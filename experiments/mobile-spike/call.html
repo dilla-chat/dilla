@@ -19,11 +19,15 @@
   <button id="start-callkit-first" type="button" data-mode="callkit-first">callkit-first</button>
   <button id="start-no-callkit-session" type="button" data-mode="no-callkit+session">no-callkit+session</button>
   <p><label><input id="force-mic" type="checkbox" checked> force mic (never fall back to the oscillator)</label></p>
+  <p><label><input id="force-capture" type="checkbox"> force capture active after didActivate (+ on KVO muted, max 5)</label></p>
+  <p><label><input id="regum" type="checkbox"> re-gUM after didActivate (new track, replaceTrack)</label></p>
   <p>
     <button id="end" type="button">End call</button>
     <button id="resume" type="button">ctx.resume (tap)</button>
     <button id="status" type="button">status</button>
     <button id="mic" type="button">native mic permission</button>
+    <button id="force-capture-btn" type="button">force capture active</button>
+    <button id="capture-state" type="button">capture state</button>
   </p>
   <a href="./index.html">capability probe</a>
   <pre id="steps"></pre>

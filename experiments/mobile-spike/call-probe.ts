@@ -32,6 +32,16 @@
 //   audioLevel / totalAudioEnergy (sender A) and inbound-rtp audioLevel / totalAudioEnergy (receiver B decodes what
 //   the mic sent), with the energy delta per 10 s line. After getUserMedia: track getSettings / getCapabilities and,
 //   on iOS, the native AVAudioSession (CallProbe.audioSessionInfo).
+//
+// Capture-state round 4 (2026-11-05): after CallKit's didActivate, WebKit mutes the in-page mic (callkit-first: track
+// muted from the start; gum-first: mic.mute at didActivate). Hypothesis: WebKit treats a foreground CallKit call as an
+// interrupting call. Native KVO on WKWebView.microphoneCaptureState / cameraCaptureState arrives as "captureState"
+// events (DILLA_CALL_EVENT capture.change). Two checkboxes (callkit modes):
+//   "force capture active"  after didActivate (and after getUserMedia in callkit-first, where no capture existed at
+//                           didActivate), CallProbe.setMicCapture("active"); again whenever KVO reports mic=muted while
+//                           the call is up, max 5 retries per run (each logged). Also a manual button.
+//   "re-gUM after didActivate"  once the loopback is up, a second getUserMedia; the new track replaces the old one on
+//                           the sender (replaceTrack) and feeds the analyser; logs whether the new track is muted.
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import { isVoiceSupported } from '../../packages/media/src/support';
 
@@ -42,7 +52,10 @@ interface CallProbePlugin {
   requestMic(): Promise<{ before: string; granted: boolean; now: string }>;
   audioSessionInfo(opts: { label: string }): Promise<Record<string, unknown>>;
   configureSession(): Promise<Record<string, unknown>>;
+  captureState(): Promise<{ mic: string; camera: string; app: string }>;
+  setMicCapture(opts: { state: 'active' | 'muted' | 'none'; reason: string }): Promise<{ requested: string; before: string; after: string }>;
   addListener(event: 'nativeLog', cb: (e: { line: string }) => void): Promise<PluginListenerHandle>;
+  addListener(event: 'captureState', cb: (e: { mic: string; camera: string; changed: string; app: string }) => void): Promise<PluginListenerHandle>;
 }
 const CallProbe = registerPlugin<CallProbePlugin>('CallProbe');
 const isIos = Capacitor.getPlatform() === 'ios';
@@ -71,6 +84,16 @@ let worker: Worker | undefined;
 let workerReady = false;
 let audioEl: HTMLAudioElement | undefined;
 let forceMic = false;
+let forceCapture = false;
+let reGum = false;
+/** True from CallKit's didActivate (startCall resolved) until the run ends. */
+let callUp = false;
+const MAX_CAPTURE_RETRIES = 5;
+let captureRetries = 0;
+/** Every KVO capture change of this run, with `at` (ms since the tap). */
+let captureChanges: { at: number; mic: string; camera: string; changed: string; app: string }[] = [];
+let sender: RTCRtpSender | undefined;
+let micSourceNode: MediaStreamAudioSourceNode | undefined;
 /** Continuous analyser sampling (every 50 ms from analyser attach to run end). */
 let sampler: ReturnType<typeof setInterval> | undefined;
 let samplerStart = 0;
@@ -90,6 +113,10 @@ const resumeBtn = document.getElementById('resume') as HTMLButtonElement;
 const statusBtn = document.getElementById('status') as HTMLButtonElement;
 const micBtn = document.getElementById('mic') as HTMLButtonElement;
 const forceMicEl = document.getElementById('force-mic') as HTMLInputElement;
+const forceCaptureEl = document.getElementById('force-capture') as HTMLInputElement;
+const reGumEl = document.getElementById('regum') as HTMLInputElement;
+const forceCaptureBtn = document.getElementById('force-capture-btn') as HTMLButtonElement;
+const captureBtn = document.getElementById('capture-state') as HTMLButtonElement;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Logging
@@ -244,9 +271,7 @@ async function getMic(): Promise<MediaStream | undefined> {
   const track = mic.getAudioTracks()[0];
   micTrack = track;
   if (track) {
-    track.onmute = () => { event('mic.mute'); };
-    track.onunmute = () => { event('mic.unmute'); };
-    track.onended = () => { event('mic.ended'); };
+    watchTrack(track, 'mic');
     try {
       event('mic.settings', { settings: track.getSettings(), capabilities: track.getCapabilities?.() ?? 'absent', constraints: track.getConstraints() });
     } catch (e) {
@@ -274,7 +299,8 @@ async function pickSource(mic: MediaStream | undefined): Promise<MediaStreamTrac
     await softStep('analyser.setup', () => {
       analyser = audio.createAnalyser();
       analyser.fftSize = 2048;
-      audio.createMediaStreamSource(mic!).connect(analyser);
+      micSourceNode = audio.createMediaStreamSource(mic!);
+      micSourceNode.connect(analyser);
       // Pull the graph: an analyser with no path to the destination may not be processed on every engine.
       const mute = audio.createGain();
       mute.gain.value = 0;
@@ -368,6 +394,74 @@ function openTransform(): TransformStream {
 type EncodedStreams = { readable: ReadableStream; writable: WritableStream };
 type WithEncoded = { createEncodedStreams(): EncodedStreams };
 
+function watchTrack(track: MediaStreamTrack, label: string): void {
+  track.onmute = () => { event(`${label}.mute`); };
+  track.onunmute = () => { event(`${label}.unmute`); };
+  track.onended = () => { event(`${label}.ended`); };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Capture state (round 4)
+
+/** CallProbe.setMicCapture("active"); a soft step, so a failure never aborts the run. */
+async function forceCaptureActive(reason: string): Promise<void> {
+  if (!isIos) { event('capture.force', { reason, skipped: 'not iOS' }); return; }
+  await softStep(`native.setMicCapture(active) ${reason}`, () => CallProbe.setMicCapture({ state: 'active', reason }), { timeoutMs: 3_000, describe: (r) => r });
+}
+
+function onCaptureState(e: { mic: string; camera: string; changed: string; app: string }): void {
+  const at = since();
+  captureChanges.push({ at, mic: e.mic, camera: e.camera, changed: e.changed, app: e.app });
+  detail.capture = { mic: e.mic, camera: e.camera, changes: captureChanges.length, retries: captureRetries };
+  event('capture.change', e);
+  if (e.changed !== 'mic' || e.mic !== 'muted' || !callUp || !forceCapture || !runActive) return;
+  if (captureRetries >= MAX_CAPTURE_RETRIES) {
+    if (captureRetries === MAX_CAPTURE_RETRIES) event('capture.retry.exhausted', { retries: captureRetries });
+    captureRetries++;
+    return;
+  }
+  captureRetries++;
+  event('capture.retry', { n: captureRetries, of: MAX_CAPTURE_RETRIES });
+  void forceCaptureActive(`retry ${captureRetries} (KVO muted)`);
+}
+
+/**
+ * Re-gUM: a second getUserMedia once the loopback is up; the new track replaces the old one on the sender and feeds
+ * the analyser. Logs the new track's muted state at once and 1 s later. The old track is stopped after the swap.
+ */
+async function reacquireMic(): Promise<void> {
+  if (!sender) { event('regum', 'no sender'); return; }
+  const old = micTrack;
+  const fresh = await softStep('regum.getUserMedia', () => navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false },
+  }), {
+    describe: (s) => s.getAudioTracks().map((t) => ({ label: t.label, readyState: t.readyState, muted: t.muted, enabled: t.enabled })),
+  });
+  const track = fresh?.getAudioTracks()[0];
+  if (!fresh || !track) { event('regum', 'no track'); return; }
+  streams.push(fresh);
+  watchTrack(track, 'regum.mic');
+  event('regum.track', { muted: track.muted, readyState: track.readyState, oldMuted: old?.muted ?? null, oldReadyState: old?.readyState ?? null });
+  const s = sender;
+  await softStep('regum.replaceTrack', () => s.replaceTrack(track));
+  micTrack = track;
+  if (ctx && analyser) {
+    const c = ctx;
+    const a = analyser;
+    await softStep('regum.analyser', () => {
+      micSourceNode?.disconnect();
+      micSourceNode = c.createMediaStreamSource(fresh);
+      micSourceNode.connect(a);
+    });
+  }
+  old?.stop();
+  detail.regum = { mutedAtStart: track.muted };
+  setTimeout(() => {
+    detail.regum = { mutedAtStart: (detail.regum as { mutedAtStart: boolean }).mutedAtStart, mutedAfter1s: track.muted, readyState: track.readyState };
+    event('regum.track+1s', { muted: track.muted, readyState: track.readyState });
+  }, 1_000);
+}
+
 function watchPc(label: string, pc: RTCPeerConnection): void {
   pc.oniceconnectionstatechange = () => { event(`pc${label}.ice`, pc.iceConnectionState); };
   pc.onconnectionstatechange = () => { event(`pc${label}.connection`, pc.connectionState); };
@@ -436,12 +530,12 @@ async function loopback(track: MediaStreamTrack): Promise<void> {
     void softStep('audio.play', () => el.play(), { describe: () => ({ paused: el.paused }) });
   };
 
-  const sender = await step('addTrack', () => a.addTrack(track, new MediaStream([track])));
+  sender = await step('addTrack', () => a.addTrack(track, new MediaStream([track])));
   await step('transform.attach.send', () => {
     if (script) {
-      (sender as unknown as { transform: unknown }).transform = new Script(worker!, { side: 'send' });
+      (sender! as unknown as { transform: unknown }).transform = new Script(worker!, { side: 'send' });
     } else {
-      const s = (sender as unknown as WithEncoded).createEncodedStreams();
+      const s = (sender! as unknown as WithEncoded).createEncodedStreams();
       s.readable.pipeThrough(sealTransform()).pipeTo(s.writable).catch((err: unknown) => { detail.pipeError = `send: ${String(err)}`; });
     }
   });
@@ -532,6 +626,9 @@ async function log(): Promise<void> {
     at: new Date().toISOString(),
     visibility: document.visibilityState,
     forceMic,
+    forceCapture,
+    reGum,
+    captureRetries,
     micLevel: analyser ? micPeaks.sinceLine : null,
     micLevelNow: micLevel(),
     micPeak0_2: analyser ? micPeaks.p0_2 : null,
@@ -563,6 +660,8 @@ async function startCallKit(): Promise<void> {
     return;
   }
   detail.callKit = await step('callkit.startCall', () => CallProbe.startCall(), { describe: (r) => r });
+  callUp = true;
+  if (forceCapture) await forceCaptureActive('after didActivate');
 }
 
 /** Optional facts that must not delay the gesture-bound steps: run after them. */
@@ -587,12 +686,17 @@ async function environment(): Promise<void> {
 async function startRun(m: Mode): Promise<void> {
   mode = m;
   forceMic = forceMicEl.checked;
+  forceCapture = forceCaptureEl.checked;
+  reGum = reGumEl.checked;
+  captureRetries = 0;
+  captureChanges = [];
   run++;
   runStart = Date.now();
   runActive = true;
   for (const btn of startBtns) btn.disabled = true;
   out.textContent = `starting (${m})…`;
-  event('run.start', { ua: navigator.userAgent, platform: Capacitor.getPlatform(), forceMic });
+  event('run.start', { ua: navigator.userAgent, platform: Capacitor.getPlatform(), forceMic, forceCapture, reGum });
+  if (isIos) void softStep('native.captureState (run start)', () => CallProbe.captureState(), { timeoutMs: 3_000, describe: (r) => r });
   heartbeat = setInterval(() => {
     if (started) return;
     event('heartbeat', { pending: Array.from(pending.entries()).map(([k, t0]) => `${k} ${Date.now() - t0}ms`) });
@@ -603,6 +707,8 @@ async function startRun(m: Mode): Promise<void> {
       await startCallKit();
       createContext('after didActivate, no gesture');
       mic = await getMic();
+      // No capture existed at didActivate, so force once more now that the track exists.
+      if (forceCapture) await forceCaptureActive('after gUM');
       await resumeCtx('ctx.resume (no gesture)');
     } else if (m === 'no-callkit+session') {
       // The native call is made synchronously in the tap; the AudioContext follows the app-configured session.
@@ -627,6 +733,8 @@ async function startRun(m: Mode): Promise<void> {
     watchFirstFrames();
     await log();
     timer = setInterval(() => { void log(); }, 10_000);
+    // Off iOS there is no CallKit: run it anyway, so a desktop smoke run exercises the path.
+    if (reGum && (callUp || !isIos)) await reacquireMic();
     if (isIos) void softStep('native.audioSessionInfo (call up)', () => CallProbe.audioSessionInfo({ label: 'call up' }), { timeoutMs: 3_000, describe: (r) => r });
   } catch (e) {
     detail.error = errText(e);
@@ -638,7 +746,8 @@ async function startRun(m: Mode): Promise<void> {
 
 /** Ends the run whatever state it is in; idempotent. Always asks CallKit to end any active call on iOS. */
 async function endRun(reason: string): Promise<void> {
-  event('run.end', reason);
+  event('run.end', { reason, captureChanges, captureRetries });
+  callUp = false;
   if (timer) clearInterval(timer);
   if (heartbeat) clearInterval(heartbeat);
   if (sampler) clearInterval(sampler);
@@ -655,7 +764,7 @@ async function endRun(reason: string): Promise<void> {
   console.log(`DILLA_CALL_END ${JSON.stringify({ ...detail, mode, run, reason })}`);
   prevEnergy = { inbound: null, source: null };
   pcs = []; streams = []; worker = undefined; workerReady = false; firstBadFrame = null; delete detail.firstBadFrame;
-  analyser = undefined; ctx = undefined; micTrack = undefined; audioEl = undefined; started = 0;
+  analyser = undefined; micSourceNode = undefined; sender = undefined; ctx = undefined; micTrack = undefined; audioEl = undefined; started = 0;
   for (const k of Object.keys(counts) as (keyof typeof counts)[]) counts[k] = 0;
   runActive = false;
   for (const btn of startBtns) btn.disabled = false;
@@ -679,8 +788,14 @@ resumeBtn.addEventListener('click', () => {
 });
 statusBtn.addEventListener('click', () => {
   void environment();
+  if (isIos) void softStep('native.captureState (status)', () => CallProbe.captureState(), { timeoutMs: 3_000, describe: (r) => r });
   if (isIos) void softStep('native.audioSessionInfo (status)', () => CallProbe.audioSessionInfo({ label: 'status' }), { timeoutMs: 3_000, describe: (r) => r });
   event('status', { pending: Array.from(pending.keys()), counts: { ...counts } });
+});
+forceCaptureBtn.addEventListener('click', () => { void forceCaptureActive('manual'); });
+captureBtn.addEventListener('click', () => {
+  if (!isIos) { event('native.captureState', 'not iOS'); return; }
+  void softStep('native.captureState', () => CallProbe.captureState(), { timeoutMs: 3_000, describe: (r) => r });
 });
 micBtn.addEventListener('click', () => {
   if (!isIos) { event('native.requestMic', 'not iOS'); return; }
@@ -700,5 +815,6 @@ window.addEventListener('unhandledrejection', (e) => { event('unhandledrejection
 if (isIos) {
   // Native lines are already on native stdout (NSLog); here they only go to the on-page list, not console.log again.
   void CallProbe.addListener('nativeLog', (e) => { screen(e.line); });
+  void CallProbe.addListener('captureState', onCaptureState);
 }
 event('page.load', { platform: Capacitor.getPlatform(), voice: isVoiceSupported() });
