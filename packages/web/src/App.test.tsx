@@ -739,6 +739,28 @@ describe('App settings and notifications', () => {
   });
 });
 
+// Review round 3 (Task 6): a checkpoint is removed under the scope it was saved under. On mobile that is the worker's
+// storage key (update-checkpoint.ts checkpointScope), not the raw instance id; desktop and the web keep the id.
+it('signing out removes the previous checkpoint under the storage key on mobile and under the instance id elsewhere', async () => {
+  for (const storageKey of ['d9'.repeat(32), undefined]) {
+    const fake = new FakeClient();
+    const ready = account();
+    const instance = storageKey === undefined ? ready.instance : { ...ready.instance!, storageKey };
+    fake.set('account', { ...ready, instance });
+    const remove = vi.fn(async () => {});
+    render(<CoreProvider client={fake}><App fatal={null} update={{ currentEntry: '/assets/old.js', watch: () => () => {},
+      store: { load: () => Promise.resolve(null), save: async () => {}, remove }, reload: vi.fn() }} /></CoreProvider>);
+    await waitFor(() => expect(fake.callsOf('start')).toHaveLength(1));
+    act(() => fake.set('account', account({ phase: 'signin-login', instance, user: null, signIn: { username: null, factor: null } })));
+    await waitFor(() => expect(remove).toHaveBeenCalled());
+    for (const [scope] of remove.mock.calls as unknown as [{ instance: string; user: string }][]) {
+      expect(scope.instance).toBe(storageKey ?? ready.instance!.id);
+      expect(scope.user).toBe(ready.user!.id);
+    }
+    cleanup();
+  }
+});
+
 it('checks for builds before login without interrupting the form', async () => {
   const fake = new FakeClient();
   fake.set('account', account({ phase: 'signin-login', signIn: { username: null, factor: null } }));

@@ -20,7 +20,7 @@ import { OtherTab } from './screens/OtherTab.tsx';
 import { requestHandover } from './handover.ts';
 import { flushSync } from 'react-dom';
 import type { ShellUpdateDeps } from './screens/Shell.tsx';
-import { updateTabId, type CheckpointScope } from './update-checkpoint.ts';
+import { checkpointScope, updateTabId, type CheckpointScope } from './update-checkpoint.ts';
 
 export type Screen = 'boot' | 'onboarding' | 'signin' | 'shell' | 'factor';
 
@@ -62,14 +62,15 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
         try {
           // eslint-disable-next-line no-restricted-globals -- only a random content-free tab identifier enters Web Storage
           const tab = updateTabId(sessionStorage, crypto);
-          return { instance: account.instance.id, user: account.user.id, tab };
+          // The scope the shell saved under (Shell.tsx): on mobile the worker's storage key, not the raw instance id.
+          return checkpointScope(account.instance, account.user.id, tab);
         } catch { return null; }
       })() : null;
     if (previous !== null && (current === null || previous.instance !== current.instance || previous.user !== current.user)) {
       void props.update.store.remove(previous).catch(() => undefined);
     }
     checkpointOwner.current = current;
-  }, [account?.phase, account?.instance?.id, account?.user?.id, props.update]);
+  }, [account?.phase, account?.instance, account?.user?.id, props.update]);
   const diagnostics = useSlice('diagnostics');
   const settings = useSlice('settings');
   const [tabPhase, setTabPhase] = useState<'other-tab' | 'waiting' | 'failed' | 'paused' | 'confirm'>('other-tab');
