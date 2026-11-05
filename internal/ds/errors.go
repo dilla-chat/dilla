@@ -43,6 +43,12 @@ func errNotFound(what string) *Error {
 	return &Error{Code: "E_NOT_FOUND", Detail: what, Status: http.StatusNotFound}
 }
 
+// errKeyPackagesExhausted is a 404 with its own code: the device is live and listed but has
+// nothing to serve, which a client answers by waiting for it to refill, not by dropping it.
+func errKeyPackagesExhausted() *Error {
+	return &Error{Code: "E_KEYPACKAGES_EXHAUSTED", Detail: "key package", Status: http.StatusNotFound}
+}
+
 func errForbidden(detail string) *Error {
 	return &Error{Code: "E_FORBIDDEN", Detail: detail, Status: http.StatusForbidden}
 }

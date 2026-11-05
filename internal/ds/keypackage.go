@@ -155,7 +155,7 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 		if err != nil {
 			return err
 		}
-		if user.DisabledAt != nil || user.DeletedAt != nil || user.Flags != 0 {
+		if user.DisabledAt != nil || user.DeletedAt != nil {
 			return errForbidden("the publishing account is disabled or deleted")
 		}
 		accountKind = user.Kind
@@ -271,7 +271,7 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 		if err != nil {
 			return err
 		}
-		if currentUser.DisabledAt != nil || currentUser.DeletedAt != nil || currentUser.Flags != 0 {
+		if currentUser.DisabledAt != nil || currentUser.DeletedAt != nil {
 			return errForbidden("the publishing account is disabled or deleted")
 		}
 		currentDevice, err := tx.GetDevice(ctx, s.DeviceID)
@@ -331,12 +331,51 @@ func (d *DS) TakeKeyPackage(ctx context.Context, s Session, target id.ID) (KeyPa
 	}
 	row, err := d.opts.Store.TakeKeyPackage(ctx, target, d.now())
 	if errors.Is(err, store.ErrNotFound) {
+		// The store cannot tell an unknown device from a live one whose directory is empty. A
+		// caller needs to (the Bot treats the second as "refill", the first as "give up"), so the
+		// device is looked up here, with the predicate invariant 4 applies to an Add: the row is
+		// not revoked and the owner's newest signed device list names it.
+		live, lerr := d.deviceIsLiveAndListed(ctx, target)
+		if lerr != nil {
+			return KeyPackage{}, lerr
+		}
+		if live {
+			return KeyPackage{}, errKeyPackagesExhausted()
+		}
 		return KeyPackage{}, errNotFound("key package")
 	}
 	if err != nil {
 		return KeyPackage{}, err
 	}
 	return KeyPackage{Blob: row.Blob, LastResort: row.LastResort == 1, KPRef: row.KPRef}, nil
+}
+
+// deviceIsLiveAndListed reports whether the device is the kind a take can find empty rather than
+// absent: the same predicate an Add is proposed under (listedDeviceVerdict).
+func (d *DS) deviceIsLiveAndListed(ctx context.Context, deviceID id.ID) (bool, error) {
+	why, err := d.listedDeviceVerdict(ctx, nil, deviceID)
+	return why == "" && err == nil, err
+}
+
+// KeyPackageCount is the session's own device's directory: the ordinary count a client refills
+// against, and whether a live last-resort package stands behind it. The ordinary count is
+// KeyPackagesRemaining, the number `ready` reports, so the two cannot disagree.
+func (d *DS) KeyPackageCount(ctx context.Context, s Session) (uint64, bool, error) {
+	if s.Bot != nil {
+		return 0, false, errForbidden("managed Bots must use their installation-scoped KeyPackage inventory route")
+	}
+	if s.Scope != auth.ScopeEnrolled {
+		return 0, false, errForbidden("reading the KeyPackage count needs an enrolled session")
+	}
+	ordinary, err := d.KeyPackagesRemaining(ctx, s.DeviceID)
+	if err != nil {
+		return 0, false, err
+	}
+	fallback, err := d.opts.Store.HasCurrentLastResortKeyPackage(ctx, s.DeviceID, d.now())
+	if err != nil {
+		return 0, false, err
+	}
+	return ordinary, fallback, nil
 }
 
 // KeyPackagesRemaining is what the gateway's `ready` frame reports so a client knows to refill. It

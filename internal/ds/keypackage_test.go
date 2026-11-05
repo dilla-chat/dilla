@@ -12,15 +12,18 @@ package ds_test
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"math"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/config"
 	"github.com/dilla-chat/dilla/internal/ds"
 	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store/sqlite"
 )
 
 const (
@@ -512,5 +515,217 @@ func TestRepublishingTheLastResortPackageDoesNotGrowTheDirectory(t *testing.T) {
 	}
 	if !got.LastResort {
 		t.Fatal("the surviving row must be the last-resort package")
+	}
+}
+
+// setUserColumn writes one users column straight on the harness's database file: the store has no
+// method that sets role flags, disable or tombstone on an existing account, and these tests need
+// exactly that state.
+func (h *dsHarness) setUserColumn(t *testing.T, user id.ID, column string, value any) {
+	t.Helper()
+	db, err := sqlite.OpenWrite(h.path)
+	if err != nil {
+		t.Fatalf("sqlite.OpenWrite: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(t.Context(), "UPDATE users SET "+column+" = ? WHERE id = ?", value, user[:]); err != nil {
+		t.Fatalf("UPDATE users SET %s: %v", column, err)
+	}
+}
+
+// users.flags are role bits (bit 0 InstanceAdmin, bit 1 BotOperator), not a disabled marker, so an
+// account that carries any of them still publishes for its own devices.
+func TestPublishAcceptsAnInstanceAdmin(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	device, session, blob, info := h.keyPackageOwner(t)
+	h.setUserColumn(t, session.UserID, "flags", 1)
+
+	if _, err := h.ds.PublishKeyPackages(ctx, session, [][]byte{blob}, nil); err != nil {
+		t.Fatalf("PublishKeyPackages: %v", err)
+	}
+	got, err := h.ds.TakeKeyPackage(ctx, session, device)
+	if err != nil {
+		t.Fatalf("TakeKeyPackage: %v", err)
+	}
+	if !bytes.Equal(got.KPRef, info.KPRef) {
+		t.Fatalf("kp_ref = %x, want the published %x", got.KPRef, info.KPRef)
+	}
+}
+
+func TestPublishAcceptsABotOperatorFlaggedHuman(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	device, session, blob, info := h.keyPackageOwner(t)
+	h.setUserColumn(t, session.UserID, "flags", 2)
+
+	if _, err := h.ds.PublishKeyPackages(ctx, session, [][]byte{blob}, nil); err != nil {
+		t.Fatalf("PublishKeyPackages: %v", err)
+	}
+	got, err := h.ds.TakeKeyPackage(ctx, session, device)
+	if err != nil {
+		t.Fatalf("TakeKeyPackage: %v", err)
+	}
+	if !bytes.Equal(got.KPRef, info.KPRef) {
+		t.Fatalf("kp_ref = %x, want the published %x", got.KPRef, info.KPRef)
+	}
+}
+
+func TestPublishStillRefusesADisabledAccount(t *testing.T) {
+	h := newDSHarness(t)
+	_, session, blob, _ := h.keyPackageOwner(t)
+	h.setUserColumn(t, session.UserID, "disabled_at", h.clk.Now().Unix())
+	h.requirePublishForbidden(t, session, blob)
+}
+
+func TestPublishStillRefusesADeletedAccount(t *testing.T) {
+	h := newDSHarness(t)
+	_, session, blob, _ := h.keyPackageOwner(t)
+	h.setUserColumn(t, session.UserID, "deleted_at", h.clk.Now().Unix())
+	h.requirePublishForbidden(t, session, blob)
+}
+
+// A managed Bot's session is refused on this generic route, whatever its account flags: Bots publish
+// through their installation-scoped route. (Bot sessions are minted only for Bot-kind accounts.)
+func TestPublishStillRefusesABotKindAccount(t *testing.T) {
+	h := newDSHarness(t)
+	_, session, blob, _ := h.keyPackageOwner(t)
+	h.setUserColumn(t, session.UserID, "kind", 1)
+	h.setUserColumn(t, session.UserID, "flags", 1)
+	session.Bot = &auth.BotSessionBinding{}
+
+	h.requirePublishForbidden(t, session, blob)
+}
+
+func (h *dsHarness) requirePublishForbidden(t *testing.T, session auth.Session, blob []byte) {
+	t.Helper()
+	_, err := h.ds.PublishKeyPackages(context.Background(), session, [][]byte{blob}, nil)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
+		t.Fatalf("got %v, want E_FORBIDDEN", err)
+	}
+	if total := h.countRows(t, "key_packages"); total != 0 {
+		t.Fatalf("%d rows were written for a refused publish, want 0", total)
+	}
+}
+
+// listedDevice is a device its owner's signed device list names, the state of every enrolled
+// device: a take that finds its directory empty can tell it from one the instance does not know.
+func (h *dsHarness) listedDevice(t *testing.T, revokedInList bool) (id.ID, auth.Session) {
+	t.Helper()
+	return h.listedDeviceSignedBy(t, testSSK(0x61), testSSK(0x61), bytes.Repeat([]byte{4}, 32), revokedInList)
+}
+
+// listedDeviceSignedBy publishes a list for a new device: owned by the user whose SSK is userSSK,
+// signed with listSSK, naming the device under listedDSK (the device is registered under 4*32).
+func (h *dsHarness) listedDeviceSignedBy(t *testing.T, userSSK, listSSK ed25519.PrivateKey, listedDSK []byte, revokedInList bool) (id.ID, auth.Session) {
+	t.Helper()
+	user, device := id.New(), id.New()
+	h.userWithSSK(t, user, userSSK)
+	h.account(t, user, device)
+	entry := listEntry{DeviceID: device[:], DSKPub: listedDSK, AddedAt: 1}
+	if revokedInList {
+		at := uint64(1_758_700_000)
+		entry.RevokedAt = &at
+	}
+	h.publishDeviceList(t, user, signedDeviceList(t, listSSK, user, []listEntry{entry}))
+	return device, h.sessionOf(t, device)
+}
+
+func requireTakeCode(t *testing.T, h *dsHarness, session auth.Session, target id.ID, code string) {
+	t.Helper()
+	_, err := h.ds.TakeKeyPackage(context.Background(), session, target)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != code || dsErr.Status != 404 {
+		t.Fatalf("got %v, want a 404 %s", err, code)
+	}
+}
+
+// A live, listed device with nothing to serve is told apart from one the instance does not know.
+func TestTakeFromALiveEmptyDeviceIsExhausted(t *testing.T) {
+	h := newDSHarness(t)
+	device, session := h.listedDevice(t, false)
+	requireTakeCode(t, h, session, device, "E_KEYPACKAGES_EXHAUSTED")
+}
+
+func TestTakeFromAnUnknownDeviceIsNotFound(t *testing.T) {
+	h := newDSHarness(t)
+	_, session := h.listedDevice(t, false)
+	requireTakeCode(t, h, session, id.New(), "E_NOT_FOUND")
+}
+
+func TestTakeFromARevokedDeviceIsNotFound(t *testing.T) {
+	h := newDSHarness(t)
+	t.Run("revoked in the signed list", func(t *testing.T) {
+		device, session := h.listedDevice(t, true)
+		requireTakeCode(t, h, session, device, "E_NOT_FOUND")
+	})
+	t.Run("revoked on the device row", func(t *testing.T) {
+		device, session := h.listedDevice(t, false)
+		if err := h.repo.RevokeDevice(context.Background(), device, h.clk.Now().Unix()); err != nil {
+			t.Fatalf("RevokeDevice: %v", err)
+		}
+		requireTakeCode(t, h, session, device, "E_NOT_FOUND")
+	})
+}
+
+// Whatever makes a device not "live and listed" keeps the old answer, E_NOT_FOUND, and never a 500.
+func TestTakeFromADeviceThatIsNotLiveAndListedIsNotFound(t *testing.T) {
+	h := newDSHarness(t)
+	t.Run("a list that does not verify", func(t *testing.T) {
+		device, session := h.listedDeviceSignedBy(t, testSSK(0x61), testSSK(0x62), bytes.Repeat([]byte{4}, 32), false)
+		requireTakeCode(t, h, session, device, "E_NOT_FOUND")
+	})
+	t.Run("a user with no device list", func(t *testing.T) {
+		device := h.device(t)
+		requireTakeCode(t, h, h.sessionOf(t, device), device, "E_NOT_FOUND")
+	})
+	t.Run("a quarantined device", func(t *testing.T) {
+		device, session := h.listedDevice(t, false)
+		if err := h.repo.QuarantineDevice(context.Background(), device, h.clk.Now().Unix(), "test"); err != nil {
+			t.Fatalf("QuarantineDevice: %v", err)
+		}
+		requireTakeCode(t, h, session, device, "E_NOT_FOUND")
+	})
+	t.Run("a list that names another key for the device", func(t *testing.T) {
+		device, session := h.listedDeviceSignedBy(t, testSSK(0x61), testSSK(0x61), bytes.Repeat([]byte{9}, 32), false)
+		requireTakeCode(t, h, session, device, "E_NOT_FOUND")
+	})
+}
+
+func TestKeyPackageCountReportsOrdinaryAndFallback(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	device := h.device(t)
+	session := h.sessionOf(t, device)
+
+	ordinary, fallback, err := h.ds.KeyPackageCount(ctx, session)
+	if err != nil || ordinary != 0 || fallback {
+		t.Fatalf("empty device: got (%d, %v, %v), want (0, false, nil)", ordinary, fallback, err)
+	}
+	h.seedKeyPackages(t, device, 5, keyPackageLifetime)
+	h.seedLastResort(t, device, keyPackageLifetime)
+	ordinary, fallback, err = h.ds.KeyPackageCount(ctx, session)
+	if err != nil || ordinary != 5 || !fallback {
+		t.Fatalf("got (%d, %v, %v), want (5, true, nil)", ordinary, fallback, err)
+	}
+	// The count is the one `ready` reports.
+	if ready := h.readyKeypackagesRemaining(t, device); ready != ordinary {
+		t.Fatalf("ready reports %d, the count route %d", ready, ordinary)
+	}
+}
+
+func TestKeyPackageCountRefusesABotAndAProvisionalSession(t *testing.T) {
+	h := newDSHarness(t)
+	device := h.device(t)
+	bot := h.sessionOf(t, device)
+	bot.Bot = &auth.BotSessionBinding{}
+	provisional := h.provisionalSessionOf(t, device, id.New())
+	for name, session := range map[string]auth.Session{"bot": bot, "provisional": provisional} {
+		_, _, err := h.ds.KeyPackageCount(context.Background(), session)
+		var dsErr *ds.Error
+		if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
+			t.Fatalf("%s: got %v, want E_FORBIDDEN", name, err)
+		}
 	}
 }

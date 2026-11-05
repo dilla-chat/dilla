@@ -8,7 +8,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/dilla-chat/dilla/internal/api"
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
@@ -463,6 +465,133 @@ func TestInteractionRegistrationFailsClosedWhenPackageReadFails(t *testing.T) {
 	}
 }
 
+func storedInteractionIntent(t *testing.T, f *interactionRegistrationFixture) interactionRegistrationIntent {
+	t.Helper()
+	value, err := f.n.StateGet(context.Background(), interactionRegistrationStateArea, interactionRegistrationKey(f.request.Group))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := decodeInteractionRegistrationIntent(value.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return intent
+}
+
+func createdSnapshotRequest(t *testing.T, f *interactionRegistrationFixture) id.ID {
+	t.Helper()
+	details, err := interactionSnapshotDetailsFromWire(f.n.createdSnapshot)
+	if err != nil {
+		t.Fatalf("native create received no parseable snapshot: %v", err)
+	}
+	return details.Request
+}
+
+// pendingTakeIntent leaves a durable intent with a saved admission and snapshot
+// but no KeyPackage, as a pass whose take failed transiently does.
+func pendingTakeIntent(t *testing.T, f *interactionRegistrationFixture) interactionRegistrationIntent {
+	t.Helper()
+	f.request.MinimumEligibilityRevision = 0
+	f.request.ParticipantKeyPackage = nil
+	f.s.keyPackageErr = errors.New("package temporarily unavailable")
+	if _, err := f.coordinator.Register(context.Background(), f.request); err == nil {
+		t.Fatal("Register succeeded without a KeyPackage")
+	}
+	intent := storedInteractionIntent(t, f)
+	if len(intent.Admission) == 0 || len(intent.Snapshot) == 0 || len(intent.KeyPackage) != 0 || f.n.createCalls != 0 {
+		t.Fatalf("transient take failure did not leave a pending intent: admission=%d snapshot=%d keypackage=%d creates=%d", len(intent.Admission), len(intent.Snapshot), len(intent.KeyPackage), f.n.createCalls)
+	}
+	f.s.keyPackageErr = nil
+	f.s.keyPackage = []byte{9, 8, 7}
+	return intent
+}
+
+// A registration whose take kept failing until the device published holds a
+// snapshot that pins an old device list. The core refuses that snapshot as
+// device_trust_changed, which never rotates the intent, so the intent restarts
+// before the take instead of creating with the stale snapshot.
+func TestInteractionRegistrationRestartsAStaleSnapshotBeforeTakingAKeyPackage(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	stale := pendingTakeIntent(t, f)
+	f.s.currentTime = f.s.serverNow() + api.BotInteractionAdmissionLifetimeSeconds + 1
+
+	if _, err := f.coordinator.Register(context.Background(), f.request); err != nil {
+		t.Fatalf("Register after the device published: %v", err)
+	}
+	if len(f.s.requestIDs) != 5 {
+		t.Fatalf("admission/context/register request IDs = %v, want a fresh admission and snapshot", f.s.requestIDs)
+	}
+	fresh := f.s.requestIDs[2]
+	if fresh == stale.AdmissionRequest || f.s.requestIDs[3] != fresh || f.s.requestIDs[4] != fresh {
+		t.Fatalf("stale admission %v was not replaced before create: request IDs %v", stale.AdmissionRequest, f.s.requestIDs)
+	}
+	if f.n.createCalls != 1 || createdSnapshotRequest(t, f) != fresh || f.n.createOperations[0] == stale.Operation || !bytes.Equal(f.n.createdKeyPackage, f.s.keyPackage) {
+		t.Fatalf("create did not use the fresh snapshot and operation: creates=%d operations=%v stale=%v", f.n.createCalls, f.n.createOperations, stale.Operation)
+	}
+	if f.s.registerCalls != 1 || f.s.lastOperation != f.n.createOperations[0] {
+		t.Fatalf("registration posts=%d operation=%v", f.s.registerCalls, f.s.lastOperation)
+	}
+}
+
+func TestInteractionRegistrationReusesAFreshSnapshotWithoutAKeyPackage(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	pending := pendingTakeIntent(t, f)
+	f.s.currentTime = f.s.serverNow() + api.BotInteractionAdmissionLifetimeSeconds - 1
+
+	if _, err := f.coordinator.Register(context.Background(), f.request); err != nil {
+		t.Fatalf("Register within the admission lifetime: %v", err)
+	}
+	if len(f.s.requestIDs) != 3 || f.s.requestIDs[2] != pending.AdmissionRequest || createdSnapshotRequest(t, f) != pending.AdmissionRequest || f.n.createOperations[0] != pending.Operation {
+		t.Fatalf("fresh snapshot was rotated needlessly: request IDs %v operations %v", f.s.requestIDs, f.n.createOperations)
+	}
+}
+
+func TestInteractionRegistrationRestartsTheIntentWhenNoKeyPackageIsAvailable(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	pending := pendingTakeIntent(t, f)
+	f.s.keyPackageErr = exhaustedKeyPackageError()
+
+	_, err := f.coordinator.Register(context.Background(), f.request)
+	if code := keyPackageUnavailableCode(err); code != "E_KEYPACKAGES_EXHAUSTED" {
+		t.Fatalf("exhausted take error = %v, want the unavailable classification kept for backoff", err)
+	}
+	intent := storedInteractionIntent(t, f)
+	if intent.Operation == pending.Operation || intent.Operation.IsZero() || intent.AdmissionRequest == pending.AdmissionRequest || intent.AdmissionRequest.IsZero() ||
+		len(intent.Admission) != 0 || len(intent.Snapshot) != 0 || intent.MinimumRevision != 0 || len(intent.KeyPackage) != 0 || f.n.createCalls != 0 {
+		t.Fatalf("exhausted take left the old admission in place: operation %v->%v request %v->%v admission=%d snapshot=%d minimum=%d", pending.Operation, intent.Operation, pending.AdmissionRequest, intent.AdmissionRequest, len(intent.Admission), len(intent.Snapshot), intent.MinimumRevision)
+	}
+
+	f.s.keyPackageErr = nil
+	if _, err := f.coordinator.Register(context.Background(), f.request); err != nil {
+		t.Fatalf("Register after the device published: %v", err)
+	}
+	if createdSnapshotRequest(t, f) != intent.AdmissionRequest || f.n.createOperations[0] != intent.Operation {
+		t.Fatalf("create did not use the restarted intent: snapshot request=%v operations=%v", createdSnapshotRequest(t, f), f.n.createOperations)
+	}
+}
+
+// Once a KeyPackage is pinned, CreateInteractionGroup may already have run, so
+// neither restart applies and the existing create paths decide.
+func TestInteractionRegistrationNeverRestartsAPinnedKeyPackageIntent(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.n.createErr = errors.New("device_trust_changed")
+	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationRecovery) {
+		t.Fatalf("first create error = %v, want pending recovery", err)
+	}
+	pinned := storedInteractionIntent(t, f)
+	f.s.currentTime = f.s.serverNow() + api.BotInteractionAdmissionLifetimeSeconds + 1
+	f.s.keyPackageErr = exhaustedKeyPackageError()
+
+	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationRecovery) {
+		t.Fatalf("second create error = %v, want pending recovery", err)
+	}
+	intent := storedInteractionIntent(t, f)
+	if f.s.keyPackageCalls != 0 || len(f.s.requestIDs) != 2 || f.n.createCalls != 2 || createdSnapshotRequest(t, f) != pinned.AdmissionRequest || f.n.createOperations[1] != pinned.Operation ||
+		intent.Operation != pinned.Operation || intent.AdmissionRequest != pinned.AdmissionRequest || !bytes.Equal(intent.Snapshot, pinned.Snapshot) || !bytes.Equal(intent.KeyPackage, f.request.ParticipantKeyPackage) {
+		t.Fatalf("pinned intent was rotated: takes=%d request IDs=%v operations=%v operation %v request %v", f.s.keyPackageCalls, f.s.requestIDs, f.n.createOperations, intent.Operation, intent.AdmissionRequest)
+	}
+}
+
 func TestInteractionRegistrationSnapshotProviderUsesPersistedBinding(t *testing.T) {
 	f := newInteractionRegistrationFixture(t)
 	if _, err := f.coordinator.Register(context.Background(), f.request); err != nil {
@@ -765,6 +894,8 @@ func newInteractionRegistrationFixture(t *testing.T) *interactionRegistrationFix
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The Bot and the server share a host clock in production.
+	f.coordinator.now = func() time.Time { return time.Unix(int64(f.s.serverNow()), 0) }
 	return f
 }
 
@@ -788,6 +919,7 @@ type interactionRegistrationNativeFake struct {
 	transactionCalls                      uint64
 	createdExpected                       native.InteractionGroupExpected
 	createdKeyPackage                     []byte
+	createdSnapshot                       []byte
 	createOperations                      []id.ID
 	inspectState                          uint64
 }
@@ -799,10 +931,11 @@ func (n *interactionRegistrationNativeFake) Bootstrap(context.Context, [32]byte)
 func (n *interactionRegistrationNativeFake) Identity(context.Context) (native.Identity, error) {
 	return n.identity, nil
 }
-func (n *interactionRegistrationNativeFake) CreateInteractionGroup(_ context.Context, operation id.ID, e native.InteractionGroupExpected, _ []byte, keyPackage []byte) (native.InteractionGroupCreateResult, error) {
+func (n *interactionRegistrationNativeFake) CreateInteractionGroup(_ context.Context, operation id.ID, e native.InteractionGroupExpected, snapshot []byte, keyPackage []byte) (native.InteractionGroupCreateResult, error) {
 	n.createCalls++
 	n.createOperations = append(n.createOperations, operation)
 	n.createdExpected = e
+	n.createdSnapshot = append([]byte(nil), snapshot...)
 	n.createdKeyPackage = append([]byte(nil), keyPackage...)
 	if n.createErr != nil {
 		return native.InteractionGroupCreateResult{}, n.createErr
@@ -910,17 +1043,29 @@ type interactionRegistrationSessionFake struct {
 	admissions                       map[id.ID]uint64
 	keyPackage                       []byte
 	keyPackageErr                    error
+	keyPackageErrFor                 map[id.ID]error
+	candidatesByUser                 []userDevices
 	keyPackageCalls                  uint64
 	keyPackageFailures               uint64
 }
 
-func (s *interactionRegistrationSessionFake) KeyPackage(context.Context, id.ID) ([]byte, error) {
+func (s *interactionRegistrationSessionFake) KeyPackage(_ context.Context, device id.ID) ([]byte, error) {
 	s.keyPackageCalls++
+	if err := s.keyPackageErrFor[device]; err != nil {
+		return nil, err
+	}
 	if s.keyPackageFailures > 0 {
 		s.keyPackageFailures--
 		return nil, errors.New("package temporarily unavailable")
 	}
 	return append([]byte(nil), s.keyPackage...), s.keyPackageErr
+}
+
+func (s *interactionRegistrationSessionFake) serverNow() uint64 {
+	if s.currentTime == 0 {
+		return 100
+	}
+	return s.currentTime
 }
 
 func (s *interactionRegistrationSessionFake) IssueBotInteractionAdmission(_ context.Context, _ id.ID, request id.ID, _ id.ID, _ id.ID, _ id.ID) ([]byte, error) {
@@ -942,7 +1087,17 @@ func (s *interactionRegistrationSessionFake) ResolveCurrentEpisode(context.Conte
 	return s.currentEpisode, !s.currentEpisode.IsZero(), nil
 }
 
-func (s *interactionRegistrationSessionFake) DeviceCandidates(context.Context, id.ID) ([]id.ID, error) {
+type userDevices struct {
+	user    id.ID
+	devices []id.ID
+}
+
+func (s *interactionRegistrationSessionFake) DeviceCandidates(_ context.Context, user id.ID) ([]id.ID, error) {
+	for _, u := range s.candidatesByUser {
+		if u.user == user {
+			return append([]id.ID(nil), u.devices...), nil
+		}
+	}
 	return append([]id.ID(nil), s.candidates...), nil
 }
 func (s *interactionRegistrationSessionFake) BotInteractionContextSnapshot(_ context.Context, _ id.ID, request, group, user, device id.ID) ([]byte, error) {

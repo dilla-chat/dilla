@@ -489,6 +489,7 @@ export function world(opts: {
     }),
     postTicket: vi.fn(() => Promise.resolve({ ticket: 'ticket', expires: 0n })),
     postKeyPackages: vi.fn((_body: Uint8Array) => Promise.resolve()),
+    getKeyPackageCount: vi.fn((): Promise<{ ordinary: number; fallback: boolean } | null> => Promise.resolve({ ordinary: 32, fallback: true })),
     // web3.6: the account's factors (owed while state.owed), and the passkey sign-in ceremony's begin.
     getFactors: vi.fn((): Promise<Factors> => {
       return Promise.resolve({ owed: state.owed, totp: state.owed ? null : 1_700_000_000, passkeys: [], backupCodesLeft: state.owed ? 0 : 10,

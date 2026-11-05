@@ -111,6 +111,7 @@ export const en = {
   'diagnostics.generation': 'Generation',
   'diagnostics.instance': 'Instance',
   'diagnostics.devices': 'Devices',
+  'diagnostics.keyPackages': 'Key packages',
   'diagnostics.empty': 'No errors recorded',
   'tabs.use': 'Use this tab',
   'tabs.wait': 'Moving to this tab…',

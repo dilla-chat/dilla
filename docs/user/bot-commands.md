@@ -23,6 +23,9 @@ upload receipt alone does not mean the requested action completed. Commands run
 through the built-in or managed bot and obey current community, channel, and role
 permissions. Inaccessible users, roles, and channels are not suggested.
 
+If Bot commands are missing on a device after a server update, quit and relaunch the app, or reload the browser tab.
+A resume is not enough.
+
 ## Available commands
 
 Fields in angle brackets are required; square brackets are optional. In the

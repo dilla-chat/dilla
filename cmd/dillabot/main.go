@@ -620,7 +620,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 											} else if catchupResult.More {
 												logger.Info("bot member registration catch-up remains bounded", "installation_id", installation.ID.String(), "members_visited", catchupResult.MembersVisited, "pages", catchupResult.Pages)
 											}
-											if workErr := registration.ProcessPending(ctx, 4, 8, members, result.Session); workErr != nil {
+											registration.WithLogger(logger).WithBackoff(registrationBackoff)
+											workErr := registration.ProcessPending(ctx, 4, 8, members, result.Session)
+											if registrationWorkReports.changed(installation.ID, workErr) {
 												logger.Info("bot interaction registration work remains pending", "installation_id", installation.ID.String(), "error", workErr.Error())
 											}
 										}

@@ -14,7 +14,7 @@ import { followWallClock, readFakeClock, wallClockFollower } from './wall-clock.
  *  so a second host on the same ports serves the same accounts (the caller removes it with `removeHostData`).
  *  L-E2E-31: `sfu` starts the host's in-process LiveKit (`-sfu -sfu-port -sfu-udp-port`); the voice suite sets it.
  *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
-export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; prebuilt?: boolean; botReconcileInterval?: string; advanceClockWithWall?: boolean; wallClockSweep?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
+export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; prebuilt?: boolean; botReconcileInterval?: string; advanceClockWithWall?: boolean; adminInvite?: boolean; wallClockSweep?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const TOOLING_DIR = process.env.DILLA_E2E_TOOLING_DIR;
 const verifyPrebuiltTools = () => TOOLING_DIR === undefined ? undefined : verifyTestTools(TOOLING_DIR, { repoRoot: REPO_ROOT });
@@ -72,6 +72,7 @@ export function hostArgs(c: HostConfig, dataDir: string): string[] {
     ...(c.webRoot === null ? [] : ['-web-root', join(REPO_ROOT, c.webRoot)]),
     ...(c.webauthnOrigin === undefined ? [] : ['-webauthn-origin', c.webauthnOrigin]),
     ...(c.botRuntime === true ? ['-bot-runtime-secret', join(dataDir, 'bot-runtime.token')] : []),
+    ...(c.adminInvite === true ? ['-admin-invite'] : []),
     ...(c.wire === undefined ? [] : [`-wire=${String(c.wire)}`]),
     ...(c.sfu === undefined ? [] : ['-sfu', '-sfu-port', String(c.sfu.port), '-sfu-udp-port', String(c.sfu.udpPort),
       ...(c.sfu.departureTimeout === undefined ? [] : ['-sfu-departure-timeout', String(c.sfu.departureTimeout)])]),

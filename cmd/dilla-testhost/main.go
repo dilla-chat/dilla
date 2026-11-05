@@ -42,7 +42,9 @@ type options struct {
 	webauthnOrigin                                    string
 	botRuntimeSecret                                  string
 	productionACL                                     bool
-	sfu                                               sfuOptions
+	// adminInvite makes the first invite grant instance administration (-admin-invite).
+	adminInvite bool
+	sfu         sfuOptions
 	// wire is the one wire version the hello offers (-wire, web3.8 S1).
 	wire uint64
 }
@@ -66,6 +68,7 @@ func parseFlags(args []string) (options, error) {
 	webauthnOrigin := fs.String("webauthn-origin", "", "the origin a browser reaches this host from (for example http://localhost:9999): passkeys bind to its hostname and rp_origins is exactly it (empty: the instance domain's own relying party)")
 	botRuntimeSecret := fs.String("bot-runtime-secret", "", "test only: create an operator runtime credential at this owner-only path")
 	wire := fs.Uint64("wire", 0, "the one wire version the gateway's hello offers and GET /v1/instance advertises (version-reload e2e only); unset, the host offers dillad's production list (wire 4 for people, 3 for managed Bots, 2)")
+	adminInvite := fs.Bool("admin-invite", false, "the first invite grants instance administration, one use, as the invite `dillad init` writes does")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -93,8 +96,8 @@ func parseFlags(args []string) (options, error) {
 	}
 	return options{public: *public, control: *control, dataDir: *dataDir, core: *core,
 		logLevel: *logLevel, webRoot: root, productionACL: *productionACL, webauthnOrigin: *webauthnOrigin,
-		botRuntimeSecret: *botRuntimeSecret,
-		wire:             *wire,
+		botRuntimeSecret: *botRuntimeSecret, adminInvite: *adminInvite,
+		wire: *wire,
 		sfu: sfuOptions{enabled: *withSFU, port: *sfuPort, udpPort: *sfuUDPPort,
 			noInternalIP: *sfuNoInternalIP, av1: *sfuAV1, departure: uint32(min(*sfuDeparture, 3600))}}, nil
 }
@@ -114,7 +117,7 @@ func (o options) hostOptions(dataDir, core, scrapeToken string) dilladtest.HostO
 		SFU: o.sfu.enabled, SFUPort: o.sfu.port, SFUUDPPort: o.sfu.udpPort,
 		SFUNoInternalIP: o.sfu.noInternalIP, SFUEnableAV1: o.sfu.av1, SFUDepartureTimeout: o.sfu.departure,
 		ScrapeToken: scrapeToken, WebRoot: o.webRoot, ProductionACL: o.productionACL,
-		WebAuthnOrigin: o.webauthnOrigin,
+		WebAuthnOrigin: o.webauthnOrigin, AdminInvite: o.adminInvite,
 	}
 	if o.wire != 0 {
 		ho.WireVersions = []uint64{o.wire}

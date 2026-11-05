@@ -30,8 +30,11 @@ const (
 	CodeModeReadable        Code = "E_MODE_READABLE"
 	CodeNotUploader         Code = "E_NOT_UPLOADER"
 	CodeNotFound            Code = "E_NOT_FOUND"
-	CodeGroupExists         Code = "E_GROUP_EXISTS"
-	CodeCommitConflict      Code = "E_COMMIT_CONFLICT"
+	// CodeKeyPackagesExhausted is a 404 for a live, listed device whose KeyPackage directory is
+	// empty: unlike E_NOT_FOUND the device exists, and a caller waits for its refill.
+	CodeKeyPackagesExhausted Code = "E_KEYPACKAGES_EXHAUSTED"
+	CodeGroupExists          Code = "E_GROUP_EXISTS"
+	CodeCommitConflict       Code = "E_COMMIT_CONFLICT"
 	// The call routes' two capacity refusals (dilla-media task 10): the advisory participant count
 	// at token time and the publisher lease. Both are 409: "full" is the call's state, not an
 	// authorization failure or a server overload.
@@ -130,7 +133,7 @@ func (e *Error) Status() int {
 		CodeProvisionalOutsidePairing, CodeChannelMode,
 		CodeFactorRequired, CodeTargetNoFactor, CodeStepUp, CodePasskeyOtherAccount:
 		return http.StatusForbidden
-	case CodeNotFound:
+	case CodeNotFound, CodeKeyPackagesExhausted:
 		return http.StatusNotFound
 	case CodeGroupExists, CodeCommitConflict, CodeRemovePending, CodeCallFull, CodeCallSharersFull, CodeCallNotAlone:
 		return http.StatusConflict

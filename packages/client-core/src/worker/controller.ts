@@ -36,7 +36,7 @@ import { chainRow, historyFrom, ingestAccountKind, readDeviceListHistory, signed
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
-  type DeviceSummary, type DmSummary, type InviteCreatedResult, type NoticesState, type PinnedItem, type ThreadState, type TimelineItem, type TrayItem,
+  type DeviceSummary, type DiagnosticsState, type DmSummary, type InviteCreatedResult, type NoticesState, type PinnedItem, type ThreadState, type TimelineItem, type TrayItem,
   type TrustSummary, type SendBlocksState, type WorkerError, type RemovalNotice, type VoiceState, type FactorSetupOrigin,
   type PresenceChoice, type PresenceStatus,
 } from '../state/types';
@@ -118,6 +118,9 @@ const ACCOUNT_CODES = new Set([
 /** dillad's AssertionTTL is 5 minutes; a 401 to a backup code this long after the assertion was minted is its expiry
  *  (the minting is earlier on the instance's clock than the answer here, by the round trip). */
 const ASSERTION_EXPIRED_MS = 300_000;
+/** A failed KeyPackage publish is tried again after 5 s, doubling to 5 min. */
+const KEYPACKAGE_RETRY_MIN_MS = 5_000;
+const KEYPACKAGE_RETRY_MAX_MS = 300_000;
 
 const ALLOWED_CODES = new Set(`E_ATTACHMENT_COUNT E_ATTACHMENT_FAILED E_ATTACHMENT_INPUT E_ATTACHMENT_MISSING E_ATTACHMENT_TOO_LARGE
 E_BAD_INPUT E_BINDING E_BLOB_HASH E_BLOB_OPEN E_BODY_TOO_LARGE E_CAPACITY E_CBOR_DEPTH E_CBOR_NONCANONICAL
@@ -132,7 +135,7 @@ E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER
 E_SETTING_KEY E_SIGNIN_EVICTED E_SIGNIN_EXPIRED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_NEWER E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
 E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
 E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED E_MEDIA_MISROUTE
-E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_PASSKEY_OTHER_ACCOUNT E_STEP_UP E_TARGET_NO_FACTOR`.split(/\s+/));
+E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_PASSKEY_OTHER_ACCOUNT E_STEP_UP E_TARGET_NO_FACTOR E_KEYPACKAGES_EXHAUSTED`.split(/\s+/));
 
 const NO_INTERACTION_GROUP = 'no active interaction group for this community';
 const AMBIGUOUS_INTERACTION_GROUP = 'multiple active interaction groups make the Bot target ambiguous';
@@ -1025,6 +1028,13 @@ export class Controller {
   /** A signup this worker completed has sent no KeyPackages yet (a V route, refused while owed): enterReady sends them
    *  once past the factor gate, before any join. */
   private keyPackagesOwed = false;
+  /** KeyPackage publication: what Diagnostics shows, the one attempt allowed at a time, and the backoff between failures. */
+  private keyPackages: DiagnosticsState['keyPackages'] = { count: null, lastAttempt: null, lastError: null };
+  private keyPackagesBusy: CorePort | null = null;
+  private keyPackagesDelayMs = 0;
+  private keyPackagesRetry: number | null = null;
+  /** Set when the gateway came back from a loss; the next ready checks the server's count instead of trusting its own. */
+  private keyPackagesRecheck = false;
   /** factorSetupDone in flight: a second one is refused E_NOT_READY (as step() does for sign-in), so a double submit never
    *  runs two enterReady at once. */
   private factorSetupRunning = false;
@@ -2144,7 +2154,45 @@ export class Controller {
   private publishDiagnostics(): void {
     this.slices.set('diagnostics', { connection: this.connectionState.status, generation: this.connectionState.generation,
       instance: this.instance === null ? '' : toHex(this.instance.instanceId), devices: this.deviceCount,
-      errors: [...this.diagnosticsErrors] });
+      errors: [...this.diagnosticsErrors], keyPackages: { ...this.keyPackages } });
+  }
+
+  /**
+   * Tops the device's KeyPackages up from the count `remaining` yields. One attempt runs at a
+   * time. A failure is shown in Diagnostics and retried, 5 s doubling to 5 min, until it lands or the account is let go
+   * of; a publish that vanished silently once left a device without any package for weeks.
+   */
+  private async topUpKeyPackages(core: CorePort, limits: Limits, remaining: () => Promise<number>, retry = false): Promise<void> {
+    // A pending retry is in charge: a flapping gateway's ready must not publish more often than the backoff allows.
+    if (this.keyPackagesBusy === core || this.keyPackagesRetry !== null) return;
+    this.keyPackagesBusy = core;
+    try {
+      // A retry asks the server first: the failed attempt may have landed (a lost response), and the count says so.
+      const known = (retry ? (await this.routes.getKeyPackageCount())?.ordinary : undefined) ?? await remaining();
+      if (this.core !== core) return;
+      const published = await refillKeyPackages(core, this.routes, known,
+        { perDevice: limits.keypackagesPerDevice, threshold: limits.keypackageRefillThreshold });
+      if (this.core !== core) return;
+      this.keyPackagesDelayMs = 0;
+      this.keyPackages = { count: known + published, lastAttempt: published > 0 ? this.deps.now() : this.keyPackages.lastAttempt, lastError: null };
+      this.publishDiagnostics();
+    } catch (e) {
+      if (this.core !== core || this.revoked()) return;
+      this.keyPackagesDelayMs = Math.min(Math.max(KEYPACKAGE_RETRY_MIN_MS, this.keyPackagesDelayMs * 2), KEYPACKAGE_RETRY_MAX_MS);
+      this.keyPackages = { ...this.keyPackages, lastAttempt: this.deps.now(), lastError: errorOf(e).code };
+      this.publishDiagnostics();
+      this.keyPackagesRetry = this.deps.setTimeout(() => {
+        this.keyPackagesRetry = null;
+        if (this.core === core && !this.revoked()) void this.barrier.track(this.topUpKeyPackages(core, limits, remaining, true));
+      }, this.keyPackagesDelayMs);
+    } finally {
+      if (this.keyPackagesBusy === core) this.keyPackagesBusy = null;
+    }
+  }
+
+  private clearKeyPackageRetry(): void {
+    if (this.keyPackagesRetry !== null) this.deps.clearTimeout(this.keyPackagesRetry);
+    this.keyPackagesRetry = null;
   }
 
   private nowS(): bigint { return BigInt(Math.floor(this.deps.now() / 1000)); }
@@ -2338,9 +2386,8 @@ export class Controller {
       if (this.keyPackagesOwed) {
         this.keyPackagesOwed = false;
         const limits = this.limits ?? await this.routes.getLimits();
-        try {
-          await refillKeyPackages(core, this.routes, 0, { perDevice: limits.keypackagesPerDevice, threshold: limits.keypackageRefillThreshold });
-        } catch { /* the gateway's ready refills from its count */ }
+        // A refusal is shown and retried in the background; the person still gets in.
+        await this.topUpKeyPackages(core, limits, () => Promise.resolve(0));
         if (this.revoked()) return;
       }
       // (e) the next ready retries a failed upload; a root mismatch is recorded, never dropped.
@@ -2502,6 +2549,7 @@ export class Controller {
     this.clearReauthTimer();
     this.clearHeldReads();
     this.clearPendingRolePanelActionRetries();
+    this.clearKeyPackageRetry();
     this.typingOff();
     this.calls.reset();
     this.sync?.stop();
@@ -2514,6 +2562,7 @@ export class Controller {
       let status: ConnectionState['status'];
       switch (e.status) {
         case 'ready':
+          if (this.wasDown) this.keyPackagesRecheck = true;
           this.wasDown = false;
           status = 'online';
           // web3.7 3a-client: a boot sweep that found the instance unreachable runs at the first online; once it has
@@ -2581,8 +2630,11 @@ export class Controller {
     const core = this.core;
     const limits = this.limits;
     if (core !== null && limits !== null) {
-      void this.barrier.track(refillKeyPackages(core, this.routes, info.keypackagesRemaining,
-        { perDevice: limits.keypackagesPerDevice, threshold: limits.keypackageRefillThreshold }).catch(() => undefined));
+      // After a reconnect the server's own count is asked for; an older server without the route leaves ready's count.
+      const recheck = this.keyPackagesRecheck;
+      this.keyPackagesRecheck = false;
+      void this.barrier.track(this.topUpKeyPackages(core, limits, async () =>
+        (recheck ? (await this.routes.getKeyPackageCount())?.ordinary : undefined) ?? info.keypackagesRemaining));
     }
     // Requirement 13 (Q27: clients refetch on ready), not awaited in the ready path.
     const me = this.me;
@@ -3131,6 +3183,8 @@ export class Controller {
       }
     }
     this.fetched = null;
+    // A new device has published nothing: its first batch goes up before it is ready, as a signup's does.
+    if (core.identity().phase === 2) this.keyPackagesOwed = true;
     try {
       await this.enterReady('signin');
     } catch (e) {
@@ -4396,6 +4450,8 @@ export class Controller {
     this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.heldLive = []; this.clearHeldReads(); this.ticketTime = null;
     this.pendingJoin = null; this.keyPackagesOwed = false;
+    this.clearKeyPackageRetry();
+    this.keyPackages = { count: null, lastAttempt: null, lastError: null }; this.keyPackagesDelayMs = 0; this.keyPackagesRecheck = false; this.keyPackagesBusy = null;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
     // CB2 fix round 1: the next account in this tab must not see this one's wait.
     for (const channelId of this.slowUntil.keys()) this.slices.set(`slow:${channelId}`, { until: 0, queued: false });

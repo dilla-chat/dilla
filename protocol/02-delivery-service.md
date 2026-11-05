@@ -177,7 +177,8 @@ lowercase hex characters (`^[0-9a-f]{32}$`). All endpoints require a device sess
 | `POST /v1/groups/{id}/resync` | E | `[external_commit(bstr), group_info(bstr)]` | `[seq, epoch]` | `E_COMMIT_INVALID`, `E_FORBIDDEN`, `E_REMOVE_PENDING` (freeze-exempt, invariant 5) |
 | `POST /v1/groups/{id}/fork-report` | E | `[epoch, seq, reason(tstr)]` | `202 []` | `E_NOT_FOUND` |
 | `POST /v1/keypackages` | E or V | `[packages([bstr]), last_resort(bstr\|null)]` | `201 [count]` | `E_COMMIT_INVALID`, `E_TOO_LARGE` |
-| `GET /v1/devices/{device_id}/keypackage` | E | — | `[blob, last_resort(uint), kp_ref(bstr)]` | `E_NOT_FOUND`, `E_RATE_LIMITED` |
+| `GET /v1/keypackages` | E | — | `200 [ordinary_active_count(uint), has_current_fallback(uint 0\|1)]` | `E_FORBIDDEN` (a Bot session: it reads its installation-scoped inventory instead) |
+| `GET /v1/devices/{device_id}/keypackage` | E | — | `[blob, last_resort(uint), kp_ref(bstr)]` | `E_NOT_FOUND`, `E_KEYPACKAGES_EXHAUSTED`, `E_RATE_LIMITED` |
 | `GET /v1/groups/{id}/messages?from=&limit=` | E | — | `[[seq, epoch, uploader_device, blob\|null, commitment\|null, franking_tag, recv_ts, deleted(uint), class(uint\|null)]]` | `E_PRUNED` |
 | `GET /v1/groups/{id}/heal` | E | — | `[epoch, next_seq, generation, need_from_seq]` | `E_NOT_FOUND` |
 | `GET /v1/groups/{id}/heal-state` | E | — | `[epoch, next_seq, generation, need_from_seq, needs_heal(uint)]` | `E_NOT_FOUND`; `needs_heal` is 0 or 1 and reports the restored epoch-unknown marker to an enrolled current member |
@@ -974,6 +975,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 403 | `E_STEP_UP` | the step-up token is missing, spent, expired, another session's, or its secret was wrong | confirm again |
 | 403 | `E_TARGET_NO_FACTOR` | the user the request names holds no second factor and the community requires one | none; tell the actor |
 | 404 | `E_NOT_FOUND` | no such group, device, message or blob | none |
+| 404 | `E_KEYPACKAGES_EXHAUSTED` | the device exists, is neither revoked nor quarantined and is named by its owner's newest signed device list, but its directory holds no ordinary and no last-resort KeyPackage | wait for the device to publish more; an unknown, revoked or quarantined device, or one its owner's list does not name, is `E_NOT_FOUND` instead |
 | 409 | `E_GROUP_EXISTS` | this `group_id` is already registered | mint a new `group_id` |
 | 409 | `E_COMMIT_CONFLICT` | another commit won this epoch | discard the pending commit, process the winner, retry |
 | 409 | `E_REMOVE_PENDING` | the instance is already removing this leaf (invariant 6); the member's own `Remove` of it is refused. Also, defensively, an uploaded proposal whose reference names an instance proposal or another sender's (no conforming client sends one; a member's re-upload of its own proposal is answered as the first). Also a resync or a heal by the target of an outstanding non-void instance `Remove` (invariant 5's first guard) | you are being removed: withdraw the proposal, do not retry; a refused resync may be tried again once a member has committed the `Remove` (the device then holds no leaf and joins afresh) or the group has closed |

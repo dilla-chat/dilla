@@ -208,6 +208,7 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | diagnostics.generation | Generation | diagnostics field |
 | diagnostics.instance | Instance | diagnostics field |
 | diagnostics.devices | Devices | diagnostics field (own-device count is its value) |
+| diagnostics.keyPackages | Key packages | diagnostics field (the count, when a publish was last tried and the last error code are its value) |
 | diagnostics.empty | No errors recorded | diagnostics, no stored code |
 | tabs.use | Use this tab | follower action |
 | tabs.wait | Moving to this tab… | waiting status |

@@ -80,35 +80,50 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 	}
 	c.jobsMu.Lock()
 	defer c.jobsMu.Unlock()
+	now := c.now()
 	jobs, revision, err := c.loadRegistrationJobs(ctx)
 	if err != nil || len(jobs) == 0 {
 		return err
 	}
 	var failures []error
+	// Jobs that made no progress this pass go behind everything else, so stuck
+	// members cannot hold the head of the queue and starve later ones.
+	var rotated []interactionRegistrationJob
 	jobsVisited, devicesVisited := uint64(0), uint64(0)
+	// keep leaves the job pending; one that processed no new device rotates.
+	keep := func(i int, job interactionRegistrationJob, progressed bool) int {
+		if progressed {
+			jobs[i] = job
+			return i + 1
+		}
+		rotated = append(rotated, job)
+		jobs = removeRegistrationJob(jobs, i)
+		return i
+	}
 	for i := 0; i < len(jobs) && jobsVisited < jobBudget && devicesVisited < deviceBudget; {
 		jobsVisited++
 		job := jobs[i]
 		current, present, err := episodes.ResolveCurrentEpisode(ctx, job.User)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("resolve member episode: %w", err))
-			i++
+			i = keep(i, job, false)
 			continue
 		}
 		if !present || current != job.Episode {
+			c.backoff.dropJob(c.installation, job.User, job.Episode)
 			jobs = removeRegistrationJob(jobs, i)
 			continue
 		}
 		devices, err := candidates.DeviceCandidates(ctx, job.User)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("read signed device candidates: %w", err))
-			i++
+			i = keep(i, job, false)
 			continue
 		}
 		if len(devices) == 0 {
 			// A signed empty list can become populated later without a new
 			// membership episode. Keep the durable job for a future pass.
-			i++
+			i = keep(i, job, false)
 			continue
 		}
 		processed := make(map[id.ID]struct{}, len(job.Processed))
@@ -116,12 +131,17 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 			processed[device] = struct{}{}
 		}
 		stale := false
+		processedBefore := len(job.Processed)
 		for _, device := range devices {
 			if device.IsZero() {
 				failures = append(failures, errors.New("device candidate has zero identifier"))
 				continue
 			}
 			if _, done := processed[device]; done {
+				continue
+			}
+			slot := interactionRegistrationBackoffKey{installation: c.installation, user: job.User, episode: job.Episode, device: device}
+			if !c.backoff.due(slot, now) {
 				continue
 			}
 			if devicesVisited >= deviceBudget {
@@ -141,8 +161,15 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 			_, err = c.Register(ctx, InteractionRegistrationRequest{Group: group, ParticipantUser: job.User, ParticipantDevice: device})
 			if errors.Is(err, ErrInteractionRegistrationManualRecovery) {
 				failures = append(failures, fmt.Errorf("manual recovery required for device registration: %w", err))
+				c.backoff.clear(slot)
 				processed[device] = struct{}{}
 				job.Processed = append(job.Processed, device)
+				continue
+			}
+			if code := keyPackageUnavailableCode(err); code != "" {
+				if c.backoff.fail(slot, now) {
+					c.logger.Warn("bot interaction registration backing off a device with no key packages", "installation_id", c.installation.String(), "device_id", device.String(), "reason", code)
+				}
 				continue
 			}
 			if err != nil {
@@ -153,13 +180,16 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 				failures = append(failures, fmt.Errorf("register eligible device: %w", err))
 				continue
 			}
+			c.backoff.clear(slot)
 			processed[device] = struct{}{}
 			job.Processed = append(job.Processed, device)
 		}
 		if stale {
+			c.backoff.dropJob(c.installation, job.User, job.Episode)
 			jobs = removeRegistrationJob(jobs, i)
 			continue
 		}
+		c.backoff.retain(c.installation, job.User, job.Episode, devices)
 		allDone := true
 		for _, device := range devices {
 			if _, done := processed[device]; !done {
@@ -168,12 +198,13 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 			}
 		}
 		if allDone {
+			c.backoff.dropJob(c.installation, job.User, job.Episode)
 			jobs = removeRegistrationJob(jobs, i)
 			continue
 		}
-		jobs[i] = job
-		i++
+		i = keep(i, job, len(job.Processed) > processedBefore)
 	}
+	jobs = append(jobs, rotated...)
 	if err := c.saveRegistrationJobs(ctx, revision, jobs); err != nil {
 		return errors.Join(err, errors.Join(failures...))
 	}

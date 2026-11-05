@@ -149,27 +149,43 @@ func (d *DS) takeBoundKeyPackage(ctx context.Context, inst *mlswasi.Instance, de
 // service proposes is one a member can commit. A list the verifier cannot reach at all
 // (ErrDeviceListUnavailable) is returned as is: that is "cannot answer", not "not listed".
 func (d *DS) checkListedDevice(ctx context.Context, v DeviceListVerifier, deviceID id.ID) error {
-	dev, err := d.opts.Store.GetDevice(ctx, deviceID)
-	if errors.Is(err, store.ErrNotFound) {
-		return errInvalid("the device is unknown to this instance")
-	}
+	why, err := d.listedDeviceVerdict(ctx, v, deviceID)
 	if err != nil {
 		return err
 	}
+	if why != "" {
+		return errInvalid(why)
+	}
+	return nil
+}
+
+// listedDeviceVerdict is the one "live and listed" predicate: "" when the device exists, is not
+// revoked or quarantined, and its DSK is in its user's newest verified signed device list, else
+// the reason it is not. A list that cannot be verified is "not listed"; only a verifier that
+// cannot answer at all (ErrDeviceListUnavailable), a cancelled context or a store failure is an
+// error.
+func (d *DS) listedDeviceVerdict(ctx context.Context, v DeviceListVerifier, deviceID id.ID) (string, error) {
+	dev, err := d.opts.Store.GetDevice(ctx, deviceID)
+	if errors.Is(err, store.ErrNotFound) {
+		return "the device is unknown to this instance", nil
+	}
+	if err != nil {
+		return "", err
+	}
 	if dev.RevokedAt != nil || dev.QuarantinedAt != nil {
-		return errInvalid("the device is revoked or quarantined")
+		return "the device is revoked or quarantined", nil
 	}
 	entries, err := d.opts.DeviceLists.Entries(ctx, v, dev.UserID)
 	if err != nil {
 		if errors.Is(err, ErrDeviceListUnavailable) || ctx.Err() != nil {
-			return err
+			return "", err
 		}
-		return errInvalid("no verifiable signed device list for the device's user: " + err.Error())
+		return "no verifiable signed device list for the device's user: " + err.Error(), nil
 	}
 	if auth.Listed(entries, dev.ID, dev.DSKPub) {
-		return nil
+		return "", nil
 	}
-	return errInvalid("the device's DSK is not in its user's newest signed device list")
+	return "the device's DSK is not in its user's newest signed device list", nil
 }
 
 // ProposeRemove issues an external Remove. A target leaf that is already gone is dropped rather

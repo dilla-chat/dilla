@@ -7,9 +7,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
+	"net/http"
 	"sync"
+	"time"
 
+	"github.com/dilla-chat/dilla/internal/api"
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
@@ -66,13 +70,16 @@ type InteractionRegistrationCoordinator struct {
 	native                            interactionRegistrationNativeAPI
 	discovery                         interactionRegistrationDiscoveryAPI
 	session                           interactionRegistrationSessionAPI
+	now                               func() time.Time
+	logger                            *slog.Logger
+	backoff                           *InteractionRegistrationBackoff
 }
 
 func NewInteractionRegistrationCoordinator(instance, community, installation id.ID, n interactionRegistrationNativeAPI, discovery interactionRegistrationDiscoveryAPI, session interactionRegistrationSessionAPI) (*InteractionRegistrationCoordinator, error) {
 	if instance.IsZero() || community.IsZero() || installation.IsZero() || n == nil || discovery == nil || session == nil || n.Binding() != (native.Binding{Instance: instance, Community: community, Installation: installation}) {
 		return nil, errors.New("invalid bot interaction registration binding")
 	}
-	return &InteractionRegistrationCoordinator{instance: instance, community: community, installation: installation, native: n, discovery: discovery, session: session}, nil
+	return &InteractionRegistrationCoordinator{instance: instance, community: community, installation: installation, native: n, discovery: discovery, session: session, now: time.Now, logger: slog.Default(), backoff: NewInteractionRegistrationBackoff()}, nil
 }
 
 type InteractionRegistrationRequest struct {
@@ -185,6 +192,17 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		}
 	}
 	if len(in.Body) == 0 {
+		if len(in.KeyPackage) == 0 && len(in.Snapshot) != 0 && c.interactionSnapshotExpired(in.Snapshot) {
+			// A snapshot pins both device lists, and a take that kept failing
+			// can leave one saved long after the participant's list moved on. The
+			// core refuses that as device_trust_changed, which never rotates, so
+			// restart before the take. With no KeyPackage pinned, no create ran.
+			renewInteractionAdmission(&in)
+			revision, err = c.saveInteractionRegistration(ctx, key, revision, in)
+			if err != nil {
+				return InteractionRegistrationResult{}, fmt.Errorf("persist renewed interaction admission: %w", err)
+			}
+		}
 		if len(in.Admission) == 0 {
 			in.Admission, err = c.session.IssueBotInteractionAdmission(ctx, c.installation, in.AdmissionRequest, in.Group, in.ParticipantUser, in.ParticipantDevice)
 			if err != nil {
@@ -216,10 +234,21 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 		}
 		in.MinimumRevision = snapshot.MinimumRevision
 		if len(in.KeyPackage) == 0 {
-			in.KeyPackage, err = c.session.KeyPackage(ctx, in.ParticipantDevice)
-			if err != nil || len(in.KeyPackage) == 0 || len(in.KeyPackage) > 65505 {
-				return InteractionRegistrationResult{}, interactionRegistrationError(ErrInteractionRegistrationRecovery, "exact participant KeyPackage unavailable", err)
+			var keyPackage []byte
+			keyPackage, err = c.session.KeyPackage(ctx, in.ParticipantDevice)
+			if err != nil || len(keyPackage) == 0 || len(keyPackage) > 65505 {
+				takeErr := interactionRegistrationError(ErrInteractionRegistrationRecovery, "exact participant KeyPackage unavailable", err)
+				if keyPackageUnavailableCode(err) != "" {
+					// The device has nothing to take, so the attempt after the
+					// backoff starts from a fresh snapshot rather than this one.
+					renewInteractionAdmission(&in)
+					if _, saveErr := c.saveInteractionRegistration(ctx, key, revision, in); saveErr != nil {
+						return InteractionRegistrationResult{}, errors.Join(takeErr, fmt.Errorf("persist renewed interaction admission: %w", saveErr))
+					}
+				}
+				return InteractionRegistrationResult{}, takeErr
 			}
+			in.KeyPackage = keyPackage
 			revision, err = c.saveInteractionRegistration(ctx, key, revision, in)
 			if err != nil {
 				return InteractionRegistrationResult{}, err
@@ -234,11 +263,7 @@ func (c *InteractionRegistrationCoordinator) Register(ctx context.Context, req I
 				// definitive expired status guarantees no group was created, so
 				// rotate both one-shot IDs while retaining the pinned participants
 				// and package. Uncertain helper outcomes never reach this branch.
-				in.Operation = id.New()
-				in.AdmissionRequest = id.New()
-				in.MinimumRevision = 0
-				in.Admission = nil
-				in.Snapshot = nil
+				renewInteractionAdmission(&in)
 				if _, saveErr := c.saveInteractionRegistration(ctx, key, revision, in); saveErr != nil {
 					return InteractionRegistrationResult{}, fmt.Errorf("persist renewed interaction admission: %w", saveErr)
 				}
@@ -600,6 +625,30 @@ func (c *InteractionRegistrationCoordinator) saveInteractionRegistration(ctx con
 	return revs[0], nil
 }
 
+// renewInteractionAdmission rotates both one-shot IDs and drops the admission
+// and snapshot bound to them. Callers only use it before any group can exist.
+func renewInteractionAdmission(in *interactionRegistrationIntent) {
+	in.Operation = id.New()
+	in.AdmissionRequest = id.New()
+	in.MinimumRevision = 0
+	in.Admission = nil
+	in.Snapshot = nil
+}
+
+// interactionSnapshotExpired reports whether a saved snapshot's admission has
+// lapsed by the coordinator's clock. The signed admission never outlives its
+// lifetime from issue, and the snapshot is taken after it, so a snapshot that
+// old is refused by the DS and the core alike. An unreadable snapshot is left
+// to the strict correlation check that follows.
+func (c *InteractionRegistrationCoordinator) interactionSnapshotExpired(wire []byte) bool {
+	snapshot, err := interactionSnapshotDetailsFromWire(wire)
+	if err != nil {
+		return false
+	}
+	now := c.now().Unix()
+	return now >= 0 && uint64(now) >= snapshot.Now+api.BotInteractionAdmissionLifetimeSeconds
+}
+
 func validInteractionCreateResult(r native.InteractionGroupCreateResult, e native.InteractionGroupExpected, d client.Discovery) bool {
 	b := r.Binding
 	return r.Group == e.Group && b.Instance == e.Instance && b.Installation == e.Installation && b.Community == e.Community && b.BotUser == e.BotUser && b.ParticipantUser == e.ParticipantUser && b.ParticipantDevice == e.ParticipantDevice && b.PolicyVersion == e.PolicyVersion && b.E2EEVersion == 1 && b.MediaVersion == 0 && containsVersion(d.E2EEVersions, b.E2EEVersion) && r.Epoch == 1 && r.MemberCount == 2 && len(r.BindingBody) > 0 && len(r.GroupInfo) > 0 && len(r.RatchetTree) > 0 && len(r.Welcome) > 0
@@ -774,6 +823,33 @@ func decodeInteractionRegistrationIntent(raw []byte) (interactionRegistrationInt
 }
 
 var _ = fmt.Sprintf
+
+// WithLogger sets where the queue reports a device entering backoff.
+func (c *InteractionRegistrationCoordinator) WithLogger(logger *slog.Logger) *InteractionRegistrationCoordinator {
+	if logger != nil {
+		c.logger = logger
+	}
+	return c
+}
+
+// WithBackoff shares a backoff store across coordinators rebuilt each pass.
+func (c *InteractionRegistrationCoordinator) WithBackoff(backoff *InteractionRegistrationBackoff) *InteractionRegistrationCoordinator {
+	if backoff != nil {
+		c.backoff = backoff
+	}
+	return c
+}
+
+// keyPackageUnavailableCode names the server refusal that says a device has no
+// KeyPackage to take: exhausted for a live device, not found for one that may be
+// gone. Anything else (network, 5xx) is transient and returns "".
+func keyPackageUnavailableCode(err error) string {
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound && (apiErr.Code == "E_KEYPACKAGES_EXHAUSTED" || apiErr.Code == "E_NOT_FOUND") {
+		return apiErr.Code
+	}
+	return ""
+}
 
 // A recovery category is context, not an independent failure. Keep definitive
 // rate refusals intact so dispatch/reconciliation can defer them without aging.
