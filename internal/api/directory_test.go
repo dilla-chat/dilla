@@ -300,6 +300,11 @@ func TestTheDirectoryRoutesAdmitAProvisionalSessionAndTheRuleRefusesIt(t *testin
 // (auth.Sessions.NewDeviceSession, in the transaction that writes the user and the device), which
 // is exactly the session a freshly signed-up browser publishes its first KeyPackages under.
 func (h *groupsAPI) keyPackageOwnerToken(t *testing.T) (string, id.ID) {
+	return h.keyPackageOwnerTokenWithFlags(t, 0)
+}
+
+// keyPackageOwnerTokenWithFlags is keyPackageOwnerToken for an account carrying the given role flags.
+func (h *groupsAPI) keyPackageOwnerTokenWithFlags(t *testing.T, flags uint64) (string, id.ID) {
 	t.Helper()
 	ctx := context.Background()
 	info := apiKeyPackageInfo(t)
@@ -312,7 +317,7 @@ func (h *groupsAPI) keyPackageOwnerToken(t *testing.T) (string, id.ID) {
 		if err := tx.CreateUser(ctx, store.UserRow{
 			ID: user, Username: "kp" + user.String()[:8], Display: "KeyPackage owner",
 			UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64),
-			Created: now,
+			Created: now, Flags: flags,
 		}); err != nil {
 			return err
 		}
@@ -487,4 +492,21 @@ func apiKeyPackageInfo(t *testing.T) mlswasi.KeyPackageInfo {
 		t.Fatalf("the fixture KeyPackage's leaf key is %d bytes, want 32", len(info.SignatureKey))
 	}
 	return info
+}
+
+// users.flags are role bits, not a disabled marker: an instance admin's device publishes like any
+// other, and a device of that account takes the package back.
+func TestAnInstanceAdminPublishesAKeyPackageOverTheMux(t *testing.T) {
+	h := newGroupsAPI(t)
+	token, device := h.keyPackageOwnerTokenWithFlags(t, store.UserFlagInstanceAdmin)
+
+	res := h.do(t, http.MethodPost, "/v1/keypackages", token,
+		mustCBOR(t, []any{[][]byte{apiKeyPackageFixture(t)}, nil}))
+	if res.Code != http.StatusCreated {
+		t.Fatalf("publish: status = %d, want 201: %s", res.Code, res.Body.String())
+	}
+	res = h.do(t, http.MethodGet, "/v1/devices/"+device.String()+"/keypackage", h.session, nil)
+	if res.Code != http.StatusOK {
+		t.Fatalf("take: status = %d, want 200: %s", res.Code, res.Body.String())
+	}
 }

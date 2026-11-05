@@ -18,9 +18,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/config"
 	"github.com/dilla-chat/dilla/internal/ds"
 	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store/sqlite"
 )
 
 const (
@@ -512,5 +514,96 @@ func TestRepublishingTheLastResortPackageDoesNotGrowTheDirectory(t *testing.T) {
 	}
 	if !got.LastResort {
 		t.Fatal("the surviving row must be the last-resort package")
+	}
+}
+
+// setUserColumn writes one users column straight on the harness's database file: the store has no
+// method that sets role flags, disable or tombstone on an existing account, and these tests need
+// exactly that state.
+func (h *dsHarness) setUserColumn(t *testing.T, user id.ID, column string, value any) {
+	t.Helper()
+	db, err := sqlite.OpenWrite(h.path)
+	if err != nil {
+		t.Fatalf("sqlite.OpenWrite: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(t.Context(), "UPDATE users SET "+column+" = ? WHERE id = ?", value, user[:]); err != nil {
+		t.Fatalf("UPDATE users SET %s: %v", column, err)
+	}
+}
+
+// users.flags are role bits (bit 0 InstanceAdmin, bit 1 BotOperator), not a disabled marker, so an
+// account that carries any of them still publishes for its own devices.
+func TestPublishAcceptsAnInstanceAdmin(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	device, session, blob, info := h.keyPackageOwner(t)
+	h.setUserColumn(t, session.UserID, "flags", 1)
+
+	if _, err := h.ds.PublishKeyPackages(ctx, session, [][]byte{blob}, nil); err != nil {
+		t.Fatalf("PublishKeyPackages: %v", err)
+	}
+	got, err := h.ds.TakeKeyPackage(ctx, session, device)
+	if err != nil {
+		t.Fatalf("TakeKeyPackage: %v", err)
+	}
+	if !bytes.Equal(got.KPRef, info.KPRef) {
+		t.Fatalf("kp_ref = %x, want the published %x", got.KPRef, info.KPRef)
+	}
+}
+
+func TestPublishAcceptsABotOperatorFlaggedHuman(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	device, session, blob, info := h.keyPackageOwner(t)
+	h.setUserColumn(t, session.UserID, "flags", 2)
+
+	if _, err := h.ds.PublishKeyPackages(ctx, session, [][]byte{blob}, nil); err != nil {
+		t.Fatalf("PublishKeyPackages: %v", err)
+	}
+	got, err := h.ds.TakeKeyPackage(ctx, session, device)
+	if err != nil {
+		t.Fatalf("TakeKeyPackage: %v", err)
+	}
+	if !bytes.Equal(got.KPRef, info.KPRef) {
+		t.Fatalf("kp_ref = %x, want the published %x", got.KPRef, info.KPRef)
+	}
+}
+
+func TestPublishStillRefusesADisabledAccount(t *testing.T) {
+	h := newDSHarness(t)
+	_, session, blob, _ := h.keyPackageOwner(t)
+	h.setUserColumn(t, session.UserID, "disabled_at", h.clk.Now().Unix())
+	h.requirePublishForbidden(t, session, blob)
+}
+
+func TestPublishStillRefusesADeletedAccount(t *testing.T) {
+	h := newDSHarness(t)
+	_, session, blob, _ := h.keyPackageOwner(t)
+	h.setUserColumn(t, session.UserID, "deleted_at", h.clk.Now().Unix())
+	h.requirePublishForbidden(t, session, blob)
+}
+
+// A managed Bot's session is refused on this generic route, whatever its account flags: Bots publish
+// through their installation-scoped route. (Bot sessions are minted only for Bot-kind accounts.)
+func TestPublishStillRefusesABotKindAccount(t *testing.T) {
+	h := newDSHarness(t)
+	_, session, blob, _ := h.keyPackageOwner(t)
+	h.setUserColumn(t, session.UserID, "kind", 1)
+	h.setUserColumn(t, session.UserID, "flags", 1)
+	session.Bot = &auth.BotSessionBinding{}
+
+	h.requirePublishForbidden(t, session, blob)
+}
+
+func (h *dsHarness) requirePublishForbidden(t *testing.T, session auth.Session, blob []byte) {
+	t.Helper()
+	_, err := h.ds.PublishKeyPackages(context.Background(), session, [][]byte{blob}, nil)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
+		t.Fatalf("got %v, want E_FORBIDDEN", err)
+	}
+	if total := h.countRows(t, "key_packages"); total != 0 {
+		t.Fatalf("%d rows were written for a refused publish, want 0", total)
 	}
 }

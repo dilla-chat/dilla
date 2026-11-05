@@ -155,7 +155,7 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 		if err != nil {
 			return err
 		}
-		if user.DisabledAt != nil || user.DeletedAt != nil || user.Flags != 0 {
+		if user.DisabledAt != nil || user.DeletedAt != nil {
 			return errForbidden("the publishing account is disabled or deleted")
 		}
 		accountKind = user.Kind
@@ -271,7 +271,7 @@ func (d *DS) PublishKeyPackages(ctx context.Context, s Session, packages [][]byt
 		if err != nil {
 			return err
 		}
-		if currentUser.DisabledAt != nil || currentUser.DeletedAt != nil || currentUser.Flags != 0 {
+		if currentUser.DisabledAt != nil || currentUser.DeletedAt != nil {
 			return errForbidden("the publishing account is disabled or deleted")
 		}
 		currentDevice, err := tx.GetDevice(ctx, s.DeviceID)
