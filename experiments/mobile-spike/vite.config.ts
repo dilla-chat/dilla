@@ -11,5 +11,11 @@ export default defineConfig({
   base: './',
   worker: { format: 'es' },
   server: { fs: { allow: [resolve(here, '../..')] } },
-  build: { target: 'es2022', outDir: resolve(here, 'dist'), emptyOutDir: true },
+  build: {
+    target: 'es2022',
+    outDir: resolve(here, 'dist'),
+    emptyOutDir: true,
+    // Two pages: the capability probe (DILLA_PROBE) and the call probe (DILLA_CALL), kept apart.
+    rollupOptions: { input: { probe: resolve(here, 'index.html'), call: resolve(here, 'call.html') } },
+  },
 });
