@@ -390,7 +390,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-latest, macos-15]
         include:
@@ -500,7 +500,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
-      fail-fast: true
+      fail-fast: false
       # The shared client suite is the same Chromium renderer on every OS: Linux runs all of it, in six shards
       # (WEB_SHARDS in scripts/check-ci-workflow.mjs; one worker per shard, each with its own test host and clock).
       # Windows and macOS run the desktop-specific specs alone: the installed upgrade of a real account (the release

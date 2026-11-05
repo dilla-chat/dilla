@@ -1282,9 +1282,6 @@ export function checkDesktopWorkflow(root) {
   catch (error) { if (error.code === 'ENOENT') return ['desktop.yml: missing desktop acceptance workflow']; throw error; }
   const problems = [];
   problems.push(...checkNativeStockFeasibility(text, { workflow: true }).map(problem => `${file}: native stock feasibility: ${problem}`));
-  if (/fail-fast:\s*false/.test(text)) {
-    problems.push(`${file}: desktop validation must stop on the first failure`);
-  }
   // The e2e shards run every test so one round shows every failing test; the watchdog leaves their failures running too.
   if (/--max-failures/.test(text)) {
     problems.push(`${file}: desktop e2e shards must run every test, so --max-failures is not allowed`);
@@ -1309,6 +1306,14 @@ export function checkDesktopWorkflow(root) {
   ]) if (!text.includes(required)) problems.push(`${file}: missing ${required}`);
   if (/--no-sandbox|contents: write|--publish always/.test(text)) problems.push(`${file}: desktop validation must keep sandboxing and cannot publish`);
   const body = job => text.split(`\n  ${job}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]*:\n/)[0] ?? '';
+  // Build matrices stop at the first failure; the e2e shards keep running so one round shows every failing test.
+  for (const job of ['test-tools', 'native-linux-package-acceptance', 'native', 'client', 'voice']) {
+    const want = job === 'client' || job === 'voice' ? 'false' : 'true';
+    const got = /^ {6}fail-fast:\s*(\w+)/m.exec(body(job))?.[1];
+    if (got !== want) {
+      problems.push(`${file}: ${job} matrix must set fail-fast: ${want} (builds stop the matrix on the first failure, e2e shards run every test)`);
+    }
+  }
   for (const job of ['native', 'client', 'voice']) {
     const steps = jobSteps(body(job));
     const install = steps.findIndex(step => step.join('\n') === 'run: node node_modules/electron/install.js');

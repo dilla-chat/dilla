@@ -404,12 +404,29 @@ test('installed proof is produced after Playwright clears output and uploaded af
   assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('Playwright cleanup')));
 });
 
-test('desktop CI refuses continuing matrix jobs after the first failure', () => {
-  const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-first-failure-'));
-  mkdirSync(join(root, '.github/workflows'), { recursive: true });
-  addE2ePackage(root);
-  writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replace('fail-fast: true', 'fail-fast: false'));
-  assert.ok(checkDesktopWorkflow(root).some(problem => problem.includes('first failure')));
+test('desktop CI: e2e shards keep running after a failure, build matrices stop', () => {
+  const failFast = job => {
+    const start = REAL_DESKTOP.indexOf(`\n  ${job}:\n`);
+    const at = REAL_DESKTOP.indexOf('fail-fast: ', start);
+    assert.ok(start >= 0 && at > start, job);
+    return at;
+  };
+  const flip = (job, value) => {
+    const at = failFast(job) + 'fail-fast: '.length;
+    return REAL_DESKTOP.slice(0, at) + value + REAL_DESKTOP.slice(at).replace(/^\w+/, '');
+  };
+  const problemsFor = changed => {
+    const root = mkdtempSync(join(TEST_ROOT, 'dilla-desktop-fail-fast-'));
+    mkdirSync(join(root, '.github/workflows'), { recursive: true });
+    addE2ePackage(root);
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+    return checkDesktopWorkflow(root).filter(problem => problem.includes('fail-fast'));
+  };
+  assert.deepEqual(problemsFor(REAL_DESKTOP), []);
+  for (const job of ['client', 'voice']) assert.ok(problemsFor(flip(job, 'true')).some(p => p.includes(job)), job);
+  for (const job of ['test-tools', 'native-linux-package-acceptance', 'native']) {
+    assert.ok(problemsFor(flip(job, 'false')).some(p => p.includes(job)), job);
+  }
 });
 
 test('the real desktop workflow passes without --max-failures', () => {
