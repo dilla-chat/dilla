@@ -2,7 +2,7 @@
 
 Date: 2026-11-05. Spec: `docs/superpowers/specs/2026-11-05-dilla-mobile-design.md` (see "iOS calls after the M0 device
 spike"). Plan: `docs/superpowers/plans/2026-11-05-dilla-mobile-m0-m1.md`, tasks 1-3. Spike code:
-`experiments/mobile-spike` on `feat/mobile-apps`. Every number below comes from the spike's own `DILLA_PROBE`,
+tag `spike/mobile-m0`, `experiments/mobile-spike` (the directory is not on `main`; check out the tag to run it). Every number below comes from the spike's own `DILLA_PROBE`,
 `DILLA_CALL` and `DILLA_CALL_DETAIL` lines, `dumpsys audio`, or the device logs reported by the Mac session.
 
 ## Question
@@ -20,18 +20,19 @@ frames while the screen is locked. A fail on any of these stops M1 and goes to J
 | iPhone | iPhone 17 Pro, iOS 27.0.1, Xcode 27.2, dev-signed (team 456U2Z5LYK). |
 | Spike app | Capacitor 7.6.10, Vite 7.3.7, appId `chat.dilla.spike`. Real repo code imported by path: `localRuntimeReadiness` over `@dilla/core-wasm` `probe_persistence` (module Worker), `isVoiceSupported()`, `DillaRnnoiseProcessor`. |
 
-Spike commits on `feat/mobile-apps` (`experiments/mobile-spike`), oldest first:
+The spike's steps, oldest first. All of them are in tag `spike/mobile-m0`, `experiments/mobile-spike`; the commits
+that made them were not merged, so this report cites the tag and the file, not their SHAs.
 
-| SHA | What |
-|---|---|
-| `855f228e` | capability probe (`DILLA_PROBE`) |
-| `23e26c9f` | a tap run is no persistence evidence; Mac prerequisites |
-| `dad234ae` | background call-audio probe (loopback with an XOR "encoded transform") |
-| `6fb53e7d`, `f44726f6` | frame-integrity counters, RTP stats, iPhone run without debugger |
-| `1dfe3c88` | iOS 27 SDK build: iOS 17 target, UIScene lifecycle |
-| `5d1706e2` | per-step call tracing, three start orders (no-callkit, gum-first, callkit-first) |
-| `a625e8ce` | force-mic option, no-callkit+session mode, mic/RTP energy evidence |
-| `8b86d962` | WKWebView capture-state control and KVO, re-gUM option |
+| Step | What | Where (tag `spike/mobile-m0`) |
+|---|---|---|
+| 1 | capability probe (`DILLA_PROBE`) | `experiments/mobile-spike/probe.ts`, `probe-worker.ts` |
+| 2 | a tap run is no persistence evidence; Mac prerequisites | `experiments/mobile-spike/probe.ts`, `README.md` |
+| 3 | background call-audio probe (loopback with an XOR "encoded transform") | `experiments/mobile-spike/call-probe.ts`, `call-transform-worker.ts`, `ios/App/App/CallProbe.swift` |
+| 4 | frame-integrity counters, RTP stats, iPhone run without debugger | `experiments/mobile-spike/call-probe.ts`, `call-transform-worker.ts` |
+| 5 | iOS 27 SDK build: iOS 17 target, UIScene lifecycle | `experiments/mobile-spike/ios/App/App/SceneDelegate.swift`, `ios/App/App.xcodeproj/project.pbxproj` |
+| 6 | per-step call tracing, three start orders (no-callkit, gum-first, callkit-first) | `experiments/mobile-spike/call-probe.ts`, `ios/App/App/CallProbe.swift` |
+| 7 | force-mic option, no-callkit+session mode, mic/RTP energy evidence | `experiments/mobile-spike/call-probe.ts`, `ios/App/App/CallProbe.swift` |
+| 8 | WKWebView capture-state control and KVO, re-gUM option | `experiments/mobile-spike/call-probe.ts`, `ios/App/App/CallProbe.swift` |
 
 ## Capability probe
 
@@ -57,7 +58,7 @@ kill on all three.
 
 Notes from the probe runs:
 
-- The platforms ran different spike builds: Android at the `855f228e`/`23e26c9f` era, iOS at `1dfe3c88` and later. `voiceSupport` picks `insertable-streams` on Chromium and the
+- The platforms ran different spike builds: Android at steps 1-2, iOS at step 5 and later (tag `spike/mobile-m0`, `experiments/mobile-spike`). `voiceSupport` picks `insertable-streams` on Chromium and the
   script-transform path on WebKit, the same split `packages/media/src/support.ts` already makes.
 - The simulator run was labelled SIMULATOR; the device run repeated every field.
 - The iPhone's first build needs `-allowProvisioningDeviceRegistration`.
