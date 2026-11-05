@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { loadBundle, bundledResponse, type Bundle } from './bundle.ts';
 import { canonicalInstance, externalLink, isAppNavigation, parseInvite, partitionFor, trustedFrame, validateCommand, instanceRequestURL, permissionOriginMatches } from './policy.ts';
-import { Preferences, GRANTABLE_PERMISSIONS } from './preferences.ts';
+import { Preferences, permissionTokens } from './preferences.ts';
 import { fetchInstanceData } from './request-forwarding.ts';
 import { linuxAutostart, rebindLinuxAutostart } from './autostart.ts';
 import { createUpdater } from './updater.ts';
@@ -213,17 +213,19 @@ async function openInstance(input: string, path = '/', show = true): Promise<Bro
     // grant here also permits legacy capture that bypasses source selection.
     if (permission === 'display-capture') return false;
     if (permission === 'clipboard-sanitized-write' || permission === 'fullscreen') return trusted && win.isVisible() && win.isFocused();
-    return trusted && allowed.has(permission);
+    return trusted && permissionTokens(permission, [(details as { mediaType?: string }).mediaType ?? '']).every(token => allowed.has(token));
   });
   ses.setPermissionRequestHandler((contents, permission, callback, details) => {
     if (contents !== win.webContents || details.isMainFrame === false || !trustedFrame({ url: details.requestingUrl, top: true }, instance)) { callback(false); return; }
     if (permission === 'display-capture') { callback(false); return; }
     if (permission === 'clipboard-sanitized-write' || permission === 'fullscreen') { callback(win.isVisible() && win.isFocused()); return; }
     if (!['media', 'notifications', 'speaker-selection', 'local-network', 'loopback-network'].includes(permission)) { callback(false); return; }
-    if (allowed.has(permission)) { callback(true); return; }
+    const tokens = permissionTokens(permission, (details as { mediaTypes?: string[] }).mediaTypes ?? []);
+    const needed = tokens.filter(token => !allowed.has(token));
+    if (needed.length === 0) { callback(true); return; }
     const label = permission === 'media' ? 'microphone or camera' : permission === 'notifications' ? 'notifications' : permission === 'local-network' ? 'local network connections for calls' : permission === 'loopback-network' ? 'connections to a local Dilla service' : 'audio output selection';
     void dialog.showMessageBox(win, { type: 'question', title: 'Dilla permission', message: `Allow ${new URL(instance).host} to use ${label}?`, buttons: ['Deny', 'Allow'], defaultId: 0, cancelId: 0 })
-      .then(result => { if (result.response === 1) { allowed.add(permission); if ((GRANTABLE_PERMISSIONS as readonly string[]).includes(permission)) void preferences.grant(instance, permission).catch(() => {}); } callback(result.response === 1); }).catch(() => callback(false));
+      .then(result => { if (result.response === 1) { for (const token of needed) { allowed.add(token); if (token !== 'local-network' && token !== 'loopback-network') void preferences.grant(instance, token).catch(() => {}); } } callback(result.response === 1); }).catch(() => callback(false));
   });
   ses.setDisplayMediaRequestHandler((_request, callback) => { callback(null); }, { useSystemPicker: false });
   ses.on('will-download', (event, item) => { if (!item.getURL().startsWith(`blob:${origin}/`)) event.preventDefault(); });
@@ -274,7 +276,7 @@ async function setAutostart(enabled: boolean): Promise<void> {
   refreshMenu();
 }
 
-async function collectQuitGuards(): Promise<boolean> {
+async function collectQuitGuards(restart = false): Promise<boolean> {
     // Ask every live renderer for a fresh snapshot. A hung, crashed or uninitialised client blocks installation.
     await new Promise<void>(done => {
       const id = randomUUID();
@@ -287,10 +289,17 @@ async function collectQuitGuards(): Promise<boolean> {
       }
       if (waiting.size === 0) quitProbe.done();
     });
+    if (updater.quitConfirmed) return true;
+    if (!restart && updater.unknownGuard()) {
+      const answer = await dialog.showMessageBox({ type: 'warning', title: 'Dilla is not responding', message: 'A Dilla window has not reported whether it is in use.', detail: 'Quitting may end a call or discard text you have not sent.', buttons: ['Keep Dilla open', 'Quit anyway'], defaultId: 0, cancelId: 0, noLink: true });
+      if (answer.response !== 1) return false;
+      updater.confirmQuit();
+      return true;
+    }
     if (updater.inUse() && !updater.unknownGuard()) {
       const answer = await dialog.showMessageBox({ type: 'question', title: 'Quit Dilla?', message: "Quitting leaves your call and discards text you haven't sent.", buttons: ['Cancel', 'Quit'], defaultId: 0, cancelId: 0, noLink: true });
       if (answer.response !== 1) return false;
-      updater.releaseInUse();
+      updater.confirmQuit();
     }
     if (updater.protected()) {
       await dialog.showMessageBox({ type: 'info', title: 'Dilla is still in use', message: 'Finish your call and save your drafts before quitting or updating.', detail: 'You can close the window to keep Dilla running in the tray.', buttons: ['Keep Dilla open'] });
@@ -304,7 +313,7 @@ async function requestQuit(restart = false): Promise<void> {
   askingQuit = true;
   for (const selection of audioSelections.values()) selection.abort();
   try {
-    if (!await collectQuitGuards()) return;
+    if (!await collectQuitGuards(restart)) return;
     if (restart && updater.state.phase !== 'ready') return;
     const ready = updater.state.phase === 'ready';
     if (ready) {
@@ -312,7 +321,7 @@ async function requestQuit(restart = false): Promise<void> {
         dialog.showErrorBox('Dilla update failed', updater.state.message ?? 'The update could not be installed. Check for updates to retry.');
         return;
       }
-      if (!await collectQuitGuards()) return;
+      if (!await collectQuitGuards(restart)) return;
     }
     for (const win of windows.values()) win.setEnabled(false);
     const prepared = await updater.quit(true, restart);
@@ -322,7 +331,7 @@ async function requestQuit(restart = false): Promise<void> {
       return;
     }
     quitting = true; app.quit();
-  } finally { askingQuit = false; }
+  } finally { askingQuit = false; if (!quitting) updater.clearQuitConfirmation(); }
 }
 
 function refreshMenu(): void {

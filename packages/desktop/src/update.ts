@@ -113,10 +113,15 @@ export class UpdateCoordinator {
   private changed: (state: UpdateState) => void;
   constructor(driver: UpdateDriver, changed: (state: UpdateState) => void = () => {}) { this.driver = driver; this.changed = changed; }
   private set(state: UpdateState): void { this.state = state; this.changed(state); }
-  expectGuard(instance: string): void { this.guards.set(instance, null); }
-  setGuard(instance: string, value: QuitGuard): void { this.guards.set(instance, value); }
+  expectGuard(instance: string): void { this.guards.set(instance, this.confirmed ? { activeCall: false, unsavedDraft: false } : null); }
+  private confirmed = false;
+  // While the user's Quit confirmation is latched, renderer reports cannot revoke it.
+  setGuard(instance: string, value: QuitGuard): void { this.guards.set(instance, this.confirmed ? { activeCall: false, unsavedDraft: false } : value); }
+  get quitConfirmed(): boolean { return this.confirmed; }
+  clearQuitConfirmation(): void { this.confirmed = false; }
   removeGuard(instance: string): void { this.guards.delete(instance); }
   installationFailed(error: unknown): void {
+    this.confirmed = false;
     this.set({ phase: 'error', message: error instanceof Error ? error.message : 'Installation failed; try again' });
   }
   cancelledQuit(): void {
@@ -127,8 +132,8 @@ export class UpdateCoordinator {
   /** A renderer that has not reported is unknown, which still blocks; a reported call or draft is a choice the user can confirm. */
   unknownGuard(): boolean { return [...this.guards.values()].some(guard => guard === null); }
   inUse(): boolean { return [...this.guards.values()].some(guard => guard !== null && (guard.activeCall || guard.unsavedDraft)); }
-  /** The user confirmed quitting: the reported call/draft no longer blocks the quit or the update install. */
-  releaseInUse(): void { for (const [instance, guard] of this.guards) if (guard !== null) this.guards.set(instance, { activeCall: false, unsavedDraft: false }); }
+  /** The user confirmed quitting: latch it so no call, draft or silent renderer blocks this quit or the update install. */
+  confirmQuit(): void { this.confirmed = true; for (const instance of this.guards.keys()) this.guards.set(instance, { activeCall: false, unsavedDraft: false }); }
   async preparePrerequisites(): Promise<boolean> {
     if (this.driver.ownership === 'package-manager' || this.state.phase !== 'ready' || this.protected()) return false;
     try { await this.driver.preparePrerequisites?.(); return this.state.phase === 'ready'; }
@@ -154,6 +159,6 @@ export class UpdateCoordinator {
     if (this.driver.ownership === 'package-manager' || !actualQuit || this.protected() || this.state.phase !== 'ready') return false;
     this.set({ phase: 'installing' });
     try { await this.driver.install(relaunch); return true; }
-    catch (error) { this.set({ phase: 'error', message: error instanceof Error ? error.message : 'Installation failed; try again' }); return false; }
+    catch (error) { this.confirmed = false; this.set({ phase: 'error', message: error instanceof Error ? error.message : 'Installation failed; try again' }); return false; }
   }
 }

@@ -3,8 +3,15 @@ import { join } from 'node:path';
 import { canonicalInstance } from './policy.ts';
 
 /** Allow answers worth remembering; local-network and loopback-network keep asking. */
-export const GRANTABLE_PERMISSIONS = ['media', 'notifications', 'speaker-selection'] as const;
+export const GRANTABLE_PERMISSIONS = ['audio', 'video', 'notifications', 'speaker-selection'] as const;
 const grantable = (value: unknown): value is string => typeof value === 'string' && (GRANTABLE_PERMISSIONS as readonly string[]).includes(value);
+
+/** The remembered tokens a permission needs: a media request is split into microphone and camera. Unknown media types need both. */
+export function permissionTokens(permission: string, mediaTypes: readonly string[]): string[] {
+  if (permission !== 'media') return [permission];
+  const wanted = mediaTypes.filter(type => type === 'audio' || type === 'video');
+  return wanted.length ? [...new Set(wanted)] : ['audio', 'video'];
+}
 
 /** Non-secret shell preferences only. Device credentials remain in each core worker's storage. */
 export class Preferences {
@@ -30,12 +37,16 @@ export class Preferences {
   private parseGrants(raw: unknown): Map<string, string[]> {
     const result = new Map<string, string[]>();
     if (raw === undefined) return result;
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid desktop preferences: grants');
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { console.warn('Dilla dropped invalid permission grants from desktop preferences'); return result; }
+    let dropped = false;
     for (const [key, value] of Object.entries(raw)) {
-      const instance = canonicalInstance(key, this.allowLoopback);
-      if (instance !== key || !this.instances.includes(instance) || !Array.isArray(value) || !value.every(grantable) || new Set(value).size !== value.length) throw new Error('Invalid desktop preferences: grants');
-      if (value.length) result.set(instance, [...value]);
+      try {
+        const instance = canonicalInstance(key, this.allowLoopback);
+        if (instance !== key || !this.instances.includes(instance) || !Array.isArray(value) || !value.every(grantable) || new Set(value).size !== value.length) throw new Error('invalid');
+        if (value.length) result.set(instance, [...value]);
+      } catch { dropped = true; }
     }
+    if (dropped) console.warn('Dilla dropped invalid permission grants from desktop preferences');
     return result;
   }
   grants(input: string): string[] { return [...(this.granted.get(canonicalInstance(input, this.allowLoopback)) ?? [])]; }
