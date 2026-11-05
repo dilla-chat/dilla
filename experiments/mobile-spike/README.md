@@ -131,7 +131,7 @@ Report both `DILLA_PROBE` lines verbatim, plus the `DILLA_PROBE_DETAIL` lines an
 ## Call probe (`call.html`, Task 2)
 
 A second page, reached by the "call probe" link under the capability probe's button (the `DILLA_PROBE` page and its
-contract are unchanged). "Start call" sets up a loopback of two `RTCPeerConnection`s carrying one audio track. The
+contract are unchanged). A start button (one of three modes, below) sets up a loopback of two `RTCPeerConnection`s carrying one audio track. The
 sender's encoded transform prepends a 2-byte magic (`d1 1a`) and XORs the frame; the receiver XORs it back, checks and
 strips the magic, and counts `framesOk` / `framesBad` (a frame without the magic passes through unchanged; the first one
 is recorded as `firstBadFrame` in `DILLA_CALL_DETAIL` with its size and first bytes, on both paths). Paths:
@@ -139,7 +139,7 @@ is recorded as `firstBadFrame` in `DILLA_CALL_DETAIL` with its size and first by
 repo's `isVoiceSupported()`. The received audio plays through an `<audio>` element, as in a real call. Every 10 s:
 
 ```
-DILLA_CALL {"t":seconds,"framesOut":n,"framesIn":n,"framesOk":n,"framesBad":n,"packetsSent":n,"packetsReceived":n}
+DILLA_CALL {"mode":m,"run":n,"t":seconds,"framesOut":n,"framesIn":n,"framesOk":n,"framesBad":n,"packetsSent":n,"packetsReceived":n}
 DILLA_CALL_DETAIL {...}     # not part of the contract
 ```
 
@@ -151,16 +151,61 @@ inbound-rtp. `DILLA_CALL_DETAIL` carries `source` (`mic` when the mic shows any 
 per second each way, 500 per line). The page also lists every `DILLA_CALL` line it logged (newest first), so the
 history can be read on screen. "End call" logs a final line and `DILLA_CALL_END`.
 
+**Start modes** (buttons; use one per app launch, force-quit between them; the mode is in every line):
+
+| mode | order |
+| --- | --- |
+| `no-callkit` | AudioContext created in the tap, `getUserMedia`, `resume()`, loopback. No CallKit: does the WebView pipeline work on the device at all? |
+| `gum-first` | AudioContext created in the tap, `getUserMedia`, `resume()`, then CallKit `startCall`, then loopback |
+| `callkit-first` | CallKit `startCall` in the tap; the AudioContext is created only after `didActivate` (no user gesture), then `getUserMedia`, `resume()`, loopback |
+
+**Step tracing** (added after the 2026-11-05 iPhone hang: `startCall` resolved, then nothing). Every await in the
+start path is a step with an 8 s timeout:
+
+```
+DILLA_CALL_STEP {"mode":m,"run":n,"step":name,"phase":"start|ok|err|timeout|late-ok|late-err","ms":n,"at":n,"detail":{ctx,mic,vis,focus,activation,info}}
+DILLA_CALL_EVENT {"mode":m,"run":n,"event":name,"at":n,"info":...,ctx,mic,...}
+```
+
+Steps: `callkit.startCall`, `ctx.create`, `getUserMedia`, `ctx.resume`, `permissions.microphone`, `enumerateDevices`,
+`native.status`, `analyser.setup`, `mic.sample`, `oscillator.setup`, `source`, `pc.create`, `worker.ready`, `addTrack`,
+`transform.attach.send`, `createOffer`, `setLocalDescription(A offer)`, `setRemoteDescription(B offer)`,
+`createAnswer`, `setLocalDescription(B answer)`, `setRemoteDescription(A answer)`, `ontrack`,
+`transform.attach.receive`, `audio.play`, `ice`, `firstFrame.out` / `.in` / `.ok`, and on the way out `ctx.close`,
+`callkit.endCall`. `ms` is the step's own duration, `at` the time since the tap; `detail` always carries the
+AudioContext state, the mic track (`readyState`, `muted`, `enabled`), visibility and user activation. `timeout` names
+the step that hung; `late-ok` / `late-err` mean it settled after the timeout (with how long it took). A timeout in
+`getUserMedia`, `ctx.resume`, the mic sample, `ice` or the first-frame waits does not abort the run (the mic track is
+used even if the AudioContext is not running; the level is then not measurable); any other step timeout aborts it.
+Events: `ctx.statechange`, `mic.mute` / `unmute` / `ended`, PC A/B ICE, connection, signaling and gathering states,
+`visibility`, `pagehide` / `pageshow`, `window.error`, `unhandledrejection`, and a `heartbeat` every 5 s until the first
+`DILLA_CALL` line listing the steps still pending (if heartbeats stop, the page's JS thread itself is stuck).
+
+Extra buttons: "End call" (any time; ends the run and every active CallKit call), "ctx.resume (tap)" (does a tap
+unstick a resume that hung without one?), "status" (permissions, devices, native session state), "native mic
+permission" (`AVAudioApplication.requestRecordPermission`). Every aborted run, "End call" and `pagehide` call the native
+`endCall`, which ends every active call; `startCall` and plugin load also end a leftover call first (logged as
+`DILLA_CALL_NATIVE ending stale call <uuid>`), because a never-ended call makes the next start fail with CallKit error 7
+(maximumCallGroupsReached).
+
+All page lines go through `console.log`; on iOS Capacitor's console bridge forwards them to native stdout as
+`⚡️  [log] - DILLA_CALL_STEP {...}` (needs `loggingBehavior: 'production'` for Release builds, which the config has).
+Native lines (`DILLA_CALL_NATIVE +<ms since plugin load>ms ...`) are NSLog'ed and also shown in the on-page step list.
+They cover provider ready / `providerDidBegin` / `providerDidReset`, `perform CXStartCallAction`, `didActivate`,
+`didDeactivate` (with our call, pending start, app state, CallKit's call list and the session), `callChanged`,
+`AVAudioSession` interruption (began/ended, raw reason, options), route change (reason, previous and current route),
+media services lost/reset, silence-secondary-audio hint, and app background/foreground.
+
 A small `framesBad` is expected: Chromium (Android WebView 124, measured) sends about 0.6 RTP audio packets per second
 with a 0-byte payload that never pass through the send transform, so they arrive without the magic
 (`packetsSent` = `framesIn` = `framesOut` + `framesBad`). They carry no audio and so cannot leak anything. A
 `firstBadFrame` with `"bytes":0` is this bypass; a non-empty one, or `framesOk` falling behind `framesOut`, is a real
 transform failure.
 
-On iOS, "Start call" first calls the native `CallProbe` plugin (`ios/App/App/CallProbe.swift`, registered by
+On iOS, the `gum-first` and `callkit-first` modes call the native `CallProbe` plugin (`ios/App/App/CallProbe.swift`, registered by
 `SpikeBridgeViewController`, which `Main.storyboard` uses): a CallKit `CXStartCallAction`, whose handler sets the
 `AVAudioSession` to `.playAndRecord` / `.voiceChat` and fulfills; CallKit activates the session and the plugin resolves
-in `provider(_:didActivate:)`, and only then does the page start the loopback. `Info.plist` has `UIBackgroundModes`
+in `provider(_:didActivate:)`; the page starts the loopback only after that. `Info.plist` has `UIBackgroundModes`
 `audio` + `voip` and `NSMicrophoneUsageDescription`. Native events are logged as `DILLA_CALL_NATIVE ...`. On Android
 there is no foreground service on purpose: the run measures the baseline that wave M3's ConnectionService + foreground
 service is meant to fix.
@@ -171,7 +216,7 @@ With the app installed as above:
 
 ```sh
 adb shell pm grant chat.dilla.spike android.permission.RECORD_AUDIO
-# open "call probe" (link under the button), tap "Start call"
+# open "call probe" (link under the button), tap "no-callkit" (Android has no CallKit; all modes skip it)
 adb logcat -v time > call.log &                  # keep the whole run
 # ~30 s in the foreground, then:
 adb shell input keyevent KEYCODE_HOME             # wait 5 minutes
@@ -197,7 +242,7 @@ Advanced → "Show features for web developers". (A Debug build of the spike has
 2. Open Console.app on the Mac, select the iPhone, press Start streaming, and filter on `DILLA_CALL_NATIVE`.
 3. Launch "dilla spike" from the home screen. Tap "call probe". On the Mac, open Safari → Develop → <iPhone> →
    dilla spike → `call.html` and its Console tab (filter `DILLA_CALL`).
-4. Tap "Start call" and allow the microphone prompt. Expect in Console.app `DILLA_CALL_NATIVE start fulfilled` and
+4. Tap the mode that reached `DILLA_CALL` lines in the diagnostic run (below) and allow the microphone prompt. Expect in Console.app `DILLA_CALL_NATIVE start fulfilled` and
    `DILLA_CALL_NATIVE didActivate session AVAudioSessionCategoryPlayAndRecord / AVAudioSessionModeVoiceChat`; on the
    phone the green call indicator; in the Web Inspector console the first `DILLA_CALL` line with `t: 0`. You should
    hear yourself (or a quiet tone) in the earpiece.
@@ -213,9 +258,43 @@ cadence, are the evidence: all counters are cumulative. If frames flowed the who
 unlock has `framesIn` ≈ `framesOk` ≈ 50 × `t` (e.g. `t: 360` → about 18 000). If the WebView was suspended while
 locked, `framesIn` falls short of 50 × `t` by about 50 × the locked seconds, and the on-page history has a gap.
 
+### Diagnostic run first (iPhone, devicectl --console)
+
+`CallProbe.swift` was changed on Linux again (stale-call ending, diagnostics) and is **uncompiled**; fix any build error
+and report it. Build and install as above (`npm run build && npx cap sync ios`, then Xcode Run once, then Stop). Then
+launch from the Mac without a debugger, so the page and native lines arrive on one stream:
+
+```sh
+xcrun devicectl list devices                      # note the iPhone's identifier
+xcrun devicectl device process launch --console --terminate-existing \
+  --device <id> chat.dilla.spike 2>&1 | tee call-<mode>.log      # use your bundle id if you changed it
+```
+
+In the app: "call probe" → tap the mode → allow the microphone if asked → wait about 30 s in the foreground (keep the
+phone unlocked and the app in front) → "End call" → Ctrl-C the devicectl command. Then do the next mode in a fresh
+launch (the `--terminate-existing` relaunch is the force-quit). Order:
+
+1. `no-callkit`
+2. `gum-first`
+3. `callkit-first`
+
+For each, send the whole `call-<mode>.log` (or at least every `DILLA_CALL_STEP`, `DILLA_CALL_EVENT`,
+`DILLA_CALL_NATIVE`, `DILLA_CALL` and `DILLA_CALL_DETAIL` line). If a run hangs, the last `DILLA_CALL_STEP ... "start"`
+without an `ok`, and its `timeout` line, name the step; wait 20 s more for a possible `late-ok`, then try "ctx.resume
+(tap)" and "status" once each before "End call". Also say whether the green call indicator / CallKit UI appeared.
+
+A devicectl-launched process may be treated differently from a home-screen launch for suspension, so the lock test
+below still launches from the home screen.
+
+### Lock run (5 minutes)
+
+With whichever mode reached `DILLA_CALL` frames (`framesOk` growing) in the diagnostic run, preferring `callkit-first`,
+then `gum-first`, follow steps 1-7 above.
+
 Report:
 
 - iOS version and iPhone model; any change needed to make `CallProbe.swift` compile.
+- The three diagnostic logs (above), one per mode.
 - All `DILLA_CALL_NATIVE` lines from Console.app (with their timestamps), and whether `startCall` resolved (or its
   error).
 - Every `DILLA_CALL` line from start to end (Web Inspector console or the on-page history), with one

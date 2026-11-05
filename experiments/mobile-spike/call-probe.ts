@@ -2,42 +2,182 @@
 // A loopback of two RTCPeerConnections carries one audio track. The sender's encoded transform prepends a 2-byte magic
 // and XORs the frame; the receiver XORs it back, checks and strips the magic (RTCRtpScriptTransform on WebKit,
 // createEncodedStreams on Chromium, chosen by the repo's own isVoiceSupported()). Every 10 s it logs:
-//   DILLA_CALL {"t":seconds,"framesOut":n,"framesIn":n,"framesOk":n,"framesBad":n,"packetsSent":n,"packetsReceived":n}
+//   DILLA_CALL {"mode":m,"run":n,"t":seconds,"framesOut":n,"framesIn":n,"framesOk":n,"framesBad":n,"packetsSent":n,"packetsReceived":n}
 // plus a DILLA_CALL_DETAIL line (source, mic level and track state, visibility, AudioContext state, inbound-rtp
 // audioLevel / concealedSamples / totalSamplesReceived) that is not part of the contract. The page also keeps a
-// history of the lines, so they can be read on screen after an unlock. On iOS, "Start call" first starts a CallKit
-// outgoing call through the native CallProbe plugin (ios/App/App/CallProbe.swift) and waits for
-// provider(_:didActivate:) before starting the loopback.
-import { Capacitor, registerPlugin } from '@capacitor/core';
+// history of the lines, so they can be read on screen after an unlock.
+//
+// Diagnostics after the iPhone hang of 2026-11-05 (startCall resolved, then nothing): every await in the start path is
+// a traced step,
+//   DILLA_CALL_STEP {"mode":m,"run":n,"step":name,"phase":"start|ok|err|timeout|late-ok|late-err","ms":n,"at":n,"detail":...}
+// with an 8 s timeout, so a hang always names its step (late-ok / late-err: the step settled after its timeout).
+// Events (AudioContext statechange, mic track mute/ended, PC state changes, visibility, pagehide, errors, a 5 s
+// heartbeat until the first DILLA_CALL line) are DILLA_CALL_EVENT lines. All of them go through console.log, which
+// Capacitor's iOS console bridge forwards to native stdout ("⚡️  [log] - ...", visible in devicectl --console).
+// Three start orders (buttons on call.html; one per app launch):
+//   no-callkit     AudioContext in the tap, getUserMedia, resume, loopback; no CallKit (does the WebView pipeline work?)
+//   gum-first      AudioContext in the tap, getUserMedia, resume, then CallKit startCall, then loopback
+//   callkit-first  CallKit startCall in the tap; AudioContext created only after didActivate (no user gesture),
+//                  getUserMedia, resume, loopback (the order that hung, minus the early AudioContext)
+// A fatal step timeout aborts the run and ends the CallKit call (CallProbe.endCall), as do "End call" and pagehide, so
+// a hung run never leaves a call behind (CallKit error 7, maximumCallGroupsReached, on the next start).
+import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import { isVoiceSupported } from '../../packages/media/src/support';
 
 interface CallProbePlugin {
-  startCall(): Promise<{ activated: boolean; category: string; mode: string }>;
-  endCall(): Promise<{ ended: boolean }>;
+  startCall(): Promise<{ activated: boolean; category: string; mode: string; record?: string; route?: string }>;
+  endCall(opts: { reason: string }): Promise<{ ended: boolean; results?: string[] }>;
+  status(): Promise<Record<string, unknown>>;
+  requestMic(): Promise<{ before: string; granted: boolean; now: string }>;
+  addListener(event: 'nativeLog', cb: (e: { line: string }) => void): Promise<PluginListenerHandle>;
 }
 const CallProbe = registerPlugin<CallProbePlugin>('CallProbe');
+const isIos = Capacitor.getPlatform() === 'ios';
 
+type Mode = 'no-callkit' | 'gum-first' | 'callkit-first';
+const STEP_TIMEOUT_MS = 8_000;
 const KEY = 0x5a;
 const MAGIC = [0xd1, 0x1a];
 const counts = { framesOut: 0, framesIn: 0, framesOk: 0, framesBad: 0 };
 const detail: Record<string, unknown> = {};
 /** The first receive-side frame without the magic, from either path; logged with `at` relative to the call start. */
 let firstBadFrame: { bytes: number; head: number[]; atEpoch: number } | null = null;
+let mode: Mode | null = null;
+let run = 0;
+let runStart = 0;
+let runActive = false;
 let started = 0;
 let timer: ReturnType<typeof setInterval> | undefined;
+let heartbeat: ReturnType<typeof setInterval> | undefined;
 let pcs: RTCPeerConnection[] = [];
 let streams: MediaStream[] = [];
+let micTrack: MediaStreamTrack | undefined;
 let ctx: AudioContext | undefined;
 let analyser: AnalyserNode | undefined;
 let worker: Worker | undefined;
+let workerReady = false;
 let audioEl: HTMLAudioElement | undefined;
-let nativeCall = false;
+/** Steps started and not yet settled (name -> start epoch ms), shown by the heartbeat. */
+const pending = new Map<string, number>();
 
 const out = document.getElementById('out')!;
 const detailEl = document.getElementById('detail')!;
 const historyEl = document.getElementById('history')!;
-const startBtn = document.getElementById('start') as HTMLButtonElement;
+const stepsEl = document.getElementById('steps')!;
+const startBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('button[data-mode]'));
 const endBtn = document.getElementById('end') as HTMLButtonElement;
+const resumeBtn = document.getElementById('resume') as HTMLButtonElement;
+const statusBtn = document.getElementById('status') as HTMLButtonElement;
+const micBtn = document.getElementById('mic') as HTMLButtonElement;
+
+// ---------------------------------------------------------------------------------------------------------------
+// Logging
+
+const screenLines: string[] = [];
+function screen(line: string): void {
+  screenLines.push(`${new Date().toISOString().slice(11, 23)} ${line}`);
+  if (screenLines.length > 400) screenLines.shift();
+  stepsEl.textContent = screenLines.join('\n');
+  stepsEl.scrollTop = stepsEl.scrollHeight;
+}
+
+/** console.log (-> Capacitor console bridge -> native stdout) and the on-page step list. */
+function emit(prefix: string, obj: Record<string, unknown>): void {
+  const line = `${prefix} ${JSON.stringify(obj)}`;
+  console.log(line);
+  screen(line);
+}
+
+function since(): number {
+  return runStart ? Date.now() - runStart : 0;
+}
+
+/** Audio-side state attached to every step result: the facts the hypotheses turn on. */
+function snap(): Record<string, unknown> {
+  const ua = (navigator as unknown as { userActivation?: { isActive: boolean; hasBeenActive: boolean } }).userActivation;
+  return {
+    ctx: ctx ? { state: ctx.state, time: Math.round(ctx.currentTime * 1000) / 1000, rate: ctx.sampleRate } : null,
+    mic: micTrack ? { readyState: micTrack.readyState, muted: micTrack.muted, enabled: micTrack.enabled } : null,
+    vis: document.visibilityState,
+    focus: document.hasFocus(),
+    activation: ua ? { active: ua.isActive, been: ua.hasBeenActive } : null,
+  };
+}
+
+function stepLog(step: string, phase: string, ms: number, extra?: unknown): void {
+  emit('DILLA_CALL_STEP', { mode, run, step, phase, ms, at: since(), detail: extra === undefined ? snap() : { ...snap(), info: extra } });
+}
+
+function event(name: string, info?: unknown): void {
+  emit('DILLA_CALL_EVENT', { mode, run, event: name, at: since(), info: info ?? null, ...snap() });
+}
+
+class StepTimeout extends Error {
+  constructor(readonly step: string) { super(`step timeout: ${step}`); }
+}
+
+/**
+ * Runs one traced step. `fn` is called synchronously (before any await), so a step started inside a tap keeps the user
+ * activation. Logs start, then ok / err / timeout; if the work settles after its timeout, also late-ok / late-err.
+ * Throws the step's error, or a StepTimeout; the caller decides whether that aborts the run.
+ */
+async function step<T>(name: string, fn: () => Promise<T> | T, opts: { timeoutMs?: number; describe?: (v: T) => unknown } = {}): Promise<T> {
+  const t0 = Date.now();
+  const timeoutMs = opts.timeoutMs ?? STEP_TIMEOUT_MS;
+  stepLog(name, 'start', 0);
+  pending.set(name, t0);
+  let timedOut = false;
+  let work: Promise<T>;
+  try {
+    work = Promise.resolve(fn());
+  } catch (e) {
+    work = Promise.reject(e);
+  }
+  let tid: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    tid = setTimeout(() => { timedOut = true; reject(new StepTimeout(name)); }, timeoutMs);
+  });
+  work.then(
+    (v) => { if (timedOut) stepLog(name, 'late-ok', Date.now() - t0, opts.describe ? opts.describe(v) : null); },
+    (e: unknown) => { if (timedOut) stepLog(name, 'late-err', Date.now() - t0, errText(e)); },
+  );
+  try {
+    const v = await Promise.race([work, timeout]);
+    stepLog(name, 'ok', Date.now() - t0, opts.describe ? opts.describe(v) : undefined);
+    return v;
+  } catch (e) {
+    stepLog(name, e instanceof StepTimeout ? 'timeout' : 'err', Date.now() - t0, errText(e));
+    throw e;
+  } finally {
+    clearTimeout(tid);
+    pending.delete(name);
+  }
+}
+
+/** A step whose failure or timeout does not abort the run: returns undefined instead. */
+async function softStep<T>(name: string, fn: () => Promise<T> | T, opts: { timeoutMs?: number; describe?: (v: T) => unknown } = {}): Promise<T | undefined> {
+  try {
+    return await step(name, fn, opts);
+  } catch {
+    return undefined;
+  }
+}
+
+function errText(e: unknown): string {
+  if (e instanceof Error) return `${e.name}: ${e.message}`;
+  return String(e);
+}
+
+/** Resolves when `cond` holds (polled every 50 ms); the surrounding step supplies the timeout. */
+function waitFor(cond: () => boolean): Promise<void> {
+  return new Promise((resolve) => {
+    const check = (): void => { if (cond()) resolve(); else setTimeout(check, 50); };
+    check();
+  });
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Audio source
 
 function micLevel(): number | null {
   if (!analyser) return null;
@@ -48,44 +188,92 @@ function micLevel(): number | null {
   return Math.round(peak * 1e4) / 1e4;
 }
 
+function createContext(where: string): AudioContext {
+  const t0 = Date.now();
+  const c = new AudioContext({ sampleRate: 48_000 });
+  c.onstatechange = () => { event('ctx.statechange', c.state); };
+  ctx = c;
+  stepLog(`ctx.create (${where})`, 'ok', Date.now() - t0);
+  return c;
+}
+
+async function getMic(): Promise<MediaStream | undefined> {
+  const mic = await softStep('getUserMedia', () => navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false },
+  }), {
+    describe: (s) => s.getAudioTracks().map((t) => ({ label: t.label, readyState: t.readyState, muted: t.muted, enabled: t.enabled })),
+  });
+  if (!mic) return undefined;
+  streams.push(mic);
+  const track = mic.getAudioTracks()[0];
+  micTrack = track;
+  if (track) {
+    track.onmute = () => { event('mic.mute'); };
+    track.onunmute = () => { event('mic.unmute'); };
+    track.onended = () => { event('mic.ended'); };
+  }
+  return mic;
+}
+
+async function resumeCtx(name: string): Promise<void> {
+  if (!ctx) return;
+  const c = ctx;
+  await softStep(name, () => c.resume(), { describe: () => ({ stateAfter: c.state }) });
+}
+
 /**
- * The mic track when it carries signal; otherwise (silent emulator mic, or no mic at all) a quiet 440 Hz tone from a
- * MediaStreamDestination. The mic stays open either way, so the capture side behaves like a real call.
- * `audio` is the AudioContext created synchronously in the click handler (user activation).
+ * The mic track when the mic shows signal, or when the AudioContext is not running (then its level cannot be read,
+ * and WebRTC does not need it); otherwise a quiet 440 Hz tone from a MediaStreamDestination. The mic stays open.
  */
-async function pickSource(audio: AudioContext): Promise<MediaStreamTrack> {
-  try {
-    const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false } });
-    await audio.resume().catch((e: unknown) => { detail.resumeError = String(e); });
-    streams.push(mic);
-    analyser = audio.createAnalyser();
-    analyser.fftSize = 2048;
-    audio.createMediaStreamSource(mic).connect(analyser);
-    let peak = 0;
-    for (let i = 0; i < 15; i++) {
-      await new Promise((r) => setTimeout(r, 100));
-      peak = Math.max(peak, micLevel() ?? 0);
+async function pickSource(mic: MediaStream | undefined): Promise<MediaStreamTrack> {
+  const audio = ctx!;
+  const track = mic?.getAudioTracks()[0];
+  if (track) {
+    await softStep('analyser.setup', () => {
+      analyser = audio.createAnalyser();
+      analyser.fftSize = 2048;
+      audio.createMediaStreamSource(mic!).connect(analyser);
+    });
+    if (audio.state !== 'running') {
+      detail.source = `mic (AudioContext ${audio.state}, level not measurable)`;
+      stepLog('source', 'ok', 0, detail.source);
+      return track;
     }
-    detail.micPeakAtStart = peak;
-    if (peak > 0) {
+    const peak = await softStep('mic.sample', async () => {
+      let p = 0;
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        p = Math.max(p, micLevel() ?? 0);
+      }
+      return p;
+    }, { describe: (p) => ({ peak: p }) });
+    detail.micPeakAtStart = peak ?? null;
+    if ((peak ?? 0) > 0) {
       detail.source = 'mic';
-      return mic.getAudioTracks()[0];
+      stepLog('source', 'ok', 0, detail.source);
+      return track;
     }
     detail.source = 'oscillator (mic silent)';
-  } catch (e) {
-    await audio.resume().catch(() => undefined);
-    detail.source = `oscillator (getUserMedia failed: ${String(e)})`;
+  } else {
+    detail.source = 'oscillator (no mic: see getUserMedia step)';
   }
-  const osc = audio.createOscillator();
-  const gain = audio.createGain();
-  gain.gain.value = 0.05;
-  const dest = audio.createMediaStreamDestination();
-  osc.frequency.value = 440;
-  osc.connect(gain).connect(dest);
-  osc.start();
+  const dest = await step('oscillator.setup', () => {
+    const osc = audio.createOscillator();
+    const gain = audio.createGain();
+    gain.gain.value = 0.05;
+    const d = audio.createMediaStreamDestination();
+    osc.frequency.value = 440;
+    osc.connect(gain).connect(d);
+    osc.start();
+    return d;
+  });
   streams.push(dest.stream);
+  stepLog('source', 'ok', 0, detail.source);
   return dest.stream.getAudioTracks()[0];
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Loopback
 
 /** Chromium send side: magic + XOR. Same frame format as call-transform-worker.ts. */
 function sealTransform(): TransformStream {
@@ -127,6 +315,13 @@ function openTransform(): TransformStream {
 type EncodedStreams = { readable: ReadableStream; writable: WritableStream };
 type WithEncoded = { createEncodedStreams(): EncodedStreams };
 
+function watchPc(label: string, pc: RTCPeerConnection): void {
+  pc.oniceconnectionstatechange = () => { event(`pc${label}.ice`, pc.iceConnectionState); };
+  pc.onconnectionstatechange = () => { event(`pc${label}.connection`, pc.connectionState); };
+  pc.onsignalingstatechange = () => { event(`pc${label}.signaling`, pc.signalingState); };
+  pc.onicegatheringstatechange = () => { event(`pc${label}.gathering`, pc.iceGatheringState); };
+}
+
 async function loopback(track: MediaStreamTrack): Promise<void> {
   const support = isVoiceSupported();
   detail.transformPath = support.ok ? support.path : support.reason;
@@ -134,53 +329,90 @@ async function loopback(track: MediaStreamTrack): Promise<void> {
   const script = support.path === 'script-transform';
   // Chromium needs the PC flag before createEncodedStreams works (as livekit-client sets it).
   const config = (script ? {} : { encodedInsertableStreams: true }) as RTCConfiguration;
-  const a = new RTCPeerConnection(config);
-  const b = new RTCPeerConnection(config);
+  const [a, b] = await step('pc.create', () => [new RTCPeerConnection(config), new RTCPeerConnection(config)] as const, {
+    describe: () => ({ path: support.path }),
+  });
   pcs = [a, b];
-  a.onicecandidate = (e) => { if (e.candidate) void b.addIceCandidate(e.candidate); };
-  b.onicecandidate = (e) => { if (e.candidate) void a.addIceCandidate(e.candidate); };
-  a.onconnectionstatechange = () => { detail.pcState = a.connectionState; };
+  watchPc('A', a);
+  watchPc('B', b);
+  let candidates = 0;
+  a.onicecandidate = (e) => {
+    if (!e.candidate) return;
+    candidates++;
+    b.addIceCandidate(e.candidate).catch((err: unknown) => { event('pcB.addIceCandidate.err', errText(err)); });
+  };
+  b.onicecandidate = (e) => {
+    if (!e.candidate) return;
+    candidates++;
+    a.addIceCandidate(e.candidate).catch((err: unknown) => { event('pcA.addIceCandidate.err', errText(err)); });
+  };
+  a.onconnectionstatechange = () => { detail.pcState = a.connectionState; event('pcA.connection', a.connectionState); };
 
   if (script) {
     worker = new Worker(new URL('./call-transform-worker.ts', import.meta.url), { type: 'module' });
+    worker.onerror = (e) => { event('worker.error', e.message); };
     worker.onmessage = (e: MessageEvent<{ pipeError?: string; counts?: typeof counts; firstBadFrame?: typeof firstBadFrame }>) => {
-      if (e.data.pipeError) detail.pipeError = e.data.pipeError;
+      workerReady = true;
+      if (e.data.pipeError) { detail.pipeError = e.data.pipeError; event('worker.pipeError', e.data.pipeError); }
       if (e.data.counts) Object.assign(counts, e.data.counts);
       if (e.data.firstBadFrame) firstBadFrame ??= e.data.firstBadFrame;
     };
+    // The worker posts its counts once a second from load, so the first message means it runs.
+    await step('worker.ready', () => waitFor(() => workerReady));
   }
   const Script = (globalThis as unknown as { RTCRtpScriptTransform: new (w: Worker, o: unknown) => unknown }).RTCRtpScriptTransform;
 
+  let gotTrack = false;
   b.ontrack = (e) => {
-    if (script) {
-      (e.receiver as unknown as { transform: unknown }).transform = new Script(worker!, { side: 'receive' });
-    } else {
-      const s = (e.receiver as unknown as WithEncoded).createEncodedStreams();
-      s.readable.pipeThrough(openTransform()).pipeTo(s.writable).catch((err: unknown) => { detail.pipeError = `receive: ${String(err)}`; });
+    gotTrack = true;
+    try {
+      if (script) {
+        (e.receiver as unknown as { transform: unknown }).transform = new Script(worker!, { side: 'receive' });
+      } else {
+        const s = (e.receiver as unknown as WithEncoded).createEncodedStreams();
+        s.readable.pipeThrough(openTransform()).pipeTo(s.writable).catch((err: unknown) => { detail.pipeError = `receive: ${String(err)}`; });
+      }
+      stepLog('transform.attach.receive', 'ok', 0);
+    } catch (err) {
+      stepLog('transform.attach.receive', 'err', 0, errText(err));
     }
     // Play the received audio like a real call would (and so the iPhone run can hear whether it comes back).
     audioEl = new Audio();
     audioEl.srcObject = new MediaStream([e.track]);
-    audioEl.play().catch((err: unknown) => { detail.playError = String(err); });
+    const el = audioEl;
+    void softStep('audio.play', () => el.play(), { describe: () => ({ paused: el.paused }) });
   };
 
-  const sender = a.addTrack(track, new MediaStream([track]));
-  if (script) {
-    (sender as unknown as { transform: unknown }).transform = new Script(worker!, { side: 'send' });
-  } else {
-    const s = (sender as unknown as WithEncoded).createEncodedStreams();
-    s.readable.pipeThrough(sealTransform()).pipeTo(s.writable).catch((err: unknown) => { detail.pipeError = `send: ${String(err)}`; });
-  }
+  const sender = await step('addTrack', () => a.addTrack(track, new MediaStream([track])));
+  await step('transform.attach.send', () => {
+    if (script) {
+      (sender as unknown as { transform: unknown }).transform = new Script(worker!, { side: 'send' });
+    } else {
+      const s = (sender as unknown as WithEncoded).createEncodedStreams();
+      s.readable.pipeThrough(sealTransform()).pipeTo(s.writable).catch((err: unknown) => { detail.pipeError = `send: ${String(err)}`; });
+    }
+  });
 
   // No DTX: Opus keeps sending 20 ms frames on silence, so the counters measure the pipeline, not the room noise.
-  const offer = await a.createOffer();
+  const offer = await step('createOffer', () => a.createOffer());
   offer.sdp = offer.sdp?.replace(/;usedtx=1/g, '');
-  await a.setLocalDescription(offer);
-  await b.setRemoteDescription(offer);
-  const answer = await b.createAnswer();
+  await step('setLocalDescription(A offer)', () => a.setLocalDescription(offer));
+  await step('setRemoteDescription(B offer)', () => b.setRemoteDescription(offer));
+  const answer = await step('createAnswer', () => b.createAnswer());
   answer.sdp = answer.sdp?.replace(/;usedtx=1/g, '');
-  await b.setLocalDescription(answer);
-  await a.setRemoteDescription(answer);
+  await step('setLocalDescription(B answer)', () => b.setLocalDescription(answer));
+  await step('setRemoteDescription(A answer)', () => a.setRemoteDescription(answer));
+  await softStep('ontrack', () => waitFor(() => gotTrack));
+  await softStep('ice', () => waitFor(() => ['connected', 'completed'].includes(a.iceConnectionState) && ['connected', 'completed'].includes(b.iceConnectionState)), {
+    describe: () => ({ a: a.iceConnectionState, b: b.iceConnectionState, candidates }),
+  });
+}
+
+/** Informational, after the call is up: when the first frames pass each side. Never aborts the run. */
+function watchFirstFrames(): void {
+  void softStep('firstFrame.out', () => waitFor(() => counts.framesOut > 0), { describe: () => ({ ...counts }) });
+  void softStep('firstFrame.in', () => waitFor(() => counts.framesIn > 0), { describe: () => ({ ...counts }) });
+  void softStep('firstFrame.ok', () => waitFor(() => counts.framesOk > 0), { describe: () => ({ ...counts }) });
 }
 
 async function rtpStats(): Promise<{ packetsSent: number | null; packetsReceived: number | null; inbound: Record<string, unknown> | null }> {
@@ -189,6 +421,7 @@ async function rtpStats(): Promise<{ packetsSent: number | null; packetsReceived
   let inbound: Record<string, unknown> | null = null;
   try {
     const [a, b] = pcs;
+    if (!a || !b) return { packetsSent, packetsReceived, inbound };
     (await a.getStats()).forEach((s: Record<string, unknown>) => {
       if (s.type === 'outbound-rtp' && s.kind === 'audio') packetsSent = s.packetsSent as number;
     });
@@ -212,14 +445,15 @@ async function rtpStats(): Promise<{ packetsSent: number | null; packetsReceived
 async function log(): Promise<void> {
   const t = Math.round((Date.now() - started) / 1000);
   const stats = await rtpStats();
-  const line = `DILLA_CALL ${JSON.stringify({ t, ...counts, packetsSent: stats.packetsSent, packetsReceived: stats.packetsReceived })}`;
-  const mic = streams[0]?.getAudioTracks()[0];
+  const line = `DILLA_CALL ${JSON.stringify({ mode, run, t, ...counts, packetsSent: stats.packetsSent, packetsReceived: stats.packetsReceived })}`;
   Object.assign(detail, {
+    mode,
+    run,
     t,
     at: new Date().toISOString(),
     visibility: document.visibilityState,
     micLevel: micLevel(),
-    micTrack: mic ? { readyState: mic.readyState, muted: mic.muted, enabled: mic.enabled } : null,
+    micTrack: micTrack ? { readyState: micTrack.readyState, muted: micTrack.muted, enabled: micTrack.enabled } : null,
     audioContext: ctx?.state ?? null,
     audioPaused: audioEl?.paused ?? null,
     inboundRtp: stats.inbound,
@@ -233,49 +467,133 @@ async function log(): Promise<void> {
   detailEl.textContent = JSON.stringify(detail, null, 2);
 }
 
-async function start(audio: AudioContext): Promise<void> {
-  out.textContent = 'starting…';
+// ---------------------------------------------------------------------------------------------------------------
+// Runs
+
+async function startCallKit(): Promise<void> {
+  if (!isIos) {
+    stepLog('callkit.startCall', 'ok', 0, 'skipped (not iOS)');
+    detail.callKit = 'n/a (no foreground service on Android in this spike)';
+    return;
+  }
+  detail.callKit = await step('callkit.startCall', () => CallProbe.startCall(), { describe: (r) => r });
+}
+
+/** Optional facts that must not delay the gesture-bound steps: run after them. */
+async function environment(): Promise<void> {
+  const perms = (navigator as unknown as { permissions?: { query(d: { name: string }): Promise<{ state: string }> } }).permissions;
+  if (perms) {
+    await softStep('permissions.microphone', () => perms.query({ name: 'microphone' }), { timeoutMs: 3_000, describe: (r) => r.state });
+  } else {
+    stepLog('permissions.microphone', 'ok', 0, 'navigator.permissions absent');
+  }
+  await softStep('enumerateDevices', () => navigator.mediaDevices.enumerateDevices(), {
+    timeoutMs: 3_000,
+    describe: (d) => d.map((x) => `${x.kind}:${x.label || '(no label)'}`),
+  });
+  if (isIos) await softStep('native.status', () => CallProbe.status(), { timeoutMs: 3_000, describe: (s) => ({ ...s, lines: (s.lines as unknown[] | undefined)?.length }) });
+}
+
+/**
+ * Called synchronously from the tap. Each mode's first step is invoked before any await, so it runs with the user
+ * activation; `ctx` is created synchronously in the tap except in callkit-first.
+ */
+async function startRun(m: Mode): Promise<void> {
+  mode = m;
+  run++;
+  runStart = Date.now();
+  runActive = true;
+  for (const btn of startBtns) btn.disabled = true;
+  out.textContent = `starting (${m})…`;
+  event('run.start', { ua: navigator.userAgent, platform: Capacitor.getPlatform() });
+  heartbeat = setInterval(() => {
+    if (started) return;
+    event('heartbeat', { pending: Array.from(pending.entries()).map(([k, t0]) => `${k} ${Date.now() - t0}ms`) });
+  }, 5_000);
   try {
-    if (Capacitor.getPlatform() === 'ios') {
-      detail.callKit = await CallProbe.startCall();
-      nativeCall = true;
+    let mic: MediaStream | undefined;
+    if (m === 'callkit-first') {
+      await startCallKit();
+      createContext('after didActivate, no gesture');
+      mic = await getMic();
+      await resumeCtx('ctx.resume (no gesture)');
     } else {
-      detail.callKit = 'n/a (no foreground service on Android in this spike)';
+      createContext('in tap');
+      mic = await getMic();
+      await resumeCtx('ctx.resume');
+      if (m === 'gum-first') await startCallKit();
     }
-    const track = await pickSource(audio);
+    await environment();
+    const track = await pickSource(mic);
     await loopback(track);
     started = Date.now();
+    watchFirstFrames();
     await log();
     timer = setInterval(() => { void log(); }, 10_000);
-    endBtn.disabled = false;
   } catch (e) {
-    detail.error = String(e);
-    console.log(`DILLA_CALL_DETAIL ${JSON.stringify(detail)}`);
-    out.textContent = `failed: ${String(e)}`;
-    startBtn.disabled = false;
+    detail.error = errText(e);
+    console.log(`DILLA_CALL_DETAIL ${JSON.stringify({ ...detail, mode, run })}`);
+    out.textContent = `failed (${m}): ${errText(e)}`;
+    await endRun(e instanceof StepTimeout ? `timeout:${e.step}` : 'error');
   }
 }
 
-async function end(): Promise<void> {
-  endBtn.disabled = true;
+/** Ends the run whatever state it is in; idempotent. Always asks CallKit to end any active call on iOS. */
+async function endRun(reason: string): Promise<void> {
+  event('run.end', reason);
   if (timer) clearInterval(timer);
-  await log();
+  if (heartbeat) clearInterval(heartbeat);
+  timer = undefined;
+  heartbeat = undefined;
+  if (started) await log();
   for (const pc of pcs) pc.close();
   for (const s of streams) for (const tr of s.getTracks()) tr.stop();
   worker?.terminate();
   audioEl?.pause();
-  await ctx?.close().catch(() => undefined);
-  if (nativeCall) detail.callKitEnd = await CallProbe.endCall().catch((e: unknown) => String(e));
-  console.log(`DILLA_CALL_END ${JSON.stringify(detail)}`);
-  pcs = []; streams = []; worker = undefined; firstBadFrame = null; delete detail.firstBadFrame; analyser = undefined; ctx = undefined; nativeCall = false;
+  if (ctx) await softStep('ctx.close', () => ctx!.close(), { timeoutMs: 3_000 });
+  if (isIos) detail.callKitEnd = await softStep('callkit.endCall', () => CallProbe.endCall({ reason }), { describe: (r) => r });
+  console.log(`DILLA_CALL_END ${JSON.stringify({ ...detail, mode, run, reason })}`);
+  pcs = []; streams = []; worker = undefined; workerReady = false; firstBadFrame = null; delete detail.firstBadFrame;
+  analyser = undefined; ctx = undefined; micTrack = undefined; audioEl = undefined; started = 0;
   for (const k of Object.keys(counts) as (keyof typeof counts)[]) counts[k] = 0;
-  startBtn.disabled = false;
+  runActive = false;
+  for (const btn of startBtns) btn.disabled = false;
 }
 
-startBtn.addEventListener('click', () => {
-  startBtn.disabled = true;
-  // Created synchronously inside the tap, before any await, so it starts with user activation (WebKit autoplay rules).
-  ctx = new AudioContext({ sampleRate: 48_000 });
-  void start(ctx);
+// ---------------------------------------------------------------------------------------------------------------
+// Wiring
+
+for (const btn of startBtns) {
+  btn.addEventListener('click', () => {
+    if (runActive) return;
+    void startRun(btn.dataset.mode as Mode);
+  });
+}
+endBtn.addEventListener('click', () => { void endRun('button'); });
+// A tap gives the context a user activation: does that unstick a resume that hung without one?
+resumeBtn.addEventListener('click', () => {
+  if (!ctx) { event('ctx.resume (tap)', 'no AudioContext'); return; }
+  const c = ctx;
+  void softStep('ctx.resume (tap)', () => c.resume(), { describe: () => ({ stateAfter: c.state }) });
 });
-endBtn.addEventListener('click', () => { void end(); });
+statusBtn.addEventListener('click', () => { void environment(); event('status', { pending: Array.from(pending.keys()), counts: { ...counts } }); });
+micBtn.addEventListener('click', () => {
+  if (!isIos) { event('native.requestMic', 'not iOS'); return; }
+  void softStep('native.requestMic', () => CallProbe.requestMic(), { timeoutMs: 30_000, describe: (r) => r });
+});
+
+document.addEventListener('visibilitychange', () => { event('visibility', document.visibilityState); });
+window.addEventListener('pageshow', (e) => { event('pageshow', { persisted: e.persisted }); });
+window.addEventListener('pagehide', (e) => {
+  event('pagehide', { persisted: e.persisted });
+  // Fire and forget: the page may be gone before it settles. A leftover call blocks the next start (CallKit error 7).
+  if (isIos) void CallProbe.endCall({ reason: 'pagehide' }).catch(() => undefined);
+});
+window.addEventListener('error', (e) => { event('window.error', `${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`); });
+window.addEventListener('unhandledrejection', (e) => { event('unhandledrejection', errText(e.reason)); });
+
+if (isIos) {
+  // Native lines are already on native stdout (NSLog); here they only go to the on-page list, not console.log again.
+  void CallProbe.addListener('nativeLog', (e) => { screen(e.line); });
+}
+event('page.load', { platform: Capacitor.getPlatform(), voice: isVoiceSupported() });
