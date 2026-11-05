@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES } from './ci-areas.mjs';
-import { assertGoShards, checkGoModuleDownloads, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkWorkflow, DESKTOP_RELEASE_ACTIONS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
+import { checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkWorkflow, DESKTOP_RELEASE_ACTIONS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -1121,7 +1121,7 @@ function fixture(body, gated = GATED) {
   writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
   // ... and the desktop release trampoline with the key scripts it pins.
   releaseRoots.push(dir);
-  for (const file of RELEASE_FILES.filter(path => !path.startsWith('.github/') || /desktop-release(-request)?\.yml$/.test(path))) {
+  for (const file of RELEASE_FILES.filter(path => !path.startsWith('.github/') || /desktop-release(-request)?\.yml$|ci-rerun-starved\.yml$/.test(path))) {
     mkdirSync(dirname(join(dir, file)), { recursive: true });
     writeFileSync(join(dir, file), readFileSync(join(REPO_ROOT, file), 'utf8'));
   }
@@ -2935,4 +2935,46 @@ test('every release Go job downloads its modules through the retry wrapper', () 
   const step = /      - name: Download Go modules \(retried only on known network errors\)\n        run: [^\n]*\n/;
   assert.match(REAL_RELEASE, step);
   assertReported(releaseProblems((r) => r.replace(step, '')), 'must run exactly one retried "go mod download" step');
+});
+
+const RERUN = '.github/workflows/ci-rerun-starved.yml';
+const rerunProblems = (change) => {
+  const root = releaseRoot({ [RERUN]: change });
+  const problems = checkRerunStarvedWorkflow(root);
+  rmSync(root, { recursive: true, force: true });
+  return problems;
+};
+
+test('the re-run-starved workflow as committed has no problems', () => {
+  assert.deepEqual(checkRerunStarvedWorkflow(REPO_ROOT), []);
+  assert.deepEqual(rerunProblems(edit(() => {})), [], 'a parse and re-dump is not a change');
+  const cli = spawnSync(process.execPath, [SCRIPT_PATH, releaseRoot({ [RERUN]: (text) => text.replace('types: [completed]', 'types: [requested]') })], { encoding: 'utf8' });
+  assert.notEqual(cli.status, 0, 'wired into the CLI');
+  assert.match(cli.stderr, /ci-rerun-starved\.yml/);
+});
+
+test('the re-run-starved workflow is reported when it is missing', () => {
+  const root = releaseRoot();
+  rmSync(join(root, RERUN));
+  assert.deepEqual(checkRerunStarvedWorkflow(root), ['ci-rerun-starved.yml: missing']);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('each pinned property of the re-run-starved workflow is enforced', () => {
+  const mutations = {
+    'another trigger': [edit((doc) => { doc.on.pull_request = {}; }), 'must trigger only on workflow_run'],
+    'another upstream workflow': [edit((doc) => { doc.on.workflow_run.workflows = ['desktop']; }), 'must trigger only on workflow_run'],
+    'wrong event type': [edit((doc) => { doc.on.workflow_run.types = ['requested']; }), 'must trigger only on workflow_run'],
+    'extra permission': [edit((doc) => { doc.permissions.contents = 'write'; }), 'exactly actions: write'],
+    'no workflow permissions': [edit((doc) => { delete doc.permissions; }), 'exactly actions: write'],
+    'job write-all': [edit((doc) => { doc.jobs.rerun.permissions = 'write-all'; }), 'only actions: write and contents: read'],
+    'attempt guard removed': [edit((doc) => { doc.jobs.rerun.if = "github.event.workflow_run.conclusion != 'success'"; }), 'run_attempt == 1'],
+    'checkout of the run head': [edit((doc) => { step(doc, 'rerun', 'actions/checkout').with.ref = '${{ github.event.workflow_run.head_sha }}'; }), 'default_branch'],
+    'checkout without a ref': [edit((doc) => { delete step(doc, 'rerun', 'actions/checkout').with.ref; }), 'default_branch'],
+    'run id interpolated inline': [edit((doc) => { step(doc, 'rerun', 'node scripts').run = 'node scripts/ci-rerun-starved.mjs ${{ github.event.workflow_run.id }}'; }), 'interpolated inline'],
+    'a secret': [edit((doc) => { step(doc, 'rerun', 'node scripts').env.TOKEN = '${{ secrets.PAT }}'; }), 'no secrets'],
+  };
+  for (const [label, [change, needle]] of Object.entries(mutations)) {
+    assert.ok(rerunProblems(change).some((problem) => problem.includes(needle)), `not reported: ${label}`);
+  }
 });

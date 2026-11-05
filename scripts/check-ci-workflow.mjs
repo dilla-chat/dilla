@@ -1938,6 +1938,43 @@ export function checkDesktopReleaseWorkflow(root) {
 }
 
 /**
+ * ci-rerun-starved.yml holds `actions: write` on a workflow_run event, so it is pinned as a privileged workflow:
+ * it fires only on the completed ci run, its sole permission is actions: write (contents: read at most), it
+ * re-runs attempt 1 only, checks out the default branch and never the triggering run's code, and takes the
+ * run's id and attempt through env rather than inline in a command.
+ */
+export function checkRerunStarvedWorkflow(root) {
+  const file = 'ci-rerun-starved.yml';
+  const problems = [];
+  const fail = (message) => problems.push(`${file}: ${message}`);
+  let text, doc;
+  try {
+    text = readFileSync(join(root, '.github', 'workflows', file), 'utf8');
+    doc = yaml.load(text);
+  } catch (error) { return [`${file}: ${error.code === 'ENOENT' ? 'missing' : `invalid YAML (${error.message.split('\n')[0]})`}`]; }
+  // The CI workflow's own name, so renaming it cannot silently unhook this one.
+  let ciName = 'ci';
+  try { ciName = yaml.load(readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8'))?.name ?? 'ci'; } catch { /* checkWorkflow reports a missing ci.yml */ }
+  if (!drSame(doc?.on, { workflow_run: { workflows: [ciName], types: ['completed'] } })) fail(`must trigger only on workflow_run of "${ciName}", types [completed], no branches`);
+  if (!drSame(doc?.permissions, { actions: 'write' })) fail('the workflow permissions must be exactly actions: write');
+  const jobs = Object.values(doc?.jobs ?? {});
+  if (jobs.length !== 1) fail('must have exactly one job');
+  for (const job of jobs) {
+    if (job?.permissions !== undefined && !drSame(job.permissions, { actions: 'write' }) && !drSame(job.permissions, { actions: 'write', contents: 'read' })) fail('a job may hold only actions: write and contents: read');
+    if (!/github\.event\.workflow_run\.run_attempt\s*==\s*1\b/.test(String(job?.if ?? ''))) fail('the job must be guarded by github.event.workflow_run.run_attempt == 1');
+    const steps = Array.isArray(job?.steps) ? job.steps : [];
+    const checkouts = steps.filter((step) => typeof step?.uses === 'string' && step.uses.startsWith('actions/checkout@'));
+    if (checkouts.length !== 1 || checkouts[0].with?.ref !== '${{ github.event.repository.default_branch }}') fail('must check out exactly once, with ref: ${{ github.event.repository.default_branch }}');
+    for (const step of steps) {
+      if (typeof step?.run === 'string' && step.run.includes('${{')) fail('an expression is interpolated inline in a run command; pass it through env');
+    }
+  }
+  if (/workflow_run\.(head_sha|head_branch|head_repository|pull_requests)/.test(text)) fail("the triggering run's head is never used");
+  if (/\bsecrets\b/.test(text.replace(/^\s*#.*$/gm, ''))) fail('uses no secrets beyond GITHUB_TOKEN');
+  return problems;
+}
+
+/**
  * `npm run ci:local` derives its jobs from ci.yml (scripts/ci-local-plan.mjs): a job, step, action, service, `if:` or
  * expression it cannot map or explicitly skip fails here, so the local mirror cannot fall behind the workflow.
  */
@@ -1947,7 +1984,7 @@ export function checkLocalMirror(root) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = [...checkWorkflow(root), ...checkReleaseWorkflow(root), ...checkDesktopWorkflow(root), ...checkDesktopReleaseWorkflow(root), ...checkLocalMirror(root)];
+  const problems = [...checkWorkflow(root), ...checkReleaseWorkflow(root), ...checkDesktopWorkflow(root), ...checkDesktopReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkLocalMirror(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }
