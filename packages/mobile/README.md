@@ -109,9 +109,11 @@ emulator it started running). It needs `target/dilla-testhost` (`go build -o tar
 debuggable `google_apis` image with Chrome (it uses `adb root` to install a throwaway CA as a user CA, and Chrome's
 debug command-line file to skip Chrome's first run).
 
-It starts two test hosts behind HTTPS proxies reachable from the emulator at `https://a.10-0-2-2.sslip.io:18443/` and
-`https://b.10-0-2-2.sslip.io:18444/` (the app refuses IP literals, so sslip.io's wildcard DNS names 10.0.2.2, this
-machine as the emulator sees it; the run needs that DNS lookup to work), installs a fresh debug APK, and through Playwright's Android driver (the WebView DevTools
+It starts two test hosts behind HTTPS proxies at `https://a.dilla.test:18443/` and `https://b.dilla.test:18444/`.
+DNS is hermetic: the emulator's global HTTP proxy (`settings put global http_proxy 10.0.2.2:18480`, reset afterwards)
+is a local CONNECT proxy that maps exactly those two names and ports to this machine, so the WebView, the Custom Tab
+and CapacitorHttp all reach them with no outside DNS (a WebView `--host-resolver-rules` flag would miss CapacitorHttp;
+dnsmasq behind `-dns-server` would need the privileged port 53). It installs a fresh debug APK, and through Playwright's Android driver (the WebView DevTools
 socket): adds instance A in the picker, signs up, joins a native peer's server and sees the peer's message (and the peer
 sees the reply); adds instance B and signs up there; checks that browser sign-in goes out over native HTTP with no
 Origin and opens Custom Tabs; sends the app to the background for 120 s while the peer posts, resumes and sees it;
