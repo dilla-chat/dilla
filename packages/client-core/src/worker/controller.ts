@@ -1030,7 +1030,7 @@ export class Controller {
   private keyPackagesOwed = false;
   /** KeyPackage publication: what Diagnostics shows, the one attempt allowed at a time, and the backoff between failures. */
   private keyPackages: DiagnosticsState['keyPackages'] = { count: null, lastAttempt: null, lastError: null };
-  private keyPackagesBusy = false;
+  private keyPackagesBusy: CorePort | null = null;
   private keyPackagesDelayMs = 0;
   private keyPackagesRetry: number | null = null;
   /** Set when the gateway came back from a loss; the next ready checks the server's count instead of trusting its own. */
@@ -2162,12 +2162,13 @@ export class Controller {
    * time. A failure is shown in Diagnostics and retried, 5 s doubling to 5 min, until it lands or the account is let go
    * of; a publish that vanished silently once left a device without any package for weeks.
    */
-  private async topUpKeyPackages(core: CorePort, limits: Limits, remaining: () => Promise<number>): Promise<void> {
-    if (this.keyPackagesBusy) return;
-    this.keyPackagesBusy = true;
-    this.clearKeyPackageRetry();
+  private async topUpKeyPackages(core: CorePort, limits: Limits, remaining: () => Promise<number>, retry = false): Promise<void> {
+    // A pending retry is in charge: a flapping gateway's ready must not publish more often than the backoff allows.
+    if (this.keyPackagesBusy === core || this.keyPackagesRetry !== null) return;
+    this.keyPackagesBusy = core;
     try {
-      const known = await remaining();
+      // A retry asks the server first: the failed attempt may have landed (a lost response), and the count says so.
+      const known = (retry ? (await this.routes.getKeyPackageCount())?.ordinary : undefined) ?? await remaining();
       if (this.core !== core) return;
       const published = await refillKeyPackages(core, this.routes, known,
         { perDevice: limits.keypackagesPerDevice, threshold: limits.keypackageRefillThreshold });
@@ -2182,10 +2183,10 @@ export class Controller {
       this.publishDiagnostics();
       this.keyPackagesRetry = this.deps.setTimeout(() => {
         this.keyPackagesRetry = null;
-        if (this.core === core && !this.revoked()) void this.barrier.track(this.topUpKeyPackages(core, limits, remaining));
+        if (this.core === core && !this.revoked()) void this.barrier.track(this.topUpKeyPackages(core, limits, remaining, true));
       }, this.keyPackagesDelayMs);
     } finally {
-      this.keyPackagesBusy = false;
+      if (this.keyPackagesBusy === core) this.keyPackagesBusy = null;
     }
   }
 
@@ -4450,7 +4451,7 @@ export class Controller {
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.heldLive = []; this.clearHeldReads(); this.ticketTime = null;
     this.pendingJoin = null; this.keyPackagesOwed = false;
     this.clearKeyPackageRetry();
-    this.keyPackages = { count: null, lastAttempt: null, lastError: null }; this.keyPackagesDelayMs = 0; this.keyPackagesRecheck = false;
+    this.keyPackages = { count: null, lastAttempt: null, lastError: null }; this.keyPackagesDelayMs = 0; this.keyPackagesRecheck = false; this.keyPackagesBusy = null;
     this.channels.clear(); this.dms.clear(); this.open.clear(); this.opening.clear(); this.refusedChannels.clear();
     // CB2 fix round 1: the next account in this tab must not see this one's wait.
     for (const channelId of this.slowUntil.keys()) this.slices.set(`slow:${channelId}`, { until: 0, queued: false });

@@ -16,6 +16,8 @@ async function readyWorld(): Promise<World> {
   const w = world();
   await toReady(w);
   w.routes.postKeyPackages.mockClear();
+  // Unknown by default, so a retry publishes from the count it was started with; tests that read a count set their own.
+  w.routes.getKeyPackageCount.mockResolvedValue(null);
   vi.useFakeTimers();
   return w;
 }
@@ -58,6 +60,34 @@ describe('a failed publish is recorded and retried with backoff', () => {
     expect(w.routes.postKeyPackages).toHaveBeenCalledTimes(4);
     await settle(1);
     expect(w.routes.postKeyPackages).toHaveBeenCalledTimes(5);
+  });
+
+  it('a ready during the backoff neither publishes nor cancels the pending retry', async () => {
+    const w = await readyWorld();
+    w.routes.postKeyPackages.mockImplementation(() => Promise.reject(refusal(500, 'E_INTERNAL')));
+    ready(w, 1);
+    await settle();
+    expect(w.routes.postKeyPackages).toHaveBeenCalledTimes(1);
+    await settle(1_000);
+    ready(w, 1);
+    await settle(1_000);
+    ready(w, 1);
+    await settle(2_999);
+    expect(w.routes.postKeyPackages).toHaveBeenCalledTimes(1);
+    await settle(1);
+    expect(w.routes.postKeyPackages).toHaveBeenCalledTimes(2);
+  });
+
+  it('a retry asks the server first: a lost-response success is not published again', async () => {
+    const w = await readyWorld();
+    w.routes.postKeyPackages.mockImplementationOnce(() => Promise.reject(refusal(502, 'E_NETWORK')));
+    ready(w, 0);
+    await settle();
+    expect(diag(w)?.lastError).toBe('E_NETWORK');
+    w.routes.getKeyPackageCount.mockResolvedValue({ ordinary: 32, fallback: true });
+    await settle(5_000);
+    expect(w.routes.postKeyPackages).toHaveBeenCalledTimes(1);
+    expect(diag(w)).toMatchObject({ count: 32, lastError: null });
   });
 
   it('the retry stops when the session ends', async () => {
@@ -161,6 +191,27 @@ describe('the first batch of a new device', () => {
     expect(w.core.keyPackages).toHaveBeenCalledWith(32, true);
   });
 
+  it('a recovery-key enrolment whose publish fails still signs in, shows the refusal and retries', async () => {
+    const w = world({ phase: 0 });
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()?.phase).toBe('needs-signup'));
+    w.call(2, { m: 'signInBegin' });
+    await vi.waitFor(() => expect(w.ret(2)).toBeDefined());
+    w.call(3, { m: 'signInLogin', username: ' web ', password: PASSWORD });
+    await vi.waitFor(() => expect(w.ret(3)).toBeDefined());
+    w.routes.postKeyPackages.mockImplementationOnce(() => Promise.reject(refusal(403, 'E_FORBIDDEN')));
+    w.routes.getKeyPackageCount.mockResolvedValue(null);
+    vi.useFakeTimers();
+    w.call(4, { m: 'signInKey', recoveryKey: RECOVERY_KEY });
+    await settle(100);
+    expect(w.ret(4)).toEqual({ t: 'ret', id: 4, ok: true, value: null });
+    expect(w.account()?.phase).toBe('ready');
+    expect(diag(w)).toMatchObject({ lastError: 'E_FORBIDDEN' });
+    await settle(5_000);
+    expect(w.routes.postKeyPackages).toHaveBeenCalledTimes(2);
+    expect(diag(w)).toMatchObject({ lastError: null, count: 32 });
+  });
+
   it('a signup that cannot publish still reaches ready, shows the refusal and retries', async () => {
     const w = world({ phase: 0 });
     w.call(1, { m: 'start' });
@@ -168,6 +219,7 @@ describe('the first batch of a new device', () => {
     w.call(2, { m: 'signupBegin' });
     await vi.waitFor(() => expect(w.account()?.phase).toBe('signup-keys'));
     w.routes.postKeyPackages.mockImplementationOnce(() => Promise.reject(refusal(403, 'E_FORBIDDEN')));
+    w.routes.getKeyPackageCount.mockResolvedValue(null);
     vi.useFakeTimers();
     w.call(3, SUBMIT);
     await settle(100);
