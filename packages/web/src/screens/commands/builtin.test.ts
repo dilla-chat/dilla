@@ -316,6 +316,15 @@ describe('builtin handler safety regressions', () => {
     expect(core.callsOf('kickMember')).toEqual([{ m: 'kickMember', communityId: cid, userId: target }]);
   });
 
+  it('passes a ban\'s reason on to banMember (kick has no reason to pass)', async () => {
+    const core = authorizedCore({ targetRolePosition: 1, myRolePosition: 4, ban: true });
+    const target = '66'.repeat(16), cid = context.binding.communityId!;
+    core.handler = () => Promise.resolve(null);
+    const result = await builtinHandlers.ban!({ commandId: 'ban', args: { user: target, duration: '1d', reason: 'spam' } }, { ...context, client: core });
+    expect(result.status).toBe('success');
+    expect(core.callsOf('banMember')).toEqual([{ m: 'banMember', communityId: cid, userId: target, reason: 'spam', seconds: 86_400 }]);
+  });
+
   it('rechecks moderation permission after confirmation and makes no call if it changed', async () => {
     const core = authorizedCore({ targetRolePosition: 1, myRolePosition: 4, kick: true });
     const cid = context.binding.communityId!, target = '66'.repeat(16);

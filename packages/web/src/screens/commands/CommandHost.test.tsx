@@ -341,8 +341,9 @@ it.each([['kick', false], ['kick', true], ['ban', false], ['ban', true]] as cons
   expect(within(dialog).getByText('Duration').parentElement).toHaveTextContent(action === 'kick' ? /^Duration—$/ : /^Duration1 day$/);
   expect(within(dialog).getByText('Reason').parentElement).toHaveTextContent(/^Reasonnone given$/);
   expect(within(dialog).getByText('Logged').parentElement).toHaveTextContent(/^Loggedmodlog · visible to moderators$/);
-  // Parity sweep 2026-11-05 (Jonas): kick has the prototype's optional "reason?" chip behind the confirm, as ban does.
-  expect(screen.getByRole('textbox', { name: 'reason' })).toHaveAttribute('placeholder', 'optional');
+  // Jonas, 2026-11-05: kick records no reason, so its composer has no "reason?" chip; ban keeps it.
+  if (action === 'kick') expect(screen.queryByRole('textbox', { name: 'reason' })).not.toBeInTheDocument();
+  else expect(screen.getByRole('textbox', { name: 'reason' })).toHaveAttribute('placeholder', 'optional');
   expect(privateResults(core, ':', `${'55'.repeat(16)}/${'44'.repeat(16)}/`).rows()).toHaveLength(0);
   if (accepted) {
     const confirm = screen.getByRole('button', { name: label });
