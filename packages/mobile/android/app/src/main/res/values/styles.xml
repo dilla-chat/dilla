@@ -17,9 +17,9 @@
 
 
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
-        <item name="android:background">@drawable/splash</item>
-        <!-- Android 12+ draws its own splash: the dilla glyph on the icon gradient's base colour. -->
-        <item name="windowSplashScreenBackground">#005799</item>
-        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_foreground</item>
+        <!-- The web boot screen's background with its 20dp brand tile, so launch hands off without a flash. Theme.SplashScreen
+             draws these on every API level (its window background below Android 12), so no stretched drawable/splash. -->
+        <item name="windowSplashScreenBackground">#08090B</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_mark</item>
     </style>
 </resources>

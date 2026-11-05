@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" width="20" height="20">
+  <!-- The boot screen's brand tile (@dilla/ui BrandMark, .d-brand__tile at size page): 20px, radius 4px (token r-sm), fill token brand,
+       a bold JetBrains Mono "D" at 12px (token text-ui) in token brand-ink, line-height 1, centred. The glyph is JetBrains Mono wght 700. -->
+  <rect width="20" height="20" rx="4" fill="#005799"/>
+  <path transform="translate(6.4 14.32) scale(0.012 -0.012)" fill="#FFFFFF" d="M75 0V730H292.1Q366 730 420.5 701.8Q474.9 673.7 505.1 622.6Q535.4 571.6 535.4 502.2V228.8Q535.4 160 505.1 108.5Q474.9 56.9 420.5 28.5Q366 0 292.1 0ZM200.1 115.1H292.1Q346.4 115.1 378.4 145.7Q410.3 176.2 410.3 228.8V502.2Q410.3 553.8 378.4 584.3Q346.4 614.9 292.1 614.9H200.1Z"/>
+</svg>
