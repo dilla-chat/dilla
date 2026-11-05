@@ -27,7 +27,13 @@ kvm)
   echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
   sudo udevadm control --reload-rules
   sudo udevadm trigger --name-match=kvm
-  test -r /dev/kvm -a -w /dev/kvm || { echo "ci-android: /dev/kvm is not usable on this runner" >&2; exit 1; }
+  # udev applies the rule asynchronously: wait for it, then set the mode directly if it still has not landed.
+  sudo udevadm settle --timeout=30 || true
+  if [ -e /dev/kvm ] && { ! [ -r /dev/kvm ] || ! [ -w /dev/kvm ]; }; then sudo chmod 0666 /dev/kvm 2>/dev/null || true; fi
+  test -r /dev/kvm -a -w /dev/kvm || {
+    echo "ci-android: /dev/kvm is not usable on this runner: $(ls -l /dev/kvm 2>&1)" >&2
+    exit 1
+  }
   ;;
 sdk)
   # `yes` ends on SIGPIPE once sdkmanager stops reading, which pipefail would report: only sdkmanager's status counts.
