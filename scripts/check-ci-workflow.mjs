@@ -1219,6 +1219,7 @@ export function checkReleaseWorkflow(root) {
   const ci = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
   const problems = [];
   const lines = text.split('\n');
+  checkGoModuleDownloads(splitJobs(text), problems, file);
 
   lines.forEach((line, i) => {
     checkActionReference(line, file, i + 1, problems);

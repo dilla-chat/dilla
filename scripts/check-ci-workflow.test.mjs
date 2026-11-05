@@ -2930,3 +2930,9 @@ test('the macOS installer build retries only the stapling errors', () => {
     assert.ok(checkDesktopWorkflow(root).some((p) => p.includes('macOS-only step through retry-on.mjs')));
   }
 });
+
+test('every release Go job downloads its modules through the retry wrapper', () => {
+  const step = /      - name: Download Go modules \(retried only on known network errors\)\n        run: [^\n]*\n/;
+  assert.match(REAL_RELEASE, step);
+  assertReported(releaseProblems((r) => r.replace(step, '')), 'must run exactly one retried "go mod download" step');
+});
