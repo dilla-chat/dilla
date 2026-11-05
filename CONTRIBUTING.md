@@ -117,5 +117,6 @@ that concluded `failure`, when at least one job never got a runner and no job re
 is never re-run.
 
 A release needs a green push run of its own workflow on main for the tagged commit: `desktop` for the desktop release
-(`packages/desktop/RELEASING.md`), `server` for `release.yml` (`scripts/server-release-gate.mjs`). A `v*` tag on a main
+(`packages/desktop/RELEASING.md`), `server` for `release.yml` (`scripts/server-release-gate.mjs`, which waits up to
+60 minutes for the commit's `server` run while it is still queued or in progress). A `v*` tag on a main
 commit from before this change runs that commit's own `release.yml`, which has no server gate.
