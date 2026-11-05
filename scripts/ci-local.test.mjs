@@ -187,6 +187,8 @@ test('if: expressions of the forms ci.yml uses', () => {
   assert.equal(evalIf(null, { ...ctx, failed: true }), false);
   assert.equal(evalIf('failure()', { ...ctx, failed: true }), true);
   assert.equal(evalIf('failure()', ctx), false);
+  assert.equal(evalIf("failure() && hashFiles('e2e/test-results/**') != ''", { ...ctx, failed: true }), true);
+  assert.equal(evalIf("failure() && hashFiles('e2e/test-results/**') != ''", ctx), false);
   assert.equal(evalIf("needs.changes.outputs.go != 'false'", { ...ctx, failed: true }), false);
   assert.throws(() => evalIf("github.ref == 'refs/heads/main'", ctx), /unmapped if:/);
 });

@@ -290,7 +290,7 @@ test('every macOS Electron consumer seals its npm runtime immediately after inst
 });
 
 test('native failure diagnostics run only after a successful desktop build', () => {
- const guard="if: failure() && steps.desktop-build.outcome == 'success'";
+ const guard="if: failure() && steps.desktop-build.outcome == 'success' && hashFiles('packages/desktop/test-results/**') != ''";
  const before=`${guard}\n        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\n        with:\n          name: desktop-failure-`;
  assert.ok(REAL_DESKTOP.includes(before)); assert.deepEqual(checkDesktopWorkflow(REPO_ROOT),[]);
  for(const replacement of ['failure()', "failure() && steps.desktop-build.outcome != 'success'", 'always()']) {
@@ -640,7 +640,7 @@ ${spec.engine === 'firefox' && spec.suite !== 'core' ? '      - run: sh scripts/
         env:
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
+        if: failure() && hashFiles('e2e/test-results/**') != ''
         with:
           name: browser-web-results-${job}
           path: e2e/test-results
@@ -833,7 +833,7 @@ ${goShardMatrix('go')}    steps:
           DILLA_MEDIA_SFU_AV1: '1'
           DILLA_TESTKIT: \${{ github.workspace }}/artifacts/dilla-testkit
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
+        if: failure() && hashFiles('e2e/test-results/**') != ''
         with:
           name: browser-media-results
           path: e2e/test-results
@@ -1798,7 +1798,7 @@ for (const [job, needle] of [
     [job, `npx playwright install --with-deps ${spec.engine}`],
     [job, browserSuiteCommand(spec)],
     [job, 'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit'],
-    [job, 'if: failure()'],
+    [job, "if: failure() && hashFiles('e2e/test-results/**') != ''"],
     [job, `name: browser-web-results-${job}`],
     [job, 'path: e2e/test-results'],
   ]),
@@ -2878,4 +2878,20 @@ test('release-keys.mjs importing a non-node module or adding a tag policy is rep
 test('other workflows naming the sign job script or chaining on desktop release request are reported', () => {
   reported({ '.github/workflows/release.yml': text => text + '\n# node packages/desktop/scripts/release-sign-job.mjs\n' }, 'sign script');
   reported({ '.github/workflows/sneaky.yml': () => "name: sneaky\non:\n  workflow_run:\n    workflows: ['desktop release request']\n    types: [completed]\npermissions: {}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo\n" }, 'workflow_run chain');
+});
+
+// A failure-evidence upload of a step that wrote no files adds a second, misleading error ("No files were
+// found with the provided path"); the guard makes the upload run only when its evidence exists.
+test('a failure-evidence upload without a hashFiles guard is reported', () => {
+  assert.deepEqual(checkWorkflow(REPO_ROOT), []);
+  assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
+  for (const [file, text, check] of [['ci.yml', REAL_CI, checkWorkflow], ['desktop.yml', REAL_DESKTOP, checkDesktopWorkflow]]) {
+    const guards = [...text.matchAll(/if: failure\(\)[^\n]*hashFiles\([^\n]*/g)].map(m => m[0]);
+    assert.ok(guards.length > 0, file);
+    for (const guard of guards) {
+      const root = fixture(GOOD);
+      writeFileSync(join(root, '.github/workflows', file), text.replace(guard, guard.replace(/ && hashFiles\(.*$/, '')));
+      assert.ok(check(root).some(p => p.includes('hashFiles') && p.includes('failure-evidence')), `${file}: ${guard}`);
+    }
+  }
 });

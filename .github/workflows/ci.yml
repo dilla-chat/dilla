@@ -498,7 +498,7 @@ jobs:
           DILLA_MEDIA_SFU_AV1: '1'
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
+        if: failure() && hashFiles('e2e/test-results/**') != ''
         with:
           name: browser-media-results
           path: e2e/test-results
@@ -728,7 +728,7 @@ jobs:
           DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
       # upload-artifact v4+ refuses a second artifact of the same name in one run: one name per job.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure()
+        if: failure() && hashFiles('e2e/test-results/**') != ''
         with:
           name: browser-web-results-core-integration
           path: e2e/test-results

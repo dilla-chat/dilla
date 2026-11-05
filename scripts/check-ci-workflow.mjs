@@ -141,7 +141,7 @@ function browserWebSteps(job, spec) {
     browserSuiteCommand(spec),
     // The suite step's own env and (for Firefox) the audio server are checked as steps, not as substrings: checkSuiteSteps.
     TESTKIT_ENV,
-    'if: failure()',
+    "if: failure() && hashFiles('e2e/test-results/**') != ''",
     // upload-artifact v4+ refuses a duplicate name within a run: one artifact name per job.
     `name: browser-web-results-${job}`,
     'path: e2e/test-results',
@@ -256,7 +256,7 @@ const REQUIRED_STEPS = {
     'bash scripts/install-ci-tool.sh wasm-bindgen',
     'bash scripts/install-ci-tool.sh wasm-pack',
     'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7',
-    'if: failure()',
+    "if: failure() && hashFiles('e2e/test-results/**') != ''",
     'name: browser-media-results',
     'path: e2e/test-results',
     'if-no-files-found: error',
@@ -525,6 +525,12 @@ function assertEveryUploadFailsOnNoFiles(text, problems, file = 'ci.yml') {
     const step = lines.slice(start, end).join('\n');
     if (!/if-no-files-found:\s*error/.test(step)) {
       problems.push(`${file}:${i + 1}: actions/upload-artifact without "if-no-files-found: error" — CI is fail-closed`);
+    }
+    // Failure evidence is uploaded only when it exists: a step that fails before writing any file would
+    // otherwise add a second, misleading "No files were found" error to the real one.
+    const condition = /^\s*(?:- )?if:\s*(failure\(\).*)$/m.exec(step)?.[1];
+    if (condition !== undefined && !/&&\s*hashFiles\('[^']+'(?:,\s*'[^']+')*\)\s*!=\s*''\s*$/.test(condition)) {
+      problems.push(`${file}:${i + 1}: failure-evidence actions/upload-artifact without a hashFiles(...) != '' guard — it would add a misleading "No files were found" error`);
     }
   }
 }
@@ -1406,7 +1412,7 @@ node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs pac
     if(jobSteps(body(job)).filter(step=>step.join('\n')===expected).length!==1)problems.push(`${file}: installed sandbox requires exact job-selected initial prerequisite proof upload for ${job}`);
   }
   const desktopBuild = nativeSteps.findIndex(step=>step.includes('id: desktop-build') && step.includes('run: npm run build -w @dilla/desktop -- --existing-client'));
-  const failureUpload = `if: failure() && steps.desktop-build.outcome == 'success'
+  const failureUpload = `if: failure() && steps.desktop-build.outcome == 'success' && hashFiles('packages/desktop/test-results/**') != ''
 uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
 with:
 name: desktop-failure-\${{ matrix.platform }}-\${{ matrix.arch }}

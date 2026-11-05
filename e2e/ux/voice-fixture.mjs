@@ -7,7 +7,7 @@ export async function waitForVoiceJoin(page, { timeout = 60_000, joinLabel = 'Jo
   let phase = 'not mounted';
   while (Date.now() < deadline) {
     if (await stage.isVisible().catch(() => false)) {
-      phase = await stage.getAttribute('data-call-phase', { timeout: Math.max(1, deadline - Date.now()) });
+      phase = await stage.getAttribute('data-call-phase', { timeout: Math.max(1_000, deadline - Date.now()) });
       // The dock is intentionally hidden/collapsed while the full stage is open.
       // Its connected state is authoritative even when it has no painted box.
       if (phase === 'in' && await page.locator('.d-voice-dock[data-phase="connected"]').count() > 0) return;

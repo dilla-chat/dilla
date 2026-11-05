@@ -371,7 +371,7 @@ jobs:
           name: desktop-validation-${{ matrix.platform }}-${{ matrix.arch }}
           path: packages/desktop/test-report
           if-no-files-found: error
-      - if: failure() && steps.desktop-build.outcome == 'success'
+      - if: failure() && steps.desktop-build.outcome == 'success' && hashFiles('packages/desktop/test-results/**') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-failure-${{ matrix.platform }}-${{ matrix.arch }}
@@ -472,7 +472,7 @@ jobs:
           # artifact (its file set is checked exactly).
           path: packages/desktop/test-report/performance-${{ matrix.platform }}-${{ matrix.arch }}.json
           if-no-files-found: error
-      - if: failure()
+      - if: failure() && hashFiles('e2e/desktop-voice-results/**/autoplay-*.json', 'e2e/desktop-voice-results/**/signal-lifecycle.json', 'e2e/desktop-voice-results/**/mac-native-notification-*.json') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-voice-diagnostics-${{ matrix.platform }}-${{ matrix.arch }}
@@ -481,7 +481,7 @@ jobs:
             e2e/desktop-voice-results/**/signal-lifecycle.json
             e2e/desktop-voice-results/**/mac-native-notification-*.json
           if-no-files-found: error
-      - if: failure()
+      - if: failure() && hashFiles('e2e/desktop-voice-results/**', 'e2e/desktop-voice-report/**', 'e2e/performance-results-browser/**', 'e2e/performance-results-desktop/**') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-voice-failure-${{ matrix.platform }}-${{ matrix.arch }}
@@ -587,7 +587,7 @@ jobs:
           name: desktop-installed-account-${{ matrix.platform }}-${{ matrix.arch }}
           path: packages/desktop/test-report/installed-account-${{ matrix.platform }}-${{ matrix.arch }}.json
           if-no-files-found: error
-      - if: failure()
+      - if: failure() && hashFiles('e2e/desktop-client-results/**/error-context.md', 'e2e/desktop-client-results/**/signal-lifecycle.json', 'e2e/desktop-client-results/**/installed-startup-diagnostics.json', 'e2e/test-results/testhost-*.log') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-client-diagnostics-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}
@@ -597,7 +597,7 @@ jobs:
             e2e/desktop-client-results/**/installed-startup-diagnostics.json
             e2e/test-results/testhost-*.log
           if-no-files-found: error
-      - if: failure()
+      - if: failure() && hashFiles('e2e/desktop-client-results/**', 'e2e/desktop-client-report/**') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-client-failure-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}

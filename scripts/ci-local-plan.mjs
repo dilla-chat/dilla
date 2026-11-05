@@ -161,6 +161,8 @@ const IF_ATOMS = [
   [/^failure\(\)$/, (m, ctx) => ctx.failed === true],
   [/^success\(\)$/, (m, ctx) => ctx.failed !== true],
   [/^always\(\)$/, () => true],
+  // An upload's evidence guard. There is no runner workspace to hash here; the upload step itself reports a missing path.
+  [/^hashFiles\('[^']+'(?:, '[^']+')*\) != ''$/, () => true],
   [/^steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+) != 'true'$/, (m, ctx) => ctx.steps?.[m[1]]?.[m[2]] !== 'true'],
   [/^steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+) == 'true'$/, (m, ctx) => ctx.steps?.[m[1]]?.[m[2]] === 'true'],
   [/^contains\(needs\.\*\.result, '(failure|cancelled)'\)$/, (m, ctx) => (ctx.needResults ?? []).includes(m[1])],
