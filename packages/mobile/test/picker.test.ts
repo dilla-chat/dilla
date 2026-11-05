@@ -27,7 +27,8 @@ test('https://chat.example is accepted, stored once, and becomes current', async
 });
 
 test('incomplete or non-HTTPS addresses are rejected with the desktop copy and nothing is stored', async () => {
-  for (const input of ['http://x', 'https://x/path', 'https://x?q', 'x', 'https://u:p@x', 'https://x#f', 'https://x.', '']) {
+  // IP literals too, as the core worker's gate (client-core worker/instance-url.ts) refuses them.
+  for (const input of ['http://x', 'https://x/path', 'https://x?q', 'x', 'https://u:p@x', 'https://x#f', 'https://x.', '', 'https://10.0.2.2:18443', 'https://127.0.0.1', 'https://[::1]', 'https://0x7f.1']) {
     const store = memory();
     await assert.rejects(addInstance(store, input), { message: CONNECT_ERROR }, input);
     assert.deepEqual(await listInstances(store), [], input);

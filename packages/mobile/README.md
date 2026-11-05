@@ -12,14 +12,17 @@ A Capacitor 8.6 shell around the bundled `@dilla/web` client. The app ships the 
   Custom Tabs) opens `/desktop-auth/<id>`, and the app polls over **native HTTP** (`CapacitorHttp`), which sends no
   `Origin` header. `/desktop-auth/` refuses any foreign Origin, so the WebView's own `fetch` cannot be used there.
 - The instance picker (`src/picker.html`, `src/picker.ts`) keeps `instances` and `current` in `@capacitor/preferences`.
-  Instances are HTTPS origins (no base path), validated with a copy of desktop's `canonicalInstance`.
+  Instances are HTTPS origins with a DNS name (no base path, no IP literal), validated with a copy of desktop's
+  `canonicalInstance`.
+- All instances share the app's one origin, so the core worker keys each instance's OPFS store, KEK record and leader
+  lock on `SHA-256(instance URL, 0x00, instanceId)` (client-core `worker/storage-key.ts`), never on the instanceId alone.
 - CSP (a `<meta>` in every page): desktop's policy with `'self'` for the local assets. Capacitor's native bridge
   is injected as a document-start script, which page CSP does not govern.
 
 ## Commands
 
 ```sh
-npm run build -w @dilla/mobile        # builds @dilla/web, then dist/ (CSP, mobile-bridge.js, picker, manifest)
+npm run build -w @dilla/mobile        # builds @dilla/web with __DILLA_MOBILE__ into .web-build/, then dist/ (CSP, bridge, picker, manifest)
 npx cap sync                          # from packages/mobile: copies dist/ into ios/ and android/
 npm test -w @dilla/mobile             # unit tests (browser-auth, picker, build, native project settings)
 npm run typecheck -w @dilla/mobile
@@ -106,8 +109,9 @@ emulator it started running). It needs `target/dilla-testhost` (`go build -o tar
 debuggable `google_apis` image with Chrome (it uses `adb root` to install a throwaway CA as a user CA, and Chrome's
 debug command-line file to skip Chrome's first run).
 
-It starts two test hosts behind HTTPS proxies reachable from the emulator at `https://10.0.2.2:18443/` and
-`https://10.0.2.2:18444/`, installs a fresh debug APK, and through Playwright's Android driver (the WebView DevTools
+It starts two test hosts behind HTTPS proxies reachable from the emulator at `https://a.10-0-2-2.sslip.io:18443/` and
+`https://b.10-0-2-2.sslip.io:18444/` (the app refuses IP literals, so sslip.io's wildcard DNS names 10.0.2.2, this
+machine as the emulator sees it; the run needs that DNS lookup to work), installs a fresh debug APK, and through Playwright's Android driver (the WebView DevTools
 socket): adds instance A in the picker, signs up, joins a native peer's server and sees the peer's message (and the peer
 sees the reply); adds instance B and signs up there; checks that browser sign-in goes out over native HTTP with no
 Origin and opens Custom Tabs; sends the app to the background for 120 s while the peer posts, resumes and sees it;

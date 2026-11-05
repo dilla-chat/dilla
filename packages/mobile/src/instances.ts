@@ -25,12 +25,15 @@ export function canonicalInstance(input: string, allowLoopback = false): string 
   return url.href;
 }
 
-/** A phone instance is an origin: the server's mobile CORS covers /v1/ and /i/ at the root only
+/** A phone instance is an HTTPS origin with a DNS name: the server's mobile CORS covers /v1/ and /i/ at the root only
  *  (internal/dillad/server.go mobileCORS), so an instance under a base path could not be reached from the app. */
 export function mobileInstance(input: string): string {
   let instance: string;
   try { instance = canonicalInstance(input.trim()); } catch { throw new Error(CONNECT_ERROR); }
-  if (new URL(instance).pathname !== '/') throw new Error(CONNECT_ERROR);
+  const url = new URL(instance);
+  // An origin with a DNS name, as the core worker's gate requires (client-core worker/instance-url.ts): no IP literal
+  // (IPv4 in any form parses to a dotted quad, IPv6 to a [bracketed] host).
+  if (url.pathname !== '/' || url.hostname.startsWith('[') || /^\d{1,3}(\.\d{1,3}){3}$/.test(url.hostname)) throw new Error(CONNECT_ERROR);
   return instance;
 }
 
