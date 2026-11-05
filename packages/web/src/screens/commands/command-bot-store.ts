@@ -1,5 +1,5 @@
 // The Bot's command list, kept per community outside any component: a picker closing or a CommandHost unmounting
-// must not discard a load (it takes 4-6 s: status, an encrypted op-3 request and the Bot's reply, status again).
+// must not discard a load (it takes 4-6 s: status, an op-3 request over the interaction group and the Bot's reply, status again).
 // A community's list loads when its composer mounts and refreshes every 30 s while it stays mounted. A failed load never
 // replaces the last good list; it is recorded in Diagnostics (E_BOT_CAPABILITIES) and the next refresh retries. A failure with
 // no good list yet (a page just reloaded) retries sooner, at 2 s, 5 s and 10 s, and the picker keeps saying it is loading
