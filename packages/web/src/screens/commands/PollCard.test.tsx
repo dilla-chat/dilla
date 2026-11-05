@@ -33,7 +33,9 @@ describe('Signal poll adapter', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000); }); expect(f.pollGet).toHaveBeenCalledTimes(3);
       await act(async () => { await vi.advanceTimersByTimeAsync(10_000); }); expect(f.pollGet).toHaveBeenCalledTimes(4);
       await act(async () => { await vi.advanceTimersByTimeAsync(9_000); }); expect(f.pollGet).toHaveBeenCalledTimes(4);
-    } finally { vi.useRealTimers(); }
+    // Restore the spies while the fake timers are still installed: fixture() spied on window.setInterval then, and restoring
+    // afterwards would put the fake one back for every later test.
+    } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
   });
   it('single choice switches to [1] and clicking your pick withdraws []', async () => { const f = fixture(); await userEvent.click(await screen.findByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenCalledWith(expect.objectContaining({ choices: [1] }))); await userEvent.click(screen.getByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenLastCalledWith(expect.objectContaining({ choices: [] }))); });
   it('multi toggles within the set and counts distinct voters across every page', async () => { const f = fixture({ multi: true, counts: [2n, 2n] }); await userEvent.click(await screen.findByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenCalledWith(expect.objectContaining({ choices: [0, 1] }))); await userEvent.click(screen.getByRole('button', { name: /Bridge/ })); await waitFor(() => expect(f.pollVote).toHaveBeenLastCalledWith(expect.objectContaining({ choices: [1] })));  await waitFor(() => expect(screen.getByText('Open for 24 hours · pick any · 2 voters')).toBeInTheDocument()); expect(f.pollVoters).toHaveBeenCalledWith(expect.objectContaining({ option: 0, cursor: new Uint8Array([1]) })); expect(screen.queryByRole('img', { name: 'other' })).not.toBeInTheDocument(); });
