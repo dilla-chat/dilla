@@ -38,7 +38,7 @@ change them; they save as you pick them):
   it disconnects from the call, as it does when its connection ends any other way,
   and drops off the channel's list of people in voice. The next play brings it back.
 
-Until someone changes them, they are 100 and 30 minutes.
+New installations start at volume 50 and 15 minutes. An instance that already saved its settings keeps them.
 
 Join a voice channel and open the command picker by typing `/` at the start of a
 community message. Choose a music command and fill its named fields, such as the

@@ -1472,6 +1472,9 @@ them into a report.
 `E_MEDIA_MISROUTE` among them means a person's audio in a call was briefly lost in Firefox and was reconnected
 automatically: you heard them again about four seconds after they joined or came back.
 
+`E_BOT_CAPABILITIES` means the app could not load the Bot's command list for a community. It tries again by itself
+(after 2, 5 and 10 seconds, then every 30), and opening the command picker tries at once.
+
 ![Diagnostics at 390 pixels wide](screenshots/fullscreen-settings-diagnostics-phone.png)
 
 ### Typing
