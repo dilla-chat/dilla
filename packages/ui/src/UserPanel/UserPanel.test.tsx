@@ -173,6 +173,13 @@ describe('UserPanel', () => {
     expect(panelCss).toMatch(/^\.d-user-panel \{[^}]*border-top: 1px solid var\(--hairline\)/m);
     expect(panelCss).not.toContain('d-user-panel__settings');
   });
+  // Parity sweep 2026-11-05: the prototype's menu is 230px outside (220px rows), 7px above the block, the current row filled.
+  it('draws the status menu 230px wide, 7px above the block, with the current row in the active fill', () => {
+    const popup = /\.d-user-panel__menu \.d-action-menu__popup \{([^}]*)\}/.exec(panelCss)?.[1] ?? '';
+    expect(popup).toMatch(/width: 230px;/);
+    expect(popup).toMatch(/margin-bottom: 7px;/);
+    expect(panelCss).toMatch(/\.d-action-menu__item\[aria-checked="true"\]:not\(:hover, :focus-visible\) \{ background: var\(--hover\); \}/);
+  });
 
   it.each(Object.keys(themes))('passes axe at its default story args in %s', async theme => {
     document.documentElement.dataset.theme = theme;

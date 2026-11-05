@@ -430,12 +430,12 @@ describe('SettingsFrame bar and footer (I8, R17)', () => {
     expect(css).not.toMatch(/section > h2:first-child/);
   });
 
-  it('draws the close button as a 34px circle that turns 90° on hover, with ESC under it except on a phone', () => {
+  it('draws the close button as a 36px circle that turns 90° on hover, with ESC under it except on a phone', () => {
     render(<SettingsFrame {...props()} />);
     const close = screen.getByRole('button', { name: 'Close settings' });
     expect(close).toHaveAttribute('aria-keyshortcuts', 'Escape');
     expect(close.querySelector('.d-settings-frame__close-key')).toHaveAttribute('aria-hidden', 'true');
-    expect(rule(css, '.d-settings-frame__close-ring')).toMatch(/width: 34px; height: 34px;/);
+    expect(rule(css, '.d-settings-frame__close-ring')).toMatch(/width: 36px; height: 36px;/);
     expect(rule(css, '.d-settings-frame__close:hover .d-settings-frame__close-ring')).toMatch(/transform: rotate\(90deg\);/);
     expect(rule(css, '.d-settings-frame[data-layout="phone"] .d-settings-frame__close-key')).toMatch(/display: none;/);
   });

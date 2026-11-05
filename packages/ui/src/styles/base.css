@@ -122,11 +122,11 @@
    overlay drawer AppShell.css declares. A shell without an aside never gets the --aside class, so its grid is unchanged. */
 @container d-shell (min-width: 64rem) {
   /* Signal (README §5.1): the aside's column is `auto`; the aside sets its own width, 232 (members) or 340 (thread) unless
-     dragged, and animates it from and to 0 over --duration-aside. Its body keeps the open width, so text never reflows. */
+     dragged, plus its 1px left edge (the prototype's aside is content-box: 233 / 341 outside, so main is 747 at 1280), and animates it from and to 0 over --duration-aside. Its body keeps the open width, so text never reflows. */
   .d-app-shell .d-app-shell__grid--aside { grid-template-columns: var(--rail-w) var(--d-sidebar-w, var(--sidebar-w)) minmax(0, 1fr) auto; grid-template-areas: "topbar topbar topbar topbar" "banner banner banner banner" "rail sidebar main aside" "rail panel main aside"; }
   .d-app-shell .d-app-shell__aside {
     --d-aside-open: var(--d-aside-w, var(--members-w));
-    position: relative; grid-area: aside; box-sizing: border-box; display: flex; flex-direction: column; width: var(--d-aside-open); min-height: 0; min-width: 0;
+    position: relative; grid-area: aside; box-sizing: border-box; display: flex; flex-direction: column; width: calc(var(--d-aside-open) + 1px); min-height: 0; min-width: 0;
     z-index: auto; box-shadow: none; overflow: hidden;
     transition: width var(--duration-aside) var(--ease-out), border-left-width var(--duration-aside) var(--ease-out), visibility 0s;
   }
@@ -134,7 +134,7 @@
   /* The body follows the aside's width and clips its scroller by overflow (Task 6 fix round 3: a clip-path here also clipped the
      fixed-position profile card that opens from a member row, and main took its clicks). The scroller keeps the open width. */
   .d-app-shell .d-app-shell__aside[data-open] > .d-app-shell__aside-body { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
-  .d-app-shell .d-app-shell__aside-body > .d-app-shell__aside-scroll { flex: 1; flex-shrink: 0; width: calc(var(--d-aside-open) - 1px); min-height: 0; overflow-y: auto; }
+  .d-app-shell .d-app-shell__aside-body > .d-app-shell__aside-scroll { flex: 1; flex-shrink: 0; width: var(--d-aside-open); min-height: 0; overflow-y: auto; }
   /* With a splitter the aside lets it hang 12px over its left edge; the body still clips on the right while it animates. */
   .d-app-shell .d-app-shell__aside[data-resizable] { overflow: visible; }
   /* Closed: 0 wide, and hidden once the width has gone (inert from the start), so it is neither read nor focusable. */

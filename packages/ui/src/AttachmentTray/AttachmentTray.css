@@ -1,6 +1,7 @@
-/* §6.8 (task 7): the prototype's tray. A scrolling row of 84px cards on bg-3 in the hairline-2 line, radius 8px. */
+/* §6.8 (task 7): the prototype's tray. A scrolling row of 84px cards on bg-3 in the hairline-2 line, radius 8px. The prototype's cards are content-box: 112x84 (200 wide for a file)
+   inside the 1px line, so 114x86 (202) outside; the parity sweep measured the app's border-box cards 2px small. */
 .d-attachment-tray { display: flex; gap: 0.5rem; overflow-x: auto; margin: 0; padding: 0 0 0.5rem; list-style: none; }
-.d-attachment-tray__item { position: relative; flex: none; width: 12.5rem /* 200px */; height: 5.25rem /* 84px */; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden;
+.d-attachment-tray__item { position: relative; flex: none; width: 12.5rem /* 200px */; height: 5.25rem /* 84px */; box-sizing: content-box; display: flex; flex-direction: column; overflow: hidden;
   background: var(--bg-3); border: 1px solid var(--hairline-2); border-radius: var(--r-lg); animation: d-up var(--duration-toggle) both; }
 .d-attachment-tray__item:is([data-kind="image"], [data-kind="gif"]) { width: 7rem /* 112px */; }
 .d-attachment-tray__item[data-failed="true"] { border-color: var(--danger-line); }

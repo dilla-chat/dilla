@@ -21,7 +21,7 @@ describe('AppShell grid areas', () => {
   });
   it('the aside is the fourth (auto) column and sets its own width: 232 (members) or 340 (thread) unless dragged', () => {
     expect(base).toMatch(/\.d-app-shell__grid--aside \{[^}]*minmax\(0, 1fr\) auto;[^}]*grid-template-areas: "topbar topbar topbar topbar" "banner banner banner banner" "rail sidebar main aside" "rail panel main aside";/);
-    expect(base).toMatch(/\.d-app-shell \.d-app-shell__aside \{[^}]*--d-aside-open: var\(--d-aside-w, var\(--members-w\)\);[^}]*width: var\(--d-aside-open\);/);
+    expect(base).toMatch(/\.d-app-shell \.d-app-shell__aside \{[^}]*--d-aside-open: var\(--d-aside-w, var\(--members-w\)\);[^}]*width: calc\(var\(--d-aside-open\) \+ 1px\);/);
     expect(base).toMatch(/\[data-aside="thread"\] > \.d-app-shell__aside \{ --d-aside-open: var\(--d-aside-w, var\(--thread-w\)\); \}/);
     expect(base).not.toMatch(/d-app-shell__status/);
   });
@@ -29,7 +29,7 @@ describe('AppShell grid areas', () => {
     expect(base).toMatch(/\.d-app-shell \.d-app-shell__aside \{[^}]*transition: width var\(--duration-aside\) var\(--ease-out\)/);
     expect(base).toMatch(/\.d-app-shell__aside\[data-open="false"\] \{[^}]*width: 0; border-left-width: 0; visibility: hidden;[^}]*visibility 0s linear var\(--duration-aside\);/);
     expect(base).toMatch(/@starting-style \{ \.d-app-shell \.d-app-shell__aside\[data-open="true"\] \{ width: 0; border-left-width: 0; \} \}/);
-    expect(base).toMatch(/\.d-app-shell__aside-body > \.d-app-shell__aside-scroll \{[^}]*width: calc\(var\(--d-aside-open\) - 1px\);/);
+    expect(base).toMatch(/\.d-app-shell__aside-body > \.d-app-shell__aside-scroll \{[^}]*width: var\(--d-aside-open\);/);
     // Task 6 fix round 3: nothing in the aside clips by clip-path, which would cut its fixed-position popovers (the profile card).
     expect(base).not.toMatch(/d-app-shell__aside[^{]*\{[^}]*clip-path/);
     expect(base).toMatch(/\.d-app-shell__aside\[data-open\] > \.d-app-shell__aside-body \{[^}]*overflow: hidden;/);

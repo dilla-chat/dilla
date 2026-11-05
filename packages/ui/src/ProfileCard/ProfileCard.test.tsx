@@ -268,6 +268,22 @@ describe('ProfileCard placement', () => {
     vi.restoreAllMocks();
   });
 
+  // Parity sweep 2026-11-05: the prototype places the card by the click: 14px right of the pointer, flipped to 314px left of it when
+  // it would pass the shell's edge, 24px above the pointer; so beside a members row the card overlaps the column.
+  it('places a card opened by a click as the prototype does: the pointer minus 314px and 24px, overlapping the column', () => {
+    const anchor = anchorButton();
+    vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue(rect(800, 100, 232, 44));
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(300);
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(380);
+    document.body.dispatchEvent(new MouseEvent('pointerdown', { clientX: 900, clientY: 130, bubbles: true }));
+    render(<ProfileCard {...props({ anchor })} />);
+    const card = screen.getByRole('dialog');
+    expect(card.style.left).toBe(`${900 - 300 - 14}px`);
+    expect(card.style.top).toBe('106px');
+    document.body.dispatchEvent(new MouseEvent('pointerdown', { clientX: -1, clientY: -1, bubbles: true }));
+    vi.restoreAllMocks();
+  });
+
   it('goes right of the row when there is no room on its left', () => {
     const anchor = anchorButton();
     vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue(rect(4, 100));

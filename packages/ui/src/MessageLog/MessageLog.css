@@ -1,6 +1,9 @@
 /* §5.5 (task 7): the feed. 12px above, 6px below; a channel switch fades the new log in with a 6px rise. */
 .d-message-log { height: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding: 0.75rem 0 0.375rem; background: var(--bg);
   animation: d-log-fade var(--duration-switch) both, d-log-rise var(--duration-switch-rise) var(--ease-out); }
+/* Parity sweep 2026-11-05: the newest message ends 6px above the composer, as the prototype's feed does; the last row's empty attachments
+   slot (4px margin and the grid's 1px gap) would add 5px more, so it takes no room there. */
+.d-message-log__rows > .d-message-row:last-child .d-message-row__attachments:empty { display: none; }
 @keyframes d-log-fade { from { opacity: 0; } }
 @keyframes d-log-rise { from { transform: translateY(6px); } }
 .d-message-log__earlier { align-self: center; margin-bottom: var(--group-gap); flex-shrink: 0; }

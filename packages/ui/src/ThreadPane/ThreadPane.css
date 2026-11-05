@@ -1,7 +1,7 @@
 /* A thread: a column in the shell's aside, or (data-phone) a full-screen sheet. min-width 0 so it fits the aside's width. */
 .d-thread-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; background: var(--bg-2); }
 /* Task 9, the prototype's aside head: --bar-h (44px), 0 8px 0 16px, gap 8px, a --hairline under it. */
-.d-thread-pane__head { box-sizing: border-box; display: flex; align-items: center; gap: 8px; height: var(--bar-h); min-width: 0; padding: 0 8px 0 16px; border-bottom: 1px solid var(--hairline); flex-shrink: 0; color: var(--fg); }
+.d-thread-pane__head { box-sizing: border-box; display: flex; align-items: center; gap: 8px; height: calc(var(--bar-h) + 1px) /* the prototype's 44px content-box plus its 1px rule */; min-width: 0; padding: 0 8px 0 16px; border-bottom: 1px solid var(--hairline); flex-shrink: 0; color: var(--fg); }
 .d-thread-pane__glyph { display: inline-flex; flex: none; }
 .d-thread-pane__title { flex: 1; margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-ui); font-weight: var(--weight-display); color: var(--fg); }
 .d-thread-pane__sub { flex: none; font-size: var(--text-meta); color: var(--fg-3); }
@@ -35,6 +35,8 @@
 .d-thread-pane .d-message-row__time { font-size: var(--text-micro); color: var(--fg-faint); }
 .d-thread-pane .d-message-row__body { font-size: var(--text-sm); line-height: 1.5; }
 .d-thread-pane .d-message-row__thread { display: none; }
+/* The prototype's thread is one column with a 12px gap: an empty attachments slot (4px margin and the grid's 1px gap) adds nothing (parity sweep 2026-11-05: the replies rule sat 4px low). */
+.d-thread-pane .d-message-row__attachments:empty { display: none; }
 /* The prototype's thread draws no client tag beside an author (fix round 2); a bot keeps its BOT tag. */
 .d-thread-pane .d-message-row .d-tag[data-kind="web"] { display: none; }
 /* The reply input (Ruling AL): 8px 12px 12px around a --bg-3 box in the --hairline-2 line, 8px corners, the accent › and a 30px line; no

@@ -53,6 +53,10 @@ export interface ProfileCardProps {
 }
 
 const GAP = 8;
+// The prototype places a card by the click that opened it (14px right of the pointer, 24px above it), not by the row's edge. The last
+// pointer-down is kept here; a card opened from the keyboard, or whose pointer is not on its row, is placed beside the row instead.
+let lastPointer: { x: number; y: number } | null = null;
+if (typeof document !== 'undefined') document.addEventListener('pointerdown', e => { lastPointer = { x: e.clientX, y: e.clientY }; }, true);
 /** A bot's band takes the hue of its --brand square (#005799), as the prototype's Glenn (205). */
 const BOT_HUE = 206;
 const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
@@ -129,9 +133,19 @@ export function ProfileCard({
         y = a.bottom - box.top + GAP;
         if (y + h > box.height) y = Math.max(0, a.top - box.top - GAP - h);
       } else {
-        const leftOfRow = a.left - box.left - GAP - w;
-        x = leftOfRow >= GAP ? leftOfRow : a.right - box.left + GAP;
-        y = Math.max(0, Math.min(a.top - box.top, box.height - h));
+        const p = lastPointer;
+        if (p !== null && p.x >= a.left && p.x <= a.right && p.y >= a.top && p.y <= a.bottom) {
+          // The prototype's rule: right of the pointer by 14px, else left of it; 24px above it; 8px from the shell's edges.
+          const px = p.x - box.left;
+          x = px + 14;
+          if (x + w > box.width - GAP) x = px - w - 14;
+          x = Math.max(GAP, x);
+          y = Math.max(GAP, Math.min(p.y - box.top - 24, box.height - h - GAP));
+        } else {
+          const leftOfRow = a.left - box.left - GAP - w;
+          x = leftOfRow >= GAP ? leftOfRow : a.right - box.left + GAP;
+          y = Math.max(0, Math.min(a.top - box.top, box.height - h));
+        }
       }
       const next = { x: Math.max(0, Math.min(x, box.width - w)), y };
       setAt(cur => (cur !== null && cur.x === next.x && cur.y === next.y ? cur : next));

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
@@ -319,5 +320,14 @@ describe('MessageLog', () => {
       const { container } = render(<MessageLog label="messages" emptyLabel="none" present={present(false)}><DateDivider label="Mon 19 Oct" /><p>a</p></MessageLog>);
       await expectNoAxeViolations(container);
     });
+  });
+});
+
+// Parity sweep 2026-11-05: the newest message ends 6px above the composer; the last row's empty attachments slot takes no room.
+describe('the feed\'s end', () => {
+  it('collapses the last row\'s empty attachments slot, so the log ends as the prototype\'s does', () => {
+    const css = readFileSync(`${process.cwd()}/src/MessageLog/MessageLog.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(css).toMatch(/\.d-message-log__rows > \.d-message-row:last-child \.d-message-row__attachments:empty \{ display: none; \}/);
+    expect(css).toMatch(/\.d-message-log \{[^}]*padding: 0\.75rem 0 0\.375rem;/);
   });
 });

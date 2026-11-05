@@ -184,6 +184,13 @@ describe('SearchPalette', () => {
       expect(css).toMatch(/\.d-search-palette-dialog::backdrop \{[^}]*background: var\(--scrim\)/);
     });
   });
+  // Parity sweep 2026-11-05: the prototype's results box is 380px of content + 12px of padding (content-box); .d-root is border-box.
+  it('lets the results list grow to 392px outside (the prototype\'s 380px content box and its padding)', async () => {
+    const fs = await import(/* @vite-ignore */ 'node:fs' as string) as { readFileSync(path: string, encoding: 'utf8'): string };
+    const cwd = (globalThis as unknown as { process: { cwd(): string } }).process.cwd();
+    const css = fs.readFileSync(`${cwd}/src/SearchPalette/SearchPalette.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(/\.d-search-palette__results \{([^}]*)\}/.exec(css)?.[1]).toMatch(/max-height: 392px;[^}]*padding: 6px;/);
+  });
   // J1: a result names its place, its author and its time; the footer is the prototype's "↑↓ move  ↵ open … note" (task 9).
   it('shows #channel, author and time on a result under a group heading, and the prototype footer', async () => {
     const withMeta = g([{ id: 'm1', snippet: 'lamp one', location: '#general · Mira · 14:02' }, { id: 'm2', snippet: 'lamp two', location: 'Ada' }]);

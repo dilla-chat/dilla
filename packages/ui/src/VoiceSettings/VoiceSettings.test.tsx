@@ -1,6 +1,7 @@
 import { themes } from '@dilla/design-tokens';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { axe } from 'vitest-axe';
 import { typesOrOperates, VoiceSettings, type VoiceSettingsProps } from './VoiceSettings.tsx';
@@ -277,6 +278,13 @@ describe('VoiceSettings', () => {
     rerender(<VoiceSettings {...base} agc={undefined} echo={undefined} />);
     expect(screen.queryByRole('switch', { name: 'automatic gain control' })).toBeNull();
     expect(screen.queryByRole('switch', { name: 'echo cancellation' })).toBeNull();
+  });
+
+  // Parity sweep 2026-11-05: the prototype's device select is 36px outside (the app drew 38).
+  it('draws the device selects 36px high, border included', () => {
+    const css = readFileSync(`${process.cwd()}/src/VoiceSettings/VoiceSettings.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const select = /\.d-voice-settings__select \{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(select).toMatch(/box-sizing: border-box;\s*height: 2\.25rem/);
   });
 
   it.each(Object.keys(themes))('passes axe at its default story args in %s', async theme => {
