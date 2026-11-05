@@ -7,8 +7,32 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Override point for customization after application launch.
+        // Before the scene shows the WebView: its data store never reaches a backup.
+        excludeAppDataFromBackup()
         return true
+    }
+
+    /// The Library directories that hold dilla's data: the WebView's website data (OPFS, IndexedDB: the device's keys and
+    /// messages) under WebKit, its cookies, and Application Support.
+    static let excludedFromBackup = ["WebKit", "Cookies", "Application Support"]
+
+    /// Parity with Android's allowBackup="false": the app's data is not in iCloud or Finder backups, so a restored or new
+    /// phone starts empty and signs in with the recovery key (docs/user/mobile.md). Each directory is created if missing,
+    /// so the flag is set on a fresh install before WebKit writes into it; a directory's flag covers its contents.
+    func excludeAppDataFromBackup() {
+        let files = FileManager.default
+        guard let library = files.urls(for: .libraryDirectory, in: .userDomainMask).first else { return }
+        for name in Self.excludedFromBackup {
+            var url = library.appendingPathComponent(name, isDirectory: true)
+            do {
+                try files.createDirectory(at: url, withIntermediateDirectories: true)
+                var values = URLResourceValues()
+                values.isExcludedFromBackup = true
+                try url.setResourceValues(values)
+            } catch {
+                NSLog("dilla: could not exclude Library/%@ from backup: %@", name, error.localizedDescription)
+            }
+        }
     }
 
     func applicationWillResignActive(_ application: UIApplication) {

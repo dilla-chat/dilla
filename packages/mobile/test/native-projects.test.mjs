@@ -70,3 +70,22 @@ test('iOS: the shared App scheme (CI builds -scheme App) builds the App target o
   for (const ref of refs) assert.equal(ref, target);
   assert.match(scheme, /buildForRunning = "YES"/);
 });
+
+// Final review ruling (iOS backup parity): Android sets allowBackup="false", so app data never reaches a backup and a new
+// phone signs in with the recovery key. iOS matches it: at launch, before any WebView exists, the app marks the WebView's
+// data store (Library/WebKit, Library/Cookies) and Library/Application Support as excluded from iCloud and Finder backup.
+test('Android: app data is not backed up (allowBackup="false")', () => {
+  assert.match(read('android/app/src/main/AndroidManifest.xml'), /android:allowBackup="false"/);
+});
+
+test('iOS: the WebView data store is excluded from backup at launch, before any WebView exists', () => {
+  const app = read('ios/App/App/AppDelegate.swift');
+  const launch = app.slice(app.indexOf('didFinishLaunchingWithOptions'));
+  assert.match(launch.slice(0, launch.indexOf('return true')), /excludeAppDataFromBackup\(\)/);
+  assert.match(app, /\.isExcludedFromBackup = true/);
+  assert.match(app, /setResourceValues/);
+  assert.match(app, /\.libraryDirectory/);
+  for (const dir of ['"WebKit"', '"Cookies"', '"Application Support"']) assert.ok(app.includes(dir), dir);
+  // The scene delegate (which shows the storyboard's CAPBridgeViewController and so the WebView) does not run first.
+  assert.doesNotMatch(read('ios/App/App/SceneDelegate.swift'), /isExcludedFromBackup/);
+});
