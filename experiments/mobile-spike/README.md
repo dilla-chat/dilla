@@ -130,26 +130,31 @@ Report both `DILLA_PROBE` lines verbatim, plus the `DILLA_PROBE_DETAIL` lines an
 
 A second page, reached by the "call probe" link under the capability probe's button (the `DILLA_PROBE` page and its
 contract are unchanged). "Start call" sets up a loopback of two `RTCPeerConnection`s carrying one audio track. The
-sender's encoded transform XORs every frame's payload and the receiver's reverses it: `createEncodedStreams` on
-Chromium, `RTCRtpScriptTransform` (`call-transform-worker.ts`) on WebKit, picked by the repo's `isVoiceSupported()`.
-The received audio plays through an `<audio>` element, as in a real call. Every 10 s it logs:
+sender's encoded transform prepends a 2-byte magic (`d1 1a`) and XORs the frame; the receiver XORs it back, checks and
+strips the magic, and counts `framesOk` / `framesBad` (a frame without the magic passes through unchanged). Paths:
+`createEncodedStreams` on Chromium, `RTCRtpScriptTransform` (`call-transform-worker.ts`) on WebKit, picked by the
+repo's `isVoiceSupported()`. The received audio plays through an `<audio>` element, as in a real call. Every 10 s:
 
 ```
-DILLA_CALL {"t":seconds,"framesOut":n,"framesIn":n}
+DILLA_CALL {"t":seconds,"framesOut":n,"framesIn":n,"framesOk":n,"framesBad":n,"packetsSent":n,"packetsReceived":n}
 DILLA_CALL_DETAIL {...}     # not part of the contract
 ```
 
-`DILLA_CALL_DETAIL` carries `source` (`mic` when the mic shows any signal in its first 1.5 s; otherwise
-`oscillator (...)`, a quiet 440 Hz tone, with the mic still open), `micLevel`, `visibility`, `micTrack`,
-`audioContext`, `audioPaused`, `pcState` and `at` (wall clock). Opus DTX is stripped, so 20 ms frames flow on silence
-too (about 50 per second each way). "End call" logs a final line and `DILLA_CALL_END`.
+`t` is wall-clock seconds since the call started; `packetsSent` / `packetsReceived` are getStats outbound-rtp and
+inbound-rtp. `DILLA_CALL_DETAIL` carries `source` (`mic` when the mic shows any signal in its first 1.5 s; otherwise
+`oscillator (...)`, a quiet 440 Hz tone, with the mic still open), `micLevel`, `micTrack` (`readyState`, `muted`,
+`enabled`), `visibility`, `audioContext`, `audioPaused`, `pcState`, `inboundRtp` (`audioLevel`, `concealedSamples`,
+`totalSamplesReceived`, `packetsLost`) and `at`. Opus DTX is stripped, so 20 ms frames flow on silence too (about 50
+per second each way, 500 per line). The page also lists every `DILLA_CALL` line it logged (newest first), so the
+history can be read on screen. "End call" logs a final line and `DILLA_CALL_END`.
 
 On iOS, "Start call" first calls the native `CallProbe` plugin (`ios/App/App/CallProbe.swift`, registered by
-`SpikeBridgeViewController`, which `Main.storyboard` uses): a CallKit `CXStartCallAction`, then in
-`provider(_:didActivate:)` the `AVAudioSession` is set to `.playAndRecord` / `.voiceChat` and activated, and only then
-does the page start the loopback. `Info.plist` has `UIBackgroundModes` `audio` + `voip` and `NSMicrophoneUsageDescription`.
-Native events are logged as `DILLA_CALL_NATIVE ...`. On Android there is no foreground service on purpose: the run
-measures the baseline that wave M3's ConnectionService + foreground service is meant to fix.
+`SpikeBridgeViewController`, which `Main.storyboard` uses): a CallKit `CXStartCallAction`, whose handler sets the
+`AVAudioSession` to `.playAndRecord` / `.voiceChat` and fulfills; CallKit activates the session and the plugin resolves
+in `provider(_:didActivate:)`, and only then does the page start the loopback. `Info.plist` has `UIBackgroundModes`
+`audio` + `voip` and `NSMicrophoneUsageDescription`. Native events are logged as `DILLA_CALL_NATIVE ...`. On Android
+there is no foreground service on purpose: the run measures the baseline that wave M3's ConnectionService + foreground
+service is meant to fix.
 
 ### Android emulator
 
@@ -161,6 +166,7 @@ adb shell pm grant chat.dilla.spike android.permission.RECORD_AUDIO
 adb logcat -v time > call.log &                  # keep the whole run
 # ~30 s in the foreground, then:
 adb shell input keyevent KEYCODE_HOME             # wait 5 minutes
+adb shell dumpsys audio | grep 'pack:chat.dilla.spike'   # silenced:true = the OS feeds the app silence
 adb shell monkey -p chat.dilla.spike -c android.intent.category.LAUNCHER 1
 grep 'DILLA_CALL ' call.log
 ```
@@ -170,25 +176,42 @@ grep 'DILLA_CALL ' call.log
 The CallKit Swift was written on Linux and has never been compiled; fix any build error in `CallProbe.swift` and
 report what changed.
 
+**No debugger during the lock test.** An app running under Xcode's debugger is never suspended by iOS, which would make
+the lock test meaningless. Xcode is used only to install; the run itself is launched from the home screen.
+
+One-time: on the iPhone, Settings → Apps → Safari → Advanced → Web Inspector on. On the Mac, Safari → Settings →
+Advanced → "Show features for web developers". (A Debug build of the spike has an inspectable WebView.)
+
 1. Build and install exactly as in the iPhone section above (Path B, then steps 3-6). `npx cap sync ios` is needed
-   after every `npm run build`.
-2. In Xcode's console filter (⇧⌘C), use `DILLA_CALL` (matches `DILLA_CALL`, `DILLA_CALL_DETAIL`, `DILLA_CALL_NATIVE`,
-   `DILLA_CALL_END`). Keep the phone connected and the app running from Xcode (⌘R) for the whole run so the console
-   keeps streaming; Console.app (device selected, filter `DILLA_CALL`) is the fallback.
-3. On the phone: tap "call probe", then "Start call". Allow the microphone prompt. Expect `DILLA_CALL_NATIVE start
-   fulfilled`, `DILLA_CALL_NATIVE didActivate`, `DILLA_CALL_NATIVE session AVAudioSessionCategoryPlayAndRecord /
-   AVAudioSessionModeVoiceChat`, the green call indicator in the status bar, and the first `DILLA_CALL` line with
-   `t: 0`. You should hear yourself (or a quiet tone) in the earpiece.
-4. Wait for two or three lines (30 s) in the foreground, then press the side button to lock. Note the time.
-5. Leave it locked for 5 minutes (30 lines at 10 s). Do not touch the phone.
-6. Unlock and return to the app (via the green call pill if needed). Wait for two more lines, listen whether the
-   loopback audio is back, then tap "End call".
+   after every `npm run build`. After Xcode has launched the app once, press Stop (⌘.) and swipe the app away in the
+   app switcher, so no debugger is attached.
+2. Open Console.app on the Mac, select the iPhone, press Start streaming, and filter on `DILLA_CALL_NATIVE`.
+3. Launch "dilla spike" from the home screen. Tap "call probe". On the Mac, open Safari → Develop → <iPhone> →
+   dilla spike → `call.html` and its Console tab (filter `DILLA_CALL`).
+4. Tap "Start call" and allow the microphone prompt. Expect in Console.app `DILLA_CALL_NATIVE start fulfilled` and
+   `DILLA_CALL_NATIVE didActivate session AVAudioSessionCategoryPlayAndRecord / AVAudioSessionModeVoiceChat`; on the
+   phone the green call indicator; in the Web Inspector console the first `DILLA_CALL` line with `t: 0`. You should
+   hear yourself (or a quiet tone) in the earpiece.
+5. Wait for three lines (about 30 s). Close the Web Inspector window (so it does not keep the WebView busy), then
+   press the side button to lock. Note the clock time.
+6. Leave it locked for 5 minutes. Do not touch the phone. Console.app keeps streaming the native lines.
+7. Unlock and return to the app (via the green call pill if needed). Reopen the Web Inspector (step 3) and wait for
+   two more lines. Listen whether the loopback audio is back. Photograph or copy the on-page history, then tap
+   "End call".
+
+Log lines may stop while the phone is locked (a suspended WebView logs nothing), so the counters, not the line
+cadence, are the evidence: all counters are cumulative. If frames flowed the whole time, the first line after the
+unlock has `framesIn` ≈ `framesOk` ≈ 50 × `t` (e.g. `t: 360` → about 18 000). If the WebView was suspended while
+locked, `framesIn` falls short of 50 × `t` by about 50 × the locked seconds, and the on-page history has a gap.
 
 Report:
 
 - iOS version and iPhone model; any change needed to make `CallProbe.swift` compile.
-- All `DILLA_CALL_NATIVE` lines, and whether `startCall` resolved (or its error).
-- Every `DILLA_CALL` line from start to end, with one `DILLA_CALL_DETAIL` from before the lock, one from during the
-  lock, and one from after the unlock (they show `source`, `visibility`, `micTrack` and `audioContext`).
-- Whether `framesIn` kept rising while locked (lines every 10 s with counts growing about 500 per line), whether the
-  lines kept coming at all, and whether the audio came back after the unlock.
+- All `DILLA_CALL_NATIVE` lines from Console.app (with their timestamps), and whether `startCall` resolved (or its
+  error).
+- Every `DILLA_CALL` line from start to end (Web Inspector console or the on-page history), with one
+  `DILLA_CALL_DETAIL` from before the lock and one from after the unlock (plus one from during the lock if any was
+  logged). Point out `source`, `visibility`, `micTrack.muted`, `audioContext` and `inboundRtp`.
+- The lock and unlock clock times, and for the first line after the unlock: `t`, `framesIn`, `framesOk`, `framesBad`
+  and `framesIn / (50 × t)`. Whether lines kept coming while locked, whether `framesBad` stayed 0, and whether the
+  audio came back after the unlock.

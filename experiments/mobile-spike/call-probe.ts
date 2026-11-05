@@ -1,11 +1,13 @@
 // The M0 background call-audio probe (separate page from the DILLA_PROBE capability probe).
-// A loopback of two RTCPeerConnections carries one audio track. The sender's encoded transform XORs each frame's
-// payload and the receiver's reverses it (RTCRtpScriptTransform on WebKit, createEncodedStreams on Chromium, chosen by
-// the repo's own isVoiceSupported()). Every 10 s it logs:
-//   DILLA_CALL {"t":seconds,"framesOut":n,"framesIn":n}
-// plus a DILLA_CALL_DETAIL line (source, mic level, visibility, track and AudioContext state) that is not part of the
-// contract. On iOS, "Start call" first starts a CallKit outgoing call through the native CallProbe plugin
-// (ios/App/App/CallProbe.swift) and waits for provider(_:didActivate:) before starting the loopback.
+// A loopback of two RTCPeerConnections carries one audio track. The sender's encoded transform prepends a 2-byte magic
+// and XORs the frame; the receiver XORs it back, checks and strips the magic (RTCRtpScriptTransform on WebKit,
+// createEncodedStreams on Chromium, chosen by the repo's own isVoiceSupported()). Every 10 s it logs:
+//   DILLA_CALL {"t":seconds,"framesOut":n,"framesIn":n,"framesOk":n,"framesBad":n,"packetsSent":n,"packetsReceived":n}
+// plus a DILLA_CALL_DETAIL line (source, mic level and track state, visibility, AudioContext state, inbound-rtp
+// audioLevel / concealedSamples / totalSamplesReceived) that is not part of the contract. The page also keeps a
+// history of the lines, so they can be read on screen after an unlock. On iOS, "Start call" first starts a CallKit
+// outgoing call through the native CallProbe plugin (ios/App/App/CallProbe.swift) and waits for
+// provider(_:didActivate:) before starting the loopback.
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { isVoiceSupported } from '../../packages/media/src/support';
 
@@ -16,7 +18,8 @@ interface CallProbePlugin {
 const CallProbe = registerPlugin<CallProbePlugin>('CallProbe');
 
 const KEY = 0x5a;
-const counts = { framesOut: 0, framesIn: 0 };
+const MAGIC = [0xd1, 0x1a];
+const counts = { framesOut: 0, framesIn: 0, framesOk: 0, framesBad: 0 };
 const detail: Record<string, unknown> = {};
 let started = 0;
 let timer: ReturnType<typeof setInterval> | undefined;
@@ -30,6 +33,7 @@ let nativeCall = false;
 
 const out = document.getElementById('out')!;
 const detailEl = document.getElementById('detail')!;
+const historyEl = document.getElementById('history')!;
 const startBtn = document.getElementById('start') as HTMLButtonElement;
 const endBtn = document.getElementById('end') as HTMLButtonElement;
 
@@ -45,15 +49,16 @@ function micLevel(): number | null {
 /**
  * The mic track when it carries signal; otherwise (silent emulator mic, or no mic at all) a quiet 440 Hz tone from a
  * MediaStreamDestination. The mic stays open either way, so the capture side behaves like a real call.
+ * `audio` is the AudioContext created synchronously in the click handler (user activation).
  */
-async function pickSource(): Promise<MediaStreamTrack> {
-  ctx = new AudioContext({ sampleRate: 48_000 });
+async function pickSource(audio: AudioContext): Promise<MediaStreamTrack> {
   try {
     const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false } });
+    await audio.resume().catch((e: unknown) => { detail.resumeError = String(e); });
     streams.push(mic);
-    analyser = ctx.createAnalyser();
+    analyser = audio.createAnalyser();
     analyser.fftSize = 2048;
-    ctx.createMediaStreamSource(mic).connect(analyser);
+    audio.createMediaStreamSource(mic).connect(analyser);
     let peak = 0;
     for (let i = 0; i < 15; i++) {
       await new Promise((r) => setTimeout(r, 100));
@@ -66,12 +71,13 @@ async function pickSource(): Promise<MediaStreamTrack> {
     }
     detail.source = 'oscillator (mic silent)';
   } catch (e) {
+    await audio.resume().catch(() => undefined);
     detail.source = `oscillator (getUserMedia failed: ${String(e)})`;
   }
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
+  const osc = audio.createOscillator();
+  const gain = audio.createGain();
   gain.gain.value = 0.05;
-  const dest = ctx.createMediaStreamDestination();
+  const dest = audio.createMediaStreamDestination();
   osc.frequency.value = 440;
   osc.connect(gain).connect(dest);
   osc.start();
@@ -79,13 +85,38 @@ async function pickSource(): Promise<MediaStreamTrack> {
   return dest.stream.getAudioTracks()[0];
 }
 
-function xorTransform(count: 'framesOut' | 'framesIn'): TransformStream {
+/** Chromium send side: magic + XOR. Same frame format as call-transform-worker.ts. */
+function sealTransform(): TransformStream {
   return new TransformStream({
     transform(frame: { data: ArrayBuffer }, ctrl) {
-      const bytes = new Uint8Array(frame.data.slice(0));
-      for (let i = 0; i < bytes.length; i++) bytes[i] ^= KEY;
-      frame.data = bytes.buffer;
-      counts[count]++;
+      const src = new Uint8Array(frame.data);
+      const sealed = new Uint8Array(src.length + 2);
+      sealed[0] = MAGIC[0];
+      sealed[1] = MAGIC[1];
+      sealed.set(src, 2);
+      for (let i = 0; i < sealed.length; i++) sealed[i] ^= KEY;
+      frame.data = sealed.buffer;
+      counts.framesOut++;
+      ctrl.enqueue(frame);
+    },
+  });
+}
+
+/** Chromium receive side: XOR back, check and strip the magic; a frame without it passes through unchanged. */
+function openTransform(): TransformStream {
+  return new TransformStream({
+    transform(frame: { data: ArrayBuffer }, ctrl) {
+      counts.framesIn++;
+      const src = new Uint8Array(frame.data);
+      if (src.length >= 2 && (src[0] ^ KEY) === MAGIC[0] && (src[1] ^ KEY) === MAGIC[1]) {
+        const plain = new Uint8Array(src.length - 2);
+        for (let i = 0; i < plain.length; i++) plain[i] = src[i + 2] ^ KEY;
+        frame.data = plain.buffer;
+        counts.framesOk++;
+      } else {
+        counts.framesBad++;
+        if (!detail.firstBadFrame) detail.firstBadFrame = { bytes: src.length, head: Array.from(src.slice(0, 4)), at: Date.now() - started };
+      }
       ctrl.enqueue(frame);
     },
   });
@@ -122,7 +153,7 @@ async function loopback(track: MediaStreamTrack): Promise<void> {
       (e.receiver as unknown as { transform: unknown }).transform = new Script(worker!, { side: 'receive' });
     } else {
       const s = (e.receiver as unknown as WithEncoded).createEncodedStreams();
-      s.readable.pipeThrough(xorTransform('framesIn')).pipeTo(s.writable).catch((err: unknown) => { detail.pipeError = `receive: ${String(err)}`; });
+      s.readable.pipeThrough(openTransform()).pipeTo(s.writable).catch((err: unknown) => { detail.pipeError = `receive: ${String(err)}`; });
     }
     // Play the received audio like a real call would (and so the iPhone run can hear whether it comes back).
     audioEl = new Audio();
@@ -135,7 +166,7 @@ async function loopback(track: MediaStreamTrack): Promise<void> {
     (sender as unknown as { transform: unknown }).transform = new Script(worker!, { side: 'send' });
   } else {
     const s = (sender as unknown as WithEncoded).createEncodedStreams();
-    s.readable.pipeThrough(xorTransform('framesOut')).pipeTo(s.writable).catch((err: unknown) => { detail.pipeError = `send: ${String(err)}`; });
+    s.readable.pipeThrough(sealTransform()).pipeTo(s.writable).catch((err: unknown) => { detail.pipeError = `send: ${String(err)}`; });
   }
 
   // No DTX: Opus keeps sending 20 ms frames on silence, so the counters measure the pipeline, not the room noise.
@@ -149,9 +180,36 @@ async function loopback(track: MediaStreamTrack): Promise<void> {
   await a.setRemoteDescription(answer);
 }
 
-function log(): void {
+async function rtpStats(): Promise<{ packetsSent: number | null; packetsReceived: number | null; inbound: Record<string, unknown> | null }> {
+  let packetsSent: number | null = null;
+  let packetsReceived: number | null = null;
+  let inbound: Record<string, unknown> | null = null;
+  try {
+    const [a, b] = pcs;
+    (await a.getStats()).forEach((s: Record<string, unknown>) => {
+      if (s.type === 'outbound-rtp' && s.kind === 'audio') packetsSent = s.packetsSent as number;
+    });
+    (await b.getStats()).forEach((s: Record<string, unknown>) => {
+      if (s.type === 'inbound-rtp' && s.kind === 'audio') {
+        packetsReceived = s.packetsReceived as number;
+        inbound = {
+          audioLevel: s.audioLevel,
+          concealedSamples: s.concealedSamples,
+          totalSamplesReceived: s.totalSamplesReceived,
+          packetsLost: s.packetsLost,
+        };
+      }
+    });
+  } catch (e) {
+    detail.statsError = String(e);
+  }
+  return { packetsSent, packetsReceived, inbound };
+}
+
+async function log(): Promise<void> {
   const t = Math.round((Date.now() - started) / 1000);
-  const line = `DILLA_CALL ${JSON.stringify({ t, framesOut: counts.framesOut, framesIn: counts.framesIn })}`;
+  const stats = await rtpStats();
+  const line = `DILLA_CALL ${JSON.stringify({ t, ...counts, packetsSent: stats.packetsSent, packetsReceived: stats.packetsReceived })}`;
   const mic = streams[0]?.getAudioTracks()[0];
   Object.assign(detail, {
     t,
@@ -161,15 +219,16 @@ function log(): void {
     micTrack: mic ? { readyState: mic.readyState, muted: mic.muted, enabled: mic.enabled } : null,
     audioContext: ctx?.state ?? null,
     audioPaused: audioEl?.paused ?? null,
+    inboundRtp: stats.inbound,
   });
   console.log(line);
   console.log(`DILLA_CALL_DETAIL ${JSON.stringify(detail)}`);
   out.textContent = line;
+  historyEl.textContent = `${new Date().toISOString().slice(11, 19)} ${line}\n${historyEl.textContent ?? ''}`;
   detailEl.textContent = JSON.stringify(detail, null, 2);
 }
 
-async function start(): Promise<void> {
-  startBtn.disabled = true;
+async function start(audio: AudioContext): Promise<void> {
   out.textContent = 'starting…';
   try {
     if (Capacitor.getPlatform() === 'ios') {
@@ -178,11 +237,11 @@ async function start(): Promise<void> {
     } else {
       detail.callKit = 'n/a (no foreground service on Android in this spike)';
     }
-    const track = await pickSource();
+    const track = await pickSource(audio);
     await loopback(track);
     started = Date.now();
-    log();
-    timer = setInterval(log, 10_000);
+    await log();
+    timer = setInterval(() => { void log(); }, 10_000);
     endBtn.disabled = false;
   } catch (e) {
     detail.error = String(e);
@@ -195,7 +254,7 @@ async function start(): Promise<void> {
 async function end(): Promise<void> {
   endBtn.disabled = true;
   if (timer) clearInterval(timer);
-  log();
+  await log();
   for (const pc of pcs) pc.close();
   for (const s of streams) for (const tr of s.getTracks()) tr.stop();
   worker?.terminate();
@@ -204,9 +263,14 @@ async function end(): Promise<void> {
   if (nativeCall) detail.callKitEnd = await CallProbe.endCall().catch((e: unknown) => String(e));
   console.log(`DILLA_CALL_END ${JSON.stringify(detail)}`);
   pcs = []; streams = []; worker = undefined; analyser = undefined; ctx = undefined; nativeCall = false;
-  counts.framesOut = 0; counts.framesIn = 0;
+  for (const k of Object.keys(counts) as (keyof typeof counts)[]) counts[k] = 0;
   startBtn.disabled = false;
 }
 
-startBtn.addEventListener('click', () => { void start(); });
+startBtn.addEventListener('click', () => {
+  startBtn.disabled = true;
+  // Created synchronously inside the tap, before any await, so it starts with user activation (WebKit autoplay rules).
+  ctx = new AudioContext({ sampleRate: 48_000 });
+  void start(ctx);
+});
 endBtn.addEventListener('click', () => { void end(); });
