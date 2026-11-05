@@ -108,6 +108,26 @@ describe('Signal poll adapter', () => {
     await waitFor(() => expect(screen.getAllByText('Raid?')).toHaveLength(2));
     expect(f.capabilities).toHaveBeenCalledTimes(1);
   });
+  it('pauses its 30 s refresh while the window is hidden and refreshes once when it is shown again, only if overdue', async () => {
+    vi.useFakeTimers();
+    let state: DocumentVisibilityState = 'visible';
+    const spy = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => state);
+    try {
+      const f = fixture();
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      const reads = f.pollGet.mock.calls.length;
+      const setVisibility = (next: DocumentVisibilityState) => { state = next; document.dispatchEvent(new Event('visibilitychange')); };
+      setVisibility('hidden');
+      await act(async () => { f.tick(); f.tick(); await vi.advanceTimersByTimeAsync(0); });
+      expect(f.pollGet).toHaveBeenCalledTimes(reads);
+      await act(async () => { setVisibility('visible'); await vi.advanceTimersByTimeAsync(0); });
+      expect(f.pollGet).toHaveBeenCalledTimes(reads + 1);
+      await act(async () => { setVisibility('hidden'); setVisibility('visible'); await vi.advanceTimersByTimeAsync(0); });
+      expect(f.pollGet).toHaveBeenCalledTimes(reads + 1);
+      await act(async () => { f.tick(); await vi.advanceTimersByTimeAsync(0); });
+      expect(f.pollGet).toHaveBeenCalledTimes(reads + 2);
+    } finally { spy.mockRestore(); vi.restoreAllMocks(); vi.useRealTimers(); }
+  });
   it('single choice switches to [1] and clicking your pick withdraws []', async () => { const f = fixture(); await userEvent.click(await screen.findByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenCalledWith(expect.objectContaining({ choices: [1] }))); await userEvent.click(screen.getByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenLastCalledWith(expect.objectContaining({ choices: [] }))); });
   it('multi toggles within the set and counts distinct voters across every page', async () => { const f = fixture({ multi: true, counts: [2n, 2n] }); await userEvent.click(await screen.findByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenCalledWith(expect.objectContaining({ choices: [0, 1] }))); await userEvent.click(screen.getByRole('button', { name: /Bridge/ })); await waitFor(() => expect(f.pollVote).toHaveBeenLastCalledWith(expect.objectContaining({ choices: [1] })));  await waitFor(() => expect(screen.getByText('Open for 24 hours · pick any · 2 voters')).toBeInTheDocument()); expect(f.pollVoters).toHaveBeenCalledWith(expect.objectContaining({ option: 0, cursor: new Uint8Array([1]) })); expect(screen.queryByRole('img', { name: 'other' })).not.toBeInTheDocument(); });
   it('uses dueAt minus createdAt, rounds vote percentages and previews first-page voters per answer', async () => { const f = fixture(); expect(await screen.findByText('Open for 24 hours · pick one · 3 voters')).toBeInTheDocument(); expect(screen.getByText('33%')).toBeInTheDocument(); await waitFor(() => expect(screen.getAllByRole('img', { name: 'Ada' })).toHaveLength(1)); expect(f.pollVoters).toHaveBeenCalledWith(expect.objectContaining({ option: 1, cursor: null })); });

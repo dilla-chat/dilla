@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { loadBundle, bundledResponse, type Bundle } from './bundle.ts';
-import { canonicalInstance, externalLink, isAppNavigation, parseInvite, partitionFor, trustedFrame, validateCommand, instanceRequestURL, permissionOriginMatches } from './policy.ts';
+import { canonicalInstance, instanceInput, externalLink, isAppNavigation, parseInvite, partitionFor, trustedFrame, validateCommand, instanceRequestURL, permissionOriginMatches } from './policy.ts';
 import { Preferences, permissionTokens } from './preferences.ts';
 import { fetchInstanceData } from './request-forwarding.ts';
 import { linuxAutostart, rebindLinuxAutostart } from './autostart.ts';
@@ -516,9 +516,9 @@ ipcMain.handle('dilla:manager', async (event, value: unknown) => {
   if (command.type === 'window-menu' && Object.keys(command).length === 1) { showWindowMenu(manager); return; }
   if (command.type === 'list' && Object.keys(command).length === 1) return preferences.instances;
   if (command.type === 'connect' && Object.keys(command).length === 2 && typeof command.instance === 'string') {
-    const instance = canonicalInstance(command.instance, allowLoopback);
+    const { instance, invite } = instanceInput(command.instance, allowLoopback);
     if (await confirmInstance(instance)) {
-      await openInstance(instance);
+      await openInstance(instance, invite ? `/welcome?invite=${encodeURIComponent(invite)}` : '/');
       // One window: the instance replaces the picker. destroy(), not close(): lockWindow turns close into hide, and a hidden
       // picker would come back stale. "Your instances…" in the menu opens a fresh one. A cancelled confirm or a throw keeps it.
       manager?.destroy();

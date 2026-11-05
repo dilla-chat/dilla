@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { canonicalInstance, partitionFor, parseInvite, isAppNavigation, externalLink, validateCommand, trustedFrame, instanceRequestURL } from '../src/policy.ts';
+import { canonicalInstance, instanceInput, partitionFor, parseInvite, isAppNavigation, externalLink, validateCommand, trustedFrame, instanceRequestURL } from '../src/policy.ts';
 
 test('instance identity includes scheme, port and the entire canonical URL', () => {
   assert.equal(canonicalInstance('https://EXAMPLE.com:443'), 'https://example.com/');
@@ -107,6 +107,18 @@ test('server settings remain trusted bundled routes, with only registered sectio
   assert.equal(trustedFrame({ url, top: false }, base), false);
  }
  for (const path of ['/unknown', '/invites/v1/evil', '/invites?token=secret']) assert.equal(isAppNavigation(prefix + path, base), false);
+});
+
+test('a pasted page link reduces to the server address and an /i/<code> link also yields an invite', () => {
+  const id = 'a'.repeat(32);
+  for (const page of ['https://h.test/welcome', 'https://h.test/welcome/', `https://h.test/c/${id}/${id}`, `https://h.test/c/${id}`, 'https://h.test/dm', 'https://h.test/settings/devices', 'https://h.test/i/abc_DEF-123']) {
+    assert.equal(canonicalInstance(page), 'https://h.test/', page);
+  }
+  assert.equal(canonicalInstance('http://127.0.0.1:8443/welcome', true), 'http://127.0.0.1:8443/');
+  assert.equal(canonicalInstance('https://h.test/team'), 'https://h.test/team/');
+  assert.deepEqual(instanceInput('https://h.test/i/abc_DEF-123'), { instance: 'https://h.test/', invite: 'abc_DEF-123' });
+  assert.deepEqual(instanceInput('https://h.test/welcome'), { instance: 'https://h.test/', invite: null });
+  assert.deepEqual(instanceInput('https://h.test/'), { instance: 'https://h.test/', invite: null });
 });
 
 test('removed startup health command is unavailable to renderers', () => {

@@ -194,9 +194,12 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     // A complete authenticated refresh can span several Bot gateway rounds. A
     // cadence tick must not supersede that read before its record can be shown.
     // Mutations also own their refresh until the action finishes.
-    let pending = false; let failures = 0; let retry: number | undefined;
-    const update = async () => {
+    let pending = false; let failures = 0; let retry: number | undefined; let overdue = false;
+    // A hidden window does not poll: the tick and the quick retries wait, and one refresh runs when it is shown again.
+    const update = async (scheduled = true) => {
+      if (scheduled && document.visibilityState === 'hidden') { overdue = true; return; }
       if (pending || busyRef.current) return;
+      overdue = false;
       pending = true;
       try {
         const poll = await refresh(true);
@@ -207,8 +210,10 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
         else setGaveUp(true);
       } finally { pending = false; }
     };
-    void update(); const timer = window.setInterval(() => { void update(); }, 30_000);
-    return () => { window.clearInterval(timer); window.clearTimeout(retry); currentGeneration.current++; currentVoterGeneration.current++; voterTarget.current = null; };
+    const shown = () => { if (overdue && document.visibilityState === 'visible') void update(); };
+    document.addEventListener('visibilitychange', shown);
+    void update(false); const timer = window.setInterval(() => { void update(); }, 30_000);
+    return () => { document.removeEventListener('visibilitychange', shown); window.clearInterval(timer); window.clearTimeout(retry); currentGeneration.current++; currentVoterGeneration.current++; voterTarget.current = null; };
   }, [active, refresh]);
   const poll = sourceAccessible && record?.client === props.client && record.scope === scopeKey && verifiedScope === scopeKey ? record.poll : null;
   const { onVerified, onGaveUp } = props;

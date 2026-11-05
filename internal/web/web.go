@@ -46,6 +46,10 @@ var contentTypes = map[string]string{
 }
 
 var reservedPrefixes = []string{"/v1/", "/gateway", "/rtc", "/i/", "/healthz", "/readyz", "/metrics", "/debug/"}
+
+// belowRootData matches a data prefix one or more segments below the root: a client whose saved
+// instance address has a path asks /<path>/v1/instance, and the client page must not answer that.
+var belowRootData = regexp.MustCompile(`^/.+/(v1/|i/|gateway(/|$)|rtc(/|$))`)
 var dnsHost = regexp.MustCompile(`^[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?$`)
 var ipv6Host = regexp.MustCompile(`^\[[0-9A-Fa-f:.]{2,45}\](:[0-9]{1,5})?$`)
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -299,6 +303,10 @@ func (h *Handler) fallback(mux *server.Mux, navigation http.Handler) http.Handle
 		_, pattern := mux.Mux().Handler(r)
 		if pattern != "" || reserved(clean(r.URL.Path)) || (navigation != h && (r.URL.Path == "/desktop-auth" || strings.HasPrefix(r.URL.Path, "/desktop-auth/"))) {
 			mux.ServeHTTP(w, r)
+			return
+		}
+		if belowRootData.MatchString(clean(r.URL.Path)) {
+			server.WriteError(w, server.Errorf(server.CodeNotFound, "the instance address must not have a path"))
 			return
 		}
 		navigation.ServeHTTP(w, r)

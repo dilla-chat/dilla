@@ -24,6 +24,16 @@ test('persists only authorized canonical instances and startup choice, without l
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('saved addresses with an app page path load as the server address, duplicates collapsing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dilla-prefs-path-'));
+  try {
+    await writeFile(join(root, 'desktop.json'), JSON.stringify({ version: 1, instances: ['https://h.test/welcome', 'https://h.test/', 'https://other.test/team/'], autostart: false }));
+    const prefs = new Preferences(root);
+    await prefs.load();
+    assert.deepEqual(prefs.instances, ['https://h.test/', 'https://other.test/team/']);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('remembers only Allow answers for the fixed permission set, per instance, and forgets them on removal', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dilla-grants-'));
   try {

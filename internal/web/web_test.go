@@ -480,6 +480,33 @@ func TestFallbackLeavesEveryRouteOfTheMuxAlone(t *testing.T) {
 	}
 }
 
+// An instance address with a path (https://host/welcome) makes a client call
+// /welcome/v1/instance; the client's index.html must not answer that with a 200.
+func TestFallbackRefusesDataPathsBelowTheRoot(t *testing.T) {
+	h, _ := newSite(t)
+	f := h.Fallback(server.NewMux())
+	want := httptest.NewRecorder()
+	server.WriteError(want, server.Errorf(server.CodeNotFound, "the instance address must not have a path"))
+	id := strings.Repeat("a", 32)
+	for _, target := range []string{"/welcome/v1/instance", "/c/" + id + "/" + id + "/v1/instance", "/welcome/gateway", "/welcome/rtc/validate", "/welcome/i/code"} {
+		rec := do(t, f, http.MethodGet, target, nil)
+		if rec.Code != 404 || rec.Header().Get("Content-Type") != "application/cbor" || rec.Body.String() != want.Body.String() {
+			t.Errorf("GET %s = %d %q %q, want the CBOR 404", target, rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+		}
+	}
+	for _, target := range []string{"/welcome", "/c/" + id, "/c/" + id + "/" + id, "/dm/" + id} {
+		if rec := do(t, f, http.MethodGet, target, nil); rec.Code != 200 || rec.Body.String() != site["index.html"] {
+			t.Errorf("GET %s = %d, want index.html", target, rec.Code)
+		}
+	}
+	teapot := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	mux := server.NewMux()
+	mux.Handle("GET /v1/instance", teapot)
+	if rec := do(t, h.Fallback(mux), http.MethodGet, "/v1/instance", nil); rec.Code != 418 {
+		t.Errorf("GET /v1/instance = %d, want the API route", rec.Code)
+	}
+}
+
 // L-HTTP-102 (web-3): the page may ask for the camera, the microphone and a screen, on its own
 // origin only; nothing else is granted, and geolocation stays denied.
 func TestPermissionsPolicyGrantsMediaToSelf(t *testing.T) {
