@@ -7,14 +7,24 @@
   <style>
     body { margin: 0; padding: env(safe-area-inset-top) 16px 16px; background: #0b0d10; color: #e6e6e6; font: 14px/1.4 ui-monospace, Menlo, monospace; }
     pre { white-space: pre-wrap; word-break: break-all; }
-    button { font: inherit; padding: 8px 12px; margin-right: 8px; }
+    button { font: inherit; padding: 8px 12px; margin: 0 8px 8px 0; }
+    #steps { max-height: 40vh; overflow: auto; font-size: 11px; }
   </style>
 </head>
 <body>
   <h1>DILLA_CALL</h1>
-  <button id="start" type="button">Start call</button>
-  <button id="end" type="button" disabled>End call</button>
+  <p>Start (one mode per app launch; force-quit between modes):</p>
+  <button id="start-no-callkit" type="button" data-mode="no-callkit">no-callkit</button>
+  <button id="start-gum-first" type="button" data-mode="gum-first">gum-first</button>
+  <button id="start-callkit-first" type="button" data-mode="callkit-first">callkit-first</button>
+  <p>
+    <button id="end" type="button">End call</button>
+    <button id="resume" type="button">ctx.resume (tap)</button>
+    <button id="status" type="button">status</button>
+    <button id="mic" type="button">native mic permission</button>
+  </p>
   <a href="./index.html">capability probe</a>
+  <pre id="steps"></pre>
   <pre id="out">idle</pre>
   <pre id="history"></pre>
   <pre id="detail"></pre>
