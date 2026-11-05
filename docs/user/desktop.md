@@ -93,7 +93,7 @@ Only unpackaged builds accept `--profile=/absolute/test/profile` and
 local test hosts. It never permits remote HTTP instances. Packaged builds ignore
 these development switches.
 
-The whole top bar drags the window on macOS and Linux. Quitting with a call or unsent text asks once ("Quit Dilla?",
+The whole top bar drags the window. Quitting with a call or unsent text asks once ("Quit Dilla?",
 **Cancel** or **Quit**) and then quits; **Restart to update** asks once in the same way, and a window that does not
 report whether it is in use gets a **Quit anyway** choice on a plain quit. Allowing the microphone or camera for an
 instance is remembered for that instance, separately for each; a denial is asked again.
