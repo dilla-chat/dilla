@@ -33,7 +33,9 @@ export function mobileInstance(input: string): string {
   const url = new URL(instance);
   // An origin with a DNS name, as the core worker's gate requires (client-core worker/instance-url.ts): no IP literal
   // (IPv4 in any form parses to a dotted quad, IPv6 to a [bracketed] host).
-  if (url.pathname !== '/' || url.hostname.startsWith('[') || /^\d{1,3}(\.\d{1,3}){3}$/.test(url.hostname)) throw new Error(CONNECT_ERROR);
+  // Nor localhost or *.localhost: the device itself, and https://localhost is the Android app's own origin.
+  if (url.pathname !== '/' || url.hostname.startsWith('[') || /^\d{1,3}(\.\d{1,3}){3}$/.test(url.hostname)
+    || url.hostname === 'localhost' || url.hostname.endsWith('.localhost')) throw new Error(CONNECT_ERROR);
   return instance;
 }
 

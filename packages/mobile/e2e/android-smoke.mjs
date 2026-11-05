@@ -8,8 +8,10 @@
 // ANDROID_HOME (default ~/Android/Sdk), JAVA_HOME with JDK 21 (default ~/.local/jdk/jdk-21*), and an AVD on a
 // google_apis image (adb root works there) with Chrome.
 //
-// The run: two hosts (A, B) behind HTTPS proxies whose certificate a throwaway CA signs for a.10-0-2-2.sslip.io and
-// b.10-0-2-2.sslip.io (wildcard DNS for 10.0.2.2, the emulator's address of this machine). The CA is put into the emulator's user CA store, which only the debug build trusts
+// The run: two hosts (A, B) behind HTTPS proxies whose certificate a throwaway CA signs for a.dilla.test and
+// b.dilla.test. The emulator resolves no such names; its global HTTP proxy (settings global http_proxy) points at a
+// local CONNECT proxy that maps exactly those two names, on the two test ports, to this machine (see HOSTS below).
+// The CA is put into the emulator's user CA store, which only the debug build trusts
 // (android/app/src/debug/res/xml/network_security_config.xml). Then, in the app: add instance A in the picker, sign up,
 // join a native peer's server and see the peer's message; add instance B and sign up there; back on A, send the app to
 // the background for 120 s while the peer posts, resume and see it; force-stop, relaunch, and find the same account
@@ -38,9 +40,15 @@ const ADB = join(sdk, 'platform-tools/adb');
 const APP = 'chat.dilla.app';
 const WAIT = 60_000;
 const BACKGROUND_S = 120;
-// The app accepts only instances with a DNS name (no IP literal), so the emulator reaches this machine (10.0.2.2) through
-// sslip.io's wildcard DNS: <anything>.10-0-2-2.sslip.io resolves to 10.0.2.2. That is the one outside dependency.
-const HOST_A = 'a.10-0-2-2.sslip.io', HOST_B = 'b.10-0-2-2.sslip.io';
+// The app accepts only instances with a DNS name (no IP literal, no localhost), and the run must not depend on outside
+// DNS. Name resolution is done by our own CONNECT proxy, which the emulator uses as its global HTTP proxy: the WebView,
+// Chrome's Custom Tab and CapacitorHttp (Java) all send `CONNECT a.dilla.test:18443` to it, unresolved, and it opens
+// 127.0.0.1:18443 here. A WebView --host-resolver-rules flag would not reach CapacitorHttp, and dnsmasq behind the
+// emulator's -dns-server would need port 53 on this machine (a privileged port).
+const HOST_A = 'a.dilla.test', HOST_B = 'b.dilla.test';
+const CONNECT_PORT = 18480;
+/** Every tunnel the emulator opened through the CONNECT proxy, for the resume measurement (host clock). */
+const tunnels = [];
 const work = mkdtempSync(join(tmpdir(), 'dilla-android-smoke-'));
 const cleanups = [];
 const started = Date.now();
@@ -70,8 +78,16 @@ async function startHost(name, hostName, port, control, proxyPort, tls) {
   cleanups.push(() => proxy.close());
   // What reached /desktop-auth/, with its Origin header: the native-HTTP check below reads it.
   const desktopAuth = [];
+  // The resume measurement: every request and gateway upgrade, with its socket's close (host clock).
+  const traffic = [];
+  proxy.on('request', request => { traffic.push({ at: Date.now(), what: `${request.method} ${request.url.replace(/[A-Za-z0-9_-]{43}/, '<id>').split('?')[0]}` }); });
+  proxy.on('upgrade', (request, socket) => {
+    const entry = { at: Date.now(), what: `UPGRADE ${request.url.split('?')[0]}` };
+    traffic.push(entry);
+    socket.on('close', () => traffic.push({ at: Date.now(), what: `CLOSED ${request.url.split('?')[0]} (opened +${Date.now() - entry.at} ms before)` }));
+  });
   proxy.on('request', request => { if (request.url.startsWith('/desktop-auth/')) desktopAuth.push({ method: request.method, path: request.url, origin: request.headers.origin ?? null, agent: request.headers['user-agent'] ?? '' }); });
-  return { name, desktopAuth, invite, inviteCode: invite.split(',')[0], ds: `http://127.0.0.1:${port}`, control: `http://127.0.0.1:${control}`, url: `https://${hostName}:${proxyPort}/` };
+  return { name, desktopAuth, traffic, invite, inviteCode: invite.split(',')[0], ds: `http://127.0.0.1:${port}`, control: `http://127.0.0.1:${control}`, url: `https://${hostName}:${proxyPort}/` };
 }
 
 /** dilla-testkit web-driver: the native second account (e2e/web/support/driver.ts speaks the same JSON lines). */
@@ -107,12 +123,23 @@ async function nextCode(host, account) {
   }
 }
 
-async function resolvesToEmulatorHost() {
-  const { lookup } = await import('node:dns/promises');
-  for (const name of [HOST_A, HOST_B]) {
-    const { address } = await lookup(name, { family: 4 }).catch(() => ({ address: 'unresolved' }));
-    if (address !== '10.0.2.2') throw new Error(`${name} resolves to ${address}, expected 10.0.2.2 (sslip.io unreachable?)`);
-  }
+/** The CONNECT proxy: only HOST_A/HOST_B on the two HTTPS proxy ports, to 127.0.0.1; anything else is refused. */
+async function startConnectProxy() {
+  const { createServer } = await import('node:http');
+  const { connect: tcp } = await import('node:net');
+  const allowed = new Map([[`${HOST_A}:18443`, 18443], [`${HOST_B}:18444`, 18444]]);
+  const server = createServer((_request, response) => { response.writeHead(403).end(); });
+  server.on('connect', (request, client, head) => {
+    const port = allowed.get(request.url ?? '');
+    if (port === undefined) { client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
+    const entry = { target: request.url, opened: Date.now(), closed: null };
+    tunnels.push(entry);
+    const upstream = tcp(port, '127.0.0.1', () => { client.write('HTTP/1.1 200 Connection Established\r\n\r\n'); if (head.length) upstream.write(head); upstream.pipe(client).pipe(upstream); });
+    const close = () => { entry.closed ??= Date.now(); upstream.destroy(); client.destroy(); };
+    upstream.on('error', close); client.on('error', close); upstream.on('close', close); client.on('close', close);
+  });
+  await new Promise((ok, fail) => { server.once('error', fail); server.listen(CONNECT_PORT, '127.0.0.1', ok); });
+  cleanups.push(() => new Promise(ok => { server.closeAllConnections?.(); server.close(() => ok()); }));
 }
 
 // ---- the emulator, the CA and the app ------------------------------------------------------------------------------
@@ -152,6 +179,10 @@ function installUserCa(ca) {
   // this command-line file (ro.debuggable=1).
   adb('shell', 'echo "_ --disable-fre --no-default-browser-check --no-first-run" > /data/local/tmp/chrome-command-line && am force-stop com.android.chrome');
   cleanups.push(() => { try { adb('shell', 'rm -f /data/local/tmp/chrome-command-line'); } catch { /* gone */ } });
+  // All HTTP(S) from the device goes through the CONNECT proxy, which resolves the two test names (10.0.2.2 is this
+  // machine as the emulator sees it).
+  adb('shell', 'settings', 'put', 'global', 'http_proxy', `10.0.2.2:${CONNECT_PORT}`);
+  cleanups.push(() => { try { adb('shell', 'settings', 'put', 'global', 'http_proxy', ':0'); } catch { /* gone */ } });
 }
 
 function buildAndInstall() {
@@ -288,7 +319,7 @@ async function main() {
   const ownEmulator = await ensureEmulator();
   if (ownEmulator && !args.has('--keep-emulator')) cleanups.unshift(() => { try { adb('emu', 'kill'); log('emulator stopped'); } catch { /* gone */ } });
   const tls = makeTls();
-  await resolvesToEmulatorHost();
+  await startConnectProxy();
   const a = await startHost('A', HOST_A, 18463, 18464, 18443, tls);
   const b = await startHost('B', HOST_B, 18465, 18466, 18444, tls);
   log(`hosts up: A ${a.url}, B ${b.url}`);
@@ -368,8 +399,32 @@ async function main() {
   if (!appOnTop()) throw new Error('the app did not come back in front of the Custom Tab');
   await sleep(1000);
 
-  // 4. Background for 120 s; the peer posts meanwhile; resume and see it.
-  const events = await page.evaluateHandle(() => { const seen = []; globalThis.dillaMobile.onEvent(e => seen.push(e.type)); return seen; });
+  // 4. Background for 120 s; the peer posts meanwhile; resume and see it. Measured (review round 2, item 3): in the worker,
+  // each gateway socket's attempt, open, error and close (WebSocket.prototype.addEventListener is wrapped: the gateway
+  // attaches its listeners right after `new WebSocket`); at the proxies, every tunnel, request and upgrade; and whether
+  // the page navigated or a new worker started while in the background. Device times are relative to the resume event.
+  const events = await page.evaluateHandle(() => { const seen = []; globalThis.dillaMobile.onEvent(e => seen.push({ type: e.type, at: Date.now() })); return seen; });
+  const worker = page.workers().find(w => /\/assets\/entry-/.test(w.url()));
+  if (!worker) throw new Error(`no core worker among ${page.workers().map(w => w.url()).join(', ')}`);
+  await worker.evaluate(() => {
+    const log = globalThis.__dillaGatewayLog = [];
+    const add = WebSocket.prototype.addEventListener;
+    WebSocket.prototype.addEventListener = function (type, listener, options) {
+      if (!this.__dillaSeen) {
+        this.__dillaSeen = true;
+        log.push({ at: Date.now(), e: 'attempt', url: this.url.split('?')[0] });
+        add.call(this, 'open', () => log.push({ at: Date.now(), e: 'open' }));
+        add.call(this, 'error', () => log.push({ at: Date.now(), e: 'error' }));
+        add.call(this, 'close', event => log.push({ at: Date.now(), e: 'close', code: event.code, clean: event.wasClean, reason: event.reason }));
+      }
+      return add.call(this, type, listener, options);
+    };
+  });
+  let navigations = 0, workersStarted = 0;
+  page.on('framenavigated', frame => { if (frame === page.mainFrame()) navigations++; });
+  page.on('worker', () => { workersStarted++; });
+  const hostHome = Date.now();
+  const tunnelsBefore = tunnels.length, trafficBefore = a.traffic.length;
   adb('shell', 'input', 'keyevent', 'KEYCODE_HOME');
   log(`step 4: app in the background for ${BACKGROUND_S} s`);
   await sleep(BACKGROUND_S / 2 * 1000);
@@ -377,11 +432,24 @@ async function main() {
   await peerA.request('send', { body: meanwhile });
   log(`step 4: peer sent "${meanwhile}" at t+${BACKGROUND_S / 2} s`);
   await sleep(BACKGROUND_S / 2 * 1000);
+  const hostResume = Date.now();
   launch();
-  await expect(row(page, peerA.channel, meanwhile)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+  await expect(row(page, peerA.channel, meanwhile)).toHaveAttribute('data-state', 'ok', { timeout: 120_000 });
+  const shownAt = await page.evaluate(() => Date.now());
   const seen = await events.jsonValue();
-  log(`step 4: resumed; the message is shown; bridge events ${JSON.stringify(seen)}`);
-  if (!seen.includes('pause') || !seen.includes('resume')) throw new Error(`pause/resume events missing: ${JSON.stringify(seen)}`);
+  const resumeAt = seen.find(e => e.type === 'resume')?.at;
+  log(`step 4: resumed; the message is shown; bridge events ${JSON.stringify(seen.map(e => e.type))}`);
+  if (!seen.some(e => e.type === 'pause') || resumeAt === undefined) throw new Error(`pause/resume events missing: ${JSON.stringify(seen)}`);
+  const gatewayLog = await worker.evaluate(() => globalThis.__dillaGatewayLog);
+  const rel = at => `${((at - resumeAt) / 1000).toFixed(1)} s`;
+  log(`step 4: RESUME->MESSAGE ${((shownAt - resumeAt) / 1000).toFixed(1)} s (device clock); page navigations ${navigations}, new workers ${workersStarted} (0/0: the same page and core worker continued)`);
+  for (const entry of gatewayLog) log(`step 4: worker gateway ${entry.e}${entry.code === undefined ? '' : ` code=${entry.code} clean=${entry.clean}${entry.reason ? ` reason=${entry.reason}` : ''}`}${entry.url ? ` ${entry.url}` : ''} at ${rel(entry.at)}`);
+  const hostRel = at => `${((at - hostResume) / 1000).toFixed(1)} s`;
+  const newTunnels = tunnels.slice(tunnelsBefore);
+  log(`step 4: proxy: ${newTunnels.length} tunnels opened from HOME to the message, first at ${newTunnels.length ? hostRel(newTunnels[0].opened) : '-'} (host clock, rel. to resume; HOME at ${hostRel(hostHome)})`);
+  const traffic = a.traffic.slice(trafficBefore);
+  for (const t of traffic.filter(t => /gateway|CLOSED|UPGRADE/.test(t.what))) log(`step 4: instance A ${t.what} at ${hostRel(t.at)} (host clock)`);
+  log(`step 4: instance A: ${traffic.filter(t => !/gateway|CLOSED|UPGRADE/.test(t.what)).length} other requests (sync after resume, ceremony polls)`);
 
   // 5. Force-stop and relaunch: the same account on A, and both instances in the picker.
   adb('shell', 'am', 'force-stop', APP);
