@@ -7,6 +7,7 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
+    "icons": "node scripts/icons.mjs",
     "sync": "cap sync",
     "test": "node --test test/*.test.ts test/*.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -28,6 +29,7 @@
   "devDependencies": {
     "@capacitor/cli": "8.6.0",
     "@playwright/test": "1.63.0",
+    "@resvg/resvg-js": "2.6.2",
     "@types/node": "^24",
     "esbuild": "^0.28.1",
     "typescript": "5.9.3"
