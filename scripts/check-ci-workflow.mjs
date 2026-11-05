@@ -73,6 +73,13 @@ export const REQUIRED_JOBS = {
 };
 
 /** A workflow's file name, for messages. */
+/** The desktop workflow's nightly run (02:17 UTC), on main. */
+export const NIGHTLY_CRON = '17 2 * * *';
+
+// The watcher runs for every trusted event; a scheduled run is one (GitHub starts it on main), so desktop-ok keeps
+// failing a skipped watcher there.
+const watchdogIf = (workflow) => `    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || ${workflow === 'desktop' ? "github.event_name == 'schedule' || " : ''}(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)`;
+
 const fileOf = (workflow) => WORKFLOWS[workflow].file;
 
 /**
@@ -931,8 +938,10 @@ function checkCiWorkflow(root, workflow) {
   let doc = null;
   try { doc = yaml.load(text); } catch (error) { problems.push(`${file}: invalid YAML (${error.message.split('\n')[0]})`); }
   if (doc !== null && doc?.name !== workflowName) problems.push(`${file}: the workflow must be named "${workflowName}" (the release gates and ci-rerun-starved.yml read it)`);
-  if (doc !== null && !drSame(doc?.on, { push: { branches: ['main'] }, pull_request: null })) {
-    problems.push(`${file}: must trigger on every pull_request and every push to main, with no paths or other filter at the trigger (area skipping is the changes job's)`);
+  // Only the desktop workflow also runs nightly (every area on, see scripts/ci-areas.mjs); server.yml has no schedule.
+  const triggers = { push: { branches: ['main'] }, pull_request: null, ...(workflow === 'desktop' ? { schedule: [{ cron: NIGHTLY_CRON }] } : {}) };
+  if (doc !== null && !drSame(doc?.on, triggers)) {
+    problems.push(`${file}: must trigger on every pull_request and every push to main${workflow === 'desktop' ? `, and nightly on schedule cron '${NIGHTLY_CRON}'` : ''}, with no paths or other filter at the trigger (area skipping is the changes job's)`);
   }
 
   let currentJob = null;
@@ -967,8 +976,8 @@ function checkCiWorkflow(root, workflow) {
   if (!/^concurrency:$/m.test(text) || !/cancel-in-progress: true/.test(text)) {
     problems.push(`${file}: missing the workflow-level concurrency block with cancel-in-progress: true`);
   }
-  if (!/^concurrency:\n {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: true$/m.test(text)) {
-    problems.push(`${file}: concurrency group must be workflow/ref so newer commits cancel obsolete runs for the same pull request`);
+  if (!/^concurrency:\n {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.event_name \}\}-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: true$/m.test(text)) {
+    problems.push(`${file}: concurrency group must be workflow/event/ref so newer commits cancel obsolete runs for the same pull request, and a scheduled run and a push to main never cancel each other`);
   }
   if (!/^permissions:\n {2}contents: read$/m.test(text)) {
     problems.push(`${file}: the workflow-level token must be read-only (permissions: contents: read)`);
@@ -985,7 +994,7 @@ function checkCiWorkflow(root, workflow) {
   if ('ci-watchdog' in jobs) {
     const body = jobs['ci-watchdog'];
     const required = [
-      "    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)",
+      watchdogIf(workflow),
       '    timeout-minutes: 90',
       '    permissions:\n      contents: read\n      actions: write',
       '          persist-credentials: false',

@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES, WORKFLOWS } from './ci-areas.mjs';
-import { checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkServerWorkflow, DESKTOP_RELEASE_ACTIONS, REQUIRED_JOBS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
+import { checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkServerWorkflow, DESKTOP_RELEASE_ACTIONS, REQUIRED_JOBS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -679,7 +679,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: \${{ github.workflow }}-\${{ github.ref }}
+  group: \${{ github.workflow }}-\${{ github.event_name }}-\${{ github.ref }}
   cancel-in-progress: true
 env:
   CARGO_TERM_COLOR: always
@@ -1109,7 +1109,9 @@ function withChanges(text) {
     steps:
       - run: echo "All CI work reached a terminal result"
 `;
-    return `${header.replace('name: ci-fixture', `name: ${WORKFLOWS[workflow].name}`)}${watcher}${CHANGES_JOB}${workflow === 'server' ? DOCS_JOB : ''}${out.join('\n')}\n${barrier}${OK_JOB(workflow, [...jobs, `${workflow}-work-complete`])}`;
+    const named = header.replace('name: ci-fixture', `name: ${WORKFLOWS[workflow].name}`);
+    const triggered = workflow === 'desktop' ? named.replace('  pull_request:\n', `  pull_request:\n  schedule:\n    - cron: '${NIGHTLY_CRON}'\n`) : named;
+    return `${triggered}${watcher}${CHANGES_JOB}${workflow === 'server' ? DOCS_JOB : ''}${out.join('\n')}\n${barrier}${OK_JOB(workflow, [...jobs, `${workflow}-work-complete`])}`;
   };
   return build('server') + SPLIT.slice(1) + build('desktop');
 }
@@ -1220,8 +1222,43 @@ test('a missing concurrency block is reported', () => {
 });
 
 test('commit-specific concurrency groups cannot leave obsolete pull-request runs alive', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('group: ${{ github.workflow }}-${{ github.ref }}', 'group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}')));
+  const problems = checkWorkflow(fixture(GOOD.replace('group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}', 'group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ github.sha }}')));
   assert.ok(problems.some((p) => p.includes('concurrency group')), problems.join('\n'));
+});
+
+test('a concurrency group without the event name lets a scheduled run and a push to main cancel each other', () => {
+  for (const [file, check] of [['server.yml', checkServerWorkflow], ['desktop-ci.yml', checkDesktopCiWorkflow]]) {
+    const [server, desktop] = GOOD.split(SPLIT);
+    const group = 'group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}';
+    const bare = 'group: ${{ github.workflow }}-${{ github.ref }}';
+    const changed = file === 'server.yml' ? server.replace(group, bare) + SPLIT + desktop : server + SPLIT + desktop.replace(group, bare);
+    assert.notEqual(changed, GOOD);
+    assert.ok(check(fixture(changed)).some((p) => p.startsWith(file) && p.includes('concurrency group')), file);
+  }
+});
+
+test('only desktop-ci.yml runs nightly, on exactly the one cron', () => {
+  const [server, desktop] = GOOD.split(SPLIT);
+  const schedule = `  schedule:\n    - cron: '${NIGHTLY_CRON}'\n`;
+  assert.ok(desktop.includes(schedule));
+  const cases = [
+    ['desktop without the schedule', server + SPLIT + desktop.replace(schedule, ''), checkDesktopCiWorkflow, 'desktop-ci.yml'],
+    ['desktop on another cron', server + SPLIT + desktop.replace(NIGHTLY_CRON, '0 * * * *'), checkDesktopCiWorkflow, 'desktop-ci.yml'],
+    ['desktop on a second cron', server + SPLIT + desktop.replace(schedule, schedule + "    - cron: '5 5 * * *'\n"), checkDesktopCiWorkflow, 'desktop-ci.yml'],
+    ['server on the schedule', server.replace('  pull_request:\n', '  pull_request:\n' + schedule) + SPLIT + desktop, checkServerWorkflow, 'server.yml'],
+  ];
+  for (const [what, changed, check, file] of cases) {
+    assert.notEqual(changed, GOOD, what);
+    assert.ok(check(fixture(changed)).some((p) => p.startsWith(file) && p.includes('must trigger')), what);
+  }
+});
+
+test('the nightly run keeps its watcher: a scheduled desktop run without one is refused, server.yml takes no schedule clause', () => {
+  const clause = "github.event_name == 'schedule' || ";
+  const [server, desktop] = GOOD.split(SPLIT);
+  assert.ok(desktop.includes(clause));
+  assert.ok(checkDesktopCiWorkflow(fixture(server + SPLIT + desktop.replace(clause, ''))).some((p) => p.includes('unsafe watchdog')));
+  assert.ok(checkServerWorkflow(fixture(server.replace("|| (github.event_name == 'pull_request' && github.event.pull_request.head.repo", "|| " + clause + "(github.event_name == 'pull_request' && github.event.pull_request.head.repo") + SPLIT + desktop)).some((p) => p.includes('unsafe watchdog')));
 });
 
 test('a workflow token without read-only permissions is reported', () => {

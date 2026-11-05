@@ -473,6 +473,11 @@ class WatchdogTests(unittest.TestCase):
                 watchdog.from_environment(base | changes, event)
         self.assertIsInstance(watchdog.from_environment(base | {"GITHUB_EVENT_NAME": "push",
                               "GITHUB_REF": "refs/heads/main"}, {}), watchdog.GitHubRun)
+        # The nightly run: GitHub starts it on the default branch, and only there is it trusted.
+        self.assertIsInstance(watchdog.from_environment(base | {"GITHUB_EVENT_NAME": "schedule",
+                              "GITHUB_REF": "refs/heads/main"}, {}), watchdog.GitHubRun)
+        with self.assertRaises(ValueError):
+            watchdog.from_environment(base | {"GITHUB_EVENT_NAME": "schedule", "GITHUB_REF": "refs/heads/feature"}, {})
 
 
     def test_the_completion_barrier_comes_from_the_workflow_step_env(self):

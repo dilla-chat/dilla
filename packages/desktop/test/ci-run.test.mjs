@@ -58,8 +58,8 @@ test('findGreenPushRun returns the green push run on exactly that sha', async ()
  assert.deepEqual(api.calls, [runsPath]);
 });
 
-test('findGreenPushRun refuses pull_request, cancelled, failure, in_progress and other-branch runs', async () => {
- for (const bad of [{ event: 'pull_request' }, { conclusion: 'cancelled' }, { conclusion: 'failure' }, { status: 'in_progress', conclusion: null }, { head_branch: 'feature' }]) {
+test('findGreenPushRun refuses pull_request, schedule, workflow_dispatch, cancelled, failure, in_progress and other-branch runs', async () => {
+ for (const bad of [{ event: 'pull_request' }, { event: 'schedule' }, { event: 'workflow_dispatch' }, { conclusion: 'cancelled' }, { conclusion: 'failure' }, { status: 'in_progress', conclusion: null }, { head_branch: 'feature' }]) {
   const api = routes({ [runsPath]: { workflow_runs: [greenRun(bad)] } });
   await assert.rejects(findGreenPushRun(api, SHA), /no green desktop push run/, JSON.stringify(bad));
  }

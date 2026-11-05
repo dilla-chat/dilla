@@ -3,18 +3,21 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Nightly on main with every area on, so test drift (a browser or runner update, a flaky lane) surfaces within a day.
+  schedule:
+    - cron: '17 2 * * *'
 permissions:
   contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 env:
   CARGO_TERM_COLOR: always
 jobs:
   # Runs independently of changes so the first failing root job is covered too. The write
-  # token belongs only to trusted same-repository PRs/main pushes; fork code never runs here.
+  # token belongs only to trusted same-repository PRs, main pushes and scheduled runs (which GitHub starts on main); fork code never runs here.
   ci-watchdog:
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -35,7 +38,7 @@ jobs:
   # workflow and its sibling (server.yml) both run on every pull request and push to main, so both
   # ok checks always report. A pull request whose changed files all sit under docs/ or are *.md is docs-only: it runs
   # this job and workflow infrastructure; test/build jobs are skipped (a skipped job counts as passed for a
-  # required check). A push to main, and any diff that cannot be computed, turn every area on. Every other job carries
+  # required check). A push to main, a scheduled run, and any diff that cannot be computed, turn every area on. Every other job carries
   # `needs: changes` and an `if:` on the outputs it depends on (JOB_GATES.desktop in scripts/ci-areas.mjs).
   changes:
     runs-on: ubuntu-latest

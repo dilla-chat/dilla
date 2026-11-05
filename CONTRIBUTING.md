@@ -71,7 +71,7 @@ CI is two workflows, both run on every pull request and every push to main: `ser
 the docs gates, the Go jobs, the Rust core checks and the release build) and `desktop`
 (`.github/workflows/desktop-ci.yml`: the script gates, the UI, the wasm core, the integration suites and the
 `desktop.yml` acceptance). Each reports one check, `server-ok` and `desktop-ok`, so a desktop failure never blocks a
-server change, or the reverse. A pull request runs only the parts of CI it touches. Each workflow's `changes` job
+server change, or the reverse. The `desktop` workflow also runs nightly on main at 02:17 UTC with every area on, so test drift surfaces within a day. A pull request runs only the parts of CI it touches. Each workflow's `changes` job
 (`scripts/ci-areas.mjs`, which holds the path table and has its own tests) reads the changed paths and sets one output
 per area:
 

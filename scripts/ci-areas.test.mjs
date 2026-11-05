@@ -156,6 +156,14 @@ test('both workflows get every area on for a push to main', () => {
   for (const wf of WFS) assert.deepEqual(ranJobs(wf, outputs), Object.keys(JOB_GATES[wf]), wf);
 });
 
+test('a scheduled run turns every desktop area on', () => {
+  // The nightly run has no base to diff against; whatever the diff would say, nothing is narrowed.
+  const outputs = computeAreas({ eventName: 'schedule', baseSha: '', diff: () => ['docs/a.md'] });
+  assert.deepEqual(outputs, ALL);
+  assert.deepEqual(computeAreas({ eventName: 'schedule', baseSha: 'abc', diff: () => ['docs/a.md'] }), ALL);
+  assert.deepEqual(ranJobs('desktop', outputs), Object.keys(JOB_GATES.desktop));
+});
+
 test('a path with a newline in it stays one path', () => {
   // docs/x\nrun.go is one file under docs/; split on newlines it would be the code file run.go.
   assert.deepEqual(computeAreas({ eventName: 'pull_request', baseSha: 'abc', diff: () => ['docs/x\nrun.go'] }), NONE);
@@ -199,7 +207,8 @@ test("a docs-only PR runs both workflows' changes job and reports their ok jobs"
     const { name, on, jobs } = readWorkflow(wf);
     assert.equal(name, WORKFLOWS[wf].name);
     // Triggered for every pull request and push to main, so its checks exist whatever the change touched.
-    assert.deepEqual(on, { push: { branches: ['main'] }, pull_request: null }, wf);
+    // The desktop workflow also runs nightly (the schedule test above).
+    assert.deepEqual(on, { push: { branches: ['main'] }, pull_request: null, ...(wf === 'desktop' ? { schedule: [{ cron: '17 2 * * *' }] } : {}) }, wf);
     assert.deepEqual(ranJobs(wf, outputs), [], wf);
     for (const job of WORKFLOWS[wf].always) {
       assert.ok(job in jobs, `${wf}: ${job}`);

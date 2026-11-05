@@ -177,8 +177,10 @@ def from_environment(env, event):
     same_repo_pr = (event_name == "pull_request" and
                     event.get("pull_request", {}).get("head", {}).get("repo", {}).get("full_name") == repository)
     main_push = event_name == "push" and env.get("GITHUB_REF") == "refs/heads/main"
-    if not (same_repo_pr or main_push):
-        raise ValueError("watchdog requires a same-repository pull request or main push")
+    # GitHub starts a scheduled run on the default branch only.
+    main_schedule = event_name == "schedule" and env.get("GITHUB_REF") == "refs/heads/main"
+    if not (same_repo_pr or main_push or main_schedule):
+        raise ValueError("watchdog requires a same-repository pull request, main push or main schedule")
     api = GitHubRun(repository, env.get("GITHUB_RUN_ID", ""), env.get("GH_TOKEN", ""))
     attempt = env.get("GITHUB_RUN_ATTEMPT", "1")
     if not re.fullmatch(r"[1-9][0-9]*", attempt):

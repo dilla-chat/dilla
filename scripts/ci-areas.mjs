@@ -236,7 +236,7 @@ export function reachableOutputs(files = null) {
 }
 
 /**
- * The outputs for an event, the same for both workflows. Only a pull request is narrowed; a push (main) runs everything. `diff` returns the
+ * The outputs for an event, the same for both workflows. Only a pull request is narrowed; a push (main) and the nightly schedule run everything. `diff` returns the
  * changed paths as an array and may throw.
  */
 export function computeAreas({ eventName, baseSha, diff }) {

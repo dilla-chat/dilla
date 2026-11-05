@@ -37,9 +37,11 @@ test('a green server run on a different SHA is refused', async () => {
   await assert.rejects(run(envFor({}), SHA, opts(fetchImpl)), /no green server push run/);
 });
 
-test('a green server run from a pull_request event is refused', async () => {
-  const fetchImpl = github({ [runsUrl('server.yml')]: [serverRun({ event: 'pull_request' })] });
-  await assert.rejects(run(envFor({}), SHA, opts(fetchImpl)), /no green server push run/);
+test('a green server run from any event but push is refused', async () => {
+  for (const event of ['pull_request', 'schedule', 'workflow_dispatch']) {
+    const fetchImpl = github({ [runsUrl('server.yml')]: [serverRun({ event })] });
+    await assert.rejects(run(envFor({}), SHA, opts(fetchImpl)), /no green server push run/, event);
+  }
 });
 
 test('a green desktop run does not satisfy the server gate', async () => {
