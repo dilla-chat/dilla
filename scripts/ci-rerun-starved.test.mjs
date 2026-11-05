@@ -7,12 +7,12 @@ function job(name, { status = 'completed', conclusion = 'success', steps = [], r
   return { id: 1, name, status, conclusion, runner_name, steps };
 }
 const starved = (name = 'desktop / macos') => job(name, { conclusion: 'cancelled', runner_name: null });
-const envFor = (over) => ({ GH_TOKEN: 't', GITHUB_REPOSITORY: 'o/r', RUN_ID: '42', RUN_ATTEMPT: '1', RUN_CONCLUSION: 'cancelled', ...over });
+const envFor = (over) => ({ GH_TOKEN: 't', GITHUB_REPOSITORY: 'o/r', RUN_ID: '42', RUN_ATTEMPT: '1', RUN_CONCLUSION: 'failure', ...over });
 
 test('a cancelled job with no runner and no steps triggers one rerun', async () => {
   const jobs = [job('node'), starved()];
   assert.deepEqual(starvedJobs(jobs).map((j) => j.name), ['desktop / macos']);
-  assert.equal(shouldRerun({ attempt: 1, conclusion: 'cancelled', jobs }), true);
+  assert.equal(shouldRerun({ attempt: 1, conclusion: 'failure', jobs }), true);
 
   const calls = [];
   const fetchImpl = async (url, { method }) => {
@@ -33,7 +33,7 @@ test('a cancelled job that ran steps does not count', () => {
   const ran = job('node', { conclusion: 'cancelled', steps: [{ name: 'Set up job', status: 'completed', conclusion: 'success' }] });
   const onRunner = job('go', { conclusion: 'cancelled' });
   assert.deepEqual(starvedJobs([ran, onRunner]), []);
-  assert.equal(shouldRerun({ attempt: 1, conclusion: 'cancelled', jobs: [ran, onRunner] }), false);
+  assert.equal(shouldRerun({ attempt: 1, conclusion: 'failure', jobs: [ran, onRunner] }), false);
 });
 
 test('a green run does nothing', async () => {
@@ -42,9 +42,54 @@ test('a green run does nothing', async () => {
   assert.equal(await run(envFor({ RUN_CONCLUSION: 'success' }), { fetchImpl, log: () => {} }), false);
 });
 
-test('a failed job beside a starved one still triggers the rerun', () => {
+test('a failed job beside a starved one does not rerun: a real failure gets no free second try', () => {
   const jobs = [job('go', { conclusion: 'failure' }), starved()];
-  assert.equal(shouldRerun({ attempt: 1, conclusion: 'failure', jobs }), true);
+  assert.equal(shouldRerun({ attempt: 1, conclusion: 'failure', jobs }), false);
+});
+
+test('a cancelled run with a starved job does not rerun', async () => {
+  assert.equal(shouldRerun({ attempt: 1, conclusion: 'cancelled', jobs: [starved()] }), false);
+  const fetchImpl = async () => assert.fail('a cancelled run must not call the API');
+  assert.equal(await run(envFor({ RUN_CONCLUSION: 'cancelled' }), { fetchImpl, log: () => {} }), false);
+});
+
+test('a starved job plus a failed aggregate reruns', () => {
+  for (const name of ['ci-ok', 'server-ok', 'desktop-ok', 'ci-watchdog']) {
+    assert.equal(shouldRerun({ attempt: 1, conclusion: 'failure', jobs: [starved(), job(name, { conclusion: 'failure' })] }), true, name);
+  }
+});
+
+test('a starved job plus a cancelled job that started does not rerun', () => {
+  const onRunner = job('go', { conclusion: 'cancelled' });
+  const withSteps = job('node', { conclusion: 'cancelled', runner_name: null, steps: [{ name: 'Set up job' }] });
+  assert.equal(shouldRerun({ attempt: 1, conclusion: 'failure', jobs: [starved(), onRunner] }), false);
+  assert.equal(shouldRerun({ attempt: 1, conclusion: 'failure', jobs: [starved(), withSteps] }), false);
+});
+
+test('a timed_out job blocks the rerun', () => {
+  assert.equal(shouldRerun({ attempt: 1, conclusion: 'failure', jobs: [starved(), job('go', { conclusion: 'timed_out' })] }), false);
+});
+
+test('predicate parity with NEVER_STARTED in ci-watchdog.py', () => {
+  // A failed job with no runner and no steps is not never-started.
+  assert.deepEqual(starvedJobs([job('x', { conclusion: 'failure', runner_name: null })]), []);
+  // An empty runner name with steps undefined is never-started.
+  const bare = { id: 1, name: 'x', status: 'completed', conclusion: 'cancelled', runner_name: '' };
+  assert.deepEqual(starvedJobs([bare]), [bare]);
+  assert.deepEqual(starvedJobs([{ ...bare, status: 'in_progress' }]), []);
+});
+
+test('a raw job name never reaches the log', async () => {
+  const lines = [];
+  const jobs = [{ ...starved('::add-mask::x'), id: 9 }];
+  const fetchImpl = async (url, { method }) => (method === 'POST' ? new Response(null, { status: 201 }) : Response.json({ jobs }));
+  assert.equal(await run(envFor({}), { fetchImpl, log: (l) => lines.push(l) }), true);
+  assert.ok(lines.some((l) => l.includes('9')));
+  assert.ok(lines.every((l) => !l.includes('::add-mask::') && !l.includes('add-mask')));
+});
+
+test('an invalid conclusion is refused', async () => {
+  await assert.rejects(run(envFor({ RUN_CONCLUSION: '::x' }), { fetchImpl: async () => assert.fail('no call'), log: () => {} }), /RUN_CONCLUSION/);
 });
 
 test('a failed job alone does not trigger a rerun', () => {

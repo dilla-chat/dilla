@@ -1943,6 +1943,9 @@ export function checkDesktopReleaseWorkflow(root) {
  * re-runs attempt 1 only, checks out the default branch and never the triggering run's code, and takes the
  * run's id and attempt through env rather than inline in a command.
  */
+const RERUN_STARVED_IF = "github.event.workflow_run.run_attempt == 1 && github.event.workflow_run.conclusion == 'failure'";
+const RERUN_STARVED_ENV = { RUN_ID: '${{ github.event.workflow_run.id }}', RUN_ATTEMPT: '${{ github.event.workflow_run.run_attempt }}', RUN_CONCLUSION: '${{ github.event.workflow_run.conclusion }}' };
+
 export function checkRerunStarvedWorkflow(root) {
   const file = 'ci-rerun-starved.yml';
   const problems = [];
@@ -1961,8 +1964,13 @@ export function checkRerunStarvedWorkflow(root) {
   if (jobs.length !== 1) fail('must have exactly one job');
   for (const job of jobs) {
     if (job?.permissions !== undefined && !drSame(job.permissions, { actions: 'write' }) && !drSame(job.permissions, { actions: 'write', contents: 'read' })) fail('a job may hold only actions: write and contents: read');
-    if (!/github\.event\.workflow_run\.run_attempt\s*==\s*1\b/.test(String(job?.if ?? ''))) fail('the job must be guarded by github.event.workflow_run.run_attempt == 1');
     const steps = Array.isArray(job?.steps) ? job.steps : [];
+    if (job?.if !== RERUN_STARVED_IF) fail(`the job's if must be exactly: ${RERUN_STARVED_IF}`);
+    if (/\|\|/.test(String(job?.if ?? ''))) fail("the job's if must not contain ||");
+    const runStep = steps.find((step) => typeof step?.run === 'string' && step.run.includes('ci-rerun-starved.mjs'));
+    if (!drSame(runStep?.env?.RUN_ID, RERUN_STARVED_ENV.RUN_ID) || !drSame(runStep?.env?.RUN_ATTEMPT, RERUN_STARVED_ENV.RUN_ATTEMPT) || !drSame(runStep?.env?.RUN_CONCLUSION, RERUN_STARVED_ENV.RUN_CONCLUSION)) {
+      fail('the script step must pass RUN_ID, RUN_ATTEMPT and RUN_CONCLUSION from github.event.workflow_run through env');
+    }
     const checkouts = steps.filter((step) => typeof step?.uses === 'string' && step.uses.startsWith('actions/checkout@'));
     if (checkouts.length !== 1 || checkouts[0].with?.ref !== '${{ github.event.repository.default_branch }}') fail('must check out exactly once, with ref: ${{ github.event.repository.default_branch }}');
     for (const step of steps) {

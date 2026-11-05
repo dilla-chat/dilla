@@ -13,9 +13,23 @@ export function starvedJobs(jobs) {
   return jobs.filter(neverStarted);
 }
 
-/** rerun-failed-jobs also re-runs the genuinely failed jobs of the run, so one starved job is reason enough. */
+/** Aggregate jobs fail because a starved job did, so they say nothing about whether the change is broken. */
+export const AGGREGATE_JOBS = ['ci-ok', 'server-ok', 'desktop-ok', 'ci-watchdog'];
+
+/** A job that really ran and failed: failure or timeout, or cancelled after it started (a runner or steps). */
+function realFailure(job) {
+  if (AGGREGATE_JOBS.includes(job.name)) return false;
+  if (job.conclusion === 'failure' || job.conclusion === 'timed_out') return true;
+  return job.conclusion === 'cancelled' && !neverStarted(job);
+}
+
+/**
+ * rerun-failed-jobs re-runs every failed job too, so a real failure must never get a free second try: only a
+ * failed run whose sole damage is jobs that never got a runner is re-run. A cancelled run (watchdog after a real
+ * failure, fail-fast siblings, supersede, user cancel) also leaves never-started jobs behind and is never re-run.
+ */
 export function shouldRerun({ attempt, conclusion, jobs }) {
-  return attempt === 1 && conclusion !== 'success' && starvedJobs(jobs).length > 0;
+  return attempt === 1 && conclusion === 'failure' && starvedJobs(jobs).length > 0 && !jobs.some(realFailure);
 }
 
 const API_ORIGIN = 'https://api.github.com';
@@ -55,7 +69,8 @@ export async function run(env, { fetchImpl = fetch, sleep = (ms) => delay(ms), l
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository ?? '')) throw new Error('GITHUB_REPOSITORY must be owner/name');
   if (!/^[1-9]\d*$/.test(runId ?? '')) throw new Error('RUN_ID must be a run number');
   if (Number(attempt) !== 1) { log(`run ${runId} attempt ${attempt}: only attempt 1 is re-run`); return false; }
-  if (conclusion === 'success') { log(`run ${runId} succeeded; nothing to do`); return false; }
+  if (!/^[a-z_]+$/.test(conclusion ?? '')) throw new Error('RUN_CONCLUSION must be a run conclusion');
+  if (conclusion !== 'failure') { log(`run ${runId} concluded ${conclusion}; only a failed run is re-run`); return false; }
 
   const api = { token, fetchImpl, sleep };
   const base = `/repos/${repository}/actions/runs/${runId}`;
@@ -66,8 +81,9 @@ export async function run(env, { fetchImpl = fetch, sleep = (ms) => delay(ms), l
     if (body.jobs.length < PAGE_SIZE) break;
   }
   const starved = starvedJobs(jobs);
-  if (!shouldRerun({ attempt: 1, conclusion, jobs })) { log(`run ${runId}: no job without a runner; nothing to do`); return false; }
-  log(`run ${runId}: ${starved.length} job(s) never got a runner (${starved.map((job) => job.name).join(', ')}); re-running failed jobs once`);
+  if (!shouldRerun({ attempt: 1, conclusion, jobs })) { log(`run ${runId}: no starved job, or a job really failed; nothing to do`); return false; }
+  // Job ids, never names: a fork controls names, and a line starting with :: is a workflow command.
+  log(`run ${runId}: ${starved.length} job(s) never got a runner (ids ${starved.map((job) => Number(job.id)).join(', ')}); re-running failed jobs once`);
   await call({ ...api, path: `${base}/rerun-failed-jobs`, method: 'POST' });
   return true;
 }
