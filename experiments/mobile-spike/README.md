@@ -64,10 +64,42 @@ The lines arrive under the `Capacitor/Console` tag.
 
 ## iPhone (Mac, Xcode 16+)
 
-The iOS project is committed (Swift Package Manager, no CocoaPods). On the Mac, from a checkout of this branch:
+The iOS project is committed (Swift Package Manager, no CocoaPods). The Mac needs Xcode 16+ (App Store, then open it
+once to install its components) and Node 24+. It does **not** need Rust if it uses a `dist/` built on Linux, which is
+the recommended path.
 
-1. Repo root: `npm install`, then build the core wasm (see Prerequisites) if `packages/core-wasm/pkg/` is missing.
-2. `cd experiments/mobile-spike && npm install && npm run build`
+Mac prerequisites:
+
+- Xcode 16 or newer, opened once; `xcode-select -p` should print `/Applications/Xcode.app/Contents/Developer`
+  (else `sudo xcode-select -s /Applications/Xcode.app`).
+- Node 24 or newer: `nvm install 24 && nvm use 24` (the repo's `engines` field requires it).
+
+**Path A (recommended): copy a Linux-built `dist/`.** On the Linux host, which has the wasm toolchain:
+
+```sh
+cd experiments/mobile-spike && npm install && npm run build
+tar czf /tmp/mobile-spike-dist.tgz dist      # then copy it to the Mac (scp, AirDrop)
+```
+
+On the Mac, from a checkout of this branch:
+
+1. `cd experiments/mobile-spike && npm install` (only the Capacitor CLI and Vite; no root `npm install` needed).
+2. `tar xzf <path>/mobile-spike-dist.tgz` inside `experiments/mobile-spike`, so `dist/index.html` exists. Do not run
+   `npm run build` (it needs the wasm toolchain).
+
+**Path B: build on the Mac.** Needs the whole wasm toolchain:
+
+- Rust via rustup (`brew install rustup && rustup-init -y`); the repo's `rust-toolchain.toml` pins 1.98.1 with the
+  `wasm32-unknown-unknown` target, which rustup installs on the first `cargo` call in the repo.
+- wasm-pack: `cargo install wasm-pack` (or `brew install wasm-pack`).
+- A clang that targets wasm32 for the bundled SQLite C build. Apple's clang does not: `brew install llvm`, then
+  `export CC_wasm32_unknown_unknown=$(brew --prefix llvm)/bin/clang AR_wasm32_unknown_unknown=$(brew --prefix llvm)/bin/llvm-ar`.
+
+Then: repo root `npm install`; the `wasm-pack build` command under Prerequisites;
+`cd experiments/mobile-spike && npm install && npm run build`.
+
+Then, either path:
+
 3. `npx cap sync ios` (copies `dist/` into `ios/App/App/public` and writes `Package.swift`).
 4. `npx cap open ios` (or open `ios/App/App.xcodeproj` in Xcode). Xcode resolves the `capacitor-swift-pm` package on
    first open; wait until "Resolving package graph" finishes.

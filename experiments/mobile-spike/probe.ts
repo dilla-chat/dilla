@@ -20,7 +20,7 @@ interface Probe {
 
 const detail: Record<string, unknown> = { isSecureContext: globalThis.isSecureContext, origin: location.origin };
 
-function opfs(): Promise<{ opfsSyncHandle: boolean; opfsPersisted: boolean }> {
+function opfs(trigger: string): Promise<{ opfsSyncHandle: boolean; opfsPersisted: boolean }> {
   return new Promise((resolve) => {
     let worker: Worker;
     const timer = setTimeout(() => { detail.worker = 'timeout'; worker?.terminate(); resolve({ opfsSyncHandle: false, opfsPersisted: false }); }, 20_000);
@@ -38,6 +38,7 @@ function opfs(): Promise<{ opfsSyncHandle: boolean; opfsPersisted: boolean }> {
       worker.terminate();
       resolve({ opfsSyncHandle: e.data.opfsSyncHandle === true, opfsPersisted: e.data.opfsPersisted === true });
     };
+    worker.postMessage({ trigger });
     worker.onerror = (e) => { clearTimeout(timer); detail.worker = `error: ${e.message}`; resolve({ opfsSyncHandle: false, opfsPersisted: false }); };
   });
 }
@@ -97,7 +98,7 @@ async function run(trigger: string): Promise<void> {
   detail.trigger = trigger;
   const out = document.getElementById('out')!;
   out.textContent = 'probing…';
-  const [o, locks, audio, persist] = [await opfs(), await webLocks(), await rnnoise(), await storagePersist()];
+  const [o, locks, audio, persist] = [await opfs(trigger), await webLocks(), await rnnoise(), await storagePersist()];
   const probe: Probe = {
     opfsSyncHandle: o.opfsSyncHandle,
     opfsPersisted: o.opfsPersisted,
