@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Release: HTTPS only, system CAs only. A user-installed CA never reaches the app's traffic.
+     The debug build overrides this file from src/debug (test/native-projects.test.mjs keeps it that way). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -1,0 +1,16 @@
+:root { color-scheme: dark; font: 16px/1.6 system-ui, sans-serif; background: #0c1218; color: #e1e8ee; -webkit-text-size-adjust: 100%; }
+body { margin: 0; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+main { max-width: 38rem; margin: 1rem auto; padding: 0 1rem; }
+.brand { display: flex; align-items: baseline; gap: 1rem; font-size: 2rem; font-weight: 700; color: #70bfca; letter-spacing: -.05em; }
+.brand span { color: #a5b5c2; font-size: .8rem; font-weight: 400; letter-spacing: normal; }
+h1 { margin: 2rem 0 1rem; font-size: 2.25rem; line-height: 1.1; letter-spacing: -.04em; font-weight: 650; }
+p { color: #a5b5c2; }
+form { margin-top: 2rem; } label { display: block; margin-bottom: .5rem; } .connect { display: flex; flex-wrap: wrap; gap: .75rem; }
+/* 16px inputs: iOS zooms into any smaller focused field. */
+input, button { font: inherit; font-size: 16px; border-radius: .4rem; padding: .65rem .8rem; border: 1px solid #344959; min-height: 44px; }
+input { min-width: 0; flex: 1; color: inherit; background: #131e28; } button { cursor: pointer; background: #2e8b9a; color: #fff; font-weight: 600; }
+:focus-visible { outline: 2px solid #e8b84b; outline-offset: 3px; } button:disabled { opacity: .6; cursor: wait; }
+section { margin-top: 2rem; border-top: 1px solid #263746; padding-top: 1rem; } h2 { font-size: 1rem; font-weight: 600; }
+ul { list-style: none; padding: 0; } li { margin-bottom: .6rem; } li button { width: 100%; background: #131e28; text-align: left; overflow-wrap: anywhere; }
+li button[aria-current="true"] { border-color: #70bfca; }
+#error { color: #f3a8a1; min-height: 1.6rem; } footer { border-top: 1px solid #263746; padding-top: 1rem; color: #a5b5c2; font-size: .85rem; }
