@@ -800,11 +800,84 @@ describe('Controller', () => {
     ask(122, COMMUNITY, 0x73);
     await refused(122);
     expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(14);
-    // ...until a Welcome turns a group active: then X is checked again.
-    w.sync.deps!.onGroupChanged(new Uint8Array(16).fill(0x55), { state: 2, epochChanged: false } as never);
+    // Final review I1: ordinary chat in a channel group, and an interaction group of ANOTHER community, prove nothing
+    // about X: its memory stays.
+    w.sync.deps!.onGroupChanged(GROUP, { state: 2, epochChanged: false } as never);
+    const otherGroup = new Uint8Array(16).fill(0x56);
+    w.state.groups.push({ ...textGroup(2), groupId: otherGroup, kind: 3, communityId: other });
+    w.sync.deps!.onGroupChanged(otherGroup, { state: 2, epochChanged: false } as never);
+    ask(124, COMMUNITY, 0x75);
+    await refused(124);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(14);
+    // ...until a Welcome turns X's interaction group active: then X's memory is forgotten. (The group is taken out
+    // again so the next read still looks, which proves the memory was cleared.)
+    const ownGroup = new Uint8Array(16).fill(0x55);
+    w.state.groups.push({ ...textGroup(2), groupId: ownGroup, kind: 3 });
+    w.sync.deps!.onGroupChanged(ownGroup, { state: 2, epochChanged: false } as never);
+    w.state.groups.splice(w.state.groups.findIndex((row) => row.groupId === ownGroup), 1);
     ask(123, COMMUNITY, 0x74);
     await refused(123);
     expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(21);
+  });
+
+  // Final review I1: chat traffic in other groups during the wait neither ends it early nor costs extra polls; an
+  // interaction group of another community does not wake it either.
+  it('unrelated group applies during the Welcome wait do not wake it, and it runs to its 45 s deadline', async () => {
+    let nowMs = 1_700_000_000_000;
+    const sleeps: { ms: number; fire: () => void }[] = [];
+    const w = world({ now: () => nowMs, sleep: (ms, signal) => new Promise<void>((resolve) => {
+      sleeps.push({ ms, fire: resolve });
+      signal?.addEventListener('abort', () => { resolve(); });
+    }) });
+    await toReady(w);
+    const other = new Uint8Array(16).fill(0x77);
+    w.call(125, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY),
+      requestId: toHex(new Uint8Array(16).fill(0x76)), cursor: null });
+    await vi.waitFor(() => expect(sleeps).toHaveLength(1));
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 10; i++) w.sync.deps!.onGroupChanged(GROUP, { state: 2, epochChanged: false } as never);
+    const otherGroup = new Uint8Array(16).fill(0x56);
+    w.state.groups.push({ ...textGroup(2), groupId: otherGroup, kind: 3, communityId: other });
+    w.sync.deps!.onGroupChanged(otherGroup, { state: 2, epochChanged: false } as never);
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    expect(w.ret(125)).toBeUndefined();
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(1);
+    expect(sleeps).toHaveLength(1);
+    // The backoff timers run out the window: each expiry polls once, and the request ends at the deadline.
+    let fired = 0;
+    while (w.ret(125) === undefined && fired < 20) {
+      const next = sleeps[sleeps.length - 1];
+      nowMs += next.ms;
+      next.fire();
+      fired++;
+      await new Promise((resolve) => { setTimeout(resolve, 5); });
+    }
+    expect(w.ret(125)).toMatchObject({ ok: false, error: { detail: 'missing_interaction_group' } });
+    expect(sleeps.map((s) => s.ms)).toEqual([1_000, 2_000, 4_000, 8_000, 15_000, 15_000]);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(7);
+  });
+
+  it('a wait woken early by its own group returns at once without spending the deadline', async () => {
+    let nowMs = 1_700_000_000_000;
+    const sleeps: number[] = [];
+    const w = world({ now: () => nowMs, sleep: (ms, signal) => new Promise<void>((resolve) => {
+      sleeps.push(ms);
+      signal?.addEventListener('abort', () => { resolve(); });
+    }) });
+    await toReady(w);
+    const groupId = new Uint8Array(16).fill(0x52);
+    w.core.humanInteractionSendPrepare.mockImplementation((rid) => {
+      w.state.outbox.push({ msgId: rid, state: 0, error: '', created: 1n, body: 'evidence page request', type: 0, replyTo: null, attachments: [] });
+      return rid;
+    });
+    w.call(126, { m: 'listManualModerationEvidence', communityId: toHex(COMMUNITY),
+      requestId: toHex(new Uint8Array(16).fill(0x78)), cursor: null });
+    await vi.waitFor(() => expect(sleeps).toHaveLength(1));
+    nowMs += 300;
+    w.state.groups.push({ ...textGroup(2), groupId, kind: 3 });
+    w.sync.deps!.onGroupChanged(groupId, { state: 2, epochChanged: false } as never);
+    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    expect(sleeps).toHaveLength(1);
   });
 
   it('a Welcome push that activates the group wakes a waiting request before its backoff ends', async () => {

@@ -140,6 +140,8 @@ E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_PASSKEY_OTHER_ACCOUNT E_STEP_UP E_TARGET_N
 /** Catch-up fetch delays while a request waits for its interaction group's Welcome (45 s in all). */
 const WELCOME_BACKOFF_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000, 15_000, 15_000];
 const NO_GROUP_MEMORY_MS = 30_000;
+/** The Welcome wait's window: the backoff schedule's sum (45 s), held as a deadline so a wake never shortens it. */
+const WELCOME_WAIT_MS = WELCOME_BACKOFF_MS.reduce((sum, ms) => sum + ms, 0);
 const NO_INTERACTION_GROUP = 'no active interaction group for this community';
 const AMBIGUOUS_INTERACTION_GROUP = 'multiple active interaction groups make the Bot target ambiguous';
 const INTERACTION_CLOCK_SKEW = 'no active interaction group: its Welcome was refused because this device clock is off from the instance clock';
@@ -1146,7 +1148,8 @@ export class Controller {
   /** Community hex → when its remembered "no interaction group" answer lapses (ms). */
   private readonly noInteractionGroupUntil = new Map<string, number>();
   /** Requests waiting for a Welcome push; each is woken when a group turns active. */
-  private readonly interactionGroupWaiters = new Set<() => void>();
+  /** community hex → wakers of requests waiting for that community's interaction group (kind 3) to become active. */
+  private readonly interactionGroupWaiters = new Map<string, Set<() => void>>();
   /** Per kept kind-3 Welcome group (hex): its community (hex, from the proof; '' when unreadable) and the deps.now() ms
    *  it was last refused for clock skew (sync's onWelcomeClockSkew). A Bot request names the skew only for its own
    *  community. The last E_CLOCK_SKEW diagnostics entry: a kept Welcome is refused on every poll, so the entry repeats
@@ -1608,14 +1611,23 @@ export class Controller {
     return saved;
   }
 
-  /** Resolves when a group becomes active (the gateway's Welcome push applied) or after `ms`, whichever is first. */
-  private async waitForInteractionWelcome(ms: number): Promise<void> {
+  /**
+   * Resolves `true` when this community's interaction group becomes active (the gateway's Welcome push applied), or
+   * `false` after `ms`, whichever is first. Traffic in any other group does not wake it.
+   */
+  private async waitForInteractionWelcome(communityHex: string, ms: number): Promise<boolean> {
     const abort = new AbortController();
     let wake: () => void = () => undefined;
-    const pushed = new Promise<void>((resolve) => { wake = resolve; });
-    this.interactionGroupWaiters.add(wake);
-    try { await Promise.race([this.deps.sleep(ms, abort.signal).catch(() => undefined), pushed]); }
-    finally { abort.abort(); this.interactionGroupWaiters.delete(wake); }
+    const pushed = new Promise<true>((resolve) => { wake = () => { resolve(true); }; });
+    let waiters = this.interactionGroupWaiters.get(communityHex);
+    if (waiters === undefined) { waiters = new Set(); this.interactionGroupWaiters.set(communityHex, waiters); }
+    waiters.add(wake);
+    try { return await Promise.race([this.deps.sleep(ms, abort.signal).then(() => false, () => false), pushed]); }
+    finally {
+      abort.abort();
+      waiters.delete(wake);
+      if (waiters.size === 0 && this.interactionGroupWaiters.get(communityHex) === waiters) this.interactionGroupWaiters.delete(communityHex);
+    }
   }
 
   private async waitForActiveInteractionGroup(communityHex: string): Promise<ReturnType<CorePort['groups']>> {
@@ -1631,16 +1643,22 @@ export class Controller {
     const knownEmpty = knownEmptyUntil !== undefined && startedMs < knownEmptyUntil;
     if (rows.length === 0 && !knownEmpty) {
       // Check once. Registration follows the daemon's 30-second reconciliation interval, so the original request stays
-      // pending: the gateway's Welcome push wakes it, and a catch-up fetch backs off (1 s doubling to 15 s) as the net.
+      // pending until a 45 s deadline: the gateway's Welcome push wakes it (only an apply that activates this
+      // community's interaction group does), and a catch-up fetch backs off (1 s doubling to 15 s) as the net. A wake
+      // never uses up a backoff step; only an expired step polls.
       if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
       await sync.pollWelcomes();
       rows = activeGroups();
-      for (let attempt = 0; rows.length === 0 && attempt < WELCOME_BACKOFF_MS.length; attempt++) {
+      const deadlineMs = startedMs + WELCOME_WAIT_MS;
+      let step = 0;
+      while (rows.length === 0 && step < WELCOME_BACKOFF_MS.length) {
+        const leftMs = deadlineMs - this.deps.now();
+        if (leftMs <= 0) break;
         if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
-        await this.waitForInteractionWelcome(WELCOME_BACKOFF_MS[attempt]);
+        const woken = await this.waitForInteractionWelcome(communityHex, Math.min(WELCOME_BACKOFF_MS[step], leftMs));
         if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
         rows = activeGroups();
-        if (rows.length === 0) { await sync.pollWelcomes(); rows = activeGroups(); }
+        if (rows.length === 0 && !woken) { step++; await sync.pollWelcomes(); rows = activeGroups(); }
       }
       if (rows.length === 0) this.noInteractionGroupUntil.set(communityHex, this.deps.now() + NO_GROUP_MEMORY_MS);
     }
@@ -4853,8 +4871,15 @@ export class Controller {
     // catch-up the DS served ('member').
     if (result.state === 2) {
       this.resyncing.delete(hex);
-      this.noInteractionGroupUntil.clear();
-      for (const wake of [...this.interactionGroupWaiters]) wake();
+      // Final review I1: only an apply that leaves this community's interaction group (kind 3) active ends that
+      // community's Welcome wait and its "no group" memory. Chat in any other group proves nothing.
+      this.safely(() => {
+        const row = this.core?.groups().find((g) => toHex(g.groupId) === hex);
+        if (row === undefined || row.kind !== 3 || row.state !== 2 || row.communityId === null) return;
+        const communityHex = toHex(row.communityId);
+        this.noInteractionGroupUntil.delete(communityHex);
+        for (const wake of [...(this.interactionGroupWaiters.get(communityHex) ?? [])]) wake();
+      });
     }
     const seen: { groups: readonly GroupInfo[] | null } = { groups: null };
     this.safely(() => { this.refreshTrustGeneration(); seen.groups = this.touchGroup(groupId); });
