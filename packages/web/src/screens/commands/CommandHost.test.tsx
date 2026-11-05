@@ -341,10 +341,8 @@ it.each([['kick', false], ['kick', true], ['ban', false], ['ban', true]] as cons
   expect(within(dialog).getByText('Duration').parentElement).toHaveTextContent(action === 'kick' ? /^Duration—$/ : /^Duration1 day$/);
   expect(within(dialog).getByText('Reason').parentElement).toHaveTextContent(/^Reasonnone given$/);
   expect(within(dialog).getByText('Logged').parentElement).toHaveTextContent(/^Loggedmodlog · visible to moderators$/);
-  if (action === 'kick') {
-    expect(screen.queryByRole('textbox', { name: 'reason' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('combobox', { name: 'reason' })).not.toBeInTheDocument();
-  }
+  // Parity sweep 2026-11-05 (Jonas): kick has the prototype's optional "reason?" chip behind the confirm, as ban does.
+  expect(screen.getByRole('textbox', { name: 'reason' })).toHaveAttribute('placeholder', 'optional');
   expect(privateResults(core, ':', `${'55'.repeat(16)}/${'44'.repeat(16)}/`).rows()).toHaveLength(0);
   if (accepted) {
     const confirm = screen.getByRole('button', { name: label });
@@ -718,11 +716,105 @@ describe('the Bot command list outlives the picker', () => {
     typeSlash('/');
     await act(() => vi.advanceTimersByTimeAsync(100));
     expect(screen.queryByRole('option', { name: /\/play/ })).not.toBeInTheDocument();
-    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    await act(() => vi.advanceTimersByTimeAsync(2_000)); // the first quick retry
     expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
     await act(() => vi.advanceTimersByTimeAsync(30_000));
     expect(capabilities).toHaveBeenCalledTimes(3);
     expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
     expect(core.calls.filter(call => call.m === 'callNote')).toEqual([{ m: 'callNote', code: 'E_BOT_CAPABILITIES' }, { m: 'callNote', code: 'E_BOT_CAPABILITIES' }]);
+  });
+
+  // Wave C task 11 (root cause bug 3): after a reload there is no good list, and a failed first load waited a full 30 s refresh.
+  it('a failed load with no good list retries at 2 s, 5 s and 10 s, says "loading" meanwhile, then falls back to the 30 s refresh', async () => {
+    const { capabilities, typeSlash } = setup(() => Promise.reject(new Error('no active interaction group')));
+    typeSlash('/play');
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(capabilities).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Loading Bot commands…')).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(1_800));
+    expect(capabilities).toHaveBeenCalledTimes(1);
+    await act(() => vi.advanceTimersByTimeAsync(300)); // 2.2 s
+    expect(capabilities).toHaveBeenCalledTimes(2);
+    await act(() => vi.advanceTimersByTimeAsync(5_000)); // 7.2 s: the second retry came 5 s after the second failure
+    expect(capabilities).toHaveBeenCalledTimes(3);
+    expect(screen.getByText('Loading Bot commands…')).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(10_000)); // 17.2 s
+    expect(capabilities).toHaveBeenCalledTimes(4);
+    expect(screen.queryByText('Loading Bot commands…')).not.toBeInTheDocument(); // the quick retries are spent
+    await act(() => vi.advanceTimersByTimeAsync(12_000)); // 29.2 s: nothing yet, the 30 s refresh is the next
+    expect(capabilities).toHaveBeenCalledTimes(4);
+    await act(() => vi.advanceTimersByTimeAsync(1_000)); // the interval tick at 30 s
+    expect(capabilities).toHaveBeenCalledTimes(5);
+  });
+
+  it('the first retry lands the list as soon as it loads', async () => {
+    let attempt = 0;
+    const { typeSlash } = setup(() => { attempt += 1; return attempt === 1 ? Promise.reject(new Error('overran')) : Promise.resolve(caps([3, 12])); });
+    typeSlash('/');
+    await act(() => vi.advanceTimersByTimeAsync(2_100));
+    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
+    expect(screen.queryByText('Loading Bot commands…')).not.toBeInTheDocument();
+  });
+
+  it('opening the picker after a failed load retries at once (a good list was never replaced)', async () => {
+    let attempt = 0;
+    const { capabilities, typeSlash } = setup(() => { attempt += 1; return attempt === 2 ? Promise.resolve(caps([3, 12])) : Promise.reject(new Error('timed out')); });
+    typeSlash('/');
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(capabilities).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Escape' });
+    expect(screen.queryByRole('textbox', { name: 'Command' })).not.toBeInTheDocument();
+    typeSlash('/'); // opened again, well inside the 2 s retry
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(capabilities).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
+  });
+
+  it('a Bot that is gone clears the list instead of keeping the stale one', async () => {
+    let attempt = 0;
+    const { capabilities, core, typeSlash } = setup(() => { attempt += 1; return attempt === 1 ? Promise.resolve(caps([3, 12])) : Promise.reject(new ClientCore.BotUtilitiesProviderUnavailableError(3)); });
+    typeSlash('/');
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    expect(capabilities).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('option', { name: /\/play/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading Bot commands…')).not.toBeInTheDocument();
+    expect(core.calls.filter(call => call.m === 'callNote')).toEqual([]); // no Bot is no fault
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(capabilities).toHaveBeenCalledTimes(2); // and no quick retry
+  });
+
+  it('community B never shows community A\'s list', async () => {
+    vi.useFakeTimers();
+    const core = new FakeClient();
+    const a = 'b1'.repeat(16); const b = 'b2'.repeat(16);
+    const capabilities = vi.fn()
+      .mockImplementation(() => Promise.resolve(caps([3, 12])));
+    vi.spyOn(ClientCore, 'createBotUtilities').mockImplementation((_client, community) => ({
+      capabilities: community === a ? capabilities : () => new Promise(() => undefined),
+    }) as unknown as ClientCore.BotUtilities);
+    let ordinary = '';
+    function Harness() {
+      const [, rerender] = useState(0);
+      const [community, setCommunity] = useState(a);
+      return <CommandProvider handlers={{ play: () => Promise.resolve({ status: 'success' as const, private: true, message: 'ok' }) }}>
+        <button type="button" onClick={() => { ordinary = ''; setCommunity(b); }}>switch</button>
+        <textarea aria-label="message" value={ordinary} onChange={event => { ordinary = event.currentTarget.value; rerender(n => n + 1); }} />
+        <CommandHost communityId={community} channelId={channel} bits={0x1ffffff} items={[]} selfId={'22'.repeat(16)} draft={ordinary}
+          onDraft={text => { ordinary = text; rerender(n => n + 1); }} onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
+      </CommandProvider>;
+    }
+    render(<CoreProvider client={core}><Harness /></CoreProvider>);
+    fireEvent.change(screen.getByRole('textbox', { name: 'message' }), { target: { value: '/' } });
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }));
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    fireEvent.change(screen.getByRole('textbox', { name: 'message' }), { target: { value: '/' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Command' }), { target: { value: '/play' } });
+    expect(screen.queryByRole('option', { name: /\/play/ })).not.toBeInTheDocument();
+    expect(screen.getByText('Loading Bot commands…')).toBeInTheDocument();
   });
 });

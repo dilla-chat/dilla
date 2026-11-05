@@ -1143,14 +1143,14 @@ export class Controller {
   /** The one pending expiry sweep per channel, and the deadline (deps.now() ms) it is set for. */
   private readonly typingSweeps = new Map<string, { handle: number; at: number }>();
   private readonly diagnosticsErrors: { code: string; at: number }[] = [];
-  /** Per kept kind-3 Welcome group (hex): its community (hex, from the proof; '' when unreadable) and the deps.now() ms
-   *  it was last refused for clock skew (sync's onWelcomeClockSkew). A Bot request names the skew only for its own
-   *  community. The last E_CLOCK_SKEW diagnostics entry: a kept Welcome is refused on every poll, so the entry repeats
-   *  at most once a minute. */
   /** Community hex → when its remembered "no interaction group" answer lapses (ms). */
   private readonly noInteractionGroupUntil = new Map<string, number>();
   /** Requests waiting for a Welcome push; each is woken when a group turns active. */
   private readonly interactionGroupWaiters = new Set<() => void>();
+  /** Per kept kind-3 Welcome group (hex): its community (hex, from the proof; '' when unreadable) and the deps.now() ms
+   *  it was last refused for clock skew (sync's onWelcomeClockSkew). A Bot request names the skew only for its own
+   *  community. The last E_CLOCK_SKEW diagnostics entry: a kept Welcome is refused on every poll, so the entry repeats
+   *  at most once a minute. */
   private readonly welcomeClockSkew = new Map<string, { communityHex: string; atMs: number }>();
   private welcomeClockSkewLoggedMs: number | null = null;
   private deviceCount = 0;

@@ -39,6 +39,8 @@ export interface CommandComposerProps {
   listed?: ReadonlySet<string>;
   /** The Bot's command list is still loading for the first time: the list says so, and Enter on a name not yet listed waits (at most 10 s). */
   loading?: boolean;
+  /** The `/` list opened (the host retries a failed Bot list load then). */
+  onListOpen?: () => void;
   /** The Bot's display name, a Bot command's source tag (the prototype's "Glenn"). */
   botName?: string;
   /** The voice room this device is in, for a music command's bar; null: not in voice. */
@@ -216,6 +218,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   }, [selected, active]);
 
   // ---- The `/` list ----
+  const listOpenNow = useRef(props.onListOpen); listOpenNow.current = props.onListOpen;
   const listState = useMemo((): { open: false } | { open: true; items: CommandDefinition[] } => {
     if (selected !== null || !draft.startsWith('/') || draft.startsWith('//')) return { open: false };
     const parsed = parseCommand(draft);
@@ -228,6 +231,8 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
     const contains = listedCommands.filter(command => !command.id.startsWith(query) && command.id.includes(query));
     return { open: true, items: [...starts, ...contains] };
   }, [selected, draft, definitionsById, listedCommands]);
+  const listIsOpen = listState.open;
+  useEffect(() => { if (listIsOpen) listOpenNow.current?.(); }, [listIsOpen]);
   const listItems = listState.open ? listState.items : [];
   const listSel = Math.min(cmdSel, Math.max(listItems.length - 1, 0));
 

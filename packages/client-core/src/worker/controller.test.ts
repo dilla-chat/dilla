@@ -760,6 +760,41 @@ describe('Controller', () => {
     expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(14);
   });
 
+  // Task 7 review Minor 1: the "no group" memory is per community, and a Welcome clears it.
+  it('remembers "no group" per community and forgets it when a Welcome turns a group active', async () => {
+    let nowMs = 1_700_000_000_000;
+    const other = new Uint8Array(16).fill(0x77);
+    const w = world({ now: () => nowMs, sleep: (_ms, signal) => new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 0);
+      signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); });
+    }) });
+    await toReady(w);
+    // A second listed community (the controller refuses an unlisted one before it looks for a group).
+    const slices = (w.controller as unknown as { slices: Map<string, { id: string; name: string; owner: string }[]> }).slices;
+    slices.set('communities', [...(slices.get('communities') ?? []), { id: toHex(other), name: 'second', owner: toHex(USER) }]);
+    const ask = (id: number, community: Uint8Array, fill: number): void => w.call(id, { m: 'listManualModerationEvidence', communityId: toHex(community),
+      requestId: toHex(new Uint8Array(16).fill(fill)), cursor: null });
+    const refused = (id: number) => vi.waitFor(() => expect(w.ret(id)).toMatchObject({ ok: false, error: { detail: 'missing_interaction_group' } }));
+    ask(120, COMMUNITY, 0x71);
+    await refused(120);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(7);
+    // X's memory does not fail community Y fast: Y checks for itself.
+    nowMs += 1_000;
+    ask(121, other, 0x72);
+    await refused(121);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(14);
+    // X is still remembered...
+    nowMs += 1_000;
+    ask(122, COMMUNITY, 0x73);
+    await refused(122);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(14);
+    // ...until a Welcome turns a group active: then X is checked again.
+    w.sync.deps!.onGroupChanged(new Uint8Array(16).fill(0x55), { state: 2, epochChanged: false } as never);
+    ask(123, COMMUNITY, 0x74);
+    await refused(123);
+    expect(w.sync.pollWelcomes).toHaveBeenCalledTimes(21);
+  });
+
   it('a Welcome push that activates the group wakes a waiting request before its backoff ends', async () => {
     const w = world({ sleep: (_ms, signal) => new Promise<void>((resolve) => { signal?.addEventListener('abort', () => { resolve(); }); }) });
     await toReady(w);
