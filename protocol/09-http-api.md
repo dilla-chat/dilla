@@ -256,6 +256,8 @@ publication is unchanged. Receipts prove historical acceptance, not current
 directory availability, and remain subject to current installation authority.
 The collection GET is a read-only current inventory snapshot with server Unix
 time in seconds; it never consumes a package. Its fallback flag is uint 0 or 1.
+A human device reads its own directory with `GET /v1/keypackages` (`02`), `[ordinary_active_count, has_current_fallback]`, the
+same count and the same uint 0 or 1 flag, without the generation and the clock.
 
 Managed Bots register groups only through the installation-scoped routes above;
 their generic `POST /v1/groups` is refused with `403 E_FORBIDDEN`. Existing

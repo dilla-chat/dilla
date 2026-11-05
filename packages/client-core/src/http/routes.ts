@@ -452,6 +452,11 @@ export class Routes {
   async postKeyPackages(body: Uint8Array): Promise<number> {
     return u53(atLeast(decode(await this.body('POST', '/v1/keypackages', 'write', false, { body })), 1)[0]);
   }
+  /** The session device's own directory: the ordinary count `ready` reports, and whether a last-resort package stands behind it. */
+  async getKeyPackageCount(): Promise<{ ordinary: number; fallback: boolean }> {
+    const a = atLeast(decode(await this.body('GET', '/v1/keypackages', 'read', true)), 2);
+    return { ordinary: u53(a[0]), fallback: oneOf(a[1], [0, 1] as const) === 1 };
+  }
   async postTicket(): Promise<Ticket> {
     const a = atLeast(decode(await this.body('POST', '/v1/gateway/ticket', 'write', false, { body: encode([]) })), 2);
     return { ticket: str(a[0]), expires: u64(a[1]) };

@@ -299,6 +299,16 @@ const CASES: Case[] = [
     reply: () => cborReply(201, [32]), expected: 32,
   },
   {
+    name: 'getKeyPackageCount', call: (r) => r.getKeyPackageCount(),
+    method: 'GET', path: '/v1/keypackages', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [5, 1]), expected: { ordinary: 5, fallback: true },
+  },
+  {
+    name: 'getKeyPackageCount on an empty device', call: (r) => r.getKeyPackageCount(),
+    method: 'GET', path: '/v1/keypackages', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [0, 0]), expected: { ordinary: 0, fallback: false },
+  },
+  {
     name: 'postTicket', call: (r) => r.postTicket(),
     method: 'POST', path: '/v1/gateway/ticket', bucket: 'write', idempotent: false, auth: true, sent: EMPTY_ARRAY,
     reply: () => cborReply(201, ['tkt-1', 1_800_000_030]), expected: { ticket: 'tkt-1', expires: 1_800_000_030n },
@@ -853,6 +863,7 @@ const REFUSALS: RefusalCase[] = [
   { name: 'putDeviceList 409', call: (r) => r.putDeviceList(USER, BODY), reply: () => refusal(409, 'E_INVALID_REQUEST', 'device-list version 1 already published'), status: 409, code: 'E_INVALID_REQUEST' },
   { name: 'getDeviceList 403', call: (r) => r.getDeviceList(USER), reply: () => refusal(403, 'E_FORBIDDEN'), status: 403, code: 'E_FORBIDDEN' },
   { name: 'postKeyPackages 413', call: (r) => r.postKeyPackages(BODY), reply: () => refusal(413, 'E_TOO_LARGE'), status: 413, code: 'E_TOO_LARGE' },
+  { name: 'getKeyPackageCount 403', call: (r) => r.getKeyPackageCount(), reply: () => refusal(403, 'E_FORBIDDEN'), status: 403, code: 'E_FORBIDDEN' },
   { name: 'postTicket 401', call: (r) => r.postTicket(), reply: () => refusal(401, 'E_UNAUTHENTICATED'), status: 401, code: 'E_UNAUTHENTICATED' },
   { name: 'listCommunities 403', call: (r) => r.listCommunities(), reply: () => refusal(403, 'E_FORBIDDEN'), status: 403, code: 'E_FORBIDDEN' },
   { name: 'joinCommunity 410', call: (r) => r.joinCommunity(COMMUNITY, 'AB12'), reply: () => refusal(410, 'E_INVITE_INVALID'), status: 410, code: 'E_INVITE_INVALID' },

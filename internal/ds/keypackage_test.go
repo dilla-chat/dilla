@@ -607,3 +607,94 @@ func (h *dsHarness) requirePublishForbidden(t *testing.T, session auth.Session, 
 		t.Fatalf("%d rows were written for a refused publish, want 0", total)
 	}
 }
+
+// listedDevice is a device its owner's signed device list names, the state of every enrolled
+// device: a take that finds its directory empty can tell it from one the instance does not know.
+func (h *dsHarness) listedDevice(t *testing.T, revokedInList bool) (id.ID, auth.Session) {
+	t.Helper()
+	user, device := id.New(), id.New()
+	ssk := testSSK(0x61)
+	h.userWithSSK(t, user, ssk)
+	h.account(t, user, device)
+	entry := listEntry{DeviceID: device[:], DSKPub: bytes.Repeat([]byte{4}, 32), AddedAt: 1}
+	if revokedInList {
+		at := uint64(1_758_700_000)
+		entry.RevokedAt = &at
+	}
+	h.publishDeviceList(t, user, signedDeviceList(t, ssk, user, []listEntry{entry}))
+	return device, h.sessionOf(t, device)
+}
+
+func requireTakeCode(t *testing.T, h *dsHarness, session auth.Session, target id.ID, code string) {
+	t.Helper()
+	_, err := h.ds.TakeKeyPackage(context.Background(), session, target)
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != code || dsErr.Status != 404 {
+		t.Fatalf("got %v, want a 404 %s", err, code)
+	}
+}
+
+// A live, listed device with nothing to serve is told apart from one the instance does not know.
+func TestTakeFromALiveEmptyDeviceIsExhausted(t *testing.T) {
+	h := newDSHarness(t)
+	device, session := h.listedDevice(t, false)
+	requireTakeCode(t, h, session, device, "E_KEYPACKAGES_EXHAUSTED")
+}
+
+func TestTakeFromAnUnknownDeviceIsNotFound(t *testing.T) {
+	h := newDSHarness(t)
+	_, session := h.listedDevice(t, false)
+	requireTakeCode(t, h, session, id.New(), "E_NOT_FOUND")
+}
+
+func TestTakeFromARevokedDeviceIsNotFound(t *testing.T) {
+	h := newDSHarness(t)
+	t.Run("revoked in the signed list", func(t *testing.T) {
+		device, session := h.listedDevice(t, true)
+		requireTakeCode(t, h, session, device, "E_NOT_FOUND")
+	})
+	t.Run("revoked on the device row", func(t *testing.T) {
+		device, session := h.listedDevice(t, false)
+		if err := h.repo.RevokeDevice(context.Background(), device, h.clk.Now().Unix()); err != nil {
+			t.Fatalf("RevokeDevice: %v", err)
+		}
+		requireTakeCode(t, h, session, device, "E_NOT_FOUND")
+	})
+}
+
+func TestKeyPackageCountReportsOrdinaryAndFallback(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	device := h.device(t)
+	session := h.sessionOf(t, device)
+
+	ordinary, fallback, err := h.ds.KeyPackageCount(ctx, session)
+	if err != nil || ordinary != 0 || fallback {
+		t.Fatalf("empty device: got (%d, %v, %v), want (0, false, nil)", ordinary, fallback, err)
+	}
+	h.seedKeyPackages(t, device, 5, keyPackageLifetime)
+	h.seedLastResort(t, device, keyPackageLifetime)
+	ordinary, fallback, err = h.ds.KeyPackageCount(ctx, session)
+	if err != nil || ordinary != 5 || !fallback {
+		t.Fatalf("got (%d, %v, %v), want (5, true, nil)", ordinary, fallback, err)
+	}
+	// The count is the one `ready` reports.
+	if ready := h.readyKeypackagesRemaining(t, device); ready != ordinary {
+		t.Fatalf("ready reports %d, the count route %d", ready, ordinary)
+	}
+}
+
+func TestKeyPackageCountRefusesABotAndAProvisionalSession(t *testing.T) {
+	h := newDSHarness(t)
+	device := h.device(t)
+	bot := h.sessionOf(t, device)
+	bot.Bot = &auth.BotSessionBinding{}
+	provisional := h.provisionalSessionOf(t, device, id.New())
+	for name, session := range map[string]auth.Session{"bot": bot, "provisional": provisional} {
+		_, _, err := h.ds.KeyPackageCount(context.Background(), session)
+		var dsErr *ds.Error
+		if !errors.As(err, &dsErr) || dsErr.Code != "E_FORBIDDEN" {
+			t.Fatalf("%s: got %v, want E_FORBIDDEN", name, err)
+		}
+	}
+}

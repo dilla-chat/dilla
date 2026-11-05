@@ -510,3 +510,44 @@ func TestAnInstanceAdminPublishesAKeyPackageOverTheMux(t *testing.T) {
 		t.Fatalf("take: status = %d, want 200: %s", res.Code, res.Body.String())
 	}
 }
+
+// `GET /v1/keypackages` is the session's own directory: `200 [ordinary_active_count, has_current_fallback]`.
+func TestTheKeyPackageCountRouteReadsTheSessionsOwnDirectory(t *testing.T) {
+	h := newGroupsAPI(t)
+	token, _ := h.keyPackageOwnerToken(t)
+	read := func() (uint64, bool) {
+		t.Helper()
+		res := h.do(t, http.MethodGet, "/v1/keypackages", token, nil)
+		if res.Code != http.StatusOK {
+			t.Fatalf("count: status = %d, want 200: %s", res.Code, res.Body.String())
+		}
+		var out struct {
+			_        struct{} `cbor:",toarray"`
+			Ordinary uint64
+			Fallback uint64
+		}
+		if err := cborx.Unmarshal(res.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode the count response: %v", err)
+		}
+		return out.Ordinary, out.Fallback == 1
+	}
+	if n, fallback := read(); n != 0 || fallback {
+		t.Fatalf("empty device: got [%d, %v], want [0, false]", n, fallback)
+	}
+	res := h.do(t, http.MethodPost, "/v1/keypackages", token, mustCBOR(t, []any{[][]byte{apiKeyPackageFixture(t)}, nil}))
+	if res.Code != http.StatusCreated {
+		t.Fatalf("publish: status = %d: %s", res.Code, res.Body.String())
+	}
+	if n, fallback := read(); n != 1 || fallback {
+		t.Fatalf("after one ordinary publish: got [%d, %v], want [1, false]", n, fallback)
+	}
+}
+
+func TestTheKeyPackageCountRouteRefusesAProvisionalSession(t *testing.T) {
+	h := newGroupsAPI(t)
+	_, token := h.seedProvisional(t)
+	res := h.do(t, http.MethodGet, "/v1/keypackages", token, nil)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", res.Code, res.Body.String())
+	}
+}

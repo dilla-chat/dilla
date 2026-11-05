@@ -18,6 +18,10 @@ import (
 // Code is a stable E_* string. It is the only thing a client switches on.
 type Code string
 
+// CodeKeyPackagesExhausted is a 404 for a live, listed device whose KeyPackage directory is empty:
+// unlike E_NOT_FOUND the device exists, and a caller waits for its refill.
+const CodeKeyPackagesExhausted Code = "E_KEYPACKAGES_EXHAUSTED"
+
 const (
 	CodeInvalidRequest Code = "E_INVALID_REQUEST"
 	// CodeRemovalProofExpired is returned only when a moderation-removal proof
@@ -130,7 +134,7 @@ func (e *Error) Status() int {
 		CodeProvisionalOutsidePairing, CodeChannelMode,
 		CodeFactorRequired, CodeTargetNoFactor, CodeStepUp, CodePasskeyOtherAccount:
 		return http.StatusForbidden
-	case CodeNotFound:
+	case CodeNotFound, CodeKeyPackagesExhausted:
 		return http.StatusNotFound
 	case CodeGroupExists, CodeCommitConflict, CodeRemovePending, CodeCallFull, CodeCallSharersFull, CodeCallNotAlone:
 		return http.StatusConflict

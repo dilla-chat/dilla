@@ -20,7 +20,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/server"
 )
 
-// RegisterDirectory mounts the four directory routes. It is a third method on Groups rather than
+// RegisterDirectory mounts the five directory routes. It is a third method on Groups rather than
 // four more lines in Register for the same reason RegisterSequencer is a second: the delivery
 // service's surface grows one named group per task.
 //
@@ -35,6 +35,7 @@ func (h *Groups) RegisterDirectory(mux *server.Mux, sessions *auth.Sessions) {
 		return sessions.Middleware(f, auth.ScopeProvisional)
 	}
 	mux.Handle("POST /v1/keypackages", orProvisional(dsMeter(h.Limiter, dsClassWrite, h.publishKeyPackages)))
+	mux.Handle("GET /v1/keypackages", enrolled(dsMeter(h.Limiter, dsClassRead, h.keyPackageCount)))
 	mux.Handle("GET /v1/devices/{device_id}/keypackage", enrolled(dsMeter(h.Limiter, dsClassRead, h.takeKeyPackage)))
 	mux.Handle("GET /v1/welcomes", orProvisional(dsMeter(h.Limiter, dsClassRead, h.welcomes)))
 	mux.Handle("DELETE /v1/welcomes/{welcome_id}", orProvisional(dsMeter(h.Limiter, dsClassWrite, h.ackWelcome)))
@@ -136,4 +137,36 @@ func parseWelcomeID(r *http.Request) (int64, error) {
 		return 0, server.Errorf(server.CodeInvalidRequest, "welcome_id must be a positive decimal integer")
 	}
 	return v, nil
+}
+
+type keyPackageCountResponse struct {
+	_                  struct{} `cbor:",toarray"`
+	OrdinaryCount      uint64
+	HasCurrentFallback uint64
+}
+
+// keyPackageCount reads the session's own device's directory: `200 [ordinary_active_count(uint),
+// has_current_fallback(uint 0/1)]`, the Bot runtime inventory's shape without its generation and
+// clock. The ordinary count is the number `ready` reports as keypackages_remaining.
+func (h *Groups) keyPackageCount(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	session, err := sessionOf(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	ordinary, fallback, err := h.DS.KeyPackageCount(r.Context(), session)
+	if err != nil {
+		server.WriteError(w, dsError(err))
+		return
+	}
+	var flag uint64 // a uint, not a bool: deterministic CBOR here has no simple values
+	if fallback {
+		flag = 1
+	}
+	if err := server.EncodeBody(w, http.StatusOK, keyPackageCountResponse{
+		OrdinaryCount: ordinary, HasCurrentFallback: flag,
+	}); err != nil {
+		server.WriteError(w, err)
+	}
 }
