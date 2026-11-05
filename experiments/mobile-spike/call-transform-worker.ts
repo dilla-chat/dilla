@@ -1,9 +1,11 @@
 // WebKit path of the call probe: an RTCRtpScriptTransform worker. The send side prepends a 2-byte magic and XORs the
-// whole frame; the receive side XORs it back, checks and strips the magic (framesOk / framesBad). Counts are posted to
-// the page once a second. Same frame format as the Chromium path in call-probe.ts.
+// whole frame; the receive side XORs it back, checks and strips the magic (framesOk / framesBad). Counts and the first bad
+// frame are posted to the page once a second. Same frame format as the Chromium path in call-probe.ts.
 const KEY = 0x5a;
 const MAGIC = [0xd1, 0x1a];
 const counts = { framesOut: 0, framesIn: 0, framesOk: 0, framesBad: 0 };
+/** The first receive-side frame without the magic: size, first bytes (as received), epoch ms. Posted with the counts. */
+let firstBadFrame: { bytes: number; head: number[]; atEpoch: number } | null = null;
 
 interface ProbeTransformEvent extends Event {
   transformer: { readable: ReadableStream<{ data: ArrayBuffer }>; writable: WritableStream; options: { side: 'send' | 'receive' } };
@@ -40,7 +42,13 @@ function open(frame: { data: ArrayBuffer }): boolean {
           counts.framesOut++;
         } else {
           counts.framesIn++;
-          if (open(frame)) counts.framesOk++; else counts.framesBad++;
+          if (open(frame)) {
+            counts.framesOk++;
+          } else {
+            counts.framesBad++;
+            const src = new Uint8Array(frame.data);
+            firstBadFrame ??= { bytes: src.length, head: Array.from(src.slice(0, 4)), atEpoch: Date.now() };
+          }
         }
         ctrl.enqueue(frame);
       },
@@ -49,4 +57,4 @@ function open(frame: { data: ArrayBuffer }): boolean {
     .catch((err: unknown) => { self.postMessage({ pipeError: `${options.side}: ${String(err)}` }); });
 };
 
-setInterval(() => { self.postMessage({ ...counts }); }, 1000);
+setInterval(() => { self.postMessage({ counts: { ...counts }, firstBadFrame }); }, 1000);
