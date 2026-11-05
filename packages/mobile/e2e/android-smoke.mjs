@@ -8,8 +8,8 @@
 // ANDROID_HOME (default ~/Android/Sdk), JAVA_HOME with JDK 21 (default ~/.local/jdk/jdk-21*), and an AVD on a
 // google_apis image (adb root works there) with Chrome.
 //
-// The run: two hosts (A, B) behind HTTPS proxies whose certificate a throwaway CA signs for 10.0.2.2 (the emulator's
-// address of this machine). The CA is put into the emulator's user CA store, which only the debug build trusts
+// The run: two hosts (A, B) behind HTTPS proxies whose certificate a throwaway CA signs for a.10-0-2-2.sslip.io and
+// b.10-0-2-2.sslip.io (wildcard DNS for 10.0.2.2, the emulator's address of this machine). The CA is put into the emulator's user CA store, which only the debug build trusts
 // (android/app/src/debug/res/xml/network_security_config.xml). Then, in the app: add instance A in the picker, sign up,
 // join a native peer's server and see the peer's message; add instance B and sign up there; back on A, send the app to
 // the background for 120 s while the peer posts, resume and see it; force-stop, relaunch, and find the same account
@@ -38,6 +38,9 @@ const ADB = join(sdk, 'platform-tools/adb');
 const APP = 'chat.dilla.app';
 const WAIT = 60_000;
 const BACKGROUND_S = 120;
+// The app accepts only instances with a DNS name (no IP literal), so the emulator reaches this machine (10.0.2.2) through
+// sslip.io's wildcard DNS: <anything>.10-0-2-2.sslip.io resolves to 10.0.2.2. That is the one outside dependency.
+const HOST_A = 'a.10-0-2-2.sslip.io', HOST_B = 'b.10-0-2-2.sslip.io';
 const work = mkdtempSync(join(tmpdir(), 'dilla-android-smoke-'));
 const cleanups = [];
 const started = Date.now();
@@ -50,7 +53,7 @@ const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // ---- test hosts and the native peer --------------------------------------------------------------------------------
 
-async function startHost(name, port, control, proxyPort, tls) {
+async function startHost(name, hostName, port, control, proxyPort, tls) {
   const data = join(work, `host-${name}`);
   const host = spawn(join(repo, 'target/dilla-testhost'), ['-listen', `127.0.0.1:${port}`, '-control', `127.0.0.1:${control}`,
     '-core', join(repo, 'internal/mlswasi/testdata/dilla_core_wasi.wasm'), '-log-level', 'warn', '-data-dir', data, '-production-acl'],
@@ -68,7 +71,7 @@ async function startHost(name, port, control, proxyPort, tls) {
   // What reached /desktop-auth/, with its Origin header: the native-HTTP check below reads it.
   const desktopAuth = [];
   proxy.on('request', request => { if (request.url.startsWith('/desktop-auth/')) desktopAuth.push({ method: request.method, path: request.url, origin: request.headers.origin ?? null, agent: request.headers['user-agent'] ?? '' }); });
-  return { name, desktopAuth, invite, inviteCode: invite.split(',')[0], ds: `http://127.0.0.1:${port}`, control: `http://127.0.0.1:${control}`, url: `https://10.0.2.2:${proxyPort}/` };
+  return { name, desktopAuth, invite, inviteCode: invite.split(',')[0], ds: `http://127.0.0.1:${port}`, control: `http://127.0.0.1:${control}`, url: `https://${hostName}:${proxyPort}/` };
 }
 
 /** dilla-testkit web-driver: the native second account (e2e/web/support/driver.ts speaks the same JSON lines). */
@@ -104,6 +107,14 @@ async function nextCode(host, account) {
   }
 }
 
+async function resolvesToEmulatorHost() {
+  const { lookup } = await import('node:dns/promises');
+  for (const name of [HOST_A, HOST_B]) {
+    const { address } = await lookup(name, { family: 4 }).catch(() => ({ address: 'unresolved' }));
+    if (address !== '10.0.2.2') throw new Error(`${name} resolves to ${address}, expected 10.0.2.2 (sslip.io unreachable?)`);
+  }
+}
+
 // ---- the emulator, the CA and the app ------------------------------------------------------------------------------
 
 async function ensureEmulator() {
@@ -122,8 +133,8 @@ function makeTls() {
   const run = a => execFileSync('openssl', a, { stdio: 'ignore' });
   const ca = join(dir, 'ca.pem'), caKey = join(dir, 'ca-key.pem'), key = join(dir, 'server-key.pem'), cert = join(dir, 'server.pem');
   run(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', caKey, '-out', ca, '-days', '1', '-subj', '/CN=Dilla disposable Android e2e CA', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign']);
-  run(['req', '-new', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', join(dir, 'server.csr'), '-subj', '/CN=10.0.2.2']);
-  writeFileSync(join(dir, 'server.ext'), 'subjectAltName=IP:10.0.2.2,IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n');
+  run(['req', '-new', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', join(dir, 'server.csr'), '-subj', `/CN=${HOST_A}`]);
+  writeFileSync(join(dir, 'server.ext'), `subjectAltName=DNS:${HOST_A},DNS:${HOST_B}\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n`);
   run(['x509', '-req', '-in', join(dir, 'server.csr'), '-CA', ca, '-CAkey', caKey, '-CAcreateserial', '-out', cert, '-days', '1', '-extfile', join(dir, 'server.ext')]);
   return { ca, key, cert };
 }
@@ -211,6 +222,9 @@ async function pickInstance(page, url) {
 
 async function signUp(page, host) {
   const account = { username: `a${randomInt(0, 0xffff_ffff).toString(16)}`, password: 'e2e-password-1234', totpSecret: null, lastCounter: -1 };
+  // Review M1: the picker's navigation to / boots the client; a goto while that load is still running raced it
+  // (the page detached on a cold emulator). Wait until the client shows its onboarding, then go to the invite.
+  await expect(page.locator('.d-onboarding-frame').getByRole('heading', { level: 1 })).toBeVisible({ timeout: WAIT });
   await page.goto(`https://localhost/welcome?invite=${encodeURIComponent(host.inviteCode)}`);
   await expect(page.getByRole('heading', { name: copy('onboarding.connect.title') })).toBeVisible({ timeout: WAIT });
   await button(page, 'onboarding.next').click();
@@ -274,8 +288,9 @@ async function main() {
   const ownEmulator = await ensureEmulator();
   if (ownEmulator && !args.has('--keep-emulator')) cleanups.unshift(() => { try { adb('emu', 'kill'); log('emulator stopped'); } catch { /* gone */ } });
   const tls = makeTls();
-  const a = await startHost('A', 18463, 18464, 18443, tls);
-  const b = await startHost('B', 18465, 18466, 18444, tls);
+  await resolvesToEmulatorHost();
+  const a = await startHost('A', HOST_A, 18463, 18464, 18443, tls);
+  const b = await startHost('B', HOST_B, 18465, 18466, 18444, tls);
   log(`hosts up: A ${a.url}, B ${b.url}`);
   installUserCa(tls.ca);
   buildAndInstall();
@@ -285,7 +300,7 @@ async function main() {
   let { page } = await connect(/^https:\/\/localhost\//);
   await page.waitForURL(/\/picker\.html$/, { timeout: WAIT });
   log('step 1: picker shown on first launch');
-  await pickInstance(page, 'https://10.0.2.2:18443');
+  await pickInstance(page, `https://${HOST_A}:18443`);
   const stored = await page.evaluate(async () => (await globalThis.dillaMobile.info()).instance);
   if (stored !== a.url) throw new Error(`current instance is ${stored}, expected ${a.url}`);
   log(`step 1: instance A added and current (${stored})`);
@@ -314,7 +329,7 @@ async function main() {
 
   // The second instance: picker, add B, sign up there.
   await switchInstance(page);
-  await pickInstance(page, 'https://10.0.2.2:18444');
+  await pickInstance(page, `https://${HOST_B}:18444`);
   const accountB = await signUp(page, b);
   log(`step 2: signed up on B as ${accountB.username}`);
   await switchInstance(page);

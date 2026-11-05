@@ -1,10 +1,12 @@
 // Builds packages/mobile/dist, the webDir Capacitor copies into the iOS and Android apps:
 // the @dilla/web build (as packages/desktop/scripts/build.mjs copies it), plus the mobile CSP, the bridge and the picker.
-//   --client-dir=<dir>  use an existing web build instead of building @dilla/web (tests, CI reuse)
+//   --client-dir=<dir>  use an existing mobile build of @dilla/web instead of building one (tests). packages/web/dist
+//                       is the web/desktop client (__DILLA_MOBILE__ false) and cannot run in the app.
 //   --out-dir=<dir>     write somewhere other than packages/mobile/dist (tests)
 import { build } from 'esbuild';
 import { execFileSync } from 'node:child_process';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -23,11 +25,27 @@ const repo = resolve(root, '../..');
 const out = resolve(option('out-dir') ?? resolve(root, 'dist'));
 const clientDir = option('client-dir');
 
+// The mobile client is its own build of @dilla/web, with __DILLA_MOBILE__ true (packages/web/vite.config.ts), written to
+// .web-build/ so packages/web/dist (the web and desktop client, flag false) is never replaced by it.
+const webBuild = resolve(root, '.web-build');
 if (!clientDir) {
-  if (!process.env.npm_execpath) throw new Error('Run this build through npm run build -w @dilla/mobile');
-  execFileSync(process.execPath, [process.env.npm_execpath, 'run', 'build', '-w', '@dilla/web'], { cwd: repo, stdio: 'inherit' });
+  const web = resolve(repo, 'packages/web');
+  execFileSync(process.execPath, [resolve(repo, 'packages/media/scripts/extract-rnnoise-wasm.mjs')], { cwd: web, stdio: 'inherit' });
+  execFileSync(process.execPath, [resolve(repo, 'node_modules/vite/bin/vite.js'), 'build', '--config', 'vite.config.ts', '--outDir', webBuild, '--emptyOutDir'],
+    { cwd: web, stdio: 'inherit', env: { ...process.env, DILLA_MOBILE_BUILD: '1' } });
+  execFileSync(process.execPath, [resolve(web, 'scripts/check-entry-chunk.mjs'), webBuild], { cwd: web, stdio: 'inherit', env: { ...process.env, DILLA_MOBILE_BUILD: '1' } });
+  assertMobileWorker(webBuild);
 }
-const client = resolve(clientDir ?? resolve(repo, 'packages/web/dist'));
+const client = resolve(clientDir ?? webBuild);
+
+/** The core worker in a mobile client must carry the mobile branch (the define reached the worker bundle). */
+export function assertMobileWorker(dir) {
+  const assets = resolve(dir, 'assets');
+  const workers = readdirSync(assets).filter(name => /\.js$/.test(name) && readFileSync(resolve(assets, name), 'utf8').includes('dilla-core:'));
+  if (!workers.some(name => readFileSync(resolve(assets, name), 'utf8').includes('capacitor://localhost'))) {
+    throw new Error(`${dir}: the core worker has no mobile branch; was __DILLA_MOBILE__ defined for the worker build?`);
+  }
+}
 
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
