@@ -136,13 +136,16 @@ async function startConnectProxy() {
   const server = createServer((_request, response) => { response.writeHead(403).end(); });
   server.on('connect', (request, client, head) => {
     const port = allowed.get(request.url ?? '');
-    if (port === undefined) { client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
+    // Refused tunnels (Android's own background traffic, e.g. connectivity checks, also goes through the global proxy)
+    // can be reset by the device; without a listener that ECONNRESET is an unhandled 'error' and kills the run.
+    if (port === undefined) { client.on('error', () => {}); client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
     const entry = { target: request.url, opened: Date.now(), closed: null };
     tunnels.push(entry);
     const upstream = tcp(port, '127.0.0.1', () => { client.write('HTTP/1.1 200 Connection Established\r\n\r\n'); if (head.length) upstream.write(head); upstream.pipe(client).pipe(upstream); });
     const close = () => { entry.closed ??= Date.now(); upstream.destroy(); client.destroy(); };
     upstream.on('error', close); client.on('error', close); upstream.on('close', close); client.on('close', close);
   });
+  server.on('clientError', (_error, socket) => { socket.destroy(); });
   await new Promise((ok, fail) => { server.once('error', fail); server.listen(CONNECT_PORT, '127.0.0.1', ok); });
   cleanups.push(() => new Promise(ok => { server.closeAllConnections?.(); server.close(() => ok()); }));
 }
