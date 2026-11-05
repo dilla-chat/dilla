@@ -4,6 +4,7 @@ import { FakeClient } from './test/fake-client.ts';
 import { account, ME } from './test/fixtures.ts';
 import { noticeTitle, notificationCtor, ringNotification, shouldNotify, startNotifier, type NotificationCtor, type NotifyContext } from './notify.ts';
 import type { Ring } from '@dilla/client-core';
+import { askPermission } from './notify-permission.ts';
 
 const A = 'a1'.repeat(16);
 const GEN = 'c3'.repeat(16);
@@ -300,12 +301,21 @@ describe('ringNotification (flow 06, R1, R8)', () => {
 });
 
 describe('mobile notifications', () => {
-  it('mobile notifications go through the bridge', () => {
-    const listeners: Array<(e: { type: 'notification-click'; id: string }) => void> = [];
+  function bridge(initial: NotificationPermission, granted: NotificationPermission = 'granted') {
+    const listeners: Array<(e: { type: string; id?: string }) => void> = [];
     const send = vi.fn(async () => {});
-    vi.stubGlobal('dillaMobile', { send, onEvent: (l: (typeof listeners)[number]) => { listeners.push(l); return () => {}; } });
+    const requestNotificationPermission = vi.fn(async () => granted);
+    vi.stubGlobal('dillaMobile', { send, requestNotificationPermission, notificationPermission: async () => initial,
+      onEvent: (l: (typeof listeners)[number]) => { listeners.push(l); return () => {}; } });
+    return { listeners, send, requestNotificationPermission };
+  }
+  const settle = () => new Promise(r => setTimeout(r, 0));
+
+  it('mobile notifications go through the bridge', async () => {
+    const { listeners, send } = bridge('granted');
     try {
       const Ctor = notificationCtor()!;
+      await settle();
       expect(Ctor.permission).toBe('granted');
       const note = new Ctor('t'.repeat(300), { body: 'b'.repeat(5000), tag: 'dilla:x' });
       expect(send).toHaveBeenCalledWith({ type: 'notify', id: 'dilla:x', title: 't'.repeat(256), body: 'b'.repeat(4096) });
@@ -314,6 +324,29 @@ describe('mobile notifications', () => {
       expect(click).toHaveBeenCalled();
       note.close();
       expect(send).toHaveBeenLastCalledWith({ type: 'dismiss-notification', id: 'dilla:x' });
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it('a denied state from the bridge sends no notify command', async () => {
+    const { send } = bridge('denied');
+    try {
+      const Ctor = notificationCtor()!;
+      await settle();
+      expect(Ctor.permission).toBe('denied');
+      new Ctor('hi', { body: 'x', tag: 'dilla:y' });
+      expect(send).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it('granted after a request lets notify through, and resume refreshes the state', async () => {
+    const { send, listeners } = bridge('default');
+    try {
+      const Ctor = notificationCtor()!;
+      await settle();
+      expect(Ctor.permission).toBe('default');
+      expect(await askPermission()).toBe('granted');
+      expect(Ctor.permission).toBe('granted');
+      new Ctor('hi', { body: 'x', tag: 'dilla:z' });
+      expect(send).toHaveBeenCalledWith({ type: 'notify', id: 'dilla:z', title: 'hi', body: 'x' });
+      expect(listeners.length).toBeGreaterThan(0);
     } finally { vi.unstubAllGlobals(); }
   });
 });

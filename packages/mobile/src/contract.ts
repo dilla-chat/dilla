@@ -10,5 +10,7 @@ export interface MobileBridge {
   info(): Promise<MobileInfo>;
   send(command: MobileCommand): Promise<void>;
   onEvent(listener: (event: MobileEvent) => void): () => void;
+  notificationPermission(): Promise<NotificationPermission>;
+  requestNotificationPermission(): Promise<NotificationPermission>;
   browserAuth(request: import('../../desktop/src/browser-auth.ts').BrowserAuthRequest): Promise<import('../../desktop/src/browser-auth.ts').BrowserAuthResult>;
 }
