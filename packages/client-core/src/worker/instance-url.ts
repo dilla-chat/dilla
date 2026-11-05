@@ -11,8 +11,10 @@ export function workerInstanceURL(input: unknown, origin: string): string {
   if (MOBILE_BUILD && isMobileAppOrigin(origin)) {
     // An IP literal is refused: IPv4 dotted or numeric forms parse to a dotted quad, IPv6 to a [bracketed] host.
     const ipLiteral = url.hostname.startsWith('[') || /^\d{1,3}(\.\d{1,3}){3}$/.test(url.hostname);
+    // localhost and *.localhost name the device itself; https://localhost is the Android app's own origin.
+    const local = url.hostname === 'localhost' || url.hostname.endsWith('.localhost');
     if (url.protocol !== 'https:' || url.pathname !== '/' || url.username || url.password || url.search || url.hash
-      || !url.hostname || url.hostname.endsWith('.') || ipLiteral) throw new Error('Invalid mobile instance URL');
+      || !url.hostname || url.hostname.endsWith('.') || ipLiteral || local) throw new Error('Invalid mobile instance URL');
     return url.origin;
   }
   if (url.origin !== origin || url.username || url.password || url.search || url.hash) throw new Error('Worker instance must have the same origin');

@@ -21,6 +21,13 @@ export function updateTabId(storage: Pick<Storage, 'getItem' | 'setItem'>, crypt
   return id;
 }
 
+/** The checkpoint scope of an account. The worker's storage key stands in for the instance id where it publishes one
+ *  (the mobile app: every instance on one origin and one IndexedDB, so the key binds the instance URL; review round 2,
+ *  Task 6). Desktop and the web have none, and their record ids stay `<instance id>:<user>:<tab>`. */
+export function checkpointScope(instance: { id: string; storageKey?: string }, user: string, tab: string): CheckpointScope {
+  return { instance: instance.storageKey ?? instance.id, user, tab };
+}
+
 function idOf(scope: CheckpointScope): string { return `${scope.instance}:${scope.user}:${scope.tab}`; }
 function aad(scope: CheckpointScope, part: string): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(`dilla update checkpoint v1:${idOf(scope)}:${part}`);
