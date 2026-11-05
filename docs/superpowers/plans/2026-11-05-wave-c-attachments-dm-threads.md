@@ -258,3 +258,14 @@ Rulings: a quit with a call or unsent text asks once — title "Quit Dilla?", me
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** vitest in packages/web and packages/client-core; lint; typecheck. Update `docs/design/signal/parity/app/*.json` so the gap52/gap53 pairs wait for `.d-poll-card`.
 - [ ] **Step 5: Commit** `fix(web): poll cards verify from the shared Bot command list; Invites lists unlimited links`.
+
+### Task 13: An instance address with a path fails clearly; hidden windows don't poll poll cards
+
+**Spec:** `/home/thim/.claude/jobs/da223a73/tmp/cbor-type-root-cause.md` (a friend's Windows beta.2 app showed `E_CBOR_TYPE`) and the final-fix report's concern about poll cards.
+
+1. **Server (keeps beta.2 working):** `internal/web/web.go` `fallback` serves the web client's `index.html` (200) for any unknown path, so a desktop app whose saved instance address has a path (`https://host/welcome`) calls `https://host/welcome/v1/instance`, gets HTML and fails with `E_CBOR_TYPE`. Answer any path whose segment after the first is a data prefix (`/<x>/v1/…`, `/<x>/i/…`, `/<x>/gateway`, `/<x>/rtc`, at any depth below the root) with a CBOR `404 [E_NOT_FOUND, "the instance address must not have a path", null]`. Navigation paths are untouched.
+   Tests in `internal/web/web_test.go`: `/welcome/v1/instance` and `/c/<id>/<id>/v1/instance` → 404 with a CBOR body; `/welcome` and `/c/<id>` → 200 index.html; `/v1/instance` still reaches the API.
+2. **Desktop:** `canonicalInstance` (`packages/desktop/src/policy.ts:~9-19`) reduces a pasted browser page URL to its origin (`https://host/welcome` → `https://host`), and an `/i/<code>` URL becomes an invite for that origin (reuse the existing invite handling). Already-saved addresses with a path are normalised when the preferences load. Tests in `packages/desktop/test/`.
+3. **Poll cards in a hidden window:** `PollCard.tsx`'s own 30 s refresh pauses while `document.visibilityState === 'hidden'` (the visibility check it uses today only covers scrolling) and resumes when the window becomes visible. Test with fake timers.
+
+- [ ] Step 1: failing tests above. Step 2: RED. Step 3: implement. Step 4: `go test ./internal/web/... -race`, desktop tests, web vitest, lint, typecheck. Step 5: commit `fix: an instance address with a path fails clearly; hidden windows pause poll cards`.
