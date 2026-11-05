@@ -54,15 +54,21 @@ func prunePreMigrationCopies(dbPath string, keep int, protect string, log *slog.
 		return nil
 	}
 	sort.Slice(copies, func(i, j int) bool { return copies[i].unix > copies[j].unix })
+	// Matched by name, not path: the configured db path may be unclean
+	// (./dilla.db), while the scanned paths are joined and so are clean.
+	protectName := ""
+	if protect != "" && filepath.Clean(filepath.Dir(protect)) == filepath.Clean(dir) {
+		protectName = filepath.Base(protect)
+	}
 	slots, protected := keep, false
 	for _, c := range copies {
-		if c.path == protect {
+		if protectName != "" && filepath.Base(c.path) == protectName {
 			slots, protected = slots-1, true
 		}
 	}
 	var removed []string
 	for _, c := range copies {
-		if c.path == protect && protected {
+		if protected && filepath.Base(c.path) == protectName {
 			continue
 		}
 		if slots > 0 {

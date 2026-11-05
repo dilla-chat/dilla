@@ -96,3 +96,17 @@ func TestPreMigrationPruneKeepsThisStartsCopyWhenTheClockWentBack(t *testing.T) 
 		}
 	}
 }
+
+func TestPreMigrationPruneProtectsThisStartsCopyGivenAnUncleanedPath(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "dilla.db")
+	writeCopies(t, db, 100, 150, 200, 300)
+	if err := prunePreMigrationCopies(dir+"/./dilla.db", 3, dir+"/./dilla.db.pre-migration-150", quietLog()); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	for s, want := range map[int]bool{100: false, 150: true, 200: true, 300: true} {
+		if got := exists(fmt.Sprintf("%s.pre-migration-%d", db, s)); got != want {
+			t.Errorf("copy %d present = %v, want %v", s, got, want)
+		}
+	}
+}
