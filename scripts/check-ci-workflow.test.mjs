@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES, WORKFLOWS } from './ci-areas.mjs';
-import { checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkElectronInstalls, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkServerWorkflow, DESKTOP_RELEASE_ACTIONS, REQUIRED_JOBS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
+import { checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkElectronInstalls, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkServerWorkflow, DESKTOP_RELEASE_ACTIONS, REQUIRED_JOBS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -18,6 +18,9 @@ const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta
 const REPO_ROOT = join(dirname(SCRIPT_PATH), '..');
 const REAL_SERVER = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'server.yml'), 'utf8');
 const REAL_DESKTOP_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'desktop-ci.yml'), 'utf8');
+// mobile.yml is not part of the server/desktop fixture text: fixture() writes the real file beside them (ci-local's
+// mirror check reads every CI workflow), and the mobile tests below edit it on their own.
+const REAL_MOBILE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'mobile.yml'), 'utf8');
 // A fixture holds both CI workflows in one text, server.yml first, split at this line (fixture() writes them apart): a
 // test edits either file with one replace. A job both carry is edited in server.yml, its first occurrence.
 const SPLIT = '\n# ---- desktop-ci.yml ----\n';
@@ -1046,6 +1049,7 @@ const CHANGES_JOB = `  changes:
       web: \${{ steps.areas.outputs.web }}
       e2e: \${{ steps.areas.outputs.e2e }}
       text: \${{ steps.areas.outputs.text }}
+      mobile: \${{ steps.areas.outputs.mobile }}
       code: \${{ steps.areas.outputs.code }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1164,6 +1168,7 @@ function fixture(body, gated = GATED) {
   assert.equal(rest.length, 0, 'fixture sanity: one split');
   writeFileSync(join(dir, '.github', 'workflows', 'server.yml'), desktop === undefined ? server : `${server}\n`);
   if (desktop !== undefined) writeFileSync(join(dir, '.github', 'workflows', 'desktop-ci.yml'), desktop);
+  writeFileSync(join(dir, '.github', 'workflows', 'mobile.yml'), REAL_MOBILE);
   // The CLI also checks release.yml.
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), REAL_RELEASE);
   writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
@@ -3317,3 +3322,80 @@ for (const [workflow, text] of [['server', REAL_SERVER], ['desktop', REAL_DESKTO
     assert.equal(okJobPasses(gutted, results({ [need]: 'failure' }), MAIN_PUSH), true);
   });
 }
+
+// ---------------------------------------------------------------- mobile.yml (plan 2026-11-05 mobile M1, Task 7)
+
+/** A fixture whose mobile.yml is `text` (the real server and desktop workflows beside it), checked as the mobile workflow. */
+function checkMobile(text) {
+  const dir = fixture(GOOD);
+  writeFileSync(join(dir, '.github', 'workflows', 'mobile.yml'), text);
+  return checkMobileCiWorkflow(dir);
+}
+const mobileEdit = (from, to) => {
+  assert.ok(REAL_MOBILE.includes(from), `fixture sanity: mobile.yml has ${from}`);
+  const changed = REAL_MOBILE.replace(from, to);
+  assert.notEqual(changed, REAL_MOBILE);
+  return changed;
+};
+
+test('the committed mobile.yml has no problems, and neither does the fixture that carries it', () => {
+  assert.deepEqual(checkMobileCiWorkflow(REPO_ROOT), []);
+  assert.deepEqual(checkMobile(REAL_MOBILE), []);
+});
+
+test('mobile.yml keeps every load-bearing command: unit tests, the client build, the APKs and their release check, the smoke test, the iOS build', () => {
+  for (const [from, what] of [
+    ['      - run: npm test -w @dilla/mobile\n', 'npm test -w @dilla/mobile'],
+    ['      - run: npm run typecheck -w @dilla/mobile\n', 'npm run typecheck -w @dilla/mobile'],
+    ['      - run: npm run build -w @dilla/mobile\n', 'npm run build -w @dilla/mobile'],
+    ['      - run: npm run android:check-release -w @dilla/mobile\n', 'android:check-release'],
+    [' --no-daemon assembleDebug assembleRelease', 'assembleDebug assembleRelease'],
+    ['        run: npm run e2e:android -w @dilla/mobile -- --skip-build\n', 'e2e:android'],
+    ['      - run: bash scripts/ci-android.sh avd\n', 'ci-android.sh avd'],
+    ["-sdk iphonesimulator -destination 'generic/platform=iOS Simulator'", 'iphonesimulator'],
+    ['      - run: go build -o target/dilla-testhost ./cmd/dilla-testhost\n', 'dilla-testhost'],
+  ]) {
+    const problems = checkMobile(mobileEdit(from, from.startsWith('      - run:') || from.startsWith('        run:') ? from.replace(/run: .*/, 'run: echo skipped') : ' build'));
+    assert.ok(problems.some((p) => p.startsWith('mobile.yml: job "') && p.includes('is missing:')), `${what}: ${problems.join('\n')}`);
+  }
+});
+
+test('mobile.yml is filtered by the changes job, never at the trigger, and keeps its nightly run and watcher', () => {
+  const cases = [
+    ['a paths filter', mobileEdit('  pull_request:\n', "  pull_request:\n    paths: ['packages/mobile/**']\n"), 'must trigger'],
+    ['no schedule', mobileEdit(`  schedule:\n    - cron: '${NIGHTLY_CRON}'\n`, ''), 'must trigger'],
+    ['a watcher that skips the nightly run', mobileEdit("|| github.event_name == 'schedule' ", ''), 'unsafe watchdog'],
+    ['a job without its gate', mobileEdit("  mobile-ios:\n    needs: [changes, mobile-bundle]\n    if: needs.changes.outputs.mobile != 'false'\n", '  mobile-ios:\n    needs: [changes, mobile-bundle]\n'), 'job-level if:'],
+    ['a job gated on another area', mobileEdit("  mobile-unit:\n    needs: [changes]\n    if: needs.changes.outputs.mobile != 'false'\n", "  mobile-unit:\n    needs: [changes]\n    if: needs.changes.outputs.web != 'false'\n"), 'job-level if:'],
+    ['an ok job that misses a job', mobileEdit('    needs: [ci-watchdog, mobile-work-complete, changes, mobile-unit, ', '    needs: [ci-watchdog, mobile-work-complete, changes, '), 'mobile-ok'],
+  ];
+  for (const [what, changed, message] of cases) {
+    const problems = checkMobile(changed);
+    assert.ok(problems.some((p) => p.startsWith('mobile.yml') && p.includes(message)), `${what}: ${problems.join('\n')}`);
+  }
+});
+
+test('every mobile artifact consumer waits for its producer', () => {
+  for (const [from, to, need] of [
+    ['  mobile-bundle:\n    needs: [changes, web-build]\n', '  mobile-bundle:\n    needs: [changes]\n', 'web-build'],
+    ['  mobile-android:\n    needs: [changes, mobile-bundle, mobile-e2e-tools]\n', '  mobile-android:\n    needs: [changes, mobile-bundle]\n', 'mobile-e2e-tools'],
+    ['  mobile-android:\n    needs: [changes, mobile-bundle, mobile-e2e-tools]\n', '  mobile-android:\n    needs: [changes, mobile-e2e-tools]\n', 'mobile-bundle'],
+    ['  mobile-ios:\n    needs: [changes, mobile-bundle]\n', '  mobile-ios:\n    needs: [changes]\n', 'mobile-bundle'],
+  ]) {
+    const problems = checkMobile(mobileEdit(from, to));
+    assert.ok(problems.some((p) => p.includes(`has no "needs: ${need}"`)), `${need}: ${problems.join('\n')}`);
+  }
+});
+
+test('mobile.yml uses GitHub-owned pinned actions only, and its uploads fail closed', () => {
+  const third = checkMobile(mobileEdit('      - run: bash scripts/ci-android.sh avd\n', '      - uses: reactivecircus/android-emulator-runner@62dbb605bba737720e10b196cb4220d374026a6d\n      - run: bash scripts/ci-android.sh avd\n'));
+  assert.ok(third.some((p) => p.includes('reactivecircus/android-emulator-runner') && p.includes('not a GitHub-owned action')), third.join('\n'));
+  const floating = checkMobile(mobileEdit('uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0', 'uses: actions/cache/restore@v6'));
+  assert.ok(floating.some((p) => p.includes('must use a 40-hex commit SHA')), floating.join('\n'));
+  const silent = checkMobile(mobileEdit('          include-hidden-files: true\n          if-no-files-found: error\n', '          include-hidden-files: true\n'));
+  assert.ok(silent.some((p) => p.includes('if-no-files-found: error')), silent.join('\n'));
+  const unguarded = checkMobile(mobileEdit("        if: failure() && hashFiles('packages/mobile/e2e/.out/**') != ''\n", '        if: failure()\n'));
+  assert.ok(unguarded.some((p) => p.includes('hashFiles(...)')), unguarded.join('\n'));
+  const escape = checkMobile(mobileEdit('        run: npm run e2e:android -w @dilla/mobile -- --skip-build\n', '        run: npm run e2e:android -w @dilla/mobile -- --skip-build\n        continue-on-error: true\n'));
+  assert.ok(escape.some((p) => p.includes('continue-on-error')), escape.join('\n'));
+});

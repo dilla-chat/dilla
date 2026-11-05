@@ -34,7 +34,7 @@ jobs:
           CI_COMPLETION_JOBS: changes desktop-work-complete
 
   # Decides which parts of the tree the change touches (scripts/ci-areas.mjs holds the path table and its tests) and
-  # writes one output per area: go, core, web, e2e, text (the profile-text tables), and code for anything but docs. This
+  # writes one output per area: go, core, web, e2e, text (the profile-text tables), mobile, and code for anything but docs. This
   # workflow and its sibling (server.yml) both run on every pull request and push to main, so both
   # ok checks always report. A pull request whose changed files all sit under docs/ or are *.md is docs-only: it runs
   # this job and workflow infrastructure; test/build jobs are skipped (a skipped job counts as passed for a
@@ -48,6 +48,7 @@ jobs:
       web: ${{ steps.areas.outputs.web }}
       e2e: ${{ steps.areas.outputs.e2e }}
       text: ${{ steps.areas.outputs.text }}
+      mobile: ${{ steps.areas.outputs.mobile }}
       code: ${{ steps.areas.outputs.code }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

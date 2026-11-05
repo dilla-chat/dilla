@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * `npm run ci:local`: the CI workflows (.github/workflows/server.yml and desktop-ci.yml) run on this machine before a
+ * `npm run ci:local`: the CI workflows (.github/workflows/server.yml, desktop-ci.yml and mobile.yml) run on this machine before a
  * push. The jobs, their steps, the needs graph and the area gates come from the workflows themselves
  * (scripts/ci-local-plan.mjs maps each step, and a job both carry runs once); GitHub-only steps become local
  * equivalents (artifacts are copied through target/ci-local/artifacts, tool installs are prerequisite checks, Postgres
@@ -15,7 +15,7 @@ import { availableParallelism, tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { computeAreas, WORKFLOWS } from './ci-areas.mjs';
+import { AREAS, computeAreas, WORKFLOWS } from './ci-areas.mjs';
 import {
   buildCleanTree, busyPorts, lockDir, lockDirPath, recoverSnapshots, releaseLock, restoreSnapshot, scrubEnv, takeSnapshot, tryLock,
 } from './ci-local-fs.mjs';
@@ -31,10 +31,10 @@ const RUNNER_TEMP = join(OUT, 'runner-temp');
 const ARTIFACTS = join(OUT, 'artifacts');
 const LOCK_DIR = lockDirPath();
 const SNAPSHOTS = join(OUT, 'snapshots');
-const EVERYTHING = { go: true, core: true, web: true, e2e: true, text: true, code: true };
+const EVERYTHING = { ...Object.fromEntries(AREAS.map((area) => [area, true])), code: true };
 
 const USAGE = `usage: npm run ci:local -- [options]
-  --only <job,...>   run these jobs (server.yml or desktop-ci.yml names, or a matrix leg such as a native target, or codeql) and what they need
+  --only <job,...>   run these jobs (server.yml, desktop-ci.yml or mobile.yml names, or a matrix leg such as a native target, or codeql) and what they need
   --no-deps          with --only: do not run the needed jobs; reuse their artifacts from an earlier run
   --changed          the jobs the ci-areas gates run for this branch's diff against origin/main (uncommitted files included)
   --stress           run the Go and browser jobs on a quarter of the CPUs beside a busy-loop load, like a loaded runner
@@ -42,7 +42,7 @@ const USAGE = `usage: npm run ci:local -- [options]
   --base <n>         the first port block (default ${DEFAULT_BASE}; 0..${MAX_BLOCK}): block k moves the browser suites by k*1000
   --jobs <n>         the CPU budget the parallel jobs share (default: this machine's ${availableParallelism()} CPUs)
   --e2e-jobs <n>     browser jobs that run at once (default 3)
-  --list             list both workflows' jobs and what ci-local does with each, and exit
+  --list             list every workflow's jobs and what ci-local does with each, and exit
   --dry-run          print the plan (jobs, needs, how each step maps) and exit
   --doctor           check the prerequisites of the selected jobs and exit`;
 

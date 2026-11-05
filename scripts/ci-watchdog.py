@@ -38,7 +38,7 @@ def NEVER_STARTED(job):
 E2E_SHARD = re.compile(r"^desktop / desktop-(client|voice)-")
 
 # The watcher itself and each workflow's aggregate check, which waits for the watcher: never watched.
-UNWATCHED = frozenset({"ci-watchdog", "server-ok", "desktop-ok"})
+UNWATCHED = frozenset({"ci-watchdog", "server-ok", "desktop-ok", "mobile-ok"})
 JOB_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 
