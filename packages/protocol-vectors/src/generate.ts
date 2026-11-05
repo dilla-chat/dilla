@@ -50,7 +50,7 @@ export async function envelopeVectors() {
   // deterministic CBOR of an envelope that is nonetheless invalid — which is exactly what an
   // implementation under test has to be handed.
   //
-  // interfaces.md §2.8: nine cases, not one — a count case per collection (5 attachments, 3
+  // interfaces.md §2.8: nine cases, not one — a count case per collection (11 attachments, 3
   // previews) plus one case per tightened scalar bound, beside the pre-existing tombstone case.
   // web-2b task 1: four more — three shapes and the name limit (L-CORE-30).
   const sampleAttachment = (): Attachment => ({ blobId: fill(32, 0x03), key: fill(32, 0x04), nonce: fill(12, 0x05), size: 2100000, mime: 'image/jpeg', w: 1600, h: 900, thumb: null, name: 'wolf-capes.jpg' });

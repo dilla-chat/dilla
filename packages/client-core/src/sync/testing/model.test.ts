@@ -1095,6 +1095,12 @@ describe('ModelCore folds envelope types 1–6 as the core does (L-CORE-33, L-CO
 });
 
 describe('ModelCore sends every type as the core does (L-CORE-36…38)', () => {
+  it('sendPrepare accepts ten attachments and refuses eleven, as the Rust core does', () => {
+    const core = fresh();
+    expect(() => core.sendPrepare(G, request(0, null, 'x', Array.from({ length: 10 }, () => FILE)), 1n)).not.toThrow();
+    expect(thrown(() => core.sendPrepare(G, request(0, null, 'x', Array.from({ length: 11 }, () => FILE)), 2n))).toMatchObject({ code: 'E_ENVELOPE_LIMIT' });
+  });
+
   it('refuses every send_prepare rule with its code and detail and writes nothing', () => {
     const core = fresh();
     apply(core, app(1n, PEER, T, 'theirs'), app(2n, PEER, T2, 'deleted'), app(3n, PEER, fold(3n), '', { type: 2, replyTo: T2 }));
@@ -1116,7 +1122,7 @@ describe('ModelCore sends every type as the core does (L-CORE-36…38)', () => {
       [request(5, T, 'x'), 'E_CORE_INPUT', 'body must be empty'],
       [request(6, T, 'x'), 'E_CORE_INPUT', 'body must be empty'],
       [request(2, mine, 'x'), 'E_CORE_INPUT', 'body must be empty'],
-      [request(0, null, 'x', [FILE, FILE, FILE, FILE, FILE]), 'E_ENVELOPE_LIMIT', ''],
+      [request(0, null, 'x', Array.from({ length: 11 }, () => FILE)), 'E_ENVELOPE_LIMIT', ''],
       [request(0, null, 'x', [{ ...FILE, name: 'n'.repeat(256) }]), 'E_ENVELOPE_LIMIT', ''],
       [request(0, null, 'x', [{ ...FILE, mime: 'm'.repeat(256) }]), 'E_ENVELOPE_LIMIT', ''],
       [request(0, null, '€'.repeat(1334)), 'E_ENVELOPE_LIMIT', ''],

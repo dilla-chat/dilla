@@ -38,6 +38,7 @@ import {
 import { FAILED_LEAF } from '../errors';
 import type { Frame } from '../../gateway/frames';
 import type { GatewayEvent, ReadyInfo } from '../../gateway/gateway';
+import { MAX_ATTACHMENTS } from '../../attachments/crypto';
 import { toHex } from '../../hex';
 import { DillaHttpError } from '../../http/errors';
 import { CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, OWNER_TOP, nameProblem, type NewOverwrite, type OverwriteRow, type RoleRow, type Routes } from '../../http/routes';
@@ -1528,7 +1529,7 @@ export class ModelCore implements CorePort {
       if ((type === 2 || type === 5 || type === 6) && body !== '') throw coreError('E_CORE_INPUT', 'body must be empty');
     }
     // Envelope::validate: the limits are UTF-8 bytes, not characters (envelope/mod.rs:17-31, 375-409).
-    if (((type === 0 || type === 1) && utf8Length(body) > 4000) || attachments.length > 4 ||
+    if (((type === 0 || type === 1) && utf8Length(body) > 4000) || attachments.length > MAX_ATTACHMENTS ||
       attachments.some((a) => utf8Length(a.mime) > 255 || (a.thumb !== null && a.thumb.length > 8192) || utf8Length(a.name) > 255)) {
       throw coreError('E_ENVELOPE_LIMIT');
     }
