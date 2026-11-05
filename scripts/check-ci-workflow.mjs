@@ -740,9 +740,9 @@ function checkWholeModuleGTK(jobs, problems, file) {
 
 /** The retried module download every Go job runs right after its Go (and, where present, Node) setup. */
 const GO_MOD_DOWNLOAD_NAME = 'name: Download Go modules (retried only on known network errors)';
-const GO_MOD_DOWNLOAD_RUN = "node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download";
+const GO_MOD_DOWNLOAD_RUN = "node scripts/retry-on.mjs --pattern 'proxy\\.golang\\.org[^\\n]*:\\s(50[0-4]|429)\\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download";
 /** The macOS stapling retry: only Apple-service errors repeat the (re-notarizing) build. */
-const STAPLE_RETRY = "node scripts/retry-on.mjs --pattern 'staple and validate action failed|NSURLErrorDomain|Error 68' -- npm run dist -w @dilla/desktop";
+const STAPLE_RETRY = "node scripts/retry-on.mjs --pattern 'staple and validate action failed|NSURLErrorDomain|\\bError 68\\b' -- npm run dist -w @dilla/desktop";
 
 /** Every job with actions/setup-go downloads its modules through retry-on.mjs, once, after the Go and Node setup. */
 export function checkGoModuleDownloads(jobs, problems, file) {

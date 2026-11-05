@@ -38,7 +38,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - name: Download Go modules (retried only on known network errors)
-        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -246,7 +246,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - name: Download Go modules (retried only on known network errors)
-        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
@@ -339,7 +339,7 @@ jobs:
       - name: Build installable desktop artifacts (macOS, staple retry)
         if: runner.os == 'macOS'
         # Notarization's stapling sometimes fails on an Apple service error; only those errors are retried (a retry notarizes again).
-        run: node scripts/retry-on.mjs --pattern 'staple and validate action failed|NSURLErrorDomain|Error 68' -- npm run dist -w @dilla/desktop -- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}
+        run: node scripts/retry-on.mjs --pattern 'staple and validate action failed|NSURLErrorDomain|\bError 68\b' -- npm run dist -w @dilla/desktop -- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}
         env:
           CSC_FOR_PULL_REQUEST: 'true' # A pull request of this repository signs like a push; a fork's gets no secrets and stays ad-hoc.
           # The Developer ID certificate and the notarization key reach the macOS build only; Windows stays unsigned.
@@ -434,7 +434,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - name: Download Go modules (retried only on known network errors)
-        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
@@ -554,7 +554,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - name: Download Go modules (retried only on known network errors)
-        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist

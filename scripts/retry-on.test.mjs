@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -88,4 +88,66 @@ test('the CLI stops at once on a non-matching failure with the same exit code', 
   const r = spawnSync(process.execPath, [script, '--pattern', 'connection reset', '--wait', '0', '--', process.execPath, '-e', 'console.error("syntax problem"); process.exit(4)'], { encoding: 'utf8' });
   assert.equal(r.status, 4);
   assert.doesNotMatch(r.stderr, /retry-on/);
+});
+
+// The pattern sets the workflows really pass, read from every workflow file: each wrapped command must carry one set
+// everywhere, so these tests hold whatever ships.
+const WORKFLOWS_DIR = fileURLToPath(new URL('../.github/workflows/', import.meta.url));
+function shippedPatterns(command) {
+  const sets = new Map();
+  for (const file of readdirSync(WORKFLOWS_DIR).filter((name) => name.endsWith('.yml'))) {
+    for (const line of readFileSync(join(WORKFLOWS_DIR, file), 'utf8').split('\n')) {
+      const m = /node scripts\/retry-on\.mjs (.*?) -- (.*)$/.exec(line.trim());
+      if (m === null || !m[2].startsWith(command)) continue;
+      const flags = [...m[1].matchAll(/--pattern '([^']*)'/g)].flatMap((p) => ['--pattern', p[1]]);
+      const key = JSON.stringify(flags);
+      sets.set(key, [...(sets.get(key) ?? []), file]);
+    }
+  }
+  assert.equal(sets.size, 1, `${command}: one pattern set everywhere, got ${[...sets.keys()].join(' / ')}`);
+  const [[flags, files]] = sets;
+  return { patterns: parseArgs([...JSON.parse(flags), '--', 'x']).patterns, files: [...new Set(files)].sort() };
+}
+const GO = shippedPatterns('go mod download');
+const STAPLE = shippedPatterns('npm run dist');
+const retried = async (patterns, output) => (await retryOn({ patterns, attempts: 3, waitMs: 0, run: sequence({ code: 1, output }, { code: 0, output: '' }).run, sleep: noSleep })).attempts > 1;
+
+test('the shipped pattern sets come from the workflows that run the wrapped commands', () => {
+  assert.deepEqual(GO.files, ['desktop-ci.yml', 'desktop.yml', 'release.yml', 'server.yml']);
+  assert.deepEqual(STAPLE.files, ['desktop.yml']);
+});
+
+test('the Go download retries a proxy 5xx, a rate limit and transport errors', async () => {
+  for (const line of [
+    'go: example.com/m@v1.2.3: reading https://proxy.golang.org/example.com/m/@v/v1.2.3.info: 502 Bad Gateway',
+    'go: example.com/m@v1.2.3: reading https://proxy.golang.org/example.com/m/@v/v1.2.3.zip: 503 Service Unavailable',
+    'go: example.com/m@v1.2.3: reading https://proxy.golang.org/example.com/m/@v/v1.2.3.mod: 429 Too Many Requests',
+    'go: example.com/m@v1.2.3: Get "https://proxy.golang.org/example.com/m/@v/v1.2.3.zip": stream error: stream ID 5; INTERNAL_ERROR; received from peer',
+    'go: example.com/m@v1.2.3: Get "https://proxy.golang.org/example.com/m/@v/v1.2.3.zip": net/http: TLS handshake timeout',
+    'go: example.com/m@v1.2.3: read tcp 10.1.0.4:443: connection reset by peer',
+    'go: example.com/m@v1.2.3: dial tcp 142.250.74.17:443: i/o timeout',
+  ]) assert.ok(await retried(GO.patterns, line), line);
+});
+
+test('the Go download does not retry a module that is not there or a real failure', async () => {
+  for (const line of [
+    'go: example.com/x@v1.2.3: reading https://proxy.golang.org/example.com/x/@v/v1.2.3.info: 404 Not Found',
+    'go: example.com/x@v1.2.3: reading https://proxy.golang.org/example.com/x/@v/v1.2.3.info: 410 Gone',
+    'verifying example.com/x@v1.2.3: checksum mismatch\n\tdownloaded: h1:abc=\n\tgo.sum:     h1:def=',
+    '--- FAIL: TestDownload (0.01s)\n    download_test.go:12: got 502 from proxy.golang.org mock, want 200\nFAIL\tgithub.com/dilla/x\t0.02s',
+  ]) assert.ok(!(await retried(GO.patterns, line)), line);
+});
+
+test('the macOS build retries only the stapling and Apple service errors', async () => {
+  for (const line of [
+    'The staple and validate action failed! Error 65.',
+    'Could not validate ticket: Error Domain=NSURLErrorDomain Code=-1001 "The request timed out."',
+    'CloudKit query for Dilla.app (2/abc) failed due to "Record not found". The staple and validate action failed! Error 68.',
+  ]) assert.ok(await retried(STAPLE.patterns, line), line);
+  for (const line of [
+    '  status: Invalid\n  message: Processing complete',
+    'Notarization failed: Error 680',
+    'Error 6800: something else',
+    'npm ERR! code ELIFECYCLE',
+  ]) assert.ok(!(await retried(STAPLE.patterns, line)), line);
 });

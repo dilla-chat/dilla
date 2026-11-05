@@ -98,7 +98,7 @@ jobs:
           go-version-file: go.mod
           cache: false
       - name: Download Go modules (retried only on known network errors)
-        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: bash scripts/install-ci-tool.sh binaryen
@@ -155,7 +155,7 @@ jobs:
           go-version-file: go.mod
           cache: false
       - name: Download Go modules (retried only on known network errors)
-        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - run: rustup show active-toolchain
       - run: cargo fmt --all -- --check
       - run: |
@@ -189,7 +189,7 @@ jobs:
           go-version-file: go.mod
           cache: false
       - name: Download Go modules (retried only on known network errors)
-        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - run: rm -rf internal/web/dist
       - name: Fetch the web client built by the web-build job
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8

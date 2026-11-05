@@ -3090,8 +3090,9 @@ test('every Go job downloads its modules through the retry wrapper, after its se
 test('the macOS installer build retries only the stapling errors', () => {
   assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
   for (const changed of [
-    REAL_DESKTOP.replace("node scripts/retry-on.mjs --pattern 'staple and validate action failed|NSURLErrorDomain|Error 68' -- npm run dist", 'npm run dist'),
-    REAL_DESKTOP.replace('|Error 68', '|Error 68|error'),
+    REAL_DESKTOP.replace("node scripts/retry-on.mjs --pattern 'staple and validate action failed|NSURLErrorDomain|\\bError 68\\b' -- npm run dist", 'npm run dist'),
+    REAL_DESKTOP.replace('|\\bError 68\\b', '|\\bError 68\\b|error'),
+    REAL_DESKTOP.replace('|\\bError 68\\b', '|Error 68'),
     REAL_DESKTOP.replace("(macOS, staple retry)\n        if: runner.os == 'macOS'", "(macOS, staple retry)\n        if: runner.os != 'macOS'"),
     REAL_DESKTOP.replace("        if: runner.os != 'macOS'\n        run: npm run dist", '        run: npm run dist'),
   ]) {
