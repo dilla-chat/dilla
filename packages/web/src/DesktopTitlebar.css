@@ -1,9 +1,9 @@
 /* Desktop controls share Signal's existing 44px top bar. There is no second row. */
 html[data-desktop] { --dw-titlebar-h: 0px; --d-shell-h: 100dvh; --d-vvtop: 0px; --d-vvh: 100dvh; }
 html[data-desktop] #root { min-height: 100dvh; }
-html[data-desktop] .d-topbar { padding-left: 46px; padding-right: 132px; -webkit-app-region: no-drag; app-region: no-drag; }
+html[data-desktop] .d-topbar { padding-left: 46px; padding-right: 132px; -webkit-app-region: drag; app-region: drag; }
 html[data-desktop] .d-topbar__brand { align-self: stretch; -webkit-app-region: drag; app-region: drag; }
-html[data-desktop] .d-topbar :is(button, input, a, [role="dialog"]) { -webkit-app-region: no-drag; app-region: no-drag; }
+html[data-desktop] .d-topbar :is(button, input, a, [role="dialog"], [role="menu"], [role="listbox"], .d-topbar__voice, .d-topbar__search) { -webkit-app-region: no-drag; app-region: no-drag; }
 html[data-desktop-platform="darwin"] .d-topbar { padding-left: 112px; padding-right: 12px; }
 .dw-desktop-titlebar { display: contents; color: var(--fg-3); user-select: none; }
 .dw-desktop-titlebar__menu { position: fixed; z-index: 10000; top: 8px; left: 6px; display: grid; place-items: center; width: 32px; height: 28px; margin: 0; padding: 0; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; pointer-events: auto; -webkit-app-region: no-drag; app-region: no-drag; }
