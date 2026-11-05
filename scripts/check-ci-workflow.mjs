@@ -766,7 +766,7 @@ export function checkGoModuleDownloads(jobs, problems, file) {
 }
 
 /**
- * The Electron binary is cached per OS and version in ELECTRON_CACHE (step env: the runner context is not available in a
+ * The Electron binary is cached per OS and version in electron_config_cache (the variable install.js reads) (step env: the runner context is not available in a
  * job's env), so the retried download only runs on a miss. The three steps stay together, after the job's npm ci.
  */
 const ELECTRON_VERSION_STEP = [
@@ -786,25 +786,32 @@ const ELECTRON_INSTALL_STEP = [
   ELECTRON_INSTALL_NAME,
   `run: ${ELECTRON_INSTALL_RUN}`,
   'env:',
-  'ELECTRON_CACHE: ${{ runner.temp }}/electron-cache',
+  'electron_config_cache: ${{ runner.temp }}/electron-cache',
 ];
 const ELECTRON_STEPS = [ELECTRON_VERSION_STEP, ELECTRON_CACHE_STEP, ELECTRON_INSTALL_STEP].map((step) => step.join('\n')).join('\n');
 
+const ELECTRON_INSTALLS_PER_FILE = { 'desktop.yml': 5, 'desktop-ci.yml': 1, 'server.yml': 0 };
+
 /** Every step that runs electron/install.js is the one retried step, byte for byte, behind the version and cache steps. */
 export function checkElectronInstalls(jobs, problems, file) {
+  let installs = 0;
   for (const [name, body] of Object.entries(jobs)) {
     const steps = jobSteps(body);
     steps.forEach((step, index) => {
       if (!step.some((line) => line.includes('electron/install.js'))) return;
+      installs += 1;
       const block = steps.slice(Math.max(0, index - 2), index + 1).map((lines) => lines.join('\n')).join('\n');
       const ci = steps.findIndex((lines) => lines.join('\n') === 'run: npm ci');
       if (block !== ELECTRON_STEPS) {
-        problems.push(`${file}: job "${name}" must read the Electron version, cache ELECTRON_CACHE by OS, arch and that version, then download the binary through the retried step (${ELECTRON_INSTALL_RUN}), as three consecutive steps with no other condition or flag`);
+        problems.push(`${file}: job "${name}" must read the Electron version, cache electron_config_cache by OS, arch and that version, then download the binary through the retried step (${ELECTRON_INSTALL_RUN}), as three consecutive steps with no other condition or flag`);
       } else if (ci < 0 || ci >= index - 2) {
         problems.push(`${file}: job "${name}" must run npm ci before it reads the Electron version`);
       }
     });
   }
+  // A deleted block would otherwise go unnoticed: each workflow keeps one per job that runs Electron.
+  const want = ELECTRON_INSTALLS_PER_FILE[file];
+  if (want !== undefined && installs !== want) problems.push(`${file}: must download the Electron binary in exactly ${want} steps, found ${installs}`);
 }
 
 // Narrow cancellation finalizers for the reviewed disposable fixture only.

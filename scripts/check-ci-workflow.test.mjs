@@ -3090,7 +3090,7 @@ test('every Go job downloads its modules through the retry wrapper, after its se
 
 const ELECTRON_VERSION = "      - name: Read the Electron version\n        id: electron-version\n        shell: bash\n        run: echo \"version=$(node -p \"require('electron/package.json').version\")\" >> \"$GITHUB_OUTPUT\"\n";
 const ELECTRON_CACHE = "      - name: Cache the Electron binary\n        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: ${{ runner.temp }}/electron-cache\n          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron-version.outputs.version }}\n";
-const ELECTRON_DOWNLOAD = `      - name: Download the Electron binary (retried only on known network errors)\n        run: ${ELECTRON_RUN}\n        env:\n          ELECTRON_CACHE: \${{ runner.temp }}/electron-cache\n`;
+const ELECTRON_DOWNLOAD = `      - name: Download the Electron binary (retried only on known network errors)\n        run: ${ELECTRON_RUN}\n        env:\n          electron_config_cache: \${{ runner.temp }}/electron-cache\n`;
 
 test('every Electron binary is cached, then downloaded through the retry wrapper', () => {
   assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
@@ -3107,7 +3107,7 @@ test('every Electron binary is cached, then downloaded through the retry wrapper
       real.replace(block, ELECTRON_CACHE + ELECTRON_DOWNLOAD),
       real.replace(ELECTRON_CACHE, ELECTRON_CACHE.replace('-${{ steps.electron-version.outputs.version }}', '')),
       real.replace(ELECTRON_CACHE, ELECTRON_CACHE.replace('${{ runner.os }}-', '')),
-      real.replace(ELECTRON_DOWNLOAD, ELECTRON_DOWNLOAD.replace('        env:\n          ELECTRON_CACHE: ${{ runner.temp }}/electron-cache\n', '')),
+      real.replace(ELECTRON_DOWNLOAD, ELECTRON_DOWNLOAD.replace('        env:\n          electron_config_cache: ${{ runner.temp }}/electron-cache\n', '')),
       real.replace(ELECTRON_DOWNLOAD, ELECTRON_DOWNLOAD.replace('electron-cache', 'electron')),
       real.replace(block, ELECTRON_DOWNLOAD.replace(/ {8}env:[\s\S]*/, '') + ELECTRON_VERSION + ELECTRON_CACHE),
     ]) {
@@ -3122,6 +3122,23 @@ test('every Electron binary is cached, then downloaded through the retry wrapper
       }
     }
   }
+});
+
+test('the Electron install.js still reads electron_config_cache, the variable the workflows cache through', () => {
+  const install = readFileSync(join(REPO_ROOT, 'node_modules', 'electron', 'install.js'), 'utf8');
+  assert.ok(install.includes('process.env.electron_config_cache'),
+    'node_modules/electron/install.js no longer reads process.env.electron_config_cache: the Electron cache in desktop.yml and desktop-ci.yml would silently do nothing; point the download steps and their checker pin at the new variable');
+});
+
+test('deleting an Electron download block is reported', () => {
+  const start = REAL_DESKTOP.indexOf('\n  native-stock-feasibility:\n');
+  const at = REAL_DESKTOP.indexOf(ELECTRON_VERSION + ELECTRON_CACHE + ELECTRON_DOWNLOAD, start);
+  assert.ok(start >= 0 && at > start);
+  const changed = REAL_DESKTOP.replace(ELECTRON_VERSION + ELECTRON_CACHE + ELECTRON_DOWNLOAD, '');
+  assert.notEqual(changed, REAL_DESKTOP);
+  const root = fixture(GOOD);
+  writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+  assert.ok(checkDesktopWorkflow(root).some((p) => p.includes('exactly 5')));
 });
 
 test('the Electron version is read only after npm ci has installed the package', () => {

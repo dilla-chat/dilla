@@ -591,7 +591,7 @@ jobs:
       - name: Download the Electron binary (retried only on known network errors)
         run: node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js
         env:
-          ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
+          electron_config_cache: ${{ runner.temp }}/electron-cache
       - name: Portable sandbox maintenance controls
         if: matrix.lane == 'managed'
         run: node --test packages/desktop/test/linux-sandbox-maintenance.test.mjs
