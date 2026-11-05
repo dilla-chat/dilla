@@ -488,8 +488,8 @@ A thread keeps the replies to one message together, out of the channel's main co
 - Replies in a thread do not appear in the channel, but they still count as unread and as mentions. Opening the channel
   marks its thread replies read; a thread has no unread count of its own.
 - **Threads** also works in a direct message and a group direct message. On a computer the header has a **Threads**
-  button; the thread opens in the side column, where the people of the conversation are shown instead of the member
-  list. On a phone the header has no Threads icon: open a thread from its reply chip, from **reply in thread**, or from
+  button, and **reply in thread** opens the thread in the side column too; a direct message has no member list beside it.
+  On a phone the header has no Threads icon: open a thread from its reply chip, from **reply in thread**, or from
   a search result. Direct messages sent before this release stay unthreaded, so their replies show in the conversation.
 
 ![A direct message with a thread open in the side column: the root message with "1 reply", and the Threads button lit in the header](screenshots/dm-thread-desktop.png)
