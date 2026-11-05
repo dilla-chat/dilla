@@ -35,7 +35,11 @@ async function marker(): Promise<{ persisted: boolean; detail: string }> {
   return { persisted, detail };
 }
 
-void (async () => {
+// The page posts its trigger first. Only a launch run reads the marker a previous process left: every run rewrites it,
+// so a tap in the same process would otherwise find the previous run's marker and report persistence without a relaunch.
+self.onmessage = (e: MessageEvent<{ trigger: string }>) => { void probe(e.data.trigger); };
+
+async function probe(trigger: string): Promise<void> {
   const out: Record<string, unknown> = {};
   try {
     await localRuntimeReadiness(loadCoreWasm)();
@@ -45,7 +49,10 @@ void (async () => {
     out.opfsError = String(e);
   }
   try { out.probePersistence = JSON.parse(await (await loadCoreWasm()).probe_persistence()); } catch (e) { out.probePersistence = String(e); }
-  try {
+  if (trigger !== 'launch') {
+    out.opfsPersisted = false;
+    out.markerDetail = `skipped: ${trigger}`;
+  } else try {
     const m = await marker();
     out.opfsPersisted = m.persisted;
     out.markerDetail = m.detail;
@@ -54,4 +61,4 @@ void (async () => {
     out.markerDetail = `error: ${String(e)}`;
   }
   postMessage(out);
-})();
+}
