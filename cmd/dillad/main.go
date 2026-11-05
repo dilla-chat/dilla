@@ -15,7 +15,7 @@ import (
 )
 
 // Version is the release's tag without its leading v, stamped at link time by
-// release.yml (-ldflags "-X main.Version=<version>"). Every other build, ci.yml's
+// release.yml (-ldflags "-X main.Version=<version>"). Every other build, server.yml's
 // included, keeps 0.0.0-dev. It is a variable because the linker sets only a
 // package-level string variable; it ignores a constant without a word.
 var Version = "0.0.0-dev"

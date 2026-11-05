@@ -11,7 +11,7 @@ import (
 // release.yml stamps the tag (without its leading v) into dillad at link time:
 // -ldflags "-X main.Version=<version>". The linker sets only a package-level
 // string variable and silently ignores a constant, so this builds dillad the way
-// the release does and runs its version verb. Every other build, ci.yml's
+// the release does and runs its version verb. Every other build, server.yml's
 // included, is a development build and says 0.0.0-dev.
 func TestVersionIsStampedAtLink(t *testing.T) {
 	if testing.Short() {

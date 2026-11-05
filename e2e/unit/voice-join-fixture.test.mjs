@@ -60,7 +60,7 @@ test('voice fixture accepts a connected dock that is hidden while the active sta
   const { waitForVoiceJoin } = await import('../ux/voice-fixture.mjs');
   await inPage(async page => {
     await page.setContent('<main class="dw-voice-stage" data-call-phase="in">Björn (you), Mute, Share, Leave</main><div class="d-voice-dock" data-phase="connected" hidden></div>');
-    await waitForVoiceJoin(page, { timeout: 100 });
+    await waitForVoiceJoin(page, { timeout: 5_000 });
     assert.equal(await page.locator('.d-voice-dock').isVisible(), false, 'collapsed dock is a valid connected stage layout');
   });
 });

@@ -365,7 +365,9 @@ certificate issuance and a migration. It runs as the `dillad` user with only
 `/etc/dilla/dilla.toml`.
 `deploy/dilla-media.service` runs the SFU as a separate `Type=simple` service. It has `PartOf=dilla.service`, so
 stopping or restarting `dilla` stops or restarts the media sidecar with it; run `systemctl daemon-reload` after copying
-the unit by hand (`install.sh --upgrade` does). `dillad media --rooms --config=/etc/dilla/dilla.toml` lists the live
+the unit by hand (`install.sh --upgrade` does). The Bot works the same way: `dillabot.service` has `Requires=dilla.service`
+and `PartOf=dilla.service`, so restarting `dilla` also restarts `dillabot` when it is installed, and stopping `dilla`
+stops it. `dillad media --rooms --config=/etc/dilla/dilla.toml` lists the live
 rooms and their participants (`no live rooms` when the SFU is empty), and `dillad media --probe` prints the room count.
 
 ```sh
@@ -498,7 +500,8 @@ sh install.sh --upgrade
 Add `--check-args` to the same command first: it checks the arguments and changes nothing, and exits 0 when they are valid, printing `arguments are valid; the release was not checked` on stderr: it does not look up the release, so a mistyped `--version` still passes here and is refused later, at the download, before anything on disk changes.
 
 It checks the new binary and core against `SHA256SUMS`, restarts the API while the sidecar SFU
-stays up, runs doctor, then restarts the media service. The previous pair stays as `dillad.prev`
+stays up, runs doctor, then restarts the media service. Restarting `dilla` also restarts `dillabot` (its unit is
+`PartOf=dilla.service`), so the Bot restarts with the API, and the rollback's stop stops it too. The previous pair stays as `dillad.prev`
 and `dilla_core_wasi.wasm.prev`. For a first upgrade from `in_process`, it saves `dilla.toml.prev`,
 stops the old combined process, changes `livekit.mode` to `sidecar`, and starts the two services.
 That one-time migration briefly interrupts calls. Later API restarts leave the SFU running;
@@ -549,7 +552,7 @@ reports `OK database schema version 17` on a web-3.6 database. Only `serve` refu
 
 If step 3 fails on SQLite, there is a fallback: the copy `dillad serve` takes before it migrates,
 `<db.path>.pre-migration-<unix time>` beside the database (`db.pre_migration_backup`, on by
-default). With `dilla` stopped, remove the database's `-wal`, `-shm` and `-journal` files and
+default). After each successful migration `dillad` keeps the newest 3 such copies and deletes the older ones. With `dilla` stopped, remove the database's `-wal`, `-shm` and `-journal` files and
 move that copy over the database file. Then do steps 4 and 5. Everything written since the upgrade is lost.
 
 What a down migration removes is listed per release under "Client data version per release" in §5.

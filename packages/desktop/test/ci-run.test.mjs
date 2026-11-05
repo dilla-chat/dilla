@@ -46,10 +46,10 @@ function routes(table) {
 }
 
 function greenRun(overrides = {}) {
- return { id: 77, run_number: 5, name: 'ci', path: '.github/workflows/ci.yml', event: 'push', head_branch: 'main', head_sha: SHA, status: 'completed', conclusion: 'success',
+ return { id: 77, run_number: 5, name: 'desktop', path: '.github/workflows/desktop-ci.yml', event: 'push', head_branch: 'main', head_sha: SHA, status: 'completed', conclusion: 'success',
   repository: { full_name: REPOSITORY }, head_repository: { full_name: REPOSITORY }, ...overrides };
 }
-const runsPath = `${prefix}/actions/workflows/ci.yml/runs?head_sha=${SHA}&event=push&branch=main&status=completed&per_page=100`;
+const runsPath = `${prefix}/actions/workflows/desktop-ci.yml/runs?head_sha=${SHA}&event=push&branch=main&status=completed&per_page=100`;
 
 test('findGreenPushRun returns the green push run on exactly that sha', async () => {
  const api = routes({ [runsPath]: { workflow_runs: [greenRun({ id: 70, run_number: 4 }), greenRun(), greenRun({ id: 60, run_number: 3 })] } });
@@ -58,29 +58,38 @@ test('findGreenPushRun returns the green push run on exactly that sha', async ()
  assert.deepEqual(api.calls, [runsPath]);
 });
 
-test('findGreenPushRun refuses pull_request, cancelled, failure, in_progress and other-branch runs', async () => {
- for (const bad of [{ event: 'pull_request' }, { conclusion: 'cancelled' }, { conclusion: 'failure' }, { status: 'in_progress', conclusion: null }, { head_branch: 'feature' }]) {
+test('findGreenPushRun refuses pull_request, schedule, workflow_dispatch, cancelled, failure, in_progress and other-branch runs', async () => {
+ for (const bad of [{ event: 'pull_request' }, { event: 'schedule' }, { event: 'workflow_dispatch' }, { conclusion: 'cancelled' }, { conclusion: 'failure' }, { status: 'in_progress', conclusion: null }, { head_branch: 'feature' }]) {
   const api = routes({ [runsPath]: { workflow_runs: [greenRun(bad)] } });
-  await assert.rejects(findGreenPushRun(api, SHA), /no green ci push run/, JSON.stringify(bad));
+  await assert.rejects(findGreenPushRun(api, SHA), /no green desktop push run/, JSON.stringify(bad));
  }
 });
 
 test('findGreenPushRun refuses a run whose head_sha differs', async () => {
  const api = routes({ [runsPath]: { workflow_runs: [greenRun({ head_sha: OTHER })] } });
- await assert.rejects(findGreenPushRun(api, SHA), /no green ci push run/);
+ await assert.rejects(findGreenPushRun(api, SHA), /no green desktop push run/);
 });
 
 test('findGreenPushRun refuses a fork head repository', async () => {
  for (const bad of [{ head_repository: { full_name: 'fork/dilla' } }, { repository: { full_name: 'fork/dilla' } }, { head_repository: null }]) {
   const api = routes({ [runsPath]: { workflow_runs: [greenRun(bad)] } });
-  await assert.rejects(findGreenPushRun(api, SHA), /no green ci push run/);
+  await assert.rejects(findGreenPushRun(api, SHA), /no green desktop push run/);
  }
 });
 
-test('findGreenPushRun refuses a workflow named ci at another path', async () => {
- for (const bad of [{ path: '.github/workflows/other.yml' }, { name: 'ci2' }]) {
+test('a green server run does not satisfy the desktop gate', async () => {
+ const server = greenRun({ id: 88, run_number: 9, name: 'server', path: '.github/workflows/server.yml' });
+ // Whichever listing it turns up in, a server run is not a desktop run.
+ const api = routes({ [runsPath]: { workflow_runs: [server] } });
+ await assert.rejects(findGreenPushRun(api, SHA), /no green desktop push run/);
+ const wrongListing = routes({ [`${prefix}/actions/workflows/server.yml/runs?head_sha=${SHA}&event=push&branch=main&status=completed&per_page=100`]: { workflow_runs: [server] } });
+ await assert.rejects(findGreenPushRun(wrongListing, SHA), /unexpected path/);
+});
+
+test('findGreenPushRun refuses a workflow named desktop at another path', async () => {
+ for (const bad of [{ path: '.github/workflows/other.yml' }, { name: 'desktop2' }, { name: 'ci' }]) {
   const api = routes({ [runsPath]: { workflow_runs: [greenRun(bad)] } });
-  await assert.rejects(findGreenPushRun(api, SHA), /no green ci push run/);
+  await assert.rejects(findGreenPushRun(api, SHA), /no green desktop push run/);
  }
  await assert.rejects(findGreenPushRun(routes({}), 'not-a-sha'), /sha/i);
 });

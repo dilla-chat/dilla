@@ -157,11 +157,13 @@ test('setupRelease refuses a HEAD that differs from --reviewed-sha or a dirty tr
  }
 });
 
-test('setupRelease aborts and prints the missing rule when pull_request, ci-ok(15368), non_fast_forward or deletion is absent', async () => {
+test('setupRelease aborts and prints the missing rule when pull_request, server-ok and desktop-ok(15368), non_fast_forward or deletion is absent', async () => {
  const base = goodPosture().rules;
  const variants: [string, unknown[]][] = [
   ['pull_request', base.filter((r: { type: string }) => r.type !== 'pull_request')],
-  ['ci-ok', base.map((r: { type: string }) => r.type === 'required_status_checks' ? { ...r, parameters: { required_status_checks: [{ context: 'ci-ok', integration_id: 1 }] } } : r)],
+  ['required status check server-ok', base.map((r: { type: string }) => r.type === 'required_status_checks' ? { ...r, parameters: { required_status_checks: [{ context: 'server-ok', integration_id: 1 }, { context: 'desktop-ok', integration_id: 15368 }] } } : r)],
+  ['required status check desktop-ok', base.map((r: { type: string }) => r.type === 'required_status_checks' ? { ...r, parameters: { required_status_checks: [{ context: 'server-ok', integration_id: 15368 }] } } : r)],
+  ['required status check server-ok', base.map((r: { type: string }) => r.type === 'required_status_checks' ? { ...r, parameters: { required_status_checks: [{ context: 'ci-ok', integration_id: 15368 }] } } : r)],
   ['non_fast_forward', base.filter((r: { type: string }) => r.type !== 'non_fast_forward')],
   ['deletion', base.filter((r: { type: string }) => r.type !== 'deletion')],
  ];

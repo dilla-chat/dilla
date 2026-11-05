@@ -1,0 +1,38 @@
+name: ci-rerun-starved
+# Re-runs once the jobs of a server or desktop CI run that GitHub never gave a runner (mostly macOS jobs that
+# queue until they are cancelled). Privileged: actions: write on a workflow_run event. It therefore checks out only the default
+# branch's script, never the triggering run's code, uses no secret beyond GITHUB_TOKEN, and takes the run
+# id and attempt through env, never inline in a command.
+on:
+  workflow_run:
+    workflows: [server, desktop]
+    types: [completed]
+permissions:
+  actions: write
+jobs:
+  rerun:
+    if: github.event.workflow_run.run_attempt == 1 && github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # A job-level block replaces the workflow's, so actions: write repeats; contents: read lets the checkout read a private repository.
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/ci-rerun-starved.mjs
+            .nvmrc
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - run: node scripts/ci-rerun-starved.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}

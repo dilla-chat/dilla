@@ -1,15 +1,16 @@
 /**
- * The block-YAML subset .github/workflows/ci.yml is written in, parsed without a dependency (scripts/ci-local.mjs runs
- * before `npm ci` has to, and scripts/check-ci-workflow.mjs runs it in the docs job): block mappings and sequences,
+ * The block-YAML subset the CI workflows (.github/workflows/server.yml, desktop-ci.yml) are written in, parsed without
+ * a dependency (scripts/ci-local.mjs runs before `npm ci` has to, and scripts/check-ci-workflow.mjs runs it in the docs
+ * job): block mappings and sequences,
  * `- key: value` items, `|`/`|-`/`>`/`>-` block scalars, `[a, b]` flow sequences, one-line `{ k: v, … }` flow mappings
  * of scalars (a matrix include leg), single- and double-quoted scalars and comments. Every scalar stays a string.
  * Anchors, aliases, tags, nested flow collections and multi-document streams are refused with the line they are on,
- * never guessed at (check-ci-workflow.mjs forbids anchors in ci.yml as well).
+ * never guessed at (check-ci-workflow.mjs forbids anchors in them as well).
  */
 
 class YamlError extends Error {
   constructor(message, line) {
-    super(`ci.yml:${line + 1}: ${message}`);
+    super(`line ${line + 1}: ${message}`);
   }
 }
 

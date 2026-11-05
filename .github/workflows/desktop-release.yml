@@ -1,7 +1,7 @@
 # The keyed desktop release. GitHub always runs the default branch's copy of a
 # workflow_run workflow, so only main's code ever holds the signing keys. The
 # triggering tag is an untrusted hint: the gate re-derives the commit, the green
-# ci run and its exact artifact set (ids and zip digests) from the API and git
+# desktop run and its exact artifact set (ids and zip digests) from the API and git
 # objects. The keyless collect job is an early-failure check only: nothing it
 # produces reaches sign or publish. sign fetches the gate-digested CI zips
 # itself as opaque blobs, reads them in-process, builds the candidate and signs.
@@ -49,7 +49,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
-      - name: Gate (re-derives tag, main equivalence, posture, green ci run and artifact set)
+      - name: Gate (re-derives tag, main equivalence, posture, green desktop run and artifact set)
         id: gate
         run: node packages/desktop/scripts/release-gate.mjs "$RUNNER_TEMP/gate"
         env:
@@ -89,7 +89,7 @@ jobs:
           name: desktop-release-gate
           path: ${{ runner.temp }}/gate
           digest-mismatch: error
-      - name: Fetch the accepted ci run's artifacts by id
+      - name: Fetch the accepted desktop run's artifacts by id
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           github-token: ${{ github.token }}

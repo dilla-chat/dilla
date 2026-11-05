@@ -37,6 +37,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -96,7 +98,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y rpm libpipewire-0.3-dev libgtk-3-dev pkg-config xvfb openbox x11-utils dbus-x11 libnss3-tools gnome-keyring
       - run: npm ci
-      - run: node node_modules/electron/install.js
+      - name: Read the Electron version
+        id: electron-version
+        shell: bash
+        run: echo "version=$(node -p "require('electron/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache the Electron binary
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/electron-cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron-version.outputs.version }}
+      - name: Download the Electron binary (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js
+        env:
+          electron_config_cache: ${{ runner.temp }}/electron-cache
       - name: Test Linux feasibility helpers
         run: |
           node --test e2e/unit/native-https-proxy.test.mjs e2e/unit/native-test-cert.test.mjs e2e/unit/native-stock-manager.test.mjs e2e/unit/native-stock-connect.test.mjs
@@ -148,7 +162,19 @@ jobs:
           path: packages/core-wasm/pkg
       - run: sudo apt-get update && sudo apt-get install -y rpm libpipewire-0.3-dev pkg-config
       - run: npm ci
-      - run: node node_modules/electron/install.js
+      - name: Read the Electron version
+        id: electron-version
+        shell: bash
+        run: echo "version=$(node -p "require('electron/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache the Electron binary
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/electron-cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron-version.outputs.version }}
+      - name: Download the Electron binary (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js
+        env:
+          electron_config_cache: ${{ runner.temp }}/electron-cache
       - name: Build native Linux release packages
         run: |
           version="$(node -p "require('./packages/desktop/package.json').version")"
@@ -220,10 +246,11 @@ jobs:
             ${{ runner.temp }}/native-linux-package-acceptance/*.txt
           if-no-files-found: error
 
+  # 60 minutes: the macOS leg may run the notarizing installer build three times (the staple retry below).
   native:
     name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: true
       matrix:
@@ -243,6 +270,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
@@ -254,7 +283,19 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber libgtk-3-dev pkg-config libarchive-tools
       - run: npm ci
-      - run: node node_modules/electron/install.js
+      - name: Read the Electron version
+        id: electron-version
+        shell: bash
+        run: echo "version=$(node -p "require('electron/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache the Electron binary
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/electron-cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron-version.outputs.version }}
+      - name: Download the Electron binary (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js
+        env:
+          electron_config_cache: ${{ runner.temp }}/electron-cache
       - name: Seal macOS npm Electron runtime for native notifications
         if: runner.os == 'macOS'
         run: node e2e/web/support/prepare-mac-electron-runtime.ts
@@ -332,7 +373,20 @@ jobs:
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY }}
         run: if [ -n "$APPLE_API_KEY_P8" ]; then printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8" && chmod 600 "$RUNNER_TEMP/AuthKey.p8"; fi
+      - name: Build installable desktop artifacts (macOS, staple retry)
+        if: runner.os == 'macOS'
+        # Notarization's stapling sometimes fails on an Apple service error; only those errors are retried (a retry notarizes again).
+        run: node scripts/retry-on.mjs --pattern 'staple and validate action failed|NSURLErrorDomain|\bError 68\b' -- npm run dist -w @dilla/desktop -- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}
+        env:
+          CSC_FOR_PULL_REQUEST: 'true' # A pull request of this repository signs like a push; a fork's gets no secrets and stays ad-hoc.
+          # The Developer ID certificate and the notarization key reach the macOS build only; Windows stays unsigned.
+          CSC_LINK: ${{ runner.os == 'macOS' && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.CSC_KEY_PASSWORD || '' }}
+          APPLE_API_KEY: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY != '' && format('{0}/AuthKey.p8', runner.temp) || '' }}
+          APPLE_API_KEY_ID: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
       - name: Build installable desktop artifacts
+        if: runner.os != 'macOS'
         run: npm run dist -w @dilla/desktop -- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}
         env:
           CSC_FOR_PULL_REQUEST: 'true' # A pull request of this repository signs like a push; a fork's gets no secrets and stays ad-hoc.
@@ -371,15 +425,16 @@ jobs:
           name: desktop-validation-${{ matrix.platform }}-${{ matrix.arch }}
           path: packages/desktop/test-report
           if-no-files-found: error
-      - if: failure() && steps.desktop-build.outcome == 'success'
+      # hashFiles and upload-artifact see only the workspace, so the Windows audio logs are copied into it first.
+      - name: Collect the Windows audio logs
+        if: failure() && steps.desktop-build.outcome == 'success'
+        shell: bash
+        run: for f in "$RUNNER_TEMP"/dilla-windows-audio/*.log "$RUNNER_TEMP"/dilla-windows-audio/*.out "$RUNNER_TEMP"/dilla-windows-audio/*.err; do if [ -f "$f" ]; then mkdir -p packages/desktop/test-results/windows-audio && cp "$f" packages/desktop/test-results/windows-audio/; fi; done
+      - if: failure() && steps.desktop-build.outcome == 'success' && hashFiles('packages/desktop/test-results/**') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-failure-${{ matrix.platform }}-${{ matrix.arch }}
-          path: |
-            packages/desktop/test-results
-            ${{ runner.temp }}/dilla-windows-audio/*.log
-            ${{ runner.temp }}/dilla-windows-audio/*.out
-            ${{ runner.temp }}/dilla-windows-audio/*.err
+          path: packages/desktop/test-results
           if-no-files-found: error
 
   voice:
@@ -390,7 +445,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-latest, macos-15]
         include:
@@ -415,6 +470,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
@@ -430,7 +487,19 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber libgtk-3-dev pkg-config xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64 dunst
       - run: npm ci
-      - run: node node_modules/electron/install.js
+      - name: Read the Electron version
+        id: electron-version
+        shell: bash
+        run: echo "version=$(node -p "require('electron/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache the Electron binary
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/electron-cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron-version.outputs.version }}
+      - name: Download the Electron binary (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js
+        env:
+          electron_config_cache: ${{ runner.temp }}/electron-cache
       - name: Seal macOS npm Electron runtime for native notifications
         if: runner.os == 'macOS'
         run: node e2e/web/support/prepare-mac-electron-runtime.ts
@@ -446,14 +515,14 @@ jobs:
         env:
           DILLA_E2E_MAC_NOTIFICATION_DIAGNOSTICS: '1'
         run: |
-          npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice ring.spec.ts --grep "answer: bob rings" --workers=1 --max-failures=1
+          npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice ring.spec.ts --grep "answer: bob rings" --workers=1
       # The voice suite is the same Chromium media stack on every OS; Linux runs it. Windows and macOS keep their
       # native pieces here: the macOS notification diagnostic above and the performance comparison below.
       - name: Desktop voice end-to-end coverage in Electron
         if: runner.os == 'Linux'
         env:
           DILLA_E2E_NOTIFICATIONS: '1'
-        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice --workers=1 --max-failures=1
+        run: xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop-voice.config.ts --project=electron-voice --workers=1
       - run: npm exec -w @dilla/e2e -- playwright install --with-deps chromium
       - if: runner.os == 'Linux'
         run: node packages/desktop/scripts/prepare-browser-sandbox.mjs
@@ -472,7 +541,7 @@ jobs:
           # artifact (its file set is checked exactly).
           path: packages/desktop/test-report/performance-${{ matrix.platform }}-${{ matrix.arch }}.json
           if-no-files-found: error
-      - if: failure()
+      - if: failure() && hashFiles('e2e/desktop-voice-results/**/autoplay-*.json', 'e2e/desktop-voice-results/**/signal-lifecycle.json', 'e2e/desktop-voice-results/**/mac-native-notification-*.json') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-voice-diagnostics-${{ matrix.platform }}-${{ matrix.arch }}
@@ -481,7 +550,7 @@ jobs:
             e2e/desktop-voice-results/**/signal-lifecycle.json
             e2e/desktop-voice-results/**/mac-native-notification-*.json
           if-no-files-found: error
-      - if: failure()
+      - if: failure() && hashFiles('e2e/desktop-voice-results/**', 'e2e/desktop-voice-report/**', 'e2e/performance-results-browser/**', 'e2e/performance-results-desktop/**') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-voice-failure-${{ matrix.platform }}-${{ matrix.arch }}
@@ -500,7 +569,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
-      fail-fast: true
+      fail-fast: false
       # The shared client suite is the same Chromium renderer on every OS: Linux runs all of it, in six shards
       # (WEB_SHARDS in scripts/check-ci-workflow.mjs; one worker per shard, each with its own test host and clock).
       # Windows and macOS run the desktop-specific specs alone: the installed upgrade of a real account (the release
@@ -533,6 +602,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-web-dist
@@ -548,7 +619,19 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber libgtk-3-dev pkg-config xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64 gnome-keyring libfuse2t64
       - run: npm ci
-      - run: node node_modules/electron/install.js
+      - name: Read the Electron version
+        id: electron-version
+        shell: bash
+        run: echo "version=$(node -p "require('electron/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache the Electron binary
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/electron-cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron-version.outputs.version }}
+      - name: Download the Electron binary (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js
+        env:
+          electron_config_cache: ${{ runner.temp }}/electron-cache
       - name: Seal macOS npm Electron runtime for native notifications
         if: runner.os == 'macOS'
         run: node e2e/web/support/prepare-mac-electron-runtime.ts
@@ -566,10 +649,10 @@ jobs:
         if: runner.os == 'Linux'
         env:
           CHROME_DEVEL_SANDBOX: ${{ github.workspace }}/node_modules/electron/dist/chrome-sandbox
-        run: xvfb-run -a bash e2e/web/support/installed-keyring.sh bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/6 --max-failures=1
+        run: xvfb-run -a bash e2e/web/support/installed-keyring.sh bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/6
       - name: Desktop-specific client coverage in Electron
         if: runner.os != 'Linux'
-        run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client ${{ matrix.specs }} --max-failures=1
+        run: npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client ${{ matrix.specs }}
       - name: Collect installed account upgrade proof
         id: installed-account
         run: node packages/desktop/scripts/installed-account-proof.mjs e2e/desktop-client-results ${{ matrix.platform }}-${{ matrix.arch }} packages/desktop/test-report
@@ -587,7 +670,7 @@ jobs:
           name: desktop-installed-account-${{ matrix.platform }}-${{ matrix.arch }}
           path: packages/desktop/test-report/installed-account-${{ matrix.platform }}-${{ matrix.arch }}.json
           if-no-files-found: error
-      - if: failure()
+      - if: failure() && hashFiles('e2e/desktop-client-results/**/error-context.md', 'e2e/desktop-client-results/**/signal-lifecycle.json', 'e2e/desktop-client-results/**/installed-startup-diagnostics.json', 'e2e/test-results/testhost-*.log') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-client-diagnostics-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}
@@ -597,7 +680,7 @@ jobs:
             e2e/desktop-client-results/**/installed-startup-diagnostics.json
             e2e/test-results/testhost-*.log
           if-no-files-found: error
-      - if: failure()
+      - if: failure() && hashFiles('e2e/desktop-client-results/**', 'e2e/desktop-client-report/**') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-client-failure-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.shard }}

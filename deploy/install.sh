@@ -622,7 +622,7 @@ rollback_stuck() {
 	log "       runuser -u dillad -- $BIN_DIR/dillad migrate down --to=$SCHEMA_BEFORE --i-know-what-i-am-doing --config=$CONF"
 	log "       cp -p $BIN_DIR/dillad.prev $BIN_DIR/dillad; cp -p $BIN_DIR/$CORE_NAME.prev $BIN_DIR/$CORE_NAME; systemctl start dilla"
 	log "  3. or, on SQLite, restore the copy the new binary took before it migrated, <db.path>.pre-migration-<unix time>"
-	log "     beside the database (it loses everything written since), then put the previous pair back as in 2"
+	log "     beside the database (it loses everything written since; dillad keeps the newest 3 such copies), then put the previous pair back as in 2"
 	exit 1
 }
 

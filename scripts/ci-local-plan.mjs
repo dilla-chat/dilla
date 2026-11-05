@@ -1,20 +1,24 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { WORKFLOWS } from './ci-areas.mjs';
 import { parseYaml } from './ci-local-yaml.mjs';
 
 /**
- * The pure half of `npm run ci:local` (scripts/ci-local.mjs runs it): .github/workflows/ci.yml read into jobs, each
- * step mapped onto what this machine does instead of the GitHub runner, the needs graph, the job selection of --only and
- * --changed, and the port blocks the browser jobs bind. Nothing here touches the tree, spawns a process or reads the
- * environment, so scripts/check-ci-workflow.mjs runs `localMirrorProblems` in the docs job: a job, a step, an action, an
- * `if:` or an expression that ci-local cannot map fails `npm run check:ci`, and the two cannot drift.
+ * The pure half of `npm run ci:local` (scripts/ci-local.mjs runs it): the two CI workflows (.github/workflows/server.yml
+ * and desktop-ci.yml, WORKFLOWS in scripts/ci-areas.mjs) read into one set of jobs, each step mapped onto what this
+ * machine does instead of the GitHub runner, the needs graph, the job selection of --only and --changed, and the port
+ * blocks the browser jobs bind. A job both workflows carry (changes, rust-native, rust-wasi, web-build) runs once
+ * locally. Nothing here touches the tree, spawns a process or reads the environment, so scripts/check-ci-workflow.mjs
+ * runs `localMirrorProblems` in the docs job: a job, a step, an action, an `if:` or an expression that ci-local cannot
+ * map fails `npm run check:ci`, and the mirror cannot drift from either workflow.
  */
 
 /**
- * Every job of ci.yml, by name. A job missing here (or listed here but gone from ci.yml) is a problem. Fields:
+ * Every job of each workflow, by name. A job missing here (or listed here but gone from its workflow) is a problem, and
+ * a job both workflows carry has the same entry in both. Fields:
  * - weight: the cores it keeps busy (a GitHub runner has 4); the scheduler runs jobs while their sum fits the CPU budget.
- * - kind: 'areas' (the `changes` job: ci-local computes the areas itself), 'aggregate' (ci-ok: the summary is its
- *   verdict) or 'steps' (default: the steps run).
+ * - kind: 'areas' (the `changes` job: ci-local computes the areas itself), 'aggregate' (server-ok, desktop-ok and the
+ *   barriers: the summary is their verdict) or 'steps' (default: the steps run).
  * - group: 'go' and 'e2e' jobs are the ones --stress squeezes.
  * - ports: 'block' (the core, web and voice suites: each run gets its own DILLA_E2E_PORT_OFFSET block), 'fixed' (suites
  *   whose ports are hard-coded: one per-user lock, so lanes queue instead of clashing) or 'ui' (Storybook's servers,
@@ -24,42 +28,64 @@ import { parseYaml } from './ci-local-yaml.mjs';
  * - cleanTree: run steps (exact commands) that run in a copy of the tracked and untracked-unignored files, as on a fresh
  *   checkout: a test that looks at the disk must not see build output (packages/web/dist, …) the runner never has.
  */
-export const JOB_MAP = {
+const SHARED_JOBS = {
   changes: { kind: 'areas', weight: 0 },
   'ci-watchdog': { kind: 'aggregate', weight: 0, skip: 'GitHub run cancellation is replaced by the local fail-fast scheduler' },
-  'ci-work-complete': { kind: 'aggregate', weight: 0 },
-  'linux-sandbox-foundation': { weight: 2, skip: 'requires disposable Ubuntu 22.04/24.04 native runners with privileged kernel fixtures' },
-  desktop: { weight: 4, skip: 'requires the Linux, Windows and macOS native platform acceptance runners in desktop.yml' },
-  'core-integration': { weight: 2, group: 'e2e', ports: 'block' },
-  docs: { weight: 1 },
-  // ci-areas.test.mjs's reader scan skips targets that do not exist: on a runner packages/web/dist never does when it runs.
-  node: { weight: 2, locks: ['tracked-tree'], cleanTree: ['npm run test:ci-check'] },
-  ui: { weight: 3, ports: 'ui' },
-  'rust-wasm-node': { weight: 4 },
   'rust-native': { weight: 4 },
   'rust-wasi': { weight: 2 },
-  vectors: { weight: 2, locks: ['tracked-tree'] },
-  'browser-spike': { weight: 3, group: 'e2e', ports: 'fixed' },
-  'browser-media': { weight: 3, group: 'e2e', ports: 'fixed' },
   'web-build': { weight: 4 },
-  deny: { weight: 1 },
-  go: { weight: 4, group: 'go' },
-  'go-checks': { weight: 3, group: 'go' },
-  'go-native': { weight: 4, group: 'go' },
-  'go-ds': { weight: 4, group: 'go' },
-  'go-api': { weight: 4, group: 'go' },
-  'go-harness': { weight: 4, group: 'go' },
-  'go-fts5-arm64': { weight: 2, group: 'go' },
-  'go-lint': { weight: 3, group: 'go' },
-  'go-vuln': { weight: 2, group: 'go' },
-  'go-sqlc': { weight: 1, group: 'go', locks: ['tracked-tree'] },
-  'go-postgres': { weight: 3, group: 'go' },
-  // It deletes the tracked placeholder in internal/web/dist and builds with the real client there: alone, and put back.
-  'go-release': { weight: 4, group: 'go', exclusive: true, snapshot: ['internal/web/dist'] },
-  'ci-ok': { kind: 'aggregate', weight: 0 },
+};
+export const JOB_MAP = {
+  server: {
+    changes: SHARED_JOBS.changes,
+    'ci-watchdog': SHARED_JOBS['ci-watchdog'],
+    'server-work-complete': { kind: 'aggregate', weight: 0 },
+    docs: { weight: 1 },
+    'server-scripts': { weight: 1 },
+    'rust-native': SHARED_JOBS['rust-native'],
+    'rust-wasi': SHARED_JOBS['rust-wasi'],
+    vectors: { weight: 2, locks: ['tracked-tree'] },
+    'web-build': SHARED_JOBS['web-build'],
+    deny: { weight: 1 },
+    go: { weight: 4, group: 'go' },
+    'go-checks': { weight: 3, group: 'go' },
+    'go-native': { weight: 4, group: 'go' },
+    'go-ds': { weight: 4, group: 'go' },
+    'go-api': { weight: 4, group: 'go' },
+    'go-harness': { weight: 4, group: 'go' },
+    'go-fts5-arm64': { weight: 2, group: 'go' },
+    'go-lint': { weight: 3, group: 'go' },
+    'go-vuln': { weight: 2, group: 'go' },
+    'go-sqlc': { weight: 1, group: 'go', locks: ['tracked-tree'] },
+    'go-postgres': { weight: 3, group: 'go' },
+    // It deletes the tracked placeholder in internal/web/dist and builds with the real client there: alone, and put back.
+    'go-release': { weight: 4, group: 'go', exclusive: true, snapshot: ['internal/web/dist'] },
+    'server-ok': { kind: 'aggregate', weight: 0 },
+  },
+  desktop: {
+    changes: SHARED_JOBS.changes,
+    'ci-watchdog': SHARED_JOBS['ci-watchdog'],
+    'desktop-work-complete': { kind: 'aggregate', weight: 0 },
+    'linux-sandbox-foundation': { weight: 2, skip: 'requires disposable Ubuntu 22.04/24.04 native runners with privileged kernel fixtures' },
+    desktop: { weight: 4, skip: 'requires the Linux, Windows and macOS native platform acceptance runners in desktop.yml' },
+    'core-integration': { weight: 2, group: 'e2e', ports: 'block' },
+    // ci-areas.test.mjs's reader scan skips targets that do not exist: on a runner packages/web/dist never does when it runs.
+    node: { weight: 2, locks: ['tracked-tree'], cleanTree: ['npm run test:ci-check'] },
+    ui: { weight: 3, ports: 'ui' },
+    'rust-wasm-node': { weight: 4 },
+    'rust-native': SHARED_JOBS['rust-native'],
+    'rust-wasi': SHARED_JOBS['rust-wasi'],
+    'browser-spike': { weight: 3, group: 'e2e', ports: 'fixed' },
+    'browser-media': { weight: 3, group: 'e2e', ports: 'fixed' },
+    'web-build': SHARED_JOBS['web-build'],
+    'desktop-ok': { kind: 'aggregate', weight: 0 },
+  },
 };
 
-/** Checks GitHub runs that ci.yml does not hold: ci-local runs them after its own jobs (`--only codeql` alone). */
+/** Every job of both workflows by name: what a merged local job is (a shared job's entries are the same object). */
+export const LOCAL_JOB_MAP = Object.assign({}, ...Object.values(JOB_MAP));
+
+/** Checks GitHub runs that neither CI workflow holds: ci-local runs them after its own jobs (`--only codeql` alone). */
 export const EXTRA_JOBS = {
   codeql: {
     weight: 4,
@@ -161,13 +187,15 @@ const IF_ATOMS = [
   [/^failure\(\)$/, (m, ctx) => ctx.failed === true],
   [/^success\(\)$/, (m, ctx) => ctx.failed !== true],
   [/^always\(\)$/, () => true],
+  // An upload's evidence guard. There is no runner workspace to hash here; the upload step itself reports a missing path.
+  [/^hashFiles\('[^']+'(?:, '[^']+')*\) != ''$/, () => true],
   [/^steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+) != 'true'$/, (m, ctx) => ctx.steps?.[m[1]]?.[m[2]] !== 'true'],
   [/^steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+) == 'true'$/, (m, ctx) => ctx.steps?.[m[1]]?.[m[2]] === 'true'],
   [/^contains\(needs\.\*\.result, '(failure|cancelled)'\)$/, (m, ctx) => (ctx.needResults ?? []).includes(m[1])],
 ];
 
 /**
- * An `if:` expression of the forms ci.yml uses: atoms joined by `||` or `&&` (no parentheses, `&&` binding tighter).
+ * An `if:` expression of the forms the CI workflows use: atoms joined by `||` or `&&` (no parentheses, `&&` binding tighter).
  * An empty condition is `success()`. Anything else throws, so a new form fails the sync check instead of being guessed.
  */
 export function evalIf(expr, ctx) {
@@ -298,12 +326,12 @@ export function expandJobs(workflow) {
 
 /** Why a job cannot run on this machine, or null. */
 export function skipReason(job, arch = 'x64') {
-  if (JOB_MAP[job.name]?.skip) return JOB_MAP[job.name].skip;
+  if (LOCAL_JOB_MAP[job.name]?.skip) return LOCAL_JOB_MAP[job.name].skip;
   if (/-arm\b|arm64/.test(job.runsOn) && arch !== 'arm64') return `needs a native linux/arm64 runner (${job.runsOn}); this machine is ${arch}`;
   return null;
 }
 
-/** ci.yml's services, as a container to start: image, env, the published ports and the readiness command. */
+/** A workflow's services, as a container to start: image, env, the published ports and the readiness command. */
 export function mapService(name, svc) {
   if (name !== 'postgres') throw new Error(`service "${name}" is unmapped (only postgres is)`);
   const allowed = new Set(['image', 'env', 'ports', 'options']);
@@ -374,7 +402,7 @@ export function resolveNames(jobs, names) {
  * - `only`: those jobs, plus what they need unless `deps` is false (then their artifacts must exist from an earlier run);
  * - otherwise every job whose `if:` holds for `outputs` (the areas: everything for a full run, the diff's for --changed)
  *   and the extra jobs.
- * ci-ok and changes are always in, as in CI.
+ * The aggregates (server-ok, desktop-ok, the barriers) and changes are always in, as in CI.
  */
 export function selectJobs(jobs, { only = null, outputs, deps = true }) {
   let chosen;
@@ -385,8 +413,8 @@ export function selectJobs(jobs, { only = null, outputs, deps = true }) {
     if (outputs.code !== false) chosen.push(...Object.keys(EXTRA_JOBS));
   }
   const extras = chosen.filter((id) => id in EXTRA_JOBS);
-  // ci-ok's verdict covers the jobs that ran: its needs never pull more jobs in.
-  const isAggregate = (id) => JOB_MAP[jobs.find((j) => j.id === id)?.name]?.kind === 'aggregate';
+  // An aggregate's verdict covers the jobs that ran: its needs never pull more jobs in.
+  const isAggregate = (id) => LOCAL_JOB_MAP[jobs.find((j) => j.id === id)?.name]?.kind === 'aggregate';
   const aggregates = chosen.filter((id) => !(id in EXTRA_JOBS) && isAggregate(id));
   const ciIds = chosen.filter((id) => !(id in EXTRA_JOBS) && !isAggregate(id));
   const closure = dependencyClosure(jobs, ciIds).filter((id) => !isAggregate(id));
@@ -394,35 +422,117 @@ export function selectJobs(jobs, { only = null, outputs, deps = true }) {
   return [...ordered, ...aggregates, ...extras];
 }
 
-/** The workflow at `root`, parsed and expanded. */
-export function loadWorkflow(root) {
-  const text = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
-  return { text, workflow: parseYaml(text), jobs: expandJobs(parseYaml(text)) };
+/**
+ * The two workflows' jobs as one local run. A job both carry runs once: its `if:` holds when either workflow's does
+ * and it needs what either needs, but its steps (when ci-local runs them) and env must be the same, or the local run
+ * would prove only one of them. The workflow-level env must agree too. Throws on a mismatch.
+ */
+export function mergeWorkflows(parsed) {
+  const byName = new Map();
+  const env = {};
+  for (const [workflow, doc] of Object.entries(parsed)) {
+    for (const [k, v] of Object.entries(doc.env ?? {})) {
+      if (k in env && env[k] !== v) throw new Error(`workflow env ${k} differs between the CI workflows`);
+      env[k] = v;
+    }
+    for (const job of expandJobs(doc)) {
+      const seen = byName.get(job.id);
+      if (seen === undefined) { byName.set(job.id, { ...job, workflows: [workflow] }); continue; }
+      const runsSteps = (LOCAL_JOB_MAP[job.name]?.kind ?? 'steps') === 'steps' && !LOCAL_JOB_MAP[job.name]?.skip;
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+      if (runsSteps && (!same(seen.steps, job.steps) || !same(seen.env, job.env) || !same(seen.services, job.services) || seen.runsOn !== job.runsOn || seen.timeout !== job.timeout)) {
+        throw new Error(`job "${job.id}" differs between ${seen.workflows.map((w) => WORKFLOWS[w].file).join(' and ')} and ${WORKFLOWS[workflow].file}; a job both carry runs once locally`);
+      }
+      const ifs = [seen.if, job.if].filter((x) => x !== null);
+      seen.if = seen.if === null || job.if === null ? null : [...new Set(ifs)].join(' || ');
+      seen.needs = [...new Set([...seen.needs, ...job.needs])];
+      seen.workflows.push(workflow);
+    }
+  }
+  return { env, jobs: [...byName.values()] };
+}
+
+/** Both workflows at `root`: each one's text and parse, and their jobs merged into one local run. */
+export function loadWorkflows(root) {
+  const texts = Object.fromEntries(Object.entries(WORKFLOWS).map(([workflow, { file }]) => [workflow, readFileSync(join(root, '.github', 'workflows', file), 'utf8')]));
+  const parsed = Object.fromEntries(Object.entries(texts).map(([workflow, text]) => [workflow, parseYaml(text)]));
+  return { texts, parsed, ...mergeWorkflows(parsed) };
+}
+
+/** `--list`: each workflow's jobs (a matrix job with its legs), and what ci-local does with each. */
+export function listJobs(parsed, arch = 'x64') {
+  const lines = [];
+  for (const [workflow, doc] of Object.entries(parsed)) {
+    const others = Object.entries(parsed).filter(([w]) => w !== workflow);
+    lines.push(`${WORKFLOWS[workflow].name} (.github/workflows/${WORKFLOWS[workflow].file}):`);
+    const jobs = expandJobs(doc);
+    for (const name of [...new Set(jobs.map((j) => j.name))]) {
+      const legs = jobs.filter((j) => j.name === name);
+      const info = LOCAL_JOB_MAP[name] ?? {};
+      const shared = others.filter(([, other]) => name in (other.jobs ?? {})).map(([w]) => WORKFLOWS[w].name);
+      const skip = skipReason(legs[0], arch);
+      const notes = [
+        legs.length > 1 ? `legs ${legs.map((j) => j.id).join(', ')}` : null,
+        info.kind && info.kind !== 'steps' ? info.kind : null,
+        shared.length ? `also in ${shared.join(', ')}: runs once` : null,
+        skip ? `skipped: ${skip}` : null,
+      ].filter(Boolean);
+      lines.push(`  ${name}${notes.length ? `  (${notes.join('; ')})` : ''}`);
+    }
+  }
+  return lines;
 }
 
 /**
- * Everything in ci.yml that ci-local would not know how to run: an unmapped job (or a JOB_MAP entry for a job ci.yml
- * no longer has), step, action, service, `if:` or expression. scripts/check-ci-workflow.mjs fails on any.
+ * Everything in either workflow that ci-local would not know how to run: an unmapped job (or a JOB_MAP entry for a job
+ * its workflow no longer has), step, action, service, `if:` or expression, and a shared job the two workflows define
+ * differently. `texts` maps each workflow of WORKFLOWS to its file's text (null: missing). scripts/check-ci-workflow.mjs
+ * fails on any.
  */
-export function localMirrorProblems(text) {
+export function localMirrorProblems(texts) {
   const problems = [];
-  let workflow;
-  let jobs;
-  try {
-    workflow = parseYaml(text);
-    jobs = expandJobs(workflow);
-  } catch (e) {
-    return [`ci-local: ${e.message}`];
+  const parsed = {};
+  for (const [workflow, { file }] of Object.entries(WORKFLOWS)) {
+    if (texts[workflow] === null || texts[workflow] === undefined) {
+      problems.push(`ci-local: ${file} is missing`);
+      continue;
+    }
+    try {
+      parsed[workflow] = parseYaml(texts[workflow]);
+      problems.push(...workflowMirrorProblems(workflow, parsed[workflow]));
+    } catch (e) {
+      problems.push(`ci-local: ${file}: ${e.message}`);
+    }
   }
+  if (Object.keys(parsed).length === Object.keys(WORKFLOWS).length) {
+    try {
+      dependencyClosure(mergeWorkflows(parsed).jobs, []);
+    } catch (e) {
+      problems.push(`ci-local: ${e.message}`);
+    }
+  }
+  for (const [name, entry] of Object.entries(LOCAL_JOB_MAP)) {
+    for (const map of Object.values(JOB_MAP)) {
+      if (name in map && map[name] !== entry) problems.push(`ci-local: JOB_MAP gives the shared job "${name}" different entries per workflow`);
+    }
+  }
+  return problems;
+}
+
+function workflowMirrorProblems(workflowKey, workflow) {
+  const { file } = WORKFLOWS[workflowKey];
+  const map = JOB_MAP[workflowKey];
+  const problems = [];
+  const jobs = expandJobs(workflow);
   for (const key of Object.keys(workflow ?? {})) {
-    if (!TOP_LEVEL_KEYS.includes(key)) problems.push(`ci-local: workflow-level key "${key}" is unmapped (TOP_LEVEL_KEYS in scripts/ci-local-plan.mjs)`);
+    if (!TOP_LEVEL_KEYS.includes(key)) problems.push(`ci-local: ${file}: workflow-level key "${key}" is unmapped (TOP_LEVEL_KEYS in scripts/ci-local-plan.mjs)`);
   }
   const names = new Set(jobs.map((j) => j.name));
-  for (const name of names) if (!(name in JOB_MAP)) problems.push(`ci-local: job "${name}" is neither mapped nor skipped in JOB_MAP (scripts/ci-local-plan.mjs)`);
-  for (const name of Object.keys(JOB_MAP)) if (!names.has(name)) problems.push(`ci-local: JOB_MAP maps "${name}", which ci.yml no longer has`);
+  for (const name of names) if (!(name in map)) problems.push(`ci-local: ${file}: job "${name}" is neither mapped nor skipped in JOB_MAP.${workflowKey} (scripts/ci-local-plan.mjs)`);
+  for (const name of Object.keys(map)) if (!names.has(name)) problems.push(`ci-local: JOB_MAP.${workflowKey} maps "${name}", which ${file} no longer has`);
   const everything = { go: true, core: true, web: true, e2e: true, text: true, code: true };
   for (const job of jobs) {
-    const where = `ci-local: job "${job.id}"`;
+    const where = `ci-local: ${file}: job "${job.id}"`;
     try {
       evalIf(job.if, { outputs: everything, needResults: [] });
       dependencyClosure(jobs, [job.id]);
@@ -431,11 +541,11 @@ export function localMirrorProblems(text) {
     } catch (e) {
       problems.push(`${where}: ${e.message}`);
     }
-    if (JOB_MAP[job.name]?.skip) continue;
-    for (const command of JOB_MAP[job.name]?.cleanTree ?? []) {
+    if (map[job.name]?.skip) continue;
+    for (const command of map[job.name]?.cleanTree ?? []) {
       if (!job.steps.some((s) => typeof s.run === 'string' && s.run.trim() === command)) problems.push(`${where}: cleanTree names "${command}", which is not a run step of the job`);
     }
-    const kind = JOB_MAP[job.name]?.kind ?? 'steps';
+    const kind = map[job.name]?.kind ?? 'steps';
     if (kind !== 'steps') continue;
     job.steps.forEach((step, n) => {
       try {

@@ -8,7 +8,8 @@ process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { areasFor, classifyFile, computeAreas, gateExpression, JOB_GATES, PATH_RULES, jobRuns, reachableOutputs, trackedFiles } from './ci-areas.mjs';
+import { areasFor, classifyFile, computeAreas, gateExpression, JOB_GATES, PATH_RULES, jobRuns, reachableOutputs, trackedFiles, WORKFLOWS } from './ci-areas.mjs';
+import { parseYaml } from './ci-local-yaml.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./ci-areas.mjs', import.meta.url));
 const REPO_ROOT = join(dirname(SCRIPT), '..');
@@ -16,7 +17,10 @@ const REPO_ROOT = join(dirname(SCRIPT), '..');
 const NONE = { go: false, core: false, web: false, e2e: false, text: false, code: false };
 const ALL = { go: true, core: true, web: true, e2e: true, text: true, code: true };
 const BROWSERS = ['core-integration'];
-const ranJobs = (outputs) => Object.keys(JOB_GATES).filter((job) => jobRuns(job, outputs));
+const WFS = Object.keys(WORKFLOWS);
+// The gated jobs of one workflow that run for a set of outputs.
+const ranJobs = (workflow, outputs) => Object.keys(JOB_GATES[workflow]).filter((job) => jobRuns(workflow, job, outputs));
+const readWorkflow = (workflow) => parseYaml(readFileSync(join(REPO_ROOT, '.github', 'workflows', WORKFLOWS[workflow].file), 'utf8'));
 
 test('docs-only changes set no area', () => {
   for (const files of [
@@ -27,7 +31,7 @@ test('docs-only changes set no area', () => {
     ['CONTRIBUTING.md', 'docs/a.md', 'LICENSE'],
   ]) {
     assert.deepEqual(areasFor(files), NONE, files.join(' '));
-    assert.deepEqual(ranJobs(areasFor(files)), [], files.join(' '));
+    for (const wf of WFS) assert.deepEqual(ranJobs(wf, areasFor(files)), [], `${wf}: ${files.join(' ')}`);
   }
 });
 
@@ -36,7 +40,7 @@ test('Markdown that a test or a build reads is code of the area that reads it', 
   assert.deepEqual(areasFor(['docs/design/flows/06-voice.md']), { go: false, core: false, web: true, e2e: true, text: false, code: true });
   // protocol/*.md: the route tables are parsed by internal/dillad/factor_owed_test.go.
   for (const doc of ['protocol/09-http-api.md', 'protocol/02-delivery-service.md', 'protocol/00-overview.md']) {
-    assert.deepEqual(areasFor([doc]), { go: true, core: false, web: false, e2e: true, text: false, code: true }, doc);
+    assert.deepEqual(areasFor([doc]), { go: true, core: false, web: false, e2e: false, text: false, code: true }, doc);
   }
   // core/vendor/sqlite-wasm-vfs/README.md: #![doc = include_str!("../README.md")] compiles it into the wasm core.
   assert.deepEqual(areasFor(['core/vendor/sqlite-wasm-vfs/README.md']), { ...ALL, text: false });
@@ -47,21 +51,29 @@ test('Markdown that a test or a build reads is code of the area that reads it', 
 test('a UI-only change runs the web jobs and the browsers, no Go jobs', () => {
   const outputs = areasFor(['packages/ui/src/Button.tsx', 'packages/web/package.json']);
   assert.deepEqual(outputs, { go: false, core: false, web: true, e2e: true, text: false, code: true });
-  const ran = ranJobs(outputs);
-  for (const job of ['node', 'ui', 'rust-wasm-node', 'browser-spike', 'browser-media', 'web-build', 'rust-native', 'rust-wasi', 'go-release', ...BROWSERS]) assert.ok(ran.includes(job), job);
-  for (const job of ['vectors', 'deny', 'go', 'go-checks', 'go-native', 'go-ds', 'go-api', 'go-harness', 'go-fts5-arm64', 'go-lint', 'go-vuln', 'go-sqlc', 'go-postgres']) assert.ok(!ran.includes(job), job);
+  assert.deepEqual(ranJobs('desktop', outputs), Object.keys(JOB_GATES.desktop));
+  // The release binaries embed the web client, so server rebuilds and embeds it; no Go tests run.
+  assert.deepEqual(ranJobs('server', outputs).sort(), ['go-release', 'rust-native', 'rust-wasi', 'server-scripts', 'web-build']);
+});
+
+test('a change to anything release.yml ships or the bot-ops guard reads runs server-scripts', () => {
+  for (const file of ['deploy/install.sh', 'deploy/install-bot.sh', 'deploy/install_bot_test.sh', 'scripts/check-bot-operations.mjs', 'internal/bot/protocol/codec.go', 'packages/client-core/src/bot/utilities.ts', 'package.json']) {
+    assert.ok(jobRuns('server', 'server-scripts', areasFor([file])), file);
+  }
+  assert.ok(!jobRuns('server', 'server-scripts', areasFor(['docs/deploy/README.md'])));
 });
 
 test('the design tokens are read by a Go test, so they run the Go jobs too', () => {
   const outputs = areasFor(['packages/design-tokens/dist/tokens.css']);
   assert.deepEqual(outputs, { go: true, core: false, web: true, e2e: true, text: false, code: true });
-  assert.ok(jobRuns('go-api', outputs));
+  assert.ok(jobRuns('server', 'go-api', outputs));
 });
 
 test('sandbox bootstrap changes run Go interop and retain web and desktop coverage', () => {
   const outputs = areasFor(['packages/desktop/native/linux-sandbox/frontend/bootstrap.py']);
   assert.deepEqual(outputs, { go: true, core: false, web: true, e2e: true, text: false, code: true });
-  for (const job of ['go', 'go-native', 'ui', 'desktop', 'linux-sandbox-foundation']) assert.ok(jobRuns(job, outputs), job);
+  for (const job of ['go', 'go-native']) assert.ok(jobRuns('server', job, outputs), job);
+  for (const job of ['ui', 'desktop', 'linux-sandbox-foundation']) assert.ok(jobRuns('desktop', job, outputs), job);
   const neighbor = areasFor(['packages/desktop/native/linux-sandbox/frontend/other.py']);
   assert.deepEqual(neighbor, { go: false, core: false, web: true, e2e: true, text: false, code: true });
 });
@@ -69,44 +81,59 @@ test('sandbox bootstrap changes run Go interop and retain web and desktop covera
 test('the LiveKit schema golden is read by the media checks, which run with web', () => {
   const outputs = areasFor(['internal/sfu/testdata/livekit-signal-schema.json']);
   assert.deepEqual(outputs, { go: true, core: false, web: true, e2e: true, text: false, code: true });
-  assert.ok(jobRuns('rust-wasm-node', outputs));
-  assert.ok(jobRuns('rust-wasm-node', areasFor(['packages/media/src/worker/x.ts'])));
+  assert.ok(jobRuns('desktop', 'rust-wasm-node', outputs));
+  assert.ok(jobRuns('desktop', 'rust-wasm-node', areasFor(['packages/media/src/worker/x.ts'])));
 });
 
-test('a Go-only change runs the Go jobs and the browsers, no rust or ui unit jobs', () => {
+test('a Go-only change runs the Go jobs and the release build, no rust lint or ui unit jobs', () => {
   const outputs = areasFor(['internal/api/messages.go', 'go.sum']);
-  assert.deepEqual(outputs, { go: true, core: false, web: false, e2e: true, text: false, code: true });
-  const ran = ranJobs(outputs);
-  for (const job of ['go', 'go-checks', 'go-native', 'go-ds', 'go-api', 'go-harness', 'go-lint', 'go-postgres', 'go-release', 'web-build', 'browser-spike', ...BROWSERS]) assert.ok(ran.includes(job), job);
-  for (const job of ['ui', 'rust-wasm-node', 'vectors', 'deny']) assert.ok(!ran.includes(job), job);
+  assert.deepEqual(outputs, { go: true, core: false, web: false, e2e: false, text: false, code: true });
+  const ran = ranJobs('server', outputs);
+  for (const job of ['go', 'go-checks', 'go-native', 'go-ds', 'go-api', 'go-harness', 'go-lint', 'go-postgres', 'go-release', 'web-build', 'rust-native', 'rust-wasi']) assert.ok(ran.includes(job), job);
+  for (const job of ['vectors', 'deny']) assert.ok(!ran.includes(job), job);
+});
+
+test('a Go-only PR turns no desktop area on except through core', () => {
+  const desktopAreas = ['web', 'e2e', 'core'];
+  for (const files of [['internal/api/messages.go'], ['go.sum', 'cmd/dillad/main.go'], ['deploy/install.sh'], ['protocol/09-http-api.md'], ['internal/web/downloads.go', 'README.md']]) {
+    const outputs = areasFor(files);
+    assert.equal(outputs.go, true, files.join(' '));
+    assert.deepEqual(desktopAreas.filter((area) => outputs[area]), [], files.join(' '));
+    // Only the code-gated jobs run (the script gates and the two Rust artifact builds): no ui, wasm, browser or desktop job.
+    assert.deepEqual(ranJobs('desktop', outputs), ['node', 'rust-native', 'rust-wasi'], files.join(' '));
+  }
+  // core drags the desktop lane in: the wasm core is the desktop app's.
+  const core = areasFor(['internal/api/messages.go', 'core/dilla-core/src/lib.rs']);
+  assert.deepEqual(desktopAreas.filter((area) => core[area]), desktopAreas);
+  assert.deepEqual(ranJobs('desktop', core), Object.keys(JOB_GATES.desktop));
 });
 
 test('a core change runs everything', () => {
   for (const file of ['core/dilla-core/src/lib.rs', 'Cargo.lock', 'testkit/src/main.rs', 'protocol/vectors/groups.json', 'deny.toml']) {
     assert.deepEqual(areasFor([file]), { ...ALL, text: false }, file);
-    assert.deepEqual(ranJobs(areasFor([file])), Object.keys(JOB_GATES), file);
+    for (const wf of WFS) assert.deepEqual(ranJobs(wf, areasFor([file])), Object.keys(JOB_GATES[wf]), `${wf}: ${file}`);
   }
 });
 
 test('a workflow or script change runs everything', () => {
-  for (const file of ['.github/workflows/ci.yml', 'scripts/ci-areas.mjs', 'scripts/install-ci-tool.sh']) {
+  for (const file of ['.github/workflows/server.yml', '.github/workflows/desktop-ci.yml', 'scripts/ci-areas.mjs', 'scripts/install-ci-tool.sh']) {
     assert.deepEqual(areasFor([file]), ALL, file);
-    assert.deepEqual(ranJobs(areasFor([file])), Object.keys(JOB_GATES), file);
+    for (const wf of WFS) assert.deepEqual(ranJobs(wf, areasFor([file])), Object.keys(JOB_GATES[wf]), `${wf}: ${file}`);
   }
 });
 
 test('an e2e-only change runs the browsers and the persistence matrix, not the unit jobs', () => {
   const outputs = areasFor(['e2e/tests/voice.spec.ts']);
   assert.deepEqual(outputs, { go: false, core: false, web: false, e2e: true, text: false, code: true });
-  assert.ok(BROWSERS.every((job) => jobRuns(job, outputs)));
-  assert.ok(jobRuns('browser-spike', outputs));
-  assert.ok(!jobRuns('ui', outputs) && !jobRuns('go', outputs));
+  assert.ok(BROWSERS.every((job) => jobRuns('desktop', job, outputs)));
+  assert.ok(jobRuns('desktop', 'browser-spike', outputs));
+  assert.ok(!jobRuns('desktop', 'ui', outputs) && !jobRuns('server', 'go', outputs));
 });
 
 test('a mixed change is the union of its files, and docs files add nothing', () => {
   assert.deepEqual(areasFor(['docs/a.md', 'packages/web/src/a.ts']), { go: false, core: false, web: true, e2e: true, text: false, code: true });
   assert.deepEqual(areasFor(['README.md', 'cmd/dillad/main.go', 'packages/web/src/a.ts']), { go: true, core: false, web: true, e2e: true, text: false, code: true });
-  assert.deepEqual(areasFor(['deploy/install.sh']), { go: true, core: false, web: false, e2e: true, text: false, code: true });
+  assert.deepEqual(areasFor(['deploy/install.sh']), { go: true, core: false, web: false, e2e: false, text: false, code: true });
 });
 
 test('a file no rule names is code in every area', () => {
@@ -130,6 +157,20 @@ test('only a pull request is narrowed, and a failing diff fails safe', () => {
   assert.deepEqual(computeAreas({ eventName: 'pull_request', baseSha: 'abc', diff: () => [] }), ALL);
 });
 
+test('both workflows get every area on for a push to main', () => {
+  const outputs = computeAreas({ eventName: 'push', baseSha: '', diff: () => ['docs/a.md'] });
+  assert.deepEqual(outputs, ALL);
+  for (const wf of WFS) assert.deepEqual(ranJobs(wf, outputs), Object.keys(JOB_GATES[wf]), wf);
+});
+
+test('a scheduled run turns every desktop area on', () => {
+  // The nightly run has no base to diff against; whatever the diff would say, nothing is narrowed.
+  const outputs = computeAreas({ eventName: 'schedule', baseSha: '', diff: () => ['docs/a.md'] });
+  assert.deepEqual(outputs, ALL);
+  assert.deepEqual(computeAreas({ eventName: 'schedule', baseSha: 'abc', diff: () => ['docs/a.md'] }), ALL);
+  assert.deepEqual(ranJobs('desktop', outputs), Object.keys(JOB_GATES.desktop));
+});
+
 test('a path with a newline in it stays one path', () => {
   // docs/x\nrun.go is one file under docs/; split on newlines it would be the code file run.go.
   assert.deepEqual(computeAreas({ eventName: 'pull_request', baseSha: 'abc', diff: () => ['docs/x\nrun.go'] }), NONE);
@@ -137,15 +178,17 @@ test('a path with a newline in it stays one path', () => {
 
 test('every browser job runs together, whenever any does', () => {
   for (const outputs of reachableOutputs()) {
-    assert.equal(new Set(BROWSERS.map((job) => jobRuns(job, outputs))).size, 1, JSON.stringify(outputs));
+    assert.equal(new Set(BROWSERS.map((job) => jobRuns('desktop', job, outputs))).size, 1, JSON.stringify(outputs));
   }
 });
 
 test('a gate fails safe: a job whose output is missing or empty runs', () => {
-  for (const job of Object.keys(JOB_GATES)) {
-    assert.equal(jobRuns(job, {}), true, job);
-    assert.equal(jobRuns(job, NONE), false, job);
-    assert.match(gateExpression(job), /^needs\.changes\.outputs\.(go|core|web|e2e|text|code) != 'false'( \|\| needs\.changes\.outputs\.(go|core|web|e2e|text|code) != 'false')*$/, job);
+  for (const wf of WFS) {
+    for (const job of Object.keys(JOB_GATES[wf])) {
+      assert.equal(jobRuns(wf, job, {}), true, job);
+      assert.equal(jobRuns(wf, job, NONE), false, job);
+      assert.match(gateExpression(wf, job), /^needs\.changes\.outputs\.(go|core|web|e2e|text|code) != 'false'( \|\| needs\.changes\.outputs\.(go|core|web|e2e|text|code) != 'false')*$/, job);
+    }
   }
 });
 
@@ -157,16 +200,39 @@ test('the reachable output sets come from the tracked files, so a new rule is co
   assert.ok(sets.includes(JSON.stringify(NONE)) && sets.includes(JSON.stringify(ALL)));
 });
 
-test('JOB_GATES names exactly the jobs of ci.yml except workflow infrastructure', () => {
-  const ci = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
-  const jobs = [...ci.slice(ci.indexOf('\njobs:')).matchAll(/^ {2}([A-Za-z0-9_-]+):\s*$/gm)].map((m) => m[1]).filter((job) => !['changes', 'docs', 'ci-watchdog', 'ci-work-complete', 'ci-ok'].includes(job));
-  assert.deepEqual(jobs.sort(), Object.keys(JOB_GATES).sort());
+test('JOB_GATES names exactly the jobs of each workflow except its infrastructure', () => {
+  for (const wf of WFS) {
+    const jobs = Object.keys(readWorkflow(wf).jobs).filter((job) => !WORKFLOWS[wf].always.includes(job));
+    assert.deepEqual(jobs.sort(), Object.keys(JOB_GATES[wf]).sort(), wf);
+  }
+});
+
+test("a docs-only PR runs both workflows' changes job and reports their ok jobs", () => {
+  const outputs = computeAreas({ eventName: 'pull_request', baseSha: 'abc', diff: () => ['README.md', 'docs/user/x.md'] });
+  assert.deepEqual(outputs, NONE);
+  for (const wf of WFS) {
+    const { name, on, jobs } = readWorkflow(wf);
+    assert.equal(name, WORKFLOWS[wf].name);
+    // Triggered for every pull request and push to main, so its checks exist whatever the change touched.
+    // The desktop workflow also runs nightly (the schedule test above).
+    assert.deepEqual(on, { push: { branches: ['main'] }, pull_request: null, ...(wf === 'desktop' ? { schedule: [{ cron: '17 2 * * *' }] } : {}) }, wf);
+    assert.deepEqual(ranJobs(wf, outputs), [], wf);
+    for (const job of WORKFLOWS[wf].always) {
+      assert.ok(job in jobs, `${wf}: ${job}`);
+      assert.doesNotMatch(String(jobs[job].if ?? ''), /needs\.changes/, `${wf}: ${job} carries an area gate`);
+    }
+    assert.equal(jobs.changes.needs, undefined, wf);
+    // The ok job runs after skipped jobs too, and its verdict covers every other job of its workflow.
+    const ok = jobs[WORKFLOWS[wf].ok];
+    assert.equal(ok.if, 'always()', wf);
+    assert.deepEqual([...ok.needs].sort(), Object.keys(jobs).filter((job) => job !== WORKFLOWS[wf].ok).sort(), wf);
+  }
 });
 
 test('Linux sandbox foundation shares desktop fail-safe code eligibility', () => {
-  assert.deepEqual(JOB_GATES['linux-sandbox-foundation'], ['e2e']);
+  assert.deepEqual(JOB_GATES.desktop['linux-sandbox-foundation'], ['e2e']);
   for (const outputs of [...reachableOutputs(), {}, { e2e: '' }]) {
-    assert.equal(jobRuns('linux-sandbox-foundation', outputs), jobRuns('desktop', outputs));
+    assert.equal(jobRuns('desktop', 'linux-sandbox-foundation', outputs), jobRuns('desktop', 'desktop', outputs));
   }
 });
 
@@ -175,7 +241,7 @@ test('Linux sandbox foundation shares desktop fail-safe code eligibility', () =>
 // Readers that no CI job runs (pre-existing): e2e/scripts/shoot-docs.test.mjs reads docs/user/*.md, and nothing runs it.
 const UNRUN_READERS = ['e2e/scripts/shoot-docs.test.mjs'];
 const READER_AREA = { internal: 'go', cmd: 'go', packages: 'web', core: 'core', testkit: 'core', e2e: 'e2e' };
-// This build-tagged Go test runs only in web-build/go-release, both gated by the web area.
+// This build-tagged Go test runs only in web-build/go-release, all gated by the web area (server's also by go).
 // A local generated dist must not make the scanner mistake it for an ordinary Go-job reader.
 const READER_PATH_AREA = {
   'internal/web/webdist_test.go': 'web',
@@ -236,7 +302,7 @@ test('every path the code reads from another place is covered by a rule', () => 
   assert.deepEqual(uncovered.map((f) => `${f.file} reads ${f.target}: a change there does not run ${f.area}`), []);
 });
 
-// The CLI against a real repository: the path ci.yml takes.
+// The CLI against a real repository: the path each workflow's changes job takes.
 function repo() {
   const dir = mkdtempSync(join(TEST_ROOT, 'dilla-areas-'));
   const git = (...args) => execFileSync('git', ['-c', 'user.email=a@b.c', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd: dir, encoding: 'utf8' });
@@ -267,7 +333,7 @@ test('the CLI reads the diff against the base: docs-only, then code', () => {
   assert.deepEqual(runCli(dir, { EVENT_NAME: 'pull_request', BASE_SHA: base }), NONE);
   writeFileSync(join(dir, 'internal', 'a.go'), 'package b\n');
   git('commit', '-q', '-a', '-m', 'code');
-  assert.deepEqual(runCli(dir, { EVENT_NAME: 'pull_request', BASE_SHA: base }), { go: true, core: false, web: false, e2e: true, text: false, code: true });
+  assert.deepEqual(runCli(dir, { EVENT_NAME: 'pull_request', BASE_SHA: base }), { go: true, core: false, web: false, e2e: false, text: false, code: true });
 });
 
 test('the CLI treats moving code into docs/ as a code change', () => {
@@ -275,7 +341,7 @@ test('the CLI treats moving code into docs/ as a code change', () => {
   mkdirSync(join(dir, 'docs'));
   git('mv', 'internal/a.go', 'docs/a.go');
   git('commit', '-q', '-m', 'move');
-  assert.deepEqual(runCli(dir, { EVENT_NAME: 'pull_request', BASE_SHA: base }), { go: true, core: false, web: false, e2e: true, text: false, code: true });
+  assert.deepEqual(runCli(dir, { EVENT_NAME: 'pull_request', BASE_SHA: base }), { go: true, core: false, web: false, e2e: false, text: false, code: true });
 });
 
 test('the CLI keeps a path with a newline in one piece', () => {
@@ -302,13 +368,13 @@ test('the profile-text tables are regenerated only when the generator, the table
   ];
   for (const file of touching) {
     assert.equal(areasFor([file]).text, true, file);
-    assert.equal(jobRuns('node', areasFor([file])), true, file);
+    assert.equal(jobRuns('desktop', 'node', areasFor([file])), true, file);
   }
   for (const file of ['internal/api/accounts.go', 'packages/web/src/screens/Settings.tsx', 'packages/client-core/src/profile-text.test.ts', 'core/dilla-core/src/lib.rs', 'e2e/tests/voice.spec.ts', 'internal/auth/handle.go']) {
     assert.equal(areasFor([file]).text, false, file);
   }
   assert.equal(areasFor(['README.md', 'docs/user/getting-started.md']).text, false);
   // A change to CI itself, a push and a diff that cannot be computed run the check.
-  assert.equal(areasFor(['.github/workflows/ci.yml']).text, true);
+  assert.equal(areasFor(['.github/workflows/server.yml']).text, true);
   assert.equal(areasFor(null).text, true);
 });

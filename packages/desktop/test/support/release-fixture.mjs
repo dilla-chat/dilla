@@ -100,7 +100,7 @@ export async function buildReleaseFixture({ version = '1.2.3', directory, now = 
  for (const artifact of release.artifacts.filter(a => a.platform === 'darwin')) await writeFile(join(directory, `appcast-${artifact.arch}.xml`), signedAppcast(appcast(release, artifact, artifact.sparkleSignature), sparkle.privateKey));
  const metadata = Buffer.from(JSON.stringify(release)), signature = sign(null, metadata, key.privateKey).toString('base64');
  const trust = { metadataPublicKeys: [key.publicKey.export({ type: 'spki', format: 'pem' }).toString()], sparklePublicKey: sparkle.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') };
- const run = { id: source.ciRun, head_sha: source.head, name: 'ci', status: 'completed', conclusion: 'success', repository: { full_name: 'dilla-chat/dilla' }, head_repository: { full_name: 'dilla-chat/dilla' } };
+ const run = { id: source.ciRun, head_sha: source.head, name: 'desktop', status: 'completed', conclusion: 'success', repository: { full_name: 'dilla-chat/dilla' }, head_repository: { full_name: 'dilla-chat/dilla' } };
  const context = { metadata, signature, trust, directory, run, jobs, version, now };
  const resign = changed => { const bytes = Buffer.from(JSON.stringify(changed)); return { ...context, metadata: bytes, signature: sign(null, bytes, key.privateKey).toString('base64') }; };
  /** Lays the CI-produced files out as one subdirectory per downloaded artifact. */

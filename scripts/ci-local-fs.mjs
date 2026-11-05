@@ -19,7 +19,7 @@ import { basename, dirname, join } from 'node:path';
 
 /**
  * Variables a caller's shell may carry that change what a test touches or where a build goes. CI sets none of them
- * unless ci.yml says so, so every job starts without them and gets only what ci.yml sets:
+ * unless the workflow says so, so every job starts without them and gets only what the workflow sets:
  * - DILLA_*: the test switches (DILLA_TEST_PG points the store and API tests at a server they CREATE/DROP databases on,
  *   DILLA_TESTKIT, DILLA_METRICS_TOKEN, the e2e port pins, …);
  * - PG* and DATABASE_URL: libpq and driver defaults;

@@ -7,7 +7,8 @@ name: release
 # default: there is no "latest" (GitHub never serves a prerelease as latest, and every hyphenated tag
 # is a prerelease here).
 #
-# Only a tag on a commit of main is released: main is what ci.yml gates. Workflow actions are
+# Only a tag on a commit of main is released: main is what server.yml gates, and the tag job below
+# refuses a commit without a green server run on main. Workflow actions are
 # GitHub-owned and pinned to commits; other tool archives have checked-in SHA-256 pins. No job
 # restores a build cache, because the release job publishes what install.sh runs as root.
 #
@@ -33,6 +34,10 @@ env:
 jobs:
   tag:
     runs-on: ubuntu-latest
+    # actions: read lists the server workflow's runs for the gate step; a job-level block replaces the workflow's, so contents repeats.
+    permissions:
+      contents: read
+      actions: read
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       prerelease: ${{ steps.tag.outputs.prerelease }}
@@ -56,7 +61,7 @@ jobs:
             *[!A-Za-z0-9.+_-]*) echo "the tag holds a character a release tag must not: $tag"; exit 1 ;;
           esac
           test "$GITHUB_REF" = "refs/tags/$tag" || { echo "run the workflow from the tag $tag itself, not from $GITHUB_REF"; exit 1; }
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$tag points at $GITHUB_SHA, which is not on main; only main, which ci.yml gates, is released"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$tag points at $GITHUB_SHA, which is not on main; only main, which server.yml gates, is released"; exit 1; }
           case "$tag" in
             *-*) prerelease=true ;;
             *) prerelease=false ;;
@@ -65,12 +70,17 @@ jobs:
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
           echo "noise_mode=$(node scripts/release-noise-mode.mjs "$tag")" >> "$GITHUB_OUTPUT"
+      - name: The tagged commit has a green server run on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_SHA: ${{ github.sha }}
+        run: node scripts/server-release-gate.mjs "$TAG_SHA"
 
   web-build:
     runs-on: ubuntu-24.04
     needs: [tag]
     timeout-minutes: 15
-    # The same build as ci.yml's web-build, LLVM 23.1 pin included: the dist is what the binaries embed.
+    # The same build as server.yml's web-build, LLVM 23.1 pin included: the dist is what the binaries embed.
     env:
       CC_wasm32_unknown_unknown: /usr/bin/clang-23
       AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
@@ -87,6 +97,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: bash scripts/install-ci-tool.sh binaryen
@@ -142,6 +154,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - run: rustup show active-toolchain
       - run: cargo fmt --all -- --check
       - run: |
@@ -174,6 +188,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - run: rm -rf internal/web/dist
       - name: Fetch the web client built by the web-build job
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8

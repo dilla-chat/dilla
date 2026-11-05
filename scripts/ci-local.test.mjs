@@ -8,8 +8,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseYaml } from './ci-local-yaml.mjs';
 import {
-  BLOCK_SIZE, E2E_PORT_SPAN, EXTRA_JOBS, JOB_MAP, MAX_BLOCK, UI_PORT_SPAN, blockPorts, classifyStep, dependencyClosure, e2eBlockEnv, evalIf,
-  expandJobs, localMirrorProblems, mapService, moveUiPorts, selectJobs, skipReason, substitute,
+  BLOCK_SIZE, E2E_PORT_SPAN, EXTRA_JOBS, JOB_MAP, LOCAL_JOB_MAP, MAX_BLOCK, UI_PORT_SPAN, blockPorts, classifyStep, dependencyClosure, e2eBlockEnv, evalIf,
+  expandJobs, listJobs, loadWorkflows, localMirrorProblems, mergeWorkflows, mapService, moveUiPorts, selectJobs, skipReason, substitute,
 } from './ci-local-plan.mjs';
 import { changedOutputs, parseArgs, parseEnvFile, sarifBlocking } from './ci-local.mjs';
 import { checkLocalMirror } from './check-ci-workflow.mjs';
@@ -18,8 +18,17 @@ import {
 } from './ci-local-fs.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const REAL_CI = readFileSync(join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
-const JOBS = expandJobs(parseYaml(REAL_CI));
+// Both CI workflows' texts, as localMirrorProblems takes them; a test edits one with `edit`.
+const REAL = {
+  server: readFileSync(join(ROOT, '.github', 'workflows', 'server.yml'), 'utf8'),
+  desktop: readFileSync(join(ROOT, '.github', 'workflows', 'desktop-ci.yml'), 'utf8'),
+};
+const PARSED = { server: parseYaml(REAL.server), desktop: parseYaml(REAL.desktop) };
+const JOBS = mergeWorkflows(PARSED).jobs;
+const edit = (workflow, from, to) => {
+  assert.ok(REAL[workflow].includes(from), `fixture sanity: ${workflow} has ${from}`);
+  return { ...REAL, [workflow]: REAL[workflow].replace(from, to) };
+};
 const EVERYTHING = { go: true, core: true, web: true, e2e: true, text: true, code: true };
 const job = (id) => JOBS.find((j) => j.id === id);
 
@@ -66,7 +75,7 @@ test('the YAML subset reads a one-line flow mapping of scalars, as a matrix incl
   });
 });
 
-test('ci.yml parses exactly as js-yaml reads it (when js-yaml is installed)', async (t) => {
+test('the CI workflows parse exactly as js-yaml reads them (when js-yaml is installed)', async (t) => {
   let yaml;
   try {
     yaml = (await import('js-yaml')).default;
@@ -75,7 +84,7 @@ test('ci.yml parses exactly as js-yaml reads it (when js-yaml is installed)', as
     return;
   }
   const strings = (v) => (v === null ? null : Array.isArray(v) ? v.map(strings) : typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, strings(x)])) : String(v));
-  for (const file of ['ci.yml', 'release.yml']) {
+  for (const file of ['server.yml', 'desktop-ci.yml', 'release.yml']) {
     const text = readFileSync(join(ROOT, '.github', 'workflows', file), 'utf8');
     assert.deepEqual(parseYaml(text), strings(yaml.load(text)), file);
   }
@@ -83,17 +92,54 @@ test('ci.yml parses exactly as js-yaml reads it (when js-yaml is installed)', as
 
 // ---------------------------------------------------------------- the job graph
 
-test('every ci.yml job is mapped in JOB_MAP and every JOB_MAP entry is a ci.yml job', () => {
-  assert.deepEqual(localMirrorProblems(REAL_CI), []);
+test('every job of each workflow is mapped in its JOB_MAP and every JOB_MAP entry is a job of its workflow', () => {
+  assert.deepEqual(localMirrorProblems(REAL), []);
   assert.deepEqual(checkLocalMirror(ROOT), []);
-  assert.deepEqual(new Set(JOBS.map((j) => j.name)), new Set(Object.keys(JOB_MAP)));
+  for (const workflow of ['server', 'desktop']) assert.deepEqual(new Set(Object.keys(PARSED[workflow].jobs)), new Set(Object.keys(JOB_MAP[workflow])), workflow);
+  assert.deepEqual(new Set(JOBS.map((j) => j.name)), new Set(Object.keys(LOCAL_JOB_MAP)));
 });
 
-test('a job ci.yml gains without a JOB_MAP entry fails the sync check, and so does a stale entry', () => {
-  const added = REAL_CI.replace('\n  ci-ok:\n', '\n  brand-new:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n  ci-ok:\n');
-  assert.ok(localMirrorProblems(added).some((p) => p.includes('"brand-new" is neither mapped nor skipped')));
-  const removed = REAL_CI.replace(/\n {2}deny:\n[\s\S]*?(?=\n {2}go:\n)/, '');
-  assert.ok(localMirrorProblems(removed).some((p) => p.includes('JOB_MAP maps "deny"')));
+test('a job a workflow gains without a JOB_MAP entry fails the sync check, and so does a stale entry', () => {
+  const added = edit('desktop', '\n  desktop-ok:\n', '\n  brand-new:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n  desktop-ok:\n');
+  assert.ok(localMirrorProblems(added).some((p) => p.includes('desktop-ci.yml: job "brand-new" is neither mapped nor skipped in JOB_MAP.desktop')));
+  const removed = { ...REAL, server: REAL.server.replace(/\n {2}deny:\n[\s\S]*?(?=\n {2}go:\n)/, '') };
+  assert.notEqual(removed.server, REAL.server);
+  assert.ok(localMirrorProblems(removed).some((p) => p.includes('JOB_MAP.server maps "deny", which server.yml no longer has')));
+  // A job of one workflow is no job of the other: mapped in server only, it fails in desktop.
+  const moved = edit('desktop', '\n  desktop-ok:\n', '\n  deny:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n  desktop-ok:\n');
+  assert.ok(localMirrorProblems(moved).some((p) => p.includes('desktop-ci.yml: job "deny" is neither mapped nor skipped in JOB_MAP.desktop')));
+  assert.ok(localMirrorProblems({ ...REAL, desktop: null }).includes('ci-local: desktop-ci.yml is missing'));
+});
+
+test('a job both workflows carry runs once: either workflow\'s gate runs it, and its steps must agree', () => {
+  const shared = JOBS.filter((j) => j.workflows.length === 2).map((j) => j.id);
+  assert.deepEqual(shared.sort(), ['changes', 'ci-watchdog', 'rust-native', 'rust-wasi', 'web-build']);
+  assert.equal(JOBS.filter((j) => j.id === 'web-build').length, 1);
+  // server builds the client for go-release (go or web), desktop for its suites (e2e).
+  const web = JOBS.find((j) => j.id === 'web-build');
+  assert.equal(web.if, "needs.changes.outputs.go != 'false' || needs.changes.outputs.web != 'false' || needs.changes.outputs.e2e != 'false'");
+  for (const outputs of [{ go: true, web: false, e2e: false }, { go: false, web: false, e2e: true }]) assert.equal(evalIf(web.if, { outputs, needResults: [] }), true);
+  assert.equal(evalIf(web.if, { outputs: { go: false, web: false, e2e: false }, needResults: [] }), false);
+  // A shared job that drifted apart would prove only one of its copies locally.
+  const drifted = edit('desktop', 'cargo build -p dilla-testkit --release --locked', 'cargo build -p dilla-testkit --locked');
+  assert.ok(localMirrorProblems(drifted).some((p) => p.includes('job "rust-native" differs between server.yml and desktop-ci.yml')), localMirrorProblems(drifted).join('\n'));
+  // The watcher's barrier differs per workflow, but ci-local skips the watcher, so that is no drift.
+  assert.notEqual(PARSED.server.jobs['ci-watchdog'].steps.at(-1).env.CI_COMPLETION_JOBS, PARSED.desktop.jobs['ci-watchdog'].steps.at(-1).env.CI_COMPLETION_JOBS);
+});
+
+test('--list shows both workflows\' jobs and what ci-local does with each', () => {
+  const lines = listJobs(PARSED, 'x64');
+  const server = lines.indexOf('server (.github/workflows/server.yml):');
+  const desktop = lines.indexOf('desktop (.github/workflows/desktop-ci.yml):');
+  assert.ok(server === 0 && desktop > server, lines.join('\n'));
+  const listed = (from, to) => lines.slice(from + 1, to).map((l) => l.trim().split(' ')[0]);
+  assert.deepEqual(listed(server, desktop), Object.keys(PARSED.server.jobs));
+  assert.deepEqual(listed(desktop, lines.length), Object.keys(PARSED.desktop.jobs));
+  assert.ok(lines.includes('  web-build  (also in desktop: runs once)'), lines.join('\n'));
+  assert.ok(lines.includes('  go  (legs go-1, go-2, go-3, go-4)'), lines.join('\n'));
+  assert.ok(lines.some((l) => l.startsWith('  desktop  (skipped: ')), lines.join('\n'));
+  assert.equal(parseArgs(['--list']).list, true);
+  assert.deepEqual(loadWorkflows(ROOT).parsed, PARSED);
 });
 
 test('an unmapped action, sudo step, if: form, expression or service fails the sync check', () => {
@@ -106,8 +152,7 @@ test('an unmapped action, sudo step, if: form, expression or service fails the s
     ['    services:\n      postgres:\n', '    services:\n      redis:\n        image: redis\n      postgres:\n', 'service "redis" is unmapped'],
   ];
   for (const [from, to, want] of cases) {
-    assert.ok(REAL_CI.includes(from), from);
-    const problems = localMirrorProblems(REAL_CI.replace(from, to));
+    const problems = localMirrorProblems(edit('server', from, to));
     assert.ok(problems.some((p) => p.includes(want)), `${want}:\n${problems.join('\n')}`);
   }
 });
@@ -141,29 +186,29 @@ test('--only picks those jobs and their needs; --no-deps leaves the needs out; a
   assert.deepEqual(selectJobs(JOBS, { only: ['go'], outputs: EVERYTHING, deps: false }), ['go-1', 'go-2', 'go-3', 'go-4']);
   assert.deepEqual(selectJobs(JOBS, { only: ['go-api-2'], outputs: EVERYTHING, deps: false }), ['go-api-2']);
   assert.deepEqual(selectJobs(JOBS, { only: ['codeql'], outputs: EVERYTHING }), ['codeql']);
-  // ci-ok aggregates what ran; naming it does not pull in the whole workflow.
-  assert.deepEqual(selectJobs(JOBS, { only: ['docs', 'ci-ok'], outputs: EVERYTHING }), ['docs', 'ci-ok']);
+  // An ok job aggregates what ran; naming it does not pull in the whole workflow.
+  assert.deepEqual(selectJobs(JOBS, { only: ['docs', 'server-ok'], outputs: EVERYTHING }), ['docs', 'server-ok']);
   assert.throws(() => selectJobs(JOBS, { only: ['nope'], outputs: EVERYTHING }), /unknown job "nope"; jobs:.*changes, docs/);
 });
 
-test('a full run covers every ci.yml job and the extra jobs', () => {
+test('a full run covers every job of both workflows and the extra jobs', () => {
   const all = selectJobs(JOBS, { only: null, outputs: EVERYTHING });
   assert.deepEqual(new Set(all), new Set([...JOBS.map((j) => j.id), ...Object.keys(EXTRA_JOBS)]));
 });
 
 // ---------------------------------------------------------------- --changed
 
-test('--changed runs what the ci-areas gates would: a docs-only diff runs only changes, docs and ci-ok', () => {
+test('--changed runs what the ci-areas gates would: a docs-only diff runs only changes, docs and the aggregates', () => {
   const outputs = changedOutputs('base', ['docs/user/x.md', 'README.md']);
   assert.equal(outputs.code, false);
-  assert.deepEqual(selectJobs(JOBS, { only: null, outputs }), ['changes', 'docs', 'ci-watchdog', 'ci-work-complete', 'ci-ok']);
+  assert.deepEqual(selectJobs(JOBS, { only: null, outputs }), ['changes', 'docs', 'ci-watchdog', 'server-work-complete', 'server-ok', 'desktop-work-complete', 'desktop-ok']);
 });
 
-test('--changed: a Go file runs the Go jobs and the browser suites, not the Rust lint or ui', () => {
+test('--changed: a Go file runs the Go jobs and the release build, not the desktop suites, the Rust lint or ui', () => {
   const outputs = changedOutputs('base', ['internal/api/x.go']);
   const chosen = selectJobs(JOBS, { only: null, outputs });
-  for (const id of ['go-1', 'go-checks', 'go-api-1', 'go-postgres-2', 'core-integration', 'browser-media', 'rust-wasi', 'rust-native', 'codeql']) assert.ok(chosen.includes(id), id);
-  for (const id of ['ui', 'vectors', 'deny', 'rust-wasm-node']) assert.ok(!chosen.includes(id), id);
+  for (const id of ['go-1', 'go-checks', 'go-api-1', 'go-postgres-2', 'web-build', 'go-release', 'rust-wasi', 'rust-native', 'codeql']) assert.ok(chosen.includes(id), id);
+  for (const id of ['ui', 'vectors', 'deny', 'rust-wasm-node', 'core-integration', 'browser-media', 'browser-spike']) assert.ok(!chosen.includes(id), id);
   // rust-native runs for its artifact; its lint and test steps are core-gated.
   const fmt = job('rust-native').steps.find((s) => s.run === 'cargo fmt --all --check');
   assert.equal(evalIf(fmt.if, { outputs, steps: {} }), false);
@@ -177,7 +222,7 @@ test('--changed fails safe: an unknown path or a ci change turns everything on',
 
 // ---------------------------------------------------------------- steps
 
-test('if: expressions of the forms ci.yml uses', () => {
+test('if: expressions of the forms the CI workflows use', () => {
   const ctx = { outputs: { ...EVERYTHING, web: false }, steps: { a: { 'cache-hit': 'true' } } };
   assert.equal(evalIf("needs.changes.outputs.web != 'false'", ctx), false);
   assert.equal(evalIf("needs.changes.outputs.go != 'false' || needs.changes.outputs.web != 'false'", ctx), true);
@@ -187,6 +232,8 @@ test('if: expressions of the forms ci.yml uses', () => {
   assert.equal(evalIf(null, { ...ctx, failed: true }), false);
   assert.equal(evalIf('failure()', { ...ctx, failed: true }), true);
   assert.equal(evalIf('failure()', ctx), false);
+  assert.equal(evalIf("failure() && hashFiles('e2e/test-results/**') != ''", { ...ctx, failed: true }), true);
+  assert.equal(evalIf("failure() && hashFiles('e2e/test-results/**') != ''", ctx), false);
   assert.equal(evalIf("needs.changes.outputs.go != 'false'", { ...ctx, failed: true }), false);
   assert.throws(() => evalIf("github.ref == 'refs/heads/main'", ctx), /unmapped if:/);
 });
@@ -225,8 +272,8 @@ test('step mapping: GitHub-only steps become local equivalents, the rest runs as
 });
 
 test('the node job runs test:ci-check on a clean tree, and a cleanTree entry that is no step fails the sync check', () => {
-  assert.deepEqual(JOB_MAP.node.cleanTree, ['npm run test:ci-check']);
-  const gone = REAL_CI.replace('      - run: npm run test:ci-check\n', '');
+  assert.deepEqual(JOB_MAP.desktop.node.cleanTree, ['npm run test:ci-check']);
+  const gone = edit('desktop', '      - run: npm run test:ci-check\n', '');
   assert.ok(localMirrorProblems(gone).some((p) => p.includes('cleanTree names "npm run test:ci-check"')));
 });
 
@@ -337,8 +384,8 @@ test('the command line', () => {
 // ---------------------------------------------------------------- review round 1 (F1-F9)
 
 test('F5: a workflow-level key ci-local does not read (defaults:, …) fails the sync check', () => {
-  const problems = localMirrorProblems(REAL_CI.replace('\njobs:\n', '\ndefaults:\n  run:\n    shell: pwsh\njobs:\n'));
-  assert.ok(problems.some((p) => p.includes('workflow-level key "defaults" is unmapped')), problems.join('\n'));
+  const problems = localMirrorProblems(edit('server', '\njobs:\n', '\ndefaults:\n  run:\n    shell: pwsh\njobs:\n'));
+  assert.ok(problems.some((p) => p.includes('server.yml: workflow-level key "defaults" is unmapped')), problems.join('\n'));
 });
 
 test('F1: a caller\'s database, test-switch and tool-override variables never reach a job', () => {
@@ -369,7 +416,7 @@ test('F1: every database or credential variable the Go code and the e2e helpers 
   const sensitive = [...names].filter((n) => /PG|DATABASE|TOKEN|SECRET|PASSWORD|DSN/.test(n));
   assert.ok(sensitive.includes('DILLA_TEST_PG'));
   for (const n of sensitive) assert.match(n, SCRUBBED_ENV, `${n} is read by the tests but would pass through to a job`);
-  // go-postgres still gets its DSN, from ci.yml's step env (pointed at the throwaway container).
+  // go-postgres still gets its DSN, from server.yml's step env (pointed at the throwaway container).
   assert.ok(job('go-postgres-1').steps.some((st) => /127\.0\.0\.1:5432/.test(st.env?.DILLA_TEST_PG ?? '')));
 });
 
