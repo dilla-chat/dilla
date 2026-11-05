@@ -68,11 +68,10 @@ Conventional commits: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`, 
 ## Continuous integration
 
 CI is two workflows, both run on every pull request and every push to main: `server` (`.github/workflows/server.yml`:
-the docs gates, the Go jobs, the Rust core checks and the release build) and `desktop`
-(`.github/workflows/desktop-ci.yml`: the script gates, the UI, the wasm core, the integration suites and the
-`desktop.yml` acceptance). Each reports one check, `server-ok` and `desktop-ok`, so a desktop failure never blocks a
-server change, or the reverse. These two checks become the required checks for `main` when this change merges and the
-ruleset switches from `ci-ok` to them; until the switch, `ci-ok` is the required check.
+the docs gates, the installer and Bot operation scripts that a release ships, the Go jobs, the Rust core checks and the
+release build) and `desktop` (`.github/workflows/desktop-ci.yml`: the script gates, the UI, the wasm core, the
+integration suites and the `desktop.yml` acceptance). Each reports one check, `server-ok` and `desktop-ok`, so a desktop
+failure never blocks a server change, or the reverse. `server-ok` and `desktop-ok` are the required checks for `main`.
 
 The `desktop` workflow also runs nightly on main at 02:17 UTC with every area on, so test drift surfaces within a day.
 
