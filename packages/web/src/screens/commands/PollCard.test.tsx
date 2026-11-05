@@ -22,6 +22,19 @@ function fixture(over: Partial<PollSummary> = {}) {
 }
 afterEach(() => vi.restoreAllMocks());
 describe('Signal poll adapter', () => {
+  it('shows a Loading poll… skeleton before verification and retries a failed verification at 2 s, 5 s and 10 s', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture(); f.pollGet.mockRejectedValue(new Error('down'));
+      expect(screen.getByRole('status')).toHaveTextContent('Loading poll…');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(f.pollGet).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); }); expect(f.pollGet).toHaveBeenCalledTimes(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); }); expect(f.pollGet).toHaveBeenCalledTimes(3);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); }); expect(f.pollGet).toHaveBeenCalledTimes(4);
+      await act(async () => { await vi.advanceTimersByTimeAsync(9_000); }); expect(f.pollGet).toHaveBeenCalledTimes(4);
+    } finally { vi.useRealTimers(); }
+  });
   it('single choice switches to [1] and clicking your pick withdraws []', async () => { const f = fixture(); await userEvent.click(await screen.findByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenCalledWith(expect.objectContaining({ choices: [1] }))); await userEvent.click(screen.getByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenLastCalledWith(expect.objectContaining({ choices: [] }))); });
   it('multi toggles within the set and counts distinct voters across every page', async () => { const f = fixture({ multi: true, counts: [2n, 2n] }); await userEvent.click(await screen.findByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenCalledWith(expect.objectContaining({ choices: [0, 1] }))); await userEvent.click(screen.getByRole('button', { name: /Bridge/ })); await waitFor(() => expect(f.pollVote).toHaveBeenLastCalledWith(expect.objectContaining({ choices: [1] })));  await waitFor(() => expect(screen.getByText('Open for 24 hours · pick any · 2 voters')).toBeInTheDocument()); expect(f.pollVoters).toHaveBeenCalledWith(expect.objectContaining({ option: 0, cursor: new Uint8Array([1]) })); expect(screen.queryByRole('img', { name: 'other' })).not.toBeInTheDocument(); });
   it('uses dueAt minus createdAt, rounds vote percentages and previews first-page voters per answer', async () => { const f = fixture(); expect(await screen.findByText('Open for 24 hours · pick one · 3 voters')).toBeInTheDocument(); expect(screen.getByText('33%')).toBeInTheDocument(); await waitFor(() => expect(screen.getAllByRole('img', { name: 'Ada' })).toHaveLength(1)); expect(f.pollVoters).toHaveBeenCalledWith(expect.objectContaining({ option: 1, cursor: null })); });

@@ -13,7 +13,7 @@ export const utility = {
   'poll.close': 'Close poll', 'poll.closed': 'Poll closed',
   'poll.conflict': 'The poll changed. Review the latest results before voting again.', 'poll.closeConflict': 'The poll changed. Review the latest results before closing it again.',
   'poll.voteUncertain': 'Your vote may not have counted. Tap it again to retry.', 'poll.voterLowerBound': '{count}+ voters',
-  'poll.uncertain': 'The vote result is uncertain. Refresh the poll before trying again.', 'poll.readError': 'Could not load voter names.',
+  'poll.uncertain': 'The vote result is uncertain. Refresh the poll before trying again.', 'poll.loading': 'Loading poll…', 'poll.readError': 'Could not load voter names.',
   'poll.created': 'Poll posted', 'poll.createdUncertain': 'The poll may have been published. Check this conversation before retrying.',
   'poll.results': '{question}\n{answers}', 'poll.noPolls': 'There are no polls in this conversation.',
   'poll.question': 'Question', 'poll.answers': 'Answers', 'poll.multiple': 'Allow several answers', 'poll.duration': 'Open for',

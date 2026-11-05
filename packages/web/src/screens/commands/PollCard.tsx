@@ -5,6 +5,7 @@ import { utilityText as t } from './utility-copy.ts';
 import { walkPollVoters } from './poll-voters.ts';
 import './UtilityCards.css';
 
+const RETRY_DELAYS = [2_000, 5_000, 10_000];
 const MARKER = /^\[dilla-poll:v1:([0-9a-f]{32})\]$/u;
 type PollAttempt = { id: string; kind: 'vote' | 'close'; choices: number[]; revision: string; scope: string; answer?: number };
 const attemptsByClient = new WeakMap<CoreClient, Map<string, PollAttempt>>();
@@ -156,14 +157,20 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     // A complete authenticated refresh can span several Bot gateway rounds. A
     // cadence tick must not supersede that read before its record can be shown.
     // Mutations also own their refresh until the action finishes.
-    let pending = false;
+    let pending = false; let failures = 0; let retry: number | undefined;
     const update = async () => {
       if (pending || busyRef.current) return;
       pending = true;
-      try { await refresh(true); } finally { pending = false; }
+      try {
+        const poll = await refresh(true);
+        window.clearTimeout(retry); retry = undefined;
+        // A failed verification retries quickly (2, 5, 10 s) before it waits for the 30 s tick.
+        if (poll === null && failures < RETRY_DELAYS.length) retry = window.setTimeout(() => { void update(); }, RETRY_DELAYS[failures++]);
+        else if (poll !== null) failures = 0;
+      } finally { pending = false; }
     };
     void update(); const timer = window.setInterval(() => { void update(); }, 30_000);
-    return () => { window.clearInterval(timer); currentGeneration.current++; currentVoterGeneration.current++; voterTarget.current = null; };
+    return () => { window.clearInterval(timer); window.clearTimeout(retry); currentGeneration.current++; currentVoterGeneration.current++; voterTarget.current = null; };
   }, [active, refresh]);
   const poll = sourceAccessible && record?.client === props.client && record.scope === scopeKey && verifiedScope === scopeKey ? record.poll : null;
   const { onVerified } = props;
@@ -172,7 +179,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     return () => onVerified?.(null);
   }, [onVerified, poll]);
   const canClose = poll !== null && (poll.creatorId === props.selfId || (props.bits !== null && (props.bits & PERM.manageMessages) !== 0));
-  if (poll === null) return <div ref={ref} className="dw-poll-card" aria-hidden="true" />;
+  if (poll === null) return <div ref={ref} className="dw-poll-card dw-poll-card--loading" role="status">{t('poll.loading')}</div>;
   const visibleSelected = selected ?? poll.myChoices ?? [];
   const live = () => isSameOwner() && sourceAccessibleRef.current && accessScopeRef.current === accessScope && scopeRef.current === scopeKey
     && installationRef.current === installationId;
