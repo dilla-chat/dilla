@@ -187,3 +187,35 @@ Added Review Focus:
 - [ ] **Step 1:** write the section; every claim matches Tasks 6-7.
 - [ ] **Step 2:** re-shoot; `npm run check:docs`.
 - [ ] **Step 3: Commit** `docs: signal3 Bot fixes and the DM screenshot`.
+
+### Task 9: The whole desktop top bar drags the window
+
+Jonas 2026-11-05: on macOS and Linux the top bar only drags the window left of the search box. Cause: `packages/web/src/DesktopTitlebar.css:4` marks `.d-topbar` `no-drag` and only `.d-topbar__brand` (`:5`) `drag`.
+
+**Files:**
+- Modify: `packages/web/src/DesktopTitlebar.css:4-6`
+- Test: the existing test that reads `DesktopTitlebar.css` (find it), or a new `DesktopTitlebar.test.ts` beside it
+
+- [ ] **Step 1: Failing test:** `the empty top bar drags the window`: `.d-topbar` is `drag` under `html[data-desktop]`, and every interactive element in it (button, input, a, `[role="dialog"]`, `[role="menu"]`, `[role="listbox"]`, the voice status pill, the search) stays `no-drag`. If the repo has a desktop Playwright check of app regions, add the same assertion there.
+- [ ] **Step 2: Run, expect FAIL.**
+- [ ] **Step 3: Implement:** `.d-topbar` → `drag`; keep line 6's `no-drag` list, extended with the roles above and any topbar control rendered as a `div` (check the topbar markup). Leave the Windows title-bar overlay controls (`.dw-desktop-titlebar__controls`) unchanged.
+- [ ] **Step 4: Run, expect PASS;** vitest in packages/web; `npm run lint`.
+- [ ] **Step 5: Commit** `fix(desktop): the whole top bar drags the window`.
+
+### Task 10: Quit always works, and permission grants are remembered
+
+Jonas 2026-11-05: "let me quit the app if I'm in a call or have something in the input. Also remember if I've given access to the mic so I don't have to allow it every time."
+
+Causes: `packages/desktop/src/main.ts:291-294` (`collectQuitGuards`) refuses to quit with only "Keep Dilla open" when any window has a call or unsent input; the renderer's `beforeunload` (`packages/web/src/desktop.ts:54-56`) also cancels the unload, and `will-prevent-unload` (`main.ts:149-157`) does not override it while quitting. Grants live in the in-memory `permissions` map (`main.ts:65,206`), so every launch asks again.
+
+**Files:**
+- Modify: `packages/desktop/src/main.ts` (`collectQuitGuards`, `requestQuit`, the `will-prevent-unload` handler, the permission request handler), `packages/desktop/src/preferences.ts` (persisted grants), the instance-removal path (forget its grants)
+- Test: `packages/desktop/test/` (the existing main/quit/preferences tests; find them)
+
+Rulings: a quit with a call or unsent text asks once — title "Quit Dilla?", message "Quitting leaves your call and discards text you haven't sent.", buttons Cancel / Quit (Cancel default) — and Quit really quits (calls end, the renderer's unload guard is overridden while quitting). The same confirm covers "Restart to update". Reload keeps its existing dialog. Persist only Allow answers, per instance origin, for `media`, `notifications` and `speaker-selection` (not `local-network` / `loopback-network`, which keep asking); a Deny is not stored. Removing an instance deletes its stored grants.
+
+- [ ] **Step 1: Failing tests:** quit with an active call → the confirm is shown; Quit → the app quits (the unload is not cancelled); Cancel → stays. A granted `media` permission is allowed without a prompt after a restart (preferences round-trip); a denied one prompts again; removing the instance clears it; a stored grant for instance A does not apply to instance B.
+- [ ] **Step 2: Run, expect FAIL** (the desktop package's test command).
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run, expect PASS;** the desktop package tests, `npm run lint`, `npm run typecheck`.
+- [ ] **Step 5: Commit** `fix(desktop): quitting asks once and then quits; permission grants are remembered`.
