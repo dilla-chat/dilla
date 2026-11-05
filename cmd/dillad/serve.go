@@ -187,11 +187,11 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("serve: %w: %w", err, exit.Data)
 	}
+	var backupPath string
 	if cfg.DB.AutoMigrate && pending {
 		// R35: migrate at start, after the pre-migration backup — which is
 		// taken only when there is a migration to run, so an ordinary restart
 		// leaves no file behind. A restored database is migrated here too.
-		var backupPath string
 		if cfg.DB.PreMigrationBackup && cfg.DB.Driver == "sqlite" {
 			backupPath = fmt.Sprintf("%s.pre-migration-%d", cfg.DB.Path, time.Now().Unix())
 			if err := store.VacuumInto(ctx, db, backupPath); err != nil {
@@ -224,6 +224,14 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	}
 
 	log := obs.NewLogger(cfg.Log, stderr)
+	if backupPath != "" {
+		// Only now, with the migration done: a failed one restores the newest
+		// copy, so nothing may be removed before this point. A copy that will
+		// not delete is logged and must not stop the server.
+		if err := prunePreMigrationCopies(cfg.DB.Path, preMigrationKeep, log); err != nil {
+			log.Warn("could not prune old pre-migration copies", "err", err)
+		}
+	}
 	metrics := newMetrics()
 	health := obs.NewHealth(clock.System())
 

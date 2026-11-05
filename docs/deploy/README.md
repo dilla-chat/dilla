@@ -552,7 +552,7 @@ reports `OK database schema version 17` on a web-3.6 database. Only `serve` refu
 
 If step 3 fails on SQLite, there is a fallback: the copy `dillad serve` takes before it migrates,
 `<db.path>.pre-migration-<unix time>` beside the database (`db.pre_migration_backup`, on by
-default). With `dilla` stopped, remove the database's `-wal`, `-shm` and `-journal` files and
+default). After each successful migration `dillad` keeps the newest 3 such copies and deletes the older ones. With `dilla` stopped, remove the database's `-wal`, `-shm` and `-journal` files and
 move that copy over the database file. Then do steps 4 and 5. Everything written since the upgrade is lost.
 
 What a down migration removes is listed per release under "Client data version per release" in §5.
