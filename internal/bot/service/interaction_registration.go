@@ -7,8 +7,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
+	"net/http"
 	"sync"
+	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
@@ -66,13 +69,15 @@ type InteractionRegistrationCoordinator struct {
 	native                            interactionRegistrationNativeAPI
 	discovery                         interactionRegistrationDiscoveryAPI
 	session                           interactionRegistrationSessionAPI
+	now                               func() time.Time
+	logger                            *slog.Logger
 }
 
 func NewInteractionRegistrationCoordinator(instance, community, installation id.ID, n interactionRegistrationNativeAPI, discovery interactionRegistrationDiscoveryAPI, session interactionRegistrationSessionAPI) (*InteractionRegistrationCoordinator, error) {
 	if instance.IsZero() || community.IsZero() || installation.IsZero() || n == nil || discovery == nil || session == nil || n.Binding() != (native.Binding{Instance: instance, Community: community, Installation: installation}) {
 		return nil, errors.New("invalid bot interaction registration binding")
 	}
-	return &InteractionRegistrationCoordinator{instance: instance, community: community, installation: installation, native: n, discovery: discovery, session: session}, nil
+	return &InteractionRegistrationCoordinator{instance: instance, community: community, installation: installation, native: n, discovery: discovery, session: session, now: time.Now, logger: slog.Default()}, nil
 }
 
 type InteractionRegistrationRequest struct {
@@ -774,6 +779,25 @@ func decodeInteractionRegistrationIntent(raw []byte) (interactionRegistrationInt
 }
 
 var _ = fmt.Sprintf
+
+// WithLogger sets where the queue reports a device entering backoff.
+func (c *InteractionRegistrationCoordinator) WithLogger(logger *slog.Logger) *InteractionRegistrationCoordinator {
+	if logger != nil {
+		c.logger = logger
+	}
+	return c
+}
+
+// keyPackageUnavailableCode names the server refusal that says a device has no
+// KeyPackage to take: exhausted for a live device, not found for one that may be
+// gone. Anything else (network, 5xx) is transient and returns "".
+func keyPackageUnavailableCode(err error) string {
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound && (apiErr.Code == "E_KEYPACKAGES_EXHAUSTED" || apiErr.Code == "E_NOT_FOUND") {
+		return apiErr.Code
+	}
+	return ""
+}
 
 // A recovery category is context, not an independent failure. Keep definitive
 // rate refusals intact so dispatch/reconciliation can defer them without aging.

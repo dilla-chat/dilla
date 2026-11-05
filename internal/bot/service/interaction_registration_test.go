@@ -910,12 +910,17 @@ type interactionRegistrationSessionFake struct {
 	admissions                       map[id.ID]uint64
 	keyPackage                       []byte
 	keyPackageErr                    error
+	keyPackageErrFor                 map[id.ID]error
+	candidatesByUser                 []userDevices
 	keyPackageCalls                  uint64
 	keyPackageFailures               uint64
 }
 
-func (s *interactionRegistrationSessionFake) KeyPackage(context.Context, id.ID) ([]byte, error) {
+func (s *interactionRegistrationSessionFake) KeyPackage(_ context.Context, device id.ID) ([]byte, error) {
 	s.keyPackageCalls++
+	if err := s.keyPackageErrFor[device]; err != nil {
+		return nil, err
+	}
 	if s.keyPackageFailures > 0 {
 		s.keyPackageFailures--
 		return nil, errors.New("package temporarily unavailable")
@@ -942,7 +947,17 @@ func (s *interactionRegistrationSessionFake) ResolveCurrentEpisode(context.Conte
 	return s.currentEpisode, !s.currentEpisode.IsZero(), nil
 }
 
-func (s *interactionRegistrationSessionFake) DeviceCandidates(context.Context, id.ID) ([]id.ID, error) {
+type userDevices struct {
+	user    id.ID
+	devices []id.ID
+}
+
+func (s *interactionRegistrationSessionFake) DeviceCandidates(_ context.Context, user id.ID) ([]id.ID, error) {
+	for _, u := range s.candidatesByUser {
+		if u.user == user {
+			return append([]id.ID(nil), u.devices...), nil
+		}
+	}
 	return append([]id.ID(nil), s.candidates...), nil
 }
 func (s *interactionRegistrationSessionFake) BotInteractionContextSnapshot(_ context.Context, _ id.ID, request, group, user, device id.ID) ([]byte, error) {
