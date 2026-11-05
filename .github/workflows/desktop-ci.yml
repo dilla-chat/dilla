@@ -579,8 +579,19 @@ jobs:
             *) exit 1 ;;
           esac
       - run: npm ci
+      - name: Read the Electron version
+        id: electron-version
+        shell: bash
+        run: echo "version=$(node -p "require('electron/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache the Electron binary
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/electron-cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron-version.outputs.version }}
       - name: Download the Electron binary (retried only on known network errors)
         run: node scripts/retry-on.mjs --pattern 'Response code (50[0-4]|429)\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up' -- node node_modules/electron/install.js
+        env:
+          ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
       - name: Portable sandbox maintenance controls
         if: matrix.lane == 'managed'
         run: node --test packages/desktop/test/linux-sandbox-maintenance.test.mjs

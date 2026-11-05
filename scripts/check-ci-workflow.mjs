@@ -765,15 +765,45 @@ export function checkGoModuleDownloads(jobs, problems, file) {
   }
 }
 
-/** Every step that runs electron/install.js is the one retried step, byte for byte. */
+/**
+ * The Electron binary is cached per OS and version in ELECTRON_CACHE (step env: the runner context is not available in a
+ * job's env), so the retried download only runs on a miss. The three steps stay together, after the job's npm ci.
+ */
+const ELECTRON_VERSION_STEP = [
+  'name: Read the Electron version',
+  'id: electron-version',
+  'shell: bash',
+  'run: echo "version=$(node -p "require(\'electron/package.json\').version")" >> "$GITHUB_OUTPUT"',
+];
+const ELECTRON_CACHE_STEP = [
+  'name: Cache the Electron binary',
+  'uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0',
+  'with:',
+  'path: ${{ runner.temp }}/electron-cache',
+  'key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron-version.outputs.version }}',
+];
+const ELECTRON_INSTALL_STEP = [
+  ELECTRON_INSTALL_NAME,
+  `run: ${ELECTRON_INSTALL_RUN}`,
+  'env:',
+  'ELECTRON_CACHE: ${{ runner.temp }}/electron-cache',
+];
+const ELECTRON_STEPS = [ELECTRON_VERSION_STEP, ELECTRON_CACHE_STEP, ELECTRON_INSTALL_STEP].map((step) => step.join('\n')).join('\n');
+
+/** Every step that runs electron/install.js is the one retried step, byte for byte, behind the version and cache steps. */
 export function checkElectronInstalls(jobs, problems, file) {
   for (const [name, body] of Object.entries(jobs)) {
-    for (const step of jobSteps(body)) {
-      if (!step.some((line) => line.includes('electron/install.js'))) continue;
-      if (step.join('\n') !== `${ELECTRON_INSTALL_NAME}\nrun: ${ELECTRON_INSTALL_RUN}`) {
-        problems.push(`${file}: job "${name}" must download the Electron binary through the retried step (${ELECTRON_INSTALL_RUN}), with no other condition or flag`);
+    const steps = jobSteps(body);
+    steps.forEach((step, index) => {
+      if (!step.some((line) => line.includes('electron/install.js'))) return;
+      const block = steps.slice(Math.max(0, index - 2), index + 1).map((lines) => lines.join('\n')).join('\n');
+      const ci = steps.findIndex((lines) => lines.join('\n') === 'run: npm ci');
+      if (block !== ELECTRON_STEPS) {
+        problems.push(`${file}: job "${name}" must read the Electron version, cache ELECTRON_CACHE by OS, arch and that version, then download the binary through the retried step (${ELECTRON_INSTALL_RUN}), as three consecutive steps with no other condition or flag`);
+      } else if (ci < 0 || ci >= index - 2) {
+        problems.push(`${file}: job "${name}" must run npm ci before it reads the Electron version`);
       }
-    }
+    });
   }
 }
 
@@ -850,8 +880,12 @@ function checkLinuxSandboxFoundationJob(jobs, problems, file) {
     "*) exit 1 ;;",
     "esac",
     "- run: npm ci",
-    `- ${ELECTRON_INSTALL_NAME}`,
-    `run: ${ELECTRON_INSTALL_RUN}`,
+    `- ${ELECTRON_VERSION_STEP[0]}`,
+    ...ELECTRON_VERSION_STEP.slice(1),
+    `- ${ELECTRON_CACHE_STEP[0]}`,
+    ...ELECTRON_CACHE_STEP.slice(1),
+    `- ${ELECTRON_INSTALL_STEP[0]}`,
+    ...ELECTRON_INSTALL_STEP.slice(1),
     ...SANDBOX_MAINTENANCE_CONTROLS.split('\n').map(line => line.trim()),
     ...SANDBOX_MAINTENANCE_CLEANUP.split('\n').map(line => line.trim()),
     ...SANDBOX_MAINTENANCE_ARTIFACT.split('\n').map(line => line.trim()),
@@ -1416,7 +1450,7 @@ export function checkDesktopWorkflow(root) {
     'workflow_call:', 'contents: read', 'fail-fast: true',
     'os: ubuntu-24.04, platform: linux, arch: x64', 'os: windows-latest, platform: win, arch: x64',
     'os: macos-15, platform: mac, arch: arm64',
-    'name: dilla-web-dist', 'name: dilla-desktop-core', 'node node_modules/electron/install.js',
+    'name: dilla-web-dist', 'name: dilla-desktop-core',
     'npm test -w @dilla/desktop', 'npm run typecheck -w @dilla/desktop',
     'npm run build -w @dilla/desktop -- --existing-client', 'npm run build:validation -w @dilla/desktop',
     'xvfb-run -a dbus-run-session -- bash packages/desktop/scripts/with-window-manager.sh npm run test:electron -w @dilla/desktop',
@@ -1438,7 +1472,7 @@ export function checkDesktopWorkflow(root) {
   }
   for (const job of ['native', 'client', 'voice']) {
     const steps = jobSteps(body(job));
-    const install = steps.findIndex(step => step.join('\n') === `${ELECTRON_INSTALL_NAME}\nrun: ${ELECTRON_INSTALL_RUN}`);
+    const install = steps.findIndex(step => step.join('\n') === ELECTRON_INSTALL_STEP.join('\n'));
     const seal = steps.map((step, index) => step.some(line => line.includes('prepare-mac-electron-runtime.ts')) ? index : -1).filter(index => index >= 0);
     const expected = "name: Seal macOS npm Electron runtime for native notifications\nif: runner.os == 'macOS'\nrun: node e2e/web/support/prepare-mac-electron-runtime.ts";
     if (install < 0 || seal.length !== 1 || seal[0] !== install + 1 || steps[seal[0]].join('\n') !== expected)

@@ -282,7 +282,7 @@ test('native desktop Go setup remains unconditional for every platform', () => {
 test('every macOS Electron consumer seals its npm runtime immediately after installation', () => {
  assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
  const seal = "      - name: Seal macOS npm Electron runtime for native notifications\n        if: runner.os == 'macOS'\n        run: node e2e/web/support/prepare-mac-electron-runtime.ts\n";
- const install = `      - name: Download the Electron binary (retried only on known network errors)\n        run: ${ELECTRON_RUN}\n`;
+ const install = ELECTRON_DOWNLOAD;
  for (const job of ['native', 'client', 'voice']) {
   const start = REAL_DESKTOP.indexOf(`\n  ${job}:\n`);
   const tail = REAL_DESKTOP.slice(start), next = /\n  [a-z][a-z0-9-]*:\n/.exec(tail.slice(1));
@@ -3088,28 +3088,50 @@ test('every Go job downloads its modules through the retry wrapper, after its se
   }
 });
 
-test('every Electron binary download goes through the retry wrapper', () => {
+const ELECTRON_VERSION = "      - name: Read the Electron version\n        id: electron-version\n        shell: bash\n        run: echo \"version=$(node -p \"require('electron/package.json').version\")\" >> \"$GITHUB_OUTPUT\"\n";
+const ELECTRON_CACHE = "      - name: Cache the Electron binary\n        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: ${{ runner.temp }}/electron-cache\n          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron-version.outputs.version }}\n";
+const ELECTRON_DOWNLOAD = `      - name: Download the Electron binary (retried only on known network errors)\n        run: ${ELECTRON_RUN}\n        env:\n          ELECTRON_CACHE: \${{ runner.temp }}/electron-cache\n`;
+
+test('every Electron binary is cached, then downloaded through the retry wrapper', () => {
   assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
   assert.deepEqual(checkWorkflow(REPO_ROOT), []);
-  const step = `      - name: Download the Electron binary (retried only on known network errors)\n        run: ${ELECTRON_RUN}\n`;
+  const block = ELECTRON_VERSION + ELECTRON_CACHE + ELECTRON_DOWNLOAD;
   for (const [file, real, check] of [['desktop.yml', REAL_DESKTOP, checkDesktopWorkflow], ['desktop-ci.yml', REAL_DESKTOP_CI, null]]) {
-    assert.ok(real.includes(step), file);
+    assert.ok(real.includes(block), file);
     for (const changed of [
-      real.replace(step, '      - run: node node_modules/electron/install.js\n'),
+      real.replace(block, ELECTRON_VERSION + ELECTRON_CACHE + '      - run: node node_modules/electron/install.js\n'),
       real.replace(ELECTRON_RUN, 'node node_modules/electron/install.js'),
       real.replace(ELECTRON_RUN, ELECTRON_RUN.replace('|socket hang up', '|socket hang up|404')),
-      real.replace(step, step + '        continue-on-error: true\n'),
+      real.replace(ELECTRON_DOWNLOAD, ELECTRON_DOWNLOAD + '        continue-on-error: true\n'),
+      real.replace(block, ELECTRON_VERSION + ELECTRON_DOWNLOAD),
+      real.replace(block, ELECTRON_CACHE + ELECTRON_DOWNLOAD),
+      real.replace(ELECTRON_CACHE, ELECTRON_CACHE.replace('-${{ steps.electron-version.outputs.version }}', '')),
+      real.replace(ELECTRON_CACHE, ELECTRON_CACHE.replace('${{ runner.os }}-', '')),
+      real.replace(ELECTRON_DOWNLOAD, ELECTRON_DOWNLOAD.replace('        env:\n          ELECTRON_CACHE: ${{ runner.temp }}/electron-cache\n', '')),
+      real.replace(ELECTRON_DOWNLOAD, ELECTRON_DOWNLOAD.replace('electron-cache', 'electron')),
+      real.replace(block, ELECTRON_DOWNLOAD.replace(/ {8}env:[\s\S]*/, '') + ELECTRON_VERSION + ELECTRON_CACHE),
     ]) {
+      assert.notEqual(changed, real);
       const found = [];
       checkElectronInstalls({ native: changed }, found, file);
-      assert.ok(found.some((p) => p.includes('Electron binary')), file);
+      assert.ok(found.some((p) => p.includes('Electron')), file);
       if (check !== null) {
         const root = fixture(GOOD);
         writeFileSync(join(root, '.github/workflows/' + file), changed);
-        assert.ok(check(root).some((p) => p.includes('Electron binary') || p.includes('macOS npm Electron runtime')), file);
+        assert.ok(check(root).some((p) => p.includes('Electron')), file);
       }
     }
   }
+});
+
+test('the Electron version is read only after npm ci has installed the package', () => {
+  const found = [];
+  const moved = REAL_DESKTOP_CI.replace('      - run: npm ci\n' + ELECTRON_VERSION + ELECTRON_CACHE + ELECTRON_DOWNLOAD, ELECTRON_VERSION + ELECTRON_CACHE + ELECTRON_DOWNLOAD + '      - run: npm ci\n');
+  assert.notEqual(moved, REAL_DESKTOP_CI);
+  const job = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  [a-z][\w-]*:\n|$(?![\s\S]))/m;
+  checkElectronInstalls({ 'linux-sandbox-foundation': job.exec(REAL_DESKTOP_CI)[0] }, [], 'desktop-ci.yml');
+  checkElectronInstalls({ 'linux-sandbox-foundation': job.exec(moved)[0] }, found, 'desktop-ci.yml');
+  assert.ok(found.some((p) => p.includes('npm ci')), found.join('\n'));
 });
 
 test('the macOS installer build retries only the stapling errors', () => {
