@@ -336,9 +336,21 @@ jobs:
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY }}
         run: if [ -n "$APPLE_API_KEY_P8" ]; then printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8" && chmod 600 "$RUNNER_TEMP/AuthKey.p8"; fi
-      - name: Build installable desktop artifacts
+      - name: Build installable desktop artifacts (macOS, staple retry)
+        if: runner.os == 'macOS'
         # Notarization's stapling sometimes fails on an Apple service error; only those errors are retried (a retry notarizes again).
         run: node scripts/retry-on.mjs --pattern 'staple and validate action failed|NSURLErrorDomain|Error 68' -- npm run dist -w @dilla/desktop -- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}
+        env:
+          CSC_FOR_PULL_REQUEST: 'true' # A pull request of this repository signs like a push; a fork's gets no secrets and stays ad-hoc.
+          # The Developer ID certificate and the notarization key reach the macOS build only; Windows stays unsigned.
+          CSC_LINK: ${{ runner.os == 'macOS' && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.CSC_KEY_PASSWORD || '' }}
+          APPLE_API_KEY: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY != '' && format('{0}/AuthKey.p8', runner.temp) || '' }}
+          APPLE_API_KEY_ID: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
+      - name: Build installable desktop artifacts
+        if: runner.os != 'macOS'
+        run: npm run dist -w @dilla/desktop -- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}
         env:
           CSC_FOR_PULL_REQUEST: 'true' # A pull request of this repository signs like a push; a fork's gets no secrets and stays ad-hoc.
           # The Developer ID certificate and the notarization key reach the macOS build only; Windows stays unsigned.

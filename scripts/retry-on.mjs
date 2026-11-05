@@ -50,12 +50,7 @@ export function parseArgs(argv) {
 function runCommand([cmd, ...args]) {
   return new Promise((done) => {
     const chunks = [];
-    // Windows cannot spawn npm.cmd directly, so only there a command that is not an .exe goes through cmd.exe; the
-    // arguments are quoted by hand because the CI call sites pass nothing with shell metacharacters. Untested off CI.
-    const viaShell = process.platform === 'win32' && !/\.exe$/i.test(cmd) && /^(npm|npx)$/i.test(cmd);
-    const child = viaShell
-      ? spawn([cmd, ...args.map((a) => (/\s/.test(a) ? `"${a}"` : a))].join(' '), { shell: true, stdio: ['inherit', 'pipe', 'pipe'] })
-      : spawn(cmd, args, { stdio: ['inherit', 'pipe', 'pipe'] });
+    const child = spawn(cmd, args, { stdio: ['inherit', 'pipe', 'pipe'] });
     child.stdout.on('data', (d) => { chunks.push(d); process.stdout.write(d); });
     child.stderr.on('data', (d) => { chunks.push(d); process.stderr.write(d); });
     child.on('error', (e) => { const msg = `retry-on: cannot run ${cmd}: ${e.message}\n`; process.stderr.write(msg); done({ code: 127, output: msg }); });

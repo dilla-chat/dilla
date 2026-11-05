@@ -1359,8 +1359,15 @@ export function checkDesktopWorkflow(root) {
   checkGoModuleDownloads(splitJobs(text), problems, file);
   const nativeSteps = jobSteps(body('native'));
   const distSteps = nativeSteps.filter((step) => step.some((line) => line.includes('npm run dist -w @dilla/desktop')));
-  if (distSteps.length !== 1 || !distSteps[0].includes(`run: ${STAPLE_RETRY} -- --config.electronDist=../../node_modules/electron/dist --\${{ matrix.platform }} --\${{ matrix.arch }}`)) {
-    problems.push(`${file}: the native installer build must run through retry-on.mjs retrying only the macOS stapling errors`);
+  const distArgs = '-- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}';
+  const [macDist, plainDist] = distSteps;
+  // The retry wrapper is macOS-only (it cannot start npm.cmd on Windows and only stapling needs it); the other platforms run plain.
+  if (distSteps.length !== 2 || macDist[0] !== 'name: Build installable desktop artifacts (macOS, staple retry)' || macDist[1] !== "if: runner.os == 'macOS'"
+    || !macDist.includes(`run: ${STAPLE_RETRY} ${distArgs}`)
+    || plainDist[0] !== 'name: Build installable desktop artifacts' || plainDist[1] !== "if: runner.os != 'macOS'"
+    || !plainDist.includes(`run: npm run dist -w @dilla/desktop ${distArgs}`)
+    || JSON.stringify(macDist.slice(3)) !== JSON.stringify(plainDist.slice(3))) {
+    problems.push(`${file}: the native installer build must be a macOS-only step through retry-on.mjs retrying only the macOS stapling errors, plus the same build plain on other platforms`);
   }
   const formatAcceptance = body('native-linux-package-acceptance');
   for (const required of [

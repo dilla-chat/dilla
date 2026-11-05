@@ -2922,9 +2922,11 @@ test('the macOS installer build retries only the stapling errors', () => {
   for (const changed of [
     REAL_DESKTOP.replace("node scripts/retry-on.mjs --pattern 'staple and validate action failed|NSURLErrorDomain|Error 68' -- npm run dist", 'npm run dist'),
     REAL_DESKTOP.replace('|Error 68', '|Error 68|error'),
+    REAL_DESKTOP.replace("(macOS, staple retry)\n        if: runner.os == 'macOS'", "(macOS, staple retry)\n        if: runner.os != 'macOS'"),
+    REAL_DESKTOP.replace("        if: runner.os != 'macOS'\n        run: npm run dist", '        run: npm run dist'),
   ]) {
     const root = fixture(GOOD);
     writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
-    assert.ok(checkDesktopWorkflow(root).some((p) => p.includes('retry-on.mjs retrying only the macOS stapling errors')));
+    assert.ok(checkDesktopWorkflow(root).some((p) => p.includes('macOS-only step through retry-on.mjs')));
   }
 });
