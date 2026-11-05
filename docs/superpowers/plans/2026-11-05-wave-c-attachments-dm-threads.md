@@ -219,3 +219,28 @@ Rulings: a quit with a call or unsent text asks once — title "Quit Dilla?", me
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run, expect PASS;** the desktop package tests, `npm run lint`, `npm run typecheck`.
 - [ ] **Step 5: Commit** `fix(desktop): quitting asks once and then quits; permission grants are remembered`.
+
+### Task 11: Match the Claude Design prototype (parity sweep 2026-11-05)
+
+**Spec:** the sweep report `target/ui-parity-2026-11-05/results.md` (79 desktop pairs; geometry measured in code, pairs read by eye, TypeSafe advisory) and Jonas's decisions of 2026-11-05. The prototype wins every layout difference below.
+
+**Layout fixes (prototype values):**
+1. Settings close ring 36 px (app 34, also 2 px right) — `packages/ui/src/SettingsFrame/SettingsFrame.css`.
+2. Voice settings device selects 36 px (app 38) — `packages/ui/src/VoiceSettings/VoiceSettings.css` (fix its comment too).
+3. Status menu 230 px wide (app 220), placed 7 px higher so it no longer overlaps the user panel, and the current row gets its active fill — `packages/ui/src/UserPanel/UserPanel.css:20`, `packages/ui/src/ActionMenu/ActionMenu.css`.
+4. Thread pane: the replies divider and first reply sit 4 and 3.5 px lower than the prototype.
+5. The message log ends 5 px higher above the composer than the prototype.
+6. Attachment tray images 112×84 (app 110×82); the file card 200 px wide (app 198).
+7. Search palette 13 px shorter: its results list `max-height: 380px` → the prototype's value.
+8. Member profile card overlaps the members column by ~60 px, as in the prototype.
+9. Main column 747 px at 1280 (app 748), so the right column sits 1 px left.
+
+**Jonas's decisions:** body text weight 400 (`packages/design-tokens/src/tokens.ts`, app 420); Ctrl/Alt keycaps on Linux and Windows in Settings → Keyboard (⌘ only on macOS, as the top bar already does); drop the Devices "BROWSER · CHROME" tag; Music defaults volume 50 and leave-when-idle 15m (instance defaults only; saved settings are kept); the kick and ban confirms get the optional "reason?" chip. Accepted deviation (record it in `docs/design/signal/parity/README.md`'s decision list): the Bot settings page layout.
+
+**Also:** Task 7 Minors 1, 2, 4, 5, 8 (ledger); `e2e/ux/world.mjs:252` waits for the nav button "overview" — the app says "Overview".
+
+- [ ] **Step 1:** for each layout fix, a test where the repo has one for that component (class or computed-style assertions), and the sweep's geometry script re-run on the affected pairs as the check; for the decisions, unit tests (keycap labels per platform, defaults, the chip, no browser tag).
+- [ ] **Step 2: Run, expect FAIL** where tests exist.
+- [ ] **Step 3: Implement.** Prototype values come from `docs/design/signal/prototype/Dilla Signal Prototype.dc.html`; read them there, not from the report's rounding.
+- [ ] **Step 4:** vitest in packages/ui, packages/web, packages/design-tokens; Storybook build; re-run the sweep's geometry + shooter for the affected pairs (patched world copy no longer needed after the world.mjs fix); `npm run lint`, `npm run typecheck`.
+- [ ] **Step 5: Commit** (one per group is fine) `fix(ui): match the Signal prototype …`.
