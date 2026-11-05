@@ -73,15 +73,14 @@ jobs:
       - run: npm test -w @dilla/mobile
       - run: npm run typecheck -w @dilla/mobile
 
-  # desktop-ci.yml's web-build, unchanged (a job several workflows carry runs once in ci:local, so it must be the same):
-  # its dilla-desktop-core artifact (the wasm core) is what mobile-bundle builds the mobile client from.
-  web-build:
+  # The wasm core (packages/core-wasm/pkg), the one input of the mobile client build that is not in the tree. Only
+  # that: desktop-ci.yml's web-build runs the typechecks, the web build and its dist guards, the harness and the
+  # webdist Go test for the same sources, so this workflow does not repeat them. It restores web-build's Rust cache
+  # (same key), so a warm run compiles nothing new and adds no cache of its own.
+  mobile-core-wasm:
     needs: [changes]
     if: needs.changes.outputs.mobile != 'false'
     runs-on: ubuntu-24.04
-    # Build the bundled UI once for Electron, shared core integration and go-release, so every
-    # consumer tests or ships the same bytes. The webdist test is web.New's manifest check over
-    # packages/web/dist, where the build left it: nothing is copied into internal/web/dist (ruling 38).
     timeout-minutes: 15
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
@@ -111,53 +110,25 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          key: rust-${{ runner.os }}-${{ runner.arch }}-web-build-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
-          cache: npm
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-      - name: Download Go modules (retried only on known network errors)
-        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: bash scripts/install-ci-tool.sh binaryen
       - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
       - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
-      - run: npm ci
-      - run: npm run typecheck -w @dilla/core-wasm
-      - run: npm run typecheck -w @dilla/client-core
-      - run: npm run typecheck -w @dilla/web
-      - run: npm run typecheck:e2e
-      - run: npm run build -w @dilla/web
-      - run: npm run test:noise-release
-      # The dist guard fails (never skips) on any data: URL in the built CSS or JS; it needs the build above.
-      - run: npm run -w @dilla/web test:dist
-      - run: npm run build:harness -w @dilla/client-core
-      - run: go test -tags webdist ./internal/web/...
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: dilla-web-dist
-          path: packages/web/dist/
-          if-no-files-found: error
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: dilla-desktop-core
+          name: mobile-core-wasm
           path: packages/core-wasm/pkg/
-          if-no-files-found: error
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: dilla-core-harness
-          path: packages/client-core/harness-dist/
           if-no-files-found: error
 
   # The mobile client (packages/mobile/dist): the @dilla/web build with __DILLA_MOBILE__, the CSP, the bridge and the
   # picker. Built once, so the APKs and the iOS app carry the same bytes.
   mobile-bundle:
-    needs: [changes, web-build]
+    needs: [changes, mobile-core-wasm]
     if: needs.changes.outputs.mobile != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -167,10 +138,10 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - name: Fetch the wasm core built by the web-build job
+      - name: Fetch the wasm core built by the mobile-core-wasm job
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: dilla-desktop-core
+          name: mobile-core-wasm
           path: packages/core-wasm/pkg
       - run: npm ci
       - run: npm run build -w @dilla/mobile
@@ -283,15 +254,18 @@ jobs:
           path: ${{ steps.android-sdk.outputs.root }}/system-images/android-35/google_apis/x86_64
           key: ${{ steps.android-image.outputs.cache-primary-key }}
       - run: bash scripts/ci-android.sh avd
+      # Its screenshots, logcat and emulator.log go to a non-hidden workspace path: upload-artifact skips hidden files
+      # by default, and the default e2e/.out is a dot-directory (hashFiles needs a path in the workspace too).
       - name: Emulator smoke test
         timeout-minutes: 20
         run: npm run e2e:android -w @dilla/mobile -- --skip-build
+        env:
+          DILLA_ANDROID_E2E_OUT: ${{ github.workspace }}/target/mobile-android-e2e
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: failure() && hashFiles('packages/mobile/e2e/.out/**') != ''
+        if: failure() && hashFiles('target/mobile-android-e2e/**') != ''
         with:
           name: mobile-android-results
-          path: packages/mobile/e2e/.out
-          include-hidden-files: true
+          path: target/mobile-android-e2e
           if-no-files-found: error
 
   # The simulator build of the iOS app (Capacitor 8.6, Swift Package Manager, iOS 17 target, the UIScene lifecycle),
@@ -314,7 +288,17 @@ jobs:
           name: dilla-mobile-dist
           path: packages/mobile/dist
       - run: cd packages/mobile && npx cap sync ios
-      - run: xcodebuild -version
+      # Pinned, not the image default, so an image update cannot change the toolchain under the build. macos-26 lists
+      # its Xcodes in actions/runner-images (images/macos/macos-26-arm64-Readme.md); 26.6 is its default on 2026-10-26.
+      - name: Xcode 26.6
+        run: |
+          if [ ! -d /Applications/Xcode_26.6.app ]; then
+            echo "Xcode 26.6 is not on this runner image; installed:" >&2
+            ls -d /Applications/Xcode_*.app >&2
+            exit 1
+          fi
+          sudo xcode-select -s /Applications/Xcode_26.6.app
+          xcodebuild -version
       - name: Cache the Swift packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -330,7 +314,7 @@ jobs:
   # A DAG barrier prevents the watcher exiting between root jobs and later children. This does no build work and never
   # depends on the watcher or final aggregator.
   mobile-work-complete:
-    needs: [changes, mobile-unit, web-build, mobile-bundle, mobile-e2e-tools, mobile-android, mobile-ios]
+    needs: [changes, mobile-unit, mobile-core-wasm, mobile-bundle, mobile-e2e-tools, mobile-android, mobile-ios]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -339,7 +323,7 @@ jobs:
 
   # One check for the whole workflow: red on any failure/cancellation, green for success or intentional skips.
   mobile-ok:
-    needs: [ci-watchdog, mobile-work-complete, changes, mobile-unit, web-build, mobile-bundle, mobile-e2e-tools, mobile-android, mobile-ios]
+    needs: [ci-watchdog, mobile-work-complete, changes, mobile-unit, mobile-core-wasm, mobile-bundle, mobile-e2e-tools, mobile-android, mobile-ios]
     if: always()
     runs-on: ubuntu-latest
     steps:

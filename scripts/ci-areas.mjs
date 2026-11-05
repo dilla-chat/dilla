@@ -52,12 +52,13 @@ export const PATH_RULES = [
     'packages/client-core/src/profile-tables.ts', 'packages/client-core/src/profile-text.ts',
   ] },
   // The mobile apps (mobile.yml): the shell, the client it bundles and what that client is built from, the browser
-  // sign-in types it shares with desktop, and the HTTPS proxy its emulator smoke test runs the hosts behind. A
-  // server-only (go) change does not run the mobile lane; the nightly mobile run covers it, as for desktop.
+  // sign-in types it shares with desktop, and what the emulator smoke test runs beside the app: the test host's main
+  // package and the HTTPS proxy in front of it (the testkit and the WASI core are core, which forces mobile). Any
+  // other server-only (go) change does not run the mobile lane; the nightly mobile run covers it, as for desktop.
   { areas: ['mobile'], patterns: [
     'packages/mobile/**', 'packages/web/**', 'packages/client-core/**', 'packages/ui/**', 'packages/media/**',
     'packages/core-wasm/**', 'packages/design-tokens/**', 'packages/desktop/src/browser-auth.ts',
-    'package.json', 'package-lock.json', '.nvmrc', 'e2e/web/support/native-https-proxy.mjs',
+    'package.json', 'package-lock.json', '.nvmrc', 'e2e/web/support/native-https-proxy.mjs', 'cmd/dilla-testhost/**',
   ] },
   // Portable maintenance output privacy audit reads this exact native test source.
   { areas: ['web'], patterns: ['internal/desktopsandbox/native_root_linux_test.go'] },
@@ -146,9 +147,8 @@ export const JOB_GATES = {
     desktop: ['e2e'],
     'core-integration': ['e2e'],
   },
-  // web-build is the desktop workflow's job, unchanged: its core-wasm artifact feeds the mobile client build.
   mobile: {
-    'web-build': ['mobile'],
+    'mobile-core-wasm': ['mobile'],
     'mobile-unit': ['mobile'],
     'mobile-bundle': ['mobile'],
     'mobile-e2e-tools': ['mobile'],

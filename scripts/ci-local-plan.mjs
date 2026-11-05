@@ -85,7 +85,7 @@ export const JOB_MAP = {
     'ci-watchdog': SHARED_JOBS['ci-watchdog'],
     'mobile-work-complete': { kind: 'aggregate', weight: 0 },
     'mobile-unit': { weight: 2 },
-    'web-build': SHARED_JOBS['web-build'],
+    'mobile-core-wasm': { weight: 4 },
     // The mobile client build: what both apps bundle, checked here as on the runner.
     'mobile-bundle': { weight: 2 },
     // Opt-in, by hand: `npm run e2e:android -w @dilla/mobile` (packages/mobile/README.md) on a machine with KVM, JDK 21

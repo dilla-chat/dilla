@@ -61,7 +61,7 @@ so the lint is the one CI runs.
 | `go-fts5-arm64` | it needs a native linux/arm64 runner (`ubuntu-24.04-arm`). The job tests FTS5 on arm64 itself, so a cross-build or qemu wouldn't be the same check. It runs on an arm64 machine. |
 | `linux-sandbox-foundation` | requires disposable Ubuntu 22.04/24.04 runners and privileged kernel fixtures. |
 | `desktop` | requires native Linux, Windows and macOS acceptance runners in `desktop.yml`. |
-| `mobile-android`, `mobile-e2e-tools` | the emulator smoke test needs KVM, JDK 21, the Android SDK and an AVD, which `scripts/ci-android.sh` provisions on the runner only. It is opt-in locally: `npm run e2e:android -w @dilla/mobile` (`packages/mobile/README.md` lists its prerequisites). `mobile-unit` and `mobile-bundle` (the mobile client build) do run. |
+| `mobile-android`, `mobile-e2e-tools` | the emulator smoke test needs KVM, JDK 21, the Android SDK and an AVD, which `scripts/ci-android.sh` provisions on the runner only. It is opt-in locally: `npm run e2e:android -w @dilla/mobile` (`packages/mobile/README.md` lists its prerequisites). `mobile-unit`, `mobile-core-wasm` (its wasm-pack build is web-build's, memoised, so it runs once) and `mobile-bundle` (the mobile client build) do run. |
 | `mobile-ios` | needs a macOS runner with Xcode; on a Mac, `packages/mobile/README.md` has the build. |
 | `ci-watchdog` | GitHub run cancellation is replaced by the local fail-fast scheduler. |
 | `codeql` (extra) | it runs only when the `codeql` CLI is on PATH, and is otherwise reported as SKIPPED with the install hint. When it runs, it creates databases for actions, go, javascript-typescript and rust and analyses them with the code-scanning suites. Results at error level or with a security severity of 7 or more fail it. |

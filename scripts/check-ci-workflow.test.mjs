@@ -3377,7 +3377,7 @@ test('mobile.yml is filtered by the changes job, never at the trigger, and keeps
 
 test('every mobile artifact consumer waits for its producer', () => {
   for (const [from, to, need] of [
-    ['  mobile-bundle:\n    needs: [changes, web-build]\n', '  mobile-bundle:\n    needs: [changes]\n', 'web-build'],
+    ['  mobile-bundle:\n    needs: [changes, mobile-core-wasm]\n', '  mobile-bundle:\n    needs: [changes]\n', 'mobile-core-wasm'],
     ['  mobile-android:\n    needs: [changes, mobile-bundle, mobile-e2e-tools]\n', '  mobile-android:\n    needs: [changes, mobile-bundle]\n', 'mobile-e2e-tools'],
     ['  mobile-android:\n    needs: [changes, mobile-bundle, mobile-e2e-tools]\n', '  mobile-android:\n    needs: [changes, mobile-e2e-tools]\n', 'mobile-bundle'],
     ['  mobile-ios:\n    needs: [changes, mobile-bundle]\n', '  mobile-ios:\n    needs: [changes]\n', 'mobile-bundle'],
@@ -3392,10 +3392,26 @@ test('mobile.yml uses GitHub-owned pinned actions only, and its uploads fail clo
   assert.ok(third.some((p) => p.includes('reactivecircus/android-emulator-runner') && p.includes('not a GitHub-owned action')), third.join('\n'));
   const floating = checkMobile(mobileEdit('uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0', 'uses: actions/cache/restore@v6'));
   assert.ok(floating.some((p) => p.includes('must use a 40-hex commit SHA')), floating.join('\n'));
-  const silent = checkMobile(mobileEdit('          include-hidden-files: true\n          if-no-files-found: error\n', '          include-hidden-files: true\n'));
+  const silent = checkMobile(mobileEdit('          path: target/mobile-android-e2e\n          if-no-files-found: error\n', '          path: target/mobile-android-e2e\n'));
   assert.ok(silent.some((p) => p.includes('if-no-files-found: error')), silent.join('\n'));
-  const unguarded = checkMobile(mobileEdit("        if: failure() && hashFiles('packages/mobile/e2e/.out/**') != ''\n", '        if: failure()\n'));
+  const unguarded = checkMobile(mobileEdit("        if: failure() && hashFiles('target/mobile-android-e2e/**') != ''\n", '        if: failure()\n'));
   assert.ok(unguarded.some((p) => p.includes('hashFiles(...)')), unguarded.join('\n'));
   const escape = checkMobile(mobileEdit('        run: npm run e2e:android -w @dilla/mobile -- --skip-build\n', '        run: npm run e2e:android -w @dilla/mobile -- --skip-build\n        continue-on-error: true\n'));
   assert.ok(escape.some((p) => p.includes('continue-on-error')), escape.join('\n'));
+});
+
+test('mobile.yml builds the wasm core alone, uploads the emulator evidence from a non-hidden path and pins Xcode', () => {
+  assert.ok(!/^  web-build:$/m.test(REAL_MOBILE), 'no copy of desktop-ci.yml\'s web-build');
+  for (const [from, to, what] of [
+    ['      - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm\n', '', 'check-wasm-size'],
+    ["        if: failure() && hashFiles('target/mobile-android-e2e/**') != ''", "        if: failure() && hashFiles('packages/mobile/e2e/.out/**') != ''", 'hidden evidence path'],
+    ['          DILLA_ANDROID_E2E_OUT: ${{ github.workspace }}/target/mobile-android-e2e\n', '', 'evidence directory'],
+    ['          sudo xcode-select -s /Applications/Xcode_26.6.app\n', '', 'xcode-select'],
+  ]) {
+    const problems = checkMobile(mobileEdit(from, to));
+    assert.ok(problems.some((p) => p.startsWith('mobile.yml: job "') && p.includes('is missing:')), `${what}: ${problems.join('\n')}`);
+  }
+  // The slim job is still a wasm job: the pinned clang 23 block applies to it.
+  const clang = checkMobile(mobileEdit('        run: bash scripts/ci-llvm.sh install\n', '        run: echo no clang\n'));
+  assert.ok(clang.some((p) => p.includes('job "mobile-core-wasm" builds for wasm32-unknown-unknown')), clang.join('\n'));
 });

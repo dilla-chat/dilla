@@ -90,7 +90,7 @@ per area:
 | core | `core/**` (Markdown included: a vendored crate compiles its README), `testkit/**`, `Cargo.*`, `protocol/vectors/**` | go, web, e2e, mobile |
 | web | `packages/**`, `package*.json`, `.nvmrc`, `docs/design/flows/**` (tests compare the copy tables with `en.ts`), `internal/sfu/testdata/**` (the LiveKit schema check) | e2e |
 | e2e | `e2e/**` | |
-| mobile | `packages/mobile/**` and what the bundled client is built from: `packages/{web,client-core,ui,media,core-wasm,design-tokens}/**`, `packages/desktop/src/browser-auth.ts`, `package*.json`, `.nvmrc`; `e2e/web/support/native-https-proxy.mjs` (the smoke test's proxy) | |
+| mobile | `packages/mobile/**` and what the bundled client is built from: `packages/{web,client-core,ui,media,core-wasm,design-tokens}/**`, `packages/desktop/src/browser-auth.ts`, `package*.json`, `.nvmrc`; what the emulator smoke test runs beside the app: `cmd/dilla-testhost/**`, `e2e/web/support/native-https-proxy.mjs` (the testkit and the WASI core are core) | |
 | ci | `.github/**`, `scripts/**` | everything |
 
 The browser jobs in CI (`browser-spike`, `browser-media` and `core-integration`) run only Chromium projects; the desktop

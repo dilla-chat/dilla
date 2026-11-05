@@ -59,3 +59,14 @@ test('Android: the release network config trusts system CAs only; user CAs are a
   const sets = readdirSync(join(root, 'android/app/src')).filter(set => existsSync(join(root, 'android/app/src', set, 'res/xml/network_security_config.xml')));
   assert.deepEqual(sets.sort(), ['debug', 'main']);
 });
+
+test('iOS: the shared App scheme (CI builds -scheme App) builds the App target of the project', () => {
+  const pbx = read('ios/App/App.xcodeproj/project.pbxproj');
+  const target = /^\t\t([0-9A-F]{24}) \/\* App \*\/ = \{\n\t\t\tisa = PBXNativeTarget;/m.exec(pbx)?.[1];
+  assert.ok(target, 'the App native target');
+  const scheme = read('ios/App/App.xcodeproj/xcshareddata/xcschemes/App.xcscheme');
+  const refs = [...scheme.matchAll(/BlueprintIdentifier = "([0-9A-F]{24})"\s+BuildableName = "App\.app"\s+BlueprintName = "App"\s+ReferencedContainer = "container:App\.xcodeproj"/g)].map(match => match[1]);
+  assert.ok(refs.length >= 2, 'build and launch reference the target');
+  for (const ref of refs) assert.equal(ref, target);
+  assert.match(scheme, /buildForRunning = "YES"/);
+});

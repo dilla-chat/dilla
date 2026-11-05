@@ -116,14 +116,19 @@ test('a job several workflows carry runs once: any workflow\'s gate runs it, and
   const shared = JOBS.filter((j) => j.workflows.length >= 2).map((j) => j.id);
   assert.deepEqual(shared.sort(), ['changes', 'ci-watchdog', 'rust-native', 'rust-wasi', 'web-build']);
   assert.equal(JOBS.filter((j) => j.id === 'web-build').length, 1);
-  // server builds the client for go-release (go or web), desktop for its suites (e2e), mobile for its wasm core (mobile).
+  // server builds the client for go-release (go or web), desktop for its suites (e2e).
   const web = JOBS.find((j) => j.id === 'web-build');
-  assert.deepEqual(web.workflows, ['server', 'desktop', 'mobile']);
-  assert.equal(web.if, "needs.changes.outputs.go != 'false' || needs.changes.outputs.web != 'false' || needs.changes.outputs.e2e != 'false' || needs.changes.outputs.mobile != 'false'");
-  for (const outputs of [{ go: true, web: false, e2e: false, mobile: false }, { go: false, web: false, e2e: true, mobile: false }, { go: false, web: false, e2e: false, mobile: true }]) assert.equal(evalIf(web.if, { outputs, needResults: [] }), true);
-  assert.equal(evalIf(web.if, { outputs: { go: false, web: false, e2e: false, mobile: false }, needResults: [] }), false);
-  const mobileDrift = edit('mobile', 'run: npm run build -w @dilla/web\n', 'run: npm run build -w @dilla/web -- --mode x\n');
-  assert.ok(localMirrorProblems(mobileDrift).some((p) => p.includes('job "web-build" differs between server.yml and desktop-ci.yml and mobile.yml')), localMirrorProblems(mobileDrift).join('\n'));
+  assert.deepEqual(web.workflows, ['server', 'desktop']);
+  assert.equal(web.if, "needs.changes.outputs.go != 'false' || needs.changes.outputs.web != 'false' || needs.changes.outputs.e2e != 'false'");
+  for (const outputs of [{ go: true, web: false, e2e: false }, { go: false, web: false, e2e: true }]) assert.equal(evalIf(web.if, { outputs, needResults: [] }), true);
+  assert.equal(evalIf(web.if, { outputs: { go: false, web: false, e2e: false }, needResults: [] }), false);
+  // mobile.yml builds only the wasm core (mobile-core-wasm), not a copy of web-build; locally its wasm-pack step is the
+  // same memoised command as web-build's, so it runs once.
+  assert.ok(!('web-build' in PARSED.mobile.jobs));
+  const wasmPack = (id) => job(id).steps.find((step) => String(step.run ?? '').startsWith('wasm-pack build') && step.run.includes('packages/core-wasm/pkg')).run;
+  assert.equal(wasmPack('mobile-core-wasm'), wasmPack('web-build'));
+  assert.equal(classifyStep({ run: wasmPack('mobile-core-wasm') }).memo, classifyStep({ run: wasmPack('web-build') }).memo);
+  assert.ok(classifyStep({ run: wasmPack('mobile-core-wasm') }).memo);
   // A shared job that drifted apart would prove only one of its copies locally.
   const drifted = edit('desktop', 'cargo build -p dilla-testkit --release --locked', 'cargo build -p dilla-testkit --locked');
   assert.ok(localMirrorProblems(drifted).some((p) => p.includes('job "rust-native" differs between server.yml and desktop-ci.yml')), localMirrorProblems(drifted).join('\n'));
@@ -141,10 +146,10 @@ test('--list shows every workflow\'s jobs and what ci-local does with each', () 
   assert.deepEqual(listed(server, desktop), Object.keys(PARSED.server.jobs));
   assert.deepEqual(listed(desktop, mobile), Object.keys(PARSED.desktop.jobs));
   assert.deepEqual(listed(mobile, lines.length), Object.keys(PARSED.mobile.jobs));
-  assert.ok(lines.includes('  web-build  (also in desktop, mobile: runs once)'), lines.join('\n'));
+  assert.ok(lines.includes('  web-build  (also in desktop: runs once)'), lines.join('\n'));
   // The heavy mobile lanes are opt-in by hand: the emulator smoke test and the macOS build never run locally.
   for (const name of ['mobile-e2e-tools', 'mobile-android', 'mobile-ios']) assert.ok(lines.some((l) => l.startsWith(`  ${name}  (skipped: `)), name);
-  for (const name of ['mobile-unit', 'mobile-bundle']) assert.ok(lines.includes(`  ${name}`), name);
+  for (const name of ['mobile-unit', 'mobile-core-wasm', 'mobile-bundle']) assert.ok(lines.includes(`  ${name}`), name);
   assert.ok(lines.includes('  go  (legs go-1, go-2, go-3, go-4)'), lines.join('\n'));
   assert.ok(lines.some((l) => l.startsWith('  desktop  (skipped: ')), lines.join('\n'));
   assert.equal(parseArgs(['--list']).list, true);
