@@ -55,6 +55,21 @@ describe('checkEntryChunk (L-WEB-51, decision 5)', () => {
     expect(webDist.status).toBe(1);
     expect(webDist.stderr).toContain('DILLA_MOBILE_BUILD is set, but this output is not packages/mobile/.web-build');
   });
+  // Final fix wave: the checker reads DILLA_MOBILE_BUILD as vite.config.ts does, set only when it is exactly '1'. Any other
+  // value is a web or desktop build: checked as one, so it neither fails for its output path nor allows the mobile branch.
+  it('treats DILLA_MOBILE_BUILD other than 1 as a web or desktop build, as vite.config.ts does', () => {
+    for (const value of ['0', '', 'true']) {
+      dir = mkdtempSync(join(tmpdir(), 'dilla-web-entry-'));
+      cleanDist();
+      const run = () => spawnSync(process.execPath, [SCRIPT, dir], { encoding: 'utf8', env: { ...process.env, DILLA_MOBILE_BUILD: value } });
+      const clean = run();
+      expect(clean.status, value).toBe(0);
+      put('assets/entry-Wrk000.js', 'const o=self.location.origin;if(o==="capacitor://localhost"||o==="https://localhost");\n');
+      const branch = run();
+      expect(branch.status, value).toBe(1);
+      expect(branch.stderr, value).toContain('the mobile-only worker branch is in a web or desktop build');
+    }
+  });
   it('passes a clean dist', () => {
     cleanDist();
     expect(checkEntryChunk(dir)).toEqual([]);

@@ -96,7 +96,8 @@ function main(argv) {
     console.error('usage: check-entry-chunk.mjs <dist-dir>');
     return 2;
   }
-  const mobile = process.env.DILLA_MOBILE_BUILD !== undefined;
+  // Set only when it is exactly '1', as vite.config.ts reads it: any other value builds (and is checked as) web or desktop.
+  const mobile = process.env.DILLA_MOBILE_BUILD === '1';
   // Review round 2, item 5: a mobile client in packages/web/dist would become the web and desktop client.
   if (mobile && resolve(argv[2]) !== MOBILE_OUTPUT) {
     console.error(`${argv[2]}: DILLA_MOBILE_BUILD is set, but this output is not packages/mobile/.web-build`);
