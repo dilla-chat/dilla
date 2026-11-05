@@ -106,7 +106,7 @@ impl ClientCore {
         // This is a read-only verification against the persisted instance key and both signed
         // device-list pins. New creates must also be fresh against the shared host clock; caller
         // supplied server_now is bound to the snapshot but is not itself a clock authority.
-        let snapshot = self.bot_verify_interaction_snapshot(snapshot_wire, expected)?;
+        let snapshot = self.bot_decode_interaction_snapshot(snapshot_wire, expected)?;
         let local_now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| rejected("clock_unavailable"))?
@@ -120,6 +120,9 @@ impl ClientCore {
         ) {
             return Err(rejected("snapshot_expired"));
         }
+        // Trust runs after freshness: a stale pinned snapshot is classified as expired (the
+        // helper's rotating status) instead of a permanent input refusal.
+        self.bot_check_interaction_snapshot_trust(&snapshot)?;
         if self
             .read(|c| super::groups::group_row(c, group_id))?
             .is_some()

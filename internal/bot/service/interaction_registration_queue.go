@@ -172,6 +172,15 @@ func (c *InteractionRegistrationCoordinator) ProcessPending(ctx context.Context,
 				}
 				continue
 			}
+			if errors.Is(err, errInteractionCreateRefused) {
+				// Register already started the intent over, which costs a KeyPackage
+				// each time. Back the device off so a permanently refused one takes
+				// one package per step, and warn once per step instead of routing it
+				// into the work-pending report that repeats only every 30 minutes.
+				c.backoff.fail(slot, now)
+				c.logger.Warn("bot interaction registration backing off a device whose create was refused", "installation_id", c.installation.String(), "device_id", device.String(), "error", err.Error())
+				continue
+			}
 			if err != nil {
 				// Eligibility can change while the member episode remains current.
 				// Keep rejected candidates pending so a later bounded pass can

@@ -1227,3 +1227,36 @@ func TestInteractionRegistrationRateLimitsRemainRetryable(t *testing.T) {
 		})
 	}
 }
+
+func TestRegisterRestartsAfterAnInvalidCreate(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.request.MinimumEligibilityRevision = 0
+	f.request.ParticipantKeyPackage = nil
+	f.s.keyPackage = []byte{9, 8, 7}
+	f.n.createErr = &helper.StatusError{Status: 1}
+	if _, err := f.coordinator.Register(context.Background(), f.request); !errors.Is(err, ErrInteractionRegistrationRecovery) {
+		t.Fatalf("refused create error = %v, want the recovery error", err)
+	}
+	if f.n.createCalls != 1 || f.s.keyPackageCalls != 1 {
+		t.Fatalf("first attempt: creates=%d takes=%d", f.n.createCalls, f.s.keyPackageCalls)
+	}
+	oldOperation, oldRequest := f.n.createOperations[0], f.s.requestIDs[0]
+	value, err := f.n.StateGet(context.Background(), interactionRegistrationStateArea, interactionRegistrationKey(f.request.Group))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := decodeInteractionRegistrationIntent(value.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.Operation == oldOperation || intent.Operation.IsZero() || intent.AdmissionRequest == oldRequest || len(intent.Admission) != 0 || len(intent.Snapshot) != 0 || len(intent.KeyPackage) != 0 {
+		t.Fatalf("refused create left a pinned intent: %+v", intent)
+	}
+	f.n.createErr = nil
+	if _, err := f.coordinator.Register(context.Background(), f.request); err != nil {
+		t.Fatalf("Register after the restart: %v", err)
+	}
+	if f.s.keyPackageCalls != 2 || f.n.createCalls != 2 || f.n.createOperations[1] != intent.Operation || createdSnapshotRequest(t, f) != intent.AdmissionRequest || !bytes.Equal(f.n.createdKeyPackage, f.s.keyPackage) {
+		t.Fatalf("restart did not use a new admission, snapshot and KeyPackage: takes=%d creates=%d operations=%v", f.s.keyPackageCalls, f.n.createCalls, f.n.createOperations)
+	}
+}

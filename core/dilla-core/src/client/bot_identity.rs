@@ -856,6 +856,19 @@ impl ClientCore {
         wire: &[u8],
         expected: &crate::bot::interaction_admission::Expected,
     ) -> Result<crate::bot::interaction_snapshot::Snapshot, ClientError> {
+        let snapshot = self.bot_decode_interaction_snapshot(wire, expected)?;
+        self.bot_check_interaction_snapshot_trust(&snapshot)?;
+        Ok(snapshot)
+    }
+
+    /// The signature, binding and codec half of `bot_verify_interaction_snapshot`. It leaves the
+    /// device-list trust comparison to `bot_check_interaction_snapshot_trust`, so a caller can
+    /// classify an expired snapshot first.
+    pub(super) fn bot_decode_interaction_snapshot(
+        &self,
+        wire: &[u8],
+        expected: &crate::bot::interaction_admission::Expected,
+    ) -> Result<crate::bot::interaction_snapshot::Snapshot, ClientError> {
         let own = self.own()?;
         if own.kind != Kind::Bot.as_u8()
             || own.tier != Tier::Native.as_u8()
@@ -880,6 +893,15 @@ impl ClientCore {
             .map_err(|_| ClientError::new(E_CORE_STORAGE, "malformed pinned instance key"))?;
         let snapshot = crate::bot::interaction_snapshot::verify(wire, &pinned, expected)
             .map_err(|_| ClientError::new(E_CORE_INPUT, "interaction context snapshot rejected"))?;
+        Ok(snapshot)
+    }
+
+    /// Compare both signed lists in a decoded snapshot with this Bot store's pins and caches.
+    pub(super) fn bot_check_interaction_snapshot_trust(
+        &self,
+        snapshot: &crate::bot::interaction_snapshot::Snapshot,
+    ) -> Result<(), ClientError> {
+        let own = self.own()?;
         for list in [&snapshot.bot, &snapshot.participant] {
             let user = list.user.as_bytes();
             let pin: Option<(Vec<u8>, i64, Option<Vec<u8>>)> = self.read(|c| {
@@ -948,7 +970,7 @@ impl ClientCore {
                 ));
             }
         }
-        Ok(snapshot)
+        Ok(())
     }
 
     /// Start (or resume) the one native bot identity bound to an installation and community.
@@ -1830,6 +1852,50 @@ mod interaction_snapshot_tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
+        // An expired snapshot that would also fail the device-list trust check is classified as
+        // expired (helper status 3, which rotates), never as input (status 1).
+        {
+            let mut stale_expected = expected.clone();
+            stale_expected.server_now = renewed_now - 100;
+            let stale_wire = make_snapshot(
+                &stale_expected,
+                &bot_snapshot_list,
+                &participant_snapshot_list,
+                &instance_key,
+                renewed_now - 90,
+            );
+            connection
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE app_device_lists SET version=version+1 WHERE user_id=?1",
+                    [HUMAN_USER.as_slice()],
+                )
+                .unwrap();
+            let refused = core
+                .bot_interaction_group_create(
+                    &[0x96; 16],
+                    stale_expected.group.as_bytes(),
+                    &stale_wire,
+                    &stale_expected,
+                    &kp_wire,
+                )
+                .expect_err("expired snapshot with changed trust is refused");
+            assert_eq!(refused.code, E_CORE_INPUT);
+            assert!(
+                refused.detail.contains("snapshot_expired"),
+                "expected the expired classification, got: {}",
+                refused.detail
+            );
+            connection
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE app_device_lists SET version=version-1 WHERE user_id=?1",
+                    [HUMAN_USER.as_slice()],
+                )
+                .unwrap();
+        }
         let mut renewed_expected = expected.clone();
         renewed_expected.server_now = renewed_now;
         let renewed_wire = make_snapshot(
