@@ -1,7 +1,7 @@
 // M0 spike only (throwaway): a CallKit outgoing call for the call probe (call.html / call-probe.ts).
-// startCall: CXStartCallAction through CXCallController; the promise resolves once CallKit hands the app its audio
-// session in provider(_:didActivate:), where it is set to .playAndRecord / .voiceChat and activated. endCall ends it.
-// Native events are NSLog'ed as "DILLA_CALL_NATIVE ..." so they sit next to the page's DILLA_CALL lines in Xcode.
+// startCall: CXStartCallAction through CXCallController. perform(CXStartCallAction) sets the session to
+// .playAndRecord / .voiceChat and fulfills; CallKit activates the session, and the promise resolves in
+// provider(_:didActivate:). endCall ends the call. Native events are NSLog'ed as "DILLA_CALL_NATIVE ..." (Console.app).
 import AVFoundation
 import CallKit
 import Capacitor
@@ -74,11 +74,21 @@ public class CallProbePlugin: CAPPlugin, CAPBridgedPlugin, CXProviderDelegate {
     }
 
     public func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+        // Configure the session before fulfilling; CallKit activates it and then calls didActivate.
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: bluetoothOptions())
+        } catch {
+            NSLog("DILLA_CALL_NATIVE setCategory failed: %@", error.localizedDescription)
+            action.fail()
+            pendingStart?.reject("AVAudioSession setCategory failed: \(error.localizedDescription)")
+            pendingStart = nil
+            return
+        }
+        action.fulfill()
+        NSLog("DILLA_CALL_NATIVE start fulfilled")
         // There is no remote party: report the call as connected straight away.
         provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: nil)
         provider.reportOutgoingCall(with: action.callUUID, connectedAt: nil)
-        action.fulfill()
-        NSLog("DILLA_CALL_NATIVE start fulfilled")
     }
 
     public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
@@ -87,27 +97,30 @@ public class CallProbePlugin: CAPPlugin, CAPBridgedPlugin, CXProviderDelegate {
     }
 
     public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
-        NSLog("DILLA_CALL_NATIVE didActivate")
+        // CallKit has activated the session (category set in perform CXStartCallAction); do not call setActive here.
+        NSLog("DILLA_CALL_NATIVE didActivate session %@ / %@", audioSession.category.rawValue, audioSession.mode.rawValue)
         guard let call = pendingStart else { return }
         pendingStart = nil
-        do {
-            try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth])
-            try audioSession.setActive(true)
-            NSLog("DILLA_CALL_NATIVE session %@ / %@", audioSession.category.rawValue, audioSession.mode.rawValue)
-            call.resolve([
-                "activated": true,
-                "category": audioSession.category.rawValue,
-                "mode": audioSession.mode.rawValue,
-            ])
-        } catch {
-            NSLog("DILLA_CALL_NATIVE session failed: %@", error.localizedDescription)
-            call.reject("AVAudioSession failed: \(error.localizedDescription)")
-        }
+        call.resolve([
+            "activated": true,
+            "category": audioSession.category.rawValue,
+            "mode": audioSession.mode.rawValue,
+        ])
     }
 
     public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
         NSLog("DILLA_CALL_NATIVE didDeactivate")
     }
+}
+
+/// .allowBluetoothHFP is the iOS 26 SDK name of .allowBluetooth; older SDKs (Xcode < 26) only know the old name.
+private func bluetoothOptions() -> AVAudioSession.CategoryOptions {
+    #if compiler(>=6.2)
+    if #available(iOS 26.0, *) {
+        return [.allowBluetoothHFP]
+    }
+    #endif
+    return [.allowBluetooth]
 }
 
 /// Main.storyboard's view controller. Plugins inside the app target are not auto-registered; register CallProbe here.
