@@ -27,7 +27,7 @@ func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, n
 func TestPreMigrationCopiesKeepTheNewestThree(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "dilla.db")
 	writeCopies(t, db, 1, 2, 3, 4, 5)
-	if err := prunePreMigrationCopies(db, 3, quietLog()); err != nil {
+	if err := prunePreMigrationCopies(db, 3, "", quietLog()); err != nil {
 		t.Fatalf("prune: %v", err)
 	}
 	for s, want := range map[int]bool{1: false, 2: false, 3: true, 4: true, 5: true} {
@@ -55,7 +55,7 @@ func TestPreMigrationPruneLeavesUnrelatedFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := prunePreMigrationCopies(db, 3, quietLog()); err != nil {
+	if err := prunePreMigrationCopies(db, 3, "", quietLog()); err != nil {
 		t.Fatalf("prune: %v", err)
 	}
 	for _, o := range append(others, link, outside) {
@@ -80,6 +80,19 @@ func TestPreMigrationPruneRunsOnlyAfterSuccess(t *testing.T) {
 	for s := 1; s <= 5; s++ {
 		if p := fmt.Sprintf("%s.pre-migration-%d", h.cfg.DB.Path, s); !exists(p) {
 			t.Errorf("%s was pruned by a failed migration", p)
+		}
+	}
+}
+
+func TestPreMigrationPruneKeepsThisStartsCopyWhenTheClockWentBack(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "dilla.db")
+	writeCopies(t, db, 100, 150, 200, 300)
+	if err := prunePreMigrationCopies(db, 3, db+".pre-migration-150", quietLog()); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	for s, want := range map[int]bool{100: false, 150: true, 200: true, 300: true} {
+		if got := exists(fmt.Sprintf("%s.pre-migration-%d", db, s)); got != want {
+			t.Errorf("copy %d present = %v, want %v", s, got, want)
 		}
 	}
 }

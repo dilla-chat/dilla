@@ -228,7 +228,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		// Only now, with the migration done: a failed one restores the newest
 		// copy, so nothing may be removed before this point. A copy that will
 		// not delete is logged and must not stop the server.
-		if err := prunePreMigrationCopies(cfg.DB.Path, preMigrationKeep, log); err != nil {
+		if err := prunePreMigrationCopies(cfg.DB.Path, preMigrationKeep, backupPath, log); err != nil {
 			log.Warn("could not prune old pre-migration copies", "err", err)
 		}
 	}

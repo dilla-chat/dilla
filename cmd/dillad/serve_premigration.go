@@ -19,9 +19,12 @@ const preMigrationKeep = 3
 // <dbPath>.pre-migration-<unix time>, newest by the number in the name. Only
 // regular files with exactly that name are considered, so the -wal and -shm
 // files, a .bak and anything with a non-numeric suffix are never touched, and
-// a symlink is skipped rather than followed. A copy that cannot be removed is
-// logged and the rest are still tried; the first such error is returned.
-func prunePreMigrationCopies(dbPath string, keep int, log *slog.Logger) error {
+// a symlink is skipped rather than followed. protect is the copy this start
+// took: it is always kept and counts toward keep, because a clock that went
+// backwards can rank it below older copies and it is the one an operator is
+// told to restore. A copy that cannot be removed is logged here and the rest
+// are still tried; only a failure to list the directory is returned.
+func prunePreMigrationCopies(dbPath string, keep int, protect string, log *slog.Logger) error {
 	dir, prefix := filepath.Dir(dbPath), filepath.Base(dbPath)+".pre-migration-"
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -51,14 +54,23 @@ func prunePreMigrationCopies(dbPath string, keep int, log *slog.Logger) error {
 		return nil
 	}
 	sort.Slice(copies, func(i, j int) bool { return copies[i].unix > copies[j].unix })
-	var first error
+	slots, protected := keep, false
+	for _, c := range copies {
+		if c.path == protect {
+			slots, protected = slots-1, true
+		}
+	}
 	var removed []string
-	for _, c := range copies[keep:] {
+	for _, c := range copies {
+		if c.path == protect && protected {
+			continue
+		}
+		if slots > 0 {
+			slots--
+			continue
+		}
 		if err := os.Remove(c.path); err != nil {
 			log.Warn("could not remove an old pre-migration copy", "path", c.path, "err", err)
-			if first == nil {
-				first = fmt.Errorf("remove %s: %w", c.path, err)
-			}
 			continue
 		}
 		removed = append(removed, c.path)
@@ -66,5 +78,5 @@ func prunePreMigrationCopies(dbPath string, keep int, log *slog.Logger) error {
 	if len(removed) > 0 {
 		log.Info("pruned pre-migration copies", "kept", keep, "removed", len(removed), "files", removed)
 	}
-	return first
+	return nil
 }
