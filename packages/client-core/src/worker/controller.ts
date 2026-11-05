@@ -1759,9 +1759,9 @@ export class Controller {
   private readonly botStatusForPoll = new Map<string, { at: number; read: ReturnType<Routes['getBotCommandStatus']> }>();
   private pollBotCommandStatus(communityHex: string): ReturnType<Routes['getBotCommandStatus']> {
     const kept = this.botStatusForPoll.get(communityHex);
-    if (kept !== undefined && Date.now() - kept.at < 1_000) return kept.read;
+    if (kept !== undefined && this.deps.now() - kept.at < 1_000) return kept.read;
     const read = this.routes.getBotCommandStatus(fromHex(communityHex));
-    const entry = { at: Date.now(), read };
+    const entry = { at: this.deps.now(), read };
     this.botStatusForPoll.set(communityHex, entry);
     read.catch(() => { if (this.botStatusForPoll.get(communityHex) === entry) this.botStatusForPoll.delete(communityHex); });
     return read;
@@ -4480,6 +4480,7 @@ export class Controller {
    * else or reset the store before this one leads again, so the next lead rebuilds from the store alone.
    */
   private forgetAccount(): void {
+    this.botStatusForPoll.clear();
     this.clearInteractionAckLeases();
     this.selfDisplay = null;
     this.clearReauthTimer();

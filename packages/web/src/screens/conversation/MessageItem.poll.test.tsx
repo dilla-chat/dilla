@@ -23,12 +23,12 @@ function open() {
   return { resolve, ...mounted };
 }
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-it('keeps the fallback with local time until the verified poll card renders, then names its creator', async () => {
+it('shows no raw text while the poll loads, then the verified card, naming its creator', async () => {
   const f = open();
-  const local = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }).format(new Date(stamp * 1000));
-  expect(rowOf(P1)).toHaveTextContent('Vote with /poll vote.');
-  expect(rowOf(P1)).toHaveTextContent(`Closes: ${local}`);
-  expect(rowOf(P1)).not.toHaveTextContent('<t:');
+  // Pending: the card says "Loading poll…" and the row holds none of the post's raw text.
+  expect(within(rowOf(P1)).getByRole('status')).toHaveTextContent('Loading poll…');
+  expect(rowOf(P1)).not.toHaveTextContent('Vote with /poll vote.');
+  expect(rowOf(P1)).not.toHaveTextContent('Closes:');
   await act(() => { f.resolve(poll); return Promise.resolve(); });
   await screen.findByRole('button', { name: /Bridge/ });
   expect(rowOf(P1)).toHaveTextContent('bob asked:');
@@ -37,11 +37,21 @@ it('keeps the fallback with local time until the verified poll card renders, the
   expect(rowOf(P1)).not.toHaveTextContent('Closes:');
   expect(rowOf(P1).querySelector('.d-tag')).toHaveAttribute('data-kind', 'bot');
 });
-it('retains the fallback when the returned poll belongs to another channel', async () => {
-  const f = open(); await act(() => { f.resolve({ ...poll, channelId: ME.id }); return Promise.resolve(); });
-  await waitFor(() => expect(rowOf(P1)).toHaveTextContent('Vote with /poll vote.'));
-  expect(screen.queryByRole('button', { name: /Bridge/ })).toBeNull();
-  expect(rowOf(P1)).not.toHaveTextContent('asked:');
+it('shows the fallback with local time once verification gives up, when the returned poll belongs to another channel', async () => {
+  vi.useFakeTimers();
+  try {
+    const f = open(); await act(() => { f.resolve({ ...poll, channelId: ME.id }); return Promise.resolve(); });
+    const local = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }).format(new Date(stamp * 1000));
+    expect(rowOf(P1)).not.toHaveTextContent('Vote with /poll vote.');
+    expect(within(rowOf(P1)).getByRole('status')).toHaveTextContent('Loading poll…');
+    await act(async () => { await vi.advanceTimersByTimeAsync(17_500); });
+    expect(rowOf(P1)).toHaveTextContent('Vote with /poll vote.');
+    expect(rowOf(P1)).toHaveTextContent(`Closes: ${local}`);
+    expect(rowOf(P1)).not.toHaveTextContent('<t:');
+    expect(within(rowOf(P1)).queryByRole('status')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Bridge/ })).toBeNull();
+    expect(rowOf(P1)).not.toHaveTextContent('asked:');
+  } finally { vi.useRealTimers(); }
 });
 
 it('keeps row identity and keyboard focus when a verified poll is edited', async () => {

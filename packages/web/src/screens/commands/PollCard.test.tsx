@@ -44,24 +44,28 @@ describe('Signal poll adapter', () => {
     // afterwards would put the fake one back for every later test.
     } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
   });
-  it('shows the Loading poll… skeleton until the retries run out when the post claims a different Bot', async () => {
+  it('shows the post text at once, without the retry chain, when a loaded Bot is not the post\'s author', async () => {
     vi.useFakeTimers();
     try {
       const f = fixture({}, () => Promise.resolve({ installationId, botUserId: 'ee'.repeat(16), supportedOperations: [3, 70] }));
       expect(screen.getByRole('status')).toHaveTextContent('Loading poll…');
-      await act(async () => { await vi.advanceTimersByTimeAsync(16_999); });
-      expect(screen.getByRole('status')).toHaveTextContent('Loading poll…');
-      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
       expect(screen.queryByRole('status')).toBeNull(); expect(f.pollGet).not.toHaveBeenCalled();
+      // The shared list was reloaded once to cover a newly installed Bot, and no quick retry follows.
+      expect(f.capabilities).toHaveBeenCalledTimes(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(f.capabilities).toHaveBeenCalledTimes(2);
     } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
   });
   it('shows the post text at once when the community has no ready Bot', async () => {
     vi.useFakeTimers();
     try {
-      fixture({}, () => Promise.reject(new Core.BotUtilitiesProviderUnavailableError()));
+      const f = fixture({}, () => Promise.reject(new Core.BotUtilitiesProviderUnavailableError()));
       expect(screen.getByRole('status')).toHaveTextContent('Loading poll…');
       await act(async () => { await vi.advanceTimersByTimeAsync(0); });
       expect(screen.queryByRole('status')).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(f.capabilities).toHaveBeenCalledTimes(1);
     } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
   });
   it('verifies from the shared Bot list: no capability read of its own, and none for a second card', async () => {

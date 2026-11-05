@@ -85,6 +85,12 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const rowEl = useRef<HTMLElement | null>(null);
   const pollScope = [p.communityId, p.channelId, p.threadId, p.book.self?.id, item.senderUser, item.body, item.edited, item.state].join('\u0000');
   const [verified, setVerified] = useState<{ client: CoreClient | undefined; scope: string; poll: PollSummary } | null>(null);
+  // The poll card's verification gave up: only then does the row show the post's own text (until then it shows nothing, the card says "Loading poll…").
+  const [gaveUp, setGaveUp] = useState<{ client: CoreClient | undefined; scope: string } | null>(null);
+  const onGaveUp = useCallback((value: boolean) => {
+    setGaveUp(current => value ? (current?.scope === pollScope && current.client === p.client ? current : { client: p.client, scope: pollScope })
+      : current?.scope === pollScope && current.client === p.client ? null : current);
+  }, [p.client, pollScope]);
   const onVerified = useCallback((poll: PollSummary | null) => {
     setVerified(current => poll === null ? current?.scope === pollScope && current.client === p.client ? null : current
       : current?.poll === poll && current.scope === pollScope && current.client === p.client ? current : { client: p.client, scope: pollScope, poll });
@@ -161,15 +167,19 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   const fallback = marker === null ? item.body : item.body.replace(/\n?\[dilla-poll:v1:[0-9a-f]{32}\]$/u, '')
     .replace(/<t:(\d+):[tTdDfFR]>/gu, (raw, seconds: string) => localUtilityTime(Number(seconds)) ?? raw);
   const verifiedPoll = bot && marker !== null && !item.edited && item.state === 'ok' && verified?.client === p.client && verified?.scope === pollScope ? verified.poll : null;
+  // A poll card that will verify (it renders for a Bot's unedited, live poll post) owns the row until it verifies or gives up.
+  const pollPending = bot && marker !== null && !item.edited && item.state === 'ok' && p.client !== undefined && (p.communityId ?? null) !== null
+    && p.book.self?.id !== undefined && item.senderUser !== null && verifiedPoll === null && !(gaveUp?.client === p.client && gaveUp?.scope === pollScope);
   const displayBody = !shown ? '' : music !== null
     ? t('music.started', { name: authorName({ senderUser: music.requesterId, senderDevice: null }, p.book.members, p.book.self), room: musicRoom })
+    : pollPending ? ''
     : verifiedPoll !== null ? utilityText('poll.asked', { name: authorName({ senderUser: verifiedPoll.creatorId, senderDevice: null }, p.book.members, p.book.self) })
     : markdownParts(fallback, p.book, item.mention);
   const card = music !== null && p.client !== undefined && shown
     ? <MusicMessageCard client={p.client} communityId={p.communityId ?? null} voiceChannelId={music.voiceChannelId} item={music.item} bot={author} />
     : marker !== null && p.client !== undefined ? <PollCard client={p.client} communityId={p.communityId ?? null} channelId={p.channelId} threadId={p.threadId ?? null}
       body={item.body} authorId={item.senderUser} bot={bot} edited={item.edited} deleted={item.state !== 'ok'} selfId={p.book.self?.id ?? null} bits={p.bits ?? null}
-      onVerified={onVerified} /> : undefined;
+      onVerified={onVerified} onGaveUp={onGaveUp} /> : undefined;
   const gutterTime = formatTime(item.ts);
   const openProfile = p.onOpenProfile;
   return <MessageRow rowRef={el => { rowEl.current = el; p.rowRef(el); }} author={author} time={time} gutterTime={gutterTime}

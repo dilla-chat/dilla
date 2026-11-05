@@ -48,6 +48,8 @@ export interface PollCardProps {
   authorId: string | null; bot: boolean; edited: boolean; deleted: boolean; selfId: string | null; bits: number | null;
   /** Update the message heading before paint, without replacing its focusable row. */
   onVerified?: (poll: PollSummary | null) => void;
+  /** True once verification has given up (the row then shows the post's own text); false while loading or verified. */
+  onGaveUp?: (gaveUp: boolean) => void;
 }
 
 /** A poll is interactive only after the authenticated bot author, final marker and durable record agree. */
@@ -76,6 +78,8 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
   const [active, setActive] = useState(false);
   // Verification failed for good (a refusal, or the 2/5/10 s retries ran out): the card steps aside so the post's own text stands.
   const [gaveUp, setGaveUp] = useState(false);
+  // A refusal (not a failure) was the reason: the quick retries are pointless, only the 30 s tick tries again.
+  const definitive = useRef(false);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [error, setError] = useState('');
@@ -103,10 +107,20 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     try {
       // The Bot's identity comes from the shared per-community store (one load for every card and the composer); pollGet's own
       // authorisation refreshes utilities.binding, which must still agree with it after the read.
-      const bot = await loadedCommandBot(props.client, props.communityId!);
+      let bot = await loadedCommandBot(props.client, props.communityId!);
+      if (bot.botUserId !== null && bot.botUserId !== props.authorId) {
+        // The stored Bot is not this post's author: reload once (a newly installed Bot has a new user id); if it still is not, the
+        // answer is definitive and the post's text shows at once.
+        refreshCommandBot(props.client, props.communityId!);
+        bot = await loadedCommandBot(props.client, props.communityId!);
+        if (bot.botUserId !== null && bot.botUserId !== props.authorId) {
+          if (generation.current === current) { definitive.current = true; setGaveUp(true); invalidate(); }
+          return null;
+        }
+      }
       if (bot.botUserId === null || bot.installationId === null) {
         // No ready Bot is a definitive refusal; a failed load is retried by the cadence below, and shows the post's text if it never lands.
-        if (generation.current === current) { if (bot.unavailable) setGaveUp(true); invalidate(); }
+        if (generation.current === current) { if (bot.unavailable) { definitive.current = true; setGaveUp(true); } invalidate(); }
         return null;
       }
       const caps = { installationId: bot.installationId, botUserId: bot.botUserId };
@@ -124,7 +138,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
         if (generation.current === current) { if (latest !== null && latest.installationId !== caps.installationId) refreshCommandBot(props.client, props.communityId!); invalidate(); }
         return null;
       }
-      setGaveUp(false);
+      definitive.current = false; setGaveUp(false);
       const boundScope = `${identityScope}:${caps.installationId}`;
       setRecord({ client: props.client, scope: boundScope, poll }); setVerifiedScope(boundScope);
       // Only the initial/cadence refresh may start a full walk. Mutation refreshes
@@ -156,7 +170,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       // Refreshes update the record without dismissing a mutation or voter-read notice.
       if (!busyRef.current && retained !== undefined) setError(t(retained.kind === 'vote' ? 'poll.voteUncertain' : 'poll.uncertain'));
       return poll;
-    } catch (cause) { if (generation.current === current) { if (cause instanceof BotUtilitiesProviderUnavailableError) setGaveUp(true); invalidate(); } return null; }
+    } catch (cause) { if (generation.current === current) { if (cause instanceof BotUtilitiesProviderUnavailableError) { definitive.current = true; setGaveUp(true); } invalidate(); } return null; }
   }, [utilities, isSameOwner, invalidate, identityScope, sourceAccessible, accessScope, props.client, props.communityId, props.authorId, props.pollId, props.channelId, props.threadId]);
   useEffect(() => {
     const node = ref.current; if (node === null) return;
@@ -179,7 +193,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
         const poll = await refresh(true);
         window.clearTimeout(retry); retry = undefined;
         // A failed verification retries quickly (2, 5, 10 s) before it waits for the 30 s tick.
-        if (poll === null && failures < RETRY_DELAYS.length) retry = window.setTimeout(() => { void update(); }, RETRY_DELAYS[failures++]);
+        if (poll === null && !definitive.current && failures < RETRY_DELAYS.length) retry = window.setTimeout(() => { void update(); }, RETRY_DELAYS[failures++]);
         else if (poll !== null) failures = 0;
         else setGaveUp(true);
       } finally { pending = false; }
@@ -188,7 +202,11 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     return () => { window.clearInterval(timer); window.clearTimeout(retry); currentGeneration.current++; currentVoterGeneration.current++; voterTarget.current = null; };
   }, [active, refresh]);
   const poll = sourceAccessible && record?.client === props.client && record.scope === scopeKey && verifiedScope === scopeKey ? record.poll : null;
-  const { onVerified } = props;
+  const { onVerified, onGaveUp } = props;
+  useLayoutEffect(() => {
+    onGaveUp?.(gaveUp && poll === null);
+    return () => onGaveUp?.(false);
+  }, [onGaveUp, gaveUp, poll]);
   useLayoutEffect(() => {
     onVerified?.(poll);
     return () => onVerified?.(null);
