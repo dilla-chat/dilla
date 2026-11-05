@@ -447,6 +447,8 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: bash scripts/install-ci-tool.sh binaryen
@@ -549,6 +551,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: bash scripts/install-ci-tool.sh binaryen
@@ -618,6 +622,9 @@ jobs:
         if: matrix.lane == 'managed'
         with:
           go-version-file: go.mod
+      - name: Download Go modules (retried only on known network errors)
+        if: matrix.lane == 'managed'
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
       - name: Root sandbox maintenance kernel proof
         id: sandbox_maintenance
         if: matrix.lane == 'managed'
@@ -681,6 +688,8 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -770,6 +779,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -793,6 +804,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -840,6 +853,8 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
       - run: npm ci
       # The adapter starts this peer through cargo, then allows 90 s for readiness. Compile before
       # that runtime deadline so a cold Go runner reports compiler errors here instead of timing out.
@@ -873,6 +888,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -902,6 +919,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -933,6 +952,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
       - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -963,6 +984,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
       - name: FTS5 on native linux/arm64
         run: go test ./internal/store/sqlite/...
 
@@ -979,6 +1002,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
       - run: bash scripts/install-ci-tool.sh golangci-lint
       - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
       - run: golangci-lint run ./...
@@ -993,6 +1018,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
       - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - name: The pinned-but-unimported module graph is scanned too
@@ -1037,6 +1064,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-wasi
@@ -1060,6 +1089,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
       - run: rm -rf internal/web/dist
       - name: Fetch the web client built by the web-build job
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8

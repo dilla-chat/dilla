@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES } from './ci-areas.mjs';
-import { assertGoShards, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkWorkflow, DESKTOP_RELEASE_ACTIONS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
+import { assertGoShards, checkGoModuleDownloads, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkWorkflow, DESKTOP_RELEASE_ACTIONS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -2896,5 +2896,35 @@ test('a failure-evidence upload without a hashFiles guard is reported', () => {
       writeFileSync(join(root, '.github/workflows', file), text.replace(guard, guard.replace(/ && hashFiles\(.*$/, '')));
       assert.ok(check(root).some(p => p.includes('hashFiles') && p.includes('failure-evidence')), `${file}: ${guard}`);
     }
+  }
+});
+
+test('every Go job downloads its modules through the retry wrapper, after its setup steps', () => {
+  assert.deepEqual(checkWorkflow(REPO_ROOT), []);
+  const step = '      - name: Download Go modules (retried only on known network errors)\n';
+  const body = new RegExp('^  go-lint:\\n[\\s\\S]*?(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))', 'm').exec(REAL_CI)[0], start = body.indexOf(step), end = body.indexOf('\n      - ', start + 1) + 1;
+  assert.ok(start >= 0);
+  const collect = (job) => { const found = []; checkGoModuleDownloads({ 'go-lint': job }, found, 'ci.yml'); return found; };
+  assert.deepEqual(collect(body), []);
+  for (const changed of [
+    body.slice(0, start) + body.slice(end),
+    body.replace('go mod download', 'go mod download || true'),
+    body.replace(step, step + '        continue-on-error: true\n'),
+    body.slice(0, start) + body.slice(end) + body.slice(start, end),
+    body.slice(0, end) + body.slice(start, end) + body.slice(end),
+  ]) {
+    assert.ok(collect(changed).some((p) => p.includes('go mod download')));
+  }
+});
+
+test('the macOS installer build retries only the stapling errors', () => {
+  assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
+  for (const changed of [
+    REAL_DESKTOP.replace("node scripts/retry-on.mjs --pattern 'staple and validate action failed|NSURLErrorDomain|Error 68' -- npm run dist", 'npm run dist'),
+    REAL_DESKTOP.replace('|Error 68', '|Error 68|error'),
+  ]) {
+    const root = fixture(GOOD);
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), changed);
+    assert.ok(checkDesktopWorkflow(root).some((p) => p.includes('retry-on.mjs retrying only the macOS stapling errors')));
   }
 });

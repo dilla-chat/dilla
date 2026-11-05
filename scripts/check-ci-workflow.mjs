@@ -711,6 +711,30 @@ function checkWholeModuleGTK(jobs, problems) {
   }
 }
 
+/** The retried module download every Go job runs right after its Go (and, where present, Node) setup. */
+const GO_MOD_DOWNLOAD_NAME = 'name: Download Go modules (retried only on known network errors)';
+const GO_MOD_DOWNLOAD_RUN = "node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download";
+/** The macOS stapling retry: only Apple-service errors repeat the (re-notarizing) build. */
+const STAPLE_RETRY = "node scripts/retry-on.mjs --pattern 'staple and validate action failed|NSURLErrorDomain|Error 68' -- npm run dist -w @dilla/desktop";
+
+/** Every job with actions/setup-go downloads its modules through retry-on.mjs, once, after the Go and Node setup. */
+export function checkGoModuleDownloads(jobs, problems, file) {
+  for (const [name, body] of Object.entries(jobs)) {
+    const steps = jobSteps(body);
+    const go = steps.findIndex((step) => step[0].startsWith('uses: actions/setup-go@'));
+    if (go < 0) continue;
+    const node = steps.findIndex((step) => step[0].startsWith('uses: actions/setup-node@'));
+    const downloads = steps.map((step, index) => (step[0] === GO_MOD_DOWNLOAD_NAME ? index : -1)).filter((index) => index >= 0);
+    const firstGoUse = steps.findIndex((s) => s.some((line) => !line.startsWith('name:') && /\bgo\s+(?:build|test|vet|run|list)\b|\bgolangci-lint\b|go-shard\.mjs/.test(line)));
+    const setupIf = steps[go].find((line) => line.startsWith('if:'));
+    const step = steps[downloads[0]];
+    const expected = [GO_MOD_DOWNLOAD_NAME, ...(setupIf === undefined ? [] : [setupIf]), `run: ${GO_MOD_DOWNLOAD_RUN}`];
+    if (downloads.length !== 1 || step.join('\n') !== expected.join('\n') || downloads[0] <= go || downloads[0] <= node || (firstGoUse >= 0 && downloads[0] > firstGoUse)) {
+      problems.push(`${file}: job "${name}" must run exactly one retried "go mod download" step (${GO_MOD_DOWNLOAD_RUN}) after its setup-go and setup-node steps and before the first Go build or test, with setup-go's condition`);
+    }
+  }
+}
+
 // Narrow cancellation finalizers for the reviewed disposable fixture only.
 // Full job shape below also rejects reordered, duplicate or extra steps.
 const SANDBOX_MAINTENANCE_CONTROLS = [
@@ -721,6 +745,9 @@ const SANDBOX_MAINTENANCE_CONTROLS = [
   "        if: matrix.lane == 'managed'",
   "        with:",
   "          go-version-file: go.mod",
+  "      - name: Download Go modules (retried only on known network errors)",
+  "        if: matrix.lane == 'managed'",
+  `        run: ${GO_MOD_DOWNLOAD_RUN}`,
   "      - name: Root sandbox maintenance kernel proof",
   "        id: sandbox_maintenance",
   "        if: matrix.lane == 'managed'",
@@ -951,6 +978,7 @@ export function checkWorkflow(root) {
     }
   }
   checkWholeModuleGTK(jobs, problems);
+  checkGoModuleDownloads(jobs, problems, 'ci.yml');
   checkLinuxSandboxFoundationJob(jobs, problems);
 
   // Every test/build job needs `changes` and carries its gate, or it would run on a docs-only pull
@@ -1328,7 +1356,12 @@ export function checkDesktopWorkflow(root) {
     if (install < 0 || seal.length !== 1 || seal[0] !== install + 1 || steps[seal[0]].join('\n') !== expected)
       problems.push(`${file}: ${job} must seal the macOS npm Electron runtime immediately after installation`);
   }
+  checkGoModuleDownloads(splitJobs(text), problems, file);
   const nativeSteps = jobSteps(body('native'));
+  const distSteps = nativeSteps.filter((step) => step.some((line) => line.includes('npm run dist -w @dilla/desktop')));
+  if (distSteps.length !== 1 || !distSteps[0].includes(`run: ${STAPLE_RETRY} -- --config.electronDist=../../node_modules/electron/dist --\${{ matrix.platform }} --\${{ matrix.arch }}`)) {
+    problems.push(`${file}: the native installer build must run through retry-on.mjs retrying only the macOS stapling errors`);
+  }
   const formatAcceptance = body('native-linux-package-acceptance');
   for (const required of [
     'name: desktop-linux-package-acceptance-${{ matrix.format }}-x64',
@@ -1440,7 +1473,7 @@ run: node packages/desktop/test/support/linux-installed-runtime-proof.mjs packag
     || sandboxGates[0]<=installedLinux || sandboxGates[0]>=proof)
     problems.push(`${file}: installed AppImage sandbox requires exact non-bypassable kernel proof verification after Linux installed upgrade and before upload`);
   const buildProvenance = nativeSteps.findIndex(step => step.some(line => line.includes('name: Record native desktop build provenance')));
-  const finalDistribution = nativeSteps.findLastIndex(step => step.some(line => line.includes('run: npm run dist -w @dilla/desktop')));
+  const finalDistribution = nativeSteps.findLastIndex(step => step.some(line => line.includes('npm run dist -w @dilla/desktop')));
   const finalFuses = nativeSteps.findLastIndex(step => step.some(line => line.includes('run: node packages/desktop/scripts/check-fuses.mjs')));
   const installerUpload = nativeSteps.findIndex(step => step.some(line => line.includes('name: desktop-installers-')));
   if (buildProvenance < 0 || finalDistribution < 0 || finalFuses <= finalDistribution || buildProvenance <= finalFuses || installerUpload <= buildProvenance
