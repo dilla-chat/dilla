@@ -350,28 +350,11 @@ func (d *DS) TakeKeyPackage(ctx context.Context, s Session, target id.ID) (KeyPa
 	return KeyPackage{Blob: row.Blob, LastResort: row.LastResort == 1, KPRef: row.KPRef}, nil
 }
 
-// deviceIsLiveAndListed reports whether the device exists, is neither revoked nor quarantined, and
-// is named by its owner's newest verified signed device list. A user with no list has no listed
-// device, so every one of its devices is simply not found.
+// deviceIsLiveAndListed reports whether the device is the kind a take can find empty rather than
+// absent: the same predicate an Add is proposed under (listedDeviceVerdict).
 func (d *DS) deviceIsLiveAndListed(ctx context.Context, deviceID id.ID) (bool, error) {
-	device, err := d.opts.Store.GetDevice(ctx, deviceID)
-	if errors.Is(err, store.ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if device.RevokedAt != nil || device.QuarantinedAt != nil {
-		return false, nil
-	}
-	entries, err := d.opts.DeviceLists.Entries(ctx, nil, device.UserID)
-	if errors.Is(err, ErrNoDeviceList) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return auth.Listed(entries, device.ID, device.DSKPub), nil
+	why, err := d.listedDeviceVerdict(ctx, nil, deviceID)
+	return why == "" && err == nil, err
 }
 
 // KeyPackageCount is the session's own device's directory: the ordinary count a client refills

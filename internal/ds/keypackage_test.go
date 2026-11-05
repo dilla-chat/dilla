@@ -12,6 +12,7 @@ package ds_test
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"math"
 	"strings"
@@ -612,16 +613,22 @@ func (h *dsHarness) requirePublishForbidden(t *testing.T, session auth.Session, 
 // device: a take that finds its directory empty can tell it from one the instance does not know.
 func (h *dsHarness) listedDevice(t *testing.T, revokedInList bool) (id.ID, auth.Session) {
 	t.Helper()
+	return h.listedDeviceSignedBy(t, testSSK(0x61), testSSK(0x61), bytes.Repeat([]byte{4}, 32), revokedInList)
+}
+
+// listedDeviceSignedBy publishes a list for a new device: owned by the user whose SSK is userSSK,
+// signed with listSSK, naming the device under listedDSK (the device is registered under 4*32).
+func (h *dsHarness) listedDeviceSignedBy(t *testing.T, userSSK, listSSK ed25519.PrivateKey, listedDSK []byte, revokedInList bool) (id.ID, auth.Session) {
+	t.Helper()
 	user, device := id.New(), id.New()
-	ssk := testSSK(0x61)
-	h.userWithSSK(t, user, ssk)
+	h.userWithSSK(t, user, userSSK)
 	h.account(t, user, device)
-	entry := listEntry{DeviceID: device[:], DSKPub: bytes.Repeat([]byte{4}, 32), AddedAt: 1}
+	entry := listEntry{DeviceID: device[:], DSKPub: listedDSK, AddedAt: 1}
 	if revokedInList {
 		at := uint64(1_758_700_000)
 		entry.RevokedAt = &at
 	}
-	h.publishDeviceList(t, user, signedDeviceList(t, ssk, user, []listEntry{entry}))
+	h.publishDeviceList(t, user, signedDeviceList(t, listSSK, user, []listEntry{entry}))
 	return device, h.sessionOf(t, device)
 }
 
@@ -658,6 +665,30 @@ func TestTakeFromARevokedDeviceIsNotFound(t *testing.T) {
 		if err := h.repo.RevokeDevice(context.Background(), device, h.clk.Now().Unix()); err != nil {
 			t.Fatalf("RevokeDevice: %v", err)
 		}
+		requireTakeCode(t, h, session, device, "E_NOT_FOUND")
+	})
+}
+
+// Whatever makes a device not "live and listed" keeps the old answer, E_NOT_FOUND, and never a 500.
+func TestTakeFromADeviceThatIsNotLiveAndListedIsNotFound(t *testing.T) {
+	h := newDSHarness(t)
+	t.Run("a list that does not verify", func(t *testing.T) {
+		device, session := h.listedDeviceSignedBy(t, testSSK(0x61), testSSK(0x62), bytes.Repeat([]byte{4}, 32), false)
+		requireTakeCode(t, h, session, device, "E_NOT_FOUND")
+	})
+	t.Run("a user with no device list", func(t *testing.T) {
+		device := h.device(t)
+		requireTakeCode(t, h, h.sessionOf(t, device), device, "E_NOT_FOUND")
+	})
+	t.Run("a quarantined device", func(t *testing.T) {
+		device, session := h.listedDevice(t, false)
+		if err := h.repo.QuarantineDevice(context.Background(), device, h.clk.Now().Unix(), "test"); err != nil {
+			t.Fatalf("QuarantineDevice: %v", err)
+		}
+		requireTakeCode(t, h, session, device, "E_NOT_FOUND")
+	})
+	t.Run("a list that names another key for the device", func(t *testing.T) {
+		device, session := h.listedDeviceSignedBy(t, testSSK(0x61), testSSK(0x61), bytes.Repeat([]byte{9}, 32), false)
 		requireTakeCode(t, h, session, device, "E_NOT_FOUND")
 	})
 }
