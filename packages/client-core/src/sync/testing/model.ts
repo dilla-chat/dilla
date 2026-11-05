@@ -1498,8 +1498,6 @@ export class ModelCore implements CorePort {
     const g = this.must(groupId);
     // L-CORE-52 (messages.rs): sending stays text-only; a call group carries no messages.
     if (g.kind !== 0) throw coreError('E_CORE_INPUT', 'not a text group');
-    // FX-core (messages.rs send_prepare): threads exist only in community channel groups.
-    if (threadId !== null && g.communityId === null) throw coreError('E_CORE_INPUT', 'threads are for channel groups only');
     if (g.state !== 2) throw coreError('E_CORE_STATE', `group state ${String(g.state)}`);
     // messages.rs send_prepare: a changed-key or failed leaf still in the group blocks queuing (and again at send_encrypt).
     const block = this.sendBlock(groupId);
@@ -2050,8 +2048,8 @@ export class ModelCore implements CorePort {
   private insertReadable(g: MGroup, seq: bigint, epoch: bigint, recvTs: bigint, v: Held): void {
     g.rows.set(seq, {
       seq, epoch, recvTs, status: 0, reason: '', senderUser: v.user, senderDevice: v.device, senderKind: 0, senderTier: 0,
-      // FX-core (messages.rs insert_message): a thread id is stored in a community channel group only.
-      msgId: v.msgId, type: v.type, body: v.body, replyTo: v.replyTo, threadId: v.type === 0 && g.communityId !== null ? v.threadId : null,
+      // Wave C (messages.rs insert_message): a thread id is stored in every text group, DMs included.
+      msgId: v.msgId, type: v.type, body: v.body, replyTo: v.replyTo, threadId: v.type === 0 ? v.threadId : null,
       editBody: null, editSeq: 0n,
       // L-CORE-35: only a type-0 row of another user, against the roles known now; recomputed later only by authoritySet.
       mention: v.type === 0 && !same(v.user, this.me.user) && this.mentionOf(g, v.body, v.user),

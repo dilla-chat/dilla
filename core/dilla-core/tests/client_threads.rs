@@ -1049,8 +1049,8 @@ fn a_thread_reply_is_reachable_from_search_pins_and_quotes() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// FX-core (final review I2): threads exist only in community channel groups. A DM peer's
-// `thread_id` is ignored, so it cannot hide its posts from the DM, and a DM send names none.
+// Wave C: threads apply to every text group, DMs and group DMs included. A DM thread reply is
+// held out of the DM timeline like a channel's, and a DM send may name a root.
 
 /// "me" (alice) created and registered DM_GROUP for DM_CHANNEL (no community); the raw peer
 /// joined it by external commit and me ingested its device list.
@@ -1075,63 +1075,37 @@ fn start_dm() -> (Instance, Relay, Core, RawPeer) {
     (instance, relay, me, peer)
 }
 
+fn thread_of_dm(me: &Core, root: &[u8; 16]) -> (Option<TimelineRow>, Vec<TimelineRow>) {
+    decode_thread_timeline(
+        &me.core
+            .thread_timeline(&DM_GROUP, root, 0, 50)
+            .expect("thread_timeline"),
+    )
+}
+
 #[test]
-fn a_dm_row_with_a_thread_id_shows_in_the_dm_timeline_and_counts_normally() {
+fn a_dm_thread_reply_is_stored_held_and_listed() {
     let (_i, mut relay, mut me, mut peer) = start_dm();
-    let me_hex: String = me.user.iter().map(|b| format!("{b:02x}")).collect();
     let root = post_in(&mut peer, &mut relay, 0x71, Message, None, None, "the root");
-    let reply = post_in(
-        &mut peer,
-        &mut relay,
-        0x72,
-        Message,
-        None,
-        Some(ROOT),
-        &format!("hidden? <@{me_hex}>"),
-    );
+    let reply = post_in(&mut peer, &mut relay, 0x72, Message, None, Some(ROOT), "a reply");
     me.sync(&relay);
     let shown: Vec<u64> = me.timeline(&DM_GROUP).into_iter().map(|r| r.seq).collect();
+    assert_eq!(shown, vec![root], "the reply is held out of the DM timeline");
     assert_eq!(
-        shown,
-        vec![root, reply],
-        "the reply shows in the DM timeline"
+        me.row_at(&DM_GROUP, root).thread.map(|t| t.0),
+        Some(1),
+        "the root counts its reply"
     );
-    assert_eq!(me.row_at(&DM_GROUP, root).thread, None, "no thread summary");
-    let row = activity(&me.core)
-        .into_iter()
-        .find(|a| a.group_id == DM_GROUP)
-        .expect("activity");
-    assert_eq!((row.unread, row.mentions), (2, 1));
-    assert!(
-        decode_threads(&me.core.threads(&DM_GROUP).expect("threads")).is_empty(),
-        "a DM lists no threads"
-    );
-    let (_, replies) = decode_thread_timeline(
-        &me.core
-            .thread_timeline(&DM_GROUP, &ROOT, 0, 50)
-            .expect("thread_timeline"),
-    );
-    assert!(replies.is_empty(), "a DM thread has no replies");
+    let listed = decode_threads(&me.core.threads(&DM_GROUP).expect("threads"));
+    assert_eq!(listed.len(), 1, "threads lists the root");
+    assert_eq!(listed[0].root_seq, Some(root));
+    let (head, replies) = thread_of_dm(&me, &ROOT);
+    assert_eq!(head.map(|h| h.seq), Some(root));
+    assert_eq!(replies.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![reply]);
     assert_eq!(
         stored_thread_in(&me, &DM_GROUP, reply),
-        None,
-        "a DM stores no thread id"
-    );
-    // A row stored with a thread id before this fix still shows: the held-root exclusion and the
-    // search, pin and quote thread root apply in community channel groups only.
-    me.probe
-        .lock()
-        .expect("lock")
-        .execute(
-            "UPDATE app_messages SET thread_id = ?3 WHERE group_id = ?1 AND seq = ?2",
-            rusqlite::params![DM_GROUP.as_slice(), reply as i64, ROOT.as_slice()],
-        )
-        .expect("plant a stored thread id");
-    let shown: Vec<u64> = me.timeline(&DM_GROUP).into_iter().map(|r| r.seq).collect();
-    assert_eq!(
-        shown,
-        vec![root, reply],
-        "a stored DM thread id hides nothing"
+        Some(ROOT.to_vec()),
+        "a DM stores the thread id"
     );
 }
 
@@ -1148,27 +1122,70 @@ fn stored_thread_in(me: &Core, group: &[u8; 16], seq: u64) -> Option<Vec<u8>> {
 }
 
 #[test]
-fn send_prepare_in_a_dm_refuses_a_thread_id() {
+fn send_prepare_in_a_dm_accepts_a_thread_id() {
     let (_i, mut relay, mut me, mut peer) = start_dm();
     post_in(&mut peer, &mut relay, 0x71, Message, None, None, "the root");
     me.sync(&relay);
-    let refused = me
-        .core
-        .send_prepare(
-            &DM_GROUP,
-            &thread_request(0, None, "in a DM thread", Some(&ROOT)),
-            NOW,
-        )
-        .unwrap_err();
+    me.prepare_request(
+        &DM_GROUP,
+        &thread_request(0, None, "in a DM thread", Some(&ROOT)),
+        NOW,
+    );
+    assert_eq!(me.outbox(&DM_GROUP).len(), 1, "the thread send queues");
+}
+
+#[test]
+fn a_dm_thread_reply_before_its_root_is_held() {
+    let (_i, mut relay, mut me, mut peer) = start_dm();
+    let early = post_in(
+        &mut peer,
+        &mut relay,
+        0x91,
+        Message,
+        None,
+        Some([0x92; 16]),
+        "early",
+    );
+    let root = post_in(&mut peer, &mut relay, 0x92, Message, None, None, "late root");
+    let reply = post_in(
+        &mut peer,
+        &mut relay,
+        0x93,
+        Message,
+        None,
+        Some([0x92; 16]),
+        "reply",
+    );
+    me.sync(&relay);
+    let shown: Vec<u64> = me.timeline(&DM_GROUP).into_iter().map(|r| r.seq).collect();
     assert_eq!(
-        (refused.code, refused.detail.as_str()),
-        ("E_CORE_INPUT", "threads are for channel groups only")
+        shown,
+        vec![early, root],
+        "a reply before its root shows flat; the one after is held"
     );
-    assert!(
-        me.outbox(&DM_GROUP).is_empty(),
-        "the refusal writes nothing"
+    assert_eq!(me.row_at(&DM_GROUP, root).thread.map(|t| t.0), Some(1));
+    let (head, rows) = thread_of_dm(&me, &[0x92; 16]);
+    assert_eq!(
+        (head.map(|h| h.seq), rows.iter().map(|r| r.seq).collect::<Vec<_>>()),
+        (Some(root), vec![reply])
     );
-    // The control: the same message without a thread queues.
-    me.prepare_request(&DM_GROUP, &thread_request(0, None, "plain", None), NOW);
-    assert_eq!(me.outbox(&DM_GROUP).len(), 1);
+}
+
+#[test]
+fn a_pre_release_dm_row_without_thread_id_stays_in_the_timeline() {
+    let (_i, mut relay, mut me, mut peer) = start_dm();
+    let root = post_in(&mut peer, &mut relay, 0x71, Message, None, None, "the root");
+    let reply = post_in(&mut peer, &mut relay, 0x72, Message, None, Some(ROOT), "a reply");
+    me.sync(&relay);
+    me.probe
+        .lock()
+        .expect("lock")
+        .execute(
+            "UPDATE app_messages SET thread_id = NULL WHERE group_id = ?1 AND seq = ?2",
+            rusqlite::params![DM_GROUP.as_slice(), reply as i64],
+        )
+        .expect("plant a pre-release row");
+    let shown: Vec<u64> = me.timeline(&DM_GROUP).into_iter().map(|r| r.seq).collect();
+    assert_eq!(shown, vec![root, reply], "a NULL thread_id row stays flat");
+    assert_eq!(me.row_at(&DM_GROUP, root).thread, None);
 }

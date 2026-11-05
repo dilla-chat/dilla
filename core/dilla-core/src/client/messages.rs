@@ -288,12 +288,10 @@ pub(super) const TIMELINE_SELECT: &str = "SELECT m.seq,m.epoch,m.recv_ts,m.statu
      FROM app_messages m ";
 
 /// `m.thread_id` names a held root before `m`: the first type-0 row with that msg id (in the
-/// group, by seq) carries no `thread_id` and has a lower seq than `m` (fix round 1, I1). Only in a
-/// community channel group (FX-core, final review I2): elsewhere a row has no thread and shows in
-/// the timeline, whatever its stored `thread_id`.
-pub(super) const HELD_ROOT: &str = "(EXISTS (SELECT 1 FROM app_groups g WHERE g.group_id=m.group_id \
-     AND g.community_id IS NOT NULL) \
-     AND EXISTS (SELECT 1 FROM app_messages t INDEXED BY app_messages_by_msg \
+/// group, by seq) carries no `thread_id` and has a lower seq than `m` (fix round 1, I1). In every
+/// text group, DMs included (wave C); a DM row stored before then has a NULL `thread_id` and so
+/// stays in the timeline.
+pub(super) const HELD_ROOT: &str = "(EXISTS (SELECT 1 FROM app_messages t INDEXED BY app_messages_by_msg \
      WHERE t.group_id=m.group_id AND t.msg_id=m.thread_id AND t.type=0 AND t.thread_id IS NULL AND t.seq<m.seq \
      AND NOT EXISTS (SELECT 1 FROM app_messages f INDEXED BY app_messages_by_msg WHERE f.group_id=t.group_id \
      AND f.msg_id=t.msg_id AND f.type=0 AND f.seq<t.seq)))";
@@ -390,7 +388,7 @@ pub(super) fn insert_message(
          (group_id,seq,epoch,recv_ts,status,reason,sender_user,sender_device, \
           sender_leaf,sender_sig_key,sender_kind,sender_tier,msg_id,type,body,envelope,franking_tag,mention,reply_to,thread_id) \
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19, \
-         CASE WHEN EXISTS (SELECT 1 FROM app_groups WHERE group_id=?1 AND community_id IS NOT NULL) THEN ?20 END)",
+         ?20)",
         params![
             m.group_id.as_slice(),
             m.seq as i64,
@@ -412,8 +410,7 @@ pub(super) fn insert_message(
             i64::from(m.mention),
             m.reply_to.map(|v| v.as_slice()),
             // web3.7: a thread is a property of a message (type 0); a fold names its target only.
-            // FX-core (final review I2): and of a community channel group only; the SQL stores none
-            // elsewhere, so a DM row with a `thread_id` has no thread.
+            // Wave C: in every text group, DMs and group DMs included.
             m.thread_id.filter(|_| m.ty == Some(0)).map(|v| v.as_slice()),
         ],
     )?;
@@ -1623,7 +1620,7 @@ impl ClientCore {
     ///              thread_id b16|null]
     /// (the L-CORE-30 attachment element, in order; `thread_id` since web3.7, and a 4-element request has none).
     /// Returns [msg_id b16] as before. Phase 2; the group must be in state 2.
-    /// A `thread_id` is for type 0 only, only in a community channel group, and must name a held
+    /// A `thread_id` is for type 0 only (in any text group, DMs included), and must name a held
     /// type-0 root that has no `thread_id` itself.
     /// Every refusal writes nothing (L-CORE-36).
     pub fn send_prepare(
@@ -1842,13 +1839,6 @@ impl ClientCore {
         if row.kind != 0 && !(interaction && row.kind == 3) {
             // L-CORE-52: sending stays text-only; a call group carries no messages.
             return Err(ClientError::new(E_CORE_INPUT, "not a text group"));
-        }
-        if t.thread_id.is_some() && row.community_id.is_none() {
-            // FX-core (final review I2): threads exist only in community channel groups.
-            return Err(ClientError::new(
-                E_CORE_INPUT,
-                "threads are for channel groups only",
-            ));
         }
         if row.state != STATE_ACTIVE {
             return Err(ClientError::new(
