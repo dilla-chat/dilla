@@ -140,7 +140,10 @@ export interface SearchState { requestId: number; hits: { channelId: string; com
     author?: string; ts?: number }[];
   cursor: { token: string } | null }
 export interface DiagnosticsState { connection: 'online' | 'offline' | 'connecting'; generation: string | null; instance: string;
-  devices: number; errors: { code: string; at: number }[] }
+  devices: number; errors: { code: string; at: number }[];
+  /** This device's KeyPackage directory as the worker last saw it: the ordinary count (null until known), when a publish
+   *  was last tried (ms) and the stable code of the last failure (null once a publish lands). */
+  keyPackages: { count: number | null; lastAttempt: number | null; lastError: string | null } }
 export interface TypingState { userId: string; name: string; expiresAt: number }
 export interface BadgeState { unread: number; mentions: number; }
 // threadRoot (FX-core): the 32-hex msg id of the thread root the message shows under (a reply whose root is held), else null.

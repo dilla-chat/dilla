@@ -27,10 +27,19 @@ export function Diagnostics({ data, instanceName, writeText }: {
     ['connection', t('diagnostics.connection'), data.connection], ['generation', t('diagnostics.generation'), data.generation],
     ['instance', t('diagnostics.instance'), instanceName ?? t('shell.status.unknown')], ['devices', t('diagnostics.devices'), devicesChunk(devices)],
   ];
+  const kp = data.keyPackages;
+  // The count, then when a publish was last tried and the code it failed with; nothing is shown for what is not known.
+  const keyPackages = <span data-fact="keyPackages">
+    {[kp.count === null ? '–' : String(kp.count),
+      kp.lastAttempt === null ? null : <time key="at" dateTime={iso(kp.lastAttempt)}>{clock.format(new Date(kp.lastAttempt))}</time>,
+      kp.lastError === null ? null : <code key="code">{kp.lastError}</code>]
+      .filter((part) => part !== null)
+      .flatMap((part, index) => (index === 0 ? [part] : [' · ', part]))}</span>;
   // Each fact is a settings row (I2): its name on the left, its value in the control column. The last 20 stable codes follow.
   return <section className="dw-settings-section" data-doc-state="settings-diagnostics" aria-labelledby="diagnostics-title">
     <h2 id="diagnostics-title" tabIndex={-1}>{t('diagnostics.title')}</h2>
     {facts.map(([id, label, value]) => <SettingsRow key={id} id={`diag-${id}`} label={label}><span data-fact={id}>{value}</span></SettingsRow>)}
+    <SettingsRow id="diag-keyPackages" label={t('diagnostics.keyPackages')}>{keyPackages}</SettingsRow>
     {errors.length > 0
       ? <ul className="dw-diagnostics-errors">{errors.map((error, index) => <li data-error-code={error.code} key={`${error.at}-${index}`}>
         <code>{error.code}</code><time dateTime={iso(error.at)}>{clock.format(new Date(error.at))}</time></li>)}</ul>

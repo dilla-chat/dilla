@@ -295,7 +295,7 @@ const CASES: Case[] = [
   },
   {
     name: 'postKeyPackages', call: (r) => r.postKeyPackages(BODY),
-    method: 'POST', path: '/v1/keypackages', bucket: 'write', idempotent: false, auth: true, sent: BODY,
+    method: 'POST', path: '/v1/keypackages', bucket: 'write', idempotent: true, auth: true, sent: BODY,
     reply: () => cborReply(201, [32]), expected: 32,
   },
   {
@@ -307,6 +307,16 @@ const CASES: Case[] = [
     name: 'getKeyPackageCount on an empty device', call: (r) => r.getKeyPackageCount(),
     method: 'GET', path: '/v1/keypackages', bucket: 'read', idempotent: true, auth: true, sent: null,
     reply: () => cborReply(200, [0, 0]), expected: { ordinary: 0, fallback: false },
+  },
+  {
+    name: 'getKeyPackageCount answers null from an older server (405)', call: (r) => r.getKeyPackageCount(),
+    method: 'GET', path: '/v1/keypackages', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => refusal(405, 'E_METHOD', 'method not allowed'), expected: null,
+  },
+  {
+    name: 'getKeyPackageCount answers null behind a proxy that 404s the route', call: (r) => r.getKeyPackageCount(),
+    method: 'GET', path: '/v1/keypackages', bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => refusal(404, 'E_NOT_FOUND', 'not found'), expected: null,
   },
   {
     name: 'postTicket', call: (r) => r.postTicket(),

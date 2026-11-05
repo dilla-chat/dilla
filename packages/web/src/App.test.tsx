@@ -43,7 +43,7 @@ describe('App', () => {
     vi.mocked(requestHandover).mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
     const fake = new FakeClient();
     fake.set('account', account({ phase: 'other-tab' }));
-    fake.set('diagnostics', { connection: 'offline', generation: null, instance: 'ab'.repeat(16), devices: 0, errors: [] });
+    fake.set('diagnostics', { connection: 'offline', generation: null, instance: 'ab'.repeat(16), devices: 0, errors: [], keyPackages: { count: null, lastAttempt: null, lastError: null } });
     const user = userEvent.setup();
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
     await user.click(screen.getByRole('button', { name: 'Use this tab' }));
@@ -60,7 +60,7 @@ describe('App', () => {
     const fake = new FakeClient();
     const instance = 'ab'.repeat(16);
     fake.set('account', account({ phase: 'other-tab' }));
-    fake.set('diagnostics', { connection: 'offline', generation: null, instance, devices: 0, errors: [] });
+    fake.set('diagnostics', { connection: 'offline', generation: null, instance, devices: 0, errors: [], keyPackages: { count: null, lastAttempt: null, lastError: null } });
     render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
     await user.click(screen.getByRole('button', { name: 'Use this tab' }));
     expect(requestHandover).toHaveBeenCalledOnce();
@@ -90,7 +90,7 @@ describe('App', () => {
       fake.handler = c => c.m === 'resign' ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(null);
       fake.set('account', account({ phase: 'ready' }));
       fake.set('communities', []);
-      fake.set('diagnostics', { connection: 'online', generation: '7', instance, devices: 1, errors: [] });
+      fake.set('diagnostics', { connection: 'online', generation: '7', instance, devices: 1, errors: [], keyPackages: { count: null, lastAttempt: null, lastError: null } });
       render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
       const leader = channels.find(c => c.name === `dilla-core:${instance}` && c.listeners.size > 0)!;
       const takeover = (n: string) => { for (const cb of [...leader.listeners]) cb({ data: { t: 'takeover', instance, nonce: n } }); };
@@ -133,7 +133,7 @@ describe('App', () => {
       fake.handler = c => c.m === 'resign' ? Promise.resolve({ released: true }) : Promise.resolve(null);
       fake.set('account', account({ phase: 'ready' }));
       fake.set('communities', []);
-      fake.set('diagnostics', { connection: 'online', generation: '7', instance, devices: 1, errors: [] });
+      fake.set('diagnostics', { connection: 'online', generation: '7', instance, devices: 1, errors: [], keyPackages: { count: null, lastAttempt: null, lastError: null } });
       const user = userEvent.setup();
       render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
       const leader = channels.find(c => c.name === `dilla-core:${instance}` && c.listeners.size > 0)!;
@@ -180,7 +180,7 @@ describe('App', () => {
       fake.handler = c => c.m === 'resign' ? Promise.resolve({ released: true }) : Promise.resolve(null);
       fake.set('account', account({ phase: 'factor-setup', factorSetup: { origin: 'required' } }));
       fake.set('factors', { owed: true, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true });
-      fake.set('diagnostics', { connection: 'offline', generation: null, instance, devices: 1, errors: [] });
+      fake.set('diagnostics', { connection: 'offline', generation: null, instance, devices: 1, errors: [], keyPackages: { count: null, lastAttempt: null, lastError: null } });
       render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
       expect(screen.getByRole('heading', { level: 1, name: 'Add a second factor' })).toBeInTheDocument();
       const leader = channels.find(c => c.name === `dilla-core:${instance}` && c.listeners.size > 0);
@@ -225,7 +225,7 @@ describe('App', () => {
       try {
         const fake = new FakeClient();
         fake.set('account', account({ phase: 'other-tab' }));
-        fake.set('diagnostics', { connection: 'offline', generation: null, instance, devices: 0, errors: [] });
+        fake.set('diagnostics', { connection: 'offline', generation: null, instance, devices: 0, errors: [], keyPackages: { count: null, lastAttempt: null, lastError: null } });
         const user = userEvent.setup();
         render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
         const asked = channels.find(c => c.name === `dilla-voice:${instance}`)!;
@@ -254,7 +254,7 @@ describe('App', () => {
       try {
         const fake = new FakeClient();
         fake.set('account', account({ phase: 'other-tab' }));
-        fake.set('diagnostics', { connection: 'offline', generation: null, instance, devices: 0, errors: [] });
+        fake.set('diagnostics', { connection: 'offline', generation: null, instance, devices: 0, errors: [], keyPackages: { count: null, lastAttempt: null, lastError: null } });
         const user = userEvent.setup();
         render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);
         const asked = channels.find(c => c.name === `dilla-voice:${instance}`)!;
@@ -272,7 +272,7 @@ describe('App', () => {
         const fake = new FakeClient();
         fake.set('account', account({ phase: 'ready' }));
         fake.set('communities', []);
-        fake.set('diagnostics', { connection: 'online', generation: '7', instance, devices: 1, errors: [] });
+        fake.set('diagnostics', { connection: 'online', generation: '7', instance, devices: 1, errors: [], keyPackages: { count: null, lastAttempt: null, lastError: null } });
         fake.set('call', { phase: 'in', channelId: 'cd'.repeat(16), callId: 'cd'.repeat(16), epoch: '1', code: null, error: null, roster: [],
           outgoing: null, changedUser: null, rejoining: false });
         render(<CoreProvider client={fake}><App fatal={null} /></CoreProvider>);

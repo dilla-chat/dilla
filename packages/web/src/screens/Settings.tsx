@@ -137,7 +137,7 @@ function SettingsWorkspaceScreen({ activity, activityVisible, communityId = null
             : activeSection === 'voice' ? <Voice />
               : activeSection === 'privacy' ? <Privacy records={records} onCompare={compare}><DmGifPrivacySetting /></Privacy>
                 : activeSection === 'keyboard' ? <Keyboard />
-                  : <Diagnostics data={diagnostics ?? { connection: 'offline', generation: null, instance: '', devices: 0, errors: [] }}
+                  : <Diagnostics data={diagnostics ?? { connection: 'offline', generation: null, instance: '', devices: 0, errors: [], keyPackages: { count: null, lastAttempt: null, lastError: null } }}
                     instanceName={account?.instance?.name ?? null} writeText={text => navigator.clipboard?.writeText(text) ?? Promise.resolve()} />;
 
   return <PhoneLayoutProvider value={phone}><SettingsFrame open title={t('settings.title')} closeLabel={t('settings.close')} onClose={close}

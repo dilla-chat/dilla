@@ -450,11 +450,15 @@ export class Routes {
     return { version: u64(a[0]), blob: bin(a[1]), raw: response.body };
   }
   async postKeyPackages(body: Uint8Array): Promise<number> {
-    return u53(atLeast(decode(await this.body('POST', '/v1/keypackages', 'write', false, { body })), 1)[0]);
+    // Idempotent per kp_ref on the server, so a transport retry cannot double-publish.
+    return u53(atLeast(decode(await this.body('POST', '/v1/keypackages', 'write', true, { body })), 1)[0]);
   }
-  /** The session device's own directory: the ordinary count `ready` reports, and whether a last-resort package stands behind it. */
-  async getKeyPackageCount(): Promise<{ ordinary: number; fallback: boolean }> {
-    const a = atLeast(decode(await this.body('GET', '/v1/keypackages', 'read', true)), 2);
+  /** The session device's own directory: the ordinary count `ready` reports, and whether a last-resort package stands behind it.
+   *  null on an older server without the route (404 behind a proxy, 405 from the mux): the count is then unknown. */
+  async getKeyPackageCount(): Promise<{ ordinary: number; fallback: boolean } | null> {
+    const response = await this.http.request({ method: 'GET', path: '/v1/keypackages', bucket: 'read', idempotent: true, ok: [200, 404, 405] });
+    if (response.status !== 200) return null;
+    const a = atLeast(decode(response.body), 2);
     return { ordinary: u53(a[0]), fallback: oneOf(a[1], [0, 1] as const) === 1 };
   }
   async postTicket(): Promise<Ticket> {
