@@ -118,7 +118,8 @@ socket): adds instance A in the picker, signs up, joins a native peer's server a
 sees the reply); adds instance B and signs up there; checks that browser sign-in goes out over native HTTP with no
 Origin and opens Custom Tabs; sends the app to the background for 120 s while the peer posts, resumes and sees it;
 force-stops and relaunches into the same account on A with both instances in the picker; and fails on any CSP
-violation. Screenshots land in `e2e/.out/`.
+violation. Screenshots, logcat on failure and the emulator's own log (`emulator.log`, when the test started it) land in
+`e2e/.out/` (`DILLA_ANDROID_E2E_OUT` moves them; CI uses `target/mobile-android-e2e`).
 
 ## Not yet
 

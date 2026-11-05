@@ -18,7 +18,7 @@
 // still signed in and both instances in the picker. Along the way: no CSP violation, and desktop-auth answers native
 // HTTP (no Origin) while the WebView fetch is refused.
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -38,6 +38,11 @@ const javaHome = process.env.JAVA_HOME ?? (existsSync(jdkRoot) ? join(jdkRoot, r
 const env = { ...process.env, ANDROID_HOME: sdk, ...(javaHome ? { JAVA_HOME: javaHome } : {}) };
 const ADB = join(sdk, 'platform-tools/adb');
 const APP = 'chat.dilla.app';
+// Screenshots, logcat and the emulator's own log. CI points it at a non-hidden path in the workspace
+// (DILLA_ANDROID_E2E_OUT, .github/workflows/mobile.yml) so its failure-evidence upload finds the files.
+const OUT = resolve(process.env.DILLA_ANDROID_E2E_OUT ?? join(root, 'e2e/.out'));
+const DEVICE_WAIT_MS = 180_000;
+const BOOT_WAIT_MS = 300_000;
 const WAIT = 60_000;
 const BACKGROUND_S = 120;
 // The app accepts only instances with a DNS name (no IP literal, no localhost), and the run must not depend on outside
@@ -147,10 +152,29 @@ async function startConnectProxy() {
 async function ensureEmulator() {
   if (adb('devices').split('\n').slice(1).some(l => /\tdevice$/.test(l))) { log('emulator already running'); return false; }
   log(`starting emulator ${avd}`);
-  const emu = spawn(join(sdk, 'emulator/emulator'), ['-avd', avd, '-no-window', '-no-snapshot-save', '-no-audio', '-no-boot-anim'], { stdio: 'ignore', detached: true, env });
+  // The emulator's own output goes to OUT/emulator.log: the evidence when it never comes up (no KVM, no GPU mode).
+  const emuLog = join(OUT, 'emulator.log');
+  const fd = openSync(emuLog, 'a');
+  const emu = spawn(join(sdk, 'emulator/emulator'), ['-avd', avd, '-no-window', '-no-snapshot-save', '-no-audio', '-no-boot-anim'], { stdio: ['ignore', fd, fd], detached: true, env });
+  closeSync(fd);
+  let exited = null;
+  emu.once('exit', (code, signal) => { exited = signal ?? `exit ${code}`; });
   emu.unref();
-  adb('wait-for-device');
-  for (let i = 0; i < 150 && adb('shell', 'getprop', 'sys.boot_completed') !== '1'; i++) await sleep(2000);
+  try {
+    execFileSync(ADB, ['wait-for-device'], { env, timeout: DEVICE_WAIT_MS, stdio: 'ignore' });
+  } catch (error) {
+    throw new Error(`emulator ${avd}: no device after ${DEVICE_WAIT_MS / 1000} s${exited ? ` (emulator ${exited})` : ''}; see ${emuLog}`, { cause: error });
+  }
+  const deadline = Date.now() + BOOT_WAIT_MS;
+  for (;;) {
+    let booted = '';
+    try { booted = adb('shell', 'getprop', 'sys.boot_completed'); } catch { /* offline while it boots */ }
+    if (booted === '1') break;
+    if (exited) throw new Error(`emulator ${avd} stopped while booting (${exited}); see ${emuLog}`);
+    if (Date.now() > deadline) throw new Error(`emulator ${avd} did not finish booting in ${BOOT_WAIT_MS / 1000} s; see ${emuLog}`);
+    await sleep(2000);
+  }
+  log('emulator booted');
   return true;
 }
 
@@ -468,19 +492,19 @@ async function main() {
   const listed = await page.locator('#instances button').allTextContents();
   if (JSON.stringify(listed) !== JSON.stringify([a.url, b.url])) throw new Error(`picker lists ${JSON.stringify(listed)}`);
   log(`step 5: picker lists both instances ${JSON.stringify(listed)}`);
-  await page.screenshot({ path: join(root, 'e2e/.out/picker.png') }).catch(() => {});
+  await page.screenshot({ path: join(OUT, 'picker.png') }).catch(() => {});
 
   if (violations.length) throw new Error(`CSP violations:\n${violations.join('\n')}`);
   log('no CSP violations in the console');
 }
 
 let failed = false;
-try { execFileSync('mkdir', ['-p', join(root, 'e2e/.out')]); await main(); log('PASS'); }
+try { execFileSync('mkdir', ['-p', OUT]); await main(); log('PASS'); }
 catch (error) {
   failed = true; console.error(error);
   // Diagnostics for a failed run, before the emulator goes away.
-  try { writeFileSync(join(root, 'e2e/.out/logcat.txt'), execFileSync(ADB, ['logcat', '-d', '-t', '3000'], { env, maxBuffer: 64 << 20 })); } catch { /* best effort */ }
-  try { writeFileSync(join(root, 'e2e/.out/failure.png'), execFileSync(ADB, ['exec-out', 'screencap', '-p'], { env, maxBuffer: 64 << 20 })); } catch { /* best effort */ }
+  try { writeFileSync(join(OUT, 'logcat.txt'), execFileSync(ADB, ['logcat', '-d', '-t', '3000'], { env, maxBuffer: 64 << 20 })); } catch { /* best effort */ }
+  try { writeFileSync(join(OUT, 'failure.png'), execFileSync(ADB, ['exec-out', 'screencap', '-p'], { env, maxBuffer: 64 << 20 })); } catch { /* best effort */ }
 }
 finally {
   for (const cleanup of cleanups.reverse()) { try { await cleanup(); } catch { /* best effort */ } }

@@ -80,8 +80,8 @@ export const REQUIRED_JOBS = {
     'mobile-ok',
     // npm test and typecheck of @dilla/mobile.
     'mobile-unit',
-    // desktop-ci.yml's job, unchanged: its wasm core artifact feeds mobile-bundle.
-    'web-build',
+    // The wasm core only (desktop's web-build runs the typechecks and dist guards): mobile-bundle's input.
+    'mobile-core-wasm',
     // The mobile client (packages/mobile/dist), once for both apps.
     'mobile-bundle',
     // The smoke test's test host, WASI core and native peer.
@@ -230,7 +230,8 @@ const REQUIRED_STEPS = {
   'mobile-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
   // The mobile lane (plan 2026-11-05 mobile M1, Task 7): each job's load-bearing commands.
   'mobile-unit': ['- run: npm test -w @dilla/mobile', '- run: npm run typecheck -w @dilla/mobile'],
-  'mobile-bundle': ['name: dilla-desktop-core\n          path: packages/core-wasm/pkg', '- run: npm run build -w @dilla/mobile', 'name: dilla-mobile-dist\n          path: packages/mobile/dist/\n          if-no-files-found: error'],
+  'mobile-core-wasm': ['- run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg', '- run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm', 'name: mobile-core-wasm\n          path: packages/core-wasm/pkg/\n          if-no-files-found: error'],
+  'mobile-bundle': ['name: mobile-core-wasm\n          path: packages/core-wasm/pkg', '- run: npm run build -w @dilla/mobile', 'name: dilla-mobile-dist\n          path: packages/mobile/dist/\n          if-no-files-found: error'],
   'mobile-e2e-tools': ['- run: go build -o target/dilla-testhost ./cmd/dilla-testhost', '- run: cargo build -p dilla-testkit --release --locked', '- run: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked', 'name: mobile-e2e-tools'],
   'mobile-android': [
     'name: dilla-mobile-dist\n          path: packages/mobile/dist',
@@ -243,10 +244,12 @@ const REQUIRED_STEPS = {
     'run: bash scripts/ci-android.sh kvm',
     ' -- bash scripts/ci-android.sh sdk',
     '- run: bash scripts/ci-android.sh avd',
-    'run: npm run e2e:android -w @dilla/mobile -- --skip-build',
+    'run: npm run e2e:android -w @dilla/mobile -- --skip-build\n        env:\n          DILLA_ANDROID_E2E_OUT: ${{ github.workspace }}/target/mobile-android-e2e',
+    "if: failure() && hashFiles('target/mobile-android-e2e/**') != ''\n        with:\n          name: mobile-android-results\n          path: target/mobile-android-e2e\n          if-no-files-found: error",
   ],
   'mobile-ios': [
     '- run: cd packages/mobile && npx cap sync ios',
+    'sudo xcode-select -s /Applications/Xcode_26.6.app',
     ' -- xcodebuild -resolvePackageDependencies -project packages/mobile/ios/App/App.xcodeproj -scheme App -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm"',
     "run: xcodebuild -project packages/mobile/ios/App/App.xcodeproj -scheme App -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -clonedSourcePackagesDirPath \"$RUNNER_TEMP/spm\" -disableAutomaticPackageResolution -derivedDataPath \"$RUNNER_TEMP/DerivedData\" CODE_SIGNING_ALLOWED=NO build",
   ],
@@ -1279,7 +1282,7 @@ function checkCiWorkflow(root, workflow) {
     ...Object.keys(BROWSER_WEB_JOBS).map((job) => [job, ['rust-native', 'rust-wasi', 'web-build']]),
     ['go-release', ['web-build']],
     ['desktop', ['web-build']],
-    ['mobile-bundle', ['web-build']],
+    ['mobile-bundle', ['mobile-core-wasm']],
     ['mobile-android', ['mobile-bundle', 'mobile-e2e-tools']],
     ['mobile-ios', ['mobile-bundle']],
   ]) {

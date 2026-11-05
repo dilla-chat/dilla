@@ -113,15 +113,19 @@ test('the mobile lane runs for the apps and the client they bundle, never for a 
   for (const file of ['packages/mobile/src/bridge.ts', 'packages/mobile/android/app/build.gradle', 'packages/mobile/ios/App/App/Info.plist', 'packages/web/src/mobile.ts',
     'packages/client-core/src/worker/storage-key.ts', 'packages/ui/src/Button.tsx', 'packages/media/src/x.ts', 'packages/design-tokens/src/x.ts',
     'packages/desktop/src/browser-auth.ts', 'package-lock.json', 'e2e/web/support/native-https-proxy.mjs', 'core/dilla-core/src/lib.rs', 'Cargo.lock',
-    '.github/workflows/mobile.yml', 'scripts/ci-areas.mjs']) {
+    '.github/workflows/mobile.yml', 'scripts/ci-areas.mjs', 'scripts/ci-android.sh',
+    // What the emulator smoke test runs beside the app: the test host, the native peer and the WASI core.
+    'cmd/dilla-testhost/main.go', 'testkit/src/main.rs', 'core/dilla-core-wasi/src/lib.rs', 'packages/mobile/e2e/android-smoke.mjs']) {
     assert.deepEqual(ranJobs('mobile', areasFor([file])), Object.keys(JOB_GATES.mobile), file);
   }
-  for (const files of [['internal/api/messages.go'], ['cmd/dilla-testhost/main.go', 'go.sum'], ['packages/desktop/src/main.ts'], ['e2e/web/x.spec.ts'], ['docs/user/mobile.md']]) {
+  for (const files of [['internal/api/messages.go'], ['cmd/dillad/main.go', 'go.sum'], ['packages/desktop/src/main.ts'], ['e2e/web/x.spec.ts'], ['docs/user/mobile.md']]) {
     assert.deepEqual(ranJobs('mobile', areasFor(files)), [], files.join(' '));
   }
   // A mobile-only change runs no Go job and no desktop lane beyond the code-gated script and artifact jobs.
   const outputs = areasFor(['packages/mobile/src/picker.ts']);
   assert.deepEqual(outputs, { go: false, core: false, web: true, e2e: true, text: false, mobile: true, code: true });
+  // The test host's main package is Go and mobile: its own server tests still run, and so does the smoke test.
+  assert.deepEqual(areasFor(['cmd/dilla-testhost/main.go']), { go: true, core: false, web: false, e2e: false, text: false, mobile: true, code: true });
 });
 
 test('a core change runs everything', () => {
