@@ -18,18 +18,19 @@ import {
 } from './ci-local-fs.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-// Both CI workflows' texts, as localMirrorProblems takes them; a test edits one with `edit`.
+// The CI workflows' texts, as localMirrorProblems takes them; a test edits one with `edit`.
 const REAL = {
   server: readFileSync(join(ROOT, '.github', 'workflows', 'server.yml'), 'utf8'),
   desktop: readFileSync(join(ROOT, '.github', 'workflows', 'desktop-ci.yml'), 'utf8'),
+  mobile: readFileSync(join(ROOT, '.github', 'workflows', 'mobile.yml'), 'utf8'),
 };
-const PARSED = { server: parseYaml(REAL.server), desktop: parseYaml(REAL.desktop) };
+const PARSED = { server: parseYaml(REAL.server), desktop: parseYaml(REAL.desktop), mobile: parseYaml(REAL.mobile) };
 const JOBS = mergeWorkflows(PARSED).jobs;
 const edit = (workflow, from, to) => {
   assert.ok(REAL[workflow].includes(from), `fixture sanity: ${workflow} has ${from}`);
   return { ...REAL, [workflow]: REAL[workflow].replace(from, to) };
 };
-const EVERYTHING = { go: true, core: true, web: true, e2e: true, text: true, code: true };
+const EVERYTHING = { go: true, core: true, web: true, e2e: true, text: true, mobile: true, code: true };
 const job = (id) => JOBS.find((j) => j.id === id);
 
 // ---------------------------------------------------------------- parsing
@@ -95,7 +96,7 @@ test('the CI workflows parse exactly as js-yaml reads them (when js-yaml is inst
 test('every job of each workflow is mapped in its JOB_MAP and every JOB_MAP entry is a job of its workflow', () => {
   assert.deepEqual(localMirrorProblems(REAL), []);
   assert.deepEqual(checkLocalMirror(ROOT), []);
-  for (const workflow of ['server', 'desktop']) assert.deepEqual(new Set(Object.keys(PARSED[workflow].jobs)), new Set(Object.keys(JOB_MAP[workflow])), workflow);
+  for (const workflow of ['server', 'desktop', 'mobile']) assert.deepEqual(new Set(Object.keys(PARSED[workflow].jobs)), new Set(Object.keys(JOB_MAP[workflow])), workflow);
   assert.deepEqual(new Set(JOBS.map((j) => j.name)), new Set(Object.keys(LOCAL_JOB_MAP)));
 });
 
@@ -111,15 +112,18 @@ test('a job a workflow gains without a JOB_MAP entry fails the sync check, and s
   assert.ok(localMirrorProblems({ ...REAL, desktop: null }).includes('ci-local: desktop-ci.yml is missing'));
 });
 
-test('a job both workflows carry runs once: either workflow\'s gate runs it, and its steps must agree', () => {
-  const shared = JOBS.filter((j) => j.workflows.length === 2).map((j) => j.id);
+test('a job several workflows carry runs once: any workflow\'s gate runs it, and its steps must agree', () => {
+  const shared = JOBS.filter((j) => j.workflows.length >= 2).map((j) => j.id);
   assert.deepEqual(shared.sort(), ['changes', 'ci-watchdog', 'rust-native', 'rust-wasi', 'web-build']);
   assert.equal(JOBS.filter((j) => j.id === 'web-build').length, 1);
-  // server builds the client for go-release (go or web), desktop for its suites (e2e).
+  // server builds the client for go-release (go or web), desktop for its suites (e2e), mobile for its wasm core (mobile).
   const web = JOBS.find((j) => j.id === 'web-build');
-  assert.equal(web.if, "needs.changes.outputs.go != 'false' || needs.changes.outputs.web != 'false' || needs.changes.outputs.e2e != 'false'");
-  for (const outputs of [{ go: true, web: false, e2e: false }, { go: false, web: false, e2e: true }]) assert.equal(evalIf(web.if, { outputs, needResults: [] }), true);
-  assert.equal(evalIf(web.if, { outputs: { go: false, web: false, e2e: false }, needResults: [] }), false);
+  assert.deepEqual(web.workflows, ['server', 'desktop', 'mobile']);
+  assert.equal(web.if, "needs.changes.outputs.go != 'false' || needs.changes.outputs.web != 'false' || needs.changes.outputs.e2e != 'false' || needs.changes.outputs.mobile != 'false'");
+  for (const outputs of [{ go: true, web: false, e2e: false, mobile: false }, { go: false, web: false, e2e: true, mobile: false }, { go: false, web: false, e2e: false, mobile: true }]) assert.equal(evalIf(web.if, { outputs, needResults: [] }), true);
+  assert.equal(evalIf(web.if, { outputs: { go: false, web: false, e2e: false, mobile: false }, needResults: [] }), false);
+  const mobileDrift = edit('mobile', 'run: npm run build -w @dilla/web\n', 'run: npm run build -w @dilla/web -- --mode x\n');
+  assert.ok(localMirrorProblems(mobileDrift).some((p) => p.includes('job "web-build" differs between server.yml and desktop-ci.yml and mobile.yml')), localMirrorProblems(mobileDrift).join('\n'));
   // A shared job that drifted apart would prove only one of its copies locally.
   const drifted = edit('desktop', 'cargo build -p dilla-testkit --release --locked', 'cargo build -p dilla-testkit --locked');
   assert.ok(localMirrorProblems(drifted).some((p) => p.includes('job "rust-native" differs between server.yml and desktop-ci.yml')), localMirrorProblems(drifted).join('\n'));
@@ -127,15 +131,20 @@ test('a job both workflows carry runs once: either workflow\'s gate runs it, and
   assert.notEqual(PARSED.server.jobs['ci-watchdog'].steps.at(-1).env.CI_COMPLETION_JOBS, PARSED.desktop.jobs['ci-watchdog'].steps.at(-1).env.CI_COMPLETION_JOBS);
 });
 
-test('--list shows both workflows\' jobs and what ci-local does with each', () => {
+test('--list shows every workflow\'s jobs and what ci-local does with each', () => {
   const lines = listJobs(PARSED, 'x64');
   const server = lines.indexOf('server (.github/workflows/server.yml):');
   const desktop = lines.indexOf('desktop (.github/workflows/desktop-ci.yml):');
-  assert.ok(server === 0 && desktop > server, lines.join('\n'));
+  const mobile = lines.indexOf('mobile (.github/workflows/mobile.yml):');
+  assert.ok(server === 0 && desktop > server && mobile > desktop, lines.join('\n'));
   const listed = (from, to) => lines.slice(from + 1, to).map((l) => l.trim().split(' ')[0]);
   assert.deepEqual(listed(server, desktop), Object.keys(PARSED.server.jobs));
-  assert.deepEqual(listed(desktop, lines.length), Object.keys(PARSED.desktop.jobs));
-  assert.ok(lines.includes('  web-build  (also in desktop: runs once)'), lines.join('\n'));
+  assert.deepEqual(listed(desktop, mobile), Object.keys(PARSED.desktop.jobs));
+  assert.deepEqual(listed(mobile, lines.length), Object.keys(PARSED.mobile.jobs));
+  assert.ok(lines.includes('  web-build  (also in desktop, mobile: runs once)'), lines.join('\n'));
+  // The heavy mobile lanes are opt-in by hand: the emulator smoke test and the macOS build never run locally.
+  for (const name of ['mobile-e2e-tools', 'mobile-android', 'mobile-ios']) assert.ok(lines.some((l) => l.startsWith(`  ${name}  (skipped: `)), name);
+  for (const name of ['mobile-unit', 'mobile-bundle']) assert.ok(lines.includes(`  ${name}`), name);
   assert.ok(lines.includes('  go  (legs go-1, go-2, go-3, go-4)'), lines.join('\n'));
   assert.ok(lines.some((l) => l.startsWith('  desktop  (skipped: ')), lines.join('\n'));
   assert.equal(parseArgs(['--list']).list, true);
@@ -201,7 +210,7 @@ test('a full run covers every job of both workflows and the extra jobs', () => {
 test('--changed runs what the ci-areas gates would: a docs-only diff runs only changes, docs and the aggregates', () => {
   const outputs = changedOutputs('base', ['docs/user/x.md', 'README.md']);
   assert.equal(outputs.code, false);
-  assert.deepEqual(selectJobs(JOBS, { only: null, outputs }), ['changes', 'docs', 'ci-watchdog', 'server-work-complete', 'server-ok', 'desktop-work-complete', 'desktop-ok']);
+  assert.deepEqual(selectJobs(JOBS, { only: null, outputs }), ['changes', 'docs', 'ci-watchdog', 'server-work-complete', 'server-ok', 'desktop-work-complete', 'desktop-ok', 'mobile-work-complete', 'mobile-ok']);
 });
 
 test('--changed: a Go file runs the Go jobs and the release build, not the desktop suites, the Rust lint or ui', () => {

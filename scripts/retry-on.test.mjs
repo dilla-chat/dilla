@@ -111,12 +111,16 @@ function shippedPatterns(command) {
 const GO = shippedPatterns('go mod download');
 const STAPLE = shippedPatterns('npm run dist');
 const ELECTRON = shippedPatterns('node node_modules/electron/install.js');
+const GRADLE = shippedPatterns('packages/mobile/android/gradlew');
+const ANDROID_SDK = shippedPatterns('bash scripts/ci-android.sh sdk');
+const SPM = shippedPatterns('xcodebuild -resolvePackageDependencies');
 const retried = async (patterns, output) => (await retryOn({ patterns, attempts: 3, waitMs: 0, run: sequence({ code: 1, output }, { code: 0, output: '' }).run, sleep: noSleep })).attempts > 1;
 
 test('the shipped pattern sets come from the workflows that run the wrapped commands', () => {
-  assert.deepEqual(GO.files, ['desktop-ci.yml', 'desktop.yml', 'release.yml', 'server.yml']);
+  assert.deepEqual(GO.files, ['desktop-ci.yml', 'desktop.yml', 'mobile.yml', 'release.yml', 'server.yml']);
   assert.deepEqual(STAPLE.files, ['desktop.yml']);
   assert.deepEqual(ELECTRON.files, ['desktop-ci.yml', 'desktop.yml']);
+  for (const set of [GRADLE, ANDROID_SDK, SPM]) assert.deepEqual(set.files, ['mobile.yml']);
 });
 
 test('the Go download retries a proxy 5xx, a rate limit and transport errors', async () => {
@@ -173,4 +177,53 @@ test('the Electron download does not retry a missing release or a checksum misma
     'Error: checksum mismatch: sha256 of electron-v45.2.1-linux-x64.zip does not match SHASUMS256.txt',
     'Error: Failed to verify the sha256 checksum of the Electron download',
   ]) assert.ok(!(await retried(ELECTRON.patterns, line)), line);
+});
+
+test('the Gradle build retries a repository 5xx, a rate limit and transport errors', async () => {
+  for (const line of [
+    "> Could not resolve androidx.core:core:1.17.0.\n   > Could not GET 'https://dl.google.com/dl/android/maven2/androidx/core/core/1.17.0/core-1.17.0.pom'. Received status code 502 from server: Bad Gateway",
+    "   > Could not HEAD 'https://repo.maven.apache.org/maven2/x/y/1/y-1.pom'. Received status code 429 from server: Too Many Requests",
+    'Exception in thread "main" java.io.IOException: Server returned HTTP response code: 503 for URL: https://services.gradle.org/distributions/gradle-8.14.3-all.zip',
+    '> Could not GET \'https://dl.google.com/x.pom\'.\n   > Read timed out',
+    'Caused by: java.net.SocketTimeoutException: Connect timed out',
+    'java.net.UnknownHostException: dl.google.com',
+    'javax.net.ssl.SSLHandshakeException: Remote host terminated the handshake',
+  ]) assert.ok(await retried(GRADLE.patterns, line), line);
+});
+
+test('the Gradle build does not retry a compile error, a missing dependency or a lint failure', async () => {
+  for (const line of [
+    'MainActivity.java:12: error: cannot find symbol\nFAILURE: Build failed with an exception.',
+    "> Could not find androidx.core:core:9.9.9.\n  Searched in the following locations:\n    - https://dl.google.com/dl/android/maven2/androidx/core/core/9.9.9/core-9.9.9.pom",
+    "   > Could not GET 'https://dl.google.com/x.pom'. Received status code 404 from server: Not Found",
+    'Lint found errors in the project; aborting build.',
+  ]) assert.ok(!(await retried(GRADLE.patterns, line)), line);
+});
+
+test('the Android SDK install retries a failed or incomplete download, not an unknown package', async () => {
+  for (const line of [
+    'Warning: An error occurred while preparing SDK package Google APIs Intel x86_64 Atom System Image: Connection reset.',
+    'Warning: Failed to download package system-images;android-35;google_apis;x86_64',
+    'ci-android: Failed to download: system-images/android-35/google_apis/x86_64/system.img missing under /usr/local/lib/android/sdk after sdkmanager',
+    'java.net.SocketTimeoutException: Read timed out',
+  ]) assert.ok(await retried(ANDROID_SDK.patterns, line), line);
+  for (const line of [
+    'Warning: Failed to find package \'system-images;android-99;google_apis;x86_64\'',
+    'ci-android.sh: line 12: ANDROID_HOME: ANDROID_HOME is not set',
+  ]) assert.ok(!(await retried(ANDROID_SDK.patterns, line)), line);
+});
+
+test('the Swift package resolution retries network errors, not a bad manifest or a missing version', async () => {
+  for (const line of [
+    "xcodebuild: error: Could not resolve package dependencies:\n  Failed to clone repository https://github.com/ionic-team/capacitor-swift-pm.git:\n    fatal: unable to access 'https://github.com/ionic-team/capacitor-swift-pm.git/': Could not resolve host: github.com",
+    'error: RPC failed; curl 92 HTTP/2 stream 5 was not closed cleanly: CANCEL (err 8)',
+    'fatal: unable to access \'https://github.com/x/y.git/\': Failed to connect to github.com port 443 after 75000 ms: Couldn\'t connect to server',
+    "fatal: unable to access 'https://github.com/x/y.git/': The requested URL returned error: 502",
+    'The network connection was lost.',
+  ]) assert.ok(await retried(SPM.patterns, line), line);
+  for (const line of [
+    "xcodebuild: error: Could not resolve package dependencies:\n  Dependencies could not be resolved because no versions of 'capacitor-swift-pm' match the requirement 9.0.0..<10.0.0",
+    "xcodebuild: error: Could not resolve package dependencies:\n  invalid manifest\n  Package.swift:12:5: error: extra argument",
+    "fatal: unable to access 'https://github.com/x/y.git/': The requested URL returned error: 404",
+  ]) assert.ok(!(await retried(SPM.patterns, line)), line);
 });
