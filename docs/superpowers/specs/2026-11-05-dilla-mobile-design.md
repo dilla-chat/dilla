@@ -12,23 +12,29 @@ Jonas wants dilla on Android and iPhone. Today there is the React web client (`p
 - **Audience:** the friend group first. iPhone users get TestFlight on Jonas's personal paid Apple account; Android users get a sideloaded, signed APK. Public stores wait for the legal entity and trademark gates.
 - **Push:** included in v1. A project-run, content-blind relay sends to APNs (iOS) and **FCM only** (Android).
 - **Notification text:** shows who and where, such as "Alice in #general" or "Alice is calling". The instance encrypts the payload per device, and a native extension decrypts it. Message bodies are never in a push.
-- **Calls:** full support. iOS uses CallKit + PushKit, Android uses ConnectionService and a foreground service, and calls keep running in the background and with the screen locked.
+- **Calls:** full support, and calls keep running in the background and with the screen locked. Android uses ConnectionService and a foreground service. **iOS uses no CallKit/PushKit in v1** (Jonas, 2026-11-05, after the M0 device spike; see below).
 - **Custody:** browser tier, the same as desktop today. Native tier (UniFFI plus Keychain/Keystore) stays a later project that covers desktop and mobile together.
 - **Tooling:** Jonas has a Mac, a paid Apple Developer account and CI macOS runners. **There is no Android phone**, so Android is tested on emulators locally and in CI, and a friend's phone does the final smoke test.
 
 ### Decisions after the builder check (2026-11-05)
 - **Mute filtering happens on the phone.** The push payload carries ids only. Native code (the iOS NSE and the Android `FirebaseMessagingService`) decrypts it and drops it when the channel or community is muted or the mode excludes it, using an on-device copy of the notify settings that the app writes to the App Group / app storage. The server never learns mutes, which keeps the web3.8 mute privacy. iOS needs Apple's `com.apple.developer.usernotifications.filtering` entitlement, which must be requested **now** (task M2.0). Until Apple grants it, iOS shows muted pushes too. Mentions-only mode can't be decided from metadata, so it is treated as "all" in push and refined in the foreground.
-- **Calls can be answered while locked.** The Keychain/Keystore key that wraps the KEK uses `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` on iOS, and on Android a Keystore key with no user-auth binding. That lets a killed or rebooted-then-unlocked-once phone boot the WebView and answer from CallKit.
+- **Calls can be answered while locked.** The Keychain/Keystore key that wraps the KEK uses `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` on iOS, and on Android a Keystore key with no user-auth binding. That lets a killed or rebooted-then-unlocked-once phone boot the WebView and answer a call from a notification.
 - **The relay accepts a static allowlist.** `cmd/dilla-push` config lists the Ed25519 instance public keys it accepts (CT 144 plus whatever Jonas adds). Requests are signed by the instance and rate-limited per key. Open enrolment is out of scope.
 - **Android updates through an in-app prompt.** The app reads the GitHub release feed and checks the pinned signing key and the APK sha256 (trust pinned like `packages/desktop/release-trust.json`). It then prompts the user and installs through `PackageInstaller` with `REQUEST_INSTALL_PACKAGES`. iOS updates come through TestFlight.
 - **Releases are lockstep.** Every server release tag also cuts the mobile builds (TestFlight upload and signed APK) from the same commit. There is no minimum-version gate in v1.
-- **App ID is `chat.dilla.app`** on both platforms, from Jonas's domain dilla.chat. The ID only names the app. Users can sign in to any dilla server on any domain. It fixes the APNs topic (`chat.dilla.app`, `chat.dilla.app.voip`), the App Group `group.chat.dilla.app`, the Keychain access group and the Firebase project.
+- **App ID is `chat.dilla.app`** on both platforms, from Jonas's domain dilla.chat. The ID only names the app. Users can sign in to any dilla server on any domain. It fixes the APNs topic (`chat.dilla.app`), the App Group `group.chat.dilla.app`, the Keychain access group and the Firebase project.
 - **Multiple instances, matching desktop.** One install can sign in to several instances. The bundled CSP uses `connect-src https: wss:`, and the push registration, name cache and mute copy are kept per instance. Deep links and push payloads carry an instance id for routing.
 - **Builder's calls:**
   - Login reuses the desktop poll flow (`/desktop-auth/.../consume`), so no `dilla://` callback is needed. `dilla://` stays for invites only.
   - DM pushes omit `community_id`.
   - "Is calling" pushes exist only for DM rings (`internal/api/ring.go`). Voice-channel activity sends no push.
   - The `wrap_key` is 32 random bytes made on the device and sent once over the authenticated device session at push registration. It is rotated on each re-registration.
+
+### iOS calls after the M0 device spike (2026-11-05)
+Measured on an iPhone 17 Pro, iOS 27.0.1, Xcode 27.2 (`docs/spikes/2026-11-mobile-webview.md`):
+- While a CallKit call is active, WKWebView's microphone capture delivers **zero samples** in every variant tried: CallKit before or after `getUserMedia`, `setMicrophoneCaptureState(.active)` (the state reads active but no samples arrive), and a fresh `getUserMedia` after activation (the track is born muted).
+- Without CallKit, with the app's own `playAndRecord`/`voiceChat` session and `UIBackgroundModes: audio`, capture, the SFrame-style encrypted loopback and playback all keep working in the foreground, in the background and with the phone locked.
+- **Decision (Jonas):** no CallKit in v1 on iOS. The cost is no full-screen lock-screen ringing and no green call pill; rings are time-sensitive notifications. CallKit returns only with a native audio path (native WebRTC with dilla's frame encryption), which is a later project.
 
 ## Process
 1. Write `docs/superpowers/specs/2026-11-05-dilla-mobile-design.md` from this file. It records the decisions above, notes that it supersedes spec line 679, and covers the architecture below.
@@ -43,7 +49,7 @@ This wave checks the WebView risks on a real iPhone (iOS 17+) and an Android emu
 - Web Locks
 - `RTCRtpScriptTransform` (WKWebView) and `createEncodedStreams` (Android) with the existing `packages/media/src/support.ts` gate
 - AudioWorklet with RNNoise
-- WKWebView keeping WebRTC audio alive in the background with `UIBackgroundModes: audio, voip` and a CallKit audio session
+- WKWebView keeping WebRTC audio alive in the background with `UIBackgroundModes: audio, voip` and a CallKit audio session (result: see "iOS calls after the M0 device spike")
 
 **Exit:** a written go/no-go per item. If OPFS persistence or encoded transforms fail, stop and bring Jonas the options before any more work.
 
@@ -57,7 +63,7 @@ This wave checks the WebView risks on a real iPhone (iOS 17+) and an Android emu
 - **Login:** reuse the `browser-auth.ts` PKCE-style flow through `@capacitor/browser` (ASWebAuthenticationSession / Custom Tabs) with a `dilla://` callback. Passkeys work in the system browser.
 - **KEK:** `client-core/src/account/kek.ts` keeps the WebCrypto KEK in IndexedDB. On mobile, a native plugin wraps it with a Keychain key (iOS) or Keystore key (Android) so wiping WebView storage can't strand it. The device stays browser tier.
 - **Phone layout:** `PHONE_QUERY` (`packages/web/src/layout.ts:10`) also matches on mobile. The native bridge forces phone mode and the AFK `exempt: true` path (`Shell.tsx:620`). The live app has three tabs (home/activity/you), which stays as is.
-- **Lifecycle:** the iOS app is suspended in the background, so the gateway socket drops. On resume the app reconnects and syncs, and push covers the gap. The `pagehide` leave and the PTT `visibilitychange` release must not end a call while CallKit owns it.
+- **Lifecycle:** the iOS app is suspended in the background, so the gateway socket drops. On resume the app reconnects and syncs, and push covers the gap. The `pagehide` leave and the PTT `visibilitychange` release must not end a call that is meant to continue in the background.
 
 ### Wave M2: push (server, relay, clients)
 - **Server (opus):**
@@ -66,20 +72,19 @@ This wave checks the WebView risks on a real iPhone (iOS 17+) and an Android emu
   - Fan-out happens on op 19 `MessageCT` (to devices with no open gateway, mute filtering happens on the phone, see above), on op 53 `CallRing`, and on ring end (`internal/api/ring.go` today delivers only to live gateway sessions).
   - The payload is `{kind, community_id, channel_id, sender_id, call_id?}`, sealed with AES-GCM under the device's `wrap_key`. The relay sees only ciphertext plus the provider token.
 - **Relay (`cmd/dilla-push`, Go):**
-  - It is stateless and forwards `{provider, token, ciphertext, priority, collapse_id}` to APNs (token-based .p8, normal and VoIP topics) and FCM HTTP v1.
+  - It is stateless and forwards `{provider, token, ciphertext, priority, collapse_id}` to APNs (token-based .p8, alert and background pushes; no VoIP topic in v1) and FCM HTTP v1.
   - Instances authenticate with a per-instance signed request, and the relay rate-limits per instance.
   - It runs on Jonas's homelab with his APNs key. The relay URL is set in instance config.
 - **iOS:**
   - A Notification Service Extension written in Swift with CryptoKit decrypts the payload and turns ids into names from an App Group cache that the app writes, then shows "Alice in #general". If decryption fails it shows "New activity".
-  - PushKit VoIP pushes go straight to `CXProvider.reportNewIncomingCall`, which is required.
+  - Rings are **time-sensitive** alert pushes (`interruption-level: time-sensitive`, entitlement `com.apple.developer.usernotifications.time-sensitive`) with a ringtone sound, decrypted by the NSE into "Alice is calling". Tapping opens the app on the call. No PushKit: VoIP pushes must be reported to CallKit.
 - **Android:** an FCM data message reaches a native `FirebaseMessagingService`, which decrypts the payload and posts a notification on a per-kind channel. Rings use a full-screen intent.
 - **Tap:** the deep link opens the channel or call, the app syncs, and the existing `notify.ts` takes over in the foreground.
 
 ### Wave M3: background calls
 - **iOS:**
-  - The CallKit plugin maps answer, decline, end and mute to the existing call session (`packages/web/src/call/session.ts`).
-  - `AVAudioSession` is set to `playAndRecord`/`voiceChat` and activated in CallKit's `didActivate` before WebRTC starts.
-  - Outgoing calls are reported to CallKit as well.
+  - **No CallKit.** A native plugin sets `AVAudioSession` to `playAndRecord`/`voiceChat` and activates it before `getUserMedia`; `UIBackgroundModes: audio` keeps capture and playback alive when the app is hidden or the phone is locked (iOS shows the orange mic indicator). The plugin deactivates the session when the call ends and handles interruptions (a cellular call) by pausing and resuming the call session.
+  - **The Web Audio graph stops while hidden.** The AudioContext goes `interrupted` when the app is backgrounded without CallKit, so dilla's AudioWorklet chain (`packages/media/src/audio/input-stage.ts`, RNNoise, DeepFilter) must not sit between the mic and the sender while hidden: on hide, swap the sender to the raw mic track (`replaceTrack`, WebRTC's built-in AEC/NS still apply); on show, swap back. Playback must not depend on the AudioContext either (use the `<audio>` element path).
 - **Android:**
   - A self-managed `ConnectionService`, plus a foreground service of type `microphone|phoneCall` while in a call.
   - Audio focus and Bluetooth routing are handled.
@@ -108,6 +113,6 @@ This wave checks the WebView risks on a real iPhone (iOS 17+) and an Android emu
   - sign in through the system browser
   - send and receive a message
   - lock the phone and get "Alice in #general"
-  - get a call while the app is killed, see the CallKit UI, answer, and keep audio with the screen locked for 5 minutes
+  - get a call while the app is killed, see the time-sensitive "Alice is calling" notification, open it, answer, then lock the screen and keep two-way audio for 5 minutes
   - get no AFK cut during that call
 - `npm run ci:local` is green before each push. Then fail-fast CI, PR, review and merge, following the existing per-wave flow.
