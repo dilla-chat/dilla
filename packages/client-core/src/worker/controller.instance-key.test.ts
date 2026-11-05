@@ -49,3 +49,19 @@ describe('two instances on one origin with the same instanceId', () => {
     expect(w.locks.requests.map((r) => r.name)).toContain(LOCK);
   });
 });
+
+// Review round 2, item 1: the page keys its update checkpoints (web/src/update-checkpoint.ts) on the same storage key.
+describe('the account slice names the storage key only where it is not the instanceId', () => {
+  it('a bound (mobile) key is published with the instance; the desktop and browser instance state is unchanged', async () => {
+    const storageKey = (id: Uint8Array) => instanceStorageKey(id, A);
+    const bound = world({ storageKey });
+    bound.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(bound.account()?.phase).toBe('ready'));
+    expect(bound.account()?.instance?.storageKey).toBe(await storageKey(new Uint8Array(16).fill(0x42)));
+    const plain = world({ storageKey: (id) => instanceStorageKey(id, null) });
+    plain.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(plain.account()?.phase).toBe('ready'));
+    expect(plain.account()?.instance).not.toHaveProperty('storageKey');
+    expect(plain.account()?.instance?.id).toBe('42'.repeat(16));
+  });
+});

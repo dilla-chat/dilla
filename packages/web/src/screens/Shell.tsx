@@ -47,7 +47,7 @@ import { You } from './You.tsx';
 import { UserPanel } from './UserPanel.tsx';
 import type { watchUpdates } from '../update.ts';
 import type { createUpdateCheckpointStore } from '../update-checkpoint.ts';
-import { updateTabId } from '../update-checkpoint.ts';
+import { checkpointScope, updateTabId } from '../update-checkpoint.ts';
 import { desktopBridge, setDesktopGuard } from '../desktop.ts';
 import { mobileBridge } from '../mobile.ts';
 import { captureViewPlace, restoreViewPlace, validViewPlace, type ViewPlace } from '../update-view.ts';
@@ -2006,10 +2006,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     try {
       // eslint-disable-next-line no-restricted-globals -- only a random content-free tab identifier enters Web Storage
       const tab = updateTabId(sessionStorage, crypto);
-      return { instance: account.instance.id, user: account.user.id, tab };
+      return checkpointScope(account.instance, account.user.id, tab);
     }
     catch { return null; }
-  }, [update, account?.instance?.id, account?.user?.id]);
+  }, [update, account?.instance, account?.user?.id]);
   useEffect(() => {
     if (update === undefined || updateScope === null) { setRestoreDone(true); return; }
     let active = true;

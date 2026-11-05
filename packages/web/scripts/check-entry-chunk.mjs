@@ -6,7 +6,7 @@
 // - No JavaScript names a dilla_core_wasm_bg*.wasm other than that one file: a `new URL` the bundler could not
 //   resolve stays in the code verbatim and becomes a second download at runtime.
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // livekit and rnnoise in any case (a class such as LiveKitRoom). Task 11 (merge 9+10 minor): the one exemption is the exact
@@ -88,12 +88,21 @@ export function checkEntryChunk(dir, { mobile = false } = {}) {
   return problems;
 }
 
+/** The one output a mobile build (DILLA_MOBILE_BUILD=1) may write: packages/mobile/scripts/build.mjs's .web-build. */
+const MOBILE_OUTPUT = resolve(dirname(fileURLToPath(import.meta.url)), '../../mobile/.web-build');
+
 function main(argv) {
   if (!argv[2]) {
     console.error('usage: check-entry-chunk.mjs <dist-dir>');
     return 2;
   }
-  const problems = checkEntryChunk(argv[2], { mobile: process.env.DILLA_MOBILE_BUILD === '1' });
+  const mobile = process.env.DILLA_MOBILE_BUILD !== undefined;
+  // Review round 2, item 5: a mobile client in packages/web/dist would become the web and desktop client.
+  if (mobile && resolve(argv[2]) !== MOBILE_OUTPUT) {
+    console.error(`${argv[2]}: DILLA_MOBILE_BUILD is set, but this output is not packages/mobile/.web-build`);
+    return 1;
+  }
+  const problems = checkEntryChunk(argv[2], { mobile });
   for (const problem of problems) console.error(problem);
   if (problems.length) return 1;
   console.log('entry chunk: no livekit, no rnnoise; one core wasm, one rnnoise wasm');

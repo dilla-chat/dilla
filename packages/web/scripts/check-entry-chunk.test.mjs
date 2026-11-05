@@ -44,6 +44,17 @@ describe('checkEntryChunk (L-WEB-51, decision 5)', () => {
     expect(checkEntryChunk(dir)).toEqual(['assets/entry-Wrk000.js: the mobile-only worker branch is in a web or desktop build']);
     expect(checkEntryChunk(dir, { mobile: true })).toEqual([]);
   });
+  // Review round 2, item 5: DILLA_MOBILE_BUILD is valid only for the mobile app's own output, packages/mobile/.web-build.
+  it('refuses mobile mode for any output but packages/mobile/.web-build, packages/web/dist included', () => {
+    cleanDist();
+    const run = (target) => spawnSync(process.execPath, [SCRIPT, target], { encoding: 'utf8', env: { ...process.env, DILLA_MOBILE_BUILD: '1' } });
+    const tmp = run(dir);
+    expect(tmp.status).toBe(1);
+    expect(tmp.stderr).toContain('DILLA_MOBILE_BUILD is set, but this output is not packages/mobile/.web-build');
+    const webDist = run(join(dirname(SCRIPT), '..', 'dist'));
+    expect(webDist.status).toBe(1);
+    expect(webDist.stderr).toContain('DILLA_MOBILE_BUILD is set, but this output is not packages/mobile/.web-build');
+  });
   it('passes a clean dist', () => {
     cleanDist();
     expect(checkEntryChunk(dir)).toEqual([]);
