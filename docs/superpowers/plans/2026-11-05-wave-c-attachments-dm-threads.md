@@ -244,3 +244,17 @@ Rulings: a quit with a call or unsent text asks once — title "Quit Dilla?", me
 - [ ] **Step 3: Implement.** Prototype values come from `docs/design/signal/prototype/Dilla Signal Prototype.dc.html`; read them there, not from the report's rounding.
 - [ ] **Step 4:** vitest in packages/ui, packages/web, packages/design-tokens; Storybook build; re-run the sweep's geometry + shooter for the affected pairs (patched world copy no longer needed after the world.mjs fix); `npm run lint`, `npm run typecheck`.
 - [ ] **Step 5: Commit** (one per group is fine) `fix(ui): match the Signal prototype …`.
+
+### Task 12: Poll cards appear quickly, and Invites lists unlimited links
+
+**Spec:** `/home/thim/.claude/jobs/da223a73/tmp/sweep-bugs-root-cause.md` (bugs 1 and 2; bug 3 is folded into Task 11).
+
+**Invites (bug 1):** `packages/client-core/src/admin/controller.ts:378` keeps a link only if `expires > now && uses < maxUses`, but the server sends `max_uses 0` for unlimited and `expires 0` for never (`internal/api/invites.go:526-540`, since d1ebb3cf). Unlimited or never-expiring links are invisible and can't be revoked. Fix: 0 means no limit in both checks. Test: extend `controller.test.ts:~246` with an unlimited-uses row and a never-expires row (listed), plus an exhausted row and an expired row (not listed).
+
+**Poll cards (bug 2):** a Bot poll shows its raw fallback text for 15-25 s after a reload, because `PollCard.tsx:97-144` verifies with four serial Bot round trips (three capability reads) and retries a failure only on the next 30 s tick (`:144`, `:165`). Fix: the card reads capabilities from Task 7/11's per-community store (`command-bot-store.ts`) instead of its own reads; until verified it shows a "Loading poll…" skeleton (`'poll.loading': 'Loading poll…'`), not the raw text; a failed verification retries at 2, 5 and 10 s. Also stop the worker issuing a command-status GET on every 200 ms interaction poll (`packages/client-core/src/worker/controller.ts:~1767`): one GET per poll cycle at most, so 25 pending requests can't exhaust the device's 8/s read budget (`pacing.ts:4`).
+
+- [ ] **Step 1: Failing tests:** the Invites rows above; PollCard: with the store already holding capabilities, the card verifies with no extra capability read and renders the card; before verification the skeleton shows, never the fallback text; a failed verification retries at 2 s. Worker: N pending interaction requests cause at most one command-status GET per poll tick.
+- [ ] **Step 2: Run, expect FAIL.**
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4:** vitest in packages/web and packages/client-core; lint; typecheck. Update `docs/design/signal/parity/app/*.json` so the gap52/gap53 pairs wait for `.d-poll-card`.
+- [ ] **Step 5: Commit** `fix(web): poll cards verify from the shared Bot command list; Invites lists unlimited links`.
