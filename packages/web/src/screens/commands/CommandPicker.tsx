@@ -39,8 +39,8 @@ export interface CommandComposerProps {
   listed?: ReadonlySet<string>;
   /** The Bot's command list is still loading for the first time: the list says so, and Enter on a name not yet listed waits (at most 10 s). */
   loading?: boolean;
-  /** The `/` list opened (the host retries a failed Bot list load then). */
-  onListOpen?: () => void;
+  /** The `/` list opened (the host re-checks the Bot list then); a returned function runs when the list closes. */
+  onListOpen?: () => void | (() => void);
   /** The Bot's display name, a Bot command's source tag (the prototype's "Glenn"). */
   botName?: string;
   /** The voice room this device is in, for a music command's bar; null: not in voice. */
@@ -232,7 +232,11 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
     return { open: true, items: [...starts, ...contains] };
   }, [selected, draft, definitionsById, listedCommands]);
   const listIsOpen = listState.open;
-  useEffect(() => { if (listIsOpen) listOpenNow.current?.(); }, [listIsOpen]);
+  useEffect(() => {
+    if (!listIsOpen) return undefined;
+    const closed = listOpenNow.current?.();
+    return typeof closed === 'function' ? closed : undefined;
+  }, [listIsOpen]);
   const listItems = listState.open ? listState.items : [];
   const listSel = Math.min(cmdSel, Math.max(listItems.length - 1, 0));
 

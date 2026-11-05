@@ -11,6 +11,7 @@ import { clearCommandDraftMemory, CommandHost } from './CommandHost.tsx';
 import { CommandProvider } from './CommandContext.tsx';
 import type { CommandProviderHandlers } from './command-types.ts';
 import { privateResults } from "./private-results.ts";
+import { invalidateCommandBot } from './command-bot-store.ts';
 
 let focusStyle: HTMLStyleElement;
 beforeEach(() => {
@@ -739,26 +740,72 @@ describe('the Bot command list outlives the picker', () => {
   // Wave C task 11 (root cause bug 3): after a reload there is no good list, and a failed first load waited a full 30 s refresh.
   it('a failed load with no good list retries at 2 s, 5 s and 10 s, says "loading" meanwhile, then waits for the picker', async () => {
     const { capabilities, typeSlash } = setup(() => Promise.reject(new Error('no active interaction group')));
-    typeSlash('/play');
-    await act(() => vi.advanceTimersByTimeAsync(100));
+    await act(() => vi.advanceTimersByTimeAsync(100)); // the composer's own load, with no picker open
     expect(capabilities).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('Loading Bot commands…')).toBeInTheDocument();
     await act(() => vi.advanceTimersByTimeAsync(1_800));
     expect(capabilities).toHaveBeenCalledTimes(1);
     await act(() => vi.advanceTimersByTimeAsync(300)); // 2.2 s
     expect(capabilities).toHaveBeenCalledTimes(2);
     await act(() => vi.advanceTimersByTimeAsync(5_000)); // 7.2 s: the second retry came 5 s after the second failure
     expect(capabilities).toHaveBeenCalledTimes(3);
-    expect(screen.getByText('Loading Bot commands…')).toBeInTheDocument();
     await act(() => vi.advanceTimersByTimeAsync(10_000)); // 17.2 s
     expect(capabilities).toHaveBeenCalledTimes(4);
-    expect(screen.queryByText('Loading Bot commands…')).not.toBeInTheDocument(); // the quick retries are spent
     // The retries are bounded: no periodic retry follows, however long the client idles (wire-5 rule).
     await act(() => vi.advanceTimersByTimeAsync(900_000));
     expect(capabilities).toHaveBeenCalledTimes(4);
-    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Escape' });
-    typeSlash('/'); // opening the picker again retries at once
+    typeSlash('/play'); // opening the picker retries at once, and says "loading" while it does
     await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(capabilities).toHaveBeenCalledTimes(5);
+  });
+
+  // PR #156 CI round 2: a second device's first loads fail until the Bot adds it to the interaction group; the picker the person
+  // opened meanwhile must land the list without a reopen, on bounded steps, and say "loading" until then.
+  it('an open picker retries a failed load at 2, 5, 10, 15 and 30 s after the quick retries, then stops', async () => {
+    const { capabilities, typeSlash } = setup(() => Promise.reject(new Error('no active interaction group')));
+    typeSlash('/play');
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(capabilities).toHaveBeenCalledTimes(1);
+    await act(() => vi.advanceTimersByTimeAsync(17_100)); // the quick retries: 2 s, 5 s, 10 s
+    expect(capabilities).toHaveBeenCalledTimes(4);
+    expect(screen.getByText('Loading Bot commands…')).toBeInTheDocument(); // the picker's own steps follow
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    expect(capabilities).toHaveBeenCalledTimes(5);
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    expect(capabilities).toHaveBeenCalledTimes(6);
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(capabilities).toHaveBeenCalledTimes(7);
+    await act(() => vi.advanceTimersByTimeAsync(15_000));
+    expect(capabilities).toHaveBeenCalledTimes(8);
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    expect(capabilities).toHaveBeenCalledTimes(9);
+    expect(screen.queryByText('Loading Bot commands…')).not.toBeInTheDocument(); // every step is spent
+    await act(() => vi.advanceTimersByTimeAsync(900_000)); // a picker left open is no periodic poll either
+    expect(capabilities).toHaveBeenCalledTimes(9);
+  });
+
+  it('an open picker lands the list when a retry succeeds', async () => {
+    let ready = false;
+    const { capabilities, typeSlash } = setup(() => ready ? Promise.resolve(caps([3, 12])) : Promise.reject(new Error('no active interaction group')));
+    typeSlash('/play');
+    await act(() => vi.advanceTimersByTimeAsync(17_200)); // the quick retries are spent
+    expect(capabilities).toHaveBeenCalledTimes(4);
+    ready = true; // the Bot added this device
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    expect(capabilities).toHaveBeenCalledTimes(5);
+    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(120_000));
+    expect(capabilities).toHaveBeenCalledTimes(5);
+  });
+
+  it('a closed picker stops its steps', async () => {
+    const { capabilities, typeSlash } = setup(() => Promise.reject(new Error('no active interaction group')));
+    typeSlash('/play');
+    await act(() => vi.advanceTimersByTimeAsync(17_200));
+    expect(capabilities).toHaveBeenCalledTimes(4);
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Escape' });
+    await act(() => vi.advanceTimersByTimeAsync(2_000)); // the step already set when the picker closed
+    expect(capabilities).toHaveBeenCalledTimes(5);
+    await act(() => vi.advanceTimersByTimeAsync(900_000));
     expect(capabilities).toHaveBeenCalledTimes(5);
   });
 
@@ -920,6 +967,71 @@ describe('the Bot command list outlives the picker', () => {
       await act(() => vi.advanceTimersByTimeAsync(100));
       expect(capabilities).toHaveBeenCalledTimes(2);
       expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
+    });
+
+    // PR #156 CI round 2 (slash-commands :914, :646, admin-keypackages :62): the owner creates a community (the composer records
+    // "no Bot"), enables the Bot within 30 s and types "/": the list must load then, not after a 30 s wait that no one triggers.
+    it('a picker opened within 30 s of a "no Bot" answer reads the status at once and loads the Bot just installed', async () => {
+      let status: unknown = null;
+      const { core, capabilities, typeSlash } = setup(() => status === null ? Promise.reject(new ClientCore.BotUtilitiesProviderUnavailableError())
+        : Promise.resolve(caps([3, 12])), () => status);
+      await act(() => vi.advanceTimersByTimeAsync(100));
+      expect(capabilities).toHaveBeenCalledTimes(1);
+      const reads = statusReads(core);
+      typeSlash('/'); // still no Bot: one status read and nothing else
+      await act(() => vi.advanceTimersByTimeAsync(100));
+      expect(statusReads(core)).toBe(reads + 1);
+      expect(capabilities).toHaveBeenCalledTimes(1);
+      closePicker();
+      status = STATUS;
+      await act(() => vi.advanceTimersByTimeAsync(5_000));
+      typeSlash('/');
+      await act(() => vi.advanceTimersByTimeAsync(100));
+      expect(capabilities).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
+    });
+
+    it('an open picker on a Bot that is installed but not ready checks again until it is, then stops', async () => {
+      let status: unknown = { ...STATUS, state: 1 };
+      const notReady = () => Promise.reject(new ClientCore.BotUtilitiesProviderUnavailableError());
+      const { capabilities, typeSlash } = setup(() => (status as { state: number }).state === 3 ? Promise.resolve(caps([3, 12])) : notReady(), () => status);
+      typeSlash('/');
+      await act(() => vi.advanceTimersByTimeAsync(100));
+      expect(capabilities).toHaveBeenCalledTimes(1);
+      await act(() => vi.advanceTimersByTimeAsync(2_000));
+      expect(capabilities).toHaveBeenCalledTimes(2);
+      expect(screen.queryByText('Loading Bot commands…')).not.toBeInTheDocument(); // a known "not ready" never flashes "loading"
+      status = STATUS;
+      await act(() => vi.advanceTimersByTimeAsync(5_000));
+      expect(capabilities).toHaveBeenCalledTimes(3);
+      expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
+      await act(() => vi.advanceTimersByTimeAsync(600_000));
+      expect(capabilities).toHaveBeenCalledTimes(3);
+    });
+
+    it('a community with no Bot installed at all costs one status read per picker open, and no steps', async () => {
+      const { core, capabilities, typeSlash } = setup(() => Promise.reject(new ClientCore.BotUtilitiesProviderUnavailableError()), () => null);
+      await act(() => vi.advanceTimersByTimeAsync(100));
+      const reads = statusReads(core);
+      typeSlash('/');
+      await act(() => vi.advanceTimersByTimeAsync(600_000));
+      expect(statusReads(core)).toBe(reads + 1);
+      expect(capabilities).toHaveBeenCalledTimes(1);
+    });
+
+    it('a Bot change made in this client loads in full on the next picker open, within 30 s', async () => {
+      const { core, capabilities, typeSlash } = setup(() => Promise.resolve(caps([3, 12])));
+      await act(() => vi.advanceTimersByTimeAsync(100));
+      expect(capabilities).toHaveBeenCalledTimes(1);
+      invalidateCommandBot(core, cid);
+      expect(capabilities).toHaveBeenCalledTimes(1); // marking costs nothing
+      typeSlash('/');
+      await act(() => vi.advanceTimersByTimeAsync(100));
+      expect(capabilities).toHaveBeenCalledTimes(2);
+      closePicker();
+      typeSlash('/');
+      await act(() => vi.advanceTimersByTimeAsync(100));
+      expect(capabilities).toHaveBeenCalledTimes(2);
     });
   });
 

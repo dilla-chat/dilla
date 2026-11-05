@@ -25,8 +25,9 @@ export function commandListed(command: CommandDefinition, operations: ReadonlySe
 
 /**
  * The server Bot's operations and user id, from the per-community store (command-bot-store.ts): loaded when the
- * composer first mounts and re-checked when the picker opens (a status read on a list older than 30 s; a full reload only on
- * a change, no answer or a failed load); no timer runs while the client is idle. `operations` is `null`
+ * composer first mounts and re-checked when the picker opens (a status read on a list older than 30 s or after a "no Bot"
+ * answer; a full reload on a change, no answer, a failed load or a Bot change made in this client; bounded retries while the
+ * picker stays open); no timer runs while the client is idle. `operations` is `null`
  * while unknown, in a DM, or when the server has no Bot; `waiting` says a first load is still running.
  */
 export function useCommandBot(client: CoreClient, communityId: string | null): CommandBotSnapshot {

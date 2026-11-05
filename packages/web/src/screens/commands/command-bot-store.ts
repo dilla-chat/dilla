@@ -2,14 +2,18 @@
 // must not discard a load (it takes 4-6 s: status, an op-3 request over the interaction group and the Bot's reply, status again).
 // An idle client makes no periodic HTTP (the wire-5 rule), so the store has no background timer. A community's list loads once
 // when its composer first mounts (a hidden window waits until it is shown), or on first need (a poll card, Enter on an unknown
-// command). Opening the picker keeps it fresh: a full load when there is no answer yet or the last load failed; otherwise, when the
-// list was last confirmed more than 30 s ago, one status read (one plain GET), and the op-3 round trip again only when the status
-// shows a different installation, Bot user, state or revision than the last full load saw (an owner toggling a feature moves the
-// revision). A failed load never replaces the last good list; it is recorded in Diagnostics (E_BOT_CAPABILITIES). A failure with no
-// answer yet (a page just reloaded) retries sooner, at 2 s, 5 s and 10 s (bounded, never periodic), and the picker keeps saying it
-// is loading meanwhile. A community whose Bot is gone or not ready (the status read refuses) is not a fault: its list is cleared,
-// and only a status change seen on a picker open loads it again. The store is keyed by CoreClient and relies on sign-out reloading
-// the page; a sign-out without a reload must drop it, or another account would see this one's list.
+// command). Opening the picker keeps it fresh, because someone is looking at it: a full load when there is no answer yet, the last
+// load failed, or this client changed the Bot's settings since (invalidateCommandBot); one status read (one plain GET) at once when
+// the last answer was "no ready Bot", whatever its age (an owner may have just enabled it); otherwise, when the list was last
+// confirmed more than 30 s ago, one status read. The op-3 round trip runs after a status read only when it shows a different
+// installation, Bot user, state or revision than the last full load saw (an owner toggling a feature moves the revision).
+// A failed load never replaces the last good list; it is recorded in Diagnostics (E_BOT_CAPABILITIES). A failure with no answer yet
+// (a page just reloaded) retries sooner, at 2 s, 5 s and 10 s, and the picker keeps saying it is loading meanwhile. While a picker is
+// open, a failed load, or a Bot whose status reads but is not ready yet, retries at 2, 5, 10, 15 and 30 s: a second device waiting
+// for the Bot to add it to the interaction group, or a Bot still starting, reaches the open list without a reopen. Every retry
+// schedule is bounded and restarts only on a person's action (a picker open); nothing repeats while the client idles. A community
+// whose Bot is gone or not ready (the status read refuses) is not a fault: its list is cleared. The store is keyed by CoreClient and
+// relies on sign-out reloading the page; a sign-out without a reload must drop it, or another account would see this one's list.
 import { createBotUtilities, BotUtilitiesProviderUnavailableError, type CoreClient } from '@dilla/client-core';
 
 /** Opening the picker re-checks the Bot's status when the list was last confirmed longer ago than this (an owner may turn a feature off in another tab). */
@@ -18,6 +22,8 @@ export const PICKER_RECHECK_MS = 30_000;
 export const COMMAND_LIST_WAIT_MS = 10_000;
 /** After a failed load with no good list: retry after these delays (2 s, 5 s, 10 s), then only when the picker opens. */
 export const COMMAND_LIST_RETRY_MS: readonly number[] = Object.freeze([2_000, 5_000, 10_000]);
+/** While a picker is open: retry a failed load, or a Bot that is installed but not ready, after these delays (bounded; reset per open). */
+export const PICKER_RETRY_MS: readonly number[] = Object.freeze([2_000, 5_000, 10_000, 15_000, 30_000]);
 
 export interface CommandBot { operations: ReadonlySet<number> | null; botUserId: string | null }
 export interface CommandBotSnapshot extends CommandBot {
@@ -27,7 +33,7 @@ export interface CommandBotSnapshot extends CommandBot {
   waiting: boolean;
   /** The Bot's installation id from the last good load: a binding check for callers that verify against that Bot (poll cards). */
   installationId: string | null;
-  /** The last load found no ready Bot (a definitive refusal, not a fault): nothing retries until a picker open sees a status change. */
+  /** The last load found no ready Bot (a definitive refusal, not a fault): a picker open reads the status again at once. */
   unavailable: boolean;
 }
 
@@ -53,6 +59,12 @@ interface Entry {
   deferred: boolean;
   /** The document's visibilitychange listener while mounted. */
   onVisible: (() => void) | null;
+  /** Open pickers for this community: while any is, failed loads and a not-yet-ready Bot retry on PICKER_RETRY_MS. */
+  pickers: number;
+  /** PICKER_RETRY_MS steps used since the last picker open. */
+  pickerRetries: number;
+  /** This client changed the Bot's settings: the next picker open loads in full. */
+  stale: boolean;
 }
 
 /** Whether a Bot refusal means "no ready Bot" (the status read refused), not a transient fault of the op-3 round trip. */
@@ -84,7 +96,8 @@ function entryOf(client: CoreClient, communityId: string): Entry {
   let entry = byCommunity.get(communityId);
   if (entry === undefined) {
     entry = { snapshot: NO_BOT, listeners: new Set(), mounted: 0, inFlight: false, failed: false, failures: 0, retry: null,
-      checkedAt: Number.NEGATIVE_INFINITY, loadedKey: undefined, statusInFlight: false, deferred: false, onVisible: null };
+      checkedAt: Number.NEGATIVE_INFINITY, loadedKey: undefined, statusInFlight: false, deferred: false, onVisible: null,
+      pickers: 0, pickerRetries: 0, stale: false };
     byCommunity.set(communityId, entry);
   }
   return entry;
@@ -99,16 +112,39 @@ function clearRetry(entry: Entry): void {
   if (entry.retry !== null) { window.clearTimeout(entry.retry); entry.retry = null; }
 }
 
+/** The next picker-open retry delay, or undefined when no picker is open or its steps are spent. */
+function pickerDelay(entry: Entry): number | undefined {
+  if (entry.pickers === 0) return undefined;
+  const delay = PICKER_RETRY_MS[entry.pickerRetries];
+  if (delay !== undefined) entry.pickerRetries += 1;
+  return delay;
+}
+
+/** A full load after `delay` (none when undefined or one is already due). A hidden window makes no request; becoming visible loads instead. */
+function scheduleRetry(client: CoreClient, communityId: string, entry: Entry, delay: number | undefined): void {
+  if (delay === undefined || entry.retry !== null || entry.inFlight) return;
+  entry.retry = window.setTimeout(() => {
+    entry.retry = null;
+    if (!hiddenNow()) refreshCommandBot(client, communityId); else entry.deferred = true;
+  }, delay);
+}
+
+/** A status key that names an installation (the Bot exists, maybe not ready yet), not "none" or an unread status. */
+function installed(key: string | undefined): boolean {
+  return key !== undefined && key !== 'none';
+}
+
 /** Starts one load unless one is in flight; the result updates the store whether or not anything is open. */
 export function refreshCommandBot(client: CoreClient, communityId: string): void {
   const entry = entryOf(client, communityId);
   if (entry.inFlight) return;
   clearRetry(entry);
-  entry.inFlight = true; entry.deferred = false;
+  entry.inFlight = true; entry.deferred = false; entry.stale = false;
   // Only a first, unknown load says "loading": a community known to have no Bot stays quiet while it re-checks (final review M2).
   publish(entry, { ...entry.snapshot, loading: true, waiting: !answered(entry) });
   // The status this load starts from, read alongside: a picker-open status check compares later reads with it.
-  void readStatusKey(client, communityId).then(key => { entry.loadedKey = key; });
+  const statusRead = readStatusKey(client, communityId);
+  void statusRead.then(key => { entry.loadedKey = key; });
   void createBotUtilities(client, communityId).capabilities().then(caps => {
     entry.inFlight = false; entry.checkedAt = Date.now(); entry.failed = false; entry.failures = 0;
     publish(entry, { operations: new Set(caps.supportedOperations), botUserId: caps.botUserId, installationId: caps.installationId, loading: false, waiting: false, unavailable: false });
@@ -119,20 +155,18 @@ export function refreshCommandBot(client: CoreClient, communityId: string): void
       // A community without a ready Bot is not a fault: its commands go (a removed Bot's list must not linger) and nothing retries quickly.
       entry.failed = false; entry.failures = 0;
       publish(entry, { operations: null, botUserId: null, installationId: null, loading: false, waiting: false, unavailable: true });
+      // A Bot that exists but is not ready yet (just enabled, starting) while someone looks at the picker: check again soon.
+      if (entry.pickers > 0) void statusRead.then(key => { if (installed(key)) scheduleRetry(client, communityId, entry, pickerDelay(entry)); });
       return;
     }
     void client.call({ m: 'callNote', code: 'E_BOT_CAPABILITIES' }).catch(() => undefined);
     entry.failed = true;
-    // No answer yet: try again soon (2 s, 5 s, 10 s) and keep saying "loading"; after that (or with a list) the picker retries.
-    const delay = !answered(entry) && entry.mounted > 0 ? COMMAND_LIST_RETRY_MS[entry.failures] : undefined;
+    // No answer yet: try again soon (2 s, 5 s, 10 s) and keep saying "loading"; after that (or with a list) an open picker retries
+    // on its own bounded steps, and a later picker open loads again.
+    const quick = !answered(entry) && entry.mounted > 0 ? COMMAND_LIST_RETRY_MS[entry.failures] : undefined;
     entry.failures += 1;
-    if (delay !== undefined) {
-      entry.retry = window.setTimeout(() => {
-        entry.retry = null;
-        // A hidden window makes no background request; becoming visible loads instead.
-        if (!hiddenNow()) refreshCommandBot(client, communityId); else entry.deferred = true;
-      }, delay);
-    }
+    const delay = quick ?? pickerDelay(entry);
+    scheduleRetry(client, communityId, entry, delay);
     publish(entry, { ...entry.snapshot, loading: false, waiting: !answered(entry) && delay !== undefined });
   });
 }
@@ -144,7 +178,8 @@ function answered(entry: Entry): boolean {
 
 /**
  * The picker-open check on an answered list: one status read, and a full load only when it differs from what the last full load
- * started from. A community recorded as having no ready Bot whose status now reads loads again (a Bot was installed since).
+ * started from. A community recorded as having no ready Bot whose status now reads loads again (a Bot was installed since); one
+ * whose Bot is installed but still not ready retries on the picker's steps while the picker stays open.
  */
 function statusCheck(client: CoreClient, communityId: string): void {
   const entry = entryOf(client, communityId);
@@ -154,17 +189,31 @@ function statusCheck(client: CoreClient, communityId: string): void {
     entry.statusInFlight = false;
     if (key === undefined || entry.inFlight) return;
     if (entry.loadedKey === undefined && !entry.snapshot.unavailable) { entry.loadedKey = key; entry.checkedAt = Date.now(); return; }
-    if (key !== entry.loadedKey) refreshCommandBot(client, communityId);
-    else entry.checkedAt = Date.now();
+    if (key !== entry.loadedKey) { refreshCommandBot(client, communityId); return; }
+    entry.checkedAt = Date.now();
+    if (entry.snapshot.unavailable && installed(key)) scheduleRetry(client, communityId, entry, pickerDelay(entry));
   });
 }
 
-/** The picker opened: load now when there is no answer or the last load failed; re-check the status when the list is older than 30 s. */
-export function refreshCommandBotForPicker(client: CoreClient, communityId: string): void {
+/**
+ * The picker opened: load now when there is no answer, the last load failed or this client changed the Bot since; read the status
+ * now when the last answer was "no ready Bot"; re-check the status when the list is older than 30 s. Until the returned release
+ * (the picker closed), failed loads retry on PICKER_RETRY_MS.
+ */
+export function refreshCommandBotForPicker(client: CoreClient, communityId: string): () => void {
   const entry = entryOf(client, communityId);
-  if (entry.inFlight) return;
-  if (entry.failed || !answered(entry)) { refreshCommandBot(client, communityId); return; }
-  if (Date.now() - entry.checkedAt >= PICKER_RECHECK_MS) statusCheck(client, communityId);
+  entry.pickers += 1; entry.pickerRetries = 0;
+  if (!entry.inFlight) {
+    if (entry.failed || entry.stale || !answered(entry)) refreshCommandBot(client, communityId);
+    else if (entry.snapshot.unavailable || Date.now() - entry.checkedAt >= PICKER_RECHECK_MS) statusCheck(client, communityId);
+  }
+  let released = false;
+  return () => { if (!released) { released = true; entry.pickers -= 1; } };
+}
+
+/** This client changed the community's Bot (enabled, reconfigured, disabled, restarted): the next picker open loads in full. No request now. */
+export function invalidateCommandBot(client: CoreClient, communityId: string): void {
+  entryOf(client, communityId).stale = true;
 }
 
 /** A community's composer mounted: load its list once if it is unknown or the last load failed. No timer: nothing repeats. Returns the release. */
