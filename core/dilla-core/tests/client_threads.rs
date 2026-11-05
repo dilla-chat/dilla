@@ -1087,10 +1087,22 @@ fn thread_of_dm(me: &Core, root: &[u8; 16]) -> (Option<TimelineRow>, Vec<Timelin
 fn a_dm_thread_reply_is_stored_held_and_listed() {
     let (_i, mut relay, mut me, mut peer) = start_dm();
     let root = post_in(&mut peer, &mut relay, 0x71, Message, None, None, "the root");
-    let reply = post_in(&mut peer, &mut relay, 0x72, Message, None, Some(ROOT), "a reply");
+    let reply = post_in(
+        &mut peer,
+        &mut relay,
+        0x72,
+        Message,
+        None,
+        Some(ROOT),
+        "a reply",
+    );
     me.sync(&relay);
     let shown: Vec<u64> = me.timeline(&DM_GROUP).into_iter().map(|r| r.seq).collect();
-    assert_eq!(shown, vec![root], "the reply is held out of the DM timeline");
+    assert_eq!(
+        shown,
+        vec![root],
+        "the reply is held out of the DM timeline"
+    );
     assert_eq!(
         me.row_at(&DM_GROUP, root).thread.map(|t| t.0),
         Some(1),
@@ -1101,7 +1113,10 @@ fn a_dm_thread_reply_is_stored_held_and_listed() {
     assert_eq!(listed[0].root_seq, Some(root));
     let (head, replies) = thread_of_dm(&me, &ROOT);
     assert_eq!(head.map(|h| h.seq), Some(root));
-    assert_eq!(replies.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![reply]);
+    assert_eq!(
+        replies.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        vec![reply]
+    );
     assert_eq!(
         stored_thread_in(&me, &DM_GROUP, reply),
         Some(ROOT.to_vec()),
@@ -1124,14 +1139,95 @@ fn stored_thread_in(me: &Core, group: &[u8; 16], seq: u64) -> Option<Vec<u8>> {
 #[test]
 fn send_prepare_in_a_dm_accepts_a_thread_id() {
     let (_i, mut relay, mut me, mut peer) = start_dm();
-    post_in(&mut peer, &mut relay, 0x71, Message, None, None, "the root");
+    let root = post_in(&mut peer, &mut relay, 0x71, Message, None, None, "the root");
     me.sync(&relay);
-    me.prepare_request(
+    let msg_id = me.prepare_request(
         &DM_GROUP,
         &thread_request(0, None, "in a DM thread", Some(&ROOT)),
         NOW,
     );
     assert_eq!(me.outbox(&DM_GROUP).len(), 1, "the thread send queues");
+    assert_eq!(
+        outbox_thread(&me, &msg_id),
+        Some(MsgId::from_bytes(ROOT)),
+        "the queued envelope carries the thread id"
+    );
+    let seq = me.encrypt_and_confirm(&mut relay, &DM_GROUP, &msg_id);
+    assert_eq!(
+        stored_thread_in(&me, &DM_GROUP, seq),
+        Some(ROOT.to_vec()),
+        "the own row keeps the thread id"
+    );
+    let shown: Vec<u64> = me.timeline(&DM_GROUP).into_iter().map(|r| r.seq).collect();
+    assert_eq!(
+        shown,
+        vec![root],
+        "the own reply is held out of the DM timeline"
+    );
+    let (_, replies) = thread_of_dm(&me, &ROOT);
+    assert_eq!(replies.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![seq]);
+}
+
+#[test]
+fn a_dm_thread_reply_counts_as_unread_and_its_root_resolves() {
+    let (_i, mut relay, mut me, mut peer) = start_dm();
+    let root = post_in(
+        &mut peer,
+        &mut relay,
+        0x71,
+        Message,
+        None,
+        None,
+        "root lantern",
+    );
+    me.sync(&relay);
+    let before = activity(&me.core)
+        .into_iter()
+        .find(|a| a.group_id == DM_GROUP)
+        .expect("activity")
+        .unread;
+    let reply = post_in(
+        &mut peer,
+        &mut relay,
+        0x72,
+        Message,
+        None,
+        Some(ROOT),
+        "reply lantern",
+    );
+    let quote = post_in(
+        &mut peer,
+        &mut relay,
+        0x75,
+        Message,
+        Some([0x72; 16]),
+        None,
+        "quoting",
+    );
+    me.sync(&relay);
+    let after = activity(&me.core)
+        .into_iter()
+        .find(|a| a.group_id == DM_GROUP)
+        .expect("activity")
+        .unread;
+    assert_eq!(
+        after,
+        before + 2,
+        "a held DM thread reply counts like a channel's"
+    );
+    let quoted = me
+        .row_at(&DM_GROUP, quote)
+        .reply
+        .expect("quote")
+        .thread_root;
+    assert_eq!(quoted, Some(ROOT), "the quote names the thread root");
+    let mut found = hits(
+        &me.core
+            .search(0, Some(&DM_CHANNEL), "lantern", None, 50)
+            .expect("search"),
+    );
+    found.sort();
+    assert_eq!(found, vec![(root, None), (reply, Some(ROOT))]);
 }
 
 #[test]
@@ -1146,7 +1242,15 @@ fn a_dm_thread_reply_before_its_root_is_held() {
         Some([0x92; 16]),
         "early",
     );
-    let root = post_in(&mut peer, &mut relay, 0x92, Message, None, None, "late root");
+    let root = post_in(
+        &mut peer,
+        &mut relay,
+        0x92,
+        Message,
+        None,
+        None,
+        "late root",
+    );
     let reply = post_in(
         &mut peer,
         &mut relay,
@@ -1166,7 +1270,10 @@ fn a_dm_thread_reply_before_its_root_is_held() {
     assert_eq!(me.row_at(&DM_GROUP, root).thread.map(|t| t.0), Some(1));
     let (head, rows) = thread_of_dm(&me, &[0x92; 16]);
     assert_eq!(
-        (head.map(|h| h.seq), rows.iter().map(|r| r.seq).collect::<Vec<_>>()),
+        (
+            head.map(|h| h.seq),
+            rows.iter().map(|r| r.seq).collect::<Vec<_>>()
+        ),
         (Some(root), vec![reply])
     );
 }
@@ -1175,7 +1282,15 @@ fn a_dm_thread_reply_before_its_root_is_held() {
 fn a_pre_release_dm_row_without_thread_id_stays_in_the_timeline() {
     let (_i, mut relay, mut me, mut peer) = start_dm();
     let root = post_in(&mut peer, &mut relay, 0x71, Message, None, None, "the root");
-    let reply = post_in(&mut peer, &mut relay, 0x72, Message, None, Some(ROOT), "a reply");
+    let reply = post_in(
+        &mut peer,
+        &mut relay,
+        0x72,
+        Message,
+        None,
+        Some(ROOT),
+        "a reply",
+    );
     me.sync(&relay);
     me.probe
         .lock()
