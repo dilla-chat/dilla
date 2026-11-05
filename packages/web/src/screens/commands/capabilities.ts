@@ -4,7 +4,7 @@ import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import type { CommandDefinition, CoreClient } from '@dilla/client-core';
 import { commandBotSnapshot, mountCommandBot, NO_BOT, subscribeCommandBot, type CommandBotSnapshot } from './command-bot-store.ts';
 
-export { CAPABILITY_REFRESH_MS, type CommandBot } from './command-bot-store.ts';
+export type { CommandBot } from './command-bot-store.ts';
 
 /** The Bot operation each Bot command needs. */
 export const COMMAND_OPERATIONS: Readonly<Record<string, number>> = Object.freeze({
@@ -25,8 +25,8 @@ export function commandListed(command: CommandDefinition, operations: ReadonlySe
 
 /**
  * The server Bot's operations and user id, from the per-community store (command-bot-store.ts): loaded when the
- * composer mounts and kept fresh while it stays and the window is visible (a 30 s status check; a full reload only on
- * a change, or when the picker opens on a list older than 5 min), whether or not the picker is open. `operations` is `null`
+ * composer first mounts and re-checked when the picker opens (a status read on a list older than 30 s; a full reload only on
+ * a change, no answer or a failed load); no timer runs while the client is idle. `operations` is `null`
  * while unknown, in a DM, or when the server has no Bot; `waiting` says a first load is still running.
  */
 export function useCommandBot(client: CoreClient, communityId: string | null): CommandBotSnapshot {
