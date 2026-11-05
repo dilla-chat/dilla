@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * `npm run ci:local`: .github/workflows/ci.yml run on this machine before a push. The jobs, their steps, the needs graph
- * and the area gates come from ci.yml itself (scripts/ci-local-plan.mjs maps each step); GitHub-only steps become local
+ * `npm run ci:local`: the CI workflows (.github/workflows/server.yml and desktop-ci.yml) run on this machine before a
+ * push. The jobs, their steps, the needs graph and the area gates come from the workflows themselves
+ * (scripts/ci-local-plan.mjs maps each step, and a job both carry runs once); GitHub-only steps become local
  * equivalents (artifacts are copied through target/ci-local/artifacts, tool installs are prerequisite checks, Postgres
  * is a throwaway container), and every job logs to target/ci-local/<job>.log. docs/dev/ci-local.md is the manual.
  */
@@ -14,14 +15,14 @@ import { availableParallelism, tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { computeAreas } from './ci-areas.mjs';
+import { computeAreas, WORKFLOWS } from './ci-areas.mjs';
 import {
   buildCleanTree, busyPorts, lockDir, lockDirPath, recoverSnapshots, releaseLock, restoreSnapshot, scrubEnv, takeSnapshot, tryLock,
 } from './ci-local-fs.mjs';
 import { randomBytes } from 'node:crypto';
 import {
-  DEFAULT_BASE, E2E_PORT_SPAN, EXTRA_JOBS, JOB_MAP, MAX_BLOCK, UI_PORT_SPAN, blockPorts, classifyStep, e2eBlockEnv, evalIf, loadWorkflow,
-  localMirrorProblems, mapService, moveUiPorts, selectJobs, skipReason, substitute,
+  DEFAULT_BASE, E2E_PORT_SPAN, EXTRA_JOBS, LOCAL_JOB_MAP, MAX_BLOCK, UI_PORT_SPAN, blockPorts, classifyStep, e2eBlockEnv, evalIf, listJobs,
+  loadWorkflows, localMirrorProblems, mapService, moveUiPorts, selectJobs, skipReason, substitute,
 } from './ci-local-plan.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -33,7 +34,7 @@ const SNAPSHOTS = join(OUT, 'snapshots');
 const EVERYTHING = { go: true, core: true, web: true, e2e: true, text: true, code: true };
 
 const USAGE = `usage: npm run ci:local -- [options]
-  --only <job,...>   run these jobs (ci.yml names, or a matrix leg such as a native target, or codeql) and what they need
+  --only <job,...>   run these jobs (server.yml or desktop-ci.yml names, or a matrix leg such as a native target, or codeql) and what they need
   --no-deps          with --only: do not run the needed jobs; reuse their artifacts from an earlier run
   --changed          the jobs the ci-areas gates run for this branch's diff against origin/main (uncommitted files included)
   --stress           run the Go and browser jobs on a quarter of the CPUs beside a busy-loop load, like a loaded runner
@@ -41,11 +42,12 @@ const USAGE = `usage: npm run ci:local -- [options]
   --base <n>         the first port block (default ${DEFAULT_BASE}; 0..${MAX_BLOCK}): block k moves the browser suites by k*1000
   --jobs <n>         the CPU budget the parallel jobs share (default: this machine's ${availableParallelism()} CPUs)
   --e2e-jobs <n>     browser jobs that run at once (default 3)
+  --list             list both workflows' jobs and what ci-local does with each, and exit
   --dry-run          print the plan (jobs, needs, how each step maps) and exit
   --doctor           check the prerequisites of the selected jobs and exit`;
 
 export function parseArgs(argv) {
-  const args = { only: null, deps: true, changed: false, stress: false, keepGoing: false, base: DEFAULT_BASE, jobs: availableParallelism(), e2eJobs: 3, dryRun: false, doctor: false, help: false };
+  const args = { only: null, deps: true, changed: false, stress: false, keepGoing: false, base: DEFAULT_BASE, jobs: availableParallelism(), e2eJobs: 3, dryRun: false, doctor: false, list: false, help: false };
   const int = (flag, v, min, max) => {
     const n = Number(v);
     if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${flag} takes an integer from ${min} to ${max}`);
@@ -67,6 +69,7 @@ export function parseArgs(argv) {
       case '--base': args.base = int('--base', next(), 0, MAX_BLOCK); break;
       case '--jobs': args.jobs = int('--jobs', next(), 1, 1024); break;
       case '--e2e-jobs': args.e2eJobs = int('--e2e-jobs', next(), 1, MAX_BLOCK + 1); break;
+      case '--list': args.list = true; break;
       case '--dry-run': args.dryRun = true; break;
       case '--doctor': args.doctor = true; break;
       case '-h': case '--help': args.help = true; break;
@@ -266,7 +269,7 @@ class Runner {
   }
 
   info(id) {
-    return id in EXTRA_JOBS ? { kind: 'extra', ...EXTRA_JOBS[id] } : { kind: 'steps', ...(JOB_MAP[this.jobs.get(id).name] ?? {}) };
+    return id in EXTRA_JOBS ? { kind: 'extra', ...EXTRA_JOBS[id] } : { kind: 'steps', ...(LOCAL_JOB_MAP[this.jobs.get(id).name] ?? {}) };
   }
 
   baseEnv(job) {
@@ -414,7 +417,7 @@ class Runner {
       if (id in EXTRA_JOBS) return await this.runCodeql(id, write, fd);
       const job = this.jobs.get(id);
       const info = this.info(id);
-      write(`ci-local: job ${id} (ci.yml job "${job.name}") in ${ROOT}`);
+      write(`ci-local: job ${id} (${job.workflows.join(' and ')} job "${job.name}") in ${ROOT}`);
       if (info.kind === 'areas') {
         write(`changes: ${Object.entries(this.outputs).map(([k, v]) => `${k}=${v}`).join(' ')}`);
         write(this.args.changed ? `(computed by scripts/ci-areas.mjs for the diff against ${this.base ?? 'nothing: everything on'})` : '(a full run: every area on, as for a push to main)');
@@ -866,6 +869,13 @@ function describeStep(step, job) {
   }
 }
 
+/** Each CI workflow's text, or null where the file is missing (localMirrorProblems reports it). */
+function loadTexts() {
+  return Object.fromEntries(Object.entries(WORKFLOWS).map(([workflow, { file }]) => {
+    try { return [workflow, readFileSync(join(ROOT, '.github', 'workflows', file), 'utf8')]; } catch { return [workflow, null]; }
+  }));
+}
+
 async function main() {
   let args;
   try {
@@ -880,11 +890,15 @@ async function main() {
   }
   // A run that died during go-release left the real client in internal/web/dist: put the tracked tree back first.
   for (const p of recoverSnapshots(ROOT, SNAPSHOTS)) console.log(`ci-local: restored ${p} from the snapshot an interrupted run left`);
-  const { text, workflow, jobs } = loadWorkflow(ROOT);
-  const problems = localMirrorProblems(text);
+  const problems = localMirrorProblems(loadTexts());
   if (problems.length > 0) {
-    console.error(`ci.yml has steps ci-local cannot map (scripts/ci-local-plan.mjs):\n${problems.join('\n')}`);
+    console.error(`the CI workflows have steps ci-local cannot map (scripts/ci-local-plan.mjs):\n${problems.join('\n')}`);
     process.exit(2);
+  }
+  const { parsed, env: workflowEnv, jobs } = loadWorkflows(ROOT);
+  if (args.list) {
+    console.log(listJobs(parsed, process.arch).join('\n'));
+    return;
   }
   let outputs = EVERYTHING;
   let base = null;
@@ -913,14 +927,14 @@ async function main() {
         continue;
       }
       const job = byId.get(id);
-      const info = JOB_MAP[job.name];
+      const info = LOCAL_JOB_MAP[job.name];
       const skip = skipReason(job, process.arch);
       console.log(`\n${id}${job.needs.length ? ` (needs ${job.needs.join(', ')})` : ''} weight ${info.weight}${info.ports ? ` ports:${info.ports}` : ''}${info.exclusive ? ' exclusive' : ''}${skip ? ` -> SKIPPED: ${skip}` : ''}${info.kind && info.kind !== 'steps' ? ` [${info.kind}]` : ''}`);
       if (!skip && (!info.kind || info.kind === 'steps')) job.steps.forEach((s, n) => console.log(`  ${String(n + 1).padStart(2)}. ${describeStep(s, job)}`));
     }
     return;
   }
-  const runnable = selection.filter((id) => id in EXTRA_JOBS || (JOB_MAP[byId.get(id).name].kind !== 'aggregate' && skipReason(byId.get(id), process.arch) === null));
+  const runnable = selection.filter((id) => id in EXTRA_JOBS || (LOCAL_JOB_MAP[byId.get(id).name].kind !== 'aggregate' && skipReason(byId.get(id), process.arch) === null));
   const missing = missingTools(requiredTools(runnable.filter((id) => !(id in EXTRA_JOBS)).map((id) => byId.get(id)), args));
   if (args.doctor) {
     console.log(missing.length === 0 ? 'ci-local: every prerequisite of the selected jobs is on PATH' : `ci-local: missing prerequisites:\n  ${missing.join('\n  ')}`);
@@ -937,7 +951,7 @@ async function main() {
   mkdirSync(OUT, { recursive: true });
   mkdirSync(RUNNER_TEMP, { recursive: true });
   for (const id of selection) rmSync(join(OUT, `${id}.log`), { force: true });
-  const runner = new Runner(args, jobs, selection, outputs, workflow.env);
+  const runner = new Runner(args, jobs, selection, outputs, workflowEnv);
   runner.base = base;
   for (const id of selection) {
     if (id in EXTRA_JOBS) continue;

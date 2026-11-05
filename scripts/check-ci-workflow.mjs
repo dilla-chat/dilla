@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
-import { gateExpression, JOB_GATES, jobRuns, reachableOutputs } from './ci-areas.mjs';
+import { gateExpression, JOB_GATES, jobRuns, reachableOutputs, WORKFLOWS } from './ci-areas.mjs';
 import { localMirrorProblems } from './ci-local-plan.mjs';
 import { checkNativeStockFeasibility } from './check-native-stock-feasibility.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
@@ -8,62 +8,77 @@ import { createRequire } from 'node:module';
 const yaml = createRequire(import.meta.url)('js-yaml');
 
 /**
- * Every job the workflow must carry (interfaces §5). Ruling L added the two Go jobs: they landed with
- * Plan B task 8, and leaving them merely "checked if present" meant deleting them was the one way to
- * make the Go half of the tree ungated without this gate saying a word. The `go` job additionally has
- * to declare its `needs: rust-wasi` edge (see below).
+ * Every job each CI workflow must carry, and no other (interfaces §5; plan 2026-11-05 Task 6 split ci.yml into these
+ * two). Ruling L added the two Go jobs: they landed with Plan B task 8, and leaving them merely "checked if present"
+ * meant deleting them was the one way to make the Go half of the tree ungated without this gate saying a word. The
+ * `go` job additionally has to declare its `needs: rust-wasi` edge (see below). Artifacts never cross workflows, so
+ * a job whose output both need (rust-native, rust-wasi, web-build) is in both, unchanged.
  */
-export const REQUIRED_JOBS = [
-  // The change filter and always-on docs gates; infrastructure remains active for docs-only changes too.
-  'changes',
-  'docs',
-  'ci-watchdog',
-  'ci-work-complete',
-  // The aggregator: one check that is red when any job failed or was cancelled and green when the rest passed or were skipped by design.
-  'ci-ok',
-  'node',
-  'ui',
-  'rust-native',
-  'rust-wasm-node',
-  'rust-wasi',
-  'vectors',
-  'browser-spike',
-  'browser-media',
-  'deny',
-  // The race-detector unit tests, in GO_SHARD_SETS.go.shards shards (scripts/go-shard.mjs), and beside them the
-  // once-only steps (vet, the pinned graph, the non-race and TURN reruns, the static build) in go-checks.
-  'go',
-  'go-checks',
-  'go-native',
-  // internal/ds under -race in a job of its own (fix wave, CI run 36697379567): it is the slowest
-  // package by far, and in the go job it pushed a 4-vCPU runner past the job's 25 minutes.
-  'go-ds',
-  // internal/api under -race in a job of its own (CI run 39486567482): ~620 s locally, it outran the go job's 20m package timeout.
-  'go-api',
-  // The scenario harness in its own job with its own timeout (final review): it needs both the
-  // wasi core and the testkit binary, and in the go job it pushed a 4-vCPU runner past its budget.
-  'go-harness',
-  // go-fts5-arm64 is created by plan-1a task 2 (interfaces §9.2): it cross-builds the SQLite FTS5
-  // path for arm64. If it is ever missing, the fix is to add it there, not to drop it from this list.
-  'go-fts5-arm64',
-  'go-lint',
-  'go-vuln',
-  'go-sqlc',
-  'go-postgres',
-  'go-release',
-  // Build the bundled client once for Electron and retain shared encrypted-core
-  // integration (BROWSER_WEB_JOBS below) without browser compatibility lanes.
-  'web-build',
-  'linux-sandbox-foundation',
-  'desktop',
-];
+export const REQUIRED_JOBS = {
+  server: [
+    // The change filter and always-on docs gates; infrastructure remains active for docs-only changes too.
+    'changes',
+    'docs',
+    'ci-watchdog',
+    'server-work-complete',
+    // The aggregator: one check that is red when any job failed or was cancelled and green when the rest passed or were skipped by design.
+    'server-ok',
+    'rust-native',
+    'rust-wasi',
+    'vectors',
+    'deny',
+    // The race-detector unit tests, in GO_SHARD_SETS.go.shards shards (scripts/go-shard.mjs), and beside them the
+    // once-only steps (vet, the pinned graph, the non-race and TURN reruns, the static build) in go-checks.
+    'go',
+    'go-checks',
+    'go-native',
+    // internal/ds under -race in a job of its own (fix wave, CI run 36697379567): it is the slowest
+    // package by far, and in the go job it pushed a 4-vCPU runner past the job's 25 minutes.
+    'go-ds',
+    // internal/api under -race in a job of its own (CI run 39486567482): ~620 s locally, it outran the go job's 20m package timeout.
+    'go-api',
+    // The scenario harness in its own job with its own timeout (final review): it needs both the
+    // wasi core and the testkit binary, and in the go job it pushed a 4-vCPU runner past its budget.
+    'go-harness',
+    // go-fts5-arm64 is created by plan-1a task 2 (interfaces §9.2): it cross-builds the SQLite FTS5
+    // path for arm64. If it is ever missing, the fix is to add it there, not to drop it from this list.
+    'go-fts5-arm64',
+    'go-lint',
+    'go-vuln',
+    'go-sqlc',
+    'go-postgres',
+    'go-release',
+    // go-release embeds the web client, so the server workflow builds it too.
+    'web-build',
+  ],
+  desktop: [
+    'changes',
+    'ci-watchdog',
+    'desktop-work-complete',
+    'desktop-ok',
+    'node',
+    'ui',
+    'rust-native',
+    'rust-wasm-node',
+    'rust-wasi',
+    'browser-spike',
+    'browser-media',
+    // Build the bundled client once for Electron and retain shared encrypted-core
+    // integration (BROWSER_WEB_JOBS below) without browser compatibility lanes.
+    'web-build',
+    'linux-sandbox-foundation',
+    'desktop',
+    // core-integration: BROWSER_WEB_JOBS.
+  ],
+};
+
+/** A workflow's file name, for messages. */
+const fileOf = (workflow) => WORKFLOWS[workflow].file;
 
 /**
- * Infrastructure jobs are exempt from area gates. Every real test/build job needs `changes` and carries the `if:` that JOB_GATES
- * (scripts/ci-areas.mjs) names for it, so a docs-only pull request skips them. A skipped job counts as passed for a
- * required check. `docs` is exempt so the cheap docs gates still run; `changes` is the gate itself.
+ * The watchdog's completion barrier (CI_COMPLETION_JOBS): the workflow's always-on roots and its DAG barrier.
  */
-export const CHANGE_GATE_EXEMPT = ['changes', 'docs', 'ci-watchdog', 'ci-work-complete', 'ci-ok'];
+export const completionJobs = (workflow) => WORKFLOWS[workflow].always.filter((job) => job !== 'ci-watchdog' && job !== WORKFLOWS[workflow].ok).join(' ');
 
 /**
  * R22: no escape hatch anywhere in the workflow. Both `always()` spellings are equally valid GitHub
@@ -162,7 +177,7 @@ export const UI_SHOTS_3 = [
   `node packages/ui/scripts/shoot-stories.mjs 6038 target/ui-screens/web-3/phone ${UI_PREFIXES_3} --viewport=360x740`,
 ];
 
-/** One load-bearing command per job, so a silently gutted job is caught. */
+/** One load-bearing command per job, so a silently gutted job is caught; a job carries them in either workflow. */
 const REQUIRED_STEPS = {
   desktop: ['uses: ./.github/workflows/desktop.yml'],
   // The areas are computed by scripts/ci-areas.mjs (tested in ci-areas.test.mjs), which fails safe to everything.
@@ -177,8 +192,9 @@ const REQUIRED_STEPS = {
   // The cheap docs gates, for every change.
   // Their unit tests and the real checks against the real files; check:ci reads the Go tree for the race and Postgres rules.
   docs: ['npm run test:docs-check', 'npm run test:brief-check', 'npm run test:copy-check', 'npm run check:docs', 'npm run check:brief', 'npm run check:copy', 'npm run check:ci'],
-  // The final gate runs regardless of dependency results, alongside its no-op completion barrier.
-  'ci-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
+  // The final gate of each workflow runs regardless of dependency results, alongside its no-op completion barrier.
+  'server-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
+  'desktop-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
   // The testkit artifact hand-off: rust-native builds and uploads it, go downloads it.
   'rust-native': [
     'cargo fmt --all --check',
@@ -393,7 +409,7 @@ const EXPECTED_GO_SETS = {
   'go-postgres': [{ pattern: './internal/store/...' }, { pattern: './internal/ops/...' }, { pattern: './internal/api/...', run: POSTGRES_API_RUN }],
 };
 
-export function assertGoShards(jobs, problems, sets = GO_SHARD_SETS) {
+export function assertGoShards(jobs, problems, sets = GO_SHARD_SETS, file = WORKFLOWS.server.file) {
   const names = Object.keys(sets).sort();
   if (JSON.stringify(names) !== JSON.stringify(Object.keys(EXPECTED_GO_SETS).sort())) {
     problems.push(`scripts/go-shard.mjs: the sharded sets must be exactly ${Object.keys(EXPECTED_GO_SETS).join(', ')}`);
@@ -406,18 +422,18 @@ export function assertGoShards(jobs, problems, sets = GO_SHARD_SETS) {
     const body = jobs[set];
     if (body === undefined || !Number.isInteger(sets[set]?.shards)) continue;
     if (!body.includes(goShardMatrix(set))) {
-      problems.push(`ci.yml: job "${set}" must be a fail-fast matrix of exactly its ${sets[set].shards} shards (scripts/go-shard.mjs SETS): ${goShardMatrix(set).trim().replaceAll('\n', ' ')}`);
+      problems.push(`${file}: job "${set}" must be a fail-fast matrix of exactly its ${sets[set].shards} shards (scripts/go-shard.mjs SETS): ${goShardMatrix(set).trim().replaceAll('\n', ' ')}`);
     }
-    if (!body.split('\n').includes(`    name: ${set}-\${{ matrix.shard }}`)) problems.push(`ci.yml: job "${set}" must be named ${set}-\${{ matrix.shard }}`);
+    if (!body.split('\n').includes(`    name: ${set}-\${{ matrix.shard }}`)) problems.push(`${file}: job "${set}" must be named ${set}-\${{ matrix.shard }}`);
     const steps = jobSteps(body);
     const shardSteps = steps.filter((step) => step.some((line) => line.includes('scripts/go-shard.mjs')));
     if (shardSteps.length !== 1 || !shardSteps[0].some((line) => line === `run: ${goShardCommand(set)}`)) {
-      problems.push(`ci.yml: job "${set}" must run its shard in exactly one step: ${goShardCommand(set)}`);
+      problems.push(`${file}: job "${set}" must run its shard in exactly one step: ${goShardCommand(set)}`);
     } else if (shardSteps[0].some((line) => /^if:/.test(line))) {
-      problems.push(`ci.yml: job "${set}"'s shard step must not be conditional`);
+      problems.push(`${file}: job "${set}"'s shard step must not be conditional`);
     }
     if (steps.some((step) => step.some((line) => /\bgo test\b/.test(line)))) {
-      problems.push(`ci.yml: job "${set}" must run its tests through scripts/go-shard.mjs only (another go test step would run them twice or outside the union check)`);
+      problems.push(`${file}: job "${set}" must run its tests through scripts/go-shard.mjs only (another go test step would run them twice or outside the union check)`);
     }
   }
 }
@@ -482,12 +498,12 @@ function assertPostgresAPITestsMatchRun(root, problems, regex = POSTGRES_API_RUN
  * package of every race-gated test and names each one exactly, and names no test that is not gated:
  * a renamed or deleted test leaves a -run alternative that matches nothing, which go test passes.
  */
-function assertRaceGatedTestsRunWithoutRace(root, goJob, problems) {
+function assertRaceGatedTestsRunWithoutRace(root, goJob, problems, file) {
   const gated = raceGatedTests(root);
   const line = goJob.split('\n').find((l) => /\bgo test\b/.test(l) && !/-race\b/.test(l) && / -run '/.test(l));
   if (line === undefined) {
     if (gated.length > 0) {
-      problems.push(`ci.yml: job "go-checks" has no non-race "go test ... -run '...'" step for the ${gated.length} race-gated test(s)`);
+      problems.push(`${file}: job "go-checks" has no non-race "go test ... -run '...'" step for the ${gated.length} race-gated test(s)`);
     }
     return;
   }
@@ -498,12 +514,12 @@ function assertRaceGatedTestsRunWithoutRace(root, goJob, problems) {
       problems.push(`${g.file}: an "if raceEnabled {" gate outside a Test function; the non-race step cannot name it`);
       continue;
     }
-    if (!pkgs.has(g.pkg)) problems.push(`ci.yml: job "go-checks"'s non-race step does not run ${g.pkg}, the package of race-gated ${g.name}`);
-    if (!names.has(g.name)) problems.push(`ci.yml: job "go-checks"'s non-race step does not name race-gated ${g.name} (${g.pkg}) in -run`);
+    if (!pkgs.has(g.pkg)) problems.push(`${file}: job "go-checks"'s non-race step does not run ${g.pkg}, the package of race-gated ${g.name}`);
+    if (!names.has(g.name)) problems.push(`${file}: job "go-checks"'s non-race step does not name race-gated ${g.name} (${g.pkg}) in -run`);
   }
   const known = new Set(gated.map((g) => g.name));
   for (const n of names) {
-    if (!known.has(n)) problems.push(`ci.yml: job "go-checks"'s non-race step names ${n || '(empty)'}, which is no race-gated test`);
+    if (!known.has(n)) problems.push(`${file}: job "go-checks"'s non-race step names ${n || '(empty)'}, which is no race-gated test`);
   }
 }
 
@@ -512,7 +528,7 @@ function assertRaceGatedTestsRunWithoutRace(root, goJob, problems) {
  * fail-closed). The per-job REQUIRED_STEPS pin it for the jobs that exist today; this rule is the
  * one that covers a job added tomorrow. A step is its `- ` list item and every line indented deeper.
  */
-function assertEveryUploadFailsOnNoFiles(text, problems, file = 'ci.yml') {
+function assertEveryUploadFailsOnNoFiles(text, problems, file) {
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     if (!/uses:\s*actions\/upload-artifact@/.test(lines[i])) continue;
@@ -536,7 +552,7 @@ function assertEveryUploadFailsOnNoFiles(text, problems, file = 'ci.yml') {
 }
 
 /** C16 / L-CI-05: also cover any wasm-pack build line added tomorrow. */
-function assertWasmPackUsesTheSizeProfile(text, problems, file = 'ci.yml') {
+function assertWasmPackUsesTheSizeProfile(text, problems, file) {
   text.split('\n').forEach((line, i) => {
     if (!line.includes('wasm-pack build')) return;
     if (!line.includes('--profile wasm-release') || / --release(?:\s|$)/.test(line)) {
@@ -631,7 +647,7 @@ function stepItems(lines) {
   });
 }
 
-function assertWasmJobsUseClang23(text, jobs, problems, file = 'ci.yml') {
+function assertWasmJobsUseClang23(text, jobs, problems, file) {
   const canonicalEnv = new Set(WASM_CLANG_ENV_BLOCK.split('\n').slice(1));
   const wasmJobs = Object.entries(jobs).filter(([, body]) => WASM_JOB.test(body));
   const allowedEnvLines = new Set();
@@ -694,7 +710,7 @@ export function jobSteps(body) {
 // Loading the complete module on Linux includes the cgo GTK setup frontend.
 // Keep it in vet/lint/vulnerability/race coverage, including future full-tree
 // jobs: provide headers before loading rather than hiding the package with cgo.
-function checkWholeModuleGTK(jobs, problems) {
+function checkWholeModuleGTK(jobs, problems, file) {
   // The go set's shards load ./... through the partitioner (scripts/go-shard.mjs).
   const loadsAll = line => /(?:\bgo\s+(?:vet|test|list|build)\b|\bgolangci-lint\s+run\b|\bgovulncheck(?:@\S+)?\b)[^\n]*\s\.\/\.\.\.(?=\s|$|[);|])/.test(line) ||
     /\bnode scripts\/go-shard\.mjs run go\s/.test(line);
@@ -703,10 +719,10 @@ function checkWholeModuleGTK(jobs, problems) {
     const steps = jobSteps(body), consumers = steps.map((step, index) => step.some(loadsAll) ? index : -1).filter(index => index >= 0);
     if (!consumers.length) continue;
     const gtk = steps.findIndex(step => step.length === 1 && step[0] === 'run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev');
-    if (gtk < 0 || consumers.some(index => index <= gtk)) problems.push(`ci.yml: job "${name}" must install GTK development headers before loading all Go packages`);
+    if (gtk < 0 || consumers.some(index => index <= gtk)) problems.push(`${file}: job "${name}" must install GTK development headers before loading all Go packages`);
     const header = body.split(/^ {4}steps:/m)[0];
     if (/\bCGO_ENABLED:\s*['"]?0\b/.test(header) || consumers.some(index => steps[index].some(line => !/^(?:name|id):/.test(line) && /\bCGO_ENABLED(?:=|:\s*['"]?)0\b|^if:/.test(line)))) {
-      problems.push(`ci.yml: job "${name}" must retain cgo GTK frontend coverage in whole-module checks`);
+      problems.push(`${file}: job "${name}" must retain cgo GTK frontend coverage in whole-module checks`);
     }
   }
 }
@@ -778,7 +794,7 @@ const SANDBOX_MAINTENANCE_ARTIFACT = [
 
 // Keep this feasibility proof independent of asset builds and long Windows tests.
 // Exact native lanes/commands prohibit extracted execution and host-policy overrides.
-function checkLinuxSandboxFoundationJob(jobs, problems) {
+function checkLinuxSandboxFoundationJob(jobs, problems, file) {
   if (!jobs['linux-sandbox-foundation']) return;
   const expected = [
     "needs: [changes]",
@@ -824,9 +840,9 @@ function checkLinuxSandboxFoundationJob(jobs, problems) {
     "if-no-files-found: error",
   ].join('\n');
   const actual = jobs['linux-sandbox-foundation'].split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#')).join('\n');
-  if (actual !== expected) problems.push('ci.yml: Linux sandbox foundation must run both fixed native Ubuntu lanes with unchanged host policy, pinned provisioning and the unfiltered FUSE feasibility fixture');
+  if (actual !== expected) problems.push(`${file}: Linux sandbox foundation must run both fixed native Ubuntu lanes with unchanged host policy, pinned provisioning and the unfiltered FUSE feasibility fixture`);
   const needs = /^ {4}needs: \[([^\]\n]*)\]$/m.exec(jobs.desktop ?? '')?.[1].split(',').map(name => name.trim()) ?? [];
-  if (!needs.includes('linux-sandbox-foundation')) problems.push('ci.yml: desktop must wait for Linux sandbox foundation');
+  if (!needs.includes('linux-sandbox-foundation')) problems.push(`${file}: desktop must wait for Linux sandbox foundation`);
 }
 
 /**
@@ -837,24 +853,24 @@ function checkLinuxSandboxFoundationJob(jobs, problems) {
  * the fake microphone's tone counts as speech). Matched on steps, never on substrings, so a commented-out step or a
  * comment naming the command satisfies nothing.
  */
-function checkSuiteSteps(jobs, problems) {
+function checkSuiteSteps(jobs, problems, file) {
   for (const [job, spec] of Object.entries(BROWSER_WEB_JOBS)) {
     if (!(job in jobs)) continue;
     const steps = jobSteps(jobs[job]);
     const command = browserSuiteCommand(spec);
     const suiteAt = steps.findIndex((s) => s[0] === `run: ${command}`);
-    if (suiteAt < 0) problems.push(`ci.yml: job "${job}" is missing: ${command} (a run step of its own)`);
+    if (suiteAt < 0) problems.push(`${file}: job "${job}" is missing: ${command} (a run step of its own)`);
     else if (!steps[suiteAt].includes(TESTKIT_ENV)) {
-      problems.push(`ci.yml: job "${job}" runs ${command} without its own env ${TESTKIT_ENV}`);
+      problems.push(`${file}: job "${job}" runs ${command} without its own env ${TESTKIT_ENV}`);
     }
     const suites = steps.filter((s) => /^run: .*test:e2e/.test(s[0]));
     if (suites.length !== 1 || (suiteAt >= 0 && suites[0] !== steps[suiteAt])) {
-      problems.push(`ci.yml: job "${job}" must run exactly one Playwright suite, ${command}, and no other test:e2e step`);
+      problems.push(`${file}: job "${job}" must run exactly one Playwright suite, ${command}, and no other test:e2e step`);
     }
     if (spec.engine !== 'firefox' || spec.suite === 'core') continue;
     const audioAt = steps.findIndex((s) => s[0] === 'run: sh scripts/ci-audio-server.sh');
-    if (audioAt < 0) problems.push(`ci.yml: job "${job}" is missing: sh scripts/ci-audio-server.sh (a run step of its own)`);
-    else if (suiteAt >= 0 && audioAt > suiteAt) problems.push(`ci.yml: ${job} audio server must start before the ${spec.suite} suite`);
+    if (audioAt < 0) problems.push(`${file}: job "${job}" is missing: sh scripts/ci-audio-server.sh (a run step of its own)`);
+    else if (suiteAt >= 0 && audioAt > suiteAt) problems.push(`${file}: ${job} audio server must start before the ${spec.suite} suite`);
   }
 }
 
@@ -888,7 +904,7 @@ function checkActionReference(line, file, number, problems) {
   const match = /^\s*(?:-\s*)?uses:\s*(\S+)/.exec(line);
   if (!match) return;
   const action = match[1];
-  if (action === './.github/workflows/desktop.yml' && file === 'ci.yml') return;
+  if (action === './.github/workflows/desktop.yml' && file === WORKFLOWS.desktop.file) return;
   if (!action.startsWith('actions/')) {
     problems.push(`${file}:${number}: ${action} is not a GitHub-owned action; use a reviewed local command`);
   } else if (!/^actions\/[\w-]+(?:\/[\w-]+)?@[0-9a-f]{40}$/.test(action)) {
@@ -896,20 +912,38 @@ function checkActionReference(line, file, number, problems) {
   }
 }
 
-export function checkWorkflow(root) {
-  const path = join(root, '.github', 'workflows', 'ci.yml');
-  const text = readFileSync(path, 'utf8');
+/**
+ * One CI workflow (server.yml or desktop-ci.yml) against its own job list, gates, watchdog barrier and ok check. Both
+ * run on every pull request and push to main, never filtered at the trigger, so a required check always reports.
+ */
+function checkCiWorkflow(root, workflow) {
+  const file = fileOf(workflow);
+  const { name: workflowName, ok, always } = WORKFLOWS[workflow];
+  const barrier = `${workflow}-work-complete`;
+  let text;
+  try { text = readFileSync(join(root, '.github', 'workflows', file), 'utf8'); } catch { return [`${file}: missing`]; }
   const problems = [];
+  const gates = JOB_GATES[workflow];
+  const requiredJobs = [...REQUIRED_JOBS[workflow], ...(workflow === 'desktop' ? Object.keys(BROWSER_WEB_JOBS) : [])];
+
+  // The release gates and ci-rerun-starved.yml find this workflow by name; a paths filter would leave its required
+  // check unreported on a pull request it skips.
+  let doc = null;
+  try { doc = yaml.load(text); } catch (error) { problems.push(`${file}: invalid YAML (${error.message.split('\n')[0]})`); }
+  if (doc !== null && doc?.name !== workflowName) problems.push(`${file}: the workflow must be named "${workflowName}" (the release gates and ci-rerun-starved.yml read it)`);
+  if (doc !== null && !drSame(doc?.on, { push: { branches: ['main'] }, pull_request: null })) {
+    problems.push(`${file}: must trigger on every pull_request and every push to main, with no paths or other filter at the trigger (area skipping is the changes job's)`);
+  }
 
   let currentJob = null;
   const workflowLines = text.split('\n');
   workflowLines.forEach((line, i) => {
-    checkActionReference(line, 'ci.yml', i + 1, problems);
+    checkActionReference(line, file, i + 1, problems);
     const jobKey = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
     if (jobKey !== null) currentJob = jobKey[1];
     for (const { re, what } of FORBIDDEN) {
       // Only the final gate and its no-op DAG barrier may run regardless of dependency results.
-      if (what === 'if: always()' && ['ci-ok', 'ci-work-complete'].includes(currentJob) && line === '    if: always()') continue;
+      if (what === 'if: always()' && [ok, barrier].includes(currentJob) && line === '    if: always()') continue;
       // Preserve only the bounded sandbox observation file after a failed
       // native test. This action cannot execute or bypass an acceptance step.
       if (what === 'if: always()' && currentJob === 'linux-sandbox-foundation' && workflowLines.slice(i, i + 6).join('\n') === [
@@ -923,28 +957,28 @@ export function checkWorkflow(root) {
       if (what === 'if: always()' && currentJob === 'linux-sandbox-foundation' &&
           [SANDBOX_MAINTENANCE_CLEANUP, SANDBOX_MAINTENANCE_ARTIFACT].some(block =>
             workflowLines.slice(i - 1, i - 1 + block.split('\n').length).join('\n') === block)) continue;
-      if (re.test(line)) problems.push(`ci.yml:${i + 1}: forbidden "${what}" — CI is fail-closed (R22)`);
+      if (re.test(line)) problems.push(`${file}:${i + 1}: forbidden "${what}" — CI is fail-closed (R22)`);
     }
     // v0.1.0-web3.1: only release.yml stamps a version; a ci build is 0.0.0-dev, so it is never mistaken for a release.
     // A quoted symbol (-X 'main.Version=…', -X "main.Version=…") and the -X= spelling stamp it all the same.
-    if (/-X[\s=]*['"]?main\.Version/.test(line)) problems.push(`ci.yml:${i + 1}: stamps main.Version; ci builds keep 0.0.0-dev (release.yml stamps the tag)`);
+    if (/-X[\s=]*['"]?main\.Version/.test(line)) problems.push(`${file}:${i + 1}: stamps main.Version; ci builds keep 0.0.0-dev (release.yml stamps the tag)`);
   });
 
   if (!/^concurrency:$/m.test(text) || !/cancel-in-progress: true/.test(text)) {
-    problems.push('ci.yml: missing the workflow-level concurrency block with cancel-in-progress: true');
+    problems.push(`${file}: missing the workflow-level concurrency block with cancel-in-progress: true`);
   }
   if (!/^concurrency:\n {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: true$/m.test(text)) {
-    problems.push('ci.yml: concurrency group must be workflow/ref so newer commits cancel obsolete runs for the same pull request');
+    problems.push(`${file}: concurrency group must be workflow/ref so newer commits cancel obsolete runs for the same pull request`);
   }
   if (!/^permissions:\n {2}contents: read$/m.test(text)) {
-    problems.push('ci.yml: the workflow-level token must be read-only (permissions: contents: read)');
+    problems.push(`${file}: the workflow-level token must be read-only (permissions: contents: read)`);
   }
   // gap-29 §4 ii: a workflow-level RUSTFLAGS overrides every target.*.rustflags outright.
   if (/^\s{2}RUSTFLAGS:/m.test(text)) {
-    problems.push('ci.yml: workflow-level RUSTFLAGS overrides .cargo/config.toml — use cargo clippy -- -D warnings');
+    problems.push(`${file}: workflow-level RUSTFLAGS overrides .cargo/config.toml — use cargo clippy -- -D warnings`);
   }
   if (!/^\s{2}CARGO_TERM_COLOR: always$/m.test(text)) {
-    problems.push('ci.yml: missing env CARGO_TERM_COLOR: always');
+    problems.push(`${file}: missing env CARGO_TERM_COLOR: always`);
   }
 
   const jobs = splitJobs(text);
@@ -956,75 +990,80 @@ export function checkWorkflow(root) {
       '    permissions:\n      contents: read\n      actions: write',
       '          persist-credentials: false',
       '      - run: python3 scripts/ci-watchdog.py\n        env:\n          GH_TOKEN: ${{ github.token }}',
+      `          CI_COMPLETION_JOBS: ${completionJobs(workflow)}`,
     ];
     const permissions = /^    permissions:\n((?:      [^\n]+\n)+)/m.exec(body)?.[1];
     const steps = jobSteps(body);
     const expectedSteps = [
       ['uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7', 'with:', 'persist-credentials: false'],
-      ['run: python3 scripts/ci-watchdog.py', 'env:', 'GH_TOKEN: ${{ github.token }}'],
+      ['run: python3 scripts/ci-watchdog.py', 'env:', 'GH_TOKEN: ${{ github.token }}', `CI_COMPLETION_JOBS: ${completionJobs(workflow)}`],
     ];
     if (required.some(value => !body.includes(value)) || /^    (?:needs|name):/m.test(body) || /secrets\./.test(body) ||
         permissions !== '      contents: read\n      actions: write\n' || JSON.stringify(steps) !== JSON.stringify(expectedSteps)) {
-      problems.push('ci.yml: unsafe watchdog: require an independent, bounded, same-repository watcher with only its job token and credential-free checkout');
+      problems.push(`${file}: unsafe watchdog: require an independent, bounded, same-repository watcher with only its job token and credential-free checkout`);
     }
   }
-  for (const name of [...REQUIRED_JOBS, ...Object.keys(BROWSER_WEB_JOBS)]) {
+  for (const name of requiredJobs) {
     if (!(name in jobs)) {
-      problems.push(`ci.yml: missing job "${name}"`);
+      problems.push(`${file}: missing job "${name}"`);
       continue;
     }
     for (const step of REQUIRED_STEPS[name] ?? []) {
-      if (!jobs[name].includes(step)) problems.push(`ci.yml: job "${name}" is missing: ${step}`);
+      if (!jobs[name].includes(step)) problems.push(`${file}: job "${name}" is missing: ${step}`);
     }
   }
-  checkWholeModuleGTK(jobs, problems);
-  checkGoModuleDownloads(jobs, problems, 'ci.yml');
-  checkLinuxSandboxFoundationJob(jobs, problems);
+  // Each workflow holds its own jobs only: a job of the other one here would run twice, or gate the wrong release.
+  for (const name of Object.keys(jobs)) {
+    if (!requiredJobs.includes(name)) problems.push(`${file}: job "${name}" does not belong to the ${workflowName} workflow (REQUIRED_JOBS.${workflow})`);
+  }
+  checkWholeModuleGTK(jobs, problems, file);
+  checkGoModuleDownloads(jobs, problems, file);
+  checkLinuxSandboxFoundationJob(jobs, problems, file);
 
   // Every test/build job needs `changes` and carries its gate, or it would run on a docs-only pull
   // request (or, with a wrong condition, be skipped on code).
   for (const [name, body] of Object.entries(jobs)) {
     const needs = /^ {4}needs:\s*\[([^\]]*)\]\s*$/m.exec(body);
     const needList = needs === null ? [] : needs[1].split(',').map((s) => s.trim());
-    if (name === 'ci-work-complete') {
-      const real = Object.keys(jobs).filter(other => !['ci-ok', 'ci-watchdog', 'ci-work-complete'].includes(other));
+    if (name === barrier) {
+      const real = Object.keys(jobs).filter(other => ![ok, 'ci-watchdog', barrier].includes(other));
       if (needList.length !== real.length || real.some(other => !needList.includes(other)) ||
           !body.split('\n').includes('    if: always()') ||
           !body.includes('    timeout-minutes: 2') ||
           jobSteps(body).length !== 1 || !body.includes('      - run: echo "All CI work reached a terminal result"')) {
-        problems.push('ci.yml: completion barrier must wait for every real job, exclude the watcher/final gate, and perform only its bounded no-op');
+        problems.push(`${file}: completion barrier must wait for every real job, exclude the watcher/final gate, and perform only its bounded no-op`);
       }
       continue;
     }
-    if (name === 'ci-ok') {
-      const others = Object.keys(jobs).filter(other => other !== 'ci-ok');
+    if (name === ok) {
+      const others = Object.keys(jobs).filter(other => other !== ok);
       if (needList.length !== others.length || new Set(needList).size !== others.length || needList.some(other => !others.includes(other))) {
-        problems.push('ci.yml: job "ci-ok" must list every other job exactly once in its needs:');
+        problems.push(`${file}: job "${ok}" must list every other job of its workflow exactly once in its needs:`);
       }
-      if (!body.split('\n').includes('    if: always()')) problems.push('ci.yml: job "ci-ok" must carry the job-level if: always(), or it is skipped when a job fails');
+      if (!body.split('\n').includes('    if: always()')) problems.push(`${file}: job "${ok}" must carry the job-level if: always(), or it is skipped when a job fails`);
       if (!body.includes("      - if: needs.ci-watchdog.result == 'skipped' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)\n        run: exit 1")) {
-        problems.push('ci.yml: job "ci-ok" may accept a skipped watcher only for fork pull requests');
+        problems.push(`${file}: job "${ok}" may accept a skipped watcher only for fork pull requests`);
       }
       for (const other of Object.keys(jobs)) {
-        if (other !== 'ci-ok' && !needList.includes(other)) problems.push(`ci.yml: job "ci-ok" must list "${other}" in its needs:`);
+        if (other !== ok && !needList.includes(other)) problems.push(`${file}: job "${ok}" must list "${other}" in its needs:`);
       }
       continue;
     }
-    if (CHANGE_GATE_EXEMPT.includes(name)) {
-      if (name === 'docs' && (needList.includes('changes') || /^ {4}if:/m.test(body))) problems.push(`ci.yml: job "${name}" must run for every change: no needs: changes, no job-level if:`);
+    if (always.includes(name)) {
+      if (name === 'docs' && (needList.includes('changes') || /^ {4}if:/m.test(body))) problems.push(`${file}: job "${name}" must run for every change: no needs: changes, no job-level if:`);
       continue;
     }
-    if (!(name in JOB_GATES)) {
-      problems.push(`ci.yml: job "${name}" has no gate in JOB_GATES (scripts/ci-areas.mjs)`);
+    if (!(name in gates)) {
+      problems.push(`${file}: job "${name}" has no gate in JOB_GATES.${workflow} (scripts/ci-areas.mjs)`);
       continue;
     }
-    if (!needList.includes('changes')) problems.push(`ci.yml: job "${name}" must list "changes" in its needs:`);
-    if (!body.split('\n').includes(`    if: ${gateExpression(name)}`)) problems.push(`ci.yml: job "${name}" must carry the job-level if: ${gateExpression(name)}`);
+    if (!needList.includes('changes')) problems.push(`${file}: job "${name}" must list "changes" in its needs:`);
+    if (!body.split('\n').includes(`    if: ${gateExpression(workflow, name)}`)) problems.push(`${file}: job "${name}" must carry the job-level if: ${gateExpression(workflow, name)}`);
     // A job whose needs are skipped is skipped too, so its gate may not be true where a needed job's is false.
     for (const need of needList) {
-      if (!(need in JOB_GATES)) continue;
-      if (reachableOutputs().some((outputs) => jobRuns(name, outputs) && !jobRuns(need, outputs))) {
-        problems.push(`ci.yml: job "${name}" can run while the job it needs, "${need}", is skipped`);
+      if (!(need in gates)) continue;
+      if (reachableOutputs().some((outputs) => jobRuns(workflow, name, outputs) && !jobRuns(workflow, need, outputs))) {
+        problems.push(`${file}: job "${name}" can run while the job it needs, "${need}", is skipped`);
       }
     }
   }
@@ -1033,21 +1072,24 @@ export function checkWorkflow(root) {
   if ('ui' in jobs) {
     const runs = jobs.ui.split('\n').map((line) => line.trim());
     for (const command of UI_SHOTS_2C) {
-      if (!runs.includes(`- run: ${command}`)) problems.push(`ci.yml: job "ui" is missing the web-2c screenshot step: ${command}`);
+      if (!runs.includes(`- run: ${command}`)) problems.push(`${file}: job "ui" is missing the web-2c screenshot step: ${command}`);
     }
     for (const command of UI_SHOTS_3) {
-      if (!runs.includes(`- run: ${command}`)) problems.push(`ci.yml: job "ui" is missing the web-3 screenshot step: ${command}`);
+      if (!runs.includes(`- run: ${command}`)) problems.push(`${file}: job "ui" is missing the web-3 screenshot step: ${command}`);
     }
   }
 
-  assertGoShards(jobs, problems);
-  assertPostgresAPITestsMatchRun(root, problems);
-  assertEveryUploadFailsOnNoFiles(text, problems);
-  assertWasmPackUsesTheSizeProfile(text, problems);
-  assertWasmJobsUseClang23(text, jobs, problems);
+  // The Go shard sets and the Postgres filter are the server workflow's, so only it reports on them.
+  if (workflow === 'server') {
+    assertGoShards(jobs, problems, GO_SHARD_SETS, file);
+    assertPostgresAPITestsMatchRun(root, problems);
+  }
+  assertEveryUploadFailsOnNoFiles(text, problems, file);
+  assertWasmPackUsesTheSizeProfile(text, problems, file);
+  assertWasmJobsUseClang23(text, jobs, problems, file);
 
   // Jonas, 2026-10-21: no container image is built or published; deploy/install.sh is the one install.
-  if (/docker\/|ghcr\.io|packages: write|build-ci-image|\bimage:\s*\$\{\{/.test(text)) problems.push('ci.yml: builds or pushes a container image; the container image was dropped, deploy/install.sh is the one install');
+  if (/docker\/|ghcr\.io|packages: write|build-ci-image|\bimage:\s*\$\{\{/.test(text)) problems.push(`${file}: builds or pushes a container image; the container image was dropped, deploy/install.sh is the one install`);
 
   // Plan B task 8 owns the `go` job; this plan owns `rust-wasi`. `actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8`
   // fetches from the same workflow run, so GitHub schedules `go` after `rust-wasi` only if a `needs:`
@@ -1057,7 +1099,7 @@ export function checkWorkflow(root) {
   for (const job of ['go', 'go-checks']) {
     if (!(job in jobs)) continue;
     if (!/^\s*needs:.*rust-wasi/m.test(jobs[job])) {
-      problems.push(`ci.yml: job "${job}" downloads the rust-wasi artifact but has no "needs: rust-wasi"`);
+      problems.push(`${file}: job "${job}" downloads the rust-wasi artifact but has no "needs: rust-wasi"`);
     }
     // gap-31 §4 item 2 / NV-14 (resolved): the current majors deliberately pair
     // `actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7` (this file's `rust-wasi` job) with `actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8`.
@@ -1065,33 +1107,33 @@ export function checkWorkflow(root) {
     // with v4, the untested combination B15 was created to avoid.
     if (!jobs[job].includes('actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8')) {
       problems.push(
-        `ci.yml: job "${job}" must use actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8 to pair with rust-wasi's actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7 (gap-31 §4 item 2)`,
+        `${file}: job "${job}" must use actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8 to pair with rust-wasi's actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7 (gap-31 §4 item 2)`,
       );
     }
   }
   // The go job has no testkit binary, so requiring one there fails every run.
   if ('go' in jobs && jobs.go.includes('DILLA_TESTKIT_REQUIRED')) {
-    problems.push('ci.yml: job "go" requires the testkit but does not download it; the harness is go-harness\'s');
+    problems.push(`${file}: job "go" requires the testkit but does not download it; the harness is go-harness's`);
   }
-  if ('go-checks' in jobs) assertRaceGatedTestsRunWithoutRace(root, jobs['go-checks'], problems);
+  if ('go-checks' in jobs) assertRaceGatedTestsRunWithoutRace(root, jobs['go-checks'], problems, file);
 
   if ('go-ds' in jobs && !/^\s*needs:.*rust-wasi/m.test(jobs['go-ds'])) {
-    problems.push('ci.yml: job "go-ds" downloads the rust-wasi artifact but has no "needs: rust-wasi"');
+    problems.push(`${file}: job "go-ds" downloads the rust-wasi artifact but has no "needs: rust-wasi"`);
   }
 
   if ('go-api' in jobs && !/^\s*needs:.*rust-wasi/m.test(jobs['go-api'])) {
-    problems.push('ci.yml: job "go-api" downloads the rust-wasi artifact but has no "needs: rust-wasi"');
+    problems.push(`${file}: job "go-api" downloads the rust-wasi artifact but has no "needs: rust-wasi"`);
   }
 
   if ('go-harness' in jobs) {
     const harness = jobs['go-harness'];
     if (!/^\s*needs:.*rust-wasi/m.test(harness)) {
-      problems.push('ci.yml: job "go-harness" downloads the rust-wasi artifact but has no "needs: rust-wasi"');
+      problems.push(`${file}: job "go-harness" downloads the rust-wasi artifact but has no "needs: rust-wasi"`);
     }
     // The testkit binary is built by `rust-native` and downloaded by `go-harness`; without the
     // edge the download finds nothing in the run and the job is red on every push.
     if (!/^\s*needs:.*rust-native/m.test(harness)) {
-      problems.push('ci.yml: job "go-harness" downloads the rust-native testkit artifact but has no "needs: rust-native"');
+      problems.push(`${file}: job "go-harness" downloads the rust-native testkit artifact but has no "needs: rust-native"`);
     }
   }
 
@@ -1099,21 +1141,21 @@ export function checkWorkflow(root) {
     const extractAt = jobs['browser-media'].indexOf('node packages/media/scripts/extract-rnnoise-wasm.mjs');
     const suiteAt = jobs['browser-media'].indexOf('npm run test:e2e:media -w @dilla/e2e');
     if (extractAt !== -1 && suiteAt !== -1 && extractAt > suiteAt) {
-      problems.push('ci.yml: browser-media RNNoise extraction must run before the media suite');
+      problems.push(`${file}: browser-media RNNoise extraction must run before the media suite`);
     }
     // Firefox's AudioContext stays suspended on a runner with no audio server (first run of PR #7).
     const audioAt = jobs['browser-media'].indexOf('sh scripts/ci-audio-server.sh');
     if (audioAt !== -1 && suiteAt !== -1 && audioAt > suiteAt) {
-      problems.push('ci.yml: browser-media audio server must start before the media suite');
+      problems.push(`${file}: browser-media audio server must start before the media suite`);
     }
     for (const need of ['rust-wasi', 'rust-native']) {
       if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs['browser-media'])) {
-        problems.push(`ci.yml: job "browser-media" downloads the ${need} artifact but has no "needs: ${need}"`);
+        problems.push(`${file}: job "browser-media" downloads the ${need} artifact but has no "needs: ${need}"`);
       }
     }
   }
 
-  checkSuiteSteps(jobs, problems);
+  checkSuiteSteps(jobs, problems, file);
 
   // Task 26: every artifact consumer waits for the producer in the same workflow run.
   for (const [job, needs] of [
@@ -1124,7 +1166,7 @@ export function checkWorkflow(root) {
     if (!(job in jobs)) continue;
     for (const need of needs) {
       if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs[job])) {
-        problems.push(`ci.yml: job "${job}" downloads the ${need} artifact but has no "needs: ${need}"`);
+        problems.push(`${file}: job "${job}" downloads the ${need} artifact but has no "needs: ${need}"`);
       }
     }
   }
@@ -1137,17 +1179,21 @@ export function checkWorkflow(root) {
     const guardAt = body.indexOf('content="placeholder"');
     const buildAt = body.indexOf(build);
     if (fetchAt !== -1 && guardAt !== -1 && buildAt !== -1 && !(fetchAt < guardAt && guardAt < buildAt)) {
-      problems.push(`ci.yml: job "${job}" must fetch dilla-web-dist into internal/web/dist and refuse the placeholder before it builds`);
+      problems.push(`${file}: job "${job}" must fetch dilla-web-dist into internal/web/dist and refuse the placeholder before it builds`);
     }
   }
 
   return problems;
 }
 
+export const checkServerWorkflow = (root) => checkCiWorkflow(root, 'server');
+export const checkDesktopCiWorkflow = (root) => checkCiWorkflow(root, 'desktop');
+
 /**
  * The release workflow (install-release, 2026-10-14): a v* tag builds the assets deploy/install.sh downloads and
- * checks. It builds what it ships, so it is held to ci.yml's rules for the same jobs (fail-closed lines, the clang
- * 23 pin, the size profile, the placeholder guard), and it uses only actions ci.yml uses at the same versions. It
+ * checks. It builds what it ships, so it is held to the CI workflows' rules for the same jobs (fail-closed lines, the
+ * clang 23 pin, the size profile, the placeholder guard), and it uses only actions server.yml or desktop-ci.yml uses at
+ * the same versions. It
  * builds and pushes no container image: the release is the native install's (Jonas, 2026-10-14).
  */
 export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'bot-release', 'go-release', 'release'];
@@ -1157,7 +1203,7 @@ const RELEASE_STEPS = {
     'test "$GITHUB_REF" = "refs/tags/$tag"',
     'INPUT_TAG: ${{ inputs.tag }}',
     '*-*) prerelease=true ;;',
-    // Only a commit on main, which ci.yml has gated, is released (review M6).
+    // Only a commit on main, which the CI workflows have gated, is released (review M6).
     'git merge-base --is-ancestor "$GITHUB_SHA" origin/main',
     // v0.1.0-web3.1: the version go-release stamps into dillad is the validated tag without its leading v.
     'echo "version=${tag#v}" >> "$GITHUB_OUTPUT"',
@@ -1216,7 +1262,7 @@ const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'bot-release
 export function checkReleaseWorkflow(root) {
   const file = 'release.yml';
   const text = readFileSync(join(root, '.github', 'workflows', file), 'utf8');
-  const ci = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
+  const ci = Object.values(WORKFLOWS).map(({ file: ciFile }) => { try { return readFileSync(join(root, '.github', 'workflows', ciFile), 'utf8'); } catch { return ''; } }).join('\n');
   const problems = [];
   const lines = text.split('\n');
   checkGoModuleDownloads(splitJobs(text), problems, file);
@@ -1232,7 +1278,7 @@ export function checkReleaseWorkflow(root) {
     }
     const uses = /^\s*(?:- )?uses:\s*(\S+)/.exec(line);
     if (uses && !new RegExp(`uses:\\s*${uses[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`, 'm').test(ci)) {
-      problems.push(`${file}:${i + 1}: ${uses[1]} is not an action ci.yml uses at that version; pin actions as ci.yml does`);
+      problems.push(`${file}:${i + 1}: ${uses[1]} is not an action server.yml or desktop-ci.yml uses at that version; pin actions as they do`);
     }
   });
   if (!/^ {2}push:\n {4}tags: \['v\*'\]$/m.test(text)) problems.push(`${file}: must run on a push of tags 'v*'`);
@@ -1939,7 +1985,7 @@ export function checkDesktopReleaseWorkflow(root) {
 
 /**
  * ci-rerun-starved.yml holds `actions: write` on a workflow_run event, so it is pinned as a privileged workflow:
- * it fires only on the completed ci run, its sole permission is actions: write (contents: read at most), it
+ * it fires only on a completed server or desktop run, its sole permission is actions: write (contents: read at most), it
  * re-runs attempt 1 only, checks out the default branch and never the triggering run's code, and takes the
  * run's id and attempt through env rather than inline in a command.
  */
@@ -1955,10 +2001,11 @@ export function checkRerunStarvedWorkflow(root) {
     text = readFileSync(join(root, '.github', 'workflows', file), 'utf8');
     doc = yaml.load(text);
   } catch (error) { return [`${file}: ${error.code === 'ENOENT' ? 'missing' : `invalid YAML (${error.message.split('\n')[0]})`}`]; }
-  // The CI workflow's own name, so renaming it cannot silently unhook this one.
-  let ciName = 'ci';
-  try { ciName = yaml.load(readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8'))?.name ?? 'ci'; } catch { /* checkWorkflow reports a missing ci.yml */ }
-  if (!drSame(doc?.on, { workflow_run: { workflows: [ciName], types: ['completed'] } })) fail(`must trigger only on workflow_run of "${ciName}", types [completed], no branches`);
+  // The CI workflows' own names, so renaming one cannot silently unhook this one.
+  const ciNames = Object.values(WORKFLOWS).map(({ file: ciFile, name }) => {
+    try { return yaml.load(readFileSync(join(root, '.github', 'workflows', ciFile), 'utf8'))?.name ?? name; } catch { return name; /* checkCiWorkflow reports it missing */ }
+  });
+  if (!drSame(doc?.on, { workflow_run: { workflows: ciNames, types: ['completed'] } })) fail(`must trigger only on workflow_run of ${ciNames.map((n) => `"${n}"`).join(' and ')}, types [completed], no branches`);
   if (!drSame(doc?.permissions, { actions: 'write' })) fail('the workflow permissions must be exactly actions: write');
   const jobs = Object.values(doc?.jobs ?? {});
   if (jobs.length !== 1) fail('must have exactly one job');
@@ -1983,16 +2030,19 @@ export function checkRerunStarvedWorkflow(root) {
 }
 
 /**
- * `npm run ci:local` derives its jobs from ci.yml (scripts/ci-local-plan.mjs): a job, step, action, service, `if:` or
- * expression it cannot map or explicitly skip fails here, so the local mirror cannot fall behind the workflow.
+ * `npm run ci:local` derives its jobs from server.yml and desktop-ci.yml (scripts/ci-local-plan.mjs): a job, step,
+ * action, service, `if:` or expression it cannot map or explicitly skip fails here, so the local mirror cannot fall
+ * behind either workflow.
  */
 export function checkLocalMirror(root) {
-  return localMirrorProblems(readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8'));
+  return localMirrorProblems(Object.fromEntries(Object.entries(WORKFLOWS).map(([workflow, { file }]) => {
+    try { return [workflow, readFileSync(join(root, '.github', 'workflows', file), 'utf8')]; } catch { return [workflow, null]; }
+  })));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = [...checkWorkflow(root), ...checkReleaseWorkflow(root), ...checkDesktopWorkflow(root), ...checkDesktopReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkLocalMirror(root)];
+  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkDesktopWorkflow(root), ...checkDesktopReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkLocalMirror(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }

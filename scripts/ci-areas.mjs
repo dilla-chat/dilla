@@ -3,14 +3,16 @@ import { appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 /**
- * Which parts of the tree a change touches, and so which jobs of .github/workflows/ci.yml it runs. The `changes` job
- * runs this file and writes one boolean output per area; every other job is gated on the outputs named for it in
- * JOB_GATES (scripts/check-ci-workflow.mjs holds ci.yml to that table). A skipped job counts as passed for a required
- * check, so branch protection keeps working.
+ * Which parts of the tree a change touches, and so which jobs of the two CI workflows (WORKFLOWS: server.yml and
+ * desktop-ci.yml) it runs. Each workflow's `changes` job runs this file and writes one boolean output per area; every
+ * other job is gated on the outputs named for it in JOB_GATES[workflow] (scripts/check-ci-workflow.mjs holds each file
+ * to its table). A skipped job counts as passed for a required check, so branch protection keeps working: both
+ * workflows run on every pull request, and their aggregate checks (server-ok, desktop-ok) always report.
  *
  * Areas: go, core, web, e2e, and text (the profile-text tables: the generator, the tables and the rule, which the
  * `node` job's step that regenerates them against unicode.org runs for). `code` is true when anything other than docs changed. Docs-only changes (every file
- * under docs/ or a *.md at any depth, README.md and protocol/*.md included) set no area, so only the `docs` job runs.
+ * under docs/ or a *.md at any depth, README.md and protocol/*.md included) set no area, so only each workflow's
+ * infrastructure (WORKFLOWS[workflow].always: changes, server's docs, the watchdog, the barrier and the ok check) runs.
  *
  * Fail safe: a push, any event that is not a pull request, a diff that cannot be computed, an empty diff and a file
  * no rule names all turn every area on.
@@ -65,63 +67,83 @@ export const PATH_RULES = [
   { areas: ['web'], patterns: ['internal/sfu/testdata/**'] },
 ];
 
-/** What an area drags in with it: the WASI core is used by the Go tests, and desktop acceptance runs the server and bundled client together. */
+/**
+ * What an area drags in with it: the WASI core is used by the Go tests, and the desktop suites run the web client. A
+ * server-only (go) change does not drag in the desktop lane (e2e): desktop acceptance of a server change is the nightly
+ * desktop run's, so a server change is never blocked on desktop e2e (plan 2026-11-05, Task 6).
+ */
 export const FORCES = {
   ci: ['go', 'core', 'web', 'e2e', 'text'],
   core: ['go', 'web', 'e2e'],
-  go: ['e2e'],
+  go: [],
   web: ['e2e'],
   e2e: [],
   text: [],
 };
 
 /**
- * The outputs each job of ci.yml is gated on (OR). A job missing here is `changes` or `docs`, which always run.
- * Because the areas imply each other (FORCES), `e2e` is in practice "any code" and `web` is "web or core".
- * - rust-native and rust-wasi run for any code: go-harness and shared integration and desktop suites download the testkit binary and
- *   the WASI core they build. rust-native's lint and test steps are gated on core at step level.
- * - go-release builds the embedded client.
+ * The two CI workflows. Each is always triggered and reports one aggregate check (`ok`); `always` are its
+ * infrastructure jobs, which carry no area gate and run for every change. The release gates read the workflow `name`.
  */
-export const JOB_GATES = {
-  node: ['code'],
-  ui: ['web'],
-  'rust-native': ['code'],
-  // Besides the wasm core's tests it runs packages/media's typecheck, wasm tests and the LiveKit schema check.
-  'rust-wasm-node': ['web'],
-  'rust-wasi': ['code'],
-  vectors: ['core'],
-  'browser-spike': ['e2e'],
-  'browser-media': ['e2e'],
-  'web-build': ['e2e'],
-  'linux-sandbox-foundation': ['e2e'],
-  desktop: ['e2e'],
-  'core-integration': ['e2e'],
-  deny: ['core'],
-  go: ['go'],
-  'go-checks': ['go'],
-  'go-native': ['go'],
-  'go-ds': ['go'],
-  'go-api': ['go'],
-  'go-harness': ['go'],
-  'go-fts5-arm64': ['go'],
-  'go-lint': ['go'],
-  'go-vuln': ['go'],
-  'go-sqlc': ['go'],
-  'go-postgres': ['go'],
-  'go-release': ['go', 'web'],
+export const WORKFLOWS = {
+  server: { file: 'server.yml', name: 'server', ok: 'server-ok', always: ['ci-watchdog', 'changes', 'docs', 'server-work-complete', 'server-ok'] },
+  desktop: { file: 'desktop-ci.yml', name: 'desktop', ok: 'desktop-ok', always: ['ci-watchdog', 'changes', 'desktop-work-complete', 'desktop-ok'] },
 };
 
 /**
- * The `if:` expression ci.yml must carry for a job. It tests `!= 'false'`, not `== 'true'`, so an output that is
+ * The outputs each job of each workflow is gated on (OR). A job missing here is one of the workflow's `always` jobs.
+ * Because the areas imply each other (FORCES), `web` is "web or core" and `e2e` is "web, core or e2e".
+ * - rust-native and rust-wasi run for any code: go-harness, go-native and the shared integration and desktop suites
+ *   download the testkit binary, the native helper and the WASI core they build. rust-native's lint and test steps are
+ *   gated on core at step level. Artifacts never cross workflows, so each workflow builds its own.
+ * - go-release builds the embedded client; server's web-build exists to feed it, so it shares go-release's gate.
+ */
+const RUST_ARTIFACTS = { 'rust-native': ['code'], 'rust-wasi': ['code'] };
+export const JOB_GATES = {
+  server: {
+    ...RUST_ARTIFACTS,
+    vectors: ['core'],
+    'web-build': ['go', 'web'],
+    deny: ['core'],
+    go: ['go'],
+    'go-checks': ['go'],
+    'go-native': ['go'],
+    'go-ds': ['go'],
+    'go-api': ['go'],
+    'go-harness': ['go'],
+    'go-fts5-arm64': ['go'],
+    'go-lint': ['go'],
+    'go-vuln': ['go'],
+    'go-sqlc': ['go'],
+    'go-postgres': ['go'],
+    'go-release': ['go', 'web'],
+  },
+  desktop: {
+    node: ['code'],
+    ui: ['web'],
+    // Besides the wasm core's tests it runs packages/media's typecheck, wasm tests and the LiveKit schema check.
+    'rust-wasm-node': ['web'],
+    ...RUST_ARTIFACTS,
+    'browser-spike': ['e2e'],
+    'browser-media': ['e2e'],
+    'web-build': ['e2e'],
+    'linux-sandbox-foundation': ['e2e'],
+    desktop: ['e2e'],
+    'core-integration': ['e2e'],
+  },
+};
+
+/**
+ * The `if:` expression a workflow must carry for a job. It tests `!= 'false'`, not `== 'true'`, so an output that is
  * missing or empty (a renamed step id, say) runs the job instead of silently skipping it.
  */
-export function gateExpression(job) {
-  return JOB_GATES[job].map((output) => `needs.changes.outputs.${output} != 'false'`).join(' || ');
+export function gateExpression(workflow, job) {
+  return JOB_GATES[workflow][job].map((output) => `needs.changes.outputs.${output} != 'false'`).join(' || ');
 }
 
 /** Whether a job runs for a set of outputs (as areasFor returns them): like the expression, anything but false runs it. */
-export function jobRuns(job, outputs) {
-  return JOB_GATES[job].some((output) => outputs[output] !== false);
+export function jobRuns(workflow, job, outputs) {
+  return JOB_GATES[workflow][job].some((output) => outputs[output] !== false);
 }
 
 const compiled = new Map();
@@ -214,7 +236,7 @@ export function reachableOutputs(files = null) {
 }
 
 /**
- * The outputs for an event. Only a pull request is narrowed; a push (main) runs everything. `diff` returns the
+ * The outputs for an event, the same for both workflows. Only a pull request is narrowed; a push (main) runs everything. `diff` returns the
  * changed paths as an array and may throw.
  */
 export function computeAreas({ eventName, baseSha, diff }) {

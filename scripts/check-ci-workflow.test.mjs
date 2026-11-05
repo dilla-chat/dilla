@@ -9,14 +9,22 @@ import { fileURLToPath } from 'node:url';
 // Every fixture lives under one per-process root that is removed on exit, so test runs never pile up in the temp dir.
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
-import { gateExpression, JOB_GATES } from './ci-areas.mjs';
-import { checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkWorkflow, DESKTOP_RELEASE_ACTIONS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
+import { gateExpression, JOB_GATES, WORKFLOWS } from './ci-areas.mjs';
+import { checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkServerWorkflow, DESKTOP_RELEASE_ACTIONS, REQUIRED_JOBS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
 const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta.url));
 const REPO_ROOT = join(dirname(SCRIPT_PATH), '..');
-const REAL_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+const REAL_SERVER = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'server.yml'), 'utf8');
+const REAL_DESKTOP_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'desktop-ci.yml'), 'utf8');
+// A fixture holds both CI workflows in one text, server.yml first, split at this line (fixture() writes them apart): a
+// test edits either file with one replace. A job both carry is edited in server.yml, its first occurrence.
+const SPLIT = '\n# ---- desktop-ci.yml ----\n';
+const REAL_CI = REAL_SERVER + SPLIT + REAL_DESKTOP_CI;
+const checkWorkflow = (root) => [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root)];
+// The file that reports on a job a fixture edits (its first occurrence).
+const fileOfJob = (job) => (REQUIRED_JOBS.server.includes(job) ? 'server.yml' : 'desktop-ci.yml');
 
 test('whole-module Go jobs provision GTK development files before package loading', () => {
   for (const name of ['go', 'go-checks', 'go-lint', 'go-vuln']) {
@@ -35,14 +43,14 @@ test('GTK provisioning cannot be omitted, postponed or bypassed by excluding cgo
     for (const changed of [body.replace(setup, ''), body.replace('libgtk-3-dev', 'libgtk-3-0'),
       body.replace(setup, '      - if: false\n        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev\n'),
       body.replace(setup, '') + setup]) {
-      assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('GTK')), name);
+      assert.ok(checkWorkflow(fixture(GOOD.replace(body, () => changed))).some(problem => problem.includes('GTK')), name);
     }
   }
   const body = jobBody('go-vuln');
   for (const changed of [body.replace('run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...', 'run: CGO_ENABLED=0 go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...'),
     body.replace('    steps:', '    env:\n      CGO_ENABLED: 0\n    steps:')]) {
     assert.notEqual(changed, body);
-    assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => problem.includes('GTK')));
+    assert.ok(checkWorkflow(fixture(GOOD.replace(body, () => changed))).some(problem => problem.includes('GTK')));
   }
 });
 
@@ -161,11 +169,11 @@ test('managed maintenance cleanup allowance is confined to exact job and finaliz
 });
 
 test('Linux sandbox foundation is required exactly once by completion and final gates', () => {
-  for (const name of ['ci-work-complete', 'ci-ok']) {
+  for (const name of ['desktop-work-complete', 'desktop-ok']) {
     const body = jobBody(name);
     for (const replacement of ['', 'linux-sandbox-foundation, linux-sandbox-foundation, ']) {
       const changed = body.replace('linux-sandbox-foundation, ', replacement); assert.notEqual(changed, body);
-      assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => name === 'ci-ok' ? problem.includes('"ci-ok"') : problem.includes('completion barrier')));
+      assert.ok(checkWorkflow(fixture(GOOD.replace(body, changed))).some(problem => name === 'desktop-ok' ? problem.includes('"desktop-ok"') : problem.includes('completion barrier')));
     }
   }
 });
@@ -456,7 +464,7 @@ test('a desktop client or voice step with --max-failures is reported', () => {
 });
 
 test('CI rejects removing the whole-run watcher or its completion barrier', () => {
-  for (const name of ['ci-watchdog', 'ci-work-complete']) {
+  for (const name of ['ci-watchdog', 'server-work-complete', 'desktop-work-complete']) {
     const changed = REAL_CI.replace(new RegExp(`^  ${name}:\\n[\\s\\S]*?(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm'), '');
     assert.notEqual(changed, REAL_CI);
     const problems = checkWorkflow(fixture(changed));
@@ -476,6 +484,11 @@ test('CI rejects an unsafe, delayed or unbounded whole-run watcher', () => {
     ['GH_TOKEN: ${{ github.token }}', 'GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}'],
     ['  ci-watchdog:\n', '  ci-watchdog:\n    needs: [changes]\n'],
     ['run: python3 scripts/ci-watchdog.py', 'run: echo done'],
+    // Each workflow's own barrier: server's without docs would finish before its docs job, desktop's has no docs.
+    ['CI_COMPLETION_JOBS: changes docs server-work-complete', 'CI_COMPLETION_JOBS: changes server-work-complete'],
+    ['CI_COMPLETION_JOBS: changes desktop-work-complete', 'CI_COMPLETION_JOBS: changes docs desktop-work-complete'],
+    ['CI_COMPLETION_JOBS: changes desktop-work-complete', 'CI_COMPLETION_JOBS: changes server-work-complete'],
+    ['          CI_COMPLETION_JOBS: changes docs server-work-complete\n', ''],
   ]) {
     const changed = REAL_CI.replace(before, after);
     assert.notEqual(changed, REAL_CI, before);
@@ -485,9 +498,12 @@ test('CI rejects an unsafe, delayed or unbounded whole-run watcher', () => {
 
 test('CI rejects a completion barrier that misses jobs or waits for the watcher', () => {
   for (const changed of [
-    REAL_CI.replace(/(  ci-work-complete:\n    needs: \[)changes, /, '$1'),
-    REAL_CI.replace(/(  ci-work-complete:\n    needs: \[)/, '$1ci-watchdog, '),
-    REAL_CI.replace(/(  ci-work-complete:\n    needs: \[[^\]]*\]\n)    if: always\(\)\n/, '$1'),
+    REAL_CI.replace(/(  server-work-complete:\n    needs: \[)changes, /, '$1'),
+    REAL_CI.replace(/(  server-work-complete:\n    needs: \[)/, '$1ci-watchdog, '),
+    REAL_CI.replace(/(  server-work-complete:\n    needs: \[[^\]]*\]\n)    if: always\(\)\n/, '$1'),
+    REAL_CI.replace(/(  desktop-work-complete:\n    needs: \[)changes, /, '$1'),
+    // A job of the other workflow is no job of this run: waiting for it never ends.
+    REAL_CI.replace(/(  desktop-work-complete:\n    needs: \[)/, '$1go-lint, '),
   ]) {
     assert.notEqual(changed, REAL_CI);
     assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('completion barrier')));
@@ -495,9 +511,13 @@ test('CI rejects a completion barrier that misses jobs or waits for the watcher'
 });
 
 test('CI accepts a skipped watcher only for fork pull requests', () => {
-  const changed = REAL_CI.replace("      - if: needs.ci-watchdog.result == 'skipped' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)\n        run: exit 1\n", '');
-  assert.notEqual(changed, REAL_CI);
-  assert.ok(checkWorkflow(fixture(changed)).some(problem => problem.includes('skipped watcher')));
+  const step = "      - if: needs.ci-watchdog.result == 'skipped' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)\n        run: exit 1\n";
+  for (const [file, check] of [['server.yml', checkServerWorkflow], ['desktop-ci.yml', checkDesktopCiWorkflow]]) {
+    const [server, desktop] = REAL_CI.split(SPLIT);
+    const changed = file === 'server.yml' ? server.replace(step, '') + SPLIT + desktop : server + SPLIT + desktop.replace(step, '');
+    assert.notEqual(changed, REAL_CI);
+    assert.ok(check(fixture(changed)).some(problem => problem.includes('skipped watcher') && problem.startsWith(file)), file);
+  }
 });
 
 test('desktop tooling must be built once per native target and verified before every consumer', () => {
@@ -651,7 +671,7 @@ ${spec.engine === 'firefox' && spec.suite !== 'core' ? '      - run: sh scripts/
 `).join('\n');
 }
 
-const GOOD_BASE = `name: ci
+const GOOD_BASE = `name: ci-fixture
 on:
   push:
     branches: [main]
@@ -989,7 +1009,7 @@ ${goShardMatrix('go-postgres')}    services:
 
 `;
 
-// The four jobs that build for wasm32-unknown-unknown, as ci.yml writes them: the canonical clang 23 job env and,
+// The four jobs that build for wasm32-unknown-unknown, as the CI workflows write them: the canonical clang 23 job env and,
 // right after checkout, the canonical pinned install steps (ruling of 2026-10-13; hardened after the d3429ce lead).
 const WASM_JOBS = ['rust-wasm-node', 'browser-spike', 'browser-media', 'web-build'];
 
@@ -1008,8 +1028,8 @@ function withWasmClang(text) {
   return out.join('\n');
 }
 
-// The shape ci.yml gives the change filter: a `changes` job, a `docs` job that always runs, and every other job gated
-// on `changes` as JOB_GATES says (its own needs merged in).
+// The shape each CI workflow gives the change filter: a `changes` job, server's `docs` job that always runs, and every
+// other job gated on `changes` as JOB_GATES[workflow] says (its own needs merged in).
 const CHANGES_JOB = `  changes:
     runs-on: ubuntu-latest
     outputs:
@@ -1028,7 +1048,8 @@ const CHANGES_JOB = `  changes:
         env:
           EVENT_NAME: \${{ github.event_name }}
           BASE_SHA: \${{ github.event.pull_request.base.sha }}
-  docs:
+`;
+const DOCS_JOB = `  docs:
     runs-on: ubuntu-latest
     steps:
       - run: npm run test:docs-check
@@ -1040,7 +1061,7 @@ const CHANGES_JOB = `  changes:
       - run: npm run check:ci
 `;
 
-const CI_OK_JOB = (jobs) => `  ci-ok:
+const OK_JOB = (workflow, jobs) => `  ${WORKFLOWS[workflow].ok}:
     needs: [${jobs.join(', ')}]
     if: always()
     runs-on: ubuntu-latest
@@ -1052,24 +1073,35 @@ const CI_OK_JOB = (jobs) => `  ci-ok:
       - run: echo ok
 `;
 
+/**
+ * GOOD_BASE's jobs dealt into the two workflows as REQUIRED_JOBS says (a job both carry into both), each workflow with
+ * its real watcher, the changes job (server also docs), its gates, its barrier and its ok job, joined at SPLIT.
+ */
 function withChanges(text) {
-  const watcher = /^  ci-watchdog:\n[\s\S]*?(?=^  changes:)/m.exec(REAL_CI)[0];
-  const lines = text.replace('jobs:\n', `jobs:\n${watcher}${CHANGES_JOB}`).split('\n');
-  const out = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+  const header = text.slice(0, text.indexOf('jobs:\n') + 'jobs:\n'.length);
+  const blocks = new Map();
+  let current = null;
+  for (const line of text.slice(header.length).split('\n')) {
     const key = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
-    out.push(line);
-    if (key === null || !(key[1] in JOB_GATES) || !lines.slice(0, i).includes('jobs:')) continue;
-    let needs = [];
-    for (let j = i + 1; j < lines.length && !/^ {2}\S/.test(lines[j]); j++) {
-      const m = /^ {4}needs: \[(.*)\]$/.exec(lines[j]);
-      if (m) { needs = m[1].split(',').map((s) => s.trim()); lines.splice(j, 1); break; }
-    }
-    out.push(`    needs: [${['changes', ...needs].join(', ')}]`, `    if: ${gateExpression(key[1])}`);
+    if (key) { current = key[1]; blocks.set(current, []); }
+    if (current !== null) blocks.get(current).push(line);
   }
-  const jobs = out.filter((line) => /^ {2}[A-Za-z0-9_-]+:\s*$/.test(line)).map((line) => line.trim().slice(0, -1)).filter((name, i, all) => all.indexOf(name) === i && out.indexOf(`  ${name}:`) > out.indexOf('jobs:'));
-  const barrier = `  ci-work-complete:
+  const build = (workflow) => {
+    const own = [...REQUIRED_JOBS[workflow], ...(workflow === 'desktop' ? Object.keys(BROWSER_WEB_JOBS) : [])];
+    const watcher = /^  ci-watchdog:\n[\s\S]*?(?=^  changes:)/m.exec(workflow === 'server' ? REAL_SERVER : REAL_DESKTOP_CI)[0];
+    const out = [];
+    for (const [name, lines] of blocks) {
+      if (!own.includes(name)) continue;
+      const body = [...lines];
+      const needsAt = body.findIndex((line) => /^ {4}needs: \[.*\]$/.test(line));
+      const needs = needsAt < 0 ? [] : /^ {4}needs: \[(.*)\]$/.exec(body[needsAt])[1].split(',').map((s) => s.trim());
+      if (needsAt >= 0) body.splice(needsAt, 1);
+      if (name in JOB_GATES[workflow]) body.splice(1, 0, `    needs: [${['changes', ...needs].join(', ')}]`, `    if: ${gateExpression(workflow, name)}`);
+      else if (needs.length) body.splice(1, 0, `    needs: [${needs.join(', ')}]`);
+      out.push(...body);
+    }
+    const jobs = ['ci-watchdog', 'changes', ...(workflow === 'server' ? ['docs'] : []), ...[...blocks.keys()].filter((name) => own.includes(name))];
+    const barrier = `  ${workflow}-work-complete:
     needs: [${jobs.filter(name => name !== 'ci-watchdog').join(', ')}]
     if: always()
     runs-on: ubuntu-latest
@@ -1077,7 +1109,9 @@ function withChanges(text) {
     steps:
       - run: echo "All CI work reached a terminal result"
 `;
-  return `${out.join('\n').replace(/\n$/, '')}\n${barrier}${CI_OK_JOB([...jobs, 'ci-work-complete'])}`;
+    return `${header.replace('name: ci-fixture', `name: ${WORKFLOWS[workflow].name}`)}${watcher}${CHANGES_JOB}${workflow === 'server' ? DOCS_JOB : ''}${out.join('\n')}\n${barrier}${OK_JOB(workflow, [...jobs, `${workflow}-work-complete`])}`;
+  };
+  return build('server') + SPLIT.slice(1) + build('desktop');
 }
 
 const LINUX_FOUNDATION_JOB = /^  linux-sandbox-foundation:\n[\s\S]*?(?=^  desktop:)/m.exec(REAL_CI)[0].replace(/^    needs:.*\n/m, '').replace(/^    if:.*\n/m, '');
@@ -1110,12 +1144,16 @@ function gatedTest(name) {
   return `package x\n\nimport "testing"\n\nfunc ${name}(t *testing.T) {\n\tif raceEnabled {\n\t\tt.Skip("upstream livekit-server data race in updateRidsFromSDP; runs in the non-race step")\n\t}\n}\n`;
 }
 
-// A repository root holding ci.yml and, as Go test files, the race-gated tests in `gated`.
+// A repository root holding server.yml and desktop-ci.yml (body's two halves, split at SPLIT; desktop-ci.yml is left out
+// when an edit removed the split) and, as Go test files, the race-gated tests in `gated`.
 function fixture(body, gated = GATED) {
   const dir = mkdtempSync(join(TEST_ROOT, 'dilla-ci-'));
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
   addE2ePackage(dir);
-  writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), body);
+  const [server, desktop, ...rest] = body.split(SPLIT);
+  assert.equal(rest.length, 0, 'fixture sanity: one split');
+  writeFileSync(join(dir, '.github', 'workflows', 'server.yml'), desktop === undefined ? server : `${server}\n`);
+  if (desktop !== undefined) writeFileSync(join(dir, '.github', 'workflows', 'desktop-ci.yml'), desktop);
   // The CLI also checks release.yml.
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), REAL_RELEASE);
   writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
@@ -1534,13 +1572,13 @@ test('a go-fts5-arm64 job that stopped running on arm is reported', () => {
 // The CLI entry point at the bottom of check-ci-workflow.mjs, not `checkWorkflow` itself: this must
 // be run as a subprocess from a cwd that is NOT the fixture root and has no .github/workflows of its
 // own, so a script that silently fell back to process.cwd() (ignoring argv[2]) cannot pass by
-// accident — it would fail to find ci.yml at all rather than happening to validate the right file.
+// accident — it would fail to find server.yml at all rather than happening to validate the right file.
 function runCli(root, cwd) {
   return spawnSync(process.execPath, [SCRIPT_PATH, root], { cwd, encoding: 'utf8' });
 }
 
 test('the CLI honours a root argument passed from a different cwd', () => {
-  // The real ci.yml: the CLI also checks release.yml, whose actions must be ci.yml's at the same versions.
+  // The real workflows: the CLI also checks release.yml, whose actions must be theirs at the same versions.
   const root = fixture(REAL_CI);
   const cwd = mkdtempSync(join(TEST_ROOT, 'dilla-ci-cwd-'));
   const result = runCli(root, cwd);
@@ -1562,7 +1600,7 @@ test('a workflow that builds or pushes a container image is reported', () => {
     '      - uses: docker/setup-buildx-action@v4\n',
     '      - run: bash scripts/build-ci-image.sh\n',
   ]) {
-    const problems = checkWorkflow(fixture(GOOD.replace('  ci-ok:', () => `  image:\n    runs-on: ubuntu-latest\n    steps:\n${addition}  ci-ok:`)));
+    const problems = checkWorkflow(fixture(GOOD.replace('  server-ok:', () => `  image:\n    runs-on: ubuntu-latest\n    steps:\n${addition}  server-ok:`)));
     assert.ok(problems.some((p) => p.includes('container image was dropped')), `${addition}: ${problems.join('\n')}`);
   }
 });
@@ -1577,11 +1615,11 @@ test('an upload-artifact step in any job without if-no-files-found: error is rep
   const extra = '\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\n        with:\n          name: x\n          path: y\n      - run: echo after\n';
   const problems = checkWorkflow(fixture(GOOD + extra));
   assert.deepEqual(
-    problems.map((p) => p.replace(/^ci\.yml:\d+: /, '')).filter((p) => !p.includes('JOB_GATES') && !p.includes('"ci-ok"') && !p.includes('completion barrier')),
+    problems.map((p) => p.replace(/^desktop-ci\.yml:\d+: /, '')).filter((p) => !p.includes('JOB_GATES') && !p.includes('"desktop-ok"') && !p.includes('completion barrier') && !p.includes('does not belong')),
     ['actions/upload-artifact without "if-no-files-found: error" — CI is fail-closed'],
   );
   // The same step with the setting is clean.
-  assert.deepEqual(checkWorkflow(fixture(GOOD + extra.replace('          path: y\n', '          path: y\n          if-no-files-found: error\n'))).filter((p) => !p.includes('JOB_GATES') && !p.includes('"ci-ok"') && !p.includes('completion barrier')), []);
+  assert.deepEqual(checkWorkflow(fixture(GOOD + extra.replace('          path: y\n', '          path: y\n          if-no-files-found: error\n'))).filter((p) => !p.includes('JOB_GATES') && !p.includes('"desktop-ok"') && !p.includes('completion barrier') && !p.includes('does not belong')), []);
 });
 
 // Task 21: the browser E2EE suite.
@@ -1648,7 +1686,7 @@ for (const needle of [
 }
 
 test('a browser-spike job without its timeout is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace('    timeout-minutes: 20\n', '')));
+  const problems = checkWorkflow(fixture(editJob('browser-spike', (body) => body.replace('    timeout-minutes: 20\n', ''))));
   assert.ok(problems.some((p) => p.includes('"browser-spike"') && p.includes('timeout-minutes: 20')), problems.join('\n'));
 });
 
@@ -1737,10 +1775,10 @@ test('a wasm-pack build with --release instead of the size profile is reported w
     'wasm-pack build core/dilla-core-wasm --target web --release --mode no-install --out-dir spike/pkg',
   );
   assert.notEqual(body, GOOD, 'fixture sanity');
-  const lineNo = body.split('\n').findIndex((l) => l.includes('--release --mode no-install --out-dir spike/pkg')) + 1;
+  const lineNo = body.split(SPLIT)[1].split('\n').findIndex((l) => l.includes('--release --mode no-install --out-dir spike/pkg')) + 1;
   const problems = checkWorkflow(fixture(body));
   assert.ok(
-    problems.includes(`ci.yml:${lineNo}: wasm-pack build must use --profile wasm-release, not --release (C16)`),
+    problems.includes(`desktop-ci.yml:${lineNo}: wasm-pack build must use --profile wasm-release, not --release (C16)`),
     problems.join('\n'),
   );
 });
@@ -1857,20 +1895,20 @@ test('unsupported browser client jobs are rejected when reintroduced', () => {
   assert.ok(problems.some(p => p.includes('firefox-web-1') && p.includes('JOB_GATES')));
 });
 
-test('every browser job has its own artifact name in the real ci.yml', () => {
+test('every browser job has its own artifact name in the real desktop-ci.yml', () => {
   const names = Object.keys(BROWSER_WEB_JOBS).map((job) => `name: browser-web-results-${job}`);
   assert.equal(new Set(names).size, names.length);
   for (const name of names) assert.equal(REAL_CI.split('\n').filter((l) => l.trim() === name).length, 1, name);
 });
 
-test('the real ci-ok job needs every browser job', () => {
-  const body = REAL_CI.slice(REAL_CI.indexOf('\n  ci-ok:'));
+test('the real desktop-ok job needs every browser job', () => {
+  const body = REAL_DESKTOP_CI.slice(REAL_DESKTOP_CI.indexOf('\n  desktop-ok:'));
   for (const job of Object.keys(BROWSER_WEB_JOBS)) assert.ok(new RegExp(`needs:[^\\n]*[ \\[]${job}[,\\]]`).test(body), job);
 });
 
-test('a ci-ok job that forgot core security integration is reported', () => {
-  const problems = checkWorkflow(fixture(GOOD.replace(/(  ci-ok:\n    needs: \[[^\]]*), core-integration/, '$1')));
-  assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('"core-integration"')), problems.join('\n'));
+test('a desktop-ok job that forgot core security integration is reported', () => {
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  desktop-ok:\n    needs: \[[^\]]*), core-integration/, '$1')));
+  assert.ok(problems.some((p) => p.includes('"desktop-ok"') && p.includes('"core-integration"')), problems.join('\n'));
 });
 
 test('a browser job without the e2e gate is reported', () => {
@@ -2011,9 +2049,9 @@ function editJob(job, edit) {
 }
 
 const STEP_RULE = (job) =>
-  `ci.yml: job "${job}" builds for wasm32-unknown-unknown; its second to fourth steps, right after actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, must be exactly the pinned clang 23 steps (WASM_CLANG_STEPS)`;
+  `${fileOfJob(job)}: job "${job}" builds for wasm32-unknown-unknown; its second to fourth steps, right after actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, must be exactly the pinned clang 23 steps (WASM_CLANG_STEPS)`;
 const ENV_RULE = (job) =>
-  `ci.yml: job "${job}" builds for wasm32-unknown-unknown; its job-level env must be exactly:\n${WASM_CLANG_ENV_BLOCK}`;
+  `${fileOfJob(job)}: job "${job}" builds for wasm32-unknown-unknown; its job-level env must be exactly:\n${WASM_CLANG_ENV_BLOCK}`;
 
 const LLVM_PACKAGES = ['clang-23', 'llvm-23', 'libllvm23', 'libclang-cpp23', 'libclang1-23', 'libclang-common-23-dev', 'llvm-23-linker-tools', 'llvm-23-runtime'];
 
@@ -2170,7 +2208,7 @@ test('a wasm job added tomorrow without the pinned clang 23 is reported', () => 
     '    steps:\n' +
     '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\n' +
     '      - run: cargo build -p dilla-core --target wasm32-unknown-unknown --locked\n';
-  const problems = checkWorkflow(fixture(GOOD.replace('  deny:\n', `${extra}  deny:\n`)));
+  const problems = checkWorkflow(fixture(GOOD.replace('  browser-spike:\n', `${extra}  browser-spike:\n`)));
   assert.ok(problems.includes(ENV_RULE('wasm-extra')), problems.join('\n'));
   assert.ok(problems.includes(STEP_RULE('wasm-extra')), problems.join('\n'));
 });
@@ -2179,12 +2217,13 @@ test('jobs that build no wasm need no clang 23', () => {
   assert.deepEqual(checkWorkflow(fixture(GOOD)), []);
 });
 
-// install-release (2026-10-14): the release workflow, checked against the real ci.yml it must match.
+// install-release (2026-10-14): the release workflow, checked against the real CI workflows it must match.
 function releaseFixture(release) {
   const dir = mkdtempSync(join(TEST_ROOT, 'dilla-release-'));
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
   addE2ePackage(dir);
-  writeFileSync(join(dir, '.github', 'workflows', 'ci.yml'), REAL_CI);
+  writeFileSync(join(dir, '.github', 'workflows', 'server.yml'), REAL_SERVER);
+  writeFileSync(join(dir, '.github', 'workflows', 'desktop-ci.yml'), REAL_DESKTOP_CI);
   writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), release);
   return dir;
@@ -2257,7 +2296,7 @@ test('a dispatch input expanded inside a script is reported', () => {
   assertReported(releaseProblems((t) => t.replace('tag="${INPUT_TAG:-$GITHUB_REF_NAME}"', 'tag="${{ inputs.tag }}"')), 'outside an env: key');
 });
 
-test('an action at a version ci.yml does not use is reported', () => {
+test('an action at a version the CI workflows do not use is reported', () => {
   assertReported(releaseProblems((t) => t.replace('  rust-wasi:\n    runs-on: ubuntu-latest\n    needs: [tag]\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7', '  rust-wasi:\n    runs-on: ubuntu-latest\n    needs: [tag]\n    steps:\n      - uses: actions/checkout@main')), 'actions/checkout@main');
 });
 
@@ -2357,7 +2396,7 @@ test('a release setup-go without cache: false is reported', () => {
   assertReported(releaseProblems((t) => t.replace('          cache: false\n', '')), 'setup-go caches by default');
 });
 
-// v0.1.0-web3.1: the release stamps its tag (without the leading v) into dillad at link time; ci.yml's builds never do.
+// v0.1.0-web3.1: the release stamps its tag (without the leading v) into dillad at link time; the CI workflows' builds never do.
 test('a release build without the version stamp is reported', () => {
   assertReported(releaseProblems((t) => t.replace(' -X main.Version=${VERSION}" -o dist/dillad-linux-arm64', '" -o dist/dillad-linux-arm64')),
     'go build without -X main.Version=${VERSION}');
@@ -2383,7 +2422,7 @@ test('a release whose tag job does not output the version is reported', () => {
   assertReported(releaseProblems((t) => t.replace('          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"\n', '')), 'is missing: echo "version=${tag#v}"');
 });
 
-test('a ci.yml build that stamps a version is reported', () => {
+test('a CI build that stamps a version is reported', () => {
   const stamped = GOOD.replace("go build -trimpath -ldflags='-s -w' ./cmd/dillad", "go build -trimpath -ldflags='-s -w -X main.Version=1.2.3' ./cmd/dillad");
   assert.notEqual(stamped, GOOD);
   const problems = checkWorkflow(fixture(stamped));
@@ -2391,7 +2430,7 @@ test('a ci.yml build that stamps a version is reported', () => {
 });
 
 // Task 3 m2: a quoted symbol after -X, and the -X= spelling, stamp a version all the same.
-test('a ci.yml build that stamps a quoted version is reported', () => {
+test('a CI build that stamps a quoted version is reported', () => {
   for (const flag of ["-X 'main.Version=1.2.3'", '-X "main.Version=1.2.3"', '-X=main.Version=1.2.3', "-X='main.Version=1.2.3'"]) {
     const stamped = GOOD.replace("go build -trimpath -ldflags='-s -w' ./cmd/dillad", `go build -trimpath -ldflags="-s -w ${flag}" ./cmd/dillad`);
     assert.notEqual(stamped, GOOD);
@@ -2434,28 +2473,86 @@ test('a gate that can run while a needed job is skipped is reported', () => {
   assert.ok(problems.some((p) => p.includes('"web-build" must carry')), problems.join('\n'));
 });
 
-test('the real ci-ok job needs every other job', () => {
-  const body = REAL_CI.slice(REAL_CI.indexOf('\n  ci-ok:'));
-  const needs = /needs: \[([^\]]*)\]/.exec(body)[1].split(',').map((s) => s.trim());
-  const jobs = [...REAL_CI.slice(REAL_CI.indexOf('\njobs:')).matchAll(/^ {2}([A-Za-z0-9_-]+):\s*$/gm)].map((m) => m[1]).filter((job) => job !== 'ci-ok');
-  assert.deepEqual(needs.sort(), jobs.sort());
+test('each real ok job needs every other job of its workflow', () => {
+  for (const real of [REAL_SERVER, REAL_DESKTOP_CI]) {
+    const ok = /^name: (\S+)$/m.exec(real)[1] + '-ok';
+    const body = real.slice(real.indexOf(`\n  ${ok}:`));
+    const needs = /needs: \[([^\]]*)\]/.exec(body)[1].split(',').map((s) => s.trim());
+    const jobs = [...real.slice(real.indexOf('\njobs:')).matchAll(/^ {2}([A-Za-z0-9_-]+):\s*$/gm)].map((m) => m[1]).filter((job) => job !== ok);
+    assert.deepEqual(needs.sort(), jobs.sort(), ok);
+  }
 });
 
-test('a ci-ok job that forgot a job is reported', () => {
-  const changed = GOOD.replace(/(  ci-ok:\n    needs: \[[^\]]*)changes, /, '$1');
-  assert.notEqual(changed, GOOD);
-  const problems = checkWorkflow(fixture(changed));
-  assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('"changes"')), problems.join('\n'));
+test('each ok job lists every other job of its workflow', () => {
+  for (const workflow of ['server', 'desktop']) {
+    const { ok } = WORKFLOWS[workflow];
+    const [server, desktop] = GOOD.split(SPLIT);
+    const edit = (change) => (workflow === 'server' ? change(server) + SPLIT + desktop : server + SPLIT + change(desktop));
+    const forgot = edit((part) => part.replace(new RegExp(`(  ${ok}:\\n    needs: \\[[^\\]]*)changes, `), '$1'));
+    assert.notEqual(forgot, GOOD);
+    let problems = checkWorkflow(fixture(forgot));
+    assert.ok(problems.some((p) => p.includes(`"${ok}"`) && p.includes('"changes"')), problems.join('\n'));
+    // A job of the other workflow is not one of this run's: GitHub would refuse the workflow.
+    const foreign = workflow === 'server' ? 'ui' : 'go-lint';
+    problems = checkWorkflow(fixture(edit((part) => part.replace(new RegExp(`(  ${ok}:\\n    needs: \\[)`), `$1${foreign}, `))));
+    assert.ok(problems.some((p) => p.includes(`"${ok}" must list every other job of its workflow exactly once`)), problems.join('\n'));
+  }
 });
 
-test('a ci-ok job without the failure check, or without always(), is reported', () => {
+test('an ok job without the failure check, or without always(), is reported', () => {
   let problems = checkWorkflow(fixture(GOOD.replace("contains(needs.*.result, 'cancelled')", 'false')));
-  assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('cancelled')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('"server-ok"') && p.includes('cancelled')), problems.join('\n'));
   problems = checkWorkflow(fixture(GOOD.replace('    if: always()\n    runs-on: ubuntu-latest\n    steps:\n      - if: contains', '    runs-on: ubuntu-latest\n    steps:\n      - if: contains')));
-  assert.ok(problems.some((p) => p.includes('"ci-ok"') && p.includes('always()')), problems.join('\n'));
+  assert.ok(problems.some((p) => p.includes('"server-ok"') && p.includes('always()')), problems.join('\n'));
 });
 
-test('if: always() stays forbidden in every job but ci-ok, and in ci-ok steps', () => {
+test('server.yml must not contain desktop jobs', () => {
+  assert.deepEqual(checkServerWorkflow(REPO_ROOT), []);
+  const desktopOnly = [...REQUIRED_JOBS.desktop, ...Object.keys(BROWSER_WEB_JOBS)].filter((job) => !REQUIRED_JOBS.server.includes(job));
+  assert.deepEqual(desktopOnly.filter((job) => new RegExp(`^  ${job}:$`, 'm').test(REAL_SERVER)), []);
+  for (const job of ['ui', 'core-integration', 'desktop']) {
+    const body = jobBody(job);
+    const [server, desktop] = GOOD.split(SPLIT);
+    const moved = server.replace('  deny:\n', () => `${body}\n  deny:\n`) + SPLIT + desktop;
+    const problems = checkServerWorkflow(fixture(moved));
+    assert.ok(problems.some((p) => p === `server.yml: job "${job}" does not belong to the server workflow (REQUIRED_JOBS.server)`), `${job}:\n${problems.join('\n')}`);
+  }
+  // And the reverse: a server job in desktop-ci.yml.
+  const problems = checkDesktopCiWorkflow(fixture(GOOD + jobBody('go-lint') + '\n'));
+  assert.ok(problems.some((p) => p.startsWith('desktop-ci.yml: job "go-lint" does not belong')), problems.join('\n'));
+});
+
+test('desktop-ci.yml must call desktop.yml', () => {
+  assert.match(REAL_DESKTOP_CI, /^  desktop:\n(?:    .*\n)*    uses: \.\/\.github\/workflows\/desktop\.yml$/m);
+  const [server, desktop] = GOOD.split(SPLIT);
+  let problems = checkDesktopCiWorkflow(fixture(server + SPLIT + desktop.replace('    uses: ./.github/workflows/desktop.yml\n', '    runs-on: ubuntu-latest\n    steps:\n      - run: echo skipped\n')));
+  assert.ok(problems.some((p) => p.includes('job "desktop" is missing: uses: ./.github/workflows/desktop.yml')), problems.join('\n'));
+  // Only desktop-ci.yml may call it: anywhere else it is an unreviewed local action.
+  problems = checkServerWorkflow(fixture(server.replace('  deny:\n', '  desktop:\n    needs: [changes]\n    uses: ./.github/workflows/desktop.yml\n  deny:\n') + SPLIT + desktop));
+  assert.ok(problems.some((p) => p.includes('./.github/workflows/desktop.yml is not a GitHub-owned action')), problems.join('\n'));
+});
+
+test('neither workflow filters paths at the trigger', () => {
+  for (const [file, check] of [['server.yml', checkServerWorkflow], ['desktop-ci.yml', checkDesktopCiWorkflow]]) {
+    for (const [before, after] of [
+      ['  push:\n    branches: [main]\n', "  push:\n    branches: [main]\n    paths: ['internal/**']\n"],
+      ['  pull_request:\n', "  pull_request:\n    paths-ignore: ['docs/**']\n"],
+      ['  pull_request:\n', '  pull_request:\n    branches: [main]\n'],
+      ['  push:\n    branches: [main]\n', ''],
+      ['name: server\n', 'name: renamed\n'],
+      ['name: desktop\n', 'name: renamed\n'],
+    ]) {
+      const [server, desktop] = GOOD.split(SPLIT);
+      const part = file === 'server.yml' ? server : desktop;
+      if (!part.includes(before)) continue;
+      const changed = file === 'server.yml' ? server.replace(before, after) + SPLIT + desktop : server + SPLIT + desktop.replace(before, after);
+      const problems = check(fixture(changed));
+      assert.ok(problems.some((p) => p.startsWith(`${file}: `) && /no paths or other filter|must be named/.test(p)), `${file} ${before}:\n${problems.join('\n')}`);
+    }
+  }
+});
+
+test('if: always() stays forbidden in every job but the ok jobs and barriers, and in their steps', () => {
   let problems = checkWorkflow(fixture(GOOD.replace("  deny:\n    needs: [changes]\n    if: needs.changes.outputs.core != 'false'\n", '  deny:\n    needs: [changes]\n    if: always()\n')));
   assert.ok(problems.some((p) => p.includes('if: always()') && p.includes('R22')), problems.join('\n'));
   problems = checkWorkflow(fixture(GOOD.replace('      - run: echo ok\n', '      - if: always()\n        run: echo ok\n')));
@@ -2669,7 +2766,7 @@ test('a seventh secrets reference, a secrets reference outside the Sign step, se
     ['collect job', { [KEYED]: edit(doc => { step(doc, 'collect', 'Collect').env.K = '${{ secrets.GITHUB_TOKEN }}'; }) }],
     ['indexing', { [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').env.DESKTOP_METADATA_KEY_A = "${{ secrets['DESKTOP_METADATA_KEY_A'] }}"; }) }],
     ['toJSON', { [KEYED]: edit(doc => { step(doc, 'gate', 'Gate').env.ALL = '${{ toJSON(secrets) }}'; }) }],
-    ['inherit elsewhere', { '.github/workflows/ci.yml': text => text.replace('    uses: ./.github/workflows/desktop.yml\n', '    uses: ./.github/workflows/desktop.yml\n    secrets: inherit\n') }],
+    ['inherit elsewhere', { '.github/workflows/desktop-ci.yml': text => text.replace('    uses: ./.github/workflows/desktop.yml\n', '    uses: ./.github/workflows/desktop.yml\n    secrets: inherit\n') }],
     ['DESKTOP_ secret in another workflow', { '.github/workflows/release.yml': text => text + '\n# ${{ secrets.DESKTOP_METADATA_KEY_A }}\n' }],
     ['swapped value', { [KEYED]: edit(doc => { step(doc, 'sign', 'Sign (').env.DESKTOP_METADATA_KEY_A = '${{ secrets.DESKTOP_METADATA_KEY_B }}'; }) }],
   ]) reported(change, label);
@@ -2743,7 +2840,7 @@ test('download-artifact with pattern, merge-multiple, the triggering run id or n
 
 test('review batch B minors: quoted inherit, Pages deploys elsewhere, unpinned step env, a workflow concurrency group', () => {
   // m1: a quoted inherit is the same YAML value.
-  // (A new caller: ci.yml's desktop call already has a secrets mapping, so editing it would only make the YAML invalid.)
+  // (A new caller: desktop-ci.yml's desktop call already has a secrets mapping, so editing it would only make the YAML invalid.)
   const caller = quoted => () => `name: caller\non: push\npermissions: {}\njobs:\n  call:\n    uses: ./.github/workflows/desktop.yml\n    secrets: ${quoted}\n`;
   for (const quoted of ['"inherit"', "'inherit'", 'inherit']) {
     const problems = reported({ '.github/workflows/caller.yml': caller(quoted) }, `${quoted} inherit`);
@@ -2888,8 +2985,9 @@ test('other workflows naming the sign job script or chaining on desktop release 
 test('a failure-evidence upload without a hashFiles guard is reported', () => {
   assert.deepEqual(checkWorkflow(REPO_ROOT), []);
   assert.deepEqual(checkDesktopWorkflow(REPO_ROOT), []);
-  for (const [file, text, check] of [['ci.yml', REAL_CI, checkWorkflow], ['desktop.yml', REAL_DESKTOP, checkDesktopWorkflow]]) {
+  for (const [file, text, check] of [['server.yml', REAL_SERVER, checkServerWorkflow], ['desktop-ci.yml', REAL_DESKTOP_CI, checkDesktopCiWorkflow], ['desktop.yml', REAL_DESKTOP, checkDesktopWorkflow]]) {
     const guards = [...text.matchAll(/if: failure\(\)[^\n]*hashFiles\([^\n]*/g)].map(m => m[0]);
+    if (file === 'server.yml') { assert.equal(guards.length, 0, 'server.yml uploads no failure evidence'); continue; }
     assert.ok(guards.length > 0, file);
     for (const guard of guards) {
       const root = fixture(GOOD);
@@ -2904,7 +3002,7 @@ test('every Go job downloads its modules through the retry wrapper, after its se
   const step = '      - name: Download Go modules (retried only on known network errors)\n';
   const body = new RegExp('^  go-lint:\\n[\\s\\S]*?(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))', 'm').exec(REAL_CI)[0], start = body.indexOf(step), end = body.indexOf('\n      - ', start + 1) + 1;
   assert.ok(start >= 0);
-  const collect = (job) => { const found = []; checkGoModuleDownloads({ 'go-lint': job }, found, 'ci.yml'); return found; };
+  const collect = (job) => { const found = []; checkGoModuleDownloads({ 'go-lint': job }, found, 'server.yml'); return found; };
   assert.deepEqual(collect(body), []);
   for (const changed of [
     body.slice(0, start) + body.slice(end),
@@ -2953,6 +3051,14 @@ test('the re-run-starved workflow as committed has no problems', () => {
   assert.match(cli.stderr, /ci-rerun-starved\.yml/);
 });
 
+test('renaming a CI workflow cannot silently unhook the re-run-starved workflow', () => {
+  for (const [file, from] of [['.github/workflows/server.yml', 'name: server\n'], ['.github/workflows/desktop-ci.yml', 'name: desktop\n']]) {
+    const root = releaseRoot({ [file]: (text) => text.replace(from, 'name: renamed\n') });
+    assert.ok(checkRerunStarvedWorkflow(root).some((problem) => problem.includes('"renamed"')), file);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('the re-run-starved workflow is reported when it is missing', () => {
   const root = releaseRoot();
   rmSync(join(root, RERUN));
@@ -2963,7 +3069,9 @@ test('the re-run-starved workflow is reported when it is missing', () => {
 test('each pinned property of the re-run-starved workflow is enforced', () => {
   const mutations = {
     'another trigger': [edit((doc) => { doc.on.pull_request = {}; }), 'must trigger only on workflow_run'],
-    'another upstream workflow': [edit((doc) => { doc.on.workflow_run.workflows = ['desktop']; }), 'must trigger only on workflow_run'],
+    'another upstream workflow': [edit((doc) => { doc.on.workflow_run.workflows = ['desktop-release']; }), 'must trigger only on workflow_run'],
+    'only one CI workflow': [edit((doc) => { doc.on.workflow_run.workflows = ['desktop']; }), 'must trigger only on workflow_run of "server" and "desktop"'],
+    'the deleted ci workflow': [edit((doc) => { doc.on.workflow_run.workflows = ['ci']; }), 'must trigger only on workflow_run of "server" and "desktop"'],
     'wrong event type': [edit((doc) => { doc.on.workflow_run.types = ['requested']; }), 'must trigger only on workflow_run'],
     'extra permission': [edit((doc) => { doc.permissions.contents = 'write'; }), 'exactly actions: write'],
     'no workflow permissions': [edit((doc) => { delete doc.permissions; }), 'exactly actions: write'],

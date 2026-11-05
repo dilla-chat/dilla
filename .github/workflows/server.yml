@@ -1,0 +1,639 @@
+name: server
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  # Runs independently of changes so the first failing root job is covered too. The write
+  # token belongs only to trusted same-repository PRs/main pushes; fork code never runs here.
+  ci-watchdog:
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: python3 scripts/ci-watchdog.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # This workflow's roots and DAG barrier: the watcher is done once they and every other job completed.
+          CI_COMPLETION_JOBS: changes docs server-work-complete
+
+  # Decides which parts of the tree the change touches (scripts/ci-areas.mjs holds the path table and its tests) and
+  # writes one output per area: go, core, web, e2e, text (the profile-text tables), and code for anything but docs. This
+  # workflow and its sibling (desktop-ci.yml) both run on every pull request and push to main, so both
+  # ok checks always report. A pull request whose changed files all sit under docs/ or are *.md is docs-only: it runs
+  # this job, `docs` and workflow infrastructure; test/build jobs are skipped (a skipped job counts as passed for a
+  # required check). A push to main, and any diff that cannot be computed, turn every area on. Every other job carries
+  # `needs: changes` and an `if:` on the outputs it depends on (JOB_GATES.server in scripts/ci-areas.mjs).
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.areas.outputs.go }}
+      core: ${{ steps.areas.outputs.core }}
+      web: ${{ steps.areas.outputs.web }}
+      e2e: ${{ steps.areas.outputs.e2e }}
+      text: ${{ steps.areas.outputs.text }}
+      code: ${{ steps.areas.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - id: areas
+        run: node scripts/ci-areas.mjs
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
+  # The cheap docs gates, their unit tests and the real checks against the real files: they run for every change,
+  # docs-only included.
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run test:docs-check
+      - run: npm run test:brief-check
+      - run: npm run test:copy-check
+      - run: npm run check:docs
+      - run: npm run check:brief
+      - run: npm run check:copy
+      # The workflow checker against the real tree; it reads the Go tests for the race and Postgres rules, so it
+      # must run whatever the change was.
+      - run: npm run check:ci
+
+  rust-native:
+    needs: [changes]
+    if: needs.changes.outputs.code != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup show active-toolchain
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      # The lint and test steps need the core area; the job itself runs for any code, because go-harness and the
+      # browser suites download the testkit binary built below.
+      - if: needs.changes.outputs.core != 'false'
+        run: cargo fmt --all --check
+      - if: needs.changes.outputs.core != 'false'
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      # SQLCipher's enhanced memory security calls mlock for SQLite allocations.
+      - if: needs.changes.outputs.core != 'false'
+        run: |
+          sudo prlimit --pid "$$" --memlock=268435456:268435456
+          cargo test --workspace --all-features --locked
+      - run: cargo build -p dilla-testkit --release --locked
+      - run: cargo build -p dilla-bot-core --release --locked
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-bot-core
+          path: target/release/dilla-bot-core
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-testkit
+          path: target/release/dilla-testkit
+          if-no-files-found: error
+
+  rust-wasi:
+    needs: [changes]
+    if: needs.changes.outputs.code != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup show active-toolchain
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - run: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-core-wasi
+          path: target/wasm32-wasip1/release/dilla_core_wasi.wasm
+          if-no-files-found: error
+
+  vectors:
+    needs: [changes]
+    if: needs.changes.outputs.core != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run vectors
+      - run: git diff --exit-code -- protocol/vectors
+      - run: test -z "$(git status --porcelain -- protocol/vectors)"
+      - run: rustup show active-toolchain
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - run: cargo run -p dilla-testkit --bin dilla-testkit --locked -- vectors
+
+  # Here web-build feeds go-release alone (artifacts never cross workflows; desktop-ci.yml builds its own), so it
+  # runs whenever go-release does.
+  web-build:
+    needs: [changes]
+    if: needs.changes.outputs.go != 'false' || needs.changes.outputs.web != 'false'
+    runs-on: ubuntu-24.04
+    # Build the bundled UI once for Electron, shared core integration and go-release, so every
+    # consumer tests or ships the same bytes. The webdist test is web.New's manifest check over
+    # packages/web/dist, where the build left it: nothing is copied into internal/web/dist (ruling 38).
+    timeout-minutes: 15
+    # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
+    # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
+    env:
+      CC_wasm32_unknown_unknown: /usr/bin/clang-23
+      AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: clang23-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/llvm-23-debs
+          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-latest
+          restore-keys: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-
+      - id: clang23
+        name: clang 23 for the wasm C build
+        run: bash scripts/ci-llvm.sh install
+      - if: steps.clang23.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/llvm-23-debs
+          key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-${{ steps.clang23.outputs.build }}
+      - run: rustup show active-toolchain
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+      - run: bash scripts/install-ci-tool.sh wasm-bindgen
+      - run: bash scripts/install-ci-tool.sh wasm-pack
+      - run: bash scripts/install-ci-tool.sh binaryen
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
+      - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
+      - run: npm ci
+      - run: npm run typecheck -w @dilla/core-wasm
+      - run: npm run typecheck -w @dilla/client-core
+      - run: npm run typecheck -w @dilla/web
+      - run: npm run typecheck:e2e
+      - run: npm run build -w @dilla/web
+      - run: npm run test:noise-release
+      # The dist guard fails (never skips) on any data: URL in the built CSS or JS; it needs the build above.
+      - run: npm run -w @dilla/web test:dist
+      - run: npm run build:harness -w @dilla/client-core
+      - run: go test -tags webdist ./internal/web/...
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-web-dist
+          path: packages/web/dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-desktop-core
+          path: packages/core-wasm/pkg/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-core-harness
+          path: packages/client-core/harness-dist/
+          if-no-files-found: error
+
+  deny:
+    needs: [changes]
+    if: needs.changes.outputs.core != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup show active-toolchain
+      - run: bash scripts/install-ci-tool.sh cargo-deny
+      # The advisory database is cloned from GitHub; retry a dropped connection before the check.
+      - run: for attempt in 1 2 3; do cargo deny fetch && break; sleep 15; done
+      - run: cargo deny --all-features check advisories bans licenses sources
+
+  # The race-detector unit tests of every package but internal/ds and internal/api (go-ds and go-api run them; the union
+  # is ./...), in shards. scripts/go-shard.mjs splits the set by package and the slow packages by top-level test name,
+  # balanced on the measured times in scripts/go-shard-timings.json (its SETS holds each matrix's shard count). Before a
+  # shard runs a test it checks that the shards cover every package and test of the set exactly once, and that `go test
+  # -list` of its split packages names no test the partition missed. The once-only steps are go-checks'. rust-wasi
+  # (Plan A's CI task) builds the dilla-core-wasi artifact this job downloads: without `needs:` the download finds
+  # nothing in the run (gap-31 §3.2). The scenario harness (internal/testkit) is go-harness's: here DILLA_TESTKIT is
+  # unset and those tests skip.
+  go:
+    name: go-${{ matrix.shard }}
+    needs: [changes, rust-wasi]
+    if: needs.changes.outputs.go != 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
+      - name: Unit tests with the race detector (cgo required, do not set CGO_ENABLED=0 here)
+        run: node scripts/go-shard.mjs run go ${{ matrix.shard }} -- -race -shuffle=on -timeout 20m
+        env:
+          GORACE: halt_on_error=1
+
+  # The go job's once-only steps, beside its shards: vet, the pinned graph, the TURN and non-race reruns, the static build.
+  go-checks:
+    needs: [changes, rust-wasi]
+    if: needs.changes.outputs.go != 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - run: go mod verify
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
+      - run: go vet ./...
+      - name: The pinned module graph still compiles cgo-free
+        run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps
+      - name: TURN permission timer backport regression
+        run: go test -race github.com/pion/turn/v5/internal/allocation -run '^TestAddPermissionPublishesInitializedTimer$' -count=20
+      # I8: these five video publishing tests are gated out of -race due to the pinned LiveKit race.
+      # scripts/check-ci-workflow.mjs finds every raceEnabled-gated test and requires it here.
+      - name: Video publishing tests without the upstream LiveKit race detector conflict
+        run: go test -timeout 5m ./cmd/dilla-loadrig ./cmd/dilla-mediabot ./internal/media ./internal/sfu -run 'TestALoopbackCellDecryptsEverything|TestTwoBotsDecryptEachOtherThroughTheSFU|TestGoPublisherToGoSubscriberDecryptsThroughTheSFU|TestTheSFUOfferCarriesOnlyTheDillaCodecs|TestPromotionAddsTheVideoSourcesAndDemotionRemovesThem'
+      - name: Static release build
+        run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' ./cmd/dillad
+
+  go-native:
+    needs: [changes, rust-wasi, rust-native]
+    if: needs.changes.outputs.go != 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Keep compiled-helper integration and its cold Rust peer build out of the unit job's budget.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - name: Fetch the native helper built from this commit
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-bot-core
+          path: target/release
+      - run: chmod +x target/release/dilla-bot-core
+      # TestClientMusicControlsEndToEnd bundles the real web client with esbuild from node_modules.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+      - run: npm ci
+      # The adapter starts this peer through cargo, then allows 90 s for readiness. Compile before
+      # that runtime deadline so a cold Go runner reports compiler errors here instead of timing out.
+      - name: Compile the Rust peer before its bounded readiness check
+        run: cargo test -p dilla-core --test native_bot_group_peer_fixture --no-run --locked
+      - name: Compiled helper and production moderation recovery integration
+        run: go test -race ./internal/bot/native ./cmd/dillabot ./internal/bot/music/persistence
+        env:
+          DILLA_BOT_HELPER_INTEGRATION: '1'
+          DILLA_CONTROL_E2E: '1'
+          DILLA_BOT_HELPER_BIN: ${{ github.workspace }}/target/release/dilla-bot-core
+
+  go-ds:
+    name: go-ds-${{ matrix.shard }}
+    needs: [changes, rust-wasi]
+    if: needs.changes.outputs.go != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    # The delivery service's tests drive the real wasm core over a 1,500-leaf fixture, and under the
+    # race detector they are among the slowest of the module (1,099 s in run 41658420078), so they have a
+    # job of their own, split by test name into shards (scripts/go-shard.mjs); the go job runs everything
+    # else. Run 39994739630 reached go test's then 20m package deadline in suite time, not a stuck migration;
+    # migrations run once per binary (internal/store/sqlite/sqlitetest), so each shard pays that once.
+    strategy:
+      fail-fast: true
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - name: The delivery service's tests with the race detector
+        run: node scripts/go-shard.mjs run go-ds ${{ matrix.shard }} -- -race -shuffle=on -timeout 25m
+        env:
+          GORACE: halt_on_error=1
+
+  go-api:
+    name: go-api-${{ matrix.shard }}
+    needs: [changes, rust-wasi]
+    if: needs.changes.outputs.go != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    # internal/api took 1,196 s under -race alone (run 41658420078) and once reached a 38-minute package
+    # limit on a loaded runner (2026-10-24), so it is split by test name into shards. The go job leaves
+    # this package out.
+    strategy:
+      fail-fast: true
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - name: The API package's tests with the race detector
+        run: node scripts/go-shard.mjs run go-api ${{ matrix.shard }} -- -race -shuffle=on -timeout 25m
+        env:
+          GORACE: halt_on_error=1
+
+  go-harness:
+    name: go-harness-${{ matrix.shard }}
+    needs: [changes, rust-wasi, rust-native]
+    if: needs.changes.outputs.go != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    # The scenario harness drives a real instance with the Rust testkit clients:
+    # it needs the wasi core from rust-wasi and the testkit binary from
+    # rust-native. Each test starts its own host and clock (testkit.Start), so
+    # the tests are independent and split by name into shards. A scenario has a
+    # 10-minute ceiling; the package -timeout leaves room for one to finish.
+    strategy:
+      fail-fast: true
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+      - name: Fetch the wasm32-wasip1 core built by the rust-wasi job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      - name: Fetch the testkit binary built by the rust-native job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-testkit
+          path: artifacts
+      - run: chmod +x artifacts/dilla-testkit
+      - name: The scenario harness against the real instance
+        run: node scripts/go-shard.mjs run go-harness ${{ matrix.shard }} -- -race -shuffle=on -timeout 25m
+        env:
+          GORACE: halt_on_error=1
+          DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit
+          # internal/testkit skips without the binary; here a skip would pass every scenario test
+          # without running one, so a missing or unusable binary must fail instead.
+          DILLA_TESTKIT_REQUIRED: '1'
+
+  go-fts5-arm64:
+    needs: [changes]
+    if: needs.changes.outputs.go != 'false'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+      - name: FTS5 on native linux/arm64
+        run: go test ./internal/store/sqlite/...
+
+  # go-lint, go-vuln and go-sqlc carry no `needs:` on purpose: `go vet ./...` and `go build` exit 0 with
+  # the wasi artifact absent and with the committed web placeholder, so they start at t=0. go-release
+  # waits for web-build: the release binaries embed the real client, never the placeholder (C9).
+  go-lint:
+    needs: [changes]
+    if: needs.changes.outputs.go != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+      - run: bash scripts/install-ci-tool.sh golangci-lint
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
+      - run: golangci-lint run ./...
+
+  go-vuln:
+    needs: [changes]
+    if: needs.changes.outputs.go != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+      - name: The pinned-but-unimported module graph is scanned too
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -scan package -tags dillapins ./internal/deps
+
+  go-sqlc:
+    needs: [changes]
+    if: needs.changes.outputs.go != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: bash scripts/install-ci-tool.sh sqlc
+      - run: sqlc diff
+      - run: git diff --exit-code
+      - run: test -z "$(git status --porcelain)"
+
+  go-postgres:
+    name: go-postgres-${{ matrix.shard }}
+    needs: [changes, rust-wasi]
+    if: needs.changes.outputs.go != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: true
+      matrix:
+        shard: [1, 2]
+    services:
+      postgres:
+        image: postgres:18.6-alpine3.24      # not "-alpine": that floats onto the next Alpine
+        env:
+          POSTGRES_PASSWORD: dilla
+          POSTGRES_USER: dilla
+          POSTGRES_DB: dilla
+          POSTGRES_INITDB_ARGS: --locale-provider=builtin --builtin-locale=C.UTF-8
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U dilla" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-core-wasi
+          path: internal/mlswasi/testdata
+      # Only the packages that have a Postgres leg: internal/store (every query, both engines), internal/ops
+      # (the Postgres backup, LoadPostgres, identity reset and heal-rollback tests) and, web3.9, the AFK backfill
+      # and channel-parent tests of internal/api (POSTGRES_API_RUN in scripts/go-shard.mjs; the rest of that
+      # package reads SQLite only and is go-api's). Every shard gets its own database service.
+      - name: The store, ops and AFK/channel-parent tests against Postgres
+        run: node scripts/go-shard.mjs run go-postgres ${{ matrix.shard }} -- -race -shuffle=on -timeout 20m
+        env:
+          DILLA_TEST_PG: postgres://dilla:dilla@127.0.0.1:5432/dilla?sslmode=disable
+
+  go-release:
+    needs: [changes, web-build]
+    if: needs.changes.outputs.go != 'false' || needs.changes.outputs.web != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy.golang.org|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset' -- go mod download
+      - run: rm -rf internal/web/dist
+      - name: Fetch the web client built by the web-build job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-web-dist
+          path: internal/web/dist
+      - name: The binaries embed the real client, not the placeholder
+        run: |
+          test -f internal/web/dist/index.html
+          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
+      # Ruling 38: the webdist test reads DILLA_WEB_DIST through os.DirFS, so it proves the downloaded bytes
+      # that the build below embeds.
+      - name: the downloaded client passes the manifest check
+        run: go test -tags webdist ./internal/web/...
+        env:
+          DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist
+      - name: linux/amd64
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-amd64 ./cmd/dillad
+      - name: linux/arm64
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-arm64 ./cmd/dillad
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dillad-binaries
+          path: dist/
+          if-no-files-found: error
+
+  # A DAG barrier prevents the watcher exiting between root jobs and later matrix/reusable
+  # children. This does no build work and never depends on the watcher or final aggregator.
+  server-work-complete:
+    needs: [changes, docs, rust-native, rust-wasi, vectors, web-build, deny, go, go-checks, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo "All CI work reached a terminal result"
+
+  # One check for the whole workflow: red on any failure/cancellation, green for success or intentional skips.
+  server-ok:
+    needs: [ci-watchdog, server-work-complete, changes, docs, rust-native, rust-wasi, vectors, web-build, deny, go, go-checks, go-native, go-ds, go-api, go-harness, go-fts5-arm64, go-lint, go-vuln, go-sqlc, go-postgres, go-release]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      # Fork PR tokens cannot cancel runs, so their watcher is deliberately skipped.
+      - if: needs.ci-watchdog.result == 'skipped' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        run: exit 1
+      - run: echo ok
