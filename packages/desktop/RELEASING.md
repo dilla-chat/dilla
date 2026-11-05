@@ -1,6 +1,6 @@
 # Releasing the desktop app
 
-A desktop release is one tag push. Pushing `desktop-v<version>` on a `main` commit whose `ci` push run is green
+A desktop release is one tag push. Pushing `desktop-v<version>` on a `main` commit whose `desktop` push run is green
 starts `desktop release request` (unprivileged, it only echoes). Its completion starts `desktop release`, which
 GitHub always loads from `main`: `gate → collect → sign → publish → verify-published → feed`. Nothing commits to
 `main`, no file is written per release, and the signing keys exist only in the `desktop-release` environment,
@@ -12,8 +12,9 @@ which admits the branch `main` only.
    `gh api repos/dilla-chat/dilla/pages --jq '{build_type, html_url}'` gives `workflow` and
    `https://dilla-chat.github.io/dilla/`. To enable it on a fresh repository:
    `gh api -X POST repos/dilla-chat/dilla/pages -f build_type=workflow` (or `-X PUT` to switch an existing site).
-2. **Immutable releases** on, the `main` ruleset active (pull request, `ci-ok` from integration 15368, no force
-   push, no deletion), and the default workflow token read-only. `setup` checks all of it.
+2. **Immutable releases** on, the `main` ruleset active (pull request, `server-ok` and `desktop-ok` from integration
+   15368, no force push, no deletion), and the default workflow token read-only. `setup` checks all of it. The release
+   gate refuses until the ruleset requires both checks.
 3. **Keys**, once, by Jonas (repository admin, `gh auth status` signed in), from a clean checkout of the exact
    commit that passed the boundary-security review:
 
@@ -40,7 +41,7 @@ with the job token).
 1. Jonas runs `setup` as above, at the reviewed commit of the automation PR.
 2. The automation PR merges. The three public files `setup` rewrote go to `main` in a follow-up PR (a release
    before it fails closed at `sign`: the pins do not match the keys).
-3. `main`'s `ci` run on that follow-up merge commit is green (it builds every installer with the new pins).
+3. `main`'s `desktop` run on that follow-up merge commit is green (it builds every installer with the new pins).
 4. Claude pushes the tag: `git tag desktop-v0.1.0-beta.1 <merge commit>` and
    `git push origin desktop-v0.1.0-beta.1`. Watch `desktop release request`, then `desktop release`.
 
@@ -48,11 +49,11 @@ A desktop release needs no CT 144 upgrade.
 
 ## Every release
 
-- Land the code with the version bump in `packages/desktop/package.json`; wait for a green `ci` push run on the
+- Land the code with the version bump in `packages/desktop/package.json`; wait for a green `desktop` push run on the
   newest code commit of `main`.
 - Tag that commit: `git tag desktop-v<version> <commit>` and `git push origin desktop-v<version>`.
 - The gate releases only a commit with no code difference from `main`'s current tip (docs-only merges after it are
-  fine; a later code merge cancels the older `ci` run and blocks the tag, so tag the new tip once it is green), a
+  fine; a later code merge cancels the older `desktop` run and blocks the tag, so tag the new tip once it is green), a
   `package.json` version equal to the tag, and a version above every published release of its channel.
 - **One tag at a time.** The keyed workflow has no concurrency group, because GitHub would silently cancel a
   pending run when a third arrived. Instead every run starts, and its gate **fails loudly** ("Another desktop
@@ -75,7 +76,7 @@ A desktop release needs no CT 144 upgrade.
   (writes are never retried); it is GitHub's outage, not the release's: re-run the request run once GitHub recovers.
 - **A red `gate` on the first tag** (a posture read, a first-use assumption about `workflow_run`, the environment or
   the secrets): nothing is public and the version is not published, but the tagged commit is no longer `main`'s
-  tip once the fix lands. Fix on `main`, wait for its green `ci` push run, delete the unpublished tag
+  tip once the fix lands. Fix on `main`, wait for its green `desktop` push run, delete the unpublished tag
   (`git push origin :refs/tags/desktop-v<version>` and `git tag -d desktop-v<version>`), then tag the new green
   commit with the same version. A posture read the job token cannot do reports "Cannot read … with the job token":
   that is a permission problem of the read, not a setting that is off; check the setting by hand
@@ -102,7 +103,7 @@ A desktop release needs no CT 144 upgrade.
      not match `SHA256SUMS`/the signed metadata and say not to install it.
      `gh release edit desktop-v<version> --notes-file <warning + original notes>`.
   2. Treat the token as stolen: rotate it, and audit Apps, collaborators and agent sessions with write access.
-  3. Publish a superseding release: bump the version on `main`, wait for green `ci`, and tag it. The feed moves to
+  3. Publish a superseding release: bump the version on `main`, wait for green `desktop`, and tag it. The feed moves to
      it; the bad release stays, marked by its notes.
   4. Do not delete the bad release (deleting frees the tag for reuse); leave it, warned.
 
@@ -178,7 +179,7 @@ release. A Mac that skips it reinstalls once.
 **The first real rotation, checked by hand** (CI cannot: its unsigned acceptance build has no Developer ID team, and
 Sparkle's key-change path needs one). Before tagging a channel's rotation release:
 
-1. The macOS `desktop-mac-arm64` job of the tagged commit's `ci` run passed `macOS update disk image check`
+1. The macOS `desktop-mac-arm64` job of the tagged commit's `desktop` run passed `macOS update disk image check`
    (`scripts/check-mac-dmg.mjs`): the DMG's app carries B's `SUPublicEDKey`; the DMG is Developer ID signed by the
    app's team, stapled, and `spctl --assess --type open --context context:primary-signature` reports
    `source=Notarized Developer ID`.

@@ -71,7 +71,12 @@ CI is two workflows, both run on every pull request and every push to main: `ser
 the docs gates, the Go jobs, the Rust core checks and the release build) and `desktop`
 (`.github/workflows/desktop-ci.yml`: the script gates, the UI, the wasm core, the integration suites and the
 `desktop.yml` acceptance). Each reports one check, `server-ok` and `desktop-ok`, so a desktop failure never blocks a
-server change, or the reverse. The `desktop` workflow also runs nightly on main at 02:17 UTC with every area on, so test drift surfaces within a day. A pull request runs only the parts of CI it touches. Each workflow's `changes` job
+server change, or the reverse. These two checks become the required checks for `main` when this change merges and the
+ruleset switches from `ci-ok` to them; until the switch, `ci-ok` is the required check.
+
+The `desktop` workflow also runs nightly on main at 02:17 UTC with every area on, so test drift surfaces within a day.
+
+A pull request runs only the parts of CI it touches. Each workflow's `changes` job
 (`scripts/ci-areas.mjs`, which holds the path table and has its own tests) reads the changed paths and sets one output
 per area:
 
@@ -84,11 +89,33 @@ per area:
 | e2e | `e2e/**` | |
 | ci | `.github/**`, `scripts/**` | everything |
 
-The browser suites always run all three engines. A push to main runs everything, and so does a pull request whose diff
-cannot be computed or touches a path no rule names. A gate tests `!= 'false'`, so a missing output runs the job.
+The browser jobs in CI (`browser-spike`, `browser-media` and `core-integration`) run only Chromium projects; the desktop
+lane runs the Electron client. The Firefox and WebKit projects stay in the Playwright configs for local runs. A push to
+main runs everything, and so does a pull request whose diff cannot be computed or touches a path no rule names. A gate
+tests `!= 'false'`, so a missing output runs the job.
 Skipped jobs count as passed for required checks. Each `*-ok` job needs every other job of its workflow and is red
-when any failed or was cancelled, so the two are the required checks. No container image is built or published. A new
+when any failed or was cancelled. No container image is built or published. A new
 job belongs to one workflow (`REQUIRED_JOBS` in `scripts/check-ci-workflow.mjs`) and needs `needs: changes`, an
 `if:`, an entry in that workflow's `JOB_GATES`, and a place in its `*-work-complete` and `*-ok` needs;
 `npm run check:ci` enforces them. A new test or build that reads a file from another area needs a path rule: a guard test in
 `scripts/ci-areas.test.mjs` scans the sources for such reads.
+
+Each workflow has a `ci-watchdog` job (`scripts/ci-watchdog.py`). It cancels the run at the first failed job, so a broken
+build does not keep the other jobs busy, except the desktop e2e shards (`desktop / desktop-client-*` and
+`desktop / desktop-voice-*`): they run to the end, so one round shows every failing test, and `desktop-ok` still fails
+on any failed shard. The client and voice matrices have `fail-fast: false` with no `--max-failures`; the build matrices
+keep `fail-fast: true`. The watchdog ignores a job that GitHub never gave a runner. It fails open: when its own API
+calls fail, it stops watching with a warning and never cancels a run.
+
+`scripts/retry-on.mjs` retries a command, at most three attempts, only when its output matches a known network error.
+It wraps `go mod download` in every Go job (`release.yml` included) and the macOS notarization staple in the native
+desktop build (a retry notarizes again, so only the Apple service errors qualify). Evidence uploads run only when the
+evidence exists.
+
+`ci-rerun-starved.yml` re-runs the failed jobs of a `server` or `desktop` run once. It acts only on attempt 1 of a run
+that concluded `failure`, when at least one job never got a runner and no job really failed. A run with a real failure
+is never re-run.
+
+A release needs a green push run of its own workflow on main for the tagged commit: `desktop` for the desktop release
+(`packages/desktop/RELEASING.md`), `server` for `release.yml` (`scripts/server-release-gate.mjs`). A `v*` tag on a main
+commit from before this change runs that commit's own `release.yml`, which has no server gate.
