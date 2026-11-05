@@ -14,6 +14,10 @@ jobs:
     if: github.event.workflow_run.run_attempt == 1 && github.event.workflow_run.conclusion == 'failure'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # A job-level block replaces the workflow's, so actions: write repeats; contents: read lets the checkout read a private repository.
+    permissions:
+      actions: write
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

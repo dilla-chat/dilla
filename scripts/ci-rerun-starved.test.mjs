@@ -1,5 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { run, shouldRerun, starvedJobs } from './ci-rerun-starved.mjs';
 
 // Same shape as job() in ci-watchdog.test.py.
@@ -119,4 +124,17 @@ test('the token never reaches the log or an error', async () => {
     (e) => !e.message.includes('secret-token'),
   );
   assert.ok(lines.every((l) => !l.includes('secret-token')));
+});
+
+test('the script runs from a checkout whose path a file:// URL has to percent-encode', () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'rerun-starved-')), 'a dir with spaces');
+  mkdirSync(dir);
+  copyFileSync(fileURLToPath(new URL('./ci-rerun-starved.mjs', import.meta.url)), join(dir, 'ci-rerun-starved.mjs'));
+  try {
+    const r = spawnSync(process.execPath, ['ci-rerun-starved.mjs'], { cwd: dir, env: { ...process.env, GH_TOKEN: '' }, encoding: 'utf8' });
+    assert.notEqual(r.status, 0, 'the script did not run');
+    assert.match(r.stderr, /GH_TOKEN is required/);
+  } finally {
+    rmSync(dirname(dir), { recursive: true, force: true });
+  }
 });

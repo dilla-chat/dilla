@@ -1,4 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 /**
  * Re-runs, once, the jobs of a CI run that GitHub never gave a runner. Such a job waits for a runner until
@@ -88,6 +90,7 @@ export async function run(env, { fetchImpl = fetch, sleep = (ms) => delay(ms), l
   return true;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// A URL, not a hand-built file:// string, so a path with characters a URL encodes still runs the script.
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   await run(process.env);
 }
