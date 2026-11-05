@@ -371,15 +371,16 @@ jobs:
           name: desktop-validation-${{ matrix.platform }}-${{ matrix.arch }}
           path: packages/desktop/test-report
           if-no-files-found: error
+      # hashFiles and upload-artifact see only the workspace, so the Windows audio logs are copied into it first.
+      - name: Collect the Windows audio logs
+        if: failure() && steps.desktop-build.outcome == 'success'
+        shell: bash
+        run: if [ -d "$RUNNER_TEMP/dilla-windows-audio" ]; then mkdir -p packages/desktop/test-results && cp -R "$RUNNER_TEMP/dilla-windows-audio" packages/desktop/test-results/windows-audio; fi
       - if: failure() && steps.desktop-build.outcome == 'success' && hashFiles('packages/desktop/test-results/**') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-failure-${{ matrix.platform }}-${{ matrix.arch }}
-          path: |
-            packages/desktop/test-results
-            ${{ runner.temp }}/dilla-windows-audio/*.log
-            ${{ runner.temp }}/dilla-windows-audio/*.out
-            ${{ runner.temp }}/dilla-windows-audio/*.err
+          path: packages/desktop/test-results
           if-no-files-found: error
 
   voice:

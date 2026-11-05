@@ -297,9 +297,12 @@ test('native failure diagnostics run only after a successful desktop build', () 
   const root=fixture(GOOD), changed=REAL_DESKTOP.replace(before,before.replace(guard,`if: ${replacement}`)); assert.notEqual(changed,REAL_DESKTOP);
   writeFileSync(join(root,'.github/workflows/desktop.yml'),changed); assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('native failure diagnostics')),replacement);
  }
- const block=`${before}\${{ matrix.platform }}-\${{ matrix.arch }}\n          path: |\n            packages/desktop/test-results\n            \${{ runner.temp }}/dilla-windows-audio/*.log\n            \${{ runner.temp }}/dilla-windows-audio/*.out\n            \${{ runner.temp }}/dilla-windows-audio/*.err\n          if-no-files-found: error`;
+ const block=`${before}\${{ matrix.platform }}-\${{ matrix.arch }}\n          path: packages/desktop/test-results\n          if-no-files-found: error`;
  assert.ok(REAL_DESKTOP.includes(block));
- for(const changed of [REAL_DESKTOP.replace(block,block.replace('if-no-files-found: error','if-no-files-found: warn')),REAL_DESKTOP.replace(block,block.replace('packages/desktop/test-results','packages/desktop/missing')),REAL_DESKTOP.replace('id: desktop-build','id: other-build')]) {
+ for(const changed of [REAL_DESKTOP.replace(block,block.replace('if-no-files-found: error','if-no-files-found: warn')),REAL_DESKTOP.replace(block,block.replace('packages/desktop/test-results','packages/desktop/missing')),REAL_DESKTOP.replace('id: desktop-build','id: other-build'),
+  REAL_DESKTOP.replace('        shell: bash\n        run: if [ -d "$RUNNER_TEMP/dilla-windows-audio" ]','        shell: bash\n        continue-on-error: true\n        run: if [ -d "$RUNNER_TEMP/dilla-windows-audio" ]'),
+  REAL_DESKTOP.replace('test-results/windows-audio; fi','test-results/windows-audio || true; fi'),
+  REAL_DESKTOP.replace("name: Collect the Windows audio logs\n        if: failure() && steps.desktop-build.outcome == 'success'","name: Collect the Windows audio logs\n        if: always()")]) {
   const root=fixture(GOOD);writeFileSync(join(root,'.github/workflows/desktop.yml'),changed);assert.ok(checkDesktopWorkflow(root).some(p=>p.includes('native failure diagnostics')));
  }
 });

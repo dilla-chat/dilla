@@ -1416,14 +1416,16 @@ node --test packages/desktop/test/linux-installed-sandbox-bootstrap.test.mjs pac
 uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
 with:
 name: desktop-failure-\${{ matrix.platform }}-\${{ matrix.arch }}
-path: |
-packages/desktop/test-results
-\${{ runner.temp }}/dilla-windows-audio/*.log
-\${{ runner.temp }}/dilla-windows-audio/*.out
-\${{ runner.temp }}/dilla-windows-audio/*.err
+path: packages/desktop/test-results
 if-no-files-found: error`;
+  // hashFiles and upload-artifact see only the workspace: the Windows audio logs are copied into it by the step
+  // directly before the upload, which must fail on nothing (no continue-on-error, no || true, no always()).
+  const collectLogs = `name: Collect the Windows audio logs
+if: failure() && steps.desktop-build.outcome == 'success'
+shell: bash
+run: if [ -d "$RUNNER_TEMP/dilla-windows-audio" ]; then mkdir -p packages/desktop/test-results && cp -R "$RUNNER_TEMP/dilla-windows-audio" packages/desktop/test-results/windows-audio; fi`;
   const failureUploads = nativeSteps.map((step,index)=>step.join('\n')===failureUpload ? index : -1).filter(index=>index>=0);
-  if(desktopBuild<0 || failureUploads.length!==1 || failureUploads[0]<=desktopBuild)problems.push(`${file}: native failure diagnostics require the exact post-build upload`);
+  if(desktopBuild<0 || failureUploads.length!==1 || failureUploads[0]<=desktopBuild || nativeSteps[failureUploads[0]-1]?.join('\n')!==collectLogs)problems.push(`${file}: native failure diagnostics require the exact post-build upload`);
   const unitSteps = nativeSteps.filter(step => step.some(line => line.includes('run: npm test -w @dilla/desktop')));
   if (unitSteps.length !== 1 || unitSteps[0].join('\n') !== 'run: npm test -w @dilla/desktop') {
     problems.push(`${file}: desktop unit tests must run on every native platform`);
