@@ -77,7 +77,7 @@ Build and run, from the repo root:
    **Device Hub** (Xcode → Open Developer Tool → Device Hub, `/Applications/Xcode.app/Contents/Applications/DeviceHub.app`),
    which replaces "Simulator" and the "Devices and Simulators" window. To run on a simulator, boot one in Device Hub
    and pick it as the destination.
-8. In the app: the picker asks for an instance (`https://dilla.thim.dev`); sign in or sign up; the phone shell opens.
+8. In the app: the picker asks for an instance (`https://dilla.chat`); sign in or sign up; the phone shell opens.
    Web Inspector: Safari → Develop → <iPhone> → Dilla → `localhost`.
 
 After each `npm run build`, repeat step 4 before running again.

@@ -192,7 +192,7 @@ export interface MobileBridge {
   5. force-stops and relaunches, then asserts the same account is still signed in and both instances are listed
 
   Expected: the script exits 0.
-- [ ] **Step 6: Send the iOS check to `dilla-MacBook`.** It runs `npm run build -w @dilla/mobile && npx cap sync ios`, then builds and runs on the iPhone against `https://dilla.thim.dev` (CT 144 must be on a build that includes T4). It goes through the same manual steps as Step 5 and returns screenshots of the picker, the signed-in phone shell and a received message.
+- [ ] **Step 6: Send the iOS check to `dilla-MacBook`.** It runs `npm run build -w @dilla/mobile && npx cap sync ios`, then builds and runs on the iPhone against `https://dilla.chat` (CT 144 must be on a build that includes T4). It goes through the same manual steps as Step 5 and returns screenshots of the picker, the signed-in phone shell and a received message.
 - [ ] **Step 7: Commit** with the message `feat(mobile): Capacitor shell for iOS and Android`.
 
 ### Task 7: Mobile CI lane
