@@ -3102,6 +3102,16 @@ test('the macOS installer build retries only the stapling errors', () => {
   }
 });
 
+test('the native build job has room for three notarizing macOS builds', () => {
+  const pin = "  native:\n    name: desktop-${{ matrix.platform }}-${{ matrix.arch }}\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 60\n";
+  assert.ok(REAL_DESKTOP.includes(pin));
+  for (const minutes of ['30', '45']) {
+    const root = fixture(GOOD);
+    writeFileSync(join(root, '.github/workflows/desktop.yml'), REAL_DESKTOP.replace(pin, pin.replace('60', minutes)));
+    assert.ok(checkDesktopWorkflow(root).some((p) => p.includes('native') && p.includes('timeout-minutes: 60')), minutes);
+  }
+});
+
 test('every release Go job downloads its modules through the retry wrapper', () => {
   const step = /      - name: Download Go modules \(retried only on known network errors\)\n        run: [^\n]*\n/;
   assert.match(REAL_RELEASE, step);

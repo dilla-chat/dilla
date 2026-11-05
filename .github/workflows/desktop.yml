@@ -222,10 +222,11 @@ jobs:
             ${{ runner.temp }}/native-linux-package-acceptance/*.txt
           if-no-files-found: error
 
+  # 60 minutes: the macOS leg may run the notarizing installer build three times (the staple retry below).
   native:
     name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: true
       matrix:

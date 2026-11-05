@@ -1428,6 +1428,8 @@ export function checkDesktopWorkflow(root) {
       problems.push(`${file}: ${job} must seal the macOS npm Electron runtime immediately after installation`);
   }
   checkGoModuleDownloads(splitJobs(text), problems, file);
+  // Three notarizing macOS builds (STAPLE_RETRY's attempts) do not fit in 30 minutes.
+  if (!/^ {4}timeout-minutes: 60$/m.test(body('native'))) problems.push(`${file}: the native job must carry timeout-minutes: 60, room for the macOS staple retry's three builds`);
   const nativeSteps = jobSteps(body('native'));
   const distSteps = nativeSteps.filter((step) => step.some((line) => line.includes('npm run dist -w @dilla/desktop')));
   const distArgs = '-- --config.electronDist=../../node_modules/electron/dist --${{ matrix.platform }} --${{ matrix.arch }}';
