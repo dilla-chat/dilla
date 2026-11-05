@@ -25,7 +25,7 @@ export const LOCK = `dilla-core:${INSTANCE_HEX}`;
 // policy_version, external_sender_key_id, external_sender_pub] (interfaces.md A3, protocol/09).
 export const INSTANCE_DOC: CborInput = [[1], [1], [1], INSTANCE_ID, 7, 'dilla.test', 0, [0], 1, new Uint8Array(16).fill(1), new Uint8Array(32).fill(2)];
 // GET /v1/instance/limits, eleven elements.
-export const LIMITS: CborInput = [131_072, 104_857_600, 4, 2, 32, 8, 10_737_418_240, 30_000, 131_584, 30, 30];
+export const LIMITS: CborInput = [131_072, 104_857_600, 10, 2, 32, 8, 10_737_418_240, 30_000, 131_584, 30, 30];
 
 export function cbor(value: CborInput, status = 200): Response {
   return new Response(encode(value).slice(), { status, headers: { 'content-type': 'application/cbor' } });

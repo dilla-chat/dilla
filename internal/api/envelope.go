@@ -26,7 +26,7 @@ const (
 const (
 	maxBodyMessage     = 4000
 	maxBodyReaction    = 32
-	maxAttachments     = 4
+	maxAttachments     = 10
 	maxPreviews        = 2
 	maxMimeBytes       = 255
 	maxNameBytes       = 255

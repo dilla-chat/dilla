@@ -111,7 +111,7 @@ describe('the copy rules', () => {
     expect(en['shell.tray.failedHint']).toBe('Remove it and attach it again.');
     expect(en['shell.message.attachmentGone']).toBe('A file of this message is no longer on the server. Discard it and attach the file again.');
     expect(Object.keys(en)).not.toContain('shell.composer.mentionHere');
-    expect(en['shell.drop.body']).toBe('Up to 4 files, 25 MB each.');
+    expect(en['shell.drop.body']).toBe('Up to 10 files, 25 MB each.');
     expect(en['shell.tray.overLimitToast']).toBe('Files over 25 MB can’t be sent from a browser');
     expect(Object.keys(en)).not.toContain('shell.tray.tooLarge');
     expect(en['shell.pins.by']).toBe('pinned by {name}');

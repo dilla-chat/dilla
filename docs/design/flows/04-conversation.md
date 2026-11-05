@@ -160,7 +160,7 @@ The drop overlay over the main pane while files are dragged over it:
 +------------------------------------------------------------------------------------------------------------+
 |  + - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - +  |
 |  |                                      Drop to attach                                                |  |
-|  |                                      Up to 4 files, 25 MB each.                                    |  |
+|  |                                      Up to 10 files, 25 MB each.                                   |  |
 |  + - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - +  |
 +------------------------------------------------------------------------------------------------------------+
 ```
@@ -210,7 +210,7 @@ active row (never over the row above); cards fill the width; the lightbox and th
 | an image card whose open failed | the box or thumbnail and `could not open ({code})` |
 | an attachment over 25 MB received in a browser | the card with `too large to open in a browser` and no button |
 | a file picked over 25 MB | a failed card stays with `Over 25 MB`; a toast says `Files over 25 MB can’t be sent from a browser` once per pick; its bytes are never read or uploaded |
-| a fifth file | nothing is added; the alert says `A message carries at most 4 files.` |
+| an eleventh file | nothing is added; the alert says `A message carries at most 10 files.` |
 | send while a file is not ready | nothing is sent; the toast says `Waiting for uploads to finish` |
 | a tray entry that failed | `failed ({code})` and, under it, `Remove it and attach it again.` (`shell.tray.failedHint`) |
 | a message failed because a file is no longer on the server | `shell.message.attachmentGone` (`A file of this message is no longer on the server. Discard it and attach the file again.`), discard only |
@@ -360,7 +360,7 @@ the mention list): they are not keys of `en.ts` and have no row in this table.
 | `shell.pins.jump` | `go to message` | pins dialog item button |
 | `shell.pins.close` | `Close` | pins dialog close |
 | `shell.drop.title` | `Drop to attach` | drop overlay |
-| `shell.drop.body` | `Up to 4 files, 25 MB each.` | drop overlay |
+| `shell.drop.body` | `Up to 10 files, 25 MB each.` | drop overlay |
 | `shell.tray.label` | `files to send` | the tray's name |
 | `shell.tray.reading` | `reading` | tray phase |
 | `shell.tray.preparing` | `preparing` | tray phase |
@@ -372,7 +372,7 @@ the mention list): they are not keys of `en.ts` and have no row in this table.
 | `shell.tray.removeTip` | `Remove` | the `×`'s tooltip (Signal §6.8) |
 | `shell.tray.overLimitToast` | `Files over 25 MB can’t be sent from a browser` | toast once per pick |
 | `shell.tray.overLimit` | `Over 25 MB` | failed oversized card meta |
-| `shell.tray.tooMany` | `A message carries at most 4 files.` | alert above the tray in the composer |
+| `shell.tray.tooMany` | `A message carries at most 10 files.` | alert above the tray in the composer |
 | `shell.tray.notReady` | `Waiting for uploads to finish` | toast |
 | `shell.attachment.open` | `open {name}` | image card button |
 | `shell.attachment.save` | `save {name}` | file card button |

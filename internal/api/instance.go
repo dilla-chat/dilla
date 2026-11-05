@@ -123,7 +123,7 @@ func (d Deps) InstanceLimits(w http.ResponseWriter, r *http.Request) {
 	limits := []uint64{
 		uint64(c.Limits.MaxCiphertextBytes),      //nolint:gosec // G115: a config value that Validate keeps positive
 		uint64(c.Blobs.MaxBlobBytes),             //nolint:gosec // G115: a config value that Validate keeps positive
-		4,                                        // max_attachments (protocol/04, tightened by R6/R32)
+		10,                                       // max_attachments (protocol/04, tightened by R6/R32)
 		2,                                        // max_previews
 		uint64(c.Limits.MaxKeypackagesPerDevice), //nolint:gosec // G115: a config value that Validate keeps positive
 		uint64(c.Limits.KeypackageRefillThreshold),                     //nolint:gosec // G115: a config value that Validate keeps positive

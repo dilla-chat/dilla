@@ -1580,7 +1580,7 @@ fn send_prepare_refuses_each_rule_and_writes_nothing() {
     let unknown = [0xee; 16];
     let mut long_name = attachment(0x31);
     long_name.name = "n".repeat(256);
-    let five: Vec<Attachment> = (1..=5).map(attachment).collect();
+    let eleven: Vec<Attachment> = (1..=11).map(attachment).collect();
     let cases: Vec<(Vec<u8>, &str, &str)> = vec![
         (vec![0x80], "E_CORE_INPUT", "request is malformed"),
         (
@@ -1663,7 +1663,7 @@ fn send_prepare_refuses_each_rule_and_writes_nothing() {
             "E_ENVELOPE_LIMIT",
             "",
         ),
-        (request(0, None, "five", &five), "E_ENVELOPE_LIMIT", ""),
+        (request(0, None, "eleven", &eleven), "E_ENVELOPE_LIMIT", ""),
         (request(0, None, "", &[long_name]), "E_ENVELOPE_LIMIT", ""),
     ];
     for (req, code, detail) in &cases {

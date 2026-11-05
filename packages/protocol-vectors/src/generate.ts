@@ -67,7 +67,7 @@ export async function envelopeVectors() {
     rejectCase('delete tombstone with a non-empty body', { ...rejectBase, type: EnvelopeType.Delete, replyTo: fill(16, 0x01), body: 'deleted because', attachments: [], previews: [] }),
     rejectCase('mime one byte over 255', withAttachment({ mime: 'a'.repeat(256) })),
     rejectCase('thumb one byte over 8192', withAttachment({ thumb: new Uint8Array(8193) })),
-    rejectCase('five attachments', { ...rejectBase, body: '', attachments: Array.from({ length: 5 }, sampleAttachment), previews: [] }),
+    rejectCase('eleven attachments', { ...rejectBase, body: '', attachments: Array.from({ length: 11 }, sampleAttachment), previews: [] }),
     rejectCase('three previews', { ...rejectBase, body: '', attachments: [], previews: Array.from({ length: 3 }, samplePreview) }),
     rejectCase('preview url one byte over 2048', withPreview({ url: 'u'.repeat(2049) })),
     rejectCase('preview title one byte over 256', withPreview({ title: 't'.repeat(257) })),

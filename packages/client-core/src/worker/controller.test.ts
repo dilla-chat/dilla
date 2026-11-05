@@ -6163,7 +6163,7 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     h.call(8, { m: 'openAttachment', channelId: CH_HEX, seq: '01', index: 0, thumb: false });
     h.call(9, { m: 'openAttachment', channelId: CH_HEX, seq: '7', index: -1, thumb: false });
     h.call(10, { m: 'send', channelId: CH_HEX, text: 'x', replyTo: 'nope' });
-    h.call(11, { m: 'send', channelId: CH_HEX, text: 'x', attachments: ['a', 'b', 'c', 'd', 'e'] });
+    h.call(11, { m: 'send', channelId: CH_HEX, text: 'x', attachments: Array.from({ length: 11 }, (_, i) => String(i)) });
     h.call(12, { m: 'discardAttachment', channelId: CH_HEX, trayId: '' });
     h.call(13, { m: 'react', channelId: CH_HEX, msgId: MSG_HEX, emoji: '👍', on: 1 });
     h.call(14, { m: 'openAttachment', channelId: CH_HEX, seq: '7', index: 0, thumb: 'no' });
@@ -6264,11 +6264,11 @@ describe('Controller say more (L-TS-34, L-TS-35, L-TS-36)', () => {
     await vi.waitFor(() => expect(trayOf(w)?.[0]?.phase).toBe('ready'));
   });
 
-  it('attachFiles refuses five files and keeps an oversize failed card without upload', async () => {
+  it('attachFiles refuses eleven files and keeps an oversize failed card without upload', async () => {
     const w = world();
     await toReady(w);
     await openGeneral(w);
-    w.call(4, { m: 'attachFiles', channelId: CH_HEX, files: [1, 2, 3, 4, 5].map((n) => file(`${String(n)}.txt`, 'text/plain', 1)) });
+    w.call(4, { m: 'attachFiles', channelId: CH_HEX, files: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((n) => file(`${String(n)}.txt`, 'text/plain', 1)) });
     w.call(5, { m: 'attachFiles', channelId: CH_HEX, files: [file('big.bin', 'application/octet-stream', BROWSER_ATTACHMENT_CAP + 1)] });
     w.call(6, { m: 'attachFiles', channelId: 'e'.repeat(32), files: [file('x.txt', 'text/plain', 1)] });
     await vi.waitFor(() => expect(w.ret(6)).toBeDefined());

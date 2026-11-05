@@ -1256,10 +1256,10 @@ their profile card ([Members](#members)); role mentions and @everyone are not.
 ![Björn's message with the image card of saturday-map.png and the file card of loot-list.txt, and under it the
 list "files to send" with packing-list.txt and bridge-sketch.png, both ready](screenshots/conversation-attachments.png)
 
-**attach files** next to the message field, dropping files on the conversation ("Drop to attach", "Up to 4 files,
+**attach files** next to the message field, dropping files on the conversation ("Drop to attach", "Up to 10 files,
 25 MB each.") or pasting them into the message field adds them to "files to send". Each file goes through
 "reading", "preparing", "uploading" and "ready", or shows "failed ({code})"; **remove {name}** takes it off the
-list. A message carries at most four files ("A message carries at most 4 files."), each at most 25 MB
+list. A message carries at most ten files ("A message carries at most 10 files."), each at most 25 MB
 (26,214,400 bytes) in a browser. An oversized card says “Over 25 MB” and the toast says “Files over 25 MB can’t be sent from a browser”. The message goes when
 its uploads are ready, with or without text. Pressing Send while an upload is pending shows “Waiting for uploads to finish”.
 Failed cards stay visible; remove one and attach the file again to retry. They do not stop your text and ready files from being sent. Files are uploaded

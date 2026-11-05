@@ -894,7 +894,7 @@ channel — an end-to-end encrypted one, a voice channel or a category — every
   attachment's `blob_id` 32, `key` 32 and `nonce` 12, an attachment a nine-element and a preview a
   four-element array — and an envelope of type 1 to 6 whose `reply_to` is null or that carries an
   attachment or a preview (`04` § Envelope) is `400 E_ENVELOPE_SHAPE`; a `type` above 6 is
-  `400 E_ENVELOPE_TYPE`; and any bound of `04`'s § Envelope limits (`body` per type, 4 attachments,
+  `400 E_ENVELOPE_TYPE`; and any bound of `04`'s § Envelope limits (`body` per type, 10 attachments,
   2 previews, `mime`, `name`, `thumb`, `url`, `title`, `description`, preview `image`) is
   `400 E_ENVELOPE_LIMIT`. The envelope of a `PATCH` is refused by the same rules. The body cap is
   96 KiB (§ Rate limits). Only a message's (type 0) or an edit's (type 1) `body` is search content,

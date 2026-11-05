@@ -425,7 +425,7 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 	}{
 		{0, "max_ciphertext_bytes", uint64(cfg.Limits.MaxCiphertextBytes)},
 		{1, "max_blob_bytes", uint64(cfg.Blobs.MaxBlobBytes)},
-		{2, "max_attachments", 4},
+		{2, "max_attachments", 10},
 		{3, "max_previews", 2},
 		{4, "max_keypackages_per_device", uint64(cfg.Limits.MaxKeypackagesPerDevice)},
 		{5, "keypackage_refill_threshold", uint64(cfg.Limits.KeypackageRefillThreshold)},
