@@ -129,4 +129,5 @@ violation. Screenshots, logcat on failure and the emulator's own log (`emulator.
 
 - App-icon badge counts (no core Capacitor API; push brings them in wave M2). `send({ type: 'badge' })` is accepted
   and ignored.
-- Push, CallKit / ConnectionService and background calls: waves M2 and M3.
+- Voice calls (untested in the app), push, and background calls: waves M2 and M3. Android uses ConnectionService; iOS uses
+  no CallKit in v1 (see the spec's "iOS calls after the M0 device spike").
