@@ -432,7 +432,7 @@ func (g *Gateway) identifyConnection(ctx context.Context, s sink, in Inbound) (*
 		return nil, false
 	}
 	if session.Bot != nil && chosen[0] != auth.WireVersion {
-		g.refuse(ctx, s, frameErr("E_UPGRADE_REQUIRED", "managed Bots require wire version 6", CloseVersion))
+		g.refuse(ctx, s, frameErr("E_UPGRADE_REQUIRED", fmt.Sprintf("managed Bots require wire version %d", auth.WireVersion), CloseVersion))
 		return nil, false
 	}
 	c, err := g.registerVersions(ctx, session, s, chosen)
@@ -519,7 +519,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	originalWire := g.connectionWire(c)
 	for _, entry := range out.entries {
 		requiresWire3, scopeErr := g.scopeRequiresWire3(ctx, entry.scope)
-		if scopeErr != nil || (requiresWire3 && originalWire < 3) {
+		if scopeErr != nil || (requiresWire3 && originalWire < auth.WireVersion) {
 			g.suspended.Delete(string(token))
 			return refuse("replay scope is no longer resumable; identify again")
 		}
@@ -613,7 +613,7 @@ func (g *Gateway) sendReady(ctx context.Context, c *conn) error {
 		if scopeErr != nil {
 			return scopeErr
 		}
-		if requiresWire3 && c.wire < 3 {
+		if requiresWire3 && c.wire < auth.WireVersion {
 			continue
 		}
 		cursor, err := g.opts.Store.GetCursor(ctx, c.deviceID, groupID)
@@ -692,7 +692,7 @@ func (g *Gateway) subscribe(ctx context.Context, c *conn, cid uint64, groups []i
 			refuse("E_UNAVAILABLE", "group compatibility state is unavailable")
 			continue
 		}
-		if requiresWire3 && g.connectionWire(c) < 3 {
+		if requiresWire3 && g.olderWire(c) {
 			versionRefused++
 			continue
 		}
@@ -714,7 +714,7 @@ func (g *Gateway) subscribe(ctx context.Context, c *conn, cid uint64, groups []i
 		refuse("E_FORBIDDEN", fmt.Sprintf("%d of the groups are not this device's", refused))
 	}
 	if versionRefused > 0 {
-		refuse("E_VERSION", fmt.Sprintf("%d groups require wire version 3", versionRefused))
+		refuse("E_UPGRADE_REQUIRED", fmt.Sprintf("%d groups require wire version %d", versionRefused, auth.WireVersion))
 	}
 	if full {
 		refuse("E_FRAME_LIMIT", fmt.Sprintf("the subscription set is full at %d groups", maxSubscribedGroups))
@@ -796,7 +796,7 @@ func (g *Gateway) handle(ctx context.Context, c *conn, in Inbound) {
 			return
 		}
 		requiresWire3, scopeErr := g.scopeRequiresWire3(ctx, FrameScope{Groups: []id.ID{*in.GroupID}})
-		if scopeErr != nil || (requiresWire3 && g.connectionWire(c) < 3) {
+		if scopeErr != nil || (requiresWire3 && g.olderWire(c)) {
 			return
 		}
 		round, err := rawUint(in.Payload[0])
@@ -870,8 +870,8 @@ func (g *Gateway) handleTypingSet(ctx context.Context, c *conn, in Inbound) {
 		g.signalError(c, "E_UNAVAILABLE")
 		return
 	}
-	if requiresWire3 && g.connectionWire(c) < 3 {
-		g.signalError(c, "E_VERSION")
+	if requiresWire3 && g.olderWire(c) {
+		g.signalError(c, "E_UPGRADE_REQUIRED")
 		return
 	}
 	if !g.acceptTyping(channel, c.userID, c.deviceID, on == 1) {
@@ -924,8 +924,8 @@ func (g *Gateway) handleVoiceSelf(ctx context.Context, c *conn, in Inbound) {
 		g.signalError(c, "E_UNAVAILABLE")
 		return
 	}
-	if requiresWire3 && g.connectionWire(c) < 3 {
-		g.signalError(c, "E_VERSION")
+	if requiresWire3 && g.olderWire(c) {
+		g.signalError(c, "E_UPGRADE_REQUIRED")
 		return
 	}
 	// The callback proves live SFU membership. Bit zero is server-owned; client bits

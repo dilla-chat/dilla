@@ -9,7 +9,7 @@ import (
 )
 
 func TestAppBuildHintRequiresWireFiveAndIsEphemeral(t *testing.T) {
-	for _, wire := range []uint64{2, 3, 4, 5} {
+	for _, wire := range []uint64{2, 3, 4, 5, 6} {
 		t.Run(string(rune('0'+wire)), func(t *testing.T) {
 			h := newHarness(t)
 			h.gw.opts.WireVersions = []uint64{wire}
@@ -17,7 +17,7 @@ func TestAppBuildHintRequiresWireFiveAndIsEphemeral(t *testing.T) {
 			h.gw.opts.CurrentAppEntry = func() string { return "/assets/index-current.js" }
 			c := h.connect(t, id.New())
 			h.drainReady(t, c)
-			if wire < 5 {
+			if wire < 6 {
 				select {
 				case <-h.sink(c).frames:
 					t.Fatal("legacy session received a new frame")
@@ -43,7 +43,7 @@ func TestAppBuildHintRequiresWireFiveAndIsEphemeral(t *testing.T) {
 }
 
 func TestAppBuildHintOnResumeUsesActualSelectedWire(t *testing.T) {
-	for _, wire := range []uint64{3, 4, 5} {
+	for _, wire := range []uint64{4, 5, 6} {
 		t.Run(string(rune('0'+wire)), func(t *testing.T) {
 			h := newHarness(t)
 			h.gw.opts.Auth = &capabilityRecordingAuth{Authenticator: h}
@@ -52,12 +52,12 @@ func TestAppBuildHintOnResumeUsesActualSelectedWire(t *testing.T) {
 			h.gw.opts.CurrentAppEntry = func() string { return entry }
 			c := h.connect(t, id.New())
 			h.drainReady(t, c)
-			if wire == 5 {
+			if wire == 6 {
 				h.waitFrame(t, c.deviceID)
 			}
 			token := c.resumeToken()
 			h.gw.suspend(c)
-			h.gw.opts.WireVersions = []uint64{5, 4, 3, 2}
+			h.gw.opts.WireVersions = []uint64{6, 5, 4, 3, 2}
 			entry = "/assets/current.js"
 			s := newRecordingSink(16, false)
 			go h.gw.serve(context.Background(), s, "")
@@ -70,7 +70,7 @@ func TestAppBuildHintOnResumeUsesActualSelectedWire(t *testing.T) {
 			if in := h.readFrom(t, s); in.Op != OpResumed || len(in.Payload) != 3 {
 				t.Fatalf("resume=%+v", in)
 			}
-			if wire == 5 {
+			if wire == 6 {
 				in := h.readFrom(t, s)
 				if in.Op != OpAppBuild || in.CID != 0 {
 					t.Fatalf("hint=%+v", in)
@@ -94,7 +94,7 @@ func TestAppBuildHintNeverAdvertisesInvalidEntry(t *testing.T) {
 	for _, entry := range []string{"", "https://other.test/a.js", "/assets/../a.js", "/assets/a.css"} {
 		h := newHarness(t)
 		h.gw.opts.Auth = &capabilityRecordingAuth{Authenticator: h}
-		h.gw.opts.WireVersions = []uint64{5}
+		h.gw.opts.WireVersions = []uint64{6}
 		h.gw.opts.CurrentAppEntry = func() string { return entry }
 		c := h.connect(t, id.New())
 		h.drainReady(t, c)

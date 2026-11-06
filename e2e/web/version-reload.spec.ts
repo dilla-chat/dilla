@@ -1,11 +1,10 @@
-// web3.8, E2: a tab speaking an older wire version than the host offers is told so, and the reload it offers keeps the work.
-// The current client offers wire 6 alone (Bot v2). A host started with `-wire 7` offers a newer, unsupported wire, so the hello
-// has no common version (the client closes the socket itself): the worker goes offline with reason 'version' (no reconnect
-// loop), and the page shows `shell.banner.clientTooOld` with `reload.action`. Pressing it checkpoints the draft first (WS3), so
-// the draft is back after the page has reloaded.
-// Bot v2 Task 1: a wire 6 instance refuses an older client with E_UPGRADE_REQUIRED (close 4006 whose reason is that code). The
-// desktop app shows `update.required` with its update button (`update.requiredAction`); a browser tab reloads once to the
-// instance's current client and, still refused, shows `update.required` with `reload.action`. Never a reconnect loop.
+// web3.8, E2 / Bot v2 Task 1: a client older than the host is told so, without a reconnect loop, and keeps its work.
+// The current client speaks wire 6 alone. A host started with `-wire 7` offers only a newer wire, so the client cannot identify:
+// its hello has nothing in common and every wire it offers is newer (the instance's own "older than all" rule, read from the
+// hello). The desktop app shows `update.required` with its update button (`update.requiredAction`) and does not reload itself;
+// a browser tab reloads once to the host's current client (checkpointing the draft first, WS3) and, still refused, shows
+// `update.required` with `reload.action`. A plain version refusal (the server's close 4006 naming E_VERSION) keeps the older
+// state: `shell.banner.clientTooOld` with `reload.action`, whose press checkpoints the draft before the page reloads.
 // Ada's account lives in /tmp/dw/host-8515, which the three hosts of this suite share (`keepData`).
 import { expect, type Page, type TestInfo } from '@playwright/test';
 import { addServerVia, TEST_TIMEOUT, WAIT, copy, composerBox, expectAccessible, expectComposerReady, railNav, signUp, test } from './support/app';
@@ -56,9 +55,9 @@ const isChromium = (info: TestInfo) => desktopE2E() || info.project.name.startsW
 const TICKET = /\/v1\/gateway\/ticket$/;
 
 /** Runs in each of the page's workers while refusing (chromium only): every WebSocket that gets its first listener from then on
- *  also closes itself 4006 with the instance's E_UPGRADE_REQUIRED reason once it is open, which the gateway reads as the server's
- *  own close. Playwright's WebSocket routes do not reach a worker's sockets. The patch is on the prototype, so it also covers a
- *  WebSocket class the worker took before it. */
+ *  also closes itself 4006 naming E_VERSION once it is open, which the gateway reads as the server's own plain version refusal.
+ *  Playwright's WebSocket routes do not reach a worker's sockets. The patch is on the prototype, so it also covers a WebSocket
+ *  class the worker took before it. */
 function refuseSockets(): void {
   const proto = WebSocket.prototype as WebSocket & { dillaRefusing?: true };
   if (proto.dillaRefusing === true) return;
@@ -68,7 +67,7 @@ function refuseSockets(): void {
   proto.addEventListener = function (this: WebSocket, ...args: Parameters<WebSocket['addEventListener']>): void {
     if (!armed.has(this)) {
       armed.add(this);
-      add.call(this, 'open', () => { this.close(4006, 'E_UPGRADE_REQUIRED'); });
+      add.call(this, 'open', () => { this.close(4006, 'E_VERSION'); });
     }
     add.apply(this, args);
   } as WebSocket['addEventListener'];
@@ -120,58 +119,62 @@ test('a tab older than the host is refused two ways: banner, no reconnect, and R
   await expect(banner(page)).toHaveCount(0);
   await composerBox(page, 'general').fill(DRAFT);
 
-  // The wire-6 host goes, a wire-7 host takes its ports. Assert the replacement host advertises the unsupported wire
-  // before waiting for the worker's version refusal and reload banner.
+  // The wire-6 host goes, a wire-7 host takes its ports. Assert the replacement host advertises the newer wire before
+  // waiting for the client's own refusal from the hello.
+  const loadsBeforeSwap = seen.loads();
   await swapHost(WIRE7);
   const replacement = await fetch(`${h.url}/v1/instance`, { headers: { accept: 'application/cbor' } });
   expect(replacement.status, 'replacement GET /v1/instance').toBe(200);
   const replacementDocument = arr(decode(new Uint8Array(await replacement.arrayBuffer())));
-  expect(replacementDocument[0], 'replacement host advertises only unsupported wire 7').toEqual([7n]);
+  expect(replacementDocument[0], 'replacement host advertises only the newer wire 7').toEqual([7n]);
   // The tab was backing off (up to 30 s) while no host answered, so the next attempt can be that far away.
-  await expect(banner(page)).toBeVisible({ timeout: BACKOFF_WAIT });
-  await expect(reloadButton(page)).toBeVisible();
-  await expectNoReconnect(page, seen.sockets);
-  await expectAccessible(page, 'version refused: banner shown');
-
-  // Reload checkpoints the draft first; the page loads once more and the draft is in the composer again.
-  const loadsBefore = seen.loads();
-  await reloadButton(page).click();
-  await expect.poll(seen.loads, { timeout: WAIT }).toBe(loadsBefore + 1);
-  await expect(composerBox(page, 'general')).toHaveValue(DRAFT, { timeout: WAIT });
-  await expect(banner(page)).toBeVisible({ timeout: WAIT });
+  if (desktopE2E()) {
+    // The desktop app: "Update dilla to continue" with the update button, and no reload of its own.
+    await expect(updateBanner(page)).toBeVisible({ timeout: BACKOFF_WAIT });
+    await expect(updateButton(page)).toBeVisible();
+    await expect(banner(page)).toHaveCount(0);
+    await expectNoReconnect(page, seen.sockets);
+    expect(seen.loads(), 'the desktop app does not reload itself').toBe(loadsBeforeSwap);
+    await expect(composerBox(page, 'general')).toHaveValue(DRAFT);
+    await expectAccessible(page, 'newer host: desktop update banner');
+  } else {
+    // A browser tab reloads once by itself, keeping the draft; refused again, it stops and says why.
+    await expect.poll(seen.loads, { timeout: BACKOFF_WAIT, message: 'the tab reloaded once to the newer client' }).toBe(loadsBeforeSwap + 1);
+    await expect(updateBanner(page)).toBeVisible({ timeout: WAIT });
+    await expect(reloadButton(page)).toBeVisible();
+    await expect(banner(page)).toHaveCount(0);
+    await expect(composerBox(page, 'general')).toHaveValue(DRAFT, { timeout: WAIT });
+    await expectNoReconnect(page, seen.sockets);
+    expect(seen.loads(), 'no second automatic reload').toBe(loadsBeforeSwap + 1);
+    await expectAccessible(page, 'newer host: browser update banner after one reload');
+  }
 
   // A host that offers wire 6 again loads the app normally: no banner.
   await swapHost(WIRE6);
   await page.reload();
   await expectComposerReady(page, 'general');
   await expect(banner(page)).toHaveCount(0);
+  await expect(updateBanner(page)).toHaveCount(0);
   await expectAccessible(page, 'wire 6 again: no banner');
 
-  // The other client path: the instance refuses this client as too old, close 4006 naming E_UPGRADE_REQUIRED (chromium only:
-  // the close is injected into the page's workers before the gateway ticket is let through). Still no reconnect loop.
+  // The plain version refusal: the server closes the socket 4006 naming E_VERSION (chromium only: the close is injected into
+  // the page's workers before the gateway ticket is let through). The older banner, Reload keeps the draft, no reconnect loop.
   if (!isChromium(test.info())) return;
   await seen.refuse(true);
   const before = seen.sockets();
-  const loadsBeforeReload = seen.loads();
   await page.reload();
   await expect.poll(seen.patched, { timeout: WAIT, message: 'the reloaded page\'s ticket waited for the refusal patch' }).toBeGreaterThan(0);
-  if (desktopE2E()) {
-    // The desktop app: "Update dilla to continue" with the update button, and no reload of its own.
-    await expect(updateBanner(page)).toBeVisible({ timeout: WAIT });
-    await expect(updateButton(page)).toBeVisible();
-    await expect(banner(page)).toHaveCount(0);
-    await expectNoReconnect(page, seen.sockets);
-    expect(seen.loads(), 'the desktop app does not reload itself').toBe(loadsBeforeReload + 1);
-    expect(seen.sockets() - before, 'one socket after the reload, refused once').toBe(1);
-    await expectAccessible(page, 'upgrade required: desktop update banner');
-    return;
-  }
-  // A browser tab reloads once by itself to the instance's current client; refused again, it stops and says why.
-  await expect.poll(seen.loads, { timeout: WAIT, message: 'the tab reloaded once on upgradeRequired' }).toBe(loadsBeforeReload + 2);
-  await expect(updateBanner(page)).toBeVisible({ timeout: WAIT });
+  await expect(banner(page)).toBeVisible({ timeout: WAIT });
   await expect(reloadButton(page)).toBeVisible();
+  await expect(updateBanner(page)).toHaveCount(0);
   await expectNoReconnect(page, seen.sockets);
-  expect(seen.loads(), 'no second automatic reload').toBe(loadsBeforeReload + 2);
-  expect(seen.sockets() - before, 'two sockets: one before the automatic reload, one after, each refused once').toBe(2);
-  await expectAccessible(page, 'upgrade required: browser banner after one reload');
+  expect(seen.sockets() - before, 'one socket after the reload, refused once').toBe(1);
+  await expectAccessible(page, 'version refused: banner shown');
+  // Reload checkpoints the draft first; the page loads once more and the draft is in the composer again.
+  await composerBox(page, 'general').fill(DRAFT);
+  const loadsBefore = seen.loads();
+  await reloadButton(page).click();
+  await expect.poll(seen.loads, { timeout: WAIT }).toBe(loadsBefore + 1);
+  await expect(composerBox(page, 'general')).toHaveValue(DRAFT, { timeout: WAIT });
+  await expect(banner(page)).toBeVisible({ timeout: WAIT });
 });

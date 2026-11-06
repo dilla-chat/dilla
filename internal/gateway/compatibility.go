@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
@@ -83,8 +84,15 @@ func (g *Gateway) connectionWire(c *conn) uint64 {
 	return c.wire
 }
 
+// olderWire reports whether the connection identified below the current wire (auth.WireVersion).
+// Since Bot v2 dillad offers only the current wire, so in production no connection is older; the
+// gates keep refusing one rather than serving it scoped traffic.
+func (g *Gateway) olderWire(c *conn) bool {
+	return g.connectionWire(c) < auth.WireVersion
+}
+
 func (g *Gateway) allowWire3Scoped(c *conn, requiresWire3 bool) bool {
-	return !requiresWire3 || g.connectionWire(c) >= 3
+	return !requiresWire3 || !g.olderWire(c)
 }
 
 func appendScopeID(ids []id.ID, value id.ID) []id.ID {

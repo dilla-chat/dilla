@@ -221,8 +221,8 @@ func (p *telemetryPool) stop(ctx context.Context) error {
 }
 
 func (g *Gateway) handleCallStats(c *conn, in Inbound) {
-	if g.connectionWire(c) < 5 {
-		g.signalError(c, "E_VERSION")
+	if g.olderWire(c) {
+		g.signalError(c, "E_UPGRADE_REQUIRED")
 		return
 	}
 	if in.CID != 0 || in.GroupID != nil || len(in.Payload) != 2 || 1+len(in.Payload[0])+len(in.Payload[1]) > telemetryShapeCap {

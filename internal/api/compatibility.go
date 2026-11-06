@@ -19,7 +19,7 @@ func requireCommunityWire(ctx context.Context, repo store.Repository, wireVersio
 	err := policy.RequireCommunity(ctx, wireVersion, communityID)
 	var upgrade *capability.UpgradeRequired
 	if errors.As(err, &upgrade) {
-		return server.Errorf(server.CodeUpgradeRequired, "this community needs wire version 6")
+		return server.Errorf(server.CodeUpgradeRequired, "this community needs wire version %d", auth.WireVersion)
 	}
 	if err != nil {
 		return server.Unavailable(1000, "compatibility state unavailable")
@@ -32,5 +32,5 @@ func requireBotWire(wireVersion uint64) error {
 	if wireVersion == auth.WireVersion {
 		return nil
 	}
-	return server.Errorf(server.CodeUpgradeRequired, "managed Bots negotiate wire version 6")
+	return server.Errorf(server.CodeUpgradeRequired, "managed Bots negotiate wire version %d", auth.WireVersion)
 }

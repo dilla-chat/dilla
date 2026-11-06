@@ -32,8 +32,10 @@ older clients (Jonas: "We dont need to care about old clients"), which sets § N
 aside before the first public release: an `identify` or `POST /v1/sessions/negotiate` offering only
 older wires is refused with `E_UPGRADE_REQUIRED` (gateway close 4006 whose reason is that code;
 HTTP 426), and the desktop app shows "Update dilla to continue" with its update button while a
-browser tab reloads once to the new client. On wire 6 the Bot reads the five-element device-list
-head like every client. The paragraphs below describe the wires before 6.
+browser tab reloads once to the new client. On wire 6 the Bot is served the five-element
+device-list head; its client (`OwnDeviceList`) checks that the fifth element is a non-empty byte
+string and discards it without verifying the attestation, keeping the four signed elements. The
+paragraphs below describe the wires before 6.
 
 Wire 5 advertises `[5,4,3,2]` (Task S1 part 2: the account-kind attestation). Human clients offer
 `[5,4,3,2]`; managed Bots offer and negotiate wire 3 only (their routes require exactly 3), so a Bot

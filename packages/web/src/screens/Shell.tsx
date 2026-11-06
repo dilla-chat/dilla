@@ -1822,7 +1822,8 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   };
   useEffect(() => {
     if (!upgradeNeeded) { setUpgradeSurface(null); return; }
-    setUpgradeSurface(upgradeRequired({ bridge: desktopBridge(), storage: tabStorage(), reload: () => { reloadKeepingWork.current(); } }));
+    setUpgradeSurface(upgradeRequired({ bridge: desktopBridge(), storage: tabStorage(), reload: () => { reloadKeepingWork.current(); },
+      onChange: setUpgradeSurface }));
   }, [upgradeNeeded]);
   useEffect(() => { if (status === 'online') clearUpgradeReload(tabStorage()); }, [status]);
   const banner = (offline && linkReason === 'version') || (upgradeNeeded && upgradeSurface !== null) || removalNotices.length > 0 || commandError !== null || rootMismatch || ownTrust !== null || removedHere || changedHere.length > 0 ? (

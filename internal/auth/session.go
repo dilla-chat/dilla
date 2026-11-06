@@ -1114,7 +1114,7 @@ func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.H
 				return
 			}
 			if r.Pattern != "POST /v1/sessions/negotiate" && sess.WireVersion != WireVersion {
-				server.WriteError(w, server.Errorf(server.CodeUpgradeRequired, "managed Bots negotiate wire version 6"))
+				server.WriteError(w, server.Errorf(server.CodeUpgradeRequired, "managed Bots negotiate wire version %d", WireVersion))
 				return
 			}
 		}

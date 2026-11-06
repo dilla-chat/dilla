@@ -182,7 +182,7 @@ func (r *registry) onlineIn(g id.ID, now time.Time, idle time.Duration, minWire 
 			c.mu.Unlock()
 			// Managed runtime sessions consume membership changes but do not yet
 			// implement the elected commit workflow. Presence alone cannot elect them.
-			if managedBot || (minWire >= 3 && wire < 3) || !c.online(now, idle) {
+			if managedBot || wire < minWire || !c.online(now, idle) {
 				continue
 			}
 			_, isBot := r.bots[device]

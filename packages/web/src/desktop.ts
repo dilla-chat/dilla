@@ -43,9 +43,11 @@ export const UPGRADE_RELOAD_KEY = 'dilla.upgradeReloaded';
 
 type SessionStore = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
-/** What the page shows when the instance refuses this client as too old: the message, the button's label, its press. */
+/** What the page shows when the instance refuses this client as too old: the message, the button's label, its press.
+ *  On the desktop a press that ends without an update changes the message: the update failed, none is available yet, or
+ *  this install is updated by its package manager. */
 export interface UpgradeRequiredSurface {
-  message: 'update.required';
+  message: 'update.required' | 'update.requiredFailed' | 'update.requiredUnavailable' | 'update.requiredManual';
   action: 'update.requiredAction' | 'reload.action';
   onAction: () => void;
 }
@@ -56,11 +58,10 @@ export interface UpgradeRequiredSurface {
  *  - A browser tab reloads to the instance's current client, once: a sessionStorage flag stops a reload loop. If it is
  *    still refused after that reload, or storage is blocked (no guard, so no automatic reload), the tab shows the
  *    message with a reload button. Returns null when the tab is reloading. */
-export function upgradeRequired(options: { bridge: DesktopBridge | undefined; storage: SessionStore | null; reload: () => void }): UpgradeRequiredSurface | null {
+export function upgradeRequired(options: { bridge: DesktopBridge | undefined; storage: SessionStore | null; reload: () => void;
+  onChange?: (surface: UpgradeRequiredSurface) => void }): UpgradeRequiredSurface | null {
   const { bridge, storage, reload } = options;
-  if (bridge) {
-    return { message: 'update.required', action: 'update.requiredAction', onAction: () => { startDesktopUpdate(bridge); } };
-  }
+  if (bridge) return desktopUpgrade(bridge, options.onChange ?? (() => {}));
   let guarded = false;
   try {
     if (storage !== null && storage.getItem(UPGRADE_RELOAD_KEY) === null) {
@@ -77,15 +78,41 @@ export function clearUpgradeReload(storage: SessionStore | null): void {
   try { storage?.removeItem(UPGRADE_RELOAD_KEY); } catch { /* blocked storage: nothing was stored */ }
 }
 
-function startDesktopUpdate(bridge: DesktopBridge): void {
+/** The shell updater's last reported phase, seen by the lifecycle listener (an update downloaded before the refusal). */
+let lastUpdatePhase: string | null = null;
+
+/** The desktop surface. One press runs one update attempt with one subscription to the shell's update events: repeat presses
+ *  while it runs do nothing; `ready` sends `restart-update` once; `idle`, `available` and `error` end the attempt, drop the
+ *  subscription and change the message, after which the button tries again. */
+function desktopUpgrade(bridge: DesktopBridge, onChange: (surface: UpgradeRequiredSurface) => void): UpgradeRequiredSurface {
   let unsubscribe: (() => void) | null = null;
-  unsubscribe = bridge.onEvent(event => {
-    if (event.type !== 'update' || event.phase !== 'ready') return;
+  let restarted = false;
+  const surface = (message: UpgradeRequiredSurface['message']): UpgradeRequiredSurface =>
+    ({ message, action: 'update.requiredAction', onAction: press });
+  const settle = (message: UpgradeRequiredSurface['message']): void => {
     unsubscribe?.();
     unsubscribe = null;
-    void bridge.send({ type: 'restart-update' }).catch(() => {});
-  });
-  void bridge.send({ type: 'check-update' }).catch(() => {});
+    onChange(surface(message));
+  };
+  const restart = (): void => {
+    if (restarted) return;
+    restarted = true;
+    void bridge.send({ type: 'restart-update' }).catch(() => { settle('update.requiredFailed'); });
+  };
+  function press(): void {
+    if (unsubscribe !== null) return;
+    restarted = false;
+    unsubscribe = bridge.onEvent(event => {
+      if (event.type !== 'update') return;
+      if (event.phase === 'ready') restart();
+      else if (event.phase === 'idle') settle('update.requiredUnavailable');
+      else if (event.phase === 'available') settle('update.requiredManual');
+      else if (event.phase === 'error') settle('update.requiredFailed');
+    });
+    if (lastUpdatePhase === 'ready') restart();
+    else void bridge.send({ type: 'check-update' }).catch(() => { settle('update.requiredFailed'); });
+  }
+  return surface('update.required');
 }
 
 let guard = { activeCall: false, unsavedDraft: false };
@@ -107,11 +134,12 @@ export function startDesktopLifecycle(bridge = desktopBridge()): () => void {
   };
   window.addEventListener('beforeunload', beforeUnload);
   const unsubscribe = bridge.onEvent(event => {
+    if (event.type === 'update') lastUpdatePhase = event.phase;
     if (event.type === 'prepare-quit') {
       void bridge.send({ type: 'quit-ack', id: event.id, activeCall: guard.activeCall, unsavedDraft: guard.unsavedDraft || pendingInput() }).catch(() => {});
     }
   });
-  return () => { unsubscribe(); window.removeEventListener('beforeunload', beforeUnload); };
+  return () => { unsubscribe(); lastUpdatePhase = null; window.removeEventListener('beforeunload', beforeUnload); };
 }
 
 

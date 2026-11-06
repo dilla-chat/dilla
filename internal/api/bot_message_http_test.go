@@ -122,8 +122,15 @@ func TestBotSessionNegotiatesWire6(t *testing.T) {
 		return h.do(t, http.MethodPost, "/v1/groups/"+groupID.String()+"/bot/messages", token,
 			mustCBOR(t, []any{id.New(), id.New(), nil, instance.Generation, uint64(4), []byte{0x80}, uint64(1)}))
 	}
-	if refused := send(); refused.Code == http.StatusForbidden && errorCode(t, refused) == "E_LEAF_NOT_CURRENT" {
-		t.Fatal("a Bot session that negotiated nothing reached the delivery service")
+	if refused := send(); refused.Code != http.StatusUpgradeRequired || errorCode(t, refused) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("un-negotiated Bot POST = %d %x, want 426 E_UPGRADE_REQUIRED", refused.Code, refused.Body.Bytes())
+	}
+	// A Bot session that negotiated wire 5 before the upgrade (only the store can still write one).
+	if err := h.deps.Repo.SetSessionVersions(context.Background(), auth.TokenHash(token), 5, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if refused := send(); refused.Code != http.StatusUpgradeRequired || errorCode(t, refused) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("stored wire 5 Bot POST = %d %x, want 426 E_UPGRADE_REQUIRED", refused.Code, refused.Body.Bytes())
 	}
 	current := h.do(t, http.MethodPost, "/v1/sessions/negotiate", token, mustCBOR(t, []any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}}))
 	if current.Code != http.StatusOK {

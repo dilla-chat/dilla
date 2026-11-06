@@ -11,7 +11,7 @@ function bridge() {
     send: command => { commands.push(command); return Promise.resolve(); },
     onEvent: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },
   };
-  return { desktop, commands, emit(event: DesktopEvent) { for (const listener of listeners) listener(event); } };
+  return { desktop, commands, listenerCount: () => listeners.size, emit(event: DesktopEvent) { for (const listener of [...listeners]) listener(event); } };
 }
 
 describe('desktop integration', () => {
@@ -139,6 +139,57 @@ describe('upgrade required', () => {
     expect(fixture.commands).toEqual([{ type: 'check-update' }, { type: 'restart-update' }]);
     fixture.emit({ type: 'update', phase: 'ready' });
     expect(fixture.commands).toHaveLength(2);
+  });
+
+  it('repeat presses while an update runs send nothing more, and one subscription serves the attempt', () => {
+    const fixture = bridge();
+    const surface = upgradeRequired({ bridge: fixture.desktop, storage: null, reload: vi.fn() })!;
+    const before = fixture.listenerCount();
+    surface.onAction(); surface.onAction(); surface.onAction();
+    expect(fixture.commands).toEqual([{ type: 'check-update' }]);
+    expect(fixture.listenerCount()).toBe(before + 1);
+    fixture.emit({ type: 'update', phase: 'ready' });
+    surface.onAction();
+    fixture.emit({ type: 'update', phase: 'ready' });
+    expect(fixture.commands).toEqual([{ type: 'check-update' }, { type: 'restart-update' }]);
+  });
+
+  it('an attempt that ends without an update unsubscribes and says why, and the button tries again', () => {
+    for (const [phase, message] of [['idle', 'No update is ready for this app yet. Try again later.'], ['error', 'The update did not install. Try again.'],
+      ['available', 'Update dilla with your package manager to continue.']] as const) {
+      const fixture = bridge(), changes: string[] = [];
+      let current = upgradeRequired({ bridge: fixture.desktop, storage: null, reload: vi.fn(), onChange: next => { current = next; changes.push(t(next.message)); } })!;
+      const before = fixture.listenerCount();
+      current.onAction();
+      fixture.emit({ type: 'update', phase: 'checking' });
+      fixture.emit({ type: 'update', phase });
+      expect(changes).toEqual([message]);
+      expect(t(current.action)).toBe('Update');
+      expect(fixture.listenerCount()).toBe(before);
+      current.onAction();
+      expect(fixture.commands).toEqual([{ type: 'check-update' }, { type: 'check-update' }]);
+      expect(fixture.listenerCount()).toBe(before + 1);
+    }
+  });
+
+  it('a restart the shell cancels reports the failure', () => {
+    const fixture = bridge(), changes: string[] = [];
+    const surface = upgradeRequired({ bridge: fixture.desktop, storage: null, reload: vi.fn(), onChange: next => { changes.push(next.message); } })!;
+    surface.onAction();
+    fixture.emit({ type: 'update', phase: 'ready' });
+    fixture.emit({ type: 'update', phase: 'installing' });
+    fixture.emit({ type: 'update', phase: 'error', message: 'Restart was cancelled.' });
+    expect(changes).toEqual(['update.requiredFailed']);
+  });
+
+  it('an update the shell already downloaded installs on the first press', () => {
+    const fixture = bridge();
+    const stop = startDesktopLifecycle(fixture.desktop);
+    fixture.emit({ type: 'update', phase: 'ready' });
+    const surface = upgradeRequired({ bridge: fixture.desktop, storage: null, reload: vi.fn() })!;
+    surface.onAction();
+    expect(fixture.commands.filter(c => c.type === 'check-update' || c.type === 'restart-update')).toEqual([{ type: 'restart-update' }]);
+    stop();
   });
 
   it('a browser tab reloads once on upgradeRequired', () => {

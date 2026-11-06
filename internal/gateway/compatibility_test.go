@@ -174,8 +174,8 @@ func TestSubscribeAndCommitAckRequireEligibleGroupAfterMembership(t *testing.T) 
 		t.Fatalf("subscribe refusal op = %d, want error", frame.Op)
 	}
 	code, err := rawText(frame.Payload[1])
-	if err != nil || code != "E_VERSION" {
-		t.Fatalf("subscribe refusal code = %q, %v; want E_VERSION", code, err)
+	if err != nil || code != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("subscribe refusal code = %q, %v; want E_UPGRADE_REQUIRED", code, err)
 	}
 
 	acked := 0
@@ -197,11 +197,11 @@ func TestSubscribeAndCommitAckRequireEligibleGroupAfterMembership(t *testing.T) 
 		t.Fatal("wire-2 commit_ack reached the group handler after compatibility refusal")
 	}
 	c.mu.Lock()
-	c.wire = 3
+	c.wire = 6
 	c.mu.Unlock()
 	h.gw.handle(context.Background(), c, ack)
 	if acked != 1 {
-		t.Fatal("wire-3 commit_ack did not reach the group handler")
+		t.Fatal("wire-6 commit_ack did not reach the group handler")
 	}
 }
 
@@ -319,11 +319,11 @@ func TestOnlineElectionExcludesWireTwoOnlyWhenGroupRequiresUpgrade(t *testing.T)
 	old := registerAtWire(t, h, oldDevice, id.New(), 2)
 	dual2 := registerAtWire(t, h, dualDevice, dualUser, 2)
 	h.clk.Advance(1)
-	dual3 := registerAtWire(t, h, dualDevice, dualUser, 3)
+	dual3 := registerAtWire(t, h, dualDevice, dualUser, 6)
 	h.gw.SetGroupMembers(group, []id.ID{oldDevice, dualDevice})
 	candidates := h.gw.OnlineIn(group)
 	if len(candidates) != 1 || candidates[0].DeviceID != dualDevice || !candidates[0].ReadyAt.Equal(dual3.readyAt()) {
-		t.Fatalf("eligible committer candidates = %#v, want the dual-session device at its wire-3 connection", candidates)
+		t.Fatalf("eligible committer candidates = %#v, want the dual-session device at its wire-6 connection", candidates)
 	}
 	h.setCommunityEnabled(community, false)
 	candidates = h.gw.OnlineIn(group)
@@ -428,7 +428,7 @@ func TestBearerRenegotiationDoesNotUpgradeExistingWireTwoConnectionOrResume(t *t
 	// retains the wire version selected when it identified.
 	h.mu.Lock()
 	session := h.tokens[h.tokenFor(device)]
-	session.WireVersion = 3
+	session.WireVersion = 6
 	h.tokens[h.tokenFor(device)] = session
 	h.mu.Unlock()
 	h.setCommunityEnabled(community, true)
@@ -439,7 +439,7 @@ func TestBearerRenegotiationDoesNotUpgradeExistingWireTwoConnectionOrResume(t *t
 	n := c.n
 	c.mu.Unlock()
 	if n != 1 {
-		t.Fatalf("current bearer wire 3 upgraded a live wire-%d connection; n = %d", oldWire, n)
+		t.Fatalf("current bearer wire 6 upgraded a live wire-%d connection; n = %d", oldWire, n)
 	}
 
 	h.gw.suspend(c)

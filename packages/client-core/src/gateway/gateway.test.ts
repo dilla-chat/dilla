@@ -750,6 +750,37 @@ describe('Gateway server version close', () => {
     expect(h.minted()).toBe(1);
   });
 
+  // Fix round 1: an instance whose hello offers only wires newer than this client's is the real "update" case. The
+  // client never identifies, so it reads that from the hello itself (the server's own "older than all" rule).
+  it('a hello offering only newer wires goes idle 4006 and emits upgradeRequired', async () => {
+    const h = harness();
+    h.gw.start();
+    await flush();
+    const s = h.last();
+    s.open();
+    s.receive(hello({ wire: [7] }));
+    expect(s.closedWith?.code).toBe(4006);
+    expect(s.sent).toHaveLength(0);
+    expect(h.events.slice(-2)).toEqual([{ type: 'status', status: 'idle', closeCode: 4006 }, { type: 'upgradeRequired' }]);
+    h.clock.advance(600_000);
+    await flush();
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(h.minted()).toBe(1);
+  });
+
+  it('a hello offering only older or mixed unknown wires keeps the plain version state', async () => {
+    for (const wire of [[5, 4, 3, 2], [5, 7], [1]]) {
+      const h = harness();
+      h.gw.start();
+      await flush();
+      const s = h.last();
+      s.open();
+      s.receive(hello({ wire }));
+      expect(h.events.at(-1)).toEqual({ type: 'status', status: 'idle', closeCode: 4006 });
+      expect(h.events.some((e) => e.type === 'upgradeRequired')).toBe(false);
+    }
+  });
+
   it('a plain version close does not claim an update is required', async () => {
     const h = harness();
     h.gw.start();

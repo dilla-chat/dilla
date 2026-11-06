@@ -70,6 +70,11 @@ function readHello(payload: CborValue[]): HelloInfo {
     backoffMs: u53(p[7]), backoffJitterMs: u53(p[8]) };
 }
 
+/** True when the instance offers wires and every one is above every wire this client speaks. */
+function newerThanAll(offered: bigint[], preference: readonly bigint[]): boolean {
+  return offered.length > 0 && offered.every((version) => preference.every((own) => version > own));
+}
+
 function highestCommon(offered: bigint[], preference: readonly bigint[]): bigint | null {
   return preference.find((version) => offered.includes(version)) ?? null;
 }
@@ -234,6 +239,9 @@ export class Gateway {
       if (wire === null || e2ee === null || media === null) {
         this.teardown(CLIENT_CLOSE.version, false);
         this.setStatus('idle', CLIENT_CLOSE.version);
+        // The instance's "older than all" rule, read from its hello: every wire it offers is newer than any this client
+        // speaks, so this client is the one to update. Only lower or mixed unknown wires stay the plain version state.
+        if (wire === null && newerThanAll(versions[0], WIRE_PREFERENCE)) this.emit({ type: 'upgradeRequired' });
         return;
       }
       hello.selectedVersions = { wire, e2ee, media };

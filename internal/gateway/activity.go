@@ -66,8 +66,8 @@ func (p *presence) chargeActivity(device id.ID) bool {
 }
 
 func (g *Gateway) handlePresenceActivity(ctx context.Context, c *conn, in Inbound) {
-	if g.connectionWire(c) < 5 {
-		g.signalError(c, "E_VERSION")
+	if g.olderWire(c) {
+		g.signalError(c, "E_UPGRADE_REQUIRED")
 		return
 	}
 	if in.CID != 0 || in.GroupID != nil || len(in.Payload) != 0 {
