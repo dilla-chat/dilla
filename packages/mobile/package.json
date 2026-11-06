@@ -14,7 +14,9 @@
     "android:run": "cap run android",
     "ios:open": "cap open ios",
     "e2e:android": "node e2e/android-smoke.mjs",
-    "android:check-release": "node scripts/check-apk-network-config.mjs android/app/build/outputs/apk/release/app-release-unsigned.apk --release"
+    "android:check-release": "node scripts/check-apk-network-config.mjs android/app/build/outputs/apk/release/app-release-unsigned.apk --release",
+    "android:check-release-signed": "node scripts/check-apk-network-config.mjs android/app/build/outputs/apk/release/app-release.apk --release",
+    "android:check-signer": "node scripts/check-apk-signer.mjs android/app/build/outputs/apk/release/app-release.apk"
   },
   "dependencies": {
     "@capacitor/android": "8.6.0",

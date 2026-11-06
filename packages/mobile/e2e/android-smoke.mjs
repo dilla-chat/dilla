@@ -198,10 +198,17 @@ function makeTls() {
 }
 
 /** A user-added CA, as Settings → Encryption → Install a certificate would store it (needs adb root: google_apis image). */
-function installUserCa(ca) {
+async function installUserCa(ca) {
   const hash = execFileSync('openssl', ['x509', '-subject_hash_old', '-noout', '-in', ca], { encoding: 'utf8' }).trim();
   const dir = '/data/misc/user/0/cacerts-added';
-  adb('root'); adb('wait-for-device');
+  // adbd restarts as root, and right after boot that restart can drop the connection ("unable to connect for root:
+  // closed", run 42219985711): retry until the shell really is uid 0.
+  for (let attempt = 1; ; attempt++) {
+    try { adb('root'); } catch { /* adbd restarting */ }
+    try { adb('wait-for-device'); if (adb('shell', 'id', '-u') === '0') break; } catch { /* not back yet */ }
+    if (attempt === 10) throw new Error('adb root: the device never came back as root');
+    await sleep(2000);
+  }
   adb('push', ca, `/data/local/tmp/${hash}.0`);
   adb('shell', `mkdir -p ${dir} && cp /data/local/tmp/${hash}.0 ${dir}/${hash}.0 && chown -R system:system ${dir} && chmod 755 ${dir} && chmod 644 ${dir}/${hash}.0 && restorecon -R ${dir}`);
   cleanups.push(() => { try { adb('shell', `rm -f ${dir}/${hash}.0 /data/local/tmp/${hash}.0`); } catch { /* the emulator may be gone */ } });
@@ -400,7 +407,7 @@ async function main() {
   const b = await startHost('B', HOST_B, 18465, 18466, 18444, tls);
   hosts.push(a, b);
   log(`hosts up: A ${a.url}, B ${b.url}`);
-  installUserCa(tls.ca);
+  await installUserCa(tls.ca);
   buildAndInstall();
 
   // 1. A fresh install opens the picker; add instance A.

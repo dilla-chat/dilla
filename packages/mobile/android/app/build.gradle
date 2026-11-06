@@ -7,8 +7,9 @@ android {
         applicationId "chat.dilla.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        // The release workflow sets both (build number and marketing version); without them the build is unchanged.
+        versionCode((System.getenv('DILLA_ANDROID_VERSION_CODE') ?: '1') as Integer)
+        versionName System.getenv('DILLA_ANDROID_VERSION_NAME') ?: "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +17,31 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // Optional release signing for a local signed build, from the environment. CI sets none of these: it builds unsigned and
+    // signs with apksigner (mobile-release.yml). Without all four variables
+    // assembleRelease still builds the unsigned app-release-unsigned.apk.
+    // Any of the four set (even to "", which is what an unset GitHub secret expands to) means a signed build is wanted:
+    // then all four must be non-empty, or the build fails naming the missing variables (never their values).
+    def signingVars = ['DILLA_ANDROID_KEYSTORE', 'DILLA_ANDROID_KEYSTORE_PASSWORD', 'DILLA_ANDROID_KEY_ALIAS', 'DILLA_ANDROID_KEY_PASSWORD']
+    def releaseSigning = signingVars.any { System.getenv(it) != null }
+    if (releaseSigning) {
+        def missing = signingVars.findAll { !System.getenv(it) }
+        if (missing) throw new GradleException("release signing: missing or empty ${missing.join(', ')}")
+        if (!file(System.getenv('DILLA_ANDROID_KEYSTORE')).isFile()) throw new GradleException('release signing: DILLA_ANDROID_KEYSTORE is not a file')
+    }
+    if (releaseSigning) {
+        signingConfigs {
+            release {
+                storeFile file(System.getenv('DILLA_ANDROID_KEYSTORE'))
+                storePassword System.getenv('DILLA_ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('DILLA_ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('DILLA_ANDROID_KEY_PASSWORD')
+            }
+        }
+    }
     buildTypes {
         release {
+            if (releaseSigning) signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

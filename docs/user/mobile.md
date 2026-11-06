@@ -1,11 +1,40 @@
 # dilla on iPhone and Android (preview)
 
-Preview, 2026-11-05: the mobile app is under development. It is built from source and not distributed yet: there is
-no App Store, TestFlight or Play Store build and no signed APK to download. **Keep using your existing browser or
-desktop device, and keep your recovery key.**
+Preview, 2026-11-06: the mobile app is a preview. You can install it on iPhone through TestFlight and on Android from
+an APK attached to each GitHub release. There is no App Store or Play Store build. **Keep using your existing browser
+or desktop device, and keep your recovery key.**
 
 The app is a shell around the same client the browser and desktop app use. It bundles that client, so an instance
 never sends the app its own code; the app only talks to the instance you choose, over HTTPS.
+
+## Install
+
+**iPhone.** Install the TestFlight app from the App Store, then open the TestFlight public link on your phone and tap
+**Accept** and **Install**. The link is in the line below; it is the only place it is published.
+
+TestFlight link: ask the instance owner (not published yet)
+
+TestFlight installs new builds for you, or shows an update in the TestFlight app. A TestFlight build
+expires after 90 days, so keep updating.
+
+**Android.**
+
+1. On your phone, open the [releases page](https://github.com/dilla-chat/dilla/releases), pick the newest release that
+   lists a `dilla-v….apk` under Assets (server release tags start with `v`; desktop releases, tagged `desktop-v…`, have no APK)
+   and download it.
+2. Optional: download `dilla-<tag>.apk.sha256` too and compare its hash with the one of the APK
+   (`sha256sum -c dilla-<tag>.apk.sha256` on a computer).
+3. Open the APK. If Android asks, allow "install unknown apps" for the browser or files app you used, then go back
+   and install.
+4. Play Protect may warn about an unknown developer. The APK is not from the Play Store, so this is expected. Choose
+   to install anyway if you trust the source.
+
+Google has announced Android developer verification for sideloaded apps, first in a few countries from
+September 2026. Where it applies, an app from an unverified developer may not install. The project will register as a
+developer before it applies more widely.
+
+To update, download the newer APK and install it over the old one. It keeps your data because it is signed with the
+same key. The app has no updater of its own yet.
 
 ## What works
 
@@ -28,7 +57,8 @@ never sends the app its own code; the app only talks to the instance you choose,
 - **No push notifications.** Nothing arrives while the app is closed or in the background.
 - **No calls in the background.** Voice calls are not part of this preview; calls that keep running with the screen
   locked come later.
-- **No store builds.** You build and install the app yourself (see `packages/mobile/README.md`).
+- **No store builds.** The app comes from TestFlight (iPhone) and a downloaded APK (Android), not the App Store or
+  Play Store. You can still build it yourself (see `packages/mobile/README.md`).
 - **No app-icon badge count.**
 - **Instances need a recent server.** The instance must be on a release that accepts the app (`http.mobile_origins`,
   on by default from the release that adds the app), reachable over HTTPS with a domain name, and not under a base
