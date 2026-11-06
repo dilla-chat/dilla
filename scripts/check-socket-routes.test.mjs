@@ -100,7 +100,7 @@ test('reports a pre-gateway route moved to SOCKET_ROUTES, and a stale pre-gatewa
 const NO_GATEWAY = [
   'POST /v1/devices/{device_id}/sessions', 'DELETE /v1/devices/{device_id}/sessions',
   'POST /v1/auth/totp/enroll', 'POST /v1/auth/totp/confirm', 'POST /v1/auth/passkey/register/begin',
-  'POST /v1/auth/passkey/register/finish', 'POST /v1/auth/recovery/codes', 'POST /v1/auth/password',
+  'POST /v1/auth/passkey/register/finish', 'POST /v1/devices/{device_id}/sessions/challenge',
 ];
 
 test('the real manifest holds every no-gateway route to HTTP, and moving one to SOCKET_ROUTES fails', () => {

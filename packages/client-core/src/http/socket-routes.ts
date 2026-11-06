@@ -212,8 +212,7 @@ export const PRE_GATEWAY_ROUTES: readonly SocketRoute[] = [
   { method: 'POST', pattern: '/v1/auth/totp/confirm' }, // factor-setup: confirms the app's first code
   { method: 'POST', pattern: '/v1/auth/passkey/register/begin' }, // factor-setup: starts a passkey registration
   { method: 'POST', pattern: '/v1/auth/passkey/register/finish' }, // factor-setup: finishes it
-  { method: 'POST', pattern: '/v1/auth/recovery/codes' }, // factor-setup: backup codes for the owed account
-  { method: 'POST', pattern: '/v1/auth/password' }, // factor-setup: the owed account's password
+  { method: 'POST', pattern: '/v1/devices/{device_id}/sessions/challenge' }, // (d) the unauthenticated challenge before session.establish()
 ];
 
 /** The Bot runtime's own HTTP routes (F24), kept apart from the app's lists. */
