@@ -17,7 +17,8 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
-    // Release signing comes from the environment (CI writes the keystore from a secret). Without all four variables
+    // Optional release signing for a local signed build, from the environment. CI sets none of these: it builds unsigned and
+    // signs with apksigner (mobile-release.yml). Without all four variables
     // assembleRelease still builds the unsigned app-release-unsigned.apk.
     // Any of the four set (even to "", which is what an unset GitHub secret expands to) means a signed build is wanted:
     // then all four must be non-empty, or the build fails naming the missing variables (never their values).

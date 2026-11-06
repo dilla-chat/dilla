@@ -4,7 +4,7 @@
 
 **Goal:** Friends install the dilla preview app: iPhone through a TestFlight public link, Android through a release-signed APK attached to the GitHub release, both cut from every `v*` server release tag.
 
-**Architecture:** A new workflow `mobile-release.yml` runs after `release.yml` completes successfully for a tag (`workflow_run`), or by hand for an existing tag (`workflow_dispatch`, which backfills `v0.1.0-mobile1`). One job signs the Android APK with the release keystore from the `mobile-release` GitHub environment, checks the signing certificate against a pin in `packages/mobile/release-trust.json`, and uploads `dilla-<tag>.apk` and its `.sha256` to the existing release. Another job, on the pinned macOS/Xcode runner, archives the iOS app with automatic signing through an App Store Connect API key and uploads it to TestFlight. The server release is never blocked by a mobile failure.
+**Architecture:** A new workflow `mobile-release.yml` runs after `release.yml` completes successfully for a tag (`workflow_run`), or by hand for an existing tag (`workflow_dispatch`, which re-runs an existing tag (the backfill of `v0.1.0-mobile1` was dropped: it predates this branch's files)). One job signs the Android APK with the release keystore from the `mobile-release` GitHub environment, checks the signing certificate against a pin in `packages/mobile/release-trust.json`, and uploads `dilla-<tag>.apk` and its `.sha256` to the existing release. Another job, on the pinned macOS/Xcode runner, archives the iOS app with automatic signing through an App Store Connect API key and uploads it to TestFlight. The server release is never blocked by a mobile failure.
 
 **Tech Stack:** GitHub Actions, Gradle signingConfig, `apksigner`, `xcodebuild archive/-exportArchive` with `-allowProvisioningUpdates` and the App Store Connect API key, Node check scripts.
 
@@ -71,7 +71,7 @@ Written into `packages/mobile/README.md` by Task 3; listed here so the controlle
 - Jobs: `resolve` (tag, version, build number), `android-release` (ubuntu, environment `mobile-release`: build web bundle as `mobile.yml` does, `cap sync android`, `assembleRelease` signed, `check-apk-signer`, `android:check-release`, `sha256sum`, `gh release upload <tag> dilla-<tag>.apk dilla-<tag>.apk.sha256 --clobber`), `ios-testflight` (macos-26, Xcode 26.6, environment `mobile-release`: write `.p8` to `$RUNNER_TEMP` with mode 600, `xcodebuild archive` with `-allowProvisioningUpdates -authenticationKeyPath/-authenticationKeyID/-authenticationKeyIssuerID`, `CURRENT_PROJECT_VERSION`=build number, `MARKETING_VERSION`=version, then `-exportArchive` with `ExportOptions.plist` (destination upload)). The two mobile jobs are independent.
 
 - [ ] Write the workflow; `npm run check:ci` passes.
-- [ ] Dry run: `workflow_dispatch` for `v0.1.0-mobile1` once Task 1's secrets exist → APK + sha256 on the release; iOS job either uploads or (before Jonas's ASC setup) fails naming the missing secret.
+- [ ] Dry run: `workflow_dispatch` for a tag cut after this branch merged once Task 1's secrets exist → APK + sha256 on the release; iOS job either uploads or (before Jonas's ASC setup) fails naming the missing secret.
 - [ ] Commit.
 
 ### Task 3: Docs

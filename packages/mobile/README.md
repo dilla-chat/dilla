@@ -105,6 +105,8 @@ Network trust: the **release** build trusts system CAs only and refuses cleartex
 emulator. `test/native-projects.test.mjs` keeps the sources that way, and
 `npm run android:check-release -w @dilla/mobile` checks a built release APK (after `./gradlew assembleRelease`).
 
+For a local signed build, set all four of `DILLA_ANDROID_KEYSTORE` (an absolute path to the keystore file), `DILLA_ANDROID_KEYSTORE_PASSWORD`, `DILLA_ANDROID_KEY_ALIAS` and `DILLA_ANDROID_KEY_PASSWORD` before `./gradlew assembleRelease`. It is all or nothing: if any is set, all four must be non-empty or the build fails. With none set the build is unsigned. CI sets none of them; it builds unsigned and signs with `apksigner`.
+
 ### The smoke test
 
 `npm run e2e:android -w @dilla/mobile` (add `-- --skip-build` to reuse the last APK, `-- --keep-emulator` to leave an
@@ -131,8 +133,8 @@ violation. Screenshots, logcat on failure and the emulator's own log (`emulator.
 refuses commits that are not on `main`, and (by hand) tags without a successful `release.yml` run.
 
 - **Android:** Gradle builds the APK unsigned. One step signs it with `apksigner` using the keystore from the
-  `mobile-release` environment, checks the signer against the pin in `release-trust.json` and the network config,
-  and uploads `dilla-<tag>.apk` and `dilla-<tag>.apk.sha256` (`sha256sum` format) to the GitHub release with
+  `mobile-release` environment, a later step checks the signer against the pin in `release-trust.json` and the
+  network config, and a last step uploads `dilla-<tag>.apk` and `dilla-<tag>.apk.sha256` (`sha256sum` format) to the GitHub release with
   `--clobber`. The upload is not atomic, so a rerun repairs a half-finished one.
 - **iOS:** an unsigned archive, a cloud-signed export, and an upload to TestFlight.
 - **Version numbers:** the marketing version comes from the tag (`v0.1.0-mobile1` gives `0.1.0`). The iOS build
@@ -140,7 +142,7 @@ refuses commits that are not on `main`, and (by hand) tags without a successful 
 
 ### The `mobile-release` environment
 
-The deployment branch policy is `main`. Secrets and variable live only here.
+The deployment branch policy is `main`. The secrets and the variable live only here.
 
 | Name | Kind | Value |
 | --- | --- | --- |
@@ -161,7 +163,7 @@ The Android secrets are already set.
    Manager is not enough, because cloud signing needs Admin. Set `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` and the
    variable `APPLE_TEAM_ID`.
 3. TestFlight: add the beta app description and a feedback email, then create an **external group** with a **public
-   link** and send the first build to beta review. Put the public link in the release notes, nowhere else.
+   link** and send the first build to beta review. Put the public link in one place, the marked `TestFlight link` line in [`docs/user/mobile.md`](../../docs/user/mobile.md#install).
 4. First build, export compliance: `Info.plist` declares `ITSAppUsesNonExemptEncryption` as `YES` (standard
    published algorithms). Answer App Store Connect's questionnaire with "standard encryption algorithms". If Apple
    issues an `ITSEncryptionExportComplianceCode`, add it to `Info.plist`.
@@ -173,10 +175,12 @@ TestFlight builds expire after 90 days, so release at least that often.
 ### Backfill or rerun by hand
 
 ```sh
-gh workflow run mobile-release.yml -f tag=v0.1.0-mobile1
+gh workflow run mobile-release.yml -f tag=vX.Y.Z-...
 ```
 
-The tag must have a successful `release.yml` run. The run replaces any APK and checksum already on the release.
+Replace `vX.Y.Z-...` with a real server release tag. The tag must have a successful `release.yml` run. The run replaces any APK and checksum already on the release.
+
+Only tags cut after this branch merged can build: older tags (such as `v0.1.0-mobile1`) lack the signer pin, the export options and the Gradle version variables the workflow needs. There is no backfill. The first real run is the next server release tag.
 
 ### Rotating the Android key
 
@@ -190,7 +194,7 @@ an existing one. For users who already have the app, rotation needs APK signatur
 ### If a job fails halfway
 
 - Android: rerun the failed job (or dispatch the tag). The upload uses `--clobber`, so the APK and checksum are
-  replaced together. Check both are on the release afterwards.
+  replaced in one upload, which is not atomic. Check both are on the release afterwards.
 - iOS: rerun the job. Each attempt gets a new build number, so TestFlight accepts it. A missing secret or variable is
   named in the job's error.
 - The two jobs are independent. One can succeed while the other fails.

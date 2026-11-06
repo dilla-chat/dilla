@@ -184,7 +184,7 @@ jobs:
       - name: JDK 21 for Gradle
         run: echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
       - run: cd packages/mobile && npx cap sync android
-      # The build runs third-party code (Gradle plugins, npm packages), so it never sees the key: it builds the release APK
+      # The build runs third-party code (Gradle plugins, npm packages), so it never sees the key (defence in depth, not a security boundary: a process an earlier step left running could still read it): it builds the release APK
       # unsigned, and the next step alone holds the keystore and its passwords, signs with apksigner and removes the file.
       - name: Build the release APK, unsigned (retried only on known network errors)
         env:
@@ -313,7 +313,7 @@ jobs:
             -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm" -disableAutomaticPackageResolution \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD"
-      # The Admin API key exists only during this step: the archive (which runs build scripts) never sees it.
+      # The Admin API key exists only during this step: the archive (which runs build scripts) never sees it (defence in depth, not a boundary: a process left running by an earlier step could still read it).
       - name: Export and upload to TestFlight
         env:
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
