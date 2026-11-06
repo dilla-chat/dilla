@@ -60,6 +60,36 @@ test('two signers are refused', () => {
   assert.match(result.message, /signers/);
 });
 
+test('a v1-only refusal names the found digest', () => {
+  assert.match(evaluateSignerReport(report({ v2: false, v3: false, v1: true }), [PIN]).message, new RegExp(PIN));
+});
+
+test('a pinned digest that is only the public-key digest is refused', () => {
+  const result = evaluateSignerReport(report({ signers: [OTHER], publicKey: PIN }), [PIN]);
+  assert.equal(result.ok, false);
+  assert.match(result.message, new RegExp(OTHER));
+});
+
+test('a pinned digest smuggled into the DN is refused', () => {
+  assert.equal(evaluateSignerReport(report({ signers: [OTHER], dn: `CN=x certificate SHA-256 digest: ${PIN}` }), [PIN]).ok, false);
+  assert.equal(evaluateSignerReport(report({ signers: [OTHER], dn: `CN=Dilla\nSigner #1 certificate SHA-256 digest: ${PIN}` }), [PIN]).ok, false);
+});
+
+test('a DN cannot fake the scheme line', () => {
+  const faked = report({ v2: false, v3: false, v1: true, dn: 'CN=Verified using v2 scheme (x): true' });
+  assert.equal(evaluateSignerReport(faked, [PIN]).ok, false);
+});
+
+test('a report without Verifies is refused', () => {
+  assert.equal(evaluateSignerReport(report({ verifies: false }), [PIN]).ok, false);
+});
+
+test('a v2 report with no certificate digest is refused', () => {
+  const result = evaluateSignerReport(report({ digests: false }), [PIN]);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /no certificate digest/);
+});
+
 test('output without a signer is refused', () => {
   assert.equal(evaluateSignerReport('', [PIN]).ok, false);
 });
