@@ -54,8 +54,8 @@ Jonas, 2026-11-06:
     - The dilla server package ships the Bot. dillad starts it as a sandboxed child process: own OS user, own state and keys. They talk over a local socket.
     - There is no separate dillabot package, unit, `bot.toml` or `base_url` to configure.
     - Bot keys and command plain text never enter dillad's memory, so the server stays blind.
-13. **Move as much as possible from REST to the WebSocket** (Jonas, 2026-11-06: "no move as much as you can to WSS"). This overrides Claude's recommendation to keep app REST. See "App requests over the socket".
 12. **Outgoing integrations come in a later release** (prompt answer). `/weather` calling an admin's URL is out of v2. The catalog must not preclude it.
+13. **Move as much as possible from REST to the WebSocket** (Jonas, 2026-11-06: "no move as much as you can to WSS"). This overrides Claude's recommendation to keep app REST. See "App requests over the socket".
 
 ## Goals
 
