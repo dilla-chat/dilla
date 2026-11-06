@@ -129,25 +129,43 @@ violation. Screenshots, logcat on failure and the emulator's own log (`emulator.
 
 ## Releases
 
-`.github/workflows/mobile-release.yml` runs after `release.yml` succeeds for a `v*` tag, or by hand with a tag. It
-refuses commits that are not on `main`, and (by hand) tags without a successful `release.yml` run.
+A server release and its Android APK are published together, as one release, by two workflows:
 
-- **Android:** Gradle builds the APK unsigned. One step signs it with `apksigner` using the keystore from the
-  `mobile-release` environment, a later step checks the signer against the pin in `release-trust.json` and the
-  network config, and a last step uploads `dilla-<tag>.apk` and `dilla-<tag>.apk.sha256` (`sha256sum` format) to the GitHub release with
-  `--clobber`. The upload is not atomic, so a rerun repairs a half-finished one.
-- **iOS:** an unsigned archive, a cloud-signed export, and an upload to TestFlight.
-- **Version numbers:** the marketing version comes from the tag (`v0.1.0-mobile1` gives `0.1.0`). The iOS build
-  number and the Android `versionCode` are `1000 + run_number*10 + run_attempt`.
+1. `.github/workflows/release.yml` runs for a `v*` tag. Its `tag` job checks that the tag's commit is on `main` with a
+   green server run. It builds the server assets, writes `SHA256SUMS` over them and creates the release as a
+   **draft**. It holds no secret and enters no environment: a tag run uses the workflow file at the tagged commit,
+   which anyone who can push a tag could edit.
+2. `.github/workflows/mobile-release.yml` runs after `release.yml` succeeds, always from `main`'s workflow file (a
+   dispatch from another branch is refused). `resolve` refuses a commit that is not on `main` and, by hand, a tag
+   without a successful `release.yml` run for that commit. If the release is already published (immutable), it says
+   so in the log and skips the two Android jobs (`draft=false`); TestFlight still runs.
+   - **Android:** Gradle builds the APK unsigned. One step signs it with `apksigner` using the keystore from the
+     main-only `mobile-release` environment, and later steps check the signer against the pin in
+     `release-trust.json` and the network config. The `publish` job, which holds no secret and is the only job that
+     may write, attaches `dilla-<tag>.apk` and `dilla-<tag>.apk.sha256` (`sha256sum` format) to the draft, adds the
+     APK's line to `SHA256SUMS`, checks the draft's assets against it and publishes the release.
+   - **iOS:** an unsigned archive, a cloud-signed export, and an upload to TestFlight. It attaches nothing, and
+     publishing does not wait for it.
+
+**What Homelab and install.sh see:** nothing until `publish` finishes. A draft is invisible to them; the release
+appears, published, only with the APK attached and listed in `SHA256SUMS`. If the Android build fails, the release
+stays a draft (server and mobile move in lockstep): fix the cause and dispatch `mobile-release.yml` for the tag.
+
+**Version numbers:** the marketing version comes from the tag (`v0.1.0-mobile1` gives `0.1.0`). The Android
+`versionCode` and the iOS build number are both `1000 + run_number*10 + run_attempt` of `mobile-release.yml`, at most
+9 attempts per run; TestFlight numbers and the Android `versionCode` are independent. They stay monotonic only while
+`mobile-release.yml` keeps its workflow id: renaming or re-adding the file resets `run_number`, and Android refuses an
+update with a lower `versionCode`.
 
 ### The `mobile-release` environment
 
-The deployment branch policy is `main`. The secrets and the variable live only here.
+The deployment branch policy is `main` only, and must stay so (a `v*` tag policy would hand the secrets to whatever
+workflow file a pushed tag carries). The secrets and the variable live only here.
 
 | Name | Kind | Value |
 | --- | --- | --- |
 | `ANDROID_KEYSTORE_B64` | secret | the release keystore, base64 |
-| `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | secret | keystore password, key alias, key password |
+| `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_PASSWORD` | secret | keystore password, key password (the key alias, `dilla`, is set in the workflow) |
 | `ASC_KEY_ID`, `ASC_ISSUER_ID` | secret | from the App Store Connect API key |
 | `ASC_KEY_P8` | secret | the contents of the `.p8` file |
 | `APPLE_TEAM_ID` | variable | developer.apple.com, Membership |
@@ -178,14 +196,17 @@ TestFlight builds expire after 90 days, so release at least that often.
 gh workflow run mobile-release.yml -f tag=vX.Y.Z-...
 ```
 
-Replace `vX.Y.Z-...` with a real server release tag. The tag must have a successful `release.yml` run. The run replaces any APK and checksum already on the release.
+Run it from `main`. Replace `vX.Y.Z-...` with a real server release tag. The tag must have a successful `release.yml`
+run. While its release is a draft, the run builds the APK, attaches it and publishes. Once it is published
+(immutable), the run only rebuilds TestFlight, for example after adding the App Store Connect secrets. A release that
+was published without an APK (such as `v0.1.0-mobile2`) stays without one; the next tag carries it.
 
 Only tags cut after this branch merged can build: older tags (such as `v0.1.0-mobile1`) lack the signer pin, the export options and the Gradle version variables the workflow needs. There is no backfill. The first real run is the next server release tag.
 
 ### Rotating the Android key
 
 1. Add the new certificate's SHA-256 as a second entry in `release-trust.json` (`android.certSha256`) and release.
-2. Then switch the four Android secrets to the new keystore.
+2. Then switch the three Android secrets to the new keystore (and the alias in the workflow, if it changes).
 
 Android only updates an app over one signed by the same key. An APK signed by a different key will not install over
 an existing one. For users who already have the app, rotation needs APK signature scheme v3 key rotation
@@ -193,11 +214,13 @@ an existing one. For users who already have the app, rotation needs APK signatur
 
 ### If a job fails halfway
 
-- Android: rerun the failed job (or dispatch the tag). The upload uses `--clobber`, so the APK and checksum are
-  replaced in one upload, which is not atomic. Check both are on the release afterwards.
+- Android or `publish`: rerun the failed jobs (or dispatch the tag). The release is still a draft, so the uploads
+  replace (`--clobber`) whatever an earlier attempt left, and `publish` checks the draft's assets before it publishes.
+  Once published, nothing can change.
 - iOS: rerun the job. Each attempt gets a new build number, so TestFlight accepts it. A missing secret or variable is
   named in the job's error.
-- The two jobs are independent. One can succeed while the other fails.
+- iOS and Android are independent: TestFlight can succeed while the release stays a draft, and the release can be
+  published while TestFlight fails.
 
 ## Not yet
 

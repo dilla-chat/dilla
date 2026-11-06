@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES, WORKFLOWS } from './ci-areas.mjs';
-import { checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkElectronInstalls, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkServerWorkflow, DESKTOP_RELEASE_ACTIONS, REQUIRED_JOBS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
+import { checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkElectronInstalls, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, DESKTOP_RELEASE_ACTIONS, REQUIRED_JOBS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -1171,6 +1171,8 @@ function fixture(body, gated = GATED) {
   writeFileSync(join(dir, '.github', 'workflows', 'mobile.yml'), REAL_MOBILE);
   // The CLI also checks release.yml.
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), REAL_RELEASE);
+  // ... and mobile-release.yml, which signs the APK and publishes the draft release.
+  writeFileSync(join(dir, '.github', 'workflows', 'mobile-release.yml'), readFileSync(join(REPO_ROOT, '.github', 'workflows', 'mobile-release.yml'), 'utf8'));
   writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
   // ... and the desktop release trampoline with the key scripts it pins.
   releaseRoots.push(dir);
@@ -2309,6 +2311,102 @@ function assertReported(problems, needle) {
 
 test('the real release workflow passes every rule', () => {
   assert.deepEqual(checkReleaseWorkflow(REPO_ROOT), []);
+});
+
+// 2026-11-06 "Draft, sign on main": release.yml, the tag's own file, leaves the release a draft and holds no
+// environment or secret; mobile-release.yml (main's file) signs, attaches and publishes (review H1, M1).
+test('release.yml creates a draft', () => {
+  assertReported(releaseProblems((t) => t.replace(' --verify-tag --draft ', ' --verify-tag ')), '--draft');
+});
+
+test('an environment, a secret, a status if: or a checkout ref in release.yml is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('  rust-wasi:\n    runs-on: ubuntu-latest\n', '  rust-wasi:\n    runs-on: ubuntu-latest\n    environment: mobile-release\n')), 'enters an environment');
+  assertReported(releaseProblems((t) => t.replace('          GH_TOKEN: ${{ github.token }}\n          TAG: ${{ needs.tag.outputs.tag }}\n', '          GH_TOKEN: ${{ github.token }}\n          TAG: ${{ needs.tag.outputs.tag }}\n          K: ${{ secrets.ANDROID_KEY_PASSWORD }}\n')), 'reads no secret');
+  assertReported(releaseProblems((t) => t.replace('  release:\n    runs-on: ubuntu-latest\n', "  release:\n    if: ${{ !cancelled() }}\n    runs-on: ubuntu-latest\n")), 'status check');
+  assertReported(releaseProblems((t) => t.replace('  release:\n    runs-on: ubuntu-latest\n', '  release:\n    if: success() || failure()\n    runs-on: ubuntu-latest\n')), 'status check');
+  assertReported(releaseProblems((t) => t.replace('  rust-wasi:\n    runs-on: ubuntu-latest\n    needs: [tag]\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\n', '  rust-wasi:\n    runs-on: ubuntu-latest\n    needs: [tag]\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\n        with:\n          ref: main\n')), 'checks out ref main');
+});
+
+const REAL_MOBILE_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'mobile-release.yml'), 'utf8');
+function mobileReleaseProblems(edit) {
+  const edited = edit(REAL_MOBILE_RELEASE);
+  assert.notEqual(edited, REAL_MOBILE_RELEASE, 'the edit changed nothing; the fixture drifted from mobile-release.yml');
+  const dir = mkdtempSync(join(TEST_ROOT, 'dilla-mobile-release-'));
+  mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  writeFileSync(join(dir, '.github', 'workflows', 'mobile-release.yml'), edited);
+  return checkMobileReleaseWorkflow(dir);
+}
+const DRAFT_IF = "    if: needs.resolve.outputs.draft == 'true'\n";
+const ANDROID_HEAD = '  android-release:\n    needs: [resolve, mobile-bundle]\n';
+const PUBLISH_HEAD = '  publish:\n    needs: [resolve, android-release]\n';
+const IOS_HEAD = '  ios-testflight:\n    needs: [resolve, mobile-bundle]\n';
+
+test('the real mobile-release workflow passes every rule', () => {
+  assert.deepEqual(checkMobileReleaseWorkflow(REPO_ROOT), []);
+});
+
+test('the Android jobs carry exactly the draft if:, which keeps their needs; the real file passes with it', () => {
+  assert.ok(REAL_MOBILE_RELEASE.includes(ANDROID_HEAD + DRAFT_IF) && REAL_MOBILE_RELEASE.includes(PUBLISH_HEAD + DRAFT_IF), 'fixture sanity: both jobs carry the draft condition');
+  assert.deepEqual(checkMobileReleaseWorkflow(REPO_ROOT), []);
+  assertReported(mobileReleaseProblems((t) => t.replace(ANDROID_HEAD + DRAFT_IF, ANDROID_HEAD)), 'job "android-release" must carry exactly if:');
+});
+
+test('a job-level if: that runs a secret or publishing job past its needs is reported', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace(ANDROID_HEAD + DRAFT_IF, `${ANDROID_HEAD}    if: always()\n`)), 'job "android-release" must carry exactly if:');
+  assertReported(mobileReleaseProblems((t) => t.replace(ANDROID_HEAD + DRAFT_IF, `${ANDROID_HEAD}    if: \${{ !cancelled() && needs.resolve.outputs.draft == 'true' }}\n`)), 'job "android-release" must carry exactly if:');
+  assertReported(mobileReleaseProblems((t) => t.replace(PUBLISH_HEAD + DRAFT_IF, `${PUBLISH_HEAD}    if: success() || failure()\n`)), 'job "publish" must carry exactly if:');
+  assertReported(mobileReleaseProblems((t) => t.replace('  mobile-bundle:\n    needs: [resolve]\n', '  mobile-bundle:\n    needs: [resolve]\n    if: always()\n')), 'job "mobile-bundle" has a job-level if:');
+  assertReported(mobileReleaseProblems((t) => t.replace(IOS_HEAD, `${IOS_HEAD}    if: always()\n`)), 'job "ios-testflight" has a job-level if:');
+});
+
+test('a secret outside the signing and export steps is reported', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace('          DILLA_ANDROID_VERSION_CODE: ${{ steps.build.outputs.number }}\n', '          DILLA_ANDROID_VERSION_CODE: ${{ steps.build.outputs.number }}\n          KS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}\n')), 'names a secret it may not');
+  assertReported(mobileReleaseProblems((t) => t.replace('\n      TAG: ${{ needs.resolve.outputs.tag }}\n      GH_TOKEN: ${{ github.token }}\n', '\n      TAG: ${{ needs.resolve.outputs.tag }}\n      GH_TOKEN: ${{ github.token }}\n      K: ${{ secrets.ANDROID_KEY_PASSWORD }}\n')), 'names a secret at job level');
+  // The export step may hold the ASC key, not the Android keystore.
+  assertReported(mobileReleaseProblems((t) => t.replace('          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}\n          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}\n', '          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}\n          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}\n          KS: ${{ secrets.ANDROID_KEYSTORE_B64 }}\n')), 'names a secret it may not');
+});
+
+test('a commented-out gate line does not count (review L2)', () => {
+  // A whole comment line, and a gate pushed into a trailing comment after a no-op.
+  assertReported(mobileReleaseProblems((t) => t.replace('          git merge-base --is-ancestor "$sha" origin/main ||', '          # git merge-base --is-ancestor "$sha" origin/main ||')), 'git merge-base --is-ancestor "$sha" origin/main');
+  assertReported(mobileReleaseProblems((t) => t.replace('          [ "$RUN_REF" = refs/heads/main ] ||', '          true # [ "$RUN_REF" = refs/heads/main ] ||')), '[ "$RUN_REF" = refs/heads/main ]');
+  assertReported(mobileReleaseProblems((t) => t.replace('          [ "$RUN_REF" = refs/heads/main ] ||', '          # [ "$RUN_REF" = refs/heads/main ] ||')), '[ "$RUN_REF" = refs/heads/main ]');
+});
+
+test('a workflow_run gate without the push event or the tag-to-head_sha match is reported (review L1)', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace('[ "$RUN_EVENT" = push ]', 'true')), '[ "$RUN_EVENT" = push ]');
+  assertReported(mobileReleaseProblems((t) => t.replace('[ "$sha" = "$RUN_SHA" ]', 'true')), '[ "$sha" = "$RUN_SHA" ]');
+});
+
+test('a publish that trusts the artifact alone is reported (review L3)', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace('          digest-mismatch: error\n', '')), 'digest-mismatch');
+  assertReported(mobileReleaseProblems((t) => t.replace(`          printf '%s  %s\\n' "$APK_SHA256" "$apk" | sha256sum -c --strict\n`, '')), '"$APK_SHA256" "$apk" | sha256sum -c --strict');
+  assertReported(mobileReleaseProblems((t) => t.replace('          APK_SHA256: ${{ needs.android-release.outputs.apk_sha256 }}\n', '          APK_SHA256: ${{ needs.resolve.outputs.sha }}\n')), 'needs.android-release.outputs.apk_sha256');
+});
+
+test('toJSON(secrets) anywhere is reported', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace('\n      TAG: ${{ needs.resolve.outputs.tag }}\n      GH_TOKEN: ${{ github.token }}\n', '\n      TAG: ${{ needs.resolve.outputs.tag }}\n      GH_TOKEN: ${{ github.token }}\n      ALL: ${{ toJSON(secrets) }}\n')), 'toJSON(secrets)');
+});
+
+test('a checkout of anything but the gated commit in a secret job, or any checkout in publish, is reported', () => {
+  const at = REAL_MOBILE_RELEASE.indexOf(ANDROID_HEAD);
+  const edited = (t) => t.slice(0, at) + t.slice(at).replace('          ref: ${{ needs.resolve.outputs.sha }}\n', '          ref: ${{ github.event.workflow_run.head_branch }}\n');
+  assertReported(mobileReleaseProblems(edited), 'job "android-release" must check out ref');
+  assertReported(mobileReleaseProblems((t) => t.replace(`${PUBLISH_HEAD}`, PUBLISH_HEAD).replace('    steps:\n      - name: The release is a draft\n', '    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\n      - name: The release is a draft\n')), 'job "publish" checks out the repository');
+});
+
+test('a key file whose trap leaves the step that writes it is reported', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace(`          trap 'rm -f "$ks"' EXIT\n`, '').replace('        run: npm run android:check-signer -w @dilla/mobile\n', `        run: |\n          trap 'rm -f "$ks"' EXIT\n          npm run android:check-signer -w @dilla/mobile\n`)), 'the key file is written in one step only');
+  assertReported(mobileReleaseProblems((t) => t.replace(`          trap 'rm -f "$RUNNER_TEMP/asc-key.p8"' EXIT\n`, '')), 'the key file is written in one step only');
+});
+
+test('an environment or write access outside their jobs, or a publish that skips the APK, is reported', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace(PUBLISH_HEAD + DRAFT_IF, `${PUBLISH_HEAD + DRAFT_IF}    environment: mobile-release\n`)), 'job "publish" enters an environment');
+  assertReported(mobileReleaseProblems((t) => t.replace(ANDROID_HEAD + DRAFT_IF, `${ANDROID_HEAD + DRAFT_IF}    permissions:\n      contents: write\n`)), 'only publish writes');
+  assertReported(mobileReleaseProblems((t) => t.replace(PUBLISH_HEAD, '  publish:\n    needs: [resolve]\n')), 'job "publish" must list "android-release"');
+  assertReported(mobileReleaseProblems((t) => t.replace('            echo "draft=$draft"\n', '')), 'echo "draft=$draft"');
+  assertReported(mobileReleaseProblems((t) => t.replace('[ "$RUN_REF" = refs/heads/main ]', 'true')), 'refs/heads/main');
+  assertReported(mobileReleaseProblems((t) => t.replace('[ "$draft" = true ]', 'true')), '[ "$draft" = true ]');
 });
 
 
