@@ -1126,12 +1126,12 @@ describe('Routes: retries and inputs', () => {
     expect(outcome).toMatchObject({ status: 500, code: 'E_INTERNAL' });
   });
 
-  it('a read is retried after a network failure', async () => {
+  it('a read on the socket is not retried by the typed route: the socket layer owns the retry and the idem (Bot v2)', async () => {
     const { t, routes } = setup();
     t.replies.push(new TypeError('fetch failed'), bytesReply(200, MESSAGES));
-    expect(await routes.getMessages(GROUP, 3n, 256)).toEqual({ raw: MESSAGES, count: 1, lastSeq: 3n });
-    expect(t.seen).toHaveLength(2);
-    expect(t.sleeps).toEqual([625]);
+    await expect(routes.getMessages(GROUP, 3n, 256)).rejects.toMatchObject({ status: 0, code: 'E_NETWORK' });
+    expect(t.seen).toHaveLength(1);
+    expect(t.seen[0]).toMatchObject({ socket: true });
   });
 
   it('decodes a contiguous moderation removal page and refuses gaps or cursor mismatch', async () => {
@@ -1547,13 +1547,13 @@ describe('Routes: web-3 calls (L-TS-55)', () => {
     expect(http.requests.map((r) => r.signal)).toEqual([abort.signal, abort.signal, abort.signal]);
   });
 
-  it('an end retrying on 503 stops once its signal aborts: no further attempt is sent', async () => {
+  it('an end whose signal is already aborted sends nothing (the socket layer owns the 503 retry and its abort)', async () => {
     const { t, routes } = setup();
     const abort = new AbortController();
-    t.replies.push(() => { abort.abort(); return refusal(503, 'E_UNAVAILABLE', '', 1000); });
+    abort.abort();
     t.replies.push(noContent());
     await expect(routes.endCallIfAlone(CALL, abort.signal)).rejects.toMatchObject({ name: 'AbortError' });
-    expect(t.seen).toHaveLength(1);
+    expect(t.seen).toHaveLength(0);
   });
 
   it('declineCall(callId, 1700000030) sends [1700000030] and gives 204; its 404 is surfaced as E_NOT_FOUND', async () => {
@@ -2194,5 +2194,53 @@ describe('Routes: the account area goes over the socket (Bot v2 task 4)', () => 
   });
   it.each(http)('%s %s stays on HTTP', (method, path) => {
     expect(socketRouteFor(method, path)).toBeNull();
+  });
+});
+
+describe('Routes: the messaging area goes over the socket (Bot v2 task 5)', () => {
+  const G = hex(GROUP);
+  const C = hex(CHANNEL);
+  const CALL = hex(fill(16, 0x21));
+  const socket: [string, string][] = [
+    ['POST', '/v1/groups'], ['GET', `/v1/groups/${G}/info`], ['GET', `/v1/groups/${G}/tree`],
+    ['GET', `/v1/groups/${G}/handshakes?from=0&limit=64`], ['POST', `/v1/groups/${G}/commit`], ['POST', `/v1/groups/${G}/proposal`],
+    ['GET', `/v1/groups/${G}/proposals`], ['POST', `/v1/groups/${G}/resync`], ['POST', `/v1/groups/${G}/fork-report`],
+    ['GET', `/v1/groups/${G}/heal-state`], ['POST', `/v1/groups/${G}/heal`], ['POST', `/v1/groups/${G}/message`],
+    ['GET', `/v1/groups/${G}/messages?from=0&limit=64`], ['DELETE', `/v1/groups/${G}/messages/3`], ['POST', `/v1/groups/${G}/cursor`],
+    ['GET', `/v1/groups/${G}/moderation/removals?after=0&limit=64`], ['POST', `/v1/groups/${G}/moderation/removals`],
+    ['POST', `/v1/groups/${G}/automod-grants/arm`], ['GET', `/v1/groups/${G}/interaction-admission-context`],
+    ['POST', '/v1/dms'], ['GET', '/v1/dms'],
+    ['POST', `/v1/channels/${C}/messages`], ['GET', `/v1/channels/${C}/messages?limit=50`], ['PATCH', `/v1/channels/${C}/messages/4`],
+    ['DELETE', `/v1/channels/${C}/messages/4`], ['GET', `/v1/channels/${C}/search?q=x`], ['PUT', `/v1/channels/${C}/read-state`],
+    ['POST', '/v1/reports'], ['GET', '/v1/reports'], ['PATCH', `/v1/reports/${C}`],
+    ['POST', `/v1/channels/${C}/calls`], ['GET', `/v1/channels/${C}/call`], ['GET', `/v1/communities/${hex(COMMUNITY)}/calls`],
+    ['DELETE', `/v1/calls/${CALL}`], ['POST', `/v1/calls/${CALL}/share`], ['DELETE', `/v1/calls/${CALL}/share`],
+    ['POST', `/v1/calls/${CALL}/rtt`], ['POST', `/v1/calls/${CALL}/decline`], ['POST', `/v1/calls/${CALL}/stats`],
+  ];
+  // Blob bodies are binary and above a frame: they stay on HTTP.
+  const http: [string, string][] = [
+    ['PUT', `/v1/channels/${C}/blobs/${hex(fill(32, 0x22))}`], ['GET', `/v1/channels/${C}/blobs/${hex(fill(32, 0x22))}`],
+    ['DELETE', `/v1/channels/${C}/blobs/${hex(fill(32, 0x22))}`], ['POST', `/v1/channels/${C}/blobs/${hex(fill(32, 0x22))}/confirm`],
+  ];
+  it.each(socket)('%s %s is a socket route', (method, path) => {
+    expect(socketRouteFor(method, path)).not.toBeNull();
+  });
+  it.each(http)('%s %s stays on HTTP', (method, path) => {
+    expect(socketRouteFor(method, path)).toBeNull();
+  });
+  it('send idem is stable per message', async () => {
+    const { routes, t } = setup();
+    const msgA = fill(16, 0x31);
+    const msgB = fill(16, 0x32);
+    t.replies.push(bytesReply(200, UPLOADED), bytesReply(200, UPLOADED), bytesReply(200, UPLOADED), bytesReply(200, UPLOADED));
+    await routes.postMessage(GROUP, BODY, msgA);
+    await routes.postMessage(GROUP, BODY, msgA); // the same send, written again after a lost socket or a restart
+    await routes.postMessage(GROUP, BODY, msgB);
+    await routes.postMessage(GROUP, fill(40, 0x44), msgA); // re-sealed: another request, another key
+    const idems = t.seen.map((r) => (r.idem === undefined ? '' : toHex(r.idem)));
+    expect(idems.every((i) => i.length === 32)).toBe(true);
+    expect(idems[0]).toBe(idems[1]);
+    expect(idems[2]).not.toBe(idems[0]);
+    expect(idems[3]).not.toBe(idems[0]);
   });
 });

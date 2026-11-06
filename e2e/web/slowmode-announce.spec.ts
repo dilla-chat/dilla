@@ -208,11 +208,11 @@ test('slow mode and an announcement channel from an empty instance: the wait, th
     const lieSent = async (text: string): Promise<void> => {
       await advanceHostClock(h, 10);
       const before = uploads.seen.length;
-      uploads.relabel = true;
+      await uploads.setRelabel(true);
       const lie = await portCall(page2, { m: 'send', channelId: newsId, text: `${text} <@${adaId}>` });
       expect(lie.error ?? null, 'the worker takes the lying send').toBeNull();
       await expect.poll(() => uploads.seen.length, { timeout: WAIT }).toBeGreaterThan(before);
-      uploads.relabel = false;
+      await uploads.setRelabel(false);
       expect(uploads.seen.at(-1), 'the host cannot tell and accepts it').toEqual({ status: 200, relabelled: true });
     };
     const markerSent = async (emojiKey: string): Promise<void> => {

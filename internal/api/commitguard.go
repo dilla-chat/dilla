@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/server"
@@ -13,30 +12,15 @@ import (
 
 // The bounds on POST /v1/groups/{id}/commit that deviation B37's 16 MiB body needs (final review):
 // who may upload and for which epoch is answered before the body is read, a commit carries at most
-// maxWelcomesPerCommit Welcomes, a device has one commit upload in flight at a time, and the body
-// must arrive within commitReadTimeout.
+// maxWelcomesPerCommit Welcomes, a device has one commit upload in flight at a time. (The route is a gateway socket
+// request, so its body arrives whole in one frame; there is no HTTP read deadline to extend.)
 const (
 	// maxWelcomesPerCommit is protocol/01 § Joining's MAX_ADDS: at most 256 Adds are batched into
 	// one commit, and each Welcome is addressed to one added device.
 	maxWelcomesPerCommit = 256
-	// commitReadTimeout bounds how long the body of one commit upload may take to arrive. 16 MiB
-	// in a minute is about 2.2 Mbit/s; a client slower than that is holding a group lock's worth
-	// of the instance's memory open, not uploading.
-	commitReadTimeout = 60 * time.Second
 	// commitBusyRetry is the retry_after_ms a device's second concurrent commit is told.
 	commitBusyRetry = 1000
 )
-
-// withReadDeadline gives one route's body a read deadline of its own. The server-wide
-// ordinary body deadline is installed before routing; this extends it for a larger commit.
-// The production boundary fails closed if deadlines are unsupported. Direct handler tests may
-// use a recorder without deadline support.
-func withReadDeadline(d time.Duration, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(d))
-		next.ServeHTTP(w, r)
-	})
-}
 
 // beginCommit reserves the device's one in-flight commit upload, or refuses with E_RATE_LIMITED.
 // The returned function releases it.

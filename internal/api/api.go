@@ -405,11 +405,21 @@ func (d Deps) scoped(h http.HandlerFunc, want auth.Scope) http.Handler {
 // HTTP form built inline, the session middleware for want and then, when class is not empty, one token from the
 // device session's bucket of that delivery-service class (dsMeter).
 func (d Deps) socketChain(want auth.Scope, class string) func(http.Handler) http.Handler {
+	return socketSessionChain(d.Sessions, d.Limiter, want, class)
+}
+
+// socketMeter is socketChain for an enrolled session, for the delivery-service groups that hold the session store
+// and the limiter themselves (Groups, Messages, the bot message routes).
+func socketMeter(sessions *auth.Sessions, l *server.RateLimiter, class string) func(http.Handler) http.Handler {
+	return socketSessionChain(sessions, l, auth.ScopeEnrolled, class)
+}
+
+func socketSessionChain(sessions *auth.Sessions, l *server.RateLimiter, want auth.Scope, class string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if class != "" {
-			next = dsMeter(d.Limiter, class, next.ServeHTTP)
+			next = dsMeter(l, class, next.ServeHTTP)
 		}
-		return d.Sessions.Middleware(next, want)
+		return sessions.Middleware(next, want)
 	}
 }
 

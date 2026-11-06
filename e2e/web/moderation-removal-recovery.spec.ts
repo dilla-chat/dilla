@@ -8,6 +8,7 @@ import { startTestHost, type HostConfig, type StartedHost } from './support/host
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { e2ePort } from './support/ports';
 import { desktopE2E, suspendDesktopContext } from './support/electron';
+import { watchSocketRequests } from './support/socket-requests';
 
 const HOST: HostConfig = { port: e2ePort(8533), control: e2ePort(8534), webRoot: 'packages/web/dist', advanceClockWithWall: true };
 const SERVER = 'Removal Lab';
@@ -73,8 +74,10 @@ test('signed moderator removal reaches a live client and recovers as a tombstone
       contexts.push(context);
       await guard.attach(context);
       const member = await context.newPage();
+      // Requests are gateway frames, read from the socket from the first one (sign-up opens it).
+      const seen = watchSocketRequests(member);
       await memberPage(member, invite, name);
-      return { context, page: member };
+      return { context, page: member, seen };
     };
     const mod = await openMember(moderatorInvite, MODERATOR);
     const author = await openMember(authorInvite, AUTHOR);
@@ -124,17 +127,10 @@ test('signed moderator removal reaches a live client and recovers as a tombstone
     await rowAction(modRow, 'moderateRemove');
     const confirm = dialog(mod.page, 'shell.moderation.removeTitle');
     await confirm.getByRole('textbox', { name: copy('shell.moderation.reason'), exact: true }).fill('reviewed by moderator');
-    const removalResult: { value: number | null } = { value: null };
-    const removalRoute = async (route: import('@playwright/test').Route) => {
-      if (route.request().method() !== 'POST') { await route.continue(); return; }
-      const response = await route.fetch();
-      removalResult.value = response.status();
-      await route.fulfill({ response });
-    };
-    await mod.context.route('**/moderation/removals', removalRoute);
+    const removals = (): number[] => mod.seen.filter((r) => r.method === 'POST' && /^\/v1\/groups\/[0-9a-f]{32}\/moderation\/removals$/.test(r.path) && r.status !== null).map((r) => r.status!);
     await button(confirm, 'shell.moderation.removeConfirm').click();
-    await expect.poll(() => removalResult.value, { timeout: 30_000 }).not.toBeNull();
-    await mod.context.unroute('**/moderation/removals', removalRoute);
+    await expect.poll(() => removals().length, { timeout: 30_000 }).toBeGreaterThan(0);
+    const removalResult = { value: removals()[0] ?? null };
     const accepted = removalResult.value;
     if (accepted === null) throw new Error('moderation removal did not reach the server');
     expect(accepted, 'moderation removal must be accepted by the real API').toBe(200);

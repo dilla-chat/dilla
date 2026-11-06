@@ -98,16 +98,13 @@ func (h *Groups) Register(mux *server.Mux, sessions *auth.Sessions) {
 	// Every delivery-service route needs an enrolled device session. The KeyPackage and Welcome
 	// routes of task 24 are the only ones that also accept a provisional session, and they say so
 	// at their own Register.
-	enrolled := func(f http.HandlerFunc) http.Handler {
-		return sessions.Middleware(f, auth.ScopeEnrolled)
-	}
-	mux.Handle("POST /v1/groups", enrolled(dsMeter(h.Limiter, dsClassWrite, h.create)))
+	mux.SocketAuthed("POST /v1/groups", socketMeter(sessions, h.Limiter, dsClassWrite), http.HandlerFunc(h.create))
 	h.registerBotInteractionGroupReads(mux, sessions)
 	h.RegisterBotRegistration(mux, sessions)
 	h.RegisterBotMessages(mux, sessions)
-	mux.Handle("GET /v1/groups/{id}/info", enrolled(dsMeter(h.Limiter, dsClassRead, h.info)))
-	mux.Handle("GET /v1/groups/{id}/interaction-admission-context", enrolled(dsMeter(h.Limiter, dsClassRead, h.currentInteractionAdmissionContext)))
-	mux.Handle("GET /v1/groups/{id}/tree", enrolled(dsMeter(h.Limiter, dsClassRead, h.tree)))
+	mux.SocketAuthed("GET /v1/groups/{id}/info", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.info))
+	mux.SocketAuthed("GET /v1/groups/{id}/interaction-admission-context", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.currentInteractionAdmissionContext))
+	mux.SocketAuthed("GET /v1/groups/{id}/tree", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.tree))
 }
 
 // RegisterSequencer mounts the four routes of the sequencer and the commit path: endpoints 4
@@ -116,14 +113,10 @@ func (h *Groups) Register(mux *server.Mux, sessions *auth.Sessions) {
 // one named group per task, and so a composition root that wants the registry without the
 // sequencer — there is none yet, but task 27a decides that, not this file — has the choice.
 func (h *Groups) RegisterSequencer(mux *server.Mux, sessions *auth.Sessions) {
-	enrolled := func(f http.HandlerFunc) http.Handler {
-		return sessions.Middleware(f, auth.ScopeEnrolled)
-	}
-	mux.Handle("GET /v1/groups/{id}/handshakes", enrolled(dsMeter(h.Limiter, dsClassRead, h.handshakes)))
-	mux.Handle("POST /v1/groups/{id}/commit",
-		withReadDeadline(commitReadTimeout, enrolled(dsMeter(h.Limiter, dsClassCommit, h.commit))))
-	mux.Handle("POST /v1/groups/{id}/proposal", enrolled(dsMeter(h.Limiter, dsClassProposal, h.proposal)))
-	mux.Handle("GET /v1/groups/{id}/proposals", enrolled(dsMeter(h.Limiter, dsClassRead, h.proposals)))
+	mux.SocketAuthed("GET /v1/groups/{id}/handshakes", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.handshakes))
+	mux.SocketAuthed("POST /v1/groups/{id}/commit", socketMeter(sessions, h.Limiter, dsClassCommit), http.HandlerFunc(h.commit))
+	mux.SocketAuthed("POST /v1/groups/{id}/proposal", socketMeter(sessions, h.Limiter, dsClassProposal), http.HandlerFunc(h.proposal))
+	mux.SocketAuthed("GET /v1/groups/{id}/proposals", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.proposals))
 }
 
 // RegisterRecovery mounts the two routes a device out of step with the epoch uses: endpoint 8
@@ -132,11 +125,8 @@ func (h *Groups) RegisterSequencer(mux *server.Mux, sessions *auth.Sessions) {
 // third method for the reason RegisterSequencer is a second one: the delivery service's surface
 // grows one named group per task.
 func (h *Groups) RegisterRecovery(mux *server.Mux, sessions *auth.Sessions) {
-	enrolled := func(f http.HandlerFunc) http.Handler {
-		return sessions.Middleware(f, auth.ScopeEnrolled)
-	}
-	mux.Handle("POST /v1/groups/{id}/resync", enrolled(dsMeter(h.Limiter, dsClassCommit, h.resync)))
-	mux.Handle("POST /v1/groups/{id}/fork-report", enrolled(dsMeter(h.Limiter, dsClassWrite, h.forkReport)))
+	mux.SocketAuthed("POST /v1/groups/{id}/resync", socketMeter(sessions, h.Limiter, dsClassCommit), http.HandlerFunc(h.resync))
+	mux.SocketAuthed("POST /v1/groups/{id}/fork-report", socketMeter(sessions, h.Limiter, dsClassWrite), http.HandlerFunc(h.forkReport))
 }
 
 // sessionOf is the one place this file reads the request's session. It is a helper in package api,

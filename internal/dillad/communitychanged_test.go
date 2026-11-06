@@ -65,7 +65,7 @@ func TestAChannelCreateTellsEveryMemberAndNoOneElse(t *testing.T) {
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	h := srv.Handler()
+	h := socketHandler(srv)
 
 	owner := accountToken(t, srv, code)
 	member := namedAccount(t, srv, mintInvite(t, srv), "friend")

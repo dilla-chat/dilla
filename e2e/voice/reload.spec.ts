@@ -14,6 +14,7 @@
 import type { Page } from '@playwright/test';
 import { expect, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
+import { watchSocketRequests } from '../web/support/socket-requests';
 import {
   VoicePeer, WAIT, callSlice, expectShellReady, heard, joinVoice, onboard, self, tile, withholdLeft,
 } from './support/voice';
@@ -91,17 +92,19 @@ test('a reload mid-call leaves one tile for alice, and a reload without a rejoin
       await withholdLeft(true);
       // Pins that the boot sweep runs: alice's worker reads the call of the channel it was in, with no join pressed. And
       // that the page going away sent nothing of its own (FX-RELOAD): no proposal of alice's goes out before that read.
-      const reads: string[] = [];
-      const proposalsBeforeRead: string[] = [];
-      alice.context.on('request', (r) => {
-        const path = new URL(r.url()).pathname;
-        if (r.method() === 'GET' && path === `/v1/channels/${s.voice_channel_id}/call`) reads.push(r.url());
-        else if (r.method() === 'POST' && /^\/v1\/groups\/[0-9a-f]{32}\/proposal$/.test(path) && reads.length === 0) proposalsBeforeRead.push(path);
-      });
+      // The reads and proposals are gateway request frames: the app's authenticated requests are not HTTP.
+      const seen = watchSocketRequests(alice.page);
+      const isRead = (r: { method: string; path: string }): boolean => r.method === 'GET' && r.path === `/v1/channels/${s.voice_channel_id}/call`;
+      const reads = (): number => seen.filter(isRead).length;
+      const proposalsBeforeRead = (): string[] => {
+        const firstRead = seen.findIndex(isRead);
+        return seen.slice(0, firstRead < 0 ? seen.length : firstRead)
+          .filter((r) => r.method === 'POST' && /^\/v1\/groups\/[0-9a-f]{32}\/proposal$/.test(r.path)).map((r) => r.path);
+      };
       await alice.page.reload();
       await expectShellReady(alice.page);
-      await expect.poll(() => reads.length, { timeout: SWEEP_BOUND, message: 'the reloaded page sweeps the call it left behind' }).toBeGreaterThan(0);
-      expect(proposalsBeforeRead, 'the page that went away sent no self-Remove of its own: the sweep writes first').toEqual([]);
+      await expect.poll(() => reads(), { timeout: SWEEP_BOUND, message: 'the reloaded page sweeps the call it left behind' }).toBeGreaterThan(0);
+      expect(proposalsBeforeRead(), 'the page that went away sent no self-Remove of its own: the sweep writes first').toEqual([]);
       await expect.poll(() => rosterDevices(bob.page), { timeout: SWEEP_BOUND, message: 'bob\'s roster drops alice\'s old device' }).toEqual([b.device]);
       await expect(tile(bob.page, 'alice')).toHaveCount(0, { timeout: SWEEP_BOUND });
     });

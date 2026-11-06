@@ -78,9 +78,29 @@ func newEnv(t *testing.T) *env {
 		DS:   &recordingDS{},
 		sess: map[string]auth.Session{},
 	}
-	e.Srv = httptest.NewServer(e.authMiddleware(e.Mux))
+	// The routes that moved to the gateway socket are registered on the socket mux. This harness's session is the
+	// stand-in below, not auth.Sessions.Middleware, so a socket route cannot pass the dispatcher's guard here: the
+	// guard is the identity and the request is served into the socket mux in process, with the handler, its
+	// body and its answer exactly as a request frame reaches them. The socket path itself (guard, replay record,
+	// frames) is tested in socket_dispatch_test.go, and the full chain per route in TestMessagingAreaIsSocketOnly
+	// (internal/dillad) and the sockettest.Bridge harnesses.
+	e.Mux.SetSocketGuard(func(w http.ResponseWriter, r *http.Request, next http.Handler) { next.ServeHTTP(w, r) })
+	e.Srv = httptest.NewServer(e.authMiddleware(e.socketOrHTTP()))
 	t.Cleanup(e.Srv.Close)
 	return e
+}
+
+// socketOrHTTP serves a request for a socket-only route into the socket mux and every other request into the HTTP mux.
+func (e *env) socketOrHTTP() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := e.Mux.Mux().Handler(r); pattern == "" {
+			if _, socketPattern := e.Mux.SocketMux().Handler(r); socketPattern != "" {
+				e.Mux.SocketMux().ServeHTTP(w, r)
+				return
+			}
+		}
+		e.Mux.ServeHTTP(w, r)
+	})
 }
 
 // authMiddleware is the test stand-in for auth.Sessions.Middleware: it maps a

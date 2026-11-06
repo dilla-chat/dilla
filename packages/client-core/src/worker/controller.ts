@@ -2549,7 +2549,7 @@ export class Controller {
     if (this.trustRefresh !== null) this.trustRefreshAgain = true;
     void this.barrier.track(this.refreshTrust()).catch(() => undefined);
     // web3.7 3a-client: the call groups a page of this browser left behind are left now, before any join is served (a
-    // join waits for it, bounded); it needs no gateway. Not tracked by the barrier: a resign stops it instead.
+    // join waits for it, bounded); its reads and proposals are socket requests, which wait for the gateway. Not tracked by the barrier: a resign stops it instead.
     this.calls.startSweep();
     void this.barrier.track(this.resumeManualRemovalEvidence()).catch(() => undefined);
     void this.barrier.track(this.resumeManualWarningEvidence()).catch(() => undefined);

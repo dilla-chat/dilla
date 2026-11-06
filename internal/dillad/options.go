@@ -43,6 +43,9 @@ type Options struct {
 	Metrics     *obs.Metrics     // optional: over a fresh prometheus.NewRegistry()
 	Health      *obs.Health      // optional: obs.NewHealth(Clock)
 	ScrapeToken string
+	// SocketObserve, when set, sees every socket request's method, route, answer status and body
+	// (api.SocketDispatchOptions.Observe). The test host reads the Bot's sends and heals through it. Production sets none.
+	SocketObserve func(method, route string, status int, body []byte)
 
 	// Extra runs after every route New mounts itself — Plan 1's and Plan 2's —
 	// and gets the same *server.Mux (deviation ID14). The production binary

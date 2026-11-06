@@ -43,8 +43,8 @@ type communityCallRow struct {
 
 // registerReads mounts the two snapshot routes.
 func (h *Calls) registerReads(mux *server.Mux) {
-	mux.HandleFunc("GET /v1/channels/{id}/call", h.channelCall)
-	mux.HandleFunc("GET /v1/communities/{id}/calls", h.communityCalls)
+	mux.Socket("GET /v1/channels/{id}/call", http.HandlerFunc(h.channelCall))
+	mux.Socket("GET /v1/communities/{id}/calls", http.HandlerFunc(h.communityCalls))
 }
 
 // viewableCallChannel is the {id} whose call a caller may read: a channel it can see (404 otherwise,

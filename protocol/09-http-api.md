@@ -30,7 +30,17 @@ The account area is `PATCH` and `DELETE /v1/accounts/me`, `PATCH /v1/accounts/me
 `DELETE /v1/devices/{device_id}`, `POST /v1/auth/password`, `POST /v1/auth/stepup` and its two
 passkey legs, `POST /v1/auth/factors/remove` and `POST /v1/auth/recovery/codes`; the delivery
 service's `GET /v1/devices/{device_id}/keypackage`, `GET /v1/welcomes` and
-`DELETE /v1/welcomes/{welcome_id}` are socket routes too. The routes a client calls before its
+`DELETE /v1/welcomes/{welcome_id}` are socket routes too. So is the messaging area: every `/v1/groups/…` route (create, info, tree, handshakes, commit,
+proposal, proposals, resync, fork-report, heal, heal-state, message, messages, cursor, the managed
+Bot send and its receipts, the moderation removals, the automod grant arm and the interaction
+admission context), `/v1/dms`, `/v1/reports`, the readable channel routes (`POST`/`GET
+/v1/channels/{id}/messages`, `PATCH`/`DELETE …/messages/{seq}`, `GET …/search`, `PUT …/read-state`),
+the call routes (`POST /v1/channels/{id}/calls`, `GET /v1/channels/{id}/call`,
+`GET /v1/communities/{id}/calls`, `DELETE /v1/calls/{call_id}`, `…/share`, `…/rtt`, `…/decline`,
+`…/stats`). The blob routes (`/v1/channels/{id}/blobs/…`) carry binary bodies above a frame and
+stay on HTTP. A message send's idempotency key derives from its message id and its ciphertext, so a
+send written again after a reconnect is answered from the instance's five-minute replay record
+and stores one message. The routes a client calls before its
 socket exists stay on HTTP: sign-up and sign-in, the session ceremonies and
 `DELETE /v1/devices/{device_id}/sessions`, the device lists, `GET` and `POST /v1/keypackages`,
 backups, `GET /v1/accounts/me`, the second-factor setup an owed account uses, the instance

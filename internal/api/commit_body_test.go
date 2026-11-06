@@ -2,9 +2,7 @@ package api_test
 
 import (
 	"bytes"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/dilla-chat/dilla/internal/id"
@@ -110,38 +108,17 @@ func TestACommitWithMoreThanMaxAddsWelcomesIsRefused(t *testing.T) {
 	}
 }
 
-// budgetReader serves a fixed head and fails the test if the handler reads a byte past it: a body
-// whose head is not `0x85` and a uint epoch is refused from the head alone.
-type budgetReader struct {
-	t    *testing.T
-	head []byte
-	off  int
-}
-
-func (b *budgetReader) Read(p []byte) (int, error) {
-	if b.off >= len(b.head) {
-		b.t.Errorf("the handler read past the %d-byte head of a body that cannot be a commit", len(b.head))
-		return 0, io.EOF
-	}
-	n := copy(p, b.head[b.off:])
-	b.off += n
-	return n, nil
-}
-
 // Every valid commit body starts with 0x85 and a uint epoch. A body that does not is refused as
-// E_INVALID_REQUEST before DecodeBody reads up to 16 MiB of it, whether or not the device is a member.
-func TestACommitWhoseHeadDoesNotParseIsRefusedWithoutReadingTheRest(t *testing.T) {
+// E_INVALID_REQUEST from its head, whether or not the device is a member, before the decoder runs on the rest. (The
+// route is a socket request, so the whole body is already in the frame: what the head check saves is the decode,
+// not the read.)
+func TestACommitWhoseHeadDoesNotParseIsRefusedFromItsHead(t *testing.T) {
 	h := newGroupsAPI(t)
 	h.mustCreate(t)
-	head := append([]byte{0x86, 0x00}, bytes.Repeat([]byte{0xff}, 30)...)
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
-		"/v1/groups/"+h.groupID.String()+"/commit", &budgetReader{t: t, head: head})
-	req.Header.Set("Content-Type", "application/cbor")
-	req.Header.Set("Authorization", "Bearer "+h.session)
-	rec := httptest.NewRecorder()
-	h.handler.ServeHTTP(rec, req)
-	if got := errorCode(t, rec); got != "E_INVALID_REQUEST" {
-		t.Fatalf("code = %s (status %d), want E_INVALID_REQUEST", got, rec.Code)
+	body := append([]byte{0x86, 0x00}, bytes.Repeat([]byte{0xff}, 30)...)
+	res := h.do(t, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/commit", h.session, body)
+	if got := errorCode(t, res); got != "E_INVALID_REQUEST" {
+		t.Fatalf("code = %s (status %d), want E_INVALID_REQUEST", got, res.Code)
 	}
 }
 

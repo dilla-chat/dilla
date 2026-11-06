@@ -1615,7 +1615,7 @@ impl HttpDs {
 
     /// Opens or joins the channel's call: the body is `[]`, or `[vdec]` with the comma-separated
     /// decode list dillad writes into the token's `dilla.vdec` attribute (DEV-07).
-    pub fn start_call(&self, channel: &[u8; 16], vdec: &str) -> Result<CallStarted, DsError> {
+    pub fn start_call(&mut self, channel: &[u8; 16], vdec: &str) -> Result<CallStarted, DsError> {
         let body = encode(|e| {
             if vdec.is_empty() {
                 e.array(0);
@@ -1624,30 +1624,25 @@ impl HttpDs {
             }
         });
         let path = format!("/v1/channels/{}/calls", hex::encode(channel));
-        let (status, out) = call(
-            &self.agent,
-            "POST",
-            &self.url(&path),
-            Some(&self.token),
-            Some(("application/cbor", &body)),
-        )?;
+        let (status, out) = self.socket_call("POST", &path, &body)?;
         check_status(status, &out)?;
         decode_call_started(&out, status == 201)
             .map_err(|e| DsError::Protocol(format!("POST {path}: {e}")))
     }
 
     /// `GET /v1/channels/{id}/call` (web-3, L-HTTP-100).
-    pub fn get_channel_call(&self, channel: &[u8; 16]) -> Result<ChannelCall, DsError> {
+    pub fn get_channel_call(&mut self, channel: &[u8; 16]) -> Result<ChannelCall, DsError> {
         let path = format!("/v1/channels/{}/call", hex::encode(channel));
-        decode_channel_call(&get_with(&self.agent, &self.base, &self.token, &path)?)
-            .map_err(protocol)
+        let (status, out) = self.socket_call("GET", &path, &[])?;
+        check_status(status, &out)?;
+        decode_channel_call(&out).map_err(protocol)
     }
 
     /// `POST /v1/calls/{call_id}/decline [expires_ts]` (web-3, L-HTTP-104): `204`. It acts only on the ring whose
     /// `expires_ts` equals the body's, so a decline of an earlier ring stops nothing.
-    pub fn decline_call(&self, call_id: &[u8; 16], expires_ts: u64) -> Result<(), DsError> {
+    pub fn decline_call(&mut self, call_id: &[u8; 16], expires_ts: u64) -> Result<(), DsError> {
         let path = format!("/v1/calls/{}/decline", hex::encode(call_id));
-        self.post_status(
+        self.socket_post_status(
             &path,
             &encode(|e| {
                 e.array(1).uint(expires_ts);
@@ -1677,9 +1672,9 @@ impl HttpDs {
 
     /// Takes the call's publisher lease for this device (`POST /v1/calls/{call_id}/share`, `204`):
     /// dillad then pushes the camera and screen sources to the live participant (DEV-02, F1).
-    pub fn share_call(&self, call_id: &[u8; 16]) -> Result<(), DsError> {
+    pub fn share_call(&mut self, call_id: &[u8; 16]) -> Result<(), DsError> {
         let path = format!("/v1/calls/{}/share", hex::encode(call_id));
-        self.post_status(
+        self.socket_post_status(
             &path,
             &encode(|e| {
                 e.array(0);
@@ -1801,20 +1796,14 @@ impl HttpDs {
     }
 
     /// `POST /v1/dms [recipients]`: the DM's channel id and whether this call created it (`201`).
-    pub fn post_dm(&self, recipients: &[[u8; 16]]) -> Result<([u8; 16], bool), DsError> {
+    pub fn post_dm(&mut self, recipients: &[[u8; 16]]) -> Result<([u8; 16], bool), DsError> {
         let body = encode(|e| {
             e.array(1).array(recipients.len());
             for id in recipients {
                 e.bytes(id);
             }
         });
-        let (status, out) = call(
-            &self.agent,
-            "POST",
-            &self.url("/v1/dms"),
-            Some(&self.token),
-            Some(("application/cbor", &body)),
-        )?;
+        let (status, out) = self.socket_call("POST", "/v1/dms", &body)?;
         check_status(status, &out)?;
         let id = decode_strict(&out, |d| {
             d.array(1)?;
@@ -1825,8 +1814,10 @@ impl HttpDs {
     }
 
     /// `GET /v1/dms`: the caller's DMs.
-    pub fn list_dms(&self) -> Result<Vec<DmInfo>, DsError> {
-        decode_dms(&get_with(&self.agent, &self.base, &self.token, "/v1/dms")?).map_err(protocol)
+    pub fn list_dms(&mut self) -> Result<Vec<DmInfo>, DsError> {
+        let (status, out) = self.socket_call("GET", "/v1/dms", &[])?;
+        check_status(status, &out)?;
+        decode_dms(&out).map_err(protocol)
     }
 
     /// `GET /v1/channels/{id}`: its id, kind and text group.
@@ -1843,16 +1834,10 @@ impl HttpDs {
         )
     }
 
-    pub fn delete_message(&self, group_id: &[u8], seq: u64) -> Result<(), DsError> {
+    pub fn delete_message(&mut self, group_id: &[u8], seq: u64) -> Result<(), DsError> {
         let group: &GroupId = group_id;
         let path = Self::group_path(group, &format!("/messages/{seq}"));
-        let (status, out) = call(
-            &self.agent,
-            "DELETE",
-            &self.url(&path),
-            Some(&self.token),
-            None,
-        )?;
+        let (status, out) = self.socket_call("DELETE", &path, &[])?;
         check_status(status, &out)
     }
 
@@ -2537,16 +2522,6 @@ impl HttpDs {
         decode_strict(&out, f).map_err(|e| DsError::Protocol(format!("GET {path}: {e}")))
     }
 
-    fn get_decoded<T>(
-        &self,
-        path: &str,
-        f: impl FnOnce(&mut Decoder<'_>) -> Result<T, CborError>,
-    ) -> Result<T, DsError> {
-        let (status, out) = call(&self.agent, "GET", &self.url(path), Some(&self.token), None)?;
-        check_status(status, &out)?;
-        decode_strict(&out, f).map_err(|e| DsError::Protocol(format!("GET {path}: {e}")))
-    }
-
     fn post_decoded<T>(
         &self,
         path: &str,
@@ -2573,12 +2548,6 @@ impl HttpDs {
     fn socket_post_status(&mut self, path: &str, body: &[u8]) -> Result<(), DsError> {
         let (status, out) = self.socket_call("POST", path, body)?;
         check_status(status, &out)
-    }
-
-    /// A POST whose success is a status and no body the client reads (`204`, or row 9's
-    /// `202 []`).
-    fn post_status(&self, path: &str, body: &[u8]) -> Result<(), DsError> {
-        post_cbor(&self.agent, &self.url(path), Some(&self.token), body).map(|_| ())
     }
 
     fn group_path(g: &GroupId, tail: &str) -> String {
@@ -2714,7 +2683,7 @@ impl DeliveryService for HttpDs {
                 .bytes(&r.group_info)
                 .bytes(&r.ratchet_tree);
         });
-        let registered = self.post_decoded("/v1/groups", &body, |d| {
+        let registered = self.socket_post_decoded("/v1/groups", &body, |d| {
             d.array(2)?;
             Ok(RegisterResult {
                 group_id: d.bytes()?.to_vec(),
@@ -2727,7 +2696,7 @@ impl DeliveryService for HttpDs {
 
     /// Row 2: `[epoch, group_info, tree_hash, next_seq]`.
     fn group_info(&mut self, g: &GroupId) -> Result<GroupInfoResp, DsError> {
-        self.get_decoded(&Self::group_path(g, "/info"), |d| {
+        self.socket_get_decoded(&Self::group_path(g, "/info"), |d| {
             d.array(4)?;
             Ok(GroupInfoResp {
                 epoch: d.uint()?,
@@ -2740,7 +2709,7 @@ impl DeliveryService for HttpDs {
 
     /// Row 3: `[epoch, ratchet_tree, tree_hash]`.
     fn ratchet_tree(&mut self, g: &GroupId) -> Result<TreeResp, DsError> {
-        self.get_decoded(&Self::group_path(g, "/tree"), |d| {
+        self.socket_get_decoded(&Self::group_path(g, "/tree"), |d| {
             d.array(3)?;
             Ok(TreeResp {
                 epoch: d.uint()?,
@@ -2759,7 +2728,7 @@ impl DeliveryService for HttpDs {
                 g,
                 &format!("/handshakes?from={next}&limit={HANDSHAKE_PAGE}"),
             );
-            let page = self.get_decoded(&path, |d| {
+            let page = self.socket_get_decoded(&path, |d| {
                 let n = array_or_null(d)?;
                 (0..n)
                     .map(|_| handshake_item(d))
@@ -2803,7 +2772,7 @@ impl DeliveryService for HttpDs {
             }
             e.null();
         });
-        self.post_decoded(&Self::group_path(g, "/commit"), &body, |d| {
+        self.socket_post_decoded(&Self::group_path(g, "/commit"), &body, |d| {
             d.array(2)?;
             Ok(CommitResult {
                 seq: d.uint()?,
@@ -2824,7 +2793,7 @@ impl DeliveryService for HttpDs {
         let body = encode(|e| {
             e.array(2).bytes(&c.external_commit).bytes(&c.group_info);
         });
-        let committed = self.post_decoded(&Self::group_path(g, "/resync"), &body, |d| {
+        let committed = self.socket_post_decoded(&Self::group_path(g, "/resync"), &body, |d| {
             d.array(2)?;
             Ok(CommitResult {
                 seq: d.uint()?,
@@ -2845,7 +2814,7 @@ impl DeliveryService for HttpDs {
         let body = encode(|e| {
             e.array(2).uint(epoch).bytes(&proposal);
         });
-        self.post_decoded(&Self::group_path(g, "/proposal"), &body, |d| {
+        self.socket_post_decoded(&Self::group_path(g, "/proposal"), &body, |d| {
             d.array(1)?;
             d.uint()
         })
@@ -2864,7 +2833,7 @@ impl DeliveryService for HttpDs {
         let body = encode(|e| {
             e.array(3).uint(epoch).bytes(&pm).uint(u64::from(class));
         });
-        self.post_decoded(&Self::group_path(g, "/message"), &body, |d| {
+        self.socket_post_decoded(&Self::group_path(g, "/message"), &body, |d| {
             d.array(3)?;
             Ok(UploadResult {
                 seq: d.uint()?,
@@ -2883,7 +2852,7 @@ impl DeliveryService for HttpDs {
         let mut next = from;
         loop {
             let path = Self::group_path(g, &format!("/messages?from={next}&limit={MESSAGE_PAGE}"));
-            let page = self.get_decoded(&path, |d| {
+            let page = self.socket_get_decoded(&path, |d| {
                 let n = array_or_null(d)?;
                 let mut items = Vec::with_capacity(n);
                 for _ in 0..n {
@@ -2963,7 +2932,7 @@ impl DeliveryService for HttpDs {
         let body = encode(|e| {
             e.array(3).uint(epoch).uint(seq).text(reason);
         });
-        self.post_status(&Self::group_path(g, "/fork-report"), &body)
+        self.socket_post_status(&Self::group_path(g, "/fork-report"), &body)
     }
 
     /// Row 14: `[group_info, tail([[seq, epoch, kind, sender, blob]]), ratchet_tree|null]` ->
@@ -2983,7 +2952,7 @@ impl DeliveryService for HttpDs {
             }
             e.opt_bytes(h.ratchet_tree.as_deref());
         });
-        self.post_decoded(&Self::group_path(g, "/heal"), &body, |d| {
+        self.socket_post_decoded(&Self::group_path(g, "/heal"), &body, |d| {
             d.array(2)?;
             let epoch = d.uint()?;
             let next_seq = d.uint()?;
@@ -2999,7 +2968,7 @@ impl DeliveryService for HttpDs {
         let body = encode(|e| {
             e.array(2).uint(seq).uint(epoch);
         });
-        self.post_status(&Self::group_path(g, "/cursor"), &body)
+        self.socket_post_status(&Self::group_path(g, "/cursor"), &body)
     }
 
     /// Frames received since the last drain. Offline, nothing is read and nothing is returned —
@@ -3090,7 +3059,7 @@ impl DeliveryService for HttpDs {
 
     /// Row 19: `[[ref, kind, target_leaf|null, blob, void(uint)]]`.
     fn proposals(&mut self, g: &GroupId) -> Result<Vec<ProposalItem>, DsError> {
-        self.get_decoded(&Self::group_path(g, "/proposals"), |d| {
+        self.socket_get_decoded(&Self::group_path(g, "/proposals"), |d| {
             let n = array_or_null(d)?;
             (0..n)
                 .map(|_| {
@@ -3829,7 +3798,11 @@ mod tests {
 
     /// A gateway that answers each request frame (op 59) from `route`, as `instance` answers an HTTP
     /// request; the client end of a socket the instance would have opened.
-    fn gateway_answering(route: fn(&str, &str) -> (u16, Vec<u8>)) -> WebSocket<TcpStream> {
+    fn gateway_answering(
+        route: fn(&str, &str) -> (u16, Vec<u8>),
+        log: &Seen,
+    ) -> WebSocket<TcpStream> {
+        let log = std::sync::Arc::clone(log);
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -3853,6 +3826,7 @@ mod tests {
                     Ok((id, method, path))
                 })
                 .unwrap();
+                log.lock().unwrap().push(format!("{method} {path}"));
                 let (status, out) = route(&method, &path);
                 let answer = encode(|e| {
                     e.array(4).uint(60).uint(0).null();
@@ -3933,7 +3907,7 @@ mod tests {
 
         let (base, seen) = origin(instance);
         // The Welcome list is a socket route: it is answered on a gateway socket, the rest over HTTP.
-        let mut ds = connected(&base, Some(gateway_answering(instance)));
+        let mut ds = connected(&base, Some(gateway_answering(instance, &seen)));
         let binding = DillaBinding {
             v: 1,
             instance_id: InstanceId::from_bytes([0x11; 16]),
@@ -4013,6 +3987,49 @@ mod tests {
             if matches!(message, Message::Binary(_))
                 && ws.send(Message::Binary(heartbeat_ack().into())).is_err()
             {
+                return;
+            }
+        }
+    }
+
+    /// Answers every request frame (op 59) on `ws` from `route`, recording `METHOD path` in `log`, and every other binary
+    /// frame with a `heartbeat_ack`, until the client lets go.
+    fn serve_requests(
+        mut ws: WebSocket<TcpStream>,
+        route: fn(&str, &str) -> (u16, Vec<u8>),
+        log: &Seen,
+    ) {
+        while let Ok(message) = ws.read() {
+            let Message::Binary(bytes) = message else {
+                continue;
+            };
+            let request = decode_strict(&bytes, |d: &mut Decoder<'_>| {
+                d.array(4)?;
+                if d.uint()? != 59 {
+                    return Ok(None);
+                }
+                let _n = d.uint()?;
+                let _group = d.opt_bytes()?;
+                d.array(5)?;
+                let id = d.uint()?;
+                let method = d.text()?.to_owned();
+                let path = d.text()?.to_owned();
+                d.skip()?;
+                d.skip()?;
+                Ok(Some((id, method, path)))
+            });
+            let answer = match request {
+                Ok(Some((id, method, path))) => {
+                    log.lock().unwrap().push(format!("{method} {path}"));
+                    let (status, out) = route(&method, &path);
+                    encode(|e| {
+                        e.array(4).uint(60).uint(0).null();
+                        e.array(3).uint(id).uint(u64::from(status)).bytes(&out);
+                    })
+                }
+                _ => heartbeat_ack(),
+            };
+            if ws.send(Message::Binary(answer.into())).is_err() {
                 return;
             }
         }
@@ -4158,7 +4175,8 @@ mod tests {
                 ws.send(Message::Binary(hello.into())).unwrap();
                 ws.read().unwrap(); // identify
                 ws.send(Message::Binary(ready.into())).unwrap();
-                std::thread::spawn(move || ack_every_frame(ws));
+                let requests = std::sync::Arc::clone(&log);
+                std::thread::spawn(move || serve_requests(ws, stalled_instance, &requests));
             }
         });
 

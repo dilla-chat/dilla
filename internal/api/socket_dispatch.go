@@ -35,6 +35,10 @@ type SocketDispatchOptions struct {
 	Log *slog.Logger
 	// Deadline bounds one dispatch, a duplicate's wait on the running request included: 60 s.
 	Deadline time.Duration
+	// Observe, when set, is called with every dispatched request's method, route (the frame's, query included) and its
+	// answer's status and body, after the answer is built. It is the test host's view of traffic that used to cross
+	// its HTTP handler (dilladtest); production sets none. It must not block.
+	Observe func(method, route string, status int, body []byte)
 }
 
 const (
@@ -163,6 +167,9 @@ func (d *SocketDispatcher) Dispatch(ctx context.Context, caller gateway.SocketCa
 		}
 	}()
 	resp = d.serve(req, r.ID)
+	if d.opts.Observe != nil {
+		d.opts.Observe(r.Method, r.Route, resp.Status, resp.Body)
+	}
 	return resp
 }
 

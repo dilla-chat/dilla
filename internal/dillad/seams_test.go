@@ -137,7 +137,7 @@ func postInstance(t *testing.T, engine string, clk clock.Clock) (*dillad.Server,
 		t.Fatalf("dillad.New: %v", err)
 	}
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
-	return srv, srv.Handler()
+	return srv, socketHandler(srv)
 }
 
 // freshPostgres is a migrated repository in a database of its own on the server DILLA_TEST_PG

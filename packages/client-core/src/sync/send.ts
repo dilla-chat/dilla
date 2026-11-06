@@ -173,7 +173,7 @@ export async function drainOne(s: SyncInternals, g: Id): Promise<void> {
     throw e;
   }
   try {
-    const answer = await s.deps.routes.postMessage(g, messageBody);
+    const answer = await s.deps.routes.postMessage(g, messageBody, msgId);
     if (s.stopped()) return;
     let confirmed: { groupId: Id; seq: bigint };
     try { confirmed = s.deps.core.sendConfirm(msgId, answer.raw); }

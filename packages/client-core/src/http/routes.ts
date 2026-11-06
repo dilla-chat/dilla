@@ -396,6 +396,17 @@ function passkeyRow(value: CborValue): PasskeyRow {
   const a = atLeast(value, 4);
   return { credId: bin(a[0]), name: str(a[1]), created: u53(a[2]), lastUsed: opt(a[3], u53) };
 }
+const MESSAGE_IDEM_DOMAIN = new TextEncoder().encode('dilla/message-idem/v1\0');
+
+/** The idempotency key of one message send: 16 bytes of SHA-256 over a domain, the message id and the ciphertext body. */
+export async function messageIdem(msgId: Uint8Array, body: Uint8Array): Promise<Uint8Array> {
+  const preimage = new Uint8Array(MESSAGE_IDEM_DOMAIN.length + msgId.length + body.length);
+  preimage.set(MESSAGE_IDEM_DOMAIN, 0);
+  preimage.set(msgId, MESSAGE_IDEM_DOMAIN.length);
+  preimage.set(body, MESSAGE_IDEM_DOMAIN.length + msgId.length);
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', preimage)).slice(0, 16);
+}
+
 export class Routes {
   constructor(private readonly http: HttpClient) {}
 
@@ -958,10 +969,15 @@ export class Routes {
     const a = atLeast(decode(await this.body('POST', `/v1/groups/${id('groupId', groupId)}/commit`, 'commit', false, { body })), 2);
     return { seq: u64(a[0]), epoch: u64(a[1]) };
   }
-  async postMessage(groupId: Uint8Array, body: Uint8Array): Promise<MessageUploaded> {
+  /** msgId, when given, is the outbox row's message id: the request's idempotency key derives from it (and the ciphertext it
+   *  sent), so a send that is written again after a lost socket, or after a restart, is answered from the instance's replay
+   *  record instead of storing a second message. A re-sealed body (a reframe) is another request with its own key. */
+  async postMessage(groupId: Uint8Array, body: Uint8Array, msgId?: Uint8Array): Promise<MessageUploaded> {
     // CB2: a 429 (slow mode) goes back to the send lane, which requeues the row and arms its own timer; a sleep here
     // would hold the group's lane (frames and catch-up) for up to RETRY.maxWaitMs.
-    const raw = await this.body('POST', `/v1/groups/${id('groupId', groupId)}/message`, 'message', false, { body, retry429: false });
+    const idem = msgId === undefined ? undefined : await messageIdem(msgId, body);
+    const raw = await this.body('POST', `/v1/groups/${id('groupId', groupId)}/message`, 'message', false,
+      { body, retry429: false, ...(idem === undefined ? {} : { idem }) });
     return { raw, seq: u64(atLeast(decode(raw), 1)[0]) };
   }
   async postCursor(groupId: Uint8Array, body: Uint8Array): Promise<void> {

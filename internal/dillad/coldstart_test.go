@@ -50,7 +50,7 @@ func TestARestartedInstanceDeliversAQuietGroupsMessages(t *testing.T) {
 	ts1 := httptest.NewServer(first.Handler())
 	t.Cleanup(ts1.Close)
 	listener1, _ := coldDial(t, ts1, members[0].token)
-	seq1 := coldUpload(t, first.Handler(), groupID, members[1].token)
+	seq1 := coldUpload(t, socketHandler(first), groupID, members[1].token)
 	expectMessageCT(t, listener1, "before the restart", seq1, members[1].device)
 
 	// The restart: the first process stops (its gateway, its delivery service, its pools), and a
@@ -68,7 +68,7 @@ func TestARestartedInstanceDeliversAQuietGroupsMessages(t *testing.T) {
 		t.Fatalf("ready after the restart does not list group %s: the member table did not survive, "+
 			"so this test cannot be about the registry", groupID)
 	}
-	seq2 := coldUpload(t, second.Handler(), groupID, members[1].token)
+	seq2 := coldUpload(t, socketHandler(second), groupID, members[1].token)
 	if seq2 != seq1+1 {
 		t.Fatalf("the upload after the restart took seq %d, want %d", seq2, seq1+1)
 	}

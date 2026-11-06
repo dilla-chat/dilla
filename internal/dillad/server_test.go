@@ -833,7 +833,7 @@ func TestTheEmbeddedWebClientIsServedAtTheRoot(t *testing.T) {
 func TestTheAPIAnswersAsBeforeBesideTheWebClient(t *testing.T) {
 	srv, h, _ := newInstance(t)
 	defer srv.Shutdown(context.Background())
-	message := "/v1/groups/" + id.New().String() + "/message"
+	message := "/v1/gateway/ticket"
 	for _, c := range []struct {
 		method, path string
 		status       int

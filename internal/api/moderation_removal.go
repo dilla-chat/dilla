@@ -40,9 +40,8 @@ type moderationRemovalPageResponse struct {
 
 func registerModerationRemovals(mux *server.Mux, d Deps) {
 	h := &moderationRemovalAPI{deps: d}
-	enrolled := func(f http.HandlerFunc) http.Handler { return d.Sessions.Middleware(f, auth.ScopeEnrolled) }
-	mux.Handle("POST /v1/groups/{group}/moderation/removals", enrolled(dsMeter(d.Limiter, dsClassWrite, h.accept)))
-	mux.Handle("GET /v1/groups/{group}/moderation/removals", enrolled(dsMeter(d.Limiter, dsClassRead, h.list)))
+	mux.SocketAuthed("POST /v1/groups/{group}/moderation/removals", socketMeter(d.Sessions, d.Limiter, dsClassWrite), http.HandlerFunc(h.accept))
+	mux.SocketAuthed("GET /v1/groups/{group}/moderation/removals", socketMeter(d.Sessions, d.Limiter, dsClassRead), http.HandlerFunc(h.list))
 }
 
 func (h *moderationRemovalAPI) accept(w http.ResponseWriter, r *http.Request) {

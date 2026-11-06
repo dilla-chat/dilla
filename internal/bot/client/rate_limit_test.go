@@ -335,7 +335,7 @@ func TestSpecializedBudgetsAreIndependentAndKeyPackagesArePerTarget(t *testing.T
 }
 
 func TestRetiredSessionDoesNotRecreateTokenBuckets(t *testing.T) {
-	c, err := New(Config{BaseURL: "https://example.invalid", InstanceID: testID(99), HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	c, err := New(Config{BaseURL: "https://example.invalid", InstanceID: testID(99), SocketRoutes: []string{}, HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 204, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
 	})}})
 	if err != nil {

@@ -405,7 +405,8 @@ func (h *Host) newServer(ctx context.Context) (*dillad.Server, error) {
 		ScrapeToken: h.o.ScrapeToken,
 		LiveKitURL:  h.o.LiveKitURL,
 		// nil keeps dillad's own default list, {5, 4, 3, 2} since wire 5.
-		WireVersions: h.o.WireVersions,
+		WireVersions:  h.o.WireVersions,
+		SocketObserve: h.observeSocket,
 	}
 	// Left nil under ProductionACL, so New wires api.ResolverACL and api.StructureChannels. (An
 	// interface holding a nil *ChannelModes would not be nil; the fields are simply not set.)
@@ -688,35 +689,10 @@ func (h *Host) Server() *dillad.Server {
 // to the server that is current when it arrives.
 func (h *Host) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		track := r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/groups/") && strings.HasSuffix(r.URL.Path, "/bot/messages")
-		trackHeal := (r.Method == http.MethodGet || r.Method == http.MethodPost) && strings.HasPrefix(r.URL.Path, "/v1/groups/") && strings.HasSuffix(r.URL.Path, "/heal")
 		trackRuntime := strings.HasPrefix(r.URL.Path, "/v1/bot-runtime/")
 		server := h.Server()
-		if !track && !trackHeal && !trackRuntime {
+		if !trackRuntime {
 			server.Handler().ServeHTTP(w, r)
-			return
-		}
-		if trackHeal {
-			wrapped := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-			server.Handler().ServeHTTP(wrapped, r)
-			parts := strings.Split(r.URL.Path, "/")
-			attempt := GroupHealAttempt{Method: r.Method, Route: "/v1/groups/{group}/heal", Status: wrapped.status,
-				ErrorCode: responseErrorCode(wrapped.body.Bytes())}
-			if len(parts) == 5 {
-				if group, err := id.Parse(parts[3]); err == nil {
-					attempt.Group = group.String()
-					if row, getErr := server.Repo().GetGroup(r.Context(), group); getErr == nil {
-						attempt.Epoch = row.Epoch
-						attempt.EpochUnknown = row.EpochUnknown
-					}
-				}
-			}
-			h.groupHealMu.Lock()
-			h.groupHealAttempts = append(h.groupHealAttempts, attempt)
-			if len(h.groupHealAttempts) > 64 {
-				h.groupHealAttempts = append([]GroupHealAttempt(nil), h.groupHealAttempts[len(h.groupHealAttempts)-64:]...)
-			}
-			h.groupHealMu.Unlock()
 			return
 		}
 		if trackRuntime {
@@ -763,23 +739,40 @@ func (h *Host) Handler() http.Handler {
 			}
 			return
 		}
-		attempt := BotSendAttempt{Method: r.Method, Route: "/v1/groups/{group}/bot/messages"}
-		h.botSendRequests.Add(1)
-		parts := strings.Split(r.URL.Path, "/")
-		if len(parts) == 6 {
-			if group, err := id.Parse(parts[3]); err == nil {
-				attempt.Group = group.String()
-			}
+		panic("unreachable: only bot-runtime requests are tracked on the HTTP handler")
+	})
+}
+
+// observeSocket sees every socket request of the current instance. The Bot's managed message sends and its group heals
+// are socket requests (Bot v2), so the attempts the host records for the e2e specs are read here, from the dispatcher,
+// instead of from the HTTP handler they no longer cross.
+func (h *Host) observeSocket(method, route string, status int, body []byte) {
+	path, _, _ := strings.Cut(route, "?")
+	parts := strings.Split(path, "/")
+	server := h.Server()
+	if server == nil {
+		return
+	}
+	ctx := context.Background()
+	group := func() (g id.ID, epoch uint64, unknown, ok bool) {
+		if len(parts) < 4 {
+			return id.ID{}, 0, false, false
 		}
-		wrapped := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		server.Handler().ServeHTTP(wrapped, r)
-		attempt.Status = wrapped.status
-		attempt.ErrorCode = responseErrorCode(wrapped.body.Bytes())
-		if group, err := id.Parse(attempt.Group); err == nil {
-			if row, getErr := server.Repo().GetGroup(r.Context(), group); getErr == nil {
-				attempt.Epoch = row.Epoch
-				attempt.EpochUnknown = row.EpochUnknown
-			}
+		g, err := id.Parse(parts[3])
+		if err != nil {
+			return id.ID{}, 0, false, false
+		}
+		if row, getErr := server.Repo().GetGroup(ctx, g); getErr == nil {
+			return g, row.Epoch, row.EpochUnknown, true
+		}
+		return g, 0, false, true
+	}
+	switch {
+	case method == http.MethodPost && len(parts) == 6 && parts[1] == "v1" && parts[2] == "groups" && parts[4] == "bot" && parts[5] == "messages":
+		attempt := BotSendAttempt{Method: method, Route: "/v1/groups/{group}/bot/messages", Status: status, ErrorCode: responseErrorCode(body)}
+		h.botSendRequests.Add(1)
+		if g, epoch, unknown, ok := group(); ok {
+			attempt.Group, attempt.Epoch, attempt.EpochUnknown = g.String(), epoch, unknown
 		}
 		h.botSendMu.Lock()
 		h.botSendAttempts = append(h.botSendAttempts, attempt)
@@ -787,12 +780,23 @@ func (h *Host) Handler() http.Handler {
 			h.botSendAttempts = append([]BotSendAttempt(nil), h.botSendAttempts[len(h.botSendAttempts)-64:]...)
 		}
 		h.botSendMu.Unlock()
-		if wrapped.status >= 200 && wrapped.status < 300 {
+		if status >= 200 && status < 300 {
 			h.botSendAccepted.Add(1)
 		} else {
 			h.botSendRefused.Add(1)
 		}
-	})
+	case (method == http.MethodGet || method == http.MethodPost) && len(parts) == 5 && parts[1] == "v1" && parts[2] == "groups" && parts[4] == "heal":
+		attempt := GroupHealAttempt{Method: method, Route: "/v1/groups/{group}/heal", Status: status, ErrorCode: responseErrorCode(body)}
+		if g, epoch, unknown, ok := group(); ok {
+			attempt.Group, attempt.Epoch, attempt.EpochUnknown = g.String(), epoch, unknown
+		}
+		h.groupHealMu.Lock()
+		h.groupHealAttempts = append(h.groupHealAttempts, attempt)
+		if len(h.groupHealAttempts) > 64 {
+			h.groupHealAttempts = append([]GroupHealAttempt(nil), h.groupHealAttempts[len(h.groupHealAttempts)-64:]...)
+		}
+		h.groupHealMu.Unlock()
+	}
 }
 
 func redactedBotRuntimeRoute(path string) string {

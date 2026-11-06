@@ -93,7 +93,7 @@ func NewCallStats(repo store.Repository, calls *Calls, m CallMetrics, clk clock.
 }
 
 func (s *CallStats) Register(mux *server.Mux) {
-	mux.HandleFunc("POST /v1/calls/{call_id}/stats", s.report)
+	mux.Socket("POST /v1/calls/{call_id}/stats", http.HandlerFunc(s.report))
 }
 
 // WithSessionResolver installs the production current-session recheck. Bare handler integrations

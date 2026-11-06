@@ -784,8 +784,14 @@ func uintsAt(raw cbor.RawMessage, maximum int) ([]uint64, error) {
 }
 func isNull(raw cbor.RawMessage) bool { return len(raw) == 1 && raw[0] == 0xf6 }
 
+// opAppBuild is the gateway's app_build notice (op 56): the build the instance serves, pushed to every connection that
+// negotiated wire 5 or newer. The Bot has no web client to update, so it drops the frame; an unknown opcode would end
+// the socket as a protocol error.
+const opAppBuild Opcode = 56
+
 // dropMalformedEphemeral mirrors protocol/02: malformed voice_state, call_ring,
-// and community_changed notifications are dropped without terminating the socket.
+// and community_changed notifications are dropped without terminating the socket. So is the app_build notice, which the
+// Bot never reads.
 func dropMalformedEphemeral(raw []byte) bool {
 	var envelope []cbor.RawMessage
 	if cborx.Unmarshal(raw, &envelope) != nil || len(envelope) != 4 {
@@ -796,7 +802,7 @@ func dropMalformedEphemeral(raw []byte) bool {
 		return false
 	}
 	switch Opcode(op) {
-	case OpVoiceState, OpCallRing, OpCommunityChanged:
+	case OpVoiceState, OpCallRing, OpCommunityChanged, opAppBuild:
 		return true
 	default:
 		return false

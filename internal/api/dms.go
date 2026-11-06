@@ -105,8 +105,8 @@ func NewDMs(repo store.Repository, dsvc DS, clk clock.Clock, instanceID id.ID, m
 // Register mounts the two DM routes bare, as Communities does; each handler
 // requires an enrolled session itself.
 func (d *DMs) Register(mux *server.Mux) {
-	mux.HandleFunc("POST /v1/dms", d.open)
-	mux.HandleFunc("GET /v1/dms", d.list)
+	mux.Socket("POST /v1/dms", http.HandlerFunc(d.open))
+	mux.Socket("GET /v1/dms", http.HandlerFunc(d.list))
 }
 
 type openDMReq struct {

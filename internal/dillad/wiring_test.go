@@ -105,27 +105,12 @@ func newServer(t *testing.T) (*dillad.Server, *httptest.Server) {
 
 // Every delivery-service route of §5.1 is MOUNTED. An unauthenticated request must be answered
 // 401, never 404: a 404 means the route does not exist, which is the failure this test exists for.
-// The KeyPackage claim and the two Welcome routes are socket routes (Bot v2): they are mounted on the
+// The group routes, the KeyPackage claim and the two Welcome routes are socket routes (Bot v2): they are mounted on the
 // socket mux, answer 404 over HTTP, and answer a request frame without a session 401.
 func TestEveryDeliveryServiceRouteIsMounted(t *testing.T) {
 	srv, ts := newServer(t)
 	const gid = "0102030405060708090a0b0c0d0e0f10"
 	for _, c := range []struct{ method, path string }{
-		{http.MethodPost, "/v1/groups"},
-		{http.MethodGet, "/v1/groups/" + gid + "/info"},
-		{http.MethodGet, "/v1/groups/" + gid + "/tree"},
-		{http.MethodGet, "/v1/groups/" + gid + "/handshakes"},
-		{http.MethodPost, "/v1/groups/" + gid + "/commit"},
-		{http.MethodPost, "/v1/groups/" + gid + "/proposal"},
-		{http.MethodGet, "/v1/groups/" + gid + "/proposals"},
-		{http.MethodPost, "/v1/groups/" + gid + "/message"},
-		{http.MethodGet, "/v1/groups/" + gid + "/messages"},
-		{http.MethodDelete, "/v1/groups/" + gid + "/messages/1"},
-		{http.MethodPost, "/v1/groups/" + gid + "/cursor"},
-		{http.MethodPost, "/v1/groups/" + gid + "/resync"},
-		{http.MethodPost, "/v1/groups/" + gid + "/fork-report"},
-		{http.MethodGet, "/v1/groups/" + gid + "/heal"},
-		{http.MethodPost, "/v1/groups/" + gid + "/heal"},
 		{http.MethodPost, "/v1/keypackages"},
 	} {
 		req, err := http.NewRequestWithContext(t.Context(), c.method, ts.URL+c.path, strings.NewReader(""))
@@ -148,6 +133,21 @@ func TestEveryDeliveryServiceRouteIsMounted(t *testing.T) {
 	// The socket routes: mounted on the socket mux only, and refused a request frame without a session.
 	disp := socketHandler(srv)
 	for _, c := range []struct{ method, pattern, path string }{
+		{http.MethodPost, "POST /v1/groups", "/v1/groups"},
+		{http.MethodGet, "GET /v1/groups/{id}/info", "/v1/groups/" + gid + "/info"},
+		{http.MethodGet, "GET /v1/groups/{id}/tree", "/v1/groups/" + gid + "/tree"},
+		{http.MethodGet, "GET /v1/groups/{id}/handshakes", "/v1/groups/" + gid + "/handshakes"},
+		{http.MethodPost, "POST /v1/groups/{id}/commit", "/v1/groups/" + gid + "/commit"},
+		{http.MethodPost, "POST /v1/groups/{id}/proposal", "/v1/groups/" + gid + "/proposal"},
+		{http.MethodGet, "GET /v1/groups/{id}/proposals", "/v1/groups/" + gid + "/proposals"},
+		{http.MethodPost, "POST /v1/groups/{id}/message", "/v1/groups/" + gid + "/message"},
+		{http.MethodGet, "GET /v1/groups/{id}/messages", "/v1/groups/" + gid + "/messages"},
+		{http.MethodDelete, "DELETE /v1/groups/{id}/messages/{seq}", "/v1/groups/" + gid + "/messages/1"},
+		{http.MethodPost, "POST /v1/groups/{id}/cursor", "/v1/groups/" + gid + "/cursor"},
+		{http.MethodPost, "POST /v1/groups/{id}/resync", "/v1/groups/" + gid + "/resync"},
+		{http.MethodPost, "POST /v1/groups/{id}/fork-report", "/v1/groups/" + gid + "/fork-report"},
+		{http.MethodGet, "GET /v1/groups/{id}/heal", "/v1/groups/" + gid + "/heal"},
+		{http.MethodPost, "POST /v1/groups/{id}/heal", "/v1/groups/" + gid + "/heal"},
 		{http.MethodGet, "GET /v1/devices/{device_id}/keypackage", "/v1/devices/" + gid + "/keypackage"},
 		{http.MethodGet, "GET /v1/welcomes", "/v1/welcomes"},
 		{http.MethodDelete, "DELETE /v1/welcomes/{welcome_id}", "/v1/welcomes/1"},
@@ -502,21 +502,11 @@ func TestRevokingADeviceClosesItsGatewayConnection(t *testing.T) {
 // limiter, keyed by the device session, refuses the request past [limits.rate]'s read burst with
 // 429 E_RATE_LIMITED — whatever the route would have answered.
 func TestTheDeliveryServiceRoutesAreMeteredPerDevice(t *testing.T) {
-	_, ts, token := newGreetedServer(t)
+	srv, _, token := newGreetedServer(t)
 	burst := testConfig(t).Limits.Rate.ReadBurst
+	h := socketHandler(srv)
 	get := func() int {
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
-			ts.URL+"/v1/groups/0102030405060708090a0b0c0d0e0f10/info", nil)
-		if err != nil {
-			t.Fatalf("request: %v", err)
-		}
-		req.Header.Set("Authorization", "Bearer "+token)
-		res, err := ts.Client().Do(req)
-		if err != nil {
-			t.Fatalf("GET info: %v", err)
-		}
-		res.Body.Close()
-		return res.StatusCode
+		return call(t, h, http.MethodGet, "/v1/groups/0102030405060708090a0b0c0d0e0f10/info", token, nil).Code
 	}
 	// The clock is the wall clock, so the bucket refills a little while the loop runs: the first
 	// refusal comes at the burst or a few requests after it, never before, and always comes.
@@ -754,7 +744,7 @@ func TestTheCompositionRootStampsAdmissionsOnTheSFUsClock(t *testing.T) {
 		t.Fatalf("dillad.New: %v", err)
 	}
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
-	h := srv.Handler()
+	h := socketHandler(srv)
 	tok := accountToken(t, srv, code)
 	repo, ctx := srv.Repo(), t.Context()
 	user, err := repo.GetUserByUsername(ctx, "jonas")

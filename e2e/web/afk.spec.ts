@@ -45,6 +45,7 @@ import { closeSettings, connected, dock, micLive, noiseOff, openVoiceSettings, p
 import { markSignalLifecycle, signalLifecycleDiagnostics } from '../voice/support/signal-lifecycle.ts';
 import { observeSignalConsole, signalCloseGuard } from '../voice/support/signal-close-guard.ts';
 import { arr, decode, encode, type CborInput, type CborValue } from '../../packages/client-core/src/cbor/index';
+import { watchSocketRequests } from './support/socket-requests';
 import { e2ePort } from './support/ports';
 
 /** Its own ports (web3.9 reservation): the host, its control listener, and its LiveKit's signalling and ICE ports. */
@@ -138,10 +139,11 @@ async function observePerson(name: string, context: BrowserContext, firefox = fa
       }), `${name}'s shipping renderer sandbox`).toEqual({ sandbox: true, contextIsolation: true, nodeIntegration: false });
     } finally { await win.dispose(); }
   }
+  // A call start or token mint is a gateway request frame now, not an HTTP request.
+  watchSocketRequests(p.page, (r) => { if (afkId !== '' && r.method === 'POST' && r.path.startsWith(`/v1/channels/${afkId}/`)) p.afkPosts += 1; });
   context.on('request', (r: Request) => {
     if (!r.url().startsWith(`${ORIGIN}/v1/`)) return;
     // AW5 (R-AW1): any call start or token mint this client asks for in the AFK channel, and each away mark it sends.
-    if (afkId !== '' && r.method() === 'POST' && r.url().startsWith(`${ORIGIN}/v1/channels/${afkId}/`)) p.afkPosts += 1;
     if (r.method() === 'PUT' && r.url() === `${ORIGIN}/v1/communities/${communityId}/afk/away`) p.awayPuts += 1;
     void r.allHeaders().then((h) => { const a = h.authorization; if (a?.startsWith('Bearer ') === true) p.bearer = a; }).catch(() => undefined);
   });

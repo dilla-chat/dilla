@@ -36,10 +36,9 @@ type botMessageResolveRequest struct {
 // RegisterBotMessages mounts the managed-Bot send, receipt and resolve surface.
 // The authenticated Bot session supplies installation and community authority.
 func (h *Groups) RegisterBotMessages(mux *server.Mux, sessions *auth.Sessions) {
-	enrolled := func(f http.HandlerFunc) http.Handler { return sessions.Middleware(f, auth.ScopeEnrolled) }
-	mux.Handle("POST /v1/groups/{group}/bot/messages", enrolled(dsMeter(h.Limiter, dsClassWrite, h.postBotMessage)))
-	mux.Handle("GET /v1/communities/{community}/bot/receipts/{operation}", enrolled(dsMeter(h.Limiter, dsClassRead, h.getBotMessageReceipt)))
-	mux.Handle("POST /v1/communities/{community}/bot/receipts/{operation}/resolve", enrolled(dsMeter(h.Limiter, dsClassWrite, h.resolveBotMessage)))
+	mux.SocketAuthed("POST /v1/groups/{group}/bot/messages", socketMeter(sessions, h.Limiter, dsClassWrite), http.HandlerFunc(h.postBotMessage))
+	mux.SocketAuthed("GET /v1/communities/{community}/bot/receipts/{operation}", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.getBotMessageReceipt))
+	mux.SocketAuthed("POST /v1/communities/{community}/bot/receipts/{operation}/resolve", socketMeter(sessions, h.Limiter, dsClassWrite), http.HandlerFunc(h.resolveBotMessage))
 }
 
 func (h *Groups) postBotMessage(w http.ResponseWriter, r *http.Request) {

@@ -142,3 +142,18 @@ func TestServerErrorCodesAreClassifiedWithoutFatalHintsBeingQueued(t *testing.T)
 		})
 	}
 }
+
+// The instance pushes app_build (op 56) to every wire 5+ connection, the Bot's included. The Bot drops it; reading it as a
+// protocol error ended the socket in a reconnect loop and the Bot never reached ready (Bot v2 task 5, found by the Bot e2e).
+func TestTheAppBuildNoticeIsDroppedNotAProtocolError(t *testing.T) {
+	raw, err := cborx.Marshal([]any{uint64(56), uint64(0), nil, []any{"/assets/index-abc.js"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeServerFrame(raw, MaxGatewayFrameBytes); err == nil {
+		t.Fatal("the decoder reads app_build as a frame; the test would not pin the drop")
+	}
+	if !dropMalformedEphemeral(raw) {
+		t.Fatal("app_build is not dropped; the read loop ends the socket with a protocol error")
+	}
+}
