@@ -9,7 +9,8 @@ name: mobile-release
 # what people install.
 #
 # workflow_dispatch backfills or reruns the mobile builds for an existing tag that has a published release. A rerun
-# for a tag that already carries an APK replaces the APK and its checksum together (--clobber on one upload).
+# for a tag that already carries an APK replaces the APK and its checksum with one --clobber upload (not atomic: rerun a failed upload
+# step to repair a half-finished pair).
 on:
   workflow_run:
     workflows: [release]
@@ -35,12 +36,19 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v') && !startsWith(github.event.workflow_run.head_branch, 'desktop-v'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     outputs:
       tag: ${{ steps.r.outputs.tag }}
       sha: ${{ steps.r.outputs.sha }}
       version: ${{ steps.r.outputs.version }}
-      build: ${{ steps.r.outputs.build }}
     steps:
+      # Full history, for the on-main check below. Default ref (main): resolve builds nothing from the tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - id: r
         env:
           GH_TOKEN: ${{ github.token }}
@@ -48,37 +56,44 @@ jobs:
           RUN_TAG: ${{ github.event.workflow_run.head_branch }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
           INPUT_TAG: ${{ inputs.tag }}
-          RUN_NUMBER: ${{ github.run_number }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           if [ "$EVENT_NAME" = workflow_run ]; then tag="$RUN_TAG"; else tag="$INPUT_TAG"; fi
           case "$tag" in
             desktop-v*) echo "$tag is a desktop release tag; the mobile builds follow server releases only"; exit 1 ;;
           esac
-          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$'; then
+          if ! [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
             echo "release tags look like v1.2.3 or v1.2.3-mobile1, got: $tag"; exit 1
           fi
-          # The release must be published: the APK is attached to it.
-          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || { echo "$tag has no published release; release.yml must publish it first"; exit 1; }
+          # The release must be published: the APK is attached to it. A 404 means none; any other failure is shown.
+          if ! out=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .tag_name 2>&1); then
+            if printf '%s' "$out" | grep -q 'HTTP 404'; then
+              echo "$tag has no published release; release.yml must publish it first"
+            else
+              echo "could not look up the release of $tag: $out"
+            fi
+            exit 1
+          fi
           if [ "$EVENT_NAME" = workflow_run ]; then
             sha="$RUN_SHA"
           else
-            # The commit the tag points at (an annotated tag resolves to its commit).
-            sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha)
+            # The commit the tag points at (refs/tags/ is unambiguous even if a branch has the same name).
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$tag" --jq .sha)
           fi
-          printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || { echo "could not resolve $tag to a commit"; exit 1; }
+          [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "could not resolve $tag to a commit"; exit 1; }
+          # The signing keys are only ever used on a commit of main that release.yml gated.
+          git merge-base --is-ancestor "$sha" origin/main || { echo "$tag points at $sha, which is not on main; the mobile builds, which hold the signing secrets, run only for commits of main"; exit 1; }
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            ok=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?branch=$tag&status=success&per_page=100" --jq "[.workflow_runs[] | select(.head_branch == \"$tag\" and .head_sha == \"$sha\")] | length")
+            [ "${ok:-0}" -gt 0 ] || { echo "no successful release.yml run for $tag at $sha; the mobile builds follow a release.yml run that gated this commit"; exit 1; }
+          fi
           # 0.1.0 from v0.1.0-mobile1: the leading v and any -suffix removed.
           version="${tag#v}"; version="${version%%-*}"
-          # One number for the iOS build and the Android versionCode. TestFlight rejects a reused build number, so a
-          # rerun (new attempt) and a backfill (new run) each get their own, and it only grows.
-          build=$((1000 + RUN_NUMBER * 10 + RUN_ATTEMPT))
           {
             echo "tag=$tag"
             echo "sha=$sha"
             echo "version=$version"
-            echo "build=$build"
           } >> "$GITHUB_OUTPUT"
-          echo "mobile build of $tag at $sha: version $version, build $build"
+          echo "mobile build of $tag at $sha: version $version"
 
   # The mobile client (packages/mobile/dist) and the wasm core it bundles, as mobile.yml's mobile-core-wasm and
   # mobile-bundle jobs build them, in one job. No secrets here; both app jobs ship these bytes.
@@ -126,6 +141,17 @@ jobs:
     env:
       TAG: ${{ needs.resolve.outputs.tag }}
     steps:
+      # The build number is computed here, from this job's own attempt, so re-running just this job gets a fresh one
+      # (TestFlight rejects a reused build number). Runs of this workflow and attempts only grow it: 1000 + run_number*10
+      # + run_attempt, so at most 9 attempts per run (a 10th would collide with the next run's number).
+      - name: Build number
+        id: build
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          if [ "$RUN_ATTEMPT" -gt 9 ]; then echo "::error::attempt $RUN_ATTEMPT: more than 9 attempts of one run would reuse the next run's build number; dispatch a new run"; exit 1; fi
+          echo "number=$((1000 + RUN_NUMBER * 10 + RUN_ATTEMPT))" >> "$GITHUB_OUTPUT"
       - name: The signing secrets are set
         env:
           ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
@@ -171,7 +197,7 @@ jobs:
           DILLA_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           DILLA_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           DILLA_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          DILLA_ANDROID_VERSION_CODE: ${{ needs.resolve.outputs.build }}
+          DILLA_ANDROID_VERSION_CODE: ${{ steps.build.outputs.number }}
           DILLA_ANDROID_VERSION_NAME: ${{ needs.resolve.outputs.version }}
         run: node scripts/retry-on.mjs --pattern 'Could not (GET|HEAD) .{1,400}Received status code (50[0-4]|429)|Server returned HTTP response code. (50[0-4]|429)|Read timed out|Connect timed out|Connection reset|Remote host terminated the handshake|UnknownHostException|SocketTimeoutException' -- packages/mobile/android/gradlew -p packages/mobile/android --no-daemon assembleRelease
       - name: The APK is signed by the pinned release key
@@ -189,11 +215,14 @@ jobs:
           cp packages/mobile/android/app/build/outputs/apk/release/app-release.apk "$apk"
           # sha256sum format with the bare filename, so `sha256sum -c` works where the two are downloaded.
           sha256sum "$apk" > "$apk.sha256"
-          # One upload, --clobber: a rerun replaces the APK and the checksum together.
+          # One upload with --clobber. It is not atomic (gh replaces the assets one by one), so a failed step can leave a new APK
+          # beside an old checksum: rerun the job before announcing; a rerun repairs a half-finished pair.
           gh release upload "$TAG" "$apk" "$apk.sha256" --clobber --repo "$GITHUB_REPOSITORY"
 
-  # The iOS app to TestFlight: archived with automatic distribution signing through the App Store Connect API key, then
-  # exported with destination upload. The team id is the environment variable APPLE_TEAM_ID, never in the repo.
+  # The iOS app to TestFlight: archived unsigned, then exported with automatic signing and destination upload. The team
+  # id is the environment variable APPLE_TEAM_ID, never in the repo. ASC_KEY_P8 must be a Team key with the Admin role:
+  # Xcode's cloud-managed distribution signing, which the export uses, needs it (an App Manager key fails with a cloud
+  # signing permission error).
   ios-testflight:
     needs: [resolve, mobile-bundle]
     runs-on: macos-26
@@ -202,6 +231,17 @@ jobs:
     env:
       TAG: ${{ needs.resolve.outputs.tag }}
     steps:
+      # The build number is computed here, from this job's own attempt, so re-running just this job gets a fresh one
+      # (TestFlight rejects a reused build number). Runs of this workflow and attempts only grow it: 1000 + run_number*10
+      # + run_attempt, so at most 9 attempts per run (a 10th would collide with the next run's number).
+      - name: Build number
+        id: build
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          if [ "$RUN_ATTEMPT" -gt 9 ]; then echo "::error::attempt $RUN_ATTEMPT: more than 9 attempts of one run would reuse the next run's build number; dispatch a new run"; exit 1; fi
+          echo "number=$((1000 + RUN_NUMBER * 10 + RUN_ATTEMPT))" >> "$GITHUB_OUTPUT"
       - name: The App Store Connect secrets and team id are set
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
@@ -214,7 +254,7 @@ jobs:
             [ -n "${!name}" ] || missing="$missing $name"
           done
           if [ -n "$missing" ]; then
-            echo "::error::missing or empty in the mobile-release environment (secrets, and the variable APPLE_TEAM_ID):$missing"
+            echo "::error::missing or empty in the mobile-release environment (secrets, and the variable APPLE_TEAM_ID):$missing. ASC_KEY_P8 is an App Store Connect Team key with the Admin role (needed for cloud signing)"
             exit 1
           fi
           printf '%s' "$APPLE_TEAM_ID" | grep -Eq '^[A-Z0-9]{10}$' || { echo "::error::APPLE_TEAM_ID is not a 10-character team id"; exit 1; }
@@ -254,20 +294,19 @@ jobs:
           chmod 600 "$RUNNER_TEMP/asc-key.p8"
           cp packages/mobile/ios/App/ExportOptions.plist "$RUNNER_TEMP/ExportOptions.plist"
           /usr/libexec/PlistBuddy -c "Add :teamID string $APPLE_TEAM_ID" "$RUNNER_TEMP/ExportOptions.plist"
-      - name: Archive for distribution
+      # Unsigned on purpose: with no device on the team, a signed archive would need a development profile, and it would
+      # create a development certificate on every run. The export signs for distribution instead, with an Apple-managed
+      # distribution certificate (-allowProvisioningUpdates and the Admin API key): nothing is created per run.
+      - name: Archive (unsigned)
         env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
           VERSION: ${{ needs.resolve.outputs.version }}
-          BUILD: ${{ needs.resolve.outputs.build }}
+          BUILD: ${{ steps.build.outputs.number }}
         run: |
           xcodebuild archive -project packages/mobile/ios/App/App.xcodeproj -scheme App -configuration Release \
             -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/Dilla.xcarchive" \
             -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm" -disableAutomaticPackageResolution \
-            -allowProvisioningUpdates -authenticationKeyPath "$RUNNER_TEMP/asc-key.p8" \
-            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
-            CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD"
       - name: Export and upload to TestFlight
         env:
