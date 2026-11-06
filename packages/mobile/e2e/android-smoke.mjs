@@ -537,6 +537,9 @@ async function main() {
   await expect(row(page, peerA.channel, after)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
   log('step 5: relaunched into the shell on A, history and live delivery intact (same account, no sign-in)');
   await switchInstance(page);
+  // The picker renders its saved instances after load (an async Preferences read): wait for them before reading the list
+  // (run 42200767452 read it empty).
+  await expect(page.locator('#instances button')).toHaveCount(2, { timeout: WAIT });
   const listed = await page.locator('#instances button').allTextContents();
   if (JSON.stringify(listed) !== JSON.stringify([a.url, b.url])) throw new Error(`picker lists ${JSON.stringify(listed)}`);
   log(`step 5: picker lists both instances ${JSON.stringify(listed)}`);
