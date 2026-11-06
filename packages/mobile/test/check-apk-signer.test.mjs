@@ -4,11 +4,12 @@ import { readFileSync } from 'node:fs';
 import { evaluateSignerReport } from '../scripts/check-apk-signer.mjs';
 
 const PIN = '64abdc649513fd8ff6ffb3b1b65c0417e4b4a6669001db2a4c2ef7aa894c0580';
+const PUBKEY = 'fdde17fa69a3a84ceaf97228362eab6fc4bbffc606835c12ccc297df5d4d26f6';
 const OTHER = '1111111111111111111111111111111111111111111111111111111111111111';
 
 // The shape of `apksigner verify -v --print-certs` (build-tools 35).
-const report = ({ v2 = true, v3 = true, v1 = false, signers = [PIN] } = {}) => [
-  'Verifies',
+const report = ({ v2 = true, v3 = true, v1 = false, signers = [PIN], dn = 'CN=Dilla', publicKey = PUBKEY, verifies = true, digests = true } = {}) => [
+  ...(verifies ? ['Verifies'] : []),
   `Verified using v1 scheme (JAR signing): ${v1}`,
   `Verified using v2 scheme (APK Signature Scheme v2): ${v2}`,
   `Verified using v3 scheme (APK Signature Scheme v3): ${v3}`,
@@ -17,10 +18,15 @@ const report = ({ v2 = true, v3 = true, v1 = false, signers = [PIN] } = {}) => [
   'Verified for SourceStamp: false',
   `Number of signers: ${signers.length}`,
   ...signers.flatMap((digest, index) => [
-    `Signer #${index + 1} certificate DN: CN=Dilla`,
-    `Signer #${index + 1} certificate SHA-256 digest: ${digest}`,
+    `Signer #${index + 1} certificate DN: ${dn}`,
+    ...(digests ? [`Signer #${index + 1} certificate SHA-256 digest: ${digest}`] : []),
     `Signer #${index + 1} certificate SHA-1 digest: 0000000000000000000000000000000000000000`,
     `Signer #${index + 1} certificate MD5 digest: 00000000000000000000000000000000`,
+    `Signer #${index + 1} key algorithm: EC`,
+    `Signer #${index + 1} key size (bits): 256`,
+    `Signer #${index + 1} public key SHA-256 digest: ${publicKey}`,
+    `Signer #${index + 1} public key SHA-1 digest: 0000000000000000000000000000000000000000`,
+    `Signer #${index + 1} public key MD5 digest: 00000000000000000000000000000000`,
   ]),
 ].join('\n');
 

@@ -7,16 +7,18 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-/** Decide whether an `apksigner verify -v --print-certs` report is signed by a pinned key. */
+/** Decide whether an `apksigner verify -v --print-certs` report is signed by a pinned key. Every match is a whole line. */
 export function evaluateSignerReport(output, pins) {
-  const verified = scheme => new RegExp(`Verified using ${scheme} scheme[^\\n]*: true`).test(output);
+  const digests = [...output.matchAll(/^Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F]{64})$/gm)].map(match => match[1].toLowerCase());
+  const found = digests.length ? `certificate digest ${digests.join(', ')}` : 'no certificate digest';
+  if (!/^Verifies$/m.test(output)) return { ok: false, message: `apksigner did not report "Verifies" (${found})` };
+  const verified = scheme => new RegExp(`^Verified using ${scheme} scheme \\(.*\\): true$`, 'm').test(output);
   if (!verified('v2') && !verified('v3') && !verified('v3\\.1')) {
-    return { ok: false, message: 'no v2/v3 signature (v1-only or unsigned APKs are not accepted)' };
+    return { ok: false, message: `no v2/v3 signature, v1-only is not accepted (${found})` };
   }
-  const digests = [...output.matchAll(/^Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F]{64})\s*$/gm)].map(match => match[1].toLowerCase());
-  const declared = /^Number of signers: (\d+)/m.exec(output);
-  if (digests.length !== 1 || (declared && Number(declared[1]) !== 1)) {
-    return { ok: false, message: `expected exactly one signer, found ${declared ? declared[1] : digests.length} signers (digests ${digests.join(', ') || 'none'})` };
+  const declared = /^Number of signers: (\d+)$/m.exec(output);
+  if (digests.length !== 1 || !declared || Number(declared[1]) !== 1) {
+    return { ok: false, message: `expected exactly one signer, but the report says ${declared ? `Number of signers: ${declared[1]}` : 'no "Number of signers" line'} with ${digests.length} certificate digests (${found})` };
   }
   const [digest] = digests;
   if (!pins.map(pin => pin.toLowerCase()).includes(digest)) {
@@ -25,10 +27,19 @@ export function evaluateSignerReport(output, pins) {
   return { ok: true, digest };
 }
 
+/** Numeric version order where a release beats its own -rc (36.0.0 > 36.0.0-rc1). */
+function compareVersions(a, b) {
+  const [aCore, aPre] = a.split('-', 2), [bCore, bPre] = b.split('-', 2);
+  const numeric = aCore.localeCompare(bCore, undefined, { numeric: true });
+  if (numeric) return numeric;
+  if (!aPre !== !bPre) return aPre ? -1 : 1;
+  return (aPre ?? '').localeCompare(bPre ?? '', undefined, { numeric: true });
+}
+
 function apksigner() {
-  const sdk = process.env.ANDROID_HOME ?? process.env.ANDROID_SDK_ROOT ?? join(homedir(), 'Android/Sdk');
+  const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT || join(homedir(), 'Android/Sdk');
   const tools = join(sdk, 'build-tools');
-  const versions = existsSync(tools) ? readdirSync(tools).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })) : [];
+  const versions = existsSync(tools) ? readdirSync(tools).sort(compareVersions) : [];
   const version = versions.at(-1);
   if (!version) throw new Error(`no Android build-tools under ${tools}`);
   return join(tools, version, 'apksigner');
