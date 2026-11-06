@@ -16,8 +16,26 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // Release signing comes from the environment (CI writes the keystore from a secret). Without all four variables
+    // assembleRelease still builds the unsigned app-release-unsigned.apk.
+    def releaseKeystore = System.getenv('DILLA_ANDROID_KEYSTORE')
+    def releaseSigning = [releaseKeystore, System.getenv('DILLA_ANDROID_KEYSTORE_PASSWORD'),
+                          System.getenv('DILLA_ANDROID_KEY_ALIAS'), System.getenv('DILLA_ANDROID_KEY_PASSWORD')].every { it }
+    if (releaseSigning) {
+        signingConfigs {
+            release {
+                storeFile file(releaseKeystore)
+                // The release keystore is PKCS12 (*.p12); anything else is treated as a JKS.
+                storeType releaseKeystore.toLowerCase().endsWith('.p12') ? 'pkcs12' : 'jks'
+                storePassword System.getenv('DILLA_ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('DILLA_ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('DILLA_ANDROID_KEY_PASSWORD')
+            }
+        }
+    }
     buildTypes {
         release {
+            if (releaseSigning) signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
