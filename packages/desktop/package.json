@@ -1,6 +1,6 @@
 {
   "name": "@dilla/desktop",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "private": true,
   "description": "Dilla desktop platform validation build",
   "license": "AGPL-3.0-or-later",
