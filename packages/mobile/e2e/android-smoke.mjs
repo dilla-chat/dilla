@@ -15,8 +15,8 @@
 // (android/app/src/debug/res/xml/network_security_config.xml). Then, in the app: add instance A in the picker, sign up,
 // join a native peer's server and see the peer's message; add instance B and sign up there; back on A, send the app to
 // the background for 120 s while the peer posts, resume and see it; force-stop, relaunch, and find the same account
-// still signed in and both instances in the picker; then 25 in-app round trips between the picker and the client, each
-// answering its first bridge call (the Capacitor reply-proxy race). Along the way: no CSP violation, and desktop-auth
+// still signed in and both instances in the picker; then 125 in-app loads of the picker and the client, each answering
+// its first bridge call (the Capacitor reply-proxy race). Along the way: no CSP violation, and desktop-auth
 // answers native HTTP (no Origin) while the WebView fetch is refused.
 import { execFileSync, spawn } from 'node:child_process';
 import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -551,19 +551,25 @@ async function main() {
   await page.screenshot({ path: join(OUT, 'picker.png') }).catch(() => {});
 
   // 6. Navigation stress: in-app loads of the picker and the client, back and forth. Stock Capacitor Android 8.6.0 lost
-  // a new page's first plugin answer on about 5 % of them (the reply-proxy race, patches/@capacitor+android+*.patch):
-  // the picker never listed its instances and the client stayed blank. A lost answer never arrives, so a bound well
-  // above a normal load tells them apart; html[data-mobile-platform] is set only once the client's bridge info() answered.
-  const stressLoads = 25, stressWait = WAIT / 4;
+  // a new page's first plugin answer on 1-6 % of them on a local emulator (the reply-proxy race,
+  // patches/@capacitor+android+*.patch): the picker never listed its instances and the client stayed blank. Picker loads
+  // are cheap, so each round trip reloads the picker four times before the client, 125 loads in about half a minute;
+  // at 2 % per load a stock build fails this step 92 % of the time. A lost answer never arrives, so a bound well above
+  // a normal load tells them apart; html[data-mobile-platform] is set only once the client's bridge info() answered.
+  const stressRounds = 25, pickerLoads = 4, stressWait = WAIT / 4;
   const stalled = [];
-  for (let i = 0; i < stressLoads; i++) {
-    await page.goto(`https://localhost/picker.html?stress=${i}`);
-    if (!await expect(page.locator('#instances button')).toHaveCount(2, { timeout: stressWait }).then(() => true, () => false)) stalled.push(`picker ${i}`);
+  let loads = 0;
+  for (let i = 0; i < stressRounds; i++) {
+    for (let j = 0; j < pickerLoads; j++, loads++) {
+      await page.goto(`https://localhost/picker.html?stress=${i}.${j}`);
+      if (!await expect(page.locator('#instances button')).toHaveCount(2, { timeout: stressWait }).then(() => true, () => false)) stalled.push(`picker ${i}.${j}`);
+    }
     await page.goto('https://localhost/');
+    loads++;
     if (!await page.locator('html[data-mobile-platform]').waitFor({ state: 'attached', timeout: stressWait }).then(() => true, () => false)) stalled.push(`client ${i}`);
   }
-  log(`step 6: navigation stress: ${2 * stressLoads - stalled.length}/${2 * stressLoads} in-app loads answered their first bridge call${stalled.length ? `; stalled: ${stalled.join(', ')}` : ''}`);
-  if (stalled.length) throw new Error(`navigation stress: ${stalled.length}/${2 * stressLoads} loads never got their first bridge answer (${stalled.join(', ')})`);
+  log(`step 6: navigation stress: ${loads - stalled.length}/${loads} in-app loads answered their first bridge call${stalled.length ? `; stalled: ${stalled.join(', ')}` : ''}`);
+  if (stalled.length) throw new Error(`navigation stress: ${stalled.length}/${loads} loads never got their first bridge answer (${stalled.join(', ')})`);
 
   if (violations.length) throw new Error(`CSP violations:\n${violations.join('\n')}`);
   log('no CSP violations in the console');
