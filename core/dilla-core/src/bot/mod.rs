@@ -3,6 +3,7 @@
 //! This module is deliberately structural: it validates the wire contract and explicit
 //! authenticated context, while dispatchers remain responsible for authorization and state.
 
+pub mod command;
 pub mod group_registration;
 pub mod human_interaction_context;
 pub mod interaction_admission;

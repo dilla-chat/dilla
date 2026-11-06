@@ -68,6 +68,47 @@ it('adapts the ABI-8 trust and search exports', () => {
   expect(s.calls[5]?.args).toEqual([G]);
 });
 
+describe('sealed Bot commands', () => {
+  const PUB = new Uint8Array([0x87, 1]);
+  const KEY = new Uint8Array(16).fill(0x33);
+  it('verifies the command key and returns its id and fingerprint', () => {
+    const s = stub({ bot_command_key_verify: () => encode([KEY, '0123456789AB']) });
+    expect(s.port.botCommandKeyVerify(PUB, USER)).toEqual({ keyId: KEY, fingerprint: '0123456789AB' });
+    expect(s.calls[0]?.args).toEqual([PUB, USER]);
+    const bad = stub({ bot_command_key_verify: () => encode([new Uint8Array(15), 'x']) });
+    expect(caught(() => bad.port.botCommandKeyVerify(PUB, USER)).code).toBe('E_CORE_DECODE');
+    const refused = stub({ bot_command_key_verify: () => { throw new Error('E_BOT_SIGNATURE: command key publication'); } });
+    expect(caught(() => refused.port.botCommandKeyVerify(PUB, USER)).code).toBe('E_BOT_SIGNATURE');
+  });
+  it('seals the request as CBOR and keeps only a handle to the reply secret', () => {
+    const sealed = new Uint8Array([0x85, 1, 2]);
+    const s = stub({ bot_command_seal: () => encode([sealed, 7]) });
+    const out = s.port.botCommandSeal(PUB, {
+      requestId: MSG, communityId: COMM, channelId: null, operation: 11,
+      args: ['hello', 3, new Uint8Array([1]), null], sentAt: 1790000000n,
+    });
+    expect(out).toEqual({ sealed, replyHandle: 7 });
+    expect(s.calls[0]?.args[0]).toEqual(PUB);
+    expect(decode(s.calls[0]?.args[1] as Uint8Array)).toEqual([MSG, COMM, null, 11n, ['hello', 3n, new Uint8Array([1]), null], 1790000000n]);
+    expect(caught(() => s.port.botCommandSeal(PUB, {
+      requestId: new Uint8Array(15), communityId: COMM, channelId: null, operation: 1, args: [], sentAt: 1n,
+    })).code).toBe('E_CORE_INPUT');
+    expect(caught(() => s.port.botCommandSeal(PUB, {
+      requestId: MSG, communityId: COMM, channelId: null, operation: 1, args: [1.5], sentAt: 1n,
+    })).code).toBe('E_CORE_INPUT');
+  });
+  it('opens and forgets replies by handle', () => {
+    const body = new Uint8Array([0x68, 0x69]);
+    const s = stub({ bot_reply_open: () => body, bot_reply_forget: () => undefined });
+    const sealed = new Uint8Array([0x83]);
+    expect(s.port.botReplyOpen(7, MSG, 2, sealed)).toEqual(body);
+    s.port.botReplyForget(7);
+    expect(s.calls.map((c) => [c.method, c.args])).toEqual([['bot_reply_open', [7, MSG, 2, sealed]], ['bot_reply_forget', [7]]]);
+    expect(caught(() => s.port.botReplyOpen(-1, MSG, 0, sealed)).code).toBe('E_CORE_INPUT');
+    expect(caught(() => s.port.botReplyOpen(7, MSG, 2 ** 32, sealed)).code).toBe('E_CORE_INPUT');
+  });
+});
+
 it('passes moderator-removal signing inputs directly to ClientCore and returns only its signed body', () => {
   const signed = encode([new Uint8Array([1]), new Uint8Array(64).fill(7)]);
   const requestId = new Uint8Array(16).fill(0x41);

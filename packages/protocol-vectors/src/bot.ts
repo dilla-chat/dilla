@@ -3,6 +3,7 @@ import { hex } from './bytes.ts';
 import { createHash } from 'node:crypto';
 import { keyFromSeed, sign } from './ed25519.ts';
 import { concat } from './bytes.ts';
+import { deriveKeyPair, sealBase } from './hpke.ts';
 
 const id = (n: number) => new Uint8Array(16).fill(n);
 const comm = id(0x22), group = id(0x33), now = '100';
@@ -298,7 +299,8 @@ export async function botVectors() {
  const malformedSignature=await sign(currentKey.privateKey,
   concat(new TextEncoder().encode('dilla bot current interaction context v1\0'),malformedPayload));
  const malformedWire=encode([malformedPayload,malformedSignature]);
- return {version:1,cases,rejects,admission_proof:{
+ const sealed_command=await sealedCommandVectors();
+ return {version:1,cases,rejects,sealed_command,admission_proof:{
   seed:hex(admissionSeed),public_key:hex(admissionKey.publicKey),
   payload_hex:hex(admissionPayload),proof_hex:hex(admissionProof),
   server_now:100,minimum_eligibility_revision:11,not_after:130,
@@ -315,3 +317,63 @@ export async function botVectors() {
    {name:'current interaction context signed payload has trailing CBOR',wire_hex:hex(malformedWire),error:'E_BOT_FORMAT'}]}};
 }
 function bodyOf(v:unknown):string {const raw=encode(v as never);let s='';for(const b of raw)s+=String.fromCharCode(b);return 'dilla.bot/1:'+btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/u,'');}
+
+// Sealed Bot commands (Bot v2 task 7). Every key comes from a fixed seed or ikm, so Rust reproduces each byte:
+// the DSK signatures are deterministic Ed25519, and the HPKE ephemeral and reply keys are DeriveKeyPair(ikm).
+async function sealedCommandVectors() {
+ const te=(s:string)=>new TextEncoder().encode(s);
+ const now=1790000000n;
+ const signedList=async (user:Uint8Array,device:Uint8Array,dskSeed:Uint8Array,sskSeed:Uint8Array) => {
+  const dsk=await keyFromSeed(dskSeed),ssk=await keyFromSeed(sskSeed);
+  const entries=[[device,dsk.publicKey,0n,100n,null]];
+  const unsigned=encode([1n,user,1n,new Uint8Array(32),entries]);
+  const sig=await sign(ssk.privateKey,concat(te('dilla devices v1'),unsigned));
+  return {dsk,sskPub:ssk.publicKey,blob:encode([1n,user,1n,new Uint8Array(32),entries,sig])};
+ };
+ const botUser=id(0xb0),botDevice=id(0xb1),botDskSeed=new Uint8Array(32).fill(0xb2),botSskSeed=new Uint8Array(32).fill(0xb3);
+ const user=id(0x10),device=id(0x11),userDskSeed=new Uint8Array(32).fill(0x12),userSskSeed=new Uint8Array(32).fill(0x13);
+ const bot=await signedList(botUser,botDevice,botDskSeed,botSskSeed);
+ const usr=await signedList(user,device,userDskSeed,userSskSeed);
+ const community=id(0x22),keyId=id(0x33),notAfter=now+604800n;
+ const commandIkm=new Uint8Array(32).fill(0x42);
+ const commandKey=await deriveKeyPair(commandIkm);
+ const pubFields=[1n,community,keyId,commandKey.pk,notAfter,botDevice];
+ const pubSig=await sign(bot.dsk.privateKey,concat(te('dilla bot command key v1'),encode(pubFields)));
+ const publication=encode([...pubFields,pubSig]);
+ const requestId=id(0x44),channel=id(0x55);
+ const args=['never gonna give you up',3n,new Uint8Array([1,2,3]),null];
+ const replyIkm=new Uint8Array(32).fill(0x02),ephemeralIkm=new Uint8Array(32).fill(0x01);
+ const replyKey=await deriveKeyPair(replyIkm);
+ const unsignedCmd=[1n,requestId,community,channel,11n,args,now,replyKey.pk,user,device];
+ const cmdSig=await sign(usr.dsk.privateKey,concat(te('dilla bot command v1'),encode(unsignedCmd as never)));
+ const signedCmd=encode([...unsignedCmd,cmdSig] as never);
+ const sealedInner=await sealBase(commandKey.pk,te('dilla bot command v1'),requestId,signedCmd,ephemeralIkm);
+ const sealed=encode([1n,keyId,requestId,sealedInner.enc,sealedInner.ct]);
+ const replies=[];
+ for(const [seq,body,fill] of [[0,'Searching…',0x03],[1,'Now playing: never gonna give you up',0x04]] as const){
+  const ikm=new Uint8Array(32).fill(fill);
+  const aad=concat(requestId,new Uint8Array([seq>>>24,(seq>>>16)&0xff,(seq>>>8)&0xff,seq&0xff]));
+  const r=await sealBase(replyKey.pk,te('dilla bot reply v1'),aad,te(body),ikm);
+  replies.push({seq,body_hex:hex(te(body)),ephemeral_ikm:hex(ikm),sealed_hex:hex(encode([1n,r.enc,r.ct]))});
+ }
+ // [0x85, 0x01, 0x50, key_id(16), 0x50, request_id(16), ...]: byte 20 is the first byte of the outer request id.
+ const tampered=sealed.slice();tampered[tampered.length-1]!^=1;
+ const movedId=sealed.slice();movedId[20]!^=1;
+ return {
+  now:Number(now),
+  bot:{user:hex(botUser),device:hex(botDevice),dsk_seed:hex(botDskSeed),ssk_pub:hex(bot.sskPub),list_hex:hex(bot.blob)},
+  user:{user:hex(user),device:hex(device),dsk_seed:hex(userDskSeed),ssk_pub:hex(usr.sskPub),list_hex:hex(usr.blob)},
+  command_key:{ikm:hex(commandIkm),sk:hex(commandKey.sk),pk:hex(commandKey.pk)},
+  publication_hex:hex(publication),
+  request:{request_id:hex(requestId),community_id:hex(community),channel_id:hex(channel),operation:11,
+   args:[{text:args[0]},{uint:3},{bytes:'010203'},{null:true}],sent_at:Number(now)},
+  ephemeral_ikm:hex(ephemeralIkm),reply_ikm:hex(replyIkm),reply_key:hex(replyKey.pk),
+  signed_hex:hex(signedCmd),sealed_hex:hex(sealed),replies,
+  rejects:[
+   {name:'attached to another device',sealed_hex:hex(sealed),attached_device:hex(id(0x14)),now:Number(now),refusal:'WrongDevice'},
+   {name:'sent_at 121 s in the past',sealed_hex:hex(sealed),attached_device:hex(device),now:Number(now+121n),refusal:'Stale'},
+   {name:'ciphertext bit flipped',sealed_hex:hex(tampered),attached_device:hex(device),now:Number(now),refusal:'Malformed'},
+   {name:'outer request id changed',sealed_hex:hex(movedId),attached_device:hex(device),now:Number(now),refusal:'Malformed'},
+  ],
+ };
+}

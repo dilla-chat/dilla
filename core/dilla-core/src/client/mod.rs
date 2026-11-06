@@ -3,6 +3,7 @@
 //! change runs inside exactly one `DillaStorage::unit`.
 
 mod account_kind;
+mod bot_command;
 mod bot_events;
 mod bot_identity;
 pub use bot_identity::BotInteractionGroupDescriptor;

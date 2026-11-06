@@ -128,6 +128,10 @@ interface ExpectedCoreHandle {
   call_leave_proposal(group_id: Uint8Array): Uint8Array;
   call_rotate(group_id: Uint8Array): Uint8Array;
   call_group_forget(group_id: Uint8Array): void;
+  bot_command_key_verify(publication: Uint8Array, bot_user_id: Uint8Array): Uint8Array;
+  bot_command_seal(publication: Uint8Array, request_cbor: Uint8Array): Uint8Array;
+  bot_reply_open(handle: number, request_id: Uint8Array, seq: number, sealed: Uint8Array): Uint8Array;
+  bot_reply_forget(handle: number): void;
 }
 
 type H = Wasm.CoreHandle;
@@ -262,3 +266,7 @@ expectTrue<Equals<H['call_join_check'], E['call_join_check']>>();
 expectTrue<Equals<H['call_leave_proposal'], E['call_leave_proposal']>>();
 expectTrue<Equals<H['call_rotate'], E['call_rotate']>>();
 expectTrue<Equals<H['call_group_forget'], E['call_group_forget']>>();
+expectTrue<Equals<H['bot_command_key_verify'], E['bot_command_key_verify']>>();
+expectTrue<Equals<H['bot_command_seal'], E['bot_command_seal']>>();
+expectTrue<Equals<H['bot_reply_open'], E['bot_reply_open']>>();
+expectTrue<Equals<H['bot_reply_forget'], E['bot_reply_forget']>>();

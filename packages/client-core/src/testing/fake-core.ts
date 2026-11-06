@@ -4,7 +4,7 @@ import { CoreError, type CorePort, type Id, type IdentityInfo, type SessionRecor
   type WelcomeOutcome, type ApplyResult, type OutboxRow, type TimelineRow, type ActivityRow, type OwnDeviceList,
   type SealedObjects, type SignedLists, type AttachmentDescriptor, type PinRow, type PurgeRow, type SendRequest, type ThreadRow,
   type PendingLeaf, type TrustRecord, type SearchHit, type CallMediaEpoch, type HumanInteractionEventPage,
-  type HumanInteractionEvent } from '../core-port';
+  type HumanInteractionEvent, type BotCommandRequest } from '../core-port';
 import { toHex } from '../hex';
 import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from './fake-list';
 
@@ -463,4 +463,8 @@ export class FakeCore implements CorePort {
   callLeaveProposal(groupId: Id): Uint8Array { return this.notModelled('callLeaveProposal', groupId); }
   callRotate(groupId: Id): Uint8Array { return this.notModelled('callRotate', groupId); }
   callGroupForget(groupId: Id): void { return this.notModelled('callGroupForget', groupId); }
+  botCommandKeyVerify(publication: Uint8Array, botUserId: Id): { keyId: Uint8Array; fingerprint: string } { return this.notModelled('botCommandKeyVerify', publication, botUserId); }
+  botCommandSeal(publication: Uint8Array, request: BotCommandRequest): { sealed: Uint8Array; replyHandle: number } { return this.notModelled('botCommandSeal', publication, request); }
+  botReplyOpen(replyHandle: number, requestId: Id, seq: number, sealed: Uint8Array): Uint8Array { return this.notModelled('botReplyOpen', replyHandle, requestId, seq, sealed); }
+  botReplyForget(replyHandle: number): void { return this.notModelled('botReplyForget', replyHandle); }
 }

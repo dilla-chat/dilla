@@ -3,6 +3,7 @@
 
 use std::cell::{Cell, RefCell, RefMut};
 
+use dilla_core::bot::command::{ReplyTable, VerifiedKeys, open_reply};
 use dilla_core::cbor::Encoder;
 use dilla_core::client::{
     ClientCore, ClientError, ManualRemovalEvidence, ManualWarningEvidence, RemovalFeedEntry,
@@ -199,6 +200,12 @@ fn owned_js_error(e: ClientError) -> JsError {
     client_js_error(&e)
 }
 
+/// The page's wall clock in whole seconds, for checks the core makes against its own clock (a
+/// command key's `not_after`). JavaScript's clock is the only one a browser core has.
+fn now_secs() -> u64 {
+    (js_sys::Date::now() / 1000.0) as u64
+}
+
 /// Opens the store and constructs its sole ClientCore owner.
 #[wasm_bindgen]
 pub async fn core_open(cfg: StoreOpenConfig) -> Result<CoreHandle, JsValue> {
@@ -208,6 +215,8 @@ pub async fn core_open(cfg: StoreOpenConfig) -> Result<CoreHandle, JsValue> {
         Ok(core) => Ok(CoreHandle {
             store,
             core: RefCell::new(Some(core)),
+            replies: RefCell::default(),
+            verified: RefCell::default(),
             phase: Cell::new(Phase::Open),
         }),
         Err(e) => {
@@ -222,6 +231,10 @@ pub struct CoreHandle {
     store: StoreHandle,
     core: RefCell<Option<ClientCore>>,
     phase: Cell<Phase>,
+    /// Reply secrets of sealed Bot commands, behind handles; zeroized on forget, eviction and drop.
+    replies: RefCell<ReplyTable>,
+    /// Command-key publications verified against the Bot user's stored device list.
+    verified: RefCell<VerifiedKeys>,
 }
 
 impl CoreHandle {
@@ -350,9 +363,66 @@ impl CoreHandle {
             store,
             core,
             phase: _,
+            replies: _,
+            verified: _,
         } = self;
         drop(core);
         store.close()
+    }
+    /// Verifies a Bot command-key publication against the stored, trusted device list of
+    /// `bot_user_id` and remembers it for `bot_command_seal`; CBOR [key_id, fingerprint].
+    pub fn bot_command_key_verify(
+        &self,
+        publication: &[u8],
+        bot_user_id: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        let bot_user_id = js_fixed_arg::<16>("bot_user_id", bot_user_id)?;
+        let now = now_secs();
+        let (verified, out) =
+            self.with_core(|c| c.bot_command_key_verify(publication, &bot_user_id, now))?;
+        self.verified.borrow_mut().remember(&verified);
+        Ok(out.into_boxed_slice())
+    }
+    /// Signs and seals a command to a publication `bot_command_key_verify` accepted (the exact
+    /// bytes, before their `not_after`). `request_cbor` is [request_id, community_id,
+    /// channel_id|null, operation, args, sent_at]. CBOR [sealed, reply_secret_handle]; the reply
+    /// secret stays here.
+    pub fn bot_command_seal(
+        &self,
+        publication: &[u8],
+        request_cbor: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        let verified = self
+            .verified
+            .borrow()
+            .check(publication, now_secs())
+            .map_err(|r| JsError::new(&r.to_string()))?;
+        let (sealed, secret) = self.with_core(|c| c.bot_command_seal(&verified, request_cbor))?;
+        let handle = self.replies.borrow_mut().insert(secret);
+        let mut out = Encoder::with_capacity(sealed.len() + 16);
+        out.array(2).bytes(&sealed).uint(u64::from(handle));
+        Ok(out.into_vec().into_boxed_slice())
+    }
+    /// Opens answer `seq` of `request_id` with the reply secret behind `handle`.
+    pub fn bot_reply_open(
+        &self,
+        handle: u32,
+        request_id: &[u8],
+        seq: u32,
+        sealed: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        let replies = self.replies.borrow();
+        let secret = replies
+            .get(handle)
+            .ok_or_else(|| JsError::new("E_BOT_REPLY_UNKNOWN: no reply secret for this handle"))?;
+        open_reply(secret, request_id, seq, sealed)
+            .map(Vec::into_boxed_slice)
+            .map_err(|_| JsError::new("E_BOT_MALFORMED: the reply does not open"))
+    }
+    /// Zeroizes and drops the reply secret behind `handle` (a no-op for an unknown handle).
+    pub fn bot_reply_forget(&self, handle: u32) {
+        self.replies.borrow_mut().forget(handle);
     }
     /// Calls ClientCore::identity; CBOR [phase, instance_id, user_id, device_id, username, list_published].
     pub fn identity(&self) -> Result<Box<[u8]>, JsError> {

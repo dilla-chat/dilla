@@ -239,6 +239,40 @@ export interface CorePort {
   callRotate(groupId: Id): Uint8Array;
   /** Deletes the call group's state and sets its row to gone. */
   callGroupForget(groupId: Id): void;
+  /** Verifies the Bot's signed command key against the Bot user's stored device list (now, by the page's clock) and
+   *  remembers it for botCommandSeal. Throws the refusal (E_BOT_SIGNATURE, E_DEVICE_UNLISTED, E_BOT_STALE, ...). */
+  botCommandKeyVerify(publication: Uint8Array, botUserId: Id): { keyId: Uint8Array; fingerprint: string };
+  /** Signs the request with this device's key and seals it to a publication botCommandKeyVerify accepted. The one-time
+   *  reply key is made inside the core; its secret never leaves it, only `replyHandle` does. */
+  botCommandSeal(publication: Uint8Array, request: BotCommandRequest): { sealed: Uint8Array; replyHandle: number };
+  /** Opens answer `seq` of `requestId` with the reply secret behind `replyHandle`. */
+  botReplyOpen(replyHandle: number, requestId: Id, seq: number, sealed: Uint8Array): Uint8Array;
+  /** Zeroizes the reply secret behind `replyHandle`. The core keeps at most 256 and evicts the oldest. */
+  botReplyForget(replyHandle: number): void;
+}
+
+/** A command for the Bot, before it is signed and sealed. Numbers are unsigned safe integers. */
+export interface BotCommandRequest { requestId: Id; communityId: Id; channelId: Id | null; operation: number;
+  args: readonly (string | number | Uint8Array | null)[]; sentAt: bigint }
+
+const U32_MAX = 0xffffffff;
+const u32 = (v: number): boolean => Number.isInteger(v) && v >= 0 && v <= U32_MAX;
+const safeUint = (v: number): boolean => Number.isSafeInteger(v) && v >= 0;
+
+/** CBOR [request_id, community_id, channel_id|null, operation, args, sent_at], the facade's bot_command_seal input. */
+export function encodeBotCommandRequest(r: BotCommandRequest): Uint8Array {
+  if (r.requestId.length !== 16 || r.communityId.length !== 16 || (r.channelId !== null && r.channelId.length !== 16))
+    throw new CoreError('E_CORE_INPUT', 'bot command ids must be 16 bytes');
+  if (!safeUint(r.operation) || r.sentAt < 0n || r.sentAt > 0xffffffffffffffffn || r.args.length > 32)
+    throw new CoreError('E_CORE_INPUT', 'bot command operation, sent_at or argument count');
+  const args = r.args.map((a) => {
+    if (typeof a === 'number') {
+      if (!safeUint(a)) throw new CoreError('E_CORE_INPUT', 'bot command number arguments are unsigned integers');
+      return BigInt(a);
+    }
+    return a;
+  });
+  return encode([r.requestId, r.communityId, r.channelId, BigInt(r.operation), args, r.sentAt]);
 }
 
 /** One epoch of a call group (L-TS-55). `baseKey` is a fresh 16-byte buffer the worker transfers once; nothing else
@@ -387,6 +421,10 @@ export interface CoreHandle {
       call_leave_proposal(group_id: Uint8Array): Uint8Array;
       call_rotate(group_id: Uint8Array): Uint8Array;
       call_group_forget(group_id: Uint8Array): void;
+      bot_command_key_verify(publication: Uint8Array, bot_user_id: Uint8Array): Uint8Array;
+      bot_command_seal(publication: Uint8Array, request_cbor: Uint8Array): Uint8Array;
+      bot_reply_open(handle: number, request_id: Uint8Array, seq: number, sealed: Uint8Array): Uint8Array;
+      bot_reply_forget(handle: number): void;
     }
     export interface StoreOpenConfigLike { directory: string; db_name: string; kek_hex: string; }
     export interface CoreWasmModule {
@@ -817,5 +855,25 @@ export function wrapCore(handle: CoreHandle): CorePort {
     callLeaveProposal: (groupId) => call(() => handle.call_leave_proposal(groupId)),
     callRotate: (groupId) => call(() => handle.call_rotate(groupId)),
     callGroupForget: (groupId) => call(() => handle.call_group_forget(groupId)),
+    botCommandKeyVerify: (publication, botUserId) => call(() => {
+      if (botUserId.length !== 16) throw new CoreError('E_CORE_INPUT', 'bot user id must be 16 bytes');
+      return decoded('botCommandKeyVerify', handle.bot_command_key_verify(publication, botUserId), (v) => {
+        const a = arr(v, 2); return { keyId: bin(field(a, 0), 16), fingerprint: str(field(a, 1)) };
+      });
+    }),
+    botCommandSeal: (publication, request) => call(() => decoded('botCommandSeal',
+      handle.bot_command_seal(publication, encodeBotCommandRequest(request)), (v) => {
+        const a = arr(v, 2); const replyHandle = u53(field(a, 1));
+        if (!u32(replyHandle) || replyHandle === 0) throw new CborError('E_CBOR_RANGE', 'reply handle');
+        return { sealed: bin(field(a, 0)), replyHandle };
+      })),
+    botReplyOpen: (replyHandle, requestId, seq, sealed) => call(() => {
+      if (!u32(replyHandle) || !u32(seq) || requestId.length !== 16) throw new CoreError('E_CORE_INPUT', 'reply handle, seq or request id');
+      return handle.bot_reply_open(replyHandle, requestId, seq, sealed);
+    }),
+    botReplyForget: (replyHandle) => call(() => {
+      if (!u32(replyHandle)) throw new CoreError('E_CORE_INPUT', 'reply handle');
+      handle.bot_reply_forget(replyHandle);
+    }),
   };
 }

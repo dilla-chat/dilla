@@ -599,3 +599,143 @@ fn context_result(
         .unwrap_or(DeviceId::from_bytes([1; 16]));
     check(community, now, group, user, device)
 }
+
+/// Bot v2 task 7: the TypeScript generator's independent RFC 9180 implementation sealed these;
+/// the core must open, verify and reproduce every byte.
+#[test]
+fn sealed_command_vectors_open_and_verify() {
+    use dilla_core::bot::command::{
+        CommandArg, CommandKeyPublication, CommandRefusal, ReplySecret, derive_key_pair,
+        open_command, open_reply, seal_command_derand, seal_reply_derand, verify_command,
+    };
+    use dilla_core::identity::{DeviceList, SskSigner};
+    use openmls::prelude::SignatureScheme;
+    use openmls_basic_credential::SignatureKeyPair;
+
+    let corpus: Value = serde_json::from_str(include_str!("../../../protocol/vectors/bot.json"))
+        .expect("shared bot corpus parses");
+    let v = &corpus["sealed_command"];
+    let b = |x: &Value| hex::decode(x.as_str().unwrap()).unwrap();
+    let a32 = |x: &Value| -> [u8; 32] { b(x).try_into().unwrap() };
+    let a16 = |x: &Value| -> [u8; 16] { b(x).try_into().unwrap() };
+    let now = v["now"].as_u64().unwrap();
+
+    let list = |side: &Value| {
+        let l = DeviceList::decode(&b(&side["list_hex"])).unwrap();
+        l.verify(&a32(&side["ssk_pub"])).unwrap();
+        assert_eq!(l.unsigned.user_id.as_bytes(), &a16(&side["user"]));
+        l
+    };
+    let bot_list = list(&v["bot"]);
+    let user_list = list(&v["user"]);
+
+    let (sk, pk) = derive_key_pair(&a32(&v["command_key"]["ikm"])).unwrap();
+    assert_eq!(*sk, a32(&v["command_key"]["sk"]));
+    assert_eq!(pk, a32(&v["command_key"]["pk"]));
+
+    let publication_bytes = b(&v["publication_hex"]);
+    let publication = CommandKeyPublication::decode(&publication_bytes).unwrap();
+    assert_eq!(publication.encode(), publication_bytes);
+    assert_eq!(publication.public_key, pk);
+    assert_eq!(publication.verify(&bot_list, now), Ok(()));
+    assert!(publication.verify(&user_list, now).is_err());
+
+    let user = UserId::from_bytes(a16(&v["user"]["user"]));
+    let device = DeviceId::from_bytes(a16(&v["user"]["device"]));
+    let sealed = b(&v["sealed_hex"]);
+    let cmd = open_command(&sk, &sealed).unwrap();
+    assert_eq!(hex::encode(cmd.encode()), v["signed_hex"].as_str().unwrap());
+    let req = verify_command(&cmd, &user_list, user, device, now).unwrap();
+    let r = &v["request"];
+    assert_eq!(req.request_id, a16(&r["request_id"]));
+    assert_eq!(req.community_id.as_bytes(), &a16(&r["community_id"]));
+    assert_eq!(
+        req.channel_id.map(|c| *c.as_bytes()),
+        Some(a16(&r["channel_id"]))
+    );
+    assert_eq!(req.operation, r["operation"].as_u64().unwrap());
+    assert_eq!(req.sent_at, r["sent_at"].as_u64().unwrap());
+    assert_eq!(req.reply_key, a32(&v["reply_key"]));
+    let args: Vec<CommandArg> = r["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            if let Some(t) = a.get("text") {
+                CommandArg::Text(t.as_str().unwrap().into())
+            } else if let Some(n) = a.get("uint") {
+                CommandArg::Uint(n.as_u64().unwrap())
+            } else if let Some(x) = a.get("bytes") {
+                CommandArg::Bytes(b(x))
+            } else {
+                CommandArg::Null
+            }
+        })
+        .collect();
+    assert_eq!(req.args, args);
+
+    // The core's own sealing reproduces the generator's bytes.
+    let dsk_seed = a32(&v["user"]["dsk_seed"]);
+    let dsk = SignatureKeyPair::from_raw(
+        SignatureScheme::ED25519,
+        dsk_seed.to_vec(),
+        SskSigner::from_bytes(&dsk_seed).public().to_vec(),
+    );
+    let (resealed, secret) = seal_command_derand(
+        &publication,
+        &req,
+        user,
+        device,
+        &dsk,
+        &a32(&v["ephemeral_ikm"]),
+        &a32(&v["reply_ikm"]),
+    )
+    .unwrap();
+    assert_eq!(resealed, sealed);
+    assert_eq!(secret.public_key(), req.reply_key);
+
+    let reply_secret = ReplySecret::derive(&a32(&v["reply_ikm"])).unwrap();
+    for reply in v["replies"].as_array().unwrap() {
+        let seq = u32::try_from(reply["seq"].as_u64().unwrap()).unwrap();
+        let body = b(&reply["body_hex"]);
+        let sealed_reply = b(&reply["sealed_hex"]);
+        assert_eq!(
+            open_reply(&reply_secret, req.request_id, seq, &sealed_reply).unwrap(),
+            body
+        );
+        assert_eq!(
+            seal_reply_derand(
+                &req.reply_key,
+                req.request_id,
+                seq,
+                &body,
+                &a32(&reply["ephemeral_ikm"])
+            )
+            .unwrap(),
+            sealed_reply
+        );
+        assert!(open_reply(&reply_secret, req.request_id, seq + 1, &sealed_reply).is_err());
+    }
+
+    let rejects = v["rejects"].as_array().unwrap();
+    assert!(!rejects.is_empty());
+    for case in rejects {
+        let name = case["name"].as_str().unwrap();
+        let want = match case["refusal"].as_str().unwrap() {
+            "WrongDevice" => CommandRefusal::WrongDevice,
+            "Stale" => CommandRefusal::Stale,
+            "Malformed" => CommandRefusal::Malformed,
+            other => panic!("{name}: unknown refusal {other}"),
+        };
+        let got = open_command(&sk, &b(&case["sealed_hex"])).and_then(|cmd| {
+            verify_command(
+                &cmd,
+                &user_list,
+                user,
+                DeviceId::from_bytes(a16(&case["attached_device"])),
+                case["now"].as_u64().unwrap(),
+            )
+        });
+        assert_eq!(got, Err(want), "{name}");
+    }
+}

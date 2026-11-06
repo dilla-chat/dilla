@@ -27,6 +27,11 @@ openmls_traits           = "=0.6.0"
 openmls_rust_crypto      = "=0.6.0"
 openmls_basic_credential = "=0.6.0"
 tls_codec                = { version = "=0.5.0", features = ["derive", "serde", "mls"] }
+# Sealed Bot commands (RFC 9180 base mode). Pinned to exactly the versions openmls_rust_crypto
+# already locks, so these add no crate to Cargo.lock; the core uses the RustCrypto provider.
+hpke-rs             = { version = "=0.8.0", default-features = false }
+hpke-rs-crypto      = "=0.8.0"
+hpke-rs-rust-crypto = "=0.8.0"
 # Match the patched upstream OpenMLS cryptography generation.
 ed25519-dalek = { version = "3.0", default-features = false, features = ["zeroize"] }
 sha2          = "0.11"

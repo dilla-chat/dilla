@@ -219,6 +219,43 @@ fn read_pin(c: &rusqlite::Connection, user: &[u8; 16]) -> Result<Option<Pin>, St
     .map_err(Into::into)
 }
 
+/// A user's cached signed device list, but only while it vouches for the user: the pin exists,
+/// no key change is pending, the list is signed under the pinned key's cached SSK and names this
+/// user. Otherwise the refusal code (`E_DEVICE_LIST_STALE` when nothing is cached or pinned,
+/// `E_UMK_CHANGED` while a change is pending, `E_CREDENTIAL` for a list that does not verify).
+/// Sealed Bot commands use it to check the Bot's command-key publication.
+pub(super) fn trusted_list(
+    c: &rusqlite::Connection,
+    user: &[u8; 16],
+) -> Result<Result<DeviceList, &'static str>, StorageError> {
+    let cached: Option<(Vec<u8>, [u8; 32], [u8; 32])> = c
+        .query_row(
+            "SELECT list,umk_pub,ssk_pub FROM app_device_lists WHERE user_id=?1",
+            [user.as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((bytes, umk, ssk)) = cached else {
+        return Ok(Err(E_DEVICE_LIST_STALE));
+    };
+    let Some(pin) = read_pin(c, user)? else {
+        return Ok(Err(E_DEVICE_LIST_STALE));
+    };
+    if pin.changed.is_some() {
+        return Ok(Err(E_UMK_CHANGED));
+    }
+    if pin.umk != umk {
+        return Ok(Err(E_CREDENTIAL));
+    }
+    let Ok(list) = DeviceList::decode(&bytes) else {
+        return Ok(Err(E_CREDENTIAL));
+    };
+    if list.unsigned.user_id.as_bytes() != user || list.verify(&ssk).is_err() {
+        return Ok(Err(E_CREDENTIAL));
+    }
+    Ok(Ok(list))
+}
+
 /// The only writer of `app_trust_pins`.
 fn write_pin(c: &rusqlite::Connection, user: &[u8; 16], pin: &Pin) -> Result<(), StorageError> {
     c.execute(

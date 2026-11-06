@@ -13,6 +13,7 @@ import { decodeBoundedArray } from '../../state/bounded';
 import {
   CoreError,
   type ApplyResult,
+  type BotCommandRequest,
   type CorePort,
   type ExpectedGroup,
   type GroupInfo,
@@ -916,6 +917,24 @@ export class ModelCore implements CorePort {
     if (g.state === 4) return;
     g.state = 4; g.epoch = 0n; g.proposals.clear(); g.pending = null; g.fromResync = false; g.wasGone = false;
     this.dropCallLeaves(groupId);
+  }
+
+  // Sealed Bot commands are not part of the group half; the model refuses them like any unmodelled call.
+  botCommandKeyVerify(publication: Uint8Array, botUserId: Id): { keyId: Uint8Array; fingerprint: string } {
+    void publication; this.log('botCommandKeyVerify', botUserId);
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
+  botCommandSeal(publication: Uint8Array, request: BotCommandRequest): { sealed: Uint8Array; replyHandle: number } {
+    void publication; this.log('botCommandSeal', request.communityId);
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
+  botReplyOpen(replyHandle: number, requestId: Id, seq: number, sealed: Uint8Array): Uint8Array {
+    void replyHandle; void seq; void sealed; this.log('botReplyOpen', requestId);
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
+  botReplyForget(replyHandle: number): void {
+    void replyHandle;
+    throw coreError('E_CORE_STATE', 'not modelled');
   }
 
   /** calls.rs call_row: E_CORE_NOT_FOUND for an unknown id, E_CORE_INPUT for a group that is not a call group. */
