@@ -29,9 +29,9 @@ use super::{
 
 /// The gateway subprotocol `internal/gateway.Handler` negotiates.
 const SUBPROTOCOL: &str = "dilla.v1";
-/// The current wire version this client identifies with. Human upload and media shapes remain
-/// unchanged in wire 3, which the media test host offers by default.
-const WIRE_VERSION: u64 = 3;
+/// The one wire version this client identifies with (Bot v2: wire 6, the only wire the instance
+/// offers; human upload and media shapes are unchanged since wire 2).
+const WIRE_VERSION: u64 = 6;
 /// How long a pump waits on an empty socket before it returns. Short, because `drain` is called
 /// once per scenario step and the harness runs every step against loopback.
 const PUMP_WAIT: Duration = Duration::from_millis(50);
@@ -860,6 +860,28 @@ fn decode_served_list(d: &mut Decoder<'_>) -> Result<ServedDeviceList, CborError
     })
 }
 
+/// The served head, `GET /v1/users/{id}/device-list`: the four row elements, plus on wire 6 (as on
+/// every wire since 4) the instance-signed account-kind attestation, which this client reads past.
+fn decode_served_head(d: &mut Decoder<'_>) -> Result<ServedDeviceList, CborError> {
+    let len = d.array_len()?;
+    if len != 4 && len != 5 {
+        return Err(CborError::WrongArrayLen {
+            expected: 5,
+            actual: len,
+        });
+    }
+    let row = ServedDeviceList {
+        version: d.uint()?,
+        blob: bytes_or_null(d)?,
+        ssk_signature: bytes_or_null(d)?,
+        prev_hash: bytes_or_null(d)?,
+    };
+    if len == 5 {
+        bytes_or_null(d)?;
+    }
+    Ok(row)
+}
+
 fn decode_history(bytes: &[u8]) -> Result<Vec<ServedDeviceList>, CborError> {
     decode_strict(bytes, |d| {
         (0..array_or_null(d)?)
@@ -985,7 +1007,7 @@ fn get_device_list_with(
     let path = format!("/v1/users/{}/device-list", hex::encode(user_id));
     decode_strict(
         &get_device_list_bounded(agent, base, token, &path)?,
-        decode_served_list,
+        decode_served_head,
     )
     .map_err(protocol)
 }
@@ -2083,7 +2105,7 @@ impl HttpDs {
             }
         };
         // protocol/07 "Negotiation": the client takes the highest version it shares with the
-        // instance. This client speaks wire version 3 and version 1 of e2ee and media.
+        // instance. This client speaks wire version 6 and version 1 of e2ee and media.
         for (name, offered, speaks) in [
             ("wire", &wire, WIRE_VERSION),
             ("e2ee", &e2ee, 1),
@@ -4159,6 +4181,19 @@ mod tests {
             prev_hash: vec![0x05; 32],
         };
         assert_eq!(decode_strict(&served, decode_served_list).unwrap(), row);
+        // Wire 6 (as every wire since 4): the head carries the account-kind attestation as a fifth
+        // element, which this client reads past; history rows stay four elements.
+        let attested = cbor(|e| {
+            e.array(5)
+                .uint(2)
+                .bytes(&[0x03; 5])
+                .bytes(&[0x04; 64])
+                .bytes(&[0x05; 32])
+                .bytes(&[0x09; 3]);
+        });
+        assert_eq!(decode_strict(&attested, decode_served_head).unwrap(), row);
+        assert_eq!(decode_strict(&served, decode_served_head).unwrap(), row);
+        assert!(decode_strict(&attested, decode_served_list).is_err());
         let history = cbor(|e| {
             e.array(2);
             e.array(4)
