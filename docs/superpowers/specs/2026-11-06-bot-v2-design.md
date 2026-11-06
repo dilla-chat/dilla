@@ -54,8 +54,8 @@ Jonas, 2026-11-06:
     - The dilla server package ships the Bot. dillad starts it as a sandboxed child process: own OS user, own state and keys. They talk over a local socket.
     - There is no separate dillabot package, unit, `bot.toml` or `base_url` to configure.
     - Bot keys and command plain text never enter dillad's memory, so the server stays blind.
-12. **Outgoing integrations come in a later release** (prompt answer). `/weather` calling an admin's URL is out of v2. The catalog must not preclude it.
-13. **Move as much as possible from REST to the WebSocket** (Jonas, 2026-11-06: "no move as much as you can to WSS"). This overrides Claude's recommendation to keep app REST. See "App requests over the socket".
+11. **Outgoing integrations come in a later release** (prompt answer). `/weather` calling an admin's URL is out of v2. The catalog must not preclude it.
+12. **Move as much as possible from REST to the WebSocket** (Jonas, 2026-11-06: "no move as much as you can to WSS"). This overrides Claude's recommendation to keep app REST. See "App requests over the socket".
 
 ## Goals
 
@@ -87,7 +87,7 @@ Jonas, 2026-11-06:
 - Third-party bot programs that are their own MLS members, or a public bot SDK. Integrations go through the Bot's webhooks (decision 3).
 - A Bot that reads ordinary chat for new features.
 - Music providers other than YouTube.
-- Outgoing integrations (decision 12). The catalog's command record keeps room for an admin-defined handler later.
+- Outgoing integrations (decision 11). The catalog's command record keeps room for an admin-defined handler later.
 - **Automod.** Jonas, 2026-11-06: "lets remove automod". It is the one feature that reads every channel message, so it is removed, not ported (see Migration).
 
 ## Anti-goals (failure even if it "works")
@@ -201,7 +201,7 @@ Jonas, 2026-11-06:
 - A webhook post is plain text with links, shown with a "via webhook <name>" label. It can't run commands or mention @everyone unless the admin allows it.
 - A webhook's channel must be a Bot channel.
 
-### App requests over the socket (decision 13)
+### App requests over the socket (decision 12)
 
 - **One generic request frame on the existing gateway connection:**
   - `request{id, method, route, body}` → `response{id, status, body}`.
