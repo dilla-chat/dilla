@@ -13,13 +13,26 @@ import { browser } from './browser.ts';
 import { watchUpdates } from './update.ts';
 import { createUpdateCheckpointStore } from './update-checkpoint.ts';
 import { desktopBridge, startDesktopLifecycle } from './desktop.ts';
-import { mobileBridge, watchMobilePermission } from './mobile.ts';
+import { MOBILE_INFO_TIMEOUT_MS, mobileBridge, mobileInfoWithin, watchMobilePermission } from './mobile.ts';
+import { MobileBootError } from './screens/Boot.tsx';
+import { t } from './strings/index.ts';
 
 startDesktopLifecycle();
 applyPreference(window, await readTheme());
 const desktop = await desktopBridge()?.info();
 if (desktop) { document.documentElement.dataset.desktop = ''; document.documentElement.dataset.desktopPlatform = desktop.platform; }
-const mobile = await mobileBridge()?.info();
+const mobileShell = mobileBridge();
+const mobileInfo = mobileShell && await mobileInfoWithin(mobileShell);
+if (mobileShell && mobileInfo === 'timeout') {
+  // The native shell never answered: show the error splash (Try again, Switch instance), never a blank page. No core
+  // starts, since the instance it would open is unknown.
+  document.documentElement.dataset.mobile = '';
+  const element = document.getElementById('root');
+  if (!element) throw new Error('dilla: #root is missing');
+  createRoot(element).render(<StrictMode><MobileBootError bridge={mobileShell} detail={t('mobile.boot.timeout.detail')} /></StrictMode>);
+  throw new Error(`dilla: the mobile shell did not answer within ${MOBILE_INFO_TIMEOUT_MS} ms`);
+}
+const mobile = mobileInfo === 'timeout' ? undefined : mobileInfo;
 if (mobile) { document.documentElement.dataset.mobile = ''; document.documentElement.dataset.mobilePlatform = mobile.platform; }
 // Mobile wins when both bridges exist, as in layout.ts and notify.ts.
 const native = mobile ?? desktop;

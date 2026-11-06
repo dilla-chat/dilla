@@ -1,8 +1,22 @@
-import type { MobileBridge } from '../../mobile/src/contract.ts';
+import type { MobileBridge, MobileInfo } from '../../mobile/src/contract.ts';
 import type { NotificationCtor, NotificationHandle } from './notify.ts';
 
 export function mobileBridge(): MobileBridge | undefined {
   return (globalThis as unknown as { dillaMobile?: MobileBridge }).dillaMobile;
+}
+
+/** How long startup waits for the native shell's first answer before it shows the error splash. */
+export const MOBILE_INFO_TIMEOUT_MS = 10_000;
+
+/**
+ * The bridge's info, or 'timeout' when the native shell has not answered within `ms`. A lost plugin answer (the
+ * Capacitor Android reply-proxy race, patches/@capacitor+android+*.patch) left the page awaiting it for good and
+ * blank: startup awaits this before it renders anything.
+ */
+export function mobileInfoWithin(bridge: MobileBridge, ms = MOBILE_INFO_TIMEOUT_MS): Promise<MobileInfo | 'timeout'> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>(resolve => { timer = setTimeout(() => resolve('timeout'), ms); });
+  return Promise.race([bridge.info(), timeout]).finally(() => clearTimeout(timer));
 }
 
 const permissions = new WeakMap<MobileBridge, { state: NotificationPermission }>();

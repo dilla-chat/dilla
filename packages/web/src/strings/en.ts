@@ -149,6 +149,8 @@ export const en = {
   'mobile.switchInstance': 'Switch instance',
   'mobile.retry': 'Try again',
   'mobile.boot.error.detail': 'Error {code}. Try again, or switch to another instance.',
+  // main.tsx: the native shell did not answer within MOBILE_INFO_TIMEOUT_MS while the app started.
+  'mobile.boot.timeout.detail': 'The app stopped responding while starting. Try again, or switch to another instance.',
   'mobile.onboarding.error.network': 'The connection dropped while creating your account. Try again to finish.',
   'mobile.shell.banner.clientTooOld': 'This server needs a newer client. Update the app.',
   'dialog.close': 'Close',
