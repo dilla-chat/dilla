@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { decode, encode, type CborInput, type CborValue } from '../cbor';
 import { fromHex, toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
-import { decodeFrame, encodeFrame, Op, type Frame } from './frames';
+import { decodeFrame, encodeFrame, encodeRequestFrame, Op, type Frame } from './frames';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent } from './gateway';
 
 it('sends bounded client signals and throttles typing per channel', async () => {
@@ -984,4 +984,29 @@ it('sends ninety current call samples over wire 6 in fifteen minutes, bounded an
   expect(s.sentFrames().filter(f => f.op === 58)).toHaveLength(90);
   s.serverClose(1006);
   expect(h.gw.sendCallStats(GROUP,[1,null,25,0,0,20])).toBe(false);
+});
+
+describe('Gateway request frames (Bot v2)', () => {
+  it('writes a request frame only while ready and hands each response to its listeners', async () => {
+    const h = harness();
+    const frame = encodeRequestFrame({ id: 1, method: 'GET', route: '/v1/x', body: new Uint8Array(), idem: null });
+    expect(h.gw.sendRequest(frame)).toBe(false);
+    const s = await connected(h);
+    expect(h.gw.sendRequest(frame)).toBe(true);
+    expect(s.sentFrames().filter((f) => f.op === Op.request).map((f) => f.payload)).toEqual([[1n, 'GET', '/v1/x', new Uint8Array(), null]]);
+    s.receive(encodeFrame(Op.response, 0, null, [1, 204, new Uint8Array()]));
+    expect(h.events.filter((e) => e.type === 'response')).toEqual([{ type: 'response', response: { id: 1, status: 204, body: new Uint8Array() } }]);
+    expect(h.gw.status).toBe('ready');
+  });
+
+  it('accepts a response frame above the hello frame size, up to the response bound', async () => {
+    const h = harness();
+    const s = await connected(h, hello({ maxFrameBytes: 131584 }));
+    s.receive(encodeFrame(Op.response, 0, null, [2, 200, new Uint8Array(2 * 1024 * 1024)]));
+    expect(h.gw.status).toBe('ready');
+    expect(h.events.flatMap((e) => (e.type === 'response' ? [e.response.body.length] : []))).toEqual([2 * 1024 * 1024]);
+    // Any other frame above the hello's bound still closes the socket.
+    s.receive(encodeFrame(Op.presence, 0, null, [new Uint8Array(16), 0, 0, 'x'.repeat(140_000)]));
+    expect(s.closedWith?.code).toBe(CLIENT_CLOSE.tooLarge);
+  });
 });

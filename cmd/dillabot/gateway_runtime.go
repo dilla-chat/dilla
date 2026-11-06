@@ -267,8 +267,11 @@ func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token strin
 	r.mu.Lock()
 	r.entries[installation] = e
 	r.mu.Unlock()
+	// Bot v2: the device's session sends its socket routes as request frames on this gateway.
+	r.api.UseTransport(device, gateway)
 	go func() {
 		defer close(e.done)
+		defer r.api.ReleaseTransport(device, gateway)
 		finished := make(chan error, 1)
 		go func() {
 			finished <- gateway.Run(ctx, func(context.Context) (string, error) { e.mu.Lock(); defer e.mu.Unlock(); return e.token, nil })

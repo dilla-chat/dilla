@@ -51,6 +51,8 @@ type Config struct {
 	AllowLoopbackHTTP bool
 	Timeout           time.Duration
 	RateLimits        RateLimits
+	// SocketRoutes overrides the package's SocketRoutes (tests); nil keeps them.
+	SocketRoutes []string
 }
 
 type Client struct {
@@ -66,6 +68,10 @@ type Client struct {
 	devices                        map[string]string
 	targetBuckets                  int
 	cacheEvictions, cacheDeferrals uint64
+	// Bot v2: routes sent over a device's gateway socket, and each device's transport (UseTransport).
+	socketRoutes socketRouteTable
+	transportMu  sync.Mutex
+	transports   map[string]Transport
 }
 
 type Runtime struct {
@@ -125,7 +131,12 @@ func New(cfg Config) (*Client, error) {
 		return nil, err
 	}
 	u.Path, u.RawPath, u.RawQuery, u.Fragment = "", "", "", ""
-	return &Client{base: u, http: &hcopy, instance: cfg.InstanceID, timeout: timeout, allowLoopback: cfg.AllowLoopbackHTTP, rates: rates, buckets: make(map[string]*deviceLimiter), devices: make(map[string]string)}, nil
+	routes := cfg.SocketRoutes
+	if routes == nil {
+		routes = SocketRoutes
+	}
+	return &Client{base: u, http: &hcopy, instance: cfg.InstanceID, timeout: timeout, allowLoopback: cfg.AllowLoopbackHTTP, rates: rates, buckets: make(map[string]*deviceLimiter), devices: make(map[string]string),
+		socketRoutes: compileSocketRoutes(routes)}, nil
 }
 
 func (c *Client) Runtime(token string) (*Runtime, error) {
@@ -250,6 +261,12 @@ func (c *Client) doObserved(ctx context.Context, token, method, path string, que
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
+	// Bot v2: a socket route of a device session goes through its gateway; the key is fixed once per call.
+	transport := c.socketTransport(ctx, method, path)
+	var idem []byte
+	if transport != nil {
+		idem = idempotencyKey(ctx, method)
+	}
 	var last error
 	for attempt := 0; ; attempt++ {
 		if err := c.waitRate(ctx, token, method, path); err != nil {
@@ -258,7 +275,7 @@ func (c *Client) doObserved(ctx context.Context, token, method, path string, que
 			}
 			return nil, 0, ResponseObservation{}, err
 		}
-		raw, status, observation, err := c.doObservedOnce(ctx, token, method, path, query, body, maxBytes, mutation)
+		raw, status, observation, err := c.doObservedOnce(ctx, token, method, path, query, body, maxBytes, mutation, transport, idem)
 		refusal := RateLimitError(err)
 		if refusal == nil {
 			return raw, status, observation, err
@@ -270,7 +287,7 @@ func (c *Client) doObserved(ctx context.Context, token, method, path string, que
 	}
 }
 
-func (c *Client) doObservedOnce(ctx context.Context, token, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool) ([]byte, int, ResponseObservation, error) {
+func (c *Client) doObservedOnce(ctx context.Context, token, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool, transport Transport, idem []byte) ([]byte, int, ResponseObservation, error) {
 	var observation ResponseObservation
 	if err := CooperativeCheckpoint(ctx); err != nil {
 		return nil, 0, observation, err
@@ -301,7 +318,12 @@ func (c *Client) doObservedOnce(ctx context.Context, token, method, path string,
 		req.Header.Set("Content-Type", "application/cbor")
 	}
 	req.Header.Set("Accept", "application/cbor")
-	resp, err := c.http.Do(req)
+	var resp *http.Response
+	if transport != nil {
+		resp, err = socketRoundTrip(ctx, transport, method, req.URL.RequestURI(), body, idem)
+	} else {
+		resp, err = c.http.Do(req)
+	}
 	if err != nil {
 		if mutation {
 			return nil, 0, observation, &APIError{Status: 0, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}

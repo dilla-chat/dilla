@@ -23,6 +23,8 @@ import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, ty
 import { Op, afkAwayOf, communityChangedOf, voiceStateOf, type AFKAwayFrame, type Frame } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
+import { RouteRtt } from '../http/route-rtt';
+import { SocketRequests } from '../gateway/requests';
 import { DillaHttpError } from '../http/errors';
 import {
   BIO_MAX_CHARS, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, DISPLAY_MAX_CHARS, GIF_OFFSET_MAX, GIF_QUERY_MAX_BYTES,
@@ -1145,6 +1147,10 @@ export class Controller {
   /** The one pending expiry sweep per channel, and the deadline (deps.now() ms) it is set for. */
   private readonly typingSweeps = new Map<string, { handle: number; at: number }>();
   private readonly diagnosticsErrors: { code: string; at: number }[] = [];
+  /** Bot v2: each socket request's round trip by route pattern, for Diagnostics' slowest requests. */
+  private readonly routeRtt = new RouteRtt();
+  /** Bot v2: the request transport of the current gateway; socket routes go through it (HttpDeps.socket). */
+  private socketRequests: SocketRequests | null = null;
   /** Community hex → when its remembered "no interaction group" answer lapses (ms). */
   private readonly noInteractionGroupUntil = new Map<string, number>();
   /** Requests waiting for a Welcome push; each is woken when a group turns active. */
@@ -1184,6 +1190,7 @@ export class Controller {
       random: () => deps.random(),
       token: () => this.session?.token() ?? null,
       reauthenticate: () => this.reauthenticate(),
+      socket: () => this.socketRequests,
       onGeneration: (generation) => { this.setConnection({ generation: generation.toString() }); },
       // web3.6: an instance that answers E_FACTOR_REQUIRED to a ready account (an operator reset) owns the next step.
       // Once per transition: onFactorRequired leaves 'ready' synchronously, so the refusals that follow (and any while
@@ -2216,7 +2223,13 @@ export class Controller {
   private publishDiagnostics(): void {
     this.slices.set('diagnostics', { connection: this.connectionState.status, generation: this.connectionState.generation,
       instance: this.instance === null ? '' : toHex(this.instance.instanceId), devices: this.deviceCount,
-      errors: [...this.diagnosticsErrors], keyPackages: { ...this.keyPackages } });
+      errors: [...this.diagnosticsErrors], keyPackages: { ...this.keyPackages }, slowRoutes: this.routeRtt.slowest(5) });
+  }
+
+  /** The gateway is being dropped: its queued and in-flight socket requests fail (E_NETWORK) rather than wait for ever. */
+  private closeSocketRequests(): void {
+    this.socketRequests?.close();
+    this.socketRequests = null;
   }
 
   /**
@@ -2493,6 +2506,7 @@ export class Controller {
         WebSocket: this.deps.WebSocket, now, random, setTimeout, clearTimeout,
       });
       this.gateway = gateway;
+      this.socketRequests = new SocketRequests(gateway, { now, random, rtt: this.routeRtt, setTimeout, clearTimeout });
       gateway.subscribe((e) => { this.onGateway(e); });
       this.startEngine();
       this.wasDown = false;
@@ -2915,6 +2929,7 @@ export class Controller {
     this.gateway?.stop();
     // enterReady builds a fresh gateway and engine after factorSetupDone (a stopped engine cannot restart).
     this.gateway = null;
+    this.closeSocketRequests();
     this.sync = null;
     // Contract 6: what each ready reads once is read again at the next.
     this.fetchedLeaves.clear();
@@ -4516,7 +4531,7 @@ export class Controller {
     this.unlistedUsers.clear(); this.changedLeafGroups = new Map(); this.removedGroups.clear();
     this.historyFailedUsers.clear(); this.pendingUsers = new Set(); this.ownRefusedLeaves.clear();
     this.fetchedLeaves.clear(); this.trustRefreshAgain = false;
-    this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
+    this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.closeSocketRequests(); this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.heldLive = []; this.clearHeldReads(); this.ticketTime = null;
     this.pendingJoin = null; this.keyPackagesOwed = false;
     this.clearKeyPackageRetry();

@@ -1,6 +1,8 @@
 // The client core's HTTP transport; every typed route passes through request.
 import { DillaHttpError, decodeErrorBody } from './errors';
 import { TokenBuckets, type Bucket } from './pacing';
+import { socketRouteFor, type SocketRoute } from './socket-routes';
+import type { SocketTransport } from '../gateway/requests';
 export { PACING, type Bucket } from './pacing';
 
 export interface HttpRequest {
@@ -18,6 +20,9 @@ export interface HttpRequest {
   signal?: AbortSignal;
   /** The per-attempt timeout; null opts out (a blob transfer, which may outlast it on a slow link). */
   timeoutMs?: number | null;
+  /** Bot v2: the idempotency key a socket route's request frame carries, kept by every retry of this call. Required for
+   *  every method but GET on a socket route (E_IDEMPOTENCY_REQUIRED); Routes sets it on every mutation. */
+  idem?: Uint8Array;
 }
 export interface HttpResponse { status: number; body: Uint8Array; }
 export interface HttpDeps {
@@ -35,6 +40,11 @@ export interface HttpDeps {
   onRefusal?(code: string): void;
   /** Overrides HTTP_ATTEMPT_TIMEOUT_MS (tests). */
   attemptTimeoutMs?: number;
+  /** Bot v2: the gateway's request transport, or null while there is no gateway. A route in the socket table goes only
+   *  through it (no HTTP fallback: the instance does not serve it there). */
+  socket?(): SocketTransport | null;
+  /** The socket route table; SOCKET_ROUTES unless a test passes its own. */
+  socketRoutes?: readonly SocketRoute[];
 }
 export const RETRY = { maxAttempts: 5, baseMs: 500, capMs: 8000, jitterMs: 250, maxWaitMs: 60000 } as const;
 const ERROR_BODY_CAP = 64 * 1024;
@@ -55,6 +65,7 @@ export class HttpClient {
   }
 
   async request(r: HttpRequest): Promise<HttpResponse> {
+    if (socketRouteFor(r.method, r.path, this.deps.socketRoutes) !== null) return this.requestSocket(r);
     let reauthenticated = false;
     for (let attempt = 1; attempt <= RETRY.maxAttempts; attempt++) {
       if (r.signal?.aborted) throw abort();
@@ -114,6 +125,41 @@ export class HttpClient {
       if (error.status !== 0) {
         try { this.deps.onRefusal?.(error.code); } catch { /* the refusal is what the caller gets */ }
       }
+      throw error;
+    }
+    throw new Error('unreachable');
+  }
+
+  /** A socket route: the request frame's answer, decoded as an HTTP answer. SocketRequests already waits out E_BUSY,
+   *  503 E_UNAVAILABLE and a lost socket (same idem); a route meter's 429 is waited out here as on HTTP. Every other
+   *  refusal (409, 401, 426, a route's own 503) reaches the caller. There are no headers: no generation, no Retry-After. */
+  private async requestSocket(r: HttpRequest): Promise<HttpResponse> {
+    const socket = this.deps.socket?.() ?? null;
+    if (socket === null) {
+      throw new DillaHttpError({ status: 0, code: 'E_NETWORK', detail: 'the gateway socket is not running', retryAfterMs: null, extra: [] });
+    }
+    for (let attempt = 1; attempt <= RETRY.maxAttempts; attempt++) {
+      if (r.signal?.aborted) throw abort();
+      await this.buckets.take(r.bucket, r.signal);
+      if (r.signal?.aborted) throw abort();
+      const response = await socket.request(r);
+      const ok = (r.ok ?? [200, 201, 204]).includes(response.status);
+      const bound = ok ? r.maxBodyBytes : ERROR_BODY_CAP;
+      if (bound !== undefined && response.body.length > bound) {
+        throw new DillaHttpError({ status: response.status, code: 'E_BODY_TOO_LARGE',
+          detail: 'the response body is larger than ' + bound + ' bytes', retryAfterMs: null, extra: [] });
+      }
+      if (ok) return response;
+      const error = decodeErrorBody(response.status, response.body, null);
+      if (error.status === 429 && r.retry429 !== false && attempt < RETRY.maxAttempts) {
+        const wait = error.retryAfterMs ?? 1000;
+        if (wait <= RETRY.maxWaitMs) {
+          try { await this.deps.sleep(wait, r.signal); }
+          catch (e) { if (r.signal?.aborted) throw abort(); throw e; }
+          continue;
+        }
+      }
+      try { this.deps.onRefusal?.(error.code); } catch { /* the refusal is what the caller gets */ }
       throw error;
     }
     throw new Error('unreachable');

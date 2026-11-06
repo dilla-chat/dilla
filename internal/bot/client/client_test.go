@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -716,5 +717,121 @@ func TestCommitBodyExceedsOneMiBCapAndAllows256Welcomes(t *testing.T) {
 	}
 	if welcomeCount != 256 {
 		t.Fatalf("commit welcomed %d devices, want valid maximum of 256", welcomeCount)
+	}
+}
+
+type socketCall struct {
+	method, route string
+	body, idem    []byte
+}
+
+type fakeSocketTransport struct {
+	mu     sync.Mutex
+	calls  []socketCall
+	status int
+	reply  []byte
+}
+
+func (f *fakeSocketTransport) Do(_ context.Context, method, route string, body, idem []byte) (int, []byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, socketCall{method: method, route: route, body: append([]byte(nil), body...), idem: append([]byte(nil), idem...)})
+	return f.status, f.reply, nil
+}
+
+func TestBotClientUsesSocketForSocketRoutes(t *testing.T) {
+	var mu sync.Mutex
+	var overHTTP []string
+	device, user := testID(5), testID(6)
+	head := cbor(t, []any{uint64(1), []byte{1}, make([]byte, 64), make([]byte, 32)})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		overHTTP = append(overHTTP, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/v1/instance":
+			reply(w, 200, discovery(testID(99)))
+		case "/v1/users/" + user.String() + "/device-list":
+			w.Header().Set("Content-Type", "application/cbor")
+			_, _ = w.Write(head)
+		default:
+			reply(w, 404, []any{"E_NOT_FOUND", "", nil})
+		}
+	}))
+	t.Cleanup(srv.Close)
+	u, _ := url.Parse(srv.URL)
+	c, err := New(Config{BaseURL: "https://example.invalid", HTTPClient: &http.Client{Transport: rewriteTransport{base: srv.Client().Transport, host: u.Host}},
+		InstanceID: testID(99), Timeout: 5 * time.Second, SocketRoutes: []string{"DELETE /v1/welcomes/{id}"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	socket := &fakeSocketTransport{status: http.StatusNoContent}
+	c.UseTransport(device, socket)
+	// A stopped gateway that was already replaced never withdraws its replacement.
+	c.ReleaseTransport(device, &fakeSocketTransport{})
+	s, err := c.SessionForDevice("device-token", device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A socket route goes through the transport, with a fresh 16-byte idempotency key.
+	if err := s.AcknowledgeWelcome(context.Background(), 7); err != nil {
+		t.Fatal(err)
+	}
+	// An HTTP route keeps HTTPS.
+	if _, err := s.OwnDeviceList(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	socket.mu.Lock()
+	calls := append([]socketCall(nil), socket.calls...)
+	socket.mu.Unlock()
+	if len(calls) != 1 || calls[0].method != http.MethodDelete || calls[0].route != "/v1/welcomes/7" || len(calls[0].body) != 0 || len(calls[0].idem) != 16 {
+		t.Fatalf("socket calls = %+v, want one DELETE /v1/welcomes/7 with a 16-byte idem", calls)
+	}
+	mu.Lock()
+	got := append([]string(nil), overHTTP...)
+	mu.Unlock()
+	want := []string{"GET /v1/instance", "GET /v1/users/" + user.String() + "/device-list"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("HTTP requests = %v, want %v", got, want)
+	}
+	// A refusal over the socket is the same APIError as over HTTP.
+	socket.status, socket.reply = http.StatusNotFound, cbor(t, []any{"E_NOT_FOUND", "", nil})
+	var apiErr *APIError
+	if err := s.AcknowledgeWelcome(context.Background(), 8); !errors.As(err, &apiErr) || apiErr.Status != 404 || apiErr.Code != "E_NOT_FOUND" {
+		t.Fatalf("socket refusal = %v, want E_NOT_FOUND (404)", err)
+	}
+	// A session that names no device, and a session of another device, keep HTTPS for every route.
+	plain, _ := c.Session("other-token")
+	if err := plain.AcknowledgeWelcome(context.Background(), 9); err == nil {
+		t.Fatal("the plain session's DELETE should have reached the HTTP 404")
+	}
+	c.ReleaseTransport(device, socket)
+	if err := s.AcknowledgeWelcome(context.Background(), 10); err == nil {
+		t.Fatal("after the transport is withdrawn the DELETE should reach the HTTP 404")
+	}
+	if n := len(socket.calls); n != 2 {
+		t.Fatalf("socket saw %d calls, want 2", n)
+	}
+}
+
+func TestBotSocketRouteMatching(t *testing.T) {
+	routes := compileSocketRoutes([]string{"DELETE /v1/welcomes/{id}", "GET /v1/groups/{id}/messages", "POST /v1/bot/{rest...}"})
+	for _, tc := range []struct {
+		method, path string
+		want         bool
+	}{
+		{"DELETE", "/v1/welcomes/7", true},
+		{"GET", "/v1/welcomes/7", false},
+		{"DELETE", "/v1/welcomes", false},
+		{"DELETE", "/v1/welcomes/7/x", false},
+		{"GET", "/v1/groups/ab/messages", true},
+		{"POST", "/v1/bot/a/b/c", true},
+	} {
+		if got := routes.match(tc.method, tc.path); got != tc.want {
+			t.Errorf("%s %s matched=%v, want %v", tc.method, tc.path, got, tc.want)
+		}
 	}
 }

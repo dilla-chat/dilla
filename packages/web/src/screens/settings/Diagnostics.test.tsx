@@ -61,3 +61,33 @@ it('shows an unknown key package count as a dash and nothing else', () => {
     keyPackages: { count: null, lastAttempt: null, lastError: null } }} instanceName="dilla.test" writeText={vi.fn(async () => {})} />));
   expect(view.container.querySelector('[data-fact="keyPackages"]')).toHaveTextContent(/^–$/);
 });
+
+it('Diagnostics lists the five slowest requests', () => {
+  const slowRoutes = [
+    { pattern: 'POST /v1/groups/{id}/message', p50: 120, p95: 480, count: 40 },
+    { pattern: 'GET /v1/communities', p50: 90, p95: 300, count: 12 },
+    { pattern: 'PUT /v1/communities/{id}/afk/away', p50: 60, p95: 200, count: 3 },
+    { pattern: 'GET /v1/accounts/me', p50: 40, p95: 120, count: 9 },
+    { pattern: 'POST /v1/groups/{id}/cursor', p50: 30, p95: 80, count: 30 },
+    { pattern: 'GET /v1/welcomes', p50: 10, p95: 20, count: 2 },
+  ];
+  const view = render(withCore(new FakeClient(), <Diagnostics data={{ connection: 'online', generation: '8', instance: 'home', devices: 1, errors: [],
+    keyPackages: { count: null, lastAttempt: null, lastError: null }, slowRoutes }} instanceName="dilla.test" writeText={vi.fn(async () => {})} />));
+  const table = screen.getByRole('table', { name: 'Slowest requests' });
+  expect(Array.from(table.querySelectorAll('thead th'), (th) => th.textContent)).toEqual(['Request', 'p50', 'p95', 'Count']);
+  const rows = Array.from(table.querySelectorAll('tbody tr'), (tr) => Array.from(tr.children, (cell) => cell.textContent));
+  expect(rows).toEqual([
+    ['POST /v1/groups/{id}/message', '120 ms', '480 ms', '40'],
+    ['GET /v1/communities', '90 ms', '300 ms', '12'],
+    ['PUT /v1/communities/{id}/afk/away', '60 ms', '200 ms', '3'],
+    ['GET /v1/accounts/me', '40 ms', '120 ms', '9'],
+    ['POST /v1/groups/{id}/cursor', '30 ms', '80 ms', '30'],
+  ]);
+  expect(view.container).not.toHaveTextContent('/v1/welcomes');
+});
+
+it('shows no slowest-requests table before any request was timed', () => {
+  render(withCore(new FakeClient(), <Diagnostics data={{ connection: 'online', generation: '8', instance: 'home', devices: 1, errors: [],
+    keyPackages: { count: null, lastAttempt: null, lastError: null }, slowRoutes: [] }} instanceName="dilla.test" writeText={vi.fn(async () => {})} />));
+  expect(screen.queryByRole('table')).toBeNull();
+});

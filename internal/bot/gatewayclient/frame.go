@@ -42,7 +42,91 @@ const (
 	OpVoiceState       Opcode = 50
 	OpCallRing         Opcode = 53
 	OpCommunityChanged Opcode = 54
+	// Bot v2: one HTTP-shaped app request over the socket (client to server) and its answer (server to client).
+	OpRequest  Opcode = 59
+	OpResponse Opcode = 60
 )
+
+const (
+	// MaxRequestBodyBytes is the instance's request body cap (gateway.MaxRequestBodyBytes).
+	MaxRequestBodyBytes = 16 << 20
+	// MaxResponseFrameBytes bounds a response frame: a route's answer (16 MiB by default) plus the frame's own bytes,
+	// the instance's request-frame bound. Only op 60 may be this large; every other frame keeps the hello's bound.
+	MaxResponseFrameBytes = MaxRequestBodyBytes + 16<<10
+	maxRequestMethod      = 16
+	maxRequestRoute       = 8192
+	maxRequestIdem        = 64
+)
+
+// ResponseFrame is one decoded op 60 answer: the request's id, its HTTP status and its body.
+type ResponseFrame struct {
+	ID     uint64
+	Status int
+	Body   []byte
+}
+
+// EncodeRequestFrame builds op 59 [id, method, route, body, idem|null] with n 0 and no group. It refuses what the
+// instance would refuse: an empty or long method or route, an idem of 0 or more than 64 bytes, a body over the cap.
+func EncodeRequestFrame(requestID uint64, method, route string, body, idem []byte) ([]byte, error) {
+	if len(method) == 0 || len(method) > maxRequestMethod || len(route) == 0 || len(route) > maxRequestRoute || len(body) > MaxRequestBodyBytes {
+		return nil, ErrProtocol
+	}
+	var key any
+	if idem != nil {
+		if len(idem) == 0 || len(idem) > maxRequestIdem {
+			return nil, ErrProtocol
+		}
+		key = idem
+	}
+	if body == nil {
+		body = []byte{}
+	}
+	b, err := cborx.Marshal([]any{uint64(OpRequest), uint64(0), nil, []any{requestID, method, route, body, key}})
+	if err != nil {
+		return nil, ErrProtocol
+	}
+	return b, nil
+}
+
+// isResponseFrame reports whether raw begins a four-element frame whose op is 60, without decoding the rest.
+func isResponseFrame(raw []byte) bool {
+	return len(raw) >= 3 && raw[0] == 0x84 && raw[1] == 0x18 && raw[2] == byte(OpResponse)
+}
+
+// DecodeResponseFrame checks op 60 strictly: deterministic CBOR, n 0, no group, [id uint, status 100..599, body bytes].
+func DecodeResponseFrame(raw []byte) (ResponseFrame, error) {
+	var out ResponseFrame
+	if len(raw) > MaxResponseFrameBytes {
+		return out, ErrProtocol
+	}
+	var elems []cbor.RawMessage
+	if err := cborx.Unmarshal(raw, &elems); err != nil || len(elems) != 4 {
+		return out, ErrProtocol
+	}
+	if op, err := uintAt(elems[0]); err != nil || Opcode(op) != OpResponse {
+		return out, ErrProtocol
+	}
+	if n, err := uintAt(elems[1]); err != nil || n != 0 || !isNull(elems[2]) {
+		return out, ErrProtocol
+	}
+	var payload []cbor.RawMessage
+	if cborx.ExpectMajor(elems[3], cborx.MajorArray) != nil || cborx.Unmarshal(elems[3], &payload) != nil || len(payload) != 3 {
+		return out, ErrProtocol
+	}
+	var err error
+	if out.ID, err = uintAt(payload[0]); err != nil {
+		return ResponseFrame{}, ErrProtocol
+	}
+	status, err := boundedUint(payload[1], 100, 599)
+	if err != nil {
+		return ResponseFrame{}, ErrProtocol
+	}
+	out.Status = int(status)
+	if out.Body, err = bytesAt(payload[2], 0, MaxResponseFrameBytes); err != nil {
+		return ResponseFrame{}, ErrProtocol
+	}
+	return out, nil
+}
 
 var (
 	ErrProtocol         = errors.New("bot gateway: invalid protocol frame")

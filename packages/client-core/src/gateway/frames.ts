@@ -74,6 +74,15 @@ const MAX_IDEM = 64;
 /** The instance's request body cap (gateway.MaxRequestBodyBytes): a larger body is refused E_FRAME_LIMIT and closes the
  *  socket, so a client that queued it would re-send it after every resume. */
 export const MAX_REQUEST_BODY = 16 * 1024 * 1024;
+/** The largest response frame a client reads: a route's answer is capped at MAX_REQUEST_BODY by default, plus the frame's
+ *  own bytes (the instance's maxRequestFrameBytes is the same bound). It applies to op 60 only; every other frame keeps the
+ *  hello's max_frame_bytes. */
+export const MAX_RESPONSE_FRAME = MAX_REQUEST_BODY + 16 * 1024;
+
+/** True when the bytes begin a four-element frame whose op is 60 (0x84, then uint8 60), read without decoding the body. */
+export function isResponseFrameHead(bytes: Uint8Array): boolean {
+  return bytes.length >= 3 && bytes[0] === 0x84 && bytes[1] === 0x18 && bytes[2] === Op.response;
+}
 
 function validRequestPayload(payload: CborValue[]): boolean {
   const [id, method, route, body, idem] = payload;

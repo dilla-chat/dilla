@@ -10,7 +10,8 @@ const clock = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-d
 
 /**
  * Device-local diagnostics: stable codes only (L-TS-43); Copy writes those codes, one per line, and nothing else. The
- * instance shows by its name (W-05); its hex id stays the BroadcastChannel's.
+ * instance shows by its name (W-05); its hex id stays the BroadcastChannel's. Bot v2: the slowest socket requests follow
+ * the facts, by route pattern (never a path with its ids).
  */
 export function Diagnostics({ data, instanceName, writeText }: {
   data: DiagnosticsState; instanceName: string | null; writeText: (text: string) => Promise<void>;
@@ -22,6 +23,8 @@ export function Diagnostics({ data, instanceName, writeText }: {
     client.call({ m: 'refreshDevices' }).catch(() => undefined);
   }, [client]);
   const errors = data.errors.slice(-20);
+  // Bot v2: the socket routes with the slowest p95 round trip, as the worker last published them; at most five.
+  const slowRoutes = (data.slowRoutes ?? []).slice(0, 5);
   const iso = (at: number) => new Date(at).toISOString();
   const facts: readonly [string, string, string | number | null][] = [
     ['connection', t('diagnostics.connection'), data.connection], ['generation', t('diagnostics.generation'), data.generation],
@@ -40,6 +43,21 @@ export function Diagnostics({ data, instanceName, writeText }: {
     <h2 id="diagnostics-title" tabIndex={-1}>{t('diagnostics.title')}</h2>
     {facts.map(([id, label, value]) => <SettingsRow key={id} id={`diag-${id}`} label={label}><span data-fact={id}>{value}</span></SettingsRow>)}
     <SettingsRow id="diag-keyPackages" label={t('diagnostics.keyPackages')}>{keyPackages}</SettingsRow>
+    {slowRoutes.length > 0
+      ? <section className="dw-diagnostics-routes" aria-labelledby="diagnostics-slow-routes">
+        <h3 id="diagnostics-slow-routes">{t('diagnostics.slowRoutes')}</h3>
+        <table className="dw-diagnostics-routes__table" aria-labelledby="diagnostics-slow-routes">
+          <thead><tr>
+            <th scope="col">{t('diagnostics.slowRoutes.route')}</th><th scope="col">{t('diagnostics.slowRoutes.p50')}</th>
+            <th scope="col">{t('diagnostics.slowRoutes.p95')}</th><th scope="col">{t('diagnostics.slowRoutes.count')}</th>
+          </tr></thead>
+          <tbody>{slowRoutes.map((route) => <tr key={route.pattern} data-route={route.pattern}>
+            <th scope="row"><code>{route.pattern}</code></th><td>{t('diagnostics.slowRoutes.ms', { ms: route.p50 })}</td>
+            <td>{t('diagnostics.slowRoutes.ms', { ms: route.p95 })}</td><td>{route.count}</td>
+          </tr>)}</tbody>
+        </table>
+      </section>
+      : null}
     {errors.length > 0
       ? <ul className="dw-diagnostics-errors">{errors.map((error, index) => <li data-error-code={error.code} key={`${error.at}-${index}`}>
         <code>{error.code}</code><time dateTime={iso(error.at)}>{clock.format(new Date(error.at))}</time></li>)}</ul>

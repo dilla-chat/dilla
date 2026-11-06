@@ -1,7 +1,8 @@
 import type { CallStats } from '../http/routes';
 import { arr, bin, u53, u64, type CborValue } from '../cbor';
 import { DillaHttpError } from '../http/errors';
-import { DROPPABLE_OPS, encodeFrame, decodeFrame, frameOp, Op, type Frame } from './frames';
+import { DROPPABLE_OPS, MAX_RESPONSE_FRAME, encodeFrame, decodeFrame, decodeResponseFrame, frameOp, isResponseFrameHead, Op,
+  type Frame, type SocketResponseFrame } from './frames';
 import { toHex } from '../hex';
 
 export type GatewayStatus = 'idle' | 'connecting' | 'ready' | 'waiting';
@@ -28,7 +29,9 @@ export type GatewayEvent =
    *  the app asks its user to update. */
   | { type: 'upgradeRequired' }
   /** Task 11 (Jonas, Q3): a heartbeat's round trip, in ms (the phone's You tab: "Connected to {host} · {ping}"). */
-  | { type: 'rtt'; ms: number };
+  | { type: 'rtt'; ms: number }
+  /** Bot v2: the answer (op 60) to a request frame this socket sent; SocketRequests matches it by id. */
+  | { type: 'response'; response: SocketResponseFrame };
 
 export interface GatewayDeps {
   url: string;
@@ -211,12 +214,23 @@ export class Gateway {
 
   private onMessage(event: MessageEvent): void {
     if (!(event.data instanceof ArrayBuffer)) { this.teardown(CLIENT_CLOSE.undecodable, true); return; }
-    if (event.data.byteLength > (this.hello?.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES)) {
+    const bytes = new Uint8Array(event.data);
+    // Bot v2: a response (op 60) of a ready session may be as large as a route's answer; every other frame keeps the
+    // hello's bound.
+    const bound = this.phase === 'ready' && isResponseFrameHead(bytes) ? MAX_RESPONSE_FRAME
+      : (this.hello?.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES);
+    if (bytes.byteLength > bound) {
       this.teardown(CLIENT_CLOSE.tooLarge, true);
       return;
     }
+    if (this.phase === 'ready' && isResponseFrameHead(bytes)) {
+      let response: SocketResponseFrame;
+      try { response = decodeResponseFrame(bytes); }
+      catch { this.teardown(CLIENT_CLOSE.undecodable, true); return; }
+      this.emit({ type: 'response', response });
+      return;
+    }
     let frame: Frame;
-    const bytes = new Uint8Array(event.data);
     try { frame = decodeFrame(bytes); }
     catch {
       // web-3 (L-GW-33): a malformed voice_state or call_ring of a ready session is dropped, never acted on, and the
@@ -311,6 +325,15 @@ export class Gateway {
 
   private send(bytes: Uint8Array): void {
     if (this.socket?.readyState === 1) this.socket.send(bytes);
+  }
+
+  /** Bot v2: writes one encoded request frame (op 59) on the ready socket. False when there is none, so the caller keeps
+   *  the request queued; its answer arrives as a `response` event. */
+  sendRequest(frame: Uint8Array): boolean {
+    if (this.phase !== 'ready' || this.current !== 'ready' || this.socket?.readyState !== 1) return false;
+    try { this.socket.send(frame); }
+    catch { return false; }
+    return true;
   }
 
   private onClose(event: CloseEvent): void {

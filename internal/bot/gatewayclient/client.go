@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -63,6 +64,11 @@ type Client struct {
 	running                        bool
 	streamID                       uint64
 	ackAvailable                   map[uint64][32]byte
+	// Bot v2 request frames: connChanged is closed and replaced whenever current changes, room on every answer.
+	connChanged chan struct{}
+	room        chan struct{}
+	slots       chan struct{}
+	nextRequest atomic.Uint64
 }
 
 // Delivery is one validated frame handed to the durable consumer. Ack is bound
@@ -90,6 +96,7 @@ type outbound struct {
 	op      Opcode
 	group   *id.ID
 	payload []any
+	raw     []byte // an already encoded frame (a request frame, which may exceed the event frame bound)
 	done    chan error
 }
 type connection struct {
@@ -100,6 +107,19 @@ type connection struct {
 	maxFrame    uint64
 	heartbeat   time.Duration
 	ackDeadline time.Duration
+	pendingMu   sync.Mutex
+	pending     map[uint64]chan ResponseFrame
+}
+
+// deliver hands an answer to the request waiting on this connection; an answer nobody waits for is dropped.
+func (conn *connection) deliver(r ResponseFrame) {
+	conn.pendingMu.Lock()
+	ch, ok := conn.pending[r.ID]
+	delete(conn.pending, r.ID)
+	conn.pendingMu.Unlock()
+	if ok {
+		ch <- r
+	}
 }
 
 // New pins the gateway to the same already-validated HTTP client origin. Callers
@@ -157,7 +177,8 @@ func New(cfg Config) (*Client, error) {
 	}
 	return &Client{log: cfg.Logger, origin: u, http: &hcopy, instance: cfg.Client.InstanceID(), device: cfg.ExpectedDeviceID, user: cfg.ExpectedUserID,
 		handshakeTimeout: cfg.HandshakeTimeout, writeTimeout: cfg.WriteTimeout, heartbeatAckTimeout: cfg.HeartbeatAckTimeout,
-		events: make(chan Delivery, cfg.QueueSize), ackAvailable: make(map[uint64][32]byte)}, nil
+		events: make(chan Delivery, cfg.QueueSize), ackAvailable: make(map[uint64][32]byte),
+		connChanged: make(chan struct{}), room: make(chan struct{}), slots: make(chan struct{}, MaxRequestsInFlight)}, nil
 }
 
 // Events returns the bounded stream of validated server deliveries. For every
@@ -201,7 +222,7 @@ func (c *Client) Run(ctx context.Context, credential CredentialFunc) error {
 		c.mu.Lock()
 		c.closed = true
 		current := c.current
-		c.current = nil
+		c.setCurrentLocked(nil)
 		c.mu.Unlock()
 		if current != nil {
 			current.cancel()
@@ -419,10 +440,14 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 		return fresh, 0, ErrProtocol
 	}
 	cx, cancel := context.WithCancel(parent)
-	conn := &connection{ws: ws, ctx: cx, cancel: cancel, writes: make(chan outbound, 32), maxFrame: h.MaxFrameBytes, heartbeat: boundedMilliseconds(h.HeartbeatMS)}
+	conn := &connection{ws: ws, ctx: cx, cancel: cancel, writes: make(chan outbound, 32), maxFrame: h.MaxFrameBytes, heartbeat: boundedMilliseconds(h.HeartbeatMS),
+		pending: make(map[uint64]chan ResponseFrame)}
 	conn.ackDeadline = c.heartbeatAckTimeout
+	// Bot v2: an answer to a request frame may be as large as the route's response; DecodeServerFrame still holds every
+	// other frame to the hello's bound.
+	ws.SetReadLimit(MaxResponseFrameBytes)
 	c.mu.Lock()
-	c.current = conn
+	c.setCurrentLocked(conn)
 	c.mu.Unlock()
 	rawFrames := make(chan []byte, 32)
 	readerDone := make(chan error, 1)
@@ -447,7 +472,7 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 		}
 		c.mu.Lock()
 		if c.current == conn {
-			c.current = nil
+			c.setCurrentLocked(nil)
 		}
 		c.mu.Unlock()
 	}()
@@ -489,6 +514,20 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 			writerDone <- err
 			return fresh, 0, errTransport
 		case raw := <-rawFrames:
+			if isResponseFrame(raw) {
+				answer, e := DecodeResponseFrame(raw)
+				if e != nil {
+					return fresh, 0, ErrProtocol
+				}
+				conn.deliver(answer)
+				c.signalRoom()
+				continue
+			}
+			if int64(len(raw)) > maxFrameReadLimit(conn.maxFrame) {
+				// Before the read limit was raised for answers, the reader itself refused such a frame and the
+				// connection was retried; keep that outcome.
+				return fresh, 0, errTransport
+			}
 			f, e := DecodeServerFrame(raw, conn.maxFrame)
 			if e != nil {
 				if dropMalformedEphemeral(raw) {
@@ -706,7 +745,10 @@ func (c *Client) writePump(conn *connection, done chan<- error) {
 			return
 		case w := <-conn.writes:
 			ctx, cancel := context.WithTimeout(conn.ctx, c.writeTimeout)
-			b, err := encodeFrame(w.op, 0, w.group, w.payload)
+			b, err := w.raw, error(nil)
+			if b == nil {
+				b, err = encodeFrame(w.op, 0, w.group, w.payload)
+			}
 			if err == nil {
 				err = conn.ws.Write(ctx, websocket.MessageBinary, b)
 			}

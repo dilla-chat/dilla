@@ -836,8 +836,38 @@ describe('Routes: one request per call, decoded as the server answers it', () =>
       expect(http.requests[0].bucket).toBe(c.bucket);
       expect(http.requests[0].idempotent).toBe(c.idempotent);
       expect(http.requests[0].auth ?? true).toBe(c.auth);
+      // Bot v2: every mutation carries an idempotency key for the socket; a read carries none.
+      if (c.method === 'GET') expect(http.requests[0].idem).toBeUndefined();
+      else expect(http.requests[0].idem).toHaveLength(16);
     });
   }
+});
+
+describe('Routes: the idempotency key of a mutation', () => {
+  it('is the request id a route already carries', async () => {
+    const { routes, t, http } = setup();
+    const request = fill(16, 0x31);
+    t.replies.push(noContent());
+    await routes.selectSelfRole(COMMUNITY, ROLE, request, true);
+    t.replies.push(cborReply(200, [request, 1]));
+    await routes.configureSelfRoles(COMMUNITY, request, [ROLE]);
+    t.replies.push(cborReply(200, [request, 77]));
+    await routes.putMemberTimeout(COMMUNITY, USER, request, 77n);
+    expect(http.requests.map((r) => r.idem)).toEqual([request, request, request]);
+  });
+
+  it('is a fresh random id per call, kept by every retry of that call', async () => {
+    const { routes, t, http } = setup();
+    t.replies.push(refusal(503, 'E_UNAVAILABLE', '', 10), noContent(), noContent());
+    await routes.putAFKAway(COMMUNITY);
+    await routes.putAFKAway(COMMUNITY);
+    expect(t.seen).toHaveLength(3);
+    expect(http.requests).toHaveLength(2);
+    const [first, second] = http.requests.map((r) => r.idem);
+    expect(first).toHaveLength(16);
+    expect(second).toHaveLength(16);
+    expect(first).not.toEqual(second);
+  });
 });
 
 describe('GET /v1/instance before sign-in', () => {
