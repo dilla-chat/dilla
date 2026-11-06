@@ -1688,7 +1688,7 @@ fn helper_encode(id: MsgId, n: u64, p: &[u8], request: bool) -> Result<Vec<u8>, 
     check_id16(id.as_bytes())?;
     if p.is_empty()
         || p.len() > HELPER_PAYLOAD_MAX
-        || (request && !(1..=20).contains(&n))
+        || (request && !(1..=24).contains(&n))
         || (!request && n > 9)
     {
         return Err(CodecError::Value);
@@ -1713,7 +1713,7 @@ fn helper_decode(b: &[u8], request: bool) -> Result<(MsgId, u64, Vec<u8>), Codec
         let id = read_msg(d)?;
         let n = d.uint()?;
         let p = bounded_bytes(d, 1, HELPER_PAYLOAD_MAX, false)?;
-        if v != 1 || (request && !(1..=20).contains(&n)) || (!request && n > 9) {
+        if v != 1 || (request && !(1..=24).contains(&n)) || (!request && n > 9) {
             return Err(CborError::TypeMismatch {
                 expected: "helper envelope",
                 offset: 0,
@@ -1809,8 +1809,8 @@ mod tests {
     use super::*;
     use crate::cbor::Encoder;
     #[test]
-    fn helper_protocol_accepts_call_group_operations_only_through_twenty() {
-        for operation in [19, 20] {
+    fn helper_protocol_accepts_call_group_and_command_operations_only_through_twenty_four() {
+        for operation in [19, 20, 21, 22, 23, 24] {
             let request = HelperRequest {
                 request_id: MsgId::from_bytes([1; 16]),
                 operation,
@@ -1824,7 +1824,7 @@ mod tests {
         }
         let unknown = HelperRequest {
             request_id: MsgId::from_bytes([1; 16]),
-            operation: 21,
+            operation: 25,
             payload: vec![0x80],
         };
         assert!(unknown.encode().is_err());

@@ -112,6 +112,31 @@ fn head_below_cached(cached_version: i64, head: &DeviceList) -> bool {
     head.unsigned.version < cached_version as u64
 }
 
+/// The chain check: each list names `requested_user`, is exactly the next version after the one
+/// before it (the first after `anchor`, or version 1 with no anchor), links to it by `prev_hash`
+/// and is signed by `ssk_pub` (`DeviceList::accept`). Returns the newest list, `anchor` when
+/// `lists` is empty. Both the leaf-anchored history ingest and the Bot's pushed-list ingest use it.
+fn check_chain<'a>(
+    requested_user: &[u8; 16],
+    ssk_pub: &[u8; 32],
+    lists: impl IntoIterator<Item = &'a DeviceList>,
+    anchor: Option<&'a DeviceList>,
+) -> Result<Option<&'a DeviceList>, ClientError> {
+    let mut previous = anchor;
+    for list in lists {
+        if list.unsigned.user_id.as_bytes() != requested_user {
+            return Err(failure(E_CREDENTIAL));
+        }
+        let expected = previous.map_or(1, |p| p.unsigned.version + 1);
+        if list.unsigned.version != expected {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
+        list.accept(previous, ssk_pub).map_err(ClientError::from)?;
+        previous = Some(list);
+    }
+    Ok(previous)
+}
+
 /// Verify every signed link against the authenticated leaf and the exact candidate head.
 #[allow(dead_code)] // L-CORE-44 direct-verifier test seam.
 pub(crate) fn validate_history(
@@ -144,20 +169,13 @@ fn validate_history_from(
     {
         return Err(failure(E_CORE_LIMIT));
     }
-    let mut previous = cached_anchor;
-    for list in history.iter().skip(usize::from(cached_anchor.is_some())) {
-        if list.unsigned.user_id.as_bytes() != requested_user {
-            return Err(failure(E_CREDENTIAL));
-        }
-        let expected = previous.map_or(1, |p| p.unsigned.version + 1);
-        if list.unsigned.version != expected {
-            return Err(failure(E_DEVICE_LIST_STALE));
-        }
-        list.accept(previous, &cred.ssk_pub)
-            .map_err(ClientError::from)?;
-        previous = Some(list);
-    }
-    let current = previous.expect("history is nonempty");
+    let current = check_chain(
+        requested_user,
+        &cred.ssk_pub,
+        history.iter().skip(usize::from(cached_anchor.is_some())),
+        cached_anchor,
+    )?
+    .expect("history is nonempty");
     if current.encode() != head.encode() || current.hash() != head.hash() {
         return Err(failure(E_DEVICE_LIST_STALE));
     }
@@ -228,6 +246,15 @@ pub(super) fn trusted_list(
     c: &rusqlite::Connection,
     user: &[u8; 16],
 ) -> Result<Result<DeviceList, &'static str>, StorageError> {
+    Ok(trusted_anchor(c, user)?.map(|(list, _)| list))
+}
+
+/// `trusted_list` with the cached SSK the list verifies under: the anchor a pushed list must
+/// chain from (`ingest_device_list`).
+fn trusted_anchor(
+    c: &rusqlite::Connection,
+    user: &[u8; 16],
+) -> Result<Result<(DeviceList, [u8; 32]), &'static str>, StorageError> {
     let cached: Option<(Vec<u8>, [u8; 32], [u8; 32])> = c
         .query_row(
             "SELECT list,umk_pub,ssk_pub FROM app_device_lists WHERE user_id=?1",
@@ -253,7 +280,7 @@ pub(super) fn trusted_list(
     if list.unsigned.user_id.as_bytes() != user || list.verify(&ssk).is_err() {
         return Ok(Err(E_CREDENTIAL));
     }
-    Ok(Ok(list))
+    Ok(Ok((list, ssk)))
 }
 
 /// The only writer of `app_trust_pins`.
@@ -1563,6 +1590,75 @@ impl ClientCore {
         // An unknown group is refused before parsing the untrusted history.
         let first = self.current_leaf(group_id, leaf_index)?;
         self.ingest_leaf(first, requested_user, history_body, head_list, now, true)
+    }
+
+    /// Bot v2 (task 8): a device list pushed on the Bot's event feed, as the device-list PUT body
+    /// `[version, blob, ssk_signature, prev_hash]`. Returns `(changed, version)`.
+    ///
+    /// A signed list carries no key, so it is checked only against what is already trusted: the
+    /// user's cached list while it vouches for the user (`trusted_anchor`: pinned, no pending key
+    /// change, signed under the cached SSK). The pushed list must be that list again (unchanged)
+    /// or its next version under the same SSK (`check_chain`). Anything else, a user never seen
+    /// through an MLS leaf included, is refused and leaves the cache as it was; first sight is
+    /// only the leaf path (`device_list_ingest`). The pin is untouched: the key is the pinned
+    /// one. Leaves already judged under the previous list are re-judged by the caller.
+    pub fn ingest_device_list(
+        &mut self,
+        user: &[u8; 16],
+        body: &[u8],
+    ) -> Result<(bool, u64), ClientError> {
+        if user == &[0; 16] {
+            return Err(failure(super::error::E_CORE_INPUT));
+        }
+        if body.len() > MAX_LIST_BYTES + 256 {
+            return Err(failure(E_CORE_LIMIT));
+        }
+        let row = wire::decode_device_list_body(body).map_err(|_| failure(E_DEVICE_LIST_STALE))?;
+        let list = bounded_list(&row.blob)?;
+        if list.unsigned.version != row.version
+            || list.sig_ssk != row.ssk_signature
+            || list.unsigned.prev_hash != row.prev_hash
+        {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
+        let (anchor, ssk) = self.read(|c| trusted_anchor(c, user))?.map_err(failure)?;
+        let anchor_blob = anchor.encode();
+        if list.encode() == anchor_blob {
+            return Ok((false, anchor.unsigned.version));
+        }
+        let head = check_chain(user, &ssk, [&list], Some(&anchor))?.expect("one list");
+        let version = head.unsigned.version;
+        let blob = head.encode();
+        // Compare-and-set on the anchor that was checked, so a concurrent writer cannot be
+        // overwritten by a list that chains from a row no longer cached.
+        let written = self.write(|_, u| {
+            u.with_conn(|c| {
+                c.execute(
+                    "UPDATE app_device_lists SET version=?1,list=?2 \
+                     WHERE user_id=?3 AND version=?4 AND list=?5 AND ssk_pub=?6",
+                    params![
+                        i64::try_from(version).unwrap_or(i64::MAX),
+                        blob,
+                        user.as_slice(),
+                        i64::try_from(anchor.unsigned.version).unwrap_or(i64::MAX),
+                        anchor_blob,
+                        ssk.as_slice()
+                    ],
+                )
+                .map_err(Into::into)
+            })
+            .map_err(ClientError::from)
+        })?;
+        if written != 1 {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
+        Ok((true, version))
+    }
+
+    /// The cached signed device list of `user` while it vouches for the user (`trusted_list`),
+    /// else `None`. Local only: Bot command verification never fetches a list.
+    pub fn trusted_device_list(&self, user: &[u8; 16]) -> Result<Option<DeviceList>, ClientError> {
+        Ok(self.read(|c| trusted_list(c, user))?.ok())
     }
 
     /// Return the trusted version from which a caller may fetch actor history. This is only a

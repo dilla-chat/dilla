@@ -85,6 +85,7 @@ impl Store {
             }
             Err(_) => return Err(StoreError::File),
         };
+        ensure_command_tables(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             _dir: dir_fd,
@@ -200,6 +201,36 @@ fn validate_binding(
         }
     }
     Ok(())
+}
+
+/// The sealed-command tables (Bot v2 task 8), additive on a validated store: no version change,
+/// and a store that never sees a command only gains two empty tables.
+///
+/// `bot_command_keys` holds the private command keys. It is its own table, not a `bot_state`
+/// area, because state areas are read and written by the Go side (ops 11 and 12); this table is
+/// reachable only through ops 21 and 22. At most one current key (`retired_at` NULL) per
+/// community, and one retired key until it is deleted 24 h after its retirement.
+///
+/// `command_replay` holds the request ids of opened, verified commands for 5 minutes.
+fn ensure_command_tables(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS bot_command_keys (\
+            key_id BLOB PRIMARY KEY, \
+            community_id BLOB NOT NULL, \
+            created_at INTEGER NOT NULL, \
+            retired_at INTEGER, \
+            private_key BLOB NOT NULL, \
+            publication BLOB NOT NULL); \
+         CREATE UNIQUE INDEX IF NOT EXISTS bot_command_keys_current \
+            ON bot_command_keys(community_id) WHERE retired_at IS NULL; \
+         CREATE INDEX IF NOT EXISTS bot_command_keys_retired \
+            ON bot_command_keys(retired_at) WHERE retired_at IS NOT NULL; \
+         CREATE TABLE IF NOT EXISTS command_replay (\
+            request_id BLOB PRIMARY KEY, \
+            seen_at INTEGER NOT NULL) WITHOUT ROWID; \
+         CREATE INDEX IF NOT EXISTS command_replay_seen ON command_replay(seen_at);",
+    )
+    .map_err(|_| StoreError::Database)
 }
 
 fn initialize_schema(

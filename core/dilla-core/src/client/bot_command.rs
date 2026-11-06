@@ -134,6 +134,29 @@ pub(super) fn verify_publication(
 }
 
 impl ClientCore {
+    /// The Bot side (Bot v2 task 8): signs the publication of its command key for `community_id`
+    /// with this device's DSK, naming this device. Returns the encoded publication. The private
+    /// half never reaches the core; the Bot helper keeps it.
+    pub fn bot_command_key_publish(
+        &self,
+        community_id: &[u8; 16],
+        key_id: [u8; 16],
+        public_key: [u8; 32],
+        not_after: u64,
+    ) -> Result<Vec<u8>, ClientError> {
+        let own = self.own()?;
+        let p = CommandKeyPublication::sign(
+            CommunityId::from_bytes(*community_id),
+            key_id,
+            public_key,
+            not_after,
+            DeviceId::from_bytes(own.device_id),
+            self.signer()?,
+        )
+        .map_err(|e| ClientError::new(E_CORE_INPUT, format!("command key: {e}")))?;
+        Ok(p.encode())
+    }
+
     /// Verifies a command-key publication for `bot_user_id` at `now` (`verify_publication`).
     /// Returns the publication and CBOR `[key_id, fingerprint]`, the fingerprint being 12
     /// Crockford characters of SHA-256(command key).

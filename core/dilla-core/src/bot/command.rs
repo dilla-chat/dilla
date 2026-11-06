@@ -209,6 +209,23 @@ pub fn derive_key_pair(ikm: &[u8; 32]) -> Result<(Zeroizing<[u8; 32]>, [u8; 32])
     Ok((sk, pk))
 }
 
+/// A command key: `(key_id, private_key, public_key)`.
+pub type CommandKeyPair = ([u8; 16], Zeroizing<[u8; 32]>, [u8; 32]);
+
+/// A fresh command key for the Bot: the pair from `DeriveKeyPair` over 32 random bytes and a
+/// random nonzero 16-byte `key_id`.
+pub fn generate_command_key() -> Result<CommandKeyPair, CoreError> {
+    let (sk, pk) = derive_key_pair(&*random32()?)?;
+    loop {
+        let raw = random32()?;
+        let mut key_id = [0u8; 16];
+        key_id.copy_from_slice(&raw[..16]);
+        if !is_zero(&key_id) {
+            return Ok((key_id, sk, pk));
+        }
+    }
+}
+
 /// RFC 9180 base-mode single-shot seal whose ephemeral key is `DeriveKeyPair(ikm_e)`: `(enc,
 /// ciphertext)`. Production callers pass 32 fresh random bytes; the vectors pass fixed ones.
 #[doc(hidden)]

@@ -707,8 +707,62 @@ func TestNewCallJoinHelperOperationsRoundTrip(t *testing.T) {
 			t.Fatalf("decode helper operation %d: %#v %v", operation, got, err)
 		}
 	}
-	if _, err := EncodeHelperRequest(HelperRequest{RequestID: fixtureID(2), Operation: HelperCallGroupForget + 1, Payload: []any{}}); err == nil {
+	if _, err := EncodeHelperRequest(HelperRequest{RequestID: fixtureID(2), Operation: HelperDeviceListIngest + 1, Payload: []any{}}); err == nil {
 		t.Fatal("helper operation after the frozen range accepted")
+	}
+}
+
+func TestCommandHelperOperationsAreNumbered21To24AndRoundTrip(t *testing.T) {
+	for want, operation := range map[HelperOperation]HelperOperation{21: HelperCommandKey, 22: HelperCommandOpen, 23: HelperReplySeal, 24: HelperDeviceListIngest} {
+		if operation != want {
+			t.Fatalf("operation %d is numbered %d", want, operation)
+		}
+		frame, err := EncodeHelperRequest(HelperRequest{RequestID: fixtureID(2), Operation: operation, Payload: []any{fixtureID(3)}})
+		if err != nil {
+			t.Fatalf("encode helper operation %d: %v", operation, err)
+		}
+		got, err := DecodeHelperRequestFrame(frame)
+		if err != nil || got.Operation != operation {
+			t.Fatalf("decode helper operation %d: %#v %v", operation, got, err)
+		}
+	}
+}
+
+func TestSealedRequestDecodesStrictly(t *testing.T) {
+	reply := make([]byte, 32)
+	reply[0] = 1
+	good := []any{idBytes(fixtureID(1)), idBytes(fixtureID(2)), idBytes(fixtureID(3)), uint64(7), []any{"x", uint64(3), []byte{9}, nil}, uint64(100), reply}
+	b, _ := cborx.Marshal(good)
+	r, err := DecodeSealedRequest(b)
+	if err != nil || r.RequestID != fixtureID(1) || r.CommunityID != fixtureID(2) || r.ChannelID != fixtureID(3) || r.Operation != 7 || r.SentAt != 100 || r.ReplyKey[0] != 1 || len(r.Args) != 4 {
+		t.Fatalf("decoded = %#v, %v", r, err)
+	}
+	bad := func(edit func([]any) []any) []byte {
+		v := append([]any(nil), good...)
+		out, _ := cborx.Marshal(edit(v))
+		return out
+	}
+	for name, input := range map[string][]byte{
+		"trailing":     append(append([]byte(nil), b...), 0),
+		"short":        bad(func(v []any) []any { return v[:6] }),
+		"zero request": bad(func(v []any) []any { v[0] = make([]byte, 16); return v }),
+		"short id":     bad(func(v []any) []any { v[1] = make([]byte, 15); return v }),
+		"nested arg":   bad(func(v []any) []any { v[4] = []any{[]any{}}; return v }),
+		"short reply":  bad(func(v []any) []any { v[6] = reply[:31]; return v }),
+		"zero reply":   bad(func(v []any) []any { v[6] = make([]byte, 32); return v }),
+		"text channel": bad(func(v []any) []any { v[2] = "c"; return v }),
+		"too many args": bad(func(v []any) []any {
+			a := make([]any, 33)
+			for i := range a {
+				a[i] = uint64(i)
+			}
+			v[4] = a
+			return v
+		}),
+	} {
+		if _, err := DecodeSealedRequest(input); err == nil {
+			t.Fatalf("%s accepted", name)
+		}
 	}
 }
 
@@ -990,3 +1044,5 @@ func TestMusicSkipOptionalCurrentItemGuard(t *testing.T) {
 		}
 	}
 }
+
+func idBytes(v id.ID) []byte { return v[:] }

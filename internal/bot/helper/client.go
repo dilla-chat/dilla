@@ -129,13 +129,143 @@ func (c *Client) Open(ctx context.Context, instance, community, installation id.
 // Operation 6 is deliberately reserved for GroupApply, which always uses the
 // staged transfer path so a large result cannot be lost to a direct frame cap.
 func (c *Client) Call(ctx context.Context, operation protocol.HelperOperation, payload []any) ([]any, error) {
-	if operation < protocol.HelperBootstrap || operation > protocol.HelperCallGroupForget ||
+	if operation < protocol.HelperBootstrap || operation > protocol.HelperDeviceListIngest ||
 		operation == protocol.HelperGroupApply || operation == protocol.HelperShutdown || operation == protocol.HelperGroupTransfer {
 		return nil, ErrInvalidOperation
 	}
 	callCtx, cancel := boundedContext(ctx, c.callTime)
 	defer cancel()
 	return c.serial(callCtx, func() ([]any, error) { return c.request(callCtx, operation, payload) })
+}
+
+// CommandRefusal is why the helper refused a sealed command (op 22). 1-7 are the core's
+// CommandRefusal codes; RefusalReplay is the helper's own.
+type CommandRefusal uint8
+
+const (
+	RefusalNone CommandRefusal = iota
+	RefusalMalformed
+	RefusalUnknownKey
+	RefusalBadSignature
+	RefusalWrongDevice
+	RefusalDeviceUnlisted
+	RefusalDeviceRevoked
+	RefusalStale
+	RefusalReplay
+)
+
+// OpenedCommand is op 22's answer: the verified request when Refusal is RefusalNone.
+type OpenedCommand struct {
+	Request protocol.SealedRequest
+	Refusal CommandRefusal
+}
+
+func unixSeconds(now time.Time) (uint64, error) {
+	seconds := now.Unix()
+	if seconds <= 0 {
+		return 0, errors.New("invalid helper time")
+	}
+	return uint64(seconds), nil
+}
+
+// CommandKey returns the signed publication of community's current command key at now
+// (op 21). The helper mints the first key and rotates a key that is 7 days old; within the
+// week it returns the same bytes.
+func (c *Client) CommandKey(ctx context.Context, community id.ID, now time.Time) ([]byte, error) {
+	seconds, err := unixSeconds(now)
+	if err != nil || community.IsZero() {
+		return nil, errors.New("invalid command key request")
+	}
+	answer, err := c.Call(ctx, protocol.HelperCommandKey, []any{community, seconds})
+	if err != nil {
+		return nil, err
+	}
+	publication, ok := oneBytes(answer)
+	if !ok || len(publication) == 0 {
+		return nil, unknown(errors.New("invalid command key answer"))
+	}
+	return publication, nil
+}
+
+// OpenCommand opens and verifies a sealed command that dillad attached to user's device (op
+// 22). A refusal is an answer, not an error: Refusal names it and Request is empty.
+func (c *Client) OpenCommand(ctx context.Context, sealed []byte, user, device id.ID, now time.Time) (OpenedCommand, error) {
+	seconds, err := unixSeconds(now)
+	if err != nil || user.IsZero() || device.IsZero() || len(sealed) == 0 {
+		return OpenedCommand{}, errors.New("invalid command open request")
+	}
+	answer, err := c.Call(ctx, protocol.HelperCommandOpen, []any{sealed, user, device, seconds})
+	if err != nil {
+		return OpenedCommand{}, err
+	}
+	code, ok := uint64At(answer, 0)
+	switch {
+	case ok && len(answer) == 1 && code >= uint64(RefusalMalformed) && code <= uint64(RefusalReplay):
+		return OpenedCommand{Refusal: CommandRefusal(code)}, nil
+	case ok && len(answer) == 2 && code == 0:
+		body, isBytes := answer[1].([]byte)
+		request, err := protocol.DecodeSealedRequest(body)
+		if !isBytes || err != nil {
+			return OpenedCommand{}, unknown(errors.New("invalid opened command"))
+		}
+		request.UserID, request.DeviceID = user, device
+		return OpenedCommand{Request: request}, nil
+	}
+	return OpenedCommand{}, unknown(errors.New("invalid command open answer"))
+}
+
+// SealReply seals answer number seq of requestID to the request's one-time replyKey (op 23).
+func (c *Client) SealReply(ctx context.Context, replyKey [32]byte, requestID id.ID, seq uint32, body []byte) ([]byte, error) {
+	if requestID.IsZero() || replyKey == [32]byte{} {
+		return nil, errors.New("invalid reply seal request")
+	}
+	if body == nil {
+		body = []byte{}
+	}
+	answer, err := c.Call(ctx, protocol.HelperReplySeal, []any{replyKey[:], requestID, uint64(seq), body})
+	if err != nil {
+		return nil, err
+	}
+	sealed, ok := oneBytes(answer)
+	if !ok || len(sealed) == 0 {
+		return nil, unknown(errors.New("invalid reply seal answer"))
+	}
+	return sealed, nil
+}
+
+// IngestDeviceList hands the helper a device list pushed for user, as the device-list PUT body
+// (op 24). It is the only way the helper's device-list cache changes. A list that does not chain
+// from the user's cached, trusted list is a StatusError and leaves the cache unchanged.
+func (c *Client) IngestDeviceList(ctx context.Context, user id.ID, body []byte) (changed bool, version uint64, err error) {
+	if user.IsZero() || len(body) == 0 {
+		return false, 0, errors.New("invalid device list ingest request")
+	}
+	answer, err := c.Call(ctx, protocol.HelperDeviceListIngest, []any{user, body})
+	if err != nil {
+		return false, 0, err
+	}
+	flag, okFlag := uint64At(answer, 0)
+	version, okVersion := uint64At(answer, 1)
+	if len(answer) != 2 || !okFlag || !okVersion || flag > 1 || version == 0 {
+		return false, 0, unknown(errors.New("invalid device list ingest answer"))
+	}
+	return flag == 1, version, nil
+}
+
+func oneBytes(answer []any) ([]byte, bool) {
+	if len(answer) != 1 {
+		return nil, false
+	}
+	b, ok := answer[0].([]byte)
+	return b, ok
+}
+
+func uint64At(answer []any, i int) (uint64, bool) {
+	if i >= len(answer) {
+		return 0, false
+	}
+	v, ok := answer[i].(uint64)
+	return v, ok
 }
 
 // GroupApply sends the complete op6 payload array through op16, including for
