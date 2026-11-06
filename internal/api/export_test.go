@@ -12,6 +12,9 @@ import (
 	"github.com/dilla-chat/dilla/internal/store"
 )
 
+// BeginCommitForTest takes the device's one commit slot, as a commit upload in flight does.
+func (h *Groups) BeginCommitForTest(device id.ID) (func(), error) { return h.beginCommit(device) }
+
 // HandleReadLiveForTest is Handle's work for a participant_joined or a track_published whose call
 // Handle read live as row: a test ends the call between that read and this work (#37 CI).
 func (c *CallEvents) HandleReadLiveForTest(ctx context.Context, ev *livekit.WebhookEvent, row store.VoiceSessionRow) {

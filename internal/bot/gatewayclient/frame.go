@@ -784,9 +784,9 @@ func uintsAt(raw cbor.RawMessage, maximum int) ([]uint64, error) {
 }
 func isNull(raw cbor.RawMessage) bool { return len(raw) == 1 && raw[0] == 0xf6 }
 
-// opAppBuild is the gateway's app_build notice (op 56): the build the instance serves, pushed to every connection that
-// negotiated wire 5 or newer. The Bot has no web client to update, so it drops the frame; an unknown opcode would end
-// the socket as a protocol error.
+// opAppBuild is the gateway's app_build notice (op 56): the build the instance serves, pushed to web clients on wire 6.
+// The instance does not send it to managed Bot connections, but an older or other instance might; the Bot has no web
+// client to update, so it drops the frame (an unknown opcode would end the socket as a protocol error).
 const opAppBuild Opcode = 56
 
 // dropMalformedEphemeral mirrors protocol/02: malformed voice_state, call_ring,

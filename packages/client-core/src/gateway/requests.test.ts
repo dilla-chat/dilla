@@ -5,14 +5,15 @@ import { DillaHttpError } from '../http/errors';
 import { RouteRtt } from '../http/route-rtt';
 import { socketRouteFor, type SocketRoute } from '../http/socket-routes';
 import { decodeFrame, Op } from './frames';
-import { CLIENT_CLOSE, type GatewayEvent, type GatewayStatus } from './gateway';
-import { SOCKET_ATTEMPT_TIMEOUT_MS, SocketRequests } from './requests';
+import { CLIENT_CLOSE, type GatewayEvent, type GatewayStatus, type ReadyInfo } from './gateway';
+import { RESEND_WINDOW_MS, SOCKET_ATTEMPT_TIMEOUT_MS, SocketRequests } from './requests';
 
 interface Sent { id: number; method: string; route: string; body: Uint8Array; idem: Uint8Array | null }
 
 /** The gateway as SocketRequests sees it: a status, its events, and request frames written while ready. */
 class FakeGateway {
   status: GatewayStatus = 'ready';
+  readyInfo: ReadyInfo | null = null;
   readonly sent: Sent[] = [];
   private readonly listeners = new Set<(e: GatewayEvent) => void>();
   subscribe(listener: (e: GatewayEvent) => void): () => void {
@@ -38,6 +39,9 @@ class FakeGateway {
     for (const listener of [...this.listeners]) listener(e);
   }
 }
+
+/** What a ready of an instance incarnation carries for SocketRequests. */
+const ready = (instance: number, generation: bigint): ReadyInfo => ({ instanceId: new Uint8Array(16).fill(instance), generation } as ReadyInfo);
 
 const ROUTES: readonly SocketRoute[] = [
   { method: 'POST', pattern: '/v1/test/{id}' },
@@ -73,6 +77,65 @@ function httpClient(sr: SocketRequests | null, fetchFn: typeof fetch): HttpClien
 
 beforeEach(() => { vi.useFakeTimers(); });
 afterEach(() => { vi.useRealTimers(); });
+
+describe('SocketRequests: a written mutation after a lost socket (Bot v2 task 5 I1)', () => {
+  const lose = (gw: FakeGateway): void => { gw.setStatus('waiting', 1006); gw.setStatus('connecting'); };
+
+  it('a fresh one is still written again with the same idem', async () => {
+    const { gw, sr, advance } = setup();
+    gw.readyInfo = ready(1, 7n);
+    gw.setStatus('ready');
+    const answer = send(sr, post('/v1/test/m', idem(9)));
+    expect(gw.sent).toHaveLength(1);
+    lose(gw);
+    advance(RESEND_WINDOW_MS - 1);
+    gw.setStatus('ready');
+    expect(gw.sent).toHaveLength(2);
+    expect(gw.sent[1].idem).toEqual(idem(9));
+    gw.respond(gw.sent[1].id, 204);
+    await expect(answer).resolves.toMatchObject({ status: 204 });
+  });
+
+  it('one first written 4 minutes ago is not written again: E_OUTCOME_UNKNOWN', async () => {
+    const { gw, sr, advance } = setup();
+    gw.readyInfo = ready(1, 7n);
+    gw.setStatus('ready');
+    const answer = send(sr, post('/v1/test/m', idem(9)));
+    const failed = answer.catch((e: unknown) => e);
+    lose(gw);
+    advance(RESEND_WINDOW_MS);
+    gw.setStatus('ready');
+    expect(gw.sent).toHaveLength(1);
+    await expect(failed).resolves.toMatchObject({ status: 0, code: 'E_OUTCOME_UNKNOWN' });
+  });
+
+  it('one written before a restart (another generation) is not written again', async () => {
+    const { gw, sr } = setup();
+    gw.readyInfo = ready(1, 7n);
+    gw.setStatus('ready');
+    const failed = send(sr, post('/v1/test/m', idem(9))).catch((e: unknown) => e);
+    lose(gw);
+    gw.readyInfo = ready(1, 8n);
+    gw.setStatus('ready');
+    expect(gw.sent).toHaveLength(1);
+    await expect(failed).resolves.toMatchObject({ status: 0, code: 'E_OUTCOME_UNKNOWN' });
+  });
+
+  it('one written before a restart (another instance id) is not written again, and a GET is', async () => {
+    const { gw, sr } = setup();
+    gw.readyInfo = ready(1, 7n);
+    gw.setStatus('ready');
+    const failed = send(sr, post('/v1/test/m', idem(9))).catch((e: unknown) => e);
+    const read = send(sr, get('/v1/test/r'));
+    lose(gw);
+    gw.readyInfo = ready(2, 7n);
+    gw.setStatus('ready');
+    await expect(failed).resolves.toMatchObject({ code: 'E_OUTCOME_UNKNOWN' });
+    expect(gw.sent.map((s) => s.method)).toEqual(['POST', 'GET', 'GET']);
+    gw.respond(gw.sent[2].id, 200, encode([1]));
+    await expect(read).resolves.toMatchObject({ status: 200 });
+  });
+});
 
 describe('SocketRequests', () => {
   it('a socket route never touches fetch while the socket is up', async () => {

@@ -187,13 +187,14 @@ func (h *Groups) create(w http.ResponseWriter, r *http.Request) {
 	if h.AfterRegister == nil {
 		return
 	}
-	// The 201 goes on the wire FIRST (protocol/02, POST /v1/groups): the hook fans instance
-	// proposals and a commit_needed election out to the creator, which must not overtake the
-	// answer that tells it the group exists, and populating a large channel is work the
-	// registrant does not wait for. A writer that cannot flush still answers when the handler
-	// returns, which is at once, because the hook runs on its own goroutine. The request's
-	// cancellation must not reach the hook: the group exists whether or not the client is still
-	// connected.
+	// The hook fans instance proposals and a commit_needed election out to the creator, and
+	// populating a large channel is work the registrant does not wait for. It runs on its own
+	// goroutine, so the handler returns at once. Over HTTP the 201 was flushed first; on the
+	// gateway socket the dispatcher's recorder cannot flush, so the hook's frames may precede the
+	// op 60 answer. The client holds or drops group frames until its group is registered
+	// (groupRegistered), and the election, re-election and ready-volunteer paths recover what was
+	// dropped. The request's cancellation must not reach the hook: the group exists whether or
+	// not the client is still connected.
 	groupID := out.GroupID
 	h.runAfter(w, r, func(ctx context.Context) { h.AfterRegister(ctx, groupID) })
 }

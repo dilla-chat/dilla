@@ -7,7 +7,7 @@ import { socketRouteFor } from './socket-routes';
 import {
   RecordingClient, bytesReply, cborReply, fakeTransport, noContent, refusal, textReply, type FakeOptions,
 } from './fake-fetch';
-import { HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, MODERATION_REMOVALS_PAGE, Routes, WELCOMES_PAGE, profileTextProblem, profileTextValue } from './routes';
+import { messageIdem, HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, MODERATION_REMOVALS_PAGE, Routes, WELCOMES_PAGE, profileTextProblem, profileTextValue } from './routes';
 
 const fill = (n: number, b: number): Uint8Array => new Uint8Array(n).fill(b);
 const INSTANCE = fill(16, 0x01);
@@ -2234,7 +2234,7 @@ describe('Routes: the messaging area goes over the socket (Bot v2 task 5)', () =
     const msgB = fill(16, 0x32);
     t.replies.push(bytesReply(200, UPLOADED), bytesReply(200, UPLOADED), bytesReply(200, UPLOADED), bytesReply(200, UPLOADED));
     await routes.postMessage(GROUP, BODY, msgA);
-    await routes.postMessage(GROUP, BODY, msgA); // the same send, written again after a lost socket or a restart
+    await routes.postMessage(GROUP, BODY, msgA); // the same send, written again by the socket layer after a lost socket (within the resend window)
     await routes.postMessage(GROUP, BODY, msgB);
     await routes.postMessage(GROUP, fill(40, 0x44), msgA); // re-sealed: another request, another key
     const idems = t.seen.map((r) => (r.idem === undefined ? '' : toHex(r.idem)));
@@ -2242,5 +2242,9 @@ describe('Routes: the messaging area goes over the socket (Bot v2 task 5)', () =
     expect(idems[0]).toBe(idems[1]);
     expect(idems[2]).not.toBe(idems[0]);
     expect(idems[3]).not.toBe(idems[0]);
+  });
+  it('the message idem matches the shared vector (internal/api send_retry_socket_test.go checks the same bytes)', async () => {
+    // msg id 0x31 x16, body 0x44 x40: SHA-256("dilla/message-idem/v1\0" || msgId || body)[:16].
+    expect(toHex(await messageIdem(fill(16, 0x31), fill(40, 0x44)))).toBe('0cf6fce80c1e9d827699c5296e842471');
   });
 });

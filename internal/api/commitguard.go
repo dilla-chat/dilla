@@ -13,7 +13,8 @@ import (
 // The bounds on POST /v1/groups/{id}/commit that deviation B37's 16 MiB body needs (final review):
 // who may upload and for which epoch is answered before the body is read, a commit carries at most
 // maxWelcomesPerCommit Welcomes, a device has one commit upload in flight at a time. (The route is a gateway socket
-// request, so its body arrives whole in one frame; there is no HTTP read deadline to extend.)
+// request, so its body arrives whole in one frame. The 60 s body deadline an HTTP commit had is now the gateway's
+// request-frame read bound, gateway.RequestFrameReadTimeout.)
 const (
 	// maxWelcomesPerCommit is protocol/01 § Joining's MAX_ADDS: at most 256 Adds are batched into
 	// one commit, and each Welcome is addressed to one added device.

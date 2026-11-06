@@ -217,7 +217,7 @@ describe('Gateway connect', () => {
     expect(h.events.find((e) => e.type === 'ready')).toEqual({
       type: 'ready',
       info: {
-        deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32,
+        deviceId: DEVICE, userId: USER, generation: 7n, instanceId: INSTANCE, keypackagesRemaining: 32,
         groups: [{ groupId: GROUP, epoch: 6n, lastSeq: 4127n, proposalsOutstanding: 2 }],
         versions: { wire: 6n, e2ee: 1n, media: 1n },
         heartbeatMs: 30000, maxFrameBytes: 131584, backoffMs: 300, backoffJitterMs: 300,

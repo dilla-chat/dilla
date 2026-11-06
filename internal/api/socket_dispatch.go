@@ -36,9 +36,10 @@ type SocketDispatchOptions struct {
 	// Deadline bounds one dispatch, a duplicate's wait on the running request included: 60 s.
 	Deadline time.Duration
 	// Observe, when set, is called with every dispatched request's method, route (the frame's, query included) and its
-	// answer's status and body, after the answer is built. It is the test host's view of traffic that used to cross
-	// its HTTP handler (dilladtest); production sets none. It must not block.
-	Observe func(method, route string, status int, body []byte)
+	// answer's status and body, after the answer is built, and whether the answer came from the replay record (a retry,
+	// not a new attempt). It is the test host's view of traffic that used to cross its HTTP handler (dilladtest);
+	// production sets none. It runs on the dispatching goroutine and must return at once: no store reads, no waiting.
+	Observe func(method, route string, status int, body []byte, replayed bool)
 }
 
 const (
@@ -70,8 +71,10 @@ const (
 //
 // The record is a best effort, not exactly-once: an answer that is not recorded (a 5xx, or a
 // response the connection's byte budget refused) lets a retry run the handler again, and so does
-// an entry evicted from the bounded record. The routes' own ids (msg_id, request_id, ...) are the
-// real dedupe.
+// an entry evicted from the bounded record, a record older than ReplayWindow and a restart of the
+// instance. A route with its own id (request_id, ...) has that as the real dedupe; a route with none (the message
+// upload) has only this record, so the client stops writing a mutation again once it may be gone (4 minutes after its
+// first write, or on another instance incarnation) and treats the answer as lost (E_OUTCOME_UNKNOWN).
 type SocketDispatcher struct {
 	mux     *server.Mux
 	handler http.Handler
@@ -108,6 +111,8 @@ type replayHook struct {
 	key         replayKey
 	fingerprint [32]byte
 	claimed     *replayEntry
+	// replayed is set when the guard answered from the record instead of running the handler.
+	replayed bool
 }
 
 type replayHookKey struct{}
@@ -168,7 +173,7 @@ func (d *SocketDispatcher) Dispatch(ctx context.Context, caller gateway.SocketCa
 	}()
 	resp = d.serve(req, r.ID)
 	if d.opts.Observe != nil {
-		d.opts.Observe(r.Method, r.Route, resp.Status, resp.Body)
+		d.opts.Observe(r.Method, r.Route, resp.Status, resp.Body, hook != nil && hook.replayed)
 	}
 	return resp
 }
@@ -218,6 +223,7 @@ func (d *SocketDispatcher) guard(w http.ResponseWriter, r *http.Request, next ht
 		return
 	}
 	d.mu.Unlock()
+	hook.replayed = true
 	if entry.fingerprint != hook.fingerprint {
 		server.WriteError(w, server.WithStatus(http.StatusConflict,
 			server.Errorf(server.CodeInvalidRequest, "idem was already used for a different request")))

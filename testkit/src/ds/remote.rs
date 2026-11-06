@@ -2430,7 +2430,7 @@ impl HttpDs {
     /// Sends one request frame (op 59) on the gateway socket and reads until its response frame
     /// (op 60), keeping every frame that arrives meanwhile as `barrier` does. The routes that moved
     /// to the socket have no HTTP form. The socket is opened when it is not.
-    fn socket_call(
+    pub(crate) fn socket_call(
         &mut self,
         method: &str,
         route: &str,

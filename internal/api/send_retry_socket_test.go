@@ -1,20 +1,41 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/dilla-chat/dilla/internal/api"
 	"github.com/dilla-chat/dilla/internal/api/sockettest"
 	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/clock"
 )
 
-// TestSendRetryOverSocketDedupesByMsgID is the server half of Review Focus 1. A message send carries an idem derived
-// from the message's msg_id; a client that lost its connection after the send and retries it on the next connection
-// sends the same idem. The device's replay record answers the retry with the first answer: one stored message, the
-// same seq. (The client half, a stable idem per message, is client-core's `send idem is stable per message`.)
-func TestSendRetryOverSocketDedupesByMsgID(t *testing.T) {
+// messageIdem is the client's idempotency key for a message send (packages/client-core/src/http/routes.ts messageIdem):
+// the first 16 bytes of SHA-256("dilla/message-idem/v1\0" || msgId || body).
+func messageIdem(msgID, body []byte) []byte {
+	sum := sha256.Sum256(append(append([]byte("dilla/message-idem/v1\x00"), msgID...), body...))
+	return sum[:16]
+}
+
+// TestMessageIdemMatchesTheClientVector pins the derivation against the vector routes.test.ts checks too.
+func TestMessageIdemMatchesTheClientVector(t *testing.T) {
+	msgID := bytes.Repeat([]byte{0x31}, 16)
+	body := bytes.Repeat([]byte{0x44}, 40)
+	if got := hex.EncodeToString(messageIdem(msgID, body)); got != "0cf6fce80c1e9d827699c5296e842471" {
+		t.Fatalf("message idem = %s, want the shared vector", got)
+	}
+}
+
+// TestSendRetryOverSocketIsAnsweredFromTheReplayRecord: the server knows no msg_id on this route; what dedupes a send
+// written again on a new connection is the (device, idem, body) replay record, for ReplayWindow. A retry past the window
+// runs again and stores a second copy: that is why the client stops resending a written mutation after 4 minutes
+// (client-core RESEND_WINDOW_MS) and hands the lost answer to the send lane's catch-up.
+func TestSendRetryOverSocketIsAnsweredFromTheReplayRecord(t *testing.T) {
 	h := newGroupsAPI(t)
 	h.mustCreate(t)
 	token := h.memberToken(t)
@@ -25,33 +46,36 @@ func TestSendRetryOverSocketDedupesByMsgID(t *testing.T) {
 	disp := api.NewSocketDispatcher(h.mux, api.SocketDispatchOptions{Clock: h.deps.Clock})
 	route := "/v1/groups/" + h.groupID.String() + "/message"
 	body := h.uploadBody(t, 64)
-	msgID := []byte("msg-0123456789ab") // the idem is the message id's bytes
-	r1 := sockettest.DispatchFrom(context.Background(), disp, sess, "127.0.0.1:40001", http.MethodPost, route, body, msgID)
+	idem := messageIdem([]byte("msg-0123456789ab"), body)
+	send := func(addr string) (uint64, int) {
+		resp := sockettest.DispatchFrom(context.Background(), disp, sess, addr, http.MethodPost, route, body, idem)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %x", resp.Status, resp.Body)
+		}
+		var out struct {
+			_           struct{} `cbor:",toarray"`
+			Seq         uint64
+			FrankingTag []byte
+			RecvTS      uint64
+		}
+		if err := cborx.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := h.deps.Repo.ListAppMessages(t.Context(), h.groupID, 1, 100)
+		if err != nil {
+			t.Fatalf("ListAppMessages: %v", err)
+		}
+		return out.Seq, len(rows)
+	}
+	first, stored := send("127.0.0.1:40001")
 	// The connection dropped; the retry arrives on a new one (another client port) with the same idem.
-	r2 := sockettest.DispatchFrom(context.Background(), disp, sess, "127.0.0.1:40002", http.MethodPost, route, body, msgID)
-	if r1.Status != http.StatusOK || r2.Status != http.StatusOK {
-		t.Fatalf("statuses = %d, %d, want 200 and 200: %x %x", r1.Status, r2.Status, r1.Body, r2.Body)
+	again, stored2 := send("127.0.0.1:40002")
+	if first != again || stored != 1 || stored2 != 1 {
+		t.Fatalf("retry within the window: seq %d then %d, %d and %d stored; want one stored message", first, again, stored, stored2)
 	}
-	var a, b struct {
-		_           struct{} `cbor:",toarray"`
-		Seq         uint64
-		FrankingTag []byte
-		RecvTS      uint64
-	}
-	if err := cborx.Unmarshal(r1.Body, &a); err != nil {
-		t.Fatal(err)
-	}
-	if err := cborx.Unmarshal(r2.Body, &b); err != nil {
-		t.Fatal(err)
-	}
-	if a.Seq != b.Seq {
-		t.Fatalf("the retry got seq %d, the first send %d: the same msg_id stored two messages", b.Seq, a.Seq)
-	}
-	rows, err := h.deps.Repo.ListAppMessages(t.Context(), h.groupID, 1, 100)
-	if err != nil {
-		t.Fatalf("ListAppMessages: %v", err)
-	}
-	if len(rows) != 1 {
-		t.Fatalf("%d stored messages after a retry with the same msg_id, want 1", len(rows))
+	h.deps.Clock.(*clock.Fake).Advance(6 * time.Minute)
+	late, stored3 := send("127.0.0.1:40003")
+	if late == first || stored3 != 2 {
+		t.Fatalf("retry past the window: seq %d, %d stored; want a second stored copy (the record is gone)", late, stored3)
 	}
 }

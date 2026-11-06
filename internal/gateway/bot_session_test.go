@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 
@@ -129,6 +130,36 @@ func TestManagedBotIdentifySelectedWireTwoReturnsUpgradeRequired(t *testing.T) {
 	}
 	if _, ok := recorder.selected(hash); ok {
 		t.Fatal("wire-2 refusal persisted unsupported bot capability")
+	}
+}
+
+// app_build tells a web client to update; a managed Bot connection is not sent it (Bot v2 task 5, review M6).
+func TestManagedBotConnectionIsNotSentAppBuild(t *testing.T) {
+	h := newHarness(t)
+	h.gw.opts.WireVersions = []uint64{6}
+	h.gw.opts.Auth = &capabilityRecordingAuth{Authenticator: h}
+	h.gw.opts.CurrentAppEntry = func() string { return "/assets/index-current.js" }
+	device := id.New()
+	bot := auth.BotSessionBinding{InstallationID: id.New(), CommunityID: id.New(), State: store.BotInstallationJoining}
+	token := scopedSession(h, device, auth.Session{Scope: auth.ScopeEnrolled, WireVersion: 0, TokenHash: []byte("01234567890123456789012345678901"), Bot: &bot})
+	sink := newRecordingSink(16, false)
+	c, ok := h.gw.identifyConnection(context.Background(), sink, identifyInbound(t, token, 6))
+	if !ok {
+		t.Fatal("a ready Bot on wire 6 was refused")
+	}
+	if !c.isBot {
+		t.Fatal("the connection is not marked as a Bot's")
+	}
+	h.gw.sendAppBuild(c)
+	for {
+		select {
+		case raw := <-sink.frames:
+			if in, err := Decode(raw, 1<<20); err == nil && in.Op == OpAppBuild {
+				t.Fatal("a managed Bot connection was sent app_build")
+			}
+		case <-time.After(50 * time.Millisecond):
+			return
+		}
 	}
 }
 

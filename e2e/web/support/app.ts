@@ -6,7 +6,7 @@ import { createHash, randomInt } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect, type BrowserContext, type ConsoleMessage, type Locator, type Page, type Response, type Worker } from '@playwright/test';
+import { expect, type BrowserContext, type ConsoleMessage, type Locator, type Page, type Worker } from '@playwright/test';
 import { test as persistentTest } from './persistent';
 import { WebDriver, type PeerAttachRequest, type PeerAttached, type PeerDm, type PeerEnrolled, type PeerFetched, type PeerReceived, type PeerSendOptions, type PeerSetup } from './driver';
 export type { PeerAttachment, PeerAttachRequest, PeerAttached, PeerDm, PeerEnrolled, PeerFetched, PeerOpenedDm, PeerReceived, PeerSendOptions, PeerSetup } from './driver';
@@ -36,21 +36,6 @@ export const RK_GROUP = /^[0-9A-HJKMNP-TV-Z]{4}$/;
 export const HEX32 = /^[0-9a-f]{32}$/;
 /** The console line Chromium and WebKit print for a response the client answers or retries by design (E2E-CI-01). */
 export const BY_DESIGN_RESOURCE_LINE = /^Failed to load resource: the server responded with a status of (401|404|409|410|429|503) \(/;
-const INTERACTION_CONTEXT_REFUSAL = 'current interaction context unavailable';
-const INTERACTION_CONTEXT_PATH = /^\/v1\/groups\/[0-9a-f]{32}\/interaction-admission-context$/;
-const FORBIDDEN_RESOURCE_LINE = /^Failed to load resource: the server responded with a status of 403 \(Forbidden\)$/;
-
-/** This read-only probe intentionally refuses ordinary Welcomes; only its exact denial is expected by the browser guard. */
-export function isExpectedInteractionAdmissionContextRefusal(status: number, url: string, body: Uint8Array): boolean {
-  let parsed: URL;
-  try { parsed = new URL(url); } catch { return false; }
-  if (status !== 403 || parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || parsed.search !== '' || parsed.hash !== '' ||
-      !INTERACTION_CONTEXT_PATH.test(parsed.pathname)) return false;
-  try {
-    const error = arr(decode(body), 3);
-    return error[0] === 'E_FORBIDDEN' && error[1] === INTERACTION_CONTEXT_REFUSAL && error[2] === null;
-  } catch { return false; }
-}
 /**
  * The line Firefox prints when it cancels a font download because the page went away mid-load (a tab taken
  * over or a context closed): status 2152398850 is 0x804B0002, NS_BINDING_ABORTED. A font the host fails to
@@ -356,8 +341,6 @@ export interface Guard {
   readonly cspViolations: CspViolation[];
   readonly consoleErrors: string[];
   readonly pageErrors: string[];
-  /** Refusals of an ordinary Welcome by the signed kind-3 context probe, with their exact request URLs. */
-  readonly interactionAdmissionRefusals: string[];
   attach(context: BrowserContext): Promise<void>;
   /** Moves every violation the tracked workers recorded into cspViolations (and empties their lists). */
   collectWorkers(): Promise<void>;
@@ -369,8 +352,6 @@ function newGuard(projectName: string): Guard {
   const cspViolations: CspViolation[] = [];
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
-  const interactionAdmissionRefusals: string[] = [];
-  const expectedForbidden = new WeakMap<Page, Map<string, { at: number; valid: Promise<boolean> }[]>>();
   const pending = new Set<Promise<unknown>>();
   const track = <T>(work: Promise<T>): Promise<T> => {
     pending.add(work);
@@ -409,23 +390,14 @@ function newGuard(projectName: string): Guard {
     p.on('framenavigated', (f) => { if (f === p.mainFrame()) disturb(p); });
     for (const w of p.workers()) watchWorker(w);
   };
-  const consumeExpectedForbidden = async (page: Page, url: string): Promise<boolean> => {
-    const responses = expectedForbidden.get(page)?.get(url);
-    if (responses === undefined) return false;
-    const now = Date.now();
-    while (responses.length > 0 && now - responses[0]!.at > 3000) responses.shift();
-    if (responses.length === 0) return false;
-    return (await responses.shift()!.valid);
-  };
   const handleConsole = async (m: ConsoleMessage): Promise<void> => {
     // Chromium and WebKit print every 4xx/5xx response as "Failed to load resource: …" (WebKit
     // measured on CI's first run: the expired session's 401 of the reload spec). Only the statuses the
     // client answers or retries by design are exempt: 401, 404, 409 and 410 (L-TS-02, L-TS-06) and the
-    // paced 429 and 503. The 403 below is matched to its exact request URL and response body; any other
-    // status or a line of another shape still fails the test (E2E-CI-01).
+    // paced 429 and 503. Any other status or a line of another shape still fails the test (E2E-CI-01). (The 403 of the
+    // interaction-admission-context probe was exempt here while it was an HTTP response; it is a socket answer now.)
     // Firefox printed nothing for them and keeps the full guard.
     const resourceLine = (projectName === 'chromium-web' || projectName === 'webkit-web') && BY_DESIGN_RESOURCE_LINE.test(m.text());
-    const interactionContextRefusal = (projectName === 'chromium-web' || projectName === 'webkit-web') && FORBIDDEN_RESOURCE_LINE.test(m.text());
     // web3.9 V-2, extended to the web suite: on a reload in a call, Firefox closes the signal socket before the
     // session's pagehide leave runs, and LiveKit logs this one line; the leave is then seen through the socket close.
     const firefoxBrowserAbort = projectName.startsWith('firefox') &&
@@ -436,9 +408,6 @@ function newGuard(projectName: string): Guard {
         FIREFOX_SOCKET_INTERRUPTED.test(m.text()));
     if (m.type() === 'error' && !resourceLine && !firefoxBrowserAbort) {
       const page = m.page();
-      const requestURL = m.location().url;
-      if (interactionContextRefusal && page !== null && requestURL !== '' &&
-          await consumeExpectedForbidden(page, requestURL)) return;
       if (page !== null && isCancelledFetchLine(m.text(), projectName)) {
         if (isNavigationAbortLine(m.text(), projectName, Date.now(), disturbed.get(page) ?? null)) return;
         cancelled.push({ page, at: Date.now(), text: m.text() });
@@ -447,7 +416,7 @@ function newGuard(projectName: string): Guard {
     }
   };
   return {
-    cspViolations, consoleErrors, pageErrors, interactionAdmissionRefusals,
+    cspViolations, consoleErrors, pageErrors,
     async attach(context: BrowserContext): Promise<void> {
       await context.exposeBinding('__dillaCspViolation', (_source, v: CspViolation) => {
         if (!isFirefoxBrowserFaviconViolation(projectName, v)) cspViolations.push(v);
@@ -463,21 +432,6 @@ function newGuard(projectName: string): Guard {
       });
       context.on('console', (m) => {
         track(handleConsole(m).catch((error: unknown) => { consoleErrors.push(`console guard failed: ${String(error)}`); }));
-      });
-      context.on('response', (response: Response) => {
-        if ((projectName !== 'chromium-web' && projectName !== 'webkit-web') || response.status() !== 403) return;
-        let page: Page;
-        try { page = response.request().frame().page(); } catch { return; }
-        const refusal = { at: Date.now(), valid: track(response.body().then((body) => {
-          const valid = isExpectedInteractionAdmissionContextRefusal(response.status(), response.url(), body);
-          if (valid) interactionAdmissionRefusals.push(response.url());
-          return valid;
-        }).catch(() => false)) };
-        const byURL = expectedForbidden.get(page) ?? new Map<string, { at: number; valid: Promise<boolean> }[]>();
-        const responses = byURL.get(response.url()) ?? [];
-        responses.push(refusal);
-        byURL.set(response.url(), responses);
-        expectedForbidden.set(page, byURL);
       });
       context.on('weberror', (e) => { pageErrors.push(String(e.error())); });
       context.on('page', watchPage);

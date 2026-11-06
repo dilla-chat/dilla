@@ -240,6 +240,13 @@ type wsSink struct {
 	requests atomic.Bool
 }
 
+// RequestFrameReadTimeout bounds how long the rest of a request frame longer than the read limit may take to arrive; a
+// slower connection is dropped. 16 MiB in 60 s is about 2.2 Mbit/s.
+const RequestFrameReadTimeout = 60 * time.Second
+
+// requestFrameReadTimeout is RequestFrameReadTimeout, a variable so a test can shorten it.
+var requestFrameReadTimeout = RequestFrameReadTimeout
+
 func newWSSink(c *websocket.Conn) sink { return &wsSink{c: c} }
 
 func newLimitedWSSink(c *websocket.Conn, limit int64) sink { return &wsSink{c: c, limit: limit} }
@@ -271,7 +278,13 @@ func (s *wsSink) read(ctx context.Context) (websocket.MessageType, []byte, error
 	if int64(len(b)) <= s.limit || !s.requests.Load() || !isRequestFrame(b) {
 		return typ, b, nil
 	}
+	// The rest of a long request frame must arrive within RequestFrameReadTimeout (the 60 s an HTTP commit's body had): a
+	// device that trickles a 16 MiB frame and stops would otherwise hold that memory for as long as TCP stays up.
+	slow := time.AfterFunc(requestFrameReadTimeout, func() {
+		_ = s.c.CloseNow() // a graceful Close would wait for the reader this is bounding
+	})
 	rest, err := io.ReadAll(io.LimitReader(r, int64(maxRequestFrameBytes)+1-int64(len(b))))
+	slow.Stop()
 	if err != nil {
 		return 0, nil, err
 	}

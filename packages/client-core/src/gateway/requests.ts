@@ -15,7 +15,7 @@ import type { HttpRequest, HttpResponse } from '../http/client';
 import { DillaHttpError, decodeErrorBody } from '../http/errors';
 import type { RouteRtt } from '../http/route-rtt';
 import { MAX_REQUEST_BODY, encodeRequestFrame } from './frames';
-import { CLIENT_CLOSE, type Gateway, type GatewayEvent } from './gateway';
+import { CLIENT_CLOSE, type Gateway, type GatewayEvent, type ReadyInfo } from './gateway';
 
 /** What HttpClient sends a socket route through, with the route's matched pattern (`METHOD /pattern`, the RTT key).
  *  `up` is true while the socket can carry a request now. */
@@ -29,7 +29,7 @@ export interface SocketTransport {
 }
 
 /** The part of the Gateway SocketRequests uses. */
-export type RequestGateway = Pick<Gateway, 'status' | 'subscribe' | 'sendRequest'>;
+export type RequestGateway = Pick<Gateway, 'status' | 'subscribe' | 'sendRequest'> & { readonly readyInfo?: ReadyInfo | null };
 
 export interface SocketRequestsDeps {
   now(): number;
@@ -40,6 +40,11 @@ export interface SocketRequestsDeps {
   /** Overrides SOCKET_ATTEMPT_TIMEOUT_MS (tests). */
   attemptTimeoutMs?: number;
 }
+
+/** A written mutation is not written again once its first write is this old: the instance's replay record keeps an answer
+ *  for 5 minutes (api.SocketDispatchOptions.ReplayWindow), so a resend after 4 could run twice. The caller gets
+ *  E_OUTCOME_UNKNOWN and its own lost-answer handling (the send lane's TS-01) decides. */
+export const RESEND_WINDOW_MS = 4 * 60_000;
 
 export const SOCKET_REQUESTS = {
   /** The instance's in-flight cap per connection (gateway.MaxInFlightRequests); more would only earn E_BUSY. */
@@ -68,6 +73,9 @@ interface Pending {
   timedOut: number;
   /** True once a frame of this request was written: a mutation's outcome is then unknown until it is answered. */
   written: boolean;
+  /** When the first frame of this request was written, and the instance incarnation it was written under (null: unknown). */
+  firstWrittenAt: number;
+  writtenUnder: string | null;
   /** The frame id of the attempt in flight, or null. */
   frameId: number | null;
   sentAt: number;
@@ -87,6 +95,8 @@ export class SocketRequests implements SocketTransport {
   private paused = false;
   private pauseTimer: number | null = null;
   private closedWith: Error | null = null;
+  /** The instance incarnation (instance id and generation) of the newest ready, or null before any. */
+  private incarnation: string | null = null;
   /** Why the gateway is stopped (revoked, upgrade, version, stop); cleared when it starts again. */
   private stoppedWith: Error | null = null;
   private readonly unsubscribe: () => void;
@@ -114,7 +124,7 @@ export class SocketRequests implements SocketTransport {
     const timeoutMs = r.timeoutMs === undefined ? (this.deps.attemptTimeoutMs ?? SOCKET_ATTEMPT_TIMEOUT_MS) : r.timeoutMs;
     return new Promise<HttpResponse>((resolve, reject) => {
       const p: Pending = { seq: this.nextSeq++, method: r.method, route: r.path, body, idem: r.idem ?? null, pattern, timeoutMs,
-        resolve, reject, signal: r.signal, onAbort: null, unavailable: 0, timedOut: 0, written: false, frameId: null, sentAt: 0,
+        resolve, reject, signal: r.signal, onAbort: null, unavailable: 0, timedOut: 0, written: false, firstWrittenAt: 0, writtenUnder: null, frameId: null, sentAt: 0,
         timer: null, deadline: null, done: false };
       if (r.signal !== undefined) {
         p.onAbort = () => { this.abort(p); };
@@ -149,7 +159,16 @@ export class SocketRequests implements SocketTransport {
           return;
         }
         this.stoppedWith = null;
-        if (e.status === 'ready') { this.pump(); return; }
+        if (e.status === 'ready') {
+          // The gateway has stored this socket's ready before the status: which instance incarnation answered.
+          const info = this.gateway.readyInfo;
+          const id = info?.instanceId;
+          this.incarnation = info === null || info === undefined || id === undefined ? null
+            : `${[...id].map((b) => b.toString(16).padStart(2, '0')).join('')}:${info.generation}`;
+          this.dropStaleWrites();
+          this.pump();
+          return;
+        }
         // Disconnected but reconnecting: what was in flight waits for the next socket.
         this.requeueInFlight();
         return;
@@ -184,6 +203,7 @@ export class SocketRequests implements SocketTransport {
       }
       if (!this.gateway.sendRequest(frame)) return;
       this.queue.shift();
+      if (!p.written) { p.firstWrittenAt = this.deps.now(); p.writtenUnder = this.incarnation; }
       p.written = true;
       p.frameId = id;
       p.sentAt = this.deps.now();
@@ -274,7 +294,25 @@ export class SocketRequests implements SocketTransport {
       p.frameId = null;
       if (!p.done) this.insert(p);
     }
+    this.dropStaleWrites();
     this.resume();
+  }
+
+  /** A mutation that was written and is queued again may have been applied. Past RESEND_WINDOW_MS, or once the socket
+   *  reached another instance incarnation (a restart or restore: the replay record is gone), it is not written again. */
+  private dropStaleWrites(): void {
+    const now = this.deps.now();
+    for (const p of [...this.queue]) {
+      if (p.done || !p.written || p.method === 'GET') continue;
+      const old = now - p.firstWrittenAt >= RESEND_WINDOW_MS;
+      const restarted = p.writtenUnder !== null && this.incarnation !== null && p.writtenUnder !== this.incarnation;
+      if (!old && !restarted) continue;
+      this.queue.splice(this.queue.indexOf(p), 1);
+      this.settle(p);
+      p.reject(refusal(0, 'E_OUTCOME_UNKNOWN', old
+        ? 'the request was written more than 4 minutes ago and its answer was lost'
+        : 'the instance restarted after the request was written and its answer was lost'));
+    }
   }
 
   /** Puts a request back by its submission order. */

@@ -11,6 +11,8 @@ export interface ReadyInfo {
   deviceId: Uint8Array;
   userId: Uint8Array;
   generation: bigint;
+  /** The instance id the hello named: with `generation`, which instance incarnation this socket reached (SocketRequests). */
+  instanceId?: Uint8Array;
   versions: { wire: bigint; e2ee: bigint; media: bigint };
   keypackagesRemaining: number;
   groups: { groupId: Uint8Array; epoch: bigint; lastSeq: bigint; proposalsOutstanding: number }[];
@@ -59,7 +61,7 @@ const WIRE_PREFERENCE = [6n] as const;
 const UPGRADE_REQUIRED = 'E_UPGRADE_REQUIRED';
 type TimerName = 'reconnectTimer' | 'handshakeTimer' | 'heartbeatTimer' | 'ackTimer';
 type HelloInfo = Pick<ReadyInfo, 'heartbeatMs' | 'maxFrameBytes' | 'backoffMs' | 'backoffJitterMs'> & {
-  versions: bigint[][]; selectedVersions: { wire: bigint; e2ee: bigint; media: bigint };
+  instanceId: Uint8Array; versions: bigint[][]; selectedVersions: { wire: bigint; e2ee: bigint; media: bigint };
 };
 
 function readHello(payload: CborValue[]): HelloInfo {
@@ -67,9 +69,9 @@ function readHello(payload: CborValue[]): HelloInfo {
   const versions = [arr(p[0]).map(u64), arr(p[1]).map(u64), arr(p[2]).map(u64)];
   const heartbeatMs = u53(p[3]);
   const maxFrameBytes = u53(p[4]);
-  bin(p[5], 16);
+  const instanceId = bin(p[5], 16);
   u64(p[6]);
-  return { versions, selectedVersions: { wire: 0n, e2ee: 1n, media: 1n }, heartbeatMs, maxFrameBytes,
+  return { instanceId, versions, selectedVersions: { wire: 0n, e2ee: 1n, media: 1n }, heartbeatMs, maxFrameBytes,
     backoffMs: u53(p[7]), backoffJitterMs: u53(p[8]) };
 }
 
@@ -96,7 +98,7 @@ function readReady(payload: CborValue[], hello: HelloInfo): ReadyInfo {
     const group = arr(entry, 4);
     return { groupId: bin(group[0], 16), epoch: u64(group[1]), lastSeq: u64(group[2]), proposalsOutstanding: u53(group[3]) };
   });
-  return { deviceId, userId, generation, versions, keypackagesRemaining, groups,
+  return { deviceId, userId, generation, instanceId: hello.instanceId, versions, keypackagesRemaining, groups,
     heartbeatMs: hello.heartbeatMs, maxFrameBytes: hello.maxFrameBytes,
     backoffMs: hello.backoffMs, backoffJitterMs: hello.backoffJitterMs };
 }
@@ -109,6 +111,8 @@ export class Gateway {
   private socket: WebSocket | null = null;
   private phase: 'minting' | 'hello' | 'ready-wait' | 'ready' = 'minting';
   private hello: HelloInfo | null = null;
+  /** The newest ready this socket produced, set before the 'ready' status is announced (SocketRequests reads it). */
+  readyInfo: ReadyInfo | null = null;
   private lastN = 0n;
   private failures = 0;
   private afterMs = 0;
@@ -274,6 +278,7 @@ export class Gateway {
         this.failures = 0;
         this.phase = 'ready';
         this.accepted = info.versions;
+        this.readyInfo = info;
         this.setStatus('ready', null);
         this.emit({ type: 'ready', info });
         this.scheduleBeat();

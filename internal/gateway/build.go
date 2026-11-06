@@ -13,7 +13,8 @@ func validAppEntry(entry string) bool {
 	return len(entry) <= 512 && !strings.Contains(entry, "..") && appEntryPattern.MatchString(entry)
 }
 func (g *Gateway) sendAppBuild(c *conn) {
-	if c.wire < auth.WireVersion || g.opts.CurrentAppEntry == nil {
+	// app_build tells a web client to update; a managed Bot has no web client, so none is sent to its connections.
+	if c.isBot || c.wire < auth.WireVersion || g.opts.CurrentAppEntry == nil {
 		return
 	}
 	entry := g.opts.CurrentAppEntry()

@@ -222,6 +222,8 @@ type Host struct {
 	botSendRefused             atomic.Uint64
 	botSendMu                  sync.Mutex
 	botSendAttempts            []BotSendAttempt
+	observeOnce                sync.Once
+	observed                   chan socketObservation
 	groupHealMu                sync.Mutex
 	groupHealAttempts          []GroupHealAttempt
 	botRuntimeMu               sync.Mutex
@@ -743,53 +745,72 @@ func (h *Host) Handler() http.Handler {
 	})
 }
 
+// socketObservation is one socket request the dispatcher handed to observeSocket.
+type socketObservation struct {
+	method, route string
+	status        int
+	code          string
+}
+
 // observeSocket sees every socket request of the current instance. The Bot's managed message sends and its group heals
 // are socket requests (Bot v2), so the attempts the host records for the e2e specs are read here, from the dispatcher,
-// instead of from the HTTP handler they no longer cross.
-func (h *Host) observeSocket(method, route string, status int, body []byte) {
-	path, _, _ := strings.Cut(route, "?")
-	parts := strings.Split(path, "/")
-	server := h.Server()
-	if server == nil {
+// instead of from the HTTP handler they no longer cross. It runs inside Dispatch, so it only queues: the group's epoch is
+// read by observeLoop. A retry answered from the replay record is not a new attempt, as it was not over HTTP.
+func (h *Host) observeSocket(method, route string, status int, body []byte, replayed bool) {
+	if replayed {
 		return
 	}
-	ctx := context.Background()
-	group := func() (g id.ID, epoch uint64, unknown, ok bool) {
-		if len(parts) < 4 {
-			return id.ID{}, 0, false, false
-		}
-		g, err := id.Parse(parts[3])
-		if err != nil {
-			return id.ID{}, 0, false, false
-		}
-		if row, getErr := server.Repo().GetGroup(ctx, g); getErr == nil {
-			return g, row.Epoch, row.EpochUnknown, true
-		}
-		return g, 0, false, true
+	path, _, _ := strings.Cut(route, "?")
+	parts := strings.Split(path, "/")
+	botSend := method == http.MethodPost && len(parts) == 6 && parts[1] == "v1" && parts[2] == "groups" && parts[4] == "bot" && parts[5] == "messages"
+	heal := (method == http.MethodGet || method == http.MethodPost) && len(parts) == 5 && parts[1] == "v1" && parts[2] == "groups" && parts[4] == "heal"
+	if !botSend && !heal {
+		return
 	}
-	switch {
-	case method == http.MethodPost && len(parts) == 6 && parts[1] == "v1" && parts[2] == "groups" && parts[4] == "bot" && parts[5] == "messages":
-		attempt := BotSendAttempt{Method: method, Route: "/v1/groups/{group}/bot/messages", Status: status, ErrorCode: responseErrorCode(body)}
-		h.botSendRequests.Add(1)
-		if g, epoch, unknown, ok := group(); ok {
-			attempt.Group, attempt.Epoch, attempt.EpochUnknown = g.String(), epoch, unknown
+	h.observeOnce.Do(func() {
+		h.observed = make(chan socketObservation, 256)
+		go h.observeLoop(h.observed)
+	})
+	defer func() { _ = recover() }() // a send after Close
+	select {
+	case h.observed <- socketObservation{method: method, route: path, status: status, code: responseErrorCode(body)}:
+	default: // a flood of attempts: the host keeps the newest 64 anyway
+	}
+}
+
+// observeLoop records the queued observations with the group's epoch at the time it gets to them.
+func (h *Host) observeLoop(in <-chan socketObservation) {
+	ctx := context.Background()
+	for o := range in {
+		parts := strings.Split(o.route, "/")
+		var group, epoch, unknown = "", uint64(0), false
+		if g, err := id.Parse(parts[3]); err == nil {
+			group = g.String()
+			if server := h.Server(); server != nil {
+				if row, getErr := server.Repo().GetGroup(ctx, g); getErr == nil {
+					epoch, unknown = row.Epoch, row.EpochUnknown
+				}
+			}
 		}
-		h.botSendMu.Lock()
-		h.botSendAttempts = append(h.botSendAttempts, attempt)
-		if len(h.botSendAttempts) > 64 {
-			h.botSendAttempts = append([]BotSendAttempt(nil), h.botSendAttempts[len(h.botSendAttempts)-64:]...)
+		if len(parts) == 6 {
+			attempt := BotSendAttempt{Method: o.method, Route: "/v1/groups/{group}/bot/messages", Status: o.status, ErrorCode: o.code,
+				Group: group, Epoch: epoch, EpochUnknown: unknown}
+			h.botSendRequests.Add(1)
+			h.botSendMu.Lock()
+			h.botSendAttempts = append(h.botSendAttempts, attempt)
+			if len(h.botSendAttempts) > 64 {
+				h.botSendAttempts = append([]BotSendAttempt(nil), h.botSendAttempts[len(h.botSendAttempts)-64:]...)
+			}
+			h.botSendMu.Unlock()
+			if o.status >= 200 && o.status < 300 {
+				h.botSendAccepted.Add(1)
+			} else {
+				h.botSendRefused.Add(1)
+			}
+			continue
 		}
-		h.botSendMu.Unlock()
-		if status >= 200 && status < 300 {
-			h.botSendAccepted.Add(1)
-		} else {
-			h.botSendRefused.Add(1)
-		}
-	case (method == http.MethodGet || method == http.MethodPost) && len(parts) == 5 && parts[1] == "v1" && parts[2] == "groups" && parts[4] == "heal":
-		attempt := GroupHealAttempt{Method: method, Route: "/v1/groups/{group}/heal", Status: status, ErrorCode: responseErrorCode(body)}
-		if g, epoch, unknown, ok := group(); ok {
-			attempt.Group, attempt.Epoch, attempt.EpochUnknown = g.String(), epoch, unknown
-		}
+		attempt := GroupHealAttempt{Method: o.method, Route: "/v1/groups/{group}/heal", Status: o.status, ErrorCode: o.code,
+			Group: group, Epoch: epoch, EpochUnknown: unknown}
 		h.groupHealMu.Lock()
 		h.groupHealAttempts = append(h.groupHealAttempts, attempt)
 		if len(h.groupHealAttempts) > 64 {
@@ -1010,6 +1031,10 @@ func (h *Host) Close(ctx context.Context) error {
 	defer h.mu.Unlock()
 	h.stopSFU(ctx)
 	h.current.Store(nil)
+	h.observeOnce.Do(func() {}) // no observer starts after Close
+	if h.observed != nil {
+		close(h.observed)
+	}
 	err := h.server.Shutdown(ctx)
 	h.closeWasm(ctx)
 	return err

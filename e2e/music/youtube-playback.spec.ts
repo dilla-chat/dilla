@@ -3,6 +3,7 @@ import { expect, test } from '../voice/support/peer-browser';
 import { audible, audibleLevel, AUDIBLE_RMS, callSlice, heardCount, keyPath, joinVoice, self, snapshotDevices, voiceRow, WAIT } from '../voice/support/voice';
 import { addServerVia, botRowMenu, channelRow, completeSignUp, composerBox, copy, makeInviteLink, makeRole, newAccount, openChannel, railItem, signUp } from '../web/support/app';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
+import { socketRequestOnce } from '../web/support/socket-requests';
 
 const SERVER = 'Music acceptance A';
 const SERVER_TWO = 'Music acceptance B';
@@ -69,11 +70,10 @@ test('two communities run isolated YouTube playback with independent Bot identit
   });
   const currentCallGroup = async (channel: string): Promise<string> => {
     expect(djAuthorization !== '', 'DJ has an authenticated sandbox session').toBe(true);
-    const response = await djPage.request.get(`${sandboxOrigin}/v1/channels/${channel}/call`, {
-      headers: { authorization: djAuthorization, accept: 'application/cbor' },
-    });
-    expect(response.ok()).toBe(true);
-    const group = arr(decode(new Uint8Array(await response.body())))[0];
+    // The call read is a socket route: a one-shot gateway connection as the DJ's session.
+    const response = await socketRequestOnce(sandboxOrigin, djAuthorization, 'GET', `/v1/channels/${channel}/call`);
+    expect(response.status).toBe(200);
+    const group = arr(decode(response.body))[0];
     expect(group).toBeInstanceOf(Uint8Array);
     return Buffer.from(group as Uint8Array).toString('hex');
   };
@@ -318,10 +318,8 @@ test('two communities run isolated YouTube playback with independent Bot identit
   const oldGroup = await currentCallGroup(callChannel!);
   // Stop intentionally retains the Bot's authorized room. End this sandbox call
   // through the current human leaf's public API, rather than assuming it is alone.
-  const ended = await djPage.request.delete(`${sandboxOrigin}/v1/calls/${callChannel}`, {
-    headers: { authorization: djAuthorization },
-  });
-  expect(ended.status()).toBe(204);
+  const ended = await socketRequestOnce(sandboxOrigin, djAuthorization, 'DELETE', `/v1/calls/${callChannel}`);
+  expect(ended.status).toBe(204);
   await expect.poll(() => snapshotDevices(djPage, callChannel!), { timeout: WAIT }).toEqual([]);
   await joinVoice(djPage, SERVER, 'general');
   expect(await currentCallGroup(callChannel!)).not.toBe(oldGroup);
