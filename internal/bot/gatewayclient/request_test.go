@@ -118,7 +118,9 @@ func (s *requestServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if a.body == nil {
 			a.body = []byte{}
 		}
-		if sendServerFrame(ctx, ws, OpResponse, 0, nil, []any{req.id, a.status, a.body}) != nil {
+		// Written directly: the test encoder holds frames to the 1 MiB event bound, and an answer may be larger.
+		frame, err := cborx.Marshal([]any{uint64(OpResponse), uint64(0), nil, []any{req.id, a.status, a.body}})
+		if err != nil || ws.Write(ctx, websocket.MessageBinary, frame) != nil {
 			return
 		}
 	}
@@ -282,6 +284,20 @@ func TestDoSurfacesConflictAndAnswersAndRequiresIdem(t *testing.T) {
 	}
 	if n := len(srv.requests()); n != 2 {
 		t.Fatalf("sent %d requests, want 2", n)
+	}
+}
+
+// An answer above the event frame bound (1 MiB) is read and handed to its request directly, never through the event
+// buffer.
+func TestDoReadsAnAnswerAboveTheEventFrameBound(t *testing.T) {
+	big := bytes.Repeat([]byte{7}, 2<<20)
+	srv := &requestServer{serve: func(seenRequest) answer { return answer{status: 200, body: big} }}
+	gw, ctx := startRequestClient(t, srv)
+	for range 40 {
+		status, body, err := gw.Do(ctx, http.MethodGet, "/v1/big", nil, nil)
+		if err != nil || status != 200 || !bytes.Equal(body, big) {
+			t.Fatalf("Do = %d, %d bytes, %v", status, len(body), err)
+		}
 	}
 }
 

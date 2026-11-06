@@ -514,15 +514,6 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 			writerDone <- err
 			return fresh, 0, errTransport
 		case raw := <-rawFrames:
-			if isResponseFrame(raw) {
-				answer, e := DecodeResponseFrame(raw)
-				if e != nil {
-					return fresh, 0, ErrProtocol
-				}
-				conn.deliver(answer)
-				c.signalRoom()
-				continue
-			}
 			if int64(len(raw)) > maxFrameReadLimit(conn.maxFrame) {
 				// Before the read limit was raised for answers, the reader itself refused such a frame and the
 				// connection was retried; keep that outcome.
@@ -725,6 +716,18 @@ func (c *Client) readPump(conn *connection, out chan<- []byte, done chan<- error
 		if messageType != websocket.MessageBinary {
 			done <- ErrProtocol
 			return
+		}
+		// Bot v2: an answer goes straight to the request waiting for it, never through the bounded event buffer, so
+		// large answers are not held there and a slow consumer cannot stall them.
+		if isResponseFrame(b) {
+			answer, err := DecodeResponseFrame(b)
+			if err != nil {
+				done <- ErrProtocol
+				return
+			}
+			conn.deliver(answer)
+			c.signalRoom()
+			continue
 		}
 		select {
 		case out <- b:

@@ -12,7 +12,10 @@ import (
 )
 
 // Bot v2: app requests over the gateway socket. Client implements client.Transport: one request frame (op 59) per
-// attempt, answered by a response frame (op 60) with the same id on the same connection.
+// attempt, answered by a response frame (op 60) with the same id on the same connection, in any order.
+//
+// Ordering is the same as over HTTPS: concurrent Do calls are written in no promised order and the instance runs them
+// concurrently; only calls a caller made one after the other (each awaited) are applied in that order.
 //
 // Retry rules, the same as the app's SocketRequests:
 //   - While there is no connection a request waits for the next one (or the caller's deadline).

@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { decode, encode, type CborInput } from '../cbor';
-import { HttpClient, type HttpDeps, type HttpRequest } from '../http/client';
+import { HttpClient, type HttpDeps, type HttpRequest, type HttpResponse } from '../http/client';
 import { DillaHttpError } from '../http/errors';
 import { RouteRtt } from '../http/route-rtt';
-import type { SocketRoute } from '../http/socket-routes';
+import { socketRouteFor, type SocketRoute } from '../http/socket-routes';
 import { decodeFrame, Op } from './frames';
-import type { GatewayEvent, GatewayStatus } from './gateway';
+import { CLIENT_CLOSE, type GatewayEvent, type GatewayStatus } from './gateway';
 import { SocketRequests } from './requests';
 
 interface Sent { id: number; method: string; route: string; body: Uint8Array; idem: Uint8Array | null }
@@ -48,6 +48,9 @@ const post = (path: string, key: Uint8Array | undefined, body: CborInput = []): 
   ({ method: 'POST', path, body: encode(body), bucket: 'none', idempotent: false, ...(key === undefined ? {} : { idem: key }) });
 const get = (path: string): HttpRequest => ({ method: 'GET', path, bucket: 'none', idempotent: true });
 const refusal = (code: string, retryMs: number | null = null): Uint8Array => encode([code, '', retryMs]);
+/** What HttpClient does: the request with the pattern it matched in the socket table. */
+const send = (sr: SocketRequests, r: HttpRequest): Promise<HttpResponse> =>
+  sr.request(r, socketRouteFor(r.method, r.path, ROUTES) ?? 'unmatched');
 const flush = async (): Promise<void> => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
 
 function setup(opts: { status?: GatewayStatus } = {}) {
@@ -55,7 +58,7 @@ function setup(opts: { status?: GatewayStatus } = {}) {
   if (opts.status !== undefined) gw.status = opts.status;
   let now = 0;
   const rtt = new RouteRtt();
-  const sr = new SocketRequests(gw, { now: () => now, random: () => 0, rtt, routes: ROUTES });
+  const sr = new SocketRequests(gw, { now: () => now, random: () => 0, rtt, attemptTimeoutMs: 30_000 });
   return { gw, sr, rtt, advance: (ms: number) => { now += ms; } };
 }
 
@@ -95,12 +98,12 @@ describe('SocketRequests', () => {
     expect(gw.sent).toEqual([]);
   });
 
-  it('requests queue while the socket is down and drain in submission order', async () => {
+  it('requests queue while the socket reconnects and are written in submission order', async () => {
     const { gw, sr } = setup({ status: 'waiting' });
     expect(sr.up).toBe(false);
-    const a = sr.request(post('/v1/test/a', idem(1)));
-    const b = sr.request(get('/v1/test/b'));
-    const c = sr.request(post('/v1/test/c', idem(3)));
+    const a = send(sr, post('/v1/test/a', idem(1)));
+    const b = send(sr, get('/v1/test/b'));
+    const c = send(sr, post('/v1/test/c', idem(3)));
     await flush();
     expect(gw.sent).toEqual([]);
     gw.setStatus('connecting');
@@ -128,7 +131,7 @@ describe('SocketRequests', () => {
       return answer;
     };
     let resolved = 0;
-    const answer = sr.request(post('/v1/test/m', idem(9))).then((r) => { resolved += 1; return r; });
+    const answer = send(sr, post('/v1/test/m', idem(9))).then((r) => { resolved += 1; return r; });
     expect(gw.sent).toHaveLength(1);
     serve(gw.sent[0]);                          // applied, but the answer is lost with the socket
     gw.setStatus('waiting', 1006);
@@ -148,11 +151,11 @@ describe('SocketRequests', () => {
   it('E_BUSY re-queues at the head and does not reject', async () => {
     const { gw, sr } = setup();
     let rejected = false;
-    const a = sr.request(post('/v1/test/a', idem(1))).catch((e: unknown) => { rejected = true; throw e; });
-    const b = sr.request(post('/v1/test/b', idem(2)));
+    const a = send(sr, post('/v1/test/a', idem(1))).catch((e: unknown) => { rejected = true; throw e; });
+    const b = send(sr, post('/v1/test/b', idem(2)));
     expect(gw.sent.map((s) => s.route)).toEqual(['/v1/test/a', '/v1/test/b']);
     gw.respond(gw.sent[0].id, 429, refusal('E_BUSY'));
-    const c = sr.request(post('/v1/test/c', idem(3)));
+    const c = send(sr, post('/v1/test/c', idem(3)));
     // Nothing more is sent until the instance has room again: here, the next answer.
     expect(gw.sent).toHaveLength(2);
     gw.respond(gw.sent[1].id, 204);
@@ -166,7 +169,7 @@ describe('SocketRequests', () => {
 
   it('E_BUSY with nothing else in flight retries after a short pause', async () => {
     const { gw, sr } = setup();
-    const a = sr.request(post('/v1/test/a', idem(1)));
+    const a = send(sr, post('/v1/test/a', idem(1)));
     gw.respond(gw.sent[0].id, 429, refusal('E_BUSY'));
     expect(gw.sent).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(250);
@@ -178,15 +181,18 @@ describe('SocketRequests', () => {
 
   it('a mutation without idem throws E_IDEMPOTENCY_REQUIRED', async () => {
     const { gw, sr } = setup();
-    await expect(sr.request(post('/v1/test/a', undefined))).rejects.toThrow('E_IDEMPOTENCY_REQUIRED');
-    await expect(sr.request({ method: 'DELETE', path: '/v1/test/a', bucket: 'none', idempotent: true }))
+    await expect(send(sr, post('/v1/test/a', undefined))).rejects.toMatchObject({ status: 0, code: 'E_IDEMPOTENCY_REQUIRED' });
+    await expect(send(sr, post('/v1/test/a', undefined))).rejects.toBeInstanceOf(DillaHttpError);
+    await expect(send(sr, { method: 'PUT', path: '/v1/test/a', body: new Uint8Array(16 * 1024 * 1024 + 1), bucket: 'none',
+      idempotent: true, idem: idem(1) })).rejects.toMatchObject({ status: 0, code: 'E_FRAME_LIMIT' });
+    await expect(send(sr, { method: 'DELETE', path: '/v1/test/a', bucket: 'none', idempotent: true }))
       .rejects.toThrow('E_IDEMPOTENCY_REQUIRED');
     expect(gw.sent).toEqual([]);
   });
 
   it('503 E_UNAVAILABLE retries with the same idem after a backoff', async () => {
     const { gw, sr } = setup();
-    const a = sr.request(post('/v1/test/a', idem(4)));
+    const a = send(sr, post('/v1/test/a', idem(4)));
     gw.respond(gw.sent[0].id, 503, refusal('E_UNAVAILABLE', 1000));
     expect(gw.sent).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(999);
@@ -201,7 +207,7 @@ describe('SocketRequests', () => {
   it('surfaces 409, 401, 426 and a route 503 to the caller without retrying', async () => {
     const { gw, sr } = setup();
     const answers = [409, 401, 426, 503].map((status, i) => {
-      const p = sr.request(post('/v1/test/x', idem(10 + i)));
+      const p = send(sr, post('/v1/test/x', idem(10 + i)));
       gw.respond(gw.sent[i].id, status, refusal(status === 503 ? 'E_BOT_OFFLINE' : 'E_CONFLICT'));
       return p;
     });
@@ -221,7 +227,7 @@ describe('SocketRequests', () => {
 
   it('a GET without idem lost in a disconnect is sent again', async () => {
     const { gw, sr } = setup();
-    const a = sr.request(get('/v1/test/g'));
+    const a = send(sr, get('/v1/test/g'));
     gw.setStatus('waiting', 1006);
     gw.setStatus('ready');
     expect(gw.sent.map((s) => [s.route, s.idem])).toEqual([['/v1/test/g', null], ['/v1/test/g', null]]);
@@ -231,20 +237,101 @@ describe('SocketRequests', () => {
 
   it('rejects what is queued when the instance asks for an update or revokes the session', async () => {
     const { gw, sr } = setup({ status: 'waiting' });
-    const a = sr.request(post('/v1/test/a', idem(1)));
+    const a = send(sr, post('/v1/test/a', idem(1)));
+    gw.setStatus('idle', CLIENT_CLOSE.version);
     gw.emit({ type: 'upgradeRequired' });
     await expect(a).rejects.toMatchObject({ status: 426, code: 'E_UPGRADE_REQUIRED' });
-    const b = sr.request(post('/v1/test/b', idem(2)));
+    gw.setStatus('connecting');
+    const b = send(sr, post('/v1/test/b', idem(2)));
+    gw.setStatus('idle', 4004);
     gw.emit({ type: 'revoked' });
-    await expect(b).rejects.toBeInstanceOf(DillaHttpError);
-    gw.setStatus('ready');
+    await expect(b).rejects.toMatchObject({ status: 401, code: 'E_UNAUTHENTICATED' });
     expect(gw.sent).toEqual([]);
+  });
+
+  it('a new request after revoke is rejected at once', async () => {
+    const { gw, sr } = setup();
+    gw.setStatus('idle', 4004);
+    gw.emit({ type: 'revoked' });
+    await expect(send(sr, post('/v1/test/a', idem(1)))).rejects.toMatchObject({ status: 401, code: 'E_UNAUTHENTICATED' });
+    await expect(send(sr, get('/v1/test/g'))).rejects.toMatchObject({ code: 'E_UNAUTHENTICATED' });
+    expect(gw.sent).toEqual([]);
+  });
+
+  it('stop with a request queued rejects it E_NETWORK, never leaving it waiting', async () => {
+    const { gw, sr } = setup({ status: 'waiting' });
+    const a = send(sr, post('/v1/test/a', idem(1)));
+    gw.setStatus('idle');
+    await expect(a).rejects.toMatchObject({ status: 0, code: 'E_NETWORK' });
+    await expect(send(sr, get('/v1/test/g'))).rejects.toMatchObject({ status: 0, code: 'E_NETWORK' });
+  });
+
+  it('stop with a request in flight rejects a mutation E_OUTCOME_UNKNOWN and a read E_NETWORK', async () => {
+    const { gw, sr } = setup();
+    const m = send(sr, post('/v1/test/m', idem(1)));
+    const g = send(sr, get('/v1/test/g'));
+    // A mutation written before, lost in a reconnect and queued again, is just as unknown.
+    gw.setStatus('waiting', 1006);
+    gw.setStatus('ready');
+    const n = send(sr, post('/v1/test/n', idem(2)));
+    expect(gw.sent).toHaveLength(5);
+    gw.setStatus('idle');
+    await expect(m).rejects.toMatchObject({ status: 0, code: 'E_OUTCOME_UNKNOWN' });
+    await expect(n).rejects.toMatchObject({ status: 0, code: 'E_OUTCOME_UNKNOWN' });
+    await expect(g).rejects.toMatchObject({ status: 0, code: 'E_NETWORK' });
+    gw.respond(gw.sent[4].id, 204);                       // a late answer for a rejected request is dropped
+  });
+
+  it('a new request after stop then start succeeds', async () => {
+    const { gw, sr } = setup();
+    gw.setStatus('idle');
+    await expect(send(sr, get('/v1/test/g'))).rejects.toMatchObject({ code: 'E_NETWORK' });
+    gw.setStatus('connecting');
+    const a = send(sr, post('/v1/test/a', idem(1)));
+    expect(gw.sent).toEqual([]);
+    gw.setStatus('ready');
+    gw.respond(gw.sent[0].id, 204);
+    await expect(a).resolves.toEqual({ status: 204, body: new Uint8Array() });
+  });
+
+  it('close rejects never-written requests E_NETWORK and a written mutation E_OUTCOME_UNKNOWN', async () => {
+    const { gw, sr } = setup();
+    const m = send(sr, post('/v1/test/m', idem(1)));
+    gw.setStatus('waiting', 1006);
+    const q = send(sr, post('/v1/test/q', idem(2)));
+    sr.close();
+    await expect(m).rejects.toMatchObject({ code: 'E_OUTCOME_UNKNOWN' });
+    await expect(q).rejects.toMatchObject({ code: 'E_NETWORK' });
+    await expect(send(sr, get('/v1/test/g'))).rejects.toMatchObject({ code: 'E_NETWORK' });
+  });
+
+  it('an attempt past its deadline is written again with the same idem and its late answer is dropped', async () => {
+    const { gw, sr } = setup();
+    const a = send(sr, post('/v1/test/a', idem(7)));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(gw.sent).toHaveLength(2);
+    expect(gw.sent[1].idem).toEqual(idem(7));
+    gw.respond(gw.sent[0].id, 200, encode(['late']));
+    gw.respond(gw.sent[1].id, 200, encode(['fresh']));
+    await expect(a).resolves.toEqual({ status: 200, body: encode(['fresh']) });
+  });
+
+  it('after the last timed-out attempt a mutation is E_OUTCOME_UNKNOWN and a read E_NETWORK', async () => {
+    const { gw, sr } = setup();
+    const m = send(sr, post('/v1/test/m', idem(7)));
+    const g = send(sr, get('/v1/test/g'));
+    const caught = Promise.allSettled([m, g]);
+    await vi.advanceTimersByTimeAsync(5 * 30_000);
+    expect(gw.sent).toHaveLength(10);
+    const [mr, gr] = await caught;
+    expect(mr).toMatchObject({ status: 'rejected', reason: { code: 'E_OUTCOME_UNKNOWN' } });
+    expect(gr).toMatchObject({ status: 'rejected', reason: { code: 'E_NETWORK' } });
   });
 
   it('a caller abort removes a queued request', async () => {
     const { gw, sr } = setup({ status: 'waiting' });
     const controller = new AbortController();
-    const a = sr.request({ ...post('/v1/test/a', idem(1)), signal: controller.signal });
+    const a = send(sr, { ...post('/v1/test/a', idem(1)), signal: controller.signal });
     controller.abort();
     await expect(a).rejects.toThrow(/abort/i);
     gw.setStatus('ready');
@@ -253,7 +340,7 @@ describe('SocketRequests', () => {
 
   it('records each answered request under its route pattern', async () => {
     const { gw, sr, rtt, advance } = setup();
-    const a = sr.request(post('/v1/test/aa', idem(1)));
+    const a = send(sr, post('/v1/test/aa', idem(1)));
     advance(40);
     gw.respond(gw.sent[0].id, 204);
     await a;

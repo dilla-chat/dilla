@@ -365,7 +365,9 @@ dense on every device of its audience; `group_id` is null.
 HTTP handler its route names on the instance's socket-only route table, with the connection's own
 session (resolved again on every request: a revoked session's next request is `401`), its client
 address and the route's own rate limits and body cap; `response` answers its `id` with the HTTP
-status and body, in any order. A connection has at most 64 requests and 32 MiB of request plus
+status and body, in any order. Requests of one connection run concurrently, as HTTP requests do:
+the only order is the order a client writes them, and a client that needs one applied before
+another waits for the first answer. A connection has at most 64 requests and 32 MiB of request plus
 response body in flight; over either the answer is `429 E_BUSY` at once. The byte budget may be
 overshot by at most one in-flight frame read (a request frame is read whole before it is admitted)
 and one body answered from the replay record. Request frames do not spend the inbound frame

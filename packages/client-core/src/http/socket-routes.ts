@@ -188,6 +188,24 @@ export const HTTP_ONLY_ROUTES: readonly SocketRoute[] = [
   { method: 'DELETE', pattern: '/v1/welcomes/{welcome_id}' },
 ];
 
+/** Ruling C1: routes the worker calls with a session before the gateway exists (sign-up, sign-in, enrolment and
+ *  enterReady's steps (a)-(f) before (g) creates the gateway), plus the ticket that opens it. They stay on HTTP: each is
+ *  also in HTTP_ONLY_ROUTES, and check-socket-routes fails if one moves to SOCKET_ROUTES. */
+export const PRE_GATEWAY_ROUTES: readonly SocketRoute[] = [
+  { method: 'GET', pattern: '/v1/instance' }, // (b) the instance signer pin check, and every mint of a ticket
+  { method: 'PUT', pattern: '/v1/users/{user_id}/device-list' }, // (c) publishDeviceList, before the session is enrolled
+  { method: 'GET', pattern: '/v1/users/{user_id}/device-list' }, // (c) a 409's served head; (f) refreshOwnDeviceList and its history pages
+  { method: 'GET', pattern: '/v1/auth/factors' }, // the factor gate between (d) and (e)
+  { method: 'GET', pattern: '/v1/instance/limits' }, // a sign-up's first KeyPackage top-up
+  { method: 'GET', pattern: '/v1/keypackages' }, // the top-up reads this device's count
+  { method: 'POST', pattern: '/v1/keypackages' }, // the top-up publishes, before any join
+  { method: 'GET', pattern: '/v1/backups' }, // (e) ensureBackups lists the objects
+  { method: 'GET', pattern: '/v1/backups/{kind}/{chunk_seq}' }, // (e) ensureBackups and repairBackupState read an object
+  { method: 'PUT', pattern: '/v1/backups/{kind}/{chunk_seq}' }, // (e) ensureBackups and repairBackupState store one
+  { method: 'GET', pattern: '/v1/accounts/me' }, // sign-up reads its own account before ready
+  { method: 'POST', pattern: '/v1/gateway/ticket' }, // the ticket that opens the socket
+];
+
 /** The Bot runtime's own HTTP routes (F24), kept apart from the app's lists. */
 export const BOT_RUNTIME_ROUTES: readonly SocketRoute[] = [
   { method: 'GET', pattern: '/v1/bot-runtime/installations' },

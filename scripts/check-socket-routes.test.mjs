@@ -17,7 +17,7 @@ const go = [{
   ].join('\n'),
 }];
 
-const ts = (socket, httpOnly, bot = []) => [
+const ts = (socket, httpOnly, bot = [], preGateway = []) => [
   'export const SOCKET_ROUTES: readonly SocketRoute[] = [',
   ...socket.map(([method, pattern]) => `  { method: '${method}', pattern: '${pattern}' },`),
   '];',
@@ -26,6 +26,9 @@ const ts = (socket, httpOnly, bot = []) => [
   '];',
   'export const BOT_RUNTIME_ROUTES: readonly SocketRoute[] = [',
   ...bot.map(([method, pattern]) => `  { method: '${method}', pattern: '${pattern}' },`),
+  '];',
+  'export const PRE_GATEWAY_ROUTES: readonly SocketRoute[] = [',
+  ...preGateway.map(([method, pattern]) => `  { method: '${method}', pattern: '${pattern}' }, // a reason`),
   '];',
 ].join('\n');
 
@@ -80,6 +83,15 @@ test('reports a Bot socket route the instance does not serve on the socket', () 
   const found = problems(goRoutes(go), manifest(ts(SOCKET, HTTP_ONLY, BOT)), ['GET /v1/accounts/me', 'GET /v1/instance']);
   assert.equal(found.length, 1);
   assert.match(found[0], /GET \/v1\/instance.*Bot.*SocketRoutes/);
+});
+
+test('reports a pre-gateway route moved to SOCKET_ROUTES, and a stale pre-gateway entry', () => {
+  const ok = problems(goRoutes(go), manifest(ts(SOCKET, HTTP_ONLY, BOT, [['GET', '/v1/instance']])));
+  assert.deepEqual(ok, []);
+  const moved = problems(goRoutes(go), manifest(ts(SOCKET, HTTP_ONLY, BOT, [['GET', '/v1/accounts/me']])));
+  assert.equal(moved.length, 2);
+  assert.match(moved[0], /GET \/v1\/accounts\/me.*PRE_GATEWAY_ROUTES.*must stay on HTTP.*SOCKET_ROUTES/);
+  assert.match(moved[1], /GET \/v1\/accounts\/me.*PRE_GATEWAY_ROUTES.*no Go HTTP registration/);
 });
 
 test('the real tree is in sync', () => {

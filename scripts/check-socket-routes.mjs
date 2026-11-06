@@ -10,7 +10,8 @@ import { fileURLToPath } from 'node:url';
  *   - a SOCKET_ROUTES entry has no Go `Socket*` registration (the app would send a request nothing answers);
  *   - a Go HTTP /v1 registration is in none of HTTP_ONLY_ROUTES, SOCKET_ROUTES and BOT_RUNTIME_ROUTES (unclassified);
  *   - an HTTP_ONLY_ROUTES or BOT_RUNTIME_ROUTES entry has no Go HTTP registration (stale), or an entry is listed twice;
- *   - the Bot's SocketRoutes (internal/bot/client/socket_routes.go) names a route the instance does not serve on the socket.
+ *   - the Bot's SocketRoutes (internal/bot/client/socket_routes.go) names a route the instance does not serve on the socket;
+ *   - a PRE_GATEWAY_ROUTES entry (called before the gateway exists, ruling C1) is in SOCKET_ROUTES, or is stale.
  * Go registrations are read from source: string literals and local variables or constants assigned one, joined by +.
  * Every production /v1 registration is written that way; internal/dillad TestSocketRouteManifestMatchesTheMux checks the
  * same rules against the composed mux.
@@ -20,6 +21,7 @@ const MANIFEST = 'packages/client-core/src/http/socket-routes.ts';
 const BOT_ROUTES = 'internal/bot/client/socket_routes.go';
 const GO_DIRS = ['internal', 'cmd'];
 const LISTS = ['SOCKET_ROUTES', 'HTTP_ONLY_ROUTES', 'BOT_RUNTIME_ROUTES'];
+const PRE_GATEWAY = 'PRE_GATEWAY_ROUTES';
 const PATTERN = /^(GET|HEAD|POST|PUT|PATCH|DELETE) \/\S*$/;
 const TERM = String.raw`(?:"[^"]*"|[A-Za-z_][A-Za-z0-9_]*)`;
 const CALL = new RegExp(String.raw`\.(HandleFunc|Handle|SocketAuthedWithCap|SocketAuthed|SocketWithCap|Socket)\(\s*(${TERM}(?:\s*\+\s*${TERM})*)\s*,`, 'g');
@@ -58,10 +60,10 @@ export function goRoutes(files) {
   return { http, socket };
 }
 
-/** The three lists of socket-routes.ts, each as `METHOD /pattern` keys in file order. */
+/** The lists of socket-routes.ts, each as `METHOD /pattern` keys in file order. */
 export function manifest(source) {
   const lists = {};
-  for (const name of LISTS) {
+  for (const name of [...LISTS, PRE_GATEWAY]) {
     const m = new RegExp(`export const ${name}: readonly SocketRoute\\[\\] = \\[([\\s\\S]*?)\\n\\];`).exec(source);
     if (!m) throw new Error(`${name} array literal not found`);
     lists[name] = [...m[1].matchAll(/\{\s*method:\s*'([A-Z]+)',\s*pattern:\s*'([^']+)'\s*\}/g)].map((e) => `${e[1]} ${e[2]}`);
@@ -98,6 +100,10 @@ export function problems(go, lists, bot = []) {
       if (seen.has(key)) found.push(`${key} is listed more than once (${seen.get(key)} and ${name})`);
       else seen.set(key, name);
     }
+  }
+  for (const key of lists[PRE_GATEWAY]) {
+    if (socketList.has(key)) found.push(`${key} is in PRE_GATEWAY_ROUTES (called before the gateway exists) and must stay on HTTP, but it is in SOCKET_ROUTES`);
+    if (!go.http.has(key)) found.push(`${key} is in PRE_GATEWAY_ROUTES but has no Go HTTP registration`);
   }
   for (const key of bot) {
     if (!go.socket.has(key)) found.push(`${key} is in the Bot's SocketRoutes (${BOT_ROUTES}) but the instance does not serve it on the socket`);

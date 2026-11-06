@@ -65,7 +65,8 @@ export class HttpClient {
   }
 
   async request(r: HttpRequest): Promise<HttpResponse> {
-    if (socketRouteFor(r.method, r.path, this.deps.socketRoutes) !== null) return this.requestSocket(r);
+    const pattern = socketRouteFor(r.method, r.path, this.deps.socketRoutes);
+    if (pattern !== null) return this.requestSocket(r, pattern);
     let reauthenticated = false;
     for (let attempt = 1; attempt <= RETRY.maxAttempts; attempt++) {
       if (r.signal?.aborted) throw abort();
@@ -133,7 +134,7 @@ export class HttpClient {
   /** A socket route: the request frame's answer, decoded as an HTTP answer. SocketRequests already waits out E_BUSY,
    *  503 E_UNAVAILABLE and a lost socket (same idem); a route meter's 429 is waited out here as on HTTP. Every other
    *  refusal (409, 401, 426, a route's own 503) reaches the caller. There are no headers: no generation, no Retry-After. */
-  private async requestSocket(r: HttpRequest): Promise<HttpResponse> {
+  private async requestSocket(r: HttpRequest, pattern: string): Promise<HttpResponse> {
     const socket = this.deps.socket?.() ?? null;
     if (socket === null) {
       throw new DillaHttpError({ status: 0, code: 'E_NETWORK', detail: 'the gateway socket is not running', retryAfterMs: null, extra: [] });
@@ -142,7 +143,7 @@ export class HttpClient {
       if (r.signal?.aborted) throw abort();
       await this.buckets.take(r.bucket, r.signal);
       if (r.signal?.aborted) throw abort();
-      const response = await socket.request(r);
+      const response = await socket.request(r, pattern);
       const ok = (r.ok ?? [200, 201, 204]).includes(response.status);
       const bound = ok ? r.maxBodyBytes : ERROR_BODY_CAP;
       if (bound !== undefined && response.body.length > bound) {
