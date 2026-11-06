@@ -23,6 +23,13 @@ Each link has failed in production in two weeks:
 
 The Bot's health log said "healthy" throughout. `/play` takes seconds when it works.
 
+The production measurements from CT 144 (2026-11-06) are worse still:
+- **The Bot reaches dillad over the public internet.** Its `base_url` is the public name. Every request goes out to the VPS, through the tunnel and back into the same container.
+- **Device-list reads grow with every device.** They run at about 23,000 an hour and rise by 1,500–3,700 an hour with each device added.
+- **Intake failures are steady, not a one-off.** They have occurred at 1–3 an hour since at least 2026-11-01. One answered command took 2 s.
+
+Hence the local-socket default and the O(changed users) rule below.
+
 Jonas, 2026-11-06:
 - "it needs to be completely architecturally redesigned";
 - "in order for it to be a music player, we can't have any lag";
