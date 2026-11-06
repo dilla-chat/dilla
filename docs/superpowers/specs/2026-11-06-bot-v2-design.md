@@ -223,7 +223,10 @@ Jonas, 2026-11-06:
   - **Before a session exists:** sign-in, passkey, TOTP, recovery, enrollment, session ticket for the socket.
   - **Large binary bodies:** blob upload and download (streaming, range requests, resumable).
   - **Unauthenticated or public:** `/v1/instance`, invite preview, web assets, desktop downloads, `/healthz`, incoming webhooks (G5).
-  - **Fallback:** the REST routes stay served. A client uses REST for a request only while its socket is down and the request can't wait. Wire-5 clients keep using REST unchanged.
+- **No REST fallback** (Jonas, 2026-11-06: "We dont need to care about old clients. dont keep a backup route").
+  - Every moved route's REST form is **deleted** from the server, its route table and the protocol docs.
+  - While the socket is down, the app queues requests (mutations keep their ids) and shows its existing reconnecting state. Queued requests go out in order after reconnect.
+  - A tests-only REST path is not kept either. Tests drive the socket.
 - **Back-pressure:** a cap on in-flight requests per connection (my call: 64). Over the cap the server answers `E_BUSY`, and the client queues instead of failing.
 - **Measurement:**
   - The client records round-trip time per route for socket requests.
@@ -301,7 +304,11 @@ Jonas, 2026-11-06:
   - the Automoderation settings page, with its strings, tests and docs.
 
   Stored automod config in Bot state is deleted with a log line. Manual moderation stays: cases, evidence, warn, timeout, kick and ban.
-- **New wire version** (wire 6) for clients and Bot. A wire-5 client sees Bot commands greyed with "Update dilla to use Bot commands". Its chat is unaffected.
+- **New wire version** (wire 6) for clients and Bot. **No compatibility with older clients** (Jonas: "We dont need to care about old clients").
+  - dillad refuses a wire-5 or older identify with a clear `E_UPGRADE_REQUIRED`.
+  - The desktop app turns that into "Update dilla to continue" with its update button.
+  - A browser tab reloads to the new client.
+  - Release notes tell everyone to update.
 - **Release order:** dillad + dillabot first, then the desktop app. Same rule as signal3.
 - **Bot state survives:**
   - reminders, polls, settings, moderation evidence and the music queue stay in the encrypted store under their existing keys;
@@ -311,7 +318,7 @@ Jonas, 2026-11-06:
   - a migration drops the interaction tables after the new path is live;
   - the catalog and command-key tables are added;
   - `bot_installations` stays.
-- **Rollback:** a binary rollback to signal3 needs interaction groups re-created. That is acceptable (they self-register), and the release notes say so.
+- **Rollback:** a binary rollback to signal3 also needs the signal3 desktop app, and interaction groups re-created (they self-register). The release notes say so.
 - **Docs:** `protocol/10-community-bot.md` is rewritten. The Bot sections of 09/01/02/07/08 and docs/user, plus the operator docs, are updated in the same change.
 
 ## Testing requirements
