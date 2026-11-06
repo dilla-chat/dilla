@@ -20,7 +20,10 @@ import (
 // Retry rules, the same as the app's SocketRequests:
 //   - While there is no connection a request waits for the next one (or the caller's deadline).
 //   - A request whose answer was lost with its connection is sent again on the next one, with the same idempotency
-//     key, so the instance's replay record (and the route's own id) answers it instead of applying it twice.
+//     key, so the instance's replay record (and the route's own id) answers it instead of applying it twice. The record
+//     lives in one dillad process for 5 minutes, so a written mutation is NOT sent again on a connection to another
+//     incarnation (another boot id, restore generation or instance id) or once ResendWindow has passed since its first
+//     write: Do returns ErrOutcomeUnknown, and the caller treats the mutation as maybe applied.
 //   - 429 E_BUSY (the instance's in-flight or byte budget): sent again once another answer frees room, or after a
 //     short jittered pause. It is never returned to the caller.
 //   - 503 E_UNAVAILABLE (the instance's dispatch deadline, or its shutdown): sent again with the same key after a
@@ -35,7 +38,14 @@ const (
 	unavailableBase     = 500 * time.Millisecond
 	unavailableCap      = 8 * time.Second
 	maxRetryAfter       = time.Minute
+	// ResendWindow is how long after its first write a mutation may be written again: below the 5 minutes the instance
+	// keeps its answer (api.SocketDispatchOptions.ReplayWindow).
+	ResendWindow = 4 * time.Minute
 )
+
+// ErrOutcomeUnknown is a written mutation that is not written again: its answer was lost and the instance that took it
+// may be gone, so it may or may not have been applied.
+var ErrOutcomeUnknown = errors.New("bot gateway: the request was written and its answer was lost; it may have been applied")
 
 // ErrIdempotencyRequired is a mutation sent without an idempotency key: a programming error, never sent.
 var ErrIdempotencyRequired = errors.New("bot gateway: a mutation needs an idempotency key")
@@ -57,10 +67,17 @@ func (c *Client) Do(ctx context.Context, method, route string, body, idem []byte
 		return 0, nil, ErrProtocol
 	}
 	unavailable := 0
+	var wrote bool
+	var wroteUnder string
+	var firstWrite time.Time
+	mutation := method != http.MethodGet && method != http.MethodHead
 	for {
 		conn, err := c.waitConnection(ctx)
 		if err != nil {
 			return 0, nil, err
+		}
+		if mutation && wrote && (conn.incarnation != wroteUnder || time.Since(firstWrite) >= ResendWindow) {
+			return 0, nil, ErrOutcomeUnknown
 		}
 		select {
 		case c.slots <- struct{}{}:
@@ -69,8 +86,11 @@ func (c *Client) Do(ctx context.Context, method, route string, body, idem []byte
 		case <-conn.ctx.Done():
 			continue
 		}
-		answer, err := c.roundTrip(ctx, conn, method, route, body, idem)
+		answer, sent, err := c.roundTrip(ctx, conn, method, route, body, idem)
 		<-c.slots
+		if sent && !wrote {
+			wrote, wroteUnder, firstWrite = true, conn.incarnation, time.Now()
+		}
 		if errors.Is(err, errConnectionLost) {
 			continue
 		}
@@ -149,11 +169,11 @@ func (c *Client) waitForRoom(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) roundTrip(ctx context.Context, conn *connection, method, route string, body, idem []byte) (ResponseFrame, error) {
+func (c *Client) roundTrip(ctx context.Context, conn *connection, method, route string, body, idem []byte) (ResponseFrame, bool, error) {
 	requestID := c.nextRequest.Add(1)
 	frame, err := EncodeRequestFrame(requestID, method, route, body, idem)
 	if err != nil {
-		return ResponseFrame{}, err
+		return ResponseFrame{}, false, err
 	}
 	answer := make(chan ResponseFrame, 1)
 	conn.pendingMu.Lock()
@@ -168,32 +188,34 @@ func (c *Client) roundTrip(ctx context.Context, conn *connection, method, route 
 	select {
 	case conn.writes <- outbound{op: OpRequest, raw: frame, done: written}:
 	case <-ctx.Done():
-		return ResponseFrame{}, ctx.Err()
+		return ResponseFrame{}, false, ctx.Err()
 	case <-conn.ctx.Done():
-		return ResponseFrame{}, errConnectionLost
+		return ResponseFrame{}, false, errConnectionLost
 	}
+	// Queued for the writer: from here the frame may have reached the instance.
+	sent := true
 	select {
 	case err := <-written:
 		if err != nil {
-			return ResponseFrame{}, errConnectionLost
+			return ResponseFrame{}, sent, errConnectionLost
 		}
 	case <-ctx.Done():
-		return ResponseFrame{}, ctx.Err()
+		return ResponseFrame{}, sent, ctx.Err()
 	case <-conn.ctx.Done():
-		return ResponseFrame{}, errConnectionLost
+		return ResponseFrame{}, sent, errConnectionLost
 	}
 	select {
 	case r := <-answer:
-		return r, nil
+		return r, sent, nil
 	case <-ctx.Done():
-		return ResponseFrame{}, ctx.Err()
+		return ResponseFrame{}, sent, ctx.Err()
 	case <-conn.ctx.Done():
 		// An answer read just before the connection ended still counts.
 		select {
 		case r := <-answer:
-			return r, nil
+			return r, sent, nil
 		default:
-			return ResponseFrame{}, errConnectionLost
+			return ResponseFrame{}, sent, errConnectionLost
 		}
 	}
 }

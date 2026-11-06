@@ -162,9 +162,9 @@ export class SocketRequests implements SocketTransport {
         if (e.status === 'ready') {
           // The gateway has stored this socket's ready before the status: which instance incarnation answered.
           const info = this.gateway.readyInfo;
-          const id = info?.instanceId;
-          this.incarnation = info === null || info === undefined || id === undefined ? null
-            : `${[...id].map((b) => b.toString(16).padStart(2, '0')).join('')}:${info.generation}`;
+          const hex = (v: Uint8Array | undefined): string => (v === undefined ? '' : [...v].map((b) => b.toString(16).padStart(2, '0')).join(''));
+          this.incarnation = info === null || info === undefined || info.instanceId === undefined ? null
+            : `${hex(info.instanceId)}:${info.generation}:${hex(info.bootId)}`;
           this.dropStaleWrites();
           this.pump();
           return;
@@ -192,6 +192,15 @@ export class SocketRequests implements SocketTransport {
     if (!this.up || this.paused) return;
     while (this.queue.length > 0 && this.inFlight.size < SOCKET_REQUESTS.maxInFlight) {
       const p = this.queue[0];
+      // The one choke point (every path that writes a request again ends here): a written mutation is not written
+      // again once its replay record may be gone.
+      const stale = this.staleReason(p);
+      if (stale !== null) {
+        this.queue.shift();
+        this.settle(p);
+        p.reject(refusal(0, 'E_OUTCOME_UNKNOWN', stale));
+        continue;
+      }
       const id = this.nextId++;
       let frame: Uint8Array;
       try { frame = encodeRequestFrame({ id, method: p.method, route: p.route, body: p.body, idem: p.idem }); }
@@ -301,18 +310,23 @@ export class SocketRequests implements SocketTransport {
   /** A mutation that was written and is queued again may have been applied. Past RESEND_WINDOW_MS, or once the socket
    *  reached another instance incarnation (a restart or restore: the replay record is gone), it is not written again. */
   private dropStaleWrites(): void {
-    const now = this.deps.now();
     for (const p of [...this.queue]) {
-      if (p.done || !p.written || p.method === 'GET') continue;
-      const old = now - p.firstWrittenAt >= RESEND_WINDOW_MS;
-      const restarted = p.writtenUnder !== null && this.incarnation !== null && p.writtenUnder !== this.incarnation;
-      if (!old && !restarted) continue;
+      const stale = this.staleReason(p);
+      if (stale === null) continue;
       this.queue.splice(this.queue.indexOf(p), 1);
       this.settle(p);
-      p.reject(refusal(0, 'E_OUTCOME_UNKNOWN', old
-        ? 'the request was written more than 4 minutes ago and its answer was lost'
-        : 'the instance restarted after the request was written and its answer was lost'));
+      p.reject(refusal(0, 'E_OUTCOME_UNKNOWN', stale));
     }
+  }
+
+  /** Why a written mutation must not be written again, or null. */
+  private staleReason(p: Pending): string | null {
+    if (p.done || !p.written || p.method === 'GET') return null;
+    if (this.deps.now() - p.firstWrittenAt >= RESEND_WINDOW_MS) return 'the request was written more than 4 minutes ago and its answer was lost';
+    if (p.writtenUnder !== null && this.incarnation !== null && p.writtenUnder !== this.incarnation) {
+      return 'the instance restarted after the request was written and its answer was lost';
+    }
+    return null;
   }
 
   /** Puts a request back by its submission order. */

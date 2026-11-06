@@ -1031,11 +1031,12 @@ func (h *Host) Close(ctx context.Context) error {
 	defer h.mu.Unlock()
 	h.stopSFU(ctx)
 	h.current.Store(nil)
-	h.observeOnce.Do(func() {}) // no observer starts after Close
+	err := h.server.Shutdown(ctx)
+	// After Shutdown no dispatch is left to observe; the observer's queue ends now.
+	h.observeOnce.Do(func() {})
 	if h.observed != nil {
 		close(h.observed)
 	}
-	err := h.server.Shutdown(ctx)
 	h.closeWasm(ctx)
 	return err
 }

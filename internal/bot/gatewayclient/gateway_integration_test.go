@@ -1174,7 +1174,12 @@ func helloPayload(instance id.ID, generation uint64) []any {
 	return []any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}, uint64(1000), uint64(131584), instance, generation, testBackoffMS, testBackoffMS}
 }
 func readyPayload(device, user id.ID, generation uint64, token []byte) []any {
-	return []any{device, user, generation, token, uint64(6), uint64(1), uint64(1), uint64(0), []any{}}
+	return readyPayloadBoot(device, user, generation, token, testID(0x77))
+}
+
+// readyPayloadBoot is a ready whose element 9 is the dillad process's boot id.
+func readyPayloadBoot(device, user id.ID, generation uint64, token []byte, boot id.ID) []any {
+	return []any{device, user, generation, token, uint64(6), uint64(1), uint64(1), uint64(0), []any{}, boot}
 }
 func testID(v byte) id.ID    { var x id.ID; x[0] = v; return x }
 func bytes32(v uint8) []byte { b := make([]byte, 32); b[0] = v; return b }

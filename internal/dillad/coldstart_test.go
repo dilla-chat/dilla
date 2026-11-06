@@ -254,7 +254,7 @@ func expectMessageCT(t *testing.T, c *websocket.Conn, phase string, seq uint64, 
 
 // readyListsGroup reports whether ready's groups element (index 8) names groupID.
 func readyListsGroup(ready []any, groupID id.ID) bool {
-	if len(ready) != 9 {
+	if len(ready) != 10 {
 		return false
 	}
 	groups, _ := ready[8].([]any)

@@ -41,7 +41,8 @@ class FakeGateway {
 }
 
 /** What a ready of an instance incarnation carries for SocketRequests. */
-const ready = (instance: number, generation: bigint): ReadyInfo => ({ instanceId: new Uint8Array(16).fill(instance), generation } as ReadyInfo);
+const ready = (instance: number, generation: bigint, boot = 1): ReadyInfo =>
+  ({ instanceId: new Uint8Array(16).fill(instance), generation, bootId: new Uint8Array(16).fill(boot) } as ReadyInfo);
 
 const ROUTES: readonly SocketRoute[] = [
   { method: 'POST', pattern: '/v1/test/{id}' },
@@ -117,6 +118,51 @@ describe('SocketRequests: a written mutation after a lost socket (Bot v2 task 5 
     lose(gw);
     gw.readyInfo = ready(1, 8n);
     gw.setStatus('ready');
+    expect(gw.sent).toHaveLength(1);
+    await expect(failed).resolves.toMatchObject({ status: 0, code: 'E_OUTCOME_UNKNOWN' });
+  });
+
+  it('one written before a restart (another boot id, same instance and generation) is not written again; a fresh one with the same boot id is', async () => {
+    const { gw, sr } = setup();
+    gw.readyInfo = ready(1, 7n, 5);
+    gw.setStatus('ready');
+    const same = send(sr, post('/v1/test/same', idem(1)));
+    lose(gw);
+    gw.readyInfo = ready(1, 7n, 5);
+    gw.setStatus('ready');
+    expect(gw.sent.map((s) => s.route)).toEqual(['/v1/test/same', '/v1/test/same']);
+    gw.respond(gw.sent[1].id, 204);
+    await expect(same).resolves.toMatchObject({ status: 204 });
+    const restarted = send(sr, post('/v1/test/restarted', idem(2))).catch((e: unknown) => e);
+    lose(gw);
+    gw.readyInfo = ready(1, 7n, 6);
+    gw.setStatus('ready');
+    expect(gw.sent).toHaveLength(3);
+    await expect(restarted).resolves.toMatchObject({ status: 0, code: 'E_OUTCOME_UNKNOWN' });
+  });
+
+  it('the timeout re-send path is checked too: a mutation whose attempts run past 4 minutes is not written again', async () => {
+    const { gw, sr, advance } = setup();
+    gw.readyInfo = ready(1, 7n);
+    gw.setStatus('ready');
+    const failed = send(sr, post('/v1/test/m', idem(9))).catch((e: unknown) => e);
+    advance(RESEND_WINDOW_MS);
+    await vi.advanceTimersByTimeAsync(SOCKET_ATTEMPT_TIMEOUT_MS);
+    expect(gw.sent).toHaveLength(1);
+    await expect(failed).resolves.toMatchObject({ status: 0, code: 'E_OUTCOME_UNKNOWN' });
+  });
+
+  it('the 503 back-off path is checked too: a request waiting to be written again across a restart is not written', async () => {
+    const { gw, sr } = setup();
+    gw.readyInfo = ready(1, 7n, 5);
+    gw.setStatus('ready');
+    const failed = send(sr, post('/v1/test/m', idem(9))).catch((e: unknown) => e);
+    gw.respond(gw.sent[0].id, 503, refusal('E_UNAVAILABLE', 5000));
+    // The socket drops and returns as another process while the request waits out its back-off.
+    lose(gw);
+    gw.readyInfo = ready(1, 7n, 6);
+    gw.setStatus('ready');
+    await vi.advanceTimersByTimeAsync(6000);
     expect(gw.sent).toHaveLength(1);
     await expect(failed).resolves.toMatchObject({ status: 0, code: 'E_OUTCOME_UNKNOWN' });
   });

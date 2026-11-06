@@ -39,9 +39,11 @@ function hello(over: { wire?: number[]; e2ee?: number[]; media?: number[]; heart
     over.maxFrameBytes ?? 131584, INSTANCE, 1, 300, 300]);
 }
 
+const BOOT = new Uint8Array(16).fill(0x5b);
+
 function ready(over: { wire?: number; e2ee?: number; media?: number } = {}): Uint8Array {
   return encodeFrame(Op.ready, 1, null, [DEVICE, USER, 7, new Uint8Array(32).fill(0x0b), over.wire ?? 6, over.e2ee ?? 1,
-    over.media ?? 1, 32, [[GROUP, 6, 4127, 2]]]);
+    over.media ?? 1, 32, [[GROUP, 6, 4127, 2]], BOOT]);
 }
 
 /** A manual clock: timers run only inside advance(), in deadline order, ties in creation order. */
@@ -217,7 +219,7 @@ describe('Gateway connect', () => {
     expect(h.events.find((e) => e.type === 'ready')).toEqual({
       type: 'ready',
       info: {
-        deviceId: DEVICE, userId: USER, generation: 7n, instanceId: INSTANCE, keypackagesRemaining: 32,
+        deviceId: DEVICE, userId: USER, generation: 7n, instanceId: INSTANCE, bootId: BOOT, keypackagesRemaining: 32,
         groups: [{ groupId: GROUP, epoch: 6n, lastSeq: 4127n, proposalsOutstanding: 2 }],
         versions: { wire: 6n, e2ee: 1n, media: 1n },
         heartbeatMs: 30000, maxFrameBytes: 131584, backoffMs: 300, backoffJitterMs: 300,

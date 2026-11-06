@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -281,7 +282,10 @@ func (s *wsSink) read(ctx context.Context) (websocket.MessageType, []byte, error
 	// The rest of a long request frame must arrive within RequestFrameReadTimeout (the 60 s an HTTP commit's body had): a
 	// device that trickles a 16 MiB frame and stops would otherwise hold that memory for as long as TCP stays up.
 	slow := time.AfterFunc(requestFrameReadTimeout, func() {
-		_ = s.c.CloseNow() // a graceful Close would wait for the reader this is bounding
+		slog.Default().Warn("gateway: a request frame did not arrive in time; connection dropped", "bound", requestFrameReadTimeout.String())
+		// Tell the client why (policy violation: it reconnects like any lost socket). The close handshake gives a peer
+		// that does not answer at most 5 s more before the connection ends and the blocked read fails.
+		go func() { _ = s.c.Close(websocket.StatusPolicyViolation, "request frame too slow") }()
 	})
 	rest, err := io.ReadAll(io.LimitReader(r, int64(maxRequestFrameBytes)+1-int64(len(b))))
 	slow.Stop()
@@ -705,7 +709,7 @@ func (g *Gateway) sendReady(ctx context.Context, c *conn) error {
 		return err
 	}
 	p, err := ReadyPayload(c.deviceID, c.userID, g.Generation(), c.resume,
-		c.wire, c.e2ee, c.media, uint64(remaining), digests) //nolint:gosec // G115: a COUNT(*) result, never negative
+		c.wire, c.e2ee, c.media, uint64(remaining), digests, g.bootID) //nolint:gosec // G115: a COUNT(*) result, never negative
 	if err != nil {
 		return err
 	}

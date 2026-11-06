@@ -223,6 +223,9 @@ type OnlineDevice struct {
 }
 
 type Gateway struct {
+	// bootID is random per process and never persisted: it is element 9 of ready, so a client can tell that the instance
+	// it reconnected to is not the process its unanswered request went to (and that process's replay record is gone).
+	bootID    id.ID
 	opts      Options
 	reg       *registry
 	tickets   *Tickets
@@ -264,6 +267,7 @@ func New(o Options) *Gateway {
 		o.Log = slog.Default()
 	}
 	g := &Gateway{
+		bootID:   id.New(),
 		opts:     o,
 		reg:      newRegistry(),
 		tickets:  NewTickets(o.Clock),
@@ -662,6 +666,9 @@ func (g *Gateway) CloseDevice(deviceID id.ID, code CloseCode, reason string) {
 // revokedCloseGrace bounds how long a revoked connection waits for its in-flight requests' answers.
 const revokedCloseGrace = 5 * time.Second
 
+// requestDrainTimeout bounds how long Shutdown waits for running socket requests to finish and answer.
+const requestDrainTimeout = 10 * time.Second
+
 // closeAfterAnswers closes c once its in-flight socket requests were answered, or after revokedCloseGrace.
 func (g *Gateway) closeAfterAnswers(c *conn, budget *requestBudget, code CloseCode, reason string) {
 	defer g.deferred.Delete(c)
@@ -849,6 +856,12 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	for _, c := range conns {
 		c.send(Frame{Op: OpReconnect, Payload: p})
 	}
+	// Socket requests running now finish, and their answers are written, before any connection closes: a mutation
+	// whose answer is lost to the shutdown is resent by the client to the next process, which has no replay record
+	// for it. Bounded, so a stuck handler cannot hold the shutdown.
+	drainCtx, cancelDrain := context.WithTimeout(ctx, requestDrainTimeout)
+	g.workers.wait(drainCtx)
+	cancelDrain()
 	for _, c := range conns {
 		w := c.currentWriter()
 		w.drain(ctx)

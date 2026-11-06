@@ -41,6 +41,15 @@ type requestServer struct {
 	mu                     sync.Mutex
 	seen                   []seenRequest
 	serve                  func(r seenRequest) answer
+	// boot is the ready's boot id for connection n (default: one process for every connection).
+	boot func(n int32) id.ID
+}
+
+func (s *requestServer) bootFor(n int32) id.ID {
+	if s.boot == nil {
+		return testID(0x77)
+	}
+	return s.boot(n)
 }
 
 func (s *requestServer) requests() []seenRequest {
@@ -72,10 +81,14 @@ func (s *requestServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch first.Op {
 	case OpIdentify:
-		if sendServerFrame(ctx, ws, OpReady, 1, nil, readyPayload(s.device, s.user, 7, bytes32(uint8(n)))) != nil {
+		if sendServerFrame(ctx, ws, OpReady, 1, nil, readyPayloadBoot(s.device, s.user, 7, bytes32(uint8(n)), s.bootFor(n))) != nil {
 			return
 		}
 	case OpResume:
+		if s.boot != nil { // another process knows no resume token
+			_ = ws.Close(websocket.StatusCode(4007), "restarted") // a replay gap: the client identifies afresh
+			return
+		}
 		ack, _ := first.Payload[3].(uint64)
 		if sendServerFrame(ctx, ws, OpResumed, ack+1, nil, []any{ack + 1, ack, bytes32(uint8(n))}) != nil {
 			return
@@ -232,6 +245,32 @@ func TestDoResendsAMutationLostInADisconnectWithTheSameIdem(t *testing.T) {
 	}
 	if effects.Load() != 1 {
 		t.Fatalf("effects = %d, want 1", effects.Load())
+	}
+}
+
+// A written mutation whose answer is lost is not written again on a connection to another dillad process (another boot id):
+// the replay record that would answer it died with the old one. The Bot's message send maps the error to "maybe sent"
+// (client.OutcomeUnknown), never a second post; a read is still sent again.
+func TestDoDoesNotResendAWrittenMutationToAnotherBootButResendsARead(t *testing.T) {
+	srv := &requestServer{boot: func(n int32) id.ID { return testID(byte(0x70 + n)) }}
+	srv.serve = func(r seenRequest) answer {
+		if r.conn == 1 {
+			return answer{drop: true}
+		}
+		return answer{status: 200, body: []byte{1}}
+	}
+	gw, ctx := startRequestClient(t, srv)
+	_, _, err := gw.Do(ctx, http.MethodPost, "/v1/x", []byte{0x80}, bytes.Repeat([]byte{9}, 16))
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("Do = %v, want ErrOutcomeUnknown", err)
+	}
+	if seen := srv.requests(); len(seen) != 1 {
+		t.Fatalf("%d requests reached the instance, want only the first write", len(seen))
+	}
+	// Still on the second process: a read is fine, and a mutation written there is not resent within the same process.
+	status, _, err := gw.Do(ctx, http.MethodGet, "/v1/y", nil, nil)
+	if err != nil || status != 200 {
+		t.Fatalf("read on the new process = %d %v", status, err)
 	}
 }
 

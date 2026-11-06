@@ -155,6 +155,8 @@ type Ready struct {
 	WireVersion, E2EEVersion, MediaVersion uint64
 	KeyPackagesRemaining                   uint64
 	Groups                                 []ReadyGroup
+	// BootID is random per dillad process (ready element 9): a restart changes it.
+	BootID id.ID
 }
 type ReadyGroup struct {
 	GroupID                              id.ID
@@ -351,6 +353,9 @@ func DecodeServerFrame(raw []byte, maxBytes uint64) (Frame, error) {
 			return bad()
 		}
 		if r.KeyPackagesRemaining, err = uintAt(payload[7]); err != nil {
+			return bad()
+		}
+		if r.BootID, err = idAt(payload[9]); err != nil {
 			return bad()
 		}
 		var rows []cbor.RawMessage
@@ -677,7 +682,7 @@ func serverSpec(op Opcode) (int, bool, bool, bool) {
 	case OpHello:
 		return 9, false, false, true
 	case OpReady:
-		return 9, false, true, true
+		return 10, false, true, true
 	case OpResumed:
 		return 3, false, true, true
 	case OpInvalidSession:

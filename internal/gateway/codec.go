@@ -32,12 +32,12 @@ type GroupDigest struct {
 	ProposalsOutstanding uint64
 }
 
-func ReadyPayload(deviceID, userID id.ID, generation uint64, resumeToken []byte, wire, e2ee, media uint64, keypackagesRemaining uint64, groups []GroupDigest) (cbor.RawMessage, error) {
+func ReadyPayload(deviceID, userID id.ID, generation uint64, resumeToken []byte, wire, e2ee, media uint64, keypackagesRemaining uint64, groups []GroupDigest, bootID id.ID) (cbor.RawMessage, error) {
 	rows := make([]any, 0, len(groups))
 	for _, g := range groups {
 		rows = append(rows, []any{g.GroupID, g.Epoch, g.LastSeq, g.ProposalsOutstanding})
 	}
-	return payload(deviceID, userID, generation, resumeToken, wire, e2ee, media, keypackagesRemaining, rows)
+	return payload(deviceID, userID, generation, resumeToken, wire, e2ee, media, keypackagesRemaining, rows, bootID)
 }
 
 // ResumedPayload answers a resume. resumeToken is the ROTATED token, not the one the client just

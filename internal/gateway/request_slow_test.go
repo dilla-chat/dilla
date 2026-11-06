@@ -55,7 +55,7 @@ func TestASlowDrippingRequestFrameIsClosed(t *testing.T) {
 		if err == nil {
 			t.Fatal("a stalled request frame was read to the end")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("a stalled request frame was still being read after 5 s; the bound did not fire")
+	case <-time.After(12 * time.Second):
+		t.Fatal("a stalled request frame was still being read after 12 s; the bound did not fire")
 	}
 }

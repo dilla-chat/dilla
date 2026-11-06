@@ -13,6 +13,8 @@ export interface ReadyInfo {
   generation: bigint;
   /** The instance id the hello named: with `generation`, which instance incarnation this socket reached (SocketRequests). */
   instanceId?: Uint8Array;
+  /** Random per instance process (ready element 9): a restart changes it, so a request lost to one is not written again. */
+  bootId?: Uint8Array;
   versions: { wire: bigint; e2ee: bigint; media: bigint };
   keypackagesRemaining: number;
   groups: { groupId: Uint8Array; epoch: bigint; lastSeq: bigint; proposalsOutstanding: number }[];
@@ -85,7 +87,7 @@ function highestCommon(offered: bigint[], preference: readonly bigint[]): bigint
 }
 
 function readReady(payload: CborValue[], hello: HelloInfo): ReadyInfo {
-  const p = arr(payload, 9);
+  const p = arr(payload, 10);
   const deviceId = bin(p[0], 16);
   const userId = bin(p[1], 16);
   const generation = u64(p[2]);
@@ -94,11 +96,12 @@ function readReady(payload: CborValue[], hello: HelloInfo): ReadyInfo {
   if (versions.wire !== hello.selectedVersions.wire || versions.e2ee !== hello.selectedVersions.e2ee
     || versions.media !== hello.selectedVersions.media) throw new Error('ready version mismatch');
   const keypackagesRemaining = u53(p[7]);
+  const bootId = bin(p[9], 16);
   const groups = arr(p[8]).map((entry) => {
     const group = arr(entry, 4);
     return { groupId: bin(group[0], 16), epoch: u64(group[1]), lastSeq: u64(group[2]), proposalsOutstanding: u53(group[3]) };
   });
-  return { deviceId, userId, generation, instanceId: hello.instanceId, versions, keypackagesRemaining, groups,
+  return { deviceId, userId, generation, instanceId: hello.instanceId, bootId, versions, keypackagesRemaining, groups,
     heartbeatMs: hello.heartbeatMs, maxFrameBytes: hello.maxFrameBytes,
     backoffMs: hello.backoffMs, backoffJitterMs: hello.backoffJitterMs };
 }

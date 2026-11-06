@@ -39,11 +39,12 @@ the call routes (`POST /v1/channels/{id}/calls`, `GET /v1/channels/{id}/call`,
 `GET /v1/communities/{id}/calls`, `DELETE /v1/calls/{call_id}`, `…/share`, `…/rtt`, `…/decline`,
 `…/stats`). The blob routes (`/v1/channels/{id}/blobs/…`) carry binary bodies above a frame and
 stay on HTTP. A message send's idempotency key derives from its message id and its ciphertext, so a
-send written again after a reconnect within four minutes of its first write is answered from the
-instance's five-minute replay record and stores one message. Past four minutes, or when the socket reaches
-another instance incarnation (another instance id or generation in the hello), the client does not write a
-mutation again: it fails with `E_OUTCOME_UNKNOWN`, and the caller's own lost-answer handling (for a message, the
-catch-up that proves whether the upload exists) decides. The routes a client calls before its
+send written again after a reconnect to the same dillad process within four minutes of its first write
+is answered from the instance's five-minute in-memory replay record and stores one message. Past four
+minutes, or when the socket reaches another incarnation (another instance id, restore generation or
+per-process `boot_id`, the last in `ready`; a restart changes it), the client does not write a mutation again:
+it fails with `E_OUTCOME_UNKNOWN`, and the caller's own lost-answer handling (for a message, the catch-up that
+proves whether the upload exists) decides. A graceful shutdown lets running requests finish and answer first. The routes a client calls before its
 socket exists stay on HTTP: sign-up and sign-in, the session ceremonies and
 `DELETE /v1/devices/{device_id}/sessions`, the device lists, `GET` and `POST /v1/keypackages`,
 backups, `GET /v1/accounts/me`, the second-factor setup an owed account uses, the instance

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,6 +70,8 @@ type Client struct {
 	room        chan struct{}
 	slots       chan struct{}
 	nextRequest atomic.Uint64
+	// incarnation of the dillad process the newest ready came from (see connection.incarnation); guarded by mu.
+	incarnation string
 }
 
 // Delivery is one validated frame handed to the durable consumer. Ack is bound
@@ -109,6 +112,9 @@ type connection struct {
 	ackDeadline time.Duration
 	pendingMu   sync.Mutex
 	pending     map[uint64]chan ResponseFrame
+	// incarnation names the dillad process this connection reached: hello instance id and generation, and the ready's
+	// boot id. A resumed connection is the same process, so it carries the previous one's.
+	incarnation string
 }
 
 // deliver hands an answer to the request waiting on this connection; an answer nobody waits for is dropped.
@@ -447,6 +453,7 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 	// other frame to the hello's bound.
 	ws.SetReadLimit(MaxResponseFrameBytes)
 	c.mu.Lock()
+	conn.incarnation = c.incarnation
 	c.setCurrentLocked(conn)
 	c.mu.Unlock()
 	rawFrames := make(chan []byte, 32)
@@ -640,6 +647,7 @@ func (c *Client) acceptReady(f Frame, h *Hello) error {
 		c.streamID++
 	}
 	c.ackAvailable = make(map[uint64][32]byte)
+	c.incarnation = h.InstanceID.String() + ":" + strconv.FormatUint(r.Generation, 10) + ":" + r.BootID.String()
 	c.mu.Unlock()
 	if f.N != 1 {
 		return ErrProtocol
