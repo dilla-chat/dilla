@@ -119,6 +119,18 @@ test('no app request uses HTTP while the socket is up', async ({ page, context, 
   const role = `Crew ${tag()}`;
   await makeRole(page, settings, role, { perms: ['pin'] });
   await selectRole(settings, role);
+  // The Bot admin page reads the installation, its command status and its settings.
+  const botTab = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('admin.nav.bot'), exact: true });
+  await botTab.click();
+  await expect(botTab).toHaveAttribute('aria-current', 'page', { timeout: WAIT });
+  await page.waitForLoadState('networkidle');
+  // The GIF settings: read the status, then set a key so the composer offers the picker.
+  await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true }).getByRole('button', { name: copy('workspace.gifs'), exact: true }).click();
+  const gifKey = settings.getByRole('textbox', { name: copy('gif.settings.key'), exact: true });
+  await expect(gifKey).toBeVisible({ timeout: WAIT });
+  await gifKey.fill(`key${tag()}abcd`);
+  await settings.getByRole('button', { name: copy('gif.settings.save'), exact: true }).click();
+  await expect(settings.getByText(copy('gif.settings.saved'), { exact: true })).toBeVisible({ timeout: WAIT });
   await page.keyboard.press('Escape');
   await expect(settings).toBeHidden({ timeout: WAIT });
   await makeInviteLink(page, own);
@@ -130,6 +142,14 @@ test('no app request uses HTTP while the socket is up', async ({ page, context, 
   await composerBox(page, 'general').fill(caption);
   await composerBox(page, 'general').press('Enter');
   await expect(messageRow(page, 'general', caption)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
+
+  // The GIF picker: open it and search once (an instance with no Giphy key answers a refusal, which is fine).
+  await page.getByRole('button', { name: copy('gif.button'), exact: true }).click();
+  const gifSearch = page.getByRole('searchbox', { name: copy('gif.search'), exact: true }).or(page.getByRole('textbox', { name: copy('gif.search'), exact: true }));
+  await expect(gifSearch.first()).toBeVisible({ timeout: WAIT });
+  await gifSearch.first().fill('cat');
+  await page.waitForLoadState('networkidle');
+  await page.keyboard.press('Escape');
 
   // A DM with the peer (a co-member of the peer's server).
   await railItem(page, peer.communityName).click();

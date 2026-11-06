@@ -53,6 +53,9 @@ frames	mls.welcome	frame
 frames	presence	frame
 frames	ready	frame
 frames	reconnect	frame
+frames	request	frame
+frames	request without idem	frame
+frames	response	frame
 frames	resume	frame
 frames	resumed	frame
 frames	subscribe	frame

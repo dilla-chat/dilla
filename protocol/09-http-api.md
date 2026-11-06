@@ -55,7 +55,7 @@ timeouts and warnings, roles, self-roles, role panels and the Bot join role), ch
 authority, join-role-grants, member episode, events and event ack). The retired `POST` and `DELETE
 /v1/communities/{id}/afk` of web3.8 are not registered. What stays on HTTP is the binary and the
 pre-socket surface: blob routes, GIF media bytes (`GET …/gifs/media/{gif_id}`) and the backup chunks (a body
-above a frame), the invite preview `GET /i/{code}`, the invite landing and `POST /v1/invites/redeem`
+above a frame), the invite preview `GET /i/{code}`, and the invite landing
 (unauthenticated, metered by client address), the instance document and limits, and the routes a client calls
 before its socket exists: sign-up and sign-in, the session ceremonies and `POST /v1/sessions/negotiate`,
 `DELETE /v1/devices/{device_id}/sessions`, the device lists, `GET` and `POST /v1/keypackages`,
@@ -436,7 +436,6 @@ its options must be approved self-service roles.
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `GET /i/{code}` | — | — | `text/html`, or CBOR when the request asks for `application/cbor`: `[instance(tstr), community_id(bstr16\|null), expires(uint), community_name(tstr\|null)]`. Never mutates; `Cache-Control: no-store`, `Referrer-Policy: no-referrer` |
-| `POST /v1/invites/redeem` | — | `[code(tstr)]` | `[invite_id(bstr16), community_id(bstr16\|null), grants_admin(uint)]` |
 | `POST /v1/communities/{id}/invites` | E | `[max_uses(uint), ttl_seconds(uint), grants_admin(uint)]` | `201 [invite_id(bstr16), code(tstr), url(tstr), expires(uint)]` |
 | `GET /v1/communities/{id}/invites` | E | — | `[[invite_id, community_id\|null, created_by\|null, grants_admin, max_uses, used_count, created, expires_at, revoked_at\|null]]`, newest first, revoked and spent invites included, never a code |
 | `DELETE /v1/invites/{id}` | E | — | `204` |
@@ -479,7 +478,7 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
 - `GET /i/{code}` of a community invite names the community; an invite of a deleted community
   answers as an unknown one. A code is accepted as a person types it: hyphens and spaces stripped,
   case ignored, and `0`, `8` and `1` read as `O`, `B` and `I` or `L`.
-- `GET /i/{code}`, `POST /v1/invites/redeem` and `POST /v1/communities/{id}/join` share one
+- `GET /i/{code}` and `POST /v1/communities/{id}/join` share one
   bucket, `limits.rate.invite_per_second` (0.1) with `invite_burst` (5), keyed by the client
   address, so a join is not a way round the limit on guessing codes. A refusal is `429
   E_RATE_LIMITED`; the landing page carries `Retry-After` too.

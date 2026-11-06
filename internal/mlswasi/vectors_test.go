@@ -73,19 +73,20 @@ const envelopeVectors = "../../protocol/vectors/envelope.json"
 // Task S1 part 2 adds the account-kind attestation (a human and a Bot, message and signature
 // each): identity 8 -> 12, total 353 -> 357; fix round 1 adds 2 re-encode checks and 3 shape
 // rejects: identity 12 -> 17, total 357 -> 362.
+// Bot v2 task 2 (f5b01382) adds the request, request-without-idem and response (ops 59/60) frame cases: frames 34 -> 37, total 362 -> 365.
 var wantSuiteCases = map[string]int{
 	"envelope":   15,
 	"franking":   4,
 	"sframe":     176,
 	"identity":   17,
-	"frames":     34,
+	"frames":     37,
 	"attachment": 14,
 	"rejects":    102,
 }
 
 // wantTotalCases is the sum of the table above: the whole cross-target
 // conformance surface in one number.
-const wantTotalCases = 362
+const wantTotalCases = 365
 
 // The four case names run_identity emits, one per sub-object of identity.json.
 var wantIdentityCases = []string{"account_kind", "credential_identity", "recovery_key", "safety_number", "sas"}

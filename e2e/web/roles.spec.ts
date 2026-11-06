@@ -9,8 +9,9 @@ import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
   CLASS, TEST_TIMEOUT, WAIT, makeInviteLink, newChannelButton, completeSignUp, copy, expectAccessible, expectComposerReady, newAccount, openChannel, railItem, railNav,
   channelRow, composerBox, messageRow, pinsDialog, rowAction, rowToolbar, sendText, signUp, tag, test, mentionList, logRegion, channelRowMenuItem, expectRowMenuAction,
- makeRole, roleButton, selectRole, setRolePermission,
+ makeRole, roleButton, selectRole, setRolePermission, ensureMembersOpen,
 } from './support/app';
+import { restoreDesktopWindow } from './support/electron.ts';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
@@ -116,12 +117,15 @@ test('roles run from an empty instance: make, assign, pin by right, mention, dem
 
   const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
   const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: h.url }, secondDir);
+  await restoreDesktopWindow(page);
   try {
     const page2 = second.pages()[0] ?? (await second.newPage());
     await openInviteInClient(page2, link, () => guard.attach(second));
     await completeSignUp(page2, newAccount(FRIEND, h.control), instance);
     await expect(railItem(page2, SERVER)).toBeVisible({ timeout: WAIT });
     await openChannel(page2, SERVER, 'general');
+    await ensureMembersOpen(page, membersRegion(page));
+    await ensureMembersOpen(page2, membersRegion(page2));
     await expect(memberRow(page, FRIEND)).toBeVisible({ timeout: WAIT });
     await expect(memberRow(page2, OWNER)).toBeVisible({ timeout: WAIT });
 

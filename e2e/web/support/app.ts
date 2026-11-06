@@ -876,6 +876,12 @@ export async function channelRowMenuItem(page: Page, channel: string, key: strin
 }
 /** The channel header's Members button (named "Members" or "Members, {n}"), on a desktop or a phone. */
 export function membersToggle(page: Page): Locator { return page.locator('.d-channel-header [data-members-toggle], .d-phone-header [data-members-toggle]'); }
+/** Opens the member pane when it is closed. The shell closes it below 64rem and widening does not reopen it, so a spec that
+ *  launches a second app (a tiling window manager shrinks the first window) cannot assume it is open. */
+export async function ensureMembersOpen(page: Page, region: Locator): Promise<void> {
+  if (!(await region.isVisible())) await membersToggle(page).first().click();
+  await expect(region).toBeVisible({ timeout: WAIT });
+}
 /** Opens the requested section through the visible workspace navigation at the current viewport. */
 export async function openSettings(page: Page, section: SettingsSection): Promise<Locator> {
   const phone = await page.evaluate(() => matchMedia('(max-width: 47.99rem), (pointer: coarse) and (max-height: 31.99rem)').matches);

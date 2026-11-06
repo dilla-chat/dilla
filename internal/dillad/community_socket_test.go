@@ -144,7 +144,6 @@ var stayOnHTTP = []string{
 	"POST /v1/auth/totp/verify",
 	"POST /v1/devices/{device_id}/sessions/challenge",
 	"POST /v1/devices/{device_id}/sessions",
-	"DELETE /v1/devices/{device_id}/sessions",
 	"POST /v1/gateway/ticket",
 	// Ruling: negotiate runs before the socket opens.
 	"POST /v1/sessions/negotiate",
@@ -159,10 +158,10 @@ var stayOnHTTP = []string{
 	"PUT /v1/users/{user_id}/device-list",
 	"GET /v1/keypackages",
 	"POST /v1/keypackages",
+	"DELETE /v1/devices/{device_id}/sessions", // forgetBrowser ends the sessions after quiesce
 	// Unauthenticated or public.
 	"GET /v1/instance",
 	"GET /v1/instance/limits",
-	"POST /v1/invites/redeem",
 	// Large binary bodies: blobs, backup chunks and GIF media.
 	"GET /v1/channels/{id}/blobs/{blob_id}",
 	"PUT /v1/channels/{id}/blobs/{blob_id}",
@@ -171,7 +170,7 @@ var stayOnHTTP = []string{
 	"GET /v1/backups",
 	"GET /v1/backups/{kind}/{chunk_seq}",
 	"PUT /v1/backups/{kind}/{chunk_seq}",
-	"DELETE /v1/backups/{kind}/{chunk_seq}",
+	"DELETE /v1/backups/{kind}/{chunk_seq}", // no client caller; kept with its backup-chunk family (ruling 3)
 	"GET /v1/communities/{id}/gifs/media/{gif_id}",
 }
 

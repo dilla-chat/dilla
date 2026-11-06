@@ -2286,7 +2286,7 @@ describe('Routes: the community area goes over the socket (Bot v2 task 6)', () =
   ];
   // Large binary bodies, the pre-session routes and the unauthenticated ones stay on HTTP.
   const http: [string, string][] = [
-    ['GET', `/v1/communities/${C}/gifs/media/abc123?r=full`], ['POST', '/v1/invites/redeem'], ['GET', '/v1/instance'],
+    ['GET', `/v1/communities/${C}/gifs/media/abc123?r=full`], ['GET', '/v1/instance'],
     ['GET', '/v1/accounts/me'], ['POST', '/v1/accounts'], ['GET', '/v1/auth/factors'], ['POST', '/v1/gateway/ticket'],
     ['PUT', '/v1/backups/0/0'], ['GET', `/v1/channels/${CH}/blobs/${hex(fill(32, 0x22))}`], ['POST', '/v1/sessions/negotiate'],
   ];

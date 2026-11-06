@@ -181,7 +181,6 @@ export const HTTP_ONLY_ROUTES: readonly SocketRoute[] = [
   { method: 'POST', pattern: '/v1/gateway/ticket' },
   { method: 'GET', pattern: '/v1/instance' },
   { method: 'GET', pattern: '/v1/instance/limits' },
-  { method: 'POST', pattern: '/v1/invites/redeem' },
   { method: 'GET', pattern: '/v1/keypackages' },
   { method: 'POST', pattern: '/v1/keypackages' },
   { method: 'POST', pattern: '/v1/sessions/negotiate' },

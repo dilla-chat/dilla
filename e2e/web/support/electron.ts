@@ -27,6 +27,14 @@ export function desktopApplication(context: BrowserContext): ElectronApplication
  return application;
 }
 
+/** Puts a desktop window back to the lane's usual 1280x720 after a second app opened: a tiling window manager shrinks the first
+ *  window then, and the shell closes the member pane and hides the channel topic below 64rem. A no-op outside the desktop lane. */
+export async function restoreDesktopWindow(page: Page): Promise<void> {
+  if (!desktopE2E()) return;
+  const win = await desktopApplication(page.context()).browserWindow(page);
+  try { await win.evaluate((w) => { w.setSize(1280, 720); }); } finally { await win.dispose(); }
+}
+
 /** Each browser-profile fixture becomes an actual sandboxed desktop process.
  * The installed client and its worker keep their normal origin/storage boundary. */
 export async function launchDesktopContext(profile: string | null, options: BrowserContextOptions & { launchOptions?: LaunchOptions }, claimWindow = true, temporary = profile === null, info?: TestInfo): Promise<BrowserContext> {
