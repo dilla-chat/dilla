@@ -43,18 +43,22 @@ func TestAnswerOfARequestRunningAtShutdownIsWrittenBeforeTheConnectionCloses(t *
 	if err := <-done; err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
-	var answered bool
+	// A real client stops reading at reconnect: the answer must come before it.
 	deadline := time.After(5 * time.Second)
-	for !answered {
+	for {
 		select {
 		case raw := <-h.sink(c).frames:
 			if resp, err := DecodeResponseFrame(raw); err == nil && resp.ID == 7 && resp.Status == 204 {
-				answered = true
+				goto answered
+			}
+			if in, err := decodeAny(raw); err == nil && in.Op == OpReconnect {
+				t.Fatal("reconnect went out before the answer of the request running at Shutdown")
 			}
 		case <-deadline:
 			t.Fatal("the answer of the request running at Shutdown was never written")
 		}
 	}
+answered:
 	if code := h.waitClose(t, c); code != CloseGoingAway {
 		t.Fatalf("close code = %d, want 4010", code)
 	}

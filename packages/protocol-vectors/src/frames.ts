@@ -41,7 +41,7 @@ export function frameVectors() {
     frame('hello', 0, 0, null, [[6], [1], [1], 30000, 131584, new Uint8Array(16).fill(0x01), 1, 300, 300]),
     frame('identify', 1, 1, null, ['tok', 6, 1, 1, 0]),
     frame('resume', 2, 2, null, ['tok', TOKEN, 1, 41]),
-    frame('ready', 3, 1, null, [DEVICE, USER, 1, TOKEN, 6, 1, 1, 32, [[GROUP, 6, 4127, 0]]]),
+    frame('ready', 3, 1, null, [DEVICE, USER, 1, TOKEN, 6, 1, 1, 32, [[GROUP, 6, 4127, 0]], new Uint8Array(16).fill(0x0c)]),
     // `resumed` carries the ROTATED resume token as element 2: the instance discards the token the
     // client just spent, so without it on the wire a client could resume exactly once per identify.
     frame('resumed', 4, 2, null, [42, 47, TOKEN]),

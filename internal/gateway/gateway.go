@@ -853,15 +853,15 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, c := range conns {
-		c.send(Frame{Op: OpReconnect, Payload: p})
-	}
-	// Socket requests running now finish, and their answers are written, before any connection closes: a mutation
-	// whose answer is lost to the shutdown is resent by the client to the next process, which has no replay record
-	// for it. Bounded, so a stuck handler cannot hold the shutdown.
+	// Socket requests running now finish, and their answers are written, BEFORE reconnect goes out: a client stops
+	// reading at reconnect, and a mutation whose answer is lost to the shutdown is resent to the next process, which has
+	// no replay record for it. Bounded, so a stuck handler cannot hold the shutdown.
 	drainCtx, cancelDrain := context.WithTimeout(ctx, requestDrainTimeout)
 	g.workers.wait(drainCtx)
 	cancelDrain()
+	for _, c := range conns {
+		c.send(Frame{Op: OpReconnect, Payload: p})
+	}
 	for _, c := range conns {
 		w := c.currentWriter()
 		w.drain(ctx)
