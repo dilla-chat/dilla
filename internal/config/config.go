@@ -111,6 +111,12 @@ type Server struct {
 
 type HTTP struct {
 	TrustedOrigins []string `toml:"trusted_origins"`
+	// MobileOrigins are the mobile app's origins (Capacitor: capacitor://localhost on iOS,
+	// https://localhost on Android). They may call /v1/ and /i/ cross-origin (CORS, bearer tokens
+	// only) and open the gateway, and are never WebAuthn relying-party origins. /desktop-auth/ is
+	// not among them: the app calls it through native HTTP with no Origin header. Each is a whole,
+	// lowercase origin, scheme included.
+	MobileOrigins []string `toml:"mobile_origins"`
 }
 
 type Gateway struct {

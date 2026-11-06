@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Android adaptive foreground (108dp canvas). The glyph keeps its desktop size relative to the visible
+       72dp square (0.937143 * 72 / 108 = 0.624762) and stays inside the 66dp safe circle. -->
+  <g transform="translate(512 512) scale(0.624762) translate(-512 -512)"><g transform="translate(-34 0)"><path fill="#fff" fill-rule="evenodd" d="M256,292H436A220,220 0 0 1 436,732H256Z M376,412H436A100,100 0 0 1 436,612H376Z"/><rect x="700" y="672" width="140" height="60" rx="8" fill="#8CC4F0"/></g></g>
+</svg>

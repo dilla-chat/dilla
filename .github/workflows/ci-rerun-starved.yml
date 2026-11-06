@@ -1,11 +1,11 @@
 name: ci-rerun-starved
-# Re-runs once the jobs of a server or desktop CI run that GitHub never gave a runner (mostly macOS jobs that
+# Re-runs once the jobs of a server, desktop or mobile CI run that GitHub never gave a runner (mostly macOS jobs that
 # queue until they are cancelled). Privileged: actions: write on a workflow_run event. It therefore checks out only the default
 # branch's script, never the triggering run's code, uses no secret beyond GITHUB_TOKEN, and takes the run
 # id and attempt through env, never inline in a command.
 on:
   workflow_run:
-    workflows: [server, desktop]
+    workflows: [server, desktop, mobile]
     types: [completed]
 permissions:
   actions: write

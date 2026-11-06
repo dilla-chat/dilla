@@ -1,7 +1,7 @@
 # ci-local: the CI workflows on your machine
 
-`npm run ci:local` runs the two CI workflows, `.github/workflows/server.yml` (check `server-ok`) and
-`.github/workflows/desktop-ci.yml` (check `desktop-ok`), locally, so a failure shows up before the push instead of on
+`npm run ci:local` runs the three CI workflows, `.github/workflows/server.yml` (check `server-ok`),
+`.github/workflows/desktop-ci.yml` (check `desktop-ok`) and `.github/workflows/mobile.yml` (check `mobile-ok`), locally, so a failure shows up before the push instead of on
 the runner. Run it before every push.
 
 ```sh
@@ -17,9 +17,9 @@ npm run ci:local -- --doctor              # check the prerequisites and exit
 
 ## How it works
 
-ci-local doesn't keep its own list of commands. `scripts/ci-local-plan.mjs` reads both workflows and builds the jobs
-from them. A job both carry (`changes`, `rust-native`, `rust-wasi`, `web-build`) runs once: it runs when either
-workflow's gate holds, and its steps must be the same in both files. Matrix jobs are expanded into one job per leg, `needs:` and the job and step `if:` area gates are respected, and each
+ci-local doesn't keep its own list of commands. `scripts/ci-local-plan.mjs` reads the workflows and builds the jobs
+from them. A job several carry (`changes`, `rust-native`, `rust-wasi`, `web-build`) runs once: it runs when any
+workflow's gate holds, and its steps must be the same in every file. Matrix jobs are expanded into one job per leg, `needs:` and the job and step `if:` area gates are respected, and each
 job's `run:` steps run as written in the order they appear, with `bash -eo pipefail`, `CI=true` and the
 `timeout-minutes` from the workflow. Jobs that don't depend on each other run in parallel within a CPU budget
 (`--jobs`, which defaults to the number of CPUs). Each job has a weight, about the number of cores it keeps busy (a
@@ -50,9 +50,9 @@ CI tools that `install-ci-tool.sh` downloads (golangci-lint with its gosec rules
 cargo-deny and sqlc) land in `target/ci-local/runner-temp/dilla-ci-tools`. They go ahead of your own copies on PATH,
 so the lint is the one CI runs.
 
-`npm run check:ci` (server's docs job) runs `localMirrorProblems`. If either workflow gains a job, step, action, service,
-`if:` form or `${{ }}` expression that ci-local can't map or doesn't explicitly skip (`JOB_MAP.server` and
-`JOB_MAP.desktop`), or a shared job's two copies differ, the check fails, so the mirror can't drift.
+`npm run check:ci` (server's docs job) runs `localMirrorProblems`. If any workflow gains a job, step, action, service,
+`if:` form or `${{ }}` expression that ci-local can't map or doesn't explicitly skip (`JOB_MAP.server`,
+`JOB_MAP.desktop` and `JOB_MAP.mobile`), or a shared job's copies differ, the check fails, so the mirror can't drift.
 
 ## Jobs it skips, and why
 
@@ -61,6 +61,8 @@ so the lint is the one CI runs.
 | `go-fts5-arm64` | it needs a native linux/arm64 runner (`ubuntu-24.04-arm`). The job tests FTS5 on arm64 itself, so a cross-build or qemu wouldn't be the same check. It runs on an arm64 machine. |
 | `linux-sandbox-foundation` | requires disposable Ubuntu 22.04/24.04 runners and privileged kernel fixtures. |
 | `desktop` | requires native Linux, Windows and macOS acceptance runners in `desktop.yml`. |
+| `mobile-android`, `mobile-e2e-tools` | the emulator smoke test needs KVM, JDK 21, the Android SDK and an AVD, which `scripts/ci-android.sh` provisions on the runner only. It is opt-in locally: `npm run e2e:android -w @dilla/mobile` (`packages/mobile/README.md` lists its prerequisites). `mobile-unit`, `mobile-core-wasm` (its wasm-pack build is web-build's, memoised, so it runs once) and `mobile-bundle` (the mobile client build) do run. |
+| `mobile-ios` | needs a macOS runner with Xcode; on a Mac, `packages/mobile/README.md` has the build. |
 | `ci-watchdog` | GitHub run cancellation is replaced by the local fail-fast scheduler. |
 | `codeql` (extra) | it runs only when the `codeql` CLI is on PATH, and is otherwise reported as SKIPPED with the install hint. When it runs, it creates databases for actions, go, javascript-typescript and rust and analyses them with the code-scanning suites. Results at error level or with a security severity of 7 or more fail it. |
 

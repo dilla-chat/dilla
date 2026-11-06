@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
-import { gateExpression, JOB_GATES, jobRuns, reachableOutputs, WORKFLOWS } from './ci-areas.mjs';
+import { AREAS, gateExpression, JOB_GATES, jobRuns, reachableOutputs, WORKFLOWS } from './ci-areas.mjs';
 import { localMirrorProblems } from './ci-local-plan.mjs';
 import { checkNativeStockFeasibility } from './check-native-stock-feasibility.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
@@ -12,7 +12,8 @@ const yaml = createRequire(import.meta.url)('js-yaml');
  * two). Ruling L added the two Go jobs: they landed with Plan B task 8, and leaving them merely "checked if present"
  * meant deleting them was the one way to make the Go half of the tree ungated without this gate saying a word. The
  * `go` job additionally has to declare its `needs: rust-wasi` edge (see below). Artifacts never cross workflows, so
- * a job whose output both need (rust-native, rust-wasi, web-build) is in both, unchanged.
+ * a job whose output several need (rust-native, rust-wasi, web-build) is in each of them, unchanged. mobile.yml
+ * (plan 2026-11-05 mobile M1, Task 7) is the third: the iOS and Android apps.
  */
 export const REQUIRED_JOBS = {
   server: [
@@ -72,15 +73,34 @@ export const REQUIRED_JOBS = {
     'desktop',
     // core-integration: BROWSER_WEB_JOBS.
   ],
+  mobile: [
+    'changes',
+    'ci-watchdog',
+    'mobile-work-complete',
+    'mobile-ok',
+    // npm test and typecheck of @dilla/mobile.
+    'mobile-unit',
+    // The wasm core only (desktop's web-build runs the typechecks and dist guards): mobile-bundle's input.
+    'mobile-core-wasm',
+    // The mobile client (packages/mobile/dist), once for both apps.
+    'mobile-bundle',
+    // The smoke test's test host, WASI core and native peer.
+    'mobile-e2e-tools',
+    // The APKs, the release network-config check and the emulator smoke test.
+    'mobile-android',
+    // The iOS simulator build.
+    'mobile-ios',
+  ],
 };
 
-/** A workflow's file name, for messages. */
-/** The desktop workflow's nightly run (02:17 UTC), on main. */
+/** The nightly run (02:17 UTC) on main of the workflows WORKFLOWS marks `nightly` (desktop, mobile). */
 export const NIGHTLY_CRON = '17 2 * * *';
 
-// The watcher runs for every trusted event; a scheduled run is one (GitHub starts it on main), so desktop-ok keeps
-// failing a skipped watcher there.
-const watchdogIf = (workflow) => `    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || ${workflow === 'desktop' ? "github.event_name == 'schedule' || " : ''}(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)`;
+// The watcher runs for every trusted event; a scheduled run is one (GitHub starts it on main), so desktop-ok and
+// mobile-ok keep failing a skipped watcher there.
+const watchdogIf = (workflow) => `    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || ${WORKFLOWS[workflow].nightly ? "github.event_name == 'schedule' || " : ''}(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)`;
+
+/** A workflow's file name, for messages. */
 
 const fileOf = (workflow) => WORKFLOWS[workflow].file;
 
@@ -196,7 +216,7 @@ const REQUIRED_STEPS = {
     'node scripts/ci-areas.mjs',
     'EVENT_NAME: ${{ github.event_name }}',
     'BASE_SHA: ${{ github.event.pull_request.base.sha }}',
-    ...['go', 'core', 'web', 'e2e', 'text', 'code'].map((area) => `${area}: \${{ steps.areas.outputs.${area} }}`),
+    ...[...AREAS, 'code'].map((area) => `${area}: \${{ steps.areas.outputs.${area} }}`),
   ],
   // The cheap docs gates, for every change.
   // Their unit tests and the real checks against the real files; check:ci reads the Go tree for the race and Postgres rules.
@@ -207,6 +227,32 @@ const REQUIRED_STEPS = {
   // The final gate of each workflow runs regardless of dependency results, alongside its no-op completion barrier.
   'server-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
   'desktop-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
+  'mobile-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
+  // The mobile lane (plan 2026-11-05 mobile M1, Task 7): each job's load-bearing commands.
+  'mobile-unit': ['- run: npm test -w @dilla/mobile', '- run: npm run typecheck -w @dilla/mobile'],
+  'mobile-core-wasm': ['- run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg', '- run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm', 'name: mobile-core-wasm\n          path: packages/core-wasm/pkg/\n          if-no-files-found: error'],
+  'mobile-bundle': ['name: mobile-core-wasm\n          path: packages/core-wasm/pkg', '- run: npm run build -w @dilla/mobile', 'name: dilla-mobile-dist\n          path: packages/mobile/dist/\n          if-no-files-found: error'],
+  'mobile-e2e-tools': ['- run: go build -o target/dilla-testhost ./cmd/dilla-testhost', '- run: cargo build -p dilla-testkit --release --locked', '- run: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked', 'name: mobile-e2e-tools'],
+  'mobile-android': [
+    'name: dilla-mobile-dist\n          path: packages/mobile/dist',
+    'name: mobile-e2e-tools',
+    'run: echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"',
+    '- run: cd packages/mobile && npx cap sync android',
+    ' -- packages/mobile/android/gradlew -p packages/mobile/android --no-daemon assembleDebug assembleRelease',
+    // Review finding M2: the release APK trusts system CAs only and refuses cleartext.
+    '- run: npm run android:check-release -w @dilla/mobile',
+    'run: bash scripts/ci-android.sh kvm',
+    ' -- bash scripts/ci-android.sh sdk',
+    '- run: bash scripts/ci-android.sh avd',
+    'run: npm run e2e:android -w @dilla/mobile -- --skip-build\n        env:\n          DILLA_ANDROID_E2E_OUT: ${{ github.workspace }}/target/mobile-android-e2e',
+    "if: failure() && hashFiles('target/mobile-android-e2e/**') != ''\n        with:\n          name: mobile-android-results\n          path: target/mobile-android-e2e\n          if-no-files-found: error",
+  ],
+  'mobile-ios': [
+    '- run: cd packages/mobile && npx cap sync ios',
+    'sudo xcode-select -s /Applications/Xcode_26.6.app',
+    ' -- xcodebuild -resolvePackageDependencies -project packages/mobile/ios/App/App.xcodeproj -scheme App -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm"',
+    "run: xcodebuild -project packages/mobile/ios/App/App.xcodeproj -scheme App -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -clonedSourcePackagesDirPath \"$RUNNER_TEMP/spm\" -disableAutomaticPackageResolution -derivedDataPath \"$RUNNER_TEMP/DerivedData\" CODE_SIGNING_ALLOWED=NO build",
+  ],
   // The testkit artifact hand-off: rust-native builds and uploads it, go downloads it.
   'rust-native': [
     'cargo fmt --all --check',
@@ -790,7 +836,7 @@ const ELECTRON_INSTALL_STEP = [
 ];
 const ELECTRON_STEPS = [ELECTRON_VERSION_STEP, ELECTRON_CACHE_STEP, ELECTRON_INSTALL_STEP].map((step) => step.join('\n')).join('\n');
 
-const ELECTRON_INSTALLS_PER_FILE = { 'desktop.yml': 5, 'desktop-ci.yml': 1, 'server.yml': 0 };
+const ELECTRON_INSTALLS_PER_FILE = { 'desktop.yml': 5, 'desktop-ci.yml': 1, 'server.yml': 0, 'mobile.yml': 0 };
 
 /** Every step that runs electron/install.js is the one retried step, byte for byte, behind the version and cache steps. */
 export function checkElectronInstalls(jobs, problems, file) {
@@ -981,8 +1027,9 @@ function checkActionReference(line, file, number, problems) {
 }
 
 /**
- * One CI workflow (server.yml or desktop-ci.yml) against its own job list, gates, watchdog barrier and ok check. Both
- * run on every pull request and push to main, never filtered at the trigger, so a required check always reports.
+ * One CI workflow (server.yml, desktop-ci.yml or mobile.yml) against its own job list, gates, watchdog barrier and ok
+ * check. Each runs on every pull request and push to main, never filtered at the trigger, so a required check always
+ * reports.
  */
 function checkCiWorkflow(root, workflow) {
   const file = fileOf(workflow);
@@ -999,10 +1046,12 @@ function checkCiWorkflow(root, workflow) {
   let doc = null;
   try { doc = yaml.load(text); } catch (error) { problems.push(`${file}: invalid YAML (${error.message.split('\n')[0]})`); }
   if (doc !== null && doc?.name !== workflowName) problems.push(`${file}: the workflow must be named "${workflowName}" (the release gates and ci-rerun-starved.yml read it)`);
-  // Only the desktop workflow also runs nightly (every area on, see scripts/ci-areas.mjs); server.yml has no schedule.
-  const triggers = { push: { branches: ['main'] }, pull_request: null, ...(workflow === 'desktop' ? { schedule: [{ cron: NIGHTLY_CRON }] } : {}) };
+  // Only the nightly workflows (desktop, mobile) also run on a schedule (every area on, see scripts/ci-areas.mjs);
+  // server.yml has none.
+  const { nightly } = WORKFLOWS[workflow];
+  const triggers = { push: { branches: ['main'] }, pull_request: null, ...(nightly ? { schedule: [{ cron: NIGHTLY_CRON }] } : {}) };
   if (doc !== null && !drSame(doc?.on, triggers)) {
-    problems.push(`${file}: must trigger on every pull_request and every push to main${workflow === 'desktop' ? `, and nightly on schedule cron '${NIGHTLY_CRON}'` : ''}, with no paths or other filter at the trigger (area skipping is the changes job's)`);
+    problems.push(`${file}: must trigger on every pull_request and every push to main${nightly ? `, and nightly on schedule cron '${NIGHTLY_CRON}'` : ''}, with no paths or other filter at the trigger (area skipping is the changes job's)`);
   }
 
   let currentJob = null;
@@ -1233,6 +1282,9 @@ function checkCiWorkflow(root, workflow) {
     ...Object.keys(BROWSER_WEB_JOBS).map((job) => [job, ['rust-native', 'rust-wasi', 'web-build']]),
     ['go-release', ['web-build']],
     ['desktop', ['web-build']],
+    ['mobile-bundle', ['mobile-core-wasm']],
+    ['mobile-android', ['mobile-bundle', 'mobile-e2e-tools']],
+    ['mobile-ios', ['mobile-bundle']],
   ]) {
     if (!(job in jobs)) continue;
     for (const need of needs) {
@@ -1259,6 +1311,7 @@ function checkCiWorkflow(root, workflow) {
 
 export const checkServerWorkflow = (root) => checkCiWorkflow(root, 'server');
 export const checkDesktopCiWorkflow = (root) => checkCiWorkflow(root, 'desktop');
+export const checkMobileCiWorkflow = (root) => checkCiWorkflow(root, 'mobile');
 
 /**
  * The release workflow (install-release, 2026-10-14): a v* tag builds the assets deploy/install.sh downloads and
@@ -2127,7 +2180,7 @@ export function checkLocalMirror(root) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkDesktopWorkflow(root), ...checkDesktopReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkLocalMirror(root)];
+  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkDesktopWorkflow(root), ...checkDesktopReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkLocalMirror(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }

@@ -58,8 +58,14 @@ function stripRnnoiseInlineWasm(): Plugin {
   };
 }
 
+// The mobile app's build flag (packages/client-core/src/worker/mobile-build.ts): packages/mobile/scripts/build.mjs sets
+// DILLA_MOBILE_BUILD=1 and builds into its own directory. Every other build (web, desktop) defines it false, so the
+// worker's mobile-only branches (a cross-origin instance, per-URL storage keys) are folded out of the bundle.
+const MOBILE_BUILD = process.env.DILLA_MOBILE_BUILD === '1';
+
 export default defineConfig({
   base: '/',
+  define: { __DILLA_MOBILE__: JSON.stringify(MOBILE_BUILD) },
   plugins: [noiseBuild(), react(), oneCoreWasm(), stripRnnoiseInlineWasm()],
   resolve: {
     // @dilla/media ships TypeScript sources and no package entry; tsconfig.json maps the same path for tsc.

@@ -6,7 +6,7 @@
 // - No JavaScript names a dilla_core_wasm_bg*.wasm other than that one file: a `new URL` the bundler could not
 //   resolve stays in the code verbatim and becomes a second download at runtime.
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // livekit and rnnoise in any case (a class such as LiveKitRoom). Task 11 (merge 9+10 minor): the one exemption is the exact
@@ -42,8 +42,13 @@ function entryChunks(html) {
   return chunks;
 }
 
-/** @returns {string[]} One line per problem, or [] when the build keeps the call code lazy and the core wasm single. */
-export function checkEntryChunk(dir) {
+/** The mobile app's origin, which only the mobile build's worker names (client-core worker/mobile-build.ts). */
+const MOBILE_MARKER = 'capacitor://localhost';
+
+/** @returns {string[]} One line per problem, or [] when the build keeps the call code lazy and the core wasm single.
+ *  `mobile`: the mobile app's build (DILLA_MOBILE_BUILD=1). Any other build must not carry the mobile worker branch:
+ *  __DILLA_MOBILE__ false folds it away (review I1, Task 6). */
+export function checkEntryChunk(dir, { mobile = false } = {}) {
   const problems = [];
   const html = existsSync(join(dir, 'index.html')) ? readFileSync(join(dir, 'index.html'), 'utf8') : '';
   const entries = entryChunks(html);
@@ -58,6 +63,12 @@ export function checkEntryChunk(dir) {
     const lower = body.toLowerCase();
     for (const word of FORBIDDEN_IN_ENTRY) {
       if (lower.includes(word)) problems.push(`${path}: the entry chunk contains ${word}`);
+    }
+  }
+
+  if (!mobile) {
+    for (const path of walk(dir).filter(p => p.endsWith('.js')).sort()) {
+      if (readFileSync(join(dir, path), 'utf8').includes(MOBILE_MARKER)) problems.push(`${path}: the mobile-only worker branch is in a web or desktop build`);
     }
   }
 
@@ -77,12 +88,22 @@ export function checkEntryChunk(dir) {
   return problems;
 }
 
+/** The one output a mobile build (DILLA_MOBILE_BUILD=1) may write: packages/mobile/scripts/build.mjs's .web-build. */
+const MOBILE_OUTPUT = resolve(dirname(fileURLToPath(import.meta.url)), '../../mobile/.web-build');
+
 function main(argv) {
   if (!argv[2]) {
     console.error('usage: check-entry-chunk.mjs <dist-dir>');
     return 2;
   }
-  const problems = checkEntryChunk(argv[2]);
+  // Set only when it is exactly '1', as vite.config.ts reads it: any other value builds (and is checked as) web or desktop.
+  const mobile = process.env.DILLA_MOBILE_BUILD === '1';
+  // Review round 2, item 5: a mobile client in packages/web/dist would become the web and desktop client.
+  if (mobile && resolve(argv[2]) !== MOBILE_OUTPUT) {
+    console.error(`${argv[2]}: DILLA_MOBILE_BUILD is set, but this output is not packages/mobile/.web-build`);
+    return 1;
+  }
+  const problems = checkEntryChunk(argv[2], { mobile });
   for (const problem of problems) console.error(problem);
   if (problems.length) return 1;
   console.log('entry chunk: no livekit, no rnnoise; one core wasm, one rnnoise wasm');

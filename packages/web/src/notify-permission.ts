@@ -2,6 +2,8 @@
 // requestPermission(), and only Settings → Notifications calls it, from the click of its button (Q30: Firefox
 // refuses a request made without a gesture, and nothing asks on load).
 
+import { mobileBridge, readMobilePermission, askMobilePermission } from './mobile.ts';
+
 export type PermissionState = NotificationPermission | 'unsupported';
 
 export interface NotificationApi {
@@ -16,11 +18,15 @@ export function notificationApi(): NotificationApi | undefined {
 }
 
 export function readPermission(api: NotificationApi | undefined = notificationApi()): PermissionState {
+  const mobile = mobileBridge();
+  if (mobile !== undefined) return readMobilePermission(mobile);
   return api === undefined ? 'unsupported' : api.permission;
 }
 
 /** Asks the browser; a refused or failed request answers the permission as it stands. */
 export async function askPermission(api: NotificationApi | undefined = notificationApi()): Promise<PermissionState> {
+  const mobile = mobileBridge();
+  if (mobile !== undefined) return askMobilePermission(mobile);
   if (api === undefined) return 'unsupported';
   try {
     return await api.requestPermission();

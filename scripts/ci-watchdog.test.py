@@ -526,7 +526,7 @@ class WatchdogTests(unittest.TestCase):
 
     def test_the_aggregate_checks_are_never_watched(self):
         # Each *-ok job needs the watcher, so its result is never the watcher's business.
-        for aggregate in ["server-ok", "desktop-ok"]:
+        for aggregate in ["server-ok", "desktop-ok", "mobile-ok"]:
             with self.subTest(aggregate=aggregate):
                 result, transport, _ = self.watch([
                     {"total_count": 4, "jobs": [job("changes"), job("docs"), job("server-work-complete"),

@@ -276,6 +276,30 @@ it('restores selected files before clearing a refreshed tab checkpoint', async (
   await waitFor(() => expect(remove).toHaveBeenCalledOnce());
 });
 
+// Final review I1: the restore depends on the instance's id and storage key, not on the account slice's object. A
+// re-posted slice (a new object with the same id and storage key) while a restore is in flight must not load or apply
+// the checkpoint a second time.
+it('does not restore the checkpoint twice when the account slice is re-posted mid-restore', async () => {
+  const file = new File(['attachment'], 'kept.txt', { type: 'text/plain' });
+  const load = vi.fn(() => Promise.resolve({ state: { conversationId: GEN, draft: { channelId: GEN, text: 'once' } }, files: [file] }));
+  const update: ShellUpdateDeps = { currentEntry: '/assets/new.js', watch: () => () => undefined,
+    store: { save: () => Promise.resolve(), load, remove: () => Promise.resolve() }, reload: () => undefined };
+  let finishAttach!: () => void;
+  const { fake } = setup(`/c/${A}/${GEN}`, { update, before: client => {
+    client.set(`timeline:${GEN}`, timeline());
+    client.handler = command => command.m === 'attachFiles'
+      ? new Promise(resolve => { finishAttach = () => resolve(null); })
+      : Promise.resolve(null);
+  } });
+  await waitFor(() => expect(fake.callsOf('attachFiles')).toHaveLength(1));
+  const ready = account();
+  act(() => fake.set('account', { ...ready, instance: { ...ready.instance! } }));
+  await act(async () => { finishAttach(); await Promise.resolve(); });
+  await new Promise(r => setTimeout(r, 50));
+  expect(load).toHaveBeenCalledOnce();
+  expect(fake.callsOf('attachFiles')).toHaveLength(1);
+});
+
 it('reopens the same thread with its unsent reply after an update', async () => {
   const root = 'fa'.repeat(16);
   const update: ShellUpdateDeps = { currentEntry: '/assets/new.js', watch: () => () => undefined,
