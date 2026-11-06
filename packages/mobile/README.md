@@ -125,6 +125,76 @@ force-stops and relaunches into the same account on A with both instances in the
 violation. Screenshots, logcat on failure and the emulator's own log (`emulator.log`, when the test started it) land in
 `e2e/.out/` (`DILLA_ANDROID_E2E_OUT` moves them; CI uses `target/mobile-android-e2e`).
 
+## Releases
+
+`.github/workflows/mobile-release.yml` runs after `release.yml` succeeds for a `v*` tag, or by hand with a tag. It
+refuses commits that are not on `main`, and (by hand) tags without a successful `release.yml` run.
+
+- **Android:** Gradle builds the APK unsigned. One step signs it with `apksigner` using the keystore from the
+  `mobile-release` environment, checks the signer against the pin in `release-trust.json` and the network config,
+  and uploads `dilla-<tag>.apk` and `dilla-<tag>.apk.sha256` (`sha256sum` format) to the GitHub release with
+  `--clobber`. The upload is not atomic, so a rerun repairs a half-finished one.
+- **iOS:** an unsigned archive, a cloud-signed export, and an upload to TestFlight.
+- **Version numbers:** the marketing version comes from the tag (`v0.1.0-mobile1` gives `0.1.0`). The iOS build
+  number and the Android `versionCode` are `1000 + run_number*10 + run_attempt`.
+
+### The `mobile-release` environment
+
+The deployment branch policy is `main`. Secrets and variable live only here.
+
+| Name | Kind | Value |
+| --- | --- | --- |
+| `ANDROID_KEYSTORE_B64` | secret | the release keystore, base64 |
+| `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | secret | keystore password, key alias, key password |
+| `ASC_KEY_ID`, `ASC_ISSUER_ID` | secret | from the App Store Connect API key |
+| `ASC_KEY_P8` | secret | the contents of the `.p8` file |
+| `APPLE_TEAM_ID` | variable | developer.apple.com, Membership |
+
+Set them with `gh secret set --env mobile-release NAME` and `gh variable set --env mobile-release APPLE_TEAM_ID`.
+The Android secrets are already set.
+
+### One-time setup (Jonas)
+
+1. App Store Connect, Apps, **+ New App**: iOS, name Dilla (Dilla Chat if taken), bundle id `chat.dilla.app`, SKU
+   `dilla-ios`.
+2. Users and Access, Integrations, **App Store Connect API**: create a **Team** key with the **Admin** role. App
+   Manager is not enough, because cloud signing needs Admin. Set `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` and the
+   variable `APPLE_TEAM_ID`.
+3. TestFlight: add the beta app description and a feedback email, then create an **external group** with a **public
+   link** and send the first build to beta review. Put the public link in the release notes, nowhere else.
+4. First build, export compliance: `Info.plist` declares `ITSAppUsesNonExemptEncryption` as `YES` (standard
+   published algorithms). Answer App Store Connect's questionnaire with "standard encryption algorithms". If Apple
+   issues an `ITSEncryptionExportComplianceCode`, add it to `Info.plist`.
+5. Keep the Android keystore file and its password in your password manager. That is its only offline copy. If you
+   lose it, users cannot update and must uninstall, which deletes the device and its messages.
+
+TestFlight builds expire after 90 days, so release at least that often.
+
+### Backfill or rerun by hand
+
+```sh
+gh workflow run mobile-release.yml -f tag=v0.1.0-mobile1
+```
+
+The tag must have a successful `release.yml` run. The run replaces any APK and checksum already on the release.
+
+### Rotating the Android key
+
+1. Add the new certificate's SHA-256 as a second entry in `release-trust.json` (`android.certSha256`) and release.
+2. Then switch the four Android secrets to the new keystore.
+
+Android only updates an app over one signed by the same key. An APK signed by a different key will not install over
+an existing one. For users who already have the app, rotation needs APK signature scheme v3 key rotation
+(`apksigner --lineage`). This is not set up. Without it, those users must uninstall first.
+
+### If a job fails halfway
+
+- Android: rerun the failed job (or dispatch the tag). The upload uses `--clobber`, so the APK and checksum are
+  replaced together. Check both are on the release afterwards.
+- iOS: rerun the job. Each attempt gets a new build number, so TestFlight accepts it. A missing secret or variable is
+  named in the job's error.
+- The two jobs are independent. One can succeed while the other fails.
+
 ## Not yet
 
 - App-icon badge counts (no core Capacitor API; push brings them in wave M2). `send({ type: 'badge' })` is accepted
