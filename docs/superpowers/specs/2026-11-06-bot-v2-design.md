@@ -54,6 +54,7 @@ Jonas, 2026-11-06:
     - The dilla server package ships the Bot. dillad starts it as a sandboxed child process: own OS user, own state and keys. They talk over a local socket.
     - There is no separate dillabot package, unit, `bot.toml` or `base_url` to configure.
     - Bot keys and command plain text never enter dillad's memory, so the server stays blind.
+13. **Move as much as possible from REST to the WebSocket** (Jonas, 2026-11-06: "no move as much as you can to WSS"). This overrides Claude's recommendation to keep app REST. See "App requests over the socket".
 12. **Outgoing integrations come in a later release** (prompt answer). `/weather` calling an admin's URL is out of v2. The catalog must not preclude it.
 
 ## Goals
@@ -85,10 +86,6 @@ Jonas, 2026-11-06:
 
 - Third-party bot programs that are their own MLS members, or a public bot SDK. Integrations go through the Bot's webhooks (decision 3).
 - A Bot that reads ordinary chat for new features.
-- Moving the app's REST calls to the WebSocket: chat sends, history, settings, admin, uploads, and sealed Bot commands, which stay one HTTPS POST each.
-  - Jonas, 2026-11-06, after review: REST on a kept-alive connection costs one round trip, the same as a socket frame. It also gives per-request status, safe retries, per-route rate limits and standard tooling.
-  - The rule is push over the socket, ask over REST, and nothing polls.
-  - A specific REST call moves only if a measurement shows it is slow.
 - Music providers other than YouTube.
 - Outgoing integrations (decision 12). The catalog's command record keeps room for an admin-defined handler later.
 - **Automod.** Jonas, 2026-11-06: "lets remove automod". It is the one feature that reads every channel message, so it is removed, not ported (see Migration).
@@ -203,6 +200,35 @@ Jonas, 2026-11-06:
 - The Bot posts it in the channel within the push path. Target: POST → message visible to a connected member ≤ 500 ms p95.
 - A webhook post is plain text with links, shown with a "via webhook <name>" label. It can't run commands or mention @everyone unless the admin allows it.
 - A webhook's channel must be a Bot channel.
+
+### App requests over the socket (decision 13)
+
+- **One generic request frame on the existing gateway connection:**
+  - `request{id, method, route, body}` → `response{id, status, body}`.
+  - The server dispatches it to **the same handler** the REST route uses: same authentication (the socket's session), the same authorization, per-route rate limits, validation, error codes and CBOR bodies.
+  - No handler is rewritten per route, and REST and socket can't drift apart.
+  - Responses may arrive out of order and are matched by `id`. Many requests can be in flight at once.
+- **Safe retries.**
+  - Every mutating request carries the idempotency key or request id its REST form already uses.
+  - A request whose socket dropped before its response is retried on the new connection with the same id, and the server answers from its dedupe record.
+  - The client never resends a mutation without its id.
+- **What moves:** every authenticated call the app makes while signed in, including:
+  - message send, edit, delete, reactions and history;
+  - groups, commits, proposals, handshakes, heal, cursor and welcomes;
+  - KeyPackages and device lists;
+  - communities, channels, DMs, members, roles, invites (create/list/revoke), moderation and admin;
+  - profile, settings, presence, search, reminders and Bot commands;
+  - call control.
+- **What stays on HTTP** (my call, each for a stated reason):
+  - **Before a session exists:** sign-in, passkey, TOTP, recovery, enrollment, session ticket for the socket.
+  - **Large binary bodies:** blob upload and download (streaming, range requests, resumable).
+  - **Unauthenticated or public:** `/v1/instance`, invite preview, web assets, desktop downloads, `/healthz`, incoming webhooks (G5).
+  - **Fallback:** the REST routes stay served. A client uses REST for a request only while its socket is down and the request can't wait. Wire-5 clients keep using REST unchanged.
+- **Back-pressure:** a cap on in-flight requests per connection (my call: 64). Over the cap the server answers `E_BUSY`, and the client queues instead of failing.
+- **Measurement:**
+  - The client records round-trip time per route for socket requests.
+  - Diagnostics shows the slowest routes.
+  - Tests assert that a socket request costs no more than its REST form on the same connection, and that no app request goes over REST while the socket is up, except the "stays on HTTP" list.
 
 ### Bot connection (decision 5)
 
