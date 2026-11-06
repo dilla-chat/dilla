@@ -621,6 +621,23 @@ func (g *Gateway) countFrame(f Frame) {
 // sessions (protocol/02, "Device sessions", rule 6).
 func (g *Gateway) CloseDevice(deviceID id.ID, code CloseCode, reason string) {
 	for _, c := range g.reg.connsOfDevice(deviceID) {
+		// A socket request that revokes its own session (DELETE /v1/accounts/me, a device deleting its own row)
+		// is still in flight here: the close waits for its answer to be written, so the caller gets the 204. The
+		// connection leaves the registry (no more fan-out) and may not resume at once; a request that
+		// arrives meanwhile is refused 401, its session being gone. The wait is bounded.
+		c.mu.Lock()
+		budget := c.requests
+		c.mu.Unlock()
+		if budget != nil && !code.Resumable() {
+			select {
+			case <-budget.whenIdle():
+			default:
+				c.denyResume()
+				g.removeLive(c)
+				go g.closeAfterAnswers(c, budget, code, reason)
+				continue
+			}
+		}
 		w := g.closeConn(c, code, reason)
 		g.removeLive(c)
 		w.stop()
@@ -640,6 +657,22 @@ func (g *Gateway) CloseDevice(deviceID id.ID, code CloseCode, reason string) {
 		g.suspended.Delete(k)
 		return true
 	})
+}
+
+// revokedCloseGrace bounds how long a revoked connection waits for its in-flight requests' answers.
+const revokedCloseGrace = 5 * time.Second
+
+// closeAfterAnswers closes c once its in-flight socket requests were answered, or after revokedCloseGrace.
+func (g *Gateway) closeAfterAnswers(c *conn, budget *requestBudget, code CloseCode, reason string) {
+	timer := time.NewTimer(revokedCloseGrace)
+	defer timer.Stop()
+	select {
+	case <-budget.whenIdle():
+	case <-timer.C:
+	}
+	w := g.closeConn(c, code, reason)
+	g.removeLive(c)
+	w.stop()
 }
 
 // SetGroupMembers is written by the delivery service after every merge: it is the fan-out list and

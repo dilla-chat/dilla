@@ -808,9 +808,26 @@ func TestBotClientUsesSocketForSocketRoutes(t *testing.T) {
 	if err := plain.AcknowledgeWelcome(context.Background(), 9); err == nil {
 		t.Fatal("the plain session's DELETE should have reached the HTTP 404")
 	}
+	// With the transport withdrawn the socket route is ErrNoGateway: retryable, and it never reaches HTTPS, which
+	// would answer a misleading 404 for a route dillad serves on the socket only.
 	c.ReleaseTransport(device, socket)
-	if err := s.AcknowledgeWelcome(context.Background(), 10); err == nil {
-		t.Fatal("after the transport is withdrawn the DELETE should reach the HTTP 404")
+	mu.Lock()
+	before := len(overHTTP)
+	mu.Unlock()
+	if err := s.AcknowledgeWelcome(context.Background(), 10); !errors.Is(err, ErrNoGateway) {
+		t.Fatalf("after the transport is withdrawn the DELETE = %v, want ErrNoGateway", err)
+	}
+	mu.Lock()
+	after := len(overHTTP)
+	mu.Unlock()
+	if err := s.AcknowledgeWelcome(context.Background(), 11); !IsDeferred(err) {
+		t.Fatalf("ErrNoGateway = %v must be a deferred (retryable) error, not a failed reconcile", err)
+	}
+	mu.Lock()
+	after = len(overHTTP)
+	mu.Unlock()
+	if after != before {
+		t.Fatalf("a socket route with no gateway reached the HTTP server (%d requests, was %d)", after, before)
 	}
 	if n := len(socket.calls); n != 2 {
 		t.Fatalf("socket saw %d calls, want 2", n)

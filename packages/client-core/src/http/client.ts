@@ -135,6 +135,8 @@ export class HttpClient {
    *  503 E_UNAVAILABLE and a lost socket (same idem); a route meter's 429 is waited out here as on HTTP. Every other
    *  refusal (409, 401, 426, a route's own 503) reaches the caller. There are no headers: no generation, no Retry-After. */
   private async requestSocket(r: HttpRequest, pattern: string): Promise<HttpResponse> {
+    // A 401 on a socket route is the revocation of the connection's session (the gateway close reports it too): it is
+    // thrown as is and never reauthenticated, because a socket has no credential to renew.
     const socket = this.deps.socket?.() ?? null;
     if (socket === null) {
       throw new DillaHttpError({ status: 0, code: 'E_NETWORK', detail: 'the gateway socket is not running', retryAfterMs: null, extra: [] });

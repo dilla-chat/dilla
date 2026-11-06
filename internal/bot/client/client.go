@@ -262,7 +262,10 @@ func (c *Client) doObserved(ctx context.Context, token, method, path string, que
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	// Bot v2: a socket route of a device session goes through its gateway; the key is fixed once per call.
-	transport := c.socketTransport(ctx, method, path)
+	transport, transportErr := c.socketTransport(ctx, method, path)
+	if transportErr != nil {
+		return nil, 0, ResponseObservation{}, transportErr
+	}
 	var idem []byte
 	if transport != nil {
 		idem = idempotencyKey(ctx, method)

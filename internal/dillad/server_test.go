@@ -692,9 +692,10 @@ func TestTheReleaseBinaryDoesNotLinkTheTestHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("go list: %v", err)
 	}
-	// Two seeding helpers exist, and neither may ship: dilladtest seeds a whole instance, and
+	// Three test helpers exist, and none may ship: internal/api/sockettest serves socket-only routes over HTTP from a bearer
+	// header; dilladtest seeds a whole instance, and
 	// internal/ds/dstest writes a group past every check of the registration route (hardening G).
-	for _, helper := range []string{"dilladtest", "internal/ds/dstest"} {
+	for _, helper := range []string{"dilladtest", "internal/ds/dstest", "internal/api/sockettest"} {
 		if strings.Contains(string(out), helper) {
 			t.Fatalf("cmd/dillad depends on %s; the seeding helpers must never ship", helper)
 		}

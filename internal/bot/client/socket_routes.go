@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -117,18 +118,28 @@ func (c *Client) ReleaseTransport(device id.ID, t Transport) {
 	}
 }
 
-// socketTransport is the transport a request goes through, or nil for HTTPS.
-func (c *Client) socketTransport(ctx context.Context, method, path string) Transport {
+// ErrNoGateway is a socket route's refusal when the device session has no gateway connection registered (the gateway
+// failed to start, or stopped and the next Ensure has not run yet). Nothing was sent. dillad serves the route on the
+// socket only, so HTTPS would answer a misleading 404; the caller retries after the gateway is back.
+var ErrNoGateway = errors.New("bot client: no gateway connection for a socket-only route; retry when the gateway is running")
+
+// socketTransport is the transport a request goes through, or nil for HTTPS. A socket route of a device session with no
+// registered transport is ErrNoGateway, never HTTPS.
+func (c *Client) socketTransport(ctx context.Context, method, path string) (Transport, error) {
 	if ctx == nil || !c.socketRoutes.match(method, "/v1/"+strings.TrimPrefix(path, "/")) {
-		return nil
+		return nil, nil
 	}
 	key, _ := ctx.Value(deviceRateContextKey{}).(string)
 	if key == "" {
-		return nil
+		return nil, nil
 	}
 	c.transportMu.Lock()
 	defer c.transportMu.Unlock()
-	return c.transports[key]
+	t := c.transports[key]
+	if t == nil {
+		return nil, ErrNoGateway
+	}
+	return t, nil
 }
 
 type idempotencyContextKey struct{}

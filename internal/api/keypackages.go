@@ -45,6 +45,9 @@ func (h *Groups) RegisterDirectory(mux *server.Mux, sessions *auth.Sessions) {
 		}
 	}
 	mux.SocketAuthed("GET /v1/devices/{device_id}/keypackage", chain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(h.takeKeyPackage))
+	// ScopeProvisional admits a provisional session as the HTTP form did, but the gateway never admits one, so no
+	// provisional session can reach these two routes now. Pairing (B27) must either admit its pairing group on the
+	// gateway or move them back to HTTP.
 	mux.SocketAuthed("GET /v1/welcomes", chain(auth.ScopeProvisional, dsClassRead), http.HandlerFunc(h.welcomes))
 	mux.SocketAuthed("DELETE /v1/welcomes/{welcome_id}", chain(auth.ScopeProvisional, dsClassWrite), http.HandlerFunc(h.ackWelcome))
 }

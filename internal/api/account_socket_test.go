@@ -134,6 +134,34 @@ func TestAccountAreaIsSocketOnly(t *testing.T) {
 	}
 }
 
+// A session that owes a second factor is refused E_FACTOR_REQUIRED on the moved enrolled routes, as over HTTP; a
+// device of another account is 404, never 403.
+func TestSocketRoutesRefuseWeakerSessionsAsHTTPDid(t *testing.T) {
+	e := newAccountSocketEnv(t)
+	other, otherDev, _ := seedAPISession(t, e.deps)
+	_ = other
+	status, body := sockettest.Do(t, e.disp, e.sess, http.MethodDelete, "/v1/devices/"+otherDev.ID.String(), nil)
+	if code, _ := sockErrorCode(t, body); status != http.StatusNotFound || code != string(server.CodeNotFound) {
+		t.Fatalf("deleting another user's device = %d %s, want 404 E_NOT_FOUND", status, code)
+	}
+	if err := e.deps.Repo.SetFactorOwed(t.Context(), e.user.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []struct {
+		method, route string
+		body          any
+	}{
+		{http.MethodPatch, "/v1/accounts/me", []any{nil, "x", nil}},
+		{http.MethodPost, "/v1/auth/stepup", []any{uint64(0), "pw"}},
+		{http.MethodGet, "/v1/devices", nil},
+	} {
+		status, body := sockettest.Do(t, e.disp, e.sess, r.method, r.route, cborBody(t, r.body))
+		if code, _ := sockErrorCode(t, body); status != http.StatusForbidden || code != "E_FACTOR_REQUIRED" {
+			t.Errorf("%s %s for an owed session = %d %s, want 403 E_FACTOR_REQUIRED", r.method, r.route, status, code)
+		}
+	}
+}
+
 // TestOwedAccountFactorRoutesStayOnHTTP: an account that owes a second factor has no socket, so the routes it uses
 // to set one up are served over HTTP for its session and are not socket routes.
 func TestOwedAccountFactorRoutesStayOnHTTP(t *testing.T) {

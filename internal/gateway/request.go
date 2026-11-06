@@ -176,6 +176,7 @@ type requestBudget struct {
 	mu       sync.Mutex
 	inflight int
 	bytes    int64
+	idle     chan struct{} // closed when inflight reaches 0; see whenIdle
 }
 
 func newRequestBudget() *requestBudget { return &requestBudget{} }
@@ -216,7 +217,27 @@ func (b *requestBudget) finish(n int64) {
 	b.mu.Lock()
 	b.inflight--
 	b.bytes -= n
+	if b.inflight <= 0 && b.idle != nil {
+		close(b.idle)
+		b.idle = nil
+	}
 	b.mu.Unlock()
+}
+
+// whenIdle is a channel that is closed once no request is in flight: at once when none is. A request is in
+// flight until its response frame was written (or dropped), so a close that waits on it cannot cut an answer off.
+func (b *requestBudget) whenIdle() <-chan struct{} {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.inflight <= 0 {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	if b.idle == nil {
+		b.idle = make(chan struct{})
+	}
+	return b.idle
 }
 
 // responseCharge is what ChargeResponse reads off a dispatch context.

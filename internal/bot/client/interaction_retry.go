@@ -48,7 +48,8 @@ func RateLimitError(err error) *APIError {
 }
 
 // IsDeferred recognizes only trees of retry-safe refusals or cooperative
-// stops (and their cancellation causes), never a joined permanent failure.
+// stops, a socket route with no gateway yet (ErrNoGateway) and their cancellation causes, never a joined permanent
+// failure.
 func IsDeferred(err error) bool {
 	found := false
 	var transient func(error) bool
@@ -71,7 +72,7 @@ func IsDeferred(err error) bool {
 		if wrapped, ok := err.(interface{ Unwrap() error }); ok {
 			return transient(wrapped.Unwrap())
 		}
-		if errors.Is(err, ErrCooperativeStop) || RateLimitError(err) != nil {
+		if errors.Is(err, ErrCooperativeStop) || errors.Is(err, ErrNoGateway) || RateLimitError(err) != nil {
 			found = true
 			return true
 		}
