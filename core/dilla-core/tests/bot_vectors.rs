@@ -643,7 +643,8 @@ fn sealed_command_vectors_open_and_verify() {
     let user = UserId::from_bytes(a16(&v["user"]["user"]));
     let device = DeviceId::from_bytes(a16(&v["user"]["device"]));
     let sealed = b(&v["sealed_hex"]);
-    let cmd = open_command(&sk, &sealed).unwrap();
+    let cmd = open_command(&sk, publication.community_id, &sealed).unwrap();
+    assert_eq!(cmd.key_id, publication.key_id);
     assert_eq!(hex::encode(cmd.encode()), v["signed_hex"].as_str().unwrap());
     let req = verify_command(&cmd, &user_list, user, device, now).unwrap();
     let r = &v["request"];
@@ -727,15 +728,16 @@ fn sealed_command_vectors_open_and_verify() {
             "Malformed" => CommandRefusal::Malformed,
             other => panic!("{name}: unknown refusal {other}"),
         };
-        let got = open_command(&sk, &b(&case["sealed_hex"])).and_then(|cmd| {
-            verify_command(
-                &cmd,
-                &user_list,
-                user,
-                DeviceId::from_bytes(a16(&case["attached_device"])),
-                case["now"].as_u64().unwrap(),
-            )
-        });
+        let got =
+            open_command(&sk, publication.community_id, &b(&case["sealed_hex"])).and_then(|cmd| {
+                verify_command(
+                    &cmd,
+                    &user_list,
+                    user,
+                    DeviceId::from_bytes(a16(&case["attached_device"])),
+                    case["now"].as_u64().unwrap(),
+                )
+            });
         assert_eq!(got, Err(want), "{name}");
     }
 }

@@ -4,17 +4,20 @@
 
 use dilla_core::bot::command::{
     CommandArg, CommandKeyPublication, CommandRefusal, CommandRequest, HPKE_AEAD, HPKE_KDF,
-    HPKE_KEM, INFO_COMMAND, INFO_REPLY, MAX_SEALED_COMMAND_BYTES, MAX_SEALED_REPLY_BYTES,
-    REPLY_TABLE_CAP, ReplySecret, ReplyTable, SENT_AT_WINDOW_SECS, VERIFIED_KEYS_CAP, VerifiedKeys,
-    derive_key_pair, hpke_open_base, hpke_seal_base_derand, open_command, open_reply, seal_command,
-    seal_command_derand, seal_reply, seal_reply_derand, sealed_command_key_id, verify_command,
+    HPKE_KEM, INFO_COMMAND, INFO_REPLY, MAX_COMMAND_KEY_LIFETIME_SECS, MAX_SEALED_COMMAND_BYTES,
+    MAX_SEALED_REPLY_BYTES, REPLY_TABLE_CAP, ReplySecret, ReplyTable, SENT_AT_WINDOW_SECS,
+    SignedCommand, VERIFIED_KEYS_CAP, VerifiedKeys, derive_key_pair, hpke_open_base,
+    hpke_seal_base_derand, open_command, open_reply, seal_command, seal_command_derand, seal_reply,
+    seal_reply_derand, sealed_command_key_id, verify_command,
 };
+use dilla_core::cbor::Encoder;
 use dilla_core::identity::{DeviceEntry, DeviceList, DeviceListUnsigned, SskSigner, Tier};
 use dilla_core::ids::{ChannelId, CommunityId, DeviceId, UserId};
 use openmls::prelude::SignatureScheme;
 use openmls_basic_credential::SignatureKeyPair;
 
 const NOW: u64 = 1_790_000_000;
+const COMMUNITY: CommunityId = CommunityId::from_bytes([0x22; 16]);
 
 fn unhex(s: &str) -> Vec<u8> {
     hex::decode(s).expect("hex")
@@ -190,7 +193,7 @@ fn seal_then_open_then_verify_round_trips() {
     assert!(sealed.len() <= MAX_SEALED_COMMAND_BYTES);
     assert_eq!(sealed_command_key_id(&sealed), Ok([0x33; 16]));
 
-    let cmd = open_command(&w.command_sk, &sealed).unwrap();
+    let cmd = open_command(&w.command_sk, COMMUNITY, &sealed).unwrap();
     let opened = verify_command(&cmd, &w.user_list, user(), device(DEVICE), NOW).unwrap();
     // The reply key is made inside seal_command; the caller's value is replaced.
     assert_eq!(opened.reply_key, secret.public_key());
@@ -253,7 +256,7 @@ fn deterministic_seal_is_reproducible_and_opens() {
         sa.public_key(),
         ReplySecret::derive(&[0x02; 32]).unwrap().public_key()
     );
-    let cmd = open_command(&w.command_sk, &a).unwrap();
+    let cmd = open_command(&w.command_sk, COMMUNITY, &a).unwrap();
     assert!(verify_command(&cmd, &w.user_list, user(), device(DEVICE), NOW).is_ok());
     let r1 = seal_reply_derand(&sa.public_key(), [0x44; 16], 7, b"ok", &[0x03; 32]).unwrap();
     let r2 = seal_reply_derand(&sa.public_key(), [0x44; 16], 7, b"ok", &[0x03; 32]).unwrap();
@@ -273,7 +276,7 @@ fn a_wrong_device_signature_is_refused() {
         &w.other_dsk,
     )
     .unwrap();
-    let cmd = open_command(&w.command_sk, &sealed).unwrap();
+    let cmd = open_command(&w.command_sk, COMMUNITY, &sealed).unwrap();
     assert_eq!(
         verify_command(&cmd, &w.user_list, user(), device(DEVICE), NOW),
         Err(CommandRefusal::BadSignature)
@@ -291,7 +294,7 @@ fn a_signature_by_another_listed_device_than_the_attached_one_is_refused() {
         &w.other_dsk,
     )
     .unwrap();
-    let cmd = open_command(&w.command_sk, &sealed).unwrap();
+    let cmd = open_command(&w.command_sk, COMMUNITY, &sealed).unwrap();
     // Valid for OTHER_DEVICE ...
     assert!(verify_command(&cmd, &w.user_list, user(), device(OTHER_DEVICE), NOW).is_ok());
     // ... but dillad attached DEVICE.
@@ -324,7 +327,7 @@ fn a_revoked_device_is_refused() {
         &revoked_dsk,
     )
     .unwrap();
-    let cmd = open_command(&w.command_sk, &sealed).unwrap();
+    let cmd = open_command(&w.command_sk, COMMUNITY, &sealed).unwrap();
     assert_eq!(
         verify_command(&cmd, &w.user_list, user(), device(REVOKED_DEVICE), NOW),
         Err(CommandRefusal::DeviceRevoked)
@@ -339,7 +342,7 @@ fn a_revoked_device_is_refused() {
         &stranger,
     )
     .unwrap();
-    let cmd = open_command(&w.command_sk, &sealed).unwrap();
+    let cmd = open_command(&w.command_sk, COMMUNITY, &sealed).unwrap();
     assert_eq!(
         verify_command(&cmd, &w.user_list, user(), device(0x14), NOW),
         Err(CommandRefusal::DeviceUnlisted)
@@ -363,7 +366,7 @@ fn sent_at_older_or_newer_than_120s_is_refused() {
             &w.user_dsk,
         )
         .unwrap();
-        let cmd = open_command(&w.command_sk, &sealed).unwrap();
+        let cmd = open_command(&w.command_sk, COMMUNITY, &sealed).unwrap();
         verify_command(&cmd, &w.user_list, user(), device(DEVICE), NOW).map(|_| ())
     };
     assert_eq!(check(NOW - 119), Ok(()));
@@ -396,7 +399,7 @@ fn a_reply_cannot_be_opened_with_another_requests_secret() {
     )
     .unwrap();
     let req = verify_command(
-        &open_command(&w.command_sk, &s1).unwrap(),
+        &open_command(&w.command_sk, COMMUNITY, &s1).unwrap(),
         &w.user_list,
         user(),
         device(DEVICE),
@@ -517,7 +520,7 @@ fn oversize_sealed_command_is_malformed() {
     let w = world();
     let oversize = vec![0x84; MAX_SEALED_COMMAND_BYTES + 1];
     assert_eq!(
-        open_command(&w.command_sk, &oversize),
+        open_command(&w.command_sk, COMMUNITY, &oversize),
         Err(CommandRefusal::Malformed)
     );
     assert_eq!(
@@ -542,16 +545,24 @@ fn sealed_command_outer_is_strict() {
     )
     .unwrap();
     assert_eq!(sealed[0], 0x85, "[1, key_id, request_id, enc, ciphertext]");
+    assert_eq!(
+        open_command(&w.command_sk, COMMUNITY, &sealed)
+            .unwrap()
+            .encode()[0],
+        0x8c,
+        "[1, request_id, community_id, channel_id, operation, args, sent_at, reply_key, key_id, \
+         user_id, device_id, sig]"
+    );
     let mut trailing = sealed.clone();
     trailing.push(0);
     assert_eq!(
-        open_command(&w.command_sk, &trailing),
+        open_command(&w.command_sk, COMMUNITY, &trailing),
         Err(CommandRefusal::Malformed)
     );
     let mut v2 = sealed.clone();
     v2[1] = 0x02;
     assert_eq!(
-        open_command(&w.command_sk, &v2),
+        open_command(&w.command_sk, COMMUNITY, &v2),
         Err(CommandRefusal::Malformed)
     );
     // The outer request id is the AEAD's associated data: moving it breaks the seal.
@@ -560,13 +571,13 @@ fn sealed_command_outer_is_strict() {
     assert_eq!(&moved[at..at + 16], &[0x44; 16]);
     moved[at] ^= 1;
     assert_eq!(
-        open_command(&w.command_sk, &moved),
+        open_command(&w.command_sk, COMMUNITY, &moved),
         Err(CommandRefusal::Malformed)
     );
     // Another key cannot open it.
     let (other_sk, _) = derive_key_pair(&[0x99; 32]).unwrap();
     assert_eq!(
-        open_command(&other_sk, &sealed),
+        open_command(&other_sk, COMMUNITY, &sealed),
         Err(CommandRefusal::Malformed)
     );
 }
@@ -574,16 +585,22 @@ fn sealed_command_outer_is_strict() {
 #[test]
 fn reply_table_is_bounded_and_forgets() {
     let mut table = ReplyTable::default();
-    let first = table.insert(ReplySecret::derive(&[1; 32]).unwrap());
+    let first = table.insert([0x61; 16], ReplySecret::derive(&[1; 32]).unwrap());
     let pk1 = ReplySecret::derive(&[1; 32]).unwrap().public_key();
-    assert_eq!(table.get(first).map(ReplySecret::public_key), Some(pk1));
+    assert_eq!(
+        table.get(first).map(|(r, s)| (r, s.public_key())),
+        Some(([0x61; 16], pk1))
+    );
     assert!(table.forget(first));
     assert!(table.get(first).is_none());
     assert!(!table.forget(first));
 
     let mut handles = Vec::new();
     for i in 0..(REPLY_TABLE_CAP + 3) {
-        handles.push(table.insert(ReplySecret::derive(&[(i % 250) as u8 + 2; 32]).unwrap()));
+        handles.push(table.insert(
+            [0x62; 16],
+            ReplySecret::derive(&[(i % 250) as u8 + 2; 32]).unwrap(),
+        ));
     }
     assert_eq!(table.len(), REPLY_TABLE_CAP);
     // The three oldest were evicted; the newest are present; handles are never reused.
@@ -603,8 +620,11 @@ fn verified_keys_admit_only_the_exact_verified_unexpired_publication() {
     let mut keys = VerifiedKeys::default();
     let bytes = w.publication.encode();
     assert!(keys.check(&bytes, NOW).is_err(), "never verified");
-    keys.remember(&w.publication);
-    assert_eq!(keys.check(&bytes, NOW).unwrap(), w.publication);
+    keys.remember(&w.publication, UserId::from_bytes([BOT_USER; 16]));
+    assert_eq!(
+        keys.check(&bytes, NOW).unwrap(),
+        (w.publication.clone(), UserId::from_bytes([BOT_USER; 16]))
+    );
     assert!(keys.check(&bytes, NOW + 3601).is_err(), "expired");
     let mut other = w.publication.clone();
     other.not_after += 1;
@@ -614,8 +634,127 @@ fn verified_keys_admit_only_the_exact_verified_unexpired_publication() {
         let mut c = [0u8; 16];
         c[..8].copy_from_slice(&(i as u64 + 1).to_be_bytes());
         p.community_id = CommunityId::from_bytes(c);
-        keys.remember(&p);
+        keys.remember(&p, UserId::from_bytes([BOT_USER; 16]));
     }
     assert_eq!(keys.len(), VERIFIED_KEYS_CAP);
     assert!(keys.check(&bytes, NOW).is_err(), "the oldest was evicted");
+}
+
+fn sign_raw(dsk: &SignatureKeyPair, msg: &[u8]) -> [u8; 64] {
+    use openmls_traits::signatures::Signer;
+    dsk.sign(msg).unwrap().try_into().unwrap()
+}
+
+/// Seals an arbitrary signed command under an arbitrary outer key_id, as a modified client could.
+fn seal_raw(w: &World, cmd: &SignedCommand, outer_key_id: [u8; 16]) -> Vec<u8> {
+    let (enc, ct) = hpke_seal_base_derand(
+        &w.publication.public_key,
+        INFO_COMMAND,
+        &cmd.request.request_id,
+        &cmd.encode(),
+        &[0x05; 32],
+    )
+    .unwrap();
+    let mut e = Encoder::new();
+    e.array(5)
+        .uint(1)
+        .bytes(&outer_key_id)
+        .bytes(&cmd.request.request_id)
+        .bytes(&enc)
+        .bytes(&ct);
+    e.into_vec()
+}
+
+fn signed(w: &World, community: CommunityId, key_id: [u8; 16]) -> SignedCommand {
+    let mut req = request(NOW);
+    req.community_id = community;
+    req.reply_key = [0x09; 32];
+    let mut cmd = SignedCommand {
+        request: req,
+        key_id,
+        user_id: user(),
+        device_id: device(DEVICE),
+        sig: [0; 64],
+    };
+    cmd.sig = sign_raw(&w.user_dsk, &cmd.signing_message());
+    cmd
+}
+
+#[test]
+fn the_signed_key_id_must_be_the_outer_key_id() {
+    let w = world();
+    // Honest: the signed key id is the publication's.
+    let ok = seal_raw(&w, &signed(&w, COMMUNITY, [0x33; 16]), [0x33; 16]);
+    let cmd = open_command(&w.command_sk, COMMUNITY, &ok).unwrap();
+    assert_eq!(cmd.key_id, [0x33; 16]);
+    assert!(verify_command(&cmd, &w.user_list, user(), device(DEVICE), NOW).is_ok());
+    // A command signed for another key (relayed by a masquerading "Bot") is refused.
+    let relayed = seal_raw(&w, &signed(&w, COMMUNITY, [0x34; 16]), [0x33; 16]);
+    assert_eq!(
+        open_command(&w.command_sk, COMMUNITY, &relayed),
+        Err(CommandRefusal::Malformed)
+    );
+    // The key id is inside the signature: changing it breaks the signature.
+    let mut moved = signed(&w, COMMUNITY, [0x33; 16]);
+    moved.key_id = [0x35; 16];
+    let sealed = seal_raw(&w, &moved, [0x35; 16]);
+    let cmd = open_command(&w.command_sk, COMMUNITY, &sealed).unwrap();
+    assert_eq!(
+        verify_command(&cmd, &w.user_list, user(), device(DEVICE), NOW),
+        Err(CommandRefusal::BadSignature)
+    );
+}
+
+#[test]
+fn a_command_for_another_community_than_the_keys_is_malformed() {
+    let w = world();
+    let other = CommunityId::from_bytes([0x23; 16]);
+    let sealed = seal_raw(&w, &signed(&w, other, [0x33; 16]), [0x33; 16]);
+    // Opened with community 0x22's key: refused.
+    assert_eq!(
+        open_command(&w.command_sk, COMMUNITY, &sealed),
+        Err(CommandRefusal::Malformed)
+    );
+    // The same bytes under a key published for community 0x23 open.
+    assert!(open_command(&w.command_sk, other, &sealed).is_ok());
+}
+
+#[test]
+fn a_command_key_valid_for_longer_than_one_rotation_fails_verify() {
+    let (bot_dsk, bot_pub) = dsk(0x71);
+    let bot_list = list(BOT_USER, vec![entry(BOT_DEVICE, bot_pub, None)]);
+    let sign = |not_after| {
+        CommandKeyPublication::sign(
+            COMMUNITY,
+            [0x33; 16],
+            [0x44; 32],
+            not_after,
+            DeviceId::from_bytes([BOT_DEVICE; 16]),
+            &bot_dsk,
+        )
+        .unwrap()
+    };
+    assert_eq!(MAX_COMMAND_KEY_LIFETIME_SECS, 8 * 24 * 3600);
+    assert_eq!(
+        sign(NOW + MAX_COMMAND_KEY_LIFETIME_SECS).verify(&bot_list, NOW),
+        Ok(())
+    );
+    assert_eq!(
+        sign(NOW + MAX_COMMAND_KEY_LIFETIME_SECS + 1).verify(&bot_list, NOW),
+        Err(CommandRefusal::Malformed)
+    );
+    assert_eq!(
+        sign(u64::MAX).verify(&bot_list, NOW),
+        Err(CommandRefusal::Malformed)
+    );
+}
+
+#[test]
+fn a_reply_table_entry_keeps_its_request_id() {
+    let mut table = ReplyTable::default();
+    let h = table.insert([0x44; 16], ReplySecret::derive(&[9; 32]).unwrap());
+    let (request_id, secret) = table.get(h).unwrap();
+    assert_eq!(request_id, [0x44; 16]);
+    let reply = seal_reply(&secret.public_key(), request_id, 0, b"ok").unwrap();
+    assert_eq!(open_reply(secret, request_id, 0, &reply).unwrap(), b"ok");
 }

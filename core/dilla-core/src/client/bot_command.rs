@@ -4,15 +4,17 @@
 //! The reply secret and the verified-publication set are not stored: the binding layer keeps them
 //! in memory (`bot::command::{ReplyTable, VerifiedKeys}`) and they die with it.
 
-use super::error::{E_CORE_INPUT, E_DEVICE_LIST_STALE};
-use super::{ClientCore, ClientError, trust};
+use super::error::{E_CORE_INPUT, E_CREDENTIAL, E_DEVICE_LIST_STALE};
+use super::{ClientCore, ClientError, account_kind, trust};
 use crate::bot::command::{
     CommandArg, CommandKeyPublication, CommandRefusal, CommandRequest, MAX_COMMAND_ARGS,
     ReplySecret, seal_command,
 };
 use crate::cbor::{CborError, Decoder, Encoder};
+use crate::identity::Kind;
 use crate::identity::fingerprint;
 use crate::ids::{ChannelId, CommunityId, DeviceId, UserId};
+use crate::mls::StorageError;
 
 /// The largest unsealed request a binding hands in; the sealed form is bounded at 16384.
 const MAX_REQUEST_INPUT: usize = 16384;
@@ -97,26 +99,53 @@ pub fn decode_command_input(bytes: &[u8]) -> Result<CommandRequest, ClientError>
     Ok(req)
 }
 
+/// The whole check of a command-key publication against this store, at `now`:
+///
+/// 1. `bot_user_id` must be attested by the pinned instance as a Bot account (`attested_kind`):
+///    an attested human is `E_CREDENTIAL`, no verifying attestation is `E_DEVICE_LIST_STALE`.
+///    There is no transition window, so a server cannot name an ordinary member as the Bot.
+/// 2. Its cached device list must vouch for it (`trust::trusted_list`).
+/// 3. The publication must be signed by a listed, unrevoked device of that list, and be valid at
+///    `now` for no longer than `MAX_COMMAND_KEY_LIFETIME_SECS` (`CommandKeyPublication::verify`).
+///
+/// Both the verify export and every seal run it, so a revocation takes effect at the next seal.
+pub(super) fn verify_publication(
+    c: &rusqlite::Connection,
+    publication: &[u8],
+    bot_user_id: &[u8; 16],
+    now: u64,
+) -> Result<Result<CommandKeyPublication, &'static str>, StorageError> {
+    let Ok(p) = CommandKeyPublication::decode(publication) else {
+        return Ok(Err("E_BOT_MALFORMED"));
+    };
+    match account_kind::attested_kind(c, bot_user_id)? {
+        Some(k) if k == Kind::Bot.as_u8() => {}
+        Some(_) => return Ok(Err(E_CREDENTIAL)),
+        None => return Ok(Err(E_DEVICE_LIST_STALE)),
+    }
+    let list = match trust::trusted_list(c, bot_user_id)? {
+        Ok(list) => list,
+        Err(code) => return Ok(Err(code)),
+    };
+    if list.unsigned.user_id != UserId::from_bytes(*bot_user_id) {
+        return Ok(Err(E_DEVICE_LIST_STALE));
+    }
+    Ok(p.verify(&list, now).map(|()| p).map_err(refusal_code))
+}
+
 impl ClientCore {
-    /// Verifies a command-key publication against the stored, trusted device list of
-    /// `bot_user_id` at `now`. Returns the publication and CBOR `[key_id, fingerprint]`, the
-    /// fingerprint being 12 Crockford characters of SHA-256(command key).
+    /// Verifies a command-key publication for `bot_user_id` at `now` (`verify_publication`).
+    /// Returns the publication and CBOR `[key_id, fingerprint]`, the fingerprint being 12
+    /// Crockford characters of SHA-256(command key).
     pub fn bot_command_key_verify(
         &self,
         publication: &[u8],
         bot_user_id: &[u8; 16],
         now: u64,
     ) -> Result<(CommandKeyPublication, Vec<u8>), ClientError> {
-        let p = CommandKeyPublication::decode(publication)
-            .map_err(|_| ClientError::new("E_BOT_MALFORMED", "command key publication"))?;
-        let list = self
-            .read(|c| trust::trusted_list(c, bot_user_id))?
-            .map_err(|code| ClientError::new(code, "Bot device list"))?;
-        if list.unsigned.user_id != UserId::from_bytes(*bot_user_id) {
-            return Err(ClientError::new(E_DEVICE_LIST_STALE, "Bot device list"));
-        }
-        p.verify(&list, now)
-            .map_err(|r| ClientError::new(refusal_code(r), "command key publication"))?;
+        let p = self
+            .read(|c| verify_publication(c, publication, bot_user_id, now))?
+            .map_err(|code| ClientError::new(code, "command key publication"))?;
         let mut e = Encoder::with_capacity(40);
         e.array(2)
             .bytes(&p.key_id)
@@ -124,30 +153,38 @@ impl ClientCore {
         Ok((p, e.into_vec()))
     }
 
-    /// Signs and seals a command as this device to an already verified publication. Returns the
-    /// sealed bytes and the reply secret; the caller keeps the secret in memory.
+    /// Re-verifies the publication for `bot_user_id` at `now` against the store as it is now
+    /// (so a Bot device revoked since the last verify is refused at once), then signs and seals
+    /// a command as this device. Returns the request id, the sealed bytes and the reply secret;
+    /// the caller keeps the secret in memory.
     pub fn bot_command_seal(
         &self,
-        publication: &CommandKeyPublication,
+        publication: &[u8],
+        bot_user_id: &[u8; 16],
         request: &[u8],
-    ) -> Result<(Vec<u8>, ReplySecret), ClientError> {
+        now: u64,
+    ) -> Result<([u8; 16], Vec<u8>, ReplySecret), ClientError> {
+        let p = self
+            .read(|c| verify_publication(c, publication, bot_user_id, now))?
+            .map_err(|code| ClientError::new(code, "command key publication"))?;
         let req = decode_command_input(request)?;
         let own = self.own()?;
         let signer = self.signer()?;
-        seal_command(
-            publication,
+        let (sealed, secret) = seal_command(
+            &p,
             &req,
             UserId::from_bytes(own.user_id),
             DeviceId::from_bytes(own.device_id),
             signer,
         )
-        .map_err(|e| ClientError::new(E_CORE_INPUT, format!("seal: {e}")))
+        .map_err(|e| ClientError::new(E_CORE_INPUT, format!("seal: {e}")))?;
+        Ok((req.request_id, sealed, secret))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::error::{E_CREDENTIAL, E_UMK_CHANGED};
+    use super::super::error::E_UMK_CHANGED;
     use super::*;
     use crate::identity::{DeviceEntry, DeviceList, DeviceListUnsigned, SskSigner, Tier};
     use rusqlite::params;
@@ -280,5 +317,199 @@ mod tests {
             .uint(100);
         assert!(decode_command_input(&e.into_vec()).is_err());
         assert!(decode_command_input(&vec![0x80; MAX_REQUEST_INPUT + 1]).is_err());
+    }
+
+    // ---- verify_publication: the attested kind, the trusted list and the publication ----
+
+    use crate::bot::command::MAX_COMMAND_KEY_LIFETIME_SECS;
+    use crate::identity::account_kind_message;
+    use ed25519_dalek::{Signer as _, SigningKey};
+    use openmls_basic_credential::SignatureKeyPair;
+    use openmls_traits::types::SignatureScheme;
+
+    const INSTANCE: [u8; 16] = [0x11; 16];
+    const NOW: u64 = 1_790_000_000;
+    const BOT_DEVICE: [u8; 16] = [0xb1; 16];
+    const BOT_DSK_SEED: [u8; 32] = [0xb2; 32];
+
+    fn instance_key(seed: u8) -> SigningKey {
+        SigningKey::from_bytes(&[seed; 32])
+    }
+
+    fn bot_list(ssk: &SskSigner, revoked_at: Option<u64>) -> DeviceList {
+        let unsigned = DeviceListUnsigned {
+            v: 1,
+            user_id: UserId::from_bytes(BOT),
+            version: 1,
+            prev_hash: [0; 32],
+            entries: vec![DeviceEntry {
+                device_id: DeviceId::from_bytes(BOT_DEVICE),
+                dsk_pub: SskSigner::from_bytes(&BOT_DSK_SEED).public(),
+                tier: Tier::Native,
+                added_at: 1,
+                revoked_at,
+            }],
+        };
+        let sig_ssk = ssk.sign_device_list(&unsigned);
+        DeviceList { unsigned, sig_ssk }
+    }
+
+    fn publication(not_after: u64) -> Vec<u8> {
+        let dsk = SignatureKeyPair::from_raw(
+            SignatureScheme::ED25519,
+            BOT_DSK_SEED.to_vec(),
+            SskSigner::from_bytes(&BOT_DSK_SEED).public().to_vec(),
+        );
+        CommandKeyPublication::sign(
+            CommunityId::from_bytes([0x22; 16]),
+            [0x33; 16],
+            [0x44; 32],
+            not_after,
+            DeviceId::from_bytes(BOT_DEVICE),
+            &dsk,
+        )
+        .expect("sign")
+        .encode()
+    }
+
+    /// A store that pins `instance_key(0x41)` for `INSTANCE`, holds the Bot's trusted list, and,
+    /// when `attested` names a kind and a signing key, that key's attestation of the Bot user.
+    fn store(attested: Option<(u8, &SigningKey)>) -> rusqlite::Connection {
+        let ssk = SskSigner::from_bytes(&[0x5a; 32]);
+        let c = db(
+            Some(&bot_list(&ssk, None)),
+            ssk.public(),
+            Some(([0x0a; 32], None)),
+        );
+        c.execute_batch("CREATE TABLE app_meta(k TEXT PRIMARY KEY,v BLOB);")
+            .expect("app_meta");
+        c.execute_batch(super::super::account_kind::ACCOUNT_KINDS_SCHEMA)
+            .expect("account kinds");
+        let pinned = instance_key(0x41).verifying_key().to_bytes();
+        super::super::schema::meta_put(&c, super::super::schema::INSTANCE_SIGNER_KEY, &pinned)
+            .expect("pin instance");
+        let record = super::super::identity::IdentityRecord {
+            instance_id: INSTANCE,
+            user_id: [0x10; 16],
+            device_id: [0x12; 16],
+            dsk_pub: [1; 32],
+            umk_pub: [2; 32],
+            ssk_pub: [3; 32],
+            username: "me".into(),
+            credential: vec![],
+            device_list_body: vec![],
+            list_published: true,
+            device_list: vec![],
+            state_uploaded: false,
+        };
+        super::super::schema::meta_put(&c, super::super::schema::IDENTITY, &record.encode())
+            .expect("identity");
+        if let Some((kind, key)) = attested {
+            let sig = key
+                .sign(&account_kind_message(&INSTANCE, &BOT, kind))
+                .to_bytes();
+            c.execute(
+                "INSERT INTO app_account_kinds(user_id,kind,key_id,signature,instance_key,instance_id) VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    BOT.as_slice(),
+                    i64::from(kind),
+                    [0x77u8; 16].as_slice(),
+                    sig.as_slice(),
+                    key.verifying_key().to_bytes().as_slice(),
+                    INSTANCE.as_slice()
+                ],
+            )
+            .expect("attestation");
+        }
+        c
+    }
+
+    fn verdict(c: &rusqlite::Connection, publication: &[u8], now: u64) -> Result<(), &'static str> {
+        verify_publication(c, publication, &BOT, now)
+            .expect("query")
+            .map(|_| ())
+    }
+
+    #[test]
+    fn a_verifying_bot_attestation_admits_the_command_key() {
+        let key = instance_key(0x41);
+        let c = store(Some((Kind::Bot.as_u8(), &key)));
+        assert_eq!(verdict(&c, &publication(NOW + 3600), NOW), Ok(()));
+    }
+
+    #[test]
+    fn an_attested_human_named_as_the_bot_is_refused() {
+        let key = instance_key(0x41);
+        let c = store(Some((Kind::User.as_u8(), &key)));
+        assert_eq!(
+            verdict(&c, &publication(NOW + 3600), NOW),
+            Err(E_CREDENTIAL)
+        );
+    }
+
+    #[test]
+    fn a_missing_attestation_is_refused_with_no_transition_window() {
+        let c = store(None);
+        // Even with the "attestation seen" flag absent (the leaf rule's transition window).
+        assert_eq!(
+            super::super::schema::meta_get(&c, super::super::account_kind::ACCOUNT_KIND_SEEN)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            verdict(&c, &publication(NOW + 3600), NOW),
+            Err(E_DEVICE_LIST_STALE)
+        );
+    }
+
+    #[test]
+    fn an_attestation_under_another_instance_key_is_refused() {
+        // Self-consistent (it verifies under the key it names), but not the pinned key.
+        let other = instance_key(0x42);
+        let c = store(Some((Kind::Bot.as_u8(), &other)));
+        assert_eq!(
+            verdict(&c, &publication(NOW + 3600), NOW),
+            Err(E_DEVICE_LIST_STALE)
+        );
+    }
+
+    /// `bot_command_seal` runs `verify_publication` before every seal: a Bot device revoked after
+    /// the verify is refused at the next seal, not at `not_after`.
+    #[test]
+    fn a_signer_revoked_after_verify_is_refused_at_the_next_seal() {
+        let key = instance_key(0x41);
+        let c = store(Some((Kind::Bot.as_u8(), &key)));
+        let p = publication(NOW + 3600);
+        assert_eq!(verdict(&c, &p, NOW), Ok(()));
+        let ssk = SskSigner::from_bytes(&[0x5a; 32]);
+        c.execute(
+            "UPDATE app_device_lists SET list=?1 WHERE user_id=?2",
+            params![bot_list(&ssk, Some(NOW - 1)).encode(), BOT.as_slice()],
+        )
+        .expect("revoke");
+        assert_eq!(verdict(&c, &p, NOW + 1), Err("E_DEVICE_REVOKED"));
+    }
+
+    #[test]
+    fn a_command_key_valid_for_longer_than_one_rotation_is_refused() {
+        let key = instance_key(0x41);
+        let c = store(Some((Kind::Bot.as_u8(), &key)));
+        assert_eq!(MAX_COMMAND_KEY_LIFETIME_SECS, 8 * 86_400);
+        assert_eq!(
+            verdict(&c, &publication(NOW + MAX_COMMAND_KEY_LIFETIME_SECS), NOW),
+            Ok(())
+        );
+        assert_eq!(
+            verdict(
+                &c,
+                &publication(NOW + MAX_COMMAND_KEY_LIFETIME_SECS + 1),
+                NOW
+            ),
+            Err("E_BOT_MALFORMED")
+        );
+        assert_eq!(
+            verdict(&c, &publication(u64::MAX), NOW),
+            Err("E_BOT_MALFORMED")
+        );
     }
 }

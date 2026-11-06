@@ -8,6 +8,7 @@ use dilla_core::cbor::Encoder;
 use dilla_core::client::{
     ClientCore, ClientError, ManualRemovalEvidence, ManualWarningEvidence, RemovalFeedEntry,
 };
+use dilla_core::ids::UserId;
 use wasm_bindgen::prelude::*;
 use zeroize::Zeroizing;
 
@@ -380,30 +381,38 @@ impl CoreHandle {
         let now = now_secs();
         let (verified, out) =
             self.with_core(|c| c.bot_command_key_verify(publication, &bot_user_id, now))?;
-        self.verified.borrow_mut().remember(&verified);
+        self.verified
+            .borrow_mut()
+            .remember(&verified, UserId::from_bytes(bot_user_id));
         Ok(out.into_boxed_slice())
     }
     /// Signs and seals a command to a publication `bot_command_key_verify` accepted (the exact
-    /// bytes, before their `not_after`). `request_cbor` is [request_id, community_id,
-    /// channel_id|null, operation, args, sent_at]. CBOR [sealed, reply_secret_handle]; the reply
-    /// secret stays here.
+    /// bytes, before their `not_after`). The core re-verifies it against the Bot user's current
+    /// device list and attestation before every seal, so a revocation since the verify is
+    /// refused here. `request_cbor` is [request_id, community_id, channel_id|null, operation,
+    /// args, sent_at]. CBOR [sealed, reply_secret_handle]; the reply secret stays here, bound to
+    /// the request id.
     pub fn bot_command_seal(
         &self,
         publication: &[u8],
         request_cbor: &[u8],
     ) -> Result<Box<[u8]>, JsError> {
-        let verified = self
+        let now = now_secs();
+        let (_, bot_user) = self
             .verified
             .borrow()
-            .check(publication, now_secs())
+            .check(publication, now)
             .map_err(|r| JsError::new(&r.to_string()))?;
-        let (sealed, secret) = self.with_core(|c| c.bot_command_seal(&verified, request_cbor))?;
-        let handle = self.replies.borrow_mut().insert(secret);
+        let (request_id, sealed, secret) = self.with_core(|c| {
+            c.bot_command_seal(publication, bot_user.as_bytes(), request_cbor, now)
+        })?;
+        let handle = self.replies.borrow_mut().insert(request_id, secret);
         let mut out = Encoder::with_capacity(sealed.len() + 16);
         out.array(2).bytes(&sealed).uint(u64::from(handle));
         Ok(out.into_vec().into_boxed_slice())
     }
-    /// Opens answer `seq` of `request_id` with the reply secret behind `handle`.
+    /// Opens answer `seq` of `request_id` with the reply secret behind `handle`. The handle is
+    /// bound to the request it was made for: another `request_id` is refused, not tried.
     pub fn bot_reply_open(
         &self,
         handle: u32,
@@ -413,10 +422,15 @@ impl CoreHandle {
     ) -> Result<Box<[u8]>, JsError> {
         let request_id = js_fixed_arg::<16>("request_id", request_id)?;
         let replies = self.replies.borrow();
-        let secret = replies
+        let (bound, secret) = replies
             .get(handle)
             .ok_or_else(|| JsError::new("E_BOT_REPLY_UNKNOWN: no reply secret for this handle"))?;
-        open_reply(secret, request_id, seq, sealed)
+        if bound != request_id {
+            return Err(JsError::new(
+                "E_CORE_INPUT: request_id is not the request of this reply handle",
+            ));
+        }
+        open_reply(secret, bound, seq, sealed)
             .map(Vec::into_boxed_slice)
             .map_err(|_| JsError::new("E_BOT_MALFORMED: the reply does not open"))
     }

@@ -13,8 +13,9 @@
 //!   over `"dilla bot command key v1" || CBOR([1, community_id, key_id, public_key, not_after,
 //!   bot_device_id])`;
 //! - signed command `[1, request_id, community_id, channel_id|null, operation, args, sent_at,
-//!   reply_key, user_id, device_id, sig]`, signed over `"dilla bot command v1" || CBOR(first ten
-//!   elements)`;
+//!   reply_key, key_id, user_id, device_id, sig]`, signed over `"dilla bot command v1" ||
+//!   CBOR(first eleven elements)`. `key_id` names the command key it was sealed to, so a command
+//!   relayed to another key (a masquerading "Bot") is refused by the real one;
 //! - sealed command `[1, key_id, request_id, enc(32), ciphertext]`, `info = "dilla bot command
 //!   v1"`, `aad = request_id`. The request id is carried outside the seal because the opener
 //!   needs it as the associated data before it can decrypt anything, and it must equal the
@@ -62,6 +63,11 @@ pub const MAX_SEALED_REPLY_BYTES: usize = 65536;
 /// A command whose `sent_at` lies more than this many seconds before or after the verifier's
 /// clock is stale.
 pub const SENT_AT_WINDOW_SECS: u64 = 120;
+/// The longest a command-key publication may stay valid: the spec's weekly rotation plus the 24 h
+/// overlap in which the previous key still opens ("Key rotation"). A publication whose
+/// `not_after` lies further ahead is refused, so a signer cannot mint a key that outlives a
+/// revocation for longer than one rotation.
+pub const MAX_COMMAND_KEY_LIFETIME_SECS: u64 = 8 * 24 * 60 * 60;
 /// The most arguments one command carries. The catalog's operations take at most a handful; the
 /// cap keeps a hostile array head from costing more than the bytes it arrived in.
 pub const MAX_COMMAND_ARGS: usize = 32;
@@ -345,7 +351,8 @@ impl CommandKeyPublication {
     }
 
     /// The signer must be a listed, unrevoked device of the Bot user whose list this is (the
-    /// caller picks the list by the Bot's user id and has verified it), and `now <= not_after`.
+    /// caller picks the list by the Bot's user id and has verified it), `now <= not_after`, and
+    /// `not_after <= now + MAX_COMMAND_KEY_LIFETIME_SECS` (a longer-lived key is `Malformed`).
     pub fn verify(&self, bot_list: &DeviceList, now: u64) -> Result<(), CommandRefusal> {
         self.validate()?;
         let entry = bot_list
@@ -357,6 +364,9 @@ impl CommandKeyPublication {
         verify_ed25519(&entry.dsk_pub, &self.signing_message(), &self.sig)?;
         if now > self.not_after {
             return Err(CommandRefusal::Stale);
+        }
+        if self.not_after > now.saturating_add(MAX_COMMAND_KEY_LIFETIME_SECS) {
+            return Err(CommandRefusal::Malformed);
         }
         Ok(())
     }
@@ -425,12 +435,21 @@ impl CommandRequest {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SignedCommand {
     pub request: CommandRequest,
+    /// The command key the user sealed to (the publication's `key_id`), inside the signature.
+    pub key_id: [u8; 16],
     pub user_id: UserId,
     pub device_id: DeviceId,
     pub sig: [u8; 64],
 }
 
-fn write_command(e: &mut Encoder, len: usize, req: &CommandRequest, user: &UserId, dev: &DeviceId) {
+fn write_command(
+    e: &mut Encoder,
+    len: usize,
+    req: &CommandRequest,
+    key_id: &[u8; 16],
+    user: &UserId,
+    dev: &DeviceId,
+) {
     e.array(len)
         .uint(VERSION)
         .bytes(&req.request_id)
@@ -450,6 +469,7 @@ fn write_command(e: &mut Encoder, len: usize, req: &CommandRequest, user: &UserI
     }
     e.uint(req.sent_at)
         .bytes(&req.reply_key)
+        .bytes(key_id)
         .bytes(user.as_bytes())
         .bytes(dev.as_bytes());
 }
@@ -476,17 +496,31 @@ fn read_arg(d: &mut Decoder<'_>) -> Result<CommandArg, CborError> {
 
 impl SignedCommand {
     /// `"dilla bot command v1" || CBOR([1, request_id, community_id, channel_id|null,
-    /// operation, args, sent_at, reply_key, user_id, device_id])`
+    /// operation, args, sent_at, reply_key, key_id, user_id, device_id])`
     pub fn signing_message(&self) -> Vec<u8> {
         let mut e = Encoder::with_capacity(INFO_COMMAND.len() + 160);
         e.raw(INFO_COMMAND);
-        write_command(&mut e, 10, &self.request, &self.user_id, &self.device_id);
+        write_command(
+            &mut e,
+            11,
+            &self.request,
+            &self.key_id,
+            &self.user_id,
+            &self.device_id,
+        );
         e.into_vec()
     }
 
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Encoder::with_capacity(224);
-        write_command(&mut e, 11, &self.request, &self.user_id, &self.device_id);
+        write_command(
+            &mut e,
+            12,
+            &self.request,
+            &self.key_id,
+            &self.user_id,
+            &self.device_id,
+        );
         e.bytes(&self.sig);
         e.into_vec()
     }
@@ -496,7 +530,7 @@ impl SignedCommand {
             return Err(CommandRefusal::Malformed);
         }
         let cmd = decode_strict(b, |d| {
-            d.array(11)?;
+            d.array(12)?;
             if d.uint()? != VERSION {
                 return Err(CborError::TypeMismatch {
                     expected: "command v1",
@@ -520,6 +554,7 @@ impl SignedCommand {
             }
             let sent_at = d.uint()?;
             let reply_key = d.bytes_exact::<32>()?;
+            let key_id = d.bytes_exact::<16>()?;
             let user_id = UserId::from_bytes(d.bytes_exact::<16>()?);
             let device_id = DeviceId::from_bytes(d.bytes_exact::<16>()?);
             let sig = d.bytes_exact::<64>()?;
@@ -533,13 +568,17 @@ impl SignedCommand {
                     sent_at,
                     reply_key,
                 },
+                key_id,
                 user_id,
                 device_id,
                 sig,
             })
         })?;
         cmd.request.validate()?;
-        if is_zero(cmd.user_id.as_bytes()) || is_zero(cmd.device_id.as_bytes()) {
+        if is_zero(&cmd.key_id)
+            || is_zero(cmd.user_id.as_bytes())
+            || is_zero(cmd.device_id.as_bytes())
+        {
             return Err(CommandRefusal::Malformed);
         }
         Ok(cmd)
@@ -581,6 +620,7 @@ pub fn seal_command_derand(
     let secret = ReplySecret::derive(reply_ikm)?;
     let mut cmd = SignedCommand {
         request: req.clone(),
+        key_id: publication.key_id,
         user_id: user,
         device_id: device,
         sig: [0; 64],
@@ -664,11 +704,18 @@ pub fn sealed_command_request_id(sealed: &[u8]) -> Result<[u8; 16], CommandRefus
     decode_sealed_command(sealed).map(|s| s.request_id)
 }
 
-/// Opens a sealed command with the command key's private half. The result is not trusted until
-/// `verify_command` passes. A seal that does not open under this key is `Malformed`: the caller
-/// selects the key by `key_id` and reports `UnknownKey` itself when it holds none.
+/// Opens a sealed command with the command key's private half; `key_community` is the community
+/// of that key's publication. The result is not trusted until `verify_command` passes.
+///
+/// `Malformed` when the seal does not open under this key (the caller selects the key by
+/// `key_id` and reports `UnknownKey` itself when it holds none), when the signed `request_id` or
+/// `key_id` differs from the outer one, or when the signed community is not the key's community
+/// (a command sealed to community A's key cannot speak for community B). The community mismatch
+/// is `Malformed`, not a new refusal, so the helper's refusal codes 1..7 stay as Task 15 numbers
+/// them: an honest client never produces one.
 pub fn open_command(
     private_key: &[u8; 32],
+    key_community: CommunityId,
     sealed: &[u8],
 ) -> Result<SignedCommand, CommandRefusal> {
     let s = decode_sealed_command(sealed)?;
@@ -684,7 +731,10 @@ pub fn open_command(
     );
     let cmd = SignedCommand::decode(&plaintext)?;
     // The signed id must be the one dillad deduplicates on and the AEAD authenticated.
-    if cmd.request.request_id != s.request_id {
+    if cmd.request.request_id != s.request_id
+        || cmd.key_id != s.key_id
+        || cmd.request.community_id != key_community
+    {
         return Err(CommandRefusal::Malformed);
     }
     Ok(cmd)
@@ -848,21 +898,25 @@ pub fn open_reply(
 /// which time every older handle has long been evicted.
 #[derive(Debug)]
 pub struct ReplyTable {
-    entries: VecDeque<(u32, ReplySecret)>,
+    // Boxed and pre-sized: the deque never reallocates, and moving an entry (eviction, a removal
+    // in the middle) copies a pointer, so no stale copy of a secret is left in freed or spare
+    // heap. Each entry keeps the request id its secret answers.
+    entries: VecDeque<(u32, [u8; 16], Box<ReplySecret>)>,
     next: u32,
 }
 
 impl Default for ReplyTable {
     fn default() -> Self {
         Self {
-            entries: VecDeque::new(),
+            entries: VecDeque::with_capacity(REPLY_TABLE_CAP),
             next: 1,
         }
     }
 }
 
 impl ReplyTable {
-    pub fn insert(&mut self, secret: ReplySecret) -> u32 {
+    /// Keeps `secret`, the reply secret of `request_id`, and returns its handle.
+    pub fn insert(&mut self, request_id: [u8; 16], secret: ReplySecret) -> u32 {
         while self.entries.len() >= REPLY_TABLE_CAP {
             self.entries.pop_front();
         }
@@ -871,20 +925,22 @@ impl ReplyTable {
             0 => 1,
             n => n,
         };
-        self.entries.push_back((handle, secret));
+        self.entries
+            .push_back((handle, request_id, Box::new(secret)));
         handle
     }
 
-    pub fn get(&self, handle: u32) -> Option<&ReplySecret> {
+    /// The request id and reply secret behind `handle`.
+    pub fn get(&self, handle: u32) -> Option<([u8; 16], &ReplySecret)> {
         self.entries
             .iter()
-            .find(|(h, _)| *h == handle)
-            .map(|(_, s)| s)
+            .find(|(h, _, _)| *h == handle)
+            .map(|(_, r, s)| (*r, s.as_ref()))
     }
 
     /// Drops (and so zeroizes) the secret; false if the handle holds none.
     pub fn forget(&mut self, handle: u32) -> bool {
-        match self.entries.iter().position(|(h, _)| *h == handle) {
+        match self.entries.iter().position(|(h, _, _)| *h == handle) {
             Some(i) => {
                 self.entries.remove(i);
                 true
@@ -912,34 +968,41 @@ impl ReplyTable {
 /// At most `VERIFIED_KEYS_CAP` communities; the oldest is evicted.
 #[derive(Debug, Default)]
 pub struct VerifiedKeys {
-    entries: VecDeque<(Vec<u8>, CommandKeyPublication)>,
+    entries: VecDeque<(Vec<u8>, CommandKeyPublication, UserId)>,
 }
 
 impl VerifiedKeys {
-    /// Records a publication the caller has just verified, replacing its community's previous.
-    pub fn remember(&mut self, publication: &CommandKeyPublication) {
+    /// Records a publication the caller has just verified against `bot_user`'s device list,
+    /// replacing its community's previous one.
+    pub fn remember(&mut self, publication: &CommandKeyPublication, bot_user: UserId) {
         self.entries
-            .retain(|(_, p)| p.community_id != publication.community_id);
+            .retain(|(_, p, _)| p.community_id != publication.community_id);
         while self.entries.len() >= VERIFIED_KEYS_CAP {
             self.entries.pop_front();
         }
         self.entries
-            .push_back((publication.encode(), publication.clone()));
+            .push_back((publication.encode(), publication.clone(), bot_user));
     }
 
-    /// The publication `bytes` decodes to, if exactly these bytes were verified and are not
-    /// expired at `now`.
-    pub fn check(&self, bytes: &[u8], now: u64) -> Result<CommandKeyPublication, CommandRefusal> {
+    /// The publication `bytes` decodes to and the Bot user it was verified for, if exactly these
+    /// bytes were verified and are not expired at `now`. This is a gate, not the check: the
+    /// sealer re-verifies against the Bot user's current device list before every seal, so a
+    /// revocation after `remember` takes effect at once.
+    pub fn check(
+        &self,
+        bytes: &[u8],
+        now: u64,
+    ) -> Result<(CommandKeyPublication, UserId), CommandRefusal> {
         let p = CommandKeyPublication::decode(bytes).map_err(|_| CommandRefusal::Malformed)?;
-        let (_, verified) = self
+        let (_, verified, bot_user) = self
             .entries
             .iter()
-            .find(|(b, _)| b.as_slice() == bytes)
+            .find(|(b, _, _)| b.as_slice() == bytes)
             .ok_or(CommandRefusal::UnknownKey)?;
         if now > verified.not_after {
             return Err(CommandRefusal::Stale);
         }
-        Ok(p)
+        Ok((p, *bot_user))
     }
 
     pub fn len(&self) -> usize {

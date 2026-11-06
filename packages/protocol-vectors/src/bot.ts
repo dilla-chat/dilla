@@ -344,7 +344,8 @@ async function sealedCommandVectors() {
  const args=['never gonna give you up',3n,new Uint8Array([1,2,3]),null];
  const replyIkm=new Uint8Array(32).fill(0x02),ephemeralIkm=new Uint8Array(32).fill(0x01);
  const replyKey=await deriveKeyPair(replyIkm);
- const unsignedCmd=[1n,requestId,community,channel,11n,args,now,replyKey.pk,user,device];
+ // The signed form names the command key (key_id) it is sealed to, between reply_key and user_id.
+ const unsignedCmd=[1n,requestId,community,channel,11n,args,now,replyKey.pk,keyId,user,device];
  const cmdSig=await sign(usr.dsk.privateKey,concat(te('dilla bot command v1'),encode(unsignedCmd as never)));
  const signedCmd=encode([...unsignedCmd,cmdSig] as never);
  const sealedInner=await sealBase(commandKey.pk,te('dilla bot command v1'),requestId,signedCmd,ephemeralIkm);
@@ -357,6 +358,14 @@ async function sealedCommandVectors() {
   replies.push({seq,body_hex:hex(te(body)),ephemeral_ikm:hex(ikm),sealed_hex:hex(encode([1n,r.enc,r.ct]))});
  }
  // [0x85, 0x01, 0x50, key_id(16), 0x50, request_id(16), ...]: byte 20 is the first byte of the outer request id.
+ // A modified client's commands: signed for another community than the key's, or for another key_id than the outer.
+ const sealRaw=async (fields:unknown[],outerKeyId:Uint8Array,ikm:number) => {
+  const sig=await sign(usr.dsk.privateKey,concat(te('dilla bot command v1'),encode(fields as never)));
+  const inner=await sealBase(commandKey.pk,te('dilla bot command v1'),requestId,encode([...fields,sig] as never),new Uint8Array(32).fill(ikm));
+  return encode([1n,outerKeyId,requestId,inner.enc,inner.ct]);
+ };
+ const otherCommunity=await sealRaw([1n,requestId,id(0x23),channel,11n,args,now,replyKey.pk,keyId,user,device],keyId,0x06);
+ const otherKeyId=await sealRaw([1n,requestId,community,channel,11n,args,now,replyKey.pk,id(0x34),user,device],keyId,0x07);
  const tampered=sealed.slice();tampered[tampered.length-1]!^=1;
  const movedId=sealed.slice();movedId[20]!^=1;
  return {
@@ -374,6 +383,8 @@ async function sealedCommandVectors() {
    {name:'sent_at 121 s in the past',sealed_hex:hex(sealed),attached_device:hex(device),now:Number(now+121n),refusal:'Stale'},
    {name:'ciphertext bit flipped',sealed_hex:hex(tampered),attached_device:hex(device),now:Number(now),refusal:'Malformed'},
    {name:'outer request id changed',sealed_hex:hex(movedId),attached_device:hex(device),now:Number(now),refusal:'Malformed'},
+   {name:'signed for another community than the key',sealed_hex:hex(otherCommunity),attached_device:hex(device),now:Number(now),refusal:'Malformed'},
+   {name:'signed for another key_id than the outer',sealed_hex:hex(otherKeyId),attached_device:hex(device),now:Number(now),refusal:'Malformed'},
   ],
  };
 }
