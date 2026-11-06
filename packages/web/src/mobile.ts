@@ -13,10 +13,12 @@ export const MOBILE_INFO_TIMEOUT_MS = 10_000;
  * Capacitor Android reply-proxy race, patches/@capacitor+android+*.patch) left the page awaiting it for good and
  * blank: startup awaits this before it renders anything.
  */
-export function mobileInfoWithin(bridge: MobileBridge, ms = MOBILE_INFO_TIMEOUT_MS): Promise<MobileInfo | 'timeout'> {
+export function mobileInfoWithin(bridge: MobileBridge, ms = MOBILE_INFO_TIMEOUT_MS): Promise<MobileInfo | 'timeout' | 'failed'> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<'timeout'>(resolve => { timer = setTimeout(() => resolve('timeout'), ms); });
-  return Promise.race([bridge.info(), timeout]).finally(() => clearTimeout(timer));
+  // A refused info() (the shell could not read its stored instance) gets the same splash as silence, never a blank page.
+  const info = bridge.info().catch((): 'failed' => 'failed');
+  return Promise.race([info, timeout]).finally(() => clearTimeout(timer));
 }
 
 const permissions = new WeakMap<MobileBridge, { state: NotificationPermission }>();

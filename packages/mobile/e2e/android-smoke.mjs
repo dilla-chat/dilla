@@ -553,7 +553,7 @@ async function main() {
   // 6. Navigation stress: in-app loads of the picker and the client, back and forth. Stock Capacitor Android 8.6.0 lost
   // a new page's first plugin answer on 1-6 % of them on a local emulator (the reply-proxy race,
   // patches/@capacitor+android+*.patch): the picker never listed its instances and the client stayed blank. Picker loads
-  // are cheap, so each round trip reloads the picker four times before the client, 125 loads in about half a minute;
+  // are cheap, so each round trip reloads the picker four times before the client, 125 loads in about 15 s;
   // at 2 % per load a stock build fails this step 92 % of the time. A lost answer never arrives, so a bound well above
   // a normal load tells them apart; html[data-mobile-platform] is set only once the client's bridge info() answered.
   const stressRounds = 25, pickerLoads = 4, stressWait = WAIT / 4;
@@ -567,6 +567,8 @@ async function main() {
     await page.goto('https://localhost/');
     loads++;
     if (!await page.locator('html[data-mobile-platform]').waitFor({ state: 'attached', timeout: stressWait }).then(() => true, () => false)) stalled.push(`client ${i}`);
+    // Each stall costs a full stressWait: stop at five so a broken build fails inside the step's time limit and still logs.
+    if (stalled.length >= 5) break;
   }
   log(`step 6: navigation stress: ${loads - stalled.length}/${loads} in-app loads answered their first bridge call${stalled.length ? `; stalled: ${stalled.join(', ')}` : ''}`);
   if (stalled.length) throw new Error(`navigation stress: ${stalled.length}/${loads} loads never got their first bridge answer (${stalled.join(', ')})`);

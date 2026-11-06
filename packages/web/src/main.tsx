@@ -23,16 +23,16 @@ const desktop = await desktopBridge()?.info();
 if (desktop) { document.documentElement.dataset.desktop = ''; document.documentElement.dataset.desktopPlatform = desktop.platform; }
 const mobileShell = mobileBridge();
 const mobileInfo = mobileShell && await mobileInfoWithin(mobileShell);
-if (mobileShell && mobileInfo === 'timeout') {
-  // The native shell never answered: show the error splash (Try again, Switch instance), never a blank page. No core
-  // starts, since the instance it would open is unknown.
+if (mobileShell && (mobileInfo === 'timeout' || mobileInfo === 'failed')) {
+  // The native shell never answered, or refused: show the error splash (Try again, Switch instance), never a blank page.
+  // No core starts, since the instance it would open is unknown.
   document.documentElement.dataset.mobile = '';
   const element = document.getElementById('root');
   if (!element) throw new Error('dilla: #root is missing');
-  createRoot(element).render(<StrictMode><MobileBootError bridge={mobileShell} detail={t('mobile.boot.timeout.detail')} /></StrictMode>);
-  throw new Error(`dilla: the mobile shell did not answer within ${MOBILE_INFO_TIMEOUT_MS} ms`);
+  createRoot(element).render(<StrictMode><MobileBootError bridge={mobileShell} detail={t(mobileInfo === 'timeout' ? 'mobile.boot.timeout.detail' : 'mobile.boot.failed.detail')} /></StrictMode>);
+  throw new Error(mobileInfo === 'timeout' ? `dilla: the mobile shell did not answer within ${MOBILE_INFO_TIMEOUT_MS} ms` : 'dilla: the mobile shell refused its info');
 }
-const mobile = mobileInfo === 'timeout' ? undefined : mobileInfo;
+const mobile = mobileInfo === 'timeout' || mobileInfo === 'failed' ? undefined : mobileInfo;
 if (mobile) { document.documentElement.dataset.mobile = ''; document.documentElement.dataset.mobilePlatform = mobile.platform; }
 // Mobile wins when both bridges exist, as in layout.ts and notify.ts.
 const native = mobile ?? desktop;

@@ -34,7 +34,7 @@ describe('mobileInfoWithin', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(settled).toBe('timeout');
   });
-  it('passes a refusal through', async () => {
-    await expect(mobileInfoWithin(bridge(Promise.reject(new Error('no'))))).rejects.toThrow('no');
+  it('turns a refusal into failed, so boot shows the splash', async () => {
+    await expect(mobileInfoWithin(bridge(Promise.reject(new Error('no'))))).resolves.toBe('failed');
   });
 });
