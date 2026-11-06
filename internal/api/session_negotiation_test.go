@@ -16,8 +16,8 @@ func TestSessionNegotiationSelectsHighestCommonVersionsPerLayer(t *testing.T) {
 	h, deps := newTestAPI(t)
 	_, _, token := seedAPISession(t, deps)
 	body, err := cborx.Marshal([]any{
-		[]any{uint64(2), uint64(3)},
-		[]any{uint64(1)},
+		[]any{uint64(9), uint64(6)},
+		[]any{uint64(2), uint64(1)},
 		[]any{uint64(1)},
 	})
 	if err != nil {
@@ -31,19 +31,50 @@ func TestSessionNegotiationSelectsHighestCommonVersionsPerLayer(t *testing.T) {
 	if err := cborx.Unmarshal(rec.Body.Bytes(), &selected); err != nil {
 		t.Fatal(err)
 	}
-	if len(selected) != 3 || selected[0] != 3 || selected[1] != 1 || selected[2] != 1 {
-		t.Fatalf("selected versions = %v, want [3 1 1]", selected)
+	if len(selected) != 3 || selected[0] != 6 || selected[1] != 1 || selected[2] != 1 {
+		t.Fatalf("selected versions = %v, want [6 1 1]", selected)
+	}
+}
+
+// Bot v2 Task 1: wire 6 is the only wire, so a client still offering wire 5 or older is told to
+// update (426 E_UPGRADE_REQUIRED) and its stored selection is left alone.
+func TestNegotiateRefusesWire5WithUpgradeRequired(t *testing.T) {
+	h, deps := newTestAPI(t)
+	_, _, token := seedAPISession(t, deps)
+	old, _ := cborx.Marshal([]any{[]any{uint64(5), uint64(4), uint64(3), uint64(2)}, []any{uint64(1)}, []any{uint64(1)}})
+	rec := postCBORAuth(h, "/v1/sessions/negotiate", old, token)
+	if rec.Code != http.StatusUpgradeRequired || refusalCode(t, rec) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("wire 5 negotiation = %d %q, want 426 E_UPGRADE_REQUIRED", rec.Code, refusalCode(t, rec))
+	}
+	s, err := deps.Sessions.Resolve(context.Background(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.WireVersion != 0 {
+		t.Fatalf("refused negotiation stored wire %d, want 0", s.WireVersion)
+	}
+	current, _ := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
+	rec = postCBORAuth(h, "/v1/sessions/negotiate", current, token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("wire 6 negotiation = %d %q, want 200", rec.Code, rec.Body.Bytes())
+	}
+	var selected []uint64
+	if err := cborx.Unmarshal(rec.Body.Bytes(), &selected); err != nil {
+		t.Fatal(err)
+	}
+	if len(selected) != 3 || selected[0] != 6 || selected[1] != 1 || selected[2] != 1 {
+		t.Fatalf("selected versions = %v, want [6 1 1]", selected)
 	}
 }
 
 func TestSessionNegotiationRejectsDuplicateVersionAndLeavesPriorSelectionUntouched(t *testing.T) {
 	h, deps := newTestAPI(t)
 	_, _, token := seedAPISession(t, deps)
-	valid, _ := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
+	valid, _ := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
 	if rec := postCBORAuth(h, "/v1/sessions/negotiate", valid, token); rec.Code != http.StatusOK {
 		t.Fatalf("initial negotiation = %d, want 200", rec.Code)
 	}
-	invalid, _ := cborx.Marshal([]any{[]any{uint64(3), uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
+	invalid, _ := cborx.Marshal([]any{[]any{uint64(6), uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
 	if rec := postCBORAuth(h, "/v1/sessions/negotiate", invalid, token); rec.Code != http.StatusBadRequest || refusalCode(t, rec) != "E_INVALID_REQUEST" {
 		t.Fatalf("duplicate version = %d %q, want 400 E_INVALID_REQUEST", rec.Code, refusalCode(t, rec))
 	}
@@ -51,36 +82,21 @@ func TestSessionNegotiationRejectsDuplicateVersionAndLeavesPriorSelectionUntouch
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.WireVersion != 3 || s.E2EEVersion != 1 || s.MediaVersion != 1 {
-		t.Fatalf("stored versions after invalid request = [%d %d %d], want [3 1 1]", s.WireVersion, s.E2EEVersion, s.MediaVersion)
+	if s.WireVersion != 6 || s.E2EEVersion != 1 || s.MediaVersion != 1 {
+		t.Fatalf("stored versions after invalid request = [%d %d %d], want [6 1 1]", s.WireVersion, s.E2EEVersion, s.MediaVersion)
 	}
 }
 
-func TestSessionNegotiationIsBearerScopedAndDowngradesTheSameBearer(t *testing.T) {
+func TestSessionNegotiationIsBearerScoped(t *testing.T) {
 	h, deps := newTestAPI(t)
 	user, _, tokenA := seedAPISession(t, deps)
 	tokenB := secondSession(t, deps, user)
-	selectVersions := func(token string, body []any) []uint64 {
-		t.Helper()
-		encoded, err := cborx.Marshal(body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		rec := postCBORAuth(h, "/v1/sessions/negotiate", encoded, token)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("negotiate = %d, want 200 (%q)", rec.Code, rec.Body.Bytes())
-		}
-		var selected []uint64
-		if err := cborx.Unmarshal(rec.Body.Bytes(), &selected); err != nil {
-			t.Fatal(err)
-		}
-		return selected
+	encoded, err := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := selectVersions(tokenA, []any{[]any{uint64(2), uint64(3)}, []any{uint64(1)}, []any{uint64(1)}}); got[0] != 3 {
-		t.Fatalf("initial wire selection = %v, want 3", got)
-	}
-	if got := selectVersions(tokenA, []any{[]any{uint64(2)}, []any{uint64(1)}, []any{uint64(1)}}); got[0] != 2 {
-		t.Fatalf("downgrade selection = %v, want wire 2", got)
+	if rec := postCBORAuth(h, "/v1/sessions/negotiate", encoded, tokenA); rec.Code != http.StatusOK {
+		t.Fatalf("negotiate = %d, want 200 (%q)", rec.Code, rec.Body.Bytes())
 	}
 	a, err := deps.Sessions.Resolve(context.Background(), tokenA)
 	if err != nil {
@@ -90,54 +106,52 @@ func TestSessionNegotiationIsBearerScopedAndDowngradesTheSameBearer(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.WireVersion != 2 || b.WireVersion != 0 {
-		t.Fatalf("same-device bearer selections = %d and %d, want 2 and 0", a.WireVersion, b.WireVersion)
+	if a.WireVersion != 6 || b.WireVersion != 0 {
+		t.Fatalf("same-device bearer selections = %d and %d, want 6 and 0", a.WireVersion, b.WireVersion)
 	}
 }
 
 func TestSessionNegotiationRejectsUnsupportedWithoutReplacingSelection(t *testing.T) {
 	h, deps := newTestAPI(t)
 	_, _, token := seedAPISession(t, deps)
-	valid, _ := cborx.Marshal([]any{[]any{uint64(3), uint64(2)}, []any{uint64(1)}, []any{uint64(1)}})
+	valid, _ := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
 	if rec := postCBORAuth(h, "/v1/sessions/negotiate", valid, token); rec.Code != http.StatusOK {
 		t.Fatalf("initial negotiation = %d, want 200", rec.Code)
 	}
-	unsupported, _ := cborx.Marshal([]any{[]any{uint64(1)}, []any{uint64(1)}, []any{uint64(1)}})
-	rec := postCBORAuth(h, "/v1/sessions/negotiate", unsupported, token)
-	if rec.Code != http.StatusBadRequest || refusalCode(t, rec) != "E_VERSION" {
-		t.Fatalf("wire 1 negotiation = %d %q, want 400 E_VERSION", rec.Code, refusalCode(t, rec))
+	older, _ := cborx.Marshal([]any{[]any{uint64(1)}, []any{uint64(1)}, []any{uint64(1)}})
+	rec := postCBORAuth(h, "/v1/sessions/negotiate", older, token)
+	if rec.Code != http.StatusUpgradeRequired || refusalCode(t, rec) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("wire 1 negotiation = %d %q, want 426 E_UPGRADE_REQUIRED", rec.Code, refusalCode(t, rec))
 	}
-	assertNegotiationVersionError(t, rec, [][]uint64{{5, 4, 3, 2}, {1}, {1}})
+	// A wire this instance does not know yet is a plain mismatch: E_VERSION lists what it speaks.
+	newer, _ := cborx.Marshal([]any{[]any{uint64(7)}, []any{uint64(1)}, []any{uint64(1)}})
+	rec = postCBORAuth(h, "/v1/sessions/negotiate", newer, token)
+	if rec.Code != http.StatusBadRequest || refusalCode(t, rec) != "E_VERSION" {
+		t.Fatalf("wire 7 negotiation = %d %q, want 400 E_VERSION", rec.Code, refusalCode(t, rec))
+	}
+	assertNegotiationVersionError(t, rec, [][]uint64{{6}, {1}, {1}})
 	s, err := deps.Sessions.Resolve(context.Background(), token)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.WireVersion != 3 {
-		t.Fatalf("failed negotiation changed selected wire to %d, want 3", s.WireVersion)
+	if s.WireVersion != 6 {
+		t.Fatalf("failed negotiation changed selected wire to %d, want 6", s.WireVersion)
 	}
 }
 
 func TestSessionNegotiationUsesTheConfiguredWireOffer(t *testing.T) {
-	h, deps := newTestAPIWired(t, func(d *api.Deps) { d.WireVersions = []uint64{2} })
+	h, deps := newTestAPIWired(t, func(d *api.Deps) { d.WireVersions = []uint64{7} })
 	_, _, token := seedAPISession(t, deps)
-	body, _ := cborx.Marshal([]any{[]any{uint64(3), uint64(2)}, []any{uint64(1)}, []any{uint64(1)}})
-	rec := postCBORAuth(h, "/v1/sessions/negotiate", body, token)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("configured wire 2 negotiation = %d, want 200", rec.Code)
+	older, _ := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
+	if rec := postCBORAuth(h, "/v1/sessions/negotiate", older, token); rec.Code != http.StatusUpgradeRequired {
+		t.Fatalf("wire 6 against a configured wire 7 offer = %d, want 426", rec.Code)
 	}
-	var selected []uint64
-	if err := cborx.Unmarshal(rec.Body.Bytes(), &selected); err != nil {
-		t.Fatal(err)
-	}
-	if len(selected) != 3 || selected[0] != 2 {
-		t.Fatalf("selected = %v, want wire 2", selected)
-	}
-	unsupported, _ := cborx.Marshal([]any{[]uint64{3}, []uint64{1}, []uint64{1}})
+	unsupported, _ := cborx.Marshal([]any{[]uint64{8}, []uint64{1}, []uint64{1}})
 	refused := postCBORAuth(h, "/v1/sessions/negotiate", unsupported, token)
 	if refused.Code != http.StatusBadRequest {
 		t.Fatalf("unsupported configured offer = %d, want 400", refused.Code)
 	}
-	assertNegotiationVersionError(t, refused, [][]uint64{{2}, {1}, {1}})
+	assertNegotiationVersionError(t, refused, [][]uint64{{7}, {1}, {1}})
 }
 
 func TestSessionNegotiationRequiresThreeNonemptyLists(t *testing.T) {
@@ -162,7 +176,7 @@ func TestSessionNegotiationRequiresThreeNonemptyLists(t *testing.T) {
 func TestDeletingTheBearerSessionDeletesItsNegotiatedSelection(t *testing.T) {
 	h, deps := newTestAPI(t)
 	_, device, token := seedAPISession(t, deps)
-	body, _ := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
+	body, _ := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
 	if rec := postCBORAuth(h, "/v1/sessions/negotiate", body, token); rec.Code != http.StatusOK {
 		t.Fatalf("negotiate = %d, want 200", rec.Code)
 	}
@@ -223,9 +237,9 @@ func TestBotSessionRoutePreservesEnrollmentAuthAndDefersResourceWireGate(t *test
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("bot route wrapper blocked handler before resource authorization: %d", rec.Code)
 	}
-	body, _ := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
+	body, _ := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
 	if rec := postCBORAuth(h, "/v1/sessions/negotiate", body, token); rec.Code != http.StatusOK {
-		t.Fatalf("negotiate wire 3 = %d, want 200", rec.Code)
+		t.Fatalf("negotiate wire 6 = %d, want 200", rec.Code)
 	}
 	if rec := call(); rec.Code != http.StatusNoContent {
 		t.Fatalf("negotiated bot guard = %d, want 204", rec.Code)

@@ -17,10 +17,22 @@ func negotiationSupported(d Deps) [][]uint64 {
 		return append([]uint64(nil), v...)
 	}
 	return [][]uint64{
-		pick(d.WireVersions, []uint64{5, 4, 3, 2}),
+		pick(d.WireVersions, []uint64{6}),
 		pick(d.E2EEVersions, []uint64{1}),
 		pick(d.MediaVersions, []uint64{1}),
 	}
+}
+
+// olderThanAll reports whether every offered version is below every supported one.
+func olderThanAll(offered, supported []uint64) bool {
+	for _, o := range offered {
+		for _, v := range supported {
+			if o >= v {
+				return false
+			}
+		}
+	}
+	return len(offered) > 0 && len(supported) > 0
 }
 
 // NegotiateSession selects the highest common version independently for each layer and records
@@ -68,6 +80,12 @@ func (d Deps) NegotiateSession(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if selected[i] == 0 {
+			if i == 0 && olderThanAll(sets[0], supported[0]) {
+				// Bot v2: wire 6 is the only wire. A client offering only older wires is told to
+				// update rather than handed a version list it cannot use.
+				server.WriteError(w, server.Errorf(server.CodeUpgradeRequired, "this instance needs a newer client"))
+				return
+			}
 			server.WriteError(w, server.Version(supported[0], supported[1], supported[2]))
 			return
 		}
@@ -85,7 +103,7 @@ func (d Deps) NegotiateSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // BotSessionRoute preserves enrolled-session and rate-limit checks for bot-only handlers. Each
-// handler applies the wire-3 requirement after authorizing its bound resource, so hidden and
+// handler applies the wire-6 requirement after authorizing its bound resource, so hidden and
 // unknown resources keep their established refusal.
 func BotSessionRoute(sessions *auth.Sessions, l *server.RateLimiter) func(pattern string, h http.Handler) http.Handler {
 	return func(pattern string, h http.Handler) http.Handler {

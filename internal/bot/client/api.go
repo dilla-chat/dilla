@@ -105,7 +105,7 @@ func (c *Client) DiscoverObserved(ctx context.Context) (Discovery, ResponseObser
 	if !equalID(d.InstanceID, c.instance) {
 		return Discovery{}, observation, ErrInstanceChanged
 	}
-	if !slices.Contains(d.WireVersions, uint64(3)) || !slices.Contains(d.E2EEVersions, uint64(1)) || !slices.Contains(d.MediaVersions, uint64(1)) {
+	if !slices.Contains(d.WireVersions, uint64(WireVersion)) || !slices.Contains(d.E2EEVersions, uint64(1)) || !slices.Contains(d.MediaVersions, uint64(1)) {
 		return Discovery{}, observation, ErrProtocol
 	}
 	c.discovered.Store(true)
@@ -490,7 +490,7 @@ func (s *Session) Negotiate(ctx context.Context, wire, e2ee, media []uint64) (Ne
 		return out, unknown()
 	}
 	var ok bool
-	if out.Wire, ok = asUint(a[0]); !ok || out.Wire != 3 {
+	if out.Wire, ok = asUint(a[0]); !ok || out.Wire != WireVersion {
 		return Negotiated{}, unknown()
 	}
 	if out.E2EE, ok = asUint(a[1]); !ok || out.E2EE != 1 {
@@ -651,9 +651,21 @@ func (s *Session) OwnDeviceList(ctx context.Context, user id.ID) ([]byte, error)
 	if e != nil {
 		return nil, e
 	}
-	a, decodeErr := decode(raw, 4)
+	a, decodeErr := decode(raw, -1)
 	if decodeErr != nil {
 		return nil, decodeErr
+	}
+	// Wire 6 (as every wire since 4): the head carries the instance-signed account-kind attestation
+	// as a fifth element; a tombstoned account's head has none. The Bot's callers compare and parse
+	// the four signed elements, so the attestation is checked for shape and then dropped.
+	switch len(a) {
+	case 4:
+	case 5:
+		if attestation, ok := asBytes(a[4], -1); !ok || len(attestation) == 0 {
+			return nil, ErrProtocol
+		}
+	default:
+		return nil, ErrProtocol
 	}
 	if _, ok := asUint(a[0]); !ok {
 		return nil, ErrProtocol
@@ -667,7 +679,10 @@ func (s *Session) OwnDeviceList(ctx context.Context, user id.ID) ([]byte, error)
 	if _, ok := asBytes(a[3], 32); !ok {
 		return nil, ErrProtocol
 	}
-	return raw, nil
+	if len(a) == 4 {
+		return raw, nil
+	}
+	return encode(a[:4])
 }
 
 func (s *Session) DeviceListHistory(ctx context.Context, user id.ID, after uint64) ([][]any, error) {

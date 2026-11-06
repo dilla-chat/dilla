@@ -24,8 +24,8 @@ func TestTheWireFlagReachesTheHostOptions(t *testing.T) {
 	if ho := o.hostOptions("/data", "/core.wasm", ""); !slices.Equal(ho.WireVersions, []uint64{2}) {
 		t.Fatalf("explicit legacy WireVersions = %v, want [2]", ho.WireVersions)
 	}
-	// Control: the flag left out keeps dillad's production list (nil here; wire [4,3,2] in the
-	// host), so people negotiate wire 4 and managed Bots wire 3 (Task S1 part 2).
+	// Control: the flag left out keeps dillad's production list (nil here; wire [6] in the
+	// host), so people and managed Bots negotiate wire 6 (Bot v2).
 	o, err = parseFlags(nil)
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)

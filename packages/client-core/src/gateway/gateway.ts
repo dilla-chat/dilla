@@ -24,6 +24,9 @@ export type GatewayEvent =
   | { type: 'ready'; info: ReadyInfo }
   | { type: 'frame'; frame: Frame }
   | { type: 'revoked' }
+  /** Bot v2: the instance refused this client's wire as too old (E_UPGRADE_REQUIRED, close 4006). The gateway stays idle;
+   *  the app asks its user to update. */
+  | { type: 'upgradeRequired' }
   /** Task 11 (Jonas, Q3): a heartbeat's round trip, in ms (the phone's You tab: "Connected to {host} · {ping}"). */
   | { type: 'rtt'; ms: number };
 
@@ -48,7 +51,9 @@ export const CLIENT_CLOSE = {
 } as const;
 
 const DEFAULT_MAX_FRAME_BYTES = 131584;
-const WIRE_PREFERENCE = [5n, 4n, 3n, 2n] as const;
+/** Bot v2: wire 6 is the only wire this client speaks. */
+const WIRE_PREFERENCE = [6n] as const;
+const UPGRADE_REQUIRED = 'E_UPGRADE_REQUIRED';
 type TimerName = 'reconnectTimer' | 'handshakeTimer' | 'heartbeatTimer' | 'ackTimer';
 type HelloInfo = Pick<ReadyInfo, 'heartbeatMs' | 'maxFrameBytes' | 'backoffMs' | 'backoffJitterMs'> & {
   versions: bigint[][]; selectedVersions: { wire: bigint; e2ee: bigint; media: bigint };
@@ -107,6 +112,8 @@ export class Gateway {
   private beatSentAt: number | null = null;
   private readonly lastTyping = new Map<string, number>();
   private accepted: ReadyInfo['versions'] | null = null;
+  /** The code of an `error` frame this socket received before ready (Bot v2: E_UPGRADE_REQUIRED). */
+  private refusedCode: string | null = null;
 
   constructor(deps: GatewayDeps) { this.deps = deps; }
   get status(): GatewayStatus { return this.current; }
@@ -187,6 +194,7 @@ export class Gateway {
     ws.binaryType = 'arraybuffer';
     this.lastN = 0n;
     this.hello = null;
+    this.refusedCode = null;
     // Fix round 2: a beat of an earlier socket (closed by the server or torn down here) is never timed against this one's ack.
     this.beatSentAt = null;
     this.phase = 'hello';
@@ -248,6 +256,7 @@ export class Gateway {
         this.emit({ type: 'ready', info });
         this.scheduleBeat();
       } else if (frame.op === Op.invalidSession || frame.op === Op.reconnect) this.reconnectFrame(frame);
+      else if (frame.op === Op.error && frame.payload[1] === UPGRADE_REQUIRED) this.refusedCode = UPGRADE_REQUIRED;
       return;
     }
     if (this.phase === 'ready') {
@@ -306,8 +315,11 @@ export class Gateway {
     // C2 review finding 1: the instance refused this client's wire (E_VERSION, close 4006). As with a hello without
     // WIRE, the refusal stands until the page is reloaded: no reconnect, no new ticket.
     if (event.code === CLIENT_CLOSE.version) {
+      // Bot v2: a wire 6 instance names E_UPGRADE_REQUIRED, in the close reason and in the error frame before it.
+      const upgrade = event.reason === UPGRADE_REQUIRED || this.refusedCode === UPGRADE_REQUIRED;
       this.goIdle();
       this.setStatus('idle', CLIENT_CLOSE.version);
+      if (upgrade) this.emit({ type: 'upgradeRequired' });
       return;
     }
     this.fail(event.code);

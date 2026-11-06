@@ -149,7 +149,7 @@ func TestMembershipReadinessBeforePrivateRestore(t *testing.T) {
 			groupBase := base + "/interaction-groups/" + n.groups[0].Group.String()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/v1/instance" {
-					reply(w, 200, []any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}, n.binding.Instance, uint64(1), "restore-test", uint64(0), []any{uint64(0)}, uint64(1), n.binding.Instance, make([]byte, 32)})
+					reply(w, 200, []any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}, n.binding.Instance, uint64(1), "restore-test", uint64(0), []any{uint64(0)}, uint64(1), n.binding.Instance, make([]byte, 32)})
 					return
 				}
 				if r.Header.Get("Authorization") != "Bearer restore-session" {

@@ -89,7 +89,7 @@ func TestBotInteractionPreflightLoaderFailsClosedOnStaleOrChangedContext(t *test
 	if err := deps.Repo.CreateBotSessionBinding(ctx, store.BotSessionBindingRow{TokenHash: auth.TokenHash(token), InstallationID: installationID, UserID: bot, DeviceID: botDevice, Created: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 3, 1, 1); err != nil {
+	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	group, requestID := id.New(), id.New()

@@ -567,3 +567,65 @@ func TestGeneratedQueriesRoundTripOnSQLite(t *testing.T) {
 		t.Fatalf("ListWebauthnCredentials (empty) = %#v, want an empty non-nil slice", none)
 	}
 }
+
+// Bot v2 Task 1: migration 00056 admits wire 6 on sessions; rolling it back rewrites wire 6
+// selections to 5 so the wire-5 column check holds again.
+func TestMigration00056AdmitsWire6(t *testing.T) {
+	db := openSQLite(t)
+	ctx := context.Background()
+	p, err := goose.NewProvider(goose.DialectSQLite3, db, sqlitemigrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 55); err != nil {
+		t.Fatalf("up to the migration before wire 6: %v", err)
+	}
+	user, device, token := bytes.Repeat([]byte{1}, 16), bytes.Repeat([]byte{2}, 16), bytes.Repeat([]byte{3}, 32)
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO users (id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, created) VALUES (?, 'u', 'u', 0, ?, ?, ?, 1)`,
+			[]any{user, make([]byte, 32), make([]byte, 32), make([]byte, 64)}},
+		{`INSERT INTO devices (id, user_id, dsk_pub, tier, signer_tier, credential_blob, last_seen, created) VALUES (?, ?, ?, 1, 1, x'01', 1, 1)`,
+			[]any{device, user, make([]byte, 32)}},
+		{`INSERT INTO sessions (token_hash, device_id, user_id, scope, tier, created, expires, idle_expires) VALUES (?, ?, ?, 0, 1, 1, 9, 9)`,
+			[]any{token, device, user}},
+		{`UPDATE sessions SET wire_version = 5, e2ee_version = 1, media_version = 1 WHERE token_hash = ?`, []any{token}},
+	} {
+		if _, err := db.ExecContext(ctx, stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("%s: %v", stmt.sql, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE sessions SET wire_version = 6 WHERE token_hash = ?`, token); err == nil {
+		t.Fatal("wire 6 was accepted before migration 00056")
+	}
+	if _, err := p.UpTo(ctx, 56); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	var wire int
+	if err := db.QueryRowContext(ctx, `SELECT wire_version FROM sessions WHERE token_hash = ?`, token).Scan(&wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire != 5 {
+		t.Fatalf("after the migration: wire %d, want the stored 5", wire)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE sessions SET wire_version = 6 WHERE token_hash = ?`, token); err != nil {
+		t.Fatalf("wire 6 refused after migration 00056: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE sessions SET wire_version = 7 WHERE token_hash = ?`, token); err == nil {
+		t.Fatal("wire 7 was accepted")
+	}
+	if _, err := p.DownTo(ctx, 55); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT wire_version FROM sessions WHERE token_hash = ?`, token).Scan(&wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire != 5 {
+		t.Fatalf("rollback: wire %d, want 6 rewritten to 5", wire)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE sessions SET wire_version = 6 WHERE token_hash = ?`, token); err == nil {
+		t.Fatal("wire 6 accepted after rollback")
+	}
+}

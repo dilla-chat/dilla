@@ -46,7 +46,7 @@ func TestPreparedModerationDependenciesReconcileAfterPolicyStopsEnforcement(t *t
 					w.Header().Set("Content-Type", "application/cbor")
 					var raw []byte
 					if req.URL.Path == "/v1/instance" {
-						raw, _ = cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}, binding.Instance, uint64(1), "test", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)})
+						raw, _ = cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}, binding.Instance, uint64(1), "test", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)})
 						_, _ = w.Write(raw)
 						return
 					}

@@ -334,7 +334,7 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 	if subtle.ConstantTimeCompare(h.InstanceID[:], c.instance[:]) != 1 {
 		return false, 0, ErrIdentity
 	}
-	if !hasVersion(h.WireVersions, 3) || !hasVersion(h.E2EEVersions, 1) || !hasVersion(h.MediaVersions, 1) {
+	if !hasVersion(h.WireVersions, client.WireVersion) || !hasVersion(h.E2EEVersions, 1) || !hasVersion(h.MediaVersions, 1) {
 		return false, 0, ErrVersion
 	}
 	ws.SetReadLimit(maxFrameReadLimit(h.MaxFrameBytes))
@@ -354,7 +354,7 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 		payload = []any{"", rs.token, rs.generation, rs.ack}
 	} else {
 		op = OpIdentify
-		payload = []any{"", uint64(3), uint64(1), uint64(1), uint64(0)}
+		payload = []any{"", uint64(client.WireVersion), uint64(1), uint64(1), uint64(0)}
 	}
 	frame, err := encodeFrame(op, 0, nil, payload)
 	if err != nil {
@@ -579,7 +579,7 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 // frame contents through the transport error surface.
 func classifyServerError(code string, handshake bool) error {
 	switch code {
-	case "E_VERSION":
+	case "E_VERSION", "E_UPGRADE_REQUIRED":
 		return ErrVersion
 	case "E_UNAUTHENTICATED":
 		return ErrTerminal
@@ -600,7 +600,7 @@ func (c *Client) acceptReady(f Frame, h *Hello) error {
 	if r == nil || r.DeviceID != c.device || r.UserID != c.user || r.Generation != h.Generation {
 		return ErrIdentity
 	}
-	if r.WireVersion != 3 || r.E2EEVersion != 1 || r.MediaVersion != 1 {
+	if r.WireVersion != client.WireVersion || r.E2EEVersion != 1 || r.MediaVersion != 1 {
 		return ErrVersion
 	}
 	c.mu.Lock()

@@ -57,7 +57,7 @@ func TestBotInteractionAdmissionRefusesWithoutSigningDependencies(t *testing.T) 
 	if err := deps.Repo.CreateBotSessionBinding(ctx, store.BotSessionBindingRow{TokenHash: auth.TokenHash(token), InstallationID: installation, UserID: bot, DeviceID: device, Created: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 3, 1, 1); err != nil {
+	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	body := mustCBOR(t, []any{id.New(), id.New(), owner.ID, id.New()})
@@ -131,7 +131,7 @@ func TestBotInteractionAdmissionSignsBoundCurrentEligibility(t *testing.T) {
 	if err := deps.Repo.CreateBotSessionBinding(ctx, store.BotSessionBindingRow{TokenHash: auth.TokenHash(token), InstallationID: installation, UserID: bot, DeviceID: botDevice, Created: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 3, 1, 1); err != nil {
+	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	requestID, group := id.New(), id.New()

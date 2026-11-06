@@ -34,11 +34,11 @@ func TestCommunityCompatibilityGateUsesNegotiatedSessionAndPreservesMetadataRead
 
 	status, body := e.Do(http.MethodPatch, "/v1/communities/"+cid.String(), token,
 		[]any{"changed", nil, nil, nil})
-	if status != http.StatusBadRequest {
-		t.Fatalf("wire-2 community mutation = %d %x, want 400 E_VERSION", status, body)
+	if status != http.StatusUpgradeRequired {
+		t.Fatalf("wire-2 community mutation = %d %x, want 426 E_UPGRADE_REQUIRED", status, body)
 	}
-	if code := e.ErrCode(body); code != "E_VERSION" {
-		t.Fatalf("wire-2 community mutation code = %s, want E_VERSION", code)
+	if code := e.ErrCode(body); code != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("wire-2 community mutation code = %s, want E_UPGRADE_REQUIRED", code)
 	}
 	row, err := e.Repo.GetCommunity(t.Context(), cid)
 	if err != nil || row.Name == "changed" {
@@ -55,8 +55,8 @@ func TestCommunityCompatibilityGateUsesNegotiatedSessionAndPreservesMetadataRead
 		map[string]string{"Content-Type": "application/cbor", "X-Wire-Version": "3"}, encoded)
 	body, _ = io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest || e.ErrCode(body) != "E_VERSION" {
-		t.Fatalf("forged version header affected gate: = %d %s, want 400 E_VERSION", resp.StatusCode, e.ErrCode(body))
+	if resp.StatusCode != http.StatusUpgradeRequired || e.ErrCode(body) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("forged version header affected gate: = %d %s, want 426 E_UPGRADE_REQUIRED", resp.StatusCode, e.ErrCode(body))
 	}
 	installation, err := e.Repo.GetBotInstallation(t.Context(), installationID)
 	if err != nil {
@@ -91,16 +91,16 @@ func TestReadableContentGateIsScopedToEnabledCommunityAndRunsBeforeWrites(t *tes
 
 	status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/messages", token,
 		[]any{compatibilityEnvelope0(t, "gated content")})
-	if status != http.StatusBadRequest || e.ErrCode(body) != "E_VERSION" {
-		t.Fatalf("enabled-community content write = %d %s, want 400 E_VERSION", status, e.ErrCode(body))
+	if status != http.StatusUpgradeRequired || e.ErrCode(body) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("enabled-community content write = %d %s, want 426 E_UPGRADE_REQUIRED", status, e.ErrCode(body))
 	}
 	row, err := e.Repo.GetChannel(t.Context(), ch)
 	if err != nil || row.Seq != 0 {
 		t.Fatalf("gated channel sequence = %d, %v; refusal must not append", row.Seq, err)
 	}
 	status, body = e.Do(http.MethodGet, "/v1/channels/"+ch.String()+"/messages", token, nil)
-	if status != http.StatusBadRequest || e.ErrCode(body) != "E_VERSION" {
-		t.Fatalf("enabled-community content read = %d %s, want 400 E_VERSION", status, e.ErrCode(body))
+	if status != http.StatusUpgradeRequired || e.ErrCode(body) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("enabled-community content read = %d %s, want 426 E_UPGRADE_REQUIRED", status, e.ErrCode(body))
 	}
 	status, body = e.Do(http.MethodPost, "/v1/channels/"+otherCh.String()+"/messages", token,
 		[]any{compatibilityEnvelope0(t, "unaffected content")})
@@ -135,14 +135,14 @@ func TestMountedCommunityActionRoutesGateAfterAuthorityWithoutSideEffects(t *tes
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			status, body := e.Do(tc.method, tc.path, token, tc.body)
-			if status != http.StatusBadRequest || e.ErrCode(body) != "E_VERSION" {
-				t.Fatalf("%s = %d %s, want 400 E_VERSION", tc.name, status, e.ErrCode(body))
+			if status != http.StatusUpgradeRequired || e.ErrCode(body) != "E_UPGRADE_REQUIRED" {
+				t.Fatalf("%s = %d %s, want 426 E_UPGRADE_REQUIRED", tc.name, status, e.ErrCode(body))
 			}
 		})
 	}
 	status, body := e.Do(http.MethodPost, "/v1/communities/"+cid.String()+"/join", joiner, []any{nil})
-	if status != http.StatusBadRequest || e.ErrCode(body) != "E_VERSION" {
-		t.Fatalf("wire-2 valid community join = %d %s, want 400 E_VERSION", status, e.ErrCode(body))
+	if status != http.StatusUpgradeRequired || e.ErrCode(body) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("wire-2 valid community join = %d %s, want 426 E_UPGRADE_REQUIRED", status, e.ErrCode(body))
 	}
 	if _, err := e.Repo.GetMember(t.Context(), cid, e.sess[joiner].UserID); err == nil {
 		t.Fatal("wire-2 join created membership")
@@ -168,8 +168,8 @@ func TestAttachmentRoutesGateAuthorizedChannelBeforeBlobWritesAndKeepHiddenRefus
 	sum := sha256.Sum256(payload)
 	url := blobURL(ch, sum[:])
 	status, body := e.DoRaw(http.MethodPut, url, owner, "application/octet-stream", payload)
-	if status != http.StatusBadRequest || e.ErrCode(body) != "E_VERSION" {
-		t.Fatalf("wire-2 attachment upload = %d %s, want 400 E_VERSION", status, e.ErrCode(body))
+	if status != http.StatusUpgradeRequired || e.ErrCode(body) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("wire-2 attachment upload = %d %s, want 426 E_UPGRADE_REQUIRED", status, e.ErrCode(body))
 	}
 	if _, err := e.Repo.GetBlobRef(t.Context(), sum[:], ch); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("attachment reference after refusal = %v, want no reference", err)
@@ -189,8 +189,8 @@ func TestCommunityCallAdmissionRequiresNegotiatedWireBeforeTokenOrCallState(t *t
 	setBotEnabled(t, e, cid, store.BotInstallationReady)
 	setWireVersion(e, token, 2)
 	status, body := e.Do(http.MethodPost, "/v1/channels/"+ch.String()+"/calls", token, []any{})
-	if status != http.StatusBadRequest || e.ErrCode(body) != "E_VERSION" {
-		t.Fatalf("wire-2 community call admission = %d %s, want 400 E_VERSION", status, e.ErrCode(body))
+	if status != http.StatusUpgradeRequired || e.ErrCode(body) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("wire-2 community call admission = %d %s, want 426 E_UPGRADE_REQUIRED", status, e.ErrCode(body))
 	}
 	if _, err := e.Repo.GetVoiceSession(t.Context(), ch); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("voice session after call refusal = %v, want none", err)

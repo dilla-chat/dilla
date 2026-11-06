@@ -230,7 +230,7 @@ func newKind3RegistrationFixture(t *testing.T) kind3RegistrationFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := auth.Session{UserID: tuple.BotUserID, DeviceID: tuple.BotDeviceID, Scope: auth.ScopeEnrolled, WireVersion: 3, TokenHash: tokenHash[:], Bot: &auth.BotSessionBinding{InstallationID: tuple.InstallationID, CommunityID: tuple.CommunityID, State: store.BotInstallationJoining}}
+	session := auth.Session{UserID: tuple.BotUserID, DeviceID: tuple.BotDeviceID, Scope: auth.ScopeEnrolled, WireVersion: 6, TokenHash: tokenHash[:], Bot: &auth.BotSessionBinding{InstallationID: tuple.InstallationID, CommunityID: tuple.CommunityID, State: store.BotInstallationJoining}}
 	preflight := ds.InteractionRegistrationPreflight{Expected: tuple, MinimumEligibilityRevision: eligibilityRevision, ExpectedPolicyVersion: meta.PolicyVersion, ExpectedE2EEVersion: 1, ExpectedMediaVersion: 0, ReceiptPayload: payload, ReceiptSignature: signature, PinnedInstanceKey: instanceKey.Public().(ed25519.PublicKey), BotDeviceList: botEntries, ParticipantDeviceList: participantEntries, Now: uint64(now), Registration: registration}
 	return kind3RegistrationFixture{h: h, meta: meta, request: ds.BotInteractionRegisterRequest{Session: session, InstallationID: tuple.InstallationID, OperationID: operationID, ExpectedGeneration: 1, AdmissionRequestID: requestID, AdmissionID: admissionID, RegistrationBody: body, Registration: registration, TrustedPreflight: preflight}}
 }

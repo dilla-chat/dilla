@@ -150,16 +150,17 @@ func TestMountedBotStructuralEventsRejectMalformedQueriesAndAckCBOR(t *testing.T
 	}
 }
 
-func TestMountedBotStructuralEventsRequireWireThree(t *testing.T) {
+func TestMountedBotStructuralEventsRequireWireSix(t *testing.T) {
 	h := newGroupsAPI(t)
 	community, _, token := seedReadyStructuralEventBot(t, h)
-	if err := h.deps.Sessions.RecordCapabilities(context.Background(), auth.TokenHash(token), 2, 1, 1); err != nil {
+	// A session negotiated before wire 6 (only the store can still write one).
+	if err := h.deps.Repo.SetSessionVersions(context.Background(), auth.TokenHash(token), 2, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	path := "/v1/communities/" + community.String() + "/bot/events"
 	got := h.do(t, http.MethodGet, path, token, nil)
-	if got.Code != http.StatusBadRequest || errorCode(t, got) != "E_VERSION" {
-		t.Fatalf("wire-2 Bot events read = %d %x, want 400 E_VERSION", got.Code, got.Body.Bytes())
+	if got.Code != http.StatusUpgradeRequired || errorCode(t, got) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("wire-2 Bot events read = %d %x, want 426 E_UPGRADE_REQUIRED", got.Code, got.Body.Bytes())
 	}
 }
 
@@ -208,7 +209,7 @@ func seedReadyStructuralEventBot(t *testing.T, h *groupsAPI) (id.ID, id.ID, stri
 	if err := h.deps.Repo.CreateBotSessionBinding(ctx, store.BotSessionBindingRow{TokenHash: auth.TokenHash(token), InstallationID: installationID, UserID: botID, DeviceID: deviceID, Created: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 3, 1, 1); err != nil {
+	if err := h.deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	return community, installationID, token

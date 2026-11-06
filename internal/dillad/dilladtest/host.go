@@ -118,7 +118,7 @@ type HostOptions struct {
 	// accepts it too. "" keeps the instance domain's own relying party.
 	WebAuthnOrigin string
 	// WireVersions is the wire version list the hello offers and GET /v1/instance advertises
-	// (dillad.Options.WireVersions, web3.8 S1); nil keeps dillad's own list, {5, 4, 3, 2} since wire 5.
+	// (dillad.Options.WireVersions, web3.8 S1); nil keeps dillad's own list, {6} since Bot v2.
 	// dilla-testhost sets it from -wire, so a browser test can meet an instance its client is too
 	// old for.
 	WireVersions []uint64

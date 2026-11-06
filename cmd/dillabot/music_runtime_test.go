@@ -525,7 +525,7 @@ func TestInstallationYouTubeStarterUsesScopedCallAndNativeMediaDependencies(t *t
 		var response any
 		switch r.URL.Path {
 		case "/v1/instance":
-			response = []any{[]any{uint64(3), uint64(2)}, []any{uint64(1)}, []any{uint64(1)}, instance, uint64(1), "chat.example", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)}
+			response = []any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}, instance, uint64(1), "chat.example", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)}
 		case "/v1/channels/" + channel.String() + "/calls":
 			calls++
 			if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer installation-session" {

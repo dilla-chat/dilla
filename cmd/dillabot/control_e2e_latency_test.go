@@ -363,7 +363,7 @@ func testClientMusicControlsEndToEnd(t *testing.T, duringSweep bool) {
 					historyReads.Add(1)
 					cborReply(w, []any{uint64(1), []byte("signed-device-list"), make([]byte, 64), make([]byte, 32)})
 				case r.URL.Path == "/v1/instance":
-					cborReply(w, []any{[]any{uint64(3), uint64(2)}, []any{uint64(1)}, []any{uint64(1)}, binding.Instance, uint64(1), "test.local", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)})
+					cborReply(w, []any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}, binding.Instance, uint64(1), "test.local", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)})
 				case strings.HasSuffix(r.URL.Path, "/interaction-admissions"):
 					admissions.Add(1)
 					cborReply(w, []any{[]byte{1}, make([]byte, 64)})

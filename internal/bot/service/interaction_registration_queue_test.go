@@ -242,7 +242,7 @@ func TestRealClientRefusalBacksOff(t *testing.T) {
 		var status int
 		var reply any
 		if strings.HasSuffix(r.URL.Path, "/instance") {
-			status, reply = http.StatusOK, []any{[]any{uint64(3), uint64(2)}, []any{uint64(1)}, []any{uint64(1)}, instance, uint64(1), "chat.example", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)}
+			status, reply = http.StatusOK, []any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}, instance, uint64(1), "chat.example", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)}
 		} else {
 			status, reply = http.StatusNotFound, []any{"E_KEYPACKAGES_EXHAUSTED", "key package", nil}
 		}

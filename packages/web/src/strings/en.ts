@@ -296,6 +296,8 @@ export const en = {
   'update.finishDialog': 'An update is ready. Finish your edit or close the current dialog to apply it.',
   'update.noStorage': 'An update is ready, but this browser cannot save your unsent work. Finish or copy it before reloading.',
   'update.reloadNow': 'Reload now',
+  'update.required': 'Update dilla to continue',
+  'update.requiredAction': 'Update',
   'update.rejoiningVoice': 'Voice disconnected. Rejoining automatically.',
   'update.sharingStopped': 'Screen sharing stopped while the call reconnected. Start sharing again when ready.',
   'shell.banner.dismiss': 'dismiss',

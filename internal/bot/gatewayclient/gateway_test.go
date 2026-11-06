@@ -11,7 +11,7 @@ func TestDecodeServerFrameValidatesOpcodeShapeAndScope(t *testing.T) {
 	instance := make([]byte, 16)
 	instance[0] = 1
 	validHello, err := cborx.Marshal([]any{uint64(OpHello), uint64(0), nil, []any{
-		[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}, uint64(30000), uint64(131584), instance, uint64(1), uint64(300), uint64(300),
+		[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}, uint64(30000), uint64(131584), instance, uint64(1), uint64(300), uint64(300),
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -26,7 +26,7 @@ func TestDecodeServerFrameValidatesOpcodeShapeAndScope(t *testing.T) {
 		{"unknown opcode", []any{uint64(13), uint64(0), nil, []any{}}},
 		{"wrong arity", []any{uint64(OpHeartbeatAck), uint64(0), nil, []any{uint64(1), uint64(2)}}},
 		{"wrong scope", []any{uint64(OpHeartbeatAck), uint64(0), make([]byte, 16), []any{uint64(1)}}},
-		{"server rejects client opcode", []any{uint64(OpIdentify), uint64(0), nil, []any{"", uint64(3), uint64(1), uint64(1), uint64(0)}}},
+		{"server rejects client opcode", []any{uint64(OpIdentify), uint64(0), nil, []any{"", uint64(6), uint64(1), uint64(1), uint64(0)}}},
 		{"heartbeat ack requires uint", []any{uint64(OpHeartbeatAck), uint64(0), nil, []any{"1"}}},
 	}
 	for _, tc := range tests {

@@ -22,7 +22,7 @@ import (
 func backgroundAPI(t *testing.T, active ...id.ID) *client.Client {
 	t.Helper()
 	instance := id.New()
-	document, err := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}, instance, uint64(1), "probe", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)})
+	document, err := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}, instance, uint64(1), "probe", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)})
 	if err != nil {
 		t.Fatal(err)
 	}

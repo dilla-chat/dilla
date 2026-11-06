@@ -59,9 +59,9 @@ func TestManagedKeyPackageRoutesCheckAuthorityBeforeWireAndIgnoreForgedHeaders(t
 		t.Fatal(err)
 	}
 	token := session.Token
-	negotiate, _ := cborx.Marshal([]any{[]any{uint64(2)}, []any{uint64(1)}, []any{uint64(1)}})
-	if rec := postCBORAuth(h.mux, "/v1/sessions/negotiate", negotiate, token); rec.Code != http.StatusOK {
-		t.Fatalf("managed Bot wire-2 negotiation = %d (%x)", rec.Code, rec.Body.Bytes())
+	// A session negotiated before wire 6 (only the store can still write one).
+	if err := deps.Repo.SetSessionVersions(ctx, auth.TokenHash(token), 2, 1, 1); err != nil {
+		t.Fatal(err)
 	}
 	upload, err := cborx.Marshal([]any{[]any{[]byte{1}}, nil})
 	if err != nil {
@@ -77,20 +77,18 @@ func TestManagedKeyPackageRoutesCheckAuthorityBeforeWireAndIgnoreForgedHeaders(t
 	inventoryReq.Header.Set("Authorization", "Bearer "+token)
 	inventoryRec := httptest.NewRecorder()
 	h.mux.ServeHTTP(inventoryRec, inventoryReq)
-	if inventoryRec.Code != http.StatusBadRequest || refusalCode(t, inventoryRec) != "E_VERSION" {
-		t.Fatalf("authorized wire-2 inventory with forged wire header absent = %d (%x), want 400 E_VERSION", inventoryRec.Code, inventoryRec.Body.Bytes())
+	if inventoryRec.Code != http.StatusUpgradeRequired || refusalCode(t, inventoryRec) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("authorized wire-2 inventory with forged wire header absent = %d (%x), want 426 E_UPGRADE_REQUIRED", inventoryRec.Code, inventoryRec.Body.Bytes())
 	}
-	assertNegotiationVersionError(t, inventoryRec, [][]uint64{{3}, {1}, {1}})
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(publication))
 	req.Header.Set("Content-Type", "application/cbor")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Dilla-Wire-Version", "3")
 	recorder := httptest.NewRecorder()
 	h.mux.ServeHTTP(recorder, req)
-	if recorder.Code != http.StatusBadRequest || refusalCode(t, recorder) != "E_VERSION" {
-		t.Fatalf("authorized wire-2 publication with forged wire header = %d (%x), want 400 E_VERSION", recorder.Code, recorder.Body.Bytes())
+	if recorder.Code != http.StatusUpgradeRequired || refusalCode(t, recorder) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("authorized wire-2 publication with forged wire header = %d (%x), want 426 E_UPGRADE_REQUIRED", recorder.Code, recorder.Body.Bytes())
 	}
-	assertNegotiationVersionError(t, recorder, [][]uint64{{3}, {1}, {1}})
 
 	unknown := id.New()
 	for _, tc := range []struct{ method, path string }{
@@ -103,7 +101,7 @@ func TestManagedKeyPackageRoutesCheckAuthorityBeforeWireAndIgnoreForgedHeaders(t
 		rec := httptest.NewRecorder()
 		h.mux.ServeHTTP(rec, req)
 		if rec.Code != http.StatusForbidden || refusalCode(t, rec) != "E_FORBIDDEN" {
-			t.Fatalf("%s %s unknown installation = %d (%x), want authority refusal before E_VERSION", tc.method, tc.path, rec.Code, rec.Body.Bytes())
+			t.Fatalf("%s %s unknown installation = %d (%x), want authority refusal before E_UPGRADE_REQUIRED", tc.method, tc.path, rec.Code, rec.Body.Bytes())
 		}
 	}
 
@@ -118,7 +116,7 @@ func TestManagedKeyPackageRoutesCheckAuthorityBeforeWireAndIgnoreForgedHeaders(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec := postCBORAuth(h.mux, "/v1/sessions/negotiate", mustCBOR(t, []any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}}), newSession.Token); rec.Code != http.StatusOK {
+	if rec := postCBORAuth(h.mux, "/v1/sessions/negotiate", mustCBOR(t, []any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}}), newSession.Token); rec.Code != http.StatusOK {
 		t.Fatalf("managed Bot wire-3 negotiation = %d (%x)", rec.Code, rec.Body.Bytes())
 	}
 	get := httptest.NewRequestWithContext(ctx, http.MethodGet, inventoryPath, nil)

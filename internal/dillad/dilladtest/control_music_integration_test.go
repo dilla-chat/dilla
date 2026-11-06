@@ -91,7 +91,7 @@ func TestControlMusicAuthorityAgainstARealDillad(t *testing.T) {
 	if err := repo.CreateBotSessionBinding(ctx, store.BotSessionBindingRow{TokenHash: auth.TokenHash(token), InstallationID: installation, UserID: bot, DeviceID: device, Created: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Server().Sessions().RecordCapabilities(ctx, auth.TokenHash(token), 3, 1, 1); err != nil {
+	if err := h.Server().Sessions().RecordCapabilities(ctx, auth.TokenHash(token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 

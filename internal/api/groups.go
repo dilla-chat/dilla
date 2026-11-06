@@ -341,7 +341,7 @@ func (h *Groups) tree(w http.ResponseWriter, r *http.Request) {
 func dsError(err error) error {
 	var upgrade *capability.UpgradeRequired
 	if errors.As(err, &upgrade) {
-		return server.Version([]uint64{3}, []uint64{1}, []uint64{1})
+		return server.Errorf(server.CodeUpgradeRequired, "wire version 6 is required")
 	}
 	var e *ds.Error
 	if !errors.As(err, &e) {

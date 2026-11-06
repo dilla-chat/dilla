@@ -362,9 +362,20 @@ func (g *Gateway) serve(ctx context.Context, s sink, token string) {
 	}
 }
 
+// olderThanAdvertised reports whether v is below every advertised version: the client is older
+// than anything this instance speaks, not merely different.
+func olderThanAdvertised(v uint64, set []uint64) bool {
+	for _, a := range set {
+		if v >= a {
+			return false
+		}
+	}
+	return len(set) > 0
+}
+
 // advertised is the instance's version sets, defaulting to {1} for all three. The {1} wire default
 // serves this package's unit tests only: the real list comes from dillad.New, the one composition
-// root, which passes dillad.Options.WireVersions ({4, 3, 2} since wire 4: people 4, managed Bots 3). A
+// root, which passes dillad.Options.WireVersions ({6} since Bot v2: people and managed Bots alike). A
 // root that left it nil would offer wire 1 while the delivery service refuses its uploads.
 func (g *Gateway) advertised() (wire, e2ee, media []uint64) {
 	pick := func(v []uint64) []uint64 {
@@ -397,6 +408,14 @@ func (g *Gateway) identifyConnection(ctx context.Context, s sink, in Inbound) (*
 			return nil, false
 		}
 		if !slices.Contains(set, v) {
+			if i == 0 && olderThanAdvertised(v, set) {
+				// Bot v2: the instance speaks wire 6 only. An older client is told to update; the
+				// close reason carries the code so a client can tell it from a plain mismatch.
+				g.refuse(ctx, s, frameErr("E_UPGRADE_REQUIRED",
+					fmt.Sprintf("wire version %d is older than this instance supports (%v); update the app", v, set),
+					CloseVersion))
+				return nil, false
+			}
 			g.refuse(ctx, s, frameErr("E_VERSION",
 				fmt.Sprintf("version %d is not advertised; this instance offers %v", v, set),
 				CloseVersion))
@@ -412,8 +431,8 @@ func (g *Gateway) identifyConnection(ctx context.Context, s sink, in Inbound) (*
 		g.refuse(ctx, s, frameErr("E_UNAUTHENTICATED", "identify", CloseUnauthenticated))
 		return nil, false
 	}
-	if session.Bot != nil && chosen[0] < 3 {
-		g.refuse(ctx, s, frameErr("E_VERSION", "managed bots require wire version 3; supported versions are [3]", CloseVersion))
+	if session.Bot != nil && chosen[0] != auth.WireVersion {
+		g.refuse(ctx, s, frameErr("E_UPGRADE_REQUIRED", "managed Bots require wire version 6", CloseVersion))
 		return nil, false
 	}
 	c, err := g.registerVersions(ctx, session, s, chosen)
@@ -486,7 +505,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	if c.isBot != (session.Bot != nil) {
 		return refuse("resume session type changed")
 	}
-	if session.Bot != nil && (c.wire < 3 || session.WireVersion < 3) {
+	if session.Bot != nil && (c.wire != auth.WireVersion || session.WireVersion != auth.WireVersion) {
 		return refuse("managed bot wire capability is not resumable; identify again")
 	}
 	out, err := c.tryResumeSnapshot(token, generation, lastN, g.Generation())

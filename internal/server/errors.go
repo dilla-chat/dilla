@@ -61,6 +61,11 @@ const (
 	CodeUnavailable Code = "E_UNAVAILABLE"
 	CodeVersion     Code = "E_VERSION"
 	CodeInternal    Code = "E_INTERNAL"
+	// CodeUpgradeRequired is 426: the client speaks only wire versions older than every one the
+	// instance supports (Bot v2: wire 6, no older clients). The client stops and asks its user to update.
+	CodeUpgradeRequired Code = "E_UPGRADE_REQUIRED"
+	// CodeBusy is 429: the instance or the managed Bot is at capacity for this kind of work; retry later.
+	CodeBusy Code = "E_BUSY"
 	// CodeProvisionalOutsidePairing is protocol/02 § Device sessions item 4:
 	// a provisional session reaching anything but its one pairing group.
 	CodeProvisionalOutsidePairing Code = "E_PROVISIONAL_OUTSIDE_PAIRING"
@@ -145,7 +150,9 @@ func (e *Error) Status() int {
 		return http.StatusUnprocessableEntity
 	case CodeCommitRequired:
 		return http.StatusTooEarly
-	case CodeRateLimited:
+	case CodeUpgradeRequired:
+		return http.StatusUpgradeRequired
+	case CodeRateLimited, CodeBusy:
 		return http.StatusTooManyRequests
 	case CodeStorageFull:
 		return http.StatusInsufficientStorage

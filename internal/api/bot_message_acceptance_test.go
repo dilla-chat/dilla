@@ -115,7 +115,7 @@ func testMountedReadyBotSendAcceptance(t *testing.T, h *groupsAPI) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 3, 1, 1); err != nil {
+	if err := h.deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	instance, err := h.deps.Repo.GetInstance(ctx)

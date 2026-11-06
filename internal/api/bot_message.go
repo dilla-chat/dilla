@@ -154,7 +154,7 @@ func managedSendSession(r *http.Request) (ds.Session, id.ID, id.ID, error) {
 	if !ok {
 		return ds.Session{}, id.ID{}, id.ID{}, server.Errorf(server.CodeUnauthenticated, "no device session")
 	}
-	if s.Scope != auth.ScopeEnrolled || s.Bot == nil || s.WireVersion != 3 || s.Bot.State != store.BotInstallationReady {
+	if s.Scope != auth.ScopeEnrolled || s.Bot == nil || s.WireVersion != auth.WireVersion || s.Bot.State != store.BotInstallationReady {
 		return ds.Session{}, id.ID{}, id.ID{}, server.Errorf(server.CodeForbidden, "a current ready Bot session is required")
 	}
 	return s, s.Bot.InstallationID, s.Bot.CommunityID, nil

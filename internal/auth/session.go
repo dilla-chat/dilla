@@ -1002,10 +1002,14 @@ func (s *Sessions) currentBotBinding(ctx context.Context, session store.SessionR
 	return binding, true, nil
 }
 
+// WireVersion is the one wire version this instance speaks (Bot v2: wire 6 for people and managed
+// Bots alike; older clients are refused with E_UPGRADE_REQUIRED).
+const WireVersion = 6
+
 // RecordCapabilities persists a negotiated selection against the exact bearer session hash.
 // The caller must first resolve the bearer; a deleted/revoked row then makes this write fail.
 func (s *Sessions) RecordCapabilities(ctx context.Context, tokenHash []byte, wire, e2ee, media uint64) error {
-	if len(tokenHash) != 32 || wire < 2 || wire > 5 || e2ee != 1 || media != 1 {
+	if len(tokenHash) != 32 || wire != WireVersion || e2ee != 1 || media != 1 {
 		return errors.New("auth: invalid negotiated capabilities")
 	}
 	return s.repo.SetSessionVersions(ctx, tokenHash, wire, e2ee, media)
@@ -1109,8 +1113,8 @@ func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.H
 				server.WriteError(w, server.Errorf(server.CodeForbidden, "managed bot session is not allowed on this route or resource"))
 				return
 			}
-			if r.Pattern != "POST /v1/sessions/negotiate" && sess.WireVersion < 3 {
-				server.WriteError(w, server.Version([]uint64{3}, []uint64{1}, []uint64{1}))
+			if r.Pattern != "POST /v1/sessions/negotiate" && sess.WireVersion != WireVersion {
+				server.WriteError(w, server.Errorf(server.CodeUpgradeRequired, "managed Bots negotiate wire version 6"))
 				return
 			}
 		}

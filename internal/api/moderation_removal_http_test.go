@@ -32,7 +32,7 @@ func TestSignedModeratorRemovalTombstonesAndPagesDurably(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token.Token), 3, 1, 1); err != nil {
+	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token.Token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	cid := seedBotCommunity(t, deps, actor.ID)
@@ -154,7 +154,7 @@ func TestSignedModeratorRemovalTombstonesAndPagesDurably(t *testing.T) {
 	}
 	nonmember, _, outsiderToken := seedAPISession(t, deps)
 	_ = nonmember
-	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(outsiderToken), 3, 1, 1); err != nil {
+	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(outsiderToken), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	deniedFeed := doCBORAuth(h, http.MethodGet, path, nil, outsiderToken)
@@ -201,7 +201,7 @@ func TestSignedRemovalRequiresManageMessagesPermission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token.Token), 3, 1, 1); err != nil {
+	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token.Token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	proof := protocol.RemovalProof{RequestID: id.New(), ActorUser: actor.ID, ActorDevice: actorDevice.ID,
@@ -259,7 +259,7 @@ func TestBotWithoutRemovalCapabilityCanReadMarkersButCannotRemove(t *testing.T) 
 		UserID: bot, DeviceID: device, Created: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 3, 1, 1); err != nil {
+	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	group := id.New()

@@ -169,7 +169,7 @@ func testInteractionPoolAndSQLProgress(t *testing.T, mode string) {
 		if err := h.deps.Repo.CreateSession(ctx, store.SessionRow{TokenHash: hash, UserID: idFromHex(t, meta.ParticipantUserID), DeviceID: idFromHex(t, meta.ParticipantDeviceID), Scope: uint8(auth.ScopeEnrolled), Created: now, Expires: now + 3600, IdleExpires: now + 3600}); err != nil {
 			t.Fatal(err)
 		}
-		if err := h.deps.Sessions.RecordCapabilities(ctx, hash, 3, 1, 1); err != nil {
+		if err := h.deps.Sessions.RecordCapabilities(ctx, hash, 6, 1, 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -198,7 +198,7 @@ func testInteractionPoolAndSQLProgress(t *testing.T, mode string) {
 		rec := httptest.NewRecorder()
 		if mode == "managed" {
 			result, err := delivery.AcceptBotMessage(context.WithValue(readCtx, interactionUploadContextKey{}, "managed"), ds.BotMessageRequest{
-				Session:        auth.Session{UserID: *row.UserID, DeviceID: *row.DeviceID, Scope: auth.ScopeEnrolled, WireVersion: 3, Bot: &auth.BotSessionBinding{InstallationID: installation, CommunityID: row.CommunityID, State: store.BotInstallationReady}},
+				Session:        auth.Session{UserID: *row.UserID, DeviceID: *row.DeviceID, Scope: auth.ScopeEnrolled, WireVersion: 6, Bot: &auth.BotSessionBinding{InstallationID: installation, CommunityID: row.CommunityID, State: store.BotInstallationReady}},
 				InstallationID: installation, OperationID: id.New(), AttemptID: id.New(), CommunityID: row.CommunityID, GroupID: group, ExpectedGeneration: instance.Generation, Epoch: 1, Class: 1, Ciphertext: apiPrivateMessage(t, 1, 64),
 			})
 			if err != nil || !result.NewlyAccepted {

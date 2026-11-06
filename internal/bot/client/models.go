@@ -2,6 +2,10 @@ package client
 
 import "github.com/dilla-chat/dilla/internal/id"
 
+// WireVersion is the one wire version the Bot negotiates and identifies with (Bot v2: wire 6,
+// the same wire as every current client; dillad refuses older ones with E_UPGRADE_REQUIRED).
+const WireVersion = 6
+
 type Discovery struct {
 	WireVersions, E2EEVersions, MediaVersions []uint64
 	InstanceID                                id.ID

@@ -3785,6 +3785,24 @@ describe('Controller in the ready phase', () => {
     expect(w.connection()).toStrictEqual({ status: 'offline', generation: '7' });
   });
 
+  // Bot v2 Task 1: a version refusal that names E_UPGRADE_REQUIRED tells the page to show the update surface.
+  it("an upgrade-required refusal publishes connection reason 'upgrade' and no reconnect", async () => {
+    const w = world();
+    await toReady(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    const starts = w.gateway.starts;
+    w.gateway.emit({ type: 'status', status: 'idle', closeCode: CLIENT_CLOSE.version });
+    w.gateway.emit({ type: 'upgradeRequired' });
+    expect(w.connection()).toStrictEqual({ status: 'offline', generation: '7', reason: 'upgrade' });
+    await settle();
+    expect(w.gateway.starts).toBe(starts);
+    // A stray upgradeRequired while online changes nothing.
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    w.gateway.emit({ type: 'upgradeRequired' });
+    expect(w.connection()).toStrictEqual({ status: 'online', generation: '7' });
+  });
+
   it('a request that cannot re-authenticate ends in revoked', async () => {
     const paths: string[] = [];
     const instanceAndLimits = fakeFetch(paths);
@@ -3855,7 +3873,7 @@ describe('Controller in the ready phase', () => {
     const w = world({ phase: 0 });
     w.routes.getInvite.mockImplementationOnce(() => Promise.resolve({ communityId: COMMUNITY, communityName: 'friends', expires: 0n }));
     const ordering: string[] = [];
-    const negotiation = vi.fn(() => { ordering.push('negotiate'); return Promise.resolve({ wire: 3, e2ee: 1, media: 1, botAvailable: true }); });
+    const negotiation = vi.fn(() => { ordering.push('negotiate'); return Promise.resolve({ wire: 6, e2ee: 1, media: 1, botAvailable: true }); });
     (w.routes as unknown as { negotiateSession: typeof negotiation }).negotiateSession = negotiation;
     w.routes.joinCommunity.mockImplementationOnce(() => { ordering.push('join'); w.state.joined = true; return Promise.resolve(); });
     await toKeys(w);

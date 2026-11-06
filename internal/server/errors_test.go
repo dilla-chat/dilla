@@ -70,6 +70,8 @@ func TestEveryCodeMapsToItsStatusAndArrayShape(t *testing.T) {
 		{server.CommitRequired([][]byte{{3}}, 250), 425, 4},
 		{server.CommitInvalid("group_info_signature"), 422, 4},
 		{server.RateLimited(1500), 429, 3},
+		{server.Errorf(server.CodeBusy, ""), 429, 3},
+		{server.Errorf(server.CodeUpgradeRequired, ""), 426, 3},
 		{server.Errorf(server.CodeInternal, ""), 500, 3},
 		{server.Version([]uint64{1}, []uint64{1}, []uint64{1}), 400, 6},
 		{server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest, "username taken")), 409, 3},

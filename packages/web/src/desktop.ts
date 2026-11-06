@@ -38,6 +38,56 @@ export function desktopNotificationCtor(bridge: DesktopBridge, permission: () =>
   };
 }
 
+/** sessionStorage key: this tab already reloaded once because the instance said its client is too old (Bot v2). */
+export const UPGRADE_RELOAD_KEY = 'dilla.upgradeReloaded';
+
+type SessionStore = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+
+/** What the page shows when the instance refuses this client as too old: the message, the button's label, its press. */
+export interface UpgradeRequiredSurface {
+  message: 'update.required';
+  action: 'update.requiredAction' | 'reload.action';
+  onAction: () => void;
+}
+
+/** Bot v2 Task 1: the instance speaks wire 6 only and told this client to update (E_UPGRADE_REQUIRED).
+ *  - The desktop app shows "Update dilla to continue" with the update button: the shell's updater checks and downloads,
+ *    and once the update is ready the app installs it and restarts (the shell's own quit guards still apply).
+ *  - A browser tab reloads to the instance's current client, once: a sessionStorage flag stops a reload loop. If it is
+ *    still refused after that reload, or storage is blocked (no guard, so no automatic reload), the tab shows the
+ *    message with a reload button. Returns null when the tab is reloading. */
+export function upgradeRequired(options: { bridge: DesktopBridge | undefined; storage: SessionStore | null; reload: () => void }): UpgradeRequiredSurface | null {
+  const { bridge, storage, reload } = options;
+  if (bridge) {
+    return { message: 'update.required', action: 'update.requiredAction', onAction: () => { startDesktopUpdate(bridge); } };
+  }
+  let guarded = false;
+  try {
+    if (storage !== null && storage.getItem(UPGRADE_RELOAD_KEY) === null) {
+      storage.setItem(UPGRADE_RELOAD_KEY, '1');
+      guarded = true;
+    }
+  } catch { /* blocked storage: no loop guard, so no automatic reload */ }
+  if (guarded) { reload(); return null; }
+  return { message: 'update.required', action: 'reload.action', onAction: reload };
+}
+
+/** A ready gateway clears the reload guard, so a later upgrade may reload this tab once again. */
+export function clearUpgradeReload(storage: SessionStore | null): void {
+  try { storage?.removeItem(UPGRADE_RELOAD_KEY); } catch { /* blocked storage: nothing was stored */ }
+}
+
+function startDesktopUpdate(bridge: DesktopBridge): void {
+  let unsubscribe: (() => void) | null = null;
+  unsubscribe = bridge.onEvent(event => {
+    if (event.type !== 'update' || event.phase !== 'ready') return;
+    unsubscribe?.();
+    unsubscribe = null;
+    void bridge.send({ type: 'restart-update' }).catch(() => {});
+  });
+  void bridge.send({ type: 'check-update' }).catch(() => {});
+}
+
 let guard = { activeCall: false, unsavedDraft: false };
 export function setDesktopGuard(next: typeof guard, bridge = desktopBridge()): void {
   guard = next;

@@ -26,6 +26,15 @@ supports. Both sides MUST support the current version and the two before it (**N
 version** published with each release and refuse instances below it, showing the advisory that
 explains why.
 
+**Wire 6 (Bot v2) is the only wire.** The instance advertises `[6]`; human clients and managed Bots
+offer and negotiate `[6]`, and every Bot route requires exactly 6. There is no compatibility with
+older clients (Jonas: "We dont need to care about old clients"), which sets § Negotiation's N-2 rule
+aside before the first public release: an `identify` or `POST /v1/sessions/negotiate` offering only
+older wires is refused with `E_UPGRADE_REQUIRED` (gateway close 4006 whose reason is that code;
+HTTP 426), and the desktop app shows "Update dilla to continue" with its update button while a
+browser tab reloads once to the new client. On wire 6 the Bot reads the five-element device-list
+head like every client. The paragraphs below describe the wires before 6.
+
 Wire 5 advertises `[5,4,3,2]` (Task S1 part 2: the account-kind attestation). Human clients offer
 `[5,4,3,2]`; managed Bots offer and negotiate wire 3 only (their routes require exactly 3), so a Bot
 session reads the four-element device-list head and its core keeps the transition rule of
@@ -77,6 +86,7 @@ Encrypted envelopes and media stay at version1; no existing MLS group migrates.
 
 | date | version | change |
 |---|---|---|
+| 2026-11-06 | e2ee 1, media 1, wire 6 | **Wire 6 (Bot v2), breaking for every older client.** `hello` and `GET /v1/instance` offer `[6]`; people and managed Bots negotiate 6. An older `identify` is an `error` naming `E_UPGRADE_REQUIRED` with close 4006 (reason `E_UPGRADE_REQUIRED`); an older `POST /v1/sessions/negotiate` and a Bot or community route on a session still holding an older wire are `426 E_UPGRADE_REQUIRED`. `02` § Errors gains `E_UPGRADE_REQUIRED` (426) and `E_BUSY` (429). Sessions may record wire 6 (store migration 00056; its rollback maps 6 to 5). `vectors/frames.json`: `hello`, `identify` and `ready` carry 6. N-2 is set aside (no released client predates the public release). |
 | 2026-10-31 | e2ee 1, media 1, wire 5 | Ephemeral ops 56–58 move build notices, actual input activity and coarse call telemetry onto the existing gateway. Ready/resumed shapes and replay numbers are unchanged. Human offers `[5,4,3,2]`; managed Bots stay on 3; HTTP APIs remain available to existing clients, while the current web app uses WSS-only telemetry and no periodic version polling. |
 | 2026-10-29 | e2ee 1, media 1, wire 4 | `09` § Voice: `POST /v1/calls/{call_id}/rtt` (`[ms]` 0..5000 or `[]`) lets a call member report its RTT to the SFU, which the instance writes as its `dilla.rtt` participant attribute (one per 1.5 s per device, current leaves only); call tokens state that they never carry LiveKit's own-metadata right (an attribute flood). `08` records the RTT's visibility. The default `livekit.max_share_bitrate_kbps` rises from 2500 to 8000. A new route on the unreleased wire, no version bump. |
 | 2026-10-28 | e2ee 1, media 1, wire 4 | **Wire 4: the instance-signed account kind** (Task S1 part 2). `03` gains § Account kind attestation: the external-sender key signs `"dilla account kind v1" \|\| CBOR([1, instance_id, user_id, kind])` (Ruling AW: no key; the attestation holds for every key of the account), encoded `[1, key_id, kind, sig]`; clients judge every leaf's credential kind against it, with a one-way per-instance "attestation seen" flag (missing = pending once seen). `09`'s `GET /v1/users/{id}/device-list` head gains the attestation as a fifth element on wire-4 sessions only; wire 2 and 3 heads are unchanged. Sessions may record wire 4 (store migration 00051). The browser core's app schema goes to 13 (`app_account_kinds`; older clients refuse the store) and gains `account_kind_ingest`. `vectors/identity.json` gains `account_kind`. Managed Bots stay on wire 3. The compatibility matrix is in § Negotiation. |

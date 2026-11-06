@@ -107,7 +107,7 @@ func (f *automodGrantFixture) createSession(t *testing.T, token string, user, de
 			t.Fatal(err)
 		}
 	}
-	if err := f.deps.Sessions.RecordCapabilities(ctx, hash, 3, 1, 1); err != nil {
+	if err := f.deps.Sessions.RecordCapabilities(ctx, hash, 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 }

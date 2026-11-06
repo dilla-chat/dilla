@@ -138,7 +138,7 @@ func newKind3HTTPAPI(t *testing.T) (*groupsAPI, kind3APIMetadata, map[string][]b
 	t.Cleanup(func() { _ = wasm.Close(context.Background()) })
 	botCapability := capability.New(deps.Repo)
 	gw := gateway.New(gateway.Options{Clock: clk, Store: apiListenStore{apiGatewayStore{deps.Repo}}, Generation: 1,
-		Auth: deps.Sessions, WireVersions: []uint64{3, 2}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1},
+		Auth: deps.Sessions, WireVersions: []uint64{6}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1},
 		ScopeResolver: apiGatewayScopeResolver{repo: deps.Repo}, CommunityCompatibility: botCapability})
 	t.Cleanup(func() { _ = gw.Shutdown(context.Background()) })
 	keys := ds.InstanceKeys{}
@@ -284,7 +284,7 @@ func newKind3HTTPAPI(t *testing.T) (*groupsAPI, kind3APIMetadata, map[string][]b
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.deps.Sessions.RecordCapabilities(ctx, tokenHash, 3, 1, 1); err != nil {
+	if err := h.deps.Sessions.RecordCapabilities(ctx, tokenHash, 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	instance, err := h.deps.Repo.GetInstance(ctx)
@@ -400,7 +400,7 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 	if err := h.deps.Repo.CreateSession(ctx, store.SessionRow{TokenHash: humanHash, DeviceID: participantDevice, UserID: participant, Scope: uint8(auth.ScopeEnrolled), Created: now, Expires: now + 3600, IdleExpires: now + 3600}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.deps.Sessions.RecordCapabilities(ctx, humanHash, 3, 1, 1); err != nil {
+	if err := h.deps.Sessions.RecordCapabilities(ctx, humanHash, 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	contextPath := "/v1/groups/" + groupID.String() + "/interaction-admission-context"
@@ -584,7 +584,7 @@ func TestBotInteractionHTTPGroupRegistrationAcceptanceReplayAndRefusals(t *testi
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.deps.Sessions.RecordCapabilities(ctx, newHash, 3, 1, 1); err != nil {
+	if err := h.deps.Sessions.RecordCapabilities(ctx, newHash, 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	replay := h.do(t, http.MethodPost, path, newToken, body)

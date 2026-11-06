@@ -40,7 +40,7 @@ func (presenceTestAuth) RecordCapabilities(context.Context, []byte, uint64, uint
 }
 func TestBotGatewayRuntimePublishesPresenceAndStopsOnRemoval(t *testing.T) {
 	instance, device, user, installation := id.New(), id.New(), id.New(), id.New()
-	gw := gateway.New(gateway.Options{InstanceID: instance, Generation: 1, WireVersions: []uint64{3}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1}, Store: presenceTestStore{}, Auth: presenceTestAuth{auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, TokenHash: make([]byte, 32)}}, TrustedOrigins: []string{"*"}, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	gw := gateway.New(gateway.Options{InstanceID: instance, Generation: 1, WireVersions: []uint64{6}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1}, Store: presenceTestStore{}, Auth: presenceTestAuth{auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, TokenHash: make([]byte, 32)}}, TrustedOrigins: []string{"*"}, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	server := httptest.NewServer(gw.Handler())
 	defer server.Close()
 	defer gw.Shutdown(context.Background())
@@ -111,7 +111,7 @@ func TestPrivateGroupJoinedAfterReadyWakesCommandIntake(t *testing.T) {
 	instance, device, user, installation, group := id.New(), id.New(), id.New(), id.New(), id.New()
 	store := &lateNotificationStore{group: group}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	gw := gateway.New(gateway.Options{InstanceID: instance, Generation: 1, WireVersions: []uint64{3}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1}, Store: store, ScopeResolver: store, CommunityCompatibility: store, Auth: presenceTestAuth{auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, TokenHash: make([]byte, 32)}}, TrustedOrigins: []string{"*"}, Log: log})
+	gw := gateway.New(gateway.Options{InstanceID: instance, Generation: 1, WireVersions: []uint64{6}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1}, Store: store, ScopeResolver: store, CommunityCompatibility: store, Auth: presenceTestAuth{auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, TokenHash: make([]byte, 32)}}, TrustedOrigins: []string{"*"}, Log: log})
 	server := httptest.NewServer(gw.Handler())
 	defer server.Close()
 	defer gw.Shutdown(context.Background())

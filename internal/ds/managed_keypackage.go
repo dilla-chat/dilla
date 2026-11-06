@@ -253,7 +253,7 @@ func (d *DS) lockManagedKeyPackageAuthority(ctx context.Context, tx store.Reposi
 	if binding.State != s.Bot.State {
 		return store.BotInstallationRow{}, store.DeviceRow{}, errForbidden("the managed installation changed state during publication")
 	}
-	if s.WireVersion < 3 {
+	if s.WireVersion != auth.WireVersion {
 		return store.BotInstallationRow{}, store.DeviceRow{}, &capability.UpgradeRequired{}
 	}
 	device, err := tx.GetDevice(ctx, s.DeviceID)
@@ -311,7 +311,7 @@ func (d *DS) BotKeyPackagePublicationReceipt(ctx context.Context, s Session, ins
 		if binding.State != s.Bot.State {
 			return errForbidden("the managed installation changed state")
 		}
-		if s.WireVersion < 3 {
+		if s.WireVersion != auth.WireVersion {
 			return &capability.UpgradeRequired{}
 		}
 		r, err := tx.GetBotKeyPackagePublicationReceipt(ctx, installation, operation)

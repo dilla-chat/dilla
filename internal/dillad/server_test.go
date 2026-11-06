@@ -343,8 +343,8 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 	}
 	// Every element, in the ORDER protocol/09-http-api.md § Instance fixes: a
 	// transposed pair or an inverted enum passes a length check. wire_versions is the hello's
-	// [4,3,2] since wire 4 (Task S1 part 2: the account-kind attestation).
-	for i, want := range [][]uint64{{5, 4, 3, 2}, {1}, {1}} {
+	// [6] since Bot v2 (no older client is served).
+	for i, want := range [][]uint64{{6}, {1}, {1}} {
 		names := []string{"wire_versions", "e2ee_versions", "media_versions"}
 		if got := uints(t, doc[i], names[i]); !slices.Equal(got, want) {
 			t.Fatalf("%s = %v, want %v", names[i], got, want)

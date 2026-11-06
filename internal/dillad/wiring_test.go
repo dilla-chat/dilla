@@ -318,7 +318,7 @@ func readFrame(t *testing.T, ctx context.Context, c *websocket.Conn) (uint64, []
 
 // identify sends op 1 with the credential left to the upgrade, which is the path both the
 // Authorization header and the ticket take. It picks the wire version the instance offers
-// (current wire 3; the offer also keeps LegacyWireVersion 2).
+// (wire 6, the only one since Bot v2).
 func identify(t *testing.T, ctx context.Context, c *websocket.Conn) {
 	t.Helper()
 	b, err := cborx.Marshal([]any{uint64(1), uint64(1), nil,

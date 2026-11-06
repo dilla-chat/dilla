@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/store"
@@ -60,7 +61,7 @@ func head(t *testing.T, h http.Handler, token string, user id.ID) []any {
 func TestAWire4DeviceListHeadCarriesTheInstanceSignedAccountKind(t *testing.T) {
 	h, d := accountKindAPI(t)
 	reader, _, token := seedAPISession(t, d)
-	negotiateWire(t, h, token, 4)
+	negotiateWire(t, h, token, 6)
 	human, _, _ := seedAPISession(t, d)
 	putList(t, d, human.ID)
 
@@ -98,7 +99,7 @@ func TestAWire4DeviceListHeadCarriesTheInstanceSignedAccountKind(t *testing.T) {
 func TestABotAccountIsAttestedAsABot(t *testing.T) {
 	h, d := accountKindAPI(t)
 	_, _, token := seedAPISession(t, d)
-	negotiateWire(t, h, token, 4)
+	negotiateWire(t, h, token, 6)
 	bot := store.UserRow{ID: id.New(), Username: "bot" + id.New().String()[:8], Display: "Bot", Kind: 1,
 		UMKPub: bytes.Repeat([]byte{7}, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: d.Clock.Now().Unix()}
 	if err := d.Repo.CreateUser(context.Background(), bot); err != nil {
@@ -113,10 +114,13 @@ func TestABotAccountIsAttestedAsABot(t *testing.T) {
 }
 
 // A wire-2 or wire-3 session reads the four elements it always has (old clients decode exactly four).
+// Such a session can no longer be negotiated (wire 6 only), so the store writes the stored selection.
 func TestAnOlderWireSessionReadsTheFourElementHead(t *testing.T) {
 	h, d := accountKindAPI(t)
 	_, _, token := seedAPISession(t, d)
-	negotiateWire(t, h, token, 3)
+	if err := d.Repo.SetSessionVersions(context.Background(), auth.TokenHash(token), 3, 1, 1); err != nil {
+		t.Fatal(err)
+	}
 	user, _, _ := seedAPISession(t, d)
 	putList(t, d, user.ID)
 	if got := head(t, h, token, user.ID); len(got) != 4 {
@@ -129,7 +133,7 @@ func TestAnOlderWireSessionReadsTheFourElementHead(t *testing.T) {
 func TestAWire4ReadWithoutTheSignerFailsClosed(t *testing.T) {
 	h, d := newTestAPIWired(t, nil)
 	_, _, token := seedAPISession(t, d)
-	negotiateWire(t, h, token, 4)
+	negotiateWire(t, h, token, 6)
 	user, _, _ := seedAPISession(t, d)
 	putList(t, d, user.ID)
 	if rec := doAuth(h, http.MethodGet, "/v1/users/"+user.ID.String()+"/device-list", token); rec.Code != http.StatusInternalServerError {
@@ -142,7 +146,7 @@ func TestAWire4ReadWithoutTheSignerFailsClosed(t *testing.T) {
 func TestATombstonedAccountHasNoAttestation(t *testing.T) {
 	h, d := accountKindAPI(t)
 	_, _, token := seedAPISession(t, d)
-	negotiateWire(t, h, token, 4)
+	negotiateWire(t, h, token, 6)
 	gone, _, _ := seedAPISession(t, d)
 	putList(t, d, gone.ID)
 	if err := d.Repo.TombstoneUser(context.Background(), gone.ID, d.Clock.Now().Unix()); err != nil {

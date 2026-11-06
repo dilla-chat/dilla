@@ -403,7 +403,7 @@ func newGroupsAPIWithHandler(t *testing.T, handler http.Handler, deps api.Deps, 
 	botCapability := capability.New(deps.Repo)
 	gw := gateway.New(gateway.Options{
 		Clock: clk, Store: apiListenStore{apiGatewayStore{deps.Repo}}, Generation: 1, Auth: deps.Sessions,
-		WireVersions: []uint64{3, 2}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1},
+		WireVersions: []uint64{6}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1},
 		ScopeResolver: apiGatewayScopeResolver{repo: deps.Repo}, CommunityCompatibility: botCapability,
 	})
 	t.Cleanup(func() { _ = gw.Shutdown(context.Background()) })

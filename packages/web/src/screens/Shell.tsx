@@ -48,7 +48,7 @@ import { UserPanel } from './UserPanel.tsx';
 import type { watchUpdates } from '../update.ts';
 import type { createUpdateCheckpointStore } from '../update-checkpoint.ts';
 import { updateTabId } from '../update-checkpoint.ts';
-import { desktopBridge, setDesktopGuard } from '../desktop.ts';
+import { clearUpgradeReload, desktopBridge, setDesktopGuard, upgradeRequired, type UpgradeRequiredSurface } from '../desktop.ts';
 import { captureViewPlace, restoreViewPlace, validViewPlace, type ViewPlace } from '../update-view.ts';
 import { browser } from '../browser.ts';
 import { CommandProvider } from './commands/CommandContext.tsx';
@@ -152,6 +152,12 @@ type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'anno
 
 /** What the aside shows instead of the member list (web3.7): a channel's thread, or its empty thread aside. */
 type Side = { channelId: string; view: 'empty' } | { channelId: string; view: 'thread'; rootMsgId: string };
+
+/** This tab's sessionStorage, or null where the browser blocks it. */
+function tabStorage(): Storage | null {
+  // eslint-disable-next-line no-restricted-globals -- only the content-free upgrade-reload flag enters Web Storage
+  try { return sessionStorage; } catch { return null; }
+}
 
 function restoredConversationUi(value: unknown): ConversationUi | null {
   if (typeof value !== 'object' || value === null) return null;
@@ -1805,7 +1811,21 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // Privacy lists no own row; what the core reports about the own key stands here, persistent, while the worker reports it.
   const ownTrust = account?.ownTrust ?? null;
   const removalNotices = (removals ?? []).filter(r => !dismissedRemovals.has(r.id));
-  const banner = (offline && linkReason === 'version') || removalNotices.length > 0 || commandError !== null || rootMismatch || ownTrust !== null || removedHere || changedHere.length > 0 ? (
+  // Bot v2 Task 1: the instance said this client is too old (E_UPGRADE_REQUIRED). The desktop app offers its update; a
+  // browser tab reloads once to the instance's current client, keeping drafts as the update banner's reload does.
+  const upgradeNeeded = offline && linkReason === 'upgrade';
+  const [upgradeSurface, setUpgradeSurface] = useState<UpgradeRequiredSurface | null>(null);
+  const reloadKeepingWork = useRef<() => void>(() => { browser.reload(); });
+  reloadKeepingWork.current = () => {
+    if (update === undefined || updateScope === null) browser.reload();
+    else setUpdateEntry(update.currentEntry);
+  };
+  useEffect(() => {
+    if (!upgradeNeeded) { setUpgradeSurface(null); return; }
+    setUpgradeSurface(upgradeRequired({ bridge: desktopBridge(), storage: tabStorage(), reload: () => { reloadKeepingWork.current(); } }));
+  }, [upgradeNeeded]);
+  useEffect(() => { if (status === 'online') clearUpgradeReload(tabStorage()); }, [status]);
+  const banner = (offline && linkReason === 'version') || (upgradeNeeded && upgradeSurface !== null) || removalNotices.length > 0 || commandError !== null || rootMismatch || ownTrust !== null || removedHere || changedHere.length > 0 ? (
     <>
       {rootMismatch ? (
         <Banner tone="danger">{t('devices.rootMismatch', { instance: account.instance?.name ?? t('shell.status.unknown') })}</Banner>
@@ -1821,6 +1841,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           if (update === undefined || updateScope === null) browser.reload();
           else setUpdateEntry(update.currentEntry);
         } }}>{t('shell.banner.clientTooOld')}</Banner>
+      ) : null}
+      {upgradeNeeded && upgradeSurface !== null ? (
+        <Banner tone="warn" action={{ label: t(upgradeSurface.action), onAction: upgradeSurface.onAction }}>{t(upgradeSurface.message)}</Banner>
       ) : null}
       {removalNotices.map(r => (
         <Banner key={r.id} tone="warn" action={{ label: t('shell.banner.dismiss'), onAction: () => {
@@ -2208,7 +2231,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         </>}
         composer={composer}
         banner={<>
-          {linkReason === 'version' ? null : <LinkBanner status={status} labels={{ offline: t('nav.link.offline'),
+          {linkReason === 'version' || linkReason === 'upgrade' ? null : <LinkBanner status={status} labels={{ offline: t('nav.link.offline'),
             connecting: t('nav.link.connecting', { node: account?.instance?.name ?? t('shell.status.unknown') }) }} />}
           {banner}
         </>}

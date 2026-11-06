@@ -27,7 +27,7 @@ func TestBotCommandStatusIsMemberReadableAndExposesLifecycleOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(memberToken), 3, 1, 1); err != nil {
+	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(memberToken), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	path := "/v1/communities/" + cid.String() + "/bot/command-status"
@@ -39,7 +39,7 @@ func TestBotCommandStatusIsMemberReadableAndExposesLifecycleOnly(t *testing.T) {
 		t.Fatalf("foreign community status = %d, want hidden 404", denied.Code)
 	}
 	outsider, _, outsiderToken := seedAPISession(t, deps)
-	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(outsiderToken), 3, 1, 1); err != nil {
+	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(outsiderToken), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	if denied := getAuth(h, path, outsiderToken); denied.Code != http.StatusNotFound {

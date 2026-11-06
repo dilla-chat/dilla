@@ -110,7 +110,7 @@ func TestMusicJoinTrustAndIntakeTrustNeverFailEachOther(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var data []byte
 		if r.URL.Path == "/v1/instance" {
-			data, _ = cborx.Marshal([]any{[]any{uint64(3), uint64(2)}, []any{uint64(1)}, []any{uint64(1)}, core.binding.Instance, uint64(1), "test.local", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)})
+			data, _ = cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}, core.binding.Instance, uint64(1), "test.local", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)})
 		} else if r.URL.Query().Has("after") {
 			selected := rows
 			if r.URL.Query().Get("after") == "1" {

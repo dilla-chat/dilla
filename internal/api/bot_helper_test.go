@@ -101,7 +101,7 @@ func testManagedBotReachesReady(t *testing.T, repo store.Repository) {
 	})
 	owner, ownerDevice, humanToken := seedAPISession(t, deps)
 	cid := seedBotCommunity(t, deps, owner.ID) // no accessible text channels are required here
-	negotiate, _ := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
+	negotiate, _ := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
 	if rec := postCBORAuth(h, "/v1/sessions/negotiate", negotiate, humanToken); rec.Code != http.StatusOK {
 		t.Fatalf("human negotiate wire 3 = %d (%x)", rec.Code, rec.Body.Bytes())
 	}

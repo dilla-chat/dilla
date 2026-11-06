@@ -35,12 +35,12 @@ function frame(name: string, op: number, n: number, group: Uint8Array | null, pa
 export function frameVectors() {
   const cases: Case[] = [
     // The last two elements are invariant 7's back-off window, backoff_ms and backoff_jitter_ms.
-    // web3.8 S1: the instance offers wire version 2 alone, the client identifies with it, and ready
-    // echoes it (fix round 1 ruling).
-    frame('hello', 0, 0, null, [[2], [1], [1], 30000, 131584, new Uint8Array(16).fill(0x01), 1, 300, 300]),
-    frame('identify', 1, 1, null, ['tok', 2, 1, 1, 0]),
+    // Bot v2: the instance offers wire version 6 alone (the only wire), the client identifies with it,
+    // and ready echoes it (web3.8 S1 fix round 1 ruling).
+    frame('hello', 0, 0, null, [[6], [1], [1], 30000, 131584, new Uint8Array(16).fill(0x01), 1, 300, 300]),
+    frame('identify', 1, 1, null, ['tok', 6, 1, 1, 0]),
     frame('resume', 2, 2, null, ['tok', TOKEN, 1, 41]),
-    frame('ready', 3, 1, null, [DEVICE, USER, 1, TOKEN, 2, 1, 1, 32, [[GROUP, 6, 4127, 0]]]),
+    frame('ready', 3, 1, null, [DEVICE, USER, 1, TOKEN, 6, 1, 1, 32, [[GROUP, 6, 4127, 0]]]),
     // `resumed` carries the ROTATED resume token as element 2: the instance discards the token the
     // client just spent, so without it on the wire a client could resume exactly once per identify.
     frame('resumed', 4, 2, null, [42, 47, TOKEN]),

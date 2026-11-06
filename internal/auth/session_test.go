@@ -49,28 +49,6 @@ func (r routeGroupFaultRepo) GetGroup(ctx context.Context, groupID id.ID) (store
 	return r.Repository.GetGroup(ctx, groupID)
 }
 
-func assertBotVersionError(t *testing.T, body []byte) {
-	t.Helper()
-	var fields []any
-	if err := cborx.Unmarshal(body, &fields); err != nil {
-		t.Fatal(err)
-	}
-	if len(fields) != 6 || fields[0] != "E_VERSION" || fields[2] != nil {
-		t.Fatalf("version error fields = %v, want six-field E_VERSION with null retry slot", fields)
-	}
-	got, err := cborx.Marshal(fields[3:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, err := cborx.Marshal([][]uint64{{3}, {1}, {1}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("supported versions = %x, want %x", got, want)
-	}
-}
-
 // newSessions returns a Sessions over a migrated temporary database and the
 // fake clock that drives it. The generation is 7, so a Token.Generation of 0 is
 // a failure rather than a coincidence.
@@ -335,7 +313,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		Sig: loginSig, Login: []byte("assertion")}); err == nil {
 		t.Fatal("bot account received an assertion/login session")
 	}
-	if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 3, 1, 1); err != nil {
+	if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -399,18 +377,19 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 	ownGroup := group(&community.ID)
 	foreignGroup := group(&foreignCommunity.ID)
 	dmGroup := group(nil)
-	// A bot with no selection or persisted wire 2 must first pass the route and
-	// resource checks, then receive the protocol's exact supported-version error.
+	// A bot with no selection or a persisted pre-6 wire must first pass the route and
+	// resource checks, then be told to update (Bot v2: wire 6 only).
 	for _, tc := range []struct {
 		name, token, group string
 		wantCode           string
 	}{
-		{name: "wire not negotiated", token: renewed.Token, group: ownGroup.String(), wantCode: "E_VERSION"},
-		{name: "wire two", token: tok.Token, group: ownGroup.String(), wantCode: "E_VERSION"},
+		{name: "wire not negotiated", token: renewed.Token, group: ownGroup.String(), wantCode: "E_UPGRADE_REQUIRED"},
+		{name: "wire five", token: tok.Token, group: ownGroup.String(), wantCode: "E_UPGRADE_REQUIRED"},
 		{name: "foreign resource visibility precedes wire refusal", token: renewed.Token, group: foreignGroup.String(), wantCode: "E_FORBIDDEN"},
 	} {
-		if tc.name == "wire two" {
-			if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 2, 1, 1); err != nil {
+		if tc.name == "wire five" {
+			// Negotiated before wire 6: only the store can still write such a selection.
+			if err := repo.SetSessionVersions(ctx, auth.TokenHash(tok.Token), 5, 1, 1); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -429,10 +408,9 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 			if err := cborx.Unmarshal(rec.Body.Bytes(), &fields); err != nil || len(fields) == 0 || fields[0] != tc.wantCode {
 				t.Fatalf("response=%d body=%x err=%v, want %s", rec.Code, rec.Body.Bytes(), err, tc.wantCode)
 			}
-			if tc.wantCode == "E_VERSION" {
-				assertBotVersionError(t, rec.Body.Bytes())
-				if rec.Code != http.StatusBadRequest {
-					t.Fatalf("version response status = %d, want 400", rec.Code)
+			if tc.wantCode == "E_UPGRADE_REQUIRED" {
+				if rec.Code != http.StatusUpgradeRequired || len(fields) != 3 {
+					t.Fatalf("upgrade response = %d with %d fields, want 426 with 3", rec.Code, len(fields))
 				}
 			} else if rec.Code != http.StatusForbidden {
 				t.Fatalf("resource refusal status = %d, want 403", rec.Code)
@@ -451,7 +429,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 	if !negotiationReached || negotiationRec.Code != http.StatusOK {
 		t.Fatalf("capability negotiation was refused before wire selection: reached=%v status=%d body=%x", negotiationReached, negotiationRec.Code, negotiationRec.Body.Bytes())
 	}
-	if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 3, 1, 1); err != nil {
+	if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	// Resolve succeeds through this wrapper; the subsequent route-specific group

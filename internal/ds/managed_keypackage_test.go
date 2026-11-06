@@ -112,7 +112,7 @@ func TestManagedBotPublicationRejectsHumanCredentialWithMatchingRegisteredIDs(t 
 		t.Fatal(err)
 	}
 	session := humanSession
-	session.WireVersion = 3
+	session.WireVersion = 6
 	session.Bot = &auth.BotSessionBinding{InstallationID: installation.ID, CommunityID: community, State: store.BotInstallationJoining}
 	upload, err := cborx.Marshal([]any{[]any{humanPackage}, nil})
 	if err != nil {
@@ -167,7 +167,7 @@ func TestPostgresDeviceQuarantineSerializesWithManagedPublication(t *testing.T) 
 			if err := repo.CreateBotInstallation(ctx, installation); err != nil {
 				t.Fatal(err)
 			}
-			session := auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, WireVersion: 3, Bot: &auth.BotSessionBinding{InstallationID: installation.ID, CommunityID: community, State: store.BotInstallationJoining}}
+			session := auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, WireVersion: 6, Bot: &auth.BotSessionBinding{InstallationID: installation.ID, CommunityID: community, State: store.BotInstallationJoining}}
 			blob, err := cborx.Marshal([]any{[]any{batches[0].Ordinary[0].blob(t)}, nil})
 			if err != nil {
 				t.Fatal(err)
@@ -284,7 +284,7 @@ func runManagedKeyPackageFlow(t *testing.T, repo store.Repository, delivery *ds.
 		t.Fatal(err)
 	}
 	session := auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled}
-	session.WireVersion = 3
+	session.WireVersion = 6
 	session.Bot = &auth.BotSessionBinding{InstallationID: installation.ID, CommunityID: community, State: store.BotInstallationJoining}
 	empty, err := delivery.ManagedBotKeyPackageInventory(ctx, session, installation.ID)
 	if err != nil || empty.Generation != 1 || empty.ServerTime != uint64(clk.Now().Unix()) || empty.OrdinaryActiveCount != 0 || empty.HasCurrentFallback != 0 {

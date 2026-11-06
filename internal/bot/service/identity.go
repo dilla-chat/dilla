@@ -383,7 +383,7 @@ func (l *Lifecycle) Ensure(ctx context.Context) (LifecycleResult, error) {
 	if err != nil {
 		return out, err
 	}
-	negotiated, err := session.Negotiate(ctx, []uint64{3}, []uint64{1}, []uint64{1})
+	negotiated, err := session.Negotiate(ctx, []uint64{client.WireVersion}, []uint64{1}, []uint64{1})
 	if err != nil {
 		var apiErr *client.APIError
 		if errors.As(err, &apiErr) && (apiErr.Status == 401 || apiErr.Status == 403) {
@@ -394,14 +394,14 @@ func (l *Lifecycle) Ensure(ctx context.Context) (LifecycleResult, error) {
 			_ = l.native.ClearSession(ctx)
 			session, err = l.establishSession(ctx, state.BotUser, state.BotDevice, discovery, true)
 			if err == nil {
-				negotiated, err = session.Negotiate(ctx, []uint64{3}, []uint64{1}, []uint64{1})
+				negotiated, err = session.Negotiate(ctx, []uint64{client.WireVersion}, []uint64{1}, []uint64{1})
 			}
 		}
 		if err != nil {
 			return out, err
 		}
 	}
-	if negotiated != (client.Negotiated{Wire: 3, E2EE: 1, Media: 1}) {
+	if negotiated != (client.Negotiated{Wire: client.WireVersion, E2EE: 1, Media: 1}) {
 		return out, client.ErrProtocol
 	}
 	inst, err = l.findInstallation(ctx)

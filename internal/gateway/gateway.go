@@ -301,7 +301,7 @@ func (g *Gateway) register(ctx context.Context, session auth.Session, s sink) (*
 // connection BEFORE ready is built: ready's elements 4, 5 and 6 are the echo, and a connection
 // that learned its versions after sendReady would echo three zeros.
 func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s sink, chosen [3]uint64) (*conn, error) {
-	if session.Bot != nil && (session.Bot.State != store.BotInstallationJoining && session.Bot.State != store.BotInstallationReady || chosen[0] < 3) {
+	if session.Bot != nil && (session.Bot.State != store.BotInstallationJoining && session.Bot.State != store.BotInstallationReady || chosen[0] != auth.WireVersion) {
 		return nil, errNotEnrolledSession
 	}
 	if err := g.recordCapabilities(ctx, session.TokenHash, chosen); err != nil {

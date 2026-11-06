@@ -35,7 +35,7 @@ func reply(w http.ResponseWriter, status int, v any) {
 	}
 }
 func discovery(idv id.ID) any {
-	return []any{[]any{uint64(3), uint64(2)}, []any{uint64(1)}, []any{uint64(1)}, idv, uint64(1), "chat.example", uint64(0), []any{uint64(0)}, uint64(1), testID(44), make([]byte, 32)}
+	return []any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}, idv, uint64(1), "chat.example", uint64(0), []any{uint64(0)}, uint64(1), testID(44), make([]byte, 32)}
 }
 func newTestClient(t *testing.T, handler http.HandlerFunc, timeout time.Duration) *Client {
 	t.Helper()
@@ -175,14 +175,14 @@ func TestRuntimeAndSessionTokensNeverCrossScopes(t *testing.T) {
 			reply(w, 200, []any{testID(9), testID(8), uint64(100)})
 			return
 		}
-		reply(w, 200, []any{uint64(3), uint64(1), uint64(1)})
+		reply(w, 200, []any{uint64(6), uint64(1), uint64(1)})
 	}, time.Second)
 	r, _ := c.Runtime("runtime-A")
 	s, _ := c.Session("device-B")
 	if _, e := r.Claim(context.Background(), testID(9), testID(7)); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := s.Negotiate(context.Background(), []uint64{3, 2}, []uint64{1}, []uint64{1}); e != nil {
+	if _, e := s.Negotiate(context.Background(), []uint64{6}, []uint64{1}, []uint64{1}); e != nil {
 		t.Fatal(e)
 	}
 	if len(seen) != 2 || seen[0] != "/v1/bot-runtime/installations/"+testID(9).String()+"/claim Bearer runtime-A" || seen[1] != "/v1/sessions/negotiate Bearer device-B" {
@@ -474,6 +474,24 @@ func TestVersionRefusalPreservesSupportedVersions(t *testing.T) {
 	var ae *APIError
 	if !errors.As(err, &ae) || ae.Code != "E_VERSION" || len(ae.WireVersions) != 2 || ae.WireVersions[0] != 3 || ae.WireVersions[1] != 2 {
 		t.Fatalf("version refusal=%#v", err)
+	}
+}
+
+// Bot v2 Task 1: a wire 6 instance tells a Bot offering an older wire to update. The refusal is a
+// typed, definitive APIError, not an unknown outcome to retry.
+func TestUpgradeRequiredRefusalIsTypedAndDefinitive(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/instance" {
+			reply(w, 200, discovery(testID(99)))
+			return
+		}
+		reply(w, 426, []any{"E_UPGRADE_REQUIRED", "update", nil})
+	}, time.Second)
+	s, _ := c.Session("device")
+	_, err := s.Negotiate(context.Background(), []uint64{WireVersion}, []uint64{1}, []uint64{1})
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.Code != "E_UPGRADE_REQUIRED" || ae.Status != 426 || ae.Outcome != OutcomeDefinitive {
+		t.Fatalf("upgrade refusal=%#v", err)
 	}
 }
 

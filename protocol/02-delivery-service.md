@@ -276,7 +276,7 @@ does.
 | op | label | dir | payload |
 |---|---|---|---|
 | 0 | `hello` | S→C | `[wire_versions([uint]), e2ee_versions([uint]), media_versions([uint]), heartbeat_ms(uint), max_frame_bytes(uint), instance_id(bstr 16), generation(uint), backoff_ms(uint), backoff_jitter_ms(uint)]` — the last two are invariant 7's back-off window: a device that is not sent `mls.commit_needed` waits `backoff_ms + random(0..backoff_jitter_ms)` before volunteering a commit. `wire_versions` is `[3,2]`: wire 3 adds the community bot capability in `10`, while wire 2 remains supported outside bot-enabled communities. Both versions require every upload to name its class (§ Upload class), and `GET /v1/instance` advertises the same list (`09` § Instance) |
-| 1 | `identify` | C→S | `[session_token(tstr), wire_version(uint), e2ee_version(uint), media_version(uint), caps(uint)]` — each version is one the `hello` offered; any other, wire version 1 included, is an `error` naming `E_VERSION` and close 4006 (`version_unsupported`) |
+| 1 | `identify` | C→S | `[session_token(tstr), wire_version(uint), e2ee_version(uint), media_version(uint), caps(uint)]` — each version is one the `hello` offered; any other, wire version 1 included, is an `error` naming `E_VERSION` and close 4006 (`version_unsupported`), except a wire version older than every one offered, which is an `error` naming `E_UPGRADE_REQUIRED` and close 4006 whose reason is that code (Bot v2: wire 6, no older clients) |
 | 2 | `resume` | C→S | `[session_token(tstr), resume_token(bstr 32), generation(uint), last_n(uint)]` |
 | 3 | `ready` | S→C | `[device_id(bstr 16), user_id(bstr 16), generation(uint), resume_token(bstr 32), wire_version(uint), e2ee_version(uint), media_version(uint), keypackages_remaining(uint), groups([[group_id(bstr 16), epoch(uint), last_seq(uint), proposals_outstanding(uint)]])]` — `epoch` and `last_seq` are the device's own acknowledged cursor for the group (`POST …/cursor`; `0, 0` before the first), not the group head |
 | 4 | `resumed` | S→C | `[replayed_from(uint), replayed_to(uint), resume_token(bstr 32)]` — the token rotates on every `resumed`, so the frame that announces a resume also issues the credential for the next one; a client that keeps the token from `ready` after resuming is refused |
@@ -988,7 +988,9 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 422 | `E_COMMIT_INVALID` | structural or policy failure; `rule` names the clause | do not retry unchanged; resync if behind |
 | 422 | `E_COMMITMENT_INVALID` | `private_message.authenticated_data` is not exactly 32 bytes | recompute `C` and resend |
 | 425 | `E_COMMIT_REQUIRED` | outstanding DS proposals must be committed first | commit them (or wait for `mls.commit_needed`), then resend |
+| 426 | `E_UPGRADE_REQUIRED` | the client offered only wire versions older than every one the instance supports (wire 6; older clients are not served) | stop retrying and tell the user to update the app |
 | 429 | `E_RATE_LIMITED` | a token bucket is empty | wait `retry_after_ms`; a `Retry-After` header in whole seconds carries the same value |
+| 429 | `E_BUSY` | the instance or the managed Bot is at capacity for this kind of work | retry later |
 | 500 | `E_INTERNAL` | an unexpected server fault; the detail is always empty | retry with backoff |
 | 503 | `E_UNAVAILABLE` | the instance could not take a resource the request needs within its bound (a call whose SFU work is stuck) | wait `retry_after_ms`, then retry |
 | 507 | `E_STORAGE_FULL` | the instance or the user's quota is exhausted | none |
@@ -1002,7 +1004,9 @@ and `E_INTERNAL` (deviation ID12), plus the four Plan 2 consumes — `E_ENVELOPE
 ruling 2026-09-24). The first three are Plan 1a's own Go code — `server.CodeVersion`,
 `Sessions.Middleware` and `WriteError`'s fallback — and `scripts/check-protocol-docs.mjs`'s
 `checkErrorVocabulary` diffs this table against `internal/server/errors.go` in both directions, so
-the three could not have been left out without CI failing.
+the three could not have been left out without CI failing. Bot v2 (wire 6) adds two more, 32 in
+all: `E_UPGRADE_REQUIRED` (`server.CodeUpgradeRequired`, also the gateway's refusal of an older
+`identify`) and `E_BUSY` (`server.CodeBusy`).
 
 Four more came later. `E_REMOVE_PENDING` is invariant 6's refusal of a member's own `Remove` of a
 leaf the instance is already removing (plan dilla-media task 9); the only other proposals it

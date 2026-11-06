@@ -28,8 +28,8 @@ pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const E2EE_VERSION: u64 = 1;
 /// `media_version` for call groups (protocol/07-versioning.md).
 pub const MEDIA_VERSION: u64 = 1;
-/// The current negotiated wire version; HTTP routes remain under `/v1`.
-pub const WIRE_VERSION: u64 = 3;
+/// The one negotiated wire version (Bot v2: wire 6, no older clients); HTTP routes remain under `/v1`.
+pub const WIRE_VERSION: u64 = 6;
 /// The wasi ABI version every request carries as element 0.
 ///
 /// **2** since 2026-09-24: `public_group_process`'s response grew from 6 to 8 elements (the

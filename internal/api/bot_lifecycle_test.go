@@ -167,6 +167,8 @@ func testManagedBotIdentityLifecycle(t *testing.T, repo store.Repository, remove
 		externalSenderSeed[0] = 1
 		externalSenderPrivate := ed25519.NewKeyFromSeed(externalSenderSeed)
 		d.ExternalSenderPub = append(ed25519.PublicKey(nil), externalSenderPrivate.Public().(ed25519.PublicKey)...)
+		// Wire 6 serves the account-kind attestation on every device-list head, the Bot's included.
+		d.SignAccountKind = func(m []byte) ([]byte, error) { return ed25519.Sign(externalSenderPrivate, m), nil }
 		d.Log = slog.New(slog.NewTextHandler(&diagnostics, nil))
 		manager = botruntime.New(d.Repo, d.Clock.Now)
 		d.BotRuntime = manager
@@ -197,7 +199,7 @@ func testManagedBotIdentityLifecycle(t *testing.T, repo store.Repository, remove
 
 	owner, ownerDevice, humanToken := seedAPISession(t, deps)
 	cid := seedBotCommunity(t, deps, owner.ID)
-	negotiate, err := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
+	negotiate, err := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,8 +298,8 @@ func testManagedBotIdentityLifecycle(t *testing.T, repo store.Repository, remove
 	if result.Session == nil {
 		t.Fatal("Ensure returned no scoped device session")
 	}
-	negotiated, err := result.Session.Negotiate(context.Background(), []uint64{3}, []uint64{1}, []uint64{1})
-	if err != nil || negotiated != (client.Negotiated{Wire: 3, E2EE: 1, Media: 1}) {
+	negotiated, err := result.Session.Negotiate(context.Background(), []uint64{6}, []uint64{1}, []uint64{1})
+	if err != nil || negotiated != (client.Negotiated{Wire: 6, E2EE: 1, Media: 1}) {
 		t.Fatalf("returned session negotiated %+v, %v", negotiated, err)
 	}
 	scoped, err := deps.Sessions.Resolve(context.Background(), result.Session.BearerToken())

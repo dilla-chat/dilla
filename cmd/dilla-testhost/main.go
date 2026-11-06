@@ -67,13 +67,13 @@ func parseFlags(args []string) (options, error) {
 	productionACL := fs.Bool("production-acl", false, "build the instance with production's ACL and channel seams (api.ResolverACL, api.StructureChannels) instead of the scenario harness's")
 	webauthnOrigin := fs.String("webauthn-origin", "", "the origin a browser reaches this host from (for example http://localhost:9999): passkeys bind to its hostname and rp_origins is exactly it (empty: the instance domain's own relying party)")
 	botRuntimeSecret := fs.String("bot-runtime-secret", "", "test only: create an operator runtime credential at this owner-only path")
-	wire := fs.Uint64("wire", 0, "the one wire version the gateway's hello offers and GET /v1/instance advertises (version-reload e2e only); unset, the host offers dillad's production list (wire 4 for people, 3 for managed Bots, 2)")
+	wire := fs.Uint64("wire", 0, "the one wire version the gateway's hello offers and GET /v1/instance advertises (version-reload e2e only); unset, the host offers dillad's production list (wire 6, for people and managed Bots)")
 	adminInvite := fs.Bool("admin-invite", false, "the first invite grants instance administration, one use, as the invite `dillad init` writes does")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
 	// Wire versions start at 1: a hello offering 0 names no version any client speaks. An unset
-	// flag (0) keeps dillad's own list, so people negotiate wire 4 and managed Bots wire 3.
+	// flag (0) keeps dillad's own list, so people and managed Bots negotiate wire 6.
 	explicit := false
 	fs.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "wire" })
 	if explicit && *wire < 1 {

@@ -445,7 +445,7 @@ func (h *groupsAPI) listen(t *testing.T, token string) func() []cbor.RawMessage 
 		t.Fatalf("first frame op %d, want hello", op)
 	}
 	identify, err := gateway.Encode(gateway.Frame{Op: gateway.OpIdentify,
-		Payload: cborx.Raw(mustCBOR(t, []any{"", uint64(3), uint64(1), uint64(1), uint64(0)}))}, 1)
+		Payload: cborx.Raw(mustCBOR(t, []any{"", uint64(6), uint64(1), uint64(1), uint64(0)}))}, 1)
 	if err != nil {
 		t.Fatalf("encode identify: %v", err)
 	}

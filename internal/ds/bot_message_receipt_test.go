@@ -269,7 +269,7 @@ func setupBotReceiptIdentity(t *testing.T, repo store.Repository, wasm *mlswasi.
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &botReceiptState{service: service, repo: repo, session: auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, WireVersion: 3, Bot: &auth.BotSessionBinding{InstallationID: installation.ID, CommunityID: community, State: store.BotInstallationReady}}, community: community, installID: installation.ID, userID: user, deviceID: device, generation: instance.Generation, epoch: group.Epoch}
+	return &botReceiptState{service: service, repo: repo, session: auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, WireVersion: 6, Bot: &auth.BotSessionBinding{InstallationID: installation.ID, CommunityID: community, State: store.BotInstallationReady}}, community: community, installID: installation.ID, userID: user, deviceID: device, generation: instance.Generation, epoch: group.Epoch}
 }
 
 func (s *botReceiptState) send(t *testing.T, outcome string) (ds.BotMessageRequest, []byte) {

@@ -385,7 +385,7 @@ export function world(opts: {
     trustGeneration: vi.fn(() => 0n),
   };
   const routes = {
-    negotiateSession: vi.fn(() => Promise.resolve({ wire: 3, e2ee: 1, media: 1, botAvailable: true })),
+    negotiateSession: vi.fn(() => Promise.resolve({ wire: 6, e2ee: 1, media: 1, botAvailable: true })),
     getInstance: vi.fn(() => Promise.resolve(INSTANCE)),
     getLimits: vi.fn(() => Promise.resolve({
       maxCiphertextBytes: 131_072, keypackagesPerDevice: 32, keypackageRefillThreshold: 8, heartbeatMs: 30_000, maxFrameBytes: 131_584,
