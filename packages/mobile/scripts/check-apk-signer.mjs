@@ -9,11 +9,14 @@ import { fileURLToPath } from 'node:url';
 
 /** Decide whether an `apksigner verify -v --print-certs` report is signed by a pinned key. Every match is a whole line. */
 export function evaluateSignerReport(output, pins) {
-  const digests = [...output.matchAll(/^Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F]{64})$/gm)].map(match => match[1].toLowerCase());
+  // apksigner up to 36 prints "Signer #1 certificate SHA-256 digest: …"; 37 prints "V2 Signer:" / "V3.0 Signer: certificate SHA-256
+  // digest: …" (one line per signature scheme block). The same certificate named by several blocks is one signer.
+  const digests = [...new Set([...output.matchAll(/^(?:Signer #\d+|V\d+(?:\.\d+)? Signer:) certificate SHA-256 digest: ([0-9a-fA-F]{64})$/gm)]
+    .map(match => match[1].toLowerCase()))];
   const found = digests.length ? `certificate digest ${digests.join(', ')}` : 'no certificate digest';
   if (!/^Verifies$/m.test(output)) return { ok: false, message: `apksigner did not report "Verifies" (${found})` };
   const verified = scheme => new RegExp(`^Verified using ${scheme} scheme \\(.*\\): true$`, 'm').test(output);
-  if (!verified('v2') && !verified('v3') && !verified('v3\\.1')) {
+  if (!verified('v2') && !verified('v3') && !verified('v3\\.1') && !verified('v3\\.2')) {
     return { ok: false, message: `no v2/v3 signature, v1-only is not accepted (${found})` };
   }
   const declared = /^Number of signers: (\d+)$/m.exec(output);

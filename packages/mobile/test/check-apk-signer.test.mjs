@@ -103,3 +103,45 @@ test('release-trust.json holds lowercase sha-256 pins', () => {
   assert.ok(trust.android.certSha256.length >= 1);
   for (const digest of trust.android.certSha256) assert.match(digest, /^[0-9a-f]{64}$/);
 });
+
+// apksigner 37 (the hosted runner's newest build-tools on 2026-11-06, run 42250807215) names the signer per scheme block.
+const report37 = (digest = PIN, more = []) => [
+  'Verifies',
+  'Verified using v1 scheme (JAR signing): false',
+  'Verified using v2 scheme (APK Signature Scheme v2): false',
+  'Verified using v3 scheme (APK Signature Scheme v3): true',
+  'Verified using v3.1 scheme (APK Signature Scheme v3.1): false',
+  'Verified using v3.2 scheme (APK Signature Scheme v3.2): false',
+  'Verified using v4 scheme (APK Signature Scheme v4): false',
+  'Verified for SourceStamp: false',
+  'Number of signers: 1',
+  'V3.0 Signer: certificate DN: CN=Dilla',
+  `V3.0 Signer: certificate SHA-256 digest: ${digest}`,
+  'V3.0 Signer: certificate SHA-1 digest: 210edf6cb9261c6cf8f0e03230f768e19f05950d',
+  ...more,
+].join('\n');
+
+test('apksigner 37: the pinned V3.0 signer is accepted', () => {
+  assert.deepEqual(evaluateSignerReport(report37(), [PIN]), { ok: true, digest: PIN });
+});
+
+test('apksigner 37: another V3.0 signer is refused and named', () => {
+  const result = evaluateSignerReport(report37(OTHER), [PIN]);
+  assert.equal(result.ok, false);
+  assert.match(result.message, new RegExp(OTHER));
+});
+
+test('apksigner 37: the same certificate in two scheme blocks is one signer', () => {
+  assert.equal(evaluateSignerReport(report37(PIN, [`V3.1 Signer: certificate SHA-256 digest: ${PIN}`]), [PIN]).ok, true);
+});
+
+test('apksigner 37: two different certificates are refused', () => {
+  assert.equal(evaluateSignerReport(report37(PIN, [`V3.1 Signer: certificate SHA-256 digest: ${OTHER}`]), [PIN]).ok, false);
+});
+
+test('apksigner 37: a V2 signer (no minor version) is read, so the debug key is refused by name', () => {
+  const debug = '061aa51997de8eab2ea1f8e7db0ccbc7cc043e4d829607c06c7596b12aba317a';
+  const result = evaluateSignerReport(report37(PIN).replace('V3.0 Signer: certificate SHA-256 digest: ' + PIN, 'V2 Signer: certificate SHA-256 digest: ' + debug), [PIN]);
+  assert.equal(result.ok, false);
+  assert.match(result.message, new RegExp(debug));
+});

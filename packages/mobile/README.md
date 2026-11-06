@@ -147,7 +147,7 @@ The deployment branch policy is `main`. The secrets and the variable live only h
 | Name | Kind | Value |
 | --- | --- | --- |
 | `ANDROID_KEYSTORE_B64` | secret | the release keystore, base64 |
-| `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | secret | keystore password, key alias, key password |
+| `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_PASSWORD` | secret | keystore password, key password (the key alias, `dilla`, is set in the workflow) |
 | `ASC_KEY_ID`, `ASC_ISSUER_ID` | secret | from the App Store Connect API key |
 | `ASC_KEY_P8` | secret | the contents of the `.p8` file |
 | `APPLE_TEAM_ID` | variable | developer.apple.com, Membership |
