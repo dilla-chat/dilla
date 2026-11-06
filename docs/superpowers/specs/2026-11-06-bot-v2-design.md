@@ -50,6 +50,10 @@ Jonas, 2026-11-06:
 7. **Dedicated Bot channels** (prompt answer). The Bot is an MLS member only of text channels an admin has marked as Bot channels, and it posts only there. It leaves every other channel group.
 8. **Live updates are a pushed hint followed by one sealed read** (prompt answer). The server pushes a content-free "Bot state changed" hint, and the app fetches the new state with one sealed request.
 9. **The ~1 s `/play` target includes the Bot joining a call it isn't in yet** (prompt answer "Yes, redesign the join").
+11. **The Bot is bundled with the server but runs as its own process** (prompt answer "Bundled, separate process").
+    - The dilla server package ships the Bot. dillad starts it as a sandboxed child process: own OS user, own state and keys. They talk over a local socket.
+    - There is no separate dillabot package, unit, `bot.toml` or `base_url` to configure.
+    - Bot keys and command plain text never enter dillad's memory, so the server stays blind.
 10. **Outgoing integrations come in a later release** (prompt answer). `/weather` calling an admin's URL is out of v2. The catalog must not preclude it.
 
 ## Goals
@@ -199,7 +203,12 @@ Jonas, 2026-11-06:
 
 ### Bot connection (decision 5)
 
-- **Transport.** dillabot keeps one gateway connection to dillad: a Unix socket by default when on the same host (the installer's normal case), or `wss://` otherwise.
+- **Process model** (decision 11).
+  - dillad supervises the Bot as a child process: it starts it, restarts it with backoff, and stops it with dillad. It runs under its own OS user (`dillabot`), its own state dir, and a sandbox no weaker than today's unit hardening.
+  - The socket is a Unix socket created by dillad and passed to the child. There is no network path and no URL to misconfigure.
+  - The Bot is enabled per instance in `dilla.toml` and per community in the Bot page.
+  - `dillad doctor` covers the Bot.
+- **Transport.** dillabot keeps one gateway connection to dillad over that socket. `wss://` to a remote dillad is kept only as a development and test mode.
 - **What it carries, in both directions:**
   - sealed requests;
   - replies;
@@ -250,6 +259,12 @@ Jonas, 2026-11-06:
 
 ## Migration and compatibility
 
+- **Packaging.** The installer and upgrade path:
+  - move the existing `dillabot` install (binary, `dilla-bot-core`, wasm, state dir `/var/lib/dillabot/<installation>` with its database key, runtime credential) under dillad's supervision;
+  - remove `dillabot.service` and `/etc/dillabot/bot.toml`;
+  - keep the state and keys in place;
+  - log each step;
+  - leave a backup of the old unit and config.
 - **Automod is removed.** That means:
   - ops 62/63;
   - the automod runtime and event state in dillabot;
