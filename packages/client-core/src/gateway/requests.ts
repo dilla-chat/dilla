@@ -9,8 +9,9 @@
 //
 // A stopped gateway (status idle: stop(), a revoked session, a refused version) carries nothing: every waiting request
 // is rejected and new ones are rejected at once until the gateway starts again. A request never written rejects
-// E_NETWORK; a mutation that was written and has no answer rejects E_OUTCOME_UNKNOWN (it may have been applied).
-import { HTTP_ATTEMPT_TIMEOUT_MS, type HttpRequest, type HttpResponse } from '../http/client';
+// E_NETWORK (or the revocation's 401, the upgrade's 426); a mutation that was written and has no answer rejects
+// E_OUTCOME_UNKNOWN (it may have been applied), with the 401 or 426 as its cause when there is one.
+import type { HttpRequest, HttpResponse } from '../http/client';
 import { DillaHttpError, decodeErrorBody } from '../http/errors';
 import type { RouteRtt } from '../http/route-rtt';
 import { MAX_REQUEST_BODY, encodeRequestFrame } from './frames';
@@ -18,6 +19,10 @@ import { CLIENT_CLOSE, type Gateway, type GatewayEvent } from './gateway';
 
 /** What HttpClient sends a socket route through, with the route's matched pattern (`METHOD /pattern`, the RTT key).
  *  `up` is true while the socket can carry a request now. */
+/** A socket attempt's deadline: just above the instance's 60 s dispatch deadline (internal/api socket_dispatch), so a
+ *  slow mutation still running there is not written again; the instance answers 503 E_UNAVAILABLE first. */
+export const SOCKET_ATTEMPT_TIMEOUT_MS = 65_000;
+
 export interface SocketTransport {
   request(r: HttpRequest, pattern: string): Promise<HttpResponse>;
   readonly up: boolean;
@@ -32,7 +37,7 @@ export interface SocketRequestsDeps {
   rtt: RouteRtt;
   setTimeout?: (fn: () => void, ms: number) => number;
   clearTimeout?: (id: number) => void;
-  /** Overrides HTTP_ATTEMPT_TIMEOUT_MS (tests). */
+  /** Overrides SOCKET_ATTEMPT_TIMEOUT_MS (tests). */
   attemptTimeoutMs?: number;
 }
 
@@ -106,7 +111,7 @@ export class SocketRequests implements SocketTransport {
     if (r.signal?.aborted === true) return Promise.reject(abortError());
     const body = r.body ?? new Uint8Array();
     if (body.length > MAX_REQUEST_BODY) return Promise.reject(refusal(0, 'E_FRAME_LIMIT', 'the request body is over the frame limit'));
-    const timeoutMs = r.timeoutMs === undefined ? (this.deps.attemptTimeoutMs ?? HTTP_ATTEMPT_TIMEOUT_MS) : r.timeoutMs;
+    const timeoutMs = r.timeoutMs === undefined ? (this.deps.attemptTimeoutMs ?? SOCKET_ATTEMPT_TIMEOUT_MS) : r.timeoutMs;
     return new Promise<HttpResponse>((resolve, reject) => {
       const p: Pending = { seq: this.nextSeq++, method: r.method, route: r.path, body, idem: r.idem ?? null, pattern, timeoutMs,
         resolve, reject, signal: r.signal, onAbort: null, unavailable: 0, timedOut: 0, written: false, frameId: null, sentAt: 0,
@@ -304,7 +309,9 @@ export class SocketRequests implements SocketTransport {
     return p.written && p.method !== 'GET' ? refusal(0, 'E_OUTCOME_UNKNOWN', detail) : refusal(0, 'E_NETWORK', detail);
   }
 
-  /** Rejects everything waiting: with `error` when one is named (revoked, upgrade, version), else by the lost split. */
+  /** Rejects everything waiting. With a named `error` (revoked, upgrade, version) a request never written gets it, and a
+   *  written mutation gets E_OUTCOME_UNKNOWN with `error` as its cause: it may have been applied, so a caller retrying
+   *  after an update must not apply it twice. Without one, the lost split. */
   private failAll(error: Error | null): void {
     const all = [...this.queue, ...this.waiting, ...this.inFlight.values()];
     this.queue.length = 0;
@@ -315,7 +322,12 @@ export class SocketRequests implements SocketTransport {
       if (p.done) continue;
       this.clearDeadline(p);
       this.settle(p);
-      p.reject(error ?? this.lostError(p, 'the gateway socket was stopped'));
+      if (error === null) p.reject(this.lostError(p, 'the gateway socket was stopped'));
+      else if (p.written && p.method !== 'GET') {
+        const unknown = refusal(0, 'E_OUTCOME_UNKNOWN', `no answer before ${error instanceof DillaHttpError ? error.code : 'the stop'}`);
+        unknown.cause = error;
+        p.reject(unknown);
+      } else p.reject(error);
     }
   }
 }

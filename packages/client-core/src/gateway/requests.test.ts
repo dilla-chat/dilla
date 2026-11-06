@@ -6,7 +6,7 @@ import { RouteRtt } from '../http/route-rtt';
 import { socketRouteFor, type SocketRoute } from '../http/socket-routes';
 import { decodeFrame, Op } from './frames';
 import { CLIENT_CLOSE, type GatewayEvent, type GatewayStatus } from './gateway';
-import { SocketRequests } from './requests';
+import { SOCKET_ATTEMPT_TIMEOUT_MS, SocketRequests } from './requests';
 
 interface Sent { id: number; method: string; route: string; body: Uint8Array; idem: Uint8Array | null }
 
@@ -58,7 +58,7 @@ function setup(opts: { status?: GatewayStatus } = {}) {
   if (opts.status !== undefined) gw.status = opts.status;
   let now = 0;
   const rtt = new RouteRtt();
-  const sr = new SocketRequests(gw, { now: () => now, random: () => 0, rtt, attemptTimeoutMs: 30_000 });
+  const sr = new SocketRequests(gw, { now: () => now, random: () => 0, rtt });
   return { gw, sr, rtt, advance: (ms: number) => { now += ms; } };
 }
 
@@ -249,6 +249,30 @@ describe('SocketRequests', () => {
     expect(gw.sent).toEqual([]);
   });
 
+  it('revoke rejects a written mutation as outcome-unknown with the 401 cause, a never-written one with 401', async () => {
+    const { gw, sr } = setup();
+    const written = send(sr, post('/v1/test/w', idem(1)));
+    const read = send(sr, get('/v1/test/g'));
+    gw.setStatus('waiting', 1006);
+    const queued = send(sr, post('/v1/test/q', idem(2)));
+    gw.setStatus('idle', 4004);
+    gw.emit({ type: 'revoked' });
+    await expect(written).rejects.toMatchObject({ status: 0, code: 'E_OUTCOME_UNKNOWN', cause: { status: 401, code: 'E_UNAUTHENTICATED' } });
+    await expect(read).rejects.toMatchObject({ status: 401, code: 'E_UNAUTHENTICATED' });
+    await expect(queued).rejects.toMatchObject({ status: 401, code: 'E_UNAUTHENTICATED' });
+  });
+
+  it('an upgrade refusal rejects a written mutation as outcome-unknown with the 426 cause, a never-written one with 426', async () => {
+    const { gw, sr } = setup();
+    const written = send(sr, post('/v1/test/w', idem(1)));
+    gw.setStatus('waiting', 1006);
+    const queued = send(sr, post('/v1/test/q', idem(2)));
+    gw.setStatus('idle', CLIENT_CLOSE.version);
+    gw.emit({ type: 'upgradeRequired' });
+    await expect(written).rejects.toMatchObject({ status: 0, code: 'E_OUTCOME_UNKNOWN', cause: { status: 426, code: 'E_UPGRADE_REQUIRED' } });
+    await expect(queued).rejects.toMatchObject({ status: 426, code: 'E_UPGRADE_REQUIRED' });
+  });
+
   it('a new request after revoke is rejected at once', async () => {
     const { gw, sr } = setup();
     gw.setStatus('idle', 4004);
@@ -308,7 +332,12 @@ describe('SocketRequests', () => {
   it('an attempt past its deadline is written again with the same idem and its late answer is dropped', async () => {
     const { gw, sr } = setup();
     const a = send(sr, post('/v1/test/a', idem(7)));
-    await vi.advanceTimersByTimeAsync(30_000);
+    // The default deadline sits just above the instance's 60 s dispatch deadline: a slow mutation still running there
+    // is not written again.
+    expect(SOCKET_ATTEMPT_TIMEOUT_MS).toBe(65_000);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(gw.sent).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(5_000);
     expect(gw.sent).toHaveLength(2);
     expect(gw.sent[1].idem).toEqual(idem(7));
     gw.respond(gw.sent[0].id, 200, encode(['late']));
@@ -321,7 +350,7 @@ describe('SocketRequests', () => {
     const m = send(sr, post('/v1/test/m', idem(7)));
     const g = send(sr, get('/v1/test/g'));
     const caught = Promise.allSettled([m, g]);
-    await vi.advanceTimersByTimeAsync(5 * 30_000);
+    await vi.advanceTimersByTimeAsync(5 * 65_000);
     expect(gw.sent).toHaveLength(10);
     const [mr, gr] = await caught;
     expect(mr).toMatchObject({ status: 'rejected', reason: { code: 'E_OUTCOME_UNKNOWN' } });

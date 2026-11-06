@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { check, goRoutes, manifest, problems } from './check-socket-routes.mjs';
 
 const go = [{
@@ -92,6 +93,28 @@ test('reports a pre-gateway route moved to SOCKET_ROUTES, and a stale pre-gatewa
   assert.equal(moved.length, 2);
   assert.match(moved[0], /GET \/v1\/accounts\/me.*PRE_GATEWAY_ROUTES.*must stay on HTTP.*SOCKET_ROUTES/);
   assert.match(moved[1], /GET \/v1\/accounts\/me.*PRE_GATEWAY_ROUTES.*no Go HTTP registration/);
+});
+
+// Fix round 2: the routes a session uses with no gateway (session establishment, the owed account's factor set-up, the
+// calls after quiesce) are held to HTTP in the real manifest; moving any one to SOCKET_ROUTES fails the check.
+const NO_GATEWAY = [
+  'POST /v1/devices/{device_id}/sessions', 'DELETE /v1/devices/{device_id}/sessions',
+  'POST /v1/auth/totp/enroll', 'POST /v1/auth/totp/confirm', 'POST /v1/auth/passkey/register/begin',
+  'POST /v1/auth/passkey/register/finish', 'POST /v1/auth/recovery/codes', 'POST /v1/auth/password',
+];
+
+test('the real manifest holds every no-gateway route to HTTP, and moving one to SOCKET_ROUTES fails', () => {
+  const source = readFileSync(new URL('../packages/client-core/src/http/socket-routes.ts', import.meta.url), 'utf8');
+  const real = manifest(source);
+  for (const key of NO_GATEWAY) assert.ok(real.PRE_GATEWAY_ROUTES.includes(key), `${key} is not in PRE_GATEWAY_ROUTES`);
+  const go = goRoutes([{ path: 'x.go', source: NO_GATEWAY.map((k) => `m.Socket("${k}", h)`).join('\n') }]);
+  for (const key of NO_GATEWAY) {
+    const moved = { ...real, SOCKET_ROUTES: [key] };
+    const found = problems({ http: new Set(real.PRE_GATEWAY_ROUTES), socket: new Set([key]) }, moved)
+      .filter((p) => p.includes('must stay on HTTP'));
+    assert.equal(found.length, 1, key);
+    assert.ok(go.socket.has(key));
+  }
 });
 
 test('the real tree is in sync', () => {

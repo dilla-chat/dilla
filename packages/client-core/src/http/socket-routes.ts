@@ -188,12 +188,14 @@ export const HTTP_ONLY_ROUTES: readonly SocketRoute[] = [
   { method: 'DELETE', pattern: '/v1/welcomes/{welcome_id}' },
 ];
 
-/** Ruling C1: routes the worker calls with a session before the gateway exists (sign-up, sign-in, enrolment and
- *  enterReady's steps (a)-(f) before (g) creates the gateway), plus the ticket that opens it. They stay on HTTP: each is
- *  also in HTTP_ONLY_ROUTES, and check-socket-routes fails if one moves to SOCKET_ROUTES. */
+/** Ruling C1: routes the worker calls with a session while no gateway carries requests, and so stay on HTTP: sign-up,
+ *  sign-in and enrolment; enterReady's steps (a)-(f) before (g) creates the gateway; the factor-setup phase of an owed
+ *  account (enterFactorSetup returns before (g), and onFactorRequired drops the gateway); the calls made after quiesce()
+ *  stops it (sign-out's self-revoking list, forgetting this browser); and the ticket that opens it. Each is also in
+ *  HTTP_ONLY_ROUTES, and check-socket-routes fails if one moves to SOCKET_ROUTES. */
 export const PRE_GATEWAY_ROUTES: readonly SocketRoute[] = [
   { method: 'GET', pattern: '/v1/instance' }, // (b) the instance signer pin check, and every mint of a ticket
-  { method: 'PUT', pattern: '/v1/users/{user_id}/device-list' }, // (c) publishDeviceList, before the session is enrolled
+  { method: 'PUT', pattern: '/v1/users/{user_id}/device-list' }, // (c) publishDeviceList; sign-out's self-revoking list after quiesce
   { method: 'GET', pattern: '/v1/users/{user_id}/device-list' }, // (c) a 409's served head; (f) refreshOwnDeviceList and its history pages
   { method: 'GET', pattern: '/v1/auth/factors' }, // the factor gate between (d) and (e)
   { method: 'GET', pattern: '/v1/instance/limits' }, // a sign-up's first KeyPackage top-up
@@ -204,6 +206,14 @@ export const PRE_GATEWAY_ROUTES: readonly SocketRoute[] = [
   { method: 'PUT', pattern: '/v1/backups/{kind}/{chunk_seq}' }, // (e) ensureBackups and repairBackupState store one
   { method: 'GET', pattern: '/v1/accounts/me' }, // sign-up reads its own account before ready
   { method: 'POST', pattern: '/v1/gateway/ticket' }, // the ticket that opens the socket
+  { method: 'POST', pattern: '/v1/devices/{device_id}/sessions' }, // (b) session.ensure() renewing, (d) session.establish(), enrolment's pending session
+  { method: 'DELETE', pattern: '/v1/devices/{device_id}/sessions' }, // forgetBrowser ends the sessions after quiesce (also from factor-setup and revoked)
+  { method: 'POST', pattern: '/v1/auth/totp/enroll' }, // factor-setup: an owed account enrols an app
+  { method: 'POST', pattern: '/v1/auth/totp/confirm' }, // factor-setup: confirms the app's first code
+  { method: 'POST', pattern: '/v1/auth/passkey/register/begin' }, // factor-setup: starts a passkey registration
+  { method: 'POST', pattern: '/v1/auth/passkey/register/finish' }, // factor-setup: finishes it
+  { method: 'POST', pattern: '/v1/auth/recovery/codes' }, // factor-setup: backup codes for the owed account
+  { method: 'POST', pattern: '/v1/auth/password' }, // factor-setup: the owed account's password
 ];
 
 /** The Bot runtime's own HTTP routes (F24), kept apart from the app's lists. */
