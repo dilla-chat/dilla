@@ -6,6 +6,14 @@
 
 **Architecture:** A new workflow `mobile-release.yml` runs after `release.yml` completes successfully for a tag (`workflow_run`), or by hand for an existing tag (`workflow_dispatch`, which re-runs an existing tag (the backfill of `v0.1.0-mobile1` was dropped: it predates this branch's files)). One job signs the Android APK with the release keystore from the `mobile-release` GitHub environment, checks the signing certificate against a pin in `packages/mobile/release-trust.json`, and uploads `dilla-<tag>.apk` and its `.sha256` to the existing release. Another job, on the pinned macOS/Xcode runner, archives the iOS app with automatic signing through an App Store Connect API key and uploads it to TestFlight. The server release is never blocked by a mobile failure.
 
+> **Note (2026-11-06, after PR #160):** the APK moved into `release.yml`. Releases in this repository are immutable, so
+> `gh release upload` after publishing can never add an asset. `release.yml` now builds and signs the APK (jobs
+> `mobile-bundle` and `android-release`) before it publishes; `dilla-<tag>.apk` and its `.sha256` are assets of the
+> server release, the APK is listed in its `SHA256SUMS`, and a failed APK fails the release (lockstep). The Android
+> `versionCode` is `1000 + run_number*10 + run_attempt` of `release.yml`. `mobile-release.yml` keeps only the iOS
+> TestFlight build and uploads nothing to the release. Statements below about attaching, `--clobber` and the server
+> release never being blocked by a mobile failure describe the original design.
+
 **Tech Stack:** GitHub Actions, Gradle signingConfig, `apksigner`, `xcodebuild archive/-exportArchive` with `-allowProvisioningUpdates` and the App Store Connect API key, Node check scripts.
 
 **Spec:** `docs/superpowers/specs/2026-11-05-dilla-mobile-design.md` (Wave M4, Decisions: audience, lockstep releases). This plan pulls M4's distribution forward on Jonas's 2026-11-06 choice ("TestFlight link", "Release-signed APK"). The in-app APK updater (spec line 23) stays in M4.

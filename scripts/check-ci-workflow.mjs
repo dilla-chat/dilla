@@ -1319,9 +1319,14 @@ export const checkMobileCiWorkflow = (root) => checkCiWorkflow(root, 'mobile');
  * clang 23 pin, the size profile, the placeholder guard), and it uses only actions server.yml or desktop-ci.yml uses at
  * the same versions. It
  * builds and pushes no container image: the release is the native install's (Jonas, 2026-10-14).
+ *
+ * Releases are immutable once published, so the release-signed Android APK is built and signed here, before the
+ * release job publishes, and listed in SHA256SUMS like every other asset (Jonas, 2026-11-06). Its name carries the
+ * tag, so its asset entry is the shell word dilla-$TAG.apk; its sha256sum-format .sha256 is attached beside it.
  */
-export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'bot-release', 'go-release', 'release'];
-export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dillabot-linux-amd64', 'dillabot-linux-arm64', 'dilla-bot-core-linux-amd64', 'dilla-bot-core-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh', 'install-bot.sh'];
+export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'bot-release', 'go-release', 'mobile-bundle', 'android-release', 'release'];
+export const RELEASE_APK = 'dilla-$TAG.apk';
+export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dillabot-linux-amd64', 'dillabot-linux-arm64', 'dilla-bot-core-linux-amd64', 'dilla-bot-core-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh', 'install-bot.sh', RELEASE_APK];
 const RELEASE_STEPS = {
   tag: [
     'test "$GITHUB_REF" = "refs/tags/$tag"',
@@ -1366,6 +1371,19 @@ const RELEASE_STEPS = {
     'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist',
     'name: dillad-binaries',
   ],
+  'mobile-bundle': [
+    'npm run build -w @dilla/mobile',
+    'name: dilla-mobile-dist',
+  ],
+  'android-release': [
+    'DILLA_ANDROID_VERSION_CODE: ${{ steps.build.outputs.number }}',
+    'if [ "$RUN_ATTEMPT" -gt 9 ]',
+    'echo "number=$((1000 + RUN_NUMBER * 10 + RUN_ATTEMPT))" >> "$GITHUB_OUTPUT"',
+    "trap 'rm -f \"$ks\"' EXIT",
+    'npm run android:check-signer -w @dilla/mobile',
+    'npm run android:check-release-signed -w @dilla/mobile',
+    'name: dilla-android-apk',
+  ],
   release: [
     'cp deploy/install.sh release/install.sh',
     'cp deploy/install-bot.sh release/install-bot.sh',
@@ -1381,11 +1399,13 @@ const RELEASE_STEPS = {
     'sha256sum -c --strict SHA256SUMS',
     'gh release create "$TAG" --verify-tag',
     'flags="--prerelease"',
-    `${RELEASE_ASSETS.map((a) => `release/${a}`).join(' ')} release/SHA256SUMS`,
+    'name: dilla-android-apk',
+    `sha256sum -c --strict ${RELEASE_APK}.sha256`,
+    `${RELEASE_ASSETS.map((a) => `release/${a}`).join(' ')} release/${RELEASE_APK}.sha256 release/SHA256SUMS`,
   ],
 };
 const RELEASE_VERSION_ENV = 'VERSION: ${{ needs.tag.outputs.version }}';
-const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'bot-release': ['tag', 'rust-wasi'], 'go-release': ['tag', 'web-build'], release: ['tag', 'go-release', 'rust-wasi', 'bot-release'] };
+const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'bot-release': ['tag', 'rust-wasi'], 'go-release': ['tag', 'web-build'], 'mobile-bundle': ['tag'], 'android-release': ['tag', 'mobile-bundle'], release: ['tag', 'go-release', 'rust-wasi', 'bot-release', 'android-release'] };
 
 export function checkReleaseWorkflow(root) {
   const file = 'release.yml';
@@ -1445,6 +1465,16 @@ export function checkReleaseWorkflow(root) {
   }
   for (const [name, body] of Object.entries(jobs)) {
     if (name !== 'release' && /contents: write/.test(body)) problems.push(`${file}: job "${name}" asks for contents: write; only the release job writes`);
+  }
+  // The signing keystore lives in the mobile-release environment, and only android-release, after the tag job's gate,
+  // enters it or reads a secret.
+  if ('android-release' in jobs && !/^ {4}environment: mobile-release$/m.test(jobs['android-release'])) {
+    problems.push(`${file}: job "android-release" must run in environment: mobile-release, which holds the signing keystore`);
+  }
+  for (const [name, body] of Object.entries(jobs)) {
+    if (name === 'android-release') continue;
+    if (/^ {4}environment:/m.test(body)) problems.push(`${file}: job "${name}" enters an environment; only android-release does`);
+    if (/\$\{\{\s*secrets\./.test(body)) problems.push(`${file}: job "${name}" reads a secret; only android-release holds the signing secrets`);
   }
   // The gate lists the server workflow's runs: only the tag job reads actions, and a job-level block replaces the workflow's.
   if ('tag' in jobs && !/^ {4}permissions:\n {6}contents: read\n {6}actions: read$/m.test(jobs.tag)) {

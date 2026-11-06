@@ -120,8 +120,9 @@ test('the shipped pattern sets come from the workflows that run the wrapped comm
   assert.deepEqual(GO.files, ['desktop-ci.yml', 'desktop.yml', 'mobile.yml', 'release.yml', 'server.yml']);
   assert.deepEqual(STAPLE.files, ['desktop.yml']);
   assert.deepEqual(ELECTRON.files, ['desktop-ci.yml', 'desktop.yml']);
-  // mobile-release.yml builds the signed APK (Gradle) and archives for TestFlight (Swift packages); the SDK install is mobile.yml's only.
-  for (const set of [GRADLE, SPM]) assert.deepEqual(set.files, ['mobile-release.yml', 'mobile.yml']);
+  // release.yml builds the signed APK (Gradle) and mobile-release.yml archives for TestFlight (Swift packages); the SDK install is mobile.yml's only.
+  assert.deepEqual(GRADLE.files, ['mobile.yml', 'release.yml']);
+  assert.deepEqual(SPM.files, ['mobile-release.yml', 'mobile.yml']);
   assert.deepEqual(ANDROID_SDK.files, ['mobile.yml']);
 });
 

@@ -23,7 +23,7 @@ expires after 90 days, so keep updating.
    lists a `dilla-v….apk` under Assets (server release tags start with `v`; desktop releases, tagged `desktop-v…`, have no APK)
    and download it.
 2. Optional: download `dilla-<tag>.apk.sha256` too and compare its hash with the one of the APK
-   (`sha256sum -c dilla-<tag>.apk.sha256` on a computer).
+   (`sha256sum -c dilla-<tag>.apk.sha256` on a computer). The release's `SHA256SUMS` lists the same hash.
 3. Open the APK. If Android asks, allow "install unknown apps" for the browser or files app you used, then go back
    and install.
 4. Play Protect may warn about an unknown developer. The APK is not from the Play Store, so this is expected. Choose

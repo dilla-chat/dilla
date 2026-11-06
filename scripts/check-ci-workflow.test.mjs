@@ -2334,11 +2334,37 @@ test('a release checksum that omits Bot binaries is reported', () => {
 });
 
 test('a release that no longer attaches install.sh is reported', () => {
-  assertReported(releaseProblems((t) => t.replace('release/install.sh release/install-bot.sh release/SHA256SUMS', 'release/install-bot.sh release/SHA256SUMS')), 'release/install.sh');
+  assertReported(releaseProblems((t) => t.replace('release/install.sh release/install-bot.sh release/dilla-$TAG.apk', 'release/install-bot.sh release/dilla-$TAG.apk')), 'release/install.sh');
 });
 
 test('a release that no longer attaches install-bot.sh is reported', () => {
-  assertReported(releaseProblems((t) => t.replace('release/install-bot.sh release/SHA256SUMS', 'release/SHA256SUMS')), 'release/install-bot.sh');
+  assertReported(releaseProblems((t) => t.replace('release/install-bot.sh release/dilla-$TAG.apk', 'release/dilla-$TAG.apk')), 'release/install-bot.sh');
+});
+
+// 2026-11-06: releases are immutable, so the signed APK is built before the release job publishes, inside the release.
+test('a release that no longer attaches the APK or its checksum is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(' release/dilla-$TAG.apk release/dilla-$TAG.apk.sha256 ', ' ')), 'release/dilla-$TAG.apk');
+  assertReported(releaseProblems((t) => t.replace(' release/dilla-$TAG.apk.sha256 ', ' ')), 'release/dilla-$TAG.apk.sha256');
+});
+
+test('SHA256SUMS without the APK is reported', () => {
+  assertReported(releaseProblems((t) => t.replace(' install-bot.sh dilla-$TAG.apk > SHA256SUMS', ' install-bot.sh > SHA256SUMS')), '> SHA256SUMS');
+});
+
+test('a release that does not wait for the signed APK is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('needs: [tag, go-release, rust-wasi, bot-release, android-release]', 'needs: [tag, go-release, rust-wasi, bot-release]')), 'must list "android-release"');
+});
+
+test('an APK build that skips the tag gate or the signer checks is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('needs: [tag, mobile-bundle]', 'needs: [mobile-bundle]')), 'job "android-release" must list "tag"');
+  assertReported(releaseProblems((t) => t.replace('        run: npm run android:check-signer -w @dilla/mobile\n', '        run: echo skipped\n')), 'android:check-signer');
+  assertReported(releaseProblems((t) => t.replace("trap 'rm -f \"$ks\"' EXIT", ': no trap')), 'trap');
+});
+
+test('the signing environment and secrets outside android-release are reported', () => {
+  assertReported(releaseProblems((t) => t.replace('    environment: mobile-release\n', '')), 'environment: mobile-release');
+  assertReported(releaseProblems((t) => t.replace('  rust-wasi:\n    runs-on: ubuntu-latest\n', '  rust-wasi:\n    runs-on: ubuntu-latest\n    environment: mobile-release\n')), 'only android-release does');
+  assertReported(releaseProblems((t) => t.replace('      - run: npm run build -w @dilla/mobile\n', '      - run: npm run build -w @dilla/mobile\n        env:\n          K: ${{ secrets.ANDROID_KEY_PASSWORD }}\n')), 'reads a secret');
 });
 
 test('SHA256SUMS that leaves an asset out is reported', () => {

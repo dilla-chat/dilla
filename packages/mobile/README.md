@@ -129,20 +129,27 @@ violation. Screenshots, logcat on failure and the emulator's own log (`emulator.
 
 ## Releases
 
-`.github/workflows/mobile-release.yml` runs after `release.yml` succeeds for a `v*` tag, or by hand with a tag. It
-refuses commits that are not on `main`, and (by hand) tags without a successful `release.yml` run.
+GitHub releases in this repository are immutable: once published, no asset can be added. So the two apps ship by
+different routes.
 
-- **Android:** Gradle builds the APK unsigned. One step signs it with `apksigner` using the keystore from the
-  `mobile-release` environment, a later step checks the signer against the pin in `release-trust.json` and the
-  network config, and a last step uploads `dilla-<tag>.apk` and `dilla-<tag>.apk.sha256` (`sha256sum` format) to the GitHub release with
-  `--clobber`. The upload is not atomic, so a rerun repairs a half-finished one.
-- **iOS:** an unsigned archive, a cloud-signed export, and an upload to TestFlight.
-- **Version numbers:** the marketing version comes from the tag (`v0.1.0-mobile1` gives `0.1.0`). The iOS build
-  number and the Android `versionCode` are `1000 + run_number*10 + run_attempt`.
+- **Android, inside the server release:** `.github/workflows/release.yml` builds and signs the APK before it
+  publishes, after its `tag` job has checked that the tag's commit is on `main` with a green server run. Gradle
+  builds the APK unsigned. One step signs it with `apksigner` using the keystore from the `mobile-release`
+  environment, later steps check the signer against the pin in `release-trust.json` and the network config, and the
+  release job attaches `dilla-<tag>.apk` and `dilla-<tag>.apk.sha256` (`sha256sum` format) and lists the APK in
+  `SHA256SUMS`. If the APK fails, the release fails: server and mobile releases move in lockstep.
+- **iOS, to TestFlight:** `.github/workflows/mobile-release.yml` runs after `release.yml` succeeds for a `v*` tag, or
+  by hand with a tag. It refuses commits that are not on `main`, and (by hand) tags without a successful `release.yml`
+  run. It builds an unsigned archive, exports it cloud-signed and uploads it to TestFlight. It uploads nothing to the
+  release.
+- **Version numbers:** the marketing version comes from the tag (`v0.1.0-mobile1` gives `0.1.0`). The Android
+  `versionCode` is `1000 + run_number*10 + run_attempt` of `release.yml`; the iOS build number is the same formula
+  over `mobile-release.yml`'s runs. The two are independent.
 
 ### The `mobile-release` environment
 
-The deployment branch policy is `main`. The secrets and the variable live only here.
+The deployment policy admits the branch `main` (`mobile-release.yml`) and tags `v*` (`release.yml` runs on the tag).
+The secrets and the variable live only here.
 
 | Name | Kind | Value |
 | --- | --- | --- |
@@ -178,7 +185,12 @@ TestFlight builds expire after 90 days, so release at least that often.
 gh workflow run mobile-release.yml -f tag=vX.Y.Z-...
 ```
 
-Replace `vX.Y.Z-...` with a real server release tag. The tag must have a successful `release.yml` run. The run replaces any APK and checksum already on the release.
+Replace `vX.Y.Z-...` with a real server release tag. The tag must have a successful `release.yml` run. This reruns
+the TestFlight build only.
+
+The APK cannot be added to a published release. If `release.yml` fails (the APK included), nothing is published:
+rerun the failed jobs, or dispatch `release.yml` from the tag. A release that is already published without an APK
+stays without one; the next tag carries it.
 
 Only tags cut after this branch merged can build: older tags (such as `v0.1.0-mobile1`) lack the signer pin, the export options and the Gradle version variables the workflow needs. There is no backfill. The first real run is the next server release tag.
 
