@@ -85,7 +85,10 @@ Jonas, 2026-11-06:
 
 - Third-party bot programs that are their own MLS members, or a public bot SDK. Integrations go through the Bot's webhooks (decision 3).
 - A Bot that reads ordinary chat for new features.
-- Moving ordinary chat sends from HTTPS POST to the WebSocket.
+- Moving the app's REST calls to the WebSocket: chat sends, history, settings, admin, uploads, and sealed Bot commands, which stay one HTTPS POST each.
+  - Jonas, 2026-11-06, after review: REST on a kept-alive connection costs one round trip, the same as a socket frame. It also gives per-request status, safe retries, per-route rate limits and standard tooling.
+  - The rule is push over the socket, ask over REST, and nothing polls.
+  - A specific REST call moves only if a measurement shows it is slow.
 - Music providers other than YouTube.
 - Outgoing integrations (decision 12). The catalog's command record keeps room for an admin-defined handler later.
 - **Automod.** Jonas, 2026-11-06: "lets remove automod". It is the one feature that reads every channel message, so it is removed, not ported (see Migration).
