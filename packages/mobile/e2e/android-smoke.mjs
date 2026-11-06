@@ -54,6 +54,9 @@ const HOST_A = 'a.dilla.test', HOST_B = 'b.dilla.test';
 const CONNECT_PORT = 18480;
 /** Every tunnel the emulator opened through the CONNECT proxy, for the resume measurement (host clock). */
 const tunnels = [];
+/** CONNECT targets the proxy refused (Android's own background traffic), and the test hosts, for a failed run's diagnostics. */
+const refused = [];
+const hosts = [];
 const work = mkdtempSync(join(tmpdir(), 'dilla-android-smoke-'));
 const cleanups = [];
 const started = Date.now();
@@ -138,7 +141,7 @@ async function startConnectProxy() {
     const port = allowed.get(request.url ?? '');
     // Refused tunnels (Android's own background traffic, e.g. connectivity checks, also goes through the global proxy)
     // can be reset by the device; without a listener that ECONNRESET is an unhandled 'error' and kills the run.
-    if (port === undefined) { client.on('error', () => {}); client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
+    if (port === undefined) { refused.push({ target: request.url, at: Date.now() }); client.on('error', () => {}); client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
     const entry = { target: request.url, opened: Date.now(), closed: null };
     tunnels.push(entry);
     const upstream = tcp(port, '127.0.0.1', () => { client.write('HTTP/1.1 200 Connection Established\r\n\r\n'); if (head.length) upstream.write(head); upstream.pipe(client).pipe(upstream); });
@@ -249,11 +252,32 @@ async function connect(urlPattern) {
 }
 
 const violations = [];
+/** The WebView's console errors and warnings and its failed requests (last 200 each), for a failed run's diagnostics. */
+const consoleLines = [], failedRequests = [];
+const keep = (list, item) => { list.push(item); if (list.length > 200) list.shift(); };
 function watch(page) {
   page.on('console', message => {
     const text = message.text();
     if (/Content Security Policy|Refused to (load|execute|apply|connect|create)/i.test(text)) violations.push(text);
+    if (message.type() === 'error' || message.type() === 'warning') keep(consoleLines, `${new Date().toISOString()} ${message.type()} ${text.slice(0, 500)}`);
   });
+  page.on('requestfailed', request => { keep(failedRequests, `${new Date().toISOString()} ${request.method()} ${request.url().split('?')[0]} ${request.failure()?.errorText ?? ''}`); });
+}
+
+/** Why a step stalled: everything the proxy, the hosts and the WebView saw, written to OUT and summarised in the log. */
+function writeDiagnostics() {
+  const rel = at => `${((at - started) / 1000).toFixed(1)}s`;
+  const lines = [
+    `# tunnels (${tunnels.length})`, ...tunnels.map(t => `${rel(t.opened)} ${t.target} ${t.closed === null ? 'open' : `closed ${rel(t.closed)}`}`),
+    `# refused CONNECTs (${refused.length})`, ...refused.map(r => `${rel(r.at)} ${r.target}`),
+    ...hosts.flatMap(h => [`# instance ${h.name} requests (${h.traffic.length})`, ...h.traffic.map(t => `${rel(t.at)} ${t.what}`)]),
+    `# WebView console errors and warnings (${consoleLines.length})`, ...consoleLines,
+    `# WebView failed requests (${failedRequests.length})`, ...failedRequests,
+  ];
+  writeFileSync(join(OUT, 'diagnostics.txt'), `${lines.join('\n')}\n`);
+  console.error(`diagnostics: ${tunnels.length} tunnels (last at ${tunnels.length ? rel(tunnels.at(-1).opened) : '-'}), ${refused.length} refused, `
+    + hosts.map(h => `${h.name} ${h.traffic.length} requests (last ${h.traffic.length ? `${rel(h.traffic.at(-1).at)} ${h.traffic.at(-1).what}` : '-'})`).join(', ')
+    + `; last failed requests:\n  ${failedRequests.slice(-8).join('\n  ') || '-'}\nlast console errors:\n  ${consoleLines.slice(-8).join('\n  ') || '-'}`);
 }
 
 // ---- UI steps (the selectors of e2e/web/support/app.ts) -------------------------------------------------------------
@@ -274,8 +298,20 @@ async function expectShell(page) {
 async function pickInstance(page, url) {
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible({ timeout: WAIT });
   await page.getByLabel('Instance address').fill(url);
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
-  await page.waitForURL(/^https:\/\/localhost\/$/, { timeout: WAIT });
+  // The picker probes the instance (10 s) before it navigates. On a cold CI emulator the first probe can time out; a
+  // person taps Connect again, and so does the test, at most three times, saying so in the log.
+  for (let attempt = 1; ; attempt++) {
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    const outcome = await Promise.race([
+      page.waitForURL(/^https:\/\/localhost\/$/, { timeout: WAIT }).then(() => 'navigated', () => 'timeout'),
+      expect(page.locator('#error')).not.toBeEmpty({ timeout: WAIT }).then(() => 'error', () => 'timeout'),
+    ]);
+    if (outcome === 'navigated') return;
+    if (outcome === 'timeout') throw new Error(`the picker neither navigated nor showed an error for ${url} in ${WAIT / 1000} s`);
+    const message = await page.locator('#error').textContent().catch(() => '');
+    log(`picker: connect to ${url} failed (attempt ${attempt}): ${message}`);
+    if (attempt === 3) throw new Error(`the picker could not connect to ${url} in 3 attempts: ${message}`);
+  }
 }
 
 async function signUp(page, host) {
@@ -283,8 +319,16 @@ async function signUp(page, host) {
   // Review M1: the picker's navigation to / boots the client; a goto while that load is still running raced it
   // (the page detached on a cold emulator). Wait until the client shows its onboarding, then go to the invite.
   await expect(page.locator('.d-onboarding-frame').getByRole('heading', { level: 1 })).toBeVisible({ timeout: WAIT });
-  await page.goto(`https://localhost/welcome?invite=${encodeURIComponent(host.inviteCode)}`);
-  await expect(page.getByRole('heading', { name: copy('onboarding.connect.title') })).toBeVisible({ timeout: WAIT });
+  const welcome = `https://localhost/welcome?invite=${encodeURIComponent(host.inviteCode)}`;
+  const connectTitle = page.getByRole('heading', { name: copy('onboarding.connect.title') });
+  await page.goto(welcome);
+  // A cold CI emulator has left this load blank (run 42170416320); record the page's state, then load it once more.
+  if (!await connectTitle.isVisible() && !await connectTitle.waitFor({ timeout: WAIT / 2 }).then(() => true, () => false)) {
+    const state = await page.evaluate(() => `${location.href} readyState=${document.readyState} body=${document.body?.innerHTML.length ?? 0} chars`).catch(e => `unreadable (${e})`);
+    log(`signup on ${host.name}: the invite page is blank after ${WAIT / 2000} s (${state}); loading it again`);
+    await page.goto(welcome);
+  }
+  await expect(connectTitle).toBeVisible({ timeout: WAIT });
   await button(page, 'onboarding.next').click();
   await page.getByLabel(copy('onboarding.identity.username'), { exact: true }).fill(account.username);
   await page.getByLabel(copy('onboarding.identity.password'), { exact: true }).fill(account.password);
@@ -349,6 +393,7 @@ async function main() {
   await startConnectProxy();
   const a = await startHost('A', HOST_A, 18463, 18464, 18443, tls);
   const b = await startHost('B', HOST_B, 18465, 18466, 18444, tls);
+  hosts.push(a, b);
   log(`hosts up: A ${a.url}, B ${b.url}`);
   installUserCa(tls.ca);
   buildAndInstall();
@@ -505,6 +550,7 @@ let failed = false;
 try { execFileSync('mkdir', ['-p', OUT]); await main(); log('PASS'); }
 catch (error) {
   failed = true; console.error(error);
+  try { writeDiagnostics(); } catch (e) { console.error(`diagnostics: ${e}`); }
   // Diagnostics for a failed run, before the emulator goes away.
   try { writeFileSync(join(OUT, 'logcat.txt'), execFileSync(ADB, ['logcat', '-d', '-t', '3000'], { env, maxBuffer: 64 << 20 })); } catch { /* best effort */ }
   try { writeFileSync(join(OUT, 'failure.png'), execFileSync(ADB, ['exec-out', 'screencap', '-p'], { env, maxBuffer: 64 << 20 })); } catch { /* best effort */ }
