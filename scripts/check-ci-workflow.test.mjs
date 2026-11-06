@@ -2366,6 +2366,24 @@ test('a secret outside the signing and export steps is reported', () => {
   assertReported(mobileReleaseProblems((t) => t.replace('          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}\n          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}\n', '          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}\n          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}\n          KS: ${{ secrets.ANDROID_KEYSTORE_B64 }}\n')), 'names a secret it may not');
 });
 
+test('a commented-out gate line does not count (review L2)', () => {
+  // A whole comment line, and a gate pushed into a trailing comment after a no-op.
+  assertReported(mobileReleaseProblems((t) => t.replace('          git merge-base --is-ancestor "$sha" origin/main ||', '          # git merge-base --is-ancestor "$sha" origin/main ||')), 'git merge-base --is-ancestor "$sha" origin/main');
+  assertReported(mobileReleaseProblems((t) => t.replace('          [ "$RUN_REF" = refs/heads/main ] ||', '          true # [ "$RUN_REF" = refs/heads/main ] ||')), '[ "$RUN_REF" = refs/heads/main ]');
+  assertReported(mobileReleaseProblems((t) => t.replace('          [ "$RUN_REF" = refs/heads/main ] ||', '          # [ "$RUN_REF" = refs/heads/main ] ||')), '[ "$RUN_REF" = refs/heads/main ]');
+});
+
+test('a workflow_run gate without the push event or the tag-to-head_sha match is reported (review L1)', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace('[ "$RUN_EVENT" = push ]', 'true')), '[ "$RUN_EVENT" = push ]');
+  assertReported(mobileReleaseProblems((t) => t.replace('[ "$sha" = "$RUN_SHA" ]', 'true')), '[ "$sha" = "$RUN_SHA" ]');
+});
+
+test('a publish that trusts the artifact alone is reported (review L3)', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace('          digest-mismatch: error\n', '')), 'digest-mismatch');
+  assertReported(mobileReleaseProblems((t) => t.replace(`          printf '%s  %s\\n' "$APK_SHA256" "$apk" | sha256sum -c --strict\n`, '')), '"$APK_SHA256" "$apk" | sha256sum -c --strict');
+  assertReported(mobileReleaseProblems((t) => t.replace('          APK_SHA256: ${{ needs.android-release.outputs.apk_sha256 }}\n', '          APK_SHA256: ${{ needs.resolve.outputs.sha }}\n')), 'needs.android-release.outputs.apk_sha256');
+});
+
 test('toJSON(secrets) anywhere is reported', () => {
   assertReported(mobileReleaseProblems((t) => t.replace('\n      TAG: ${{ needs.resolve.outputs.tag }}\n      GH_TOKEN: ${{ github.token }}\n', '\n      TAG: ${{ needs.resolve.outputs.tag }}\n      GH_TOKEN: ${{ github.token }}\n      ALL: ${{ toJSON(secrets) }}\n')), 'toJSON(secrets)');
 });

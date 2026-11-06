@@ -36,7 +36,7 @@ jobs:
   # v* tag (with workflow_run, head_branch is the tag name for a tag push); a failed or non-tag release run, or a
   # desktop-v* tag, builds nothing. For a published release (immutable) only TestFlight runs: draft=false skips Android.
   resolve:
-    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v') && !startsWith(github.event.workflow_run.head_branch, 'desktop-v'))
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v') && !startsWith(github.event.workflow_run.head_branch, 'desktop-v'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -60,6 +60,9 @@ jobs:
           RUN_REF: ${{ github.ref }}
           RUN_TAG: ${{ github.event.workflow_run.head_branch }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_PATH: ${{ github.event.workflow_run.path }}
+          RUN_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
           INPUT_TAG: ${{ inputs.tag }}
         run: |
           # Only main's workflow file runs here (a dispatch from another branch would run that branch's file).
@@ -85,13 +88,17 @@ jobs:
             echo "could not look up the release of $tag: $out"
             exit 1
           fi
-          if [ "$EVENT_NAME" = workflow_run ]; then
-            sha="$RUN_SHA"
-          else
-            # The commit the tag points at (refs/tags/ is unambiguous even if a branch has the same name).
-            sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$tag" --jq .sha)
-          fi
+          # The commit the tag points at (refs/tags/ is unambiguous even if a branch has the same name).
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$tag" --jq .sha)
           [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "could not resolve $tag to a commit"; exit 1; }
+          if [ "$EVENT_NAME" = workflow_run ]; then
+            # workflows: [release] matches by name: only this repository's release.yml, run by a tag push, for exactly
+            # the commit the tag points at, starts the mobile builds.
+            [ "$RUN_EVENT" = push ] || { echo "the release run was triggered by $RUN_EVENT, not a tag push"; exit 1; }
+            [ "$RUN_PATH" = .github/workflows/release.yml ] || { echo "the triggering run is $RUN_PATH, not .github/workflows/release.yml"; exit 1; }
+            [ "$RUN_REPO" = "$GITHUB_REPOSITORY" ] || { echo "the triggering run is from $RUN_REPO, not $GITHUB_REPOSITORY"; exit 1; }
+            [ "$sha" = "$RUN_SHA" ] || { echo "$tag points at $sha, but the release run built $RUN_SHA"; exit 1; }
+          fi
           # The signing keys are only ever used on a commit of main that release.yml gated.
           git merge-base --is-ancestor "$sha" origin/main || { echo "$tag points at $sha, which is not on main; the mobile builds, which hold the signing secrets, run only for commits of main"; exit 1; }
           if [ "$EVENT_NAME" = workflow_dispatch ]; then
@@ -152,6 +159,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     environment: mobile-release
+    # The APK's sha256, which publish checks the downloaded artifact against (not only the .sha256 inside it).
+    outputs:
+      apk_sha256: ${{ steps.apk.outputs.sha256 }}
     env:
       TAG: ${{ needs.resolve.outputs.tag }}
     steps:
@@ -233,11 +243,13 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/dilla-release.p12"
       - name: Name the APK for the release and write its checksum
+        id: apk
         run: |
           mkdir -p dist
           cp packages/mobile/android/app/build/outputs/apk/release/app-release.apk "dist/dilla-$TAG.apk"
           # sha256sum format with the bare filename, so `sha256sum -c` works where the two are downloaded.
           cd dist && sha256sum "dilla-$TAG.apk" > "dilla-$TAG.apk.sha256"
+          echo "sha256=$(cut -d' ' -f1 "dilla-$TAG.apk.sha256")" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-android-apk
@@ -273,10 +285,16 @@ jobs:
         with:
           name: dilla-android-apk
           path: apk
+          digest-mismatch: error
       - name: Add the APK to SHA256SUMS and attach it to the draft
+        env:
+          APK_SHA256: ${{ needs.android-release.outputs.apk_sha256 }}
         run: |
           apk="dilla-$TAG.apk"
           cd apk
+          # The APK is the one android-release signed and hashed (its job output), and its .sha256 says the same.
+          [[ $APK_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo "::error::android-release gave no APK sha256"; exit 1; }
+          printf '%s  %s\n' "$APK_SHA256" "$apk" | sha256sum -c --strict
           sha256sum -c --strict "$apk.sha256"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir server
           test -s server/SHA256SUMS

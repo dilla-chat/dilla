@@ -1538,12 +1538,14 @@ const MOBILE_RELEASE_STEPS = {
   resolve: [
     '[ "$RUN_REF" = refs/heads/main ]',
     'git merge-base --is-ancestor "$sha" origin/main',
+    '[ "$RUN_EVENT" = push ]',
+    '[ "$sha" = "$RUN_SHA" ]',
     'actions/workflows/release.yml/runs?branch=$tag&status=success',
     'published releases are immutable',
     'echo "draft=$draft"',
   ],
   'android-release': ['npm run android:check-signer -w @dilla/mobile', 'npm run android:check-release-signed -w @dilla/mobile', 'if [ "$RUN_ATTEMPT" -gt 9 ]', 'dilla-android-apk'],
-  publish: ['[ "$draft" = true ]', 'dilla-android-apk', '--clobber', 'sha256sum -c --strict SHA256SUMS', 'gh release edit "$TAG" --draft=false'],
+  publish: ['[ "$draft" = true ]', 'dilla-android-apk', '"digest-mismatch":"error"', '"APK_SHA256":"${{ needs.android-release.outputs.apk_sha256 }}"', 'printf \'%s  %s\\n\' "$APK_SHA256" "$apk" | sha256sum -c --strict', '--clobber', 'sha256sum -c --strict SHA256SUMS', 'gh release edit "$TAG" --draft=false'],
 };
 
 export function checkMobileReleaseWorkflow(root) {
@@ -1565,11 +1567,15 @@ export function checkMobileReleaseWorkflow(root) {
   }
   const jobs = doc?.jobs ?? {};
   for (const name of ['resolve', ...Object.keys(MOBILE_RELEASE_NEEDS)]) if (!(name in jobs)) problems.push(`${file}: missing job "${name}"`);
-  const stepLines = (step) => JSON.stringify(step);
+  // A step as text for the required lines, its run without comment lines and trailing ` # …` comments, so a
+  // commented-out gate does not count (review L2).
+  const uncomment = (run) => run.split('\n').filter((line) => !/^\s*#/.test(line)).map((line) => line.replace(/\s+#.*$/, '')).join('\n');
+  const stepLines = (step) => JSON.stringify(typeof step?.run === 'string' ? { ...step, run: uncomment(step.run) } : step);
   for (const [name, job] of Object.entries(jobs)) {
     const steps = job?.steps ?? [];
     for (const want of MOBILE_RELEASE_STEPS[name] ?? []) {
-      if (!steps.some((step) => stepLines(step).includes(JSON.stringify(want).slice(1, -1)))) problems.push(`${file}: job "${name}" is missing: ${want}`);
+      // A wanted line is script text (JSON-escaped to match) or, written as JSON, a with:/env: entry.
+      if (!steps.some((step) => stepLines(step).includes(JSON.stringify(want).slice(1, -1)) || stepLines(step).includes(want))) problems.push(`${file}: job "${name}" is missing: ${want}`);
     }
     const needs = typeof job?.needs === 'string' ? [job.needs] : job?.needs ?? [];
     for (const need of MOBILE_RELEASE_NEEDS[name] ?? []) if (!needs.includes(need)) problems.push(`${file}: job "${name}" must list "${need}" in its needs:`);
