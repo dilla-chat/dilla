@@ -8,7 +8,8 @@ name: mobile-release
 # a tag can edit. This workflow always runs main's file (workflow_run runs the default branch's; a dispatch must be
 # from main, and resolve refuses any other ref). The signing secrets live only in the `mobile-release` environment,
 # whose deployment policy is main only. Releases are immutable once published, so the APK goes onto the draft; if
-# Android fails, the release stays a draft (lockstep): fix it and dispatch this workflow for the tag.
+# Android fails, the release stays a draft (lockstep): fix it and dispatch this workflow for the tag. For a release
+# that is already published, a run (such as a dispatch after adding the App Store Connect secrets) builds TestFlight only.
 #
 # Each secret job checks its own secrets first and fails naming the missing ones, never printing a value. The bundle
 # and publish jobs hold no secrets; only publish may write (contents: write) and it enters no environment. Like
@@ -20,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: the release tag to build the mobile apps for, e.g. v0.1.0 (its release must exist and still be a draft)
+        description: the release tag to build the mobile apps for, e.g. v0.1.0 (a draft gets the APK and is published; a published release reruns TestFlight only)
         required: true
         type: string
 concurrency:
@@ -33,7 +34,7 @@ env:
 jobs:
   # Which tag, which commit and which numbers. A workflow_run builds only when the release run succeeded and ran for a
   # v* tag (with workflow_run, head_branch is the tag name for a tag push); a failed or non-tag release run, or a
-  # desktop-v* tag, builds nothing. A published release is refused: it is immutable, so nothing can be added to it.
+  # desktop-v* tag, builds nothing. For a published release (immutable) only TestFlight runs: draft=false skips Android.
   resolve:
     if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v') && !startsWith(github.event.workflow_run.head_branch, 'desktop-v'))
     runs-on: ubuntu-latest
@@ -45,6 +46,7 @@ jobs:
       tag: ${{ steps.r.outputs.tag }}
       sha: ${{ steps.r.outputs.sha }}
       version: ${{ steps.r.outputs.version }}
+      draft: ${{ steps.r.outputs.draft }}
     steps:
       # Full history, for the on-main check below. Default ref (main): resolve builds nothing from the tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -69,13 +71,15 @@ jobs:
           if ! [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
             echo "release tags look like v1.2.3 or v1.2.3-mobile1, got: $tag"; exit 1
           fi
-          # A published release is immutable: the APK can never be added to it. The tags endpoint answers only for a
-          # published release; a 404 means a draft or none, and the publish job (whose token can see drafts) requires
-          # the draft before it uploads anything. Any other failure is shown.
+          # A published release is immutable: the APK can never be added to it, so Android is skipped (draft=false) and
+          # only TestFlight runs, which attaches nothing. The tags endpoint answers only for a published release; a 404
+          # means a draft (or none: the publish job, whose token can see drafts, requires the draft before it uploads
+          # anything). Any other failure is shown.
+          draft=true
           if out=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .draft 2>&1); then
             if [ "$out" != true ]; then
-              echo "the release of $tag is already published and immutable; its assets cannot be changed. Cut a new tag"
-              exit 1
+              draft=false
+              echo "::notice::the release of $tag is already published, and published releases are immutable: Android (android-release, publish) is skipped; only the TestFlight build runs"
             fi
           elif ! printf '%s' "$out" | grep -q 'HTTP 404'; then
             echo "could not look up the release of $tag: $out"
@@ -100,6 +104,7 @@ jobs:
             echo "tag=$tag"
             echo "sha=$sha"
             echo "version=$version"
+            echo "draft=$draft"
           } >> "$GITHUB_OUTPUT"
           echo "mobile build of $tag at $sha: version $version"
 
@@ -138,9 +143,12 @@ jobs:
           if-no-files-found: error
 
   # The release-signed APK: signed from the environment's keystore, proven to be signed by the pinned certificate and to
-  # trust system CAs only with no cleartext, then handed to the publish job as an artifact. This job cannot write.
+  # trust system CAs only with no cleartext, then handed to the publish job as an artifact. This job cannot write. It and
+  # publish run only for a draft (a published release is immutable); the plain condition keeps needs in force: they
+  # run only if their needs succeeded.
   android-release:
     needs: [resolve, mobile-bundle]
+    if: needs.resolve.outputs.draft == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     environment: mobile-release
@@ -242,6 +250,7 @@ jobs:
   # It does not wait for TestFlight, which attaches nothing.
   publish:
     needs: [resolve, android-release]
+    if: needs.resolve.outputs.draft == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

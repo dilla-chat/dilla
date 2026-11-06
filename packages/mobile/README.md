@@ -136,8 +136,9 @@ A server release and its Android APK are published together, as one release, by 
    **draft**. It holds no secret and enters no environment: a tag run uses the workflow file at the tagged commit,
    which anyone who can push a tag could edit.
 2. `.github/workflows/mobile-release.yml` runs after `release.yml` succeeds, always from `main`'s workflow file (a
-   dispatch from another branch is refused). `resolve` refuses a commit that is not on `main`, a tag whose release is
-   already published (it is immutable), and, by hand, a tag without a successful `release.yml` run for that commit.
+   dispatch from another branch is refused). `resolve` refuses a commit that is not on `main` and, by hand, a tag
+   without a successful `release.yml` run for that commit. If the release is already published (immutable), it says
+   so in the log and skips the two Android jobs (`draft=false`); TestFlight still runs.
    - **Android:** Gradle builds the APK unsigned. One step signs it with `apksigner` using the keystore from the
      main-only `mobile-release` environment, and later steps check the signer against the pin in
      `release-trust.json` and the network config. The `publish` job, which holds no secret and is the only job that
@@ -196,7 +197,8 @@ gh workflow run mobile-release.yml -f tag=vX.Y.Z-...
 ```
 
 Run it from `main`. Replace `vX.Y.Z-...` with a real server release tag. The tag must have a successful `release.yml`
-run, and its release must still be a draft: a published release is immutable, so the run is refused. A release that
+run. While its release is a draft, the run builds the APK, attaches it and publishes. Once it is published
+(immutable), the run only rebuilds TestFlight, for example after adding the App Store Connect secrets. A release that
 was published without an APK (such as `v0.1.0-mobile2`) stays without one; the next tag carries it.
 
 Only tags cut after this branch merged can build: older tags (such as `v0.1.0-mobile1`) lack the signer pin, the export options and the Gradle version variables the workflow needs. There is no backfill. The first real run is the next server release tag.

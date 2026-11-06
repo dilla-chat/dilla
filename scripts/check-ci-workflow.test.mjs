@@ -2336,6 +2336,7 @@ function mobileReleaseProblems(edit) {
   writeFileSync(join(dir, '.github', 'workflows', 'mobile-release.yml'), edited);
   return checkMobileReleaseWorkflow(dir);
 }
+const DRAFT_IF = "    if: needs.resolve.outputs.draft == 'true'\n";
 const ANDROID_HEAD = '  android-release:\n    needs: [resolve, mobile-bundle]\n';
 const PUBLISH_HEAD = '  publish:\n    needs: [resolve, android-release]\n';
 const IOS_HEAD = '  ios-testflight:\n    needs: [resolve, mobile-bundle]\n';
@@ -2344,9 +2345,17 @@ test('the real mobile-release workflow passes every rule', () => {
   assert.deepEqual(checkMobileReleaseWorkflow(REPO_ROOT), []);
 });
 
+test('the Android jobs carry exactly the draft if:, which keeps their needs; the real file passes with it', () => {
+  assert.ok(REAL_MOBILE_RELEASE.includes(ANDROID_HEAD + DRAFT_IF) && REAL_MOBILE_RELEASE.includes(PUBLISH_HEAD + DRAFT_IF), 'fixture sanity: both jobs carry the draft condition');
+  assert.deepEqual(checkMobileReleaseWorkflow(REPO_ROOT), []);
+  assertReported(mobileReleaseProblems((t) => t.replace(ANDROID_HEAD + DRAFT_IF, ANDROID_HEAD)), 'job "android-release" must carry exactly if:');
+});
+
 test('a job-level if: that runs a secret or publishing job past its needs is reported', () => {
-  assertReported(mobileReleaseProblems((t) => t.replace(ANDROID_HEAD, `${ANDROID_HEAD}    if: \${{ !cancelled() }}\n`)), 'job "android-release" has a job-level if:');
-  assertReported(mobileReleaseProblems((t) => t.replace(PUBLISH_HEAD, `${PUBLISH_HEAD}    if: success() || failure()\n`)), 'job "publish" has a job-level if:');
+  assertReported(mobileReleaseProblems((t) => t.replace(ANDROID_HEAD + DRAFT_IF, `${ANDROID_HEAD}    if: always()\n`)), 'job "android-release" must carry exactly if:');
+  assertReported(mobileReleaseProblems((t) => t.replace(ANDROID_HEAD + DRAFT_IF, `${ANDROID_HEAD}    if: \${{ !cancelled() && needs.resolve.outputs.draft == 'true' }}\n`)), 'job "android-release" must carry exactly if:');
+  assertReported(mobileReleaseProblems((t) => t.replace(PUBLISH_HEAD + DRAFT_IF, `${PUBLISH_HEAD}    if: success() || failure()\n`)), 'job "publish" must carry exactly if:');
+  assertReported(mobileReleaseProblems((t) => t.replace('  mobile-bundle:\n    needs: [resolve]\n', '  mobile-bundle:\n    needs: [resolve]\n    if: always()\n')), 'job "mobile-bundle" has a job-level if:');
   assertReported(mobileReleaseProblems((t) => t.replace(IOS_HEAD, `${IOS_HEAD}    if: always()\n`)), 'job "ios-testflight" has a job-level if:');
 });
 
@@ -2374,9 +2383,10 @@ test('a key file whose trap leaves the step that writes it is reported', () => {
 });
 
 test('an environment or write access outside their jobs, or a publish that skips the APK, is reported', () => {
-  assertReported(mobileReleaseProblems((t) => t.replace(PUBLISH_HEAD, `${PUBLISH_HEAD}    environment: mobile-release\n`)), 'job "publish" enters an environment');
-  assertReported(mobileReleaseProblems((t) => t.replace(ANDROID_HEAD, `${ANDROID_HEAD}    permissions:\n      contents: write\n`)), 'only publish writes');
+  assertReported(mobileReleaseProblems((t) => t.replace(PUBLISH_HEAD + DRAFT_IF, `${PUBLISH_HEAD + DRAFT_IF}    environment: mobile-release\n`)), 'job "publish" enters an environment');
+  assertReported(mobileReleaseProblems((t) => t.replace(ANDROID_HEAD + DRAFT_IF, `${ANDROID_HEAD + DRAFT_IF}    permissions:\n      contents: write\n`)), 'only publish writes');
   assertReported(mobileReleaseProblems((t) => t.replace(PUBLISH_HEAD, '  publish:\n    needs: [resolve]\n')), 'job "publish" must list "android-release"');
+  assertReported(mobileReleaseProblems((t) => t.replace('            echo "draft=$draft"\n', '')), 'echo "draft=$draft"');
   assertReported(mobileReleaseProblems((t) => t.replace('[ "$RUN_REF" = refs/heads/main ]', 'true')), 'refs/heads/main');
   assertReported(mobileReleaseProblems((t) => t.replace('[ "$draft" = true ]', 'true')), '[ "$draft" = true ]');
 });

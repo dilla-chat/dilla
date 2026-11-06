@@ -1531,12 +1531,16 @@ const MOBILE_KEY_FILES = {
   'ios-testflight': { step: 'Export and upload to TestFlight', trap: `trap 'rm -f "$RUNNER_TEMP/asc-key.p8"' EXIT`, write: '> "$RUNNER_TEMP/asc-key.p8"' },
 };
 const RESOLVE_SHA = '${{ needs.resolve.outputs.sha }}';
+/** The jobs that change the release run only while it is a draft; this exact condition keeps their needs in force. */
+export const MOBILE_DRAFT_IF = "needs.resolve.outputs.draft == 'true'";
+const MOBILE_DRAFT_ONLY = { 'android-release': true, publish: true };
 const MOBILE_RELEASE_STEPS = {
   resolve: [
     '[ "$RUN_REF" = refs/heads/main ]',
     'git merge-base --is-ancestor "$sha" origin/main',
     'actions/workflows/release.yml/runs?branch=$tag&status=success',
-    'already published and immutable',
+    'published releases are immutable',
+    'echo "draft=$draft"',
   ],
   'android-release': ['npm run android:check-signer -w @dilla/mobile', 'npm run android:check-release-signed -w @dilla/mobile', 'if [ "$RUN_ATTEMPT" -gt 9 ]', 'dilla-android-apk'],
   publish: ['[ "$draft" = true ]', 'dilla-android-apk', '--clobber', 'sha256sum -c --strict SHA256SUMS', 'gh release edit "$TAG" --draft=false'],
@@ -1569,8 +1573,12 @@ export function checkMobileReleaseWorkflow(root) {
     }
     const needs = typeof job?.needs === 'string' ? [job.needs] : job?.needs ?? [];
     for (const need of MOBILE_RELEASE_NEEDS[name] ?? []) if (!needs.includes(need)) problems.push(`${file}: job "${name}" must list "${need}" in its needs:`);
-    // Only resolve, which has no needs, may carry a job-level if: anything else could run past a failed gate.
-    if (name !== 'resolve' && Object.hasOwn(job ?? {}, 'if')) problems.push(`${file}: job "${name}" has a job-level if: (${job.if}); it must run only when its needs succeeded`);
+    // Only resolve, which has no needs, may carry a free job-level if:. The Android jobs carry exactly the draft
+    // condition, which has no status check and so still runs them only when their needs succeeded; every other job
+    // carries none (always(), !cancelled() or success() || failure() would run a job past a failed gate).
+    if (name in MOBILE_DRAFT_ONLY) {
+      if (job?.if !== MOBILE_DRAFT_IF) problems.push(`${file}: job "${name}" must carry exactly if: ${MOBILE_DRAFT_IF} (a published release is immutable), got ${job?.if === undefined ? 'none' : `if: ${job.if}`}`);
+    } else if (name !== 'resolve' && Object.hasOwn(job ?? {}, 'if')) problems.push(`${file}: job "${name}" has a job-level if: (${job.if}); it must run only when its needs succeeded`);
     const environment = job?.environment;
     if (name in MOBILE_SECRET_STEPS) {
       if (environment !== 'mobile-release') problems.push(`${file}: job "${name}" must run in environment: mobile-release, which holds its secrets`);
