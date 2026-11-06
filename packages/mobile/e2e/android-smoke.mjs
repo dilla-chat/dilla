@@ -15,8 +15,9 @@
 // (android/app/src/debug/res/xml/network_security_config.xml). Then, in the app: add instance A in the picker, sign up,
 // join a native peer's server and see the peer's message; add instance B and sign up there; back on A, send the app to
 // the background for 120 s while the peer posts, resume and see it; force-stop, relaunch, and find the same account
-// still signed in and both instances in the picker. Along the way: no CSP violation, and desktop-auth answers native
-// HTTP (no Origin) while the WebView fetch is refused.
+// still signed in and both instances in the picker; then 25 in-app round trips between the picker and the client, each
+// answering its first bridge call (the Capacitor reply-proxy race). Along the way: no CSP violation, and desktop-auth
+// answers native HTTP (no Origin) while the WebView fetch is refused.
 import { execFileSync, spawn } from 'node:child_process';
 import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -548,6 +549,21 @@ async function main() {
   if (JSON.stringify(listed) !== JSON.stringify([a.url, b.url])) throw new Error(`picker lists ${JSON.stringify(listed)}`);
   log(`step 5: picker lists both instances ${JSON.stringify(listed)}`);
   await page.screenshot({ path: join(OUT, 'picker.png') }).catch(() => {});
+
+  // 6. Navigation stress: in-app loads of the picker and the client, back and forth. Stock Capacitor Android 8.6.0 lost
+  // a new page's first plugin answer on about 5 % of them (the reply-proxy race, patches/@capacitor+android+*.patch):
+  // the picker never listed its instances and the client stayed blank. A lost answer never arrives, so a bound well
+  // above a normal load tells them apart; html[data-mobile-platform] is set only once the client's bridge info() answered.
+  const stressLoads = 25, stressWait = WAIT / 4;
+  const stalled = [];
+  for (let i = 0; i < stressLoads; i++) {
+    await page.goto(`https://localhost/picker.html?stress=${i}`);
+    if (!await expect(page.locator('#instances button')).toHaveCount(2, { timeout: stressWait }).then(() => true, () => false)) stalled.push(`picker ${i}`);
+    await page.goto('https://localhost/');
+    if (!await page.locator('html[data-mobile-platform]').waitFor({ state: 'attached', timeout: stressWait }).then(() => true, () => false)) stalled.push(`client ${i}`);
+  }
+  log(`step 6: navigation stress: ${2 * stressLoads - stalled.length}/${2 * stressLoads} in-app loads answered their first bridge call${stalled.length ? `; stalled: ${stalled.join(', ')}` : ''}`);
+  if (stalled.length) throw new Error(`navigation stress: ${stalled.length}/${2 * stressLoads} loads never got their first bridge answer (${stalled.join(', ')})`);
 
   if (violations.length) throw new Error(`CSP violations:\n${violations.join('\n')}`);
   log('no CSP violations in the console');
