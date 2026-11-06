@@ -184,27 +184,36 @@ jobs:
       - name: JDK 21 for Gradle
         run: echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
       - run: cd packages/mobile && npx cap sync android
-      - name: Write the keystore (removed again at the end)
+      # The build runs third-party code (Gradle plugins, npm packages), so it never sees the key: it builds the release APK
+      # unsigned, and the next step alone holds the keystore and its passwords, signs with apksigner and removes the file.
+      - name: Build the release APK, unsigned (retried only on known network errors)
         env:
-          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
-        run: |
-          umask 077
-          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/dilla-release.p12"
-          test -s "$RUNNER_TEMP/dilla-release.p12" || { echo "::error::ANDROID_KEYSTORE_B64 decodes to an empty file"; exit 1; }
-      - name: Build the release-signed APK (retried only on known network errors)
-        env:
-          DILLA_ANDROID_KEYSTORE: ${{ runner.temp }}/dilla-release.p12
-          DILLA_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          DILLA_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          DILLA_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           DILLA_ANDROID_VERSION_CODE: ${{ steps.build.outputs.number }}
           DILLA_ANDROID_VERSION_NAME: ${{ needs.resolve.outputs.version }}
         run: node scripts/retry-on.mjs --pattern 'Could not (GET|HEAD) .{1,400}Received status code (50[0-4]|429)|Server returned HTTP response code. (50[0-4]|429)|Read timed out|Connect timed out|Connection reset|Remote host terminated the handshake|UnknownHostException|SocketTimeoutException' -- packages/mobile/android/gradlew -p packages/mobile/android --no-daemon assembleRelease
+      - name: Sign the APK with the release key (the keystore exists only during this step)
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          umask 077
+          ks="$RUNNER_TEMP/dilla-release.p12"
+          trap 'rm -f "$ks"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$ks"
+          test -s "$ks" || { echo "::error::ANDROID_KEYSTORE_B64 decodes to an empty file"; exit 1; }
+          tools="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n 1)"
+          out=packages/mobile/android/app/build/outputs/apk/release
+          "$tools/zipalign" -P 16 -f 4 "$out/app-release-unsigned.apk" "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" sign --ks "$ks" --ks-key-alias "$KEY_ALIAS" --ks-pass env:KS_PASS --key-pass env:KEY_PASS \
+            --out "$out/app-release.apk" "$RUNNER_TEMP/aligned.apk"
+          rm -f "$RUNNER_TEMP/aligned.apk"
       - name: The APK is signed by the pinned release key
         run: npm run android:check-signer -w @dilla/mobile
       - name: The APK trusts system CAs only and allows no cleartext
         run: npm run android:check-release-signed -w @dilla/mobile
-      - name: Remove the keystore
+      - name: Remove the keystore (backstop, the signing step removes it on exit)
         if: always()
         run: rm -f "$RUNNER_TEMP/dilla-release.p12"
       - name: Attach the APK and its checksum to the release
@@ -284,14 +293,10 @@ jobs:
           xcodebuild -version
       - name: Resolve the Swift packages (retried only on known network errors)
         run: node scripts/retry-on.mjs --pattern 'Could not resolve host|The network connection was lost|The request timed out|Connection reset by peer|RPC failed|SSL_ERROR_SYSCALL|Failed to connect to|returned error. (50[0-4]|429)' -- xcodebuild -resolvePackageDependencies -project packages/mobile/ios/App/App.xcodeproj -scheme App -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm"
-      - name: Write the API key and the export options (the key is removed again at the end)
+      - name: Write the export options
         env:
-          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: |
-          umask 077
-          printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc-key.p8"
-          chmod 600 "$RUNNER_TEMP/asc-key.p8"
           cp packages/mobile/ios/App/ExportOptions.plist "$RUNNER_TEMP/ExportOptions.plist"
           /usr/libexec/PlistBuddy -c "Add :teamID string $APPLE_TEAM_ID" "$RUNNER_TEMP/ExportOptions.plist"
       # Unsigned on purpose: with no device on the team, a signed archive would need a development profile, and it would
@@ -308,15 +313,20 @@ jobs:
             -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm" -disableAutomaticPackageResolution \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD"
+      # The Admin API key exists only during this step: the archive (which runs build scripts) never sees it.
       - name: Export and upload to TestFlight
         env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/asc-key.p8"' EXIT
+          printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc-key.p8"
           xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/Dilla.xcarchive" -exportPath "$RUNNER_TEMP/export" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
             -allowProvisioningUpdates -authenticationKeyPath "$RUNNER_TEMP/asc-key.p8" \
             -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID"
-      - name: Remove the API key
+      - name: Remove the API key (backstop, the export step removes it on exit)
         if: always()
         run: rm -f "$RUNNER_TEMP/asc-key.p8"
