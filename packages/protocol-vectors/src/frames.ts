@@ -16,6 +16,7 @@ const CALL = new Uint8Array(16).fill(0x0d);
 const COMMUNITY = new Uint8Array(16).fill(0x0e);
 const TAG = new Uint8Array(32).fill(0x0a);
 const TOKEN = new Uint8Array(32).fill(0x0b);
+const IDEM = new Uint8Array(16).fill(0x0f);
 
 type Case = { name: string; op: number; n: number; group_id: string; payload: string; frame: string };
 
@@ -82,6 +83,12 @@ export function frameVectors() {
     // the member became away in the community; 0 says the member is no longer away.
     frame('afk_away', 55, 0, null, [COMMUNITY, USER, 1758659040]),
     frame('afk_away cleared', 55, 0, null, [COMMUNITY, USER, 0]),
+    // op 59 request (C->S, Bot v2): [id, method, route, body, idem | null]. n = 0: neither request
+    // nor response is replayable; an unanswered request is re-sent after a reconnect with its idem.
+    frame('request', 59, 0, null, [7, 'POST', '/v1/communities', new Uint8Array([0x80]), IDEM]),
+    frame('request without idem', 59, 0, null, [8, 'GET', '/v1/communities?limit=50', new Uint8Array(0), null]),
+    // op 60 response (S->C, Bot v2): [id, status, body], in any order.
+    frame('response', 60, 0, null, [7, 201, new Uint8Array([0x80])]),
   ];
 
   const rejects = [
@@ -124,6 +131,11 @@ export function frameVectors() {
     // op 55 is server-to-client as op 54 is: the instance's code is E_FRAME_TYPE, and a client
     // decoder refuses four elements, not three, as E_FRAME_SHAPE.
     { name: 'afk_away with 4 elements', frame: hex(encode([55, 0, null, [COMMUNITY, USER, 1758659040, 1]])), code: 'E_FRAME_TYPE' },
+    // op 59's body is a bstr: a text body is refused before the request is dispatched.
+    { name: 'request with a text body', frame: hex(encode([59, 0, null, [7, 'POST', '/v1/communities', 'body', null]])), code: 'E_FRAME_SHAPE' },
+    // op 60 is server-to-client: the instance's code is E_FRAME_TYPE, and a client decoder refuses
+    // a status outside 100..599 as E_FRAME_SHAPE.
+    { name: 'response with status 600', frame: hex(encode([60, 0, null, [7, 600, new Uint8Array(0)]])), code: 'E_FRAME_TYPE' },
   ];
 
   return {

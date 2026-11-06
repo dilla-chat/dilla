@@ -68,6 +68,11 @@ const (
 	OpAppBuild         Op = 56
 	OpPresenceActivity Op = 57
 	OpCallStats        Op = 58
+	// OpRequest and OpResponse are the socket request shim (Bot v2 task 2): a client's HTTP-shaped
+	// request [id, method, route, body, idem|null] and the instance's answer [id, status, body].
+	// Neither is replayable; see request.go.
+	OpRequest  Op = 59
+	OpResponse Op = 60
 )
 
 // CloseCode is a WebSocket close code from RFC 6455's private range.
@@ -154,6 +159,10 @@ var opSpecs = map[Op]opSpec{
 	OpAppBuild:         {elements: 1},
 	OpPresenceActivity: {elements: 0, fromClient: true},
 	OpCallStats:        {elements: 2, fromClient: true},
+	// Not replayable on resume: a request lost in a disconnect is re-sent by the client with the
+	// same idem, and its response belongs to the socket the request came in on.
+	OpRequest:  {elements: 5, fromClient: true},
+	OpResponse: {elements: 3},
 }
 
 // FrameError is a structured refusal. Code is the E_FRAME_* string the client sees in an error
@@ -215,6 +224,8 @@ type Inbound struct {
 	// handshake carries an empty one in its payload and must still resolve. It is unexported
 	// because it never comes off the wire.
 	handshakeToken string
+	// request is op 59's payload, decoded once by Decode.
+	request *SocketRequest
 }
 
 // Decode parses one inbound frame. maxBytes is gateway.read_limit_bytes; a longer frame is
@@ -291,11 +302,19 @@ func Decode(b []byte, maxBytes int) (Inbound, error) {
 			return Inbound{}, frameErr("E_FRAME_SHAPE", "signal n must be zero", CloseDecode)
 		}
 	}
+	var request *SocketRequest
+	if code == OpRequest {
+		r, err := decodeRequest(Inbound{Payload: payload})
+		if err != nil {
+			return Inbound{}, err
+		}
+		request = &r
+	}
 	if !spec.fromClient {
 		return Inbound{}, frameErr("E_FRAME_TYPE",
 			fmt.Sprintf("opcode %d is not a client frame in this wire_version", op), CloseDecode)
 	}
-	return Inbound{Op: code, CID: cid, GroupID: gid, Payload: payload}, nil
+	return Inbound{Op: code, CID: cid, GroupID: gid, Payload: payload, request: request}, nil
 }
 
 // lookupOp resolves a wire opcode to its catalogue entry. An opcode is a uint8, so 256+6 is an

@@ -12,12 +12,13 @@ export const Op = {
   reconnect: 8, error: 9, commitAck: 12, handshake: 16, commitNeeded: 17,
   epochChanged: 18, messageCt: 19, welcome: 20, messageDeleted: 21,
   presence: 48, typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53, communityChanged: 54, afkAway: 55, appBuild: 56, presenceActivity: 57, callStats: 58,
+  request: 59, response: 60,
 } as const;
 
 const SPECS: ReadonlyMap<number, { elements: number; grouped: boolean }> = new Map([
   [0, 9], [1, 5], [2, 4], [3, 9], [4, 3], [5, 2], [6, 2], [7, 1], [8, 2],
   [9, 3], [10, 1], [11, 1], [12, 1], [16, 5], [17, 4], [18, 2], [19, 7],
-  [20, 6], [21, 2], [32, 7], [33, 4], [48, 4], [49, 5], [50, 4], [51, 2], [52, 2], [53, 5], [54, 1], [55, 3], [56, 1], [57, 0], [58, 2],
+  [20, 6], [21, 2], [32, 7], [33, 4], [48, 4], [49, 5], [50, 4], [51, 2], [52, 2], [53, 5], [54, 1], [55, 3], [56, 1], [57, 0], [58, 2], [59, 5], [60, 3],
 ].map(([op, elements]) => [op, { elements, grouped: op === 12 || (op >= 16 && op <= 21) }]));
 
 function shape(): never {
@@ -55,7 +56,49 @@ export function decodeFrame(bytes: Uint8Array): Frame {
   // op 55 afk_away (AW4): [community_id, user_id, since_ts], since_ts 0 = cleared.
   if (op === 55n && (n !== 0n || !isId(payload[0]) || !isId(payload[1]) || !uint(payload[2]))) shape();
   if (op === 56n && (n !== 0n || !validAppEntry(payload[0]))) shape();
+  // op 59 request (Bot v2): [id, method, route, body, idem | null]; op 60 response: [id, status 100..599, body].
+  if (op === 59n && !validRequestPayload(payload)) shape();
+  if (op === 60n && (n !== 0n || !uint(payload[0]) || !httpStatus(payload[1]) || !(payload[2] instanceof Uint8Array))) shape();
   return { op: Number(op), n, groupId, payload };
+}
+
+/** The socket request shim (Bot v2): one HTTP-shaped request over the gateway, answered by op 60 with its id. */
+export interface SocketRequestFrame { id: number; method: string; route: string; body: Uint8Array; idem: Uint8Array | null }
+export interface SocketResponseFrame { id: number; status: number; body: Uint8Array }
+
+/** The instance's bounds on op 59 (internal/gateway/request.go): a method of at most 16 bytes, a route of at most
+ *  8192, an idem of 1..64 bytes or null. */
+const MAX_METHOD = 16;
+const MAX_ROUTE = 8192;
+const MAX_IDEM = 64;
+
+function validRequestPayload(payload: CborValue[]): boolean {
+  const [id, method, route, body, idem] = payload;
+  return uint(id) && typeof method === 'string' && method.length > 0 && utf8Length(method) <= MAX_METHOD
+    && typeof route === 'string' && route.length > 0 && utf8Length(route) <= MAX_ROUTE && body instanceof Uint8Array
+    && (idem === null || (idem instanceof Uint8Array && idem.length > 0 && idem.length <= MAX_IDEM));
+}
+
+const utf8Length = (s: string): number => new TextEncoder().encode(s).length;
+const httpStatus = (value: CborValue | undefined): boolean => typeof value === 'bigint' && value >= 100n && value <= 599n;
+
+/** op 59 [id, method, route, body, idem | null], n = 0 and no group: neither frame is replayable. A request the instance
+ *  would refuse as E_FRAME_SHAPE is refused here, before it is sent. */
+export function encodeRequestFrame(r: SocketRequestFrame): Uint8Array {
+  if (!Number.isSafeInteger(r.id) || r.id < 0) shape();
+  const payload = [r.id, r.method, r.route, r.body, r.idem];
+  if (!validRequestPayload(payload.map((v) => (typeof v === 'number' ? BigInt(v) : v)))) shape();
+  return encodeFrame(Op.request, 0, null, payload);
+}
+
+/** op 60 [id, status, body], checked as decodeFrame checks it; any other frame, or an id past the safe integers, is
+ *  E_FRAME_SHAPE. */
+export function decodeResponseFrame(bytes: Uint8Array): SocketResponseFrame {
+  const frame = decodeFrame(bytes);
+  const [id, status, body] = frame.payload;
+  if (frame.op !== Op.response || frame.groupId !== null || frame.payload.length !== 3 || !uint(id)
+    || (id as bigint) > BigInt(Number.MAX_SAFE_INTEGER) || !httpStatus(status) || !(body instanceof Uint8Array)) shape();
+  return { id: Number(id), status: Number(status), body };
 }
 
 const isId = (value: CborValue | undefined): boolean => value instanceof Uint8Array && value.length === 16;

@@ -273,6 +273,30 @@
       "group_id": "",
       "payload": "83500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e500909090909090909090909090909090900",
       "frame": "84183700f683500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e500909090909090909090909090909090900"
+    },
+    {
+      "name": "request",
+      "op": 59,
+      "n": 0,
+      "group_id": "",
+      "payload": "850764504f53546f2f76312f636f6d6d756e69746965734180500f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "frame": "84183b00f6850764504f53546f2f76312f636f6d6d756e69746965734180500f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+    },
+    {
+      "name": "request without idem",
+      "op": 59,
+      "n": 0,
+      "group_id": "",
+      "payload": "85086347455478182f76312f636f6d6d756e69746965733f6c696d69743d353040f6",
+      "frame": "84183b00f685086347455478182f76312f636f6d6d756e69746965733f6c696d69743d353040f6"
+    },
+    {
+      "name": "response",
+      "op": 60,
+      "n": 0,
+      "group_id": "",
+      "payload": "830718c94180",
+      "frame": "84183c00f6830718c94180"
     }
   ],
   "rejects": [
@@ -374,6 +398,16 @@
     {
       "name": "afk_away with 4 elements",
       "frame": "84183700f684500e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e50090909090909090909090909090909091a68d301e001",
+      "code": "E_FRAME_TYPE"
+    },
+    {
+      "name": "request with a text body",
+      "frame": "84183b00f6850764504f53546f2f76312f636f6d6d756e697469657364626f6479f6",
+      "code": "E_FRAME_SHAPE"
+    },
+    {
+      "name": "response with status 600",
+      "frame": "84183c00f6830719025840",
       "code": "E_FRAME_TYPE"
     }
   ]

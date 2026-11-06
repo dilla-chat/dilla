@@ -358,6 +358,19 @@ dense on every device of its audience; `group_id` is null.
 | 56 | `app_build` | S→C, wire ≥5 | `[entry(tstr)]` |
 | 57 | `presence_activity` | C→S, wire ≥5 | `[]` |
 | 58 | `call_stats` | C→S, wire ≥5 | `[call_id(bstr 16), report(array)]` |
+| 59 | `request` | C→S, wire 6 | `[id(uint), method(tstr), route(tstr), body(bstr), idem(bstr 1..64 \| null)]` |
+| 60 | `response` | S→C, wire 6 | `[id(uint), status(uint 100..599), body(bstr)]` |
+
+`request` and `response` are the socket request shim (Bot v2): a `request` is dispatched to the
+HTTP handler its route names on the instance's socket-only route table, with the connection's own
+session (resolved again on every request: a revoked session's next request is `401`), its client
+address and the route's own rate limits and body cap; `response` answers its `id` with the HTTP
+status and body, in any order. A connection has at most 64 requests and 32 MiB of request plus
+response body in flight; over either the answer is `429 E_BUSY` at once. A request frame may be
+larger than `max_frame_bytes`, up to 16 MiB of body; a response over its route's cap is
+`E_FRAME_LIMIT`. Neither frame is replayed: a client re-sends an unanswered request after a
+reconnect. A non-GET request with an `idem` is answered from the instance's record of
+(device, idem) for five minutes, so a retry never runs twice.
 
 `app_build` follows ready/resumed and names the entry from the verified, currently served web
 handler. It is at most 512 characters, matches `/assets/[A-Za-z0-9_./-]+.js`, and contains no `..`.

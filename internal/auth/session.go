@@ -1076,6 +1076,24 @@ func (s *Sessions) RevokeUser(ctx context.Context, userID id.ID) error {
 
 type ctxKey struct{}
 
+// socketCallerKey is unexported, so no package but this one can read or forge the value, and the
+// only setter is WithSocketCaller.
+type socketCallerKey struct{}
+
+// WithSocketCaller marks a request as a gateway socket request from the connection whose session
+// token hashes to tokenHash. The socket request dispatcher (internal/api.SocketDispatcher) is its
+// one caller: it builds the *http.Request itself, from a frame of an identified connection, with
+// no client header copied onto it. Nothing an HTTP client sends — header, query or body — reaches
+// a context value; an HTTP request still needs its Authorization header.
+func WithSocketCaller(ctx context.Context, tokenHash []byte) context.Context {
+	return context.WithValue(ctx, socketCallerKey{}, append([]byte(nil), tokenHash...))
+}
+
+func socketCaller(ctx context.Context) ([]byte, bool) {
+	h, ok := ctx.Value(socketCallerKey{}).([]byte)
+	return h, ok && len(h) == 32
+}
+
 // Middleware resolves the bearer token and enforces the wanted scope. An enrolled session whose
 // account owes a second factor is refused with E_FACTOR_REQUIRED on every route that does not also
 // admit a pending session (protocol/02 § Device sessions item 8): default-deny, so a route added
@@ -1093,8 +1111,17 @@ func (s *Sessions) MiddlewareOwedOK(next http.Handler, want Scope) http.Handler 
 
 func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		sess, err := s.Resolve(r.Context(), bearer)
+		var sess Session
+		var err error
+		if hash, ok := socketCaller(r.Context()); ok && r.Header.Get("Authorization") == "" {
+			// A socket request: the connection's session, re-resolved on every request with the
+			// same revocation, expiry, device-list and Bot checks a bearer gets (Resolve is
+			// ResolveHash over the bearer's hash), and the scope, factor and wire checks below.
+			sess, err = s.ResolveHash(r.Context(), hash)
+		} else {
+			bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			sess, err = s.Resolve(r.Context(), bearer)
+		}
 		if err != nil {
 			server.WriteError(w, err)
 			return

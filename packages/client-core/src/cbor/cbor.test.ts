@@ -55,9 +55,9 @@ const HEADS: [CborInput, string][] = [
 ];
 
 describe('protocol/vectors/frames.json', () => {
-  it('carries 34 cases and 20 rejects, two of them at the codec layer', () => {
-    expect(frames.cases).toHaveLength(34);
-    expect(frames.rejects).toHaveLength(20);
+  it('carries 37 cases and 22 rejects, two of them at the codec layer', () => {
+    expect(frames.cases).toHaveLength(37);
+    expect(frames.rejects).toHaveLength(22);
     expect(frames.rejects.filter((r) => r.code === 'E_FRAME_CBOR').map((r) => r.name))
       .toEqual(['non-minimal op', 'map instead of an array']);
   });
@@ -78,7 +78,7 @@ describe('protocol/vectors/frames.json', () => {
 
   it('round-trips the frame-layer rejects, which are well-formed items', () => {
     const frameLayer = frames.rejects.filter((r) => r.code !== 'E_FRAME_CBOR');
-    expect(frameLayer).toHaveLength(18);
+    expect(frameLayer).toHaveLength(20);
     for (const r of frameLayer) expect(roundTrip(r.frame), r.name).toBe(r.frame);
   });
 });

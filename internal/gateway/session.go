@@ -6,10 +6,12 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -55,6 +57,10 @@ type conn struct {
 	pingAt      time.Time
 	// The versions this connection negotiated at identify, echoed in ready.
 	wire, e2ee, media uint64
+	// remoteAddr is the upgrade request's client address (Options.ClientAddr), which socket
+	// requests are attributed to; requests is the in-flight request budget of the current socket.
+	remoteAddr string
+	requests   *requestBudget
 
 	ring   *ring
 	writer *writer
@@ -222,16 +228,51 @@ var errNotEnrolledSession = errors.New("gateway: only an enrolled session opens 
 
 // wsSink adapts a coder/websocket connection to the writer's sink. Binary frames only: dilla's
 // wire is CBOR, never text.
-type wsSink struct{ c *websocket.Conn }
+type wsSink struct {
+	c *websocket.Conn
+	// limit is the configured read limit; zero leaves every frame to the library's own bound.
+	limit int64
+	// requests is set once the connection is identified: from then on a request frame may be
+	// read past limit, up to maxRequestFrameBytes.
+	requests atomic.Bool
+}
 
 func newWSSink(c *websocket.Conn) sink { return &wsSink{c: c} }
+
+func newLimitedWSSink(c *websocket.Conn, limit int64) sink { return &wsSink{c: c, limit: limit} }
+
+// allowRequestFrames lets an identified connection's request frames past the read limit.
+func (s *wsSink) allowRequestFrames() { s.requests.Store(true) }
 
 func (s *wsSink) write(ctx context.Context, b []byte) error {
 	return s.c.Write(ctx, websocket.MessageBinary, b)
 }
 
+// read reads one message. With a limit, it reads at most limit+1 bytes of it and stops there,
+// unless the connection is identified and the head says it is a request frame, which is read on
+// up to maxRequestFrameBytes+1. An over-long message comes back truncated one byte past its
+// bound, so Decode refuses it as E_FRAME_LIMIT without the rest ever being buffered; the
+// connection then closes.
 func (s *wsSink) read(ctx context.Context) (websocket.MessageType, []byte, error) {
-	return s.c.Read(ctx)
+	if s.limit <= 0 {
+		return s.c.Read(ctx)
+	}
+	typ, r, err := s.c.Reader(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+	b, err := io.ReadAll(io.LimitReader(r, s.limit+1))
+	if err != nil {
+		return 0, nil, err
+	}
+	if int64(len(b)) <= s.limit || !s.requests.Load() || !isRequestFrame(b) {
+		return typ, b, nil
+	}
+	rest, err := io.ReadAll(io.LimitReader(r, int64(maxRequestFrameBytes)+1-int64(len(b))))
+	if err != nil {
+		return 0, nil, err
+	}
+	return typ, append(b, rest...), nil
 }
 
 func (s *wsSink) close(code CloseCode, reason string) {
@@ -537,6 +578,10 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	c.state = stateReady
 	c.lastLive = now
 	c.tokenHash = append(c.tokenHash[:0], session.TokenHash...)
+	// Requests of the old socket settle against their own budget; this socket starts afresh, and
+	// its requests are attributed to the address it came from.
+	c.requests = newRequestBudget()
+	c.remoteAddr = remoteAddrFrom(ctx)
 	// Paused until the connection is live again, as on identify: see newPausedWriter.
 	c.writer = newPausedWriter(s, writerLimits{
 		Frames:   g.opts.QueueFrames,
@@ -725,6 +770,9 @@ func (g *Gateway) subscribe(ctx context.Context, c *conn, cid uint64, groups []i
 // decoder: coder/websocket's reader grows 2*cap+512 without bound.
 func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 	defer g.suspend(c)
+	if rs, ok := s.(interface{ allowRequestFrames() }); ok {
+		rs.allowRequestFrames()
+	}
 	inbound := rate.NewLimiter(rate.Limit(g.opts.FramesPerSecond), g.opts.FrameBurst)
 	for {
 		typ, b, err := s.read(ctx)
@@ -747,7 +795,7 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 			s.close(CloseDecode, "text frame")
 			return
 		}
-		in, err := Decode(b, int(g.opts.ReadLimit))
+		in, err := Decode(b, frameReadLimit(b, int(g.opts.ReadLimit)))
 		if err != nil {
 			var fe *FrameError
 			if errors.As(err, &fe) {
@@ -767,6 +815,8 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 // unsubscribe adjust this connection's group set.
 func (g *Gateway) handle(ctx context.Context, c *conn, in Inbound) {
 	switch in.Op {
+	case OpRequest:
+		g.handleRequest(ctx, c, in)
 	case OpCallStats:
 		g.handleCallStats(c, in)
 	case OpPresenceActivity:

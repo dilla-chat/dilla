@@ -35,6 +35,10 @@ type queued struct {
 	n    uint64
 	at   time.Time
 	size int
+	// response marks a socket response (enqueueResponse): its bytes are held by the connection's
+	// request budget, not by queuedBytes, and done runs once it is written or dropped.
+	response bool
+	done     func()
 }
 
 // frameOverhead is what Encode adds around a payload: the four-element array head, the opcode,
@@ -70,6 +74,8 @@ type writer struct {
 
 	mu          sync.Mutex
 	queuedBytes int
+	// responseBytes is the socket responses queued; drain waits for them too.
+	responseBytes int
 
 	// enqueued counts the frames the queue accepted and written the frames the sink took, over the
 	// writer's life. They exist for Gateway.Debug: a device that stops receiving while its socket
@@ -148,6 +154,57 @@ func (w *writer) enqueue(f Frame, n uint64) {
 	}
 }
 
+// enqueueResponse queues a socket response (op 60). It never blocks and is bounded by frame count
+// like every frame, but not by the byte bound: a response body is already bounded by its route
+// cap and held in the connection's request budget (MaxRequestBytesInFlight), and a 2 MiB answer
+// must not close a connection whose fan-out queue is 1 MiB. done runs exactly once, when the frame
+// is written, dropped, or the queue refuses it.
+func (w *writer) enqueueResponse(b []byte, done func()) {
+	size := len(b)
+	w.mu.Lock()
+	w.responseBytes += size
+	w.mu.Unlock()
+	select {
+	case w.queue <- queued{raw: b, at: w.clk.Now(), size: size, response: true, done: done}:
+		w.enqueued.Add(1)
+	default:
+		w.mu.Lock()
+		w.responseBytes -= size
+		w.mu.Unlock()
+		done()
+		w.closeAs(CloseRateLimited, "writer queue overflow", OpResponse)
+	}
+}
+
+// concurrentSink is a sink whose write may be called from several goroutines at once:
+// coder/websocket's Conn ("All methods may be called concurrently except for Reader and Read").
+// The recording doubles of the unit tests are not, so they never take the direct path.
+type concurrentSink interface{ concurrentWrites() }
+
+func (s *wsSink) concurrentWrites() {}
+
+// writeResponse writes a socket response straight to a live socket from the goroutine that
+// produced it, without the hop through the writer's queue: a response carries n = 0, is ordered
+// against nothing, and its bytes are already held by the request budget, so the queue adds only
+// latency (ruling 2: a socket request costs no more than its HTTP form). It reports false when the
+// sink cannot take concurrent writes or the writer is not open, and the caller queues instead. A
+// failed write closes the connection exactly as a failed queued write does.
+func (w *writer) writeResponse(b []byte, done func()) bool {
+	if _, ok := w.sink.(concurrentSink); !ok || isClosed(w.done) || (w.gate != nil && !isClosed(w.gate)) {
+		return false
+	}
+	defer done()
+	ctx, cancel := context.WithTimeout(context.Background(), w.limits.Deadline)
+	err := w.sink.write(ctx, b)
+	cancel()
+	if err != nil {
+		w.closeAs(CloseUnknown, "write: "+err.Error(), OpResponse)
+		return true
+	}
+	w.written.Add(1)
+	return true
+}
+
 // closeAs closes the sink and records why at INFO: a connection the writer takes down (a slow
 // consumer, a write past its deadline) leaves no other trace, and a harness run that then fails
 // on that device needs to know the instance closed it and with what queued.
@@ -209,8 +266,15 @@ func (w *writer) run() {
 func (w *writer) writeOne(q queued) bool {
 	defer func() {
 		w.mu.Lock()
-		w.queuedBytes -= q.size
+		if q.response {
+			w.responseBytes -= q.size
+		} else {
+			w.queuedBytes -= q.size
+		}
 		w.mu.Unlock()
+		if q.done != nil {
+			q.done()
+		}
 	}()
 	if q.raw != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), w.limits.Deadline)
@@ -331,7 +395,7 @@ func (w *writer) stop() {
 func (w *writer) drain(ctx context.Context) {
 	for {
 		w.mu.Lock()
-		pending := w.queuedBytes
+		pending := w.queuedBytes + w.responseBytes
 		w.mu.Unlock()
 		if pending == 0 {
 			w.stop()

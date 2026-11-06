@@ -3,7 +3,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { arr, CborError, decode, encode } from '../cbor';
 import { fromHex, toHex } from '../hex';
-import { afkAwayOf, callRingOf, communityChangedOf, decodeFrame, DROPPABLE_OPS, encodeFrame, frameOp, Op, voiceStateOf } from './frames';
+import {
+  afkAwayOf, callRingOf, communityChangedOf, decodeFrame, decodeResponseFrame, DROPPABLE_OPS, encodeFrame, encodeRequestFrame, frameOp, Op,
+  voiceStateOf,
+} from './frames';
 
 interface FrameCase { name: string; op: number; n: number; group_id: string; payload: string; frame: string }
 interface FrameReject { name: string; frame: string; code: string }
@@ -38,6 +41,10 @@ const CLIENT_VERDICT: Record<string, string | null> = {
   'message.ct with 8 elements': 'E_FRAME_SHAPE',
   // The instance answers E_FRAME_TYPE (op 55 is S->C, AW3); this client decodes op 55 and refuses four elements, not three (AW4).
   'afk_away with 4 elements': 'E_FRAME_SHAPE',
+  // Bot v2 socket requests: this client checks op 59's payload before it sends one, and refuses a status outside
+  // 100..599 in op 60 (the instance answers E_FRAME_TYPE: op 60 is S->C).
+  'request with a text body': 'E_FRAME_SHAPE',
+  'response with status 600': 'E_FRAME_SHAPE',
 };
 
 function verdict(bytes: Uint8Array): string | null {
@@ -52,9 +59,9 @@ function verdict(bytes: Uint8Array): string | null {
 }
 
 describe('frames.json', () => {
-  it('holds the 34 cases and 20 rejects this codec was written against', () => {
-    expect(vectors.cases).toHaveLength(34);
-    expect(vectors.rejects).toHaveLength(20);
+  it('holds the 37 cases and 22 rejects this codec was written against', () => {
+    expect(vectors.cases).toHaveLength(37);
+    expect(vectors.rejects).toHaveLength(22);
     expect(Object.keys(CLIENT_VERDICT).sort()).toEqual(vectors.rejects.map((r) => r.name).sort());
   });
 
@@ -117,7 +124,46 @@ describe('frame shape', () => {
   it('pins the opcode numbers', () => {
     expect(Op).toEqual({ hello: 0, identify: 1, ready: 3, invalidSession: 5, heartbeat: 6, heartbeatAck: 7, reconnect: 8,
       error: 9, commitAck: 12, handshake: 16, commitNeeded: 17, epochChanged: 18, messageCt: 19, welcome: 20, messageDeleted: 21,
-      presence: 48, typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53, communityChanged: 54, afkAway: 55, appBuild: 56, presenceActivity: 57, callStats: 58 });
+      presence: 48, typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53, communityChanged: 54, afkAway: 55, appBuild: 56, presenceActivity: 57, callStats: 58,
+      request: 59, response: 60 });
+  });
+});
+
+describe('socket request and response frames (ops 59, 60)', () => {
+  const byName = (name: string): FrameCase => {
+    const c = vectors.cases.find((x) => x.name === name);
+    if (c === undefined) throw new Error(`no vector ${name}`);
+    return c;
+  };
+
+  it('encodes the request vectors byte for byte', () => {
+    expect(toHex(encodeRequestFrame({ id: 7, method: 'POST', route: '/v1/communities', body: new Uint8Array([0x80]),
+      idem: new Uint8Array(16).fill(0x0f) }))).toBe(byName('request').frame);
+    expect(toHex(encodeRequestFrame({ id: 8, method: 'GET', route: '/v1/communities?limit=50', body: new Uint8Array(0),
+      idem: null }))).toBe(byName('request without idem').frame);
+  });
+
+  it('decodes the response vector', () => {
+    expect(decodeResponseFrame(fromHex(byName('response').frame))).toEqual({ id: 7, status: 201, body: new Uint8Array([0x80]) });
+  });
+
+  it('refuses to encode a request the instance would refuse', () => {
+    const ok = { id: 1, method: 'GET', route: '/v1/x', body: new Uint8Array(0), idem: null };
+    expect(() => encodeRequestFrame({ ...ok, id: -1 })).toThrow('E_FRAME_SHAPE');
+    expect(() => encodeRequestFrame({ ...ok, id: 1.5 })).toThrow('E_FRAME_SHAPE');
+    expect(() => encodeRequestFrame({ ...ok, method: '' })).toThrow('E_FRAME_SHAPE');
+    expect(() => encodeRequestFrame({ ...ok, route: '' })).toThrow('E_FRAME_SHAPE');
+    expect(() => encodeRequestFrame({ ...ok, route: '/'.repeat(8193) })).toThrow('E_FRAME_SHAPE');
+    expect(() => encodeRequestFrame({ ...ok, idem: new Uint8Array(0) })).toThrow('E_FRAME_SHAPE');
+    expect(() => encodeRequestFrame({ ...ok, idem: new Uint8Array(65) })).toThrow('E_FRAME_SHAPE');
+  });
+
+  it('refuses a response of another op, shape or status', () => {
+    expect(() => decodeResponseFrame(encode([60, 0, null, [7, 99, new Uint8Array(0)]]))).toThrow('E_FRAME_SHAPE');
+    expect(() => decodeResponseFrame(encode([60, 0, null, [7, 200, 'body']]))).toThrow('E_FRAME_SHAPE');
+    expect(() => decodeResponseFrame(encode([60, 0, null, [7, 200]]))).toThrow('E_FRAME_SHAPE');
+    expect(() => decodeResponseFrame(encode([60, 0, fid(1), [7, 200, new Uint8Array(0)]]))).toThrow('E_FRAME_SHAPE');
+    expect(() => decodeResponseFrame(encode([59, 0, null, [7, 'GET', '/v1/x', new Uint8Array(0), null]]))).toThrow('E_FRAME_SHAPE');
   });
 });
 

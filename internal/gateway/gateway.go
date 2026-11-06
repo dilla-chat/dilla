@@ -110,6 +110,14 @@ type Options struct {
 	// it is sent E_RATE_LIMITED and closed 4008, which is resumable.
 	FramesPerSecond float64
 	FrameBurst      int
+
+	// Requests runs op 59 request frames against the socket routes (Bot v2 task 2). Nil answers
+	// every request 404 E_NOT_FOUND.
+	Requests RequestDispatcher
+	// ClientAddr resolves the upgrade request's client address, which every socket request of the
+	// connection is attributed to for rate limits and audit. The composition root passes the HTTP
+	// layer's trusted-proxy rule (server.RealIP); nil uses the peer address.
+	ClientAddr func(*http.Request) string
 }
 
 // withDefaults fills zero values and enforces the ring-vs-queue contract. The ring must be at
@@ -242,6 +250,8 @@ type Gateway struct {
 	mu        sync.Mutex
 	draining  bool
 	telemetry *telemetryPool
+	// workers runs socket requests (request.go).
+	workers *workerPool
 }
 
 func New(o Options) *Gateway {
@@ -258,6 +268,7 @@ func New(o Options) *Gateway {
 		tickets:  NewTickets(o.Clock),
 		presence: newPresence(o.Clock),
 		beat:     newHeartbeatPolicy(time.Duration(o.HeartbeatMS) * time.Millisecond), //nolint:gosec // G115: a non-negative duration in milliseconds
+		workers:  newWorkerPool(),
 	}
 	g.generation.Store(o.Generation)
 	return g
@@ -322,6 +333,8 @@ func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s 
 		tokenHash:    session.TokenHash,
 		resume:       token,
 		groups:       map[id.ID]struct{}{},
+		remoteAddr:   remoteAddrFrom(ctx),
+		requests:     newRequestBudget(),
 		lastLive:     now,
 		ready:        now,
 		gw:           g,
@@ -829,8 +842,11 @@ func (g *Gateway) Handler() http.Handler {
 		if err != nil {
 			return
 		}
-		c.SetReadLimit(g.opts.ReadLimit)
-		g.serve(r.Context(), newWSSink(c), bearerOrTicket(r, g.tickets))
+		// The library's own bound is the request frame's; wsSink applies the configured read limit
+		// to every other frame and to every frame before identify (see wsSink.read).
+		c.SetReadLimit(int64(max(maxRequestFrameBytes, int(g.opts.ReadLimit))) + 1)
+		ctx := withRemoteAddr(r.Context(), g.clientAddr(r))
+		g.serve(ctx, newLimitedWSSink(c, g.opts.ReadLimit), bearerOrTicket(r, g.tickets))
 	})
 }
 
@@ -854,4 +870,5 @@ var opNames = map[Op]string{
 	OpTypingSet: "typing_set", OpVoiceSelf: "voice_self", OpCallRing: "call_ring",
 	OpCommunityChanged: "community_changed", OpAFKAway: "afk_away",
 	OpAppBuild: "app_build", OpPresenceActivity: "presence_activity", OpCallStats: "call_stats",
+	OpRequest: "request", OpResponse: "response",
 }

@@ -298,8 +298,25 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		}
 	}
 
+	// The mux exists before the gateway: the socket request dispatcher (Bot v2 task 2) serves into
+	// its socket-only routes, which the route groups below register, and the gateway hands every
+	// request frame to it.
+	mux := server.NewMux()
+	requests := api.NewSocketDispatcher(mux, api.SocketDispatchOptions{Clock: o.Clock, Log: o.Log, Sessions: sessions})
+	trustedProxies := o.Config.Server.TrustedProxyCIDRs
+
 	var presence *api.PresenceService
 	gw := gateway.New(gateway.Options{
+		// Request frames run against the mux's socket routes, attributed to the client address the
+		// HTTP layer would resolve for the upgrade request (the same trusted-proxy rule).
+		Requests: requests,
+		ClientAddr: func(r *http.Request) string {
+			addr := server.RealIP(r, trustedProxies)
+			if !addr.IsValid() {
+				return r.RemoteAddr
+			}
+			return net.JoinHostPort(addr.String(), "0")
+		},
 		CurrentAppEntry: client.BuildEntry,
 		OnPresenceChanged: func(user id.ID) {
 			if presence != nil {
@@ -527,7 +544,6 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		botRoleNotify.Changed(ctx, communityID)
 	}
 
-	mux := server.NewMux()
 	api.Register(mux, deps)
 
 	// The upgrade is HTTP/1.1 only: a WebSocket needs Hijacker, so this route
