@@ -44,7 +44,8 @@ export const PATH_RULES = [
   // Rust MLS conformance tests read these shared delivery-service fixtures.
   { areas: ['core'], patterns: ['internal/ds/dstest/testdata/kind3-interaction/**'] },
   { areas: ['core'], patterns: ['core/**', 'testkit/**', 'Cargo.*', 'rust-toolchain.toml', 'deny.toml', '.cargo/**', 'protocol/vectors/**'] },
-  { areas: ['web'], patterns: ['packages/**', 'package*.json', '.nvmrc', 'eslint.config.js'] },
+  // patches/: patch-package fixes the root postinstall applies to node_modules (every JS job installs them).
+  { areas: ['web'], patterns: ['packages/**', 'package*.json', '.nvmrc', 'eslint.config.js', 'patches/**'] },
   { areas: ['e2e'], patterns: ['e2e/**'] },
   // The generator, the tables it writes and the Go and TS rules that read them: `node`'s "profile-text tables are current" step.
   { areas: ['text'], patterns: [
@@ -55,8 +56,9 @@ export const PATH_RULES = [
   // sign-in types it shares with desktop, and what the emulator smoke test runs beside the app: the test host's main
   // package and the HTTPS proxy in front of it (the testkit and the WASI core are core, which forces mobile). Any
   // other server-only (go) change does not run the mobile lane; the nightly mobile run covers it, as for desktop.
+  // patches/ holds the Capacitor Android fix the app is compiled with.
   { areas: ['mobile'], patterns: [
-    'packages/mobile/**', 'packages/web/**', 'packages/client-core/**', 'packages/ui/**', 'packages/media/**',
+    'packages/mobile/**', 'patches/**', 'packages/web/**', 'packages/client-core/**', 'packages/ui/**', 'packages/media/**',
     'packages/core-wasm/**', 'packages/design-tokens/**', 'packages/desktop/src/browser-auth.ts',
     'package.json', 'package-lock.json', '.nvmrc', 'e2e/web/support/native-https-proxy.mjs', 'cmd/dilla-testhost/**',
   ] },
