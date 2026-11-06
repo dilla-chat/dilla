@@ -239,6 +239,8 @@ export function buildCleanTree(root, dir, files) {
   // The node_modules link is a file to git (`/node_modules/` ignores only a directory): keep it out of the index.
   writeFileSync(join(dir, '.git', 'info', 'exclude'), '/node_modules\n', { flag: 'a' });
   git(['add', '-A']);
+  // A runner's checkout has a HEAD commit: tests that read `git rev-parse HEAD` (e2e-test-tools.test.mjs) need one.
+  git(['-c', 'user.name=ci-local', '-c', 'user.email=ci-local@localhost', '-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'ci-local clean tree']);
   return dir;
 }
 

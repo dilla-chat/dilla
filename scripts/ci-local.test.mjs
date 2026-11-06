@@ -576,6 +576,9 @@ test('F8: the clean tree holds the listed files, not local build output, with a 
   assert.ok(lstatSync(join(dir, 'node_modules')).isSymbolicLink());
   const ls = spawnSync('git', ['ls-files'], { cwd: dir, encoding: 'utf8' });
   assert.deepEqual(ls.stdout.trim().split('\n'), ['scripts/a.mjs']);
+  // Like a runner's checkout: a HEAD commit and a clean status.
+  assert.equal(spawnSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: dir }).status, 0);
+  assert.equal(spawnSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' }).stdout, '');
   // Rebuilding unlinks node_modules, never follows it.
   writeFileSync(join(root, 'node_modules/keep'), 'k');
   buildCleanTree(root, dir, ['scripts/a.mjs']);
