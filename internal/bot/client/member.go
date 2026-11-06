@@ -113,7 +113,7 @@ func (m *CommunityMembers) ResolveCurrentEpisode(ctx context.Context, user id.ID
 		return id.ID{}, false, ErrInvalidConfig
 	}
 	path := "communities/" + m.community.String() + "/bot/members/" + user.String() + "/episode"
-	raw, _, err := m.session.c.do(ctx, m.session.token, http.MethodGet, path, nil, nil, MaxSmallBody, false)
+	raw, _, err := m.session.do(ctx, http.MethodGet, path, nil, nil, MaxSmallBody, false)
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {

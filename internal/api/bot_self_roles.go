@@ -54,13 +54,13 @@ type rolePanelReactionRequest struct {
 }
 
 func (h *Roles) RegisterSelfRoles(mux *server.Mux) {
-	mux.HandleFunc("GET /v1/communities/{id}/self-roles", h.listSelfRoles)
-	mux.HandleFunc("PUT /v1/communities/{id}/self-roles/policy", h.configureSelfRoles)
-	mux.HandleFunc("PUT /v1/communities/{id}/self-roles/{role_id}", h.selectSelfRole)
-	mux.HandleFunc("PUT /v1/communities/{id}/role-panels", h.registerRolePanel)
-	mux.HandleFunc("POST /v1/communities/{id}/role-panels/{channel_id}/{message_seq}/reaction", h.rolePanelReaction)
-	mux.HandleFunc("PUT /v1/communities/{id}/bot-join-role", h.configureBotJoinRole)
-	mux.HandleFunc("GET /v1/communities/{id}/bot-join-role", h.getBotJoinRole)
+	mux.Socket("GET /v1/communities/{id}/self-roles", http.HandlerFunc(h.listSelfRoles))
+	mux.Socket("PUT /v1/communities/{id}/self-roles/policy", http.HandlerFunc(h.configureSelfRoles))
+	mux.Socket("PUT /v1/communities/{id}/self-roles/{role_id}", http.HandlerFunc(h.selectSelfRole))
+	mux.Socket("PUT /v1/communities/{id}/role-panels", http.HandlerFunc(h.registerRolePanel))
+	mux.Socket("POST /v1/communities/{id}/role-panels/{channel_id}/{message_seq}/reaction", http.HandlerFunc(h.rolePanelReaction))
+	mux.Socket("PUT /v1/communities/{id}/bot-join-role", http.HandlerFunc(h.configureBotJoinRole))
+	mux.Socket("GET /v1/communities/{id}/bot-join-role", http.HandlerFunc(h.getBotJoinRole))
 }
 
 // rolePanelReaction records the authenticated member's explicit selection for

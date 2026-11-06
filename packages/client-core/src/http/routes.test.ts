@@ -862,8 +862,9 @@ describe('Routes: the idempotency key of a mutation', () => {
   it('is a fresh random id per call, kept by every retry of that call', async () => {
     const { routes, t, http } = setup();
     t.replies.push(refusal(503, 'E_UNAVAILABLE', '', 10), noContent(), noContent());
-    await routes.putAFKAway(COMMUNITY);
-    await routes.putAFKAway(COMMUNITY);
+    // A route that stays on HTTP (the retry is the HTTP client's); a socket route's retry is the socket layer's.
+    await routes.putDeviceList(USER, fill(8, 1));
+    await routes.putDeviceList(USER, fill(8, 1));
     expect(t.seen).toHaveLength(3);
     expect(http.requests).toHaveLength(2);
     const [first, second] = http.requests.map((r) => r.idem);
@@ -2246,5 +2247,53 @@ describe('Routes: the messaging area goes over the socket (Bot v2 task 5)', () =
   it('the message idem matches the shared vector (internal/api send_retry_socket_test.go checks the same bytes)', async () => {
     // msg id 0x31 x16, body 0x44 x40: SHA-256("dilla/message-idem/v1\0" || msgId || body)[:16].
     expect(toHex(await messageIdem(fill(16, 0x31), fill(40, 0x44)))).toBe('0cf6fce80c1e9d827699c5296e842471');
+  });
+});
+
+describe('Routes: the community area goes over the socket (Bot v2 task 6)', () => {
+  const C = hex(COMMUNITY);
+  const CH = hex(CHANNEL);
+  const U = hex(USER);
+  const R = hex(ROLE);
+  const socket: [string, string][] = [
+    ['GET', '/v1/communities'], ['POST', '/v1/communities'], ['GET', `/v1/communities/${C}`], ['PATCH', `/v1/communities/${C}`],
+    ['DELETE', `/v1/communities/${C}`], ['GET', `/v1/communities/${C}/members?limit=50`], ['GET', `/v1/communities/${C}/members/${U}`],
+    ['DELETE', `/v1/communities/${C}/members/${U}`], ['GET', `/v1/communities/${C}/permissions`], ['POST', `/v1/communities/${C}/join`],
+    ['POST', `/v1/communities/${C}/leave`], ['POST', `/v1/communities/${C}/owner`], ['GET', `/v1/communities/${C}/presence`],
+    ['GET', `/v1/communities/${C}/afk`], ['POST', `/v1/communities/${C}/afk/activity`], ['PUT', `/v1/communities/${C}/afk/away`],
+    ['GET', `/v1/communities/${C}/afk/settings`], ['PUT', `/v1/communities/${C}/afk/settings`],
+    ['GET', `/v1/communities/${C}/channels`], ['POST', `/v1/communities/${C}/channels`], ['GET', `/v1/channels/${CH}`],
+    ['PATCH', `/v1/channels/${CH}`], ['DELETE', `/v1/channels/${CH}`], ['GET', `/v1/channels/${CH}/permissions`],
+    ['GET', `/v1/channels/${CH}/members`], ['PUT', `/v1/channels/${CH}/members/${U}`], ['DELETE', `/v1/channels/${CH}/members/${U}`],
+    ['PUT', `/v1/channels/${CH}/overwrites/role/${R}`], ['DELETE', `/v1/channels/${CH}/overwrites/role/${R}`],
+    ['GET', `/v1/communities/${C}/roles`], ['POST', `/v1/communities/${C}/roles`], ['GET', `/v1/communities/${C}/overwrites`],
+    ['PATCH', `/v1/roles/${R}`], ['DELETE', `/v1/roles/${R}`], ['PUT', `/v1/communities/${C}/members/${U}/roles/${R}`],
+    ['DELETE', `/v1/communities/${C}/members/${U}/roles/${R}`], ['GET', `/v1/communities/${C}/self-roles`],
+    ['PUT', `/v1/communities/${C}/self-roles/policy`], ['PUT', `/v1/communities/${C}/self-roles/${R}`],
+    ['PUT', `/v1/communities/${C}/role-panels`], ['POST', `/v1/communities/${C}/role-panels/${CH}/4/reaction`],
+    ['GET', `/v1/communities/${C}/bot-join-role`], ['PUT', `/v1/communities/${C}/bot-join-role`],
+    ['GET', `/v1/communities/${C}/bans`], ['PUT', `/v1/communities/${C}/bans/${U}`], ['DELETE', `/v1/communities/${C}/bans/${U}`],
+    ['GET', `/v1/communities/${C}/members/${U}/timeout`], ['PUT', `/v1/communities/${C}/members/${U}/timeout`],
+    ['DELETE', `/v1/communities/${C}/members/${U}/timeout`], ['POST', `/v1/communities/${C}/members/${U}/warning`],
+    ['GET', `/v1/communities/${C}/invites`], ['POST', `/v1/communities/${C}/invites`], ['DELETE', `/v1/invites/${R}`],
+    ['GET', `/v1/communities/${C}/gifs`], ['PUT', `/v1/communities/${C}/gifs/key`], ['DELETE', `/v1/communities/${C}/gifs/key`],
+    ['PUT', `/v1/communities/${C}/gifs/rating`], ['GET', `/v1/communities/${C}/gifs/search?q=cat&offset=0`],
+    ['GET', '/v1/admin/audit'], ['GET', '/v1/admin/diagnostics'], ['POST', `/v1/admin/users/${U}/disable`],
+    ['DELETE', `/v1/admin/blobs/${hex(fill(32, 0x22))}`],
+    ['GET', `/v1/communities/${C}/bot`], ['PUT', `/v1/communities/${C}/bot?v=2`], ['DELETE', `/v1/communities/${C}/bot`],
+    ['PATCH', `/v1/communities/${C}/bot/profile`], ['POST', `/v1/communities/${C}/bot/disable`], ['POST', `/v1/communities/${C}/bot/restart`],
+    ['PUT', `/v1/communities/${C}/bot/music-settings`], ['GET', `/v1/communities/${C}/bot/command-status`],
+  ];
+  // Large binary bodies, the pre-session routes and the unauthenticated ones stay on HTTP.
+  const http: [string, string][] = [
+    ['GET', `/v1/communities/${C}/gifs/media/abc123?r=full`], ['POST', '/v1/invites/redeem'], ['GET', '/v1/instance'],
+    ['GET', '/v1/accounts/me'], ['POST', '/v1/accounts'], ['GET', '/v1/auth/factors'], ['POST', '/v1/gateway/ticket'],
+    ['PUT', '/v1/backups/0/0'], ['GET', `/v1/channels/${CH}/blobs/${hex(fill(32, 0x22))}`], ['POST', '/v1/sessions/negotiate'],
+  ];
+  it.each(socket)('%s %s is a socket route', (method, path) => {
+    expect(socketRouteFor(method, path)).not.toBeNull();
+  });
+  it.each(http)('%s %s stays on HTTP', (method, path) => {
+    expect(socketRouteFor(method, path)).toBeNull();
   });
 });

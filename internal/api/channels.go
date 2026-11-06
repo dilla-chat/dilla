@@ -130,12 +130,12 @@ func NewChannels(repo store.Repository, dsvc DS, clk clock.Clock, maxGroupDM int
 }
 
 func (c *Channels) Register(mux *server.Mux) {
-	mux.HandleFunc("POST /v1/communities/{id}/channels", c.create)
-	mux.HandleFunc("GET /v1/communities/{id}/channels", c.list)
-	mux.HandleFunc("GET /v1/channels/{id}", c.get)
-	mux.HandleFunc("GET /v1/channels/{id}/permissions", c.permissions)
-	mux.HandleFunc("PATCH /v1/channels/{id}", c.patch)
-	mux.HandleFunc("DELETE /v1/channels/{id}", c.delete)
+	mux.Socket("POST /v1/communities/{id}/channels", http.HandlerFunc(c.create))
+	mux.Socket("GET /v1/communities/{id}/channels", http.HandlerFunc(c.list))
+	mux.Socket("GET /v1/channels/{id}", http.HandlerFunc(c.get))
+	mux.Socket("GET /v1/channels/{id}/permissions", http.HandlerFunc(c.permissions))
+	mux.Socket("PATCH /v1/channels/{id}", http.HandlerFunc(c.patch))
+	mux.Socket("DELETE /v1/channels/{id}", http.HandlerFunc(c.delete))
 }
 
 // permissions returns the caller's effective channel permissions after role
@@ -161,9 +161,9 @@ func (c *Channels) permissions(w http.ResponseWriter, r *http.Request) {
 // separate from Register because channel_members is task 6's table: a build of
 // tasks 1-5 alone must not advertise a route with no storage behind it.
 func (c *Channels) RegisterMembers(mux *server.Mux) {
-	mux.HandleFunc("GET /v1/channels/{id}/members", c.members)
-	mux.HandleFunc("PUT /v1/channels/{id}/members/{user_id}", c.addMember)
-	mux.HandleFunc("DELETE /v1/channels/{id}/members/{user_id}", c.removeMember)
+	mux.Socket("GET /v1/channels/{id}/members", http.HandlerFunc(c.members))
+	mux.Socket("PUT /v1/channels/{id}/members/{user_id}", http.HandlerFunc(c.addMember))
+	mux.Socket("DELETE /v1/channels/{id}/members/{user_id}", http.HandlerFunc(c.removeMember))
 }
 
 // members lists the channel's materialised membership, ordered by user id, one

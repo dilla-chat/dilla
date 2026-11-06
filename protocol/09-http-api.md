@@ -44,13 +44,25 @@ is answered from the instance's five-minute in-memory replay record and stores o
 minutes, or when the socket reaches another incarnation (another instance id, restore generation or
 per-process `boot_id`, the last in `ready`; a restart changes it), the client does not write a mutation again:
 it fails with `E_OUTCOME_UNKNOWN`, and the caller's own lost-answer handling (for a message, the catch-up that
-proves whether the upload exists) decides. A graceful shutdown lets running requests finish and answer first. The routes a client calls before its
-socket exists stay on HTTP: sign-up and sign-in, the session ceremonies and
+proves whether the upload exists) decides. A graceful shutdown lets running requests finish and answer first.
+The community area is socket-only too: communities (`/v1/communities`, `/v1/communities/{id}` and its
+members, permissions, join, leave, owner, presence, AFK and `afk/settings`, channels, invites, bans, member
+timeouts and warnings, roles, self-roles, role panels and the Bot join role), channels
+(`/v1/channels/{id}`, its permissions, members and overwrites), `/v1/roles/{id}`, `DELETE /v1/invites/{id}`,
+`/v1/admin/…` (audit, diagnostics, a blob purge and a user disable), the GIF picker (`GET /v1/communities/{id}/gifs`,
+`…/gifs/key`, `…/gifs/rating`, `…/gifs/search`) and the human-facing Bot admin routes
+(`/v1/communities/{community}/bot` and its profile, disable, restart, music-settings, command-status, actor
+authority, join-role-grants, member episode, events and event ack). The retired `POST` and `DELETE
+/v1/communities/{id}/afk` of web3.8 are not registered. What stays on HTTP is the binary and the
+pre-socket surface: blob routes, GIF media bytes (`GET …/gifs/media/{gif_id}`) and the backup chunks (a body
+above a frame), the invite preview `GET /i/{code}`, the invite landing and `POST /v1/invites/redeem`
+(unauthenticated, metered by client address), the instance document and limits, and the routes a client calls
+before its socket exists: sign-up and sign-in, the session ceremonies and `POST /v1/sessions/negotiate`,
 `DELETE /v1/devices/{device_id}/sessions`, the device lists, `GET` and `POST /v1/keypackages`,
-backups, `GET /v1/accounts/me`, the second-factor setup an owed account uses, the instance
-document and limits, and `POST /v1/gateway/ticket`. An owed account has no socket.
-Nothing a handler wrote to a response header (`X-Dilla-Generation`, `Cache-Control`) reaches a
-socket client; the generation is the gateway's `ready`.
+backups, `GET /v1/accounts/me`, the second-factor setup an owed account uses, and `POST /v1/gateway/ticket`.
+An owed account has no socket. Nothing a handler wrote to a response header (`X-Dilla-Generation`,
+`Cache-Control`, `Retry-After`) reaches a socket client; the generation is the gateway's `ready`, and a
+refusal that carried `Retry-After` carries `retry_after_ms` in its body.
 
 ## Identifiers
 
@@ -1187,8 +1199,6 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 | `GET /v1/communities/{id}/afk` | — | `200 [channel_id(bstr16\|null), timeout_seconds(uint), [], pending(uint), away([[user_id(bstr16), since_ts(uint)]])]`: the built-in AFK channel; the third element is always the empty array (web3.8's retired occupant list, kept so a web3.8 parser still reads it); `pending` is the calling device's pending cut, a reason code (the dilla CBOR subset has no booleans): `0` none, `1` the sweep moved the device, `2` the device was cut because its user chose AFK (`PUT …/afk/away`); it is device-scoped, so every community's snapshot reports it to that device, a read does not consume it, and it lasts through gateway disconnects until an admission of that device clears it, at most 24 hours (held in memory; a restart drops it with the calls); a client reads any value it does not know as pending; `away` is the community's away roster (below), sorted by `user_id`, at most 1024 entries, `since_ts` the unix second each member became away. A client that reads four elements is unaffected. A community with no live AFK channel gets one here first; `channel_id` is `null` only if that fails. `away` is empty whenever `channel_id` is `null` for the caller, so the roster goes only to those who may reach the AFK channel, the audience of `afk_away` | community membership |
 | `PUT /v1/communities/{id}/afk/away` | `[]` | `204`; the caller's user goes to the AFK channel: the user is first marked away in this community (a member already away keeps the earlier `since_ts`; a user who holds no gateway connection, or one of whose devices was admitted to a call meanwhile, is not marked), then every device of the user is cut from every call room it is in (a community's or a DM's, in any community). Each device it cuts gets pending `2` (the snapshot above) before its removal, so its first read already says why; so does every other device of the user that was admitted to a call in the last 2 minutes and that no room lists now (a call recovering after the media server dropped it), so that its recovery does not rejoin. A cut that fails is logged, the device keeps pending `2`, and the answer is still `204`. `400 E_INVALID_REQUEST` for any other body; `404 E_NOT_FOUND` for a non-member (also when a kick lands during the request) and for a community whose AFK channel the caller cannot reach. There is no `DELETE`: only the instance clears away | community membership |
 | `POST /v1/communities/{id}/afk/activity` | `[channel_id(bstr16)]` or `[channel_id(bstr16), exempt(uint)]` | `204`; records this authenticated device's activity in that live community voice call. `exempt` is `0` or `1` (`400 E_INVALID_REQUEST` otherwise, and for a CBOR boolean); with `1` the device is never moved out of that call's room, even when the report precedes its admission | community membership |
-| `POST /v1/communities/{id}/afk` | any | `404 E_NOT_FOUND` `retired in web3.9` (web3.8's manual move) | — |
-| `DELETE /v1/communities/{id}/afk` | — | `404 E_NOT_FOUND` `retired in web3.9` (web3.8's leave) | — |
 
 - **The built-in AFK channel.** Every community has exactly one AFK channel, written by the
   instance: a voice channel named `AFK`, end-to-end encrypted and private, at the top level, at

@@ -49,6 +49,18 @@ var SocketRoutes = []string{
 	"GET /v1/channels/{id}/call",
 	"POST /v1/calls/{call_id}/rtt",
 	"DELETE /v1/calls/{call_id}",
+	"GET /v1/communities",
+	"GET /v1/communities/{id}",
+	"GET /v1/communities/{id}/channels",
+	"GET /v1/communities/{id}/members",
+	"GET /v1/communities/{id}/members/{user_id}",
+	"GET /v1/channels/{id}/permissions",
+	"GET /v1/communities/{community}/bot/actors/{actor}/authority",
+	"GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority",
+	"GET /v1/communities/{community}/bot/members/{member}/episode",
+	"GET /v1/communities/{community}/bot/events",
+	"PUT /v1/communities/{community}/bot/events/ack",
+	"POST /v1/communities/{community}/bot/join-role-grants",
 }
 
 type socketRoute struct {

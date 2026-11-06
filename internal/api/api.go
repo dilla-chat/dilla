@@ -294,7 +294,7 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("GET /v1/accounts/me", d.owedOK(d.GetMe))
 	m.SocketAuthed("PATCH /v1/accounts/me/presence", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.PatchPresence))
 	m.SocketAuthed("POST /v1/accounts/me/presence/activity", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.PresenceActivity))
-	m.Handle("GET /v1/communities/{community_id}/presence", d.enrolled(dsMeter(d.Limiter, dsClassRead, d.PresenceSnapshot)))
+	m.SocketAuthed("GET /v1/communities/{community_id}/presence", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.PresenceSnapshot))
 	m.SocketAuthed("PATCH /v1/accounts/me", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.PatchMe))
 	m.SocketAuthed("DELETE /v1/accounts/me", d.socketChain(auth.ScopeEnrolled, ""), http.HandlerFunc(d.DeleteMe))
 

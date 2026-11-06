@@ -1821,9 +1821,11 @@ impl HttpDs {
     }
 
     /// `GET /v1/channels/{id}`: its id, kind and text group.
-    pub fn get_channel(&self, channel_id: &[u8; 16]) -> Result<ChannelInfo, DsError> {
+    pub fn get_channel(&mut self, channel_id: &[u8; 16]) -> Result<ChannelInfo, DsError> {
         let path = format!("/v1/channels/{}", hex::encode(channel_id));
-        decode_channel(&get_with(&self.agent, &self.base, &self.token, &path)?).map_err(protocol)
+        let (status, out) = self.socket_call("GET", &path, &[])?;
+        check_status(status, &out)?;
+        decode_channel(&out).map_err(protocol)
     }
 
     fn blob_path(channel_id: &[u8; 16], blob_id: &[u8; 32]) -> String {
@@ -1925,8 +1927,8 @@ impl HttpDs {
     }
 
     /// POST /v1/communities [name, policy bstr "{}", 0, 0].
-    pub fn create_community(&self, name: &str) -> Result<[u8; 16], DsError> {
-        self.post_decoded(
+    pub fn create_community(&mut self, name: &str) -> Result<[u8; 16], DsError> {
+        self.socket_post_decoded(
             "/v1/communities",
             &encode(|e| {
                 e.array(4).text(name).bytes(b"{}").uint(0).uint(0);
@@ -1944,9 +1946,10 @@ impl HttpDs {
     /// What the owner's roles tab does to give everyone a right (flow 09): `GET /v1/communities/{id}/roles` finds
     /// @everyone (position 0), then `PATCH /v1/roles/{everyone}` `[null, null, null, allow | bits, null, null, null]`.
     /// Answers the new mask.
-    pub fn allow_everyone(&self, community: &[u8; 16], bits: u64) -> Result<u64, DsError> {
+    pub fn allow_everyone(&mut self, community: &[u8; 16], bits: u64) -> Result<u64, DsError> {
         let path = format!("/v1/communities/{}/roles", hex::encode(community));
-        let roles = get_with(&self.agent, &self.base, &self.token, &path)?;
+        let (roles_status, roles) = self.socket_call("GET", &path, &[])?;
+        check_status(roles_status, &roles)?;
         let (everyone, allow) = decode_strict(&roles, |d| {
             let mut found = None;
             for _ in 0..d.array_len()? {
@@ -1979,20 +1982,14 @@ impl HttpDs {
                 .null();
         });
         let role_path = format!("/v1/roles/{}", hex::encode(everyone));
-        let (status, out) = call(
-            &self.agent,
-            "PATCH",
-            &self.url(&role_path),
-            Some(&self.token),
-            Some(("application/cbor", &body)),
-        )?;
+        let (status, out) = self.socket_call("PATCH", &role_path, &body)?;
         check_status(status, &out)?;
         Ok(mask)
     }
 
     /// POST /v1/communities/{id}/channels [0, 0, 0, null, name, "", 0, 0].
     pub fn create_text_channel(
-        &self,
+        &mut self,
         community: &[u8; 16],
         name: &str,
     ) -> Result<([u8; 16], u64, u64), DsError> {
@@ -2001,13 +1998,13 @@ impl HttpDs {
 
     /// POST /v1/communities/{id}/channels [kind, 0, 0, null, name, "", 0, 0]: kind 0 text, 1 voice.
     pub fn create_channel(
-        &self,
+        &mut self,
         community: &[u8; 16],
         kind: u64,
         name: &str,
     ) -> Result<([u8; 16], u64, u64), DsError> {
         let path = format!("/v1/communities/{}/channels", hex::encode(community));
-        self.post_decoded(
+        self.socket_post_decoded(
             &path,
             &encode(|e| {
                 e.array(8)
@@ -2029,13 +2026,13 @@ impl HttpDs {
 
     /// POST /v1/communities/{id}/invites [max_uses, ttl_seconds, 0].
     pub fn create_invite(
-        &self,
+        &mut self,
         community: &[u8; 16],
         max_uses: u64,
         ttl_seconds: u64,
     ) -> Result<String, DsError> {
         let path = format!("/v1/communities/{}/invites", hex::encode(community));
-        self.post_decoded(
+        self.socket_post_decoded(
             &path,
             &encode(|e| {
                 e.array(3).uint(max_uses).uint(ttl_seconds).uint(0);
@@ -2052,9 +2049,9 @@ impl HttpDs {
     }
 
     /// POST /v1/communities/{id}/join [code].
-    pub fn join_community(&self, community: &[u8; 16], code: &str) -> Result<(), DsError> {
+    pub fn join_community(&mut self, community: &[u8; 16], code: &str) -> Result<(), DsError> {
         let path = format!("/v1/communities/{}/join", hex::encode(community));
-        self.post_decoded(
+        self.socket_post_decoded(
             &path,
             &encode(|e| {
                 e.array(1).text(code);

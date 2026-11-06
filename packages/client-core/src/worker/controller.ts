@@ -23,6 +23,7 @@ import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, ty
 import { Op, afkAwayOf, communityChangedOf, voiceStateOf, type AFKAwayFrame, type Frame } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
+import type { SocketRoute } from '../http/socket-routes';
 import { RouteRtt } from '../http/route-rtt';
 import { SocketRequests } from '../gateway/requests';
 import { DillaHttpError } from '../http/errors';
@@ -58,6 +59,9 @@ import { authorityFor } from '../admin/authority';
 export interface ControllerDeps {
   origin: string;                                  // the page origin, e.g. http://127.0.0.1:8453
   fetch: typeof fetch; WebSocket: typeof WebSocket; locks: LockManagerLike;
+  /** The socket route table (HttpDeps.socketRoutes); SOCKET_ROUTES when absent. A test seam: a controller test that
+   *  serves a route through its fake fetch passes [] so that no route goes to the (fake) gateway. */
+  socketRoutes?: readonly SocketRoute[];
   now(): number;                                   // ms
   /** A monotonic clock (ms, performance.now): elapsed-time bounds that a wall-clock step must not stretch or cut
    *  (task-10 fix review N2). Defaults to now. */
@@ -1191,6 +1195,7 @@ export class Controller {
       token: () => this.session?.token() ?? null,
       reauthenticate: () => this.reauthenticate(),
       socket: () => this.socketRequests,
+      ...(deps.socketRoutes === undefined ? {} : { socketRoutes: deps.socketRoutes }),
       onGeneration: (generation) => { this.setConnection({ generation: generation.toString() }); },
       // web3.6: an instance that answers E_FACTOR_REQUIRED to a ready account (an operator reset) owns the next step.
       // Once per transition: onFactorRequired leaves 'ready' synchronously, so the refusals that follow (and any while

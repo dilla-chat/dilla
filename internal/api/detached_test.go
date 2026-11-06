@@ -89,7 +89,10 @@ func serveCancellable(t *testing.T, e *env, dsvc *cancellingDS, register func(*s
 		req.Header.Set("Content-Type", "application/cbor")
 	}
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
+	// These routes are socket-only: serve the request into the socket mux in process, with the session on its context
+	// and the guard as the identity (the harness has no auth.Sessions; the real chain is tested through the dispatcher).
+	mux.SetSocketGuard(func(w http.ResponseWriter, r *http.Request, next http.Handler) { next.ServeHTTP(w, r) })
+	mux.SocketMux().ServeHTTP(rec, req)
 	return rec.Code
 }
 

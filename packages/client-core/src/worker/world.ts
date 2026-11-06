@@ -603,6 +603,7 @@ export function world(opts: {
     boot: (instance) => { bootCount.value += 1; return Promise.resolve({ kind: 'opened', core: core as unknown as CorePort, instance }); },
     resetDevice: (instance) => { calls.push('resetDevice'); wiped.push(toHex(instance.instanceId)); return Promise.resolve(); },
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
+    ...(opts.realRoutes === true && opts.fetch ? { socketRoutes: [] } : {}),
     ...(opts.now ? { now: opts.now } : {}),
     ...(opts.sleep ? { sleep: opts.sleep } : {}),
     ...(opts.monotonic ? { monotonic: opts.monotonic } : {}),

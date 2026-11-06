@@ -99,6 +99,8 @@ func testManagedBotReachesReady(t *testing.T, repo store.Repository) {
 		}
 		groups.RegisterBotDirectory(mux, d.Sessions)
 	})
+	// The routes that moved to the gateway socket are sent as request frames.
+	h = viaSocket(t, h, deps)
 	owner, ownerDevice, humanToken := seedAPISession(t, deps)
 	cid := seedBotCommunity(t, deps, owner.ID) // no accessible text channels are required here
 	negotiate, _ := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})

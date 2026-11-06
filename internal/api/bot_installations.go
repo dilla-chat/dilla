@@ -133,27 +133,21 @@ func appendBotInstallationEvent(ctx context.Context, tx store.Repository, row st
 }
 
 func registerBotInstallations(m *server.Mux, d Deps) {
+	// The human-facing Bot admin routes are socket-only. Each keeps the chain BotSessionRoute built (the enrolled session,
+	// whose Bot allow-list runs in the session middleware, then the device session's bucket of routeClass: read for a GET,
+	// write otherwise), as socketChain; the socket has no headers, so the Cache-Control: no-store that command-status and
+	// the channel authority route set is dropped.
+	m.SocketAuthed("GET /v1/communities/{community}/bot", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.GetBotInstallation))
+	m.SocketAuthed("PATCH /v1/communities/{community}/bot/profile", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.PatchBotProfile))
+	m.SocketAuthed("PUT /v1/communities/{community}/bot", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.ConfigureBotInstallation))
+	m.SocketAuthed("POST /v1/communities/{community}/bot/disable", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.DisableBotInstallation))
+	m.SocketAuthed("DELETE /v1/communities/{community}/bot", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.RemoveBotInstallation))
+	m.SocketAuthed("GET /v1/communities/{community}/bot/command-status", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.GetBotCommandStatus))
+	m.SocketAuthed("GET /v1/communities/{community}/bot/actors/{actor}/authority", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.GetBotActorAuthority))
+	m.SocketAuthed("GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.GetBotActorChannelAuthority))
+	m.SocketAuthed("POST /v1/communities/{community}/bot/join-role-grants", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.GrantBotJoinRole))
+	m.SocketAuthed("GET /v1/communities/{community}/bot/members/{member}/episode", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.GetBotMemberEpisode))
 	botSession := BotSessionRoute(d.Sessions, d.Limiter)
-	m.Handle("GET /v1/communities/{community}/bot", botSession("GET /v1/communities/{community}/bot", http.HandlerFunc(d.GetBotInstallation)))
-	m.Handle("PATCH /v1/communities/{community}/bot/profile", botSession("PATCH /v1/communities/{community}/bot/profile", http.HandlerFunc(d.PatchBotProfile)))
-	m.Handle("PUT /v1/communities/{community}/bot", botSession("PUT /v1/communities/{community}/bot", http.HandlerFunc(d.ConfigureBotInstallation)))
-	m.Handle("POST /v1/communities/{community}/bot/disable", botSession("POST /v1/communities/{community}/bot/disable", http.HandlerFunc(d.DisableBotInstallation)))
-	m.Handle("DELETE /v1/communities/{community}/bot", botSession("DELETE /v1/communities/{community}/bot", http.HandlerFunc(d.RemoveBotInstallation)))
-	commandStatusPath := "GET /v1/communities/{community}/bot/command-status"
-	commandStatus := SessionRoute(d.Sessions, d.Limiter)(commandStatusPath, http.HandlerFunc(d.GetBotCommandStatus))
-	m.Handle(commandStatusPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		commandStatus.ServeHTTP(w, r)
-	}))
-	m.Handle("GET /v1/communities/{community}/bot/actors/{actor}/authority", botSession("GET /v1/communities/{community}/bot/actors/{actor}/authority", http.HandlerFunc(d.GetBotActorAuthority)))
-	channelAuthorityPath := "GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority"
-	channelAuthority := botSession(channelAuthorityPath, http.HandlerFunc(d.GetBotActorChannelAuthority))
-	m.Handle(channelAuthorityPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		channelAuthority.ServeHTTP(w, r)
-	}))
-	m.Handle("POST /v1/communities/{community}/bot/join-role-grants", botSession("POST /v1/communities/{community}/bot/join-role-grants", http.HandlerFunc(d.GrantBotJoinRole)))
-	m.Handle("GET /v1/communities/{community}/bot/members/{member}/episode", botSession("GET /v1/communities/{community}/bot/members/{member}/episode", http.HandlerFunc(d.GetBotMemberEpisode)))
 	m.HandleFunc("GET /v1/bot-runtime/installations", d.ListRuntimeInstallations)
 	m.HandleFunc("POST /v1/bot-runtime/installations/{installation}/claim", d.ClaimBotInstallation)
 	m.HandleFunc("POST /v1/bot-runtime/installations/{installation}/enroll", d.EnrollBotInstallation)

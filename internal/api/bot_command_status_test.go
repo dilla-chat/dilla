@@ -32,8 +32,8 @@ func TestBotCommandStatusIsMemberReadableAndExposesLifecycleOnly(t *testing.T) {
 	}
 	path := "/v1/communities/" + cid.String() + "/bot/command-status"
 	noInstallation := getAuth(h, path, memberToken)
-	if noInstallation.Code != http.StatusOK || noInstallation.Header().Get("Cache-Control") != "no-store" || !bytes.Equal(noInstallation.Body.Bytes(), []byte{0xf6}) {
-		t.Fatalf("missing bot status = %d cache=%q body=%x, want no-store null", noInstallation.Code, noInstallation.Header().Get("Cache-Control"), noInstallation.Body.Bytes())
+	if noInstallation.Code != http.StatusOK || !bytes.Equal(noInstallation.Body.Bytes(), []byte{0xf6}) {
+		t.Fatalf("missing bot status = %d body=%x, want null (a socket answer has no Cache-Control)", noInstallation.Code, noInstallation.Body.Bytes())
 	}
 	if denied := getAuth(h, "/v1/communities/"+id.New().String()+"/bot/command-status", memberToken); denied.Code != http.StatusNotFound {
 		t.Fatalf("foreign community status = %d, want hidden 404", denied.Code)

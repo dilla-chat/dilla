@@ -25,7 +25,7 @@ func NewMemberWarnings(repo store.Repository, clk clock.Clock) *MemberWarnings {
 }
 
 func (h *MemberWarnings) Register(mux *server.Mux) {
-	mux.HandleFunc("POST /v1/communities/{id}/members/{user_id}/warning", h.post)
+	mux.Socket("POST /v1/communities/{id}/members/{user_id}/warning", http.HandlerFunc(h.post))
 }
 
 type warningPostReq struct {

@@ -33,13 +33,11 @@ type botStructuralEventsAPI struct {
 
 func registerBotStructuralEvents(mux *server.Mux, d Deps) {
 	h := &botStructuralEventsAPI{deps: d}
-	enrolled := func(f http.HandlerFunc) http.Handler { return d.Sessions.Middleware(f, auth.ScopeEnrolled) }
-	mux.Handle("GET /v1/communities/{community}/bot/events", enrolled(dsMeter(d.Limiter, dsClassRead, h.get)))
-	mux.Handle("PUT /v1/communities/{community}/bot/events/ack", enrolled(dsMeter(d.Limiter, dsClassWrite, h.ack)))
+	mux.SocketAuthed("GET /v1/communities/{community}/bot/events", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(h.get))
+	mux.SocketAuthed("PUT /v1/communities/{community}/bot/events/ack", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(h.ack))
 }
 
 func (h *botStructuralEventsAPI) get(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
 	community, err := server.PathID(r, "community")
 	if err != nil {
 		server.WriteError(w, err)
@@ -87,7 +85,6 @@ func (h *botStructuralEventsAPI) get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *botStructuralEventsAPI) ack(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
 	community, err := server.PathID(r, "community")
 	if err != nil {
 		server.WriteError(w, err)

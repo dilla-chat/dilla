@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/server"
 	"github.com/dilla-chat/dilla/internal/store"
@@ -20,11 +21,8 @@ import (
 var botRuntimeVersion = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z.+_-]{0,31}$`)
 
 func registerBotSettings(m *server.Mux, d Deps) {
-	botSession := BotSessionRoute(d.Sessions, d.Limiter)
-	musicPath := "PUT /v1/communities/{community}/bot/music-settings"
-	m.Handle(musicPath, botSession(musicPath, http.HandlerFunc(d.PutBotMusicSettings)))
-	restartPath := "POST /v1/communities/{community}/bot/restart"
-	m.Handle(restartPath, botSession(restartPath, http.HandlerFunc(d.RestartBotInstallation)))
+	m.SocketAuthed("PUT /v1/communities/{community}/bot/music-settings", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.PutBotMusicSettings))
+	m.SocketAuthed("POST /v1/communities/{community}/bot/restart", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.RestartBotInstallation))
 	m.HandleFunc("PUT /v1/bot-runtime/installations/{installation}/status", d.PutBotRuntimeStatus)
 }
 

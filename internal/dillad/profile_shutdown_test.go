@@ -11,7 +11,7 @@ import (
 
 func TestShutdownFlushesProfileHintsBeforeGatewayStops(t *testing.T) {
 	srv, ts, token := newGreetedServer(t)
-	rec := call(t, srv.Handler(), http.MethodPost, "/v1/communities", token, []any{"profiles", []byte("{}"), uint64(0), uint64(0)})
+	rec := call(t, socketHandler(srv), http.MethodPost, "/v1/communities", token, []any{"profiles", []byte("{}"), uint64(0), uint64(0)})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create community = %d: %s", rec.Code, rec.Body.String())
 	}

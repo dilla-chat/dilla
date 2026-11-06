@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/api/sockettest"
 	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/service"
@@ -95,7 +96,9 @@ func TestControlMusicAuthorityAgainstARealDillad(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := httptest.NewServer(h.Handler())
+	// The routes that moved to the gateway socket are sent as request frames (sockettest.Bridge).
+	s := h.Server()
+	srv := httptest.NewServer(sockettest.NewBridge(h.Handler(), s.Mux(), s.SocketDispatcher(), s.Repo(), s.Now))
 	t.Cleanup(srv.Close)
 	c, err := client.New(client.Config{BaseURL: srv.URL, InstanceID: instanceID(t, srv.URL), AllowLoopbackHTTP: true})
 	if err != nil {

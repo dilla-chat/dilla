@@ -188,6 +188,8 @@ func testManagedBotIdentityLifecycle(t *testing.T, repo store.Repository, remove
 		}}
 		groups.RegisterBotDirectory(mux, d.Sessions)
 	})
+	// The routes that moved to the gateway socket are sent as request frames.
+	h = viaSocket(t, h, deps)
 	// Serve with the harness clock as the authoritative HTTP Date. The production client uses that
 	// response observation to judge claim expiry; using net/http's host clock would compare it to a
 	// separate clock from the API's installed fake clock.

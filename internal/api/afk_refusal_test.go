@@ -9,7 +9,6 @@ import (
 	"github.com/fxamacker/cbor/v2"
 
 	"github.com/dilla-chat/dilla/internal/api"
-	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/store"
 )
@@ -392,7 +391,7 @@ func TestAFKSettingsBody(t *testing.T) {
 	}
 }
 
-func TestRetiredAFKRoutes(t *testing.T) {
+func TestRetiredAFKRoutesAreGone(t *testing.T) {
 	r := newRefusalEnv(t)
 	api.NewCalls(r.e.Repo, api.NewResolver(r.e.Repo), &stubSFU{}, api.CallsConfig{LiveKitURL: testLiveKitURL}, r.e.Clk,
 		slog.New(slog.DiscardHandler)).Register(r.e.Mux)
@@ -401,13 +400,8 @@ func TestRetiredAFKRoutes(t *testing.T) {
 		method string
 		body   any
 	}{{http.MethodPost, []any{r.lounge[:]}}, {http.MethodDelete, nil}} {
-		status, body := r.e.Do(m.method, path, r.memberTok, m.body)
-		r.refused(t, m.method+" /afk", status, body, http.StatusNotFound, "E_NOT_FOUND")
-		var arr []cbor.RawMessage
-		mustUnmarshal(t, body, &arr)
-		var detail string
-		if len(arr) < 2 || cborx.Unmarshal(arr[1], &detail) != nil || detail != "retired in web3.9" {
-			t.Fatalf("%s /afk detail = %q", m.method, detail)
+		if status, _ := r.e.Do(m.method, path, r.memberTok, m.body); status != http.StatusNotFound && status != http.StatusMethodNotAllowed {
+			t.Fatalf("%s /afk = %d, want 404 or 405 (retired in web3.9, no longer registered)", m.method, status)
 		}
 	}
 	// Control: the snapshot route next to them still answers.

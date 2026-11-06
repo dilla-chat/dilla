@@ -357,9 +357,9 @@ func NewInvites(repo store.Repository, clk clock.Clock, baseURL string, log *slo
 }
 
 func (h *Invites) Register(mux *server.Mux) {
-	mux.HandleFunc("POST /v1/communities/{id}/invites", h.create)
-	mux.HandleFunc("GET /v1/communities/{id}/invites", h.list)
-	mux.HandleFunc("DELETE /v1/invites/{id}", h.revoke)
+	mux.Socket("POST /v1/communities/{id}/invites", http.HandlerFunc(h.create))
+	mux.Socket("GET /v1/communities/{id}/invites", http.HandlerFunc(h.list))
+	mux.Socket("DELETE /v1/invites/{id}", http.HandlerFunc(h.revoke))
 }
 
 const (

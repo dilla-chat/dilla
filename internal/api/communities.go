@@ -84,20 +84,20 @@ func (c *Communities) WithInviteMeter(l *server.RateLimiter, trustedProxies []ne
 }
 
 func (c *Communities) Register(mux *server.Mux) {
-	mux.HandleFunc("POST /v1/communities", c.create)
-	mux.HandleFunc("GET /v1/communities", c.mine)
-	mux.HandleFunc("GET /v1/communities/{id}", c.get)
-	mux.HandleFunc("PATCH /v1/communities/{id}", c.patch)
-	mux.HandleFunc("DELETE /v1/communities/{id}", c.delete)
-	mux.HandleFunc("GET /v1/communities/{id}/members", c.members)
-	mux.HandleFunc("GET /v1/communities/{id}/members/{user_id}", c.member)
-	mux.HandleFunc("GET /v1/communities/{id}/permissions", c.permissions)
-	mux.HandleFunc("DELETE /v1/communities/{id}/members/{user_id}", c.removeMember)
-	mux.HandleFunc("POST /v1/communities/{id}/join", c.join)
-	mux.HandleFunc("POST /v1/communities/{id}/leave", c.leave)
-	mux.HandleFunc("POST /v1/communities/{id}/owner", c.transfer)
-	mux.HandleFunc("GET /v1/communities/{id}/afk/settings", c.afkSettings)
-	mux.HandleFunc("PUT /v1/communities/{id}/afk/settings", c.putAFKSettings)
+	mux.Socket("POST /v1/communities", http.HandlerFunc(c.create))
+	mux.Socket("GET /v1/communities", http.HandlerFunc(c.mine))
+	mux.Socket("GET /v1/communities/{id}", http.HandlerFunc(c.get))
+	mux.Socket("PATCH /v1/communities/{id}", http.HandlerFunc(c.patch))
+	mux.Socket("DELETE /v1/communities/{id}", http.HandlerFunc(c.delete))
+	mux.Socket("GET /v1/communities/{id}/members", http.HandlerFunc(c.members))
+	mux.Socket("GET /v1/communities/{id}/members/{user_id}", http.HandlerFunc(c.member))
+	mux.Socket("GET /v1/communities/{id}/permissions", http.HandlerFunc(c.permissions))
+	mux.Socket("DELETE /v1/communities/{id}/members/{user_id}", http.HandlerFunc(c.removeMember))
+	mux.Socket("POST /v1/communities/{id}/join", http.HandlerFunc(c.join))
+	mux.Socket("POST /v1/communities/{id}/leave", http.HandlerFunc(c.leave))
+	mux.Socket("POST /v1/communities/{id}/owner", http.HandlerFunc(c.transfer))
+	mux.Socket("GET /v1/communities/{id}/afk/settings", http.HandlerFunc(c.afkSettings))
+	mux.Socket("PUT /v1/communities/{id}/afk/settings", http.HandlerFunc(c.putAFKSettings))
 }
 
 type afkSettingsBody struct {
