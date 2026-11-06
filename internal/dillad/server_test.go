@@ -28,6 +28,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	_ "modernc.org/sqlite"
 
+	"github.com/dilla-chat/dilla/internal/api/sockettest"
 	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/clock"
@@ -187,6 +188,12 @@ func newInstanceWith(t *testing.T, tune func(*config.Config)) (*dillad.Server, h
 	return srv, h, code
 }
 
+// socketHandler is srv's HTTP handler with the routes that moved to the gateway socket sent as request frames
+// (sockettest.Bridge), for a test that drives the composed instance in process.
+func socketHandler(srv *dillad.Server) http.Handler {
+	return sockettest.NewBridge(srv.Handler(), srv.Mux(), srv.SocketDispatcher(), srv.Repo(), srv.Now)
+}
+
 // newInstanceTuned is newInstanceWith plus the config the instance was built
 // from, which is what the instance document and the limits array are asserted
 // against: every one of their elements is either a config value or a constant
@@ -204,7 +211,8 @@ func newInstanceTuned(t *testing.T, tune func(*config.Config)) (*dillad.Server, 
 	if err != nil {
 		t.Fatalf("dillad.New: %v", err)
 	}
-	return srv, srv.Handler(), code, cfg
+	// The routes that moved to the gateway socket are sent as request frames (sockettest.Bridge).
+	return srv, socketHandler(srv), code, cfg
 }
 
 // uints reads a decoded CBOR array of unsigned integers. cborx decodes a

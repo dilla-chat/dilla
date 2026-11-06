@@ -321,9 +321,12 @@ func TestACommitForADecidedEpochIsFourZeroNineCarryingTheWinnerAndTheProposals(t
 // ------------------------------------------------------------------ harness
 
 type groupsAPI struct {
-	mux  *server.Mux
-	deps api.Deps
-	ds   *ds.DS // the same delivery service the mounted routes hold
+	mux *server.Mux
+	// handler is the harness handler, which sends the routes that moved to the gateway socket through the socket
+	// dispatcher (viaSocket); mux is the mux behind it.
+	handler http.Handler
+	deps    api.Deps
+	ds      *ds.DS // the same delivery service the mounted routes hold
 	// groups is the mounted *api.Groups, for a test that sets one of its hooks before its first
 	// request.
 	groups  *api.Groups
@@ -382,10 +385,7 @@ func newGroupsAPIWithRepository(t *testing.T, repo store.Repository, channels fu
 
 func newGroupsAPIWithHandler(t *testing.T, handler http.Handler, deps api.Deps, channels func(store.Repository) ds.Channels, policy ...ds.PostPolicy) *groupsAPI {
 	t.Helper()
-	mux, ok := handler.(*server.Mux)
-	if !ok {
-		t.Fatalf("newTestAPI returned %T, want *server.Mux", handler)
-	}
+	mux := muxOf(t, handler)
 	f := apiFixtureData(t)
 
 	// The guest validates every leaf's KeyPackage lifetime against the clock it is given, so the
@@ -451,7 +451,7 @@ func newGroupsAPIWithHandler(t *testing.T, handler http.Handler, deps api.Deps, 
 
 	user, _, token := seedAPISession(t, deps)
 	return &groupsAPI{
-		mux: mux, deps: deps, ds: d, groups: groups, groupID: f.groupID, fixture: f, session: token,
+		mux: mux, handler: handler, deps: deps, ds: d, groups: groups, groupID: f.groupID, fixture: f, session: token,
 		user: user.ID, clk: clk, wasm: wasm, keys: keys, gw: gw,
 	}
 }
@@ -559,7 +559,7 @@ func (h *groupsAPI) do(t *testing.T, method, path, token string, body []byte) *h
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	rec := httptest.NewRecorder()
-	h.mux.ServeHTTP(rec, req)
+	h.handler.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -807,7 +807,7 @@ func TestAnAcceptedRegistrationIsHandedToAfterRegisterAfterThe201(t *testing.T) 
 		req.Header.Set("Content-Type", "application/cbor")
 		req.Header.Set("Authorization", "Bearer "+token)
 		rec := httptest.NewRecorder()
-		h.mux.ServeHTTP(rec, req)
+		h.handler.ServeHTTP(rec, req)
 		res <- rec
 	}()
 	select {

@@ -71,7 +71,7 @@ func newPasskeyAPITuned(t *testing.T, uv string, hooked bool, tune func(*config.
 	}
 	m := server.NewMux()
 	api.Register(m, d)
-	return m, d, hook
+	return viaSocket(t, m, d), d, hook
 }
 
 // An instance with no relying party configured still MOUNTS the four routes —

@@ -36,9 +36,17 @@ func (h *Groups) RegisterDirectory(mux *server.Mux, sessions *auth.Sessions) {
 	}
 	mux.Handle("POST /v1/keypackages", orProvisional(dsMeter(h.Limiter, dsClassWrite, h.publishKeyPackages)))
 	mux.Handle("GET /v1/keypackages", enrolled(dsMeter(h.Limiter, dsClassRead, h.keyPackageCount)))
-	mux.Handle("GET /v1/devices/{device_id}/keypackage", enrolled(dsMeter(h.Limiter, dsClassRead, h.takeKeyPackage)))
-	mux.Handle("GET /v1/welcomes", orProvisional(dsMeter(h.Limiter, dsClassRead, h.welcomes)))
-	mux.Handle("DELETE /v1/welcomes/{welcome_id}", orProvisional(dsMeter(h.Limiter, dsClassWrite, h.ackWelcome)))
+	// The KeyPackage claim and the two Welcome routes are socket-only (Bot v2): the same session middleware and
+	// delivery-service meter in front of the bare handler. POST and GET /v1/keypackages stay on HTTP, because a
+	// device tops its directory up before its gateway exists (ruling C1).
+	chain := func(want auth.Scope, class string) func(http.Handler) http.Handler {
+		return func(next http.Handler) http.Handler {
+			return sessions.Middleware(dsMeter(h.Limiter, class, next.ServeHTTP), want)
+		}
+	}
+	mux.SocketAuthed("GET /v1/devices/{device_id}/keypackage", chain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(h.takeKeyPackage))
+	mux.SocketAuthed("GET /v1/welcomes", chain(auth.ScopeProvisional, dsClassRead), http.HandlerFunc(h.welcomes))
+	mux.SocketAuthed("DELETE /v1/welcomes/{welcome_id}", chain(auth.ScopeProvisional, dsClassWrite), http.HandlerFunc(h.ackWelcome))
 }
 
 type publishRequest struct {

@@ -76,7 +76,7 @@ func TestManagedKeyPackageRoutesCheckAuthorityBeforeWireAndIgnoreForgedHeaders(t
 	inventoryReq := httptest.NewRequestWithContext(ctx, http.MethodGet, inventoryPath, nil)
 	inventoryReq.Header.Set("Authorization", "Bearer "+token)
 	inventoryRec := httptest.NewRecorder()
-	h.mux.ServeHTTP(inventoryRec, inventoryReq)
+	h.handler.ServeHTTP(inventoryRec, inventoryReq)
 	if inventoryRec.Code != http.StatusUpgradeRequired || refusalCode(t, inventoryRec) != "E_UPGRADE_REQUIRED" {
 		t.Fatalf("authorized wire-2 inventory with forged wire header absent = %d (%x), want 426 E_UPGRADE_REQUIRED", inventoryRec.Code, inventoryRec.Body.Bytes())
 	}
@@ -85,7 +85,7 @@ func TestManagedKeyPackageRoutesCheckAuthorityBeforeWireAndIgnoreForgedHeaders(t
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Dilla-Wire-Version", "3")
 	recorder := httptest.NewRecorder()
-	h.mux.ServeHTTP(recorder, req)
+	h.handler.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusUpgradeRequired || refusalCode(t, recorder) != "E_UPGRADE_REQUIRED" {
 		t.Fatalf("authorized wire-2 publication with forged wire header = %d (%x), want 426 E_UPGRADE_REQUIRED", recorder.Code, recorder.Body.Bytes())
 	}
@@ -99,7 +99,7 @@ func TestManagedKeyPackageRoutesCheckAuthorityBeforeWireAndIgnoreForgedHeaders(t
 		req := httptest.NewRequestWithContext(ctx, tc.method, tc.path, nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		rec := httptest.NewRecorder()
-		h.mux.ServeHTTP(rec, req)
+		h.handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusForbidden || refusalCode(t, rec) != "E_FORBIDDEN" {
 			t.Fatalf("%s %s unknown installation = %d (%x), want authority refusal before E_UPGRADE_REQUIRED", tc.method, tc.path, rec.Code, rec.Body.Bytes())
 		}
@@ -116,13 +116,13 @@ func TestManagedKeyPackageRoutesCheckAuthorityBeforeWireAndIgnoreForgedHeaders(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec := postCBORAuth(h.mux, "/v1/sessions/negotiate", mustCBOR(t, []any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}}), newSession.Token); rec.Code != http.StatusOK {
+	if rec := postCBORAuth(h.handler, "/v1/sessions/negotiate", mustCBOR(t, []any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}}), newSession.Token); rec.Code != http.StatusOK {
 		t.Fatalf("managed Bot wire-3 negotiation = %d (%x)", rec.Code, rec.Body.Bytes())
 	}
 	get := httptest.NewRequestWithContext(ctx, http.MethodGet, inventoryPath, nil)
 	get.Header.Set("Authorization", "Bearer "+newSession.Token)
 	got := httptest.NewRecorder()
-	h.mux.ServeHTTP(got, get)
+	h.handler.ServeHTTP(got, get)
 	if got.Code != http.StatusOK || got.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("current managed inventory = %d cache=%q body=%x", got.Code, got.Header().Get("Cache-Control"), got.Body.Bytes())
 	}

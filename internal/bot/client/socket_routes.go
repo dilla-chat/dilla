@@ -21,7 +21,11 @@ type Transport interface {
 // SocketRoutes lists the routes, as Go ServeMux patterns ("METHOD /v1/..."), that the Bot sends over its gateway socket
 // instead of HTTPS. scripts/check-socket-routes.mjs holds every entry to a dillad Socket registration. Tasks 4-6 add
 // entries as they move routes.
-var SocketRoutes = []string{}
+var SocketRoutes = []string{
+	"GET /v1/devices/{device_id}/keypackage",
+	"GET /v1/welcomes",
+	"DELETE /v1/welcomes/{welcome_id}",
+}
 
 type socketRoute struct {
 	method   string

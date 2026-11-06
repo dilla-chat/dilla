@@ -209,7 +209,7 @@ func testInteractionPoolAndSQLProgress(t *testing.T, mode string) {
 		} else {
 			req := httptest.NewRequestWithContext(readCtx, http.MethodGet, path, nil)
 			req.Header.Set("Authorization", "Bearer "+token)
-			h.mux.ServeHTTP(rec, req)
+			h.handler.ServeHTTP(rec, req)
 		}
 		readDone <- rec
 	}()

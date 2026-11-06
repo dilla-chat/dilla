@@ -835,3 +835,23 @@ func TestBotSocketRouteMatching(t *testing.T) {
 		}
 	}
 }
+
+// The Bot reads its Welcomes, acknowledges them and claims a KeyPackage on the socket: dillad serves those three
+// routes there only, and keeps POST /v1/keypackages and the device lists on HTTPS.
+func TestBotDefaultSocketRoutesCarryTheMovedDeliveryRoutes(t *testing.T) {
+	routes := compileSocketRoutes(SocketRoutes)
+	for _, tc := range []struct {
+		method, path string
+		want         bool
+	}{
+		{"GET", "/v1/welcomes", true},
+		{"DELETE", "/v1/welcomes/7", true},
+		{"GET", "/v1/devices/0102030405060708090a0b0c0d0e0f10/keypackage", true},
+		{"POST", "/v1/keypackages", false},
+		{"PUT", "/v1/users/0102030405060708090a0b0c0d0e0f10/device-list", false},
+	} {
+		if got := routes.match(tc.method, tc.path); got != tc.want {
+			t.Errorf("%s %s matched=%v, want %v", tc.method, tc.path, got, tc.want)
+		}
+	}
+}

@@ -764,6 +764,28 @@ fn decode_frame(bytes: &[u8]) -> Result<(u64, Inbound), DsError> {
     .map_err(|e| DsError::Protocol(format!("gateway frame: {e}")))
 }
 
+/// Decodes `[60, n, null, [id, status, body]]`, the response frame of a socket request (Bot v2). `None`
+/// for any other frame, which the caller handles as it handles every inbound frame.
+fn decode_response(bytes: &[u8]) -> Option<(u64, u16, Vec<u8>)> {
+    decode_strict(bytes, |d: &mut Decoder<'_>| {
+        d.array(4)?;
+        if d.uint()? != 60 {
+            return Ok(None);
+        }
+        let _n = d.uint()?;
+        let _group = d.opt_bytes()?;
+        d.array(3)?;
+        let id = d.uint()?;
+        let status = u16::try_from(d.uint()?).unwrap_or(0);
+        let body = d.bytes()?.to_vec();
+        Ok(Some((id, status, body)))
+    })
+    .ok()
+    .flatten()
+}
+
+static SOCKET_REQUEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 fn read_timeout(ws: &mut WebSocket<TcpStream>, wait: Duration) -> Result<(), DsError> {
     ws.get_mut().set_read_timeout(Some(wait)).map_err(transport)
 }
@@ -1475,7 +1497,7 @@ impl HttpDs {
         Ok(code)
     }
 
-    /// `POST /v1/auth/stepup [method, secret]` → `[stepup, expires]`. It spends a backup code (method 2) while one is
+    /// `POST /v1/auth/stepup [method, secret]` → `[stepup, expires]`, a socket request. It spends a backup code (method 2) while one is
     /// left, which never moves the test host's shared clock, and falls back to a TOTP code (method 1).
     pub fn step_up(&mut self) -> Result<String, TestkitError> {
         let backup = self.totp.as_mut().and_then(|s| s.backup_codes.pop());
@@ -1483,7 +1505,7 @@ impl HttpDs {
             Some(code) => (2, code),
             None => (1, self.next_totp_code()?),
         };
-        let token = self.post_decoded(
+        let token = self.socket_post_decoded(
             "/v1/auth/stepup",
             &encode(|e| {
                 e.array(2).uint(method).text(&secret);
@@ -1741,7 +1763,7 @@ impl HttpDs {
             Some(_) => Some(self.step_up()?),
             None => None,
         };
-        self.post_status(
+        self.socket_post_status(
             "/v1/auth/password",
             &encode(|e| {
                 e.array(3).null().text(password);
@@ -2420,6 +2442,101 @@ impl HttpDs {
         format!("{}{path}", self.base)
     }
 
+    /// Sends one request frame (op 59) on the gateway socket and reads until its response frame
+    /// (op 60), keeping every frame that arrives meanwhile as `barrier` does. The routes that moved
+    /// to the socket have no HTTP form. The socket is opened when it is not.
+    fn socket_call(
+        &mut self,
+        method: &str,
+        route: &str,
+        body: &[u8],
+    ) -> Result<(u16, Vec<u8>), DsError> {
+        if self.ws.is_none() {
+            self.open_socket()?;
+        }
+        let id = SOCKET_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // The idem of a mutation: unique per call; a failed call is not retried here.
+        let mut idem = [0u8; 16];
+        idem[..8].copy_from_slice(&id.to_be_bytes());
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        idem[8..].copy_from_slice(&nanos.to_be_bytes());
+        let frame = encode(|e| {
+            e.array(4).uint(59).uint(0).null();
+            e.array(5).uint(id).text(method).text(route).bytes(body);
+            if method == "GET" {
+                e.null();
+            } else {
+                e.bytes(&idem);
+            }
+        });
+        let Some(ws) = self.ws.as_mut() else {
+            return Err(DsError::Transport("no gateway connection".into()));
+        };
+        ws.send(Message::Binary(frame.into())).map_err(transport)?;
+        let deadline = Instant::now() + HANDSHAKE_WAIT;
+        loop {
+            let Some(ws) = self.ws.as_mut() else {
+                return Err(DsError::Transport(
+                    "the gateway closed the connection before answering a request".into(),
+                ));
+            };
+            match ws.read() {
+                Ok(Message::Binary(bytes)) => {
+                    if let Some((answer, status, out)) = decode_response(&bytes) {
+                        if answer == id {
+                            return Ok((status, out));
+                        }
+                        continue;
+                    }
+                    let (n, inbound) = decode_frame(&bytes)?;
+                    self.last_n = self.last_n.max(n);
+                    self.ack_since = Instant::now();
+                    match inbound {
+                        Inbound::HeartbeatAck => self.acked(),
+                        Inbound::Frame(frame) => self.accept(frame),
+                        Inbound::Ring(ring) => self.keep_ring(ring),
+                        Inbound::Closing(reason) => {
+                            self.ws = None;
+                            return Err(DsError::Transport(reason));
+                        }
+                        Inbound::Hello { .. }
+                        | Inbound::Ready
+                        | Inbound::Ignored
+                        | Inbound::Signal { .. } => {}
+                    }
+                }
+                Ok(Message::Close(_)) => {
+                    self.ws = None;
+                    return Err(DsError::Transport(
+                        "the gateway closed the connection".into(),
+                    ));
+                }
+                Ok(_) => {}
+                Err(e) if is_timeout(&e) => {
+                    if Instant::now() >= deadline {
+                        return Err(DsError::Transport(format!(
+                            "no response to {method} {route}"
+                        )));
+                    }
+                }
+                Err(e) => return Err(transport(e)),
+            }
+        }
+    }
+
+    /// `get_decoded` for a socket route.
+    fn socket_get_decoded<T>(
+        &mut self,
+        path: &str,
+        f: impl FnOnce(&mut Decoder<'_>) -> Result<T, CborError>,
+    ) -> Result<T, DsError> {
+        let (status, out) = self.socket_call("GET", path, &[])?;
+        check_status(status, &out)?;
+        decode_strict(&out, f).map_err(|e| DsError::Protocol(format!("GET {path}: {e}")))
+    }
+
     fn get_decoded<T>(
         &self,
         path: &str,
@@ -2438,6 +2555,24 @@ impl HttpDs {
     ) -> Result<T, DsError> {
         let out = post_cbor(&self.agent, &self.url(path), Some(&self.token), body)?;
         decode_strict(&out, f).map_err(|e| DsError::Protocol(format!("POST {path}: {e}")))
+    }
+
+    /// `post_decoded` for a socket route.
+    fn socket_post_decoded<T>(
+        &mut self,
+        path: &str,
+        body: &[u8],
+        f: impl FnOnce(&mut Decoder<'_>) -> Result<T, CborError>,
+    ) -> Result<T, DsError> {
+        let (status, out) = self.socket_call("POST", path, body)?;
+        check_status(status, &out)?;
+        decode_strict(&out, f).map_err(|e| DsError::Protocol(format!("POST {path}: {e}")))
+    }
+
+    /// `post_status` for a socket route.
+    fn socket_post_status(&mut self, path: &str, body: &[u8]) -> Result<(), DsError> {
+        let (status, out) = self.socket_call("POST", path, body)?;
+        check_status(status, &out)
     }
 
     /// A POST whose success is a status and no body the client reads (`204`, or row 9's
@@ -2644,7 +2779,7 @@ impl DeliveryService for HttpDs {
     /// Row 11: `[blob, last_resort(uint), kp_ref]`.
     fn take_key_package(&mut self, target: &DeviceId) -> Result<KeyPackageResp, DsError> {
         let path = format!("/v1/devices/{}/keypackage", hex::encode(target.as_bytes()));
-        self.get_decoded(&path, |d| {
+        self.socket_get_decoded(&path, |d| {
             d.array(3)?;
             Ok(KeyPackageResp {
                 blob: bytes_or_null(d)?,
@@ -2775,7 +2910,7 @@ impl DeliveryService for HttpDs {
         let mut after = 0u64;
         loop {
             let path = format!("/v1/welcomes?after={after}&limit={WELCOME_PAGE}");
-            let page = self.get_decoded(&path, |d| {
+            let page = self.socket_get_decoded(&path, |d| {
                 let n = array_or_null(d)?;
                 let mut items = Vec::with_capacity(n);
                 for _ in 0..n {
@@ -2809,16 +2944,11 @@ impl DeliveryService for HttpDs {
         }
     }
 
-    /// Row 16: `DELETE /v1/welcomes/{welcome_id}` -> `204`. The id is the table's decimal
+    /// Row 16: `DELETE /v1/welcomes/{welcome_id}` -> `204`, a socket request. The id is the table's decimal
     /// surrogate key, the one protocol identifier that is not 16 random bytes.
     fn ack_welcome(&mut self, welcome_id: u64) -> Result<(), DsError> {
-        let (status, out) = call(
-            &self.agent,
-            "DELETE",
-            &self.url(&format!("/v1/welcomes/{welcome_id}")),
-            Some(&self.token),
-            None,
-        )?;
+        let (status, out) =
+            self.socket_call("DELETE", &format!("/v1/welcomes/{welcome_id}"), &[])?;
         check_status(status, &out)
     }
 
@@ -3697,6 +3827,48 @@ mod tests {
         }
     }
 
+    /// A gateway that answers each request frame (op 59) from `route`, as `instance` answers an HTTP
+    /// request; the client end of a socket the instance would have opened.
+    fn gateway_answering(route: fn(&str, &str) -> (u16, Vec<u8>)) -> WebSocket<TcpStream> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            while let Ok(message) = ws.read() {
+                let Message::Binary(bytes) = message else {
+                    continue;
+                };
+                let (id, method, path) = decode_strict(&bytes, |d: &mut Decoder<'_>| {
+                    d.array(4)?;
+                    assert_eq!(d.uint()?, 59);
+                    let _n = d.uint()?;
+                    let _group = d.opt_bytes()?;
+                    d.array(5)?;
+                    let id = d.uint()?;
+                    let method = d.text()?.to_owned();
+                    let path = d.text()?.to_owned();
+                    d.skip()?;
+                    d.skip()?;
+                    Ok((id, method, path))
+                })
+                .unwrap();
+                let (status, out) = route(&method, &path);
+                let answer = encode(|e| {
+                    e.array(4).uint(60).uint(0).null();
+                    e.array(3).uint(id).uint(u64::from(status)).bytes(&out);
+                });
+                if ws.send(Message::Binary(answer.into())).is_err() {
+                    return;
+                }
+            }
+        });
+        let stream = TcpStream::connect(addr).unwrap();
+        let (mut socket, _) = tungstenite::client(format!("ws://{addr}/gateway"), stream).unwrap();
+        read_timeout(&mut socket, PUMP_WAIT).unwrap();
+        socket
+    }
+
     type Seen = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
     /// A throwaway HTTP/1.1 origin, one request per connection, answering from `route` and
@@ -3760,7 +3932,8 @@ mod tests {
         use dilla_core::mls::{DillaBinding, GroupKind};
 
         let (base, seen) = origin(instance);
-        let mut ds = connected(&base, None);
+        // The Welcome list is a socket route: it is answered on a gateway socket, the rest over HTTP.
+        let mut ds = connected(&base, Some(gateway_answering(instance)));
         let binding = DillaBinding {
             v: 1,
             instance_id: InstanceId::from_bytes([0x11; 16]),

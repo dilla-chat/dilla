@@ -3,6 +3,7 @@ import { decode, encode, type CborInput } from '../cbor';
 import { toHex } from '../hex';
 import { type Bucket } from './client';
 import { DillaHttpError } from './errors';
+import { socketRouteFor } from './socket-routes';
 import {
   RecordingClient, bytesReply, cborReply, fakeTransport, noContent, refusal, textReply, type FakeOptions,
 } from './fake-fetch';
@@ -830,7 +831,9 @@ describe('Routes: one request per call, decoded as the server answers it', () =>
       const s = t.seen[0];
       expect(s.method).toBe(c.method);
       expect(s.url).toBe(`https://dilla.test${c.path}`);
-      expect(s.headers.get('authorization')).toBe(c.auth ? 'Bearer tok-1' : null);
+      // A socket request frame carries no headers: the connection's session is its credential.
+      expect(s.headers.get('authorization')).toBe(c.auth && s.socket !== true ? 'Bearer tok-1' : null);
+      expect(s.socket === true).toBe(socketRouteFor(c.method, c.path) !== null);
       expect(s.headers.get('accept')).toBe(c.accept ?? null);
       expect(s.body).toEqual(c.sent);
       expect(http.requests[0].bucket).toBe(c.bucket);
@@ -1241,21 +1244,22 @@ describe('Routes: patchMe', () => {
     const { t, routes } = setup();
     t.replies.push(noContent());
     await routes.patchMe({ statusMsg: 'on a call' });
-    expect(t.seen[0].init.method).toBe('PATCH');
+    expect(t.seen[0].method).toBe('PATCH');
+    expect(t.seen[0].socket).toBe(true);
     expect(t.seen[0].url).toBe('https://dilla.test/v1/accounts/me');
-    expect(decode(t.seen[0].init.body as Uint8Array)).toEqual([null, 'on a call', null]);
+    expect(decode(t.seen[0].body as Uint8Array)).toEqual([null, 'on a call', null]);
   });
   it('sends an empty string to clear a field', async () => {
     const { t, routes } = setup();
     t.replies.push(noContent());
     await routes.patchMe({ display: 'Ada', bio: '' });
-    expect(decode(t.seen[0].init.body as Uint8Array)).toEqual(['Ada', null, '']);
+    expect(decode(t.seen[0].body as Uint8Array)).toEqual(['Ada', null, '']);
   });
   it('sends the text trimmed', async () => {
     const { t, routes } = setup();
     t.replies.push(noContent());
     await routes.patchMe({ statusMsg: '  hello  ', bio: '\nbio\n' });
-    expect(decode(t.seen[0].init.body as Uint8Array)).toEqual([null, 'hello', 'bio']);
+    expect(decode(t.seen[0].body as Uint8Array)).toEqual([null, 'hello', 'bio']);
   });
   it('refuses a too long field before any request', async () => {
     const { t, routes } = setup();
@@ -2161,4 +2165,34 @@ it('sends "never" and "∞" as zeros and reads a never-expiring answer', async (
   t.replies.push(cborReply(201, [BOT, 'code1234', 'https://dilla.test/i/code1234', 0]));
   await expect(routes.createInvite(COMMUNITY, { maxUses: 0, ttlSeconds: 0 })).resolves.toMatchObject({ expires: 0n });
   expect(http.requests[0].body).toEqual(encode([0, 0, 0]));
+});
+
+describe('Routes: the account area goes over the socket (Bot v2 task 4)', () => {
+  const DEVICE_HEX = toHex(DEVICE);
+  const socket: [string, string][] = [
+    ['PATCH', '/v1/accounts/me'], ['DELETE', '/v1/accounts/me'],
+    ['PATCH', '/v1/accounts/me/presence'], ['POST', '/v1/accounts/me/presence/activity'],
+    ['GET', '/v1/devices'], ['POST', '/v1/devices'], ['PATCH', `/v1/devices/${DEVICE_HEX}`], ['DELETE', `/v1/devices/${DEVICE_HEX}`],
+    ['GET', `/v1/devices/${DEVICE_HEX}/keypackage`],
+    ['POST', '/v1/auth/password'], ['POST', '/v1/auth/stepup'], ['POST', '/v1/auth/stepup/passkey/begin'],
+    ['POST', '/v1/auth/stepup/passkey/finish'], ['POST', '/v1/auth/factors/remove'], ['POST', '/v1/auth/recovery/codes'],
+    ['GET', '/v1/welcomes?after=0&limit=64'], ['DELETE', '/v1/welcomes/5'],
+  ];
+  // Called before the gateway exists (PRE_GATEWAY_ROUTES) or without a session: these stay on HTTP.
+  const http: [string, string][] = [
+    ['GET', '/v1/accounts/me'], ['POST', '/v1/accounts'],
+    ['GET', `/v1/users/${hex(USER)}/device-list`], ['PUT', `/v1/users/${hex(USER)}/device-list`],
+    ['GET', '/v1/keypackages'], ['POST', '/v1/keypackages'],
+    ['POST', `/v1/devices/${DEVICE_HEX}/sessions`], ['DELETE', `/v1/devices/${DEVICE_HEX}/sessions`],
+    ['POST', `/v1/devices/${DEVICE_HEX}/sessions/challenge`], ['GET', '/v1/auth/factors'],
+    ['POST', '/v1/auth/totp/enroll'], ['POST', '/v1/auth/totp/confirm'],
+    ['POST', '/v1/auth/passkey/register/begin'], ['POST', '/v1/auth/passkey/register/finish'],
+    ['GET', '/v1/backups'], ['GET', '/v1/instance'], ['GET', '/v1/instance/limits'], ['POST', '/v1/gateway/ticket'],
+  ];
+  it.each(socket)('%s %s is a socket route', (method, path) => {
+    expect(socketRouteFor(method, path)).not.toBeNull();
+  });
+  it.each(http)('%s %s stays on HTTP', (method, path) => {
+    expect(socketRouteFor(method, path)).toBeNull();
+  });
 });

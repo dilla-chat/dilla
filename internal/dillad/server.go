@@ -40,8 +40,10 @@ import (
 type Server struct {
 	o Options
 	// calls is the call route group; the maintenance tick runs its post-boot AFK clear (AW2).
-	calls    *api.Calls
-	mux      *server.Mux
+	calls *api.Calls
+	mux   *server.Mux
+	// requests runs gateway request frames against the mux's socket routes.
+	requests *api.SocketDispatcher
 	handler  http.Handler
 	sessions *auth.Sessions
 	httpSrv  *http.Server
@@ -688,7 +690,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	h = server.RequestLog(o.Log, o.Clock, o.Metrics.ObserveHTTP)(h)
 
 	s := &Server{
-		o: o, mux: mux, handler: h, sessions: sessions, instance: instance,
+		o: o, mux: mux, requests: requests, handler: h, sessions: sessions, instance: instance,
 		wasm: wasm, ownsWasm: ownsWasm, gw: gw, cutDevice: cutFromCalls, ds: delivery, groups: groups, presence: presence, events: events,
 		calls: callRoutes,
 		blobs: blobs, ownsBlobs: ownsBlobs,
@@ -757,10 +759,14 @@ func (s *Server) sweep(ctx context.Context) {
 // Throttle is the login throttle New built; the maintenance loop sweeps it.
 func (s *Server) Throttle() *auth.Throttle { return s.throttle }
 
-func (s *Server) Handler() http.Handler    { return s.handler }
-func (s *Server) Mux() *server.Mux         { return s.mux }
-func (s *Server) Repo() store.Repository   { return s.o.Repo }
-func (s *Server) Sessions() *auth.Sessions { return s.sessions }
+func (s *Server) Handler() http.Handler { return s.handler }
+func (s *Server) Mux() *server.Mux      { return s.mux }
+
+// SocketDispatcher runs a request frame against the socket routes, as the gateway does for a connection. Tests drive
+// the routes that moved to the socket through it (internal/api/sockettest).
+func (s *Server) SocketDispatcher() *api.SocketDispatcher { return s.requests }
+func (s *Server) Repo() store.Repository                  { return s.o.Repo }
+func (s *Server) Sessions() *auth.Sessions                { return s.sessions }
 
 // DS returns the delivery service New built. It is one of three harness accessors of
 // deviation B17 (with Gateway and Now): plain getters over what New built.

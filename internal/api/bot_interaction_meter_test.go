@@ -9,7 +9,6 @@ import (
 	"github.com/dilla-chat/dilla/internal/api"
 	"github.com/dilla-chat/dilla/internal/config"
 	"github.com/dilla-chat/dilla/internal/id"
-	"github.com/dilla-chat/dilla/internal/server"
 )
 
 // The Bot session wrapper owns rate metering. A single request must spend only
@@ -26,7 +25,7 @@ func TestBotInteractionRoutesSpendOneRateTokenPerRequest(t *testing.T) {
 				c.Limits.Rate.ReadBurst, c.Limits.Rate.WriteBurst = 1, 1
 				c.Limits.Rate.ReadPerSecond, c.Limits.Rate.WritePerSecond = 0.001, 0.001
 			})
-			mux := handler.(*server.Mux)
+			mux := muxOf(t, handler)
 			groups := &api.Groups{Limiter: deps.Limiter}
 			groups.Register(mux, deps.Sessions)
 			_, _, token := seedAPISession(t, deps)

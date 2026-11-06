@@ -125,10 +125,7 @@ func newKind3HTTPAPI(t *testing.T) (*groupsAPI, kind3APIMetadata, map[string][]b
 	}
 	repo = fixedKind3InstanceRepo{repo}
 	handler, deps := newTestAPIFullWithRepo(t, repo, nil, nil)
-	mux, ok := handler.(*server.Mux)
-	if !ok {
-		t.Fatalf("test API mux type=%T", handler)
-	}
+	mux := muxOf(t, handler)
 	f := apiFixtureData(t)
 	clk := clock.NewFake(time.Unix(time.Now().Unix(), 0))
 	wasm, err := mlswasi.New(ctx, f.wasm, mlswasi.Options{PoolSize: 2, CacheDir: apiWasmCacheDir(t), Now: clk.Now})
@@ -167,7 +164,7 @@ func newKind3HTTPAPI(t *testing.T) (*groupsAPI, kind3APIMetadata, map[string][]b
 	groups.RegisterRecovery(mux, deps.Sessions)
 	groups.RegisterHeal(mux, deps.Sessions)
 	user, _, sessionToken := seedAPISession(t, deps)
-	h := &groupsAPI{mux: mux, deps: deps, ds: delivery, groups: groups, groupID: f.groupID, fixture: f,
+	h := &groupsAPI{mux: mux, handler: handler, deps: deps, ds: delivery, groups: groups, groupID: f.groupID, fixture: f,
 		session: sessionToken, user: user.ID, clk: clk, wasm: wasm, keys: keys, gw: gw}
 	// Align the API and delivery-service clocks so a freshly signed proof is fresh to both.
 	if delta := h.clk.Now().Sub(h.deps.Clock.Now()); delta > 0 {

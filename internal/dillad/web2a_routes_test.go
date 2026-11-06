@@ -96,7 +96,7 @@ func newLoggedInstance(t *testing.T, logs *recordLog) (*dillad.Server, http.Hand
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return srv, srv.Handler(), ts, code
+	return srv, socketHandler(srv), ts, code
 }
 
 // Every route web-2a mounts or changes answers 401 from the middleware without a token, never the

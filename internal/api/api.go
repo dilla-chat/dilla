@@ -259,7 +259,7 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("POST /v1/auth/password/login", http.HandlerFunc(d.PasswordLogin))
 	m.Handle("POST /v1/auth/totp/verify", http.HandlerFunc(d.VerifyTOTP))
 	m.Handle("POST /v1/auth/recovery/verify", http.HandlerFunc(d.VerifyRecovery))
-	m.Handle("POST /v1/auth/password", d.enrolled(d.ChangePassword))
+	m.SocketAuthed("POST /v1/auth/password", d.socketChain(auth.ScopeEnrolled, ""), http.HandlerFunc(d.ChangePassword))
 	m.Handle("POST /v1/auth/totp/enroll", d.owedOK(d.EnrollTOTP))
 	m.Handle("POST /v1/auth/totp/confirm", d.owedOK(d.ConfirmTOTP))
 
@@ -284,29 +284,29 @@ func Register(m *server.Mux, d Deps) {
 	// what it has while it sets one up. Step-up, removal and fresh backup codes are `E`: an owed
 	// account holds nothing to step up with or remove.
 	m.Handle("GET /v1/auth/factors", d.owedOK(d.Factors))
-	m.Handle("POST /v1/auth/stepup", d.enrolled(d.StepUp))
-	m.Handle("POST /v1/auth/stepup/passkey/begin", d.enrolled(d.BeginPasskeyStepUp))
-	m.Handle("POST /v1/auth/stepup/passkey/finish", d.enrolled(d.FinishPasskeyStepUp))
-	m.Handle("POST /v1/auth/factors/remove", d.enrolled(d.RemoveFactor))
-	m.Handle("POST /v1/auth/recovery/codes", d.enrolled(d.RecoveryCodes))
+	m.SocketAuthed("POST /v1/auth/stepup", d.socketChain(auth.ScopeEnrolled, ""), http.HandlerFunc(d.StepUp))
+	m.SocketAuthed("POST /v1/auth/stepup/passkey/begin", d.socketChain(auth.ScopeEnrolled, ""), http.HandlerFunc(d.BeginPasskeyStepUp))
+	m.SocketAuthed("POST /v1/auth/stepup/passkey/finish", d.socketChain(auth.ScopeEnrolled, ""), http.HandlerFunc(d.FinishPasskeyStepUp))
+	m.SocketAuthed("POST /v1/auth/factors/remove", d.socketChain(auth.ScopeEnrolled, ""), http.HandlerFunc(d.RemoveFactor))
+	m.SocketAuthed("POST /v1/auth/recovery/codes", d.socketChain(auth.ScopeEnrolled, ""), http.HandlerFunc(d.RecoveryCodes))
 
 	// Accounts. Every one of these is an enrolled session; GET is also an owed one's (`E, F`).
 	m.Handle("GET /v1/accounts/me", d.owedOK(d.GetMe))
-	m.Handle("PATCH /v1/accounts/me/presence", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PatchPresence)))
-	m.Handle("POST /v1/accounts/me/presence/activity", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PresenceActivity)))
+	m.SocketAuthed("PATCH /v1/accounts/me/presence", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.PatchPresence))
+	m.SocketAuthed("POST /v1/accounts/me/presence/activity", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.PresenceActivity))
 	m.Handle("GET /v1/communities/{community_id}/presence", d.enrolled(dsMeter(d.Limiter, dsClassRead, d.PresenceSnapshot)))
-	m.Handle("PATCH /v1/accounts/me", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PatchMe)))
-	m.Handle("DELETE /v1/accounts/me", d.enrolled(d.DeleteMe))
+	m.SocketAuthed("PATCH /v1/accounts/me", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.PatchMe))
+	m.SocketAuthed("DELETE /v1/accounts/me", d.socketChain(auth.ScopeEnrolled, ""), http.HandlerFunc(d.DeleteMe))
 
 	// Devices. POST /v1/devices is enrolled only. The enrolling browser registers inside
 	// establish; while pending it reads and publishes only its own device list. The
 	// /v1/devices routes spend the device session's read and write buckets like the device-list and
 	// backup routes (branch review REGISTRATION-DEVICES-03: unmetered, a stolen session polled GET
 	// for a recovering owner's new row).
-	m.Handle("POST /v1/devices", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.CreateDevice)))
-	m.Handle("GET /v1/devices", d.enrolled(dsMeter(d.Limiter, dsClassRead, d.ListDevices)))
-	m.Handle("PATCH /v1/devices/{device_id}", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PatchDevice)))
-	m.Handle("DELETE /v1/devices/{device_id}", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.DeleteDevice)))
+	m.SocketAuthed("POST /v1/devices", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.CreateDevice))
+	m.SocketAuthed("GET /v1/devices", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.ListDevices))
+	m.SocketAuthed("PATCH /v1/devices/{device_id}", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.PatchDevice))
+	m.SocketAuthed("DELETE /v1/devices/{device_id}", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.DeleteDevice))
 	m.Handle("PUT /v1/users/{user_id}/device-list", d.scoped(dsMeter(d.Limiter, dsClassWrite, d.PutDeviceList), auth.ScopePending))
 	m.Handle("GET /v1/users/{user_id}/device-list", d.scoped(dsMeter(d.Limiter, dsClassRead, d.GetDeviceList), auth.ScopePending))
 
@@ -399,6 +399,18 @@ func (d Deps) enrolled(h http.HandlerFunc) http.Handler {
 
 func (d Deps) scoped(h http.HandlerFunc, want auth.Scope) http.Handler {
 	return d.Sessions.Middleware(h, want)
+}
+
+// socketChain is the middleware of a route that moved to the gateway socket (server.Mux.SocketAuthed): the chain its
+// HTTP form built inline, the session middleware for want and then, when class is not empty, one token from the
+// device session's bucket of that delivery-service class (dsMeter).
+func (d Deps) socketChain(want auth.Scope, class string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if class != "" {
+			next = dsMeter(d.Limiter, class, next.ServeHTTP)
+		}
+		return d.Sessions.Middleware(next, want)
+	}
 }
 
 // owedOK mounts one of protocol/09's `E, F` routes: an enrolled session, also one whose account

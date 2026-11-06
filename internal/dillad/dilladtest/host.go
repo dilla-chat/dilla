@@ -31,6 +31,7 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/api/sockettest"
 	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/clock"
@@ -565,7 +566,8 @@ func (h *Host) AsDevice(ctx context.Context, device id.ID, method, path string, 
 		req.Header.Set("Content-Type", "application/cbor")
 	}
 	rec := httptest.NewRecorder()
-	h.Handler().ServeHTTP(rec, req)
+	// A route that moved to the gateway socket is sent as the device session's request frame.
+	sockettest.NewBridge(h.Handler(), s.Mux(), s.SocketDispatcher(), s.Repo(), s.Now).ServeHTTP(rec, req)
 	return rec.Code, rec.Body.Bytes(), nil
 }
 

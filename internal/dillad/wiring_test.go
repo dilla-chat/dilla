@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -104,8 +105,10 @@ func newServer(t *testing.T) (*dillad.Server, *httptest.Server) {
 
 // Every delivery-service route of §5.1 is MOUNTED. An unauthenticated request must be answered
 // 401, never 404: a 404 means the route does not exist, which is the failure this test exists for.
+// The KeyPackage claim and the two Welcome routes are socket routes (Bot v2): they are mounted on the
+// socket mux, answer 404 over HTTP, and answer a request frame without a session 401.
 func TestEveryDeliveryServiceRouteIsMounted(t *testing.T) {
-	_, ts := newServer(t)
+	srv, ts := newServer(t)
 	const gid = "0102030405060708090a0b0c0d0e0f10"
 	for _, c := range []struct{ method, path string }{
 		{http.MethodPost, "/v1/groups"},
@@ -124,9 +127,6 @@ func TestEveryDeliveryServiceRouteIsMounted(t *testing.T) {
 		{http.MethodGet, "/v1/groups/" + gid + "/heal"},
 		{http.MethodPost, "/v1/groups/" + gid + "/heal"},
 		{http.MethodPost, "/v1/keypackages"},
-		{http.MethodGet, "/v1/devices/" + gid + "/keypackage"},
-		{http.MethodGet, "/v1/welcomes"},
-		{http.MethodDelete, "/v1/welcomes/1"},
 	} {
 		req, err := http.NewRequestWithContext(t.Context(), c.method, ts.URL+c.path, strings.NewReader(""))
 		if err != nil {
@@ -143,6 +143,32 @@ func TestEveryDeliveryServiceRouteIsMounted(t *testing.T) {
 		if res.StatusCode != http.StatusUnauthorized {
 			t.Errorf("%s %s: status = %d, want 401 (mounted, unauthenticated)",
 				c.method, c.path, res.StatusCode)
+		}
+	}
+	// The socket routes: mounted on the socket mux only, and refused a request frame without a session.
+	disp := socketHandler(srv)
+	for _, c := range []struct{ method, pattern, path string }{
+		{http.MethodGet, "GET /v1/devices/{device_id}/keypackage", "/v1/devices/" + gid + "/keypackage"},
+		{http.MethodGet, "GET /v1/welcomes", "/v1/welcomes"},
+		{http.MethodDelete, "DELETE /v1/welcomes/{welcome_id}", "/v1/welcomes/1"},
+	} {
+		if !slices.Contains(srv.Mux().SocketPatterns(), c.pattern) || slices.Contains(srv.Mux().Patterns(), c.pattern) {
+			t.Errorf("%s is not a socket-only route", c.pattern)
+		}
+		req, err := http.NewRequestWithContext(t.Context(), c.method, ts.URL+c.path, strings.NewReader(""))
+		if err != nil {
+			t.Fatalf("%s %s: %v", c.method, c.path, err)
+		}
+		res, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", c.method, c.path, err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusNotFound {
+			t.Errorf("%s %s over HTTP = %d, want 404", c.method, c.path, res.StatusCode)
+		}
+		if rec := call(t, disp, c.method, c.path, "", nil); rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s over the socket without a session = %d, want 401", c.method, c.path, rec.Code)
 		}
 	}
 }

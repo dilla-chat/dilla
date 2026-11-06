@@ -139,7 +139,7 @@ func TestACommitWhoseHeadDoesNotParseIsRefusedWithoutReadingTheRest(t *testing.T
 	req.Header.Set("Content-Type", "application/cbor")
 	req.Header.Set("Authorization", "Bearer "+h.session)
 	rec := httptest.NewRecorder()
-	h.mux.ServeHTTP(rec, req)
+	h.handler.ServeHTTP(rec, req)
 	if got := errorCode(t, rec); got != "E_INVALID_REQUEST" {
 		t.Fatalf("code = %s (status %d), want E_INVALID_REQUEST", got, rec.Code)
 	}

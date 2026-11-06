@@ -20,6 +20,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/api/sockettest"
 	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/blob"
 	"github.com/dilla-chat/dilla/internal/bot/identity"
@@ -158,6 +159,12 @@ func newTestAPIWithConfig(t *testing.T, tune func(*config.Config)) (http.Handler
 
 func newTestAPIFull(t *testing.T, tune func(*config.Config), wire func(*api.Deps)) (http.Handler, api.Deps) {
 	t.Helper()
+	return newTestAPIFullWithRepo(t, newAPIRepo(t), tune, wire)
+}
+
+// newAPIRepo is a migrated SQLite repository in a temporary directory, closed with the test.
+func newAPIRepo(t *testing.T) store.Repository {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "api.db")
 	sqlitetest.MigratedFile(t, path)
 	write, err := sqlite.OpenWrite(path)
@@ -170,7 +177,7 @@ func newTestAPIFull(t *testing.T, tune func(*config.Config), wire func(*api.Deps
 	}
 	repo := sqlite.New(write, read)
 	t.Cleanup(func() { repo.Close() })
-	return newTestAPIFullWithRepo(t, repo, tune, wire)
+	return repo
 }
 
 // newTestAPIWithRepository builds the normal API mux and dependencies over a caller-owned,
@@ -181,7 +188,24 @@ func newTestAPIWithRepository(t *testing.T, repo store.Repository, wire func(*ap
 }
 
 func newTestAPIFullWithRepo(t *testing.T, repo store.Repository, tune func(*config.Config), wire func(*api.Deps)) (http.Handler, api.Deps) {
-	return newTestAPIFullWithRepoAndMount(t, repo, tune, wire, nil)
+	t.Helper()
+	// Every harness but the mount one answers the routes that moved to the gateway socket through the socket
+	// request dispatcher (viaSocket); muxOf unwraps it for a test that registers more routes.
+	h, d := newTestAPIFullWithRepoAndMount(t, repo, tune, wire, nil)
+	return viaSocket(t, h, d), d
+}
+
+// muxOf is the *server.Mux behind a harness handler.
+func muxOf(t testing.TB, h http.Handler) *server.Mux {
+	t.Helper()
+	switch v := h.(type) {
+	case *server.Mux:
+		return v
+	case *sockettest.Bridge:
+		return v.Mux()
+	}
+	t.Fatalf("the harness handler is %T, want a mux", h)
+	return nil
 }
 
 // newTestAPIFullWithRepoAndMount adds a narrow composition seam for integration tests whose

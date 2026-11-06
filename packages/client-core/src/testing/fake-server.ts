@@ -4,6 +4,7 @@ import { Session } from '../account/session';
 import type { CorePort } from '../core-port';
 import { fromHex, toHex } from '../hex';
 import { HttpClient } from '../http/client';
+import type { SocketTransport } from '../gateway/requests';
 import { Routes } from '../http/routes';
 import { fakeDskPub, fakeListBlob, fakeListNames, readFakeList } from './fake-list';
 
@@ -1120,10 +1121,29 @@ export class FakeServer {
   }
 }
 
+/** The fake gateway socket (Bot v2): a request frame for a route in SOCKET_ROUTES is answered by the model as the
+ *  session the connection identified with answers it (the token the connection holds), and the answer carries a status
+ *  and a body only. There is no reauthentication on a socket: a 401 is the revocation, and reaches the caller. */
+export function fakeSocketFor(server: FakeServer, auth: { token(): string | null }): SocketTransport {
+  return {
+    up: true,
+    request: async (r) => {
+      const token = auth.token();
+      const headers = new Headers();
+      if (token !== null) headers.set('Authorization', `Bearer ${token}`);
+      if (r.body !== undefined) headers.set('Content-Type', 'application/cbor');
+      const response = await server.fetch('http://127.0.0.1:8453' + r.path, { method: r.method, headers, body: r.body?.slice() });
+      return { status: response.status, body: new Uint8Array(await response.arrayBuffer()) };
+    },
+  };
+}
+
 export function routesFor(server: FakeServer, auth: { token(): string | null; reauthenticate(): Promise<boolean> }): Routes {
+  const socket = fakeSocketFor(server, auth);
   return new Routes(new HttpClient({
     baseUrl: 'http://127.0.0.1:8453',
     fetch: server.fetch,
+    socket: () => socket,
     now: () => NOW_S * 1000,
     sleep: () => Promise.resolve(),
     random: () => 0,

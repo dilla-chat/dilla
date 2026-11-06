@@ -19,7 +19,7 @@ func TestShutdownFlushesProfileHintsBeforeGatewayStops(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	conn := dialReady(t, ctx, ts, token)
-	rec = call(t, srv.Handler(), http.MethodPatch, "/v1/accounts/me", token, []any{"Updated", nil, nil})
+	rec = call(t, socketHandler(srv), http.MethodPatch, "/v1/accounts/me", token, []any{"Updated", nil, nil})
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("patch profile = %d: %s", rec.Code, rec.Body.String())
 	}

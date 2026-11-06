@@ -18,6 +18,26 @@ whose `Content-Type` is not `application/cbor` is `415`; a body that fails to de
 deterministic CBOR is `400 E_INVALID_REQUEST`. Blob bodies are the one exception: raw octets,
 `Content-Type: application/octet-stream`.
 
+### Routes served on the gateway socket only
+
+From wire 6 the routes an identified session uses are request frames on its gateway connection
+(op 59 request, op 60 response), not HTTP requests: the frame carries the method, the route with its
+query string, the CBOR body and, for a mutation, an idempotency key; the response carries a status
+and the CBOR body, and no headers. The route's session class, rate bucket, body shapes and refusals
+are the ones the table rows give. These routes have no HTTP form: the instance answers `404` to one.
+The account area is `PATCH` and `DELETE /v1/accounts/me`, `PATCH /v1/accounts/me/presence`,
+`POST /v1/accounts/me/presence/activity`, `GET` and `POST /v1/devices`, `PATCH` and
+`DELETE /v1/devices/{device_id}`, `POST /v1/auth/password`, `POST /v1/auth/stepup` and its two
+passkey legs, `POST /v1/auth/factors/remove` and `POST /v1/auth/recovery/codes`; the delivery
+service's `GET /v1/devices/{device_id}/keypackage`, `GET /v1/welcomes` and
+`DELETE /v1/welcomes/{welcome_id}` are socket routes too. The routes a client calls before its
+socket exists stay on HTTP: sign-up and sign-in, the session ceremonies and
+`DELETE /v1/devices/{device_id}/sessions`, the device lists, `GET` and `POST /v1/keypackages`,
+backups, `GET /v1/accounts/me`, the second-factor setup an owed account uses, the instance
+document and limits, and `POST /v1/gateway/ticket`. An owed account has no socket.
+Nothing a handler wrote to a response header (`X-Dilla-Generation`, `Cache-Control`) reaches a
+socket client; the generation is the gateway's `ready`.
+
 ## Identifiers
 
 Path identifiers are 32 lowercase hex characters (`^[0-9a-f]{32}$`); `{blob_id}` is 64 lowercase
