@@ -369,6 +369,12 @@ the unit by hand (`install.sh --upgrade` does). The Bot works the same way: `dil
 and `PartOf=dilla.service`, so restarting `dilla` also restarts `dillabot` when it is installed, and stopping `dilla`
 stops it. `dillad media --rooms --config=/etc/dilla/dilla.toml` lists the live
 rooms and their participants (`no live rooms` when the SFU is empty), and `dillad media --probe` prints the room count.
+`install.sh --upgrade` runs `media --rooms` itself and refuses while a room has participants. To confirm a room is
+really in use rather than leaked, look for `POST /v1/calls/{call_id}/rtt` in the API journal (field `route`): a device
+in a call posts its round-trip time there whenever it moves, usually several times a minute, though a very steady link
+posts less, so few posts are a hint and `media --rooms` stays the authority. Call stats travel over the gateway since v0.1.0-signal1.4,
+so `calls/{id}/stats` no longer appears in the journal. Test any grep against a window in which you were in a call
+yourself; a pattern that matches nothing looks the same as an empty server.
 
 ```sh
 sudo install -m 0755 dillad-linux-amd64 /usr/local/bin/dillad
