@@ -14,6 +14,7 @@ import (
 	botaccess "github.com/dilla-chat/dilla/internal/bot/access"
 	"github.com/dilla-chat/dilla/internal/bot/identity"
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/gateway"
 	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/mlswasi"
 	"github.com/dilla-chat/dilla/internal/server"
@@ -274,6 +275,10 @@ func (d Deps) DeleteDevice(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.WithStatus(http.StatusConflict, server.Errorf(server.CodeInvalidRequest,
 			"the device registered less than 10 minutes ago and is too new to remove; its own session may remove it, or it expires unlisted after 24 hours")))
 		return
+	}
+	if deviceID == sess.DeviceID {
+		// The device deletes its own row: its connection closes after the 204 is written.
+		gateway.SelfRevoking(r.Context())
 	}
 	if err := d.Sessions.RevokeDevice(r.Context(), deviceID); err != nil {
 		server.WriteError(w, d.storeError(r, err))

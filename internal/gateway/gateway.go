@@ -229,6 +229,7 @@ type Gateway struct {
 	presence  *presence
 	beat      heartbeatPolicy
 	suspended sync.Map // resume token string -> *conn, inside the resume window
+	deferred  sync.Map // *conn -> struct{}: revoked connections waiting for their self-revoking answer (CloseDevice)
 
 	// Test seams for the two steps of a resume that cannot fail with real inputs; nil means the
 	// real one. They are set before the Gateway serves and never after.
@@ -622,21 +623,20 @@ func (g *Gateway) countFrame(f Frame) {
 func (g *Gateway) CloseDevice(deviceID id.ID, code CloseCode, reason string) {
 	for _, c := range g.reg.connsOfDevice(deviceID) {
 		// A socket request that revokes its own session (DELETE /v1/accounts/me, a device deleting its own row)
-		// is still in flight here: the close waits for its answer to be written, so the caller gets the 204. The
-		// connection leaves the registry (no more fan-out) and may not resume at once; a request that
-		// arrives meanwhile is refused 401, its session being gone. The wait is bounded.
+		// declared it (SelfRevoking) and is still in flight here: the close of THAT connection waits for the
+		// answer to be written, so the caller gets its 204. The connection leaves the registry (no fan-out), may
+		// not resume, and is sealed: its read loop drops every inbound frame. Any other cause, and every other
+		// connection, closes at once. The wait is bounded by revokedCloseGrace, and Shutdown closes it too.
 		c.mu.Lock()
 		budget := c.requests
 		c.mu.Unlock()
-		if budget != nil && !code.Resumable() {
-			select {
-			case <-budget.whenIdle():
-			default:
-				c.denyResume()
-				g.removeLive(c)
-				go g.closeAfterAnswers(c, budget, code, reason)
-				continue
-			}
+		if budget != nil && !code.Resumable() && budget.isSelfRevoking() {
+			c.denyResume()
+			c.sealed.Store(true)
+			g.removeLive(c)
+			g.deferred.Store(c, struct{}{})
+			go g.closeAfterAnswers(c, budget, code, reason)
+			continue
 		}
 		w := g.closeConn(c, code, reason)
 		g.removeLive(c)
@@ -664,11 +664,12 @@ const revokedCloseGrace = 5 * time.Second
 
 // closeAfterAnswers closes c once its in-flight socket requests were answered, or after revokedCloseGrace.
 func (g *Gateway) closeAfterAnswers(c *conn, budget *requestBudget, code CloseCode, reason string) {
-	timer := time.NewTimer(revokedCloseGrace)
+	defer g.deferred.Delete(c)
+	timer := g.opts.Clock.NewTimer(revokedCloseGrace)
 	defer timer.Stop()
 	select {
 	case <-budget.whenIdle():
-	case <-timer.C:
+	case <-timer.C():
 	}
 	w := g.closeConn(c, code, reason)
 	g.removeLive(c)
@@ -857,6 +858,15 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	// Socket requests still running finish (or ctx ends) before the gateway reports it is down:
 	// the composition root closes the store after this, under a handler that is mid-request.
 	g.workers.wait(ctx)
+	// A revoked connection still waiting for its answer (CloseDevice) is out of the registry: close it now.
+	g.deferred.Range(func(k, _ any) bool {
+		if c, ok := k.(*conn); ok {
+			w := c.currentWriter()
+			w.drain(ctx)
+			w.sink.close(CloseGoingAway, "going away")
+		}
+		return true
+	})
 	return telemetryErr
 }
 

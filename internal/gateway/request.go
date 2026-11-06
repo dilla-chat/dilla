@@ -177,6 +177,21 @@ type requestBudget struct {
 	inflight int
 	bytes    int64
 	idle     chan struct{} // closed when inflight reaches 0; see whenIdle
+	// selfRevoking counts the in-flight requests of this connection that declared they revoke their own session
+	// (SelfRevoking); only those make a revocation of the device wait for their answer.
+	selfRevoking int
+}
+
+func (b *requestBudget) markSelfRevoking(delta int) {
+	b.mu.Lock()
+	b.selfRevoking += delta
+	b.mu.Unlock()
+}
+
+func (b *requestBudget) isSelfRevoking() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.inflight > 0 && b.selfRevoking > 0
 }
 
 func newRequestBudget() *requestBudget { return &requestBudget{} }
@@ -245,9 +260,40 @@ type responseCharge struct {
 	budget  *requestBudget
 	mu      sync.Mutex
 	charged int64
+	marked  bool // SelfRevoking was called by this request
 }
 
 type chargeKey struct{}
+
+// SelfRevoking is called by a socket request's handler just before it revokes the calling session (DELETE
+// /v1/accounts/me, a device deleting its own row). The revocation then closes the connection after this request's
+// answer was written instead of before it, so the caller receives its 204. Any other cause of a revocation (an
+// admin, a disabled user, a device list, another device) closes at once. A context that did not come from a
+// gateway dispatch ignores the call.
+func SelfRevoking(ctx context.Context) {
+	rc, ok := ctx.Value(chargeKey{}).(*responseCharge)
+	if !ok {
+		return
+	}
+	rc.mu.Lock()
+	first := !rc.marked
+	rc.marked = true
+	rc.mu.Unlock()
+	if first {
+		rc.budget.markSelfRevoking(1)
+	}
+}
+
+// unmark withdraws the request's SelfRevoking declaration once it is answered.
+func (rc *responseCharge) unmark() {
+	rc.mu.Lock()
+	was := rc.marked
+	rc.marked = false
+	rc.mu.Unlock()
+	if was {
+		rc.budget.markSelfRevoking(-1)
+	}
+}
 
 // ChargeResponse reserves n bytes of the dispatching connection's in-flight budget for the
 // response being recorded. It reports false when the budget is spent; the recorder then answers
@@ -325,7 +371,7 @@ func (g *Gateway) handleRequest(ctx context.Context, c *conn, in Inbound) bool {
 	// writer once the response is written, or the recover below.
 	var once sync.Once
 	var held atomic.Int64
-	release := func() { once.Do(func() { budget.finish(size + max(held.Load(), rc.total())) }) }
+	release := func() { once.Do(func() { rc.unmark(); budget.finish(size + max(held.Load(), rc.total())) }) }
 	admitted := g.workers.run(func() {
 		answered := false
 		// A fault in the dispatcher is answered 500 and still frees the request's slot and bytes:

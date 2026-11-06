@@ -528,10 +528,14 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		result, ensureErr := lifecycle.Ensure(ctx)
 		ready := false
 		membershipReady := false
+		var gatewayErr error
 		if ensureErr == nil {
 			if result.Installation.BotDevice != nil && result.Installation.BotUser != nil && result.Session != nil {
 				if err := gateways.Ensure(installation.ID, *result.Installation.BotDevice, *result.Installation.BotUser, result.Session.BearerToken()); err != nil {
-					logger.Warn("bot gateway startup unavailable", "installation_id", installation.ID.String())
+					// A gateway that cannot start is a failure of this installation's pass, not a transient gap: the
+					// socket-only routes below answer ErrNoGateway (deferred), which must not hide it.
+					gatewayErr = fmt.Errorf("bot gateway startup: %w", err)
+					logger.Warn("bot gateway startup unavailable", "installation_id", installation.ID.String(), "err", err.Error())
 				}
 			}
 			reconcileStage = "membership_source_sync"
@@ -840,6 +844,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				}
 			}
 		}
+		ensureErr = withGatewayStartup(ensureErr, gatewayErr)
 		cleanupUnreadyInstallation(installation.ID, membershipReady, ensureErr, musicRegistry, autoModerationState)
 		var closeErr error
 		if !retainedNative && !runtimeOwnedNative {
@@ -968,4 +973,14 @@ func unrefreshedSendersLogger(logger *slog.Logger, installation id.ID) func(serv
 		logger.Warn("bot commands from senders with stale device-list history held",
 			"installation_id", installation.String(), "trust_failure", "sender_history_stale", "senders", len(refresh.Unrefreshed))
 	}
+}
+
+// withGatewayStartup joins a failed gateway start into the pass result. The joined error is never deferred
+// (client.IsDeferred is false for a tree with a permanent cause), so the installation counts as failed even when
+// every socket route it tried answered ErrNoGateway.
+func withGatewayStartup(ensureErr, gatewayErr error) error {
+	if gatewayErr == nil {
+		return ensureErr
+	}
+	return errors.Join(ensureErr, gatewayErr)
 }

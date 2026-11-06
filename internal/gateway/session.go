@@ -48,7 +48,10 @@ type conn struct {
 	// noResume is set when this connection was closed with a code protocol/02 marks as NOT
 	// resumable (4004 session_revoked, 4009 session_timeout). suspend refuses to park such a
 	// connection in the resume window, so its token dies with the socket.
-	noResume    bool
+	noResume bool
+	// sealed is set when a self-revoking request's close is deferred until its answer is written: from then
+	// on the read loop drops every inbound frame, so the revoked session can do nothing on this socket.
+	sealed      atomic.Bool
 	n           uint64
 	groups      map[id.ID]struct{}
 	lastLive    time.Time
@@ -782,6 +785,9 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 					"err", err.Error())
 			}
 			return
+		}
+		if c.sealed.Load() {
+			continue // a deferred close: only the answers already in flight are written
 		}
 		// The injected clock, not the wall clock x/time/rate would read by itself. An ADMITTED
 		// request frame (op 59) does not spend the bucket (controller rulings M2 and B): it is

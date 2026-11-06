@@ -9,6 +9,7 @@ import (
 
 	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/bot/identity"
+	"github.com/dilla-chat/dilla/internal/gateway"
 	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/server"
 	"github.com/dilla-chat/dilla/internal/store"
@@ -420,6 +421,8 @@ func (d Deps) DeleteMe(w http.ResponseWriter, r *http.Request) {
 	// RevokeUser disables the account, deletes every session and closes every
 	// socket; it runs after the tombstone so a failure leaves the account
 	// unusable rather than deleted-but-live.
+	// This request revokes the connection it arrived on: that connection closes after the 204 is written.
+	gateway.SelfRevoking(ctx)
 	if err := d.Sessions.RevokeUser(ctx, sess.UserID); err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
