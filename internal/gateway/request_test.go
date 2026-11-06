@@ -2,8 +2,11 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/dilla-chat/dilla/internal/cborx"
 )
@@ -164,5 +167,64 @@ func TestSocketBusyBudgetAdmitsSixtyFourAndThirtyTwoMiB(t *testing.T) {
 	}
 	if b2.charge(3<<20) || !b2.charge(1<<20) {
 		t.Fatal("a response charge ignores the byte budget")
+	}
+}
+
+// Minor 2: once Shutdown's wait has begun the pool refuses new work, a run racing the wait never
+// panics, and a wait whose ctx ends first returns without leaving anything behind.
+func TestWorkerPoolRefusesRunDuringShutdown(t *testing.T) {
+	p := newWorkerPool()
+	release := make(chan struct{})
+	started := make(chan struct{})
+	if !p.run(func() { close(started); <-release }) {
+		t.Fatal("refused work before shutdown")
+	}
+	<-started
+	waited := make(chan struct{})
+	go func() {
+		p.wait(context.Background())
+		close(waited)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for !p.closingForTest() {
+		if time.Now().After(deadline) {
+			t.Fatal("wait never marked the pool closing")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if p.run(func() { t.Error("a job ran after shutdown began") }) {
+		t.Fatal("run accepted work after shutdown began")
+	}
+	close(release)
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("wait did not return once the running job finished")
+	}
+	// A wait whose ctx is already done returns at once while a job still runs.
+	q := newWorkerPool()
+	hold := make(chan struct{})
+	q.run(func() { <-hold })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	q.wait(ctx)
+	close(hold)
+}
+
+func TestWorkerPoolRunRacingWaitNeverPanics(t *testing.T) {
+	for range 50 {
+		p := newWorkerPool()
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range 20 {
+					p.run(func() {})
+				}
+			}()
+		}
+		p.wait(context.Background())
+		wg.Wait()
 	}
 }

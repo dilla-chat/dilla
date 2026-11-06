@@ -105,6 +105,33 @@ func (m *Mux) Socket(pattern string, h http.Handler) {
 // DefaultSocketBodyCap: the route's own HTTP body cap, so a response over it is refused as the
 // request over it is.
 func (m *Mux) SocketWithCap(pattern string, maxBody int64, h http.Handler) {
+	m.socketRoute(pattern, maxBody, nil, h)
+}
+
+// SocketAuthed registers a socket route whose middleware is built inline rather than by a Wrapped
+// view: the enrolled/scoped/dsMeter chains of api.go, groups.go, messages.go, keypackages.go,
+// heal.go and the bot_*.go helpers. mw is that chain and h the bare handler; the socket guard runs
+// between them, so the chain's session middleware has marked the call passed before the guard
+// looks, its rate meter is spent once per request (a replay hit included) and stays outside the
+// replay record, and the session is resolved once. The composition is cap setter → this view's
+// wrap → mw → guard → h. Tasks 4–5 move inline-wrapped routes this way: pass the route's existing
+// chain as mw and its handler as h. A chain that does not run the session middleware fails closed
+// (401) at the guard.
+func (m *Mux) SocketAuthed(pattern string, mw func(http.Handler) http.Handler, h http.Handler) {
+	m.SocketAuthedWithCap(pattern, DefaultSocketBodyCap, mw, h)
+}
+
+// SocketAuthedWithCap is SocketAuthed with the route's own response cap, as SocketWithCap is to
+// Socket.
+func (m *Mux) SocketAuthedWithCap(pattern string, maxBody int64, mw func(http.Handler) http.Handler, h http.Handler) {
+	if mw == nil {
+		panic("server: SocketAuthed " + pattern + " without its middleware chain")
+	}
+	m.socketRoute(pattern, maxBody, mw, h)
+}
+
+// socketRoute composes cap setter → view wrap → mw (when given) → guard → h and registers it.
+func (m *Mux) socketRoute(pattern string, maxBody int64, mw func(http.Handler) http.Handler, h http.Handler) {
 	handler := h
 	h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		g := m.socket.guard.Load()
@@ -115,6 +142,9 @@ func (m *Mux) SocketWithCap(pattern string, maxBody int64, h http.Handler) {
 		}
 		(*g)(w, r, handler)
 	})
+	if mw != nil {
+		h = mw(h)
+	}
 	if m.wrap != nil {
 		h = m.wrap(pattern, h)
 	}

@@ -374,7 +374,9 @@ larger than `max_frame_bytes`, up to 16 MiB of body (a larger one is `E_FRAME_LI
 connection); a response over its route's cap is `E_FRAME_LIMIT`. A dispatch runs at most 60 s.
 Neither frame is replayed: a client re-sends an unanswered request after a reconnect. A non-GET
 request with an `idem` is answered from the instance's record of (device, idem) for five minutes,
-so a retry never runs twice; the record is consulted only after the route's session, scope,
+so a retry of a recorded request is not run again. The record is a best effort, not exactly-once:
+a handler that ran and answered `5xx`, or whose answer the byte budget refused, can run again on a
+retry, and the routes' own ids (`msg_id`, `request_id`) remain the dedupe. The record is consulted only after the route's session, scope,
 factor, Bot and rate checks pass for the retry itself, an `idem` reused for a different request is
 `409`, a duplicate of a request still running waits for its answer (`503 E_UNAVAILABLE` past the
 60 s), and refusals that ran nothing (`401`, `426`, `429`) and every `5xx` are not recorded.

@@ -783,15 +783,14 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 			}
 			return
 		}
-		// The injected clock, not the wall clock x/time/rate would read by itself. A request frame
-		// (op 59) does not spend the bucket (controller ruling M2): it is bounded by the 64
-		// in-flight cap, the 32 MiB byte budget and its route's own rate meter. The op is read from
-		// the frame's head alone; a frame that only claims op 59 still has to decode as one.
-		if op, ok := frameOp(b); (!ok || op != OpRequest) && !inbound.AllowN(g.opts.Clock.Now(), 1) {
-			if p, perr := ErrorPayload(0, "E_RATE_LIMITED", "inbound frame rate"); perr == nil {
-				c.send(Frame{Op: OpError, Payload: p})
-			}
-			g.closeConn(c, CloseRateLimited, "inbound frame rate")
+		// The injected clock, not the wall clock x/time/rate would read by itself. An ADMITTED
+		// request frame (op 59) does not spend the bucket (controller rulings M2 and B): it is
+		// bounded by the 64 in-flight cap, the 32 MiB byte budget and its route's own rate meter. A
+		// refused one (E_BUSY, no dispatcher, shutting down) is charged below once it is refused;
+		// a malformed one closes the connection at Decode. The op is read from the head alone.
+		overRate := func() bool { return !inbound.AllowN(g.opts.Clock.Now(), 1) }
+		if op, ok := frameOp(b); (!ok || op != OpRequest) && overRate() {
+			g.closeOverRate(c)
 			return
 		}
 		if typ != websocket.MessageBinary {
@@ -810,8 +809,27 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 			}
 			return
 		}
+		if in.Op == OpRequest {
+			admitted := g.handleRequest(ctx, c, in)
+			if g.opts.Metrics != nil {
+				g.opts.Metrics.GatewayFrames.WithLabelValues(opLabel(in.Op), "in").Inc()
+			}
+			if !admitted && overRate() {
+				g.closeOverRate(c)
+				return
+			}
+			continue
+		}
 		g.handle(ctx, c, in)
 	}
+}
+
+// closeOverRate answers a connection past its inbound frame bucket: E_RATE_LIMITED, then 4008.
+func (g *Gateway) closeOverRate(c *conn) {
+	if p, err := ErrorPayload(0, "E_RATE_LIMITED", "inbound frame rate"); err == nil {
+		c.send(Frame{Op: OpError, Payload: p})
+	}
+	g.closeConn(c, CloseRateLimited, "inbound frame rate")
 }
 
 // handle dispatches one inbound frame. heartbeat marks liveness and trims the ring; subscribe and
@@ -819,7 +837,7 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 func (g *Gateway) handle(ctx context.Context, c *conn, in Inbound) {
 	switch in.Op {
 	case OpRequest:
-		g.handleRequest(ctx, c, in)
+		_ = g.handleRequest(ctx, c, in) // the read loop routes requests itself; this keeps handle total
 	case OpCallStats:
 		g.handleCallStats(c, in)
 	case OpPresenceActivity:

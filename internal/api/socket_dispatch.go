@@ -60,9 +60,14 @@ const (
 // A mutation that carries an idem is recorded under (device, idem) for ReplayWindow, and the record
 // is consulted inside the guard, after the whole middleware chain (session, scope, factor, Bot
 // allow-list and eligibility, wire, the route's rate meter) passed for THIS request: a retry is
-// answered from the record and never runs twice, a duplicate that arrives while the first is still
+// answered from the record instead of running again, a duplicate that arrives while the first is still
 // running waits for its answer, and a session the middleware now refuses gets that refusal, never
 // the record. The key includes the device, so one device's record is never another's answer.
+//
+// The record is a best effort, not exactly-once: an answer that is not recorded (a 5xx, or a
+// response the connection's byte budget refused) lets a retry run the handler again, and so does
+// an entry evicted from the bounded record. The routes' own ids (msg_id, request_id, ...) are the
+// real dedupe.
 type SocketDispatcher struct {
 	mux     *server.Mux
 	handler http.Handler
@@ -174,6 +179,13 @@ func (d *SocketDispatcher) guard(w http.ResponseWriter, r *http.Request, next ht
 	hook, _ := r.Context().Value(replayHookKey{}).(*replayHook)
 	if hook == nil || hook.claimed != nil {
 		next.ServeHTTP(w, r)
+		return
+	}
+	// The record is keyed by the connection's device; it is consulted only for a session the
+	// middleware resolved to that same device.
+	if sess, ok := auth.FromContext(r.Context()); !ok || sess.DeviceID != hook.key.device {
+		d.opts.Log.Warn("socket replay key names another device than the session; refused", "route", r.Pattern)
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
 		return
 	}
 	now := d.opts.Clock.Now()

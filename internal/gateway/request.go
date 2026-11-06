@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
@@ -262,14 +263,19 @@ func errorResponse(reqID uint64, e *server.Error) SocketResponse {
 
 // handleRequest admits one request frame and dispatches it on its own goroutine, so a slow
 // request never holds up the read loop or a faster request behind it.
-func (g *Gateway) handleRequest(ctx context.Context, c *conn, in Inbound) {
+//
+// It reports whether the request was admitted to a worker. A refused request (E_BUSY, no
+// dispatcher, the pool shutting down) is answered here, and the read loop charges it to the
+// inbound frame bucket (controller ruling B), so a flood of refused requests closes the
+// connection as any other frame flood does.
+func (g *Gateway) handleRequest(ctx context.Context, c *conn, in Inbound) bool {
 	var req SocketRequest
 	if in.request != nil {
 		req = *in.request
 	} else {
 		var err error
 		if req, err = decodeRequest(in); err != nil {
-			return // Decode already refused a malformed request frame; this is unreachable.
+			return false // Decode already refused a malformed request frame; this is unreachable.
 		}
 	}
 	c.mu.Lock()
@@ -281,42 +287,56 @@ func (g *Gateway) handleRequest(ctx context.Context, c *conn, in Inbound) {
 	c.mu.Unlock()
 	if g.opts.Requests == nil {
 		g.sendResponse(c, w, errorResponse(req.ID, server.Errorf(server.CodeNotFound, "this instance serves no socket routes")), nil)
-		return
+		return false
 	}
 	size := int64(len(req.Body))
 	if budget == nil || !budget.admit(size) {
 		g.sendResponse(c, w, errorResponse(req.ID, server.Errorf(server.CodeBusy,
 			"at most %d requests and %d bytes in flight on one connection", MaxInFlightRequests, MaxRequestBytesInFlight)), nil)
-		return
+		return false
 	}
 	// The dispatch outlives a dropped socket: a mutation runs to its end and lands in the replay
 	// record, so the client's re-send with the same idem is answered with its real outcome rather
 	// than with a cancellation.
 	dctx := context.WithoutCancel(ctx)
-	g.workers.run(func() {
-		rc := &responseCharge{budget: budget}
+	rc := &responseCharge{budget: budget}
+	// release frees the request's slot and bytes exactly once, whichever path gets there first: the
+	// writer once the response is written, or the recover below.
+	var once sync.Once
+	var held atomic.Int64
+	release := func() { once.Do(func() { budget.finish(size + max(held.Load(), rc.total())) }) }
+	admitted := g.workers.run(func() {
 		answered := false
 		// A fault in the dispatcher is answered 500 and still frees the request's slot and bytes:
-		// without this, a panicking dispatch would hold one of the connection's 64 slots forever.
+		// without this, a panicking dispatch would hold one of the connection's 64 slots forever. A
+		// fault after the answer was handed over (sendResponse) still frees them.
 		defer func() {
 			if v := recover(); v != nil {
 				g.opts.Log.Error("gateway: socket request dispatch panicked", "panic", v, "stack", string(debug.Stack()))
 				if !answered {
-					g.sendResponse(c, w, errorResponse(req.ID, server.Errorf(server.CodeInternal, "")),
-						func() { budget.finish(size + rc.total()) })
+					g.sendResponse(c, w, errorResponse(req.ID, server.Errorf(server.CodeInternal, "")), release)
+					return
 				}
+				release()
 			}
 		}()
 		resp := g.opts.Requests.Dispatch(context.WithValue(dctx, chargeKey{}, rc), caller, req)
 		resp.ID = req.ID
 		answered = true
-		held := rc.total()
-		if extra := int64(len(resp.Body)) - held; extra > 0 {
+		h := rc.total()
+		if extra := int64(len(resp.Body)) - h; extra > 0 {
 			budget.force(extra)
-			held += extra
+			h += extra
 		}
-		g.sendResponse(c, w, resp, func() { budget.finish(size + held) })
+		held.Store(h)
+		g.sendResponse(c, w, resp, release)
 	})
+	if !admitted {
+		// The gateway is shutting down: nothing new is dispatched.
+		budget.finish(size)
+		g.sendResponse(c, w, errorResponse(req.ID, server.Unavailable(1000, "the instance is shutting down")), nil)
+	}
+	return admitted
 }
 
 // workerPool runs socket requests on goroutines that outlive one request. A request's handler
@@ -327,18 +347,32 @@ func (g *Gateway) handleRequest(ctx context.Context, c *conn, in Inbound) {
 // per-connection budget bounds it). A worker idle for workerIdle exits.
 type workerPool struct {
 	jobs chan func()
-	// active counts the jobs handed out and not yet finished; Shutdown waits on it.
-	active sync.WaitGroup
+
+	// mu guards closing, active and drained. Once closing is set (Shutdown's wait began) run
+	// refuses new work; drained is closed when the last active job finishes.
+	mu      sync.Mutex
+	closing bool
+	active  int
+	drained chan struct{}
 }
 
 const workerIdle = 30 * time.Second
 
-func newWorkerPool() *workerPool { return &workerPool{jobs: make(chan func())} }
+func newWorkerPool() *workerPool {
+	return &workerPool{jobs: make(chan func()), drained: make(chan struct{})}
+}
 
-func (p *workerPool) run(job func()) {
-	p.active.Add(1)
+// run hands job to a worker, or reports false once the pool is closing.
+func (p *workerPool) run(job func()) bool {
+	p.mu.Lock()
+	if p.closing {
+		p.mu.Unlock()
+		return false
+	}
+	p.active++
+	p.mu.Unlock()
 	tracked := func() {
-		defer p.active.Done()
+		defer p.finished()
 		job()
 	}
 	select {
@@ -346,19 +380,45 @@ func (p *workerPool) run(job func()) {
 	default:
 		go p.work(tracked)
 	}
+	return true
 }
 
-// wait returns once every job handed out has finished, or when ctx ends.
+func (p *workerPool) finished() {
+	p.mu.Lock()
+	p.active--
+	if p.active == 0 && p.closing {
+		select {
+		case <-p.drained:
+		default:
+			close(p.drained)
+		}
+	}
+	p.mu.Unlock()
+}
+
+// wait closes the pool to new work and returns once every job handed out has finished, or when
+// ctx ends. It starts no goroutine, so an expired ctx leaves nothing behind.
 func (p *workerPool) wait(ctx context.Context) {
-	done := make(chan struct{})
-	go func() {
-		p.active.Wait()
-		close(done)
-	}()
+	p.mu.Lock()
+	p.closing = true
+	if p.active == 0 {
+		select {
+		case <-p.drained:
+		default:
+			close(p.drained)
+		}
+	}
+	p.mu.Unlock()
 	select {
-	case <-done:
+	case <-p.drained:
 	case <-ctx.Done():
 	}
+}
+
+func (p *workerPool) closingForTest() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.closing
 }
 
 func (p *workerPool) work(job func()) {
