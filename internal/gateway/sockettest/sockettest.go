@@ -202,6 +202,24 @@ func (c *Client) Await(reqID uint64, timeout time.Duration) (gateway.SocketRespo
 	}
 }
 
+// SendRaw writes an already-encoded frame.
+func (c *Client) SendRaw(frame []byte) error {
+	ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
+	defer cancel()
+	return c.ws.Write(ctx, websocket.MessageBinary, frame)
+}
+
+// CloseStatus is the close code the instance closed the connection with, once Done is closed, or
+// -1.
+func (c *Client) CloseStatus() websocket.StatusCode {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return websocket.CloseStatus(c.readErr)
+}
+
+// Done is closed once the connection's read side has ended.
+func (c *Client) Done() <-chan struct{} { return c.closed }
+
 // Do sends one request and waits for its response.
 func (c *Client) Do(method, route string, body, idem []byte) (gateway.SocketResponse, error) {
 	reqID, err := c.Send(method, route, body, idem)

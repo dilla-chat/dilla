@@ -156,6 +156,9 @@ describe('socket request and response frames (ops 59, 60)', () => {
     expect(() => encodeRequestFrame({ ...ok, route: '/'.repeat(8193) })).toThrow('E_FRAME_SHAPE');
     expect(() => encodeRequestFrame({ ...ok, idem: new Uint8Array(0) })).toThrow('E_FRAME_SHAPE');
     expect(() => encodeRequestFrame({ ...ok, idem: new Uint8Array(65) })).toThrow('E_FRAME_SHAPE');
+    // M4: a body over the instance's 16 MiB request cap would be refused (E_FRAME_LIMIT) and re-sent after every resume.
+    expect(() => encodeRequestFrame({ ...ok, body: new Uint8Array(16 * 1024 * 1024 + 1) })).toThrow('E_FRAME_LIMIT');
+    expect(encodeRequestFrame({ ...ok, body: new Uint8Array(16 * 1024 * 1024) }).length).toBeGreaterThan(16 * 1024 * 1024);
   });
 
   it('refuses a response of another op, shape or status', () => {

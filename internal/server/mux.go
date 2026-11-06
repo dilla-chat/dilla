@@ -1,8 +1,10 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 )
 
 // Mux is the stdlib ServeMux with Go 1.22 method-and-wildcard patterns. There
@@ -25,11 +27,22 @@ type Mux struct {
 // socketRoutes is the socket-only ServeMux, the patterns registered on it in order, and each
 // pattern's body cap.
 type socketRoutes struct {
-	mux  *http.ServeMux
-	mu   sync.Mutex
-	list []string
-	caps map[string]int64
+	mux   *http.ServeMux
+	mu    sync.Mutex
+	list  []string
+	caps  map[string]int64
+	guard atomic.Pointer[SocketGuard]
 }
+
+// SocketGuard is the socket routes' innermost leaf: it runs after the route's wrap (the session
+// middleware and rate meter), immediately before the handler, and decides whether next runs. The
+// socket request dispatcher installs it (it checks that the session middleware passed and serves
+// the replay record); internal/server cannot import internal/auth, hence the hook.
+type SocketGuard func(w http.ResponseWriter, r *http.Request, next http.Handler)
+
+// SetSocketGuard installs the guard every socket route runs innermost. Until one is installed,
+// every socket request is refused (fail closed).
+func (m *Mux) SetSocketGuard(g SocketGuard) { m.socket.guard.Store(&g) }
 
 // DefaultSocketBodyCap bounds a socket route's response body (and, through the frame reader, its
 // request body) when the route was registered with Socket rather than SocketWithCap. It is the
@@ -92,6 +105,16 @@ func (m *Mux) Socket(pattern string, h http.Handler) {
 // DefaultSocketBodyCap: the route's own HTTP body cap, so a response over it is refused as the
 // request over it is.
 func (m *Mux) SocketWithCap(pattern string, maxBody int64, h http.Handler) {
+	handler := h
+	h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		g := m.socket.guard.Load()
+		if g == nil || *g == nil {
+			slog.Default().Error("socket route served with no socket guard installed; refused", "route", r.Pattern)
+			WriteError(w, Errorf(CodeUnauthenticated, ""))
+			return
+		}
+		(*g)(w, r, handler)
+	})
 	if m.wrap != nil {
 		h = m.wrap(pattern, h)
 	}

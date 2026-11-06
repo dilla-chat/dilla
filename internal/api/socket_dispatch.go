@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/auth"
@@ -29,23 +30,17 @@ type SocketDispatchOptions struct {
 	// ReplayEntries bounds the replay record, least recently used first out: 4096 per instance.
 	ReplayEntries int
 	Clock         clock.Clock
-	// Log receives a handler panic's stack (server.Recover); nil is the process default.
+	// Log receives a handler panic's stack (server.Recover) and every request the socket guard
+	// refuses; nil is the process default.
 	Log *slog.Logger
-	// Sessions re-resolves the connection's session before a recorded answer is returned: a
-	// replay never runs the route, so without it a revoked session's retry would still be
-	// answered. Nil turns the replay record off (every request runs); the composition root
-	// always passes *auth.Sessions.
-	Sessions SessionResolver
-}
-
-// SessionResolver is the one *auth.Sessions method the replay record needs.
-type SessionResolver interface {
-	ResolveHash(ctx context.Context, tokenHash []byte) (auth.Session, error)
+	// Deadline bounds one dispatch, a duplicate's wait on the running request included: 60 s.
+	Deadline time.Duration
 }
 
 const (
 	defaultReplayWindow  = 5 * time.Minute
 	defaultReplayEntries = 4096
+	defaultDeadline      = 60 * time.Second
 	// maxReplayBytes bounds the recorded bodies across the instance as ReplayEntries bounds their
 	// count: a socket response may be up to 16 MiB, and 4096 of those is not memory to hold for
 	// retries. Past it the least recently used records go first.
@@ -57,10 +52,17 @@ const (
 // client address), marks it with the connection's session (auth.WithSocketCaller, which only this
 // type sets), serves it into a bounded recorder and answers the recorded status and body.
 //
-// A mutation that carries an idem is recorded under (device, idem) for ReplayWindow: a retry —
-// typically the same request re-sent after a reconnect — is answered from the record and never
-// runs twice, and a duplicate that arrives while the first is still running waits for its answer.
-// The key includes the device, so one device's record is never another's answer.
+// It installs the mux's socket guard (server.Mux.SetSocketGuard), which every socket route runs
+// innermost, immediately before its handler. The guard fails closed: a request that reached it
+// without the session middleware having passed every check is 401 and logged, so a route
+// registered without the middleware is refused rather than served unauthenticated.
+//
+// A mutation that carries an idem is recorded under (device, idem) for ReplayWindow, and the record
+// is consulted inside the guard, after the whole middleware chain (session, scope, factor, Bot
+// allow-list and eligibility, wire, the route's rate meter) passed for THIS request: a retry is
+// answered from the record and never runs twice, a duplicate that arrives while the first is still
+// running waits for its answer, and a session the middleware now refuses gets that refusal, never
+// the record. The key includes the device, so one device's record is never another's answer.
 type SocketDispatcher struct {
 	mux     *server.Mux
 	handler http.Handler
@@ -71,6 +73,8 @@ type SocketDispatcher struct {
 	done    map[replayKey]*list.Element // of *replayEntry, most recently used at the front
 	lru     *list.List
 	bytes   int // the recorded bodies' total, bounded by maxReplayBytes
+	// waiters counts duplicates parked on a running entry (tests read it).
+	waiters atomic.Int64
 }
 
 var _ gateway.RequestDispatcher = (*SocketDispatcher)(nil)
@@ -88,8 +92,19 @@ type replayEntry struct {
 	finished    chan struct{}
 }
 
-// NewSocketDispatcher serves into mux.SocketMux(). The mux may still be gaining routes: the
-// dispatcher reads it per request.
+// replayHook is what Dispatch puts on a mutation's context for the guard: the record's key and the
+// request's fingerprint, and, once the guard claimed a new running entry, that entry, which
+// Dispatch settles with the response.
+type replayHook struct {
+	key         replayKey
+	fingerprint [32]byte
+	claimed     *replayEntry
+}
+
+type replayHookKey struct{}
+
+// NewSocketDispatcher serves into mux.SocketMux() and installs the mux's socket guard. The mux may
+// still be gaining routes: the dispatcher reads it per request.
 func NewSocketDispatcher(mux *server.Mux, opts SocketDispatchOptions) *SocketDispatcher {
 	if opts.ReplayWindow <= 0 {
 		opts.ReplayWindow = defaultReplayWindow
@@ -97,13 +112,16 @@ func NewSocketDispatcher(mux *server.Mux, opts SocketDispatchOptions) *SocketDis
 	if opts.ReplayEntries <= 0 {
 		opts.ReplayEntries = defaultReplayEntries
 	}
+	if opts.Deadline <= 0 {
+		opts.Deadline = defaultDeadline
+	}
 	if opts.Clock == nil {
 		opts.Clock = clock.System()
 	}
 	if opts.Log == nil {
 		opts.Log = slog.Default()
 	}
-	return &SocketDispatcher{
+	d := &SocketDispatcher{
 		mux:     mux,
 		handler: server.Recover(opts.Log)(mux.SocketMux()),
 		opts:    opts,
@@ -111,6 +129,8 @@ func NewSocketDispatcher(mux *server.Mux, opts SocketDispatchOptions) *SocketDis
 		done:    map[replayKey]*list.Element{},
 		lru:     list.New(),
 	}
+	mux.SetSocketGuard(d.guard)
+	return d
 }
 
 // Dispatch implements gateway.RequestDispatcher.
@@ -118,14 +138,105 @@ func (d *SocketDispatcher) Dispatch(ctx context.Context, caller gateway.SocketCa
 	if caller.Wire != auth.WireVersion {
 		return refusal(r.ID, server.Errorf(server.CodeUpgradeRequired, "socket requests need wire version %d", auth.WireVersion))
 	}
+	// The dispatch outlives a dropped socket (the gateway passes an uncancelled context) but never
+	// runs, or waits, without bound.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), d.opts.Deadline)
+	defer cancel()
+	var hook *replayHook
+	if r.Idem != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
+		hook = &replayHook{key: replayKey{device: caller.DeviceID, idem: string(r.Idem)}, fingerprint: fingerprint(r)}
+		ctx = context.WithValue(ctx, replayHookKey{}, hook)
+	}
 	req, err := buildSocketRequest(ctx, caller, r)
 	if err != nil {
 		return refusal(r.ID, err)
 	}
-	if r.Idem == nil || r.Method == http.MethodGet || r.Method == http.MethodHead || d.opts.Sessions == nil {
-		return d.serve(req, r.ID)
+	resp := gateway.SocketResponse{ID: r.ID, Status: http.StatusInternalServerError}
+	defer func() {
+		if hook != nil && hook.claimed != nil {
+			d.settle(hook.claimed, resp)
+		}
+	}()
+	resp = d.serve(req, r.ID)
+	return resp
+}
+
+// guard is the socket routes' innermost leaf (server.SocketGuard). It refuses, with 401 and a log
+// line, any request whose session middleware did not pass every check, then answers a mutation
+// with an idem from the replay record, or runs the handler and lets Dispatch record the result.
+func (d *SocketDispatcher) guard(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	if socket, passed := auth.SocketCallPassed(r.Context()); !socket || !passed {
+		d.opts.Log.Warn("socket route reached without the session middleware; refused",
+			"route", r.Pattern, "socket_call", socket)
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
 	}
-	return d.serveOnce(req, caller, r)
+	hook, _ := r.Context().Value(replayHookKey{}).(*replayHook)
+	if hook == nil || hook.claimed != nil {
+		next.ServeHTTP(w, r)
+		return
+	}
+	now := d.opts.Clock.Now()
+	d.mu.Lock()
+	entry, running := d.running[hook.key]
+	if !running {
+		if el, ok := d.done[hook.key]; ok {
+			entry = el.Value.(*replayEntry) //nolint:forcetypeassert // the list holds only *replayEntry
+			if now.Sub(entry.at) > d.opts.ReplayWindow {
+				d.dropLocked(el)
+				entry = nil
+			} else {
+				d.lru.MoveToFront(el)
+			}
+		}
+	}
+	if entry == nil {
+		entry = &replayEntry{key: hook.key, fingerprint: hook.fingerprint, finished: make(chan struct{})}
+		d.running[hook.key] = entry
+		hook.claimed = entry
+		d.mu.Unlock()
+		next.ServeHTTP(w, r)
+		return
+	}
+	d.mu.Unlock()
+	if entry.fingerprint != hook.fingerprint {
+		server.WriteError(w, server.WithStatus(http.StatusConflict,
+			server.Errorf(server.CodeInvalidRequest, "idem was already used for a different request")))
+		return
+	}
+	if running {
+		d.waiters.Add(1)
+		select {
+		case <-entry.finished:
+			d.waiters.Add(-1)
+		case <-r.Context().Done():
+			d.waiters.Add(-1)
+			server.WriteError(w, server.Unavailable(1000, "the request with this idem is still running"))
+			return
+		}
+	}
+	if entry.resp.Status != 0 {
+		w.WriteHeader(entry.resp.Status)
+	}
+	_, _ = w.Write(entry.resp.Body)
+}
+
+// settle ends a running entry with its response: recorded when it is the request's outcome, and
+// handed to the duplicates waiting on it either way.
+func (d *SocketDispatcher) settle(entry *replayEntry, resp gateway.SocketResponse) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.running, entry.key)
+	entry.resp = gateway.SocketResponse{Status: resp.Status, Body: resp.Body}
+	entry.at = d.opts.Clock.Now()
+	if recordable(resp.Status) && len(resp.Body) <= maxReplayBytes {
+		d.done[entry.key] = d.lru.PushFront(entry)
+		d.bytes += len(resp.Body)
+		for d.lru.Len() > d.opts.ReplayEntries || d.bytes > maxReplayBytes {
+			d.dropLocked(d.lru.Back())
+		}
+	}
+	close(entry.finished)
 }
 
 // buildSocketRequest is the *http.Request a REST client would have sent, minus every header but
@@ -174,73 +285,15 @@ func (d *SocketDispatcher) serve(req *http.Request, reqID uint64) gateway.Socket
 	return gateway.SocketResponse{ID: reqID, Status: status, Body: rec.body.Bytes()}
 }
 
-// serveOnce is serve under the replay record of (device, idem).
-func (d *SocketDispatcher) serveOnce(req *http.Request, caller gateway.SocketCaller, r gateway.SocketRequest) gateway.SocketResponse {
-	key := replayKey{device: caller.DeviceID, idem: string(r.Idem)}
-	fp := fingerprint(r)
-	now := d.opts.Clock.Now()
-
-	d.mu.Lock()
-	entry, waiting := d.running[key]
-	if !waiting {
-		if el, ok := d.done[key]; ok {
-			entry = el.Value.(*replayEntry) //nolint:forcetypeassert // the list holds only *replayEntry
-			if now.Sub(entry.at) > d.opts.ReplayWindow {
-				d.dropLocked(el)
-				entry = nil
-			} else {
-				d.lru.MoveToFront(el)
-			}
-		}
-	}
-	if entry != nil {
-		d.mu.Unlock()
-		if entry.fingerprint != fp {
-			return refusal(r.ID, server.WithStatus(http.StatusConflict,
-				server.Errorf(server.CodeInvalidRequest, "idem was already used for a different request")))
-		}
-		<-entry.finished
-		// The recorded answer goes only to a session that is still current and still the record's
-		// device: the same revocation, expiry and device checks the route's middleware applies.
-		sess, err := d.opts.Sessions.ResolveHash(req.Context(), caller.TokenHash)
-		if err != nil {
-			return refusal(r.ID, err)
-		}
-		if sess.DeviceID != key.device {
-			return refusal(r.ID, server.Errorf(server.CodeUnauthenticated, ""))
-		}
-		resp := entry.resp
-		resp.ID = r.ID
-		return resp
-	}
-	entry = &replayEntry{key: key, fingerprint: fp, finished: make(chan struct{})}
-	d.running[key] = entry
-	d.mu.Unlock()
-
-	resp := d.serve(req, r.ID)
-
-	d.mu.Lock()
-	delete(d.running, key)
-	entry.resp = gateway.SocketResponse{Status: resp.Status, Body: resp.Body}
-	entry.at = d.opts.Clock.Now()
-	if recordable(resp.Status) && len(resp.Body) <= maxReplayBytes {
-		d.done[key] = d.lru.PushFront(entry)
-		d.bytes += len(resp.Body)
-		for d.lru.Len() > d.opts.ReplayEntries || d.bytes > maxReplayBytes {
-			d.dropLocked(d.lru.Back())
-		}
-	}
-	close(entry.finished)
-	d.mu.Unlock()
-	return resp
-}
-
 // recordable reports whether an answer is the request's outcome. A refusal that ran nothing and
-// asks the client to come back — not authenticated, update first, rate limited or busy, briefly
-// unavailable — is not recorded, so the retry runs.
+// asks the client to come back (not authenticated, update first, rate limited or busy) and every
+// 5xx (a fault or a brief unavailability) are not recorded, so the retry runs and a transient
+// error never sticks to an idem.
 func recordable(status int) bool {
-	switch status {
-	case http.StatusUnauthorized, http.StatusUpgradeRequired, http.StatusTooManyRequests, http.StatusServiceUnavailable:
+	switch {
+	case status >= 500:
+		return false
+	case status == http.StatusUnauthorized, status == http.StatusUpgradeRequired, status == http.StatusTooManyRequests:
 		return false
 	default:
 		return true

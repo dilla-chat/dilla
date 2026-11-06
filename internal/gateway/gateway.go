@@ -821,6 +821,9 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 		w.sink.close(CloseGoingAway, "going away")
 		g.removeLive(c)
 	}
+	// Socket requests still running finish (or ctx ends) before the gateway reports it is down:
+	// the composition root closes the store after this, under a handler that is mid-request.
+	g.workers.wait(ctx)
 	return telemetryErr
 }
 

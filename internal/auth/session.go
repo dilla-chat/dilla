@@ -1086,12 +1086,34 @@ type socketCallerKey struct{}
 // no client header copied onto it. Nothing an HTTP client sends — header, query or body — reaches
 // a context value; an HTTP request still needs its Authorization header.
 func WithSocketCaller(ctx context.Context, tokenHash []byte) context.Context {
-	return context.WithValue(ctx, socketCallerKey{}, append([]byte(nil), tokenHash...))
+	return context.WithValue(ctx, socketCallerKey{}, &socketCall{hash: append([]byte(nil), tokenHash...)})
 }
 
-func socketCaller(ctx context.Context) ([]byte, bool) {
-	h, ok := ctx.Value(socketCallerKey{}).([]byte)
-	return h, ok && len(h) == 32
+// socketCall is one socket request's credential and its verdict. passed is set by the session
+// middleware only once every check of the request has passed (resolve, Bot allow-list and
+// eligibility, Bot wire, scope, factor); the socket routes' innermost guard refuses a request
+// whose call has not passed, so a route mounted without the middleware fails closed.
+type socketCall struct {
+	hash   []byte
+	passed atomic.Bool
+}
+
+func socketCallFrom(ctx context.Context) *socketCall {
+	c, _ := ctx.Value(socketCallerKey{}).(*socketCall)
+	if c == nil || len(c.hash) != 32 {
+		return nil
+	}
+	return c
+}
+
+// SocketCallPassed reports whether ctx is a socket request's (WithSocketCaller) and whether the
+// session middleware passed it. The socket guard is its reader.
+func SocketCallPassed(ctx context.Context) (socket, passed bool) {
+	c := socketCallFrom(ctx)
+	if c == nil {
+		return false, false
+	}
+	return true, c.passed.Load()
 }
 
 // Middleware resolves the bearer token and enforces the wanted scope. An enrolled session whose
@@ -1113,12 +1135,14 @@ func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.H
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var sess Session
 		var err error
-		if hash, ok := socketCaller(r.Context()); ok && r.Header.Get("Authorization") == "" {
+		call := socketCallFrom(r.Context())
+		if call != nil && r.Header.Get("Authorization") == "" {
 			// A socket request: the connection's session, re-resolved on every request with the
 			// same revocation, expiry, device-list and Bot checks a bearer gets (Resolve is
 			// ResolveHash over the bearer's hash), and the scope, factor and wire checks below.
-			sess, err = s.ResolveHash(r.Context(), hash)
+			sess, err = s.ResolveHash(r.Context(), call.hash)
 		} else {
+			call = nil // a header-carrying request is never a passed socket call
 			bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			sess, err = s.Resolve(r.Context(), bearer)
 		}
@@ -1162,6 +1186,9 @@ func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.H
 		if sess.FactorOwed && want != ScopePending && !owedOK {
 			server.WriteError(w, server.Errorf(server.CodeFactorRequired, "the account owes a second factor"))
 			return
+		}
+		if call != nil {
+			call.passed.Store(true)
 		}
 		next.ServeHTTP(w, r.WithContext(WithSession(r.Context(), sess)))
 	})

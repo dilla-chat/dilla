@@ -153,3 +153,6 @@ func (a *Assertions) LiveForTest() int {
 	a.sweepLocked()
 	return len(a.items)
 }
+
+// ReplayWaitersForTest is how many duplicates are parked on a running replay entry.
+func (d *SocketDispatcher) ReplayWaitersForTest() int64 { return d.waiters.Load() }

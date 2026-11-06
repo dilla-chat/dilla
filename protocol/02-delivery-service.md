@@ -366,11 +366,18 @@ HTTP handler its route names on the instance's socket-only route table, with the
 session (resolved again on every request: a revoked session's next request is `401`), its client
 address and the route's own rate limits and body cap; `response` answers its `id` with the HTTP
 status and body, in any order. A connection has at most 64 requests and 32 MiB of request plus
-response body in flight; over either the answer is `429 E_BUSY` at once. A request frame may be
-larger than `max_frame_bytes`, up to 16 MiB of body; a response over its route's cap is
-`E_FRAME_LIMIT`. Neither frame is replayed: a client re-sends an unanswered request after a
-reconnect. A non-GET request with an `idem` is answered from the instance's record of
-(device, idem) for five minutes, so a retry never runs twice.
+response body in flight; over either the answer is `429 E_BUSY` at once. The byte budget may be
+overshot by at most one in-flight frame read (a request frame is read whole before it is admitted)
+and one body answered from the replay record. Request frames do not spend the inbound frame
+allowance; those three bounds and each route's own rate limit are theirs. A request frame may be
+larger than `max_frame_bytes`, up to 16 MiB of body (a larger one is `E_FRAME_LIMIT` and closes the
+connection); a response over its route's cap is `E_FRAME_LIMIT`. A dispatch runs at most 60 s.
+Neither frame is replayed: a client re-sends an unanswered request after a reconnect. A non-GET
+request with an `idem` is answered from the instance's record of (device, idem) for five minutes,
+so a retry never runs twice; the record is consulted only after the route's session, scope,
+factor, Bot and rate checks pass for the retry itself, an `idem` reused for a different request is
+`409`, a duplicate of a request still running waits for its answer (`503 E_UNAVAILABLE` past the
+60 s), and refusals that ran nothing (`401`, `426`, `429`) and every `5xx` are not recorded.
 
 `app_build` follows ready/resumed and names the entry from the verified, currently served web
 handler. It is at most 512 characters, matches `/assets/[A-Za-z0-9_./-]+.js`, and contains no `..`.

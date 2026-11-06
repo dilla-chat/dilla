@@ -302,7 +302,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// its socket-only routes, which the route groups below register, and the gateway hands every
 	// request frame to it.
 	mux := server.NewMux()
-	requests := api.NewSocketDispatcher(mux, api.SocketDispatchOptions{Clock: o.Clock, Log: o.Log, Sessions: sessions})
+	requests := api.NewSocketDispatcher(mux, api.SocketDispatchOptions{Clock: o.Clock, Log: o.Log})
 	trustedProxies := o.Config.Server.TrustedProxyCIDRs
 
 	var presence *api.PresenceService

@@ -783,8 +783,11 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 			}
 			return
 		}
-		// The injected clock, not the wall clock x/time/rate would read by itself.
-		if !inbound.AllowN(g.opts.Clock.Now(), 1) {
+		// The injected clock, not the wall clock x/time/rate would read by itself. A request frame
+		// (op 59) does not spend the bucket (controller ruling M2): it is bounded by the 64
+		// in-flight cap, the 32 MiB byte budget and its route's own rate meter. The op is read from
+		// the frame's head alone; a frame that only claims op 59 still has to decode as one.
+		if op, ok := frameOp(b); (!ok || op != OpRequest) && !inbound.AllowN(g.opts.Clock.Now(), 1) {
 			if p, perr := ErrorPayload(0, "E_RATE_LIMITED", "inbound frame rate"); perr == nil {
 				c.send(Frame{Op: OpError, Payload: p})
 			}

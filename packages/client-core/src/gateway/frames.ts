@@ -71,6 +71,9 @@ export interface SocketResponseFrame { id: number; status: number; body: Uint8Ar
 const MAX_METHOD = 16;
 const MAX_ROUTE = 8192;
 const MAX_IDEM = 64;
+/** The instance's request body cap (gateway.MaxRequestBodyBytes): a larger body is refused E_FRAME_LIMIT and closes the
+ *  socket, so a client that queued it would re-send it after every resume. */
+export const MAX_REQUEST_BODY = 16 * 1024 * 1024;
 
 function validRequestPayload(payload: CborValue[]): boolean {
   const [id, method, route, body, idem] = payload;
@@ -86,6 +89,7 @@ const httpStatus = (value: CborValue | undefined): boolean => typeof value === '
  *  would refuse as E_FRAME_SHAPE is refused here, before it is sent. */
 export function encodeRequestFrame(r: SocketRequestFrame): Uint8Array {
   if (!Number.isSafeInteger(r.id) || r.id < 0) shape();
+  if (r.body.length > MAX_REQUEST_BODY) throw new Error('E_FRAME_LIMIT');
   const payload = [r.id, r.method, r.route, r.body, r.idem];
   if (!validRequestPayload(payload.map((v) => (typeof v === 'number' ? BigInt(v) : v)))) shape();
   return encodeFrame(Op.request, 0, null, payload);

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -28,7 +29,10 @@ const (
 	// cap, so a body over it gets the same refusal it would over HTTP.
 	MaxRequestBodyBytes = server.DefaultSocketBodyCap
 	// MaxRequestBytesInFlight bounds one connection's request plus response body bytes in flight.
-	// A request that would take it over is answered E_BUSY, as the 65th request is.
+	// A request that would take it over is answered E_BUSY, as the 65th request is. The bound can be
+	// overshot by at most one in-flight frame read (a request frame is read whole, up to 16 MiB of
+	// body, before it is admitted or refused) and one replayed body (an answer from the replay
+	// record was not charged while it was recorded, so it is charged when it is sent).
 	MaxRequestBytesInFlight int64 = 32 << 20
 
 	maxIdemBytes  = 64
@@ -291,8 +295,21 @@ func (g *Gateway) handleRequest(ctx context.Context, c *conn, in Inbound) {
 	dctx := context.WithoutCancel(ctx)
 	g.workers.run(func() {
 		rc := &responseCharge{budget: budget}
+		answered := false
+		// A fault in the dispatcher is answered 500 and still frees the request's slot and bytes:
+		// without this, a panicking dispatch would hold one of the connection's 64 slots forever.
+		defer func() {
+			if v := recover(); v != nil {
+				g.opts.Log.Error("gateway: socket request dispatch panicked", "panic", v, "stack", string(debug.Stack()))
+				if !answered {
+					g.sendResponse(c, w, errorResponse(req.ID, server.Errorf(server.CodeInternal, "")),
+						func() { budget.finish(size + rc.total()) })
+				}
+			}
+		}()
 		resp := g.opts.Requests.Dispatch(context.WithValue(dctx, chargeKey{}, rc), caller, req)
 		resp.ID = req.ID
+		answered = true
 		held := rc.total()
 		if extra := int64(len(resp.Body)) - held; extra > 0 {
 			budget.force(extra)
@@ -310,6 +327,8 @@ func (g *Gateway) handleRequest(ctx context.Context, c *conn, in Inbound) {
 // per-connection budget bounds it). A worker idle for workerIdle exits.
 type workerPool struct {
 	jobs chan func()
+	// active counts the jobs handed out and not yet finished; Shutdown waits on it.
+	active sync.WaitGroup
 }
 
 const workerIdle = 30 * time.Second
@@ -317,10 +336,28 @@ const workerIdle = 30 * time.Second
 func newWorkerPool() *workerPool { return &workerPool{jobs: make(chan func())} }
 
 func (p *workerPool) run(job func()) {
+	p.active.Add(1)
+	tracked := func() {
+		defer p.active.Done()
+		job()
+	}
 	select {
-	case p.jobs <- job:
+	case p.jobs <- tracked:
 	default:
-		go p.work(job)
+		go p.work(tracked)
+	}
+}
+
+// wait returns once every job handed out has finished, or when ctx ends.
+func (p *workerPool) wait(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		p.active.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 

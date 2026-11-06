@@ -12,6 +12,7 @@ import (
 // and the HTTP mux never answers it.
 func TestSocketRoutesAreOnlyOnTheSocketMux(t *testing.T) {
 	m := server.NewMux()
+	m.SetSocketGuard(func(w http.ResponseWriter, r *http.Request, next http.Handler) { next.ServeHTTP(w, r) })
 	wrapped := 0
 	view := m.Wrapped(func(_ string, h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -46,6 +47,38 @@ func TestSocketRoutesAreOnlyOnTheSocketMux(t *testing.T) {
 	view.SocketWithCap("POST /v1/socket/small", 64, http.NotFoundHandler())
 	if m.SocketCap("POST /v1/socket/small") != 64 {
 		t.Fatal("SocketWithCap did not record its cap")
+	}
+}
+
+// I1: with no guard installed a socket route refuses every request and never runs its handler; an
+// installed guard runs innermost, after the route's wrap, immediately before the handler.
+func TestSocketRoutesFailClosedAndRunTheGuardInnermost(t *testing.T) {
+	m := server.NewMux()
+	var order []string
+	view := m.Wrapped(func(_ string, h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			order = append(order, "wrap")
+			h.ServeHTTP(w, r)
+		})
+	})
+	view.Socket("POST /v1/socket/guarded", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		order = append(order, "handler")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rec := httptest.NewRecorder()
+	m.SocketMux().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/socket/guarded", nil))
+	if rec.Code != http.StatusUnauthorized || len(order) != 1 || order[0] != "wrap" {
+		t.Fatalf("unguarded = %d, ran %v; want 401 and no handler", rec.Code, order)
+	}
+	order = nil
+	m.SetSocketGuard(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		order = append(order, "guard")
+		next.ServeHTTP(w, r)
+	})
+	rec = httptest.NewRecorder()
+	m.SocketMux().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/socket/guarded", nil))
+	if rec.Code != http.StatusNoContent || len(order) != 3 || order[0] != "wrap" || order[1] != "guard" || order[2] != "handler" {
+		t.Fatalf("guarded = %d, order %v; want wrap, guard, handler", rec.Code, order)
 	}
 }
 
