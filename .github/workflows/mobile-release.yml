@@ -1,0 +1,283 @@
+name: mobile-release
+# The mobile preview builds of a release: after release.yml publishes a v* release, this attaches the release-signed
+# Android APK and its checksum to that release and uploads the iOS app to TestFlight. Both are built from the tag's
+# commit (never main's head), with the same recipe as mobile.yml. Not a CI workflow: nothing gates a pull request on it.
+#
+# Secrets live only in the `mobile-release` environment (deployment branch policy: main; workflow_run and
+# workflow_dispatch both run on main). Each job checks its own secrets first and fails naming the missing ones, never
+# printing a value. The bundle job holds no secrets. Like release.yml, no job restores a build cache: it publishes
+# what people install.
+#
+# workflow_dispatch backfills or reruns the mobile builds for an existing tag that has a published release. A rerun
+# for a tag that already carries an APK replaces the APK and its checksum together (--clobber on one upload).
+on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: the release tag to build the mobile apps for, e.g. v0.1.0 (its release must exist)
+        required: true
+        type: string
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch || inputs.tag }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  # Which tag, which commit and which numbers. A workflow_run builds only when the release run succeeded and ran for a
+  # v* tag (with workflow_run, head_branch is the tag name for a tag push); a failed or non-tag release run, or a
+  # desktop-v* tag, builds nothing.
+  resolve:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v') && !startsWith(github.event.workflow_run.head_branch, 'desktop-v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.r.outputs.tag }}
+      sha: ${{ steps.r.outputs.sha }}
+      version: ${{ steps.r.outputs.version }}
+      build: ${{ steps.r.outputs.build }}
+    steps:
+      - id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_TAG: ${{ inputs.tag }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          if [ "$EVENT_NAME" = workflow_run ]; then tag="$RUN_TAG"; else tag="$INPUT_TAG"; fi
+          case "$tag" in
+            desktop-v*) echo "$tag is a desktop release tag; the mobile builds follow server releases only"; exit 1 ;;
+          esac
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$'; then
+            echo "release tags look like v1.2.3 or v1.2.3-mobile1, got: $tag"; exit 1
+          fi
+          # The release must be published: the APK is attached to it.
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || { echo "$tag has no published release; release.yml must publish it first"; exit 1; }
+          if [ "$EVENT_NAME" = workflow_run ]; then
+            sha="$RUN_SHA"
+          else
+            # The commit the tag points at (an annotated tag resolves to its commit).
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha)
+          fi
+          printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || { echo "could not resolve $tag to a commit"; exit 1; }
+          # 0.1.0 from v0.1.0-mobile1: the leading v and any -suffix removed.
+          version="${tag#v}"; version="${version%%-*}"
+          # One number for the iOS build and the Android versionCode. TestFlight rejects a reused build number, so a
+          # rerun (new attempt) and a backfill (new run) each get their own, and it only grows.
+          build=$((1000 + RUN_NUMBER * 10 + RUN_ATTEMPT))
+          {
+            echo "tag=$tag"
+            echo "sha=$sha"
+            echo "version=$version"
+            echo "build=$build"
+          } >> "$GITHUB_OUTPUT"
+          echo "mobile build of $tag at $sha: version $version, build $build"
+
+  # The mobile client (packages/mobile/dist) and the wasm core it bundles, as mobile.yml's mobile-core-wasm and
+  # mobile-bundle jobs build them, in one job. No secrets here; both app jobs ship these bytes.
+  mobile-bundle:
+    needs: [resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, as mobile.yml does.
+    env:
+      CC_wasm32_unknown_unknown: /usr/bin/clang-23
+      AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - name: clang 23 for the wasm C build
+        run: bash scripts/ci-llvm.sh install
+      - run: rustup show active-toolchain
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - run: bash scripts/install-ci-tool.sh wasm-bindgen
+      - run: bash scripts/install-ci-tool.sh wasm-pack
+      - run: bash scripts/install-ci-tool.sh binaryen
+      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
+      - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
+      - run: npm ci
+      - run: npm run build -w @dilla/mobile
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-mobile-dist
+          path: packages/mobile/dist/
+          if-no-files-found: error
+
+  # The release-signed APK: signed from the environment's keystore, proven to be signed by the pinned certificate and to
+  # trust system CAs only with no cleartext, then attached to the release with its checksum in one upload.
+  android-release:
+    needs: [resolve, mobile-bundle]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    environment: mobile-release
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+    steps:
+      - name: The signing secrets are set
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=""
+          for name in ANDROID_KEYSTORE_B64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::missing or empty secrets in the mobile-release environment:$missing"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - name: Fetch the mobile client built by the mobile-bundle job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-mobile-dist
+          path: packages/mobile/dist
+      # Gradle rejects JDKs newer than 21 (packages/mobile/README.md); the image carries 21 beside its default.
+      - name: JDK 21 for Gradle
+        run: echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
+      - run: cd packages/mobile && npx cap sync android
+      - name: Write the keystore (removed again at the end)
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/dilla-release.p12"
+          test -s "$RUNNER_TEMP/dilla-release.p12" || { echo "::error::ANDROID_KEYSTORE_B64 decodes to an empty file"; exit 1; }
+      - name: Build the release-signed APK (retried only on known network errors)
+        env:
+          DILLA_ANDROID_KEYSTORE: ${{ runner.temp }}/dilla-release.p12
+          DILLA_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          DILLA_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          DILLA_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          DILLA_ANDROID_VERSION_CODE: ${{ needs.resolve.outputs.build }}
+          DILLA_ANDROID_VERSION_NAME: ${{ needs.resolve.outputs.version }}
+        run: node scripts/retry-on.mjs --pattern 'Could not (GET|HEAD) .{1,400}Received status code (50[0-4]|429)|Server returned HTTP response code. (50[0-4]|429)|Read timed out|Connect timed out|Connection reset|Remote host terminated the handshake|UnknownHostException|SocketTimeoutException' -- packages/mobile/android/gradlew -p packages/mobile/android --no-daemon assembleRelease
+      - name: The APK is signed by the pinned release key
+        run: npm run android:check-signer -w @dilla/mobile
+      - name: The APK trusts system CAs only and allows no cleartext
+        run: npm run android:check-release-signed -w @dilla/mobile
+      - name: Remove the keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/dilla-release.p12"
+      - name: Attach the APK and its checksum to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apk="dilla-$TAG.apk"
+          cp packages/mobile/android/app/build/outputs/apk/release/app-release.apk "$apk"
+          # sha256sum format with the bare filename, so `sha256sum -c` works where the two are downloaded.
+          sha256sum "$apk" > "$apk.sha256"
+          # One upload, --clobber: a rerun replaces the APK and the checksum together.
+          gh release upload "$TAG" "$apk" "$apk.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+
+  # The iOS app to TestFlight: archived with automatic distribution signing through the App Store Connect API key, then
+  # exported with destination upload. The team id is the environment variable APPLE_TEAM_ID, never in the repo.
+  ios-testflight:
+    needs: [resolve, mobile-bundle]
+    runs-on: macos-26
+    timeout-minutes: 45
+    environment: mobile-release
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+    steps:
+      - name: The App Store Connect secrets and team id are set
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          missing=""
+          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 APPLE_TEAM_ID; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::missing or empty in the mobile-release environment (secrets, and the variable APPLE_TEAM_ID):$missing"
+            exit 1
+          fi
+          printf '%s' "$APPLE_TEAM_ID" | grep -Eq '^[A-Z0-9]{10}$' || { echo "::error::APPLE_TEAM_ID is not a 10-character team id"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - name: Fetch the mobile client built by the mobile-bundle job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-mobile-dist
+          path: packages/mobile/dist
+      - run: cd packages/mobile && npx cap sync ios
+      # Pinned as mobile.yml pins it, so an image update cannot change the toolchain under the build.
+      - name: Xcode 26.6
+        run: |
+          if [ ! -d /Applications/Xcode_26.6.app ]; then
+            echo "Xcode 26.6 is not on this runner image; installed:" >&2
+            ls -d /Applications/Xcode_*.app >&2
+            exit 1
+          fi
+          sudo xcode-select -s /Applications/Xcode_26.6.app
+          xcodebuild -version
+      - name: Resolve the Swift packages (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'Could not resolve host|The network connection was lost|The request timed out|Connection reset by peer|RPC failed|SSL_ERROR_SYSCALL|Failed to connect to|returned error. (50[0-4]|429)' -- xcodebuild -resolvePackageDependencies -project packages/mobile/ios/App/App.xcodeproj -scheme App -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm"
+      - name: Write the API key and the export options (the key is removed again at the end)
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          umask 077
+          printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc-key.p8"
+          chmod 600 "$RUNNER_TEMP/asc-key.p8"
+          cp packages/mobile/ios/App/ExportOptions.plist "$RUNNER_TEMP/ExportOptions.plist"
+          /usr/libexec/PlistBuddy -c "Add :teamID string $APPLE_TEAM_ID" "$RUNNER_TEMP/ExportOptions.plist"
+      - name: Archive for distribution
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          BUILD: ${{ needs.resolve.outputs.build }}
+        run: |
+          xcodebuild archive -project packages/mobile/ios/App/App.xcodeproj -scheme App -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/Dilla.xcarchive" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm" -disableAutomaticPackageResolution \
+            -allowProvisioningUpdates -authenticationKeyPath "$RUNNER_TEMP/asc-key.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD"
+      - name: Export and upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/Dilla.xcarchive" -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -allowProvisioningUpdates -authenticationKeyPath "$RUNNER_TEMP/asc-key.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+      - name: Remove the API key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/asc-key.p8"

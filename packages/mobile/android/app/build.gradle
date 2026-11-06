@@ -7,8 +7,9 @@ android {
         applicationId "chat.dilla.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        // The release workflow sets both (build number and marketing version); without them the build is unchanged.
+        versionCode((System.getenv('DILLA_ANDROID_VERSION_CODE') ?: '1') as Integer)
+        versionName System.getenv('DILLA_ANDROID_VERSION_NAME') ?: "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
