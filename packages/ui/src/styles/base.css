@@ -78,12 +78,19 @@
 /* Task 11 (Jonas, Q4; the prototype's phone thread and members): a sheet covers the whole screen, the tab bar included; its own
    head's × closes it. */
 .d-app-shell[data-layout="phone"] .d-app-shell__aside, .d-app-shell[data-layout="phone"] .d-app-shell__backdrop { bottom: 0; }
+/* The sheet starts at the screen's top edge, under the status bar and notch in the mobile app (viewport-fit=cover): its own head
+   (the thread pane's back, the member list's ×) sits below the inset, so the way back to the conversation stays visible and
+   tappable. A PhoneHeader in the sheet pads the inset itself, so it adds none here; under the ring (below) the ring pads it. */
+.d-app-shell[data-layout="phone"] .d-app-shell__aside { padding-top: env(safe-area-inset-top); }
+.d-app-shell[data-layout="phone"] .d-app-shell__aside .d-phone-header { padding-top: 0; }
+.d-app-shell[data-layout="phone"] .d-app-shell__aside-head { top: env(safe-area-inset-top); }
 .d-app-shell[data-layout="phone"] .d-app-shell__tabbar[hidden], .d-app-shell[data-layout="phone"][data-typing="true"] .d-app-shell__tabbar { display: none; }
 /* The call bar is the bottom row on the view pane: it clears the home indicator when no tab bar follows it, and then the
    composer above it needs no inset of its own. */
 .d-app-shell[data-layout="phone"] .d-app-shell__callbar:not(:has(+ .d-app-shell__tabbar:not([hidden]))) { padding-bottom: env(safe-area-inset-bottom); }
 /* Final fix I3: the ring (z-index 30) is above the sheet (aside 25, backdrop 24); the sheet starts under it, so its back button stays reachable. */
-.d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__aside { top: var(--d-ring-h, 0px); }
+.d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__aside { top: var(--d-ring-h, 0px); padding-top: 0; }
+.d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__aside-head { top: 0; }
 .d-app-shell[data-layout="phone"]:has(.d-app-shell__ring) .d-app-shell__aside .d-phone-header { padding-top: 0; }
 /* web3.9 (R10, R13): a finger needs taller rows and a wider trailing column; the rows stay flush (no gap). `[data-phone]` is the
    thread sheet's and the other phone-only surfaces' hook, which sit outside the shell element. */
