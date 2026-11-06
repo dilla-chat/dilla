@@ -245,6 +245,10 @@ async function connect(urlPattern) {
   // By the process's own socket: after a force-stop the package's old socket must not be picked up.
   const webview = await device.webView({ socketName: `webview_devtools_remote_${pid}` }, { timeout: WAIT });
   const page = await webview.page();
+  // Every action and wait is bounded: Playwright's Android pages default to no timeout, so a stalled WebView hung a
+  // fill/click until the job's 20-minute limit and the diagnostics were never written (run 42187112370).
+  page.setDefaultTimeout(WAIT);
+  page.setDefaultNavigationTimeout(WAIT);
   for (let i = 0; i < 120 && !urlPattern.test(page.url()); i++) await sleep(500);
   if (!urlPattern.test(page.url())) throw new Error(`the WebView is at ${page.url()}, expected ${urlPattern}`);
   watch(page);
