@@ -1319,14 +1319,9 @@ export const checkMobileCiWorkflow = (root) => checkCiWorkflow(root, 'mobile');
  * clang 23 pin, the size profile, the placeholder guard), and it uses only actions server.yml or desktop-ci.yml uses at
  * the same versions. It
  * builds and pushes no container image: the release is the native install's (Jonas, 2026-10-14).
- *
- * Releases are immutable once published, so the release-signed Android APK is built and signed here, before the
- * release job publishes, and listed in SHA256SUMS like every other asset (Jonas, 2026-11-06). Its name carries the
- * tag, so its asset entry is the shell word dilla-$TAG.apk; its sha256sum-format .sha256 is attached beside it.
  */
-export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'bot-release', 'go-release', 'mobile-bundle', 'android-release', 'release'];
-export const RELEASE_APK = 'dilla-$TAG.apk';
-export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dillabot-linux-amd64', 'dillabot-linux-arm64', 'dilla-bot-core-linux-amd64', 'dilla-bot-core-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh', 'install-bot.sh', RELEASE_APK];
+export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'bot-release', 'go-release', 'release'];
+export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dillabot-linux-amd64', 'dillabot-linux-arm64', 'dilla-bot-core-linux-amd64', 'dilla-bot-core-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh', 'install-bot.sh'];
 const RELEASE_STEPS = {
   tag: [
     'test "$GITHUB_REF" = "refs/tags/$tag"',
@@ -1371,19 +1366,6 @@ const RELEASE_STEPS = {
     'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist',
     'name: dillad-binaries',
   ],
-  'mobile-bundle': [
-    'npm run build -w @dilla/mobile',
-    'name: dilla-mobile-dist',
-  ],
-  'android-release': [
-    'DILLA_ANDROID_VERSION_CODE: ${{ steps.build.outputs.number }}',
-    'if [ "$RUN_ATTEMPT" -gt 9 ]',
-    'echo "number=$((1000 + RUN_NUMBER * 10 + RUN_ATTEMPT))" >> "$GITHUB_OUTPUT"',
-    "trap 'rm -f \"$ks\"' EXIT",
-    'npm run android:check-signer -w @dilla/mobile',
-    'npm run android:check-release-signed -w @dilla/mobile',
-    'name: dilla-android-apk',
-  ],
   release: [
     'cp deploy/install.sh release/install.sh',
     'cp deploy/install-bot.sh release/install-bot.sh',
@@ -1397,15 +1379,14 @@ const RELEASE_STEPS = {
     'gh release view "$TAG"',
     `sha256sum ${RELEASE_ASSETS.join(' ')} > SHA256SUMS`,
     'sha256sum -c --strict SHA256SUMS',
-    'gh release create "$TAG" --verify-tag',
+    // A draft: mobile-release.yml signs the APK on main, attaches it and publishes (Jonas, 2026-11-06).
+    'gh release create "$TAG" --verify-tag --draft',
     'flags="--prerelease"',
-    'name: dilla-android-apk',
-    `sha256sum -c --strict ${RELEASE_APK}.sha256`,
-    `${RELEASE_ASSETS.map((a) => `release/${a}`).join(' ')} release/${RELEASE_APK}.sha256 release/SHA256SUMS`,
+    `${RELEASE_ASSETS.map((a) => `release/${a}`).join(' ')} release/SHA256SUMS`,
   ],
 };
 const RELEASE_VERSION_ENV = 'VERSION: ${{ needs.tag.outputs.version }}';
-const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'bot-release': ['tag', 'rust-wasi'], 'go-release': ['tag', 'web-build'], 'mobile-bundle': ['tag'], 'android-release': ['tag', 'mobile-bundle'], release: ['tag', 'go-release', 'rust-wasi', 'bot-release', 'android-release'] };
+const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'bot-release': ['tag', 'rust-wasi'], 'go-release': ['tag', 'web-build'], release: ['tag', 'go-release', 'rust-wasi', 'bot-release'] };
 
 export function checkReleaseWorkflow(root) {
   const file = 'release.yml';
@@ -1466,16 +1447,6 @@ export function checkReleaseWorkflow(root) {
   for (const [name, body] of Object.entries(jobs)) {
     if (name !== 'release' && /contents: write/.test(body)) problems.push(`${file}: job "${name}" asks for contents: write; only the release job writes`);
   }
-  // The signing keystore lives in the mobile-release environment, and only android-release, after the tag job's gate,
-  // enters it or reads a secret.
-  if ('android-release' in jobs && !/^ {4}environment: mobile-release$/m.test(jobs['android-release'])) {
-    problems.push(`${file}: job "android-release" must run in environment: mobile-release, which holds the signing keystore`);
-  }
-  for (const [name, body] of Object.entries(jobs)) {
-    if (name === 'android-release') continue;
-    if (/^ {4}environment:/m.test(body)) problems.push(`${file}: job "${name}" enters an environment; only android-release does`);
-    if (/\$\{\{\s*secrets\./.test(body)) problems.push(`${file}: job "${name}" reads a secret; only android-release holds the signing secrets`);
-  }
   // The gate lists the server workflow's runs: only the tag job reads actions, and a job-level block replaces the workflow's.
   if ('tag' in jobs && !/^ {4}permissions:\n {6}contents: read\n {6}actions: read$/m.test(jobs.tag)) {
     problems.push(`${file}: job "tag" needs exactly permissions: contents: read, actions: read for the server release gate`);
@@ -1518,6 +1489,124 @@ export function checkReleaseWorkflow(root) {
   assertEveryUploadFailsOnNoFiles(text, problems, file);
   assertWasmPackUsesTheSizeProfile(text, problems, file);
   assertWasmJobsUseClang23(text, jobs, problems, file);
+  // A v* tag run uses the workflow file at the tagged commit, which any tag pusher controls: no job here may enter an
+  // environment or name a secret, no job may run past a failed gate, and every checkout is the tag's own commit.
+  let doc;
+  try { doc = yaml.load(text); } catch (error) { problems.push(`${file}: invalid YAML (${error.message.split('\n')[0]})`); return problems; }
+  for (const [name, job] of Object.entries(doc?.jobs ?? {})) {
+    if (Object.hasOwn(job ?? {}, 'environment')) problems.push(`${file}: job "${name}" enters an environment; a tag run's workflow file is the tag's, so release.yml holds no environment (signing is mobile-release.yml's, on main)`);
+    if (typeof job?.if === 'string' && STATUS_CHECK.test(job.if)) problems.push(`${file}: job "${name}" has a job-level if: with a status check (${job.if}), which runs it past a failed need`);
+    for (const step of job?.steps ?? []) {
+      if (isCheckout(step) && Object.hasOwn(step.with ?? {}, 'ref')) problems.push(`${file}: job "${name}" checks out ref ${step.with.ref}; a release builds the tagged commit only`);
+    }
+  }
+  for (const expr of expressions(text)) {
+    if (/\bsecrets\b/.test(expr)) problems.push(`${file}: names secrets (\${{${expr}}}); release.yml reads no secret`);
+  }
+  return problems;
+}
+
+/** A job-level `if:` with a status check runs the job even when a need failed or was skipped. */
+const STATUS_CHECK = /\b(?:always|cancelled|failure|success)\s*\(/;
+const isCheckout = (step) => typeof step?.uses === 'string' && step.uses.startsWith('actions/checkout@');
+/** Every `${{ … }}` expression body in a text. */
+const expressions = (text) => [...text.matchAll(/\$\{\{([\s\S]*?)\}\}/g)].map((m) => m[1]);
+
+/**
+ * mobile-release.yml (2026-11-06, "Draft, sign on main"): release.yml leaves each v* release a draft; this workflow,
+ * always main's file in the main-only mobile-release environment, signs the APK from the tag's commit, attaches it to
+ * the draft, adds it to SHA256SUMS and publishes. The rules keep the secrets in the steps that use them (review M1).
+ */
+export const MOBILE_RELEASE_NEEDS = { 'mobile-bundle': ['resolve'], 'android-release': ['resolve', 'mobile-bundle'], publish: ['resolve', 'android-release'], 'ios-testflight': ['resolve', 'mobile-bundle'] };
+const ANDROID_SECRETS = ['ANDROID_KEYSTORE_B64', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_PASSWORD'];
+const ASC_SECRETS = ['ASC_KEY_ID', 'ASC_ISSUER_ID', 'ASC_KEY_P8'];
+/** job -> step name -> the secrets that step's env may name. No other step, and no job-level key, names a secret. */
+export const MOBILE_SECRET_STEPS = {
+  'android-release': { 'The signing secrets are set': ANDROID_SECRETS, 'Sign the APK with the release key (the keystore exists only during this step)': ANDROID_SECRETS },
+  'ios-testflight': { 'The App Store Connect secrets and team id are set': ASC_SECRETS, 'Export and upload to TestFlight': ASC_SECRETS },
+};
+/** The one step of a job that writes a key file, the trap that removes it, and the write, which the trap precedes. */
+const MOBILE_KEY_FILES = {
+  'android-release': { step: 'Sign the APK with the release key (the keystore exists only during this step)', trap: `trap 'rm -f "$ks"' EXIT`, write: 'base64 -d > "$ks"' },
+  'ios-testflight': { step: 'Export and upload to TestFlight', trap: `trap 'rm -f "$RUNNER_TEMP/asc-key.p8"' EXIT`, write: '> "$RUNNER_TEMP/asc-key.p8"' },
+};
+const RESOLVE_SHA = '${{ needs.resolve.outputs.sha }}';
+const MOBILE_RELEASE_STEPS = {
+  resolve: [
+    '[ "$RUN_REF" = refs/heads/main ]',
+    'git merge-base --is-ancestor "$sha" origin/main',
+    'actions/workflows/release.yml/runs?branch=$tag&status=success',
+    'already published and immutable',
+  ],
+  'android-release': ['npm run android:check-signer -w @dilla/mobile', 'npm run android:check-release-signed -w @dilla/mobile', 'if [ "$RUN_ATTEMPT" -gt 9 ]', 'dilla-android-apk'],
+  publish: ['[ "$draft" = true ]', 'dilla-android-apk', '--clobber', 'sha256sum -c --strict SHA256SUMS', 'gh release edit "$TAG" --draft=false'],
+};
+
+export function checkMobileReleaseWorkflow(root) {
+  const file = 'mobile-release.yml';
+  let text;
+  try { text = readFileSync(join(root, '.github', 'workflows', file), 'utf8'); }
+  catch (error) { if (error.code === 'ENOENT') return [`${file}: missing`]; throw error; }
+  const problems = [];
+  let doc;
+  try { doc = yaml.load(text); } catch (error) { return [`${file}: invalid YAML (${error.message.split('\n')[0]})`]; }
+  text.split('\n').forEach((line, i) => checkActionReference(line, file, i + 1, problems));
+  const on = doc?.on ?? doc?.true ?? {};
+  if (JSON.stringify(on.workflow_run?.workflows) !== '["release"]' || JSON.stringify(on.workflow_run?.types) !== '["completed"]') problems.push(`${file}: must run on workflow_run of [release], types [completed]`);
+  if (!on.workflow_dispatch?.inputs?.tag) problems.push(`${file}: must offer workflow_dispatch with a tag input`);
+  if (Object.keys(on).some((event) => !['workflow_run', 'workflow_dispatch'].includes(event))) problems.push(`${file}: runs only on workflow_run and workflow_dispatch (main's file)`);
+  if (JSON.stringify(doc?.permissions) !== '{"contents":"read"}') problems.push(`${file}: the workflow-level token must be read-only (permissions: contents: read)`);
+  for (const expr of expressions(text)) {
+    if (/toJSON\s*\(\s*secrets\b/i.test(expr)) problems.push(`${file}: toJSON(secrets) exposes every secret`);
+  }
+  const jobs = doc?.jobs ?? {};
+  for (const name of ['resolve', ...Object.keys(MOBILE_RELEASE_NEEDS)]) if (!(name in jobs)) problems.push(`${file}: missing job "${name}"`);
+  const stepLines = (step) => JSON.stringify(step);
+  for (const [name, job] of Object.entries(jobs)) {
+    const steps = job?.steps ?? [];
+    for (const want of MOBILE_RELEASE_STEPS[name] ?? []) {
+      if (!steps.some((step) => stepLines(step).includes(JSON.stringify(want).slice(1, -1)))) problems.push(`${file}: job "${name}" is missing: ${want}`);
+    }
+    const needs = typeof job?.needs === 'string' ? [job.needs] : job?.needs ?? [];
+    for (const need of MOBILE_RELEASE_NEEDS[name] ?? []) if (!needs.includes(need)) problems.push(`${file}: job "${name}" must list "${need}" in its needs:`);
+    // Only resolve, which has no needs, may carry a job-level if: anything else could run past a failed gate.
+    if (name !== 'resolve' && Object.hasOwn(job ?? {}, 'if')) problems.push(`${file}: job "${name}" has a job-level if: (${job.if}); it must run only when its needs succeeded`);
+    const environment = job?.environment;
+    if (name in MOBILE_SECRET_STEPS) {
+      if (environment !== 'mobile-release') problems.push(`${file}: job "${name}" must run in environment: mobile-release, which holds its secrets`);
+    } else if (environment !== undefined) problems.push(`${file}: job "${name}" enters an environment; only ${Object.keys(MOBILE_SECRET_STEPS).join(' and ')} do`);
+    if (name === 'publish' ? JSON.stringify(job?.permissions) !== '{"contents":"write"}' : job?.permissions !== undefined && JSON.stringify(job.permissions).includes('write')) {
+      problems.push(name === 'publish' ? `${file}: job "publish" needs exactly permissions: contents: write` : `${file}: job "${name}" asks for write access; only publish writes`);
+    }
+    // Secrets only in the env of the steps that use them; nowhere at job level, in a with:, or in a script.
+    const { steps: _steps, ...jobKeys } = job ?? {};
+    for (const expr of expressions(JSON.stringify(jobKeys))) if (/\bsecrets\b/.test(expr)) problems.push(`${file}: job "${name}" names a secret at job level (\${{${expr}}})`);
+    steps.forEach((step, index) => {
+      const label = step?.name ?? step?.uses ?? step?.run?.split('\n')[0] ?? `step ${index + 1}`;
+      const allowed = MOBILE_SECRET_STEPS[name]?.[step?.name];
+      const { env = {}, ...rest } = step ?? {};
+      for (const expr of expressions(JSON.stringify(rest))) if (/\bsecrets\b/.test(expr)) problems.push(`${file}: job "${name}" step "${label}" names a secret outside its env (\${{${expr}}})`);
+      for (const [key, value] of Object.entries(env ?? {})) {
+        for (const expr of expressions(String(value))) {
+          if (!/\bsecrets\b/.test(expr)) continue;
+          const secret = /^\s*secrets\.([A-Z0-9_]+)\s*$/.exec(expr)?.[1];
+          if (allowed === undefined || secret === undefined || !allowed.includes(secret)) problems.push(`${file}: job "${name}" step "${label}" names a secret it may not (${key}: \${{${expr}}}); secrets live only in ${Object.entries(MOBILE_SECRET_STEPS).map(([j, s]) => `${j}: ${Object.keys(s).join(', ')}`).join('; ')}`);
+        }
+      }
+      if (isCheckout(step) && name !== 'resolve') {
+        if (name === 'publish') problems.push(`${file}: job "publish" checks out the repository; the job that writes runs no repository code`);
+        else if (step.with?.ref !== RESOLVE_SHA || step.with?.['persist-credentials'] !== false) problems.push(`${file}: job "${name}" must check out ref: ${RESOLVE_SHA} (the gated commit) with persist-credentials: false`);
+      }
+    });
+    const keyFile = MOBILE_KEY_FILES[name];
+    if (keyFile) {
+      const writers = steps.filter((step) => typeof step?.run === 'string' && step.run.includes(keyFile.write));
+      const run = writers[0]?.run ?? '';
+      if (writers.length !== 1 || writers[0].name !== keyFile.step || !run.includes(keyFile.trap) || run.indexOf(keyFile.trap) > run.indexOf(keyFile.write)) {
+        problems.push(`${file}: job "${name}": the key file is written in one step only, "${keyFile.step}", whose ${keyFile.trap} comes before the write`);
+      }
+    }
+  }
   return problems;
 }
 
@@ -2210,7 +2299,7 @@ export function checkLocalMirror(root) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkDesktopWorkflow(root), ...checkDesktopReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkLocalMirror(root)];
+  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkMobileReleaseWorkflow(root), ...checkDesktopWorkflow(root), ...checkDesktopReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkLocalMirror(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }

@@ -1,15 +1,18 @@
 name: mobile-release
-# The iOS preview build of a release: after release.yml publishes a v* release, this uploads the iOS app to TestFlight,
-# built from the tag's commit (never main's head) with the same recipe as mobile.yml. It uploads nothing to the
-# release: releases are immutable once published, so the release-signed Android APK is built, signed and attached by
-# release.yml itself, before it publishes. Not a CI workflow: nothing gates a pull request on it.
+# The mobile half of a release. release.yml creates every v* release as a DRAFT with the server assets. After it
+# succeeds, this workflow builds the release-signed Android APK from the tag's commit, attaches it and its checksum
+# to the draft, adds the APK's line to SHA256SUMS and publishes the release; independently it uploads the iOS app to
+# TestFlight. Both apps use the same recipe as mobile.yml. Not a CI workflow: nothing gates a pull request on it.
 #
-# Secrets live only in the `mobile-release` environment (deployment policy: main and v* tags; workflow_run and
-# workflow_dispatch both run on main, release.yml's android-release job on the tag). The job checks its own secrets
-# first and fails naming the missing ones, never printing a value. The bundle job holds no secrets. Like release.yml,
-# no job restores a build cache: it publishes what people install.
+# Why here and not in release.yml: a v* tag run uses the workflow file at the tagged commit, which anyone who can push
+# a tag can edit. This workflow always runs main's file (workflow_run runs the default branch's; a dispatch must be
+# from main, and resolve refuses any other ref). The signing secrets live only in the `mobile-release` environment,
+# whose deployment policy is main only. Releases are immutable once published, so the APK goes onto the draft; if
+# Android fails, the release stays a draft (lockstep): fix it and dispatch this workflow for the tag.
 #
-# workflow_dispatch backfills or reruns the TestFlight build for an existing tag that has a published release.
+# Each secret job checks its own secrets first and fails naming the missing ones, never printing a value. The bundle
+# and publish jobs hold no secrets; only publish may write (contents: write) and it enters no environment. Like
+# release.yml, no job restores a build cache: it publishes what people install.
 on:
   workflow_run:
     workflows: [release]
@@ -17,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: the release tag to build the mobile apps for, e.g. v0.1.0 (its release must exist)
+        description: the release tag to build the mobile apps for, e.g. v0.1.0 (its release must exist and still be a draft)
         required: true
         type: string
 concurrency:
@@ -30,7 +33,7 @@ env:
 jobs:
   # Which tag, which commit and which numbers. A workflow_run builds only when the release run succeeded and ran for a
   # v* tag (with workflow_run, head_branch is the tag name for a tag push); a failed or non-tag release run, or a
-  # desktop-v* tag, builds nothing.
+  # desktop-v* tag, builds nothing. A published release is refused: it is immutable, so nothing can be added to it.
   resolve:
     if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v') && !startsWith(github.event.workflow_run.head_branch, 'desktop-v'))
     runs-on: ubuntu-latest
@@ -52,10 +55,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
+          RUN_REF: ${{ github.ref }}
           RUN_TAG: ${{ github.event.workflow_run.head_branch }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
           INPUT_TAG: ${{ inputs.tag }}
         run: |
+          # Only main's workflow file runs here (a dispatch from another branch would run that branch's file).
+          [ "$RUN_REF" = refs/heads/main ] || { echo "run this workflow from main, not $RUN_REF"; exit 1; }
           if [ "$EVENT_NAME" = workflow_run ]; then tag="$RUN_TAG"; else tag="$INPUT_TAG"; fi
           case "$tag" in
             desktop-v*) echo "$tag is a desktop release tag; the mobile builds follow server releases only"; exit 1 ;;
@@ -63,13 +69,16 @@ jobs:
           if ! [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
             echo "release tags look like v1.2.3 or v1.2.3-mobile1, got: $tag"; exit 1
           fi
-          # The release must be published: TestFlight gets only what a release ships. A 404 means none; any other failure is shown.
-          if ! out=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .tag_name 2>&1); then
-            if printf '%s' "$out" | grep -q 'HTTP 404'; then
-              echo "$tag has no published release; release.yml must publish it first"
-            else
-              echo "could not look up the release of $tag: $out"
+          # A published release is immutable: the APK can never be added to it. The tags endpoint answers only for a
+          # published release; a 404 means a draft or none, and the publish job (whose token can see drafts) requires
+          # the draft before it uploads anything. Any other failure is shown.
+          if out=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .draft 2>&1); then
+            if [ "$out" != true ]; then
+              echo "the release of $tag is already published and immutable; its assets cannot be changed. Cut a new tag"
+              exit 1
             fi
+          elif ! printf '%s' "$out" | grep -q 'HTTP 404'; then
+            echo "could not look up the release of $tag: $out"
             exit 1
           fi
           if [ "$EVENT_NAME" = workflow_run ]; then
@@ -95,8 +104,7 @@ jobs:
           echo "mobile build of $tag at $sha: version $version"
 
   # The mobile client (packages/mobile/dist) and the wasm core it bundles, as mobile.yml's mobile-core-wasm and
-  # mobile-bundle jobs build them, in one job. No secrets here; ios-testflight ships these bytes (release.yml builds
-  # the same bundle for the APK in its own mobile-bundle job).
+  # mobile-bundle jobs build them, in one job. No secrets here; both app jobs ship these bytes.
   mobile-bundle:
     needs: [resolve]
     runs-on: ubuntu-24.04
@@ -129,6 +137,165 @@ jobs:
           path: packages/mobile/dist/
           if-no-files-found: error
 
+  # The release-signed APK: signed from the environment's keystore, proven to be signed by the pinned certificate and to
+  # trust system CAs only with no cleartext, then handed to the publish job as an artifact. This job cannot write.
+  android-release:
+    needs: [resolve, mobile-bundle]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    environment: mobile-release
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+    steps:
+      # The Android versionCode, computed from this job's own attempt so a rerun gets a fresh one. Runs of this workflow
+      # and attempts only grow it: 1000 + run_number*10 + run_attempt (run 2, the first after run 1, gives 1021, above
+      # the hand-built v0.1.0-mobile2's 1001), so at most 9 attempts per run (a 10th would collide with the next run's
+      # number). It stays monotonic only while this file keeps its workflow id: renaming or re-adding it resets
+      # run_number, and Android refuses an update with a lower versionCode.
+      - name: Build number
+        id: build
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          if [ "$RUN_ATTEMPT" -gt 9 ]; then echo "::error::attempt $RUN_ATTEMPT: more than 9 attempts of one run would reuse the next run's build number; dispatch a new run"; exit 1; fi
+          echo "number=$((1000 + RUN_NUMBER * 10 + RUN_ATTEMPT))" >> "$GITHUB_OUTPUT"
+      - name: The signing secrets are set
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=""
+          for name in ANDROID_KEYSTORE_B64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_PASSWORD; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::missing or empty secrets in the mobile-release environment:$missing"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - name: Fetch the mobile client built by the mobile-bundle job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-mobile-dist
+          path: packages/mobile/dist
+      # Gradle rejects JDKs newer than 21 (packages/mobile/README.md); the image carries 21 beside its default.
+      - name: JDK 21 for Gradle
+        run: echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
+      - run: cd packages/mobile && npx cap sync android
+      # The build runs third-party code (Gradle plugins, npm packages), so it never sees the key (defence in depth, not a security boundary: a process an earlier step left running could still read it): it builds the release APK
+      # unsigned, and the next step alone holds the keystore and its passwords, signs with apksigner and removes the file.
+      - name: Build the release APK, unsigned (retried only on known network errors)
+        env:
+          DILLA_ANDROID_VERSION_CODE: ${{ steps.build.outputs.number }}
+          DILLA_ANDROID_VERSION_NAME: ${{ needs.resolve.outputs.version }}
+        run: node scripts/retry-on.mjs --pattern 'Could not (GET|HEAD) .{1,400}Received status code (50[0-4]|429)|Server returned HTTP response code. (50[0-4]|429)|Read timed out|Connect timed out|Connection reset|Remote host terminated the handshake|UnknownHostException|SocketTimeoutException' -- packages/mobile/android/gradlew -p packages/mobile/android --no-daemon assembleRelease
+      - name: Sign the APK with the release key (the keystore exists only during this step)
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          # The alias is not a secret: as one, GitHub masked every "dilla" in the job log.
+          KEY_ALIAS: dilla
+        run: |
+          umask 077
+          ks="$RUNNER_TEMP/dilla-release.p12"
+          trap 'rm -f "$ks"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$ks"
+          test -s "$ks" || { echo "::error::ANDROID_KEYSTORE_B64 decodes to an empty file"; exit 1; }
+          tools="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n 1)"
+          out=packages/mobile/android/app/build/outputs/apk/release
+          "$tools/zipalign" -P 16 -f 4 "$out/app-release-unsigned.apk" "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" sign --ks "$ks" --ks-key-alias "$KEY_ALIAS" --ks-pass env:KS_PASS --key-pass env:KEY_PASS \
+            --out "$out/app-release.apk" "$RUNNER_TEMP/aligned.apk"
+          rm -f "$RUNNER_TEMP/aligned.apk"
+      - name: The APK is signed by the pinned release key
+        run: npm run android:check-signer -w @dilla/mobile
+      - name: The APK trusts system CAs only and allows no cleartext
+        run: npm run android:check-release-signed -w @dilla/mobile
+      - name: Remove the keystore (backstop, the signing step removes it on exit)
+        if: always()
+        run: rm -f "$RUNNER_TEMP/dilla-release.p12"
+      - name: Name the APK for the release and write its checksum
+        run: |
+          mkdir -p dist
+          cp packages/mobile/android/app/build/outputs/apk/release/app-release.apk "dist/dilla-$TAG.apk"
+          # sha256sum format with the bare filename, so `sha256sum -c` works where the two are downloaded.
+          cd dist && sha256sum "dilla-$TAG.apk" > "dilla-$TAG.apk.sha256"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-android-apk
+          path: dist/
+          if-no-files-found: error
+
+  # Attaches the APK and its checksum to the draft, adds the APK's line to SHA256SUMS, checks the draft's assets and
+  # publishes it. The only job that writes; it holds no secret and enters no environment. While the release is a
+  # draft every upload may replace (--clobber), so a rerun repairs a half-finished one; once published, nothing can.
+  # It does not wait for TestFlight, which attaches nothing.
+  publish:
+    needs: [resolve, android-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: The release is a draft
+        id: draft
+        run: |
+          # Drafts are listed only to a token that can write, which is why this check lives here and not in resolve.
+          releases=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) \(.draft)\"")
+          [ "$(printf '%s\n' "$releases" | grep -c .)" -eq 1 ] || { echo "::error::expected exactly one release for $TAG, found: ${releases:-none}"; exit 1; }
+          read -r id draft <<< "$releases"
+          [ "$draft" = true ] || { echo "::error::the release of $TAG is already published and immutable; its assets cannot be changed"; exit 1; }
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - name: Fetch the APK and its checksum
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-android-apk
+          path: apk
+      - name: Add the APK to SHA256SUMS and attach it to the draft
+        run: |
+          apk="dilla-$TAG.apk"
+          cd apk
+          sha256sum -c --strict "$apk.sha256"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir server
+          test -s server/SHA256SUMS
+          # The server lines as release.yml wrote them, any APK line of an earlier attempt dropped, then the APK's line
+          # in the same sha256sum format.
+          awk -v n="$apk" '$2 != n' server/SHA256SUMS > SHA256SUMS
+          sha256sum "$apk" >> SHA256SUMS
+          test "$(grep -c " $apk\$" SHA256SUMS)" -eq 1
+          gh release upload "$TAG" "$apk" "$apk.sha256" SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+      - name: The draft holds exactly the release's assets, and they match SHA256SUMS
+        env:
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+        run: |
+          apk="dilla-$TAG.apk"
+          want=$(printf '%s\n' dillad-linux-amd64 dillad-linux-arm64 dillabot-linux-amd64 dillabot-linux-arm64 dilla-bot-core-linux-amd64 dilla-bot-core-linux-arm64 dilla_core_wasi.wasm install.sh install-bot.sh "$apk" "$apk.sha256" SHA256SUMS | sort)
+          have=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --jq '.[].name' | sort)
+          [ "$have" = "$want" ] || { echo "::error::the draft's assets differ from the release's:"; diff <(echo "$want") <(echo "$have"); exit 1; }
+          mkdir verify
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir verify
+          cd verify
+          sha256sum -c --strict SHA256SUMS
+          sha256sum -c --strict "$apk.sha256"
+          test "$(wc -l < SHA256SUMS)" -eq 10
+      - name: Publish the release
+        run: |
+          gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .draft)" = false
+
   # The iOS app to TestFlight: archived unsigned, then exported with automatic signing and destination upload. The team
   # id is the environment variable APPLE_TEAM_ID, never in the repo. ASC_KEY_P8 must be a Team key with the Admin role:
   # Xcode's cloud-managed distribution signing, which the export uses, needs it (an App Manager key fails with a cloud
@@ -143,9 +310,8 @@ jobs:
     steps:
       # The build number is computed here, from this job's own attempt, so re-running just this job gets a fresh one
       # (TestFlight rejects a reused build number). Runs of this workflow and attempts only grow it: 1000 + run_number*10
-      # + run_attempt, so at most 9 attempts per run (a 10th would collide with the next run's number). It is the iOS
-      # build number only: TestFlight numbers are independent of the Android versionCode, which release.yml computes
-      # from its own runs.
+      # + run_attempt, so at most 9 attempts per run (a 10th would collide with the next run's number). TestFlight build
+      # numbers are independent of the Android versionCode, though both use this formula.
       - name: Build number
         id: build
         env:
