@@ -79,11 +79,46 @@ func BridgeWithOptions(ctx context.Context, pcm io.Reader, sampleRate, channels 
 		return ctx.Err()
 	}
 
+	return supervise(ctx, pcm, provider, options, func(runCtx context.Context, activity chan<- struct{}) error {
+		return run(runCtx, pcm, sampleRate, channels, provider, options.FFmpegPath, activity)
+	})
+}
+
+// BridgeOgg forwards a finished 48 kHz stereo Ogg Opus stream (one ffmpeg,
+// stream to Opus, started by the sandboxed worker) to the live provider. It
+// starts no process: every Ogg page is checked, and every packet must be one
+// 20 ms Opus frame. It takes ownership of the closable source like Bridge.
+func BridgeOgg(ctx context.Context, source io.Reader, provider *media.LiveOpusProvider, options Options) error {
+	if provider != nil {
+		defer func() { _ = provider.CloseInput() }()
+	}
+	closer, closable := source.(io.ReadCloser)
+	if closable {
+		defer func() { _ = closer.Close() }()
+	}
+	if source == nil || !closable {
+		return ErrSourceNotInterruptible
+	}
+	if ctx == nil || provider == nil {
+		return ErrInvalidPCMFormat
+	}
+	if options.StallTimeout <= 0 {
+		options.StallTimeout = 10 * time.Second
+	}
+	return supervise(ctx, source, provider, options, func(runCtx context.Context, activity chan<- struct{}) error {
+		return forwardOgg(runCtx, source, provider, activity)
+	})
+}
+
+// supervise runs one producer under the stall deadline. A paused provider
+// holds the deadline; cancellation and stalls close the source so a blocked
+// read returns.
+func supervise(ctx context.Context, source io.Reader, provider *media.LiveOpusProvider, options Options, produce func(context.Context, chan<- struct{}) error) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	activity := make(chan struct{}, 1)
 	result := make(chan error, 1)
-	go func() { result <- run(runCtx, pcm, sampleRate, channels, provider, options.FFmpegPath, activity) }()
+	go func() { result <- produce(runCtx, activity) }()
 	timer := time.NewTimer(options.StallTimeout)
 	defer timer.Stop()
 	resetTimer := func() {
@@ -104,7 +139,7 @@ func BridgeWithOptions(ctx context.Context, pcm io.Reader, sampleRate, channels 
 			return err
 		case <-ctx.Done():
 			cancel()
-			closeReader(pcm)
+			closeReader(source)
 			<-result
 			_ = provider.CloseInput()
 			return ctx.Err()
@@ -114,12 +149,41 @@ func BridgeWithOptions(ctx context.Context, pcm io.Reader, sampleRate, channels 
 				continue
 			}
 			cancel()
-			closeReader(pcm)
+			closeReader(source)
 			<-result
 			_ = provider.CloseInput()
 			return ErrStalled
 		case <-activity:
 			resetTimer()
+		}
+	}
+}
+
+// forwardOgg validates and forwards every Opus packet of one Ogg stream.
+func forwardOgg(ctx context.Context, source io.Reader, provider *media.LiveOpusProvider, activity chan<- struct{}) error {
+	checked := &checkedOggReader{source: source}
+	reader, header, err := oggreader.NewOggReader(checked)
+	if err != nil {
+		return fmt.Errorf("%w: Ogg headers: %w", ErrInvalidOpus, err)
+	}
+	if !validOpusHeader(header) {
+		return fmt.Errorf("%w: unexpected output format", ErrInvalidOpus)
+	}
+	for {
+		packet, readErr := readPacketSafely(reader)
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				return fmt.Errorf("%w: Ogg packet: %w", ErrInvalidOpus, readErr)
+			}
+			return nil
+		}
+		duration, durationErr := oggreader.ParsePacketDuration(packet)
+		if durationErr != nil || len(packet) == 0 || len(packet) > media.MaxLiveOpusSampleBytes || duration != media.LiveOpusSampleDuration {
+			return ErrInvalidOpus
+		}
+		signal(activity)
+		if err := provider.WriteSample(ctx, packet); err != nil {
+			return err
 		}
 	}
 }
@@ -152,50 +216,12 @@ func run(ctx context.Context, pcm io.Reader, sampleRate, channels int, provider 
 		_ = stdin.Close()
 	}()
 
-	checked := &checkedOggReader{source: stdout}
-	reader, header, err := oggreader.NewOggReader(checked)
-	if err != nil {
+	if err := forwardOgg(ctx, stdout, provider, activity); err != nil {
 		_ = cmd.Cancel()
 		_ = stdin.Close()
 		<-pumpErr
 		_ = cmd.Wait()
-		return fmt.Errorf("%w: Ogg headers: %w", ErrInvalidOpus, err)
-	}
-	if !validOpusHeader(header) {
-		_ = cmd.Cancel()
-		_ = stdin.Close()
-		<-pumpErr
-		_ = cmd.Wait()
-		return fmt.Errorf("%w: unexpected output format", ErrInvalidOpus)
-	}
-	for {
-		packet, readErr := readPacketSafely(reader)
-		if readErr != nil {
-			if !errors.Is(readErr, io.EOF) {
-				_ = cmd.Cancel()
-				_ = stdin.Close()
-				<-pumpErr
-				_ = cmd.Wait()
-				return fmt.Errorf("%w: Ogg packet: %w", ErrInvalidOpus, readErr)
-			}
-			break
-		}
-		duration, durationErr := oggreader.ParsePacketDuration(packet)
-		if durationErr != nil || len(packet) == 0 || len(packet) > media.MaxLiveOpusSampleBytes || duration != media.LiveOpusSampleDuration {
-			_ = cmd.Cancel()
-			_ = stdin.Close()
-			<-pumpErr
-			_ = cmd.Wait()
-			return ErrInvalidOpus
-		}
-		signal(activity)
-		if err := provider.WriteSample(ctx, packet); err != nil {
-			_ = cmd.Cancel()
-			_ = stdin.Close()
-			<-pumpErr
-			_ = cmd.Wait()
-			return err
-		}
+		return err
 	}
 	if err := <-pumpErr; err != nil {
 		_ = cmd.Cancel()

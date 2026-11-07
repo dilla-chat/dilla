@@ -63,6 +63,30 @@ func Start(ctx context.Context, source io.ReadCloser, format PCMFormat, capacity
 	return s, nil
 }
 
+// StartOgg is Start for a finished 48 kHz stereo Ogg Opus stream, the output
+// of the sandboxed stream worker's single ffmpeg. No second encoder runs: the
+// stream's 20 ms packets are validated and forwarded as they arrive.
+func StartOgg(ctx context.Context, source io.ReadCloser, capacity int, options Options) (*Session, error) {
+	if ctx == nil || source == nil {
+		return nil, ErrInvalidConfig
+	}
+	provider, err := media.NewLiveOpusProvider(capacity)
+	if err != nil {
+		return nil, err
+	}
+	runCtx, cancel := context.WithCancel(client.WithoutCooperativeStop(client.WithBackground(ctx)))
+	s := &Session{provider: provider, cancel: cancel, done: make(chan struct{})}
+	s.source = &gatedPCM{ReadCloser: source, provider: provider, ctx: runCtx}
+	go func() {
+		err := encode.BridgeOgg(runCtx, s.source, provider, options)
+		s.mu.Lock()
+		s.err = err
+		s.mu.Unlock()
+		close(s.done)
+	}()
+	return s, nil
+}
+
 // Provider returns the bounded sample source accepted by media.PublishLiveOpus.
 func (s *Session) Provider() *media.LiveOpusProvider { return s.provider }
 

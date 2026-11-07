@@ -64,6 +64,10 @@ type Supervisor struct {
 	idleFor   func() time.Duration
 	idleTimer Timer
 	idleGen   uint64
+	// Bot v2 task 18: stage timings of the last 20 starts, and the timer that pre-buffers the next track.
+	timings       []StartTiming
+	prefetch      *prefetchPlan
+	prefetchAfter func(time.Duration, func()) Timer
 }
 
 // IdleLeaver is a TrackStarter that can leave its retained voice room while nothing plays.
@@ -84,6 +88,7 @@ func WithIdleLeave(idleFor func() time.Duration, afterFunc func(time.Duration, f
 // idleCheckLocked starts the idle-leave timer when nothing plays and stops it when something
 // does. It runs after every state change.
 func (s *Supervisor) idleCheckLocked() {
+	s.prefetchCheckLocked()
 	if s.idleFor == nil {
 		return
 	}
@@ -541,7 +546,8 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool, budget *sta
 			continue
 		}
 		track := *s.state.Current
-		startCtx := WithStartAtMS(runCtx, s.state.PositionMS)
+		startCtx, startTimer := withStartTimer(WithStartAtMS(runCtx, s.state.PositionMS))
+		startBegan := time.Now()
 		s.mu.Unlock()
 		var p Playback
 		var err error
@@ -607,6 +613,7 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool, budget *sta
 			}
 			return skips, errors.New("music track starter returned invalid playback")
 		}
+		s.recordTimingLocked(startTimer.finish(track.ID, startBegan, time.Now()))
 		budget.succeeded()
 		successful = true
 		timeout.Stop()
@@ -814,6 +821,7 @@ func (s *Supervisor) Close() error {
 		s.idleTimer = nil
 	}
 	s.closePlaybackLocked()
+	s.cancelPrefetchLocked()
 	var pending <-chan struct{}
 	if s.starting != nil {
 		pending = s.starting.done

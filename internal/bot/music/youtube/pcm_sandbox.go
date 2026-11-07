@@ -120,6 +120,19 @@ func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, worke
 		inputs = append(inputs, input)
 	}
 	process := &isolatedPCM{diagnosticInputs: inputs, stdout: stdout, cmd: cmd, ctx: runCtx, cancel: cancel, broker: broker, root: root, done: make(chan struct{})}
+	if len(workerArgs) > 0 && workerArgs[0] == "serve" {
+		// The long-lived lookup worker reads its requests from stdin. The sandbox
+		// command (mounts, namespaces, broker socket) is the same as for any worker.
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			cancel()
+			_ = stdout.Close()
+			broker.close()
+			_ = os.RemoveAll(root)
+			return nil, ErrSandboxUnavailable
+		}
+		process.stdin = stdin
+	}
 	if err := cmd.Start(); err != nil {
 		cancel()
 		_ = stdout.Close()
@@ -129,7 +142,7 @@ func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, worke
 	}
 	go process.wait()
 	workerFailure := ErrPCMStart
-	if len(workerArgs) > 0 && workerArgs[0] == "exec" {
+	if len(workerArgs) > 0 && (workerArgs[0] == "exec" || workerArgs[0] == "serve") {
 		workerFailure = ErrExtractFailed
 	}
 	timer := time.NewTimer(startupTimeout)
@@ -230,6 +243,7 @@ func sandboxCommand(ctx context.Context, bwrap, python string, tools, workerArgs
 type isolatedPCM struct {
 	diagnosticInputs []string
 	stdout           io.ReadCloser
+	stdin            io.WriteCloser
 	cmd              *exec.Cmd
 	ctx              context.Context
 	cancel           context.CancelFunc

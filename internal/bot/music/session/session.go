@@ -189,6 +189,27 @@ func (s QueueStarter) startOnce(ctx context.Context, track music.Track) (music.P
 	return Start(ctx, o)
 }
 
+// Prefetch pre-resolves and pre-buffers track, so the Start that follows when
+// the current track ends has its audio ready. It never joins a call or touches
+// the room: only the provider is asked. A provider that cannot pre-buffer, or
+// a track it refuses, simply starts cold later.
+func (s QueueStarter) Prefetch(ctx context.Context, track music.Track) error {
+	if ctx == nil || s.OptionsFor == nil || track.Provider != music.ProviderYouTube {
+		return ErrInvalid
+	}
+	o, err := s.OptionsFor(ctx, track)
+	if err != nil {
+		return err
+	}
+	prefetcher, ok := o.PCM.(interface {
+		Prefetch(context.Context, string) error
+	})
+	if !ok {
+		return nil
+	}
+	return prefetcher.Prefetch(ctx, track.CanonicalID)
+}
+
 // Start owns every resource through publisher completion.
 func Start(ctx context.Context, o Options) (*Session, error) {
 	if ctx == nil {
@@ -201,6 +222,7 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 	if o.Community.IsZero() || o.Channel.IsZero() || o.Track == "" || o.PCM == nil || o.Encoder == nil || o.Publisher == nil || o.Epochs == nil || (o.PrepareCall == nil && (o.Call.CallID.IsZero() || o.Group.IsZero() || o.Call.GroupID != o.Group)) || provider != music.ProviderYouTube {
 		return nil, music.StartStage(ctx, "provider_check", ErrInvalid)
 	}
+	began := time.Now()
 	ctx = music.WithCallJoinTrace(client.WithoutCooperativeStop(ctx))
 	if !o.Group.IsZero() {
 		ctx = music.WithPlaybackGroup(ctx, o.Group)
@@ -252,6 +274,7 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 		return nil, err
 	}
 	_ = music.StartStage(ctx, "published", nil)
+	music.MarkFirstFrame(ctx, time.Since(began))
 	s := &Session{startAtMS: music.StartAtMS(ctx), pcm: pcm, encoder: encoder, publisher: pub, done: make(chan struct{}), stop: make(chan struct{})}
 	go s.monitor(ctx)
 	return s, nil
@@ -358,6 +381,9 @@ type ownedPCM struct {
 }
 
 func (p *ownedPCM) Close() error { p.once.Do(func() { p.err = p.ReadCloser.Close() }); return p.err }
+
+// OggOpus forwards the provider's marker that its stream is already Opus.
+func (p *ownedPCM) OggOpus() bool { return isOggOpus(p.ReadCloser) }
 func (p *ownedPCM) PCMFormat() musicruntime.PCMFormat {
 	if formatted, ok := p.ReadCloser.(interface{ PCMFormat() musicruntime.PCMFormat }); ok {
 		return formatted.PCMFormat()

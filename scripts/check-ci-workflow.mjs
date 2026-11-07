@@ -406,6 +406,7 @@ const REQUIRED_STEPS = {
     // Bot v2 task 11: no shipped dillad is a dilla_unsafe_test build (the tag survives -trimpath in the build info).
     `test "$(go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -c 'build[[:space:]]CGO_ENABLED=0')" -eq 2`,
     'if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_unsafe_test; then echo "a dillad was built with the dilla_unsafe_test tag"; exit 1; fi',
+    'if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_testhost; then echo "a dillad was built with the dilla_testhost tag"; exit 1; fi',
   ],
 };
 
@@ -1304,6 +1305,9 @@ const RELEASE_STEPS = {
     'go test ./internal/bot/... ./cmd/dillabot',
     'GOOS=linux GOARCH=${{ matrix.arch }} go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o dist/dillabot-linux-${{ matrix.arch }} ./cmd/dillabot',
     'test "$(dist/dillabot-linux-${{ matrix.arch }} version)" = "dillabot $VERSION"',
+    // Bot v2 task 18: the shipped Bot binary is read back and must not be a dilla_testhost (fixture music) build.
+    "go version -m dist/dillabot-linux-${{ matrix.arch }} | grep -q 'build[[:space:]]CGO_ENABLED=0'",
+    'if go version -m dist/dillabot-linux-${{ matrix.arch }} | grep -q dilla_testhost; then echo "a dillabot was built with the dilla_testhost tag"; exit 1; fi',
     'install -m 0755 target/release/dilla-bot-core dist/dilla-bot-core-linux-${{ matrix.arch }}',
     'name: dilla-bot-${{ matrix.arch }}',
     'if-no-files-found: error',
@@ -1317,6 +1321,7 @@ const RELEASE_STEPS = {
     // Bot v2 task 11: no released dillad is a dilla_unsafe_test build (the tag survives -trimpath in the build info).
     `test "$(go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -c 'build[[:space:]]CGO_ENABLED=0')" -eq 2`,
     'if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_unsafe_test; then echo "a dillad was built with the dilla_unsafe_test tag"; exit 1; fi',
+    'if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_testhost; then echo "a dillad was built with the dilla_testhost tag"; exit 1; fi',
     'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist',
     'name: dillad-binaries',
   ],

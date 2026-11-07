@@ -1,5 +1,6 @@
 """Minimal in-namespace HTTP CONNECT relay and yt-dlp/ffmpeg pipeline."""
 
+import json
 import os
 import resource
 import selectors
@@ -65,6 +66,95 @@ def relay(client):
         broker.close()
 
 
+MAX_REQUEST = 256 * 1024
+MAX_ARGS = 128
+MAX_STDERR_REPLY = 8 * 1024
+MAX_CONCURRENT = 4
+
+
+def serve(ytdlp, limit, env, children, stopping, stop):
+    """Long-lived lookup worker: one JSON request per stdin line, one JSON reply per stdout line.
+
+    Only the configured yt-dlp ever runs, with the same environment (proxy, no
+    credentials) and the same network namespace as the per-request worker. The
+    reply carries yt-dlp's exit code, its stdout (bounded) and the tail of its
+    stderr so the caller can classify a failure per request.
+    """
+    out_lock = threading.Lock()
+    slots = threading.BoundedSemaphore(MAX_CONCURRENT)
+
+    def reply(rid, code, out="", err=""):
+        line = json.dumps({"id": rid, "code": code, "out": out, "err": err}, ensure_ascii=True)
+        with out_lock:
+            sys.stdout.write(line + "\n")
+            sys.stdout.flush()
+
+    def drain(stream, sink):
+        try:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    return
+                if len(sink) < MAX_STDERR_REPLY:
+                    sink.extend(chunk[: MAX_STDERR_REPLY - len(sink)])
+        except (OSError, ValueError):
+            return
+
+    def handle(rid, args):
+        try:
+            proc = subprocess.Popen([ytdlp] + args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, close_fds=True)
+        except OSError:
+            reply(rid, 1)
+            return
+        children.append(proc)
+        err_bytes = bytearray()
+        err_thread = threading.Thread(target=drain, args=(proc.stderr, err_bytes), daemon=True)
+        err_thread.start()
+        try:
+            data = proc.stdout.read(limit + 1)
+            if len(data) > limit:
+                proc.kill()
+                proc.wait()
+                reply(rid, 75)
+                return
+            code = proc.wait()
+            err_thread.join(1)
+            reply(rid, code, data.decode("utf-8", "replace"), bytes(err_bytes).decode("utf-8", "replace"))
+        except (OSError, ValueError):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            reply(rid, 1)
+        finally:
+            try:
+                children.remove(proc)
+            except ValueError:
+                pass
+            slots.release()
+
+    for raw in sys.stdin.buffer:
+        if stopping.is_set():
+            break
+        if len(raw) > MAX_REQUEST:
+            continue
+        try:
+            request = json.loads(raw)
+            rid = request["id"]
+            args = request["args"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        if not isinstance(rid, int) or not isinstance(args, list) or len(args) > MAX_ARGS or not all(isinstance(a, str) and "\0" not in a for a in args):
+            if isinstance(rid, int):
+                reply(rid, 125)
+            continue
+        slots.acquire()
+        threading.Thread(target=handle, args=(rid, args), daemon=True).start()
+    stop(signal.SIGTERM, None)
+    stopping.set()
+    return 0
+
+
 def main(argv):
     if not argv:
         return 125
@@ -74,6 +164,11 @@ def main(argv):
         start_at = argv[6] if len(argv) == 7 else "0.000"
         command = None
         output_limit = max_pcm
+    elif mode == "serve" and len(argv) == 3:
+        output_limit = argv[1]
+        command = None
+        ytdlp = argv[2]
+        ffmpeg = node = source = max_pcm = None
     elif mode == "exec" and len(argv) >= 3:
         output_limit = argv[1]
         command = argv[2:]
@@ -150,6 +245,8 @@ def main(argv):
         "PYTHONDONTWRITEBYTECODE": "1",
         "SSL_CERT_FILE": "/etc/ssl/cert.pem",
     }
+    if mode == "serve":
+        return serve(ytdlp, limit, env, children, stopping, stop)
     if command is not None:
         try:
             child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=None, env=env, close_fds=True)
@@ -157,7 +254,9 @@ def main(argv):
             total = 0
             too_large = False
             while True:
-                chunk = child.stdout.read(32768)
+                # os.read returns what is available: a buffered read(32768) would hold a
+                # streaming child's first 32 KB (seconds of audio) back until it filled.
+                chunk = os.read(child.stdout.fileno(), 32768)
                 if not chunk:
                     break
                 if total + len(chunk) > limit:

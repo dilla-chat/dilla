@@ -94,16 +94,33 @@ type prefetchedYouTubePCM struct {
 func (p *prefetchedYouTubePCM) Close() error                      { return p.source.Close() }
 func (p *prefetchedYouTubePCM) PCMFormat() musicruntime.PCMFormat { return p.source.PCMFormat() }
 
+// OggOpus reports that the provider already delivers 48 kHz Ogg Opus from its
+// single ffmpeg, so no second encoder runs over it.
+func (p *prefetchedYouTubePCM) OggOpus() bool { return isOggOpus(p.source.ReadCloser) }
+
+func isOggOpus(source io.Reader) bool {
+	marked, ok := source.(interface{ OggOpus() bool })
+	return ok && marked.OggOpus()
+}
+
 type EncoderConfig struct {
 	Capacity int
 	Options  encode.Options
 	start    func(context.Context, io.ReadCloser, musicruntime.PCMFormat, int, encode.Options) (Encoder, error)
+	startOgg func(context.Context, io.ReadCloser, int, encode.Options) (Encoder, error)
 }
 type RuntimeEncoder struct{ Config EncoderConfig }
 
 const youtubePCMRate = 44100
 
 func (e RuntimeEncoder) Start(ctx context.Context, pcm io.ReadCloser) (Encoder, error) {
+	if isOggOpus(pcm) {
+		// One ffmpeg already produced 48 kHz Opus in 20 ms frames; forward it as is.
+		if e.Config.startOgg != nil {
+			return e.Config.startOgg(ctx, pcm, e.Config.Capacity, e.Config.Options)
+		}
+		return musicruntime.StartOgg(ctx, pcm, e.Config.Capacity, e.Config.Options)
+	}
 	format := musicruntime.PCMFormat{SampleRate: youtubePCMRate, Channels: 2}
 	if source, ok := pcm.(interface{ PCMFormat() musicruntime.PCMFormat }); ok {
 		format = source.PCMFormat()
@@ -148,6 +165,9 @@ func (s YouTubePCM) Check(ctx context.Context) error {
 	if s.Source == nil {
 		return youtube.ErrRunnerRequired
 	}
+	if checked, ok := s.Source.(interface{ Check(context.Context) error }); ok {
+		return checked.Check(ctx)
+	}
 	source, production := s.Source.(youtube.PCMStarter)
 	if !production {
 		return nil
@@ -173,3 +193,22 @@ func (s YouTubePCM) Check(ctx context.Context) error {
 }
 
 func (p *prefetchedYouTubePCM) SourceGone() bool { return p.source.SourceGone() }
+
+// Prefetch asks the provider to resolve and buffer a track ahead of its start.
+// A provider without pre-buffering is not an error: the track then starts cold.
+func (s YouTubePCM) Prefetch(ctx context.Context, track string) error {
+	if ctx == nil || s.Source == nil {
+		return ErrInvalid
+	}
+	source, ok := s.Source.(interface {
+		Prefetch(context.Context, string) error
+	})
+	if !ok {
+		return nil
+	}
+	canonical := "https://www.youtube.com/watch?v=" + track
+	if kind, normalized, err := youtube.NormalizeInput(canonical); err != nil || kind != "video" || normalized != canonical {
+		return youtube.ErrInvalidInput
+	}
+	return source.Prefetch(youtube.WithDiagnosticLogger(ctx, music.PlaybackLogger(ctx)), canonical)
+}

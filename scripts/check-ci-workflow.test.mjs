@@ -1013,6 +1013,7 @@ ${goShardMatrix('go-postgres')}    services:
         run: |
           test "$(go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -c 'build[[:space:]]CGO_ENABLED=0')" -eq 2
           if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_unsafe_test; then echo "a dillad was built with the dilla_unsafe_test tag"; exit 1; fi
+          if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_testhost; then echo "a dillad was built with the dilla_testhost tag"; exit 1; fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dillad-binaries
@@ -2302,6 +2303,22 @@ test('go-release must refuse a dilla_unsafe_test dillad in both workflows', () =
   const problems = checkWorkflow(fixture(GOOD.replace(step, 'true')));
   assert.ok(problems.some((p) => p.includes('go-release') && p.includes('dilla_unsafe_test')), problems.join('\n'));
   assertReported(releaseProblems((t) => t.replace(step, 'true')), 'dilla_unsafe_test');
+});
+
+test('go-release must refuse a dilla_testhost dillad in both workflows', () => {
+  const step = 'if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_testhost; then echo "a dillad was built with the dilla_testhost tag"; exit 1; fi';
+  assert.deepEqual(checkWorkflow(fixture(GOOD)), [], 'fixture sanity: GOOD passes');
+  const problems = checkWorkflow(fixture(GOOD.replace(step, 'true')));
+  assert.ok(problems.some((p) => p.includes('go-release') && p.includes('dilla_testhost')), problems.join('\n'));
+  assertReported(releaseProblems((t) => t.replace(step, 'true')), 'dilla_testhost');
+});
+
+test('bot-release must refuse a dilla_testhost dillabot', () => {
+  const step = 'if go version -m dist/dillabot-linux-${{ matrix.arch }} | grep -q dilla_testhost; then echo "a dillabot was built with the dilla_testhost tag"; exit 1; fi';
+  assertReported(releaseProblems((t) => t.replace(step, 'true')), 'dilla_testhost');
+  // The build info must also be present, or an absent tag proves nothing.
+  const info = "go version -m dist/dillabot-linux-${{ matrix.arch }} | grep -q 'build[[:space:]]CGO_ENABLED=0'";
+  assertReported(releaseProblems((t) => t.replace(info, 'true')), 'CGO_ENABLED=0');
 });
 
 function releaseProblems(edit) {
