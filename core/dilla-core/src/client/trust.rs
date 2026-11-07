@@ -18,6 +18,7 @@ use super::error::{
     E_DEVICE_REVOKED, E_DEVICE_UNLISTED, E_TIER_MISMATCH, E_UMK_CHANGED,
 };
 use super::{ClientCore, ClientError, schema, wire};
+use crate::bot::device_list_push::DeviceListPush;
 use crate::cbor::{Decoder, Encoder};
 use crate::identity::{CredentialIdentity, DISPLAY_GROUP, DeviceList, group_digits, safety_number};
 use crate::mls::{DillaGroup, StorageError};
@@ -110,6 +111,26 @@ fn anchor_bytes_differ(cached_blob: &[u8], first: &DeviceList) -> bool {
 /// The candidate head is older than the cached version.
 fn head_below_cached(cached_version: i64, head: &DeviceList) -> bool {
     head.unsigned.version < cached_version as u64
+}
+
+/// Served rows `(version, blob, ssk_signature, prev_hash)` as bounded signed lists, each row's
+/// version, signature and `prev_hash` equal to its blob's own (a served history and a pushed one
+/// alike).
+fn lists_from_rows<'a>(
+    rows: impl IntoIterator<Item = (u64, &'a [u8], &'a [u8; 64], &'a [u8; 32])>,
+) -> Result<Vec<DeviceList>, ClientError> {
+    let mut lists = Vec::new();
+    for (version, blob, ssk_signature, prev_hash) in rows {
+        let list = bounded_list(blob)?;
+        if list.unsigned.version != version
+            || &list.sig_ssk != ssk_signature
+            || &list.unsigned.prev_hash != prev_hash
+        {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
+        lists.push(list);
+    }
+    Ok(lists)
 }
 
 /// The chain check: each list names `requested_user`, is exactly the next version after the one
@@ -378,6 +399,37 @@ fn pin_after_list(
         return None;
     }
     Some(next_pin(prior, key, now))
+}
+
+/// Writes `next` when it differs from `prior`, and raises the trust generation when an existing
+/// pin changes (first sight changes nothing displayed), as `ingest_leaf` does.
+fn repin(
+    c: &rusqlite::Connection,
+    user: &[u8; 16],
+    prior: Option<Pin>,
+    next: Option<Pin>,
+) -> Result<(), StorageError> {
+    if let Some(pin) = next.filter(|p| prior != Some(*p)) {
+        write_pin(c, user, &pin)?;
+        if prior.is_some() {
+            bump_generation(c)?;
+        }
+    }
+    Ok(())
+}
+
+/// What a device-list push did (`ClientCore::ingest_device_list`). `version` is the cached
+/// list's version afterwards (0 when none is cached).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PushedList {
+    /// The cache vouches for the user. `changed` when this push wrote the list or the pin.
+    Current { changed: bool, version: u64 },
+    /// The user's pin has a key change pending (or the pushed key is not the pinned one): the
+    /// change is recorded, and the user's commands are refused until it is verified.
+    Held { changed: bool, version: u64 },
+    /// The push claims `head`, newer than the cache, but does not chain from it. Nothing was
+    /// written; the user is behind until a history reaching `head` is ingested.
+    Behind { version: u64, head: u64 },
 }
 
 /// The pin after a validated signed list under `key`. First sight pins it unverified; the pinned
@@ -1592,67 +1644,186 @@ impl ClientCore {
         self.ingest_leaf(first, requested_user, history_body, head_list, now, true)
     }
 
-    /// Bot v2 (task 8): a device list pushed on the Bot's event feed, as the device-list PUT body
-    /// `[version, blob, ssk_signature, prev_hash]`. Returns `(changed, version)`.
+    /// Bot v2 (task 8): ingests a device-list push (`bot::device_list_push::DeviceListPush`) for
+    /// `user` at `now`. The push carries the user's UMK, the UMK's certificate over the SSK and
+    /// a contiguous history; every list is checked under that SSK by `check_chain`, and the pin
+    /// is written by the same `pin_after_list`/`write_pin` the leaf path uses, in the one shared
+    /// pin table.
     ///
-    /// A signed list carries no key, so it is checked only against what is already trusted: the
-    /// user's cached list while it vouches for the user (`trusted_anchor`: pinned, no pending key
-    /// change, signed under the cached SSK). The pushed list must be that list again (unchanged)
-    /// or its next version under the same SSK (`check_chain`). Anything else, a user never seen
-    /// through an MLS leaf included, is refused and leaves the cache as it was; first sight is
-    /// only the leaf path (`device_list_ingest`). The pin is untouched: the key is the pinned
-    /// one. Leaves already judged under the previous list are re-judged by the caller.
+    /// - **Extend.** The cached list is under the pushed UMK: the SSK must be the cached one, and
+    ///   the rows newer than the cache must chain from it. Rows at or below the cached version
+    ///   are skipped, and a push whose head is not newer changes nothing. A newer head that does
+    ///   not chain from the cache (a gap, or a broken link) leaves the cache as it was and is
+    ///   `Behind`: the caller must refuse the user until a history reaching `head` arrives.
+    /// - **First push.** No cached list under this UMK: the history must chain from version 1.
+    ///   With no pin, or under the pinned UMK, the UMK is pinned (trust on first use, unverified,
+    ///   as the app pins on first sight) and the list is cached.
+    /// - **Another key.** The history chains from version 1 under a UMK other than the pinned
+    ///   one: it becomes the pin's pending change (`changed_umk`), the cached list stays, and the
+    ///   user is `Held` until the change is verified.
+    ///
+    /// The own account's key never changes by a push (`E_UMK_CHANGED`). Leaves already judged
+    /// under the previous list are re-judged by the caller.
     pub fn ingest_device_list(
         &mut self,
         user: &[u8; 16],
         body: &[u8],
-    ) -> Result<(bool, u64), ClientError> {
+        now: u64,
+    ) -> Result<PushedList, ClientError> {
         if user == &[0; 16] {
             return Err(failure(super::error::E_CORE_INPUT));
         }
-        if body.len() > MAX_LIST_BYTES + 256 {
-            return Err(failure(E_CORE_LIMIT));
-        }
-        let row = wire::decode_device_list_body(body).map_err(|_| failure(E_DEVICE_LIST_STALE))?;
-        let list = bounded_list(&row.blob)?;
-        if list.unsigned.version != row.version
-            || list.sig_ssk != row.ssk_signature
-            || list.unsigned.prev_hash != row.prev_hash
+        let now = i64::try_from(now).map_err(|_| failure(super::error::E_CORE_INPUT))?;
+        let push = DeviceListPush::decode(body).map_err(|e| match e {
+            crate::bot::CodecError::Limit => failure(E_CORE_LIMIT),
+            _ => failure(E_DEVICE_LIST_STALE),
+        })?;
+        let (umk, ssk) = (push.umk_pub, push.ssk_pub);
+        CredentialIdentity::verify_ssk_cert(&umk, &ssk, &push.sig_umk_ssk)
+            .map_err(|_| failure(E_CREDENTIAL))?;
+        let lists = lists_from_rows(
+            push.history
+                .iter()
+                .map(|r| (r.version, r.blob.as_slice(), &r.ssk_signature, &r.prev_hash)),
+        )?;
+        let head_version = lists.last().expect("a push has rows").unsigned.version;
+        if self
+            .read(own_user_key)?
+            .is_some_and(|(own, own_umk)| own == *user && own_umk != umk)
         {
-            return Err(failure(E_DEVICE_LIST_STALE));
+            return Err(failure(E_UMK_CHANGED));
         }
-        let (anchor, ssk) = self.read(|c| trusted_anchor(c, user))?.map_err(failure)?;
-        let anchor_blob = anchor.encode();
-        if list.encode() == anchor_blob {
-            return Ok((false, anchor.unsigned.version));
-        }
-        let head = check_chain(user, &ssk, [&list], Some(&anchor))?.expect("one list");
-        let version = head.unsigned.version;
-        let blob = head.encode();
-        // Compare-and-set on the anchor that was checked, so a concurrent writer cannot be
-        // overwritten by a list that chains from a row no longer cached.
-        let written = self.write(|_, u| {
-            u.with_conn(|c| {
-                c.execute(
-                    "UPDATE app_device_lists SET version=?1,list=?2 \
-                     WHERE user_id=?3 AND version=?4 AND list=?5 AND ssk_pub=?6",
-                    params![
-                        i64::try_from(version).unwrap_or(i64::MAX),
-                        blob,
-                        user.as_slice(),
-                        i64::try_from(anchor.unsigned.version).unwrap_or(i64::MAX),
-                        anchor_blob,
-                        ssk.as_slice()
-                    ],
+        let (prior, cached): (Option<Pin>, Option<CachedList>) = self.read(|c| {
+            let cached = c
+                .query_row(
+                    "SELECT version,list,umk_pub,ssk_pub FROM app_device_lists WHERE user_id=?1",
+                    [user.as_slice()],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
-                .map_err(Into::into)
+                .optional()?;
+            Ok((read_pin(c, user)?, cached))
+        })?;
+        let cached_version = cached
+            .as_ref()
+            .map_or(0, |(v, ..)| u64::try_from(*v).unwrap_or(0));
+        // The pin vouches for the pushed key only when it is that key with no change pending.
+        let outcome = |pin: Option<Pin>, changed: bool, version: u64| {
+            if pin.is_some_and(|p| p.umk == umk && p.changed.is_none()) {
+                PushedList::Current { changed, version }
+            } else {
+                PushedList::Held { changed, version }
+            }
+        };
+
+        if let Some((version, blob, _, cached_ssk)) = cached.as_ref().filter(|row| row.2 == umk) {
+            if *cached_ssk != ssk {
+                return Err(failure(E_CREDENTIAL));
+            }
+            let anchor = DeviceList::decode(blob)
+                .ok()
+                .filter(|l| {
+                    !cached_version_invalid(*version)
+                        && !anchor_version_differs(*version, l)
+                        && l.unsigned.user_id.as_bytes() == user
+                        && l.verify(&ssk).is_ok()
+                })
+                .ok_or_else(|| failure(E_CREDENTIAL))?;
+            if head_version <= cached_version {
+                return Ok(outcome(prior, false, cached_version));
+            }
+            let behind = PushedList::Behind {
+                version: cached_version,
+                head: head_version,
+            };
+            let newer: Vec<&DeviceList> = lists
+                .iter()
+                .filter(|l| l.unsigned.version > cached_version)
+                .collect();
+            if newer.first().map(|l| l.unsigned.version) != Some(cached_version + 1) {
+                return Ok(behind);
+            }
+            let Ok(Some(head)) = check_chain(user, &ssk, newer, Some(&anchor)) else {
+                return Ok(behind);
+            };
+            let next = pin_after_list(prior, &umk, now, true);
+            let (version, list, anchor_blob) = (head.unsigned.version, head.encode(), blob);
+            let written = self.write(|_, u| {
+                u.with_conn(|c| {
+                    // Compare-and-set on the anchor that was checked.
+                    let n = c.execute(
+                        "UPDATE app_device_lists SET version=?1,list=?2 \
+                         WHERE user_id=?3 AND version=?4 AND list=?5 AND umk_pub=?6 AND ssk_pub=?7",
+                        params![
+                            i64::try_from(version).unwrap_or(i64::MAX),
+                            list,
+                            user.as_slice(),
+                            i64::try_from(cached_version).unwrap_or(i64::MAX),
+                            anchor_blob,
+                            umk.as_slice(),
+                            ssk.as_slice()
+                        ],
+                    )?;
+                    if n == 1 {
+                        repin(c, user, prior, next)?;
+                    }
+                    Ok(n == 1)
+                })
+                .map_err(ClientError::from)
+            })?;
+            if !written {
+                return Err(failure(E_DEVICE_LIST_STALE));
+            }
+            return Ok(outcome(next.or(prior), true, version));
+        }
+
+        // First push, a list re-established under the pinned key, or another key: the whole
+        // history from version 1.
+        let head = check_chain(user, &ssk, lists.iter(), None)?.expect("a push has rows");
+        let newer = cached.is_none() || head.unsigned.version > cached_version;
+        let Some(next) = pin_after_list(prior, &umk, now, newer) else {
+            return Ok(outcome(prior, false, cached_version));
+        };
+        // Only the pinned key's own list is cached; another key is a pending change only.
+        let cache = next.umk == umk && newer;
+        let (version, list) = (head.unsigned.version, head.encode());
+        self.write(|_, u| {
+            u.with_conn(|c| {
+                let current: Option<i64> = c
+                    .query_row(
+                        "SELECT version FROM app_device_lists WHERE user_id=?1",
+                        [user.as_slice()],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if current.map_or(0, |v| u64::try_from(v).unwrap_or(0)) != cached_version {
+                    return Err(StorageError::Codec("device list changed during ingest".into()));
+                }
+                repin(c, user, prior, Some(next))?;
+                if cache {
+                    c.execute(
+                        "INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub,credential) \
+                         VALUES(?1,?2,?3,?4,?5,NULL) ON CONFLICT(user_id) DO UPDATE SET \
+                         version=excluded.version,list=excluded.list,umk_pub=excluded.umk_pub,\
+                         ssk_pub=excluded.ssk_pub,credential=excluded.credential",
+                        params![
+                            user.as_slice(),
+                            i64::try_from(version).unwrap_or(i64::MAX),
+                            list,
+                            umk.as_slice(),
+                            ssk.as_slice()
+                        ],
+                    )?;
+                }
+                Ok(())
             })
             .map_err(ClientError::from)
         })?;
-        if written != 1 {
-            return Err(failure(E_DEVICE_LIST_STALE));
-        }
-        Ok((true, version))
+        let changed = cache || prior != Some(next);
+        Ok(outcome(
+            Some(next),
+            changed,
+            if cache { version } else { cached_version },
+        ))
     }
 
     /// The cached signed device list of `user` while it vouches for the user (`trusted_list`),
@@ -1819,17 +1990,11 @@ impl ClientCore {
         if served.is_empty() {
             return Err(failure(E_DEVICE_LIST_STALE));
         }
-        let mut history = Vec::new();
-        for row in served {
-            let list = bounded_list(&row.blob)?;
-            if list.unsigned.version != row.version
-                || list.sig_ssk != row.ssk_signature
-                || list.unsigned.prev_hash != row.prev_hash
-            {
-                return Err(failure(E_DEVICE_LIST_STALE));
-            }
-            history.push(list);
-        }
+        let history = lists_from_rows(
+            served
+                .iter()
+                .map(|r| (r.version, r.blob.as_slice(), &r.ssk_signature, &r.prev_hash)),
+        )?;
         let head = bounded_list(head_list)?;
         let cached: Option<CachedList> = self.read(|c| {
             c.query_row(

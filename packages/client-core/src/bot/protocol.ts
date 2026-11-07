@@ -682,3 +682,44 @@ export function parseHelperFrame(bytes: Uint8Array): Uint8Array {
   if (length < 1 || length > HELPER_MAX || length !== bytes.length - 4) fail('E_BOT_FRAME');
   return bytes.slice(4);
 }
+
+/** One device-list version as the device-list PUT body carries it. */
+export interface DeviceListRow { version: bigint; blob: Uint8Array; sskSignature: Uint8Array; prevHash: Uint8Array }
+/**
+ * The device-list push dillad sends the Bot and helper op 24 ingests (Bot v2 task 8):
+ * `[umk_pub(32), ssk_pub(32), sig_umk_ssk(64), [[version, blob, ssk_signature(64), prev_hash(32)], ...]]`,
+ * 1..=1024 rows. The history starts at version 1 for a user the Bot has not pinned (or under
+ * another UMK), else at or below the Bot's cached version + 1.
+ */
+export interface DeviceListPush { umk: Uint8Array; ssk: Uint8Array; sigUmkSsk: Uint8Array; history: DeviceListRow[] }
+const DEVICE_LIST_PUSH_MAX = 4 * 1024 * 1024;
+
+function devicePushValue(push: DeviceListPush): CborInput[] {
+  const key = (v: unknown, n: number) => { const b = bytes(v, n); if (b.every(x => x === 0)) fail('E_BOT_VALUE'); return b; };
+  if (!Array.isArray(push.history) || push.history.length < 1 || push.history.length > 1024) fail('E_BOT_RANGE');
+  return [key(push.umk, 32), key(push.ssk, 32), bytes(push.sigUmkSsk, 64), push.history.map(row => {
+    const blob = bytes(row.blob); if (blob.length === 0) fail('E_BOT_VALUE');
+    return [uint(row.version, 1n), blob, bytes(row.sskSignature, 64), bytes(row.prevHash, 32)];
+  })];
+}
+
+export const encodeDeviceListPush = (push: DeviceListPush) => guarded(() => {
+  const encoded = encode(devicePushValue(push));
+  if (encoded.length > DEVICE_LIST_PUSH_MAX) fail('E_BOT_SIZE');
+  return encoded;
+});
+export const decodeDeviceListPush = (b: Uint8Array) => guarded(() => {
+  if (b.length > DEVICE_LIST_PUSH_MAX) fail('E_BOT_SIZE');
+  const fields = arr(decode(b), 4);
+  const rows = fields[3];
+  if (!Array.isArray(rows)) fail('E_BOT_SHAPE');
+  const push: DeviceListPush = {
+    umk: bytes(fields[0], 32), ssk: bytes(fields[1], 32), sigUmkSsk: bytes(fields[2], 64),
+    history: (rows as CborValue[]).map(row => {
+      const r = arr(row, 4);
+      return { version: u64(r[0]!), blob: bytes(r[1]), sskSignature: bytes(r[2], 64), prevHash: bytes(r[3], 32) };
+    }),
+  };
+  devicePushValue(push);
+  return push;
+});

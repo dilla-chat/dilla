@@ -8,7 +8,10 @@
 //!   `[refusal_code]`; `request_cbor` is `[request_id, community_id, channel_id|null, operation,
 //!   args, sent_at, reply_key]`
 //! - 23 `reply_seal [reply_key, request_id, seq, body]` → `[sealed]`
-//! - 24 `device_list_ingest [user_id, signed_list_body]` → `[changed 0|1, version]`
+//! - 24 `device_list_ingest [user_id, push, now]` → `[changed 0|1, version, state]`; `push` is
+//!   `dilla_core::bot::device_list_push::DeviceListPush` (`[umk_pub, ssk_pub, sig_umk_ssk,
+//!   [[version, blob, ssk_signature, prev_hash], ...]]`), `state` 0 current, 1 held (a key
+//!   change is pending), 2 behind (the push did not chain from the cache)
 //!
 //! Time is the `now` the caller passes, never the helper's clock, and nothing runs on a timer:
 //! rotation happens in op 21, and an expired previous key is deleted by the next op 21 or 22.
@@ -21,7 +24,7 @@ use dilla_core::bot::command::{
     verify_command,
 };
 use dilla_core::cbor::{Encoder, decode_strict};
-use dilla_core::client::ClientCore;
+use dilla_core::client::{ClientCore, PushedList};
 use dilla_core::ids::{CommunityId, DeviceId, UserId};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::sync::MutexGuard;
@@ -42,6 +45,13 @@ const REPLAY_WINDOW_SECS: i64 = 300;
 /// The publication's `not_after` is 10 minutes short of the clients' 8-day cap, so a client
 /// whose clock runs up to 10 minutes behind still accepts a fresh key (clients allow no skew).
 const PUBLICATION_SLACK_SECS: u64 = 600;
+/// The `sent_at` window, and the most a current key's `created_at` may lie ahead of `now` before
+/// op 21 treats it as forward-dated (minted under a clock that later stepped back) and replaces it.
+const CLOCK_SKEW_SECS: i64 = 120;
+/// A key is never used past its publication's lifetime: 8 days after `created_at`, plus the
+/// `sent_at` window for a command sealed just before `not_after`. Op 21 and op 22 both delete and
+/// refuse an older key, so a key's life is bounded even when op 21 is not called.
+const KEY_MAX_AGE_SECS: i64 = MAX_COMMAND_KEY_LIFETIME_SECS as i64 + CLOCK_SKEW_SECS;
 
 pub(crate) enum Opened {
     Request(CommandRequest),
@@ -64,13 +74,14 @@ fn db<T>(r: rusqlite::Result<T>) -> Result<T, DispatchError> {
     r.map_err(|_| DispatchError::Internal)
 }
 
-/// Deletes every retired key whose 24 h have passed at `now`, then truncates the WAL so no old
-/// page image that held the key outlives the deletion (`secure_delete` zeroes the cell in the
-/// page itself).
+/// Deletes every retired key whose 24 h have passed at `now`, and every key (current included)
+/// older than `KEY_MAX_AGE_SECS`, then truncates the WAL so no old page image that held the key
+/// outlives the deletion (`secure_delete` zeroes the cell in the page itself).
 fn purge_retired(conn: &Connection, now: i64) -> Result<(), DispatchError> {
     let deleted = db(conn.execute(
-        "DELETE FROM bot_command_keys WHERE retired_at IS NOT NULL AND retired_at <= ?1",
-        [now - PREVIOUS_KEPT_SECS],
+        "DELETE FROM bot_command_keys \
+         WHERE (retired_at IS NOT NULL AND retired_at <= ?1) OR created_at <= ?2",
+        [now - PREVIOUS_KEPT_SECS, now - KEY_MAX_AGE_SECS],
     ))?;
     if deleted > 0 {
         truncate_wal(conn)?;
@@ -119,9 +130,12 @@ pub(crate) fn current_publication(
         purge_retired(&conn, now_i)?;
         read_current(&conn, &community)?
     };
-    // A clock behind `created_at` counts as fresh: an earlier `now` never rolls a key back.
+    // A clock up to `CLOCK_SKEW_SECS` behind `created_at` counts as fresh. A key dated further
+    // ahead is replaced: clients refuse its publication, whose `not_after` lies beyond their
+    // 8-day cap. Retiring it is no rollback: a retired key never becomes current again.
     if let Some((_, created_at, publication)) = &read
         && now_i < created_at.saturating_add(ROTATE_AFTER_SECS)
+        && *created_at <= now_i + CLOCK_SKEW_SECS
     {
         return Ok(publication.clone());
     }
@@ -203,8 +217,12 @@ pub(crate) fn open(
         db(conn
             .query_row(
                 "SELECT community_id,private_key FROM bot_command_keys \
-                 WHERE key_id=?1 AND (retired_at IS NULL OR retired_at>?2)",
-                params![key_id.as_slice(), now_i - PREVIOUS_KEPT_SECS],
+                 WHERE key_id=?1 AND (retired_at IS NULL OR retired_at>?2) AND created_at>?3",
+                params![
+                    key_id.as_slice(),
+                    now_i - PREVIOUS_KEPT_SECS,
+                    now_i - KEY_MAX_AGE_SECS
+                ],
                 |r| {
                     Ok((
                         r.get::<_, [u8; 16]>(0)?,
@@ -232,7 +250,17 @@ pub(crate) fn open(
     if cmd.user_id != user || cmd.device_id != device {
         return refused(CommandRefusal::WrongDevice);
     }
-    // The cache only: ingest (op 24) is the one writer, and no command reads a list remotely.
+    // The cache only: ingest (op 24) is the one writer, and no command reads a list remotely. A
+    // user whose pushed list did not chain from the cache is refused until it catches up: the
+    // versions it missed may revoke this very device.
+    let behind: bool = db(lock(store)?.query_row(
+        "SELECT EXISTS(SELECT 1 FROM bot_device_list_behind WHERE user_id=?1)",
+        [user.as_bytes().as_slice()],
+        |r| r.get(0),
+    ))?;
+    if behind {
+        return refused(CommandRefusal::DeviceUnlisted);
+    }
     let Some(list) = core
         .trusted_device_list(user.as_bytes())
         .map_err(map_client)?
@@ -244,11 +272,29 @@ pub(crate) fn open(
         Err(r) => return refused(r),
     };
     // Verified: now record. Pruning on insert keeps the table to 5 minutes of verified commands.
+    // The prune bound is persisted and only rises: a command whose `sent_at` is old enough that
+    // its row may already be pruned is refused as a replay, so a clock that steps forward and
+    // back cannot reopen a pruned request.
     let mut conn = lock(store)?;
     let tx = db(conn.transaction_with_behavior(TransactionBehavior::Immediate))?;
+    let stored: Option<i64> = db(tx
+        .query_row(
+            "SELECT floor FROM command_replay_floor WHERE id=1",
+            [],
+            |r| r.get(0),
+        )
+        .optional())?;
+    let floor = stored.map_or(now_i - REPLAY_WINDOW_SECS, |f| {
+        f.max(now_i - REPLAY_WINDOW_SECS)
+    });
+    if i64::try_from(request.sent_at).unwrap_or(i64::MAX) < floor + CLOCK_SKEW_SECS {
+        return Ok(Opened::Refused(REFUSAL_REPLAY));
+    }
+    db(tx.execute("DELETE FROM command_replay WHERE seen_at<?1", [floor]))?;
     db(tx.execute(
-        "DELETE FROM command_replay WHERE seen_at<?1",
-        [now_i - REPLAY_WINDOW_SECS],
+        "INSERT INTO command_replay_floor(id,floor) VALUES(1,?1) \
+         ON CONFLICT(id) DO UPDATE SET floor=excluded.floor",
+        [floor],
     ))?;
     let inserted = db(tx.execute(
         "INSERT OR IGNORE INTO command_replay(request_id,seen_at) VALUES(?1,?2)",
@@ -261,17 +307,59 @@ pub(crate) fn open(
     Ok(Opened::Request(request))
 }
 
-/// Op 24: the only writer of the device-list cache the opener reads (`ingest_device_list`).
+/// Op 24 state: the cache vouches for the user.
+pub(crate) const LIST_CURRENT: u8 = 0;
+/// Op 24 state: a key change is pending; the user's commands are refused until it is verified.
+pub(crate) const LIST_HELD: u8 = 1;
+/// Op 24 state: a pushed list did not chain from the cache; the user's commands are refused
+/// until a history reaching the pushed head is ingested.
+pub(crate) const LIST_BEHIND: u8 = 2;
+
+/// Op 24: the only writer of the device-list cache the opener reads (`ingest_device_list`),
+/// and of the helper's behind marks. Returns `(changed, cached version, state)`.
 pub(crate) fn ingest(
+    store: &Store,
     core: &mut ClientCore,
     user: [u8; 16],
     body: &[u8],
-) -> Result<(bool, u64), DispatchError> {
-    core.ingest_device_list(&user, body)
+    now: u64,
+) -> Result<(bool, u64, u8), DispatchError> {
+    checked_now(now)?;
+    let outcome = core
+        .ingest_device_list(&user, body, now)
         .map_err(|e| match e.code {
             "E_CORE_LIMIT" => DispatchError::Invalid,
             _ => map_client(e),
-        })
+        })?;
+    let conn = lock(store)?;
+    let user_key = user.as_slice();
+    match outcome {
+        PushedList::Current { changed, version } => {
+            db(conn.execute(
+                "DELETE FROM bot_device_list_behind WHERE user_id=?1 AND head<=?2",
+                params![user_key, i64::try_from(version).unwrap_or(i64::MAX)],
+            ))?;
+            let behind: bool = db(conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM bot_device_list_behind WHERE user_id=?1)",
+                [user_key],
+                |r| r.get(0),
+            ))?;
+            Ok((
+                changed,
+                version,
+                if behind { LIST_BEHIND } else { LIST_CURRENT },
+            ))
+        }
+        PushedList::Held { changed, version } => Ok((changed, version, LIST_HELD)),
+        PushedList::Behind { version, head } => {
+            db(conn.execute(
+                "INSERT INTO bot_device_list_behind(user_id,head) VALUES(?1,?2) \
+                 ON CONFLICT(user_id) DO UPDATE SET head=max(head,excluded.head)",
+                params![user_key, i64::try_from(head).unwrap_or(i64::MAX)],
+            ))?;
+            Ok((false, version, LIST_BEHIND))
+        }
+    }
 }
 
 /// Op 23: answer number `seq` of `request_id`, sealed to the request's one-time `reply_key`.
@@ -379,17 +467,21 @@ pub(crate) fn op_reply_seal(payload: &[u8]) -> Result<Zeroizing<Vec<u8>>, Dispat
 }
 
 pub(crate) fn op_device_list_ingest(
+    store: &Store,
     core: &mut ClientCore,
     payload: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>, DispatchError> {
-    let (user, list) = decode_strict(payload, |d| {
-        d.array(2)?;
-        Ok((d.bytes_exact::<16>()?, d.bytes()?.to_vec()))
+    let (user, push, now) = decode_strict(payload, |d| {
+        d.array(3)?;
+        Ok((d.bytes_exact::<16>()?, d.bytes()?.to_vec(), d.uint()?))
     })
     .map_err(invalid)?;
-    let (changed, version) = ingest(core, user, &list)?;
+    let (changed, version, state) = ingest(store, core, user, &push, now)?;
     let mut e = Encoder::new();
-    e.array(2).uint(u64::from(changed)).uint(version);
+    e.array(3)
+        .uint(u64::from(changed))
+        .uint(version)
+        .uint(u64::from(state));
     Ok(Zeroizing::new(e.into_vec()))
 }
 
@@ -400,12 +492,15 @@ mod tests {
         CommandArg, CommandKeyPublication, CommandRefusal, MAX_COMMAND_KEY_LIFETIME_SECS,
         ReplySecret, open_reply, seal_command,
     };
-    use dilla_core::cbor::{Encoder, decode_strict};
-    use dilla_core::identity::{DeviceEntry, DeviceList, DeviceListUnsigned, SskSigner, Tier};
+    use dilla_core::bot::device_list_push::{DeviceListPush, DeviceListRow};
+    use dilla_core::cbor::decode_strict;
+    use dilla_core::identity::{
+        DeviceEntry, DeviceList, DeviceListUnsigned, SskSigner, Tier, UmkSigner,
+    };
     use dilla_core::ids::{ChannelId, CommunityId, DeviceId, UserId};
     use openmls::prelude::SignatureScheme;
     use openmls_basic_credential::SignatureKeyPair;
-    use rusqlite::{OptionalExtension, params};
+    use rusqlite::OptionalExtension;
     use std::{
         fs,
         os::unix::fs::PermissionsExt,
@@ -419,19 +514,74 @@ mod tests {
     const BOT_USER: [u8; 16] = [0x44; 16];
     const USER: [u8; 16] = [0x55; 16];
     const DEVICE: [u8; 16] = [0x56; 16];
+    const SECOND: [u8; 16] = [0x58; 16];
     const T0: u64 = 1_800_000_000;
     const DAY: u64 = 86_400;
-    const UMK: [u8; 32] = [0x0a; 32];
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    /// A user's key set: the UMK, the SSK it certifies.
+    struct Keys {
+        umk: UmkSigner,
+        ssk: SskSigner,
+    }
+
+    impl Keys {
+        fn new(seed: u8) -> Self {
+            Self {
+                umk: UmkSigner::from_bytes(&[seed; 32]),
+                ssk: SskSigner::from_bytes(&[seed ^ 0x5a; 32]),
+            }
+        }
+
+        fn list(
+            &self,
+            version: u64,
+            prev: Option<&DeviceList>,
+            entries: Vec<DeviceEntry>,
+        ) -> DeviceList {
+            let unsigned = DeviceListUnsigned {
+                v: 1,
+                user_id: UserId::from_bytes(USER),
+                version,
+                prev_hash: prev.map_or([0; 32], DeviceList::hash),
+                entries,
+            };
+            let sig_ssk = self.ssk.sign_device_list(&unsigned);
+            DeviceList { unsigned, sig_ssk }
+        }
+
+        /// The op 24 body for `lists` under these keys.
+        fn push(&self, lists: &[&DeviceList]) -> Vec<u8> {
+            let ssk_pub = self.ssk.public();
+            DeviceListPush {
+                umk_pub: self.umk.public(),
+                ssk_pub,
+                sig_umk_ssk: self.umk.sign_ssk(&ssk_pub),
+                history: lists.iter().map(|l| row(l)).collect(),
+            }
+            .encode()
+        }
+    }
+
+    fn row(list: &DeviceList) -> DeviceListRow {
+        DeviceListRow {
+            version: list.unsigned.version,
+            blob: list.encode(),
+            ssk_signature: list.sig_ssk,
+            prev_hash: list.unsigned.prev_hash,
+        }
+    }
 
     struct World {
         dir: PathBuf,
         store: Store,
         core: ClientCore,
-        user_ssk: SskSigner,
+        keys: Keys,
         user_dsk: SignatureKeyPair,
         user_dsk_pub: [u8; 32],
+        second_dsk: SignatureKeyPair,
+        second_dsk_pub: [u8; 32],
         next_request: u8,
     }
 
@@ -468,13 +618,16 @@ mod tests {
         core.bot_bootstrap_complete(&BOT_USER, "command bot", T0)
             .unwrap();
         let (user_dsk, user_dsk_pub) = dsk(0x61);
+        let (second_dsk, second_dsk_pub) = dsk(0x63);
         World {
             dir,
             store,
             core,
-            user_ssk: SskSigner::from_bytes(&[0x5a; 32]),
+            keys: Keys::new(0x0a),
             user_dsk,
             user_dsk_pub,
+            second_dsk,
+            second_dsk_pub,
             next_request: 1,
         }
     }
@@ -489,34 +642,6 @@ mod tests {
         }
     }
 
-    fn signed(
-        ssk: &SskSigner,
-        version: u64,
-        prev: Option<&DeviceList>,
-        entries: Vec<DeviceEntry>,
-    ) -> DeviceList {
-        let unsigned = DeviceListUnsigned {
-            v: 1,
-            user_id: UserId::from_bytes(USER),
-            version,
-            prev_hash: prev.map_or([0; 32], DeviceList::hash),
-            entries,
-        };
-        let sig_ssk = ssk.sign_device_list(&unsigned);
-        DeviceList { unsigned, sig_ssk }
-    }
-
-    /// The device-list PUT body dillad pushes: `[version, blob, ssk_signature, prev_hash]`.
-    fn body(list: &DeviceList) -> Vec<u8> {
-        let mut e = Encoder::new();
-        e.array(4)
-            .uint(list.unsigned.version)
-            .bytes(&list.encode())
-            .bytes(&list.sig_ssk)
-            .bytes(&list.unsigned.prev_hash);
-        e.into_vec()
-    }
-
     fn refused(opened: Opened) -> u8 {
         match opened {
             Opened::Refused(code) => code,
@@ -526,37 +651,24 @@ mod tests {
 
     impl World {
         fn v1(&self) -> DeviceList {
-            signed(
-                &self.user_ssk,
-                1,
-                None,
-                vec![entry(DEVICE, self.user_dsk_pub, None)],
-            )
+            self.keys
+                .list(1, None, vec![entry(DEVICE, self.user_dsk_pub, None)])
         }
 
-        /// The first sight of USER, as the MLS leaf path (`device_list_ingest`) leaves it: the
-        /// pin and the cached list under the leaf credential's SSK.
-        fn anchor(&self, list: &DeviceList) {
-            let conn = self.store.conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub,credential) VALUES(?1,?2,?3,?4,?5,NULL)",
-                params![
-                    USER.as_slice(),
-                    list.unsigned.version as i64,
-                    list.encode(),
-                    UMK.as_slice(),
-                    self.user_ssk.public().as_slice()
-                ],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO app_trust_pins(user_id,umk_pub,first_seen,verified,changed_umk) VALUES(?1,?2,1,0,NULL)",
-                params![USER.as_slice(), UMK.as_slice()],
-            )
-            .unwrap();
+        fn ingest(&mut self, body: &[u8]) -> Result<(bool, u64, u8), DispatchError> {
+            ingest(&self.store, &mut self.core, USER, body, T0)
         }
 
-        fn cached(&self) -> (i64, Vec<u8>) {
+        /// The first push of USER: trust on first use of the user's UMK.
+        fn anchor(&mut self, list: &DeviceList) {
+            let body = self.keys.push(&[list]);
+            assert_eq!(
+                self.ingest(&body).unwrap(),
+                (true, list.unsigned.version, LIST_CURRENT)
+            );
+        }
+
+        fn cached(&self) -> Option<(i64, Vec<u8>)> {
             self.store
                 .conn
                 .lock()
@@ -566,6 +678,22 @@ mod tests {
                     [USER.as_slice()],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
+                .optional()
+                .unwrap()
+        }
+
+        /// `(umk_pub, verified, changed_umk)` of USER's pin.
+        fn pin(&self) -> Option<([u8; 32], i64, Option<[u8; 32]>)> {
+            self.store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT umk_pub,verified,changed_umk FROM app_trust_pins WHERE user_id=?1",
+                    [USER.as_slice()],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()
                 .unwrap()
         }
 
@@ -603,22 +731,48 @@ mod tests {
         }
 
         fn seal(&self, p: &CommandKeyPublication, req: &CommandRequest) -> Vec<u8> {
+            self.seal_as(p, req, DEVICE, &self.user_dsk)
+        }
+
+        fn seal_as(
+            &self,
+            p: &CommandKeyPublication,
+            req: &CommandRequest,
+            device: [u8; 16],
+            key: &SignatureKeyPair,
+        ) -> Vec<u8> {
             seal_command(
                 p,
                 req,
                 UserId::from_bytes(USER),
-                DeviceId::from_bytes(DEVICE),
-                &self.user_dsk,
+                DeviceId::from_bytes(device),
+                key,
             )
             .unwrap()
             .0
         }
 
         fn open_at(&self, sealed: &[u8], now: u64) -> Result<CommandRequest, u8> {
-            match open(&self.store, &self.core, sealed, USER, DEVICE, now).unwrap() {
+            self.open_as(sealed, DEVICE, now)
+        }
+
+        fn open_as(&self, sealed: &[u8], device: [u8; 16], now: u64) -> Result<CommandRequest, u8> {
+            match open(&self.store, &self.core, sealed, USER, device, now).unwrap() {
                 Opened::Request(r) => Ok(r),
                 Opened::Refused(code) => Err(code),
             }
+        }
+
+        /// A fresh command from `device` at T0, opened at T0.
+        fn command_from(&mut self, device: [u8; 16]) -> Result<CommandRequest, u8> {
+            let p = self.publication(T0);
+            let req = self.request(T0);
+            let sealed = if device == DEVICE {
+                self.seal(&p, &req)
+            } else {
+                self.seal_as(&p, &req, device, &self.second_dsk)
+            };
+            self.open_as(&sealed, device, T0)
         }
 
         fn count(&self, table: &str) -> i64 {
@@ -644,6 +798,8 @@ mod tests {
                 .unwrap()
         }
     }
+
+    // ---- command keys ----
 
     #[test]
     fn key_rotates_after_seven_days_and_previous_opens_for_24h() {
@@ -688,244 +844,48 @@ mod tests {
     }
 
     #[test]
-    fn opened_request_is_the_signed_request_and_its_reply_opens() {
+    fn a_forward_dated_key_is_replaced_when_the_clock_returns() {
         let mut w = world();
         w.anchor(&w.v1());
-        let p = w.publication(T0);
+        // Op 21 once under a clock an hour ahead.
+        let ahead = w.publication(T0 + 3600);
+        // Within the skew allowance the key stands.
+        assert_eq!(w.publication(T0 + 3600 - 120), ahead);
+        // Back at the real clock, clients would refuse `ahead` (not_after beyond their cap).
+        let real = w.publication(T0);
+        assert_ne!(real.key_id, ahead.key_id, "a forward-dated key is rotated");
+        assert_eq!(real.verify(&w.bot_list(), T0), Ok(()));
+        assert_eq!(w.publication(T0 + 60), real, "and the new key is stable");
+        // The forward-dated key is now the previous one; it never becomes current again.
         let req = w.request(T0);
-        let (sealed, secret) = seal_command(
-            &p,
-            &req,
-            UserId::from_bytes(USER),
-            DeviceId::from_bytes(DEVICE),
-            &w.user_dsk,
-        )
-        .unwrap();
-        let opened = w.open_at(&sealed, T0).unwrap();
-        let mut expected = req.clone();
-        expected.reply_key = secret.public_key();
-        assert_eq!(opened, expected);
-        let sealed_reply =
-            seal_reply(opened.reply_key, opened.request_id, 2, b"Now playing").unwrap();
-        assert_eq!(
-            open_reply(&secret, opened.request_id, 2, &sealed_reply).unwrap(),
-            b"Now playing"
-        );
-        assert!(open_reply(&secret, opened.request_id, 3, &sealed_reply).is_err());
-        let other = ReplySecret::generate().unwrap();
-        assert!(open_reply(&other, opened.request_id, 2, &sealed_reply).is_err());
+        assert!(w.open_at(&w.seal(&ahead, &req), T0).is_ok());
+        assert_eq!(w.publication(T0 + 3600), real);
     }
 
     #[test]
-    fn replayed_request_id_is_refused() {
+    fn a_current_key_past_its_lifetime_is_deleted_and_refused_without_op_21() {
         let mut w = world();
         w.anchor(&w.v1());
         let p = w.publication(T0);
-        let req = w.request(T0);
-        let sealed = w.seal(&p, &req);
-        assert!(w.open_at(&sealed, T0).is_ok());
-        assert_eq!(w.open_at(&sealed, T0 + 1), Err(REFUSAL_REPLAY));
-        // A fresh seal of the same request (another ephemeral key) is the same request.
-        let again = w.seal(&p, &req);
-        assert_eq!(w.open_at(&again, T0 + 100), Err(REFUSAL_REPLAY));
-    }
-
-    #[test]
-    fn a_refused_command_does_not_consume_its_request_id() {
-        let mut w = world();
-        w.anchor(&w.v1());
-        let p = w.publication(T0);
-        let req = w.request(T0);
-        // Same user, device and request id, signed by a key the list does not hold.
-        let (forger, _) = dsk(0x62);
-        let (forged, _) = seal_command(
-            &p,
-            &req,
-            UserId::from_bytes(USER),
-            DeviceId::from_bytes(DEVICE),
-            &forger,
-        )
-        .unwrap();
-        assert_eq!(
-            w.open_at(&forged, T0),
-            Err(CommandRefusal::BadSignature.code())
-        );
-        // A stale copy is refused for staleness and records nothing either.
-        let mut stale = req.clone();
-        stale.sent_at = T0 - 121;
-        let stale = w.seal(&p, &stale);
-        assert_eq!(w.open_at(&stale, T0), Err(CommandRefusal::Stale.code()));
-        assert_eq!(w.count("command_replay"), 0);
-        let genuine = w.seal(&p, &req);
+        let edge = T0 + MAX_COMMAND_KEY_LIFETIME_SECS + 119;
+        let req = w.request(edge);
         assert!(
-            w.open_at(&genuine, T0).is_ok(),
-            "the genuine command still opens"
+            w.open_at(&w.seal(&p, &req), edge).is_ok(),
+            "opens through not_after plus the sent_at window"
         );
-    }
-
-    #[test]
-    fn replay_rows_older_than_five_minutes_are_pruned_on_insert() {
-        let mut w = world();
-        w.anchor(&w.v1());
-        let p = w.publication(T0);
-        for i in 0..3 {
-            let req = w.request(T0 + i);
-            assert!(w.open_at(&w.seal(&p, &req), T0 + i).is_ok());
-        }
-        assert_eq!(w.count("command_replay"), 3);
-        // At T0 + 301 the row seen at T0 is older than 5 minutes; the others are not.
-        let req = w.request(T0 + 301);
-        assert!(w.open_at(&w.seal(&p, &req), T0 + 301).is_ok());
-        assert_eq!(w.count("command_replay"), 3, "one pruned, one inserted");
-        let req = w.request(T0 + 900);
-        assert!(w.open_at(&w.seal(&p, &req), T0 + 900).is_ok());
-        assert_eq!(w.count("command_replay"), 1);
-    }
-
-    #[test]
-    fn command_from_unknown_user_is_unlisted() {
-        let mut w = world();
-        let p = w.publication(T0);
-        let req = w.request(T0);
-        let sealed = w.seal(&p, &req);
+        let req = w.request(edge + 1);
         assert_eq!(
-            w.open_at(&sealed, T0),
-            Err(CommandRefusal::DeviceUnlisted.code())
-        );
-        // Not recorded: once the list is cached, the same command opens.
-        w.anchor(&w.v1());
-        assert!(w.open_at(&sealed, T0).is_ok());
-    }
-
-    #[test]
-    fn command_naming_another_device_than_attached_is_wrong_device() {
-        let mut w = world();
-        w.anchor(&w.v1());
-        let p = w.publication(T0);
-        let req = w.request(T0);
-        let sealed = w.seal(&p, &req);
-        assert_eq!(
-            refused(open(&w.store, &w.core, &sealed, USER, [0x57; 16], T0).unwrap()),
-            CommandRefusal::WrongDevice.code()
-        );
-        let mut garbage = sealed.clone();
-        let n = garbage.len();
-        garbage[n - 1] ^= 1;
-        assert_eq!(
-            w.open_at(&garbage, T0),
-            Err(CommandRefusal::Malformed.code())
+            w.open_at(&w.seal(&p, &req), edge + 1),
+            Err(CommandRefusal::UnknownKey.code())
         );
         assert_eq!(
-            w.open_at(&[0x80], T0),
-            Err(CommandRefusal::Malformed.code())
+            w.count("bot_command_keys"),
+            0,
+            "op 22 deleted the expired current key"
         );
-    }
-
-    #[test]
-    fn ingest_rejects_a_list_with_a_broken_chain() {
-        let mut w = world();
-        let v1 = w.v1();
-        let (second_dsk, second_pub) = dsk(0x63);
-        let second = [0x58; 16];
-        let v2_entries = vec![
-            entry(DEVICE, w.user_dsk_pub, None),
-            entry(second, second_pub, None),
-        ];
-        let v2 = signed(&w.user_ssk, 2, Some(&v1), v2_entries.clone());
-
-        // Nothing cached: a pushed list carries no key to check it against.
-        assert!(ingest(&mut w.core, USER, &body(&v2)).is_err());
-        assert_eq!(w.count("app_device_lists"), 0);
-        w.anchor(&v1);
-        let before = w.cached();
-
-        let mut wrong_prev = v2.clone();
-        wrong_prev.unsigned.prev_hash = [0x99; 32];
-        wrong_prev.sig_ssk = w.user_ssk.sign_device_list(&wrong_prev.unsigned);
-        let other_ssk = signed(
-            &SskSigner::from_bytes(&[0x5b; 32]),
-            2,
-            Some(&v1),
-            v2_entries,
-        );
-        let gap = signed(
-            &w.user_ssk,
-            3,
-            Some(&v2),
-            vec![entry(DEVICE, w.user_dsk_pub, None)],
-        );
-        let mut fork = v1.clone();
-        fork.unsigned.entries.push(entry(second, second_pub, None));
-        fork.sig_ssk = w.user_ssk.sign_device_list(&fork.unsigned);
-        // The row's version disagrees with the signed blob's.
-        let mut mismatched_row = Encoder::new();
-        mismatched_row
-            .array(4)
-            .uint(3)
-            .bytes(&v2.encode())
-            .bytes(&v2.sig_ssk)
-            .bytes(&v2.unsigned.prev_hash);
-        for (name, bad) in [
-            ("wrong prev_hash", body(&wrong_prev)),
-            ("another SSK", body(&other_ssk)),
-            ("a gap", body(&gap)),
-            ("a fork of the cached version", body(&fork)),
-            (
-                "a row that disagrees with its blob",
-                mismatched_row.into_vec(),
-            ),
-            ("not a list", vec![0x80]),
-        ] {
-            assert!(ingest(&mut w.core, USER, &bad).is_err(), "{name} accepted");
-            assert_eq!(w.cached(), before, "{name} changed the cache");
-        }
-
-        // The device only the refused lists add is still unlisted.
-        let p = w.publication(T0);
-        let req = w.request(T0);
-        let (sealed, _) = seal_command(
-            &p,
-            &req,
-            UserId::from_bytes(USER),
-            DeviceId::from_bytes(second),
-            &second_dsk,
-        )
-        .unwrap();
-        assert_eq!(
-            refused(open(&w.store, &w.core, &sealed, USER, second, T0).unwrap()),
-            CommandRefusal::DeviceUnlisted.code()
-        );
-
-        // The next link is accepted, once; the same list again changes nothing.
-        assert_eq!(ingest(&mut w.core, USER, &body(&v2)).unwrap(), (true, 2));
-        assert_eq!(ingest(&mut w.core, USER, &body(&v2)).unwrap(), (false, 2));
-        assert_eq!(w.cached(), (2, v2.encode()));
-        assert!(
-            ingest(&mut w.core, USER, &body(&v1)).is_err(),
-            "a rollback to v1"
-        );
-        assert!(matches!(
-            open(&w.store, &w.core, &sealed, USER, second, T0).unwrap(),
-            Opened::Request(_)
-        ));
-
-        // v3 revokes the first device: its commands are refused as revoked.
-        let v3 = signed(
-            &w.user_ssk,
-            3,
-            Some(&v2),
-            vec![
-                entry(DEVICE, w.user_dsk_pub, Some(200)),
-                entry(second, second_pub, None),
-            ],
-        );
-        assert_eq!(ingest(&mut w.core, USER, &body(&v3)).unwrap(), (true, 3));
-        let req = w.request(T0);
-        let sealed = w.seal(&p, &req);
-        assert_eq!(
-            w.open_at(&sealed, T0),
-            Err(CommandRefusal::DeviceRevoked.code())
-        );
+        assert!(w.private_key(&p.key_id).is_none());
+        // The next op 21 mints a fresh key.
+        assert_ne!(w.publication(edge + 2).key_id, p.key_id);
     }
 
     #[test]
@@ -993,5 +953,460 @@ mod tests {
         assert!(current_publication(&w.store, &w.core, [0; 16], T0).is_err());
         assert!(current_publication(&w.store, &w.core, COMMUNITY, 0).is_err());
         assert_eq!(w.count("bot_command_keys"), 0);
+    }
+
+    // ---- opening ----
+
+    #[test]
+    fn opened_request_is_the_signed_request_and_its_reply_opens() {
+        let mut w = world();
+        w.anchor(&w.v1());
+        let p = w.publication(T0);
+        let req = w.request(T0);
+        let (sealed, secret) = seal_command(
+            &p,
+            &req,
+            UserId::from_bytes(USER),
+            DeviceId::from_bytes(DEVICE),
+            &w.user_dsk,
+        )
+        .unwrap();
+        let opened = w.open_at(&sealed, T0).unwrap();
+        let mut expected = req.clone();
+        expected.reply_key = secret.public_key();
+        assert_eq!(opened, expected);
+        let sealed_reply =
+            seal_reply(opened.reply_key, opened.request_id, 2, b"Now playing").unwrap();
+        assert_eq!(
+            open_reply(&secret, opened.request_id, 2, &sealed_reply).unwrap(),
+            b"Now playing"
+        );
+        assert!(open_reply(&secret, opened.request_id, 3, &sealed_reply).is_err());
+        let other = ReplySecret::generate().unwrap();
+        assert!(open_reply(&other, opened.request_id, 2, &sealed_reply).is_err());
+    }
+
+    #[test]
+    fn replayed_request_id_is_refused() {
+        let mut w = world();
+        w.anchor(&w.v1());
+        let p = w.publication(T0);
+        let req = w.request(T0);
+        let sealed = w.seal(&p, &req);
+        assert!(w.open_at(&sealed, T0).is_ok());
+        assert_eq!(w.open_at(&sealed, T0 + 1), Err(REFUSAL_REPLAY));
+        // A fresh seal of the same request (another ephemeral key) is the same request.
+        let again = w.seal(&p, &req);
+        assert_eq!(w.open_at(&again, T0 + 100), Err(REFUSAL_REPLAY));
+    }
+
+    #[test]
+    fn a_refused_command_does_not_consume_its_request_id() {
+        let mut w = world();
+        w.anchor(&w.v1());
+        let p = w.publication(T0);
+        let req = w.request(T0);
+        // Same user, device and request id, signed by a key the list does not hold.
+        let (forger, _) = dsk(0x62);
+        let forged = w.seal_as(&p, &req, DEVICE, &forger);
+        assert_eq!(
+            w.open_at(&forged, T0),
+            Err(CommandRefusal::BadSignature.code())
+        );
+        // A stale copy is refused for staleness and records nothing either.
+        let mut stale = req.clone();
+        stale.sent_at = T0 - 121;
+        let stale = w.seal(&p, &stale);
+        assert_eq!(w.open_at(&stale, T0), Err(CommandRefusal::Stale.code()));
+        assert_eq!(w.count("command_replay"), 0);
+        let genuine = w.seal(&p, &req);
+        assert!(
+            w.open_at(&genuine, T0).is_ok(),
+            "the genuine command still opens"
+        );
+    }
+
+    #[test]
+    fn replay_rows_older_than_five_minutes_are_pruned_on_insert() {
+        let mut w = world();
+        w.anchor(&w.v1());
+        let p = w.publication(T0);
+        for i in 0..3 {
+            let req = w.request(T0 + i);
+            assert!(w.open_at(&w.seal(&p, &req), T0 + i).is_ok());
+        }
+        assert_eq!(w.count("command_replay"), 3);
+        // At T0 + 301 the row seen at T0 is older than 5 minutes; the others are not.
+        let req = w.request(T0 + 301);
+        assert!(w.open_at(&w.seal(&p, &req), T0 + 301).is_ok());
+        assert_eq!(w.count("command_replay"), 3, "one pruned, one inserted");
+        let req = w.request(T0 + 900);
+        assert!(w.open_at(&w.seal(&p, &req), T0 + 900).is_ok());
+        assert_eq!(w.count("command_replay"), 1);
+    }
+
+    #[test]
+    fn a_clock_step_back_cannot_reopen_a_pruned_request() {
+        let mut w = world();
+        w.anchor(&w.v1());
+        let p = w.publication(T0);
+        let first = w.request(T0);
+        let sealed = w.seal(&p, &first);
+        assert!(w.open_at(&sealed, T0).is_ok());
+        // One command under a clock 1000 s ahead prunes the first row.
+        let ahead = w.request(T0 + 1000);
+        assert!(w.open_at(&w.seal(&p, &ahead), T0 + 1000).is_ok());
+        assert_eq!(w.count("command_replay"), 1);
+        // The clock steps back: the first command's sent_at is fresh again, its row is gone,
+        // and the persisted prune floor still refuses it.
+        assert_eq!(w.open_at(&sealed, T0 + 5), Err(REFUSAL_REPLAY));
+    }
+
+    #[test]
+    fn command_from_unknown_user_is_unlisted() {
+        let mut w = world();
+        let p = w.publication(T0);
+        let req = w.request(T0);
+        let sealed = w.seal(&p, &req);
+        assert_eq!(
+            w.open_at(&sealed, T0),
+            Err(CommandRefusal::DeviceUnlisted.code())
+        );
+        // Not recorded: once the list is cached, the same command opens.
+        w.anchor(&w.v1());
+        assert!(w.open_at(&sealed, T0).is_ok());
+    }
+
+    #[test]
+    fn command_naming_another_device_than_attached_is_wrong_device() {
+        let mut w = world();
+        w.anchor(&w.v1());
+        let p = w.publication(T0);
+        let req = w.request(T0);
+        let sealed = w.seal(&p, &req);
+        assert_eq!(
+            refused(open(&w.store, &w.core, &sealed, USER, [0x57; 16], T0).unwrap()),
+            CommandRefusal::WrongDevice.code()
+        );
+        let mut garbage = sealed.clone();
+        let n = garbage.len();
+        garbage[n - 1] ^= 1;
+        assert_eq!(
+            w.open_at(&garbage, T0),
+            Err(CommandRefusal::Malformed.code())
+        );
+        assert_eq!(
+            w.open_at(&[0x80], T0),
+            Err(CommandRefusal::Malformed.code())
+        );
+    }
+
+    // ---- device-list pushes ----
+
+    #[test]
+    fn first_push_pins_the_user_on_first_use() {
+        let mut w = world();
+        let v1 = w.v1();
+        let v2 = w.keys.list(
+            2,
+            Some(&v1),
+            vec![
+                entry(DEVICE, w.user_dsk_pub, None),
+                entry(SECOND, w.second_dsk_pub, None),
+            ],
+        );
+        assert_eq!(w.pin(), None);
+        let body = w.keys.push(&[&v1, &v2]);
+        assert_eq!(w.ingest(&body).unwrap(), (true, 2, LIST_CURRENT));
+        assert_eq!(
+            w.pin(),
+            Some((w.keys.umk.public(), 0, None)),
+            "UMK pinned, unverified, as the app pins on first sight"
+        );
+        assert_eq!(w.cached(), Some((2, v2.encode())));
+        assert!(w.command_from(SECOND).is_ok());
+        // The same push again changes nothing.
+        assert_eq!(w.ingest(&body).unwrap(), (false, 2, LIST_CURRENT));
+    }
+
+    #[test]
+    fn first_push_needs_the_history_from_version_one_and_a_valid_certificate() {
+        let mut w = world();
+        let v1 = w.v1();
+        let v2 = w
+            .keys
+            .list(2, Some(&v1), vec![entry(DEVICE, w.user_dsk_pub, None)]);
+        // Head only: there is nothing to chain v2 from.
+        assert!(w.ingest(&w.keys.push(&[&v2])).is_err());
+        // A certificate the UMK did not make.
+        let mut forged = DeviceListPush::decode(&w.keys.push(&[&v1])).unwrap();
+        forged.sig_umk_ssk[0] ^= 1;
+        assert!(w.ingest(&forged.encode()).is_err());
+        // An SSK the UMK certified, but lists signed by another SSK.
+        let mut other = DeviceListPush::decode(&w.keys.push(&[&v1])).unwrap();
+        let stranger = SskSigner::from_bytes(&[0x77; 32]).public();
+        other.ssk_pub = stranger;
+        other.sig_umk_ssk = w.keys.umk.sign_ssk(&stranger);
+        assert!(w.ingest(&other.encode()).is_err());
+        assert!(w.ingest(&[0x80]).is_err(), "not a push");
+        assert_eq!(w.pin(), None, "nothing pinned");
+        assert_eq!(w.cached(), None, "nothing cached");
+        assert_eq!(
+            w.command_from(DEVICE),
+            Err(CommandRefusal::DeviceUnlisted.code())
+        );
+    }
+
+    #[test]
+    fn a_push_under_another_umk_is_held_and_keeps_the_cached_list() {
+        let mut w = world();
+        let v1 = w.v1();
+        w.anchor(&v1);
+        let before = w.cached();
+        let other = Keys::new(0x0c);
+        let theirs = other.list(1, None, vec![entry(SECOND, w.second_dsk_pub, None)]);
+        assert_eq!(
+            w.ingest(&other.push(&[&theirs])).unwrap(),
+            (true, 1, LIST_HELD)
+        );
+        assert_eq!(w.cached(), before, "the cached list is not replaced");
+        assert_eq!(
+            w.pin(),
+            Some((w.keys.umk.public(), 0, Some(other.umk.public()))),
+            "recorded as the pending change"
+        );
+        assert_eq!(
+            w.command_from(DEVICE),
+            Err(CommandRefusal::DeviceUnlisted.code()),
+            "held until the change is verified"
+        );
+        assert_eq!(
+            w.command_from(SECOND),
+            Err(CommandRefusal::DeviceUnlisted.code())
+        );
+        // The same pending push again changes nothing and stays held.
+        assert_eq!(
+            w.ingest(&other.push(&[&theirs])).unwrap(),
+            (false, 1, LIST_HELD)
+        );
+        // An unchanged list under the pinned key does not end the pending change either.
+        assert_eq!(
+            w.ingest(&w.keys.push(&[&v1])).unwrap(),
+            (false, 1, LIST_HELD)
+        );
+    }
+
+    #[test]
+    fn ingest_rejects_a_list_with_a_broken_chain() {
+        let mut w = world();
+        let v1 = w.v1();
+        w.anchor(&v1);
+        let before = w.cached();
+        let v2_entries = vec![
+            entry(DEVICE, w.user_dsk_pub, None),
+            entry(SECOND, w.second_dsk_pub, None),
+        ];
+        let v2 = w.keys.list(2, Some(&v1), v2_entries.clone());
+
+        // The pinned UMK certifying a different SSK: refused outright, as on the leaf path.
+        let mut new_ssk = DeviceListPush::decode(&w.keys.push(&[&v2])).unwrap();
+        let rotated = SskSigner::from_bytes(&[0x78; 32]).public();
+        new_ssk.ssk_pub = rotated;
+        new_ssk.sig_umk_ssk = w.keys.umk.sign_ssk(&rotated);
+        assert!(w.ingest(&new_ssk.encode()).is_err());
+        // A row that disagrees with its blob.
+        let mut mismatched = DeviceListPush::decode(&w.keys.push(&[&v2])).unwrap();
+        mismatched.history[0].version = 3;
+        assert!(w.ingest(&mismatched.encode()).is_err());
+        assert_eq!(w.cached(), before);
+        assert!(w.command_from(DEVICE).is_ok(), "not behind after a refusal");
+
+        // A newer list that does not link to the cache fails closed: behind.
+        let mut wrong_prev = v2.clone();
+        wrong_prev.unsigned.prev_hash = [0x99; 32];
+        wrong_prev.sig_ssk = w.keys.ssk.sign_device_list(&wrong_prev.unsigned);
+        assert_eq!(
+            w.ingest(&w.keys.push(&[&wrong_prev])).unwrap(),
+            (false, 1, LIST_BEHIND)
+        );
+        assert_eq!(w.cached(), before, "the cache is unchanged");
+        assert_eq!(
+            w.command_from(DEVICE),
+            Err(CommandRefusal::DeviceUnlisted.code())
+        );
+        assert_eq!(
+            w.command_from(SECOND),
+            Err(CommandRefusal::DeviceUnlisted.code())
+        );
+
+        // The real next link catches up.
+        assert_eq!(
+            w.ingest(&w.keys.push(&[&v2])).unwrap(),
+            (true, 2, LIST_CURRENT)
+        );
+        assert_eq!(w.cached(), Some((2, v2.encode())));
+        assert!(w.command_from(SECOND).is_ok());
+    }
+
+    #[test]
+    fn older_or_equal_pushes_are_ignored() {
+        let mut w = world();
+        let v1 = w.v1();
+        let v2 = w
+            .keys
+            .list(2, Some(&v1), vec![entry(DEVICE, w.user_dsk_pub, None)]);
+        w.anchor(&v1);
+        assert_eq!(
+            w.ingest(&w.keys.push(&[&v2])).unwrap(),
+            (true, 2, LIST_CURRENT)
+        );
+        assert_eq!(
+            w.ingest(&w.keys.push(&[&v1])).unwrap(),
+            (false, 2, LIST_CURRENT)
+        );
+        assert_eq!(
+            w.ingest(&w.keys.push(&[&v1, &v2])).unwrap(),
+            (false, 2, LIST_CURRENT)
+        );
+        let mut fork = v2.clone();
+        fork.unsigned
+            .entries
+            .push(entry(SECOND, w.second_dsk_pub, None));
+        fork.sig_ssk = w.keys.ssk.sign_device_list(&fork.unsigned);
+        assert_eq!(
+            w.ingest(&w.keys.push(&[&fork])).unwrap(),
+            (false, 2, LIST_CURRENT)
+        );
+        assert_eq!(w.cached(), Some((2, v2.encode())));
+        assert!(w.command_from(DEVICE).is_ok());
+    }
+
+    #[test]
+    fn a_gap_fails_closed_until_the_history_arrives() {
+        let mut w = world();
+        let v1 = w.v1();
+        w.anchor(&v1);
+        let v2 = w.keys.list(
+            2,
+            Some(&v1),
+            vec![
+                entry(DEVICE, w.user_dsk_pub, None),
+                entry(SECOND, w.second_dsk_pub, None),
+            ],
+        );
+        let v3 = w.keys.list(
+            3,
+            Some(&v2),
+            vec![
+                entry(DEVICE, w.user_dsk_pub, None),
+                entry(SECOND, w.second_dsk_pub, None),
+            ],
+        );
+        assert_eq!(
+            w.ingest(&w.keys.push(&[&v3])).unwrap(),
+            (false, 1, LIST_BEHIND)
+        );
+        assert_eq!(
+            w.command_from(DEVICE),
+            Err(CommandRefusal::DeviceUnlisted.code())
+        );
+        // A history that ends short of the pushed head is not enough.
+        assert_eq!(
+            w.ingest(&w.keys.push(&[&v2])).unwrap(),
+            (true, 2, LIST_BEHIND)
+        );
+        assert_eq!(
+            w.command_from(DEVICE),
+            Err(CommandRefusal::DeviceUnlisted.code())
+        );
+        // The contiguous history reaches the head: caught up.
+        assert_eq!(
+            w.ingest(&w.keys.push(&[&v1, &v2, &v3])).unwrap(),
+            (true, 3, LIST_CURRENT)
+        );
+        assert!(w.command_from(DEVICE).is_ok());
+        assert!(w.command_from(SECOND).is_ok());
+    }
+
+    #[test]
+    fn ingest_accepts_a_contiguous_history_past_a_gap() {
+        let mut w = world();
+        let v1 = w.v1();
+        w.anchor(&v1);
+        let mut previous = v1.clone();
+        let mut history = vec![v1.clone()];
+        for version in 2..=6 {
+            let next = w.keys.list(
+                version,
+                Some(&previous),
+                vec![entry(DEVICE, w.user_dsk_pub, None)],
+            );
+            history.push(next.clone());
+            previous = next;
+        }
+        let refs: Vec<&DeviceList> = history[2..].iter().collect();
+        assert_eq!(
+            w.ingest(&w.keys.push(&refs)).unwrap(),
+            (false, 1, LIST_BEHIND),
+            "starting at v3 skips v2"
+        );
+        let refs: Vec<&DeviceList> = history[1..].iter().collect();
+        assert_eq!(
+            w.ingest(&w.keys.push(&refs)).unwrap(),
+            (true, 6, LIST_CURRENT)
+        );
+        assert_eq!(w.cached(), Some((6, previous.encode())));
+    }
+
+    #[test]
+    fn a_device_revoked_inside_the_gap_is_refused() {
+        let mut w = world();
+        let v1 = w.keys.list(
+            1,
+            None,
+            vec![
+                entry(DEVICE, w.user_dsk_pub, None),
+                entry(SECOND, w.second_dsk_pub, None),
+            ],
+        );
+        w.anchor(&v1);
+        assert!(w.command_from(DEVICE).is_ok());
+        // v2 revokes DEVICE; v3 changes something else. The Bot sees only v3 at first.
+        let v2 = w.keys.list(
+            2,
+            Some(&v1),
+            vec![
+                entry(DEVICE, w.user_dsk_pub, Some(200)),
+                entry(SECOND, w.second_dsk_pub, None),
+            ],
+        );
+        let (_, third_pub) = dsk(0x64);
+        let v3 = w.keys.list(
+            3,
+            Some(&v2),
+            vec![
+                entry(DEVICE, w.user_dsk_pub, Some(200)),
+                entry(SECOND, w.second_dsk_pub, None),
+                entry([0x59; 16], third_pub, None),
+            ],
+        );
+        assert_eq!(
+            w.ingest(&w.keys.push(&[&v3])).unwrap(),
+            (false, 1, LIST_BEHIND)
+        );
+        assert_eq!(
+            w.command_from(DEVICE),
+            Err(CommandRefusal::DeviceUnlisted.code()),
+            "the cached v1 no longer vouches"
+        );
+        assert_eq!(
+            w.ingest(&w.keys.push(&[&v2, &v3])).unwrap(),
+            (true, 3, LIST_CURRENT)
+        );
+        assert_eq!(
+            w.command_from(DEVICE),
+            Err(CommandRefusal::DeviceRevoked.code())
+        );
+        assert!(w.command_from(SECOND).is_ok());
     }
 }

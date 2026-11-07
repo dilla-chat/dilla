@@ -1,3 +1,4 @@
+use dilla_core::bot::device_list_push::DeviceListPush;
 use dilla_core::bot::group_registration::{
     Receipt as GroupRegistrationReceipt, Request as GroupRegistrationRequest,
 };
@@ -337,7 +338,8 @@ fn shared_bot_corpus_round_trips_and_rejects() {
             "keypackage_intent_result",
             "keypackage_resolution",
             "group_registration_request",
-            "group_registration_receipt"
+            "group_registration_receipt",
+            "device_list_push"
         ]
         .into_iter()
         .collect()
@@ -463,6 +465,10 @@ fn shared_bot_corpus_round_trips_and_rejects() {
                 let value = GroupRegistrationReceipt::decode(&raw).unwrap();
                 assert_eq!(value.encode().unwrap(), raw, "{}", case["name"]);
             }
+            "device_list_push" => {
+                let value = DeviceListPush::decode(&raw).unwrap();
+                assert_eq!(value.encode(), raw, "{}", case["name"]);
+            }
             other => panic!("unknown bot vector kind: {other}"),
         }
     }
@@ -549,6 +555,9 @@ fn shared_bot_corpus_round_trips_and_rejects() {
             "group_registration_receipt" => raw
                 .as_ref()
                 .is_some_and(|r| GroupRegistrationReceipt::decode(r).is_ok()),
+            "device_list_push" => raw
+                .as_ref()
+                .is_some_and(|r| DeviceListPush::decode(r).is_ok()),
             other => panic!("unknown bot reject kind: {other}"),
         };
         assert!(!accepted, "reject vector accepted: {}", case["name"]);

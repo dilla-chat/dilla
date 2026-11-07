@@ -233,21 +233,42 @@ func (c *Client) SealReply(ctx context.Context, replyKey [32]byte, requestID id.
 	return sealed, nil
 }
 
-// IngestDeviceList hands the helper a device list pushed for user, as the device-list PUT body
-// (op 24). It is the only way the helper's device-list cache changes. A list that does not chain
-// from the user's cached, trusted list is a StatusError and leaves the cache unchanged.
+// ErrDeviceListHeld means the push was recorded, but the user's pin has a key change pending
+// (a UMK other than the pinned one): the helper refuses the user's commands until the change
+// is verified. ErrDeviceListBehind means a pushed head did not chain from the cached list (a
+// gap or a broken link): the cache is unchanged and the user's commands are refused until a
+// history reaching that head is ingested. Both come with the cached version.
+var (
+	ErrDeviceListHeld   = errors.New("device list: key change pending")
+	ErrDeviceListBehind = errors.New("device list: behind the pushed head")
+)
+
+// IngestDeviceList hands the helper a device-list push for user (op 24): the body is
+// protocol.DeviceListPush, see EncodeDeviceListPush for its shape and history rules. It is the
+// only way the helper's device-list cache changes, and it pins a user the Bot has not seen
+// before (trust on first use). version is the cached list's version afterwards (0 for none).
+// A push the helper refuses outright (a bad certificate or chain from version 1, the pinned
+// UMK with another SSK) is a StatusError and changes nothing.
 func (c *Client) IngestDeviceList(ctx context.Context, user id.ID, body []byte) (changed bool, version uint64, err error) {
-	if user.IsZero() || len(body) == 0 {
+	seconds, err := unixSeconds(time.Now())
+	if err != nil || user.IsZero() || len(body) == 0 {
 		return false, 0, errors.New("invalid device list ingest request")
 	}
-	answer, err := c.Call(ctx, protocol.HelperDeviceListIngest, []any{user, body})
+	answer, err := c.Call(ctx, protocol.HelperDeviceListIngest, []any{user, body, seconds})
 	if err != nil {
 		return false, 0, err
 	}
 	flag, okFlag := uint64At(answer, 0)
 	version, okVersion := uint64At(answer, 1)
-	if len(answer) != 2 || !okFlag || !okVersion || flag > 1 || version == 0 {
+	state, okState := uint64At(answer, 2)
+	if len(answer) != 3 || !okFlag || !okVersion || !okState || flag > 1 || state > 2 {
 		return false, 0, unknown(errors.New("invalid device list ingest answer"))
+	}
+	switch state {
+	case 1:
+		return flag == 1, version, ErrDeviceListHeld
+	case 2:
+		return flag == 1, version, ErrDeviceListBehind
 	}
 	return flag == 1, version, nil
 }

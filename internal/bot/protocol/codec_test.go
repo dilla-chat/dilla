@@ -439,6 +439,12 @@ func roundTripVector(t *testing.T, tc vectorCase, raw []byte) []byte {
 		if err == nil {
 			got, err = EncodeGroupRegistrationReceipt(v)
 		}
+	case "device_list_push":
+		var v DeviceListPush
+		v, err = DecodeDeviceListPush(raw)
+		if err == nil {
+			got, err = EncodeDeviceListPush(v)
+		}
 	default:
 		t.Fatalf("unknown vector kind %q", tc.Kind)
 	}
@@ -546,6 +552,12 @@ func roundTripVectorErr(tc vectorCase, raw []byte) ([]byte, error) {
 			return nil, e
 		}
 		return EncodeGroupRegistrationReceipt(v)
+	case "device_list_push":
+		v, e := DecodeDeviceListPush(raw)
+		if e != nil {
+			return nil, e
+		}
+		return EncodeDeviceListPush(v)
 	default:
 		return nil, invalid()
 	}

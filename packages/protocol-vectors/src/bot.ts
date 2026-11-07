@@ -62,17 +62,30 @@ export async function botVectors() {
   ['send receipt accepted zero receive time and opaque zero tag',receipt(id(9),id(13),null,1n,new Uint8Array(32),0n,1n,1n,sendResponse(1n,new Uint8Array(32),0n))],
  ];
  for(const [name,value] of receipts)cases.push({name,kind:'receipt',hex:cbor(value),context:receiptContext});
+ const pushKey=(b:number)=>new Uint8Array(32).fill(b);
+ const pushRow=(v:bigint):unknown[]=>[v,encode([1n,id(0x60),v,new Uint8Array(32),[],new Uint8Array(64)]),new Uint8Array(64).fill(0x44),new Uint8Array(32).fill(Number(v))];
+ const devicePush=(rows:unknown[]):unknown[]=>[pushKey(0x11),pushKey(0x22),new Uint8Array(64).fill(0x33),rows];
  for(const [kind,name,v] of [
   ['helper_request','helper request',[1n,id(10),1n,encode([])]],['helper_request','helper group_transfer operation 16',[1n,id(10),16n,encode([])]],
   ['helper_request','helper ingest removals operation 17',[1n,id(15),17n,encode([])]],['helper_request','helper removal actor refresh operation 18',[1n,id(16),18n,encode([])]],
   ['helper_request','call join check helper operation',[1n,id(11),19n,encode([id(12)])]],['helper_request','call group forget helper operation',[1n,id(13),20n,encode([id(14)])]],
   ['helper_request','command key helper operation 21',[1n,id(17),21n,encode([id(18),1n])]],['helper_request','command open helper operation 22',[1n,id(19),22n,encode([new Uint8Array([0x80]),id(20),id(21),1n])]],
-  ['helper_request','reply seal helper operation 23',[1n,id(22),23n,encode([new Uint8Array(32),id(23),0n,new Uint8Array([1])])]],['helper_request','device list ingest helper operation 24',[1n,id(24),24n,encode([id(25),new Uint8Array([0x80])])]],
+  ['helper_request','reply seal helper operation 23',[1n,id(22),23n,encode([new Uint8Array(32),id(23),0n,new Uint8Array([1])])]],['helper_request','device list ingest helper operation 24',[1n,id(24),24n,encode([id(25),encode(devicePush([pushRow(1n)])),1n])]],
   ['helper_response','helper response',[1n,id(10),0n,encode([])]],
  ] as const)cases.push({name,kind,hex:cbor(v)});
  cases.push({name:'generic helper op5 payload remains opaque',kind:'helper_request',hex:cbor([1n,id(0x95),5n,encode([32n,1n])])});
+ // The device-list push (helper op 24 body): shape only; the trust rules are the core's.
+ cases.push({name:'device list push first sight from version 1',kind:'device_list_push',hex:cbor(devicePush([pushRow(1n)]))});
+ cases.push({name:'device list push contiguous history',kind:'device_list_push',hex:cbor(devicePush([pushRow(2n),pushRow(3n),pushRow(4n)]))});
  const rejects:any[]=[];
  const rej=(name:string,kind:string,v:unknown,extra:any={})=>rejects.push({name,kind,hex:cbor(v),...extra});
+ rej('device list push without history','device_list_push',devicePush([]));
+ rej('device list push zero umk','device_list_push',[new Uint8Array(32),pushKey(0x22),new Uint8Array(64).fill(0x33),[pushRow(1n)]]);
+ rej('device list push short ssk','device_list_push',[pushKey(0x11),new Uint8Array(31).fill(0x22),new Uint8Array(64).fill(0x33),[pushRow(1n)]]);
+ rej('device list push version zero','device_list_push',devicePush([pushRow(0n)]));
+ rej('device list push empty blob','device_list_push',devicePush([[1n,new Uint8Array(),new Uint8Array(64).fill(0x44),new Uint8Array(32)]]));
+ rej('device list push short row signature','device_list_push',devicePush([[1n,encode([1n]),new Uint8Array(63).fill(0x44),new Uint8Array(32)]]));
+ rej('device list push extra field','device_list_push',[...devicePush([pushRow(1n)]),null]);
  const base=[1n,id(1),comm,null,0n,null,null,[]];
  rej('application wrong version','request',[2n,...base.slice(1)]);
  rej('application wrong shape','request',[1n,id(1)]);

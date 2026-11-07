@@ -170,10 +170,12 @@ impl Helper {
             )
             .map(|v| (v, false)),
             23 => crate::command::op_reply_seal(payload).map(|v| (v, false)),
-            24 => {
-                crate::command::op_device_list_ingest(self.core.as_mut().expect("opened"), payload)
-                    .map(|v| (v, false))
-            }
+            24 => crate::command::op_device_list_ingest(
+                self.store.as_ref().expect("opened"),
+                self.core.as_mut().expect("opened"),
+                payload,
+            )
+            .map(|v| (v, false)),
             _ => Err(DispatchError::Invalid),
         }
     }

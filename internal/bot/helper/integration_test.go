@@ -150,9 +150,8 @@ func TestCompiledHelperIntegration(t *testing.T) {
 // TestOpenCommandRoundTripThroughHelper drives ops 21-24 on the compiled helper. A Go client
 // verifies the command-key publication against the Bot's own signed device list, seals a
 // command to it with RFC 9180 HPKE and signs it with its own device key, and opens the helper's
-// sealed reply. The sender is a user the helper has no cached list for, so the opened, verified
-// command is refused as unlisted (a seal the helper could not open is Malformed instead); the
-// accepted path is covered by the Rust tests in core/dilla-bot-core/src/command.rs.
+// sealed reply. Before the user's device list is pushed the command is refused as unlisted;
+// after a first push (trust on first use of the user's UMK) the same command opens, once.
 func TestOpenCommandRoundTripThroughHelper(t *testing.T) {
 	binary := os.Getenv("DILLA_BOT_HELPER_BIN")
 	if binary == "" {
@@ -216,6 +215,29 @@ func TestOpenCommandRoundTripThroughHelper(t *testing.T) {
 	if opened.Refusal != RefusalDeviceUnlisted {
 		t.Fatalf("command from a user with no cached list = %d, want RefusalDeviceUnlisted", opened.Refusal)
 	}
+	push := testDeviceListPush(t, user, device, userKey.Public().(ed25519.PublicKey))
+	if changed, version, err := helper.IngestDeviceList(ctx, user, push); err != nil || !changed || version != 1 {
+		t.Fatalf("first push = %v %d %v, want a pinned version 1", changed, version, err)
+	}
+	if changed, version, err := helper.IngestDeviceList(ctx, user, push); err != nil || changed || version != 1 {
+		t.Fatalf("repeated push = %v %d %v, want unchanged", changed, version, err)
+	}
+	opened, err = helper.OpenCommand(ctx, sealed, user, device, now)
+	if err != nil || opened.Refusal != RefusalNone {
+		t.Fatalf("command after the push = %#v, %v", opened, err)
+	}
+	r := opened.Request
+	if r.RequestID != requestID || r.CommunityID != community || r.ChannelID != (id.ID{}) || r.Operation != 7 ||
+		r.SentAt != uint64(now.Unix()) || !bytes.Equal(r.ReplyKey[:], reply.PublicKey().Bytes()) ||
+		r.UserID != user || r.DeviceID != device || len(r.Args) != 2 || r.Args[0] != "hello" || r.Args[1] != uint64(3) {
+		t.Fatalf("opened request = %#v", r)
+	}
+	if again, err := helper.OpenCommand(ctx, sealed, user, device, now); err != nil || again.Refusal != RefusalReplay {
+		t.Fatalf("replayed command = %#v, %v; want RefusalReplay", again, err)
+	}
+	if other, err := helper.OpenCommand(ctx, sealed, user, realID(10), now); err != nil || other.Refusal != RefusalWrongDevice {
+		t.Fatalf("command attached to another device = %#v, %v; want RefusalWrongDevice", other, err)
+	}
 	tampered := append([]byte(nil), sealed...)
 	tampered[len(tampered)-1] ^= 1
 	if opened, err := helper.OpenCommand(ctx, tampered, user, device, now); err != nil || opened.Refusal != RefusalMalformed {
@@ -238,10 +260,10 @@ func TestOpenCommandRoundTripThroughHelper(t *testing.T) {
 		t.Fatalf("opened reply = %q", got)
 	}
 
-	changed, version, err := helper.IngestDeviceList(ctx, user, []byte{0x80})
+	changed, version, err := helper.IngestDeviceList(ctx, realID(11), []byte{0x80})
 	var status *StatusError
 	if !errors.As(err, &status) || changed || version != 0 {
-		t.Fatalf("IngestDeviceList of an unanchored user = %v %d %v, want a definitive refusal", changed, version, err)
+		t.Fatalf("IngestDeviceList of a malformed push = %v %d %v, want a definitive refusal", changed, version, err)
 	}
 	if err := helper.Close(); err != nil {
 		t.Fatalf("shutdown: %v", err)
@@ -343,6 +365,41 @@ func sealTestCommand(t *testing.T, commandKey, keyID []byte, requestID, communit
 		t.Fatal(err)
 	}
 	return sealed
+}
+
+// testDeviceListPush builds a first push for user: a fresh UMK certifying a fresh SSK, and a
+// version-1 list naming device with dsk, as protocol.DeviceListPush.
+func testDeviceListPush(t *testing.T, user, device id.ID, dsk ed25519.PublicKey) []byte {
+	t.Helper()
+	umkPub, umk, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sskPub, ssk, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := make([]byte, 32)
+	unsigned := []any{uint64(1), user[:], uint64(1), prev, []any{[]any{device[:], []byte(dsk), uint64(0), uint64(100), nil}}}
+	message, err := cborx.Marshal(unsigned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := ed25519.Sign(ssk, append([]byte("dilla devices v1"), message...))
+	blob, err := cborx.Marshal(append(unsigned, sig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := protocol.DeviceListPush{History: []protocol.DeviceListRow{{Version: 1, Blob: blob}}}
+	copy(p.UMK[:], umkPub)
+	copy(p.SSK[:], sskPub)
+	copy(p.SigUMKSSK[:], ed25519.Sign(umk, append([]byte("dilla ssk v1"), sskPub...)))
+	copy(p.History[0].SSKSignature[:], sig)
+	body, err := protocol.EncodeDeviceListPush(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
 }
 
 func openTestReply(t *testing.T, reply *ecdh.PrivateKey, requestID id.ID, seq uint32, sealed []byte) []byte {

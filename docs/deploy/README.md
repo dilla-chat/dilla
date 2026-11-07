@@ -676,16 +676,23 @@ sudo sh install-bot.sh --upgrade --version TAG
 The upgrade keeps `bot.toml`, the runtime credential and service state. It runs the existing local
 doctor, stops the Bot if it is active, saves a root-only cold copy of state and the previous
 binaries/unit under `/var/backups/dillabot`, installs the checked assets, runs doctor again, and
-restarts the service if it was active before. If installation, doctor or restart fails, it restores
-the previous assets and state. The retained copy contains `database.key` and must be protected as a
-secret. The upgrade path has not yet been exercised against a prior released Bot database schema.
+restarts the service if it was active before. The restarted Bot must stay active, without systemd
+restarting it, for 15 seconds. If installation, doctor, the restart or that health check fails, it
+restores the previous assets and state. The upgrade path has not yet been exercised against a prior
+released Bot database schema.
 
-Each upgrade run writes one such copy, as a new directory `/var/backups/dillabot/<UTC timestamp>-<suffix>`, root-only,
-holding the whole state directory (with the database key) plus the three Bot binaries and the unit. After a successful
-upgrade the installer keeps the 3 newest copies, the new one included, and removes the older ones; it logs each path
-it removes and never prunes after a failed or rolled-back upgrade. `--keep-backups N` (N of at least 1) keeps N
-instead. Only directories named like the installer's own copies are touched. This pruning starts with the release after
-`v0.1.0-signal1`: on `v0.1.0-signal1` and earlier, remove old copies by hand, keeping the newest.
+The pre-upgrade copy, a new directory `/var/backups/dillabot/<UTC timestamp>-<suffix>`, holds the
+whole state directory, including `database.key` and the Bot's sealed-command keys, so the installer
+keeps it only while a rollback is possible:
+
+- after a confirmed upgrade (the restarted Bot is healthy, or, for a Bot that was not running, the
+  upgraded files pass doctor) it deletes the copy, and every earlier copy an older installer kept;
+- after a failed upgrade it restores from the copy and then deletes it;
+- only when that restore itself fails does it keep the copy, and it names the path: restore by
+  hand, then delete it.
+
+It logs every path it creates or deletes, and touches only directories named like its own copies.
+`--keep-backups` is gone. Make your own backup first (below) if you want to keep one.
 
 For a cold operator backup of the complete Bot files, including its config and runtime credential:
 

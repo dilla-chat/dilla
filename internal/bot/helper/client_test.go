@@ -119,7 +119,20 @@ func fixtureCommandAnswer(request protocol.HelperRequest) ([]any, bool) {
 	case protocol.HelperReplySeal:
 		return []any{[]byte{0x83, 0x01}}, true
 	case protocol.HelperDeviceListIngest:
-		return []any{uint64(1), uint64(7)}, true
+		// The body's first byte picks the state: 0x84 current, 1 held, 2 behind, 3 undefined.
+		body, _ := request.Payload[1].([]byte)
+		if now, ok := request.Payload[2].(uint64); !ok || now == 0 || len(body) == 0 {
+			return nil, false
+		}
+		switch body[0] {
+		case 1:
+			return []any{uint64(1), uint64(7), uint64(1)}, true
+		case 2:
+			return []any{uint64(0), uint64(7), uint64(2)}, true
+		case 3:
+			return []any{uint64(0), uint64(7), uint64(3)}, true
+		}
+		return []any{uint64(1), uint64(7), uint64(0)}, true
 	}
 	return nil, false
 }
@@ -154,6 +167,15 @@ func TestCommandWrappersDecodeHelperAnswers(t *testing.T) {
 	}
 	if changed, version, err := c.IngestDeviceList(ctx, fixtureID(5), []byte{0x84}); err != nil || !changed || version != 7 {
 		t.Fatalf("IngestDeviceList = %v %d %v", changed, version, err)
+	}
+	if changed, version, err := c.IngestDeviceList(ctx, fixtureID(5), []byte{1}); !errors.Is(err, ErrDeviceListHeld) || !changed || version != 7 {
+		t.Fatalf("held IngestDeviceList = %v %d %v", changed, version, err)
+	}
+	if changed, version, err := c.IngestDeviceList(ctx, fixtureID(5), []byte{2}); !errors.Is(err, ErrDeviceListBehind) || changed || version != 7 {
+		t.Fatalf("behind IngestDeviceList = %v %d %v", changed, version, err)
+	}
+	if _, _, err := c.IngestDeviceList(ctx, fixtureID(5), []byte{3}); !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("undefined ingest state = %v", err)
 	}
 }
 

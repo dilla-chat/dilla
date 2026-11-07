@@ -27,9 +27,9 @@ options:
   --helper FILE           local dilla-bot-core native helper
   --module FILE           local dilla_core_wasi.wasm module
   --sums FILE             checksums for supplied local assets
-  --upgrade               replace Bot binaries and unit; preserve config, credential and state
-  --keep-backups N        after a successful upgrade keep the N newest pre-upgrade copies
-                          under /var/backups/dillabot, the new one included (N >= 1, default 3)
+  --upgrade               replace Bot binaries and unit; preserve config, credential and state.
+                          The pre-upgrade copy (it holds the database key) is deleted once the
+                          upgraded Bot is healthy, or once a failed upgrade is rolled back
   --insecure-skip-verify  allow supplied local assets without --sums
   --check-args            validate options without changing anything
   -h, --help              show this help
@@ -50,14 +50,15 @@ MODULE=""
 SUMS=""
 INSECURE=0
 UPGRADE=0
-KEEP_BACKUPS=3
+# How long a restarted Bot must stay active, without systemd restarting it, to count as healthy.
+HEALTH_SECONDS="${DILLA_BOT_HEALTH_SECONDS:-15}"
 CHECK_ARGS=0
 while [ "$#" -gt 0 ]; do
 	flag="$1"; value=""
 	case "$flag" in
 	--*=*) value="${flag#*=}"; flag="${flag%%=*}"; shift ;;
 	--check-args | --insecure-skip-verify | --upgrade | -h | --help) shift ;;
-	--base-url | --instance-id | --dillad-config | --version | --release-url | --binary | --helper | --module | --sums | --keep-backups)
+	--base-url | --instance-id | --dillad-config | --version | --release-url | --binary | --helper | --module | --sums)
 		[ "$#" -ge 2 ] || die "$flag needs a value"
 		value="$2"; shift 2 ;;
 	-*) usage; die "unknown option $flag" ;;
@@ -73,7 +74,6 @@ while [ "$#" -gt 0 ]; do
 	--helper) HELPER="$value" ;;
 	--module) MODULE="$value" ;;
 	--sums) SUMS="$value" ;;
-	--keep-backups) KEEP_BACKUPS="$value" ;;
 	--insecure-skip-verify) INSECURE=1 ;;
 	--check-args) CHECK_ARGS=1 ;;
 	--upgrade) UPGRADE=1 ;;
@@ -82,10 +82,10 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-case "$KEEP_BACKUPS" in
-'' | *[!0-9]*) die "--keep-backups must be a whole number of at least 1" ;;
+case "$HEALTH_SECONDS" in
+'' | *[!0-9]*) die "DILLA_BOT_HEALTH_SECONDS must be a whole number" ;;
 esac
-[ "${#KEEP_BACKUPS}" -le 6 ] && [ "$KEEP_BACKUPS" -ge 1 ] || die "--keep-backups must be a whole number of at least 1"
+[ "${#HEALTH_SECONDS}" -le 4 ] || die "DILLA_BOT_HEALTH_SECONDS is too large"
 
 if [ "$UPGRADE" -eq 0 ]; then
 	[ -n "$BASE_URL" ] || die "--base-url is required"
@@ -272,8 +272,10 @@ run_bot_doctor() {
 	"$doctor_runuser" -u dillabot -- "$doctor_env" "PATH=$doctor_path" "$BIN_DIR/dillabot" doctor --config="$CONF"
 }
 
+# Restores the pre-upgrade files and state. Fails when anything could not be restored, so the
+# caller keeps the copy for a manual restore.
 rollback_upgrade() { # BACKUP WAS_ACTIVE
-	backup="$1"; was_active="$2"
+	backup="$1"; was_active="$2"; restored=0
 	log "rolling back Bot binary and local-state changes"
 	systemctl stop dillabot >/dev/null 2>&1 || :
 	for name in dillabot dilla-bot-core dilla_core_wasi.wasm dillabot.service; do
@@ -283,35 +285,59 @@ rollback_upgrade() { # BACKUP WAS_ACTIVE
 		dilla_core_wasi.wasm) dest="$LIB_DIR/dilla_core_wasi.wasm" ;;
 		dillabot.service) dest="$UNIT" ;;
 		esac
-		cp -a "$backup/files/$name" "$dest.restore" && mv -f "$dest.restore" "$dest" || log "rollback failed for $dest"
+		if ! { cp -a "$backup/files/$name" "$dest.restore" && mv -f "$dest.restore" "$dest"; }; then
+			log "rollback failed for $dest"; restored=1
+		fi
 	done
 	rm -rf "$DATA_DIR"
-	cp -a "$backup/state" "$DATA_DIR" || log "rollback failed for Bot state; use $backup/state"
+	cp -a "$backup/state" "$DATA_DIR" || { log "rollback failed for Bot state; use $backup/state"; restored=1; }
 	systemctl daemon-reload || log "rollback daemon-reload failed"
 	if [ "$was_active" -eq 1 ]; then systemctl start dillabot || log "previous Bot service did not restart; use systemctl status dillabot"; fi
+	return "$restored"
 }
 
-# Keep the newest KEEP pre-upgrade copies. Only plain directories whose names
-# match the installer's own pattern are touched, ordered by that name (the UTC
-# timestamp prefix sorts chronologically); symlinks and other files are skipped.
-# NEW, the copy this run made, is never a candidate: it counts as one of the KEEP
-# whatever its random suffix sorts to within its second.
-prune_backups() { # PARENT KEEP NEW
-	parent="$1"; keep=$(($2 - 1)); new="$3"
-	set --
-	for dir in "$parent"/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-????????; do
+# Rolls back, then deletes the copy once nothing more can be restored from it, and stops.
+fail_upgrade() { # MESSAGE
+	if rollback_upgrade "$BACKUP" "$WAS_ACTIVE"; then
+		remove_copy "$BACKUP"
+		die "$1"
+	fi
+	die "$1; the rollback was incomplete, so the pre-upgrade copy is kept at $BACKUP (root-only; it holds the database key: delete it once the Bot is restored)"
+}
+
+remove_copy() { # DIR
+	if rm -rf "$1"; then log "removed pre-upgrade copy $1"; else log "warning: could not remove pre-upgrade copy $1 (it holds the database key)"; fi
+}
+
+restart_count() {
+	n="$(systemctl show -p NRestarts --value dillabot 2>/dev/null)" || n=0
+	case "$n" in '' | *[!0-9]*) n=0 ;; esac
+	echo "$n"
+}
+
+# The upgraded Bot is healthy when it stays active, and systemd does not restart it, for
+# HEALTH_SECONDS after the start.
+bot_healthy() { # RESTARTS_BEFORE
+	waited=0
+	while :; do
+		systemctl is-active --quiet dillabot || return 1
+		[ "$(restart_count)" -le "$1" ] || return 1
+		[ "$waited" -lt "$HEALTH_SECONDS" ] || return 0
+		sleep 1
+		waited=$((waited + 1))
+	done
+}
+
+# Deletes every pre-upgrade copy an earlier installer left (they hold the database key and
+# no rollback uses them). Only plain directories whose names match the installer's own
+# pattern are touched; symlinks and other entries are left alone.
+remove_old_copies() { # PARENT
+	for dir in "$1"/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-????????; do
 		case "${dir##*/}" in
 		*[!0-9A-Za-z-]*) continue ;;
 		esac
-		if [ -L "$dir" ] || [ ! -d "$dir" ] || [ "$dir" = "$new" ]; then continue; fi
-		set -- "$@" "$dir"
-	done
-	[ "$#" -gt "$keep" ] || return 0
-	remove=$(($# - keep))
-	for dir in "$@"; do
-		[ "$remove" -gt 0 ] || break
-		remove=$((remove - 1))
-		if rm -rf "$dir"; then log "removed old pre-upgrade copy $dir"; else log "warning: could not remove old pre-upgrade copy $dir"; fi
+		if [ -L "$dir" ] || [ ! -d "$dir" ]; then continue; fi
+		remove_copy "$dir"
 	done
 }
 
@@ -331,24 +357,23 @@ if [ "$UPGRADE" -eq 1 ]; then
 		[ "$WAS_ACTIVE" -eq 0 ] || systemctl start dillabot
 		die "could not make a complete pre-upgrade backup; no Bot files were changed"
 	fi
-	if ! install_assets; then
-		rollback_upgrade "$BACKUP" "$WAS_ACTIVE"
-		die "could not install the Bot assets; restored the previous files (backup: $BACKUP)"
-	fi
-	if ! run_bot_doctor >&2; then
-		rollback_upgrade "$BACKUP" "$WAS_ACTIVE"
-		die "upgraded Bot files failed doctor; restored the previous files and state (backup: $BACKUP)"
-	fi
-	systemctl daemon-reload || { rollback_upgrade "$BACKUP" "$WAS_ACTIVE"; die "systemd reload failed; restored the previous Bot files (backup: $BACKUP)"; }
+	log "made pre-upgrade copy at $BACKUP (root-only; kept only until the upgrade is confirmed)"
+	install_assets || fail_upgrade "could not install the Bot assets; restored the previous files"
+	run_bot_doctor >&2 || fail_upgrade "upgraded Bot files failed doctor; restored the previous files and state"
+	systemctl daemon-reload || fail_upgrade "systemd reload failed; restored the previous Bot files"
 	if [ "$WAS_ACTIVE" -eq 1 ]; then
-		if ! systemctl start dillabot || ! systemctl is-active --quiet dillabot; then
-			rollback_upgrade "$BACKUP" "$WAS_ACTIVE"
-			die "upgraded Bot service did not remain active; restored the previous files and state (backup: $BACKUP)"
+		RESTARTS_BEFORE="$(restart_count)"
+		if ! systemctl start dillabot || ! bot_healthy "$RESTARTS_BEFORE"; then
+			fail_upgrade "upgraded Bot service did not remain active; restored the previous files and state"
 		fi
+		log "upgraded Bot stayed active for ${HEALTH_SECONDS}s"
+	else
+		log "the Bot service was not running before the upgrade and was not started; the upgraded files passed doctor"
 	fi
 	log "Bot binaries upgraded; preserved config, runtime credential and state"
-	log "cold pre-upgrade copy retained at $BACKUP (root-only; includes the database key)"
-	prune_backups "$BACKUP_PARENT" "$KEEP_BACKUPS" "$BACKUP"
+	# No rollback runs after this point, so no copy of the database key is kept.
+	remove_copy "$BACKUP"
+	remove_old_copies "$BACKUP_PARENT"
 else
 	if id dillabot >/dev/null 2>&1; then die "the dillabot account already exists; inspect it and any Bot files before installing"; fi
 	useradd --system --user-group --no-create-home --home-dir /var/lib/dillabot --shell /usr/sbin/nologin dillabot
