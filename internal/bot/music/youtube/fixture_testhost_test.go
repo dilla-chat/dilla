@@ -46,16 +46,20 @@ func TestFixtureResolverServesFilesThroughTheSameFfmpegArguments(t *testing.T) {
 		t.Skipf("backend unavailable: %v", err)
 	}
 	defer backend.Close()
+	view, err := backend.For("fixture-test")
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	tracks, err := backend.Tracks.Resolve(context.Background(), "alpha track")
+	tracks, err := view.Tracks.Resolve(context.Background(), "alpha track")
 	if err != nil || len(tracks) != 1 || tracks[0].Title != "alpha-track" || tracks[0].DurationMS < 900 || tracks[0].DurationMS > 1100 {
 		t.Fatalf("fixture lookup by search text = %+v, %v", tracks, err)
 	}
-	byURL, err := backend.Tracks.Resolve(context.Background(), "https://www.youtube.com/watch?v=alpha-track")
+	byURL, err := view.Tracks.Resolve(context.Background(), "https://www.youtube.com/watch?v=alpha-track")
 	if err != nil || byURL[0].CanonicalID != tracks[0].CanonicalID {
 		t.Fatalf("fixture lookup by video id = %+v, %v", byURL, err)
 	}
-	source, err := backend.Streams.Start(context.Background(), "https://www.youtube.com/watch?v="+tracks[0].CanonicalID)
+	source, err := view.Streams.Start(context.Background(), "https://www.youtube.com/watch?v="+tracks[0].CanonicalID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +76,7 @@ func TestFixtureResolverServesFilesThroughTheSameFfmpegArguments(t *testing.T) {
 	if strings.TrimSpace(string(recorded)) != want {
 		t.Fatalf("ffmpeg argv\n got %q\nwant %q", strings.TrimSpace(string(recorded)), want)
 	}
-	if _, err := backend.Tracks.Resolve(context.Background(), "no such song"); err == nil {
+	if _, err := view.Tracks.Resolve(context.Background(), "no such song"); err == nil {
 		t.Fatal("an absent fixture resolved")
 	}
 }
@@ -104,7 +108,7 @@ func (m *memQueue) Save(_ context.Context, _ id.ID, expected uint64, state music
 // fixturePlayer is a TrackStarter made of the real stream starter and the real
 // Opus runtime, with a consumer standing in for LiveKit that stamps each frame.
 type fixturePlayer struct {
-	streams *StreamStarter
+	streams *OwnedStreams
 	mu      sync.Mutex
 	first   map[string]time.Time
 	last    map[string]time.Time
@@ -173,18 +177,22 @@ func TestNextQueuedTrackGapUnder150ms(t *testing.T) {
 		t.Skipf("backend unavailable: %v", err)
 	}
 	defer backend.Close()
+	view, err := backend.For("fixture-test")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var gaps []time.Duration
 	for run := 0; run < 20; run++ {
-		player := &fixturePlayer{streams: backend.Streams, first: map[string]time.Time{}, last: map[string]time.Time{}, ended: map[string]bool{}}
+		player := &fixturePlayer{streams: view.Streams, first: map[string]time.Time{}, last: map[string]time.Time{}, ended: map[string]bool{}}
 		supervisor, err := music.NewSupervisor(context.Background(), id.ID{15: 1}, &memQueue{}, player)
 		if err != nil {
 			t.Fatal(err)
 		}
-		a, err := backend.Tracks.Resolve(context.Background(), "alpha-track")
+		a, err := view.Tracks.Resolve(context.Background(), "alpha-track")
 		if err != nil {
 			t.Fatal(err)
 		}
-		b, err := backend.Tracks.Resolve(context.Background(), "bravo-track")
+		b, err := view.Tracks.Resolve(context.Background(), "bravo-track")
 		if err != nil {
 			t.Fatal(err)
 		}

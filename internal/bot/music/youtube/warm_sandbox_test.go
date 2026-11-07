@@ -64,8 +64,8 @@ printf '%s\n' '`+fakePrintJSON+`'`, 10*time.Second)
 		if err != nil || got.Track.CanonicalID != "aqz-KE-bpKQ" {
 			t.Fatalf("%q = %+v, %v", query, got, err)
 		}
-		r.Invalidate(query) // each lookup must reach the worker, not the cache
-		r.Invalidate("https://www.youtube.com/watch?v=aqz-KE-bpKQ")
+		r.invalidate("", query) // each lookup must reach the worker, not the cache
+		r.invalidate("", "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
 	}
 	if n := launches(t, log); n != 1 {
 		t.Fatalf("three lookups launched %d sandboxes, want 1 warm worker", n)

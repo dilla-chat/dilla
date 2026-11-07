@@ -264,7 +264,7 @@ func TestWarmResolverInvalidateForcesAFreshLookup(t *testing.T) {
 	if _, err := r.Resolve(context.Background(), warmVideo); err != nil {
 		t.Fatal(err)
 	}
-	r.Invalidate(warmVideo)
+	r.invalidate("", warmVideo)
 	if _, err := r.Resolve(context.Background(), warmVideo); err != nil {
 		t.Fatal(err)
 	}

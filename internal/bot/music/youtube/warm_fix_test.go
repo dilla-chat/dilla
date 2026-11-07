@@ -246,7 +246,7 @@ func TestWarmBackendOnePlayIsOneWorkerRunAndARepeatIsNone(t *testing.T) {
 	warm, _, _, _ := testWarm(t, w)
 	streams, _ := streamStarterForTest(t, dir, ffmpeg, warm)
 	backend := newBackend(warm, streams)
-	a := backend.For("community-a")
+	a := mustFor(t, backend, "community-a")
 	ctx := context.Background()
 	play := func(view *OwnerBackend, text string) {
 		t.Helper()
@@ -272,7 +272,7 @@ func TestWarmBackendOnePlayIsOneWorkerRunAndARepeatIsNone(t *testing.T) {
 	if w.calls.Load() != 1 {
 		t.Fatalf("repeats ran the worker %d times in total, want still 1", w.calls.Load())
 	}
-	play(backend.For("community-b"), "some text")
+	play(mustFor(t, backend, "community-b"), "some text")
 	if w.calls.Load() != 2 {
 		t.Fatalf("community B's first play ran the worker %d times in total, want its own lookup (2)", w.calls.Load())
 	}
@@ -416,3 +416,12 @@ func TestWarmWorkerReleasesItsSlotWhenYtDlpCannotStart(t *testing.T) {
 }
 
 var _ = io.EOF
+
+func mustFor(t *testing.T, backend *Backend, owner string) *OwnerBackend {
+	t.Helper()
+	view, err := backend.For(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return view
+}

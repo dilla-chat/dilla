@@ -45,11 +45,13 @@ type StreamStarter struct {
 	cancel   context.CancelFunc
 
 	mu         sync.Mutex
-	prefetched map[string]*prefetchedStream // keyed by owner and video: one community never claims another's buffer
-	order      []string
+	prefetched map[prefetchID]*prefetchedStream // keyed by owner and video: one community never claims another's buffer
+	order      []prefetchID
 }
 
-func prefetchKey(owner, canonical string) string { return owner + "\x00" + canonical }
+type prefetchID struct{ owner, video string }
+
+func prefetchKey(owner, canonical string) prefetchID { return prefetchID{owner, canonical} }
 
 type prefetchedStream struct {
 	stream *bufferedStream
@@ -66,7 +68,7 @@ func NewStreamStarter(cfg SandboxConfig, resolver Resolver) (*StreamStarter, err
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &StreamStarter{cfg: cfg, resolver: resolver, ctx: ctx, cancel: cancel, prefetched: map[string]*prefetchedStream{}}, nil
+	return &StreamStarter{cfg: cfg, resolver: resolver, ctx: ctx, cancel: cancel, prefetched: map[prefetchID]*prefetchedStream{}}, nil
 }
 
 // Check reports whether the tools the stream needs are present.
@@ -85,7 +87,7 @@ func (s *StreamStarter) Close() error {
 	s.cancel()
 	s.mu.Lock()
 	entries := s.prefetched
-	s.prefetched = map[string]*prefetchedStream{}
+	s.prefetched = map[prefetchID]*prefetchedStream{}
 	s.order = nil
 	s.mu.Unlock()
 	for _, entry := range entries {
@@ -106,9 +108,13 @@ func (s *StreamStarter) StartAt(ctx context.Context, source string, ms int64) (i
 	if err != nil {
 		return nil, err
 	}
+	owner, err := ownerFrom(ctx)
+	if err != nil {
+		return nil, err
+	}
 	began := time.Now()
 	if ms <= 0 {
-		if stream := s.takePrefetched(ownerOf(ctx), canonical); stream != nil {
+		if stream := s.takePrefetched(owner, canonical); stream != nil {
 			if err := stream.waitFirst(ctx); err == nil {
 				music.MarkResolve(ctx, 0, false)
 				music.MarkFirstByte(ctx, time.Since(began))
@@ -135,7 +141,10 @@ func (s *StreamStarter) Prefetch(ctx context.Context, source string) error {
 	if err != nil {
 		return err
 	}
-	owner := ownerOf(ctx)
+	owner, err := ownerFrom(ctx)
+	if err != nil {
+		return err
+	}
 	key := prefetchKey(owner, canonical)
 	s.mu.Lock()
 	_, held := s.prefetched[key]
@@ -161,8 +170,8 @@ func (s *StreamStarter) Prefetch(ctx context.Context, source string) error {
 	}
 	var evicted []*prefetchedStream
 	// One held stream per owner: the owner's next track replaces whatever it buffered before.
-	for _, other := range append([]string(nil), s.order...) {
-		if strings.HasPrefix(other, owner+"\x00") {
+	for _, other := range append([]prefetchID(nil), s.order...) {
+		if other.owner == owner {
 			if entry, ok := s.prefetched[other]; ok {
 				delete(s.prefetched, other)
 				evicted = append(evicted, entry)
@@ -208,7 +217,7 @@ func (s *StreamStarter) takePrefetched(owner, canonical string) *bufferedStream 
 	return entry.stream
 }
 
-func (s *StreamStarter) takePrefetchedEntry(key string, entry *prefetchedStream) bool {
+func (s *StreamStarter) takePrefetchedEntry(key prefetchID, entry *prefetchedStream) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.prefetched[key] != entry {
@@ -219,9 +228,9 @@ func (s *StreamStarter) takePrefetchedEntry(key string, entry *prefetchedStream)
 	return true
 }
 
-func (s *StreamStarter) removeOrderLocked(canonical string) {
+func (s *StreamStarter) removeOrderLocked(target prefetchID) {
 	for i, key := range s.order {
-		if key == canonical {
+		if key == target {
 			s.order = append(s.order[:i], s.order[i+1:]...)
 			return
 		}

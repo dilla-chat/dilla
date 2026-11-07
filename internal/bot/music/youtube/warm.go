@@ -25,6 +25,7 @@ const (
 	DefaultLookupTimeout = 30 * time.Second
 
 	maxWarmCacheEntries  = 512
+	maxOwnerCacheEntries = 128
 	maxWorkerStartTries  = 4
 	workerBackoffInitial = 100 * time.Millisecond
 	workerBackoffMax     = 10 * time.Second
@@ -105,8 +106,10 @@ type warmDeps struct {
 	sleep func(ctx context.Context, d time.Duration) error
 }
 
-type warmEntry struct {
+// cacheEntry is one cached lookup; used orders entries for LRU eviction.
+type cacheEntry struct {
 	resolved Resolved
+	used     uint64
 }
 
 type warmCall struct {
@@ -135,8 +138,9 @@ type WarmResolver struct {
 	failures     int
 	consecutive  int // consecutive lookups on the current worker that failed for reasons other than the video
 	nextStart    time.Time
-	cache        map[string]warmEntry
-	inflight     map[string]*warmCall
+	cache        map[ownedKey]*cacheEntry
+	inflight     map[ownedKey]*warmCall
+	tick         uint64
 	closed       bool
 }
 
@@ -210,7 +214,7 @@ func newWarmResolver(cfg SandboxConfig, ttl time.Duration, deps warmDeps) *WarmR
 	return &WarmResolver{
 		cfg: cfg, ttl: ttl, timeout: timeout, deps: deps, ctx: ctx, cancel: cancel,
 		recycleAfter: workerRecycleAfter, retireGrace: workerRetireGrace,
-		cache: map[string]warmEntry{}, inflight: map[string]*warmCall{},
+		cache: map[ownedKey]*cacheEntry{}, inflight: map[ownedKey]*warmCall{},
 	}
 }
 
@@ -249,15 +253,21 @@ func (r *WarmResolver) Resolve(ctx context.Context, input string) (Resolved, err
 	if kind == "playlist" {
 		return Resolved{}, ErrInvalidInput
 	}
-	owner := ownerOf(ctx)
-	key := ownedKey(owner, cacheKey(kind, canonical))
+	owner, err := ownerFrom(ctx)
+	if err != nil {
+		return Resolved{}, err
+	}
+	key := ownedKey{owner, cacheKey(kind, canonical)}
 	started := time.Now()
 	r.mu.Lock()
 	if entry, ok := r.cache[key]; ok {
 		if r.deps.now().Before(entry.resolved.Expires) {
+			r.tick++
+			entry.used = r.tick
+			res := entry.resolved
 			r.mu.Unlock()
 			music.MarkResolve(ctx, time.Since(started), false)
-			return entry.resolved, nil
+			return res, nil
 		}
 		delete(r.cache, key)
 	}
@@ -294,13 +304,12 @@ func (r *WarmResolver) Resolve(ctx context.Context, input string) (Resolved, err
 	return call.res, nil
 }
 
-// Invalidate drops the cached lookup for input, for example after its stream
-// URL stopped working.
-func (r *WarmResolver) Invalidate(input string) { r.invalidate("", input) }
-
-// InvalidateCtx is Invalidate for the owner ctx carries.
+// InvalidateCtx drops the cached lookup for input of the owner ctx carries,
+// for example after its stream URL stopped working. An owner-less ctx is refused.
 func (r *WarmResolver) InvalidateCtx(ctx context.Context, input string) {
-	r.invalidate(ownerOf(ctx), input)
+	if owner, err := ownerFrom(ctx); err == nil {
+		r.invalidate(owner, input)
+	}
 }
 
 func (r *WarmResolver) invalidate(owner, input string) {
@@ -310,15 +319,16 @@ func (r *WarmResolver) invalidate(owner, input string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := ownedKey(owner, cacheKey(kind, canonical))
+	key := ownedKey{owner, cacheKey(kind, canonical)}
 	if entry, ok := r.cache[key]; ok {
-		delete(r.cache, ownedKey(owner, urlKey(entry.resolved.Track.CanonicalID)))
+		delete(r.cache, ownedKey{owner, urlKey(entry.resolved.Track.CanonicalID)})
 	}
 	delete(r.cache, key)
 }
 
 // ownedKey partitions the cache: a community never reads another's entries.
-func ownedKey(owner, key string) string { return owner + "\x00" + key }
+// A struct key cannot collide the way a joined string could.
+type ownedKey struct{ owner, key string }
 
 func cacheKey(kind, canonical string) string {
 	if kind == "search" {
@@ -330,23 +340,59 @@ func cacheKey(kind, canonical string) string {
 
 func urlKey(id string) string { return videoURL(id) }
 
-func (r *WarmResolver) storeLocked(owner, key string, res Resolved) {
-	if len(r.cache) >= maxWarmCacheEntries {
-		now := r.deps.now()
-		for k, e := range r.cache {
-			if !now.Before(e.resolved.Expires) {
-				delete(r.cache, k)
-			}
+func (r *WarmResolver) storeLocked(owner string, key ownedKey, res Resolved) {
+	urlK := ownedKey{owner, urlKey(res.Track.CanonicalID)}
+	r.dropExpiredLocked()
+	// Each owner has its own cap, so one community's searches cannot push another's entries out; the
+	// global cap is the second bound. Both evict the least recently used entry.
+	for r.countLocked(owner)+2 > maxOwnerCacheEntries {
+		if !r.evictLRULocked(func(k ownedKey) bool { return k.owner == owner }) {
+			break
 		}
-		for k := range r.cache {
-			if len(r.cache) < maxWarmCacheEntries {
-				break
-			}
+	}
+	for len(r.cache)+2 > maxWarmCacheEntries {
+		if !r.evictLRULocked(func(ownedKey) bool { return true }) {
+			break
+		}
+	}
+	r.tick++
+	r.cache[key] = &cacheEntry{resolved: res, used: r.tick}
+	r.cache[urlK] = &cacheEntry{resolved: res, used: r.tick}
+}
+
+func (r *WarmResolver) dropExpiredLocked() {
+	now := r.deps.now()
+	for k, e := range r.cache {
+		if !now.Before(e.resolved.Expires) {
 			delete(r.cache, k)
 		}
 	}
-	r.cache[key] = warmEntry{resolved: res}
-	r.cache[ownedKey(owner, urlKey(res.Track.CanonicalID))] = warmEntry{resolved: res}
+}
+
+func (r *WarmResolver) countLocked(owner string) int {
+	n := 0
+	for k := range r.cache {
+		if k.owner == owner {
+			n++
+		}
+	}
+	return n
+}
+
+// evictLRULocked removes the least recently used entry accepted by match.
+func (r *WarmResolver) evictLRULocked(match func(ownedKey) bool) bool {
+	var oldest ownedKey
+	var oldestUsed uint64
+	found := false
+	for k, e := range r.cache {
+		if match(k) && (!found || e.used < oldestUsed) {
+			oldest, oldestUsed, found = k, e.used, true
+		}
+	}
+	if found {
+		delete(r.cache, oldest)
+	}
+	return found
 }
 
 // lookupArgs is yt-dlp's whole command line for one lookup: one extraction that
@@ -505,6 +551,7 @@ func (r *WarmResolver) run(ctx context.Context, args []string, limit int, input 
 			return nil, processErr
 		}
 		if ctx.Err() != nil {
+			r.finished(w, true) // the caller gave up; the worker is fine, and the lookup still counts
 			return nil, context.Cause(ctx)
 		}
 		r.finished(w, false)
@@ -610,7 +657,7 @@ func (r *WarmResolver) finished(w lookupWorker, healthy bool) {
 		spent = budget.egressUsed()
 	}
 	r.mu.Lock()
-	retired := false
+	retired, broken := false, false
 	if r.worker == w {
 		r.served++
 		if healthy {
@@ -619,12 +666,22 @@ func (r *WarmResolver) finished(w lookupWorker, healthy bool) {
 		} else {
 			r.consecutive++
 		}
-		if r.served >= r.recycleAfter || r.consecutive >= workerMaxFailures || spent > maxProcessBytes/2 {
+		switch {
+		case r.consecutive >= workerMaxFailures:
+			// The worker is failing, not merely used up: the replacement waits out a backoff (an outage
+			// must not start a sandbox every few lookups) and the old worker is closed at once.
+			r.worker, r.served, r.consecutive, broken = nil, 0, 0, true
+			r.failures++
+			r.nextStart = r.deps.now().Add(backoffFor(r.failures))
+		case r.served >= r.recycleAfter || spent > maxProcessBytes/2:
 			r.worker, r.served, r.consecutive, retired = nil, 0, 0, true
 		}
 	}
 	grace := r.retireGrace
 	r.mu.Unlock()
+	if broken {
+		go func() { _ = w.Close() }()
+	}
 	if retired {
 		// Requests already on w finish; new ones start a fresh worker with a fresh egress budget.
 		time.AfterFunc(grace, func() { _ = w.Close() })
@@ -716,7 +773,10 @@ type lookupProcess struct {
 	dead    bool
 	closeMu sync.Once
 	done    chan struct{}
-	// lastReply is the unix-nano time of the latest line the worker wrote.
+	// base anchors lastReply on the monotonic clock: it holds time.Since(base) of the latest line the worker
+	// wrote, so a wall-clock step cannot change the wedge check.
+	base      time.Time
+	grace     time.Duration // how long a cancelled lookup waits for the worker to acknowledge
 	lastReply atomic.Int64
 }
 
@@ -745,7 +805,8 @@ func startSandboxWorker(ctx context.Context, cfg SandboxConfig) (lookupWorker, e
 		return nil, err
 	}
 	w := &lookupProcess{process: process, pending: map[uint64]chan workerReply{}, done: make(chan struct{})}
-	w.lastReply.Store(time.Now().UnixNano())
+	w.base, w.grace = time.Now(), workerCancelGrace
+	w.lastReply.Store(int64(time.Since(w.base)))
 	go w.readReplies()
 	return w, nil
 }
@@ -774,7 +835,7 @@ func (w *lookupProcess) readReplies() {
 		if json.Unmarshal(line, &reply) != nil {
 			continue
 		}
-		w.lastReply.Store(time.Now().UnixNano())
+		w.lastReply.Store(int64(time.Since(w.base)))
 		w.mu.Lock()
 		ch := w.pending[reply.ID]
 		delete(w.pending, reply.ID)
@@ -831,7 +892,7 @@ func (w *lookupProcess) Do(ctx context.Context, args []string, limit int) ([]byt
 		forget()
 		return nil, ErrExtractFailed
 	}
-	sent := time.Now()
+	sent := int64(time.Since(w.base))
 	if err := w.write(line); err != nil {
 		forget()
 		return nil, errWorkerGone
@@ -858,11 +919,11 @@ func (w *lookupProcess) write(line []byte) error {
 // answers the request, which proves it is alive. Only when nothing at all came
 // back from the worker since the request was sent (and the cancel went
 // unanswered) is the worker wedged.
-func (w *lookupProcess) cancel(id uint64, ch chan workerReply, sent time.Time, cause error) error {
+func (w *lookupProcess) cancel(id uint64, ch chan workerReply, sent int64, cause error) error {
 	if line, err := json.Marshal(workerRequest{Cancel: id}); err == nil {
 		_ = w.write(line)
 	}
-	timer := time.NewTimer(workerCancelGrace)
+	timer := time.NewTimer(w.grace)
 	defer timer.Stop()
 	select {
 	case _, ok := <-ch:
@@ -875,7 +936,7 @@ func (w *lookupProcess) cancel(id uint64, ch chan workerReply, sent time.Time, c
 	w.mu.Lock()
 	delete(w.pending, id)
 	w.mu.Unlock()
-	if w.lastReply.Load() < sent.UnixNano() {
+	if w.lastReply.Load() < sent {
 		return errors.Join(errWorkerWedged, cause)
 	}
 	return cause

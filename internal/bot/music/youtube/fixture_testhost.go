@@ -25,6 +25,9 @@ import (
 
 func init() { localStream = startLocalStream }
 
+// A test host may run without an owner; a shipped Bot may not.
+func init() { requireOwner = false }
+
 // FixtureResolver serves Opus files from a directory as if YouTube had
 // resolved them. A video URL (or a bare 11-character name) selects <id>.opus;
 // search text selects <text with spaces as dashes>.opus. The stream goes
@@ -61,7 +64,7 @@ func fixtureBackend(cfg SandboxConfig) (*Backend, bool, error) {
 	if err != nil {
 		return nil, true, err
 	}
-	return &Backend{Streams: streams, Tracks: fixtureTracks{fixtures}}, true, nil
+	return &Backend{streams: streams, tracks: fixtureTracks{fixtures}}, true, nil
 }
 
 // fixtureID maps a file stem to a queue-valid 11-character video id.

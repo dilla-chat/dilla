@@ -26,10 +26,9 @@ type TrackResolver interface {
 // Backend is everything the Bot's music path needs from YouTube, built once
 // per process so every installation shares one warm worker and one cache.
 type Backend struct {
-	// Streams starts a track's single-ffmpeg Ogg Opus stream and pre-buffers the next.
-	Streams *StreamStarter
-	// Tracks resolves /play inputs and searches to queue descriptors.
-	Tracks TrackResolver
+	// Both are reachable only through For, so nothing can use the cache or the buffers without an owner.
+	streams *StreamStarter
+	tracks  TrackResolver
 
 	warm *WarmResolver
 }
@@ -54,7 +53,7 @@ func NewBackend(cfg SandboxConfig, cache time.Duration) (*Backend, error) {
 }
 
 func newBackend(warm *WarmResolver, streams *StreamStarter) *Backend {
-	return &Backend{Streams: streams, Tracks: warmTracks{warm: warm, metadata: warm.MetadataResolver()}, warm: warm}
+	return &Backend{streams: streams, tracks: warmTracks{warm: warm, metadata: warm.MetadataResolver()}, warm: warm}
 }
 
 // warmTracks answers a /play: a video or a search text goes through the warm
@@ -90,8 +89,12 @@ func (t warmTracks) Search(ctx context.Context, input string) ([]music.Track, er
 // owner's: another community never hits this one's cache entries or claims its
 // buffer, and its start timings report Cold for its own lookups only. The cost
 // is one extra yt-dlp run per community for the same song.
-func (b *Backend) For(owner string) *OwnerBackend {
-	return &OwnerBackend{Streams: &OwnedStreams{streams: b.Streams, owner: owner}, Tracks: ownedTracks{base: b.Tracks, owner: owner}}
+// The owner must be non-empty printable text without NUL, or For fails closed.
+func (b *Backend) For(owner string) (*OwnerBackend, error) {
+	if b == nil || b.streams == nil || b.tracks == nil || !validOwner(owner) {
+		return nil, ErrInvalidInput
+	}
+	return &OwnerBackend{Streams: &OwnedStreams{streams: b.streams, owner: owner}, Tracks: ownedTracks{base: b.tracks, owner: owner}}, nil
 }
 
 // OwnerBackend is a Backend scoped to one owner.
@@ -139,8 +142,8 @@ func (b *Backend) Close() error {
 	if b == nil {
 		return nil
 	}
-	if b.Streams != nil {
-		_ = b.Streams.Close()
+	if b.streams != nil {
+		_ = b.streams.Close()
 	}
 	if b.warm != nil {
 		_ = b.warm.Close()
