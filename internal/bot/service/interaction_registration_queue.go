@@ -58,6 +58,19 @@ func (c *InteractionRegistrationCoordinator) QueueMemberJoin(ctx context.Context
 	return c.saveRegistrationJobs(ctx, revision, jobs)
 }
 
+// HasPendingWork reports whether a durable member-episode job is still queued: a member whose devices are not all
+// registered yet (one may be waiting for KeyPackages, or for a device list). The Bot polls nothing (Bot v2 task 14),
+// so its loop runs the pass again, on a backoff, while this holds.
+func (c *InteractionRegistrationCoordinator) HasPendingWork(ctx context.Context) (bool, error) {
+	if c == nil {
+		return false, errors.New("invalid interaction registration worker")
+	}
+	c.jobsMu.Lock()
+	defer c.jobsMu.Unlock()
+	jobs, _, err := c.loadRegistrationJobs(ctx)
+	return len(jobs) > 0, err
+}
+
 // ProcessPending advances a bounded number of durable member-episode jobs and
 // per-device registrations. Current episode is rechecked immediately before
 // each device registration. A transient device failure stays queued while

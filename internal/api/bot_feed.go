@@ -522,6 +522,12 @@ func (f *BotFeed) snapshot(ctx context.Context, b *feedBot, s BotFeedStream) err
 		}
 		channels[m.ChannelID] = true
 	}
+	// The channel groups (Bot v2 task 14, Task 12 review N-1): a live op 65 is dropped while the snapshot is owed, so
+	// an epoch committed before these reads reaches the Bot only here. One committed after them is queued by GroupEpoch
+	// and sent once snapshot_end has gone out.
+	if err := f.snapshotChannelGroups(ctx, b, channels, send); err != nil {
+		return err
+	}
 	end, err := event(gateway.BotEventSnapshotEnd, []any{b.community})
 	if err != nil {
 		return err
@@ -717,6 +723,53 @@ func (f *BotFeed) channelGroup(b *feedBot, c ds.EpochChange) error {
 		return err
 	}
 	return f.liveSender(b)(fr)
+}
+
+// snapshotChannelGroups sends, inside a snapshot, the channel_group of everything channelGroup feeds live: each marked
+// Bot channel's open text group, and each open call group of the Bot's community that the Bot's device is in.
+func (f *BotFeed) snapshotChannelGroups(ctx context.Context, b *feedBot, marked map[id.ID]bool, send func(gateway.Frame) error) error {
+	emit := func(g store.GroupRow) error {
+		fr, err := event(gateway.BotEventChannelGroup, []any{b.community, g.TargetID, g.GroupID, g.Epoch})
+		if err != nil {
+			return err
+		}
+		return send(fr)
+	}
+	for _, ch := range sortedKeys(marked) {
+		groups, err := f.o.Repo.GroupsForTarget(ctx, ch, groupKindText)
+		if err != nil {
+			return err
+		}
+		for _, g := range groups {
+			if g.ClosedAt != nil || g.CommunityID == nil || *g.CommunityID != b.community {
+				continue
+			}
+			if err := emit(g); err != nil {
+				return err
+			}
+		}
+	}
+	ids, err := f.o.Repo.GroupsForDevice(ctx, b.device)
+	if err != nil {
+		return err
+	}
+	slices.SortFunc(ids, compareIDs)
+	for _, gid := range slices.Compact(ids) {
+		g, err := f.o.Repo.GetGroup(ctx, gid)
+		if errors.Is(err, store.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if g.Kind != groupKindCall || g.ClosedAt != nil || g.CommunityID == nil || *g.CommunityID != b.community {
+			continue
+		}
+		if err := emit(g); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // The group kinds the feed reads from an EpochChange (protocol/01 § Group kinds).

@@ -1123,6 +1123,14 @@ restore that right. The music publisher also disables automatic subscriptions.
 | `POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[snapshot_payload_bstr, snapshot_signature_bstr]`; read-only v1 snapshot signed with the instance context-snapshot domain, max 160 KiB |
 | `GET /v1/groups/{id}/interaction-admission-context` | enrolled human participant device | no body | `[current_payload_bstr, signature_bstr]`; read-only v1 current-group proof signed with the dedicated current-interaction-context domain, max 160 KiB |
 
+Transport (Bot v2): every `B` route above is socket-only, a request frame on the Bot's gateway connection,
+except `PUT …/credential`, which the Bot sends while its installation is still enrolling and the gateway admits
+only a joining or ready Bot. The `R` routes run before and outside any device session and stay on HTTP; on a
+supervised instance the Bot reaches them, the credential finalize, discovery, the session ceremony and its own
+device list only over its Unix socket (`02` § The supervised Bot's socket). The Bot polls nothing: it reads its
+installations at start, on SIGHUP from dillad's supervisor after an installation change (configure, disable,
+remove, a restart request, the music defaults), after `community_changed` and after a `bot_event`.
+
 `device` is `09`'s native registration tuple, with device tier Native and signer
 tier Native. Credential kind MUST be Bot, and all key ids, key signatures, device
 keys and tiers must agree. The placeholder user id is zero only in the enrollment

@@ -22,7 +22,7 @@ func TestSocketRouteManifestMatchesTheMux(t *testing.T) {
 	entry := regexp.MustCompile(`\{\s*method:\s*'([A-Z]+)',\s*pattern:\s*'([^']+)'\s*\}`)
 	lists := map[string]map[string]bool{}
 	listedIn := map[string]string{}
-	for _, name := range []string{"SOCKET_ROUTES", "HTTP_ONLY_ROUTES", "BOT_RUNTIME_ROUTES", "PRE_GATEWAY_ROUTES"} {
+	for _, name := range []string{"SOCKET_ROUTES", "HTTP_ONLY_ROUTES", "PRE_GATEWAY_ROUTES"} {
 		m := regexp.MustCompile(`export const ` + name + `: readonly SocketRoute\[\] = \[([\s\S]*?)\n\];`).FindSubmatch(raw)
 		if m == nil {
 			t.Fatalf("%s not found in the manifest", name)
@@ -30,7 +30,7 @@ func TestSocketRouteManifestMatchesTheMux(t *testing.T) {
 		lists[name] = map[string]bool{}
 		for _, e := range entry.FindAllSubmatch(m[1], -1) {
 			key := string(e[1]) + " " + string(e[2])
-			// PRE_GATEWAY_ROUTES annotates HTTP_ONLY_ROUTES entries; the other three lists are disjoint.
+			// PRE_GATEWAY_ROUTES annotates HTTP_ONLY_ROUTES entries; the other two lists are disjoint.
 			if other, ok := listedIn[key]; ok && name != "PRE_GATEWAY_ROUTES" {
 				t.Errorf("%s is listed more than once (%s and %s)", key, other, name)
 			} else if name != "PRE_GATEWAY_ROUTES" {
@@ -63,14 +63,14 @@ func TestSocketRouteManifestMatchesTheMux(t *testing.T) {
 			continue
 		}
 		mounted++
-		if !lists["HTTP_ONLY_ROUTES"][pattern] && !lists["SOCKET_ROUTES"][pattern] && !lists["BOT_RUNTIME_ROUTES"][pattern] {
-			t.Errorf("%s is served on HTTP but is in none of HTTP_ONLY_ROUTES, SOCKET_ROUTES and BOT_RUNTIME_ROUTES", pattern)
+		if !lists["HTTP_ONLY_ROUTES"][pattern] && !lists["SOCKET_ROUTES"][pattern] {
+			t.Errorf("%s is served on HTTP but is in neither HTTP_ONLY_ROUTES nor SOCKET_ROUTES", pattern)
 		}
 	}
-	if mounted < 50 {
+	if mounted < 30 {
 		t.Fatalf("only %d /v1 HTTP patterns were recorded", mounted)
 	}
-	for _, name := range []string{"HTTP_ONLY_ROUTES", "BOT_RUNTIME_ROUTES", "PRE_GATEWAY_ROUTES"} {
+	for _, name := range []string{"HTTP_ONLY_ROUTES", "PRE_GATEWAY_ROUTES"} {
 		for pattern := range lists[name] {
 			if !served[pattern] {
 				t.Errorf("%s is in %s but the instance does not serve it on HTTP", pattern, name)

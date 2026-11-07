@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -251,6 +252,33 @@ func TestSupervisorStopsChildWithDillad(t *testing.T) {
 }
 
 // Restart stops the running child and starts the next one at once; it may be called from any goroutine.
+// TestSupervisorNudgeSignalsTheRunningChild (Bot v2 task 14): the Bot polls nothing, so dillad tells it that an
+// installation changed by sending the running child SIGHUP through the keeper. With no child running, Nudge does
+// nothing; it never restarts the child.
+func TestSupervisorNudgeSignalsTheRunningChild(t *testing.T) {
+	keeper := newFakeKeeper()
+	s := New(testBotConfig(), keeper, quietLog())
+	s.Nudge() // nothing runs yet
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = s.Run(ctx) }()
+	pid := keeper.waitStart(t)
+	deadline := time.Now().Add(5 * time.Second)
+	for s.Status().PID != pid && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	s.Nudge()
+	keeper.mu.Lock()
+	got := slices.Clone(keeper.signals)
+	keeper.mu.Unlock()
+	if !slices.Equal(got, []syscall.Signal{syscall.SIGHUP}) {
+		t.Fatalf("signals = %v, want one SIGHUP to the running child", got)
+	}
+	if st := s.Status(); st.PID != pid || st.Restarts != 0 {
+		t.Fatalf("status after Nudge = %+v, want the same child", st)
+	}
+}
+
 func TestSupervisorRestartReplacesTheChild(t *testing.T) {
 	keeper := newFakeKeeper()
 	s := New(testBotConfig(), keeper, quietLog())

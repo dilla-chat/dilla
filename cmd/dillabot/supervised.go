@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
-	"github.com/pelletier/go-toml/v2"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/gatewayclient"
@@ -26,17 +24,17 @@ import (
 // The supervised Bot (Bot v2 task 11). dillad's supervisor starts dillabot through `dillad bot-launch` with no
 // arguments, an environment of exactly PATH, HOME, DILLA_BOT_SOCKET, DILLA_BOT_STATE_DIR, DILLA_BOT_HELPER and
 // DILLA_BOT_WASI, its state directory as cwd, and the launch token on fd 3. It reaches dillad only over the Unix socket
-// DILLA_BOT_SOCKET: its gateway connections (the first identify carries the launch token) and, until Task 14 moves
-// them onto the gateway, its HTTP calls too, which dillad serves on the same socket. There is no base_url and no
-// network path.
+// DILLA_BOT_SOCKET: its gateway connections (the first identify carries the launch token), which carry every request
+// the Bot's device session makes as request frames, and the few HTTP routes it calls before its gateway exists
+// (discovery, its enrollment, its session and its device list), the only HTTP routes dillad serves beside /gateway on
+// that socket (dillad.BotSocketHTTPRoutes). There is no base_url and no network path.
 //
-// Two files in the state directory stand in for what bot.toml held until Task 14 removes it: runtime.token, the
-// runtime credential (0600, the Bot's), and an optional bot.toml with only reconcile_interval and [rate_limits].
+// There is no configuration file (Bot v2 task 14): the one file the Bot reads from its state directory is
+// runtime.token, the runtime credential (0600, the Bot's). Its client rate limits are built-in defaults
+// (client.RateLimits), and it has no reconcile interval: it polls nothing.
 const (
-	launchTokenFD           = 3
-	supervisedCredential    = "runtime.token"
-	supervisedTuningFile    = "bot.toml"
-	supervisedReconcileTime = 30 * time.Second
+	launchTokenFD        = 3
+	supervisedCredential = "runtime.token"
 	// supervisedOrigin is the HTTP origin of the socket's requests; the host name is never resolved.
 	supervisedOrigin = "http://localhost"
 )
@@ -84,12 +82,11 @@ func loadSupervisedConfig(ctx context.Context) (config, error) {
 	}
 	c := config{
 		BaseURL: supervisedOrigin, AllowLoopbackHTTP: true,
-		Socket:            os.Getenv("DILLA_BOT_SOCKET"),
-		StateDir:          os.Getenv("DILLA_BOT_STATE_DIR"),
-		HelperExecutable:  os.Getenv("DILLA_BOT_HELPER"),
-		WASIModule:        os.Getenv("DILLA_BOT_WASI"),
-		ReconcileInterval: supervisedReconcileTime,
-		launch:            launch,
+		Socket:           os.Getenv("DILLA_BOT_SOCKET"),
+		StateDir:         os.Getenv("DILLA_BOT_STATE_DIR"),
+		HelperExecutable: os.Getenv("DILLA_BOT_HELPER"),
+		WASIModule:       os.Getenv("DILLA_BOT_WASI"),
+		launch:           launch,
 	}
 	for name, value := range map[string]string{
 		"DILLA_BOT_SOCKET": c.Socket, "DILLA_BOT_STATE_DIR": c.StateDir,
@@ -100,12 +97,6 @@ func loadSupervisedConfig(ctx context.Context) (config, error) {
 		}
 	}
 	c.RuntimeCredentialFile = filepath.Join(c.StateDir, supervisedCredential)
-	if err := c.loadTuning(filepath.Join(c.StateDir, supervisedTuningFile)); err != nil {
-		return config{}, err
-	}
-	if err := c.RateLimits.Validate(); err != nil {
-		return config{}, fmt.Errorf("%w: rate_limits requires positive finite rates and bounded cache capacities", errConfigInvalid)
-	}
 	credential, err := readCredential(c.RuntimeCredentialFile)
 	if err != nil {
 		return config{}, errCredentialBad
@@ -115,66 +106,50 @@ func loadSupervisedConfig(ctx context.Context) (config, error) {
 	if err != nil {
 		return config{}, fmt.Errorf("instance discovery over %s: %w", c.Socket, err)
 	}
+	c.RateLimits = supervisedRateLimits(c.Socket)
 	return c, nil
 }
 
-// loadTuning reads the optional tuning file: the Bot's own, owner-only, and holding only reconcile_interval and
-// [rate_limits] (strict).
-func (c *config) loadTuning(path string) error {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
-	if errors.Is(err, syscall.ENOENT) {
-		return nil
-	}
+// unpacedRateLimits is a client with no pacing of its own: every bucket far above any request rate.
+var unpacedRateLimits = client.RateLimits{
+	WritePerSecond: 1e6, WriteBurst: 1e6, ReadPerSecond: 1e6, ReadBurst: 1e6, MessagePerSecond: 1e6, MessageBurst: 1e6,
+	CommitPerSecond: 1e6, CommitBurst: 1e6, ProposalPerSecond: 1e6, ProposalBurst: 1e6, KeyPackagePerSecond: 1e6, KeyPackageBurst: 1e6,
+}
+
+// supervisedRateLimits is the supervised Bot's client pacing (Bot v2 task 14: there is no bot.toml). It is the built-in
+// defaults (client.RateLimits{}), which keep the Bot below a production instance's meters. A Bot whose socket is its
+// own user's runs as dillad's own user ([bot] dev_same_user, development and the e2e test host) and is not paced, as the
+// test host's tuning file used to set; dillad's own meters still apply. In production the socket is dillad's.
+func supervisedRateLimits(socket string) client.RateLimits {
+	info, err := os.Lstat(socket)
 	if err != nil {
-		return errConfigUnreadable
-	}
-	f := os.NewFile(uintptr(fd), "bot-tuning")
-	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil {
-		return errConfigUnreadable
+		return client.RateLimits{}
 	}
 	st, ok := info.Sys().(*syscall.Stat_t)
-	if !info.Mode().IsRegular() || !ok || int64(st.Uid) != int64(os.Geteuid()) || info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("%w: %s must be an owner-only regular file", errConfigInvalid, path)
+	if !ok || int64(st.Uid) != int64(os.Geteuid()) {
+		return client.RateLimits{}
 	}
-	raw, err := io.ReadAll(io.LimitReader(f, maxConfigBytes+1))
-	if err != nil || len(raw) > maxConfigBytes {
-		return errConfigUnreadable
-	}
-	full := struct {
-		RateLimits        client.RateLimits `toml:"rate_limits"`
-		ReconcileInterval string            `toml:"reconcile_interval"`
-	}{RateLimits: c.RateLimits}
-	dec := toml.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&full); err != nil {
-		return fmt.Errorf("%w: %s: only reconcile_interval and [rate_limits] are read", errConfigInvalid, path)
-	}
-	c.RateLimits = full.RateLimits
-	if full.ReconcileInterval != "" {
-		d, err := time.ParseDuration(full.ReconcileInterval)
-		if err != nil || d < time.Second || d > 24*time.Hour {
-			return fmt.Errorf("%w: reconcile_interval must be between 1s and 24h", errConfigInvalid)
-		}
-		c.ReconcileInterval = d
-	}
-	return nil
+	return unpacedRateLimits
 }
 
 // discoverInstanceID reads the instance id from GET /v1/instance over the socket. The socket is dillad's own (it sits
 // in dillad's runtime directory, and dillad admitted this very process on it), so its answer is the instance's.
 func discoverInstanceID(ctx context.Context, socket string) (id.ID, error) {
+	transport := unixTransport(socket)
+	defer transport.CloseIdleConnections()
+	return discoverInstance(ctx, &http.Client{Transport: transport}, supervisedOrigin)
+}
+
+// discoverInstance reads the instance id from origin's GET /v1/instance.
+func discoverInstance(ctx context.Context, hc *http.Client, origin string) (id.ID, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, supervisedOrigin+"/v1/instance", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/v1/instance", nil) // #nosec G704 -- origin is the fixed socket origin or the operator's --remote flag
 	if err != nil {
 		return id.ID{}, err
 	}
 	req.Header.Set("Accept", "application/cbor")
-	transport := unixTransport(socket)
-	defer transport.CloseIdleConnections()
-	res, err := (&http.Client{Transport: transport}).Do(req)
+	res, err := hc.Do(req) // #nosec G704 -- as above: the request goes only to the configured instance
 	if err != nil {
 		return id.ID{}, err
 	}

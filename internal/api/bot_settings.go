@@ -122,12 +122,20 @@ func (d Deps) PutBotMusicSettings(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
+	d.botInstallationsChanged()
 	value, err := botInstallationValueV2(row)
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
 	d.write(w, r, http.StatusOK, value)
+}
+
+// botInstallationsChanged runs Deps.BotInstallationsChanged, when set, after an installation commit (Bot v2 task 14).
+func (d Deps) botInstallationsChanged() {
+	if d.BotInstallationsChanged != nil {
+		d.BotInstallationsChanged()
+	}
 }
 
 type botRestartRequest struct {
@@ -201,6 +209,9 @@ func (d Deps) RestartBotInstallation(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
+	}
+	if requested != handled {
+		d.botInstallationsChanged()
 	}
 	d.write(w, r, http.StatusOK, []any{requested, handled})
 }

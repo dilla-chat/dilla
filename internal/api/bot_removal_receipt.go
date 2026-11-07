@@ -11,8 +11,7 @@ import (
 // A bot can attach encrypted evidence only after resolving an accepted,
 // immutable human action. This endpoint returns structural receipt data only.
 func (d Deps) registerBotRemovalReceipt(m *server.Mux) {
-	path := "GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}"
-	m.Handle(path, BotSessionRoute(d.Sessions, d.Limiter)(path, http.HandlerFunc(d.getBotRemovalReceipt)))
+	m.SocketAuthed("GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}", botSocketChain(d.Sessions, d.Limiter, "GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}"), http.HandlerFunc(d.getBotRemovalReceipt))
 }
 
 func (d Deps) getBotRemovalReceipt(w http.ResponseWriter, r *http.Request) {

@@ -50,7 +50,7 @@ func TestBotGatewayRuntimePublishesPresenceAndStopsOnRemoval(t *testing.T) {
 	}
 	runtime := newBotGatewayRuntime(t.Context(), api, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer runtime.Close()
-	if err := runtime.Ensure(installation, device, user, "session"); err != nil {
+	if err := runtime.Ensure(installation, id.New(), device, user, "session"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -127,7 +127,7 @@ func TestPrivateGroupJoinedAfterReadyWakesCommandIntake(t *testing.T) {
 		return nil
 	})
 	runtime.StartCommandWorkers()
-	if err := runtime.Ensure(installation, device, user, "session"); err != nil {
+	if err := runtime.Ensure(installation, id.New(), device, user, "session"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -192,6 +192,89 @@ ownEcho:
 		case <-timeout.C:
 			t.Fatal("new private group did not wake command intake")
 		}
+	}
+}
+
+// laterNotificationSource is a helper whose private group appears only once registered is set.
+type laterNotificationSource struct {
+	group      id.ID
+	registered *atomic.Bool
+	reads      *atomic.Int64
+}
+
+func (s laterNotificationSource) Groups(context.Context) ([]native.GroupInfo, error) { return nil, nil }
+func (s laterNotificationSource) InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error) {
+	s.reads.Add(1)
+	if !s.registered.Load() {
+		return nil, nil
+	}
+	return []native.InteractionGroupDescriptor{{Group: s.group, State: 2}}, nil
+}
+
+// TestMessageInAGroupRegisteredSinceTheLastReadReachesCommandIntake (Bot v2 task 14): no periodic pass re-reads the
+// helper's groups, so a member's first command in an interaction group registered after the last read arrives as a
+// hint for a group the Bot does not know. The hint re-reads the groups, and the now-private group's command reaches
+// the command worker. A second hint for the same, now known, group re-reads nothing.
+func TestMessageInAGroupRegisteredSinceTheLastReadReachesCommandIntake(t *testing.T) {
+	instance, device, user, installation, group := id.New(), id.New(), id.New(), id.New(), id.New()
+	store := &lateNotificationStore{group: group}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := gateway.New(gateway.Options{InstanceID: instance, Generation: 1, WireVersions: []uint64{6}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1}, Store: store, ScopeResolver: store, CommunityCompatibility: store, Auth: presenceTestAuth{auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, TokenHash: make([]byte, 32)}}, TrustedOrigins: []string{"*"}, Log: log})
+	server := httptest.NewServer(gw.Handler())
+	defer server.Close()
+	defer gw.Shutdown(context.Background())
+	api, err := client.New(client.Config{BaseURL: server.URL, InstanceID: instance, AllowLoopbackHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := newBotGatewayRuntime(t.Context(), api, true, log)
+	defer runtime.Close()
+	polled := make(chan id.ID, 4)
+	runtime.SetInteractionPoller(installation, func(_ context.Context, group id.ID) error {
+		polled <- group
+		return nil
+	})
+	runtime.StartCommandWorkers()
+	if err := runtime.Ensure(installation, id.New(), device, user, "session"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runtime.Wake():
+	case <-time.After(3 * time.Second):
+		t.Fatal("gateway did not become ready")
+	}
+	var registered atomic.Bool
+	var reads atomic.Int64
+	source := laterNotificationSource{group: group, registered: &registered, reads: &reads}
+	if err := runtime.SubscribeNativeGroups(t.Context(), installation, source); err != nil {
+		t.Fatal(err)
+	}
+	// Registered after the last read; the gateway fans the group's messages out to its member devices.
+	registered.Store(true)
+	store.joined.Store(true)
+	gw.SetGroupMembers(group, []id.ID{device})
+	payload, err := gateway.MessageCTPayload(1, 1, id.New(), []byte("ciphertext"), make([]byte, 32), 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw.DeliverGroup(group, gateway.Frame{Op: gateway.OpMessageCT, GroupID: &group, Payload: payload, Replay: true})
+	select {
+	case got := <-polled:
+		if got != group {
+			t.Fatalf("polled %s, want %s", got, group)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a command in a group registered since the last read never reached command intake")
+	}
+	before := reads.Load()
+	gw.DeliverGroup(group, gateway.Frame{Op: gateway.OpMessageCT, GroupID: &group, Payload: payload, Replay: true})
+	select {
+	case <-polled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the known private group's next command did not reach command intake")
+	}
+	if got := reads.Load(); got != before {
+		t.Fatalf("a hint for a known group re-read the helper's groups (%d reads)", got-before)
 	}
 }
 

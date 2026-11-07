@@ -8,9 +8,9 @@ import { fileURLToPath } from 'node:url';
  * must agree exactly. This fails when:
  *   - a Go `Socket*` registration is missing from SOCKET_ROUTES (the app would still use HTTP, which no longer serves it);
  *   - a SOCKET_ROUTES entry has no Go `Socket*` registration (the app would send a request nothing answers);
- *   - a Go HTTP /v1 or /hooks registration is in none of HTTP_ONLY_ROUTES, SOCKET_ROUTES and BOT_RUNTIME_ROUTES
- *     (unclassified; /hooks/ is the incoming webhooks' public route);
- *   - an HTTP_ONLY_ROUTES or BOT_RUNTIME_ROUTES entry has no Go HTTP registration (stale), or an entry is listed twice;
+ *   - a Go HTTP /v1 or /hooks registration is in neither HTTP_ONLY_ROUTES nor SOCKET_ROUTES (unclassified; /hooks/ is
+ *     the incoming webhooks' public route);
+ *   - an HTTP_ONLY_ROUTES entry has no Go HTTP registration (stale), or an entry is listed twice;
  *   - the Bot's SocketRoutes (internal/bot/client/socket_routes.go) names a route the instance does not serve on the socket;
  *   - a PRE_GATEWAY_ROUTES entry (called before the gateway exists, ruling C1) is in SOCKET_ROUTES, or is stale.
  * Go registrations are read from source: string literals and local variables or constants assigned one, joined by +.
@@ -21,7 +21,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const MANIFEST = 'packages/client-core/src/http/socket-routes.ts';
 const BOT_ROUTES = 'internal/bot/client/socket_routes.go';
 const GO_DIRS = ['internal', 'cmd'];
-const LISTS = ['SOCKET_ROUTES', 'HTTP_ONLY_ROUTES', 'BOT_RUNTIME_ROUTES'];
+const LISTS = ['SOCKET_ROUTES', 'HTTP_ONLY_ROUTES'];
 const PRE_GATEWAY = 'PRE_GATEWAY_ROUTES';
 const PATTERN = /^(GET|HEAD|POST|PUT|PATCH|DELETE) \/\S*$/;
 const TERM = String.raw`(?:"[^"]*"|[A-Za-z_][A-Za-z0-9_]*)`;
@@ -88,13 +88,11 @@ export function problems(go, lists, bot = []) {
   for (const key of lists.SOCKET_ROUTES) {
     if (!go.socket.has(key)) found.push(`${key} is in SOCKET_ROUTES but has no Go Socket registration`);
   }
-  const classified = new Set([...lists.SOCKET_ROUTES, ...lists.HTTP_ONLY_ROUTES, ...lists.BOT_RUNTIME_ROUTES]);
+  const classified = new Set([...lists.SOCKET_ROUTES, ...lists.HTTP_ONLY_ROUTES]);
   for (const key of go.http) {
-    if (!classified.has(key)) found.push(`${key} is registered on HTTP in Go but is not in HTTP_ONLY_ROUTES, SOCKET_ROUTES or BOT_RUNTIME_ROUTES`);
+    if (!classified.has(key)) found.push(`${key} is registered on HTTP in Go but is in neither HTTP_ONLY_ROUTES nor SOCKET_ROUTES`);
   }
-  for (const name of ['HTTP_ONLY_ROUTES', 'BOT_RUNTIME_ROUTES']) {
-    for (const key of lists[name]) if (!go.http.has(key)) found.push(`${key} is in ${name} but has no Go HTTP registration`);
-  }
+  for (const key of lists.HTTP_ONLY_ROUTES) if (!go.http.has(key)) found.push(`${key} is in HTTP_ONLY_ROUTES but has no Go HTTP registration`);
   const seen = new Map();
   for (const name of LISTS) {
     for (const key of lists[name]) {
@@ -129,7 +127,7 @@ function goFiles(base) {
 
 export function check(base = root) {
   const go = goRoutes(goFiles(base));
-  if (go.http.size < 50) return [`only ${go.http.size} Go /v1 HTTP registrations were found; the scan no longer sees the routes`];
+  if (go.http.size < 30) return [`only ${go.http.size} Go /v1 HTTP registrations were found; the scan no longer sees the routes`];
   return problems(go, manifest(readFileSync(join(base, MANIFEST), 'utf8')), botSocketRoutes(readFileSync(join(base, BOT_ROUTES), 'utf8')));
 }
 

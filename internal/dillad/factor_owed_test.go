@@ -267,7 +267,8 @@ func TestEveryMountedRouteIsADocumentedRoute(t *testing.T) {
 			t.Errorf("%s is mounted but no protocol/09 or protocol/02 table lists it, so the owed sweep never sends it", pattern)
 		}
 	}
-	if mounted < 50 {
+	// Bot v2 tasks 4-6 and 14 moved most routes to the socket mux: about 40 /v1 HTTP routes remain.
+	if mounted < 30 {
 		t.Fatalf("only %d /v1 patterns were recorded; the mux is not reporting its routes", mounted)
 	}
 }

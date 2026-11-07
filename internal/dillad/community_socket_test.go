@@ -181,17 +181,17 @@ var stayOnHTTP = []string{
 }
 
 // TestHTTPOnlyListIsExactlyTheStaysOnHTTPList: every /v1 and /hooks pattern on the HTTP mux is in the fixed list above
-// or under /v1/bot-runtime/ (until Bot v2 task 14 moves it), and every entry of the list is served.
+// or is one of the Bot's enrollment routes (botEnrollmentRoutes, Bot v2 task 14), and every entry of the list is served.
 func TestHTTPOnlyListIsExactlyTheStaysOnHTTPList(t *testing.T) {
 	srv, _ := newServer(t)
 	want := map[string]bool{}
-	for _, p := range stayOnHTTP {
+	for _, p := range append(slices.Clone(stayOnHTTP), botEnrollmentRoutes...) {
 		want[p] = true
 	}
 	seen := map[string]bool{}
 	for _, pattern := range srv.Mux().Patterns() {
 		_, path, _ := strings.Cut(pattern, " ")
-		if (!strings.HasPrefix(path, "/v1/") && !strings.HasPrefix(path, "/hooks/")) || strings.HasPrefix(path, "/v1/bot-runtime/") {
+		if !strings.HasPrefix(path, "/v1/") && !strings.HasPrefix(path, "/hooks/") {
 			continue
 		}
 		seen[pattern] = true

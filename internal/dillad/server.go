@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -581,6 +582,10 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		}
 	}
 	deps.BotProfileChanged = botRoleNotify.Changed
+	// Bot v2 task 14: the supervised Bot polls nothing; an installation change is a SIGHUP to it (Supervisor.Nudge).
+	if n, ok := o.BotLaunch.(interface{ Nudge() }); ok {
+		deps.BotInstallationsChanged = n.Nudge
+	}
 	deps.BotJoinRoleGranted = func(ctx context.Context, communityID, memberID id.ID) {
 		if err := api.SyncBotChannelEligibility(ctx, o.Repo, delivery, communityID, memberID, o.Clock.Now().Unix()); err != nil {
 			o.Log.ErrorContext(ctx, "bringing channel groups in line after bot join role grant failed",
@@ -852,22 +857,57 @@ func (s *Server) DebugState(ctx context.Context) (DebugState, error) {
 // doctor leg and a test can both assert that unencrypted HTTP/2 is on.
 func (s *Server) Protocols() *http.Protocols { return s.httpSrv.Protocols }
 
+// BotSocketHTTPRoutes is everything but /gateway that the supervised Bot's Unix socket serves (Bot v2 task 14, Task 11
+// review M-7): the HTTP routes the Bot calls before it has a gateway connection to send request frames on. They are its
+// discovery (the instance document and limits), its enrollment (the runtime credential's installation list, claim,
+// enroll and status, and the credential finalize the device session sends while the installation is enrolling, which
+// the gateway does not admit), the session ceremony and negotiate, and its own device list, which it reads and
+// publishes before the device session is joining. Every route the Bot calls once its gateway runs is a socket route,
+// sent as a request frame (internal/bot/client.SocketRoutes); the rest of dillad's HTTP surface answers 404 here.
+var BotSocketHTTPRoutes = []string{
+	"GET /v1/instance",
+	"GET /v1/instance/limits",
+	"POST /v1/devices/{device_id}/sessions/challenge",
+	"POST /v1/devices/{device_id}/sessions",
+	"POST /v1/sessions/negotiate",
+	"GET /v1/users/{user_id}/device-list",
+	"PUT /v1/users/{user_id}/device-list",
+	"GET /v1/bot-runtime/installations",
+	"POST /v1/bot-runtime/installations/{installation}/claim",
+	"POST /v1/bot-runtime/installations/{installation}/enroll",
+	"PUT /v1/bot-runtime/installations/{installation}/credential",
+	"PUT /v1/bot-runtime/installations/{installation}/status",
+}
+
+// BotSocketHandler is the supervised Bot's socket surface: GET /gateway is gw (the Bot's upgrade, gateway.BotHandler),
+// each BotSocketHTTPRoutes pattern is app (dillad's own HTTP handler, which applies the route's ordinary middleware),
+// and every other request is 404. A refusal is logged with its method only: a path can name a webhook's secret.
+func BotSocketHandler(gw, app http.Handler, log *slog.Logger) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("GET /gateway", gw)
+	for _, pattern := range BotSocketHTTPRoutes {
+		mux.Handle(pattern, app)
+	}
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if log != nil {
+			log.Warn("bot socket: a request outside the Bot's allow-list was refused", "method", r.Method)
+		}
+		http.NotFound(w, r)
+	})
+	return mux
+}
+
 // ServeBot serves the supervised Bot's Unix socket until ln closes (Bot v2 task 11). Every connection must come from
 // the current Bot child (its SO_PEERCRED pid and uid, gateway.BotPeerListener); /gateway is the Bot's upgrade, which
-// takes its launch token and binds its managed session (gateway.BotHandler); every other path is this server's own
-// HTTP surface, so the Bot's remaining HTTP calls (discovery, /v1/bot-runtime/…) stay on the socket and never cross the
-// public listener. Only a Unix listener is served: there is no network form of this path.
+// takes its launch token and binds its managed session (gateway.BotHandler); beside it only BotSocketHTTPRoutes are
+// served (BotSocketHandler), so the Bot's pre-session HTTP calls stay on the socket and never cross the public
+// listener. Only a Unix listener is served: there is no network form of this path.
 func (s *Server) ServeBot(ln net.Listener) error {
 	pl, err := gateway.BotPeerListener(ln, s.o.BotLaunch)
 	if err != nil {
 		return err
 	}
-	mux := http.NewServeMux()
-	mux.Handle("GET /gateway", s.gw.BotHandler())
-	// Incoming webhooks are the public listener's alone (Bot v2 Task 13): on this socket every peer would share one
-	// address bucket, and the Bot has no reason to post to its own webhooks.
-	mux.Handle("/hooks/", http.NotFoundHandler())
-	mux.Handle("/", s.handler)
+	mux := BotSocketHandler(s.gw.BotHandler(), s.handler, s.o.Log)
 	// The public listener's limits and timeouts (server.NewHTTPServer), and the peer's pid in every request context.
 	srv := server.NewHTTPServer(mux, s.o.Config)
 	srv.ConnContext = gateway.BotConnContext

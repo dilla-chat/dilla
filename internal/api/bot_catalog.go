@@ -60,11 +60,10 @@ func registerBotCatalog(m *server.Mux, d Deps) {
 	// session's read bucket).
 	m.SocketAuthed("GET /v1/communities/{community}/bot/catalog", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.GetBotCatalog))
 	m.SocketAuthed("GET /v1/bot/revisions", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.GetBotRevisions))
-	// Bot runtime routes stay on HTTP until Task 14, behind BotSessionRoute (the enrolled session, whose Bot allow-list
-	// admits only the ready Bot of the path's community, then the write bucket).
-	botSession := BotSessionRoute(d.Sessions, d.Limiter)
-	m.Handle("PUT /v1/bot-runtime/communities/{community}/catalog", botSession("PUT /v1/bot-runtime/communities/{community}/catalog", http.HandlerFunc(d.PutBotRuntimeCatalog)))
-	m.Handle("PUT /v1/bot-runtime/communities/{community}/command-key", botSession("PUT /v1/bot-runtime/communities/{community}/command-key", http.HandlerFunc(d.PutBotRuntimeCommandKey)))
+	// Bot runtime routes, socket-only since Task 14, behind BotSessionRoute's chain (the enrolled session, whose Bot
+	// allow-list admits only the ready Bot of the path's community, then the write bucket).
+	m.SocketAuthed("PUT /v1/bot-runtime/communities/{community}/catalog", botSocketChain(d.Sessions, d.Limiter, "PUT /v1/bot-runtime/communities/{community}/catalog"), http.HandlerFunc(d.PutBotRuntimeCatalog))
+	m.SocketAuthed("PUT /v1/bot-runtime/communities/{community}/command-key", botSocketChain(d.Sessions, d.Limiter, "PUT /v1/bot-runtime/communities/{community}/command-key"), http.HandlerFunc(d.PutBotRuntimeCommandKey))
 }
 
 // botCommand is one validated catalog entry: its 7-element array exactly as the Bot sent it, and

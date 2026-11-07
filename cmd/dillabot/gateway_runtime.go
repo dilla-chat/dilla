@@ -4,9 +4,9 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -24,14 +24,111 @@ type botGatewayEntry struct {
 	cancel       context.CancelFunc
 	done         chan struct{}
 	client       *gatewayclient.Client
-	// private is the installation's current private interaction groups (guarded by mu).
-	private map[id.ID]bool
+	// feed applies the connection's op 65 events (Bot v2 task 14).
+	feed *feedConsumer
+	// private is the installation's current private interaction groups, and known every group it was last told of,
+	// active or not (guarded by mu). source is the helper they were read from; unknown collects the groups a hint named
+	// that are in neither, for the next refresh (Bot v2 task 14: no periodic pass refreshes them).
+	private, known, unknown map[id.ID]bool
+	source                  notificationGroupSource
+	refreshing              bool
 }
 
 func (e *botGatewayEntry) setPrivate(groups map[id.ID]bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.private = groups
+}
+
+// setGroups records what a SubscribeNativeGroups read: the private groups, every group seen, and their source.
+func (e *botGatewayEntry) setGroups(private, known map[id.ID]bool, source notificationGroupSource) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.private, e.known, e.source = private, known, source
+}
+
+// noteUnknown records a hinted group the Bot knows nothing of, and reports whether a refresh should start (none is
+// running and the helper is known).
+func (e *botGatewayEntry) noteUnknown(group id.ID) (notificationGroupSource, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.private[group] || e.known[group] || e.source == nil {
+		return nil, false
+	}
+	if e.unknown == nil {
+		e.unknown = map[id.ID]bool{}
+	}
+	e.unknown[group] = true
+	if e.refreshing {
+		return nil, false
+	}
+	e.refreshing = true
+	return e.source, true
+}
+
+// finishRefresh ends a refresh: it returns the hinted groups that are now private, marks the rest known (a group that
+// is not private now is not refreshed for again until the next pass re-reads the groups), and reports whether more
+// unknown groups arrived meanwhile.
+func (e *botGatewayEntry) finishRefresh(checked map[id.ID]bool) (private []id.ID, again bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for g := range checked {
+		if e.private[g] {
+			private = append(private, g)
+		} else {
+			if e.known == nil {
+				e.known = map[id.ID]bool{}
+			}
+			e.known[g] = true
+		}
+		delete(e.unknown, g)
+	}
+	// More hints arrived meanwhile: the refresh goes on (refreshing stays set), so no second one starts.
+	e.refreshing = len(e.unknown) > 0
+	return private, e.refreshing
+}
+
+func (e *botGatewayEntry) takeUnknown() map[id.ID]bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make(map[id.ID]bool, len(e.unknown))
+	for g := range e.unknown {
+		out[g] = true
+	}
+	return out
+}
+
+// discoverGroup handles a message hint for a group the installation knows nothing of: typically a private interaction
+// group registered after the last read of the helper's groups, whose participant's command would otherwise wait for
+// the next pass. It re-reads the groups once (one refresh at a time; hints meanwhile are collected) and starts the
+// interaction intake of every hinted group that is now private.
+func (r *botGatewayRuntime) discoverGroup(ctx context.Context, installation id.ID, e *botGatewayEntry, group id.ID) {
+	source, start := e.noteUnknown(group)
+	if !start {
+		return
+	}
+	go func() {
+		for {
+			checked := e.takeUnknown()
+			refreshCtx, cancel := context.WithTimeout(client.WithBackground(ctx), 30*time.Second)
+			err := r.SubscribeNativeGroups(refreshCtx, installation, source)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				r.log.Warn("bot gateway native group discovery unavailable", "installation_id", installation.String())
+			}
+			private, again := e.finishRefresh(checked)
+			for _, g := range private {
+				r.notifyInteraction(installation, g)
+			}
+			if !again {
+				return
+			}
+			if ctx.Err() != nil {
+				e.finishRefresh(e.takeUnknown())
+				return
+			}
+		}
+	}()
 }
 
 func (e *botGatewayEntry) isPrivate(group *id.ID) bool {
@@ -60,6 +157,11 @@ type botGatewayRuntime struct {
 	log        *slog.Logger
 	entries    map[id.ID]*botGatewayEntry
 	wake       chan struct{}
+	// pass asks the main loop for a reconciliation pass (Bot v2 task 14: the Bot polls nothing; a pass follows a feed
+	// change, a fresh identify, an op 54, a lost connection or SIGHUP). Coalesced: one pending ask is enough.
+	pass chan struct{}
+	// feeds is each installation's feed handler, which outlives a pass and a gateway connection (guarded by mu).
+	feeds map[id.ID]*installationFeed
 	// interaction carries a participant's message in a private interaction group: a command
 	// waiting for an answer. It wakes the dedicated command workers directly.
 	interaction chan struct{}
@@ -82,7 +184,7 @@ type botGatewayRuntime struct {
 }
 
 func newBotGatewayRuntime(ctx context.Context, api *client.Client, loopback bool, log *slog.Logger) *botGatewayRuntime {
-	return &botGatewayRuntime{now: time.Now, startedAt: unixSecondsOrZero(time.Now()) * 1000, ctx: client.WithBackground(ctx), api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), interaction: make(chan struct{}, 1), pollers: map[id.ID]func(context.Context) error{}, lastInteractionPoll: map[id.ID]time.Time{}}
+	return &botGatewayRuntime{now: time.Now, startedAt: unixSecondsOrZero(time.Now()) * 1000, ctx: client.WithBackground(ctx), api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), pass: make(chan struct{}, 1), feeds: map[id.ID]*installationFeed{}, interaction: make(chan struct{}, 1), pollers: map[id.ID]func(context.Context) error{}, lastInteractionPoll: map[id.ID]time.Time{}}
 }
 
 // InteractionPollSchedule survives the short-lived reconciler built each tick.
@@ -99,6 +201,42 @@ func (r *botGatewayRuntime) InteractionPollSchedule(installation id.ID) *service
 }
 
 func (r *botGatewayRuntime) Wake() <-chan struct{} { return r.wake }
+
+// Pass is the main loop's channel of pass requests (requestPass).
+func (r *botGatewayRuntime) Pass() <-chan struct{} { return r.pass }
+
+// requestPass asks for one reconciliation pass; asks while one is pending coalesce.
+func (r *botGatewayRuntime) requestPass() {
+	select {
+	case r.pass <- struct{}{}:
+	default:
+	}
+}
+
+// feedHandler is the installation's feed handler, or nil before a pass built one.
+func (r *botGatewayRuntime) feedHandler(installation id.ID) *installationFeed {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.feeds[installation]
+}
+
+// feedFor returns the installation's feed handler, creating it on first use: it outlives passes and connections, so
+// what it learned from the feed (members, roles, Bot channels) survives a reconnect.
+func (r *botGatewayRuntime) feedFor(installation, community, botUser id.ID, deps feedDeps) *installationFeed {
+	r.mu.Lock()
+	f := r.feeds[installation]
+	if f == nil || f.community != community || f.botUser != botUser {
+		f = newInstallationFeed(installation, community, botUser, r.log.With("installation_id", installation.String()), r.requestPass)
+		r.feeds[installation] = f
+	}
+	f.setDeps(deps)
+	e := r.entries[installation]
+	r.mu.Unlock()
+	if e != nil && e.feed != nil {
+		e.feed.setFeed(f)
+	}
+	return f
+}
 func (r *botGatewayRuntime) notify() {
 	select {
 	case r.wake <- struct{}{}:
@@ -243,7 +381,7 @@ func (r *botGatewayRuntime) interactionDelayLocked(installation, group id.ID, no
 	return max(r.budgetLocked(installation, group).delay(now), r.deferred[installation].Sub(now), interactionSpacing-now.Sub(r.lastInteractionPoll[installation]))
 }
 
-func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token string) error {
+func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, token string) error {
 	if e := r.entry(installation); e != nil {
 		select {
 		case <-e.done:
@@ -263,18 +401,28 @@ func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token strin
 			r.SetMaintenance(installation, backgroundMaintenance{})
 		}
 	}
-	gateway, err := gatewayclient.New(gatewayclient.Config{Client: r.api, AllowLoopbackHTTP: r.loopback, ExpectedDeviceID: device, ExpectedUserID: user, Logger: r.log.With("installation_id", installation.String()),
-		HTTPClient: r.httpClient, Launch: r.launch})
+	log := r.log.With("installation_id", installation.String())
+	gateway, err := gatewayclient.New(gatewayclient.Config{Client: r.api, AllowLoopbackHTTP: r.loopback, ExpectedDeviceID: device, ExpectedUserID: user, Logger: log,
+		HTTPClient: r.httpClient, Launch: r.launch,
+		// A cold-start snapshot streams one frame per member's device list, then the members and roles, faster than
+		// any handler runs; the feed buffers them, and the client's queue must hold the burst (Bot v2 task 14).
+		QueueSize: botGatewayQueue})
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancel(r.ctx)
-	e := &botGatewayEntry{token: token, device: device, user: user, cancel: cancel, done: make(chan struct{}), client: gateway}
+	acks := &orderedAcks{log: log}
+	feed := newFeedConsumer(community, acks, log)
+	if h := r.feedHandler(installation); h != nil {
+		feed.setFeed(h)
+	}
+	e := &botGatewayEntry{token: token, device: device, user: user, cancel: cancel, done: make(chan struct{}), client: gateway, feed: feed}
 	r.mu.Lock()
 	r.entries[installation] = e
 	r.mu.Unlock()
 	// Bot v2: the device's session sends its socket routes as request frames on this gateway.
 	r.api.UseTransport(device, gateway)
+	go feed.run(ctx)
 	go func() {
 		defer close(e.done)
 		defer r.api.ReleaseTransport(device, gateway)
@@ -282,7 +430,7 @@ func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token strin
 		go func() {
 			finished <- gateway.Run(ctx, func(context.Context) (string, error) { e.mu.Lock(); defer e.mu.Unlock(); return e.token, nil })
 		}()
-		for delivery := range gateway.Events() {
+		consumeDeliveries(ctx, gateway.Events(), acks, feed, log, func(delivery gatewayclient.Delivery) {
 			switch delivery.Frame.Op {
 			case gatewayclient.OpReady:
 				if ready := delivery.Frame.Ready; ready != nil && len(ready.Groups) > 0 {
@@ -291,10 +439,12 @@ func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token strin
 						groups = append(groups, g.GroupID)
 					}
 					if err := gateway.Subscribe(ctx, groups); err != nil && ctx.Err() == nil {
-						r.log.Warn("bot gateway group notifications unavailable", "installation_id", installation.String())
+						log.Warn("bot gateway group notifications unavailable")
 					}
 				}
 				r.notify()
+				// A fresh identify (a new or restarted socket session): what changed while it was away is read again.
+				r.requestPass()
 			case gatewayclient.OpMessageCT:
 				// Outgoing ciphertext is already processed by the native sender.
 				// Its gateway echo must not start another full intake sweep.
@@ -305,23 +455,63 @@ func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token strin
 						r.notifyInteraction(installation, *delivery.Frame.GroupID)
 					} else {
 						r.notify()
+						// A group the Bot was never told of may be an interaction group registered since the last read.
+						if g := delivery.Frame.GroupID; g != nil {
+							r.discoverGroup(ctx, installation, e, *g)
+						}
 					}
 				}
-			case gatewayclient.OpMessagePlain, gatewayclient.OpWelcome, gatewayclient.OpHandshake, gatewayclient.OpEpochChanged, gatewayclient.OpCommunityChanged, gatewayclient.OpVoiceState:
+			case gatewayclient.OpCommunityChanged:
+				// The community's channels, settings or the Bot's own installation changed (op 54): read them again.
+				r.notify()
+				r.requestPass()
+			case gatewayclient.OpWelcome:
+				// A Welcome adds the Bot to a group: the pass joins it (and may then mark the installation ready).
+				r.notify()
+				r.requestPass()
+			case gatewayclient.OpMessagePlain, gatewayclient.OpHandshake, gatewayclient.OpEpochChanged, gatewayclient.OpVoiceState:
 				r.notify()
 			}
-			// Gateway deliveries are wake-up hints only. MLS source cursors and bot
-			// event acknowledgements advance independently after durable HTTP intake.
-			if err := acknowledgeGatewayHint(delivery); err != nil && !errors.Is(err, gatewayclient.ErrStaleDelivery) && ctx.Err() == nil {
-				r.log.Warn("bot gateway notification acknowledgement deferred", "installation_id", installation.String())
-			}
-		}
+		})
 		if err := <-finished; err != nil && ctx.Err() == nil {
-			r.log.Warn("bot gateway requires session reconciliation", "installation_id", installation.String())
+			log.Warn("bot gateway requires session reconciliation")
 			r.notify()
+			r.requestPass()
 		}
 	}()
 	return nil
+}
+
+// botGatewayQueue is the gateway client's delivery queue for a Bot connection: the client's largest, so a cold-start
+// snapshot (n = 0 frames, one per member's device list, then members and roles) never overflows it.
+const botGatewayQueue = 4096
+
+// consumeDeliveries is one Bot connection's delivery loop (Bot v2 task 14). Every ringed delivery is acknowledged in
+// order (orderedAcks): an op 65 bot_event once the feed applied it, anything else once hint ran. Op 64 bot_command is
+// acknowledged as received (sealed intake is Task 15's) and op 66 bot_webhook, never ringed, is dropped (posting it
+// into the Bot channel is Task 17's; no op 67 is sent, so dillad answers the sender 503 rather than a 204 for a post
+// nobody sees). It returns when events closes.
+func consumeDeliveries(ctx context.Context, events <-chan gatewayclient.Delivery, acks *orderedAcks, feed *feedConsumer, log *slog.Logger, hint func(gatewayclient.Delivery)) {
+	for delivery := range events {
+		if delivery.Frame.Op == gatewayclient.OpReady {
+			// A new stream: its n restart at 1, and what the old one left unapplied comes again in its snapshot.
+			acks.reset()
+			feed.resetStream()
+		}
+		slot := acks.track(delivery)
+		switch delivery.Frame.Op {
+		case gatewayclient.OpBotEvent:
+			feed.deliver(delivery, slot)
+			continue
+		case gatewayclient.OpBotWebhook:
+			if ctx.Err() == nil {
+				log.Debug("bot webhook delivery dropped: webhook posts land with Task 17")
+			}
+		default:
+			hint(delivery)
+		}
+		acks.done(slot)
+	}
 }
 func (r *botGatewayRuntime) entry(installation id.ID) *botGatewayEntry {
 	r.mu.Lock()
@@ -356,6 +546,11 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 	for installation := range r.maintenance {
 		if !keep[installation] {
 			delete(r.maintenance, installation)
+		}
+	}
+	for installation := range r.feeds {
+		if !keep[installation] {
+			delete(r.feeds, installation)
 		}
 	}
 	for installation := range r.idlePolls {
@@ -480,7 +675,9 @@ func (r *botGatewayRuntime) SubscribeNativeGroups(ctx context.Context, installat
 		return err
 	}
 	ids := make([]id.ID, 0, len(groups)+len(private))
+	known := make(map[id.ID]bool, len(groups)+len(private))
 	for _, group := range groups {
+		known[group.ID] = true
 		if group.State == 2 && group.Kind == 0 {
 			ids = append(ids, group.ID)
 		}
@@ -489,23 +686,23 @@ func (r *botGatewayRuntime) SubscribeNativeGroups(ctx context.Context, installat
 	// groups through the native API that authenticates their installation binding.
 	active := make(map[id.ID]bool, len(private))
 	for _, group := range private {
+		known[group.Group] = true
 		if group.State == 2 {
 			ids = append(ids, group.Group)
 			active[group.Group] = true
 		}
 	}
 	if e := r.entry(installation); e != nil {
-		e.setPrivate(active)
+		// A private group not active yet is not known: a later hint for it re-reads (discoverGroup).
+		for g := range known {
+			if !active[g] && !slices.ContainsFunc(groups, func(x native.GroupInfo) bool { return x.ID == g }) {
+				delete(known, g)
+			}
+		}
+		e.setGroups(active, known, source)
 	}
 	r.SubscribeGroups(ctx, installation, ids)
 	return nil
-}
-
-func acknowledgeGatewayHint(delivery gatewayclient.Delivery) error {
-	if delivery.Frame.N == 0 {
-		return nil
-	}
-	return delivery.Ack()
 }
 
 func (r *botGatewayRuntime) SetTextPoller(installation id.ID, poll func(context.Context) error) {

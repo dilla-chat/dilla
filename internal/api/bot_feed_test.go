@@ -589,6 +589,77 @@ func TestBotChannelsAndChannelGroupsAreFed(t *testing.T) {
 	}
 }
 
+// TestColdStartSnapshotCarriesChannelGroups (Bot v2 task 14, Task 12 review N-1): the gateway drops a live op 65 while
+// a snapshot is owed, so the snapshot itself must carry every channel_group the Bot is fed: the current group of each
+// Bot channel and each open call group the Bot's device is a member of, in its community. An ordinary channel's group,
+// a call without the Bot and a closed call are not carried.
+func TestColdStartSnapshotCarriesChannelGroups(t *testing.T) {
+	f := newFeedFixture(t)
+	ctx := context.Background()
+	repo := f.deps.Repo
+	now := f.deps.Clock.Now().Unix()
+	cid := f.community
+	group := func(kind uint8, target id.ID, epoch uint64, botMember, closed bool) id.ID {
+		t.Helper()
+		g := id.New()
+		row := store.GroupRow{GroupID: g, Binding: []byte{0x80}, Kind: kind, CommunityID: &cid, TargetID: target, Ciphersuite: 1, Epoch: epoch,
+			ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 1, PolicyVersion: 1, Created: now}
+		if kind == 1 {
+			call := id.New()
+			row.CallID = &call
+		}
+		if closed {
+			row.ClosedAt = &now
+		}
+		if err := repo.CreateGroup(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+		members := []store.MemberRow{{GroupID: g, LeafIndex: 0, UserID: f.owner.ID, DeviceID: id.New(), SignatureKey: make([]byte, 32), AddedEpoch: 1}}
+		if botMember {
+			members = append(members, store.MemberRow{GroupID: g, LeafIndex: 1, UserID: f.botUser, DeviceID: f.botDevice, SignatureKey: make([]byte, 32), AddedEpoch: 1})
+		}
+		if err := repo.ReplaceMembers(ctx, g, epoch, members); err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	botChannelText := group(0, f.text, 7, true, false)
+	plainText := group(0, f.other, 3, true, false)
+	voice := id.New()
+	botCall := group(1, voice, 5, true, false)
+	_ = group(1, voice, 9, false, false)  // a call without the Bot
+	_ = group(1, id.New(), 2, true, true) // a closed call
+	s := f.identify(t)
+	if !s.finished {
+		t.Fatal("the snapshot did not finish")
+	}
+	got := map[id.ID][2]uint64{}
+	var targets = map[id.ID]id.ID{}
+	events := decodeFeed(t, s.sent)
+	endAt := -1
+	for i, ev := range events {
+		switch ev.kind {
+		case gateway.BotEventChannelGroup:
+			if feedID(t, ev.body[0]) != f.community {
+				t.Fatalf("channel_group of community %v", feedID(t, ev.body[0]))
+			}
+			g := feedID(t, ev.body[2])
+			got[g] = [2]uint64{uint64(i), feedUint(t, ev.body[3])}
+			targets[g] = feedID(t, ev.body[1])
+		case gateway.BotEventSnapshotEnd:
+			endAt = i
+		}
+	}
+	if len(got) != 2 || got[botChannelText][1] != 7 || got[botCall][1] != 5 || targets[botChannelText] != f.text || targets[botCall] != voice {
+		t.Fatalf("snapshot channel_group events %v (targets %v), want the Bot channel's group at 7 and the Bot's call at 5; not %v", got, targets, plainText)
+	}
+	for g, at := range got {
+		if endAt >= 0 && int(at[0]) > endAt {
+			t.Fatalf("channel_group %v follows snapshot_end", g)
+		}
+	}
+}
+
 // A user whose push would exceed the 1 MiB frame cap is skipped with a metric; the feed goes on.
 func TestOversizedDeviceListIsSkippedWithAMetric(t *testing.T) {
 	f := newFeedFixture(t)

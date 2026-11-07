@@ -151,9 +151,13 @@ func registerBotInstallations(m *server.Mux, d Deps) {
 	m.HandleFunc("GET /v1/bot-runtime/installations", d.ListRuntimeInstallations)
 	m.HandleFunc("POST /v1/bot-runtime/installations/{installation}/claim", d.ClaimBotInstallation)
 	m.HandleFunc("POST /v1/bot-runtime/installations/{installation}/enroll", d.EnrollBotInstallation)
+	// The Bot's enrollment stays on HTTP (Bot v2 task 14): the runtime-credential routes above run before the Bot has
+	// a device session, and the credential finalize runs while the installation is still enrolling, which the gateway
+	// does not admit (only a joining or ready Bot identifies). Every other route the Bot's device session calls is a
+	// socket route.
 	m.Handle("PUT /v1/bot-runtime/installations/{installation}/credential", botSession("PUT /v1/bot-runtime/installations/{installation}/credential", http.HandlerFunc(d.FinalizeBotCredential)))
-	m.Handle("POST /v1/bot-runtime/installations/{installation}/ready", botSession("POST /v1/bot-runtime/installations/{installation}/ready", http.HandlerFunc(d.MarkBotReady)))
-	m.Handle("POST /v1/bot-runtime/installations/{installation}/moderation/actions", botSession("POST /v1/bot-runtime/installations/{installation}/moderation/actions", http.HandlerFunc(d.AcceptBotModerationAction)))
+	m.SocketAuthed("POST /v1/bot-runtime/installations/{installation}/ready", botSocketChain(d.Sessions, d.Limiter, "POST /v1/bot-runtime/installations/{installation}/ready"), http.HandlerFunc(d.MarkBotReady))
+	m.SocketAuthed("POST /v1/bot-runtime/installations/{installation}/moderation/actions", botSocketChain(d.Sessions, d.Limiter, "POST /v1/bot-runtime/installations/{installation}/moderation/actions"), http.HandlerFunc(d.AcceptBotModerationAction))
 	d.registerBotRemovalReceipt(m)
 	d.registerBotWarningReceipt(m)
 	d.registerBotInteractionAdmissions(m)
@@ -440,6 +444,7 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 	if d.BotProfileChanged != nil {
 		d.BotProfileChanged(context.WithoutCancel(r.Context()), cid)
 	}
+	d.botInstallationsChanged()
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
@@ -764,6 +769,9 @@ func (d Deps) setBotDisabled(w http.ResponseWriter, r *http.Request, remove bool
 	}
 	if changed && d.BotRevoked != nil {
 		d.BotRevoked(context.WithoutCancel(r.Context()), result, remove)
+	}
+	if changed {
+		d.botInstallationsChanged()
 	}
 	if remove {
 		d.noContent(w, r)

@@ -18,15 +18,12 @@ const go = [{
   ].join('\n'),
 }];
 
-const ts = (socket, httpOnly, bot = [], preGateway = []) => [
+const ts = (socket, httpOnly, preGateway = []) => [
   'export const SOCKET_ROUTES: readonly SocketRoute[] = [',
   ...socket.map(([method, pattern]) => `  { method: '${method}', pattern: '${pattern}' },`),
   '];',
   'export const HTTP_ONLY_ROUTES: readonly SocketRoute[] = [',
   ...httpOnly.map(([method, pattern]) => `  { method: '${method}', pattern: '${pattern}' },`),
-  '];',
-  'export const BOT_RUNTIME_ROUTES: readonly SocketRoute[] = [',
-  ...bot.map(([method, pattern]) => `  { method: '${method}', pattern: '${pattern}' },`),
   '];',
   'export const PRE_GATEWAY_ROUTES: readonly SocketRoute[] = [',
   ...preGateway.map(([method, pattern]) => `  { method: '${method}', pattern: '${pattern}' }, // a reason`),
@@ -34,8 +31,7 @@ const ts = (socket, httpOnly, bot = [], preGateway = []) => [
 ].join('\n');
 
 const SOCKET = [['POST', '/v1/groups/{id}/message'], ['GET', '/v1/accounts/me']];
-const HTTP_ONLY = [['GET', '/v1/instance'], ['POST', '/v1/communities/{id}/join']];
-const BOT = [['PUT', '/v1/communities/{community}/bot/music']];
+const HTTP_ONLY = [['GET', '/v1/instance'], ['POST', '/v1/communities/{id}/join'], ['PUT', '/v1/communities/{community}/bot/music']];
 
 test('reads Go registrations, literal and through a local pattern variable', () => {
   const routes = goRoutes(go);
@@ -43,53 +39,47 @@ test('reads Go registrations, literal and through a local pattern variable', () 
   assert.deepEqual([...routes.socket].sort(), ['GET /v1/accounts/me', 'POST /v1/groups/{id}/message']);
 });
 
-test('passes when the three lists cover the Go routes exactly', () => {
-  assert.deepEqual(problems(goRoutes(go), manifest(ts(SOCKET, HTTP_ONLY, BOT))), []);
+test('passes when the two lists cover the Go routes exactly', () => {
+  assert.deepEqual(problems(goRoutes(go), manifest(ts(SOCKET, HTTP_ONLY))), []);
 });
 
 test('reports a Go Socket pattern missing from SOCKET_ROUTES', () => {
-  const found = problems(goRoutes(go), manifest(ts(SOCKET.slice(1), HTTP_ONLY, BOT)));
+  const found = problems(goRoutes(go), manifest(ts(SOCKET.slice(1), HTTP_ONLY)));
   assert.equal(found.length, 1);
   assert.match(found[0], /POST \/v1\/groups\/\{id\}\/message.*registered with Socket.*not in SOCKET_ROUTES/);
 });
 
 test('reports a SOCKET_ROUTES entry with no Go Socket registration', () => {
-  const found = problems(goRoutes(go), manifest(ts([...SOCKET, ['DELETE', '/v1/welcomes/{id}']], HTTP_ONLY, BOT)));
+  const found = problems(goRoutes(go), manifest(ts([...SOCKET, ['DELETE', '/v1/welcomes/{id}']], HTTP_ONLY)));
   assert.equal(found.length, 1);
   assert.match(found[0], /DELETE \/v1\/welcomes\/\{id\}.*SOCKET_ROUTES.*no Go Socket registration/);
 });
 
-test('reports a Go HTTP /v1 pattern in neither HTTP_ONLY_ROUTES nor BOT_RUNTIME_ROUTES', () => {
-  const found = problems(goRoutes(go), manifest(ts(SOCKET, HTTP_ONLY.slice(1), BOT)));
+test('reports a Go HTTP /v1 pattern in neither HTTP_ONLY_ROUTES nor SOCKET_ROUTES', () => {
+  const found = problems(goRoutes(go), manifest(ts(SOCKET, HTTP_ONLY.slice(1))));
   assert.equal(found.length, 1);
-  assert.match(found[0], /GET \/v1\/instance.*HTTP.*not in HTTP_ONLY_ROUTES, SOCKET_ROUTES or BOT_RUNTIME_ROUTES/);
+  assert.match(found[0], /GET \/v1\/instance.*HTTP.*in neither HTTP_ONLY_ROUTES nor SOCKET_ROUTES/);
 });
 
-test('reports a Bot runtime route that is only on the Bot runtime list when it is missing there', () => {
-  const found = problems(goRoutes(go), manifest(ts(SOCKET, HTTP_ONLY, [])));
-  assert.equal(found.length, 1);
-  assert.match(found[0], /PUT \/v1\/communities\/\{community\}\/bot\/music/);
-});
-
-test('reports a stale HTTP-only or Bot runtime entry and an entry listed twice', () => {
-  const stale = problems(goRoutes(go), manifest(ts(SOCKET, [...HTTP_ONLY, ['GET', '/v1/gone']], BOT)));
+test('reports a stale HTTP-only entry and an entry listed twice', () => {
+  const stale = problems(goRoutes(go), manifest(ts(SOCKET, [...HTTP_ONLY, ['GET', '/v1/gone']])));
   assert.equal(stale.length, 1);
   assert.match(stale[0], /GET \/v1\/gone.*HTTP_ONLY_ROUTES.*no Go HTTP registration/);
-  const twice = problems(goRoutes(go), manifest(ts(SOCKET, [...HTTP_ONLY, ['PUT', '/v1/communities/{community}/bot/music']], BOT)));
+  const twice = problems(goRoutes(go), manifest(ts(SOCKET, [...HTTP_ONLY, ['PUT', '/v1/communities/{community}/bot/music']])));
   assert.equal(twice.length, 1);
   assert.match(twice[0], /listed more than once/);
 });
 
 test('reports a Bot socket route the instance does not serve on the socket', () => {
-  const found = problems(goRoutes(go), manifest(ts(SOCKET, HTTP_ONLY, BOT)), ['GET /v1/accounts/me', 'GET /v1/instance']);
+  const found = problems(goRoutes(go), manifest(ts(SOCKET, HTTP_ONLY)), ['GET /v1/accounts/me', 'GET /v1/instance']);
   assert.equal(found.length, 1);
   assert.match(found[0], /GET \/v1\/instance.*Bot.*SocketRoutes/);
 });
 
 test('reports a pre-gateway route moved to SOCKET_ROUTES, and a stale pre-gateway entry', () => {
-  const ok = problems(goRoutes(go), manifest(ts(SOCKET, HTTP_ONLY, BOT, [['GET', '/v1/instance']])));
+  const ok = problems(goRoutes(go), manifest(ts(SOCKET, HTTP_ONLY, [['GET', '/v1/instance']])));
   assert.deepEqual(ok, []);
-  const moved = problems(goRoutes(go), manifest(ts(SOCKET, HTTP_ONLY, BOT, [['GET', '/v1/accounts/me']])));
+  const moved = problems(goRoutes(go), manifest(ts(SOCKET, HTTP_ONLY, [['GET', '/v1/accounts/me']])));
   assert.equal(moved.length, 2);
   assert.match(moved[0], /GET \/v1\/accounts\/me.*PRE_GATEWAY_ROUTES.*must stay on HTTP.*SOCKET_ROUTES/);
   assert.match(moved[1], /GET \/v1\/accounts\/me.*PRE_GATEWAY_ROUTES.*no Go HTTP registration/);
@@ -121,10 +111,10 @@ test('classifies the public /hooks route like a /v1 one (Bot v2 task 13)', () =>
   const hooks = [{ path: 'internal/api/webhooks.go', source: 'm.Handle("POST /hooks/{webhook_id}/{secret}", h)' }];
   const routes = goRoutes([...go, ...hooks]);
   assert.ok(routes.http.has('POST /hooks/{webhook_id}/{secret}'));
-  const unlisted = problems(routes, manifest(ts(SOCKET, HTTP_ONLY, BOT)));
+  const unlisted = problems(routes, manifest(ts(SOCKET, HTTP_ONLY)));
   assert.equal(unlisted.length, 1);
-  assert.match(unlisted[0], /POST \/hooks\/\{webhook_id\}\/\{secret\}.*not in HTTP_ONLY_ROUTES/);
-  assert.deepEqual(problems(routes, manifest(ts(SOCKET, [...HTTP_ONLY, ['POST', '/hooks/{webhook_id}/{secret}']], BOT))), []);
+  assert.match(unlisted[0], /POST \/hooks\/\{webhook_id\}\/\{secret\}.*in neither HTTP_ONLY_ROUTES nor SOCKET_ROUTES/);
+  assert.deepEqual(problems(routes, manifest(ts(SOCKET, [...HTTP_ONLY, ['POST', '/hooks/{webhook_id}/{secret}']]))), []);
 });
 
 test('the real tree is in sync', () => {

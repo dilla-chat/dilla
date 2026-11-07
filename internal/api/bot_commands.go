@@ -212,14 +212,11 @@ func registerBotCommands(m *server.Mux, d Deps) {
 	// Socket-only: the session middleware for an enrolled session (a Bot session's allow-list refuses
 	// it), then one token of the device's own bot_command bucket.
 	m.SocketAuthed("POST /v1/communities/{community}/bot/commands", d.socketChain(auth.ScopeEnrolled, dsClassBotCommand), http.HandlerFunc(d.PostBotCommand))
-	// Bot runtime routes stay on HTTP until Task 14. The session middleware runs the Bot allow-list
+	// Bot runtime routes, socket-only since Task 14. The session middleware runs the Bot allow-list
 	// (ready Bot only), then one token of the Bot device's bot_runtime bucket; each handler then binds
 	// the session to its community's ready installation (readyBotFor).
-	botRuntime := func(h http.HandlerFunc) http.Handler {
-		return d.Sessions.Middleware(dsMeter(d.Limiter, dsClassBotRuntime, h), auth.ScopeEnrolled)
-	}
-	m.Handle("POST /v1/bot-runtime/replies", botRuntime(d.PostBotReply))
-	m.Handle("POST /v1/bot-runtime/state-hints", botRuntime(d.PostBotStateHint))
+	m.SocketAuthed("POST /v1/bot-runtime/replies", d.socketChain(auth.ScopeEnrolled, dsClassBotRuntime), http.HandlerFunc(d.PostBotReply))
+	m.SocketAuthed("POST /v1/bot-runtime/state-hints", d.socketChain(auth.ScopeEnrolled, dsClassBotRuntime), http.HandlerFunc(d.PostBotStateHint))
 }
 
 // rawBstrOf decodes one CBOR byte string, refusing any other major type.

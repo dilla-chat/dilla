@@ -213,7 +213,7 @@ func TestAutoModerationGrantArmAndRedeemBindExactTupleAndRetry(t *testing.T) {
 		// after consuming the grant but before the bot received its receipt.
 		mux := server.NewMux()
 		api.Register(mux, f.deps)
-		f.handler = mux
+		f.handler = viaSocket(t, mux, f.deps)
 		if status2, receipt2 := f.redeem(t, grant, f.community, f.group, request, f.human, f.humanDevice, 0, expires, hash); status2 != http.StatusOK || receipt2 != receipt {
 			t.Fatalf("post-restart exact retry=%d receipt %s; original %s", status2, receipt2, receipt)
 		}

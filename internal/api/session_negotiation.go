@@ -110,3 +110,10 @@ func BotSessionRoute(sessions *auth.Sessions, l *server.RateLimiter) func(patter
 		return sessions.Middleware(dsMeter(l, routeClass(pattern), h.ServeHTTP), auth.ScopeEnrolled)
 	}
 }
+
+// botSocketChain is BotSessionRoute's chain for a socket-only Bot runtime route (Bot v2 task 14), for
+// server.Mux.SocketAuthed: the enrolled session, whose Bot allow-list runs in the session middleware, then the device's
+// bucket of the route's class. The socket guard runs between it and the handler.
+func botSocketChain(sessions *auth.Sessions, l *server.RateLimiter, pattern string) func(http.Handler) http.Handler {
+	return socketSessionChain(sessions, l, auth.ScopeEnrolled, routeClass(pattern))
+}

@@ -707,6 +707,31 @@ func TestInteractionRegistrationQueueProcessesDevicesOnlyForCurrentEpisode(t *te
 	}
 }
 
+// HasPendingWork reports the durable jobs (Bot v2 task 14: with no periodic pass, the Bot reruns its pass while a
+// registration waits, e.g. on a device's KeyPackages).
+func TestInteractionRegistrationHasPendingWorkUntilEveryDeviceIsDone(t *testing.T) {
+	f := newInteractionRegistrationFixture(t)
+	f.s.currentEpisode = f.episode
+	f.s.candidates = []id.ID{id.New()}
+	f.s.keyPackage = []byte{7, 8, 9}
+	ctx := context.Background()
+	if pending, err := f.coordinator.HasPendingWork(ctx); err != nil || pending {
+		t.Fatalf("empty queue: pending %v, %v", pending, err)
+	}
+	if err := f.coordinator.QueueMemberJoin(ctx, f.request.ParticipantUser, f.episode); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := f.coordinator.HasPendingWork(ctx); err != nil || !pending {
+		t.Fatalf("queued member: pending %v, %v; want pending", pending, err)
+	}
+	if err := f.coordinator.ProcessPending(ctx, 1, 8, f.s, f.s); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := f.coordinator.HasPendingWork(ctx); err != nil || pending {
+		t.Fatalf("after the member's devices registered: pending %v, %v; want none", pending, err)
+	}
+}
+
 func TestInteractionRegistrationQueueKeepsEpisodeUntilDevicesAppear(t *testing.T) {
 	f := newInteractionRegistrationFixture(t)
 	f.s.currentEpisode = f.episode

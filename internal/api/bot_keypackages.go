@@ -31,10 +31,10 @@ type botKeyPackageInventoryResponse struct {
 
 // RegisterBotDirectory mounts the only KeyPackage publication surface available to managed Bots.
 func (h *Groups) RegisterBotDirectory(mux *server.Mux, sessions *auth.Sessions) {
-	enrolled := func(f http.HandlerFunc) http.Handler { return sessions.Middleware(f, auth.ScopeEnrolled) }
-	mux.Handle("POST /v1/bot-runtime/installations/{installation}/keypackages", enrolled(dsMeter(h.Limiter, dsClassWrite, h.publishBotKeyPackages)))
-	mux.Handle("GET /v1/bot-runtime/installations/{installation}/keypackages", enrolled(dsMeter(h.Limiter, dsClassRead, h.getBotKeyPackageInventory)))
-	mux.Handle("GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}", enrolled(dsMeter(h.Limiter, dsClassRead, h.getBotKeyPackageReceipt)))
+	// Socket-only (Bot v2 task 14): the Bot's device session sends them as request frames.
+	mux.SocketAuthed("POST /v1/bot-runtime/installations/{installation}/keypackages", socketMeter(sessions, h.Limiter, dsClassWrite), http.HandlerFunc(h.publishBotKeyPackages))
+	mux.SocketAuthed("GET /v1/bot-runtime/installations/{installation}/keypackages", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.getBotKeyPackageInventory))
+	mux.SocketAuthed("GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.getBotKeyPackageReceipt))
 }
 
 func (h *Groups) getBotKeyPackageInventory(w http.ResponseWriter, r *http.Request) {

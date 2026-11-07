@@ -3,51 +3,39 @@
 package main
 
 import (
-	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
+
+	"github.com/dilla-chat/dilla/internal/bot/client"
 )
 
-// A supervised Bot's tuning file holds reconcile_interval and [rate_limits] only, is its own and owner-only, and may
-// be absent.
-func TestSupervisedTuningFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, supervisedTuningFile)
-	c := config{ReconcileInterval: supervisedReconcileTime}
-	if err := c.loadTuning(path); err != nil || c.ReconcileInterval != supervisedReconcileTime {
-		t.Fatalf("no tuning file: %v, %s", err, c.ReconcileInterval)
+// TestSupervisedRateLimitsAreBuiltInUnlessDevSameUser (Bot v2 task 14): there is no bot.toml, so a supervised Bot's
+// client rate limits are the built-in defaults. A Bot that dillad runs as its own user (dev_same_user, development and
+// the e2e test host) is told so by its socket, which is then its own, and runs without client pacing, as the test
+// host's tuning file used to set; dillad's metering still applies to it.
+func TestSupervisedRateLimitsAreBuiltInUnlessDevSameUser(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "gateway.sock")
+	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", sock)
+	if err != nil {
+		t.Fatal(err)
 	}
-	write := func(body string, mode os.FileMode) {
-		t.Helper()
-		_ = os.Remove(path)
-		if err := os.WriteFile(path, []byte(body), mode); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(path, mode); err != nil {
-			t.Fatal(err)
-		}
+	defer func() { _ = l.Close() }()
+	got := supervisedRateLimits(sock)
+	if got != unpacedRateLimits {
+		t.Fatalf("own socket (dev_same_user): rate limits %+v, want unpaced", got)
 	}
-	write("reconcile_interval = \"5s\"\n[rate_limits]\nwrite_per_second = 1000\nwrite_burst = 1000\n", 0o600)
-	if err := c.loadTuning(path); err != nil {
-		t.Fatalf("loadTuning: %v", err)
+	if err := (unpacedRateLimits).Validate(); err != nil {
+		t.Fatalf("unpaced rate limits are invalid: %v", err)
 	}
-	if c.ReconcileInterval != 5*time.Second || c.RateLimits.WritePerSecond != 1000 || c.RateLimits.WriteBurst != 1000 {
-		t.Fatalf("tuning = %s, %+v", c.ReconcileInterval, c.RateLimits)
+	if got := supervisedRateLimits(filepath.Join(t.TempDir(), "absent.sock")); got != (client.RateLimits{}) {
+		t.Fatalf("unreadable socket: rate limits %+v, want the built-in defaults", got)
 	}
-	for _, tc := range []struct {
-		body string
-		mode os.FileMode
-	}{
-		{"base_url = \"https://elsewhere.example\"\n", 0o600},
-		{"helper_executable = \"/tmp/evil\"\n", 0o600},
-		{"reconcile_interval = \"10ms\"\n", 0o600},
-		{"reconcile_interval = \"5s\"\n", 0o640},
-	} {
-		write(tc.body, tc.mode)
-		if err := c.loadTuning(path); !errors.Is(err, errConfigInvalid) {
-			t.Errorf("tuning %q (mode %04o): %v, want errConfigInvalid", tc.body, tc.mode, err)
+	if os.Geteuid() != 0 {
+		// A socket another user owns: the production layout (dillad's socket, the Bot's group).
+		if got := supervisedRateLimits("/"); got != (client.RateLimits{}) {
+			t.Fatalf("a path another user owns: rate limits %+v, want the built-in defaults", got)
 		}
 	}
 }

@@ -929,7 +929,12 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 		// refused one (E_BUSY, no dispatcher, shutting down) is charged below once it is refused;
 		// a malformed one closes the connection at Decode. The op is read from the head alone.
 		overRate := func() bool { return !inbound.AllowN(g.opts.Clock.Now(), 1) }
-		if op, ok := frameOp(b); (!ok || op != OpRequest) && overRate() {
+		// A Bot connection's op 67 webhook ack is not charged either (Bot v2 task 14): it answers one op 66 dillad sent,
+		// so its rate is the webhook posts' (metered per address, network and webhook), and a burst of posts must not
+		// close the Bot 4008. Unsolicited acks are dropped by handleWebhookAck.
+		op, ok := frameOp(b)
+		uncharged := ok && (op == OpRequest || (op == OpBotWebhookAck && c.isBot))
+		if !uncharged && overRate() {
 			g.closeOverRate(c)
 			return
 		}

@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
 	"github.com/dilla-chat/dilla/internal/cborx"
@@ -88,7 +89,7 @@ func (s *Session) ModerationRemovals(ctx context.Context, group id.ID, after, li
 	if s == nil || s.c == nil || group.IsZero() || after > math.MaxInt64 || limit == 0 || limit > MaxModerationRemovalPage {
 		return ModerationRemovalPage{}, ErrInvalidConfig
 	}
-	q := url.Values{"after": {formatUint(after)}, "limit": {formatUint(limit)}}
+	q := url.Values{"after": {strconv.FormatUint(after, 10)}, "limit": {strconv.FormatUint(limit, 10)}}
 	path := "groups/" + group.String() + "/moderation/removals"
 	raw, _, err := s.do(ctx, http.MethodGet, path, q, nil, MaxModerationRemovalBody, false)
 	if err != nil {

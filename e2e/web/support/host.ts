@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FullConfig } from '@playwright/test';
@@ -13,7 +13,7 @@ import { followWallClock, readFakeClock, wallClockFollower } from './wall-clock.
  *  so a second host on the same ports serves the same accounts (the caller removes it with `removeHostData`).
  *  L-E2E-31: `sfu` starts the host's in-process LiveKit (`-sfu -sfu-port -sfu-udp-port`); the voice suite sets it.
  *  `departureTimeout` (seconds, `-sfu-departure-timeout`) lengthens the rooms' departure timeout (task-10 fix review N3). */
-export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; prebuilt?: boolean; botReconcileInterval?: string; advanceClockWithWall?: boolean; adminInvite?: boolean; wallClockSweep?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
+export interface HostConfig { port: number; control: number; webRoot: string | null; webauthnOrigin?: string; wire?: number; keepData?: boolean; botRuntime?: boolean; prebuilt?: boolean; advanceClockWithWall?: boolean; adminInvite?: boolean; wallClockSweep?: boolean; sfu?: { port: number; udpPort: number; departureTimeout?: number } }
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const TOOLING_DIR = process.env.DILLA_E2E_TOOLING_DIR;
 const verifyPrebuiltTools = () => TOOLING_DIR === undefined ? undefined : verifyTestTools(TOOLING_DIR, { repoRoot: REPO_ROOT });
@@ -81,7 +81,7 @@ export function hostArgs(c: HostConfig, dataDir: string): string[] {
   ];
 }
 
-/** The supervised Bot's state directory, and its runtime credential and tuning file inside it. */
+/** The supervised Bot's state directory, and its runtime credential inside it. */
 const botStateDir = (dataDir: string): string => join(dataDir, 'bot-state');
 const botRuntimeToken = (dataDir: string): string => join(botStateDir(dataDir), 'runtime.token');
 
@@ -196,7 +196,7 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
     const clockURL = c.advanceClockWithWall === true ? `http://127.0.0.1:${c.control}/debug/clock` : undefined;
     const startBot = async (): Promise<void> => {
       if (botRunning || c.botRuntime !== true) throw new Error('test host Bot runtime is already running or unavailable');
-      await startBotRuntime(c.control, dataDir, c.port, botHealthy, clockURL, c.botReconcileInterval);
+      await startBotRuntime(c.control, dataDir, c.port, botHealthy, clockURL);
       botRunning = true;
     };
     const stopBot = async (): Promise<void> => {
@@ -301,9 +301,10 @@ function healthyCounter(host: ChildProcess): HealthyCounter {
   return { count: () => n };
 }
 
-/** Starts the supervised Bot (POST /debug/bot/start) once its state directory holds the tuning file, and waits for it
- *  to log "bot service healthy". The runtime credential is already there: the host wrote it (-bot-runtime-secret). */
-async function startBotRuntime(control: number, dataDir: string, port: number, healthy: HealthyCounter, clockURL?: string, reconcileInterval = '1s'): Promise<void> {
+/** Starts the supervised Bot (POST /debug/bot/start) and waits for it to log "bot service healthy". The runtime
+ *  credential is already in its state directory: the host wrote it (-bot-runtime-secret). The Bot reads no other file
+ *  (Bot v2 task 14): no reconcile interval (it polls nothing) and built-in rate limits. */
+async function startBotRuntime(control: number, dataDir: string, port: number, healthy: HealthyCounter, clockURL?: string): Promise<void> {
   await prepareBotRuntimeBinaries();
   if (clockURL !== undefined) await alignWallClock(clockURL, 'after Bot/helper build and before Bot installation');
   let helperInfo;
@@ -317,29 +318,6 @@ async function startBotRuntime(control: number, dataDir: string, port: number, h
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   chmodSync(stateDir, 0o700);
   chmodSync(dataDir, 0o700);
-  const quote = (value: string): string => JSON.stringify(value);
-  // The supervised Bot reads only these two settings from its state directory (cmd/dillabot/supervised.go); paths,
-  // the instance and the socket come from the supervisor.
-  const tuning = [
-    `reconcile_interval = ${quote(reconcileInterval)}`,
-    // The test server does not meter; production pacing is covered by the Go tests.
-    '[rate_limits]',
-    'write_per_second = 1000000',
-    'write_burst = 1000000',
-    'read_per_second = 1000000',
-    'read_burst = 1000000',
-    'message_per_second = 1000000',
-    'message_burst = 1000000',
-    'commit_per_second = 1000000',
-    'commit_burst = 1000000',
-    'proposal_per_second = 1000000',
-    'proposal_burst = 1000000',
-    'keypackage_per_second = 1000000',
-    'keypackage_burst = 1000000',
-    '',
-  ].join('\n');
-  writeFileSync(join(stateDir, 'bot.toml'), tuning, { mode: 0o600 });
-  chmodSync(join(stateDir, 'bot.toml'), 0o600);
   chmodSync(botRuntimeToken(dataDir), 0o600);
   const before = healthy.count();
   await postControl(control, '/debug/bot/start', {});

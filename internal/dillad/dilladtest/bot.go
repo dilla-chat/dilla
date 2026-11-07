@@ -7,20 +7,17 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/botsupervisor"
+	"github.com/dilla-chat/dilla/internal/dillad"
 )
 
 // BotHandler is the supervised Bot's Unix socket surface over the current server, stable across Restore like Handler:
-// /gateway is the Bot's upgrade (gateway.BotHandler: launch token, managed session), every other path is Handler, so
-// the host records the Bot's /v1/bot-runtime/ answers as it did over HTTP. Serve it behind gateway.BotPeerListener
-// with gateway.BotConnContext.
+// dillad.BotSocketHandler, the same allow-list dillad serves (/gateway, the Bot's upgrade, and the Bot's pre-session
+// HTTP routes, answered by Handler so the host records them as it did over HTTP). Serve it behind
+// gateway.BotPeerListener with gateway.BotConnContext.
 func (h *Host) BotHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/gateway" {
-			h.Server().Gateway().BotHandler().ServeHTTP(w, r)
-			return
-		}
-		h.Handler().ServeHTTP(w, r)
-	})
+	gw := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { h.Server().Gateway().BotHandler().ServeHTTP(w, r) })
+	app := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { h.Handler().ServeHTTP(w, r) })
+	return dillad.BotSocketHandler(gw, app, h.Log())
 }
 
 // BotRunner runs a Bot supervisor on demand for the e2e host (dilla-testhost -bot): the specs start, stop and restart

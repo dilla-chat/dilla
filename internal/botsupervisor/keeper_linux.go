@@ -359,11 +359,12 @@ func (c *children) start(token [32]byte) (int, error) {
 	return cmd.Process.Pid, nil
 }
 
-// signal sends SIGTERM or SIGKILL to a running child of this keeper. os.Process signals through a pidfd, so a reaped
+// signal sends SIGTERM, SIGKILL or SIGHUP (Bot v2 task 14: "your installations changed", Supervisor.Nudge) to a
+// running child of this keeper. os.Process signals through a pidfd, so a reaped
 // child's pid, which may already be someone else's, is never signalled.
 func (c *children) signal(pid int, sig syscall.Signal) error {
-	if sig != syscall.SIGTERM && sig != syscall.SIGKILL {
-		return fmt.Errorf("signal %d is not SIGTERM or SIGKILL", sig)
+	if sig != syscall.SIGTERM && sig != syscall.SIGKILL && sig != syscall.SIGHUP {
+		return fmt.Errorf("signal %d is not SIGTERM, SIGKILL or SIGHUP", sig)
 	}
 	c.mu.Lock()
 	ch, ok := c.m[pid]
@@ -532,8 +533,8 @@ func parseKeeperRequest(frame []cbor.RawMessage) (keeperRequest, error) {
 	case opSignal:
 		var sig uint64
 		if len(frame) != 4 || pid(frame[2]) != nil || keeperDec.Unmarshal(frame[3], &sig) != nil ||
-			(sig != uint64(syscall.SIGTERM) && sig != uint64(syscall.SIGKILL)) {
-			return req, errors.New("keeper: signal takes a pid and SIGTERM or SIGKILL")
+			(sig != uint64(syscall.SIGTERM) && sig != uint64(syscall.SIGKILL) && sig != uint64(syscall.SIGHUP)) {
+			return req, errors.New("keeper: signal takes a pid and SIGTERM, SIGKILL or SIGHUP")
 		}
 		req.sig = syscall.Signal(sig)
 	case opWait:

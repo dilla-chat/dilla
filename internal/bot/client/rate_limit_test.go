@@ -264,7 +264,7 @@ func TestSpecializedRateTableMatchesServerRegistrations(t *testing.T) {
 		{"groups.go", "POST /v1/groups/{id}/resync", "dsClassCommit", "POST", "groups/x/resync", "commit"},
 		{"groups.go", "POST /v1/groups/{id}/proposal", "dsClassProposal", "POST", "groups/x/proposal", "proposal"},
 		{"heal.go", "POST /v1/groups/{id}/heal", "dsClassCommit", "POST", "groups/x/heal", "commit"},
-		{"bot_interaction_group_heal.go", "mux.Handle(\"POST \"+base", "dsClassCommit", "POST", "bot-runtime/installations/x/interaction-groups/y/heal", "commit"},
+		{"bot_interaction_group_heal.go", "mux.SocketAuthed(\"POST \"+base", "dsClassCommit", "POST", "bot-runtime/installations/x/interaction-groups/y/heal", "commit"},
 	} {
 		raw, err := os.ReadFile("../../api/" + tc.file)
 		if err != nil {

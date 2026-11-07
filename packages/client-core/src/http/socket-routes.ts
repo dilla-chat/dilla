@@ -1,11 +1,11 @@
 // Bot v2: which authenticated app routes go over the gateway socket (op 59 request, op 60 response) and which stay on HTTP.
 // scripts/check-socket-routes.mjs holds this file to the Go registrations: every `m.Socket*` pattern is in SOCKET_ROUTES and
-// every SOCKET_ROUTES entry is one; every Go HTTP /v1 and /hooks pattern is in HTTP_ONLY_ROUTES, SOCKET_ROUTES or
-// BOT_RUNTIME_ROUTES.
+// every SOCKET_ROUTES entry is one; every Go HTTP /v1 and /hooks pattern is in HTTP_ONLY_ROUTES or SOCKET_ROUTES.
 // Tasks 4-6 moved every authenticated app route from HTTP_ONLY_ROUTES to SOCKET_ROUTES and deleted its REST form; what is
 // left in HTTP_ONLY_ROUTES is the spec's stays-on-HTTP list (before a session exists, large binary bodies, unauthenticated
-// or public) and the rulings' additions (negotiate, the F allow-list, backup chunks and GIF media), plus the Bot runtime's own
-// routes in BOT_RUNTIME_ROUTES until Task 14. internal/dillad TestHTTPOnlyListIsExactlyTheStaysOnHTTPList pins the list.
+// or public) and the rulings' additions (negotiate, the F allow-list, backup chunks and GIF media). Task 14 moved the Bot
+// runtime's device-session routes into SOCKET_ROUTES; its enrollment stays in HTTP_ONLY_ROUTES. internal/dillad
+// TestHTTPOnlyListIsExactlyTheStaysOnHTTPList and TestBotRuntimeRoutesAreSocketOnly pin the lists.
 import type { HttpRequest } from './client';
 
 /** One route: its method and its Go ServeMux path pattern ({name} one segment, {name...} the rest). */
@@ -27,6 +27,30 @@ export const SOCKET_ROUTES: readonly SocketRoute[] = [
   { method: 'POST', pattern: '/v1/auth/stepup' },
   { method: 'POST', pattern: '/v1/auth/stepup/passkey/begin' },
   { method: 'POST', pattern: '/v1/auth/stepup/passkey/finish' },
+  // The Bot runtime's device-session routes (Bot v2 task 14): the Bot sends them on its socket; the app never calls them.
+  { method: 'PUT', pattern: '/v1/bot-runtime/communities/{community}/catalog' },
+  { method: 'PUT', pattern: '/v1/bot-runtime/communities/{community}/command-key' },
+  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/automod-grants/redeem' },
+  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/groups' },
+  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/groups/{operation}' },
+  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/interaction-admissions' },
+  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/interaction-admissions/context' },
+  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence' },
+  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor' },
+  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes' },
+  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal' },
+  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal' },
+  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info' },
+  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages' },
+  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/keypackages' },
+  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/keypackages' },
+  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/keypackages/{operation}' },
+  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/moderation/actions' },
+  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/moderation/removals/{request}' },
+  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/moderation/warnings/{request}' },
+  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/ready' },
+  { method: 'POST', pattern: '/v1/bot-runtime/replies' },
+  { method: 'POST', pattern: '/v1/bot-runtime/state-hints' },
   { method: 'GET', pattern: '/v1/bot/revisions' },
   { method: 'DELETE', pattern: '/v1/calls/{call_id}' },
   { method: 'POST', pattern: '/v1/calls/{call_id}/decline' },
@@ -178,6 +202,13 @@ export const HTTP_ONLY_ROUTES: readonly SocketRoute[] = [
   { method: 'POST', pattern: '/v1/auth/totp/confirm' },
   { method: 'POST', pattern: '/v1/auth/totp/enroll' },
   { method: 'POST', pattern: '/v1/auth/totp/verify' },
+  // The Bot's enrollment (Bot v2 task 14): its runtime credential's routes, before and outside any device session, and
+  // the credential finalize while the installation is enrolling (the gateway admits only a joining or ready Bot).
+  { method: 'GET', pattern: '/v1/bot-runtime/installations' },
+  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/claim' },
+  { method: 'PUT', pattern: '/v1/bot-runtime/installations/{installation}/credential' },
+  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/enroll' },
+  { method: 'PUT', pattern: '/v1/bot-runtime/installations/{installation}/status' },
   { method: 'GET', pattern: '/v1/backups' },
   { method: 'GET', pattern: '/v1/backups/{kind}/{chunk_seq}' },
   { method: 'PUT', pattern: '/v1/backups/{kind}/{chunk_seq}' },
@@ -225,38 +256,6 @@ export const PRE_GATEWAY_ROUTES: readonly SocketRoute[] = [
   { method: 'POST', pattern: '/v1/auth/passkey/register/begin' }, // factor-setup: starts a passkey registration
   { method: 'POST', pattern: '/v1/auth/passkey/register/finish' }, // factor-setup: finishes it
   { method: 'POST', pattern: '/v1/devices/{device_id}/sessions/challenge' }, // (d) the unauthenticated challenge before session.establish()
-];
-
-/** The Bot runtime's own HTTP routes (F24), kept apart from the app's lists. */
-export const BOT_RUNTIME_ROUTES: readonly SocketRoute[] = [
-  { method: 'PUT', pattern: '/v1/bot-runtime/communities/{community}/catalog' },
-  { method: 'PUT', pattern: '/v1/bot-runtime/communities/{community}/command-key' },
-  { method: 'GET', pattern: '/v1/bot-runtime/installations' },
-  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/automod-grants/redeem' },
-  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/claim' },
-  { method: 'PUT', pattern: '/v1/bot-runtime/installations/{installation}/credential' },
-  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/enroll' },
-  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/groups' },
-  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/groups/{operation}' },
-  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/interaction-admissions' },
-  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/interaction-admissions/context' },
-  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence' },
-  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor' },
-  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes' },
-  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal' },
-  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal' },
-  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info' },
-  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages' },
-  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/keypackages' },
-  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/keypackages' },
-  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/keypackages/{operation}' },
-  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/moderation/actions' },
-  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/moderation/removals/{request}' },
-  { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/moderation/warnings/{request}' },
-  { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/ready' },
-  { method: 'PUT', pattern: '/v1/bot-runtime/installations/{installation}/status' },
-  { method: 'POST', pattern: '/v1/bot-runtime/replies' },
-  { method: 'POST', pattern: '/v1/bot-runtime/state-hints' },
 ];
 
 interface Compiled { key: string; method: string; segments: readonly string[] }

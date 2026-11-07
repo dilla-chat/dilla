@@ -16,10 +16,9 @@ import (
 // registerBotInteractionGroupHeal mounts the restore-only Bot heal surface. It is scoped by both
 // installation and the current accepted kind-3 registration; generic bot group routes stay narrow.
 func (h *Groups) registerBotInteractionGroupHeal(mux *server.Mux, sessions *auth.Sessions) {
-	bot := BotSessionRoute(sessions, h.Limiter)
 	base := "/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal"
-	mux.Handle("GET "+base, bot("GET "+base, dsMeter(h.Limiter, dsClassRead, h.botInteractionGroupHealStatus)))
-	mux.Handle("POST "+base, bot("POST "+base, dsMeter(h.Limiter, dsClassCommit, h.botInteractionGroupHeal)))
+	mux.SocketAuthed("GET "+base, botSocketChain(sessions, h.Limiter, "GET "+base), dsMeter(h.Limiter, dsClassRead, h.botInteractionGroupHealStatus))
+	mux.SocketAuthed("POST "+base, botSocketChain(sessions, h.Limiter, "POST "+base), dsMeter(h.Limiter, dsClassCommit, h.botInteractionGroupHeal))
 }
 
 type botHealStatusResponse struct {

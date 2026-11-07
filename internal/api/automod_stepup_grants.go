@@ -51,8 +51,7 @@ type automodGrantRedeemResponse struct {
 func registerAutoModerationGrants(m *server.Mux, d Deps) {
 	path := "POST /v1/groups/{group}/automod-grants/arm"
 	m.SocketAuthed(path, d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.armAutoModerationGrant))
-	path = "POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem"
-	m.Handle(path, BotSessionRoute(d.Sessions, d.Limiter)(path, http.HandlerFunc(d.redeemAutoModerationGrant)))
+	m.SocketAuthed("POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem", botSocketChain(d.Sessions, d.Limiter, "POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem"), http.HandlerFunc(d.redeemAutoModerationGrant))
 }
 
 func (d Deps) armAutoModerationGrant(w http.ResponseWriter, r *http.Request) {

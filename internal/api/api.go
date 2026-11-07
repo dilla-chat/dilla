@@ -179,6 +179,10 @@ type Deps struct {
 	BotEnrolled func(context.Context, store.BotInstallationRow)
 	// BotProfileChanged prompts live community members to refresh the bot's display name.
 	BotProfileChanged func(context.Context, id.ID)
+	// BotInstallationsChanged runs after a commit that changes what the Bot runtime reads from its installation list
+	// (configure, disable, remove, a restart request, the music defaults). The Bot polls nothing (Bot v2 task 14), so
+	// the composition root tells the supervised Bot to read its installations again. Nil tells nobody.
+	BotInstallationsChanged func()
 	// BotMembershipPending repairs missing eligible MLS joins after a Ready
 	// transaction has rolled back. It must never run inside Repository.Tx.
 	BotMembershipPending func(context.Context, store.BotInstallationRow, []id.ID)

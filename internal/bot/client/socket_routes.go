@@ -59,6 +59,31 @@ var SocketRoutes = []string{
 	"GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority",
 	"GET /v1/communities/{community}/bot/members/{member}/episode",
 	"POST /v1/communities/{community}/bot/join-role-grants",
+	// Bot v2 task 14: every Bot runtime route the device session calls. The Bot's enrollment (the runtime credential's
+	// list, claim, enroll and status, and the device session's credential finalize while enrolling) stays on HTTP.
+	"PUT /v1/bot-runtime/communities/{community}/catalog",
+	"PUT /v1/bot-runtime/communities/{community}/command-key",
+	"POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem",
+	"POST /v1/bot-runtime/installations/{installation}/groups",
+	"GET /v1/bot-runtime/installations/{installation}/groups/{operation}",
+	"POST /v1/bot-runtime/installations/{installation}/interaction-admissions",
+	"POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context",
+	"GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence",
+	"POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor",
+	"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes",
+	"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal",
+	"POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal",
+	"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info",
+	"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages",
+	"GET /v1/bot-runtime/installations/{installation}/keypackages",
+	"POST /v1/bot-runtime/installations/{installation}/keypackages",
+	"GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}",
+	"POST /v1/bot-runtime/installations/{installation}/moderation/actions",
+	"GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}",
+	"GET /v1/bot-runtime/installations/{installation}/moderation/warnings/{request}",
+	"POST /v1/bot-runtime/installations/{installation}/ready",
+	"POST /v1/bot-runtime/replies",
+	"POST /v1/bot-runtime/state-hints",
 }
 
 type socketRoute struct {

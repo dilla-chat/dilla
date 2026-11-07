@@ -148,6 +148,22 @@ func (s *Supervisor) Restart() {
 	}
 }
 
+// Nudge tells the running child that its installations changed (Bot v2 task 14): SIGHUP through the keeper, on which
+// dillabot re-reads its installations once. The Bot polls nothing, and a new installation in a community it has no
+// connection for has no other way to reach it. With no living child it does nothing; a failed signal is logged.
+func (s *Supervisor) Nudge() {
+	s.mu.Lock()
+	pid := s.status.PID
+	live := s.status.Running && pid > 0 && s.child != nil && s.child.alive()
+	s.mu.Unlock()
+	if !live {
+		return
+	}
+	if err := s.keeper.Signal(pid, syscall.SIGHUP); err != nil {
+		s.log.Warn("could not tell the Bot its installations changed", "pid", pid, "err", err)
+	}
+}
+
 // Peer reports whether a process connecting to the Bot listener is the current child: its pid is the one the keeper
 // started (bot-launch execs the Bot in place, so the pid stays), the child behind that pid still lives (its pidfd,
 // opened when it started: a live process's pid cannot have been reused by another), and its uid is the Bot's.

@@ -25,9 +25,9 @@ type botGroupRegistrationReceiptResponse struct {
 
 // RegisterBotRegistration mounts the installation-scoped managed-bot first-group routes.
 func (h *Groups) RegisterBotRegistration(mux *server.Mux, sessions *auth.Sessions) {
-	enrolled := func(f http.HandlerFunc) http.Handler { return sessions.Middleware(f, auth.ScopeEnrolled) }
-	mux.Handle("POST /v1/bot-runtime/installations/{installation}/groups", enrolled(dsMeter(h.Limiter, dsClassWrite, h.registerBotGroup)))
-	mux.Handle("GET /v1/bot-runtime/installations/{installation}/groups/{operation}", enrolled(dsMeter(h.Limiter, dsClassRead, h.getBotGroupReceipt)))
+	// Socket-only (Bot v2 task 14): the Bot's device session sends them as request frames.
+	mux.SocketAuthed("POST /v1/bot-runtime/installations/{installation}/groups", socketMeter(sessions, h.Limiter, dsClassWrite), http.HandlerFunc(h.registerBotGroup))
+	mux.SocketAuthed("GET /v1/bot-runtime/installations/{installation}/groups/{operation}", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.getBotGroupReceipt))
 }
 
 func (h *Groups) registerBotGroup(w http.ResponseWriter, r *http.Request) {

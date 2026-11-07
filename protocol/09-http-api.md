@@ -53,7 +53,10 @@ timeouts and warnings, roles, self-roles, role panels and the Bot join role), ch
 `…/gifs/key`, `…/gifs/rating`, `…/gifs/search`) and the human-facing Bot admin routes
 (`/v1/communities/{community}/bot` and its profile, disable, restart, music-settings, command-status, actor
 authority, join-role-grants, member episode, events and event ack, and the webhook admin routes under
-`…/bot/webhooks`). The retired `POST` and `DELETE
+`…/bot/webhooks`). The managed Bot's runtime routes under `/v1/bot-runtime/` are socket-only too, apart from its
+enrollment: the runtime credential's `GET /v1/bot-runtime/installations`, `…/{installation}/claim`, `…/enroll` and
+`…/status`, which run before and outside any device session, and the device session's `…/credential`, sent while the
+installation is still enrolling, which the gateway does not admit (`10` § Bot runtime). The retired `POST` and `DELETE
 /v1/communities/{id}/afk` of web3.8 are not registered. What stays on HTTP is the binary and the
 pre-socket surface: blob routes, GIF media bytes (`GET …/gifs/media/{gif_id}`) and the backup chunks (a body
 above a frame), the invite preview `GET /i/{code}`, and the invite landing

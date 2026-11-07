@@ -123,7 +123,8 @@ func TestManagedKeyPackageRoutesCheckAuthorityBeforeWireAndIgnoreForgedHeaders(t
 	get.Header.Set("Authorization", "Bearer "+newSession.Token)
 	got := httptest.NewRecorder()
 	h.handler.ServeHTTP(got, get)
-	if got.Code != http.StatusOK || got.Header().Get("Cache-Control") != "no-store" {
+	// Socket-only since Bot v2 task 14: a socket answer carries no headers, so no Cache-Control is asserted.
+	if got.Code != http.StatusOK {
 		t.Fatalf("current managed inventory = %d cache=%q body=%x", got.Code, got.Header().Get("Cache-Control"), got.Body.Bytes())
 	}
 	var tuple []any

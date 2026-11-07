@@ -597,19 +597,21 @@ func seedSocketBot(t *testing.T, d api.Deps) (string, store.BotInstallationRow) 
 func TestIneligibleBotRetryWithSameIdemGetsTheMiddlewareRefusal(t *testing.T) {
 	e := newSocketEnv(t, nil)
 	var runs atomic.Int64
+	// The route is the real socket-only ready route (Bot v2 task 14); the HTTP twin mounts a stub behind the same
+	// middleware, to read the refusal an ineligible Bot gets before any handler runs.
 	const pattern = "POST /v1/bot-runtime/installations/{installation}/ready"
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = server.EncodeBody(w, http.StatusCreated, runs.Add(1))
 	})
-	e.routes.Socket(pattern, h)
 	twin := server.NewMux()
 	twin.Wrapped(api.SessionRoute(e.deps.Sessions, e.deps.Limiter)).Handle(pattern, h)
 	token, inst := seedSocketBot(t, e.deps)
 	route := "/v1/bot-runtime/installations/" + inst.ID.String() + "/ready"
 	c := e.dial(token)
 	idem := []byte("idem-then-disabled")
-	if resp := sockDo(t, c, http.MethodPost, route, nil, idem); resp.Status != http.StatusCreated {
-		t.Fatalf("first = %d %x", resp.Status, resp.Body)
+	first := sockDo(t, c, http.MethodPost, route, nil, idem)
+	if first.Status >= 500 || first.Status == http.StatusUnauthorized || first.Status == http.StatusForbidden {
+		t.Fatalf("first = %d %x, want an answer the handler gave (recorded for a retry)", first.Status, first.Body)
 	}
 	next := inst
 	next.Revision, next.State, next.Updated = 2, store.BotInstallationDisabled, inst.Updated+1
@@ -622,8 +624,8 @@ func TestIneligibleBotRetryWithSameIdemGetsTheMiddlewareRefusal(t *testing.T) {
 	req.Header.Set("Content-Type", "application/cbor")
 	rec := httptest.NewRecorder()
 	twin.ServeHTTP(rec, req)
-	if resp.Status == http.StatusCreated || resp.Status != rec.Code || !bytes.Equal(resp.Body, rec.Body.Bytes()) || runs.Load() != 1 {
-		t.Fatalf("disabled Bot retry = %d %x, HTTP %d %x, runs %d", resp.Status, resp.Body, rec.Code, rec.Body.Bytes(), runs.Load())
+	if resp.Status == first.Status || resp.Status != rec.Code || !bytes.Equal(resp.Body, rec.Body.Bytes()) || runs.Load() != 0 {
+		t.Fatalf("disabled Bot retry = %d %x (first %d), HTTP %d %x, runs %d", resp.Status, resp.Body, first.Status, rec.Code, rec.Body.Bytes(), runs.Load())
 	}
 }
 

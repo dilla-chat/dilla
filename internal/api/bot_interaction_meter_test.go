@@ -28,6 +28,8 @@ func TestBotInteractionRoutesSpendOneRateTokenPerRequest(t *testing.T) {
 			mux := muxOf(t, handler)
 			groups := &api.Groups{Limiter: deps.Limiter}
 			groups.Register(mux, deps.Sessions)
+			// Socket-only since Bot v2 task 14: the requests go as request frames.
+			socket := viaSocket(t, mux, deps)
 			_, _, token := seedAPISession(t, deps)
 			path := "/v1/bot-runtime/installations/" + id.New().String() + "/interaction-groups/" + id.New().String() + route.suffix
 			call := func() int {
@@ -35,7 +37,7 @@ func TestBotInteractionRoutesSpendOneRateTokenPerRequest(t *testing.T) {
 				request.Header.Set("Authorization", "Bearer "+token)
 				request.Header.Set("Content-Type", "application/cbor")
 				response := httptest.NewRecorder()
-				mux.ServeHTTP(response, request)
+				socket.ServeHTTP(response, request)
 				return response.Code
 			}
 			if status := call(); status != http.StatusServiceUnavailable {

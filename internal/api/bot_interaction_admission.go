@@ -46,9 +46,8 @@ type botInteractionAdmissionPayload struct {
 }
 
 func (d Deps) registerBotInteractionAdmissions(m *server.Mux) {
-	botSession := BotSessionRoute(d.Sessions, d.Limiter)
-	m.Handle("POST /v1/bot-runtime/installations/{installation}/interaction-admissions", botSession("POST /v1/bot-runtime/installations/{installation}/interaction-admissions", http.HandlerFunc(d.issueBotInteractionAdmission)))
-	m.Handle("GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence", botSession("GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence", http.HandlerFunc(d.proveBotInteractionGroupAbsent)))
+	m.SocketAuthed("POST /v1/bot-runtime/installations/{installation}/interaction-admissions", botSocketChain(d.Sessions, d.Limiter, "POST /v1/bot-runtime/installations/{installation}/interaction-admissions"), http.HandlerFunc(d.issueBotInteractionAdmission))
+	m.SocketAuthed("GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence", botSocketChain(d.Sessions, d.Limiter, "GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence"), http.HandlerFunc(d.proveBotInteractionGroupAbsent))
 	d.registerBotInteractionContext(m)
 }
 

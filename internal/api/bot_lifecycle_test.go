@@ -241,7 +241,9 @@ func testManagedBotIdentityLifecycle(t *testing.T, repo store.Repository, remove
 	}
 
 	transport := &lifecycleDropAcceptedPublication{base: srv.Client().Transport}
-	httpClient, err := client.New(client.Config{BaseURL: srv.URL, HTTPClient: &http.Client{Transport: transport}, InstanceID: instance, AllowLoopbackHTTP: true})
+	// No socket routes on the client side: its socket routes go over HTTP to the harness, whose bridge (viaSocket) sends
+	// them to the dispatcher as request frames, so the transport below still sees, and can lose, every response.
+	httpClient, err := client.New(client.Config{BaseURL: srv.URL, HTTPClient: &http.Client{Transport: transport}, InstanceID: instance, AllowLoopbackHTTP: true, SocketRoutes: []string{}})
 	if err != nil {
 		t.Fatalf("construct pinned bot HTTP client: %v", err)
 	}

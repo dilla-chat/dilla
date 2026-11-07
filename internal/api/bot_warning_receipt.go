@@ -10,8 +10,7 @@ import (
 // registerBotWarningReceipt exposes only authoritative receipt metadata to the
 // installation that owns the community's encrypted moderation state.
 func (d Deps) registerBotWarningReceipt(m *server.Mux) {
-	path := "GET /v1/bot-runtime/installations/{installation}/moderation/warnings/{request}"
-	m.Handle(path, BotSessionRoute(d.Sessions, d.Limiter)(path, http.HandlerFunc(d.getBotWarningReceipt)))
+	m.SocketAuthed("GET /v1/bot-runtime/installations/{installation}/moderation/warnings/{request}", botSocketChain(d.Sessions, d.Limiter, "GET /v1/bot-runtime/installations/{installation}/moderation/warnings/{request}"), http.HandlerFunc(d.getBotWarningReceipt))
 }
 
 func (d Deps) getBotWarningReceipt(w http.ResponseWriter, r *http.Request) {

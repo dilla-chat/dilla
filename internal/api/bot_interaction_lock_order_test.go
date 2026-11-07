@@ -228,10 +228,11 @@ func testInteractionPoolAndSQLProgress(t *testing.T, mode string) {
 	}()
 	rec := <-readDone
 	uploadErr := <-uploadDone
+	// "cancelled" cancels the caller's context while the read holds the lease. The route is socket-only since Bot v2
+	// task 14, and a socket request outlives its caller (api.SocketDispatcher dispatches without the caller's
+	// cancellation, so a retry gets the real answer): the read completes. What this mode still proves is that a
+	// cancelled caller neither deadlocks the upload nor keeps the lease.
 	wantCode := http.StatusOK
-	if mode == "cancelled" {
-		wantCode = http.StatusForbidden
-	}
 	if mode == "human_changed_proof" {
 		wantCode = http.StatusServiceUnavailable
 	}

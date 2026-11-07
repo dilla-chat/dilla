@@ -17,12 +17,11 @@ import (
 // groups. Values are selected under the same transaction and group fence that proves
 // the currently accepted two-leaf MLS roster.
 func (h *Groups) registerBotInteractionGroupReads(mux *server.Mux, sessions *auth.Sessions) {
-	bot := BotSessionRoute(sessions, h.Limiter)
 	base := "/v1/bot-runtime/installations/{installation}/interaction-groups/{group}"
-	mux.Handle("GET "+base+"/info", bot("GET "+base+"/info", http.HandlerFunc(h.botInteractionGroupInfo)))
-	mux.Handle("GET "+base+"/handshakes", bot("GET "+base+"/handshakes", http.HandlerFunc(h.botInteractionGroupHandshakes)))
-	mux.Handle("GET "+base+"/messages", bot("GET "+base+"/messages", http.HandlerFunc(h.botInteractionGroupMessages)))
-	mux.Handle("POST "+base+"/cursor", bot("POST "+base+"/cursor", http.HandlerFunc(h.botInteractionGroupCursor)))
+	mux.SocketAuthed("GET "+base+"/info", botSocketChain(sessions, h.Limiter, "GET "+base+"/info"), http.HandlerFunc(h.botInteractionGroupInfo))
+	mux.SocketAuthed("GET "+base+"/handshakes", botSocketChain(sessions, h.Limiter, "GET "+base+"/handshakes"), http.HandlerFunc(h.botInteractionGroupHandshakes))
+	mux.SocketAuthed("GET "+base+"/messages", botSocketChain(sessions, h.Limiter, "GET "+base+"/messages"), http.HandlerFunc(h.botInteractionGroupMessages))
+	mux.SocketAuthed("POST "+base+"/cursor", botSocketChain(sessions, h.Limiter, "POST "+base+"/cursor"), http.HandlerFunc(h.botInteractionGroupCursor))
 }
 
 func (h *Groups) botInteractionGroupRead(w http.ResponseWriter, r *http.Request, fn func(ds.CurrentBotInteractionGroupContext, store.Repository, auth.Session, id.ID) error) bool {

@@ -2,15 +2,7 @@
 
 package main
 
-import (
-	"context"
-	"time"
-)
-
-// gatewayWakeThrottle spaces text-source refreshes that a general gateway hint (a welcome, an
-// epoch change, a channel message) starts. Full reconciliation includes proof POSTs for every
-// private group and stays on its own interval.
-const gatewayWakeThrottle = 5 * time.Second
+import "time"
 
 // interactionSpacing is the least time between two interaction fast-path polls: signals inside
 // the gap coalesce into one poll after it. interactionBurst is how many fast polls may follow one
@@ -62,38 +54,4 @@ func (b *interactionBudget) spend(now time.Time, groups int) {
 	b.refill(now)
 	b.tokens -= float64(groups)
 	b.last = now
-}
-
-// reconcileWait polls text sources when the gateway hints at new input. Full
-// reconciliation stays on its interval as a safety net for lost notifications;
-// command workers handle private-source synchronization independently.
-type reconcileWait struct {
-	interval time.Duration
-	wake     <-chan struct{}
-	poll     func(context.Context)
-	now      func() time.Time
-	after    func(time.Duration) <-chan time.Time
-}
-
-// wait returns true when the interval elapses and false when ctx ends.
-// started is when the previous reconciliation pass began.
-func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
-	next := w.after(w.interval)
-	var general <-chan time.Time
-	for {
-		select {
-		case <-ctx.Done():
-			return false
-		case <-next:
-			return true
-		case <-w.wake:
-			if general == nil {
-				general = w.after(gatewayWakeThrottle - w.now().Sub(started))
-			}
-		case <-general:
-			general = nil
-			w.poll(ctx)
-			started = w.now()
-		}
-	}
 }

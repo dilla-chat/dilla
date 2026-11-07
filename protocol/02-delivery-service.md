@@ -265,8 +265,13 @@ listens on a Unix socket, `<bot.socket_dir>/gateway.sock` (default `/run/dillad/
 the directory is mode 0750 and the socket 0660, both dillad's with the Bot user's group). There is no
 network form of it. A connection is accepted only from the process dillad's keeper started, by its
 `SO_PEERCRED` pid and uid (the Bot's user; dillad's own with `dev_same_user`); any other peer is
-closed before a byte is read. The socket serves dillad's HTTP routes and the same `GET /gateway`
-upgrade, with two differences on the upgrade: the session is the upgrade's
+closed before a byte is read. The socket serves the same `GET /gateway` upgrade and, beside it, only
+the HTTP routes the Bot calls before its gateway connection exists: `GET /v1/instance` and
+`/v1/instance/limits`, the session ceremony (`POST /v1/devices/{device_id}/sessions/challenge` and
+`…/sessions`) and `POST /v1/sessions/negotiate`, its own device list (`GET` and `PUT
+/v1/users/{user_id}/device-list`), and its enrollment (`GET /v1/bot-runtime/installations`, `…/claim`,
+`…/enroll`, `…/credential`, `…/status`). Every other path is `404` there; every other route the Bot
+calls is a request frame on its gateway connection. There are two differences on the upgrade: the session is the upgrade's
 `Authorization: Bearer` and must be a managed Bot session, and the first `identify` of each Bot start
 carries in `session_token` the launch token dillad gave that start on its descriptor 3 (32 bytes,
 base64url without padding). The token is spent by the first `identify` that binds, compared in
@@ -631,13 +636,22 @@ it is emitted only after the change committed. The kinds:
 | 8 | `community` | `[community_id, owner_user_id]`: the owner, who holds every permission |
 
 On a Bot identify (not a resume) the instance streams a cold-start snapshot: `snapshot_begin`, then
-the device list of every member, every member, every role, the owner and every Bot channel, then
-`snapshot_end`. It is one pass per Bot start, never per command or on a timer. The body frames are
+the device list of every member, every member, every role, the owner, every Bot channel and the
+`channel_group` of each Bot channel's open text group and of each open call group the Bot's device is
+in, then `snapshot_end`. It is one pass per Bot start, never per command or on a timer. The body frames are
 sent with `n = 0` and are not ringed; `snapshot_end` is ringed. A Bot connection may resume only from
 an `n` at or above its `snapshot_end`: a drop before it is answered `invalid_session` on resume, and
 the Bot's next identify streams a fresh snapshot. Live commands and events that arrive while the
 snapshot streams follow `snapshot_end`. A device list whose push would exceed 1 MiB, or whose history
 exceeds 1024 versions, is left out and counted (`dilla_bot_feed_skipped_total`).
+
+The Bot reads a `bot_event` of up to 1 MiB plus its framing, whatever `max_frame_bytes` its `hello`
+named; every other frame stays within `max_frame_bytes`. It acknowledges a ringed `bot_event` only once
+it has applied it, and every ringed frame after it only after that, so its last acknowledged `n` (the
+heartbeat's and a resume's `last_n`) never runs ahead of what it applied. It buffers a snapshot's body
+and applies the whole snapshot once `snapshot_end` arrives, acknowledging only `snapshot_end`. A
+Bot connection's `bot_webhook_ack` is not charged to the inbound frame bucket (as an admitted `request`
+is not); a person's connection's is.
 
 `bot_webhook` and `bot_webhook_ack` carry an incoming webhook POST (`10` § Webhooks); they are the
 exception to this section's heading and are never sequenced. `bot_webhook` goes only to a Bot runtime

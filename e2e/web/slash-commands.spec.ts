@@ -472,8 +472,8 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
   let host: StartedHost | null = null;
   let secondContext: BrowserContext | null = null;
   try {
-    // Production uses 30 seconds: command delivery must wake independently of reconciliation.
-    host = await startTestHost({ ...HOST, botReconcileInterval: '30s' });
+    // The Bot polls nothing (Bot v2 task 14): command delivery wakes on its own, never on a reconcile pass.
+    host = await startTestHost(HOST);
     await installWorkerPort(page.context());
     await traceCoreWorker(page);
     await page.addInitScript(() => {

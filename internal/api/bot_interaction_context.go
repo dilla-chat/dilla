@@ -152,9 +152,7 @@ func snapshotListWire(list interactionSnapshotDeviceList) interactionSnapshotLis
 }
 
 func (d Deps) registerBotInteractionContext(m *server.Mux) {
-	botSession := BotSessionRoute(d.Sessions, d.Limiter)
-	path := "POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context"
-	m.Handle(path, botSession(path, http.HandlerFunc(d.getBotInteractionContext)))
+	m.SocketAuthed("POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context", botSocketChain(d.Sessions, d.Limiter, "POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context"), http.HandlerFunc(d.getBotInteractionContext))
 }
 
 func (d Deps) getBotInteractionContext(w http.ResponseWriter, r *http.Request) {

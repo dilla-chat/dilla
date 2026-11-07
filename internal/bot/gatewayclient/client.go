@@ -537,12 +537,14 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 			writerDone <- err
 			return fresh, 0, errTransport
 		case raw := <-rawFrames:
-			if int64(len(raw)) > maxFrameReadLimit(conn.maxFrame) {
+			// An op 65 may carry a 1 MiB device-list push (Bot v2 task 14); every other frame keeps the hello's bound.
+			limit := serverFrameLimit(raw, conn.maxFrame)
+			if uint64(len(raw)) > limit {
 				// Before the read limit was raised for answers, the reader itself refused such a frame and the
 				// connection was retried; keep that outcome.
 				return fresh, 0, errTransport
 			}
-			f, e := DecodeServerFrame(raw, conn.maxFrame)
+			f, e := DecodeServerFrame(raw, limit)
 			if e != nil {
 				if dropMalformedEphemeral(raw) {
 					continue

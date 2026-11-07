@@ -9,8 +9,10 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
+	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // Bot v2 Task 13: an incoming webhook (op 66) reaches only a live Bot runtime connection, unringed, and
@@ -270,4 +272,77 @@ func mustFrameBytes(t *testing.T, v any) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// TestWebhookAcksFromTheBotAreNotChargedToTheInboundFrameBucket (Bot v2 task 14): every op 66 the Bot is sent asks for
+// one op 67 back within 2 s, so a burst of webhook posts must not close the Bot's connection 4008. Op 67 rides outside
+// the inbound bucket on a Bot connection, as an admitted op 59 request does; on a person's connection it is charged.
+func TestWebhookAcksFromTheBotAreNotChargedToTheInboundFrameBucket(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		bot    bool
+		closed bool
+	}{{"bot", true, false}, {"person", false, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.gw.opts.WireVersions = []uint64{auth.WireVersion}
+			h.gw.opts.Auth = &capabilityRecordingAuth{Authenticator: h}
+			device := id.New()
+			session := auth.Session{Scope: auth.ScopeEnrolled, WireVersion: auth.WireVersion, TokenHash: tokenHash()}
+			if tc.bot {
+				session.Bot = &auth.BotSessionBinding{InstallationID: id.New(), CommunityID: id.New(), State: store.BotInstallationReady}
+			}
+			token := scopedSession(h, device, session)
+			s := newRecordingSink(512, false)
+			go h.gw.serve(context.Background(), s, token)
+			h.readFrom(t, s) // hello
+			p, err := payload(token, auth.WireVersion, uint64(1), uint64(1), uint64(0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.feed(mustEncode(t, Frame{Op: OpIdentify, Payload: p, Replay: true}, 1))
+			select {
+			case b := <-s.frames:
+				if in, err := decodeAny(b); err != nil || in.Op != OpReady {
+					t.Fatalf("op %d (%v), want ready", in.Op, err)
+				}
+			case code := <-s.closed:
+				t.Fatalf("identify closed %d", code)
+			case <-time.After(2 * time.Second):
+				t.Fatal("no ready")
+			}
+			frames := make([][]byte, 0, h.gw.opts.FrameBurst*2)
+			for range h.gw.opts.FrameBurst * 2 {
+				delivery := id.New()
+				ack, err := payload(delivery[:], uint64(0))
+				if err != nil {
+					t.Fatal(err)
+				}
+				frames = append(frames, mustEncode(t, Frame{Op: OpBotWebhookAck, Payload: ack}, 0))
+			}
+			// A closed connection stops reading, so the feeder must not block the test.
+			go func() {
+				for _, f := range frames {
+					select {
+					case s.reads <- f:
+					case <-time.After(time.Second):
+						return
+					}
+				}
+			}()
+			select {
+			case code := <-s.closed:
+				if !tc.closed {
+					t.Fatalf("the Bot's connection was closed %d for its webhook acks", code)
+				}
+				if code != CloseRateLimited {
+					t.Fatalf("close code = %d, want 4008", code)
+				}
+			case <-time.After(500 * time.Millisecond):
+				if tc.closed {
+					t.Fatal("a person's connection sent twice the burst of op 67 frames and stayed open")
+				}
+			}
+		})
+	}
 }

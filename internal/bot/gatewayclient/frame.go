@@ -13,6 +13,21 @@ import (
 
 const MaxGatewayFrameBytes = (1 << 20) + 512
 
+// MaxBotEventFrameBytes bounds one op 65 bot_event frame (Bot v2 task 14): a device-list push of up to 1 MiB, the most
+// dillad sends (api.BotFeedMaxDeviceListBytes; a larger one it leaves out), plus the frame's own bytes. It is above
+// the hello's max_frame_bytes on purpose; every other server frame stays held to that.
+const MaxBotEventFrameBytes = MaxGatewayFrameBytes
+
+// serverFrameLimit is the size bound of one server frame read after the handshake: MaxBotEventFrameBytes for an op 65,
+// read from the frame's head (a four-element array whose op is the one-byte-argument uint 65), and the hello's
+// maxFrame for everything else.
+func serverFrameLimit(raw []byte, maxFrame uint64) uint64 {
+	if len(raw) >= 3 && raw[0] == 0x84 && raw[1] == 0x18 && raw[2] == byte(OpBotEvent) {
+		return MaxBotEventFrameBytes
+	}
+	return min(maxFrame, MaxGatewayFrameBytes)
+}
+
 type Opcode uint64
 
 const (

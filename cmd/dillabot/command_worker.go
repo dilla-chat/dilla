@@ -280,6 +280,7 @@ func (r *botGatewayRuntime) finishCommandJob(pool *commandWorkers, job commandJo
 	delete(pool.background, job.work.installation)
 	retry := err != nil && pool.ctx.Err() == nil && r.interactionPollers[job.work.installation] != nil && (job.turn == nil || !job.turn.retired.Load())
 	warn := false
+	failed := false
 	rateInfo := false
 	var delay time.Duration
 	if err == nil {
@@ -306,6 +307,7 @@ func (r *botGatewayRuntime) finishCommandJob(pool *commandWorkers, job commandJo
 				r.deferred[job.work.installation] = now.Add(delay)
 				rateInfo = true
 			} else {
+				failed = true
 				state := pool.failures[job.work]
 				if state == nil {
 					state = &commandFailureState{logs: make(map[string]commandLogState)}
@@ -350,6 +352,11 @@ func (r *botGatewayRuntime) finishCommandJob(pool *commandWorkers, job commandJo
 		if errors.As(err, &trustErr) {
 			attrs = append(attrs, "phase", trustErr.Phase.String(), "cause_class", trustErr.CauseClass())
 		}
+		var membershipErr *service.MembershipPhaseError
+		if errors.As(err, &membershipErr) {
+			attrs = append(attrs, "membership_phase", membershipErr.Phase.String())
+			attrs = append(attrs, safeMembershipErrorAttrs(membershipErr)...)
+		}
 		if isPanic {
 			attrs = append(attrs, "stack", string(panicErr.stack))
 		}
@@ -360,5 +367,11 @@ func (r *botGatewayRuntime) finishCommandJob(pool *commandWorkers, job commandJo
 	}
 	if retry {
 		r.signalCommands()
+	}
+	if failed {
+		// A failed intake turn (a source the pass has not synced or healed, a membership the pass has not
+		// reconciled) asks for one reconciliation pass, as the periodic pass used to provide (Bot v2 task 14): the
+		// worker's own retry backoff spaces the asks, and a pass is never requested while intake succeeds.
+		r.requestPass()
 	}
 }
