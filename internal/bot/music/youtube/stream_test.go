@@ -47,6 +47,8 @@ case " $* " in *" -c:a libopus "*) ;; *) exit 34;; esac
 case " $* " in *" -frame_duration 20 "*) ;; *) exit 35;; esac
 case " $* " in *" -ar 48000 "*) ;; *) exit 36;; esac
 test "$HTTPS_PROXY" = "http://127.0.0.1:3128" || exit 37
+case " $* " in *" -protocol_whitelist https,tls,tcp,httpproxy "*) ;; *) exit 38;; esac
+case " $* " in *" -user_agent UA/9 "*) ;; *) exit 39;; esac
 base64 -d > /tmp/stream.opus <<'DATA'
 ` + encoded + `
 DATA
@@ -62,13 +64,15 @@ type fakeResolver struct {
 	urls        []string
 }
 
+const testUserAgent = "UA/9"
+
 func (f *fakeResolver) Resolve(_ context.Context, input string) (Resolved, error) {
 	n := int(f.calls.Add(1))
 	u := "https://rr1---sn-abc.googlevideo.com/videoplayback?expire=4102444800&n=" + strconv.Itoa(n)
 	if len(f.urls) > 0 {
 		u = f.urls[min(n-1, len(f.urls)-1)]
 	}
-	return Resolved{StreamURL: u, Expires: time.Now().Add(time.Hour)}, nil
+	return Resolved{StreamURL: u, Expires: time.Now().Add(time.Hour), UserAgent: testUserAgent}, nil
 }
 func (f *fakeResolver) Invalidate(string) { f.invalidated.Add(1) }
 
@@ -271,18 +275,19 @@ func TestStreamStarterRefusesStreamsTheSandboxMustNotFetch(t *testing.T) {
 }
 
 func TestFfmpegStreamArgsSeekBeforeInputAndNeverUseShellOrFilters(t *testing.T) {
-	args := ffmpegStreamArgs("https://rr1---sn-abc.googlevideo.com/videoplayback?x=1", 12500, true)
+	args := ffmpegStreamArgs("https://rr1---sn-abc.googlevideo.com/videoplayback?x=1", 12500, true, "UA/1")
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "-ss 12.500 -i https://rr1---sn-abc.googlevideo.com/videoplayback?x=1 ") {
 		t.Fatalf("seek must precede -i: %s", joined)
 	}
-	for _, want := range []string{"-http_proxy http://127.0.0.1:3128", "-c:a libopus", "-frame_duration 20", "-ar 48000", "-f ogg pipe:1", "-vn"} {
+	for _, want := range []string{"-protocol_whitelist https,tls,tcp,httpproxy -reconnect", "-user_agent UA/1", "-http_proxy http://127.0.0.1:3128", "-c:a libopus", "-frame_duration 20", "-ar 48000", "-f ogg pipe:1", "-vn"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %q in %s", want, joined)
 		}
 	}
-	if strings.Contains(strings.Join(ffmpegStreamArgs("/x/a.opus", 0, false), " "), "-reconnect") || strings.Contains(joined, "-protocol_whitelist") {
-		t.Fatal("unexpected option")
+	local := strings.Join(ffmpegStreamArgs("/x/a.opus", 0, false, "UA/1"), " ")
+	if strings.Contains(local, "-reconnect") || strings.Contains(local, "-user_agent") || !strings.Contains(local, "-protocol_whitelist file -i /x/a.opus") {
+		t.Fatalf("a file input must allow only the file protocol and no network options: %s", local)
 	}
 }
 

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const fakePrintJSON = `{"id":"aqz-KE-bpKQ","title":"Big Buck Bunny","uploader":"Blender","duration":596,"availability":"public","live_status":"not_live","is_live":false,"extractor_key":"Youtube","url":"https://rr1---sn-abc.googlevideo.com/videoplayback?expire=4102444800&id=o-xyz"}`
+const fakePrintJSON = `{"id":"aqz-KE-bpKQ","title":"Big Buck Bunny","uploader":"Blender","duration":596,"availability":"public","live_status":"not_live","is_live":false,"extractor_key":"Youtube","protocol":"https","http_headers":{"User-Agent":"Mozilla/5.0 test"},"url":"https://rr1---sn-abc.googlevideo.com/videoplayback?expire=4102444800&id=o-xyz"}`
 
 // countingBwrap logs one line per sandbox launch, then runs the real bubblewrap
 // with exactly the arguments it was given.
@@ -72,7 +72,7 @@ printf '%s\n' '`+fakePrintJSON+`'`, 10*time.Second)
 	}
 }
 
-func TestWarmWorkerHungYtDlpIsKilledAndTheWorkerRestarts(t *testing.T) {
+func TestWarmWorkerHungYtDlpIsCancelledAloneAndTheWorkerSurvives(t *testing.T) {
 	dir := t.TempDir()
 	r, log := warmForTest(t, dir, `for a; do last="$a"; done
 case "$last" in *hang*) sleep 30;; esac
@@ -93,8 +93,8 @@ printf '%s\n' '`+fakePrintJSON+`'`, 400*time.Millisecond)
 	if _, err := r.Resolve(context.Background(), "healthy again"); err != nil {
 		t.Fatalf("lookup after the kill: %v", err)
 	}
-	if n := launches(t, log); n != 2 {
-		t.Fatalf("sandbox launches = %d, want 2 (initial and one restart)", n)
+	if n := launches(t, log); n != 1 {
+		t.Fatalf("sandbox launches = %d, want 1: a timed-out lookup cancels only itself and the worker stays", n)
 	}
 }
 

@@ -3,6 +3,7 @@ package youtube
 import (
 	"context"
 	"errors"
+	"io"
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/music"
@@ -49,8 +50,89 @@ func NewBackend(cfg SandboxConfig, cache time.Duration) (*Backend, error) {
 		_ = warm.Close()
 		return nil, err
 	}
-	return &Backend{Streams: streams, Tracks: warm.MetadataResolver(), warm: warm}, nil
+	return newBackend(warm, streams), nil
 }
+
+func newBackend(warm *WarmResolver, streams *StreamStarter) *Backend {
+	return &Backend{Streams: streams, Tracks: warmTracks{warm: warm, metadata: warm.MetadataResolver()}, warm: warm}
+}
+
+// warmTracks answers a /play: a video or a search text goes through the warm
+// resolver, so it is one yt-dlp run (none when cached) that also seeds the
+// stream URL the track's start will use. Playlists and suggestions keep the
+// flat metadata listing.
+type warmTracks struct {
+	warm     *WarmResolver
+	metadata MetadataResolver
+}
+
+func (t warmTracks) Resolve(ctx context.Context, input string) ([]music.Track, error) {
+	kind, _, err := NormalizeInput(input)
+	if err != nil {
+		return nil, err
+	}
+	if kind == "playlist" {
+		return t.metadata.Resolve(ctx, input)
+	}
+	resolved, err := t.warm.Resolve(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	return []music.Track{resolved.Track}, nil
+}
+
+func (t warmTracks) Search(ctx context.Context, input string) ([]music.Track, error) {
+	return t.metadata.Search(ctx, input)
+}
+
+// For returns the view of the backend one community (or installation) uses.
+// Its lookups are cached and its pre-buffers held apart from every other
+// owner's: another community never hits this one's cache entries or claims its
+// buffer, and its start timings report Cold for its own lookups only. The cost
+// is one extra yt-dlp run per community for the same song.
+func (b *Backend) For(owner string) *OwnerBackend {
+	return &OwnerBackend{Streams: &OwnedStreams{streams: b.Streams, owner: owner}, Tracks: ownedTracks{base: b.Tracks, owner: owner}}
+}
+
+// OwnerBackend is a Backend scoped to one owner.
+type OwnerBackend struct {
+	Streams *OwnedStreams
+	Tracks  TrackResolver
+}
+
+type ownedTracks struct {
+	base  TrackResolver
+	owner string
+}
+
+func (t ownedTracks) Resolve(ctx context.Context, input string) ([]music.Track, error) {
+	return t.base.Resolve(WithOwner(ctx, t.owner), input)
+}
+
+func (t ownedTracks) Search(ctx context.Context, input string) ([]music.Track, error) {
+	return t.base.Search(WithOwner(ctx, t.owner), input)
+}
+
+// OwnedStreams is a StreamStarter scoped to one owner. It satisfies
+// PCMSourceStarter, so it is the YouTube source of that owner's music runtime.
+type OwnedStreams struct {
+	streams *StreamStarter
+	owner   string
+}
+
+func (o *OwnedStreams) Start(ctx context.Context, source string) (io.ReadCloser, error) {
+	return o.streams.Start(WithOwner(ctx, o.owner), source)
+}
+
+func (o *OwnedStreams) StartAt(ctx context.Context, source string, ms int64) (io.ReadCloser, error) {
+	return o.streams.StartAt(WithOwner(ctx, o.owner), source, ms)
+}
+
+func (o *OwnedStreams) Prefetch(ctx context.Context, source string) error {
+	return o.streams.Prefetch(WithOwner(ctx, o.owner), source)
+}
+
+func (o *OwnedStreams) Check(ctx context.Context) error { return o.streams.Check(ctx) }
 
 // Close stops the worker and every pre-buffered stream.
 func (b *Backend) Close() error {

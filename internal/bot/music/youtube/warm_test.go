@@ -18,6 +18,7 @@ type fakeLookup struct {
 	calls  atomic.Int32
 	closed atomic.Bool
 	hang   bool
+	wedge  bool // a hung lookup that the worker does not even acknowledge a cancel for
 	gate   chan struct{}
 	reply  func(args []string) ([]byte, error)
 	once   sync.Once
@@ -31,7 +32,7 @@ func newFakeLookup() *fakeLookup {
 }
 
 func videoReply(id string, expire time.Time) []byte {
-	return []byte(fmt.Sprintf(`{"id":%q,"title":"Big Buck Bunny","uploader":"Blender","duration":596,"availability":"public","live_status":"not_live","is_live":false,"extractor_key":"Youtube","url":"https://rr1---sn-abc.googlevideo.com/videoplayback?expire=%d&id=o-xyz"}`+"\n", id, expire.Unix()))
+	return []byte(fmt.Sprintf(`{"id":%q,"title":"Big Buck Bunny","uploader":"Blender","duration":596,"availability":"public","live_status":"not_live","is_live":false,"extractor_key":"Youtube","protocol":"https","http_headers":{"User-Agent":"UA/9"},"url":"https://rr1---sn-abc.googlevideo.com/videoplayback?expire=%d&id=o-xyz"}`+"\n", id, expire.Unix()))
 }
 
 func (f *fakeLookup) Do(ctx context.Context, args []string, limit int) ([]byte, error) {
@@ -44,6 +45,9 @@ func (f *fakeLookup) Do(ctx context.Context, args []string, limit int) ([]byte, 
 	}
 	if f.hang {
 		<-ctx.Done()
+		if f.wedge {
+			return nil, errors.Join(errWorkerWedged, ctx.Err())
+		}
 		return nil, ctx.Err()
 	}
 	return f.reply(args)
@@ -179,9 +183,9 @@ func TestWarmResolverSingleFlightsConcurrentLookups(t *testing.T) {
 	}
 }
 
-func TestWarmResolverKillsAHungWorkerAndRestarts(t *testing.T) {
+func TestWarmResolverKillsAWedgedWorkerAndRestarts(t *testing.T) {
 	hung := newFakeLookup()
-	hung.hang = true
+	hung.hang, hung.wedge = true, true
 	healthy := newFakeLookup()
 	r, _, _, starts := testWarm(t, hung, healthy)
 	r.timeout = 40 * time.Millisecond
@@ -247,7 +251,7 @@ func TestWarmResolverRefusesNonVideoInputAndForeignStreamHosts(t *testing.T) {
 		t.Fatal("a refused input reached yt-dlp")
 	}
 	w.reply = func([]string) ([]byte, error) {
-		return []byte(`{"id":"aqz-KE-bpKQ","title":"x","duration":5,"extractor_key":"Youtube","url":"https://evil.example/a.webm"}` + "\n"), nil
+		return []byte(`{"id":"aqz-KE-bpKQ","title":"x","duration":5,"extractor_key":"Youtube","protocol":"https","url":"https://evil.example/a.webm"}` + "\n"), nil
 	}
 	if _, err := r.Resolve(context.Background(), warmVideo); !errors.Is(err, ErrMetadataInvalid) {
 		t.Fatalf("a stream URL on a foreign host = %v, want ErrMetadataInvalid", err)

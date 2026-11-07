@@ -209,7 +209,7 @@ func startLocalStream(ctx context.Context, ffmpeg, path string, startMS int64) (
 	if err != nil || !withinPath(root, resolved) || !strings.HasSuffix(resolved, ".opus") {
 		return nil, ErrStreamURL
 	}
-	cmd := exec.CommandContext(ctx, ffmpeg, ffmpegStreamArgs(path, startMS, false)...) // #nosec G204 -- test-host build only; the path comes from the fixture directory.
+	cmd := exec.CommandContext(ctx, ffmpeg, ffmpegStreamArgs(resolved, startMS, false, "")...) // #nosec G204 -- test-host build only; the path comes from the fixture directory.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.Stderr = io.Discard

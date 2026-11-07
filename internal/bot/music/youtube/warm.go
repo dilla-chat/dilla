@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/music"
@@ -27,7 +28,15 @@ const (
 	maxWorkerStartTries  = 4
 	workerBackoffInitial = 100 * time.Millisecond
 	workerBackoffMax     = 10 * time.Second
-	workerMaxLifetime    = 24 * time.Hour
+	// A short life bounds what one worker's tmpfs and pid namespace share between lookups.
+	workerMaxLifetime = time.Hour
+	// A worker whose lookups fail this many times in a row (other than a video that is simply unavailable) is
+	// replaced: that is what an exhausted egress budget or a broken session looks like.
+	workerMaxFailures = 3
+	// workerCancelGrace is how long a cancelled lookup waits for the worker to acknowledge the cancel.
+	workerCancelGrace = 2 * time.Second
+	// A reply line is JSON-escaped output: control characters grow six-fold.
+	workerReplyLimit = 6*MaxMetadataBytes + 64<<10
 	// The worker's egress broker stops a process at 1 GiB of tunnelled bytes (maxProcessBytes), and a lookup moves
 	// a few MiB. The worker is replaced long before that, and its replacement starts before it is closed.
 	workerRecycleAfter = 200
@@ -61,6 +70,21 @@ type Resolved struct {
 	Track     music.Track
 	StreamURL string
 	Expires   time.Time
+	// UserAgent is the User-Agent of the format yt-dlp chose; the stream is fetched with it.
+	UserAgent string
+}
+
+type ownerKey struct{}
+
+// WithOwner scopes lookups and pre-buffers made under ctx to one community (or
+// installation). Nothing cached or buffered for one owner is visible to another.
+func WithOwner(ctx context.Context, owner string) context.Context {
+	return context.WithValue(ctx, ownerKey{}, owner)
+}
+
+func ownerOf(ctx context.Context) string {
+	owner, _ := ctx.Value(ownerKey{}).(string)
+	return owner
 }
 
 // Resolver turns a video URL or search text into a Resolved.
@@ -109,6 +133,7 @@ type WarmResolver struct {
 	mu           sync.Mutex
 	worker       lookupWorker
 	failures     int
+	consecutive  int // consecutive lookups on the current worker that failed for reasons other than the video
 	nextStart    time.Time
 	cache        map[string]warmEntry
 	inflight     map[string]*warmCall
@@ -224,7 +249,8 @@ func (r *WarmResolver) Resolve(ctx context.Context, input string) (Resolved, err
 	if kind == "playlist" {
 		return Resolved{}, ErrInvalidInput
 	}
-	key := cacheKey(kind, canonical)
+	owner := ownerOf(ctx)
+	key := ownedKey(owner, cacheKey(kind, canonical))
 	started := time.Now()
 	r.mu.Lock()
 	if entry, ok := r.cache[key]; ok {
@@ -257,7 +283,7 @@ func (r *WarmResolver) Resolve(ctx context.Context, input string) (Resolved, err
 	r.mu.Lock()
 	delete(r.inflight, key)
 	if call.err == nil {
-		r.storeLocked(key, call.res)
+		r.storeLocked(owner, key, call.res)
 	}
 	r.mu.Unlock()
 	close(call.done)
@@ -270,19 +296,29 @@ func (r *WarmResolver) Resolve(ctx context.Context, input string) (Resolved, err
 
 // Invalidate drops the cached lookup for input, for example after its stream
 // URL stopped working.
-func (r *WarmResolver) Invalidate(input string) {
+func (r *WarmResolver) Invalidate(input string) { r.invalidate("", input) }
+
+// InvalidateCtx is Invalidate for the owner ctx carries.
+func (r *WarmResolver) InvalidateCtx(ctx context.Context, input string) {
+	r.invalidate(ownerOf(ctx), input)
+}
+
+func (r *WarmResolver) invalidate(owner, input string) {
 	kind, canonical, err := NormalizeInput(input)
 	if err != nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := cacheKey(kind, canonical)
+	key := ownedKey(owner, cacheKey(kind, canonical))
 	if entry, ok := r.cache[key]; ok {
-		delete(r.cache, urlKey(entry.resolved.Track.CanonicalID))
+		delete(r.cache, ownedKey(owner, urlKey(entry.resolved.Track.CanonicalID)))
 	}
 	delete(r.cache, key)
 }
+
+// ownedKey partitions the cache: a community never reads another's entries.
+func ownedKey(owner, key string) string { return owner + "\x00" + key }
 
 func cacheKey(kind, canonical string) string {
 	if kind == "search" {
@@ -294,7 +330,7 @@ func cacheKey(kind, canonical string) string {
 
 func urlKey(id string) string { return videoURL(id) }
 
-func (r *WarmResolver) storeLocked(key string, res Resolved) {
+func (r *WarmResolver) storeLocked(owner, key string, res Resolved) {
 	if len(r.cache) >= maxWarmCacheEntries {
 		now := r.deps.now()
 		for k, e := range r.cache {
@@ -310,21 +346,22 @@ func (r *WarmResolver) storeLocked(key string, res Resolved) {
 		}
 	}
 	r.cache[key] = warmEntry{resolved: res}
-	r.cache[urlKey(res.Track.CanonicalID)] = warmEntry{resolved: res}
+	r.cache[ownedKey(owner, urlKey(res.Track.CanonicalID))] = warmEntry{resolved: res}
 }
 
 // lookupArgs is yt-dlp's whole command line for one lookup: one extraction that
 // prints the metadata and the chosen audio stream URL.
 func (r *WarmResolver) lookupArgs(kind, canonical string) []string {
-	args := []string{"--ignore-config", "--no-plugin-dirs", "--no-remote-components"}
+	args := []string{"--ignore-config", "--no-plugin-dirs", "--no-remote-components", "--no-cache-dir"}
 	if r.cfg.Node != "" {
 		args = append(args, "--js-runtimes", "node:"+r.cfg.Node)
 	}
 	args = append(args,
 		"--no-warnings", "--no-progress", "--color", "never",
 		"--socket-timeout", "10", "--extractor-retries", "1", "--no-playlist",
-		"--format", "bestaudio[protocol=https]/bestaudio",
-		"--print", "%(.{id,title,uploader,duration,availability,live_status,is_live,extractor_key,url})j",
+		// Progressive https only: a manifest (HLS, DASH) is never handed to ffmpeg.
+		"--format", "bestaudio[protocol=https]",
+		"--print", "%("+printFields+")j",
 		"--")
 	if kind == "search" {
 		return append(args, "ytsearch1:"+strings.TrimPrefix(canonical, "ytsearch5:"))
@@ -332,9 +369,32 @@ func (r *WarmResolver) lookupArgs(kind, canonical string) []string {
 	return append(args, canonical)
 }
 
+// printFields is what a lookup asks yt-dlp to print; printRequired must all come back.
+const printFields = ".{id,title,uploader,duration,availability,live_status,is_live,extractor_key,url,protocol,http_headers}"
+
+var printRequired = []string{"id", "title", "duration", "extractor_key", "url", "protocol"}
+
 type printed struct {
 	metadata
-	URL string `json:"url"`
+	URL      string            `json:"url"`
+	Protocol string            `json:"protocol"`
+	Headers  map[string]string `json:"http_headers"`
+}
+
+// userAgentFrom returns the chosen format's User-Agent when it is plain printable text.
+func userAgentFrom(headers map[string]string) string {
+	for name, value := range headers {
+		if !strings.EqualFold(name, "User-Agent") || value == "" || len(value) > 512 {
+			continue
+		}
+		for _, c := range value {
+			if c < 0x20 || c > 0x7e {
+				return ""
+			}
+		}
+		return value
+	}
+	return ""
 }
 
 func (r *WarmResolver) lookup(ctx context.Context, input, kind, canonical string) (Resolved, error) {
@@ -347,9 +407,22 @@ func (r *WarmResolver) lookup(ctx context.Context, input, kind, canonical string
 	if i := bytes.IndexByte(bytes.TrimSpace(out), '\n'); i >= 0 {
 		line = bytes.TrimSpace(out)[:i]
 	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimSpace(line), &keys); err != nil {
+		return Resolved{}, invalidMetadata("json")
+	}
+	for _, key := range printRequired {
+		if _, ok := keys[key]; !ok {
+			// yt-dlp did not honour the print template (a version change), so no field can be trusted.
+			return Resolved{}, invalidMetadata("print_keys")
+		}
+	}
 	var data printed
 	if err := json.Unmarshal(bytes.TrimSpace(line), &data); err != nil {
 		return Resolved{}, invalidMetadata("json")
+	}
+	if data.Protocol != "https" {
+		return Resolved{}, invalidMetadata("protocol")
 	}
 	if liveMetadata(data.LiveStatus, data.IsLive) {
 		return Resolved{}, invalidMetadata("live")
@@ -367,7 +440,7 @@ func (r *WarmResolver) lookup(ctx context.Context, input, kind, canonical string
 	if !urlExpiry.IsZero() && urlExpiry.Add(-streamURLSlack).Before(expires) {
 		expires = urlExpiry.Add(-streamURLSlack)
 	}
-	return Resolved{Track: track, StreamURL: streamURL, Expires: expires}, nil
+	return Resolved{Track: track, StreamURL: streamURL, Expires: expires, UserAgent: userAgentFrom(data.Headers)}, nil
 }
 
 // checkStreamURL accepts only an https URL on the hosts the egress broker
@@ -392,8 +465,9 @@ func checkStreamURL(raw string) (string, time.Time, error) {
 	return raw, expiry, nil
 }
 
-// run sends args to the worker, restarting it with backoff when it is gone and
-// killing it when a lookup exceeds the timeout.
+// run sends args to the worker, restarting it with backoff when it is gone. A
+// lookup that times out is cancelled alone; the worker is killed only when it
+// is wedged (it answered nothing, not even the cancel).
 func (r *WarmResolver) run(ctx context.Context, args []string, limit int, input string) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
@@ -405,37 +479,50 @@ func (r *WarmResolver) run(ctx context.Context, args []string, limit int, input 
 		out, err := w.Do(callCtx, args, limit)
 		timedOut := callCtx.Err() != nil && ctx.Err() == nil
 		cancel()
+		var failure *workerFailure
 		switch {
 		case err == nil:
-			r.succeeded(w)
+			r.finished(w, true)
 			return out, nil
-		case timedOut:
+		case errors.Is(err, errWorkerWedged):
 			r.discard(w, true)
+			return nil, errors.Join(ErrExtractFailed, context.DeadlineExceeded)
+		case timedOut:
+			r.finished(w, false)
 			return nil, errors.Join(ErrExtractFailed, context.DeadlineExceeded)
 		case errors.Is(err, errWorkerGone) && ctx.Err() == nil:
 			// The worker died under this request (not a yt-dlp failure). One retry on a fresh worker.
 			r.discard(w, true)
 			lastErr = err
 			continue
-		}
-		var failure *ProcessError
-		if errors.As(err, &failure) {
-			failure.Stderr = redactInput(failure.Stderr, input)
+		case errors.As(err, &failure):
+			// Full redaction of the input (and its canonical, search and id forms), as for any subprocess.
+			processErr := newProcessError(ErrExtractFailed, failure.Stderr, failure.Code, input)
+			r.finished(w, processErr.PermanentPlaybackFailure())
+			if ctx.Err() != nil {
+				return nil, context.Cause(ctx)
+			}
+			return nil, processErr
 		}
 		if ctx.Err() != nil {
 			return nil, context.Cause(ctx)
 		}
+		r.finished(w, false)
 		return nil, err
 	}
 	return nil, errors.Join(ErrExtractFailed, lastErr)
 }
 
-func redactInput(text, input string) string {
-	if input != "" {
-		text = strings.ReplaceAll(text, input, "[redacted]")
-	}
-	return text
+// workerFailure is a yt-dlp run that exited non-zero, as the worker reported it.
+type workerFailure struct {
+	Code   int
+	Stderr string
 }
+
+func (f *workerFailure) Error() string { return ErrExtractFailed.Error() }
+func (f *workerFailure) Unwrap() error { return ErrExtractFailed }
+
+var errWorkerWedged = errors.New("youtube: lookup worker is wedged")
 
 var errWorkerGone = errors.New("youtube: lookup worker exited")
 
@@ -511,15 +598,29 @@ func backoffFor(failures int) time.Duration {
 	return min(d, workerBackoffMax)
 }
 
-func (r *WarmResolver) succeeded(w lookupWorker) {
+// finished counts one completed lookup toward replacing the worker, success or
+// not. healthy means the worker did its job (the video may still have been
+// unavailable). A worker is replaced after recycleAfter lookups, after
+// workerMaxFailures unhealthy ones in a row, or once its egress broker has
+// spent half of its byte budget; the replacement starts before the old
+// worker is closed.
+func (r *WarmResolver) finished(w lookupWorker, healthy bool) {
+	var spent int64
+	if budget, ok := w.(interface{ egressUsed() int64 }); ok {
+		spent = budget.egressUsed()
+	}
 	r.mu.Lock()
 	retired := false
 	if r.worker == w {
-		r.failures = 0
-		r.nextStart = time.Time{}
 		r.served++
-		if r.served >= r.recycleAfter {
-			r.worker, r.served, retired = nil, 0, true
+		if healthy {
+			r.failures, r.consecutive = 0, 0
+			r.nextStart = time.Time{}
+		} else {
+			r.consecutive++
+		}
+		if r.served >= r.recycleAfter || r.consecutive >= workerMaxFailures || spent > maxProcessBytes/2 {
+			r.worker, r.served, r.consecutive, retired = nil, 0, 0, true
 		}
 	}
 	grace := r.retireGrace
@@ -568,7 +669,19 @@ func (w warmRunner) Run(ctx context.Context, executable string, args []string, o
 		}
 	}
 	input, _ := ctx.Value(diagnosticInputKey{}).(string)
+	if !containsString(args, "--no-cache-dir") {
+		args = append([]string{"--no-cache-dir"}, args...)
+	}
 	return w.r.run(ctx, args, outputLimit, input)
+}
+
+func containsString(list []string, want string) bool {
+	for _, item := range list {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 var _ sandboxedRunner = warmRunner{}
@@ -576,8 +689,9 @@ var _ sandboxedRunner = warmRunner{}
 // ---- the sandboxed worker process -----------------------------------------
 
 type workerRequest struct {
-	ID   uint64   `json:"id"`
-	Args []string `json:"args"`
+	ID     uint64   `json:"id,omitempty"`
+	Args   []string `json:"args,omitempty"`
+	Cancel uint64   `json:"cancel,omitempty"`
 }
 
 type workerReply struct {
@@ -602,6 +716,19 @@ type lookupProcess struct {
 	dead    bool
 	closeMu sync.Once
 	done    chan struct{}
+	// lastReply is the unix-nano time of the latest line the worker wrote.
+	lastReply atomic.Int64
+}
+
+// egressUsed is how many bytes this worker's broker has tunnelled.
+func (w *lookupProcess) egressUsed() int64 {
+	broker := w.process.broker
+	if broker == nil {
+		return 0
+	}
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	return broker.used
 }
 
 // startSandboxWorker launches the long-lived yt-dlp worker in the same
@@ -618,6 +745,7 @@ func startSandboxWorker(ctx context.Context, cfg SandboxConfig) (lookupWorker, e
 		return nil, err
 	}
 	w := &lookupProcess{process: process, pending: map[uint64]chan workerReply{}, done: make(chan struct{})}
+	w.lastReply.Store(time.Now().UnixNano())
 	go w.readReplies()
 	return w, nil
 }
@@ -638,7 +766,7 @@ func (w *lookupProcess) readReplies() {
 	defer close(w.done)
 	reader := bufio.NewReaderSize(w.process.stdout, 64<<10)
 	for {
-		line, err := readBoundedLine(reader, 4*MaxMetadataBytes)
+		line, err := readBoundedLine(reader, workerReplyLimit)
 		if err != nil {
 			break
 		}
@@ -646,6 +774,7 @@ func (w *lookupProcess) readReplies() {
 		if json.Unmarshal(line, &reply) != nil {
 			continue
 		}
+		w.lastReply.Store(time.Now().UnixNano())
 		w.mu.Lock()
 		ch := w.pending[reply.ID]
 		delete(w.pending, reply.ID)
@@ -702,10 +831,8 @@ func (w *lookupProcess) Do(ctx context.Context, args []string, limit int) ([]byt
 		forget()
 		return nil, ErrExtractFailed
 	}
-	w.wmu.Lock()
-	_, err = w.process.stdin.Write(append(line, '\n'))
-	w.wmu.Unlock()
-	if err != nil {
+	sent := time.Now()
+	if err := w.write(line); err != nil {
 		forget()
 		return nil, errWorkerGone
 	}
@@ -716,9 +843,42 @@ func (w *lookupProcess) Do(ctx context.Context, args []string, limit int) ([]byt
 		}
 		return w.result(reply, limit)
 	case <-ctx.Done():
-		forget()
-		return nil, ctx.Err()
+		return nil, w.cancel(id, ch, sent, ctx.Err())
 	}
+}
+
+func (w *lookupProcess) write(line []byte) error {
+	w.wmu.Lock()
+	defer w.wmu.Unlock()
+	_, err := w.process.stdin.Write(append(line, '\n'))
+	return err
+}
+
+// cancel stops one lookup. The worker kills that yt-dlp's process group and
+// answers the request, which proves it is alive. Only when nothing at all came
+// back from the worker since the request was sent (and the cancel went
+// unanswered) is the worker wedged.
+func (w *lookupProcess) cancel(id uint64, ch chan workerReply, sent time.Time, cause error) error {
+	if line, err := json.Marshal(workerRequest{Cancel: id}); err == nil {
+		_ = w.write(line)
+	}
+	timer := time.NewTimer(workerCancelGrace)
+	defer timer.Stop()
+	select {
+	case _, ok := <-ch:
+		if !ok {
+			return errWorkerGone
+		}
+		return cause
+	case <-timer.C:
+	}
+	w.mu.Lock()
+	delete(w.pending, id)
+	w.mu.Unlock()
+	if w.lastReply.Load() < sent.UnixNano() {
+		return errors.Join(errWorkerWedged, cause)
+	}
+	return cause
 }
 
 func (w *lookupProcess) result(reply workerReply, limit int) ([]byte, error) {
@@ -731,5 +891,5 @@ func (w *lookupProcess) result(reply workerReply, limit int) ([]byte, error) {
 	case 75:
 		return nil, ErrMetadataTooLarge
 	}
-	return nil, newProcessError(ErrExtractFailed, reply.Err, reply.Code)
+	return nil, &workerFailure{Code: reply.Code, Stderr: reply.Err}
 }

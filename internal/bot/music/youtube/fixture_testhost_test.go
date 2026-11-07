@@ -68,7 +68,7 @@ func TestFixtureResolverServesFilesThroughTheSameFfmpegArguments(t *testing.T) {
 		t.Fatalf("fixture stream = %d bytes, not an Ogg Opus re-encode of %d bytes", len(got), len(stream))
 	}
 	recorded, _ := os.ReadFile(log)
-	want := strings.Join(ffmpegStreamArgs(filepath.Join(fixtures, "alpha-track.opus"), 0, false), " ")
+	want := strings.Join(ffmpegStreamArgs(filepath.Join(fixtures, "alpha-track.opus"), 0, false, ""), " ")
 	if strings.TrimSpace(string(recorded)) != want {
 		t.Fatalf("ffmpeg argv\n got %q\nwant %q", strings.TrimSpace(string(recorded)), want)
 	}

@@ -20,8 +20,11 @@ const (
 	streamBufferBytes = 128 << 10
 	// prefetchTTL is how long a pre-buffered stream waits to be used before it is dropped.
 	prefetchTTL = 90 * time.Second
-	// maxPrefetched bounds pre-buffered streams (each holds one sandboxed ffmpeg).
-	maxPrefetched = 2
+	// maxPrefetched bounds pre-buffered streams in the whole process (each holds one sandboxed ffmpeg and at most
+	// 128 KiB); each owner holds at most one.
+	maxPrefetched = 32
+	// urlMargin is how much longer than the track a cached stream URL must stay valid.
+	urlMargin = time.Minute
 )
 
 // ErrStreamURL means the resolved stream URL is not one the sandbox may fetch.
@@ -42,9 +45,11 @@ type StreamStarter struct {
 	cancel   context.CancelFunc
 
 	mu         sync.Mutex
-	prefetched map[string]*prefetchedStream
+	prefetched map[string]*prefetchedStream // keyed by owner and video: one community never claims another's buffer
 	order      []string
 }
+
+func prefetchKey(owner, canonical string) string { return owner + "\x00" + canonical }
 
 type prefetchedStream struct {
 	stream *bufferedStream
@@ -103,7 +108,7 @@ func (s *StreamStarter) StartAt(ctx context.Context, source string, ms int64) (i
 	}
 	began := time.Now()
 	if ms <= 0 {
-		if stream := s.takePrefetched(canonical); stream != nil {
+		if stream := s.takePrefetched(ownerOf(ctx), canonical); stream != nil {
 			if err := stream.waitFirst(ctx); err == nil {
 				music.MarkResolve(ctx, 0, false)
 				music.MarkFirstByte(ctx, time.Since(began))
@@ -130,14 +135,16 @@ func (s *StreamStarter) Prefetch(ctx context.Context, source string) error {
 	if err != nil {
 		return err
 	}
+	owner := ownerOf(ctx)
+	key := prefetchKey(owner, canonical)
 	s.mu.Lock()
-	_, held := s.prefetched[canonical]
+	_, held := s.prefetched[key]
 	s.mu.Unlock()
 	if held {
 		return nil
 	}
 	// The pre-buffer outlives the caller's context: it belongs to the starter until claimed.
-	stream, err := s.open(ctx, s.ctx, canonical, 0)
+	stream, err := s.open(ctx, WithOwner(s.ctx, owner), canonical, 0)
 	if err != nil {
 		return err
 	}
@@ -147,13 +154,22 @@ func (s *StreamStarter) Prefetch(ctx context.Context, source string) error {
 		_ = stream.Close()
 		return context.Canceled
 	}
-	if previous, ok := s.prefetched[canonical]; ok {
+	if _, ok := s.prefetched[key]; ok {
 		s.mu.Unlock()
 		_ = stream.Close()
-		_ = previous
 		return nil
 	}
 	var evicted []*prefetchedStream
+	// One held stream per owner: the owner's next track replaces whatever it buffered before.
+	for _, other := range append([]string(nil), s.order...) {
+		if strings.HasPrefix(other, owner+"\x00") {
+			if entry, ok := s.prefetched[other]; ok {
+				delete(s.prefetched, other)
+				evicted = append(evicted, entry)
+			}
+			s.removeOrderLocked(other)
+		}
+	}
 	for len(s.order) >= maxPrefetched {
 		oldest := s.order[0]
 		s.order = s.order[1:]
@@ -164,12 +180,12 @@ func (s *StreamStarter) Prefetch(ctx context.Context, source string) error {
 	}
 	entry := &prefetchedStream{stream: stream}
 	entry.timer = time.AfterFunc(prefetchTTL, func() {
-		if s.takePrefetchedEntry(canonical, entry) {
+		if s.takePrefetchedEntry(key, entry) {
 			_ = stream.Close()
 		}
 	})
-	s.prefetched[canonical] = entry
-	s.order = append(s.order, canonical)
+	s.prefetched[key] = entry
+	s.order = append(s.order, key)
 	s.mu.Unlock()
 	for _, old := range evicted {
 		old.timer.Stop()
@@ -178,11 +194,12 @@ func (s *StreamStarter) Prefetch(ctx context.Context, source string) error {
 	return nil
 }
 
-func (s *StreamStarter) takePrefetched(canonical string) *bufferedStream {
+func (s *StreamStarter) takePrefetched(owner, canonical string) *bufferedStream {
+	key := prefetchKey(owner, canonical)
 	s.mu.Lock()
-	entry := s.prefetched[canonical]
-	delete(s.prefetched, canonical)
-	s.removeOrderLocked(canonical)
+	entry := s.prefetched[key]
+	delete(s.prefetched, key)
+	s.removeOrderLocked(key)
 	s.mu.Unlock()
 	if entry == nil {
 		return nil
@@ -191,14 +208,14 @@ func (s *StreamStarter) takePrefetched(canonical string) *bufferedStream {
 	return entry.stream
 }
 
-func (s *StreamStarter) takePrefetchedEntry(canonical string, entry *prefetchedStream) bool {
+func (s *StreamStarter) takePrefetchedEntry(key string, entry *prefetchedStream) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.prefetched[canonical] != entry {
+	if s.prefetched[key] != entry {
 		return false
 	}
-	delete(s.prefetched, canonical)
-	s.removeOrderLocked(canonical)
+	delete(s.prefetched, key)
+	s.removeOrderLocked(key)
 	return true
 }
 
@@ -224,12 +241,21 @@ func canonicalVideo(source string) (string, error) {
 // resolveCtx bounds the lookup and the wait; processCtx owns the process.
 func (s *StreamStarter) open(resolveCtx, processCtx context.Context, canonical string, startMS int64) (*bufferedStream, error) {
 	var lastErr error
+	refreshed := false
 	for attempt := 0; attempt < 2; attempt++ {
 		resolved, err := s.resolver.Resolve(resolveCtx, canonical)
 		if err != nil {
 			return nil, err
 		}
-		source, err := s.launch(WithDiagnosticLogger(context.WithValue(processCtx, diagnosticInputKey{}, canonical), s.cfg.Logger), resolved.StreamURL, startMS)
+		// A cached URL must outlive the whole track (ffmpeg reconnects mid-track with it); if it will not, look again.
+		if !refreshed && !resolved.Expires.IsZero() && resolved.Track.DurationMS > 0 &&
+			time.Until(resolved.Expires) < time.Duration(resolved.Track.DurationMS)*time.Millisecond+urlMargin {
+			refreshed = true
+			s.invalidate(resolveCtx, canonical)
+			attempt--
+			continue
+		}
+		source, err := s.launch(WithDiagnosticLogger(context.WithValue(processCtx, diagnosticInputKey{}, canonical), s.cfg.Logger), resolved.StreamURL, resolved.UserAgent, startMS)
 		if err != nil {
 			return nil, err
 		}
@@ -240,9 +266,7 @@ func (s *StreamStarter) open(resolveCtx, processCtx context.Context, canonical s
 				return nil, context.Cause(resolveCtx)
 			}
 			lastErr = err
-			if invalidator, ok := s.resolver.(interface{ Invalidate(string) }); ok {
-				invalidator.Invalidate(canonical)
-			}
+			s.invalidate(resolveCtx, canonical)
 			if errors.Is(err, ErrSandboxUnavailable) || errors.Is(err, ErrPCMLimit) {
 				return nil, err
 			}
@@ -253,7 +277,18 @@ func (s *StreamStarter) open(resolveCtx, processCtx context.Context, canonical s
 	return nil, lastErr
 }
 
-func (s *StreamStarter) launch(ctx context.Context, streamURL string, startMS int64) (io.ReadCloser, error) {
+func (s *StreamStarter) invalidate(ctx context.Context, canonical string) {
+	switch r := s.resolver.(type) {
+	case interface {
+		InvalidateCtx(context.Context, string)
+	}:
+		r.InvalidateCtx(ctx, canonical)
+	case interface{ Invalidate(string) }:
+		r.Invalidate(canonical)
+	}
+}
+
+func (s *StreamStarter) launch(ctx context.Context, streamURL, userAgent string, startMS int64) (io.ReadCloser, error) {
 	if path, ok := strings.CutPrefix(streamURL, "file://"); ok {
 		if localStream == nil {
 			return nil, ErrStreamURL
@@ -271,7 +306,7 @@ func (s *StreamStarter) launch(ctx context.Context, streamURL string, startMS in
 	if maxDuration <= 0 || maxDuration > MaxDuration {
 		maxDuration = MaxDuration
 	}
-	args := append([]string{"exec", strconv.FormatInt(limit, 10), s.cfg.FFmpeg}, ffmpegStreamArgs(streamURL, startMS, true)...)
+	args := append([]string{"exec", strconv.FormatInt(limit, 10), s.cfg.FFmpeg}, ffmpegStreamArgs(streamURL, startMS, true, userAgent)...)
 	process, err := launchNetworkWorker(ctx, s.cfg.Bubblewrap, s.cfg.Python, []string{s.cfg.FFmpeg}, args, defaultSandboxStartupTimeout, maxDuration)
 	if err != nil {
 		return nil, err
@@ -282,10 +317,17 @@ func (s *StreamStarter) launch(ctx context.Context, streamURL string, startMS in
 // ffmpegStreamArgs is the one ffmpeg of the music path: the stream (a URL the
 // sandbox fetches through the egress broker, or a fixture file) to 48 kHz
 // stereo Ogg Opus in 20 ms frames, which the Bot forwards without re-encoding.
-func ffmpegStreamArgs(input string, startMS int64, network bool) []string {
+func ffmpegStreamArgs(input string, startMS int64, network bool, userAgent string) []string {
 	args := []string{"-nostdin", "-hide_banner", "-loglevel", "error"}
 	if network {
-		args = append(args, "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2", "-http_proxy", "http://127.0.0.1:3128")
+		// Only https over the loopback proxy: no file, concat, subfile, data or nested protocol may be opened.
+		args = append(args, "-protocol_whitelist", "https,tls,tcp,httpproxy",
+			"-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2", "-http_proxy", "http://127.0.0.1:3128")
+		if userAgent != "" {
+			args = append(args, "-user_agent", userAgent)
+		}
+	} else {
+		args = append(args, "-protocol_whitelist", "file")
 	}
 	if startMS > 0 {
 		args = append(args, "-ss", strconv.FormatFloat(float64(startMS)/1000, 'f', 3, 64))

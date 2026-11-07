@@ -70,6 +70,7 @@ MAX_REQUEST = 256 * 1024
 MAX_ARGS = 128
 MAX_STDERR_REPLY = 8 * 1024
 MAX_CONCURRENT = 4
+MAX_ACTIVE = 64
 
 
 def serve(ytdlp, limit, env, children, stopping, stop):
@@ -100,38 +101,69 @@ def serve(ytdlp, limit, env, children, stopping, stop):
         except (OSError, ValueError):
             return
 
-    def handle(rid, args):
+    state_lock = threading.Lock()
+    active = set()  # ids dispatched and not finished
+    procs = {}  # id -> running yt-dlp
+    cancelled = set()  # ids cancelled before their yt-dlp started
+
+    def kill_group(proc):
+        # The whole group: yt-dlp may have started node, and an orphan would keep the stdout pipe open.
         try:
-            proc = subprocess.Popen([ytdlp] + args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, close_fds=True)
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    def run(rid, args):
+        with state_lock:
+            if rid in cancelled:
+                reply(rid, -9)
+                return
+        try:
+            proc = subprocess.Popen([ytdlp] + args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, close_fds=True, start_new_session=True)
         except OSError:
             reply(rid, 1)
             return
+        with state_lock:
+            procs[rid] = proc
+            was_cancelled = rid in cancelled
         children.append(proc)
-        err_bytes = bytearray()
-        err_thread = threading.Thread(target=drain, args=(proc.stderr, err_bytes), daemon=True)
-        err_thread.start()
         try:
-            data = proc.stdout.read(limit + 1)
-            if len(data) > limit:
-                proc.kill()
-                proc.wait()
-                reply(rid, 75)
-                return
-            code = proc.wait()
-            err_thread.join(1)
-            reply(rid, code, data.decode("utf-8", "replace"), bytes(err_bytes).decode("utf-8", "replace"))
-        except (OSError, ValueError):
+            if was_cancelled:
+                kill_group(proc)
+            err_bytes = bytearray()
+            err_thread = threading.Thread(target=drain, args=(proc.stderr, err_bytes), daemon=True)
+            err_thread.start()
             try:
-                proc.kill()
-            except OSError:
-                pass
-            reply(rid, 1)
+                data = proc.stdout.read(limit + 1)
+                if len(data) > limit:
+                    kill_group(proc)
+                    proc.wait()
+                    reply(rid, 75)
+                    return
+                code = proc.wait()
+                err_thread.join(1)
+                reply(rid, code, data.decode("utf-8", "replace"), bytes(err_bytes).decode("utf-8", "replace"))
+            except (OSError, ValueError):
+                kill_group(proc)
+                reply(rid, 1)
         finally:
+            with state_lock:
+                procs.pop(rid, None)
             try:
                 children.remove(proc)
             except ValueError:
                 pass
+
+    def handle(rid, args):
+        # The slot and the bookkeeping are released on every path, Popen failures included.
+        slots.acquire()
+        try:
+            run(rid, args)
+        finally:
             slots.release()
+            with state_lock:
+                active.discard(rid)
+                cancelled.discard(rid)
 
     for raw in sys.stdin.buffer:
         if stopping.is_set():
@@ -140,15 +172,40 @@ def serve(ytdlp, limit, env, children, stopping, stop):
             continue
         try:
             request = json.loads(raw)
-            rid = request["id"]
-            args = request["args"]
-        except (ValueError, KeyError, TypeError):
+            if not isinstance(request, dict):
+                continue
+        except ValueError:
             continue
-        if not isinstance(rid, int) or not isinstance(args, list) or len(args) > MAX_ARGS or not all(isinstance(a, str) and "\0" not in a for a in args):
-            if isinstance(rid, int):
-                reply(rid, 125)
+        if "cancel" in request:
+            rid = request["cancel"]
+            if not isinstance(rid, int):
+                continue
+            proc = None
+            with state_lock:
+                if rid in active:
+                    proc = procs.get(rid)
+                    if proc is None:
+                        cancelled.add(rid)
+            if proc is not None:
+                kill_group(proc)
             continue
-        slots.acquire()
+        rid = request.get("id")
+        args = request.get("args")
+        if not isinstance(rid, int) or isinstance(rid, bool):
+            continue
+        if not isinstance(args, list) or len(args) > MAX_ARGS or not all(isinstance(a, str) and "\0" not in a for a in args):
+            reply(rid, 125)
+            continue
+        with state_lock:
+            if len(active) >= MAX_ACTIVE or rid in active:
+                full = True
+            else:
+                full = False
+                active.add(rid)
+        if full:
+            reply(rid, 125)
+            continue
+        # A thread per request, so this loop keeps reading (and can see a cancel) while all slots are busy.
         threading.Thread(target=handle, args=(rid, args), daemon=True).start()
     stop(signal.SIGTERM, None)
     stopping.set()

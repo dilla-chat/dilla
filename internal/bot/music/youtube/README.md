@@ -52,6 +52,14 @@ frames. The Bot forwards those packets (`encode.BridgeOgg`) with no second ffmpe
 128 KiB until the track's own start claims it. `PCMStarter` and its PCM pipeline
 remain for the qualification tests only.
 
+Fix round 1: lookups and pre-buffers are partitioned by owner (`Backend.For(communityID)`;
+the cache key and the pre-buffer key include it, one held stream per owner), so one community
+never hits or claims another's entry. yt-dlp runs with `--no-cache-dir`, progressive `https`
+audio only, and its chosen User-Agent is passed to ffmpeg, which runs with
+`-protocol_whitelist https,tls,tcp,httpproxy`. A timed-out lookup is cancelled alone (the worker
+kills that yt-dlp's process group); the worker is killed only when it answers nothing, and is
+replaced after 200 lookups, 3 failures in a row, half its egress budget, or 1 h.
+
 `FixtureResolver` (`-tags dilla_testhost`, `fixture_testhost.go`) serves `.opus`
 files from `DILLA_BOT_MUSIC_FIXTURES` through the same ffmpeg arguments. A build
 without the tag refuses to start while the variable is set, and release.yml and
