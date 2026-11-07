@@ -1355,16 +1355,6 @@ mod tests {
             w.ingest(&wrong_key.encode()).unwrap(),
             (false, 1, LIST_CURRENT)
         );
-        // A genuine signed head further than MAX_BEHIND_GAP past the cache is not a mark either.
-        let far = w.keys.list(
-            1 + dilla_core::client::MAX_BEHIND_GAP + 1,
-            Some(&v1),
-            vec![entry(DEVICE, w.user_dsk_pub, None)],
-        );
-        assert_eq!(
-            w.ingest(&w.keys.push(&[&far])).unwrap(),
-            (false, 1, LIST_CURRENT)
-        );
         assert_eq!(w.count("bot_device_list_behind"), 0);
         assert_eq!(w.cached(), before);
         assert!(w.command_from(DEVICE).is_ok(), "the user is not behind");
@@ -1374,6 +1364,18 @@ mod tests {
             .list(2, Some(&v1), vec![entry(DEVICE, w.user_dsk_pub, None)]);
         assert!(w.ingest(&w.keys.push(&[&v2, &v1])).is_err());
         assert_eq!(w.count("bot_device_list_behind"), 0);
+        // A genuine signed head however far past the cache is a mark: fail closed until the
+        // history reaches it.
+        let far = w
+            .keys
+            .list(5000, Some(&v1), vec![entry(DEVICE, w.user_dsk_pub, None)]);
+        assert_eq!(w.ingest(&w.keys.push(&[&far])).unwrap().2, LIST_BEHIND);
+        assert_eq!(w.count("bot_device_list_behind"), 1);
+        assert_eq!(w.cached(), before);
+        assert!(
+            w.command_from(DEVICE).is_err(),
+            "a user behind a far signed head is refused"
+        );
     }
 
     #[test]

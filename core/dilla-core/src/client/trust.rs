@@ -418,11 +418,6 @@ fn repin(
     Ok(())
 }
 
-/// The furthest past the cached version a signed pushed head may sit and still mark the user
-/// behind: one push's worth of rows (`MAX_PUSH_ROWS`), so a single catch-up push can always reach
-/// the mark from the cache. A signed head further ahead is ignored (not marked) until the history
-/// closes the distance.
-pub const MAX_BEHIND_GAP: u64 = crate::bot::device_list_push::MAX_PUSH_ROWS as u64;
 
 /// What a device-list push did (`ClientCore::ingest_device_list`). `version` is the cached
 /// list's version afterwards (0 when none is cached).
@@ -433,8 +428,8 @@ pub enum PushedList {
     /// The user's pin has a key change pending (or the pushed key is not the pinned one): the
     /// change is recorded, and the user's commands are refused until it is verified.
     Held { changed: bool, version: u64 },
-    /// A row signed by the user's cached SSK shows `head`, newer than the cache (by at most
-    /// `MAX_BEHIND_GAP`), but the push does not chain to it. Nothing was written; the user is
+    /// A row signed by the user's cached SSK shows `head`, newer than the cache, but the push
+    /// does not chain to it. Nothing was written; the user is
     /// behind until a history reaching `head` is ingested. Unsigned claims never yield this.
     Behind { version: u64, head: u64 },
 }
@@ -1745,15 +1740,15 @@ impl ClientCore {
             if head_version <= cached_version {
                 return Ok(outcome(prior, false, cached_version));
             }
-            // Only a row the user's cached SSK signed, naming the user, and at most
-            // `MAX_BEHIND_GAP` versions past the cache, may mark the user behind. A forged or
-            // unsigned claim of a newer list is ignored and changes nothing, so it cannot set a
-            // mark that no real history could ever reach.
+            // Only a row the user's cached SSK signed and naming the user may mark the user
+            // behind. A forged or unsigned claim of a newer list is ignored and changes nothing,
+            // so it cannot set a mark that no real history could ever reach. A signed head is
+            // real however far ahead it sits: the mark holds (fail closed) until consecutive
+            // pushes of history reach it.
             let signed_head = lists
                 .iter()
                 .filter(|l| {
                     l.unsigned.version > cached_version
-                        && l.unsigned.version - cached_version <= MAX_BEHIND_GAP
                         && l.unsigned.user_id.as_bytes() == user
                         && l.verify(&ssk).is_ok()
                 })
