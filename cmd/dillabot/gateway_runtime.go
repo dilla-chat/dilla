@@ -581,8 +581,9 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 			delete(r.maintenance, installation)
 		}
 	}
-	for installation := range r.feeds {
+	for installation, f := range r.feeds {
 		if !keep[installation] {
+			f.close() // its trust retries stop (Bot v2 Task 16, fix round 1 M-3)
 			delete(r.feeds, installation)
 		}
 	}

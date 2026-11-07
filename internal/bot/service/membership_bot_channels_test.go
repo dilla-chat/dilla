@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/id"
 )
@@ -47,12 +48,13 @@ func (h *recordedLogs) with(msg string) []map[string]any {
 
 // botChannelSet is the feed's Bot channels as a test sets them.
 type botChannelSet struct {
-	mu     sync.Mutex
-	marked map[id.ID]bool
-	known  bool
+	mu          sync.Mutex
+	marked      map[id.ID]bool
+	known       bool
+	left, reAdd map[id.ID]bool
 }
 
-func (b *botChannelSet) get() (map[id.ID]bool, bool) {
+func (b *botChannelSet) Marked() (map[id.ID]bool, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	out := map[id.ID]bool{}
@@ -76,44 +78,70 @@ func (b *botChannelSet) set(channel id.ID, marked bool) {
 	b.known = true
 }
 
-// TestBotJoinsOnMarkAndLeavesOnUnmark: with the Bot channels known, a Welcome to an unmarked channel's group is not
-// applied (acknowledged, so it never blocks the page) and an unmarked channel's group is not synced. Marking the channel
-// applies its Welcome and syncs the group; removing the mark leaves it again (no sync, nothing applied).
+func (b *botChannelSet) Membership(left, needsReAdd map[id.ID]bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.left, b.reAdd = left, needsReAdd
+}
+
+func (b *botChannelSet) reported() (left, reAdd map[id.ID]bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.left, b.reAdd
+}
+
+// TestBotJoinsOnMarkAndLeavesOnUnmark (fix round 1, I-1): with the Bot channels known, the one Welcome to an unmarked
+// channel's group is kept unapplied and acknowledged; the group is neither joined nor synced. Marking the channel later
+// joins the Bot from that kept Welcome, with no second Welcome, and the next pass syncs the group. Removing the mark
+// leaves it again: not synced, and reported as left.
 func TestBotJoinsOnMarkAndLeavesOnUnmark(t *testing.T) {
 	r, n, s, community, channel, group := membershipFixture(t)
 	channels := &botChannelSet{known: true}
 	logs := &recordedLogs{}
-	r.UseBotChannels(channels.get, slog.New(logs))
-	welcome := func(wid uint64) client.Welcome {
-		return client.Welcome{ID: wid, GroupID: group, Blob: []byte{1}, Tree: []byte{2}, TreeHash: make([]byte, 32)}
-	}
+	r.UseBotChannels(channels, slog.New(logs))
+	s.welcomes = []client.Welcome{{ID: 1, GroupID: group, Epoch: 3, CommitSequence: 7, Blob: []byte{1}, Tree: []byte{2}, TreeHash: make([]byte, 32)}}
 
-	// Not a Bot channel: the Welcome is acknowledged but not applied.
-	s.welcomes = []client.Welcome{welcome(1)}
+	// Not a Bot channel: the Welcome is kept and acknowledged, not applied.
 	if _, err := r.reconcileOnce(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}
 	if n.applyCalls != 0 || len(s.acked) != 1 {
 		t.Fatalf("unmarked: apply %d, acked %v; want no apply and the Welcome acknowledged", n.applyCalls, s.acked)
 	}
+	if _, reAdd := channels.reported(); len(reAdd) != 0 {
+		t.Fatalf("an unmarked channel reported as needing re-add: %v", reAdd)
+	}
 
-	// Marked: the next Welcome is applied and the group synced.
+	// Marked, and no second Welcome: the kept one joins the Bot.
 	channels.set(channel, true)
-	s.welcomes = append(s.welcomes, welcome(2))
-	n.outcomes = []native.GroupWelcomeOutcome{{ID: 2, Group: group, Outcome: 0}}
+	n.outcomes = []native.GroupWelcomeOutcome{{ID: 1, Group: group, Outcome: 0}}
 	info := native.GroupInfo{ID: group, Kind: 0, Community: &community, Target: channel, State: 2, NextSequence: 1}
-	n.groups, n.inspected = []native.GroupInfo{info}, info
+	n.inspected = info // revalidation after the join
 	res, err := r.reconcileOnce(context.Background(), s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.applyCalls != 1 || res.Applied != 1 || res.GroupsSynced != 1 {
-		t.Fatalf("marked: apply %d, result %+v; want the Welcome applied and the group synced", n.applyCalls, res)
+	if n.applyCalls != 1 || res.Applied != 1 || !res.More || len(n.welcomes) != 1 || n.welcomes[0].ID != 1 || n.welcomes[0].Epoch != 3 || n.welcomes[0].CommitSequence != 7 {
+		t.Fatalf("marked: apply %d, result %+v, applied %+v; want the kept Welcome applied", n.applyCalls, res, n.welcomes)
+	}
+	if len(n.expected) != 1 || n.expected[0].Channel != channel || n.expected[0].Kind != 0 {
+		t.Fatalf("expected binding %+v", n.expected)
+	}
+	if got := len(logs.with("bot joined Bot channel group from its kept Welcome")); got != 1 {
+		t.Fatalf("join logged %d times", got)
+	}
+	// The next pass syncs the joined group; the kept Welcome is gone.
+	n.groups = []native.GroupInfo{info}
+	res, err = r.reconcileOnce(context.Background(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.applyCalls != 1 || res.GroupsSynced != 1 {
+		t.Fatalf("after the join: apply %d, result %+v; want the group synced and nothing applied again", n.applyCalls, res)
 	}
 
-	// Unmarked again: the group is left (not synced) and a later Welcome is not applied.
+	// Unmarked again: the group is left (not synced, reported left) and nothing is applied.
 	channels.set(channel, false)
-	s.welcomes = append(s.welcomes, welcome(3))
 	pages := s.groupPageCalls
 	res, err = r.reconcileOnce(context.Background(), s)
 	if err != nil {
@@ -122,13 +150,70 @@ func TestBotJoinsOnMarkAndLeavesOnUnmark(t *testing.T) {
 	if n.applyCalls != 1 || res.GroupsSynced != 0 || s.groupPageCalls != pages {
 		t.Fatalf("unmarked again: apply %d, result %+v, page reads %d; want nothing applied or synced", n.applyCalls, res, s.groupPageCalls-pages)
 	}
+	if left, _ := channels.reported(); !left[group] {
+		t.Fatalf("left groups %v, want the unmarked channel's group", left)
+	}
+}
+
+// TestAStaleOrMissingKeptWelcomeNeedsReAdd (fix round 1, I-1): a kept Welcome the helper refuses at mark time (its key
+// package spent) cannot join the Bot: it is dropped and the channel is reported as needing the Bot re-added. A marked
+// channel with no kept Welcome is reported the same way. Nothing is applied early.
+func TestAStaleOrMissingKeptWelcomeNeedsReAdd(t *testing.T) {
+	r, n, s, _, channel, group := membershipFixture(t)
+	channels := &botChannelSet{known: true}
+	logs := &recordedLogs{}
+	r.UseBotChannels(channels, slog.New(logs))
+	s.welcomes = []client.Welcome{{ID: 1, GroupID: group, Blob: []byte{1}, Tree: []byte{2}, TreeHash: make([]byte, 32)}}
+	if _, err := r.reconcileOnce(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	channels.set(channel, true)
+	n.applyErr = &helper.StatusError{Status: 3} // expired
+	if _, err := r.reconcileOnce(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if _, reAdd := channels.reported(); !reAdd[channel] || !r.NeedsReAdd()[channel] {
+		t.Fatalf("needs re-add %v, want the marked channel", reAdd)
+	}
+	if v := n.other[deferredWelcomeIndexKey]; v.Value == nil {
+		t.Fatal("the deferred index is missing")
+	} else if idx, _, err := r.loadDeferredIndex(context.Background()); err != nil || len(idx) != 0 {
+		t.Fatalf("the stale Welcome is still kept: %v %v", idx, err)
+	}
+	// Again: no Welcome left to try, still reported, logged once.
+	if _, err := r.reconcileOnce(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if n.applyCalls != 1 {
+		t.Fatalf("apply calls %d, want 1 (the stale Welcome tried once)", n.applyCalls)
+	}
+	if got := len(logs.with("bot channel group needs the Bot re-added: no Welcome to join it from")); got != 1 {
+		t.Fatalf("needs re-add logged %d times, want once", got)
+	}
+}
+
+// TestAKeptWelcomeIsReplacedByANewerOne: per group only the newest Welcome is kept.
+func TestAKeptWelcomeIsReplacedByANewerOne(t *testing.T) {
+	r, _, s, _, _, group := membershipFixture(t)
+	r.UseBotChannels(&botChannelSet{known: true}, nil)
+	s.welcomes = []client.Welcome{
+		{ID: 1, GroupID: group, Blob: []byte{1}, Tree: []byte{2}, TreeHash: make([]byte, 32)},
+		{ID: 2, GroupID: group, Blob: []byte{3}, Tree: []byte{4}, TreeHash: make([]byte, 32)},
+	}
+	if _, err := r.reconcileOnce(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	w, _, _, ok, err := r.loadDeferredWelcome(context.Background(), group)
+	if err != nil || !ok || w.ID != 2 || string(w.Blob) != string([]byte{3}) {
+		t.Fatalf("kept %+v ok %v err %v; want Welcome 2", w, ok, err)
+	}
 }
 
 // TestBotChannelsUnknownKeepMembership: until the feed has applied a snapshot, the Bot channels are unknown and
 // membership is not narrowed (an empty set before the snapshot must not leave every group).
 func TestBotChannelsUnknownKeepMembership(t *testing.T) {
 	r, n, s, community, channel, group := membershipFixture(t)
-	r.UseBotChannels((&botChannelSet{}).get, nil)
+	r.UseBotChannels(&botChannelSet{}, nil)
 	info := native.GroupInfo{ID: group, Kind: 0, Community: &community, Target: channel, State: 2, NextSequence: 1}
 	n.groups, n.inspected = []native.GroupInfo{info}, info
 	res, err := r.reconcileOnce(context.Background(), s)
@@ -156,7 +241,7 @@ func TestFirstV2StartLeavesNonBotChannelGroups(t *testing.T) {
 	channels := &botChannelSet{}
 	channels.set(channel, true)
 	logs := &recordedLogs{}
-	r.UseBotChannels(channels.get, slog.New(logs))
+	r.UseBotChannels(channels, slog.New(logs))
 	res, err := r.reconcileOnce(context.Background(), s)
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +263,7 @@ func TestFirstV2StartLeavesNonBotChannelGroups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	again.UseBotChannels(channels.get, slog.New(logs))
+	again.UseBotChannels(channels, slog.New(logs))
 	if _, err = again.reconcileOnce(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}

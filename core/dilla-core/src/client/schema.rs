@@ -665,7 +665,7 @@ pub(crate) fn migrate_conn(c: &rusqlite::Connection) -> Result<u64, StorageError
     c.execute_batch(super::account_kind::ACCOUNT_KINDS_SCHEMA)?;
     // Bot v2 Task 16: what each leaf was last judged under. Additive: an older client ignores it,
     // and a row it leaves stale matches no newer list or pin, so the leaf is reported again.
-    c.execute_batch(super::trust::LEAF_CHECKED_SCHEMA)?;
+    super::trust::ensure_leaf_checked(c)?;
     // An unreleased schema-13 build (S1 fix rounds 2-3) staged attestations in a table that fix
     // round 4 removed; a development store that ran it drops the orphan (Task 11).
     c.execute_batch("DROP TABLE IF EXISTS app_account_kind_staged;")?;

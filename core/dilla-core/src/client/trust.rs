@@ -639,9 +639,10 @@ fn apply_verdict(
     device: &[u8; 16],
     (leaf_index, signature_key): (u32, &[u8]),
     verdict: Result<(), &str>,
+    credential: Option<&CredentialIdentity>,
 ) -> Result<bool, StorageError> {
     if verdict != Err(E_DEVICE_LIST_STALE) {
-        mark_checked(c, group_id, user, leaf_index, signature_key)?;
+        mark_checked(c, group_id, user, leaf_index, signature_key, credential)?;
     }
     let code = match verdict {
         Ok(()) => {
@@ -698,8 +699,9 @@ fn apply_verdict(
 /// Bot v2 Task 16: the list version and pinned key each current leaf was last judged under
 /// (`apply_verdict`, a decided verdict only). `pending_leaves` omits a Bot's leaf whose row still
 /// matches its user's cached list and pin, so a pushed list costs that user's leaves only. A row
-/// for a leaf index that another leaf took (another signature key) matches nothing.
-pub(super) const LEAF_CHECKED_SCHEMA: &str = "
+/// for a leaf index that another leaf took (another signature key), or whose credential changed
+/// under the same key (fix round 1, M-4: `credential_hash`), matches nothing.
+const LEAF_CHECKED_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS app_leaf_checked (
   group_id BLOB NOT NULL CHECK(length(group_id)=16),
   leaf_index INTEGER NOT NULL,
@@ -707,9 +709,47 @@ CREATE TABLE IF NOT EXISTS app_leaf_checked (
   user_id BLOB NOT NULL CHECK(length(user_id)=16),
   umk_pub BLOB NOT NULL CHECK(length(umk_pub)=32),
   version INTEGER NOT NULL,
+  credential_hash BLOB NOT NULL CHECK(length(credential_hash)=32),
   PRIMARY KEY(group_id,leaf_index)
 ) WITHOUT ROWID;
 ";
+
+/// Creates `app_leaf_checked`, replacing a table of the first Task 16 shape (no
+/// `credential_hash`): its rows are only a cache of judgements, so a dropped row makes its leaf
+/// pending again, which is the safe direction.
+pub(super) fn ensure_leaf_checked(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    let exists: bool = c
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_leaf_checked'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if exists {
+        let has_hash: bool = c
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('app_leaf_checked') WHERE name='credential_hash'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !has_hash {
+            c.execute_batch("DROP TABLE app_leaf_checked;")?;
+        }
+    }
+    c.execute_batch(LEAF_CHECKED_SCHEMA)?;
+    Ok(())
+}
+
+/// The hash of a leaf's credential that `app_leaf_checked` binds its judgement to.
+fn credential_hash(credential: &CredentialIdentity) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"dilla leaf checked credential v1");
+    hash.update(credential.encode());
+    hash.finalize().into()
+}
 
 /// Records that the leaf was judged under its user's current cached list and pinned key. With no
 /// cached list, or a key change pending, nothing is recorded: the leaf stays pending.
@@ -719,21 +759,27 @@ fn mark_checked(
     user: &[u8; 16],
     leaf_index: u32,
     signature_key: &[u8],
+    credential: Option<&CredentialIdentity>,
 ) -> Result<(), StorageError> {
     c.execute(
         "DELETE FROM app_leaf_checked WHERE group_id=?1 AND leaf_index=?2",
         params![group_id.as_slice(), i64::from(leaf_index)],
     )?;
+    // A leaf whose credential does not decode has no judgement to bind: it stays pending.
+    let Some(credential) = credential else {
+        return Ok(());
+    };
     c.execute(
-        "INSERT INTO app_leaf_checked(group_id,leaf_index,signature_key,user_id,umk_pub,version) \
-         SELECT ?1,?2,?3,?4,p.umk_pub,l.version FROM app_device_lists l \
+        "INSERT INTO app_leaf_checked(group_id,leaf_index,signature_key,user_id,umk_pub,version,credential_hash) \
+         SELECT ?1,?2,?3,?4,p.umk_pub,l.version,?5 FROM app_device_lists l \
          JOIN app_trust_pins p ON p.user_id=l.user_id \
          WHERE l.user_id=?4 AND p.changed_umk IS NULL AND p.umk_pub=l.umk_pub",
         params![
             group_id.as_slice(),
             i64::from(leaf_index),
             signature_key,
-            user.as_slice()
+            user.as_slice(),
+            credential_hash(credential).as_slice()
         ],
     )?;
     Ok(())
@@ -749,12 +795,14 @@ fn leaf_checked_current(
         "SELECT 1 FROM app_leaf_checked k \
          JOIN app_device_lists l ON l.user_id=k.user_id AND l.version=k.version \
          JOIN app_trust_pins p ON p.user_id=k.user_id AND p.umk_pub=k.umk_pub AND p.changed_umk IS NULL \
-         WHERE k.group_id=?1 AND k.leaf_index=?2 AND k.signature_key=?3 AND k.user_id=?4",
+         WHERE k.group_id=?1 AND k.leaf_index=?2 AND k.signature_key=?3 AND k.user_id=?4 \
+         AND k.credential_hash=?5",
         params![
             leaf.group_id.as_slice(),
             i64::from(leaf.leaf_index),
             leaf.dsk_pub.as_slice(),
-            user.as_slice()
+            user.as_slice(),
+            credential_hash(&leaf.credential).as_slice()
         ],
         |_| Ok(()),
     )
@@ -1219,7 +1267,7 @@ fn audit_member(
     previous: Option<&[LeafFingerprint]>,
 ) -> Result<(), StorageError> {
     let fingerprint = (member.index.u32(), member.signature_key.as_slice().to_vec());
-    let (user, device, code) = match extract_leaf(group_id, group, [0; 32], member) {
+    let (user, device, code, credential) = match extract_leaf(group_id, group, [0; 32], member) {
         Ok(leaf) => {
             let user = *leaf.credential.user_id.as_bytes();
             let device = *leaf.credential.device_id.as_bytes();
@@ -1238,12 +1286,13 @@ fn audit_member(
                         &device,
                         (fingerprint.0, &fingerprint.1),
                         Ok(()),
+                        Some(&leaf.credential),
                     )? {
                         bump_generation(c)?;
                     }
                     return Ok(());
                 }
-                Err(code) => (user, device, code),
+                Err(code) => (user, device, code, Some(leaf.credential)),
             }
         }
         Err(_) => {
@@ -1259,7 +1308,7 @@ fn audit_member(
             let digest = hash.finalize();
             let mut opaque_device = [0u8; 16];
             opaque_device.copy_from_slice(&digest[..16]);
-            ([0; 16], opaque_device, E_CREDENTIAL)
+            ([0; 16], opaque_device, E_CREDENTIAL, None)
         }
     };
     if code == E_DEVICE_LIST_STALE {
@@ -1272,6 +1321,7 @@ fn audit_member(
         &device,
         (fingerprint.0, &fingerprint.1),
         Err(code),
+        credential.as_ref(),
     )? {
         bump_generation(c)?;
     }
@@ -2239,7 +2289,7 @@ impl ClientCore {
                 for leaf in user_leaves.iter().filter(|leaf| !is_own(&own, leaf)) {
                     let verdict = leaf_verdict(c, leaf)?;
                     let device = leaf.credential.device_id.as_bytes();
-                    touched |= apply_verdict(c, &leaf.group_id, requested_user, device, (leaf.leaf_index, &leaf.dsk_pub), verdict)?;
+                    touched |= apply_verdict(c, &leaf.group_id, requested_user, device, (leaf.leaf_index, &leaf.dsk_pub), verdict, Some(&leaf.credential))?;
                     quarantined += u64::from(verdict.is_err_and(|code| code != E_DEVICE_LIST_STALE));
                 }
                 // Only a list under the pinned key is the user's own word on its devices; a list
@@ -2396,7 +2446,7 @@ impl ClientCore {
                 for leaf in leaves.iter().filter(|leaf| !is_own(&own, leaf)) {
                     let verdict = leaf_verdict(c, leaf)?;
                     let device = leaf.credential.device_id.as_bytes();
-                    apply_verdict(c, &leaf.group_id, user_id, device, (leaf.leaf_index, &leaf.dsk_pub), verdict)?;
+                    apply_verdict(c, &leaf.group_id, user_id, device, (leaf.leaf_index, &leaf.dsk_pub), verdict, Some(&leaf.credential))?;
                 }
                 bump_generation(c)
             })

@@ -104,16 +104,21 @@ func (n *membershipFakeNative) StateGet(_ context.Context, _ uint64, key []byte)
 	return n.state, nil
 }
 func (n *membershipFakeNative) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
-	if key := string(changes[0].Key); key != membershipStateKey {
-		if n.other == nil {
-			n.other = map[string]native.StateValue{}
+	revs := make([]uint64, 0, len(changes))
+	for _, ch := range changes {
+		if key := string(ch.Key); key != membershipStateKey {
+			if n.other == nil {
+				n.other = map[string]native.StateValue{}
+			}
+			v := native.StateValue{Revision: n.other[key].Revision + 1, Value: ch.Value, Tombstone: ch.Value == nil}
+			n.other[key] = v
+			revs = append(revs, v.Revision)
+			continue
 		}
-		v := native.StateValue{Revision: n.other[key].Revision + 1, Value: changes[0].Value}
-		n.other[key] = v
-		return []uint64{v.Revision}, nil
+		n.state = native.StateValue{Revision: n.state.Revision + 1, Value: ch.Value}
+		revs = append(revs, n.state.Revision)
 	}
-	n.state = native.StateValue{Revision: n.state.Revision + 1, Value: changes[0].Value}
-	return []uint64{n.state.Revision}, nil
+	return revs, nil
 }
 
 type membershipFakeSession struct {

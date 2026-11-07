@@ -886,4 +886,56 @@ mod pushed {
         let rows = pending(&w.alice);
         assert!(rows.iter().any(|r| r.4 == "ready-refresh"), "{rows:?}");
     }
+
+    /// Fix round 1, M-4: a judgement is bound to the leaf's credential. A row recorded for
+    /// another credential at the same leaf and signature key (one changed by an Update) does
+    /// not make the leaf current: it is judged again.
+    #[test]
+    fn a_leaf_judged_under_another_credential_is_reported_again() {
+        let f = fleet();
+        let peer = &f.peers[5];
+        let changed = f
+            .bot
+            .probe
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE app_leaf_checked SET credential_hash=zeroblob(32) WHERE user_id=?1",
+                [peer.user.as_slice()],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+        let rows = pending(&f.bot);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!((rows[0].2, rows[0].4.as_str()), (peer.user, "changed"));
+    }
+
+    /// Fix round 1, M-4: a store with the first Task 16 table (no credential hash) gets the
+    /// new table on open; the old rows go, so their leaves are judged again.
+    #[test]
+    fn a_first_shape_leaf_checked_table_is_replaced_on_open() {
+        let bot = bot_core();
+        {
+            let db = bot.probe.lock().unwrap();
+            db.execute_batch(
+                "DROP TABLE app_leaf_checked;
+                 CREATE TABLE app_leaf_checked(group_id BLOB NOT NULL,leaf_index INTEGER NOT NULL,signature_key BLOB NOT NULL,user_id BLOB NOT NULL,umk_pub BLOB NOT NULL,version INTEGER NOT NULL,PRIMARY KEY(group_id,leaf_index)) WITHOUT ROWID;
+                 INSERT INTO app_leaf_checked VALUES(zeroblob(16),1,zeroblob(32),zeroblob(16),zeroblob(32),1);",
+            )
+            .unwrap();
+        }
+        let bot = bot.reopen();
+        let db = bot.probe.lock().unwrap();
+        let has_hash: i64 = db
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('app_leaf_checked') WHERE name='credential_hash'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let rows: i64 = db
+            .query_row("SELECT count(*) FROM app_leaf_checked", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!((has_hash, rows), (1, 0));
+    }
 }

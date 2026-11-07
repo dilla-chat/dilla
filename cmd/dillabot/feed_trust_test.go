@@ -183,3 +183,46 @@ func TestASnapshotSweepsLeavesWithoutDelayingReadiness(t *testing.T) {
 	waitFor(t, "the sweep's read", time.Second, func() bool { return core.reads.Load() == 1 })
 	close(core.release)
 }
+
+// TestADroppedFeedStopsItsTrustRetries (fix round 1, M-3): an installation that is removed or disabled drops its feed,
+// and the feed's pending trust retries stop with it; the failing user stays held.
+func TestADroppedFeedStopsItsTrustRetries(t *testing.T) {
+	defer func(p trust.RetryPolicy) { feedTrustRetry = p }(feedTrustRetry)
+	feedTrustRetry = trust.RetryPolicy{First: 20 * time.Millisecond, Max: 20 * time.Millisecond, Attempts: 1000}
+	installation, ada := feedID(9), feedID(4)
+	var calls atomic.Int64
+	h := newInstallationFeed(installation, feedID(1), feedID(8), quietLogger(), func() {})
+	h.setDeps(feedDeps{core: trustCoreFunc(func(context.Context, id.ID, []byte) (native.DeviceListIngest, error) {
+		calls.Add(1)
+		return native.DeviceListIngest{}, &helper.StatusError{Status: 6}
+	})})
+	_ = h.DeviceList(t.Context(), ada, []byte{0xad}, false)
+	waitFor(t, "a retry", time.Second, func() bool { return calls.Load() >= 2 })
+	r := &botGatewayRuntime{feeds: map[id.ID]*installationFeed{installation: h}}
+	r.RetainOnly(nil)
+	time.Sleep(50 * time.Millisecond)
+	settledAt := calls.Load()
+	time.Sleep(150 * time.Millisecond)
+	if got := calls.Load(); got != settledAt {
+		t.Fatalf("a dropped feed's retries kept running: %d more op 24 calls", got-settledAt)
+	}
+	if !h.Held(ada) {
+		t.Fatal("the failing user was released when the feed was dropped")
+	}
+}
+
+// TestLeftGroupsReportedByMembershipCostNoTrustWork (fix round 1, M-5): the groups the membership reconciler reports as
+// left are skipped by the feed's trust; the Bot channels still need re-adding are kept for the admin page.
+func TestLeftGroupsReportedByMembershipCostNoTrustWork(t *testing.T) {
+	installation, left, kept, channel := feedID(9), feedID(0x41), feedID(0x42), feedID(0x43)
+	h := newInstallationFeed(installation, feedID(1), feedID(8), quietLogger(), func() {})
+	defer h.trust.Close()
+	r := &botGatewayRuntime{feeds: map[id.ID]*installationFeed{installation: h}}
+	r.BotChannels(installation).Membership(map[id.ID]bool{left: true}, map[id.ID]bool{channel: true})
+	if h.inTrustGroup(left) || !h.inTrustGroup(kept) {
+		t.Fatalf("in trust: left %v kept %v; want the left group skipped", h.inTrustGroup(left), h.inTrustGroup(kept))
+	}
+	if !h.NeedsReAdd()[channel] {
+		t.Fatal("the channel needing re-add was not kept")
+	}
+}

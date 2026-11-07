@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -112,12 +114,37 @@ type MembershipReconciler struct {
 	// membership (every authorised channel group).
 	botChannels BotChannels
 	log         *slog.Logger
+	// reAdd is the Bot channels last reported as needing the Bot re-added (logged once each).
+	reAdd map[id.ID]bool
 }
 
-// BotChannels reports the community's Bot channels (marked) as the Bot's event feed last applied them, and whether the
-// feed has applied a snapshot (known). Until known, membership is not narrowed: an empty set before the first snapshot
-// must not leave every group.
-type BotChannels func() (marked map[id.ID]bool, known bool)
+// BotChannels is the reconciler's link to the Bot's event feed (Bot v2 Task 16).
+type BotChannels interface {
+	// Marked reports the community's Bot channels as the feed last applied them, and whether the feed has applied a
+	// snapshot (known). Until known, membership is not narrowed: an empty set before the first snapshot must not leave
+	// every group.
+	Marked() (marked map[id.ID]bool, known bool)
+	// Membership receives, after each reconcile with the Bot channels known, the text groups the Bot has left (no
+	// trust work for them, fix round 1 M-5) and the Bot channels whose group the Bot cannot join on its own (no stored
+	// Welcome, or a stale one): a member's client must add the Bot again (the admin page shows it, Task 22).
+	Membership(left, needsReAdd map[id.ID]bool)
+}
+
+// BotChannelsFunc is a BotChannels from a Marked function alone; Membership is dropped.
+type BotChannelsFunc func() (map[id.ID]bool, bool)
+
+func (f BotChannelsFunc) Marked() (map[id.ID]bool, bool) { return f() }
+func (BotChannelsFunc) Membership(_, _ map[id.ID]bool)   {}
+
+// Deferred Welcomes (fix round 1, I-1): a Welcome to a channel that is not a Bot channel is never applied (that would
+// let the Bot read a non-Bot channel), but it is kept unapplied, the newest per group, for at most maxDeferredWelcomes
+// groups, so marking the channel later joins the Bot without a second Welcome.
+const (
+	deferredWelcomeIndexKey = "dilla.bot.membership.deferred-welcomes"
+	deferredWelcomePrefix   = "dilla.bot.membership.deferred-welcome."
+	maxDeferredWelcomes     = maxMembershipGroups
+	maxDeferredWelcomeBytes = 256 << 10
+)
 
 // botChannelMigrationKey marks that the Bot's first start under v2 has left every channel group that is not a Bot
 // channel (state area membershipStateArea): the one-time migration is not repeated.
@@ -153,8 +180,20 @@ func (r *MembershipReconciler) botChannelSet() (map[id.ID]bool, bool, *slog.Logg
 	if channels == nil {
 		return nil, false, log
 	}
-	marked, known := channels()
+	marked, known := channels.Marked()
 	return marked, known, log
+}
+
+// NeedsReAdd is the Bot channels the last reconcile found the Bot cannot join on its own: a member's client must add
+// it again (fix round 1, I-1).
+func (r *MembershipReconciler) NeedsReAdd() map[id.ID]bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[id.ID]bool, len(r.reAdd))
+	for k := range r.reAdd {
+		out[k] = true
+	}
+	return out
 }
 
 // InteractionPollSchedule retains background backoff across reconciliation passes.
@@ -321,6 +360,7 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		}
 		welcomes = kept
 	}
+	applied := map[id.ID]bool{}
 	if len(welcomes) > 0 {
 		apply := make([]native.GroupWelcome, 0, len(welcomes))
 		expected := make([]native.GroupExpected, 0, len(welcomes))
@@ -375,14 +415,25 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 			}
 			out.Applied++
 			out.Acknowledged++
+			applied[o.Group] = true
 		}
 	}
 	for _, w := range refused {
+		ch := textGroup[w.GroupID]
+		// Kept unapplied before it is acknowledged: a failure to keep it leaves it on the server for the next pass.
+		stored, storeErr := r.storeDeferredWelcome(ctx, w, ch.ID)
+		if storeErr != nil {
+			return out, fmt.Errorf("keep deferred welcome: %w", storeErr)
+		}
 		if err = session.AcknowledgeWelcome(ctx, w.ID); err != nil {
 			return out, membershipPhaseError(MembershipPhaseWelcomeAcknowledge, err)
 		}
 		out.Acknowledged++
-		log.Info("bot welcome to a non-Bot channel group not applied", "channel_id", textGroup[w.GroupID].ID.String())
+		if stored {
+			log.Info("bot welcome to a non-Bot channel group kept unapplied until the channel is marked", "channel_id", ch.ID.String())
+		} else {
+			log.Warn("bot welcome to a non-Bot channel group not kept (too large or too many); marking the channel needs the Bot re-added", "channel_id", ch.ID.String())
+		}
 	}
 	if len(all) > 0 {
 		last := all[len(all)-1].ID
@@ -395,6 +446,14 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 	if known {
 		if err = r.leaveNonBotChannelsOnce(ctx, groups, channelByID, participates, log); err != nil {
 			return out, err
+		}
+		joined, joinErr := r.reconcileBotChannels(ctx, session, own, groups, applied, textGroup, channelByID, participates, log)
+		if joinErr != nil {
+			return out, joinErr
+		}
+		if joined > 0 {
+			out.Applied += joined
+			out.More = true // the next pass syncs the groups just joined
 		}
 	}
 	for _, g := range groups {
@@ -641,6 +700,264 @@ func (r *MembershipReconciler) revalidateChannelAccess(ctx context.Context, sess
 	return ErrMembershipUnproven
 }
 func bytes32(b []byte) (out [32]byte) { copy(out[:], b); return }
+
+func deferredWelcomeKey(group id.ID) []byte {
+	return []byte(deferredWelcomePrefix + hex.EncodeToString(group[:]))
+}
+
+// loadDeferredIndex reads the groups with a kept Welcome.
+func (r *MembershipReconciler) loadDeferredIndex(ctx context.Context) ([]id.ID, uint64, error) {
+	v, err := r.native.StateGet(ctx, membershipStateArea, []byte(deferredWelcomeIndexKey))
+	if err != nil {
+		return nil, 0, err
+	}
+	if v.Tombstone || len(v.Value) == 0 {
+		return nil, v.Revision, nil
+	}
+	var a []any
+	if cborx.Unmarshal(v.Value, &a) != nil || len(a) != 2 || a[0] != uint64(1) {
+		return nil, 0, errors.New("invalid deferred welcome index")
+	}
+	raw, ok := a[1].([]any)
+	if !ok || len(raw) > maxDeferredWelcomes {
+		return nil, 0, errors.New("invalid deferred welcome index")
+	}
+	out := make([]id.ID, 0, len(raw))
+	for _, x := range raw {
+		b, ok := x.([]byte)
+		if !ok || len(b) != id.Size {
+			return nil, 0, errors.New("invalid deferred welcome index")
+		}
+		out = append(out, id.ID(b))
+	}
+	return out, v.Revision, nil
+}
+
+func encodeDeferredIndex(groups []id.ID) ([]byte, error) {
+	raw := make([]any, 0, len(groups))
+	for _, g := range groups {
+		raw = append(raw, append([]byte(nil), g[:]...))
+	}
+	return cborx.Marshal([]any{uint64(1), raw})
+}
+
+// loadDeferredWelcome reads group's kept Welcome; ok is false when there is none.
+func (r *MembershipReconciler) loadDeferredWelcome(ctx context.Context, group id.ID) (client.Welcome, id.ID, uint64, bool, error) {
+	v, err := r.native.StateGet(ctx, membershipStateArea, deferredWelcomeKey(group))
+	if err != nil {
+		return client.Welcome{}, id.ID{}, 0, false, err
+	}
+	if v.Tombstone || len(v.Value) == 0 {
+		return client.Welcome{}, id.ID{}, v.Revision, false, nil
+	}
+	var a []any
+	if cborx.Unmarshal(v.Value, &a) != nil || len(a) != 9 || a[0] != uint64(1) {
+		return client.Welcome{}, id.ID{}, 0, false, errors.New("invalid deferred welcome")
+	}
+	wid, ok1 := a[1].(uint64)
+	g, ok2 := a[2].([]byte)
+	ch, ok3 := a[3].([]byte)
+	epoch, ok4 := a[4].(uint64)
+	seq, ok5 := a[5].(uint64)
+	blob, ok6 := a[6].([]byte)
+	tree, ok7 := a[7].([]byte)
+	hash, ok8 := a[8].([]byte)
+	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 || !ok7 || !ok8 || len(g) != id.Size || len(ch) != id.Size || id.ID(g) != group || len(hash) != 32 {
+		return client.Welcome{}, id.ID{}, 0, false, errors.New("invalid deferred welcome")
+	}
+	return client.Welcome{ID: wid, GroupID: group, Epoch: epoch, CommitSequence: seq, Blob: blob, Tree: tree, TreeHash: hash}, id.ID(ch), v.Revision, true, nil
+}
+
+// stateOperation is a deterministic transaction id for one state change of the reconciler.
+func (r *MembershipReconciler) stateOperation(label string, parts ...[]byte) id.ID {
+	seed := append([]byte("dilla.bot.membership."+label+".v1\x00"), r.binding.Installation[:]...)
+	for _, p := range parts {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(p)))
+		seed = append(append(seed, n[:]...), p...)
+	}
+	sum := sha256.Sum256(seed)
+	return id.ID(sum[:16])
+}
+
+func revBytes(v uint64) []byte {
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], v)
+	return b[:]
+}
+
+// storeDeferredWelcome keeps w for channel's group, unapplied: the newest Welcome per group wins. It answers false when
+// w cannot be kept (larger than a state value, or the bound of kept groups is reached).
+func (r *MembershipReconciler) storeDeferredWelcome(ctx context.Context, w client.Welcome, channel id.ID) (bool, error) {
+	index, indexRev, err := r.loadDeferredIndex(ctx)
+	if err != nil {
+		return false, err
+	}
+	old, _, rev, present, err := r.loadDeferredWelcome(ctx, w.GroupID)
+	if err != nil {
+		return false, err
+	}
+	if present && old.ID >= w.ID {
+		return true, nil
+	}
+	listed := false
+	for _, g := range index {
+		listed = listed || g == w.GroupID
+	}
+	if !listed && len(index) >= maxDeferredWelcomes {
+		return false, nil
+	}
+	value, err := cborx.Marshal([]any{uint64(1), w.ID, append([]byte(nil), w.GroupID[:]...), append([]byte(nil), channel[:]...),
+		w.Epoch, w.CommitSequence, w.Blob, w.Tree, w.TreeHash})
+	if err != nil {
+		return false, err
+	}
+	if len(value) > maxDeferredWelcomeBytes {
+		return false, nil
+	}
+	changes := []native.StateChange{{Area: membershipStateArea, Key: deferredWelcomeKey(w.GroupID), ExpectedRevision: rev, Value: value}}
+	if !listed {
+		next, encErr := encodeDeferredIndex(append(index, w.GroupID))
+		if encErr != nil {
+			return false, encErr
+		}
+		changes = append(changes, native.StateChange{Area: membershipStateArea, Key: []byte(deferredWelcomeIndexKey), ExpectedRevision: indexRev, Value: next})
+	}
+	op := r.stateOperation("deferred-welcome.keep", w.GroupID[:], revBytes(w.ID), revBytes(rev), revBytes(indexRev))
+	if _, err = r.native.StateTransaction(ctx, op, changes); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// dropDeferredWelcome forgets group's kept Welcome.
+func (r *MembershipReconciler) dropDeferredWelcome(ctx context.Context, group id.ID, index []id.ID, indexRev uint64) error {
+	_, _, rev, _, err := r.loadDeferredWelcome(ctx, group)
+	if err != nil {
+		return err
+	}
+	rest := make([]id.ID, 0, len(index))
+	for _, g := range index {
+		if g != group {
+			rest = append(rest, g)
+		}
+	}
+	next, err := encodeDeferredIndex(rest)
+	if err != nil {
+		return err
+	}
+	changes := []native.StateChange{{Area: membershipStateArea, Key: []byte(deferredWelcomeIndexKey), ExpectedRevision: indexRev, Value: next}}
+	if rev != 0 {
+		changes = append(changes, native.StateChange{Area: membershipStateArea, Key: deferredWelcomeKey(group), ExpectedRevision: rev})
+	}
+	op := r.stateOperation("deferred-welcome.drop", group[:], revBytes(rev), revBytes(indexRev))
+	_, err = r.native.StateTransaction(ctx, op, changes)
+	return err
+}
+
+// staleWelcome reports whether ApplyWelcomes refused a kept Welcome for good (its key package was spent or expired,
+// the group moved on): the Bot cannot join from it.
+func staleWelcome(err error) bool {
+	var status *helper.StatusError
+	if !errors.As(err, &status) {
+		return false
+	}
+	switch status.Status {
+	case 1, 2, 3, 4, 7:
+		return true
+	}
+	return false
+}
+
+// reconcileBotChannels joins marked Bot channels from their kept Welcomes, drops the kept Welcomes of channels that went
+// away or that the Bot already holds, and reports the left groups and the Bot channels that need the Bot re-added (fix
+// round 1, I-1 and M-5). It answers how many groups it joined.
+func (r *MembershipReconciler) reconcileBotChannels(ctx context.Context, session membershipSession, own client.Community, groups []native.GroupInfo,
+	applied map[id.ID]bool, textGroup map[id.ID]client.Channel, channelByID map[id.ID]client.Channel, participates func(client.Channel) bool, log *slog.Logger,
+) (uint64, error) {
+	held := map[id.ID]bool{}
+	left := map[id.ID]bool{}
+	for _, g := range groups {
+		if g.State != 2 {
+			continue
+		}
+		held[g.ID] = true
+		if g.Kind != 0 || g.Community == nil || *g.Community != r.binding.Community {
+			continue
+		}
+		if ch, ok := channelByID[g.Target]; !ok || !participates(ch) {
+			left[g.ID] = true
+		}
+	}
+	for g := range applied {
+		held[g] = true
+	}
+	index, indexRev, err := r.loadDeferredIndex(ctx)
+	if err != nil {
+		return 0, err
+	}
+	needsReAdd := map[id.ID]bool{}
+	var joined uint64
+	for _, group := range index {
+		if err = client.CooperativeCheckpoint(ctx); err != nil {
+			return joined, err
+		}
+		ch, ok := textGroup[group]
+		if ok && !participates(ch) && !held[group] {
+			continue // still not a Bot channel: kept
+		}
+		if ok && !held[group] {
+			w, keptFor, _, present, loadErr := r.loadDeferredWelcome(ctx, group)
+			if loadErr != nil {
+				return joined, loadErr
+			}
+			if present && keptFor == ch.ID {
+				outcomes, applyErr := r.native.ApplyWelcomes(ctx,
+					[]native.GroupWelcome{{ID: w.ID, Group: group, Epoch: w.Epoch, CommitSequence: w.CommitSequence, Welcome: w.Blob, RatchetTree: w.Tree, TreeHash: bytes32(w.TreeHash)}},
+					[]native.GroupExpected{{Group: group, Community: r.binding.Community, Channel: ch.ID, Kind: 0, Policy: own.PolicyVersion}})
+				switch {
+				case applyErr != nil && !staleWelcome(applyErr):
+					return joined, membershipPhaseError(MembershipPhaseWelcomeApply, applyErr)
+				case applyErr == nil && len(outcomes) == 1 && outcomes[0].Group == group && (outcomes[0].Outcome == 0 || outcomes[0].Outcome == 1):
+					if err = r.revalidateChannelAccess(ctx, session, group, ch.ID, 0); err != nil {
+						return joined, membershipPhaseError(MembershipPhaseWelcomeRevalidation, err)
+					}
+					held[group] = true
+					joined++
+					log.Info("bot joined Bot channel group from its kept Welcome", "channel_id", ch.ID.String())
+				default:
+					log.Warn("bot kept Welcome no longer valid; the Bot channel needs the Bot re-added", "channel_id", ch.ID.String())
+				}
+			}
+		}
+		// Joined, already held, stale, or its channel went away: the kept Welcome is done.
+		if err = r.dropDeferredWelcome(ctx, group, index, indexRev); err != nil {
+			return joined, err
+		}
+		index, indexRev, err = r.loadDeferredIndex(ctx)
+		if err != nil {
+			return joined, err
+		}
+	}
+	for _, ch := range channelByID {
+		if ch.Kind == 0 && participates(ch) && ch.TextGroupID != nil && !ch.TextGroupID.IsZero() && !held[*ch.TextGroupID] {
+			needsReAdd[ch.ID] = true
+		}
+	}
+	r.mu.Lock()
+	for ch := range needsReAdd {
+		if !r.reAdd[ch] {
+			log.Warn("bot channel group needs the Bot re-added: no Welcome to join it from", "channel_id", ch.String())
+		}
+	}
+	r.reAdd = needsReAdd
+	channels := r.botChannels
+	r.mu.Unlock()
+	if channels != nil {
+		channels.Membership(left, needsReAdd)
+	}
+	return joined, nil
+}
 
 // leaveNonBotChannelsOnce is the Bot's first start under v2 (Bot v2 Task 16): every channel group it holds that is not
 // a Bot channel is left, each logged once with its channel id, and botChannelMigrationKey is persisted so it is not

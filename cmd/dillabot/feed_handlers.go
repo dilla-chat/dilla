@@ -93,6 +93,10 @@ type installationFeed struct {
 	trust *trust.Trust
 	// sweeping is set while a snapshot's trust sweep runs.
 	sweeping atomic.Bool
+	// left is the text groups the Bot has left (not a Bot channel), as the membership reconciler last reported them:
+	// no trust work for them (fix round 1, M-5). needsReAdd is the Bot channels whose group the Bot cannot join on its
+	// own (fix round 1, I-1).
+	left, needsReAdd map[id.ID]bool
 	// firstSeen is when a join episode was first heard: the welcome handler keys its pending state on the event's id
 	// and time, so a retried episode must present the same ones.
 	firstSeen map[id.ID]uint64
@@ -106,8 +110,26 @@ var feedTrustRetry = trust.DefaultRetry
 func newInstallationFeed(installation, community, botUser id.ID, log *slog.Logger, requestPass func()) *installationFeed {
 	f := &installationFeed{installation: installation, community: community, botUser: botUser, log: log, requestPass: requestPass, now: time.Now,
 		state: newFeedState(), firstSeen: map[id.ID]uint64{}}
-	f.trust = trust.New(feedTrustCore{f}, feedTrustRetry).WithLogger(log)
+	f.trust = trust.New(feedTrustCore{f}, feedTrustRetry).WithLogger(log).WithGroups(f.inTrustGroup)
 	return f
+}
+
+// inTrustGroup reports whether membership trust works on group: not a group the Bot has left.
+func (f *installationFeed) inTrustGroup(group id.ID) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.left[group]
+}
+
+// close stops the feed's trust retries: the installation's feed is dropped (fix round 1, M-3).
+func (f *installationFeed) close() { f.trust.Close() }
+
+// NeedsReAdd is the Bot channels whose group the Bot cannot join on its own: a member's client must add the Bot again
+// (the admin page shows them, Task 22).
+func (f *installationFeed) NeedsReAdd() map[id.ID]bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return maps.Clone(f.needsReAdd)
 }
 
 // setDeps replaces the handler's dependencies with the current pass's. A dependency the pass did not build (nil)
@@ -434,13 +456,31 @@ func (r *botGatewayRuntime) Held(installation, user id.ID) bool {
 // BotChannels is the membership reconciler's view of installation's Bot channels (service.BotChannels): unknown until
 // the installation's feed has applied a snapshot.
 func (r *botGatewayRuntime) BotChannels(installation id.ID) service.BotChannels {
-	return func() (map[id.ID]bool, bool) {
-		f := r.feedHandler(installation)
-		if f == nil {
-			return nil, false
-		}
-		return f.BotChannels()
+	return feedBotChannels{r: r, installation: installation}
+}
+
+// feedBotChannels links installation's membership reconciler to its feed (service.BotChannels).
+type feedBotChannels struct {
+	r            *botGatewayRuntime
+	installation id.ID
+}
+
+func (b feedBotChannels) Marked() (map[id.ID]bool, bool) {
+	f := b.r.feedHandler(b.installation)
+	if f == nil {
+		return nil, false
 	}
+	return f.BotChannels()
+}
+
+func (b feedBotChannels) Membership(left, needsReAdd map[id.ID]bool) {
+	f := b.r.feedHandler(b.installation)
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	f.left, f.needsReAdd = maps.Clone(left), maps.Clone(needsReAdd)
+	f.mu.Unlock()
 }
 
 // nativeRegistry is where a pass finds an installation's retained helper (musicQueueRegistry).
