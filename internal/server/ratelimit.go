@@ -26,7 +26,15 @@ type Class struct {
 // is keyed by the webhook id and spent only once the secret matched: 30 a minute with a burst of 5 (spec G5).
 var (
 	WebhookAddressClass = Class{Name: "webhook_address", PerSecond: 2, Burst: 20}
-	WebhookClass        = Class{Name: "webhook", PerSecond: 0.5, Burst: 5}
+	// WebhookPrefixClass is keyed by RatePrefixKey (IPv4 /24, IPv6 /48) and spent right after the address bucket
+	// (fix round 1 M-3): one network spreading attempts over its 65 536 /64s still meets one bucket.
+	WebhookPrefixClass = Class{Name: "webhook_prefix", PerSecond: 20, Burst: 100}
+	// WebhookAvatarClass (per webhook) and WebhookAvatarGlobalClass (the instance) meter avatar fetches (fix round
+	// 1): a webhook starts at most one fetch per 30 s after a burst of 2, and the instance at most 2 a second
+	// after a burst of 10. A refused fetch posts without an avatar.
+	WebhookAvatarClass       = Class{Name: "webhook_avatar", PerSecond: 1.0 / 30, Burst: 2}
+	WebhookAvatarGlobalClass = Class{Name: "webhook_avatar_all", PerSecond: 2, Burst: 10}
+	WebhookClass             = Class{Name: "webhook", PerSecond: 0.5, Burst: 5}
 )
 
 type bucket struct {

@@ -178,7 +178,7 @@ func concrete(t *testing.T, r docRoute) string {
 			return "abc123"
 		case "{id}", "{user_id}", "{device_id}", "{role_id}", "{target_id}", "{call_id}", "{channel_id}", "{community}", "{installation}", "{operation}", "{group}", "{actor}", "{member}", "{attempt}", "{request}":
 			return hex32
-		case "{blob_id}":
+		case "{blob_id}", "{avatar_id}": // a webhook avatar id is a SHA-256 in hex, like a blob id
 			return hex32 + hex32
 		case "{kind}", "{chunk_seq}":
 			return "0"

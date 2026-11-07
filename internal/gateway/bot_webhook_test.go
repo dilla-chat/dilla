@@ -20,8 +20,8 @@ const webhookTestText = "the boss has been defeated by Ada"
 
 func webhookPayload(t *testing.T, delivery id.ID) cbor.RawMessage {
 	t.Helper()
-	avatar := "https://example.test/a.png"
-	p, err := BotWebhookPayload(delivery, id.New(), id.New(), id.New(), "Terraria", &avatar, webhookTestText, false)
+	avatar := bytes.Repeat([]byte{0xa7}, 32)
+	p, err := BotWebhookPayload(delivery, id.New(), id.New(), id.New(), "Terraria", avatar, webhookTestText, false)
 	if err != nil {
 		t.Fatalf("BotWebhookPayload: %v", err)
 	}
@@ -176,6 +176,66 @@ func TestWebhookPendingTableIsBounded(t *testing.T) {
 		t.Fatalf("err = %v, want ErrBotWebhookBusy", err)
 	}
 	noFrameOn(t, h.sink(bot))
+}
+
+// Fix round 1 I-1: one Bot device holds at most BotWebhookPendingPerDevice waiting deliveries. The next is busy
+// before anything is sent, and another device still delivers.
+func TestWebhookPendingIsCappedPerBotDevice(t *testing.T) {
+	h := newHarness(t)
+	busyDevice, otherDevice := id.New(), id.New()
+	busyBot, _ := h.finishedBot(t, busyDevice)
+	otherBot, _ := h.finishedBot(t, otherDevice)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	results := make([]<-chan webhookResult, 0, BotWebhookPendingPerDevice)
+	for range BotWebhookPendingPerDevice {
+		d := id.New()
+		results = append(results, deliverAsync(h, ctx, busyDevice, d, webhookPayload(t, d)))
+	}
+	for range BotWebhookPendingPerDevice {
+		if in := h.waitFrame(t, busyDevice); in.Op != OpBotWebhook {
+			t.Fatalf("op %d, want bot_webhook", in.Op)
+		}
+	}
+	if _, err := h.gw.DeliverBotWebhook(ctx, busyDevice, id.New(), webhookPayload(t, id.New())); !errors.Is(err, ErrBotWebhookBusy) {
+		t.Fatalf("delivery %d to one device = %v, want ErrBotWebhookBusy", BotWebhookPendingPerDevice+1, err)
+	}
+	other := id.New()
+	res := deliverAsync(h, ctx, otherDevice, other, webhookPayload(t, other))
+	if in := h.waitFrame(t, otherDevice); in.Op != OpBotWebhook {
+		t.Fatalf("other device got op %d", in.Op)
+	}
+	h.gw.handle(context.Background(), otherBot, ackInbound(t, other[:], 0))
+	if r := <-res; r.err != nil {
+		t.Fatalf("the other device's delivery = %v", r.err)
+	}
+	cancel()
+	for _, r := range results {
+		<-r
+	}
+	_ = busyBot
+	if n := h.gw.webhooks.len(); n != 0 {
+		t.Fatalf("%d pending after all returned", n)
+	}
+}
+
+// Fix round 1 I-1: a webhook never fills the Bot's writer queue past half; past that it is busy and nothing is sent,
+// so it can never be the frame that closes the Bot's socket for overflow.
+func TestWebhookLeavesHalfTheBotQueueFree(t *testing.T) {
+	h := newHarness(t)
+	h.gw.opts.BotQueueFrames = 4
+	device := id.New()
+	bot, _ := h.finishedBot(t, device)
+	h.stall(bot)
+	for i := range 3 {
+		if !h.gw.DeliverBot(device, botEventFrame(t, BotEventMember, uint64(i))) {
+			t.Fatal("feed event not taken")
+		}
+	}
+	if _, err := h.gw.DeliverBotWebhook(context.Background(), device, id.New(), webhookPayload(t, id.New())); !errors.Is(err, ErrBotWebhookBusy) {
+		t.Fatalf("webhook into a half-full Bot queue = %v, want ErrBotWebhookBusy", err)
+	}
+	h.release(bot)
 }
 
 func TestWebhookAckFrameShape(t *testing.T) {

@@ -262,7 +262,7 @@ type Frame struct {
 	ErrorCode        string
 	// BotPayload is an op 64, 65 or 66 frame's payload elements, shape-checked only: op 64 is [request_id, community_id,
 	// user_id, device_id, sealed], op 65 is [kind, payload], op 66 is [delivery_id, webhook_id, community_id,
-	// channel_id, display_name, avatar_url|null, text, allow_everyone]. Their consumers decode them.
+	// channel_id, display_name, avatar_id(bstr 32)|null, text, allow_everyone]. Their consumers decode them.
 	BotPayload []cbor.RawMessage
 }
 

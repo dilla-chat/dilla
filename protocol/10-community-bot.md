@@ -1664,53 +1664,85 @@ instance never dereferences; `allow_everyone` is uint 0 or 1.
 | `PATCH /v1/communities/{community}/bot/webhooks/{webhook}` | E (manage_community), socket | `[name, avatar_blob\|null, allow_everyone]` | `204`; `404` |
 | `DELETE /v1/communities/{community}/bot/webhooks/{webhook}` | E (manage_community), socket | — | `204`; `404` |
 | `POST /hooks/{webhook_id}/{secret}` | none (the secret), HTTP only | JSON, below | `204` once the Bot posted it; refusals below |
+| `GET /v1/communities/{community}/bot/webhook-avatars/{avatar_id}` | E (community member), HTTP only | — | `200 image/png`, the cached avatar; `404` otherwise |
 
 **The POST.** `Content-Type: application/json`, a body of at most 8192 bytes (more is `413` before
 anything is parsed), valid UTF-8, one JSON object. The fields are Discord's: `text` (string, 1 to 4000
 bytes of UTF-8; Discord's `content` is read when `text` is absent), `username` (string, at most 80
 bytes) and `avatar_url` (string, an absolute `https://` URL with a host and no credentials, at most
-2048 bytes; empty or null means none). Any other field is ignored, so an integration that also sends
-`embeds` or `tts` still works; a known field of another JSON type is `400`. Control characters
+2048 bytes, port 443 only; empty or null means none). Any other field is ignored, so an integration that also sends
+`embeds` or `tts` still works; a known field of another JSON type is `400`, and so is a control
+character (Unicode Cc) in `text` other than tab, line feed and carriage return. Control characters
 (Unicode Cc), format characters (Cf: bidi overrides, zero-width joiners) and U+2028/U+2029 are
 stripped from `username` and its white space is collapsed; an empty result shows the webhook's
 `name`. The text is posted as plain text with links; the Bot labels it "via webhook <name>" and
 neutralises `@everyone` unless `allow_everyone` is 1.
 
 **Metering.** Every POST first spends one token of its client address's `webhook_address` bucket (2
-per second, burst 20; IPv6 by /64, `X-Forwarded-For` only from a trusted proxy), known id or not, so
-one address can neither enumerate ids nor flood the lookup. A POST whose secret matched then spends
+per second, burst 20; IPv6 by /64, `X-Forwarded-For` only from a trusted proxy), then one of its
+network's `webhook_prefix` bucket (20 per second, burst 100; IPv4 /24, IPv6 /48), known id or not, so
+neither an address nor a network spreading over its addresses can enumerate ids or flood the lookup. A POST whose secret matched then spends
 one token of the webhook's own `webhook` bucket (30 a minute, burst 5: the sixth POST at once waits 2
 s). Either refusal is `429` with `Retry-After` in whole seconds. The instance serves `/hooks/` on its
 public listener only, never on the Bot's local socket, where every peer would share one address.
 
-**Authentication.** A malformed id, an unknown id, a malformed secret and a wrong secret are one
-answer: `401 {"code":"E_UNAUTHENTICATED","message":"unknown webhook or wrong secret"}`. Each does the
+**Authentication.** A secret has one spelling: strict unpadded base64url (the unused low bits of the
+last character are 0), and a path that carried any percent escape is refused. A malformed id, an
+unknown id, a malformed or otherwise-spelled secret and a wrong secret are one answer: `401 {"code":"E_UNAUTHENTICATED","message":"unknown webhook or wrong secret"}`. Each does the
 same work, one store lookup, one SHA-256 of the presented secret and one constant-time compare (with
 a per-process random hash when there is no stored one), so none is told apart by timing either.
 
 **Delivery.** After the checks the instance confirms the channel is still a Bot channel and the
 community's Bot installation is ready, then sends gateway op 66 `bot_webhook` `[delivery_id,
-webhook_id, community_id, channel_id, display_name, avatar_url|null, text, allow_everyone]` to the
+webhook_id, community_id, channel_id, display_name, avatar_id|null, text, allow_everyone]` to the
 Bot runtime's live connection (`02` § Bot runtime) and waits at most 2 s for its op 67
 `bot_webhook_ack`. `display_name` is the cleaned `username`, else the webhook's `name`. A Bot that is
 offline, parked, resuming or streaming its snapshot, an installation that is not ready, an ack
-timeout and an ack whose status is not 0 are all `503 E_BOT_OFFLINE` with `Retry-After: 5`. Delivery
+timeout, an ack whose status is not 0, and a Bot device that already has 32 deliveries waiting are all
+`503 E_BOT_OFFLINE` with `Retry-After: 5`. Delivery
 is at least once from the sender's side: a POST answered `503` after the Bot posted (its ack was lost)
 and retried by the sender posts twice; a `503` before the frame was sent posts nothing.
 
+**Avatars.** No client and no Bot ever sees or loads the sender's `avatar_url`: a viewer's address
+would reach whoever runs the webhook. The instance fetches it instead, and only for a POST that
+authenticated. The fetch is hardened against server-side request forgery:
+
+- the URL is https, port 443, with no credentials, at most 2048 bytes;
+- the instance resolves the host itself and refuses it unless every answer is a public unicast address
+  (not loopback, private, link-local, CGNAT `100.64.0.0/10`, ULA `fc00::/7`, multicast, unspecified,
+  a documentation, benchmarking or reserved range, an IPv4-mapped, IPv4-compatible, 6to4 or NAT64
+  form of any of those, or one of the instance's own addresses), and dials the vetted address
+  directly, so a DNS rebind cannot swap it;
+- at most 2 redirects, each checked and vetted again; no proxy; TLS verified; no cookies, credentials
+  or instance identifiers; `User-Agent: dilla-webhook-avatar`; 3 s in all;
+- at most 512 KiB of body; the type is sniffed from the bytes (PNG, JPEG or GIF; the header is
+  ignored, and WebP is refused until a decoder is vetted); at most 512×512, checked before decoding;
+  decoded and re-encoded as PNG, so the instance never serves the sender's bytes.
+
+The result is cached in memory, content-addressed by the SHA-256 of the PNG (the `avatar_id`), scoped
+to the webhook's community, for 24 h, at most 4 MiB per community and 128 MiB in all (oldest first). A
+failed fetch is remembered for 10 minutes. Fetches are metered per webhook (one per 30 s after a burst
+of 2) and for the instance (2 a second, burst 10). A POST waits at most 750 ms for a new fetch; past
+that it is delivered without an avatar and the fetch, which goes on, serves the webhook's next post.
+A restart forgets the cache. Members read the image with `GET
+/v1/communities/{community}/bot/webhook-avatars/{avatar_id}` (an enrolled session of a member of
+`community`; HTTP, like GIF media): `200 image/png` with `X-Content-Type-Options: nosniff`,
+`Content-Security-Policy: default-src 'none'` and `Cache-Control: private, max-age=86400, immutable`;
+`404` for a non-member, another community's avatar, or one no longer cached.
+
 **What is kept.** Nothing of the body: the text, username and avatar URL are in no row, no log line
 and no gateway ring (op 66 is never ringed). The secret is in the path, and the request log records
-the route pattern (`POST /hooks/{webhook_id}/{secret}`), never the URL. The instance and the Bot never
-fetch `avatar_url`; they only pass it on.
+the route pattern (`POST /hooks/{webhook_id}/{secret}`), never the URL. An operator's reverse proxy
+logs full URLs by default and must redact `/hooks/*` in its access log, or the secrets land there.
 
 | Status | Code | When |
 |---|---|---|
 | 204 | — | the Bot posted it |
-| 400 | `E_INVALID_REQUEST` | not `application/json`, not UTF-8, not one JSON object, a field of the wrong type, no `text`, a `username` over 80 bytes, a bad `avatar_url` |
-| 401 | `E_UNAUTHENTICATED` | an unknown or malformed webhook id, or a wrong or malformed secret |
+| 400 | `E_INVALID_REQUEST` | not `application/json`, not UTF-8, not one JSON object, a field of the wrong type, no `text`, a control character in `text`, a `username` over 80 bytes, a bad `avatar_url` |
+| 401 | `E_UNAUTHENTICATED` | an unknown or malformed webhook id, a wrong, malformed or otherwise-spelled secret, or a percent-escaped path |
 | 409 | `E_NOT_BOT_CHANNEL` | the webhook's channel is not a Bot channel now |
 | 413 | `E_TOO_LARGE` | a body over 8192 bytes, or `text` over 4000 bytes |
-| 429 | `E_RATE_LIMITED` | the address or the webhook bucket is empty; `Retry-After` |
+| 429 | `E_RATE_LIMITED` | the address, network or webhook bucket is empty; `Retry-After` |
 | 503 | `E_BOT_OFFLINE` | the Bot did not take it; `Retry-After: 5` |
 
 ## Vectors

@@ -35,6 +35,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/server"
 	"github.com/dilla-chat/dilla/internal/store"
 	"github.com/dilla-chat/dilla/internal/web"
+	"github.com/dilla-chat/dilla/internal/webhookavatar"
 )
 
 type Server struct {
@@ -512,6 +513,13 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	deps.BotRelay = gw
 	// Bot v2 Task 13: an incoming webhook POST goes to the Bot's live connection (op 66) and waits for its ack.
 	deps.BotWebhooks = gw
+	// Fix round 1: a sender's avatar_url is fetched by dillad (hardened, internal/webhookavatar), re-encoded and
+	// served to members, so no viewer's address reaches the sender. The instance's own addresses are refused targets.
+	avatarSelf := webhookavatar.LocalAddrs()
+	if o.Config.Instance.PublicIP.IsValid() {
+		avatarSelf = append(avatarSelf, o.Config.Instance.PublicIP)
+	}
+	deps.WebhookAvatars = webhookavatar.New(webhookavatar.Options{Clock: o.Clock, Limiter: limiter, Self: avatarSelf})
 	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log).WithBotFeed(botFeed)
 	deps.BotRevoked = func(ctx context.Context, installation store.BotInstallationRow, remove bool) {
 		if remove {

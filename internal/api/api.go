@@ -25,6 +25,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/obs"
 	"github.com/dilla-chat/dilla/internal/server"
 	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/webhookavatar"
 )
 
 // Deps is everything the handlers need, declared once so no handler reaches for
@@ -209,6 +210,9 @@ type Deps struct {
 	BotWebhooks BotWebhookGateway
 	// WebhookAckTimeout is how long a webhook POST waits for the Bot's ack; 0 is DefaultWebhookAckTimeout.
 	WebhookAckTimeout time.Duration
+	// WebhookAvatars fetches, re-encodes and caches a webhook sender's avatar_url, and serves the result to
+	// members (fix round 1). Nil posts every webhook without an avatar.
+	WebhookAvatars *webhookavatar.Service
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket

@@ -177,6 +177,7 @@ var stayOnHTTP = []string{
 	"PUT /v1/backups/{kind}/{chunk_seq}",
 	"DELETE /v1/backups/{kind}/{chunk_seq}", // no client caller; kept with its backup-chunk family (ruling 3)
 	"GET /v1/communities/{id}/gifs/media/{gif_id}",
+	"GET /v1/communities/{community}/bot/webhook-avatars/{avatar}", // a webhook avatar's PNG bytes (Bot v2 task 13)
 }
 
 // TestHTTPOnlyListIsExactlyTheStaysOnHTTPList: every /v1 and /hooks pattern on the HTTP mux is in the fixed list above

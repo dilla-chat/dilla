@@ -163,6 +163,7 @@ export const SOCKET_ROUTES: readonly SocketRoute[] = [
 /** Routes that stay on HTTP (before a session exists, large binary bodies, unauthenticated or public). */
 export const HTTP_ONLY_ROUTES: readonly SocketRoute[] = [
   { method: 'POST', pattern: '/hooks/{webhook_id}/{secret}' }, // incoming webhooks: public, never called by the app
+  { method: 'GET', pattern: '/v1/communities/{community}/bot/webhook-avatars/{avatar}' }, // image bytes, like GIF media
   { method: 'POST', pattern: '/v1/accounts' },
   { method: 'GET', pattern: '/v1/accounts/me' },
   { method: 'GET', pattern: '/v1/auth/factors' },

@@ -6,12 +6,16 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"image"
+	"image/color"
+	"image/png"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -28,7 +32,49 @@ import (
 	"github.com/dilla-chat/dilla/internal/store"
 	"github.com/dilla-chat/dilla/internal/store/sqlite"
 	"github.com/dilla-chat/dilla/internal/store/sqlite/sqlitetest"
+	"github.com/dilla-chat/dilla/internal/webhookavatar"
 )
+
+const avatarURL = "https://cdn.example.test/a.png"
+
+// avatarFetch is the avatar fetcher of the fixture: no network. It answers avatarURL with png (already through
+// webhookavatar.Process) and anything else with an error, and counts what it was asked.
+type avatarFetch struct {
+	mu   sync.Mutex
+	png  []byte
+	urls []string
+}
+
+func (a *avatarFetch) Fetch(_ context.Context, raw string) ([]byte, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.urls = append(a.urls, raw)
+	if raw != avatarURL {
+		return nil, webhookavatar.ErrAddress
+	}
+	return a.png, nil
+}
+
+func (a *avatarFetch) asked() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.urls)
+}
+
+func testAvatarPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	img.Set(2, 2, color.RGBA{G: 180, A: 255})
+	var b bytes.Buffer
+	if err := png.Encode(&b, img); err != nil {
+		t.Fatal(err)
+	}
+	out, err := webhookavatar.Process(b.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
 
 // Bot v2 Task 13: incoming webhooks. Admins create them on the socket; anything that can send an HTTPS POST
 // posts through /hooks/{webhook_id}/{secret}; dillad hands the text to the Bot's live connection (op 66) and
@@ -106,10 +152,12 @@ func (c *webhookLookupRepo) count() int {
 
 type webhookFixture struct {
 	*catalogFixture
-	gw     *webhookGateway
-	path   string
-	logs   *lockedBuffer
-	counts *webhookLookupRepo
+	gw *webhookGateway
+	// avatars is the fake fetcher behind the real avatar cache: it answers avatarURL with avatarPNG.
+	avatars *avatarFetch
+	path    string
+	logs    *lockedBuffer
+	counts  *webhookLookupRepo
 	// public is the HTTP surface as dillad serves it: the mux behind the request log.
 	public http.Handler
 }
@@ -134,6 +182,8 @@ func newWebhookFixture(t *testing.T) *webhookFixture {
 		d.Repo = f.counts
 		d.BotWebhooks = f.gw
 		d.WebhookAckTimeout = 100 * time.Millisecond
+		f.avatars = &avatarFetch{png: testAvatarPNG(t)}
+		d.WebhookAvatars = webhookavatar.New(webhookavatar.Options{Clock: d.Clock, Limiter: d.Limiter, Fetcher: f.avatars})
 		d.Log = slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	})
 	logger := slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -280,6 +330,10 @@ func TestWebhookBadSecretAndUnknownIDLookTheSame(t *testing.T) {
 		"unknown id":       "/hooks/" + id.New().String() + "/" + secret,
 		"malformed id":     "/hooks/not-an-id/" + secret,
 		"malformed secret": "/hooks/" + wid.String() + "/%21%21",
+		// Fix round 1 M-1: a second base64url spelling of the right secret, and the right secret with one character
+		// percent-escaped, are refused like a wrong one.
+		"other spelling": "/hooks/" + wid.String() + "/" + otherSpelling(secret),
+		"escaped path":   "/hooks/" + wid.String() + "/" + "%" + strings.ToUpper(hex.EncodeToString([]byte{secret[0]})) + secret[1:],
 	}
 	var firstBody []byte
 	var firstType string
@@ -321,6 +375,14 @@ func TestWebhookBadSecretAndUnknownIDLookTheSame(t *testing.T) {
 	if a > 5*b || b > 5*a {
 		t.Fatalf("median bad secret %s vs unknown id %s: not one timing class", a, b)
 	}
+}
+
+// otherSpelling is secret with the two unused low bits of its last character flipped: the same 32 bytes to a
+// lenient decoder.
+func otherSpelling(secret string) string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	last := strings.IndexByte(alphabet, secret[len(secret)-1])
+	return secret[:len(secret)-1] + string(alphabet[last^1])
 }
 
 func TestWebhookSecretIsStoredHashed(t *testing.T) {
@@ -588,7 +650,7 @@ func TestDiscordFieldNamesAccepted(t *testing.T) {
 	_, url := f.create(t, f.text, "Terraria", 1)
 	path := hookPath(t, url)
 	wantHookStatus(t, f.postJSON(t, path,
-		`{"text":"boss down","username":"Ada\u0007 \u202eLovelace","avatar_url":"https://cdn.example.test/a.png","embeds":[{"title":"x"}],"tts":false}`),
+		`{"text":"boss down","username":"Ada\u0007 \u202eLovelace","avatar_url":"`+avatarURL+`","embeds":[{"title":"x"}],"tts":false}`),
 		http.StatusNoContent, "")
 	// Discord's own body field is content; it is read when text is absent.
 	wantHookStatus(t, f.postJSON(t, path, `{"content":"from discord","username":"Ada"}`), http.StatusNoContent, "")
@@ -600,8 +662,19 @@ func TestDiscordFieldNamesAccepted(t *testing.T) {
 	if name := payloadString(t, p[4]); name != "Ada Lovelace" {
 		t.Fatalf("display name %q, want control and format characters stripped", name)
 	}
-	if avatar := payloadString(t, p[5]); avatar != "https://cdn.example.test/a.png" {
-		t.Fatalf("avatar %q", avatar)
+	var avatarID []byte
+	if err := cborx.Unmarshal(p[5], &avatarID); err != nil || len(avatarID) != 32 {
+		t.Fatalf("avatar element %x, want the 32-byte cached avatar id", p[5])
+	}
+	if sum := sha256.Sum256(f.avatars.png); !bytes.Equal(avatarID, sum[:]) {
+		t.Fatalf("avatar id %x, want SHA-256 of the re-encoded image", avatarID)
+	}
+	for _, d := range got {
+		for _, elem := range d.payload {
+			if bytes.Contains(elem, []byte("cdn.example.test")) {
+				t.Fatal("op 66 carries the sender's avatar URL")
+			}
+		}
 	}
 	if payloadString(t, p[6]) != "boss down" || rawUint(t, p[7]) != 1 {
 		t.Fatalf("text %q allow_everyone %d", payloadString(t, p[6]), rawUint(t, p[7]))
@@ -627,6 +700,12 @@ func TestWebhookMalformedBodiesAre400(t *testing.T) {
 		"avatar http":       `{"text":"x","avatar_url":"http://example.test/a.png"}`,
 		"avatar javascript": `{"text":"x","avatar_url":"javascript:alert(1)"}`,
 		"avatar long":       `{"text":"x","avatar_url":"https://example.test/` + strings.Repeat("a", 2048) + `"}`,
+		"avatar port":       `{"text":"x","avatar_url":"https://example.test:8443/a.png"}`,
+		"avatar userinfo":   `{"text":"x","avatar_url":"https://u:p@example.test/a.png"}`,
+		"text NUL":          `{"text":"a\u0000b"}`,
+		"text bell":         `{"text":"a\u0007b"}`,
+		"text DEL":          `{"text":"a\u007fb"}`,
+		"text C1":           `{"text":"a\u0085b"}`,
 		"avatar not text":   `{"text":"x","avatar_url":{"u":1}}`,
 		"trailing data":     `{"text":"x"} {"text":"y"}`,
 	} {
@@ -712,5 +791,89 @@ func TestWebhookAdminRoutes(t *testing.T) {
 	}
 	if rec := doBotCBOR(f.h, http.MethodDelete, one, nil, "Bearer "+f.adminTok); rec.Code != http.StatusNotFound {
 		t.Fatalf("delete again = %d, want 404", rec.Code)
+	}
+}
+
+// Fix round 1 M-2: tab, line feed and carriage return are the text's only control characters.
+func TestWebhookTextKeepsTabsAndLineBreaks(t *testing.T) {
+	f := newWebhookFixture(t)
+	_, url := f.create(t, f.text, "Terraria", 0)
+	wantHookStatus(t, f.postJSON(t, hookPath(t, url), `{"text":"a\tb\r\nc"}`), http.StatusNoContent, "")
+	if got := payloadString(t, f.gw.deliveries()[0].payload[6]); got != "a\tb\r\nc" {
+		t.Fatalf("text %q", got)
+	}
+}
+
+// Fix round 1 (Jonas, 2026-11-07): the sender's avatar is fetched by dillad, cached, and served from the instance to
+// members of the webhook's community only.
+func TestWebhookAvatarIsCachedAndServedOnlyToMembers(t *testing.T) {
+	f := newWebhookFixture(t)
+	_, url := f.create(t, f.text, "Terraria", 0)
+	for range 2 {
+		wantHookStatus(t, f.postJSON(t, hookPath(t, url), `{"text":"x","avatar_url":"`+avatarURL+`"}`), http.StatusNoContent, "")
+	}
+	if asked := f.avatars.asked(); len(asked) != 1 {
+		t.Fatalf("the avatar was fetched %d times for two posts, want once", len(asked))
+	}
+	sum := sha256.Sum256(f.avatars.png)
+	path := "/v1/communities/" + f.community.String() + "/bot/webhook-avatars/" + hex.EncodeToString(sum[:])
+	rec := getAuth(f.h, path, f.memberTok)
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), f.avatars.png) {
+		t.Fatalf("member GET avatar = %d (%d bytes)", rec.Code, rec.Body.Len())
+	}
+	h := rec.Header()
+	if h.Get("Content-Type") != "image/png" || h.Get("X-Content-Type-Options") != "nosniff" || !strings.Contains(h.Get("Cache-Control"), "private") {
+		t.Fatalf("avatar headers %v", h)
+	}
+	_, _, _, strangerTok := seedKeyedSession(t, f.deps)
+	if rec := getAuth(f.h, path, strangerTok); rec.Code != http.StatusNotFound {
+		t.Fatalf("non-member GET avatar = %d, want 404", rec.Code)
+	}
+	if rec := getAuth(f.h, path, ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous GET avatar = %d, want 401", rec.Code)
+	}
+	other := sha256.Sum256([]byte("nothing"))
+	if rec := getAuth(f.h, "/v1/communities/"+f.community.String()+"/bot/webhook-avatars/"+hex.EncodeToString(other[:]), f.memberTok); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown avatar = %d, want 404", rec.Code)
+	}
+	// A URL that fails is posted without an avatar, and not fetched again on the next post.
+	for range 2 {
+		wantHookStatus(t, f.postJSON(t, hookPath(t, url), `{"text":"x","avatar_url":"https://internal.test/a.png"}`), http.StatusNoContent, "")
+	}
+	if n := len(f.avatars.asked()); n != 2 {
+		t.Fatalf("%d fetches, want 2 (the failing URL once)", n)
+	}
+	d := f.gw.deliveries()
+	if last := d[len(d)-1].payload[5]; !bytes.Equal(last, []byte{0xf6}) {
+		t.Fatalf("a failed avatar posted %x, want null", last)
+	}
+}
+
+// Nothing is fetched for a POST that did not authenticate.
+func TestWebhookWrongSecretFetchesNoAvatar(t *testing.T) {
+	f := newWebhookFixture(t)
+	wid, _ := f.create(t, f.text, "Terraria", 0)
+	wrong := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
+	wantHookStatus(t, f.postJSON(t, "/hooks/"+wid.String()+"/"+wrong, `{"text":"x","avatar_url":"`+avatarURL+`"}`), http.StatusUnauthorized, "")
+	wantHookStatus(t, f.postJSON(t, "/hooks/"+id.New().String()+"/"+wrong, `{"text":"x","avatar_url":"`+avatarURL+`"}`), http.StatusUnauthorized, "")
+	if asked := f.avatars.asked(); len(asked) != 0 {
+		t.Fatalf("an unauthenticated POST fetched %v", asked)
+	}
+}
+
+// Fix round 1 M-3: one network meets one bucket however many /64s it spreads attempts over.
+func TestWebhookPerNetworkLimit(t *testing.T) {
+	f := newWebhookFixture(t)
+	burst := server.WebhookPrefixClass.Burst
+	for i := range burst {
+		addr := "[2001:db8:7:" + strconv.FormatInt(int64(i), 16) + "::1]:1"
+		if rec := f.post(t, "/hooks/"+id.New().String()+"/x", "application/json", []byte(`{"text":"x"}`), addr); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d = %d, want 401", i, rec.Code)
+		}
+	}
+	rec := f.post(t, "/hooks/"+id.New().String()+"/x", "application/json", []byte(`{"text":"x"}`), "[2001:db8:7:ffff::1]:1")
+	wantHookStatus(t, rec, http.StatusTooManyRequests, "E_RATE_LIMITED")
+	if rec := f.post(t, "/hooks/"+id.New().String()+"/x", "application/json", []byte(`{"text":"x"}`), "[2001:db8:8::1]:1"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("another /48 = %d, want 401", rec.Code)
 	}
 }

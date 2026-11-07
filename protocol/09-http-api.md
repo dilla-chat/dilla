@@ -58,7 +58,9 @@ authority, join-role-grants, member episode, events and event ack, and the webho
 pre-socket surface: blob routes, GIF media bytes (`GET …/gifs/media/{gif_id}`) and the backup chunks (a body
 above a frame), the invite preview `GET /i/{code}`, and the invite landing
 (unauthenticated, metered by client address), incoming webhooks `POST /hooks/{webhook_id}/{secret}`
-(unauthenticated JSON, metered by client address and by webhook; `10` § Webhooks), the instance document and limits, and the routes a client calls
+(unauthenticated JSON, metered by client address, network and webhook; `10` § Webhooks) and the
+webhook avatars the instance fetched (`GET /v1/communities/{community}/bot/webhook-avatars/{avatar_id}`,
+image bytes like GIF media), the instance document and limits, and the routes a client calls
 before its socket exists: sign-up and sign-in, the session ceremonies and `POST /v1/sessions/negotiate`,
 `DELETE /v1/devices/{device_id}/sessions`, the device lists, `GET` and `POST /v1/keypackages`,
 backups, `GET /v1/accounts/me`, the second-factor setup an owed account uses, and `POST /v1/gateway/ticket`.
@@ -260,6 +262,7 @@ a second factor.
 |---|---|---|---|
 | `GET /v1/communities/{community}/bot/command-status` | E (human, current community member, wire v3) | — | `null` when no active installation; otherwise `[1,installation_id,bot_user_id|null,state,revision]`; no-store; omits configuration, capabilities and credentials |
 | `GET /v1/communities/{community}/bot` | E (human, manage_community) | — | installation or 404 |
+| `GET /v1/communities/{community}/bot/webhook-avatars/{avatar_id}` | E (community member), HTTP | — | `200 image/png`, a webhook avatar the instance fetched and re-encoded (`10` § Webhooks); `nosniff`, `Cache-Control: private`; 404 for a non-member or an avatar not cached |
 | `PATCH /v1/communities/{community}/bot/profile` | E (human, manage_community, wire v3) | `[display_name]` | `[normalized_display_name]`; changes only the installed bot account's display name and not its handle |
 | `PUT /v1/communities/{community}/bot` | E (human, manage_community and capability approval) | `[request_id,expected_revision\|null,capabilities,step_up]` | installation; 201 new, 200 existing. Without `v=2` only bits 0–7 may be sent and Polls/Reminders (bits 8, 9) keep their value, both on for a new installation (10-community-bot.md) |
 | `POST /v1/communities/{community}/bot/disable` | E (human, manage_community) | `[request_id,expected_revision]` | installation |
@@ -1863,8 +1866,10 @@ committer-election watchdog removes a device.
 
 The public webhook route `POST /hooks/{webhook_id}/{secret}` has two buckets of its own (`10` §
 Webhooks): `webhook_address`, keyed by the client address and spent by every attempt (2 per second,
-burst 20), and `webhook`, keyed by the webhook and spent once its secret matched (30 a minute, burst
-5). Its body cap is 8192 bytes, read before anything is parsed.
+burst 20), `webhook_prefix`, keyed by the network (IPv4 /24, IPv6 /48; 20 per second, burst 100), and
+`webhook`, keyed by the webhook and spent once its secret matched (30 a minute, burst 5). Avatar
+fetches have `webhook_avatar` (per webhook, one per 30 s, burst 2) and `webhook_avatar_all` (the
+instance, 2 per second, burst 10). Its body cap is 8192 bytes, read before anything is parsed.
 
 Body caps: `max_ciphertext_bytes + 4096` on `POST /v1/groups/{id}/message`; `max_ciphertext_bytes` (default 196608) on
 `POST /v1/channels/{id}/messages`, `PATCH /v1/channels/{id}/messages/{seq}` and `POST /v1/reports`

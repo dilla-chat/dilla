@@ -599,7 +599,7 @@ instance.
 |---|---|---|---|
 | 64 | `bot_command` | S→C, Bot runtime connection only, `n ≠ 0` | `[request_id(bstr 16), community_id(bstr 16), user_id(bstr 16), device_id(bstr 16), sealed(bstr)]` |
 | 65 | `bot_event` | S→C, Bot runtime connection only, `n ≠ 0` live, `n = 0` inside a cold-start snapshot | `[kind(uint), payload(array)]` |
-| 66 | `bot_webhook` | S→C, the Bot runtime's live connection only, always `n = 0` | `[delivery_id(bstr 16), webhook_id(bstr 16), community_id(bstr 16), channel_id(bstr 16), display_name(tstr), avatar_url(tstr)\|null, text(tstr), allow_everyone(uint 0\|1)]` |
+| 66 | `bot_webhook` | S→C, the Bot runtime's live connection only, always `n = 0` | `[delivery_id(bstr 16), webhook_id(bstr 16), community_id(bstr 16), channel_id(bstr 16), display_name(tstr), avatar_id(bstr 32)\|null, text(tstr), allow_everyone(uint 0\|1)]` |
 | 67 | `bot_webhook_ack` | C→S, from the Bot runtime connection the `bot_webhook` went to, `n = 0` | `[delivery_id(bstr 16), status(uint)]` |
 
 Both reach only the Bot runtime's own connection (a session bound to the community's installation, on
@@ -647,8 +647,11 @@ ring and a resume can never replay it into a second post. The POST waits (2 s at
 `bot_webhook_ack` whose `delivery_id` matches, from the connection the frame went to: `status` 0 means
 the Bot posted it, any other value that it did not. An ack from any other connection, for a
 `delivery_id` that is not waiting, or a second ack for one, is ignored; a human connection's op 67 is
-ignored too. The waiting deliveries are an in-memory table of at most 1024 entries, each dropped when
-its POST answers. An op 67 whose payload is not a 16-byte `delivery_id` and a uint `status`, or whose
+ignored too. The waiting deliveries are an in-memory table of at most 1024 entries, and at most 32 for
+one Bot device, each dropped when its POST answers; past either cap, or when the Bot connection's writer
+queue would pass half its frames or bytes, nothing is sent and the POST is answered `503`. `avatar_id`
+names the sender's avatar as the instance fetched and re-encoded it (`10` § Webhooks), never the
+sender's URL. An op 67 whose payload is not a 16-byte `delivery_id` and a uint `status`, or whose
 `n` is not 0, is `E_FRAME_SHAPE`. Delivery is at least once from the sender's side: an ack lost after
 the Bot posted makes the POST a `503`, and a sender that retries posts the text again.
 

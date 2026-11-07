@@ -27,6 +27,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/server"
 	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/webhookavatar"
 )
 
 // Bot v2 Task 13: incoming webhooks (spec G5). An admin creates a webhook for one Bot channel on the socket and is
@@ -69,6 +70,9 @@ const (
 	webhookSecretBytes = 32
 	// webhookAvatarBlobBytes is an avatar blob id's length: a content digest, never dereferenced by dillad.
 	webhookAvatarBlobBytes = 32
+	// webhookAvatarWait is the most a POST waits for a new avatar fetch before it delivers without one; the
+	// fetch goes on (at most webhookavatar.FetchTimeout) and its image serves the webhook's next post.
+	webhookAvatarWait = 750 * time.Millisecond
 	// DefaultWebhookAckTimeout is how long a POST waits for the Bot's ack before it answers 503.
 	DefaultWebhookAckTimeout = 2 * time.Second
 	// webhookRetryAfter is the Retry-After of every 503.
@@ -94,6 +98,8 @@ func registerBotWebhooks(m *server.Mux, d Deps) {
 	m.SocketAuthed("DELETE /v1/communities/{community}/bot/webhooks/{webhook}", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.DeleteBotWebhook))
 	// Unauthenticated and public, so it stays on HTTP; it meters itself (PostWebhook).
 	m.Handle("POST /hooks/{webhook_id}/{secret}", http.HandlerFunc(d.PostWebhook))
+	// A webhook avatar dillad fetched and re-encoded: binary, so it stays on HTTP like GIF media; members only.
+	m.Handle("GET /v1/communities/{community}/bot/webhook-avatars/{avatar}", d.enrolled(dsMeter(d.Limiter, dsClassRead, d.GetWebhookAvatar)))
 }
 
 // newWebhookSecret is 32 random bytes and their SHA-256, the only form stored.
@@ -460,7 +466,7 @@ func (d Deps) webhookByCredential(ctx context.Context, rawID, rawSecret string) 
 		return store.BotWebhookRow{}, false, err
 	}
 	presented := make([]byte, webhookSecretBytes)
-	n, decErr := base64.RawURLEncoding.Decode(presented, []byte(rawSecret[:min(len(rawSecret), base64.RawURLEncoding.EncodedLen(webhookSecretBytes))]))
+	n, decErr := base64.RawURLEncoding.Strict().Decode(presented, []byte(rawSecret[:min(len(rawSecret), base64.RawURLEncoding.EncodedLen(webhookSecretBytes))]))
 	wellFormed := decErr == nil && n == webhookSecretBytes && len(rawSecret) == base64.RawURLEncoding.EncodedLen(webhookSecretBytes)
 	sum := sha256.Sum256(presented)
 	want := webhookDummyHash
@@ -513,6 +519,11 @@ func decodeWebhookPost(body []byte) (text string, username string, avatar *strin
 		h := hookTooLarge
 		return "", "", nil, &h
 	}
+	for _, r := range *t {
+		if unicode.IsControl(r) && r != '\t' && r != '\n' && r != '\r' {
+			return invalid("text holds a control character")
+		}
+	}
 	if req.Username != nil {
 		if len(*req.Username) > maxWebhookUsername {
 			return invalid("username is over 80 bytes")
@@ -522,7 +533,7 @@ func decodeWebhookPost(body []byte) (text string, username string, avatar *strin
 	if req.AvatarURL != nil && *req.AvatarURL != "" {
 		a := *req.AvatarURL
 		if len(a) > maxWebhookAvatarURL || !validAvatarURL(a) {
-			return invalid("avatar_url must be an https:// URL of at most 2048 bytes")
+			return invalid("avatar_url must be an https:// URL on port 443 of at most 2048 bytes")
 		}
 		avatar = &a
 	}
@@ -534,7 +545,7 @@ func decodeWebhookPost(body []byte) (text string, username string, avatar *strin
 // "" means the webhook's own name is shown.
 func cleanWebhookUsername(s string) string {
 	s = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == ' ' || r == ' ' || r == utf8.RuneError {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029' || r == utf8.RuneError {
 			return -1
 		}
 		return r
@@ -542,15 +553,11 @@ func cleanWebhookUsername(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// validAvatarURL: an absolute https URL with a host, no credentials and no control or space characters.
+// validAvatarURL is the avatar fetcher's URL rule: https, port 443 only, a host, no credentials, no control or
+// space characters (webhookavatar.CheckURL).
 func validAvatarURL(s string) bool {
-	for _, r := range s {
-		if r <= ' ' || r == 0x7f {
-			return false
-		}
-	}
-	u, err := url.Parse(s)
-	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil && u.Opaque == ""
+	_, err := webhookavatar.CheckURL(s)
+	return err == nil
 }
 
 func webhookContentTypeOK(r *http.Request) bool {
@@ -567,8 +574,12 @@ func (d Deps) PostWebhook(w http.ResponseWriter, r *http.Request) {
 		writeHookError(w, hookInternal)
 		return
 	}
-	addr := server.RateKey(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
-	if ok, wait := d.Limiter.Allow(server.WebhookAddressClass, addr); !ok {
+	client := server.RealIP(r, d.Config.Server.TrustedProxyCIDRs)
+	if ok, wait := d.Limiter.Allow(server.WebhookAddressClass, server.RateKey(client)); !ok {
+		writeHookError(w, hookRateLimited(wait))
+		return
+	}
+	if ok, wait := d.Limiter.Allow(server.WebhookPrefixClass, server.RatePrefixKey(client)); !ok {
 		writeHookError(w, hookRateLimited(wait))
 		return
 	}
@@ -589,7 +600,7 @@ func (d Deps) PostWebhook(w http.ResponseWriter, r *http.Request) {
 		writeHookError(w, hookInternal)
 		return
 	}
-	if !ok {
+	if !ok || r.URL.RawPath != "" {
 		writeHookError(w, hookUnauthenticated)
 		return
 	}
@@ -630,8 +641,12 @@ func (d Deps) PostWebhook(w http.ResponseWriter, r *http.Request) {
 	if display == "" {
 		display = hook.Name
 	}
+	var avatarID []byte
+	if avatar != nil && d.WebhookAvatars != nil {
+		avatarID = d.WebhookAvatars.Resolve(ctx, hook.CommunityID, hook.WebhookID, *avatar, webhookAvatarWait)
+	}
 	delivery := id.New()
-	p, err := gateway.BotWebhookPayload(delivery, hook.WebhookID, hook.CommunityID, hook.ChannelID, display, avatar, text, hook.AllowEveryone)
+	p, err := gateway.BotWebhookPayload(delivery, hook.WebhookID, hook.CommunityID, hook.ChannelID, display, avatarID, text, hook.AllowEveryone)
 	if err != nil {
 		writeHookError(w, hookInternal)
 		return
@@ -649,4 +664,46 @@ func (d Deps) PostWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// GetWebhookAvatar serves a webhook avatar the instance fetched and re-encoded (fix round 1), to a member of the
+// community whose webhook named it: image/png, privately cacheable, nosniff. Anything else is 404, so a non-member
+// learns nothing about which avatars exist.
+func (d Deps) GetWebhookAvatar(w http.ResponseWriter, r *http.Request) {
+	s, ok := session(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	cid, err := server.PathID(r, "community")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	avatar, err := server.PathDigest(r, "avatar")
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if _, err := d.Repo.GetMember(r.Context(), cid, s.UserID); err != nil {
+		server.WriteError(w, notFound(err))
+		return
+	}
+	if d.WebhookAvatars == nil {
+		server.WriteError(w, server.Errorf(server.CodeNotFound, "no such avatar"))
+		return
+	}
+	img, ok := d.WebhookAvatars.Get(cid, avatar)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeNotFound, "no such avatar"))
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "image/png")
+	h.Set("Content-Length", strconv.Itoa(len(img)))
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Content-Security-Policy", "default-src 'none'")
+	h.Set("Cache-Control", "private, max-age=86400, immutable")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(img) //nolint:gosec // G705: a PNG the instance re-encoded itself, served as image/png with nosniff and a none CSP
 }
