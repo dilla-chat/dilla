@@ -27,10 +27,12 @@ type ringEntry struct {
 
 // The op 62 reply budget of one ring (Bot v2 task 10): Bot replies are counted apart from every
 // other frame, so held or unacknowledged replies never push a message frame out of the ring. A
-// reply that does not fit is not ringed (ring.addOp reports false).
+// reply that does not fit is not ringed (ring.addOp reports false). The byte bound counts whole
+// encoded frames, so it is the per-request sealed cap (api.BotReplyBytesPerRequest, 256 KiB) plus
+// 1 KiB of framing per frame: one request's full allowance always fits.
 const (
 	replyRingFrames = 16
-	replyRingBytes  = 256 << 10
+	replyRingBytes  = 256<<10 + replyRingFrames<<10
 )
 
 // ring is a per-connection replay buffer, bounded on count, bytes and age. It is an optimisation:

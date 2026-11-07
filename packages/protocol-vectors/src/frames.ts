@@ -99,7 +99,8 @@ export function frameVectors() {
     frame('bot_catalog', 61, 0, null, [COMMUNITY, 3, [['remind', 'Set a reminder', 20, [['when', 4, 1], ['text', 0, 1]], 0, 0, 0]], null]),
     // op 62 bot_reply (S->C, Bot v2): [request_id, seq, sealed, final(uint 0|1)], to the one device
     // that sent the command. The ephemeral range's one replayable frame: n != 0, held two minutes for
-    // a suspended connection.
+    // a suspended connection; a reply over the connection's reply ring budget is sent unringed with
+    // n = 0, so a decoder accepts both for op 62.
     frame('bot_reply', 62, 5, null, [REQUEST, 1, new Uint8Array([0x83, 0x01, 0x41, 0x00, 0x41, 0x00]), 1]),
     // op 63 bot_state_changed (S->C, Bot v2): [scope_kind(0 user, 1 channel, 2 call), scope_id,
     // revision]. Content-free, n = 0: a client that missed it compares revisions at connect sync.

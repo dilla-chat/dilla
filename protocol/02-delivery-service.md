@@ -361,11 +361,12 @@ dense on every device of its audience; `group_id` is null.
 | 59 | `request` | C→S, wire 6 | `[id(uint), method(tstr), route(tstr), body(bstr), idem(bstr 1..64 \| null)]` |
 | 60 | `response` | S→C, wire 6 | `[id(uint), status(uint 100..599), body(bstr)]` |
 | 61 | `bot_catalog` | S→C, wire 6 | `[community_id(bstr 16), revision(uint), filtered_catalog(array), publication(bstr \| null)]` |
-| 62 | `bot_reply` | S→C, wire 6, `n ≠ 0` | `[request_id(bstr 16), seq(uint), sealed(bstr), final(uint 0\|1)]` |
+| 62 | `bot_reply` | S→C, wire 6, `n ≠ 0` when ringed, `n = 0` over the reply budget | `[request_id(bstr 16), seq(uint), sealed(bstr), final(uint 0\|1)]` |
 | 63 | `bot_state_changed` | S→C, wire 6 | `[scope_kind(uint 0..2), scope_id(bstr 16), revision(uint)]` |
 
 `bot_reply` (Bot v2) is the one exception to this range's heading: it is replayable and carries
-`n ≠ 0`. It is one sealed answer of the community Bot to a command, delivered to the one device
+`n ≠ 0`, except a reply over the reply budget below, which carries `n = 0`; a client accepts
+both for op 62. It is one sealed answer of the community Bot to a command, delivered to the one device
 that sent the command (`10` § Sealed command relay, replies and state hints); `final` is 1 on the
 last answer. A connection of that device that is suspended in the resume window when the answer
 arrives holds it in its replay ring, and it is replayed on resume like any replayable frame. Its
@@ -373,7 +374,8 @@ ring entry expires two minutes after it was added (the spec's offline reply drop
 own TTL when that is sooner; eviction stays oldest-first, so with the instance's ring TTL (also two
 minutes) the two bounds coincide and the replay range stays contiguous. No other frame reaches a
 suspended connection, and nothing is held for a connection closed with a non-resumable code.
-Replies have their own ring budget, 16 frames and 256 KiB per connection, apart from the ring's
+Replies have their own ring budget, 16 frames and 272 KiB of encoded frames per connection (one
+request's 256 KiB sealed allowance plus framing), apart from the ring's
 own bounds, so replies never push another frame out of the ring. A reply that does not fit that
 budget is sent to a live connection unringed, with `n = 0` (so the replay sequence keeps no hole),
 and is not held for a suspended one. The answer is opaque to the instance.
