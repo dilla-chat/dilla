@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"os/exec"
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
@@ -34,10 +33,7 @@ type serviceMusicProviderAuthority interface {
 }
 
 func youtubePlaybackSetup() (service.ProviderSetup, service.ProviderReason) {
-	if _, err := newYouTubeMetadataResolver(); err != nil {
-		return service.ProviderMissingRequirements, service.ProviderReasonDependenciesMissing
-	}
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
+	if _, err := youtubeSandboxConfig(); err != nil {
 		return service.ProviderMissingRequirements, service.ProviderReasonDependenciesMissing
 	}
 	return service.ProviderConfigured, service.ProviderReasonNone

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"os/exec"
 	"slices"
@@ -225,7 +226,7 @@ func newInstallationMusicQueueStarter(instance, installation, community, channel
 			if youtubeSource != nil {
 				return youtubeSource
 			}
-			return youtube.PCMStarter{YTDLP: "yt-dlp", FFmpeg: "ffmpeg", Node: "node", Logger: slog.Default().With("installation_id", installation.String())}
+			return youtubeStreamsFor(community, installation)
 		}(),
 		Encoder: session.RuntimeEncoder{Config: session.EncoderConfig{
 			Capacity: 50, Options: encode.Options{FFmpegPath: "ffmpeg"},
@@ -279,32 +280,75 @@ func newRuntimeMusicInteractions(installation, community id.ID, capabilities uin
 		OnImmediateControl:  registry.applyImmediateControl,
 		OnPersistedSnapshot: musicSnapshotCommitCallback(registry, logger),
 	}
-	if resolver, err := newYouTubeMetadataResolver(); err == nil {
-		handlers.Resolver = service.LoggingMusicTrackResolver{Resolver: resolver, Logger: logger, InstallationID: installation}
+	if view, err := youtubeViewFor(community); err == nil {
+		handlers.Resolver = service.LoggingMusicTrackResolver{Resolver: view.Tracks, Logger: logger, InstallationID: installation}
 	} else if logger != nil {
 		logger.Info("YouTube music search and enqueue are unavailable", "installation_id", installation.String(), "error", err.Error())
 	}
 	return handlers, nil
 }
 
-func newYouTubeMetadataResolver() (youtube.MetadataResolver, error) {
-	ytdlp, err := exec.LookPath("yt-dlp")
-	if err != nil {
-		return youtube.MetadataResolver{}, err
+// youtubeSandboxConfig finds the sandboxed lookup's tools. A missing one makes YouTube music unavailable.
+func youtubeSandboxConfig() (youtube.SandboxConfig, error) {
+	var cfg youtube.SandboxConfig
+	for _, tool := range []struct {
+		name string
+		dst  *string
+	}{{"yt-dlp", &cfg.YTDLP}, {"node", &cfg.Node}, {"bwrap", &cfg.Bubblewrap}, {"python3", &cfg.Python}, {"ffmpeg", &cfg.FFmpeg}} {
+		path, err := exec.LookPath(tool.name)
+		if err != nil {
+			return youtube.SandboxConfig{}, err
+		}
+		*tool.dst = path
 	}
-	node, err := exec.LookPath("node")
+	return cfg, nil
+}
+
+// The warm YouTube backend is one per Bot process (Task 18): one sandboxed worker and one cache, partitioned by
+// community through Backend.For, so no community reaches another's cache or pre-buffered track.
+var (
+	youtubeBackendOnce sync.Once
+	youtubeBackend     *youtube.Backend
+	youtubeBackendErr  error
+)
+
+func sharedYouTubeBackend() (*youtube.Backend, error) {
+	youtubeBackendOnce.Do(func() {
+		cfg, err := youtubeSandboxConfig()
+		if err != nil {
+			youtubeBackendErr = err
+			return
+		}
+		cfg.Logger = slog.Default().With("component", "youtube")
+		youtubeBackend, youtubeBackendErr = youtube.NewBackend(cfg, 0)
+	})
+	return youtubeBackend, youtubeBackendErr
+}
+
+// youtubeViewFor is the community's own view of the shared backend.
+func youtubeViewFor(community id.ID) (*youtube.OwnerBackend, error) {
+	backend, err := sharedYouTubeBackend()
 	if err != nil {
-		return youtube.MetadataResolver{}, err
+		return nil, err
 	}
-	bubblewrap, err := exec.LookPath("bwrap")
+	return backend.For(community.String())
+}
+
+// youtubeStreamsFor is the community's stream source; with no backend, a source whose every start fails, so the
+// queue reports music unavailable instead of the runtime failing to build.
+func youtubeStreamsFor(community, installation id.ID) youtube.PCMSourceStarter {
+	view, err := youtubeViewFor(community)
 	if err != nil {
-		return youtube.MetadataResolver{}, err
+		slog.Default().Info("YouTube playback is unavailable", "installation_id", installation.String(), "error", err.Error())
+		return unavailableYouTubeSource{err: err}
 	}
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		return youtube.MetadataResolver{}, err
-	}
-	return youtube.NewMetadataResolver(ytdlp, node, bubblewrap, python)
+	return view.Streams
+}
+
+type unavailableYouTubeSource struct{ err error }
+
+func (u unavailableYouTubeSource) Start(context.Context, string) (io.ReadCloser, error) {
+	return nil, u.err
 }
 
 func (s runtimeMusicAuthorityStore) GetActiveBotInstallationByCommunity(ctx context.Context, community id.ID) (store.BotInstallationRow, error) {

@@ -577,12 +577,16 @@ func TestInstallationYouTubeStarterUsesScopedCallAndNativeMediaDependencies(t *t
 	if !ok {
 		t.Fatalf("YouTube PCM = %T", options.PCM)
 	}
-	source, ok := pcm.Source.(youtube.PCMStarter)
-	if !ok {
-		t.Fatalf("YouTube source = %T, want sandboxed PCMStarter", pcm.Source)
-	}
-	if source.Node == "" {
-		t.Fatal("production YouTube PCM starter must enable its qualified Node JS runtime")
+	// Task 18 wiring: the source is this community's view of the one warm backend, or, on a host without the
+	// sandbox tools, a source that refuses every start. Never the per-request PCMStarter.
+	switch source := pcm.Source.(type) {
+	case *youtube.OwnedStreams:
+	case unavailableYouTubeSource:
+		if source.err == nil {
+			t.Fatal("an unavailable YouTube source must carry its reason")
+		}
+	default:
+		t.Fatalf("YouTube source = %T, want the community's warm-backend view", pcm.Source)
 	}
 	encoder, ok := options.Encoder.(session.RuntimeEncoder)
 	if !ok || encoder.Config.Options.FFmpegPath != "ffmpeg" {

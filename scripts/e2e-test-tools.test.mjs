@@ -129,7 +129,7 @@ test('local Bot preparation still runs both real build commands when no bundle i
   const host = await loadHost(t, undefined, { GO: recorder, CARGO: recorder });
   await host.prepareBotRuntimeBinaries();
   assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse), [
-    ['-C', repoRoot, 'build', '-o', join(repoRoot, 'target/dillabot'), './cmd/dillabot'],
+    ['-C', repoRoot, 'build', '-tags', 'dilla_testhost', '-o', join(repoRoot, 'target/dillabot'), './cmd/dillabot'],
     ['build', '-p', 'dilla-bot-core', '--release', '--locked'],
   ]);
 });
@@ -215,7 +215,7 @@ fs.mkdirSync(path.dirname(output), { recursive: true }); fs.writeFileSync(output
   assert.deepEqual(calls, [
     ['-C', repoRoot, 'build', '-o', join(output, 'dilla-testhost'), './cmd/dilla-testhost'],
     ['build', '-p', 'dilla-testkit', '--release', '--locked'],
-    ['-C', repoRoot, 'build', '-o', join(output, 'dillabot'), './cmd/dillabot'],
+    ['-C', repoRoot, 'build', '-tags', 'dilla_testhost', '-o', join(output, 'dillabot'), './cmd/dillabot'],
     ['build', '-p', 'dilla-bot-core', '--release', '--locked'],
   ]);
   buildTestTools(output, options);

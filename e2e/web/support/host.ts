@@ -278,7 +278,7 @@ export async function prepareBotRuntimeBinaries(): Promise<void> {
     if (prebuiltTools?.bot === undefined || prebuiltTools.botHelper === undefined) throw new Error('Prebuilt Bot runtime tools are only available on Linux');
     return;
   }
-  await runInherited(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-o', DILLABOT_BIN, './cmd/dillabot']);
+  await runInherited(process.env.GO ?? 'go', ['-C', REPO_ROOT, 'build', '-tags', 'dilla_testhost', '-o', DILLABOT_BIN, './cmd/dillabot']);
   await runInherited(process.env.CARGO ?? 'cargo', ['build', '-p', 'dilla-bot-core', '--release', '--locked']);
 }
 
