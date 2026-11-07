@@ -1189,8 +1189,8 @@ export class Controller {
   /** Bot v2 (task 21): op 63 hints decide when the page fetches (bot/hints.ts); a rise in `botHints[scope]` is the cue. */
   private botHints!: BotHints;
   private botHintSignals: Record<string, number> = {};
-  /** Channel (1) and call (2) scopes a page shows now, counted per scope. */
-  private readonly botScopesShown = new Map<string, number>();
+  /** Counts every hint fetch cue across scopes and accounts, so a counter never falls back below what a page already saw. */
+  private botHintSeq = 0;
   /** Community hex → when its remembered "no interaction group" answer lapses (ms). */
   private readonly noInteractionGroupUntil = new Map<string, number>();
   /** Requests waiting for a Welcome push; each is woken when a group turns active. */
@@ -1278,13 +1278,13 @@ export class Controller {
     this.botHints = new BotHints({
       fetch: (scope) => {
         const key = `${scope.kind}:${scope.id}`;
-        this.botHintSignals = { ...this.botHintSignals, [key]: (this.botHintSignals[key] ?? 0) + 1 };
+        this.botHintSignals = { ...this.botHintSignals, [key]: ++this.botHintSeq };
         this.slices.set('botHints', this.botHintSignals);
         return Promise.resolve();
       },
       now: () => deps.now(),
       setTimer: (fn, ms) => { const handle = deps.setTimeout(fn, ms); return () => { deps.clearTimeout(handle); }; },
-      visible: (scope) => (this.botScopesShown.get(`${scope.kind}:${scope.id}`) ?? 0) > 0,
+      visible: (scope) => this.botHints.shown(scope),
     });
     this.calls = new CallController({
       core: () => this.core,
@@ -2921,10 +2921,7 @@ export class Controller {
   }
 
   private watchBotScope(kind: 1 | 2, channelId: string, on: boolean): void {
-    const key = `${kind}:${channelId}`;
-    const count = (this.botScopesShown.get(key) ?? 0) + (on ? 1 : -1);
-    if (count > 0) this.botScopesShown.set(key, count);
-    else this.botScopesShown.delete(key);
+    this.botHints.watch({ kind, id: channelId }, on);
   }
 
   private incomingTypingFrame(payload: readonly unknown[]): void {
@@ -4705,7 +4702,6 @@ export class Controller {
     this.botRelay.forgetAll();
     this.botCatalog.clear();
     this.botHints.clear();
-    this.botScopesShown.clear();
     if (Object.keys(this.botHintSignals).length > 0) { this.botHintSignals = {}; this.slices.set('botHints', {}); }
     if (this.botAnswers.length > 0) { this.botAnswers = []; this.slices.set('botAnswers', []); }
     this.clearInteractionAckLeases();

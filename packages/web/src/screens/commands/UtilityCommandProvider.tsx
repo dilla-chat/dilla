@@ -289,7 +289,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
     const token = fetchToken;
     return () => { stopped = true; token.current++; stopHints(); document.removeEventListener('visibilitychange', onVisible); };
   }, [client, ownerKey, fetchInbox]);
-  const openDialog = useCallback((state: UtilityDialogInput, context: CommandExecutionContext, installationId: string, operation: 70 | 80) => new Promise<unknown>(resolve => {
+  const openDialog = useCallback((state: UtilityDialogInput, context: CommandExecutionContext) => new Promise<unknown>(resolve => {
     if (liveScope.current.client !== client || liveScope.current.ownerKey === '' || !context.isCurrent()) { resolve(null); return; }
     cancelDialog.current?.();
     const scope = { client, owner: liveScope.current.ownerKey, communityId };
@@ -302,24 +302,21 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
         && current.communityId === communityId && current.channelId === capturedBinding.channelId && current.channelId !== null
         && ((current.bits ?? 0) & PERM.sendMessages) !== 0 && context.isCurrent();
     };
-    let stopCheck: () => void = () => undefined; let capabilityProbe = 0; let settled = false;
+    let stopCheck: () => void = () => undefined; let stopCatalog: () => void = () => undefined; let settled = false;
     const finish = (value: unknown) => {
-      if (settled) return; settled = true; stopCheck();
+      if (settled) return; settled = true; stopCheck(); stopCatalog();
       if (resolveDialog.current === resolve) { resolveDialog.current = null; cancelDialog.current = null; setDialog(null); setDialogScope(null); }
       resolve(value);
     };
     const cancel = () => finish(null);
     cancelDialog.current = cancel;
-    stopCheck = recheck(() => {
-      if (!isScopeCurrent()) { cancel(); return; }
-      capabilityProbe++;
-      if (capabilityProbe % 10 === 0 && communityId !== null) void utilityFor(communityId).capabilities().then(caps => {
-        if (!isScopeCurrent() || caps.installationId !== installationId || !caps.supportedOperations.includes(operation)) cancel();
-      }).catch(cancel);
-    }, 100);
+    // Local guard only: it reads the page's own state. What the Bot offers comes from the pushed catalog, so a change of this
+    // community's catalog closes the dialog instead of a periodic capability request.
+    stopCheck = recheck(() => { if (!isScopeCurrent()) cancel(); }, 100);
+    if (communityId !== null) stopCatalog = client.subscribe(`botCatalog:${communityId}`, cancel);
     const submit = (value: unknown) => { if (!isScopeCurrent()) { cancel(); return; } finish(value); };
     setDialog({ ...state, isCurrent: isScopeCurrent, onCancel: cancel, onSubmit: submit });
-  }), [client, communityId, utilityFor]);
+  }), [client, communityId]);
   useEffect(() => {
     if (dialogScope === null || (dialogScope.client === client && dialogScope.owner === ownerKey && dialogScope.communityId === communityId)) return;
     cancelDialog.current?.();
@@ -332,7 +329,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
     try {
       const caps = await utilityFor(communityId).capabilities();
       if (!canCreateFromContext(context, communityId) || !caps.supportedOperations.includes(operation)) return null;
-      const value = await openDialog(state, context, caps.installationId, operation);
+      const value = await openDialog(state, context);
       return context.isCurrent() ? value : null;
     } catch { return null; }
   }, [communityId, openDialog, utilityFor]);

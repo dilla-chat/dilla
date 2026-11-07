@@ -32,9 +32,14 @@ it('retries an unknown installed Bot only while its result is visible, and stops
   await waitFor(() => expect(client.callsOf('getBotCommandStatus')).toHaveLength(1));
   vi.useFakeTimers(); await act(() => vi.advanceTimersByTimeAsync(90_000));
   expect(client.callsOf('getBotCommandStatus')).toHaveLength(1);
+  // Shown with a changed member list: one read. Minutes later with no change: none. A pushed catalog: one.
   rerender({ visible: true, members: [] });
-  await act(() => vi.advanceTimersByTimeAsync(30_000));
+  await act(async () => { await Promise.resolve(); });
   expect(client.callsOf('getBotCommandStatus')).toHaveLength(2);
+  await act(() => vi.advanceTimersByTimeAsync(300_000));
+  expect(client.callsOf('getBotCommandStatus')).toHaveLength(2);
+  await act(async () => { client.set('botCatalog:community', null); await Promise.resolve(); });
+  expect(client.callsOf('getBotCommandStatus')).toHaveLength(3);
   rerender({ visible: true, members: [{ userId: 'installed', kind: 1, display: 'Freja' }] });
   await act(async () => { await Promise.resolve(); });
   expect(result.current).toBe('Freja');

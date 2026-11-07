@@ -31,10 +31,13 @@ export function useResultBotName(client: CoreClient, communityId: string | null,
   const botUserId = identity?.key === key ? identity.botUserId : null;
   const known = botUserId !== null && members?.some(member => member.userId === botUserId && Boolean(member.display || member.username)) === true;
   useEffect(() => {
-    // No installation means no polling, even if an old private result is still visible.
-    if (!visible || known || botUserId === null) return;
-    const timer = window.setInterval(() => { void read(); }, 30_000);
-    return () => window.clearInterval(timer);
-  }, [visible, known, botUserId, read]);
+    // No installation means no re-read. While the Bot's name is unknown, the identity is read again when the member list
+    // changes (a member reload after op 54) or the pushed catalog does, never on a clock.
+    if (!visible || known || botUserId === null || communityId === null) return;
+    return client.subscribe(`botCatalog:${communityId}`, () => { void read(); });
+  }, [client, communityId, visible, known, botUserId, read]);
+  useEffect(() => {
+    if (visible && !known && botUserId !== null) void read();
+  }, [members]); // eslint-disable-line react-hooks/exhaustive-deps -- only a members change re-reads
   return installationBotName(members, botUserId);
 }

@@ -30,6 +30,11 @@ export class BotHints {
   private readonly seen = new Map<string, bigint>();
   private readonly lastFetch = new Map<string, number>();
   private readonly pending = new Map<string, () => void>();
+  /** Surfaces showing a channel or call scope, counted per scope. These follow the pages, not the account: a sign-out does
+   *  not reset them, so an "off" from a surface that mounted before a re-sign-in cannot hide one mounted after it. */
+  private readonly watched = new Map<string, number>();
+  /** Scopes whose hint was dropped because nothing showed them: the next watch-on fetches once. */
+  private readonly missed = new Set<string>();
 
   constructor(private readonly deps: BotHintsDeps) {}
 
@@ -56,22 +61,38 @@ export class BotHints {
     }
   }
 
+  /** A surface starts (`on`) or stops showing a channel or call scope. */
+  watch(scope: HintScope, on: boolean): void {
+    const key = keyOf(scope);
+    const count = (this.watched.get(key) ?? 0) + (on ? 1 : -1);
+    if (count > 0) this.watched.set(key, count); else this.watched.delete(key);
+    if (on && this.missed.delete(key)) this.request(scope);
+  }
+
+  /** Whether a surface shows the scope now. */
+  shown(scope: HintScope): boolean { return (this.watched.get(keyOf(scope)) ?? 0) > 0; }
+
   /** Sign-out: nothing is fetched afterwards and no revision is kept. */
   clear(): void {
     for (const cancel of this.pending.values()) cancel();
     this.pending.clear();
     this.seen.clear();
     this.lastFetch.clear();
+    this.missed.clear();
   }
 
   private request(scope: HintScope): void {
-    if (scope.kind !== 0 && !this.deps.visible(scope)) return;
     const key = keyOf(scope);
+    if (scope.kind !== 0 && !this.deps.visible(scope)) { this.missed.add(key); return; }
     if (this.pending.has(key)) return;      // the trailing fetch reads whatever is newest
     const last = this.lastFetch.get(key);
     const wait = last === undefined ? 0 : Math.max(0, last + HINT_COALESCE_MS - this.deps.now());
     if (wait === 0) { this.run(scope); return; }
-    this.pending.set(key, this.deps.setTimer(() => { this.pending.delete(key); this.run(scope); }, wait));
+    this.pending.set(key, this.deps.setTimer(() => {
+      this.pending.delete(key);
+      if (scope.kind !== 0 && !this.deps.visible(scope)) { this.missed.add(key); return; }
+      this.run(scope);
+    }, wait));
   }
 
   private run(scope: HintScope): void {
@@ -87,24 +108,43 @@ export interface HintClient {
   subscribe(name: 'botHints', listener: () => void): () => void;
 }
 
+interface Fan { listeners: Set<() => void>; stop: () => void }
+const fans = new WeakMap<object, Map<string, Fan>>();
+
 /**
  * A surface's side of the hints: `onHint` runs whenever the worker asks for a fetch of the scope (the user scope: any
- * community's), never on a timer and never for state the surface already read. A channel or call scope is registered as
- * shown for as long as the watch lasts, so its hints are fetched at all. Returns the stop function.
+ * community's), never on a timer and never for state the surface already read. All watchers of one scope on one client share
+ * a single slice subscription and a single `watchBotScope` registration, which is on while any of them is. Returns the stop.
  */
 export function watchBotHint(client: HintClient, scope: { kind: 0 } | { kind: 1 | 2; id: string }, onHint: () => void): () => void {
-  const wanted = (key: string): boolean => scope.kind === 0 ? key.startsWith('0:') : key === `${scope.kind}:${scope.id}`;
-  let seen = { ...(client.get('botHints') ?? {}) };
-  const unsubscribe = client.subscribe('botHints', () => {
-    const now = client.get('botHints') ?? {};
-    let rose = false;
-    for (const [key, count] of Object.entries(now)) if (wanted(key) && count > (seen[key] ?? 0)) rose = true;
-    seen = { ...now };
-    if (rose) onHint();
-  });
-  if (scope.kind !== 0) void client.call({ m: 'watchBotScope', kind: scope.kind, channelId: scope.id, on: true }).catch(() => undefined);
+  const key = scope.kind === 0 ? '0' : `${scope.kind}:${scope.id}`;
+  let byScope = fans.get(client);
+  if (byScope === undefined) { byScope = new Map(); fans.set(client, byScope); }
+  let fan = byScope.get(key);
+  if (fan === undefined) {
+    const listeners = new Set<() => void>();
+    const wanted = (k: string): boolean => scope.kind === 0 ? k.startsWith('0:') : k === key;
+    let seen = { ...(client.get('botHints') ?? {}) };
+    const unsubscribe = client.subscribe('botHints', () => {
+      const now = client.get('botHints') ?? {};
+      let rose = false;
+      for (const [k, count] of Object.entries(now)) if (wanted(k) && count > (seen[k] ?? 0)) rose = true;
+      seen = { ...now };
+      if (rose) for (const l of [...listeners]) l();
+    });
+    if (scope.kind !== 0) void client.call({ m: 'watchBotScope', kind: scope.kind, channelId: scope.id, on: true }).catch(() => undefined);
+    fan = { listeners, stop: () => {
+      unsubscribe();
+      if (scope.kind !== 0) void client.call({ m: 'watchBotScope', kind: scope.kind, channelId: scope.id, on: false }).catch(() => undefined);
+    } };
+    byScope.set(key, fan);
+  }
+  const held = fan;
+  held.listeners.add(onHint);
   return () => {
-    unsubscribe();
-    if (scope.kind !== 0) void client.call({ m: 'watchBotScope', kind: scope.kind, channelId: scope.id, on: false }).catch(() => undefined);
+    held.listeners.delete(onHint);
+    if (held.listeners.size > 0) return;
+    held.stop();
+    if (byScope.get(key) === held) byScope.delete(key);
   };
 }

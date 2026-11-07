@@ -105,7 +105,68 @@ describe('BotHints', () => {
   });
 });
 
+describe('BotHints visibility', () => {
+  it('a scope that becomes visible after a hint fetches once', () => {
+    const r = rig((s) => r.hints.shown(s));
+    r.hints.onHint({ kind: 1, id: CH, revision: 1n });
+    r.hints.onHint({ kind: 1, id: CH, revision: 2n });
+    expect(r.fetched).toEqual([]);
+    r.hints.watch({ kind: 1, id: CH }, true);
+    expect(r.fetched).toEqual([{ kind: 1, id: CH }]);
+    r.hints.watch({ kind: 1, id: CH }, false);
+    r.hints.watch({ kind: 1, id: CH }, true);
+    expect(r.fetched).toHaveLength(1);
+  });
+
+  it('the trailing fetch is dropped when the scope stopped being shown', () => {
+    const r = rig((s) => r.hints.shown(s));
+    r.hints.watch({ kind: 1, id: CH }, true);
+    r.hints.onHint({ kind: 1, id: CH, revision: 1n });
+    r.advance(10);
+    r.hints.onHint({ kind: 1, id: CH, revision: 2n });
+    r.hints.watch({ kind: 1, id: CH }, false);
+    r.advance(400);
+    expect(r.fetched).toHaveLength(1);
+  });
+
+  it('watch counts survive clear, so a stale off cannot hide a mounted surface', () => {
+    const r = rig();
+    const scope = { kind: 1 as const, id: CH };
+    r.hints.watch(scope, true);           // surface A, mounted before sign-out
+    r.hints.clear();                      // sign-out and re-sign-in
+    r.hints.watch(scope, true);           // surface B, mounted after
+    r.hints.watch(scope, false);          // A's late "off"
+    expect(r.hints.shown(scope)).toBe(true);
+    r.hints.watch(scope, false);
+    expect(r.hints.shown(scope)).toBe(false);
+  });
+});
+
 describe('watchBotHint', () => {
+  it('fans one registration out to every watcher of a scope', () => {
+    const slice: Record<string, number> = {};
+    const listeners = new Set<() => void>();
+    const calls: unknown[] = [];
+    const client: HintClient = {
+      call: (c) => { calls.push(c); return Promise.resolve(null); },
+      get: () => slice,
+      subscribe: (_n, l) => { listeners.add(l); return () => { listeners.delete(l); }; },
+    };
+    const a: number[] = []; const b: number[] = [];
+    const stopA = watchBotHint(client, { kind: 1, id: CH }, () => a.push(1));
+    const stopB = watchBotHint(client, { kind: 1, id: CH }, () => b.push(1));
+    expect(calls).toEqual([{ m: 'watchBotScope', kind: 1, channelId: CH, on: true }]);
+    slice[`1:${CH}`] = 1; for (const l of listeners) l();
+    expect([a.length, b.length]).toEqual([1, 1]);
+    stopA();
+    expect(calls).toHaveLength(1);
+    slice[`1:${CH}`] = 2; for (const l of listeners) l();
+    expect([a.length, b.length]).toEqual([1, 2]);
+    stopB();
+    expect(calls[1]).toEqual({ m: 'watchBotScope', kind: 1, channelId: CH, on: false });
+    expect(listeners.size).toBe(0);
+  });
+
   function fakeClient() {
     let slice: Record<string, number> = {};
     const listeners = new Set<() => void>();

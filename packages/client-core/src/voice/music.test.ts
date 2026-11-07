@@ -51,7 +51,7 @@ function fixture() {
 }
 
 describe('authenticated voice music adapter', () => {
-  it('retries an unavailable subscribed channel so a late Bot Welcome can recover', async () => {
+  it('does not retry an unavailable subscribed channel on a clock; a hint or a shown page re-reads it', async () => {
     vi.useFakeTimers();
     try {
       const f = fixture();
@@ -62,8 +62,14 @@ describe('authenticated voice music adapter', () => {
         return Promise.resolve({ responses: [], through: null, blocked: false });
       });
       const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
-      await vi.advanceTimersByTimeAsync(5_500);
-      expect(f.commands.filter(command => command.m === 'humanInteractionRequest' && command.operation === 10).length).toBeGreaterThanOrEqual(2);
+      const reads = () => f.commands.filter(command => command.m === 'humanInteractionRequest' && command.operation === 10).length;
+      await vi.advanceTimersByTimeAsync(1_000);
+      const first = reads();
+      expect(first).toBeGreaterThanOrEqual(1);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(reads()).toBe(first);
+      await f.adapter.refresh(CHANNEL).catch(() => undefined);
+      expect(reads()).toBeGreaterThan(first);
       unsubscribe();
     } finally {
       vi.useRealTimers();

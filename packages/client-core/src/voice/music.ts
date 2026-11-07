@@ -96,7 +96,6 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
   interface MusicAttemptRecord { channelId: string; operation: number; args: readonly (string | number | Uint8Array | null)[];
     revision: string; scope: BotInteractionScope | undefined; sent: boolean; acceptedRevision: string | null; }
   const attempts = new Map<string, MusicAttemptRecord>();
-  let timer: ReturnType<typeof setInterval> | null = null;
 
   const publish = (channelId: string, state: VoiceMusicState) => {
     states.set(channelId, state);
@@ -109,17 +108,6 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
     channelScopes.set(channelId, scope);
     revisions.set(channelId, snapshot.revision);
     publish(channelId, snapshot.state);
-  };
-  const ensurePolling = () => {
-    if (timer === null) {
-      timer = setInterval(() => {
-        for (const channelId of listeners.keys()) {
-          if (states.get(channelId)?.status !== 'available' && Date.now() - (refreshStarted.get(channelId) ?? 0) >= 5_000) {
-            refreshSubscribed(channelId);
-          }
-        }
-      }, 500);
-    }
   };
   const request = async (channelId: string, operation: number, args: readonly (string | number | Uint8Array | null)[], revision: string | null, attempt?: VoiceMusicAttempt) => {
     if (!ID.test(channelId)) throw new Error('Invalid voice channel id.');
@@ -316,12 +304,10 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
       const channelListeners = listeners.get(channelId) ?? new Set<() => void>();
       channelListeners.add(onChange);
       listeners.set(channelId, channelListeners);
-      ensurePolling();
       refreshSubscribed(channelId);
       return () => {
         channelListeners.delete(onChange);
         if (channelListeners.size === 0) { listeners.delete(channelId); refreshStarted.delete(channelId); }
-        if (listeners.size === 0 && timer !== null) { clearInterval(timer); timer = null; }
       };
     },
     pause: (id, paused, attempt) => mutate(id, paused ? 13 : 14, [], attempt),
