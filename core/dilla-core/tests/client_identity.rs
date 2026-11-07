@@ -764,6 +764,7 @@ fn open_creates_app_schema_v13_and_reopens_idempotently() {
             "app_human_interaction_receipts",
             "app_human_interaction_receipts_request",
             "app_human_interaction_response_claims",
+            "app_leaf_checked",
             "app_manual_removal_evidence",
             "app_manual_removal_evidence_pending",
             "app_manual_warning_evidence",

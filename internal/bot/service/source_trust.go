@@ -83,6 +83,10 @@ type senderTrustNative interface {
 
 // SourceTrust reads bounded signed device-list history and delegates every signature, leaf,
 // current-membership and key-binding decision to the native core.
+//
+// Superseded: Bot v2 Task 16 replaced it with internal/bot/trust, which re-judges only a pushed user's leaves and
+// reads no history. It stays only for the v1 interaction intake and the music call join until Tasks 19 and 23
+// remove those callers and this file.
 type SourceTrust struct {
 	native  senderTrustNative
 	binding native.Binding

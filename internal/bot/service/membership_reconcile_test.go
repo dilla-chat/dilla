@@ -32,6 +32,7 @@ type membershipFakeNative struct {
 	genericAckCalls        int
 	interactionCursor      *native.GroupCursor
 	changeGroupOnInspect   bool
+	other                  map[string]native.StateValue // state keys other than the welcome cursor
 }
 
 func (n *membershipFakeNative) Binding() native.Binding { return n.binding }
@@ -96,10 +97,21 @@ func (n *membershipFakeNative) ApplyWelcomes(_ context.Context, ws []native.Grou
 	n.expected = append([]native.GroupExpected(nil), expected...)
 	return n.outcomes, n.applyErr
 }
-func (n *membershipFakeNative) StateGet(context.Context, uint64, []byte) (native.StateValue, error) {
+func (n *membershipFakeNative) StateGet(_ context.Context, _ uint64, key []byte) (native.StateValue, error) {
+	if string(key) != membershipStateKey {
+		return n.other[string(key)], nil
+	}
 	return n.state, nil
 }
 func (n *membershipFakeNative) StateTransaction(_ context.Context, _ id.ID, changes []native.StateChange) ([]uint64, error) {
+	if key := string(changes[0].Key); key != membershipStateKey {
+		if n.other == nil {
+			n.other = map[string]native.StateValue{}
+		}
+		v := native.StateValue{Revision: n.other[key].Revision + 1, Value: changes[0].Value}
+		n.other[key] = v
+		return []uint64{v.Revision}, nil
+	}
 	n.state = native.StateValue{Revision: n.state.Revision + 1, Value: changes[0].Value}
 	return []uint64{n.state.Revision}, nil
 }

@@ -45,6 +45,17 @@ type Client struct {
 	trust   map[id.ID]bool
 }
 
+// Usable reports whether the helper can still serve calls: false once it was closed, or invalidated by a mutation
+// whose result could not be validated. A retained helper that is not usable is replaced (Bot v2 Task 16, R2-3).
+func (c *Client) Usable() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.usable && !c.closed
+}
+
 // Binding reports the immutable identity tuple this helper was opened for.
 func (c *Client) Binding() Binding {
 	if c == nil {
@@ -145,6 +156,12 @@ func (c *Client) call(ctx context.Context, op protocol.HelperOperation, payload 
 		result, err = c.t.Call(ctx, op, payload)
 	}
 	if err != nil {
+		if errors.Is(err, helper.ErrClosed) {
+			// The helper process is gone for good: this client can serve nothing more (Usable, R2-3).
+			c.mu.Lock()
+			c.usable = false
+			c.mu.Unlock()
+		}
 		return nil, err
 	}
 	value, err := decode(result)

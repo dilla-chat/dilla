@@ -723,6 +723,13 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	g.suspended.Delete(string(token))
 	now := g.opts.Clock.Now()
 	c.mu.Lock()
+	// A newer identify of the device may have replaced this Bot connection after the check above (Bot v2 Task 16,
+	// R2-2). botDead is checked again where the resume commits, under the same lock add sets it under: a replaced
+	// connection is refused here, and one replaced after this point is closed by add through the new writer.
+	if c.isBot && c.botDead {
+		c.mu.Unlock()
+		return refuse("a newer Bot connection replaced this one; identify again")
+	}
 	c.state = stateReady
 	c.lastLive = now
 	c.tokenHash = append(c.tokenHash[:0], session.TokenHash...)

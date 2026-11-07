@@ -21,18 +21,20 @@ import (
 	"github.com/dilla-chat/dilla/internal/bot/gatewayclient"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
+	"github.com/dilla-chat/dilla/internal/bot/trust"
 	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/gateway"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
-// TestOneUsersFailingDeviceListDoesNotStallTheFeed (N-1): user A's op 24 fails on every attempt. After the bounded
-// retries the event is given up and acknowledged; user B's revocation behind it is applied and the op 64 behind that is
-// acknowledged within the bound, while A stays held (their commands are refused) until a later ingest for A succeeds.
-// A failure because the helper closed also asks for a pass, which binds a fresh helper.
+// TestOneUsersFailingDeviceListDoesNotStallTheFeed (N-1, as Bot v2 Task 16 R2-1 changed it): user A's op 24 fails on
+// every attempt. A's event is acknowledged in order at once and retried out of band; user B's revocation behind it is
+// applied and the op 64 behind that acknowledged without waiting on A's retries. A is retried on the policy, stays held
+// (their commands are refused) once the attempts run out, and is released by a later successful ingest. A failure
+// because the helper closed also asks for a pass, which binds a fresh helper.
 func TestOneUsersFailingDeviceListDoesNotStallTheFeed(t *testing.T) {
-	defer func(base time.Duration, attempts int) { feedRetryBase, feedRetryAttempts = base, attempts }(feedRetryBase, feedRetryAttempts)
-	feedRetryBase, feedRetryAttempts = 10*time.Millisecond, 7 // 6 waits: 10+20+40+80+160+320 ms
+	defer func(p trust.RetryPolicy) { feedTrustRetry = p }(feedTrustRetry)
+	feedTrustRetry = trust.RetryPolicy{First: 10 * time.Millisecond, Max: time.Second, Attempts: 7} // 6 waits: 10+20+40+80+160+320 ms
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	community, installation, ada, bea := feedID(1), feedID(9), feedID(4), feedID(5)
@@ -63,10 +65,12 @@ func TestOneUsersFailingDeviceListDoesNotStallTheFeed(t *testing.T) {
 	runFeed(ctx, botGatewayClient(t, d), community, h)
 	waitFor(t, "B's revocation and the command acknowledged", 5*time.Second, func() bool { return d.ackedThrough() >= 4 })
 	if took := time.Since(started); took > 3*time.Second {
-		t.Fatalf("the feed moved past A's failing list after %v, want within the bound (about 0.6 s here)", took)
+		t.Fatalf("the feed moved past A's failing list after %v, want at once", took)
 	}
-	if got := adaCalls.Load(); got != int64(feedRetryAttempts) {
-		t.Fatalf("A's list was attempted %d times, want %d", got, feedRetryAttempts)
+	waitFor(t, "A's retries run out", 5*time.Second, func() bool { return adaCalls.Load() == int64(feedTrustRetry.Attempts) })
+	time.Sleep(50 * time.Millisecond)
+	if got := adaCalls.Load(); got != int64(feedTrustRetry.Attempts) {
+		t.Fatalf("A's list was attempted %d times, want %d", got, feedTrustRetry.Attempts)
 	}
 	if !beaApplied.Load() {
 		t.Fatal("B's revocation behind A's failing list was not applied")

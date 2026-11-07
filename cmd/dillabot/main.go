@@ -536,7 +536,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		oldInteractionPoller := gateways.InteractionPoller(installation.ID)
 		// Keep the current callbacks live during slow dependency rebuilding.
 		// Successful publication swaps in the callbacks for the rebuilt runtime.
-		nativeClient, retainedNative := musicRegistry.Native(installation.ID, installation.CommunityID).(*native.Client)
+		nativeClient, retainedNative := retainedNativeClient(musicRegistry, installation.ID, installation.CommunityID)
 		if !retainedNative {
 			key, _, keyErr := loadDatabaseKey(cfg.StateDir, installation.ID.String())
 			if keyErr != nil {
@@ -587,13 +587,15 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				}
 				// The feed handler is bound now, with the helper only (fix round 1, M-2): device lists, revocations
 				// included, are ingested while the installation is still joining; membership work binds the rest later.
-				gateways.feedFor(installation.ID, installation.CommunityID, *result.Installation.BotUser, feedDeps{ingest: nativeClient.IngestDeviceList})
+				gateways.feedFor(installation.ID, installation.CommunityID, *result.Installation.BotUser, feedDeps{core: nativeClient})
 			}
 			reconcileStage = "membership_source_sync"
 			var membership *service.MembershipReconciler
 			membership, ensureErr = service.NewMembershipReconciler(nativeClient, service.SourceSyncOptions{}, 32)
 			if ensureErr == nil {
 				membership.UseInteractionPollSchedule(gateways.InteractionPollSchedule(installation.ID))
+				// Bot v2 Task 16: the Bot stays in Bot channel groups only, as its feed last applied them.
+				membership.UseBotChannels(gateways.BotChannels(installation.ID), logger.With("installation_id", installation.ID.String()))
 			}
 			if ensureErr == nil {
 				var trust *service.SourceTrust
@@ -636,7 +638,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										botUser = *result.Installation.BotUser
 									}
 									gateways.feedFor(installation.ID, installation.CommunityID, botUser, feedDeps{
-										ingest: nativeClient.IngestDeviceList, episodes: members, stage: registration.QueueMemberJoin, welcome: welcomeHandler,
+										core: nativeClient, episodes: members, stage: registration.QueueMemberJoin, welcome: welcomeHandler,
 									})
 									catchupResult, stageErr := catchup.StageOnce(ctx, members, registration)
 									if stageErr != nil {

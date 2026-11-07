@@ -343,6 +343,8 @@ impl ClientCore {
         }
         let own = self.own()?;
         let (pending_user, pending_device) = self.current_leaf_pair(id, leaf_index)?;
+        // Bot v2 Task 16: a Bot judges the leaf against its pushed list first (a no-op for a person).
+        self.rejudge_pushed_leaf(id, leaf_index)?;
         let mut cursor = -1_i64;
         let mut total_recovered = 0_u32;
         loop {

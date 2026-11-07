@@ -656,3 +656,234 @@ fn a_row_held_for_any_releasable_reason_takes_revoked_when_its_device_is_revoked
         assert_eq!(retained(&w, w.bob2_seq), 0, "a row held as {reason}");
     }
 }
+
+// Bot v2 Task 16: membership trust from pushed device lists. A Bot's cache changes only by a
+// push (op 24), so `pending_leaves` reports a leaf only when its user's list (or pinned key)
+// changed since that leaf was last judged, plus leaves whose user has no list yet. It never
+// reports `ready-refresh` for a Bot: a current leaf costs nothing.
+mod pushed {
+    use super::*;
+    use dilla_core::bot::device_list_push::{DeviceListPush, DeviceListRow};
+    use dilla_core::client::ClientCore;
+    use dilla_core::identity::{DeviceEntry, DeviceListUnsigned, Tier, UmkSigner};
+    use dilla_core::ids::{DeviceId, UserId};
+    use std::sync::Arc;
+
+    const INSTALLATION: [u8; 16] = [0x5c; 16];
+    const BOT_USER: [u8; 16] = [0xe0; 16];
+
+    /// A Bot core (bootstrap, then completion as `BOT_USER`): its own credential's kind is Bot.
+    fn bot_core() -> Core {
+        let conn = memory();
+        let probe = Arc::clone(&conn);
+        let mut core = ClientCore::open(conn).expect("open");
+        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
+            .expect("bot bootstrap");
+        core.bot_bootstrap_complete(&BOT_USER, "music-bot", NOW)
+            .expect("bot completion");
+        let identity = core.identity().expect("identity");
+        let device = decode_strict(&identity, |d| {
+            d.array(6)?;
+            d.uint()?;
+            d.opt_bytes_exact::<16>()?;
+            d.opt_bytes_exact::<16>()?;
+            let device = d.opt_bytes_exact::<16>()?;
+            d.text()?;
+            d.uint()?;
+            Ok(device)
+        })
+        .expect("identity shape")
+        .expect("a device id");
+        Core {
+            core,
+            probe,
+            user: BOT_USER,
+            device,
+        }
+    }
+
+    fn ssk_of(peer: &RawPeer) -> SskSigner {
+        SskSigner::from_bytes(&[peer.user[0].wrapping_add(0x40); 32])
+    }
+
+    /// The user's signed v1 list naming `peer`'s device, under the keys `RawPeer::new` derives.
+    fn v1_of(peer: &RawPeer) -> DeviceList {
+        let unsigned = DeviceListUnsigned {
+            v: 1,
+            user_id: UserId::from_bytes(peer.user),
+            version: 1,
+            prev_hash: [0; 32],
+            entries: vec![DeviceEntry {
+                device_id: DeviceId::from_bytes(peer.device),
+                dsk_pub: peer.signer.public().try_into().unwrap(),
+                tier: Tier::Native,
+                added_at: NOW,
+                revoked_at: None,
+            }],
+        };
+        DeviceList {
+            sig_ssk: ssk_of(peer).sign_device_list(&unsigned),
+            unsigned,
+        }
+    }
+
+    /// dillad's op 65 device_list push of `lists` for `peer`'s user.
+    fn push_of(peer: &RawPeer, lists: &[&DeviceList]) -> Vec<u8> {
+        let umk = UmkSigner::from_bytes(&[peer.user[0]; 32]);
+        let ssk_pub = ssk_of(peer).public();
+        DeviceListPush {
+            umk_pub: umk.public(),
+            ssk_pub,
+            sig_umk_ssk: umk.sign_ssk(&ssk_pub),
+            history: lists
+                .iter()
+                .map(|l| DeviceListRow {
+                    version: l.unsigned.version,
+                    blob: l.encode(),
+                    ssk_signature: l.sig_ssk,
+                    prev_hash: l.unsigned.prev_hash,
+                })
+                .collect(),
+        }
+        .encode()
+    }
+
+    type Pending = Vec<([u8; 16], u64, [u8; 16], u64, String)>;
+
+    fn pending(core: &Core) -> Pending {
+        let rows = core.core.pending_leaves().expect("pending leaves");
+        decode_strict(&rows, |d| {
+            let n = d.array_len()?;
+            let mut out = Vec::new();
+            for _ in 0..n {
+                d.array(5)?;
+                out.push((
+                    d.bytes_exact::<16>()?,
+                    d.uint()?,
+                    d.bytes_exact::<16>()?,
+                    d.uint()?,
+                    d.text()?.to_owned(),
+                ));
+            }
+            Ok(out)
+        })
+        .expect("pending leaves shape")
+    }
+
+    struct Fleet {
+        bot: Core,
+        peers: Vec<RawPeer>,
+        lists: Vec<DeviceList>,
+    }
+
+    /// A Bot channel group of 50 users (one device each). Every user's v1 list is pushed and
+    /// each leaf is judged once (`revalidate_pending`, what `trust.Changed` calls per leaf).
+    fn fleet() -> Fleet {
+        let instance = Instance::generate();
+        let mut relay = Relay::new(GROUP);
+        let mut bot = bot_core();
+        bot.create_and_register(&mut relay, &instance);
+        let mut peers = Vec::new();
+        for i in 0..50u8 {
+            let mut peer = RawPeer::new(0x10 + i, 0x60 + i);
+            peer.join_external(&mut relay);
+            peers.push(peer);
+        }
+        bot.sync(&relay);
+        let before = pending(&bot);
+        assert_eq!(before.len(), 50, "every member's leaf, not the Bot's own");
+        assert!(before.iter().all(|r| r.4 == "unknown"), "{before:?}");
+        let lists: Vec<DeviceList> = peers.iter().map(v1_of).collect();
+        for (peer, list) in peers.iter().zip(&lists) {
+            bot.core
+                .ingest_device_list(&peer.user, &push_of(peer, &[list]), NOW + 1)
+                .expect("first push pins and caches");
+        }
+        for (group, leaf, ..) in pending(&bot) {
+            bot.core
+                .revalidate_pending(&group, leaf as u32, 256)
+                .expect("judge the leaf");
+        }
+        Fleet { bot, peers, lists }
+    }
+
+    #[test]
+    fn pending_leaves_omits_current_leaves() {
+        let f = fleet();
+        assert_eq!(
+            pending(&f.bot),
+            Vec::new(),
+            "50 members whose lists did not change since their leaves were judged: nothing to do"
+        );
+    }
+
+    #[test]
+    fn pending_leaves_reports_only_the_changed_user() {
+        let mut f = fleet();
+        let peer = &f.peers[7];
+        let v1 = f.lists[7].clone();
+        let v2 = sec_next(
+            &v1,
+            v1.unsigned.entries.clone(),
+            peer.user[0].wrapping_add(0x40),
+        );
+        f.bot
+            .core
+            .ingest_device_list(&peer.user, &push_of(peer, &[&v1, &v2]), NOW + 2)
+            .expect("a newer list");
+        let rows = pending(&f.bot);
+        assert_eq!(rows.len(), 1, "only the changed user's leaf: {rows:?}");
+        assert_eq!(
+            (rows[0].2, rows[0].3, rows[0].4.as_str()),
+            (peer.user, 2, "changed")
+        );
+        f.bot
+            .core
+            .revalidate_pending(&rows[0].0, rows[0].1 as u32, 256)
+            .expect("judge it again");
+        assert_eq!(pending(&f.bot), Vec::new(), "judged under v2: current again");
+    }
+
+    #[test]
+    fn a_revoked_device_is_judged_on_its_users_push_and_leaves_others_current() {
+        let mut f = fleet();
+        let peer = &f.peers[3];
+        let v1 = f.lists[3].clone();
+        let mut entries = v1.unsigned.entries.clone();
+        entries[0].revoked_at = Some(NOW + 2);
+        let v2 = sec_next(&v1, entries, peer.user[0].wrapping_add(0x40));
+        f.bot
+            .core
+            .ingest_device_list(&peer.user, &push_of(peer, &[&v1, &v2]), NOW + 2)
+            .expect("a revocation");
+        let rows = pending(&f.bot);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        f.bot
+            .core
+            .revalidate_pending(&rows[0].0, rows[0].1 as u32, 256)
+            .expect("judge it");
+        let code: String = f
+            .bot
+            .probe
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT code FROM app_quarantine WHERE group_id=?1 AND user_id=?2",
+                [GROUP.as_slice(), peer.user.as_slice()],
+                |r| r.get(0),
+            )
+            .expect("the revoked leaf is quarantined");
+        assert_eq!(code, "E_DEVICE_REVOKED");
+        assert_eq!(pending(&f.bot), Vec::new());
+    }
+
+    #[test]
+    fn a_person_still_refreshes_current_leaves_on_ready() {
+        // A person's cache changes only when it reads a list, so its current leaves stay
+        // `ready-refresh`: only a Bot's pushed cache omits them.
+        let mut w = world();
+        cache_v2(&mut w);
+        let rows = pending(&w.alice);
+        assert!(rows.iter().any(|r| r.4 == "ready-refresh"), "{rows:?}");
+    }
+}

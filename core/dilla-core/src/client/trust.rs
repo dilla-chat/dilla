@@ -640,6 +640,9 @@ fn apply_verdict(
     (leaf_index, signature_key): (u32, &[u8]),
     verdict: Result<(), &str>,
 ) -> Result<bool, StorageError> {
+    if verdict != Err(E_DEVICE_LIST_STALE) {
+        mark_checked(c, group_id, user, leaf_index, signature_key)?;
+    }
     let code = match verdict {
         Ok(()) => {
             let cleared = c.execute(
@@ -690,6 +693,73 @@ fn apply_verdict(
         )?;
     }
     Ok(recorded || retracted > 0 || relabelled > 0)
+}
+
+/// Bot v2 Task 16: the list version and pinned key each current leaf was last judged under
+/// (`apply_verdict`, a decided verdict only). `pending_leaves` omits a Bot's leaf whose row still
+/// matches its user's cached list and pin, so a pushed list costs that user's leaves only. A row
+/// for a leaf index that another leaf took (another signature key) matches nothing.
+pub(super) const LEAF_CHECKED_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS app_leaf_checked (
+  group_id BLOB NOT NULL CHECK(length(group_id)=16),
+  leaf_index INTEGER NOT NULL,
+  signature_key BLOB NOT NULL,
+  user_id BLOB NOT NULL CHECK(length(user_id)=16),
+  umk_pub BLOB NOT NULL CHECK(length(umk_pub)=32),
+  version INTEGER NOT NULL,
+  PRIMARY KEY(group_id,leaf_index)
+) WITHOUT ROWID;
+";
+
+/// Records that the leaf was judged under its user's current cached list and pinned key. With no
+/// cached list, or a key change pending, nothing is recorded: the leaf stays pending.
+fn mark_checked(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+    user: &[u8; 16],
+    leaf_index: u32,
+    signature_key: &[u8],
+) -> Result<(), StorageError> {
+    c.execute(
+        "DELETE FROM app_leaf_checked WHERE group_id=?1 AND leaf_index=?2",
+        params![group_id.as_slice(), i64::from(leaf_index)],
+    )?;
+    c.execute(
+        "INSERT INTO app_leaf_checked(group_id,leaf_index,signature_key,user_id,umk_pub,version) \
+         SELECT ?1,?2,?3,?4,p.umk_pub,l.version FROM app_device_lists l \
+         JOIN app_trust_pins p ON p.user_id=l.user_id \
+         WHERE l.user_id=?4 AND p.changed_umk IS NULL AND p.umk_pub=l.umk_pub",
+        params![
+            group_id.as_slice(),
+            i64::from(leaf_index),
+            signature_key,
+            user.as_slice()
+        ],
+    )?;
+    Ok(())
+}
+
+/// Whether the leaf was judged under its user's current cached list and pinned key.
+fn leaf_checked_current(
+    c: &rusqlite::Connection,
+    leaf: &LeafEvidence,
+) -> Result<bool, StorageError> {
+    let user = leaf.credential.user_id.as_bytes();
+    Ok(c.query_row(
+        "SELECT 1 FROM app_leaf_checked k \
+         JOIN app_device_lists l ON l.user_id=k.user_id AND l.version=k.version \
+         JOIN app_trust_pins p ON p.user_id=k.user_id AND p.umk_pub=k.umk_pub AND p.changed_umk IS NULL \
+         WHERE k.group_id=?1 AND k.leaf_index=?2 AND k.signature_key=?3 AND k.user_id=?4",
+        params![
+            leaf.group_id.as_slice(),
+            i64::from(leaf.leaf_index),
+            leaf.dsk_pub.as_slice(),
+            user.as_slice()
+        ],
+        |_| Ok(()),
+    )
+    .optional()?
+    .is_some())
 }
 
 pub(super) fn bump_generation(c: &rusqlite::Connection) -> Result<(), StorageError> {
@@ -1557,6 +1627,36 @@ impl ClientCore {
         extract_leaf(group_id, group, tree_hash, member)
     }
 
+    /// Bot v2 Task 16: a Bot judges one current leaf again against its user's cached list and pin
+    /// (the transition audit's verdict, `audit_sender`), recording what it was judged under. A
+    /// pushed list (`ingest_device_list`) leaves the judging of already-judged leaves to the
+    /// caller; `revalidate_pending` calls this first, so a revoked device's leaf is quarantined
+    /// and a newly listed one released before its held rows are released. A person's core
+    /// re-judges every leaf of the user in its leaf ingest instead, and calls nothing here.
+    pub(super) fn rejudge_pushed_leaf(
+        &mut self,
+        group_id: &[u8; 16],
+        leaf_index: u32,
+    ) -> Result<(), ClientError> {
+        let own = self.own()?;
+        if own.kind != crate::identity::Kind::Bot.as_u8() {
+            return Ok(());
+        }
+        self.retry_reload(group_id, |this| {
+            let group = this
+                .take_group(group_id)?
+                .ok_or_else(|| failure(E_CORE_NOT_FOUND))?;
+            let result = this.write(|_, u| {
+                u.with_conn(|c| {
+                    audit_sender(c, &group, group_id, &own.user_id, &own.device_id, leaf_index)
+                })
+                .map_err(ClientError::from)
+            });
+            this.keep_group(*group_id, group);
+            result
+        })
+    }
+
     pub(super) fn current_leaf_pair(
         &self,
         group_id: &[u8; 16],
@@ -1570,7 +1670,20 @@ impl ClientCore {
     }
 
     /// Current tree leaves that need a signed-list refresh, without exporting credentials or keys.
+    ///
+    /// Reasons: `unknown` (the user has no cached list), `changed` (a key change is pending, or,
+    /// for a Bot, the user's list or pinned key changed since the leaf was last judged) and, for a
+    /// person only, `ready-refresh` (a current leaf). A person's cache changes only when it reads
+    /// a list, so it re-reads current leaves on ready. A Bot's cache changes only by a pushed list
+    /// (op 24, Bot v2 Task 16): a leaf judged under the user's current list and pin
+    /// (`app_leaf_checked`, written by `apply_verdict`) needs nothing and is omitted, and the
+    /// Bot's own leaf is never listed. So the Bot's work per push is that user's leaves only.
     pub fn pending_leaves(&self) -> Result<Vec<u8>, ClientError> {
+        let own = self.own().ok();
+        let pushed = own
+            .as_ref()
+            .is_some_and(|o| o.kind == crate::identity::Kind::Bot.as_u8());
+        let own_leaf = own.map(|o| (o.user_id, o.device_id, o.dsk_pub));
         let mut rows = Vec::new();
         self.each_active_group_or(
             &mut |id, group| {
@@ -1586,8 +1699,11 @@ impl ClientCore {
                     let Ok(leaf) = extract_leaf(&id, group, tree_hash, member) else {
                         continue;
                     };
+                    if pushed && is_own(&own_leaf, &leaf) {
+                        continue;
+                    }
                     let user: [u8; 16] = *leaf.credential.user_id.as_bytes();
-                    let (cached, changed): (u64, bool) = self.read(|c| {
+                    let (cached, changed, current): (u64, bool, bool) = self.read(|c| {
                         let version: Option<i64> = c
                             .query_row(
                                 "SELECT version FROM app_device_lists WHERE user_id=?1",
@@ -1596,21 +1712,21 @@ impl ClientCore {
                             )
                             .optional()?;
                         let changed = read_pin(c, &user)?.is_some_and(|pin| pin.changed.is_some());
-                        Ok((version.unwrap_or(0).max(0) as u64, changed))
+                        let current = pushed && !changed && leaf_checked_current(c, &leaf)?;
+                        Ok((version.unwrap_or(0).max(0) as u64, changed, current))
                     })?;
-                    rows.push((
-                        id,
-                        leaf.leaf_index,
-                        user,
-                        cached,
-                        if changed {
-                            "changed"
-                        } else if cached == 0 {
-                            "unknown"
-                        } else {
-                            "ready-refresh"
-                        },
-                    ));
+                    let reason = if changed {
+                        "changed"
+                    } else if cached == 0 {
+                        "unknown"
+                    } else if current {
+                        continue;
+                    } else if pushed {
+                        "changed"
+                    } else {
+                        "ready-refresh"
+                    };
+                    rows.push((id, leaf.leaf_index, user, cached, reason));
                 }
                 Ok(())
             },

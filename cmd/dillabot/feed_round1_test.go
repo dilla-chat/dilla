@@ -28,6 +28,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/bot/service"
+	"github.com/dilla-chat/dilla/internal/bot/trust"
 	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/gateway"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -101,12 +102,13 @@ func TestStateEventsAskForNoPass(t *testing.T) {
 	}
 }
 
-// TestARevocationSurvivesATransientHelperError (I-2): op 24 fails transiently (not a StatusError) on a pushed list that
-// revokes a device. The event is not acknowledged, the frames behind it wait, the user is held (their commands fail
-// closed) and the push is applied on the retry; only then is it acknowledged.
+// TestARevocationSurvivesATransientHelperError (I-2, as Bot v2 Task 16 R2-1 changed it): op 24 fails transiently (not
+// a StatusError) on a pushed list that revokes a device. The user is held (their commands fail closed) at once; the
+// event and the frames behind it are acknowledged in order without waiting (the retry is out of band), and the push is
+// applied on the retry, which releases the user.
 func TestARevocationSurvivesATransientHelperError(t *testing.T) {
-	defer func(base time.Duration) { feedRetryBase = base }(feedRetryBase)
-	feedRetryBase = 50 * time.Millisecond
+	defer func(p trust.RetryPolicy) { feedTrustRetry = p }(feedTrustRetry)
+	feedTrustRetry = trust.RetryPolicy{First: 50 * time.Millisecond, Max: time.Second, Attempts: 8}
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	community, user := feedID(1), feedID(4)
@@ -136,15 +138,12 @@ func TestARevocationSurvivesATransientHelperError(t *testing.T) {
 	if !h.Held(user) {
 		t.Fatal("the user is not held while their device list waits to be applied")
 	}
-	time.Sleep(1200 * time.Millisecond) // heartbeats
-	if got := d.ackedThrough(); got != 1 {
-		t.Fatalf("acknowledged through %d while the device list was not applied, want 1 (ready only)", got)
+	waitFor(t, "the device list and the frame behind it acknowledged in order", 5*time.Second, func() bool { return d.ackedThrough() >= 3 })
+	if applied.Load() || !h.Held(user) {
+		t.Fatalf("applied %v, held %v before the retry finished; want not applied and held", applied.Load(), h.Held(user))
 	}
 	close(release)
-	waitFor(t, "the device list and the frame behind it acknowledged", 5*time.Second, func() bool { return d.ackedThrough() >= 3 })
-	if !applied.Load() || h.Held(user) {
-		t.Fatalf("applied %v, held %v; want the revocation applied and the user released", applied.Load(), h.Held(user))
-	}
+	waitFor(t, "the revocation applied by the retry", 5*time.Second, func() bool { return applied.Load() && !h.Held(user) })
 }
 
 // TestAMemberBurstCostsAtMostOnePassPerTwoSeconds (I-3): 50 member events over 10 s of fake clock cost at most one

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"sync"
 	"time"
@@ -107,6 +108,53 @@ type MembershipReconciler struct {
 	source    *SourceSync
 	pageLimit uint64
 	idlePolls *InteractionPollSchedule
+	// botChannels is the community's Bot channels as the Bot's feed last applied them (Bot v2 Task 16); nil keeps v1
+	// membership (every authorised channel group).
+	botChannels BotChannels
+	log         *slog.Logger
+}
+
+// BotChannels reports the community's Bot channels (marked) as the Bot's event feed last applied them, and whether the
+// feed has applied a snapshot (known). Until known, membership is not narrowed: an empty set before the first snapshot
+// must not leave every group.
+type BotChannels func() (marked map[id.ID]bool, known bool)
+
+// botChannelMigrationKey marks that the Bot's first start under v2 has left every channel group that is not a Bot
+// channel (state area membershipStateArea): the one-time migration is not repeated.
+const botChannelMigrationKey = "dilla.bot.membership.v2.bot-channels-only"
+
+// UseBotChannels makes the reconciler keep the Bot in Bot channel groups only (Bot v2 Task 16):
+//   - a Welcome to a text channel that is not a Bot channel is acknowledged and not applied;
+//   - a text channel group whose channel is not (or no longer) a Bot channel is left: never synced, so nothing of it
+//     is read, applied or answered. Marking the channel joins it again: its Welcome is applied and its group synced on
+//     the pass the mark asks for;
+//   - the first reconcile with the Bot channels known logs "bot left non-Bot channel group" with the channel id for
+//     every such group and persists botChannelMigrationKey, once.
+//
+// Call groups are not narrowed: the Bot is in a call group while it plays music.
+func (r *MembershipReconciler) UseBotChannels(channels BotChannels, log *slog.Logger) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.botChannels = channels
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	r.log = log
+}
+
+// botChannelSet is the reconciler's Bot channels now; known false keeps v1 membership.
+func (r *MembershipReconciler) botChannelSet() (map[id.ID]bool, bool, *slog.Logger) {
+	r.mu.Lock()
+	channels, log := r.botChannels, r.log
+	r.mu.Unlock()
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	if channels == nil {
+		return nil, false, log
+	}
+	marked, known := channels()
+	return marked, known, log
 }
 
 // InteractionPollSchedule retains background backoff across reconciliation passes.
@@ -222,6 +270,9 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 			textGroup[*ch.TextGroupID] = ch
 		}
 	}
+	marked, known, log := r.botChannelSet()
+	// participates: a text channel's group is one the Bot is in only while the channel is a Bot channel.
+	participates := func(ch client.Channel) bool { return !known || ch.Kind != 0 || marked[ch.ID] }
 	groups, err := r.native.Groups(ctx)
 	if err != nil {
 		return out, err
@@ -252,6 +303,23 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 	}
 	if uint64(len(welcomes)) > r.pageLimit {
 		return out, client.ErrProtocol
+	}
+	// Welcomes to a channel that is not a Bot channel are acknowledged without being applied (Bot v2 Task 16).
+	all := welcomes
+	var refused []client.Welcome
+	if known {
+		kept := make([]client.Welcome, 0, len(welcomes))
+		for _, w := range welcomes {
+			if c, ok := textGroup[w.GroupID]; ok && !participates(c) {
+				if w.ID <= cursor || w.ID > math.MaxInt64 {
+					return out, client.ErrProtocol
+				}
+				refused = append(refused, w)
+				continue
+			}
+			kept = append(kept, w)
+		}
+		welcomes = kept
 	}
 	if len(welcomes) > 0 {
 		apply := make([]native.GroupWelcome, 0, len(welcomes))
@@ -308,12 +376,26 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 			out.Applied++
 			out.Acknowledged++
 		}
-		last := welcomes[len(welcomes)-1].ID
+	}
+	for _, w := range refused {
+		if err = session.AcknowledgeWelcome(ctx, w.ID); err != nil {
+			return out, membershipPhaseError(MembershipPhaseWelcomeAcknowledge, err)
+		}
+		out.Acknowledged++
+		log.Info("bot welcome to a non-Bot channel group not applied", "channel_id", textGroup[w.GroupID].ID.String())
+	}
+	if len(all) > 0 {
+		last := all[len(all)-1].ID
 		_, err = r.saveMembershipCursor(ctx, revision, last)
 		if err != nil {
 			return out, fmt.Errorf("persist welcome cursor: %w", err)
 		}
-		out.More = uint64(len(welcomes)) == r.pageLimit
+		out.More = uint64(len(all)) == r.pageLimit
+	}
+	if known {
+		if err = r.leaveNonBotChannelsOnce(ctx, groups, channelByID, participates, log); err != nil {
+			return out, err
+		}
 	}
 	for _, g := range groups {
 		if err = client.CooperativeCheckpoint(ctx); err != nil {
@@ -331,6 +413,9 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		}
 		if g.Kind == 0 && (ch.TextGroupID == nil || *ch.TextGroupID != g.ID) {
 			continue
+		}
+		if !participates(ch) {
+			continue // not a Bot channel: the Bot has left its group (Bot v2 Task 16)
 		}
 		res, e := r.source.sync(ctx, session, native.GroupExpected{Group: g.ID, Community: r.binding.Community, Channel: ch.ID, Kind: g.Kind})
 		if e != nil {
@@ -556,6 +641,42 @@ func (r *MembershipReconciler) revalidateChannelAccess(ctx context.Context, sess
 	return ErrMembershipUnproven
 }
 func bytes32(b []byte) (out [32]byte) { copy(out[:], b); return }
+
+// leaveNonBotChannelsOnce is the Bot's first start under v2 (Bot v2 Task 16): every channel group it holds that is not
+// a Bot channel is left, each logged once with its channel id, and botChannelMigrationKey is persisted so it is not
+// repeated. Leaving is not syncing the group (reconcileOnce skips it from here on); it is idempotent, so a failure to
+// persist the marker only logs the same groups again on the next pass.
+func (r *MembershipReconciler) leaveNonBotChannelsOnce(ctx context.Context, groups []native.GroupInfo, channelByID map[id.ID]client.Channel, participates func(client.Channel) bool, log *slog.Logger) error {
+	done, err := r.native.StateGet(ctx, membershipStateArea, []byte(botChannelMigrationKey))
+	if err != nil {
+		return err
+	}
+	if done.Revision != 0 && !done.Tombstone {
+		return nil
+	}
+	for _, g := range groups {
+		if g.State != 2 || g.Kind != 0 || g.Community == nil || *g.Community != r.binding.Community {
+			continue
+		}
+		if ch, ok := channelByID[g.Target]; ok && participates(ch) {
+			continue
+		}
+		log.Info("bot left non-Bot channel group", "channel_id", g.Target.String(), "reason", "first_v2_start")
+	}
+	value, err := cborx.Marshal([]any{uint64(1)})
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(append([]byte("dilla.bot.membership.v2-migration\x00"), r.binding.Installation[:]...))
+	revs, err := r.native.StateTransaction(ctx, id.ID(sum[:16]), []native.StateChange{{Area: membershipStateArea, Key: []byte(botChannelMigrationKey), ExpectedRevision: done.Revision, Value: value}})
+	if err != nil {
+		return fmt.Errorf("persist Bot channel migration: %w", err)
+	}
+	if len(revs) != 1 {
+		return errors.New("invalid Bot channel migration revision")
+	}
+	return nil
+}
 
 func (r *MembershipReconciler) loadMembershipCursor(ctx context.Context) (uint64, uint64, error) {
 	v, err := r.native.StateGet(ctx, membershipStateArea, []byte(membershipStateKey))
