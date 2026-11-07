@@ -84,6 +84,7 @@ if [ "$1 $2 $3" = "enable --now dilla" ] && [ -z "${STUB_SYSTEMCTL_FAIL:-}" ]; t
 	bnd=0000000000000000; [ "${STUB_BOT:-}" != caps ] || bnd=00000000000000c0
 	if [ "${STUB_BOT:-}" != none ]; then
 		printf "/usr/local/bin/dillabot\\0" >"$R/proc/4001/cmdline"
+		ln -sfn /usr/local/bin/dillabot "$R/proc/4001/exe"
 		printf "Uid:\\t990\\t990\\t990\\t990\\nCapInh:\\t0000000000000000\\nCapPrm:\\t0000000000000000\\nCapEff:\\t0000000000000000\\nCapBnd:\\t%s\\nCapAmb:\\t0000000000000000\\nNoNewPrivs:\\t1\\n" "$bnd" >"$R/proc/4001/status"
 		echo 4001 >>"$R/sys/fs/cgroup/system.slice/dilla.service/cgroup.procs"
 	fi
@@ -476,7 +477,7 @@ check_bot_install() {
 	has "$calls" "install -d -m 0755 -o root -g root $ROOT/usr/local/lib/dilla" || printf '|/usr/local/lib/dilla was not made root:root 0755'
 	has "$calls" "dillad admin bot-runtime create --config=$ROOT/etc/dilla/dilla.toml --out=" || printf '|no runtime credential was registered'
 	[ "$(mode_of "$ROOT/var/lib/dillabot/runtime.token")" = 600 ] || printf '|runtime.token mode %s, want 600' "$(mode_of "$ROOT/var/lib/dillabot/runtime.token")"
-	echo "$calls" | grep -q "^install -m 0600 -o dillabot -g dillabot .* $ROOT/var/lib/dillabot/runtime.token$" || printf '|runtime.token was not installed 0600 dillabot:dillabot'
+	echo "$calls" | grep -q "^install -T -m 0600 -o dillabot -g dillabot .* $ROOT/var/lib/dillabot/runtime.token$" || printf '|runtime.token was not installed -T 0600 dillabot:dillabot'
 	has "$ERR" "dbr_secret" && printf '|the runtime credential reached stderr'
 	[ "$(toml_get "$ROOT/etc/dilla/dilla.toml" bot enabled)" = true ] || printf '|bot.enabled = %s, want true' "$(toml_get "$ROOT/etc/dilla/dilla.toml" bot enabled)"
 	has "$ERR" "the Bot runs under dilla.service as dillabot (pid 4001), holding no capabilities" || printf '|the Bot was not checked under dilla.service'
@@ -863,10 +864,13 @@ for bot in caps none; do
 	# shellcheck disable=SC2086
 	STUB_BOT="$bot" KEEP_ROOT=1 run $PUBLIC_ARGS $URL
 	case "$bot" in
-	caps) want="RED bot: the Bot (pid 4001) holds capabilities: CapBnd=00000000000000c0" ;;
+	caps) want="RED bot: the Bot (pid 4001) holds capabilities: CapBnd=00000000000000c0; it must hold none" ;;
 	none) want="no Bot process runs under dilla.service" ;;
 	esac
-	if [ "$RC" -ne 0 ] && [ "$OUT" = "https://chat.example.org/i/SECRETINVITECODE" ] && has "$ERR" "$want"; then
+	# The Bot is turned off and dilla restarted without it, so a Bot that may hold capabilities is not left running.
+	if [ "$RC" -ne 0 ] && [ "$OUT" = "https://chat.example.org/i/SECRETINVITECODE" ] && has "$ERR" "$want" &&
+		[ "$(toml_get "$ROOT/etc/dilla/dilla.toml" bot enabled)" = false ] && has "$(cat "$LOG")" "systemctl restart dilla" &&
+		has "$ERR" "turned the Bot off ([bot] enabled = false) and restarted dilla"; then
 		pass "a fresh install whose Bot check fails ($bot) fails, and still prints the link"
 	else
 		fail "a fresh install whose Bot check fails ($bot) fails, and still prints the link" "rc $RC" "out: $OUT" "stderr: $ERR"

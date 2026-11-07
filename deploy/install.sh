@@ -712,14 +712,19 @@ live_calls_preflight() {
 
 # --- bot health: begin (install.sh and install-bot.sh carry this block verbatim; install_bot_test.sh compares them) ---
 # bot_pids PROCS UID prints the pids listed in the control-group file PROCS that are the Bot: every uid (real,
-# effective, saved, filesystem) is UID, and argv[0] is /usr/local/bin/dillabot, which bot-launch passes when it execs
-# the Bot. The Bot's helper and its sandbox run as the same user under other names.
+# effective, saved, filesystem) is UID, argv[0] is /usr/local/bin/dillabot, which bot-launch passes when it execs the
+# Bot, and /proc/<pid>/exe, which the process cannot choose, resolves to that file. The Bot's helper and its sandbox
+# run as the same user under other names.
 bot_pids() {
 	while IFS= read -r bp_pid; do
 		case "$bp_pid" in '' | *[!0-9]*) continue ;; esac
 		[ -r "$ROOT/proc/$bp_pid/status" ] || continue
 		[ "$(awk '$1 == "Uid:" { print $2, $3, $4, $5 }' "$ROOT/proc/$bp_pid/status")" = "$2 $2 $2 $2" ] || continue
 		[ "$(tr '\0' '\n' <"$ROOT/proc/$bp_pid/cmdline" 2>/dev/null | head -n 1)" = /usr/local/bin/dillabot ] || continue
+		if [ "$(readlink "$ROOT/proc/$bp_pid/exe" 2>/dev/null)" != /usr/local/bin/dillabot ]; then
+			log "warning: pid $bp_pid calls itself /usr/local/bin/dillabot but runs $(readlink "$ROOT/proc/$bp_pid/exe" 2>/dev/null || echo 'an unreadable executable'); it is not the Bot"
+			continue
+		fi
 		printf '%s\n' "$bp_pid"
 	done <"$1"
 }
@@ -1050,7 +1055,7 @@ mkdir -m 0700 "$WORK/credential"
 BOT_OUT="$("$BIN_DIR/dillad" admin bot-runtime create --config="$CONF" --out="$WORK/credential/runtime.token")" ||
 	die "dillad could not create the Bot's runtime credential"
 [ -s "$WORK/credential/runtime.token" ] || die "dillad did not write the Bot's runtime credential"
-install -m 0600 -o dillabot -g dillabot "$WORK/credential/runtime.token" "$BOT_STATE/runtime.token"
+install -T -m 0600 -o dillabot -g dillabot "$WORK/credential/runtime.token" "$BOT_STATE/runtime.token"
 rm -f "$WORK/credential/runtime.token"
 log "dillad registered the Bot's runtime credential: $BOT_OUT"
 
@@ -1076,10 +1081,17 @@ if systemctl daemon-reload >&2 && systemctl enable --now dilla-media >&2 &&
 	systemctl enable --now dilla >&2; then
 	doctor_and_report || STATUS=1
 	# The Bot dillad now supervises: running as dillabot, steady, and holding no capability.
-	bot_health || {
+	# A Bot that fails it (it may hold capabilities) is turned off, not left running.
+	if ! bot_health; then
 		STATUS=1
 		log "error: the Bot did not come up healthy under dillad; read its log with: journalctl -o cat -u dilla"
-	}
+		toml_set bot enabled false
+		if systemctl restart dilla >&2; then
+			log "turned the Bot off ([bot] enabled = false) and restarted dilla; fix the cause, set it back to true and restart dilla"
+		else
+			log "error: turned the Bot off ([bot] enabled = false), but dilla did not restart; read journalctl -o cat -u dilla"
+		fi
+	fi
 else
 	STATUS=1
 	log "error: the service did not start; read its log with: journalctl -o cat -u dilla"

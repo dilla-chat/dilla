@@ -60,6 +60,9 @@ case "$1 $2" in
 	printf "dbr_fresh-runtime-secret-value\n" >"$out"
 	echo "created bot runtime 02020202020202020202020202020202; secret written to protected file"
 	exit 0 ;;
+"media --rooms")
+	if [ -n "${BOT_TEST_ROOMS:-}" ]; then cat "$BOT_TEST_ROOMS"; else echo "no live rooms"; fi
+	exit 0 ;;
 esac
 [ "$1" = doctor ] || exit 64
 for a in "$@"; do case "$a" in --config=*) cfg="${a#*=}" ;; esac; done
@@ -99,6 +102,7 @@ restart)
 	proc() { # PID UID CAPBND ARGV0
 		mkdir -p "$R/proc/$1"
 		printf "%s\\0--flag\\0" "$4" >"$R/proc/$1/cmdline"
+		ln -sfn "$4" "$R/proc/$1/exe"
 		printf "Name:\\tx\\nUid:\\t%s\\t%s\\t%s\\t%s\\nCapInh:\\t0000000000000000\\nCapPrm:\\t0000000000000000\\nCapEff:\\t0000000000000000\\nCapBnd:\\t%s\\nCapAmb:\\t0000000000000000\\nNoNewPrivs:\\t1\\n" "$2" "$2" "$2" "$2" "$3" >"$R/proc/$1/status"
 		echo "$1" >>"$R/sys/fs/cgroup/system.slice/dilla.service/cgroup.procs"
 	}
@@ -222,7 +226,9 @@ if grep -rqF -e "$SECRET_TOKEN" -e "$SECRET_KEY" "$R/var/backups/dilla"; then fa
 # The runtime credential moves into the state dir unchanged, 0600 dillabot.
 [ "$(sha256sum <"$R/var/lib/dillabot/runtime.token")" = "$TOKEN_SUM" ] || fail "the runtime credential changed on its move"
 [ "$(stat -c '%a %u' "$R/var/lib/dillabot/runtime.token")" = "600 $BOT_TEST_UID" ] || fail "runtime.token is not 0600 dillabot"
-grep -q "^install -m 0600 -o dillabot -g dillabot $R/etc/dillabot/runtime.token $R/var/lib/dillabot/runtime.token.new$" "$LOG" || fail "the credential was not installed 0600 dillabot:dillabot"
+grep -q "^install -T -m 0600 -o dillabot -g dillabot $R/etc/dillabot/runtime.token $R/var/lib/dillabot/runtime.token.new$" "$LOG" || fail "the credential was not installed -T 0600 dillabot:dillabot"
+if grep -q '^chown -R\|^chown [^-]' "$LOG"; then fail "root ran a chown that follows links in the state dir: $(grep '^chown' "$LOG")"; fi
+[ ! -e "$R/etc/dilla/dilla.toml.bot-prev" ] || fail "the previous dilla.toml outlived the confirmed upgrade"
 if grep -q '^dillad admin bot-runtime create' "$LOG"; then fail "the upgrade created a new runtime credential"; fi
 # Writes [bot] enabled = true with state_dir.
 [ "$(sed -n '/^\[bot\]$/,/^\[/p' "$R/etc/dilla/dilla.toml")" = "$(printf "[bot]\n  enabled = true\n  state_dir = '/var/lib/dillabot'")" ] || fail "dilla.toml has no [bot] enabled = true with state_dir: $(cat "$R/etc/dilla/dilla.toml")"
@@ -283,7 +289,7 @@ F="$TMP/fresh"
 mkdir -p "$F/usr/local/bin" "$F/etc/dilla" "$F/etc/systemd/system" "$F.state"
 cp "$STUBS/dillad" "$F/usr/local/bin/dillad"
 printf 'core-v2\n' >"$F/usr/local/bin/dilla_core_wasi.wasm"
-printf "[instance]\n  domain = 'chat.example.org'\n\n[bot]\n  enabled = false\n  executable = '/usr/local/bin/dillabot'\n  state_dir = '/var/lib/dillabot'\n  user = 'dillabot'\n" >"$F/etc/dilla/dilla.toml"
+printf "[instance]\n  domain = 'chat.example.org'\n\n[livekit]\n  mode = 'sidecar'\n\n[bot]\n  enabled = false\n  executable = '/usr/local/bin/dillabot'\n  state_dir = '/var/lib/dillabot'\n  user = 'dillabot'\n" >"$F/etc/dilla/dilla.toml"
 cp "$HERE/dilla.service" "$F/etc/systemd/system/dilla.service"
 inst "$F" --upgrade --release-url="file://$REL"
 [ "$RC" = 0 ] || fail "fresh install has no dillabot.service: exit $RC: $(cat "$TMP/err")"
@@ -318,17 +324,24 @@ expect_v1_restored() {
 	[ "$(cat "$r/etc/systemd/system/dilla.service")" = "$(printf '[Service]\nExecStart=/usr/local/bin/dillad serve')" ] || fail "$1: dilla.service was not restored"
 	if grep -q '^\[bot\]' "$r/etc/dilla/dilla.toml"; then fail "$1: dilla.toml was not restored"; fi
 	[ "$(tree "$r/var/lib/dillabot/$INST")" = "$STATE_BEFORE" ] || fail "$1: the state changed"
-	[ -f "$r.state/v1-enabled" ] && [ -f "$r.state/v1-active" ] || fail "$1: dillabot.service was not enabled and started again"
-	grep -q 'restored the v1 Bot' "$TMP/err" || fail "$1: the rollback was not reported: $(cat "$TMP/err")"
+	{ [ -f "$r.state/v1-enabled" ] && [ -f "$r.state/v1-active" ]; } || fail "$1: dillabot.service was not enabled and started again"
+	grep -q "put back the v1 Bot's files and unit (dillabot.service and /etc/dillabot) and the previous dilla.toml, dilla.service and Bot binaries. The v1 Bot cannot connect to a wire-6 dillad until this upgrade succeeds" "$TMP/err" ||
+		fail "$1: the rollback was not reported as files and unit put back: $(cat "$TMP/err")"
+	if grep -q 'incomplete' "$TMP/err"; then fail "$1: a complete rollback said incomplete"; fi
+	# A complete rollback leaves no rollback material behind.
+	[ -z "$(find "$r/var/backups" -path '*/dilla/bot-*' 2>/dev/null)" ] || fail "$1: the rollback material outlived a complete rollback: $(find "$r/var/backups/dilla")"
+	[ ! -e "$r/etc/dilla/dilla.toml.bot-prev" ] || fail "$1: dilla.toml.bot-prev outlived a complete rollback"
 	no_secret_printed "$1"
 }
 R2="$TMP/caps"
 v1_root "$R2"
 BOT_TEST_BOT=caps inst "$R2" --upgrade --release-url="file://$REL"
 expect_v1_restored "a Bot holding capabilities" "$R2"
-grep -q 'install-bot: RED bot: the Bot (pid 101) holds capabilities: CapBnd=000001ffffffffff' "$TMP/err" || fail "the capability failure was not named: $(cat "$TMP/err")"
+grep -q 'install-bot: RED bot: the Bot (pid 101) holds capabilities: CapBnd=000001ffffffffff; it must hold none' "$TMP/err" || fail "the capability failure was not named: $(cat "$TMP/err")"
 [ "$(grep -c '^systemctl restart dilla$' "$LOG")" = 2 ] || fail "dilla was not restarted on the restored config"
 [ -e "$R2/var/backups/dillabot/20200101T000000Z-aaaaaaa1" ] || fail "a rolled-back upgrade removed an older copy"
+grep -qF "the v1 installer's key copies are still there (they hold the database key; delete them once the Bot is upgraded): $R2/var/backups/dillabot/20200101T000000Z-aaaaaaa1" "$TMP/err" ||
+	fail "the rollback did not name the kept key copies: $(cat "$TMP/err")"
 pass "a Bot that holds any capability fails the upgrade, which restores the v1 Bot"
 
 R3="$TMP/nobot"
@@ -385,7 +398,223 @@ inst "$R8" --upgrade --release-url="file://$BAD"
 if grep -q '^systemctl' "$LOG"; then fail "a checksum failure ran systemctl"; fi
 pass "a tampered release changes nothing"
 
+# ------------------------------- I-1: root never follows a link in the state dir ----
+# Every entry looks foreign here (dillabot resolves to uid 4242, which owns nothing), as after a restore done as root.
+# A hardlink or a symlink among them is refused before anything changes: chown would reach the inode outside.
+for kind in hardlink symlink; do
+	RL="$TMP/links-$kind"
+	v1_root "$RL"
+	printf 'root-owned target\n' >"$TMP/target-$kind"
+	TARGET_OWNER="$(stat -c %u "$TMP/target-$kind")"
+	case "$kind" in
+	hardlink) ln "$TMP/target-$kind" "$RL/var/lib/dillabot/$INST/planted" ;;
+	symlink) ln -s "$TMP/target-$kind" "$RL/var/lib/dillabot/$INST/planted" ;;
+	esac
+	SNAP="$(tree "$RL")"
+	BOT_TEST_UID=4242 inst "$RL" --upgrade --release-url="file://$REL"
+	[ "$RC" != 0 ] || fail "a $kind in the state dir was accepted"
+	grep -qF "$RL/var/lib/dillabot/$INST/planted" "$TMP/err" || fail "the planted $kind was not named: $(cat "$TMP/err")"
+	[ "$(tree "$RL")" = "$SNAP" ] || fail "the $kind refusal changed files"
+	[ "$(stat -c %u "$TMP/target-$kind")" = "$TARGET_OWNER" ] || fail "the $kind's target changed owner"
+	if grep -q '^chown\|^systemctl \(stop\|disable\|restart\)' "$LOG"; then fail "the $kind refusal ran chown or stopped something: $(cat "$LOG")"; fi
+done
+pass "a hardlink or symlink that dillabot does not own in the state dir is refused, and root never chowns through it"
+
+# Foreign directories and single-link files are given to dillabot with chown -h, one filesystem, after dilla stopped.
+RO="$TMP/owners"
+v1_root "$RO"
+BOT_TEST_UID=4242 inst "$RO" --upgrade --release-url="file://$REL"
+[ "$RC" = 0 ] || fail "the ownership repair failed: $(cat "$TMP/err")"
+grep -q "^chown -h dillabot:dillabot .*$RO/var/lib/dillabot/$INST/database.key" "$LOG" || fail "the foreign key file was not given to dillabot with chown -h: $(grep chown "$LOG")"
+if grep -q '^chown -R\|^chown [^-]' "$LOG"; then fail "a chown that follows links ran"; fi
+[ "$(grep -n '^systemctl stop dilla$' "$LOG" | cut -d: -f1)" -lt "$(grep -n '^chown -h dillabot:dillabot .*database.key' "$LOG" | cut -d: -f1)" ] || fail "dilla was not stopped before the owners were fixed"
+grep -qx 'install-bot: gave dillabot the files under /var/lib/dillabot it did not own' "$TMP/err" || fail "the ownership repair was not logged"
+pass "foreign directories and single-link files are given to dillabot with chown -h, with no Bot running"
+
+# ------------------------------------------------- I-2: interrupted runs ----
+# inst_bg ROOT ARGS...: starts install-bot.sh with a 30 s health wait and returns once it is in that wait (dilla has
+# restarted with the Bot enabled); BGPID is the script.
+inst_bg() {
+	r="$1"
+	shift
+	: >"$LOG"
+	: >"$TMP/err"
+	env PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$r" BOT_TEST_LOG="$LOG" BOT_TEST_STATE="$r.state" DILLA_BOT_HEALTH_SECONDS=30 \
+		"$INSTALL" "$@" >"$TMP/out" 2>"$TMP/err" &
+	BGPID=$!
+	for _ in $(seq 150); do
+		if grep -q 'the Bot runs under\|restarted dilla.service' "$TMP/err"; then sleep 0.3; return 0; fi
+		sleep 0.1
+	done
+	fail "the run never reached the health wait: $(cat "$TMP/err")"
+}
+# An interrupt (SIGTERM, like Ctrl-C's SIGINT) during the health wait rolls back at once.
+RT="$TMP/term"
+v1_root "$RT"
+inst_bg "$RT" --upgrade --release-url="file://$REL"
+kill -TERM "$BGPID"
+RC=0
+wait "$BGPID" || RC=$?
+grep -q 'install-bot: error: interrupted' "$TMP/err" || fail "SIGTERM did not roll back: $(cat "$TMP/err")"
+expect_v1_restored "an interrupt during the health wait" "$RT"
+pass "an interrupt during the health wait rolls back to the v1 Bot's files and unit"
+
+# A SIGKILL leaves the run pending; its rollback material is in the backup and beside dilla.toml, not in a temp dir.
+killed_root() { # ROOT
+	v1_root "$1"
+	inst_bg "$1" --upgrade --release-url="file://$REL"
+	kill -KILL "$BGPID"
+	# bash reports the kill on wait's stderr.
+	{ wait "$BGPID"; } 2>/dev/null || :
+	PBK="$(find "$1/var/backups/dilla" -mindepth 1 -maxdepth 1 -name 'bot-v1-*')"
+	[ -f "$PBK/pending" ] || fail "a killed run left no pending backup"
+	[ "$(cat "$PBK/prev-dillabot")" = bot-binary-v1 ] || fail "the killed run's backup does not hold the previous dillabot"
+	{ grep -qx 'was_enabled=1' "$PBK/state" && grep -qx 'was_active=1' "$PBK/state"; } || fail "the v1 unit's enable state is not in the backup"
+	[ -f "$1/etc/dilla/dilla.toml.bot-prev" ] || fail "the previous dilla.toml is not beside dilla.toml"
+	[ "$(stat -c %a "$1/etc/dilla/dilla.toml.bot-prev")" = 640 ] || fail "dilla.toml.bot-prev is not 0640"
+	[ ! -e "$1/etc/systemd/system/dillabot.service" ] || fail "the killed run had not reached the health wait"
+}
+RK1="$TMP/killed-ok"
+killed_root "$RK1"
+inst "$RK1" --upgrade --release-url="file://$REL"
+[ "$RC" = 0 ] || fail "the re-run after a kill failed: $(cat "$TMP/err")"
+grep -qxF "install-bot: resuming the interrupted upgrade recorded in $PBK" "$TMP/err" || fail "the re-run did not resume the pending backup"
+[ "$(find "$RK1/var/backups/dilla" -mindepth 1 -maxdepth 1 | wc -l)" = 1 ] || fail "the re-run made a second backup"
+[ "$(find "$PBK" -mindepth 1 -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')" = "bot.toml dilla.service dillabot.service " ] || fail "the confirmed backup holds $(find "$PBK" -mindepth 1 -printf '%f ')"
+{ [ ! -e "$RK1/etc/dillabot" ] && [ ! -e "$RK1/etc/dilla/dilla.toml.bot-prev" ]; } || fail "the resumed upgrade left v1 leftovers"
+pass "a re-run after a killed upgrade resumes its pending backup and completes"
+
+RK2="$TMP/killed-fail"
+killed_root "$RK2"
+BOT_TEST_BOT=caps inst "$RK2" --upgrade --release-url="file://$REL"
+expect_v1_restored "a failing re-run after a kill" "$RK2"
+pass "a failing re-run after a killed upgrade restores the v1 Bot's files, binaries and enable state from the pending backup"
+
+RK3="$TMP/killed-missing"
+killed_root "$RK3"
+rm -f "$PBK/prev-dillabot"
+BOT_TEST_BOT=caps inst "$RK3" --upgrade --release-url="file://$REL"
+[ "$RC" != 0 ] || fail "a rollback with missing material succeeded"
+grep -qF "the rollback was incomplete: the previous dillabot is missing ($PBK/prev-dillabot). The rollback material is kept in $PBK" "$TMP/err" ||
+	fail "the incomplete rollback did not name what is missing: $(cat "$TMP/err")"
+if grep -q "put back the v1 Bot" "$TMP/err"; then fail "an incomplete rollback claimed the v1 Bot was put back"; fi
+[ -d "$PBK" ] || fail "an incomplete rollback deleted its material"
+pass "a rollback that misses its material says incomplete and names exactly what is missing"
+
+# --------------------------------- I-3: key copies go only after a healthy Bot ----
+# R is on this release; a key copy an earlier run could not delete is kept while the Bot is RED, and goes once it is not.
+install -d -m 0700 "$R/var/backups/dillabot/20200102T000000Z-bbbbbbb1/state"
+printf '%s\n' "$SECRET_KEY" >"$R/var/backups/dillabot/20200102T000000Z-bbbbbbb1/state/database.key"
+cp "$R/proc/101/status" "$TMP/status.ok"
+sed -i 's/^CapEff:.*/CapEff:\t0000000000000400/' "$R/proc/101/status"
+inst "$R" --upgrade --release-url="file://$REL"
+[ "$RC" != 0 ] || fail "a no-op run with a RED Bot succeeded"
+[ -d "$R/var/backups/dillabot/20200102T000000Z-bbbbbbb1" ] || fail "the key copy was deleted while the Bot was RED"
+grep -qF "the v1 installer's key copies are kept until the Bot is healthy: $R/var/backups/dillabot/20200102T000000Z-bbbbbbb1" "$TMP/err" || fail "the kept key copy was not named"
+cp "$TMP/status.ok" "$R/proc/101/status"
+inst "$R" --upgrade --release-url="file://$REL"
+[ "$RC" = 0 ] || fail "the healthy no-op run failed: $(cat "$TMP/err")"
+[ ! -e "$R/var/backups/dillabot/20200102T000000Z-bbbbbbb1" ] || fail "the key copy survived a healthy run"
+[ "$(grep -n 'removed pre-upgrade copy' "$TMP/err" | cut -d: -f1)" -gt "$(grep -n 'the Bot runs under dilla.service' "$TMP/err" | cut -d: -f1)" ] || fail "the key copy went before the Bot was checked"
+pass "a run that changes nothing else deletes the v1 key copies only after doctor and the Bot check pass"
+
+# --------------------------------------------------- I-4: live calls ----
+printf 'room-a\t2 participants\n  alice\n  bob\n' >"$TMP/rooms.live"
+RL4="$TMP/live"
+v1_root "$RL4"
+SNAP="$(tree "$RL4")"
+BOT_TEST_ROOMS="$TMP/rooms.live" inst "$RL4" --upgrade --release-url="file://$REL"
+[ "$RC" != 0 ] || fail "an upgrade over live calls went ahead"
+grep -q 'there are live calls, and restarting the SFU disconnects everyone in them. Nothing was changed' "$TMP/err" || fail "the live calls were not the reason: $(cat "$TMP/err")"
+grep -q 'room-a: 2 participants' "$TMP/err" || fail "the live room was not listed"
+if grep -q 'alice' "$TMP/err"; then fail "a participant's identity was listed"; fi
+[ "$(tree "$RL4")" = "$SNAP" ] || fail "the live-call refusal changed files"
+if grep '^systemctl' "$LOG" | grep -vq '^systemctl is-active'; then fail "the live-call refusal ran systemctl: $(grep systemctl "$LOG")"; fi
+BOT_TEST_ROOMS="$TMP/rooms.live" inst "$RL4" --upgrade --yes --release-url="file://$REL"
+[ "$RC" = 0 ] || fail "--yes over live calls failed: $(cat "$TMP/err")"
+grep -q 'warning: there are live calls, and restarting the SFU disconnects everyone in them; continuing because of --yes' "$TMP/err" || fail "--yes did not warn"
+pass "live calls refuse the restart unless --yes, as install.sh --upgrade does"
+
+# --------------------------------------- M-3: the Bot check, case by case ----
+# health_case NAME WANT_RC [TEXT]: runs the shared bot_health against the fake /proc and cgroup under $HR.
+HR="$TMP/health"
+mkdir -p "$HR.state"
+touch "$HR.state/account"
+hproc() { # PID UID ARGV0 EXE CAPS("inh prm eff bnd amb", "-" drops a line) NNP IN_CGROUP
+	mkdir -p "$HR/proc/$1"
+	printf '%s\0' "$3" >"$HR/proc/$1/cmdline"
+	ln -sfn "$4" "$HR/proc/$1/exe"
+	{
+		printf 'Uid:\t%s\t%s\t%s\t%s\n' "$2" "$2" "$2" "$2"
+		i=0
+		for v in $5; do
+			i=$((i + 1))
+			name="$(echo "CapInh CapPrm CapEff CapBnd CapAmb" | cut -d' ' -f"$i")"
+			[ "$v" = - ] || printf '%s:\t%s\n' "$name" "$v"
+		done
+		printf 'NoNewPrivs:\t%s\n' "$6"
+	} >"$HR/proc/$1/status"
+	[ "$7" != 1 ] || echo "$1" >>"$HR/sys/fs/cgroup/system.slice/dilla.service/cgroup.procs"
+}
+Z=0000000000000000
+ZERO="$Z $Z $Z $Z $Z"
+B=/usr/local/bin/dillabot
+health_case() { # NAME WANT_RC TEXT; then resets the fake tree
+	rc=0
+	# The eval'd block reads ROOT, the two timings and log.
+	# shellcheck disable=SC2034,SC2329
+	(
+		ROOT="$HR"
+		BOT_START_SECONDS=0
+		BOT_HEALTH_SECONDS=0
+		log() { printf 'install-bot: %s\n' "$*" >&2; }
+		eval "$(health_block "$INSTALL")"
+		PATH="$STUBS:$PATH" BOT_TEST_STATE="$HR.state" BOT_TEST_LOG="$TMP/health.log" bot_health
+	) 2>"$TMP/health.err" || rc=$?
+	[ "$rc" = "$2" ] || fail "bot check, $1: exit $rc, want $2: $(cat "$TMP/health.err")"
+	grep -qF "$3" "$TMP/health.err" || fail "bot check, $1: no \"$3\" in: $(cat "$TMP/health.err")"
+	rm -rf "$HR/proc" "$HR/sys"
+	mkdir -p "$HR/sys/fs/cgroup/system.slice/dilla.service"
+	: >"$HR/sys/fs/cgroup/system.slice/dilla.service/cgroup.procs"
+}
+health_block() { sed -n '/^# --- bot health: begin/,/^# --- bot health: end/p' "$1"; }
+mkdir -p "$HR/sys/fs/cgroup/system.slice/dilla.service"
+: >"$HR/sys/fs/cgroup/system.slice/dilla.service/cgroup.procs"
+U="$BOT_TEST_UID"
+hproc 7 "$U" $B $B "$ZERO" 1 1
+health_case "a clean Bot" 0 "the Bot runs under dilla.service as dillabot (pid 7), holding no capabilities"
+hproc 7 "$U" $B $B "$Z $Z 0000000000000400 $Z $Z" 1 1
+health_case "CapEff set" 1 "holds capabilities: CapEff=0000000000000400; it must hold none"
+hproc 7 "$U" $B $B "$Z $Z $Z $Z 0000000000000080" 1 1
+health_case "CapAmb set" 1 "holds capabilities: CapAmb=0000000000000080; it must hold none"
+hproc 7 "$U" $B $B "$ZERO" 0 1
+health_case "NoNewPrivs 0" 1 "runs without no_new_privs"
+hproc 7 "$U" $B $B "$Z $Z $Z $Z -" 1 1
+health_case "a capability line missing" 1 "could not read the Bot's (pid 7) five capability sets"
+hproc 7 "$U" $B $B "$ZERO" 1 1
+hproc 8 "$U" $B $B "$Z $Z 000001ffffffffff 000001ffffffffff $Z" 1 0
+health_case "a capable dillabot process outside the cgroup is not the Bot" 0 "(pid 7), holding no capabilities"
+hproc 8 "$U" $B $B "$ZERO" 1 0
+health_case "a Bot outside the cgroup only" 1 "no Bot process runs under dilla.service"
+hproc 7 "$U" $B $B "$ZERO" 1 1
+hproc 9 4343 $B $B "$Z $Z 000001ffffffffff 000001ffffffffff $Z" 1 1
+health_case "a process of another uid named dillabot is not the Bot" 0 "(pid 7), holding no capabilities"
+hproc 9 4343 $B $B "$ZERO" 1 1
+health_case "another uid only" 1 "no Bot process runs under dilla.service"
+hproc 7 "$U" $B $B "$ZERO" 1 1
+hproc 10 "$U" $B $B "$ZERO" 1 1
+health_case "two Bots" 1 "more than one Bot process runs under dilla.service: 7 10"
+hproc 11 "$U" $B /var/lib/dillabot/evil "$ZERO" 1 1
+health_case "argv[0] dillabot, another executable" 1 "pid 11 calls itself /usr/local/bin/dillabot but runs /var/lib/dillabot/evil; it is not the Bot"
+pass "the Bot check: CapEff, CapAmb, NoNewPrivs, a missing set, the cgroup, the uid, two Bots and /proc/<pid>/exe"
+
 # ------------------------------------------------------------ the scripts ----
+# The live-call preflight is install.sh's, verbatim.
+for fn in livekit_mode live_calls_preflight; do
+	[ "$(sed -n "/^$fn() {/,/^}/p" "$INSTALL")" = "$(sed -n "/^$fn() {/,/^}/p" "$HERE/install.sh")" ] || fail "$fn differs between install.sh and install-bot.sh"
+	[ -n "$(sed -n "/^$fn() {/,/^}/p" "$INSTALL")" ] || fail "install-bot.sh has no $fn"
+done
+pass "install-bot.sh's live-call preflight is install.sh's"
 # The Bot health check is the same code in install.sh (fresh install) and install-bot.sh (upgrade).
 health_block() { sed -n '/^# --- bot health: begin/,/^# --- bot health: end/p' "$1"; }
 [ -n "$(health_block "$INSTALL")" ] || fail "install-bot.sh has no bot health block"

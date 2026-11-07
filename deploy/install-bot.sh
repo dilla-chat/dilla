@@ -34,6 +34,8 @@ Bot (dillabot.service, /etc/dillabot) is retired: its unit and bot.toml are back
 
 options:
   --upgrade               the upgrade (the only mode; kept so v1 command lines keep working)
+  --yes                   restart dilla even when calls are live (restarting dilla restarts
+                          dilla-media and ends them), or when the live-room check fails
   --dillad-config FILE    dillad config (default: /etc/dilla/dilla.toml)
   --version TAG           release tag (default: this release's stamped tag)
   --release-url URL       release asset URL (default: GitHub release URL for TAG)
@@ -57,6 +59,7 @@ HELPER=""
 SUMS=""
 INSECURE=0
 CHECK_ARGS=0
+ASSUME_YES=0
 # How long the Bot may take to appear under dilla.service, and how long it must then keep its pid to count as healthy.
 BOT_START_SECONDS="${DILLA_BOT_START_SECONDS:-30}"
 BOT_HEALTH_SECONDS="${DILLA_BOT_HEALTH_SECONDS:-15}"
@@ -64,7 +67,7 @@ while [ "$#" -gt 0 ]; do
 	flag="$1"; value=""
 	case "$flag" in
 	--*=*) value="${flag#*=}"; flag="${flag%%=*}"; shift ;;
-	--check-args | --insecure-skip-verify | --upgrade | -h | --help) shift ;;
+	--check-args | --insecure-skip-verify | --upgrade | --yes | -h | --help) shift ;;
 	--base-url | --instance-id | --module | --dillad-config | --version | --release-url | --binary | --helper | --sums)
 		[ "$#" -ge 2 ] || die "$flag needs a value"
 		value="$2"; shift 2 ;;
@@ -83,6 +86,7 @@ while [ "$#" -gt 0 ]; do
 	--insecure-skip-verify) INSECURE=1 ;;
 	--check-args) CHECK_ARGS=1 ;;
 	--upgrade) ;;
+	--yes) ASSUME_YES=1 ;;
 	-h | --help) usage; exit 0 ;;
 	*) usage; die "unknown option $flag" ;;
 	esac
@@ -116,6 +120,8 @@ HELPER_NAME="dilla-bot-core-linux-$ARCH"
 BIN_DIR="$ROOT/usr/local/bin"
 LIB_DIR="$ROOT/usr/local/lib/dilla"
 DILLAD_BIN="$BIN_DIR/dillad"
+# The names install.sh's live_calls_preflight reads.
+CONF="$DILLAD_CONFIG"
 UNIT_DIR="$ROOT/etc/systemd/system"
 DILLA_UNIT="$UNIT_DIR/dilla.service"
 STATE_DIR="$ROOT/var/lib/dillabot"
@@ -138,7 +144,12 @@ id dillad >/dev/null 2>&1 || die "the dillad user does not exist; install dillad
 [ ! -L "$STATE_DIR" ] || die "$STATE_DIR is a symlink; the Bot's state directory must be a real directory"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+# $WORK holds only downloads and the new credential on its way in; the rollback material lives in the backup
+# directory and beside dilla.toml, so an interrupted run leaves it for the next one. Until the change phase begins, an
+# interrupt just exits; from then on it rolls back.
+trap 'rm -rf "$WORK"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
 have() { command -v "$1" >/dev/null 2>&1; }
 fetch() {
 	if have curl; then curl -fsSL --proto '=https,file' --proto-redir '=https' -o "$2" "$1" >&2 || die "download failed: $1"
@@ -285,16 +296,72 @@ bot_toml() {
 	' "$1" "$1"
 }
 
+# livekit_mode and live_calls_preflight are install.sh's, verbatim (install_bot_test.sh compares them): every
+# change restarts dilla, and dilla-media is PartOf=dilla.service, so live calls are checked first.
+livekit_mode() {
+	awk '
+		/^[[:space:]]*\[livekit\][[:space:]]*$/ { inside = 1; next }
+		inside && /^[[:space:]]*\[/ { exit }
+		inside && /^[[:space:]]*mode[[:space:]]*=/ {
+			line = $0
+			sub(/^[^=]*=[[:space:]]*/, "", line)
+			sub(/[[:space:]]*#.*/, "", line)
+			gsub(/["\047[:space:]]/, "", line)
+			print line
+			exit
+		}
+	' "$CONF"
+}
+
+# live_calls_preflight refuses (exit 1, nothing touched) while a room has participants or when the
+# check cannot be made, unless --yes. It runs at the moment the upgrade is about to stop things:
+# an answer from earlier does not count. `media --rooms` prints "no live rooms", or per room
+# "<room><TAB><n> participants" followed by the participants' identities indented by two spaces.
+live_calls_preflight() {
+	_rooms=""
+	if [ "$LIVEKIT_MODE_BEFORE" != sidecar ]; then
+		_why="livekit.mode is $LIVEKIT_MODE_BEFORE, so the SFU runs inside dilla and its rooms cannot be listed; this upgrade restarts it and ends every live call"
+	elif ! systemctl is-active --quiet dilla-media; then
+		# A stopped SFU holds no rooms (a rollback stops dilla first, and dilla-media with it through PartOf).
+		log "dilla-media is not running, so there are no live calls"
+		return 0
+	elif _rooms="$(runuser -u dillad -- "$BIN_DIR/dillad" media --rooms --config="$CONF")"; then
+		_busy="$(printf '%s\n' "$_rooms" | awk -F'\t' '$2 ~ /^[1-9][0-9]* participants$/ { print "  " $1 ": " $2 }')"
+		if [ -z "$_busy" ]; then
+			case "$_rooms" in
+			"no live rooms" | *participants*) return 0 ;;
+			esac
+			_why="dillad media --rooms printed something unexpected: $_rooms"
+		else
+			_why="there are live calls, and restarting the SFU disconnects everyone in them"
+			log "live rooms:"
+			printf '%s\n' "$_busy" | while IFS= read -r _line; do log "$_line"; done
+		fi
+	else
+		_why="could not list the live rooms (runuser -u dillad -- $BIN_DIR/dillad media --rooms --config=$CONF failed)"
+	fi
+	if [ "$ASSUME_YES" -eq 1 ]; then
+		log "warning: $_why; continuing because of --yes"
+		return 0
+	fi
+	die "$_why. Nothing was changed. Try again when the rooms are empty, or pass --yes to upgrade anyway"
+}
+
 # --- bot health: begin (install.sh and install-bot.sh carry this block verbatim; install_bot_test.sh compares them) ---
 # bot_pids PROCS UID prints the pids listed in the control-group file PROCS that are the Bot: every uid (real,
-# effective, saved, filesystem) is UID, and argv[0] is /usr/local/bin/dillabot, which bot-launch passes when it execs
-# the Bot. The Bot's helper and its sandbox run as the same user under other names.
+# effective, saved, filesystem) is UID, argv[0] is /usr/local/bin/dillabot, which bot-launch passes when it execs the
+# Bot, and /proc/<pid>/exe, which the process cannot choose, resolves to that file. The Bot's helper and its sandbox
+# run as the same user under other names.
 bot_pids() {
 	while IFS= read -r bp_pid; do
 		case "$bp_pid" in '' | *[!0-9]*) continue ;; esac
 		[ -r "$ROOT/proc/$bp_pid/status" ] || continue
 		[ "$(awk '$1 == "Uid:" { print $2, $3, $4, $5 }' "$ROOT/proc/$bp_pid/status")" = "$2 $2 $2 $2" ] || continue
 		[ "$(tr '\0' '\n' <"$ROOT/proc/$bp_pid/cmdline" 2>/dev/null | head -n 1)" = /usr/local/bin/dillabot ] || continue
+		if [ "$(readlink "$ROOT/proc/$bp_pid/exe" 2>/dev/null)" != /usr/local/bin/dillabot ]; then
+			log "warning: pid $bp_pid calls itself /usr/local/bin/dillabot but runs $(readlink "$ROOT/proc/$bp_pid/exe" 2>/dev/null || echo 'an unreadable executable'); it is not the Bot"
+			continue
+		fi
 		printf '%s\n' "$bp_pid"
 	done <"$1"
 }
@@ -390,17 +457,31 @@ remove_old_copies() {
 		if rm -rf "$dir"; then log "removed pre-upgrade copy $dir"; else log "warning: could not remove pre-upgrade copy $dir (it holds the database key)"; fi
 	done
 }
-old_copies_exist() {
+
+# old_copies_list prints the v1 installer's key copies that are still there, space-separated.
+old_copies_list() {
 	for dir in "$OLD_COPIES"/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-????????; do
-		if [ -d "$dir" ] && [ ! -L "$dir" ]; then return 0; fi
+		if [ -d "$dir" ] && [ ! -L "$dir" ]; then printf '%s ' "$dir"; fi
 	done
-	return 1
 }
 
 # ------------------------------------------------------------------ plan ----
 # What this run has to change. Nothing is changed while the plan is made.
+
+# A run that was killed before it confirmed or rolled back leaves its backup marked pending: this run resumes it, so
+# the rollback material (the original units, binaries, dilla.toml and the v1 unit's enable state) stays the original's.
+BACKUP=""
+for dir in "$BACKUP_PARENT"/bot-*; do
+	if [ -d "$dir" ] && [ ! -L "$dir" ] && [ -f "$dir/pending" ]; then BACKUP="$dir"; fi
+done
+# state_get KEY prints the value the backup's state file first recorded for KEY; state_once KEY VALUE records it
+# unless the backup already holds one (the first run's answer wins).
+state_get() { [ -n "$BACKUP" ] && [ -f "$BACKUP/state" ] && awk -F= -v k="$1" '$1 == k { print substr($0, length(k) + 2); exit }' "$BACKUP/state"; }
+state_once() { [ -n "$(state_get "$1" || :)" ] || printf '%s=%s\n' "$1" "$2" >>"$BACKUP/state"; }
+
 LEGACY=0
 if [ -e "$LEGACY_UNIT" ] || [ -e "$LEGACY_CONF" ] || [ -e "$LEGACY_CREDENTIAL" ]; then LEGACY=1; fi
+[ "$(state_get legacy || :)" != 1 ] || LEGACY=1
 if [ -f "$LEGACY_CONF" ]; then
 	legacy_state="$(awk -F= '$1 ~ /^[ \t]*state_dir[ \t]*$/ { v = $2; gsub(/^[ \t]*["\047]|["\047][ \t]*(#.*)?$/, "", v); print v }' "$LEGACY_CONF" | tail -n 1)"
 	case "$legacy_state" in
@@ -417,10 +498,21 @@ NEED_GROUP=0
 case " $(id -nG dillad 2>/dev/null || :) " in *" dillabot "*) ;; *) NEED_GROUP=1 ;; esac
 BOT_UID=""
 [ "$NEED_ACCOUNT" -eq 1 ] || BOT_UID="$(id -u dillabot)"
+if [ "$NEED_ACCOUNT" -eq 1 ] && [ -d "$STATE_DIR" ] && [ -n "$(find "$STATE_DIR" -mindepth 1 -print -quit)" ]; then
+	die "$STATE_DIR holds files but there is no dillabot user; check who wrote them, then create the user or move them away. Nothing was changed"
+fi
 NEED_STATE_DIR=0
 if [ ! -d "$STATE_DIR" ] || [ "$NEED_ACCOUNT" -eq 1 ] || [ "$(stat -c '%u %a' "$STATE_DIR")" != "$BOT_UID 700" ]; then NEED_STATE_DIR=1; fi
+# The state directory is the Bot's: a compromised Bot can plant anything in it. Root never follows a link there. An
+# entry dillabot does not own is given to it only when it is a directory or a regular file with one link, so chown
+# cannot reach an inode outside the tree; anything else is refused for a person to look at.
 NEED_OWNER=0
-if [ -d "$STATE_DIR" ] && [ -n "$BOT_UID" ] && [ -n "$(find "$STATE_DIR" -mindepth 1 ! -uid "$BOT_UID" -print -quit)" ]; then NEED_OWNER=1; fi
+if [ -d "$STATE_DIR" ] && [ -n "$BOT_UID" ]; then
+	foreign="$(find "$STATE_DIR" -xdev -mindepth 1 ! -uid "$BOT_UID" \( \( ! -type d ! -type f \) -o \( -type f -links +1 \) \) -print)"
+	[ -z "$foreign" ] || die "entries under $STATE_DIR that dillabot does not own are links or special files: $(printf '%s' "$foreign" | tr '\n' ' ')
+root does not touch them. Check where they came from, remove them or give them to dillabot by hand, then run this again. Nothing was changed"
+	[ -z "$(find "$STATE_DIR" -xdev -mindepth 1 ! -uid "$BOT_UID" -print -quit)" ] || NEED_OWNER=1
+fi
 NEED_CREDENTIAL=0
 [ -f "$CREDENTIAL" ] || NEED_CREDENTIAL=1
 NEED_BINARIES=0
@@ -431,102 +523,133 @@ cmp -s "$WORK/dilla.service" "$DILLA_UNIT" || NEED_UNIT=1
 bot_toml "$DILLAD_CONFIG" >"$WORK/dilla.toml"
 NEED_TOML=0
 cmp -s "$WORK/dilla.toml" "$DILLAD_CONFIG" || NEED_TOML=1
-NEED_RESTART=$((LEGACY + NEED_ACCOUNT + NEED_GROUP + NEED_STATE_DIR + NEED_OWNER + NEED_CREDENTIAL + NEED_BINARIES + NEED_UNIT + NEED_TOML))
+RESUME=0
+[ -z "$BACKUP" ] || RESUME=1
+NEED_CHANGE=$((LEGACY + RESUME + NEED_ACCOUNT + NEED_GROUP + NEED_STATE_DIR + NEED_OWNER + NEED_CREDENTIAL + NEED_BINARIES + NEED_UNIT + NEED_TOML))
 
-if [ "$NEED_RESTART" -eq 0 ]; then
-	if old_copies_exist; then
-		remove_old_copies
-	else
-		log "nothing to change: the Bot already runs under dillad from this release"
+if [ "$NEED_CHANGE" -eq 0 ]; then
+	log "nothing to change: the Bot already runs under dillad from this release"
+	# The v1 installer's key copies go only once the Bot is proven healthy (Task 8).
+	if ! doctor_bot || ! bot_health; then
+		kept="$(old_copies_list)"
+		[ -z "$kept" ] || log "the v1 installer's key copies are kept until the Bot is healthy: $kept"
+		die "the Bot is not healthy under dillad; nothing was changed"
 	fi
-	doctor_bot || die "the Bot's files fail dillad doctor; nothing was changed"
-	bot_health || die "the Bot is not healthy under dillad; nothing was changed"
+	remove_old_copies
 	exit 0
 fi
 
+# Every change restarts dilla, and dilla-media is PartOf=dilla.service: refuse while calls are live (or say why not),
+# before anything is touched.
+LIVEKIT_MODE_BEFORE="$(livekit_mode)"
+live_calls_preflight
+
 # ---------------------------------------------------------------- change ----
-# What has changed so far, for the rollback.
-BACKUP=""
-LEGACY_STOPPED=0
-WAS_ENABLED=0
-WAS_ACTIVE=0
-CREDENTIAL_ADDED=0
-NEW_RUNTIME=""
-BINARIES_CHANGED=0
-UNIT_CHANGED=0
-LEGACY_REMOVED=0
-TOML_CHANGED=0
-RESTARTED=0
-
-# restore SRC DEST puts SRC back at DEST, through a rename.
-restore() { cp -p "$1" "$2.restore" && mv -f "$2.restore" "$2"; }
-
-# rollback REASON puts every changed file back, restarts dilla on the previous configuration if it was restarted, and
-# starts the v1 Bot again if it ran before. It always exits.
+# rollback REASON puts back every file the backup records, restarts dilla on the previous configuration if this run
+# (or the interrupted one it resumes) restarted or stopped it, and enables and starts the v1 unit as it was. It reads
+# what to restore from the backup's state file, so it works for a resumed run too. When an expected file is missing it
+# says exactly which, keeps the backup, and reports the rollback incomplete. It always exits.
 rollback() {
+	trap - INT TERM HUP
 	log "error: $1"
-	rb_ok=0
-	if [ "$TOML_CHANGED" -eq 1 ]; then restore "$WORK/dilla.toml.prev" "$DILLAD_CONFIG" || { log "could not restore $DILLAD_CONFIG"; rb_ok=1; }; fi
-	if [ "$UNIT_CHANGED" -eq 1 ]; then restore "$BACKUP/dilla.service" "$DILLA_UNIT" || { log "could not restore $DILLA_UNIT"; rb_ok=1; }; fi
-	if [ "$BINARIES_CHANGED" -eq 1 ]; then
+	missing=""
+	# miss PATH WHAT records a file the rollback needed and did not find, or could not put back.
+	miss() { missing="$missing${missing:+; }$2 ($1)"; }
+	if [ "$(state_get toml_saved || :)" = 1 ]; then
+		if [ -f "$TOML_PREV" ]; then restore "$TOML_PREV" "$DILLAD_CONFIG" || miss "$DILLAD_CONFIG" "dilla.toml could not be put back"; else miss "$TOML_PREV" "the previous dilla.toml is missing"; fi
+	fi
+	if [ "$(state_get unit_saved || :)" = 1 ]; then
+		if [ -f "$BACKUP/dilla.service" ]; then restore "$BACKUP/dilla.service" "$DILLA_UNIT" || miss "$DILLA_UNIT" "dilla.service could not be put back"; else miss "$BACKUP/dilla.service" "the previous dilla.service is missing"; fi
+	fi
+	if [ "$(state_get binaries_saved || :)" = 1 ]; then
 		for pair in "dillabot:$BIN_DIR/dillabot" "dilla-bot-core:$LIB_DIR/dilla-bot-core"; do
-			if [ -f "$WORK/prev/${pair%%:*}" ]; then
-				restore "$WORK/prev/${pair%%:*}" "${pair#*:}" || { log "could not restore ${pair#*:}"; rb_ok=1; }
+			name="${pair%%:*}"
+			dest="${pair#*:}"
+			if [ "$(state_get "had_$name" || :)" = 1 ]; then
+				if [ -f "$BACKUP/prev-$name" ]; then restore "$BACKUP/prev-$name" "$dest" || miss "$dest" "the previous $name could not be put back"; else miss "$BACKUP/prev-$name" "the previous $name is missing"; fi
 			else
-				rm -f "${pair#*:}" || rb_ok=1
+				rm -f "$dest" || miss "$dest" "the new $name could not be removed"
 			fi
 		done
 	fi
-	if [ "$LEGACY_REMOVED" -eq 1 ]; then
-		for name in dillabot.service bot.toml; do
-			[ -f "$BACKUP/$name" ] || continue
-			case "$name" in dillabot.service) dest="$LEGACY_UNIT" ;; *) dest="$LEGACY_CONF" ;; esac
-			restore "$BACKUP/$name" "$dest" || { log "could not restore $dest"; rb_ok=1; }
-		done
+	for pair in "dillabot.service:$LEGACY_UNIT" "bot.toml:$LEGACY_CONF"; do
+		name="${pair%%:*}"
+		[ "$(state_get "had_$name" || :)" = 1 ] || continue
+		[ ! -f "${pair#*:}" ] || continue
+		if [ -f "$BACKUP/$name" ]; then restore "$BACKUP/$name" "${pair#*:}" || miss "${pair#*:}" "the v1 $name could not be put back"; else miss "$BACKUP/$name" "the v1 $name is missing"; fi
+	done
+	if [ "$(state_get credential_added || :)" = 1 ]; then
+		rm -f "$CREDENTIAL" || miss "$CREDENTIAL" "the copied credential could not be removed"
+		new_runtime="$(state_get new_runtime || :)"
+		[ -z "$new_runtime" ] || log "the runtime $new_runtime registered for this upgrade is unused; revoke it with: dillad admin bot-runtime revoke --id=$new_runtime --config=$DILLAD_CONFIG"
 	fi
-	if [ "$CREDENTIAL_ADDED" -eq 1 ]; then
-		rm -f "$CREDENTIAL" || rb_ok=1
-		[ -z "$NEW_RUNTIME" ] || log "the runtime $NEW_RUNTIME this run registered is unused; revoke it with: dillad admin bot-runtime revoke --id=$NEW_RUNTIME --config=$DILLAD_CONFIG"
+	systemctl daemon-reload || log "systemd could not reload the restored units"
+	if [ "$(state_get restarted || :)" = 1 ]; then
+		systemctl restart dilla || log "warning: dilla did not start on the restored configuration; read journalctl -o cat -u dilla"
 	fi
-	if [ "$UNIT_CHANGED" -eq 1 ] || [ "$LEGACY_REMOVED" -eq 1 ]; then systemctl daemon-reload || log "systemd could not reload the restored units"; fi
-	if [ "$RESTARTED" -eq 1 ]; then
-		systemctl restart dilla || log "warning: dilla did not restart on the restored configuration; read journalctl -o cat -u dilla"
+	if [ "$(state_get had_dillabot.service || :)" = 1 ] && [ -f "$LEGACY_UNIT" ]; then
+		[ "$(state_get was_enabled || :)" != 1 ] || systemctl enable dillabot || miss "dillabot.service" "the v1 unit could not be enabled again"
+		[ "$(state_get was_active || :)" != 1 ] || systemctl start dillabot || log "the v1 unit did not start again; read journalctl -o cat -u dillabot"
 	fi
-	if [ "$LEGACY_STOPPED" -eq 1 ]; then
-		[ "$WAS_ENABLED" -eq 0 ] || systemctl enable dillabot || { log "could not enable dillabot.service again"; rb_ok=1; }
-		[ "$WAS_ACTIVE" -eq 0 ] || systemctl start dillabot || log "the v1 Bot did not start again; read journalctl -o cat -u dillabot"
+	kept="$(old_copies_list)"
+	[ -z "$kept" ] || log "the v1 installer's key copies are still there (they hold the database key; delete them once the Bot is upgraded): $kept"
+	if [ -n "$missing" ]; then
+		die "$1; the rollback was incomplete: $missing. The rollback material is kept in $BACKUP${TOML_PREV:+ and $TOML_PREV}"
 	fi
-	if [ "$rb_ok" -ne 0 ]; then
-		die "$1; the rollback was incomplete: the previous units and bot.toml are in ${BACKUP:-(no backup was needed)}, and every step above names what it could not restore"
-	fi
+	rm -rf "$BACKUP"
+	rm -f "$TOML_PREV"
+	rmdir "$BACKUP_PARENT" 2>/dev/null || :
 	if [ "$LEGACY" -eq 1 ]; then
-		die "$1; restored the v1 Bot (dillabot.service and /etc/dillabot) and the previous dilla.toml, dilla.service and Bot binaries"
+		die "$1; put back the v1 Bot's files and unit (dillabot.service and /etc/dillabot) and the previous dilla.toml, dilla.service and Bot binaries. The v1 Bot cannot connect to a wire-6 dillad until this upgrade succeeds"
 	fi
-	die "$1; restored the previous dilla.toml, dilla.service and Bot binaries"
+	die "$1; put back the previous dilla.toml, dilla.service and Bot binaries"
 }
 
-# The backup: the v1 unit and bot.toml, and the dilla.service this run replaces. Never the database key or the
-# runtime credential: the state stays where it is, and the credential stays in /etc/dillabot until the end.
-if [ "$LEGACY" -eq 1 ] || [ "$NEED_UNIT" -eq 1 ]; then
+# restore SRC DEST puts SRC back at DEST, through a rename.
+restore() { cp -p "$1" "$2.restore" && mv -f "$2.restore" "$2"; }
+# TOML_PREV is dilla.toml as it was, beside it with its owner and mode (root:dillad 0640): it may hold secrets, so it
+# never goes to /var/backups.
+TOML_PREV="$DILLAD_CONFIG.bot-prev"
+
+# The backup, and the rollback material: the v1 unit and bot.toml, the dilla.service this run replaces, the previous
+# Bot binaries and a state file. Never the database key or the runtime credential: the state stays where it is, and the
+# v1 credential stays in /etc/dillabot until the upgrade is confirmed.
+if [ -n "$BACKUP" ]; then
+	log "resuming the interrupted upgrade recorded in $BACKUP"
+else
 	install -d -m 0700 -o root -g root "$BACKUP_PARENT" || die "cannot create $BACKUP_PARENT; nothing was changed"
-	BACKUP="$BACKUP_PARENT/bot-v1-$(date -u +%Y%m%dT%H%M%SZ)"
+	stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+	if [ "$LEGACY" -eq 1 ]; then BACKUP="$BACKUP_PARENT/bot-v1-$stamp"; else BACKUP="$BACKUP_PARENT/bot-upgrade-$stamp"; fi
+	[ ! -e "$BACKUP" ] || BACKUP="$BACKUP-$$"
 	mkdir -m 0700 "$BACKUP" || die "cannot create $BACKUP; nothing was changed"
-	saved=""
-	for pair in "dillabot.service:$LEGACY_UNIT" "bot.toml:$LEGACY_CONF" "dilla.service:$DILLA_UNIT"; do
-		[ -f "${pair#*:}" ] || continue
-		[ "${pair%%:*}" != dilla.service ] || [ "$NEED_UNIT" -eq 1 ] || continue
-		cp -p "${pair#*:}" "$BACKUP/${pair%%:*}" || die "could not back up ${pair#*:}; nothing was changed"
-		saved="$saved${saved:+, }${pair%%:*}"
-	done
+	: >"$BACKUP/pending"
+fi
+state_once legacy "$LEGACY"
+saved=""
+for pair in "dillabot.service:$LEGACY_UNIT" "bot.toml:$LEGACY_CONF" "dilla.service:$DILLA_UNIT"; do
+	name="${pair%%:*}"
+	[ -f "${pair#*:}" ] || continue
+	[ "$name" != dilla.service ] || [ "$NEED_UNIT" -eq 1 ] || continue
+	[ ! -e "$BACKUP/$name" ] || continue
+	cp -p "${pair#*:}" "$BACKUP/$name" || die "could not back up ${pair#*:}; only $BACKUP was written"
+	case "$name" in dilla.service) state_once unit_saved 1 ;; *) state_once "had_$name" 1 ;; esac
+	saved="$saved${saved:+, }$name"
+done
+if [ -n "$saved" ]; then
 	case "$saved" in *", "*) saved="$(printf '%s' "$saved" | sed 's/\(.*\), /\1 and /')" ;; esac
 	log "backed up $saved to $BACKUP (no keys, no credential)"
 fi
+# From here on an interrupt rolls back.
+trap 'rollback "interrupted"' INT TERM HUP
 
 if [ "$LEGACY" -eq 1 ] && [ -e "$LEGACY_UNIT" ]; then
-	if systemctl is-enabled --quiet dillabot 2>/dev/null; then WAS_ENABLED=1; fi
-	if systemctl is-active --quiet dillabot; then WAS_ACTIVE=1; fi
-	systemctl disable --now dillabot || die "could not stop and disable dillabot.service; only the backup in $BACKUP was made"
-	LEGACY_STOPPED=1
+	was_enabled=0
+	was_active=0
+	if systemctl is-enabled --quiet dillabot 2>/dev/null; then was_enabled=1; fi
+	if systemctl is-active --quiet dillabot; then was_active=1; fi
+	state_once was_enabled "$was_enabled"
+	state_once was_active "$was_active"
+	systemctl disable --now dillabot || rollback "could not stop and disable dillabot.service"
 	log "stopped and disabled dillabot.service"
 fi
 
@@ -542,7 +665,8 @@ if [ "$NEED_GROUP" -eq 1 ]; then
 fi
 if [ "$NEED_STATE_DIR" -eq 1 ]; then
 	if [ -d "$STATE_DIR" ]; then
-		{ chown dillabot:dillabot "$STATE_DIR" && chmod 0700 "$STATE_DIR"; } || rollback "could not set $STATE_DIR to 0700 dillabot"
+		# The directory itself: /var/lib is root's, and the plan refused a symlink here.
+		{ chown -h dillabot:dillabot "$STATE_DIR" && chmod 0700 "$STATE_DIR"; } || rollback "could not set $STATE_DIR to 0700 dillabot"
 		log "set /var/lib/dillabot to 0700 dillabot"
 	else
 		install -d -m 0700 -o dillabot -g dillabot "$STATE_DIR" || rollback "could not create $STATE_DIR"
@@ -550,36 +674,52 @@ if [ "$NEED_STATE_DIR" -eq 1 ]; then
 	fi
 fi
 if [ "$NEED_OWNER" -eq 1 ]; then
-	# Ownership only: no byte under the state directory changes.
-	chown -R dillabot:dillabot "$STATE_DIR" || rollback "could not give dillabot its state under $STATE_DIR"
+	# No Bot may run while root changes owners in its tree: dilla (which runs it) is stopped first.
+	if systemctl is-active --quiet dilla; then
+		state_once restarted 1
+		systemctl stop dilla || rollback "could not stop dilla.service before fixing owners under $STATE_DIR"
+		log "stopped dilla.service, so no Bot runs while owners are fixed"
+	fi
+	# Directories and single-link regular files only, never through a link, never off this filesystem.
+	find "$STATE_DIR" -xdev -mindepth 1 ! -uid "$BOT_UID" \( -type d -o \( -type f -links 1 \) \) -exec chown -h dillabot:dillabot {} + ||
+		rollback "could not give dillabot its state under $STATE_DIR"
 	log "gave dillabot the files under /var/lib/dillabot it did not own"
 fi
 if [ "$NEED_CREDENTIAL" -eq 1 ]; then
+	state_once credential_added 1
 	if [ -f "$LEGACY_CREDENTIAL" ]; then
 		# Copied by path, unchanged; the v1 copy is removed once the Bot runs healthy under dillad.
-		{ install -m 0600 -o dillabot -g dillabot "$LEGACY_CREDENTIAL" "$CREDENTIAL.new" && mv -f "$CREDENTIAL.new" "$CREDENTIAL"; } ||
+		{ install -T -m 0600 -o dillabot -g dillabot "$LEGACY_CREDENTIAL" "$CREDENTIAL.new" && mv -T -f "$CREDENTIAL.new" "$CREDENTIAL"; } ||
 			rollback "could not move the runtime credential into $STATE_DIR"
-		CREDENTIAL_ADDED=1
 		log "moved the runtime credential to /var/lib/dillabot/runtime.token, unchanged"
 	else
 		# The CLI requires an owner-private parent with no symlink ancestors; it never prints the credential.
 		mkdir -m 0700 "$WORK/credential"
 		admin_out="$("$DILLAD_BIN" admin bot-runtime create --config="$DILLAD_CONFIG" --out="$WORK/credential/runtime.token")" ||
 			rollback "dillad could not create a Bot runtime credential"
+		state_once new_runtime "$(printf '%s\n' "$admin_out" | sed -n 's/^created bot runtime \([0-9a-f]*\);.*/\1/p')"
 		[ -s "$WORK/credential/runtime.token" ] || rollback "dillad did not write a runtime credential file"
-		NEW_RUNTIME="$(printf '%s\n' "$admin_out" | sed -n 's/^created bot runtime \([0-9a-f]*\);.*/\1/p')"
-		{ install -m 0600 -o dillabot -g dillabot "$WORK/credential/runtime.token" "$CREDENTIAL.new" && mv -f "$CREDENTIAL.new" "$CREDENTIAL"; } ||
-			rollback "could not install the new runtime credential"
-		CREDENTIAL_ADDED=1
+		install_rc=0
+		install -T -m 0600 -o dillabot -g dillabot "$WORK/credential/runtime.token" "$CREDENTIAL.new" || install_rc=$?
+		rm -f "$WORK/credential/runtime.token"
+		{ [ "$install_rc" -eq 0 ] && mv -T -f "$CREDENTIAL.new" "$CREDENTIAL"; } || rollback "could not install the new runtime credential"
 		log "dillad registered a new runtime credential: $admin_out"
 	fi
 fi
 if [ "$NEED_BINARIES" -eq 1 ]; then
+	# The previous binaries go into the backup first (not secret), so a later run can still put them back.
+	for pair in "dillabot:$BIN_DIR/dillabot" "dilla-bot-core:$LIB_DIR/dilla-bot-core"; do
+		name="${pair%%:*}"
+		[ -z "$(state_get "had_$name" || :)" ] || continue
+		if [ -f "${pair#*:}" ]; then
+			cp -p "${pair#*:}" "$BACKUP/prev-$name" || rollback "could not keep the previous $name in $BACKUP"
+			state_once "had_$name" 1
+		else
+			state_once "had_$name" 0
+		fi
+	done
+	state_once binaries_saved 1
 	# Root-owned, never group- or world-writable, in root-owned directories: the keeper refuses anything else.
-	mkdir -m 0700 "$WORK/prev"
-	[ ! -f "$BIN_DIR/dillabot" ] || cp -p "$BIN_DIR/dillabot" "$WORK/prev/dillabot"
-	[ ! -f "$LIB_DIR/dilla-bot-core" ] || cp -p "$LIB_DIR/dilla-bot-core" "$WORK/prev/dilla-bot-core"
-	BINARIES_CHANGED=1
 	{
 		install -d -m 0755 -o root -g root "$LIB_DIR" &&
 			install -m 0755 -o root -g root "$WORK/$BIN_NAME" "$BIN_DIR/dillabot.new" && mv -f "$BIN_DIR/dillabot.new" "$BIN_DIR/dillabot" &&
@@ -588,35 +728,41 @@ if [ "$NEED_BINARIES" -eq 1 ]; then
 	log "installed dillabot and dilla-bot-core (root:root 0755)"
 fi
 if [ "$NEED_UNIT" -eq 1 ]; then
-	UNIT_CHANGED=1
 	{ install -m 0644 "$WORK/dilla.service" "$DILLA_UNIT.new" && mv -f "$DILLA_UNIT.new" "$DILLA_UNIT"; } || rollback "could not install dilla.service"
 	log "installed dilla.service from this release"
 fi
-if [ "$LEGACY" -eq 1 ]; then
-	LEGACY_REMOVED=1
+UNITS_CHANGED="$NEED_UNIT"
+if [ -e "$LEGACY_UNIT" ] || [ -e "$LEGACY_CONF" ]; then
 	rm -f "$LEGACY_UNIT" "$LEGACY_CONF" || rollback "could not remove dillabot.service and $LEGACY_CONF"
+	UNITS_CHANGED=1
 	log "removed dillabot.service and /etc/dillabot/bot.toml"
 fi
-if [ "$UNIT_CHANGED" -eq 1 ] || [ "$LEGACY_REMOVED" -eq 1 ]; then
+if [ "$UNITS_CHANGED" -eq 1 ]; then
 	systemctl daemon-reload || rollback "systemd could not reload its units"
 	log "reloaded systemd's units"
 fi
 if [ "$NEED_TOML" -eq 1 ]; then
-	cp -p "$DILLAD_CONFIG" "$WORK/dilla.toml.prev"
-	TOML_CHANGED=1
+	if [ "$(state_get toml_saved || :)" != 1 ]; then
+		cp -p "$DILLAD_CONFIG" "$TOML_PREV" || rollback "could not keep the previous dilla.toml as $TOML_PREV"
+		state_once toml_saved 1
+	fi
 	# cp -p keeps dilla.toml's owner and mode (root:dillad 0640); the rename makes the change atomic.
 	{ cp -p "$DILLAD_CONFIG" "$DILLAD_CONFIG.new" && cat "$WORK/dilla.toml" >"$DILLAD_CONFIG.new" && mv -f "$DILLAD_CONFIG.new" "$DILLAD_CONFIG"; } ||
 		rollback "could not write [bot] into $DILLAD_CONFIG"
 	log "set [bot] enabled = true, state_dir = '/var/lib/dillabot' in dilla.toml"
 fi
 doctor_bot || rollback "dillad doctor refuses the Bot under dillad; dilla.service was not restarted"
-RESTARTED=1
+state_once restarted 1
 systemctl restart dilla || rollback "dilla.service did not restart with the Bot enabled; read journalctl -o cat -u dilla"
 log "restarted dilla.service"
 bot_health || rollback "the Bot did not come up healthy under dillad"
 
 # --------------------------------------------------------------- confirm ----
-# No rollback runs after this point: the v1 leftovers go, and with them every copy of the database key.
+# The Bot is healthy. No rollback runs after this point: the pending mark goes first, then the rollback material and
+# the v1 leftovers, and with them every copy of the database key.
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+rm -f "$BACKUP/pending" "$BACKUP/state" "$BACKUP/prev-dillabot" "$BACKUP/prev-dilla-bot-core" "$TOML_PREV"
 if [ -f "$LEGACY_CREDENTIAL" ]; then
 	if rm -f "$LEGACY_CREDENTIAL"; then log "removed the v1 credential copy /etc/dillabot/runtime.token"; else log "warning: could not remove $LEGACY_CREDENTIAL"; fi
 fi
@@ -625,7 +771,10 @@ if [ "$LEGACY" -eq 1 ] && { [ -e "$LEGACY_HELPER" ] || [ -e "$LEGACY_MODULE" ]; 
 	if rm -f "$LEGACY_HELPER" "$LEGACY_MODULE"; then log "removed the v1 helper and module"; else log "warning: could not remove $LEGACY_HELPER or $LEGACY_MODULE"; fi
 fi
 remove_old_copies
-if [ -n "$BACKUP" ]; then
+# A backup that kept no unit is empty now.
+rmdir "$BACKUP" 2>/dev/null || :
+rmdir "$BACKUP_PARENT" 2>/dev/null || :
+if [ -d "$BACKUP" ]; then
 	log "done: the Bot runs under dillad; the previous units and bot.toml are kept in $BACKUP"
 else
 	log "done: the Bot runs under dillad"
