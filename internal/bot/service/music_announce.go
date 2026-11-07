@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -177,6 +178,16 @@ func (h MusicAnnouncements) announce(ctx context.Context, actor InteractionActor
 	if !visible || bits&musicAnnounceChannelSend != musicAnnounceChannelSend {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
+	// Bot v2 Task 17: the card goes only into a Bot channel. A target that is not one gets no card and no destination
+	// registration, and the feature is flagged needs_bot_channel; /play itself needs no text channel at all.
+	if err := CheckBotChannel(h.CommunityID, text); err != nil {
+		if errors.Is(err, ErrNeedsBotChannel) {
+			FlagNeedsBotChannel(h.CommunityID, "music", text)
+			return InteractionResult{Status: interactionStatusUnavailable, Note: "The Bot posts only in Bot channels."}, nil
+		}
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
+	ClearNeedsBotChannel(h.CommunityID, "music")
 	// The existing request also registers the command's text destination before playback.
 	// Resolve the channel's MLS binding now, before remembering it or acknowledging registration.
 	group, err := h.Destination.ResolveTextGroup(ctx, h.CommunityID, text)

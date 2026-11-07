@@ -78,6 +78,9 @@ type MusicInteractions struct {
 	// DefaultVolume is the installation's Music page default (Task 10c). A new session, a track
 	// enqueued while nothing is playing or queued, starts at it. Nil keeps the queue's volume.
 	DefaultVolume func() uint8
+	// Hints tells the room's members (a call hint, scope the voice channel) that the queue or the playing track
+	// changed, after a mutation committed (Bot v2 Task 17). Nil sends none.
+	Hints HintSender
 }
 
 func (h MusicInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
@@ -109,6 +112,9 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	var group id.ID
 	defer func() {
 		if result.Status == 0 && failure == nil {
+			if op != protocol.OpMusicState && op != protocol.OpMusicSearch && req.ChannelID != nil {
+				hint(ctx, h.Hints, client.StateScopeCall, *req.ChannelID)
+			}
 			return
 		}
 		logger := h.Logger

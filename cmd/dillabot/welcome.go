@@ -62,7 +62,7 @@ func newWelcomeHandler(n *native.Client, session *client.Session, authority *cli
 	if err != nil {
 		return nil, err
 	}
-	destination := service.WelcomeDestinationResolver{Session: session, Native: n}
+	destination := service.WelcomeDestinationResolver{Session: session, Native: n, Feature: "welcome"}
 	var granter welcome.JoinRoleGranter
 	if capabilities&botRolesCapability != 0 {
 		granter = welcomeRoleGranter{members: members, installation: installation}

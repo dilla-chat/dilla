@@ -448,10 +448,26 @@ func newUtilityRuntime(n *native.Client, session *client.Session, authority *cli
 		return nil, err
 	}
 	actor := utilityActorAuthority{session: session, community: community}
-	publisher := &durablePollPublisher{state: n, coordinator: coordinator, destination: service.WelcomeDestinationResolver{Session: session, Native: n}, authority: authority, session: session, receipts: session, actorAuthority: session, community: community, installation: installation, now: now}
+	publisher := &durablePollPublisher{state: n, coordinator: coordinator, destination: service.WelcomeDestinationResolver{Session: session, Native: n, Feature: "polls"}, authority: authority, session: session, receipts: session, actorAuthority: session, community: community, installation: installation, now: now}
 	pollStore := polls.NewStore(n, community)
 	reminderStore := reminders.NewStore(n, binding, now)
-	return &utilityRuntime{polls: service.PollInteractions{Store: pollStore, Authority: actor, CommunityID: community, Now: now, Publisher: publisher}, reminders: service.ReminderInteractions{Store: reminderStore, Authority: actor, CommunityID: community, Now: now}}, nil
+	// Bot v2 Task 17: a reminder that comes due tells its owner's clients (a user hint), and a poll vote or close tells
+	// its channel's (a channel hint). Polls name their channel in the reply.
+	hints := client.SessionHints{Session: session}
+	reminderStore.Hints = hints
+	channelName := func(ctx context.Context, channel id.ID) string {
+		channels, err := session.Channels(ctx, community)
+		if err != nil {
+			return ""
+		}
+		for _, ch := range channels {
+			if ch.ID == channel {
+				return ch.Name
+			}
+		}
+		return ""
+	}
+	return &utilityRuntime{polls: service.PollInteractions{Store: pollStore, Authority: actor, CommunityID: community, Now: now, Publisher: publisher, Hints: hints, ChannelName: channelName}, reminders: service.ReminderInteractions{Store: reminderStore, Authority: actor, CommunityID: community, Now: now}}, nil
 }
 
 // gateCreation makes poll and reminder creation read the installation's current capability bit

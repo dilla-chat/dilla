@@ -130,7 +130,7 @@ before it ("every route below is `E`").
 | `PATCH /v1/devices/{device_id}` | E | `[label\|null]` | `204` names the device (null clears the name); the label is under the shared text rule below (NFC, trimmed, 1 to 64 characters, one line, no control, bidirectional or other invisible character), and the label is not part of the signed device list, so the server can see and change it; else `400 E_INVALID_REQUEST`; the device may be the caller's own or another live device of the same user; `404 E_NOT_FOUND` for another user's, an unknown or a removed (revoked) device; `403 E_FACTOR_REQUIRED` while the session owes a second factor; spends the device session's write bucket |
 | `DELETE /v1/devices/{device_id}` | E | — | `204` for an unlisted row — revokes, deletes sessions, closes sockets; `409 E_INVALID_REQUEST` for a listed device (its `device_id` and `dsk_pub` in one unrevoked entry of the newest list), which is revoked by a signed device list, and for an unlisted row created less than 10 minutes ago unless the caller's session is that device's own; `404 E_NOT_FOUND` for another user's device |
 | `PUT /v1/users/{user_id}/device-list` | E or P (own list only for P) | `[version(uint), blob(bstr), ssk_signature(bstr64), prev_hash(bstr32)]` | `204`; `400 E_INVALID_REQUEST` when `blob`'s outer elements disagree with the body or the list does not verify; `409 E_INVALID_REQUEST` when `version` is not the newest plus one or `prev_hash` does not chain |
-| `GET /v1/users/{user_id}/device-list` | E or P (own list only for P) | — | `[version, blob, ssk_signature, prev_hash]`; on a wire-4 session `[version, blob, ssk_signature, prev_hash, attestation]`, the account-kind attestation of `03` § Account kind attestation (a `500 E_INTERNAL` when the instance cannot sign it, never a head without it) |
+| `GET /v1/users/{user_id}/device-list` | E or P (own list only for P) | — | `[version, blob, ssk_signature, prev_hash]`; on a wire-4 session `[version, blob, ssk_signature, prev_hash, attestation]`, the account-kind attestation of `03` § Account kind attestation (a `500 E_INTERNAL` when the instance cannot sign it, never a head without it); on a wire-6 session `[version, blob, ssk_signature, prev_hash, attestation, umk_pub(bstr32), ssk_pub(bstr32), sig_umk_ssk(bstr64)]`, the account's keys as registered (below); a tombstoned account's head is the four elements on every wire |
 | `GET /v1/users/{user_id}/device-list?after=N` | E or P (own list only for P) | — | `[[version, blob, ssk_signature, prev_hash]]` of the stored versions greater than `N`, ascending, at most 64; `[]` when none; a malformed `N` is `400` |
 
 For trust validation, the unpaged `GET /v1/users/{user_id}/device-list` supplies a signed
@@ -145,6 +145,17 @@ version, or final signed bytes/hash different from the candidate. Read the unpag
 after paging; if it changed, retry once within 1024 versions and 4 MiB total or leave the leaf
 untrusted. A 403, 404 or malformed body also leaves it untrusted. A server that withholds all
 newer history can freeze first-sight trust; the client cannot prove freshness from these routes.
+
+On wire 6 (Bot v2 task 20b) the head's sixth to eighth elements are the account's `umk_pub`,
+`ssk_pub` and `sig_umk_ssk` (`users`, as `POST /v1/accounts` or the Bot's enrolment registered
+them). They carry no authority of their own: they let a member who shares no MLS group with the
+community's Bot build the Bot's `device_list_push` (`[umk_pub, ssk_pub, sig_umk_ssk, history]`,
+Bot v2 task 8) from the head and the history pages read from `after=0` (64 rows a page, within
+the 1024-version and 4 MiB bounds above), and hand it to the core, which checks `sig_umk_ssk`
+under the UMK and every list under the SSK and pins it only for an account the instance attested
+as a Bot (trust on first sight; another UMK later is held until it is verified). The access rule
+is the route's: an enrolled session reads any user's head, a pending session only its own. The
+keys are no secret: every leaf credential and KeyPackage of the account carries them.
 
 `POST /v1/accounts` is the sole exception to the device-session proof rule: it creates the device
 and its first session in the same transaction, because the device's key is the one being
@@ -389,6 +400,7 @@ permission checks still apply.
 | `PUT /v1/bot-runtime/communities/{community}/command-key` | B (ready, path community) | the signed command-key publication | `204`; `403` unless the installation's listed, unrevoked device signed it; `400` for another community or a `not_after` past or more than 8 days ahead; a new `key_id` bumps the catalog revision and pushes op 61 |
 | `POST /v1/bot-runtime/replies` | B (ready, own community) | `[device_id, request_id, seq, sealed, final]` (`10` § Sealed command relay, replies and state hints) | `204`; gateway op 62 to that device only; `404` unless that device sent the request into the Bot's community in the last five minutes; `413 E_TOO_LARGE` past 16 replies or 256 KiB for the request |
 | `POST /v1/bot-runtime/state-hints` | B (ready, own community) | `[scope_kind, scope_id]` | `[revision]`; gateway op 63 to the scope's audience only; `404` for a scope outside the Bot's community or a channel that is not a Bot channel |
+| `PUT /v1/bot-runtime/health` | B (ready, own community), socket | `[probe_ok(0\|1), probe_at, queue_depth, oldest_wait_ms, music_start_p95_ms, failing_since\|null]` (`10` § Bot health) | `204`; `400` for another shape |
 | `POST /v1/groups/{group}/moderation/removals` | E or B | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |
 | `GET /v1/groups/{group}/moderation/removals?after=N&limit=L` | E or B | — | `[removal_rows, next_revision]` |
 | `GET /v1/communities/{id}/self-roles` | E (community member) | — | `[[role_id, role_name, position, selected(uint)]]` |

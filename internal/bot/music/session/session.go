@@ -79,6 +79,10 @@ type QueueStarter struct {
 	// IdleLeaveAfter is the installation's current "Leave voice when idle" time; the supervisor
 	// that owns this starter leaves the room once nothing has played for that long. Nil disables.
 	IdleLeaveAfter func() time.Duration
+	// OnStateChange is called after the channel's queue state was persisted by the playback supervisor: the playing
+	// track or the queue changed on its own (a track ended and the next began). Bot v2 Task 17 sends a call hint from
+	// it. Nil does nothing.
+	OnStateChange func(context.Context)
 }
 
 // LeaveIdle leaves the retained room when nothing is playing.

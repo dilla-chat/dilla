@@ -596,6 +596,8 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				membership.UseInteractionPollSchedule(gateways.InteractionPollSchedule(installation.ID))
 				// Bot v2 Task 16: the Bot stays in Bot channel groups only, as its feed last applied them.
 				membership.UseBotChannels(gateways.BotChannels(installation.ID), logger.With("installation_id", installation.ID.String()))
+				// Bot v2 Task 17: the same marks gate every post the Bot makes, at the send layer.
+				service.SetPostGate(installation.CommunityID, gateways.BotChannels(installation.ID))
 			}
 			if ensureErr == nil {
 				var trust *service.SourceTrust
@@ -695,6 +697,13 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 											notices := musicRegistry.SkipNotices(installation.ID)
 											starter.OnSkipped = func(skipCtx context.Context, skips []music.SkippedTrack) { notices.Notify(skipCtx, channel, skips) }
 											starter.OnCallEnded = func() { notices.Clear(channel) }
+											// Bot v2 Task 17: the room's members hear that the queue or the playing track changed.
+											hints := client.SessionHints{Session: result.Session}
+											starter.OnStateChange = func(changeCtx context.Context) {
+												hintCtx, cancelHint := context.WithTimeout(context.WithoutCancel(changeCtx), 2*time.Second)
+												defer cancelHint()
+												_ = hints.Hint(hintCtx, client.StateScopeCall, channel)
+											}
 											if starter.SetCallEnded != nil {
 												starter.SetCallEnded(starter.OnCallEnded)
 											}
@@ -783,7 +792,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 													)
 													for operation, handler := range runtimeRolePanelHandlers(result.Installation.Capabilities, service.RolePanelInteractions{
 														Authority:   result.Session,
-														Destination: service.WelcomeDestinationResolver{Session: result.Session, Native: nativeClient},
+														Destination: service.WelcomeDestinationResolver{Session: result.Session, Native: nativeClient, Feature: "role_panels"},
 														Sender:      coordinator, Discovery: api, Session: result.Session, CommunityID: installation.CommunityID, Now: time.Now,
 													}) {
 														handlers[operation] = handler
@@ -791,7 +800,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 													// Jonas 2026-10-28: /play that starts music is announced publicly with the live player card.
 													musicAnnouncements := service.MusicAnnouncements{
 														Music: musicInteractions, Authority: result.Session, Channels: result.Session, Limiter: &service.MusicAnnounceLimiter{},
-														Destination: service.WelcomeDestinationResolver{Session: result.Session, Native: nativeClient},
+														Destination: service.WelcomeDestinationResolver{Session: result.Session, Native: nativeClient, Feature: "music"},
 														Sender:      coordinator, Discovery: api, Session: result.Session, CommunityID: installation.CommunityID, Now: time.Now,
 														Notices: musicRegistry.SkipNotices(installation.ID),
 													}
@@ -817,7 +826,14 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 												eventRuntime := newInteractionEventRuntime(interactionPoller, eventHandler)
 												if interactionErr = musicRegistry.RetainInteractions(installation.ID, installation.CommunityID, nativeClient); interactionErr == nil {
 													runtimeOwnedNative = true
+													sealedConfig.healthDir = filepath.Join(cfg.StateDir, installation.ID.String())
+													sealedConfig.musicStartP95 = func() time.Duration { return musicRegistry.StartP95(installation.ID, installation.CommunityID) }
 													gateways.SetSealedIntake(sealedConfig)
+													// Bot v2 Task 17: incoming webhooks are posted through this installation's send path.
+													gateways.SetWebhookPoster(installation.ID, newWebhookPoster(installation.CommunityID,
+														service.WelcomeDestinationResolver{Session: result.Session, Native: nativeClient, Feature: "webhooks"},
+														coordinatorWebhookSend{coordinator: coordinator, session: result.Session, authority: api}, time.Now,
+														logger.With("installation_id", installation.ID.String())))
 													reportUnrefreshed := unrefreshedSendersLogger(logger, installation.ID)
 													intakeEvents := countSkipped{holdingEventDrainer: eventRuntime, reportSkipped: func(events []service.SkippedGroupEvent) {
 														logSkippedCommandEvents(logger, installation.ID, events)

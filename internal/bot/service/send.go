@@ -237,6 +237,14 @@ func (s *SendCoordinator) sendAttempt(ctx context.Context, session sendSession, 
 	if group.ID != in.GroupID || group.State != 2 || group.Community == nil || *group.Community != s.binding.Community || group.Epoch > math.MaxInt64 {
 		return protocol.SendReceipt{}, errors.New("native send group does not match identity binding")
 	}
+	// Bot v2 Task 17: the Bot posts only into a marked Bot channel's group. The private interaction groups carry
+	// replies to one member and are not channels; every other group must be a channel group of a Bot channel. The gate
+	// sits here, below every feature and the webhook post, so no caller can bypass it.
+	if interaction == nil {
+		if err := s.requireBotChannelGroup(group); err != nil {
+			return protocol.SendReceipt{}, err
+		}
+	}
 	if in.PredecessorAttemptID != nil {
 		previous, lookupErr := session.BotMessageReceipt(ctx, s.binding.Community, in.OperationID, *in.PredecessorAttemptID, in.GroupID)
 		if lookupErr != nil {
@@ -449,4 +457,16 @@ func equalHash(got []byte, want [32]byte) bool {
 		}
 	}
 	return true
+}
+
+// requireBotChannelGroup refuses a group that is not a text channel group (kind 0) of a marked Bot channel, when the
+// community registered its marks (SetPostGate).
+func (s *SendCoordinator) requireBotChannelGroup(group native.GroupInfo) error {
+	if _, gated := postGates.Load(s.binding.Community); !gated {
+		return nil
+	}
+	if group.Kind != 0 {
+		return &NeedsBotChannelError{}
+	}
+	return CheckBotChannel(s.binding.Community, group.Target)
 }

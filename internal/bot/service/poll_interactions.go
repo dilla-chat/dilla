@@ -10,12 +10,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/polls"
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
 )
+
+// pollDefaultChannel stands for "the feature's configured Bot channel" in a poll create payload (the v1 payload needs a
+// non-zero channel id; no real channel id is all ones).
+var pollDefaultChannel = id.ID{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 
 const (
 	pollPermView           uint64 = 1 << 0
@@ -42,6 +47,13 @@ type PollInteractions struct {
 	// poll is created. Off refuses only creation: existing polls stay votable and closable. Nil
 	// allows creation (tests and older wiring).
 	CreateEnabled func(context.Context) (bool, error)
+	// DefaultChannel is the feature's configured Bot channel, where a poll goes when the command names none (Bot v2
+	// Task 17). Nil uses the community's only Bot channel, when it has exactly one.
+	DefaultChannel func(context.Context) (id.ID, bool)
+	// ChannelName names a channel for the reply ("Posted the poll in #bot."). Nil, or an empty name, leaves it out.
+	ChannelName func(context.Context, id.ID) string
+	// Hints tells members' clients that a poll in a Bot channel changed (vote or close): channel scope.
+	Hints HintSender
 }
 
 func (h PollInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
@@ -225,8 +237,20 @@ func (h PollInteractions) create(ctx context.Context, actor InteractionActor, r 
 	if cborx.Unmarshal(payload, &a) != nil || len(a) != 7 || a[0] != uint64(1) {
 		return unavailableInteraction()
 	}
-	channel, ok := pollIDValue(a[1])
-	if !ok {
+	var channel id.ID
+	if c, isID := pollIDValue(a[1]); isID && c == pollDefaultChannel {
+		// Bot v2 Task 17: no channel named, so the feature's configured Bot channel.
+		channel, ok = h.defaultChannel(ctx)
+		if !ok {
+			return needsBotChannelResult(h.CommunityID, "polls", id.ID{}, "Polls post in a Bot channel. Mark one in Settings, or name one with channel."), nil
+		}
+	} else if channel, ok = pollIDValue(a[1]); !ok {
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
+	if err := CheckBotChannel(h.CommunityID, channel); err != nil {
+		if errors.Is(err, ErrNeedsBotChannel) {
+			return needsBotChannelResult(h.CommunityID, "polls", channel, "The Bot posts only in Bot channels. Pick a Bot channel for the poll."), nil
+		}
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
 	var thread *id.ID
@@ -293,7 +317,27 @@ func (h PollInteractions) create(ctx context.Context, actor InteractionActor, r 
 		return InteractionResult{}, e
 	}
 	rev := p.Revision
-	return InteractionResult{Revision: &rev, Data: data}, nil
+	ClearNeedsBotChannel(h.CommunityID, "polls")
+	return InteractionResult{Revision: &rev, Data: data, Note: h.postedNote(ctx, channel)}, nil
+}
+
+// defaultChannel is where a poll with no named channel goes.
+func (h PollInteractions) defaultChannel(ctx context.Context) (id.ID, bool) {
+	if h.DefaultChannel != nil {
+		channel, ok := h.DefaultChannel(ctx)
+		return channel, ok && !channel.IsZero()
+	}
+	return OnlyBotChannel(h.CommunityID)
+}
+
+// postedNote is the reply that names where the poll went.
+func (h PollInteractions) postedNote(ctx context.Context, channel id.ID) string {
+	if h.ChannelName != nil {
+		if name := h.ChannelName(ctx, channel); name != "" {
+			return "Posted the poll in #" + strings.TrimPrefix(name, "#") + "."
+		}
+	}
+	return "Posted the poll."
 }
 func validPollDuration(v uint64) bool {
 	switch v {
@@ -421,6 +465,7 @@ func (h PollInteractions) vote(ctx context.Context, actor InteractionActor, r pr
 	p = out.Poll
 	data, e := pollData([]any{uint64(1), pollSummary(h.present(p), out.Choice)})
 	rev := p.Revision
+	hint(ctx, h.Hints, client.StateScopeChannel, p.ChannelID)
 	return InteractionResult{Revision: &rev, Data: data}, e
 }
 func (h PollInteractions) close(ctx context.Context, actor InteractionActor, r protocol.Request) (InteractionResult, error) {
@@ -458,6 +503,7 @@ func (h PollInteractions) close(ctx context.Context, actor InteractionActor, r p
 	}
 	data, e := pollData([]any{uint64(1), pollSummary(h.present(p), my)})
 	rev := p.Revision
+	hint(ctx, h.Hints, client.StateScopeChannel, p.ChannelID)
 	return InteractionResult{Revision: &rev, Data: data}, e
 }
 func (h PollInteractions) voters(ctx context.Context, actor InteractionActor, r protocol.Request) (InteractionResult, error) {

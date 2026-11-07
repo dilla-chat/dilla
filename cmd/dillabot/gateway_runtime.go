@@ -188,6 +188,8 @@ type botGatewayRuntime struct {
 	pollerVersions      map[id.ID]uint64
 	// sealed is each installation's sealed command intake (Bot v2 Task 15, command_worker.go).
 	sealed sealedRegistry
+	// webhooks is each installation's incoming-webhook poster (Bot v2 Task 17, webhook_post.go).
+	webhooks webhookRegistry
 }
 
 func newBotGatewayRuntime(ctx context.Context, api *client.Client, loopback bool, log *slog.Logger) *botGatewayRuntime {
@@ -497,6 +499,10 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 			case gatewayclient.OpBotCommand:
 				// A member's sealed command (Task 15): queued for the installation's sealed intake, acknowledged here.
 				r.relayCommand(installation, delivery.Frame.BotPayload, feed.barrier())
+			case gatewayclient.OpBotWebhook:
+				// An incoming webhook POST (Task 17): posted into its Bot channel, then acknowledged with op 67 on this
+				// connection, off this loop.
+				r.deliverWebhook(ctx, installation, gateway.WebhookAck, delivery.Frame.BotPayload)
 			case gatewayclient.OpCommunityChanged:
 				// The community's channels, settings or the Bot's own installation changed (op 54): read them again.
 				r.notify()
@@ -532,9 +538,9 @@ const botGatewayQueue = 4096
 
 // consumeDeliveries is one Bot connection's delivery loop (Bot v2 task 14). Every ringed delivery is acknowledged in
 // order (orderedAcks): an op 65 bot_event once the feed applied it, anything else once hint ran. Op 64 bot_command is
-// acknowledged as received (sealed intake is Task 15's) and op 66 bot_webhook, never ringed, is dropped (posting it
-// into the Bot channel is Task 17's; no op 67 is sent, so dillad answers the sender 503 rather than a 204 for a post
-// nobody sees). It returns when events closes.
+// acknowledged as received (sealed intake is Task 15's) and op 66 bot_webhook, never ringed, goes to hint like the
+// others: its poster (Task 17) posts it and answers with op 67 only once the message is accepted. It returns when
+// events closes.
 func consumeDeliveries(ctx context.Context, events <-chan gatewayclient.Delivery, acks *orderedAcks, feed *feedConsumer, log *slog.Logger, hint func(gatewayclient.Delivery)) {
 	for delivery := range events {
 		if delivery.Frame.Op == gatewayclient.OpReady {
@@ -547,11 +553,8 @@ func consumeDeliveries(ctx context.Context, events <-chan gatewayclient.Delivery
 		case gatewayclient.OpBotEvent:
 			feed.deliver(delivery, slot)
 			continue
-		case gatewayclient.OpBotWebhook:
-			if ctx.Err() == nil {
-				log.Debug("bot webhook delivery dropped: webhook posts land with Task 17")
-			}
 		default:
+			// Op 66 bot_webhook is never ringed (n = 0); its poster acknowledges it with op 67 once the post is made.
 			hint(delivery)
 		}
 		acks.done(slot)
@@ -599,6 +602,7 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 		}
 	}
 	r.sealed.retain(keep)
+	r.webhooks.retain(keep)
 	for installation := range r.idlePolls {
 		if !keep[installation] {
 			delete(r.idlePolls, installation)

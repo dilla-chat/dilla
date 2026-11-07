@@ -247,6 +247,21 @@ func (p persistedMusicQueue) Save(ctx context.Context, channel id.ID, expected u
 	return snapshot.Revision, err
 }
 
+// notifyingMusicQueue is the supervisor's persisted queue that tells changed after each successful save: the playing
+// track or the queue changed (Bot v2 Task 17: a call hint for the room's members).
+type notifyingMusicQueue struct {
+	persistedMusicQueue
+	changed func(context.Context)
+}
+
+func (q notifyingMusicQueue) Save(ctx context.Context, channel id.ID, expected uint64, state music.State) (uint64, error) {
+	revision, err := q.persistedMusicQueue.Save(ctx, channel, expected, state)
+	if err == nil {
+		q.changed(ctx)
+	}
+	return revision, err
+}
+
 // runtimeMusicAuthorityStore resolves installation and DJ policy from current
 // bot APIs on every authorization check. It never falls back to cached roles.
 type runtimeMusicAuthorityStore struct {
@@ -279,6 +294,7 @@ func newRuntimeMusicInteractions(installation, community id.ID, capabilities uin
 		CurrentState:        registry.CurrentState,
 		OnImmediateControl:  registry.applyImmediateControl,
 		OnPersistedSnapshot: musicSnapshotCommitCallback(registry, logger),
+		Hints:               client.SessionHints{Session: session},
 	}
 	if view, err := youtubeViewFor(community); err == nil {
 		handlers.Resolver = service.LoggingMusicTrackResolver{Resolver: view.Tracks, Logger: logger, InstallationID: installation}
@@ -389,7 +405,11 @@ func newMusicSupervisor(ctx context.Context, channel id.ID, store *persistence.S
 	if starter.IdleLeaveAfter != nil {
 		options = append(options, music.WithIdleLeave(starter.IdleLeaveAfter, nil))
 	}
-	return music.NewSupervisor(client.WithoutCooperativeStop(client.WithBackground(ctx)), channel, persistedMusicQueue{store: store}, starter, options...)
+	var queue music.QueueStore = persistedMusicQueue{store: store}
+	if starter.OnStateChange != nil {
+		queue = notifyingMusicQueue{persistedMusicQueue: persistedMusicQueue{store: store}, changed: starter.OnStateChange}
+	}
+	return music.NewSupervisor(client.WithoutCooperativeStop(client.WithBackground(ctx)), channel, queue, starter, options...)
 }
 
 // restoreMusicSupervisors binds one paused queue supervisor to each voice
@@ -650,6 +670,35 @@ func (r *musicQueueRegistry) QueueCount(installation, community id.ID) int {
 	}
 	r.mu.Unlock()
 	return queues.Len()
+}
+
+// StartP95 is the 95th percentile of the first-frame time of the installation's last 20 track starts in each of its
+// voice rooms, the worst room's (zero without a start): the health report's music_start_p95_ms.
+func (r *musicQueueRegistry) StartP95(installation, community id.ID) time.Duration {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	retained := r.runtimes[installation]
+	var queues *musicQueueRuntime
+	if retained != nil && retained.community == community {
+		queues = retained.queues
+	}
+	r.mu.Unlock()
+	if queues == nil {
+		return 0
+	}
+	queues.mu.Lock()
+	supervisors := make([]*music.Supervisor, 0, len(queues.supervisors))
+	for _, supervisor := range queues.supervisors {
+		supervisors = append(supervisors, supervisor)
+	}
+	queues.mu.Unlock()
+	var worst time.Duration
+	for _, supervisor := range supervisors {
+		worst = max(worst, music.StartP95(supervisor.Timings()))
+	}
+	return worst
 }
 
 func (r *musicQueueRegistry) QueueStore(installation, community id.ID) (*persistence.Store, bool) {

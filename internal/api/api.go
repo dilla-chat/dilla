@@ -197,6 +197,9 @@ type Deps struct {
 	BotCatalogGateway BotCatalogGateway
 	// BotCatalogPushes runs those fan-outs in the background, bounded. Register builds one when nil.
 	BotCatalogPushes *BotCatalogPusher
+	// BotHealth is dillad's view of each community Bot's health, from the Bot's reports (Bot v2 Task 17). Register
+	// builds one when nil.
+	BotHealth *BotHealth
 	// BotChannelEvents hears Bot-channel marks and unmarks after they commit (Bot v2 Task 9; Task 12's
 	// Bot feed implements it). Nil is NoBotChannelEvents.
 	BotChannelEvents BotChannelEvents
@@ -271,6 +274,9 @@ func Register(m *server.Mux, d Deps) {
 	}
 	if d.BotCatalogPushes == nil {
 		d.BotCatalogPushes = NewBotCatalogPusher()
+	}
+	if d.BotHealth == nil {
+		d.BotHealth = NewBotHealth(d.Clock)
 	}
 	if d.BotRequests == nil {
 		d.BotRequests = NewBotRequestLedger(d.Clock)

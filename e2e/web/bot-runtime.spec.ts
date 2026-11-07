@@ -10,6 +10,7 @@ import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { installWorkerPort, portCall } from './support/worker-port';
 import { advanceClock } from './support/totp';
 import { e2ePort } from './support/ports';
+import { markBotChannel, watchBearer } from './support/bot-channel';
 
 const BOT_RUNTIME_PORT = Number(process.env.DILLA_E2E_BOT_RUNTIME_PORT ?? e2ePort(8491));
 const HOST: HostConfig = { port: BOT_RUNTIME_PORT, control: BOT_RUNTIME_PORT + 1, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
@@ -468,6 +469,7 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
   const roleName = 'Readers';
   try {
     host = await startTestHost(ROLE_PANEL_HOST);
+    const bearerOf = watchBearer(page);
     const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await addServerVia(page, 'create');
     const create = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
@@ -533,6 +535,8 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await nav.getByRole('button', { name: copy('admin.nav.selfRoles'), exact: true }).click();
 
+    // Bot v2 Task 17: the Bot posts only into Bot channels; the panel's target is marked first.
+    await markBotChannel(page, host.url, bearerOf, 'general');
     await settings.getByLabel(`${copy('admin.bot.rolePanel.emoji')} for ${roleName}`, { exact: true }).fill('👍');
     await settings.getByRole('combobox', { name: copy('admin.bot.rolePanel.channel'), exact: true }).selectOption({ label: 'general' });
     await settings.getByRole('button', { name: copy('admin.bot.rolePanel.publish'), exact: true }).click();

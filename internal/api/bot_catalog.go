@@ -36,8 +36,8 @@ const (
 	maxCommandKeyPublication = 256
 )
 
-// The catalog status states (GET …/bot/catalog element 3). State 1, degraded, is reported once the
-// Bot's health signal exists (Task 14).
+// The catalog status states (GET …/bot/catalog element 3). State 1, degraded, is the Bot's own health report
+// (bot_health.go, Bot v2 Task 17); a ready Bot that stops reporting is offline.
 const (
 	botStatusReady    uint64 = 0
 	botStatusOffline  uint64 = 2
@@ -308,8 +308,8 @@ func commandVisible(perm, community Bits, perChannel []Bits) bool {
 
 // botCatalogStatus is GET …/bot/catalog's [state, since]: absent with no installation, ready,
 // disabled, or offline for an installation still enrolling or joining. since is the installation's
-// last change. Degraded comes with the Bot's health signal (Task 14).
-func botCatalogStatus(ctx context.Context, repo store.Repository, cid id.ID) ([]any, error) {
+// last change. A ready installation reads the Bot's health reports: degraded or offline, with since when.
+func botCatalogStatus(ctx context.Context, repo store.Repository, health *BotHealth, cid id.ID) ([]any, error) {
 	row, err := repo.GetActiveBotInstallationByCommunity(ctx, cid)
 	if errors.Is(err, store.ErrNotFound) {
 		return []any{botStatusAbsent, nil}, nil
@@ -325,6 +325,11 @@ func botCatalogStatus(ctx context.Context, repo store.Repository, cid id.ID) ([]
 	switch row.State {
 	case store.BotInstallationReady:
 		state = botStatusReady
+		if health != nil {
+			if judged, judgedSince := health.Status(cid); judged != botStatusReady || judgedSince != 0 {
+				state, since = judged, judgedSince
+			}
+		}
 	case store.BotInstallationDisabled:
 		state = botStatusDisabled
 	}
@@ -394,7 +399,7 @@ func (d Deps) GetBotCatalog(w http.ResponseWriter, r *http.Request) {
 	default:
 		publication = key.Publication
 	}
-	status, err := botCatalogStatus(ctx, d.Repo, cid)
+	status, err := botCatalogStatus(ctx, d.Repo, d.BotHealth, cid)
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return

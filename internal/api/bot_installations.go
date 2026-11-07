@@ -156,6 +156,8 @@ func registerBotInstallations(m *server.Mux, d Deps) {
 	// does not admit (only a joining or ready Bot identifies). Every other route the Bot's device session calls is a
 	// socket route.
 	m.Handle("PUT /v1/bot-runtime/installations/{installation}/credential", botSession("PUT /v1/bot-runtime/installations/{installation}/credential", http.HandlerFunc(d.FinalizeBotCredential)))
+	// Bot v2 Task 17: the Bot's health report, socket-only like the other runtime routes (bot_health.go).
+	m.SocketAuthed("PUT /v1/bot-runtime/health", d.socketChain(auth.ScopeEnrolled, dsClassBotRuntime), http.HandlerFunc(d.PutBotRuntimeHealth))
 	m.SocketAuthed("POST /v1/bot-runtime/installations/{installation}/ready", botSocketChain(d.Sessions, d.Limiter, "POST /v1/bot-runtime/installations/{installation}/ready"), http.HandlerFunc(d.MarkBotReady))
 	m.SocketAuthed("POST /v1/bot-runtime/installations/{installation}/moderation/actions", botSocketChain(d.Sessions, d.Limiter, "POST /v1/bot-runtime/installations/{installation}/moderation/actions"), http.HandlerFunc(d.AcceptBotModerationAction))
 	d.registerBotRemovalReceipt(m)

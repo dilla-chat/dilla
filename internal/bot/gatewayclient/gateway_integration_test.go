@@ -219,11 +219,21 @@ func TestRunResumesThroughServerReplayBarrierAndRotatesToken(t *testing.T) {
 	if err := gw.CommitAck(ctx, group, 9); err != nil {
 		t.Fatalf("commit ack: %v", err)
 	}
-	for _, want := range []Opcode{OpSubscribe, OpCommitAck} {
+	delivery := testID(6)
+	if err := gw.WebhookAck(ctx, delivery, 0); err != nil {
+		t.Fatalf("webhook ack: %v", err)
+	}
+	for _, want := range []Opcode{OpSubscribe, OpCommitAck, OpBotWebhookAck} {
 		select {
 		case got := <-seenOps:
 			if got.Op != want {
 				t.Fatalf("outbound opcode=%d, want %d", got.Op, want)
+			}
+			if want == OpBotWebhookAck {
+				b, ok := got.Payload[0].([]byte)
+				if !ok || !bytesEqual(b, delivery[:]) || len(got.Payload) != 2 || got.Payload[1] != uint64(0) {
+					t.Fatalf("webhook ack payload=%v, want [delivery_id bstr, 0]", got.Payload)
+				}
 			}
 			if want == OpCommitAck {
 				bytes, ok := got.GroupID.([]byte)

@@ -616,6 +616,10 @@ func expectedStatus(method, path string) (int, bool) {
 			return 204, true
 		}
 	}
+	// Bot v2 Task 17: a health report answers 204.
+	if len(parts) == 2 && parts[0] == "bot-runtime" && parts[1] == "health" && method == http.MethodPut {
+		return 204, true
+	}
 	// Bot v2 Task 10: a reply answers 204, a state hint [revision].
 	if len(parts) == 2 && parts[0] == "bot-runtime" && method == http.MethodPost {
 		switch parts[1] {

@@ -72,6 +72,9 @@ type InteractionResult struct {
 	Status   uint64
 	Revision *uint64
 	Data     []byte
+	// Note is text for the member, for the sealed path (Bot v2 Task 17): a command's reply when it succeeds ("Posted
+	// the poll in #bot.") and the reason when it is refused ("The Bot posts only in Bot channels.").
+	Note string
 }
 
 // InteractionHandlerSpec allows mutations to check the current operator
@@ -734,21 +737,24 @@ var sealedAdapters = map[protocol.Operation]sealedAdapter{
 					}
 				}
 			}
-			channel, ok := sealedID(req.Args, 4)
-			if !ok {
-				channel = req.ChannelID
+			// Bot v2 Task 17: a channel named in the command is used as given (the handler refuses one that is not a Bot
+			// channel). Without one the poll goes where the command ran if that is a Bot channel, else to the
+			// feature's configured Bot channel, which the handler resolves (pollDefaultChannel stands for it: the v1
+			// payload needs a non-zero channel).
+			target := pollDefaultChannel[:]
+			if channel, ok := sealedID(req.Args, 4); ok {
+				target = channel[:]
+			} else if !req.ChannelID.IsZero() && CheckBotChannel(req.CommunityID, req.ChannelID) == nil {
+				target = req.ChannelID[:]
 			}
-			if channel.IsZero() {
-				return nil, nil, false, "Choose a channel for the poll."
-			}
-			payload, err := cborx.Marshal([]any{uint64(1), channel[:], nil, strings.TrimSpace(question), answers, min(multiple, 1), duration})
+			payload, err := cborx.Marshal([]any{uint64(1), target, nil, strings.TrimSpace(question), answers, min(multiple, 1), duration})
 			if err != nil {
 				return nil, nil, false, "That poll is too long."
 			}
 			return nil, []any{payload}, true, ""
 		},
-		// No text: the client says where the poll was posted.
-		render: func(protocol.SealedRequest, InteractionResult) string { return "" }},
+		// The reply names the channel the poll went to; a handler with no note leaves the client to say where.
+		render: func(_ protocol.SealedRequest, result InteractionResult) string { return result.Note }},
 	protocol.OpReadPoll: {handler: protocol.OpPollGet, read: true,
 		request: func(req protocol.SealedRequest) (*id.ID, []any, bool, string) {
 			poll, ok := sealedID(req.Args, 0)
@@ -879,7 +885,11 @@ func (d *SealedDispatcher) Dispatch(ctx context.Context, req protocol.SealedRequ
 		return
 	}
 	if result.Status != 0 {
-		reply(sealedRefusal(result.Status, adapter.read))
+		answer := sealedRefusal(result.Status, adapter.read)
+		if result.Note != "" && !adapter.read {
+			answer.Body = []byte(result.Note)
+		}
+		reply(answer)
 		return
 	}
 	if adapter.read {

@@ -12,6 +12,7 @@ import { connected, dock, joinVoice, voiceRow } from '../voice/support/voice';
 import { leaveIfInCall } from '../voice/support/peer-browser';
 import { FIREFOX_MEDIA_PREFS } from '../media/support/fixtures';
 import { e2ePort } from './support/ports';
+import { markBotChannel, watchBearer } from './support/bot-channel';
 
 const PORT = Number(process.env.DILLA_E2E_SLASH_PORT ?? e2ePort(8581));
 const HOST: HostConfig = { port: PORT, control: PORT + 1, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
@@ -493,9 +494,12 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
         },
       }) as typeof IntersectionObserver;
     });
+    const bearerOf = watchBearer(page);
     const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await createCommunity(page);
     await enableBot(page, owner.password, ['roles']);
+    // Bot v2 Task 17: polls post only into Bot channels.
+    await markBotChannel(page, host.url, bearerOf, GENERAL);
     // Two sequential round trips in less than one full interval cannot both be
     // served by periodic reconciliation, regardless of where its next tick lands.
     const communities = await portSlice<{ id: string; name: string }[]>(page, 'communities');

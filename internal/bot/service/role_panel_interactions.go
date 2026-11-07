@@ -82,6 +82,14 @@ func (h RolePanelInteractions) publish(ctx context.Context, actor InteractionAct
 	if !present || actor.Kind != 0 || (!authority.Owner && !authority.Administrator && authority.EffectiveBits&rolePanelManageRolesBit == 0) {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
+	// Bot v2 Task 17: a role panel is posted into a Bot channel only.
+	if err := CheckBotChannel(h.CommunityID, channel); err != nil {
+		if errors.Is(err, ErrNeedsBotChannel) {
+			FlagNeedsBotChannel(h.CommunityID, "role_panels", channel)
+			return InteractionResult{Status: interactionStatusUnavailable, Note: "The Bot posts only in Bot channels."}, nil
+		}
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
 	group, err := h.Destination.ResolveTextGroup(ctx, h.CommunityID, channel)
 	if err != nil || group.IsZero() {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil

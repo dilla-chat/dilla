@@ -51,6 +51,7 @@ export const SOCKET_ROUTES: readonly SocketRoute[] = [
   { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/ready' },
   { method: 'POST', pattern: '/v1/bot-runtime/replies' },
   { method: 'POST', pattern: '/v1/bot-runtime/state-hints' },
+  { method: 'PUT', pattern: '/v1/bot-runtime/health' },
   { method: 'GET', pattern: '/v1/bot/revisions' },
   { method: 'DELETE', pattern: '/v1/calls/{call_id}' },
   { method: 'POST', pattern: '/v1/calls/{call_id}/decline' },

@@ -1358,9 +1358,10 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		"PUT /v1/bot-runtime/communities/{community}/command-key":
 		// Bot v2 Task 9: only the ready Bot of the path's community publishes its catalog and command key.
 		return ready && communityPath("community"), nil
-	case "POST /v1/bot-runtime/replies", "POST /v1/bot-runtime/state-hints":
+	case "POST /v1/bot-runtime/replies", "POST /v1/bot-runtime/state-hints", "PUT /v1/bot-runtime/health":
 		// Bot v2 Task 10: only a ready Bot replies or sends hints; the handler binds both to the
-		// session's own community (a reply to its relayed requests, a hint to its own scopes).
+		// session's own community (a reply to its relayed requests, a hint to its own scopes). Task 17: and reports
+		// its health, for its own community.
 		return ready, nil
 	case "GET /v1/communities/{community}/bot/actors/{actor}/authority":
 		if !ready || !communityPath("community") {

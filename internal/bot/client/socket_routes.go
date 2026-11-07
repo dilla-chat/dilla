@@ -84,6 +84,7 @@ var SocketRoutes = []string{
 	"POST /v1/bot-runtime/installations/{installation}/ready",
 	"POST /v1/bot-runtime/replies",
 	"POST /v1/bot-runtime/state-hints",
+	"PUT /v1/bot-runtime/health",
 }
 
 type socketRoute struct {

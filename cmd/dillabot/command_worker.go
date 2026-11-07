@@ -16,6 +16,7 @@ import (
 
 	"github.com/dilla-chat/dilla/internal/bot/catalog"
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/health"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/intake"
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
@@ -434,6 +435,11 @@ type sealedIntakeConfig struct {
 	reminders *service.ReminderInteractions
 	held      intake.HeldChecker
 	log       *slog.Logger
+	// musicStartP95 reads the installation's music start p95 for the health report (Bot v2 Task 17); nil is zero.
+	musicStartP95 func() time.Duration
+	// healthDir is where the health monitor leaves its last report for `dillabot doctor` (health_state.go); empty
+	// writes none.
+	healthDir string
 }
 
 // sealedEntry is one installation's sealed intake. It is the intake's helper, dispatcher and reply sender and the
@@ -451,6 +457,13 @@ type sealedEntry struct {
 	publisher  *catalog.Publisher
 	cancel     context.CancelFunc
 	started    bool
+
+	// Bot v2 Task 17 (health_probe.go): the Bot's probes of its own intake, the commands waiting for a worker, and the
+	// health monitor that reports both.
+	probes  probeTable
+	load    commandLoad
+	monitor *health.Monitor
+	clk     clock.Clock // the probe's clock; nil is the system's
 }
 
 func (e *sealedEntry) current() (sealedIntakeConfig, *service.SealedDispatcher) {
@@ -462,6 +475,9 @@ func (e *sealedEntry) current() (sealedIntakeConfig, *service.SealedDispatcher) 
 var errSealedNotConfigured = errors.New("bot sealed intake: no pass has configured the installation")
 
 func (e *sealedEntry) OpenCommand(ctx context.Context, sealed []byte, user, device id.ID, now time.Time) (helper.OpenedCommand, error) {
+	if request, ok := e.probes.probeRequest(sealed); ok {
+		return openProbe(request, e.community, user, device, now), nil
+	}
 	cfg, _ := e.current()
 	if cfg.helper == nil {
 		return helper.OpenedCommand{}, errSealedNotConfigured
@@ -470,6 +486,9 @@ func (e *sealedEntry) OpenCommand(ctx context.Context, sealed []byte, user, devi
 }
 
 func (e *sealedEntry) SealReply(ctx context.Context, key [32]byte, request id.ID, seq uint32, body []byte) ([]byte, error) {
+	if e.probes.has(request) {
+		return append([]byte{}, body...), nil // a probe's answer stays in the Bot
+	}
 	cfg, _ := e.current()
 	if cfg.helper == nil {
 		return nil, errSealedNotConfigured
@@ -486,6 +505,10 @@ func (e *sealedEntry) CommandKey(ctx context.Context, community id.ID, now time.
 }
 
 func (e *sealedEntry) Reply(ctx context.Context, device, request id.ID, seq uint32, sealed []byte, final bool) error {
+	if e.probes.has(request) {
+		e.probes.deliver(request, sealed)
+		return nil
+	}
 	cfg, _ := e.current()
 	if cfg.session == nil {
 		return errSealedNotConfigured
@@ -701,6 +724,13 @@ func (r *botGatewayRuntime) SetSealedIntake(cfg sealedIntakeConfig) {
 			go e.work(ctx)
 		}
 		go e.publisher.Run(ctx, cfg.community)
+		e.startHealth(ctx, func() time.Duration {
+			current, _ := e.current()
+			if current.musicStartP95 == nil {
+				return 0
+			}
+			return current.musicStartP95()
+		}, clock.System())
 	}
 	in, publisher := e.in, e.publisher
 	e.mu.Unlock()
@@ -719,6 +749,7 @@ func (e *sealedEntry) work(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case cmd := <-e.queue:
+			e.load.started(cmd.RequestID)
 			e.mu.Lock()
 			in := e.in
 			e.mu.Unlock()
@@ -761,9 +792,11 @@ func (r *botGatewayRuntime) relayCommand(installation id.ID, payload []cbor.RawM
 	case e == nil || cmd.CommunityID != e.community:
 		r.log.Warn("bot command relay for no sealed intake", "installation_id", installation.String())
 	default:
+		e.load.enqueue(cmd.RequestID, time.Now())
 		select {
 		case e.queue <- cmd:
 		default:
+			e.load.started(cmd.RequestID)
 			r.log.Warn("bot command intake queue full; command dropped", "installation_id", installation.String())
 		}
 	}
