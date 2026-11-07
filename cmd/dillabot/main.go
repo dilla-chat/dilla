@@ -489,6 +489,8 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 	maintained := make(map[id.ID]bool)
 	maintenanceErr := gateways.maintain(ctx, maintained)
 	var eligible, succeeded, failed int
+	// unsucceeded is the eligible installations this pass did not reconcile: the ones the loop retries.
+	unsucceeded := map[id.ID]bool{}
 	// incomplete is the installations to run again, each with its delay (0: the loop's joining backoff).
 	incomplete := map[id.ID]time.Duration{}
 	for _, installation := range installations {
@@ -504,6 +506,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			continue
 		}
 		eligible++
+		unsucceeded[installation.ID] = true
 		// Task 10c: a manager's Restart. Tear down everything this process holds for the
 		// installation (native helper, music queues and voice rooms, automatic moderation state,
 		// gateway connection); the rest of this pass starts them again from durable state.
@@ -524,6 +527,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 					logBotRateLimit(logger, installation.ID, refusal)
 				}
 				succeeded++
+				delete(unsucceeded, installation.ID)
 				continue
 			}
 			logger.Warn("bot runtime status report deferred", "installation_id", installation.ID.String())
@@ -884,6 +888,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				logBotRateLimit(logger, installation.ID, refusal)
 			}
 			succeeded++
+			delete(unsucceeded, installation.ID)
 			continue
 		}
 		if ensureErr != nil || closeErr != nil {
@@ -903,6 +908,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			continue
 		}
 		succeeded++
+		delete(unsucceeded, installation.ID)
 		if !ready {
 			incomplete[installation.ID] = 0
 		}
@@ -912,8 +918,16 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 	if succeeded != eligible || failed > 0 {
 		passErr = fmt.Errorf("%d of %d eligible installations reconciled", succeeded, eligible)
 	}
-	if err := errors.Join(passErr, maintenanceErr); err != nil {
-		return err
+	if maintenanceErr != nil {
+		return errors.Join(passErr, maintenanceErr)
+	}
+	var pending *passIncomplete
+	if len(incomplete) > 0 {
+		pending = &passIncomplete{after: incomplete}
+	}
+	if passErr != nil {
+		// Each failure is one installation's: the loop retries only those, each on its own backoff (fix round 2, N-3).
+		return &passFailed{installations: unsucceeded, incomplete: pending, err: passErr}
 	}
 	if len(incomplete) > 0 {
 		// An installation is joining (its required MLS joins are pending) or an interaction-group registration is in

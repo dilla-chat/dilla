@@ -162,6 +162,9 @@ type botGatewayRuntime struct {
 	pass chan struct{}
 	// passTargets are the installations asked for since the loop last took them (guarded by mu).
 	passTargets map[id.ID]bool
+	// gatewayEnds is each installation's backoff for restarting a gateway that ended with an error, reset by its ready
+	// (guarded by mu; fix round 2, N-3).
+	gatewayEnds map[id.ID]time.Duration
 	// feeds is each installation's feed handler, which outlives a pass and a gateway connection (guarded by mu).
 	feeds map[id.ID]*installationFeed
 	// interaction carries a participant's message in a private interaction group: a command
@@ -460,6 +463,7 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 		consumeDeliveries(ctx, gateway.Events(), acks, feed, log, func(delivery gatewayclient.Delivery) {
 			switch delivery.Frame.Op {
 			case gatewayclient.OpReady:
+				r.gatewayReady(installation)
 				if ready := delivery.Frame.Ready; ready != nil && len(ready.Groups) > 0 {
 					groups := make([]id.ID, 0, len(ready.Groups))
 					for _, g := range ready.Groups {
@@ -503,7 +507,9 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 		if err := <-finished; err != nil && ctx.Err() == nil {
 			log.Warn("bot gateway requires session reconciliation")
 			r.notify()
-			r.requestPass(installation)
+			// A gateway that ends before ready again (a refused identify: the bare-identify loop of fix round 1, I-4) is
+			// restarted on a growing backoff, not at the pass spacing (fix round 2, N-3).
+			r.requestPassAfterGatewayEnd(installation)
 		}
 	}()
 	return nil

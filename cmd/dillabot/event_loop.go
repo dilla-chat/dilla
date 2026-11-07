@@ -23,10 +23,14 @@ import (
 //     the feed handler's state and ask for nothing (fix round 1, I-3);
 //   - reload: SIGHUP, which dillad's supervisor sends when an installation changed (configure, disable, remove, a
 //     restart request, the music defaults; Supervisor.Nudge): a pass for every installation;
-//   - retry: a pass that failed is run again for every installation after a backoff (passRetryBase doubling to
-//     passRetryCap). An installation a pass left incomplete is run again on its own: a joining one on the same doubling
-//     capped at passJoiningCap, and a registration that waits on a device's KeyPackages when that device's registration
-//     backoff (30 s up to 1 h) is due (fix round 1, M-3). Once a pass leaves everything ready, nothing is armed.
+//   - retry: an installation a pass failed is run again on its own, on its own backoff (passRetryBase doubling to
+//     passRetryCap), which only a pass of that installation resets (fix round 2, N-3); a pass that failed as a whole
+//     (the installation list, the maintenance) runs every installation again on the full-pass backoff, which only a
+//     successful full pass resets. An installation a pass left incomplete is run again on its own: a joining one on its
+//     own doubling capped at passJoiningCap, and a registration that waits on a device's KeyPackages when that device's
+//     registration backoff (30 s up to 1 h) is due (fix round 1, M-3). Once a pass leaves everything ready, nothing is
+//     armed. A gateway that ends with an error is restarted at once, then on a backoff until it reaches ready again
+//     (requestPassAfterGatewayEnd).
 //
 // Passes are spaced (fix round 1, I-3): one starts at least passMinSpacing after the previous one started; the asks in
 // between are coalesced into it, so a burst of member events costs at most one pass per passMinSpacing.
@@ -81,6 +85,17 @@ var errPassIncomplete = errors.New("bot installation or interaction group still 
 
 func (e *passIncomplete) Is(target error) bool { return target == errPassIncomplete }
 
+// passFailed is a pass whose failures are each an installation's (fix round 2, N-3): only those are retried, each on its
+// own backoff, and the rest of the pass counts as done. incomplete, when set, is what the pass left joining.
+type passFailed struct {
+	installations map[id.ID]bool
+	incomplete    *passIncomplete
+	err           error
+}
+
+func (e *passFailed) Error() string { return e.err.Error() }
+func (e *passFailed) Unwrap() error { return e.err }
+
 func (l botLoop) run(ctx context.Context) error {
 	var (
 		pendingAll     = true // the start pass
@@ -89,9 +104,14 @@ func (l botLoop) run(ctx context.Context) error {
 		started        bool
 		spaced         clock.Timer
 		failRetry      clock.Timer
-		failBackoff    = passRetryBase
-		joinBackoff    = passRetryBase
-		// retries are the incomplete installations and when each is due.
+		// failBackoff is the backoff of a full pass that failed as a whole (the installation list, the maintenance):
+		// only a successful full pass resets it.
+		failBackoff = passRetryBase
+		// instFail and instJoin are each installation's failure and joining backoffs (fix round 2, N-3): only a pass of
+		// that installation resets them.
+		instFail = map[id.ID]time.Duration{}
+		instJoin = map[id.ID]time.Duration{}
+		// retries are the failed and incomplete installations and when each is due.
 		retries    = map[id.ID]time.Time{}
 		retryTimer clock.Timer
 	)
@@ -132,29 +152,60 @@ func (l botLoop) run(ctx context.Context) error {
 		}
 		armRetries()
 		err := l.pass(ctx, targets)
+		covered := func(inst id.ID) bool { return targets == nil || targets[inst] }
+		var failed *passFailed
 		var incomplete *passIncomplete
-		switch {
-		case errors.As(err, &incomplete):
-			now := l.clock.Now()
-			for inst, after := range incomplete.after {
-				if after <= 0 {
-					after = joinBackoff
-				}
-				retries[inst] = now.Add(after)
-			}
-			l.log.Info("bot installation or interaction group still joining; reconciling it again", "installations", len(incomplete.after), "joining_backoff", joinBackoff)
-			joinBackoff = min(joinBackoff*2, passJoiningCap)
-			failBackoff = passRetryBase
-			armRetries()
-		case err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled):
-			reportBackgroundPass(l.log, err)
-			failBackoff, joinBackoff = passRetryBase, passRetryBase
-		default:
+		if errors.As(err, &failed) {
+			incomplete = failed.incomplete
+		} else {
+			errors.As(err, &incomplete)
+		}
+		if failed == nil && incomplete == nil && err != nil && ctx.Err() == nil && !errors.Is(err, context.Canceled) {
+			// The pass failed as a whole: every installation again, on the full-pass backoff.
 			reportBackgroundPass(l.log, err)
 			stop(&failRetry)
 			failRetry = l.clock.NewTimer(failBackoff)
 			failBackoff = min(failBackoff*2, passRetryCap)
+			return
 		}
+		if targets == nil && ctx.Err() == nil {
+			failBackoff = passRetryBase
+		}
+		now := l.clock.Now()
+		// Every installation the pass covered and did not leave failed or joining is done: its backoffs start over.
+		for _, backoffs := range []map[id.ID]time.Duration{instFail, instJoin} {
+			for inst := range backoffs {
+				if covered(inst) && (failed == nil || !failed.installations[inst]) && (incomplete == nil || !hasKey(incomplete.after, inst)) {
+					delete(backoffs, inst)
+				}
+			}
+		}
+		if failed != nil {
+			reportBackgroundPass(l.log, failed.err)
+			for inst := range failed.installations {
+				b := max(instFail[inst], passRetryBase)
+				retries[inst] = now.Add(b)
+				instFail[inst] = min(b*2, passRetryCap)
+			}
+		}
+		if incomplete != nil {
+			for inst, after := range incomplete.after {
+				if failed != nil && failed.installations[inst] {
+					continue
+				}
+				if after <= 0 {
+					b := max(instJoin[inst], passRetryBase)
+					after = b
+					instJoin[inst] = min(b*2, passJoiningCap)
+				}
+				retries[inst] = now.Add(after)
+			}
+			l.log.Info("bot installation or interaction group still joining; reconciling it again", "installations", len(incomplete.after))
+		}
+		if failed == nil && incomplete == nil {
+			reportBackgroundPass(l.log, err)
+		}
+		armRetries()
 	}
 	// schedule runs the pending pass now, or arms the spacing timer for it.
 	schedule := func() {
@@ -235,4 +286,47 @@ func (l botLoop) run(ctx context.Context) error {
 			due.Reset(l.due)
 		}
 	}
+}
+
+func hasKey[K comparable, V any](m map[K]V, k K) bool {
+	_, ok := m[k]
+	return ok
+}
+
+// gatewayEndBase and gatewayEndCap bound the backoff of restarting an installation's gateway that ended with an error
+// before reaching ready again (fix round 2, N-3): a refused bare identify no longer re-runs at the pass spacing.
+const (
+	gatewayEndBase = passMinSpacing
+	gatewayEndCap  = 5 * time.Minute
+)
+
+// gatewayAfter schedules f after d; a variable so tests run it on a fake clock.
+var gatewayAfter = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
+
+// requestPassAfterGatewayEnd asks for a pass of installation after its gateway ended with an error: at once the first
+// time, then after a backoff that doubles from gatewayEndBase to gatewayEndCap until the gateway reaches ready.
+func (r *botGatewayRuntime) requestPassAfterGatewayEnd(installation id.ID) {
+	r.mu.Lock()
+	if r.gatewayEnds == nil {
+		r.gatewayEnds = map[id.ID]time.Duration{}
+	}
+	delay, again := r.gatewayEnds[installation]
+	if !again {
+		r.gatewayEnds[installation] = gatewayEndBase
+	} else {
+		r.gatewayEnds[installation] = min(delay*2, gatewayEndCap)
+	}
+	r.mu.Unlock()
+	if !again {
+		r.requestPass(installation)
+		return
+	}
+	gatewayAfter(delay, func() { r.requestPass(installation) })
+}
+
+// gatewayReady ends installation's gateway restart backoff: its gateway reached ready.
+func (r *botGatewayRuntime) gatewayReady(installation id.ID) {
+	r.mu.Lock()
+	delete(r.gatewayEnds, installation)
+	r.mu.Unlock()
 }

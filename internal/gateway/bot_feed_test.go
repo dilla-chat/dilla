@@ -512,3 +512,47 @@ func TestManagedBotResumeIsRefusedOnThePublicGatewayWhenSupervised(t *testing.T)
 		t.Fatalf("op %d, want invalid_session for a public resume of a supervised Bot", resumed.Op)
 	}
 }
+
+// TestANewerBotConnectionReplacesTheOlderOne (Bot v2 task 14, fix round 2, N-2): a device keeps at most one Bot runtime
+// connection. A second identify of the same Bot device replaces the first: the first is closed 4004 (not resumable),
+// is never fed again and cannot resume with its token; the feed reaches only the newer connection.
+func TestANewerBotConnectionReplacesTheOlderOne(t *testing.T) {
+	h := newHarness(t)
+	device := id.New()
+	first, firstToken := h.finishedBot(t, device)
+	streams := newBotStreams()
+	second := h.connectBot(t, device, streams)
+	if in := h.readFrom(t, h.sink(second)); in.Op != OpReady {
+		t.Fatalf("the newer connection's first frame is op %d, want ready", in.Op)
+	}
+	select {
+	case code := <-h.sink(first).closed:
+		if code != CloseSessionRevoked {
+			t.Fatalf("the replaced connection closed %d, want 4004", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the replaced Bot connection was not closed")
+	}
+	if got := h.gw.bots.of(device); len(got) != 1 || got[0] != second {
+		t.Fatalf("the device has %d Bot connections, want only the newer one", len(got))
+	}
+	// The newer connection streams its own snapshot; then the feed reaches it, and only it.
+	s := streams.next(t)
+	if !s.Send(context.Background(), botEventFrame(t, BotEventSnapshotBegin, 0)) || !s.Finish(botEventFrame(t, BotEventSnapshotEnd, 0)) {
+		t.Fatal("the newer connection's snapshot was refused")
+	}
+	h.readFrom(t, h.sink(second))
+	h.readFrom(t, h.sink(second))
+	if !h.gw.DeliverBot(device, botEventFrame(t, BotEventMember, 7)) {
+		t.Fatal("the newer connection was not fed")
+	}
+	if in := h.readFrom(t, h.sink(second)); eventMarker(t, in) != 7 {
+		t.Fatalf("the newer connection got marker %d, want 7", eventMarker(t, in))
+	}
+	noFrameOn(t, h.sink(first))
+	// Its socket closed, the replaced connection is not parked for a resume.
+	h.gw.suspend(first)
+	if _, parked := h.gw.suspended.Load(string(firstToken)); parked {
+		t.Fatal("the replaced Bot connection is parked in the resume window")
+	}
+}

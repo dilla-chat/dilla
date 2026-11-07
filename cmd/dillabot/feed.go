@@ -341,7 +341,9 @@ type feedConsumer struct {
 	jobs     []feedJob
 	snapshot []feedEvent // the body of the snapshot streaming now; nil outside one
 	inSnap   bool
-	wake     chan struct{}
+	// afterSnap is the live events seen inside the streaming snapshot: applied after it (fix round 2, N-4).
+	afterSnap []feedJob
+	wake      chan struct{}
 
 	ready     chan struct{} // closed once a snapshot has been applied
 	readyOnce sync.Once
@@ -371,7 +373,7 @@ func (f *feedConsumer) setFeed(h Feed) {
 // snapshot that supersedes them, and their acknowledgements are stale.
 func (f *feedConsumer) resetStream() {
 	f.mu.Lock()
-	f.jobs, f.snapshot, f.inSnap = nil, nil, false
+	f.jobs, f.snapshot, f.inSnap, f.afterSnap = nil, nil, false, nil
 	f.mu.Unlock()
 }
 
@@ -402,10 +404,17 @@ func (f *feedConsumer) deliver(d gatewayclient.Delivery, slot *ackSlot) {
 			return
 		}
 		f.jobs = append(f.jobs, feedJob{events: f.snapshot, snapshot: true, slot: slot})
-		f.snapshot, f.inSnap = nil, false
+		f.jobs = append(f.jobs, f.afterSnap...)
+		f.snapshot, f.inSnap, f.afterSnap = nil, false, nil
 	case f.inSnap && d.Frame.N == 0:
 		ev.fromSnapshot = true
 		f.snapshot = append(f.snapshot, ev)
+		f.mu.Unlock()
+		return
+	case f.inSnap:
+		// A live event inside a snapshot (dillad sends none: the snapshot's reads supersede it) is applied after the
+		// snapshot's swap, never before it, where the swap would undo it (fix round 2, N-4).
+		f.afterSnap = append(f.afterSnap, feedJob{events: []feedEvent{ev}, slot: slot})
 		f.mu.Unlock()
 		return
 	default:
@@ -451,22 +460,33 @@ func (f *feedConsumer) run(ctx context.Context) {
 	}
 }
 
-// feedRetryBase and feedRetryCap bound the backoff of an event whose apply failed transiently.
-var feedRetryBase = time.Second
+// feedRetryBase, feedRetryCap and feedRetryAttempts bound the retries of an event whose apply failed transiently: 7
+// attempts with 6 waits of 1, 2, 4, 8, 16 and 30 s between them, about a minute (fix round 2, N-1).
+var (
+	feedRetryBase     = time.Second
+	feedRetryAttempts = 7
+)
 
 const feedRetryCap = 30 * time.Second
 
 // applyHeld applies ev, and while that fails transiently (a helper restart, a timeout), applies it again on a backoff
 // (feedRetryBase doubling to feedRetryCap) without moving on: the event stays unacknowledged, and so does every frame
-// behind it, so the order holds and a resume would replay it (fix round 1, I-2). It reports false when ctx ended first.
+// behind it, so the order holds and a resume would replay it (fix round 1, I-2). The hold is bounded (fix round 2, N-1):
+// after feedRetryAttempts the event is given up and counts as applied, so one user's list that never applies cannot
+// stall the installation's feed (everyone else's revocations, the snapshot, op 64 acks). The handler keeps that user
+// held, so their commands stay refused until a later ingest for them succeeds. It reports false when ctx ended first.
 func (f *feedConsumer) applyHeld(ctx context.Context, h Feed, ev feedEvent) bool {
 	delay := feedRetryBase
-	for {
+	for attempt := 1; ; attempt++ {
 		if ctx.Err() != nil {
 			return false
 		}
 		err := ev.apply(ctx, h)
 		if err == nil {
+			return true
+		}
+		if attempt >= feedRetryAttempts {
+			f.log.Warn("bot feed event given up after its retries; its user stays held", "kind", ev.kind, "attempts", attempt, "error", err.Error())
 			return true
 		}
 		f.log.Warn("bot feed event held; applying it again", "kind", ev.kind, "after", delay, "error", err.Error())

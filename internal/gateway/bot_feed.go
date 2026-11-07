@@ -37,13 +37,35 @@ type botIndex struct {
 	byDevice map[id.ID][]*conn
 }
 
+// add indexes c as its device's one Bot runtime connection. A device has at most one (Bot v2 task 14, fix round 2,
+// N-2): the newest identify replaces every older connection of the device, live, parked in the resume window or
+// mid-resume. Each replaced one is never fed again, loses its resume token and is closed 4004, which is not
+// resumable. Each live connection streams its own snapshot, so the replaced ones would otherwise multiply that cost; the
+// supervised Bot keeps one gateway per installation, and an identify reaching ready means it moved to the new one.
 func (b *botIndex) add(c *conn) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.byDevice == nil {
 		b.byDevice = map[id.ID][]*conn{}
 	}
-	b.byDevice[c.deviceID] = append(b.byDevice[c.deviceID], c)
+	replaced := b.byDevice[c.deviceID]
+	b.byDevice[c.deviceID] = []*conn{c}
+	b.mu.Unlock()
+	for _, old := range replaced {
+		if old == c {
+			continue
+		}
+		old.mu.Lock()
+		old.botDead = true
+		old.botPending = nil
+		old.noResume = true
+		token := string(old.resume)
+		w := old.writer
+		old.mu.Unlock()
+		old.gw.suspended.CompareAndDelete(token, old)
+		if w != nil {
+			w.sink.close(CloseSessionRevoked, "replaced by a newer Bot connection")
+		}
+	}
 }
 
 // drop marks the connection as never fed again and forgets it, with whatever it was holding.

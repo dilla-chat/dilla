@@ -667,6 +667,14 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	if c.isBot != (session.Bot != nil) {
 		return refuse("resume session type changed")
 	}
+	c.mu.Lock()
+	replaced := c.isBot && c.botDead
+	c.mu.Unlock()
+	if replaced {
+		// A newer identify of the device replaced this Bot connection (fix round 2, N-2).
+		g.suspended.Delete(string(token))
+		return refuse("a newer Bot connection replaced this one; identify again")
+	}
 	if session.Bot != nil && (c.wire != auth.WireVersion || session.WireVersion != auth.WireVersion) {
 		return refuse("managed bot wire capability is not resumable; identify again")
 	}

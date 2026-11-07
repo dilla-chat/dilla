@@ -125,8 +125,9 @@ func (f *installationFeed) changed() {
 	}
 }
 
-// Held reports whether user's latest device list is waiting to be applied after a transient failure: the user's
-// commands are refused until it is (fix round 1, I-2).
+// Held reports whether user's latest device list failed to apply (a transient failure being retried, or one whose
+// retries ran out, fix round 2, N-1): the user's commands are refused until a later ingest for the user succeeds (their
+// next push, or the next snapshot's). Command intake (Task 15) enforces it through botGatewayRuntime.Held.
 func (f *installationFeed) Held(user id.ID) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -159,6 +160,10 @@ func (f *installationFeed) DeviceList(ctx context.Context, user id.ID, push []by
 		return nil
 	case err != nil:
 		f.hold(user)
+		if errors.Is(err, helper.ErrClosed) {
+			// The helper went away: a pass binds a fresh one (fix round 2, N-1).
+			f.changed()
+		}
 		return err
 	case got.State == native.DeviceListHeld:
 		f.log.Info("bot feed device list held: a key change is pending; the user's commands are refused until it is verified", "version", got.Version)
@@ -340,4 +345,12 @@ func (f *installationFeed) snapshotOfState() feedState {
 	defer f.mu.Unlock()
 	return feedState{members: maps.Clone(f.state.members), roles: maps.Clone(f.state.roles), owner: f.state.owner,
 		botChannels: maps.Clone(f.state.botChannels), groups: maps.Clone(f.state.groups)}
+}
+
+// Held is the query command intake (Task 15) refuses a user's command by: whether user's latest device list failed to
+// apply on installation's feed and no later ingest for the user has succeeded since (fix round 2, N-1). An installation
+// without a feed yet has applied nothing and holds no one; intake gates on the feed's readiness for that.
+func (r *botGatewayRuntime) Held(installation, user id.ID) bool {
+	f := r.feedHandler(installation)
+	return f != nil && f.Held(user)
 }
