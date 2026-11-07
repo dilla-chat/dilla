@@ -130,10 +130,13 @@ func (a *Authz) target(snapshot bool) *authzState {
 	return a.live
 }
 
-// SnapshotBegin starts staging a snapshot; whatever an earlier, cut-off one staged is dropped.
+// SnapshotBegin starts staging a snapshot; whatever an earlier, cut-off one staged is dropped. Until it ends the cache
+// is not ready (fix round 1, I-2): a new snapshot means the Bot was away, and the state it holds may predate changes
+// made meanwhile, so commands are answered offline (retryable) rather than authorised against it.
 func (a *Authz) SnapshotBegin() {
 	a.mu.Lock()
 	a.staging = newAuthzState()
+	a.ready = false
 	a.mu.Unlock()
 }
 

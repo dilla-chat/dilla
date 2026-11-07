@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/dilla-chat/dilla/internal/api"
@@ -26,9 +27,13 @@ type botModerationFixture struct {
 	token                   string
 }
 
-func newBotModerationFixture(t *testing.T, sourceAgeSeconds int64) botModerationFixture {
+func newBotModerationFixture(t *testing.T, sourceAgeSeconds int64, wire ...func(*api.Deps)) botModerationFixture {
 	t.Helper()
-	h, deps := newTestAPI(t)
+	h, deps := newTestAPIWired(t, func(d *api.Deps) {
+		for _, w := range wire {
+			w(d)
+		}
+	})
 	ctx := context.Background()
 	owner, _, _ := seedAPISession(t, deps)
 	cid := seedBotCommunity(t, deps, owner.ID)
@@ -267,5 +272,40 @@ func TestBotModerationAcceptedReceiptSurvivesCapabilityRevocation(t *testing.T) 
 				t.Fatalf("new effect after revocation=%d", fresh.Code)
 			}
 		})
+	}
+}
+
+// timeoutHeard is a Bot feed that records the member timeouts it is told of (Bot v2 Task 15, fix round 1 I-1).
+type timeoutHeard struct {
+	mu  sync.Mutex
+	got [][2]id.ID
+}
+
+func (h *timeoutHeard) DeviceListChanged(id.ID) {}
+func (h *timeoutHeard) CommunityChanged(id.ID)  {}
+func (h *timeoutHeard) MemberTimeoutChanged(community, user id.ID) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.got = append(h.got, [2]id.ID{community, user})
+}
+
+// An automatic-moderation timeout reaches the Bot's feed after its commit, as a moderator's does, so the Bot refuses
+// the timed-out member's commands at once (fix round 1, I-1). A warning sets no timeout and tells the feed nothing.
+func TestBotAutomaticTimeoutIsToldToTheBotFeed(t *testing.T) {
+	warned := &timeoutHeard{}
+	w := newBotModerationFixture(t, 0, func(d *api.Deps) { d.BotFeed = warned })
+	if warn := w.submit(t, "warn", 1, uint64(w.deps.Clock.Now().Unix())+20, 0, w.installation); warn.Code != http.StatusOK || len(warned.got) != 0 {
+		t.Fatalf("warning = %d, heard %v", warn.Code, warned.got)
+	}
+	heard := &timeoutHeard{}
+	f := newBotModerationFixture(t, 0, func(d *api.Deps) { d.BotFeed = heard })
+	now := uint64(f.deps.Clock.Now().Unix())
+	if rec := f.submit(t, "timeout", 1, now+20, 10*60*1000, f.installation); rec.Code != http.StatusOK {
+		t.Fatalf("timeout = %d %x", rec.Code, rec.Body.Bytes())
+	}
+	heard.mu.Lock()
+	defer heard.mu.Unlock()
+	if len(heard.got) != 1 || heard.got[0] != [2]id.ID{f.community, f.target} {
+		t.Fatalf("the feed heard %v, want one timeout of the target", heard.got)
 	}
 }

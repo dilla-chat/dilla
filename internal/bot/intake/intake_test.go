@@ -97,12 +97,14 @@ func (s *fakeSender) all() []sentReply {
 type funcDispatcher struct {
 	mu    sync.Mutex
 	calls int
+	last  protocol.SealedRequest
 	fn    func(req protocol.SealedRequest, reply func(Answer))
 }
 
 func (d *funcDispatcher) Dispatch(_ context.Context, req protocol.SealedRequest, reply func(Answer)) {
 	d.mu.Lock()
 	d.calls++
+	d.last = req
 	d.mu.Unlock()
 	d.fn(req, reply)
 }
@@ -191,7 +193,7 @@ func (w *world) retry(cmd RelayedCommand, k byte) RelayedCommand {
 	sealed := append(append([]byte(nil), cmd.Sealed...), k, k)
 	var key [32]byte
 	key[0] = k
-	w.helper.opens[string(sealed)] = helper.OpenedCommand{Refusal: helper.RefusalReplay, ReplyKey: key}
+	w.helper.opens[string(sealed)] = helper.OpenedCommand{Refusal: helper.RefusalReplay, ReplyKey: key, ReplayRequestID: cmd.RequestID}
 	cmd.Sealed = sealed
 	return cmd
 }
@@ -201,6 +203,9 @@ func (w *world) refusedWith(cmd RelayedCommand, refusal helper.CommandRefusal, k
 	o := helper.OpenedCommand{Refusal: refusal}
 	if refusal >= helper.RefusalBadSignature {
 		o.ReplyKey[0] = k
+	}
+	if refusal == helper.RefusalReplay {
+		o.ReplayRequestID = cmd.RequestID
 	}
 	w.helper.opens[string(sealed)] = o
 	cmd.Sealed = sealed
@@ -633,5 +638,120 @@ func TestIntakeChannelScopeAndChannelArguments(t *testing.T) {
 	// A community-scoped operation still works without a channel.
 	if a := run(opCommunity, id.ID{}, nil, 6); a.Status != 200 {
 		t.Fatalf("community-scoped without a channel: %+v", a)
+	}
+}
+
+// Fix round 1, I-2: a new snapshot (a reconnect) makes the cache not ready until it ends, so no command is authorised
+// against the state from before the outage; a command in that window is 503, retryable, and its Retry is served once
+// the snapshot is applied, against the snapshot's state.
+func TestCommandDuringAResnapshotIsOfflineThenServedFromTheNewState(t *testing.T) {
+	w := newWorld(t)
+	cmd, _ := w.command(opRemind, 1)
+	w.authz.SnapshotBegin() // the Bot reconnected: dillad streams a fresh snapshot
+	w.in.Handle(context.Background(), cmd)
+	expectOne(t, w.sender.all(), 503, "E_BOT_OFFLINE")
+	if w.dispatch.count() != 0 {
+		t.Fatal("dispatched against the pre-outage state")
+	}
+	// The snapshot no longer names the member: the Retry is refused from the new state.
+	w.authz.Role(w.everyone, PermViewChannel, 0, 0, false, true)
+	w.authz.SnapshotDone()
+	w.in.Handle(context.Background(), w.retry(cmd, 2))
+	if got := w.sender.all(); len(got) != 2 || got[1].answer.Status != 403 || w.dispatch.count() != 0 {
+		t.Fatalf("retry after the snapshot = %+v", got)
+	}
+}
+
+// Fix round 1, M-1: a Replay binds its reply key to the verified seal's own request id. A relay that pairs a seal of
+// one request with another request's id gets nothing: no answer is moved to that key.
+func TestReplayOfAnotherRequestsSealIsDropped(t *testing.T) {
+	w := newWorld(t)
+	first, _ := w.command(opRemind, 1)
+	second, _ := w.command(opRemind, 2)
+	w.in.Handle(context.Background(), first)
+	w.in.Handle(context.Background(), second)
+	// A fresh seal of the second request, relayed under the first one's id.
+	forged := w.retry(second, 9)
+	forged.RequestID = first.RequestID
+	w.in.Handle(context.Background(), forged)
+	if got := w.sender.all(); len(got) != 2 {
+		t.Fatalf("replies = %+v, want none for the mismatched replay", got)
+	}
+}
+
+// Fix round 1, M-6: a Retry from another user is refused, never served from the cache.
+func TestRetryOfAnotherUserIsRefused(t *testing.T) {
+	w := newWorld(t)
+	cmd, _ := w.command(opRemind, 1)
+	w.in.Handle(context.Background(), cmd)
+	other := w.retry(cmd, 9)
+	other.UserID = id.New()
+	w.in.Handle(context.Background(), other)
+	if got := w.sender.all(); len(got) != 2 || got[1].answer.Status != 409 || got[1].key != 9 || w.dispatch.count() != 1 {
+		t.Fatalf("replies = %+v", got)
+	}
+}
+
+// Fix round 1, M-6 and M-4: a Retry of a retryable refusal runs every gate again (a member released from the hold but
+// meanwhile denied the bit is refused), and a served Retry's request is as fresh as the seal the helper just verified.
+func TestRetryAfterARetryableRefusalRerunsAuthorisationWithAFreshSentAt(t *testing.T) {
+	w := newWorld(t)
+	mods := id.New()
+	w.authz.Role(mods, PermManageCommunity, 0, 3, false, false)
+	w.authz.Member(w.user, true, []id.ID{mods}, false)
+	w.held[w.user] = true
+	cmd, _ := w.command(51, 1)
+	w.in.Handle(context.Background(), cmd)
+	expectOne(t, w.sender.all(), 401, "E_BOT_SIGNATURE")
+	delete(w.held, w.user)
+	w.authz.Role(mods, 0, PermManageCommunity, 3, false, false)
+	w.in.Handle(context.Background(), w.retry(cmd, 2))
+	if got := w.sender.all(); len(got) != 2 || got[1].answer.Status != 403 || w.dispatch.count() != 0 {
+		t.Fatalf("retry after the bit was removed = %+v", got)
+	}
+	// A 403 is final: a further Retry gets it again and runs nothing.
+	w.authz.Role(mods, PermManageCommunity, 0, 3, false, false)
+	w.in.Handle(context.Background(), w.retry(cmd, 3))
+	if got := w.sender.all(); len(got) != 3 || got[2].answer.Status != 403 || w.dispatch.count() != 0 {
+		t.Fatalf("retry after a final refusal = %+v", got)
+	}
+
+	// M-4: held, then released three minutes later: the served Retry carries the Retry's time as sent_at, so a
+	// mutation's expiry (sent_at + 120 s) is not already past.
+	w2 := newWorld(t)
+	w2.held[w2.user] = true
+	cmd2, _ := w2.command(opRemind, 1)
+	w2.in.Handle(context.Background(), cmd2)
+	w2.clk.Advance(3 * time.Minute)
+	delete(w2.held, w2.user)
+	w2.in.Handle(context.Background(), w2.retry(cmd2, 2))
+	if w2.dispatch.count() != 1 || w2.dispatch.last.SentAt != uint64(w2.clk.Now().Unix()) {
+		t.Fatalf("dispatched %d times with sent_at %d, want once at %d", w2.dispatch.count(), w2.dispatch.last.SentAt, w2.clk.Now().Unix())
+	}
+}
+
+// Fix round 1, M-3: the cache is bounded in bytes too; past the budget the oldest requests are forgotten.
+func TestAnswerCacheIsBoundedInBytes(t *testing.T) {
+	w := newWorld(t)
+	big := make([]byte, 1000)
+	w.dispatch.fn = func(_ protocol.SealedRequest, reply func(Answer)) {
+		reply(Answer{Status: 200, Body: big, Final: true})
+	}
+	w.in.byteBudget = 2500
+	var first RelayedCommand
+	for i := range 4 {
+		cmd, _ := w.command(opRemind, byte(i+1))
+		if i == 0 {
+			first = cmd
+		}
+		w.in.Handle(context.Background(), cmd)
+	}
+	if n, b := w.in.cached(), w.in.cachedBytes(); n != 2 || b > 2500 {
+		t.Fatalf("cached %d requests, %d bytes", n, b)
+	}
+	w.in.Handle(context.Background(), w.retry(first, 50))
+	got := w.sender.all()
+	if last := got[len(got)-1]; last.answer.Status != 409 {
+		t.Fatalf("evicted retry = %+v", last)
 	}
 }

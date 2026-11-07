@@ -672,6 +672,9 @@ func (r *botGatewayRuntime) SetSealedIntake(cfg sealedIntakeConfig) {
 	features := catalog.FeaturesOf(cfg.capabilities)
 	e.mu.Lock()
 	changed := e.started && e.cfg.capabilities != cfg.capabilities
+	// A new Bot session (fix round 1 M-2): dillad may hold an older publication, or none after a restore, so the key
+	// and the catalog are sent again whatever the publisher believes it sent.
+	renewed := e.started && e.cfg.session != cfg.session
 	e.cfg = cfg
 	e.dispatcher = &service.SealedDispatcher{Community: cfg.community, Handlers: sealedHandlers(cfg, e.authz)}
 	e.operations = catalog.Operations(features)
@@ -684,7 +687,10 @@ func (r *botGatewayRuntime) SetSealedIntake(cfg sealedIntakeConfig) {
 		e.in.SetLogger(cfg.log)
 		e.publisher = catalog.NewPublisher(e, e, clock.System(), e.features)
 		e.publisher.SetLogger(cfg.log)
-		e.in.SetKeyStale(e.publisher.Changed)
+		// A command sealed to a key the helper does not hold: send the current key and catalog again even when their
+		// bytes are unchanged, so the client's refetch finds them (fix round 1 M-2).
+		publisher := e.publisher
+		e.in.SetKeyStale(func() { publisher.Forget(); publisher.Changed() })
 		// Fail closed until the installation's feed exists (Held is false for an installation with no feed) and has
 		// applied a snapshot (the Authz's own readiness): 503 E_BOT_OFFLINE, retryable.
 		installation := cfg.installation
@@ -699,7 +705,10 @@ func (r *botGatewayRuntime) SetSealedIntake(cfg sealedIntakeConfig) {
 	in, publisher := e.in, e.publisher
 	e.mu.Unlock()
 	in.SetBotUser(cfg.botUser)
-	if changed {
+	if renewed {
+		publisher.Forget()
+	}
+	if changed || renewed {
 		publisher.Changed()
 	}
 }

@@ -13,7 +13,8 @@ import (
 func TestCommandOpsCallTheHelperAndDecode(t *testing.T) {
 	key := make([]byte, 32)
 	key[0] = 0xaa
-	f := &fakeTransport{responses: [][]any{{[]byte{0x87, 1}}, {uint64(8), key}, {[]byte{0x83, 2}}, {uint64(2), key}}}
+	request := testID(41)
+	f := &fakeTransport{responses: [][]any{{[]byte{0x87, 1}}, {uint64(8), key, request[:]}, {[]byte{0x83, 2}}, {uint64(2), key}}}
 	c := newFakeClient(t, f)
 	ctx := context.Background()
 	now := time.Unix(1_800_000_000, 0)
@@ -21,7 +22,7 @@ func TestCommandOpsCallTheHelperAndDecode(t *testing.T) {
 		t.Fatalf("CommandKey = %x %v", pub, err)
 	}
 	opened, err := c.OpenCommand(ctx, []byte{0x85}, testID(5), testID(6), now)
-	if err != nil || opened.Refusal != helper.RefusalReplay || opened.ReplyKey[0] != 0xaa {
+	if err != nil || opened.Refusal != helper.RefusalReplay || opened.ReplyKey[0] != 0xaa || opened.ReplayRequestID != request {
 		t.Fatalf("OpenCommand = %+v %v", opened, err)
 	}
 	var reply [32]byte

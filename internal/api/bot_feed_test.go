@@ -189,7 +189,7 @@ func newFeedFixture(t *testing.T) *feedFixture {
 	t.Cleanup(cancel)
 	f.h, f.deps = newTestAPIWired(t, func(d *api.Deps) {
 		d.DeviceLists = ds.NewDeviceLists(d.Repo, rt)
-		f.feed = api.NewBotFeed(ctx, api.BotFeedOptions{Repo: d.Repo, Gateway: f.gw, Log: d.Log, Skipped: f.skipped.add})
+		f.feed = api.NewBotFeed(ctx, api.BotFeedOptions{Repo: d.Repo, Gateway: f.gw, Log: d.Log, Skipped: f.skipped.add, Clock: d.Clock})
 		d.BotFeed = f.feed
 		d.BotChannelEvents = f.feed
 	})
@@ -969,5 +969,26 @@ func TestMemberTimeoutIsFedInTheSnapshotAndOnChange(t *testing.T) {
 	}
 	if !slices.Equal(got, []uint64{0}) {
 		t.Fatalf("member_timeout after clearing = %v, want [0]", got)
+	}
+}
+
+// The feed reads timeouts at its own clock (fix round 1, M-5), as requireNotTimedOut does at the handler's: a timeout
+// ending a minute after the instance's now is current, whatever the machine's wall clock says.
+func TestMemberTimeoutIsReadAtTheFeedsClock(t *testing.T) {
+	f := newFeedFixture(t)
+	until := f.deps.Clock.Now().Unix() + 60
+	if err := f.deps.Repo.PutMemberTimeout(context.Background(), store.MemberTimeoutRow{CommunityID: f.community, UserID: f.member.User.ID,
+		ByUser: f.owner.ID, Created: f.deps.Clock.Now().Unix(), Expires: until}); err != nil {
+		t.Fatal(err)
+	}
+	s := f.identify(t)
+	var got []uint64
+	for _, ev := range decodeFeed(t, s.sent) {
+		if ev.kind == gateway.BotEventMemberTimeout {
+			got = append(got, feedUint(t, ev.body[2]))
+		}
+	}
+	if !slices.Equal(got, []uint64{uint64(until)}) {
+		t.Fatalf("snapshot member_timeout = %v, want [%d]", got, until)
 	}
 }

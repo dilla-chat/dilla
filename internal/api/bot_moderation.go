@@ -82,6 +82,7 @@ func (d Deps) AcceptBotModerationAction(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var receipt botModerationActionReceipt
+	var timedOut id.ID // the member this request timed out, told to the Bot's feed after the commit
 	err = d.Repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := tx.LockCommunity(r.Context(), communityID); err != nil {
 			return notFound(err)
@@ -183,6 +184,7 @@ func (d Deps) AcceptBotModerationAction(w http.ResponseWriter, r *http.Request) 
 				ByUser: s.UserID, Created: now, Expires: *expiresInt64}); err != nil {
 				return err
 			}
+			timedOut = uploader.UserID
 		}
 		name := "bot.automod.warn"
 		if req.Action == string(automod.ActionTimeout) {
@@ -207,6 +209,13 @@ func (d Deps) AcceptBotModerationAction(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
+	}
+	// After the commit, a timeout reaches the Bot's feed as a moderator's does (Bot v2 Task 15, fix round 1 I-1): the
+	// Bot refuses the timed-out member's sealed commands at once, not at its next snapshot.
+	if !timedOut.IsZero() {
+		if t, ok := d.BotFeed.(interface{ MemberTimeoutChanged(community, user id.ID) }); ok {
+			t.MemberTimeoutChanged(communityID, timedOut)
+		}
 	}
 	_ = server.WriteCBOR(w, http.StatusOK, []any{receipt.ActionID, receipt.Revision, receipt.Expires})
 }

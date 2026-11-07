@@ -37,6 +37,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/helper"
@@ -90,6 +91,9 @@ const (
 	// DefaultCapacity bounds the kept requests. dillad keeps 256 per device and 65536 in all; one
 	// community's Bot needs far fewer, and past the cap the oldest is forgotten (a Retry of it is 409).
 	DefaultCapacity = 4096
+	// DefaultByteBudget bounds the kept answers' bodies in all (fix round 1 M-3): past it the oldest requests are
+	// forgotten, as past DefaultCapacity.
+	DefaultByteBudget = 32 << 20
 	// MaxAnswers is the most answers one command gets, final included: dillad's BotRepliesPerRequest.
 	MaxAnswers = 16
 )
@@ -198,8 +202,11 @@ type record struct {
 	at        time.Time
 	replyKey  [32]byte
 	answers   []Answer
-	seq       uint32 // the next answer's seq: len(answers)
-	final     bool
+	// bytes is the kept answers' body bytes, counted in the intake's total; written under both locks' order
+	// (rec.mu, then i.mu) and read by the eviction with i.mu held.
+	bytes atomic.Int64
+	seq   uint32 // the next answer's seq: len(answers)
+	final bool
 	// retry is the verified request of a retryable refusal: a Retry handles it once the cause cleared.
 	retry *protocol.SealedRequest
 	elem  *list.Element
@@ -221,6 +228,8 @@ type Intake struct {
 	keyStale   func()
 	ready      func() bool
 	capacity   int
+	byteBudget int64
+	bytes      int64
 	records    map[id.ID]*record
 	order      list.List
 }
@@ -231,7 +240,7 @@ func New(h Helper, authz *Authz, dispatch Dispatcher, send ReplySender, clk cloc
 		clk = clock.System()
 	}
 	return &Intake{helper: h, authz: authz, dispatch: dispatch, send: send, clk: clk, log: slog.New(slog.DiscardHandler),
-		capacity: DefaultCapacity, records: map[id.ID]*record{}}
+		capacity: DefaultCapacity, byteBudget: DefaultByteBudget, records: map[id.ID]*record{}}
 }
 
 // SetHeld sets the held-user query (Task 14's installationFeed.Held).
@@ -331,6 +340,12 @@ func (i *Intake) Handle(ctx context.Context, cmd RelayedCommand) {
 		i.sendOnce(ctx, cmd, opened.ReplyKey, refusal(StatusStale, CodeStale))
 		return
 	case helper.RefusalReplay:
+		// The key is bound to the verified seal's own request (fix round 1 M-1): a seal of another request, relayed
+		// under this id, gets nothing.
+		if opened.ReplayRequestID != cmd.RequestID {
+			i.refused(ctx, log, "replay_mismatch", 0)
+			return
+		}
 		i.replay(ctx, log, cmd, opened.ReplyKey, held, operations, botUser)
 		return
 	default:
@@ -441,9 +456,14 @@ func (i *Intake) replay(ctx context.Context, log *slog.Logger, cmd RelayedComman
 	if retry := rec.retry; retry != nil {
 		// A retryable refusal: forget it and handle the request now, answering to the new key.
 		rec.retry, rec.answers, rec.seq, rec.final = nil, nil, 0, false
+		freed := rec.bytes.Swap(0)
 		rec.mu.Unlock()
+		i.charge(-freed)
 		req := *retry
 		req.ReplyKey = key
+		// The helper has just verified this seal's sent_at against now: the request is as fresh as the Retry (fix
+		// round 1 M-4), so a mutation's expiry follows it, not the first send's.
+		req.SentAt = uint64(max(i.clk.Now().Unix(), 0))
 		i.run(ctx, log, rec, req, held, operations, botUser)
 		return
 	}
@@ -469,6 +489,8 @@ func (i *Intake) answer(ctx context.Context, rec *record, a Answer) {
 	seq := rec.seq
 	rec.seq++
 	rec.answers = append(rec.answers, a)
+	rec.bytes.Add(int64(len(a.Body)))
+	i.charge(int64(len(a.Body)))
 	rec.final = a.Final
 	i.sendLocked(ctx, rec, seq, a)
 }
@@ -536,6 +558,24 @@ func (i *Intake) dropLocked(e *list.Element) {
 	rec, _ := e.Value.(*record)
 	i.order.Remove(e)
 	delete(i.records, rec.requestID)
+	i.bytes -= rec.bytes.Load()
+}
+
+// charge adds n body bytes to the kept total and forgets the oldest requests while it is over the budget.
+func (i *Intake) charge(n int64) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.bytes += n
+	for i.bytes > i.byteBudget && i.order.Len() > 0 {
+		i.dropLocked(i.order.Front())
+	}
+}
+
+// cachedBytes is the kept answers' body bytes (tests).
+func (i *Intake) cachedBytes() int64 {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.bytes
 }
 
 // cached is the number of kept requests (tests).

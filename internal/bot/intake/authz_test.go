@@ -218,3 +218,21 @@ func TestAuthzZeroChannelHoldsOnlyForCommunityScopedOperations(t *testing.T) {
 		t.Fatal("permission_bit 0 needs membership only")
 	}
 }
+
+// Fix round 1, I-2: SnapshotBegin clears readiness; SnapshotDone restores it; a cut-off snapshot stays not ready.
+func TestAuthzIsNotReadyWhileASnapshotStreams(t *testing.T) {
+	a, _, _, _ := authzFixture(t)
+	a.SnapshotBegin()
+	if a.Ready() {
+		t.Fatal("ready while a snapshot streams")
+	}
+	a.SnapshotDone()
+	if !a.Ready() {
+		t.Fatal("not ready after the snapshot")
+	}
+	a.SnapshotBegin()
+	a.SnapshotBegin() // the first was cut off; a new stream began
+	if a.Ready() {
+		t.Fatal("a cut-off snapshot left the cache ready")
+	}
+}

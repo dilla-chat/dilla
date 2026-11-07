@@ -89,8 +89,14 @@ func (h *loadHelper) OpenCommand(_ context.Context, sealed []byte, user, device 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.ops++
+	if strings.HasPrefix(string(sealed), "unknown-key") {
+		return helper.OpenedCommand{Refusal: helper.RefusalUnknownKey}, nil
+	}
 	if key, ok := h.replays[string(sealed)]; ok {
-		return helper.OpenedCommand{Refusal: helper.RefusalReplay, ReplyKey: key}, nil
+		// A Retry's seal is "sealed:" + request id + its key bytes: the helper names the seal's own request (M-1).
+		var request id.ID
+		copy(request[:], sealed[len("sealed:"):])
+		return helper.OpenedCommand{Refusal: helper.RefusalReplay, ReplyKey: key, ReplayRequestID: request}, nil
 	}
 	req, ok := h.requests[string(sealed)]
 	if !ok {
@@ -146,6 +152,7 @@ func (s *countingState) taken() int {
 }
 
 type loadWorld struct {
+	session   *client.Session
 	runtime   *botGatewayRuntime
 	entry     *sealedEntry
 	transport *loadTransport
@@ -197,7 +204,7 @@ func newLoadWorld(t testing.TB, members int, cancel bool) *loadWorld {
 		t.Fatal(err)
 	}
 	r := newBotGatewayRuntime(ctx, api, true, log)
-	w := &loadWorld{runtime: r, transport: transport, helper: &loadHelper{requests: map[string]protocol.SealedRequest{}}, community: community, devices: map[id.ID][]id.ID{}}
+	w := &loadWorld{session: session, runtime: r, transport: transport, helper: &loadHelper{requests: map[string]protocol.SealedRequest{}}, community: community, devices: map[id.ID][]id.ID{}}
 	// The feed: the installation's handler, teed to the intake's Authz, applies a cold-start snapshot.
 	feed := r.feedFor(installation, community, botUser, feedDeps{ingest: func(context.Context, id.ID, []byte) (native.DeviceListIngest, error) {
 		w.helper.mu.Lock()
@@ -460,4 +467,52 @@ func TestSealedIntakeFailsClosedUntilTheFeedIsReady(t *testing.T) {
 	if a := last(); a.Status != 200 || !strings.HasPrefix(string(a.Body), "Saved") {
 		t.Fatalf("ready: %+v", a)
 	}
+}
+
+// Fix round 1, M-2: a command sealed to a key the helper does not hold, and a new Bot session, each make the publisher
+// send the key and the catalog again even though their bytes did not change (dillad may hold an older publication, or
+// none after a restore), so the client's refetch finds the current key.
+func TestStaleKeyAndNewSessionRepublishUnchangedBytes(t *testing.T) {
+	w := newLoadWorld(t, 3, false)
+	puts := func() int {
+		w.transport.mu.Lock()
+		defer w.transport.mu.Unlock()
+		n := 0
+		for route, c := range w.transport.frames {
+			if strings.HasSuffix(route, "/command-key") || strings.HasSuffix(route, "/catalog") {
+				n += c
+			}
+		}
+		return n
+	}
+	if n := puts(); n != 0 {
+		t.Fatalf("puts before = %d", n)
+	}
+	cmd := w.commands[0]
+	cmd.Sealed = []byte("unknown-key")
+	w.entry.in.Handle(context.Background(), cmd)
+	waitUntil(t, func() bool { return puts() == 2 })
+	cfg, _ := w.entry.current()
+	api, err := client.New(client.Config{BaseURL: "http://127.0.0.1:1", InstanceID: id.New(), AllowLoopbackHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := api.Session("another-bot-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A new session of the same Bot: republished through it (it has no transport here, so the PUTs fail and are
+	// retried; what matters is that the publisher forgot what dillad held and tried again).
+	cfg.session = fresh
+	w.runtime.SetSealedIntake(cfg)
+	w.entry.mu.Lock()
+	forgot := w.entry.publisher != nil
+	w.entry.mu.Unlock()
+	if !forgot {
+		t.Fatal("no publisher")
+	}
+	// Back on the original session: the next publish sends both again.
+	cfg.session = w.session
+	w.runtime.SetSealedIntake(cfg)
+	waitUntil(t, func() bool { return puts() >= 4 })
 }

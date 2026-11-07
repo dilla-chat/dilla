@@ -161,8 +161,11 @@ const (
 // RefusalUnknownKey carry none: no reply is possible.
 type OpenedCommand struct {
 	ReplyKey [32]byte
-	Request  protocol.SealedRequest
-	Refusal  CommandRefusal
+	// ReplayRequestID is, for RefusalReplay, the verified seal's own request id: the Bot re-seals only that request's
+	// answers to ReplyKey (fix round 1 M-1).
+	ReplayRequestID id.ID
+	Request         protocol.SealedRequest
+	Refusal         CommandRefusal
 }
 
 func unixSeconds(now time.Time) (uint64, error) {
@@ -215,15 +218,28 @@ func OpenCommandPayload(sealed []byte, user, device id.ID, now time.Time) ([]any
 	return []any{sealed, user, device, seconds}, nil
 }
 
-// DecodeOpenedCommand reads op 22's answer strictly: [0, request], [refusal 3..8, reply_key(32)] or
-// [refusal 1..8]. Anything else is an outcome-unknown error. The opened request gets the attached
-// user and device.
+// DecodeOpenedCommand reads op 22's answer strictly: [0, request], [refusal 3..7, reply_key(32)],
+// [8, reply_key(32), request_id(16)] or [refusal 1..8]. Anything else is an outcome-unknown error. The
+// opened request gets the attached user and device.
 func DecodeOpenedCommand(answer []any, user, device id.ID) (OpenedCommand, error) {
 	code, ok := uint64At(answer, 0)
 	switch {
 	case ok && len(answer) == 1 && code >= uint64(RefusalMalformed) && code <= uint64(RefusalReplay):
 		return OpenedCommand{Refusal: CommandRefusal(code)}, nil
-	case ok && len(answer) == 2 && code >= uint64(RefusalBadSignature) && code <= uint64(RefusalReplay):
+	case ok && len(answer) == 3 && code == uint64(RefusalReplay):
+		key, isKey := answer[1].([]byte)
+		request, isRequest := answer[2].([]byte)
+		if !isKey || len(key) != 32 || !isRequest || len(request) != len(id.ID{}) {
+			return OpenedCommand{}, unknown(errors.New("invalid command replay answer"))
+		}
+		opened := OpenedCommand{Refusal: RefusalReplay}
+		copy(opened.ReplyKey[:], key)
+		copy(opened.ReplayRequestID[:], request)
+		if opened.ReplayRequestID.IsZero() {
+			return OpenedCommand{}, unknown(errors.New("invalid command replay request id"))
+		}
+		return opened, nil
+	case ok && len(answer) == 2 && code >= uint64(RefusalBadSignature) && code <= uint64(RefusalStale):
 		key, isBytes := answer[1].([]byte)
 		if !isBytes || len(key) != 32 {
 			return OpenedCommand{}, unknown(errors.New("invalid command refusal reply key"))

@@ -113,7 +113,9 @@ func fixtureCommandAnswer(request protocol.HelperRequest) ([]any, bool) {
 		replyKey[0] = 0xaa
 		// Task 15: a refusal decided after the seal opened carries the reply key ([code, key]).
 		switch now {
-		case 4:
+		case 4: // a verified replay: its reply key and its own request id (fix round 1 M-1)
+			return []any{uint64(8), replyKey, idBytes(fixtureID(41))}, true
+		case 8: // undefined: a replay without its request id
 			return []any{uint64(8), replyKey}, true
 		case 5:
 			return []any{uint64(3), replyKey}, true
@@ -174,7 +176,7 @@ func TestCommandWrappersDecodeHelperAnswers(t *testing.T) {
 		t.Fatalf("replay = %#v, %v", replay, err)
 	}
 	keyed, err := c.OpenCommand(ctx, []byte{0x85}, fixtureID(5), fixtureID(6), time.Unix(4, 0))
-	if err != nil || keyed.Refusal != RefusalReplay || keyed.ReplyKey[0] != 0xaa || keyed.Request.RequestID != (id.ID{}) {
+	if err != nil || keyed.Refusal != RefusalReplay || keyed.ReplyKey[0] != 0xaa || keyed.ReplayRequestID != fixtureID(41) || keyed.Request.RequestID != (id.ID{}) {
 		t.Fatalf("replay with its reply key = %#v, %v", keyed, err)
 	}
 	signature, err := c.OpenCommand(ctx, []byte{0x85}, fixtureID(5), fixtureID(6), time.Unix(5, 0))
@@ -199,7 +201,7 @@ func TestCommandWrappersDecodeHelperAnswers(t *testing.T) {
 }
 
 func TestOpenCommandRefusesUndefinedAnswers(t *testing.T) {
-	for _, now := range []int64{2, 3, 6, 7} {
+	for _, now := range []int64{2, 3, 6, 7, 8} {
 		c := startFixture(t, "command")
 		if _, err := c.OpenCommand(context.Background(), []byte{0x85}, fixtureID(5), fixtureID(6), time.Unix(now, 0)); err == nil {
 			t.Fatalf("answer %d accepted", now)

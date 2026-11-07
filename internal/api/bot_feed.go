@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
-	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/ds"
 	"github.com/dilla-chat/dilla/internal/gateway"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -80,6 +80,8 @@ type BotFeedOptions struct {
 	// Skipped counts a device-list push left out, by reason: too_large, too_many_rows, no_keys or
 	// invalid. Nil counts nothing.
 	Skipped func(reason string)
+	// Clock is the time member timeouts are read at (Task 15, fix round 1 M-5); nil is the system clock.
+	Clock clock.Clock
 }
 
 // BotFeed is the feed of every installed Bot of the instance.
@@ -96,6 +98,9 @@ type BotFeed struct {
 func NewBotFeed(ctx context.Context, o BotFeedOptions) *BotFeed {
 	if o.Log == nil {
 		o.Log = slog.Default()
+	}
+	if o.Clock == nil {
+		o.Clock = clock.System()
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	return &BotFeed{ctx: ctx, cancel: cancel, o: o, bots: map[id.ID]*feedBot{}}
@@ -1046,7 +1051,7 @@ func cmpUint(a, b uint64) int {
 func (f *BotFeed) memberTimeouts(ctx context.Context, b *feedBot, users []id.ID, inScope func(id.ID) bool, send func(gateway.Frame) error) error {
 	users = slices.Clone(users)
 	slices.SortFunc(users, compareIDs)
-	now := time.Now().Unix()
+	now := f.o.Clock.Now().Unix()
 	for _, u := range slices.Compact(users) {
 		if !inScope(u) {
 			b.mu.Lock()

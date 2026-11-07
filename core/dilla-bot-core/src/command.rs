@@ -5,7 +5,8 @@
 //! Ops (payload → answer):
 //! - 21 `command_key_current [community_id, now]` → `[publication]`
 //! - 22 `command_open [sealed, attached_user, attached_device, now]` → `[0, request_cbor]`,
-//!   `[refusal_code, reply_key]` once the seal opened (codes 3..8; Task 15) or `[refusal_code]`
+//!   `[refusal_code, reply_key]` once the seal opened (codes 3..7; Task 15), `[8, reply_key,
+//!   request_id]` for a verified replay (fix round 1 M-1), or `[refusal_code]`
 //!   when it did not (1 malformed, 2 unknown key); `request_cbor` is `[request_id, community_id, channel_id|null, operation,
 //!   args, sent_at, reply_key]`
 //! - 23 `reply_seal [reply_key, request_id, seq, body]` → `[sealed]`
@@ -61,6 +62,12 @@ pub(crate) enum Opened {
     /// (Task 15). Nothing else of an unverified request leaves the helper. Codes 1 and 2 (the
     /// seal did not open) carry none.
     Refused(u8, Option<[u8; 32]>),
+    /// Refusal 8: a verified seal of a request already opened (a Retry). It carries the seal's own request id with
+    /// its reply key, so the Bot binds the key to that request and no other (Task 15, fix round 1 M-1).
+    Replay {
+        reply_key: [u8; 32],
+        request_id: [u8; 16],
+    },
 }
 
 fn checked_now(now: u64) -> Result<i64, DispatchError> {
@@ -296,7 +303,10 @@ pub(crate) fn open(
         f.max(now_i - REPLAY_WINDOW_SECS)
     });
     if i64::try_from(request.sent_at).unwrap_or(i64::MAX) < floor + CLOCK_SKEW_SECS {
-        return Ok(Opened::Refused(REFUSAL_REPLAY, Some(request.reply_key)));
+        return Ok(Opened::Replay {
+            reply_key: request.reply_key,
+            request_id: request.request_id,
+        });
     }
     db(tx.execute("DELETE FROM command_replay WHERE seen_at<?1", [floor]))?;
     db(tx.execute(
@@ -312,7 +322,10 @@ pub(crate) fn open(
     if inserted == 0 {
         // Verified, and seen before: a Retry. The Bot re-seals what it already answered to this
         // send's reply key (the client keeps only the newest), and dispatches nothing again.
-        return Ok(Opened::Refused(REFUSAL_REPLAY, Some(request.reply_key)));
+        return Ok(Opened::Replay {
+            reply_key: request.reply_key,
+            request_id: request.request_id,
+        });
     }
     Ok(Opened::Request(request))
 }
@@ -430,6 +443,15 @@ pub(crate) fn op_open(
         }
         Opened::Refused(code, Some(reply_key)) => {
             e.array(2).uint(u64::from(code)).bytes(&reply_key);
+        }
+        Opened::Replay {
+            reply_key,
+            request_id,
+        } => {
+            e.array(3)
+                .uint(u64::from(REFUSAL_REPLAY))
+                .bytes(&reply_key)
+                .bytes(&request_id);
         }
         Opened::Request(request) => {
             let request = Zeroizing::new(encode_request(&request));
@@ -658,6 +680,7 @@ mod tests {
     fn refused(opened: Opened) -> u8 {
         match opened {
             Opened::Refused(code, _) => code,
+            Opened::Replay { .. } => REFUSAL_REPLAY,
             Opened::Request(_) => 0,
         }
     }
@@ -773,6 +796,7 @@ mod tests {
             match open(&self.store, &self.core, sealed, USER, device, now).unwrap() {
                 Opened::Request(r) => Ok(r),
                 Opened::Refused(code, _) => Err(code),
+                Opened::Replay { .. } => Err(REFUSAL_REPLAY),
             }
         }
 
@@ -1090,11 +1114,21 @@ mod tests {
         )
         .unwrap();
         match open_full(&w, &again, DEVICE, T0 + 2) {
-            Opened::Refused(code, Some(key)) => {
-                assert_eq!(code, REFUSAL_REPLAY);
-                assert_eq!(key, again_secret.public_key(), "the newest send's key");
+            Opened::Replay {
+                reply_key,
+                request_id,
+            } => {
+                assert_eq!(
+                    reply_key,
+                    again_secret.public_key(),
+                    "the newest send's key"
+                );
+                assert_eq!(
+                    request_id, req.request_id,
+                    "the verified seal's own request id"
+                );
             }
-            _ => panic!("a replay carries the newest reply key"),
+            _ => panic!("a replay carries the newest reply key and its request id"),
         }
         assert!(matches!(
             open_full(&w, &[0x80], DEVICE, T0),
@@ -1118,14 +1152,18 @@ mod tests {
             e.into_vec()
         };
         let answer = op_open(&w.store, &w.core, &payload(&again, T0 + 3)).unwrap();
-        let (code, key) = decode_strict(&answer, |d| {
-            d.array(2)?;
-            Ok((d.uint()?, d.bytes_exact::<32>()?))
+        let (code, key, request_id) = decode_strict(&answer, |d| {
+            d.array(3)?;
+            Ok((d.uint()?, d.bytes_exact::<32>()?, d.bytes_exact::<16>()?))
         })
         .unwrap();
         assert_eq!(
-            (code, key),
-            (u64::from(REFUSAL_REPLAY), again_secret.public_key())
+            (code, key, request_id),
+            (
+                u64::from(REFUSAL_REPLAY),
+                again_secret.public_key(),
+                req.request_id
+            )
         );
         let answer = op_open(&w.store, &w.core, &payload(&[0x80], T0 + 3)).unwrap();
         let code = decode_strict(&answer, |d| {
