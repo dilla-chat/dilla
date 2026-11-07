@@ -11,9 +11,13 @@ import { socketRequestOnce } from './socket-requests';
  */
 export function watchBearer(page: Page): () => string {
   let bearer = '';
-  page.on('request', (r) => {
+  page.context().on('request', (r) => {
+    if (!r.url().includes('/v1/')) return;
     void r.allHeaders().then((h) => { const a = h.authorization; if (a?.startsWith('Bearer ') === true) bearer = a; }).catch(() => undefined);
   });
+  // Ordinary native request reports on the desktop (Electron) lane omit headers. Observing the factor gate's read (an
+  // HTTP route, sent before the socket exists) through a pass-through route makes its headers visible, as afk.spec does.
+  void page.context().route('**/v1/auth/factors', (route) => route.continue());
   return () => bearer;
 }
 

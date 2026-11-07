@@ -44,6 +44,9 @@ type RolePanelInteractions struct {
 	Session     *client.Session
 	CommunityID id.ID
 	Now         func() time.Time
+	// JoinWait is how long a publish into a Bot channel the Bot has not joined yet waits for the join (a newly marked
+	// channel is joined from its kept Welcome some seconds after the mark), polling every JoinPoll. Zero: 45 s and 1 s.
+	JoinWait, JoinPoll time.Duration
 }
 
 type rolePanelOption struct {
@@ -86,11 +89,12 @@ func (h RolePanelInteractions) publish(ctx context.Context, actor InteractionAct
 	if err := CheckBotChannel(h.CommunityID, channel); err != nil {
 		if errors.Is(err, ErrNeedsBotChannel) {
 			FlagNeedsBotChannel(h.CommunityID, "role_panels", channel)
+			logRefusal(ctx, "role_panels", channel, err)
 			return InteractionResult{Status: interactionStatusUnavailable, Note: "The Bot posts only in Bot channels."}, nil
 		}
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
-	group, err := h.Destination.ResolveTextGroup(ctx, h.CommunityID, channel)
+	group, err := h.resolveGroup(ctx, channel)
 	if err != nil || group.IsZero() {
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
@@ -134,6 +138,38 @@ func (h RolePanelInteractions) publish(ctx context.Context, actor InteractionAct
 		return InteractionResult{}, err
 	}
 	return InteractionResult{Data: data}, nil
+}
+
+// resolveGroup resolves the channel's group, waiting (bounded) while the refusal is temporary: the Bot has not joined a
+// newly marked channel yet, or has not learned the Bot channels yet. The post is then sent as soon as the Bot is in.
+func (h RolePanelInteractions) resolveGroup(ctx context.Context, channel id.ID) (id.ID, error) {
+	wait, poll := h.JoinWait, h.JoinPoll
+	if wait <= 0 {
+		wait = 45 * time.Second
+	}
+	if poll <= 0 {
+		poll = time.Second
+	}
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	logged := false
+	for {
+		group, err := h.Destination.ResolveTextGroup(ctx, h.CommunityID, channel)
+		if err == nil || !errors.Is(err, ErrBotNotJoined) && !errors.Is(err, ErrBotChannelsUnknown) {
+			return group, err
+		}
+		if !logged { // once per publish: the wait polls every second
+			logRefusal(ctx, "role_panels", channel, err)
+			logged = true
+		}
+		select {
+		case <-time.After(poll):
+		case <-deadline.C:
+			return id.ID{}, err
+		case <-ctx.Done():
+			return id.ID{}, ctx.Err()
+		}
+	}
 }
 
 func decodeRolePanelOptions(raw []byte) ([]rolePanelOption, error) {

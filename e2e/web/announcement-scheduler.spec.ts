@@ -5,6 +5,7 @@ import { arr, decode, encode } from '../../packages/client-core/src/cbor/index';
 import { test as appTest, addServerVia, completeSignUp, copy, makeInviteLink, newAccount, signUp, type Account } from './support/app';
 import { prepareBotRuntimeBinaries, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { e2ePort } from './support/ports';
+import { markBotChannel, watchBearer } from './support/bot-channel';
 
 const HOST: HostConfig = { port: e2ePort(8521), control: e2ePort(8522), webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
 const SERVER = 'Announcement Scheduler Acceptance';
@@ -160,6 +161,7 @@ appTest('creates and sends a one-off announcement through the browser client, th
   let host: StartedHost | null = null;
   try {
     host = await startTestHost(HOST);
+    const bearerOf = watchBearer(page);
     const account = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await addServerVia(page, 'create');
     const create = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
@@ -194,6 +196,8 @@ appTest('creates and sends a one-off announcement through the browser client, th
     await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.ready') })).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
     await page.keyboard.press('Escape');
 
+    // Bot v2 Task 17: the Bot posts only into Bot channels.
+    await markBotChannel(page, host.url, bearerOf, 'general');
     const welcomeSettingsId = await botInteraction(page, communityId, 1, [5], null);
     expect((await interactionResponse(page, communityId, 1, welcomeSettingsId)).status).toBe(0);
 
@@ -243,6 +247,7 @@ appTest('paired restore refuses a stale managed Bot announcement until a member 
   let intentionalOfflineConsoleStart: number | null = null;
   try {
     host = await startTestHost(HOST);
+    const bearerOf = watchBearer(page);
     const account = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await addServerVia(page, 'create');
     const create = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
@@ -274,6 +279,8 @@ appTest('paired restore refuses a stale managed Bot announcement until a member 
     await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.ready') })).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
     await page.keyboard.press('Escape');
 
+    // Bot v2 Task 17: the Bot posts only into Bot channels.
+    await markBotChannel(page, host.url, bearerOf, 'general');
     const welcomeSettingsId = await botInteraction(page, communityId, 1, [5], null);
     expect((await interactionResponse(page, communityId, 1, welcomeSettingsId)).status).toBe(0);
     const runAt = stockholmMinuteAfterWithTime(300);

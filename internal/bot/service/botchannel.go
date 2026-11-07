@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -25,6 +26,28 @@ var ErrNeedsBotChannel = errors.New("needs_bot_channel")
 // ErrBotChannelsUnknown is a temporary refusal: the feed has not applied its first snapshot, so the marks are not
 // known yet. A caller retries; nothing is posted meanwhile.
 var ErrBotChannelsUnknown = errors.New("bot channels not known yet")
+
+// ErrBotNotJoined means the channel is a Bot channel but the Bot has not joined its group yet (a newly marked channel is
+// joined from its kept Welcome some seconds after the mark). Temporary: a post waits for the join.
+var ErrBotNotJoined = errors.New("bot has not joined the channel's group yet")
+
+// refusalReason is the short reason a post was refused, for the log.
+func refusalReason(err error) string {
+	switch {
+	case errors.Is(err, ErrNeedsBotChannel):
+		return NeedsBotChannelCode
+	case errors.Is(err, ErrBotChannelsUnknown):
+		return "bot_channels_unknown"
+	case errors.Is(err, ErrBotNotJoined):
+		return "not_joined"
+	}
+	return "unavailable"
+}
+
+// logRefusal records one refused post at info level: the feature, the channel and the reason, never content.
+func logRefusal(ctx context.Context, feature string, channel id.ID, err error) {
+	slog.InfoContext(ctx, "bot post refused", "feature", feature, "channel_id", channel.String(), "reason", refusalReason(err))
+}
 
 // NeedsBotChannelError names the channel (when known) a post was refused for.
 type NeedsBotChannelError struct{ Channel id.ID }

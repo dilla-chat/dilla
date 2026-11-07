@@ -242,6 +242,7 @@ func (s *SendCoordinator) sendAttempt(ctx context.Context, session sendSession, 
 	// sits here, below every feature and the webhook post, so no caller can bypass it.
 	if interaction == nil {
 		if err := s.requireBotChannelGroup(group); err != nil {
+			logRefusal(ctx, "send", group.Target, err)
 			return protocol.SendReceipt{}, err
 		}
 	}

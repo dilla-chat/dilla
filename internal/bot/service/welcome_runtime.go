@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/community/welcome"
@@ -44,6 +45,7 @@ func (r WelcomeDestinationResolver) ResolveTextGroup(ctx context.Context, commun
 		if errors.Is(err, ErrNeedsBotChannel) {
 			FlagNeedsBotChannel(community, feature, channel)
 		}
+		logRefusal(ctx, feature, channel, err)
 		return id.ID{}, err
 	}
 	ClearNeedsBotChannel(community, feature)
@@ -60,10 +62,18 @@ func (r WelcomeDestinationResolver) ResolveTextGroup(ctx context.Context, commun
 		}
 		group, err := r.Native.InspectGroup(ctx, *ch.TextGroupID)
 		if err != nil {
+			// Not (yet) in the Bot's native state: a Bot channel marked a moment ago is joined from its kept Welcome later.
+			err = fmt.Errorf("%w: %w", ErrBotNotJoined, err)
+			logRefusal(ctx, feature, channel, err)
 			return id.ID{}, err
 		}
 		if group.ID != *ch.TextGroupID || group.State != 2 || group.Community == nil || *group.Community != community || group.Target != channel {
-			return id.ID{}, errors.New("welcome destination MLS group is not authorized for this channel")
+			err = errors.New("welcome destination MLS group is not authorized for this channel")
+			if group.State != 2 {
+				err = ErrBotNotJoined
+			}
+			logRefusal(ctx, feature, channel, err)
+			return id.ID{}, err
 		}
 		return group.ID, nil
 	}
