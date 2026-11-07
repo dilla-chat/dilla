@@ -717,7 +717,7 @@ export const decodeDeviceListPush = (b: Uint8Array) => guarded(() => {
     umk: bytes(fields[0], 32), ssk: bytes(fields[1], 32), sigUmkSsk: bytes(fields[2], 64),
     history: (rows as CborValue[]).map(row => {
       const r = arr(row, 4);
-      return { version: u64(r[0]!), blob: bytes(r[1]), sskSignature: bytes(r[2], 64), prevHash: bytes(r[3], 32) };
+      return { version: u64(r[0]), blob: bytes(r[1]), sskSignature: bytes(r[2], 64), prevHash: bytes(r[3], 32) };
     }),
   };
   devicePushValue(push);

@@ -418,7 +418,6 @@ fn repin(
     Ok(())
 }
 
-
 /// What a device-list push did (`ClientCore::ingest_device_list`). `version` is the cached
 /// list's version afterwards (0 when none is cached).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
