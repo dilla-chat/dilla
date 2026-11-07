@@ -517,6 +517,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 			// member list (op 54) instead of keeping the Bot until a focus or reconnect.
 			defer botRoleNotify.Changed(ctx, installation.CommunityID)
 		}
+		// The disabled or removed Bot's event feed goes with it (Task 12 fix round 1 M-4).
+		botFeed.Forget(installation.ID)
 		if installation.DeviceID == nil {
 			return
 		}

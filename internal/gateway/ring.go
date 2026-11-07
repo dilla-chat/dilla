@@ -48,6 +48,10 @@ type ring struct {
 	bytes       int
 	replyFrames int
 	replyBytes  int
+	// evicted is the highest n the bounds dropped unacknowledged (count, bytes or age; not trim). A Bot
+	// connection's resume from below it is refused (fix round 1 I-3): the replay would silently miss
+	// those frames, and an empty ring reports no floor to catch it.
+	evicted uint64
 }
 
 func newRing(l ringLimits, clk clock.Clock) *ring {
@@ -115,6 +119,7 @@ func (r *ring) evictLocked() {
 		if !tooMany && !tooBig && !tooOld {
 			return
 		}
+		r.evicted = max(r.evicted, head.n)
 		r.dropHeadLocked()
 	}
 }
@@ -126,6 +131,14 @@ func (r *ring) trim(lastN uint64) {
 	for len(r.entries) > 0 && r.entries[0].n <= lastN {
 		r.dropHeadLocked()
 	}
+}
+
+// evictedThrough is the highest n the ring's bounds dropped, after evicting what is due now.
+func (r *ring) evictedThrough() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.evictLocked()
+	return r.evicted
 }
 
 // floor is the lowest n still replayable, or 0 when the ring is empty.

@@ -304,8 +304,16 @@ func TestConfigureBotReplayPrecedesCurrentManagedRoleCeiling(t *testing.T) {
 }
 
 func testBotInstallationEnableRequiresStepUpAndReplaysOnlyTheSameRequest(t *testing.T, repo store.Repository) {
+	var profileMu sync.Mutex
+	var profileChanged []id.ID
 	h, deps := newTestAPIWithRepository(t, repo, func(d *api.Deps) {
 		d.StepUps = api.NewStepUps(d.Clock, time.Minute)
+		// Bot v2 task 12 fix round 1 M-2: a committed configure tells members and the Bot feed.
+		d.BotProfileChanged = func(_ context.Context, c id.ID) {
+			profileMu.Lock()
+			defer profileMu.Unlock()
+			profileChanged = append(profileChanged, c)
+		}
 	})
 	owner, _, token := seedAPISession(t, deps)
 	cid := id.New()
@@ -360,6 +368,11 @@ func testBotInstallationEnableRequiresStepUpAndReplaysOnlyTheSameRequest(t *test
 	if first.Code != http.StatusCreated {
 		t.Fatalf("enable = %d (%x), want 201", first.Code, first.Body.Bytes())
 	}
+	profileMu.Lock()
+	if len(profileChanged) != 1 || profileChanged[0] != cid {
+		t.Fatalf("a committed configure announced %v, want [%s]", profileChanged, cid)
+	}
+	profileMu.Unlock()
 	page, err := deps.Repo.ListBotStructuralEvents(ctx, cid, 0, 10)
 	if err != nil || len(page.Events) != 1 || page.Events[0].Kind != botprotocol.EventInstallation || page.Events[0].Data[1] != uint64(store.BotInstallationPending) || page.Events[0].Data[2] != uint64(1) {
 		t.Fatalf("enable event = %+v, %v; want one pending installation revision 1", page, err)

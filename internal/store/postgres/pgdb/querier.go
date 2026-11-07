@@ -242,6 +242,7 @@ type Querier interface {
 	// GET /v1/communities (dilla-web-1 L-SQL-02): the live communities the user is a member of, by id
 	// (the same order on both engines), over members_by_user (00013_members_by_user.sql).
 	ListCommunitiesForUser(ctx context.Context, arg ListCommunitiesForUserParams) ([]Communities, error)
+	ListCommunityMemberRoles(ctx context.Context, arg ListCommunityMemberRolesParams) ([]ListCommunityMemberRolesRow, error)
 	// dilla-web-2a (L-SQL-21, Q04): the enrolment rate counts every enrolment, revoked devices
 	// included, so enrol-revoke-enrol inside the hour still counts twice.
 	ListDeviceCreationsSince(ctx context.Context, arg ListDeviceCreationsSinceParams) ([]int64, error)

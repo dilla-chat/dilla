@@ -820,6 +820,9 @@ type Communities interface {
 	// list each member's roles and the permission resolver needs the set a user
 	// holds, which deriving from ListRoles would make a full scan per member.
 	ListMemberRoles(ctx context.Context, communityID, userID id.ID) ([]id.ID, error)
+	// ListCommunityMemberRoles is every member's roles in one read, user -> role ids in id order (Bot v2
+	// task 12: the Bot feed's member diff). A member who holds no role is absent.
+	ListCommunityMemberRoles(ctx context.Context, communityID id.ID) (map[id.ID][]id.ID, error)
 }
 
 // RoleGrantSource identifies an independent reason a member holds a role.

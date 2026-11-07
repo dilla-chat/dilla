@@ -22,8 +22,12 @@ import (
 // snapshot_end in arrival order, so no live event is applied before the state it changes.
 
 // botPendingCap bounds the frames one Bot connection holds while its snapshot or a resume is in
-// progress. Past it the connection is not fed again: Finish fails and the Bot identifies afresh.
-const botPendingCap = 4096
+// progress: half its writer queue (fix round 1 M-1), so the flush after snapshot_end, into a queue
+// Finish first lets drain below half, cannot overflow it. Past it the connection is not fed again:
+// Finish fails and the Bot identifies afresh.
+func (c *conn) botPendingCap() int {
+	return max(1, c.gw.opts.BotQueueFrames/2)
+}
 
 // botIndex is the Bot runtime connections by device. A connection stays in it from its identify until
 // it can never be fed again (a non-resumable close, the resume window elapsing, a refused resume), so
@@ -93,8 +97,15 @@ func (c *conn) deliverBot(f Frame) bool {
 		return false
 	}
 	f.Replay = true
+	// While the cold-start snapshot is owed, a live op 65 predates the snapshot's reads (the feed's
+	// one worker streams the snapshot before any later live work), so the snapshot supersedes it.
+	// Flushed after snapshot_end it would overwrite the newer state (fix round 1 I-2). It is dropped,
+	// and reported taken so the feed stays online. Op 64 commands still wait and follow.
+	if f.Op == OpBotEvent && c.botSnapshot && c.botSnapshotEnd == 0 {
+		return true
+	}
 	if c.botHolding {
-		if len(c.botPending) >= botPendingCap {
+		if len(c.botPending) >= c.botPendingCap() {
 			c.botOverflow = true
 			return false
 		}
@@ -215,6 +226,17 @@ func (s *BotStream) Send(ctx context.Context, f Frame) bool {
 // botPendingCap, the connection is ended instead and the Bot identifies again.
 func (s *BotStream) Finish(f Frame) bool {
 	c := s.c
+	// Let the snapshot's tail drain below half the queue first, so snapshot_end and the held frames
+	// (at most half the queue) fit (fix round 1 M-1). The wait is bounded by the write deadline; past it
+	// the flush goes ahead, and an overflow closes resumably as for any slow consumer.
+	c.mu.Lock()
+	w := c.writer
+	c.mu.Unlock()
+	if w != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), c.gw.opts.WriteDeadline)
+		w.waitRoom(ctx, w.limits.Bytes/4)
+		cancel()
+	}
 	c.mu.Lock()
 	if !c.streamOpenLocked() {
 		c.mu.Unlock()

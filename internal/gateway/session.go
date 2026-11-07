@@ -249,6 +249,12 @@ func (c *conn) tryResumeSnapshot(token []byte, generation, lastN, current uint64
 	if floor != 0 && lastN < floor-1 {
 		return resumeOutcome{}, errNotResumable
 	}
+	// A Bot connection also refuses an ack below the highest frame its ring dropped unacknowledged
+	// (fix round 1 I-3): with the whole gap aged out the ring is empty and floor says nothing. The Bot
+	// identifies again and is sent a fresh snapshot. User connections keep their resume rule.
+	if c.isBot && lastN < c.ring.evictedThrough() {
+		return resumeOutcome{}, errNotResumable
+	}
 	entries := c.ring.entriesSince(lastN)
 	c.resuming = true
 	// A Bot connection's frames from here until the replay is queued wait in botPending
@@ -573,7 +579,7 @@ func (g *Gateway) identifyConnection(ctx context.Context, s sink, in Inbound) (*
 		bearer = tokenFromHandshake(in)
 	}
 	session, err := g.identify(ctx, bearer)
-	if err != nil || (in.botPeer != nil && (session.Bot == nil || !g.admitBotSession(in.botPeer, &in))) {
+	if err != nil || (in.botPeer != nil && (session.Bot == nil || !g.admitBotSession(in.botPeer, &in))) || g.botOffSocket(in, session) {
 		g.refuse(ctx, s, frameErr("E_UNAUTHENTICATED", "identify", CloseUnauthenticated))
 		return nil, false
 	}
@@ -639,7 +645,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 		bearer = tokenFromHandshake(in)
 	}
 	session, err := g.identify(ctx, bearer)
-	if err != nil || (in.botPeer != nil && session.Bot == nil) {
+	if err != nil || (in.botPeer != nil && session.Bot == nil) || g.botOffSocket(in, session) {
 		return refuse("unauthenticated")
 	}
 	if session.DeviceID != c.deviceID {

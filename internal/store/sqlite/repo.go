@@ -2788,6 +2788,19 @@ func (r *Repo) ListMemberRoles(ctx context.Context, communityID, userID id.ID) (
 	return rows, nil
 }
 
+// ListCommunityMemberRoles is store.Structure's one-read member-roles map.
+func (r *Repo) ListCommunityMemberRoles(ctx context.Context, communityID id.ID) (map[id.ID][]id.ID, error) {
+	rows, err := r.r.ListCommunityMemberRoles(ctx, sqlitedb.ListCommunityMemberRolesParams{CommunityID: communityID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make(map[id.ID][]id.ID)
+	for _, row := range rows {
+		out[row.UserID] = append(out[row.UserID], row.RoleID)
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------- Channels
 //
 // Plan 2 task 2: the slice of store.Structure whose table 00005_channels.sql

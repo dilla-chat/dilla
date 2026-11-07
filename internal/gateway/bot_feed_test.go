@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fxamacker/cbor/v2"
+
 	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -290,5 +292,223 @@ func TestUserConnectionRingIsUnchanged(t *testing.T) {
 	}
 	if bot.ring.limits.Bytes < o.BotQueueBytes || bot.ring.limits.Frames < o.BotQueueFrames {
 		t.Fatal("the Bot ring is smaller than its queue")
+	}
+}
+
+// --- Fix round 1 ---------------------------------------------------------------------------------
+
+// I-2: a live op 65 computed before a snapshot is superseded by it. Delivered while the snapshot is
+// owed, it is dropped (and still reported taken, so the feed does not go offline); never sent after
+// snapshot_end, where it would overwrite the newer state. An op 64 command still waits and follows.
+func TestDeliverBotDropsAStaleEventWhileTheSnapshotIsOwed(t *testing.T) {
+	h := newHarness(t)
+	device := id.New()
+	streams := newBotStreams()
+	c := h.connectBot(t, device, streams)
+	h.readyResumeToken(t, c)
+	s := streams.next(t)
+	if !s.Send(context.Background(), botEventFrame(t, BotEventSnapshotBegin, 0)) {
+		t.Fatal("snapshot_begin refused")
+	}
+	if !h.gw.DeliverBot(device, botEventFrame(t, BotEventMember, 99)) {
+		t.Fatal("a stale live event during the snapshot was reported not taken")
+	}
+	command, err := BotCommandPayload(id.New(), id.New(), id.New(), id.New(), []byte{0x85})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !h.gw.DeliverBot(device, Frame{Op: OpBotCommand, Payload: command, Replay: true}) {
+		t.Fatal("a command during the snapshot was refused")
+	}
+	if !s.Finish(botEventFrame(t, BotEventSnapshotEnd, 0)) {
+		t.Fatal("snapshot_end refused")
+	}
+	for i, want := range []struct {
+		op Op
+		n  uint64
+	}{{OpBotEvent, 0}, {OpBotEvent, 2}, {OpBotCommand, 3}} {
+		in := h.waitFrame(t, device)
+		if in.Op != want.op || in.CID != want.n {
+			t.Fatalf("frame %d: op %d n %d, want op %d n %d", i, in.Op, in.CID, want.op, want.n)
+		}
+	}
+	noFrameOn(t, h.sink(c))
+	// After snapshot_end, live events flow again.
+	if !h.gw.DeliverBot(device, botEventFrame(t, BotEventMember, 100)) {
+		t.Fatal("a live event after the snapshot was not taken")
+	}
+	if in := h.waitFrame(t, device); eventMarker(t, in) != 100 || in.CID != 4 {
+		t.Fatalf("live event after the snapshot: marker %d n %d, want 100 n 4", eventMarker(t, in), in.CID)
+	}
+}
+
+// I-3: a Bot resume whose unacknowledged gap aged out of the ring is refused, so the Bot identifies
+// and gets a fresh snapshot instead of an empty replay that silently lost events.
+func TestBotRingRefusesAResumeWhoseGapAgedOut(t *testing.T) {
+	h := newHarness(t)
+	device := id.New()
+	c, token := h.finishedBot(t, device) // snapshot_end is n = 2
+	if !h.gw.DeliverBot(device, botEventFrame(t, BotEventMember, 1)) {
+		t.Fatal("event not delivered")
+	}
+	h.waitFrame(t, device) // n = 3, never acknowledged
+	h.gw.suspend(c)
+	h.clk.Advance(h.gw.opts.RingTTL + time.Second)
+	_, resumed := h.resumeFrom(t, c, token, 2)
+	if resumed.Op != OpInvalidSession {
+		t.Fatalf("op %d, want invalid_session for a resume whose gap aged out", resumed.Op)
+	}
+	// The Bot's identify streams a new snapshot: nothing is lost.
+	streams := newBotStreams()
+	h.connectBot(t, device, streams)
+	streams.next(t)
+}
+
+// The control for I-3: everything that aged out was acknowledged, so the resume goes ahead.
+func TestBotRingResumesWhenOnlyAcknowledgedFramesAgedOut(t *testing.T) {
+	h := newHarness(t)
+	device := id.New()
+	c, token := h.finishedBot(t, device)
+	h.gw.suspend(c)
+	h.clk.Advance(h.gw.opts.RingTTL + time.Second)
+	if _, resumed := h.resumeFrom(t, c, token, 2); resumed.Op != OpResumed {
+		t.Fatalf("op %d, want resumed: nothing unacknowledged aged out", resumed.Op)
+	}
+}
+
+// DeliverBot to a parked Bot connection rings the frame for its resume, in order with the rest.
+func TestDeliverBotHoldsForAParkedConnection(t *testing.T) {
+	h := newHarness(t)
+	device := id.New()
+	c, token := h.finishedBot(t, device)
+	h.gw.suspend(c)
+	for i := uint64(1); i <= 3; i++ {
+		if !h.gw.DeliverBot(device, botEventFrame(t, BotEventMember, i)) {
+			t.Fatalf("event %d was not held for the parked connection", i)
+		}
+	}
+	s, resumed := h.resumeFrom(t, c, token, 2)
+	if resumed.Op != OpResumed {
+		t.Fatalf("op %d, want resumed", resumed.Op)
+	}
+	for i := uint64(1); i <= 3; i++ {
+		if in := h.readFrom(t, s); eventMarker(t, in) != i || in.CID != 2+i {
+			t.Fatalf("replayed marker %d n %d, want %d n %d", eventMarker(t, in), in.CID, i, 2+i)
+		}
+	}
+}
+
+// DeliverBot while a resume is in progress (its ring snapshot taken, the connection not yet live)
+// holds the frame and sends it right after the replay, on the next n: it is neither lost nor sent
+// ahead of `resumed`.
+func TestDeliverBotDuringAResumeFollowsTheReplay(t *testing.T) {
+	h := newHarness(t)
+	device := id.New()
+	c, token := h.finishedBot(t, device)
+	h.gw.suspend(c)
+	if !h.gw.DeliverBot(device, botEventFrame(t, BotEventMember, 1)) {
+		t.Fatal("event 1 not held")
+	}
+	h.gw.resumedPayloadFn = func(from, to uint64, resumeToken []byte) (cbor.RawMessage, error) {
+		if !h.gw.DeliverBot(device, botEventFrame(t, BotEventMember, 2)) {
+			t.Error("event 2 sent mid-resume was not taken")
+		}
+		return ResumedPayload(from, to, resumeToken)
+	}
+	s, resumed := h.resumeFrom(t, c, token, 2)
+	if resumed.Op != OpResumed || resumed.CID != 4 {
+		t.Fatalf("op %d n %d, want resumed n 4", resumed.Op, resumed.CID)
+	}
+	if in := h.readFrom(t, s); eventMarker(t, in) != 1 || in.CID != 3 {
+		t.Fatalf("replay: marker %d n %d, want 1 n 3", eventMarker(t, in), in.CID)
+	}
+	if in := h.readFrom(t, s); eventMarker(t, in) != 2 || in.CID != 5 {
+		t.Fatalf("mid-resume event: marker %d n %d, want 2 n 5", eventMarker(t, in), in.CID)
+	}
+}
+
+// M-1: what a Bot connection holds during its snapshot is capped at half its writer queue, so the
+// flush after snapshot_end cannot overflow the queue and send the Bot into a snapshot loop. Past the
+// cap the snapshot ends the connection instead, and the Bot identifies again.
+func TestBotPendingIsCappedAtHalfTheQueue(t *testing.T) {
+	for _, over := range []bool{false, true} {
+		h := newHarness(t)
+		h.gw.opts.BotQueueFrames = 8
+		device := id.New()
+		streams := newBotStreams()
+		c := h.connectBot(t, device, streams)
+		h.readyResumeToken(t, c)
+		s := streams.next(t)
+		command, err := BotCommandPayload(id.New(), id.New(), id.New(), id.New(), []byte{0x85})
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 4
+		if over {
+			n = 5
+		}
+		taken := 0
+		for range n {
+			if h.gw.DeliverBot(device, Frame{Op: OpBotCommand, Payload: command, Replay: true}) {
+				taken++
+			}
+		}
+		if taken != 4 {
+			t.Fatalf("over %v: %d commands held, want 4 (half the 8-frame queue)", over, taken)
+		}
+		if ok := s.Finish(botEventFrame(t, BotEventSnapshotEnd, 0)); ok == over {
+			t.Fatalf("over %v: Finish = %v", over, ok)
+		}
+		if over {
+			if code := h.waitClose(t, c); code != CloseUnknown {
+				t.Fatalf("close %d, want 4000 after the overflow", code)
+			}
+		}
+	}
+}
+
+// staticLaunch admits no peer: the gateway is serving with a supervised Bot, so the public path must
+// not admit a managed-Bot session.
+type staticLaunch struct{}
+
+func (staticLaunch) Peer(int32, uint32) bool  { return false }
+func (staticLaunch) Spend(int32, []byte) bool { return false }
+func (staticLaunch) Authenticated(int32) bool { return false }
+
+// M-5: with a supervised Bot (BotLaunch set), a managed-Bot session identifying or resuming on the
+// public gateway, without the Bot socket's peer, is refused. Without a supervisor (dev, testhost) it
+// is admitted as before.
+func TestManagedBotIsRefusedOnThePublicGatewayWhenSupervised(t *testing.T) {
+	for _, supervised := range []bool{true, false} {
+		h := newHarness(t)
+		h.gw.opts.WireVersions = []uint64{6}
+		h.gw.opts.Auth = &capabilityRecordingAuth{Authenticator: h}
+		if supervised {
+			h.gw.opts.BotLaunch = staticLaunch{}
+		}
+		device := id.New()
+		bot := auth.BotSessionBinding{InstallationID: id.New(), CommunityID: id.New(), State: store.BotInstallationReady}
+		token := scopedSession(h, device, auth.Session{Scope: auth.ScopeEnrolled, WireVersion: 6, TokenHash: []byte("01234567890123456789012345678901"), Bot: &bot})
+		sink := newRecordingSink(16, false)
+		_, ok := h.gw.identifyConnection(context.Background(), sink, identifyInbound(t, token, 6))
+		if ok == supervised {
+			t.Fatalf("supervised %v: public identify admitted = %v", supervised, ok)
+		}
+		if supervised {
+			if in := h.readFrom(t, sink); in.Op != OpError {
+				t.Fatalf("op %d, want an error frame", in.Op)
+			}
+		}
+	}
+}
+
+func TestManagedBotResumeIsRefusedOnThePublicGatewayWhenSupervised(t *testing.T) {
+	h := newHarness(t)
+	device := id.New()
+	c, token := h.finishedBot(t, device)
+	h.gw.suspend(c)
+	h.gw.opts.BotLaunch = staticLaunch{}
+	if _, resumed := h.resumeFrom(t, c, token, 2); resumed.Op != OpInvalidSession {
+		t.Fatalf("op %d, want invalid_session for a public resume of a supervised Bot", resumed.Op)
 	}
 }

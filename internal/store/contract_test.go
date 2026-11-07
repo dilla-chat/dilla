@@ -142,7 +142,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"AddMemberRoleGrant", "CreateChannel", "CreateCommunity", "DeleteBan", "DeleteChannel",
 			"DeleteChannelMember", "DeleteMember", "DeleteMemberRole", "EndVoiceSession",
 			"GetBan", "GetChannel", "GetCommunity", "HasMemberRoleGrant", "ListChannelMembers", "ListChannels",
-			"ListMemberRoles", "ListMembersOfCommunity", "ListOverwrites", "ListRoles",
+			"ListCommunityMemberRoles", "ListMemberRoles", "ListMembersOfCommunity", "ListOverwrites", "ListRoles",
 			"PutBan", "PutChannelMember", "PutMember", "PutMemberRole", "PutOverwrite",
 			"PutRole", "PutVoiceSession", "RemoveMemberRoleGrant", "RevokeMemberRole", "UpdateChannel", "UpdateCommunityPolicy",
 			// §4.1 plus four, all reached through the embedded Communities: GetMember,
@@ -231,7 +231,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"Communities", reflect.TypeOf((*store.Communities)(nil)).Elem(), []string{
 			"AFKAwayExists", "AFKAwayExistsUser", "ClearAFKAway", "ClearAFKAwayUser", "ListAFKAway", "ListAFKAwayFirst", "SetAFKAway",
 			"AddMemberRoleGrant", "CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity", "GetCommunityAFK",
-			"GetMember", "GetRole", "HasMemberRoleGrant", "ListCommunities", "ListCommunitiesForUser", "ListMemberRoles",
+			"GetMember", "GetRole", "HasMemberRoleGrant", "ListCommunities", "ListCommunitiesForUser", "ListCommunityMemberRoles", "ListMemberRoles",
 			"ListMembersOfCommunity",
 			"ListRoles", "ListSelfRoleGrantUsers", "ListSelfRolePolicy", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "RemoveMemberRoleGrant", "RevokeMemberRole", "SetCommunityAFK", "SetCommunityOwner", "SetSelfRolePolicy",
 			"SoftDeleteCommunity", "UpdateCommunityMeta", "UpdateCommunityPolicy",

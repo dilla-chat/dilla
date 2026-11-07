@@ -154,6 +154,17 @@ func (f *BotFeed) bot(installation, community, device id.ID) *feedBot {
 	return b
 }
 
+// Forget drops an installation's feed and stops its worker (fix round 1 M-4): its Bot was disabled or
+// removed. A later identify of the same installation starts a new one.
+func (f *BotFeed) Forget(installation id.ID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if b := f.bots[installation]; b != nil {
+		close(b.retired)
+		delete(f.bots, installation)
+	}
+}
+
 // each runs fn on every Bot feed of a community, or on every Bot feed when community is zero.
 func (f *BotFeed) each(community id.ID, fn func(*feedBot)) {
 	f.mu.Lock()
@@ -294,6 +305,12 @@ func (b *feedBot) take() (feedBatch, bool) {
 	defer b.mu.Unlock()
 	batch := feedBatch{snapshot: b.snapshot, structure: b.structure, channel: b.channels, groups: b.groups, barriers: b.barriers}
 	b.snapshotting = batch.snapshot != nil
+	// A snapshot taken now supersedes any failure before it (fix round 1 I-1): a goOffline from the
+	// old connection's last send, landing after the Bot re-identified, must not leave the feed deaf for
+	// the whole new snapshot. Changes committed from here are queued and follow snapshot_end.
+	if batch.snapshot != nil {
+		b.offline = false
+	}
 	for u := range b.users {
 		batch.users = append(batch.users, u)
 	}
@@ -528,12 +545,14 @@ func (f *BotFeed) readMembers(ctx context.Context, community id.ID) (map[id.ID][
 	if err != nil {
 		return nil, err
 	}
+	// One read for every member's roles (fix round 1 M-3), not one per member.
+	held, err := f.o.Repo.ListCommunityMemberRoles(ctx, community)
+	if err != nil {
+		return nil, err
+	}
 	out := make(map[id.ID][]id.ID, len(ids))
 	for _, u := range ids {
-		roles, err := f.o.Repo.ListMemberRoles(ctx, community, u)
-		if err != nil {
-			return nil, err
-		}
+		roles := held[u]
 		if roles == nil {
 			roles = []id.ID{}
 		}

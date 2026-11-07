@@ -739,6 +739,42 @@ func (q *Queries) ListCommunitiesForUser(ctx context.Context, arg ListCommunitie
 	return items, nil
 }
 
+const listCommunityMemberRoles = `-- name: ListCommunityMemberRoles :many
+SELECT user_id, role_id FROM member_roles WHERE community_id = $1 ORDER BY user_id, role_id
+`
+
+type ListCommunityMemberRolesParams struct {
+	CommunityID id.ID
+}
+
+type ListCommunityMemberRolesRow struct {
+	UserID id.ID
+	RoleID id.ID
+}
+
+func (q *Queries) ListCommunityMemberRoles(ctx context.Context, arg ListCommunityMemberRolesParams) ([]ListCommunityMemberRolesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listCommunityMemberRoles, arg.CommunityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCommunityMemberRolesRow{}
+	for rows.Next() {
+		var i ListCommunityMemberRolesRow
+		if err := rows.Scan(&i.UserID, &i.RoleID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLiveVoiceSessions = `-- name: ListLiveVoiceSessions :many
 SELECT call_id, channel_id, group_id, livekit_room, started, ended
 FROM voice_sessions WHERE channel_id = $1 AND ended IS NULL

@@ -435,6 +435,11 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
+	// The managed role's bits may have changed in that commit: members re-read (op 54) and the Bot's
+	// event feed diffs the roles (Bot v2 task 12, fix round 1 M-2).
+	if d.BotProfileChanged != nil {
+		d.BotProfileChanged(context.WithoutCancel(r.Context()), cid)
+	}
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
@@ -1441,6 +1446,11 @@ func (d Deps) MarkBotReady(w http.ResponseWriter, r *http.Request) {
 		}
 		server.WriteError(w, d.storeError(r, err))
 		return
+	}
+	// Ready rewrote the managed role's bits: members re-read (op 54) and the Bot's event feed diffs the
+	// roles (Bot v2 task 12, fix round 1 M-2).
+	if d.BotProfileChanged != nil {
+		d.BotProfileChanged(context.WithoutCancel(r.Context()), row.CommunityID)
 	}
 	d.writeRuntimeBotInstallation(w, r, http.StatusOK, row)
 }

@@ -703,3 +703,88 @@ func TestStructureNoticesReachTheBotFeed(t *testing.T) {
 		t.Fatalf("the feed heard %v, want %v", heard.got, []id.ID{a, b, c})
 	}
 }
+
+// --- Fix round 1 ---------------------------------------------------------------------------------
+
+// blockingStream is a snapshot stream that stops on one chosen Send until released, then answers ok.
+type blockingStream struct {
+	feedStream
+	stopAt  func(gateway.Frame) bool
+	reached chan struct{}
+	release chan struct{}
+	ok      bool
+	once    sync.Once
+}
+
+func (s *blockingStream) Send(ctx context.Context, f gateway.Frame) bool {
+	if s.stopAt(f) {
+		s.once.Do(func() {
+			close(s.reached)
+			<-s.release
+		})
+		if !s.ok {
+			return false
+		}
+	}
+	return s.feedStream.Send(ctx, f)
+}
+
+func isDeviceListOf(t *testing.T, user id.ID) func(gateway.Frame) bool {
+	return func(f gateway.Frame) bool {
+		evs := decodeFeed(t, []gateway.Frame{f})
+		if evs[0].kind != gateway.BotEventDeviceList {
+			return false
+		}
+		u, _ := pushOf(t, evs[0])
+		return u == user
+	}
+}
+
+// I-1: the Bot re-identifies while the worker is still failing on its old connection. The failure
+// must not leave the feed offline through the new snapshot: a device-list change committed during
+// that snapshot, after it read the user's list, still reaches the Bot after snapshot_end.
+func TestReidentifyWhileTheOldConnectionFailsKeepsTheFeedOnline(t *testing.T) {
+	f := newFeedFixture(t)
+	_, blob1 := f.publish(t, f.member, 1, nil)
+	stops := isDeviceListOf(t, f.member.User.ID)
+	s1 := &blockingStream{feedStream: feedStream{installation: f.install, community: f.community, device: f.botDevice},
+		stopAt: stops, reached: make(chan struct{}), release: make(chan struct{}), ok: false}
+	f.feed.BotIdentified(s1)
+	<-s1.reached // the worker is blocked on the old connection
+	s2 := &blockingStream{feedStream: feedStream{installation: f.install, community: f.community, device: f.botDevice},
+		stopAt: stops, reached: make(chan struct{}), release: make(chan struct{}), ok: true}
+	f.feed.BotIdentified(s2)
+	close(s1.release) // the old connection's send fails now, after the new identify
+	<-s2.reached      // the new snapshot has read the member's list (v1) and is sending it
+	f.publish(t, f.member, 2, blob1)
+	close(s2.release)
+	f.drain(t)
+	if !s2.finished {
+		t.Fatal("the new snapshot did not finish")
+	}
+	var heads []uint64
+	for _, ev := range decodeFeed(t, f.gw.take(f.botDevice)) {
+		if ev.kind == gateway.BotEventDeviceList {
+			_, push := pushOf(t, ev)
+			heads = append(heads, push.History[len(push.History)-1].Version)
+		}
+	}
+	if !slices.Equal(heads, []uint64{2}) {
+		t.Fatalf("live device-list heads after the new snapshot = %v, want [2]", heads)
+	}
+}
+
+// M-4: a revoked installation's feed is forgotten: its worker stops and nothing more is queued for it.
+func TestForgottenInstallationIsNotFed(t *testing.T) {
+	f := newFeedFixture(t)
+	_, blob1 := f.publish(t, f.member, 1, nil)
+	f.identify(t)
+	f.gw.take(f.botDevice)
+	f.feed.Forget(f.install)
+	f.publish(t, f.member, 2, blob1)
+	f.feed.CommunityChanged(f.community)
+	f.drain(t)
+	if got := f.gw.take(f.botDevice); len(got) != 0 {
+		t.Fatalf("a forgotten installation was fed %d events", len(got))
+	}
+}
