@@ -378,14 +378,16 @@ type Doctor struct {
 // but 0-3, clears the environment down to an allowlist and execs it with cwd StateDir. The Bot reaches dillad over the
 // Unix socket <SocketDir>/gateway.sock, never over the network.
 type Bot struct {
-	Enabled bool `toml:"enabled"`
+	// The comments on Enabled and StateDir are written into the dilla.toml `dillad init` produces: install.sh and
+	// install-bot.sh turn the Bot on in place, and dilla.service makes only /var/lib/dillabot writable to the Bot.
+	Enabled bool `toml:"enabled" comment:"The bundled Bot, which dillad runs as user in its own sandbox. install.sh and install-bot.sh set it to true."`
 	// Executable is the Bot binary. It, HelperExecutable and WASIModule must be root's and not writable by group or
 	// world: the keeper refuses to start anything the serving user could rewrite.
 	Executable       string `toml:"executable"`
 	HelperExecutable string `toml:"helper_executable"`
 	// WASIModule is the dilla-core-wasi module the Bot loads; "" is the core beside dillad (dilla_core_wasi.wasm).
 	WASIModule string `toml:"wasi_module"`
-	StateDir   string `toml:"state_dir"`
+	StateDir   string `toml:"state_dir" comment:"The Bot's keys and state, 0700 and owned by user. dilla.service's ReadWritePaths makes only /var/lib/dillabot writable."`
 	// User is the Bot's own OS user: the Bot's keys live in its state directory, out of dillad's reach.
 	User string `toml:"user"`
 	// SocketDir holds gateway.sock: mode 0750, owned by dillad, group User's primary group.

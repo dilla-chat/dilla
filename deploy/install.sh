@@ -41,7 +41,7 @@ die() {
 	log "error: $*"
 	if [ "$POST_INIT" -eq 1 ]; then
 		log "the instance is half-installed: init ran, so its invite link is printed below, once."
-		log "to start over: systemctl disable --now dilla; rm -rf /var/lib/dillad /etc/dilla/dilla.toml; then run install.sh again"
+		log "to start over: systemctl disable --now dilla; rm -rf /var/lib/dillad /var/lib/dillabot /etc/dilla/dilla.toml; then run install.sh again"
 	fi
 	exit 1
 }
@@ -67,6 +67,10 @@ usage: install.sh --behind-proxy --domain NAME --listen ADDR:PORT --trusted-prox
 Installs dillad as the systemd service `dilla`: the user dillad, /usr/local/bin/dillad
 with dilla_core_wasi.wasm beside it, /var/lib/dillad (0700) and /etc/dilla/dilla.toml
 (0640 root:dillad). Prints the bootstrap invite link once, on stdout.
+A fresh install also sets up the Bot, which dillad runs as its supervised child ([bot] enabled =
+true): the user dillabot, /usr/local/bin/dillabot and /usr/local/lib/dilla/dilla-bot-core
+(root-owned) and /var/lib/dillabot (0700 dillabot) with its runtime credential. There is no
+dillabot.service. To upgrade the Bot, or to move a v1 Bot under dillad, run install-bot.sh --upgrade.
 
 modes (exactly one):
   --behind-proxy         a reverse proxy terminates TLS (tls.mode = "behind_proxy");
@@ -99,6 +103,8 @@ options:
                          https://github.com/dilla-chat/dilla/releases/download/TAG)
   --binary FILE          use this dillad binary instead of downloading one
   --core FILE            use this dilla_core_wasi.wasm instead of downloading one
+  --bot-binary FILE      use this dillabot binary instead of downloading one (fresh install)
+  --bot-helper FILE      use this dilla-bot-core helper instead of downloading one (fresh install)
   --sums FILE            the SHA256SUMS to check local files and downloaded assets against
   --insecure-skip-verify install local files without a --sums check
   --udp-port N           LiveKit's media port (livekit.udp_port, default 7882)
@@ -121,6 +127,8 @@ TRUSTED=""
 VERSION=""
 RELEASE_URL=""
 BINARY=""
+BOT_BINARY=""
+BOT_HELPER=""
 CORE=""
 SUMS=""
 INSECURE=0
@@ -151,7 +159,7 @@ while [ "$#" -gt 0 ]; do
 	--behind-proxy | --public | --agree-tos | --upgrade | --yes | --check-args | --insecure-skip-verify | --no-media-ip | -h | --help)
 		shift
 		;;
-	--domain | --public-ip | --listen | --trusted-proxy | --udp-port | --node-ip | --version | --release-url | --binary | --core | --sums)
+	--domain | --public-ip | --listen | --trusted-proxy | --udp-port | --node-ip | --version | --release-url | --binary | --core | --sums | --bot-binary | --bot-helper)
 		[ "$#" -ge 2 ] || die "$flag needs a value"
 		value="$2"
 		shift 2
@@ -213,6 +221,14 @@ while [ "$#" -gt 0 ]; do
 	--version) VERSION="$value" ;;
 	--release-url) RELEASE_URL="${value%/}" ;;
 	--binary) BINARY="$value" ;;
+	--bot-binary)
+		BOT_BINARY="$value"
+		saw "$flag"
+		;;
+	--bot-helper)
+		BOT_HELPER="$value"
+		saw "$flag"
+		;;
 	--core) CORE="$value" ;;
 	--sums) SUMS="$value" ;;
 	-h | --help)
@@ -335,9 +351,21 @@ fi
 DOWNLOAD=0
 [ -n "$BINARY" ] || DOWNLOAD=1
 [ -n "$CORE" ] || DOWNLOAD=1
-if [ -n "$BINARY$CORE" ] && [ -z "$SUMS" ] && [ "$INSECURE" -eq 0 ]; then
+# A fresh install also installs the Bot (dillabot and dilla-bot-core); an upgrade leaves it to install-bot.sh.
+if [ "$UPGRADE" -eq 0 ]; then
+	[ -n "$BOT_BINARY" ] || DOWNLOAD=1
+	[ -n "$BOT_HELPER" ] || DOWNLOAD=1
+fi
+if [ -n "$BINARY$CORE$BOT_BINARY$BOT_HELPER" ] && [ -z "$SUMS" ] && [ "$INSECURE" -eq 0 ]; then
 	die "local binaries are checked against a SHA256SUMS: pass --sums FILE, or --insecure-skip-verify to install them unchecked"
 fi
+# How long the supervised Bot may take to appear under dilla.service, and how long it must then keep its pid.
+BOT_START_SECONDS="${DILLA_BOT_START_SECONDS:-30}"
+BOT_HEALTH_SECONDS="${DILLA_BOT_HEALTH_SECONDS:-15}"
+for seconds in "$BOT_START_SECONDS" "$BOT_HEALTH_SECONDS"; do
+	case "$seconds" in '' | *[!0-9]*) die "DILLA_BOT_START_SECONDS and DILLA_BOT_HEALTH_SECONDS must be whole numbers" ;; esac
+	[ "${#seconds}" -le 4 ] || die "DILLA_BOT_START_SECONDS and DILLA_BOT_HEALTH_SECONDS must be below 10000"
+done
 
 [ -n "$VERSION" ] || VERSION="$DILLA_RELEASE_TAG"
 if [ -n "$VERSION" ]; then
@@ -380,6 +408,12 @@ CONF="$CONF_DIR/dilla.toml"
 DATA_DIR="$ROOT/var/lib/dillad"
 BIN_NAME="dillad-linux-$ARCH"
 CORE_NAME="dilla_core_wasi.wasm"
+# The Bot, which dillad supervises ([bot] in dilla.toml): its binary, its native helper in /usr/local/lib/dilla, and its
+# state, owned by its own user. It loads the core beside dillad (bot.wasi_module = '').
+BOT_NAME="dillabot-linux-$ARCH"
+BOT_HELPER_NAME="dilla-bot-core-linux-$ARCH"
+LIB_DIR="$ROOT/usr/local/lib/dilla"
+BOT_STATE="$ROOT/var/lib/dillabot"
 
 INSTALLED=0
 if [ -e "$CONF" ]; then
@@ -448,6 +482,22 @@ else
 	log "downloading $CORE_NAME from $RELEASE_URL"
 	fetch "$RELEASE_URL/$CORE_NAME" "$WORK/$CORE_NAME"
 	CHECK="$CHECK $CORE_NAME"
+fi
+# get_bot_asset LOCAL NAME: a fresh install's Bot asset, local or downloaded, under its release name in $WORK.
+get_bot_asset() {
+	if [ -n "$1" ]; then
+		[ -s "$1" ] || die "the Bot asset $1 is missing or empty"
+		cp "$1" "$WORK/$2"
+		if [ -n "$SUMS" ]; then CHECK="$CHECK $2"; else UNCHECKED="$UNCHECKED $2"; fi
+	else
+		log "downloading $2 from $RELEASE_URL"
+		fetch "$RELEASE_URL/$2" "$WORK/$2"
+		CHECK="$CHECK $2"
+	fi
+}
+if [ "$UPGRADE" -eq 0 ]; then
+	get_bot_asset "$BOT_BINARY" "$BOT_NAME"
+	get_bot_asset "$BOT_HELPER" "$BOT_HELPER_NAME"
 fi
 
 if [ -n "$CHECK" ]; then
@@ -660,6 +710,74 @@ live_calls_preflight() {
 	die "$_why. Nothing was changed. Try again when the rooms are empty, or pass --yes to upgrade anyway"
 }
 
+# --- bot health: begin (install.sh and install-bot.sh carry this block verbatim; install_bot_test.sh compares them) ---
+# bot_pids PROCS UID prints the pids listed in the control-group file PROCS that are the Bot: every uid (real,
+# effective, saved, filesystem) is UID, and argv[0] is /usr/local/bin/dillabot, which bot-launch passes when it execs
+# the Bot. The Bot's helper and its sandbox run as the same user under other names.
+bot_pids() {
+	while IFS= read -r bp_pid; do
+		case "$bp_pid" in '' | *[!0-9]*) continue ;; esac
+		[ -r "$ROOT/proc/$bp_pid/status" ] || continue
+		[ "$(awk '$1 == "Uid:" { print $2, $3, $4, $5 }' "$ROOT/proc/$bp_pid/status")" = "$2 $2 $2 $2" ] || continue
+		[ "$(tr '\0' '\n' <"$ROOT/proc/$bp_pid/cmdline" 2>/dev/null | head -n 1)" = /usr/local/bin/dillabot ] || continue
+		printf '%s\n' "$bp_pid"
+	done <"$1"
+}
+# bot_health checks the supervised Bot from outside, as root: dilla.service is active; exactly one process in its
+# control group is the Bot, running as dillabot; it keeps that pid for BOT_HEALTH_SECONDS (the supervisor did not
+# restart it); and its /proc status shows every capability set (CapInh, CapPrm, CapEff, CapBnd, CapAmb) empty and
+# NoNewPrivs set. That last part is the check of the keeper's real non-root chain: dillad starts the keeper with the
+# unit's ambient capabilities, the keeper starts bot-launch as dillabot, and bot-launch empties every set before it
+# execs the Bot. It logs one line when the Bot passes, and "RED bot:" with the reason when it does not.
+bot_health() {
+	bh_uid="$(id -u dillabot 2>/dev/null)" || bh_uid=""
+	[ -n "$bh_uid" ] || { log "RED bot: the dillabot user does not resolve"; return 1; }
+	bh_cg="$(systemctl show -p ControlGroup --value dilla 2>/dev/null)" || bh_cg=""
+	case "$bh_cg" in /*) ;; *) log "RED bot: systemd names no control group for dilla.service"; return 1 ;; esac
+	bh_procs=""
+	for bh_f in "$ROOT/sys/fs/cgroup$bh_cg/cgroup.procs" "$ROOT/sys/fs/cgroup/unified$bh_cg/cgroup.procs" "$ROOT/sys/fs/cgroup/systemd$bh_cg/cgroup.procs"; do
+		if [ -r "$bh_f" ]; then bh_procs="$bh_f"; break; fi
+	done
+	bh_pid=""
+	bh_waited=0
+	while :; do
+		systemctl is-active --quiet dilla || { log "RED bot: dilla.service is not active; read journalctl -o cat -u dilla"; return 1; }
+		bh_now=""
+		[ -z "$bh_procs" ] || bh_now="$(bot_pids "$bh_procs" "$bh_uid")"
+		if [ "$(printf '%s\n' "$bh_now" | grep -c .)" -gt 1 ]; then
+			log "RED bot: more than one Bot process runs under dilla.service: $(printf '%s' "$bh_now" | tr '\n' ' ')"
+			return 1
+		fi
+		if [ -z "$bh_pid" ]; then
+			if [ -n "$bh_now" ]; then
+				bh_pid="$bh_now"
+				bh_waited=0
+				continue
+			fi
+			[ "$bh_waited" -lt "$BOT_START_SECONDS" ] || {
+				log "RED bot: no Bot process runs under dilla.service after ${BOT_START_SECONDS}s; read journalctl -o cat -u dilla"
+				return 1
+			}
+		else
+			[ "$bh_now" = "$bh_pid" ] || {
+				log "RED bot: the Bot (pid $bh_pid) did not stay up for ${BOT_HEALTH_SECONDS}s; read journalctl -o cat -u dilla"
+				return 1
+			}
+			[ "$bh_waited" -lt "$BOT_HEALTH_SECONDS" ] || break
+		fi
+		sleep 1
+		bh_waited=$((bh_waited + 1))
+	done
+	bh_status="$ROOT/proc/$bh_pid/status"
+	bh_sets="$(awk '$1 ~ /^Cap(Inh|Prm|Eff|Bnd|Amb):$/ { n++ } END { print n + 0 }' "$bh_status" 2>/dev/null)" || bh_sets=0
+	[ "$bh_sets" = 5 ] || { log "RED bot: could not read the Bot's (pid $bh_pid) five capability sets from its /proc status"; return 1; }
+	bh_caps="$(awk '$1 ~ /^Cap(Inh|Prm|Eff|Bnd|Amb):$/ && $2 !~ /^0+$/ { printf "%s%s=%s", sep, substr($1, 1, length($1) - 1), $2; sep = " " }' "$bh_status")"
+	[ -z "$bh_caps" ] || { log "RED bot: the Bot (pid $bh_pid) holds capabilities: $bh_caps; it must hold none"; return 1; }
+	[ "$(awk '$1 == "NoNewPrivs:" { print $2 }' "$bh_status")" = 1 ] || { log "RED bot: the Bot (pid $bh_pid) runs without no_new_privs"; return 1; }
+	log "the Bot runs under dilla.service as dillabot (pid $bh_pid), holding no capabilities"
+}
+# --- bot health: end ---
+
 # ---------------------------------------------------------------- upgrade ----
 if [ "$UPGRADE" -eq 1 ]; then
 	log "upgrading $BIN_DIR/dillad and $BIN_DIR/$CORE_NAME"
@@ -739,6 +857,10 @@ if [ "$UPGRADE" -eq 1 ]; then
 	fi
 	log "upgrade done; the previous binary, core and config are kept as $BIN_DIR/dillad.prev, $CORE_NAME.prev and $CONF.prev"
 	log "dilla.service was not rewritten; compare it with the release's deploy/dilla.service"
+	if [ -e "$ROOT/etc/systemd/system/dillabot.service" ] || [ -e "$BIN_DIR/dillabot" ]; then
+		# The Bot ships with dillad: install-bot.sh installs its binaries and dilla.service, and retires a v1 dillabot.service.
+		log "now upgrade the Bot to the same release: sh install-bot.sh --upgrade"
+	fi
 	exit 0
 fi
 
@@ -748,6 +870,14 @@ mkdir -p "$BIN_DIR" "$ROOT/etc/systemd/system"
 put "$WORK/$BIN_NAME" "$BIN_DIR/dillad" 0755
 # Beside the binary: dillad looks for the wasi core in its own executable's directory.
 put "$WORK/$CORE_NAME" "$BIN_DIR/$CORE_NAME" 0644
+# The Bot's binaries, root-owned and never group- or world-writable, in root-owned directories: dillad's bot-keeper
+# refuses to start anything else (it checks every component of each path).
+install -d -m 0755 -o root -g root "$LIB_DIR"
+install -m 0755 -o root -g root "$WORK/$BOT_NAME" "$BIN_DIR/dillabot.new"
+mv -f "$BIN_DIR/dillabot.new" "$BIN_DIR/dillabot"
+install -m 0755 -o root -g root "$WORK/$BOT_HELPER_NAME" "$LIB_DIR/dilla-bot-core.new"
+mv -f "$LIB_DIR/dilla-bot-core.new" "$LIB_DIR/dilla-bot-core"
+log "installed dillabot and dilla-bot-core (root:root 0755)"
 
 # deploy/dilla.service, verbatim (deploy/install_test.sh compares the two).
 cat >"$WORK/dilla.service" <<'UNIT'
@@ -772,6 +902,11 @@ RestartPreventExitStatus=78
 # exceed the 90 s default on a large SQLite file.
 TimeoutStartSec=300s
 TimeoutStopSec=45s
+# KillMode=mixed: a stop sends SIGTERM to serve alone, which stops the Bot it supervises through the bot-keeper
+# (SIGTERM, a 10 s grace, then SIGKILL) and only then exits; the keeper ends when serve's control socket closes. The
+# default, control-group, would SIGTERM the keeper and the Bot at once and skip the Bot's orderly shutdown. Anything
+# still running when serve has exited, or at TimeoutStopSec, is SIGKILLed as before.
+KillMode=mixed
 
 User=dillad
 Group=dillad
@@ -781,15 +916,36 @@ StateDirectory=dillad
 StateDirectoryMode=0700
 ConfigurationDirectory=dilla
 UMask=0077
+# /run/dillad: dillad creates /run/dillad/bot (mode 0750, group dillabot) there and listens on
+# /run/dillad/bot/gateway.sock for the Bot it supervises ([bot] in dilla.toml). systemd removes it at stop.
+RuntimeDirectory=dillad
+# The Bot runs inside this unit's sandbox as the dillabot user, and keeps its state and keys in
+# /var/lib/dillabot (owned by dillabot, mode 0700, so dillad itself cannot read them). ProtectSystem=strict
+# would otherwise leave that directory read-only to the Bot. The "-" keeps an instance without the Bot
+# (no such directory) starting: systemd otherwise refuses to set up the namespace.
+ReadWritePaths=-/var/lib/dillabot
+# SQLCipher's enhanced memory security in the Bot locks its SQLite allocations in memory, as the
+# dillabot unit allowed (LimitMEMLOCK=256M there). The limit is inherited by the Bot from this unit.
+LimitMEMLOCK=256M
 
-# How a non-root process binds 443/tcp.
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+# CAP_NET_BIND_SERVICE: how a non-root process binds 443/tcp.
+# CAP_SETUID CAP_SETGID: only for the bot-keeper child, which dillad starts before it opens any listener and
+# which uses them for one thing, to start the configured Bot executable as the configured Bot user. The
+# serving dillad drops both from every set (effective, permitted, inheritable, ambient and bounding) right
+# after starting the keeper; `dillad bot-launch` drops every capability before it execs the Bot.
+# CAP_SETPCAP: what lets the serving process and bot-launch remove those from the bounding set; both drop it
+# as well, so only the keeper keeps it.
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-PrivateDevices=yes
+# DevicePolicy=closed instead of PrivateDevices=yes: the Bot's bubblewrap sandbox mounts /proc and /dev
+# inside its own user namespace, and PrivateDevices blocks that nested mount in the supported Debian LXC
+# deployment (the dillabot unit made the same change). DevicePolicy=closed still denies every device node
+# but the pseudo devices (/dev/null, /dev/zero, /dev/random, ...).
+DevicePolicy=closed
 ProtectProc=invisible
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
@@ -799,7 +955,8 @@ ProtectControlGroups=yes
 # call it. Without it serve fails at start with "netlinkrib: address family not
 # supported by protocol".
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
-RestrictSUIDSGID=yes
+# RestrictSUIDSGID is deliberately NOT set: it blocks bubblewrap's bind mounts in this LXC, as the dillabot
+# unit found. NoNewPrivileges=yes still means no set-id binary can gain privileges, for dillad or the Bot.
 LockPersonality=yes
 # MemoryDenyWriteExecute is deliberately NOT set: wazero's compiler back end
 # writes and then executes generated machine code, so setting it would make the
@@ -819,6 +976,15 @@ if getent passwd dillad >/dev/null 2>&1; then
 else
 	useradd --system --user-group --no-create-home --home-dir /var/lib/dillad --shell /usr/sbin/nologin dillad >&2
 fi
+# The Bot's own user: its keys live in /var/lib/dillabot, out of dillad's reach. dillad joins its group because it
+# hands the Bot socket's directory (/run/dillad/bot) to that group; serve refuses to start the Bot otherwise.
+if getent passwd dillabot >/dev/null 2>&1; then
+	log "the dillabot user exists"
+else
+	useradd --system --user-group --no-create-home --home-dir /var/lib/dillabot --shell /usr/sbin/nologin dillabot >&2
+fi
+usermod -aG dillabot dillad >&2
+install -d -m 0700 -o dillabot -g dillabot "$BOT_STATE"
 
 # init needs --public-ip and --agree-tos whatever the mode. Behind a proxy
 # without an address it gets loopback, and both values are corrected below.
@@ -875,6 +1041,18 @@ if [ "$MODE" = behind-proxy ]; then
 		[ -n "$NODE_IP" ] || toml_set livekit node_ip "''"
 	fi
 fi
+# init writes [bot] off; dillad runs the Bot as its supervised child once it is on.
+toml_set bot enabled true
+
+# The Bot's runtime credential, registered while the database is still root's to open (the chown below follows). The
+# CLI writes it only to a new owner-private file and never prints it; it is installed 0600 dillabot in the Bot's state.
+mkdir -m 0700 "$WORK/credential"
+BOT_OUT="$("$BIN_DIR/dillad" admin bot-runtime create --config="$CONF" --out="$WORK/credential/runtime.token")" ||
+	die "dillad could not create the Bot's runtime credential"
+[ -s "$WORK/credential/runtime.token" ] || die "dillad did not write the Bot's runtime credential"
+install -m 0600 -o dillabot -g dillabot "$WORK/credential/runtime.token" "$BOT_STATE/runtime.token"
+rm -f "$WORK/credential/runtime.token"
+log "dillad registered the Bot's runtime credential: $BOT_OUT"
 
 log "setting the owners and modes of $CONF and $DATA_DIR"
 chown root:dillad "$CONF"
@@ -897,6 +1075,11 @@ if systemctl daemon-reload >&2 && systemctl enable --now dilla-media >&2 &&
 	runuser -u dillad -- "$BIN_DIR/dillad" media --probe --config="$CONF" >&2 &&
 	systemctl enable --now dilla >&2; then
 	doctor_and_report || STATUS=1
+	# The Bot dillad now supervises: running as dillabot, steady, and holding no capability.
+	bot_health || {
+		STATUS=1
+		log "error: the Bot did not come up healthy under dillad; read its log with: journalctl -o cat -u dilla"
+	}
 else
 	STATUS=1
 	log "error: the service did not start; read its log with: journalctl -o cat -u dilla"

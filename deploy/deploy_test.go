@@ -1,8 +1,11 @@
 package deploy_test
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -142,6 +145,41 @@ func TestDillaServiceAllowsBubblewrapAndKeeper(t *testing.T) {
 	for _, reason := range []string{"bot-keeper", "bubblewrap", "SQLCipher", "/run/dillad/bot", "dillabot", "KillMode=mixed: a stop sends SIGTERM to serve alone"} {
 		if !strings.Contains(unit, reason) {
 			t.Errorf("the unit's comments never mention %q", reason)
+		}
+	}
+}
+
+// Bot v2 task 24: the Bot ships with dillad and runs as its supervised child, so no dillabot.service is shipped, and
+// no script writes one. install-bot.sh only retires a v1 unit; its rollback puts back the operator's own copy from the
+// backup, never a unit of its own.
+func TestNoDillabotUnitShipped(t *testing.T) {
+	if _, err := os.Stat("dillabot.service"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("deploy/dillabot.service is still shipped (stat: %v); dillad supervises the Bot", err)
+	}
+	scripts, err := filepath.Glob("*.sh")
+	if err != nil || len(scripts) == 0 {
+		t.Fatalf("no deploy scripts found: %v", err)
+	}
+	for _, script := range scripts {
+		if strings.HasSuffix(script, "_test.sh") {
+			continue
+		}
+		body := read(t, script)
+		for _, unitLine := range []string{
+			"ExecStart=/usr/local/bin/dillabot",
+			"Description=Dilla community bot",
+			"systemctl enable --now dillabot",
+		} {
+			if strings.Contains(body, unitLine) {
+				t.Errorf("%s still carries %q: the Bot has no unit of its own", script, unitLine)
+			}
+		}
+	}
+	// install.sh and install-bot.sh carry deploy/dilla.service verbatim (their tests compare the installed copy).
+	unit := read(t, "dilla.service")
+	for _, script := range []string{"install.sh", "install-bot.sh"} {
+		if !strings.Contains(read(t, script), unit) {
+			t.Errorf("%s does not carry deploy/dilla.service verbatim", script)
 		}
 	}
 }

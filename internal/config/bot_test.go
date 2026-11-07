@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,38 @@ func TestConfigBotDefaults(t *testing.T) {
 	}
 	if c.Bot != want {
 		t.Fatalf("a file without [bot] loads %+v, want the defaults %+v", c.Bot, want)
+	}
+}
+
+// Bot v2 task 24: `dillad init` writes the [bot] table, off, with its default paths, so install.sh turns it on in
+// place (toml_set bot enabled true) instead of appending a table. The comments tell an operator reading the file who
+// turns it on and why state_dir is where it is.
+func TestWriteConfigWritesTheBotTable(t *testing.T) {
+	var buf bytes.Buffer
+	if err := config.Default().WriteConfig(&buf); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"\n[bot]\n",
+		"  enabled = false\n",
+		"  executable = '/usr/local/bin/dillabot'\n",
+		"  helper_executable = '/usr/local/lib/dilla/dilla-bot-core'\n",
+		"  state_dir = '/var/lib/dillabot'\n",
+		"  user = 'dillabot'\n",
+		"  socket_dir = '/run/dillad/bot'\n",
+		// The comments: who turns it on, and what pins state_dir.
+		"install.sh",
+		"ReadWritePaths",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("WriteConfig output lacks %q", want)
+		}
+	}
+	// The comment on a key is written above it, inside the table.
+	bot := out[strings.Index(out, "\n[bot]\n"):]
+	if i, j := strings.Index(bot, "install.sh"), strings.Index(bot, "enabled = false"); i < 0 || j < 0 || i > j {
+		t.Errorf("the comment naming install.sh is not above bot.enabled:\n%s", bot)
 	}
 }
 

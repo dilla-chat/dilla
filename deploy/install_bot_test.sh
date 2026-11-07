@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# Rootless integration tests for install-bot.sh. Host commands are stubbed and
-# release assets come from a local file:// directory.
+# Rootless integration tests for install-bot.sh, the Bot's upgrade path. Since Bot v2 the Bot ships with dillad and
+# runs as its supervised child; install-bot.sh moves a v1 installation (dillabot.service, /etc/dillabot) under dillad
+# and upgrades the Bot binaries there. Host commands are stubbed, release assets come from a local file:// directory,
+# and /proc and the cgroup tree are fakes under the install root that the systemctl stub fills in when dilla restarts.
+#
+# SC2016: the stub bodies are single-quoted on purpose, to expand when the stub runs.
+# shellcheck disable=SC2016
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 INSTALL="$HERE/install-bot.sh"
@@ -10,338 +15,382 @@ STUBS="$TMP/stubs"
 mkdir -p "$STUBS"
 LOG="$TMP/calls.log"
 fail() { echo "FAIL $*" >&2; exit 1; }
-# A restarted Bot must stay active this long to count as healthy; keep the tests quick.
-export DILLA_BOT_HEALTH_SECONDS=1
 pass() { echo "ok   $*"; }
-cat >"$STUBS/id" <<'STUB'
-#!/bin/sh
-if [ "$1" = -u ]; then echo 0; exit 0; fi
-[ "${STUB_ACCOUNT_EXISTS:-}" = 1 ]
-STUB
-cat >"$STUBS/useradd" <<'STUB'
-#!/bin/sh
-echo "useradd $*" >>"$BOT_TEST_LOG"
-STUB
-cat >"$STUBS/install" <<'STUB'
-#!/bin/sh
-echo "install $*" >>"$BOT_TEST_LOG"
+# The Bot must keep its pid this long under dilla.service to count as healthy, and may take this long to appear; keep
+# the tests quick.
+export DILLA_BOT_HEALTH_SECONDS=1 DILLA_BOT_START_SECONDS=1
+# The dillabot account resolves to the uid that owns the files the tests create, so ownership checks are real.
+BOT_TEST_UID="$(id -u)"
+export BOT_TEST_UID
+
+stub() {
+	printf '#!/bin/sh\n%s\n' "$2" >"$STUBS/$1"
+	chmod 0755 "$STUBS/$1"
+}
+# State the stubs share lives in $BOT_TEST_STATE: whether the dillabot account exists, whether dillad is in its group,
+# and the v1 unit's enabled/active state.
+stub id 'case "$*" in
+"-u") echo 0 ;;
+"-u dillabot") [ -f "$BOT_TEST_STATE/account" ] || exit 1; echo "$BOT_TEST_UID" ;;
+dillabot) [ -f "$BOT_TEST_STATE/account" ] ;;
+dillad) exit 0 ;;
+"-nG dillad") if [ -f "$BOT_TEST_STATE/group" ]; then echo "dillad dillabot"; else echo dillad; fi ;;
+*) exit 1 ;;
+esac'
+stub useradd 'echo "useradd $*" >>"$BOT_TEST_LOG"; touch "$BOT_TEST_STATE/account"'
+stub usermod 'echo "usermod $*" >>"$BOT_TEST_LOG"; touch "$BOT_TEST_STATE/group"'
+stub chown 'echo "chown $*" >>"$BOT_TEST_LOG"'
+# install -o/-g need root; the stub logs them and installs without.
+stub install 'echo "install $*" >>"$BOT_TEST_LOG"
 args=""
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 	-o | -g) shift 2 ;;
-	*) args="$args '$1'"; shift ;;
-esac
+	*) args="$args '"'"'$1'"'"'"; shift ;;
+	esac
 done
-eval exec /usr/bin/install $args
-STUB
-cat >"$STUBS/chown" <<'STUB'
-#!/bin/sh
-echo "chown $*" >>"$BOT_TEST_LOG"
-STUB
-cat >"$STUBS/runuser" <<'STUB'
-echo "runuser $*" >>"$BOT_TEST_LOG"
-while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
-shift
-case "$1" in */env) shift; export "$1"; shift ;; esac
-case "$1" in
-*/dillabot) shift; exec "$FAKE_BOT" "$@" ;;
-*) exec "$@" ;;
+eval exec /usr/bin/install $args'
+# runuser -u USER -- CMD ARGS: runs CMD ARGS.
+stub runuser 'echo "runuser $*" >>"$BOT_TEST_LOG"; while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done; shift; exec "$@"'
+# The fake dillad: `admin bot-runtime create --out=F` writes a credential, `doctor` reports its config and Bot legs.
+stub dillad 'echo "dillad $*" >>"$BOT_TEST_LOG"
+case "$1 $2" in
+"admin bot-runtime")
+	for a in "$@"; do case "$a" in --out=*) out="${a#*=}" ;; --config=*) ;; esac; done
+	printf "dbr_fresh-runtime-secret-value\n" >"$out"
+	echo "created bot runtime 02020202020202020202020202020202; secret written to protected file"
+	exit 0 ;;
 esac
-STUB
-cat >"$STUBS/systemctl" <<'STUB'
-echo "systemctl $*" >>"$BOT_TEST_LOG"
-if [ "$1" = start ] && [ -n "${BOT_TEST_FAIL_START_FIRST:-}" ]; then
-	n=0; [ ! -f "$BOT_TEST_START_COUNT" ] || n="$(cat "$BOT_TEST_START_COUNT")"
-	n=$((n + 1)); echo "$n" >"$BOT_TEST_START_COUNT"
-	[ "$n" -gt 1 ] || exit 1
+[ "$1" = doctor ] || exit 64
+for a in "$@"; do case "$a" in --config=*) cfg="${a#*=}" ;; esac; done
+echo "OK    config       parsed and validated"
+if [ -n "${BOT_TEST_BOT_LEG_FAIL:-}" ]; then echo "FAIL  bot          helper_executable /usr/local/lib/dilla/dilla-bot-core: group or others can write /usr/local/lib/dilla"; exit 1; fi
+if awk "/^\\[bot\\]/{b=1;next} /^\\[/{b=0} b && /enabled = true/{f=1} END{exit !f}" "$cfg"; then
+	echo "OK    bot          runs /usr/local/bin/dillabot as user dillabot"
+else
+	echo "OK    bot          disabled ([bot] enabled = false)"
 fi
-if [ "$1" = show-environment ] && [ -n "${BOT_TEST_SERVICE_PATH:-}" ]; then echo "PATH=$BOT_TEST_SERVICE_PATH"; fi
-if [ "$1" = start ] && [ -n "${BOT_TEST_STARTED:-}" ]; then echo 0 >"$BOT_TEST_STARTED"; fi
-# NRestarts: the old service's count before the start; in a simulated crash loop, one more on
-# every read after the start (systemd resets the count on a manual start).
-if [ "$1" = show ]; then
-	if [ -n "${BOT_TEST_STARTED:-}" ] && [ -f "$BOT_TEST_STARTED" ]; then
-		n=$(($(cat "$BOT_TEST_STARTED") + 1)); echo "$n" >"$BOT_TEST_STARTED"; echo "$n"
-	else
-		echo "${BOT_TEST_OLD_RESTARTS:-0}"
-	fi
-fi
-if [ "$1" = is-active ]; then [ "${BOT_TEST_ACTIVE:-1}" = 1 ]; fi
-STUB
-cat >"$STUBS/cp" <<'STUB'
-#!/bin/sh
-# Fails a rollback's state restore (`cp -a BACKUP/state DATA_DIR`) when asked to.
-if [ -n "${BOT_TEST_FAIL_STATE_RESTORE:-}" ] && [ "$1" = -a ]; then
-	case "$2" in */state) exit 1 ;; esac
-fi
-exec /usr/bin/cp "$@"
-STUB
-cat >"$STUBS/dillad" <<'STUB'
-#!/bin/sh
-echo "dillad $*" >>"$BOT_TEST_LOG"
-[ "$1" = admin ] && [ "$2" = bot-runtime ] && [ "$3" = create ] || exit 2
-for arg in "$@"; do case "$arg" in --out=*) out="${arg#*=}" ;; esac; done
-printf 'dbr_c29tZS1sb25nLXJhbmRvbS10ZXN0LXZhbHVl\n' >"$out"
-echo 'created bot runtime 01010101010101010101010101010101; secret written to protected file'
-STUB
-cat >"$STUBS/fake-bot" <<'STUB'
-#!/bin/sh
-[ "$1" = doctor ] || exit 2
-if [ -n "${BOT_TEST_DOCTOR_FAIL_AFTER_FIRST:-}" ]; then
-	n=0; [ ! -f "$BOT_TEST_DOCTOR_COUNT" ] || n="$(cat "$BOT_TEST_DOCTOR_COUNT")"
-	n=$((n + 1)); echo "$n" >"$BOT_TEST_DOCTOR_COUNT"
-	[ "$n" -lt 2 ] || exit 1
-fi
-if [ -n "${BOT_TEST_DOCTOR_PATH_LOG:-}" ]; then
-	echo "$PATH" >"$BOT_TEST_DOCTOR_PATH_LOG"
-	if command -v yt-dlp >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then echo 'youtube_dependencies OK'; else echo 'youtube_dependencies WARN: yt-dlp unavailable; node unavailable'; fi
-fi
-echo 'runtime_credential OK'
-echo 'native_helper OK'
-echo 'wasi_identity_module OK'
-echo 'state_directory OK'
-STUB
-chmod +x "$STUBS"/*
+echo "FAIL  certificate  no DNS yet"
+exit 1'
+# systemctl: the v1 unit'"'"'s state lives in $BOT_TEST_STATE. A restart of dilla starts the supervised Bot: it writes
+# dilla.service'"'"'s control group and the /proc entries of dillad, the Bot ($BOT_TEST_BOT: ok, caps, none or
+# restarting) and the Bot'"'"'s helper.
+stub systemctl 'echo "systemctl $*" >>"$BOT_TEST_LOG"
+S="$BOT_TEST_STATE"
+case "$1" in
+is-active)
+	case "$*" in
+	*dillabot*) [ -f "$S/v1-active" ] ;;
+	*) [ "${BOT_TEST_DILLA_ACTIVE:-1}" = 1 ] ;;
+	esac
+	exit ;;
+is-enabled) case "$*" in *dillabot*) [ -f "$S/v1-enabled" ] ;; *) exit 0 ;; esac; exit ;;
+disable) rm -f "$S/v1-enabled"; [ "$2" != --now ] || rm -f "$S/v1-active" ;;
+enable) case "$*" in *dillabot*) touch "$S/v1-enabled" ;; esac ;;
+start) case "$*" in *dillabot*) touch "$S/v1-active" ;; esac ;;
+show) [ "$2 $3 $4 $5" = "-p ControlGroup --value dilla" ] && echo /system.slice/dilla.service ;;
+restart)
+	[ "$2" = dilla ] || exit 0
+	[ -z "${BOT_TEST_RESTART_FAIL:-}" ] || exit 1
+	R="$DILLA_INSTALL_ROOT"
+	n=0; [ ! -f "$S/restarts" ] || n="$(cat "$S/restarts")"; n=$((n + 1)); echo "$n" >"$S/restarts"
+	rm -rf "$R/proc" "$R/sys"
+	mkdir -p "$R/sys/fs/cgroup/system.slice/dilla.service"
+	proc() { # PID UID CAPBND ARGV0
+		mkdir -p "$R/proc/$1"
+		printf "%s\\0--flag\\0" "$4" >"$R/proc/$1/cmdline"
+		printf "Name:\\tx\\nUid:\\t%s\\t%s\\t%s\\t%s\\nCapInh:\\t0000000000000000\\nCapPrm:\\t0000000000000000\\nCapEff:\\t0000000000000000\\nCapBnd:\\t%s\\nCapAmb:\\t0000000000000000\\nNoNewPrivs:\\t1\\n" "$2" "$2" "$2" "$2" "$3" >"$R/proc/$1/status"
+		echo "$1" >>"$R/sys/fs/cgroup/system.slice/dilla.service/cgroup.procs"
+	}
+	proc 100 999 00000000000000c0 /usr/local/bin/dillad
+	case "${BOT_TEST_BOT:-ok}" in
+	ok) proc 101 "$BOT_TEST_UID" 0000000000000000 /usr/local/bin/dillabot ;;
+	caps) proc 101 "$BOT_TEST_UID" 000001ffffffffff /usr/local/bin/dillabot ;;
+	none) ;;
+	esac
+	# The Bot'"'"'s helper and its sandbox run as dillabot too; a bubblewrap child holds capabilities in its own
+	# user namespace, which is not the Bot'"'"'s and is not checked.
+	proc 102 "$BOT_TEST_UID" 000001ffffffffff /usr/local/lib/dilla/dilla-bot-core
+	;;
+esac
+exit 0'
 
-ROOT="$TMP/root"
-mkdir -p "$ROOT/etc/dilla" "$ROOT/usr/local/bin" "$ROOT/etc/ssl/certs"
-chmod 0750 "$ROOT/etc/dilla"
-printf 'server config\n' >"$ROOT/etc/dilla/dilla.toml"
-cp "$STUBS/dillad" "$ROOT/usr/local/bin/dillad"
-chmod +x "$ROOT/usr/local/bin/dillad"
-FAKE_BOT="$STUBS/fake-bot"
-export FAKE_BOT
 REL="$TMP/release"
 mkdir -p "$REL"
-printf 'bot-binary\n' >"$REL/dillabot-linux-amd64"
-printf 'native-helper\n' >"$REL/dilla-bot-core-linux-amd64"
-printf 'module\n' >"$REL/dilla_core_wasi.wasm"
-(cd "$REL" && sha256sum dillabot-linux-amd64 dilla-bot-core-linux-amd64 dilla_core_wasi.wasm >SHA256SUMS)
+printf 'bot-binary-v2\n' >"$REL/dillabot-linux-amd64"
+printf 'native-helper-v2\n' >"$REL/dilla-bot-core-linux-amd64"
+(cd "$REL" && sha256sum dillabot-linux-amd64 dilla-bot-core-linux-amd64 >SHA256SUMS)
 
-BASE="--base-url=https://chat.example.org --instance-id=01010101010101010101010101010101 --dillad-config=$ROOT/etc/dilla/dilla.toml --release-url=file://$REL"
-# shellcheck disable=SC2086
-if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" "$INSTALL" $BASE --check-args >"$TMP/out" 2>"$TMP/err"; then
-	[ ! -s "$LOG" ] || fail "--check-args ran a host command"
-	[ ! -e "$ROOT/etc/systemd/system/dillabot.service" ] || fail "--check-args wrote files"
-	pass "--check-args validates without host changes"
-else fail "--check-args rejected valid arguments: $(cat "$TMP/err")"; fi
+SECRET_TOKEN='dbr_v1-runtime-secret-value'
+SECRET_KEY='database-key-secret-material'
+INST=01010101010101010101010101010101
 
-reject_args() { # NAME ARGUMENTS...
-	name="$1"; shift
-	if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" "$INSTALL" "$@" --check-args >"$TMP/out" 2>"$TMP/err"; then
-		fail "$name was accepted"
-	fi
-	[ ! -s "$LOG" ] || fail "$name ran a host command"
-	pass "$name is refused before host changes"
+# v1_root ROOT: a host with dillad (no [bot] in dilla.toml, the pre-v2 dilla.service) and a v1 Bot: dillabot.service
+# (enabled and active), /etc/dillabot/{bot.toml,runtime.token}, the v1 binaries, and one installation's state with its
+# database key, plus an older installer's pre-upgrade key copy.
+v1_root() {
+	r="$1"
+	mkdir -p "$r/usr/local/bin" "$r/usr/local/libexec" "$r/usr/local/lib/dilla" "$r/etc/dilla" "$r/etc/systemd/system" "$r.state"
+	cp "$STUBS/dillad" "$r/usr/local/bin/dillad"
+	printf 'core-v2\n' >"$r/usr/local/bin/dilla_core_wasi.wasm"
+	printf "[instance]\n  domain = 'chat.example.org'\n\n[livekit]\n  mode = 'sidecar'\n" >"$r/etc/dilla/dilla.toml"
+	chmod 0640 "$r/etc/dilla/dilla.toml"
+	printf '[Service]\nExecStart=/usr/local/bin/dillad serve\n' >"$r/etc/systemd/system/dilla.service"
+	printf '[Unit]\nDescription=the v1 Bot unit\n[Service]\nUser=dillabot\n' >"$r/etc/systemd/system/dillabot.service"
+	install -d -m 0750 "$r/etc/dillabot"
+	printf 'base_url = "https://chat.example.org"\nruntime_credential_file = "/etc/dillabot/runtime.token"\nstate_dir = "/var/lib/dillabot"\n' >"$r/etc/dillabot/bot.toml"
+	chmod 0640 "$r/etc/dillabot/bot.toml"
+	printf '%s\n' "$SECRET_TOKEN" >"$r/etc/dillabot/runtime.token"
+	chmod 0600 "$r/etc/dillabot/runtime.token"
+	printf 'bot-binary-v1\n' >"$r/usr/local/bin/dillabot"
+	printf 'native-helper-v1\n' >"$r/usr/local/libexec/dilla-bot-core"
+	printf 'module-v1\n' >"$r/usr/local/lib/dilla/dilla_core_wasi.wasm"
+	install -d -m 0700 "$r/var/lib/dillabot" "$r/var/lib/dillabot/$INST"
+	printf 'sqlcipher pages\n' >"$r/var/lib/dillabot/$INST/state.db"
+	printf '%s\n' "$SECRET_KEY" >"$r/var/lib/dillabot/$INST/database.key"
+	chmod 0600 "$r/var/lib/dillabot/$INST/state.db" "$r/var/lib/dillabot/$INST/database.key"
+	install -d -m 0700 "$r/var/backups/dillabot/20200101T000000Z-aaaaaaa1/state/$INST"
+	printf '%s\n' "$SECRET_KEY" >"$r/var/backups/dillabot/20200101T000000Z-aaaaaaa1/state/$INST/database.key"
+	touch "$r.state/account" "$r.state/v1-enabled" "$r.state/v1-active"
 }
-# The origin is constrained to an HTTPS authority and the id must be a nonzero
-# canonical 16-byte hex string so neither value can corrupt generated TOML.
-# shellcheck disable=SC2086
-reject_args "an instance ID of all zeroes" $BASE --instance-id=00000000000000000000000000000000
-# shellcheck disable=SC2086
-reject_args "a server URL with a path" $BASE --base-url=https://chat.example.org/v1
-# shellcheck disable=SC2086
-reject_args "a nonnumeric server URL port" $BASE --base-url=https://chat.example.org:admin
-# Full local assets are accepted with checksums without requiring a release tag.
-# shellcheck disable=SC2086
-if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" "$INSTALL" $BASE --binary="$REL/dillabot-linux-amd64" --helper="$REL/dilla-bot-core-linux-amd64" --module="$REL/dilla_core_wasi.wasm" --sums="$REL/SHA256SUMS" --check-args >"$TMP/out" 2>"$TMP/err"; then
-	pass "local assets with SHA256SUMS need no release tag"
-else fail "local assets with checksums were rejected: $(cat "$TMP/err")"; fi
-# shellcheck disable=SC2086
-reject_args "local assets without checksums" $BASE --binary="$REL/dillabot-linux-amd64" --helper="$REL/dilla-bot-core-linux-amd64" --module="$REL/dilla_core_wasi.wasm"
 
-# shellcheck disable=SC2086
-if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" "$INSTALL" $BASE >"$TMP/out" 2>"$TMP/err"; then :; else fail "guided install failed: $(cat "$TMP/err")"; fi
-[ -x "$ROOT/usr/local/bin/dillabot" ] || fail "dillabot binary missing"
-[ -x "$ROOT/usr/local/libexec/dilla-bot-core" ] || fail "native helper missing"
-[ -s "$ROOT/usr/local/lib/dilla/dilla_core_wasi.wasm" ] || fail "WASI module missing"
-[ "$(stat -c %a "$ROOT/etc/dillabot/runtime.token")" = 600 ] || fail "runtime credential mode is not 0600"
-[ "$(stat -c %a "$ROOT/etc/dillabot")" = 750 ] || fail "Bot config directory mode is not 0750"
-[ "$(stat -c %a "$ROOT/etc/dillabot/bot.toml")" = 640 ] || fail "bot config mode is not 0640"
-[ "$(stat -c %a "$ROOT/var/lib/dillabot")" = 700 ] || fail "state directory mode is not 0700"
-[ "$(stat -c %a "$ROOT/etc/dilla")" = 750 ] || fail "server config directory mode was changed"
-grep -q 'install -m 0600 -o dillabot -g dillabot .*runtime.token' "$LOG" || fail "runtime credential ownership flags are wrong"
-grep -q 'install -m 0640 -o root -g dillabot .*bot.toml' "$LOG" || fail "Bot config ownership flags are wrong"
-grep -q 'useradd --system --user-group --no-create-home --home-dir /var/lib/dillabot --shell /usr/sbin/nologin dillabot' "$LOG" || fail "dedicated service user was not created"
-[ "$(cat "$ROOT/etc/dillabot/bot.toml")" = "$(cat <<CONFIG
-base_url = "https://chat.example.org"
-instance_id = "01010101010101010101010101010101"
-runtime_credential_file = "$ROOT/etc/dillabot/runtime.token"
-helper_executable = "/usr/local/libexec/dilla-bot-core"
-wasi_module = "/usr/local/lib/dilla/dilla_core_wasi.wasm"
-state_dir = "/var/lib/dillabot"
-reconcile_interval = "30s"
-CONFIG
-)" ] || fail "Bot config content differs from expected"
-cmp -s "$HERE/dillabot.service" "$ROOT/etc/systemd/system/dillabot.service" || fail "installed systemd unit differs from deploy/dillabot.service"
-grep -q '^DevicePolicy=closed$' "$ROOT/etc/systemd/system/dillabot.service" || fail "Bot unit does not restrict device access"
-if grep -Eq '^(PrivateDevices|RestrictSUIDSGID)=yes$' "$ROOT/etc/systemd/system/dillabot.service"; then fail "Bot unit blocks the nested YouTube sandbox"; fi
-grep -q '^dillad admin bot-runtime create --config=' "$LOG" || fail "runtime credential was not created via dillad admin"
-grep -q '^systemctl enable --now dillabot$' "$LOG" || fail "service was not enabled"
-if grep -q 'dbr_' "$LOG" "$TMP/err" "$TMP/out"; then fail "runtime credential leaked to output"; fi
-pass "guided install verifies assets, protects files, creates runtime credential and enables unit"
+# inst ROOT ARGS...: runs install-bot.sh against ROOT; leaves RC, $TMP/out and $TMP/err.
+inst() {
+	r="$1"
+	shift
+	: >"$LOG"
+	RC=0
+	PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$r" BOT_TEST_LOG="$LOG" BOT_TEST_STATE="$r.state" "$INSTALL" "$@" >"$TMP/out" 2>"$TMP/err" || RC=$?
+}
+# tree DIR: every path under DIR with its mode, owner and (for files) contents hash.
+tree() {
+	(cd "$1" && find . -path ./proc -prune -o -path ./sys -prune -o -print | LC_ALL=C sort | while IFS= read -r p; do
+		if [ -f "$p" ] && [ ! -L "$p" ]; then h="$(sha256sum <"$p" | cut -c1-16)"; else h=-; fi
+		printf '%s %s %s\n' "$p" "$(stat -c '%a %u' "$p")" "$h"
+	done)
+}
+no_secret_printed() { # NAME
+	for s in "$SECRET_TOKEN" "$SECRET_KEY" dbr_fresh-runtime-secret-value; do
+		if grep -qF "$s" "$TMP/out" "$TMP/err" "$LOG"; then fail "$1: a secret reached the output or a command line"; fi
+	done
+}
 
-# Upgrade uses a fresh release but leaves credentials, config and encrypted state untouched.
-mkdir -m 0700 "$ROOT/var/lib/dillabot/install-sentinel"
-printf 'encrypted-state-marker\n' >"$ROOT/var/lib/dillabot/install-sentinel/keep"
-chmod 0600 "$ROOT/var/lib/dillabot/install-sentinel/keep"
-CONFIG_BEFORE="$(sha256sum "$ROOT/etc/dillabot/bot.toml")"
-CREDENTIAL_BEFORE="$(sha256sum "$ROOT/etc/dillabot/runtime.token")"
-STATE_BEFORE="$(sha256sum "$ROOT/var/lib/dillabot/install-sentinel/keep")"
-REL2="$TMP/release2"
-mkdir -p "$REL2"
-printf 'bot-binary-v2\n' >"$REL2/dillabot-linux-amd64"
-printf 'native-helper-v2\n' >"$REL2/dilla-bot-core-linux-amd64"
-printf 'module-v2\n' >"$REL2/dilla_core_wasi.wasm"
-(cd "$REL2" && sha256sum dillabot-linux-amd64 dilla-bot-core-linux-amd64 dilla_core_wasi.wasm >SHA256SUMS)
-if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" BOT_TEST_DATE_COUNT="$TMP/date-count" STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --release-url="file://$REL2" >"$TMP/out" 2>"$TMP/err"; then :; else fail "Bot upgrade failed: $(cat "$TMP/err")"; fi
-[ "$(cat "$ROOT/usr/local/bin/dillabot")" = bot-binary-v2 ] || fail "upgrade did not replace dillabot"
-[ "$(sha256sum "$ROOT/etc/dillabot/bot.toml")" = "$CONFIG_BEFORE" ] || fail "upgrade changed bot.toml"
-[ "$(sha256sum "$ROOT/etc/dillabot/runtime.token")" = "$CREDENTIAL_BEFORE" ] || fail "upgrade changed runtime credential"
-[ "$(sha256sum "$ROOT/var/lib/dillabot/install-sentinel/keep")" = "$STATE_BEFORE" ] || fail "upgrade changed Bot state"
-COPY="$(sed -n 's|.*made pre-upgrade copy at \([^ ]*\) .*|\1|p' "$TMP/err")"
-[ -n "$COPY" ] || fail "upgrade did not report its pre-upgrade copy"
-grep -q "removed pre-upgrade copy $COPY" "$TMP/err" || fail "the confirmed upgrade did not delete its copy"
-[ ! -e "$COPY" ] || fail "the pre-upgrade copy (with the database key) outlived the confirmed upgrade"
-[ "$(stat -c %a "$ROOT/var/backups/dillabot")" = 700 ] || fail "pre-upgrade backup parent is not private"
-grep -q 'upgraded Bot stayed active for 1s' "$TMP/err" || fail "upgrade did not wait for the Bot to stay healthy"
-grep -q '^systemctl start dillabot$' "$LOG" || fail "active service was not restarted after upgrade"
-[ "$(grep -c '^dillad admin bot-runtime create ' "$LOG")" = 1 ] || fail "upgrade unexpectedly created another runtime credential"
-pass "upgrade preserves config, credential and state, and deletes its copy once the Bot is healthy"
+# ---------------------------------------------------------------- arguments ----
+inst "$TMP/args" --upgrade --release-url="file://$REL" --check-args
+[ "$RC" = 0 ] || fail "--check-args rejected valid arguments: $(cat "$TMP/err")"
+[ ! -s "$LOG" ] || fail "--check-args ran a host command"
+pass "--check-args validates without host changes"
+for bad in "--base-url=https://chat.example.org" "--instance-id=$INST" "--module=$REL/x.wasm" "--keep-backups=3"; do
+	inst "$TMP/args" --upgrade --release-url="file://$REL" "$bad" --check-args
+	[ "$RC" != 0 ] || fail "$bad was accepted"
+	[ ! -s "$LOG" ] || fail "$bad ran a host command"
+done
+inst "$TMP/args" --upgrade --base-url=https://chat.example.org --check-args
+grep -q 'learns the instance from dillad' "$TMP/err" || fail "--base-url was not explained: $(cat "$TMP/err")"
+pass "the v1 first-install flags (--base-url, --instance-id, --module) and --keep-backups are refused"
 
-# A failed upgraded doctor restores old binaries and state, then restarts the prior service.
-REL3="$TMP/release3"
-mkdir -p "$REL3"
-printf 'bot-binary-v3\n' >"$REL3/dillabot-linux-amd64"
-printf 'native-helper-v3\n' >"$REL3/dilla-bot-core-linux-amd64"
-printf 'module-v3\n' >"$REL3/dilla_core_wasi.wasm"
-(cd "$REL3" && sha256sum dillabot-linux-amd64 dilla-bot-core-linux-amd64 dilla_core_wasi.wasm >SHA256SUMS)
-if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" BOT_TEST_DATE_COUNT="$TMP/date-count" BOT_TEST_DOCTOR_COUNT="$TMP/doctor-count" BOT_TEST_DOCTOR_FAIL_AFTER_FIRST=1 STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --release-url="file://$REL3" >"$TMP/out" 2>"$TMP/err"; then fail "upgrade with failed doctor succeeded"; fi
-[ "$(cat "$ROOT/usr/local/bin/dillabot")" = bot-binary-v2 ] || fail "failed upgrade did not restore previous binary"
-[ "$(cat "$ROOT/usr/local/libexec/dilla-bot-core")" = native-helper-v2 ] || fail "failed upgrade did not restore previous helper"
-[ "$(cat "$ROOT/usr/local/lib/dilla/dilla_core_wasi.wasm")" = module-v2 ] || fail "failed upgrade did not restore previous WASI module"
-cmp -s "$HERE/dillabot.service" "$ROOT/etc/systemd/system/dillabot.service" || fail "failed upgrade did not restore previous unit"
-[ "$(cat "$ROOT/var/lib/dillabot/install-sentinel/keep")" = encrypted-state-marker ] || fail "failed upgrade did not restore Bot state"
-grep -q 'restored the previous files and state' "$TMP/err" || fail "failed upgrade did not report rollback: $(cat "$TMP/err")"
-COPY="$(sed -n 's|.*made pre-upgrade copy at \([^ ]*\) .*|\1|p' "$TMP/err")"
-[ -n "$COPY" ] && [ ! -e "$COPY" ] || fail "a completed rollback kept its pre-upgrade copy"
-pass "doctor failure rolls back Bot binaries and local state, then deletes the copy"
+# ---------------------------------------------- upgrade moves dillabot under dillad ----
+R="$TMP/v1"
+v1_root "$R"
+STATE_BEFORE="$(tree "$R/var/lib/dillabot/$INST")"
+UNIT_V1="$(cat "$R/etc/systemd/system/dillabot.service")"
+TOML_V1="$(cat "$R/etc/dillabot/bot.toml")"
+TOKEN_SUM="$(sha256sum <"$R/etc/dillabot/runtime.token")"
+inst "$R" --upgrade --release-url="file://$REL"
+[ "$RC" = 0 ] || fail "upgrade moves dillabot under dillad: exit $RC: $(cat "$TMP/err")"
+# Stops and disables dillabot.service.
+grep -qx 'systemctl disable --now dillabot' "$LOG" || fail "dillabot.service was not stopped and disabled: $(cat "$LOG")"
+[ ! -f "$R.state/v1-active" ] && [ ! -f "$R.state/v1-enabled" ] || fail "dillabot.service is still active or enabled"
+# Backs up the unit and bot.toml to /var/backups/dilla/bot-v1-<timestamp>/, root-only, and nothing secret.
+BK="$(find "$R/var/backups/dilla" -mindepth 1 -maxdepth 1 -type d -name 'bot-v1-[0-9]*T[0-9]*Z')"
+[ -n "$BK" ] && [ "$(printf '%s\n' "$BK" | wc -l)" = 1 ] || fail "no single bot-v1-<timestamp> backup: $(find "$R/var/backups" | head)"
+[ "$(stat -c %a "$R/var/backups/dilla")" = 700 ] && [ "$(stat -c %a "$BK")" = 700 ] || fail "the backup is not root-only (0700)"
+[ "$(cat "$BK/dillabot.service")" = "$UNIT_V1" ] || fail "the backup does not hold the v1 unit"
+[ "$(cat "$BK/bot.toml")" = "$TOML_V1" ] || fail "the backup does not hold bot.toml"
+for f in "$BK"/*; do
+	case "${f##*/}" in dillabot.service | bot.toml | dilla.service) ;; *) fail "the backup holds ${f##*/}; it holds only the units and bot.toml" ;; esac
+done
+if grep -rqF -e "$SECRET_TOKEN" -e "$SECRET_KEY" "$R/var/backups/dilla"; then fail "the backup holds the runtime credential or the database key"; fi
+[ -z "$(find "$R/var/backups/dilla" -name 'database.key' -o -name 'runtime.token' -o -name 'state.db')" ] || fail "the backup holds a key, credential or database file"
+# Removes both.
+[ ! -e "$R/etc/systemd/system/dillabot.service" ] || fail "dillabot.service was not removed"
+[ ! -e "$R/etc/dillabot" ] || fail "/etc/dillabot was not removed: $(ls -la "$R/etc/dillabot")"
+# Leaves /var/lib/dillabot/<installation> byte-identical, owned by dillabot.
+[ "$(tree "$R/var/lib/dillabot/$INST")" = "$STATE_BEFORE" ] || fail "the installation's state changed"
+[ "$(stat -c '%a %u' "$R/var/lib/dillabot")" = "700 $BOT_TEST_UID" ] || fail "/var/lib/dillabot is not 0700 dillabot"
+[ "$(stat -c %u "$R/var/lib/dillabot/$INST")" = "$BOT_TEST_UID" ] || fail "the installation's state is not owned by dillabot"
+# The runtime credential moves into the state dir unchanged, 0600 dillabot.
+[ "$(sha256sum <"$R/var/lib/dillabot/runtime.token")" = "$TOKEN_SUM" ] || fail "the runtime credential changed on its move"
+[ "$(stat -c '%a %u' "$R/var/lib/dillabot/runtime.token")" = "600 $BOT_TEST_UID" ] || fail "runtime.token is not 0600 dillabot"
+grep -q "^install -m 0600 -o dillabot -g dillabot $R/etc/dillabot/runtime.token $R/var/lib/dillabot/runtime.token.new$" "$LOG" || fail "the credential was not installed 0600 dillabot:dillabot"
+if grep -q '^dillad admin bot-runtime create' "$LOG"; then fail "the upgrade created a new runtime credential"; fi
+# Writes [bot] enabled = true with state_dir.
+[ "$(sed -n '/^\[bot\]$/,/^\[/p' "$R/etc/dilla/dilla.toml")" = "$(printf "[bot]\n  enabled = true\n  state_dir = '/var/lib/dillabot'")" ] || fail "dilla.toml has no [bot] enabled = true with state_dir: $(cat "$R/etc/dilla/dilla.toml")"
+grep -q "^  domain = 'chat.example.org'$" "$R/etc/dilla/dilla.toml" || fail "the rest of dilla.toml was lost"
+[ "$(stat -c %a "$R/etc/dilla/dilla.toml")" = 640 ] || fail "dilla.toml lost its mode"
+# The Bot's files: root-owned binaries where [bot] expects them, the release's dilla.service, dillad in the group.
+[ "$(cat "$R/usr/local/bin/dillabot")" = bot-binary-v2 ] || fail "dillabot was not upgraded"
+[ "$(cat "$R/usr/local/lib/dilla/dilla-bot-core")" = native-helper-v2 ] || fail "dilla-bot-core is not at /usr/local/lib/dilla"
+grep -q "^install -m 0755 -o root -g root .*/dillabot-linux-amd64 $R/usr/local/bin/dillabot.new$" "$LOG" || fail "dillabot was not installed root:root 0755"
+grep -q "^install -m 0755 -o root -g root .*/dilla-bot-core-linux-amd64 $R/usr/local/lib/dilla/dilla-bot-core.new$" "$LOG" || fail "dilla-bot-core was not installed root:root 0755"
+grep -q "^install -d -m 0755 -o root -g root $R/usr/local/lib/dilla$" "$LOG" || fail "/usr/local/lib/dilla was not made root:root 0755"
+[ ! -e "$R/usr/local/libexec/dilla-bot-core" ] && [ ! -e "$R/usr/local/lib/dilla/dilla_core_wasi.wasm" ] || fail "the v1 helper and module were left behind"
+cmp -s "$HERE/dilla.service" "$R/etc/systemd/system/dilla.service" || fail "dilla.service is not the release's deploy/dilla.service"
+grep -qx 'usermod -aG dillabot dillad' "$LOG" || fail "dillad was not added to the dillabot group"
+# The old installer's key copy goes (Task 8: no indefinite key copies).
+[ ! -e "$R/var/backups/dillabot/20200101T000000Z-aaaaaaa1" ] || fail "an older installer's key copy survived"
+# Restarts dilla.service, once, after doctor passed.
+[ "$(grep -c '^systemctl restart dilla$' "$LOG")" = 1 ] || fail "dilla.service was not restarted exactly once"
+grep -q 'runuser -u dillad -- .*dillad doctor' "$LOG" || fail "doctor did not run as dillad"
+[ "$(grep -n 'runuser -u dillad -- .*dillad doctor' "$LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n '^systemctl restart dilla$' "$LOG" | cut -d: -f1)" ] || fail "doctor did not run before the restart"
+# Logs one line per step.
+for line in \
+	"verified Bot assets against SHA256SUMS" \
+	"backed up dillabot.service, bot.toml and dilla.service to $BK (no keys, no credential)" \
+	"stopped and disabled dillabot.service" \
+	"added dillad to the dillabot group" \
+	"moved the runtime credential to /var/lib/dillabot/runtime.token, unchanged" \
+	"installed dillabot and dilla-bot-core (root:root 0755)" \
+	"installed dilla.service from this release" \
+	"removed dillabot.service and /etc/dillabot/bot.toml" \
+	"set [bot] enabled = true, state_dir = '/var/lib/dillabot' in dilla.toml" \
+	"dillad doctor: bot OK, runs /usr/local/bin/dillabot as user dillabot" \
+	"restarted dilla.service" \
+	"the Bot runs under dilla.service as dillabot (pid 101), holding no capabilities" \
+	"removed the v1 credential copy /etc/dillabot/runtime.token" \
+	"removed the v1 helper and module" \
+	"removed pre-upgrade copy $R/var/backups/dillabot/20200101T000000Z-aaaaaaa1"; do
+	grep -qxF "install-bot: $line" "$TMP/err" || fail "the log lacks the step line \"$line\"; it was:
+$(cat "$TMP/err")"
+done
+no_secret_printed "upgrade moves dillabot under dillad"
+pass "upgrade moves dillabot under dillad"
 
-# A service start failure also restores the old files before starting the prior service.
-REL4="$TMP/release4"
-mkdir -p "$REL4"
-printf 'bot-binary-v4\n' >"$REL4/dillabot-linux-amd64"
-printf 'native-helper-v4\n' >"$REL4/dilla-bot-core-linux-amd64"
-printf 'module-v4\n' >"$REL4/dilla_core_wasi.wasm"
-(cd "$REL4" && sha256sum dillabot-linux-amd64 dilla-bot-core-linux-amd64 dilla_core_wasi.wasm >SHA256SUMS)
-if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" BOT_TEST_DATE_COUNT="$TMP/date-count" BOT_TEST_START_COUNT="$TMP/start-count" BOT_TEST_FAIL_START_FIRST=1 STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --release-url="file://$REL4" >"$TMP/out" 2>"$TMP/err"; then fail "upgrade with failed service start succeeded"; fi
-[ "$(cat "$ROOT/usr/local/bin/dillabot")" = bot-binary-v2 ] || fail "start failure did not restore previous binary"
-[ "$(cat "$ROOT/var/lib/dillabot/install-sentinel/keep")" = encrypted-state-marker ] || fail "start failure did not restore Bot state"
-grep -q 'upgraded Bot service did not remain active' "$TMP/err" || fail "start failure did not report rollback"
-[ "$(cat "$TMP/start-count")" = 2 ] || fail "old service was not started after rollback"
-pass "service start failure rolls back Bot files and state"
+# ---------------------------------- upgrade run twice is a no-op the second time ----
+BEFORE="$(tree "$R")"
+inst "$R" --upgrade --release-url="file://$REL"
+[ "$RC" = 0 ] || fail "the second run failed: $(cat "$TMP/err")"
+[ "$(tree "$R")" = "$BEFORE" ] || fail "the second run changed files: $(diff <(printf '%s\n' "$BEFORE") <(tree "$R"))"
+if grep -E '^(systemctl (restart|stop|start|enable|disable|daemon-reload)|useradd|usermod|chown|install|dillad admin)' "$LOG"; then fail "the second run changed the host"; fi
+grep -qx 'install-bot: nothing to change: the Bot already runs under dillad from this release' "$TMP/err" || fail "the second run did not say it changed nothing: $(cat "$TMP/err")"
+grep -qx 'install-bot: the Bot runs under dilla.service as dillabot (pid 101), holding no capabilities' "$TMP/err" || fail "the second run did not check the Bot"
+no_secret_printed "the second run"
+pass "upgrade run twice is a no-op the second time"
 
-# A Bot that systemd keeps restarting after the upgrade is not healthy: roll back.
-rm -f "$TMP/started"
-# The old service's restart count (3) must not hide the new one's restarts.
-if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" BOT_TEST_STARTED="$TMP/started" BOT_TEST_OLD_RESTARTS=3 STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --release-url="file://$REL4" >"$TMP/out" 2>"$TMP/err"; then fail "upgrade with a restarting service succeeded"; fi
-[ "$(cat "$ROOT/usr/local/bin/dillabot")" = bot-binary-v2 ] || fail "restart loop did not restore previous binary"
-grep -q 'upgraded Bot service did not remain active' "$TMP/err" || fail "restart loop did not report rollback"
-pass "a restart loop after the upgrade rolls back"
+# -------------------------------------------- fresh install has no dillabot.service ----
+# dillad installed without a Bot (no [bot] enabled, no account): install-bot.sh puts the Bot under it.
+F="$TMP/fresh"
+mkdir -p "$F/usr/local/bin" "$F/etc/dilla" "$F/etc/systemd/system" "$F.state"
+cp "$STUBS/dillad" "$F/usr/local/bin/dillad"
+printf 'core-v2\n' >"$F/usr/local/bin/dilla_core_wasi.wasm"
+printf "[instance]\n  domain = 'chat.example.org'\n\n[bot]\n  enabled = false\n  executable = '/usr/local/bin/dillabot'\n  state_dir = '/var/lib/dillabot'\n  user = 'dillabot'\n" >"$F/etc/dilla/dilla.toml"
+cp "$HERE/dilla.service" "$F/etc/systemd/system/dilla.service"
+inst "$F" --upgrade --release-url="file://$REL"
+[ "$RC" = 0 ] || fail "fresh install has no dillabot.service: exit $RC: $(cat "$TMP/err")"
+[ ! -e "$F/etc/systemd/system/dillabot.service" ] || fail "a fresh install wrote dillabot.service"
+[ ! -e "$F/etc/dillabot" ] || fail "a fresh install wrote /etc/dillabot"
+[ ! -e "$F/var/backups/dilla" ] || fail "a fresh install made a backup of nothing"
+if grep -q 'dillabot.service\|systemctl [a-z-]* .*dillabot' "$LOG"; then fail "a fresh install touched a dillabot unit: $(cat "$LOG")"; fi
+grep -qx 'useradd --system --user-group --no-create-home --home-dir /var/lib/dillabot --shell /usr/sbin/nologin dillabot' "$LOG" || fail "the dillabot user was not created"
+grep -qx 'usermod -aG dillabot dillad' "$LOG" || fail "dillad was not added to the dillabot group"
+grep -q "^install -d -m 0700 -o dillabot -g dillabot $F/var/lib/dillabot$" "$LOG" || fail "the state dir was not created 0700 dillabot"
+grep -q "^dillad admin bot-runtime create --config=$F/etc/dilla/dilla.toml --out=" "$LOG" || fail "no runtime credential was registered"
+[ "$(stat -c %a "$F/var/lib/dillabot/runtime.token")" = 600 ] || fail "the new credential is not 0600"
+grep -qx "install-bot: dillad registered a new runtime credential: created bot runtime 02020202020202020202020202020202; secret written to protected file" "$TMP/err" || fail "the new runtime id was not logged"
+[ "$(sed -n '/^\[bot\]$/,/^\[/p' "$F/etc/dilla/dilla.toml" | sed -n 2p)" = "  enabled = true" ] || fail "[bot] was not enabled in place: $(cat "$F/etc/dilla/dilla.toml")"
+[ "$(grep -c '^\[bot\]$' "$F/etc/dilla/dilla.toml")" = 1 ] || fail "a second [bot] table was appended"
+if grep -q 'daemon-reload' "$LOG"; then fail "an unchanged dilla.service was reloaded"; fi
+no_secret_printed "fresh install has no dillabot.service"
+pass "fresh install has no dillabot.service"
 
-# An incomplete rollback keeps the copy and names it, so the admin can restore by hand.
-rm -f "$TMP/doctor-count"
-if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" BOT_TEST_DOCTOR_COUNT="$TMP/doctor-count" BOT_TEST_DOCTOR_FAIL_AFTER_FIRST=1 BOT_TEST_FAIL_STATE_RESTORE=1 STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --release-url="file://$REL3" >"$TMP/out" 2>"$TMP/err"; then fail "upgrade with failed doctor succeeded"; fi
-COPY="$(sed -n 's|.*made pre-upgrade copy at \([^ ]*\) .*|\1|p' "$TMP/err")"
-grep -q "the rollback was incomplete, so the pre-upgrade copy is kept at $COPY" "$TMP/err" || fail "incomplete rollback did not name the kept copy: $(cat "$TMP/err")"
-[ -s "$COPY/state/install-sentinel/keep" ] || fail "incomplete rollback did not keep the copy with its state"
-if grep -q "removed pre-upgrade copy $COPY" "$TMP/err"; then fail "incomplete rollback deleted the copy"; fi
-# Restore by hand, as the message asks, and delete the copy.
-rm -rf "$ROOT/var/lib/dillabot"
-/usr/bin/cp -a "$COPY/state" "$ROOT/var/lib/dillabot"
-rm -rf "$COPY"
-pass "an incomplete rollback keeps and names the copy"
+# ------------------------------------------------ failures restore the v1 Bot ----
+# expect_v1_restored NAME ROOT: the failed upgrade put every v1 file back and the v1 Bot runs again.
+expect_v1_restored() {
+	[ "$RC" != 0 ] || fail "$1: the upgrade succeeded"
+	r="$2"
+	[ "$(cat "$r/etc/systemd/system/dillabot.service")" = "$UNIT_V1" ] || fail "$1: dillabot.service was not restored"
+	[ "$(cat "$r/etc/dillabot/bot.toml")" = "$TOML_V1" ] || fail "$1: bot.toml was not restored"
+	[ "$(sha256sum <"$r/etc/dillabot/runtime.token")" = "$TOKEN_SUM" ] || fail "$1: the v1 credential is not in place"
+	[ ! -e "$r/var/lib/dillabot/runtime.token" ] || fail "$1: the moved credential copy was left in the state dir"
+	[ "$(cat "$r/usr/local/bin/dillabot")" = bot-binary-v1 ] || fail "$1: dillabot was not restored"
+	[ "$(cat "$r/usr/local/libexec/dilla-bot-core")" = native-helper-v1 ] || fail "$1: the v1 helper is gone"
+	[ ! -e "$r/usr/local/lib/dilla/dilla-bot-core" ] || fail "$1: the new helper was left behind"
+	[ "$(cat "$r/etc/systemd/system/dilla.service")" = "$(printf '[Service]\nExecStart=/usr/local/bin/dillad serve')" ] || fail "$1: dilla.service was not restored"
+	if grep -q '^\[bot\]' "$r/etc/dilla/dilla.toml"; then fail "$1: dilla.toml was not restored"; fi
+	[ "$(tree "$r/var/lib/dillabot/$INST")" = "$STATE_BEFORE" ] || fail "$1: the state changed"
+	[ -f "$r.state/v1-enabled" ] && [ -f "$r.state/v1-active" ] || fail "$1: dillabot.service was not enabled and started again"
+	grep -q 'restored the v1 Bot' "$TMP/err" || fail "$1: the rollback was not reported: $(cat "$TMP/err")"
+	no_secret_printed "$1"
+}
+R2="$TMP/caps"
+v1_root "$R2"
+BOT_TEST_BOT=caps inst "$R2" --upgrade --release-url="file://$REL"
+expect_v1_restored "a Bot holding capabilities" "$R2"
+grep -q 'install-bot: RED bot: the Bot (pid 101) holds capabilities: CapBnd=000001ffffffffff' "$TMP/err" || fail "the capability failure was not named: $(cat "$TMP/err")"
+[ "$(grep -c '^systemctl restart dilla$' "$LOG")" = 2 ] || fail "dilla was not restarted on the restored config"
+[ -e "$R2/var/backups/dillabot/20200101T000000Z-aaaaaaa1" ] || fail "a rolled-back upgrade removed an older copy"
+pass "a Bot that holds any capability fails the upgrade, which restores the v1 Bot"
 
-# A confirmed upgrade deletes every copy an earlier installer kept (they hold the database
-# key); a rolled-back one leaves them alone. Only the installer's own plain directories go.
-BP="$ROOT/var/backups/dillabot"
-rm -rf "$BP"
-mkdir -m 0700 "$BP"
-for n in 1 2 3; do mkdir -m 0700 "$BP/2020010${n}T000000Z-aaaaaaa$n"; done
-mkdir -m 0700 "$BP/notes-from-operator"
-mkdir -m 0700 "$TMP/link-target"
-ln -s "$TMP/link-target" "$BP/20200101T000000Z-linkaaaa"
-printf 'x\n' >"$BP/20200101T000000Z-fileaaaa"
-rm -f "$TMP/doctor-count"
-if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" BOT_TEST_DOCTOR_COUNT="$TMP/doctor-count" BOT_TEST_DOCTOR_FAIL_AFTER_FIRST=1 STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --release-url="file://$REL3" >"$TMP/out" 2>"$TMP/err"; then fail "upgrade with failed doctor succeeded"; fi
-for n in 1 2 3; do [ -d "$BP/2020010${n}T000000Z-aaaaaaa$n" ] || fail "a rolled-back upgrade removed old copy $n"; done
-pass "a rolled-back upgrade leaves earlier copies alone"
-if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --release-url="file://$REL3" >"$TMP/out" 2>"$TMP/err"; then :; else fail "upgrade failed: $(cat "$TMP/err")"; fi
-[ "$(cat "$ROOT/usr/local/bin/dillabot")" = bot-binary-v3 ] || fail "upgrade did not install v3"
-for n in 1 2 3; do [ ! -e "$BP/2020010${n}T000000Z-aaaaaaa$n" ] || fail "old copy $n survived a confirmed upgrade"; done
-grep -q "removed pre-upgrade copy $BP/20200101T000000Z-aaaaaaa1" "$TMP/err" || fail "removed path was not logged"
-[ "$(find "$BP" -mindepth 1 -maxdepth 1 -type d -name '2???????T??????Z-????????' | wc -l)" -eq 0 ] || fail "a pre-upgrade copy remains"
-[ -d "$BP/notes-from-operator" ] || fail "non-matching directory was removed"
-[ -L "$BP/20200101T000000Z-linkaaaa" ] && [ -d "$TMP/link-target" ] || fail "symlink or its target was removed"
-[ -f "$BP/20200101T000000Z-fileaaaa" ] || fail "plain file was removed"
-pass "a confirmed upgrade deletes every installer copy and leaves foreign entries alone"
+R3="$TMP/nobot"
+v1_root "$R3"
+BOT_TEST_BOT=none inst "$R3" --upgrade --release-url="file://$REL"
+expect_v1_restored "a Bot that never starts" "$R3"
+grep -q 'no Bot process runs under dilla.service' "$TMP/err" || fail "the missing Bot was not named: $(cat "$TMP/err")"
+pass "a Bot that never starts under dillad fails the upgrade, which restores the v1 Bot"
 
-# A stopped Bot is not started; the upgrade is confirmed by doctor and keeps no copy.
-if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" BOT_TEST_ACTIVE=0 STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --release-url="file://$REL2" >"$TMP/out" 2>"$TMP/err"; then :; else fail "upgrade of a stopped Bot failed: $(cat "$TMP/err")"; fi
-grep -q 'was not running before the upgrade and was not started' "$TMP/err" || fail "stopped-service upgrade was not explained"
-[ "$(find "$BP" -mindepth 1 -maxdepth 1 -type d -name '2???????T??????Z-????????' | wc -l)" -eq 0 ] || fail "a stopped-service upgrade kept its copy"
-pass "upgrading a stopped Bot keeps no copy"
+R4="$TMP/leg"
+v1_root "$R4"
+BOT_TEST_BOT_LEG_FAIL=1 inst "$R4" --upgrade --release-url="file://$REL"
+expect_v1_restored "a red doctor Bot leg" "$R4"
+if grep -q '^systemctl restart dilla$' "$LOG"; then fail "dilla was restarted although doctor's Bot leg was red"; fi
+grep -q 'group or others can write /usr/local/lib/dilla' "$TMP/err" || fail "the doctor's reason was not shown"
+pass "a red doctor Bot leg stops the upgrade before dilla restarts, and restores the v1 Bot"
 
-: >"$LOG"
-reject_args "the removed --keep-backups" --upgrade --keep-backups 3
+R5="$TMP/restart"
+v1_root "$R5"
+BOT_TEST_RESTART_FAIL=1 inst "$R5" --upgrade --release-url="file://$REL"
+expect_v1_restored "a dilla that does not restart" "$R5"
+pass "a dilla that does not restart restores the v1 Bot"
 
-# A second guided first-install run must preserve the existing secret/state and refuse.
-BEFORE="$(sha256sum "$ROOT/etc/dillabot/runtime.token")"
-# shellcheck disable=SC2086
-if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" "$INSTALL" $BASE >"$TMP/out" 2>"$TMP/err"; then fail "rerun replaced an existing bot install"; fi
-[ "$(sha256sum "$ROOT/etc/dillabot/runtime.token")" = "$BEFORE" ] || fail "refused rerun changed credential"
-grep -q 'files or state already exist' "$TMP/err" || fail "rerun refusal was not explained"
-pass "rerun refuses without replacing Bot credential"
+# ------------------------------------------------------------- refusals ----
+R6="$TMP/elsewhere"
+v1_root "$R6"
+sed -i 's|^state_dir = .*|state_dir = "/srv/bot"|' "$R6/etc/dillabot/bot.toml"
+SNAP="$(tree "$R6")"
+inst "$R6" --upgrade --release-url="file://$REL"
+[ "$RC" != 0 ] || fail "a v1 state_dir outside /var/lib/dillabot was accepted"
+grep -q 'state_dir is /srv/bot' "$TMP/err" || fail "the state_dir refusal was not explained: $(cat "$TMP/err")"
+[ "$(tree "$R6")" = "$SNAP" ] || fail "the refusal changed files"
+if grep -q '^systemctl \(stop\|disable\|restart\)' "$LOG"; then fail "the refusal stopped something"; fi
+pass "a v1 state_dir outside /var/lib/dillabot is refused before anything changes"
 
-# The doctor's dependency check runs with the service's PATH, not the caller's:
-# `pct exec` has no /usr/local/bin, while systemd's default PATH does.
-SVCBIN="$TMP/service-bin"
-mkdir -p "$SVCBIN"
-printf '#!/bin/sh\n' >"$SVCBIN/yt-dlp"
-printf '#!/bin/sh\n' >"$SVCBIN/node"
-chmod +x "$SVCBIN/yt-dlp" "$SVCBIN/node"
-PROOT="$TMP/path-root"
-mkdir -p "$PROOT/etc/dilla" "$PROOT/usr/local/bin" "$PROOT/etc/ssl/certs"
-chmod 0750 "$PROOT/etc/dilla"
-printf 'server config\n' >"$PROOT/etc/dilla/dilla.toml"
-cp "$STUBS/dillad" "$PROOT/usr/local/bin/dillad"
-DOCTOR_PATH_LOG="$TMP/doctor-path"
-# shellcheck disable=SC2086
-if PATH="$STUBS:/usr/bin:/bin" DILLA_INSTALL_ROOT="$PROOT" BOT_TEST_LOG="$LOG" BOT_TEST_DOCTOR_PATH_LOG="$DOCTOR_PATH_LOG" BOT_TEST_SERVICE_PATH="$SVCBIN:/usr/bin" "$INSTALL" --base-url=https://chat.example.org --instance-id=01010101010101010101010101010101 --dillad-config="$PROOT/etc/dilla/dilla.toml" --release-url="file://$REL" >"$TMP/out" 2>"$TMP/err"; then :; else fail "install with a minimal caller PATH failed: $(cat "$TMP/err")"; fi
-[ "$(cat "$DOCTOR_PATH_LOG")" = "$SVCBIN:/usr/bin" ] || fail "doctor ran with PATH $(cat "$DOCTOR_PATH_LOG"), not the service PATH"
-grep -q "service PATH $SVCBIN:/usr/bin" "$TMP/err" || fail "installer did not name the PATH it used for the doctor"
-grep -q '^systemctl show-environment$' "$LOG" || fail "installer did not ask systemd for its default PATH"
-pass "the doctor's dependency check uses the service PATH, not the caller's"
-# A PATH set by the installed unit wins over systemd's default.
-printf '[Service]\nEnvironment="PATH=%s"\n' "$SVCBIN" >"$TMP/unit-with-path"
-eval "$(sed -n '/^service_path() {/,/^}/p' "$INSTALL")"
-UNIT="$TMP/unit-with-path"
-[ "$(PATH="$STUBS:/usr/bin:/bin" BOT_TEST_LOG="$LOG" BOT_TEST_SERVICE_PATH=/elsewhere service_path)" = "$SVCBIN" ] || fail "the unit's Environment=PATH is not read"
-UNIT="$TMP/no-such-unit"
-[ "$(PATH="$STUBS:/usr/bin:/bin" BOT_TEST_LOG="$LOG" service_path)" = /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin ] || fail "the documented systemd PATH is not the last fallback"
-pass "an Environment=PATH in the unit is honoured"
+R7="$TMP/twocreds"
+v1_root "$R7"
+printf 'dbr_another\n' >"$R7/var/lib/dillabot/runtime.token"
+SNAP="$(tree "$R7")"
+inst "$R7" --upgrade --release-url="file://$REL"
+{ [ "$RC" != 0 ] && grep -q 'two different runtime credentials' "$TMP/err"; } || fail "two different credentials were not refused: $(cat "$TMP/err")"
+[ "$(tree "$R7")" = "$SNAP" ] || fail "the refusal changed files"
+pass "two different runtime credentials are refused before anything changes"
 
-# A tampered release artifact is rejected before account, state or service changes.
 BAD="$TMP/bad-release"
 cp -a "$REL" "$BAD"
 printf 'tamper' >>"$BAD/dillabot-linux-amd64"
-BADROOT="$TMP/bad-root"
-mkdir -p "$BADROOT/etc/dilla" "$BADROOT/usr/local/bin"
-printf 'server config\n' >"$BADROOT/etc/dilla/dilla.toml"
-cp "$ROOT/usr/local/bin/dillad" "$BADROOT/usr/local/bin/dillad"
-# shellcheck disable=SC2086
-if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$BADROOT" BOT_TEST_LOG="$LOG" "$INSTALL" --base-url=https://chat.example.org --instance-id=01010101010101010101010101010101 --dillad-config="$BADROOT/etc/dilla/dilla.toml" --release-url="file://$BAD" >"$TMP/out" 2>"$TMP/err"; then fail "tampered asset was installed"; fi
-[ ! -e "$BADROOT/usr/local/bin/dillabot" ] || fail "checksum failure installed binary"
-[ ! -e "$BADROOT/etc/systemd/system/dillabot.service" ] || fail "checksum failure installed service"
-grep -q 'checksum mismatch' "$TMP/err" || fail "checksum failure was not reported"
-pass "checksum failure changes no service files"
+R8="$TMP/tamper"
+v1_root "$R8"
+SNAP="$(tree "$R8")"
+inst "$R8" --upgrade --release-url="file://$BAD"
+{ [ "$RC" != 0 ] && grep -q 'checksum mismatch' "$TMP/err"; } || fail "a tampered release was accepted"
+[ "$(tree "$R8")" = "$SNAP" ] || fail "a checksum failure changed files"
+if grep -q '^systemctl' "$LOG"; then fail "a checksum failure ran systemctl"; fi
+pass "a tampered release changes nothing"
+
+# ------------------------------------------------------------ the scripts ----
+# The Bot health check is the same code in install.sh (fresh install) and install-bot.sh (upgrade).
+health_block() { sed -n '/^# --- bot health: begin/,/^# --- bot health: end/p' "$1"; }
+[ -n "$(health_block "$INSTALL")" ] || fail "install-bot.sh has no bot health block"
+[ "$(health_block "$INSTALL")" = "$(health_block "$HERE/install.sh")" ] || fail "the bot health blocks of install.sh and install-bot.sh differ"
+pass "install.sh and install-bot.sh share one Bot health check"
+# Nothing that touches a secret runs under xtrace.
+if grep -nE '^[[:space:]]*set -[a-wyz]*x|set -o xtrace' "$INSTALL" "$HERE/install.sh"; then fail "an installer turns on xtrace"; fi
+pass "neither installer turns on xtrace"
