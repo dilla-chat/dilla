@@ -489,9 +489,6 @@ if [ -f "$LEGACY_CONF" ]; then
 	*) die "the v1 Bot's state_dir is $legacy_state; dillad runs the Bot with /var/lib/dillabot (dilla.service makes only that writable). Move the state there and set state_dir in $LEGACY_CONF, then run this again. Nothing was changed" ;;
 	esac
 fi
-if [ -f "$LEGACY_CREDENTIAL" ] && [ -f "$CREDENTIAL" ] && ! cmp -s "$LEGACY_CREDENTIAL" "$CREDENTIAL"; then
-	die "two different runtime credentials exist, $LEGACY_CREDENTIAL and $CREDENTIAL; keep the one dillad knows and remove the other, then run this again. Nothing was changed"
-fi
 NEED_ACCOUNT=0
 id dillabot >/dev/null 2>&1 || NEED_ACCOUNT=1
 NEED_GROUP=0
@@ -500,6 +497,16 @@ BOT_UID=""
 [ "$NEED_ACCOUNT" -eq 1 ] || BOT_UID="$(id -u dillabot)"
 if [ "$NEED_ACCOUNT" -eq 1 ] && [ -d "$STATE_DIR" ] && [ -n "$(find "$STATE_DIR" -mindepth 1 -print -quit)" ]; then
 	die "$STATE_DIR holds files but there is no dillabot user; check who wrote them, then create the user or move them away. Nothing was changed"
+fi
+# The state dir's runtime.token is the Bot's to write: before root tests or reads it (and follows a link the Bot
+# planted, or blocks on a special file), it must be a regular single-link file that dillabot owns.
+if [ -e "$CREDENTIAL" ] || [ -L "$CREDENTIAL" ]; then
+	if [ -L "$CREDENTIAL" ] || [ "$(stat -c '%F %h %u' "$CREDENTIAL")" != "regular file 1 $BOT_UID" ]; then
+		die "$CREDENTIAL is not a regular single-link file owned by dillabot ($(stat -c '%F, %h links, uid %u' "$CREDENTIAL")); root does not read it. Check where it came from and replace it with the real credential, then run this again. Nothing was changed"
+	fi
+fi
+if [ -f "$LEGACY_CREDENTIAL" ] && [ -f "$CREDENTIAL" ] && ! cmp -s "$LEGACY_CREDENTIAL" "$CREDENTIAL"; then
+	die "two different runtime credentials exist, $LEGACY_CREDENTIAL and $CREDENTIAL; keep the one dillad knows and remove the other, then run this again. Nothing was changed"
 fi
 NEED_STATE_DIR=0
 if [ ! -d "$STATE_DIR" ] || [ "$NEED_ACCOUNT" -eq 1 ] || [ "$(stat -c '%u %a' "$STATE_DIR")" != "$BOT_UID 700" ]; then NEED_STATE_DIR=1; fi
@@ -550,7 +557,8 @@ live_calls_preflight
 # what to restore from the backup's state file, so it works for a resumed run too. When an expected file is missing it
 # says exactly which, keeps the backup, and reports the rollback incomplete. It always exits.
 rollback() {
-	trap - INT TERM HUP
+	# A second interrupt must not cut the rollback short: it is a few renames and one restart.
+	trap '' INT TERM HUP
 	log "error: $1"
 	missing=""
 	# miss PATH WHAT records a file the rollback needed and did not find, or could not put back.
@@ -630,9 +638,13 @@ for pair in "dillabot.service:$LEGACY_UNIT" "bot.toml:$LEGACY_CONF" "dilla.servi
 	name="${pair%%:*}"
 	[ -f "${pair#*:}" ] || continue
 	[ "$name" != dilla.service ] || [ "$NEED_UNIT" -eq 1 ] || continue
-	[ ! -e "$BACKUP/$name" ] || continue
-	cp -p "${pair#*:}" "$BACKUP/$name" || die "could not back up ${pair#*:}; only $BACKUP was written"
-	case "$name" in dilla.service) state_once unit_saved 1 ;; *) state_once "had_$name" 1 ;; esac
+	case "$name" in dilla.service) key=unit_saved ;; *) key="had_$name" ;; esac
+	# The state key, recorded only once the copy is whole and in place, says the copy is done; a file without its key
+	# (a run killed mid-copy) is redone.
+	[ -z "$(state_get "$key" || :)" ] || continue
+	{ cp -p "${pair#*:}" "$BACKUP/$name.tmp" && mv -f "$BACKUP/$name.tmp" "$BACKUP/$name"; } ||
+		die "could not back up ${pair#*:}; only $BACKUP was written"
+	state_once "$key" 1
 	saved="$saved${saved:+, }$name"
 done
 if [ -n "$saved" ]; then
@@ -674,12 +686,22 @@ if [ "$NEED_STATE_DIR" -eq 1 ]; then
 	fi
 fi
 if [ "$NEED_OWNER" -eq 1 ]; then
-	# No Bot may run while root changes owners in its tree: dilla (which runs it) is stopped first.
-	if systemctl is-active --quiet dilla; then
-		state_once restarted 1
-		systemctl stop dilla || rollback "could not stop dilla.service before fixing owners under $STATE_DIR"
-		log "stopped dilla.service, so no Bot runs while owners are fixed"
-	fi
+	# No Bot may run while root changes owners in its tree: dilla (which runs it) is stopped first, whatever its state
+	# (an activating or auto-restarting dilla could start a Bot), and the owners change only once it is inactive.
+	dilla_state="$(systemctl is-active dilla 2>/dev/null || :)"
+	case "$dilla_state" in active | activating | reloading | deactivating) state_once restarted 1 ;; esac
+	systemctl stop dilla || rollback "could not stop dilla.service before fixing owners under $STATE_DIR"
+	waited=0
+	while :; do
+		case "$(systemctl is-active dilla 2>/dev/null || :)" in
+		active | activating | reloading | deactivating | refreshing) ;;
+		*) break ;;
+		esac
+		[ "$waited" -lt 90 ] || rollback "dilla.service did not stop within 90s; owners under $STATE_DIR were not changed"
+		sleep 1
+		waited=$((waited + 1))
+	done
+	log "stopped dilla.service, so no Bot runs while owners are fixed"
 	# Directories and single-link regular files only, never through a link, never off this filesystem.
 	find "$STATE_DIR" -xdev -mindepth 1 ! -uid "$BOT_UID" \( -type d -o \( -type f -links 1 \) \) -exec chown -h dillabot:dillabot {} + ||
 		rollback "could not give dillabot its state under $STATE_DIR"

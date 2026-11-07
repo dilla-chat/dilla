@@ -84,9 +84,18 @@ case "$1" in
 is-active)
 	case "$*" in
 	*dillabot*) [ -f "$S/v1-active" ] ;;
-	*) [ "${BOT_TEST_DILLA_ACTIVE:-1}" = 1 ] ;;
+	*dilla-media*) [ "${BOT_TEST_DILLA_ACTIVE:-1}" = 1 ] ;;
+	*)
+		# dilla: inactive once stopped, until the next restart; prints its state without --quiet.
+		if [ -f "$S/dilla-stopped" ] || [ "${BOT_TEST_DILLA_ACTIVE:-1}" != 1 ]; then
+			[ "$2" = --quiet ] || echo inactive
+			exit 3
+		fi
+		[ "$2" = --quiet ] || echo active
+		exit 0 ;;
 	esac
 	exit ;;
+stop) [ "$2" != dilla ] || touch "$S/dilla-stopped" ;;
 is-enabled) case "$*" in *dillabot*) [ -f "$S/v1-enabled" ] ;; *) exit 0 ;; esac; exit ;;
 disable) rm -f "$S/v1-enabled"; [ "$2" != --now ] || rm -f "$S/v1-active" ;;
 enable) case "$*" in *dillabot*) touch "$S/v1-enabled" ;; esac ;;
@@ -95,6 +104,7 @@ show) [ "$2 $3 $4 $5" = "-p ControlGroup --value dilla" ] && echo /system.slice/
 restart)
 	[ "$2" = dilla ] || exit 0
 	[ -z "${BOT_TEST_RESTART_FAIL:-}" ] || exit 1
+	rm -f "$S/dilla-stopped"
 	R="$DILLA_INSTALL_ROOT"
 	n=0; [ ! -f "$S/restarts" ] || n="$(cat "$S/restarts")"; n=$((n + 1)); echo "$n" >"$S/restarts"
 	rm -rf "$R/proc" "$R/sys"
@@ -500,6 +510,52 @@ grep -qF "the rollback was incomplete: the previous dillabot is missing ($PBK/pr
 if grep -q "put back the v1 Bot" "$TMP/err"; then fail "an incomplete rollback claimed the v1 Bot was put back"; fi
 [ -d "$PBK" ] || fail "an incomplete rollback deleted its material"
 pass "a rollback that misses its material says incomplete and names exactly what is missing"
+
+# N-2: a unit copy is done only once its state key is recorded. A run killed mid-copy leaves a truncated file without
+# its key (and maybe a .tmp): the resumed run copies it again.
+RN2="$TMP/torn-backup"
+v1_root "$RN2"
+install -d -m 0700 "$RN2/var/backups/dilla/bot-v1-20261107T000000Z"
+TB="$RN2/var/backups/dilla/bot-v1-20261107T000000Z"
+: >"$TB/pending"
+printf 'legacy=1\n' >"$TB/state"
+printf '[Unit]\nDescrip' >"$TB/dillabot.service"
+printf 'torn' >"$TB/bot.toml.tmp"
+inst "$RN2" --upgrade --release-url="file://$REL"
+[ "$RC" = 0 ] || fail "the resumed run over a torn backup failed: $(cat "$TMP/err")"
+grep -qxF "install-bot: resuming the interrupted upgrade recorded in $TB" "$TMP/err" || fail "the torn backup was not resumed"
+[ "$(cat "$TB/dillabot.service")" = "$UNIT_V1" ] || fail "the truncated dillabot.service copy was not redone"
+[ "$(cat "$TB/bot.toml")" = "$TOML_V1" ] || fail "the unrecorded bot.toml copy was not redone"
+[ ! -e "$TB/bot.toml.tmp" ] || fail "a .tmp copy was left in the backup"
+pass "a truncated or unrecorded unit copy in a pending backup is redone"
+# And a rollback that expects a recorded unit copy that is missing says incomplete.
+RN2b="$TMP/lost-unit"
+killed_root "$RN2b"
+rm -f "$PBK/dillabot.service"
+BOT_TEST_BOT=caps inst "$RN2b" --upgrade --release-url="file://$REL"
+[ "$RC" != 0 ] || fail "a rollback without the v1 unit copy succeeded"
+grep -qF "the rollback was incomplete: the v1 dillabot.service is missing ($PBK/dillabot.service)" "$TMP/err" ||
+	fail "the missing unit copy was not named: $(cat "$TMP/err")"
+pass "a rollback missing a recorded unit copy says incomplete and names it"
+
+# N-4: root never reads a runtime.token the Bot could have pointed elsewhere.
+for kind in symlink hardlink; do
+	RN4="$TMP/token-$kind"
+	v1_root "$RN4"
+	printf 'not the credential\n' >"$TMP/token-target-$kind"
+	case "$kind" in
+	symlink) ln -s "$TMP/token-target-$kind" "$RN4/var/lib/dillabot/runtime.token" ;;
+	hardlink) ln "$TMP/token-target-$kind" "$RN4/var/lib/dillabot/runtime.token" ;;
+	esac
+	SNAP="$(tree "$RN4")"
+	inst "$RN4" --upgrade --release-url="file://$REL"
+	[ "$RC" != 0 ] || fail "a $kind runtime.token was accepted"
+	grep -q "runtime.token is not a regular single-link file owned by dillabot" "$TMP/err" || fail "the $kind token was not refused: $(cat "$TMP/err")"
+	if grep -q 'two different runtime credentials' "$TMP/err"; then fail "root compared a $kind token"; fi
+	[ "$(tree "$RN4")" = "$SNAP" ] || fail "the $kind token refusal changed files"
+	if grep -q '^systemctl' "$LOG"; then fail "the $kind token refusal ran systemctl"; fi
+done
+pass "a symlinked or hardlinked runtime.token is refused before root reads it"
 
 # --------------------------------- I-3: key copies go only after a healthy Bot ----
 # R is on this release; a key copy an earlier run could not delete is kept while the Bot is RED, and goes once it is not.
