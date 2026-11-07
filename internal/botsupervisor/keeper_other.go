@@ -37,6 +37,8 @@ func CheckTrustedFile(string, bool) error { return errNotLinux }
 
 func DropServingCapabilities(*slog.Logger, bool) error { return nil }
 
+func UnsafeTestBuild() bool { return false }
+
 // PipeKeeper and LocalKeeper refuse every start off Linux.
 type PipeKeeper struct{}
 

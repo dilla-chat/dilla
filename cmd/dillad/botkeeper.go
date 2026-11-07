@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -48,6 +49,23 @@ func errBotNeedsDevSameUser(b config.Bot) error {
 	return fmt.Errorf("bot: cannot switch to user %s; set [bot] dev_same_user = true for development only: %w", b.User, exit.Config)
 }
 
+// errRootServe is the refusal of a supervised Bot under a serving process that runs as root: root keeps
+// CAP_SYS_PTRACE and CAP_DAC_OVERRIDE after the keeper's three are dropped, and could read the Bot's keys or attach to
+// it, so the separation would be for show.
+var errRootServe = errors.New("bot: dillad runs as root, which can read the Bot's keys whatever user it runs as; run dillad as its own user (deploy/dilla.service), or set [bot] dev_same_user = true for development only")
+
+// geteuid is os.Geteuid; a variable so a test can be root.
+var geteuid = os.Geteuid
+
+// refuseRootKeeper is that refusal, unless dev_same_user or a binary linked for the root-in-a-namespace test
+// (botsupervisor.UnsafeTestBuild).
+func refuseRootKeeper(b config.Bot) error {
+	if b.Enabled && !b.DevSameUser && geteuid() == 0 && !botsupervisor.UnsafeTestBuild() {
+		return fmt.Errorf("%w: %w", errRootServe, exit.Config)
+	}
+	return nil
+}
+
 // botKeeper is what serve starts the Bot through, and how it lets go of it.
 type botKeeper struct {
 	keeper botsupervisor.Keeper
@@ -74,6 +92,9 @@ func doctorBotLeg(cfg *config.Config) ops.Leg {
 		return ops.Leg{Name: name, Status: ops.Green, Detail: "disabled ([bot] enabled = false)"}
 	}
 	var problems []string
+	if !b.DevSameUser && geteuid() == 0 {
+		problems = append(problems, errRootServe.Error())
+	}
 	if !b.DevSameUser {
 		u, err := user.Lookup(b.User)
 		switch {

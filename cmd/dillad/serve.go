@@ -152,7 +152,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	if keeper != nil {
 		defer keeper.close()
 	}
-	if err := botsupervisor.DropServingCapabilities(slog.Default(), keeper != nil && !cfg.Bot.DevSameUser); err != nil {
+	if err := botsupervisor.DropServingCapabilities(slog.Default(), cfg.Bot.Enabled && cfg.Bot.DevSameUser); err != nil {
 		return fmt.Errorf("serve: drop CAP_SETUID and CAP_SETGID: %w: %w", err, exit.Software)
 	}
 
@@ -363,6 +363,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		go watchRemoteSFU(runCtx, remoteSFU, health.Gate("livekit"))
 	}
 
+	botExit := make(chan error, 1)
 	// The Bot: its Unix socket, then the child. The supervisor stops the child when runCtx ends, and serve waits for
 	// that before the repository closes; the socket closes last.
 	if bot != nil {
@@ -383,7 +384,11 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		botDone := make(chan struct{})
 		go func() {
 			defer close(botDone)
-			_ = bot.Run(botCtx)
+			// A keeper that is gone can start nothing again: end serve, and systemd restarts the unit with a new one.
+			if err := bot.Run(botCtx); err != nil {
+				botExit <- err
+				stop()
+			}
 		}()
 		defer func() {
 			stopBot()
@@ -514,6 +519,8 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	select {
 	case err := <-sfuExit:
 		return fmt.Errorf("serve: the in-process SFU exited: %w: %w", err, exit.Unavailable)
+	case err := <-botExit:
+		return fmt.Errorf("serve: the Bot supervisor stopped: %w: %w", err, exit.Unavailable)
 	default:
 	}
 	return nil

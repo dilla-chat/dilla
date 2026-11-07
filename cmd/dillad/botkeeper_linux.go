@@ -29,6 +29,9 @@ func runBotKeeper(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := refuseRootKeeper(cfg.Bot); err != nil {
+		return fmt.Errorf("bot-keeper: %w", err)
+	}
 	kc, err := keeperConfig(cfg.Bot)
 	if err != nil {
 		return fmt.Errorf("bot-keeper: %w: %w", err, exit.Config)
@@ -52,6 +55,9 @@ func startBotKeeper(cfg *config.Config, cfgPath string) (*botKeeper, error) {
 	b := cfg.Bot
 	if !b.Enabled {
 		return nil, nil
+	}
+	if err := refuseRootKeeper(b); err != nil {
+		return nil, fmt.Errorf("serve: %w", err)
 	}
 	if !b.DevSameUser && !holdsSetuid() {
 		return nil, errBotNeedsDevSameUser(b)

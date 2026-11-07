@@ -10,9 +10,11 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -48,7 +50,23 @@ type KeeperConfig struct {
 	// noSetgroups leaves the supplementary groups alone: only tests set it, because an unprivileged user namespace
 	// refuses setgroups. Production clears them.
 	noSetgroups bool
+	// insecurePaths skips the root-owned ancestor rule: only tests set it (in a user namespace the host's root owns
+	// nothing), or a test build linked with UnsafeTestBuild. Production checks every component.
+	insecurePaths bool
+	// allowCgoNarrowing lets a cgo test keeper keep its capabilities when it cannot narrow them on every thread.
+	allowCgoNarrowing bool
 }
+
+// requireRoot is whether the Bot's files and their directories must be root's.
+func (k KeeperConfig) requireRoot() bool { return !k.SameUser && !k.insecurePaths }
+
+// unsafeTestBuild is set only by a test's `go build -ldflags -X …botsupervisor.unsafeTestBuild=yes`
+// (TestServingDilladHoldsNoSetuidCapability, which runs serve as root in a user namespace): it lets the keeper run
+// as euid 0 and accept paths whose ancestors are not the host's root's. A release build never sets it.
+var unsafeTestBuild string
+
+// UnsafeTestBuild reports whether this binary was linked for that test.
+func UnsafeTestBuild() bool { return unsafeTestBuild == "yes" }
 
 // NewKeeperConfig resolves b into a launch configuration: the Bot user's uid and primary gid, and the wasi core
 // beside dillad (coreDir) when bot.wasi_module is empty. Unless dev_same_user, the user must not be root and every
@@ -80,37 +98,137 @@ func NewKeeperConfig(b config.Bot, coreDir string) (KeeperConfig, error) {
 		}
 		k.UID, k.GID = uint32(uid), uint32(gid)
 	}
-	for _, f := range []struct{ key, path string }{
-		{"bot.executable", k.Executable}, {"bot.helper_executable", k.Helper}, {"bot.wasi_module", k.WASI},
-	} {
-		if err := checkTrustedFile(f.path, !b.DevSameUser); err != nil {
-			return KeeperConfig{}, fmt.Errorf("bot: %s: %w", f.key, err)
-		}
+	k.insecurePaths = UnsafeTestBuild()
+	if err := k.checkFiles(); err != nil {
+		return KeeperConfig{}, err
 	}
 	return k, nil
 }
 
-// CheckTrustedFile is the keeper's check of a file the Bot runs or loads, for `dillad doctor`.
-func CheckTrustedFile(path string, requireRoot bool) error {
-	return checkTrustedFile(path, requireRoot)
+// checkFiles runs checkTrustedFile on the executable, the helper and the wasi core. The keeper runs it when it starts
+// and again before every launch.
+func (k KeeperConfig) checkFiles() error {
+	for _, f := range []struct{ key, path string }{
+		{"bot.executable", k.Executable}, {"bot.helper_executable", k.Helper}, {"bot.wasi_module", k.WASI},
+	} {
+		if _, err := resolveTrusted(f.path, k.requireRoot(), k.SameUser || k.insecurePaths); err != nil {
+			return fmt.Errorf("bot: %s: %w", f.key, err)
+		}
+	}
+	return nil
 }
 
-// checkTrustedFile refuses a path that is not a regular file, that group or others may write, that carries a set-id
-// bit, or (requireRoot) that root does not own.
+// CheckTrustedFile is the keeper's check of a file the Bot runs or loads, for `dillad doctor`.
+func CheckTrustedFile(path string, requireRoot bool) error {
+	_, err := resolveTrusted(path, requireRoot, !requireRoot)
+	return err
+}
+
+// checkTrustedFile is CheckTrustedFile for the tests.
 func checkTrustedFile(path string, requireRoot bool) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
+	return CheckTrustedFile(path, requireRoot)
+}
+
+// maxSymlinkHops bounds resolveTrusted, as the kernel's own 40.
+const maxSymlinkHops = 40
+
+// resolveTrusted resolves path one component at a time and returns the file it names.
+//
+// The file must be regular, not writable by group or others, without a set-id bit, and (requireRoot) root's. Unless
+// leafOnly, so must be every directory on the way, the root included, and every symlink followed must be root's:
+// otherwise whoever can write one of them (dillad, the Bot) could swap in another file between this check and the
+// next launch, or re-point a link at any root-owned program. A sticky world-writable directory fails like any other
+// writable one. leafOnly is dev_same_user, where everything is the user's own anyway.
+func resolveTrusted(path string, requireRoot, leafOnly bool) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("%s is not an absolute path", path)
 	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", path)
+	checkDir := func(dir string) error {
+		if leafOnly {
+			return nil
+		}
+		info, err := os.Lstat(dir)
+		if err != nil {
+			return err
+		}
+		return trustedEntry(dir, info, requireRoot, false)
+	}
+	if err := checkDir("/"); err != nil {
+		return "", err
+	}
+	resolved := "/"
+	rest := splitPath(path)
+	hops := 0
+	for len(rest) > 0 {
+		name := rest[0]
+		rest = rest[1:]
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			resolved = filepath.Dir(resolved)
+			continue
+		}
+		next := filepath.Join(resolved, name)
+		info, err := os.Lstat(next)
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			hops++
+			if hops > maxSymlinkHops {
+				return "", fmt.Errorf("%s: too many symlinks", path)
+			}
+			if !leafOnly {
+				if err := trustedOwner(next, info, requireRoot); err != nil {
+					return "", err
+				}
+			}
+			target, err := os.Readlink(next)
+			if err != nil {
+				return "", err
+			}
+			if filepath.IsAbs(target) {
+				resolved = "/"
+			}
+			rest = append(splitPath(target), rest...)
+			continue
+		}
+		if len(rest) > 0 {
+			if !info.IsDir() {
+				return "", fmt.Errorf("%s is not a directory", next)
+			}
+			if err := checkDir(next); err != nil {
+				return "", err
+			}
+		} else if err := trustedEntry(next, info, requireRoot, true); err != nil {
+			return "", err
+		}
+		resolved = next
+	}
+	return resolved, nil
+}
+
+func splitPath(p string) []string { return strings.Split(strings.Trim(p, "/"), "/") }
+
+// trustedEntry checks one resolved component: not writable by group or others, root's when requireRoot, and for the
+// final file regular and without a set-id bit.
+func trustedEntry(path string, info os.FileInfo, requireRoot, file bool) error {
+	if file {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s is not a regular file", path)
+		}
+		if info.Mode()&(os.ModeSetuid|os.ModeSetgid) != 0 {
+			return fmt.Errorf("%s has a set-id bit", path)
+		}
 	}
 	if info.Mode().Perm()&0o022 != 0 {
 		return fmt.Errorf("%s is writable by group or others (mode %04o)", path, info.Mode().Perm())
 	}
-	if info.Mode()&(os.ModeSetuid|os.ModeSetgid) != 0 {
-		return fmt.Errorf("%s has a set-id bit", path)
-	}
+	return trustedOwner(path, info, requireRoot)
+}
+
+func trustedOwner(path string, info os.FileInfo, requireRoot bool) error {
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return fmt.Errorf("%s: no owner", path)
@@ -119,6 +237,28 @@ func checkTrustedFile(path string, requireRoot bool) error {
 		return fmt.Errorf("%s must be owned by root (it is owned by uid %d)", path, st.Uid)
 	}
 	return nil
+}
+
+// openExecutable opens the resolved executable for the launch, which execs this very descriptor (fd 4), and checks
+// the open file again with fstat: what runs is what was checked, whatever happens to the path afterwards.
+func (k KeeperConfig) openExecutable() (*os.File, error) {
+	resolved, err := resolveTrusted(k.Executable, k.requireRoot(), k.SameUser || k.insecurePaths)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(resolved) //nolint:gosec // G304: the configured executable, resolved and checked just above
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err == nil {
+		err = trustedEntry(resolved, info, k.requireRoot(), true)
+	}
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 // launchArgs is bot-launch's command line, built from the keeper's own configuration only.
@@ -141,9 +281,10 @@ type children struct {
 }
 
 type child struct {
-	cmd  *exec.Cmd
-	done chan struct{}
-	exit string
+	cmd     *exec.Cmd
+	done    chan struct{}
+	exit    string
+	waiting bool // a wait is pending: one per child
 }
 
 func newChildren(cfg KeeperConfig) *children { return &children{cfg: cfg, m: map[int]*child{}} }
@@ -154,9 +295,28 @@ var errNotChild = errors.New("not a child of this keeper")
 // notChildExit is Wait's answer for such a pid.
 const notChildExit = "not a child of this keeper"
 
-// start runs `<launcher> bot-launch …` with the launch token on fd 3, an empty environment, cwd /, and, unless
-// SameUser, the Bot user's uid and gid with no supplementary groups.
+// errBotRunning refuses a second start while the keeper's Bot is still in its table: one Bot per keeper.
+var errBotRunning = errors.New("a Bot started by this keeper has not been waited for yet")
+
+// start runs `<launcher> bot-launch …` with the launch token on fd 3, the executable it checked open on fd 4, an
+// empty environment, cwd /, and, unless SameUser, the Bot user's uid and gid with no supplementary groups. It
+// re-checks the Bot's files first, every time: a start long after the keeper's own may otherwise run whatever a
+// path came to name since.
 func (c *children) start(token [32]byte) (int, error) {
+	c.mu.Lock()
+	running := len(c.m) > 0
+	c.mu.Unlock()
+	if running {
+		return 0, errBotRunning
+	}
+	if err := c.cfg.checkFiles(); err != nil {
+		return 0, err
+	}
+	exe, err := c.cfg.openExecutable()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = exe.Close() }()
 	r, w, err := os.Pipe()
 	if err != nil {
 		return 0, err
@@ -177,7 +337,7 @@ func (c *children) start(token [32]byte) (int, error) {
 	cmd := &exec.Cmd{
 		Path: c.cfg.Launcher, Args: append([]string{c.cfg.Launcher}, launchArgs(c.cfg, c.cfg.SameUser)...),
 		Env: []string{}, Dir: "/", Stdout: os.Stdout, Stderr: os.Stderr,
-		ExtraFiles: []*os.File{r}, SysProcAttr: attr,
+		ExtraFiles: []*os.File{r, exe}, SysProcAttr: attr,
 	}
 	if err := cmd.Start(); err != nil {
 		return 0, err
@@ -214,17 +374,30 @@ func (c *children) signal(pid int, sig syscall.Signal) error {
 	return ch.cmd.Process.Signal(sig)
 }
 
-// wait blocks until the child ends and forgets it.
+// alreadyWaitedExit is Wait's answer while another wait for the same child is pending.
+const alreadyWaitedExit = "already being waited for"
+
+// wait blocks until the child ends and forgets it. One wait per child; a second one answers at once.
 func (c *children) wait(pid int) string {
 	c.mu.Lock()
 	ch, ok := c.m[pid]
+	if ok && ch.waiting {
+		c.mu.Unlock()
+		return alreadyWaitedExit
+	}
+	if ok {
+		ch.waiting = true
+	}
 	c.mu.Unlock()
 	if !ok {
 		return notChildExit
 	}
 	<-ch.done
 	c.mu.Lock()
-	delete(c.m, pid)
+	// Only this child's entry: the pid may already name a later one.
+	if c.m[pid] == ch {
+		delete(c.m, pid)
+	}
 	c.mu.Unlock()
 	return ch.exit
 }
@@ -358,7 +531,13 @@ func ServeKeeper(cfg KeeperConfig, ctl *os.File, log *slog.Logger) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	narrowKeeperCapabilities(log)
+	// systemd's stop signals the whole cgroup (dilla.service has KillMode=mixed, so normally only serve): the keeper
+	// stays until serve has stopped the Bot through it (SIGTERM, StopGrace, SIGKILL) and closed the control socket.
+	signal.Ignore(syscall.SIGTERM, syscall.SIGINT)
+	if err := narrowKeeperCapabilities(cfg.allowCgoNarrowing); err != nil {
+		_ = ctl.Close()
+		return fmt.Errorf("keeper: %w", err)
+	}
 	conn, err := net.FileConn(ctl)
 	_ = ctl.Close()
 	if err != nil {
@@ -467,7 +646,7 @@ func (k *PipeKeeper) readLoop() {
 		}
 		if err != nil {
 			k.mu.Lock()
-			k.gone = fmt.Errorf("keeper: control socket: %w", err)
+			k.gone = fmt.Errorf("%w: control socket: %w", ErrKeeperGone, err)
 			for id, ch := range k.pending {
 				ch <- keeperReply{err: k.gone}
 				delete(k.pending, id)
@@ -487,7 +666,7 @@ func (k *PipeKeeper) readLoop() {
 
 func (k *PipeKeeper) call(op string, args ...any) (keeperReply, error) {
 	if k.conn == nil {
-		return keeperReply{}, k.connErr
+		return keeperReply{}, fmt.Errorf("%w: %w", ErrKeeperGone, k.connErr)
 	}
 	k.once.Do(func() { go k.readLoop() })
 	ch := make(chan keeperReply, 1)
@@ -512,7 +691,7 @@ func (k *PipeKeeper) call(op string, args ...any) (keeperReply, error) {
 		k.mu.Lock()
 		delete(k.pending, id)
 		k.mu.Unlock()
-		return keeperReply{}, fmt.Errorf("keeper: %w", err)
+		return keeperReply{}, fmt.Errorf("%w: %w", ErrKeeperGone, err)
 	}
 	r := <-ch
 	if r.err != nil {

@@ -47,6 +47,10 @@ func runTestChild() {
 		}
 		// An unprivileged user namespace refuses setgroups; production always calls it.
 		cfg.noSetgroups = true
+		// In a user namespace the host's root owns nothing (and /tmp holds the test binary); and the race build is
+		// cgo, which cannot narrow every thread. The static-build serve test checks both for real.
+		cfg.insecurePaths = true
+		cfg.allowCgoNarrowing = true
 		if err := ServeKeeper(cfg, os.NewFile(3, "keeper-control"), quietLog()); err != nil {
 			fmt.Fprintln(os.Stderr, "keeper:", err)
 			os.Exit(73)
@@ -151,7 +155,7 @@ func testKeeperConfig(t *testing.T) KeeperConfig {
 		t.Fatal(err)
 	}
 	return KeeperConfig{
-		Launcher: exe, Executable: exe, Helper: "/usr/local/lib/dilla/dilla-bot-core", WASI: "/usr/local/lib/dilla/core.wasm",
+		Launcher: exe, Executable: exe, Helper: exe, WASI: exe,
 		StateDir: state, Socket: "/run/dillad/bot/gateway.sock",
 	}
 }
@@ -160,6 +164,13 @@ func testKeeperConfig(t *testing.T) KeeperConfig {
 // it the full capability sets a keeper under dilla.service starts with, without being root on the host. It skips when
 // the kernel or its policy refuses unprivileged user namespaces.
 func startUserNSKeeper(t *testing.T, cfg KeeperConfig) *PipeKeeper {
+	t.Helper()
+	k, _ := startUserNSKeeperProcess(t, cfg)
+	return k
+}
+
+// startUserNSKeeperProcess is startUserNSKeeper that also returns the keeper's process.
+func startUserNSKeeperProcess(t *testing.T, cfg KeeperConfig) (*PipeKeeper, *os.Process) {
 	t.Helper()
 	pair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
@@ -198,7 +209,7 @@ func startUserNSKeeper(t *testing.T, cfg KeeperConfig) *PipeKeeper {
 			<-done
 		}
 	})
-	return k
+	return k, cmd.Process
 }
 
 func newToken(t *testing.T) [32]byte {
@@ -290,7 +301,7 @@ func wantAllowlist(t *testing.T, cfg KeeperConfig, r botReport, token [32]byte) 
 }
 
 func TestLaunchedChildSeesOnlyAllowlistedEnvAndFds(t *testing.T) {
-	// The launcher on its own, as dev_same_user runs it: no namespace needed. It inherits a stray descriptor (fd 4) and
+	// The launcher on its own, as dev_same_user runs it: no namespace needed. It inherits a stray descriptor (fd 5) and
 	// a dirty environment and a loose umask, and must pass none of them on.
 	t.Run("launcher", func(t *testing.T) {
 		cfg := testKeeperConfig(t)
@@ -303,6 +314,11 @@ func TestLaunchedChildSeesOnlyAllowlistedEnvAndFds(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = w.Close()
+		exe, err := os.Open(cfg.Executable)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = exe.Close() }()
 		stray, err := os.Open(os.DevNull)
 		if err != nil {
 			t.Fatal(err)
@@ -310,7 +326,7 @@ func TestLaunchedChildSeesOnlyAllowlistedEnvAndFds(t *testing.T) {
 		defer func() { _ = stray.Close() }()
 		cmd := exec.CommandContext(t.Context(), cfg.Launcher, launchArgs(cfg, true)...)
 		cmd.Env = []string{"LEAKED_SECRET=hunter2", "PATH=/nowhere", "HOME=/root", "DILLA_BOT_SOCKET=/tmp/evil"}
-		cmd.ExtraFiles = []*os.File{r, stray}
+		cmd.ExtraFiles = []*os.File{r, exe, stray}
 		cmd.Dir = "/"
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
@@ -389,27 +405,269 @@ func mustCBOR(t *testing.T, v any) []byte {
 	return b
 }
 
-// The keeper refuses, at its own start, an executable the serving user could rewrite: swapping it would run the
-// attacker's code as the Bot user.
+// The keeper refuses a file the serving user, or the Bot, could rewrite or re-point, at its own start and before every
+// launch: a writable file, a writable directory anywhere on its path, a symlink into an untrusted place or one that
+// lives in an untrusted directory, and (requireRoot) anything not root's.
 func TestKeeperConfigRefusesAWritableExecutable(t *testing.T) {
-	dir := t.TempDir()
+	trusted := "/usr/bin/true"
+	if _, err := resolveTrusted(trusted, true, false); err != nil {
+		t.Skipf("%s is not a root-owned file on a root-owned path here: %v", trusted, err)
+	}
+	// t.TempDir is under /tmp, which is world-writable (sticky) and so fails the rule on its own: work in a directory
+	// beside the package instead, whose ancestors are the checkout's.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.MkdirTemp(cwd, "trusted-test-") //nolint:usetesting // t.TempDir is under /tmp, which the rule refuses
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveTrusted(dir, false, false); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Skipf("the checkout's own path is not trusted here: %v", err)
+	}
 	exe := filepath.Join(dir, "dillabot")
-	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o775); err != nil {
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(exe, 0o775); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkTrustedFile(exe, true); err == nil || !strings.Contains(err.Error(), "writable") {
-		t.Fatalf("checkTrustedFile on a group-writable file = %v", err)
+	if err := checkTrustedFile(exe, false); err == nil || !strings.Contains(err.Error(), "writable") {
+		t.Fatalf("a group-writable file = %v", err)
 	}
 	if err := os.Chmod(exe, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkTrustedFile(exe, true); err == nil || !strings.Contains(err.Error(), "owned by root") {
-		t.Fatalf("checkTrustedFile on a file the test user owns = %v, want it refused as not root's", err)
-	}
 	if err := checkTrustedFile(exe, false); err != nil {
 		t.Fatalf("dev_same_user accepts the user's own build: %v", err)
+	}
+	if _, err := resolveTrusted(exe, true, false); err == nil {
+		t.Fatal("a file the test user owns passed the root rule")
+	}
+
+	t.Run("a writable parent directory", func(t *testing.T) {
+		parent := filepath.Join(dir, "writable")
+		if err := os.Mkdir(parent, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(parent, 0o777); err != nil {
+			t.Fatal(err)
+		}
+		file := filepath.Join(parent, "dillabot")
+		if err := os.WriteFile(file, []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		_, err := resolveTrusted(file, false, false)
+		if err == nil || !strings.Contains(err.Error(), parent) || !strings.Contains(err.Error(), "writable") {
+			t.Fatalf("a file in a world-writable directory = %v, want the directory refused", err)
+		}
+		// The rule covers every ancestor, the system's /tmp included.
+		if info, _ := os.Stat(os.TempDir()); info != nil && info.Mode().Perm()&0o022 != 0 {
+			if _, err := resolveTrusted(exe, true, false); err == nil || !strings.Contains(err.Error(), "writable") && !strings.Contains(err.Error(), "owned by root") {
+				t.Fatalf("a file under %s = %v", os.TempDir(), err)
+			}
+		}
+	})
+	t.Run("a symlink to an untrusted target", func(t *testing.T) {
+		target := filepath.Join(dir, "untrusted")
+		if err := os.WriteFile(target, []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(target, 0o777); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(dir, "link")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := resolveTrusted(link, false, true); err == nil || !strings.Contains(err.Error(), target) {
+			t.Fatalf("a symlink to a world-writable file = %v, want the target refused", err)
+		}
+	})
+	t.Run("a symlink in an untrusted directory to a trusted target", func(t *testing.T) {
+		// Whoever can write the link's directory can re-point it at any root-owned program between launches.
+		link := filepath.Join(dir, "to-true")
+		if err := os.Symlink(trusted, link); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := resolveTrusted(link, true, false); err == nil {
+			t.Fatal("a symlink the test user owns, in its own directory, passed the root rule")
+		}
+		got, err := resolveTrusted(link, false, true)
+		if err != nil || got != trusted {
+			t.Fatalf("dev_same_user resolves %s to %q, %v", link, got, err)
+		}
+	})
+	t.Run("a trusted chain passes", func(t *testing.T) {
+		got, err := resolveTrusted(trusted, true, false)
+		if err != nil || got != trusted {
+			t.Fatalf("resolveTrusted(%s) = %q, %v", trusted, got, err)
+		}
+	})
+}
+
+// The keeper ignores SIGTERM and SIGINT: systemd's stop must not end it before serve has stopped the Bot through it.
+func TestKeeperSurvivesSIGTERM(t *testing.T) {
+	cfg := testKeeperConfig(t)
+	k, proc := startUserNSKeeperProcess(t, cfg)
+	// Make sure the keeper is serving (it installs its handlers before it reads the socket).
+	if got := k.Wait(1); got != notChildExit {
+		t.Fatalf("Wait(1) = %q", got)
+	}
+	for _, sig := range []os.Signal{syscall.SIGTERM, syscall.SIGINT} {
+		if err := proc.Signal(sig); err != nil {
+			t.Fatalf("signal the keeper: %v", err)
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+	pid, err := k.Start(LaunchSpec{Token: newToken(t)})
+	if err != nil {
+		t.Fatalf("Start after SIGTERM and SIGINT: %v", err)
+	}
+	if got := k.Wait(pid); got != "exit status 0" {
+		t.Fatalf("Wait = %q", got)
+	}
+}
+
+// One Bot per keeper, and one wait per child; a wait forgets only its own child.
+func TestKeeperRunsOneBotAndOneWait(t *testing.T) {
+	cfg := testKeeperConfig(t)
+	cfg.SameUser = true
+	c := newChildren(cfg)
+	pid, err := c.start(newToken(t))
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := c.start(newToken(t)); !errors.Is(err, errBotRunning) {
+		t.Fatalf("a second start while the first is not waited for = %v, want errBotRunning", err)
+	}
+	first := make(chan string, 1)
+	go func() { first <- c.wait(pid) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c.mu.Lock()
+		waiting := c.m[pid] != nil && c.m[pid].waiting
+		c.mu.Unlock()
+		if waiting || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// The first wait may already have returned and forgotten the child; either answer is a refusal to block twice.
+	if got := c.wait(pid); got != alreadyWaitedExit && got != notChildExit {
+		t.Fatalf("a second wait = %q", got)
+	}
+	if got := <-first; got != "exit status 0" {
+		t.Fatalf("first wait = %q", got)
+	}
+	again, err := c.start(newToken(t))
+	if err != nil {
+		t.Fatalf("start after the wait: %v", err)
+	}
+	if got := c.wait(again); got != "exit status 0" {
+		t.Fatalf("wait = %q", got)
+	}
+	// A wait forgets only its own child (M-1): if the pid came to name another entry while it waited, that entry stays.
+	stale := &child{done: make(chan struct{}), exit: "exit status 9"}
+	other := &child{done: make(chan struct{})}
+	c.mu.Lock()
+	c.m[42] = stale
+	c.mu.Unlock()
+	done := make(chan string, 1)
+	go func() { done <- c.wait(42) }()
+	for {
+		c.mu.Lock()
+		waiting := stale.waiting
+		c.mu.Unlock()
+		if waiting {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	c.mu.Lock()
+	c.m[42] = other
+	c.mu.Unlock()
+	close(stale.done)
+	if got := <-done; got != "exit status 9" {
+		t.Fatalf("the stale wait = %q", got)
+	}
+	c.mu.Lock()
+	kept := c.m[42] == other
+	delete(c.m, 42)
+	c.mu.Unlock()
+	if !kept {
+		t.Fatal("a wait removed another child's entry under the same pid")
+	}
+}
+
+// Every start re-checks the Bot's files: a file made writable after the keeper started is refused at the next launch.
+func TestKeeperRechecksFilesEveryStart(t *testing.T) {
+	cfg := testKeeperConfig(t)
+	cfg.SameUser = true
+	dir := t.TempDir()
+	helper := filepath.Join(dir, "dilla-bot-core")
+	if err := os.WriteFile(helper, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Helper = helper
+	c := newChildren(cfg)
+	pid, err := c.start(newToken(t))
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	_ = c.wait(pid)
+	if err := os.Chmod(helper, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.start(newToken(t)); err == nil || !strings.Contains(err.Error(), "writable") {
+		t.Fatalf("start after the helper became writable = %v", err)
+	}
+}
+
+// The serving process fails closed: holding CAP_SETUID it cannot drop (a cgo build) is an error in every mode, and
+// only dev_same_user as root may go on.
+func TestDropServingCapabilitiesFailsClosed(t *testing.T) {
+	oldRead, oldAll := readCaps, allThreadsSyscall
+	t.Cleanup(func() { readCaps, allThreadsSyscall = oldRead, oldAll })
+	held := capSets{effective: keeperCapabilities, permitted: keeperCapabilities}
+	readCaps = func() (capSets, uint64, uint64, error) { return held, 0, keeperCapabilities, nil }
+	allThreadsSyscall = func(uintptr, uintptr, uintptr, uintptr) (uintptr, uintptr, syscall.Errno) {
+		return 0, 0, syscall.ENOTSUP
+	}
+	for _, rootDevTest := range []bool{false, true} {
+		err := DropServingCapabilities(quietLog(), rootDevTest)
+		if os.Geteuid() != 0 || !rootDevTest {
+			if !errors.Is(err, errCgoCapabilities) {
+				t.Errorf("rootDevTest=%v: %v, want errCgoCapabilities", rootDevTest, err)
+			}
+		}
+	}
+	// Held without CAP_SETPCAP: the bounding set cannot shrink, which is refused too.
+	readCaps = func() (capSets, uint64, uint64, error) {
+		return capSets{permitted: 1 << capSetuid}, 0, keeperCapabilities, nil
+	}
+	if err := DropServingCapabilities(quietLog(), false); err == nil || !strings.Contains(err.Error(), "CAP_SETPCAP") {
+		t.Fatalf("held without CAP_SETPCAP = %v", err)
+	}
+	// Holding none of them (an ordinary process, whose bounding set is full) is nothing to drop.
+	readCaps = func() (capSets, uint64, uint64, error) { return capSets{}, 0, ^uint64(0), nil }
+	if err := DropServingCapabilities(quietLog(), false); err != nil {
+		t.Fatalf("nothing held = %v", err)
+	}
+	// The keeper's own narrowing is fatal when it fails, and when it lacks CAP_SETPCAP.
+	readCaps = func() (capSets, uint64, uint64, error) { return held, 0, keeperCapabilities, nil }
+	if err := narrowKeeperCapabilities(false); !errors.Is(err, errCgoCapabilities) {
+		t.Fatalf("narrowing in a cgo build = %v", err)
+	}
+	readCaps = func() (capSets, uint64, uint64, error) {
+		return capSets{effective: 1 << capSetuid, permitted: 1 << capSetuid}, 0, 0, nil
+	}
+	if err := narrowKeeperCapabilities(true); err == nil {
+		t.Fatal("a keeper without CAP_SETPCAP narrowed")
 	}
 }

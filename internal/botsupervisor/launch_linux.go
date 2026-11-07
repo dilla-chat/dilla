@@ -75,6 +75,13 @@ func LaunchMain(args []string) error {
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		return fmt.Errorf("bot-launch: no_new_privs: %w", err)
 	}
+	var st unix.Stat_t
+	if err := unix.Fstat(execFD, &st); err != nil {
+		return fmt.Errorf("bot-launch: fd %d: %w", execFD, err)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return fmt.Errorf("bot-launch: fd %d is not the executable (mode %o)", execFD, st.Mode)
+	}
 	if err := closeExtraDescriptors(); err != nil {
 		return fmt.Errorf("bot-launch: descriptors: %w", err)
 	}
@@ -91,8 +98,17 @@ func LaunchMain(args []string) error {
 		return fmt.Errorf("bot-launch: %w", err)
 	}
 	//nolint:gosec // G204: the keeper's configured executable, checked root-owned and not writable by others at keeper start
-	return fmt.Errorf("bot-launch: exec %s: %w", *executable, syscall.Exec(*executable, []string{*executable}, env))
+	// The keeper opened and checked the executable and handed it over as fd 4; exec that very file. The path is
+	// argv[0] only. fd 4 is close-on-exec by now, so the Bot does not inherit it.
+	return fmt.Errorf("bot-launch: exec %s: %w", *executable, syscall.Exec(execFDPath, []string{*executable}, env))
 }
+
+// execFD is the descriptor the keeper passes the opened executable on; bot-launch execs it through /proc. (x/sys has no
+// execveat, and a raw execveat would bypass the Go runtime's exec lock.)
+const (
+	execFD     = 4
+	execFDPath = "/proc/self/fd/4"
+)
 
 // closeExtraDescriptors marks every descriptor above 3 close-on-exec (the Go runtime's own included: they close at
 // the exec, not before it) and clears close-on-exec from 0-3, which must reach the Bot. Descriptor 3 must be open.

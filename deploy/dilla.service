@@ -19,6 +19,11 @@ RestartPreventExitStatus=78
 # exceed the 90 s default on a large SQLite file.
 TimeoutStartSec=300s
 TimeoutStopSec=45s
+# KillMode=mixed: a stop sends SIGTERM to serve alone, which stops the Bot it supervises through the bot-keeper
+# (SIGTERM, a 10 s grace, then SIGKILL) and only then exits; the keeper ends when serve's control socket closes. The
+# default, control-group, would SIGTERM the keeper and the Bot at once and skip the Bot's orderly shutdown. Anything
+# still running when serve has exited, or at TimeoutStopSec, is SIGKILLed as before.
+KillMode=mixed
 
 User=dillad
 Group=dillad

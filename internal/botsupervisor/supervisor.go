@@ -43,6 +43,17 @@ const StopGrace = 10 * time.Second
 // ErrRunning is Run's answer while another Run of the same Supervisor is going.
 var ErrRunning = errors.New("botsupervisor: already running")
 
+// ErrKeeperGone is a keeper that can start nothing any more: its process ended or its control socket broke. Run
+// returns it, so dillad exits and systemd restarts the unit, which is the only way to a new keeper.
+var ErrKeeperGone = errors.New("botsupervisor: the bot keeper is gone")
+
+// childHandle tells whether the started child still lives (a pidfd on Linux). While it does, its pid can name no
+// other process, so a peer whose SO_PEERCRED pid is that pid is the child.
+type childHandle interface {
+	alive() bool
+	close()
+}
+
 // LaunchSpec is everything a start takes from the caller: the launch token, 32 random bytes the keeper writes into
 // the pipe the Bot reads on fd 3. It is fixed-size data that can only become the contents of that pipe. The binary,
 // its arguments, the user, the group and every path are the keeper's own configuration, read when it started, so a
@@ -79,8 +90,10 @@ type Supervisor struct {
 	uid int64
 
 	// clock and armed are test seams: armed sees every delay the supervisor waits out (a backoff, a stop grace).
-	clock clock.Clock
-	armed func(time.Duration)
+	// openChild is too: it is openPidfd, and the tests' fake pids have none.
+	clock     clock.Clock
+	armed     func(time.Duration)
+	openChild func(pid int) (childHandle, error)
 
 	running sync.Mutex // held for the whole of Run
 	restart chan struct{}
@@ -88,6 +101,8 @@ type Supervisor struct {
 	status  Status
 	token   [32]byte
 	spent   bool
+	// child is the running child's handle; nil admits nobody.
+	child childHandle
 }
 
 // New builds a Supervisor for cfg's Bot over keeper. It starts nothing: Run does.
@@ -95,7 +110,8 @@ func New(cfg config.Bot, keeper Keeper, log *slog.Logger) *Supervisor {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Supervisor{keeper: keeper, log: log, uid: botUID(cfg), clock: clock.System(), restart: make(chan struct{}, 1)}
+	return &Supervisor{keeper: keeper, log: log, uid: botUID(cfg), clock: clock.System(), openChild: openPidfd,
+		restart: make(chan struct{}, 1)}
 }
 
 func botUID(cfg config.Bot) int64 {
@@ -130,11 +146,17 @@ func (s *Supervisor) Restart() {
 }
 
 // Peer reports whether a process connecting to the Bot listener is the current child: its pid is the one the keeper
-// started (bot-launch execs the Bot in place, so the pid stays), and its uid is the Bot's.
+// started (bot-launch execs the Bot in place, so the pid stays), the child behind that pid still lives (its pidfd,
+// opened when it started: a live process's pid cannot have been reused by another), and its uid is the Bot's.
 func (s *Supervisor) Peer(pid int32, uid uint32) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.status.Running && pid > 0 && int(pid) == s.status.PID && s.uid >= 0 && int64(uid) == s.uid
+	return s.current(pid) && s.uid >= 0 && int64(uid) == s.uid
+}
+
+// current is whether pid is the running, living child (s.mu held).
+func (s *Supervisor) current(pid int32) bool {
+	return s.status.Running && pid > 0 && int(pid) == s.status.PID && s.child != nil && s.child.alive()
 }
 
 // Spend accepts the current child's launch token once. The comparison runs in constant time over all 32 bytes
@@ -143,7 +165,7 @@ func (s *Supervisor) Spend(pid int32, token []byte) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	match := len(token) == len(s.token) && subtle.ConstantTimeCompare(token, s.token[:]) == 1
-	if !match || s.spent || !s.status.Running || int(pid) != s.status.PID {
+	if !match || s.spent || !s.current(pid) {
 		return false
 	}
 	s.spent = true
@@ -154,7 +176,7 @@ func (s *Supervisor) Spend(pid int32, token []byte) bool {
 func (s *Supervisor) Authenticated(pid int32) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.status.Running && s.spent && int(pid) == s.status.PID
+	return s.spent && s.current(pid)
 }
 
 // Run keeps the Bot running until ctx ends, then stops it (SIGTERM, then SIGKILL after StopGrace) and returns nil.
@@ -181,6 +203,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			return nil
 		}
 		pid, started, err := s.start()
+		if errors.Is(err, ErrKeeperGone) {
+			s.log.Error("the bot keeper is gone; stopping so the service restarts", "err", err)
+			s.ended("start: "+err.Error(), false)
+			return err
+		}
 		if err != nil {
 			s.log.Error("the Bot did not start", "err", err)
 			s.ended("start: "+err.Error(), false)
@@ -228,8 +255,14 @@ func (s *Supervisor) start() (pid int, started time.Time, err error) {
 		return 0, time.Time{}, err
 	}
 	started = s.clock.Now()
+	// The child cannot have been reaped yet: the keeper keeps it until it is waited for, which this Run does next.
+	child, herr := s.openChild(pid)
+	if herr != nil {
+		s.log.Error("cannot hold the Bot's pidfd; its socket admits nobody", "pid", pid, "err", herr)
+	}
 	s.mu.Lock()
 	s.status.Running, s.status.PID, s.status.Since = true, pid, started
+	s.child = child
 	s.mu.Unlock()
 	s.log.Info("the Bot started", "pid", pid)
 	return pid, started, nil
@@ -245,6 +278,10 @@ func (s *Supervisor) ended(how string, restart bool) {
 	}
 	clear(s.token[:])
 	s.spent = false
+	if s.child != nil {
+		s.child.close()
+		s.child = nil
+	}
 }
 
 // stop sends SIGTERM, waits StopGrace, then SIGKILL, and returns how the child ended.

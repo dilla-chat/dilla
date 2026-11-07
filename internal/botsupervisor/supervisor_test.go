@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -268,6 +270,15 @@ func TestSupervisorRestartReplacesTheChild(t *testing.T) {
 func TestSupervisorLaunchGate(t *testing.T) {
 	keeper := newFakeKeeper()
 	s := New(testBotConfig(), keeper, quietLog())
+	handles := map[int]*fakeHandle{}
+	var hmu sync.Mutex
+	s.openChild = func(pid int) (childHandle, error) {
+		hmu.Lock()
+		defer hmu.Unlock()
+		h := &fakeHandle{}
+		handles[pid] = h
+		return h, nil
+	}
 	uid := uint32(syscall.Getuid())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -311,6 +322,35 @@ func TestSupervisorLaunchGate(t *testing.T) {
 	}
 	if !s.Spend(int32(second), next[:]) {
 		t.Fatal("the new child's token was refused")
+	}
+	// A child that died is no longer the peer, even before the supervisor heard of it: its pid may be anyone's.
+	hmu.Lock()
+	handles[second].dead.Store(true)
+	hmu.Unlock()
+	if s.Peer(int32(second), uid) || s.Authenticated(int32(second)) {
+		t.Fatal("a dead child's pid still counts")
+	}
+}
+
+type fakeHandle struct{ dead atomic.Bool }
+
+func (h *fakeHandle) alive() bool { return !h.dead.Load() }
+func (h *fakeHandle) close()      {}
+
+// A keeper that is gone ends Run with ErrKeeperGone, so serve exits and systemd restarts the unit.
+func TestSupervisorStopsWhenTheKeeperIsGone(t *testing.T) {
+	keeper := newFakeKeeper()
+	keeper.startErr = fmt.Errorf("%w: control socket: EOF", ErrKeeperGone)
+	s := New(testBotConfig(), keeper, quietLog())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(context.Background()) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrKeeperGone) {
+			t.Fatalf("Run = %v, want ErrKeeperGone", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run kept going without a keeper")
 	}
 }
 

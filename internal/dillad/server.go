@@ -830,10 +830,9 @@ func (s *Server) ServeBot(ln net.Listener) error {
 	mux := http.NewServeMux()
 	mux.Handle("GET /gateway", s.gw.BotHandler())
 	mux.Handle("/", s.handler)
-	srv := &http.Server{
-		Handler: mux, ConnContext: gateway.BotConnContext,
-		ReadHeaderTimeout: s.httpSrv.ReadHeaderTimeout, IdleTimeout: s.httpSrv.IdleTimeout,
-	}
+	// The public listener's limits and timeouts (server.NewHTTPServer), and the peer's pid in every request context.
+	srv := server.NewHTTPServer(mux, s.o.Config)
+	srv.ConnContext = gateway.BotConnContext
 	s.botMu.Lock()
 	s.botSrvs = append(s.botSrvs, srv)
 	s.botMu.Unlock()

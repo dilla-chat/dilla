@@ -96,9 +96,12 @@ func HoldsSetuid() bool {
 // capabilities (syscall.AllThreadsSyscall returns ENOTSUP). Release builds are CGO_ENABLED=0.
 var errCgoCapabilities = errors.New("this dillad was built with cgo and cannot drop capabilities from every thread; build it with CGO_ENABLED=0 as the release does")
 
+// allThreadsSyscall is syscall.AllThreadsSyscall; a variable so a test can stand in for a cgo build.
+var allThreadsSyscall = syscall.AllThreadsSyscall
+
 // allThreads runs one raw syscall on every thread of the process.
 func allThreads(trap, a1, a2, a3 uintptr) error {
-	if _, _, errno := syscall.AllThreadsSyscall(trap, a1, a2, a3); errno != 0 {
+	if _, _, errno := allThreadsSyscall(trap, a1, a2, a3); errno != 0 {
 		if errno == syscall.ENOTSUP {
 			return errCgoCapabilities
 		}
@@ -152,64 +155,81 @@ func dropOnAllThreads(drop []int, canBound bool) error {
 	return nil
 }
 
+// readCaps is the process's capability sets (capget and /proc/self/status); a variable so a test can stand in.
+var readCaps = func() (s capSets, ambient, bounding uint64, err error) {
+	if s, err = capget(); err != nil {
+		return s, 0, 0, fmt.Errorf("capget: %w", err)
+	}
+	if ambient, bounding, err = statusSets(); err != nil {
+		return s, 0, 0, fmt.Errorf("read /proc/self/status: %w", err)
+	}
+	return s, ambient, bounding, nil
+}
+
 // DropServingCapabilities removes CAP_SETUID, CAP_SETGID and CAP_SETPCAP from every set of every thread of the
 // serving dillad: the keeper, already started, is the only process left that holds them. A process that holds none
-// of them (a development run, a test) has nothing to drop. Without CAP_SETPCAP the bounding set cannot shrink; the
-// effective, permitted, inheritable and ambient sets still lose both, and NoNewPrivileges keeps the bounding set
-// from mattering, so that case is logged rather than refused.
+// of them in its effective, permitted, inheritable or ambient set (a development run, a test) has nothing to drop.
 //
-// A cgo build cannot change every thread. strict (a keeper was started: the separation is what the keeper is for)
-// makes that an error; otherwise (a development build run as root, say) it is logged.
-func DropServingCapabilities(log *slog.Logger, strict bool) error {
+// It fails closed: holding one of them without CAP_SETPCAP (so the bounding set cannot shrink), or being unable to
+// change every thread (a cgo build: syscall.AllThreadsSyscall is ENOTSUP), is an error, in every mode. The one
+// exception is rootDevTest (dev_same_user) in a process whose euid is 0, a development or test run as root, where
+// dropping three capabilities from uid 0 buys nothing; it is logged.
+func DropServingCapabilities(log *slog.Logger, rootDevTest bool) error {
 	drop := []int{capSetuid, capSetgid, capSetpcap}
-	s, err := capget()
+	s, ambient, _, err := readCaps()
 	if err != nil {
-		return fmt.Errorf("capget: %w", err)
+		return err
 	}
-	ambient, bounding, err := statusSets()
-	if err != nil {
-		return fmt.Errorf("read /proc/self/status: %w", err)
-	}
-	var held uint64
+	var mask uint64
 	for _, c := range drop {
-		held |= 1 << c
+		mask |= 1 << c
 	}
 	canBound := s.effective&(1<<capSetpcap) != 0
-	if (s.effective|s.permitted|s.inheritable|ambient)&held == 0 && !canBound {
-		if bounding&held != 0 && log != nil {
-			log.Debug("no CAP_SETPCAP: CAP_SETUID and CAP_SETGID stay in the bounding set, which no_new_privs makes inert")
-		}
+	held := (s.effective|s.permitted|s.inheritable|ambient)&mask != 0
+	if !held {
 		return nil
 	}
-	if !canBound && log != nil {
-		log.Warn("dillad holds CAP_SETUID or CAP_SETGID without CAP_SETPCAP, so it cannot remove them from its bounding set; give the unit CAP_SETPCAP as deploy/dilla.service does")
+	if !canBound {
+		err = errors.New("dillad holds CAP_SETUID or CAP_SETGID without CAP_SETPCAP, so it cannot remove them from its bounding set; give the unit CAP_SETPCAP as deploy/dilla.service does")
+	} else {
+		err = dropOnAllThreads(drop, true)
 	}
-	err = dropOnAllThreads(drop, canBound)
-	if errors.Is(err, errCgoCapabilities) && !strict {
+	if err != nil && rootDevTest && os.Geteuid() == 0 {
 		if log != nil {
-			log.Warn("could not drop CAP_SETUID and CAP_SETGID", "err", err)
+			log.Warn("dev_same_user as root: keeping CAP_SETUID and CAP_SETGID", "err", err)
 		}
 		return nil
 	}
 	return err
 }
 
-// narrowKeeperCapabilities leaves the keeper only what it uses: CAP_SETUID, CAP_SETGID and CAP_SETPCAP (the last one
-// passes to bot-launch, which needs it to empty its own bounding set). A cgo build cannot change every thread, and the
-// keeper then keeps what it started with; that is logged.
-func narrowKeeperCapabilities(log *slog.Logger) {
-	s, err := capget()
-	if err != nil || s.effective&(1<<capSetpcap) == 0 {
-		return
+// keeperCapabilities is what the keeper keeps: CAP_SETUID and CAP_SETGID to start the Bot as its user, and
+// CAP_SETPCAP, which passes to bot-launch so it can empty its own bounding set.
+const keeperCapabilities = uint64(1)<<capSetuid | uint64(1)<<capSetgid | uint64(1)<<capSetpcap
+
+// narrowKeeperCapabilities leaves the keeper only keeperCapabilities, in every set of every thread. Failing to is
+// fatal for the keeper: without CAP_SETPCAP it cannot, and in a cgo build it cannot change every thread (allowCgo,
+// for the package's own cgo test keeper only, lets that one go).
+func narrowKeeperCapabilities(allowCgo bool) error {
+	s, _, _, err := readCaps()
+	if err != nil {
+		return err
 	}
-	keep := uint64(1)<<capSetuid | uint64(1)<<capSetgid | uint64(1)<<capSetpcap
+	if s.effective&(1<<capSetpcap) == 0 {
+		return errors.New("the bot keeper needs CAP_SETPCAP (deploy/dilla.service grants it)")
+	}
 	var drop []int
 	for c := 0; c <= lastCap(); c++ {
-		if keep&(1<<c) == 0 {
+		if keeperCapabilities&(1<<c) == 0 {
 			drop = append(drop, c)
 		}
 	}
-	if err := dropOnAllThreads(drop, true); err != nil {
-		log.Warn("bot keeper: could not narrow its capabilities to CAP_SETUID, CAP_SETGID and CAP_SETPCAP", "err", err)
+	err = dropOnAllThreads(drop, true)
+	if err != nil && allowCgo && errors.Is(err, errCgoCapabilities) {
+		return nil
 	}
+	if err != nil {
+		return fmt.Errorf("narrow its capabilities to CAP_SETUID, CAP_SETGID and CAP_SETPCAP: %w", err)
+	}
+	return nil
 }

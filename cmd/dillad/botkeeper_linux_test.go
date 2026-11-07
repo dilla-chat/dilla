@@ -36,7 +36,10 @@ func buildStaticDillad(t *testing.T) string {
 	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "dillad")
-	cmd := exec.CommandContext(t.Context(), gobin, "build", "-o", bin, ".")
+	// Linked for this test only: serve runs as root in a user namespace (the keeper otherwise refuses euid 0), and in
+	// there the host's root owns no directory (the ancestor rule otherwise refuses every path).
+	cmd := exec.CommandContext(t.Context(), gobin, "build", "-o", bin,
+		"-ldflags=-X github.com/dilla-chat/dilla/internal/botsupervisor.unsafeTestBuild=yes", ".")
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
@@ -195,10 +198,19 @@ func TestServingDilladHoldsNoSetuidCapability(t *testing.T) {
 	if keeper == 0 {
 		t.Fatalf("serve started no bot-keeper (children %q)", children)
 	}
+	// The keeper holds exactly CAP_SETUID, CAP_SETGID and CAP_SETPCAP, bounding set included. Root in a namespace
+	// starts with empty ambient and inheritable sets (dilla.service's ambient set is where production's come from),
+	// so those two only must not hold anything else.
+	const keeperMask = 1<<capSetuid | 1<<capSetgid | 1<<capSetpcap
 	sets := capSets(t, fmt.Sprintf("/proc/%d/status", keeper))
-	for _, bit := range []int{capSetuid, capSetgid} {
-		if sets["CapEff"]&(1<<bit) == 0 || sets["CapPrm"]&(1<<bit) == 0 {
-			t.Errorf("the keeper lost capability %d: %v", bit, sets)
+	for _, set := range []string{"CapEff", "CapPrm", "CapBnd"} {
+		if sets[set] != keeperMask {
+			t.Errorf("the keeper's %s = %016x, want exactly %016x", set, sets[set], uint64(keeperMask))
+		}
+	}
+	for _, set := range []string{"CapInh", "CapAmb"} {
+		if sets[set]&^keeperMask != 0 {
+			t.Errorf("the keeper's %s = %016x holds more than %016x", set, sets[set], uint64(keeperMask))
 		}
 	}
 }

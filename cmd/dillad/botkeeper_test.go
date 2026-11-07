@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dilla-chat/dilla/internal/botsupervisor"
 	"github.com/dilla-chat/dilla/internal/config"
 	"github.com/dilla-chat/dilla/internal/exit"
 	"github.com/dilla-chat/dilla/internal/ops"
@@ -79,6 +80,43 @@ func TestDoctorBotLegReportsMissingUserAndExecutable(t *testing.T) {
 	}
 	if leg.Fix == "" {
 		t.Error("a red Bot leg must say how to fix it")
+	}
+}
+
+// A serving process that runs as root defeats the user separation: with [bot] enabled and no dev_same_user, serve
+// and the keeper refuse it and doctor's leg is red (M-8).
+func TestRootServeRefusesTheBot(t *testing.T) {
+	old := geteuid
+	geteuid = func() int { return 0 }
+	t.Cleanup(func() { geteuid = old })
+	c := config.Default()
+	c.Bot.Enabled = true
+	if err := refuseRootKeeper(c.Bot); !errors.Is(err, errRootServe) {
+		t.Fatalf("refuseRootKeeper as root = %v", err)
+	}
+	if _, err := startBotKeeper(c, "/nonexistent/dilla.toml"); !errors.Is(err, errRootServe) {
+		t.Fatalf("startBotKeeper as root = %v", err)
+	}
+	if leg := doctorBotLeg(c); leg.Status != ops.Red || !strings.Contains(leg.Detail, "runs as root") {
+		t.Fatalf("doctor as root = %+v", leg)
+	}
+	c.Bot.DevSameUser = true
+	if err := refuseRootKeeper(c.Bot); err != nil {
+		t.Fatalf("dev_same_user as root = %v", err)
+	}
+	// The one way past it, botsupervisor.UnsafeTestBuild, is a link-time flag only TestServingDilladHoldsNoSetuidCapability
+	// sets: never this binary, and never a workflow or script that builds a release.
+	if botsupervisor.UnsafeTestBuild() {
+		t.Fatal("the test binary is linked as an unsafe test build")
+	}
+	for _, glob := range []string{"../../.github/workflows/*.yml", "../../scripts/*", "../../deploy/*.sh"} {
+		files, _ := filepath.Glob(glob)
+		for _, f := range files {
+			body, err := os.ReadFile(f)
+			if err == nil && strings.Contains(string(body), "unsafeTestBuild") {
+				t.Errorf("%s links unsafeTestBuild", f)
+			}
+		}
 	}
 }
 

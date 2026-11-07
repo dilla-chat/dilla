@@ -127,6 +127,7 @@ func TestDillaServiceAllowsBubblewrapAndKeeper(t *testing.T) {
 		"ProtectControlGroups":  "yes",
 		"LockPersonality":       "yes",
 		"UMask":                 "0077",
+		"KillMode":              "mixed",
 	} {
 		if got, ok := directives[key]; !ok || got != want {
 			t.Errorf("%s=%q (set: %v), want %q", key, got, ok, want)
@@ -138,7 +139,7 @@ func TestDillaServiceAllowsBubblewrapAndKeeper(t *testing.T) {
 		}
 	}
 	// Each change says why, next to it.
-	for _, reason := range []string{"bot-keeper", "bubblewrap", "SQLCipher", "/run/dillad/bot", "dillabot"} {
+	for _, reason := range []string{"bot-keeper", "bubblewrap", "SQLCipher", "/run/dillad/bot", "dillabot", "KillMode=mixed: a stop sends SIGTERM to serve alone"} {
 		if !strings.Contains(unit, reason) {
 			t.Errorf("the unit's comments never mention %q", reason)
 		}
