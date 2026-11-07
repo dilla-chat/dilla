@@ -11,7 +11,8 @@ import { clearCommandDraftMemory, CommandHost } from './CommandHost.tsx';
 import { CommandProvider } from './CommandContext.tsx';
 import type { CommandProviderHandlers } from './command-types.ts';
 import { privateResults } from "./private-results.ts";
-import { invalidateCommandBot } from './command-bot-store.ts';
+import { fixtureCatalog } from './bot-catalog.fixture.ts';
+import { botSince } from './bot-run.ts';
 
 let focusStyle: HTMLStyleElement;
 beforeEach(() => {
@@ -359,14 +360,14 @@ it.each([['kick', false], ['kick', true], ['ban', false], ['ban', true]] as cons
   if (!accepted) expect(privateResults(core, ':', `${'55'.repeat(16)}/${'44'.repeat(16)}/`).rows()[0].text).toBe(`${label} cancelled. Nothing changed.`);
 });
 
-it('remind starts with the prototype pending text and records a dropped capability failure', async () => {
+// Bot v2: /remind is the catalog's command, sent sealed: the when chip becomes seconds from now, the text stays text.
+it('remind starts with the prototype pending text, is sent sealed and shows the Bot’s answer', async () => {
   const core = new FakeClient(); const channel = '11'.repeat(16); const community = '22'.repeat(16);
-  let resolve!: (value: { status: 'failure'; private: true; message: string }) => void;
-  const handler = vi.fn(() => new Promise<{ status: 'failure'; private: true; message: string }>(done => { resolve = done; }));
-  render(<CoreProvider client={core}><CommandProvider handlers={{ remind: handler }}>
+  core.set(`botCatalog:${community}`, fixtureCatalog());
+  render(<CoreProvider client={core}>
     <CommandHost communityId={community} channelId={channel} items={[]} selfId={null} draft="/remind" onDraft={() => undefined}
       onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
-  </CommandProvider></CoreProvider>);
+  </CoreProvider>);
   const user = userEvent.setup();
   await user.type(await screen.findByRole('combobox', { name: 'when' }), 'in 1 hour');
   await user.click(screen.getByRole('textbox', { name: 'text' }));
@@ -374,33 +375,26 @@ it('remind starts with the prototype pending text and records a dropped capabili
   await user.click(screen.getByRole('button', { name: 'send' }));
   const store = privateResults(core, ':', `${community}/${channel}/`);
   expect(store.rows()[0]).toMatchObject({ status: 'pending', text: 'Saving your reminder…', provider: 'bot' });
-  await act(() => { resolve({ status: 'failure', private: true, message: 'This command is temporarily unavailable.' }); return Promise.resolve(); });
-  expect(store.rows()[0]).toMatchObject({ status: 'failed', text: 'This command is temporarily unavailable.' });
-  expect(handler).toHaveBeenCalledOnce();
+  await waitFor(() => expect(core.callsOf('sendBotCommand')).toHaveLength(1));
+  const [sent] = core.callsOf('sendBotCommand');
+  expect(sent).toMatchObject({ communityId: community, channelId: channel, operation: 80, args: [3600, 'bring two ropes'] });
+  core.publish('botAnswers', [{ n: 1, requestId: sent.requestId, seq: 0, status: 200, body: ClientCore.toHex(new TextEncoder().encode('Saved')), final: true }]);
+  await waitFor(() => expect(store.rows()[0]).toMatchObject({ status: 'success', text: 'Saved' }));
 });
 
-
-it('a capability disabled with remind chips open becomes the existing unavailable failed result', async () => {
+it('a Bot that goes offline with remind chips open sends nothing and says why', async () => {
   const core = new FakeClient(); const cid = '31'.repeat(16); const channel = '32'.repeat(16);
-  let enabled = true;
-  const capabilities = vi.fn(() => Promise.resolve({ installationId: '33'.repeat(16), botUserId: '34'.repeat(16), version: 1 as const, supportedOperations: enabled ? [80] : [] }));
-  const spy = vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities } as unknown as ClientCore.BotUtilities);
-  function Harness() {
-    const provider = useUtilityCommandProvider(core, cid);
-    return <CommandProvider handlers={provider.handlers}><CommandHost communityId={cid} channelId={channel} bits={ClientCore.PERM.sendMessages}
-      items={[]} selfId={null} draft="/remind" onDraft={() => undefined} onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CommandProvider>;
-  }
-  try {
-    render(<CoreProvider client={core}><Harness /></CoreProvider>);
-    const user = userEvent.setup();
-    await user.type(await screen.findByRole('combobox', { name: 'when' }), 'in 1 hour');
-    await user.type(screen.getByRole('textbox', { name: 'text' }), 'bring two ropes');
-    enabled = false;
-    await user.click(screen.getByRole('button', { name: 'send' }));
-    await waitFor(() => expect(privateResults(core, ':', `${cid}/${channel}/`).rows()[0]).toMatchObject({ status: 'failed', text: 'Reminders are unavailable in this channel.', provider: 'bot' }));
-    // Nothing is sent; the command store's status read (its background baseline) is the only call.
-    expect(core.calls.filter(call => call.m !== 'getBotCommandStatus')).toEqual([]);
-  } finally { spy.mockRestore(); }
+  core.set(`botCatalog:${cid}`, fixtureCatalog());
+  render(<CoreProvider client={core}><CommandHost communityId={cid} channelId={channel} bits={ClientCore.PERM.sendMessages}
+    items={[]} selfId={null} draft="/remind" onDraft={() => undefined} onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled /></CoreProvider>);
+  const user = userEvent.setup();
+  await user.type(await screen.findByRole('combobox', { name: 'when' }), 'in 1 hour');
+  await user.type(screen.getByRole('textbox', { name: 'text' }), 'bring two ropes');
+  core.publish(`botCatalog:${cid}`, fixtureCatalog({ status: { state: 'offline', since: 1_758_659_040 } }));
+  expect(await screen.findByText(`The Bot is offline since ${botSince(1_758_659_040)}`)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'send' }));
+  await act(() => Promise.resolve());
+  expect(core.calls).toEqual([]);
 });
 
 it('returns to the empty chat composer while a private command is pending, as in the prototype', async () => {
@@ -602,6 +596,7 @@ it.each(['post', 'cancel'] as const)('keeps poll dialog out of the feed until Po
   core.set('account', { user: { id: selfId }, instance: { id: 'instance' }, deviceId: 'device' } as never);
   core.set('communities', [{ id: cid, name: 'Town', owner: selfId }]);
   core.set(`channels:${cid}`, [{ id: channel, name: 'general', kind: 0, group: 'active' }] as never);
+  core.set(`botCatalog:${cid}`, fixtureCatalog({ botUserId: botId }));
   let complete!: () => void;
   const pollCreate = vi.fn(() => new Promise<void>(resolve => { complete = resolve; }));
   const spy = vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities: () => Promise.resolve({ installationId, botUserId: botId, supportedOperations: [70] }), pollCreate,
@@ -632,439 +627,4 @@ it.each(['post', 'cancel'] as const)('keeps poll dialog out of the feed until Po
     }
     view.unmount();
   } finally { spy.mockRestore(); }
-});
-
-describe('the Bot command list outlives the picker', () => {
-  const cid = 'a1'.repeat(16); const channel = 'a2'.repeat(16);
-  const caps = (ops: number[]) => ({ installationId: '33'.repeat(16), botUserId: '34'.repeat(16), version: 1 as const, supportedOperations: ops });
-  const STATUS = { installationId: '33'.repeat(16), botUserId: '34'.repeat(16), state: 3, revision: '1' };
-  function setup(load: () => Promise<unknown>, status: () => unknown = () => STATUS) {
-    vi.useFakeTimers();
-    const core = new FakeClient();
-    core.handler = command => Promise.resolve(command.m === 'getBotCommandStatus' ? status() : null);
-    const capabilities = vi.fn(load);
-    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ capabilities } as unknown as ClientCore.BotUtilities);
-    let ordinary = '';
-    const run = vi.fn(() => Promise.resolve({ status: 'success' as const, private: true, message: 'ok' }));
-    function Harness() {
-      const [, rerender] = useState(0);
-      return <CommandProvider handlers={{ play: run }}>
-        <textarea aria-label="message" value={ordinary} onChange={event => { ordinary = event.currentTarget.value; rerender(n => n + 1); }} />
-        <CommandHost communityId={cid} channelId={channel} bits={0x1ffffff} items={[]} selfId={'22'.repeat(16)} draft={ordinary}
-          onDraft={text => { ordinary = text; rerender(n => n + 1); }} onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
-      </CommandProvider>;
-    }
-    const view = render(<CoreProvider client={core}><Harness /></CoreProvider>);
-    // The first slash opens the picker; the rest is typed into it, as a person does.
-    const typeSlash = (text: string) => {
-      fireEvent.change(screen.getByRole('textbox', { name: 'message' }), { target: { value: '/' } });
-      if (text !== '/') fireEvent.change(screen.getByRole('textbox', { name: 'Command' }), { target: { value: text } });
-    };
-    return { core, capabilities, view, typeSlash, run };
-  }
-  const slow = (ms: number, ops = [3, 12]) => () => new Promise(resolve => { setTimeout(() => { resolve(caps(ops)); }, ms); });
-  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
-
-  it('the list survives the picker closing', async () => {
-    const { capabilities, typeSlash } = setup(slow(5_000));
-    typeSlash('/');
-    await act(() => vi.advanceTimersByTimeAsync(1_000));
-    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Escape' });
-    expect(screen.queryByRole('textbox', { name: 'Command' })).not.toBeInTheDocument();
-    await act(() => vi.advanceTimersByTimeAsync(5_000));
-    typeSlash('/');
-    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
-    expect(capabilities).toHaveBeenCalledTimes(1);
-  });
-
-  it('the picker says it is loading while the list is unknown', async () => {
-    const { typeSlash } = setup(slow(5_000));
-    typeSlash('/play');
-    await act(() => vi.advanceTimersByTimeAsync(500));
-    expect(screen.getByText('Loading Bot commands…')).toBeInTheDocument();
-    expect(screen.queryByText(/No command matches/)).not.toBeInTheDocument();
-    await act(() => vi.advanceTimersByTimeAsync(5_000));
-    expect(screen.queryByText('Loading Bot commands…')).not.toBeInTheDocument();
-    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
-  });
-
-  it('Enter before the list loads waits for it', async () => {
-    const { core, typeSlash } = setup(slow(5_000));
-    const refusals = () => privateResults(core, ':', `${cid}/${channel}/`).rows().filter(row => /isn’t a command here/.test(row.text));
-    typeSlash('/play x');
-    await act(() => vi.advanceTimersByTimeAsync(1_000));
-    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Enter' });
-    await act(() => vi.advanceTimersByTimeAsync(500));
-    expect(refusals()).toHaveLength(0);
-    await act(() => vi.advanceTimersByTimeAsync(5_000));
-    expect(refusals()).toHaveLength(0);
-    expect(screen.getByLabelText('query-or-url')).toHaveValue('x');
-  });
-
-  it('Enter on a name that never loads gives the refusal after at most 10 s', async () => {
-    const { core, typeSlash } = setup(() => new Promise(() => undefined));
-    const refusals = () => privateResults(core, ':', `${cid}/${channel}/`).rows().filter(row => /isn’t a command here/.test(row.text));
-    typeSlash('/play x');
-    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Enter' });
-    await act(() => vi.advanceTimersByTimeAsync(9_000));
-    expect(refusals()).toHaveLength(0);
-    await act(() => vi.advanceTimersByTimeAsync(1_500));
-    expect(refusals()).toHaveLength(1);
-  });
-
-  it('a failed load keeps the last good list and retries; a failure never replaces a good list', async () => {
-    let attempt = 0;
-    let revision = '1';
-    const { core, capabilities, typeSlash } = setup(() => {
-      attempt += 1;
-      if (attempt === 1) return Promise.reject(new Error('no active interaction group'));
-      if (attempt === 2) return Promise.resolve(caps([3, 12]));
-      return Promise.reject(new Error('timed out'));
-    }, () => ({ ...STATUS, revision }));
-    typeSlash('/');
-    await act(() => vi.advanceTimersByTimeAsync(100));
-    expect(screen.queryByRole('option', { name: /\/play/ })).not.toBeInTheDocument();
-    await act(() => vi.advanceTimersByTimeAsync(2_000)); // the first quick retry
-    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
-    revision = '2'; // the owner changed the Bot: the next picker open after 30 s reads the status and reloads the list
-    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Escape' });
-    await act(() => vi.advanceTimersByTimeAsync(30_000));
-    expect(capabilities).toHaveBeenCalledTimes(2);
-    typeSlash('/');
-    await act(() => vi.advanceTimersByTimeAsync(100));
-    expect(capabilities).toHaveBeenCalledTimes(3);
-    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
-    expect(core.calls.filter(call => call.m === 'callNote')).toEqual([{ m: 'callNote', code: 'E_BOT_CAPABILITIES' }, { m: 'callNote', code: 'E_BOT_CAPABILITIES' }]);
-  });
-
-  // Wave C task 11 (root cause bug 3): after a reload there is no good list, and a failed first load waited a full 30 s refresh.
-  it('a failed load with no good list retries at 2 s, 5 s and 10 s, says "loading" meanwhile, then waits for the picker', async () => {
-    const { capabilities, typeSlash } = setup(() => Promise.reject(new Error('no active interaction group')));
-    await act(() => vi.advanceTimersByTimeAsync(100)); // the composer's own load, with no picker open
-    expect(capabilities).toHaveBeenCalledTimes(1);
-    await act(() => vi.advanceTimersByTimeAsync(1_800));
-    expect(capabilities).toHaveBeenCalledTimes(1);
-    await act(() => vi.advanceTimersByTimeAsync(300)); // 2.2 s
-    expect(capabilities).toHaveBeenCalledTimes(2);
-    await act(() => vi.advanceTimersByTimeAsync(5_000)); // 7.2 s: the second retry came 5 s after the second failure
-    expect(capabilities).toHaveBeenCalledTimes(3);
-    await act(() => vi.advanceTimersByTimeAsync(10_000)); // 17.2 s
-    expect(capabilities).toHaveBeenCalledTimes(4);
-    // The retries are bounded: no periodic retry follows, however long the client idles (wire-5 rule).
-    await act(() => vi.advanceTimersByTimeAsync(900_000));
-    expect(capabilities).toHaveBeenCalledTimes(4);
-    typeSlash('/play'); // opening the picker retries at once, and says "loading" while it does
-    await act(() => vi.advanceTimersByTimeAsync(100));
-    expect(capabilities).toHaveBeenCalledTimes(5);
-  });
-
-  // PR #156 CI round 2: a second device's first loads fail until the Bot adds it to the interaction group; the picker the person
-  // opened meanwhile must land the list without a reopen, on bounded steps, and say "loading" until then.
-  it('an open picker retries a failed load at 2, 5, 10, 15 and 30 s after the quick retries, then stops', async () => {
-    const { capabilities, typeSlash } = setup(() => Promise.reject(new Error('no active interaction group')));
-    typeSlash('/play');
-    await act(() => vi.advanceTimersByTimeAsync(100));
-    expect(capabilities).toHaveBeenCalledTimes(1);
-    await act(() => vi.advanceTimersByTimeAsync(17_100)); // the quick retries: 2 s, 5 s, 10 s
-    expect(capabilities).toHaveBeenCalledTimes(4);
-    expect(screen.getByText('Loading Bot commands…')).toBeInTheDocument(); // the picker's own steps follow
-    await act(() => vi.advanceTimersByTimeAsync(2_000));
-    expect(capabilities).toHaveBeenCalledTimes(5);
-    await act(() => vi.advanceTimersByTimeAsync(5_000));
-    expect(capabilities).toHaveBeenCalledTimes(6);
-    await act(() => vi.advanceTimersByTimeAsync(10_000));
-    expect(capabilities).toHaveBeenCalledTimes(7);
-    await act(() => vi.advanceTimersByTimeAsync(15_000));
-    expect(capabilities).toHaveBeenCalledTimes(8);
-    await act(() => vi.advanceTimersByTimeAsync(30_000));
-    expect(capabilities).toHaveBeenCalledTimes(9);
-    expect(screen.queryByText('Loading Bot commands…')).not.toBeInTheDocument(); // every step is spent
-    await act(() => vi.advanceTimersByTimeAsync(900_000)); // a picker left open is no periodic poll either
-    expect(capabilities).toHaveBeenCalledTimes(9);
-  });
-
-  it('an open picker lands the list when a retry succeeds', async () => {
-    let ready = false;
-    const { capabilities, typeSlash } = setup(() => ready ? Promise.resolve(caps([3, 12])) : Promise.reject(new Error('no active interaction group')));
-    typeSlash('/play');
-    await act(() => vi.advanceTimersByTimeAsync(17_200)); // the quick retries are spent
-    expect(capabilities).toHaveBeenCalledTimes(4);
-    ready = true; // the Bot added this device
-    await act(() => vi.advanceTimersByTimeAsync(2_000));
-    expect(capabilities).toHaveBeenCalledTimes(5);
-    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
-    await act(() => vi.advanceTimersByTimeAsync(120_000));
-    expect(capabilities).toHaveBeenCalledTimes(5);
-  });
-
-  it('a closed picker stops its steps', async () => {
-    const { capabilities, typeSlash } = setup(() => Promise.reject(new Error('no active interaction group')));
-    typeSlash('/play');
-    await act(() => vi.advanceTimersByTimeAsync(17_200));
-    expect(capabilities).toHaveBeenCalledTimes(4);
-    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Escape' });
-    await act(() => vi.advanceTimersByTimeAsync(2_000)); // the step already set when the picker closed
-    expect(capabilities).toHaveBeenCalledTimes(5);
-    await act(() => vi.advanceTimersByTimeAsync(900_000));
-    expect(capabilities).toHaveBeenCalledTimes(5);
-  });
-
-  it('the first retry lands the list as soon as it loads', async () => {
-    let attempt = 0;
-    const { typeSlash } = setup(() => { attempt += 1; return attempt === 1 ? Promise.reject(new Error('overran')) : Promise.resolve(caps([3, 12])); });
-    typeSlash('/');
-    await act(() => vi.advanceTimersByTimeAsync(2_100));
-    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
-    expect(screen.queryByText('Loading Bot commands…')).not.toBeInTheDocument();
-  });
-
-  it('opening the picker after a failed load retries at once (a good list was never replaced)', async () => {
-    let attempt = 0;
-    const { capabilities, typeSlash } = setup(() => { attempt += 1; return attempt === 2 ? Promise.resolve(caps([3, 12])) : Promise.reject(new Error('timed out')); });
-    typeSlash('/');
-    await act(() => vi.advanceTimersByTimeAsync(100));
-    expect(capabilities).toHaveBeenCalledTimes(1);
-    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Escape' });
-    expect(screen.queryByRole('textbox', { name: 'Command' })).not.toBeInTheDocument();
-    typeSlash('/'); // opened again, well inside the 2 s retry
-    await act(() => vi.advanceTimersByTimeAsync(100));
-    expect(capabilities).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
-  });
-
-  it('a Bot that is gone clears the list instead of keeping the stale one', async () => {
-    let attempt = 0;
-    let status: unknown = STATUS;
-    const { capabilities, core, typeSlash } = setup(() => { attempt += 1; return attempt === 1 ? Promise.resolve(caps([3, 12])) : Promise.reject(new ClientCore.BotUtilitiesProviderUnavailableError()); },
-      () => status);
-    typeSlash('/');
-    await act(() => vi.advanceTimersByTimeAsync(100));
-    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
-    status = null; // the Bot was removed: the status read on the next picker open sees it
-    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Escape' });
-    await act(() => vi.advanceTimersByTimeAsync(30_000));
-    typeSlash('/');
-    await act(() => vi.advanceTimersByTimeAsync(100));
-    expect(capabilities).toHaveBeenCalledTimes(2);
-    expect(screen.queryByRole('option', { name: /\/play/ })).not.toBeInTheDocument();
-    expect(screen.queryByText('Loading Bot commands…')).not.toBeInTheDocument();
-    expect(core.calls.filter(call => call.m === 'callNote')).toEqual([]); // no Bot is no fault
-    await act(() => vi.advanceTimersByTimeAsync(10_000));
-    expect(capabilities).toHaveBeenCalledTimes(2); // and no quick retry
-  });
-
-  // Final review I2, then the wire-5 rule (PR #156 CI): an idle client makes no periodic HTTP, so there is no background tick.
-  // Opening the picker re-checks: a status read on a list older than 30 s; the Bot round trip (op 3) only for a missing list,
-  // a failed load, or a changed installation or revision.
-  describe('refresh cost', () => {
-    let hidden = false;
-    beforeEach(() => {
-      hidden = false;
-      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => hidden ? 'hidden' : 'visible' });
-    });
-    afterEach(() => { Reflect.deleteProperty(document, 'visibilityState'); });
-    const statusReads = (core: FakeClient) => core.callsOf('getBotCommandStatus').length;
-    const closePicker = () => { fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Escape' }); };
-
-    it('a hidden window makes no requests at all over 10 min, and becoming visible loads once', async () => {
-      hidden = true;
-      const { core, capabilities } = setup(() => Promise.resolve(caps([3, 12])));
-      await act(() => vi.advanceTimersByTimeAsync(600_000));
-      expect(capabilities).not.toHaveBeenCalled();
-      expect(core.calls).toEqual([]);
-      hidden = false;
-      await act(async () => { document.dispatchEvent(new Event('visibilitychange')); await vi.advanceTimersByTimeAsync(100); });
-      expect(capabilities).toHaveBeenCalledTimes(1);
-      await act(async () => { document.dispatchEvent(new Event('visibilitychange')); await vi.advanceTimersByTimeAsync(100); });
-      expect(capabilities).toHaveBeenCalledTimes(1);
-    });
-
-    it('a loaded list costs nothing over 15 idle minutes, hidden or visible, and showing the window again costs nothing', async () => {
-      const { core, capabilities } = setup(() => Promise.resolve(caps([3, 12])));
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(capabilities).toHaveBeenCalledTimes(1);
-      const before = core.calls.length;
-      await act(() => vi.advanceTimersByTimeAsync(900_000));
-      expect(core.calls.length).toBe(before);
-      hidden = true;
-      await act(async () => { document.dispatchEvent(new Event('visibilitychange')); await vi.advanceTimersByTimeAsync(600_000); });
-      hidden = false;
-      await act(async () => { document.dispatchEvent(new Event('visibilitychange')); await vi.advanceTimersByTimeAsync(100); });
-      expect(core.calls.length).toBe(before);
-      expect(capabilities).toHaveBeenCalledTimes(1);
-    });
-
-    it('opening the picker within 30 s costs nothing; after 30 s one status read and no op-3 when nothing changed', async () => {
-      const { core, capabilities, typeSlash } = setup(() => Promise.resolve(caps([3, 12])));
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      const first = statusReads(core);
-      typeSlash('/');
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(statusReads(core)).toBe(first);
-      expect(capabilities).toHaveBeenCalledTimes(1);
-      closePicker();
-      await act(() => vi.advanceTimersByTimeAsync(360_000));
-      typeSlash('/');
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(statusReads(core)).toBe(first + 1);
-      expect(capabilities).toHaveBeenCalledTimes(1);
-      expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
-      closePicker();
-      typeSlash('/'); // just confirmed: no second read
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(statusReads(core)).toBe(first + 1);
-    });
-
-    it('a changed revision or installation costs exactly one op-3 on the next picker open', async () => {
-      let status = STATUS;
-      const { capabilities, typeSlash } = setup(() => Promise.resolve(caps([3, 12])), () => status);
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      status = { ...STATUS, revision: '2' };
-      await act(() => vi.advanceTimersByTimeAsync(120_000));
-      expect(capabilities).toHaveBeenCalledTimes(1);
-      typeSlash('/');
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(capabilities).toHaveBeenCalledTimes(2);
-      closePicker();
-      status = { ...STATUS, revision: '2', installationId: '35'.repeat(16) };
-      await act(() => vi.advanceTimersByTimeAsync(120_000));
-      typeSlash('/');
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(capabilities).toHaveBeenCalledTimes(3);
-    });
-
-    // Final review M2: a community the store knows has no Bot never says "loading" again on a re-check.
-    it('a community without a Bot does not flash "Loading Bot commands…" when a picker open reloads it', async () => {
-      let status: unknown = null;
-      const { capabilities, typeSlash } = setup(() => new Promise((_resolve, reject) => {
-        setTimeout(() => { reject(new ClientCore.BotUtilitiesProviderUnavailableError()); }, 3_000);
-      }), () => status);
-      typeSlash('/play');
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(screen.getByText('Loading Bot commands…')).toBeInTheDocument(); // the very first, unknown load
-      await act(() => vi.advanceTimersByTimeAsync(3_000));
-      expect(screen.queryByText('Loading Bot commands…')).not.toBeInTheDocument();
-      closePicker();
-      status = { ...STATUS, state: 1 }; // a Bot is being set up: the next picker open after 30 s reloads
-      await act(() => vi.advanceTimersByTimeAsync(30_000));
-      expect(capabilities).toHaveBeenCalledTimes(1);
-      typeSlash('/play');
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(capabilities).toHaveBeenCalledTimes(2);
-      expect(screen.queryByText('Loading Bot commands…')).not.toBeInTheDocument();
-    });
-
-    it('a community recorded without a Bot loads once a Bot is installed, even when its first status read refused', async () => {
-      let installed = false;
-      // The status read itself refuses while there is no installation, so the first load records no status to compare with.
-      const { capabilities, typeSlash } = setup(() => installed ? Promise.resolve(caps([3, 12])) : Promise.reject(new ClientCore.BotUtilitiesProviderUnavailableError()),
-        () => installed ? STATUS : Promise.reject(new Error('no Bot installation')));
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(capabilities).toHaveBeenCalledTimes(1);
-      installed = true;
-      await act(() => vi.advanceTimersByTimeAsync(30_000));
-      typeSlash('/');
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(capabilities).toHaveBeenCalledTimes(2);
-      expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
-    });
-
-    // PR #156 CI round 2 (slash-commands :914, :646, admin-keypackages :62): the owner creates a community (the composer records
-    // "no Bot"), enables the Bot within 30 s and types "/": the list must load then, not after a 30 s wait that no one triggers.
-    it('a picker opened within 30 s of a "no Bot" answer reads the status at once and loads the Bot just installed', async () => {
-      let status: unknown = null;
-      const { core, capabilities, typeSlash } = setup(() => status === null ? Promise.reject(new ClientCore.BotUtilitiesProviderUnavailableError())
-        : Promise.resolve(caps([3, 12])), () => status);
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(capabilities).toHaveBeenCalledTimes(1);
-      const reads = statusReads(core);
-      typeSlash('/'); // still no Bot: one status read and nothing else
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(statusReads(core)).toBe(reads + 1);
-      expect(capabilities).toHaveBeenCalledTimes(1);
-      closePicker();
-      status = STATUS;
-      await act(() => vi.advanceTimersByTimeAsync(5_000));
-      typeSlash('/');
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(capabilities).toHaveBeenCalledTimes(2);
-      expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
-    });
-
-    it('an open picker on a Bot that is installed but not ready checks again until it is, then stops', async () => {
-      let status: unknown = { ...STATUS, state: 1 };
-      const notReady = () => Promise.reject(new ClientCore.BotUtilitiesProviderUnavailableError());
-      const { capabilities, typeSlash } = setup(() => (status as { state: number }).state === 3 ? Promise.resolve(caps([3, 12])) : notReady(), () => status);
-      typeSlash('/');
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(capabilities).toHaveBeenCalledTimes(1);
-      await act(() => vi.advanceTimersByTimeAsync(2_000));
-      expect(capabilities).toHaveBeenCalledTimes(2);
-      expect(screen.queryByText('Loading Bot commands…')).not.toBeInTheDocument(); // a known "not ready" never flashes "loading"
-      status = STATUS;
-      await act(() => vi.advanceTimersByTimeAsync(5_000));
-      expect(capabilities).toHaveBeenCalledTimes(3);
-      expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
-      await act(() => vi.advanceTimersByTimeAsync(600_000));
-      expect(capabilities).toHaveBeenCalledTimes(3);
-    });
-
-    it('a community with no Bot installed at all costs one status read per picker open, and no steps', async () => {
-      const { core, capabilities, typeSlash } = setup(() => Promise.reject(new ClientCore.BotUtilitiesProviderUnavailableError()), () => null);
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      const reads = statusReads(core);
-      typeSlash('/');
-      await act(() => vi.advanceTimersByTimeAsync(600_000));
-      expect(statusReads(core)).toBe(reads + 1);
-      expect(capabilities).toHaveBeenCalledTimes(1);
-    });
-
-    it('a Bot change made in this client loads in full on the next picker open, within 30 s', async () => {
-      const { core, capabilities, typeSlash } = setup(() => Promise.resolve(caps([3, 12])));
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(capabilities).toHaveBeenCalledTimes(1);
-      invalidateCommandBot(core, cid);
-      expect(capabilities).toHaveBeenCalledTimes(1); // marking costs nothing
-      typeSlash('/');
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(capabilities).toHaveBeenCalledTimes(2);
-      closePicker();
-      typeSlash('/');
-      await act(() => vi.advanceTimersByTimeAsync(100));
-      expect(capabilities).toHaveBeenCalledTimes(2);
-    });
-  });
-
-  it('community B never shows community A\'s list', async () => {
-    vi.useFakeTimers();
-    const core = new FakeClient();
-    const a = 'b1'.repeat(16); const b = 'b2'.repeat(16);
-    const capabilities = vi.fn()
-      .mockImplementation(() => Promise.resolve(caps([3, 12])));
-    vi.spyOn(ClientCore, 'createBotUtilities').mockImplementation((_client, community) => ({
-      capabilities: community === a ? capabilities : () => new Promise(() => undefined),
-    }) as unknown as ClientCore.BotUtilities);
-    let ordinary = '';
-    function Harness() {
-      const [, rerender] = useState(0);
-      const [community, setCommunity] = useState(a);
-      return <CommandProvider handlers={{ play: () => Promise.resolve({ status: 'success' as const, private: true, message: 'ok' }) }}>
-        <button type="button" onClick={() => { ordinary = ''; setCommunity(b); }}>switch</button>
-        <textarea aria-label="message" value={ordinary} onChange={event => { ordinary = event.currentTarget.value; rerender(n => n + 1); }} />
-        <CommandHost communityId={community} channelId={channel} bits={0x1ffffff} items={[]} selfId={'22'.repeat(16)} draft={ordinary}
-          onDraft={text => { ordinary = text; rerender(n => n + 1); }} onSendLiteral={() => undefined} encodeMessage={text => text} openGif={() => undefined} gifsEnabled />
-      </CommandProvider>;
-    }
-    render(<CoreProvider client={core}><Harness /></CoreProvider>);
-    fireEvent.change(screen.getByRole('textbox', { name: 'message' }), { target: { value: '/' } });
-    await act(() => vi.advanceTimersByTimeAsync(100));
-    expect(screen.getByRole('option', { name: /\/play/ })).toBeInTheDocument();
-    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command' }), { key: 'Escape' });
-    fireEvent.click(screen.getByRole('button', { name: 'switch' }));
-    await act(() => vi.advanceTimersByTimeAsync(100));
-    fireEvent.change(screen.getByRole('textbox', { name: 'message' }), { target: { value: '/' } });
-    fireEvent.change(screen.getByRole('textbox', { name: 'Command' }), { target: { value: '/play' } });
-    expect(screen.queryByRole('option', { name: /\/play/ })).not.toBeInTheDocument();
-    expect(screen.getByText('Loading Bot commands…')).toBeInTheDocument();
-  });
 });

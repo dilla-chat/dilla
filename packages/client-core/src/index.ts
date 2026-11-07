@@ -14,6 +14,9 @@ export { createBotInteractionClient, BotInteractionUncertainError, BotInteractio
 export type { BotInteractionClient, BotInteractionRequest, BotInteractionResult, BotInteractionScope } from './bot/interactions';
 export { createBotUtilities, decodePollVote, decodePollClose, BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError } from './bot/utilities';
 export type { BotUtilities, PollSummary, ReminderSummary, ReminderState, UtilityBinding, UtilityCapabilities, PollPage, ReminderPage, PollVotersPage } from './bot/utilities';
+export { botCommands, createBotCommands, botCommandPort, BOT_FIRST_ANSWER_MS, BOT_KEY_STALE_STATUS } from './bot/commands';
+export type { BotAnswer, BotArg, BotCommandRun, BotRunItem, BotCommandPort } from './bot/commands';
+export type { ArgShape, ArgType, BotCatalog, BotCommandSpec, BotState, BotStatus } from './bot/catalog';
 export { parseReminderTime, resolveReminderTimeCandidate } from './bot/utility-time';
 export type { ReminderTimeResult, ReminderTimeCandidate } from './bot/utility-time';
 export type { VoiceMusicAdapter, VoiceMusicState, VoiceMusicTrack, VoiceMusicQueueItem, VoiceMusicSearchResult, VoiceMusicPermissions, VoiceMusicErrorCode, VoiceMusicAttempt } from './voice/music';
@@ -37,6 +40,6 @@ export type { PermKey, PermRole, PermOverwrite, PermMember, PermInput } from './
 export type { PendingLeaf, TrustRecord, SearchScope, SearchCursor, SearchHit } from './core-port';
 export { negotiateSession } from './http/negotiate-session';
 export type { SessionCapabilities } from './http/negotiate-session';
-export { COMMANDS, availableCommands, commandAvailability, commandById, parseCommand, parseSeekPosition, searchCommands, validateCommandArgs } from './commands/registry';
+export { COMMANDS, availableCommands, botCommandDefinitions, commandAvailability, commandById, parseCommand, parseSeekPosition, searchCommands, validateCommandArgs } from './commands/registry';
 export { CLASSIC_COMMAND_PAYLOADS, formatClassicCommandMessage } from './commands/classic';
-export type { ArgumentIssue, CommandArgumentKind, CommandAvailability, CommandContext, CommandDefinition, CommandInvocation, CommandOption, CommandParseResult, CommandProvider, CommandResult, CommandValidation } from './commands/registry';
+export type { ArgumentIssue, CommandArgumentKind, BotCatalogCommand, BotCommandBinding, CommandAvailability, CommandContext, CommandDefinition, CommandInvocation, CommandOption, CommandParseResult, CommandProvider, CommandResult, CommandValidation } from './commands/registry';

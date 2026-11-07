@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { COMMANDS, commandById } from '@dilla/client-core';
+import { COMMANDS } from '@dilla/client-core';
 import { pickerEntry, registryDuration } from './picker-catalog.ts';
+import { fixtureCommand } from './bot-catalog.fixture.ts';
 
-const entry = (id: string) => pickerEntry(commandById(id)!, 'Glenn');
+// Bot v2: the Bot's commands come from its catalog (the fixture's), the built-ins from the registry.
+const entry = (id: string) => pickerEntry(fixtureCommand(id), 'Glenn');
 
 describe('picker catalog', () => {
   it('carries the prototype copy for the commands it lists', () => {

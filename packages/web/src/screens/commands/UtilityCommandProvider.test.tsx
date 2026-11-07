@@ -2,13 +2,14 @@ import { createElement, useEffect } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { COMMANDS, decode, encode as importEncode, fromHex, PERM, type BotUtilities, type CoreClient, type CommandContext as Binding, type CommandResult, type PollSummary, type ReminderSummary } from '@dilla/client-core';
+import { decode, encode as importEncode, fromHex, PERM, type BotUtilities, type CoreClient, type CommandContext as Binding, type CommandResult, type PollSummary, type ReminderSummary } from '@dilla/client-core';
 import * as ClientCore from '@dilla/client-core';
 import { FakeClient } from '../../test/fake-client.ts';
 import type { CommandExecutionContext } from './command-types.ts';
 import { finalPollMarker, PollCard } from './PollCard.tsx';
 import { CommandPicker } from './CommandPicker.tsx';
 import { notifyReminder, reminderFromArgs, useUtilityCommandProvider } from './UtilityCommandProvider.tsx';
+import { FIXTURE_COMMANDS, FIXTURE_DEFINITIONS, fixtureCatalog } from './bot-catalog.fixture.ts';
 
 const COMMUNITY = '11'.repeat(16); const CHANNEL = '22'.repeat(16); const USER = '33'.repeat(16);
 const INSTALLATION = '44'.repeat(16); const BOT = '55'.repeat(16); const POLL = '77'.repeat(16);
@@ -28,6 +29,9 @@ function utilityFixture() {
   core.set(`overwrites:${COMMUNITY}`, {});
   core.set(`channels:${COMMUNITY}`, [{ id: CHANNEL, communityId: COMMUNITY, kind: 0, mode: 0, name: 'lobby', topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'active' }]);
   core.set(`members:${COMMUNITY}`, [{ userId: USER, username: 'ada', display: 'Ada', kind: 0, roleIds: [] }]);
+  // Bot v2: utilities authorise an operation against the catalog held on this device (no op-3 round trip per operation).
+  core.set(`botCatalog:${COMMUNITY}`, fixtureCatalog({ botUserId: BOT, commands: [...FIXTURE_COMMANDS, ...[72, 75, 84].map(operation => ({ name: `op ${operation}`,
+    description: '', operation, args: [], permissionBit: 0, needsBotChannel: false, handlerKind: 0 }))] }));
   const requests: { operation: number; requestId: string; args: readonly unknown[]; revision: string | null }[] = [];
   const responses: { deliveryId: string; requestId: string; communityId: string; operation: number; channelId: null; status: number; revision: string | null; data: Uint8Array }[] = [];
   let row = pollSummary(); let reminder: unknown[] | null = null; let delivery = 0; let failOperation: number | null = null; let failApplies = true;
@@ -80,7 +84,7 @@ describe('utility command provider', () => {
     const f = utilityFixture();
     function Picker() {
       const provider = useUtilityCommandProvider(f.client, COMMUNITY);
-      return <>{provider.dialogs}<CommandPicker definitions={COMMANDS} initialText="/" contextKey="poll-picker-test"
+      return <>{provider.dialogs}<CommandPicker definitions={FIXTURE_DEFINITIONS} initialText="/" contextKey="poll-picker-test"
         suggest={() => Promise.resolve([])} onExecute={() => Promise.resolve({ status: 'success', private: true, message: '' })} onCancel={() => {}} onSendLiteral={() => {}}
         onRunDetached={invocation => { void provider.handlers['poll create']!(invocation, commandContext(f.client, 'af'.repeat(16))); }} /> </>;
     }

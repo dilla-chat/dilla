@@ -1,7 +1,10 @@
 // The state slices the worker publishes and the page renders (L-TS-08). Every id is 32 lower-case hex
 // characters; every slice value is immutable and replaced whole.
 import type { TrustBlock } from '../core-port';
+import type { BotCatalogView } from '../bot/catalog';
+import type { BotAnswerView } from '../bot/commands';
 export type { TrustBlock };
+export type { BotCatalogView, BotAnswerView };
 export type BootPhase = 'loading' | 'unsupported' | 'other-tab' | 'paused-error' | 'store-lost' | 'needs-signup' | 'signup-keys' | 'registering' | 'ready' | 'revoked' | 'error'
   | 'signin-login' | 'signin-totp' | 'signin-key' | 'enrolling' | 'cleared'
   // web3.6: a login owing a passkey (needs 2); an account that owes a second factor before the shell.
@@ -249,8 +252,13 @@ export type SliceName = 'account' | 'connection' | 'communities' | `channels:${s
   | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
   | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'pendingAttachments' | 'call' | 'voice' | 'rings'
   | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals' | 'factors'
-  | `slow:${string}` | `thread:${string}` | `threads:${string}`;
+  | `slow:${string}` | `thread:${string}` | `threads:${string}`
+  | `botCatalog:${string}` | 'botAnswers';
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
+  /** Bot v2: the community Bot's command catalog held on this device (bot/catalog.ts); null while none was read. */
+  [k: `botCatalog:${string}`]: BotCatalogView | null;
+  /** Bot v2: the last opened Bot answers to this device's sealed commands (bot/commands.ts), oldest first. */
+  botAnswers: BotAnswerView[];
   [k: `communityChanges:${string}`]: number;
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `presence:${string}`]: PresenceState; [k: `timeline:${string}`]: TimelineState;
   [k: `afk:${string}`]: AFKState | null;

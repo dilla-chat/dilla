@@ -4,8 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { arr, CborError, decode, encode } from '../cbor';
 import { fromHex, toHex } from '../hex';
 import {
-  afkAwayOf, callRingOf, communityChangedOf, decodeFrame, decodeResponseFrame, DROPPABLE_OPS, encodeFrame, encodeRequestFrame, frameOp, Op,
-  voiceStateOf,
+  afkAwayOf, botCatalogOf, botReplyOf, botStateChangedOf, callRingOf, communityChangedOf, decodeFrame, decodeResponseFrame, DROPPABLE_OPS,
+  encodeFrame, encodeRequestFrame, frameOp, Op, voiceStateOf,
 } from './frames';
 
 interface FrameCase { name: string; op: number; n: number; group_id: string; payload: string; frame: string }
@@ -90,7 +90,7 @@ describe('frames.json', () => {
 
 describe('frame shape', () => {
   it('accepts an unknown opcode with any payload', () => {
-    expect(decodeFrame(encode([63, 1, null, []]))).toEqual({ op: 63, n: 1n, groupId: null, payload: [] });
+    expect(decodeFrame(encode([99, 1, null, []]))).toEqual({ op: 99, n: 1n, groupId: null, payload: [] });
   });
 
   it('refuses an opcode above 255, a text group id and a wrong ready length', () => {
@@ -125,7 +125,7 @@ describe('frame shape', () => {
     expect(Op).toEqual({ hello: 0, identify: 1, ready: 3, invalidSession: 5, heartbeat: 6, heartbeatAck: 7, reconnect: 8,
       error: 9, commitAck: 12, handshake: 16, commitNeeded: 17, epochChanged: 18, messageCt: 19, welcome: 20, messageDeleted: 21,
       presence: 48, typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53, communityChanged: 54, afkAway: 55, appBuild: 56, presenceActivity: 57, callStats: 58,
-      request: 59, response: 60 });
+      request: 59, response: 60, botCatalog: 61, botReply: 62, botStateChanged: 63 });
   });
 });
 
@@ -292,4 +292,52 @@ it('validates an ephemeral app-build hint and makes malformed hints droppable', 
     expect(() => decodeFrame(encode([56, 0, null, [entry]]))).toThrow('E_FRAME_SHAPE');
   }
   expect(() => decodeFrame(encode([56, 1, null, ['/assets/a.js']]))).toThrow('E_FRAME_SHAPE');
+});
+
+// Bot v2 task 20: ops 61 bot_catalog, 62 bot_reply and 63 bot_state_changed. A misshapen one is a shape error the gateway
+// drops (DROPPABLE_OPS): a bad Bot frame never closes the socket.
+describe('Bot frames (ops 61, 62, 63)', () => {
+  const vector = (name: string): FrameCase => vectors.cases.find((x) => x.name === name)!;
+
+  it('reads the bot_catalog vector', () => {
+    const catalog = botCatalogOf(decodeFrame(fromHex(vector('bot_catalog').frame)));
+    expect(catalog.communityId).toEqual(fid(0x0e));
+    expect(catalog.revision).toBe(3n);
+    expect(catalog.commands).toHaveLength(1);
+    expect(catalog.publication).toBeNull();
+    expect(DROPPABLE_OPS.has(Op.botCatalog)).toBe(true);
+  });
+
+  it('reads the bot_reply vector, and a reply with n = 0 (over the ring budget)', () => {
+    expect(botReplyOf(decodeFrame(fromHex(vector('bot_reply').frame))))
+      .toEqual({ requestId: fid(0x10), seq: 1, sealed: fromHex('830141004100'), final: true });
+    const unringed = decodeFrame(encodeFrame(Op.botReply, 0, null, [fid(1), 0, new Uint8Array([1]), 0]));
+    expect(botReplyOf(unringed)).toEqual({ requestId: fid(1), seq: 0, sealed: new Uint8Array([1]), final: false });
+    expect(DROPPABLE_OPS.has(Op.botReply)).toBe(true);
+  });
+
+  it('reads the bot_state_changed vector', () => {
+    expect(botStateChangedOf(decodeFrame(fromHex(vector('bot_state_changed').frame)))).toEqual({ scopeKind: 1, scopeId: fid(0x0c), revision: 4n });
+    expect(DROPPABLE_OPS.has(Op.botStateChanged)).toBe(true);
+  });
+
+  it('refuses misshapen Bot frames', () => {
+    const ok61 = [fid(1), 2, [], null];
+    expect(verdict(encodeFrame(Op.botCatalog, 0, null, ok61))).toBeNull();
+    expect(verdict(encodeFrame(Op.botCatalog, 0, null, [fid(1), 2, [], new Uint8Array([1])]))).toBeNull();
+    expect(verdict(encodeFrame(Op.botCatalog, 1, null, ok61))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.botCatalog, 0, null, [fid(1).slice(1), 2, [], null]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.botCatalog, 0, null, [fid(1), 'two', [], null]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.botCatalog, 0, null, [fid(1), 2, 'x', null]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.botCatalog, 0, null, [fid(1), 2, [], 'key']))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.botCatalog, 0, fid(2), ok61))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.botReply, 3, null, [fid(1), 0, new Uint8Array([1]), 2]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.botReply, 3, null, [fid(1), 2 ** 32, new Uint8Array([1]), 1]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.botReply, 3, null, [fid(1), 0, 'sealed', 1]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.botReply, 3, null, [fid(1), 0, new Uint8Array([1])]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.botStateChanged, 0, null, [3, fid(1), 1]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.botStateChanged, 1, null, [0, fid(1), 1]))).toBe('E_FRAME_SHAPE');
+    expect(verdict(encodeFrame(Op.botStateChanged, 0, null, [0, fid(1)]))).toBe('E_FRAME_SHAPE');
+    expect(() => botReplyOf({ op: Op.botCatalog, n: 0n, groupId: null, payload: [fid(1), 0n, new Uint8Array(1), 0n] })).toThrow('E_FRAME_SHAPE');
+  });
 });

@@ -26,7 +26,15 @@ export interface CommandDefinition {
   handler: string;
   permissionBit?: number;
   options: readonly CommandOption[];
+  /** Bot v2: a Bot command's catalog entry: the operation it is sealed as and each option's argument type code. */
+  bot?: BotCommandBinding;
 }
+
+/** Bot v2: one command of the community Bot's catalog (bot/catalog.ts BotCommandSpec). */
+export interface BotCatalogCommand { name: string; description: string; operation: number;
+  args: readonly { name: string; type: 0 | 1 | 2 | 3 | 4 | 5; required: boolean }[]; permissionBit: number; needsBotChannel: boolean; handlerKind: number }
+/** Type codes per option, in order: 0 text, 1 uint, 2 user, 3 channel, 4 duration (seconds), 5 bool. */
+export interface BotCommandBinding { operation: number; argTypes: readonly (0 | 1 | 2 | 3 | 4 | 5)[]; needsBotChannel: boolean; handlerKind: number }
 
 export interface CommandContext {
   communityId: string | null;
@@ -45,6 +53,8 @@ export interface CommandResult {
   status: 'pending' | 'success' | 'failure' | 'uncertain';
   message?: string;
   private: boolean;
+  /** Bot v2: an uncertain run the person may send again as is (the same request id): the composer offers Retry. */
+  retry?: boolean;
 }
 
 export interface ArgumentIssue {
@@ -63,7 +73,6 @@ type OptionSeed = Pick<CommandOption, 'name' | 'kind' | 'required'> & Partial<Pi
 const o = (name: string, kind: CommandArgumentKind, required = true, extra: Partial<CommandOption> = {}): OptionSeed => ({ name, kind, required, ...extra });
 const text = (name = 'text', required = true, freeText = true): OptionSeed => o(name, 'text', required, { freeText });
 const entity = (name: string, kind: CommandArgumentKind, required = true): OptionSeed => o(name, kind, required);
-const choice = (name: string, choices: readonly string[], required = true): OptionSeed => o(name, 'choice', required, { choices });
 
 const seeds: Array<{ id: string; description: string; scope?: 'any' | 'community'; permissionBit?: number; options?: OptionSeed[] }> = [
   { id: 'help', description: 'Show command help', scope: 'any', options: [o('command', 'text', false)] },
@@ -89,22 +98,6 @@ const seeds: Array<{ id: string; description: string; scope?: 'any' | 'community
   { id: 'unmute', description: 'Unmute your microphone', scope: 'any' },
   { id: 'deafen', description: 'Deafen yourself', scope: 'any' },
   { id: 'undeafen', description: 'Stop deafening yourself', scope: 'any' },
-  { id: 'play', description: 'Play a search result or URL', options: [text('query-or-url')] },
-  { id: 'pause', description: 'Pause playback' },
-  { id: 'resume', description: 'Resume playback' },
-  { id: 'skip', description: 'Skip the current track' },
-  { id: 'stop', description: 'Stop playback' },
-  { id: 'queue', description: 'Show the music queue' },
-  { id: 'nowplaying', description: 'Show the current track' },
-  { id: 'seek', description: 'Seek within the current track', options: [o('position', 'time')] },
-  { id: 'volume', description: 'Set playback volume', options: [o('level', 'number', true, { min: 0, max: 100 })] },
-  { id: 'shuffle', description: 'Toggle queue shuffle', options: [choice('mode', ['on', 'off'])] },
-  { id: 'repeat', description: 'Set repeat mode', options: [choice('mode', ['off', 'one', 'all'])] },
-  { id: 'queue remove', description: 'Remove a queued track', options: [entity('item', 'queue-item')] },
-  { id: 'queue move', description: 'Move a queued track', options: [entity('item', 'queue-item'), o('position', 'number', true, { min: 1 })] },
-  { id: 'queue clear', description: 'Clear the music queue' },
-  { id: 'music', description: 'Show music command help' },
-  { id: 'music help', description: 'Show music command help' },
   { id: 'kick', description: 'Remove a member from the community', permissionBit: 1 << 12, options: [entity('user', 'user')] },
   { id: 'ban', description: 'Ban a member', permissionBit: 1 << 13, options: [entity('user', 'user'), o('duration', 'duration', false), text('reason', false)] },
   { id: 'unban', description: 'Unban a member', permissionBit: 1 << 13, options: [entity('user', 'user')] },
@@ -117,44 +110,57 @@ const seeds: Array<{ id: string; description: string; scope?: 'any' | 'community
   { id: 'selfrole list', description: 'List self-assignable roles' },
   { id: 'selfrole add', description: 'Add one of your self-assignable roles', options: [entity('role', 'role')] },
   { id: 'selfrole remove', description: 'Remove one of your self-assignable roles', options: [entity('role', 'role')] },
-  { id: 'rolepanel create', description: 'Create a role panel', permissionBit: 1 << 15 },
-  { id: 'announcement list', description: 'List announcements' },
-  { id: 'announcement create', description: 'Create an announcement', permissionBit: 1 << 16, options: [text('text', false)] },
-  { id: 'announcement edit', description: 'Edit an announcement', permissionBit: 1 << 16, options: [entity('announcement', 'announcement'), text()] },
-  { id: 'announcement delete', description: 'Delete an announcement', permissionBit: 1 << 16, options: [entity('announcement', 'announcement')] },
-  { id: 'poll create', description: 'Create a poll', options: [text('question', false), text('answers', false), choice('multiple', ['on', 'off'], false), o('duration', 'duration', false)] },
-  { id: 'poll vote', description: 'Vote in a poll', options: [entity('poll', 'poll'), entity('choice', 'choice', false)] },
-  { id: 'poll results', description: 'Show poll results', options: [entity('poll', 'poll')] },
-  { id: 'poll close', description: 'Close a poll', options: [entity('poll', 'poll')] },
-  { id: 'remind', description: 'Create a personal reminder', options: [o('when', 'time'), text()] },
-  { id: 'reminders list', description: 'List your reminders' },
-  { id: 'reminders cancel', description: 'Cancel a reminder', options: [entity('reminder', 'reminder')] },
-  { id: 'reminders dismiss', description: 'Dismiss a due reminder', options: [entity('reminder', 'reminder')] },
 ];
-
-const botCommandIds = new Set([
-  'play', 'pause', 'resume', 'skip', 'stop', 'queue', 'nowplaying', 'seek', 'volume', 'shuffle', 'repeat',
-  'queue remove', 'queue move', 'queue clear', 'music', 'music help', 'rolepanel create',
-  'announcement list', 'announcement create', 'announcement edit', 'announcement delete',
-  'poll create', 'poll vote', 'poll results', 'poll close',
-  'remind', 'reminders list', 'reminders cancel', 'reminders dismiss',
-]);
 
 function materialize(seed: (typeof seeds)[number]): CommandDefinition {
   return {
     id: seed.id,
     description: seed.description,
     scope: seed.scope ?? 'community',
-    provider: botCommandIds.has(seed.id) ? 'bot' : 'builtin',
+    provider: 'builtin',
     handler: seed.id.replaceAll(' ', '.'),
     ...(seed.permissionBit === undefined ? {} : { permissionBit: seed.permissionBit }),
     options: (seed.options ?? []).map((option) => ({ ...option, description: option.description ?? `${option.name} argument` })),
   };
 }
 
+/** The built-in commands. Bot v2: the Bot's commands are not listed here; they come from the community's catalog
+ *  (botCommandDefinitions), which the instance filters per member. */
 export const COMMANDS: readonly CommandDefinition[] = Object.freeze(seeds.map(materialize));
 const byId = new Map(COMMANDS.map((command) => [command.id, command]));
 export const commandById = (id: string): CommandDefinition | undefined => byId.get(id);
+
+const KIND_OF_TYPE: Readonly<Record<0 | 1 | 2 | 3 | 4 | 5, CommandArgumentKind>> = { 0: 'text', 1: 'number', 2: 'user', 3: 'channel', 4: 'duration', 5: 'choice' };
+/** A text argument the picker can offer from what this device shows (an id travels as its text): by argument name. */
+const ENTITY_TEXT: Readonly<Record<string, CommandArgumentKind>> = { poll: 'poll', reminder: 'reminder', announcement: 'announcement', role: 'role',
+  message: 'message', item: 'queue-item' };
+
+/**
+ * Bot v2: the picker's definitions of a Bot catalog's commands, one option per argument shape: text, a whole number from
+ * 0, a member, a channel, a duration, or on/off. The last text argument takes the rest of the line. `remind`'s `when`
+ * keeps the picker's time field ("in 1 hour", "tomorrow 09:00"), sent as seconds from now. A catalog name that is a
+ * built-in command's is dropped, so a Bot cannot shadow one.
+ */
+export function botCommandDefinitions(commands: readonly BotCatalogCommand[]): CommandDefinition[] {
+  return commands.filter(command => !byId.has(command.name)).map(command => {
+    const lastText = command.args.map(arg => arg.type).lastIndexOf(0);
+    return {
+      id: command.name,
+      description: command.description,
+      scope: 'community',
+      provider: 'bot',
+      handler: 'bot',
+      options: command.args.map((arg, index): CommandOption => {
+        const kind: CommandArgumentKind = arg.type === 4 && command.name === 'remind' && arg.name === 'when' ? 'time'
+          : arg.type === 0 && Object.hasOwn(ENTITY_TEXT, arg.name) ? ENTITY_TEXT[arg.name] : KIND_OF_TYPE[arg.type];
+        return { name: arg.name, kind, description: `${arg.name} argument`, required: arg.required,
+          ...(arg.type === 0 && kind === 'text' && index === lastText ? { freeText: true } : {}), ...(arg.type === 1 ? { min: 0 } : {}),
+          ...(arg.type === 5 ? { choices: ['on', 'off'] } : {}) };
+      }),
+      bot: { operation: command.operation, argTypes: command.args.map(arg => arg.type), needsBotChannel: command.needsBotChannel, handlerKind: command.handlerKind },
+    };
+  });
+}
 
 export interface CommandAvailability {
   available: boolean;
@@ -298,7 +304,9 @@ function tokenize(source: string): Token[] | null {
   return tokens;
 }
 
-export function parseCommand(input: string): CommandParseResult {
+/** Parses against `commands` (the built-ins by default; the picker adds the community Bot's catalog commands). */
+export function parseCommand(input: string, commands: readonly CommandDefinition[] = COMMANDS): CommandParseResult {
+  const lookup = commands === COMMANDS ? byId : new Map(commands.map((command) => [command.id, command]));
   const literal = input.startsWith('//') ? input.slice(1) : input;
   if (!input.startsWith('/') || input.startsWith('//')) return { type: 'literal', text: literal };
   // A code fence at the beginning is ordinary content; slash text inside is never inspected.
@@ -316,12 +324,12 @@ export function parseCommand(input: string): CommandParseResult {
   let command: CommandDefinition | undefined;
   let commandWordCount = 0;
   for (let count = 1; count <= words.length; count++) {
-    const candidate = commandById(words.slice(0, count).join(' '));
+    const candidate = lookup.get(words.slice(0, count).join(' '));
     if (candidate) { command = candidate; commandWordCount = count; }
   }
   if (!command) {
     const path = words.join(' ');
-    const subcommands = path === '' ? [] : [...new Set(COMMANDS.flatMap((entry) => {
+    const subcommands = path === '' ? [] : [...new Set(commands.flatMap((entry) => {
       const prefix = `${path} `;
       return entry.id.startsWith(prefix) ? [entry.id.slice(prefix.length).split(' ')[0]] : [];
     }))];

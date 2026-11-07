@@ -230,13 +230,19 @@ function fakeUtilityCore(options: {
   upload?: (command: Record<string, unknown>) => string;
   failReadAfterUpload?: number[];
   enforceRequestIdentity?: boolean;
+  /** Bot v2: the operations of the catalog held on this device (botCatalog:<community>). */
+  catalog?: number[];
 }) {
   const calls: Record<string, unknown>[] = [];
   const identities = new Map<string, string>();
   const sentOperations = new Set<number>();
+  const catalog = { revision: '1', keyId: null, fingerprint: null, status: { state: 'ready', since: null }, botChannels: [], botUserId: BOT_USER,
+    commands: (options.catalog ?? [70, 71, 72, 73, 74, 75, 80, 81, 82, 83, 84]).map(operation => ({ name: `op ${operation}`, description: '', operation,
+      args: [], permissionBit: 0, needsBotChannel: false, handlerKind: 0 })) };
   const client = {
     get: (name: string) => name === 'account' ? { phase: 'ready', user: { id: USER, username: 'member' }, deviceId: hex(5) }
-      : name === 'communities' ? [{ id: COMMUNITY }] : name === `permissions:${COMMUNITY}` ? { loaded: true } : undefined,
+      : name === 'communities' ? [{ id: COMMUNITY }] : name === `permissions:${COMMUNITY}` ? { loaded: true }
+        : name === `botCatalog:${COMMUNITY}` ? catalog : undefined,
     subscribe: () => () => {},
     call: vi.fn((command: Record<string, unknown>) => {
       calls.push(command);
@@ -319,12 +325,12 @@ describe('createBotUtilities facade', () => {
   it('does not dispatch an operation when the live installation changes after its capability check', async () => {
     let statusReads = 0;
     const f = fakeUtilityCore({
-      status: () => statusRow(++statusReads <= 4 ? INSTALLATION : hex(11)),
+      status: () => statusRow(++statusReads <= 1 ? INSTALLATION : hex(11)),
       response: operation => ({ data: operation === 3 ? capabilityData() : pollSummaryForId(hex(1)), revision: operation === 3 ? null : '1' }),
     });
     const api = createBotUtilities(f.client, COMMUNITY);
     await expect(api.pollGet(hex(1), { channelId: hex(2) })).rejects.toMatchObject({ code: 'binding-mismatch' });
-    expect(statusReads).toBe(5);
+    expect(statusReads).toBe(2);
     expect(api.binding).toBeNull();
     expect(f.calls.some(call => call.m === 'humanInteractionRequest' && call.operation === 71)).toBe(false);
   });
@@ -332,12 +338,12 @@ describe('createBotUtilities facade', () => {
   it('withholds a read result and clears its card binding when installation changes after dispatch', async () => {
     let statusReads = 0;
     const f = fakeUtilityCore({
-      status: () => statusRow(++statusReads <= 5 ? INSTALLATION : hex(11)),
+      status: () => statusRow(++statusReads <= 2 ? INSTALLATION : hex(11)),
       response: operation => ({ data: operation === 3 ? capabilityData() : pollSummaryForId(hex(1), hex(2), null, []), revision: operation === 3 ? null : '1' }),
     });
     const api = createBotUtilities(f.client, COMMUNITY);
     await expect(api.pollGet(hex(1), { channelId: hex(2) })).rejects.toMatchObject({ constructor: BotInteractionUncertainError });
-    expect(statusReads).toBe(6);
+    expect(statusReads).toBe(3);
     expect(api.binding).toBeNull();
   });
 
@@ -354,8 +360,15 @@ describe('createBotUtilities facade', () => {
     expect((sent.args as unknown[])[0]).toEqual(encode([1n, id(2), id(12), 'Lunch?', ['Soup', 'Salad'], 0n, 3600n]));
   });
 
-  it('does not dispatch an operation absent from current capabilities', async () => {
-    const f = fakeUtilityCore({ response: operation => ({ data: capabilityData(operation === 3 ? [3, 70, 71, 72, 73, 75, 80, 81, 82, 83, 84] : []) }) });
+  // Bot v2 task 20: an operation is checked against the catalog this device holds, not by an op-3 round trip each time.
+  it('authorises an operation from the catalog on this device, with no capability request', async () => {
+    const f = fakeUtilityCore({ response: (operation) => ({ data: pollSummaryForId(hex(1), hex(2), null, []), revision: operation === 71 ? '1' : null }) });
+    await createBotUtilities(f.client, COMMUNITY).pollGet(hex(1), { channelId: hex(2) });
+    expect(f.calls.filter(call => call.m === 'humanInteractionRequest').map(call => call.operation)).toEqual([71]);
+  });
+
+  it('does not dispatch an operation absent from the catalog on this device', async () => {
+    const f = fakeUtilityCore({ catalog: [70, 71, 72, 73, 75, 80, 81, 82, 83, 84], response: () => ({ data: capabilityData([]) }) });
     await expect(createBotUtilities(f.client, COMMUNITY).pollClose({ requestId: REQUEST_ID, pollId: hex(1), revision: '1', channelId: hex(2) }))
       .rejects.toBeInstanceOf(BotUtilitiesProviderUnavailableError);
     expect(f.calls.some(call => call.m === 'humanInteractionRequest' && call.operation === 74)).toBe(false);

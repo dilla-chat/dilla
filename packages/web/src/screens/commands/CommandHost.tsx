@@ -4,7 +4,8 @@ import { Avatar, Button, ConfirmDialog, Dialog, Icon } from '@dilla/ui';
 import { privateResults } from './private-results.ts';
 import { commandPickerCopy, privateResultCopy as resultCopy } from './copy.ts';
 import './CommandHost.css';
-import { DURATION_SUGGESTIONS, registryDuration } from './picker-catalog.ts';
+import { DURATION_SUGGESTIONS, pickerEntry, registryDuration } from './picker-catalog.ts';
+import { botCommandHandler } from './bot-run.ts';
 import { InviteFlow } from '../Create.tsx';
 import { ModerationLog } from '../admin/ModerationLog.tsx';
 import { COMMANDS, commandAvailability, type CommandContext as Binding, type CommandInvocation, type CommandOption, type CommandResult } from '@dilla/client-core';
@@ -13,8 +14,7 @@ import { useSlice, useSlices } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
 import { useCommandProviders } from './CommandContext.tsx';
 import { CommandPicker, type PickerFrame } from './CommandPicker.tsx';
-import { commandListed, useCommandBot } from './capabilities.ts';
-import { refreshCommandBotForPicker } from './command-bot-store.ts';
+import { useCommandBot } from './capabilities.ts';
 import { builtinHandlers, eligibleAssignableRole, eligibleModerationTarget } from './builtin.ts';
 import type { CommandExecutionContext, CommandSuggestionList } from './command-types.ts';
 import type { TimelineItem } from '@dilla/client-core';
@@ -26,6 +26,8 @@ const clientOwners = new WeakMap<object, number>();
 let nextClientOwner = 1;
 let ownerDrafts = new WeakMap<object, Map<string, Map<string, SavedDraft>>>();
 const LIMIT = 128;
+/** Bot commands that open a surface of this client (besides a form): their provider's handler runs them. */
+const OPENS_SURFACE: ReadonlySet<string> = new Set(['reminders list']);
 export function clearCommandDraftMemory(): void { ownerDrafts = new WeakMap(); }
 const requestId = (): string => [...crypto.getRandomValues(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, '0')).join('');
 function memoryFor(client: object, selfId: string | null, accountScope: string): Map<string, SavedDraft> {
@@ -165,16 +167,17 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     const canceledDraft = saved?.mode === 'canceled' ? saved.text : null;
     if (!active && draft.startsWith('/') && suppress.current !== draft && canceledDraft !== draft) open(draft);
   }, [active, draft, open, memory, key]);
+  // Bot v2 (task 20): the Bot's commands are the community's catalog held on this device (the worker keeps it current: a
+  // read at connect when behind, op 61 live); opening the picker sends nothing. Its source tag is the Bot's display name.
+  const bot = useCommandBot(client, props.communityId);
   const definitions = useMemo(() => {
     const extra = handlers ?? {};
-    return COMMANDS.filter(command => commandAvailability(command, binding).available).filter(command => (command.id !== 'giphy' || gifsEnabled) && (command.provider === 'builtin'
-      ? builtinHandlers[command.id] !== undefined || extra[command.id] !== undefined
-      : extra[command.id] !== undefined));
-  }, [binding, handlers, gifsEnabled]);
-  // Wave B Task 2: a Bot command is listed only while the server's Bot reports its operation (held per community by command-bot-store: loaded when this
-  // composer mounts, refreshed every 30 s, kept when the picker closes); its source tag is the Bot's display name.
-  const bot = useCommandBot(client, props.communityId);
-  const listed = useMemo(() => new Set(definitions.filter(command => commandListed(command, bot.operations)).map(command => command.id)), [definitions, bot.operations]);
+    const builtins = COMMANDS.filter(command => commandAvailability(command, binding).available).filter(command => (command.id !== 'giphy' || gifsEnabled)
+      && (builtinHandlers[command.id] !== undefined || extra[command.id] !== undefined));
+    return [...builtins, ...bot.definitions.filter(command => commandAvailability(command, binding).available)];
+  }, [binding, handlers, gifsEnabled, bot.definitions]);
+  /** The last run of this conversation's draft that the Bot never answered: the picker offers Retry with the same request id. */
+  const [noAnswer, setNoAnswer] = useState<{ key: string; message: string } | null>(null);
   const members = useSlice(`members:${props.communityId ?? ''}`);
   const botName = installationBotName(members, bot.botUserId);
   const channels = useSlice(`channels:${props.communityId ?? ''}`);
@@ -190,10 +193,18 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     onDraft('');
   }, [memory, key, onDraft, onModeChange]);
   const execution = useCallback((invocation: CommandInvocation): Promise<CommandResult> => {
-    const handler = (handlers ?? {})[invocation.commandId] ?? builtinHandlers[invocation.commandId];
-    const provider = COMMANDS.find(command => command.id === invocation.commandId)?.provider === 'bot' ? 'bot' : 'builtin';
-    const moderation = invocation.commandId === 'kick' || invocation.commandId === 'ban';
+    setNoAnswer(null);
+    const definition = definitions.find(command => command.id === invocation.commandId);
     let resultId: string | undefined;
+    // A catalog command runs sealed (bot-run.ts), its answers streaming into this run's result row. Only one that opens a
+    // surface of this client keeps its provider: `poll create`'s form and `reminders list`'s inbox.
+    const opensSurface = definition?.bot !== undefined && (pickerEntry(definition, '').opensForm || OPENS_SURFACE.has(definition.id));
+    const formHandler = opensSurface ? (handlers ?? {})[invocation.commandId] : undefined;
+    const handler = definition?.bot !== undefined
+      ? formHandler ?? botCommandHandler(definition, (_context, text) => { if (resultId !== undefined) resultStore.update(resultId, { text }); })
+      : (handlers ?? {})[invocation.commandId] ?? builtinHandlers[invocation.commandId];
+    const provider = definition?.provider === 'bot' ? 'bot' : 'builtin';
+    const moderation = invocation.commandId === 'kick' || invocation.commandId === 'ban';
     const pendingResult = () => { resultId ??= resultStore.add({ at: Date.now(), status: 'pending', text: resultCopy.pending(invocation.commandId), provider }); return resultId; };
     const formResult = invocation.commandId === 'poll create';
     if (!moderation && !formResult) pendingResult();
@@ -260,7 +271,11 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
       if (response.status === 'uncertain') {
         // Keep the original invocation and request id when an uncertain attempt is retried.
         remember(memory, key, { text: commandText, requestId: attempt, invocationKey, mode: 'active' });
-        if (isCurrent()) { setCommandText(commandText); setActive(true); activeRef.current = true; onModeChange(true); }
+        if (isCurrent()) {
+          setCommandText(commandText); setActive(true); activeRef.current = true; onModeChange(true);
+          // Bot v2: no answer in 5 s: the reopened draft offers Retry, which sends the same request id again.
+          if (response.retry === true) setNoAnswer({ key, message: response.message ?? resultCopy.failed() });
+        }
       }
       return response;
     }, cause => {
@@ -274,7 +289,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
       resultStore.update(pendingResult(), { status: 'failed', text });
       return { status: 'failure', private: true, message: text };
     });
-  }, [handlers, contextKey, key, memory, binding, commandText, client, runtime, items, selfId, encodeMessage, openGif, resultStore, leaveAfterRun, onModeChange]);
+  }, [handlers, definitions, contextKey, key, memory, binding, commandText, client, runtime, items, selfId, encodeMessage, openGif, resultStore, leaveAfterRun, onModeChange]);
   const suggest = useCallback(async (commandId: string, option: CommandOption, query: string, values?: Readonly<Record<string, string>>): Promise<CommandSuggestionList> => {
     const supplied = await suggestionProvider?.(commandId, option, query, binding, values);
     if (supplied !== undefined) return supplied;
@@ -324,6 +339,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     return [];
   }, [suggestionProvider, binding, items, selfId, client]);
   const cancel = (text: string) => {
+    setNoAnswer(null);
     const saved = memory.get(key);
     remember(memory, key, { text, requestId: saved?.requestId ?? requestId(), invocationKey: saved?.invocationKey ?? text, mode: 'canceled' });
     generation.current++;
@@ -366,6 +382,6 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     onConfirm={() => { setConfirmation(null); confirmationResolve.current?.('confirm'); confirmationResolve.current = null; }}
     onClose={() => { setConfirmation(null); confirmationResolve.current?.('cancel'); confirmationResolve.current = null; }} /> : null}{active ? <CommandPicker key={contextKey} definitions={definitions} initialText={saved}
     onUnknown={text => { resultStore.add({ at: Date.now(), status: 'failed', text, provider: 'builtin' }); leaveAfterRun(); }} onExecute={execution} onCancel={cancel} onDone={leaveAfterRun} onSendLiteral={sendLiteral} suggest={suggest} suggestionSources={suggestionSources} contextKey={contextKey}
-    moderationConfirmOpen={confirmation?.moderation !== undefined} listed={listed} loading={bot.waiting} onListOpen={() => props.communityId === null ? undefined : refreshCommandBotForPicker(client, props.communityId)} room={room} onRunDetached={runDetached} {...(botName !== undefined ? { botName } : {})} {...(props.renderFrame !== undefined ? { frame: props.renderFrame } : {})}
+    moderationConfirmOpen={confirmation?.moderation !== undefined} loading={bot.waiting} greyed={bot.greyed} {...(noAnswer !== null && noAnswer.key === key ? { retry: noAnswer.message } : {})} room={room} onRunDetached={runDetached} {...(botName !== undefined ? { botName } : {})} {...(props.renderFrame !== undefined ? { frame: props.renderFrame } : {})}
     onDraftChange={text => { setCommandText(text); const row = memory.get(key); remember(memory, key, { text, requestId: row?.requestId ?? requestId(), invocationKey: row?.invocationKey ?? text, mode: 'active' }); }} /> : null}</>;
 }

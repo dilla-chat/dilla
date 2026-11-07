@@ -1,43 +1,43 @@
-// Signal wave B Task 2: which Bot commands the picker lists. A Bot command shows only while the server's Bot reports its
-// operation (`createBotUtilities(...).capabilities().supportedOperations`); while that is unknown, none show.
-import { useCallback, useEffect, useSyncExternalStore } from 'react';
-import type { CommandDefinition, CoreClient } from '@dilla/client-core';
-import { commandBotSnapshot, mountCommandBot, NO_BOT, subscribeCommandBot, type CommandBotSnapshot } from './command-bot-store.ts';
+// Bot v2 (task 20): which Bot commands the picker lists. They are the community Bot's catalog, held on this device by the
+// worker (the `botCatalog:<community>` slice): read at connect only when the instance's revision is newer, replaced live by
+// op 61. Opening the picker reads that copy and sends nothing, so it never says "Loading Bot commands…" once synced. A Bot
+// that is not ready, or a command that needs a Bot channel this member cannot view, greys its commands (bot-run.ts).
+import { useCallback, useMemo, useSyncExternalStore } from 'react';
+import { botCommandDefinitions, type BotCatalogView, type CommandDefinition, type CoreClient } from '@dilla/client-core';
+import { botCommandReason } from './bot-run.ts';
 
-export type { CommandBot } from './command-bot-store.ts';
-
-/** The Bot operation each Bot command needs. */
-export const COMMAND_OPERATIONS: Readonly<Record<string, number>> = Object.freeze({
-  play: 12, pause: 13, resume: 14, skip: 15, stop: 16, queue: 10, nowplaying: 10, seek: 17, volume: 18, shuffle: 19, repeat: 20,
-  'queue remove': 21, 'queue move': 22, 'queue clear': 23, music: 10, 'music help': 10,
-  'rolepanel create': 31,
-  'announcement list': 50, 'announcement create': 51, 'announcement edit': 51, 'announcement delete': 52,
-  'poll create': 70, 'poll results': 71, 'poll vote': 73, 'poll close': 74,
-  remind: 80, 'reminders list': 81, 'reminders cancel': 82, 'reminders dismiss': 83,
-});
-
-/** Whether the picker lists `command`: built-ins always; a Bot command only with its operation reported. */
-export function commandListed(command: CommandDefinition, operations: ReadonlySet<number> | null): boolean {
-  if (command.provider !== 'bot') return true;
-  const operation = COMMAND_OPERATIONS[command.id];
-  return operations !== null && operation !== undefined && operations.has(operation);
+export interface CommandBot {
+  /** The catalog this device holds; null in a DM, or before the first sync of this community. */
+  catalog: BotCatalogView | null;
+  /** The catalog's commands as picker definitions (none while there is no catalog). */
+  definitions: readonly CommandDefinition[];
+  /** Command id → why it is greyed (the Bot's state and since, or a missing Bot channel). */
+  greyed: ReadonlyMap<string, string>;
+  /** The Bot's user id (the source tag's name, and the signer of its posts). */
+  botUserId: string | null;
+  /** No catalog has been read for this community yet (the first connect sync is still running). */
+  waiting: boolean;
 }
 
-/**
- * The server Bot's operations and user id, from the per-community store (command-bot-store.ts): loaded when the
- * composer first mounts and re-checked when the picker opens (a status read on a list older than 30 s or after a "no Bot"
- * answer; a full reload on a change, no answer, a failed load or a Bot change made in this client; bounded retries while the
- * picker stays open); no timer runs while the client is idle. `operations` is `null`
- * while unknown, in a DM, or when the server has no Bot; `waiting` says a first load is still running.
- */
-export function useCommandBot(client: CoreClient, communityId: string | null): CommandBotSnapshot {
-  useEffect(() => communityId === null ? undefined : mountCommandBot(client, communityId), [client, communityId]);
-  const subscribe = useCallback((listener: () => void) => communityId === null ? () => undefined : subscribeCommandBot(client, communityId, listener), [client, communityId]);
-  const snapshot = useCallback(() => communityId === null ? NO_BOT : commandBotSnapshot(client, communityId), [client, communityId]);
-  return useSyncExternalStore(subscribe, snapshot);
+const NONE: CommandBot = Object.freeze({ catalog: null, definitions: [], greyed: new Map(), botUserId: null, waiting: false });
+
+/** The picker's Bot commands for a community, from the catalog on this device; it makes no request. */
+export function commandBotOf(catalog: BotCatalogView | null | undefined, communityId: string | null): CommandBot {
+  if (communityId === null) return NONE;
+  if (catalog === undefined || catalog === null) return { ...NONE, waiting: catalog === undefined };
+  const definitions = botCommandDefinitions(catalog.commands);
+  const greyed = new Map<string, string>();
+  for (const definition of definitions) {
+    const reason = botCommandReason(catalog, definition);
+    if (reason !== undefined) greyed.set(definition.id, reason);
+  }
+  return { catalog, definitions, greyed, botUserId: catalog.botUserId, waiting: false };
 }
 
-/** The operations alone (the plan's interface): `null` while unknown. */
-export function useCommandCapabilities(client: CoreClient, communityId: string | null): ReadonlySet<number> | null {
-  return useCommandBot(client, communityId).operations;
+export function useCommandBot(client: CoreClient, communityId: string | null): CommandBot {
+  const name = `botCatalog:${communityId ?? ''}` as const;
+  const subscribe = useCallback((listener: () => void) => (communityId === null ? () => undefined : client.subscribe(name, listener)), [client, communityId, name]);
+  const snapshot = useCallback(() => (communityId === null ? null : client.get(name)), [client, communityId, name]);
+  const catalog = useSyncExternalStore(subscribe, snapshot);
+  return useMemo(() => commandBotOf(catalog, communityId), [catalog, communityId]);
 }

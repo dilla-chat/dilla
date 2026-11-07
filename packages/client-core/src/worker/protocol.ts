@@ -28,6 +28,12 @@ export type Command =
   | { m: 'listManualModerationEvidence'; communityId: string; requestId: string; cursor: string | null }
   | { m: 'humanInteractionRequest'; communityId: string; channelId: string | null; requestId: string; operation: number;
       args: readonly (string | number | Uint8Array | null)[]; revision: string | null; stepUp?: string }
+  // Bot v2 (task 20): seal one command to the community's verified command key and send it over the socket; → null once the
+  // instance accepted it (202). Its answers arrive in the botAnswers slice. A retry passes the same requestId.
+  | { m: 'sendBotCommand'; communityId: string; channelId: string | null; requestId: string; operation: number;
+      args: readonly (string | number | boolean | Uint8Array | null)[] }
+  // Bot v2: read the community's catalog and Bot channels now (a stale command key); → null.
+  | { m: 'syncBotCatalog'; communityId: string }
   | { m: 'readBotInteractionResponses'; communityId: string; operations: readonly number[]; requestIds?: readonly string[] }
   | { m: 'ackBotInteractionResponses'; communityId: string; through: string }
   | { m: 'readHumanInteractionResponses'; communityId: string; requestIds?: readonly string[] }

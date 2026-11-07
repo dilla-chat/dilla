@@ -2,10 +2,11 @@ import { createElement, useEffect } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { COMMANDS, decode, encode, fromHex, PERM, parseCommand, type CoreClient, type CommandContext as Binding } from '@dilla/client-core';
+import { decode, encode, fromHex, PERM, parseCommand, type CoreClient, type CommandContext as Binding } from '@dilla/client-core';
 import type { CommandExecutionContext } from './command-types.ts';
 import { useBotCommandProvider } from './bot-handlers.ts';
 import { CommandPicker } from './CommandPicker.tsx';
+import { FIXTURE_DEFINITIONS } from './bot-catalog.fixture.ts';
 
 const COMMUNITY = '11'.repeat(16); const TEXT = '22'.repeat(16); const VOICE = '33'.repeat(16); const OTHER_VOICE = '34'.repeat(16); const USER = '44'.repeat(16);
 const INSTALLATION = '55'.repeat(16); const ITEM = '66'.repeat(16); const OTHER_ITEM = '67'.repeat(16); const CURRENT_ITEM = '65'.repeat(16); const PARENT = '77'.repeat(16);
@@ -125,7 +126,7 @@ function mountProvider(client: CoreClient, capture: { value?: ReturnType<typeof 
 function mountMusicPicker(client: CoreClient, initialText = '/play') {
   function Picker() {
     const provider = useBotCommandProvider(client, COMMUNITY);
-    return createElement(CommandPicker, { definitions: COMMANDS, initialText, contextKey: 'music-search',
+    return createElement(CommandPicker, { definitions: FIXTURE_DEFINITIONS, initialText, contextKey: 'music-search',
       onExecute: () => Promise.resolve({ status: 'success' as const, private: true }), onCancel: () => undefined, onSendLiteral: () => undefined,
       suggest: async (command, option, query) => await provider.suggest(command, option, query, { communityId: COMMUNITY, channelId: TEXT }) ?? [] });
   }
@@ -833,7 +834,7 @@ describe('historical receipt identity across changed capability revisions', () =
     }
   });
   it.each([['90', 90_000], ['1:02', 62_000], ['0:01:02', 62_000]] as const)('runs registry-parsed /seek %s with the shared grammar', async (position, milliseconds) => {
-    const parsed = parseCommand(`/seek ${position}`); expect(parsed.type).toBe('invocation'); if (parsed.type !== 'invocation') throw new Error('Invalid seek parse');
+    const parsed = parseCommand(`/seek ${position}`, FIXTURE_DEFINITIONS); expect(parsed.type).toBe('invocation'); if (parsed.type !== 'invocation') throw new Error('Invalid seek parse');
     const f = fixture(); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {}; const view = mountProvider(f.client, capture);
     await waitFor(() => expect(capture.value).toBeDefined());
     expect(await capture.value!.handlers.seek!(parsed.invocation, commandContext(f.client))).toMatchObject({ status: 'success' });

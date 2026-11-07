@@ -560,7 +560,6 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
   const community = idText(communityId);
   const transport: BotInteractionClient = createBotInteractionClient(client, community);
   let lastBinding: UtilityBinding | null = null;
-  let lastCapabilityScope: BotInteractionScope | null = null;
   const sameScope = (left: BotInteractionScope, right: BotInteractionScope): boolean => left.installationId === right.installationId
     && left.botUserId === right.botUserId && left.revision === right.revision;
 
@@ -578,7 +577,6 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
   };
   const capabilities = async (): Promise<UtilityCapabilities> => {
     lastBinding = null;
-    lastCapabilityScope = null;
     const before = await statusBinding();
     const expectedScope: BotInteractionScope = before;
     const result = await transport.request({ operation: 3, args: [], expectedScope });
@@ -592,16 +590,19 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
       throw new BotUtilitiesProviderUnavailableError(3, result.requestId, 'The Bot installation changed while capabilities were loading.');
     }
     lastBinding = { installationId: caps.installationId, botUserId: caps.botUserId };
-    lastCapabilityScope = result.scope;
     return caps;
   };
+  // Bot v2 (task 20): an operation is authorised against the catalog this device holds (pushed on change, read at connect
+  // when behind), never by an op-3 capability round trip per operation; the live status read still binds the request to
+  // the current installation.
   const authorizeOperation = async (operation: number): Promise<BotInteractionScope> => {
-    const caps = await capabilities();
-    const supported = operation >= 70 && operation <= 75 ? isPollOperationSupported(caps, operation)
-      : operation >= 80 && operation <= 84 ? isReminderOperationSupported(caps, operation) : false;
+    const catalog = client.get(`botCatalog:${community}`);
+    const listed = catalog?.commands.some(command => command.operation === operation) === true;
+    const supported = listed && (POLL_OPERATIONS.has(operation) || REMINDER_OPERATIONS.has(operation));
     if (!supported) throw new BotUtilitiesProviderUnavailableError(operation);
-    if (lastCapabilityScope === null) fail('binding-mismatch');
-    return { ...lastCapabilityScope };
+    const status = await statusBinding();
+    lastBinding = { installationId: status.installationId, botUserId: status.botUserId };
+    return { ...status };
   };
   const send = async (operation: number, args: readonly (string | number | Uint8Array | null)[], options: {
     requestId?: string; revision?: string | bigint | null;
@@ -615,12 +616,10 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
     } catch (cause) {
       if (cause instanceof BotInteractionBindingMismatchError) {
         lastBinding = null;
-        lastCapabilityScope = null;
         fail('binding-mismatch');
       }
       if (cause instanceof BotInteractionUncertainError) {
         lastBinding = null;
-        lastCapabilityScope = null;
       }
       if (MUTATION_OPERATIONS.has(operation) && cause instanceof BotInteractionUncertainError) {
         return uncertainMutation(operation, requestId, cause, null);
@@ -629,7 +628,6 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
     }
     if (!sameScope(result.scope, expectedScope)) {
       lastBinding = null;
-      lastCapabilityScope = null;
       if (MUTATION_OPERATIONS.has(operation) && result.status === 0) return uncertainMutation(operation, requestId, 'installation changed after mutation acceptance');
       fail('binding-mismatch');
     }

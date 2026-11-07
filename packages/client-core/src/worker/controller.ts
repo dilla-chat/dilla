@@ -14,15 +14,17 @@ import type { ThumbDeps } from '../attachments/thumb';
 import { Tray, type TrayEntry } from '../attachments/tray';
 import { CborError } from '../cbor';
 import { decodeBotResponse, encodeBotRequestBytes, validateBotResponseForRequest, validateBotContext } from '../bot/protocol';
+import { BotCatalogStore } from '../bot/catalog';
+import { BOT_ANSWER_LOG, BotCommandError, BotCommandRelay, type BotAnswerView } from '../bot/commands';
 import { arr, decode as decodeCbor, type CborInput } from '../cbor';
 import {
   CoreError, storeNewerOf, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
   type HumanInteractionEvent, type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
-import { Op, afkAwayOf, communityChangedOf, voiceStateOf, type AFKAwayFrame, type Frame } from '../gateway/frames';
+import { Op, afkAwayOf, botCatalogOf, botReplyOf, communityChangedOf, voiceStateOf, type AFKAwayFrame, type Frame } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
-import { HttpClient } from '../http/client';
+import { HttpClient, type HttpRequest, type HttpResponse } from '../http/client';
 import type { SocketRoute } from '../http/socket-routes';
 import { RouteRtt } from '../http/route-rtt';
 import { SocketRequests } from '../gateway/requests';
@@ -141,7 +143,8 @@ E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER
 E_SETTING_KEY E_SIGNIN_EVICTED E_SIGNIN_EXPIRED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_NEWER E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
 E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
 E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED E_MEDIA_MISROUTE E_BOT_CAPABILITIES
-E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_PASSKEY_OTHER_ACCOUNT E_STEP_UP E_TARGET_NO_FACTOR E_KEYPACKAGES_EXHAUSTED`.split(/\s+/));
+E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_PASSKEY_OTHER_ACCOUNT E_STEP_UP E_TARGET_NO_FACTOR E_KEYPACKAGES_EXHAUSTED
+E_BOT_OFFLINE E_BOT_DUPLICATE E_BOT_KEY_STALE E_BOT_STALE E_BOT_SIGNATURE E_BOT_CATALOG`.split(/\s+/));
 
 /** Catch-up fetch delays while a request waits for its interaction group's Welcome (45 s in all). */
 const WELCOME_BACKOFF_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000, 15_000, 15_000];
@@ -227,6 +230,8 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'refreshCommunities',
   'getBotInstallation',
   'getBotCommandStatus',
+  'sendBotCommand',
+  'syncBotCatalog',
   'patchBotProfile',
   'listModerationCases',
   'listManualModerationEvidence',
@@ -419,6 +424,8 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
   getBotCommandStatus: ['communityId'],
+  sendBotCommand: ['communityId', 'requestId'],
+  syncBotCatalog: ['communityId'],
   patchBotProfile: ['communityId'],
   listModerationCases: ['communityId', 'requestId'],
   listManualModerationEvidence: ['communityId', 'requestId'],
@@ -533,6 +540,8 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'refreshCommunities',
     'getBotInstallation',
     'getBotCommandStatus',
+    'sendBotCommand',
+    'syncBotCatalog',
     'patchBotProfile',
     'listModerationCases',
     'listManualModerationEvidence',
@@ -768,6 +777,13 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'listModerationCases' && command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
   if (m === 'listManualModerationEvidence' && (command.requestId === '0'.repeat(32)
     || command.cursor !== null && (typeof command.cursor !== 'string' || !/^(?:[0-9a-f]{2}){1,256}$/u.test(command.cursor)))) return 'manual evidence cursor is invalid';
+  if (m === 'sendBotCommand') {
+    if (command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
+    if (command.channelId !== null && (typeof command.channelId !== 'string' || !ID.test(command.channelId))) return 'channelId is invalid';
+    if (typeof command.operation !== 'number' || !Number.isSafeInteger(command.operation) || command.operation < 0) return 'operation is invalid';
+    if (!Array.isArray(command.args) || command.args.length > 32 || !command.args.every((a: unknown) => a === null || typeof a === 'string'
+      || typeof a === 'boolean' || a instanceof Uint8Array || (typeof a === 'number' && Number.isSafeInteger(a) && a >= 0))) return 'arguments are invalid';
+  }
   if (m === 'humanInteractionRequest') {
     const operation = command.operation;
     if (typeof operation !== 'number' || !Number.isInteger(operation)
@@ -1155,6 +1171,13 @@ export class Controller {
   private readonly routeRtt = new RouteRtt();
   /** Bot v2: the request transport of the current gateway; socket routes go through it (HttpDeps.socket). */
   private socketRequests: SocketRequests | null = null;
+  /** Bot v2 (task 20): each community Bot's command catalog, held on this device and published as `botCatalog:<id>`. */
+  private readonly botCatalog: BotCatalogStore;
+  /** Bot v2 (task 20): sealed commands out, sealed answers in (op 62), published as `botAnswers`. */
+  private readonly botRelay: BotCommandRelay;
+  private botAnswers: BotAnswerView[] = [];
+  private botAnswerN = 0;
+  private readonly botCatalogWatched = new Set<string>();
   /** Community hex → when its remembered "no interaction group" answer lapses (ms). */
   private readonly noInteractionGroupUntil = new Map<string, number>();
   /** Requests waiting for a Welcome push; each is woken when a group turns active. */
@@ -1204,6 +1227,41 @@ export class Controller {
       onRefusal: (code) => { if (code === 'E_FACTOR_REQUIRED' && this.phase === 'ready') this.onFactorRequired(); },
     });
     this.routes = this.parts.routes(http);
+    // Bot v2 (task 20): the catalog and sealed commands go over the socket only (socket-routes.ts); nothing here polls.
+    // They share the routes' transport: a parts double of Routes (a controller test's) has no Bot routes, so none are sent.
+    const botHttp = (r: HttpRequest): Promise<HttpResponse> => this.routes instanceof Routes ? http.request(r)
+      : Promise.reject(new Refusal('E_UNAVAILABLE', ''));
+    const botGet = async (path: string): Promise<Uint8Array> => (await botHttp({ method: 'GET', path, bucket: 'read', idempotent: true })).body;
+    this.botCatalog = new BotCatalogStore({
+      fetchCatalog: (communityId) => botGet(`/v1/communities/${communityId}/bot/catalog`),
+      fetchBotChannels: (communityId) => botGet(`/v1/communities/${communityId}/bot/channels`),
+      fetchRevisions: () => botGet('/v1/bot/revisions'),
+      botUserId: (communityId) => this.botUserOf(communityId),
+      verify: (publication, botUserId) => {
+        const core = this.core;
+        if (core === null) throw new Refusal('E_NOT_READY', '');
+        return core.botCommandKeyVerify(publication, botUserId);
+      },
+      onError: (code) => { this.recordError(code); },
+    });
+    this.botRelay = new BotCommandRelay({
+      core: () => this.core,
+      catalog: this.botCatalog,
+      post: async (communityId, body, idem) => {
+        await botHttp({ method: 'POST', path: `/v1/communities/${communityId}/bot/commands`, body, bucket: 'write', idempotent: false,
+          idem, ok: [202], retry429: false });
+      },
+      nowS: () => this.serverNowS(),
+      random: (n) => crypto.getRandomValues(new Uint8Array(n)),
+      setTimer: (fn, ms) => deps.setTimeout(fn, ms),
+      clearTimer: (handle) => { deps.clearTimeout(handle); },
+      emit: (answer) => {
+        this.botAnswerN += 1;
+        this.botAnswers = [...this.botAnswers, { n: this.botAnswerN, requestId: answer.requestId, seq: answer.seq, status: answer.status,
+          body: toHex(answer.body), final: answer.final }].slice(-BOT_ANSWER_LOG);
+        this.slices.set('botAnswers', this.botAnswers);
+      },
+    });
     this.calls = new CallController({
       core: () => this.core,
       routes: this.routes,
@@ -1461,6 +1519,8 @@ export class Controller {
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
       case 'getBotCommandStatus': return this.getBotCommandStatus(command.communityId);
+      case 'sendBotCommand': return this.sendBotCommand(command);
+      case 'syncBotCatalog': return this.syncBotCatalog(command.communityId);
       case 'patchBotProfile': return this.patchBotProfile(command.communityId, command.display);
       case 'listModerationCases': return this.listModerationCases(command);
       case 'listManualModerationEvidence': return this.listManualModerationEvidence(command);
@@ -1614,6 +1674,56 @@ export class Controller {
     const row = await this.routes.getBotCommandStatus(fromHex(communityId));
     return row === null ? null : { installationId: toHex(row.installationId),
       botUserId: row.botUserId === null ? null : toHex(row.botUserId), state: row.state, revision: row.revision.toString() };
+  }
+
+  // ---- Bot v2 (task 20): the catalog on this device and sealed commands ----
+
+  /** Seals one command to the community's verified command key and sends it; null once the instance accepted it. The
+   *  answers arrive as op 62 and are published in the `botAnswers` slice. */
+  private async sendBotCommand(command: Extract<Command, { m: 'sendBotCommand' }>): Promise<null> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    try {
+      await this.botRelay.send({ communityId: command.communityId, channelId: command.channelId, operation: command.operation,
+        args: command.args, requestId: command.requestId });
+    } catch (e) {
+      if (e instanceof BotCommandError) throw new Refusal(e.code, '');
+      throw e;
+    }
+    return null;
+  }
+
+  /** Reads the catalog and Bot channels now (a stale command key, or a structure change). */
+  private async syncBotCatalog(communityId: string): Promise<null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    this.watchBotCatalog(communityId);
+    await this.botCatalog.refresh(communityId);
+    return null;
+  }
+
+  /** Publishes `botCatalog:<id>` on every change of that community's catalog (once per community). */
+  private watchBotCatalog(communityId: string): void {
+    if (this.botCatalogWatched.has(communityId)) return;
+    this.botCatalogWatched.add(communityId);
+    this.botCatalog.subscribe(communityId, () => { this.slices.set(`botCatalog:${communityId}`, this.botCatalog.view(communityId)); });
+  }
+
+  /** Connect sync for every listed community: one revisions read per connection, a catalog read only when behind. */
+  private async syncBotCatalogs(): Promise<void> {
+    for (const community of this.slices.get('communities') ?? []) {
+      if (this.revoked() || this.storeCleared) return;
+      this.watchBotCatalog(community.id);
+      // A key that could not be checked at its push (the Bot's device list arrived since) is checked again, locally.
+      this.botCatalog.reverify(community.id);
+      await this.botCatalog.syncOnConnect(community.id).catch(() => undefined);
+    }
+  }
+
+  /** The community Bot's user id: its member row of account kind 1, else the instance's command status. */
+  private async botUserOf(communityId: string): Promise<Uint8Array | null> {
+    const member = this.slices.get(`members:${communityId}`)?.find((row) => row.kind === 1);
+    if (member !== undefined) return fromHex(member.userId);
+    const status = await this.routes.getBotCommandStatus(fromHex(communityId)).catch(() => null);
+    return status?.botUserId ?? null;
   }
 
   private async patchBotProfile(communityId: string, display: string): Promise<string> {
@@ -2633,6 +2743,7 @@ export class Controller {
     this.clearKeyPackageRetry();
     this.typingOff();
     this.calls.reset();
+    this.botRelay.forgetAll();
     this.sync?.stop();
     this.gateway?.stop();
     this.setAccount({ phase: 'revoked', recoveryKey: null });
@@ -2690,6 +2801,19 @@ export class Controller {
       const changeSlice = `communityChanges:${communityId}` as const;
       this.slices.set(changeSlice, (this.slices.get(changeSlice) ?? 0) + 1);
       this.safely(() => { this.scheduleCommunityReload(communityId); });
+      // Bot v2 (task 9 ruling): a role, grant or overwrite change can change which commands this member may use, and a
+      // channel change which Bot channels it can view: the catalog and the Bot channels are read again.
+      if (this.listed(communityId)) { this.watchBotCatalog(communityId); void this.botCatalog.refresh(communityId); }
+    } else if (e.type === 'frame' && e.frame.op === Op.botCatalog) {
+      this.safely(() => {
+        const frame = botCatalogOf(e.frame);
+        const communityId = toHex(frame.communityId);
+        if (!this.listed(communityId)) return;
+        this.watchBotCatalog(communityId);
+        this.botCatalog.apply(frame);
+      });
+    } else if (e.type === 'frame' && e.frame.op === Op.botReply) {
+      this.safely(() => { this.botRelay.onReply(botReplyOf(e.frame)); });
     } else if (e.type === 'frame' && e.frame.op === Op.afkAway) {
       this.safely(() => { this.incomingAFKAway(afkAwayOf(e.frame)); });
     } else if (e.type === 'revoked') {
@@ -2705,6 +2829,8 @@ export class Controller {
 
   private onReady(info: ReadyInfo): void {
     this.fetchedLeaves.clear();
+    // Bot v2: op 61 is not replayed, so every connection compares the catalog revisions once (refreshAfterReady).
+    this.botCatalog.newConnection();
     if (this.trustRefresh !== null) this.trustRefreshAgain = true;
     void this.barrier.track(this.refreshTrust().catch(() => undefined));
     this.setConnection({ generation: info.generation.toString() });
@@ -2749,6 +2875,8 @@ export class Controller {
     }
     if (this.revoked() || this.storeCleared) return;
     try { await this.reloadDms(); } catch { /* the next ready retries */ }
+    if (this.revoked() || this.storeCleared) return;
+    await this.syncBotCatalogs();
   }
 
   private incomingTypingFrame(payload: readonly unknown[]): void {
@@ -4525,6 +4653,10 @@ export class Controller {
    */
   private forgetAccount(): void {
     this.botStatusForPoll.clear();
+    // Bot v2: every reply secret goes, and another account must not see this one's catalogs or answers.
+    this.botRelay.forgetAll();
+    this.botCatalog.clear();
+    if (this.botAnswers.length > 0) { this.botAnswers = []; this.slices.set('botAnswers', []); }
     this.clearInteractionAckLeases();
     this.selfDisplay = null;
     this.clearReauthTimer();
