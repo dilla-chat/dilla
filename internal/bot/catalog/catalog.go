@@ -225,7 +225,13 @@ type Publisher struct {
 	mu      sync.Mutex
 	key     []byte
 	catalog []byte
+	// forced is when Stale last forced a republish (fix round 2, N-3).
+	forced time.Time
 }
+
+// StaleRepublishEvery throttles Stale: a forced republish at most once a minute per community, so commands sealed to
+// an unknown key cannot make the Bot rewrite its publication at dillad on every command.
+const StaleRepublishEvery = time.Minute
 
 // NewPublisher publishes the catalog of features() and the helper's current key through session.
 func NewPublisher(keys KeySource, session Session, clk clock.Clock, features func() []Feature) *Publisher {
@@ -279,6 +285,21 @@ func (p *Publisher) Publish(ctx context.Context, community id.ID) error {
 		p.mu.Unlock()
 	}
 	return nil
+}
+
+// Stale is a command sealed to a key the helper does not hold: dillad may hold an older publication, or none after a
+// restore, so the key and the catalog are sent again even with unchanged bytes, at most once per
+// StaleRepublishEvery; in between it only asks for an ordinary publish.
+func (p *Publisher) Stale() {
+	now := p.clk.Now()
+	p.mu.Lock()
+	force := p.forced.IsZero() || now.Sub(p.forced) >= StaleRepublishEvery
+	if force {
+		p.forced = now
+		p.key, p.catalog = nil, nil
+	}
+	p.mu.Unlock()
+	p.Changed()
 }
 
 // Forget makes the next Publish send both again (a new Bot session: dillad may have dropped them).

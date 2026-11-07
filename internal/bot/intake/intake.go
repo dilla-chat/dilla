@@ -37,7 +37,6 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/helper"
@@ -205,11 +204,13 @@ type record struct {
 	at        time.Time
 	replyKey  [32]byte
 	answers   []Answer
-	// bytes is the kept answers' body bytes, counted in the intake's total; written under both locks' order
-	// (rec.mu, then i.mu) and read by the eviction with i.mu held.
-	bytes atomic.Int64
-	seq   uint32 // the next answer's seq: len(answers)
-	final bool
+	// bytes is the kept answers' body bytes counted in the intake's total, and dropped is whether the record left the
+	// cache (evicted, expired or replaced). Both are guarded by i.mu (fix round 2, N-2): a dropped record's later
+	// answers are not counted, and its bytes were subtracted once, when it was dropped.
+	bytes   int64
+	dropped bool
+	seq     uint32 // the next answer's seq: len(answers)
+	final   bool
 	// retry is the verified request of a retryable refusal: a Retry handles it once the cause cleared.
 	retry *protocol.SealedRequest
 	elem  *list.Element
@@ -465,9 +466,8 @@ func (i *Intake) replay(ctx context.Context, log *slog.Logger, cmd RelayedComman
 	if retry := rec.retry; retry != nil {
 		// A retryable refusal: forget it and handle the request now, answering to the new key.
 		rec.retry, rec.answers, rec.seq, rec.final = nil, nil, 0, false
-		freed := rec.bytes.Swap(0)
+		i.release(rec)
 		rec.mu.Unlock()
-		i.charge(-freed)
 		req := *retry
 		req.ReplyKey = key
 		// The helper has just verified this seal's sent_at against now: the request is as fresh as the Retry (fix
@@ -498,8 +498,7 @@ func (i *Intake) answer(ctx context.Context, rec *record, a Answer) {
 	seq := rec.seq
 	rec.seq++
 	rec.answers = append(rec.answers, a)
-	rec.bytes.Add(int64(len(a.Body)))
-	i.charge(int64(len(a.Body)))
+	i.charge(rec, int64(len(a.Body)))
 	rec.final = a.Final
 	i.sendLocked(ctx, rec, seq, a)
 }
@@ -534,8 +533,7 @@ func (i *Intake) remember(cmd RelayedCommand, key [32]byte, now time.Time) *reco
 	defer i.mu.Unlock()
 	i.expireLocked(now)
 	if old := i.records[cmd.RequestID]; old != nil {
-		i.order.Remove(old.elem)
-		delete(i.records, cmd.RequestID)
+		i.dropLocked(old.elem) // replaced: its bytes leave the count (fix round 2, N-2)
 	}
 	for i.order.Len() >= i.capacity && i.order.Len() > 0 {
 		i.dropLocked(i.order.Front())
@@ -567,13 +565,27 @@ func (i *Intake) dropLocked(e *list.Element) {
 	rec, _ := e.Value.(*record)
 	i.order.Remove(e)
 	delete(i.records, rec.requestID)
-	i.bytes -= rec.bytes.Load()
+	i.bytes -= rec.bytes
+	rec.bytes, rec.dropped = 0, true
 }
 
-// charge adds n body bytes to the kept total and forgets the oldest requests while it is over the budget.
-func (i *Intake) charge(n int64) {
+// release takes a cached record's answers out of the count (a retryable refusal's answers are forgotten for its Retry).
+func (i *Intake) release(rec *record) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	i.bytes -= rec.bytes
+	rec.bytes = 0
+}
+
+// charge counts n more body bytes of rec, while it is cached, and forgets the oldest requests while the total is over
+// the budget.
+func (i *Intake) charge(rec *record, n int64) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if rec.dropped {
+		return // no longer cached: its answers are not kept for a Retry, so not counted
+	}
+	rec.bytes += n
 	i.bytes += n
 	for i.bytes > i.byteBudget && i.order.Len() > 0 {
 		i.dropLocked(i.order.Front())

@@ -333,8 +333,10 @@ type feedJob struct {
 	events   []feedEvent
 	snapshot bool
 	slot     *ackSlot
-	// frames is the op 65 deliveries the job settles (a snapshot's begin, body and end), for the command barrier.
+	// frames is the op 65 deliveries the job settles (a snapshot's begin, body and end), for the command barrier;
+	// gen is the stream it was queued on: a job of an older stream settles nothing (fix round 2, N-1).
 	frames uint64
+	gen    uint64
 }
 
 // feedConsumer is one gateway connection's feed: the delivery loop hands it every op 65 (deliver) and never waits on
@@ -356,10 +358,14 @@ type feedConsumer struct {
 	ready     chan struct{} // closed once a snapshot has been applied
 	readyOnce sync.Once
 
-	// The command barrier (Task 15, fix round 1 I-3): posted counts the op 65 deliveries handed to deliver, settled
-	// those applied, dropped or superseded, in delivery order; settledCh is closed and replaced whenever settled
-	// moves. A sealed command waits until settled reaches the posted count at its arrival, so it is authorised only
-	// after every event dillad sent before it. snapFrames counts the snapshot streaming now.
+	// The command barrier (Task 15, fix round 1 I-3): posted counts the stream's op 65 deliveries handed to deliver,
+	// settled those applied or dropped, in delivery order; settledCh is closed and replaced whenever settled moves or
+	// the stream changes. A sealed command waits until settled reaches the posted count at its arrival, so it is
+	// authorised only after every event dillad sent before it. gen is the stream (fix round 2, N-1): a fresh identify
+	// starts a new one with both counts at zero; a command of an older stream is never released (its barrier
+	// returns false, so it is answered offline and its Retry arrives on the new stream), and a job of an older
+	// stream settles nothing. snapFrames counts the snapshot streaming now.
+	gen             uint64
 	posted, settled uint64
 	snapFrames      uint64
 	settledCh       chan struct{}
@@ -390,19 +396,32 @@ func (f *feedConsumer) settle(n uint64) {
 	f.mu.Unlock()
 }
 
+// settleJob settles a finished job's frames, unless a fresh identify replaced its stream meanwhile (fix round 2, N-1).
+func (f *feedConsumer) settleJob(job *feedJob) {
+	f.mu.Lock()
+	if job.gen == f.gen {
+		f.settleLocked(job.frames)
+	}
+	f.mu.Unlock()
+}
+
 // barrier is called on the delivery loop for an op 64: it returns the wait a sealed command makes before it is
-// opened and authorised, true once every op 65 delivered before it has settled, false when the bound or ctx ended.
+// opened and authorised, true once every op 65 delivered before it on its stream has settled, false when the stream
+// changed (a fresh identify), the bound passed or ctx ended.
 func (f *feedConsumer) barrier() func(context.Context) bool {
 	f.mu.Lock()
-	target := f.posted
+	gen, target := f.gen, f.posted
 	f.mu.Unlock()
 	return func(ctx context.Context) bool {
 		t := time.NewTimer(feedBarrierBound)
 		defer t.Stop()
 		for {
 			f.mu.Lock()
-			done, ch := f.settled >= target, f.settledCh
+			stale, done, ch := f.gen != gen, f.settled >= target, f.settledCh
 			f.mu.Unlock()
+			if stale {
+				return false
+			}
 			if done {
 				return true
 			}
@@ -438,9 +457,12 @@ func (f *feedConsumer) setFeed(h Feed) {
 func (f *feedConsumer) resetStream() {
 	f.mu.Lock()
 	f.jobs, f.snapshot, f.inSnap, f.afterSnap = nil, nil, false, nil
-	// What the old stream left unapplied is superseded by the new stream's snapshot: settled for the barrier.
-	f.snapFrames = 0
-	f.settleLocked(f.posted - f.settled)
+	// A new stream (fix round 2, N-1): nothing of the old one is marked applied. Its waiting commands see the
+	// generation change and are answered offline; its counts start again at zero.
+	f.gen++
+	f.posted, f.settled, f.snapFrames = 0, 0, 0
+	close(f.settledCh)
+	f.settledCh = make(chan struct{})
 	f.mu.Unlock()
 }
 
@@ -477,7 +499,7 @@ func (f *feedConsumer) deliver(d gatewayclient.Delivery, slot *ackSlot) {
 			f.acks.done(slot)
 			return
 		}
-		f.jobs = append(f.jobs, feedJob{events: f.snapshot, snapshot: true, slot: slot, frames: f.snapFrames + 1})
+		f.jobs = append(f.jobs, feedJob{events: f.snapshot, snapshot: true, slot: slot, frames: f.snapFrames + 1, gen: f.gen})
 		f.jobs = append(f.jobs, f.afterSnap...)
 		f.snapshot, f.inSnap, f.afterSnap, f.snapFrames = nil, false, nil, 0
 	case f.inSnap && d.Frame.N == 0:
@@ -489,11 +511,11 @@ func (f *feedConsumer) deliver(d gatewayclient.Delivery, slot *ackSlot) {
 	case f.inSnap:
 		// A live event inside a snapshot (dillad sends none: the snapshot's reads supersede it) is applied after the
 		// snapshot's swap, never before it, where the swap would undo it (fix round 2, N-4).
-		f.afterSnap = append(f.afterSnap, feedJob{events: []feedEvent{ev}, slot: slot, frames: 1})
+		f.afterSnap = append(f.afterSnap, feedJob{events: []feedEvent{ev}, slot: slot, frames: 1, gen: f.gen})
 		f.mu.Unlock()
 		return
 	default:
-		f.jobs = append(f.jobs, feedJob{events: []feedEvent{ev}, slot: slot, frames: 1})
+		f.jobs = append(f.jobs, feedJob{events: []feedEvent{ev}, slot: slot, frames: 1, gen: f.gen})
 	}
 	f.mu.Unlock()
 	f.poke()
@@ -532,7 +554,7 @@ func (f *feedConsumer) run(ctx context.Context) {
 			f.readyOnce.Do(func() { close(f.ready) })
 		}
 		f.acks.done(job.slot)
-		f.settle(job.frames)
+		f.settleJob(job)
 	}
 }
 

@@ -321,3 +321,35 @@ func TestEveryCommandDeclaresItsScope(t *testing.T) {
 		t.Fatalf("remind rule = %+v", r)
 	}
 }
+
+// Fix round 2, N-3: a command sealed to an unknown key forces the key and catalog out again at most once a minute per
+// community; in between, Stale only asks for an ordinary publish, which sends nothing when the bytes are unchanged.
+func TestStaleKeyRepublishIsThrottled(t *testing.T) {
+	community := id.New()
+	session := &fakeSession{}
+	keys := &fakeKeys{key: []byte("k1")}
+	clk := clock.NewFake(time.Unix(1_800_000_000, 0))
+	p := NewPublisher(keys, session, clk, func() []Feature { return []Feature{FeatureReminders} })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { p.Run(ctx, community); close(done) }()
+	waitFor(t, func() bool { return len(session.all()) == 2 })
+	calls := func() int { keys.mu.Lock(); defer keys.mu.Unlock(); return keys.calls }
+	p.Stale()
+	waitFor(t, func() bool { return len(session.all()) == 4 })
+	// A burst of stale-key commands within the minute: each asks for a publish, none forces one.
+	for range 5 {
+		before := calls()
+		p.Stale()
+		waitFor(t, func() bool { return calls() > before })
+	}
+	if n := len(session.all()); n != 4 {
+		t.Fatalf("puts after the burst = %d, want 4", n)
+	}
+	clk.Advance(time.Minute)
+	p.Stale()
+	waitFor(t, func() bool { return len(session.all()) == 6 })
+	cancel()
+	<-done
+}

@@ -755,3 +755,85 @@ func TestAnswerCacheIsBoundedInBytes(t *testing.T) {
 		t.Fatalf("evicted retry = %+v", last)
 	}
 }
+
+// keptBytes is the sum of the cached requests' answer bodies, read record by record (tests).
+func keptBytes(in *Intake) int64 {
+	in.mu.Lock()
+	recs := make([]*record, 0, len(in.records))
+	for _, r := range in.records {
+		recs = append(recs, r)
+	}
+	in.mu.Unlock()
+	var n int64
+	for _, r := range recs {
+		r.mu.Lock()
+		for _, a := range r.answers {
+			n += int64(len(a.Body))
+		}
+		r.mu.Unlock()
+	}
+	return n
+}
+
+func expectExactBytes(t *testing.T, in *Intake, what string) {
+	t.Helper()
+	if counted, kept := in.cachedBytes(), keptBytes(in); counted != kept {
+		t.Fatalf("%s: counted %d bytes, the cache holds %d", what, counted, kept)
+	}
+}
+
+// Fix round 2, N-2: the byte count is exactly the cached answers' bytes: a request evicted while its handler still
+// answers is not counted again, a replaced record is subtracted, and concurrent Retries do not subtract twice.
+func TestAnswerCacheByteCountStaysExact(t *testing.T) {
+	// Eviction mid-answer: capacity 1, and a second command arrives between the first one's two answers.
+	w := newWorld(t)
+	w.in.capacity = 1
+	body := make([]byte, 100)
+	second, _ := w.command(opRemind, 2)
+	first := true
+	w.dispatch.fn = func(_ protocol.SealedRequest, reply func(Answer)) {
+		if first {
+			first = false
+			reply(Answer{Status: 202, Body: body})
+			w.in.Handle(context.Background(), second) // evicts the first request
+			reply(Answer{Status: 200, Body: body, Final: true})
+			return
+		}
+		reply(Answer{Status: 200, Body: body, Final: true})
+	}
+	cmd, _ := w.command(opRemind, 1)
+	w.in.Handle(context.Background(), cmd)
+	expectExactBytes(t, w.in, "eviction mid-answer")
+
+	// Replace: the same request id opened as a fresh request again.
+	w2 := newWorld(t)
+	w2.dispatch.fn = func(_ protocol.SealedRequest, reply func(Answer)) {
+		reply(Answer{Status: 200, Body: body, Final: true})
+	}
+	again, _ := w2.command(opRemind, 1)
+	w2.in.Handle(context.Background(), again)
+	w2.in.Handle(context.Background(), again)
+	expectExactBytes(t, w2.in, "replace")
+
+	// Concurrent Retries of a retryable refusal, with evictions pressing on the cache meanwhile.
+	w3 := newWorld(t)
+	w3.in.capacity = 3
+	w3.held[w3.user] = true
+	held, _ := w3.command(opRemind, 1)
+	w3.in.Handle(context.Background(), held)
+	retries := make([]RelayedCommand, 0, 20)
+	others := make([]RelayedCommand, 0, 20)
+	for i := range 20 {
+		retries = append(retries, w3.retry(held, byte(10+i)))
+		o, _ := w3.command(opRemind, byte(40+i))
+		others = append(others, o)
+	}
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(2)
+		go func() { defer wg.Done(); w3.in.Handle(context.Background(), retries[i]) }()
+		go func() { defer wg.Done(); w3.in.Handle(context.Background(), others[i]) }()
+	}
+	wg.Wait()
+	expectExactBytes(t, w3.in, "concurrent retries")
+}

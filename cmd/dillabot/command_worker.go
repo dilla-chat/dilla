@@ -711,9 +711,9 @@ func (r *botGatewayRuntime) SetSealedIntake(cfg sealedIntakeConfig) {
 		e.publisher = catalog.NewPublisher(e, e, clock.System(), e.features)
 		e.publisher.SetLogger(cfg.log)
 		// A command sealed to a key the helper does not hold: send the current key and catalog again even when their
-		// bytes are unchanged, so the client's refetch finds them (fix round 1 M-2).
-		publisher := e.publisher
-		e.in.SetKeyStale(func() { publisher.Forget(); publisher.Changed() })
+		// bytes are unchanged, so the client's refetch finds them (fix round 1 M-2), at most once a minute (fix round
+		// 2, N-3).
+		e.in.SetKeyStale(e.publisher.Stale)
 		// Fail closed until the installation's feed exists (Held is false for an installation with no feed) and has
 		// applied a snapshot (the Authz's own readiness): 503 E_BOT_OFFLINE, retryable.
 		installation := cfg.installation

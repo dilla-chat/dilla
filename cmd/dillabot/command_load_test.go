@@ -608,3 +608,99 @@ func TestCommandBehindAStalledFeedIsOffline(t *testing.T) {
 		t.Fatalf("answers = %+v", w.transport.answers)
 	}
 }
+
+// gatedRoles holds each role event until its own gate is released, in order: a feed worker behind the delivery loop.
+type gatedRoles struct {
+	Feed
+	mu      sync.Mutex
+	gates   []chan struct{}
+	applied []RoleEvent
+}
+
+func (g *gatedRoles) gate() chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	c := make(chan struct{})
+	g.gates = append(g.gates, c)
+	return c
+}
+
+func (g *gatedRoles) Role(_ context.Context, ev RoleEvent) {
+	g.mu.Lock()
+	var c chan struct{}
+	if len(g.gates) > 0 {
+		c, g.gates = g.gates[0], g.gates[1:]
+	}
+	g.mu.Unlock()
+	if c != nil {
+		<-c
+	}
+	g.mu.Lock()
+	g.applied = append(g.applied, ev)
+	g.mu.Unlock()
+}
+
+func (g *gatedRoles) count() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.applied)
+}
+
+func roleDelivery(t *testing.T, community id.ID) gatewayclient.Delivery {
+	t.Helper()
+	raw := botEventRaw(t, feedRole, []any{community, id.New(), []uint64{intake.PermViewChannel, 0, 0}, uint64(0)})
+	return gatewayclient.Delivery{Frame: gatewayclient.Frame{Op: gatewayclient.OpBotEvent, BotPayload: raw}}
+}
+
+// Fix round 2, N-1 (first scenario): a command of the old stream waiting on an event that was never applied is not
+// released by a fresh identify. The new stream's snapshot supersedes that event, but the command was sent against the
+// old one: it is answered offline (its Retry arrives on the new stream after the snapshot).
+func TestOldStreamCommandIsNotReleasedByAFreshIdentify(t *testing.T) {
+	community := id.New()
+	fc := newFeedConsumer(community, &orderedAcks{log: quietLogger()}, quietLogger())
+	// No handler: the role event waits, unapplied.
+	fc.deliver(roleDelivery(t, community), nil)
+	wait := fc.barrier()
+	result := make(chan bool, 1)
+	go func() { result <- wait(context.Background()) }()
+	time.Sleep(20 * time.Millisecond)
+	fc.resetStream()
+	select {
+	case ok := <-result:
+		if ok {
+			t.Fatal("the fresh identify released a command whose earlier event was never applied")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the waiting command was not answered at the reset")
+	}
+}
+
+// Fix round 2, N-1 (second scenario): a job of the old stream still running at the reset settles nothing of the new
+// stream: a command behind a new-stream event waits for that event, not for the old job.
+func TestAJobRunningAtTheResetDoesNotAdvanceTheNewStream(t *testing.T) {
+	community := id.New()
+	fc := newFeedConsumer(community, &orderedAcks{log: quietLogger()}, quietLogger())
+	h := &gatedRoles{Feed: &recordingFeed{}}
+	oldGate, newGate := h.gate(), h.gate()
+	fc.setFeed(h)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go fc.run(ctx)
+	fc.deliver(roleDelivery(t, community), nil) // the old stream's event: the worker takes it and holds
+	waitFor(t, "the worker holds the old job", time.Second, func() bool { fc.mu.Lock(); defer fc.mu.Unlock(); return len(fc.jobs) == 0 })
+	fc.resetStream()
+	fc.deliver(roleDelivery(t, community), nil) // the new stream's live event
+	feedBarrierBound = 150 * time.Millisecond
+	defer func() { feedBarrierBound = 2 * time.Second }()
+	wait := fc.barrier()
+	close(oldGate) // the old job ends
+	waitFor(t, "the old job is applied", time.Second, func() bool { return h.count() == 1 })
+	if wait(ctx) {
+		t.Fatal("the old stream's job settled the new stream's event")
+	}
+	close(newGate)
+	waitFor(t, "the new event is applied", time.Second, func() bool { return h.count() == 2 })
+	if !fc.barrier()(ctx) {
+		t.Fatal("a command after the applied new event was not released")
+	}
+}
