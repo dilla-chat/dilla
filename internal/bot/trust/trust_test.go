@@ -43,11 +43,12 @@ type fakeCore struct {
 	pending   int
 	revalid   map[id.ID]int // user → RevalidateGroup calls
 	state     map[id.ID]native.DeviceListState
-	last      map[id.ID]string        // user → the last applied push: the same push again changes nothing
-	pendFail  int                     // PendingLeaves failures to answer before succeeding
-	pushFail  map[string]error        // push body → op 24 failure (checked before failIn)
-	block     map[id.ID]chan struct{} // user → op 24 waits on it
-	revalErr  map[leafKey]error       // leaf → op 13 failure
+	last      map[id.ID]string         // user → the last applied push: the same push again changes nothing
+	pendFail  int                      // PendingLeaves failures to answer before succeeding
+	pushFail  map[string]error         // push body → op 24 failure (checked before failIn)
+	block     map[id.ID]chan struct{}  // user → op 24 waits on it
+	revalErr  map[leafKey]error        // leaf → op 13 failure
+	blockPush map[string]chan struct{} // push body → op 24 waits on it
 }
 
 func newFakeCore() *fakeCore {
@@ -88,6 +89,11 @@ func push(revoked ...id.ID) []byte {
 
 func (c *fakeCore) IngestDeviceList(_ context.Context, user id.ID, body []byte) (native.DeviceListIngest, error) {
 	c.mu.Lock()
+	if gate := c.blockPush[string(body)]; gate != nil {
+		c.mu.Unlock()
+		<-gate
+		c.mu.Lock()
+	}
 	wait := c.block[user]
 	c.mu.Unlock()
 	if wait != nil {

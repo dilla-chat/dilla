@@ -209,19 +209,41 @@ func TestAKeptWelcomeIsReplacedByANewerOne(t *testing.T) {
 	}
 }
 
-// TestBotChannelsUnknownKeepMembership: until the feed has applied a snapshot, the Bot channels are unknown and
-// membership is not narrowed (an empty set before the snapshot must not leave every group).
-func TestBotChannelsUnknownKeepMembership(t *testing.T) {
+// TestBeforeTheSnapshotNoTextGroupIsSyncedOrJoined (fix round 2, N-2): after a start, until the feed has applied a
+// snapshot, the Bot does not know its Bot channels and fails closed. A held text group (one the Bot left) is not
+// synced, and a Welcome to an unmarked channel is kept, not applied. Nothing is left or migrated yet. Once the snapshot
+// says the second channel is a Bot channel, its kept Welcome joins the Bot, and the left group stays unsynced.
+func TestBeforeTheSnapshotNoTextGroupIsSyncedOrJoined(t *testing.T) {
 	r, n, s, community, channel, group := membershipFixture(t)
-	r.UseBotChannels(&botChannelSet{}, nil)
-	info := native.GroupInfo{ID: group, Kind: 0, Community: &community, Target: channel, State: 2, NextSequence: 1}
-	n.groups, n.inspected = []native.GroupInfo{info}, info
+	other, otherGroup := membershipID(30), membershipID(31)
+	s.channels = append(s.channels, client.Channel{ID: other, CommunityID: community, Kind: 0, TextGroupID: &otherGroup})
+	channels := &botChannelSet{} // linked, not known
+	r.UseBotChannels(channels, nil)
+	held := native.GroupInfo{ID: group, Kind: 0, Community: &community, Target: channel, State: 2, NextSequence: 1}
+	n.groups, n.inspected = []native.GroupInfo{held}, held
+	s.welcomes = []client.Welcome{{ID: 1, GroupID: otherGroup, Blob: []byte{1}, Tree: []byte{2}, TreeHash: make([]byte, 32)}}
 	res, err := r.reconcileOnce(context.Background(), s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.GroupsSynced != 1 || len(n.other) != 0 {
-		t.Fatalf("result %+v, state %v; want the group synced and no migration marker", res, n.other)
+	if res.GroupsSynced != 0 || s.groupPageCalls != 0 || n.applyCalls != 0 {
+		t.Fatalf("before the snapshot: result %+v, page reads %d, applies %d; want nothing synced or applied", res, s.groupPageCalls, n.applyCalls)
+	}
+	if _, _, _, kept, err := r.loadDeferredWelcome(context.Background(), otherGroup); err != nil || !kept {
+		t.Fatalf("the Welcome was not kept: %v %v", kept, err)
+	}
+	if v := n.other[botChannelMigrationKey]; v.Revision != 0 {
+		t.Fatal("the first-start migration ran before the Bot channels were known")
+	}
+	// The snapshot: the second channel is a Bot channel.
+	channels.set(other, true)
+	n.outcomes = []native.GroupWelcomeOutcome{{ID: 1, Group: otherGroup, Outcome: 0}}
+	n.inspected = native.GroupInfo{ID: otherGroup, Kind: 0, Community: &community, Target: other, State: 2, NextSequence: 1}
+	if res, err = r.reconcileOnce(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if n.applyCalls != 1 || res.Applied != 1 || s.groupPageCalls != 0 {
+		t.Fatalf("after the snapshot: apply %d, result %+v, page reads %d; want the kept Welcome applied and the left group unsynced", n.applyCalls, res, s.groupPageCalls)
 	}
 }
 

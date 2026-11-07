@@ -169,8 +169,9 @@ func (r *MembershipReconciler) UseBotChannels(channels BotChannels, log *slog.Lo
 	r.log = log
 }
 
-// botChannelSet is the reconciler's Bot channels now; known false keeps v1 membership.
-func (r *MembershipReconciler) botChannelSet() (map[id.ID]bool, bool, *slog.Logger) {
+// botChannelSet is the reconciler's Bot channels now. linked is false only with no feed link (v1 membership); with
+// one, known is false until the feed has applied a snapshot.
+func (r *MembershipReconciler) botChannelSet() (marked map[id.ID]bool, linked, known bool, log *slog.Logger) {
 	r.mu.Lock()
 	channels, log := r.botChannels, r.log
 	r.mu.Unlock()
@@ -178,10 +179,10 @@ func (r *MembershipReconciler) botChannelSet() (map[id.ID]bool, bool, *slog.Logg
 		log = slog.New(slog.DiscardHandler)
 	}
 	if channels == nil {
-		return nil, false, log
+		return nil, false, false, log
 	}
-	marked, known := channels.Marked()
-	return marked, known, log
+	marked, known = channels.Marked()
+	return marked, true, known, log
 }
 
 // NeedsReAdd is the Bot channels the last reconcile found the Bot cannot join on its own: a member's client must add
@@ -309,9 +310,11 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 			textGroup[*ch.TextGroupID] = ch
 		}
 	}
-	marked, known, log := r.botChannelSet()
-	// participates: a text channel's group is one the Bot is in only while the channel is a Bot channel.
-	participates := func(ch client.Channel) bool { return !known || ch.Kind != 0 || marked[ch.ID] }
+	marked, linked, known, log := r.botChannelSet()
+	// participates: a text channel's group is one the Bot is in only while the channel is a Bot channel. With a feed
+	// link, no text channel participates until the feed has applied a snapshot (fix round 2, N-2, fail closed): no
+	// Welcome is applied (it is kept) and no text group is synced before the Bot knows its Bot channels.
+	participates := func(ch client.Channel) bool { return !linked || ch.Kind != 0 || known && marked[ch.ID] }
 	groups, err := r.native.Groups(ctx)
 	if err != nil {
 		return out, err
@@ -346,7 +349,7 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 	// Welcomes to a channel that is not a Bot channel are acknowledged without being applied (Bot v2 Task 16).
 	all := welcomes
 	var refused []client.Welcome
-	if known {
+	if linked {
 		kept := make([]client.Welcome, 0, len(welcomes))
 		for _, w := range welcomes {
 			if c, ok := textGroup[w.GroupID]; ok && !participates(c) {

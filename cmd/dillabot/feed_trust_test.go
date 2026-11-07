@@ -226,3 +226,37 @@ func TestLeftGroupsReportedByMembershipCostNoTrustWork(t *testing.T) {
 		t.Fatal("the channel needing re-add was not kept")
 	}
 }
+
+// TestADeferredListStillStagesTheNewDevice (fix round 2, N-4): a member's changed list whose op 24 outlasts the inline
+// budget is staged once it applies, off the feed worker.
+func TestADeferredListStillStagesTheNewDevice(t *testing.T) {
+	community, ada := feedID(1), feedID(4)
+	deps := &fakeFeedDeps{episodes: map[id.ID]id.ID{ada: feedID(0x31)}, changed: true}
+	h := newInstallationFeed(feedID(9), community, feedID(8), quietLogger(), func() {})
+	defer h.trust.Close()
+	h.trust.WithInlineBudget(20 * time.Millisecond)
+	gate := make(chan struct{})
+	d := deps.deps()
+	ingest := d.ingest
+	d.ingest = func(ctx context.Context, u id.ID, push []byte) (native.DeviceListIngest, error) {
+		<-gate
+		return ingest(ctx, u, push)
+	}
+	h.setDeps(d)
+	h.Member(t.Context(), MemberEvent{Community: community, User: ada, Joined: true})
+	deps.mu.Lock()
+	deps.staged = nil
+	deps.mu.Unlock()
+	if err := h.DeviceList(t.Context(), ada, []byte{0xad}, false); err != nil {
+		t.Fatal(err)
+	}
+	if !h.Held(ada) {
+		t.Fatal("a deferred list did not hold the user")
+	}
+	close(gate)
+	waitFor(t, "the new device staged", time.Second, func() bool {
+		deps.mu.Lock()
+		defer deps.mu.Unlock()
+		return len(deps.staged) == 1 && deps.staged[0][0] == ada
+	})
+}
