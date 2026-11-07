@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError, PERM, createBotUtilities, decodePollVote, decodePollClose, type CoreClient, type PollSummary } from '@dilla/client-core';
+import { BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError, PERM, createBotUtilities, watchBotHint, decodePollVote, decodePollClose, type CoreClient, type PollSummary } from '@dilla/client-core';
 import { PollCard as SignalPollCard, showToast } from '@dilla/ui';
 import { utilityText as t } from './utility-copy.ts';
 import { botDefinitelyUnavailable, loadedCommandBot, refreshCommandBot } from './command-bot-store.ts';
@@ -78,7 +78,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
   const [active, setActive] = useState(false);
   // Verification failed for good (a refusal, or the 2/5/10 s retries ran out): the card steps aside so the post's own text stands.
   const [gaveUp, setGaveUp] = useState(false);
-  // A refusal (not a failure) was the reason: the quick retries are pointless, only the 30 s tick tries again.
+  // A refusal (not a failure) was the reason: the quick retries are pointless, only the next pushed hint tries again.
   const definitive = useRef(false);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -204,7 +204,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       try {
         const poll = await refresh(true);
         window.clearTimeout(retry); retry = undefined;
-        // A failed verification retries quickly (2, 5, 10 s) before it waits for the 30 s tick.
+        // A failed verification retries quickly (2, 5, 10 s) before it waits for the next pushed hint.
         if (poll === null && !definitive.current && failures < RETRY_DELAYS.length) retry = window.setTimeout(() => { void update(); }, RETRY_DELAYS[failures++]);
         else if (poll !== null) failures = 0;
         else setGaveUp(true);
@@ -212,9 +212,11 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     };
     const shown = () => { if (overdue && document.visibilityState === 'visible') void update(); };
     document.addEventListener('visibilitychange', shown);
-    void update(false); const timer = window.setInterval(() => { void update(); }, 30_000);
-    return () => { document.removeEventListener('visibilitychange', shown); window.clearInterval(timer); window.clearTimeout(retry); currentGeneration.current++; currentVoterGeneration.current++; voterTarget.current = null; };
-  }, [active, refresh]);
+    void update(false);
+    // Bot v2: a pushed channel hint (the tally changed) is the only cue to read again; nothing runs on a timer.
+    const stopHints = watchBotHint(props.client, { kind: 1, id: props.channelId }, () => { void update(); });
+    return () => { document.removeEventListener('visibilitychange', shown); stopHints(); window.clearTimeout(retry); currentGeneration.current++; currentVoterGeneration.current++; voterTarget.current = null; };
+  }, [active, refresh, props.client, props.channelId]);
   const poll = sourceAccessible && record?.client === props.client && record.scope === scopeKey && verifiedScope === scopeKey ? record.poll : null;
   const { onVerified, onGaveUp } = props;
   useLayoutEffect(() => {

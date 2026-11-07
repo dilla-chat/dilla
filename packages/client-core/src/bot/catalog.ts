@@ -220,10 +220,15 @@ export class BotCatalogStore {
   /** A new gateway connection: the next sync reads the revisions again (op 61 is not replayed). */
   newConnection(): void { this.revisions = null; }
 
+  /** The instance's revisions for this connection (one read, shared with the catalog sync); null when it could not be read. */
+  readRevisions(): Promise<BotRevision[] | null> {
+    this.revisions ??= this.deps.fetchRevisions().then(decodeBotRevisions).catch((e: unknown) => { this.deps.onError?.(codeOf(e)); return null; });
+    return this.revisions;
+  }
+
   /** Connect sync: fetch the catalog only when none is held or the instance's revision is newer than the held one. */
   async syncOnConnect(communityId: string): Promise<void> {
-    this.revisions ??= this.deps.fetchRevisions().then(decodeBotRevisions).catch((e: unknown) => { this.deps.onError?.(codeOf(e)); return null; });
-    const revisions = await this.revisions;
+    const revisions = await this.readRevisions();
     const held = this.entries.get(communityId);
     if (held !== undefined) {
       if (revisions === null) return;

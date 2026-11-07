@@ -3,7 +3,7 @@ import { Button, PollDialog, RemindersPopover, showToast, type PollDraft, type R
 import { BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError,
   createBotUtilities, encode, fromHex, parseReminderTime, resolveReminderTimeCandidate,
   type BotUtilities, type CoreClient, type ReminderSummary, type ReminderTimeResult } from '@dilla/client-core';
-import { channelBitsOf, PERM, type CommandContext as Binding, type CommandInvocation, type CommandResult } from '@dilla/client-core';
+import { channelBitsOf, PERM, watchBotHint, type CommandContext as Binding, type CommandInvocation, type CommandResult } from '@dilla/client-core';
 import { BOT_ACCOUNT_KIND } from '../bot-member.ts';
 import { shouldNotify, notificationCtor } from '../../notify.ts';
 import type { CommandExecutionContext, CommandProviderHandlers, CommandSuggestion, CommandSuggestionProvider } from './command-types.ts';
@@ -103,11 +103,18 @@ export function reminderFromArgs(args: Readonly<Record<string, string>>, now: Da
   return { value: { when: args.when ?? '', text, timezone, result } };
 }
 
+/** A local check re-armed after each run (no interval): the dialog's scope guard reads the page's own state. */
+function recheck(fn: () => void, ms: number): () => void {
+  let timer = 0;
+  const run = () => { fn(); timer = window.setTimeout(run, ms); };
+  timer = window.setTimeout(run, ms);
+  return () => { window.clearTimeout(timer); };
+}
+
 export function UtilityCommandDialogs({ dialog, channelName, botName }: { dialog: UtilityDialogState | null; channelName: string; botName: string }): React.JSX.Element | null {
   useEffect(() => {
     if (dialog === null) return;
-    const timer = window.setInterval(() => { if (!dialog.isCurrent()) dialog.onCancel(); }, 100);
-    return () => window.clearInterval(timer);
+    return recheck(() => { if (!dialog.isCurrent()) dialog.onCancel(); }, 100);
   }, [dialog]);
   if (dialog === null) return null;
   return <PollEditor key="poll" dialog={dialog} channelName={channelName} botName={botName} />;
@@ -264,22 +271,24 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
   useEffect(() => {
     if (ownerKey === '') { fetchToken.current++; knownDue.current = null; setRecords(null); return; }
     knownDue.current = null;
-    let stopped = false; let running = false; let queued = false; let timer = 0;
-    let availabilityTicks = 0;
+    let stopped = false; let running = false; let queued = false;
+    // Bot v2: no timer re-reads the inbox. It is read when the surface opens, when the window is shown again, and on a pushed
+    // user hint (a reminder fell due or changed): the worker also raises one at connect when the instance is ahead of this
+    // device. A hint or a return to the window also gives a community whose Bot was unavailable another try.
     const poll = async (initial = false): Promise<void> => {
       if (stopped) return;
       if (running) { queued = true; return; }
-      running = true; availabilityTicks++; await fetchInbox(initial, availabilityTicks % 5 === 0); running = false;
+      running = true; await fetchInbox(initial, !initial); running = false;
       if (stopped) return;
       if (queued) { queued = false; void poll(); }
-      else timer = window.setTimeout(() => { void poll(); }, 60_000);
     };
     void poll(true);
     const onVisible = () => { if (document.visibilityState === 'visible') void poll(); };
     document.addEventListener('visibilitychange', onVisible);
+    const stopHints = watchBotHint(client, { kind: 0 }, () => { void poll(); });
     const token = fetchToken;
-    return () => { stopped = true; token.current++; window.clearTimeout(timer); document.removeEventListener('visibilitychange', onVisible); };
-  }, [ownerKey, fetchInbox]);
+    return () => { stopped = true; token.current++; stopHints(); document.removeEventListener('visibilitychange', onVisible); };
+  }, [client, ownerKey, fetchInbox]);
   const openDialog = useCallback((state: UtilityDialogInput, context: CommandExecutionContext, installationId: string, operation: 70 | 80) => new Promise<unknown>(resolve => {
     if (liveScope.current.client !== client || liveScope.current.ownerKey === '' || !context.isCurrent()) { resolve(null); return; }
     cancelDialog.current?.();
@@ -293,15 +302,15 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
         && current.communityId === communityId && current.channelId === capturedBinding.channelId && current.channelId !== null
         && ((current.bits ?? 0) & PERM.sendMessages) !== 0 && context.isCurrent();
     };
-    let timer = 0; let capabilityProbe = 0; let settled = false;
+    let stopCheck: () => void = () => undefined; let capabilityProbe = 0; let settled = false;
     const finish = (value: unknown) => {
-      if (settled) return; settled = true; window.clearInterval(timer);
+      if (settled) return; settled = true; stopCheck();
       if (resolveDialog.current === resolve) { resolveDialog.current = null; cancelDialog.current = null; setDialog(null); setDialogScope(null); }
       resolve(value);
     };
     const cancel = () => finish(null);
     cancelDialog.current = cancel;
-    timer = window.setInterval(() => {
+    stopCheck = recheck(() => {
       if (!isScopeCurrent()) { cancel(); return; }
       capabilityProbe++;
       if (capabilityProbe % 10 === 0 && communityId !== null) void utilityFor(communityId).capabilities().then(caps => {

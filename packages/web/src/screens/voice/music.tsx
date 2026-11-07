@@ -3,7 +3,7 @@
 // in that channel's call. Nothing here invents a value the snapshot does not carry: the requester is the member the Bot
 // recorded, and the playhead runs on only from the Bot's own stamp (Ruling AI; an older Bot's snapshot stays static).
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createVoiceMusicAdapter, musicPlayheadMs, type CoreClient, type MemberSummary, type TrustSummary, type VoiceMusicAdapter,
+import { createVoiceMusicAdapter, musicPlayheadMs, watchBotHint, type CoreClient, type MemberSummary, type TrustSummary, type VoiceMusicAdapter,
   type VoiceMusicState, type VoiceMusicTrack } from '@dilla/client-core';
 import { NowPlaying, type NowPlayingProps } from '@dilla/ui';
 import { en, t } from '../../strings/index.ts';
@@ -16,12 +16,10 @@ export type MusicPlayerView = Omit<NowPlayingProps, 'variant' | 'onToggle' | 'on
 };
 
 /**
- * Fix rounds 1–2 (item 3): the Bot has no push for music changes (interaction responses answer requests; nothing streams
- * state), so an open player re-reads the snapshot as a fallback: every 25 s while the page is visible, once when it becomes
- * visible again, and once a second after the playing track should end. One schedule per channel, however many views read it.
+ * Bot v2 (task 21): the Bot pushes a call hint (op 63, kind 2) when the queue or now-playing state changes, so an open player
+ * re-reads the snapshot once per hint, once when the page becomes visible again, and once a second after the playing track
+ * should end. No interval reads the Bot. One watch per channel, however many views read it.
  */
-export const MUSIC_REFRESH_MS = 25_000;
-
 export const MUSIC_LABELS = (): NowPlayingProps['labels'] => ({
   region: t('music.region'), playing: t('music.playing'), paused: t('music.paused'), stopped: t('music.stopped'), idle: t('music.idle'),
   play: t('music.play'), pause: t('music.pause'), skip: t('music.skip'), stop: t('music.stop'),
@@ -35,7 +33,7 @@ function adapterFor(client: CoreClient, communityId: string | null): VoiceMusicA
   try { return createVoiceMusicAdapter(client, communityId); } catch { return null; }
 }
 
-interface Refresher { count: number; timer: ReturnType<typeof setInterval>; end: ReturnType<typeof setTimeout> | null; refresh(): void }
+interface Refresher { count: number; stopHints: () => void; end: ReturnType<typeof setTimeout> | null; refresh(): void }
 const refreshers = new Map<VoiceMusicAdapter, Map<string, Refresher>>();
 const hidden = () => typeof document !== 'undefined' && document.hidden;
 let visibilityBound = false;
@@ -49,14 +47,16 @@ function bindVisibility(): void {
   });
 }
 /** One schedule per (adapter, channel) while any view holds it; returns the release and the track-end scheduler. */
-function holdRefresh(adapter: VoiceMusicAdapter, channelId: string): { release(): void; endIn(ms: number | null): void } {
+function holdRefresh(client: CoreClient, adapter: VoiceMusicAdapter, channelId: string): { release(): void; endIn(ms: number | null): void } {
   bindVisibility();
   let channels = refreshers.get(adapter);
   if (channels === undefined) { channels = new Map(); refreshers.set(adapter, channels); }
   let row = channels.get(channelId);
   if (row === undefined) {
     const refresh = () => { void adapter.refresh(channelId).catch(() => undefined); };
-    row = { count: 0, end: null, refresh, timer: setInterval(() => { if (!hidden()) refresh(); }, MUSIC_REFRESH_MS) };
+    // Bot v2: the Bot pushes a call hint when the queue or now-playing state changes; that is the only cue to read again.
+    const stopHints = watchBotHint(client, { kind: 2, id: channelId }, () => { if (!hidden()) refresh(); });
+    row = { count: 0, end: null, refresh, stopHints };
     channels.set(channelId, row);
   }
   row.count++;
@@ -64,7 +64,7 @@ function holdRefresh(adapter: VoiceMusicAdapter, channelId: string): { release()
   return {
     release() {
       if (--held.count > 0) return;
-      clearInterval(held.timer);
+      held.stopHints();
       if (held.end !== null) clearTimeout(held.end);
       channels.delete(channelId);
       if (channels.size === 0) refreshers.delete(adapter);
@@ -99,7 +99,7 @@ function useMusicState(client: CoreClient, communityId: string | null, channelId
       setState(adapter.state(channelId));
       return unsubscribe;
     }
-    const hold = holdRefresh(adapter, channelId);
+    const hold = holdRefresh(client, adapter, channelId);
     const read = () => {
       const next = adapter.state(channelId);
       setState(next);
@@ -121,8 +121,11 @@ function usePlayheadNow(running: boolean): number {
   useEffect(() => {
     if (!running) return;
     setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
+    // A one-second clock for the playhead, re-armed after each tick (a local display clock, not a read of the Bot).
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => { setNow(Date.now()); timer = setTimeout(tick, 1000); };
+    timer = setTimeout(tick, 1000);
+    return () => clearTimeout(timer);
   }, [running]);
   return now;
 }

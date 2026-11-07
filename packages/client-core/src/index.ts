@@ -14,6 +14,8 @@ export { createBotInteractionClient, BotInteractionUncertainError, BotInteractio
 export type { BotInteractionClient, BotInteractionRequest, BotInteractionResult, BotInteractionScope } from './bot/interactions';
 export { createBotUtilities, decodePollVote, decodePollClose, BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError } from './bot/utilities';
 export type { BotUtilities, PollSummary, ReminderSummary, ReminderState, UtilityBinding, UtilityCapabilities, PollPage, ReminderPage, PollVotersPage } from './bot/utilities';
+export { BotHints, watchBotHint, HINT_COALESCE_MS } from './bot/hints';
+export type { Hint, HintClient, HintRevision, HintScope } from './bot/hints';
 export { botCommands, createBotCommands, botCommandPort, BOT_FIRST_ANSWER_MS, BOT_KEY_STALE_STATUS } from './bot/commands';
 export type { BotAnswer, BotArg, BotCommandRun, BotRunItem, BotCommandPort } from './bot/commands';
 export type { ArgShape, ArgType, BotCatalog, BotCommandSpec, BotState, BotStatus } from './bot/catalog';

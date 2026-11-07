@@ -9,8 +9,8 @@ import { commandBotSnapshot } from './command-bot-store.ts';
 const communityId = '11'.repeat(16), channelId = '22'.repeat(16), selfId = '33'.repeat(16), authorId = '44'.repeat(16), installationId = '55'.repeat(16), id = '66'.repeat(16);
 // The clock starts on a whole millisecond: from a fractional start, 30 s later minus the start can fall a hair under 30 000 and skip the walk.
 function fixture(over: Partial<PollSummary> = {}, capabilities: () => Promise<unknown> = () => Promise.resolve({ installationId, botUserId: authorId, supportedOperations: [3, 70] })) {
-  let tick!: () => void; let clock = Math.round(performance.now()); vi.spyOn(performance, 'now').mockImplementation(() => clock); const interval = window.setInterval.bind(window);
-  vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => { if (ms === 30_000) { tick = fn; return 900001; } return interval(fn, ms); }) as never);
+  let clock = Math.round(performance.now()); vi.spyOn(performance, 'now').mockImplementation(() => clock);
+  const interval = vi.spyOn(window, 'setInterval');
   const client = new FakeClient(); const base = client.handler;
   client.handler = command => command.m === 'getBotCommandStatus' ? Promise.resolve({ installationId, botUserId: authorId, state: 3, revision: '1' }) : base(command);
   client.set('account', { instance: { id: 'instance' }, user: { id: selfId }, deviceId: 'device' } as never);
@@ -23,10 +23,27 @@ function fixture(over: Partial<PollSummary> = {}, capabilities: () => Promise<un
   const capabilitiesSpy = vi.fn(capabilities);
   vi.spyOn(Core, 'createBotUtilities').mockReturnValue({ binding: { installationId, botUserId: authorId }, capabilities: capabilitiesSpy, pollGet, pollVote, pollVoters } as never);
   render(<PollCard {...{ client, communityId, channelId, selfId, authorId }} threadId={null} body={`[dilla-poll:v1:${id}]`} bot edited={false} deleted={false} bits={0} />);
-  return { client, capabilities: capabilitiesSpy, pollVote, pollVoters, pollGet, tick: () => { clock += 30_000; tick(); }, refreshNow: () => tick(), get poll() { return poll; }, setPoll(over: Partial<PollSummary>) { poll = { ...poll, ...over }; }, close() { poll = { ...poll, closed: true }; } };
+  // The worker's cue for a channel hint: its counter in the botHints slice rises.
+  let hints = 0; const hint = () => { client.set('botHints', { [`1:${channelId}`]: ++hints }); };
+  return { client, interval, capabilities: capabilitiesSpy, pollVote, pollVoters, pollGet, tick: () => { clock += 30_000; hint(); }, refreshNow: hint, get poll() { return poll; }, setPoll(over: Partial<PollSummary>) { poll = { ...poll, ...over }; }, close() { poll = { ...poll, closed: true }; } };
 }
 afterEach(() => vi.restoreAllMocks());
 describe('Signal poll adapter', () => {
+  it('updates on a channel hint and has no interval', async () => {
+    const f = fixture();
+    await waitFor(() => expect(f.pollGet).toHaveBeenCalledTimes(1));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(f.pollGet).toHaveBeenCalledTimes(1);
+    expect(f.client.calls).toContainEqual({ m: 'watchBotScope', kind: 1, channelId, on: true });
+    f.setPoll({ counts: [4n, 2n], revision: 2n });
+    await act(async () => { f.tick(); await Promise.resolve(); });
+    await waitFor(() => expect(f.pollGet).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(/6 voters/)).toBeInTheDocument();
+    // A hint for another channel is not this card's.
+    await act(async () => { f.client.set('botHints', { [`1:${'99'.repeat(16)}`]: 1 }); await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(f.pollGet).toHaveBeenCalledTimes(2);
+    expect(f.interval.mock.calls.filter(([, ms]) => ms === 30_000)).toEqual([]);
+  });
   it('shows a Loading poll… skeleton before verification and retries a failed verification at 2 s, 5 s and 10 s', async () => {
     vi.useFakeTimers();
     try {
@@ -108,7 +125,7 @@ describe('Signal poll adapter', () => {
     await waitFor(() => expect(screen.getAllByText('Raid?')).toHaveLength(2));
     expect(f.capabilities).toHaveBeenCalledTimes(1);
   });
-  it('pauses its 30 s refresh while the window is hidden and refreshes once when it is shown again, only if overdue', async () => {
+  it('pauses its hint refresh while the window is hidden and refreshes once when it is shown again, only if overdue', async () => {
     vi.useFakeTimers();
     let state: DocumentVisibilityState = 'visible';
     const spy = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => state);

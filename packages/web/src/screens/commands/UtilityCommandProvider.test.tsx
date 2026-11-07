@@ -79,6 +79,10 @@ function mount(client: CoreClient, community: string | null = COMMUNITY, onNavig
   const view = render(createElement(Probe)); return { captured, ...view, rerenderProbe: () => view.rerender(createElement(Probe)) }; }
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
+let hintN = 0;
+// The worker's cue for a channel hint: its counter in the botHints slice rises.
+const channelHint = (client: { set(name: 'botHints', value: Record<string, number>): void }) => { client.set('botHints', { [`1:${CHANNEL}`]: ++hintN }); };
+
 describe('utility command provider', () => {
   it('/poll create from the picker opens the New poll dialog', async () => {
     const f = utilityFixture();
@@ -218,6 +222,19 @@ describe('utility command provider', () => {
     expect(payload[1]).toBe(1n); expect(payload[4]).toBe('America/New_York'); expect(payload[2]).toBe(1_793_514_600n); mounted.unmount();
   });
 
+  it('reads the reminders inbox again on a user hint and on no timer', async () => {
+    const f = utilityFixture(); const mounted = mount(f.client, COMMUNITY, vi.fn());
+    await waitFor(() => expect(f.requests.some(row => row.operation === 81)).toBe(true));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+    const reads = f.requests.filter(row => row.operation === 81).length;
+    act(() => { f.client.set('botHints', { [`0:${COMMUNITY}`]: 1 }); });
+    await waitFor(() => expect(f.requests.filter(row => row.operation === 81).length).toBeGreaterThan(reads));
+    mounted.unmount();
+    const after = f.requests.filter(row => row.operation === 81).length;
+    act(() => { f.client.set('botHints', { [`0:${COMMUNITY}`]: 2 }); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+    expect(f.requests.filter(row => row.operation === 81)).toHaveLength(after);
+  });
   it('shows due reminders in the inbox and reuses an uncertain dismissal attempt', async () => {
     const user = userEvent.setup(); const f = utilityFixture(); const mounted = mount(f.client, COMMUNITY, vi.fn());
     await waitFor(() => expect(mounted.captured.value).toBeDefined());
@@ -416,14 +433,8 @@ describe('poll card binding', () => {
     expect(f.poll.closed).toBe(false); view.unmount();
   });
 
-  it('finishes the close refresh when the 30 s tick arrives while it is pending', async () => {
-    let tick!: () => void;
-    const setInterval = window.setInterval.bind(window);
-    vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
-      if (ms === 30_000) { tick = fn; return 900001; }
-      return setInterval(fn, ms);
-    }) as never);
-    const user = userEvent.setup(); const f = utilityFixture(); const view = renderPollCard(f.client);
+  it('finishes the close refresh when the hint arrives while it is pending', async () => {
+        const user = userEvent.setup(); const f = utilityFixture(); const view = renderPollCard(f.client);
     await screen.findByRole('button', { name: 'Close poll' });
     f.poll.revision = 2n;
     const base = f.client.handler; let release: (() => void) | undefined; let held = false;
@@ -437,21 +448,15 @@ describe('poll card binding', () => {
     const before = f.requests.length;
     await user.click(screen.getByRole('button', { name: 'Close poll' }));
     await waitFor(() => expect(release).toBeDefined());
-    await act(async () => { tick(); await Promise.resolve(); });
+    await act(async () => { channelHint(f.client); await Promise.resolve(); });
     await act(async () => { release!(); await Promise.resolve(); });
     expect(await screen.findByText('CLOSED')).toBeInTheDocument();
     expect(f.requests.slice(before).filter(row => row.operation === 74 || row.operation === 71).map(row => row.operation)).toEqual([74, 71, 74]);
     view.unmount();
   });
 
-  it('keeps a conflict notice across the 30 s refresh', async () => {
-    let tick!: () => void;
-    const setInterval = window.setInterval.bind(window);
-    vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
-      if (ms === 30_000) { tick = fn; return 900001; }
-      return setInterval(fn, ms);
-    }) as never);
-    const user = userEvent.setup(); const f = utilityFixture(); const view = renderPollCard(f.client);
+  it('keeps a conflict notice across the pushed refresh', async () => {
+        const user = userEvent.setup(); const f = utilityFixture(); const view = renderPollCard(f.client);
     await screen.findByRole('button', { name: 'Close poll' });
     f.poll.revision = 2n;
     const base = f.client.handler;
@@ -464,7 +469,7 @@ describe('poll card binding', () => {
     await screen.findByText(closeConflict);
     f.client.handler = base;
     f.poll.counts = [1n, 0n];
-    act(() => { tick(); });
+    act(() => { channelHint(f.client); });
     // The new counts prove the periodic read has completed before checking the notice.
     await screen.findByText('100%');
     expect(screen.getByText(closeConflict)).toBeInTheDocument();
@@ -497,16 +502,11 @@ describe('poll card binding', () => {
     await user.click(screen.getByRole('button', { name: 'Close poll' })); await waitFor(() => expect(f.poll.closed).toBe(true));
     expect(f.requests.filter(row => row.operation === 73).map(row => row.requestId)).toHaveLength(4); expect(f.requests.some(row => row.operation === 74)).toBe(true);
   });
-  it('finishes an authenticated poll read when its next refresh tick arrives before the response', async () => {
+  it('finishes an authenticated poll read when its next refresh hint arrives before the response', async () => {
     const f = utilityFixture(); const base = f.client.handler;
     const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
     vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: () => Promise.resolve({ voters: [], nextCursor: null }) });
-    let tick!: () => void; let firstRead: (() => void) | undefined; let firstRequest: string | undefined;
-    const setInterval = window.setInterval.bind(window);
-    vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
-      if (ms === 30_000) { tick = fn; return 900001; }
-      return setInterval(fn, ms);
-    }) as never);
+    let firstRead: (() => void) | undefined; let firstRequest: string | undefined;
     f.client.handler = command => {
       if (command.m === 'humanInteractionRequest' && command.operation === 71) firstRequest ??= command.requestId;
       if (command.m === 'readBotInteractionResponses' && command.operations.includes(71)) {
@@ -519,22 +519,17 @@ describe('poll card binding', () => {
     render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
     await waitFor(() => expect(firstRead).toBeDefined());
-    // The real Bot can need several gateway rounds, exceeding the 30-second refresh cadence.
-    act(() => { tick(); });
+    // The real Bot can need several gateway rounds, exceeding the refresh hints.
+    act(() => { channelHint(f.client); });
     act(() => { firstRead!(); });
     expect(await screen.findByRole('heading', { name: 'Lunch?' })).toBeInTheDocument();
     expect(f.requests.filter(row => row.operation === 71)).toHaveLength(1);
-    act(() => { tick(); });
+    act(() => { channelHint(f.client); });
     await waitFor(() => expect(f.requests.filter(row => row.operation === 71)).toHaveLength(2));
   });
   it.each([false, true])('keeps a pending walk and refreshes changed revisions on the next cadence (%s)', async changed => {
     const f = utilityFixture(); f.setPoll({ counts: [1n, 1n] }); let clock = performance.now(); vi.spyOn(performance, 'now').mockImplementation(() => clock); const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
-    let tick!: () => void; let release!: () => void; let started = false;
-    const setInterval = window.setInterval.bind(window);
-    vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
-      if (ms === 30_000) { tick = fn; return 900001; }
-      return setInterval(fn, ms);
-    }) as never);
+    let release!: () => void; let started = false;
     vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: async () => {
       if (!started) { started = true; return new Promise(resolve => { release = () => resolve({ voters: [USER], nextCursor: null }); }); }
       return { voters: [], nextCursor: null };
@@ -544,12 +539,12 @@ describe('poll card binding', () => {
     await waitFor(() => expect(release).toBeDefined());
     await act(async () => { await Promise.resolve(); });
     if (changed) f.setPoll({ revision: 2n });
-    act(() => { clock += 30_000; tick(); });
+    act(() => { clock += 30_000; channelHint(f.client); });
     await waitFor(() => expect(f.requests.filter(row => row.operation === 71)).toHaveLength(2));
     await act(async () => { release(); await Promise.resolve(); });
     await screen.findByText('Open for 1 hour · pick any · 1 voter');
     if (changed) {
-      act(() => { clock += 30_000; tick(); });
+      act(() => { clock += 30_000; channelHint(f.client); });
       await screen.findByText('Open for 1 hour · pick any · 0 voters');
       expect(screen.queryByRole('img', { name: 'Ada' })).not.toBeInTheDocument();
     } else expect(await screen.findByRole('img', { name: 'Ada' })).toBeInTheDocument();
@@ -607,9 +602,7 @@ describe('poll card binding', () => {
     expect(decode((selectedMutation?.args[1] as Uint8Array | undefined) ?? new Uint8Array())).toEqual([0n]);
   });
   it('keeps an uncertain vote ID when capability recovery temporarily fails', async () => {
-    const f = utilityFixture(); const base = f.client.handler; let ready = true; let refresh!: () => void;
-    vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => { if (ms === 30_000) refresh = fn; return 9; }) as never);
-    f.client.handler = command => command.m === 'getBotCommandStatus'
+    const f = utilityFixture(); const base = f.client.handler; let ready = true;     f.client.handler = command => command.m === 'getBotCommandStatus'
       ? Promise.resolve({ installationId: INSTALLATION, botUserId: BOT, state: ready ? 3 : 4, revision: '1' }) : base(command);
     const user = userEvent.setup(); const props = { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages };
@@ -618,7 +611,7 @@ describe('poll card binding', () => {
     await screen.findByText('Your vote may not have counted. Tap it again to retry.');
     const originalId = f.requests.find(row => row.operation === 73)!.requestId; ready = false; await user.click(screen.getByRole('button', { name: /^Soup/ }));
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Lunch?' })).not.toBeInTheDocument());
-    ready = true; act(() => { refresh(); }); await screen.findByRole('heading', { name: 'Lunch?' });
+    ready = true; act(() => { channelHint(f.client); }); await screen.findByRole('heading', { name: 'Lunch?' });
     await user.click(screen.getByRole('button', { name: /^Soup/ }));
     expect(f.requests.filter(row => row.operation === 73).every(row => row.requestId === originalId)).toBe(true); view.unmount();
   });
@@ -642,8 +635,7 @@ describe('utility outcome and privacy regressions', () => {
   const badReceipts = ([73, 74] as const).flatMap(operation =>
     (['malformed', 'poll', 'channel', 'thread', 'revision', 'schema', 'state'] as const).map(defect => ({ operation, defect })));
   it.each(badReceipts)('retains operation $operation after a $defect accepted receipt and failed recovery', async ({ operation, defect }) => {
-    const f = utilityFixture(); const base = f.client.handler; const attemptedIds: string[] = []; let corrupt = true; let uncertain = false; let failRead = false; let failedRead = false; let refresh!: () => void;
-    const canonical = pollSummary({ revision: 2n, myChoices: operation === 73 ? [0] : [], counts: [1n, 0n], closed: operation === 74 });
+    const f = utilityFixture(); const base = f.client.handler; const attemptedIds: string[] = []; let corrupt = true; let uncertain = false; let failRead = false; let failedRead = false;     const canonical = pollSummary({ revision: 2n, myChoices: operation === 73 ? [0] : [], counts: [1n, 0n], closed: operation === 74 });
     const bad = { ...canonical, ...(defect === 'poll' ? { id: 'ab'.repeat(16) } : {}), ...(defect === 'channel' ? { channelId: 'ac'.repeat(16) } : {}),
       ...(defect === 'thread' ? { threadId: 'ad'.repeat(16) } : {}), ...(defect === 'revision' ? { revision: 3n } : {}),
       ...(defect === 'state' ? operation === 73 ? { myChoices: [] } : { closed: false } : {}) };
@@ -656,7 +648,6 @@ describe('utility outcome and privacy regressions', () => {
     };
     const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
     const observe = async (run: () => Promise<PollSummary>) => { try { return await run(); } catch (cause) { uncertain = cause instanceof ClientCore.BotUtilitiesUncertainMutationError; throw cause; } };
-    vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => { if (ms === 30_000) refresh = fn; return 9; }) as never);
     vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; },
       // The card verifies from the shared Bot list, so its refresh read is pollGet (which does its own capability read).
       pollGet: (...args) => { if (failRead) { failRead = false; failedRead = true; return Promise.reject(new Error('backing read unavailable')); } return real.pollGet(...args); },
@@ -669,7 +660,7 @@ describe('utility outcome and privacy regressions', () => {
     await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
     await waitFor(() => expect(uncertain && failedRead).toBe(true));
     const originalId = f.requests.find(row => row.operation === operation)!.requestId;
-    act(() => { refresh(); });
+    act(() => { channelHint(f.client); });
     const retry = await screen.findByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' });
     expect(retry).toBeEnabled(); expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0])[operation === 73 ? 'toBeEnabled' : 'toBeDisabled']();
     if (operation === 73) expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toHaveAttribute('aria-pressed', 'true');
@@ -682,9 +673,7 @@ describe('utility outcome and privacy regressions', () => {
   });
 
   it.each([73, 74] as const)('settles a validated operation %s receipt despite an unavailable refresh', async operation => {
-    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let failRead = false; let failedRead = false; let refresh!: () => void;
-    const accepted = async (input: { requestId: string }, run: () => Promise<PollSummary>) => { await run(); throw new ClientCore.BotUtilitiesUncertainMutationError(operation, 0, input.requestId, new Error('lost outcome')); };
-    vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => { if (ms === 30_000) refresh = fn; return 9; }) as never);
+    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let failRead = false; let failedRead = false;     const accepted = async (input: { requestId: string }, run: () => Promise<PollSummary>) => { await run(); throw new ClientCore.BotUtilitiesUncertainMutationError(operation, 0, input.requestId, new Error('lost outcome')); };
     vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; },
       capabilities: () => { if (failRead && operation === 73) { failRead = false; failedRead = true; return Promise.reject(new Error('capability unavailable')); } return real.capabilities(); },
       pollGet: (...args) => { if (failRead && operation === 74) { failRead = false; failedRead = true; return Promise.reject(new Error('backing read unavailable')); } return real.pollGet(...args); },
@@ -697,7 +686,7 @@ describe('utility outcome and privacy regressions', () => {
     await waitFor(() => expect(failedRead).toBe(true));
     await waitFor(() => expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toBeEnabled());
     expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument();
-    act(() => { refresh(); });
+    act(() => { channelHint(f.client); });
     if (operation === 74) await screen.findByText('CLOSED');
     else await waitFor(() => expect(screen.getByRole('button', { name: /^Soup/ })).toBeInTheDocument());
     expect(f.requests.filter(row => row.operation === operation)).toHaveLength(1); view.unmount();
@@ -714,9 +703,7 @@ describe('utility outcome and privacy regressions', () => {
     expect(f.requests.filter(row => row.operation === 74)).toHaveLength(1); view.unmount();
   });
   it.each([73, 74] as const)('keeps operation %s uncertain across unrelated typed capability statuses', async operation => {
-    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let rejectedStatus: number | null = null; let refresh!: () => void;
-    vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => { if (ms === 30_000) refresh = fn; return 9; }) as never);
-    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; },
+    const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let rejectedStatus: number | null = null;     vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; },
       capabilities: () => rejectedStatus === null ? real.capabilities() : Promise.reject(new ClientCore.BotUtilitiesStatusError(3, rejectedStatus, 'e1'.repeat(16), null)),
       // pollGet does its own capability read; the card's refresh goes through it.
       pollGet: (...args) => rejectedStatus === null ? real.pollGet(...args) : Promise.reject(new ClientCore.BotUtilitiesStatusError(3, rejectedStatus, 'e1'.repeat(16), null)) });
@@ -729,7 +716,7 @@ describe('utility outcome and privacy regressions', () => {
     for (const status of [2, 3, 4]) {
       rejectedStatus = status; await user.click(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' }));
       await waitFor(() => expect(screen.queryByRole('heading', { name: 'Lunch?' })).not.toBeInTheDocument());
-      rejectedStatus = null; act(() => { refresh(); }); await screen.findByRole('heading', { name: 'Lunch?' });
+      rejectedStatus = null; act(() => { channelHint(f.client); }); await screen.findByRole('heading', { name: 'Lunch?' });
       expect(screen.getByRole('button', { name: operation === 73 ? /^Soup/ : 'Close poll' })).toBeEnabled();
       if (operation === 73) expect(screen.getAllByRole('button', { name: /^(Soup|Salad)/ })[0]).toHaveAttribute('aria-pressed', 'true');
     }

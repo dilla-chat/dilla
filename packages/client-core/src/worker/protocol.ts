@@ -36,6 +36,9 @@ export type Command =
   | { m: 'syncBotCatalog'; communityId: string }
   // Bot v2 (task 20 fix round 1): the page closed this run; the worker forgets its reply secret now. → null.
   | { m: 'forgetBotCommand'; requestId: string }
+  // Bot v2 (task 21): a surface shows (on) or stops showing a channel (kind 1) or call (kind 2, its voice channel) scope, so
+  // that op 63 hints for it are fetched; the user scope needs no watch. Counted per scope. → null.
+  | { m: 'watchBotScope'; kind: 1 | 2; channelId: string; on: boolean }
   | { m: 'readBotInteractionResponses'; communityId: string; operations: readonly number[]; requestIds?: readonly string[] }
   | { m: 'ackBotInteractionResponses'; communityId: string; through: string }
   | { m: 'readHumanInteractionResponses'; communityId: string; requestIds?: readonly string[] }

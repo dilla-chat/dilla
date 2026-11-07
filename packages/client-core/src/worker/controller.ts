@@ -15,6 +15,7 @@ import { Tray, type TrayEntry } from '../attachments/tray';
 import { CborError } from '../cbor';
 import { decodeBotResponse, encodeBotRequestBytes, validateBotResponseForRequest, validateBotContext } from '../bot/protocol';
 import { BotCatalogStore } from '../bot/catalog';
+import { BotHints } from '../bot/hints';
 import { BOT_ANSWER_LOG, BotCommandError, BotCommandRelay, type BotAnswerView } from '../bot/commands';
 import { arr, decode as decodeCbor, type CborInput } from '../cbor';
 import {
@@ -22,7 +23,7 @@ import {
   type HumanInteractionEvent, type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
-import { Op, afkAwayOf, botCatalogOf, botReplyOf, communityChangedOf, voiceStateOf, type AFKAwayFrame, type Frame } from '../gateway/frames';
+import { Op, afkAwayOf, botCatalogOf, botReplyOf, botStateChangedOf, communityChangedOf, voiceStateOf, type AFKAwayFrame, type Frame } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
 import { HttpClient, type HttpRequest, type HttpResponse } from '../http/client';
 import type { SocketRoute } from '../http/socket-routes';
@@ -233,6 +234,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'sendBotCommand',
   'syncBotCatalog',
   'forgetBotCommand',
+  'watchBotScope',
   'patchBotProfile',
   'listModerationCases',
   'listManualModerationEvidence',
@@ -428,6 +430,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   sendBotCommand: ['communityId', 'requestId'],
   syncBotCatalog: ['communityId'],
   forgetBotCommand: ['requestId'],
+  watchBotScope: ['channelId'],
   patchBotProfile: ['communityId'],
   listModerationCases: ['communityId', 'requestId'],
   listManualModerationEvidence: ['communityId', 'requestId'],
@@ -545,6 +548,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'sendBotCommand',
     'syncBotCatalog',
     'forgetBotCommand',
+    'watchBotScope',
     'patchBotProfile',
     'listModerationCases',
     'listManualModerationEvidence',
@@ -955,6 +959,7 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'safetyNumber' && (typeof command.umk !== 'string' || !/^[0-9a-f]{64}$/.test(command.umk))) return 'umk is not 64 lowercase hex';
   if (m === 'voiceSelf' && (typeof command.flags !== 'number' || !Number.isInteger(command.flags) || command.flags < 0 || command.flags > 3)) return 'flags are not 0..3';
   if (m === 'typing' && typeof command.on !== 'boolean') return 'on is not a boolean';
+  if (m === 'watchBotScope' && ((command.kind !== 1 && command.kind !== 2) || typeof command.on !== 'boolean')) return 'kind or on is invalid';
   if (m === 'callJoin' && !validVdec(command.vdec)) return 'vdec is not a list of distinct decoders';
   if (m === 'callLeave' && command.reason !== 'user' && command.reason !== 'pagehide' && command.reason !== 'switch' && command.reason !== 'lost') return 'invalid leave reason';
   if (m === 'callShare' && typeof command.on !== 'boolean') return 'on is not a boolean';
@@ -1181,6 +1186,11 @@ export class Controller {
   private botAnswers: BotAnswerView[] = [];
   private botAnswerN = 0;
   private readonly botCatalogWatched = new Set<string>();
+  /** Bot v2 (task 21): op 63 hints decide when the page fetches (bot/hints.ts); a rise in `botHints[scope]` is the cue. */
+  private botHints!: BotHints;
+  private botHintSignals: Record<string, number> = {};
+  /** Channel (1) and call (2) scopes a page shows now, counted per scope. */
+  private readonly botScopesShown = new Map<string, number>();
   /** Community hex → when its remembered "no interaction group" answer lapses (ms). */
   private readonly noInteractionGroupUntil = new Map<string, number>();
   /** Requests waiting for a Welcome push; each is woken when a group turns active. */
@@ -1264,6 +1274,17 @@ export class Controller {
           body: toHex(answer.body), final: answer.final }].slice(-BOT_ANSWER_LOG);
         this.slices.set('botAnswers', this.botAnswers);
       },
+    });
+    this.botHints = new BotHints({
+      fetch: (scope) => {
+        const key = `${scope.kind}:${scope.id}`;
+        this.botHintSignals = { ...this.botHintSignals, [key]: (this.botHintSignals[key] ?? 0) + 1 };
+        this.slices.set('botHints', this.botHintSignals);
+        return Promise.resolve();
+      },
+      now: () => deps.now(),
+      setTimer: (fn, ms) => { const handle = deps.setTimeout(fn, ms); return () => { deps.clearTimeout(handle); }; },
+      visible: (scope) => (this.botScopesShown.get(`${scope.kind}:${scope.id}`) ?? 0) > 0,
     });
     this.calls = new CallController({
       core: () => this.core,
@@ -1525,6 +1546,7 @@ export class Controller {
       case 'sendBotCommand': return this.sendBotCommand(command);
       case 'syncBotCatalog': return this.syncBotCatalog(command.communityId);
       case 'forgetBotCommand': this.botRelay.forget(command.requestId); return Promise.resolve(null);
+      case 'watchBotScope': this.watchBotScope(command.kind, command.channelId, command.on); return Promise.resolve(null);
       case 'patchBotProfile': return this.patchBotProfile(command.communityId, command.display);
       case 'listModerationCases': return this.listModerationCases(command);
       case 'listManualModerationEvidence': return this.listManualModerationEvidence(command);
@@ -2819,6 +2841,14 @@ export class Controller {
         this.watchBotCatalog(communityId);
         this.botCatalog.apply(frame);
       });
+    } else if (e.type === 'frame' && e.frame.op === Op.botStateChanged) {
+      this.safely(() => {
+        const frame = botStateChangedOf(e.frame);
+        const id = toHex(frame.scopeId);
+        // The user scope's id is the community: a community this account is not in is not a hint for it.
+        if (frame.scopeKind === 0 && !this.listed(id)) return;
+        this.botHints.onHint({ kind: frame.scopeKind, id, revision: frame.revision });
+      });
     } else if (e.type === 'frame' && e.frame.op === Op.botReply) {
       this.safely(() => { this.botRelay.onReply(botReplyOf(e.frame)); });
     } else if (e.type === 'frame' && e.frame.op === Op.afkAway) {
@@ -2884,6 +2914,17 @@ export class Controller {
     try { await this.reloadDms(); } catch { /* the next ready retries */ }
     if (this.revoked() || this.storeCleared) return;
     await this.syncBotCatalogs();
+    if (this.revoked() || this.storeCleared) return;
+    // Op 63 is not replayed either: a scope the instance is ahead of is fetched once (the same read the catalog sync made).
+    const revisions = await this.botCatalog.readRevisions();
+    if (revisions !== null && !this.revoked() && !this.storeCleared) this.botHints.onConnect(revisions);
+  }
+
+  private watchBotScope(kind: 1 | 2, channelId: string, on: boolean): void {
+    const key = `${kind}:${channelId}`;
+    const count = (this.botScopesShown.get(key) ?? 0) + (on ? 1 : -1);
+    if (count > 0) this.botScopesShown.set(key, count);
+    else this.botScopesShown.delete(key);
   }
 
   private incomingTypingFrame(payload: readonly unknown[]): void {
@@ -4663,6 +4704,9 @@ export class Controller {
     // Bot v2: every reply secret goes, and another account must not see this one's catalogs or answers.
     this.botRelay.forgetAll();
     this.botCatalog.clear();
+    this.botHints.clear();
+    this.botScopesShown.clear();
+    if (Object.keys(this.botHintSignals).length > 0) { this.botHintSignals = {}; this.slices.set('botHints', {}); }
     if (this.botAnswers.length > 0) { this.botAnswers = []; this.slices.set('botAnswers', []); }
     this.clearInteractionAckLeases();
     this.selfDisplay = null;

@@ -253,12 +253,15 @@ export type SliceName = 'account' | 'connection' | 'communities' | `channels:${s
   | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'pendingAttachments' | 'call' | 'voice' | 'rings'
   | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals' | 'factors'
   | `slow:${string}` | `thread:${string}` | `threads:${string}`
-  | `botCatalog:${string}` | 'botAnswers';
+  | `botCatalog:${string}` | 'botAnswers' | 'botHints';
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
   /** Bot v2: the community Bot's command catalog held on this device (bot/catalog.ts); null while none was read. */
   [k: `botCatalog:${string}`]: BotCatalogView | null;
   /** Bot v2: the last opened Bot answers to this device's sealed commands (bot/commands.ts), oldest first. */
   botAnswers: BotAnswerView[];
+  /** Bot v2: per hint scope (`<kind>:<id>`), how many times the worker asked the page to fetch it (bot/hints.ts). A rise is
+   *  the page's cue to read that scope once; there is no timer behind it. */
+  botHints: Record<string, number>;
   [k: `communityChanges:${string}`]: number;
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `presence:${string}`]: PresenceState; [k: `timeline:${string}`]: TimelineState;
   [k: `afk:${string}`]: AFKState | null;
