@@ -581,63 +581,70 @@ func TestBotRevisionsReportVisibleScopes(t *testing.T) {
 	if err := f.deps.Repo.CreateChannel(ctx, foreign); err != nil {
 		t.Fatal(err)
 	}
+	// The member's user scope in this community (twice) and in another community it is not in; the
+	// admin's; this community's text and voice scopes; another community's channel.
 	for _, bump := range []struct {
-		kind  uint8
-		scope id.ID
-	}{{store.BotScopeUser, f.member.ID}, {store.BotScopeUser, f.member.ID}, {store.BotScopeChannel, f.text}, {store.BotScopeCall, f.voice}, {store.BotScopeChannel, foreign.ID}, {store.BotScopeUser, f.admin.ID}} {
-		if _, err := f.deps.Repo.BumpBotStateRevision(ctx, bump.kind, bump.scope); err != nil {
+		kind             uint8
+		community, scope id.ID
+	}{
+		{store.BotScopeUser, f.community, f.member.ID}, {store.BotScopeUser, f.community, f.member.ID},
+		{store.BotScopeUser, other, f.member.ID}, {store.BotScopeChannel, f.community, f.text},
+		{store.BotScopeCall, f.community, f.voice}, {store.BotScopeChannel, other, foreign.ID},
+		{store.BotScopeUser, f.community, f.admin.ID},
+	} {
+		if _, err := f.deps.Repo.BumpBotStateRevision(ctx, bump.kind, bump.community, bump.scope); err != nil {
 			t.Fatal(err)
 		}
 	}
 	catalogRev := f.publishCatalog(t, catalogCommand("remind", 20, 0, 0, 0))
-	rec := getAuth(f.h, "/v1/bot/revisions", f.memberTok)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET revisions = %d %x", rec.Code, rec.Body.Bytes())
+	type key struct {
+		kind  uint64
+		scope id.ID
 	}
-	var resp []cbor.RawMessage
-	if err := cborx.Unmarshal(rec.Body.Bytes(), &resp); err != nil || len(resp) != 2 {
-		t.Fatalf("revisions %x: %v", rec.Body.Bytes(), err)
-	}
-	var user uint64
-	if err := cborx.Unmarshal(resp[0], &user); err != nil || user != 2 {
-		t.Fatalf("user revision %x: %v, want 2", resp[0], err)
-	}
-	var scopes [][]cbor.RawMessage
-	if err := cborx.Unmarshal(resp[1], &scopes); err != nil {
-		t.Fatal(err)
-	}
-	seen := map[id.ID]uint64{}
-	revs := map[id.ID]uint64{}
-	for _, s := range scopes {
-		var kind, rev uint64
-		var scope id.ID
-		if len(s) != 3 || cborx.Unmarshal(s[0], &kind) != nil || cborx.Unmarshal(s[1], &scope) != nil || cborx.Unmarshal(s[2], &rev) != nil {
-			t.Fatalf("scope row %x", s)
+	read := func() map[key]uint64 {
+		t.Helper()
+		rec := getAuth(f.h, "/v1/bot/revisions", f.memberTok)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET revisions = %d %x", rec.Code, rec.Body.Bytes())
 		}
-		seen[scope], revs[scope] = kind, rev
+		var scopes [][]cbor.RawMessage
+		if err := cborx.Unmarshal(rec.Body.Bytes(), &scopes); err != nil {
+			t.Fatalf("revisions %x: %v", rec.Body.Bytes(), err)
+		}
+		got := map[key]uint64{}
+		for _, s := range scopes {
+			var kind, rev uint64
+			var scope id.ID
+			if len(s) != 3 || cborx.Unmarshal(s[0], &kind) != nil || cborx.Unmarshal(s[1], &scope) != nil || cborx.Unmarshal(s[2], &rev) != nil {
+				t.Fatalf("scope row %x", s)
+			}
+			got[key{kind, scope}] = rev
+		}
+		return got
 	}
-	if len(seen) != 3 || seen[f.text] != uint64(store.BotScopeChannel) || seen[f.voice] != uint64(store.BotScopeCall) || seen[f.community] != 3 {
-		t.Fatalf("scopes = %v, want the text channel (1), the voice call (2) and the community catalog (3) only", seen)
+	got := read()
+	want := map[key]uint64{
+		// The member's own scope in this community, named by the community; the other community's
+		// bump is not this one's.
+		{uint64(store.BotScopeUser), f.community}: 2,
+		{uint64(store.BotScopeChannel), f.text}:   1,
+		{uint64(store.BotScopeCall), f.voice}:     1,
+		{3, f.community}:                          catalogRev,
 	}
-	if revs[f.community] != catalogRev {
-		t.Fatalf("catalog revision = %d, want %d", revs[f.community], catalogRev)
+	if len(got) != len(want) {
+		t.Fatalf("scopes = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("scopes = %v, want %v", got, want)
+		}
 	}
 	// A channel the member can no longer view drops out.
 	if err := f.deps.Repo.PutOverwrite(ctx, store.OverwriteRow{ChannelID: f.text, TargetKind: 1, TargetID: f.member.ID, Deny: uint64(api.PermViewChannel)}); err != nil {
 		t.Fatal(err)
 	}
-	rec = getAuth(f.h, "/v1/bot/revisions", f.memberTok)
-	if err := cborx.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
-	}
-	if err := cborx.Unmarshal(resp[1], &scopes); err != nil {
-		t.Fatal(err)
-	}
-	for _, s := range scopes {
-		var scope id.ID
-		if cborx.Unmarshal(s[1], &scope) == nil && scope == f.text {
-			t.Fatal("a channel the member cannot view still reports its revision")
-		}
+	if _, ok := read()[key{uint64(store.BotScopeChannel), f.text}]; ok {
+		t.Fatal("a channel the member cannot view still reports its revision")
 	}
 }
 

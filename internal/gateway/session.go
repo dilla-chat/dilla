@@ -106,8 +106,12 @@ func (c *conn) send(f Frame) {
 	if f.Replay {
 		c.n++
 		n = c.n
-		if b, err := Encode(f, n); err == nil {
-			c.ring.addOp(n, b, f.Scope, f.Op)
+		if b, err := Encode(f, n); err == nil && !c.ring.addOp(n, b, f.Scope, f.Op) {
+			// Only an op 62 reply over its ring budget is refused: it goes out unringed, with n = 0,
+			// so the replay sequence keeps no hole.
+			c.n--
+			n = 0
+			f.Replay = false
 		}
 	}
 	if c.writer == nil {
@@ -120,11 +124,12 @@ func (c *conn) send(f Frame) {
 // the suspended writer is stopped, and a resume replays from the ring. It is how an op 62 reply
 // reaches a device whose socket dropped (Bot v2 task 10). It reports false, and holds nothing, once
 // a resume has taken its snapshot of the ring (resuming): a frame stamped after that snapshot would
-// sit between the announced replay range and `resumed`, an n the client was never told about.
+// sit between the announced replay range and `resumed`, an n the client was never told about. Nor
+// does it hold for a connection that may not resume (noResume: revoked or timed out).
 func (c *conn) hold(f Frame) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.state != stateClosed || c.resuming || !f.Replay {
+	if c.state != stateClosed || c.resuming || c.noResume || !f.Replay {
 		return false
 	}
 	c.n++
@@ -133,7 +138,10 @@ func (c *conn) hold(f Frame) bool {
 		c.n--
 		return false
 	}
-	c.ring.addOp(c.n, b, f.Scope, f.Op)
+	if !c.ring.addOp(c.n, b, f.Scope, f.Op) {
+		c.n--
+		return false
+	}
 	return true
 }
 
@@ -613,6 +621,11 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	}
 	versions := [3]uint64{c.wire, c.e2ee, c.media}
 	if err := g.recordCapabilities(ctx, session.TokenHash, versions); err != nil {
+		// The connection stays parked under its token, so it must hold op 62 replies again: the
+		// snapshot that set resuming led to no resume.
+		c.mu.Lock()
+		c.resuming = false
+		c.mu.Unlock()
 		return refuse("session capability persistence failed")
 	}
 

@@ -799,10 +799,12 @@ func (d Deps) PutBotRuntimeCommandKey(w http.ResponseWriter, r *http.Request) {
 // under (scope_id the community). Kinds 0-2 are the stored Bot state scopes (store.BotScope*).
 const botScopeCatalog uint64 = 3
 
-// GetBotRevisions is the connect sync's one read: [user_revision, [[scope_kind, scope_id,
-// revision]…]] for the caller's own scope, every channel or call scope with a stored revision in a
-// channel the caller can view now, and the catalog of every community the caller is in (kind 3).
-// A client fetches a scope's Bot state, or a catalog, only when it is behind.
+// GetBotRevisions is the connect sync's one read: [[scope_kind, scope_id, revision]…], the same
+// three elements op 63 carries. It holds the caller's own user scope in each community it is in
+// (kind 0; scope_id is the community, since the user is the caller), every channel or call scope
+// with a stored revision in a channel the caller can view now, and the catalog of every community
+// the caller is in (kind 3). A client fetches a scope's Bot state, or a catalog, only when it is
+// behind.
 func (d Deps) GetBotRevisions(w http.ResponseWriter, r *http.Request) {
 	s, ok := session(r)
 	if !ok {
@@ -839,7 +841,7 @@ func (d Deps) GetBotRevisions(w http.ResponseWriter, r *http.Request) {
 			scopes = append(scopes, ch.ID)
 		}
 	}
-	userRev, rows, err := d.Repo.BotStateRevisions(ctx, s.UserID, scopes)
+	rows, err := d.Repo.BotStateRevisions(ctx, s.UserID, scopes)
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
@@ -848,9 +850,13 @@ func (d Deps) GetBotRevisions(w http.ResponseWriter, r *http.Request) {
 	// then each scope channel's overwrites (viewableChannels).
 	byCommunity := map[id.ID][]store.ChannelRow{}
 	for _, row := range rows {
-		if sc, ok := channels[row.ScopeID]; ok {
+		if sc, ok := channels[row.ScopeID]; ok && row.ScopeKind != store.BotScopeUser && row.CommunityID == sc.community {
 			byCommunity[sc.community] = append(byCommunity[sc.community], sc.channel)
 		}
+	}
+	member := make(map[id.ID]bool, len(communities))
+	for _, c := range communities {
+		member[c.ID] = true
 	}
 	visible := map[id.ID]bool{}
 	for cid, chs := range byCommunity {
@@ -865,7 +871,13 @@ func (d Deps) GetBotRevisions(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		if visible[row.ScopeID] {
+		switch {
+		case row.ScopeKind == store.BotScopeUser:
+			// The caller's own revision in one community: scope_id names the community.
+			if member[row.CommunityID] {
+				out = append(out, []any{uint64(row.ScopeKind), row.CommunityID, row.Revision})
+			}
+		case visible[row.ScopeID] && channels[row.ScopeID].community == row.CommunityID:
 			out = append(out, []any{uint64(row.ScopeKind), row.ScopeID, row.Revision})
 		}
 	}
@@ -882,7 +894,7 @@ func (d Deps) GetBotRevisions(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, []any{botScopeCatalog, c.ID, catalog.Revision})
 	}
-	d.write(w, r, http.StatusOK, []any{userRev, out})
+	d.write(w, r, http.StatusOK, out)
 }
 
 // viewableChannels is the subset of channels (live channels of community cid) that member user can

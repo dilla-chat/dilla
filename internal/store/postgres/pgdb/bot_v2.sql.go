@@ -12,18 +12,19 @@ import (
 )
 
 const bumpBotStateRevision = `-- name: BumpBotStateRevision :one
-INSERT INTO bot_state_revisions(scope_kind, scope_id, revision) VALUES ($1, $2, 1)
-ON CONFLICT(scope_kind, scope_id) DO UPDATE SET revision = bot_state_revisions.revision + 1
+INSERT INTO bot_state_revisions(scope_kind, scope_id, community_id, revision) VALUES ($1, $2, $3, 1)
+ON CONFLICT(scope_kind, scope_id, community_id) DO UPDATE SET revision = bot_state_revisions.revision + 1
 RETURNING revision
 `
 
 type BumpBotStateRevisionParams struct {
-	ScopeKind int64
-	ScopeID   id.ID
+	ScopeKind   int64
+	ScopeID     id.ID
+	CommunityID id.ID
 }
 
 func (q *Queries) BumpBotStateRevision(ctx context.Context, arg BumpBotStateRevisionParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, bumpBotStateRevision, arg.ScopeKind, arg.ScopeID)
+	row := q.db.QueryRowContext(ctx, bumpBotStateRevision, arg.ScopeKind, arg.ScopeID, arg.CommunityID)
 	var revision int64
 	err := row.Scan(&revision)
 	return revision, err
@@ -86,6 +87,19 @@ func (q *Queries) DeleteBotCommandKey(ctx context.Context, arg DeleteBotCommandK
 	return err
 }
 
+const deleteBotStateRevisionsOfCommunity = `-- name: DeleteBotStateRevisionsOfCommunity :exec
+DELETE FROM bot_state_revisions WHERE community_id = $1
+`
+
+type DeleteBotStateRevisionsOfCommunityParams struct {
+	CommunityID id.ID
+}
+
+func (q *Queries) DeleteBotStateRevisionsOfCommunity(ctx context.Context, arg DeleteBotStateRevisionsOfCommunityParams) error {
+	_, err := q.db.ExecContext(ctx, deleteBotStateRevisionsOfCommunity, arg.CommunityID)
+	return err
+}
+
 const deleteBotWebhooksOfCommunity = `-- name: DeleteBotWebhooksOfCommunity :exec
 DELETE FROM bot_webhooks WHERE community_id = $1
 `
@@ -134,22 +148,6 @@ func (q *Queries) GetBotCommandKey(ctx context.Context, arg GetBotCommandKeyPara
 	return i, err
 }
 
-const getBotStateRevision = `-- name: GetBotStateRevision :one
-SELECT revision FROM bot_state_revisions WHERE scope_kind = $1 AND scope_id = $2
-`
-
-type GetBotStateRevisionParams struct {
-	ScopeKind int64
-	ScopeID   id.ID
-}
-
-func (q *Queries) GetBotStateRevision(ctx context.Context, arg GetBotStateRevisionParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, getBotStateRevision, arg.ScopeKind, arg.ScopeID)
-	var revision int64
-	err := row.Scan(&revision)
-	return revision, err
-}
-
 const listBotChannels = `-- name: ListBotChannels :many
 SELECT b.channel_id, b.community_id, b.marked_at, b.marked_by
 FROM bot_channels b JOIN channels c ON c.id = b.channel_id
@@ -176,6 +174,43 @@ func (q *Queries) ListBotChannels(ctx context.Context, arg ListBotChannelsParams
 			&i.MarkedAt,
 			&i.MarkedBy,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBotUserStateRevisions = `-- name: ListBotUserStateRevisions :many
+SELECT community_id, revision FROM bot_state_revisions WHERE scope_kind = 0 AND scope_id = $1
+ORDER BY community_id
+`
+
+type ListBotUserStateRevisionsParams struct {
+	ScopeID id.ID
+}
+
+type ListBotUserStateRevisionsRow struct {
+	CommunityID id.ID
+	Revision    int64
+}
+
+func (q *Queries) ListBotUserStateRevisions(ctx context.Context, arg ListBotUserStateRevisionsParams) ([]ListBotUserStateRevisionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listBotUserStateRevisions, arg.ScopeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBotUserStateRevisionsRow{}
+	for rows.Next() {
+		var i ListBotUserStateRevisionsRow
+		if err := rows.Scan(&i.CommunityID, &i.Revision); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

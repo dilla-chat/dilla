@@ -1590,7 +1590,7 @@ deleted (which also drops the community's catalog, command key and webhooks).
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `GET /v1/communities/{community}/bot/catalog` | E (community member), socket | — | `[revision, commands, publication\|null, status]`; `commands` filtered for the caller; `status` is `[state, since\|null]`, state 0 ready, 1 degraded, 2 offline, 3 disabled, 4 absent; 404 for a non-member |
-| `GET /v1/bot/revisions` | E, socket | — | `[user_revision, [[scope_kind, scope_id, revision]…]]`: kinds 1 channel and 2 call (scope_id the voice channel) for channels the caller can view, kind 3 each of the caller's communities' catalog revision |
+| `GET /v1/bot/revisions` | E, socket | — | `[[scope_kind, scope_id, revision]…]`, the elements of gateway op 63: kind 0 the caller's own user scope in each of its communities that holds one (scope_id the community), kinds 1 channel and 2 call (scope_id the voice channel) for channels the caller can view, kind 3 each of the caller's communities' catalog revision |
 | `PUT /v1/bot-runtime/communities/{community}/catalog` | B (ready, path community) | the catalog | `[revision]`; a changed catalog takes the next revision and is pushed as gateway op 61 to every connected member, filtered for that member, after the answer; an unchanged one keeps its revision |
 | `PUT /v1/bot-runtime/communities/{community}/command-key` | B (ready, path community) | the publication | `204`; `403` when the signer is not the installation's listed, unrevoked device or the signature fails, `400` for another community or a `not_after` in the past or more than 8 days ahead; a new `key_id` bumps the catalog revision and pushes op 61 |
 | `PUT /v1/communities/{community}/channels/{channel}/bot-channel` | E (manage_community), socket | — | `204`; `400` unless the channel is a live end-to-end text channel that is not the AFK channel; `404` for a channel outside the community |
@@ -1611,8 +1611,9 @@ the Bot runtime's connection, where `user_id` and `device_id` are the sending co
 authenticated session, never anything from the body, and answers `202 [0]`.
 
 The relay's only state is an in-memory ledger of `request_id → (device_id, community_id)`, kept
-five minutes after the latest relay of that id and bounded at 65536 entries (the oldest is evicted
-first). A command whose `request_id` another device (or another community) sent within the five
+five minutes after the latest relay of that id. Each device holds at most 256 entries (a device at
+its quota loses its own oldest entry, never another device's), and the ledger at most 65536 in all
+(the oldest is evicted first). A command whose `request_id` another device (or another community) sent within the five
 minutes is `409 E_BOT_DUPLICATE`; the same device sending it again is accepted and pushed again
 (the Bot de-duplicates). The socket's `idem` replay record (`02` § `request`) answers a retry of the
 same request frame from its record without pushing again; a re-send with a new `idem` reaches the
@@ -1624,22 +1625,26 @@ The Bot answers through `POST /v1/bot-runtime/replies`, body `[device_id(bstr 16
 16), seq(uint ≤ 2^32−1), sealed(bstr 1..65536), final(uint 0|1)]` (the subset has no boolean).
 The instance delivers gateway op 62 `bot_reply` `[request_id, seq, sealed, final]` to that device
 only, and answers `204`; a `request_id` the ledger does not hold for that device in the replying
-Bot's own community is `404`. A device whose socket dropped holds the reply in its suspended
+Bot's own community is `404`. One request takes at most 16 replies and 256 KiB of sealed replies
+in all; a reply past either is `413 E_TOO_LARGE` and is not delivered. A device whose socket dropped holds the reply in its suspended
 connection's replay ring for at most two minutes (`02` § Ephemeral). `POST
 /v1/bot-runtime/state-hints`, body `[scope_kind(uint 0 user, 1 channel, 2 call), scope_id(bstr
-16)]`, raises the scope's stored revision and answers `200 [revision]`. The scope must be the Bot's
-own community's: a member (user), a live text channel (channel) or a live voice channel (call; the
-scope id is the voice channel, as `GET /v1/bot/revisions` reads it); any other scope is `404`.
-Gateway op 63 `bot_state_changed` `[scope_kind, scope_id, revision]` goes to the user's live
-connections, to the connections subscribed to the channel's text group, or to the online devices
-of the call group of the channel's live call. Both runtime routes are metered per Bot device in a
+16)]`, raises the scope's stored revision in the Bot's community and answers `200 [revision]`. The scope
+must be the Bot's own community's: a member (user), one of its Bot channels (channel: the only
+channels the Bot keeps channel state in) or a live voice channel (call; the scope id is the voice
+channel, as `GET /v1/bot/revisions` reads it); any other scope is `404` and nothing is bumped. A
+user scope's revision is that user's in this community only, so one community's Bot learns
+nothing of another's hints. Gateway op 63 `bot_state_changed` `[scope_kind, scope_id, revision]`
+goes to the user's live connections (with `scope_id` the **community**: the user is the receiving
+connection's own), to the connections subscribed to the Bot channel's text group, or to the online
+devices of the call group of the channel's live call. Both runtime routes are metered per Bot device in a
 `bot_runtime` bucket at the `read` rate (10/s, burst 60 by default).
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `POST /v1/communities/{community}/bot/commands` | E (community member), socket | `[request_id, sealed]` | `202 [0]`; `400` for a malformed body or sealed form; `404` for a non-member; `403` when the installation is disabled; `409 E_BOT_DUPLICATE`; `503 E_BOT_OFFLINE` with no installation, an installation that is not ready, or no live Bot runtime connection |
-| `POST /v1/bot-runtime/replies` | B (ready, own community) | `[device_id, request_id, seq, sealed, final]` | `204`; `404` for a request not relayed from that device into the Bot's community in the last five minutes |
-| `POST /v1/bot-runtime/state-hints` | B (ready, own community) | `[scope_kind, scope_id]` | `200 [revision]`; `404` for a scope outside the Bot's community; `400` for another scope kind |
+| `POST /v1/bot-runtime/replies` | B (ready, own community) | `[device_id, request_id, seq, sealed, final]` | `204`; `404` for a request not relayed from that device into the Bot's community in the last five minutes; `413 E_TOO_LARGE` past 16 replies or 256 KiB for the request |
+| `POST /v1/bot-runtime/state-hints` | B (ready, own community) | `[scope_kind, scope_id]` | `200 [revision]`; `404` for a scope outside the Bot's community or a channel that is not a Bot channel; `400` for another scope kind |
 
 ## Vectors
 

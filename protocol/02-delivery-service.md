@@ -372,13 +372,20 @@ arrives holds it in its replay ring, and it is replayed on resume like any repla
 ring entry expires two minutes after it was added (the spec's offline reply drop) or at the ring's
 own TTL when that is sooner; eviction stays oldest-first, so with the instance's ring TTL (also two
 minutes) the two bounds coincide and the replay range stays contiguous. No other frame reaches a
-suspended connection. The answer is opaque to the instance.
+suspended connection, and nothing is held for a connection closed with a non-resumable code.
+Replies have their own ring budget, 16 frames and 256 KiB per connection, apart from the ring's
+own bounds, so replies never push another frame out of the ring. A reply that does not fit that
+budget is sent to a live connection unringed, with `n = 0` (so the replay sequence keeps no hole),
+and is not held for a suspended one. The answer is opaque to the instance.
 
-`bot_state_changed` is a content-free hint that the Bot's state for one scope changed: kind 0 a
-user (sent to that user's live connections), 1 a text channel (to the connections subscribed to
-its group), 2 the call in a voice channel, whose `scope_id` is the voice channel (to the call
-group's online devices). It carries exactly those three elements. It is never replayed: a client
-that missed one compares revisions at connect sync (`GET /v1/bot/revisions`).
+`bot_state_changed` is a content-free hint that the community Bot's state for one scope changed:
+kind 0 the receiving user's own state in one community, whose `scope_id` is that **community** (the
+user is the connection's own; sent to that user's live connections), 1 a Bot channel (to the
+connections subscribed to its group), 2 the call in a voice channel, whose `scope_id` is the voice
+channel (to the call group's online devices). Every scope's revision is counted within one
+community, so a user's revision in one community says nothing about another's. It carries exactly
+those three elements. It is never replayed: a client that missed one compares revisions at connect
+sync (`GET /v1/bot/revisions`, whose entries are the same three elements).
 
 `bot_catalog` carries a community's Bot command catalog to one member after the Bot publishes a
 changed one or a new command key (`10` § Command catalog). Each connected member receives exactly

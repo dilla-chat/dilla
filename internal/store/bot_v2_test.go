@@ -123,46 +123,67 @@ func TestStoreBotStateRevisionsBumpAndReadByScope(t *testing.T) {
 		t.Run(engine, func(t *testing.T) {
 			ctx := context.Background()
 			user := seedUser(ctx, t, repo)
+			cid, other := seedCommunity(ctx, t, repo), seedCommunity(ctx, t, repo)
 			chA, chB, call := id.New(), id.New(), id.New()
-			if rev, rows, err := repo.BotStateRevisions(ctx, user.ID, []id.ID{chA}); err != nil || rev != 0 || len(rows) != 0 {
-				t.Fatalf("BotStateRevisions (none) = %d %+v %v", rev, rows, err)
+			if rows, err := repo.BotStateRevisions(ctx, user.ID, []id.ID{chA}); err != nil || len(rows) != 0 {
+				t.Fatalf("BotStateRevisions (none) = %+v %v", rows, err)
 			}
 			for want := uint64(1); want <= 3; want++ {
-				got, err := repo.BumpBotStateRevision(ctx, store.BotScopeUser, user.ID)
+				got, err := repo.BumpBotStateRevision(ctx, store.BotScopeUser, cid, user.ID)
 				if err != nil || got != want {
 					t.Fatalf("BumpBotStateRevision user = %d, %v; want %d", got, err, want)
 				}
 			}
-			if _, err := repo.BumpBotStateRevision(ctx, store.BotScopeChannel, chA); err != nil {
+			// The same user in another community has its own counter (Bot v2 Task 10).
+			if got, err := repo.BumpBotStateRevision(ctx, store.BotScopeUser, other, user.ID); err != nil || got != 1 {
+				t.Fatalf("user bump in another community = %d, %v; want 1", got, err)
+			}
+			if _, err := repo.BumpBotStateRevision(ctx, store.BotScopeChannel, cid, chA); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := repo.BumpBotStateRevision(ctx, store.BotScopeChannel, chB); err != nil {
+			if _, err := repo.BumpBotStateRevision(ctx, store.BotScopeChannel, cid, chB); err != nil {
 				t.Fatal(err)
 			}
-			if got, err := repo.BumpBotStateRevision(ctx, store.BotScopeChannel, chB); err != nil || got != 2 {
+			if got, err := repo.BumpBotStateRevision(ctx, store.BotScopeChannel, cid, chB); err != nil || got != 2 {
 				t.Fatalf("second channel bump = %d, %v; want 2", got, err)
 			}
-			if _, err := repo.BumpBotStateRevision(ctx, store.BotScopeCall, call); err != nil {
+			if _, err := repo.BumpBotStateRevision(ctx, store.BotScopeCall, cid, call); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := repo.BumpBotStateRevision(ctx, 3, call); err == nil {
+			if _, err := repo.BumpBotStateRevision(ctx, 3, cid, call); err == nil {
 				t.Fatal("scope kind 3 was accepted")
 			}
-			rev, rows, err := repo.BotStateRevisions(ctx, user.ID, []id.ID{chB, call, id.New()})
-			if err != nil || rev != 3 {
-				t.Fatalf("BotStateRevisions = %d, %v; want user revision 3", rev, err)
+			if _, err := repo.BumpBotStateRevision(ctx, store.BotScopeCall, id.ID{}, call); err == nil {
+				t.Fatal("a zero community was accepted")
+			}
+			rows, err := repo.BotStateRevisions(ctx, user.ID, []id.ID{chB, call, id.New()})
+			if err != nil {
+				t.Fatal(err)
 			}
 			want := map[store.BotStateRevisionRow]bool{
-				{ScopeKind: store.BotScopeChannel, ScopeID: chB, Revision: 2}: true,
-				{ScopeKind: store.BotScopeCall, ScopeID: call, Revision: 1}:   true,
+				{ScopeKind: store.BotScopeUser, ScopeID: user.ID, CommunityID: cid, Revision: 3}:   true,
+				{ScopeKind: store.BotScopeUser, ScopeID: user.ID, CommunityID: other, Revision: 1}: true,
+				{ScopeKind: store.BotScopeChannel, ScopeID: chB, CommunityID: cid, Revision: 2}:    true,
+				{ScopeKind: store.BotScopeCall, ScopeID: call, CommunityID: cid, Revision: 1}:      true,
 			}
 			if len(rows) != len(want) {
-				t.Fatalf("rows = %+v, want exactly chB and the call (chA was not asked for)", rows)
+				t.Fatalf("rows = %+v, want both user rows, chB and the call (chA was not asked for)", rows)
 			}
 			for _, r := range rows {
 				if !want[r] {
 					t.Fatalf("unexpected row %+v", r)
 				}
+			}
+			// A community's deletion drops its revisions and leaves the other's.
+			if err := repo.Tx(ctx, func(tx store.Repository) error {
+				_, err := tx.DeleteBotCommunityState(ctx, cid)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			rows, err = repo.BotStateRevisions(ctx, user.ID, []id.ID{chB, call})
+			if err != nil || len(rows) != 1 || rows[0].CommunityID != other {
+				t.Fatalf("after deleting the community's state = %+v, %v; want only the other community's user row", rows, err)
 			}
 		})
 	}

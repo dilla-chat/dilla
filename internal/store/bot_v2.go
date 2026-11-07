@@ -46,11 +46,14 @@ const (
 	BotScopeCall    uint8 = 2
 )
 
-// BotStateRevisionRow is one stored scope revision.
+// BotStateRevisionRow is one stored scope revision. Every scope belongs to one community: a user
+// scope's revision is that user's in CommunityID only (Bot v2 Task 10), and a channel or call
+// scope's CommunityID is its channel's.
 type BotStateRevisionRow struct {
-	ScopeKind uint8
-	ScopeID   id.ID
-	Revision  uint64
+	ScopeKind   uint8
+	ScopeID     id.ID
+	CommunityID id.ID
+	Revision    uint64
 }
 
 // SortBotStateRevisions orders rows by (kind, scope id), the order BotStateRevisions answers in on
@@ -60,7 +63,10 @@ func SortBotStateRevisions(rows []BotStateRevisionRow) {
 		if c := cmp.Compare(a.ScopeKind, b.ScopeKind); c != 0 {
 			return c
 		}
-		return bytes.Compare(a.ScopeID[:], b.ScopeID[:])
+		if c := bytes.Compare(a.ScopeID[:], b.ScopeID[:]); c != 0 {
+			return c
+		}
+		return bytes.Compare(a.CommunityID[:], b.CommunityID[:])
 	})
 }
 
@@ -81,12 +87,15 @@ type BotV2 interface {
 	// ListBotChannels is the community's marked channels that are still live end-to-end text
 	// channels, oldest mark first.
 	ListBotChannels(ctx context.Context, community id.ID) ([]BotChannelRow, error)
-	// BumpBotStateRevision raises one scope's revision by one (the first bump is 1) and returns it.
-	BumpBotStateRevision(ctx context.Context, kind uint8, scope id.ID) (uint64, error)
-	// BotStateRevisions is the user's own revision (0 when none) and the stored channel and call
-	// revisions of exactly the given scope ids, ordered by (kind, id).
-	BotStateRevisions(ctx context.Context, user id.ID, scopes []id.ID) (uint64, []BotStateRevisionRow, error)
-	// DeleteBotCommunityState removes a deleted community's Bot channels, catalog, command key and
-	// webhooks, inside the caller's transaction, and returns the channels it unmarked.
+	// BumpBotStateRevision raises one scope's revision in one community by one (the first bump is
+	// 1) and returns it.
+	BumpBotStateRevision(ctx context.Context, kind uint8, community, scope id.ID) (uint64, error)
+	// BotStateRevisions is the user's own revision in each community that holds one (kind 0 rows,
+	// ScopeID the user) and the stored channel and call revisions of exactly the given scope ids,
+	// ordered by (kind, scope id, community).
+	BotStateRevisions(ctx context.Context, user id.ID, scopes []id.ID) ([]BotStateRevisionRow, error)
+	// DeleteBotCommunityState removes a deleted community's Bot channels, catalog, command key,
+	// webhooks and state revisions, inside the caller's transaction, and returns the channels it
+	// unmarked.
 	DeleteBotCommunityState(ctx context.Context, community id.ID) ([]id.ID, error)
 }

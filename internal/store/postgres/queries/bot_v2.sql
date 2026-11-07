@@ -28,12 +28,16 @@ WHERE b.community_id = $1 AND c.deleted_at IS NULL AND c.kind = 0 AND c.mode = 0
 ORDER BY b.marked_at, b.channel_id;
 
 -- name: BumpBotStateRevision :one
-INSERT INTO bot_state_revisions(scope_kind, scope_id, revision) VALUES ($1, $2, 1)
-ON CONFLICT(scope_kind, scope_id) DO UPDATE SET revision = bot_state_revisions.revision + 1
+INSERT INTO bot_state_revisions(scope_kind, scope_id, community_id, revision) VALUES ($1, $2, $3, 1)
+ON CONFLICT(scope_kind, scope_id, community_id) DO UPDATE SET revision = bot_state_revisions.revision + 1
 RETURNING revision;
 
--- name: GetBotStateRevision :one
-SELECT revision FROM bot_state_revisions WHERE scope_kind = $1 AND scope_id = $2;
+-- name: ListBotUserStateRevisions :many
+SELECT community_id, revision FROM bot_state_revisions WHERE scope_kind = 0 AND scope_id = $1
+ORDER BY community_id;
+
+-- name: DeleteBotStateRevisionsOfCommunity :exec
+DELETE FROM bot_state_revisions WHERE community_id = $1;
 
 -- name: DeleteBotChannelsOfCommunity :many
 DELETE FROM bot_channels WHERE community_id = $1 RETURNING channel_id;

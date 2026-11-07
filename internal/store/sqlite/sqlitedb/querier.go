@@ -81,6 +81,7 @@ type Querier interface {
 	DeleteBotClaimsByRuntime(ctx context.Context, arg DeleteBotClaimsByRuntimeParams) (int64, error)
 	DeleteBotCommandKey(ctx context.Context, arg DeleteBotCommandKeyParams) error
 	DeleteBotSessionBindingsByInstallation(ctx context.Context, arg DeleteBotSessionBindingsByInstallationParams) (int64, error)
+	DeleteBotStateRevisionsOfCommunity(ctx context.Context, arg DeleteBotStateRevisionsOfCommunityParams) error
 	DeleteBotWebhooksOfCommunity(ctx context.Context, arg DeleteBotWebhooksOfCommunityParams) error
 	DeleteCeremony(ctx context.Context, arg DeleteCeremonyParams) (int64, error)
 	DeleteChannel(ctx context.Context, arg DeleteChannelParams) (int64, error)
@@ -151,7 +152,6 @@ type Querier interface {
 	GetBotRuntime(ctx context.Context, arg GetBotRuntimeParams) (BotRuntimes, error)
 	GetBotRuntimeByHash(ctx context.Context, arg GetBotRuntimeByHashParams) (BotRuntimes, error)
 	GetBotSessionBinding(ctx context.Context, arg GetBotSessionBindingParams) (BotSessionBindings, error)
-	GetBotStateRevision(ctx context.Context, arg GetBotStateRevisionParams) (int64, error)
 	GetCeremony(ctx context.Context, arg GetCeremonyParams) (WebauthnCeremonies, error)
 	GetChannel(ctx context.Context, arg GetChannelParams) (Channels, error)
 	GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochParams) (MlsHandshakes, error)
@@ -225,6 +225,7 @@ type Querier interface {
 	ListBotInstallationsByDevice(ctx context.Context, arg ListBotInstallationsByDeviceParams) ([]BotInstallations, error)
 	ListBotInstallationsForRuntime(ctx context.Context, arg ListBotInstallationsForRuntimeParams) ([]BotInstallations, error)
 	ListBotRuntimes(ctx context.Context, arg ListBotRuntimesParams) ([]BotRuntimes, error)
+	ListBotUserStateRevisions(ctx context.Context, arg ListBotUserStateRevisionsParams) ([]ListBotUserStateRevisionsRow, error)
 	ListChannelMembers(ctx context.Context, arg ListChannelMembersParams) ([]id.ID, error)
 	ListChannels(ctx context.Context, arg ListChannelsParams) ([]Channels, error)
 	// P2-D11: GET /v1/dms. The live DMs and group DMs (kinds 3 and 4) the user is a

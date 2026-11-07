@@ -237,6 +237,166 @@ func TestReplyIsNotHeldOnceAResumeTookItsSnapshot(t *testing.T) {
 	}
 }
 
+// ringFrames is the number of entries in a connection's ring, read without evicting.
+func ringFrames(c *conn) int {
+	frames, _, _, _ := c.ring.stats()
+	return frames
+}
+
+// A reply for one device is never held in another device's suspended connection, even one of the
+// same user (fix round 1, M7).
+func TestReplyIsNotHeldForAnotherDevicesSuspendedConnection(t *testing.T) {
+	h := newHarness(t)
+	asking, other := id.New(), id.New()
+	a := h.connect(t, asking)
+	b := h.connect(t, other)
+	h.gw.suspend(a)
+	h.gw.suspend(b)
+	before := ringFrames(b)
+	h.gw.DeliverDevice(asking, botReplyFrame(t, id.New(), 0, []byte{1}, true))
+	if got := ringFrames(b); got != before {
+		t.Fatalf("another device's suspended ring went from %d to %d frames", before, got)
+	}
+	if got := ringFrames(a); got != before+1 {
+		t.Fatalf("the asking device's suspended ring holds %d frames, want %d", got, before+1)
+	}
+}
+
+// A connection CloseDevice dropped with 4004 holds nothing, whether it was live or already
+// suspended when the revocation came (fix round 1, M2 and M7).
+func TestReplyIsNotHeldAfterCloseDeviceRevokes(t *testing.T) {
+	h := newHarness(t)
+	device := id.New()
+	live := h.connect(t, device)
+	parked := h.connect(t, device)
+	h.gw.suspend(parked)
+	h.gw.CloseDevice(device, CloseSessionRevoked, "session revoked")
+	h.gw.suspend(live) // readLoop's deferred suspend after the close
+	f := botReplyFrame(t, id.New(), 0, []byte{1}, true)
+	liveBefore, parkedBefore := ringFrames(live), ringFrames(parked)
+	h.gw.DeliverDevice(device, f)
+	if ringFrames(live) != liveBefore || ringFrames(parked) != parkedBefore {
+		t.Fatal("a revoked device's connection held a reply")
+	}
+	// Defence in depth: hold itself refuses a connection that may not resume.
+	if live.hold(f) || parked.hold(f) {
+		t.Fatal("hold accepted a connection closed with a non-resumable code")
+	}
+}
+
+// A sealed connection (a self-revoking request's deferred close) never holds a reply (M7).
+func TestReplyIsNotHeldForASealedConnection(t *testing.T) {
+	h := newHarness(t)
+	device := id.New()
+	c := h.connect(t, device)
+	// What CloseDevice does to a connection whose self-revoking request is still in flight.
+	c.denyResume()
+	c.sealed.Store(true)
+	h.gw.removeLive(c)
+	h.gw.suspend(c)
+	before := ringFrames(c)
+	f := botReplyFrame(t, id.New(), 0, []byte{1}, true)
+	h.gw.DeliverDevice(device, f)
+	if ringFrames(c) != before || c.hold(f) {
+		t.Fatal("a sealed connection held a reply")
+	}
+}
+
+// A resume refused at capability persistence leaves the connection parked, and it holds replies
+// again (fix round 1, M3).
+func TestReplyIsHeldAgainAfterAResumeRefusedAtCapabilityPersistence(t *testing.T) {
+	h := newHarness(t)
+	device := id.New()
+	c := h.connect(t, device)
+	token := h.readyResumeToken(t, c)
+	h.gw.suspend(c)
+	h.gw.opts.Auth = &capabilityRecordingAuth{Authenticator: h, err: errors.New("storage unavailable")}
+	_, in := h.resumeFrom(t, c, token, 1)
+	if in.Op != OpInvalidSession {
+		t.Fatalf("op %d, want invalid_session", in.Op)
+	}
+	if reason, err := rawText(in.Payload[1]); err != nil || reason != "session capability persistence failed" {
+		t.Fatalf("refusal reason %q (%v), want the capability persistence refusal", reason, err)
+	}
+	if _, parked := h.gw.suspended.Load(string(token)); !parked {
+		t.Fatal("the refused resume took the connection out of the resume window")
+	}
+	before := ringFrames(c)
+	h.gw.DeliverDevice(device, botReplyFrame(t, id.New(), 0, []byte{1}, true))
+	if got := ringFrames(c); got != before+1 {
+		t.Fatalf("after a refused resume the ring holds %d frames, want %d", got, before+1)
+	}
+}
+
+// Op 62 has its own ring budget: replies never evict a message frame, and a reply past the budget
+// is not ringed (fix round 1, M4).
+func TestReplyRingBudgetNeverEvictsMessageFrames(t *testing.T) {
+	h := newHarness(t)
+	r := newRing(ringLimits{Frames: 4, Bytes: 4096, TTL: 10 * time.Minute}, h.clk)
+	n := uint64(0)
+	for range 4 {
+		n++
+		if !r.addOp(n, make([]byte, 1000), FrameScope{}, OpMessageCT) {
+			t.Fatal("a message frame was refused")
+		}
+	}
+	accepted := 0
+	for range replyRingFrames + 4 {
+		if r.addOp(n+1, make([]byte, 1000), FrameScope{}, OpBotReply) {
+			n++
+			accepted++
+		}
+	}
+	if accepted != replyRingFrames {
+		t.Fatalf("%d replies ringed, want the budget of %d", accepted, replyRingFrames)
+	}
+	if got := r.floor(); got != 1 {
+		t.Fatalf("floor = %d, want 1: replies pushed a message frame out", got)
+	}
+	// The byte budget holds too.
+	r2 := newRing(ringLimits{Frames: 64, Bytes: 1 << 20, TTL: 10 * time.Minute}, h.clk)
+	if !r2.addOp(1, make([]byte, replyRingBytes-10), FrameScope{}, OpBotReply) {
+		t.Fatal("a reply inside the byte budget was refused")
+	}
+	if r2.addOp(2, make([]byte, 11), FrameScope{}, OpBotReply) {
+		t.Fatal("a reply past the byte budget was ringed")
+	}
+	// Once the client acknowledges, the budget frees.
+	r2.trim(1)
+	if !r2.addOp(2, make([]byte, 11), FrameScope{}, OpBotReply) {
+		t.Fatal("the reply budget was not freed by trim")
+	}
+}
+
+// On a live connection a reply past the ring's reply budget still goes out, unringed with n = 0,
+// and the replay sequence keeps no hole.
+func TestReplyPastTheRingBudgetGoesOutUnringed(t *testing.T) {
+	h := newHarness(t)
+	device := id.New()
+	c := h.connect(t, device)
+	h.drainReady(t, c)
+	for i := range replyRingFrames + 1 {
+		h.gw.DeliverDevice(device, botReplyFrame(t, id.New(), uint64(i), []byte{1}, false))
+	}
+	for i := range replyRingFrames {
+		if in := h.waitFrame(t, device); in.Op != OpBotReply || in.CID != uint64(i+2) {
+			t.Fatalf("reply %d: op %d n %d, want bot_reply n %d", i, in.Op, in.CID, i+2)
+		}
+	}
+	if in := h.waitFrame(t, device); in.Op != OpBotReply || in.CID != 0 {
+		t.Fatalf("the reply past the budget: op %d n %d, want bot_reply n 0", in.Op, in.CID)
+	}
+	// The next replayable frame continues the sequence.
+	p, err := cborx.Marshal([]any{id.New(), id.New(), uint64(1), []byte{1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.gw.DeliverDevice(device, Frame{Op: OpInteraction, Payload: p, Replay: true})
+	if in := h.waitFrame(t, device); in.CID != uint64(replyRingFrames+2) {
+		t.Fatalf("the next replayable frame has n %d, want %d", in.CID, replyRingFrames+2)
+	}
+}
+
 // Ops 62, 63 and 64 are server-to-client: a client that sends one is refused at the opcode check.
 func TestBotRelayOpsAreNotClientFrames(t *testing.T) {
 	for _, op := range []Op{OpBotReply, OpBotStateChanged, OpBotCommand} {

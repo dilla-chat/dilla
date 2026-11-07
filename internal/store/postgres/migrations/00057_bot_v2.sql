@@ -46,14 +46,20 @@ CREATE TABLE bot_webhooks (
 );
 CREATE INDEX bot_webhooks_by_community ON bot_webhooks(community_id, webhook_id);
 -- The last revision of each Bot state scope: scope_kind 0 user (scope_id a user id), 1 channel
--- (a Bot channel), 2 call (the voice channel the call is in). Nothing else is stored.
+-- (a Bot channel), 2 call (the voice channel the call is in), each within one community. A user
+-- scope's revision is the user's in that community alone (Bot v2 Task 10), so one community's Bot
+-- learns nothing of another's hints. Nothing else is stored.
 CREATE TABLE bot_state_revisions (
-  scope_kind BIGINT NOT NULL CHECK (scope_kind IN (0, 1, 2)),
-  scope_id   BYTEA  NOT NULL CHECK (octet_length(scope_id) = 16),
-  revision   BIGINT NOT NULL CHECK (revision > 0),
-  PRIMARY KEY (scope_kind, scope_id)
+  scope_kind   BIGINT  NOT NULL CHECK (scope_kind IN (0, 1, 2)),
+  scope_id     BYTEA   NOT NULL CHECK (octet_length(scope_id) = 16),
+  community_id BYTEA   NOT NULL CHECK (octet_length(community_id) = 16)
+                       REFERENCES communities(id) ON DELETE CASCADE,
+  revision     BIGINT  NOT NULL CHECK (revision > 0),
+  PRIMARY KEY (scope_kind, scope_id, community_id)
 );
+CREATE INDEX bot_state_revisions_by_community ON bot_state_revisions(community_id);
 -- +goose Down
+DROP INDEX bot_state_revisions_by_community;
 DROP TABLE bot_state_revisions;
 DROP TABLE bot_webhooks;
 DROP TABLE bot_channels;

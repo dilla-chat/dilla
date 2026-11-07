@@ -255,9 +255,10 @@ type BotSessionBindings struct {
 }
 
 type BotStateRevisions struct {
-	ScopeKind int64
-	ScopeID   id.ID
-	Revision  int64
+	ScopeKind   int64
+	ScopeID     id.ID
+	CommunityID id.ID
+	Revision    int64
 }
 
 type BotStructuralEvents struct {

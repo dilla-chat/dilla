@@ -77,11 +77,11 @@ func (r *Repo) ListBotChannels(ctx context.Context, community id.ID) ([]store.Bo
 	return out, nil
 }
 
-func (r *Repo) BumpBotStateRevision(ctx context.Context, kind uint8, scope id.ID) (uint64, error) {
-	if kind > store.BotScopeCall || scope.IsZero() {
+func (r *Repo) BumpBotStateRevision(ctx context.Context, kind uint8, community, scope id.ID) (uint64, error) {
+	if kind > store.BotScopeCall || scope.IsZero() || community.IsZero() {
 		return 0, store.ErrConflict
 	}
-	rev, err := r.w.BumpBotStateRevision(ctx, pgdb.BumpBotStateRevisionParams{ScopeKind: int64(kind), ScopeID: scope})
+	rev, err := r.w.BumpBotStateRevision(ctx, pgdb.BumpBotStateRevisionParams{ScopeKind: int64(kind), ScopeID: scope, CommunityID: community})
 	if err != nil {
 		return 0, wrap(err)
 	}
@@ -91,17 +91,17 @@ func (r *Repo) BumpBotStateRevision(ctx context.Context, kind uint8, scope id.ID
 	return uint64(rev), nil
 }
 
-func (r *Repo) BotStateRevisions(ctx context.Context, user id.ID, scopes []id.ID) (uint64, []store.BotStateRevisionRow, error) {
-	var userRev uint64
-	rev, err := r.r.GetBotStateRevision(ctx, pgdb.GetBotStateRevisionParams{ScopeKind: int64(store.BotScopeUser), ScopeID: user})
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-	case err != nil:
-		return 0, nil, wrap(err)
-	case rev <= 0:
-		return 0, nil, store.ErrConflict
-	default:
-		userRev = uint64(rev)
+func (r *Repo) BotStateRevisions(ctx context.Context, user id.ID, scopes []id.ID) ([]store.BotStateRevisionRow, error) {
+	users, err := r.r.ListBotUserStateRevisions(ctx, pgdb.ListBotUserStateRevisionsParams{ScopeID: user})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BotStateRevisionRow, 0, len(users))
+	for _, u := range users {
+		if u.Revision <= 0 {
+			return nil, store.ErrConflict
+		}
+		out = append(out, store.BotStateRevisionRow{ScopeKind: store.BotScopeUser, ScopeID: user, CommunityID: u.CommunityID, Revision: uint64(u.Revision)})
 	}
 	var q interface {
 		QueryContext(context.Context, string, ...any) (*sql.Rows, error)
@@ -109,7 +109,6 @@ func (r *Repo) BotStateRevisions(ctx context.Context, user id.ID, scopes []id.ID
 	if r.tx != nil {
 		q = r.tx
 	}
-	out := []store.BotStateRevisionRow{}
 	for start := 0; start < len(scopes); start += botScopeChunk {
 		chunk := scopes[start:min(start+botScopeChunk, len(scopes))]
 		args := make([]any, 0, len(chunk))
@@ -118,19 +117,19 @@ func (r *Repo) BotStateRevisions(ctx context.Context, user id.ID, scopes []id.ID
 			args = append(args, s)
 			marks = append(marks, "$"+strconv.Itoa(i+1))
 		}
-		rows, err := q.QueryContext(ctx, `SELECT scope_kind, scope_id, revision FROM bot_state_revisions WHERE scope_kind IN (1, 2) AND scope_id IN (`+
+		rows, err := q.QueryContext(ctx, `SELECT scope_kind, scope_id, community_id, revision FROM bot_state_revisions WHERE scope_kind IN (1, 2) AND scope_id IN (`+
 			strings.Join(marks, ",")+`)`, args...)
 		if err != nil {
-			return 0, nil, wrap(err)
+			return nil, wrap(err)
 		}
 		got, err := scanBotStateRevisions(rows)
 		if err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 		out = append(out, got...)
 	}
 	store.SortBotStateRevisions(out)
-	return userRev, out, nil
+	return out, nil
 }
 
 func scanBotStateRevisions(rows *sql.Rows) (out []store.BotStateRevisionRow, retErr error) {
@@ -141,19 +140,19 @@ func scanBotStateRevisions(rows *sql.Rows) (out []store.BotStateRevisionRow, ret
 	}()
 	for rows.Next() {
 		var kind, rev int64
-		var scope id.ID
-		if err := rows.Scan(&kind, &scope, &rev); err != nil {
+		var scope, community id.ID
+		if err := rows.Scan(&kind, &scope, &community, &rev); err != nil {
 			return nil, wrap(err)
 		}
 		if kind < 0 || kind > int64(store.BotScopeCall) || rev <= 0 {
 			return nil, store.ErrConflict
 		}
-		out = append(out, store.BotStateRevisionRow{ScopeKind: uint8(kind), ScopeID: scope, Revision: uint64(rev)})
+		out = append(out, store.BotStateRevisionRow{ScopeKind: uint8(kind), ScopeID: scope, CommunityID: community, Revision: uint64(rev)})
 	}
 	return out, wrap(rows.Err())
 }
 
-// DeleteBotCommunityState removes a community's Bot channels, catalog, command key and webhooks in
+// DeleteBotCommunityState removes a community's Bot channels, catalog, command key, webhooks and state revisions in
 // the caller's transaction (a community's soft delete fires no cascade) and returns the unmarked
 // channels.
 func (r *Repo) DeleteBotCommunityState(ctx context.Context, community id.ID) ([]id.ID, error) {
@@ -171,6 +170,9 @@ func (r *Repo) DeleteBotCommunityState(ctx context.Context, community id.ID) ([]
 		return nil, wrap(err)
 	}
 	if err := r.w.DeleteBotWebhooksOfCommunity(ctx, pgdb.DeleteBotWebhooksOfCommunityParams{CommunityID: community}); err != nil {
+		return nil, wrap(err)
+	}
+	if err := r.w.DeleteBotStateRevisionsOfCommunity(ctx, pgdb.DeleteBotStateRevisionsOfCommunityParams{CommunityID: community}); err != nil {
 		return nil, wrap(err)
 	}
 	return channels, nil

@@ -544,6 +544,41 @@ func TestRelayIsRateLimitedPerDevice(t *testing.T) {
 	wantAccepted(t, status, body)
 }
 
+// The Bot answers one request at most BotRepliesPerRequest times: the next reply is 413 and is not
+// delivered (fix round 1, M4).
+func TestReplyPastTheCapIs413(t *testing.T) {
+	r := newRelayFixture(t)
+	requestID := id.New()
+	status, body := r.send(t, r.memberTok, requestID, sealedCommand(t, requestID, 16))
+	wantAccepted(t, status, body)
+	for seq := range api.BotRepliesPerRequest {
+		if status, body := r.reply(t, r.botTok, r.memberDevice.ID, requestID, uint64(seq), []byte{1}, 0); status != http.StatusNoContent {
+			t.Fatalf("reply %d = %d %x", seq, status, body)
+		}
+	}
+	status, body = r.reply(t, r.botTok, r.memberDevice.ID, requestID, uint64(api.BotRepliesPerRequest), []byte{1}, 1)
+	if status != http.StatusRequestEntityTooLarge || bodyCode(t, body) != "E_TOO_LARGE" {
+		t.Fatalf("reply past the cap = %d %x, want 413 E_TOO_LARGE", status, body)
+	}
+	if n := len(r.relay.frames(r.relay.device, r.memberDevice.ID)); n != api.BotRepliesPerRequest {
+		t.Fatalf("delivered %d replies, want %d", n, api.BotRepliesPerRequest)
+	}
+}
+
+// An account that still owes a second factor cannot send a sealed command (fix round 1, M7).
+func TestRelayRefusesAnAccountThatOwesASecondFactor(t *testing.T) {
+	r := newRelayFixture(t)
+	owe(t, r.deps, r.member.ID)
+	requestID := id.New()
+	status, body := r.send(t, r.memberTok, requestID, sealedCommand(t, requestID, 16))
+	if status != http.StatusForbidden || bodyCode(t, body) != "E_FACTOR_REQUIRED" {
+		t.Fatalf("command from an owed account = %d %x, want 403 E_FACTOR_REQUIRED", status, body)
+	}
+	if n := r.relay.total(); n != 0 {
+		t.Fatalf("an owed account's command reached the Bot (%d frames)", n)
+	}
+}
+
 func TestHintCarriesNoContentAndReachesOnlyScope(t *testing.T) {
 	r := newRelayFixture(t)
 	ctx := context.Background()
@@ -566,6 +601,14 @@ func TestHintCarriesNoContentAndReachesOnlyScope(t *testing.T) {
 	r.relay.mu.Lock()
 	r.relay.online[callGroup.GroupID] = []gateway.OnlineDevice{{DeviceID: r.memberDevice.ID}}
 	r.relay.mu.Unlock()
+	// The text channel is a Bot channel; a second text channel is not.
+	if _, err := r.deps.Repo.MarkBotChannel(ctx, store.BotChannelRow{ChannelID: r.text, CommunityID: cid, MarkedAt: now, MarkedBy: r.owner.ID}); err != nil {
+		t.Fatal(err)
+	}
+	unmarked := store.ChannelRow{ID: id.New(), CommunityID: &cid, Kind: api.ChannelText, Mode: api.ModeE2EE, Name: "general", SettingsJSON: []byte(`{}`), HostPolicyVersion: 1, Created: now}
+	if err := r.deps.Repo.CreateChannel(ctx, unmarked); err != nil {
+		t.Fatal(err)
+	}
 
 	check := func(frames []gateway.Frame, kind uint64, scope id.ID, revision uint64) {
 		t.Helper()
@@ -584,9 +627,11 @@ func TestHintCarriesNoContentAndReachesOnlyScope(t *testing.T) {
 		}
 	}
 
+	// A user hint is the user's in this community: op 63 names the community, the user being the
+	// receiving connection's own.
 	status, body := r.hint(t, r.botTok, 0, r.member.ID)
 	wantRevision(status, body, 1)
-	check(r.relay.frames(r.relay.user, r.member.ID), 0, r.member.ID, 1)
+	check(r.relay.frames(r.relay.user, r.member.ID), 0, r.community, 1)
 
 	status, body = r.hint(t, r.botTok, 1, r.text)
 	wantRevision(status, body, 1)
@@ -618,12 +663,13 @@ func TestHintCarriesNoContentAndReachesOnlyScope(t *testing.T) {
 		scope id.ID
 		want  int
 	}{
-		"a non-member user":              {0, other.ID, http.StatusNotFound},
-		"another community's channel":    {1, foreign.ID, http.StatusNotFound},
-		"another community's call scope": {2, foreign.ID, http.StatusNotFound},
-		"a call scope on a text channel": {2, r.text, http.StatusNotFound},
-		"a channel scope on a voice one": {1, r.voice, http.StatusNotFound},
-		"the catalog kind":               {3, r.community, http.StatusBadRequest},
+		"a non-member user":                     {0, other.ID, http.StatusNotFound},
+		"another community's channel":           {1, foreign.ID, http.StatusNotFound},
+		"another community's call scope":        {2, foreign.ID, http.StatusNotFound},
+		"a call scope on a text channel":        {2, r.text, http.StatusNotFound},
+		"a channel scope on a voice one":        {1, r.voice, http.StatusNotFound},
+		"a text channel that is no Bot channel": {1, unmarked.ID, http.StatusNotFound},
+		"the catalog kind":                      {3, r.community, http.StatusBadRequest},
 	} {
 		if status, _ := r.hint(t, r.botTok, tc.kind, tc.scope); status != tc.want {
 			t.Fatalf("%s = %d, want %d", name, status, tc.want)
@@ -636,8 +682,15 @@ func TestHintCarriesNoContentAndReachesOnlyScope(t *testing.T) {
 	if n := r.relay.total(); n != 4 {
 		t.Fatalf("refused hints delivered frames: %d in all, want 4", n)
 	}
-	_, scopes, err := r.deps.Repo.BotStateRevisions(ctx, other.ID, []id.ID{foreign.ID})
-	if err != nil || len(scopes) != 0 {
-		t.Fatalf("refused hints stored revisions %+v: %v", scopes, err)
+	for _, who := range []id.ID{other.ID, r.member.ID} {
+		scopes, err := r.deps.Repo.BotStateRevisions(ctx, who, []id.ID{foreign.ID, unmarked.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range scopes {
+			if row.ScopeKind != store.BotScopeUser || row.CommunityID != r.community {
+				t.Fatalf("a refused hint stored revision %+v", row)
+			}
+		}
 	}
 }

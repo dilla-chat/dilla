@@ -35,10 +35,19 @@ const (
 	// BotRequestTTL is how long a relayed request_id is remembered: a retry from the same device
 	// within it is accepted again, one from another device is 409, and a reply to it is delivered.
 	BotRequestTTL = 5 * time.Minute
-	// BotRequestCap bounds the ledger. At the default per-device command rate (2/s) it is the five
-	// minutes of about 110 devices sending flat out; past it the oldest entry is evicted, so a late
-	// reply to it is 404 and the Bot's own replay table still de-duplicates.
+	// BotRequestCap bounds the ledger as a backstop. At the default per-device command rate (2/s)
+	// it is the five minutes of about 110 devices sending flat out; past it the oldest entry is
+	// evicted, so a late reply to it is 404 and the Bot's own replay table still de-duplicates.
 	BotRequestCap = 65536
+	// BotRequestsPerDevice is one device's share of the ledger: a device at its quota evicts its
+	// own oldest entry, never another device's. 256 commands in five minutes is far above any
+	// person's typing, and below the 620 the per-device rate would allow.
+	BotRequestsPerDevice = 256
+	// BotRepliesPerRequest and BotReplyBytesPerRequest bound what the Bot may send back for one
+	// command: a streamed answer is a handful of replies, and the cap keeps a misbehaving Bot from
+	// using one relayed request to fill a member's connection. Past either, a reply is 413.
+	BotRepliesPerRequest    = 16
+	BotReplyBytesPerRequest = 256 << 10
 	// sealedCommandVersion is the version element of the sealed form.
 	sealedCommandVersion = 1
 )
@@ -56,28 +65,34 @@ type BotRelayGateway interface {
 }
 
 // BotRequestLedger is the relay's only state: which device sent each request_id, in which
-// community, for BotRequestTTL. It is in memory and bounded by BotRequestCap; a restart forgets it
-// (an answer to a command relayed before the restart is then 404, and the client retries).
+// community, for BotRequestTTL, and how much the Bot has answered to it. It is in memory and bounded
+// per device by BotRequestsPerDevice and in all by BotRequestCap; a restart forgets it (an answer to
+// a command relayed before the restart is then 404, and the client retries).
 type BotRequestLedger struct {
-	mu      sync.Mutex
-	clk     clock.Clock
-	cap     int
-	entries map[id.ID]*list.Element
-	order   *list.List // of *botRequest, least recently relayed first
+	mu       sync.Mutex
+	clk      clock.Clock
+	cap      int
+	perDev   int
+	entries  map[id.ID]*botRequest
+	order    *list.List           // of *botRequest, least recently relayed first
+	byDevice map[id.ID]*list.List // per device, the same order
 }
 
 type botRequest struct {
 	requestID, device, community id.ID
 	at                           time.Time
+	replies, replyBytes          int
+	all, mine                    *list.Element
 }
 
 // NewBotRequestLedger is an empty ledger on clk.
 func NewBotRequestLedger(clk clock.Clock) *BotRequestLedger {
-	return newBotRequestLedger(clk, BotRequestCap)
+	return newBotRequestLedger(clk, BotRequestCap, BotRequestsPerDevice)
 }
 
-func newBotRequestLedger(clk clock.Clock, capacity int) *BotRequestLedger {
-	return &BotRequestLedger{clk: clk, cap: capacity, entries: map[id.ID]*list.Element{}, order: list.New()}
+func newBotRequestLedger(clk clock.Clock, capacity, perDevice int) *BotRequestLedger {
+	return &BotRequestLedger{clk: clk, cap: capacity, perDev: perDevice, entries: map[id.ID]*botRequest{},
+		order: list.New(), byDevice: map[id.ID]*list.List{}}
 }
 
 var errBotDuplicate = server.Errorf(server.CodeBotDuplicate, "another device sent this request_id")
@@ -85,24 +100,37 @@ var errBotDuplicate = server.Errorf(server.CodeBotDuplicate, "another device sen
 // admit records that device sent requestID to community. A request_id another device (or another
 // community) sent within BotRequestTTL is errBotDuplicate. The same device sending it again is
 // admitted and its entry refreshed; inserted reports whether the entry is new, so a relay that
-// fails can take back exactly what it added.
+// fails can take back exactly what it added. A device at its quota loses its own oldest entry.
 func (l *BotRequestLedger) admit(requestID, device, community id.ID) (inserted bool, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.clk.Now()
 	l.expireLocked(now)
-	if e, ok := l.entries[requestID]; ok {
-		r, _ := e.Value.(*botRequest)
+	if r, ok := l.entries[requestID]; ok {
 		if r.device != device || r.community != community {
 			return false, errBotDuplicate
 		}
 		r.at = now
-		l.order.MoveToBack(e)
+		l.order.MoveToBack(r.all)
+		l.byDevice[device].MoveToBack(r.mine)
 		return false, nil
 	}
-	l.entries[requestID] = l.order.PushBack(&botRequest{requestID: requestID, device: device, community: community, at: now})
+	mine := l.byDevice[device]
+	if mine == nil {
+		mine = list.New()
+		l.byDevice[device] = mine
+	}
+	for mine.Len() >= l.perDev {
+		oldest, _ := mine.Front().Value.(*botRequest)
+		l.removeLocked(oldest)
+	}
+	r := &botRequest{requestID: requestID, device: device, community: community, at: now}
+	r.all = l.order.PushBack(r)
+	r.mine = mine.PushBack(r)
+	l.entries[requestID] = r
 	for l.order.Len() > l.cap {
-		l.removeLocked(l.order.Front())
+		front, _ := l.order.Front().Value.(*botRequest)
+		l.removeLocked(front)
 	}
 	return true, nil
 }
@@ -111,10 +139,8 @@ func (l *BotRequestLedger) admit(requestID, device, community id.ID) (inserted b
 func (l *BotRequestLedger) forget(requestID, device id.ID) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if e, ok := l.entries[requestID]; ok {
-		if r, _ := e.Value.(*botRequest); r.device == device {
-			l.removeLocked(e)
-		}
+	if r, ok := l.entries[requestID]; ok && r.device == device {
+		l.removeLocked(r)
 	}
 }
 
@@ -123,12 +149,33 @@ func (l *BotRequestLedger) relayed(requestID, device, community id.ID) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.expireLocked(l.clk.Now())
-	e, ok := l.entries[requestID]
-	if !ok {
-		return false
+	r, ok := l.entries[requestID]
+	return ok && r.device == device && r.community == community
+}
+
+var (
+	errNoSuchRequest = server.Errorf(server.CodeNotFound, "no such request")
+	errReplyCap      = server.Errorf(server.CodeTooLarge, "the Bot already sent %d replies or %d bytes for this request", BotRepliesPerRequest, BotReplyBytesPerRequest)
+)
+
+// reply admits one reply of size bytes to requestID from the Bot of community, for device: the
+// request must have been relayed from that device into that community within BotRequestTTL
+// (errNoSuchRequest), and the request's replies must stay within BotRepliesPerRequest and
+// BotReplyBytesPerRequest (errReplyCap). An admitted reply is counted.
+func (l *BotRequestLedger) reply(requestID, device, community id.ID, size int) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.expireLocked(l.clk.Now())
+	r, ok := l.entries[requestID]
+	if !ok || r.device != device || r.community != community {
+		return errNoSuchRequest
 	}
-	r, _ := e.Value.(*botRequest)
-	return r.device == device && r.community == community
+	if r.replies+1 > BotRepliesPerRequest || r.replyBytes+size > BotReplyBytesPerRequest {
+		return errReplyCap
+	}
+	r.replies++
+	r.replyBytes += size
+	return nil
 }
 
 // expireLocked drops every entry older than BotRequestTTL; the list is in relay order, so they are
@@ -139,12 +186,18 @@ func (l *BotRequestLedger) expireLocked(now time.Time) {
 		if now.Sub(r.at) <= BotRequestTTL {
 			return
 		}
-		l.removeLocked(e)
+		l.removeLocked(r)
 	}
 }
 
-func (l *BotRequestLedger) removeLocked(e *list.Element) {
-	r, _ := l.order.Remove(e).(*botRequest)
+func (l *BotRequestLedger) removeLocked(r *botRequest) {
+	l.order.Remove(r.all)
+	if mine := l.byDevice[r.device]; mine != nil {
+		mine.Remove(r.mine)
+		if mine.Len() == 0 {
+			delete(l.byDevice, r.device)
+		}
+	}
 	delete(l.entries, r.requestID)
 }
 
@@ -340,7 +393,8 @@ func readyBotSession(r *http.Request, d Deps) (auth.Session, store.BotInstallati
 
 // PostBotReply delivers one sealed answer of the Bot, [device_id, request_id, seq, sealed, final],
 // to the device that sent the command: 204. A request_id not relayed from that device into the
-// Bot's own community within BotRequestTTL is 404.
+// Bot's own community within BotRequestTTL is 404; a reply past BotRepliesPerRequest or
+// BotReplyBytesPerRequest for its request is 413 E_TOO_LARGE.
 func (d Deps) PostBotReply(w http.ResponseWriter, r *http.Request) {
 	_, installation, err := readyBotSession(r, d)
 	if err != nil {
@@ -367,8 +421,12 @@ func (d Deps) PostBotReply(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, invalid)
 		return
 	}
-	if d.BotRelay == nil || !d.BotRequests.relayed(requestID, device, installation.CommunityID) {
-		server.WriteError(w, server.Errorf(server.CodeNotFound, "no such request"))
+	if d.BotRelay == nil {
+		server.WriteError(w, errNoSuchRequest)
+		return
+	}
+	if err := d.BotRequests.reply(requestID, device, installation.CommunityID, len(sealed)); err != nil {
+		server.WriteError(w, err)
 		return
 	}
 	payload, err := gateway.BotReplyPayload(requestID, seq, sealed, final == 1)
