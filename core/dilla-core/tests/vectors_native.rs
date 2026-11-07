@@ -38,9 +38,9 @@ fn each_suite_reports_the_expected_number_of_cases() {
     // web-3.1's `community_changed` (op 54) and web3.7's `message.ct with a null class` (op 19's
     // 7th element) and AW3's two `afk_away` cases (op 55, set and cleared) and Bot v2's socket
     // `request` (op 59, with and without an idem) and `response` (op 60), checked as one
-    // `frame` field each. Pinned exactly, for the same reason the
-    // reject suite is.
-    assert_eq!(run_frames().cases.len(), 37);
+    // `frame` field each, and Bot v2 task 9's `bot_catalog` (op 61). Pinned exactly, for the
+    // same reason the reject suite is.
+    assert_eq!(run_frames().cases.len(), 38);
     // protocol/04 § Attachments (web-2b task 1): four cases, `stored`, `blob_id` and `open` each,
     // plus `thumb` and `thumb_open` for the one with a thumbnail: 3 + 3 + 5 + 3
     assert_eq!(run_attachment().cases.len(), 14);

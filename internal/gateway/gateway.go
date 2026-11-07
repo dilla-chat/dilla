@@ -929,5 +929,5 @@ var opNames = map[Op]string{
 	OpTypingSet: "typing_set", OpVoiceSelf: "voice_self", OpCallRing: "call_ring",
 	OpCommunityChanged: "community_changed", OpAFKAway: "afk_away",
 	OpAppBuild: "app_build", OpPresenceActivity: "presence_activity", OpCallStats: "call_stats",
-	OpRequest: "request", OpResponse: "response",
+	OpRequest: "request", OpResponse: "response", OpBotCatalog: "bot_catalog",
 }

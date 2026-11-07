@@ -26,6 +26,7 @@ export const SOCKET_ROUTES: readonly SocketRoute[] = [
   { method: 'POST', pattern: '/v1/auth/stepup' },
   { method: 'POST', pattern: '/v1/auth/stepup/passkey/begin' },
   { method: 'POST', pattern: '/v1/auth/stepup/passkey/finish' },
+  { method: 'GET', pattern: '/v1/bot/revisions' },
   { method: 'DELETE', pattern: '/v1/calls/{call_id}' },
   { method: 'POST', pattern: '/v1/calls/{call_id}/decline' },
   { method: 'POST', pattern: '/v1/calls/{call_id}/rtt' },
@@ -57,6 +58,8 @@ export const SOCKET_ROUTES: readonly SocketRoute[] = [
   { method: 'PUT', pattern: '/v1/communities/{community}/bot' },
   { method: 'GET', pattern: '/v1/communities/{community}/bot/actors/{actor}/authority' },
   { method: 'GET', pattern: '/v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority' },
+  { method: 'GET', pattern: '/v1/communities/{community}/bot/catalog' },
+  { method: 'GET', pattern: '/v1/communities/{community}/bot/channels' },
   { method: 'GET', pattern: '/v1/communities/{community}/bot/command-status' },
   { method: 'POST', pattern: '/v1/communities/{community}/bot/disable' },
   { method: 'GET', pattern: '/v1/communities/{community}/bot/events' },
@@ -68,6 +71,8 @@ export const SOCKET_ROUTES: readonly SocketRoute[] = [
   { method: 'GET', pattern: '/v1/communities/{community}/bot/receipts/{operation}' },
   { method: 'POST', pattern: '/v1/communities/{community}/bot/receipts/{operation}/resolve' },
   { method: 'POST', pattern: '/v1/communities/{community}/bot/restart' },
+  { method: 'DELETE', pattern: '/v1/communities/{community}/channels/{channel}/bot-channel' },
+  { method: 'PUT', pattern: '/v1/communities/{community}/channels/{channel}/bot-channel' },
   { method: 'DELETE', pattern: '/v1/communities/{id}' },
   { method: 'GET', pattern: '/v1/communities/{id}' },
   { method: 'PATCH', pattern: '/v1/communities/{id}' },
@@ -217,6 +222,8 @@ export const PRE_GATEWAY_ROUTES: readonly SocketRoute[] = [
 
 /** The Bot runtime's own HTTP routes (F24), kept apart from the app's lists. */
 export const BOT_RUNTIME_ROUTES: readonly SocketRoute[] = [
+  { method: 'PUT', pattern: '/v1/bot-runtime/communities/{community}/catalog' },
+  { method: 'PUT', pattern: '/v1/bot-runtime/communities/{community}/command-key' },
   { method: 'GET', pattern: '/v1/bot-runtime/installations' },
   { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/automod-grants/redeem' },
   { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/claim' },

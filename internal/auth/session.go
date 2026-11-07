@@ -1354,6 +1354,10 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem":
 		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "PUT /v1/bot-runtime/communities/{community}/catalog",
+		"PUT /v1/bot-runtime/communities/{community}/command-key":
+		// Bot v2 Task 9: only the ready Bot of the path's community publishes its catalog and command key.
+		return ready && communityPath("community"), nil
 	case "GET /v1/communities/{community}/bot/actors/{actor}/authority":
 		if !ready || !communityPath("community") {
 			return false, nil

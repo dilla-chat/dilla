@@ -185,6 +185,14 @@ type Deps struct {
 	// after an episode-bound automatic role grant commits or its accepted receipt
 	// is replayed. Replay repairs a crash after commit but before refresh.
 	BotJoinRoleGranted func(context.Context, id.ID, id.ID)
+
+	// BotCatalogGateway delivers a published Bot command catalog (op 61) to each connected member,
+	// filtered for that member (Bot v2 Task 9). Nil pushes nothing; members read the catalog at
+	// connect sync.
+	BotCatalogGateway BotCatalogGateway
+	// BotChannelEvents hears Bot-channel marks and unmarks after they commit (Bot v2 Task 9; Task 12's
+	// Bot feed implements it). Nil is NoBotChannelEvents.
+	BotChannelEvents BotChannelEvents
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket
@@ -234,9 +242,14 @@ func Register(m *server.Mux, d Deps) {
 	if d.enrolments == nil {
 		d.enrolments = newEnrolments(d.Clock, enrolmentTTL)
 	}
+	if d.BotChannelEvents == nil {
+		d.BotChannelEvents = NoBotChannelEvents{}
+	}
 	// Discovery. The two routes a client reads before it has anything else.
 	registerInstance(m, d)
 	registerBotInstallations(m, d)
+	registerBotCatalog(m, d)
+	registerBotChannels(m, d)
 	registerAutoModerationGrants(m, d)
 	registerBotStructuralEvents(m, d)
 	registerModerationRemovals(m, d)

@@ -607,6 +607,15 @@ func expectedStatus(method, path string) (int, bool) {
 	if len(parts) == 2 && parts[0] == "instance" && parts[1] == "limits" && method == http.MethodGet {
 		return 200, true
 	}
+	// Bot v2 Task 9: the catalog answers [revision], the command key 204.
+	if len(parts) == 4 && parts[0] == "bot-runtime" && parts[1] == "communities" && method == http.MethodPut {
+		switch parts[3] {
+		case "catalog":
+			return 200, true
+		case "command-key":
+			return 204, true
+		}
+	}
 	if len(parts) >= 2 && parts[0] == "bot-runtime" && parts[1] == "installations" {
 		if len(parts) == 6 && parts[3] == "interaction-groups" {
 			if parts[5] == "heal" && (method == http.MethodGet || method == http.MethodPost) {

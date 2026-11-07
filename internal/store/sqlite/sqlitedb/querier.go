@@ -18,6 +18,7 @@ type Querier interface {
 	AppendHandshake(ctx context.Context, arg AppendHandshakeParams) error
 	// COUNT, not EXISTS, for the reason GetBlobTombstone gives.
 	BackupRefersToBlob(ctx context.Context, arg BackupRefersToBlobParams) (int64, error)
+	BumpBotStateRevision(ctx context.Context, arg BumpBotStateRevisionParams) (int64, error)
 	BumpGeneration(ctx context.Context) (int64, error)
 	BumpGroupSeq(ctx context.Context, arg BumpGroupSeqParams) (int64, error)
 	// Fix round 2 (security L1): a change writes the new hash and its change time in one statement.
@@ -138,12 +139,15 @@ type Querier interface {
 	// interfaces must stay identical.
 	GetBlobTombstone(ctx context.Context, arg GetBlobTombstoneParams) (int64, error)
 	GetBotAutoModerationGrant(ctx context.Context, arg GetBotAutoModerationGrantParams) (AutomodStepupGrants, error)
+	GetBotCatalog(ctx context.Context, arg GetBotCatalogParams) (BotCatalogs, error)
 	GetBotClaim(ctx context.Context, arg GetBotClaimParams) (BotClaims, error)
+	GetBotCommandKey(ctx context.Context, arg GetBotCommandKeyParams) (BotCommandKeys, error)
 	GetBotInstallation(ctx context.Context, arg GetBotInstallationParams) (BotInstallations, error)
 	GetBotOperation(ctx context.Context, arg GetBotOperationParams) (BotOperations, error)
 	GetBotRuntime(ctx context.Context, arg GetBotRuntimeParams) (BotRuntimes, error)
 	GetBotRuntimeByHash(ctx context.Context, arg GetBotRuntimeByHashParams) (BotRuntimes, error)
 	GetBotSessionBinding(ctx context.Context, arg GetBotSessionBindingParams) (BotSessionBindings, error)
+	GetBotStateRevision(ctx context.Context, arg GetBotStateRevisionParams) (int64, error)
 	GetCeremony(ctx context.Context, arg GetCeremonyParams) (WebauthnCeremonies, error)
 	GetChannel(ctx context.Context, arg GetChannelParams) (Channels, error)
 	GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochParams) (MlsHandshakes, error)
@@ -212,6 +216,7 @@ type Querier interface {
 	// Plan 2 task 12: the backup's walk over every blob row, in blob_id byte order, resumed after
 	// the last id of the previous page. An empty after (X'') sorts below every 32-byte id.
 	ListBlobs(ctx context.Context, arg ListBlobsParams) ([]Blobs, error)
+	ListBotChannels(ctx context.Context, arg ListBotChannelsParams) ([]BotChannels, error)
 	ListBotInstallationsAfter(ctx context.Context, arg ListBotInstallationsAfterParams) ([]BotInstallations, error)
 	ListBotInstallationsByDevice(ctx context.Context, arg ListBotInstallationsByDeviceParams) ([]BotInstallations, error)
 	ListBotInstallationsForRuntime(ctx context.Context, arg ListBotInstallationsForRuntimeParams) ([]BotInstallations, error)
@@ -307,6 +312,7 @@ type Querier interface {
 	// Sets the mark only when no reference is left, and only when it is not already set, so a
 	// repeated delete cannot push collection back.
 	MarkBlobUnreferenced(ctx context.Context, arg MarkBlobUnreferencedParams) error
+	MarkBotChannel(ctx context.Context, arg MarkBotChannelParams) (int64, error)
 	// The boot reconcile's first half (web3.6 S1): every live human account that holds no confirmed
 	// TOTP secret and no passkey registered for the instance's rp_id owes a second factor.
 	MarkFactorOwedWithoutFactor(ctx context.Context, arg MarkFactorOwedWithoutFactorParams) (int64, error)
@@ -364,7 +370,10 @@ type Querier interface {
 	PutBlobRef(ctx context.Context, arg PutBlobRefParams) error
 	// The first purge's record stands.
 	PutBlobTombstone(ctx context.Context, arg PutBlobTombstoneParams) error
+	// Bot v2 (Task 9): 051_bot_v2.sql.
+	PutBotCatalog(ctx context.Context, arg PutBotCatalogParams) error
 	PutBotClaim(ctx context.Context, arg PutBotClaimParams) error
+	PutBotCommandKey(ctx context.Context, arg PutBotCommandKeyParams) error
 	PutCeremony(ctx context.Context, arg PutCeremonyParams) error
 	// Channel members (Plan 2 task 6, 00008_channel_members.sql).
 	PutChannelMember(ctx context.Context, arg PutChannelMemberParams) error
@@ -464,6 +473,7 @@ type Querier interface {
 	TombstoneUser(ctx context.Context, arg TombstoneUserParams) error
 	TouchDevice(ctx context.Context, arg TouchDeviceParams) error
 	TouchSession(ctx context.Context, arg TouchSessionParams) error
+	UnmarkBotChannel(ctx context.Context, arg UnmarkBotChannelParams) (int64, error)
 	UpdateBotInstallation(ctx context.Context, arg UpdateBotInstallationParams) (int64, error)
 	// kind, community_id, seq and created are not written: a channel's kind and home
 	// are immutable, and seq moves only through NextChannelSeq.

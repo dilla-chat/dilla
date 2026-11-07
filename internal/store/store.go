@@ -76,6 +76,8 @@ type Repository interface {
 	BotGroupRegistrationAdmissionReceipts
 	BotAutoModerationGrants
 	ModerationRemovals
+	// Bot v2 Task 9 — 00057_bot_v2.sql
+	BotV2
 }
 
 // BotAutoModerationGrantRow stores only a digest of the opaque bearer grant and a

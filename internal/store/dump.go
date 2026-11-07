@@ -126,6 +126,9 @@ var DumpTables = []string{
 	// the accepted registration in logical backups.
 	"bot_group_registration_admission_receipts",
 	"bot_event_acks",
+	// 051_bot_v2.sql (Bot v2 Task 9): catalogs, command keys, Bot channels and webhooks are
+	// children of communities (and channels, users); the state revisions have no parent.
+	"bot_catalogs", "bot_command_keys", "bot_channels", "bot_webhooks", "bot_state_revisions",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

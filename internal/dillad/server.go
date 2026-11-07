@@ -481,6 +481,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 				"user", userID, "err", err)
 		}
 	}
+	// Bot v2 Task 9: a published catalog goes to each connected member as op 61, filtered for that
+	// member. BotChannelEvents stays the no-op default until Task 12's Bot feed.
+	deps.BotCatalogGateway = gw
 	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log)
 	deps.BotRevoked = func(ctx context.Context, installation store.BotInstallationRow, remove bool) {
 		if remove {

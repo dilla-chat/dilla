@@ -73,6 +73,10 @@ const (
 	// Neither is replayable; see request.go.
 	OpRequest  Op = 59
 	OpResponse Op = 60
+	// OpBotCatalog pushes a community's Bot command catalog to one member, filtered for that member
+	// (Bot v2 task 9): [community_id, revision, filtered_catalog]. S->C only and not replayed: a
+	// member who missed it compares revisions at connect sync.
+	OpBotCatalog Op = 61
 )
 
 // CloseCode is a WebSocket close code from RFC 6455's private range.
@@ -163,6 +167,9 @@ var opSpecs = map[Op]opSpec{
 	// same idem, and its response belongs to the socket the request came in on.
 	OpRequest:  {elements: 5, fromClient: true},
 	OpResponse: {elements: 3},
+	// [community_id, revision, filtered_catalog]. Server-to-client, so a client op 61 is
+	// E_FRAME_TYPE at the opcode check.
+	OpBotCatalog: {elements: 3},
 }
 
 // FrameError is a structured refusal. Code is the E_FRAME_* string the client sees in an error

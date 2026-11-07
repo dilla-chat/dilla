@@ -652,6 +652,8 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "ready bot can share own community call", pattern: "POST /v1/calls/{call_id}/share", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
 		{name: "ready bot can decline own community call", pattern: "POST /v1/calls/{call_id}/decline", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
 		{name: "ready bot can report its rtt in own community call", pattern: "POST /v1/calls/{call_id}/rtt", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
+		{name: "ready bot can publish its own community catalog", pattern: "PUT /v1/bot-runtime/communities/{community}/catalog", method: http.MethodPut, pathName: "community", pathValue: community.ID.String()},
+		{name: "ready bot can publish its own community command key", pattern: "PUT /v1/bot-runtime/communities/{community}/command-key", method: http.MethodPut, pathName: "community", pathValue: community.ID.String()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
@@ -676,6 +678,9 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "ready bot cannot read foreign community send receipt", pattern: "GET /v1/communities/{community}/bot/receipts/{operation}", method: http.MethodGet, pathName: "community", pathValue: foreignCommunity.ID.String()},
 		{name: "ready bot cannot resolve foreign community send receipt", pattern: "POST /v1/communities/{community}/bot/receipts/{operation}/resolve", method: http.MethodPost, pathName: "community", pathValue: foreignCommunity.ID.String()},
 		{name: "ready bot cannot read foreign channel permissions", pattern: "GET /v1/channels/{id}/permissions", method: http.MethodGet, pathName: "id", pathValue: foreignChannel.ID.String()},
+		{name: "ready bot cannot publish a foreign community catalog", pattern: "PUT /v1/bot-runtime/communities/{community}/catalog", method: http.MethodPut, pathName: "community", pathValue: foreignCommunity.ID.String()},
+		{name: "ready bot cannot publish a foreign community command key", pattern: "PUT /v1/bot-runtime/communities/{community}/command-key", method: http.MethodPut, pathName: "community", pathValue: foreignCommunity.ID.String()},
+		{name: "ready bot cannot read a member's catalog", pattern: "GET /v1/communities/{community}/bot/catalog", method: http.MethodGet, pathName: "community", pathValue: community.ID.String()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false

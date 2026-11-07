@@ -29,6 +29,7 @@ envelope	text message with a reply and one attachment	commitment
 envelope	text message with a reply and one attachment	length
 frames	afk_away	frame
 frames	afk_away cleared	frame
+frames	bot_catalog	frame
 frames	call_ring state 0	frame
 frames	call_ring state 1	frame
 frames	call_ring state 2	frame

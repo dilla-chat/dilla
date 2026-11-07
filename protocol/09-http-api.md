@@ -377,6 +377,8 @@ permission checks still apply.
 |---|---|---|---|
 | `GET /v1/communities/{community}/bot/actors/{actor}/authority` | B (ready) | — | `[effective_permission_bits, is_owner(uint), is_administrator(uint)]`; 404 if the community, installation or actor is absent |
 | `GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority` | B (ready, channel visible to bot) | — | `[community_id,actor_id,channel_id,effective_permission_bits]` for the current human member; 403/404 if installation, membership or visibility checks fail; no-store |
+| `PUT /v1/bot-runtime/communities/{community}/catalog` | B (ready, path community) | the command catalog (`10` § Command catalog, command key and Bot channels) | `[revision]`; a changed catalog is pushed as gateway op 61 to each connected member, filtered for that member |
+| `PUT /v1/bot-runtime/communities/{community}/command-key` | B (ready, path community) | the signed command-key publication | `204`; `403` unless a listed, unrevoked device of the Bot signed it; `400` for another community or a `not_after` past or more than 8 days ahead |
 | `GET /v1/communities/{community}/bot/events?after=N&limit=L` | B | — | `[events, next_seq, high_water, floor]`; `after` is exclusive, default limit 100, maximum 250 |
 | `PUT /v1/communities/{community}/bot/events/ack` | B | `[through]` | `204` |
 | `POST /v1/groups/{group}/moderation/removals` | E or B | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |

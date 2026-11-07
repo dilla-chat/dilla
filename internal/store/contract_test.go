@@ -211,6 +211,11 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"AddReactionRoleGrant", "ListReactionRolePanelGrantUsers", "RemoveReactionRoleChannelGrants", "RemoveReactionRoleGrant", "RemoveReactionRolePanelGrants",
 		}},
 		{"BotJoinRoleGrants", reflect.TypeOf((*store.BotJoinRoleGrants)(nil)).Elem(), []string{"GrantBotJoinRoleForEpisode"}},
+		// Bot v2 Task 9: the catalog, the command key, Bot channels and the state revisions.
+		{"BotV2", reflect.TypeOf((*store.BotV2)(nil)).Elem(), []string{
+			"BotStateRevisions", "BumpBotStateRevision", "GetBotCatalog", "GetBotCommandKey",
+			"ListBotChannels", "MarkBotChannel", "PutBotCatalog", "PutBotCommandKey", "UnmarkBotChannel",
+		}},
 		{"BotGroupRegistrationAdmissionReceipts", reflect.TypeOf((*store.BotGroupRegistrationAdmissionReceipts)(nil)).Elem(), []string{"AcceptBotGroupRegistrationAdmission", "GetBotGroupRegistrationAdmission"}},
 		// Overwrites is the slice of Structure Plan 2 task 3's table supports.
 		{"Overwrites", reflect.TypeOf((*store.Overwrites)(nil)).Elem(), []string{
@@ -375,6 +380,8 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.BotAutoModerationGrants)(nil)).Elem(),
 		// Task 7: permanent signed moderation-removal proofs and group revision feeds.
 		reflect.TypeOf((*store.ModerationRemovals)(nil)).Elem(),
+		// Bot v2 Task 9: 00057_bot_v2.sql.
+		reflect.TypeOf((*store.BotV2)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)
@@ -426,6 +433,10 @@ func TestDeferredRowTypesAreDeclared(t *testing.T) {
 		"BotClaimRow":          store.BotClaimRow{},
 		"BotOperationRow":      store.BotOperationRow{},
 		"BotSessionBindingRow": store.BotSessionBindingRow{},
+		"BotCatalogRow":        store.BotCatalogRow{},
+		"BotCommandKeyRow":     store.BotCommandKeyRow{},
+		"BotChannelRow":        store.BotChannelRow{},
+		"BotStateRevisionRow":  store.BotStateRevisionRow{},
 	}
 	for name, v := range rows {
 		if k := reflect.TypeOf(v).Kind(); k != reflect.Struct {
