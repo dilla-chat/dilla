@@ -260,6 +260,20 @@ sends `identify` with an empty `session_token`. The upgrade spends the ticket wh
 connection then identifies, and the ticket is never echoed, so the credential does not appear in
 the response.
 
+**The supervised Bot's socket.** When dillad runs the bundled Bot (`[bot]` in `dilla.toml`), it also
+listens on a Unix socket, `<bot.socket_dir>/gateway.sock` (default `/run/dillad/bot/gateway.sock`;
+the directory is mode 0750 and the socket 0660, both dillad's with the Bot user's group). There is no
+network form of it. A connection is accepted only from the process dillad's keeper started, by its
+`SO_PEERCRED` pid and uid (the Bot's user; dillad's own with `dev_same_user`); any other peer is
+closed before a byte is read. The socket serves dillad's HTTP routes and the same `GET /gateway`
+upgrade, with two differences on the upgrade: the session is the upgrade's
+`Authorization: Bearer` and must be a managed Bot session, and the first `identify` of each Bot start
+carries in `session_token` the launch token dillad gave that start on its descriptor 3 (32 bytes,
+base64url without padding). The token is spent by the first `identify` that binds, compared in
+constant time; later `identify` and `resume` frames of the same start carry an empty
+`session_token`, and are refused until the token was spent. A spent token, a token of an earlier
+start, or a person's session is `E_UNAUTHENTICATED` and close 4003.
+
 An upgrade whose `Origin` header names a host other than the request's `Host` (compared with the
 port, case-insensitively) and matches none of the instance's `http.trusted_origins` (default
 `dilla://app`) is refused with `403`; a request without `Origin` is not refused on this rule. A

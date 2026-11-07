@@ -256,6 +256,10 @@ type Inbound struct {
 	// handshake carries an empty one in its payload and must still resolve. It is unexported
 	// because it never comes off the wire.
 	handshakeToken string
+	// botPeer marks a first frame that came in over the Bot's Unix socket: the session it resolves to must be a
+	// managed Bot's, and botToken (an identify's launch token, nil without one) must then pass the launch check.
+	botPeer  *botPeer
+	botToken []byte
 	// request is op 59's payload, decoded once by Decode.
 	request *SocketRequest
 }

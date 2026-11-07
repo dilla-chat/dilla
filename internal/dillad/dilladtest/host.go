@@ -38,6 +38,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/config"
 	"github.com/dilla-chat/dilla/internal/dillad"
 	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/gateway"
 	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/mlswasi"
 	"github.com/dilla-chat/dilla/internal/obs"
@@ -123,6 +124,9 @@ type HostOptions struct {
 	// dilla-testhost sets it from -wire, so a browser test can meet an instance its client is too
 	// old for.
 	WireVersions []uint64
+	// BotLaunch is the Bot supervisor's launch gate (dillad.Options.BotLaunch): dilla-testhost -bot passes its
+	// supervisor, so the Bot it starts can connect over BotHandler's socket. Nil admits nobody there.
+	BotLaunch gateway.BotLaunch
 }
 
 // AllowEveryone is the harness's channel ACL: every enrolled user is eligible for every group.
@@ -409,6 +413,7 @@ func (h *Host) newServer(ctx context.Context) (*dillad.Server, error) {
 		// nil keeps dillad's own default list, {5, 4, 3, 2} since wire 5.
 		WireVersions:  h.o.WireVersions,
 		SocketObserve: h.observeSocket,
+		BotLaunch:     h.o.BotLaunch,
 	}
 	// Left nil under ProductionACL, so New wires api.ResolverACL and api.StructureChannels. (An
 	// interface holding a nil *ChannelModes would not be nil; the fields are simply not set.)

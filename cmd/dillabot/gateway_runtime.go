@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -52,9 +53,13 @@ type botGatewayRuntime struct {
 	ctx            context.Context
 	api            *client.Client
 	loopback       bool
-	log            *slog.Logger
-	entries        map[id.ID]*botGatewayEntry
-	wake           chan struct{}
+	// httpClient and launch are the supervised Bot's: its gateway connections dial dillad's Bot socket, and the first
+	// identify carries the launch token. Both nil for a Bot on the network.
+	httpClient *http.Client
+	launch     *gatewayclient.LaunchToken
+	log        *slog.Logger
+	entries    map[id.ID]*botGatewayEntry
+	wake       chan struct{}
 	// interaction carries a participant's message in a private interaction group: a command
 	// waiting for an answer. It wakes the dedicated command workers directly.
 	interaction chan struct{}
@@ -258,7 +263,8 @@ func (r *botGatewayRuntime) Ensure(installation, device, user id.ID, token strin
 			r.SetMaintenance(installation, backgroundMaintenance{})
 		}
 	}
-	gateway, err := gatewayclient.New(gatewayclient.Config{Client: r.api, AllowLoopbackHTTP: r.loopback, ExpectedDeviceID: device, ExpectedUserID: user, Logger: r.log.With("installation_id", installation.String())})
+	gateway, err := gatewayclient.New(gatewayclient.Config{Client: r.api, AllowLoopbackHTTP: r.loopback, ExpectedDeviceID: device, ExpectedUserID: user, Logger: r.log.With("installation_id", installation.String()),
+		HTTPClient: r.httpClient, Launch: r.launch})
 	if err != nil {
 		return err
 	}

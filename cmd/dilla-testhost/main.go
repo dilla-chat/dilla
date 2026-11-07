@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -19,6 +20,8 @@ import (
 	"time"
 
 	botruntime "github.com/dilla-chat/dilla/internal/bot/runtime"
+	"github.com/dilla-chat/dilla/internal/botsupervisor"
+	"github.com/dilla-chat/dilla/internal/config"
 	"github.com/dilla-chat/dilla/internal/dillad"
 	"github.com/dilla-chat/dilla/internal/dillad/dilladtest"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -26,6 +29,12 @@ import (
 )
 
 func main() {
+	// The Bot supervisor's keeper runs `<this binary> bot-launch …` as dillad's runs `dillad bot-launch …`.
+	if len(os.Args) > 1 && os.Args[1] == "bot-launch" {
+		err := botsupervisor.LaunchMain(os.Args[2:])
+		fmt.Fprintln(os.Stderr, "dilla-testhost:", err)
+		os.Exit(70)
+	}
 	o, err := parseFlags(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "dilla-testhost:", err)
@@ -47,6 +56,8 @@ type options struct {
 	sfu         sfuOptions
 	// wire is the one wire version the hello offers (-wire, web3.8 S1).
 	wire uint64
+	// bot runs the Bot as dillad does, supervised on a Unix socket (-bot, Bot v2 task 11).
+	bot botOptions
 }
 
 func parseFlags(args []string) (options, error) {
@@ -69,6 +80,11 @@ func parseFlags(args []string) (options, error) {
 	botRuntimeSecret := fs.String("bot-runtime-secret", "", "test only: create an operator runtime credential at this owner-only path")
 	wire := fs.Uint64("wire", 0, "the one wire version the gateway's hello offers and GET /v1/instance advertises (version-reload e2e only); unset, the host offers dillad's production list (wire 6, for people and managed Bots)")
 	adminInvite := fs.Bool("admin-invite", false, "the first invite grants instance administration, one use, as the invite `dillad init` writes does")
+	withBot := fs.Bool("bot", false, "run the Bot as a supervised child on <data-dir>/bot/gateway.sock (dev_same_user); start and stop it with POST /debug/bot/start and /debug/bot/stop")
+	botExecutable := fs.String("bot-executable", "", "with -bot: the dillabot binary")
+	botHelper := fs.String("bot-helper", "", "with -bot: the dilla-bot-core binary")
+	botWasi := fs.String("bot-wasi", "", "with -bot: the dilla_core_wasi.wasm the Bot loads")
+	botStateDir := fs.String("bot-state-dir", "", "with -bot: the Bot's state directory (default <data-dir>/bot-state)")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -98,6 +114,7 @@ func parseFlags(args []string) (options, error) {
 		logLevel: *logLevel, webRoot: root, productionACL: *productionACL, webauthnOrigin: *webauthnOrigin,
 		botRuntimeSecret: *botRuntimeSecret, adminInvite: *adminInvite,
 		wire: *wire,
+		bot:  botOptions{enabled: *withBot, executable: *botExecutable, helper: *botHelper, wasi: *botWasi, stateDir: *botStateDir},
 		sfu: sfuOptions{enabled: *withSFU, port: *sfuPort, udpPort: *sfuUDPPort,
 			noInternalIP: *sfuNoInternalIP, av1: *sfuAV1, departure: uint32(min(*sfuDeparture, 3600))}}, nil
 }
@@ -155,11 +172,31 @@ func run(o options) error {
 	// fifteen scenarios cross a TTL, retention or heal boundary and none of them can wait for it.
 	// /metrics accepts DILLA_METRICS_TOKEN as its bearer token, exactly as dillad does, so a load
 	// rig can scrape this host (docs/spikes/2026-10-capacity.md); unset, every scrape is refused.
-	host, err := dilladtest.NewHost(ctx, o.hostOptions(dataDir, core, os.Getenv("DILLA_METRICS_TOKEN")))
+	hostOpts := o.hostOptions(dataDir, core, os.Getenv("DILLA_METRICS_TOKEN"))
+	var bot *hostBot
+	var botCfg config.Bot
+	var err error
+	if o.bot.enabled {
+		if botCfg, err = o.bot.botConfig(dataDir); err != nil {
+			return err
+		}
+		if bot, err = newHostBot(botCfg, core, slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("component", "bot")); err != nil {
+			return err
+		}
+		hostOpts.BotLaunch = bot.sup
+	}
+	host, err := dilladtest.NewHost(ctx, hostOpts)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = host.Close(context.Background()) }()
+	if bot != nil {
+		// Deferred after host.Close, so it runs before it: the Bot stops while its instance still serves.
+		defer bot.close()
+		if err := bot.serve(botCfg, host); err != nil {
+			return fmt.Errorf("bot socket: %w", err)
+		}
+	}
 	if o.botRuntimeSecret != "" {
 		if err := createBotRuntimeSecret(ctx, filepath.Join(dataDir, "dilla.db"), o.botRuntimeSecret); err != nil {
 			return fmt.Errorf("create test bot runtime credential: %w", err)
@@ -177,8 +214,15 @@ func run(o options) error {
 
 	var requestDiagnostics instanceRequestDiagnostics
 	publicSrv := &http.Server{Handler: requestDiagnostics.public(host.Handler()), ReadHeaderTimeout: 10 * time.Second}
+	control := dilladtest.ControlHandler(host)
+	if bot != nil {
+		mux := http.NewServeMux()
+		mux.Handle("/debug/bot/", dilladtest.BotControl(bot.runner))
+		mux.Handle("/", control)
+		control = mux
+	}
 	controlSrv := &http.Server{
-		Handler:           requestDiagnostics.control(dilladtest.ControlHandler(host)),
+		Handler:           requestDiagnostics.control(control),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errs := make(chan error, 2)

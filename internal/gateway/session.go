@@ -394,6 +394,13 @@ func decodeAny(b []byte) (Inbound, error) {
 // detector flags even against the recording double. `writer.stop` closes a channel; it does not
 // wait for a goroutine already inside sink.write.
 func (g *Gateway) serve(ctx context.Context, s sink, token string) {
+	g.serveConn(ctx, s, token, nil)
+}
+
+// serveConn is serve for either listener; peer is non-nil on the Bot's Unix socket (BotHandler), where the session
+// must be a managed Bot's and the launch check applies: a resume needs a child that already spent its token, and an
+// identify's token (readBotLaunch) is spent only once its session resolved (admitBotSession).
+func (g *Gateway) serveConn(ctx context.Context, s sink, token string, peer *botPeer) {
 	wire, e2ee, media := g.advertised()
 	hello, err := HelloPayload(wire, e2ee, media,
 		g.opts.HeartbeatMS, g.opts.MaxFrameBytes, g.opts.InstanceID, g.Generation(),
@@ -434,6 +441,22 @@ func (g *Gateway) serve(ctx context.Context, s sink, token string) {
 	}
 	// The credential may have travelled on the HTTP upgrade instead of in the identify payload.
 	in.handshakeToken = token
+
+	if peer != nil {
+		switch in.Op {
+		case OpIdentify:
+			if !readBotLaunch(&in) {
+				g.refuse(ctx, s, frameErr("E_UNAUTHENTICATED", "launch token", CloseUnauthenticated))
+				return
+			}
+		case OpResume:
+			if !g.opts.BotLaunch.Authenticated(peer.pid) {
+				s.close(CloseUnauthenticated, "launch token")
+				return
+			}
+		}
+		in.botPeer = peer
+	}
 
 	switch in.Op {
 	case OpResume:
@@ -521,7 +544,7 @@ func (g *Gateway) identifyConnection(ctx context.Context, s sink, in Inbound) (*
 		bearer = tokenFromHandshake(in)
 	}
 	session, err := g.identify(ctx, bearer)
-	if err != nil {
+	if err != nil || (in.botPeer != nil && (session.Bot == nil || !g.admitBotSession(in.botPeer, &in))) {
 		g.refuse(ctx, s, frameErr("E_UNAUTHENTICATED", "identify", CloseUnauthenticated))
 		return nil, false
 	}
@@ -587,7 +610,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 		bearer = tokenFromHandshake(in)
 	}
 	session, err := g.identify(ctx, bearer)
-	if err != nil {
+	if err != nil || (in.botPeer != nil && session.Bot == nil) {
 		return refuse("unauthenticated")
 	}
 	if session.DeviceID != c.deviceID {

@@ -28,15 +28,36 @@ StateDirectory=dillad
 StateDirectoryMode=0700
 ConfigurationDirectory=dilla
 UMask=0077
+# /run/dillad: dillad creates /run/dillad/bot (mode 0750, group dillabot) there and listens on
+# /run/dillad/bot/gateway.sock for the Bot it supervises ([bot] in dilla.toml). systemd removes it at stop.
+RuntimeDirectory=dillad
+# The Bot runs inside this unit's sandbox as the dillabot user, and keeps its state and keys in
+# /var/lib/dillabot (owned by dillabot, mode 0700, so dillad itself cannot read them). ProtectSystem=strict
+# would otherwise leave that directory read-only to the Bot. The "-" keeps an instance without the Bot
+# (no such directory) starting: systemd otherwise refuses to set up the namespace.
+ReadWritePaths=-/var/lib/dillabot
+# SQLCipher's enhanced memory security in the Bot locks its SQLite allocations in memory, as the
+# dillabot unit allowed (LimitMEMLOCK=256M there). The limit is inherited by the Bot from this unit.
+LimitMEMLOCK=256M
 
-# How a non-root process binds 443/tcp.
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+# CAP_NET_BIND_SERVICE: how a non-root process binds 443/tcp.
+# CAP_SETUID CAP_SETGID: only for the bot-keeper child, which dillad starts before it opens any listener and
+# which uses them for one thing, to start the configured Bot executable as the configured Bot user. The
+# serving dillad drops both from every set (effective, permitted, inheritable, ambient and bounding) right
+# after starting the keeper; `dillad bot-launch` drops every capability before it execs the Bot.
+# CAP_SETPCAP: what lets the serving process and bot-launch remove those from the bounding set; both drop it
+# as well, so only the keeper keeps it.
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-PrivateDevices=yes
+# DevicePolicy=closed instead of PrivateDevices=yes: the Bot's bubblewrap sandbox mounts /proc and /dev
+# inside its own user namespace, and PrivateDevices blocks that nested mount in the supported Debian LXC
+# deployment (the dillabot unit made the same change). DevicePolicy=closed still denies every device node
+# but the pseudo devices (/dev/null, /dev/zero, /dev/random, ...).
+DevicePolicy=closed
 ProtectProc=invisible
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
@@ -46,7 +67,8 @@ ProtectControlGroups=yes
 # call it. Without it serve fails at start with "netlinkrib: address family not
 # supported by protocol".
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
-RestrictSUIDSGID=yes
+# RestrictSUIDSGID is deliberately NOT set: it blocks bubblewrap's bind mounts in this LXC, as the dillabot
+# unit found. NoNewPrivileges=yes still means no set-id binary can gain privileges, for dillad or the Bot.
 LockPersonality=yes
 # MemoryDenyWriteExecute is deliberately NOT set: wazero's compiler back end
 # writes and then executes generated machine code, so setting it would make the

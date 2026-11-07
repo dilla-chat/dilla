@@ -25,6 +25,7 @@ import (
 
 	"github.com/dilla-chat/dilla/internal/bot/announcements"
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/gatewayclient"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/moderation"
 	"github.com/dilla-chat/dilla/internal/bot/music"
@@ -54,6 +55,20 @@ type config struct {
 	AllowLoopbackHTTP     bool              `toml:"allow_loopback_http"`
 	InstanceID            id.ID             `toml:"-"`
 	ReconcileInterval     time.Duration     `toml:"-"`
+	// Socket is dillad's Bot socket when the supervisor started this process (supervised.go); "" for a Bot that
+	// reaches dillad at base_url.
+	Socket string `toml:"-"`
+	// launch is the supervised Bot's launch token; nil otherwise.
+	launch *gatewayclient.LaunchToken
+}
+
+// httpClient is the Bot's HTTP client: over dillad's Bot socket when supervised, the network otherwise. timeout 0
+// leaves requests unbounded (the gateway's upgrade bounds itself).
+func (c config) httpClient(timeout time.Duration) *http.Client {
+	if c.Socket == "" {
+		return &http.Client{Timeout: timeout}
+	}
+	return &http.Client{Timeout: timeout, Transport: unixTransport(c.Socket)}
 }
 
 // defaultConfigPath is where install-bot.sh writes the config and where the
@@ -332,6 +347,23 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "interaction-recovery" {
 		os.Exit(runInteractionRecoveryCommand(os.Args[2:], os.Stdout, os.Stderr))
 	}
+	if supervisedMode() {
+		logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		cfg, err := loadSupervisedConfig(ctx)
+		if err != nil {
+			logger.Error("bot service configuration failed", "error", err.Error())
+			stop()
+			os.Exit(2) //nolint:gocritic // exitAfterDefer: stop already ran
+		}
+		if err := run(ctx, cfg, logger); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("bot service stopped", "error", err.Error())
+			stop()
+			os.Exit(1)
+		}
+		return
+	}
 	fs := flag.NewFlagSet("dillabot", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath, "path to the bot service TOML config")
 	_ = fs.Parse(os.Args[1:])
@@ -389,7 +421,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 		AllowLoopbackHTTP: cfg.AllowLoopbackHTTP,
 		Timeout:           30 * time.Second,
 		RateLimits:        cfg.RateLimits,
-		HTTPClient:        &http.Client{Timeout: 30 * time.Second},
+		HTTPClient:        cfg.httpClient(30 * time.Second),
 	})
 	if err != nil {
 		return errors.New("bot HTTP client configuration is invalid")
@@ -411,6 +443,9 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	}()
 	autoModerationState := newAutoModerationEventState()
 	gateways := newBotGatewayRuntime(ctx, api, cfg.AllowLoopbackHTTP, logger)
+	if cfg.Socket != "" {
+		gateways.httpClient, gateways.launch = cfg.httpClient(0), cfg.launch
+	}
 	gateways.StartCommandWorkers()
 	defer gateways.Close()
 	statuses := newRuntimeStatusTracker(Version)

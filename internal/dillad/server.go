@@ -48,6 +48,9 @@ type Server struct {
 	sessions *auth.Sessions
 	httpSrv  *http.Server
 	instance store.InstanceRow
+	// botSrvs are the servers ServeBot runs on the Bot's Unix socket; Shutdown closes them beside httpSrv.
+	botMu   sync.Mutex
+	botSrvs []*http.Server
 
 	// Part 1b's three subsystems (task 27a). ownsWasm records that New compiled
 	// the runtime itself, so Shutdown closes it; a runtime passed in through
@@ -309,6 +312,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 
 	var presence *api.PresenceService
 	gw := gateway.New(gateway.Options{
+		// The supervised Bot's Unix socket (ServeBot) admits the child the supervisor started, by its peer
+		// credentials and its launch token.
+		BotLaunch: o.BotLaunch,
 		// Request frames run against the mux's socket routes, attributed to the client address the
 		// HTTP layer would resolve for the upgrade request (the same trusted-proxy rule).
 		Requests: requests,
@@ -811,6 +817,32 @@ func (s *Server) DebugState(ctx context.Context) (DebugState, error) {
 // doctor leg and a test can both assert that unencrypted HTTP/2 is on.
 func (s *Server) Protocols() *http.Protocols { return s.httpSrv.Protocols }
 
+// ServeBot serves the supervised Bot's Unix socket until ln closes (Bot v2 task 11). Every connection must come from
+// the current Bot child (its SO_PEERCRED pid and uid, gateway.BotPeerListener); /gateway is the Bot's upgrade, which
+// takes its launch token and binds its managed session (gateway.BotHandler); every other path is this server's own
+// HTTP surface, so the Bot's remaining HTTP calls (discovery, /v1/bot-runtime/…) stay on the socket and never cross the
+// public listener. Only a Unix listener is served: there is no network form of this path.
+func (s *Server) ServeBot(ln net.Listener) error {
+	pl, err := gateway.BotPeerListener(ln, s.o.BotLaunch)
+	if err != nil {
+		return err
+	}
+	mux := http.NewServeMux()
+	mux.Handle("GET /gateway", s.gw.BotHandler())
+	mux.Handle("/", s.handler)
+	srv := &http.Server{
+		Handler: mux, ConnContext: gateway.BotConnContext,
+		ReadHeaderTimeout: s.httpSrv.ReadHeaderTimeout, IdleTimeout: s.httpSrv.IdleTimeout,
+	}
+	s.botMu.Lock()
+	s.botSrvs = append(s.botSrvs, srv)
+	s.botMu.Unlock()
+	if err := srv.Serve(pl); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+		return fmt.Errorf("dillad: serve the Bot socket: %w", err)
+	}
+	return nil
+}
+
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	if err := s.httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("dillad: serve: %w", err)
@@ -844,6 +876,16 @@ func (s *Server) shutdown(ctx context.Context) error {
 	}
 	if serr := s.httpSrv.Shutdown(ctx); serr != nil {
 		keep(s.httpSrv.Close())
+	}
+	// The Bot's socket: its HTTP requests drain like the public listener's; its upgraded gateway connections are the
+	// gateway's, closed with the rest below.
+	s.botMu.Lock()
+	bots := s.botSrvs
+	s.botMu.Unlock()
+	for _, srv := range bots {
+		if serr := srv.Shutdown(ctx); serr != nil {
+			_ = srv.Close()
+		}
 	}
 	// No request is being served any more, so no AfterRegister run can start; the ones still
 	// populating a registered group finish before the delivery service they propose through stops.

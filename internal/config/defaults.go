@@ -93,6 +93,10 @@ func Default() *Config {
 	c.Log = Log{Level: "info", Format: "json"}
 	c.Metrics = Metrics{Enabled: true, Path: "/metrics", RequireAdmin: true}
 	c.Doctor = Doctor{ClockSkewMax: "60s", TURNProbe: true, UDPProbe: true}
+	c.Bot = Bot{
+		Executable: "/usr/local/bin/dillabot", HelperExecutable: "/usr/local/lib/dilla/dilla-bot-core",
+		StateDir: "/var/lib/dillabot", User: "dillabot", SocketDir: "/run/dillad/bot",
+	}
 	return c
 }
 

@@ -88,3 +88,59 @@ func read(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+// Bot v2 task 11: dillad supervises the Bot. The keeper keeps CAP_SETUID and CAP_SETGID to start it as the dillabot
+// user (CAP_SETPCAP lets the serving process and the launcher drop them from the bounding set); the Bot's bubblewrap
+// sandbox needs the device and set-id rules the dillabot unit already had; its state directory is writable beside
+// dillad's; the socket lives under dillad's runtime directory. Each of these lines carries its reason in the unit.
+func TestDillaServiceAllowsBubblewrapAndKeeper(t *testing.T) {
+	unit := read(t, "dilla.service")
+	directives := map[string]string{}
+	for _, line := range strings.Split(unit, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "[") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			t.Fatalf("unit line %q is not key=value", line)
+		}
+		if _, dup := directives[key]; dup {
+			t.Fatalf("directive %s is set twice", key)
+		}
+		directives[key] = value
+	}
+	for key, want := range map[string]string{
+		"RuntimeDirectory":      "dillad",
+		"ReadWritePaths":        "-/var/lib/dillabot",
+		"AmbientCapabilities":   "CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP",
+		"CapabilityBoundingSet": "CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP",
+		"DevicePolicy":          "closed",
+		"LimitMEMLOCK":          "256M",
+		"NoNewPrivileges":       "yes",
+		"ProtectSystem":         "strict",
+		"ProtectHome":           "yes",
+		"PrivateTmp":            "yes",
+		"ProtectProc":           "invisible",
+		"ProtectKernelTunables": "yes",
+		"ProtectKernelModules":  "yes",
+		"ProtectControlGroups":  "yes",
+		"LockPersonality":       "yes",
+		"UMask":                 "0077",
+	} {
+		if got, ok := directives[key]; !ok || got != want {
+			t.Errorf("%s=%q (set: %v), want %q", key, got, ok, want)
+		}
+	}
+	for _, gone := range []string{"PrivateDevices", "RestrictSUIDSGID"} {
+		if v, ok := directives[gone]; ok {
+			t.Errorf("%s=%s is set; bubblewrap's nested mounts need it gone (see the unit comment)", gone, v)
+		}
+	}
+	// Each change says why, next to it.
+	for _, reason := range []string{"bot-keeper", "bubblewrap", "SQLCipher", "/run/dillad/bot", "dillabot"} {
+		if !strings.Contains(unit, reason) {
+			t.Errorf("the unit's comments never mention %q", reason)
+		}
+	}
+}

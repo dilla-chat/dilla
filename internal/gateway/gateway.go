@@ -118,6 +118,10 @@ type Options struct {
 	// connection is attributed to for rate limits and audit. The composition root passes the HTTP
 	// layer's trusted-proxy rule (server.RealIP); nil uses the peer address.
 	ClientAddr func(*http.Request) string
+
+	// BotLaunch admits the supervised Bot on its Unix socket (BotPeerListener, BotHandler; Bot v2 task 11): the
+	// peer check and the launch token. Nil admits nobody there.
+	BotLaunch BotLaunch
 }
 
 // withDefaults fills zero values and enforces the ring-vs-queue contract. The ring must be at

@@ -19,6 +19,7 @@ import (
 
 	"github.com/dilla-chat/dilla/internal/api"
 	"github.com/dilla-chat/dilla/internal/blob"
+	"github.com/dilla-chat/dilla/internal/botsupervisor"
 	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/config"
 	"github.com/dilla-chat/dilla/internal/dillad"
@@ -138,6 +139,21 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		return err
+	}
+
+	// The Bot's keeper starts first, while this process still holds CAP_SETUID and CAP_SETGID (dilla.service's
+	// ambient set), and those leave this process right after, from every set of every thread, before anything below
+	// opens a listener (Bot v2 task 11). From here on only the keeper can start a process as another user, and only
+	// the configured Bot as the configured user.
+	keeper, err := startBotKeeper(cfg, *cfgPath)
+	if err != nil {
+		return err
+	}
+	if keeper != nil {
+		defer keeper.close()
+	}
+	if err := botsupervisor.DropServingCapabilities(slog.Default(), keeper != nil && !cfg.Bot.DevSameUser); err != nil {
+		return fmt.Errorf("serve: drop CAP_SETUID and CAP_SETGID: %w: %w", err, exit.Software)
 	}
 
 	// The data-directory lock (Plan 2 task 13): dilla.serve.lock exclusively,
@@ -307,6 +323,11 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		Blobs: blobStore, Relay: relayRev,
 		DesktopDownloads: *desktopDownloads,
 	}
+	var bot *botsupervisor.Supervisor
+	if keeper != nil {
+		bot = botsupervisor.New(cfg.Bot, keeper.keeper, log.With("component", "bot"))
+		opts.BotLaunch = bot
+	}
 	if callSFU != nil {
 		opts.SFU = callSFU
 	}
@@ -340,6 +361,36 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	}()
 	if remoteSFU != nil {
 		go watchRemoteSFU(runCtx, remoteSFU, health.Gate("livekit"))
+	}
+
+	// The Bot: its Unix socket, then the child. The supervisor stops the child when runCtx ends, and serve waits for
+	// that before the repository closes; the socket closes last.
+	if bot != nil {
+		botLn, err := openBotSocket(cfg.Bot, keeper.gid)
+		if err != nil {
+			_ = srv.Shutdown(context.Background())
+			return fmt.Errorf("serve: bot socket %s: %w: %w", cfg.Bot.SocketPath(), err, exit.CantCreate)
+		}
+		botServed := make(chan struct{})
+		go func() {
+			defer close(botServed)
+			if err := srv.ServeBot(botLn); err != nil {
+				log.Error("bot socket", "err", err)
+			}
+		}()
+		// Its own context: a serve that returns early (before runCtx ends) still stops the Bot before it waits for it.
+		botCtx, stopBot := context.WithCancel(runCtx)
+		botDone := make(chan struct{})
+		go func() {
+			defer close(botDone)
+			_ = bot.Run(botCtx)
+		}()
+		defer func() {
+			stopBot()
+			<-botDone
+			_ = botLn.Close()
+			<-botServed
+		}()
 	}
 	sfuExit := make(chan error, 1)
 	if sfuServer != nil {

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -394,6 +395,7 @@ func (c *Config) Validate() error {
 	if c.Doctor.ClockSkewMax.Value() < 2*time.Second {
 		add("doctor.clock_skew_max is %s; HTTP-date has one-second granularity, so anything under 2s is noise", c.Doctor.ClockSkewMax.Value())
 	}
+	problems = append(problems, c.Bot.validate()...)
 	return errors.Join(problems...)
 }
 
@@ -450,4 +452,34 @@ func validWebhookListen(v string) error {
 		return fmt.Errorf("%q is not a loopback address (127.0.0.0/8, ::1 or localhost)", v)
 	}
 	return nil
+}
+
+// maxSunPath is the longest Unix socket path the kernel takes (sun_path is 108 bytes with its NUL).
+const maxSunPath = 107
+
+// validate checks [bot] when it is enabled; a disabled Bot's keys are never read.
+func (b Bot) validate() []error {
+	if !b.Enabled {
+		return nil
+	}
+	var problems []error
+	for _, kv := range [][2]string{
+		{"bot.executable", b.Executable}, {"bot.helper_executable", b.HelperExecutable},
+		{"bot.state_dir", b.StateDir}, {"bot.socket_dir", b.SocketDir},
+	} {
+		if !filepath.IsAbs(kv[1]) || filepath.Clean(kv[1]) != kv[1] {
+			problems = append(problems, fmt.Errorf("%s is %q; it must be a clean absolute path", kv[0], kv[1]))
+		}
+	}
+	if b.WASIModule != "" && (!filepath.IsAbs(b.WASIModule) || filepath.Clean(b.WASIModule) != b.WASIModule) {
+		problems = append(problems, fmt.Errorf("bot.wasi_module is %q; it must be empty or a clean absolute path", b.WASIModule))
+	}
+	if b.User == "" || strings.ContainsAny(b.User, ":/ \t\n") {
+		problems = append(problems, fmt.Errorf("bot.user is %q; it must name the Bot's own OS user", b.User))
+	}
+	if len(b.SocketPath()) > maxSunPath {
+		problems = append(problems, fmt.Errorf("bot.socket_dir %q is too long: %s must fit the kernel's %d-byte socket path",
+			b.SocketDir, b.SocketPath(), maxSunPath))
+	}
+	return problems
 }

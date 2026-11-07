@@ -17,6 +17,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/config"
 	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/gateway"
 	"github.com/dilla-chat/dilla/internal/mlswasi"
 	"github.com/dilla-chat/dilla/internal/obs"
 	"github.com/dilla-chat/dilla/internal/server"
@@ -100,6 +101,10 @@ type Options struct {
 	WireVersions  []uint64
 	E2EEVersions  []uint64
 	MediaVersions []uint64
+
+	// BotLaunch is the Bot supervisor's launch gate (internal/botsupervisor.Supervisor): who may connect to the Bot's
+	// Unix socket (ServeBot), and its single-use launch token. Nil, as without [bot], admits nobody there.
+	BotLaunch gateway.BotLaunch
 
 	// closeRepo records that New opened the repository itself, so Shutdown
 	// closes it. A caller that supplied its own keeps ownership of it: closing

@@ -48,6 +48,10 @@ type Config struct {
 	WriteTimeout        time.Duration
 	HeartbeatAckTimeout time.Duration
 	QueueSize           int
+	// Launch is the supervised Bot's launch token (Bot v2 task 11): the first identify over the Bot's Unix socket
+	// carries it, and once a connection reached ready no identify does. Nil for a Bot that reaches dillad over the
+	// network.
+	Launch *LaunchToken
 }
 
 type Client struct {
@@ -72,6 +76,7 @@ type Client struct {
 	nextRequest atomic.Uint64
 	// incarnation of the dillad process the newest ready came from (see connection.incarnation); guarded by mu.
 	incarnation string
+	launch      *LaunchToken
 }
 
 // Delivery is one validated frame handed to the durable consumer. Ack is bound
@@ -184,7 +189,8 @@ func New(cfg Config) (*Client, error) {
 	return &Client{log: cfg.Logger, origin: u, http: &hcopy, instance: cfg.Client.InstanceID(), device: cfg.ExpectedDeviceID, user: cfg.ExpectedUserID,
 		handshakeTimeout: cfg.HandshakeTimeout, writeTimeout: cfg.WriteTimeout, heartbeatAckTimeout: cfg.HeartbeatAckTimeout,
 		events: make(chan Delivery, cfg.QueueSize), ackAvailable: make(map[uint64][32]byte),
-		connChanged: make(chan struct{}), room: make(chan struct{}), slots: make(chan struct{}, MaxRequestsInFlight)}, nil
+		connChanged: make(chan struct{}), room: make(chan struct{}), slots: make(chan struct{}, MaxRequestsInFlight),
+		launch: cfg.Launch}, nil
 }
 
 // Events returns the bounded stream of validated server deliveries. For every
@@ -376,12 +382,21 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 	}
 	var op Opcode
 	var payload []any
+	// settleLaunch reports how an identify that may have carried the launch token went; it is idempotent, and the
+	// deferred call covers every path that ends the handshake without ready.
+	settleLaunch := func(bool) {}
+	defer func() { settleLaunch(false) }()
 	if resume {
 		op = OpResume
 		payload = []any{"", rs.token, rs.generation, rs.ack}
 	} else {
 		op = OpIdentify
-		payload = []any{"", uint64(client.WireVersion), uint64(1), uint64(1), uint64(0)}
+		launch, settle, err := c.launch.acquire(ctx)
+		if err != nil {
+			return fresh, 0, errTransport
+		}
+		settleLaunch = settle
+		payload = []any{launch, uint64(client.WireVersion), uint64(1), uint64(1), uint64(0)}
 	}
 	frame, err := encodeFrame(op, 0, nil, payload)
 	if err != nil {
@@ -433,6 +448,7 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 		if err = c.acceptReady(first, h); err != nil {
 			return false, 0, err
 		}
+		settleLaunch(true)
 		fresh = false
 	} else if first.Op == OpReconnect {
 		if first.ReconnectAfterMS != nil {

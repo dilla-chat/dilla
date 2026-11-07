@@ -1,5 +1,5 @@
-// Package config is dillad's dilla.toml: 16 top-level tables, 8 sub-tables and
-// about 155 keys, decoded in strict mode so a misspelling refuses to start
+// Package config is dillad's dilla.toml: 17 top-level tables, 8 sub-tables and
+// about 163 keys, decoded in strict mode so a misspelling refuses to start
 // rather than running with a default the operator did not choose.
 //
 // interfaces.md §6.4 says "14 top-level tables, 5 sub-tables, 128 keys", but its
@@ -20,6 +20,7 @@ package config
 import (
 	"fmt"
 	"net/netip"
+	"path/filepath"
 	"time"
 )
 
@@ -84,6 +85,7 @@ type Config struct {
 	Log          Log          `toml:"log"`
 	Metrics      Metrics      `toml:"metrics"`
 	Doctor       Doctor       `toml:"doctor"`
+	Bot          Bot          `toml:"bot"`
 
 	// turnExplicitlyEnabled records whether the operator wrote turn.enabled,
 	// set by Load from a second, non-strict decode (see write-up in defaults.go).
@@ -370,6 +372,34 @@ type Doctor struct {
 	TURNProbe    bool     `toml:"turn_probe"`
 	UDPProbe     bool     `toml:"udp_probe"`
 }
+
+// Bot is the bundled community Bot, which dillad runs as a supervised child (Bot v2 task 11). A privilege-separated
+// keeper starts Executable as User through `dillad bot-launch`, which drops every capability, closes every descriptor
+// but 0-3, clears the environment down to an allowlist and execs it with cwd StateDir. The Bot reaches dillad over the
+// Unix socket <SocketDir>/gateway.sock, never over the network.
+type Bot struct {
+	Enabled bool `toml:"enabled"`
+	// Executable is the Bot binary. It, HelperExecutable and WASIModule must be root's and not writable by group or
+	// world: the keeper refuses to start anything the serving user could rewrite.
+	Executable       string `toml:"executable"`
+	HelperExecutable string `toml:"helper_executable"`
+	// WASIModule is the dilla-core-wasi module the Bot loads; "" is the core beside dillad (dilla_core_wasi.wasm).
+	WASIModule string `toml:"wasi_module"`
+	StateDir   string `toml:"state_dir"`
+	// User is the Bot's own OS user: the Bot's keys live in its state directory, out of dillad's reach.
+	User string `toml:"user"`
+	// SocketDir holds gateway.sock: mode 0750, owned by dillad, group User's primary group.
+	SocketDir string `toml:"socket_dir"`
+	// DevSameUser runs the Bot as dillad's own user, for development and tests only: the Bot's keys are then readable
+	// by the server's user, and `dillad doctor` says so.
+	DevSameUser bool `toml:"dev_same_user"`
+}
+
+// BotSocketName is the Bot listener's file name inside bot.socket_dir.
+const BotSocketName = "gateway.sock"
+
+// SocketPath is the Bot listener's path, <socket_dir>/gateway.sock.
+func (b Bot) SocketPath() string { return filepath.Join(b.SocketDir, BotSocketName) }
 
 // BehindProxy is the derived predicate. There is no behind_proxy key.
 func (c *Config) BehindProxy() bool { return c.TLS.Mode == TLSModeBehindProxy }
