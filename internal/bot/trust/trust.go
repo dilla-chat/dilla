@@ -258,6 +258,7 @@ func (t *Trust) Pushed(ctx context.Context, user id.ID, push []byte) (native.Dev
 	t.gen[user]++
 	j.gen = t.gen[user]
 	t.live[user] = append(t.live[user], livePush{gen: j.gen, push: push, attempts: 1})
+	t.boundLiveLocked(user)
 	t.mu.Unlock()
 	t.enqueue(user, j)
 	wait := time.NewTimer(t.inline)
@@ -286,16 +287,26 @@ func (t *Trust) Pushed(ctx context.Context, user id.ID, push []byte) (native.Dev
 func (t *Trust) enqueue(user id.ID, j *job) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.enqueueLocked(user, j)
+}
+
+// enqueueLocked queues j under the lock the caller holds, in the same hold as the caller's checks (fix round 3, N-5).
+// A retry job is queued only while its retry is the user's and its push is live, and it never replaces a waiting job
+// of the same or a newer generation; it answers false when it is not queued. A fresh push supersedes whatever waits;
+// a superseded fresh push stays on the live stack, so if the newer push is refused outright the rollback retries it
+// (fix round 3, N-6).
+func (t *Trust) enqueueLocked(user id.ID, j *job) bool {
 	w := t.work[user]
 	if w == nil {
 		w = &userWork{}
 		t.work[user] = w
 	}
-	if old := w.queued; old != nil {
-		if old.retry == nil {
-			// The superseded fresh push never runs: it leaves the live stack.
-			t.dropLiveLocked(user, old.gen)
+	if j.retry != nil {
+		if t.retries[user] != j.retry || j.gen != t.liveLocked(user) || w.queued != nil && w.queued.gen >= j.gen {
+			return false
 		}
+	}
+	if old := w.queued; old != nil {
 		t.resolveLocked(user, old)
 		old.done <- outcome{err: errSuperseded}
 	}
@@ -304,6 +315,7 @@ func (t *Trust) enqueue(user id.ID, j *job) {
 		w.running = true
 		go t.drive(user, w)
 	}
+	return true
 }
 
 // resolveLocked marks j settled and ends its deferral.
@@ -403,6 +415,23 @@ func (t *Trust) dropLiveLocked(user id.ID, gen uint64) {
 	if len(t.live[user]) == 0 {
 		delete(t.live, user)
 	}
+}
+
+// maxLiveStack bounds a user's live stack: superseded pushes stay on it (N-6), so a burst of pushes while one attempt
+// hangs could otherwise grow it. The oldest entries that no attempt runs or waits for go first: a rollback reaches
+// them only if every newer push is refused outright.
+const maxLiveStack = 8
+
+func (t *Trust) boundLiveLocked(user id.ID) {
+	l := t.live[user]
+	for i := 0; len(l) > maxLiveStack && i < len(l)-1; {
+		if t.inFlightLocked(user, l[i].gen) {
+			i++
+			continue
+		}
+		l = append(l[:i:i], l[i+1:]...)
+	}
+	t.live[user] = l
 }
 
 // settleLiveLocked keeps only user's live push on the stack: it applied, failed transiently or gave up, so no older
@@ -546,21 +575,24 @@ func (t *Trust) await(user id.ID, r *pendingRetry) {
 // queueRetry queues r's next attempt unless r is no longer the user's retry or a newer push already waits.
 func (t *Trust) queueRetry(user id.ID, r *pendingRetry) {
 	t.mu.Lock()
-	current := t.retries[user] == r && r.gen == t.liveLocked(user)
-	w := t.work[user]
-	waiting := w != nil && w.queued != nil // a newer push decides; if it is refused, the rollback retries r
-	t.mu.Unlock()
-	if !current || waiting || t.ctx.Err() != nil {
+	defer t.mu.Unlock()
+	t.queueRetryLocked(user, r)
+}
+
+// queueRetryLocked checks and queues r's next attempt in one hold of the lock (fix round 3, N-5). A newer push that
+// waits decides; if it is refused outright, the rollback retries r.
+func (t *Trust) queueRetryLocked(user id.ID, r *pendingRetry) {
+	if t.ctx.Err() != nil {
 		return
 	}
-	t.enqueue(user, &job{push: r.push, gen: r.gen, attempts: r.attempts + 1, retry: r, done: make(chan outcome, 1)})
+	t.enqueueLocked(user, &job{push: r.push, gen: r.gen, attempts: r.attempts + 1, retry: r, done: make(chan outcome, 1)})
 }
 
 // Kick retries every user whose push is waiting for a retry now: a fresh helper was bound (the failures were a closed
 // helper). A user whose retries ran out is not retried; their next push is.
 func (t *Trust) Kick() {
 	t.mu.Lock()
-	due := map[id.ID]*pendingRetry{}
+	defer t.mu.Unlock()
 	for u, r := range t.retries {
 		select {
 		case <-r.stop:
@@ -568,12 +600,8 @@ func (t *Trust) Kick() {
 		default:
 		}
 		r.timer.Stop()
-		close(r.stop) // the waiting goroutine leaves; this kick queues the attempt
-		due[u] = r
-	}
-	t.mu.Unlock()
-	for u, r := range due {
-		t.queueRetry(u, r)
+		close(r.stop) // the waiting goroutine leaves; this kick queues the attempt, in this same hold (N-5)
+		t.queueRetryLocked(u, r)
 	}
 }
 

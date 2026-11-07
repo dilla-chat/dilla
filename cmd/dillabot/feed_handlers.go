@@ -91,8 +91,6 @@ type installationFeed struct {
 	hadSnapshot bool
 	// trust is the installation's membership trust: it applies device lists and keeps the held users.
 	trust *trust.Trust
-	// fromSnapshot is, per user, whether their latest pushed list came in a snapshot.
-	fromSnapshot map[id.ID]bool
 	// sweeping is set while a snapshot's trust sweep runs.
 	sweeping atomic.Bool
 	// left is the text groups the Bot has left (not a Bot channel), as the membership reconciler last reported them:
@@ -111,7 +109,7 @@ var feedTrustRetry = trust.DefaultRetry
 
 func newInstallationFeed(installation, community, botUser id.ID, log *slog.Logger, requestPass func()) *installationFeed {
 	f := &installationFeed{installation: installation, community: community, botUser: botUser, log: log, requestPass: requestPass, now: time.Now,
-		state: newFeedState(), firstSeen: map[id.ID]uint64{}, fromSnapshot: map[id.ID]bool{}}
+		state: newFeedState(), firstSeen: map[id.ID]uint64{}}
 	f.trust = trust.New(feedTrustCore{f}, feedTrustRetry).WithLogger(log).WithGroups(f.inTrustGroup).WithApplied(f.listApplied)
 	return f
 }
@@ -245,9 +243,6 @@ var errFeedNoHelper = errors.New("bot feed: no helper bound yet")
 // DeviceList applies a pushed list through membership trust and never returns an error: a failure holds the user and
 // is retried out of band (Bot v2 Task 16, R2-1), so the event is acknowledged in order and nothing behind it waits.
 func (f *installationFeed) DeviceList(ctx context.Context, user id.ID, push []byte, snapshot bool) error {
-	f.mu.Lock()
-	f.fromSnapshot[user] = snapshot
-	f.mu.Unlock()
 	_, err := f.trust.Pushed(ctx, user, push)
 	if err != nil && !errors.Is(err, trust.ErrHeld) && !trust.Definitive(err) &&
 		(errors.Is(err, helper.ErrClosed) || errors.Is(err, errFeedNoHelper)) {
@@ -257,21 +252,36 @@ func (f *installationFeed) DeviceList(ctx context.Context, user id.ID, push []by
 	return nil
 }
 
-// listApplied is told by trust of every pushed list that applied and changed, inline, deferred or retried (fix round
-// 2, N-4): a live member's new device needs its own interaction group. A snapshot's lists are not staged here
-// (SnapshotDone welcomes and registers the members that joined while the Bot was away).
-func (f *installationFeed) listApplied(ctx context.Context, user id.ID, got native.DeviceListIngest) {
+// listApplied is told by trust of every pushed list that applied and changed, inline, deferred or retried, live or
+// from a snapshot (fix round 2 and 3, N-4): a known member's new device needs its own interaction group, also when the
+// list arrived in a snapshot or applied after one. A user not yet a known member is covered elsewhere: a join stages
+// through joined (live, or at SnapshotDone for a member who joined while the Bot was away), and on the Bot's first
+// snapshot the pass's member registration catch-up registers everyone.
+func (f *installationFeed) listApplied(_ context.Context, user id.ID, got native.DeviceListIngest) {
 	if user == f.botUser || !got.Changed {
 		return
 	}
 	f.mu.Lock()
-	member, snapshot := f.state.members[user], f.fromSnapshot[user]
+	member := f.state.members[user]
 	f.mu.Unlock()
-	if !member || snapshot {
-		return
+	if member {
+		f.stageAsync(user)
 	}
-	f.stage(ctx, f.current(), user)
-	f.changed()
+}
+
+// stageTimeout bounds one staging of a member's new device (an episode read on the socket).
+const stageTimeout = 30 * time.Second
+
+// stageAsync stages user's new device off the caller (the user's trust worker must not wait on the network) within
+// stageTimeout, then asks for a pass.
+func (f *installationFeed) stageAsync(user id.ID) {
+	d := f.current()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), stageTimeout)
+		defer cancel()
+		f.stage(ctx, d, user)
+		f.changed()
+	}()
 }
 
 // stage queues the member's interaction registration under its current episode.

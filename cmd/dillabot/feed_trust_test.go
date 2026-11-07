@@ -260,3 +260,86 @@ func TestADeferredListStillStagesTheNewDevice(t *testing.T) {
 		return len(deps.staged) == 1 && deps.staged[0][0] == ada
 	})
 }
+
+func stagedCount(deps *fakeFeedDeps) int {
+	deps.mu.Lock()
+	defer deps.mu.Unlock()
+	return len(deps.staged)
+}
+
+// TestSnapshotAndLaterDeferredListsAreStaged (fix round 3, N-4): a known member's changed list that arrives in a later
+// snapshot is staged when it applies (the parked case), and so is a deferred live list that applies after a snapshot
+// list of the same user.
+func TestSnapshotAndLaterDeferredListsAreStaged(t *testing.T) {
+	ctx := t.Context()
+	community, ada := feedID(1), feedID(4)
+	deps := &fakeFeedDeps{episodes: map[id.ID]id.ID{ada: feedID(0x31)}, changed: true}
+	h := newInstallationFeed(feedID(9), community, feedID(8), quietLogger(), func() {})
+	defer h.trust.Close()
+	h.trust.WithInlineBudget(20 * time.Millisecond)
+	gate := make(chan struct{})
+	var gated atomic.Bool
+	d := deps.deps()
+	ingest := d.ingest
+	d.ingest = func(ctx context.Context, u id.ID, push []byte) (native.DeviceListIngest, error) {
+		if gated.Load() {
+			<-gate
+		}
+		return ingest(ctx, u, push)
+	}
+	h.setDeps(d)
+	h.SnapshotBegin(ctx)
+	h.Member(ctx, MemberEvent{Community: community, User: ada, Joined: true, Snapshot: true})
+	h.SnapshotDone(ctx) // the first snapshot: ada is a known member
+	// A reconnect's snapshot carries ada's changed list.
+	h.SnapshotBegin(ctx)
+	_ = h.DeviceList(ctx, ada, []byte{1}, true)
+	h.Member(ctx, MemberEvent{Community: community, User: ada, Joined: true, Snapshot: true})
+	h.SnapshotDone(ctx)
+	waitFor(t, "the snapshot list staged", time.Second, func() bool { return stagedCount(deps) == 1 })
+	// Then a live list that outlasts the inline budget.
+	gated.Store(true)
+	_ = h.DeviceList(ctx, ada, []byte{2}, false)
+	close(gate)
+	waitFor(t, "the deferred list after the snapshot staged", time.Second, func() bool { return stagedCount(deps) == 2 })
+}
+
+// TestStagingDoesNotHoldTheTrustWorker (fix round 3, N-4): staging's episode read runs off the user's trust worker,
+// so a hung read never delays the user's next list.
+func TestStagingDoesNotHoldTheTrustWorker(t *testing.T) {
+	ctx := t.Context()
+	community, ada := feedID(1), feedID(4)
+	release := make(chan struct{})
+	defer close(release)
+	var ingests atomic.Int64
+	h := newInstallationFeed(feedID(9), community, feedID(8), quietLogger(), func() {})
+	defer h.trust.Close()
+	h.setDeps(feedDeps{
+		ingest: func(context.Context, id.ID, []byte) (native.DeviceListIngest, error) {
+			ingests.Add(1)
+			return native.DeviceListIngest{Changed: true, Version: 2}, nil
+		},
+		episodes: blockingEpisodes{release},
+		stage:    func(context.Context, id.ID, id.ID) error { return nil },
+	})
+	h.SnapshotBegin(ctx) // a known member through the first snapshot (a live join stages through joined)
+	h.Member(ctx, MemberEvent{Community: community, User: ada, Joined: true, Snapshot: true})
+	h.SnapshotDone(ctx)
+	start := time.Now()
+	_ = h.DeviceList(ctx, ada, []byte{1}, false)
+	_ = h.DeviceList(ctx, ada, []byte{2}, false)
+	if took := time.Since(start); took > time.Second || ingests.Load() != 2 || h.Held(ada) {
+		t.Fatalf("two lists with a hung staging read: %v, %d ingests, held %v", took, ingests.Load(), h.Held(ada))
+	}
+}
+
+// blockingEpisodes is an episode resolver whose reads hang until released or their context ends.
+type blockingEpisodes struct{ release chan struct{} }
+
+func (b blockingEpisodes) ResolveCurrentEpisode(ctx context.Context, _ id.ID) (id.ID, bool, error) {
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+	}
+	return id.ID{}, false, ctx.Err()
+}

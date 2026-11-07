@@ -700,13 +700,22 @@ func TestInstallationFeedAppliesMembersAndDeviceLists(t *testing.T) {
 	}
 	first := deps.welcomed[0]
 	_ = f.DeviceList(ctx, bea, []byte{2}, false)
-	if len(deps.staged) != 2 || deps.staged[1] != [2]id.ID{bea, feedID(0x32)} {
-		t.Fatalf("a member's new device staged %v, want bea's episode again", deps.staged)
-	}
+	// Staging runs off the trust worker (fix round 3, N-4).
+	waitFor(t, "bea's new device staged", time.Second, func() bool {
+		deps.mu.Lock()
+		defer deps.mu.Unlock()
+		return len(deps.staged) == 2 && deps.staged[1] == [2]id.ID{bea, feedID(0x32)}
+	})
+	deps.mu.Lock()
 	deps.state, deps.changed = native.DeviceListHeld, false
+	deps.mu.Unlock()
 	_ = f.DeviceList(ctx, ada, []byte{3}, false)
-	if len(deps.staged) != 2 || len(deps.ingested) != 3 {
-		t.Fatalf("a held list staged %v (ingested %d), want nothing staged", deps.staged, len(deps.ingested))
+	time.Sleep(50 * time.Millisecond)
+	deps.mu.Lock()
+	staged, ingested := len(deps.staged), len(deps.ingested)
+	deps.mu.Unlock()
+	if staged != 2 || ingested != 3 {
+		t.Fatalf("a held list staged %d (ingested %d), want nothing staged", staged, ingested)
 	}
 	// Bea leaves and rejoins under the same episode id: the welcome sees the same event id and time.
 	f.Member(ctx, MemberEvent{Community: community, User: bea, Joined: false})
