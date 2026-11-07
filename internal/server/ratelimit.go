@@ -138,7 +138,22 @@ func (l *RateLimiter) Take(class Class, key string) (bool, time.Duration, func()
 		return false, l.retryAfter(b.lim.TokensAt(now), class), nil
 	}
 	var once sync.Once
-	return true, 0, func() { once.Do(func() { r.CancelAt(l.clk.Now()) }) }
+	return true, 0, func() { once.Do(func() { l.refund(b, class) }) }
+}
+
+// refund gives one token back to b, never past its burst. Reservation.CancelAt cannot do it: it restores nothing
+// once its time to act has passed, which for an immediately granted reservation is the instant it was taken, so a
+// refund after any work at all would be a silent no-op. AllowN with -1 adds one token at the current time; the
+// burst check and the add run under l.mu so two refunds cannot both pass the check. A concurrent Allow only takes
+// tokens, so it cannot push the bucket over its burst either.
+func (l *RateLimiter) refund(b *bucket, class Class) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.clk.Now()
+	if b.lim.TokensAt(now) > float64(class.Burst)-1 {
+		return
+	}
+	b.lim.AllowN(now, -1)
 }
 
 // retryAfter is §5.3's number: computed from the bucket's DEFICIT and rounded

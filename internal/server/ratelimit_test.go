@@ -118,3 +118,40 @@ func TestNonPositiveMaxKeysStillLimits(t *testing.T) {
 		}
 	}
 }
+
+// A Take's refund must give the token back after the clock moved on (Reservation.CancelAt restores nothing once its
+// time to act has passed), at most once, and never past the burst.
+func TestTakeRefundAfterTheClockAdvanced(t *testing.T) {
+	l, clk := newLimiter(t, 10)
+	class := server.Class{Name: "hook_fail", PerSecond: 0.001, Burst: 2}
+	ok, _, refund := l.Take(class, "a")
+	if !ok {
+		t.Fatal("first Take refused")
+	}
+	if ok, _, _ := l.Take(class, "a"); !ok {
+		t.Fatal("second Take refused; burst is 2")
+	}
+	clk.Advance(250 * time.Millisecond) // the work: reading the body, checking the secret
+	refund()
+	refund() // once only
+	if got := l.Tokens(class, "a"); got < 0.99 || got > 1.01 {
+		t.Fatalf("tokens after one refund = %v, want about 1", got)
+	}
+	if ok, _, _ := l.Take(class, "a"); !ok {
+		t.Fatal("the refunded token is not usable")
+	}
+	if ok, _, _ := l.Take(class, "a"); ok {
+		t.Fatal("a second token appeared: the refund was applied twice")
+	}
+	// A refund into a full bucket adds nothing.
+	l2, clk2 := newLimiter(t, 10)
+	ok, _, refund2 := l2.Take(class, "b")
+	if !ok {
+		t.Fatal("Take refused")
+	}
+	clk2.Advance(time.Hour * 1000) // refills to the burst
+	refund2()
+	if got := l2.Tokens(class, "b"); got > float64(class.Burst)+0.001 {
+		t.Fatalf("tokens = %v, above the burst %d", got, class.Burst)
+	}
+}
