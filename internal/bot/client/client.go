@@ -616,6 +616,15 @@ func expectedStatus(method, path string) (int, bool) {
 			return 204, true
 		}
 	}
+	// Bot v2 Task 10: a reply answers 204, a state hint [revision].
+	if len(parts) == 2 && parts[0] == "bot-runtime" && method == http.MethodPost {
+		switch parts[1] {
+		case "replies":
+			return 204, true
+		case "state-hints":
+			return 200, true
+		}
+	}
 	if len(parts) >= 2 && parts[0] == "bot-runtime" && parts[1] == "installations" {
 		if len(parts) == 6 && parts[3] == "interaction-groups" {
 			if parts[5] == "heal" && (method == http.MethodGet || method == http.MethodPost) {

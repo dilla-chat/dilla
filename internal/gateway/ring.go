@@ -17,7 +17,10 @@ type ringEntry struct {
 	n     uint64
 	bytes []byte
 	at    time.Time
-	scope FrameScope
+	// expires is when the entry may be dropped: at + the ring's TTL, or at + BotReplyHold for an
+	// op 62 reply when that is sooner.
+	expires time.Time
+	scope   FrameScope
 }
 
 // ring is a per-connection replay buffer, bounded on count, bytes and age. It is an optimisation:
@@ -36,21 +39,34 @@ func newRing(l ringLimits, clk clock.Clock) *ring {
 }
 
 func (r *ring) add(n uint64, frame []byte, scope FrameScope) {
+	r.addOp(n, frame, scope, 0)
+}
+
+// addOp is add for a frame of opcode op. Every opcode keeps the ring's TTL except op 62 bot_reply,
+// whose entry expires after BotReplyHold when that is sooner (Bot v2 task 10: an undelivered reply
+// is dropped after two minutes). Eviction stays head-first, so the replay range stays contiguous:
+// with the default TTL (also two minutes) the two bounds coincide.
+func (r *ring) addOp(n uint64, frame []byte, scope FrameScope, op Op) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.entries = append(r.entries, ringEntry{n: n, bytes: frame, at: r.clk.Now(), scope: scope.clone()})
+	now := r.clk.Now()
+	ttl := r.limits.TTL
+	if op == OpBotReply && BotReplyHold < ttl {
+		ttl = BotReplyHold
+	}
+	r.entries = append(r.entries, ringEntry{n: n, bytes: frame, at: now, expires: now.Add(ttl), scope: scope.clone()})
 	r.bytes += len(frame)
 	r.evictLocked()
 }
 
 // evictLocked drops the oldest entries until all three bounds hold.
 func (r *ring) evictLocked() {
-	cutoff := r.clk.Now().Add(-r.limits.TTL)
+	now := r.clk.Now()
 	for len(r.entries) > 0 {
 		head := r.entries[0]
 		tooMany := len(r.entries) > r.limits.Frames
 		tooBig := r.bytes > r.limits.Bytes
-		tooOld := head.at.Before(cutoff)
+		tooOld := now.After(head.expires)
 		if !tooMany && !tooBig && !tooOld {
 			return
 		}
@@ -125,7 +141,7 @@ func (r *ring) entriesSince(lastN uint64) []ringEntry {
 	out := make([]ringEntry, 0, len(r.entries))
 	for _, e := range r.entries {
 		if e.n > lastN {
-			out = append(out, ringEntry{n: e.n, bytes: e.bytes, at: e.at, scope: e.scope.clone()})
+			out = append(out, ringEntry{n: e.n, bytes: e.bytes, at: e.at, expires: e.expires, scope: e.scope.clone()})
 		}
 	}
 	return out

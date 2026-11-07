@@ -59,8 +59,8 @@ function verdict(bytes: Uint8Array): string | null {
 }
 
 describe('frames.json', () => {
-  it('holds the 38 cases and 22 rejects this codec was written against', () => {
-    expect(vectors.cases).toHaveLength(38);
+  it('holds the 41 cases and 22 rejects this codec was written against', () => {
+    expect(vectors.cases).toHaveLength(41);
     expect(vectors.rejects).toHaveLength(22);
     expect(Object.keys(CLIENT_VERDICT).sort()).toEqual(vectors.rejects.map((r) => r.name).sort());
   });

@@ -195,6 +195,12 @@ type Deps struct {
 	// BotChannelEvents hears Bot-channel marks and unmarks after they commit (Bot v2 Task 9; Task 12's
 	// Bot feed implements it). Nil is NoBotChannelEvents.
 	BotChannelEvents BotChannelEvents
+	// BotRelay carries sealed commands to the Bot runtime's connection, the Bot's sealed replies to
+	// the requesting device and its state hints to their scope (Bot v2 Task 10). Nil relays nothing:
+	// a command is 503 E_BOT_OFFLINE, a reply 404.
+	BotRelay BotRelayGateway
+	// BotRequests is the relay's request_id -> device ledger. Register builds one when nil.
+	BotRequests *BotRequestLedger
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket
@@ -250,11 +256,15 @@ func Register(m *server.Mux, d Deps) {
 	if d.BotCatalogPushes == nil {
 		d.BotCatalogPushes = NewBotCatalogPusher()
 	}
+	if d.BotRequests == nil {
+		d.BotRequests = NewBotRequestLedger(d.Clock)
+	}
 	// Discovery. The two routes a client reads before it has anything else.
 	registerInstance(m, d)
 	registerBotInstallations(m, d)
 	registerBotCatalog(m, d)
 	registerBotChannels(m, d)
+	registerBotCommands(m, d)
 	registerAutoModerationGrants(m, d)
 	registerBotStructuralEvents(m, d)
 	registerModerationRemovals(m, d)

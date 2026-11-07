@@ -61,6 +61,7 @@ export const SOCKET_ROUTES: readonly SocketRoute[] = [
   { method: 'GET', pattern: '/v1/communities/{community}/bot/catalog' },
   { method: 'GET', pattern: '/v1/communities/{community}/bot/channels' },
   { method: 'GET', pattern: '/v1/communities/{community}/bot/command-status' },
+  { method: 'POST', pattern: '/v1/communities/{community}/bot/commands' },
   { method: 'POST', pattern: '/v1/communities/{community}/bot/disable' },
   { method: 'GET', pattern: '/v1/communities/{community}/bot/events' },
   { method: 'PUT', pattern: '/v1/communities/{community}/bot/events/ack' },
@@ -248,6 +249,8 @@ export const BOT_RUNTIME_ROUTES: readonly SocketRoute[] = [
   { method: 'GET', pattern: '/v1/bot-runtime/installations/{installation}/moderation/warnings/{request}' },
   { method: 'POST', pattern: '/v1/bot-runtime/installations/{installation}/ready' },
   { method: 'PUT', pattern: '/v1/bot-runtime/installations/{installation}/status' },
+  { method: 'POST', pattern: '/v1/bot-runtime/replies' },
+  { method: 'POST', pattern: '/v1/bot-runtime/state-hints' },
 ];
 
 interface Compiled { key: string; method: string; segments: readonly string[] }

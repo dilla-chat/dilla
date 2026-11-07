@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 
@@ -78,7 +79,25 @@ const (
 	// filtered_catalog, publication|null]. S->C only and not replayed: a member who missed it
 	// compares revisions at connect sync.
 	OpBotCatalog Op = 61
+	// OpBotReply carries one sealed answer of the Bot to the device that sent the command (Bot v2
+	// task 10): [request_id, seq, sealed, final]. It is the one replayable opcode of the ephemeral
+	// range: a connection suspended when the answer arrives holds it in its ring for at most
+	// BotReplyHold, then it is dropped (ring.go).
+	OpBotReply Op = 62
+	// OpBotStateChanged is a content-free hint that the Bot's state for one scope changed (Bot v2
+	// task 10): [scope_kind, scope_id, revision]. Not replayed: a client that missed one compares
+	// revisions at connect sync (GET /v1/bot/revisions).
+	OpBotStateChanged Op = 63
+	// OpBotCommand carries a member's sealed command to the Bot runtime's connection, with the
+	// identity dillad authenticated (Bot v2 task 10): [request_id, community_id, user_id, device_id,
+	// sealed]. Wire 6 opens 64 from the reserved range for it. Not replayed: an unanswered command
+	// is retried by the client with the same request_id.
+	OpBotCommand Op = 64
 )
+
+// BotReplyHold bounds how long a suspended connection's ring holds an op 62 reply: the spec's
+// offline reply drop.
+const BotReplyHold = 2 * time.Minute
 
 // CloseCode is a WebSocket close code from RFC 6455's private range.
 type CloseCode uint16
@@ -171,6 +190,11 @@ var opSpecs = map[Op]opSpec{
 	// [community_id, revision, filtered_catalog, publication|null]. Server-to-client, so a client
 	// op 61 is E_FRAME_TYPE at the opcode check.
 	OpBotCatalog: {elements: 4},
+	// Bot v2 task 10. All three are server-to-client, so a client op 62, 63 or 64 is E_FRAME_TYPE
+	// at the opcode check. 62 is replayable (with its own two-minute hold), 63 and 64 are not.
+	OpBotReply:        {elements: 4, replayable: true},
+	OpBotStateChanged: {elements: 3},
+	OpBotCommand:      {elements: 5},
 }
 
 // FrameError is a structured refusal. Code is the E_FRAME_* string the client sees in an error

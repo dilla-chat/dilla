@@ -114,6 +114,7 @@ type catalogFixture struct {
 	botUser, botDevice id.ID
 	botKey             ed25519.PrivateKey
 	botTok             string
+	installation       id.ID
 
 	text, voice, category, readable, afk id.ID
 }
@@ -143,20 +144,28 @@ func seedKeyedSession(t *testing.T, d api.Deps) (store.UserRow, store.DeviceRow,
 // text, a voice, a category, a readable text and the AFK channel.
 func newCatalogFixture(t *testing.T) *catalogFixture {
 	t.Helper()
+	return newCatalogFixtureOn(t, newAPIRepo(t), nil)
+}
+
+// newCatalogFixtureOn is newCatalogFixture over a caller-owned repository, with one more Deps hook.
+func newCatalogFixtureOn(t *testing.T, repo store.Repository, wire func(*api.Deps)) *catalogFixture {
+	t.Helper()
 	f := &catalogFixture{
 		gw:     &catalogGateway{connected: map[id.ID]bool{}, frames: map[id.ID][]gateway.Frame{}},
 		pusher: api.NewBotCatalogPusher(),
 		events: &channelEvents{},
 		lists:  &catalogLists{entries: map[id.ID][]mlswasi.DeviceListEntry{}},
 	}
-	f.h, f.deps = newTestAPIWired(t, func(d *api.Deps) {
+	f.h, f.deps = newTestAPIFullWithRepo(t, repo, nil, func(d *api.Deps) {
 		d.DeviceLists = f.lists
 		d.BotCatalogGateway = f.gw
 		d.BotCatalogPushes = f.pusher
 		d.BotChannelEvents = f.events
+		if wire != nil {
+			wire(d)
+		}
 	})
 	ctx := context.Background()
-	repo := f.deps.Repo
 	now := f.deps.Clock.Now().Unix()
 	f.owner, _, _, f.ownerTok = seedKeyedSession(t, f.deps)
 	f.admin, _, _, f.adminTok = seedKeyedSession(t, f.deps)
@@ -210,6 +219,7 @@ func newCatalogFixture(t *testing.T) *catalogFixture {
 	}
 	f.botUser, f.botDevice, f.botKey = id.New(), id.New(), priv
 	installation, runtime := id.New(), id.New()
+	f.installation = installation
 	verified := now
 	if err := repo.CreateUser(ctx, store.UserRow{ID: f.botUser, Username: "bot" + f.botUser.String()[:8], Display: "Bot", Kind: 1, UMKPub: make([]byte, 32), SSKPub: make([]byte, 32), SigUMKSSK: make([]byte, 64), Created: now}); err != nil {
 		t.Fatal(err)

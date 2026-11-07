@@ -52,7 +52,10 @@ type conn struct {
 	noResume bool
 	// sealed is set when a self-revoking request's close is deferred until its answer is written: from then
 	// on the read loop drops every inbound frame, so the revoked session can do nothing on this socket.
-	sealed      atomic.Bool
+	sealed atomic.Bool
+	// resuming is set when a resume took its snapshot of this suspended connection's ring, and
+	// cleared when the connection is suspended again: from the snapshot on, hold adds nothing.
+	resuming    bool
 	n           uint64
 	groups      map[id.ID]struct{}
 	lastLive    time.Time
@@ -104,13 +107,34 @@ func (c *conn) send(f Frame) {
 		c.n++
 		n = c.n
 		if b, err := Encode(f, n); err == nil {
-			c.ring.add(n, b, f.Scope)
+			c.ring.addOp(n, b, f.Scope, f.Op)
 		}
 	}
 	if c.writer == nil {
 		return
 	}
 	c.writer.enqueue(f, n)
+}
+
+// hold rings a replayable frame for a connection parked in the resume window, without queueing it:
+// the suspended writer is stopped, and a resume replays from the ring. It is how an op 62 reply
+// reaches a device whose socket dropped (Bot v2 task 10). It reports false, and holds nothing, once
+// a resume has taken its snapshot of the ring (resuming): a frame stamped after that snapshot would
+// sit between the announced replay range and `resumed`, an n the client was never told about.
+func (c *conn) hold(f Frame) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state != stateClosed || c.resuming || !f.Replay {
+		return false
+	}
+	c.n++
+	b, err := Encode(f, c.n)
+	if err != nil {
+		c.n--
+		return false
+	}
+	c.ring.addOp(c.n, b, f.Scope, f.Op)
+	return true
 }
 
 // mark records a liveness signal: ready, resumed or a heartbeat frame. Online is defined over
@@ -194,6 +218,7 @@ func (c *conn) tryResumeSnapshot(token []byte, generation, lastN, current uint64
 		return resumeOutcome{}, errNotResumable
 	}
 	entries := c.ring.entriesSince(lastN)
+	c.resuming = true
 	return resumeOutcome{from: lastN + 1, to: c.n, entries: entries}, nil
 }
 

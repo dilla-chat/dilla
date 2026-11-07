@@ -25,6 +25,14 @@ const (
 	// bound would exhaust the target's directory (32 + 1 last resort) and leave it unaddable. The
 	// requester's read bucket still applies on top.
 	dsClassKeyPackage = "keypackage"
+	// dsClassBotCommand meters POST /v1/communities/{community}/bot/commands per device at the write
+	// rate (2/s, burst 20 by default) in its own bucket (Bot v2 Task 10): one device cannot flood the
+	// Bot, and commands do not spend the device's write allowance for everything else.
+	dsClassBotCommand = "bot_command"
+	// dsClassBotRuntime meters the Bot's replies and state hints per Bot device at the read rate
+	// (10/s, burst 60 by default): the one Bot answers the whole community, so its allowance is the
+	// larger one. Every reply answers a command that was itself metered per device.
+	dsClassBotRuntime = "bot_runtime"
 )
 
 func dsRateClass(r config.Rate, name string) server.Class {
@@ -37,8 +45,10 @@ func dsRateClass(r config.Rate, name string) server.Class {
 		return server.Class{Name: name, PerSecond: r.ProposalPerSecond, Burst: r.ProposalBurst}
 	case dsClassKeyPackage:
 		return server.Class{Name: name, PerSecond: r.ProposalPerSecond, Burst: r.ProposalBurst}
-	case dsClassWrite:
+	case dsClassWrite, dsClassBotCommand:
 		return server.Class{Name: name, PerSecond: r.WritePerSecond, Burst: r.WriteBurst}
+	case dsClassBotRuntime:
+		return server.Class{Name: name, PerSecond: r.ReadPerSecond, Burst: r.ReadBurst}
 	default:
 		return server.Class{Name: dsClassRead, PerSecond: r.ReadPerSecond, Burst: r.ReadBurst}
 	}

@@ -482,6 +482,7 @@ func (g *Gateway) suspend(c *conn) {
 	c.mu.Lock()
 	c.state = stateClosed
 	c.suspendedAt = now
+	c.resuming = false
 	token := string(c.resume)
 	w := c.writer
 	resumable := !c.noResume
@@ -567,6 +568,60 @@ func (g *Gateway) DeliverDevice(deviceID id.ID, f Frame) {
 	}
 	for _, c := range g.reg.connsOfDevice(deviceID) {
 		if g.allowWire3Scoped(c, requiresWire3) {
+			c.send(f)
+		}
+	}
+	// An op 62 reply also goes into the ring of every connection of the device that is parked in
+	// the resume window (Bot v2 task 10): a device whose socket dropped gets the answer on resume,
+	// for at most BotReplyHold. No other opcode reaches a suspended connection.
+	if f.Op == OpBotReply && f.Replay {
+		g.suspended.Range(func(_, v any) bool {
+			if c, ok := v.(*conn); ok && c.deviceID == deviceID && g.allowWire3Scoped(c, requiresWire3) {
+				c.hold(f)
+			}
+			return true
+		})
+	}
+	g.countFrame(f)
+}
+
+// DeliverBot hands a sealed command (op 64) to the Bot runtime's live connections of deviceID, the
+// installation's managed device (Bot v2 task 10). It reports whether any received it: no live Bot
+// runtime connection is the Bot being offline. A connection of the device that is not a Bot runtime
+// session gets nothing.
+func (g *Gateway) DeliverBot(deviceID id.ID, f Frame) bool {
+	f.Scope = normalizeFrameScope(f)
+	delivered := false
+	for _, c := range g.reg.connsOfDevice(deviceID) {
+		c.mu.Lock()
+		bot := c.isBot && c.state == stateReady
+		c.mu.Unlock()
+		if bot {
+			c.send(f)
+			delivered = true
+		}
+	}
+	if delivered {
+		g.countFrame(f)
+	}
+	return delivered
+}
+
+// DeliverSubscribed sends a frame to the live connections of the group's member devices that are
+// subscribed to the group (subscribe / unsubscribe): the connections showing it. A Bot state hint
+// for a channel (op 63, Bot v2 task 10) goes this way.
+func (g *Gateway) DeliverSubscribed(groupID id.ID, f Frame) {
+	f.Scope = normalizeFrameScope(f)
+	f.Scope.Groups = appendScopeID(f.Scope.Groups, groupID)
+	requiresWire3, err := g.scopeRequiresWire3(context.Background(), f.Scope)
+	if err != nil {
+		return
+	}
+	for _, c := range g.reg.connsOfGroup(groupID) {
+		c.mu.Lock()
+		_, subscribed := c.groups[groupID]
+		c.mu.Unlock()
+		if subscribed && g.allowWire3Scoped(c, requiresWire3) {
 			c.send(f)
 		}
 	}
@@ -930,4 +985,5 @@ var opNames = map[Op]string{
 	OpCommunityChanged: "community_changed", OpAFKAway: "afk_away",
 	OpAppBuild: "app_build", OpPresenceActivity: "presence_activity", OpCallStats: "call_stats",
 	OpRequest: "request", OpResponse: "response", OpBotCatalog: "bot_catalog",
+	OpBotReply: "bot_reply", OpBotStateChanged: "bot_state_changed", OpBotCommand: "bot_command",
 }

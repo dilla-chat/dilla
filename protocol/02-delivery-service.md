@@ -361,6 +361,24 @@ dense on every device of its audience; `group_id` is null.
 | 59 | `request` | C→S, wire 6 | `[id(uint), method(tstr), route(tstr), body(bstr), idem(bstr 1..64 \| null)]` |
 | 60 | `response` | S→C, wire 6 | `[id(uint), status(uint 100..599), body(bstr)]` |
 | 61 | `bot_catalog` | S→C, wire 6 | `[community_id(bstr 16), revision(uint), filtered_catalog(array), publication(bstr \| null)]` |
+| 62 | `bot_reply` | S→C, wire 6, `n ≠ 0` | `[request_id(bstr 16), seq(uint), sealed(bstr), final(uint 0\|1)]` |
+| 63 | `bot_state_changed` | S→C, wire 6 | `[scope_kind(uint 0..2), scope_id(bstr 16), revision(uint)]` |
+
+`bot_reply` (Bot v2) is the one exception to this range's heading: it is replayable and carries
+`n ≠ 0`. It is one sealed answer of the community Bot to a command, delivered to the one device
+that sent the command (`10` § Sealed command relay, replies and state hints); `final` is 1 on the
+last answer. A connection of that device that is suspended in the resume window when the answer
+arrives holds it in its replay ring, and it is replayed on resume like any replayable frame. Its
+ring entry expires two minutes after it was added (the spec's offline reply drop) or at the ring's
+own TTL when that is sooner; eviction stays oldest-first, so with the instance's ring TTL (also two
+minutes) the two bounds coincide and the replay range stays contiguous. No other frame reaches a
+suspended connection. The answer is opaque to the instance.
+
+`bot_state_changed` is a content-free hint that the Bot's state for one scope changed: kind 0 a
+user (sent to that user's live connections), 1 a text channel (to the connections subscribed to
+its group), 2 the call in a voice channel, whose `scope_id` is the voice channel (to the call
+group's online devices). It carries exactly those three elements. It is never replayed: a client
+that missed one compares revisions at connect sync (`GET /v1/bot/revisions`).
 
 `bot_catalog` carries a community's Bot command catalog to one member after the Bot publishes a
 changed one or a new command key (`10` § Command catalog). Each connected member receives exactly
@@ -546,7 +564,19 @@ community it does not list. A client that predates op 55 ignores it as an unknow
 server-to-client opcode in this range. Sent by a client, any op 55 is `E_FRAME_TYPE` at the
 instance.
 
-Opcodes 64–127 are reserved for future `wire_version`s; 128 and above are never used. An opcode
+### Bot runtime (64–79) — wire 6, `n = 0`
+
+| op | label | dir | payload |
+|---|---|---|---|
+| 64 | `bot_command` | S→C, Bot runtime connection only | `[request_id(bstr 16), community_id(bstr 16), user_id(bstr 16), device_id(bstr 16), sealed(bstr)]` |
+
+`bot_command` carries a member's sealed command to the Bot runtime's own connection (a session
+bound to the community's ready installation, on the installation's device), never to a human
+connection. `user_id` and `device_id` are the sending connection's authenticated session. It is
+not replayed: with no live Bot runtime connection the sender is answered `503 E_BOT_OFFLINE`, and
+an unanswered command is retried by the client with the same `request_id`.
+
+Opcodes 65–127 are reserved for future `wire_version`s; 128 and above are never used. An opcode
 outside the negotiated `wire_version` is a hard error (`E_FRAME_TYPE`), never ignored. A frame of
 the wrong element count for its opcode is `E_FRAME_SHAPE`; a frame that fails the deterministic
 decoder is `E_FRAME_CBOR`; a frame over `max_frame_bytes` is `E_FRAME_LIMIT`. A client frame whose
@@ -1015,6 +1045,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 409 | `E_CALL_FULL` | the call already has `livekit.max_voice_participants` devices | show "This call is full"; the user may retry later |
 | 409 | `E_CALL_SHARERS_FULL` | the call already has `livekit.max_publishers` devices sharing camera or screen | show that sharing is full; retry after a sharer stops |
 | 409 | `E_CALL_NOT_ALONE` | `DELETE /v1/calls/{call_id}?if_alone=1`: the caller's device is not the call group's only current leaf | the call goes on; just leave it |
+| 409 | `E_BOT_DUPLICATE` | a sealed Bot command's `request_id` was sent by another device in the last five minutes | mint a new `request_id` |
 | 410 | `E_PRUNED` | delivery retention has deleted a row of the requested stream at or above `from` (`from` is the first `seq` wanted; the instance records the highest `seq` delivery retention deleted from each stream, so the answer is exact; an archival deletion is not recorded, invariant 10) | resync; mark older messages "undecryptable (too old)" |
 | 410 | `E_INVITE_INVALID` | the invite is expired, exhausted or revoked | none |
 | 413 | `E_TOO_LARGE` | the object exceeds the instance limit | split or attach |
@@ -1026,6 +1057,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 429 | `E_BUSY` | the instance or the managed Bot is at capacity for this kind of work | retry later |
 | 500 | `E_INTERNAL` | an unexpected server fault; the detail is always empty | retry with backoff |
 | 503 | `E_UNAVAILABLE` | the instance could not take a resource the request needs within its bound (a call whose SFU work is stuck) | wait `retry_after_ms`, then retry |
+| 503 | `E_BOT_OFFLINE` | a sealed Bot command found no live Bot runtime connection (or no ready installation) to relay to | show the Bot as offline; Retry reuses the `request_id` |
 | 507 | `E_STORAGE_FULL` | the instance or the user's quota is exhausted | none |
 
 A **syntactically invalid** identifier in a path is `400 E_INVALID_REQUEST`; a syntactically valid
@@ -1058,7 +1090,10 @@ distinct, so a client tells the three apart by code, never by detail. `E_PASSKEY
 came with them: a passkey login whose credential this instance does not hold (`09` § Second
 factors), distinct from `E_UNAUTHENTICATED` so the client can say which. `E_PASSKEY_OTHER_ACCOUNT`
 (403) came with wave B task 3: a passkey login bound to a password or OIDC login (`09` § Second factors)
-whose passkey belongs to another account. None is a delivery-service code.
+whose passkey belongs to another account. None is a delivery-service code. Bot v2's sealed
+command relay (`10` § Sealed command relay, replies and state hints) adds two: `E_BOT_DUPLICATE`
+(409), a command `request_id` another device sent within five minutes, and `E_BOT_OFFLINE` (503),
+a command with no live Bot runtime connection to relay to.
 
 The four Plan 2 consumes are declared **here**, in the one task that owns the vocabulary, even though their
 only call sites are Plan 2's. The three `E_ENVELOPE_*` codes are 400 and mirror the Rust envelope

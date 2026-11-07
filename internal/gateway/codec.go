@@ -130,6 +130,30 @@ func BotCatalogPayload(communityID id.ID, revision uint64, commands cbor.RawMess
 	return payload(communityID, revision, commands, pub)
 }
 
+// BotReplyPayload is op 62 bot_reply's `[request_id, seq, sealed, final]` (Bot v2 task 10): one
+// sealed answer of the Bot to a command, for the device that sent it. final travels as uint 0 or
+// 1: the deterministic-CBOR subset has no boolean.
+func BotReplyPayload(requestID id.ID, seq uint64, sealed []byte, final bool) (cbor.RawMessage, error) {
+	var f uint64
+	if final {
+		f = 1
+	}
+	return payload(requestID, seq, sealed, f)
+}
+
+// BotStateChangedPayload is op 63 bot_state_changed's `[scope_kind, scope_id, revision]` (Bot v2
+// task 10): a content-free hint that the Bot's state for one user, channel or call changed.
+func BotStateChangedPayload(scopeKind uint8, scopeID id.ID, revision uint64) (cbor.RawMessage, error) {
+	return payload(uint64(scopeKind), scopeID, revision)
+}
+
+// BotCommandPayload is op 64 bot_command's `[request_id, community_id, user_id, device_id, sealed]`
+// (Bot v2 task 10): a member's sealed command for the Bot runtime, with the identity dillad
+// authenticated attached outside the seal.
+func BotCommandPayload(requestID, communityID, userID, deviceID id.ID, sealed []byte) (cbor.RawMessage, error) {
+	return payload(requestID, communityID, userID, deviceID, sealed)
+}
+
 // CommunityChangedPayload is op 54 community_changed's `[community_id]` (dilla-web-3.1): the
 // community whose channels or settings changed. It names nothing else; a member re-reads.
 func CommunityChangedPayload(communityID id.ID) (cbor.RawMessage, error) {

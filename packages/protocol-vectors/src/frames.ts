@@ -17,6 +17,7 @@ const COMMUNITY = new Uint8Array(16).fill(0x0e);
 const TAG = new Uint8Array(32).fill(0x0a);
 const TOKEN = new Uint8Array(32).fill(0x0b);
 const IDEM = new Uint8Array(16).fill(0x0f);
+const REQUEST = new Uint8Array(16).fill(0x10);
 
 type Case = { name: string; op: number; n: number; group_id: string; payload: string; frame: string };
 
@@ -96,12 +97,22 @@ export function frameVectors() {
     // publication, null before the Bot publishes one. n = 0: a member who missed it compares
     // revisions at connect sync.
     frame('bot_catalog', 61, 0, null, [COMMUNITY, 3, [['remind', 'Set a reminder', 20, [['when', 4, 1], ['text', 0, 1]], 0, 0, 0]], null]),
+    // op 62 bot_reply (S->C, Bot v2): [request_id, seq, sealed, final(uint 0|1)], to the one device
+    // that sent the command. The ephemeral range's one replayable frame: n != 0, held two minutes for
+    // a suspended connection.
+    frame('bot_reply', 62, 5, null, [REQUEST, 1, new Uint8Array([0x83, 0x01, 0x41, 0x00, 0x41, 0x00]), 1]),
+    // op 63 bot_state_changed (S->C, Bot v2): [scope_kind(0 user, 1 channel, 2 call), scope_id,
+    // revision]. Content-free, n = 0: a client that missed it compares revisions at connect sync.
+    frame('bot_state_changed', 63, 0, null, [1, CHANNEL, 4]),
+    // op 64 bot_command (S->C, Bot runtime connection only, wire 6): [request_id, community_id,
+    // user_id, device_id, sealed]. The identity is the sending connection's session. n = 0.
+    frame('bot_command', 64, 0, null, [REQUEST, COMMUNITY, USER, DEVICE, new Uint8Array([0x85, 0x01])]),
   ];
 
   const rejects = [
     { name: 'three elements', frame: hex(encode([10, 1, null])), code: 'E_FRAME_SHAPE' },
     { name: 'five elements', frame: hex(encode([10, 1, null, [[GROUP]], 0])), code: 'E_FRAME_SHAPE' },
-    { name: 'unknown opcode', frame: hex(encode([63, 1, null, []])), code: 'E_FRAME_TYPE' },
+    { name: 'unknown opcode', frame: hex(encode([100, 1, null, []])), code: 'E_FRAME_TYPE' },
     { name: 'server opcode from a client', frame: hex(encode([3, 1, null, []])), code: 'E_FRAME_TYPE' },
     { name: 'payload is not an array', frame: hex(encode([10, 1, null, 'x'])), code: 'E_FRAME_SHAPE' },
     { name: 'subscribe with the wrong element count', frame: hex(encode([10, 1, null, [[GROUP], 1]])), code: 'E_FRAME_SHAPE' },
