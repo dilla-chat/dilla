@@ -543,6 +543,20 @@ describe('Gateway input checks', () => {
     expect(h.events.slice(before)).toEqual([]);
     expect(s.closedWith).toBeNull();
   });
+
+  // Bot v2: the catalog push (61), a sealed answer (62) and a state hint (63) reach the worker once ready.
+  it('emits bot_catalog, bot_reply and bot_state_changed (ops 61-63) once ready', async () => {
+    const h = harness();
+    const s = await connected(h);
+    const frames = [
+      encodeFrame(Op.botCatalog, 0, null, [GROUP, 3, [], null]),
+      encodeFrame(Op.botReply, 0, null, [GROUP, 1, new Uint8Array([1, 2, 3]), 1]),
+      encodeFrame(Op.botStateChanged, 0, null, [1, GROUP, 4]),
+    ];
+    for (const f of frames) s.receive(f);
+    expect(h.events.flatMap((e) => (e.type === 'frame' ? [e.frame.op] : []))).toEqual([Op.botCatalog, Op.botReply, Op.botStateChanged]);
+    expect(s.closedWith).toBeNull();
+  });
 });
 
 describe('Gateway reconnect', () => {

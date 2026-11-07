@@ -300,9 +300,11 @@ export class Gateway {
       }
       // The group frames, the relayed typing signal the worker publishes as typing:<channel> (L-HTTP-96 op 49), and the
       // voice presence and DM ring signals of web-3 (ops 50 and 53, L-GW-32, L-GW-33), the structure notice of
-      // web-3.1 (op 54), and the away roster notice (op 55, AW4).
+      // web-3.1 (op 54), the away roster notice (op 55, AW4), and the Bot v2 catalog push, sealed answer and state hint
+      // (ops 61-63), without which no catalog, Bot answer or hint ever reaches the worker.
       else if ((frame.op >= Op.handshake && frame.op <= Op.messageDeleted) || frame.op === Op.presence || frame.op === Op.typing
         || frame.op === Op.voiceState || frame.op === Op.callRing || frame.op === Op.communityChanged || frame.op === Op.afkAway
+        || frame.op === Op.botCatalog || frame.op === Op.botReply || frame.op === Op.botStateChanged
         || (frame.op === Op.appBuild && (this.acceptedVersions?.wire ?? 0) >= 5)) {
         this.emit({ type: 'frame', frame });
       }
