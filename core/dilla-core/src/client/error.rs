@@ -23,6 +23,9 @@ pub(crate) const E_BINDING: &str = "E_BINDING";
 /// The store was written by a newer client (`StorageError::StoreNewer`); the detail is exactly
 /// `found <n>, supported <m>`, which the worker reads at the core's boundary.
 pub(crate) const E_STORE_NEWER: &str = "E_STORE_NEWER";
+/// A verifying account-kind attestation that names another kind than the one stored for the user (task 20 fix round 2,
+/// N3): an account's kind is final once stored, so the change is refused (and the worker logs the code).
+pub(crate) const E_ACCOUNT_KIND_CHANGED: &str = "E_ACCOUNT_KIND_CHANGED";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientError {

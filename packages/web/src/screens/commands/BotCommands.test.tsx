@@ -142,6 +142,12 @@ describe('Bot commands from the catalog on this device', () => {
     expect(second.requestId).toBe(first.requestId);
     h.answer({ seq: 0, status: 200, body: text('The queue is empty.'), final: true });
     await waitFor(() => expect(h.results().at(-1)?.text).toBe('The queue is empty.'));
+    // N1: the timed-out run stopped listening when Retry ran: its row never takes the retry's answer.
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(h.results()).toHaveLength(2);
+    expect(h.results()[0]).toMatchObject({ status: 'failed', text: "The Bot didn't answer" });
+    // A cancel would have forgotten the new send's reply secret; Retry must not.
+    expect(h.fake.callsOf('forgetBotCommand')).toEqual([]);
   });
 
   it('greyed rows are aria-disabled, with no inline style (I1), and a key this device cannot check or a changed Bot say so (M10, A)', async () => {

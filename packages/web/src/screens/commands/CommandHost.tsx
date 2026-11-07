@@ -103,8 +103,8 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
   const previousLayoutKey = useRef(key);
   const mounted = useRef(true);
   /** Bot v2 (fix round 1, M5): the sealed runs this composer started; closing it (unmount, another conversation) ends them. */
-  const botRuns = useRef(new Set<BotCommandRun>());
-  const cancelBotRuns = useCallback(() => { for (const run of botRuns.current) run.cancel(); botRuns.current.clear(); }, []);
+  const botRuns = useRef(new Map<string, BotCommandRun>());
+  const cancelBotRuns = useCallback(() => { for (const run of botRuns.current.values()) run.cancel(); botRuns.current.clear(); }, []);
   const contextKey = `${clientOwnerId(client)}\u0000${accountScope}\u0000${props.selfId ?? ''}\u0000${key}`;
 
   const open = useCallback((text: string) => {
@@ -216,7 +216,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
           setNoAnswer(current => (current?.key === key ? null : current));
         },
         // Tracked until it settles, or (timed out, still listening for a late answer) until the composer closes.
-        started: run => { startedRun = run; botRuns.current.add(run); },
+        started: run => { startedRun = run; botRuns.current.set(run.requestId, run); },
       })
       : (handlers ?? {})[invocation.commandId] ?? builtinHandlers[invocation.commandId];
     const provider = definition?.provider === 'bot' ? 'bot' : 'builtin';
@@ -269,8 +269,15 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
       items, selfId, encodeMessage, confirm, openInvite,
       openGif: query => { if (isCurrent()) openGif(query); }, openModerationLog };
     if (!moderation) leaveAfterRun(formResult ? 'preserve' : 'restore');
+    // N1: Retry is a new execution of the same request id. The timed-out run of that id stops listening (its row keeps "The
+    // Bot didn't answer"), but its reply secret stays for the new send to replace: stop(), never cancel().
+    if (definition?.bot !== undefined) {
+      botRuns.current.get(attempt)?.stop();
+      botRuns.current.delete(attempt);
+    }
     return Promise.resolve().then(() => handler(invocation, context)).then(response => {
-      if (startedRun !== undefined && response.status !== 'uncertain') botRuns.current.delete(startedRun);
+      // N6: a run stays tracked only while it may still take a late answer (it timed out and offers Retry).
+      if (startedRun !== undefined && !(response.status === 'uncertain' && response.retry === true) && botRuns.current.get(startedRun.requestId) === startedRun) botRuns.current.delete(startedRun.requestId);
       if (confirmationChoice === 'abandon' || confirmationChoice === 'cancel' && !moderation) {
         if (resultId !== undefined) resultStore.dismiss(resultId);
         return response;

@@ -340,6 +340,20 @@ describe('fix round 1: the page side', () => {
     expect(late).not.toHaveBeenCalled();
   });
 
+  it('stop ends a timed-out run’s listening and keeps the reply secret (N1)', async () => {
+    const port = fakePort();
+    const run = createBotCommands(port).sendBotCommand({ communityId: COMMUNITY, channelId: null, operation: 81, args: [], requestId: REQUEST });
+    const late = vi.fn();
+    run.onLate(late);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(port.listening(REQUEST)).toBe(1);
+    run.stop();
+    expect(port.listening(REQUEST)).toBe(0);
+    port.answer({ seq: 0, final: true });
+    expect(late).not.toHaveBeenCalled();
+    expect(port.forgotten).toEqual([]);
+  });
+
   it('cancel ends the run with no item and asks the worker to forget the reply secret (M5)', async () => {
     const port = fakePort();
     const run = createBotCommands(port).sendBotCommand({ communityId: COMMUNITY, channelId: null, operation: 81, args: [], requestId: REQUEST });

@@ -31,6 +31,9 @@ export interface BotCommandRun {
   answers: AsyncIterable<BotRunItem>;
   /** Sends the same request id again (a new seal); this run stops listening. */
   retry(): BotCommandRun;
+  /** Ends this run's listening (also after a timeout) and keeps the worker's reply secret: a new run of the same request
+   *  id (the host's Retry) takes over its answers (fix round 2, N1). */
+  stop(): void;
   /** The composer closed: the run ends with no item and the worker forgets its reply secret. */
   cancel(): void;
   /** After a timeout: the first answer that still arrives (before a retry or cancel, within 2 min) goes here. */
@@ -275,6 +278,7 @@ export function createBotCommands(port: BotCommandPort): { sendBotCommand(req: S
       requestId,
       answers: queue,
       retry: () => { finish(false); return sendBotCommand({ ...req, requestId }); },
+      stop: () => { finish(false); },
       cancel: () => { finish(true); },
       onLate: (listener) => { late = listener; },
     };

@@ -22,7 +22,9 @@
 //! one, a client that has seen an attestation leaves the leaf pending (`E_DEVICE_LIST_STALE`) and a
 //! client that has not keeps the earlier rule (the transition window `protocol/07` describes).
 
-use super::error::{E_CORE_INPUT, E_CORE_STATE, E_CREDENTIAL, E_DEVICE_LIST_STALE};
+use super::error::{
+    E_ACCOUNT_KIND_CHANGED, E_CORE_INPUT, E_CORE_STATE, E_CREDENTIAL, E_DEVICE_LIST_STALE,
+};
 use super::{ClientCore, ClientError, schema};
 use crate::identity::CredentialIdentity;
 pub use crate::identity::{AccountKindAttestation, account_kind_message};
@@ -187,6 +189,15 @@ impl ClientCore {
                     E_CORE_INPUT,
                     "account-kind attestation does not verify",
                 ));
+            }
+            // An account's kind is final once stored (task 20 fix round 2, N3): a verifying attestation naming another
+            // kind than a stored one that still verifies is refused and changes nothing. Without this the instance
+            // could turn a human this device never pinned into a Bot and have `bot_device_list_pin` trust its keys.
+            let stored = u.with_conn(|c| stored_row(c, user_id))?;
+            if let Some(row) = stored.as_ref() {
+                if stored_kind(row, user_id).is_some_and(|k| k != a.kind) {
+                    return Err(ClientError::new(E_ACCOUNT_KIND_CHANGED, "an account's kind never changes"));
+                }
             }
             u.with_conn(|c| {
                 let held: Option<StoredAttestation> = c

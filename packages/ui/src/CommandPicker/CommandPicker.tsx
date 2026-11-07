@@ -29,7 +29,14 @@ export interface CommandListProps {
 }
 
 /** The option id a command row carries: the field that drives the list points at it with `aria-activedescendant`. */
-export const commandOptionId = (listId: string, itemId: string): string => `${listId}-${itemId.replaceAll(' ', '-')}`;
+export const commandOptionId = (listId: string, itemId: string): string => `${listId}-${hexOf(itemId)}`;
+
+const utf8 = new TextEncoder();
+/** The item id's UTF-8 bytes as lower-case hex: an injective, always-valid id part (Bot v2 fix round 2, N4: "a b" and
+ *  "a-b" are both valid command names and must not share a DOM id). */
+function hexOf(itemId: string): string {
+  return Array.from(utf8.encode(itemId), b => b.toString(16).padStart(2, '0')).join('');
+}
 
 /**
  * The commands that match the `/` draft, as a listbox the draft field points at: no row takes focus. A pointer down on a

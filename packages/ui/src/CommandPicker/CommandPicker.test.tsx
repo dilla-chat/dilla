@@ -37,6 +37,16 @@ describe('CommandList', () => {
     expect(screen.getByRole('option', { name: /^\/reminders list,/ })).not.toHaveAttribute('aria-disabled');
   });
 
+  it('gives every name its own option id: "a b" and "a-b" differ (N4)', () => {
+    expect(commandOptionId('cmds', 'a b')).not.toBe(commandOptionId('cmds', 'a-b'));
+    render(<CommandList id="cmds" items={[{ ...ITEMS[0], id: 'a b', name: 'a b' }, { ...ITEMS[1], id: 'a-b', name: 'a-b' }]} activeId="a-b" showHint
+      labels={LABELS} query="/a" onActive={() => {}} onPick={() => {}} onSendAsText={() => {}} />);
+    const ids = screen.getAllByRole('option').map(row => row.id);
+    expect(new Set(ids).size).toBe(2);
+    expect(screen.getByRole('listbox')).toHaveAttribute('aria-activedescendant', commandOptionId('cmds', 'a-b'));
+    expect(document.getElementById(commandOptionId('cmds', 'a-b'))).toHaveAccessibleName(/^\/a-b,/);
+  });
+
   it('offers "Send as text" when nothing matches', () => {
     const onSendAsText = vi.fn();
     render(<CommandList id="cmds" items={[]} activeId={null} showHint labels={LABELS} query="/xyz" onActive={() => {}} onPick={() => {}} onSendAsText={onSendAsText} />);

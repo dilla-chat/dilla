@@ -123,6 +123,11 @@ pub(super) fn verify_publication(
         Some(_) => return Ok(Err(E_CREDENTIAL)),
         None => return Ok(Err(E_DEVICE_LIST_STALE)),
     }
+    // A pinned push that did not reach the Bot's signed head (`bot_device_list_pin` state 2): a device revoked in the
+    // unreached head must not sign an accepted key, so nothing verifies until a push reaches it.
+    if behind_head(c, bot_user_id)?.is_some() {
+        return Ok(Err(E_DEVICE_LIST_STALE));
+    }
     let list = match trust::trusted_list(c, bot_user_id)? {
         Ok(list) => list,
         Err(code) => return Ok(Err(code)),
@@ -131,6 +136,30 @@ pub(super) fn verify_publication(
         return Ok(Err(E_DEVICE_LIST_STALE));
     }
     Ok(p.verify(&list, now).map(|()| p).map_err(refusal_code))
+}
+
+/// `app_meta` key of a Bot user's behind mark: the signed head version a pinned push showed but did not reach.
+fn behind_key(user: &[u8; 16]) -> String {
+    let hex: String = user.iter().map(|b| format!("{b:02x}")).collect();
+    format!("bot_behind/v1/{hex}")
+}
+
+/// The head a Bot user is behind on, if any.
+fn behind_head(c: &rusqlite::Connection, user: &[u8; 16]) -> Result<Option<u64>, StorageError> {
+    use rusqlite::OptionalExtension;
+    let raw: Option<Vec<u8>> = c
+        .query_row(
+            "SELECT v FROM app_meta WHERE k=?1",
+            [behind_key(user)],
+            |r| r.get(0),
+        )
+        .optional()?;
+    raw.map(|v| {
+        <[u8; 8]>::try_from(v.as_slice())
+            .map(u64::from_be_bytes)
+            .map_err(|_| StorageError::Codec("app_meta bot_behind is malformed".into()))
+    })
+    .transpose()
 }
 
 impl ClientCore {
@@ -188,7 +217,35 @@ impl ClientCore {
                 ));
             }
         }
-        let (state, version) = match self.ingest_device_list(bot_user_id, push, now)? {
+        let outcome = self.ingest_device_list(bot_user_id, push, now)?;
+        // State 2 is recorded (fix round 2, N2): until a push reaches the signed head it showed, `verify_publication`
+        // refuses. A push the cache vouches for clears a mark it reached; a held key change leaves the mark as it is.
+        let key = behind_key(bot_user_id);
+        let mark: Option<(u64, bool)> = match outcome {
+            trust::PushedList::Current { version, .. } => Some((version, false)),
+            trust::PushedList::Behind { head, .. } => Some((head, true)),
+            trust::PushedList::Held { .. } => None,
+        };
+        if let Some((at, behind)) = mark {
+            self.write(|_, u| {
+                u.with_conn(|c| {
+                    let held = behind_head(c, bot_user_id)?;
+                    if behind {
+                        if held.is_none_or(|h| h < at) {
+                            c.execute(
+                                "INSERT INTO app_meta(k,v) VALUES(?1,?2) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                                rusqlite::params![key, at.to_be_bytes().to_vec()],
+                            )?;
+                        }
+                    } else if held.is_some_and(|h| h <= at) {
+                        c.execute("DELETE FROM app_meta WHERE k=?1", [&key])?;
+                    }
+                    Ok(())
+                })
+                .map_err(ClientError::from)
+            })?;
+        }
+        let (state, version) = match outcome {
             trust::PushedList::Current { version, .. } => (0u64, version),
             trust::PushedList::Held { version, .. } => (1, version),
             trust::PushedList::Behind { version, .. } => (2, version),
