@@ -280,6 +280,10 @@ type child struct {
 	cmd     *exec.Cmd
 	exited  chan struct{}
 	waiting bool // a wait is pending: one per child
+
+	// reaped makes the reap happen once: a pending wait and killAll at keeper shutdown may both reach it.
+	reaped   sync.Once
+	exitText string
 }
 
 func newChildren(cfg KeeperConfig) *children { return &children{cfg: cfg, m: map[int]*child{}} }
@@ -405,13 +409,17 @@ func (c *children) wait(pid int) string {
 	return exit
 }
 
-// reap collects the exit status (os/exec's Wait) and describes it.
+// reap collects the exit status (os/exec's Wait) once and describes it; later calls answer the same text.
 func (ch *child) reap() string {
-	_ = ch.cmd.Wait()
-	if ch.cmd.ProcessState == nil {
-		return "unknown exit"
-	}
-	return ch.cmd.ProcessState.String()
+	ch.reaped.Do(func() {
+		_ = ch.cmd.Wait()
+		if ch.cmd.ProcessState == nil {
+			ch.exitText = "unknown exit"
+			return
+		}
+		ch.exitText = ch.cmd.ProcessState.String()
+	})
+	return ch.exitText
 }
 
 // killAll ends every child: the keeper is going away, and so does what it started.
