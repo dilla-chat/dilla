@@ -45,6 +45,10 @@ const (
 	// Bot v2: one HTTP-shaped app request over the socket (client to server) and its answer (server to client).
 	OpRequest  Opcode = 59
 	OpResponse Opcode = 60
+	// Bot v2 tasks 10 and 12: a member's sealed command and the Bot's event feed, on the Bot runtime's connection only.
+	// Both are sequenced in its ring; a cold-start snapshot's op 65 body frames are sent with n = 0.
+	OpBotCommand Opcode = 64
+	OpBotEvent   Opcode = 65
 )
 
 const (
@@ -252,6 +256,9 @@ type Frame struct {
 	CommunityID      *id.ID
 	ServerTimestamp  *uint64
 	ErrorCode        string
+	// BotPayload is an op 64 or op 65 frame's payload elements, shape-checked only: op 64 is [request_id, community_id,
+	// user_id, device_id, sealed], op 65 is [kind, payload]. Their consumers decode them.
+	BotPayload []cbor.RawMessage
 }
 
 // DecodeServerFrame applies deterministic CBOR, direction, shape, and scope checks
@@ -291,7 +298,8 @@ func DecodeServerFrame(raw []byte, maxBytes uint64) (Frame, error) {
 	if grouped != (out.GroupID != nil) {
 		return Frame{}, ErrProtocol
 	}
-	if replayable && out.N == 0 || !replayable && out.N != 0 {
+	// Op 65 is the one opcode with both forms: ringed live, unringed inside a cold-start snapshot.
+	if out.Op != OpBotEvent && (replayable && out.N == 0 || !replayable && out.N != 0) {
 		return Frame{}, ErrProtocol
 	}
 	bad := func() (Frame, error) { return Frame{}, ErrProtocol }
@@ -671,6 +679,8 @@ func DecodeServerFrame(raw []byte, maxBytes uint64) (Frame, error) {
 			return bad()
 		}
 		out.CommunityID = &v
+	case OpBotCommand, OpBotEvent:
+		out.BotPayload = payload
 	default:
 		return bad()
 	}
@@ -719,6 +729,10 @@ func serverSpec(op Opcode) (int, bool, bool, bool) {
 		return 5, false, false, true
 	case OpCommunityChanged:
 		return 1, false, false, true
+	case OpBotCommand:
+		return 5, false, true, true
+	case OpBotEvent:
+		return 2, false, true, true
 	}
 	return 0, false, false, false
 }

@@ -434,12 +434,10 @@ group+target_seq required and target_user optional; other actions require target
 group+target_seq null. Timeout requires expires>timestamp; other actions expires
 null except ban may have expires>timestamp. Identifiers and metadata only: no
 message text, reasons, excerpts, names, URLs. Max encoded event4096 bytes.
-Validate community separately against route/session binding. Stream retention30d;
-ack semantics and pagination handled by API. Event id survives retries. A human signed-device-list
-publication appends kind 8 in the same transaction as the new list, once for each of the user's
-current community memberships; the event contains only the account ID
-and accepted list version, never device keys or list contents. The Bot resolves the current member
-episode from the community before using the event to enqueue device registration.
+Validate community separately against route/session binding. Event id survives retries. Since Bot
+v2 task 12 no route serves these records to the Bot and they are no longer pruned; a signed-device-list
+publication appends none (kind 8 is retired), and the Bot learns device lists, members, roles and
+Bot channels from the op 65 `bot_event` feed (`02` § Bot runtime) instead.
 
 ## Send receipt
 
@@ -1397,20 +1395,14 @@ remain one exclusive server operation.
 
 | Method and path | Auth | Request | Response |
 | --- | --- | --- | --- |
-| `GET /v1/communities/{community}/bot/events?after=N&limit=L` | B | — | `[events, next_seq, high_water, floor]` |
-| `PUT /v1/communities/{community}/bot/events/ack` | B | `[through]` | 204 |
 | `GET /v1/communities/{community}/bot/receipts/{operation}?attempt=ID` | B | — | send receipt or 404 |
 | `POST /v1/communities/{community}/bot/receipts/{operation}/resolve` | B | `[attempt_id,predecessor_attempt_id\|null,group_id,expected_generation,epoch,class,ciphertext_sha256]` | send receipt |
 | `POST /v1/groups/{group}/bot/messages` | B | `[operation_id,attempt_id,predecessor_attempt_id\|null,expected_generation,epoch,private_message,class]` | send receipt |
 
-L defaults to 100 and is at most 250; each page also stays below 1 MiB. Sequence
-values admitted to SQL are at most signed-int64 max; overflow refuses, never wraps.
-Events and their community sequence increments commit with the structural change.
-Gateway opcode54 remains a wakeup; recovery always polls this stream. `after` is
-exclusive. A cursor below the retained floor returns `410 E_PRUNED` with the floor
-and high-water. Reconcile current membership/configuration, report the gap and
-avoid inventing historical welcomes. Ack is monotone and cannot exceed the
-published high-water; consumer commits progress locally before acknowledging.
+The structural-event stream's read and acknowledgement routes are gone (Bot v2 task 12): the Bot
+learns its community's device lists, members, roles, channel groups and Bot channels from the
+gateway's op 65 `bot_event` feed on its own connection (`02` § Bot runtime), which resumes from the
+Bot's last acknowledged `n` and starts with a snapshot on every identify.
 
 ### Send attempts and resolution
 

@@ -72,6 +72,20 @@ type conn struct {
 	ring   *ring
 	writer *writer
 	gw     *Gateway
+
+	// The Bot runtime connection's feed state (Bot v2 task 12, bot_feed.go). botInstallation and
+	// botCommunity are its session's binding. botSnapshot is set when a cold-start snapshot is owed on
+	// this connection, and botSnapshotEnd is the n of its ringed snapshot_end once sent: a resume is
+	// accepted only from an ack at or above it. While botHolding, DeliverBot's frames wait in
+	// botPending (a snapshot or a resume is in progress); botOverflow records that more waited than
+	// botPendingCap, and botDead that the connection can never be fed again.
+	botInstallation, botCommunity id.ID
+	botSnapshot                   bool
+	botSnapshotEnd                uint64
+	botHolding                    bool
+	botPending                    []Frame
+	botOverflow                   bool
+	botDead                       bool
 }
 
 // denyResume marks the connection dead for resume purposes. It is called before the socket is
@@ -102,6 +116,11 @@ func (c *conn) currentWriter() *writer {
 func (c *conn) send(f Frame) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.sendLocked(f)
+}
+
+// sendLocked is send with c.mu already held.
+func (c *conn) sendLocked(f Frame) {
 	var n uint64
 	if f.Replay {
 		c.n++
@@ -132,6 +151,11 @@ func (c *conn) hold(f Frame) bool {
 	if c.state != stateClosed || c.resuming || c.noResume || !f.Replay {
 		return false
 	}
+	return c.holdLocked(f)
+}
+
+// holdLocked is hold's ringing, with c.mu held and the state already checked.
+func (c *conn) holdLocked(f Frame) bool {
 	c.n++
 	b, err := Encode(f, c.n)
 	if err != nil {
@@ -227,6 +251,11 @@ func (c *conn) tryResumeSnapshot(token []byte, generation, lastN, current uint64
 	}
 	entries := c.ring.entriesSince(lastN)
 	c.resuming = true
+	// A Bot connection's frames from here until the replay is queued wait in botPending
+	// (flushBotPending), instead of being lost between the snapshot and the connection going live.
+	if c.isBot {
+		c.botHolding = true
+	}
 	return resumeOutcome{from: lastN + 1, to: c.n, entries: entries}, nil
 }
 
@@ -625,9 +654,17 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	if session.Bot != nil && (c.wire != auth.WireVersion || session.WireVersion != auth.WireVersion) {
 		return refuse("managed bot wire capability is not resumable; identify again")
 	}
+	// A Bot that has not acknowledged the whole cold-start snapshot identifies again, which streams a
+	// fresh one (Bot v2 task 12): the snapshot's body frames are not ringed.
+	if !c.botSnapshotAcked(lastN) {
+		g.suspended.Delete(string(token))
+		g.bots.drop(c)
+		return refuse("the Bot's snapshot is incomplete; identify again")
+	}
 	out, err := c.tryResumeSnapshot(token, generation, lastN, g.Generation())
 	if err != nil {
 		g.suspended.Delete(string(token))
+		g.bots.drop(c)
 		return refuse("resume window elapsed or n below the ring floor")
 	}
 	// Replay is all-or-nothing: skipping a newly blocked entry would create an n hole and hide
@@ -638,6 +675,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 		requiresWire3, scopeErr := g.scopeRequiresWire3(ctx, entry.scope)
 		if scopeErr != nil || (requiresWire3 && originalWire < auth.WireVersion) {
 			g.suspended.Delete(string(token))
+			g.bots.drop(c)
 			return refuse("replay scope is no longer resumable; identify again")
 		}
 		out.frames = append(out.frames, entry.bytes)
@@ -649,6 +687,11 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 		c.mu.Lock()
 		c.resuming = false
 		c.mu.Unlock()
+		// And the Bot frames that waited during the attempt go into its ring, in order.
+		if !c.parkBotPending() {
+			g.suspended.Delete(string(token))
+			g.bots.drop(c)
+		}
 		return refuse("session capability persistence failed")
 	}
 
@@ -664,11 +707,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	c.requests = newRequestBudget()
 	c.remoteAddr = remoteAddrFrom(ctx)
 	// Paused until the connection is live again, as on identify: see newPausedWriter.
-	c.writer = newPausedWriter(s, writerLimits{
-		Frames:   g.opts.QueueFrames,
-		Bytes:    g.opts.QueueBytes,
-		Deadline: g.opts.WriteDeadline,
-	}, g.opts.Clock, g.opts.Log)
+	c.writer = newPausedWriter(s, g.writerLimitsFor(c.isBot), g.opts.Clock, g.opts.Log)
 	w := c.writer
 	c.mu.Unlock()
 
@@ -677,6 +716,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	// answers what it reads here, so a stale read would leave it holding the spent token.
 	if err := g.rotateResume(c); err != nil {
 		w.stop()
+		g.bots.drop(c)
 		s.close(CloseUnknown, "rotate")
 		return nil, false
 	}
@@ -687,6 +727,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	p, err := resumedPayload(out.from, out.to, c.resumeToken())
 	if err != nil {
 		w.stop()
+		g.bots.drop(c)
 		s.close(CloseUnknown, "resumed")
 		return nil, false
 	}
@@ -694,6 +735,13 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	g.sendAppBuild(c)
 	for _, frame := range out.frames {
 		w.enqueueRaw(frame)
+	}
+	// A Bot connection's frames that arrived during the resume follow the replay, on the next n.
+	if !c.flushBotPending() {
+		w.stop()
+		g.bots.drop(c)
+		s.close(CloseUnknown, "bot feed overflow during the resume")
+		return nil, false
 	}
 	// Only now does the connection go back into the live registry. Publishing it before `resumed`
 	// and the replay are on the writer lets a concurrent fan-out land ahead of `resumed` or in

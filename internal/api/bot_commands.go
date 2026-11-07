@@ -54,8 +54,8 @@ const (
 
 // BotRelayGateway is what the relay needs of the gateway. *gateway.Gateway is one.
 type BotRelayGateway interface {
-	// DeliverBot hands op 64 to the Bot runtime's live connections of the device, and reports
-	// whether any received it.
+	// DeliverBot hands op 64 to the Bot runtime's connections of the device (live, or in its resume
+	// window: the frame is ringed, Task 12), and reports whether any took it.
 	DeliverBot(deviceID id.ID, f gateway.Frame) bool
 	DeliverDevice(deviceID id.ID, f gateway.Frame)
 	DeliverUser(userID id.ID, f gateway.Frame)
@@ -361,7 +361,9 @@ func (d Deps) PostBotCommand(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeInternal, "encode"))
 		return
 	}
-	if !d.BotRelay.DeliverBot(*installation.DeviceID, gateway.Frame{Op: gateway.OpBotCommand, Payload: payload}) {
+	// Sequenced in the Bot connection's ring (Task 12): a Bot whose socket is down inside its resume
+	// window gets the command on resume, so it counts as delivered.
+	if !d.BotRelay.DeliverBot(*installation.DeviceID, gateway.Frame{Op: gateway.OpBotCommand, Payload: payload, Replay: true}) {
 		if inserted {
 			d.BotRequests.forget(requestID, s.DeviceID)
 		}

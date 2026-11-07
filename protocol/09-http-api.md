@@ -381,8 +381,6 @@ permission checks still apply.
 | `PUT /v1/bot-runtime/communities/{community}/command-key` | B (ready, path community) | the signed command-key publication | `204`; `403` unless the installation's listed, unrevoked device signed it; `400` for another community or a `not_after` past or more than 8 days ahead; a new `key_id` bumps the catalog revision and pushes op 61 |
 | `POST /v1/bot-runtime/replies` | B (ready, own community) | `[device_id, request_id, seq, sealed, final]` (`10` § Sealed command relay, replies and state hints) | `204`; gateway op 62 to that device only; `404` unless that device sent the request into the Bot's community in the last five minutes; `413 E_TOO_LARGE` past 16 replies or 256 KiB for the request |
 | `POST /v1/bot-runtime/state-hints` | B (ready, own community) | `[scope_kind, scope_id]` | `[revision]`; gateway op 63 to the scope's audience only; `404` for a scope outside the Bot's community or a channel that is not a Bot channel |
-| `GET /v1/communities/{community}/bot/events?after=N&limit=L` | B | — | `[events, next_seq, high_water, floor]`; `after` is exclusive, default limit 100, maximum 250 |
-| `PUT /v1/communities/{community}/bot/events/ack` | B | `[through]` | `204` |
 | `POST /v1/groups/{group}/moderation/removals` | E or B | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |
 | `GET /v1/groups/{group}/moderation/removals?after=N&limit=L` | E or B | — | `[removal_rows, next_revision]` |
 | `GET /v1/communities/{id}/self-roles` | E (community member) | — | `[[role_id, role_name, position, selected(uint)]]` |

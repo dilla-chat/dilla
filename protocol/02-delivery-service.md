@@ -587,19 +587,51 @@ community it does not list. A client that predates op 55 ignores it as an unknow
 server-to-client opcode in this range. Sent by a client, any op 55 is `E_FRAME_TYPE` at the
 instance.
 
-### Bot runtime (64–79) — wire 6, `n = 0`
+### Bot runtime (64–79) — wire 6, sequenced in the Bot connection's ring
 
 | op | label | dir | payload |
 |---|---|---|---|
-| 64 | `bot_command` | S→C, Bot runtime connection only | `[request_id(bstr 16), community_id(bstr 16), user_id(bstr 16), device_id(bstr 16), sealed(bstr)]` |
+| 64 | `bot_command` | S→C, Bot runtime connection only, `n ≠ 0` | `[request_id(bstr 16), community_id(bstr 16), user_id(bstr 16), device_id(bstr 16), sealed(bstr)]` |
+| 65 | `bot_event` | S→C, Bot runtime connection only, `n ≠ 0` live, `n = 0` inside a cold-start snapshot | `[kind(uint), payload(array)]` |
 
-`bot_command` carries a member's sealed command to the Bot runtime's own connection (a session
-bound to the community's ready installation, on the installation's device), never to a human
-connection. `user_id` and `device_id` are the sending connection's authenticated session. It is
-not replayed: with no live Bot runtime connection the sender is answered `503 E_BOT_OFFLINE`, and
-an unanswered command is retried by the client with the same `request_id`.
+Both reach only the Bot runtime's own connection (a session bound to the community's installation, on
+the installation's device), never a human connection, and both are sequenced in that connection's
+replay ring. A Bot whose socket dropped resumes from its last acknowledged `n` and is replayed the
+gap in order, commands and events interleaved as they were sent. A frame for a Bot connection that
+is parked in the resume window is held in its ring for the resume; one that arrives while a resume
+or a cold-start snapshot is in progress is sent right after it. The Bot connection has its own ring
+and writer queue (4096 frames and 16 MiB, 1024 frames and 8 MiB by default); every user connection
+keeps its own budget unchanged.
 
-Opcodes 65–127 are reserved for future `wire_version`s; 128 and above are never used. An opcode
+`bot_command` carries a member's sealed command; `user_id` and `device_id` are the sending
+connection's authenticated session. With no Bot runtime connection, live or in its resume window, the
+sender is answered `503 E_BOT_OFFLINE`; an unanswered command is retried by the client with the same
+`request_id`.
+
+`bot_event` is the Bot's event feed. Everything in it is about the installation's own community, and
+it is emitted only after the change committed. The kinds:
+
+| kind | label | payload |
+|---|---|---|
+| 1 | `device_list` | `[user_id, push(bstr)]`: `push` is a `device_list_push` body (`10` § Helper payloads, op 24), the user's account key, its certificate over the self-signing key, and the whole signed list history from version 1, at most 1024 rows. Sent for a current member of the community only: when the list changes, when the user joins, and in the snapshot. |
+| 2 | `member` | `[community_id, user_id, joined(uint 0\|1), role_ids(array of bstr 16)]`: a join or a change of the member's roles is `joined = 1` with the current role ids; a leave, kick or ban is `joined = 0` with no roles. |
+| 3 | `role` | `[community_id, role_id, [allow(uint), deny(uint), position(uint)], deleted(uint 0\|1)]` |
+| 4 | `channel_group` | `[community_id, channel_id, group_id, epoch(uint)]`: a committed epoch of a Bot channel's text group, or of a call group the Bot's device is a member of |
+| 5 | `bot_channel` | `[community_id, channel_id, marked(uint 0\|1)]` |
+| 6 | `snapshot_begin` | `[community_id]` |
+| 7 | `snapshot_end` | `[community_id]` |
+| 8 | `community` | `[community_id, owner_user_id]`: the owner, who holds every permission |
+
+On a Bot identify (not a resume) the instance streams a cold-start snapshot: `snapshot_begin`, then
+the device list of every member, every member, every role, the owner and every Bot channel, then
+`snapshot_end`. It is one pass per Bot start, never per command or on a timer. The body frames are
+sent with `n = 0` and are not ringed; `snapshot_end` is ringed. A Bot connection may resume only from
+an `n` at or above its `snapshot_end`: a drop before it is answered `invalid_session` on resume, and
+the Bot's next identify streams a fresh snapshot. Live commands and events that arrive while the
+snapshot streams follow `snapshot_end`. A device list whose push would exceed 1 MiB, or whose history
+exceeds 1024 versions, is left out and counted (`dilla_bot_feed_skipped_total`).
+
+Opcodes 66–127 are reserved for future `wire_version`s; 128 and above are never used. An opcode
 outside the negotiated `wire_version` is a hard error (`E_FRAME_TYPE`), never ignored. A frame of
 the wrong element count for its opcode is `E_FRAME_SHAPE`; a frame that fails the deterministic
 decoder is `E_FRAME_CBOR`; a frame over `max_frame_bytes` is `E_FRAME_LIMIT`. A client frame whose

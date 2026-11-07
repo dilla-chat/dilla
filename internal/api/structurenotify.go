@@ -24,6 +24,25 @@ type StructureNotifier struct {
 	gw   VoiceGateway
 	repo store.Repository
 	log  *slog.Logger
+	// feed hears every community change too (Bot v2 task 12): the Bot's event feed diffs its
+	// community's members, roles and owner. Nil tells nobody.
+	feed BotFeedHooks
+}
+
+// WithBotFeed sets the Bot's event feed, which hears each community change after its commit, and
+// returns n.
+func (n *StructureNotifier) WithBotFeed(f BotFeedHooks) *StructureNotifier {
+	if n != nil {
+		n.feed = f
+	}
+	return n
+}
+
+// toFeed tells the Bot's event feed that cid changed.
+func (n *StructureNotifier) toFeed(cid id.ID) {
+	if n != nil && n.feed != nil {
+		n.feed.CommunityChanged(cid)
+	}
 }
 
 // NewStructureNotifier delivers through gw (*gateway.Gateway is one) to the members repo lists.
@@ -44,6 +63,7 @@ func (n *StructureNotifier) frame(ctx context.Context, cid id.ID) (gateway.Frame
 // Changed sends community_changed for cid to every member. A failure is logged, not answered: the
 // change is committed, and a client that missed the frame still re-reads on focus and on reconnect.
 func (n *StructureNotifier) Changed(ctx context.Context, cid id.ID) {
+	n.toFeed(cid)
 	if n == nil || n.gw == nil {
 		return
 	}
@@ -52,13 +72,14 @@ func (n *StructureNotifier) Changed(ctx context.Context, cid id.ID) {
 		n.log.ErrorContext(ctx, "listing members for community_changed failed", "community", cid, "err", err)
 		return
 	}
-	n.ChangedTo(ctx, cid, users)
+	n.changedTo(ctx, cid, users)
 }
 
 // Removed sends community_changed for cid once to every live connection of uid, a user a leave,
 // kick or ban has just removed: they knew the community until this commit, and the frame tells
 // them to re-read their list, which no longer names it.
 func (n *StructureNotifier) Removed(ctx context.Context, cid, uid id.ID) {
+	n.toFeed(cid)
 	if n == nil || n.gw == nil {
 		return
 	}
@@ -81,6 +102,12 @@ func (n *StructureNotifier) ChangedUser(ctx context.Context, cid, uid id.ID) {
 // ChangedTo sends community_changed for cid to users, a list the caller already read: a deleted
 // community's members, listed inside the delete's transaction before the tombstone.
 func (n *StructureNotifier) ChangedTo(ctx context.Context, cid id.ID, users []id.ID) {
+	n.toFeed(cid)
+	n.changedTo(ctx, cid, users)
+}
+
+// changedTo is ChangedTo without telling the feed, for Changed, which told it already.
+func (n *StructureNotifier) changedTo(ctx context.Context, cid id.ID, users []id.ID) {
 	if n == nil || n.gw == nil {
 		return
 	}

@@ -90,9 +90,15 @@ const (
 	OpBotStateChanged Op = 63
 	// OpBotCommand carries a member's sealed command to the Bot runtime's connection, with the
 	// identity dillad authenticated (Bot v2 task 10): [request_id, community_id, user_id, device_id,
-	// sealed]. Wire 6 opens 64 from the reserved range for it. Not replayed: an unanswered command
-	// is retried by the client with the same request_id.
+	// sealed]. Wire 6 opens 64 from the reserved range for it. Since Task 12 it is sequenced in the
+	// Bot connection's ring like op 65, so a resume from the Bot's last ack replays a command sent
+	// while its socket was down; a command that still goes unanswered is retried by the client with
+	// the same request_id.
 	OpBotCommand Op = 64
+	// OpBotEvent is the Bot's event feed (Bot v2 task 12): [kind, payload], on the Bot runtime's
+	// connection only. A live event is sequenced in the Bot connection's ring; a cold-start
+	// snapshot's body frames are sent with n = 0 and closed by a ringed snapshot_end (BotStream).
+	OpBotEvent Op = 65
 )
 
 // BotReplyHold bounds how long a suspended connection's ring holds an op 62 reply: the spec's
@@ -190,11 +196,13 @@ var opSpecs = map[Op]opSpec{
 	// [community_id, revision, filtered_catalog, publication|null]. Server-to-client, so a client
 	// op 61 is E_FRAME_TYPE at the opcode check.
 	OpBotCatalog: {elements: 4},
-	// Bot v2 task 10. All three are server-to-client, so a client op 62, 63 or 64 is E_FRAME_TYPE
-	// at the opcode check. 62 is replayable (with its own two-minute hold), 63 and 64 are not.
+	// Bot v2 tasks 10 and 12. All four are server-to-client, so a client op 62, 63, 64 or 65 is
+	// E_FRAME_TYPE at the opcode check. 62 is replayable (with its own two-minute hold), 63 is not;
+	// 64 and 65 are replayable on the Bot runtime's connection, the only one they reach.
 	OpBotReply:        {elements: 4, replayable: true},
 	OpBotStateChanged: {elements: 3},
-	OpBotCommand:      {elements: 5},
+	OpBotCommand:      {elements: 5, replayable: true},
+	OpBotEvent:        {elements: 2, replayable: true},
 }
 
 // FrameError is a structured refusal. Code is the E_FRAME_* string the client sees in an error

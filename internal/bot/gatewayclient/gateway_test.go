@@ -157,3 +157,38 @@ func TestTheAppBuildNoticeIsDroppedNotAProtocolError(t *testing.T) {
 		t.Fatal("app_build is not dropped; the read loop ends the socket with a protocol error")
 	}
 }
+
+// Bot v2 Task 12: op 64 bot_command and op 65 bot_event reach the Bot runtime's connection. Op 64 is
+// ringed (n != 0); op 65 is ringed live and unringed (n = 0) inside a cold-start snapshot. The client
+// decodes both and hands them to its consumer, which acknowledges the ringed ones in order (the op 65
+// consumer itself is Task 14's). Before this, either opcode ended the socket as a protocol error.
+func TestBotCommandAndBotEventFramesDecode(t *testing.T) {
+	id16 := make([]byte, 16)
+	for _, tc := range []struct {
+		name    string
+		op      Opcode
+		n       uint64
+		payload []any
+		ok      bool
+	}{
+		{"ringed bot_command", OpBotCommand, 3, []any{id16, id16, id16, id16, []byte{0x85}}, true},
+		{"unringed bot_command", OpBotCommand, 0, []any{id16, id16, id16, id16, []byte{0x85}}, false},
+		{"ringed bot_event", OpBotEvent, 4, []any{uint64(2), []any{id16, id16, uint64(1), []any{}}}, true},
+		{"snapshot bot_event", OpBotEvent, 0, []any{uint64(6), []any{id16}}, true},
+		{"bot_event of three elements", OpBotEvent, 4, []any{uint64(2), []any{}, uint64(0)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := cborx.Marshal([]any{uint64(tc.op), tc.n, nil, tc.payload})
+			if err != nil {
+				t.Fatal(err)
+			}
+			f, err := DecodeServerFrame(raw, 197120)
+			if (err == nil) != tc.ok {
+				t.Fatalf("decode err %v, want ok %v", err, tc.ok)
+			}
+			if tc.ok && (f.Op != tc.op || f.N != tc.n || len(f.BotPayload) != len(tc.payload)) {
+				t.Fatalf("decoded %+v", f)
+			}
+		})
+	}
+}

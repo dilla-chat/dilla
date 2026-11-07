@@ -195,6 +195,9 @@ type Deps struct {
 	// BotChannelEvents hears Bot-channel marks and unmarks after they commit (Bot v2 Task 9; Task 12's
 	// Bot feed implements it). Nil is NoBotChannelEvents.
 	BotChannelEvents BotChannelEvents
+	// BotFeed hears, after the commit, a device-list publish (Bot v2 Task 12): the Bot's event feed
+	// pushes the user's list to the Bot of each community they share with one. Nil tells nobody.
+	BotFeed BotFeedHooks
 	// BotRelay carries sealed commands to the Bot runtime's connection, the Bot's sealed replies to
 	// the requesting device and its state hints to their scope (Bot v2 Task 10). Nil relays nothing:
 	// a command is 503 E_BOT_OFFLINE, a reply 404.
@@ -266,7 +269,6 @@ func Register(m *server.Mux, d Deps) {
 	registerBotChannels(m, d)
 	registerBotCommands(m, d)
 	registerAutoModerationGrants(m, d)
-	registerBotStructuralEvents(m, d)
 	registerModerationRemovals(m, d)
 
 	// Unauthenticated. The invite landing page and the two registration routes

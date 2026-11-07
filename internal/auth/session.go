@@ -1512,8 +1512,7 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		return communityPathForBot(ctx, s.repo, bot)
 	case "POST /v1/groups/{group}/bot/messages":
 		return interactionSendGroupPath()
-	case "GET /v1/communities/{community}/bot/events", "PUT /v1/communities/{community}/bot/events/ack",
-		"GET /v1/communities/{community}/bot/receipts/{operation}",
+	case "GET /v1/communities/{community}/bot/receipts/{operation}",
 		"POST /v1/communities/{community}/bot/receipts/{operation}/resolve",
 		"POST /v1/groups/{group}/moderation/removals",
 		"GET /v1/groups/{group}/moderation/removals", "GET /v1/communities/{community}/moderation/actions":

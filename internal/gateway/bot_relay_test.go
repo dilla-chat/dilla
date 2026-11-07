@@ -134,11 +134,7 @@ func TestReplyGoesOnlyToTheRequestingDeviceConnections(t *testing.T) {
 func TestRelayDeliversACommandOnlyToTheBotConnection(t *testing.T) {
 	h := newHarness(t)
 	botDevice, humanDevice := id.New(), id.New()
-	bot := h.connect(t, botDevice)
-	h.drainReady(t, bot)
-	bot.mu.Lock()
-	bot.isBot = true
-	bot.mu.Unlock()
+	bot, _ := h.finishedBot(t, botDevice)
 	human := h.connect(t, humanDevice)
 	h.drainReady(t, human)
 
@@ -146,12 +142,13 @@ func TestRelayDeliversACommandOnlyToTheBotConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := Frame{Op: OpBotCommand, Payload: p}
+	// Task 12: op 64 is sequenced in the Bot connection's ring, so a resume replays it.
+	f := Frame{Op: OpBotCommand, Payload: p, Replay: true}
 	if !h.gw.DeliverBot(botDevice, f) {
 		t.Fatal("DeliverBot to a live Bot connection reported offline")
 	}
-	if in := h.waitFrame(t, botDevice); in.Op != OpBotCommand || in.CID != 0 {
-		t.Fatalf("Bot got op %d n %d, want bot_command n 0", in.Op, in.CID)
+	if in := h.waitFrame(t, botDevice); in.Op != OpBotCommand || in.CID != 3 {
+		t.Fatalf("Bot got op %d n %d, want bot_command n 3", in.Op, in.CID)
 	}
 	// A device whose connections are not Bot runtime sessions is no Bot, and nothing is sent.
 	if h.gw.DeliverBot(humanDevice, f) {
@@ -161,10 +158,16 @@ func TestRelayDeliversACommandOnlyToTheBotConnection(t *testing.T) {
 	if h.gw.DeliverBot(id.New(), f) {
 		t.Fatal("DeliverBot to a device with no connection reported delivered")
 	}
-	// A suspended Bot connection is offline.
+	// A suspended Bot connection holds the command for its resume.
 	h.gw.suspend(bot)
+	if !h.gw.DeliverBot(botDevice, f) {
+		t.Fatal("DeliverBot to a suspended Bot connection was not held")
+	}
+	// Once the resume window has passed, the Bot is offline.
+	h.clk.Advance(h.gw.opts.ResumeWindow + time.Second)
+	h.gw.sweepSuspended()
 	if h.gw.DeliverBot(botDevice, f) {
-		t.Fatal("DeliverBot to a suspended Bot connection reported delivered")
+		t.Fatal("DeliverBot to an expired Bot connection reported delivered")
 	}
 }
 

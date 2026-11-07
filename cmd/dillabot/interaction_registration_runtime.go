@@ -36,19 +36,6 @@ func interactionRegistrationEventHandler(installation id.ID, stage interactionRe
 	}
 }
 
-func newInteractionRegistrationHandler(coordinator *service.InteractionRegistrationCoordinator, installation id.ID, resolver interactionRegistrationEpisodeResolver) (service.StructuralEventHandler, error) {
-	if coordinator == nil || installation.IsZero() || resolver == nil {
-		return nil, errors.New("missing interaction registration coordinator")
-	}
-	stage := func(ctx context.Context, user, episode id.ID) error {
-		return coordinator.QueueMemberJoin(ctx, user, episode)
-	}
-	return composeStructuralEventHandlers(
-		interactionRegistrationEventHandler(installation, stage),
-		interactionRegistrationDeviceListEventHandler(installation, resolver, stage),
-	), nil
-}
-
 // interactionRegistrationDeviceListEventHandler turns a signed device-list
 // publication into a registration retry only when the user still has a current
 // membership episode in this community. The event carries no episode authority.
@@ -73,19 +60,5 @@ func interactionRegistrationDeviceListEventHandler(installation id.ID, resolver 
 			return errors.New("current member episode is empty")
 		}
 		return stage(ctx, user, episode)
-	}
-}
-
-func composeStructuralEventHandlers(handlers ...service.StructuralEventHandler) service.StructuralEventHandler {
-	return func(ctx context.Context, event protocol.Event) error {
-		for _, handler := range handlers {
-			if handler == nil {
-				continue
-			}
-			if err := handler(ctx, event); err != nil {
-				return err
-			}
-		}
-		return nil
 	}
 }

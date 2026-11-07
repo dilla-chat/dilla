@@ -597,74 +597,29 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							if err := gateways.SubscribeNativeGroups(ctx, installation.ID, nativeClient); err != nil {
 								logger.Warn("bot gateway native group discovery unavailable", "installation_id", installation.ID.String())
 							}
-							poller, pollerErr := service.NewStructuralEventPoller(nativeClient, service.StructuralEventPollerOptions{})
-							if pollerErr != nil {
-								ensureErr = pollerErr
+							// Bot v2 Task 12: the structural-event poller is gone with its routes; dillad pushes membership,
+							// roles, device lists and Bot channels as op 65 on this Bot's gateway connection, whose consumer
+							// is Task 14's. Interaction registration still stages from the current member list.
+							registration, registrationErr := service.NewInteractionRegistrationCoordinator(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, api, result.Session)
+							if registrationErr != nil {
+								ensureErr = registrationErr
+							} else if catchup, catchupErr := service.NewMemberRegistrationCatchup(nativeClient, service.MemberRegistrationCatchupOptions{}); catchupErr != nil {
+								ensureErr = catchupErr
 							} else {
-								handler, handlerErr := newWelcomeHandler(nativeClient, result.Session, api, installation.CommunityID, installation.ID, installation.Capabilities)
-								if handlerErr != nil {
-									ensureErr = handlerErr
+								members, membersErr := result.Session.CommunityMembers(installation.CommunityID)
+								if membersErr != nil {
+									logger.Info("bot interaction registration worker unavailable", "installation_id", installation.ID.String(), "stage", "member_lookup")
 								} else {
-									registration, registrationErr := service.NewInteractionRegistrationCoordinator(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, api, result.Session)
-									if registrationErr != nil {
-										ensureErr = registrationErr
-									} else if catchup, catchupErr := service.NewMemberRegistrationCatchup(nativeClient, service.MemberRegistrationCatchupOptions{}); catchupErr != nil {
-										ensureErr = catchupErr
-									} else if registrationMembers, registrationMembersErr := result.Session.CommunityMembers(installation.CommunityID); registrationMembersErr != nil {
-										ensureErr = registrationMembersErr
-									} else if registrationHandler, registrationHandlerErr := newInteractionRegistrationHandler(registration, installation.ID, registrationMembers); registrationHandlerErr != nil {
-										ensureErr = registrationHandlerErr
-									} else {
-										handler = composeStructuralEventHandlers(handler, registrationHandler)
-										pollResult, pollErr := drainStructuralEvents(ctx, func(pollCtx context.Context) (service.StructuralEventPollResult, error) {
-											return poller.PollOnce(pollCtx, result.Session, handler)
-										})
-										var gap *service.StructuralEventGapError
-										if errors.As(pollErr, &gap) {
-											recovery, recoveryErr := service.NewStructuralGapRecovery(nativeClient, 0)
-											if recoveryErr == nil {
-												var finished bool
-												finished, recoveryErr = finishStructuralGap(ctx, gap,
-													func(recoveryCtx context.Context, floor, highWater uint64) (service.StructuralGapRecoveryResult, error) {
-														return recovery.StageOnce(recoveryCtx, registrationMembers, registration, floor, highWater)
-													},
-													func(recoveryCtx context.Context, highWater uint64) error {
-														return poller.CompleteGapReconciliation(recoveryCtx, result.Session, highWater)
-													})
-												if finished {
-													pollErr = nil
-													pollResult.More = true // Poll events newer than the recovered snapshot next pass.
-													logger.Warn("bot structural event history reconciled from current members", "installation_id", installation.ID.String(), "high_water", gap.HighWater)
-												}
-											}
-											if recoveryErr != nil {
-												pollErr = recoveryErr
-											}
-										}
-										if pollErr != nil {
-											if !client.IsDeferred(pollErr) {
-												logger.Error("bot structural event dispatch paused", "installation_id", installation.ID.String(), "error", pollErr.Error())
-											}
-											ensureErr = pollErr
-										} else if pollResult.More {
-											logger.Info("bot structural event catch-up remains bounded", "installation_id", installation.ID.String(), "acknowledged_through", pollResult.AcknowledgedThrough)
-										}
-										members, membersErr := result.Session.CommunityMembers(installation.CommunityID)
-										if membersErr != nil {
-											logger.Info("bot interaction registration worker unavailable", "installation_id", installation.ID.String(), "stage", "member_lookup")
-										} else {
-											catchupResult, stageErr := catchup.StageOnce(ctx, members, registration)
-											if stageErr != nil {
-												logger.Info("bot member registration catch-up remains pending", "installation_id", installation.ID.String(), "error", stageErr.Error())
-											} else if catchupResult.More {
-												logger.Info("bot member registration catch-up remains bounded", "installation_id", installation.ID.String(), "members_visited", catchupResult.MembersVisited, "pages", catchupResult.Pages)
-											}
-											registration.WithLogger(logger).WithBackoff(registrationBackoff)
-											workErr := registration.ProcessPending(ctx, 4, 8, members, result.Session)
-											if registrationWorkReports.changed(installation.ID, workErr) {
-												logger.Info("bot interaction registration work remains pending", "installation_id", installation.ID.String(), "error", workErr.Error())
-											}
-										}
+									catchupResult, stageErr := catchup.StageOnce(ctx, members, registration)
+									if stageErr != nil {
+										logger.Info("bot member registration catch-up remains pending", "installation_id", installation.ID.String(), "error", stageErr.Error())
+									} else if catchupResult.More {
+										logger.Info("bot member registration catch-up remains bounded", "installation_id", installation.ID.String(), "members_visited", catchupResult.MembersVisited, "pages", catchupResult.Pages)
+									}
+									registration.WithLogger(logger).WithBackoff(registrationBackoff)
+									workErr := registration.ProcessPending(ctx, 4, 8, members, result.Session)
+									if registrationWorkReports.changed(installation.ID, workErr) {
+										logger.Info("bot interaction registration work remains pending", "installation_id", installation.ID.String(), "error", workErr.Error())
 									}
 								}
 							}

@@ -154,6 +154,30 @@ func BotCommandPayload(requestID, communityID, userID, deviceID id.ID, sealed []
 	return payload(requestID, communityID, userID, deviceID, sealed)
 }
 
+// The kinds of an op 65 bot_event (Bot v2 task 12). protocol/02 § Bot runtime fixes each payload.
+const (
+	// BotEventDeviceList is `[user_id, device_list_push]`: the user's whole signed history from version 1.
+	BotEventDeviceList uint64 = 1
+	// BotEventMember is `[community_id, user_id, joined(uint 0|1), role_ids]`; joined 0 is a leave.
+	BotEventMember uint64 = 2
+	// BotEventRole is `[community_id, role_id, [allow, deny, position], deleted(uint 0|1)]`.
+	BotEventRole uint64 = 3
+	// BotEventChannelGroup is `[community_id, channel_id, group_id, epoch]`.
+	BotEventChannelGroup uint64 = 4
+	// BotEventBotChannel is `[community_id, channel_id, marked(uint 0|1)]`.
+	BotEventBotChannel uint64 = 5
+	// BotEventSnapshotBegin and BotEventSnapshotEnd bracket a cold start: `[community_id]`.
+	BotEventSnapshotBegin uint64 = 6
+	BotEventSnapshotEnd   uint64 = 7
+	// BotEventCommunity is `[community_id, owner_user_id]`: who holds the owner short-circuit.
+	BotEventCommunity uint64 = 8
+)
+
+// BotEventPayload is op 65 bot_event's `[kind, payload]` (Bot v2 task 12).
+func BotEventPayload(kind uint64, body any) (cbor.RawMessage, error) {
+	return payload(kind, body)
+}
+
 // CommunityChangedPayload is op 54 community_changed's `[community_id]` (dilla-web-3.1): the
 // community whose channels or settings changed. It names nothing else; a member re-reads.
 func CommunityChangedPayload(communityID id.ID) (cbor.RawMessage, error) {

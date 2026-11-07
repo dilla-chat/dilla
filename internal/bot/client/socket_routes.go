@@ -58,8 +58,6 @@ var SocketRoutes = []string{
 	"GET /v1/communities/{community}/bot/actors/{actor}/authority",
 	"GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority",
 	"GET /v1/communities/{community}/bot/members/{member}/episode",
-	"GET /v1/communities/{community}/bot/events",
-	"PUT /v1/communities/{community}/bot/events/ack",
 	"POST /v1/communities/{community}/bot/join-role-grants",
 }
 

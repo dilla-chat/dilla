@@ -63,8 +63,6 @@ export const SOCKET_ROUTES: readonly SocketRoute[] = [
   { method: 'GET', pattern: '/v1/communities/{community}/bot/command-status' },
   { method: 'POST', pattern: '/v1/communities/{community}/bot/commands' },
   { method: 'POST', pattern: '/v1/communities/{community}/bot/disable' },
-  { method: 'GET', pattern: '/v1/communities/{community}/bot/events' },
-  { method: 'PUT', pattern: '/v1/communities/{community}/bot/events/ack' },
   { method: 'POST', pattern: '/v1/communities/{community}/bot/join-role-grants' },
   { method: 'GET', pattern: '/v1/communities/{community}/bot/members/{member}/episode' },
   { method: 'PUT', pattern: '/v1/communities/{community}/bot/music-settings' },

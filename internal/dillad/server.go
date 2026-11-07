@@ -51,6 +51,8 @@ type Server struct {
 	// botSrvs are the servers ServeBot runs on the Bot's Unix socket; Shutdown closes them beside httpSrv.
 	botMu   sync.Mutex
 	botSrvs []*http.Server
+	// botFeed is the Bot's event feed (Bot v2 task 12); Shutdown stops its workers before the store closes.
+	botFeed *api.BotFeed
 
 	// Part 1b's three subsystems (task 27a). ownsWasm records that New compiled
 	// the runtime itself, so Shutdown closes it; a runtime passed in through
@@ -311,7 +313,15 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	trustedProxies := o.Config.Server.TrustedProxyCIDRs
 
 	var presence *api.PresenceService
+	// The Bot's event feed (Bot v2 task 12) needs the gateway, and the gateway hands it each Bot identify:
+	// the hook reads the variable set right after New, before anything is served.
+	var botFeed *api.BotFeed
 	gw := gateway.New(gateway.Options{
+		OnBotIdentified: func(s *gateway.BotStream) {
+			if botFeed != nil {
+				botFeed.BotIdentified(s)
+			}
+		},
 		// The supervised Bot's Unix socket (ServeBot) admits the child the supervisor started, by its peer
 		// credentials and its launch token.
 		BotLaunch: o.BotLaunch,
@@ -392,6 +402,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	})
 	presence = api.NewPresenceService(o.Repo, gw, o.Clock, o.Log)
 	deps.Presence = presence
+	// Its workers outlive New's context: Shutdown stops them.
+	botFeed = api.NewBotFeed(context.WithoutCancel(ctx), api.BotFeedOptions{Repo: o.Repo, Gateway: gw, Log: o.Log, Skipped: o.Metrics.BotFeedSkip})
 	channels, acl := deliverySeams(o)
 	delivery, err = ds.New(ds.Options{
 		Store:         o.Repo,
@@ -422,6 +434,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 				events.Evict(ctx, groupID, removed)
 			}
 		},
+		// Bot v2 task 12: an epoch of a Bot channel's group or of a call the Bot is in reaches the Bot's
+		// event feed as channel_group. The feed only queues; it runs under the group lock.
+		OnEpoch: botFeed.GroupEpoch,
 	})
 	if err != nil {
 		return nil, err
@@ -488,12 +503,14 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		}
 	}
 	// Bot v2 Task 9: a published catalog goes to each connected member as op 61, filtered for that
-	// member. BotChannelEvents stays the no-op default until Task 12's Bot feed.
+	// member. Task 12: Bot-channel marks and unmarks, and device-list publishes, reach the Bot's event feed.
 	deps.BotCatalogGateway = gw
+	deps.BotChannelEvents = botFeed
+	deps.BotFeed = botFeed
 	// Bot v2 Task 10: sealed commands go to the Bot runtime's connection, replies to the requesting
 	// device and state hints to their scope, all through the gateway.
 	deps.BotRelay = gw
-	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log)
+	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log).WithBotFeed(botFeed)
 	deps.BotRevoked = func(ctx context.Context, installation store.BotInstallationRow, remove bool) {
 		if remove {
 			// Removal deletes the Bot's member row and managed role: a leave, so live members re-read the
@@ -614,7 +631,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	callRoutes, roles := mountPlanTwo(mux, planTwo{
 		ctx: ctx, o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
 		blobs: blobs, uploads: deps.UploadMeter, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
-		botEvents: deps.BotChannelEvents,
+		botEvents: deps.BotChannelEvents, botFeed: botFeed,
 	})
 	stopAFK = callRoutes.StopAFK
 	(&api.Messages{
@@ -707,7 +724,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		wasm: wasm, ownsWasm: ownsWasm, gw: gw, cutDevice: cutFromCalls, ds: delivery, groups: groups, presence: presence, events: events,
 		calls: callRoutes,
 		blobs: blobs, ownsBlobs: ownsBlobs,
-		throttle: throttle, limiter: limiter, passkeys: passkeys,
+		throttle: throttle, limiter: limiter, passkeys: passkeys, botFeed: botFeed,
 	}
 	// One http.Server for whichever listener tls.mode chooses (Plan 2 task 16):
 	// ReadHeaderTimeout is never zero, ReadTimeout and WriteTimeout stay unset
@@ -893,6 +910,10 @@ func (s *Server) shutdown(ctx context.Context) error {
 	}
 	if perr := s.presence.Drain(ctx); perr != nil {
 		keep(fmt.Errorf("dillad: drain profile hints: %w", perr))
+	}
+	// No write path can queue Bot feed work any more; its workers stop before the store closes.
+	if s.botFeed != nil {
+		s.botFeed.Stop()
 	}
 	if s.maintenance != nil {
 		s.maintenance()

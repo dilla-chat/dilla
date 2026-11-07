@@ -282,8 +282,8 @@ func TestCommandIsRelayedWithAuthenticatedIdentity(t *testing.T) {
 	wantAccepted(t, status, body)
 
 	got := r.relay.frames(r.relay.bot, r.botDevice)
-	if len(got) != 1 || got[0].Op != gateway.OpBotCommand || got[0].Replay {
-		t.Fatalf("Bot frames = %+v, want one non-replayable bot_command", got)
+	if len(got) != 1 || got[0].Op != gateway.OpBotCommand || !got[0].Replay {
+		t.Fatalf("Bot frames = %+v, want one bot_command, sequenced in the Bot ring (Task 12)", got)
 	}
 	p := framePayload(t, got[0])
 	if len(p) != 5 {

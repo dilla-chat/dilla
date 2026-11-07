@@ -106,8 +106,13 @@ export function frameVectors() {
     // revision]. Content-free, n = 0: a client that missed it compares revisions at connect sync.
     frame('bot_state_changed', 63, 0, null, [1, CHANNEL, 4]),
     // op 64 bot_command (S->C, Bot runtime connection only, wire 6): [request_id, community_id,
-    // user_id, device_id, sealed]. The identity is the sending connection's session. n = 0.
-    frame('bot_command', 64, 0, null, [REQUEST, COMMUNITY, USER, DEVICE, new Uint8Array([0x85, 0x01])]),
+    // user_id, device_id, sealed]. The identity is the sending connection's session. n != 0: since
+    // Bot v2 task 12 it is sequenced in the Bot connection's ring, so a resume replays it.
+    frame('bot_command', 64, 7, null, [REQUEST, COMMUNITY, USER, DEVICE, new Uint8Array([0x85, 0x01])]),
+    // op 65 bot_event (S->C, Bot runtime connection only, wire 6, Bot v2 task 12): [kind, payload].
+    // Kind 2 member is [community_id, user_id, joined(uint 0|1), role_ids]. A live event is ringed
+    // (n != 0); a cold-start snapshot's body frames are sent with n = 0.
+    frame('bot_event', 65, 8, null, [2, [COMMUNITY, USER, 1, [GROUP]]]),
   ];
 
   const rejects = [

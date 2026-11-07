@@ -91,8 +91,6 @@ var communitySocketRoutes = func() []struct{ pattern, path string } {
 		{"GET /v1/communities/{community}/bot/members/{member}/episode", c + "/bot/members/" + anID + "/episode"},
 		{"PUT /v1/communities/{community}/bot/music-settings", c + "/bot/music-settings"},
 		{"POST /v1/communities/{community}/bot/restart", c + "/bot/restart"},
-		{"GET /v1/communities/{community}/bot/events", c + "/bot/events"},
-		{"PUT /v1/communities/{community}/bot/events/ack", c + "/bot/events/ack"},
 	}
 }()
 

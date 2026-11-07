@@ -529,6 +529,24 @@ func (h *dsHarness) restartWithEvictor(e ds.CallEvictor) {
 	h.ds = d
 }
 
+// restartWithEpochHook rebuilds the delivery service over the same store with an OnEpoch hook (Bot v2 task 12).
+func (h *dsHarness) restartWithEpochHook(hook func(ds.EpochChange)) {
+	h.t.Helper()
+	if err := h.ds.Shutdown(context.Background()); err != nil {
+		h.t.Fatalf("Shutdown: %v", err)
+	}
+	d, err := ds.New(ds.Options{
+		Store: h.repo, Wasm: h.wasm, Gateway: h.gw, Clock: h.clk,
+		Keys: testInstanceKeys(h.t), Policy: ds.DefaultPolicy(), Channels: h.channels,
+		ACL: h.acl, OnEpoch: hook,
+	})
+	if err != nil {
+		h.t.Fatalf("ds.New: %v", err)
+	}
+	h.t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
+	h.ds = d
+}
+
 var errInjected = errors.New("injected failure")
 
 func (r *failingRepo) failNext(method string) {

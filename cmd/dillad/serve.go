@@ -346,19 +346,6 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	botPruneCtx, stopBotPrune := context.WithCancel(runCtx)
-	botPruneDone := make(chan struct{})
-	go func() {
-		defer close(botPruneDone)
-		runBotStructuralEventPruner(botPruneCtx, botStructuralEventPruneInterval, time.Now,
-			func(ctx context.Context, cutoff int64) (int64, error) {
-				return pruneBotStructuralEventsInStore(ctx, repo, cutoff)
-			}, log)
-	}()
-	defer func() {
-		stopBotPrune()
-		<-botPruneDone
-	}()
 	if remoteSFU != nil {
 		go watchRemoteSFU(runCtx, remoteSFU, health.Gate("livekit"))
 	}

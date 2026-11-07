@@ -55,8 +55,8 @@ const HEADS: [CborInput, string][] = [
 ];
 
 describe('protocol/vectors/frames.json', () => {
-  it('carries 37 cases and 22 rejects, two of them at the codec layer', () => {
-    expect(frames.cases).toHaveLength(37);
+  it('carries 42 cases and 22 rejects, two of them at the codec layer', () => {
+    expect(frames.cases).toHaveLength(42);
     expect(frames.rejects).toHaveLength(22);
     expect(frames.rejects.filter((r) => r.code === 'E_FRAME_CBOR').map((r) => r.name))
       .toEqual(['non-minimal op', 'map instead of an array']);

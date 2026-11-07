@@ -122,6 +122,20 @@ type Options struct {
 	// BotLaunch admits the supervised Bot on its Unix socket (BotPeerListener, BotHandler; Bot v2 task 11): the
 	// peer check and the launch token. Nil admits nobody there.
 	BotLaunch BotLaunch
+
+	// OnBotIdentified hears every managed Bot identify (not a resume), with the stream its cold-start
+	// snapshot goes out on (Bot v2 task 12, BotStream). It must return at once. With it set, a Bot
+	// connection holds its live op 64 and 65 frames until the snapshot finishes, and a Bot connection
+	// whose snapshot did not finish cannot resume. Nil streams nothing.
+	OnBotIdentified func(*BotStream)
+	// BotQueueFrames, BotQueueBytes, BotRingFrames and BotRingBytes are the Bot runtime connection's
+	// own writer queue and replay ring (Bot v2 task 12): its feed carries device-list pushes of up to
+	// 1 MiB and a cold-start snapshot, so the user connections' 1 MiB budget is too small for it.
+	// Every other connection keeps QueueFrames, QueueBytes, RingFrames and RingBytes.
+	BotQueueFrames int
+	BotQueueBytes  int
+	BotRingFrames  int
+	BotRingBytes   int
 }
 
 // withDefaults fills zero values and enforces the ring-vs-queue contract. The ring must be at
@@ -178,6 +192,26 @@ func (o Options) withDefaults() Options {
 	}
 	if o.RingBytes < o.QueueBytes {
 		o.RingBytes = o.QueueBytes
+	}
+	if o.BotQueueFrames == 0 {
+		o.BotQueueFrames = 1024
+	}
+	if o.BotQueueBytes == 0 {
+		o.BotQueueBytes = 8 << 20
+	}
+	if o.BotRingFrames == 0 {
+		o.BotRingFrames = 4096
+	}
+	if o.BotRingBytes == 0 {
+		o.BotRingBytes = 16 << 20
+	}
+	// The same ring-vs-queue contract for the Bot connection: whatever its queue dropped is still in
+	// its ring when it resumes.
+	if o.BotRingFrames < o.BotQueueFrames {
+		o.BotRingFrames = o.BotQueueFrames
+	}
+	if o.BotRingBytes < o.BotQueueBytes {
+		o.BotRingBytes = o.BotQueueBytes
 	}
 	return o
 }
@@ -236,7 +270,10 @@ type Gateway struct {
 	presence  *presence
 	beat      heartbeatPolicy
 	suspended sync.Map // resume token string -> *conn, inside the resume window
-	deferred  sync.Map // *conn -> struct{}: revoked connections waiting for their self-revoking answer (CloseDevice)
+	// bots indexes the Bot runtime connections by device, live, suspended or mid-resume (bot_feed.go):
+	// DeliverBot reaches a Bot connection through every state change, not only while it is registered.
+	bots     botIndex
+	deferred sync.Map // *conn -> struct{}: revoked connections waiting for their self-revoking answer (CloseDevice)
 
 	// Test seams for the two steps of a resume that cannot fail with real inputs; nil means the
 	// real one. They are set before the Gateway serves and never after.
@@ -347,19 +384,18 @@ func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s 
 		lastLive:     now,
 		ready:        now,
 		gw:           g,
-		ring: newRing(ringLimits{
-			Frames: g.opts.RingFrames,
-			Bytes:  g.opts.RingBytes,
-			TTL:    g.opts.RingTTL,
-		}, g.opts.Clock),
+		ring:         newRing(g.ringLimitsFor(session.Bot != nil), g.opts.Clock),
+	}
+	if session.Bot != nil {
+		c.botInstallation, c.botCommunity = session.Bot.InstallationID, session.Bot.CommunityID
+		// With a feed, the connection holds its live op 64 and 65 frames until the cold-start snapshot
+		// has finished (BotStream.Finish), and may resume only after it.
+		c.botSnapshot = g.opts.OnBotIdentified != nil
+		c.botHolding = c.botSnapshot
 	}
 	c.wire, c.e2ee, c.media = chosen[0], chosen[1], chosen[2]
 	// Paused until the connection is live: see newPausedWriter.
-	c.writer = newPausedWriter(s, writerLimits{
-		Frames:   g.opts.QueueFrames,
-		Bytes:    g.opts.QueueBytes,
-		Deadline: g.opts.WriteDeadline,
-	}, g.opts.Clock, g.opts.Log)
+	c.writer = newPausedWriter(s, g.writerLimitsFor(c.isBot), g.opts.Clock, g.opts.Log)
 	// The server's own ping ticker starts at a jittered offset so 1,500 clients reconnecting
 	// after a restart do not synchronise onto one second (task 17's firstDelay, which nothing
 	// else calls).
@@ -374,10 +410,16 @@ func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s 
 	// so a DeliverGroup landing in that window takes n = 1 and `ready` then carries n = 2 —
 	// against protocol/02's "n ... the per-session replay sequence, starting at 1" and against
 	// the hello/identify/ready handshake order a client is written to.
+	if c.isBot {
+		g.bots.add(c)
+	}
 	g.addLive(c)
 	// Only now may `ready` reach the wire: a client that has read it is a device Online counts.
 	c.currentWriter().open()
 	g.touch(ctx, c.deviceID, now)
+	if c.isBot && g.opts.OnBotIdentified != nil {
+		g.opts.OnBotIdentified(&BotStream{c: c})
+	}
 	return c, nil
 }
 
@@ -498,6 +540,8 @@ func (g *Gateway) suspend(c *conn) {
 	// ResumeWindow with nothing but its old resume token.
 	if resumable {
 		g.suspended.Store(token, c)
+	} else {
+		g.bots.drop(c)
 	}
 	if w != nil {
 		w.stop()
@@ -526,6 +570,7 @@ func (g *Gateway) sweepSuspended() {
 		c.mu.Unlock()
 		if expired {
 			g.suspended.Delete(k)
+			g.bots.drop(c)
 		}
 		return true
 	})
@@ -589,19 +634,17 @@ func (g *Gateway) DeliverDevice(deviceID id.ID, f Frame) {
 	g.countFrame(f)
 }
 
-// DeliverBot hands a sealed command (op 64) to the Bot runtime's live connections of deviceID, the
-// installation's managed device (Bot v2 task 10). It reports whether any received it: no live Bot
-// runtime connection is the Bot being offline. A connection of the device that is not a Bot runtime
-// session gets nothing.
+// DeliverBot hands a frame for the Bot runtime, a sealed command (op 64, Bot v2 task 10) or a feed
+// event (op 65, task 12), to the Bot runtime connections of deviceID, the installation's managed
+// device. Both are sequenced in the Bot connection's ring: a live connection gets the frame now, one
+// whose snapshot or resume is in progress gets it right after, and one parked in the resume window
+// holds it for the resume. It reports whether any connection took it: none is the Bot being offline.
+// A connection of the device that is not a Bot runtime session gets nothing.
 func (g *Gateway) DeliverBot(deviceID id.ID, f Frame) bool {
 	f.Scope = normalizeFrameScope(f)
 	delivered := false
-	for _, c := range g.reg.connsOfDevice(deviceID) {
-		c.mu.Lock()
-		bot := c.isBot && c.state == stateReady
-		c.mu.Unlock()
-		if bot {
-			c.send(f)
+	for _, c := range g.bots.of(deviceID) {
+		if c.deliverBot(f) {
 			delivered = true
 		}
 	}
@@ -990,4 +1033,5 @@ var opNames = map[Op]string{
 	OpAppBuild: "app_build", OpPresenceActivity: "presence_activity", OpCallStats: "call_stats",
 	OpRequest: "request", OpResponse: "response", OpBotCatalog: "bot_catalog",
 	OpBotReply: "bot_reply", OpBotStateChanged: "bot_state_changed", OpBotCommand: "bot_command",
+	OpBotEvent: "bot_event",
 }
