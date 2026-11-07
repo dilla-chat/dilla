@@ -279,6 +279,11 @@ func requestClass(method, path string) string {
 		if len(parts) == 6 && parts[0] == "bot-runtime" && parts[1] == "installations" && parts[3] == "interaction-groups" && parts[5] == "heal" {
 			return "commit"
 		}
+		// dillad meters the Bot's sealed answers and state hints as bot_runtime at the read rate (dsmeter.go): one
+		// answer per command must not wait on the write bucket (Bot v2 Task 15).
+		if len(parts) == 2 && parts[0] == "bot-runtime" && (parts[1] == "replies" || parts[1] == "state-hints") {
+			return "read"
+		}
 	}
 	if method == http.MethodGet || method == http.MethodHead {
 		return "read"

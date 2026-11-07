@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
 	"github.com/dilla-chat/dilla/internal/ds"
@@ -25,7 +26,10 @@ import (
 //     its owner;
 //   - bot_channel: that community's Bot-channel marks;
 //   - channel_group: the epoch of a group in that community that is a Bot channel's text group or a
-//     call group the Bot's device is a member of.
+//     call group the Bot's device is a member of;
+//   - channel_overwrites (task 15): the permission overwrites of that community's Bot channels and voice
+//     channels, and of no other channel, so the Bot authorises a command in its channel as dillad would;
+//   - member_timeout (task 15): a member's timeout end, so the Bot refuses a timed-out member.
 //
 // Nothing about another community, and no message content. Every event is emitted after the change
 // committed: the write paths call in after their transaction (PutDeviceList, StructureNotifier, the
@@ -134,6 +138,18 @@ type feedBot struct {
 	roles   map[id.ID]roleState
 	owner   id.ID
 	marked  map[id.ID]bool
+	// overwrites is each Bot or voice channel's overwrites as told (task 15); timeouts each timed-out member's
+	// end as told; timeoutUsers the members whose timeout changed since the last turn.
+	overwrites   map[id.ID][]feedOverwrite
+	timeouts     map[id.ID]uint64
+	timeoutUsers map[id.ID]struct{}
+}
+
+// feedOverwrite is one channel_overwrites entry: target_kind 0 @everyone, 1 role, 2 member.
+type feedOverwrite struct {
+	kind        uint64
+	target      id.ID
+	allow, deny uint64
 }
 
 // bot returns the installation's feed, creating it and its worker on first use.
@@ -146,7 +162,7 @@ func (f *BotFeed) bot(installation, community, device id.ID) *feedBot {
 			close(b.retired)
 		}
 		b = &feedBot{installation: installation, community: community, device: device, wake: make(chan struct{}, 1),
-			retired: make(chan struct{}), users: map[id.ID]struct{}{}}
+			retired: make(chan struct{}), users: map[id.ID]struct{}{}, timeoutUsers: map[id.ID]struct{}{}}
 		f.bots[installation] = b
 		f.wg.Add(1)
 		go f.run(b)
@@ -228,6 +244,22 @@ func (f *BotFeed) CommunityChanged(community id.ID) {
 	})
 }
 
+// MemberTimeoutChanged queues the member's timeout for the community's Bot (task 15): the timeout routes call it
+// after their commit, through StructureNotifier.ChangedUser.
+func (f *BotFeed) MemberTimeoutChanged(community, user id.ID) {
+	f.each(community, func(b *feedBot) {
+		b.mu.Lock()
+		queue := !b.offline
+		if queue {
+			b.timeoutUsers[user] = struct{}{}
+		}
+		b.mu.Unlock()
+		if queue {
+			b.poke()
+		}
+	})
+}
+
 // BotChannelMarked and BotChannelUnmarked are the feed's BotChannelEvents: they queue a Bot-channel diff.
 func (f *BotFeed) BotChannelMarked(community, _ id.ID)   { f.channelsChanged(community) }
 func (f *BotFeed) BotChannelUnmarked(community, _ id.ID) { f.channelsChanged(community) }
@@ -296,6 +328,7 @@ type feedBatch struct {
 	snapshot           BotFeedStream
 	structure, channel bool
 	users              []id.ID
+	timeouts           []id.ID
 	groups             []ds.EpochChange
 	barriers           []chan struct{}
 }
@@ -314,9 +347,14 @@ func (b *feedBot) take() (feedBatch, bool) {
 	for u := range b.users {
 		batch.users = append(batch.users, u)
 	}
+	for u := range b.timeoutUsers {
+		batch.timeouts = append(batch.timeouts, u)
+	}
 	b.snapshot, b.structure, b.channels, b.groups, b.barriers = nil, false, false, nil, nil
 	clear(b.users)
-	empty := batch.snapshot == nil && !batch.structure && !batch.channel && len(batch.users) == 0 && len(batch.groups) == 0
+	clear(b.timeoutUsers)
+	empty := batch.snapshot == nil && !batch.structure && !batch.channel && len(batch.users) == 0 && len(batch.groups) == 0 &&
+		len(batch.timeouts) == 0
 	return batch, !empty || len(batch.barriers) > 0
 }
 
@@ -360,17 +398,29 @@ func (f *BotFeed) process(b *feedBot, batch feedBatch) {
 	}
 	err := func() error {
 		users := batch.users
+		timeouts := batch.timeouts
 		if batch.structure {
 			joined, err := f.structure(ctx, b)
 			if err != nil {
 				return err
 			}
 			users = append(users, joined...)
+			// A rejoining member may still be timed out.
+			timeouts = append(timeouts, joined...)
 		}
 		if batch.channel {
 			if err := f.botChannels(ctx, b); err != nil {
 				return err
 			}
+		}
+		// Overwrites change with a channel, a role, an overwrite (a community change) or a Bot-channel mark.
+		if batch.structure || batch.channel {
+			if err := f.channelOverwrites(ctx, b, f.liveSender(b)); err != nil {
+				return err
+			}
+		}
+		if err := f.memberTimeouts(ctx, b, timeouts, b.inScope, f.liveSender(b)); err != nil {
+			return err
 		}
 		slices.SortFunc(users, compareIDs)
 		for _, u := range slices.Compact(users) {
@@ -412,6 +462,7 @@ func (f *BotFeed) goOffline(b *feedBot) {
 	b.offline, b.snapshotting = true, false
 	b.structure, b.channels, b.groups = false, false, nil
 	clear(b.users)
+	clear(b.timeoutUsers)
 }
 
 // inScope is the device-list scope: a current member of the Bot's community, as last told.
@@ -526,6 +577,16 @@ func (f *BotFeed) snapshot(ctx context.Context, b *feedBot, s BotFeedStream) err
 	// an epoch committed before these reads reaches the Bot only here. One committed after them is queued by GroupEpoch
 	// and sent once snapshot_end has gone out.
 	if err := f.snapshotChannelGroups(ctx, b, channels, send); err != nil {
+		return err
+	}
+	// Task 15: the Bot and voice channels' overwrites, and every timed-out member, from scratch.
+	b.mu.Lock()
+	b.overwrites, b.timeouts = nil, nil
+	b.mu.Unlock()
+	if err := f.channelOverwritesOf(ctx, b, roles, channels, send); err != nil {
+		return err
+	}
+	if err := f.memberTimeouts(ctx, b, users, func(u id.ID) bool { _, ok := members[u]; return ok }, send); err != nil {
 		return err
 	}
 	end, err := event(gateway.BotEventSnapshotEnd, []any{b.community})
@@ -872,4 +933,158 @@ func sortedKeys[V any](m map[id.ID]V) []id.ID {
 	}
 	slices.SortFunc(out, compareIDs)
 	return out
+}
+
+// channelOverwrites sends the diff of the Bot and voice channels' overwrites (task 15).
+func (f *BotFeed) channelOverwrites(ctx context.Context, b *feedBot, send func(gateway.Frame) error) error {
+	roles, err := f.o.Repo.ListRoles(ctx, b.community)
+	if err != nil {
+		return err
+	}
+	rows, err := f.o.Repo.ListBotChannels(ctx, b.community)
+	if err != nil {
+		return err
+	}
+	marked := map[id.ID]bool{}
+	for _, r := range rows {
+		marked[r.ChannelID] = true
+	}
+	return f.channelOverwritesOf(ctx, b, roles, marked, send)
+}
+
+// channelOverwritesOf sends, for every Bot channel (marked) and voice channel of the community, its overwrites when
+// they differ from what the Bot was told, and deleted for a channel it was told of that is no longer one of them. It
+// names no other channel. Role overwrites of the @everyone role (the first role at position 0) are target_kind 0.
+func (f *BotFeed) channelOverwritesOf(ctx context.Context, b *feedBot, roles []store.RoleRow, marked map[id.ID]bool, send func(gateway.Frame) error) error {
+	channels, err := f.o.Repo.ListChannels(ctx, b.community)
+	if err != nil {
+		return err
+	}
+	sorted := slices.Clone(roles)
+	slices.SortFunc(sorted, byPositionThenID)
+	var everyone id.ID
+	if len(sorted) > 0 && sorted[0].Position == 0 {
+		everyone = sorted[0].ID
+	}
+	b.mu.Lock()
+	old := b.overwrites
+	b.mu.Unlock()
+	now := map[id.ID][]feedOverwrite{}
+	for _, ch := range channels {
+		if ch.DeletedAt != nil || !marked[ch.ID] && ch.Kind != ChannelVoice {
+			continue
+		}
+		rows, err := f.o.Repo.ListOverwrites(ctx, ch.ID)
+		if err != nil {
+			return err
+		}
+		list := make([]feedOverwrite, 0, len(rows))
+		for _, o := range rows {
+			kind := uint64(2)
+			if o.TargetKind == overwriteRole {
+				kind = 1
+				if o.TargetID == everyone {
+					kind = 0
+				}
+			}
+			list = append(list, feedOverwrite{kind: kind, target: o.TargetID, allow: o.Allow & uint64(PermAll), deny: o.Deny & uint64(PermAll)})
+		}
+		slices.SortFunc(list, func(x, y feedOverwrite) int {
+			if c := cmpUint(x.kind, y.kind); c != 0 {
+				return c
+			}
+			return compareIDs(x.target, y.target)
+		})
+		now[ch.ID] = list
+	}
+	for _, ch := range sortedKeys(now) {
+		if was, ok := old[ch]; ok && slices.Equal(was, now[ch]) {
+			continue
+		}
+		entries := make([]any, 0, len(now[ch]))
+		for _, o := range now[ch] {
+			entries = append(entries, []any{o.kind, o.target, o.allow, o.deny})
+		}
+		fr, err := event(gateway.BotEventChannelOverwrites, []any{b.community, ch, entries, uint64(0)})
+		if err != nil {
+			return err
+		}
+		if err := send(fr); err != nil {
+			return err
+		}
+	}
+	for _, ch := range sortedKeys(old) {
+		if _, ok := now[ch]; ok {
+			continue
+		}
+		fr, err := event(gateway.BotEventChannelOverwrites, []any{b.community, ch, []any{}, uint64(1)})
+		if err != nil {
+			return err
+		}
+		if err := send(fr); err != nil {
+			return err
+		}
+	}
+	b.mu.Lock()
+	b.overwrites = now
+	b.mu.Unlock()
+	return nil
+}
+
+func cmpUint(a, b uint64) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
+}
+
+// memberTimeouts sends each of users' timeout when it differs from what the Bot was told (task 15): the end in
+// unix seconds, or 0 once it is cleared. A member who left is forgotten without an event (their member event says so).
+func (f *BotFeed) memberTimeouts(ctx context.Context, b *feedBot, users []id.ID, inScope func(id.ID) bool, send func(gateway.Frame) error) error {
+	users = slices.Clone(users)
+	slices.SortFunc(users, compareIDs)
+	now := time.Now().Unix()
+	for _, u := range slices.Compact(users) {
+		if !inScope(u) {
+			b.mu.Lock()
+			delete(b.timeouts, u)
+			b.mu.Unlock()
+			continue
+		}
+		var until uint64
+		row, err := f.o.Repo.GetMemberTimeout(ctx, b.community, u, now)
+		switch {
+		case err == nil && row.Expires > 0:
+			until = uint64(row.Expires)
+		case err != nil && !errors.Is(err, store.ErrNotFound):
+			return err
+		}
+		b.mu.Lock()
+		told := b.timeouts[u]
+		b.mu.Unlock()
+		if told == until {
+			continue
+		}
+		fr, err := event(gateway.BotEventMemberTimeout, []any{b.community, u, until})
+		if err != nil {
+			return err
+		}
+		if err := send(fr); err != nil {
+			return err
+		}
+		b.mu.Lock()
+		if b.timeouts == nil {
+			b.timeouts = map[id.ID]uint64{}
+		}
+		if until == 0 {
+			delete(b.timeouts, u)
+		} else {
+			b.timeouts[u] = until
+		}
+		b.mu.Unlock()
+	}
+	return nil
 }

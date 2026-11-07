@@ -7,11 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 
 	"github.com/dilla-chat/dilla/internal/bot/helper"
+	"github.com/dilla-chat/dilla/internal/bot/intake"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
@@ -438,4 +441,467 @@ func (d *InteractionDispatcher) complete(entry *interactionReplay, response stri
 
 func interactionFingerprint(body string) [32]byte {
 	return sha256.Sum256([]byte(body))
+}
+
+// ---- Bot v2 Task 15: sealed commands ----
+
+// SealedDispatcher runs a sealed command the intake opened, verified and authorised through the same
+// feature handlers the interaction dispatcher registers (the InteractionHandlerSpec map). The member
+// identity is the one the helper verified (the device's signature, matched to the identity dillad
+// attached); the community-wide permission_bit was checked from the feed state by the intake; each
+// handler still applies its own checks (a call's DJ rights, a poll's channel).
+//
+// An adapter per operation turns the catalog's argument shapes into the v1 handler's request and the
+// handler's result into answers. A picker command (catalog handler_kind 0) answers UTF-8 text. A sealed
+// read (handler_kind 1: OpReadPoll, OpReadMusic, OpReadRemindersDue) takes the v1 operation's arguments
+// (ids as 16-byte byte strings or 32 hex digits, a cursor as bytes or null) and answers the CBOR
+// [revision uint|null, data bstr], data being the v1 response data unchanged, so the app's existing
+// decoders read it. A refusal's body is a bare code for a read, and text a member can act on for a
+// picker command (the client maps E_FORBIDDEN itself).
+//
+// Mutations carry Revision 0 and Expires sent_at + 120 s (the sent_at window). A picker command does not
+// know the entity's revision: for the operations marked retryConflict a 409 that names the current
+// revision is tried once more with it (last writer wins, as a typed command means), and never looped.
+type SealedDispatcher struct {
+	Community id.ID
+	Handlers  map[protocol.Operation]InteractionHandlerSpec
+}
+
+type sealedAdapter struct {
+	// handler is the v1 operation whose handler runs.
+	handler protocol.Operation
+	// request builds the v1 request's channel, args and mutation flag; problem is the 400 text.
+	request func(req protocol.SealedRequest) (channel *id.ID, args []any, mutation bool, problem string)
+	// progress, when set, is answered before the handler runs ("Searching…").
+	progress string
+	// read answers [revision, data]; otherwise render makes the text of a success.
+	read          bool
+	render        func(req protocol.SealedRequest, result InteractionResult) string
+	retryConflict bool
+}
+
+const (
+	sealedCommandWindow = 120
+	musicNeedsRoom      = "Join a voice channel with the Bot first."
+)
+
+// SealedOperationSupported reports whether op has a sealed adapter.
+func SealedOperationSupported(op protocol.Operation) bool {
+	_, ok := sealedAdapters[op]
+	return ok
+}
+
+func sealedText(args []any, i int) (string, bool) {
+	if i >= len(args) {
+		return "", false
+	}
+	s, ok := args[i].(string)
+	return s, ok && strings.TrimSpace(s) != ""
+}
+
+func sealedUint(args []any, i int) (uint64, bool) {
+	if i >= len(args) {
+		return 0, false
+	}
+	v, ok := args[i].(uint64)
+	return v, ok
+}
+
+// sealedID reads an id given as 16 bytes (an app surface) or 32 hex digits (typed in the picker).
+func sealedID(args []any, i int) (id.ID, bool) {
+	if i >= len(args) {
+		return id.ID{}, false
+	}
+	switch v := args[i].(type) {
+	case []byte:
+		if len(v) != len(id.ID{}) {
+			return id.ID{}, false
+		}
+		var out id.ID
+		copy(out[:], v)
+		return out, !out.IsZero()
+	case string:
+		out, err := id.Parse(strings.TrimSpace(v))
+		return out, err == nil && !out.IsZero()
+	}
+	return id.ID{}, false
+}
+
+// sealedCursor reads a page cursor: null, or 1..256 bytes.
+func sealedCursor(args []any, i int) (any, bool) {
+	if i >= len(args) || args[i] == nil {
+		return nil, true
+	}
+	b, ok := args[i].([]byte)
+	return b, ok && len(b) > 0 && len(b) <= protocol.MaxModerationCursorBytes
+}
+
+func musicRoom(req protocol.SealedRequest) (*id.ID, bool) {
+	if req.ChannelID.IsZero() {
+		return nil, false
+	}
+	ch := req.ChannelID
+	return &ch, true
+}
+
+// musicControl is a music mutation with no arguments, answered with done.
+func musicControl(op protocol.Operation, done string, retry bool) sealedAdapter {
+	return sealedAdapter{handler: op, retryConflict: retry,
+		request: func(req protocol.SealedRequest) (*id.ID, []any, bool, string) {
+			ch, ok := musicRoom(req)
+			if !ok {
+				return nil, nil, false, musicNeedsRoom
+			}
+			return ch, []any{}, true, ""
+		},
+		render: func(protocol.SealedRequest, InteractionResult) string { return done }}
+}
+
+func musicState(op protocol.Operation, withQueue bool) sealedAdapter {
+	return sealedAdapter{handler: protocol.OpMusicState,
+		request: func(req protocol.SealedRequest) (*id.ID, []any, bool, string) {
+			ch, ok := musicRoom(req)
+			if !ok {
+				return nil, nil, false, musicNeedsRoom
+			}
+			return ch, []any{}, false, ""
+		},
+		read: op == protocol.OpReadMusic,
+		render: func(_ protocol.SealedRequest, r InteractionResult) string {
+			return renderMusicState(r.Data, withQueue)
+		}}
+}
+
+// musicTrackText is "Title — Artist" from an encodeMusicTrack row.
+func musicTrackText(v any) (string, bool) {
+	row, ok := v.([]any)
+	if !ok || len(row) < 5 {
+		return "", false
+	}
+	title, _ := row[3].(string)
+	artist, _ := row[4].(string)
+	if title == "" {
+		return "", false
+	}
+	if artist == "" {
+		return title, true
+	}
+	return title + " — " + artist, true
+}
+
+// renderMusicState is the text of a music snapshot (encodeMusicSnapshot) in the established /queue copy
+// (web bot-handlers.ts): "Now playing: T — A (paused)", then "1. T — A" per queued track, "Showing n of m queued
+// tracks." when the snapshot was cut, and "The music queue is empty." with neither. /queue and /nowplaying share
+// OpMusicState, so both answer this form.
+func renderMusicState(data []byte, _ bool) string {
+	var fields []any
+	if cborx.Unmarshal(data, &fields) != nil || len(fields) < 4 {
+		return "The music queue is empty."
+	}
+	var lines []string
+	if now, ok := musicTrackText(fields[2]); ok {
+		if len(fields) > 5 && fields[5] == uint64(1) {
+			now += " (paused)"
+		}
+		lines = append(lines, "Now playing: "+now)
+	}
+	queue, _ := fields[3].([]any)
+	for i, row := range queue {
+		if text, ok := musicTrackText(row); ok {
+			lines = append(lines, fmt.Sprintf("%d. %s", i+1, text))
+		}
+	}
+	if len(fields) > 12 {
+		if total, ok := fields[12].(uint64); ok {
+			lines = append(lines, fmt.Sprintf("Showing %d of %d queued tracks.", len(queue), total))
+		}
+	}
+	if len(lines) == 0 {
+		return "The music queue is empty."
+	}
+	return strings.Join(lines, "\n")
+}
+
+// pollDurations are the poll lengths the handler accepts; a picker duration rounds up to the next one.
+var pollDurations = []uint64{3600, 14400, 28800, 86400, 259200, 604800}
+
+func pollAnswers(text string) []any {
+	sep := "|"
+	if !strings.Contains(text, sep) {
+		sep = ","
+	}
+	var out []any
+	for _, part := range strings.Split(text, sep) {
+		if s := strings.TrimSpace(part); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func humanSeconds(s uint64) string {
+	unit := func(n uint64, one string) string {
+		if n == 1 {
+			return "1 " + one
+		}
+		return fmt.Sprintf("%d %ss", n, one)
+	}
+	switch {
+	case s%86400 == 0:
+		return unit(s/86400, "day")
+	case s%3600 == 0:
+		return unit(s/3600, "hour")
+	case s%60 == 0:
+		return unit(s/60, "minute")
+	}
+	return unit(s, "second")
+}
+
+var sealedAdapters = map[protocol.Operation]sealedAdapter{
+	protocol.OpMusicEnqueue: {handler: protocol.OpMusicEnqueue, progress: "Searching…",
+		request: func(req protocol.SealedRequest) (*id.ID, []any, bool, string) {
+			ch, ok := musicRoom(req)
+			if !ok {
+				return nil, nil, false, musicNeedsRoom
+			}
+			query, ok := sealedText(req.Args, 0)
+			if !ok {
+				return nil, nil, false, "Say what to play: a song or a link."
+			}
+			return ch, []any{strings.TrimSpace(query)}, true, ""
+		},
+		render: func(protocol.SealedRequest, InteractionResult) string { return "Added to the queue." }},
+	protocol.OpMusicPause:   musicControl(protocol.OpMusicPause, "Paused.", false),
+	protocol.OpMusicResume:  musicControl(protocol.OpMusicResume, "Resumed.", true),
+	protocol.OpMusicSkip:    musicControl(protocol.OpMusicSkip, "Skipped.", false),
+	protocol.OpMusicStop:    musicControl(protocol.OpMusicStop, "Stopped.", true),
+	protocol.OpMusicShuffle: musicControl(protocol.OpMusicShuffle, "Shuffled the queue.", true),
+	protocol.OpMusicClear:   musicControl(protocol.OpMusicClear, "Cleared the queue.", true),
+	protocol.OpMusicVolume: {handler: protocol.OpMusicVolume, retryConflict: true,
+		request: func(req protocol.SealedRequest) (*id.ID, []any, bool, string) {
+			ch, ok := musicRoom(req)
+			if !ok {
+				return nil, nil, false, musicNeedsRoom
+			}
+			level, ok := sealedUint(req.Args, 0)
+			if !ok || level > 100 {
+				return nil, nil, false, "The volume is a number from 0 to 100."
+			}
+			return ch, []any{level}, true, ""
+		},
+		render: func(req protocol.SealedRequest, _ InteractionResult) string {
+			level, _ := sealedUint(req.Args, 0)
+			return fmt.Sprintf("Volume set to %d.", level)
+		}},
+	protocol.OpMusicRepeat: {handler: protocol.OpMusicRepeat, retryConflict: true,
+		request: func(req protocol.SealedRequest) (*id.ID, []any, bool, string) {
+			ch, ok := musicRoom(req)
+			if !ok {
+				return nil, nil, false, musicNeedsRoom
+			}
+			mode, _ := sealedText(req.Args, 0)
+			value, ok := map[string]uint64{"off": 0, "one": 1, "all": 2}[strings.ToLower(strings.TrimSpace(mode))]
+			if !ok {
+				return nil, nil, false, "Repeat is off, one or all."
+			}
+			return ch, []any{value}, true, ""
+		},
+		render: func(req protocol.SealedRequest, _ InteractionResult) string {
+			mode, _ := sealedText(req.Args, 0)
+			return "Repeat: " + strings.ToLower(strings.TrimSpace(mode)) + "."
+		}},
+	protocol.OpMusicState: musicState(protocol.OpMusicState, true),
+	protocol.OpReadMusic:  musicState(protocol.OpReadMusic, false),
+	protocol.OpPollCreate: {handler: protocol.OpPollCreate,
+		request: func(req protocol.SealedRequest) (*id.ID, []any, bool, string) {
+			question, ok := sealedText(req.Args, 0)
+			if !ok {
+				return nil, nil, false, "Ask a question."
+			}
+			text, _ := sealedText(req.Args, 1)
+			answers := pollAnswers(text)
+			if len(answers) < 2 || len(answers) > 10 {
+				return nil, nil, false, "Give 2 to 10 answers, separated by |."
+			}
+			multiple, _ := sealedUint(req.Args, 2)
+			duration := uint64(86400)
+			if d, ok := sealedUint(req.Args, 3); ok {
+				duration = pollDurations[len(pollDurations)-1]
+				for _, allowed := range pollDurations {
+					if d <= allowed {
+						duration = allowed
+						break
+					}
+				}
+			}
+			channel, ok := sealedID(req.Args, 4)
+			if !ok {
+				channel = req.ChannelID
+			}
+			if channel.IsZero() {
+				return nil, nil, false, "Choose a channel for the poll."
+			}
+			payload, err := cborx.Marshal([]any{uint64(1), channel[:], nil, strings.TrimSpace(question), answers, min(multiple, 1), duration})
+			if err != nil {
+				return nil, nil, false, "That poll is too long."
+			}
+			return nil, []any{payload}, true, ""
+		},
+		// No text: the client says where the poll was posted.
+		render: func(protocol.SealedRequest, InteractionResult) string { return "" }},
+	protocol.OpReadPoll: {handler: protocol.OpPollGet, read: true,
+		request: func(req protocol.SealedRequest) (*id.ID, []any, bool, string) {
+			poll, ok := sealedID(req.Args, 0)
+			if !ok || len(req.Args) != 1 {
+				return nil, nil, false, "E_INVALID"
+			}
+			return nil, []any{poll}, false, ""
+		}},
+	protocol.OpReminderCreate: {handler: protocol.OpReminderCreate,
+		request: func(req protocol.SealedRequest) (*id.ID, []any, bool, string) {
+			when, okWhen := sealedUint(req.Args, 0)
+			text, okText := sealedText(req.Args, 1)
+			if !okWhen || when < 60 || when > 31536000 {
+				return nil, nil, false, "Choose a time at least a minute from now and within a year."
+			}
+			if !okText {
+				return nil, nil, false, "Say what to remind you of."
+			}
+			payload, err := cborx.Marshal([]any{uint64(1), uint64(0), when, text, "UTC", nil, nil})
+			if err != nil {
+				return nil, nil, false, "That reminder is too long."
+			}
+			return nil, []any{payload}, true, ""
+		},
+		// The established copy (web strings reminder.created): "Saved. I’ll remind you {time}: {text}".
+		render: func(req protocol.SealedRequest, _ InteractionResult) string {
+			when, _ := sealedUint(req.Args, 0)
+			text, _ := sealedText(req.Args, 1)
+			return "Saved. I’ll remind you in " + humanSeconds(when) + ": " + text
+		}},
+	protocol.OpReminderList: {handler: protocol.OpReminderList,
+		request: func(protocol.SealedRequest) (*id.ID, []any, bool, string) {
+			return nil, []any{nil}, false, ""
+		},
+		render: func(_ protocol.SealedRequest, r InteractionResult) string {
+			var page []any
+			if cborx.Unmarshal(r.Data, &page) == nil && len(page) >= 2 {
+				if items, ok := page[1].([]any); ok {
+					switch len(items) {
+					case 0:
+						return "You have no upcoming reminders."
+					case 1:
+						return "You have 1 upcoming reminder. Open Reminders to see it."
+					}
+					return fmt.Sprintf("You have %d upcoming reminders. Open Reminders to see them.", len(items))
+				}
+			}
+			return "Open Reminders to see your reminders."
+		}},
+	protocol.OpReadRemindersDue: {handler: protocol.OpReminderDue, read: true,
+		request: func(req protocol.SealedRequest) (*id.ID, []any, bool, string) {
+			cursor, ok := sealedCursor(req.Args, 0)
+			if !ok || len(req.Args) > 1 {
+				return nil, nil, false, "E_INVALID"
+			}
+			return nil, []any{cursor}, false, ""
+		}},
+}
+
+// sealedRefusal maps a v1 handler status to an answer: a bare code for a read, text for a command.
+func sealedRefusal(status uint64, read bool) intake.Answer {
+	type pair struct {
+		code   uint16
+		bare   string
+		member string
+	}
+	m := map[uint64]pair{
+		interactionStatusInvalid:         {400, "E_INVALID", "That command's arguments aren't right."},
+		interactionStatusForbidden:       {403, "E_FORBIDDEN", "E_FORBIDDEN"},
+		interactionStatusExpired:         {408, "E_BOT_STALE", "E_BOT_STALE"},
+		interactionStatusConflict:        {409, "E_CONFLICT", "Something changed meanwhile. Try again."},
+		interactionStatusUnavailable:     {503, "E_UNAVAILABLE", "The Bot can't do that here right now."},
+		interactionStatusBusy:            {429, "E_BUSY", "The Bot is busy. Try again in a moment."},
+		interactionStatusNotFound:        {404, "E_NOT_FOUND", "That wasn't found."},
+		interactionStatusUpgradeRequired: {426, "E_UPGRADE_REQUIRED", "E_UPGRADE_REQUIRED"},
+	}
+	p, ok := m[status]
+	if !ok {
+		p = pair{500, intake.CodeInternal, intake.CodeInternal}
+	}
+	body := p.member
+	if read {
+		body = p.bare
+	}
+	return intake.Answer{Status: p.code, Body: []byte(body), Final: true}
+}
+
+// Dispatch answers req through its adapter and feature handler. It always ends with a final answer.
+func (d *SealedDispatcher) Dispatch(ctx context.Context, req protocol.SealedRequest, reply func(intake.Answer)) {
+	unsupported := intake.Answer{Status: intake.StatusUnsupported, Body: []byte(intake.CodeUnsupported), Final: true}
+	adapter, ok := sealedAdapters[protocol.Operation(req.Operation)]
+	if !ok || d == nil {
+		reply(unsupported)
+		return
+	}
+	handler, ok := d.Handlers[adapter.handler]
+	if !ok || handler.Handle == nil {
+		reply(unsupported)
+		return
+	}
+	channel, args, mutation, problem := adapter.request(req)
+	if problem != "" {
+		reply(intake.Answer{Status: 400, Body: []byte(problem), Final: true})
+		return
+	}
+	v1 := protocol.Request{RequestID: req.RequestID, CommunityID: d.Community, ChannelID: channel, Operation: adapter.handler, Args: args}
+	if mutation {
+		revision, expires := uint64(0), req.SentAt+sealedCommandWindow
+		v1.Revision, v1.Expires = &revision, &expires
+	}
+	// The v1 request's own validation (argument shapes and bounds) applies to every sealed request.
+	if _, err := protocol.EncodeRequestCBOR(v1); err != nil || req.CommunityID != d.Community {
+		reply(sealedRefusal(interactionStatusInvalid, adapter.read))
+		return
+	}
+	if adapter.progress != "" {
+		reply(intake.Answer{Status: 202, Body: []byte(adapter.progress)})
+	}
+	actor := InteractionActor{User: req.UserID, Device: req.DeviceID, Channel: req.ChannelID}
+	result, err := handler.Handle(ctx, actor, v1)
+	if err == nil && result.Status == interactionStatusConflict && adapter.retryConflict && mutation && result.Revision != nil {
+		current := *result.Revision
+		v1.Revision = &current
+		result, err = handler.Handle(ctx, actor, v1)
+	}
+	if err != nil || result.Status > interactionStatusInternal {
+		reply(sealedRefusal(interactionStatusInternal, adapter.read))
+		return
+	}
+	if result.Status != 0 {
+		reply(sealedRefusal(result.Status, adapter.read))
+		return
+	}
+	if adapter.read {
+		var revision any
+		if result.Revision != nil {
+			revision = *result.Revision
+		}
+		data := result.Data
+		if data == nil {
+			data = []byte{}
+		}
+		body, err := cborx.Marshal([]any{revision, data})
+		if err != nil {
+			reply(sealedRefusal(interactionStatusInternal, true))
+			return
+		}
+		reply(intake.Answer{Status: intake.StatusOK, Body: body, Final: true})
+		return
+	}
+	text := ""
+	if adapter.render != nil {
+		text = adapter.render(req, result)
+	}
+	reply(intake.Answer{Status: intake.StatusOK, Body: []byte(text), Final: true})
 }

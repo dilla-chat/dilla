@@ -154,10 +154,15 @@ const (
 	RefusalReplay
 )
 
-// OpenedCommand is op 22's answer: the verified request when Refusal is RefusalNone.
+// OpenedCommand is op 22's answer: the verified request when Refusal is RefusalNone. A refusal
+// decided after the seal opened (RefusalBadSignature through RefusalReplay) carries the request's
+// one-time ReplyKey and nothing else of it (Task 15): the Bot seals its refusal to it, and for a
+// replay (a Retry) re-seals what it already answered to this newest key. RefusalMalformed and
+// RefusalUnknownKey carry none: no reply is possible.
 type OpenedCommand struct {
-	Request protocol.SealedRequest
-	Refusal CommandRefusal
+	ReplyKey [32]byte
+	Request  protocol.SealedRequest
+	Refusal  CommandRefusal
 }
 
 func unixSeconds(now time.Time) (uint64, error) {
@@ -190,18 +195,42 @@ func (c *Client) CommandKey(ctx context.Context, community id.ID, now time.Time)
 // OpenCommand opens and verifies a sealed command that dillad attached to user's device (op
 // 22). A refusal is an answer, not an error: Refusal names it and Request is empty.
 func (c *Client) OpenCommand(ctx context.Context, sealed []byte, user, device id.ID, now time.Time) (OpenedCommand, error) {
-	seconds, err := unixSeconds(now)
-	if err != nil || user.IsZero() || device.IsZero() || len(sealed) == 0 {
-		return OpenedCommand{}, errors.New("invalid command open request")
-	}
-	answer, err := c.Call(ctx, protocol.HelperCommandOpen, []any{sealed, user, device, seconds})
+	payload, err := OpenCommandPayload(sealed, user, device, now)
 	if err != nil {
 		return OpenedCommand{}, err
 	}
+	answer, err := c.Call(ctx, protocol.HelperCommandOpen, payload)
+	if err != nil {
+		return OpenedCommand{}, err
+	}
+	return DecodeOpenedCommand(answer, user, device)
+}
+
+// OpenCommandPayload is op 22's payload for a sealed command dillad attached to user's device at now.
+func OpenCommandPayload(sealed []byte, user, device id.ID, now time.Time) ([]any, error) {
+	seconds, err := unixSeconds(now)
+	if err != nil || user.IsZero() || device.IsZero() || len(sealed) == 0 {
+		return nil, errors.New("invalid command open request")
+	}
+	return []any{sealed, user, device, seconds}, nil
+}
+
+// DecodeOpenedCommand reads op 22's answer strictly: [0, request], [refusal 3..8, reply_key(32)] or
+// [refusal 1..8]. Anything else is an outcome-unknown error. The opened request gets the attached
+// user and device.
+func DecodeOpenedCommand(answer []any, user, device id.ID) (OpenedCommand, error) {
 	code, ok := uint64At(answer, 0)
 	switch {
 	case ok && len(answer) == 1 && code >= uint64(RefusalMalformed) && code <= uint64(RefusalReplay):
 		return OpenedCommand{Refusal: CommandRefusal(code)}, nil
+	case ok && len(answer) == 2 && code >= uint64(RefusalBadSignature) && code <= uint64(RefusalReplay):
+		key, isBytes := answer[1].([]byte)
+		if !isBytes || len(key) != 32 {
+			return OpenedCommand{}, unknown(errors.New("invalid command refusal reply key"))
+		}
+		opened := OpenedCommand{Refusal: CommandRefusal(code)}
+		copy(opened.ReplyKey[:], key)
+		return opened, nil
 	case ok && len(answer) == 2 && code == 0:
 		body, isBytes := answer[1].([]byte)
 		request, err := protocol.DecodeSealedRequest(body)

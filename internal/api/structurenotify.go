@@ -91,6 +91,12 @@ func (n *StructureNotifier) Removed(ctx context.Context, cid, uid id.ID) {
 // ChangedUser sends community_changed only to uid. Member timeouts are personal state: the
 // affected user's connected clients re-read the community, while other members need no update.
 func (n *StructureNotifier) ChangedUser(ctx context.Context, cid, uid id.ID) {
+	// The Bot's feed hears a member's timeout change (Bot v2 task 15): it refuses a timed-out member's commands.
+	if n != nil {
+		if t, ok := n.feed.(interface{ MemberTimeoutChanged(community, user id.ID) }); ok {
+			t.MemberTimeoutChanged(cid, uid)
+		}
+	}
 	if n == nil || n.gw == nil {
 		return
 	}

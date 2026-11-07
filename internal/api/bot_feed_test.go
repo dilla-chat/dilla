@@ -371,7 +371,7 @@ func TestColdStartSnapshotIsBracketed(t *testing.T) {
 	members := map[id.ID][]id.ID{}
 	roles := map[id.ID][]uint64{}
 	var lists []id.ID
-	var marked []id.ID
+	var marked, overwritten []id.ID
 	var owner id.ID
 	for _, ev := range events[1 : len(events)-1] {
 		switch ev.kind {
@@ -403,9 +403,15 @@ func TestColdStartSnapshotIsBracketed(t *testing.T) {
 			marked = append(marked, feedID(t, ev.body[1]))
 		case gateway.BotEventCommunity:
 			owner = feedID(t, ev.body[1])
+		case gateway.BotEventChannelOverwrites:
+			overwritten = append(overwritten, feedID(t, ev.body[1]))
 		default:
 			t.Fatalf("unexpected kind %d in the snapshot", ev.kind)
 		}
+	}
+	// Task 15: the overwrites of the Bot channel only (the fixture has no voice channel; the unmarked one is not named).
+	if !slices.Equal(overwritten, []id.ID{f.text}) {
+		t.Fatalf("snapshot channel_overwrites for %v, want only the Bot channel %v", overwritten, f.text)
 	}
 	if !slices.Equal(lists, []id.ID{f.member.User.ID}) {
 		t.Fatalf("snapshot device lists %v, want only the member's (the owner and the Bot have none, the stranger is not in scope)", lists)
@@ -558,15 +564,23 @@ func TestBotChannelsAndChannelGroupsAreFed(t *testing.T) {
 	}
 	f.feed.BotChannelMarked(f.community, f.other)
 	f.drain(t)
-	got := map[id.ID]uint64{}
+	got, overwrites := map[id.ID]uint64{}, map[id.ID]uint64{}
 	for _, ev := range decodeFeed(t, f.gw.take(f.botDevice)) {
-		if ev.kind != gateway.BotEventBotChannel {
+		switch ev.kind {
+		case gateway.BotEventBotChannel:
+			got[feedID(t, ev.body[1])] = feedUint(t, ev.body[2])
+		case gateway.BotEventChannelOverwrites:
+			// Task 15: a channel that stops being a Bot channel is deleted from the Bot's view, a new one is named.
+			overwrites[feedID(t, ev.body[1])] = feedUint(t, ev.body[3])
+		default:
 			t.Fatalf("unexpected kind %d", ev.kind)
 		}
-		got[feedID(t, ev.body[1])] = feedUint(t, ev.body[2])
 	}
 	if len(got) != 2 || got[f.text] != 0 || got[f.other] != 1 {
 		t.Fatalf("bot_channel events %v, want text unmarked and other marked", got)
+	}
+	if len(overwrites) != 2 || overwrites[f.text] != 1 || overwrites[f.other] != 0 {
+		t.Fatalf("channel_overwrites %v, want text deleted and other named", overwrites)
 	}
 
 	cid := f.community
@@ -857,5 +871,103 @@ func TestForgottenInstallationIsNotFed(t *testing.T) {
 	f.drain(t)
 	if got := f.gw.take(f.botDevice); len(got) != 0 {
 		t.Fatalf("a forgotten installation was fed %d events", len(got))
+	}
+}
+
+// --- Task 15: channel overwrites and member timeouts -------------------------------------------------
+
+// TestChannelOverwritesAreFedForBotAndVoiceChannelsOnly: an overwrite change reaches the Bot for a Bot channel and a
+// voice channel, with @everyone, role and member targets told apart; an ordinary channel's overwrites never do.
+func TestChannelOverwritesAreFedForBotAndVoiceChannelsOnly(t *testing.T) {
+	f := newFeedFixture(t)
+	f.identify(t)
+	f.gw.take(f.botDevice)
+	ctx := context.Background()
+	repo := f.deps.Repo
+	cid := f.community
+	voice := id.New()
+	if err := repo.CreateChannel(ctx, store.ChannelRow{ID: voice, CommunityID: &cid, Kind: api.ChannelVoice, Mode: api.ModeE2EE, Name: "voice", SettingsJSON: []byte(`{}`), HostPolicyVersion: 1, Created: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range []store.OverwriteRow{
+		{ChannelID: f.text, TargetKind: 0, TargetID: f.everyone.ID, Deny: uint64(api.PermSendMessages)},
+		{ChannelID: f.text, TargetKind: 0, TargetID: f.mods.ID, Allow: uint64(api.PermSendMessages)},
+		{ChannelID: f.text, TargetKind: 1, TargetID: f.member.User.ID, Deny: uint64(api.PermAddReactions)},
+		{ChannelID: f.other, TargetKind: 0, TargetID: f.everyone.ID, Deny: uint64(api.PermSendMessages)},
+	} {
+		if err := repo.PutOverwrite(ctx, o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.feed.CommunityChanged(f.community)
+	f.drain(t)
+	seen := map[id.ID][][]any{}
+	for _, ev := range decodeFeed(t, f.gw.take(f.botDevice)) {
+		if ev.kind != gateway.BotEventChannelOverwrites {
+			continue
+		}
+		var rows [][]any
+		if err := cborx.Unmarshal(ev.body[2], &rows); err != nil || feedUint(t, ev.body[3]) != 0 || feedID(t, ev.body[0]) != f.community {
+			t.Fatalf("channel_overwrites %v %v", ev.body, err)
+		}
+		seen[feedID(t, ev.body[1])] = rows
+	}
+	if _, ok := seen[f.other]; ok {
+		t.Fatal("an ordinary channel's overwrites reached the Bot")
+	}
+	if rows, ok := seen[voice]; !ok || len(rows) != 0 {
+		t.Fatalf("the voice channel = %v %v, want named with no overwrites", rows, ok)
+	}
+	kinds := map[uint64]uint64{}
+	for _, row := range seen[f.text] {
+		kinds[row[0].(uint64)]++
+	}
+	if len(seen[f.text]) != 3 || kinds[0] != 1 || kinds[1] != 1 || kinds[2] != 1 {
+		t.Fatalf("the Bot channel's overwrites = %v, want one @everyone, one role and one member entry", seen[f.text])
+	}
+	// Nothing changed: nothing is sent again.
+	f.feed.CommunityChanged(f.community)
+	f.drain(t)
+	for _, ev := range decodeFeed(t, f.gw.take(f.botDevice)) {
+		if ev.kind == gateway.BotEventChannelOverwrites {
+			t.Fatal("unchanged overwrites were sent again")
+		}
+	}
+}
+
+// TestMemberTimeoutIsFedInTheSnapshotAndOnChange: a timed-out member's end is in the snapshot, and a change made
+// through the timeout routes' notice (StructureNotifier.ChangedUser) reaches the Bot, 0 once cleared.
+func TestMemberTimeoutIsFedInTheSnapshotAndOnChange(t *testing.T) {
+	f := newFeedFixture(t)
+	ctx := context.Background()
+	repo := f.deps.Repo
+	until := time.Now().Unix() + 3600
+	if err := repo.PutMemberTimeout(ctx, store.MemberTimeoutRow{CommunityID: f.community, UserID: f.member.User.ID, ByUser: f.owner.ID, Created: 1, Expires: until}); err != nil {
+		t.Fatal(err)
+	}
+	s := f.identify(t)
+	timeouts := map[id.ID]uint64{}
+	for _, ev := range decodeFeed(t, s.sent) {
+		if ev.kind == gateway.BotEventMemberTimeout {
+			timeouts[feedID(t, ev.body[1])] = feedUint(t, ev.body[2])
+		}
+	}
+	if len(timeouts) != 1 || timeouts[f.member.User.ID] != uint64(until) {
+		t.Fatalf("snapshot member_timeout %v, want the member until %d", timeouts, until)
+	}
+	f.gw.take(f.botDevice)
+	if err := repo.DeleteMemberTimeout(ctx, f.community, f.member.User.ID); err != nil {
+		t.Fatal(err)
+	}
+	api.NewStructureNotifier(newRelayGateway(), repo, f.deps.Log).WithBotFeed(f.feed).ChangedUser(ctx, f.community, f.member.User.ID)
+	f.drain(t)
+	var got []uint64
+	for _, ev := range decodeFeed(t, f.gw.take(f.botDevice)) {
+		if ev.kind == gateway.BotEventMemberTimeout && feedID(t, ev.body[1]) == f.member.User.ID {
+			got = append(got, feedUint(t, ev.body[2]))
+		}
+	}
+	if !slices.Equal(got, []uint64{0}) {
+		t.Fatalf("member_timeout after clearing = %v, want [0]", got)
 	}
 }

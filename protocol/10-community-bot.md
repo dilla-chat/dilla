@@ -436,8 +436,11 @@ null except ban may have expires>timestamp. Identifiers and metadata only: no
 message text, reasons, excerpts, names, URLs. Max encoded event4096 bytes.
 Validate community separately against route/session binding. Event id survives retries. Since Bot
 v2 task 12 no route serves these records to the Bot and they are no longer pruned; a signed-device-list
-publication appends none (kind 8 is retired), and the Bot learns device lists, members, roles and
-Bot channels from the op 65 `bot_event` feed (`02` § Bot runtime) instead.
+publication appends none (kind 8 is retired), and the Bot learns device lists, members, roles,
+Bot channels, the Bot and voice channels' overwrites and member timeouts from the op 65 `bot_event`
+feed (`02` § Bot runtime) instead. The Bot authorises a sealed command from that state only: the
+catalog command's `permission_bit` in the command's channel (a channel it was told nothing of refuses
+any non-zero bit), and a timed-out member's commands are refused.
 
 ## Send receipt
 

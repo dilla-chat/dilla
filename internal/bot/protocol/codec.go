@@ -79,6 +79,18 @@ const (
 	OpReminderCancel         Operation = 82
 	OpReminderDismiss        Operation = 83
 	OpReminderDue            Operation = 84
+	// Bot v2 sealed commands (Task 15). OpProbe is the Bot's own health probe (Task 17), answered
+	// 200 with an empty body, final. The three reads serve the app's surfaces over sealed commands
+	// (Task 21's swap off interactions.ts). Their arguments are the v1 operation's arguments (ids as
+	// 16-byte byte strings, a cursor as bytes or null), and their answer body is the deterministic
+	// CBOR [revision uint|null, data bstr], data being the v1 operation's response data:
+	//   OpReadPoll [poll_id]           -> OpPollGet's data       (channel: none)
+	//   OpReadMusic []                 -> OpMusicState's data    (channel: the voice channel)
+	//   OpReadRemindersDue [cursor|null] -> OpReminderDue's data (channel: none)
+	OpProbe            Operation = 90
+	OpReadPoll         Operation = 91
+	OpReadMusic        Operation = 92
+	OpReadRemindersDue Operation = 93
 )
 
 type Request struct {

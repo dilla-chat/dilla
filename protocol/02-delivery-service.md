@@ -634,11 +634,14 @@ it is emitted only after the change committed. The kinds:
 | 6 | `snapshot_begin` | `[community_id]` |
 | 7 | `snapshot_end` | `[community_id]` |
 | 8 | `community` | `[community_id, owner_user_id]`: the owner, who holds every permission |
+| 9 | `channel_overwrites` | `[community_id, channel_id, [[target_kind(uint 0 @everyone, 1 role, 2 member), target_id, allow(uint), deny(uint)]…], deleted(uint 0\|1)]`: the permission overwrites of a Bot channel or a voice channel, and of no other channel, so the Bot authorises a sealed command in its channel as the instance resolves it. Sent when the overwrites change and when a channel becomes a Bot or voice channel; `deleted = 1` (no entries) when it is deleted or stops being one. |
+| 10 | `member_timeout` | `[community_id, user_id, until_unix(uint) \| 0]`: a member's timeout end, `0` once cleared. The Bot refuses a timed-out member's commands (not its sealed reads) until then. |
 
 On a Bot identify (not a resume) the instance streams a cold-start snapshot: `snapshot_begin`, then
 the device list of every member, every member, every role, the owner, every Bot channel and the
 `channel_group` of each Bot channel's open text group and of each open call group the Bot's device is
-in, then `snapshot_end`. It is one pass per Bot start, never per command or on a timer. The body frames are
+in, the `channel_overwrites` of every Bot and voice channel and the `member_timeout` of every timed-out
+member, then `snapshot_end`. It is one pass per Bot start, never per command or on a timer. The body frames are
 sent with `n = 0` and are not ringed; `snapshot_end` is ringed. A Bot connection may resume only from
 an `n` at or above its `snapshot_end`: a drop before it is answered `invalid_session` on resume, and
 the Bot's next identify streams a fresh snapshot. Live commands and events that arrive while the

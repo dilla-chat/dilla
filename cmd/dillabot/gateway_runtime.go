@@ -186,6 +186,8 @@ type botGatewayRuntime struct {
 	lastInteractionPoll map[id.ID]time.Time                    // per installation, guarded by pendingMu
 	interactionPollers  map[id.ID]func(context.Context, id.ID) error
 	pollerVersions      map[id.ID]uint64
+	// sealed is each installation's sealed command intake (Bot v2 Task 15, command_worker.go).
+	sealed sealedRegistry
 }
 
 func newBotGatewayRuntime(ctx context.Context, api *client.Client, loopback bool, log *slog.Logger) *botGatewayRuntime {
@@ -254,7 +256,7 @@ func (r *botGatewayRuntime) feedFor(installation, community, botUser id.ID, deps
 	e := r.entries[installation]
 	r.mu.Unlock()
 	if e != nil && e.feed != nil {
-		e.feed.setFeed(f)
+		e.feed.setFeed(r.sealed.feed(installation, community, f))
 	}
 	return f
 }
@@ -435,7 +437,7 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 	acks := &orderedAcks{log: log}
 	feed := newFeedConsumer(community, acks, log)
 	if h := r.feedHandler(installation); h != nil {
-		feed.setFeed(h)
+		feed.setFeed(r.sealed.feed(installation, community, h))
 	}
 	e := &botGatewayEntry{token: token, device: device, user: user, cancel: cancel, done: make(chan struct{}), client: gateway, feed: feed}
 	r.mu.Lock()
@@ -492,6 +494,9 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 						}
 					}
 				}
+			case gatewayclient.OpBotCommand:
+				// A member's sealed command (Task 15): queued for the installation's sealed intake, acknowledged here.
+				r.relayCommand(installation, delivery.Frame.BotPayload)
 			case gatewayclient.OpCommunityChanged:
 				// The community's channels, settings or the Bot's own installation changed (op 54): read them again.
 				r.notify()
@@ -587,6 +592,7 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 			delete(r.feeds, installation)
 		}
 	}
+	r.sealed.retain(keep)
 	for installation := range r.idlePolls {
 		if !keep[installation] {
 			delete(r.idlePolls, installation)

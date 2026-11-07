@@ -1,0 +1,463 @@
+//go:build linux
+
+package main
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/fxamacker/cbor/v2"
+
+	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
+	"github.com/dilla-chat/dilla/internal/bot/intake"
+	"github.com/dilla-chat/dilla/internal/bot/native"
+	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	"github.com/dilla-chat/dilla/internal/bot/reminders"
+	"github.com/dilla-chat/dilla/internal/bot/service"
+	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/id"
+)
+
+// loadTransport is the Bot device's gateway as the fake dillad: every socket route is one request frame, counted by
+// route. Replies are 204, the catalog PUT answers its revision, the command-key PUT 204.
+type loadTransport struct {
+	mu      sync.Mutex
+	frames  map[string]int
+	first   chan time.Time
+	answers []intake.Answer
+}
+
+func (t *loadTransport) Do(_ context.Context, method, route string, body, _ []byte) (int, []byte, error) {
+	t.mu.Lock()
+	t.frames[method+" "+route]++
+	if strings.HasSuffix(route, "/bot-runtime/replies") {
+		// [device, request, seq, sealed, final]; loadHelper's seal is 0xa0 then the answer plaintext.
+		var reply []any
+		if cborx.Unmarshal(body, &reply) == nil && len(reply) == 5 {
+			if sealed, ok := reply[3].([]byte); ok && len(sealed) > 1 {
+				if a, err := intake.DecodeAnswer(sealed[1:]); err == nil {
+					t.answers = append(t.answers, a)
+				}
+			}
+		}
+	}
+	t.mu.Unlock()
+	switch {
+	case strings.HasSuffix(route, "/catalog"):
+		b, _ := cborx.Marshal([]uint64{1})
+		return 200, b, nil
+	case strings.HasSuffix(route, "/bot-runtime/replies"):
+		if t.first != nil {
+			select {
+			case t.first <- time.Now():
+			default:
+			}
+		}
+		return 204, nil, nil
+	}
+	return 204, nil, nil
+}
+
+func (t *loadTransport) take() map[string]int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := t.frames
+	t.frames = map[string]int{}
+	return out
+}
+
+// loadHelper is the installation's helper: it opens the prepared commands as verified requests and seals an answer
+// by copying it. It counts every op.
+type loadHelper struct {
+	mu       sync.Mutex
+	requests map[string]protocol.SealedRequest
+	replays  map[string][32]byte // a Retry's seal: answered Replay with this reply key
+	ops      int
+	ingests  int
+}
+
+func (h *loadHelper) OpenCommand(_ context.Context, sealed []byte, user, device id.ID, _ time.Time) (helper.OpenedCommand, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.ops++
+	if key, ok := h.replays[string(sealed)]; ok {
+		return helper.OpenedCommand{Refusal: helper.RefusalReplay, ReplyKey: key}, nil
+	}
+	req, ok := h.requests[string(sealed)]
+	if !ok {
+		return helper.OpenedCommand{Refusal: helper.RefusalMalformed}, nil
+	}
+	req.UserID, req.DeviceID = user, device
+	return helper.OpenedCommand{Request: req}, nil
+}
+
+func (h *loadHelper) SealReply(_ context.Context, _ [32]byte, _ id.ID, _ uint32, body []byte) ([]byte, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.ops++
+	return append([]byte{0xa0}, body...), nil
+}
+
+func (h *loadHelper) CommandKey(context.Context, id.ID, time.Time) ([]byte, error) {
+	return []byte{0x87, 0x01}, nil
+}
+
+func (h *loadHelper) counts() (ops, ingests int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.ops, h.ingests
+}
+
+// countingState is the reminders' state (helper ops 11/12 in production), counted separately from the intake's ops.
+type countingState struct {
+	*utilityStateFake
+	mu  sync.Mutex
+	ops int
+}
+
+func (s *countingState) count() { s.mu.Lock(); s.ops++; s.mu.Unlock() }
+func (s *countingState) StateGet(ctx context.Context, area uint64, key []byte) (native.StateValue, error) {
+	s.count()
+	return s.utilityStateFake.StateGet(ctx, area, key)
+}
+func (s *countingState) StateScan(ctx context.Context, area uint64, after []byte, limit uint64) (native.StatePage, error) {
+	s.count()
+	return s.utilityStateFake.StateScan(ctx, area, after, limit)
+}
+func (s *countingState) StateTransaction(ctx context.Context, tx id.ID, changes []native.StateChange) ([]uint64, error) {
+	s.count()
+	return s.utilityStateFake.StateTransaction(ctx, tx, changes)
+}
+func (s *countingState) taken() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.ops
+	s.ops = 0
+	return n
+}
+
+type loadWorld struct {
+	runtime   *botGatewayRuntime
+	entry     *sealedEntry
+	transport *loadTransport
+	helper    *loadHelper
+	state     *countingState
+	community id.ID
+	members   []id.ID
+	devices   map[id.ID][]id.ID
+	commands  []intake.RelayedCommand
+	next      int
+}
+
+const loadCommands = 200
+
+// newLoadWorld is a Bot whose feed snapshot held members members with 3 devices each, and loadCommands /remind
+// commands ready to relay (from the first 20 members, round robin, so the reminders' state is the same at any size).
+func newLoadWorld(t testing.TB, members int, cancel bool) *loadWorld {
+	t.Helper()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	installation, community, botUser, botDevice, instance := id.New(), id.New(), id.New(), id.New(), id.New()
+	transport := &loadTransport{frames: map[string]int{}}
+	// HTTPS serves only discovery; anything else on it is counted as a request and fails the frame count.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/instance" {
+			data, _ := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}, instance, uint64(1), "test.local", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)})
+			w.Header().Set("Content-Type", "application/cbor")
+			_, _ = w.Write(data)
+			return
+		}
+		transport.mu.Lock()
+		transport.frames["HTTPS "+r.Method+" "+r.URL.Path]++
+		transport.mu.Unlock()
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	unlimited := client.RateLimits{ReadPerSecond: 1e9, ReadBurst: 1 << 20, WritePerSecond: 1e9, WriteBurst: 1 << 20}
+	api, err := client.New(client.Config{BaseURL: srv.URL, InstanceID: instance, AllowLoopbackHTTP: true, RateLimits: unlimited})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.Discover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	api.UseTransport(botDevice, transport)
+	session, err := api.SessionForDevice("bot-session", botDevice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newBotGatewayRuntime(ctx, api, true, log)
+	w := &loadWorld{runtime: r, transport: transport, helper: &loadHelper{requests: map[string]protocol.SealedRequest{}}, community: community, devices: map[id.ID][]id.ID{}}
+	// The feed: the installation's handler, teed to the intake's Authz, applies a cold-start snapshot.
+	feed := r.feedFor(installation, community, botUser, feedDeps{ingest: func(context.Context, id.ID, []byte) (native.DeviceListIngest, error) {
+		w.helper.mu.Lock()
+		w.helper.ingests++
+		w.helper.mu.Unlock()
+		return native.DeviceListIngest{Changed: true, Version: 1}, nil
+	}})
+	tee := r.sealed.feed(installation, community, feed)
+	everyone := id.New()
+	tee.SnapshotBegin(ctx)
+	tee.Community(ctx, community, id.New(), true)
+	tee.Role(ctx, RoleEvent{Community: community, Role: everyone, Allow: intake.PermViewChannel | intake.PermSendMessages, FromSnapshot: true})
+	for range members {
+		user := id.New()
+		w.members = append(w.members, user)
+		w.devices[user] = []id.ID{id.New(), id.New(), id.New()}
+		// One device-list push per member, naming its three devices (the helper's op 24 reads it).
+		if err := tee.DeviceList(ctx, user, []byte{0x84, 3}, true); err != nil {
+			t.Fatal(err)
+		}
+		tee.Member(ctx, MemberEvent{Community: community, User: user, Joined: true, Snapshot: true})
+	}
+	tee.SnapshotDone(ctx)
+	w.state = &countingState{utilityStateFake: newUtilityStateFake()}
+	binding := native.Binding{Instance: id.New(), Community: community, Installation: installation}
+	rem := service.ReminderInteractions{Store: reminders.NewStore(w.state, binding), CommunityID: community}
+	r.SetSealedIntake(sealedIntakeConfig{installation: installation, community: community, botUser: botUser, capabilities: 1 << 9,
+		helper: w.helper, session: session, reminders: &rem, held: installationHeld{r, installation}, log: log})
+	w.entry = r.sealed.lookup(installation)
+	if w.entry == nil {
+		t.Fatal("no sealed intake")
+	}
+	// The publisher's start: the key and the catalog. Then the command phase starts from zero.
+	waitUntil(t, func() bool { transport.mu.Lock(); defer transport.mu.Unlock(); return len(transport.frames) >= 2 })
+	if cancel {
+		w.entry.stop()
+	}
+	transport.take()
+	w.state.taken()
+	now := uint64(time.Now().Unix())
+	for i := range 2 * loadCommands {
+		user := w.members[i%min(20, members)]
+		device := w.devices[user][i%3]
+		request := id.New()
+		sealed := append([]byte("sealed:"), request[:]...)
+		var key [32]byte
+		key[0] = 1
+		w.helper.requests[string(sealed)] = protocol.SealedRequest{RequestID: request, CommunityID: community, Operation: uint64(protocol.OpReminderCreate),
+			Args: []any{uint64(600), "stand up"}, SentAt: now, ReplyKey: key}
+		w.commands = append(w.commands, intake.RelayedCommand{RequestID: request, CommunityID: community, UserID: user, DeviceID: device, Sealed: sealed})
+	}
+	return w
+}
+
+func (w *loadWorld) handleNext(ctx context.Context) {
+	cmd := w.commands[w.next]
+	w.next++
+	w.entry.in.Handle(ctx, cmd)
+}
+
+func waitUntil(t testing.TB, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not met")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func cpuTime() time.Duration {
+	var u syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &u); err != nil {
+		return 0
+	}
+	return time.Duration(u.Utime.Nano() + u.Stime.Nano())
+}
+
+// TestCommandCostIsFlatAt200Members600Devices (Task 15 load bound, spec "200 members / 600 devices"): after the
+// snapshot, 200 /remind commands cost no device-list read, one request frame per answer, at most 3 intake helper
+// ops each, and the same allocations and CPU time per command at 200 members as at 20.
+func TestCommandCostIsFlatAt200Members600Devices(t *testing.T) {
+	ctx := context.Background()
+	w := newLoadWorld(t, 200, true)
+	if len(w.devices) != 200 || len(w.members)*3 != 600 {
+		t.Fatalf("world has %d members", len(w.members))
+	}
+	_, ingestsBefore := w.helper.counts()
+	opsBefore, _ := w.helper.counts()
+	for range loadCommands {
+		w.handleNext(ctx)
+	}
+	ops, ingests := w.helper.counts()
+	frames := w.transport.take()
+	stateOps := w.state.taken()
+	replies := frames["POST /v1/bot-runtime/replies"]
+	total := 0
+	for route, n := range frames {
+		total += n
+		if strings.Contains(route, "device-list") || strings.Contains(route, "/members") {
+			t.Fatalf("a command read %s %d times", route, n)
+		}
+	}
+	if ingests != ingestsBefore {
+		t.Fatalf("commands ingested device lists: %d", ingests-ingestsBefore)
+	}
+	if replies != loadCommands || total != replies {
+		t.Fatalf("request frames %v: want exactly one reply per command (%d)", frames, loadCommands)
+	}
+	perCommand := float64(ops-opsBefore) / loadCommands
+	if perCommand > 3 {
+		t.Fatalf("intake helper ops per command = %.2f, want ≤ 3", perCommand)
+	}
+	t.Logf("per /remind: %d request frame(s), %.0f intake helper ops (open, seal), %.0f reminder state ops, 0 device-list reads",
+		total/loadCommands, perCommand, float64(stateOps)/loadCommands)
+
+	// Allocations and CPU time per command: 200 members against 20.
+	small := newLoadWorld(t, 20, true)
+	large := newLoadWorld(t, 200, true)
+	for range 20 { // warm both
+		small.handleNext(ctx)
+		large.handleNext(ctx)
+	}
+	allocSmall := testing.AllocsPerRun(150, func() { small.handleNext(ctx) })
+	allocLarge := testing.AllocsPerRun(150, func() { large.handleNext(ctx) })
+	if allocLarge > 1.1*allocSmall {
+		t.Fatalf("allocations per command: %.0f at 200 members, %.0f at 20 (ratio %.2f > 1.1)", allocLarge, allocSmall, allocLarge/allocSmall)
+	}
+	cpuOf := func(members int) time.Duration {
+		best := time.Duration(1<<63 - 1)
+		for range 3 {
+			lw := newLoadWorld(t, members, true)
+			start := cpuTime()
+			for range loadCommands {
+				lw.handleNext(ctx)
+			}
+			best = min(best, cpuTime()-start)
+		}
+		return best
+	}
+	cpuSmall, cpuLarge := cpuOf(20), cpuOf(200)
+	if float64(cpuLarge) > 1.2*float64(cpuSmall) {
+		t.Fatalf("CPU per 200 commands: %v at 200 members, %v at 20 (ratio %.2f > 1.2)", cpuLarge, cpuSmall, float64(cpuLarge)/float64(cpuSmall))
+	}
+	t.Logf("allocations per command %.0f (200 members) vs %.0f (20); CPU per 200 commands %v vs %v", allocLarge, allocSmall, cpuLarge, cpuSmall)
+}
+
+// TestRelayedRemindAnswersWithin100ms: an op 64 for /remind, relayed on the delivery loop, is answered "Saved" by the
+// real reminder handler within 100 ms, through the queue and a worker.
+func TestRelayedRemindAnswersWithin100ms(t *testing.T) {
+	w := newLoadWorld(t, 20, false)
+	w.transport.first = make(chan time.Time, 1)
+	cmd := w.commands[0]
+	payload := []cbor.RawMessage{}
+	for _, v := range []any{cmd.RequestID[:], cmd.CommunityID[:], cmd.UserID[:], cmd.DeviceID[:], cmd.Sealed} {
+		b, err := cborx.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload = append(payload, b)
+	}
+	installation := w.entry.installation
+	start := time.Now()
+	w.runtime.relayCommand(installation, payload)
+	select {
+	case at := <-w.transport.first:
+		if took := at.Sub(start); took > 100*time.Millisecond {
+			t.Fatalf("relay to first answer took %v", took)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no answer")
+	}
+	if n := w.transport.take()["POST /v1/bot-runtime/replies"]; n != 1 {
+		t.Fatalf("replies = %d", n)
+	}
+}
+
+func TestRelayedCommandDecodeIsStrict(t *testing.T) {
+	good := []any{id.New(), id.New(), id.New(), id.New(), []byte{1}}
+	encode := func(vs []any) []cbor.RawMessage {
+		var out []cbor.RawMessage
+		for _, v := range vs {
+			b, _ := cborx.Marshal(v)
+			out = append(out, b)
+		}
+		return out
+	}
+	if _, err := decodeRelayedCommand(encode(good)); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range [][]any{good[:4], {id.ID{}, id.New(), id.New(), id.New(), []byte{1}}, {id.New(), id.New(), id.New(), id.New(), []byte{}}, {id.New(), "x", id.New(), id.New(), []byte{1}}} {
+		if _, err := decodeRelayedCommand(encode(bad)); err == nil {
+			t.Fatalf("accepted %v", bad)
+		}
+	}
+}
+
+// TestSealedIntakeFailsClosedUntilTheFeedIsReady (Task 14 ruling): Held is false for an installation with no feed, so
+// the intake refuses every command with 503 E_BOT_OFFLINE until the installation's feed is bound and has applied a
+// snapshot; then the same command (its Retry) is served.
+func TestSealedIntakeFailsClosedUntilTheFeedIsReady(t *testing.T) {
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	installation, community, botUser, user, device := id.New(), id.New(), id.New(), id.New(), id.New()
+	w := newLoadWorld(t, 1, true) // for its runtime, transport and session
+	r := w.runtime
+	h := &loadHelper{requests: map[string]protocol.SealedRequest{}, replays: map[string][32]byte{}}
+	state := &countingState{utilityStateFake: newUtilityStateFake()}
+	rem := service.ReminderInteractions{Store: reminders.NewStore(state, native.Binding{Instance: id.New(), Community: community, Installation: installation}), CommunityID: community}
+	session, _ := w.entry.current()
+	r.SetSealedIntake(sealedIntakeConfig{installation: installation, community: community, botUser: botUser, capabilities: 1 << 9,
+		helper: h, session: session.session, reminders: &rem, held: installationHeld{r, installation}, log: log})
+	e := r.sealed.lookup(installation)
+	e.stop()
+	request := id.New()
+	var key [32]byte
+	key[0] = 1
+	sealed := append([]byte("sealed:"), request[:]...)
+	h.requests[string(sealed)] = protocol.SealedRequest{RequestID: request, CommunityID: community, Operation: uint64(protocol.OpReminderCreate),
+		Args: []any{uint64(600), "x"}, SentAt: uint64(time.Now().Unix()), ReplyKey: key}
+	cmd := intake.RelayedCommand{RequestID: request, CommunityID: community, UserID: user, DeviceID: device, Sealed: sealed}
+	last := func() intake.Answer {
+		t.Helper()
+		w.transport.mu.Lock()
+		defer w.transport.mu.Unlock()
+		if len(w.transport.answers) == 0 {
+			t.Fatal("no answer")
+		}
+		return w.transport.answers[len(w.transport.answers)-1]
+	}
+	retry := func(k byte) {
+		resealed := append(append([]byte(nil), sealed...), k)
+		var rk [32]byte
+		rk[0] = k
+		h.mu.Lock()
+		h.replays[string(resealed)] = rk
+		h.mu.Unlock()
+		c := cmd
+		c.Sealed = resealed
+		e.in.Handle(ctx, c)
+	}
+	// No feed at all: Held cannot know, so the intake is offline.
+	e.in.Handle(ctx, cmd)
+	if a := last(); a.Status != 503 || string(a.Body) != "E_BOT_OFFLINE" {
+		t.Fatalf("no feed: %+v", a)
+	}
+	// A feed, but no snapshot applied yet: still offline.
+	feed := r.feedFor(installation, community, botUser, feedDeps{})
+	tee := r.sealed.feed(installation, community, feed)
+	retry(2)
+	if a := last(); a.Status != 503 {
+		t.Fatalf("no snapshot: %+v", a)
+	}
+	tee.SnapshotBegin(ctx)
+	tee.Role(ctx, RoleEvent{Community: community, Role: id.New(), Allow: intake.PermViewChannel, FromSnapshot: true})
+	tee.Member(ctx, MemberEvent{Community: community, User: user, Joined: true, Snapshot: true})
+	tee.SnapshotDone(ctx)
+	retry(3)
+	if a := last(); a.Status != 200 || !strings.HasPrefix(string(a.Body), "Saved") {
+		t.Fatalf("ready: %+v", a)
+	}
+}

@@ -749,6 +749,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									outbox, interactionErr = service.NewInteractionResponseOutbox(nativeClient, coordinator, result.Session)
 									if interactionErr == nil {
 										var dispatcher *service.InteractionDispatcher
+										// The sealed intake (Bot v2 Task 15) serves the same handlers; it is configured once the
+										// helper is retained by the runtime.
+										var sealedConfig sealedIntakeConfig
 										var snapshots *service.InteractionRegistrationCoordinator
 										snapshots, interactionErr = service.NewInteractionRegistrationCoordinator(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, api, result.Session)
 										if interactionErr == nil {
@@ -804,6 +807,8 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 													dispatcher, interactionErr = newRuntimeUtilityDispatcher(nativeClient, handlers, utilities, result.Session,
 														installation.CommunityID, installation.ID, botUser, result.Installation.Capabilities,
 														func() uint64 { return unixSecondsOrZero(time.Now()) }, snapshots)
+													sealedConfig = newSealedIntakeConfig(gateways, installation.ID, installation.CommunityID, botUser,
+														result.Installation.Capabilities, nativeClient, result.Session, handlers, utilities)
 												}
 											}
 											if interactionErr == nil {
@@ -812,6 +817,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 												eventRuntime := newInteractionEventRuntime(interactionPoller, eventHandler)
 												if interactionErr = musicRegistry.RetainInteractions(installation.ID, installation.CommunityID, nativeClient); interactionErr == nil {
 													runtimeOwnedNative = true
+													gateways.SetSealedIntake(sealedConfig)
 													reportUnrefreshed := unrefreshedSendersLogger(logger, installation.ID)
 													intakeEvents := countSkipped{holdingEventDrainer: eventRuntime, reportSkipped: func(events []service.SkippedGroupEvent) {
 														logSkippedCommandEvents(logger, installation.ID, events)

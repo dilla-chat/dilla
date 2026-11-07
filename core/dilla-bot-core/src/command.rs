@@ -4,8 +4,9 @@
 //!
 //! Ops (payload → answer):
 //! - 21 `command_key_current [community_id, now]` → `[publication]`
-//! - 22 `command_open [sealed, attached_user, attached_device, now]` → `[0, request_cbor]` or
-//!   `[refusal_code]`; `request_cbor` is `[request_id, community_id, channel_id|null, operation,
+//! - 22 `command_open [sealed, attached_user, attached_device, now]` → `[0, request_cbor]`,
+//!   `[refusal_code, reply_key]` once the seal opened (codes 3..8; Task 15) or `[refusal_code]`
+//!   when it did not (1 malformed, 2 unknown key); `request_cbor` is `[request_id, community_id, channel_id|null, operation,
 //!   args, sent_at, reply_key]`
 //! - 23 `reply_seal [reply_key, request_id, seq, body]` → `[sealed]`
 //! - 24 `device_list_ingest [user_id, push, now]` → `[changed 0|1, version, state]`; `push` is
@@ -55,7 +56,11 @@ const KEY_MAX_AGE_SECS: i64 = MAX_COMMAND_KEY_LIFETIME_SECS as i64 + CLOCK_SKEW_
 
 pub(crate) enum Opened {
     Request(CommandRequest),
-    Refused(u8),
+    /// A refusal code, and the request's one-time reply key when the seal opened (codes 3..8):
+    /// the Bot seals its refusal to it, or for a replay re-seals its answers to this newest key
+    /// (Task 15). Nothing else of an unverified request leaves the helper. Codes 1 and 2 (the
+    /// seal did not open) carry none.
+    Refused(u8, Option<[u8; 32]>),
 }
 
 fn checked_now(now: u64) -> Result<i64, DispatchError> {
@@ -206,7 +211,7 @@ pub(crate) fn open(
     if user == [0; 16] || device == [0; 16] {
         return Err(DispatchError::Invalid);
     }
-    let refused = |r: CommandRefusal| Ok(Opened::Refused(r.code()));
+    let refused = |r: CommandRefusal| Ok(Opened::Refused(r.code(), None));
     let key_id = match sealed_command_key_id(sealed) {
         Ok(k) => k,
         Err(r) => return refused(r),
@@ -246,6 +251,9 @@ pub(crate) fn open(
         Err(r) => return refused(r),
     };
     drop(private_key);
+    // From here the seal opened: a refusal carries the request's reply key and nothing else.
+    let reply_key = cmd.request.reply_key;
+    let refused = |r: CommandRefusal| Ok(Opened::Refused(r.code(), Some(reply_key)));
     let (user, device) = (UserId::from_bytes(user), DeviceId::from_bytes(device));
     if cmd.user_id != user || cmd.device_id != device {
         return refused(CommandRefusal::WrongDevice);
@@ -288,7 +296,7 @@ pub(crate) fn open(
         f.max(now_i - REPLAY_WINDOW_SECS)
     });
     if i64::try_from(request.sent_at).unwrap_or(i64::MAX) < floor + CLOCK_SKEW_SECS {
-        return Ok(Opened::Refused(REFUSAL_REPLAY));
+        return Ok(Opened::Refused(REFUSAL_REPLAY, Some(request.reply_key)));
     }
     db(tx.execute("DELETE FROM command_replay WHERE seen_at<?1", [floor]))?;
     db(tx.execute(
@@ -302,7 +310,9 @@ pub(crate) fn open(
     ))?;
     db(tx.commit())?;
     if inserted == 0 {
-        return Ok(Opened::Refused(REFUSAL_REPLAY));
+        // Verified, and seen before: a Retry. The Bot re-seals what it already answered to this
+        // send's reply key (the client keeps only the newest), and dispatches nothing again.
+        return Ok(Opened::Refused(REFUSAL_REPLAY, Some(request.reply_key)));
     }
     Ok(Opened::Request(request))
 }
@@ -415,8 +425,11 @@ pub(crate) fn op_open(
     .map_err(invalid)?;
     let mut e = Encoder::new();
     match open(store, core, &sealed, user, device, now)? {
-        Opened::Refused(code) => {
+        Opened::Refused(code, None) => {
             e.array(1).uint(u64::from(code));
+        }
+        Opened::Refused(code, Some(reply_key)) => {
+            e.array(2).uint(u64::from(code)).bytes(&reply_key);
         }
         Opened::Request(request) => {
             let request = Zeroizing::new(encode_request(&request));
@@ -644,7 +657,7 @@ mod tests {
 
     fn refused(opened: Opened) -> u8 {
         match opened {
-            Opened::Refused(code) => code,
+            Opened::Refused(code, _) => code,
             Opened::Request(_) => 0,
         }
     }
@@ -759,7 +772,7 @@ mod tests {
         fn open_as(&self, sealed: &[u8], device: [u8; 16], now: u64) -> Result<CommandRequest, u8> {
             match open(&self.store, &self.core, sealed, USER, device, now).unwrap() {
                 Opened::Request(r) => Ok(r),
-                Opened::Refused(code) => Err(code),
+                Opened::Refused(code, _) => Err(code),
             }
         }
 
@@ -1024,6 +1037,103 @@ mod tests {
             w.open_at(&genuine, T0).is_ok(),
             "the genuine command still opens"
         );
+    }
+
+    /// Task 15: a refusal decided after the seal opened carries the request's reply key, so the Bot
+    /// can seal its refusal (401, 408) or, for a replay, re-seal its answers to the newest key.
+    /// A seal that did not open (malformed, unknown key) carries none: no reply is possible.
+    #[test]
+    fn refusals_after_the_seal_opened_carry_the_reply_key() {
+        let mut w = world();
+        w.anchor(&w.v1());
+        let p = w.publication(T0);
+        let req = w.request(T0);
+        let open_full = |w: &World, sealed: &[u8], device: [u8; 16], now: u64| {
+            open(&w.store, &w.core, sealed, USER, device, now).unwrap()
+        };
+        let (forger, _) = dsk(0x62);
+        let (forged, forged_secret) = seal_command(
+            &p,
+            &req,
+            UserId::from_bytes(USER),
+            DeviceId::from_bytes(DEVICE),
+            &forger,
+        )
+        .unwrap();
+        match open_full(&w, &forged, DEVICE, T0) {
+            Opened::Refused(code, Some(key)) => {
+                assert_eq!(code, CommandRefusal::BadSignature.code());
+                assert_eq!(key, forged_secret.public_key());
+            }
+            _ => panic!("a bad signature carries the reply key"),
+        }
+        let sealed = w.seal(&p, &req);
+        assert!(matches!(
+            open_full(&w, &sealed, [0x57; 16], T0),
+            Opened::Refused(c, Some(_)) if c == CommandRefusal::WrongDevice.code()
+        ));
+        assert!(matches!(
+            open_full(&w, &sealed, DEVICE, T0 + 500),
+            Opened::Refused(c, Some(_)) if c == CommandRefusal::Stale.code()
+        ));
+        assert!(matches!(
+            open_full(&w, &sealed, DEVICE, T0),
+            Opened::Request(_)
+        ));
+        // A Retry: the same request sealed again with a fresh one-time reply key.
+        let (again, again_secret) = seal_command(
+            &p,
+            &req,
+            UserId::from_bytes(USER),
+            DeviceId::from_bytes(DEVICE),
+            &w.user_dsk,
+        )
+        .unwrap();
+        match open_full(&w, &again, DEVICE, T0 + 2) {
+            Opened::Refused(code, Some(key)) => {
+                assert_eq!(code, REFUSAL_REPLAY);
+                assert_eq!(key, again_secret.public_key(), "the newest send's key");
+            }
+            _ => panic!("a replay carries the newest reply key"),
+        }
+        assert!(matches!(
+            open_full(&w, &[0x80], DEVICE, T0),
+            Opened::Refused(c, None) if c == CommandRefusal::Malformed.code()
+        ));
+        let mut unknown = sealed.clone();
+        // The key id is the outer array's second element: [1, key_id, request_id, enc, ct].
+        unknown[3] ^= 1;
+        assert!(matches!(
+            open_full(&w, &unknown, DEVICE, T0),
+            Opened::Refused(c, None) if c == CommandRefusal::UnknownKey.code()
+        ));
+        // The op 22 answer: [code, reply_key] once the seal opened, [code] otherwise.
+        let payload = |sealed: &[u8], now: u64| {
+            let mut e = Encoder::new();
+            e.array(4)
+                .bytes(sealed)
+                .bytes(&USER)
+                .bytes(&DEVICE)
+                .uint(now);
+            e.into_vec()
+        };
+        let answer = op_open(&w.store, &w.core, &payload(&again, T0 + 3)).unwrap();
+        let (code, key) = decode_strict(&answer, |d| {
+            d.array(2)?;
+            Ok((d.uint()?, d.bytes_exact::<32>()?))
+        })
+        .unwrap();
+        assert_eq!(
+            (code, key),
+            (u64::from(REFUSAL_REPLAY), again_secret.public_key())
+        );
+        let answer = op_open(&w.store, &w.core, &payload(&[0x80], T0 + 3)).unwrap();
+        let code = decode_strict(&answer, |d| {
+            d.array(1)?;
+            d.uint()
+        })
+        .unwrap();
+        assert_eq!(code, u64::from(CommandRefusal::Malformed.code()));
     }
 
     #[test]

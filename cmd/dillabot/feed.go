@@ -110,6 +110,7 @@ type feedEvent struct {
 	marked       bool
 	owner        id.ID
 	fromSnapshot bool
+	authz        authzFeedEvent // kinds 9 and 10 (Task 15, feed_authz.go)
 }
 
 var errFeedShape = errors.New("bot feed: malformed bot_event")
@@ -144,6 +145,9 @@ func decodeFeedEvent(payload []cbor.RawMessage) (feedEvent, error) {
 	var body []cbor.RawMessage
 	if cborx.ExpectMajor(payload[1], cborx.MajorArray) != nil || cborx.Unmarshal(payload[1], &body) != nil {
 		return ev, errFeedShape
+	}
+	if kind == feedChannelOverwrites || kind == feedMemberTimeout {
+		return decodeAuthzFeedEvent(kind, body) // Task 15, feed_authz.go
 	}
 	want := map[uint64]int{feedDeviceList: 2, feedMember: 4, feedRole: 4, feedChannelGroup: 4, feedBotChannel: 3,
 		feedSnapshotBegin: 1, feedSnapshotEnd: 1, feedCommunity: 2}[kind]
@@ -262,6 +266,8 @@ func (ev feedEvent) apply(ctx context.Context, h Feed) error {
 		h.BotChannel(ctx, ev.community, ev.channel, ev.marked, ev.fromSnapshot)
 	case feedCommunity:
 		h.Community(ctx, ev.community, ev.owner, ev.fromSnapshot)
+	case feedChannelOverwrites, feedMemberTimeout:
+		ev.applyAuthz(ctx, h) // Task 15, feed_authz.go
 	}
 	return nil
 }

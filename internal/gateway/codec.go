@@ -171,6 +171,12 @@ const (
 	BotEventSnapshotEnd   uint64 = 7
 	// BotEventCommunity is `[community_id, owner_user_id]`: who holds the owner short-circuit.
 	BotEventCommunity uint64 = 8
+	// BotEventChannelOverwrites is `[community_id, channel_id, [[target_kind, target_id, allow, deny]…], deleted(uint
+	// 0|1)]` (Bot v2 task 15): a Bot channel's or voice channel's overwrites, target_kind 0 @everyone, 1 role, 2
+	// member. deleted 1 (with no entries) means the channel is gone or no longer a Bot or voice channel.
+	BotEventChannelOverwrites uint64 = 9
+	// BotEventMemberTimeout is `[community_id, user_id, until_unix | 0]` (Bot v2 task 15).
+	BotEventMemberTimeout uint64 = 10
 )
 
 // BotEventPayload is op 65 bot_event's `[kind, payload]` (Bot v2 task 12).

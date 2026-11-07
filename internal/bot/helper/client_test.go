@@ -111,6 +111,17 @@ func fixtureCommandAnswer(request protocol.HelperRequest) ([]any, bool) {
 		}
 		replyKey := make([]byte, 32)
 		replyKey[0] = 0xaa
+		// Task 15: a refusal decided after the seal opened carries the reply key ([code, key]).
+		switch now {
+		case 4:
+			return []any{uint64(8), replyKey}, true
+		case 5:
+			return []any{uint64(3), replyKey}, true
+		case 6: // undefined: the seal of an unknown key never opened
+			return []any{uint64(2), replyKey}, true
+		case 7: // undefined: a short key
+			return []any{uint64(8), replyKey[:31]}, true
+		}
 		body, _ := cborx.Marshal([]any{idBytes(fixtureID(40)), idBytes(fixtureID(2)), nil, uint64(7), []any{"hello", uint64(3), []byte{1}, nil}, uint64(1_800_000_000), replyKey})
 		if now == 3 {
 			body = append(body, 0)
@@ -159,8 +170,16 @@ func TestCommandWrappersDecodeHelperAnswers(t *testing.T) {
 		t.Fatalf("opened args = %#v", r.Args)
 	}
 	replay, err := c.OpenCommand(ctx, []byte{0x85}, fixtureID(5), fixtureID(6), time.Unix(1, 0))
-	if err != nil || replay.Refusal != RefusalReplay {
+	if err != nil || replay.Refusal != RefusalReplay || replay.ReplyKey != ([32]byte{}) {
 		t.Fatalf("replay = %#v, %v", replay, err)
+	}
+	keyed, err := c.OpenCommand(ctx, []byte{0x85}, fixtureID(5), fixtureID(6), time.Unix(4, 0))
+	if err != nil || keyed.Refusal != RefusalReplay || keyed.ReplyKey[0] != 0xaa || keyed.Request.RequestID != (id.ID{}) {
+		t.Fatalf("replay with its reply key = %#v, %v", keyed, err)
+	}
+	signature, err := c.OpenCommand(ctx, []byte{0x85}, fixtureID(5), fixtureID(6), time.Unix(5, 0))
+	if err != nil || signature.Refusal != RefusalBadSignature || signature.ReplyKey[0] != 0xaa {
+		t.Fatalf("bad signature with its reply key = %#v, %v", signature, err)
 	}
 	if sealed, err := c.SealReply(ctx, [32]byte{1}, fixtureID(40), 2, []byte("ok")); err != nil || len(sealed) != 2 {
 		t.Fatalf("SealReply = %x, %v", sealed, err)
@@ -180,7 +199,7 @@ func TestCommandWrappersDecodeHelperAnswers(t *testing.T) {
 }
 
 func TestOpenCommandRefusesUndefinedAnswers(t *testing.T) {
-	for _, now := range []int64{2, 3} {
+	for _, now := range []int64{2, 3, 6, 7} {
 		c := startFixture(t, "command")
 		if _, err := c.OpenCommand(context.Background(), []byte{0x85}, fixtureID(5), fixtureID(6), time.Unix(now, 0)); err == nil {
 			t.Fatalf("answer %d accepted", now)

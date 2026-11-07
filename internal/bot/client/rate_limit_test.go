@@ -119,6 +119,10 @@ func TestRequestRateClassesMirrorServer(t *testing.T) {
 		{"POST", "groups/x/proposal", "proposal"},
 		{"GET", "devices/x/keypackage", "keypackage"},
 		{"POST", "bot-runtime/installations/x/interaction-groups/y/heal", "commit"},
+		// Bot v2 Task 15: dillad meters the Bot's replies and state hints as bot_runtime, at the read rate.
+		{"POST", "bot-runtime/replies", "read"},
+		{"POST", "bot-runtime/state-hints", "read"},
+		{"PUT", "bot-runtime/communities/x/catalog", "write"},
 	} {
 		if got := requestClass(tc.method, tc.path); got != tc.want {
 			t.Errorf("%s %s class=%s want=%s", tc.method, tc.path, got, tc.want)
