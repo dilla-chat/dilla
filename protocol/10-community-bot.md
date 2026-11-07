@@ -1681,16 +1681,21 @@ neutralises `@everyone` unless `allow_everyone` is 1.
 **Metering.** Client addresses are keyed by IPv4 address or IPv6 /64, networks by IPv4 /24 or IPv6
 /48, and `X-Forwarded-For` is read only from a trusted proxy.
 
-- Every POST spends one token of its address's `webhook_address_all` bucket (10 per second, burst 50),
-  which bounds the work any one address causes, valid secrets included.
+- Every POST spends one token of its address's `webhook_address_all` bucket (10 per second, burst 50)
+  and of its network's `webhook_prefix_all` bucket (50 per second, burst 250), before any work. They
+  bound the work any one address or network causes, valid secrets included; the network ceiling is far
+  above what valid senders on one network send, so junk must be very heavy to throttle them.
+- Every POST then reserves one token of its address's `webhook_address` failure bucket (2 per second,
+  burst 20); an address with none left is refused before any work. The token is given back once the
+  secret matched, so a valid sender spends nothing of it, and requests in flight at once (slow bodies)
+  each hold their own token, so they cannot all pass on the last one.
 - A POST that fails before or at the secret check (an unknown or malformed id, a wrong secret, a body
-  over the cap) also spends one token of its address's `webhook_address` failure bucket (2 per second,
-  burst 20) and of its network's `webhook_prefix` failure bucket (20 per second, burst 100). An address
-  whose failure bucket is empty is refused before any work; a network whose failure bucket is empty
-  has its failures answered `429` instead of `401`. A bad id and a bad secret spend the same buckets
-  after the same work, so they still look alike.
-- A POST whose secret matched never touches the failure buckets, so junk from a network cannot throttle
-  a valid sender on it. It spends one token of the webhook's own `webhook` bucket (30 a minute, burst
+  over the cap) keeps its address token and also spends one token of its network's `webhook_prefix`
+  failure bucket (20 per second, burst 100); a network whose failure bucket is empty has its failures
+  answered `429` instead of `401`. A bad id and a bad secret spend the same buckets after the same work,
+  so they still look alike.
+- A POST whose secret matched never keeps a failure token, so junk from a network cannot throttle a
+  valid sender on it. It spends one token of the webhook's own `webhook` bucket (30 a minute, burst
   5: the sixth POST at once waits 2 s).
 
 Every refusal is `429` with `Retry-After` in whole seconds. The instance serves `/hooks/` on its
@@ -1726,7 +1731,10 @@ authenticated. The fetch is hardened against server-side request forgery:
   the documentation ranges; everything outside `2000::/3` is refused, including `::ffff:0:0/96` and
   the local-use NAT64 `64:ff9b:1::/48`, except 6to4 `2002::/16` and the NAT64 well-known `64:ff9b::/96`,
   whose embedded IPv4 is vetted instead. The instance's own addresses are refused too: its interfaces,
-  `instance.public_ip`, and what `instance.domain` resolves to (re-resolved every 10 minutes). Behind a
+  `instance.public_ip`, and what `instance.domain` resolves to. The domain is resolved in the background
+  at start-up and every 10 minutes (5 s per lookup), never while fetching; until its first lookup
+  succeeds no avatar is fetched (posts go on without one), and a later failed lookup keeps the last good
+  answer. Behind a
   reverse proxy, set `public_ip` to the proxy's public address as well, so the check holds even when the
   domain resolves elsewhere;
 - at most 2 redirects, each checked and vetted again; no proxy; TLS verified; no cookies, credentials
@@ -1738,7 +1746,9 @@ authenticated. The fetch is hardened against server-side request forgery:
 The result is cached in memory, content-addressed by the SHA-256 of the PNG (the `avatar_id`), scoped
 to the webhook's community, for 24 h, at most 4 MiB per community, 128 MiB and 16384 images in all,
 each image charged 512 bytes on top of its PNG; the oldest go first, and expired entries are swept as
-the cache is used. A failed fetch is remembered for 10 minutes. Fetches are metered per webhook (one
+the cache is used. A failed fetch is remembered for 10 minutes. The remembered URLs, successes and
+failures kept apart so each expires on time, are at most 16384 and 8 MiB (each URL charged its length
+plus 256 bytes), failures dropped first. Fetches are metered per webhook (one
 per 30 s after a burst of 2), per community (one per 5 s after a burst of 5) and for the instance (2 a
 second, burst 10), narrowest first: a fetch one bucket refuses spends nothing of the others. A POST waits at most 750 ms for a new fetch; past
 that it is delivered without an avatar and the fetch, which goes on, serves the webhook's next post.

@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -244,15 +245,66 @@ func TestFetchRefusesWhatIsNotASmallImage(t *testing.T) {
 
 // Fix round 2 N-4: the addresses instance.domain resolves to are refused, so an avatar URL naming the operator's own
 // public address cannot hairpin through their proxy.
+// switchResolver answers instance.domain lookups from a fakeResolver, or fails while down is set; every other host
+// goes to the fake table.
+type switchResolver struct {
+	fakeResolver
+	down atomic.Bool
+}
+
+func (r *switchResolver) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {
+	if host == "self.test" && r.down.Load() {
+		return nil, errors.New("SERVFAIL")
+	}
+	return r.fakeResolver.LookupNetIP(ctx, network, host)
+}
+
+// Fix round 2 N-4 and round 3 S3: the addresses instance.domain resolves to are refused; the domain is resolved by the
+// background refresh only; before its first success nothing is fetched; a failed refresh keeps the last good set.
 func TestFetchRefusesTheInstanceDomainsAddresses(t *testing.T) {
 	a := newAvatarServer(t, map[string]func(http.ResponseWriter, *http.Request){"/ok.png": serve(pngOf(t, 8, 8), "image/png")})
 	f := a.fetcher(t)
+	base, ok := f.o.Resolver.(fakeResolver)
+	if !ok {
+		t.Fatal("the test fetcher's resolver is not the fake table")
+	}
+	r := &switchResolver{fakeResolver: base}
+	r.down.Store(true)
+	f.o.Resolver = r
 	f.o.SelfDomain = "self.test:443"
+
+	// Before the first successful lookup: fail closed, and nothing is dialled.
+	if err := f.RefreshSelf(context.Background()); err == nil {
+		t.Fatal("RefreshSelf succeeded while the resolver is down")
+	}
+	if _, err := f.Fetch(context.Background(), "https://example.com/ok.png"); !errors.Is(err, ErrSelfUnknown) {
+		t.Fatalf("fetch before the first lookup = %v, want ErrSelfUnknown", err)
+	}
+	if n := len(a.dials()); n != 0 {
+		t.Fatalf("%d dials before the instance's addresses were known", n)
+	}
+
+	r.down.Store(false)
+	if err := f.RefreshSelf(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.Fetch(context.Background(), "https://[::ffff:93.184.216.36]/ok.png"); !errors.Is(err, ErrAddress) {
 		t.Fatalf("the instance domain's address = %v, want ErrAddress", err)
 	}
 	if _, err := f.Fetch(context.Background(), "https://example.com/ok.png"); err != nil {
 		t.Fatalf("another address = %v", err)
+	}
+
+	// A failed refresh keeps the last good set: the domain's address stays refused, fetching goes on.
+	r.down.Store(true)
+	if err := f.RefreshSelf(context.Background()); err == nil {
+		t.Fatal("RefreshSelf succeeded while the resolver is down")
+	}
+	if _, err := f.Fetch(context.Background(), "https://93.184.216.36/ok.png"); !errors.Is(err, ErrAddress) {
+		t.Fatalf("after a failed refresh the domain's address = %v, want still ErrAddress", err)
+	}
+	if _, err := f.Fetch(context.Background(), "https://example.com/ok.png"); err != nil {
+		t.Fatalf("after a failed refresh another address = %v", err)
 	}
 }
 

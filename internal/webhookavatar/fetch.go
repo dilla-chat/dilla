@@ -177,7 +177,8 @@ type FetchOptions struct {
 	Self []netip.Addr
 	// SelfDomain is instance.domain: its resolved addresses are refused too (fix round 2 N-4), so an avatar URL that
 	// names the operator's own public address cannot hairpin through their reverse proxy from inside the network.
-	// It is re-resolved at most every SelfRefresh, on the fetch path.
+	// It is resolved by RunSelfRefresh in the background (fix round 3 S3), never on the fetch path; until its first
+	// lookup succeeds every fetch is refused (fail closed).
 	SelfDomain string
 	// RootCAs, nil for the system pool.
 	RootCAs *x509.CertPool
@@ -185,38 +186,82 @@ type FetchOptions struct {
 	Dial func(ctx context.Context, network string, addr netip.AddrPort) (net.Conn, error)
 }
 
-// SelfRefresh is how often instance.domain is resolved again for the refused set.
-const SelfRefresh = 10 * time.Minute
+const (
+	// SelfRefresh is how often instance.domain is resolved again for the refused set.
+	SelfRefresh = 10 * time.Minute
+	// SelfLookupTimeout bounds one lookup of instance.domain.
+	SelfLookupTimeout = 5 * time.Second
+)
+
+// ErrSelfUnknown is returned while instance.domain has not resolved yet: the instance cannot tell its own addresses apart and fetches
+// nothing (fail closed).
+var ErrSelfUnknown = errors.New("webhookavatar: the instance's own addresses are not known yet")
 
 // Fetcher fetches and processes one avatar at a time; it is safe for concurrent use.
 type Fetcher struct {
 	o      FetchOptions
 	client *http.Client
 
-	selfMu     sync.Mutex
+	selfMu     sync.RWMutex
 	selfDomain []netip.Addr
-	selfAt     time.Time
+	selfReady  bool
 }
 
-// self is the refused set: Self and the last addresses instance.domain resolved to. A failed lookup keeps the previous
-// answer; the static addresses always stay.
-func (f *Fetcher) self(ctx context.Context) []netip.Addr {
+// self is the refused set: Self and the last addresses instance.domain resolved to. It reports false while a
+// configured domain has never resolved. It only reads what RefreshSelf stored.
+func (f *Fetcher) self() ([]netip.Addr, bool) {
 	if f.o.SelfDomain == "" {
-		return f.o.Self
+		return f.o.Self, true
+	}
+	f.selfMu.RLock()
+	defer f.selfMu.RUnlock()
+	if !f.selfReady {
+		return nil, false
+	}
+	return append(append([]netip.Addr(nil), f.o.Self...), f.selfDomain...), true
+}
+
+// RefreshSelf resolves instance.domain once, within SelfLookupTimeout. A success replaces the stored addresses; a
+// failure keeps the last good ones (and, before any success, fetching stays refused).
+func (f *Fetcher) RefreshSelf(ctx context.Context) error {
+	if f.o.SelfDomain == "" {
+		return nil
+	}
+	host := f.o.SelfDomain
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	ctx, cancel := context.WithTimeout(ctx, SelfLookupTimeout)
+	defer cancel()
+	addrs, err := f.o.Resolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return err
+	}
+	if len(addrs) == 0 {
+		return ErrAddress
 	}
 	f.selfMu.Lock()
-	defer f.selfMu.Unlock()
-	if f.selfAt.IsZero() || time.Since(f.selfAt) >= SelfRefresh {
-		host := f.o.SelfDomain
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-		if addrs, err := f.o.Resolver.LookupNetIP(ctx, "ip", host); err == nil {
-			f.selfDomain = addrs
-		}
-		f.selfAt = time.Now()
+	f.selfDomain, f.selfReady = addrs, true
+	f.selfMu.Unlock()
+	return nil
+}
+
+// RunSelfRefresh resolves instance.domain now and then every SelfRefresh, until ctx ends.
+func (f *Fetcher) RunSelfRefresh(ctx context.Context) {
+	if f.o.SelfDomain == "" {
+		return
 	}
-	return append(append([]netip.Addr(nil), f.o.Self...), f.selfDomain...)
+	_ = f.RefreshSelf(ctx)
+	t := time.NewTicker(SelfRefresh)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			_ = f.RefreshSelf(ctx)
+		}
+	}
 }
 
 // NewFetcher builds a Fetcher.
@@ -265,7 +310,10 @@ func (f *Fetcher) dial(ctx context.Context, network, addr string) (net.Conn, err
 	if len(addrs) == 0 {
 		return nil, ErrAddress
 	}
-	self := f.self(ctx)
+	self, known := f.self()
+	if !known {
+		return nil, ErrSelfUnknown
+	}
 	for _, a := range addrs {
 		if Blocked(a, self) {
 			return nil, ErrAddress
@@ -290,6 +338,9 @@ func (f *Fetcher) Fetch(ctx context.Context, raw string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, known := f.self(); !known {
+		return nil, ErrSelfUnknown
+	}
 	ctx, cancel := context.WithTimeout(ctx, FetchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -301,7 +352,7 @@ func (f *Fetcher) Fetch(ctx context.Context, raw string) ([]byte, error) {
 	res, err := f.client.Do(req)
 	if err != nil {
 		// The sentinel the dial or redirect check returned, when there is one; never the URL in an error string.
-		for _, s := range []error{ErrURL, ErrAddress, ErrResponse} {
+		for _, s := range []error{ErrURL, ErrAddress, ErrResponse, ErrSelfUnknown} {
 			if errors.Is(err, s) {
 				return nil, s
 			}

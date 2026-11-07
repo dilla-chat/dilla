@@ -85,6 +85,9 @@ type Server struct {
 	// stopIdleClose stops the idle call-group close (web-3, L-HTTP-105), which runs with or without
 	// an SFU; Shutdown calls it before it stops the delivery service the close goes through.
 	stopIdleClose func()
+	// stopAvatars stops the webhook avatar fetcher's background refresh of instance.domain (Bot v2 task 13 fix
+	// round 3); until its first lookup succeeds no avatar is fetched.
+	stopAvatars func()
 
 	// throttle and limiter are swept by the gateway's maintenance loop, whose stop function
 	// Shutdown calls before it stops the gateway.
@@ -519,7 +522,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if o.Config.Instance.PublicIP.IsValid() {
 		avatarSelf = append(avatarSelf, o.Config.Instance.PublicIP)
 	}
-	// instance.domain is resolved too (fix round 2 N-4), every 10 minutes on the fetch path: behind a proxy it names the
+	// instance.domain is resolved too (fix round 2 N-4), in the background every 10 minutes (Start, below): behind a proxy it names the
 	// proxy's public address, which public_ip may not be set to.
 	deps.WebhookAvatars = webhookavatar.New(webhookavatar.Options{Clock: o.Clock, Limiter: limiter, Self: avatarSelf, SelfDomain: o.Config.Instance.Domain})
 	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log).WithBotFeed(botFeed)
@@ -775,6 +778,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		s.stopCallRetries = callRoutes.StartRetries(api.CallRetryInterval)
 	}
 	s.stopIdleClose = callRoutes.StartIdleClose(api.CallRetryInterval)
+	s.stopAvatars = deps.WebhookAvatars.Start()
 	return s, nil
 }
 
@@ -942,6 +946,9 @@ func (s *Server) shutdown(ctx context.Context) error {
 	}
 	if s.stopIdleClose != nil {
 		s.stopIdleClose()
+	}
+	if s.stopAvatars != nil {
+		s.stopAvatars()
 	}
 	// AW2 (R3): the op 55 drainer and any AFK maintenance pass stop, and are waited for, before the
 	// delivery service and the gateway they use: a pass that ran on would clear the rows of users who

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -188,7 +189,7 @@ func TestCacheSweepsExpiredEntries(t *testing.T) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.images) != 0 || s.total != 0 || len(s.comm) != 0 || len(s.urls) != 0 || s.urlOrder.Len() != 0 {
+	if len(s.images) != 0 || s.total != 0 || len(s.comm) != 0 || len(s.urls) != 0 || s.okURLs.Len() != 0 || s.failURLs.Len() != 0 || s.urlBytes != 0 {
 		t.Fatalf("after expiry: %d images, %d bytes, %d communities, %d urls", len(s.images), s.total, len(s.comm), len(s.urls))
 	}
 }
@@ -222,5 +223,46 @@ func TestCacheNarrowBucketsAreAskedFirst(t *testing.T) {
 	s.Wait()
 	if f.count() != server.WebhookAvatarCommunityClass.Burst+1 {
 		t.Fatalf("another community's fetch was refused (%d fetches)", f.count())
+	}
+}
+
+// Fix round 3 R2-3: a 24 h success at the front of the URL table does not hold back the sweep of 10-minute failures,
+// and the table is bounded in bytes as well as in count.
+func TestCacheURLFailuresExpireBehindASuccess(t *testing.T) {
+	img := pngOf(t, 4, 4)
+	f := &countingFetch{answer: map[string][]byte{"https://example.com/a.png": img}}
+	s, clk := newTestService(t, f)
+	community := id.New()
+	s.Resolve(context.Background(), community, id.New(), "https://example.com/a.png", time.Second)
+	for i := range 4 {
+		s.Resolve(context.Background(), community, id.New(), "https://example.com/bad"+strconv.Itoa(i)+".png", time.Second)
+	}
+	s.Wait()
+	clk.Advance(NegativeTTL)
+	s.Get(community, make([]byte, 32)) // any use sweeps
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.urls) != 1 || s.failURLs.Len() != 0 || s.okURLs.Len() != 1 {
+		t.Fatalf("after NegativeTTL: %d urls, %d failures, %d successes; want only the success", len(s.urls), s.failURLs.Len(), s.okURLs.Len())
+	}
+	if want := len("https://example.com/a.png") + URLEntryOverhead; s.urlBytes != want {
+		t.Fatalf("urlBytes %d, want %d", s.urlBytes, want)
+	}
+}
+
+func TestCacheURLTableByteCap(t *testing.T) {
+	s, clk := newTestService(t, &countingFetch{})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	long := "https://example.com/" + strings.Repeat("a", MaxURLTableBytes/MaxURLs*4)
+	for i := range MaxURLs {
+		e := &urlEntry{key: urlKey{id.New(), long + strconv.Itoa(i)}, expires: clk.Now().Add(NegativeTTL)}
+		s.urls[e.key] = e
+		s.urlBytes += e.cost()
+		e.in, e.elem = s.failURLs, s.failURLs.PushBack(e)
+		s.trimURLsLocked()
+	}
+	if s.urlBytes > MaxURLTableBytes || len(s.urls) >= MaxURLs {
+		t.Fatalf("URL table %d bytes in %d entries, want at most %d bytes", s.urlBytes, len(s.urls), MaxURLTableBytes)
 	}
 }

@@ -1865,10 +1865,11 @@ separately and loosely, so the delivery service's own throttle never becomes the
 committer-election watchdog removes a device.
 
 The public webhook route `POST /hooks/{webhook_id}/{secret}` has buckets of its own (`10` §
-Webhooks): `webhook_address_all`, keyed by the client address and spent by every request (10 per
-second, burst 50); the failure buckets `webhook_address` (per address, 2 per second, burst 20) and
-`webhook_prefix` (per network, IPv4 /24 or IPv6 /48, 20 per second, burst 100), spent only by a request
-that fails before or at the secret check; and `webhook`, keyed by the webhook and spent once its secret
+Webhooks): `webhook_address_all` (per client address, 10 per second, burst 50) and `webhook_prefix_all`
+(per network, IPv4 /24 or IPv6 /48, 50 per second, burst 250), spent by every request before any work;
+the failure buckets `webhook_address` (per address, 2 per second, burst 20; reserved before the work
+and given back when the secret matched) and `webhook_prefix` (per network, 20 per second, burst 100;
+spent only by a request that fails before or at the secret check); and `webhook`, keyed by the webhook and spent once its secret
 matched (30 a minute, burst 5). Avatar fetches have `webhook_avatar` (per webhook, one per 30 s, burst
 2), `webhook_avatar_community` (one per 5 s, burst 5) and `webhook_avatar_all` (the instance, 2 per
 second, burst 10). Its body cap is 8192 bytes, read before anything is parsed.

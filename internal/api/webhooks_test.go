@@ -9,6 +9,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -930,4 +931,67 @@ func TestWebhookAllRequestsBucketBoundsAnAddress(t *testing.T) {
 	}
 	wantHookStatus(t, f.post(t, hookPath(t, url), "application/json", []byte(`{"text":"x"}`), sender), http.StatusTooManyRequests, "E_RATE_LIMITED")
 	wantHookStatus(t, f.post(t, hookPath(t, url), "application/json", []byte(`{"text":"x"}`), "192.0.2.78:1"), http.StatusNoContent, "")
+}
+
+// Fix round 3 S4/R2-1: a flood spread over many addresses of one network meets the network's all-requests bucket,
+// which refuses before any lookup.
+func TestWebhookNetworkFloodIsCappedBeforeAnyLookup(t *testing.T) {
+	f := newWebhookFixture(t)
+	burst := server.WebhookPrefixAllClass.Burst
+	for i := range burst {
+		addr := "[2001:db8:a:" + strconv.FormatInt(int64(i), 16) + "::1]:1"
+		f.post(t, "/hooks/"+id.New().String()+"/x", "application/json", []byte(`{"text":"x"}`), addr)
+	}
+	before := f.counts.count()
+	rec := f.post(t, "/hooks/"+id.New().String()+"/x", "application/json", []byte(`{"text":"x"}`), "[2001:db8:a:ffff::1]:1")
+	wantHookStatus(t, rec, http.StatusTooManyRequests, "E_RATE_LIMITED")
+	if f.counts.count() != before {
+		t.Fatal("a request over its network's all-requests bucket caused a webhook lookup")
+	}
+}
+
+// Fix round 3 R2-2: the address failure token is reserved before the body is read, so requests whose bodies are
+// still arriving each hold one, and the next request finds none; a request whose secret matches gets its token back.
+func TestWebhookFailureTokenIsReservedBeforeTheWork(t *testing.T) {
+	f := newWebhookFixture(t)
+	_, url := f.create(t, f.text, "Terraria", 0)
+	const sender, key = "203.0.113.200:1", "203.0.113.200"
+	// One valid post: its token is refunded.
+	wantHookStatus(t, f.post(t, hookPath(t, url), "application/json", []byte(`{"text":"x"}`), sender), http.StatusNoContent, "")
+	if got := f.deps.Limiter.Tokens(server.WebhookAddressClass, key); got != float64(server.WebhookAddressClass.Burst) {
+		t.Fatalf("after a valid post the address's failure bucket holds %.1f, want its full %d", got, server.WebhookAddressClass.Burst)
+	}
+	// Burst slow requests, each holding a reserved token while its body has not arrived.
+	burst := server.WebhookAddressClass.Burst
+	writers := make([]*io.PipeWriter, 0, burst)
+	var wg sync.WaitGroup
+	for range burst {
+		pr, pw := io.Pipe()
+		writers = append(writers, pw)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/hooks/"+id.New().String()+"/x", pr)
+			req.Header.Set("Content-Type", "application/json")
+			req.RemoteAddr = sender
+			f.public.ServeHTTP(httptest.NewRecorder(), req)
+		}()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for f.deps.Limiter.Tokens(server.WebhookAddressClass, key) >= 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("the slow requests did not reserve their tokens")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	before := f.counts.count()
+	wantHookStatus(t, f.post(t, hookPath(t, url), "application/json", []byte(`{"text":"x"}`), sender), http.StatusTooManyRequests, "E_RATE_LIMITED")
+	if f.counts.count() != before {
+		t.Fatal("a request with no failure token left caused a lookup")
+	}
+	for _, w := range writers {
+		_, _ = w.Write([]byte(`{"text":"x"}`))
+		_ = w.Close()
+	}
+	wg.Wait()
 }

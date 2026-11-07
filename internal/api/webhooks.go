@@ -560,14 +560,6 @@ func validAvatarURL(s string) bool {
 	return err == nil
 }
 
-// chargeHookFailure spends one token of the address's and the network's failure buckets and reports whether either
-// was empty, with the longer wait.
-func (d Deps) chargeHookFailure(addrKey, netKey string) (time.Duration, bool) {
-	okAddr, waitAddr := d.Limiter.Allow(server.WebhookAddressClass, addrKey)
-	okNet, waitNet := d.Limiter.Allow(server.WebhookPrefixClass, netKey)
-	return max(waitAddr, waitNet), !okAddr || !okNet
-}
-
 func webhookContentTypeOK(r *http.Request) bool {
 	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	return err == nil && mt == "application/json"
@@ -582,23 +574,33 @@ func (d Deps) PostWebhook(w http.ResponseWriter, r *http.Request) {
 		writeHookError(w, hookInternal)
 		return
 	}
-	// Metering before the secret is known (fix round 2 S1). Every request spends the generous all-requests bucket
-	// of its address, which bounds the work any one address causes. The failure buckets, per address and per
-	// network, are spent only by a request that fails before or at the secret check; a request whose secret matches
-	// never touches them, so junk from a network cannot throttle a valid sender on it. An address whose own failures
-	// emptied its failure bucket is refused before any work: that address is the one guessing.
+	// Metering before the secret is known (fix rounds 2 and 3: S1, S4, R2-1, R2-2):
+	//   - every request spends the generous all-requests buckets of its address and of its network, before any work,
+	//     which bound the work any one address or network causes, valid secrets included;
+	//   - it then reserves one token of its address's failure bucket, and an address with none left is refused before
+	//     any work: that address is the one guessing. The token is refunded once the secret matched, so a valid sender
+	//     spends nothing of it; requests in flight at once (slow bodies) each hold their own token, so they cannot all
+	//     pass on the last one;
+	//   - a request that fails before or at the secret check also spends one token of its network's failure bucket,
+	//     which turns that network's failures into 429. A valid secret never touches it, so junk from a network cannot
+	//     throttle a valid sender on it.
 	client := server.RealIP(r, d.Config.Server.TrustedProxyCIDRs)
 	addrKey, netKey := server.RateKey(client), server.RatePrefixKey(client)
 	if ok, wait := d.Limiter.Allow(server.WebhookAddressAllClass, addrKey); !ok {
 		writeHookError(w, hookRateLimited(wait))
 		return
 	}
-	if ok, wait := d.Limiter.Peek(server.WebhookAddressClass, addrKey); !ok {
+	if ok, wait := d.Limiter.Allow(server.WebhookPrefixAllClass, netKey); !ok {
 		writeHookError(w, hookRateLimited(wait))
 		return
 	}
+	reserved, reserveWait, refund := d.Limiter.Take(server.WebhookAddressClass, addrKey)
+	if !reserved {
+		writeHookError(w, hookRateLimited(reserveWait))
+		return
+	}
 	failed := func(answer hookError) {
-		if wait, limited := d.chargeHookFailure(addrKey, netKey); limited {
+		if ok, wait := d.Limiter.Allow(server.WebhookPrefixClass, netKey); !ok {
 			answer = hookRateLimited(wait)
 		}
 		writeHookError(w, answer)
@@ -626,6 +628,7 @@ func (d Deps) PostWebhook(w http.ResponseWriter, r *http.Request) {
 		failed(hookUnauthenticated)
 		return
 	}
+	refund() // the secret matched: this address's failure token goes back
 	if ok, wait := d.Limiter.Allow(server.WebhookClass, hook.WebhookID.String()); !ok {
 		writeHookError(w, hookRateLimited(wait))
 		return

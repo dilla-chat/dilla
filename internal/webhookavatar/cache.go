@@ -27,8 +27,12 @@ const (
 	// EntryOverhead is charged against the byte caps for every image on top of its PNG: the map and list entries and
 	// the struct around it, so a flood of tiny images still meets the caps (fix round 2 N-3).
 	EntryOverhead = 512
-	// MaxURLs bounds the remembered URLs, positive and negative.
-	MaxURLs = 65536
+	// MaxURLs bounds the remembered URLs, positive and negative (fix round 3 R2-3: 16384).
+	MaxURLs = 16384
+	// URLEntryOverhead is charged per remembered URL on top of the URL's own bytes.
+	URLEntryOverhead = 256
+	// MaxURLTableBytes bounds the remembered URLs in bytes, URL plus URLEntryOverhead each.
+	MaxURLTableBytes = 8 << 20
 	// sweepBudget is the most expired entries one call removes from each table.
 	sweepBudget = 32
 )
@@ -65,7 +69,9 @@ type urlEntry struct {
 	ok      bool
 	hash    [32]byte
 	expires time.Time
-	elem    *list.Element // in Service.urlOrder
+	// elem is the entry's place in okURLs or failURLs, in on that list; both are nil while a fetch is in flight.
+	elem *list.Element
+	in   *list.List
 }
 
 type imgKey struct {
@@ -89,6 +95,8 @@ func imageOf(el *list.Element) *imageEntry {
 	return img
 }
 
+func (e *urlEntry) cost() int { return len(e.key.url) + URLEntryOverhead }
+
 func urlOf(el *list.Element) *urlEntry {
 	e, _ := el.Value.(*urlEntry)
 	return e
@@ -109,9 +117,14 @@ type communityImages struct {
 type Service struct {
 	o Options
 
-	mu       sync.Mutex
-	urls     map[urlKey]*urlEntry
-	urlOrder *list.List
+	mu   sync.Mutex
+	urls map[urlKey]*urlEntry
+	// okURLs and failURLs hold the finished URL entries, successes and failures apart (fix round 3 R2-3), each in the
+	// order it finished: each list has one TTL, so its expired entries are a prefix, and a 24 h success at the front
+	// never holds back the sweep of 10-minute failures. urlBytes is the table's charged size.
+	okURLs   *list.List
+	failURLs *list.List
+	urlBytes int
 	images   map[imgKey]*imageEntry
 	imgOrder *list.List
 	comm     map[id.ID]*communityImages
@@ -124,7 +137,7 @@ func New(o Options) *Service {
 	if o.Fetcher == nil {
 		o.Fetcher = NewFetcher(FetchOptions{Self: o.Self, SelfDomain: o.SelfDomain})
 	}
-	return &Service{o: o, urls: map[urlKey]*urlEntry{}, urlOrder: list.New(), images: map[imgKey]*imageEntry{},
+	return &Service{o: o, urls: map[urlKey]*urlEntry{}, okURLs: list.New(), failURLs: list.New(), images: map[imgKey]*imageEntry{},
 		imgOrder: list.New(), comm: map[id.ID]*communityImages{}}
 }
 
@@ -162,10 +175,10 @@ func (s *Service) Resolve(ctx context.Context, community, webhook id.ID, raw str
 		}
 		if e == nil {
 			e = &urlEntry{key: key}
-			e.elem = s.urlOrder.PushBack(e)
 			s.urls[key] = e
+			s.urlBytes += e.cost()
 		} else {
-			s.urlOrder.MoveToBack(e.elem)
+			s.detachURLLocked(e)
 		}
 		e.done = make(chan struct{})
 		s.trimURLsLocked()
@@ -248,10 +261,14 @@ func (s *Service) fetch(key urlKey, e *urlEntry) {
 	defer close(done)
 	if err != nil || len(png)+EntryOverhead > CommunityBytes {
 		e.ok, e.expires = false, now.Add(NegativeTTL)
+		e.in = s.failURLs
+		e.elem = s.failURLs.PushBack(e)
 		return
 	}
 	e.hash = sha256.Sum256(png)
 	e.ok, e.expires = true, now.Add(PositiveTTL)
+	e.in = s.okURLs
+	e.elem = s.okURLs.PushBack(e)
 	s.storeLocked(key.community, e.hash, png, now)
 }
 
@@ -296,9 +313,8 @@ func (s *Service) removeLocked(img *imageEntry) {
 	}
 }
 
-// sweepLocked removes expired entries from the front of both tables, at most sweepBudget from each per call. Images
-// expire in list order, so their sweep is exact; a URL entry is removed while it is finished and expired, and the
-// sweep stops at the first one that is not (MaxURLs bounds the rest).
+// sweepLocked removes expired entries from the front of the image list and both URL lists, at most sweepBudget from
+// each per call. Each list has one TTL and is in finishing order, so its expired entries are exactly a prefix.
 func (s *Service) sweepLocked(now time.Time) {
 	for i := 0; i < sweepBudget; i++ {
 		f := s.imgOrder.Front()
@@ -307,32 +323,44 @@ func (s *Service) sweepLocked(now time.Time) {
 		}
 		s.removeLocked(imageOf(f))
 	}
-	for i := 0; i < sweepBudget; i++ {
-		f := s.urlOrder.Front()
-		if f == nil {
-			break
+	for _, l := range []*list.List{s.failURLs, s.okURLs} {
+		for i := 0; i < sweepBudget; i++ {
+			f := l.Front()
+			if f == nil || now.Before(urlOf(f).expires) {
+				break
+			}
+			s.dropURLLocked(urlOf(f))
 		}
-		e := urlOf(f)
-		if e.done != nil || now.Before(e.expires) {
-			break
-		}
-		s.urlOrder.Remove(f)
-		delete(s.urls, e.key)
 	}
 }
 
-// trimURLsLocked keeps the URL table at MaxURLs, dropping the oldest finished entries; a fetch in flight (at most a
-// few, bounded by the fetch buckets) is moved behind them instead.
+// detachURLLocked takes a finished entry off its list, for a new fetch; it stays in the table and keeps its charge.
+func (s *Service) detachURLLocked(e *urlEntry) {
+	if e.in != nil {
+		e.in.Remove(e.elem)
+		e.in, e.elem = nil, nil
+	}
+}
+
+// dropURLLocked forgets a finished entry.
+func (s *Service) dropURLLocked(e *urlEntry) {
+	s.detachURLLocked(e)
+	delete(s.urls, e.key)
+	s.urlBytes -= e.cost()
+}
+
+// trimURLsLocked keeps the URL table at MaxURLs entries and MaxURLTableBytes, dropping the oldest failures first, then the
+// oldest successes. A fetch in flight is on neither list and is never dropped; the fetch buckets keep those few.
 func (s *Service) trimURLsLocked() {
-	for budget := s.urlOrder.Len(); len(s.urls) > MaxURLs && budget > 0; budget-- {
-		f := s.urlOrder.Front()
-		e := urlOf(f)
-		if e.done != nil {
-			s.urlOrder.MoveToBack(f)
-			continue
+	for len(s.urls) > MaxURLs || s.urlBytes > MaxURLTableBytes {
+		f := s.failURLs.Front()
+		if f == nil {
+			f = s.okURLs.Front()
 		}
-		s.urlOrder.Remove(f)
-		delete(s.urls, e.key)
+		if f == nil {
+			return
+		}
+		s.dropURLLocked(urlOf(f))
 	}
 }
 
@@ -352,6 +380,25 @@ func (s *Service) Get(community id.ID, avatarID []byte) ([]byte, bool) {
 		return nil, false
 	}
 	return img.png, true
+}
+
+// Start runs the fetcher's background refresh of instance.domain (fix round 3 S3) until stop is called; stop waits for
+// it to end. A Service whose fetcher is not a *Fetcher has nothing to run.
+func (s *Service) Start() (stop func()) {
+	f, ok := s.o.Fetcher.(*Fetcher)
+	if !ok {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.RunSelfRefresh(ctx)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 // Wait waits for the fetches in flight (tests and shutdown).

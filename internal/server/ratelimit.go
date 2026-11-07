@@ -31,6 +31,11 @@ type Class struct {
 var (
 	// WebhookAddressClass: one address's failures, 2 a second with a burst of 20.
 	WebhookAddressClass = Class{Name: "webhook_address", PerSecond: 2, Burst: 20}
+	// WebhookPrefixAllClass is spent by every webhook request of a network (RatePrefixKey: IPv4 /24, IPv6 /48),
+	// before any work (fix round 3 S4/R2-1): a flood spread over a network's addresses meets one ceiling. 50 a
+	// second with a burst of 250 is far above what valid senders on one network send to webhooks at 0.5 a second
+	// each, so junk must be very heavy before it can throttle them.
+	WebhookPrefixAllClass = Class{Name: "webhook_prefix_all", PerSecond: 50, Burst: 250}
 	// WebhookAddressAllClass is spent by every webhook request of an address, whatever its outcome (fix round 2 S1):
 	// 10 a second with a burst of 50 bounds the work one address causes, valid secrets included, well above what a
 	// host feeding even a dozen webhooks at their own 0.5 a second sends.
@@ -92,9 +97,18 @@ func (l *RateLimiter) Allow(class Class, key string) (bool, time.Duration) {
 	if !l.cfg.Enabled {
 		return true, 0
 	}
-	k := class.Name + "\x00" + key
 	now := l.clk.Now()
+	b := l.bucketFor(class, key, now)
+	if b.lim.AllowN(now, 1) {
+		return true, 0
+	}
+	return false, l.retryAfter(b.lim.TokensAt(now), class)
+}
+
+func (l *RateLimiter) bucketFor(class Class, key string, now time.Time) *bucket {
+	k := class.Name + "\x00" + key
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	b, ok := l.buckets[k]
 	if !ok {
 		if len(l.buckets) >= l.cfg.MaxKeys {
@@ -104,12 +118,27 @@ func (l *RateLimiter) Allow(class Class, key string) (bool, time.Duration) {
 		l.buckets[k] = b
 	}
 	b.seen = now
-	l.mu.Unlock()
+	return b
+}
 
-	if b.lim.AllowN(now, 1) {
-		return true, 0
+// Take is Allow for a token the caller may give back: it spends one token of (class, key) now and, when it did,
+// returns refund, which restores it (once). A refused Take spends nothing, as a refused Allow does. It is how a
+// failure bucket is reserved before work whose outcome is not yet known and refunded when the work succeeded
+// (webhook fix round 3 R2-2): requests running at the same time each hold a token, so they cannot all pass a check
+// that only one token would have allowed.
+func (l *RateLimiter) Take(class Class, key string) (bool, time.Duration, func()) {
+	if !l.cfg.Enabled {
+		return true, 0, func() {}
 	}
-	return false, l.retryAfter(b.lim.TokensAt(now), class)
+	now := l.clk.Now()
+	b := l.bucketFor(class, key, now)
+	r := b.lim.ReserveN(now, 1)
+	if !r.OK() || r.DelayFrom(now) > 0 {
+		r.CancelAt(now)
+		return false, l.retryAfter(b.lim.TokensAt(now), class), nil
+	}
+	var once sync.Once
+	return true, 0, func() { once.Do(func() { r.CancelAt(l.clk.Now()) }) }
 }
 
 // retryAfter is §5.3's number: computed from the bucket's DEFICIT and rounded
