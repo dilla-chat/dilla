@@ -215,6 +215,13 @@ jobs:
         env:
           VERSION: ${{ needs.tag.outputs.version }}
         run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o dist/dillad-linux-arm64 ./cmd/dillad
+      # Bot v2 task 11: the dilla_unsafe_test build tag compiles in the Bot keeper's test-only relaxations
+      # (internal/botsupervisor/unsafe_on.go). Build tags stay in the build info even with -trimpath, so the shipped
+      # binaries are read back: both must carry build info, and neither the tag.
+      - name: No dillad is a dilla_unsafe_test build
+        run: |
+          test "$(go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -c 'build[[:space:]]CGO_ENABLED=0')" -eq 2
+          if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_unsafe_test; then echo "a dillad was built with the dilla_unsafe_test tag"; exit 1; fi
       # The amd64 binary runs here and says its version. The arm64 one cannot run here, and -trimpath records no ldflags,
       # so it is built by the same flags (the checker holds both lines) and must hold the version's text.
       - name: The binaries carry the release's version

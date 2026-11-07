@@ -15,7 +15,9 @@ type pidfd struct {
 }
 
 func openPidfd(pid int) (childHandle, error) {
-	fd, err := unix.PidfdOpen(pid, unix.PIDFD_NONBLOCK)
+	// No flags: PIDFD_NONBLOCK (Linux 5.10) is for waitid on the fd, which this never does; a zero-timeout poll is all
+	// alive needs. pidfd_open itself is Linux 5.3.
+	fd, err := unix.PidfdOpen(pid, 0)
 	if err != nil {
 		return nil, err
 	}

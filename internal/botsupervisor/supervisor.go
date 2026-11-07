@@ -47,6 +47,9 @@ var ErrRunning = errors.New("botsupervisor: already running")
 // returns it, so dillad exits and systemd restarts the unit, which is the only way to a new keeper.
 var ErrKeeperGone = errors.New("botsupervisor: the bot keeper is gone")
 
+// defaultOpenChild is openPidfd; the supervisor tests, whose fake pids have no process, swap it.
+var defaultOpenChild = openPidfd
+
 // childHandle tells whether the started child still lives (a pidfd on Linux). While it does, its pid can name no
 // other process, so a peer whose SO_PEERCRED pid is that pid is the child.
 type childHandle interface {
@@ -110,7 +113,7 @@ func New(cfg config.Bot, keeper Keeper, log *slog.Logger) *Supervisor {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Supervisor{keeper: keeper, log: log, uid: botUID(cfg), clock: clock.System(), openChild: openPidfd,
+	return &Supervisor{keeper: keeper, log: log, uid: botUID(cfg), clock: clock.System(), openChild: defaultOpenChild,
 		restart: make(chan struct{}, 1)}
 }
 
@@ -255,10 +258,15 @@ func (s *Supervisor) start() (pid int, started time.Time, err error) {
 		return 0, time.Time{}, err
 	}
 	started = s.clock.Now()
-	// The child cannot have been reaped yet: the keeper keeps it until it is waited for, which this Run does next.
+	// The child cannot have been reaped yet, even if it already exited: the keeper reaps only on a wait op, and this
+	// Run issues that only after the pidfd is open. So the pidfd is this child's, not a later holder of its pid.
 	child, herr := s.openChild(pid)
 	if herr != nil {
-		s.log.Error("cannot hold the Bot's pidfd; its socket admits nobody", "pid", pid, "err", herr)
+		// A Bot whose pidfd cannot be held could never connect (Peer admits nobody): stop it now, and count it as a
+		// failed start.
+		_ = s.keeper.Signal(pid, syscall.SIGKILL)
+		_ = s.keeper.Wait(pid)
+		return 0, time.Time{}, fmt.Errorf("pidfd for pid %d: %w", pid, herr)
 	}
 	s.mu.Lock()
 	s.status.Running, s.status.PID, s.status.Since = true, pid, started

@@ -58,7 +58,7 @@ var errRootServe = errors.New("bot: dillad runs as root, which can read the Bot'
 var geteuid = os.Geteuid
 
 // refuseRootKeeper is that refusal, unless dev_same_user or a binary linked for the root-in-a-namespace test
-// (botsupervisor.UnsafeTestBuild).
+// (botsupervisor.UnsafeTestBuild, the dilla_unsafe_test build tag).
 func refuseRootKeeper(b config.Bot) error {
 	if b.Enabled && !b.DevSameUser && geteuid() == 0 && !botsupervisor.UnsafeTestBuild() {
 		return fmt.Errorf("%w: %w", errRootServe, exit.Config)

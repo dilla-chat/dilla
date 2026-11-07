@@ -36,10 +36,10 @@ func buildStaticDillad(t *testing.T) string {
 	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "dillad")
-	// Linked for this test only: serve runs as root in a user namespace (the keeper otherwise refuses euid 0), and in
-	// there the host's root owns no directory (the ancestor rule otherwise refuses every path).
-	cmd := exec.CommandContext(t.Context(), gobin, "build", "-o", bin,
-		"-ldflags=-X github.com/dilla-chat/dilla/internal/botsupervisor.unsafeTestBuild=yes", ".")
+	// Built with the dilla_unsafe_test tag for this test only (internal/botsupervisor/unsafe_on.go): serve runs as root
+	// in a user namespace (the keeper otherwise refuses euid 0), and in there the host's root owns no file (the Bot-file
+	// ownership rules otherwise refuse every path).
+	cmd := exec.CommandContext(t.Context(), gobin, "build", "-tags", "dilla_unsafe_test", "-o", bin, ".")
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
@@ -184,9 +184,15 @@ func TestServingDilladHoldsNoSetuidCapability(t *testing.T) {
 		}
 	}
 
-	children, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", pid, pid))
-	if err != nil {
-		t.Fatalf("children of serve: %v", err)
+	// Every thread's children: Go forks from whichever thread runs the goroutine, and a task's children file lists only
+	// what that thread forked.
+	var children []byte
+	for _, task := range tasks {
+		b, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%s/children", pid, task.Name()))
+		if err == nil {
+			children = append(children, b...)
+			children = append(children, ' ')
+		}
 	}
 	keeper := 0
 	for _, f := range strings.Fields(string(children)) {

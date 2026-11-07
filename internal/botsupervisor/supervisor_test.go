@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -90,6 +91,12 @@ func (k *fakeKeeper) waitStart(t *testing.T) int {
 		t.Fatal("the supervisor did not start a child")
 		return 0
 	}
+}
+
+// The fake keeper's pids name no process: the supervisor tests hold a handle that is always alive instead of a pidfd
+// (TestSupervisorLaunchGate sets its own).
+func init() {
+	defaultOpenChild = func(int) (childHandle, error) { return &fakeHandle{}, nil }
 }
 
 func testBotConfig() config.Bot {
@@ -383,4 +390,33 @@ func TestSupervisorRunIsExclusive(t *testing.T) {
 	defer cancel2()
 	go func() { _ = s.Run(ctx2) }()
 	keeper.waitStart(t)
+}
+
+// A started child whose pidfd cannot be opened could never connect: the supervisor kills it and counts a failed start
+// (N-3).
+func TestSupervisorKillsAChildItCannotHold(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_800_000_000, 0))
+	keeper := newFakeKeeper()
+	keeper.exitOnTerm = false
+	s := New(testBotConfig(), keeper, quietLog())
+	s.clock = clk
+	s.openChild = func(int) (childHandle, error) { return nil, errors.New("pidfd_open: ENOSYS") }
+	delays := make(chan time.Duration, 8)
+	s.armed = func(d time.Duration) { delays <- d }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = s.Run(ctx) }()
+	keeper.waitStart(t)
+	if got := waitDelay(t, delays); got != BackoffInitial {
+		t.Fatalf("backoff after an unholdable child = %s", got)
+	}
+	keeper.mu.Lock()
+	signals := append([]syscall.Signal(nil), keeper.signals...)
+	keeper.mu.Unlock()
+	if len(signals) != 1 || signals[0] != syscall.SIGKILL {
+		t.Fatalf("signals = %v, want the child killed", signals)
+	}
+	if st := s.Status(); st.Running || !strings.Contains(st.LastExit, "pidfd") {
+		t.Fatalf("status = %+v, want a failed start naming the pidfd", st)
+	}
 }

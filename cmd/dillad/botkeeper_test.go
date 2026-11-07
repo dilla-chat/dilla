@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -104,19 +105,60 @@ func TestRootServeRefusesTheBot(t *testing.T) {
 	if err := refuseRootKeeper(c.Bot); err != nil {
 		t.Fatalf("dev_same_user as root = %v", err)
 	}
-	// The one way past it, botsupervisor.UnsafeTestBuild, is a link-time flag only TestServingDilladHoldsNoSetuidCapability
-	// sets: never this binary, and never a workflow or script that builds a release.
+	// The one way past it, botsupervisor.UnsafeTestBuild, is the dilla_unsafe_test build tag, which only
+	// TestServingDilladHoldsNoSetuidCapability builds with: never this binary.
 	if botsupervisor.UnsafeTestBuild() {
-		t.Fatal("the test binary is linked as an unsafe test build")
+		t.Fatal("the test binary was built with the dilla_unsafe_test tag")
 	}
-	for _, glob := range []string{"../../.github/workflows/*.yml", "../../scripts/*", "../../deploy/*.sh"} {
-		files, _ := filepath.Glob(glob)
-		for _, f := range files {
-			body, err := os.ReadFile(f)
-			if err == nil && strings.Contains(string(body), "unsafeTestBuild") {
-				t.Errorf("%s links unsafeTestBuild", f)
-			}
+}
+
+// The dilla_unsafe_test build tag appears in no tracked file but the ones that define it, the one test that builds
+// with it, this guard, and the release jobs that fail a dillad carrying it (and the checker that pins those steps).
+// A Makefile, a package.json script, a workflow's GOFLAGS or a deploy script that named it would be refused here.
+func TestUnsafeTestTagStaysInItsTests(t *testing.T) {
+	gitBin, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git on PATH")
+	}
+	root, err := exec.CommandContext(t.Context(), gitBin, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		t.Skipf("not a git checkout: %v", err)
+	}
+	top := strings.TrimSpace(string(root))
+	out, err := exec.CommandContext(t.Context(), gitBin, "-C", top, "ls-files", "-z").Output()
+	if err != nil {
+		t.Fatalf("git ls-files: %v", err)
+	}
+	allowed := map[string]bool{
+		"internal/botsupervisor/unsafe.go":       true,
+		"internal/botsupervisor/unsafe_on.go":    true,
+		"internal/botsupervisor/unsafe_off.go":   true,
+		"internal/botsupervisor/keeper_linux.go": true,
+		"cmd/dillad/botkeeper.go":                true,
+		"cmd/dillad/botkeeper_linux_test.go":     true,
+		"cmd/dillad/botkeeper_test.go":           true,
+		".github/workflows/release.yml":          true,
+		".github/workflows/server.yml":           true,
+		"scripts/check-ci-workflow.mjs":          true,
+		"scripts/check-ci-workflow.test.mjs":     true,
+	}
+	const tag = "dilla_unsafe_test"
+	scanned := 0
+	for _, f := range strings.Split(string(out), "\x00") {
+		if f == "" || allowed[f] || strings.HasPrefix(f, ".superpowers/") {
+			continue
 		}
+		body, err := os.ReadFile(filepath.Join(top, f))
+		if err != nil {
+			continue // a tracked file deleted in the working tree, or a submodule
+		}
+		scanned++
+		if strings.Contains(string(body), tag) {
+			t.Errorf("%s names the %s build tag", f, tag)
+		}
+	}
+	if scanned < 100 {
+		t.Fatalf("scanned only %d tracked files", scanned)
 	}
 }
 

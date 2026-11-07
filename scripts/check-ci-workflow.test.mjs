@@ -1009,6 +1009,10 @@ ${goShardMatrix('go-postgres')}    services:
         env:
           DILLA_WEB_DIST: \${{ github.workspace }}/internal/web/dist
       - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/dillad-linux-amd64 ./cmd/dillad
+      - name: No dillad is a dilla_unsafe_test build
+        run: |
+          test "$(go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -c 'build[[:space:]]CGO_ENABLED=0')" -eq 2
+          if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_unsafe_test; then echo "a dillad was built with the dilla_unsafe_test tag"; exit 1; fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dillad-binaries
@@ -2291,6 +2295,14 @@ function releaseFixture(release) {
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), release);
   return dir;
 }
+
+test('go-release must refuse a dilla_unsafe_test dillad in both workflows', () => {
+  const step = 'if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_unsafe_test; then echo "a dillad was built with the dilla_unsafe_test tag"; exit 1; fi';
+  assert.deepEqual(checkWorkflow(fixture(GOOD)), [], 'fixture sanity: GOOD passes');
+  const problems = checkWorkflow(fixture(GOOD.replace(step, 'true')));
+  assert.ok(problems.some((p) => p.includes('go-release') && p.includes('dilla_unsafe_test')), problems.join('\n'));
+  assertReported(releaseProblems((t) => t.replace(step, 'true')), 'dilla_unsafe_test');
+});
 
 function releaseProblems(edit) {
   const edited = edit(REAL_RELEASE);

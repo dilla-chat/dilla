@@ -254,6 +254,11 @@ func TestLaunchedChildHasNoCapabilities(t *testing.T) {
 	if got := r.Status["NoNewPrivs"]; got != "1" {
 		t.Errorf("NoNewPrivs = %q, want 1", got)
 	}
+	// The keeper handles SIGTERM and SIGINT rather than ignoring them, so nothing it starts inherits an ignored
+	// signal (N-5).
+	if got := r.Status["SigIgn"]; got != "0000000000000000" {
+		t.Errorf("SigIgn = %q, want 0000000000000000", got)
+	}
 	// The keeper (root in its namespace, so holding every capability) ran the Bot as uid 0 there: the drop, not the
 	// uid, is what emptied the sets.
 	if !strings.HasPrefix(r.Status["Uid"], "0\t") {
@@ -573,8 +578,12 @@ func TestKeeperRunsOneBotAndOneWait(t *testing.T) {
 		t.Fatalf("wait = %q", got)
 	}
 	// A wait forgets only its own child (M-1): if the pid came to name another entry while it waited, that entry stays.
-	stale := &child{done: make(chan struct{}), exit: "exit status 9"}
-	other := &child{done: make(chan struct{})}
+	staleCmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", "exit 9")
+	if err := staleCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stale := &child{cmd: staleCmd, exited: make(chan struct{})}
+	other := &child{exited: make(chan struct{})}
 	c.mu.Lock()
 	c.m[42] = stale
 	c.mu.Unlock()
@@ -592,7 +601,7 @@ func TestKeeperRunsOneBotAndOneWait(t *testing.T) {
 	c.mu.Lock()
 	c.m[42] = other
 	c.mu.Unlock()
-	close(stale.done)
+	close(stale.exited)
 	if got := <-done; got != "exit status 9" {
 		t.Fatalf("the stale wait = %q", got)
 	}
@@ -669,5 +678,54 @@ func TestDropServingCapabilitiesFailsClosed(t *testing.T) {
 	}
 	if err := narrowKeeperCapabilities(true); err == nil {
 		t.Fatal("a keeper without CAP_SETPCAP narrowed")
+	}
+}
+
+// The keeper reaps a child only on a wait op, so the pidfd the supervisor opens after start binds the child it started,
+// even one that has already exited: until the wait, the pid is that zombie's and no one else's (N-2).
+func TestPidfdBindsAChildThatExitedAtOnce(t *testing.T) {
+	cfg := testKeeperConfig(t)
+	cfg.SameUser = true
+	cfg.Launcher = "/bin/false" // exits at once, whatever bot-launch's arguments
+	c := newChildren(cfg)
+	pid, err := c.start(newToken(t))
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	c.mu.Lock()
+	ch := c.m[pid]
+	c.mu.Unlock()
+	select {
+	case <-ch.exited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the child never exited")
+	}
+	// Exited, not reaped: still our zombie.
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		t.Fatalf("the exited child was reaped before any wait: %v", err)
+	}
+	fields := strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+1:]))
+	if fields[0] != "Z" || fields[1] != strconv.Itoa(os.Getpid()) {
+		t.Fatalf("/proc/%d/stat = %s, want a zombie child of this process", pid, stat)
+	}
+	h, err := openPidfd(pid)
+	if err != nil {
+		t.Fatalf("pidfd_open on the unreaped child: %v", err)
+	}
+	defer h.close()
+	if h.alive() {
+		t.Fatal("the pidfd of an exited child reads alive")
+	}
+	if got := c.wait(pid); got != "exit status 1" {
+		t.Fatalf("wait = %q", got)
+	}
+	if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err == nil {
+		if b, _ := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); strings.Contains(string(b), "(false) Z") {
+			t.Fatal("wait did not reap the child")
+		}
+	}
+	if h.alive() {
+		t.Fatal("the pidfd reads alive after the reap")
 	}
 }

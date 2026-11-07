@@ -19,6 +19,7 @@ import (
 	"syscall"
 
 	"github.com/fxamacker/cbor/v2"
+	"golang.org/x/sys/unix"
 
 	"github.com/dilla-chat/dilla/internal/config"
 )
@@ -51,7 +52,7 @@ type KeeperConfig struct {
 	// refuses setgroups. Production clears them.
 	noSetgroups bool
 	// insecurePaths skips the root-owned ancestor rule: only tests set it (in a user namespace the host's root owns
-	// nothing), or a test build linked with UnsafeTestBuild. Production checks every component.
+	// nothing), or a binary built with the dilla_unsafe_test tag (UnsafeTestBuild). Production checks every component.
 	insecurePaths bool
 	// allowCgoNarrowing lets a cgo test keeper keep its capabilities when it cannot narrow them on every thread.
 	allowCgoNarrowing bool
@@ -59,14 +60,6 @@ type KeeperConfig struct {
 
 // requireRoot is whether the Bot's files and their directories must be root's.
 func (k KeeperConfig) requireRoot() bool { return !k.SameUser && !k.insecurePaths }
-
-// unsafeTestBuild is set only by a test's `go build -ldflags -X …botsupervisor.unsafeTestBuild=yes`
-// (TestServingDilladHoldsNoSetuidCapability, which runs serve as root in a user namespace): it lets the keeper run
-// as euid 0 and accept paths whose ancestors are not the host's root's. A release build never sets it.
-var unsafeTestBuild string
-
-// UnsafeTestBuild reports whether this binary was linked for that test.
-func UnsafeTestBuild() bool { return unsafeTestBuild == "yes" }
 
 // NewKeeperConfig resolves b into a launch configuration: the Bot user's uid and primary gid, and the wasi core
 // beside dillad (coreDir) when bot.wasi_module is empty. Unless dev_same_user, the user must not be root and every
@@ -280,10 +273,12 @@ type children struct {
 	m   map[int]*child
 }
 
+// child is one started Bot. The keeper never reaps it by itself: exited closes when the process has ended
+// (waitid with WNOWAIT, which leaves it a zombie), and only a wait op reaps it. Until then its pid can name no other
+// process, which is what the supervisor's pidfd, opened right after start answers, relies on.
 type child struct {
 	cmd     *exec.Cmd
-	done    chan struct{}
-	exit    string
+	exited  chan struct{}
 	waiting bool // a wait is pending: one per child
 }
 
@@ -342,11 +337,17 @@ func (c *children) start(token [32]byte) (int, error) {
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
-	ch := &child{cmd: cmd, done: make(chan struct{})}
+	ch := &child{cmd: cmd, exited: make(chan struct{})}
+	pid := cmd.Process.Pid
 	go func() {
-		_ = cmd.Wait()
-		ch.exit = cmd.ProcessState.String()
-		close(ch.done)
+		defer close(ch.exited)
+		var info unix.Siginfo
+		for {
+			err := unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT, nil)
+			if !errors.Is(err, unix.EINTR) {
+				return
+			}
+		}
 	}()
 	c.mu.Lock()
 	c.m[cmd.Process.Pid] = ch
@@ -367,7 +368,7 @@ func (c *children) signal(pid int, sig syscall.Signal) error {
 		return errNotChild
 	}
 	select {
-	case <-ch.done:
+	case <-ch.exited:
 		return errors.New("the child has exited")
 	default:
 	}
@@ -392,14 +393,25 @@ func (c *children) wait(pid int) string {
 	if !ok {
 		return notChildExit
 	}
-	<-ch.done
+	<-ch.exited
+	// The reap: from here on the pid is free for anyone, and the entry goes.
+	exit := ch.reap()
 	c.mu.Lock()
 	// Only this child's entry: the pid may already name a later one.
 	if c.m[pid] == ch {
 		delete(c.m, pid)
 	}
 	c.mu.Unlock()
-	return ch.exit
+	return exit
+}
+
+// reap collects the exit status (os/exec's Wait) and describes it.
+func (ch *child) reap() string {
+	_ = ch.cmd.Wait()
+	if ch.cmd.ProcessState == nil {
+		return "unknown exit"
+	}
+	return ch.cmd.ProcessState.String()
 }
 
 // killAll ends every child: the keeper is going away, and so does what it started.
@@ -412,7 +424,8 @@ func (c *children) killAll() {
 	c.mu.Unlock()
 	for _, ch := range all {
 		_ = ch.cmd.Process.Kill()
-		<-ch.done
+		<-ch.exited
+		_ = ch.reap()
 	}
 }
 
@@ -533,7 +546,15 @@ func ServeKeeper(cfg KeeperConfig, ctl *os.File, log *slog.Logger) error {
 	}
 	// systemd's stop signals the whole cgroup (dilla.service has KillMode=mixed, so normally only serve): the keeper
 	// stays until serve has stopped the Bot through it (SIGTERM, StopGrace, SIGKILL) and closed the control socket.
-	signal.Ignore(syscall.SIGTERM, syscall.SIGINT)
+	// Handled, not ignored: an ignored disposition would pass through fork and exec to bot-launch and the Bot, and a
+	// handled one is reset to the default there.
+	stops := make(chan os.Signal, 1)
+	signal.Notify(stops, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(stops)
+	go func() {
+		for range stops { //nolint:revive // drained: the keeper outlives the stop signal on purpose
+		}
+	}()
 	if err := narrowKeeperCapabilities(cfg.allowCgoNarrowing); err != nil {
 		_ = ctl.Close()
 		return fmt.Errorf("keeper: %w", err)
