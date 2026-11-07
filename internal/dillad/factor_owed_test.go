@@ -94,7 +94,7 @@ func docRoutes(t *testing.T, name string) []docRoute {
 			}
 			continue
 		}
-		if header == nil || strings.HasPrefix(line, "|---") {
+		if header == nil || strings.HasPrefix(line, "|---") || (len(cells) > 0 && strings.Trim(cells[0], "-: ") == "") {
 			continue
 		}
 		m := routeCell.FindStringSubmatch(cells[0])
@@ -247,7 +247,8 @@ func TestEveryMountedRouteIsADocumentedRoute(t *testing.T) {
 	srv, _, _ := newInstance(t)
 	defer srv.Shutdown(context.Background())
 	documented := map[string]bool{}
-	for _, doc := range []string{"09-http-api.md", "02-delivery-service.md"} {
+	// protocol/10 tables the Bot routes (fix round 1, M-6: the socket routes are checked too).
+	for _, doc := range []string{"09-http-api.md", "02-delivery-service.md", "10-community-bot.md"} {
 		for _, r := range docRoutes(t, doc) {
 			path, _, _ := strings.Cut(r.path, "?")
 			documented[r.method+" "+pathParameter.ReplaceAllString(path, "{}")] = true
@@ -257,18 +258,23 @@ func TestEveryMountedRouteIsADocumentedRoute(t *testing.T) {
 	documented["POST /v1/bot-runtime/installations/{}/interaction-admissions"] = true
 	anyParameter := regexp.MustCompile(`\{[A-Za-z_.]+\}`)
 	mounted := 0
-	for _, pattern := range srv.Mux().Patterns() {
+	httpPatterns := srv.Mux().Patterns()
+	// The socket-only routes too (Bot v2 task 14 fix round 1, M-6): moving a route to the socket must not take it out
+	// of this check.
+	for i, pattern := range append(slices.Clone(httpPatterns), srv.Mux().SocketPatterns()...) {
 		method, path, ok := strings.Cut(pattern, " ")
 		if !ok || !strings.HasPrefix(path, "/v1/") {
 			continue
 		}
-		mounted++
+		if i < len(httpPatterns) {
+			mounted++
+		}
 		if key := method + " " + anyParameter.ReplaceAllString(path, "{}"); !documented[key] {
 			t.Errorf("%s is mounted but no protocol/09 or protocol/02 table lists it, so the owed sweep never sends it", pattern)
 		}
 	}
-	// Bot v2 tasks 4-6 and 14 moved most routes to the socket mux: about 40 /v1 HTTP routes remain.
-	if mounted < 30 {
+	// Bot v2 tasks 4-6 and 14 moved most routes to the socket mux: 41 /v1 HTTP routes remain.
+	if mounted < 38 {
 		t.Fatalf("only %d /v1 patterns were recorded; the mux is not reporting its routes", mounted)
 	}
 }

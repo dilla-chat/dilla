@@ -218,6 +218,7 @@ func run(o options) error {
 	if bot != nil {
 		mux := http.NewServeMux()
 		mux.Handle("/debug/bot/", dilladtest.BotControl(bot.runner))
+		mux.Handle("GET /debug/bot/installations", host.BotRuntimeInstallations())
 		mux.Handle("/", control)
 		control = mux
 	}

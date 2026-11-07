@@ -251,7 +251,6 @@ func TestSupervisorStopsChildWithDillad(t *testing.T) {
 	})
 }
 
-// Restart stops the running child and starts the next one at once; it may be called from any goroutine.
 // TestSupervisorNudgeSignalsTheRunningChild (Bot v2 task 14): the Bot polls nothing, so dillad tells it that an
 // installation changed by sending the running child SIGHUP through the keeper. With no child running, Nudge does
 // nothing; it never restarts the child.
@@ -279,6 +278,7 @@ func TestSupervisorNudgeSignalsTheRunningChild(t *testing.T) {
 	}
 }
 
+// Restart stops the running child and starts the next one at once; it may be called from any goroutine.
 func TestSupervisorRestartReplacesTheChild(t *testing.T) {
 	keeper := newFakeKeeper()
 	s := New(testBotConfig(), keeper, quietLog())

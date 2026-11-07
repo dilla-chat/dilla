@@ -62,13 +62,19 @@ func (c *InteractionRegistrationCoordinator) QueueMemberJoin(ctx context.Context
 // registered yet (one may be waiting for KeyPackages, or for a device list). The Bot polls nothing (Bot v2 task 14),
 // so its loop runs the pass again, on a backoff, while this holds.
 func (c *InteractionRegistrationCoordinator) HasPendingWork(ctx context.Context) (bool, error) {
+	n, err := c.PendingJobs(ctx)
+	return n > 0, err
+}
+
+// PendingJobs is how many durable member-episode jobs are queued.
+func (c *InteractionRegistrationCoordinator) PendingJobs(ctx context.Context) (int, error) {
 	if c == nil {
-		return false, errors.New("invalid interaction registration worker")
+		return 0, errors.New("invalid interaction registration worker")
 	}
 	c.jobsMu.Lock()
 	defer c.jobsMu.Unlock()
 	jobs, _, err := c.loadRegistrationJobs(ctx)
-	return len(jobs) > 0, err
+	return len(jobs), err
 }
 
 // ProcessPending advances a bounded number of durable member-episode jobs and

@@ -92,6 +92,27 @@ func (b *InteractionRegistrationBackoff) dropJob(installation, user, episode id.
 	b.retain(installation, user, episode, nil)
 }
 
+// NextDue is the earliest time a backed-off device of installation is due again, and whether one is backed off
+// (Bot v2 task 14 fix round 1, M-3: the Bot retries a stuck registration on this per-device backoff, not on a timer).
+func (b *InteractionRegistrationBackoff) NextDue(installation id.ID) (time.Time, bool) {
+	if b == nil {
+		return time.Time{}, false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var next time.Time
+	found := false
+	for key, entry := range b.entries {
+		if key.installation != installation {
+			continue
+		}
+		if !found || entry.notBefore.Before(next) {
+			next, found = entry.notBefore, true
+		}
+	}
+	return next, found
+}
+
 func (b *InteractionRegistrationBackoff) has(key interactionRegistrationBackoffKey) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()

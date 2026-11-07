@@ -125,6 +125,12 @@ func dialBotSocket(ctx context.Context, path, bearer string) (*websocket.Conn, e
 // answer frame, or the close code when the connection closed instead.
 func identifyOverBot(t *testing.T, path, bearer, launch string) (Inbound, websocket.StatusCode) {
 	t.Helper()
+	return identifyOverBotWire(t, path, bearer, launch, auth.WireVersion)
+}
+
+// identifyOverBotWire is identifyOverBot choosing the wire version.
+func identifyOverBotWire(t *testing.T, path, bearer, launch string, wire uint64) (Inbound, websocket.StatusCode) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	c, err := dialBotSocket(ctx, path, bearer)
@@ -135,7 +141,7 @@ func identifyOverBot(t *testing.T, path, bearer, launch string) (Inbound, websoc
 	if in := readWS(t, ctx, c); in.Op != OpHello {
 		t.Fatalf("first frame op %d, want hello", in.Op)
 	}
-	p, err := payload(launch, auth.WireVersion, uint64(1), uint64(1), uint64(0))
+	p, err := payload(launch, wire, uint64(1), uint64(1), uint64(0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,6 +198,24 @@ func TestBotListenerRefusesWrongPeerUid(t *testing.T) {
 	if c, err := dialBotSocket(ctx, path, bearer); err == nil {
 		_ = c.CloseNow()
 		t.Fatal("a process that is not the current child completed the upgrade")
+	}
+}
+
+// TestLaunchTokenIsSpentOnlyByAnIdentifyThatReachesReady (Bot v2 task 14 fix round 1, I-4): the token is spent last,
+// after every other check. An identify refused after its session resolved (here: a managed Bot on an older wire the
+// instance still advertises) leaves the token unspent, so the next identify with it reaches ready.
+func TestLaunchTokenIsSpentOnlyByAnIdentifyThatReachesReady(t *testing.T) {
+	launch := &fakeLaunch{uid: uint32(os.Getuid()), pid: int32(os.Getpid())}
+	h := newBotListenerHarness(t, launch)
+	h.gw.opts.WireVersions = []uint64{auth.WireVersion - 1, auth.WireVersion}
+	tok := launch.newStart(t)
+	path := serveBotSocket(t, h)
+	bearer := botSessionToken(h, id.New())
+	if in, _ := identifyOverBotWire(t, path, bearer, encodeLaunch(tok), auth.WireVersion-1); in.Op != OpError {
+		t.Fatalf("a managed Bot on wire %d got op %d, want an error", auth.WireVersion-1, in.Op)
+	}
+	if in, code := identifyOverBot(t, path, bearer, encodeLaunch(tok)); in.Op != OpReady {
+		t.Fatalf("the token after a refused identify got op %d close %d, want ready (it was spent by the refusal)", in.Op, code)
 	}
 }
 

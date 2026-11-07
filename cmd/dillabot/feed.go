@@ -83,7 +83,12 @@ type ChannelGroupEvent struct {
 // helper op 24 push, which the handler hands on unchanged. Community (kind 8, the owner) is added beside the brief's
 // methods, and every method takes the worker's context.
 type Feed interface {
-	DeviceList(ctx context.Context, user id.ID, push []byte, snapshot bool)
+	// DeviceList returns an error only for a transient failure (fix round 1, I-2): the feed then holds the event,
+	// unacknowledged with everything behind it, and applies it again on a backoff. A definitive refusal is applied.
+	DeviceList(ctx context.Context, user id.ID, push []byte, snapshot bool) error
+	// SnapshotBegin starts a snapshot: the handler stages the snapshot's state, and SnapshotDone replaces its state
+	// with it (fix round 1, I-1). A snapshot cut off before snapshot_end never reaches SnapshotDone.
+	SnapshotBegin(ctx context.Context)
 	Member(ctx context.Context, ev MemberEvent)
 	Role(ctx context.Context, ev RoleEvent)
 	Community(ctx context.Context, community, owner id.ID, snapshot bool)
@@ -237,10 +242,10 @@ func decodeFeedEvent(payload []cbor.RawMessage) (feedEvent, error) {
 }
 
 // apply dispatches one event to h.
-func (ev feedEvent) apply(ctx context.Context, h Feed) {
+func (ev feedEvent) apply(ctx context.Context, h Feed) error {
 	switch ev.kind {
 	case feedDeviceList:
-		h.DeviceList(ctx, ev.user, ev.push, ev.fromSnapshot)
+		return h.DeviceList(ctx, ev.user, ev.push, ev.fromSnapshot)
 	case feedMember:
 		m := ev.member
 		m.Snapshot = ev.fromSnapshot
@@ -258,6 +263,7 @@ func (ev feedEvent) apply(ctx context.Context, h Feed) {
 	case feedCommunity:
 		h.Community(ctx, ev.community, ev.owner, ev.fromSnapshot)
 	}
+	return nil
 }
 
 // ackSlot is one ringed delivery waiting for its turn to be acknowledged.
@@ -429,17 +435,49 @@ func (f *feedConsumer) run(ctx context.Context) {
 			}
 			continue
 		}
+		if job.snapshot {
+			h.SnapshotBegin(ctx)
+		}
 		for _, ev := range job.events {
-			if ctx.Err() != nil {
+			if !f.applyHeld(ctx, h, ev) {
 				return // unapplied: not acknowledged, so the next connection gets it again
 			}
-			ev.apply(ctx, h)
 		}
 		if job.snapshot {
 			h.SnapshotDone(ctx)
 			f.readyOnce.Do(func() { close(f.ready) })
 		}
 		f.acks.done(job.slot)
+	}
+}
+
+// feedRetryBase and feedRetryCap bound the backoff of an event whose apply failed transiently.
+var feedRetryBase = time.Second
+
+const feedRetryCap = 30 * time.Second
+
+// applyHeld applies ev, and while that fails transiently (a helper restart, a timeout), applies it again on a backoff
+// (feedRetryBase doubling to feedRetryCap) without moving on: the event stays unacknowledged, and so does every frame
+// behind it, so the order holds and a resume would replay it (fix round 1, I-2). It reports false when ctx ended first.
+func (f *feedConsumer) applyHeld(ctx context.Context, h Feed, ev feedEvent) bool {
+	delay := feedRetryBase
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		err := ev.apply(ctx, h)
+		if err == nil {
+			return true
+		}
+		f.log.Warn("bot feed event held; applying it again", "kind", ev.kind, "after", delay, "error", err.Error())
+		t := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return false
+		case <-t.C:
+		}
+		delay = min(delay*2, feedRetryCap)
 	}
 }
 

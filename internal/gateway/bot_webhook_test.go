@@ -279,12 +279,14 @@ func mustFrameBytes(t *testing.T, v any) []byte {
 // the inbound bucket on a Bot connection, as an admitted op 59 request does; on a person's connection it is charged.
 func TestWebhookAcksFromTheBotAreNotChargedToTheInboundFrameBucket(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		bot    bool
-		closed bool
-	}{{"bot", true, false}, {"person", false, true}} {
+		name         string
+		bot, awaited bool
+		closed       bool
+	}{{"bot, awaited deliveries", true, true, false}, {"bot, unsolicited (fix round 1 M-5)", true, false, true}, {"person", false, false, true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
+			// Twice the burst stays within the per-Bot cap of pending deliveries.
+			h.gw.opts.FrameBurst = 8
 			h.gw.opts.WireVersions = []uint64{auth.WireVersion}
 			h.gw.opts.Auth = &capabilityRecordingAuth{Authenticator: h}
 			device := id.New()
@@ -314,6 +316,13 @@ func TestWebhookAcksFromTheBotAreNotChargedToTheInboundFrameBucket(t *testing.T)
 			frames := make([][]byte, 0, h.gw.opts.FrameBurst*2)
 			for range h.gw.opts.FrameBurst * 2 {
 				delivery := id.New()
+				if tc.awaited {
+					want := h.gw.webhooks.len() + 1
+					deliverAsync(h, context.Background(), device, delivery, webhookPayload(t, delivery))
+					for deadline := time.Now().Add(2 * time.Second); h.gw.webhooks.len() < want && time.Now().Before(deadline); {
+						time.Sleep(time.Millisecond)
+					}
+				}
 				ack, err := payload(delivery[:], uint64(0))
 				if err != nil {
 					t.Fatal(err)
@@ -340,7 +349,7 @@ func TestWebhookAcksFromTheBotAreNotChargedToTheInboundFrameBucket(t *testing.T)
 				}
 			case <-time.After(500 * time.Millisecond):
 				if tc.closed {
-					t.Fatal("a person's connection sent twice the burst of op 67 frames and stayed open")
+					t.Fatal("twice the burst of op 67 frames that answer no awaited delivery left the connection open")
 				}
 			}
 		})

@@ -20,6 +20,17 @@ func (h *Host) BotHandler() http.Handler {
 	return dillad.BotSocketHandler(gw, app, h.Log())
 }
 
+// BotRuntimeInstallations serves the runtime credential's GET /v1/bot-runtime/installations as the Bot's socket does,
+// for the specs on the host's private control listener (GET /debug/bot/installations, with the runtime credential as
+// the bearer). Under a supervisor the public listener refuses the route (Bot v2 task 14 fix round 1, M-1).
+func (h *Host) BotRuntimeInstallations() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := r.Clone(r.Context())
+		req.URL.Path, req.URL.RawPath, req.RequestURI = "/v1/bot-runtime/installations", "", ""
+		h.BotHandler().ServeHTTP(w, req)
+	})
+}
+
 // BotRunner runs a Bot supervisor on demand for the e2e host (dilla-testhost -bot): the specs start, stop and restart
 // the Bot through BotControl on the host's private control listener. dillad itself has no such switch: serve runs
 // its supervisor for its whole life, and this package never ships (TestTheReleaseBinaryDoesNotLinkTheTestHelpers).

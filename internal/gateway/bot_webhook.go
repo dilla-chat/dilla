@@ -52,6 +52,14 @@ type webhookWaits struct {
 	byDevice map[id.ID]int
 }
 
+// awaiting reports whether delivery is waiting for an ack from c (Bot v2 task 14 fix round 1, M-5).
+func (w *webhookWaits) awaiting(c *conn, delivery id.ID) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	wait := w.byID[delivery]
+	return wait != nil && wait.c == c
+}
+
 func (w *webhookWaits) len() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()

@@ -384,6 +384,7 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 	var payload []any
 	// settleLaunch reports how an identify that may have carried the launch token went; it is idempotent, and the
 	// deferred call covers every path that ends the handshake without ready.
+	presentedLaunch := false
 	settleLaunch := func(bool) {}
 	defer func() { settleLaunch(false) }()
 	if resume {
@@ -396,6 +397,7 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 			return fresh, 0, errTransport
 		}
 		settleLaunch = settle
+		presentedLaunch = launch != ""
 		payload = []any{launch, uint64(client.WireVersion), uint64(1), uint64(1), uint64(0)}
 	}
 	frame, err := encodeFrame(op, 0, nil, payload)
@@ -428,6 +430,12 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 	}
 	firstRaw = append(firstRaw[:0], raw...)
 	if first.Op == OpError {
+		if presentedLaunch && first.ErrorCode == "E_UNAUTHENTICATED" {
+			// The token may have been spent on an identify whose ready never arrived: try once without it, on the
+			// ordinary reconnect backoff (Bot v2 task 14 fix round 1, I-4).
+			c.launch.refusedWithToken()
+			return fresh, 0, errLaunchRefused
+		}
 		return fresh, 0, classifyServerError(first.ErrorCode, true)
 	}
 	if first.Op == OpInvalidSession {

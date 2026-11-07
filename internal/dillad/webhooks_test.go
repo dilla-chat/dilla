@@ -180,6 +180,26 @@ func TestBotSocketServesOnlyTheGatewayAndTheBotsPreSessionRoutes(t *testing.T) {
 			t.Errorf("%s %s on the Bot socket = %d, want it served", allowed.method, allowed.path, got)
 		}
 	}
+	// Fix round 1 (M-1): under a supervisor the public listener refuses the Bot's enrollment routes; the socket serves
+	// them (above). Without a supervisor (dev, the test host without -bot) the public listener still serves them.
+	for _, p := range dillad.BotEnrollmentRoutes {
+		method, path := concretePath(p)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), method, path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s over the public listener under a supervisor = %d, want 404", p, rec.Code)
+		}
+	}
+	plain, err := dillad.New(context.Background(), dillad.Options{Config: testConfig(t), Clock: clock.System(), Wasm: sharedRuntime(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = plain.Shutdown(context.Background()) }()
+	rec := httptest.NewRecorder()
+	plain.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/bot-runtime/installations", nil))
+	if rec.Code == http.StatusNotFound {
+		t.Errorf("GET /v1/bot-runtime/installations without a supervisor = 404, want it served")
+	}
 	if !slices.Equal(dillad.BotSocketHTTPRoutes, []string{
 		"GET /v1/instance",
 		"GET /v1/instance/limits",

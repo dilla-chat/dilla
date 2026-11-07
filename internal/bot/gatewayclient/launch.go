@@ -17,6 +17,23 @@ type LaunchToken struct {
 	mu    sync.Mutex
 	value string
 	spent bool
+	// bare is set when an identify that carried the token was refused E_UNAUTHENTICATED: dillad may have spent it on an
+	// identify whose ready never arrived (Bot v2 task 14 fix round 1, I-4). The next identify goes once without it,
+	// which dillad admits only from the same live child that spent it (BotLaunch.Authenticated).
+	bare bool
+}
+
+// refusedWithToken records that an identify carrying the token was refused E_UNAUTHENTICATED, so the next identify
+// tries once without it.
+func (t *LaunchToken) refusedWithToken() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.spent {
+		t.bare = true
+	}
 }
 
 // NewLaunchToken holds raw (32 bytes) and clears the caller's copy.
@@ -55,6 +72,10 @@ func (t *LaunchToken) acquire(ctx context.Context) (string, func(ready bool), er
 		return "", noop, nil
 	}
 	value := t.value
+	if t.bare {
+		// One attempt without the token; refused too, the token is presented again next time.
+		t.bare, value = false, ""
+	}
 	t.mu.Unlock()
 	var once sync.Once
 	return value, func(ready bool) {

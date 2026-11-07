@@ -581,12 +581,20 @@ func (g *Gateway) identifyConnection(ctx context.Context, s sink, in Inbound) (*
 		bearer = tokenFromHandshake(in)
 	}
 	session, err := g.identify(ctx, bearer)
-	if err != nil || (in.botPeer != nil && (session.Bot == nil || !g.admitBotSession(in.botPeer, &in))) || g.botOffSocket(in, session) {
+	if err != nil || (in.botPeer != nil && session.Bot == nil) || g.botOffSocket(in, session) {
 		g.refuse(ctx, s, frameErr("E_UNAUTHENTICATED", "identify", CloseUnauthenticated))
 		return nil, false
 	}
 	if session.Bot != nil && chosen[0] != auth.WireVersion {
 		g.refuse(ctx, s, frameErr("E_UPGRADE_REQUIRED", fmt.Sprintf("managed Bots require wire version %d", auth.WireVersion), CloseVersion))
+		return nil, false
+	}
+	// The launch token is spent last (Bot v2 task 14 fix round 1, I-4): after every other check, immediately before
+	// registerVersions writes ready, so an identify refused for anything else leaves it unspent. A ready that is then
+	// lost costs the client one retry without the token, which only the same live child is admitted with
+	// (BotLaunch.Authenticated).
+	if in.botPeer != nil && !g.admitBotSession(in.botPeer, &in) {
+		g.refuse(ctx, s, frameErr("E_UNAUTHENTICATED", "identify", CloseUnauthenticated))
 		return nil, false
 	}
 	c, err := g.registerVersions(ctx, session, s, chosen)
@@ -931,7 +939,8 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 		overRate := func() bool { return !inbound.AllowN(g.opts.Clock.Now(), 1) }
 		// A Bot connection's op 67 webhook ack is not charged either (Bot v2 task 14): it answers one op 66 dillad sent,
 		// so its rate is the webhook posts' (metered per address, network and webhook), and a burst of posts must not
-		// close the Bot 4008. Unsolicited acks are dropped by handleWebhookAck.
+		// close the Bot 4008. Only an ack of a delivery this connection is awaiting is free (fix round 1, M-5): any other
+		// op 67 is charged once decoded, below, and then dropped by handleWebhookAck.
 		op, ok := frameOp(b)
 		uncharged := ok && (op == OpRequest || (op == OpBotWebhookAck && c.isBot))
 		if !uncharged && overRate() {
@@ -964,6 +973,12 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 				return
 			}
 			continue
+		}
+		if in.Op == OpBotWebhookAck && uncharged {
+			if a, err := webhookAckFields(in.Payload); (err != nil || !g.webhooks.awaiting(c, a.delivery)) && overRate() {
+				g.closeOverRate(c)
+				return
+			}
 		}
 		g.handle(ctx, c, in)
 	}

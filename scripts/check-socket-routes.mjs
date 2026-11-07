@@ -127,7 +127,7 @@ function goFiles(base) {
 
 export function check(base = root) {
   const go = goRoutes(goFiles(base));
-  if (go.http.size < 30) return [`only ${go.http.size} Go /v1 HTTP registrations were found; the scan no longer sees the routes`];
+  if (go.http.size < 38) return [`only ${go.http.size} Go /v1 HTTP registrations were found; the scan no longer sees the routes`];
   return problems(go, manifest(readFileSync(join(base, MANIFEST), 'utf8')), botSocketRoutes(readFileSync(join(base, BOT_ROUTES), 'utf8')));
 }
 

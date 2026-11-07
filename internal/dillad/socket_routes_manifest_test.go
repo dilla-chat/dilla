@@ -67,7 +67,7 @@ func TestSocketRouteManifestMatchesTheMux(t *testing.T) {
 			t.Errorf("%s is served on HTTP but is in neither HTTP_ONLY_ROUTES nor SOCKET_ROUTES", pattern)
 		}
 	}
-	if mounted < 30 {
+	if mounted < 38 {
 		t.Fatalf("only %d /v1 HTTP patterns were recorded", mounted)
 	}
 	for _, name := range []string{"HTTP_ONLY_ROUTES", "PRE_GATEWAY_ROUTES"} {

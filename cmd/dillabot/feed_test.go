@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -17,7 +16,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -114,8 +112,10 @@ type fakeDillad struct {
 	acked               uint64 // the highest last_n a heartbeat or resume reported
 	ackedAt             map[uint64]time.Time
 	session             func(ctx context.Context, ws *websocket.Conn, resumeFrom uint64, resumed bool)
-	lastResumeAck       uint64
-	srv                 *http.Server
+	// onIdentify, when set, decides an identify: "ready", "drop" (close before ready) or "refuse" (E_UNAUTHENTICATED).
+	onIdentify    func(n int, launch string) string
+	lastResumeAck uint64
+	srv           *http.Server
 }
 
 func newFakeDillad(t *testing.T, session func(ctx context.Context, ws *websocket.Conn, resumeFrom uint64, resumed bool)) *fakeDillad {
@@ -204,8 +204,21 @@ func (d *fakeDillad) serve(w http.ResponseWriter, r *http.Request) {
 		_ = cborx.Unmarshal(payload[0], &launch)
 		d.mu.Lock()
 		d.identifies++
+		n := d.identifies
 		d.launches = append(d.launches, launch)
+		decide := d.onIdentify
 		d.mu.Unlock()
+		if decide != nil {
+			switch decide(n, launch) {
+			case "drop":
+				_ = ws.Close(4000, "drop")
+				return
+			case "refuse":
+				_ = d.send(ctx, ws, gatewayclient.OpError, 0, []any{uint64(0), "E_UNAUTHENTICATED", "identify"})
+				_ = ws.Close(4003, "E_UNAUTHENTICATED")
+				return
+			}
+		}
 		ready := []any{d.dev, d.user, uint64(7), token, uint64(6), uint64(1), uint64(1), uint64(0), []any{}, feedID(0x77)}
 		if d.send(ctx, ws, gatewayclient.OpReady, 1, ready) != nil {
 			return
@@ -299,14 +312,16 @@ func (f *recordingFeed) note(key string) {
 	f.applied = append(f.applied, key)
 	f.mu.Unlock()
 }
-func (f *recordingFeed) DeviceList(_ context.Context, _ id.ID, _ []byte, snapshot bool) {
+func (f *recordingFeed) DeviceList(_ context.Context, _ id.ID, _ []byte, snapshot bool) error {
 	if snapshot && f.seenEnd != nil && !f.seenEnd.Load() {
 		f.early.Store(true) // a snapshot body applied before dillad sent snapshot_end
 	}
 	f.mu.Lock()
 	f.lists++
 	f.mu.Unlock()
+	return nil
 }
+func (f *recordingFeed) SnapshotBegin(context.Context)       {}
 func (f *recordingFeed) Member(context.Context, MemberEvent) {}
 func (f *recordingFeed) Role(context.Context, RoleEvent)     {}
 func (f *recordingFeed) Community(context.Context, id.ID, id.ID, bool) {
@@ -340,6 +355,48 @@ func waitFor(t *testing.T, what string, timeout time.Duration, ok func() bool) {
 // TestBotConnectsOverUnixSocketWithLaunchToken: the supervised Bot dials dillad's Bot socket (a Unix socket; there is
 // no URL to resolve), its first identify carries the launch token from fd 3 beside its session bearer, and after a drop
 // it resumes without the token.
+// TestALostReadyAfterTheTokenWasSpentRecovers (fix round 1, I-4): dillad spends the launch token on the first
+// identify, then the connection drops before ready. The token presented again is refused E_UNAUTHENTICATED (spent);
+// the client then identifies once without it, which dillad admits for the same child, and reaches ready without a
+// restart. Each attempt waits on the reconnect backoff.
+func TestALostReadyAfterTheTokenWasSpentRecovers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	ready := make(chan struct{})
+	var once sync.Once
+	d := newFakeDillad(t, func(ctx context.Context, _ *websocket.Conn, _ uint64, _ bool) {
+		once.Do(func() { close(ready) })
+		<-ctx.Done()
+	})
+	token := base64.RawURLEncoding.EncodeToString(d.launch)
+	spent := false
+	d.onIdentify = func(n int, launch string) string {
+		switch {
+		case launch == token && !spent:
+			spent = true
+			return "drop" // spent, but ready never reaches the client
+		case launch == token:
+			return "refuse"
+		case launch == "" && spent:
+			return "ready"
+		}
+		return "refuse"
+	}
+	runFeed(ctx, botGatewayClient(t, d), feedID(1), &recordingFeed{})
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		t.Fatalf("no ready after a lost one; identifies carried %q", d.launches)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.launches) != 3 || d.launches[0] != token || d.launches[1] != token || d.launches[2] != "" {
+		t.Fatalf("identifies carried %q, want the token, the token (refused), then none", d.launches)
+	}
+}
+
 func TestBotConnectsOverUnixSocketWithLaunchToken(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -436,11 +493,11 @@ func TestFeedResumeAfterSocketDrop(t *testing.T) {
 	}
 }
 
-// TestBotIsReadyForCommandsWithin5s: from the start of the Bot's connection, a cold-start snapshot of 200 members with
+// TestColdSnapshotIsAppliedAsOneJobWithin5s: from the start of the Bot's connection, a cold-start snapshot of 200 members with
 // 600 devices (one device-list push each member) is applied as one job, and the first op 64 command behind it is
 // acknowledged within the spec's 5 s. The snapshot body is applied only after snapshot_end arrived, and snapshot_end is
 // acknowledged only after SnapshotDone ran.
-func TestBotIsReadyForCommandsWithin5s(t *testing.T) {
+func TestColdSnapshotIsAppliedAsOneJobWithin5s(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	community := feedID(1)
@@ -538,7 +595,7 @@ type countingPass struct {
 	perPass          int64
 }
 
-func (p *countingPass) run(context.Context) error {
+func (p *countingPass) run(context.Context, map[id.ID]bool) error {
 	p.passes.Add(1)
 	p.requests.Add(p.perPass)
 	return nil
@@ -553,7 +610,7 @@ func TestBotMakesNoPeriodicRequests(t *testing.T) {
 	pass := &countingPass{perPass: 12}
 	var maintained atomic.Int64
 	ctx, cancel := context.WithCancel(t.Context())
-	loop := botLoop{clock: clk, log: quietLogger(), pass: pass.run, passes: make(chan struct{}), reload: make(chan os.Signal),
+	loop := botLoop{clock: clk, log: quietLogger(), pass: pass.run, passes: make(chan struct{}), take: noTargets, reload: make(chan os.Signal),
 		wake: make(chan struct{}), poll: func(context.Context) { t.Error("a text poll ran without a hint") },
 		maintain: func(context.Context) error { maintained.Add(1); return nil }, due: dueInterval}
 	done := make(chan error, 1)
@@ -574,44 +631,6 @@ func TestBotMakesNoPeriodicRequests(t *testing.T) {
 	}
 	if got := pass.requests.Load() - startRequests; got != 0 {
 		t.Fatalf("%d request frames in 10 idle minutes, want 0", got)
-	}
-}
-
-// TestBotLoopRunsAPassOnlyOnAnEvent: a feed change, a SIGHUP and a failed pass's retry each run one pass; a success
-// arms no retry.
-func TestBotLoopRunsAPassOnlyOnAnEvent(t *testing.T) {
-	clk := clock.NewFake(time.Unix(1_800_000_000, 0))
-	passes := make(chan struct{}, 1)
-	reload := make(chan os.Signal, 1)
-	var runs atomic.Int64
-	var fail atomic.Bool
-	loop := botLoop{clock: clk, log: quietLogger(), passes: passes, reload: reload, wake: make(chan struct{}),
-		poll: func(context.Context) {}, maintain: func(context.Context) error { return nil }, due: time.Hour,
-		pass: func(context.Context) error {
-			runs.Add(1)
-			if fail.Load() {
-				return errors.New("transient")
-			}
-			return nil
-		}}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	go func() { _ = loop.run(ctx) }()
-	waitFor(t, "the start pass", 5*time.Second, func() bool { return runs.Load() == 1 })
-	passes <- struct{}{}
-	waitFor(t, "a pass on a feed change", 5*time.Second, func() bool { return runs.Load() == 2 })
-	reload <- syscall.SIGHUP
-	waitFor(t, "a pass on SIGHUP", 5*time.Second, func() bool { return runs.Load() == 3 })
-	fail.Store(true)
-	passes <- struct{}{}
-	waitFor(t, "the failing pass", 5*time.Second, func() bool { return runs.Load() == 4 })
-	fail.Store(false)
-	clk.Advance(passRetryBase)
-	waitFor(t, "the retry", 5*time.Second, func() bool { return runs.Load() == 5 })
-	clk.Advance(time.Hour - time.Second)
-	time.Sleep(50 * time.Millisecond)
-	if got := runs.Load(); got != 5 {
-		t.Fatalf("%d passes, want no retry after a success", got)
 	}
 }
 
@@ -666,7 +685,8 @@ func TestInstallationFeedAppliesMembersAndDeviceLists(t *testing.T) {
 	var passes atomic.Int64
 	f := newInstallationFeed(feedID(9), community, bot, quietLogger(), func() { passes.Add(1) })
 	f.setDeps(deps.deps())
-	f.DeviceList(ctx, ada, []byte{1}, true)
+	f.SnapshotBegin(ctx)
+	_ = f.DeviceList(ctx, ada, []byte{1}, true)
 	f.Member(ctx, MemberEvent{Community: community, User: ada, Joined: true, Snapshot: true})
 	f.Member(ctx, MemberEvent{Community: community, User: bot, Joined: true, Snapshot: true})
 	f.SnapshotDone(ctx)
@@ -679,12 +699,12 @@ func TestInstallationFeedAppliesMembersAndDeviceLists(t *testing.T) {
 		t.Fatalf("live join: welcomed %v, staged %v", deps.welcomed, deps.staged)
 	}
 	first := deps.welcomed[0]
-	f.DeviceList(ctx, bea, []byte{2}, false)
+	_ = f.DeviceList(ctx, bea, []byte{2}, false)
 	if len(deps.staged) != 2 || deps.staged[1] != [2]id.ID{bea, feedID(0x32)} {
 		t.Fatalf("a member's new device staged %v, want bea's episode again", deps.staged)
 	}
 	deps.state, deps.changed = native.DeviceListHeld, false
-	f.DeviceList(ctx, ada, []byte{3}, false)
+	_ = f.DeviceList(ctx, ada, []byte{3}, false)
 	if len(deps.staged) != 2 || len(deps.ingested) != 3 {
 		t.Fatalf("a held list staged %v (ingested %d), want nothing staged", deps.staged, len(deps.ingested))
 	}
@@ -695,6 +715,7 @@ func TestInstallationFeedAppliesMembersAndDeviceLists(t *testing.T) {
 		t.Fatalf("a retried episode welcomed with %v, want the first event's id and time", deps.welcomed)
 	}
 	// A reconnect's snapshot names Cid, who joined while the Bot was away: welcomed now.
+	f.SnapshotBegin(ctx)
 	for _, u := range []id.ID{ada, bea, bot, cid} {
 		f.Member(ctx, MemberEvent{Community: community, User: u, Joined: true, Snapshot: true})
 	}

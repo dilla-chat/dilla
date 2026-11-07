@@ -160,6 +160,8 @@ type botGatewayRuntime struct {
 	// pass asks the main loop for a reconciliation pass (Bot v2 task 14: the Bot polls nothing; a pass follows a feed
 	// change, a fresh identify, an op 54, a lost connection or SIGHUP). Coalesced: one pending ask is enough.
 	pass chan struct{}
+	// passTargets are the installations asked for since the loop last took them (guarded by mu).
+	passTargets map[id.ID]bool
 	// feeds is each installation's feed handler, which outlives a pass and a gateway connection (guarded by mu).
 	feeds map[id.ID]*installationFeed
 	// interaction carries a participant's message in a private interaction group: a command
@@ -205,12 +207,28 @@ func (r *botGatewayRuntime) Wake() <-chan struct{} { return r.wake }
 // Pass is the main loop's channel of pass requests (requestPass).
 func (r *botGatewayRuntime) Pass() <-chan struct{} { return r.pass }
 
-// requestPass asks for one reconciliation pass; asks while one is pending coalesce.
-func (r *botGatewayRuntime) requestPass() {
+// requestPass asks for one reconciliation pass of installation (fix round 1, I-3: never of every installation for one
+// installation's event); asks while one is pending coalesce.
+func (r *botGatewayRuntime) requestPass(installation id.ID) {
+	r.mu.Lock()
+	if r.passTargets == nil {
+		r.passTargets = map[id.ID]bool{}
+	}
+	r.passTargets[installation] = true
+	r.mu.Unlock()
 	select {
 	case r.pass <- struct{}{}:
 	default:
 	}
+}
+
+// takePassTargets returns and clears the installations asked for.
+func (r *botGatewayRuntime) takePassTargets() (map[id.ID]bool, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	targets := r.passTargets
+	r.passTargets = nil
+	return targets, false
 }
 
 // feedHandler is the installation's feed handler, or nil before a pass built one.
@@ -226,7 +244,7 @@ func (r *botGatewayRuntime) feedFor(installation, community, botUser id.ID, deps
 	r.mu.Lock()
 	f := r.feeds[installation]
 	if f == nil || f.community != community || f.botUser != botUser {
-		f = newInstallationFeed(installation, community, botUser, r.log.With("installation_id", installation.String()), r.requestPass)
+		f = newInstallationFeed(installation, community, botUser, r.log.With("installation_id", installation.String()), func() { r.requestPass(installation) })
 		r.feeds[installation] = f
 	}
 	f.setDeps(deps)
@@ -423,6 +441,15 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 	// Bot v2: the device's session sends its socket routes as request frames on this gateway.
 	r.api.UseTransport(device, gateway)
 	go feed.run(ctx)
+	// Readiness (fix round 1, I-5): from the connection's start to its first applied snapshot, within the spec's 5 s.
+	go func() {
+		started := time.Now()
+		if err := feed.readyWithin(ctx, readyBudget); err == nil {
+			log.Info("bot feed ready for commands", "after", time.Since(started))
+		} else if ctx.Err() == nil {
+			log.Warn("bot feed not ready within the budget", "budget", readyBudget)
+		}
+	}()
 	go func() {
 		defer close(e.done)
 		defer r.api.ReleaseTransport(device, gateway)
@@ -444,7 +471,7 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 				}
 				r.notify()
 				// A fresh identify (a new or restarted socket session): what changed while it was away is read again.
-				r.requestPass()
+				r.requestPass(installation)
 			case gatewayclient.OpMessageCT:
 				// Outgoing ciphertext is already processed by the native sender.
 				// Its gateway echo must not start another full intake sweep.
@@ -464,11 +491,11 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 			case gatewayclient.OpCommunityChanged:
 				// The community's channels, settings or the Bot's own installation changed (op 54): read them again.
 				r.notify()
-				r.requestPass()
+				r.requestPass(installation)
 			case gatewayclient.OpWelcome:
 				// A Welcome adds the Bot to a group: the pass joins it (and may then mark the installation ready).
 				r.notify()
-				r.requestPass()
+				r.requestPass(installation)
 			case gatewayclient.OpMessagePlain, gatewayclient.OpHandshake, gatewayclient.OpEpochChanged, gatewayclient.OpVoiceState:
 				r.notify()
 			}
@@ -476,7 +503,7 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 		if err := <-finished; err != nil && ctx.Err() == nil {
 			log.Warn("bot gateway requires session reconciliation")
 			r.notify()
-			r.requestPass()
+			r.requestPass(installation)
 		}
 	}()
 	return nil

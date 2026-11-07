@@ -731,6 +731,10 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		h = client.DownloadsFallback(mux)
 	}
 	h = generationHeader(h, instance.Generation)
+	if o.BotLaunch != nil {
+		// Under a supervisor the Bot's enrollment is the socket's alone (fix round 1, M-1).
+		h = refuseEnrollmentOffSocket(h)
+	}
 	// Recover sits INSIDE RequestLog, not outside it. server.RequestLog logs
 	// and calls observe after next.ServeHTTP returns, with no defer, so a panic
 	// unwinding past it skips both: the outer-Recover order produced no
@@ -879,14 +883,50 @@ var BotSocketHTTPRoutes = []string{
 	"PUT /v1/bot-runtime/installations/{installation}/status",
 }
 
+// BotEnrollmentRoutes are the Bot runtime routes that stay on HTTP (Bot v2 task 14 ruling): the runtime credential's
+// list, claim, enroll and status, and the device session's credential finalize while enrolling.
+var BotEnrollmentRoutes = []string{
+	"GET /v1/bot-runtime/installations",
+	"POST /v1/bot-runtime/installations/{installation}/claim",
+	"POST /v1/bot-runtime/installations/{installation}/enroll",
+	"PUT /v1/bot-runtime/installations/{installation}/credential",
+	"PUT /v1/bot-runtime/installations/{installation}/status",
+}
+
+// botSocketKey marks a request BotSocketHandler forwards: it came over the supervised Bot's Unix socket, behind the
+// peer check.
+type botSocketKey struct{}
+
+// refuseEnrollmentOffSocket answers 404 to a BotEnrollmentRoutes request that did not come over the Bot's socket
+// (fix round 1, M-1): under a supervisor nothing legitimate calls them on the public listener, and a leaked runtime
+// credential must not be able to claim or enroll an installation from the network.
+func refuseEnrollmentOffSocket(next http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	guard := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if on, _ := r.Context().Value(botSocketKey{}).(bool); !on {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+	for _, pattern := range BotEnrollmentRoutes {
+		mux.Handle(pattern, guard)
+	}
+	mux.Handle("/", next)
+	return mux
+}
+
 // BotSocketHandler is the supervised Bot's socket surface: GET /gateway is gw (the Bot's upgrade, gateway.BotHandler),
 // each BotSocketHTTPRoutes pattern is app (dillad's own HTTP handler, which applies the route's ordinary middleware),
 // and every other request is 404. A refusal is logged with its method only: a path can name a webhook's secret.
 func BotSocketHandler(gw, app http.Handler, log *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /gateway", gw)
+	onSocket := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		app.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), botSocketKey{}, true)))
+	})
 	for _, pattern := range BotSocketHTTPRoutes {
-		mux.Handle(pattern, app)
+		mux.Handle(pattern, onSocket)
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if log != nil {

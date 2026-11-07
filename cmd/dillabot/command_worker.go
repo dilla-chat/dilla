@@ -372,6 +372,6 @@ func (r *botGatewayRuntime) finishCommandJob(pool *commandWorkers, job commandJo
 		// A failed intake turn (a source the pass has not synced or healed, a membership the pass has not
 		// reconciled) asks for one reconciliation pass, as the periodic pass used to provide (Bot v2 task 14): the
 		// worker's own retry backoff spaces the asks, and a pass is never requested while intake succeeds.
-		r.requestPass()
+		r.requestPass(job.work.installation)
 	}
 }

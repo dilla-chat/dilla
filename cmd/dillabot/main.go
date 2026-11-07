@@ -447,10 +447,10 @@ func run(ctx context.Context, cfg config, logger *slog.Logger, reload <-chan os.
 	// Bot v2 task 14: no reconcile interval. A pass runs at start and then on an event (event_loop.go).
 	loop := botLoop{
 		clock: clock.System(), log: logger,
-		pass: func(passCtx context.Context) error {
-			return reconcile(passCtx, cfg, api, runtime, wasm, musicRegistry, autoModerationState, gateways, statuses, logger)
+		pass: func(passCtx context.Context, targets map[id.ID]bool) error {
+			return reconcile(passCtx, cfg, api, runtime, wasm, musicRegistry, autoModerationState, gateways, statuses, logger, targets)
 		},
-		passes: gateways.Pass(), reload: reload,
+		passes: gateways.Pass(), take: gateways.takePassTargets, reload: reload,
 		wake: gateways.Wake(), poll: gateways.PollText,
 		maintain: func(maintainCtx context.Context) error {
 			return gateways.maintain(client.WithBackground(maintainCtx), map[id.ID]bool{})
@@ -460,7 +460,9 @@ func run(ctx context.Context, cfg config, logger *slog.Logger, reload <-chan os.
 	return loop.run(ctx)
 }
 
-func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, autoModerationState *autoModerationEventState, gateways *botGatewayRuntime, statuses *runtimeStatusTracker, logger *slog.Logger) error {
+// reconcile runs one pass: over targets, or over every installation when targets is nil (fix round 1, I-3: an event
+// of one installation runs that installation only). The installation list itself is always read.
+func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, autoModerationState *autoModerationEventState, gateways *botGatewayRuntime, statuses *runtimeStatusTracker, logger *slog.Logger, targets map[id.ID]bool) error {
 	// Refresh inventory before retained maintenance so removed installations are
 	// pruned before their tasks can run.
 	installations, err := runtime.ListInstallations(ctx)
@@ -487,10 +489,14 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 	maintained := make(map[id.ID]bool)
 	maintenanceErr := gateways.maintain(ctx, maintained)
 	var eligible, succeeded, failed int
-	incomplete := false
+	// incomplete is the installations to run again, each with its delay (0: the loop's joining backoff).
+	incomplete := map[id.ID]time.Duration{}
 	for _, installation := range installations {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if targets != nil && !targets[installation.ID] {
+			continue
 		}
 		if installation.State >= 4 {
 			_ = musicRegistry.Disable(installation.ID)
@@ -575,6 +581,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 					gatewayErr = fmt.Errorf("bot gateway startup: %w", err)
 					logger.Warn("bot gateway startup unavailable", "installation_id", installation.ID.String(), "err", err.Error())
 				}
+				// The feed handler is bound now, with the helper only (fix round 1, M-2): device lists, revocations
+				// included, are ingested while the installation is still joining; membership work binds the rest later.
+				gateways.feedFor(installation.ID, installation.CommunityID, *result.Installation.BotUser, feedDeps{ingest: nativeClient.IngestDeviceList})
 			}
 			reconcileStage = "membership_source_sync"
 			var membership *service.MembershipReconciler
@@ -632,6 +641,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										logger.Info("bot member registration catch-up remains bounded", "installation_id", installation.ID.String(), "members_visited", catchupResult.MembersVisited, "pages", catchupResult.Pages)
 									}
 									registration.WithLogger(logger).WithBackoff(registrationBackoff)
+									jobsBefore, _ := registration.PendingJobs(ctx)
 									workErr := registration.ProcessPending(ctx, 4, 8, members, result.Session)
 									if registrationWorkReports.changed(installation.ID, workErr) {
 										logger.Info("bot interaction registration work remains pending", "installation_id", installation.ID.String(), "error", workErr.Error())
@@ -641,13 +651,8 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									if err := gateways.SubscribeNativeGroups(ctx, installation.ID, nativeClient); err != nil {
 										logger.Warn("bot gateway native group discovery unavailable", "installation_id", installation.ID.String())
 									}
-									// While a registration is in flight (a member's device not registered yet, e.g. waiting for its
-									// KeyPackages, or a registered group not active yet) the pass is incomplete: the loop runs it
-									// again on its backoff, which also subscribes the group once it is active. Nothing the Bot
-									// hears says when either happens.
-									pendingWork, pendingErr := registration.HasPendingWork(ctx)
-									if workErr != nil || pendingErr != nil || pendingWork || interactionGroupsPending(ctx, nativeClient) {
-										incomplete = true
+									if after, again := registrationRetry(ctx, registration, jobsBefore, workErr, nativeClient, installation.ID, time.Now()); again {
+										incomplete[installation.ID] = after
 									}
 								}
 							}
@@ -899,7 +904,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		}
 		succeeded++
 		if !ready {
-			incomplete = true
+			incomplete[installation.ID] = 0
 		}
 		logger.Info("bot installation identity and membership reconciled", "installation_id", installation.ID.String(), "ready", ready)
 	}
@@ -910,11 +915,11 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 	if err := errors.Join(passErr, maintenanceErr); err != nil {
 		return err
 	}
-	if incomplete {
+	if len(incomplete) > 0 {
 		// An installation is joining (its required MLS joins are pending) or an interaction-group registration is in
-		// flight; no event of the Bot's own reports either as done. The loop runs the pass again on a backoff until
-		// both are settled (Bot v2 task 14).
-		return errPassIncomplete
+		// flight; no event of the Bot's own reports either as done. The loop runs that installation again (Bot v2
+		// task 14, fix round 1 M-3).
+		return &passIncomplete{after: incomplete}
 	}
 	return nil
 }
@@ -1005,9 +1010,32 @@ func unrefreshedSendersLogger(logger *slog.Logger, installation id.ID) func(serv
 	}
 }
 
-// withGatewayStartup joins a failed gateway start into the pass result. The joined error is never deferred
-// (client.IsDeferred is false for a tree with a permanent cause), so the installation counts as failed even when
-// every socket route it tried answered ErrNoGateway.
+// registrationRetry decides whether an installation's interaction registrations need its pass to run again, and after
+// how long (fix round 1, M-3). A registered group not active yet: on the loop's joining backoff (0). Jobs that made
+// progress with work left (the pass's bounded budget): after passMinSpacing. A job waiting on a backed-off device
+// (no KeyPackages yet): when that device's registration backoff (30 s up to 1 h) is due. Otherwise, a job that made no
+// progress (failed, or a member with no device yet) waits for an event: the member's device-list change, a join, a
+// failed intake turn, never a timer.
+func registrationRetry(ctx context.Context, reg *service.InteractionRegistrationCoordinator, jobsBefore int, workErr error, groups notificationGroupSource, installation id.ID, now time.Time) (time.Duration, bool) {
+	if interactionGroupsPending(ctx, groups) {
+		return 0, true
+	}
+	jobs, err := reg.PendingJobs(ctx)
+	switch {
+	case err != nil:
+		return 0, true
+	case jobs == 0:
+		return 0, false
+	case jobs < jobsBefore:
+		return passMinSpacing, true
+	}
+	if at, ok := registrationBackoff.NextDue(installation); ok {
+		return max(at.Sub(now), passMinSpacing), true
+	}
+	_ = workErr // reported by registrationWorkReports; it waits for an event
+	return 0, false
+}
+
 // interactionGroupsPending reports a private interaction group the helper holds that is not active yet (below state 2,
 // the active one; 3 is gone): its participant's commands reach the Bot as hints only once it is subscribed as active. A read failure
 // counts as pending, so the pass is run again rather than left waiting.
@@ -1024,6 +1052,9 @@ func interactionGroupsPending(ctx context.Context, n notificationGroupSource) bo
 	return false
 }
 
+// withGatewayStartup joins a failed gateway start into the pass result. The joined error is never deferred
+// (client.IsDeferred is false for a tree with a permanent cause), so the installation counts as failed even when
+// every socket route it tried answered ErrNoGateway.
 func withGatewayStartup(ensureErr, gatewayErr error) error {
 	if gatewayErr == nil {
 		return ensureErr

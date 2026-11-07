@@ -162,6 +162,8 @@ var (
 	errHeartbeatOverdue = errors.New("bot gateway: heartbeat overdue; re-identification required")
 	errReplayGap        = errors.New("bot gateway: replay gap; authoritative sync required")
 	errTransport        = errors.New("bot gateway: transport disconnected")
+	// errLaunchRefused is an identify carrying the launch token refused E_UNAUTHENTICATED: retried once without it.
+	errLaunchRefused = errors.New("bot gateway: launch token refused; retrying without it")
 )
 
 type Hello struct {

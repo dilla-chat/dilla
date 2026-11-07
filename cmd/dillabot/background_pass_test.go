@@ -114,7 +114,7 @@ func TestMaintenanceRunsWithCommandsEveryFiveSeconds(t *testing.T) {
 		for elapsed := time.Duration(0); elapsed <= 125*time.Second; elapsed += 5 * time.Second {
 			// New hints stay pending while the command worker is occupied.
 			r.notifyInteraction(installation, id.New())
-			if err := reconcile(t.Context(), cfg, api, runtime, nil, registry, newAutoModerationEventState(), r, statuses, logger); err != nil {
+			if err := reconcile(t.Context(), cfg, api, runtime, nil, registry, newAutoModerationEventState(), r, statuses, logger, nil); err != nil {
 				t.Fatalf("reconciliation stopped during a command: %v", err)
 			}
 			time.Sleep(5 * time.Second)
@@ -159,7 +159,7 @@ func TestRemovedInstallationDoesNotRunMaintenance(t *testing.T) {
 	r.maintenance = map[id.ID]backgroundMaintenance{installation: {run: func(ctx context.Context) error { return runBackgroundMaintenance(ctx, task, task) }}}
 	registry := newMusicQueueRegistry()
 	t.Cleanup(func() { _ = registry.Close() })
-	err = reconcile(t.Context(), config{StateDir: t.TempDir()}, api, runtime, nil, registry, newAutoModerationEventState(), r, newRuntimeStatusTracker("test"), logger)
+	err = reconcile(t.Context(), config{StateDir: t.TempDir()}, api, runtime, nil, registry, newAutoModerationEventState(), r, newRuntimeStatusTracker("test"), logger, nil)
 	if runs != 0 {
 		t.Fatalf("removed installation ran RunDue/maintain %d times", runs)
 	}

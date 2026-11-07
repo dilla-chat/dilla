@@ -11,12 +11,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
 
-	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/gatewayclient"
 	"github.com/dilla-chat/dilla/internal/id"
 )
@@ -106,30 +104,9 @@ func loadSupervisedConfig(ctx context.Context) (config, error) {
 	if err != nil {
 		return config{}, fmt.Errorf("instance discovery over %s: %w", c.Socket, err)
 	}
-	c.RateLimits = supervisedRateLimits(c.Socket)
+	// c.RateLimits stays zero: the built-in defaults, also under dev_same_user and in the e2e test host (fix round 1,
+	// I-3: the Bot spaces its passes, so it fits the production meters without a tuning of its own).
 	return c, nil
-}
-
-// unpacedRateLimits is a client with no pacing of its own: every bucket far above any request rate.
-var unpacedRateLimits = client.RateLimits{
-	WritePerSecond: 1e6, WriteBurst: 1e6, ReadPerSecond: 1e6, ReadBurst: 1e6, MessagePerSecond: 1e6, MessageBurst: 1e6,
-	CommitPerSecond: 1e6, CommitBurst: 1e6, ProposalPerSecond: 1e6, ProposalBurst: 1e6, KeyPackagePerSecond: 1e6, KeyPackageBurst: 1e6,
-}
-
-// supervisedRateLimits is the supervised Bot's client pacing (Bot v2 task 14: there is no bot.toml). It is the built-in
-// defaults (client.RateLimits{}), which keep the Bot below a production instance's meters. A Bot whose socket is its
-// own user's runs as dillad's own user ([bot] dev_same_user, development and the e2e test host) and is not paced, as the
-// test host's tuning file used to set; dillad's own meters still apply. In production the socket is dillad's.
-func supervisedRateLimits(socket string) client.RateLimits {
-	info, err := os.Lstat(socket)
-	if err != nil {
-		return client.RateLimits{}
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || int64(st.Uid) != int64(os.Geteuid()) {
-		return client.RateLimits{}
-	}
-	return unpacedRateLimits
 }
 
 // discoverInstanceID reads the instance id from GET /v1/instance over the socket. The socket is dillad's own (it sits

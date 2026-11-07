@@ -105,7 +105,8 @@ test('a bot enabled through server settings reaches ready through the native run
     if (runtimeCredentialFile === undefined) throw new Error('test host did not expose its protected runtime credential path');
     await expect.poll(async () => {
       const token = readFileSync(runtimeCredentialFile, 'utf8').trim();
-      const response = await fetch(`${host!.url}/v1/bot-runtime/installations`, {
+      // The runtime credential's list is the Bot socket's alone under a supervisor; the host serves it on its control listener.
+      const response = await fetch(`${host!.control}/debug/bot/installations`, {
         headers: { authorization: `Bearer ${token}`, accept: 'application/cbor' },
       });
       if (!response.ok) return `HTTP ${response.status}`;
@@ -154,7 +155,8 @@ test('literal music command text never executes through the native runtime', asy
     if (runtimeCredentialFile === undefined) throw new Error('test host did not expose its protected runtime credential path');
     await expect.poll(async () => {
       const token = readFileSync(runtimeCredentialFile, 'utf8').trim();
-      const response = await fetch(`${host!.url}/v1/bot-runtime/installations`, {
+      // The runtime credential's list is the Bot socket's alone under a supervisor; the host serves it on its control listener.
+      const response = await fetch(`${host!.control}/debug/bot/installations`, {
         headers: { authorization: `Bearer ${token}`, accept: 'application/cbor' },
       });
       if (!response.ok) return `HTTP ${response.status}`;
@@ -377,7 +379,8 @@ test('a Roles-enabled bot applies the configured join role on join and rejoin', 
     if (runtimeCredentialFile === undefined) throw new Error('test host did not expose its protected runtime credential path');
     await expect.poll(async () => {
       const token = readFileSync(runtimeCredentialFile, 'utf8').trim();
-      const response = await fetch(`${host!.url}/v1/bot-runtime/installations`, {
+      // The runtime credential's list is the Bot socket's alone under a supervisor; the host serves it on its control listener.
+      const response = await fetch(`${host!.control}/debug/bot/installations`, {
         headers: { authorization: `Bearer ${token}`, accept: 'application/cbor' },
       });
       if (!response.ok) return `HTTP ${response.status}`;
@@ -489,7 +492,8 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     if (runtimeCredentialFile === undefined) throw new Error('test host did not expose its protected runtime credential path');
     await expect.poll(async () => {
       const token = readFileSync(runtimeCredentialFile, 'utf8').trim();
-      const response = await fetch(`${host!.url}/v1/bot-runtime/installations`, {
+      // The runtime credential's list is the Bot socket's alone under a supervisor; the host serves it on its control listener.
+      const response = await fetch(`${host!.control}/debug/bot/installations`, {
         headers: { authorization: `Bearer ${token}`, accept: 'application/cbor' },
       });
       if (!response.ok) return `HTTP ${response.status}`;
