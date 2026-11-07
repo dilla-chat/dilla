@@ -249,10 +249,12 @@ func (c *conn) tryResumeSnapshot(token []byte, generation, lastN, current uint64
 	if floor != 0 && lastN < floor-1 {
 		return resumeOutcome{}, errNotResumable
 	}
-	// A Bot connection also refuses an ack below the highest frame its ring dropped unacknowledged
-	// (fix round 1 I-3): with the whole gap aged out the ring is empty and floor says nothing. The Bot
-	// identifies again and is sent a fresh snapshot. User connections keep their resume rule.
-	if c.isBot && lastN < c.ring.evictedThrough() {
+	// An ack below the highest frame the ring dropped unacknowledged is refused too (Bot v2 task 12 fix
+	// round 1, I-3, extended to every connection by Jonas's ruling): with the whole gap aged out the ring
+	// is empty and floor says nothing, so the resume would replay nothing and lose the gap silently.
+	// The client identifies again: a person heals through ready's digest and the ?from= catch-up, the
+	// Bot through a fresh snapshot.
+	if lastN < c.ring.evictedThrough() {
 		return resumeOutcome{}, errNotResumable
 	}
 	entries := c.ring.entriesSince(lastN)

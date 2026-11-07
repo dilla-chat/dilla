@@ -313,6 +313,12 @@ until every preceding replay entry has been durably handled. Replay entries
 arrive in increasing, contiguous order within the announced range; live entries
 start after the barrier. A missing entry or inconsistent range requires fresh
 identification and authoritative catch-up, not an acknowledgement across the gap.
+The instance refuses a resume (`invalid_session`, `resumable = 0`) whose `last_n` is below the ring's
+floor, and also one whose `last_n` is below the highest `n` the ring dropped unacknowledged (by its
+frame, byte or age bound): when the whole gap aged out the ring is empty, and an accepted resume would
+replay nothing. The client then identifies and heals from `ready`'s per-group digest and the
+`?from=` catch-up routes; a Bot runtime connection is sent a fresh snapshot (§ Bot runtime). Frames
+the client acknowledged with a heartbeat's `last_n` and the ring then dropped never cause a refusal.
 An older `ready` or `resumed` encountered inside the replay range is a historical
 control entry: it does not replace the newly rotated token or begin another replay
 window. This ordering also permits a connection interrupted during replay to use
