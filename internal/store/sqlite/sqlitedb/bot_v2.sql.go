@@ -29,6 +29,76 @@ func (q *Queries) BumpBotStateRevision(ctx context.Context, arg BumpBotStateRevi
 	return revision, err
 }
 
+const deleteBotCatalog = `-- name: DeleteBotCatalog :exec
+DELETE FROM bot_catalogs WHERE community_id = ?
+`
+
+type DeleteBotCatalogParams struct {
+	CommunityID id.ID
+}
+
+func (q *Queries) DeleteBotCatalog(ctx context.Context, arg DeleteBotCatalogParams) error {
+	_, err := q.db.ExecContext(ctx, deleteBotCatalog, arg.CommunityID)
+	return err
+}
+
+const deleteBotChannelsOfCommunity = `-- name: DeleteBotChannelsOfCommunity :many
+DELETE FROM bot_channels WHERE community_id = ? RETURNING channel_id
+`
+
+type DeleteBotChannelsOfCommunityParams struct {
+	CommunityID id.ID
+}
+
+func (q *Queries) DeleteBotChannelsOfCommunity(ctx context.Context, arg DeleteBotChannelsOfCommunityParams) ([]id.ID, error) {
+	rows, err := q.db.QueryContext(ctx, deleteBotChannelsOfCommunity, arg.CommunityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []id.ID{}
+	for rows.Next() {
+		var channel_id id.ID
+		if err := rows.Scan(&channel_id); err != nil {
+			return nil, err
+		}
+		items = append(items, channel_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const deleteBotCommandKey = `-- name: DeleteBotCommandKey :exec
+DELETE FROM bot_command_keys WHERE community_id = ?
+`
+
+type DeleteBotCommandKeyParams struct {
+	CommunityID id.ID
+}
+
+func (q *Queries) DeleteBotCommandKey(ctx context.Context, arg DeleteBotCommandKeyParams) error {
+	_, err := q.db.ExecContext(ctx, deleteBotCommandKey, arg.CommunityID)
+	return err
+}
+
+const deleteBotWebhooksOfCommunity = `-- name: DeleteBotWebhooksOfCommunity :exec
+DELETE FROM bot_webhooks WHERE community_id = ?
+`
+
+type DeleteBotWebhooksOfCommunityParams struct {
+	CommunityID id.ID
+}
+
+func (q *Queries) DeleteBotWebhooksOfCommunity(ctx context.Context, arg DeleteBotWebhooksOfCommunityParams) error {
+	_, err := q.db.ExecContext(ctx, deleteBotWebhooksOfCommunity, arg.CommunityID)
+	return err
+}
+
 const getBotCatalog = `-- name: GetBotCatalog :one
 SELECT community_id, revision, body FROM bot_catalogs WHERE community_id = ?
 `
@@ -83,7 +153,7 @@ func (q *Queries) GetBotStateRevision(ctx context.Context, arg GetBotStateRevisi
 const listBotChannels = `-- name: ListBotChannels :many
 SELECT b.channel_id, b.community_id, b.marked_at, b.marked_by
 FROM bot_channels b JOIN channels c ON c.id = b.channel_id
-WHERE b.community_id = ? AND c.deleted_at IS NULL
+WHERE b.community_id = ? AND c.deleted_at IS NULL AND c.kind = 0 AND c.mode = 0
 ORDER BY b.marked_at, b.channel_id
 `
 

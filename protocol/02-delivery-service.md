@@ -360,12 +360,13 @@ dense on every device of its audience; `group_id` is null.
 | 58 | `call_stats` | C→S, wire ≥5 | `[call_id(bstr 16), report(array)]` |
 | 59 | `request` | C→S, wire 6 | `[id(uint), method(tstr), route(tstr), body(bstr), idem(bstr 1..64 \| null)]` |
 | 60 | `response` | S→C, wire 6 | `[id(uint), status(uint 100..599), body(bstr)]` |
-| 61 | `bot_catalog` | S→C, wire 6 | `[community_id(bstr 16), revision(uint), filtered_catalog(array)]` |
+| 61 | `bot_catalog` | S→C, wire 6 | `[community_id(bstr 16), revision(uint), filtered_catalog(array), publication(bstr \| null)]` |
 
 `bot_catalog` carries a community's Bot command catalog to one member after the Bot publishes a
-changed one (`10` § Command catalog). Each connected member receives exactly one, holding only the
-commands that member may use; it is the body of `GET /v1/communities/{community}/bot/catalog`'s
-element 1 at `revision`. A member with no live connection receives nothing and compares revisions
+changed one or a new command key (`10` § Command catalog). Each connected member receives exactly
+one, holding only the commands that member may use and the Bot's command-key publication (null
+before the Bot publishes one); its elements 2 and 3 are `GET /v1/communities/{community}/bot/catalog`'s
+elements 1 and 2 at `revision`. The fan-out runs after the commit, off the Bot's request. A member with no live connection receives nothing and compares revisions
 at connect sync (`GET /v1/bot/revisions`, then the catalog GET when behind). The frame is not
 replayed.
 

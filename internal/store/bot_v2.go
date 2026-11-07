@@ -78,11 +78,15 @@ type BotV2 interface {
 	MarkBotChannel(ctx context.Context, row BotChannelRow) (bool, error)
 	// UnmarkBotChannel reports whether a mark was removed.
 	UnmarkBotChannel(ctx context.Context, community, channel id.ID) (bool, error)
-	// ListBotChannels is the community's marked channels that are not deleted, oldest mark first.
+	// ListBotChannels is the community's marked channels that are still live end-to-end text
+	// channels, oldest mark first.
 	ListBotChannels(ctx context.Context, community id.ID) ([]BotChannelRow, error)
 	// BumpBotStateRevision raises one scope's revision by one (the first bump is 1) and returns it.
 	BumpBotStateRevision(ctx context.Context, kind uint8, scope id.ID) (uint64, error)
 	// BotStateRevisions is the user's own revision (0 when none) and the stored channel and call
 	// revisions of exactly the given scope ids, ordered by (kind, id).
 	BotStateRevisions(ctx context.Context, user id.ID, scopes []id.ID) (uint64, []BotStateRevisionRow, error)
+	// DeleteBotCommunityState removes a deleted community's Bot channels, catalog, command key and
+	// webhooks, inside the caller's transaction, and returns the channels it unmarked.
+	DeleteBotCommunityState(ctx context.Context, community id.ID) ([]id.ID, error)
 }

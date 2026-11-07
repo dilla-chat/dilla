@@ -52,6 +52,16 @@ type Communities struct {
 	// community, the user a leave or kick removed, and a deleted community's members (op 54);
 	// nil tells nobody.
 	notify *StructureNotifier
+	// botEvents hears the Bot-channel unmarks a community delete makes (Bot v2 Task 9); nil hears
+	// nothing.
+	botEvents BotChannelEvents
+}
+
+// WithBotChannelEvents sets who hears that a deleted community's Bot channels were unmarked, and
+// returns c.
+func (c *Communities) WithBotChannelEvents(e BotChannelEvents) *Communities {
+	c.botEvents = e
+	return c
 }
 
 // WithCalls sets the call routes a kick or a leave cuts the user's live call sessions through, and
@@ -1033,7 +1043,7 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 	// Inside the transaction: read what will be closed, then tombstone.
 	// ListChannels filters deleted_at IS NULL, so it runs BEFORE
 	// DeleteChannelsOfCommunity or it returns nothing.
-	var toClose, ids, members []id.ID
+	var toClose, ids, members, unmarked []id.ID
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
 		// Re-checked under the community lock: a hand-over may have committed since ownerOnly.
 		owner, err := lockedOwner(r.Context(), tx, row.ID)
@@ -1066,6 +1076,11 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 		if err := tx.SoftDeleteCommunity(r.Context(), row.ID, now); err != nil {
 			return err
 		}
+		// Bot v2 Task 9: the soft delete fires no cascade, so the community's Bot channels, catalog,
+		// command key and webhooks go here; the Bot feed hears each unmark after the commit.
+		if unmarked, err = tx.DeleteBotCommunityState(r.Context(), row.ID); err != nil {
+			return err
+		}
 		// E8: the server's Giphy key goes with it; a secret must not outlive the server it belongs to.
 		if err := tx.PutSetting(r.Context(), gifSettingKey(row.ID), []byte("{}"), now); err != nil {
 			return err
@@ -1088,6 +1103,11 @@ func (c *Communities) delete(w http.ResponseWriter, r *http.Request) {
 	}
 	// Every live call of its channels ends with it (CALLS-1), as for a channel delete.
 	c.calls.EndChannelCalls(afterCommit(r), ids, "community_deleted")
+	if c.botEvents != nil {
+		for _, ch := range unmarked {
+			c.botEvents.BotChannelUnmarked(row.ID, ch)
+		}
+	}
 	c.notify.ChangedTo(afterCommit(r), row.ID, members)
 	w.WriteHeader(http.StatusNoContent)
 }

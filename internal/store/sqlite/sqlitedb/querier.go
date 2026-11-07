@@ -75,9 +75,13 @@ type Querier interface {
 	DeleteBan(ctx context.Context, arg DeleteBanParams) (int64, error)
 	DeleteBlob(ctx context.Context, arg DeleteBlobParams) (int64, error)
 	DeleteBlobRef(ctx context.Context, arg DeleteBlobRefParams) error
+	DeleteBotCatalog(ctx context.Context, arg DeleteBotCatalogParams) error
+	DeleteBotChannelsOfCommunity(ctx context.Context, arg DeleteBotChannelsOfCommunityParams) ([]id.ID, error)
 	DeleteBotClaim(ctx context.Context, arg DeleteBotClaimParams) (int64, error)
 	DeleteBotClaimsByRuntime(ctx context.Context, arg DeleteBotClaimsByRuntimeParams) (int64, error)
+	DeleteBotCommandKey(ctx context.Context, arg DeleteBotCommandKeyParams) error
 	DeleteBotSessionBindingsByInstallation(ctx context.Context, arg DeleteBotSessionBindingsByInstallationParams) (int64, error)
+	DeleteBotWebhooksOfCommunity(ctx context.Context, arg DeleteBotWebhooksOfCommunityParams) error
 	DeleteCeremony(ctx context.Context, arg DeleteCeremonyParams) (int64, error)
 	DeleteChannel(ctx context.Context, arg DeleteChannelParams) (int64, error)
 	DeleteChannelMember(ctx context.Context, arg DeleteChannelMemberParams) (int64, error)

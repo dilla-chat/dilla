@@ -152,3 +152,26 @@ func scanBotStateRevisions(rows *sql.Rows) (out []store.BotStateRevisionRow, ret
 	}
 	return out, wrap(rows.Err())
 }
+
+// DeleteBotCommunityState removes a community's Bot channels, catalog, command key and webhooks in
+// the caller's transaction (a community's soft delete fires no cascade) and returns the unmarked
+// channels.
+func (r *Repo) DeleteBotCommunityState(ctx context.Context, community id.ID) ([]id.ID, error) {
+	if !r.inTx {
+		return nil, errors.New("store: DeleteBotCommunityState outside a transaction")
+	}
+	channels, err := r.w.DeleteBotChannelsOfCommunity(ctx, pgdb.DeleteBotChannelsOfCommunityParams{CommunityID: community})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	if err := r.w.DeleteBotCatalog(ctx, pgdb.DeleteBotCatalogParams{CommunityID: community}); err != nil {
+		return nil, wrap(err)
+	}
+	if err := r.w.DeleteBotCommandKey(ctx, pgdb.DeleteBotCommandKeyParams{CommunityID: community}); err != nil {
+		return nil, wrap(err)
+	}
+	if err := r.w.DeleteBotWebhooksOfCommunity(ctx, pgdb.DeleteBotWebhooksOfCommunityParams{CommunityID: community}); err != nil {
+		return nil, wrap(err)
+	}
+	return channels, nil
+}

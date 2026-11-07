@@ -167,3 +167,68 @@ func TestStoreBotStateRevisionsBumpAndReadByScope(t *testing.T) {
 		})
 	}
 }
+
+func TestStoreBotChannelListAndCommunityDeleteDropState(t *testing.T) {
+	for engine, repo := range engines(t) {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			cid, other := seedCommunity(ctx, t, repo), seedCommunity(ctx, t, repo)
+			admin := seedUser(ctx, t, repo)
+			text, kept := channelIn(cid, 0, 0, 0, "bot", 1), channelIn(other, 0, 0, 0, "bot", 1)
+			for _, ch := range []store.ChannelRow{text, kept} {
+				if err := repo.CreateChannel(ctx, ch); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, row := range []store.BotChannelRow{
+				{ChannelID: text.ID, CommunityID: cid, MarkedAt: 1, MarkedBy: admin.ID},
+				{ChannelID: kept.ID, CommunityID: other, MarkedAt: 1, MarkedBy: admin.ID},
+			} {
+				if _, err := repo.MarkBotChannel(ctx, row); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// A channel that is no longer an end-to-end text channel is not listed, whatever its row says.
+			readable := text
+			readable.Mode, readable.Visibility = 1, 2
+			if err := repo.UpdateChannel(ctx, readable); err != nil {
+				t.Fatal(err)
+			}
+			if rows, err := repo.ListBotChannels(ctx, cid); err != nil || len(rows) != 0 {
+				t.Fatalf("ListBotChannels of a readable channel = %+v, %v; want none", rows, err)
+			}
+			if err := repo.UpdateChannel(ctx, text); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.PutBotCatalog(ctx, store.BotCatalogRow{CommunityID: cid, Revision: 1, Body: []byte{0x80}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.PutBotCommandKey(ctx, store.BotCommandKeyRow{CommunityID: cid, KeyID: id.New(), Publication: []byte{1}, PublishedAt: 1}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.DeleteBotCommunityState(ctx, cid); err == nil {
+				t.Fatal("DeleteBotCommunityState ran outside a transaction")
+			}
+			var unmarked []id.ID
+			if err := repo.Tx(ctx, func(tx store.Repository) error {
+				var err error
+				unmarked, err = tx.DeleteBotCommunityState(ctx, cid)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(unmarked) != 1 || unmarked[0] != text.ID {
+				t.Fatalf("unmarked = %v, want [%s]", unmarked, text.ID)
+			}
+			if _, err := repo.GetBotCatalog(ctx, cid); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("catalog after delete: %v", err)
+			}
+			if _, err := repo.GetBotCommandKey(ctx, cid); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("command key after delete: %v", err)
+			}
+			if rows, err := repo.ListBotChannels(ctx, other); err != nil || len(rows) != 1 {
+				t.Fatalf("the other community's mark = %+v, %v; want kept", rows, err)
+			}
+		})
+	}
+}

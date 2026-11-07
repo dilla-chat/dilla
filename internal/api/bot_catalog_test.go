@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 
@@ -27,9 +28,17 @@ type catalogGateway struct {
 	mu        sync.Mutex
 	connected map[id.ID]bool
 	frames    map[id.ID][]gateway.Frame
+	// gate, when set, holds every delivery until it is closed.
+	gate chan struct{}
 }
 
 func (g *catalogGateway) DeliverUser(u id.ID, f gateway.Frame) {
+	g.mu.Lock()
+	gate := g.gate
+	g.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.frames[u] = append(g.frames[u], f)
@@ -92,6 +101,7 @@ type catalogFixture struct {
 	h      http.Handler
 	deps   api.Deps
 	gw     *catalogGateway
+	pusher *api.BotCatalogPusher
 	events *channelEvents
 	lists  *catalogLists
 
@@ -135,12 +145,14 @@ func newCatalogFixture(t *testing.T) *catalogFixture {
 	t.Helper()
 	f := &catalogFixture{
 		gw:     &catalogGateway{connected: map[id.ID]bool{}, frames: map[id.ID][]gateway.Frame{}},
+		pusher: api.NewBotCatalogPusher(),
 		events: &channelEvents{},
 		lists:  &catalogLists{entries: map[id.ID][]mlswasi.DeviceListEntry{}},
 	}
 	f.h, f.deps = newTestAPIWired(t, func(d *api.Deps) {
 		d.DeviceLists = f.lists
 		d.BotCatalogGateway = f.gw
+		d.BotCatalogPushes = f.pusher
 		d.BotChannelEvents = f.events
 	})
 	ctx := context.Background()
@@ -235,7 +247,7 @@ func newCatalogFixture(t *testing.T) *catalogFixture {
 // The catalog's commands, as the Bot publishes them: [name, description, operation, args_shape,
 // permission_bit, needs_bot_channel (uint 0|1), handler_kind].
 func catalogCommand(name string, operation uint64, perm api.Bits, needsChannel uint64, handlerKind uint64) []any {
-	return []any{name, name + " description", operation, []any{[]any{"query", uint64(0)}}, uint64(perm), needsChannel, handlerKind}
+	return []any{name, name + " description", operation, []any{[]any{"query", uint64(0), uint64(1)}}, uint64(perm), needsChannel, handlerKind}
 }
 
 func (f *catalogFixture) publishCatalog(t *testing.T, commands ...[]any) uint64 {
@@ -366,10 +378,17 @@ func TestCatalogPublishPushesOneFramePerMember(t *testing.T) {
 	f.gw.connected[f.member.ID] = true
 	f.gw.connected[f.admin.ID] = true
 	f.gw.connected[f.botUser] = true
+	// A connected user who is not a member of this community hears nothing of it.
+	stranger, _, _, _ := seedKeyedSession(t, f.deps)
+	f.gw.connected[stranger.ID] = true
 	rev := f.publishCatalog(t,
 		catalogCommand("play", 11, api.PermControlMusic, 0, 0),
 		catalogCommand("remind", 20, 0, 0, 0),
 	)
+	f.pusher.Wait()
+	if frames := f.gw.delivered(stranger.ID); len(frames) != 0 {
+		t.Fatalf("a non-member got %d op 61 frames", len(frames))
+	}
 	for user, want := range map[id.ID][]string{f.member.ID: {"remind"}, f.admin.ID: {"play", "remind"}} {
 		frames := f.gw.delivered(user)
 		if len(frames) != 1 {
@@ -380,7 +399,7 @@ func TestCatalogPublishPushesOneFramePerMember(t *testing.T) {
 			t.Fatalf("frame = op %d replay %v group %v, want op 61, not replayable, ungrouped", fr.Op, fr.Replay, fr.GroupID)
 		}
 		var payload []cbor.RawMessage
-		if err := cborx.Unmarshal(fr.Payload, &payload); err != nil || len(payload) != 3 {
+		if err := cborx.Unmarshal(fr.Payload, &payload); err != nil || len(payload) != 4 || !bytes.Equal(payload[3], []byte{0xf6}) {
 			t.Fatalf("payload %x: %v", fr.Payload, err)
 		}
 		var community id.ID
@@ -410,6 +429,7 @@ func TestCatalogPublishPushesOneFramePerMember(t *testing.T) {
 	if again := f.publishCatalog(t, catalogCommand("play", 11, api.PermControlMusic, 0, 0), catalogCommand("remind", 20, 0, 0, 0)); again != rev {
 		t.Fatalf("an unchanged publish moved the revision to %d, want %d", again, rev)
 	}
+	f.pusher.Wait()
 	if frames := f.gw.delivered(f.member.ID); len(frames) != 1 {
 		t.Fatalf("an unchanged publish pushed again (%d frames)", len(frames))
 	}
@@ -426,7 +446,7 @@ func TestCatalogPublishPushesOneFramePerMember(t *testing.T) {
 
 func TestCatalogHasRoomForHandlerKinds(t *testing.T) {
 	f := newCatalogFixture(t)
-	odd := []any{"weather", "Ask an outgoing integration", uint64(900), []any{[]any{"city", uint64(0)}, []any{"days", uint64(1)}, nil}, uint64(0), uint64(1), uint64(7)}
+	odd := []any{"weather", "Ask an outgoing integration", uint64(900), []any{[]any{"city", uint64(0), uint64(1)}, []any{"days", uint64(4), uint64(0)}}, uint64(0), uint64(1), uint64(7)}
 	want := mustCBOR(t, odd)
 	f.publishCatalog(t, odd)
 	got := f.getCatalog(t, f.memberTok)
@@ -441,6 +461,18 @@ func TestCatalogHasRoomForHandlerKinds(t *testing.T) {
 		"name is not text":      {uint64(5), "d", uint64(1), []any{}, uint64(0), uint64(0), uint64(0)},
 		"description not text":  {"x", []byte{1}, uint64(1), []any{}, uint64(0), uint64(0), uint64(0)},
 		"handler_kind not uint": {"x", "d", uint64(1), []any{}, uint64(0), uint64(0), "k"},
+		// args_shape has one grammar: at most 16 [name, type_code 0..5, required 0|1].
+		"args_shape an id":      {"x", "d", uint64(1), []any{make([]byte, 16)}, uint64(0), uint64(0), uint64(0)},
+		"args_shape bare bytes": {"x", "d", uint64(1), make([]byte, 16), uint64(0), uint64(0), uint64(0)},
+		"args_shape null":       {"x", "d", uint64(1), nil, uint64(0), uint64(0), uint64(0)},
+		"arg with an id":        {"x", "d", uint64(1), []any{[]any{"c", uint64(3), uint64(0), make([]byte, 16)}}, uint64(0), uint64(0), uint64(0)},
+		"arg of two elements":   {"x", "d", uint64(1), []any{[]any{"c", uint64(3)}}, uint64(0), uint64(0), uint64(0)},
+		"arg type 6":            {"x", "d", uint64(1), []any{[]any{"c", uint64(6), uint64(0)}}, uint64(0), uint64(0), uint64(0)},
+		"arg required 2":        {"x", "d", uint64(1), []any{[]any{"c", uint64(0), uint64(2)}}, uint64(0), uint64(0), uint64(0)},
+		"arg name of 33 bytes":  {"x", "d", uint64(1), []any{[]any{"abcdefghijklmnopqrstuvwxyz0123456", uint64(0), uint64(0)}}, uint64(0), uint64(0), uint64(0)},
+		"arg name repeated":     {"x", "d", uint64(1), []any{[]any{"c", uint64(0), uint64(0)}, []any{"c", uint64(1), uint64(0)}}, uint64(0), uint64(0), uint64(0)},
+		"arg name is bytes":     {"x", "d", uint64(1), []any{[]any{[]byte("c"), uint64(0), uint64(0)}}, uint64(0), uint64(0), uint64(0)},
+		"seventeen arguments":   {"x", "d", uint64(1), seventeenArgs(), uint64(0), uint64(0), uint64(0)},
 	} {
 		rec := putCBORAuth(f.h, "/v1/bot-runtime/communities/"+f.community.String()+"/catalog", mustCBOR(t, []any{cmd}), f.botTok)
 		if rec.Code != http.StatusBadRequest {
@@ -484,6 +516,17 @@ func TestCommandKeyFromNonBotDeviceIsRefused(t *testing.T) {
 	if rec := putCBORAuth(f.h, path, valid, f.adminTok); rec.Code != http.StatusForbidden {
 		t.Fatalf("a human PUT command-key = %d, want 403", rec.Code)
 	}
+	// A second device the Bot user lists is still not the installation's device.
+	pub2, priv2, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := id.New()
+	f.lists.entries[f.botUser] = append(f.lists.entries[f.botUser], mlswasi.DeviceListEntry{DeviceID: second[:], DSKPub: pub2})
+	if rec := putCBORAuth(f.h, path, commandKeyPublication(t, f.community, id.New(), second, now+3600, priv2), f.botTok); rec.Code != http.StatusForbidden {
+		t.Fatalf("a publication by the Bot user's other listed device = %d, want 403", rec.Code)
+	}
+	f.lists.entries[f.botUser] = f.lists.entries[f.botUser][:1]
 	// A revoked Bot device no longer signs.
 	f.lists.entries[f.botUser][0].Revoked = true
 	if rec := putCBORAuth(f.h, path, valid, f.botTok); rec.Code != http.StatusForbidden {
@@ -585,5 +628,101 @@ func TestBotRevisionsReportVisibleScopes(t *testing.T) {
 		if cborx.Unmarshal(s[1], &scope) == nil && scope == f.text {
 			t.Fatal("a channel the member cannot view still reports its revision")
 		}
+	}
+}
+
+func seventeenArgs() []any {
+	out := make([]any, 0, 17)
+	for i := range 17 {
+		out = append(out, []any{string(rune('a' + i)), uint64(0), uint64(0)})
+	}
+	return out
+}
+
+// The fan-out runs after the commit, off the Bot's request: the PUT answers while every delivery
+// is still held, and the frames arrive once the gateway lets them through.
+func TestCatalogPushDoesNotHoldTheBotsPut(t *testing.T) {
+	f := newCatalogFixture(t)
+	f.gw.connected[f.member.ID] = true
+	f.gw.connected[f.admin.ID] = true
+	gate := make(chan struct{})
+	f.gw.mu.Lock()
+	f.gw.gate = gate
+	f.gw.mu.Unlock()
+	body := mustCBOR(t, [][]any{catalogCommand("remind", 20, 0, 0, 0)})
+	done := make(chan int, 1)
+	go func() {
+		rec := putCBORAuth(f.h, "/v1/bot-runtime/communities/"+f.community.String()+"/catalog", body, f.botTok)
+		done <- rec.Code
+	}()
+	select {
+	case code := <-done:
+		if code != http.StatusOK {
+			close(gate)
+			t.Fatalf("PUT catalog = %d", code)
+		}
+	case <-time.After(10 * time.Second):
+		close(gate)
+		t.Fatal("the Bot's PUT waited for the fan-out")
+	}
+	if n := len(f.gw.delivered(f.member.ID)) + len(f.gw.delivered(f.admin.ID)); n != 0 {
+		close(gate)
+		t.Fatalf("%d frames delivered through a closed gate", n)
+	}
+	close(gate)
+	f.pusher.Wait()
+	for _, u := range []id.ID{f.member.ID, f.admin.ID} {
+		if frames := f.gw.delivered(u); len(frames) != 1 {
+			t.Fatalf("user %s got %d frames after the gate opened, want 1", u, len(frames))
+		}
+	}
+}
+
+// A new command key reaches clients through the catalog: the revision moves (so a reconnecting
+// client refetches) and op 61 carries the publication. The same key again moves nothing.
+func TestCommandKeyRotationBumpsTheCatalogAndPushes(t *testing.T) {
+	f := newCatalogFixture(t)
+	f.gw.connected[f.member.ID] = true
+	rev := f.publishCatalog(t, catalogCommand("remind", 20, 0, 0, 0))
+	f.pusher.Wait()
+	now := uint64(f.deps.Clock.Now().Unix())
+	path := "/v1/bot-runtime/communities/" + f.community.String() + "/command-key"
+	put := func(body []byte) {
+		t.Helper()
+		if rec := putCBORAuth(f.h, path, body, f.botTok); rec.Code != http.StatusNoContent {
+			t.Fatalf("PUT command-key = %d %x", rec.Code, rec.Body.Bytes())
+		}
+		f.pusher.Wait()
+	}
+	keyID := id.New()
+	first := commandKeyPublication(t, f.community, keyID, f.botDevice, now+3600, f.botKey)
+	put(first)
+	if got := f.getCatalog(t, f.memberTok); got.Revision != rev+1 {
+		t.Fatalf("revision after a new key = %d, want %d", got.Revision, rev+1)
+	}
+	frames := f.gw.delivered(f.member.ID)
+	if len(frames) != 2 {
+		t.Fatalf("frames = %d, want the publish and the key", len(frames))
+	}
+	var payload []cbor.RawMessage
+	if err := cborx.Unmarshal(frames[1].Payload, &payload); err != nil || len(payload) != 4 {
+		t.Fatalf("payload %x: %v", frames[1].Payload, err)
+	}
+	var pushed []byte
+	var pushedRev uint64
+	if cborx.Unmarshal(payload[3], &pushed) != nil || !bytes.Equal(pushed, first) || cborx.Unmarshal(payload[1], &pushedRev) != nil || pushedRev != rev+1 {
+		t.Fatalf("pushed revision %x publication %x, want %d and the stored publication", payload[1], payload[3], rev+1)
+	}
+	// Re-publishing the same key (a later not_after) bumps nothing and pushes nothing.
+	put(commandKeyPublication(t, f.community, keyID, f.botDevice, now+7200, f.botKey))
+	if got := f.getCatalog(t, f.memberTok); got.Revision != rev+1 {
+		t.Fatalf("the same key moved the revision to %d", got.Revision)
+	}
+	if frames := f.gw.delivered(f.member.ID); len(frames) != 2 {
+		t.Fatalf("the same key pushed (%d frames)", len(frames))
+	}
+	put(commandKeyPublication(t, f.community, id.New(), f.botDevice, now+7200, f.botKey))
+	if got := f.getCatalog(t, f.memberTok); got.Revision != rev+2 {
+		t.Fatalf("a second rotation's revision = %d, want %d", got.Revision, rev+2)
 	}
 }

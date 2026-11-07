@@ -89,11 +89,13 @@ export function frameVectors() {
     frame('request without idem', 59, 0, null, [8, 'GET', '/v1/communities?limit=50', new Uint8Array(0), null]),
     // op 60 response (S->C, Bot v2): [id, status, body], in any order.
     frame('response', 60, 0, null, [7, 201, new Uint8Array([0x80])]),
-    // op 61 bot_catalog (S->C, Bot v2): [community_id, revision, filtered_catalog]. The catalog is the
-    // commands this one member may use, each [name, description, operation, args_shape,
-    // permission_bit, needs_bot_channel(uint 0|1), handler_kind]. n = 0: a member who missed it
-    // compares revisions at connect sync.
-    frame('bot_catalog', 61, 0, null, [COMMUNITY, 3, [['remind', 'Set a reminder', 20, [['when', 0], ['text', 0]], 0, 0, 0]]]),
+    // op 61 bot_catalog (S->C, Bot v2): [community_id, revision, filtered_catalog, publication | null].
+    // The catalog is the commands this one member may use, each [name, description, operation,
+    // args_shape, permission_bit, needs_bot_channel(uint 0|1), handler_kind]; args_shape is
+    // [[name, type_code 0..5, required(uint 0|1)]...]. The publication is the Bot's command-key
+    // publication, null before the Bot publishes one. n = 0: a member who missed it compares
+    // revisions at connect sync.
+    frame('bot_catalog', 61, 0, null, [COMMUNITY, 3, [['remind', 'Set a reminder', 20, [['when', 4, 1], ['text', 0, 1]], 0, 0, 0]], null]),
   ];
 
   const rejects = [

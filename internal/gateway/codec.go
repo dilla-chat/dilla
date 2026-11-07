@@ -118,10 +118,16 @@ func CallRingPayload(callID, channelID, userID id.ID, state, expires uint64) (cb
 	return payload(callID, channelID, userID, state, expires)
 }
 
-// BotCatalogPayload is op 61 bot_catalog's `[community_id, revision, filtered_catalog]` (Bot v2
-// task 9). commands is the CBOR array of the commands this one member may use, already encoded.
-func BotCatalogPayload(communityID id.ID, revision uint64, commands cbor.RawMessage) (cbor.RawMessage, error) {
-	return payload(communityID, revision, commands)
+// BotCatalogPayload is op 61 bot_catalog's `[community_id, revision, filtered_catalog,
+// publication|null]` (Bot v2 task 9). commands is the CBOR array of the commands this one member
+// may use, already encoded; publication is the Bot's command-key publication as stored, nil for
+// none (CBOR null).
+func BotCatalogPayload(communityID id.ID, revision uint64, commands cbor.RawMessage, publication []byte) (cbor.RawMessage, error) {
+	var pub any
+	if publication != nil {
+		pub = publication
+	}
+	return payload(communityID, revision, commands, pub)
 }
 
 // CommunityChangedPayload is op 54 community_changed's `[community_id]` (dilla-web-3.1): the

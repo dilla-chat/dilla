@@ -1558,8 +1558,10 @@ command-key publication and the list of Bot channels. None of it is command cont
 
 A catalog is the CBOR array `[[name, description, operation, args_shape, permission_bit,
 needs_bot_channel, handler_kind]…]`: `name` 1–64 bytes of text and unique in the catalog,
-`description` at most 512 bytes of text, `operation` a uint, `args_shape` any item of the
-deterministic subset, `permission_bit` a mask of the permission bits of `09` § Permissions (0
+`description` at most 512 bytes of text, `operation` a uint, `args_shape` at most 16 arguments
+`[name(text 1–32 bytes, unique), type_code(uint), required(uint 0|1)]` with type codes 0 text, 1
+uint, 2 user, 3 channel, 4 duration (uint seconds), 5 bool (uint 0|1) — a user or channel argument
+is a 16-byte id the member picks, never one the catalog carries; anything else is refused, `permission_bit` a mask of the permission bits of `09` § Permissions (0
 means every member), `needs_bot_channel` uint 0 or 1 (the subset has no boolean), and
 `handler_kind` a uint: 0 is a built-in feature, the other values are reserved for outgoing
 integrations and kept as sent. At most 256 commands.
@@ -1576,17 +1578,24 @@ command key v1" || CBOR([1, community_id, key_id, public_key, not_after, bot_dev
 instance stores it only when `bot_device_id` is a listed, unrevoked device of the community's
 Bot user in the newest verified device list it serves, the signature verifies under that
 device's key, `community_id` is the route's community, and `now <= not_after <= now + 691200`
-(8 days). Clients verify it again against the device list before sealing to it.
+(8 days), and `bot_device_id` is the installation's own device. Clients verify it again against
+the device list before sealing to it. A publication with a new `key_id` gives the catalog the next
+revision and is pushed with it (gateway op 61 carries the publication), so a rotated key reaches
+connected clients at once and reconnecting ones through the revision sync.
+
+A Bot channel is unmarked in the same transaction when its channel stops being an end-to-end text
+channel (a channel PATCH to readable), when the channel is deleted, and when the community is
+deleted (which also drops the community's catalog, command key and webhooks).
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `GET /v1/communities/{community}/bot/catalog` | E (community member), socket | — | `[revision, commands, publication\|null, status]`; `commands` filtered for the caller; `status` is `[state, since\|null]`, state 0 ready, 1 degraded, 2 offline, 3 disabled, 4 absent; 404 for a non-member |
 | `GET /v1/bot/revisions` | E, socket | — | `[user_revision, [[scope_kind, scope_id, revision]…]]`: kinds 1 channel and 2 call (scope_id the voice channel) for channels the caller can view, kind 3 each of the caller's communities' catalog revision |
-| `PUT /v1/bot-runtime/communities/{community}/catalog` | B (ready, path community) | the catalog | `[revision]`; a changed catalog takes the next revision and is pushed as gateway op 61 to every connected member, filtered for that member; an unchanged one keeps its revision |
-| `PUT /v1/bot-runtime/communities/{community}/command-key` | B (ready, path community) | the publication | `204`; `403` when the signer is not a listed device of the Bot or the signature fails, `400` for another community or a `not_after` in the past or more than 8 days ahead |
+| `PUT /v1/bot-runtime/communities/{community}/catalog` | B (ready, path community) | the catalog | `[revision]`; a changed catalog takes the next revision and is pushed as gateway op 61 to every connected member, filtered for that member, after the answer; an unchanged one keeps its revision |
+| `PUT /v1/bot-runtime/communities/{community}/command-key` | B (ready, path community) | the publication | `204`; `403` when the signer is not the installation's listed, unrevoked device or the signature fails, `400` for another community or a `not_after` in the past or more than 8 days ahead; a new `key_id` bumps the catalog revision and pushes op 61 |
 | `PUT /v1/communities/{community}/channels/{channel}/bot-channel` | E (manage_community), socket | — | `204`; `400` unless the channel is a live end-to-end text channel that is not the AFK channel; `404` for a channel outside the community |
 | `DELETE /v1/communities/{community}/channels/{channel}/bot-channel` | E (manage_community), socket | — | `204`, also when the channel was not marked |
-| `GET /v1/communities/{community}/bot/channels` | E (manage_community), socket | — | `[[channel_id, marked_at, marked_by]…]`, oldest mark first |
+| `GET /v1/communities/{community}/bot/channels` | E (any human member), socket | — | `[[channel_id, marked_at, marked_by]…]` of the Bot channels the caller can view (`view_channel`), oldest mark first; 404 for a non-member |
 
 ## Vectors
 

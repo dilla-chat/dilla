@@ -231,15 +231,10 @@ func (s Snapshot) Highest(userID id.ID) (uint64, bool) {
 // channelID is non-nil, that channel's overwrites: four queries, never N+1.
 // store.ErrNotFound means the community is unknown or deleted.
 func LoadSnapshot(ctx context.Context, repo store.Repository, communityID, userID id.ID, channelID *id.ID) (Snapshot, error) {
-	com, err := repo.GetCommunity(ctx, communityID)
+	s, err := loadCommunitySnapshotBase(ctx, repo, communityID)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	roles, err := repo.ListRoles(ctx, communityID)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	slices.SortFunc(roles, byPositionThenID)
 	held, err := repo.ListMemberRoles(ctx, communityID, userID)
 	if err != nil {
 		return Snapshot{}, err
@@ -248,7 +243,7 @@ func LoadSnapshot(ctx context.Context, repo store.Repository, communityID, userI
 	if err != nil {
 		return Snapshot{}, err
 	}
-	s := Snapshot{Owner: com.Owner, Bot: user.Kind == 1, Roles: roles, Held: make(map[id.ID]bool, len(held))}
+	s.Bot, s.Held = user.Kind == 1, make(map[id.ID]bool, len(held))
 	if s.Bot {
 		binding, _, bindingErr := botaccess.ForUserCommunity(ctx, repo, userID, communityID)
 		if bindingErr != nil && !errors.Is(bindingErr, botaccess.ErrIneligible) && !errors.Is(bindingErr, store.ErrNotFound) {
@@ -264,12 +259,6 @@ func LoadSnapshot(ctx context.Context, repo store.Repository, communityID, userI
 			}
 		}
 	}
-	// @everyone is the role created with the community; it is the only role ever
-	// stored at position 0 (the role routes refuse position 0 on create and on
-	// patch), and the sort above puts it first.
-	if len(roles) > 0 && roles[0].Position == 0 {
-		s.Everyone = roles[0].ID
-	}
 	for _, r := range held {
 		s.Held[r] = true
 	}
@@ -282,6 +271,29 @@ func LoadSnapshot(ctx context.Context, repo store.Repository, communityID, userI
 			return Snapshot{}, err
 		}
 		s.AFK = afk.ChannelID != nil && *afk.ChannelID == *channelID
+	}
+	return s, nil
+}
+
+// loadCommunitySnapshotBase is the community half of a Snapshot, the same for every member: the
+// owner, the roles in (position, id) order and @everyone. LoadSnapshot adds one user's grants, and
+// the Bot catalog filter (bot_catalog.go) adds each member's, so the two cannot diverge.
+func loadCommunitySnapshotBase(ctx context.Context, repo store.Repository, communityID id.ID) (Snapshot, error) {
+	com, err := repo.GetCommunity(ctx, communityID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	roles, err := repo.ListRoles(ctx, communityID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	slices.SortFunc(roles, byPositionThenID)
+	s := Snapshot{Owner: com.Owner, Roles: roles}
+	// @everyone is the role created with the community; it is the only role ever
+	// stored at position 0 (the role routes refuse position 0 on create and on
+	// patch), and the sort above puts it first.
+	if len(roles) > 0 && roles[0].Position == 0 {
+		s.Everyone = roles[0].ID
 	}
 	return s, nil
 }

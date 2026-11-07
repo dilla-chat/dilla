@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/dilla-chat/dilla/internal/auth"
@@ -10,9 +11,11 @@ import (
 )
 
 // Bot v2 Task 9: Bot channels (spec "Bot channels", decision 7). An admin marks a text channel as a
-// Bot channel; the Bot is an MLS member of, and posts in, only those. Marking and listing take the
+// Bot channel; the Bot is an MLS member of, and posts in, only those. Marking and unmarking take the
 // authority PUT /v1/communities/{community}/bot takes (humanForBot: a human member holding
-// manage_community).
+// manage_community); any human member lists the Bot channels they can view. A channel update that
+// makes a Bot channel readable, a channel delete and a community delete unmark it in their own
+// transaction (channels.go, communities.go).
 
 // BotChannelEvents hears that a Bot channel was marked or unmarked, after the change commits and
 // before the route answers. Task 12's Bot feed implements it; Deps defaults to NoBotChannelEvents.
@@ -170,7 +173,9 @@ func (d Deps) UnmarkBotChannel(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ListBotChannels answers [[channel_id, marked_at, marked_by]…], oldest mark first.
+// ListBotChannels answers [[channel_id, marked_at, marked_by]…], oldest mark first, to any human
+// member: only the Bot channels that member can view, so no member learns a hidden channel's id.
+// Administrators and the owner resolve to every permission and see them all.
 func (d Deps) ListBotChannels(w http.ResponseWriter, r *http.Request) {
 	s, ok := session(r)
 	if !ok {
@@ -182,21 +187,55 @@ func (d Deps) ListBotChannels(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if _, _, err := humanForBot(r, d.Repo, cid, s); err != nil {
-		server.WriteError(w, err)
+	ctx := r.Context()
+	user, err := d.Repo.GetUser(ctx, s.UserID)
+	if err != nil {
+		server.WriteError(w, notFound(err))
+		return
+	}
+	if user.Kind != kindHuman {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "human session required"))
+		return
+	}
+	if _, err := d.Repo.GetMember(ctx, cid, s.UserID); err != nil {
+		server.WriteError(w, notFound(err))
+		return
+	}
+	if _, err := d.Repo.GetCommunity(ctx, cid); err != nil {
+		server.WriteError(w, notFound(err))
 		return
 	}
 	if err := requireBotWire(s.WireVersion); err != nil {
 		server.WriteError(w, err)
 		return
 	}
-	rows, err := d.Repo.ListBotChannels(r.Context(), cid)
+	rows, err := d.Repo.ListBotChannels(ctx, cid)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	channels := make([]store.ChannelRow, 0, len(rows))
+	for _, row := range rows {
+		ch, err := d.Repo.GetChannel(ctx, row.ChannelID)
+		if errors.Is(err, store.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			server.WriteError(w, d.storeError(r, err))
+			return
+		}
+		channels = append(channels, ch)
+	}
+	visible, err := viewableChannels(ctx, d.Repo, cid, s.UserID, channels)
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
 	out := make([][]any, 0, len(rows))
 	for _, row := range rows {
+		if !visible[row.ChannelID] {
+			continue
+		}
 		at, ok := checkedUint64(row.MarkedAt)
 		if !ok {
 			server.WriteError(w, d.storeError(r, store.ErrConflict))

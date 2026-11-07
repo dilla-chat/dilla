@@ -605,6 +605,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	callRoutes, roles := mountPlanTwo(mux, planTwo{
 		ctx: ctx, o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
 		blobs: blobs, uploads: deps.UploadMeter, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
+		botEvents: deps.BotChannelEvents,
 	})
 	stopAFK = callRoutes.StopAFK
 	(&api.Messages{

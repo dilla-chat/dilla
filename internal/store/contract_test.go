@@ -213,7 +213,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"BotJoinRoleGrants", reflect.TypeOf((*store.BotJoinRoleGrants)(nil)).Elem(), []string{"GrantBotJoinRoleForEpisode"}},
 		// Bot v2 Task 9: the catalog, the command key, Bot channels and the state revisions.
 		{"BotV2", reflect.TypeOf((*store.BotV2)(nil)).Elem(), []string{
-			"BotStateRevisions", "BumpBotStateRevision", "GetBotCatalog", "GetBotCommandKey",
+			"BotStateRevisions", "BumpBotStateRevision", "DeleteBotCommunityState", "GetBotCatalog", "GetBotCommandKey",
 			"ListBotChannels", "MarkBotChannel", "PutBotCatalog", "PutBotCommandKey", "UnmarkBotChannel",
 		}},
 		{"BotGroupRegistrationAdmissionReceipts", reflect.TypeOf((*store.BotGroupRegistrationAdmissionReceipts)(nil)).Elem(), []string{"AcceptBotGroupRegistrationAdmission", "GetBotGroupRegistrationAdmission"}},

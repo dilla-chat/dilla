@@ -24,7 +24,7 @@ DELETE FROM bot_channels WHERE community_id = $1 AND channel_id = $2;
 -- name: ListBotChannels :many
 SELECT b.channel_id, b.community_id, b.marked_at, b.marked_by
 FROM bot_channels b JOIN channels c ON c.id = b.channel_id
-WHERE b.community_id = $1 AND c.deleted_at IS NULL
+WHERE b.community_id = $1 AND c.deleted_at IS NULL AND c.kind = 0 AND c.mode = 0
 ORDER BY b.marked_at, b.channel_id;
 
 -- name: BumpBotStateRevision :one
@@ -34,3 +34,15 @@ RETURNING revision;
 
 -- name: GetBotStateRevision :one
 SELECT revision FROM bot_state_revisions WHERE scope_kind = $1 AND scope_id = $2;
+
+-- name: DeleteBotChannelsOfCommunity :many
+DELETE FROM bot_channels WHERE community_id = $1 RETURNING channel_id;
+
+-- name: DeleteBotCatalog :exec
+DELETE FROM bot_catalogs WHERE community_id = $1;
+
+-- name: DeleteBotCommandKey :exec
+DELETE FROM bot_command_keys WHERE community_id = $1;
+
+-- name: DeleteBotWebhooksOfCommunity :exec
+DELETE FROM bot_webhooks WHERE community_id = $1;

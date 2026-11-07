@@ -6,7 +6,6 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"net/http"
-	"slices"
 	"unicode/utf8"
 
 	"github.com/fxamacker/cbor/v2"
@@ -77,9 +76,9 @@ type botCommand struct {
 }
 
 // decodeBotCatalog validates a commands list, [[name, description, operation, args_shape,
-// permission_bit, needs_bot_channel, handler_kind]…]. args_shape is any item of the deterministic
-// subset and handler_kind any uint (0 built-in; the rest reserved for outgoing integrations), and
-// both are kept as sent. needs_bot_channel is uint 0 or 1: the subset has no boolean.
+// permission_bit, needs_bot_channel, handler_kind]…]. args_shape follows validArgsShape's grammar,
+// handler_kind is any uint (0 built-in; the rest reserved for outgoing integrations) and is kept as
+// sent. needs_bot_channel is uint 0 or 1: the subset has no boolean.
 func decodeBotCatalog(body []byte) ([]botCommand, error) {
 	invalid := func(msg string) error { return server.Errorf(server.CodeInvalidRequest, "%s", msg) }
 	var raw []cbor.RawMessage
@@ -113,6 +112,9 @@ func decodeBotCatalog(body []byte) ([]botCommand, error) {
 		if _, ok := rawUintOf(f[2]); !ok {
 			return nil, invalid("a command operation is a uint")
 		}
+		if err := validArgsShape(f[3]); err != nil {
+			return nil, err
+		}
 		perm, ok := rawUintOf(f[4])
 		if !ok || Bits(perm)&^PermAll != 0 {
 			return nil, invalid("a command permission_bit names only defined permissions")
@@ -126,6 +128,55 @@ func decodeBotCatalog(body []byte) ([]botCommand, error) {
 		out = append(out, botCommand{raw: c, name: name, perm: Bits(perm)})
 	}
 	return out, nil
+}
+
+// The argument type codes of args_shape. They name the kinds of value a member supplies, which the
+// client encodes as dilla_core::bot::command::CommandArg (text, uint, bytes, null): text is a
+// string, uint a number, user and channel a 16-byte id the member picks (the client resolves it;
+// the catalog itself never carries one), duration a uint of seconds, bool a uint 0 or 1.
+const (
+	argText uint64 = iota
+	argUint
+	argUser
+	argChannel
+	argDuration
+	argBool
+	argTypeCount
+)
+
+const (
+	maxCommandArgs   = 16
+	maxCommandArgLen = 32
+)
+
+// validArgsShape checks args_shape against its one grammar: an array of at most 16 arguments, each
+// [name(text, 1-32 bytes, unique), type_code(uint, one of the codes above), required(uint 0 or 1)].
+// Nothing else is admitted, so a Bot cannot carry an id or free bytes to members in a catalog.
+func validArgsShape(b cbor.RawMessage) error {
+	bad := server.Errorf(server.CodeInvalidRequest, "args_shape is at most 16 [name(text 1-32), type_code(0 text, 1 uint, 2 user, 3 channel, 4 duration, 5 bool), required(uint 0|1)]")
+	var args []cbor.RawMessage
+	if cborx.ExpectMajor(b, cborx.MajorArray) != nil || cborx.Unmarshal(b, &args) != nil || len(args) > maxCommandArgs {
+		return bad
+	}
+	seen := make(map[string]bool, len(args))
+	for _, a := range args {
+		var f []cbor.RawMessage
+		if cborx.ExpectMajor(a, cborx.MajorArray) != nil || cborx.Unmarshal(a, &f) != nil || len(f) != 3 {
+			return bad
+		}
+		name, ok := rawText(f[0])
+		if !ok || name == "" || len(name) > maxCommandArgLen || seen[name] {
+			return bad
+		}
+		seen[name] = true
+		if code, ok := rawUintOf(f[1]); !ok || code >= argTypeCount {
+			return bad
+		}
+		if req, ok := rawUintOf(f[2]); !ok || req > 1 {
+			return bad
+		}
+	}
+	return nil
 }
 
 func rawText(b cbor.RawMessage) (string, bool) {
@@ -159,20 +210,9 @@ type catalogAudience struct {
 }
 
 func loadCatalogAudience(ctx context.Context, repo store.Repository, cid id.ID, cmds []botCommand) (*catalogAudience, error) {
-	// LoadSnapshot's community half: the owner, the roles in (position, id) order and @everyone,
-	// the one role stored at position 0. Each member's grants are added in filter.
-	com, err := repo.GetCommunity(ctx, cid)
+	base, err := loadCommunitySnapshotBase(ctx, repo, cid)
 	if err != nil {
 		return nil, err
-	}
-	roles, err := repo.ListRoles(ctx, cid)
-	if err != nil {
-		return nil, err
-	}
-	slices.SortFunc(roles, byPositionThenID)
-	base := Snapshot{Owner: com.Owner, Roles: roles}
-	if len(roles) > 0 && roles[0].Position == 0 {
-		base.Everyone = roles[0].ID
 	}
 	a := &catalogAudience{base: base}
 	channelScoped := false
@@ -412,8 +452,7 @@ func (d Deps) PutBotRuntimeCatalog(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	cmds, err := decodeBotCatalog(body)
-	if err != nil {
+	if _, err := decodeBotCatalog(body); err != nil {
 		server.WriteError(w, err)
 		return
 	}
@@ -443,17 +482,46 @@ func (d Deps) PutBotRuntimeCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if changed {
-		d.pushBotCatalog(context.WithoutCancel(ctx), cid, revision, cmds)
+		d.scheduleBotCatalogPush(cid)
 	}
 	d.write(w, r, http.StatusOK, []uint64{revision})
 }
 
-// pushBotCatalog sends op 61 once to each connected member, filtered for that member. A member with
-// no live connection is skipped: it compares revisions at connect sync. A failure is logged; the
-// catalog is committed, and the revision sync recovers a missed frame.
-func (d Deps) pushBotCatalog(ctx context.Context, cid id.ID, revision uint64, cmds []botCommand) {
+// scheduleBotCatalogPush hands the community's push to the background pusher: the Bot's request
+// does not wait for the fan-out.
+func (d Deps) scheduleBotCatalogPush(cid id.ID) {
+	if d.BotCatalogGateway == nil || d.BotCatalogPushes == nil {
+		return
+	}
+	d.BotCatalogPushes.schedule(cid, func(ctx context.Context) { d.pushBotCatalog(ctx, cid) })
+}
+
+// pushBotCatalog sends op 61 once to each connected human member, filtered for that member, with
+// the catalog and command-key publication stored now (a push that ran late carries the newest
+// both). A member with no live connection is skipped: it compares revisions at connect sync. A
+// failure is logged; the catalog is committed, and the revision sync recovers a missed frame.
+func (d Deps) pushBotCatalog(ctx context.Context, cid id.ID) {
 	gw := d.BotCatalogGateway
 	if gw == nil {
+		return
+	}
+	catalog, err := d.Repo.GetBotCatalog(ctx, cid)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			d.logCtx(ctx, "reading the catalog for a Bot catalog push failed", "community", cid, "err", err)
+		}
+		return
+	}
+	cmds, err := decodeBotCatalog(catalog.Body)
+	if err != nil {
+		d.logCtx(ctx, "a stored Bot catalog does not decode", "community", cid, "err", err)
+		return
+	}
+	var publication []byte
+	if key, err := d.Repo.GetBotCommandKey(ctx, cid); err == nil {
+		publication = key.Publication
+	} else if !errors.Is(err, store.ErrNotFound) {
+		d.logCtx(ctx, "reading the command key for a Bot catalog push failed", "community", cid, "err", err)
 		return
 	}
 	members, err := communityMemberIDs(ctx, d.Repo, cid)
@@ -485,7 +553,7 @@ func (d Deps) pushBotCatalog(ctx context.Context, cid id.ID, revision uint64, cm
 			d.logCtx(ctx, "filtering a Bot catalog push failed", "community", cid, "user", m, "err", err)
 			continue
 		}
-		payload, err := gateway.BotCatalogPayload(cid, revision, shown)
+		payload, err := gateway.BotCatalogPayload(cid, catalog.Revision, shown, publication)
 		if err != nil {
 			d.logCtx(ctx, "encoding a Bot catalog push failed", "community", cid, "err", err)
 			return
@@ -616,8 +684,9 @@ func (d Deps) botListedDeviceKey(ctx context.Context, botUser, device id.ID) (ed
 }
 
 // PutBotRuntimeCommandKey stores the community's command-key publication from its ready Bot after
-// checking it the way a client will: a listed, unrevoked device of the Bot user signed it, it names
-// this community, and its not_after is neither past nor more than 8 days ahead. 204.
+// checking it the way a client will: the installation's device signed it and is a listed, unrevoked
+// device of the Bot user, it names this community, and its not_after is neither past nor more than
+// 8 days ahead. A new key_id bumps the catalog revision and pushes op 61 with the publication. 204.
 func (d Deps) PutBotRuntimeCommandKey(w http.ResponseWriter, r *http.Request) {
 	s, ok := session(r)
 	if !ok {
@@ -662,6 +731,11 @@ func (d Deps) PutBotRuntimeCommandKey(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "the publication's not_after is more than 8 days ahead; clients refuse it"))
 		return
 	}
+	// The signer is the installation's own managed device, never another device the Bot user lists.
+	if p.BotDeviceID != *installation.DeviceID {
+		server.WriteError(w, server.Errorf(server.CodeForbidden, "the publication is not signed by the Bot installation's device"))
+		return
+	}
 	pub, err := d.botListedDeviceKey(ctx, *installation.UserID, p.BotDeviceID)
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
@@ -671,6 +745,7 @@ func (d Deps) PutBotRuntimeCommandKey(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeForbidden, "the publication's signature does not verify under the Bot device's key"))
 		return
 	}
+	rotated := false
 	err = d.Repo.Tx(ctx, func(tx store.Repository) error {
 		if err := tx.LockBotCommunity(ctx, cid); err != nil {
 			return notFound(err)
@@ -679,14 +754,43 @@ func (d Deps) PutBotRuntimeCommandKey(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		if current.ID != installation.ID || *current.UserID != *installation.UserID {
+		if current.ID != installation.ID || *current.UserID != *installation.UserID || *current.DeviceID != p.BotDeviceID {
 			return server.Errorf(server.CodeForbidden, "the Bot installation changed")
 		}
-		return tx.PutBotCommandKey(ctx, store.BotCommandKeyRow{CommunityID: cid, KeyID: p.KeyID, Publication: body, PublishedAt: now})
+		prevKey, err := tx.GetBotCommandKey(ctx, cid)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			rotated = true
+		case err != nil:
+			return err
+		default:
+			rotated = prevKey.KeyID != p.KeyID
+		}
+		if err := tx.PutBotCommandKey(ctx, store.BotCommandKeyRow{CommunityID: cid, KeyID: p.KeyID, Publication: body, PublishedAt: now}); err != nil {
+			return err
+		}
+		// A new key reaches clients the way a changed catalog does: the catalog takes the next
+		// revision (so the connect sync sees it) and the push carries the publication.
+		if !rotated {
+			return nil
+		}
+		catalog, err := tx.GetBotCatalog(ctx, cid)
+		if errors.Is(err, store.ErrNotFound) {
+			rotated = false
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		catalog.Revision++
+		return tx.PutBotCatalog(ctx, catalog)
 	})
 	if err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
+	}
+	if rotated {
+		d.scheduleBotCatalogPush(cid)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -715,7 +819,11 @@ func (d Deps) GetBotRevisions(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	channels := map[id.ID]store.ChannelRow{}
+	type scoped struct {
+		community id.ID
+		channel   store.ChannelRow
+	}
+	channels := map[id.ID]scoped{}
 	scopes := []id.ID{}
 	for _, c := range communities {
 		rows, err := d.Repo.ListChannels(ctx, c.ID)
@@ -727,7 +835,7 @@ func (d Deps) GetBotRevisions(w http.ResponseWriter, r *http.Request) {
 			if ch.DeletedAt != nil || (ch.Kind != ChannelText && ch.Kind != ChannelVoice) {
 				continue
 			}
-			channels[ch.ID] = ch
+			channels[ch.ID] = scoped{community: c.ID, channel: ch}
 			scopes = append(scopes, ch.ID)
 		}
 	}
@@ -736,22 +844,30 @@ func (d Deps) GetBotRevisions(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
-	resolver := NewResolver(d.Repo)
-	out := make([][]any, 0, len(rows))
+	// Visibility is resolved once per community with a stored scope: one snapshot of the caller,
+	// then each scope channel's overwrites (viewableChannels).
+	byCommunity := map[id.ID][]store.ChannelRow{}
 	for _, row := range rows {
-		ch, ok := channels[row.ScopeID]
-		if !ok {
-			continue
+		if sc, ok := channels[row.ScopeID]; ok {
+			byCommunity[sc.community] = append(byCommunity[sc.community], sc.channel)
 		}
-		bits, err := resolver.Resolve(ctx, s.UserID, ch)
+	}
+	visible := map[id.ID]bool{}
+	for cid, chs := range byCommunity {
+		v, err := viewableChannels(ctx, d.Repo, cid, s.UserID, chs)
 		if err != nil {
 			server.WriteError(w, d.storeError(r, err))
 			return
 		}
-		if !bits.Has(PermViewChannel) {
-			continue
+		for ch := range v {
+			visible[ch] = true
 		}
-		out = append(out, []any{uint64(row.ScopeKind), row.ScopeID, row.Revision})
+	}
+	out := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		if visible[row.ScopeID] {
+			out = append(out, []any{uint64(row.ScopeKind), row.ScopeID, row.Revision})
+		}
 	}
 	// Each community's catalog revision rides along as scope kind 3, so the one read tells a client
 	// which catalogs to fetch again.
@@ -767,4 +883,46 @@ func (d Deps) GetBotRevisions(w http.ResponseWriter, r *http.Request) {
 		out = append(out, []any{botScopeCatalog, c.ID, catalog.Revision})
 	}
 	d.write(w, r, http.StatusOK, []any{userRev, out})
+}
+
+// viewableChannels is the subset of channels (live channels of community cid) that member user can
+// view now: one snapshot of the member (LoadSnapshot), then each channel's overwrites and the AFK
+// grant, through Snapshot.ResolveChannel as Resolver.Resolve does per channel. A user who is not a
+// member, or a deleted community, sees none.
+func viewableChannels(ctx context.Context, repo store.Repository, cid, user id.ID, channels []store.ChannelRow) (map[id.ID]bool, error) {
+	out := map[id.ID]bool{}
+	if len(channels) == 0 {
+		return out, nil
+	}
+	if _, err := repo.GetMember(ctx, cid, user); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return out, nil
+		}
+		return nil, err
+	}
+	snap, err := LoadSnapshot(ctx, repo, cid, user, nil)
+	if errors.Is(err, store.ErrNotFound) {
+		return out, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	afk, err := afkPointerOf(ctx, repo, cid)
+	if err != nil {
+		return nil, err
+	}
+	for _, ch := range channels {
+		if ch.DeletedAt != nil || ch.CommunityID == nil || *ch.CommunityID != cid {
+			continue
+		}
+		s := snap
+		if s.Overwrite, err = repo.ListOverwrites(ctx, ch.ID); err != nil {
+			return nil, err
+		}
+		s.AFK = afk.ChannelID != nil && *afk.ChannelID == ch.ID
+		if s.ResolveChannel(user).Has(PermViewChannel) {
+			out[ch.ID] = true
+		}
+	}
+	return out, nil
 }

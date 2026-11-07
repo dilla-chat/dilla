@@ -96,6 +96,8 @@ type Channels struct {
 	// notify tells the community's members, after the commit, that a channel was created,
 	// updated or deleted (op 54); nil tells nobody.
 	notify *StructureNotifier
+	// botEvents hears Bot-channel unmarks a channel update or delete makes; nil hears nothing.
+	botEvents BotChannelEvents
 }
 
 // WithCalls sets the call routes a membership change of a channel re-syncs, and returns c.
@@ -105,6 +107,20 @@ func (c *Channels) WithCalls(calls *Calls) *Channels {
 }
 
 func (c *Channels) WithRoles(roles *Roles) *Channels { c.roles = roles; return c }
+
+// WithBotChannelEvents sets who hears that a channel's Bot-channel mark went with an update or a
+// delete (Bot v2 Task 9), and returns c. Nil hears nothing.
+func (c *Channels) WithBotChannelEvents(e BotChannelEvents) *Channels {
+	c.botEvents = e
+	return c
+}
+
+func (c *Channels) botChannelEvents() BotChannelEvents {
+	if c.botEvents == nil {
+		return NoBotChannelEvents{}
+	}
+	return c.botEvents
+}
 
 // WithNotifier sets where a community channel's create, update and delete is announced, and
 // returns c.
@@ -843,6 +859,7 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 	now := c.clk.Now().Unix()
 	var updated store.ChannelRow
 	var toClose []id.ID
+	unmarked := false
 	// The row is read again inside the transaction and the request applied to
 	// that, so two concurrent PATCHes of different fields both land.
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
@@ -915,6 +932,15 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 		// A channel that stops being end-to-end encrypted is never allowed an MLS
 		// text group, so its open text groups are closed after the commit. Only
 		// the text kind: a voice channel's call group is untouched.
+		// A Bot channel is an end-to-end text channel (Bot v2 Task 9): one that stops being one is
+		// unmarked in the same transaction, and the Bot feed hears it after the commit.
+		if row.CommunityID != nil && (row.Kind != ChannelText || row.Mode != ModeE2EE) {
+			removed, err := tx.UnmarkBotChannel(r.Context(), *row.CommunityID, row.ID)
+			if err != nil {
+				return err
+			}
+			unmarked = removed
+		}
 		if TextGroupAllowed(before) && !TextGroupAllowed(row) {
 			groups, err := tx.GroupsForTarget(r.Context(), row.ID, groupText)
 			if err != nil {
@@ -931,6 +957,9 @@ func (c *Channels) patch(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		c.fail(w, r, "patch channel", err)
 		return
+	}
+	if unmarked {
+		c.botChannelEvents().BotChannelUnmarked(*updated.CommunityID, updated.ID)
 	}
 	if err := closeGroups(afterCommit(r), c.dsvc, toClose); err != nil {
 		c.log.ErrorContext(r.Context(), "close the text group of a channel that left end-to-end encryption",
@@ -1100,6 +1129,7 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 	now := c.clk.Now().Unix()
 	var toClose []id.ID
 	var roleAffected []id.ID
+	unmarked := false
 	if err := c.repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := c.lockManageable(r, tx, row); err != nil {
 			return err
@@ -1122,6 +1152,11 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := tx.DeleteChannel(r.Context(), row.ID, now); err != nil {
 			return notFound(err)
+		}
+		// A deleted channel is no Bot channel (Bot v2 Task 9): the soft delete keeps its row, so the
+		// mark is removed here and the Bot feed hears it after the commit.
+		if unmarked, err = tx.UnmarkBotChannel(r.Context(), *row.CommunityID, row.ID); err != nil {
+			return err
 		}
 		roleAffected, err = tx.RemoveReactionRoleChannelGrants(r.Context(), *row.CommunityID, row.ID)
 		if err != nil {
@@ -1152,6 +1187,9 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		c.fail(w, r, "delete channel", err)
 		return
+	}
+	if unmarked {
+		c.botChannelEvents().BotChannelUnmarked(*row.CommunityID, row.ID)
 	}
 	if c.roles != nil {
 		for _, user := range roleAffected {

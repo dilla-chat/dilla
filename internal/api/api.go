@@ -190,6 +190,8 @@ type Deps struct {
 	// filtered for that member (Bot v2 Task 9). Nil pushes nothing; members read the catalog at
 	// connect sync.
 	BotCatalogGateway BotCatalogGateway
+	// BotCatalogPushes runs those fan-outs in the background, bounded. Register builds one when nil.
+	BotCatalogPushes *BotCatalogPusher
 	// BotChannelEvents hears Bot-channel marks and unmarks after they commit (Bot v2 Task 9; Task 12's
 	// Bot feed implements it). Nil is NoBotChannelEvents.
 	BotChannelEvents BotChannelEvents
@@ -244,6 +246,9 @@ func Register(m *server.Mux, d Deps) {
 	}
 	if d.BotChannelEvents == nil {
 		d.BotChannelEvents = NoBotChannelEvents{}
+	}
+	if d.BotCatalogPushes == nil {
+		d.BotCatalogPushes = NewBotCatalogPusher()
 	}
 	// Discovery. The two routes a client reads before it has anything else.
 	registerInstance(m, d)
