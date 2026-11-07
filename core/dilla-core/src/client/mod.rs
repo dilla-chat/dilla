@@ -35,7 +35,7 @@ pub use removals::RemovalFeedEntry;
 #[cfg(feature = "test-hooks")]
 pub use schema::test_force_missing_fts5;
 pub use schema::{APP_SCHEMA_SUPPORTED, HANDSHAKE_TAIL, migrate_app};
-pub use trust::PushedList;
+pub use trust::{MAX_BEHIND_GAP, PushedList};
 
 use crate::identity::{CredentialIdentity, Kind, Tier};
 use crate::mls::{

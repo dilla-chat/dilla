@@ -147,6 +147,14 @@ Jonas, 2026-11-06:
   - A later leak of the current key can't open replies (one-time reply keys), and can't open requests older than the rotation window.
   - This is the trade accepted against MLS's per-epoch updates.
 
+### Threat model
+
+- **First sight of a user is trust on first push** (Jonas, 2026-11-07).
+  - The Bot pins a user's account key (UMK) the first time dillad pushes that user's device list. The push carries the UMK, its certificate over the self-signing key, and the signed list history from version 1.
+  - So for a user the Bot never met in an MLS group, the Bot trusts the server for that first sight, as the app does when it first meets a member.
+  - A later push under a different account key does not replace anything. It is held as a pending key change, and that user's commands are refused until the change is resolved: by the user's MLS leaf, by a newer list under the old key, or by an admin re-pin.
+  - A pushed head that does not chain from the Bot's cache marks the user behind (commands refused) only when the user's own key signed it. A forged claim changes nothing.
+
 ### Bot channels (decision 7)
 
 - **Marking.** An admin marks a text channel as a **Bot channel** in channel settings or on the Bot page.

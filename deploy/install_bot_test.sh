@@ -56,12 +56,25 @@ if [ "$1" = start ] && [ -n "${BOT_TEST_FAIL_START_FIRST:-}" ]; then
 	[ "$n" -gt 1 ] || exit 1
 fi
 if [ "$1" = show-environment ] && [ -n "${BOT_TEST_SERVICE_PATH:-}" ]; then echo "PATH=$BOT_TEST_SERVICE_PATH"; fi
-if [ "$1" = start ] && [ -n "${BOT_TEST_STARTED:-}" ]; then : >"$BOT_TEST_STARTED"; fi
-# NRestarts: 0, or 1 once started when the test simulates a crash loop.
+if [ "$1" = start ] && [ -n "${BOT_TEST_STARTED:-}" ]; then echo 0 >"$BOT_TEST_STARTED"; fi
+# NRestarts: the old service's count before the start; in a simulated crash loop, one more on
+# every read after the start (systemd resets the count on a manual start).
 if [ "$1" = show ]; then
-	if [ -n "${BOT_TEST_STARTED:-}" ] && [ -f "$BOT_TEST_STARTED" ]; then echo 1; else echo 0; fi
+	if [ -n "${BOT_TEST_STARTED:-}" ] && [ -f "$BOT_TEST_STARTED" ]; then
+		n=$(($(cat "$BOT_TEST_STARTED") + 1)); echo "$n" >"$BOT_TEST_STARTED"; echo "$n"
+	else
+		echo "${BOT_TEST_OLD_RESTARTS:-0}"
+	fi
 fi
 if [ "$1" = is-active ]; then [ "${BOT_TEST_ACTIVE:-1}" = 1 ]; fi
+STUB
+cat >"$STUBS/cp" <<'STUB'
+#!/bin/sh
+# Fails a rollback's state restore (`cp -a BACKUP/state DATA_DIR`) when asked to.
+if [ -n "${BOT_TEST_FAIL_STATE_RESTORE:-}" ] && [ "$1" = -a ]; then
+	case "$2" in */state) exit 1 ;; esac
+fi
+exec /usr/bin/cp "$@"
 STUB
 cat >"$STUBS/dillad" <<'STUB'
 #!/bin/sh
@@ -230,10 +243,24 @@ pass "service start failure rolls back Bot files and state"
 
 # A Bot that systemd keeps restarting after the upgrade is not healthy: roll back.
 rm -f "$TMP/started"
-if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" BOT_TEST_STARTED="$TMP/started" STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --release-url="file://$REL4" >"$TMP/out" 2>"$TMP/err"; then fail "upgrade with a restarting service succeeded"; fi
+# The old service's restart count (3) must not hide the new one's restarts.
+if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" BOT_TEST_STARTED="$TMP/started" BOT_TEST_OLD_RESTARTS=3 STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --release-url="file://$REL4" >"$TMP/out" 2>"$TMP/err"; then fail "upgrade with a restarting service succeeded"; fi
 [ "$(cat "$ROOT/usr/local/bin/dillabot")" = bot-binary-v2 ] || fail "restart loop did not restore previous binary"
 grep -q 'upgraded Bot service did not remain active' "$TMP/err" || fail "restart loop did not report rollback"
 pass "a restart loop after the upgrade rolls back"
+
+# An incomplete rollback keeps the copy and names it, so the admin can restore by hand.
+rm -f "$TMP/doctor-count"
+if PATH="$STUBS:$PATH" DILLA_INSTALL_ROOT="$ROOT" BOT_TEST_LOG="$LOG" BOT_TEST_DOCTOR_COUNT="$TMP/doctor-count" BOT_TEST_DOCTOR_FAIL_AFTER_FIRST=1 BOT_TEST_FAIL_STATE_RESTORE=1 STUB_ACCOUNT_EXISTS=1 "$INSTALL" --upgrade --release-url="file://$REL3" >"$TMP/out" 2>"$TMP/err"; then fail "upgrade with failed doctor succeeded"; fi
+COPY="$(sed -n 's|.*made pre-upgrade copy at \([^ ]*\) .*|\1|p' "$TMP/err")"
+grep -q "the rollback was incomplete, so the pre-upgrade copy is kept at $COPY" "$TMP/err" || fail "incomplete rollback did not name the kept copy: $(cat "$TMP/err")"
+[ -s "$COPY/state/install-sentinel/keep" ] || fail "incomplete rollback did not keep the copy with its state"
+if grep -q "removed pre-upgrade copy $COPY" "$TMP/err"; then fail "incomplete rollback deleted the copy"; fi
+# Restore by hand, as the message asks, and delete the copy.
+rm -rf "$ROOT/var/lib/dillabot"
+/usr/bin/cp -a "$COPY/state" "$ROOT/var/lib/dillabot"
+rm -rf "$COPY"
+pass "an incomplete rollback keeps and names the copy"
 
 # A confirmed upgrade deletes every copy an earlier installer kept (they hold the database
 # key); a rolled-back one leaves them alone. Only the installer's own plain directories go.

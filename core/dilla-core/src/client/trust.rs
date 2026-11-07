@@ -418,6 +418,12 @@ fn repin(
     Ok(())
 }
 
+/// The furthest past the cached version a signed pushed head may sit and still mark the user
+/// behind: one push's worth of rows (`MAX_PUSH_ROWS`), so a single catch-up push can always reach
+/// the mark from the cache. A signed head further ahead is ignored (not marked) until the history
+/// closes the distance.
+pub const MAX_BEHIND_GAP: u64 = crate::bot::device_list_push::MAX_PUSH_ROWS as u64;
+
 /// What a device-list push did (`ClientCore::ingest_device_list`). `version` is the cached
 /// list's version afterwards (0 when none is cached).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -427,8 +433,9 @@ pub enum PushedList {
     /// The user's pin has a key change pending (or the pushed key is not the pinned one): the
     /// change is recorded, and the user's commands are refused until it is verified.
     Held { changed: bool, version: u64 },
-    /// The push claims `head`, newer than the cache, but does not chain from it. Nothing was
-    /// written; the user is behind until a history reaching `head` is ingested.
+    /// A row signed by the user's cached SSK shows `head`, newer than the cache (by at most
+    /// `MAX_BEHIND_GAP`), but the push does not chain to it. Nothing was written; the user is
+    /// behind until a history reaching `head` is ingested. Unsigned claims never yield this.
     Behind { version: u64, head: u64 },
 }
 
@@ -1686,6 +1693,13 @@ impl ClientCore {
                 .iter()
                 .map(|r| (r.version, r.blob.as_slice(), &r.ssk_signature, &r.prev_hash)),
         )?;
+        // Rows must be in strictly increasing version order; anything else is not a history.
+        if lists
+            .windows(2)
+            .any(|w| w[0].unsigned.version >= w[1].unsigned.version)
+        {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
         let head_version = lists.last().expect("a push has rows").unsigned.version;
         if self
             .read(own_user_key)?
@@ -1731,9 +1745,26 @@ impl ClientCore {
             if head_version <= cached_version {
                 return Ok(outcome(prior, false, cached_version));
             }
-            let behind = PushedList::Behind {
-                version: cached_version,
-                head: head_version,
+            // Only a row the user's cached SSK signed, naming the user, and at most
+            // `MAX_BEHIND_GAP` versions past the cache, may mark the user behind. A forged or
+            // unsigned claim of a newer list is ignored and changes nothing, so it cannot set a
+            // mark that no real history could ever reach.
+            let signed_head = lists
+                .iter()
+                .filter(|l| {
+                    l.unsigned.version > cached_version
+                        && l.unsigned.version - cached_version <= MAX_BEHIND_GAP
+                        && l.unsigned.user_id.as_bytes() == user
+                        && l.verify(&ssk).is_ok()
+                })
+                .map(|l| l.unsigned.version)
+                .max();
+            let behind = match signed_head {
+                Some(head) => PushedList::Behind {
+                    version: cached_version,
+                    head,
+                },
+                None => outcome(prior, false, cached_version),
             };
             let newer: Vec<&DeviceList> = lists
                 .iter()

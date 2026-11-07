@@ -691,6 +691,10 @@ keeps it only while a rollback is possible:
 - only when that restore itself fails does it keep the copy, and it names the path: restore by
   hand, then delete it.
 
+A Bot you stopped before the upgrade stays stopped: the installer does not start it, so passing
+doctor is the confirmation, and its copy is deleted then too. No copy of the keys outlives the
+upgrade run, unless a rollback failed.
+
 It logs every path it creates or deletes, and touches only directories named like its own copies.
 `--keep-backups` is gone. Make your own backup first (below) if you want to keep one.
 

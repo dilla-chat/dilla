@@ -1329,6 +1329,54 @@ mod tests {
     }
 
     #[test]
+    fn a_forged_huge_version_row_does_not_mark_the_user_behind() {
+        let mut w = world();
+        let v1 = w.v1();
+        w.anchor(&v1);
+        let before = w.cached();
+        // A well-formed list claiming a huge version, with a signature the SSK never made.
+        let mut forged = w.keys.list(
+            1_000_000,
+            Some(&v1),
+            vec![entry(DEVICE, w.user_dsk_pub, Some(200))],
+        );
+        forged.sig_ssk[0] ^= 1;
+        assert_eq!(
+            w.ingest(&w.keys.push(&[&forged])).unwrap(),
+            (false, 1, LIST_CURRENT),
+            "an unsigned claim is ignored"
+        );
+        // Signed by another SSK (the user's UMK did not certify it for this cache).
+        let stranger = Keys::new(0x0c);
+        let theirs = stranger.list(2, Some(&v1), vec![entry(DEVICE, w.user_dsk_pub, None)]);
+        let mut wrong_key = DeviceListPush::decode(&w.keys.push(&[&theirs])).unwrap();
+        wrong_key.history[0].ssk_signature = theirs.sig_ssk;
+        assert_eq!(
+            w.ingest(&wrong_key.encode()).unwrap(),
+            (false, 1, LIST_CURRENT)
+        );
+        // A genuine signed head further than MAX_BEHIND_GAP past the cache is not a mark either.
+        let far = w.keys.list(
+            1 + dilla_core::client::MAX_BEHIND_GAP + 1,
+            Some(&v1),
+            vec![entry(DEVICE, w.user_dsk_pub, None)],
+        );
+        assert_eq!(
+            w.ingest(&w.keys.push(&[&far])).unwrap(),
+            (false, 1, LIST_CURRENT)
+        );
+        assert_eq!(w.count("bot_device_list_behind"), 0);
+        assert_eq!(w.cached(), before);
+        assert!(w.command_from(DEVICE).is_ok(), "the user is not behind");
+        // Rows out of version order are not a history at all.
+        let v2 = w
+            .keys
+            .list(2, Some(&v1), vec![entry(DEVICE, w.user_dsk_pub, None)]);
+        assert!(w.ingest(&w.keys.push(&[&v2, &v1])).is_err());
+        assert_eq!(w.count("bot_device_list_behind"), 0);
+    }
+
+    #[test]
     fn ingest_accepts_a_contiguous_history_past_a_gap() {
         let mut w = world();
         let v1 = w.v1();

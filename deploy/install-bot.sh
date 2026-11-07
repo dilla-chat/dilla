@@ -316,8 +316,10 @@ restart_count() {
 }
 
 # The upgraded Bot is healthy when it stays active, and systemd does not restart it, for
-# HEALTH_SECONDS after the start.
-bot_healthy() { # RESTARTS_BEFORE
+# HEALTH_SECONDS after the start. The baseline is the restart count read right after the manual
+# start: systemd resets the counter on a manual start, so a count read before it could be the
+# old service's and hide that many restarts of the new one.
+bot_healthy() { # RESTARTS_AFTER_START
 	waited=0
 	while :; do
 		systemctl is-active --quiet dillabot || return 1
@@ -362,12 +364,13 @@ if [ "$UPGRADE" -eq 1 ]; then
 	run_bot_doctor >&2 || fail_upgrade "upgraded Bot files failed doctor; restored the previous files and state"
 	systemctl daemon-reload || fail_upgrade "systemd reload failed; restored the previous Bot files"
 	if [ "$WAS_ACTIVE" -eq 1 ]; then
-		RESTARTS_BEFORE="$(restart_count)"
-		if ! systemctl start dillabot || ! bot_healthy "$RESTARTS_BEFORE"; then
+		if ! systemctl start dillabot || ! bot_healthy "$(restart_count)"; then
 			fail_upgrade "upgraded Bot service did not remain active; restored the previous files and state"
 		fi
 		log "upgraded Bot stayed active for ${HEALTH_SECONDS}s"
 	else
+		# Ruling (2026-11-07): a Bot the admin stopped is not started here, so doctor is the
+		# confirmation, and its copy is deleted like any other: no key copy outlives the upgrade.
 		log "the Bot service was not running before the upgrade and was not started; the upgraded files passed doctor"
 	fi
 	log "Bot binaries upgraded; preserved config, runtime credential and state"
