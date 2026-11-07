@@ -155,3 +155,32 @@ func TestTakeRefundAfterTheClockAdvanced(t *testing.T) {
 		t.Fatalf("tokens = %v, above the burst %d", got, class.Burst)
 	}
 }
+
+// Refused Takes on an empty bucket, interleaved with a refund, never push the bucket negative or mint a token.
+func TestRefusedTakesNeverDriveTheBucketNegative(t *testing.T) {
+	l, clk := newLimiter(t, 10)
+	class := server.Class{Name: "hook_fail", PerSecond: 0.001, Burst: 1}
+	ok, _, refund := l.Take(class, "a")
+	if !ok {
+		t.Fatal("first Take refused")
+	}
+	for i := 0; i < 5; i++ {
+		clk.Advance(time.Millisecond)
+		if ok, _, _ := l.Take(class, "a"); ok {
+			t.Fatalf("Take %d allowed on an empty bucket", i)
+		}
+		if got := l.Tokens(class, "a"); got < -0.001 {
+			t.Fatalf("tokens = %v after refused Take %d, below zero", got, i)
+		}
+	}
+	refund()
+	if got := l.Tokens(class, "a"); got < 0.99 || got > 1.01 {
+		t.Fatalf("tokens after the refund = %v, want about 1", got)
+	}
+	if ok, _, _ := l.Take(class, "a"); !ok {
+		t.Fatal("the refunded token is not usable")
+	}
+	if ok, _, _ := l.Take(class, "a"); ok {
+		t.Fatal("a token was minted")
+	}
+}

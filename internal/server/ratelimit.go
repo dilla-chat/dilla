@@ -132,28 +132,23 @@ func (l *RateLimiter) Take(class Class, key string) (bool, time.Duration, func()
 	}
 	now := l.clk.Now()
 	b := l.bucketFor(class, key, now)
-	r := b.lim.ReserveN(now, 1)
-	if !r.OK() || r.DelayFrom(now) > 0 {
-		r.CancelAt(now)
+	// AllowN, not ReserveN plus CancelAt: a refused AllowN changes nothing, where a refused reservation briefly
+	// takes the bucket below zero and, cancelled at a later instant or interleaved with refunds, leaks or mints a token.
+	if !b.lim.AllowN(now, 1) {
 		return false, l.retryAfter(b.lim.TokensAt(now), class), nil
 	}
 	var once sync.Once
-	return true, 0, func() { once.Do(func() { l.refund(b, class) }) }
+	return true, 0, func() { once.Do(func() { l.refund(b) }) }
 }
 
 // refund gives one token back to b, never past its burst. Reservation.CancelAt cannot do it: it restores nothing
 // once its time to act has passed, which for an immediately granted reservation is the instant it was taken, so a
-// refund after any work at all would be a silent no-op. AllowN with -1 adds one token at the current time; the
-// burst check and the add run under l.mu so two refunds cannot both pass the check. A concurrent Allow only takes
-// tokens, so it cannot push the bucket over its burst either.
-func (l *RateLimiter) refund(b *bucket, class Class) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	now := l.clk.Now()
-	if b.lim.TokensAt(now) > float64(class.Burst)-1 {
-		return
-	}
-	b.lim.AllowN(now, -1)
+// refund after any work at all would be a silent no-op. AllowN with -1 adds one token at the current time. There is
+// no burst check before the add: x/time/rate clips the bucket at its burst on every read (advance), so a token added
+// to a nearly full bucket is capped there, where skipping the add below burst-1 would lose a whole token to a few
+// milliseconds of refill. Take refuses with AllowN, which changes nothing, so no open reservation is ever disturbed.
+func (l *RateLimiter) refund(b *bucket) {
+	b.lim.AllowN(l.clk.Now(), -1)
 }
 
 // retryAfter is §5.3's number: computed from the bucket's DEFICIT and rounded
