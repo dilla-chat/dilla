@@ -19,14 +19,17 @@ import (
 func retryOf(tr *Trust, user id.ID) *pendingRetry {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
-	return tr.retries[user]
+	if u := tr.users[user]; u != nil {
+		return u.retry
+	}
+	return nil
 }
 
 func idle(tr *Trust, user id.ID) bool {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
-	w := tr.work[user]
-	return w == nil || !w.running && w.queued == nil
+	u := tr.users[user]
+	return u == nil || !u.running && u.queued == nil
 }
 
 // TestAnOlderRetryNeverReleasesAUserWhoseRevocationFailed (N-1, the reviewer's probe): push N fails transiently and

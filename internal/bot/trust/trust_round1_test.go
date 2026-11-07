@@ -61,7 +61,7 @@ func TestARetryRefusedOutrightGivesUp(t *testing.T) {
 	core.pushFail[string(body)] = &helper.StatusError{Status: 4}
 	core.mu.Unlock()
 	clk.Advance(time.Second)
-	waitFor(t, "the retry settled", func() bool { tr.mu.Lock(); defer tr.mu.Unlock(); return tr.givenUp[ada] })
+	waitFor(t, "the retry settled", func() bool { tr.mu.Lock(); defer tr.mu.Unlock(); return tr.users[ada].givenUp })
 	if !tr.Held(ada) {
 		t.Fatal("a retry refused outright released the user")
 	}

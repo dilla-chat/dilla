@@ -8,55 +8,55 @@ import (
 	"github.com/dilla-chat/dilla/internal/clock"
 )
 
-// Fix round 3, N-5 (the reviewer's probe): queueRetry used to check under t.mu, unlocks, then enqueue relocks. A fresh push enqueued in between is
-// superseded by the stale retry job (and dropped from the live stack).
+// Fix round 3, N-5 (the reviewer's probe, on the fix round 4 mailbox): a stale retry falling due and a fresh revocation
+// push for the same user arrive at the user's mailbox back to back while the worker is busy, in either order. Before
+// round 3, queueRetry checked under t.mu, unlocked, and enqueued in a second hold, so a fresh push in between was
+// superseded by the stale retry. Now each is one message in one hold, and no job replaces a waiting job of a newer
+// generation, so whatever the order the user ends held or with the revocation applied, never released with it
+// unapplied.
 func TestAStaleRetryNeverSupersedesANewerPushInQueueRetrysWindow(t *testing.T) {
-	clk := clock.NewFake(time.Unix(1_800_000_000, 0))
-	core := newFakeCore()
-	ada, phone := uid(1), uid(0xa1)
-	core.member(uid(0x91), 1, ada, phone)
-	older, revocation := []byte{0x01, 0x02}, push(phone)
-	core.pushFail = map[string]error{string(older): &helper.StatusError{Status: 6}}
-	tr := New(core, testPolicy).WithClock(clk).WithInlineBudget(20 * time.Millisecond)
-	defer tr.Close()
-	_, _ = tr.Pushed(t.Context(), ada, older)
-	waitFor(t, "idle", func() bool { return idle(tr, ada) })
-	core.mu.Lock()
-	delete(core.pushFail, string(older))
-	core.mu.Unlock()
-	r := retryOf(tr, ada)
-	// queueRetry's check, as it runs under t.mu:
-	tr.mu.Lock()
-	current := tr.retries[ada] == r && r.gen == tr.liveLocked(ada)
-	w := tr.work[ada]
-	waiting := w != nil && w.queued != nil
-	tr.mu.Unlock()
-	if !current || waiting {
-		t.Fatalf("setup: current %v waiting %v", current, waiting)
-	}
-	// --- window: queueRetry has unlocked, not yet called enqueue ---
-	// The fresh revocation push arrives: Pushed's gen/live step and its enqueue. Its drive goroutine is launched but
-	// has not yet taken the job (modelled by running=true and starting drive below).
-	tr.mu.Lock()
-	w.running = true
-	tr.gen[ada]++
-	g := tr.gen[ada]
-	tr.live[ada] = append(tr.live[ada], livePush{gen: g, push: revocation, attempts: 1})
-	tr.mu.Unlock()
-	jRev := &job{push: revocation, gen: g, attempts: 1, done: make(chan outcome, 1)}
-	tr.enqueue(ada, jRev)
-	// queueRetry resumes:
-	tr.enqueue(ada, &job{push: r.push, gen: r.gen, attempts: r.attempts + 1, retry: r, done: make(chan outcome, 1)})
-	go tr.drive(ada, w)
-	o := <-jRev.done
-	waitFor(t, "idle", func() bool { return idle(tr, ada) })
-	tr.mu.Lock()
-	live := tr.live[ada]
-	tr.mu.Unlock()
-	t.Logf("revocation push outcome: %v; held=%v revocationApplied=%v retry=%v live=%v", o.err, tr.Held(ada),
-		core.isRefused(leafKey{uid(0x91), 1}), retryOf(tr, ada), live)
-	if !tr.Held(ada) && !core.isRefused(leafKey{uid(0x91), 1}) {
-		t.Fatal("FAIL OPEN: the revocation push was superseded by a stale retry and the user was released")
+	for _, retryFirst := range []bool{false, true} {
+		clk := clock.NewFake(time.Unix(1_800_000_000, 0))
+		core := newFakeCore()
+		ada, phone := uid(1), uid(0xa1)
+		core.member(uid(0x91), 1, ada, phone)
+		older, revocation := []byte{0x01, 0x02}, push(phone)
+		core.pushFail = map[string]error{string(older): &helper.StatusError{Status: 6}}
+		tr := New(core, testPolicy).WithClock(clk).WithInlineBudget(20 * time.Millisecond)
+		_, _ = tr.Pushed(t.Context(), ada, older)
+		waitFor(t, "idle", func() bool { return idle(tr, ada) })
+		core.mu.Lock()
+		delete(core.pushFail, string(older)) // the stale retry would now succeed
+		core.mu.Unlock()
+		r := retryOf(tr, ada)
+		// The worker is busy (modelled by running=true; drive is started below, after both messages).
+		tr.mu.Lock()
+		u := tr.users[ada]
+		u.running = true
+		var jRev *job
+		if retryFirst {
+			tr.queueRetryLocked(ada, u, r)
+			jRev = tr.pushLocked(ada, u, revocation)
+		} else {
+			jRev = tr.pushLocked(ada, u, revocation)
+			tr.queueRetryLocked(ada, u, r)
+		}
+		tr.mu.Unlock()
+		go tr.drive(ada, u)
+		o := <-jRev.done
+		waitFor(t, "idle", func() bool { return idle(tr, ada) })
+		tr.mu.Lock()
+		live := u.live
+		tr.mu.Unlock()
+		t.Logf("retry first %v: revocation push outcome: %v; held=%v revocationApplied=%v retry=%v live=%v", retryFirst, o.err,
+			tr.Held(ada), core.isRefused(leafKey{uid(0x91), 1}), retryOf(tr, ada), live)
+		if !tr.Held(ada) && !core.isRefused(leafKey{uid(0x91), 1}) {
+			t.Fatal("FAIL OPEN: the revocation push was superseded by a stale retry and the user was released")
+		}
+		if o.err != nil {
+			t.Fatalf("retry first %v: the revocation push was not applied: %v", retryFirst, o.err)
+		}
+		tr.Close()
 	}
 }
 

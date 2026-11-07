@@ -509,7 +509,13 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 				r.notify()
 			}
 		})
-		if err := <-finished; err != nil && ctx.Err() == nil {
+		err := <-finished
+		onItsOwn := ctx.Err() == nil // the connection ended itself, not through Ensure, RetainOnly or Drop
+		// The connection is over, so its feed worker is too (Bot v2 Task 16 fix round 4, N-7). Left running, it would
+		// keep applying this stream's device lists (the rest of a snapshot, applyHeld's retries) beside the next
+		// connection's snapshot: two Pushed callers for one user on one installationFeed.
+		cancel()
+		if err != nil && onItsOwn {
 			log.Warn("bot gateway requires session reconciliation")
 			r.notify()
 			// A gateway that ends before ready again (a refused identify: the bare-identify loop of fix round 1, I-4) is

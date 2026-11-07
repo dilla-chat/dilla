@@ -194,10 +194,14 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 func settled(tr *Trust, user id.ID, n int) bool {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
-	if r := tr.retries[user]; r != nil {
+	u := tr.users[user]
+	if u == nil {
+		return false
+	}
+	if r := u.retry; r != nil {
 		return r.attempts == n
 	}
-	return tr.givenUp[user] && n == tr.policy.Attempts
+	return u.givenUp && n == tr.policy.Attempts
 }
 
 var testPolicy = RetryPolicy{First: time.Second, Max: 5 * time.Minute, Attempts: 8}

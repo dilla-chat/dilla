@@ -100,6 +100,11 @@ type installationFeed struct {
 	// firstSeen is when a join episode was first heard: the welcome handler keys its pending state on the event's id
 	// and time, so a retried episode must present the same ones.
 	firstSeen map[id.ID]uint64
+	// stageCtx is the context of the staging goroutines (stageAsync), cancelled by close; stageSlots bounds how many
+	// stage at once (fix round 4, N-8).
+	stageCtx    context.Context
+	stageCancel context.CancelFunc
+	stageSlots  chan struct{}
 }
 
 var _ Feed = (*installationFeed)(nil)
@@ -109,7 +114,8 @@ var feedTrustRetry = trust.DefaultRetry
 
 func newInstallationFeed(installation, community, botUser id.ID, log *slog.Logger, requestPass func()) *installationFeed {
 	f := &installationFeed{installation: installation, community: community, botUser: botUser, log: log, requestPass: requestPass, now: time.Now,
-		state: newFeedState(), firstSeen: map[id.ID]uint64{}}
+		state: newFeedState(), firstSeen: map[id.ID]uint64{}, stageSlots: make(chan struct{}, maxConcurrentStagings)}
+	f.stageCtx, f.stageCancel = context.WithCancel(context.Background())
 	f.trust = trust.New(feedTrustCore{f}, feedTrustRetry).WithLogger(log).WithGroups(f.inTrustGroup).WithApplied(f.listApplied)
 	return f
 }
@@ -121,8 +127,12 @@ func (f *installationFeed) inTrustGroup(group id.ID) bool {
 	return !f.left[group]
 }
 
-// close stops the feed's trust retries: the installation's feed is dropped (fix round 1, M-3).
-func (f *installationFeed) close() { f.trust.Close() }
+// close stops the feed's trust retries and its stagings: the installation's feed is dropped (fix round 1, M-3; fix
+// round 4, N-8).
+func (f *installationFeed) close() {
+	f.stageCancel()
+	f.trust.Close()
+}
 
 // NeedsReAdd is the Bot channels whose group the Bot cannot join on its own: a member's client must add the Bot again
 // (the admin page shows them, Task 22).
@@ -269,18 +279,35 @@ func (f *installationFeed) listApplied(_ context.Context, user id.ID, got native
 	}
 }
 
-// stageTimeout bounds one staging of a member's new device (an episode read on the socket).
-const stageTimeout = 30 * time.Second
+// stageTimeout bounds one staging of a member's new device (an episode read on the socket). maxConcurrentStagings
+// bounds how many run at once per feed: a snapshot after a long outage can change many members' lists in a burst
+// (fix round 4, N-8).
+const (
+	stageTimeout          = 30 * time.Second
+	maxConcurrentStagings = 4
+)
 
 // stageAsync stages user's new device off the caller (the user's trust worker must not wait on the network) within
-// stageTimeout, then asks for a pass.
+// stageTimeout, at most maxConcurrentStagings at once, then asks for a pass. A closed feed stages nothing more: the
+// stagings in flight end with its context, and the waiting ones never start.
 func (f *installationFeed) stageAsync(user id.ID) {
 	d := f.current()
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), stageTimeout)
+		select {
+		case f.stageSlots <- struct{}{}:
+		case <-f.stageCtx.Done():
+			return
+		}
+		defer func() { <-f.stageSlots }()
+		if f.stageCtx.Err() != nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(f.stageCtx, stageTimeout)
 		defer cancel()
 		f.stage(ctx, d, user)
-		f.changed()
+		if f.stageCtx.Err() == nil {
+			f.changed()
+		}
 	}()
 }
 
