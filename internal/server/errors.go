@@ -72,6 +72,9 @@ const (
 	// CodeBotDuplicate is 409: another device sent a sealed Bot command with this request_id in the
 	// last five minutes (Bot v2 task 10). The client mints a new request_id.
 	CodeBotDuplicate Code = "E_BOT_DUPLICATE"
+	// CodeNotBotChannel is 409: a webhook's target channel is not a Bot channel of its community (Bot v2 task 13),
+	// at create time or, after an unmark, on every POST. Mark the channel again or pick a Bot channel.
+	CodeNotBotChannel Code = "E_NOT_BOT_CHANNEL"
 	// CodeProvisionalOutsidePairing is protocol/02 § Device sessions item 4:
 	// a provisional session reaching anything but its one pairing group.
 	CodeProvisionalOutsidePairing Code = "E_PROVISIONAL_OUTSIDE_PAIRING"
@@ -146,7 +149,7 @@ func (e *Error) Status() int {
 		return http.StatusForbidden
 	case CodeNotFound, CodeKeyPackagesExhausted:
 		return http.StatusNotFound
-	case CodeGroupExists, CodeCommitConflict, CodeRemovePending, CodeCallFull, CodeCallSharersFull, CodeCallNotAlone, CodeBotDuplicate:
+	case CodeGroupExists, CodeCommitConflict, CodeRemovePending, CodeCallFull, CodeCallSharersFull, CodeCallNotAlone, CodeBotDuplicate, CodeNotBotChannel:
 		return http.StatusConflict
 	case CodePruned, CodeInviteInvalid:
 		return http.StatusGone

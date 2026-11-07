@@ -174,3 +174,91 @@ func (r *Repo) DeleteBotCommunityState(ctx context.Context, community id.ID) ([]
 	}
 	return channels, nil
 }
+
+// Bot v2 Task 13: incoming webhooks.
+
+func botWebhookUint(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func validBotWebhookRow(row store.BotWebhookRow) bool {
+	return !row.WebhookID.IsZero() && !row.CommunityID.IsZero() && !row.ChannelID.IsZero() && len(row.SecretHash) == 32 && row.CreatedAt >= 0
+}
+
+func botWebhookFrom(w sqlitedb.BotWebhooks) (store.BotWebhookRow, error) {
+	if w.AllowEveryone != 0 && w.AllowEveryone != 1 {
+		return store.BotWebhookRow{}, store.ErrConflict
+	}
+	return store.BotWebhookRow{WebhookID: w.WebhookID, CommunityID: w.CommunityID, ChannelID: w.ChannelID, Name: w.Name,
+		AvatarBlob: w.AvatarBlob, SecretHash: w.SecretHash, AllowEveryone: w.AllowEveryone == 1, CreatedAt: w.CreatedAt,
+		RotatedAt: ptrInt64(w.RotatedAt)}, nil
+}
+
+func (r *Repo) CreateBotWebhook(ctx context.Context, row store.BotWebhookRow) error {
+	if !validBotWebhookRow(row) {
+		return store.ErrConflict
+	}
+	return wrap(r.w.CreateBotWebhook(ctx, sqlitedb.CreateBotWebhookParams{WebhookID: row.WebhookID, CommunityID: row.CommunityID,
+		ChannelID: row.ChannelID, Name: row.Name, AvatarBlob: row.AvatarBlob, SecretHash: row.SecretHash,
+		AllowEveryone: botWebhookUint(row.AllowEveryone), CreatedAt: row.CreatedAt}))
+}
+
+func (r *Repo) GetBotWebhook(ctx context.Context, webhook id.ID) (store.BotWebhookRow, error) {
+	w, err := r.r.GetBotWebhook(ctx, sqlitedb.GetBotWebhookParams{WebhookID: webhook})
+	if err != nil {
+		return store.BotWebhookRow{}, wrap(err)
+	}
+	return botWebhookFrom(w)
+}
+
+func (r *Repo) ListBotWebhooks(ctx context.Context, community id.ID) ([]store.BotWebhookRow, error) {
+	rows, err := r.r.ListBotWebhooks(ctx, sqlitedb.ListBotWebhooksParams{CommunityID: community})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]store.BotWebhookRow, 0, len(rows))
+	for _, w := range rows {
+		row, err := botWebhookFrom(w)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+func (r *Repo) UpdateBotWebhook(ctx context.Context, row store.BotWebhookRow) (bool, error) {
+	n, err := r.w.UpdateBotWebhook(ctx, sqlitedb.UpdateBotWebhookParams{Name: row.Name, AvatarBlob: row.AvatarBlob,
+		AllowEveryone: botWebhookUint(row.AllowEveryone), CommunityID: row.CommunityID, WebhookID: row.WebhookID})
+	if err != nil {
+		return false, wrap(err)
+	}
+	return n == 1, nil
+}
+
+func (r *Repo) RotateBotWebhookSecret(ctx context.Context, community, webhook id.ID, secretHash []byte, at int64) (bool, error) {
+	if len(secretHash) != 32 || at < 0 {
+		return false, store.ErrConflict
+	}
+	n, err := r.w.RotateBotWebhookSecret(ctx, sqlitedb.RotateBotWebhookSecretParams{SecretHash: secretHash, RotatedAt: nullInt64(&at),
+		CommunityID: community, WebhookID: webhook})
+	if err != nil {
+		return false, wrap(err)
+	}
+	return n == 1, nil
+}
+
+func (r *Repo) DeleteBotWebhook(ctx context.Context, community, webhook id.ID) (bool, error) {
+	n, err := r.w.DeleteBotWebhook(ctx, sqlitedb.DeleteBotWebhookParams{CommunityID: community, WebhookID: webhook})
+	if err != nil {
+		return false, wrap(err)
+	}
+	return n == 1, nil
+}
+
+func (r *Repo) DeleteBotWebhooksOfChannel(ctx context.Context, channel id.ID) error {
+	return wrap(r.w.DeleteBotWebhooksOfChannel(ctx, sqlitedb.DeleteBotWebhooksOfChannelParams{ChannelID: channel}))
+}

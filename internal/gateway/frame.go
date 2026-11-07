@@ -99,6 +99,15 @@ const (
 	// connection only. A live event is sequenced in the Bot connection's ring; a cold-start
 	// snapshot's body frames are sent with n = 0 and closed by a ringed snapshot_end (BotStream).
 	OpBotEvent Op = 65
+	// OpBotWebhook hands one incoming webhook POST to the Bot runtime's live connection (Bot v2 task 13):
+	// [delivery_id, webhook_id, community_id, channel_id, display_name, avatar_url|null, text,
+	// allow_everyone]. It is never ringed or held: a Bot that is offline, parked or mid-resume makes the
+	// POST a 503, so the text sits in no ring and a replay can never post it twice.
+	OpBotWebhook Op = 66
+	// OpBotWebhookAck is the Bot's answer to one op 66, on the connection it came in on (Bot v2 task 13):
+	// [delivery_id, status], status 0 posted and any other value not posted. Any other connection's ack,
+	// an unknown delivery id and a second ack are ignored.
+	OpBotWebhookAck Op = 67
 )
 
 // BotReplyHold bounds how long a suspended connection's ring holds an op 62 reply: the spec's
@@ -203,6 +212,10 @@ var opSpecs = map[Op]opSpec{
 	OpBotStateChanged: {elements: 3},
 	OpBotCommand:      {elements: 5, replayable: true},
 	OpBotEvent:        {elements: 2, replayable: true},
+	// Bot v2 task 13. 66 is server-to-client and never replayed; 67 is the Bot's ack, a client frame
+	// whose shape Decode checks: [delivery_id(bstr 16), status(uint)].
+	OpBotWebhook:    {elements: 8},
+	OpBotWebhookAck: {elements: 2, fromClient: true},
 }
 
 // FrameError is a structured refusal. Code is the E_FRAME_* string the client sees in an error
@@ -344,6 +357,14 @@ func Decode(b []byte, maxBytes int) (Inbound, error) {
 		}
 		if cid != 0 {
 			return Inbound{}, frameErr("E_FRAME_SHAPE", "signal n must be zero", CloseDecode)
+		}
+	}
+	if code == OpBotWebhookAck {
+		if _, err := webhookAckFields(payload); err != nil {
+			return Inbound{}, frameErr("E_FRAME_SHAPE", "bot_webhook_ack: "+err.Error(), CloseDecode)
+		}
+		if cid != 0 {
+			return Inbound{}, frameErr("E_FRAME_SHAPE", "bot_webhook_ack n must be zero", CloseDecode)
 		}
 	}
 	var request *SocketRequest

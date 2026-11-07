@@ -176,6 +176,10 @@ func TestBotCommandAndBotEventFramesDecode(t *testing.T) {
 		{"ringed bot_event", OpBotEvent, 4, []any{uint64(2), []any{id16, id16, uint64(1), []any{}}}, true},
 		{"snapshot bot_event", OpBotEvent, 0, []any{uint64(6), []any{id16}}, true},
 		{"bot_event of three elements", OpBotEvent, 4, []any{uint64(2), []any{}, uint64(0)}, false},
+		// Bot v2 task 13: op 66 is never ringed; the Bot decodes and drops it until its consumer lands (task 14+).
+		{"bot_webhook", OpBotWebhook, 0, []any{id16, id16, id16, id16, "Terraria", nil, "boss down", uint64(0)}, true},
+		{"ringed bot_webhook", OpBotWebhook, 5, []any{id16, id16, id16, id16, "Terraria", nil, "boss down", uint64(0)}, false},
+		{"bot_webhook of seven elements", OpBotWebhook, 0, []any{id16, id16, id16, id16, "Terraria", nil, "x"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := cborx.Marshal([]any{uint64(tc.op), tc.n, nil, tc.payload})

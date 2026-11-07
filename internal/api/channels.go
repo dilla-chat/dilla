@@ -1158,6 +1158,10 @@ func (c *Channels) delete(w http.ResponseWriter, r *http.Request) {
 		if unmarked, err = tx.UnmarkBotChannel(r.Context(), *row.CommunityID, row.ID); err != nil {
 			return err
 		}
+		// Its incoming webhooks go with it (Bot v2 Task 13): the soft delete fires no cascade either.
+		if err := tx.DeleteBotWebhooksOfChannel(r.Context(), row.ID); err != nil {
+			return err
+		}
 		roleAffected, err = tx.RemoveReactionRoleChannelGrants(r.Context(), *row.CommunityID, row.ID)
 		if err != nil {
 			return err

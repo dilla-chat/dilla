@@ -117,6 +117,16 @@ test('the real manifest holds every no-gateway route to HTTP, and moving one to 
   }
 });
 
+test('classifies the public /hooks route like a /v1 one (Bot v2 task 13)', () => {
+  const hooks = [{ path: 'internal/api/webhooks.go', source: 'm.Handle("POST /hooks/{webhook_id}/{secret}", h)' }];
+  const routes = goRoutes([...go, ...hooks]);
+  assert.ok(routes.http.has('POST /hooks/{webhook_id}/{secret}'));
+  const unlisted = problems(routes, manifest(ts(SOCKET, HTTP_ONLY, BOT)));
+  assert.equal(unlisted.length, 1);
+  assert.match(unlisted[0], /POST \/hooks\/\{webhook_id\}\/\{secret\}.*not in HTTP_ONLY_ROUTES/);
+  assert.deepEqual(problems(routes, manifest(ts(SOCKET, [...HTTP_ONLY, ['POST', '/hooks/{webhook_id}/{secret}']], BOT))), []);
+});
+
 test('the real tree is in sync', () => {
   assert.deepEqual(check(), []);
 });

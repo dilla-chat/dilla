@@ -60,6 +60,8 @@ type Querier interface {
 	CreateBotOperation(ctx context.Context, arg CreateBotOperationParams) error
 	CreateBotRuntime(ctx context.Context, arg CreateBotRuntimeParams) error
 	CreateBotSessionBinding(ctx context.Context, arg CreateBotSessionBindingParams) error
+	// Bot v2 (Task 13): incoming webhooks. secret_hash is SHA-256(secret); the secret itself is never stored.
+	CreateBotWebhook(ctx context.Context, arg CreateBotWebhookParams) error
 	// Channels (Plan 2 task 2, 00005_channels.sql).
 	CreateChannel(ctx context.Context, arg CreateChannelParams) error
 	CreateCommunity(ctx context.Context, arg CreateCommunityParams) error
@@ -82,6 +84,8 @@ type Querier interface {
 	DeleteBotCommandKey(ctx context.Context, arg DeleteBotCommandKeyParams) error
 	DeleteBotSessionBindingsByInstallation(ctx context.Context, arg DeleteBotSessionBindingsByInstallationParams) (int64, error)
 	DeleteBotStateRevisionsOfCommunity(ctx context.Context, arg DeleteBotStateRevisionsOfCommunityParams) error
+	DeleteBotWebhook(ctx context.Context, arg DeleteBotWebhookParams) (int64, error)
+	DeleteBotWebhooksOfChannel(ctx context.Context, arg DeleteBotWebhooksOfChannelParams) error
 	DeleteBotWebhooksOfCommunity(ctx context.Context, arg DeleteBotWebhooksOfCommunityParams) error
 	DeleteCeremony(ctx context.Context, arg DeleteCeremonyParams) (int64, error)
 	DeleteChannel(ctx context.Context, arg DeleteChannelParams) (int64, error)
@@ -152,6 +156,7 @@ type Querier interface {
 	GetBotRuntime(ctx context.Context, arg GetBotRuntimeParams) (BotRuntimes, error)
 	GetBotRuntimeByHash(ctx context.Context, arg GetBotRuntimeByHashParams) (BotRuntimes, error)
 	GetBotSessionBinding(ctx context.Context, arg GetBotSessionBindingParams) (BotSessionBindings, error)
+	GetBotWebhook(ctx context.Context, arg GetBotWebhookParams) (BotWebhooks, error)
 	GetCeremony(ctx context.Context, arg GetCeremonyParams) (WebauthnCeremonies, error)
 	GetChannel(ctx context.Context, arg GetChannelParams) (Channels, error)
 	GetCommitAtEpoch(ctx context.Context, arg GetCommitAtEpochParams) (MlsHandshakes, error)
@@ -226,6 +231,7 @@ type Querier interface {
 	ListBotInstallationsForRuntime(ctx context.Context, arg ListBotInstallationsForRuntimeParams) ([]BotInstallations, error)
 	ListBotRuntimes(ctx context.Context, arg ListBotRuntimesParams) ([]BotRuntimes, error)
 	ListBotUserStateRevisions(ctx context.Context, arg ListBotUserStateRevisionsParams) ([]ListBotUserStateRevisionsRow, error)
+	ListBotWebhooks(ctx context.Context, arg ListBotWebhooksParams) ([]BotWebhooks, error)
 	ListChannelMembers(ctx context.Context, arg ListChannelMembersParams) ([]id.ID, error)
 	ListChannels(ctx context.Context, arg ListChannelsParams) ([]Channels, error)
 	// P2-D11: GET /v1/dms. The live DMs and group DMs (kinds 3 and 4) the user is a
@@ -455,6 +461,7 @@ type Querier interface {
 	RevokeDevice(ctx context.Context, arg RevokeDeviceParams) error
 	RevokeInvite(ctx context.Context, arg RevokeInviteParams) error
 	RotateBotRuntime(ctx context.Context, arg RotateBotRuntimeParams) (int64, error)
+	RotateBotWebhookSecret(ctx context.Context, arg RotateBotWebhookSecretParams) (int64, error)
 	SetAFKAway(ctx context.Context, arg SetAFKAwayParams) (int64, error)
 	SetBotMusicSettings(ctx context.Context, arg SetBotMusicSettingsParams) (int64, error)
 	SetBotRuntimeStatus(ctx context.Context, arg SetBotRuntimeStatusParams) (int64, error)
@@ -481,6 +488,7 @@ type Querier interface {
 	TouchSession(ctx context.Context, arg TouchSessionParams) error
 	UnmarkBotChannel(ctx context.Context, arg UnmarkBotChannelParams) (int64, error)
 	UpdateBotInstallation(ctx context.Context, arg UpdateBotInstallationParams) (int64, error)
+	UpdateBotWebhook(ctx context.Context, arg UpdateBotWebhookParams) (int64, error)
 	// kind, community_id, seq and created are not written: a channel's kind and home
 	// are immutable, and seq moves only through NextChannelSeq.
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (int64, error)

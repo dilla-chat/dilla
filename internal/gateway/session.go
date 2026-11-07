@@ -986,6 +986,8 @@ func (g *Gateway) handle(ctx context.Context, c *conn, in Inbound) {
 		g.handleTypingSet(ctx, c, in)
 	case OpVoiceSelf:
 		g.handleVoiceSelf(ctx, c, in)
+	case OpBotWebhookAck:
+		g.handleWebhookAck(c, in)
 	case OpHeartbeat:
 		lastN, err := rawUint(in.Payload[0])
 		if err != nil {

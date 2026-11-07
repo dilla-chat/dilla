@@ -7,6 +7,7 @@ package sqlitedb
 
 import (
 	"context"
+	"database/sql"
 
 	id "github.com/dilla-chat/dilla/internal/id"
 )
@@ -28,6 +29,38 @@ func (q *Queries) BumpBotStateRevision(ctx context.Context, arg BumpBotStateRevi
 	var revision int64
 	err := row.Scan(&revision)
 	return revision, err
+}
+
+const createBotWebhook = `-- name: CreateBotWebhook :exec
+
+INSERT INTO bot_webhooks(webhook_id, community_id, channel_id, name, avatar_blob, secret_hash, allow_everyone, created_at, rotated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+`
+
+type CreateBotWebhookParams struct {
+	WebhookID     id.ID
+	CommunityID   id.ID
+	ChannelID     id.ID
+	Name          string
+	AvatarBlob    []byte
+	SecretHash    []byte
+	AllowEveryone int64
+	CreatedAt     int64
+}
+
+// Bot v2 (Task 13): incoming webhooks. secret_hash is SHA-256(secret); the secret itself is never stored.
+func (q *Queries) CreateBotWebhook(ctx context.Context, arg CreateBotWebhookParams) error {
+	_, err := q.db.ExecContext(ctx, createBotWebhook,
+		arg.WebhookID,
+		arg.CommunityID,
+		arg.ChannelID,
+		arg.Name,
+		arg.AvatarBlob,
+		arg.SecretHash,
+		arg.AllowEveryone,
+		arg.CreatedAt,
+	)
+	return err
 }
 
 const deleteBotCatalog = `-- name: DeleteBotCatalog :exec
@@ -100,6 +133,36 @@ func (q *Queries) DeleteBotStateRevisionsOfCommunity(ctx context.Context, arg De
 	return err
 }
 
+const deleteBotWebhook = `-- name: DeleteBotWebhook :execrows
+DELETE FROM bot_webhooks WHERE community_id = ? AND webhook_id = ?
+`
+
+type DeleteBotWebhookParams struct {
+	CommunityID id.ID
+	WebhookID   id.ID
+}
+
+func (q *Queries) DeleteBotWebhook(ctx context.Context, arg DeleteBotWebhookParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteBotWebhook, arg.CommunityID, arg.WebhookID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteBotWebhooksOfChannel = `-- name: DeleteBotWebhooksOfChannel :exec
+DELETE FROM bot_webhooks WHERE channel_id = ?
+`
+
+type DeleteBotWebhooksOfChannelParams struct {
+	ChannelID id.ID
+}
+
+func (q *Queries) DeleteBotWebhooksOfChannel(ctx context.Context, arg DeleteBotWebhooksOfChannelParams) error {
+	_, err := q.db.ExecContext(ctx, deleteBotWebhooksOfChannel, arg.ChannelID)
+	return err
+}
+
 const deleteBotWebhooksOfCommunity = `-- name: DeleteBotWebhooksOfCommunity :exec
 DELETE FROM bot_webhooks WHERE community_id = ?
 `
@@ -144,6 +207,32 @@ func (q *Queries) GetBotCommandKey(ctx context.Context, arg GetBotCommandKeyPara
 		&i.KeyID,
 		&i.Publication,
 		&i.PublishedAt,
+	)
+	return i, err
+}
+
+const getBotWebhook = `-- name: GetBotWebhook :one
+SELECT webhook_id, community_id, channel_id, name, avatar_blob, secret_hash, allow_everyone, created_at, rotated_at
+FROM bot_webhooks WHERE webhook_id = ?
+`
+
+type GetBotWebhookParams struct {
+	WebhookID id.ID
+}
+
+func (q *Queries) GetBotWebhook(ctx context.Context, arg GetBotWebhookParams) (BotWebhooks, error) {
+	row := q.db.QueryRowContext(ctx, getBotWebhook, arg.WebhookID)
+	var i BotWebhooks
+	err := row.Scan(
+		&i.WebhookID,
+		&i.CommunityID,
+		&i.ChannelID,
+		&i.Name,
+		&i.AvatarBlob,
+		&i.SecretHash,
+		&i.AllowEveryone,
+		&i.CreatedAt,
+		&i.RotatedAt,
 	)
 	return i, err
 }
@@ -224,6 +313,48 @@ func (q *Queries) ListBotUserStateRevisions(ctx context.Context, arg ListBotUser
 	return items, nil
 }
 
+const listBotWebhooks = `-- name: ListBotWebhooks :many
+SELECT webhook_id, community_id, channel_id, name, avatar_blob, secret_hash, allow_everyone, created_at, rotated_at
+FROM bot_webhooks WHERE community_id = ? ORDER BY created_at, webhook_id
+`
+
+type ListBotWebhooksParams struct {
+	CommunityID id.ID
+}
+
+func (q *Queries) ListBotWebhooks(ctx context.Context, arg ListBotWebhooksParams) ([]BotWebhooks, error) {
+	rows, err := q.db.QueryContext(ctx, listBotWebhooks, arg.CommunityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BotWebhooks{}
+	for rows.Next() {
+		var i BotWebhooks
+		if err := rows.Scan(
+			&i.WebhookID,
+			&i.CommunityID,
+			&i.ChannelID,
+			&i.Name,
+			&i.AvatarBlob,
+			&i.SecretHash,
+			&i.AllowEveryone,
+			&i.CreatedAt,
+			&i.RotatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markBotChannel = `-- name: MarkBotChannel :execrows
 INSERT INTO bot_channels(channel_id, community_id, marked_at, marked_by) VALUES (?, ?, ?, ?)
 ON CONFLICT(channel_id) DO NOTHING
@@ -289,6 +420,31 @@ func (q *Queries) PutBotCommandKey(ctx context.Context, arg PutBotCommandKeyPara
 	return err
 }
 
+const rotateBotWebhookSecret = `-- name: RotateBotWebhookSecret :execrows
+UPDATE bot_webhooks SET secret_hash = ?, rotated_at = ?
+WHERE community_id = ? AND webhook_id = ?
+`
+
+type RotateBotWebhookSecretParams struct {
+	SecretHash  []byte
+	RotatedAt   sql.NullInt64
+	CommunityID id.ID
+	WebhookID   id.ID
+}
+
+func (q *Queries) RotateBotWebhookSecret(ctx context.Context, arg RotateBotWebhookSecretParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, rotateBotWebhookSecret,
+		arg.SecretHash,
+		arg.RotatedAt,
+		arg.CommunityID,
+		arg.WebhookID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const unmarkBotChannel = `-- name: UnmarkBotChannel :execrows
 DELETE FROM bot_channels WHERE community_id = ? AND channel_id = ?
 `
@@ -300,6 +456,33 @@ type UnmarkBotChannelParams struct {
 
 func (q *Queries) UnmarkBotChannel(ctx context.Context, arg UnmarkBotChannelParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, unmarkBotChannel, arg.CommunityID, arg.ChannelID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateBotWebhook = `-- name: UpdateBotWebhook :execrows
+UPDATE bot_webhooks SET name = ?, avatar_blob = ?, allow_everyone = ?
+WHERE community_id = ? AND webhook_id = ?
+`
+
+type UpdateBotWebhookParams struct {
+	Name          string
+	AvatarBlob    []byte
+	AllowEveryone int64
+	CommunityID   id.ID
+	WebhookID     id.ID
+}
+
+func (q *Queries) UpdateBotWebhook(ctx context.Context, arg UpdateBotWebhookParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateBotWebhook,
+		arg.Name,
+		arg.AvatarBlob,
+		arg.AllowEveryone,
+		arg.CommunityID,
+		arg.WebhookID,
+	)
 	if err != nil {
 		return 0, err
 	}

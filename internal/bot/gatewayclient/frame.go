@@ -49,6 +49,10 @@ const (
 	// Both are sequenced in its ring; a cold-start snapshot's op 65 body frames are sent with n = 0.
 	OpBotCommand Opcode = 64
 	OpBotEvent   Opcode = 65
+	// Bot v2 task 13: an incoming webhook for the Bot to post, never ringed (n = 0). Its consumer, which answers
+	// with op 67 bot_webhook_ack, comes in a later task; until then the frame is decoded and dropped.
+	OpBotWebhook    Opcode = 66
+	OpBotWebhookAck Opcode = 67
 )
 
 const (
@@ -256,8 +260,9 @@ type Frame struct {
 	CommunityID      *id.ID
 	ServerTimestamp  *uint64
 	ErrorCode        string
-	// BotPayload is an op 64 or op 65 frame's payload elements, shape-checked only: op 64 is [request_id, community_id,
-	// user_id, device_id, sealed], op 65 is [kind, payload]. Their consumers decode them.
+	// BotPayload is an op 64, 65 or 66 frame's payload elements, shape-checked only: op 64 is [request_id, community_id,
+	// user_id, device_id, sealed], op 65 is [kind, payload], op 66 is [delivery_id, webhook_id, community_id,
+	// channel_id, display_name, avatar_url|null, text, allow_everyone]. Their consumers decode them.
 	BotPayload []cbor.RawMessage
 }
 
@@ -679,7 +684,7 @@ func DecodeServerFrame(raw []byte, maxBytes uint64) (Frame, error) {
 			return bad()
 		}
 		out.CommunityID = &v
-	case OpBotCommand, OpBotEvent:
+	case OpBotCommand, OpBotEvent, OpBotWebhook:
 		out.BotPayload = payload
 	default:
 		return bad()
@@ -733,6 +738,8 @@ func serverSpec(op Opcode) (int, bool, bool, bool) {
 		return 5, false, true, true
 	case OpBotEvent:
 		return 2, false, true, true
+	case OpBotWebhook:
+		return 8, false, false, true
 	}
 	return 0, false, false, false
 }

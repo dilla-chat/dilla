@@ -204,6 +204,11 @@ type Deps struct {
 	BotRelay BotRelayGateway
 	// BotRequests is the relay's request_id -> device ledger. Register builds one when nil.
 	BotRequests *BotRequestLedger
+	// BotWebhooks hands an incoming webhook POST to the Bot's live connection (op 66) and waits for its ack
+	// (Bot v2 Task 13). Nil answers every POST 503.
+	BotWebhooks BotWebhookGateway
+	// WebhookAckTimeout is how long a webhook POST waits for the Bot's ack; 0 is DefaultWebhookAckTimeout.
+	WebhookAckTimeout time.Duration
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket
@@ -268,6 +273,7 @@ func Register(m *server.Mux, d Deps) {
 	registerBotCatalog(m, d)
 	registerBotChannels(m, d)
 	registerBotCommands(m, d)
+	registerBotWebhooks(m, d)
 	registerAutoModerationGrants(m, d)
 	registerModerationRemovals(m, d)
 

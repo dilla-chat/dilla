@@ -1,6 +1,7 @@
 // Bot v2: which authenticated app routes go over the gateway socket (op 59 request, op 60 response) and which stay on HTTP.
 // scripts/check-socket-routes.mjs holds this file to the Go registrations: every `m.Socket*` pattern is in SOCKET_ROUTES and
-// every SOCKET_ROUTES entry is one; every Go HTTP /v1 pattern is in HTTP_ONLY_ROUTES, SOCKET_ROUTES or BOT_RUNTIME_ROUTES.
+// every SOCKET_ROUTES entry is one; every Go HTTP /v1 and /hooks pattern is in HTTP_ONLY_ROUTES, SOCKET_ROUTES or
+// BOT_RUNTIME_ROUTES.
 // Tasks 4-6 moved every authenticated app route from HTTP_ONLY_ROUTES to SOCKET_ROUTES and deleted its REST form; what is
 // left in HTTP_ONLY_ROUTES is the spec's stays-on-HTTP list (before a session exists, large binary bodies, unauthenticated
 // or public) and the rulings' additions (negotiate, the F allow-list, backup chunks and GIF media), plus the Bot runtime's own
@@ -70,6 +71,11 @@ export const SOCKET_ROUTES: readonly SocketRoute[] = [
   { method: 'GET', pattern: '/v1/communities/{community}/bot/receipts/{operation}' },
   { method: 'POST', pattern: '/v1/communities/{community}/bot/receipts/{operation}/resolve' },
   { method: 'POST', pattern: '/v1/communities/{community}/bot/restart' },
+  { method: 'GET', pattern: '/v1/communities/{community}/bot/webhooks' },
+  { method: 'POST', pattern: '/v1/communities/{community}/bot/webhooks' },
+  { method: 'DELETE', pattern: '/v1/communities/{community}/bot/webhooks/{webhook}' },
+  { method: 'PATCH', pattern: '/v1/communities/{community}/bot/webhooks/{webhook}' },
+  { method: 'POST', pattern: '/v1/communities/{community}/bot/webhooks/{webhook}/rotate' },
   { method: 'DELETE', pattern: '/v1/communities/{community}/channels/{channel}/bot-channel' },
   { method: 'PUT', pattern: '/v1/communities/{community}/channels/{channel}/bot-channel' },
   { method: 'DELETE', pattern: '/v1/communities/{id}' },
@@ -156,6 +162,7 @@ export const SOCKET_ROUTES: readonly SocketRoute[] = [
 
 /** Routes that stay on HTTP (before a session exists, large binary bodies, unauthenticated or public). */
 export const HTTP_ONLY_ROUTES: readonly SocketRoute[] = [
+  { method: 'POST', pattern: '/hooks/{webhook_id}/{secret}' }, // incoming webhooks: public, never called by the app
   { method: 'POST', pattern: '/v1/accounts' },
   { method: 'GET', pattern: '/v1/accounts/me' },
   { method: 'GET', pattern: '/v1/auth/factors' },

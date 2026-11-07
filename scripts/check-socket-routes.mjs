@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
  * must agree exactly. This fails when:
  *   - a Go `Socket*` registration is missing from SOCKET_ROUTES (the app would still use HTTP, which no longer serves it);
  *   - a SOCKET_ROUTES entry has no Go `Socket*` registration (the app would send a request nothing answers);
- *   - a Go HTTP /v1 registration is in none of HTTP_ONLY_ROUTES, SOCKET_ROUTES and BOT_RUNTIME_ROUTES (unclassified);
+ *   - a Go HTTP /v1 or /hooks registration is in none of HTTP_ONLY_ROUTES, SOCKET_ROUTES and BOT_RUNTIME_ROUTES
+ *     (unclassified; /hooks/ is the incoming webhooks' public route);
  *   - an HTTP_ONLY_ROUTES or BOT_RUNTIME_ROUTES entry has no Go HTTP registration (stale), or an entry is listed twice;
  *   - the Bot's SocketRoutes (internal/bot/client/socket_routes.go) names a route the instance does not serve on the socket;
  *   - a PRE_GATEWAY_ROUTES entry (called before the gateway exists, ruling C1) is in SOCKET_ROUTES, or is stale.
@@ -45,7 +46,7 @@ function patternOf(source, expression, at) {
   return pattern;
 }
 
-/** Go registrations as `METHOD /path` keys: `http` holds the /v1 HTTP patterns, `socket` every socket pattern. */
+/** Go registrations as `METHOD /path` keys: `http` holds the /v1 and /hooks HTTP patterns, `socket` every socket pattern. */
 export function goRoutes(files) {
   const http = new Set();
   const socket = new Set();
@@ -54,7 +55,7 @@ export function goRoutes(files) {
       const pattern = patternOf(source, m[2], m.index);
       if (pattern === null || !PATTERN.test(pattern)) continue;
       if (m[1].startsWith('Socket')) socket.add(pattern);
-      else if (pattern.split(' ')[1].startsWith('/v1/')) http.add(pattern);
+      else if (/^\/(v1|hooks)\//.test(pattern.split(' ')[1])) http.add(pattern);
     }
   }
   return { http, socket };

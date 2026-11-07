@@ -272,7 +272,9 @@ type Gateway struct {
 	suspended sync.Map // resume token string -> *conn, inside the resume window
 	// bots indexes the Bot runtime connections by device, live, suspended or mid-resume (bot_feed.go):
 	// DeliverBot reaches a Bot connection through every state change, not only while it is registered.
-	bots     botIndex
+	bots botIndex
+	// webhooks is the in-memory table of op 66 deliveries waiting for their op 67 ack (bot_webhook.go).
+	webhooks webhookWaits
 	deferred sync.Map // *conn -> struct{}: revoked connections waiting for their self-revoking answer (CloseDevice)
 
 	// Test seams for the two steps of a resume that cannot fail with real inputs; nil means the
@@ -1033,5 +1035,5 @@ var opNames = map[Op]string{
 	OpAppBuild: "app_build", OpPresenceActivity: "presence_activity", OpCallStats: "call_stats",
 	OpRequest: "request", OpResponse: "response", OpBotCatalog: "bot_catalog",
 	OpBotReply: "bot_reply", OpBotStateChanged: "bot_state_changed", OpBotCommand: "bot_command",
-	OpBotEvent: "bot_event",
+	OpBotEvent: "bot_event", OpBotWebhook: "bot_webhook", OpBotWebhookAck: "bot_webhook_ack",
 }

@@ -91,6 +91,12 @@ var communitySocketRoutes = func() []struct{ pattern, path string } {
 		{"GET /v1/communities/{community}/bot/members/{member}/episode", c + "/bot/members/" + anID + "/episode"},
 		{"PUT /v1/communities/{community}/bot/music-settings", c + "/bot/music-settings"},
 		{"POST /v1/communities/{community}/bot/restart", c + "/bot/restart"},
+		// Bot v2 task 13: the webhook admin routes.
+		{"POST /v1/communities/{community}/bot/webhooks", c + "/bot/webhooks"},
+		{"GET /v1/communities/{community}/bot/webhooks", c + "/bot/webhooks"},
+		{"POST /v1/communities/{community}/bot/webhooks/{webhook}/rotate", c + "/bot/webhooks/" + anID + "/rotate"},
+		{"PATCH /v1/communities/{community}/bot/webhooks/{webhook}", c + "/bot/webhooks/" + anID},
+		{"DELETE /v1/communities/{community}/bot/webhooks/{webhook}", c + "/bot/webhooks/" + anID},
 	}
 }()
 
@@ -160,6 +166,7 @@ var stayOnHTTP = []string{
 	// Unauthenticated or public.
 	"GET /v1/instance",
 	"GET /v1/instance/limits",
+	"POST /hooks/{webhook_id}/{secret}", // incoming webhooks (G5), metered per address and per webhook
 	// Large binary bodies: blobs, backup chunks and GIF media.
 	"GET /v1/channels/{id}/blobs/{blob_id}",
 	"PUT /v1/channels/{id}/blobs/{blob_id}",
@@ -172,8 +179,8 @@ var stayOnHTTP = []string{
 	"GET /v1/communities/{id}/gifs/media/{gif_id}",
 }
 
-// TestHTTPOnlyListIsExactlyTheStaysOnHTTPList: every /v1 pattern on the HTTP mux is in the fixed list above or under
-// /v1/bot-runtime/ (until Bot v2 task 14 moves it), and every entry of the list is served.
+// TestHTTPOnlyListIsExactlyTheStaysOnHTTPList: every /v1 and /hooks pattern on the HTTP mux is in the fixed list above
+// or under /v1/bot-runtime/ (until Bot v2 task 14 moves it), and every entry of the list is served.
 func TestHTTPOnlyListIsExactlyTheStaysOnHTTPList(t *testing.T) {
 	srv, _ := newServer(t)
 	want := map[string]bool{}
@@ -183,7 +190,7 @@ func TestHTTPOnlyListIsExactlyTheStaysOnHTTPList(t *testing.T) {
 	seen := map[string]bool{}
 	for _, pattern := range srv.Mux().Patterns() {
 		_, path, _ := strings.Cut(pattern, " ")
-		if !strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/v1/bot-runtime/") {
+		if (!strings.HasPrefix(path, "/v1/") && !strings.HasPrefix(path, "/hooks/")) || strings.HasPrefix(path, "/v1/bot-runtime/") {
 			continue
 		}
 		seen[pattern] = true

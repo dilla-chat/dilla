@@ -57,7 +57,9 @@ func TestSocketRouteManifestMatchesTheMux(t *testing.T) {
 	served := map[string]bool{}
 	for _, pattern := range srv.Mux().Patterns() {
 		served[pattern] = true
-		if _, path, _ := strings.Cut(pattern, " "); !strings.HasPrefix(path, "/v1/") {
+		// /hooks/ is the incoming webhooks' public route (Bot v2 task 13), classified like a /v1 route.
+		_, path, _ := strings.Cut(pattern, " ")
+		if !strings.HasPrefix(path, "/v1/") && !strings.HasPrefix(path, "/hooks/") {
 			continue
 		}
 		mounted++

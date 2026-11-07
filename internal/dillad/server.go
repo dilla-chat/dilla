@@ -510,6 +510,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// Bot v2 Task 10: sealed commands go to the Bot runtime's connection, replies to the requesting
 	// device and state hints to their scope, all through the gateway.
 	deps.BotRelay = gw
+	// Bot v2 Task 13: an incoming webhook POST goes to the Bot's live connection (op 66) and waits for its ack.
+	deps.BotWebhooks = gw
 	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log).WithBotFeed(botFeed)
 	deps.BotRevoked = func(ctx context.Context, installation store.BotInstallationRow, remove bool) {
 		if remove {
@@ -848,6 +850,9 @@ func (s *Server) ServeBot(ln net.Listener) error {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("GET /gateway", s.gw.BotHandler())
+	// Incoming webhooks are the public listener's alone (Bot v2 Task 13): on this socket every peer would share one
+	// address bucket, and the Bot has no reason to post to its own webhooks.
+	mux.Handle("/hooks/", http.NotFoundHandler())
 	mux.Handle("/", s.handler)
 	// The public listener's limits and timeouts (server.NewHTTPServer), and the peer's pid in every request context.
 	srv := server.NewHTTPServer(mux, s.o.Config)

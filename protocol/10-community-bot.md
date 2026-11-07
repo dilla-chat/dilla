@@ -1576,8 +1576,9 @@ revision and is pushed with it (gateway op 61 carries the publication), so a rot
 connected clients at once and reconnecting ones through the revision sync.
 
 A Bot channel is unmarked in the same transaction when its channel stops being an end-to-end text
-channel (a channel PATCH to readable), when the channel is deleted, and when the community is
-deleted (which also drops the community's catalog, command key and webhooks).
+channel (a channel PATCH to readable), when the channel is deleted (which also deletes the webhooks
+that target it), and when the community is deleted (which also drops the community's catalog,
+command key and webhooks).
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
@@ -1637,6 +1638,80 @@ devices of the call group of the channel's live call. Both runtime routes are me
 | `POST /v1/communities/{community}/bot/commands` | E (community member), socket | `[request_id, sealed]` | `202 [0]`; `400` for a malformed body or sealed form; `404` for a non-member; `403` when the installation is disabled; `409 E_BOT_DUPLICATE`; `503 E_BOT_OFFLINE` with no installation, an installation that is not ready, or no live Bot runtime connection |
 | `POST /v1/bot-runtime/replies` | B (ready, own community) | `[device_id, request_id, seq, sealed, final]` | `204`; `404` for a request not relayed from that device into the Bot's community in the last five minutes; `413 E_TOO_LARGE` past 16 replies or 256 KiB for the request |
 | `POST /v1/bot-runtime/state-hints` | B (ready, own community) | `[scope_kind, scope_id]` | `200 [revision]`; `404` for a scope outside the Bot's community or a channel that is not a Bot channel; `400` for another scope kind |
+
+## Webhooks
+
+An incoming webhook lets anything that can send an HTTPS POST (a game server, a weather feed,
+`curl`) post into one Bot channel through the Bot. An admin creates it on the socket and is shown its
+address once: `https://<instance.domain>/hooks/<webhook_id>/<secret>`, where `webhook_id` is 32
+lowercase hex characters and `secret` is 32 random bytes in unpadded base64url (43 characters). The
+instance stores only `SHA-256(secret)` and never the secret; no read returns either. Rotating
+replaces the hash in one statement, so the old address stops working at once.
+
+The admin routes take the authority `PUT /v1/communities/{community}/bot` takes (a human member
+holding `manage_community`), on the socket only. A webhook's channel must be a Bot channel of the
+community when it is created (else `409 E_NOT_BOT_CHANNEL`); unmarking the channel later keeps the
+webhook but makes every POST `409 E_NOT_BOT_CHANNEL` until the channel is marked again, and deleting
+the channel deletes its webhooks. A community holds at most 50. `name` is 1 to 80 characters under
+the text rule of `09` § Accounts and devices; `avatar_blob` is null or an opaque 32-byte blob id that the
+instance never dereferences; `allow_everyone` is uint 0 or 1.
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `POST /v1/communities/{community}/bot/webhooks` | E (manage_community), socket | `[channel_id, name, avatar_blob\|null, allow_everyone]` | `201 [webhook_id, url]`, the only time the URL is shown; `409 E_NOT_BOT_CHANNEL`; `409 E_INVALID_REQUEST` past 50 webhooks |
+| `GET /v1/communities/{community}/bot/webhooks` | E (manage_community), socket | — | `[[webhook_id, channel_id, name, avatar_blob\|null, allow_everyone, created_at, rotated_at\|null]…]`, oldest first; never the secret or its hash |
+| `POST /v1/communities/{community}/bot/webhooks/{webhook}/rotate` | E (manage_community), socket | — | `200 [url]` with a new secret; `404` for a webhook the community does not hold |
+| `PATCH /v1/communities/{community}/bot/webhooks/{webhook}` | E (manage_community), socket | `[name, avatar_blob\|null, allow_everyone]` | `204`; `404` |
+| `DELETE /v1/communities/{community}/bot/webhooks/{webhook}` | E (manage_community), socket | — | `204`; `404` |
+| `POST /hooks/{webhook_id}/{secret}` | none (the secret), HTTP only | JSON, below | `204` once the Bot posted it; refusals below |
+
+**The POST.** `Content-Type: application/json`, a body of at most 8192 bytes (more is `413` before
+anything is parsed), valid UTF-8, one JSON object. The fields are Discord's: `text` (string, 1 to 4000
+bytes of UTF-8; Discord's `content` is read when `text` is absent), `username` (string, at most 80
+bytes) and `avatar_url` (string, an absolute `https://` URL with a host and no credentials, at most
+2048 bytes; empty or null means none). Any other field is ignored, so an integration that also sends
+`embeds` or `tts` still works; a known field of another JSON type is `400`. Control characters
+(Unicode Cc), format characters (Cf: bidi overrides, zero-width joiners) and U+2028/U+2029 are
+stripped from `username` and its white space is collapsed; an empty result shows the webhook's
+`name`. The text is posted as plain text with links; the Bot labels it "via webhook <name>" and
+neutralises `@everyone` unless `allow_everyone` is 1.
+
+**Metering.** Every POST first spends one token of its client address's `webhook_address` bucket (2
+per second, burst 20; IPv6 by /64, `X-Forwarded-For` only from a trusted proxy), known id or not, so
+one address can neither enumerate ids nor flood the lookup. A POST whose secret matched then spends
+one token of the webhook's own `webhook` bucket (30 a minute, burst 5: the sixth POST at once waits 2
+s). Either refusal is `429` with `Retry-After` in whole seconds. The instance serves `/hooks/` on its
+public listener only, never on the Bot's local socket, where every peer would share one address.
+
+**Authentication.** A malformed id, an unknown id, a malformed secret and a wrong secret are one
+answer: `401 {"code":"E_UNAUTHENTICATED","message":"unknown webhook or wrong secret"}`. Each does the
+same work, one store lookup, one SHA-256 of the presented secret and one constant-time compare (with
+a per-process random hash when there is no stored one), so none is told apart by timing either.
+
+**Delivery.** After the checks the instance confirms the channel is still a Bot channel and the
+community's Bot installation is ready, then sends gateway op 66 `bot_webhook` `[delivery_id,
+webhook_id, community_id, channel_id, display_name, avatar_url|null, text, allow_everyone]` to the
+Bot runtime's live connection (`02` § Bot runtime) and waits at most 2 s for its op 67
+`bot_webhook_ack`. `display_name` is the cleaned `username`, else the webhook's `name`. A Bot that is
+offline, parked, resuming or streaming its snapshot, an installation that is not ready, an ack
+timeout and an ack whose status is not 0 are all `503 E_BOT_OFFLINE` with `Retry-After: 5`. Delivery
+is at least once from the sender's side: a POST answered `503` after the Bot posted (its ack was lost)
+and retried by the sender posts twice; a `503` before the frame was sent posts nothing.
+
+**What is kept.** Nothing of the body: the text, username and avatar URL are in no row, no log line
+and no gateway ring (op 66 is never ringed). The secret is in the path, and the request log records
+the route pattern (`POST /hooks/{webhook_id}/{secret}`), never the URL. The instance and the Bot never
+fetch `avatar_url`; they only pass it on.
+
+| Status | Code | When |
+|---|---|---|
+| 204 | — | the Bot posted it |
+| 400 | `E_INVALID_REQUEST` | not `application/json`, not UTF-8, not one JSON object, a field of the wrong type, no `text`, a `username` over 80 bytes, a bad `avatar_url` |
+| 401 | `E_UNAUTHENTICATED` | an unknown or malformed webhook id, or a wrong or malformed secret |
+| 409 | `E_NOT_BOT_CHANNEL` | the webhook's channel is not a Bot channel now |
+| 413 | `E_TOO_LARGE` | a body over 8192 bytes, or `text` over 4000 bytes |
+| 429 | `E_RATE_LIMITED` | the address or the webhook bucket is empty; `Retry-After` |
+| 503 | `E_BOT_OFFLINE` | the Bot did not take it; `Retry-After: 5` |
 
 ## Vectors
 

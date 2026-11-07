@@ -18,6 +18,17 @@ type Class struct {
 	Burst     int
 }
 
+// The incoming-webhook buckets (Bot v2 task 13). POST /hooks/{webhook_id}/{secret} is unauthenticated, so it is
+// metered twice. WebhookAddressClass is keyed by the client address (RateKey of RealIP) and spent first, by every
+// attempt, known id or not: it bounds how fast one address can try ids or secrets and how much store and hashing
+// work it can cause. 2 per second with a burst of 20 lets one integration host feed several webhooks at their own
+// full rate, while an enumeration of random 128-bit ids with 256-bit secrets is hopeless at any rate. WebhookClass
+// is keyed by the webhook id and spent only once the secret matched: 30 a minute with a burst of 5 (spec G5).
+var (
+	WebhookAddressClass = Class{Name: "webhook_address", PerSecond: 2, Burst: 20}
+	WebhookClass        = Class{Name: "webhook", PerSecond: 0.5, Burst: 5}
+)
+
 type bucket struct {
 	lim  *rate.Limiter
 	seen time.Time

@@ -215,6 +215,9 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"BotV2", reflect.TypeOf((*store.BotV2)(nil)).Elem(), []string{
 			"BotStateRevisions", "BumpBotStateRevision", "DeleteBotCommunityState", "GetBotCatalog", "GetBotCommandKey",
 			"ListBotChannels", "MarkBotChannel", "PutBotCatalog", "PutBotCommandKey", "UnmarkBotChannel",
+			// Task 13: incoming webhooks.
+			"CreateBotWebhook", "DeleteBotWebhook", "DeleteBotWebhooksOfChannel", "GetBotWebhook", "ListBotWebhooks",
+			"RotateBotWebhookSecret", "UpdateBotWebhook",
 		}},
 		{"BotGroupRegistrationAdmissionReceipts", reflect.TypeOf((*store.BotGroupRegistrationAdmissionReceipts)(nil)).Elem(), []string{"AcceptBotGroupRegistrationAdmission", "GetBotGroupRegistrationAdmission"}},
 		// Overwrites is the slice of Structure Plan 2 task 3's table supports.

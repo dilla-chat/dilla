@@ -113,6 +113,13 @@ export function frameVectors() {
     // Kind 2 member is [community_id, user_id, joined(uint 0|1), role_ids]. A live event is ringed
     // (n != 0); a cold-start snapshot's body frames are sent with n = 0.
     frame('bot_event', 65, 8, null, [2, [COMMUNITY, USER, 1, [GROUP]]]),
+    // op 66 bot_webhook (S->C, Bot runtime connection only, wire 6, Bot v2 task 13): [delivery_id,
+    // webhook_id, community_id, channel_id, display_name, avatar_url | null, text,
+    // allow_everyone(uint 0|1)]. Never ringed (n = 0): sent only to a live Bot connection.
+    frame('bot_webhook', 66, 0, null, [REQUEST, IDEM, COMMUNITY, CHANNEL, 'Terraria', 'https://example.test/a.png', 'The boss was defeated', 0]),
+    // op 67 bot_webhook_ack (C->S, the Bot runtime connection's answer to one op 66): [delivery_id,
+    // status], status 0 posted. n = 0.
+    frame('bot_webhook_ack', 67, 0, null, [REQUEST, 0]),
   ];
 
   const rejects = [

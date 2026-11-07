@@ -52,11 +52,13 @@ timeouts and warnings, roles, self-roles, role panels and the Bot join role), ch
 `/v1/admin/…` (audit, diagnostics, a blob purge and a user disable), the GIF picker (`GET /v1/communities/{id}/gifs`,
 `…/gifs/key`, `…/gifs/rating`, `…/gifs/search`) and the human-facing Bot admin routes
 (`/v1/communities/{community}/bot` and its profile, disable, restart, music-settings, command-status, actor
-authority, join-role-grants, member episode, events and event ack). The retired `POST` and `DELETE
+authority, join-role-grants, member episode, events and event ack, and the webhook admin routes under
+`…/bot/webhooks`). The retired `POST` and `DELETE
 /v1/communities/{id}/afk` of web3.8 are not registered. What stays on HTTP is the binary and the
 pre-socket surface: blob routes, GIF media bytes (`GET …/gifs/media/{gif_id}`) and the backup chunks (a body
 above a frame), the invite preview `GET /i/{code}`, and the invite landing
-(unauthenticated, metered by client address), the instance document and limits, and the routes a client calls
+(unauthenticated, metered by client address), incoming webhooks `POST /hooks/{webhook_id}/{secret}`
+(unauthenticated JSON, metered by client address and by webhook; `10` § Webhooks), the instance document and limits, and the routes a client calls
 before its socket exists: sign-up and sign-in, the session ceremonies and `POST /v1/sessions/negotiate`,
 `DELETE /v1/devices/{device_id}/sessions`, the device lists, `GET` and `POST /v1/keypackages`,
 backups, `GET /v1/accounts/me`, the second-factor setup an owed account uses, and `POST /v1/gateway/ticket`.
@@ -1859,6 +1861,11 @@ header carries the same value in whole seconds. The commit and proposal paths ar
 separately and loosely, so the delivery service's own throttle never becomes the reason its
 committer-election watchdog removes a device.
 
+The public webhook route `POST /hooks/{webhook_id}/{secret}` has two buckets of its own (`10` §
+Webhooks): `webhook_address`, keyed by the client address and spent by every attempt (2 per second,
+burst 20), and `webhook`, keyed by the webhook and spent once its secret matched (30 a minute, burst
+5). Its body cap is 8192 bytes, read before anything is parsed.
+
 Body caps: `max_ciphertext_bytes + 4096` on `POST /v1/groups/{id}/message`; `max_ciphertext_bytes` (default 196608) on
 `POST /v1/channels/{id}/messages`, `PATCH /v1/channels/{id}/messages/{seq}` and `POST /v1/reports`
 (`protocol/04`'s own worst-case legal envelope, ten attachments and two previews, is ≈ 129 KiB, so a
@@ -1949,7 +1956,7 @@ content="placeholder">`.
 **Which requests the client answers.** A request for which the instance has a route — every route
 of this document and of `02`, `GET /gateway`, `/rtc`, `GET /i/{code}` and the operational
 endpoints — is answered by that route when its method is routed. A path equal to or below one of the
-reserved prefixes `/v1/`, `/gateway`, `/rtc`, `/i/`, `/healthz`, `/readyz`, `/metrics` and `/debug/`
+reserved prefixes `/v1/`, `/gateway`, `/rtc`, `/i/`, `/hooks/`, `/healthz`, `/readyz`, `/metrics` and `/debug/`
 (each also without its trailing `/`) is never answered by the client: an unknown one is
 `404` with the body `404 page not found`, a known one asked with the wrong method `405` with
 `Allow`. Every other request is the client's, in this order:

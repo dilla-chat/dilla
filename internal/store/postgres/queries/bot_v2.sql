@@ -50,3 +50,31 @@ DELETE FROM bot_command_keys WHERE community_id = $1;
 
 -- name: DeleteBotWebhooksOfCommunity :exec
 DELETE FROM bot_webhooks WHERE community_id = $1;
+
+-- Bot v2 (Task 13): incoming webhooks. secret_hash is SHA-256(secret); the secret itself is never stored.
+
+-- name: CreateBotWebhook :exec
+INSERT INTO bot_webhooks(webhook_id, community_id, channel_id, name, avatar_blob, secret_hash, allow_everyone, created_at, rotated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL);
+
+-- name: GetBotWebhook :one
+SELECT webhook_id, community_id, channel_id, name, avatar_blob, secret_hash, allow_everyone, created_at, rotated_at
+FROM bot_webhooks WHERE webhook_id = $1;
+
+-- name: ListBotWebhooks :many
+SELECT webhook_id, community_id, channel_id, name, avatar_blob, secret_hash, allow_everyone, created_at, rotated_at
+FROM bot_webhooks WHERE community_id = $1 ORDER BY created_at, webhook_id;
+
+-- name: UpdateBotWebhook :execrows
+UPDATE bot_webhooks SET name = $1, avatar_blob = $2, allow_everyone = $3
+WHERE community_id = $4 AND webhook_id = $5;
+
+-- name: RotateBotWebhookSecret :execrows
+UPDATE bot_webhooks SET secret_hash = $1, rotated_at = $2
+WHERE community_id = $3 AND webhook_id = $4;
+
+-- name: DeleteBotWebhook :execrows
+DELETE FROM bot_webhooks WHERE community_id = $1 AND webhook_id = $2;
+
+-- name: DeleteBotWebhooksOfChannel :exec
+DELETE FROM bot_webhooks WHERE channel_id = $1;

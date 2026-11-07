@@ -10,8 +10,7 @@ import (
 )
 
 // Bot v2 (Task 9, 051_bot_v2.sql): the command catalog, the Bot's command-key publication, Bot
-// channels and the Bot state revisions. bot_webhooks ships in the same migration; its methods come
-// with the webhook routes.
+// channels, the Bot state revisions and (Task 13) incoming webhooks.
 
 // BotCatalogRow mirrors bot_catalogs. Body is the deterministic-CBOR commands list the Bot
 // published; Revision only grows.
@@ -36,6 +35,20 @@ type BotChannelRow struct {
 	CommunityID id.ID
 	MarkedAt    int64
 	MarkedBy    id.ID
+}
+
+// BotWebhookRow mirrors bot_webhooks (Bot v2 Task 13). SecretHash is SHA-256 of the webhook's secret: the
+// secret itself is never stored. AvatarBlob is an opaque 32-byte blob id or nil; dillad never dereferences it.
+type BotWebhookRow struct {
+	WebhookID     id.ID
+	CommunityID   id.ID
+	ChannelID     id.ID
+	Name          string
+	AvatarBlob    []byte
+	SecretHash    []byte
+	AllowEveryone bool
+	CreatedAt     int64
+	RotatedAt     *int64
 }
 
 // The Bot state scopes (spec "Live updates"). A call scope's id is the voice channel the call is
@@ -94,6 +107,23 @@ type BotV2 interface {
 	// ScopeID the user) and the stored channel and call revisions of exactly the given scope ids,
 	// ordered by (kind, scope id, community).
 	BotStateRevisions(ctx context.Context, user id.ID, scopes []id.ID) ([]BotStateRevisionRow, error)
+	// CreateBotWebhook stores a new webhook; RotatedAt is ignored (a new webhook was never rotated).
+	CreateBotWebhook(ctx context.Context, row BotWebhookRow) error
+	// GetBotWebhook is ErrNotFound for an unknown id.
+	GetBotWebhook(ctx context.Context, webhook id.ID) (BotWebhookRow, error)
+	// ListBotWebhooks is the community's webhooks, oldest first.
+	ListBotWebhooks(ctx context.Context, community id.ID) ([]BotWebhookRow, error)
+	// UpdateBotWebhook replaces the name, avatar and allow_everyone of a webhook of community and reports
+	// whether one was found.
+	UpdateBotWebhook(ctx context.Context, row BotWebhookRow) (bool, error)
+	// RotateBotWebhookSecret replaces a webhook's secret hash and sets rotated_at, in one statement, and
+	// reports whether one was found.
+	RotateBotWebhookSecret(ctx context.Context, community, webhook id.ID, secretHash []byte, at int64) (bool, error)
+	// DeleteBotWebhook reports whether a webhook of community was removed.
+	DeleteBotWebhook(ctx context.Context, community, webhook id.ID) (bool, error)
+	// DeleteBotWebhooksOfChannel removes every webhook that targets channel: a channel's soft delete fires no
+	// cascade.
+	DeleteBotWebhooksOfChannel(ctx context.Context, channel id.ID) error
 	// DeleteBotCommunityState removes a deleted community's Bot channels, catalog, command key,
 	// webhooks and state revisions, inside the caller's transaction, and returns the channels it
 	// unmarked.

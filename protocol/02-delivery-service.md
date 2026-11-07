@@ -599,6 +599,8 @@ instance.
 |---|---|---|---|
 | 64 | `bot_command` | S→C, Bot runtime connection only, `n ≠ 0` | `[request_id(bstr 16), community_id(bstr 16), user_id(bstr 16), device_id(bstr 16), sealed(bstr)]` |
 | 65 | `bot_event` | S→C, Bot runtime connection only, `n ≠ 0` live, `n = 0` inside a cold-start snapshot | `[kind(uint), payload(array)]` |
+| 66 | `bot_webhook` | S→C, the Bot runtime's live connection only, always `n = 0` | `[delivery_id(bstr 16), webhook_id(bstr 16), community_id(bstr 16), channel_id(bstr 16), display_name(tstr), avatar_url(tstr)\|null, text(tstr), allow_everyone(uint 0\|1)]` |
+| 67 | `bot_webhook_ack` | C→S, from the Bot runtime connection the `bot_webhook` went to, `n = 0` | `[delivery_id(bstr 16), status(uint)]` |
 
 Both reach only the Bot runtime's own connection (a session bound to the community's installation, on
 the installation's device), never a human connection, and both are sequenced in that connection's
@@ -637,7 +639,20 @@ the Bot's next identify streams a fresh snapshot. Live commands and events that 
 snapshot streams follow `snapshot_end`. A device list whose push would exceed 1 MiB, or whose history
 exceeds 1024 versions, is left out and counted (`dilla_bot_feed_skipped_total`).
 
-Opcodes 66–127 are reserved for future `wire_version`s; 128 and above are never used. An opcode
+`bot_webhook` and `bot_webhook_ack` carry an incoming webhook POST (`10` § Webhooks); they are the
+exception to this section's heading and are never sequenced. `bot_webhook` goes only to a Bot runtime
+connection that is live: not parked in the resume window, not mid-resume and not streaming its
+cold-start snapshot. With none, nothing is sent and the POST is answered `503`, so the text sits in no
+ring and a resume can never replay it into a second post. The POST waits (2 s at most) for the
+`bot_webhook_ack` whose `delivery_id` matches, from the connection the frame went to: `status` 0 means
+the Bot posted it, any other value that it did not. An ack from any other connection, for a
+`delivery_id` that is not waiting, or a second ack for one, is ignored; a human connection's op 67 is
+ignored too. The waiting deliveries are an in-memory table of at most 1024 entries, each dropped when
+its POST answers. An op 67 whose payload is not a 16-byte `delivery_id` and a uint `status`, or whose
+`n` is not 0, is `E_FRAME_SHAPE`. Delivery is at least once from the sender's side: an ack lost after
+the Bot posted makes the POST a `503`, and a sender that retries posts the text again.
+
+Opcodes 68–127 are reserved for future `wire_version`s; 128 and above are never used. An opcode
 outside the negotiated `wire_version` is a hard error (`E_FRAME_TYPE`), never ignored. A frame of
 the wrong element count for its opcode is `E_FRAME_SHAPE`; a frame that fails the deterministic
 decoder is `E_FRAME_CBOR`; a frame over `max_frame_bytes` is `E_FRAME_LIMIT`. A client frame whose
@@ -1107,6 +1122,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 409 | `E_CALL_SHARERS_FULL` | the call already has `livekit.max_publishers` devices sharing camera or screen | show that sharing is full; retry after a sharer stops |
 | 409 | `E_CALL_NOT_ALONE` | `DELETE /v1/calls/{call_id}?if_alone=1`: the caller's device is not the call group's only current leaf | the call goes on; just leave it |
 | 409 | `E_BOT_DUPLICATE` | a sealed Bot command's `request_id` was sent by another device in the last five minutes | mint a new `request_id` |
+| 409 | `E_NOT_BOT_CHANNEL` | a webhook's channel is not a Bot channel of its community: when the webhook is created, or on a POST after the channel was unmarked | pick a Bot channel, or mark the channel again |
 | 410 | `E_PRUNED` | delivery retention has deleted a row of the requested stream at or above `from` (`from` is the first `seq` wanted; the instance records the highest `seq` delivery retention deleted from each stream, so the answer is exact; an archival deletion is not recorded, invariant 10) | resync; mark older messages "undecryptable (too old)" |
 | 410 | `E_INVITE_INVALID` | the invite is expired, exhausted or revoked | none |
 | 413 | `E_TOO_LARGE` | the object exceeds the instance limit | split or attach |
@@ -1154,7 +1170,9 @@ factors), distinct from `E_UNAUTHENTICATED` so the client can say which. `E_PASS
 whose passkey belongs to another account. None is a delivery-service code. Bot v2's sealed
 command relay (`10` § Sealed command relay, replies and state hints) adds two: `E_BOT_DUPLICATE`
 (409), a command `request_id` another device sent within five minutes, and `E_BOT_OFFLINE` (503),
-a command with no live Bot runtime connection to relay to.
+a command with no live Bot runtime connection to relay to. Incoming webhooks (`10` § Webhooks) add
+`E_NOT_BOT_CHANNEL` (409), a webhook whose channel is not a Bot channel; the public webhook route
+answers its refusals as JSON `{"code", "message"}` with these codes rather than as CBOR.
 
 The four Plan 2 consumes are declared **here**, in the one task that owns the vocabulary, even though their
 only call sites are Plan 2's. The three `E_ENVELOPE_*` codes are 400 and mirror the Rust envelope

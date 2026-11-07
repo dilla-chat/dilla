@@ -39,9 +39,10 @@ fn each_suite_reports_the_expected_number_of_cases() {
     // 7th element) and AW3's two `afk_away` cases (op 55, set and cleared) and Bot v2's socket
     // `request` (op 59, with and without an idem) and `response` (op 60), checked as one
     // `frame` field each, and Bot v2 task 9's `bot_catalog` (op 61) and task 10's `bot_reply`
-    // (op 62), `bot_state_changed` (op 63) and `bot_command` (op 64). Pinned exactly, for the
+    // (op 62), `bot_state_changed` (op 63) and `bot_command` (op 64), task 12's `bot_event` (op 65)
+    // and task 13's `bot_webhook` and `bot_webhook_ack` (ops 66, 67). Pinned exactly, for the
     // same reason the reject suite is.
-    assert_eq!(run_frames().cases.len(), 41);
+    assert_eq!(run_frames().cases.len(), 44);
     // protocol/04 § Attachments (web-2b task 1): four cases, `stored`, `blob_id` and `open` each,
     // plus `thumb` and `thumb_open` for the one with a thumbnail: 3 + 3 + 5 + 3
     assert_eq!(run_attachment().cases.len(), 14);
