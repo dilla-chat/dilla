@@ -50,6 +50,11 @@ export const en = {
   'commands.postedIn': '{what} posted in #{channel}',
   'commands.botDisabled': 'The Bot is turned off in this server',
   'commands.botNotOnInstance': 'This server has no Bot',
+  // Task 20 fix round 1 (new copy, for Jonas's approval): a Bot key this device cannot check yet, a Bot account other than
+  // the one this device first saw, and a Bot refusal for a member without the right.
+  'commands.botUnverified': "This device can't check the Bot yet",
+  'commands.botChanged': "This server's Bot account changed, so its commands are paused",
+  'commands.botForbidden': "You can't use this command here",
   ...utility,
   ...botCommand,
   ...settingsWorkspace,

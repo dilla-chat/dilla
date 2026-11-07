@@ -107,6 +107,14 @@ describe('sealed Bot commands', () => {
     expect(caught(() => s.port.botReplyOpen(-1, MSG, 0, sealed)).code).toBe('E_CORE_INPUT');
     expect(caught(() => s.port.botReplyOpen(7, MSG, 2 ** 32, sealed)).code).toBe('E_CORE_INPUT');
   });
+  it('pins a Bot device list and reads [state, version]', () => {
+    const push = new Uint8Array([0x84]);
+    const s = stub({ bot_device_list_pin: () => encode([1, 3]) });
+    expect(s.port.botDeviceListPin(USER, push)).toEqual({ state: 1, version: 3n });
+    expect(s.calls.map((c) => [c.method, c.args])).toEqual([['bot_device_list_pin', [USER, push]]]);
+    expect(caught(() => stub({ bot_device_list_pin: () => encode([3, 1]) }).port.botDeviceListPin(USER, push)).code).toBe('E_CORE_DECODE');
+    expect(caught(() => s.port.botDeviceListPin(USER.slice(1), push)).code).toBe('E_CORE_INPUT');
+  });
 });
 
 it('passes moderator-removal signing inputs directly to ClientCore and returns only its signed body', () => {

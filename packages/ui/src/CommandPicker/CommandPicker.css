@@ -12,6 +12,8 @@
 .d-cmd-list__scroll { max-height: 16.25rem /* 260px */; overflow: auto; padding: 0.25rem; }
 .d-cmd-row { display: flex; align-items: center; gap: 0.625rem; min-height: 2.5rem /* 40px */; padding: 0.25rem 0.625rem; border-radius: var(--r-seg); cursor: pointer; background: transparent; transition: background var(--duration-cmd-row); }
 .d-cmd-row[aria-selected="true"] { background: var(--surface-hi); box-shadow: inset 2px 0 0 var(--accent); }
+/* Bot v2: a greyed command (the Bot is not ready, or it needs a Bot channel): it stays listed, says why, and does not run. */
+.d-cmd-row[aria-disabled="true"] { opacity: 0.5; cursor: default; }
 .d-cmd-row__icon { display: flex; flex: none; align-items: center; justify-content: center; width: 1.625rem; height: 1.625rem /* 26px */; border-radius: var(--r-md); background: var(--hover); color: var(--fg-2); }
 .d-cmd-row[aria-selected="true"] .d-cmd-row__icon { color: var(--accent); }
 .d-cmd-row__text { display: grid; flex: 1; min-width: 0; line-height: 1.35; }

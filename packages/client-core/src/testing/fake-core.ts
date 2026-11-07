@@ -467,4 +467,5 @@ export class FakeCore implements CorePort {
   botCommandSeal(publication: Uint8Array, request: BotCommandRequest): { sealed: Uint8Array; replyHandle: number } { return this.notModelled('botCommandSeal', publication, request); }
   botReplyOpen(replyHandle: number, requestId: Id, seq: number, sealed: Uint8Array): Uint8Array { return this.notModelled('botReplyOpen', replyHandle, requestId, seq, sealed); }
   botReplyForget(replyHandle: number): void { return this.notModelled('botReplyForget', replyHandle); }
+  botDeviceListPin(botUserId: Id, push: Uint8Array): { state: 0 | 1 | 2; version: bigint } { return this.notModelled('botDeviceListPin', botUserId, push); }
 }

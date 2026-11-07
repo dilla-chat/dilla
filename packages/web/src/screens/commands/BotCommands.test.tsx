@@ -37,7 +37,7 @@ function harness(catalog: BotCatalogView | null = fixtureCatalog(), user = userE
     n += 1;
     fake.publish('botAnswers', [...(fake.get('botAnswers') ?? []), { ...a, n, requestId }]);
   };
-  return { fake, open, results, answer, user };
+  return { fake, open, results, answer, user, unmount: () => { view.unmount(); } };
 }
 
 beforeEach(() => { clearCommandDraftMemory(); });
@@ -142,6 +142,60 @@ describe('Bot commands from the catalog on this device', () => {
     expect(second.requestId).toBe(first.requestId);
     h.answer({ seq: 0, status: 200, body: text('The queue is empty.'), final: true });
     await waitFor(() => expect(h.results().at(-1)?.text).toBe('The queue is empty.'));
+  });
+
+  it('greyed rows are aria-disabled, with no inline style (I1), and a key this device cannot check or a changed Bot say so (M10, A)', async () => {
+    const h = harness(fixtureCatalog({ status: { state: 'unverified', since: null } }));
+    h.open('/');
+    const row = await screen.findByRole('option', { name: "/play, This device can't check the Bot yet" });
+    expect(row).toHaveAttribute('aria-disabled', 'true');
+    expect(document.querySelector('style')).toBeNull();
+    h.fake.publish(`botCatalog:${COMMUNITY}`, fixtureCatalog({ status: { state: 'changed', since: null } }));
+    expect(await screen.findByRole('option', { name: "/play, This server's Bot account changed, so its commands are paused" })).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('a refusal says why: a disabled Bot, no Bot channel, no permission (M3)', async () => {
+    const h = harness();
+    h.fake.handler = command => command.m === 'sendBotCommand'
+      ? Promise.reject(Object.assign(new Error('E_FORBIDDEN'), { code: 'E_FORBIDDEN', status: 403 })) : Promise.resolve(null);
+    h.open('/queue');
+    await h.user.click(await screen.findByRole('button', { name: 'send' }));
+    await waitFor(() => expect(h.results()[0]?.text).toBe('The Bot is turned off in this server'));
+    h.fake.handler = () => Promise.resolve(null);
+    h.open('/pause');
+    await h.user.click(await screen.findByRole('button', { name: 'send' }));
+    await waitFor(() => expect(h.fake.callsOf('sendBotCommand')).toHaveLength(2));
+    h.answer({ seq: 0, status: 409, body: text('E_NOT_BOT_CHANNEL'), final: true });
+    await waitFor(() => expect(h.results().at(-1)?.text).toBe('Mark a channel as a Bot channel first'));
+    h.open('/skip');
+    await h.user.click(await screen.findByRole('button', { name: 'send' }));
+    await waitFor(() => expect(h.fake.callsOf('sendBotCommand')).toHaveLength(3));
+    h.answer({ seq: 0, status: 403, body: '', final: true });
+    await waitFor(() => expect(h.results().at(-1)?.text).toBe("You can't use this command here"));
+  });
+
+  it('an answer that comes after the timeout, before Retry, is shown and the Retry offer goes (M4)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const h = harness(fixtureCatalog(), userEvent.setup({ advanceTimers: vi.advanceTimersByTime }));
+    h.open('/queue');
+    await h.user.click(await screen.findByRole('button', { name: 'send' }));
+    await waitFor(() => expect(h.fake.callsOf('sendBotCommand')).toHaveLength(1));
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    h.answer({ seq: 0, status: 200, body: text('Late but here'), final: true });
+    await waitFor(() => expect(h.results()[0]).toMatchObject({ status: 'success', text: 'Late but here' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull());
+    expect(h.fake.callsOf('sendBotCommand')).toHaveLength(1);
+  });
+
+  it('closing the composer ends a pending run and forgets its reply secret (M5)', async () => {
+    const h = harness();
+    h.open('/queue');
+    await h.user.click(await screen.findByRole('button', { name: 'send' }));
+    await waitFor(() => expect(h.fake.callsOf('sendBotCommand')).toHaveLength(1));
+    const [sent] = h.fake.callsOf('sendBotCommand');
+    h.unmount();
+    await waitFor(() => expect(h.fake.callsOf('forgetBotCommand')).toEqual([{ m: 'forgetBotCommand', requestId: sent.requestId }]));
   });
 
   it('nothing polls: 60 s after a command, no further request', async () => {

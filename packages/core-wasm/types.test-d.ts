@@ -132,6 +132,7 @@ interface ExpectedCoreHandle {
   bot_command_seal(publication: Uint8Array, request_cbor: Uint8Array): Uint8Array;
   bot_reply_open(handle: number, request_id: Uint8Array, seq: number, sealed: Uint8Array): Uint8Array;
   bot_reply_forget(handle: number): void;
+  bot_device_list_pin(bot_user_id: Uint8Array, push: Uint8Array): Uint8Array;
 }
 
 type H = Wasm.CoreHandle;
@@ -270,3 +271,4 @@ expectTrue<Equals<H['bot_command_key_verify'], E['bot_command_key_verify']>>();
 expectTrue<Equals<H['bot_command_seal'], E['bot_command_seal']>>();
 expectTrue<Equals<H['bot_reply_open'], E['bot_reply_open']>>();
 expectTrue<Equals<H['bot_reply_forget'], E['bot_reply_forget']>>();
+expectTrue<Equals<H['bot_device_list_pin'], E['bot_device_list_pin']>>();

@@ -8,7 +8,7 @@ import { DURATION_SUGGESTIONS, pickerEntry, registryDuration } from './picker-ca
 import { botCommandHandler } from './bot-run.ts';
 import { InviteFlow } from '../Create.tsx';
 import { ModerationLog } from '../admin/ModerationLog.tsx';
-import { COMMANDS, commandAvailability, type CommandContext as Binding, type CommandInvocation, type CommandOption, type CommandResult } from '@dilla/client-core';
+import { COMMANDS, commandAvailability, type BotCommandRun, type CommandContext as Binding, type CommandInvocation, type CommandOption, type CommandResult } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
 import { useSlice, useSlices } from '../../core/use-slice.ts';
 import { t } from '../../strings/index.ts';
@@ -102,6 +102,9 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
   const generation = useRef(0);
   const previousLayoutKey = useRef(key);
   const mounted = useRef(true);
+  /** Bot v2 (fix round 1, M5): the sealed runs this composer started; closing it (unmount, another conversation) ends them. */
+  const botRuns = useRef(new Set<BotCommandRun>());
+  const cancelBotRuns = useCallback(() => { for (const run of botRuns.current) run.cancel(); botRuns.current.clear(); }, []);
   const contextKey = `${clientOwnerId(client)}\u0000${accountScope}\u0000${props.selfId ?? ''}\u0000${key}`;
 
   const open = useCallback((text: string) => {
@@ -116,6 +119,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
   useLayoutEffect(() => {
     if (previousLayoutKey.current !== key) {
       generation.current++;
+      cancelBotRuns();
       confirmationResolve.current?.('abandon'); confirmationResolve.current = null; setConfirmation(null);
       inviteResolve.current?.(false); inviteResolve.current = null; setInviteOpen(false);
       setModlogOpen(false);
@@ -128,15 +132,16 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     activeRef.current = shouldActivate;
     setCommandText(saved?.text ?? '');
     onModeChange?.(shouldActivate);
-  }, [key, memory, onModeChange]);
+  }, [key, memory, onModeChange, cancelBotRuns]);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      cancelBotRuns();
       confirmationResolve.current?.('abandon'); confirmationResolve.current = null;
       inviteResolve.current?.(false); inviteResolve.current = null;
     };
-  }, []);
+  }, [cancelBotRuns]);
   useLayoutEffect(() => {
     generation.current++;
     confirmationResolve.current?.('abandon'); confirmationResolve.current = null; setConfirmation(null);
@@ -196,12 +201,23 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     setNoAnswer(null);
     const definition = definitions.find(command => command.id === invocation.commandId);
     let resultId: string | undefined;
+    let startedRun: BotCommandRun | undefined;
     // A catalog command runs sealed (bot-run.ts), its answers streaming into this run's result row. Only one that opens a
     // surface of this client keeps its provider: `poll create`'s form and `reminders list`'s inbox.
     const opensSurface = definition?.bot !== undefined && (pickerEntry(definition, '').opensForm || OPENS_SURFACE.has(definition.id));
     const formHandler = opensSurface ? (handlers ?? {})[invocation.commandId] : undefined;
     const handler = definition?.bot !== undefined
-      ? formHandler ?? botCommandHandler(definition, (_context, text) => { if (resultId !== undefined) resultStore.update(resultId, { text }); })
+      ? formHandler ?? botCommandHandler(definition, {
+        progress: (_context, text) => { if (resultId !== undefined) resultStore.update(resultId, { text }); },
+        // M4: an answer that came after the 5 s timeout is shown in its row, and the Retry offer goes (it is answered).
+        late: (_context, result) => {
+          if (resultId !== undefined) resultStore.update(resultId, { status: result.status === 'success' ? 'success' : 'failed',
+            text: result.message ?? commandPickerCopy.completedPrivately });
+          setNoAnswer(current => (current?.key === key ? null : current));
+        },
+        // Tracked until it settles, or (timed out, still listening for a late answer) until the composer closes.
+        started: run => { startedRun = run; botRuns.current.add(run); },
+      })
       : (handlers ?? {})[invocation.commandId] ?? builtinHandlers[invocation.commandId];
     const provider = definition?.provider === 'bot' ? 'bot' : 'builtin';
     const moderation = invocation.commandId === 'kick' || invocation.commandId === 'ban';
@@ -254,6 +270,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
       openGif: query => { if (isCurrent()) openGif(query); }, openModerationLog };
     if (!moderation) leaveAfterRun(formResult ? 'preserve' : 'restore');
     return Promise.resolve().then(() => handler(invocation, context)).then(response => {
+      if (startedRun !== undefined && response.status !== 'uncertain') botRuns.current.delete(startedRun);
       if (confirmationChoice === 'abandon' || confirmationChoice === 'cancel' && !moderation) {
         if (resultId !== undefined) resultStore.dismiss(resultId);
         return response;

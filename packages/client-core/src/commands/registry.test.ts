@@ -52,6 +52,9 @@ describe('command registry', () => {
     expect(vote.options.map(o => [o.kind, o.freeText])).toEqual([['poll', undefined], ['text', true]]);
     // A catalog name that shadows a built-in is not offered twice: the built-in stays.
     expect(botCommandDefinitions([{ ...CATALOG[0], name: 'help' }])).toEqual([]);
+    // M9: nor can it extend a built-in's first word (`/shrug hello`, `/role list`) and take over its invocation.
+    expect(botCommandDefinitions(['shrug hello', 'giphy cat', 'role list', 'selfrole x', 'queue clear'].map(name => ({ ...CATALOG[0], name }))).map(c => c.id))
+      .toEqual(['queue clear']);
   });
 
   it('validates required and optional arguments across schema kinds', () => {

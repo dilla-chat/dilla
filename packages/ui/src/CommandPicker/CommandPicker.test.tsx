@@ -30,6 +30,13 @@ describe('CommandList', () => {
     expect(screen.queryByText('↑↓ move · tab complete · esc close')).toBeNull();
   });
 
+  it('marks a greyed row aria-disabled and leaves the others alone (Bot v2)', () => {
+    render(<CommandList id="cmds" items={[{ ...ITEMS[0], disabled: true }, ITEMS[1]]} activeId="remind" showHint labels={LABELS} query="/re"
+      onActive={() => {}} onPick={() => {}} onSendAsText={() => {}} />);
+    expect(screen.getByRole('option', { name: /^\/remind,/ })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('option', { name: /^\/reminders list,/ })).not.toHaveAttribute('aria-disabled');
+  });
+
   it('offers "Send as text" when nothing matches', () => {
     const onSendAsText = vi.fn();
     render(<CommandList id="cmds" items={[]} activeId={null} showHint labels={LABELS} query="/xyz" onActive={() => {}} onPick={() => {}} onSendAsText={onSendAsText} />);

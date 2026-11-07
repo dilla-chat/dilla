@@ -34,6 +34,8 @@ export type Command =
       args: readonly (string | number | boolean | Uint8Array | null)[] }
   // Bot v2: read the community's catalog and Bot channels now (a stale command key); → null.
   | { m: 'syncBotCatalog'; communityId: string }
+  // Bot v2 (task 20 fix round 1): the page closed this run; the worker forgets its reply secret now. → null.
+  | { m: 'forgetBotCommand'; requestId: string }
   | { m: 'readBotInteractionResponses'; communityId: string; operations: readonly number[]; requestIds?: readonly string[] }
   | { m: 'ackBotInteractionResponses'; communityId: string; through: string }
   | { m: 'readHumanInteractionResponses'; communityId: string; requestIds?: readonly string[] }

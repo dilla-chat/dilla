@@ -232,6 +232,7 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'getBotCommandStatus',
   'sendBotCommand',
   'syncBotCatalog',
+  'forgetBotCommand',
   'patchBotProfile',
   'listModerationCases',
   'listManualModerationEvidence',
@@ -426,6 +427,7 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   getBotCommandStatus: ['communityId'],
   sendBotCommand: ['communityId', 'requestId'],
   syncBotCatalog: ['communityId'],
+  forgetBotCommand: ['requestId'],
   patchBotProfile: ['communityId'],
   listModerationCases: ['communityId', 'requestId'],
   listManualModerationEvidence: ['communityId', 'requestId'],
@@ -542,6 +544,7 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'getBotCommandStatus',
     'sendBotCommand',
     'syncBotCatalog',
+    'forgetBotCommand',
     'patchBotProfile',
     'listModerationCases',
     'listManualModerationEvidence',
@@ -1521,6 +1524,7 @@ export class Controller {
       case 'getBotCommandStatus': return this.getBotCommandStatus(command.communityId);
       case 'sendBotCommand': return this.sendBotCommand(command);
       case 'syncBotCatalog': return this.syncBotCatalog(command.communityId);
+      case 'forgetBotCommand': this.botRelay.forget(command.requestId); return Promise.resolve(null);
       case 'patchBotProfile': return this.patchBotProfile(command.communityId, command.display);
       case 'listModerationCases': return this.listModerationCases(command);
       case 'listManualModerationEvidence': return this.listManualModerationEvidence(command);
@@ -1712,16 +1716,19 @@ export class Controller {
     for (const community of this.slices.get('communities') ?? []) {
       if (this.revoked() || this.storeCleared) return;
       this.watchBotCatalog(community.id);
-      // A key that could not be checked at its push (the Bot's device list arrived since) is checked again, locally.
-      this.botCatalog.reverify(community.id);
+      // The Bot user is looked up again (a different one is greyed, never adopted: M8) and a key that could not be checked
+      // at its push (the Bot's device list arrived since) is checked again, locally.
+      await this.botCatalog.reresolve(community.id).catch(() => undefined);
       await this.botCatalog.syncOnConnect(community.id).catch(() => undefined);
     }
   }
 
-  /** The community Bot's user id: its member row of account kind 1, else the instance's command status. */
-  private async botUserOf(communityId: string): Promise<Uint8Array | null> {
-    const member = this.slices.get(`members:${communityId}`)?.find((row) => row.kind === 1);
-    if (member !== undefined) return fromHex(member.userId);
+  /** The server's Bot user for a community: its one member row of account kind 1 (more than one is refused), else the
+   *  instance's command status. The catalog store pins the first one it sees and never switches to another. */
+  private async botUserOf(communityId: string): Promise<Uint8Array | null | 'ambiguous'> {
+    const bots = this.slices.get(`members:${communityId}`)?.filter((row) => row.kind === 1) ?? [];
+    if (bots.length > 1) return 'ambiguous';
+    if (bots.length === 1) return fromHex(bots[0].userId);
     const status = await this.routes.getBotCommandStatus(fromHex(communityId)).catch(() => null);
     return status?.botUserId ?? null;
   }

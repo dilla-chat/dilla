@@ -129,6 +129,7 @@ function materialize(seed: (typeof seeds)[number]): CommandDefinition {
 export const COMMANDS: readonly CommandDefinition[] = Object.freeze(seeds.map(materialize));
 const byId = new Map(COMMANDS.map((command) => [command.id, command]));
 export const commandById = (id: string): CommandDefinition | undefined => byId.get(id);
+const BUILTIN_FIRST_WORDS: ReadonlySet<string> = new Set(COMMANDS.map(command => command.id.split(' ')[0]));
 
 const KIND_OF_TYPE: Readonly<Record<0 | 1 | 2 | 3 | 4 | 5, CommandArgumentKind>> = { 0: 'text', 1: 'number', 2: 'user', 3: 'channel', 4: 'duration', 5: 'choice' };
 /** A text argument the picker can offer from what this device shows (an id travels as its text): by argument name. */
@@ -142,7 +143,9 @@ const ENTITY_TEXT: Readonly<Record<string, CommandArgumentKind>> = { poll: 'poll
  * built-in command's is dropped, so a Bot cannot shadow one.
  */
 export function botCommandDefinitions(commands: readonly BotCatalogCommand[]): CommandDefinition[] {
-  return commands.filter(command => !byId.has(command.name)).map(command => {
+  // M9: a name whose first word is a built-in's first word is dropped too, so `/shrug hello` or `/role list` never routes
+  // a built-in's text to the Bot (the parser takes the longest match).
+  return commands.filter(command => !BUILTIN_FIRST_WORDS.has(command.name.split(' ')[0])).map(command => {
     const lastText = command.args.map(arg => arg.type).lastIndexOf(0);
     return {
       id: command.name,

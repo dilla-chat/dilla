@@ -8,7 +8,8 @@ const fid = (byte: number): Uint8Array => new Uint8Array(16).fill(byte);
 const cv = (value: CborInput): CborValue => decode(encode(value));
 const COMMUNITY = toHex(fid(0x0e));
 const BOT_USER = fid(0x0b);
-const PUBLICATION = new Uint8Array([1, 2, 3]);
+/** A command-key publication's leading [1, community_id, key_id, …]: enough for the community check (the core verifies the rest). */
+const PUBLICATION = encode([1, fid(0x0e), fid(0x0a)]);
 const KEY = fid(0x0a);
 
 const remind: CborInput = ['remind', 'Set a reminder', 80, [['when', 4, 1], ['text', 0, 1]], 0, 0, 0];
@@ -129,7 +130,7 @@ describe('BotCatalogStore', () => {
     const f = fakeDeps();
     const store = new BotCatalogStore(f.deps);
     await store.syncOnConnect(COMMUNITY);
-    const next = new Uint8Array([9, 9]);
+    const next = encode([1, fid(0x0e), fid(0x0b)]);
     store.apply({ communityId: fid(0x0e), revision: 4n, commands: [cv(remind)], publication: next });
     await vi.waitFor(() => expect(store.get(COMMUNITY)?.revision).toBe(4n));
     expect(f.verify).toHaveBeenLastCalledWith(next, BOT_USER);
@@ -141,11 +142,11 @@ describe('BotCatalogStore', () => {
     const store = new BotCatalogStore(f.deps);
     await store.syncOnConnect(COMMUNITY);
     const catalog = store.get(COMMUNITY)!;
-    // The commands stay (greyed, not hidden), but there is no key to seal to and the state is the offline reason.
+    // The commands stay (greyed, not hidden), but there is no key to seal to and the state is its own reason (M10).
     expect(catalog.commands.map(c => c.name)).toEqual(['remind', 'play']);
     expect(catalog.keyId).toBeNull();
     expect(catalog.fingerprint).toBeNull();
-    expect(catalog.status.state).toBe('offline');
+    expect(catalog.status.state).toBe('unverified');
     expect(store.publication(COMMUNITY)).toBeNull();
   });
 
@@ -185,5 +186,84 @@ describe('BotCatalogStore', () => {
     expect(store.publication(COMMUNITY)).toEqual(PUBLICATION);
     expect(store.get(COMMUNITY)?.status.state).toBe('ready');
     expect(f.fetchCatalog).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('fix round 1', () => {
+  it('drops a command whose name or argument names are outside the picker grammar (I1)', () => {
+    const bad = ['x"],body{display:none}[id="', 'Play', ' play', 'play  now', 'a'.repeat(33), 'ünïcode'];
+    const decoded = decodeBotCatalogResponse(catalogBody(1, [remind, ...bad.map(name => [name, '', 1, [], 0, 0, 0]),
+      ['ok name', '', 2, [['bad arg!', 0, 1]], 0, 0, 0], ['queue-move', '', 3, [['to_pos', 1, 1]], 0, 0, 0]]));
+    expect(decoded.commands.map(c => c.name)).toEqual(['remind', 'queue-move']);
+  });
+
+  it('refuses another community’s publication before the core sees it (M1)', async () => {
+    const f = fakeDeps();
+    f.set(catalogBody(3, [remind], encode([1, fid(0x0f), fid(0x0a)])));
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    expect(f.verify).not.toHaveBeenCalled();
+    expect(store.publication(COMMUNITY)).toBeNull();
+    expect(store.get(COMMUNITY)?.status.state).toBe('unverified');
+  });
+
+  it('invalidate drops this device’s verdict, so the next check is real (M2)', async () => {
+    const f = fakeDeps();
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    expect(store.publication(COMMUNITY)).toEqual(PUBLICATION);
+    store.invalidate(COMMUNITY);
+    expect(store.publication(COMMUNITY)).toBeNull();
+    f.verify.mockImplementationOnce(() => { throw Object.assign(new Error('E_BOT_STALE'), { code: 'E_BOT_STALE' }); });
+    expect(store.reverify(COMMUNITY)).toBe(false);
+    expect(store.reverify(COMMUNITY)).toBe(true);
+    expect(f.verify).toHaveBeenCalledTimes(3);
+  });
+
+  it('a push that lands during a catalog read wins over the older read (M7)', async () => {
+    let release!: (body: Uint8Array) => void;
+    const f = fakeDeps();
+    const store = new BotCatalogStore({ ...f.deps, fetchCatalog: () => new Promise(resolve => { release = resolve; }) });
+    const reading = store.refresh(COMMUNITY);
+    await Promise.resolve();
+    store.apply({ communityId: fid(0x0e), revision: 5n, commands: [cv(poll)], publication: PUBLICATION });
+    release(catalogBody(4, [remind]));
+    await reading;
+    expect(store.get(COMMUNITY)?.revision).toBe(5n);
+    expect(store.get(COMMUNITY)?.commands.map(c => c.name)).toEqual(['poll create']);
+  });
+
+  it('pins the Bot user on first sight; another one later is greyed, never switched to (A, M8)', async () => {
+    let bot: Uint8Array | null | 'ambiguous' = BOT_USER;
+    const f = fakeDeps({ botUserId: () => Promise.resolve(bot) });
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    expect(store.get(COMMUNITY)?.botUserId).toBe(toHex(BOT_USER));
+    bot = fid(0x0c);
+    await store.reresolve(COMMUNITY);
+    expect(store.get(COMMUNITY)).toMatchObject({ botUserId: toHex(BOT_USER), status: { state: 'changed' } });
+    expect(store.publication(COMMUNITY)).toBeNull();
+    // A read does not adopt it either.
+    await store.refresh(COMMUNITY);
+    expect(store.get(COMMUNITY)?.status.state).toBe('changed');
+    expect(f.verify.mock.calls.every(call => toHex(call[1]) === toHex(BOT_USER))).toBe(true);
+  });
+
+  it('refuses a community with more than one Bot account (A)', async () => {
+    const f = fakeDeps({ botUserId: () => Promise.resolve('ambiguous') });
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    expect(f.verify).not.toHaveBeenCalled();
+    expect(store.get(COMMUNITY)?.status.state).toBe('unverified');
+    expect(store.publication(COMMUNITY)).toBeNull();
+  });
+
+  it('a signer refusal looks the Bot user up again (M8)', async () => {
+    const lookups = vi.fn(() => Promise.resolve<Uint8Array | null>(BOT_USER));
+    const f = fakeDeps({ botUserId: lookups, verify: vi.fn(() => { throw Object.assign(new Error('E_DEVICE_UNLISTED'), { code: 'E_DEVICE_UNLISTED' }); }) });
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    await vi.waitFor(() => expect(lookups).toHaveBeenCalledTimes(2));
+    expect(store.get(COMMUNITY)?.status.state).toBe('unverified');
   });
 });

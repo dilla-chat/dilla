@@ -613,11 +613,11 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
 
   const listItemsUi: CommandListItem[] = listItems.map(command => {
     const e = entries.get(command.id)!;
-    // A greyed Bot command stays in the list and says why instead of what it does.
-    return { id: command.id, icon: e.icon, name: command.id, args: e.args, description: props.greyed?.get(command.id) ?? e.description, source: e.source };
+    // A greyed Bot command stays in the list, dimmed and aria-disabled, and says why instead of what it does.
+    const reason = props.greyed?.get(command.id);
+    return { id: command.id, icon: e.icon, name: command.id, args: e.args, description: reason ?? e.description, source: e.source,
+      ...(reason === undefined ? {} : { disabled: true }) };
   });
-  // The rows the list draws greyed (the shared CommandList has no disabled row of its own): an attribute selector per row id.
-  const greyedRows = listItemsUi.filter(item => props.greyed?.has(item.id) === true).map(item => `[id="${commandOptionId(listId, item.id)}"]`);
   const listOpen = listState.open;
   const activeListId = listItemsUi[listSel]?.id ?? null;
 
@@ -629,7 +629,6 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
     {sugOpen ? <CommandSuggestions id={sugsId} title={copy.sugTitle[activeField!.suggest as Exclude<PickerSuggest, 'none'>]} items={sg} activeId={sg[sugIndex]?.id ?? null}
       onActive={id => setSugSel(Math.max(sg.findIndex(s => s.id === id), 0))}
       onPick={id => { const pick = sg.find(s => s.id === id); if (pick !== undefined) accept(pick); }} /> : null}
-    {greyedRows.length > 0 ? <style>{`${greyedRows.join(',')}{opacity:.5}`}</style> : null}
     {bar !== null ? <CommandBar icon={bar.icon} text={bar.text} tone={bar.tone} hint={copy.fieldHint} /> : null}
     {props.retry !== undefined && selected !== null && error === null && !pending
       ? <div className="dw-command-retry"><Button onClick={() => { void run(); }}>{t('commands.retry')}</Button></div> : null}

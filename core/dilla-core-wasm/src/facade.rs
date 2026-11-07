@@ -386,6 +386,21 @@ impl CoreHandle {
             .remember(&verified, UserId::from_bytes(bot_user_id));
         Ok(out.into_boxed_slice())
     }
+    /// Bot v2 (task 20 fix round 1): pins the device list of an account the instance signed as a
+    /// Bot from a `DeviceListPush` (trust on first sight; another key is held, never put in place).
+    /// CBOR [state, version]: 0 current, 1 key change held, 2 behind. A human is E_CREDENTIAL, a
+    /// user with no attestation E_DEVICE_LIST_STALE.
+    pub fn bot_device_list_pin(
+        &self,
+        bot_user_id: &[u8],
+        push: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        let bot_user_id = js_fixed_arg::<16>("bot_user_id", bot_user_id)?;
+        let now = now_secs();
+        Ok(self
+            .with_core(|c| c.bot_device_list_pin(&bot_user_id, push, now))?
+            .into_boxed_slice())
+    }
     /// Signs and seals a command to a publication `bot_command_key_verify` accepted (the exact
     /// bytes, before their `not_after`). The core re-verifies it against the Bot user's current
     /// device list and attestation before every seal, so a revocation since the verify is

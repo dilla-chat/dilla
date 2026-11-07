@@ -595,6 +595,9 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
   // Bot v2 (task 20): an operation is authorised against the catalog this device holds (pushed on change, read at connect
   // when behind), never by an op-3 capability round trip per operation; the live status read still binds the request to
   // the current installation.
+  // Ruling (fix round 1, automated review #5): the server-filtered catalog is display only. Hiding or listing an operation
+  // here is no authority: the Bot authorises every operation itself, from the sender's permissions in its own feed, and
+  // refuses what the member may not do whatever this check said.
   const authorizeOperation = async (operation: number): Promise<BotInteractionScope> => {
     const catalog = client.get(`botCatalog:${community}`);
     const listed = catalog?.commands.some(command => command.operation === operation) === true;

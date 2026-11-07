@@ -10,7 +10,9 @@ import './CommandPicker.css';
  * owns state: the web's CommandPicker holds the draft, the active field and the run.
  */
 
-export interface CommandListItem { id: string; icon: IconName; name: string; args: string; description: string; source: string }
+export interface CommandListItem { id: string; icon: IconName; name: string; args: string; description: string; source: string;
+  /** Greyed: still listed (its description says why), drawn dimmed and announced as unavailable (aria-disabled). */
+  disabled?: boolean }
 
 export interface CommandListProps {
   id: string;
@@ -53,6 +55,7 @@ export function CommandList({ id, items, activeId, showHint, labels, query, onAc
         <div role="listbox" id={id} aria-label={labels.title} aria-activedescendant={items.length > 0 ? active : undefined} className="d-cmd-list__list">
           {items.map(item => (
             <div key={item.id} role="option" id={commandOptionId(id, item.id)} aria-selected={item.id === activeId}
+              {...(item.disabled === true ? { 'aria-disabled': true } : {})}
               aria-label={`/${item.name}, ${item.description}`} className="d-cmd-row"
               onMouseEnter={() => onActive(item.id)}
               onMouseDown={(e: MouseEvent<HTMLDivElement>) => { e.preventDefault(); onPick(item.id); }}>

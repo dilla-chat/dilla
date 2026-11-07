@@ -157,6 +157,47 @@ impl ClientCore {
         Ok(p.encode())
     }
 
+    /// Bot v2 (task 20 fix round 1; Jonas, 2026-11-07): pins the device list of a user the instance
+    /// signed as a **Bot**, from a `DeviceListPush` the client assembled itself, so that a member
+    /// who shares no group with the Bot can still check its command key. It mirrors the Bot side's
+    /// trust on first push, and only for a Bot account:
+    ///
+    /// - The stored, verified account-kind attestation must say Bot: a human is `E_CREDENTIAL`, a
+    ///   user with no attestation `E_DEVICE_LIST_STALE`. Nothing is read from the push before that.
+    /// - The push goes through `ingest_device_list` unchanged: the whole history from version 1 (or
+    ///   chained from the cache), every list under the SSK, the SSK under the UMK, the one shared
+    ///   pin table. A first sight pins the UMK unverified; another UMK becomes the pending change
+    ///   (`changed_umk`) and is never put in place of the pinned one, so `botCommandKeyVerify`
+    ///   refuses until it is verified.
+    ///
+    /// Returns CBOR `[state, version]`: state 0 the cache vouches for the Bot, 1 a key change is
+    /// held, 2 the push did not reach the signed head (behind).
+    pub fn bot_device_list_pin(
+        &mut self,
+        bot_user_id: &[u8; 16],
+        push: &[u8],
+        now: u64,
+    ) -> Result<Vec<u8>, ClientError> {
+        match self.read(|c| account_kind::attested_kind(c, bot_user_id))? {
+            Some(k) if k == Kind::Bot.as_u8() => {}
+            Some(_) => return Err(ClientError::new(E_CREDENTIAL, "not a Bot account")),
+            None => {
+                return Err(ClientError::new(
+                    E_DEVICE_LIST_STALE,
+                    "no account-kind attestation",
+                ));
+            }
+        }
+        let (state, version) = match self.ingest_device_list(bot_user_id, push, now)? {
+            trust::PushedList::Current { version, .. } => (0u64, version),
+            trust::PushedList::Held { version, .. } => (1, version),
+            trust::PushedList::Behind { version, .. } => (2, version),
+        };
+        let mut e = Encoder::with_capacity(12);
+        e.array(2).uint(state).uint(version);
+        Ok(e.into_vec())
+    }
+
     /// Verifies a command-key publication for `bot_user_id` at `now` (`verify_publication`).
     /// Returns the publication and CBOR `[key_id, fingerprint]`, the fingerprint being 12
     /// Crockford characters of SHA-256(command key).

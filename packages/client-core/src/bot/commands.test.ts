@@ -27,10 +27,14 @@ function fakePort() {
   let next = 0x20;
   const submit = vi.fn((req: BotCommandSubmit) => { submits.push(req); return port.submitError === null ? Promise.resolve() : Promise.reject(port.submitError); });
   const refetchCatalog = vi.fn(() => { refetches++; return Promise.resolve(); });
+  const forgotten: string[] = [];
   const port: BotCommandPort & { submits: BotCommandSubmit[]; answer(a: Partial<BotAnswerEvent> & { seq: number }): void; refetches(): number;
-    submitError: Error | null; submitMock: typeof submit; refetchMock: typeof refetchCatalog } = {
+    submitError: Error | null; submitMock: typeof submit; refetchMock: typeof refetchCatalog; forgotten: string[]; listening(id: string): number } = {
     submits,
     submitError: null,
+    forgotten,
+    forget: (requestId) => { forgotten.push(requestId); },
+    listening: (id) => listeners.get(id)?.size ?? 0,
     submit,
     submitMock: submit,
     refetchMock: refetchCatalog,
@@ -147,7 +151,7 @@ describe('sendBotCommand (the page side)', () => {
 });
 
 /** The worker side, faked around a core whose seal and open are recorded. */
-function fakeRelay(over: { publication?: Uint8Array | null; sealError?: string[] } = {}) {
+function fakeRelay(over: { publication?: Uint8Array | null; sealError?: string[]; refreshed?: Uint8Array | null } = {}) {
   const emitted: BotAnswerEvent[] = [];
   const posts: { communityId: string; body: Uint8Array; idem: Uint8Array }[] = [];
   const sealErrors = [...(over.sealError ?? [])];
@@ -168,7 +172,9 @@ function fakeRelay(over: { publication?: Uint8Array | null; sealError?: string[]
     botReplyForget: vi.fn((h: number) => { forgotten.push(h); }),
   };
   const publication = over.publication === undefined ? PUBLICATION : over.publication;
-  const catalog = { publication: vi.fn(() => publication), reverify: vi.fn(() => publication !== null) };
+  let usable = publication;
+  const catalog = { publication: vi.fn(() => usable), reverify: vi.fn(() => usable !== null), invalidate: vi.fn(() => undefined),
+    refresh: vi.fn(() => { usable = over.refreshed === undefined ? usable : over.refreshed; return Promise.resolve(); }) };
   const post = vi.fn((communityId: string, body: Uint8Array, idem: Uint8Array) => { posts.push({ communityId, body, idem }); return Promise.resolve(); });
   const deps: BotRelayDeps = {
     core: () => core, catalog,
@@ -181,8 +187,9 @@ function fakeRelay(over: { publication?: Uint8Array | null; sealError?: string[]
   };
   return { relay: new BotCommandRelay(deps), core, catalog, deps, emitted, posts, forgotten, post };
 }
-const sealedReply = (handle: number, status: number, body: string): Uint8Array =>
-  new Uint8Array([handle, ...encodeBotAnswer({ status, body: text(body) })]);
+/** An answer sealed to `handle` (the fake core opens it when the first byte names its handle); `final` is the sealed one. */
+const sealedReply = (handle: number, status: number, body: string, final = false): Uint8Array =>
+  new Uint8Array([handle, ...encodeBotAnswer({ status, body: text(body), final })]);
 
 describe('BotCommandRelay (the worker side)', () => {
   beforeEach(() => { vi.useFakeTimers(); });
@@ -209,43 +216,54 @@ describe('BotCommandRelay (the worker side)', () => {
     expect(f.posts).toHaveLength(0);
   });
 
-  it('a key the core no longer holds as verified is checked again once, then sealed', async () => {
-    const f = fakeRelay({ sealError: ['E_BOT_KEY_STALE'] });
+  it('a stale or expired key drops this device’s verdict, refetches the catalog once and checks again (M2)', async () => {
+    // The core refuses the held key; checking again locally still fails; the catalog read brings the rotated key.
+    const rotated = new Uint8Array([9]);
+    const f = fakeRelay({ sealError: ['E_BOT_STALE'], refreshed: rotated });
+    f.catalog.reverify.mockReturnValueOnce(false);
     await f.relay.send({ communityId: COMMUNITY, channelId: null, operation: 80, args: [], requestId: REQUEST });
-    expect(f.catalog.reverify).toHaveBeenCalledTimes(1);
-    expect(f.core.botCommandSeal).toHaveBeenCalledTimes(2);
-    const g = fakeRelay({ sealError: ['E_BOT_STALE', 'E_BOT_STALE'] });
-    await expect(g.relay.send({ communityId: COMMUNITY, channelId: null, operation: 80, args: [], requestId: REQUEST })).rejects.toMatchObject({ code: 'E_BOT_STALE' });
+    expect(f.catalog.invalidate).toHaveBeenCalledWith(COMMUNITY);
+    expect(f.catalog.refresh).toHaveBeenCalledTimes(1);
+    expect(f.core.botCommandSeal.mock.calls[1][0]).toEqual(rotated);
+    // Still refused after all that: the refusal goes to the page, with no loop.
+    const g = fakeRelay({ sealError: ['E_BOT_KEY_STALE', 'E_BOT_KEY_STALE'] });
+    g.catalog.reverify.mockReturnValueOnce(false);
+    await expect(g.relay.send({ communityId: COMMUNITY, channelId: null, operation: 80, args: [], requestId: REQUEST })).rejects.toMatchObject({ code: 'E_BOT_KEY_STALE' });
+    expect(g.catalog.refresh).toHaveBeenCalledTimes(1);
     expect(g.posts).toHaveLength(0);
   });
 
-  it('opens each answer with its own reply handle, drops a replayed one, and forgets the handle on the final answer', async () => {
+  it('ends the stream on the sealed final only; the envelope’s final is not trusted (#3)', async () => {
     const f = fakeRelay();
     await f.relay.send({ communityId: COMMUNITY, channelId: null, operation: 12, args: ['x'], requestId: REQUEST });
-    f.relay.onReply({ requestId: fid(0x10), seq: 0, sealed: sealedReply(1, 200, 'Searching…'), final: false });
-    f.relay.onReply({ requestId: fid(0x10), seq: 0, sealed: sealedReply(1, 200, 'Searching…'), final: false });
-    f.relay.onReply({ requestId: fid(0x10), seq: 1, sealed: sealedReply(1, 200, 'Now playing'), final: true });
+    // The server says final, the Bot did not: the stream goes on.
+    f.relay.onReply({ requestId: fid(0x10), seq: 0, sealed: sealedReply(1, 200, 'Searching…', false), final: true });
+    f.relay.onReply({ requestId: fid(0x10), seq: 0, sealed: sealedReply(1, 200, 'Searching…', false), final: false });
+    // The server says not final, the Bot did: it ends.
+    f.relay.onReply({ requestId: fid(0x10), seq: 1, sealed: sealedReply(1, 200, 'Now playing', true), final: false });
     expect(f.emitted.map(a => [a.seq, new TextDecoder().decode(a.body), a.final])).toEqual([[0, 'Searching…', false], [1, 'Now playing', true]]);
     expect(f.core.botReplyOpen.mock.calls[0][1]).toEqual(fid(0x10));
     expect(f.forgotten).toEqual([1]);
-    // After the final answer the request is gone: a late frame opens nothing.
-    f.relay.onReply({ requestId: fid(0x10), seq: 2, sealed: sealedReply(1, 200, 'late'), final: true });
+    f.relay.onReply({ requestId: fid(0x10), seq: 2, sealed: sealedReply(1, 200, 'late', true), final: true });
     expect(f.emitted).toHaveLength(2);
   });
 
-  it('a retry seals afresh with the same id and an answer to either reply key opens', async () => {
+  it('a retry keeps only the newest reply key: an answer sealed to the old one is dropped (#4)', async () => {
     const f = fakeRelay();
     await f.relay.send({ communityId: COMMUNITY, channelId: null, operation: 81, args: [], requestId: REQUEST });
+    f.relay.onReply({ requestId: fid(0x10), seq: 0, sealed: sealedReply(1, 200, 'first', false), final: false });
     await f.relay.send({ communityId: COMMUNITY, channelId: null, operation: 81, args: [], requestId: REQUEST });
-    expect(f.posts.map(p => toHex(decode(p.body) instanceof Array ? (decode(p.body) as Uint8Array[])[0] : new Uint8Array()))).toEqual([REQUEST, REQUEST]);
+    expect(f.forgotten).toEqual([1]);
     expect(toHex(f.posts[0].idem)).not.toBe(toHex(f.posts[1].idem));
-    // The Bot answers the first seal's reply key (it de-duplicates by request id).
-    f.relay.onReply({ requestId: fid(0x10), seq: 0, sealed: sealedReply(1, 200, 'list'), final: true });
-    expect(f.emitted).toHaveLength(1);
-    expect(f.forgotten.sort()).toEqual([1, 2]);
+    f.relay.onReply({ requestId: fid(0x10), seq: 1, sealed: sealedReply(1, 200, 'old key', true), final: true });
+    expect(f.emitted.map(a => new TextDecoder().decode(a.body))).toEqual(['first']);
+    // The newest send's stream starts over: its seq 0 is accepted.
+    f.relay.onReply({ requestId: fid(0x10), seq: 0, sealed: sealedReply(2, 200, 'list', true), final: true });
+    expect(f.emitted.map(a => new TextDecoder().decode(a.body))).toEqual(['first', 'list']);
+    expect(f.forgotten).toEqual([1, 2]);
   });
 
-  it('forgets the reply handle 2 min after the last answer', async () => {
+  it('forgets the reply handle 2 min after the last answer, or when the page closes the run (M5)', async () => {
     const f = fakeRelay();
     await f.relay.send({ communityId: COMMUNITY, channelId: null, operation: 12, args: [], requestId: REQUEST });
     await vi.advanceTimersByTimeAsync(BOT_REPLY_HOLD_MS - 1000);
@@ -254,13 +272,16 @@ describe('BotCommandRelay (the worker side)', () => {
     expect(f.forgotten).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     expect(f.forgotten).toEqual([1]);
+    await f.relay.send({ communityId: COMMUNITY, channelId: null, operation: 12, args: [], requestId: REQUEST });
+    f.relay.forget(REQUEST);
+    expect(f.forgotten).toEqual([1, 2]);
   });
 
   it('a reply for no request of this device, or one that does not open, is dropped', async () => {
     const f = fakeRelay();
-    f.relay.onReply({ requestId: fid(0x33), seq: 0, sealed: sealedReply(1, 200, 'x'), final: true });
+    f.relay.onReply({ requestId: fid(0x33), seq: 0, sealed: sealedReply(1, 200, 'x', true), final: true });
     await f.relay.send({ communityId: COMMUNITY, channelId: null, operation: 12, args: [], requestId: REQUEST });
-    f.relay.onReply({ requestId: fid(0x10), seq: 0, sealed: sealedReply(9, 200, 'x'), final: true });
+    f.relay.onReply({ requestId: fid(0x10), seq: 0, sealed: sealedReply(9, 200, 'x', true), final: true });
     expect(f.emitted).toEqual([]);
   });
 
@@ -273,11 +294,63 @@ describe('BotCommandRelay (the worker side)', () => {
 });
 
 describe('the answer plaintext', () => {
-  it('is [status, body] and nothing else', () => {
-    expect(decodeBotAnswer(encode([200, text('hi')]))).toEqual({ status: 200, body: text('hi') });
-    expect(() => decodeBotAnswer(encode([200, 'hi']))).toThrow();
-    expect(() => decodeBotAnswer(encode([70000, text('hi')]))).toThrow();
-    expect(() => decodeBotAnswer(encode([200, text('hi'), 1]))).toThrow();
-    expect(toHex(encodeBotAnswer({ status: 0, body: fromHex('80') }))).toBe('82004180');
+  it('is [status, body, final] and nothing else', () => {
+    expect(decodeBotAnswer(encode([200, text('hi'), 1]))).toEqual({ status: 200, body: text('hi'), final: true });
+    expect(decodeBotAnswer(encode([200, text('hi'), 0]))).toEqual({ status: 200, body: text('hi'), final: false });
+    expect(() => decodeBotAnswer(encode([200, text('hi')]))).toThrow();
+    expect(() => decodeBotAnswer(encode([200, 'hi', 1]))).toThrow();
+    expect(() => decodeBotAnswer(encode([70000, text('hi'), 1]))).toThrow();
+    expect(() => decodeBotAnswer(encode([200, text('hi'), 2]))).toThrow();
+    expect(toHex(encodeBotAnswer({ status: 0, body: fromHex('80'), final: true }))).toBe('8300418001');
+  });
+});
+
+describe('fix round 1: the page side', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('a first answer that arrives after the timeout, before Retry, is shown (M4)', async () => {
+    const port = fakePort();
+    const run = createBotCommands(port).sendBotCommand({ communityId: COMMUNITY, channelId: null, operation: 81, args: [], requestId: REQUEST });
+    const late = vi.fn();
+    run.onLate(late);
+    const all = collect(run.answers);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await all).toEqual([{ kind: 'timeout' }]);
+    port.answer({ seq: 0, body: text('Saved'), final: true });
+    expect(late).toHaveBeenCalledWith({ status: 200, body: text('Saved'), final: true });
+    expect(port.listening(REQUEST)).toBe(0);
+    // Retry after that still works as a resend of the same id (the Bot de-duplicates).
+    run.retry();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(port.submits.map(s => s.requestId)).toEqual([REQUEST, REQUEST]);
+  });
+
+  it('Retry ends the timed-out run: a later answer goes to the new run only', async () => {
+    const port = fakePort();
+    const run = createBotCommands(port).sendBotCommand({ communityId: COMMUNITY, channelId: null, operation: 81, args: [], requestId: REQUEST });
+    const late = vi.fn();
+    run.onLate(late);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const again = run.retry();
+    const second = collect(again.answers);
+    await vi.advanceTimersByTimeAsync(0);
+    port.answer({ seq: 0, body: text('list'), final: true });
+    expect(await second).toEqual([{ status: 200, body: text('list'), final: true }]);
+    expect(late).not.toHaveBeenCalled();
+  });
+
+  it('cancel ends the run with no item and asks the worker to forget the reply secret (M5)', async () => {
+    const port = fakePort();
+    const run = createBotCommands(port).sendBotCommand({ communityId: COMMUNITY, channelId: null, operation: 81, args: [], requestId: REQUEST });
+    const all = collect(run.answers);
+    await vi.advanceTimersByTimeAsync(0);
+    run.cancel();
+    expect(await all).toEqual([]);
+    expect(port.forgotten).toEqual([REQUEST]);
+    expect(port.listening(REQUEST)).toBe(0);
+    port.answer({ seq: 0, final: true });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(port.submits).toHaveLength(1);
   });
 });

@@ -2,7 +2,7 @@
 // catalog's shapes say (text, a whole number, a member or channel id, seconds, on/off); its answers stream into the private
 // result row ("Searching…", then "Now playing: …"); with no first answer in 5 s the run is uncertain and the composer keeps
 // the draft with a Retry that reuses the request id. Nothing here polls: the answers come with the socket.
-import { botCommands, fromHex, parseReminderTime, type BotArg, type BotCatalogView, type CommandDefinition, type CommandInvocation,
+import { botCommands, fromHex, parseReminderTime, type BotAnswer, type BotArg, type BotCatalogView, type BotCommandRun, type CommandDefinition, type CommandInvocation,
   type CommandResult } from '@dilla/client-core';
 import { t } from '../../strings/index.ts';
 import type { CommandExecutionContext, CommandHandler } from './command-types.ts';
@@ -21,8 +21,8 @@ export function botSince(since: number | null): string {
 
 /**
  * Why a catalog command is greyed for this member, or undefined when it can run. A Bot that is not ready greys every
- * command with its state and since (a key the core refused reads as offline); a command whose result is a channel post
- * needs a Bot channel this member can view. Commands never vanish for either reason.
+ * command with its state and since; a key this device cannot check, or a Bot account other than the one it pinned, has its
+ * own reason; a command whose result is a channel post needs a Bot channel this member can view. Commands never vanish.
  */
 export function botCommandReason(view: BotCatalogView | null | undefined, definition: CommandDefinition): string | undefined {
   if (view === null || view === undefined || definition.bot === undefined) return undefined;
@@ -31,6 +31,8 @@ export function botCommandReason(view: BotCatalogView | null | undefined, defini
     case 'offline': return t('commands.botOffline', { time: botSince(view.status.since) });
     case 'disabled': return t('commands.botDisabled');
     case 'absent': return t('commands.botNotOnInstance');
+    case 'unverified': return t('commands.botUnverified');
+    case 'changed': return t('commands.botChanged');
     case 'ready': break;
   }
   if (definition.bot.needsBotChannel && (view.botChannels ?? []).length === 0) return t('commands.needsBotChannel');
@@ -94,17 +96,41 @@ function answerText(body: Uint8Array): string | null {
   try { return decoder.decode(body); } catch { return null; }
 }
 
-/** A refusal before the Bot saw the command, as the result row says it. */
-function refusalText(code: string, view: BotCatalogView | null | undefined): string {
-  if (code === 'E_BOT_OFFLINE') return t('commands.botOffline', { time: botSince(view?.status.since ?? null) });
-  return t('privateResult.failed');
+/** A refusal code as the result row says it (M3): before the Bot saw the command, or a Bot answer whose body is a code. */
+function codeText(code: string, view: BotCatalogView | null | undefined): string | null {
+  switch (code) {
+    case 'E_BOT_OFFLINE': return t('commands.botOffline', { time: botSince(view?.status.since ?? null) });
+    case 'E_NOT_BOT_CHANNEL': return t('commands.needsBotChannel');
+    // The command route answers 403 only when the community's Bot is turned off.
+    case 'E_BOT_DISABLED': return t('commands.botDisabled');
+    case 'E_BOT_KEY_STALE': case 'E_BOT_STALE': return t('commands.botUnverified');
+    default: return null;
+  }
+}
+
+/** The result of one Bot answer: its text, or for a refusal (status ≥ 400) its code's copy. */
+function answerResult(answer: BotAnswer, view: BotCatalogView | null | undefined): CommandResult {
+  const text = answerText(answer.body);
+  if (answer.status < 400) return { status: 'success', private: true, ...(text === null ? {} : { message: text }) };
+  const coded = text !== null && /^E_[A-Z_]+$/u.test(text) ? codeText(text, view) ?? (text === 'E_FORBIDDEN' ? t('commands.botForbidden') : null) : null;
+  return { status: 'failure', private: true, message: coded ?? (text !== null && !/^E_[A-Z_]+$/u.test(text) ? text
+    : answer.status === 403 ? t('commands.botForbidden') : t('privateResult.failed')) };
+}
+
+export interface BotRunHooks {
+  /** A streamed answer before the last ("Searching…"): the result row shows it. */
+  progress(context: CommandExecutionContext, text: string): void;
+  /** After a timeout: the first answer that still arrived (M4). */
+  late(context: CommandExecutionContext, result: CommandResult): void;
+  /** The run started: the host cancels it when the composer closes (M5). */
+  started(run: BotCommandRun): void;
 }
 
 /**
  * The handler of one catalog command: sends it sealed, shows each answer as it arrives (progress) and returns the last
  * one. A command whose result is a channel post, answered with no text, says where it went.
  */
-export function botCommandHandler(definition: CommandDefinition, progress: (context: CommandExecutionContext, text: string) => void): CommandHandler {
+export function botCommandHandler(definition: CommandDefinition, hooks: BotRunHooks): CommandHandler {
   return async (invocation: CommandInvocation, context: CommandExecutionContext): Promise<CommandResult> => {
     const communityId = context.binding.communityId;
     const bot = definition.bot;
@@ -118,20 +144,29 @@ export function botCommandHandler(definition: CommandDefinition, progress: (cont
     const callChannel = MUSIC_COMMANDS.has(definition.id) ? context.getCall().channelId ?? null : null;
     const run = botCommands(context.client).sendBotCommand({ communityId, channelId: callChannel ?? context.binding.channelId,
       operation: bot.operation, args, requestId: context.requestId });
+    hooks.started(run);
     let last: string | null = null;
+    let ended = false;
     for await (const item of run.answers) {
       if ('kind' in item) {
-        if (item.kind === 'timeout') return { status: 'uncertain', private: true, message: t('commands.botNoAnswer'), retry: true };
+        if (item.kind === 'timeout') {
+          run.onLate(answer => { hooks.late(context, answerResult(answer, context.client.get(`botCatalog:${communityId}`))); });
+          return { status: 'uncertain', private: true, message: t('commands.botNoAnswer'), retry: true };
+        }
         // The held status said ready, but the Bot is not: read the catalog once so the picker greys with the real reason.
         if (item.code === 'E_BOT_OFFLINE') void context.client.call({ m: 'syncBotCatalog', communityId }).catch(() => undefined);
-        return { status: 'failure', private: true, message: refusalText(item.code, view) };
+        return { status: 'failure', private: true, message: codeText(item.code, view)
+          ?? (item.status === 403 ? t('commands.botDisabled') : t('privateResult.failed')) };
       }
+      if (item.status >= 400) return answerResult(item, view);
       const text = answerText(item.body);
-      if (item.status >= 400) return { status: 'failure', private: true, message: text ?? t('privateResult.failed') };
       if (text !== null) last = text;
-      if (!item.final) { if (text !== null) progress(context, text); continue; }
+      if (!item.final) { if (text !== null) hooks.progress(context, text); continue; }
+      ended = true;
       break;
     }
+    // The composer closed (cancel): no answer is shown for it.
+    if (!ended && last === null) return { status: 'uncertain', private: true, message: t('commands.botNoAnswer') };
     if (last === null && bot.needsBotChannel) {
       const channelId = definition.options.find((_, index) => bot.argTypes[index] === 3)?.name;
       const target = channelId === undefined ? undefined : invocation.args[channelId];
