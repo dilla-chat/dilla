@@ -60,6 +60,8 @@ export const PATH_RULES = [
   { areas: ['go'], patterns: ['packages/desktop/release-trust.json', 'packages/desktop/src/update-keys.ts'] },
   // internal/api/invites_test.go (TestLandingTokensMatchMesh) reads dist/tokens.css.
   { areas: ['go'], patterns: ['packages/design-tokens/**'] },
+  // internal/dillad/socket_routes_manifest_test.go holds the mux to the client's socket-route manifest.
+  { areas: ['go'], patterns: ['packages/client-core/src/http/socket-routes.ts'] },
   { areas: ['go'], patterns: ['packages/web/dist', 'packages/web/dist/**'] },
   // packages/client-core/src/profile-text.test.ts reads the RGI sequences the generator writes for the Go tests too.
   { areas: ['web'], patterns: ['internal/auth/testdata/rgi-zwj-sequences.txt'] },
