@@ -877,3 +877,57 @@ func TestWebhookPerNetworkLimit(t *testing.T) {
 		t.Fatalf("another /48 = %d, want 401", rec.Code)
 	}
 }
+
+// Fix round 2 S1: junk from a network spends only the failure buckets, so a valid sender on the same network still
+// posts, and the junk itself is still limited.
+func TestWebhookJunkFromANetworkDoesNotThrottleAValidSender(t *testing.T) {
+	f := newWebhookFixture(t)
+	_, url := f.create(t, f.text, "Terraria", 0)
+	for i := range server.WebhookPrefixClass.Burst {
+		addr := "[2001:db8:9:" + strconv.FormatInt(int64(i), 16) + "::1]:1"
+		if rec := f.post(t, "/hooks/"+id.New().String()+"/x", "application/json", []byte(`{"text":"x"}`), addr); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("junk %d = %d, want 401", i, rec.Code)
+		}
+	}
+	// The network's failures are now limited...
+	rec := f.post(t, "/hooks/"+id.New().String()+"/x", "application/json", []byte(`{"text":"x"}`), "[2001:db8:9:fffe::1]:1")
+	wantHookStatus(t, rec, http.StatusTooManyRequests, "E_RATE_LIMITED")
+	// ...and a valid sender on the same /48 is not.
+	wantHookStatus(t, f.post(t, hookPath(t, url), "application/json", []byte(`{"text":"still here"}`), "[2001:db8:9:ffff::1]:1"), http.StatusNoContent, "")
+}
+
+// Fix round 2 S1: an address that keeps presenting wrong secrets is refused before any work, whatever it presents
+// next; a bad id and a bad secret spend the failure bucket alike.
+func TestWebhookBadSecretFloodIsStillLimited(t *testing.T) {
+	f := newWebhookFixture(t)
+	wid, url := f.create(t, f.text, "Terraria", 0)
+	wrong := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
+	const flooder = "198.51.100.99:1"
+	for i := range server.WebhookAddressClass.Burst {
+		path := "/hooks/" + wid.String() + "/" + wrong
+		if i%2 == 1 {
+			path = "/hooks/" + id.New().String() + "/" + wrong
+		}
+		if rec := f.post(t, path, "application/json", []byte(`{"text":"x"}`), flooder); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d = %d, want 401", i, rec.Code)
+		}
+	}
+	before := f.counts.count()
+	rec := f.post(t, hookPath(t, url), "application/json", []byte(`{"text":"x"}`), flooder)
+	wantHookStatus(t, rec, http.StatusTooManyRequests, "E_RATE_LIMITED")
+	if f.counts.count() != before {
+		t.Fatal("an address over its failure bucket still caused a webhook lookup")
+	}
+}
+
+// Fix round 2 S1: every request, valid secrets included, spends the address's all-requests bucket.
+func TestWebhookAllRequestsBucketBoundsAnAddress(t *testing.T) {
+	f := newWebhookFixture(t)
+	_, url := f.create(t, f.text, "Terraria", 0)
+	const sender = "192.0.2.77:1"
+	for range server.WebhookAddressAllClass.Burst {
+		f.deps.Limiter.Allow(server.WebhookAddressAllClass, "192.0.2.77")
+	}
+	wantHookStatus(t, f.post(t, hookPath(t, url), "application/json", []byte(`{"text":"x"}`), sender), http.StatusTooManyRequests, "E_RATE_LIMITED")
+	wantHookStatus(t, f.post(t, hookPath(t, url), "application/json", []byte(`{"text":"x"}`), "192.0.2.78:1"), http.StatusNoContent, "")
+}

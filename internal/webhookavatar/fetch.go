@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"sync"
 	"time"
 )
 
@@ -89,52 +90,74 @@ func CheckURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-// blockedPrefixes are the special-purpose ranges netip's predicates do not name: this network, CGNAT, IETF protocol
-// assignments, documentation, benchmarking, reserved and broadcast, the old site-local and the discard-only ranges.
-var blockedPrefixes = func() []netip.Prefix {
-	var out []netip.Prefix
-	for _, s := range []string{
-		"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24",
-		"203.0.113.0/24", "240.0.0.0/4",
-		"100::/64", "2001:db8::/32", "fec0::/10", "2001::/32", // the last is Teredo: its embedded address is the relay's
-	} {
+// blocked4 are the IPv4 special-purpose ranges netip's predicates do not name: this network, CGNAT, IETF protocol
+// assignments, documentation, benchmarking, and reserved with broadcast.
+var blocked4 = prefixes("0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24",
+	"203.0.113.0/24", "240.0.0.0/4")
+
+// blocked6 are the special-purpose ranges inside 2000::/3: the IETF protocol assignments (2001::/23, which holds
+// Teredo 2001::/32, benchmarking and ORCHID) and both documentation ranges. Teredo is refused outright rather than
+// decoded: its embedded client address is obfuscated and its server address is a relay's, so neither names the host
+// that would answer.
+var blocked6 = prefixes("2001::/23", "2001:db8::/32", "3fff::/20")
+
+var (
+	// global6 is the IPv6 global unicast space, the only IPv6 an avatar may come from (fix round 2 S2/N-1):
+	// anything outside it (::/96, ::ffff:0:0/96 SIIT, 64:ff9b:1::/48 local-use NAT64, 100::/64, fc00::/7, fe80::/10,
+	// fec0::/10, ff00::/8, and every future special range) is refused by default.
+	global6 = netip.MustParsePrefix("2000::/3")
+	// The two translation forms whose IPv4 position is fixed are decoded and the embedded IPv4 vetted instead.
+	sixToFour = netip.MustParsePrefix("2002::/16")    // RFC 3056: bytes 2-5
+	nat64     = netip.MustParsePrefix("64:ff9b::/96") // RFC 6052 well-known prefix: bytes 12-15
+)
+
+func prefixes(list ...string) []netip.Prefix {
+	out := make([]netip.Prefix, 0, len(list))
+	for _, s := range list {
 		out = append(out, netip.MustParsePrefix(s))
 	}
 	return out
-}()
+}
 
-var (
-	sixToFour = netip.MustParsePrefix("2002::/16")
-	nat64     = netip.MustParsePrefix("64:ff9b::/96")
-	nat64Ext  = netip.MustParsePrefix("64:ff9b:1::/48")
-	v4compat  = netip.MustParsePrefix("::/96")
-)
-
-// Blocked reports whether a may not be fetched from: it is not valid, is loopback, private (RFC 1918 or ULA
-// fc00::/7), link-local, multicast, unspecified, in a special-purpose range, one of self, or an IPv4-mapped,
-// IPv4-compatible, 6to4 or NAT64 form of any of those.
+// Blocked reports whether a may not be fetched from. IPv4 (an IPv4-mapped address is read as its IPv4) must be
+// public unicast: not loopback, RFC 1918, link-local, multicast, unspecified, nor in blocked4. IPv6 must be in
+// 2000::/3 and not in blocked6, except that 6to4 and the NAT64 well-known /96 are decoded and their embedded IPv4
+// vetted as IPv4. Neither may be one of self.
 func Blocked(a netip.Addr, self []netip.Addr) bool {
-	a = a.WithZone("").Unmap()
-	if !a.IsValid() || a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() ||
-		a.IsInterfaceLocalMulticast() || a.IsMulticast() || a.IsUnspecified() {
+	a = a.WithZone("")
+	if a.Is4In6() {
+		a = a.Unmap()
+	}
+	if !a.IsValid() {
 		return true
-	}
-	for _, p := range blockedPrefixes {
-		if p.Contains(a) {
-			return true
-		}
-	}
-	if a.Is6() {
-		b := a.As16()
-		switch {
-		case sixToFour.Contains(a):
-			return Blocked(netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}), self)
-		case nat64.Contains(a), nat64Ext.Contains(a), v4compat.Contains(a):
-			return Blocked(netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}), self)
-		}
 	}
 	for _, s := range self {
 		if s.WithZone("").Unmap() == a {
+			return true
+		}
+	}
+	if a.Is4() {
+		if a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() || a.IsMulticast() || a.IsUnspecified() {
+			return true
+		}
+		for _, p := range blocked4 {
+			if p.Contains(a) {
+				return true
+			}
+		}
+		return false
+	}
+	b := a.As16()
+	switch {
+	case sixToFour.Contains(a):
+		return Blocked(netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}), self)
+	case nat64.Contains(a):
+		return Blocked(netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}), self)
+	case !global6.Contains(a):
+		return true
+	}
+	for _, p := range blocked6 {
+		if p.Contains(a) {
 			return true
 		}
 	}
@@ -152,16 +175,48 @@ type FetchOptions struct {
 	Resolver Resolver
 	// Self is the instance's own addresses (its public IP and its interfaces), refused like private ones.
 	Self []netip.Addr
+	// SelfDomain is instance.domain: its resolved addresses are refused too (fix round 2 N-4), so an avatar URL that
+	// names the operator's own public address cannot hairpin through their reverse proxy from inside the network.
+	// It is re-resolved at most every SelfRefresh, on the fetch path.
+	SelfDomain string
 	// RootCAs, nil for the system pool.
 	RootCAs *x509.CertPool
 	// Dial connects to a vetted address; nil dials it with a plain net.Dialer.
 	Dial func(ctx context.Context, network string, addr netip.AddrPort) (net.Conn, error)
 }
 
+// SelfRefresh is how often instance.domain is resolved again for the refused set.
+const SelfRefresh = 10 * time.Minute
+
 // Fetcher fetches and processes one avatar at a time; it is safe for concurrent use.
 type Fetcher struct {
 	o      FetchOptions
 	client *http.Client
+
+	selfMu     sync.Mutex
+	selfDomain []netip.Addr
+	selfAt     time.Time
+}
+
+// self is the refused set: Self and the last addresses instance.domain resolved to. A failed lookup keeps the previous
+// answer; the static addresses always stay.
+func (f *Fetcher) self(ctx context.Context) []netip.Addr {
+	if f.o.SelfDomain == "" {
+		return f.o.Self
+	}
+	f.selfMu.Lock()
+	defer f.selfMu.Unlock()
+	if f.selfAt.IsZero() || time.Since(f.selfAt) >= SelfRefresh {
+		host := f.o.SelfDomain
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if addrs, err := f.o.Resolver.LookupNetIP(ctx, "ip", host); err == nil {
+			f.selfDomain = addrs
+		}
+		f.selfAt = time.Now()
+	}
+	return append(append([]netip.Addr(nil), f.o.Self...), f.selfDomain...)
 }
 
 // NewFetcher builds a Fetcher.
@@ -210,8 +265,9 @@ func (f *Fetcher) dial(ctx context.Context, network, addr string) (net.Conn, err
 	if len(addrs) == 0 {
 		return nil, ErrAddress
 	}
+	self := f.self(ctx)
 	for _, a := range addrs {
-		if Blocked(a, f.o.Self) {
+		if Blocked(a, self) {
 			return nil, ErrAddress
 		}
 	}

@@ -519,7 +519,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if o.Config.Instance.PublicIP.IsValid() {
 		avatarSelf = append(avatarSelf, o.Config.Instance.PublicIP)
 	}
-	deps.WebhookAvatars = webhookavatar.New(webhookavatar.Options{Clock: o.Clock, Limiter: limiter, Self: avatarSelf})
+	// instance.domain is resolved too (fix round 2 N-4), every 10 minutes on the fetch path: behind a proxy it names the
+	// proxy's public address, which public_ip may not be set to.
+	deps.WebhookAvatars = webhookavatar.New(webhookavatar.Options{Clock: o.Clock, Limiter: limiter, Self: avatarSelf, SelfDomain: o.Config.Instance.Domain})
 	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log).WithBotFeed(botFeed)
 	deps.BotRevoked = func(ctx context.Context, installation store.BotInstallationRow, remove bool) {
 		if remove {

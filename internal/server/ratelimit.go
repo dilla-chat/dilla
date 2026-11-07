@@ -18,15 +18,24 @@ type Class struct {
 	Burst     int
 }
 
-// The incoming-webhook buckets (Bot v2 task 13). POST /hooks/{webhook_id}/{secret} is unauthenticated, so it is
-// metered twice. WebhookAddressClass is keyed by the client address (RateKey of RealIP) and spent first, by every
-// attempt, known id or not: it bounds how fast one address can try ids or secrets and how much store and hashing
-// work it can cause. 2 per second with a burst of 20 lets one integration host feed several webhooks at their own
-// full rate, while an enumeration of random 128-bit ids with 256-bit secrets is hopeless at any rate. WebhookClass
-// is keyed by the webhook id and spent only once the secret matched: 30 a minute with a burst of 5 (spec G5).
+// The incoming-webhook buckets (Bot v2 task 13). POST /hooks/{webhook_id}/{secret} is unauthenticated:
+//   - WebhookAddressAllClass is spent by every request of a client address (RateKey of RealIP) and bounds the work
+//     any one address causes.
+//   - WebhookAddressClass and WebhookPrefixClass count failures only (fix round 2 S1): a request whose id or secret
+//     did not match, or that failed before the check. An address whose failure bucket is empty is refused before any
+//     work; a network's failure bucket only turns its failures' 401 into 429. A request with the right secret never
+//     touches either, so junk from a network cannot throttle a valid sender on it. Guessing a random 128-bit id with
+//     a 256-bit secret is hopeless at any of these rates.
+//   - WebhookClass is keyed by the webhook id and spent only once the secret matched: 30 a minute with a burst of 5
+//     (spec G5).
 var (
+	// WebhookAddressClass: one address's failures, 2 a second with a burst of 20.
 	WebhookAddressClass = Class{Name: "webhook_address", PerSecond: 2, Burst: 20}
-	// WebhookPrefixClass is keyed by RatePrefixKey (IPv4 /24, IPv6 /48) and spent right after the address bucket
+	// WebhookAddressAllClass is spent by every webhook request of an address, whatever its outcome (fix round 2 S1):
+	// 10 a second with a burst of 50 bounds the work one address causes, valid secrets included, well above what a
+	// host feeding even a dozen webhooks at their own 0.5 a second sends.
+	WebhookAddressAllClass = Class{Name: "webhook_address_all", PerSecond: 10, Burst: 50}
+	// WebhookPrefixClass is keyed by RatePrefixKey (IPv4 /24, IPv6 /48) and counts the network's failures
 	// (fix round 1 M-3): one network spreading attempts over its 65 536 /64s still meets one bucket.
 	WebhookPrefixClass = Class{Name: "webhook_prefix", PerSecond: 20, Burst: 100}
 	// WebhookAvatarClass (per webhook) and WebhookAvatarGlobalClass (the instance) meter avatar fetches (fix round
@@ -34,7 +43,10 @@ var (
 	// after a burst of 10. A refused fetch posts without an avatar.
 	WebhookAvatarClass       = Class{Name: "webhook_avatar", PerSecond: 1.0 / 30, Burst: 2}
 	WebhookAvatarGlobalClass = Class{Name: "webhook_avatar_all", PerSecond: 2, Burst: 10}
-	WebhookClass             = Class{Name: "webhook", PerSecond: 0.5, Burst: 5}
+	// WebhookAvatarCommunityClass (fix round 2 N-2) is one community's share: one fetch per 5 s after a burst of 5,
+	// so a community's 50 webhooks cannot fill the instance's 2 a second by themselves.
+	WebhookAvatarCommunityClass = Class{Name: "webhook_avatar_community", PerSecond: 0.2, Burst: 5}
+	WebhookClass                = Class{Name: "webhook", PerSecond: 0.5, Burst: 5}
 )
 
 type bucket struct {

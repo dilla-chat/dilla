@@ -560,6 +560,14 @@ func validAvatarURL(s string) bool {
 	return err == nil
 }
 
+// chargeHookFailure spends one token of the address's and the network's failure buckets and reports whether either
+// was empty, with the longer wait.
+func (d Deps) chargeHookFailure(addrKey, netKey string) (time.Duration, bool) {
+	okAddr, waitAddr := d.Limiter.Allow(server.WebhookAddressClass, addrKey)
+	okNet, waitNet := d.Limiter.Allow(server.WebhookPrefixClass, netKey)
+	return max(waitAddr, waitNet), !okAddr || !okNet
+}
+
 func webhookContentTypeOK(r *http.Request) bool {
 	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	return err == nil && mt == "application/json"
@@ -574,23 +582,35 @@ func (d Deps) PostWebhook(w http.ResponseWriter, r *http.Request) {
 		writeHookError(w, hookInternal)
 		return
 	}
+	// Metering before the secret is known (fix round 2 S1). Every request spends the generous all-requests bucket
+	// of its address, which bounds the work any one address causes. The failure buckets, per address and per
+	// network, are spent only by a request that fails before or at the secret check; a request whose secret matches
+	// never touches them, so junk from a network cannot throttle a valid sender on it. An address whose own failures
+	// emptied its failure bucket is refused before any work: that address is the one guessing.
 	client := server.RealIP(r, d.Config.Server.TrustedProxyCIDRs)
-	if ok, wait := d.Limiter.Allow(server.WebhookAddressClass, server.RateKey(client)); !ok {
+	addrKey, netKey := server.RateKey(client), server.RatePrefixKey(client)
+	if ok, wait := d.Limiter.Allow(server.WebhookAddressAllClass, addrKey); !ok {
 		writeHookError(w, hookRateLimited(wait))
 		return
 	}
-	if ok, wait := d.Limiter.Allow(server.WebhookPrefixClass, server.RatePrefixKey(client)); !ok {
+	if ok, wait := d.Limiter.Peek(server.WebhookAddressClass, addrKey); !ok {
 		writeHookError(w, hookRateLimited(wait))
 		return
+	}
+	failed := func(answer hookError) {
+		if wait, limited := d.chargeHookFailure(addrKey, netKey); limited {
+			answer = hookRateLimited(wait)
+		}
+		writeHookError(w, answer)
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBody))
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			writeHookError(w, hookTooLarge)
+			failed(hookTooLarge)
 			return
 		}
-		writeHookError(w, hookInvalid("the body could not be read"))
+		failed(hookInvalid("the body could not be read"))
 		return
 	}
 	ctx := r.Context()
@@ -600,8 +620,10 @@ func (d Deps) PostWebhook(w http.ResponseWriter, r *http.Request) {
 		writeHookError(w, hookInternal)
 		return
 	}
+	// A wrong secret and an unknown or malformed id have done the same work by here and spend the same buckets, so
+	// they still answer alike, in status, body and timing.
 	if !ok || r.URL.RawPath != "" {
-		writeHookError(w, hookUnauthenticated)
+		failed(hookUnauthenticated)
 		return
 	}
 	if ok, wait := d.Limiter.Allow(server.WebhookClass, hook.WebhookID.String()); !ok {

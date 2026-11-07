@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -145,9 +146,81 @@ func TestCacheCommunityCap(t *testing.T) {
 		b := append([]byte{byte(i)}, chunk...)
 		s.storeLocked(community, sha256.Sum256(b), b, clk.Now())
 	}
-	used, n := s.perComm[community], len(s.images[community])
+	used, n := s.comm[community].bytes, s.comm[community].order.Len()
 	s.mu.Unlock()
 	if used > CommunityBytes || n != 1 {
 		t.Fatalf("community holds %d bytes in %d images, want at most %d", used, n, CommunityBytes)
+	}
+}
+
+// Fix round 2 N-3: every image is charged EntryOverhead, the count is capped at MaxImages, and the oldest go first.
+func TestCacheChargesOverheadAndCapsTheCount(t *testing.T) {
+	s, clk := newTestService(t, &countingFetch{})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range MaxImages + 10 {
+		b := []byte{byte(i), byte(i >> 8), byte(i >> 16)}
+		s.storeLocked(id.New(), sha256.Sum256(b), b, clk.Now())
+	}
+	if len(s.images) != MaxImages || s.imgOrder.Len() != MaxImages {
+		t.Fatalf("%d images (%d in order), want MaxImages %d", len(s.images), s.imgOrder.Len(), MaxImages)
+	}
+	if s.total != MaxImages*(3+EntryOverhead) {
+		t.Fatalf("total %d bytes, want each image charged its PNG plus %d", s.total, EntryOverhead)
+	}
+	if len(s.comm) != MaxImages {
+		t.Fatalf("%d community lists, want one per cached image's community", len(s.comm))
+	}
+}
+
+// Fix round 2 N-3: expired images and URL outcomes are swept, not only skipped.
+func TestCacheSweepsExpiredEntries(t *testing.T) {
+	img := pngOf(t, 4, 4)
+	f := &countingFetch{answer: map[string][]byte{"https://example.com/a.png": img}}
+	s, clk := newTestService(t, f)
+	community := id.New()
+	s.Resolve(context.Background(), community, id.New(), "https://example.com/a.png", time.Second)
+	s.Resolve(context.Background(), community, id.New(), "https://example.com/missing.png", time.Second)
+	clk.Advance(PositiveTTL)
+	sum := sha256.Sum256(img)
+	if _, ok := s.Get(community, sum[:]); ok {
+		t.Fatal("an expired image was served")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.images) != 0 || s.total != 0 || len(s.comm) != 0 || len(s.urls) != 0 || s.urlOrder.Len() != 0 {
+		t.Fatalf("after expiry: %d images, %d bytes, %d communities, %d urls", len(s.images), s.total, len(s.comm), len(s.urls))
+	}
+}
+
+// Fix round 2 N-2: a fetch the webhook's own bucket refuses spends nothing of the community's or the instance's, and
+// one community cannot use up the instance's fetches.
+func TestCacheNarrowBucketsAreAskedFirst(t *testing.T) {
+	f := &countingFetch{answer: map[string][]byte{}}
+	s, _ := newTestService(t, f)
+	community, webhook := id.New(), id.New()
+	for i := range 20 {
+		s.Resolve(context.Background(), community, webhook, "https://example.com/"+strconv.Itoa(i)+".png", 0)
+	}
+	s.Wait()
+	if f.count() != 2 {
+		t.Fatalf("%d fetches for one webhook, want its burst of 2", f.count())
+	}
+	if global := s.o.Limiter.Tokens(server.WebhookAvatarGlobalClass, "instance"); global < float64(server.WebhookAvatarGlobalClass.Burst)-2 {
+		t.Fatalf("the instance bucket holds %.1f tokens, want all but the 2 spent", global)
+	}
+	// Many webhooks of one community stop at the community's burst.
+	for i := range 20 {
+		s.Resolve(context.Background(), community, id.New(), "https://example.com/c"+strconv.Itoa(i)+".png", 0)
+	}
+	s.Wait()
+	if want := server.WebhookAvatarCommunityClass.Burst; f.count() != want {
+		t.Fatalf("%d fetches for one community, want its burst of %d", f.count(), want)
+	}
+	// Another community still fetches.
+	s.Resolve(context.Background(), id.New(), id.New(), "https://example.com/other.png", 0)
+	s.Wait()
+	if f.count() != server.WebhookAvatarCommunityClass.Burst+1 {
+		t.Fatalf("another community's fetch was refused (%d fetches)", f.count())
 	}
 }

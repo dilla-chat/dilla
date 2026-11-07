@@ -89,15 +89,18 @@ func (a *avatarServer) fetcher(t *testing.T, self ...string) *Fetcher {
 	}
 	return NewFetcher(FetchOptions{
 		Resolver: fakeResolver{
-			"example.com":   {"93.184.216.34"},
-			"cdn.test":      {"93.184.216.35"},
-			"internal.test": {"10.0.0.5"},
-			"meta.test":     {"169.254.169.254"},
-			"loop.test":     {"127.0.0.1"},
-			"mixed.test":    {"93.184.216.34", "10.0.0.1"},
-			"mapped.test":   {"::ffff:127.0.0.1"},
-			"ula.test":      {"fd00::1"},
-			"cgnat.test":    {"100.64.1.1"},
+			"example.com":     {"93.184.216.34"},
+			"cdn.test":        {"93.184.216.35"},
+			"internal.test":   {"10.0.0.5"},
+			"meta.test":       {"169.254.169.254"},
+			"loop.test":       {"127.0.0.1"},
+			"mixed.test":      {"93.184.216.34", "10.0.0.1"},
+			"mapped.test":     {"::ffff:127.0.0.1"},
+			"ula.test":        {"fd00::1"},
+			"cgnat.test":      {"100.64.1.1"},
+			"nat64local.test": {"64:ff9b:1:7f00:1:0:808:808"},
+			"siit.test":       {"::ffff:0:7f00:1"},
+			"self.test":       {"93.184.216.36"},
 		},
 		Self:    selfAddrs,
 		RootCAs: pool,
@@ -202,6 +205,11 @@ func TestFetchRefusesPrivateTargets(t *testing.T) {
 		"https://example.com/to-http":                             ErrURL,
 		"https://example.com/to-port":                             ErrURL,
 		"https://example.com/to-loopback6":                        ErrAddress,
+		// Fix round 2 S2/N-1: the local-use NAT64 /48 (127.0.0.1 in its /48 layout) and SIIT ::ffff:0:0/96.
+		"https://[64:ff9b:1:7f00:1:0:808:808]/ok.png": ErrAddress,
+		"https://[::ffff:0:7f00:1]/ok.png":            ErrAddress,
+		"https://nat64local.test/ok.png":              ErrAddress,
+		"https://siit.test/ok.png":                    ErrAddress,
 	} {
 		if _, err := f.Fetch(context.Background(), raw); !errors.Is(err, want) {
 			t.Errorf("Fetch(%.60s) = %v, want %v", raw, err, want)
@@ -234,11 +242,28 @@ func TestFetchRefusesWhatIsNotASmallImage(t *testing.T) {
 	}
 }
 
+// Fix round 2 N-4: the addresses instance.domain resolves to are refused, so an avatar URL naming the operator's own
+// public address cannot hairpin through their proxy.
+func TestFetchRefusesTheInstanceDomainsAddresses(t *testing.T) {
+	a := newAvatarServer(t, map[string]func(http.ResponseWriter, *http.Request){"/ok.png": serve(pngOf(t, 8, 8), "image/png")})
+	f := a.fetcher(t)
+	f.o.SelfDomain = "self.test:443"
+	if _, err := f.Fetch(context.Background(), "https://[::ffff:93.184.216.36]/ok.png"); !errors.Is(err, ErrAddress) {
+		t.Fatalf("the instance domain's address = %v, want ErrAddress", err)
+	}
+	if _, err := f.Fetch(context.Background(), "https://example.com/ok.png"); err != nil {
+		t.Fatalf("another address = %v", err)
+	}
+}
+
 func TestBlocked(t *testing.T) {
 	for _, s := range []string{
 		"0.0.0.0", "127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "100.127.255.255",
 		"224.0.0.1", "255.255.255.255", "198.18.0.1", "::", "::1", "fe80::1", "fc00::1", "fd12::1", "ff02::1",
 		"::ffff:10.0.0.1", "64:ff9b::7f00:1", "2002:c0a8:101::1", "::127.0.0.1", "2001::1",
+		// Fix round 2: everything outside 2000::/3 that is not a decoded translation form.
+		"64:ff9b:1:7f00:1:0:808:808", "64:ff9b:1:a00:1:0:808:808", "64:ff9b:1::808:808", "::ffff:0:7f00:1", "::ffff:0:808:808",
+		"100::1", "fec0::1", "4000::1", "2001:2::1", "2001:10::1", "3fff::1",
 	} {
 		if !Blocked(netip.MustParseAddr(s), nil) {
 			t.Errorf("%s is not blocked", s)

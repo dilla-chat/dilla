@@ -1678,12 +1678,22 @@ stripped from `username` and its white space is collapsed; an empty result shows
 `name`. The text is posted as plain text with links; the Bot labels it "via webhook <name>" and
 neutralises `@everyone` unless `allow_everyone` is 1.
 
-**Metering.** Every POST first spends one token of its client address's `webhook_address` bucket (2
-per second, burst 20; IPv6 by /64, `X-Forwarded-For` only from a trusted proxy), then one of its
-network's `webhook_prefix` bucket (20 per second, burst 100; IPv4 /24, IPv6 /48), known id or not, so
-neither an address nor a network spreading over its addresses can enumerate ids or flood the lookup. A POST whose secret matched then spends
-one token of the webhook's own `webhook` bucket (30 a minute, burst 5: the sixth POST at once waits 2
-s). Either refusal is `429` with `Retry-After` in whole seconds. The instance serves `/hooks/` on its
+**Metering.** Client addresses are keyed by IPv4 address or IPv6 /64, networks by IPv4 /24 or IPv6
+/48, and `X-Forwarded-For` is read only from a trusted proxy.
+
+- Every POST spends one token of its address's `webhook_address_all` bucket (10 per second, burst 50),
+  which bounds the work any one address causes, valid secrets included.
+- A POST that fails before or at the secret check (an unknown or malformed id, a wrong secret, a body
+  over the cap) also spends one token of its address's `webhook_address` failure bucket (2 per second,
+  burst 20) and of its network's `webhook_prefix` failure bucket (20 per second, burst 100). An address
+  whose failure bucket is empty is refused before any work; a network whose failure bucket is empty
+  has its failures answered `429` instead of `401`. A bad id and a bad secret spend the same buckets
+  after the same work, so they still look alike.
+- A POST whose secret matched never touches the failure buckets, so junk from a network cannot throttle
+  a valid sender on it. It spends one token of the webhook's own `webhook` bucket (30 a minute, burst
+  5: the sixth POST at once waits 2 s).
+
+Every refusal is `429` with `Retry-After` in whole seconds. The instance serves `/hooks/` on its
 public listener only, never on the Bot's local socket, where every peer would share one address.
 
 **Authentication.** A secret has one spelling: strict unpadded base64url (the unused low bits of the
@@ -1708,11 +1718,17 @@ would reach whoever runs the webhook. The instance fetches it instead, and only 
 authenticated. The fetch is hardened against server-side request forgery:
 
 - the URL is https, port 443, with no credentials, at most 2048 bytes;
-- the instance resolves the host itself and refuses it unless every answer is a public unicast address
-  (not loopback, private, link-local, CGNAT `100.64.0.0/10`, ULA `fc00::/7`, multicast, unspecified,
-  a documentation, benchmarking or reserved range, an IPv4-mapped, IPv4-compatible, 6to4 or NAT64
-  form of any of those, or one of the instance's own addresses), and dials the vetted address
-  directly, so a DNS rebind cannot swap it;
+- the instance resolves the host itself and refuses it unless every answer may be fetched, and dials
+  the vetted address directly, so a DNS rebind cannot swap it. An IPv4 address (or the IPv4 of an
+  IPv4-mapped one) must be public unicast: not loopback, private, link-local, CGNAT `100.64.0.0/10`,
+  multicast, unspecified, or a documentation, benchmarking or reserved range. An IPv6 address must be
+  global unicast `2000::/3`, outside the IETF protocol assignments `2001::/23` (which hold Teredo) and
+  the documentation ranges; everything outside `2000::/3` is refused, including `::ffff:0:0/96` and
+  the local-use NAT64 `64:ff9b:1::/48`, except 6to4 `2002::/16` and the NAT64 well-known `64:ff9b::/96`,
+  whose embedded IPv4 is vetted instead. The instance's own addresses are refused too: its interfaces,
+  `instance.public_ip`, and what `instance.domain` resolves to (re-resolved every 10 minutes). Behind a
+  reverse proxy, set `public_ip` to the proxy's public address as well, so the check holds even when the
+  domain resolves elsewhere;
 - at most 2 redirects, each checked and vetted again; no proxy; TLS verified; no cookies, credentials
   or instance identifiers; `User-Agent: dilla-webhook-avatar`; 3 s in all;
 - at most 512 KiB of body; the type is sniffed from the bytes (PNG, JPEG or GIF; the header is
@@ -1720,9 +1736,11 @@ authenticated. The fetch is hardened against server-side request forgery:
   decoded and re-encoded as PNG, so the instance never serves the sender's bytes.
 
 The result is cached in memory, content-addressed by the SHA-256 of the PNG (the `avatar_id`), scoped
-to the webhook's community, for 24 h, at most 4 MiB per community and 128 MiB in all (oldest first). A
-failed fetch is remembered for 10 minutes. Fetches are metered per webhook (one per 30 s after a burst
-of 2) and for the instance (2 a second, burst 10). A POST waits at most 750 ms for a new fetch; past
+to the webhook's community, for 24 h, at most 4 MiB per community, 128 MiB and 16384 images in all,
+each image charged 512 bytes on top of its PNG; the oldest go first, and expired entries are swept as
+the cache is used. A failed fetch is remembered for 10 minutes. Fetches are metered per webhook (one
+per 30 s after a burst of 2), per community (one per 5 s after a burst of 5) and for the instance (2 a
+second, burst 10), narrowest first: a fetch one bucket refuses spends nothing of the others. A POST waits at most 750 ms for a new fetch; past
 that it is delivered without an avatar and the fetch, which goes on, serves the webhook's next post.
 A restart forgets the cache. Members read the image with `GET
 /v1/communities/{community}/bot/webhook-avatars/{avatar_id}` (an enrolled session of a member of
