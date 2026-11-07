@@ -749,8 +749,11 @@ func decodeRelayedCommand(payload []cbor.RawMessage) (intake.RelayedCommand, err
 }
 
 // relayCommand queues one op 64 for the installation's sealed intake. It never blocks the delivery loop.
-func (r *botGatewayRuntime) relayCommand(installation id.ID, payload []cbor.RawMessage) {
+func (r *botGatewayRuntime) relayCommand(installation id.ID, payload []cbor.RawMessage, ready func(context.Context) bool) {
 	cmd, err := decodeRelayedCommand(payload)
+	// The feed barrier (fix round 1 I-3): the command is opened and authorised only after the events dillad sent
+	// before it are applied.
+	cmd.Ready = ready
 	e := r.sealed.lookup(installation)
 	switch {
 	case err != nil:

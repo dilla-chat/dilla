@@ -333,6 +333,8 @@ type feedJob struct {
 	events   []feedEvent
 	snapshot bool
 	slot     *ackSlot
+	// frames is the op 65 deliveries the job settles (a snapshot's begin, body and end), for the command barrier.
+	frames uint64
 }
 
 // feedConsumer is one gateway connection's feed: the delivery loop hands it every op 65 (deliver) and never waits on
@@ -353,10 +355,66 @@ type feedConsumer struct {
 
 	ready     chan struct{} // closed once a snapshot has been applied
 	readyOnce sync.Once
+
+	// The command barrier (Task 15, fix round 1 I-3): posted counts the op 65 deliveries handed to deliver, settled
+	// those applied, dropped or superseded, in delivery order; settledCh is closed and replaced whenever settled
+	// moves. A sealed command waits until settled reaches the posted count at its arrival, so it is authorised only
+	// after every event dillad sent before it. snapFrames counts the snapshot streaming now.
+	posted, settled uint64
+	snapFrames      uint64
+	settledCh       chan struct{}
 }
 
 func newFeedConsumer(community id.ID, acks *orderedAcks, log *slog.Logger) *feedConsumer {
-	return &feedConsumer{community: community, acks: acks, log: log, wake: make(chan struct{}, 1), ready: make(chan struct{})}
+	return &feedConsumer{community: community, acks: acks, log: log, wake: make(chan struct{}, 1), ready: make(chan struct{}),
+		settledCh: make(chan struct{})}
+}
+
+// feedBarrierBound is how long a command waits for the feed to apply the events delivered before it; past it the
+// command is answered offline (retryable).
+var feedBarrierBound = 2 * time.Second
+
+// settleLocked marks n more deliveries settled and wakes the commands waiting on them. f.mu is held.
+func (f *feedConsumer) settleLocked(n uint64) {
+	if n == 0 {
+		return
+	}
+	f.settled = min(f.settled+n, f.posted)
+	close(f.settledCh)
+	f.settledCh = make(chan struct{})
+}
+
+func (f *feedConsumer) settle(n uint64) {
+	f.mu.Lock()
+	f.settleLocked(n)
+	f.mu.Unlock()
+}
+
+// barrier is called on the delivery loop for an op 64: it returns the wait a sealed command makes before it is
+// opened and authorised, true once every op 65 delivered before it has settled, false when the bound or ctx ended.
+func (f *feedConsumer) barrier() func(context.Context) bool {
+	f.mu.Lock()
+	target := f.posted
+	f.mu.Unlock()
+	return func(ctx context.Context) bool {
+		t := time.NewTimer(feedBarrierBound)
+		defer t.Stop()
+		for {
+			f.mu.Lock()
+			done, ch := f.settled >= target, f.settledCh
+			f.mu.Unlock()
+			if done {
+				return true
+			}
+			select {
+			case <-ch:
+			case <-t.C:
+				return false
+			case <-ctx.Done():
+				return false
+			}
+		}
+	}
 }
 
 func (f *feedConsumer) poke() {
@@ -380,11 +438,17 @@ func (f *feedConsumer) setFeed(h Feed) {
 func (f *feedConsumer) resetStream() {
 	f.mu.Lock()
 	f.jobs, f.snapshot, f.inSnap, f.afterSnap = nil, nil, false, nil
+	// What the old stream left unapplied is superseded by the new stream's snapshot: settled for the barrier.
+	f.snapFrames = 0
+	f.settleLocked(f.posted - f.settled)
 	f.mu.Unlock()
 }
 
 // deliver takes one op 65 delivery and its slot (nil for n = 0). It never blocks on the handler.
 func (f *feedConsumer) deliver(d gatewayclient.Delivery, slot *ackSlot) {
+	f.mu.Lock()
+	f.posted++
+	f.mu.Unlock()
 	ev, err := decodeFeedEvent(d.Frame.BotPayload)
 	if err == nil && ev.community != (id.ID{}) && ev.community != f.community {
 		err = fmt.Errorf("bot feed: an event of community %s on community %s's connection", ev.community, f.community)
@@ -393,38 +457,43 @@ func (f *feedConsumer) deliver(d gatewayclient.Delivery, slot *ackSlot) {
 		// Nothing can ever apply it; acknowledging lets the frames behind it through.
 		f.log.Warn("bot feed event dropped", "error", err.Error(), "n", d.Frame.N)
 		f.acks.done(slot)
+		f.settle(1)
 		return
 	}
 	f.mu.Lock()
 	switch {
 	case ev.kind == feedSnapshotBegin:
-		f.snapshot, f.inSnap = []feedEvent{}, true
+		// A begin inside a streaming snapshot restarts it: the cut-off one's frames are settled (superseded).
+		f.settleLocked(f.snapFrames)
+		f.snapshot, f.inSnap, f.snapFrames = []feedEvent{}, true, 1
 		f.mu.Unlock()
 		f.acks.done(slot)
 		return
 	case ev.kind == feedSnapshotEnd:
 		if !f.inSnap {
+			f.settleLocked(1)
 			f.mu.Unlock()
 			f.log.Warn("bot feed snapshot_end without a snapshot_begin; ignored")
 			f.acks.done(slot)
 			return
 		}
-		f.jobs = append(f.jobs, feedJob{events: f.snapshot, snapshot: true, slot: slot})
+		f.jobs = append(f.jobs, feedJob{events: f.snapshot, snapshot: true, slot: slot, frames: f.snapFrames + 1})
 		f.jobs = append(f.jobs, f.afterSnap...)
-		f.snapshot, f.inSnap, f.afterSnap = nil, false, nil
+		f.snapshot, f.inSnap, f.afterSnap, f.snapFrames = nil, false, nil, 0
 	case f.inSnap && d.Frame.N == 0:
 		ev.fromSnapshot = true
 		f.snapshot = append(f.snapshot, ev)
+		f.snapFrames++
 		f.mu.Unlock()
 		return
 	case f.inSnap:
 		// A live event inside a snapshot (dillad sends none: the snapshot's reads supersede it) is applied after the
 		// snapshot's swap, never before it, where the swap would undo it (fix round 2, N-4).
-		f.afterSnap = append(f.afterSnap, feedJob{events: []feedEvent{ev}, slot: slot})
+		f.afterSnap = append(f.afterSnap, feedJob{events: []feedEvent{ev}, slot: slot, frames: 1})
 		f.mu.Unlock()
 		return
 	default:
-		f.jobs = append(f.jobs, feedJob{events: []feedEvent{ev}, slot: slot})
+		f.jobs = append(f.jobs, feedJob{events: []feedEvent{ev}, slot: slot, frames: 1})
 	}
 	f.mu.Unlock()
 	f.poke()
@@ -463,6 +532,7 @@ func (f *feedConsumer) run(ctx context.Context) {
 			f.readyOnce.Do(func() { close(f.ready) })
 		}
 		f.acks.done(job.slot)
+		f.settle(job.frames)
 	}
 }
 

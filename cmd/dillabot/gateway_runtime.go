@@ -496,7 +496,7 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 				}
 			case gatewayclient.OpBotCommand:
 				// A member's sealed command (Task 15): queued for the installation's sealed intake, acknowledged here.
-				r.relayCommand(installation, delivery.Frame.BotPayload)
+				r.relayCommand(installation, delivery.Frame.BotPayload, feed.barrier())
 			case gatewayclient.OpCommunityChanged:
 				// The community's channels, settings or the Bot's own installation changed (op 54): read them again.
 				r.notify()

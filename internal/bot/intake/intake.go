@@ -52,6 +52,9 @@ import (
 type RelayedCommand struct {
 	RequestID, CommunityID, UserID, DeviceID id.ID
 	Sealed                                   []byte
+	// Ready, when set, waits (bounded) until the Bot has applied every feed event delivered before this command (fix
+	// round 1 I-3); false answers the command offline, retryable, without authorising it.
+	Ready func(context.Context) bool
 }
 
 // Answer is one answer to a command. A handler may answer several times ("Searching…" then "Now
@@ -313,6 +316,8 @@ func (i *Intake) Handle(ctx context.Context, cmd RelayedCommand) {
 		i.refused(ctx, log, "foreign", 0)
 		return
 	}
+	// Before the open (the helper's device lists come from the feed too) and before any authorisation.
+	settled := cmd.Ready == nil || cmd.Ready(ctx)
 	now := i.clk.Now()
 	opened, err := i.helper.OpenCommand(ctx, cmd.Sealed, cmd.UserID, cmd.DeviceID, now)
 	if err != nil {
@@ -346,7 +351,7 @@ func (i *Intake) Handle(ctx context.Context, cmd RelayedCommand) {
 			i.refused(ctx, log, "replay_mismatch", 0)
 			return
 		}
-		i.replay(ctx, log, cmd, opened.ReplyKey, held, operations, botUser)
+		i.replay(ctx, log, cmd, opened.ReplyKey, held, operations, botUser, settled)
 		return
 	default:
 		i.refused(ctx, log, "unknown_refusal", 0)
@@ -358,7 +363,7 @@ func (i *Intake) Handle(ctx context.Context, cmd RelayedCommand) {
 		return
 	}
 	rec := i.remember(cmd, req.ReplyKey, now)
-	i.run(ctx, log, rec, req, held, operations, botUser)
+	i.run(ctx, log, rec, req, held, operations, botUser, settled)
 }
 
 func refusalClass(r helper.CommandRefusal) string {
@@ -376,7 +381,7 @@ func refusalClass(r helper.CommandRefusal) string {
 }
 
 // run authorises a verified request and dispatches it, or refuses it, answering through rec.
-func (i *Intake) run(ctx context.Context, log *slog.Logger, rec *record, req protocol.SealedRequest, held HeldChecker, operations func(uint64) (OperationRule, bool), botUser id.ID) {
+func (i *Intake) run(ctx context.Context, log *slog.Logger, rec *record, req protocol.SealedRequest, held HeldChecker, operations func(uint64) (OperationRule, bool), botUser id.ID, settled bool) {
 	retryable := func(class string, status uint16, code string) {
 		i.refused(ctx, log, class, status)
 		rec.mu.Lock()
@@ -384,6 +389,10 @@ func (i *Intake) run(ctx context.Context, log *slog.Logger, rec *record, req pro
 		rec.retry = &kept
 		rec.mu.Unlock()
 		i.answer(ctx, rec, refusal(status, code))
+	}
+	if !settled {
+		retryable("feed_behind", StatusOffline, CodeOffline)
+		return
 	}
 	if held != nil && held.Held(req.UserID) {
 		retryable("held", StatusSignature, CodeSignature)
@@ -444,7 +453,7 @@ func (i *Intake) run(ctx context.Context, log *slog.Logger, rec *record, req pro
 
 // replay answers a Retry: the answers already sent, re-sealed to the newest key, or the retryable
 // request handled now, or 409.
-func (i *Intake) replay(ctx context.Context, log *slog.Logger, cmd RelayedCommand, key [32]byte, held HeldChecker, operations func(uint64) (OperationRule, bool), botUser id.ID) {
+func (i *Intake) replay(ctx context.Context, log *slog.Logger, cmd RelayedCommand, key [32]byte, held HeldChecker, operations func(uint64) (OperationRule, bool), botUser id.ID, settled bool) {
 	rec := i.lookup(cmd.RequestID, i.clk.Now())
 	if rec == nil || rec.user != cmd.UserID || rec.device != cmd.DeviceID || key == ([32]byte{}) {
 		i.refused(ctx, log, "replay", StatusReplay)
@@ -464,7 +473,7 @@ func (i *Intake) replay(ctx context.Context, log *slog.Logger, cmd RelayedComman
 		// The helper has just verified this seal's sent_at against now: the request is as fresh as the Retry (fix
 		// round 1 M-4), so a mutation's expiry follows it, not the first send's.
 		req.SentAt = uint64(max(i.clk.Now().Unix(), 0))
-		i.run(ctx, log, rec, req, held, operations, botUser)
+		i.run(ctx, log, rec, req, held, operations, botUser, settled)
 		return
 	}
 	defer rec.mu.Unlock()

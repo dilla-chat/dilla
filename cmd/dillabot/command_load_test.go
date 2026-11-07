@@ -17,6 +17,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/gatewayclient"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/intake"
 	"github.com/dilla-chat/dilla/internal/bot/native"
@@ -369,7 +370,7 @@ func TestRelayedRemindAnswersWithin100ms(t *testing.T) {
 	}
 	installation := w.entry.installation
 	start := time.Now()
-	w.runtime.relayCommand(installation, payload)
+	w.runtime.relayCommand(installation, payload, nil)
 	select {
 	case at := <-w.transport.first:
 		if took := at.Sub(start); took > 100*time.Millisecond {
@@ -515,4 +516,95 @@ func TestStaleKeyAndNewSessionRepublishUnchangedBytes(t *testing.T) {
 	cfg.session = w.session
 	w.runtime.SetSealedIntake(cfg)
 	waitUntil(t, func() bool { return puts() >= 4 })
+}
+
+// blockRole holds every role event until released: a feed whose worker lags behind the delivery loop.
+type blockRole struct {
+	Feed
+	release chan struct{}
+}
+
+func (b blockRole) Role(ctx context.Context, ev RoleEvent) {
+	<-b.release
+	b.Feed.Role(ctx, ev)
+}
+
+// Fix round 1, I-3: a command waits until every op 65 delivered before it is applied. A role removal delivered just
+// before a command, still being applied when the command arrives, is applied before the command is authorised: the
+// command is refused, never served against the old role.
+func TestRoleRemovalDeliveredBeforeACommandIsAppliedFirst(t *testing.T) {
+	w := newLoadWorld(t, 3, true)
+	ctx := context.Background()
+	e := w.entry
+	cfg, _ := e.current()
+	cfg.capabilities = 1<<8 | 1<<9 // polls: poll create is channel-scoped and needs send_messages
+	w.runtime.SetSealedIntake(cfg)
+	installation, community := e.installation, e.community
+	channel := id.New()
+	everyone := id.New()
+	tee := w.runtime.sealed.feed(installation, community, w.runtime.feedHandler(installation))
+	tee.SnapshotBegin(ctx)
+	tee.Role(ctx, RoleEvent{Community: community, Role: everyone, Allow: intake.PermViewChannel | intake.PermSendMessages, FromSnapshot: true})
+	for _, u := range w.members {
+		tee.Member(ctx, MemberEvent{Community: community, User: u, Joined: true, Snapshot: true})
+	}
+	tee.(authzFeed).ChannelOverwrites(ctx, community, channel, nil, false, true)
+	tee.SnapshotDone(ctx)
+
+	// The feed's worker is behind: it holds role events until released.
+	block := blockRole{Feed: tee, release: make(chan struct{})}
+	fc := newFeedConsumer(community, &orderedAcks{log: quietLogger()}, quietLogger())
+	fc.setFeed(block)
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	go fc.run(runCtx)
+
+	// op 65: @everyone loses send_messages; then op 64: a poll created in the channel.
+	removal := botEventRaw(t, feedRole, []any{community, everyone, []uint64{intake.PermViewChannel, 0, 0}, uint64(0)})
+	fc.deliver(gatewayclient.Delivery{Frame: gatewayclient.Frame{Op: gatewayclient.OpBotEvent, BotPayload: removal}}, nil)
+	ready := fc.barrier()
+
+	cmd := w.commands[0]
+	req := w.helper.requests[string(cmd.Sealed)]
+	req.Operation, req.ChannelID, req.Args = uint64(protocol.OpPollCreate), channel, []any{"Lunch?", "a | b", nil, nil, nil}
+	w.helper.requests[string(cmd.Sealed)] = req
+	cmd.Ready = ready
+	done := make(chan struct{})
+	go func() { w.entry.in.Handle(ctx, cmd); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("the command was handled before the role removal delivered ahead of it was applied")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(block.release)
+	<-done
+	w.transport.mu.Lock()
+	defer w.transport.mu.Unlock()
+	if len(w.transport.answers) == 0 {
+		t.Fatal("no answer")
+	}
+	if a := w.transport.answers[len(w.transport.answers)-1]; a.Status != 403 {
+		t.Fatalf("answer = %+v, want 403 from the applied role", a)
+	}
+}
+
+// Fix round 1, I-3: past the 2 s bound the command is answered offline (retryable), never authorised against a feed
+// that is still behind.
+func TestCommandBehindAStalledFeedIsOffline(t *testing.T) {
+	w := newLoadWorld(t, 3, true)
+	ctx := context.Background()
+	fc := newFeedConsumer(w.community, &orderedAcks{log: quietLogger()}, quietLogger())
+	// No handler is set: the feed holds every job.
+	member := botEventRaw(t, feedMember, []any{w.community, id.New(), uint64(1), []id.ID{}})
+	fc.deliver(gatewayclient.Delivery{Frame: gatewayclient.Frame{Op: gatewayclient.OpBotEvent, BotPayload: member}}, nil)
+	feedBarrierBound = 50 * time.Millisecond
+	defer func() { feedBarrierBound = 2 * time.Second }()
+	cmd := w.commands[0]
+	cmd.Ready = fc.barrier()
+	w.entry.in.Handle(ctx, cmd)
+	w.transport.mu.Lock()
+	defer w.transport.mu.Unlock()
+	if len(w.transport.answers) != 1 || w.transport.answers[0].Status != 503 || string(w.transport.answers[0].Body) != "E_BOT_OFFLINE" {
+		t.Fatalf("answers = %+v", w.transport.answers)
+	}
 }
