@@ -51,6 +51,7 @@ func testMountedReadyBotSendAcceptance(t *testing.T, h *groupsAPI) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	markBotChannel(t, h.deps, communityID, targetID, owner.ID) // Task 17 fix round 2 (M2)
 	binding, err := cborx.Marshal(ds.Binding{
 		V: 1, InstanceID: h.keys.InstanceID, CommunityID: &communityID, TargetID: targetID,
 		Kind: api.ChannelText, PolicyVersion: 1, E2EEVersion: 1, MediaVersion: 1,

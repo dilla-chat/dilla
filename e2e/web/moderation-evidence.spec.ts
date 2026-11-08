@@ -1,8 +1,9 @@
 import { openInviteInClient } from './support/invite';
 import { expect } from '@playwright/test';
-import { addServerVia, completeSignUp, copy, makeInviteLink, newAccount, openChannel, railItem, signUp, test } from './support/app';
+import { addServerVia, completeSignUp, copy, makeInviteLink, newAccount, openChannel, railItem, signUp, test, ensureMembersOpen } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { e2ePort } from './support/ports';
+import { restoreDesktopWindow } from './support/electron.ts';
 
 const HOST: HostConfig = {
   port: e2ePort(8495), control: e2ePort(8496), webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true,
@@ -54,6 +55,8 @@ test('a warning made in the web client can be retrieved from Bot settings', asyn
 
     // The owner warns Bea through her row's person menu (a right-click; Signal task 9); the reason is the evidence we retrieve below.
     const members = page.getByRole('complementary', { name: copy('members.region', { server: SERVER }), exact: true });
+    await restoreDesktopWindow(page);
+    await ensureMembersOpen(page, members);
     const targetRow = members.getByRole('listitem').filter({ hasText: TARGET });
     await expect(targetRow).toBeVisible();
     await targetRow.locator('.d-member-list__open').click({ button: 'right' });

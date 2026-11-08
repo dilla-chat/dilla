@@ -87,6 +87,8 @@ type Delivery struct {
 	client *Client
 	stream uint64
 	ackN   uint64
+	// conn is the socket the frame arrived on: an op 66's ack goes on it or not at all (WebhookAck).
+	conn *connection
 }
 
 func (d Delivery) Ack() error {
@@ -709,8 +711,9 @@ func (c *Client) enqueueEvent(f Frame, raw []byte) (bool, error) {
 		}
 		c.ackAvailable[f.N] = hash
 	}
+	conn := c.current
 	c.mu.Unlock()
-	d := Delivery{Frame: f, client: c, stream: stream, ackN: f.N}
+	d := Delivery{Frame: f, client: c, stream: stream, ackN: f.N, conn: conn}
 	select {
 	case c.events <- d:
 		return true, nil
@@ -832,6 +835,21 @@ func (c *Client) sendFrame(ctx context.Context, op Opcode, group *id.ID, payload
 	if conn == nil {
 		return ErrProtocol
 	}
+	return c.sendFrameVia(ctx, conn, op, group, payload)
+}
+
+// sendFrameOn sends on want only while it is still the open connection; another (or none) is ErrStaleDelivery.
+func (c *Client) sendFrameOn(ctx context.Context, want *connection, op Opcode, group *id.ID, payload []any) error {
+	c.mu.Lock()
+	conn := c.current
+	c.mu.Unlock()
+	if want == nil || conn != want {
+		return ErrStaleDelivery
+	}
+	return c.sendFrameVia(ctx, conn, op, group, payload)
+}
+
+func (c *Client) sendFrameVia(ctx context.Context, conn *connection, op Opcode, group *id.ID, payload []any) error {
 	done := make(chan error, 1)
 	select {
 	case conn.writes <- outbound{op: op, group: group, payload: payload, done: done}:

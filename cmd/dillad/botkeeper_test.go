@@ -7,10 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/dilla-chat/dilla/internal/api"
 	"github.com/dilla-chat/dilla/internal/botsupervisor"
+	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/config"
 	"github.com/dilla-chat/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/ops"
 )
 
@@ -180,5 +184,32 @@ func TestBotVerbsAreInternal(t *testing.T) {
 	_, _, err = run(t, "bot-keeper", "--config=/nonexistent/dilla.toml")
 	if err == nil || errors.Is(err, errHelp) {
 		t.Fatalf("bot-keeper without a config = %v", err)
+	}
+}
+
+// Bot v2 Task 17 fix round 2 (I2): dillad doctor prints "commands failing since <time>" from the failing-since file the
+// running dillad keeps, dillad's own stamp.
+func TestDoctorBotHealthLegPrintsCommandsFailingSince(t *testing.T) {
+	c := config.Default()
+	if leg := doctorBotHealthLeg(c); leg.Status != ops.Green || !strings.Contains(leg.Detail, "disabled") {
+		t.Fatalf("a disabled Bot's health leg = %+v, want OK and disabled", leg)
+	}
+	c.Bot.Enabled = true
+	c.Instance.DataDir = t.TempDir()
+	if leg := doctorBotHealthLeg(c); leg.Status != ops.Green {
+		t.Fatalf("no failing-since file: %+v, want OK", leg)
+	}
+	clk := clock.NewFake(time.Date(2026, 11, 8, 9, 30, 0, 0, time.UTC))
+	tracker := api.NewBotHealth(clk)
+	tracker.Persist(filepath.Join(c.Instance.DataDir, api.BotHealthFile), nil)
+	community := id.New()
+	for range 2 {
+		tracker.Record(community, api.BotHealthReport{ProbeAt: uint64(clk.Now().Unix())})
+		clk.Advance(time.Minute)
+	}
+	leg := doctorBotHealthLeg(c)
+	want := "commands failing since 2026-11-08T09:31:00Z (community " + community.String() + ")"
+	if leg.Status != ops.Yellow || leg.Detail != want {
+		t.Fatalf("leg = %+v, want WARN %q", leg, want)
 	}
 }

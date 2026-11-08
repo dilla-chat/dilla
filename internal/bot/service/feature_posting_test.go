@@ -159,3 +159,49 @@ func TestHintFailureNeverFailsTheCommand(t *testing.T) {
 	}
 	hint(context.Background(), nil, client.StateScopeUser, pollServiceID(5)) // a nil sender is a no-op
 }
+
+func TestBlockedHintSenderDelaysNoPollVote(t *testing.T) {
+	botChannel := pollServiceID(40)
+	h, _ := pollFixture(t, &marks{set: map[id.ID]bool{botChannel: true}, known: true})
+	stuck := stuckHints{release: make(chan struct{})}
+	t.Cleanup(func() { close(stuck.release) })
+	h.Hints = client.NewAsyncHints(stuck)
+	pid := pollServiceID(3)
+	now := time.Unix(1000, 0)
+	if _, err := h.Store.Create(context.Background(), pid, [32]byte{1}, polls.Poll{ID: pid, CommunityID: h.CommunityID, ChannelID: botChannel, CreatorID: pollServiceID(2), Question: "Q", Answers: []string{"A", "B"}, CreatedAt: 1000, DueAt: 4600, Published: true}, now); err != nil {
+		t.Fatal(err)
+	}
+	selection, _ := cborx.Marshal([]any{uint64(0)})
+	rev, expires := uint64(1), uint64(1100)
+	vote := protocol.Request{RequestID: pollServiceID(8), CommunityID: h.CommunityID, Operation: protocol.OpPollVote, Revision: &rev, Expires: &expires, Args: []any{pid, selection}}
+	start := time.Now()
+	if res, err := h.vote(context.Background(), InteractionActor{User: pollServiceID(6)}, vote); err != nil || res.Status != 0 {
+		t.Fatalf("vote: %+v %v", res, err)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("a vote with a blocked hint sender took %v; the reply must not wait for the hint", elapsed)
+	}
+}
+
+// Fix round 2 (M7): a vote on a poll kept from v1 in a channel that is not a Bot channel sends no channel hint (dillad
+// would 404 it); the vote itself is answered.
+func TestLegacyPollInAnOrdinaryChannelSendsNoHint(t *testing.T) {
+	legacy := pollServiceID(41)
+	h, _ := pollFixture(t, &marks{set: map[id.ID]bool{pollServiceID(40): true}, known: true})
+	rec := &hintRecorder{}
+	h.Hints = rec
+	pid := pollServiceID(3)
+	now := time.Unix(1000, 0)
+	if _, err := h.Store.Create(context.Background(), pid, [32]byte{1}, polls.Poll{ID: pid, CommunityID: h.CommunityID, ChannelID: legacy, CreatorID: pollServiceID(2), Question: "Q", Answers: []string{"A", "B"}, CreatedAt: 1000, DueAt: 4600, Published: true}, now); err != nil {
+		t.Fatal(err)
+	}
+	selection, _ := cborx.Marshal([]any{uint64(0)})
+	rev, expires := uint64(1), uint64(1100)
+	vote := protocol.Request{RequestID: pollServiceID(8), CommunityID: h.CommunityID, Operation: protocol.OpPollVote, Revision: &rev, Expires: &expires, Args: []any{pid, selection}}
+	if res, err := h.vote(context.Background(), InteractionActor{User: pollServiceID(6)}, vote); err != nil || res.Status != 0 {
+		t.Fatalf("vote on a legacy poll: %+v %v", res, err)
+	}
+	if got := rec.hints(); len(got) != 0 {
+		t.Fatalf("hints for a poll in an ordinary channel = %+v, want none", got)
+	}
+}

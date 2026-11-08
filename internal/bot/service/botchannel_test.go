@@ -111,3 +111,29 @@ func TestFeatureWithUnmarkedChannelPostsNothingAndFlags(t *testing.T) {
 		t.Fatalf("flags %+v after the channel was marked, want none", flags)
 	}
 }
+
+// Fix round 2 (M1): the gate fails closed. A community with no marks registered (a feature built before the feed, or an
+// installation since removed) posts nowhere, at the feature check and at the send layer, whatever the group's kind.
+func TestUnregisteredCommunityPostsNowhere(t *testing.T) {
+	ungatedForTests = false
+	t.Cleanup(func() { ungatedForTests = true })
+	community := sendID(77)
+	if err := CheckBotChannel(community, sendID(78)); !errors.Is(err, ErrBotChannelsUnknown) {
+		t.Fatalf("an unregistered community's channel = %v, want ErrBotChannelsUnknown", err)
+	}
+	gateFor(t, community, &marks{set: map[id.ID]bool{sendID(78): true}, known: true})
+	if err := CheckBotChannel(community, sendID(78)); err != nil {
+		t.Fatalf("a marked channel = %v", err)
+	}
+	// Removing the installation forgets its gate: closed again.
+	RetainPostGates(map[id.ID]bool{})
+	if err := CheckBotChannel(community, sendID(78)); !errors.Is(err, ErrBotChannelsUnknown) {
+		t.Fatalf("after RetainPostGates dropped it = %v, want ErrBotChannelsUnknown", err)
+	}
+	c := &SendCoordinator{binding: native.Binding{Community: community}}
+	for _, kind := range []uint64{0, 1} {
+		if err := c.requireBotChannelGroup(native.GroupInfo{Kind: kind, Target: sendID(78)}); err == nil {
+			t.Fatalf("the send layer let an unregistered community post into a kind-%d group", kind)
+		}
+	}
+}

@@ -719,13 +719,13 @@ func TestNewCallJoinHelperOperationsRoundTrip(t *testing.T) {
 			t.Fatalf("decode helper operation %d: %#v %v", operation, got, err)
 		}
 	}
-	if _, err := EncodeHelperRequest(HelperRequest{RequestID: fixtureID(2), Operation: HelperDeviceListIngest + 1, Payload: []any{}}); err == nil {
+	if _, err := EncodeHelperRequest(HelperRequest{RequestID: fixtureID(2), Operation: HelperProbeOpen + 1, Payload: []any{}}); err == nil {
 		t.Fatal("helper operation after the frozen range accepted")
 	}
 }
 
 func TestCommandHelperOperationsAreNumbered21To24AndRoundTrip(t *testing.T) {
-	for want, operation := range map[HelperOperation]HelperOperation{21: HelperCommandKey, 22: HelperCommandOpen, 23: HelperReplySeal, 24: HelperDeviceListIngest} {
+	for want, operation := range map[HelperOperation]HelperOperation{21: HelperCommandKey, 22: HelperCommandOpen, 23: HelperReplySeal, 24: HelperDeviceListIngest, 25: HelperProbeSeal, 26: HelperProbeOpen} {
 		if operation != want {
 			t.Fatalf("operation %d is numbered %d", want, operation)
 		}

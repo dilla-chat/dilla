@@ -85,6 +85,8 @@ var SocketRoutes = []string{
 	"POST /v1/bot-runtime/replies",
 	"POST /v1/bot-runtime/state-hints",
 	"PUT /v1/bot-runtime/health",
+	// Task 17 fix round 2: the health probe goes through the sealed command relay like a member's command.
+	"POST /v1/communities/{community}/bot/commands",
 }
 
 type socketRoute struct {

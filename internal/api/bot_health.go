@@ -1,7 +1,18 @@
 package api
 
 import (
+	"bufio"
+	"bytes"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +32,11 @@ import (
 //
 // The catalog's status (element 3 of GET …/bot/catalog) reads it. Nothing here trusts the Bot's own clock: dillad
 // stamps each report when it arrives.
+//
+// Fix round 2 (I2): when the judgement first becomes degraded dillad stamps failing_since with its own clock (the
+// report's failing_since is the Bot's and is ignored). The catalog's since shows it while the Bot stays degraded, and
+// it is kept in a 0600 file in dillad's data directory (BotHealthFile) so `dillad doctor`, a separate process, prints
+// "commands failing since <time>". A restarted dillad reads the file back: a Bot still degraded keeps its time.
 const (
 	// BotHealthFailedProbes is the consecutive failed probes that make the Bot degraded.
 	BotHealthFailedProbes = 2
@@ -69,14 +85,113 @@ type BotHealth struct {
 	start time.Time
 	mu    sync.Mutex
 	state map[id.ID]*botHealthState
+	// failing is when each degraded community's judgement first became degraded, by dillad's clock; file keeps it.
+	failing map[id.ID]time.Time
+	file    string
+	log     *slog.Logger
 }
+
+// BotHealthFile is the name of dillad's failing-since file in its data directory.
+const BotHealthFile = "bot-health"
 
 // NewBotHealth builds an empty tracker; clk is dillad's clock.
 func NewBotHealth(clk clock.Clock) *BotHealth {
 	if clk == nil {
 		clk = clock.System()
 	}
-	return &BotHealth{clk: clk, start: clk.Now(), state: map[id.ID]*botHealthState{}}
+	return &BotHealth{clk: clk, start: clk.Now(), state: map[id.ID]*botHealthState{}, failing: map[id.ID]time.Time{}}
+}
+
+// Persist keeps the failing-since times in path (0600, written whole on every change) and reads back what a previous
+// run left there: a community whose Bot is judged degraded again keeps its time; one judged ready drops it. A missing
+// file is an empty one; an unreadable one is logged and replaced on the next change.
+func (h *BotHealth) Persist(path string, log *slog.Logger) {
+	failing, err := ReadBotHealthFile(path)
+	if err != nil && log != nil {
+		log.Warn("bot health: the failing-since file is unreadable; it is rewritten on the next change", "error", err.Error())
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.file, h.log = path, log
+	for community, since := range failing {
+		h.failing[community] = since
+	}
+}
+
+// ReadBotHealthFile reads a failing-since file: one "<community hex> <unix seconds>" line per community whose Bot was
+// degraded when dillad last judged it. A missing file is empty.
+func ReadBotHealthFile(path string) (map[id.ID]time.Time, error) {
+	out := map[id.ID]time.Time{}
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: dillad's own data directory joined with a constant name
+	if errors.Is(err, fs.ErrNotExist) {
+		return out, nil
+	}
+	if err != nil {
+		return out, err
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	for scanner.Scan() {
+		community, at, ok := strings.Cut(strings.TrimSpace(scanner.Text()), " ")
+		if !ok {
+			return out, fmt.Errorf("%s: malformed line", path)
+		}
+		cid, err := id.Parse(community)
+		if err != nil || cid.IsZero() {
+			return out, fmt.Errorf("%s: malformed community id", path)
+		}
+		seconds, err := strconv.ParseInt(at, 10, 64)
+		if err != nil || seconds <= 0 {
+			return out, fmt.Errorf("%s: malformed time", path)
+		}
+		out[cid] = time.Unix(seconds, 0).UTC()
+	}
+	return out, scanner.Err()
+}
+
+// writeLocked replaces the file with the failing set (h.mu held). A failure is logged: doctor then reads the last
+// file written, the judgement itself is unaffected.
+func (h *BotHealth) writeLocked() {
+	if h.file == "" {
+		return
+	}
+	ids := make([]id.ID, 0, len(h.failing))
+	for community := range h.failing {
+		ids = append(ids, community)
+	}
+	slices.SortFunc(ids, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+	var b strings.Builder
+	for _, community := range ids {
+		fmt.Fprintf(&b, "%s %d\n", community.String(), h.failing[community].Unix())
+	}
+	if err := writeFileAtomic(h.file, []byte(b.String())); err != nil && h.log != nil {
+		h.log.Warn("bot health: the failing-since file was not written", "error", err.Error())
+	}
+}
+
+// writeFileAtomic writes data to path through a 0600 temporary file in the same directory and a rename.
+func writeFileAtomic(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer func() { _ = os.Remove(name) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
 }
 
 // Record takes one report from the community's Bot.
@@ -113,6 +228,29 @@ func (h *BotHealth) Record(community id.ID, r BotHealthReport) {
 	if degraded != st.degraded {
 		st.degraded, st.since = degraded, now
 	}
+	// failing_since is dillad's own stamp of when the judgement first became degraded (r.FailingSince is the Bot's
+	// clock and is never used). A previous run's time stands while the Bot is still degraded.
+	at, kept := h.failing[community]
+	switch {
+	case degraded && !kept:
+		h.failing[community] = now
+		h.writeLocked()
+	case degraded:
+		st.since = at
+	case kept && r.ProbeOK:
+		// Only a passing probe ends it: right after a restart one failed probe is not yet "degraded", but nor is it
+		// a recovery.
+		delete(h.failing, community)
+		h.writeLocked()
+	}
+}
+
+// FailingSince is when the community's Bot was first judged degraded, by dillad's clock, while it still is.
+func (h *BotHealth) FailingSince(community id.ID) (time.Time, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	at, ok := h.failing[community]
+	return at, ok
 }
 
 // queueGrowing is true when the queue depth rose from each report to the next over the last BotHealthGrowthWindow: from

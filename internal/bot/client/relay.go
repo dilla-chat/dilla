@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/sha256"
 	"net/http"
 
 	"github.com/dilla-chat/dilla/internal/cborx"
@@ -38,6 +39,33 @@ func (s *Session) Reply(ctx context.Context, device, request id.ID, seq uint32, 
 	}
 	_, _, err = s.do(ctx, http.MethodPost, "bot-runtime/replies", nil, body, MaxSmallBody, true)
 	return err
+}
+
+// maxSealedCommand is dilla_core::bot::command::MAX_SEALED_COMMAND_BYTES, dillad's bound.
+const maxSealedCommand = 16384
+
+// SendCommand relays one sealed command to community's Bot through dillad, POST /v1/communities/{community}/bot/commands
+// `[request_id, sealed]` (202). The Bot sends only its own health probe this way (Task 17 fix round 2): dillad attaches
+// the Bot's own session, pushes it back to the Bot as op 64, and the answer returns as op 62 through the reply route, the
+// path a member's command takes. The idempotency key is the SHA-256 of the sealed bytes (F3).
+func (s *Session) SendCommand(ctx context.Context, community, request id.ID, sealed []byte) error {
+	if s == nil || s.c == nil || s.token == "" || community.IsZero() || request.IsZero() || len(sealed) == 0 || len(sealed) > maxSealedCommand {
+		return ErrInvalidConfig
+	}
+	body, err := cborx.Marshal([]any{request[:], sealed})
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(sealed)
+	raw, _, err := s.do(WithIdempotencyKey(ctx, digest[:]), http.MethodPost, "communities/"+community.String()+"/bot/commands", nil, body, MaxSmallBody, true)
+	if err != nil {
+		return err
+	}
+	var accepted []uint64
+	if cborx.Unmarshal(raw, &accepted) != nil || len(accepted) != 1 || accepted[0] != 0 {
+		return ErrProtocol
+	}
+	return nil
 }
 
 // StateHint raises one scope's Bot state revision and has dillad tell that scope's audience. It

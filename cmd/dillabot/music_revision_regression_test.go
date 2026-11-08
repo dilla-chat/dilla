@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -203,5 +204,48 @@ func TestScheduledResumeSurvivesAStateReadBetweenCommitAndHandoff(t *testing.T) 
 	case <-starter.entered:
 	case <-time.After(time.Second):
 		t.Fatal("the explicit resume handoff was lost after a read adopted its revision")
+	}
+}
+
+// blockedHint is a HintSender stuck on a slow or reconnecting socket until the test ends.
+type blockedHint struct{ release chan struct{} }
+
+func (b blockedHint) Hint(ctx context.Context, _ uint8, _ id.ID) error {
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+	}
+	return nil
+}
+
+// Task 17 fix round 2 (I4): the supervisor's save path tells the room through client.AsyncHints, so a hint sender that
+// blocks never delays the next track (G3 allows a 150 ms gap): Save returns at once.
+func TestQueueSaveDoesNotWaitForABlockedHint(t *testing.T) {
+	community, channel := id.New(), id.New()
+	n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: id.New()}, rows: map[string]native.StateValue{}}
+	stateStore, err := persistence.New(n, community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stuck := blockedHint{release: make(chan struct{})}
+	t.Cleanup(func() { close(stuck.release) })
+	hints := client.NewAsyncHints(stuck)
+	queue := notifyingMusicQueue{persistedMusicQueue: persistedMusicQueue{store: stateStore}, changed: func(ctx context.Context) {
+		_ = hints.Hint(ctx, client.StateScopeCall, channel)
+	}}
+	state, revision := music.InitialState(), uint64(0)
+	start := time.Now()
+	for i := range 3 {
+		next, err := music.Apply(state, revision, music.Operation{Kind: music.OpEnqueue, Tracks: []music.Track{{ID: fmt.Sprintf("t%d", i), Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "T", RequesterID: "member"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if revision, err = queue.Save(context.Background(), channel, revision, next); err != nil {
+			t.Fatalf("save %d: %v", i, err)
+		}
+		state = next
+	}
+	if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+		t.Fatalf("three saves with a blocked hint sender took %v, want well under the 150 ms track gap", elapsed)
 	}
 }

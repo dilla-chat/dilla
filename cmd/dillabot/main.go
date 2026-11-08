@@ -474,11 +474,15 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		return errors.New("installation discovery failed")
 	}
 	activeInstallations := make([]id.ID, 0, len(installations))
+	activeCommunities := make(map[id.ID]bool, len(installations))
 	for _, installation := range installations {
 		if installation.State < 4 {
 			activeInstallations = append(activeInstallations, installation.ID)
+			activeCommunities[installation.CommunityID] = true
 		}
 	}
+	// A removed installation's post gate goes with it (Task 17 fix round 2, M1); its community then posts nowhere.
+	service.RetainPostGates(activeCommunities)
 	// Retire command contexts before helper/voice teardown can block.
 	gateways.RetainOnly(activeInstallations)
 	if err := musicRegistry.RetainOnly(activeInstallations); err != nil {
@@ -698,11 +702,10 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 											starter.OnSkipped = func(skipCtx context.Context, skips []music.SkippedTrack) { notices.Notify(skipCtx, channel, skips) }
 											starter.OnCallEnded = func() { notices.Clear(channel) }
 											// Bot v2 Task 17: the room's members hear that the queue or the playing track changed.
-											hints := client.SessionHints{Session: result.Session}
+											// Fix round 2 (I4): asynchronous and coalesced, so the supervisor's save never waits on the socket.
+											hints := client.NewAsyncHints(client.SessionHints{Session: result.Session})
 											starter.OnStateChange = func(changeCtx context.Context) {
-												hintCtx, cancelHint := context.WithTimeout(context.WithoutCancel(changeCtx), 2*time.Second)
-												defer cancelHint()
-												_ = hints.Hint(hintCtx, client.StateScopeCall, channel)
+												_ = hints.Hint(changeCtx, client.StateScopeCall, channel)
 											}
 											if starter.SetCallEnded != nil {
 												starter.SetCallEnded(starter.OnCallEnded)

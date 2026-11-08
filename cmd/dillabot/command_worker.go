@@ -458,8 +458,8 @@ type sealedEntry struct {
 	cancel     context.CancelFunc
 	started    bool
 
-	// Bot v2 Task 17 (health_probe.go): the Bot's probes of its own intake, the commands waiting for a worker, and the
-	// health monitor that reports both.
+	// Bot v2 Task 17 (health_probe.go): the Bot's probes of its own command path, the commands not yet answered, and
+	// the health monitor that reports both.
 	probes  probeTable
 	load    commandLoad
 	monitor *health.Monitor
@@ -475,9 +475,6 @@ func (e *sealedEntry) current() (sealedIntakeConfig, *service.SealedDispatcher) 
 var errSealedNotConfigured = errors.New("bot sealed intake: no pass has configured the installation")
 
 func (e *sealedEntry) OpenCommand(ctx context.Context, sealed []byte, user, device id.ID, now time.Time) (helper.OpenedCommand, error) {
-	if request, ok := e.probes.probeRequest(sealed); ok {
-		return openProbe(request, e.community, user, device, now), nil
-	}
 	cfg, _ := e.current()
 	if cfg.helper == nil {
 		return helper.OpenedCommand{}, errSealedNotConfigured
@@ -486,9 +483,6 @@ func (e *sealedEntry) OpenCommand(ctx context.Context, sealed []byte, user, devi
 }
 
 func (e *sealedEntry) SealReply(ctx context.Context, key [32]byte, request id.ID, seq uint32, body []byte) ([]byte, error) {
-	if e.probes.has(request) {
-		return append([]byte{}, body...), nil // a probe's answer stays in the Bot
-	}
 	cfg, _ := e.current()
 	if cfg.helper == nil {
 		return nil, errSealedNotConfigured
@@ -505,10 +499,6 @@ func (e *sealedEntry) CommandKey(ctx context.Context, community id.ID, now time.
 }
 
 func (e *sealedEntry) Reply(ctx context.Context, device, request id.ID, seq uint32, sealed []byte, final bool) error {
-	if e.probes.has(request) {
-		e.probes.deliver(request, sealed)
-		return nil
-	}
 	cfg, _ := e.current()
 	if cfg.session == nil {
 		return errSealedNotConfigured
@@ -749,11 +739,13 @@ func (e *sealedEntry) work(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case cmd := <-e.queue:
-			e.load.started(cmd.RequestID)
 			e.mu.Lock()
 			in := e.in
 			e.mu.Unlock()
 			in.Handle(ctx, cmd)
+			// Fix round 2, M3: counted until its handling ends, so a command stuck in a worker (a hanging helper call,
+			// a blocked handler) shows as waiting even while other workers are free.
+			e.load.answered(cmd.RequestID)
 		}
 	}
 }
@@ -796,7 +788,7 @@ func (r *botGatewayRuntime) relayCommand(installation id.ID, payload []cbor.RawM
 		select {
 		case e.queue <- cmd:
 		default:
-			e.load.started(cmd.RequestID)
+			e.load.answered(cmd.RequestID)
 			r.log.Warn("bot command intake queue full; command dropped", "installation_id", installation.String())
 		}
 	}

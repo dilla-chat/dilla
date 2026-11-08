@@ -789,6 +789,10 @@ func expectedStatus(method, path string) (int, bool) {
 	if len(parts) == 6 && parts[0] == "communities" && parts[2] == "bot" && parts[3] == "members" && parts[5] == "episode" && method == http.MethodGet {
 		return http.StatusOK, true
 	}
+	// Bot v2 Task 17 fix round 2: the health probe's relay answers 202 [0].
+	if len(parts) == 4 && parts[0] == "communities" && parts[2] == "bot" && parts[3] == "commands" && method == http.MethodPost {
+		return http.StatusAccepted, true
+	}
 	if len(parts) == 4 && parts[0] == "communities" && parts[2] == "bot" && parts[3] == "join-role-grants" && method == http.MethodPost {
 		return http.StatusOK, true
 	}

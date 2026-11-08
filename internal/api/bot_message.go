@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/dilla-chat/dilla/internal/auth"
@@ -57,6 +58,10 @@ func (h *Groups) postBotMessage(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	if err := h.requireBotChannelGroup(r, community, groupID); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	out, err := h.DS.AcceptBotMessage(r.Context(), ds.BotMessageRequest{
 		Session: session, InstallationID: installation, OperationID: body.OperationID,
 		AttemptID: body.AttemptID, PredecessorAttempt: body.PredecessorAttempt,
@@ -68,6 +73,33 @@ func (h *Groups) postBotMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeBotReceipt(w, out.Receipt, body.OperationID, body.AttemptID, community, groupID)
+}
+
+// requireBotChannelGroup is dillad's own Bot-channel check (Bot v2 Task 17 fix round 2, M2), beside the Bot's send-layer
+// gate: a text channel group (kind 0) of the Bot's community takes a Bot post only while its channel is a Bot channel,
+// else 409 E_NOT_BOT_CHANNEL. Other kinds and unknown groups are the delivery service's to refuse.
+func (h *Groups) requireBotChannelGroup(r *http.Request, community, groupID id.ID) error {
+	if h.Deps.Repo == nil {
+		return server.Errorf(server.CodeInternal, "no repository")
+	}
+	group, err := h.Deps.Repo.GetGroup(r.Context(), groupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return h.Deps.storeError(r, err)
+	}
+	if group.Kind != 0 || group.CommunityID == nil || *group.CommunityID != community {
+		return nil
+	}
+	marked, err := isBotChannelOf(r.Context(), h.Deps.Repo, community, group.TargetID)
+	if err != nil {
+		return h.Deps.storeError(r, err)
+	}
+	if !marked {
+		return server.Errorf(server.CodeNotBotChannel, "the channel is not a Bot channel")
+	}
+	return nil
 }
 
 func (h *Groups) getBotMessageReceipt(w http.ResponseWriter, r *http.Request) {

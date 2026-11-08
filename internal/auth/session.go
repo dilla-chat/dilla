@@ -1363,6 +1363,11 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		// session's own community (a reply to its relayed requests, a hint to its own scopes). Task 17: and reports
 		// its health, for its own community.
 		return ready, nil
+	case "POST /v1/communities/{community}/bot/commands":
+		// Bot v2 Task 17 fix round 2: the ready Bot's health probe, a sealed OpProbe to its own command key, sent
+		// through the relay like a member's command. Its own community only; the handler attaches the session's own
+		// user and device, so the Bot can relay nothing as anyone else.
+		return ready && communityPath("community"), nil
 	case "GET /v1/communities/{community}/bot/actors/{actor}/authority":
 		if !ready || !communityPath("community") {
 			return false, nil

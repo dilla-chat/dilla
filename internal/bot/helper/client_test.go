@@ -3,6 +3,7 @@
 package helper
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -87,7 +88,7 @@ func TestCleanupAfterChildAlreadyExitedUsesTrackedProcessHandle(t *testing.T) {
 
 func TestCallRejectsOperationOutsideFrozenRange(t *testing.T) {
 	c := startFixture(t, "")
-	for _, operation := range []protocol.HelperOperation{protocol.HelperShutdown, protocol.HelperGroupTransfer, 25} {
+	for _, operation := range []protocol.HelperOperation{protocol.HelperShutdown, protocol.HelperGroupTransfer, 27} {
 		if _, err := c.Call(context.Background(), operation, []any{}); !errors.Is(err, ErrInvalidOperation) {
 			t.Fatalf("operation %d error = %v, want ErrInvalidOperation", operation, err)
 		}
@@ -146,8 +147,44 @@ func fixtureCommandAnswer(request protocol.HelperRequest) ([]any, bool) {
 			return []any{uint64(0), uint64(7), uint64(3)}, true
 		}
 		return []any{uint64(1), uint64(7), uint64(0)}, true
+	case protocol.HelperProbeSeal:
+		// [community, request, now]: now 1 answers a zero handle (undefined).
+		if now, _ := request.Payload[2].(uint64); now == 1 {
+			return []any{[]byte{0x85}, uint64(0)}, true
+		}
+		return []any{[]byte{0x85, 0x01}, uint64(3)}, true
+	case protocol.HelperProbeOpen:
+		// [handle, seq, sealed, forget]: the plaintext is the sealed bytes after their first.
+		sealed, _ := request.Payload[2].([]byte)
+		if forget, _ := request.Payload[3].(uint64); forget > 1 || len(sealed) < 2 {
+			return nil, false
+		}
+		return []any{sealed[1:]}, true
 	}
 	return nil, false
+}
+
+// Task 17 fix round 2: ops 25 and 26, the health probe's seal and the opening of its answer.
+func TestProbeWrappersDecodeHelperAnswers(t *testing.T) {
+	c := startFixture(t, "command")
+	ctx := context.Background()
+	sealed, handle, err := c.SealProbe(ctx, fixtureID(2), fixtureID(40), time.Unix(1_800_000_000, 0))
+	if err != nil || handle != 3 || len(sealed) != 2 {
+		t.Fatalf("SealProbe = %x %d %v", sealed, handle, err)
+	}
+	if _, _, err := c.SealProbe(ctx, fixtureID(2), fixtureID(40), time.Unix(1, 0)); !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("a zero handle = %v, want an outcome-unknown error", err)
+	}
+	if _, _, err := c.SealProbe(ctx, fixtureID(2), id.ID{}, time.Unix(1_800_000_000, 0)); err == nil {
+		t.Fatal("SealProbe accepted a zero request id")
+	}
+	body, err := c.OpenProbeReply(ctx, handle, 0, []byte{0x83, 0x18, 0xc8}, true)
+	if err != nil || !bytes.Equal(body, []byte{0x18, 0xc8}) {
+		t.Fatalf("OpenProbeReply = %x %v", body, err)
+	}
+	if _, err := c.OpenProbeReply(ctx, 0, 0, []byte{1, 2}, true); err == nil {
+		t.Fatal("OpenProbeReply accepted handle 0")
+	}
 }
 
 func TestCommandWrappersDecodeHelperAnswers(t *testing.T) {

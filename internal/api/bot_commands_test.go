@@ -427,6 +427,45 @@ func TestReplyGoesOnlyToTheRequestingDevice(t *testing.T) {
 	}
 }
 
+// Task 17 fix round 2: the Bot's health probe is a sealed command from the ready Bot's own session. dillad relays it to
+// the Bot's own runtime connection with the identity it authenticated (the Bot's user and device, never anything from
+// the body), and the Bot's answer comes back as op 62 to the Bot's own device. Another community's relay stays closed
+// to it.
+func TestBotsOwnProbeIsRelayedToItselfAndAnsweredToItself(t *testing.T) {
+	r := newRelayFixture(t)
+	requestID := id.New()
+	sealed := sealedCommand(t, requestID, 96)
+	status, body := r.send(t, r.botTok, requestID, sealed)
+	wantAccepted(t, status, body)
+	got := r.relay.frames(r.relay.bot, r.botDevice)
+	if len(got) != 1 || got[0].Op != gateway.OpBotCommand {
+		t.Fatalf("Bot frames = %+v, want its own probe as one bot_command", got)
+	}
+	p := framePayload(t, got[0])
+	for i, want := range [][]byte{requestID[:], r.community[:], r.botUser[:], r.botDevice[:], sealed} {
+		if g := rawBstr(t, p[i]); !bytes.Equal(g, want) {
+			t.Fatalf("bot_command element %d = %x, want %x", i, g, want)
+		}
+	}
+	answer := []byte{0x83, 0x01, 0x02}
+	if status, body := r.reply(t, r.botTok, r.botDevice, requestID, 0, answer, 1); status != http.StatusNoContent {
+		t.Fatalf("the Bot's answer to its own probe = %d %x, want 204", status, body)
+	}
+	replies := r.relay.frames(r.relay.device, r.botDevice)
+	if len(replies) != 1 || replies[0].Op != gateway.OpBotReply || !bytes.Equal(rawBstr(t, framePayload(t, replies[0])[2]), answer) {
+		t.Fatalf("frames to the Bot's device = %+v, want its probe's answer as one bot_reply", replies)
+	}
+	// Another community: the Bot's allow-list refuses it before the handler.
+	other := id.New()
+	foreign := "/v1/communities/" + id.New().String() + "/bot/commands"
+	if rec := postCBORAuth(r.h, foreign, mustCBOR(t, []any{other[:], sealedCommand(t, other, 8)}), r.botTok); rec.Code != http.StatusForbidden {
+		t.Fatalf("the Bot's command into another community = %d, want 403", rec.Code)
+	}
+	if n := len(r.relay.frames(r.relay.bot, r.botDevice)); n != 1 {
+		t.Fatalf("the Bot's runtime got %d commands, want only its own probe", n)
+	}
+}
+
 func TestReplyToUnknownRequestIs404(t *testing.T) {
 	r := newRelayFixture(t)
 	if status, body := r.reply(t, r.botTok, r.memberDevice.ID, id.New(), 0, []byte{1}, 1); status != http.StatusNotFound || bodyCode(t, body) != "E_NOT_FOUND" {

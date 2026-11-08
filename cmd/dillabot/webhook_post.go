@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/fxamacker/cbor/v2"
@@ -111,12 +112,89 @@ func neutralizeEveryone(text string) string {
 	return everyoneMention.ReplaceAllString(text, "@\u200b$1")
 }
 
-var everyoneMention = regexp.MustCompile(`(?i)@(everyone|here)`)
+var (
+	everyoneMention = regexp.MustCompile(`(?i)@(everyone|here)`)
+	// memberMention is a client's user or role mention token (packages/client-core/src/state/mentions.ts TOKEN).
+	memberMention = regexp.MustCompile(`<@([0-9a-f]{32})>`)
+)
 
-// defangMarkers turns every "[dilla-" a webhook's text carries into "(dilla-": clients draw cards and labels from
-// bracketed markers only the Bot writes.
-func defangMarkers(text string) string {
-	return strings.ReplaceAll(text, "[dilla-", "(dilla-")
+// webhookMentions makes a webhook's text ping exactly what its admin allowed (fix round 2, M5). Clients notify only on
+// the exact tokens <@everyone>, <@here> and <@{user or role hex}> (mentions.ts):
+//   - a user or role token is always broken with a zero-width space: a webhook pings no user and no role;
+//   - without allow_everyone, every @everyone and @here, bare or as a token and in any case, is broken the same way;
+//   - with allow_everyone, a bare @everyone or @here at a mention boundary (as the client's encodeMentions finds one:
+//     after the start, white space or one of ( [ { " ', and ending where a name cannot continue) becomes the token, so
+//     an integration that writes the bare form, as Discord's do, pings.
+func webhookMentions(text string, allowEveryone bool) string {
+	text = memberMention.ReplaceAllString(text, "<@\u200b$1>")
+	if !allowEveryone {
+		return neutralizeEveryone(text)
+	}
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		if text[i] == '@' && mentionBoundary(text, i) {
+			if handle, ok := broadcastHandle(text[i+1:]); ok {
+				b.WriteString("<@" + handle + ">")
+				i += 1 + len(handle)
+				continue
+			}
+		}
+		b.WriteByte(text[i])
+		i++
+	}
+	return b.String()
+}
+
+// mentionBoundary is the client's boundary(): the start, or after white space or one of ( [ { " '.
+func mentionBoundary(text string, at int) bool {
+	if at == 0 {
+		return true
+	}
+	switch text[at-1] {
+	case ' ', '\t', '\n', '\r', '\f', '\v', '(', '[', '{', '"', '\'':
+		return true
+	}
+	r, _ := utf8.DecodeLastRuneInString(text[:at])
+	return unicode.IsSpace(r)
+}
+
+// broadcastHandle is "everyone" or "here" when rest starts with one (any case) that ends a mention.
+func broadcastHandle(rest string) (string, bool) {
+	for _, handle := range []string{"everyone", "here"} {
+		if len(rest) >= len(handle) && strings.EqualFold(rest[:len(handle)], handle) && mentionEnds(rest[len(handle):]) {
+			return handle, true
+		}
+	}
+	return "", false
+}
+
+// mentionEnds is the client's endsMention(): the end, CJK text, a dot run no name continues past, or any character
+// a name cannot hold.
+func mentionEnds(rest string) bool {
+	if rest == "" {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(rest)
+	if isCJK(r) {
+		return true
+	}
+	if r == '.' {
+		dots := strings.TrimLeft(rest, ".")
+		if dots == "" {
+			return true
+		}
+		next, _ := utf8.DecodeRuneInString(dots)
+		return !isNameRune(next) || isCJK(next)
+	}
+	return !isNameRune(r)
+}
+
+func isNameRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsMark(r) || unicode.IsNumber(r) || r == '_' || r == '-'
+}
+
+func isCJK(r rune) bool {
+	return unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul)
 }
 
 // webhookLabelEscape percent-encodes what would end or split a label field: % : [ ] and control characters.
@@ -152,10 +230,7 @@ func webhookLabel(d webhookDelivery) string {
 // webhookBody is the message text posted for d: the sender's text, made inert, then the label line. A long text is
 // cut at a rune boundary to fit the message cap with its label.
 func webhookBody(d webhookDelivery) string {
-	text := defangMarkers(d.Text)
-	if !d.AllowEveryone {
-		text = neutralizeEveryone(text)
-	}
+	text := webhookMentions(service.DefangMarkers(d.Text), d.AllowEveryone)
 	label := "\n" + webhookLabel(d)
 	if room := maxWebhookBody - len(label); len(text) > room {
 		cut := room - len("…")

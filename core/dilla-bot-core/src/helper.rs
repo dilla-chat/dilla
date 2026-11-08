@@ -31,6 +31,8 @@ pub struct Helper {
     store: Option<Store>,
     core: Option<ClientCore>,
     transfer: Option<Transfer>,
+    /// The health probe's reply secrets (ops 25 and 26), in memory only and bounded.
+    probe_replies: dilla_core::bot::command::ReplyTable,
 }
 
 impl Helper {
@@ -40,6 +42,7 @@ impl Helper {
             store: None,
             core: None,
             transfer: None,
+            probe_replies: Default::default(),
         }
     }
 
@@ -176,6 +179,16 @@ impl Helper {
                 payload,
             )
             .map(|v| (v, false)),
+            25 => crate::command::op_probe_seal(
+                self.store.as_ref().expect("opened"),
+                self.core.as_ref().expect("opened"),
+                &mut self.probe_replies,
+                payload,
+            )
+            .map(|v| (v, false)),
+            26 => {
+                crate::command::op_probe_open(&mut self.probe_replies, payload).map(|v| (v, false))
+            }
             _ => Err(DispatchError::Invalid),
         }
     }
@@ -685,7 +698,7 @@ fn dispatch_status(error: DispatchError) -> u64 {
         DispatchError::Internal => 9,
     }
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum DispatchError {
     Invalid,
     Forbidden,

@@ -38,7 +38,7 @@ func (b botOptions) botConfig(dataDir string) (config.Bot, error) {
 	}
 	c := config.Bot{
 		Enabled: true, Executable: b.executable, HelperExecutable: b.helper, WASIModule: b.wasi,
-		StateDir: state, User: u.Username, SocketDir: filepath.Join(dataDir, "bot"), DevSameUser: true,
+		StateDir: state, User: u.Username, SocketDir: filepath.Join(filepath.Dir(dataDir), filepath.Base(dataDir)+"-bot"), DevSameUser: true,
 	}
 	for name, p := range map[string]*string{"-bot-executable": &c.Executable, "-bot-helper": &c.HelperExecutable, "-bot-wasi": &c.WASIModule, "-bot-state-dir": &c.StateDir} {
 		abs, err := filepath.Abs(*p)

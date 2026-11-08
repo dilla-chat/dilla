@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/music"
@@ -77,5 +78,41 @@ func TestPlayNeedsNoTextChannelAndPostsCardOnlyWithTarget(t *testing.T) {
 	}
 	if flags := NeedsBotChannelFlags(f.community); len(flags) != 0 {
 		t.Fatalf("flags %+v after posting, want none", flags)
+	}
+}
+
+// stuckHints is a HintSender whose every send blocks until the test ends (a slow or reconnecting Bot socket).
+type stuckHints struct{ release chan struct{} }
+
+func (s stuckHints) Hint(ctx context.Context, _ uint8, _ id.ID) error {
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+	}
+	return nil
+}
+
+// Task 17 fix round 2 (I4): hints go through client.AsyncHints, so a sender that blocks delays neither a music command's
+// reply nor a poll vote's (G2: the answer is RTT + 100 ms; a synchronous hint could add its 2 s timeout).
+func TestBlockedHintSenderDelaysNoCommandReply(t *testing.T) {
+	stuck := stuckHints{release: make(chan struct{})}
+	t.Cleanup(func() { close(stuck.release) })
+	hints := client.NewAsyncHints(stuck)
+
+	channel, callID := id.New(), id.New()
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: callID, ChannelID: channel, Active: true}, user: true, dj: true}
+	resolver := &musicInteractionResolverFake{tracks: []music.Track{{ID: "yt:abcdefghijk", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "One"}}}
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: id.New(), Resolver: resolver, Hints: hints}
+	enqueue := protocol.Request{CommunityID: h.CommunityID, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{"One"}}
+	start := time.Now()
+	for i := range 3 {
+		enqueue.Revision = uint64Ptr(uint64(i))
+		if result, err := h.handle(context.Background(), InteractionActor{User: id.New()}, enqueue, protocol.OpMusicEnqueue); err != nil || result.Status != 0 {
+			t.Fatalf("enqueue %d: %+v %v", i, result, err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("three queue changes with a blocked hint sender took %v; the reply must not wait for the hint", elapsed)
 	}
 }

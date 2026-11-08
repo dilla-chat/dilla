@@ -6,6 +6,7 @@ mod account_kind;
 mod bot_command;
 mod bot_events;
 mod bot_identity;
+mod bot_probe;
 pub use bot_identity::BotInteractionGroupDescriptor;
 mod bot_intents;
 mod bot_interaction_create;

@@ -229,7 +229,7 @@ func rolePanelMessage(options []rolePanelOption) (string, error) {
 		}
 	}
 	// Security review (task 8b): option names never carry the music player marker.
-	return NeutralizeBotMarkers(builder.String()), nil
+	return DefangMarkers(builder.String()), nil
 }
 
 func rolePanelAttemptID(operation id.ID) id.ID {

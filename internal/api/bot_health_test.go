@@ -3,6 +3,8 @@ package api_test
 import (
 	"context"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -213,5 +215,80 @@ func TestHealthRouteFeedsTheCatalogStatus(t *testing.T) {
 	clk.Advance(151 * time.Second)
 	if state, _ := status(); state != healthOffline {
 		t.Fatalf("after 151 s of silence: state %d, want offline", state)
+	}
+}
+
+// Fix round 2 (I2): dillad stamps failing_since itself, when its judgement first becomes degraded, and never takes the
+// Bot's: the catalog's since shows it for as long as the Bot stays degraded, and it is kept in a 0600 file that a
+// restarted dillad (and `dillad doctor`) reads back. A ready judgement drops it.
+func TestFailingSinceIsDilladsOwnStampKeptForDoctor(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_800_000_000, 0))
+	path := filepath.Join(t.TempDir(), api.BotHealthFile)
+	tracker := api.NewBotHealth(clk)
+	tracker.Persist(path, nil)
+	community := id.New()
+	lie := uint64(1_000) // the Bot's own failing_since: a time it made up
+	report := func(ok bool) {
+		r := healthReportAt(ok, clk.Now(), 0, 0)
+		r.FailingSince = &lie
+		tracker.Record(community, r)
+	}
+	report(true)
+	clk.Advance(health.ProbePeriod)
+	report(false)
+	clk.Advance(health.ProbePeriod)
+	report(false)
+	first := clk.Now()
+	if state, since := tracker.Status(community); state != healthDegraded || since != uint64(first.Unix()) {
+		t.Fatalf("state %d since %d, want degraded since dillad's %d", state, since, first.Unix())
+	}
+	// Still degraded later: the time it first became degraded stands.
+	clk.Advance(health.ProbePeriod)
+	report(false)
+	if _, since := tracker.Status(community); since != uint64(first.Unix()) {
+		t.Fatalf("since moved to %d while still degraded, want %d", since, first.Unix())
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("failing-since file = %v, %v; want mode 0600", info, err)
+	}
+	kept, err := api.ReadBotHealthFile(path)
+	if err != nil || len(kept) != 1 || !kept[community].Equal(first) {
+		t.Fatalf("file = %v, %v; want %s failing since %v", kept, err, community, first)
+	}
+	// A restarted dillad keeps the time while the Bot is still degraded.
+	clk.Advance(time.Hour)
+	restarted := api.NewBotHealth(clk)
+	restarted.Persist(path, nil)
+	restarted.Record(community, healthReportAt(false, clk.Now(), 0, 0))
+	clk.Advance(health.ProbePeriod)
+	restarted.Record(community, healthReportAt(false, clk.Now(), 0, 0))
+	if state, since := restarted.Status(community); state != healthDegraded || since != uint64(first.Unix()) {
+		t.Fatalf("after a restart: state %d since %d, want degraded since %d", state, since, first.Unix())
+	}
+	// Ready again: dropped from the judgement and the file.
+	clk.Advance(health.ProbePeriod)
+	restarted.Record(community, healthReportAt(true, clk.Now(), 0, 0))
+	if _, ok := restarted.FailingSince(community); ok {
+		t.Fatal("a ready Bot still has a failing-since")
+	}
+	if kept, err := api.ReadBotHealthFile(path); err != nil || len(kept) != 0 {
+		t.Fatalf("file after recovery = %v, %v; want empty", kept, err)
+	}
+}
+
+func TestBotHealthFileRefusesGarbage(t *testing.T) {
+	dir := t.TempDir()
+	if kept, err := api.ReadBotHealthFile(filepath.Join(dir, "missing")); err != nil || len(kept) != 0 {
+		t.Fatalf("a missing file = %v, %v; want empty", kept, err)
+	}
+	for _, body := range []string{"nonsense\n", id.New().String() + " -4\n", "zz 1800000000\n"} {
+		path := filepath.Join(dir, "garbage")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := api.ReadBotHealthFile(path); err == nil {
+			t.Fatalf("%q was read as a failing-since file", body)
+		}
 	}
 }

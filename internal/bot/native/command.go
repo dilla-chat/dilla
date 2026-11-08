@@ -57,6 +57,42 @@ func (c *Client) SealReply(ctx context.Context, replyKey [32]byte, requestID id.
 	return resultAs[[]byte](v)
 }
 
+// SealProbe is op 25: the health probe sealed to community's current command key as the Bot's own device, and the
+// handle of its reply secret (kept in the helper).
+func (c *Client) SealProbe(ctx context.Context, community, request id.ID, now time.Time) ([]byte, uint32, error) {
+	payload, err := helper.ProbeSealPayload(community, request, now)
+	if err != nil {
+		return nil, 0, err
+	}
+	v, err := c.call(ctx, protocol.HelperProbeSeal, payload, false, func(result []any) (any, error) {
+		sealed, handle, err := helper.DecodeProbeSeal(result)
+		return sealedProbe{sealed, handle}, err
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	probe, err := resultAs[sealedProbe](v)
+	return probe.sealed, probe.handle, err
+}
+
+type sealedProbe struct {
+	sealed []byte
+	handle uint32
+}
+
+// OpenProbeReply is op 26: the plaintext of answer seq of the probe behind handle.
+func (c *Client) OpenProbeReply(ctx context.Context, handle, seq uint32, sealed []byte, forget bool) ([]byte, error) {
+	payload, err := helper.ProbeOpenPayload(handle, seq, sealed, forget)
+	if err != nil {
+		return nil, err
+	}
+	v, err := c.call(ctx, protocol.HelperProbeOpen, payload, false, oneByteString("probe open"))
+	if err != nil {
+		return nil, err
+	}
+	return resultAs[[]byte](v)
+}
+
 func oneByteString(what string) func([]any) (any, error) {
 	return func(result []any) (any, error) {
 		if len(result) != 1 {

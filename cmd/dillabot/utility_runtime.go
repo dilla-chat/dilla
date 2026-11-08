@@ -379,7 +379,8 @@ func (p *durablePollPublisher) PublishPoll(ctx context.Context, poll polls.Poll)
 			return nil
 		}
 	}
-	bodyText := fmt.Sprintf("%s\n\n%s\n\n%s\n\nCloses: <t:%d:R>\n[dilla-poll:v1:%x]", poll.Question, strings.Join(poll.Answers, "\n"), "Vote with /poll vote.", poll.DueAt, poll.ID[:])
+	// The member's question and answers are defanged (fix round 2, M6); the marker line is the Bot's own.
+	bodyText := fmt.Sprintf("%s\n\n%s\n\n%s\n\nCloses: <t:%d:R>\n[dilla-poll:v1:%x]", service.DefangMarkers(poll.Question), service.DefangMarkers(strings.Join(poll.Answers, "\n")), "Vote with /poll vote.", poll.DueAt, poll.ID[:])
 	if len([]byte(bodyText)) > 4000 {
 		return errors.New("poll publication body exceeds protocol limit")
 	}
@@ -453,7 +454,8 @@ func newUtilityRuntime(n *native.Client, session *client.Session, authority *cli
 	reminderStore := reminders.NewStore(n, binding, now)
 	// Bot v2 Task 17: a reminder that comes due tells its owner's clients (a user hint), and a poll vote or close tells
 	// its channel's (a channel hint). Polls name their channel in the reply.
-	hints := client.SessionHints{Session: session}
+	// Fix round 2 (I4): asynchronous and coalesced, so no reply waits on a hint.
+	hints := client.NewAsyncHints(client.SessionHints{Session: session})
 	reminderStore.Hints = hints
 	channelName := func(ctx context.Context, channel id.ID) string {
 		channels, err := session.Channels(ctx, community)
@@ -467,7 +469,7 @@ func newUtilityRuntime(n *native.Client, session *client.Session, authority *cli
 		}
 		return ""
 	}
-	return &utilityRuntime{polls: service.PollInteractions{Store: pollStore, Authority: actor, CommunityID: community, Now: now, Publisher: publisher, Hints: hints, ChannelName: channelName}, reminders: service.ReminderInteractions{Store: reminderStore, Authority: actor, CommunityID: community, Now: now}}, nil
+	return &utilityRuntime{polls: service.PollInteractions{Store: pollStore, Authority: actor, CommunityID: community, Now: now, Publisher: publisher, Hints: hints, ChannelName: channelName}, reminders: service.ReminderInteractions{Store: reminderStore, Authority: actor, CommunityID: community, Now: now, Hints: hints}}, nil
 }
 
 // gateCreation makes poll and reminder creation read the installation's current capability bit

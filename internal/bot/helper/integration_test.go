@@ -272,6 +272,100 @@ func TestOpenCommandRoundTripThroughHelper(t *testing.T) {
 
 // ownDeviceKey reads the Bot's device id and DSK from its signed device-list PUT body
 // `[version, blob, ssk_signature, prev_hash]`, blob `[v, user, version, prev_hash, entries, sig]`.
+// TestProbeRoundTripThroughHelper (Bot v2 task 17, fix round 2) drives ops 25 and 26 on the compiled helper with ops
+// 21-24: the probe is sealed to the Bot's own current key as its own device, opened by op 22 against the Bot's own list
+// as dillad's feed pushes it, answered through op 23, and the answer opens with the handle once.
+func TestProbeRoundTripThroughHelper(t *testing.T) {
+	binary := os.Getenv("DILLA_BOT_HELPER_BIN")
+	if binary == "" {
+		if os.Getenv("DILLA_BOT_HELPER_INTEGRATION") == "1" {
+			t.Fatal("DILLA_BOT_HELPER_INTEGRATION=1 requires DILLA_BOT_HELPER_BIN")
+		}
+		t.Skip("set DILLA_BOT_HELPER_BIN to run the compiled dilla-bot-core integration")
+	}
+	binary, err := filepath.Abs(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	instance, community, installation, botUser := realID(1), realID(2), realID(3), realID(4)
+	key := make([]byte, 32)
+	copy(key, []byte("probe-round-trip-database-key"))
+	helper := startReal(t, binary, filepath.Join(t.TempDir(), "private-state"))
+	if _, err := helper.Open(ctx, instance, community, installation, key); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	instanceKey := [32]byte{0x77}
+	registration, err := helper.Call(ctx, protocol.HelperBootstrap, []any{instance, community, installation, instanceKey[:]})
+	if err != nil || len(registration) != 4 {
+		t.Fatalf("bootstrap: %#v %v", registration, err)
+	}
+	now := time.Now()
+	enrolled, err := helper.Call(ctx, protocol.HelperEnrollComplete, []any{botUser, "probe bot", uint64(now.Unix())})
+	if err != nil || len(enrolled) != 2 {
+		t.Fatalf("enroll: %#v %v", enrolled, err)
+	}
+	botDevice, _ := ownDeviceKey(t, enrolled[1])
+	var device id.ID
+	copy(device[:], botDevice)
+
+	// No key yet: the probe does not mint one.
+	if _, _, err := helper.SealProbe(ctx, community, realID(20), now); err == nil {
+		t.Fatal("a probe was sealed before any command key existed")
+	}
+	if _, err := helper.CommandKey(ctx, community, now); err != nil {
+		t.Fatalf("CommandKey: %v", err)
+	}
+	request := realID(21)
+	sealed, _, err := helper.SealProbe(ctx, community, request, now)
+	if err != nil {
+		t.Fatalf("SealProbe: %v", err)
+	}
+	// Before the Bot's own list is in the cache the probe is refused like any unlisted sender's command.
+	if opened, err := helper.OpenCommand(ctx, sealed, botUser, device, now); err != nil || opened.Refusal != RefusalDeviceUnlisted {
+		t.Fatalf("probe before the Bot's own list = %#v, %v", opened, err)
+	}
+	var row []any
+	if raw, _ := enrolled[1].([]byte); cborx.Unmarshal(raw, &row) != nil || len(row) != 4 {
+		t.Fatalf("device list body = %#v", enrolled[1])
+	}
+	push := protocol.DeviceListPush{History: []protocol.DeviceListRow{{Version: row[0].(uint64), Blob: row[1].([]byte)}}}
+	copy(push.History[0].SSKSignature[:], row[2].([]byte))
+	copy(push.History[0].PrevHash[:], row[3].([]byte))
+	copy(push.UMK[:], registration[0].([]byte))
+	copy(push.SSK[:], registration[1].([]byte))
+	copy(push.SigUMKSSK[:], registration[2].([]byte))
+	body, err := protocol.EncodeDeviceListPush(push)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := helper.IngestDeviceList(ctx, botUser, body); err != nil {
+		t.Fatalf("the Bot's own list: %v", err)
+	}
+	request = realID(22)
+	sealed, handle, err := helper.SealProbe(ctx, community, request, now)
+	if err != nil {
+		t.Fatalf("SealProbe: %v", err)
+	}
+	opened, err := helper.OpenCommand(ctx, sealed, botUser, device, now)
+	if err != nil || opened.Refusal != RefusalNone {
+		t.Fatalf("probe = %#v, %v", opened, err)
+	}
+	if r := opened.Request; r.RequestID != request || r.CommunityID != community || r.Operation != uint64(protocol.OpProbe) || len(r.Args) != 0 {
+		t.Fatalf("opened probe = %#v", r)
+	}
+	answer, err := helper.SealReply(ctx, opened.Request.ReplyKey, request, 0, []byte("ok"))
+	if err != nil {
+		t.Fatalf("SealReply: %v", err)
+	}
+	if got, err := helper.OpenProbeReply(ctx, handle, 0, answer, true); err != nil || string(got) != "ok" {
+		t.Fatalf("OpenProbeReply = %q, %v", got, err)
+	}
+	if _, err := helper.OpenProbeReply(ctx, handle, 0, answer, true); err == nil {
+		t.Fatal("a forgotten probe secret opened again")
+	}
+}
+
 func ownDeviceKey(t *testing.T, body any) ([]byte, ed25519.PublicKey) {
 	t.Helper()
 	raw, ok := body.([]byte)

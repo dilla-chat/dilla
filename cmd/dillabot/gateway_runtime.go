@@ -499,10 +499,13 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 			case gatewayclient.OpBotCommand:
 				// A member's sealed command (Task 15): queued for the installation's sealed intake, acknowledged here.
 				r.relayCommand(installation, delivery.Frame.BotPayload, feed.barrier())
+			case gatewayclient.OpBotReply:
+				// The answer to the Bot's own health probe (Task 17 fix round 2), through dillad's reply route.
+				r.probeReply(installation, delivery.Frame.BotReply)
 			case gatewayclient.OpBotWebhook:
-				// An incoming webhook POST (Task 17): posted into its Bot channel, then acknowledged with op 67 on this
-				// connection, off this loop.
-				r.deliverWebhook(ctx, installation, gateway.WebhookAck, delivery.Frame.BotPayload)
+				// An incoming webhook POST (Task 17): posted into its Bot channel, then acknowledged with op 67 on the
+				// socket it came on (fix round 2, M4: none if that socket was resumed or replaced meanwhile), off this loop.
+				r.deliverWebhook(ctx, installation, delivery.WebhookAck, delivery.Frame.BotPayload)
 			case gatewayclient.OpCommunityChanged:
 				// The community's channels, settings or the Bot's own installation changed (op 54): read them again.
 				r.notify()

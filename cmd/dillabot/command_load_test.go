@@ -35,9 +35,23 @@ type loadTransport struct {
 	frames  map[string]int
 	first   chan time.Time
 	answers []intake.Answer
+	// relay, when set, is the fake dillad's sealed command relay and reply route (health_probe_test.go): it answers a
+	// route it handles.
+	relay func(method, route string, body []byte) (status int, handled bool)
 }
 
 func (t *loadTransport) Do(_ context.Context, method, route string, body, _ []byte) (int, []byte, error) {
+	t.mu.Lock()
+	relay := t.relay
+	t.mu.Unlock()
+	if relay != nil {
+		if status, ok := relay(method, route, body); ok {
+			if status == 202 {
+				return status, []byte{0x81, 0x00}, nil // [0]
+			}
+			return status, nil, nil
+		}
+	}
 	t.mu.Lock()
 	t.frames[method+" "+route]++
 	if strings.HasSuffix(route, "/bot-runtime/replies") {

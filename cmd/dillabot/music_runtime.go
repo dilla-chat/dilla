@@ -294,7 +294,7 @@ func newRuntimeMusicInteractions(installation, community id.ID, capabilities uin
 		CurrentState:        registry.CurrentState,
 		OnImmediateControl:  registry.applyImmediateControl,
 		OnPersistedSnapshot: musicSnapshotCommitCallback(registry, logger),
-		Hints:               client.SessionHints{Session: session},
+		Hints:               client.NewAsyncHints(client.SessionHints{Session: session}), // never delays the reply (I4)
 	}
 	if view, err := youtubeViewFor(community); err == nil {
 		handlers.Resolver = service.LoggingMusicTrackResolver{Resolver: view.Tracks, Logger: logger, InstallationID: installation}

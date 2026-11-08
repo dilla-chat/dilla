@@ -129,7 +129,7 @@ func (c *Client) Open(ctx context.Context, instance, community, installation id.
 // Operation 6 is deliberately reserved for GroupApply, which always uses the
 // staged transfer path so a large result cannot be lost to a direct frame cap.
 func (c *Client) Call(ctx context.Context, operation protocol.HelperOperation, payload []any) ([]any, error) {
-	if operation < protocol.HelperBootstrap || operation > protocol.HelperDeviceListIngest ||
+	if operation < protocol.HelperBootstrap || operation > protocol.HelperProbeOpen ||
 		operation == protocol.HelperGroupApply || operation == protocol.HelperShutdown || operation == protocol.HelperGroupTransfer {
 		return nil, ErrInvalidOperation
 	}
@@ -276,6 +276,74 @@ func (c *Client) SealReply(ctx context.Context, replyKey [32]byte, requestID id.
 		return nil, unknown(errors.New("invalid reply seal answer"))
 	}
 	return sealed, nil
+}
+
+// ProbeSealPayload is op 25's payload: seal the Bot's health probe, request, to community's current command key at now.
+func ProbeSealPayload(community, request id.ID, now time.Time) ([]any, error) {
+	seconds, err := unixSeconds(now)
+	if err != nil || community.IsZero() || request.IsZero() {
+		return nil, errors.New("invalid probe seal request")
+	}
+	return []any{community, request, seconds}, nil
+}
+
+// DecodeProbeSeal reads op 25's answer, [sealed, handle]: the sealed OpProbe and the handle of its reply secret, which
+// stays in the helper.
+func DecodeProbeSeal(answer []any) ([]byte, uint32, error) {
+	if len(answer) != 2 {
+		return nil, 0, unknown(errors.New("invalid probe seal answer"))
+	}
+	sealed, ok := answer[0].([]byte)
+	handle, okHandle := uint64At(answer, 1)
+	if !ok || len(sealed) == 0 || !okHandle || handle == 0 || handle > 1<<32-1 {
+		return nil, 0, unknown(errors.New("invalid probe seal answer"))
+	}
+	return sealed, uint32(handle), nil
+}
+
+// ProbeOpenPayload is op 26's payload: open answer seq of the probe behind handle; forget drops its secret after.
+func ProbeOpenPayload(handle, seq uint32, sealed []byte, forget bool) ([]any, error) {
+	if handle == 0 || len(sealed) == 0 {
+		return nil, errors.New("invalid probe open request")
+	}
+	f := uint64(0)
+	if forget {
+		f = 1
+	}
+	return []any{uint64(handle), uint64(seq), sealed, f}, nil
+}
+
+// SealProbe is op 25 (Bot v2 task 17, fix round 2): the Bot's health probe, an OpProbe signed as the Bot's own device
+// and sealed to community's current command key, for POST …/bot/commands. The helper never mints or rotates a key for
+// it: with no current key it refuses (status 5). The reply secret stays in the helper behind the returned handle.
+func (c *Client) SealProbe(ctx context.Context, community, request id.ID, now time.Time) ([]byte, uint32, error) {
+	payload, err := ProbeSealPayload(community, request, now)
+	if err != nil {
+		return nil, 0, err
+	}
+	answer, err := c.Call(ctx, protocol.HelperProbeSeal, payload)
+	if err != nil {
+		return nil, 0, err
+	}
+	return DecodeProbeSeal(answer)
+}
+
+// OpenProbeReply is op 26: the plaintext of answer seq of the probe behind handle (an intake answer,
+// [status, body, final]). forget drops the secret once opened.
+func (c *Client) OpenProbeReply(ctx context.Context, handle, seq uint32, sealed []byte, forget bool) ([]byte, error) {
+	payload, err := ProbeOpenPayload(handle, seq, sealed, forget)
+	if err != nil {
+		return nil, err
+	}
+	answer, err := c.Call(ctx, protocol.HelperProbeOpen, payload)
+	if err != nil {
+		return nil, err
+	}
+	body, ok := oneBytes(answer)
+	if !ok {
+		return nil, unknown(errors.New("invalid probe open answer"))
+	}
+	return body, nil
 }
 
 // ErrDeviceListHeld means the push was recorded, but the user's pin has a key change pending

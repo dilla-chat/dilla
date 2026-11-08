@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
@@ -408,5 +409,58 @@ func TestFinalReviewDueReminderCancel(t *testing.T) {
 	result, err := h.cancel(t.Context(), InteractionActor{User: owner}, protocol.Request{RequestID: reminderTestID(20), CommunityID: reminderTestID(1), Operation: protocol.OpReminderCancel, Revision: &revision, Expires: &expires, Args: []any{row.ID}})
 	if err != nil || result.Status != 0 {
 		t.Fatalf("due cancellation should succeed per UI contract; status=%d error=%v", result.Status, err)
+	}
+}
+
+// Task 17 fix round 2: a reminder created, cancelled or dismissed tells the member's own clients (a user hint, scope the
+// member), so an inbox open on another device refreshes. A refused change hints nothing.
+func TestReminderChangesSendAUserHint(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1000, 0).UTC()
+	h, auth, _ := newReminderTest(&now)
+	rec := &hintRecorder{}
+	h.Hints = rec
+	owner := reminderTestID(4)
+	actor := InteractionActor{User: owner, Device: reminderTestID(5)}
+	payload, _ := cborx.Marshal([]any{uint64(1), uint64(0), uint64(600), "call", "UTC", nil, nil})
+	rev, expires := uint64(0), uint64(1100)
+	create := protocol.Request{RequestID: reminderTestID(8), CommunityID: reminderTestID(1), Operation: protocol.OpReminderCreate, Revision: &rev, Expires: &expires, Args: []any{payload}}
+	if res, err := h.create(ctx, actor, create); err != nil || res.Status != 0 {
+		t.Fatalf("create: %+v %v", res, err)
+	}
+	if got := rec.hints(); len(got) != 1 || got[0].kind != client.StateScopeUser || got[0].scope != owner {
+		t.Fatalf("hints after create = %+v, want one user hint for the owner", got)
+	}
+	for i, op := range []protocol.Operation{protocol.OpReminderCancel, protocol.OpReminderDismiss} {
+		reminder, err := h.Store.Create(ctx, reminderTestID(byte(20+i)), owner, [32]byte{byte(i + 1)}, reminders.Reminder{Text: "x", Timezone: "UTC"}, time.Unix(4600, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		revision, until := reminder.Revision, expires
+		handle := h.cancel
+		if op == protocol.OpReminderDismiss {
+			handle = h.dismiss
+			now = time.Unix(5000, 0).UTC() // a reminder is dismissed once it is due
+			until = 5100
+		}
+		req := protocol.Request{RequestID: reminderTestID(byte(30 + i)), CommunityID: reminderTestID(1), Operation: op, Revision: &revision, Expires: &until, Args: []any{reminder.ID}}
+		before := len(rec.hints())
+		if res, err := handle(ctx, actor, req); err != nil || res.Status != 0 {
+			t.Fatalf("op %d: %+v %v", op, res, err)
+		}
+		if got := rec.hints(); len(got) != before+1 || got[before].kind != client.StateScopeUser || got[before].scope != owner {
+			t.Fatalf("hints after op %d = %+v", op, got)
+		}
+	}
+	auth.member = false
+	now = time.Unix(1000, 0).UTC()
+	before := len(rec.hints())
+	refused := create
+	refused.RequestID = reminderTestID(40)
+	if res, _ := h.create(ctx, actor, refused); res.Status == 0 {
+		t.Fatal("a non-member created a reminder")
+	}
+	if len(rec.hints()) != before {
+		t.Fatal("a refused create sent a hint")
 	}
 }

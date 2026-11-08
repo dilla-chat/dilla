@@ -158,6 +158,42 @@ func TestTheAppBuildNoticeIsDroppedNotAProtocolError(t *testing.T) {
 	}
 }
 
+// Bot v2 Task 17 fix round 2: op 62 bot_reply reaches the Bot (its health probe's answer). Before this it ended the
+// Bot's socket as a protocol error. It is ringed, or unringed when the server's ring had no room for it.
+func TestBotReplyFrameDecodes(t *testing.T) {
+	request := make([]byte, 16)
+	request[15] = 7
+	for _, tc := range []struct {
+		name    string
+		n       uint64
+		payload []any
+		ok      bool
+	}{
+		{"ringed", 3, []any{request, uint64(0), []byte{0x83}, uint64(1)}, true},
+		{"over the ring budget", 0, []any{request, uint64(2), []byte{0x83}, uint64(0)}, true},
+		{"zero request id", 3, []any{make([]byte, 16), uint64(0), []byte{0x83}, uint64(1)}, false},
+		{"seq over 32 bits", 3, []any{request, uint64(1 << 32), []byte{0x83}, uint64(1)}, false},
+		{"empty sealed", 3, []any{request, uint64(0), []byte{}, uint64(1)}, false},
+		{"final 2", 3, []any{request, uint64(0), []byte{0x83}, uint64(2)}, false},
+		{"three elements", 3, []any{request, uint64(0), []byte{0x83}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := cborx.Marshal([]any{uint64(OpBotReply), tc.n, nil, tc.payload})
+			if err != nil {
+				t.Fatal(err)
+			}
+			f, err := DecodeServerFrame(raw, 197120)
+			if (err == nil) != tc.ok {
+				t.Fatalf("decode err %v, want ok %v", err, tc.ok)
+			}
+			if tc.ok && (f.BotReply == nil || f.BotReply.RequestID[15] != 7 || f.BotReply.Seq != uint32(tc.payload[1].(uint64)) ||
+				f.BotReply.Final != (tc.payload[3] == uint64(1)) || len(f.BotReply.Sealed) != 1) {
+				t.Fatalf("decoded %+v", f.BotReply)
+			}
+		})
+	}
+}
+
 // Bot v2 Task 12: op 64 bot_command and op 65 bot_event reach the Bot runtime's connection. Op 64 is
 // ringed (n != 0); op 65 is ringed live and unringed (n = 0) inside a cold-start snapshot. The client
 // decodes both and hands them to its consumer, which acknowledges the ringed ones in order (the op 65

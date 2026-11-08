@@ -1689,7 +1689,7 @@ fn helper_encode(id: MsgId, n: u64, p: &[u8], request: bool) -> Result<Vec<u8>, 
     check_id16(id.as_bytes())?;
     if p.is_empty()
         || p.len() > HELPER_PAYLOAD_MAX
-        || (request && !(1..=24).contains(&n))
+        || (request && !(1..=26).contains(&n))
         || (!request && n > 9)
     {
         return Err(CodecError::Value);
@@ -1714,7 +1714,7 @@ fn helper_decode(b: &[u8], request: bool) -> Result<(MsgId, u64, Vec<u8>), Codec
         let id = read_msg(d)?;
         let n = d.uint()?;
         let p = bounded_bytes(d, 1, HELPER_PAYLOAD_MAX, false)?;
-        if v != 1 || (request && !(1..=24).contains(&n)) || (!request && n > 9) {
+        if v != 1 || (request && !(1..=26).contains(&n)) || (!request && n > 9) {
             return Err(CborError::TypeMismatch {
                 expected: "helper envelope",
                 offset: 0,

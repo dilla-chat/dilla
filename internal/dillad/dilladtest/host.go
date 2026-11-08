@@ -769,7 +769,9 @@ func (h *Host) observeSocket(method, route string, status int, body []byte, repl
 	parts := strings.Split(path, "/")
 	botSend := method == http.MethodPost && len(parts) == 6 && parts[1] == "v1" && parts[2] == "groups" && parts[4] == "bot" && parts[5] == "messages"
 	heal := (method == http.MethodGet || method == http.MethodPost) && len(parts) == 5 && parts[1] == "v1" && parts[2] == "groups" && parts[4] == "heal"
-	if !botSend && !heal {
+	interactionHeal := (method == http.MethodGet || method == http.MethodPost) && len(parts) == 8 && parts[1] == "v1" && parts[2] == "bot-runtime" &&
+		parts[3] == "installations" && parts[5] == "interaction-groups" && parts[7] == "heal"
+	if !botSend && !heal && !interactionHeal {
 		return
 	}
 	h.observeOnce.Do(func() {
@@ -789,13 +791,25 @@ func (h *Host) observeLoop(in <-chan socketObservation) {
 	for o := range in {
 		parts := strings.Split(o.route, "/")
 		var group, epoch, unknown = "", uint64(0), false
-		if g, err := id.Parse(parts[3]); err == nil {
+		groupPart := parts[3]
+		if len(parts) == 8 {
+			groupPart = parts[6]
+		}
+		if g, err := id.Parse(groupPart); err == nil {
 			group = g.String()
 			if server := h.Server(); server != nil {
 				if row, getErr := server.Repo().GetGroup(ctx, g); getErr == nil {
 					epoch, unknown = row.Epoch, row.EpochUnknown
 				}
 			}
+		}
+		if len(parts) == 8 {
+			h.botRuntimeMu.Lock()
+			h.botInteractionHealAttempts = append(h.botInteractionHealAttempts, BotInteractionHealAttempt{Method: o.method,
+				Route: "/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal", Status: o.status, ErrorCode: o.code,
+				Group: group, Epoch: epoch, EpochUnknown: unknown})
+			h.botRuntimeMu.Unlock()
+			continue
 		}
 		if len(parts) == 6 {
 			attempt := BotSendAttempt{Method: o.method, Route: "/v1/groups/{group}/bot/messages", Status: o.status, ErrorCode: o.code,

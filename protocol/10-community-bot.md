@@ -1646,7 +1646,7 @@ devices of the call group of the channel's live call. Both runtime routes are me
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
-| `POST /v1/communities/{community}/bot/commands` | E (community member), socket | `[request_id, sealed]` | `202 [0]`; `400` for a malformed body or sealed form; `404` for a non-member; `403` when the installation is disabled; `409 E_BOT_DUPLICATE`; `503 E_BOT_OFFLINE` with no installation, an installation that is not ready, or no live Bot runtime connection |
+| `POST /v1/communities/{community}/bot/commands` | E (community member; also the ready Bot of `community`, for its health probe only), socket | `[request_id, sealed]` | `202 [0]`; `400` for a malformed body or sealed form; `404` for a non-member; `403` when the installation is disabled; `409 E_BOT_DUPLICATE`; `503 E_BOT_OFFLINE` with no installation, an installation that is not ready, or no live Bot runtime connection |
 | `POST /v1/bot-runtime/replies` | B (ready, own community) | `[device_id, request_id, seq, sealed, final]` | `204`; `404` for a request not relayed from that device into the Bot's community in the last five minutes; `413 E_TOO_LARGE` past 16 replies or 256 KiB for the request |
 | `POST /v1/bot-runtime/state-hints` | B (ready, own community) | `[scope_kind, scope_id]` | `200 [revision]`; `404` for a scope outside the Bot's community or a channel that is not a Bot channel; `400` for another scope kind |
 
@@ -1656,21 +1656,33 @@ The Bot reports its health every 15 s, `PUT /v1/bot-runtime/health`, socket only
 (metered in the `bot_runtime` bucket): `[probe_ok, probe_at, queue_depth, oldest_wait_ms, music_start_p95_ms,
 failing_since|null]`, all uints (`probe_ok` is 0 or 1; times are Unix seconds). `204`.
 
-- **The probe.** Every 60 s the Bot sends its own command intake an `OpProbe` (90) and counts it answered only when
-  the intake answers 200 within 5 s. The probe enters the same queue as a member's command and is handled by the same
-  workers and the same intake code: the Held check, the readiness gate (503 until the feed's first snapshot) and the
-  answer. A reply that never comes is a failure. `probe_ok` and `probe_at` are the last probe's; `failing_since` is
-  when the failures began (null while the last probe passed).
-- **The load.** `queue_depth` is the commands relayed to the Bot and not yet taken by a worker, `oldest_wait_ms` how
-  long the oldest has waited, `music_start_p95_ms` the 95th percentile of the first-frame time over the last 20 track
-  starts (0 without any).
+- **The probe.** Every 60 s the Bot sends itself a sealed `OpProbe` (90) along the whole command path and counts it
+  answered only when the answer `[200, "", 1]` comes back within 5 s. Its helper seals the probe to the community's
+  current command key as the Bot's own device (helper op 25 `probe_seal [community_id, request_id, now]` →
+  `[sealed, handle]`; it never mints or rotates a key, and with none it refuses) and keeps the reply secret behind
+  `handle`. The Bot POSTs it to `POST /v1/communities/{community}/bot/commands` like a member's device (the ready
+  Bot's own community only); dillad attaches the Bot's own session and relays it back as op 64; the Bot's intake opens
+  it in the helper against the Bot's own device list as the feed pushed it, behind the feed barrier, with the Held
+  check and the readiness gate, and answers through `POST /v1/bot-runtime/replies`; dillad delivers op 62 to the
+  Bot's own connection, and the helper opens it (op 26 `probe_open [handle, seq, sealed, forget]` → `[body]`). A
+  helper that errors or hangs, a stuck feed, a wedged delivery loop, a full queue, idle workers, and a broken relay or
+  reply route each fail it. A reply that never comes is a failure. `probe_ok` and `probe_at` are the last probe's;
+  `failing_since` is when the failures began by the Bot's clock (null while the last probe passed); dillad ignores it.
+- **The load.** `queue_depth` is the commands relayed to the Bot and not yet answered (a command a worker holds, in a
+  hanging helper call or a blocked handler, still counts), `oldest_wait_ms` how long the oldest has waited,
+  `music_start_p95_ms` the 95th percentile of the first-frame time over the last 20 track starts (0 without any).
 - **dillad's judgement**, in memory and from its own clock, per community. The Bot is **degraded** (catalog status
   state 1, `since` the time the judgement began) when the probe failed twice in a row (two reports with distinct
   `probe_at`, both not ok), when `oldest_wait_ms` is over 10000, or when `queue_depth` rose from each report to the
   next over the last 60 s (the reports compared start at least 60 s ago). It is **offline** (state 2, `since` the last
   report) when no report came for 150 s; a Bot that never reported is offline 150 s after dillad started. Otherwise it
   is ready. A new report ends degraded or offline at once.
-- `dillabot doctor` prints `commands failing since <time>` from the last report the running Bot left in its state
+- **Failing since.** When its judgement first becomes degraded, dillad stamps the time with its own clock. While the
+  Bot stays degraded the catalog status's `since` is that time, and dillad keeps it in a `0600` file, `bot-health` in
+  its data directory (one `<community hex> <unix seconds>` line per degraded community), written whole on each change.
+  A restarted dillad reads it back: a Bot judged degraded again keeps its time, and only a passing probe drops it.
+- `dillad doctor` prints `commands failing since <time> (community <id>)` from that file (a warning, not a failure),
+  and `dillabot doctor` prints `commands failing since <time>` from the last report the running Bot left in its state
   directory.
 
 ## Webhooks
@@ -1812,9 +1824,18 @@ logs full URLs by default and must redact `/hooks/*` in its access log, or the s
 The Bot posts a webhook (op 66) as an ordinary plain-text message in the webhook's Bot channel, through its normal send
 path, and answers op 67 `[delivery_id, 0]` on the same connection only once the message is accepted (any other status,
 or none within 2 s, is the sender's `503`). It posts nothing, and acks nonzero, when the channel is no longer a Bot
-channel. The text is never parsed as a command. `@everyone` and `@here` get a zero-width space after the `@` unless
-`allow_everyone` is set, and a `[dilla-` in the text becomes `(dilla-`, so it cannot forge a player card, a poll or a
-label. The body ends in a label line the client draws "via webhook <name>" from:
+channel. The text is never parsed as a command. Mentions:
+
+- a user or role token (`<@` + 32 hex digits + `>`) gets a zero-width space after the `@`: a webhook pings no user and
+  no role;
+- without `allow_everyone`, every `@everyone` and `@here`, bare or as a token, in any case, gets one too;
+- with `allow_everyone`, a bare `@everyone` or `@here` at a mention boundary (the start, or after white space or one of
+  `( [ { " '`, and ending where a name cannot continue) becomes the token `<@everyone>` or `<@here>`, so an integration
+  that writes the bare form, as Discord's do, pings.
+
+A `[dilla-` in the text becomes `(dilla-`, as in every free text the Bot posts (welcome messages, announcements, role
+panels, poll questions and answers), so it cannot forge a player card, a poll or a label. The body ends in a label line
+the client draws "via webhook <name>" from:
 
 ```
 <text>
@@ -1826,6 +1847,13 @@ label. The body ends in a label line the client draws "via webhook <name>" from:
 (`GET /v1/communities/{community}/bot/webhook-avatars/{avatar_id}`), never a URL. `display_name` is percent-escaped for
 `%`, `:`, `[`, `]` and control characters (`%3A` is a colon). A text too long to fit the 4000-byte body with its label is
 cut at a character boundary and ends in an ellipsis.
+
+The ack goes only on the socket the delivery arrived on. When that socket was resumed or replaced while the message was
+being posted, the Bot sends no ack: dillad has already answered the sender `503`, the sender retries with a new
+`delivery_id`, and the message is posted twice. Delivery is at least once on reconnect.
+
+Bot posts into a channel group (kind 0) are also checked by dillad: `POST /v1/groups/{group}/bot/messages` into a text
+channel that is not a Bot channel of the Bot's community is `409 E_NOT_BOT_CHANNEL`.
 
 ## Vectors
 

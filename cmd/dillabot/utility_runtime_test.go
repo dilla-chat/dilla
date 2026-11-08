@@ -617,6 +617,9 @@ func TestRuntimeAssemblyDispatcherOutboxAuthorityAndRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The poll's channel is a Bot channel (Task 17: the send layer refuses any other, and a community with no marks).
+	service.SetPostGate(community, service.BotChannelsFunc(func() (map[id.ID]bool, bool) { return map[id.ID]bool{pollChannel: true}, true }))
+	t.Cleanup(func() { service.SetPostGate(community, nil) })
 	actorAuthority := utilityActorAuthority{session: session, community: community}
 	publisher := &durablePollPublisher{state: nativeBoundary, coordinator: coordinator, destination: utilityDestinationFake{group: pollGroup}, authority: discovery, session: session, receipts: session, actorAuthority: session, community: community, installation: installation, now: func() time.Time { return now }}
 	pollStore := polls.NewStore(nativeBoundary, community)

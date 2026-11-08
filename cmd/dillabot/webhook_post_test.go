@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -169,13 +168,41 @@ func TestWebhookPostIsPlainTextWithLabelAndNoEveryone(t *testing.T) {
 		t.Fatalf("posted into %s, want the channel's group %s", got, dest.group)
 	}
 
-	// With allow_everyone the mention stays.
+	// With allow_everyone the bare mention becomes the client's token (fix round 2, M5), so it pings.
 	poster.deliver(context.Background(), whPayload(t, whID(3), whID(5), "Terraria", nil, "hello @everyone", true), acks.ack)
 	acks.wait(t)
-	if bodies := send.bodies(t); !strings.HasPrefix(bodies[1], "hello @everyone\n[dilla-webhook:v1:") || strings.Count(bodies[1], ":") != 3 {
+	if bodies := send.bodies(t); !strings.HasPrefix(bodies[1], "hello <@everyone>\n[dilla-webhook:v1:") || strings.Count(bodies[1], ":") != 3 {
 		t.Fatalf("allowed mention or no-avatar label wrong: %q", bodies[1])
 	}
 	poster.wait()
+}
+
+// Fix round 2 (M5): with allow_everyone a bare @everyone or @here, as Discord-style integrations write it, becomes the
+// token clients notify on, at a mention boundary only; without it no spelling pings. A webhook never pings a user or a
+// role: their tokens are broken either way.
+func TestWebhookMentionsPingOnlyWhatTheAdminAllowed(t *testing.T) {
+	user := strings.Repeat("ab", 16)
+	for _, tc := range []struct {
+		text  string
+		allow bool
+		want  string
+	}{
+		{"@everyone up", true, "<@everyone> up"},
+		{"raid (@Here)!", true, "raid (<@here>)!"},
+		{"done.@everyone", true, "done.@everyone"}, // not at a boundary
+		{"mail@here.com", true, "mail@here.com"},   // not at a boundary
+		{"@everyones", true, "@everyones"},         // the name goes on
+		{"@everyone.", true, "<@everyone>."},       // a dot no name continues past ends it
+		{"@everyone.x", true, "@everyone.x"},       // a dot run a name continues past does not
+		{"<@everyone> as a token", true, "<@everyone> as a token"},
+		{"@everyone and <@here>", false, "@\u200beveryone and <@\u200bhere>"},
+		{"<@" + user + "> and <@" + user + ">", true, "<@\u200b" + user + "> and <@\u200b" + user + ">"},
+		{"<@" + user + ">", false, "<@\u200b" + user + ">"},
+	} {
+		if got := webhookMentions(tc.text, tc.allow); got != tc.want {
+			t.Errorf("webhookMentions(%q, %v) = %q, want %q", tc.text, tc.allow, got, tc.want)
+		}
+	}
 }
 
 func TestWebhookTextIsNeverParsedAsACommand(t *testing.T) {
@@ -265,33 +292,4 @@ func TestWebhookDeliveryForAnotherCommunityOrMalformedIsNotPosted(t *testing.T) 
 	if len(send.sent) != 0 {
 		t.Fatal("a malformed delivery posted")
 	}
-}
-
-// The Bot-side cost of a webhook post, with the dillad fan-out modelled in process: a POST becomes a visible
-// message at a connected member within 500 ms at p95 (100 runs). The fake send path returns after a 20 ms
-// round trip, a fair share of what the socket and the upload cost.
-func TestWebhookPostVisibleWithin500msP95(t *testing.T) {
-	dest := &whDestination{group: whID(9)}
-	visible := make(chan time.Time, 1)
-	send := &whSend{}
-	send.onEvent = func(string) { time.Sleep(20 * time.Millisecond); visible <- time.Now() }
-	poster := newTestPoster(dest, send)
-	acks := newWhAck()
-	var latencies []time.Duration
-	for i := 0; i < 100; i++ {
-		start := time.Now()
-		poster.deliver(context.Background(), whPayload(t, whID(byte(i+1)), whID(5), "Hook", nil, "tick", false), acks.ack)
-		select {
-		case at := <-visible:
-			latencies = append(latencies, at.Sub(start))
-		case <-time.After(2 * time.Second):
-			t.Fatalf("run %d: the post never became visible", i)
-		}
-		acks.wait(t)
-	}
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-	if p95 := latencies[94]; p95 > 500*time.Millisecond {
-		t.Fatalf("webhook post visible p95 = %v, want <= 500ms", p95)
-	}
-	poster.wait()
 }

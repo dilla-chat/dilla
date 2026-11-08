@@ -430,7 +430,7 @@ func newGroupsAPIWithHandler(t *testing.T, handler http.Handler, deps api.Deps, 
 	}
 	t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
 
-	groups := &api.Groups{DS: d, MaxBody: 1 << 21}
+	groups := &api.Groups{DS: d, Deps: deps, MaxBody: 1 << 21}
 	groups.Register(mux, deps.Sessions)
 	groups.RegisterSequencer(mux, deps.Sessions)
 	// Task 25's two recovery routes, endpoints 8 and 9.

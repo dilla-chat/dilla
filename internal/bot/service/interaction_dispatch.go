@@ -673,13 +673,26 @@ var sealedAdapters = map[protocol.Operation]sealedAdapter{
 			}
 			return ch, []any{strings.TrimSpace(query)}, true, ""
 		},
-		render: func(protocol.SealedRequest, InteractionResult) string { return "Added to the queue." }},
-	protocol.OpMusicPause:   musicControl(protocol.OpMusicPause, "Paused.", false),
-	protocol.OpMusicResume:  musicControl(protocol.OpMusicResume, "Resumed.", true),
-	protocol.OpMusicSkip:    musicControl(protocol.OpMusicSkip, "Skipped.", false),
-	protocol.OpMusicStop:    musicControl(protocol.OpMusicStop, "Stopped.", true),
-	protocol.OpMusicShuffle: musicControl(protocol.OpMusicShuffle, "Shuffled the queue.", true),
-	protocol.OpMusicClear:   musicControl(protocol.OpMusicClear, "Cleared the queue.", true),
+		render: func(protocol.SealedRequest, InteractionResult) string { return "Track added to the music queue." }},
+	// The established client copy (packages/web/src/screens/commands/bot-handlers.ts; Task 17 fix round 2 ruling: every
+	// sealed music, poll and reminder answer reads as the v1 client said it).
+	protocol.OpMusicPause:  musicControl(protocol.OpMusicPause, "Music paused.", false),
+	protocol.OpMusicResume: musicControl(protocol.OpMusicResume, "Music resumed.", true),
+	protocol.OpMusicSkip:   musicControl(protocol.OpMusicSkip, "Skipped the current track.", false),
+	protocol.OpMusicStop:   musicControl(protocol.OpMusicStop, "Music stopped.", true),
+	protocol.OpMusicShuffle: func() sealedAdapter {
+		a := musicControl(protocol.OpMusicShuffle, "", true)
+		a.render = func(_ protocol.SealedRequest, r InteractionResult) string {
+			// The handler answers the state after the toggle; element 7 is shuffle.
+			var fields []any
+			if cborx.Unmarshal(r.Data, &fields) == nil && len(fields) > 7 && fields[7] == uint64(0) {
+				return "Shuffle disabled."
+			}
+			return "Shuffle enabled."
+		}
+		return a
+	}(),
+	protocol.OpMusicClear: musicControl(protocol.OpMusicClear, "Music queue cleared.", true),
 	protocol.OpMusicVolume: {handler: protocol.OpMusicVolume, retryConflict: true,
 		request: func(req protocol.SealedRequest) (*id.ID, []any, bool, string) {
 			ch, ok := musicRoom(req)
@@ -694,7 +707,7 @@ var sealedAdapters = map[protocol.Operation]sealedAdapter{
 		},
 		render: func(req protocol.SealedRequest, _ InteractionResult) string {
 			level, _ := sealedUint(req.Args, 0)
-			return fmt.Sprintf("Volume set to %d.", level)
+			return fmt.Sprintf("Volume set to %d%%.", level)
 		}},
 	protocol.OpMusicRepeat: {handler: protocol.OpMusicRepeat, retryConflict: true,
 		request: func(req protocol.SealedRequest) (*id.ID, []any, bool, string) {
@@ -711,7 +724,7 @@ var sealedAdapters = map[protocol.Operation]sealedAdapter{
 		},
 		render: func(req protocol.SealedRequest, _ InteractionResult) string {
 			mode, _ := sealedText(req.Args, 0)
-			return "Repeat: " + strings.ToLower(strings.TrimSpace(mode)) + "."
+			return "Repeat set to " + strings.ToLower(strings.TrimSpace(mode)) + "."
 		}},
 	protocol.OpMusicState: musicState(protocol.OpMusicState, true),
 	protocol.OpReadMusic:  musicState(protocol.OpReadMusic, false),

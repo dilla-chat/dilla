@@ -14,6 +14,12 @@
 //!   `dilla_core::bot::device_list_push::DeviceListPush` (`[umk_pub, ssk_pub, sig_umk_ssk,
 //!   [[version, blob, ssk_signature, prev_hash], ...]]`), `state` 0 current, 1 held (a key
 //!   change is pending), 2 behind (the push did not chain from the cache)
+//! - 25 `probe_seal [community_id, request_id, now]` → `[sealed, handle]` (Task 17 fix round 2):
+//!   the Bot's health probe, an `OpProbe` (90) signed as the Bot's own device and sealed to the
+//!   community's **current** command key (never minted or rotated here; no key is a refusal,
+//!   status 5). The reply secret stays in the helper behind `handle` (a bounded in-memory table).
+//! - 26 `probe_open [handle, seq, sealed, forget 0|1]` → `[body]`: opens answer `seq` of the probe
+//!   behind `handle`; `forget` drops the secret afterwards. An unknown handle is status 7.
 //!
 //! Time is the `now` the caller passes, never the helper's clock, and nothing runs on a timer:
 //! rotation happens in op 21, and an expired previous key is deleted by the next op 21 or 22.
@@ -22,8 +28,8 @@ use crate::helper::{DispatchError, body, map_client};
 use crate::store::Store;
 use dilla_core::bot::command::{
     CommandArg, CommandRefusal, CommandRequest, MAX_COMMAND_KEY_LIFETIME_SECS,
-    MAX_SEALED_COMMAND_BYTES, generate_command_key, open_command, sealed_command_key_id,
-    verify_command,
+    MAX_SEALED_COMMAND_BYTES, ReplyTable, generate_command_key, open_command, open_reply,
+    sealed_command_key_id, verify_command,
 };
 use dilla_core::cbor::{Encoder, decode_strict};
 use dilla_core::client::{ClientCore, PushedList};
@@ -520,6 +526,73 @@ pub(crate) fn op_device_list_ingest(
     Ok(Zeroizing::new(e.into_vec()))
 }
 
+/// Op 25: the health probe, sealed to `community`'s current command key as this device. The
+/// reply secret is kept in `replies`; its handle is returned with the sealed bytes.
+pub(crate) fn op_probe_seal(
+    store: &Store,
+    core: &ClientCore,
+    replies: &mut ReplyTable,
+    payload: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, DispatchError> {
+    let (community, request_id, now) = decode_strict(payload, |d| {
+        d.array(3)?;
+        Ok((d.bytes_exact::<16>()?, d.bytes_exact::<16>()?, d.uint()?))
+    })
+    .map_err(invalid)?;
+    let now_i = checked_now(now)?;
+    if community == [0; 16] || community != store.bind().1 || request_id == [0; 16] {
+        return Err(DispatchError::Invalid);
+    }
+    // The current key as op 22 would find it: purged when expired, never minted or rotated here,
+    // so the probe tests the key members seal to and changes nothing they see.
+    let current = {
+        let conn = lock(store)?;
+        purge_retired(&conn, now_i)?;
+        read_current(&conn, &community)?
+    };
+    let Some((_, created_at, publication)) = current else {
+        return Err(DispatchError::Unavailable);
+    };
+    if created_at <= now_i - KEY_MAX_AGE_SECS {
+        return Err(DispatchError::Unavailable);
+    }
+    let (sealed, secret) = core
+        .bot_probe_seal(&publication, &community, request_id, now)
+        .map_err(map_client)?;
+    let handle = replies.insert(request_id, secret);
+    let mut e = Encoder::new();
+    e.array(2).bytes(&sealed).uint(u64::from(handle));
+    Ok(Zeroizing::new(e.into_vec()))
+}
+
+/// Op 26: opens answer `seq` of the probe behind `handle` with its reply secret.
+pub(crate) fn op_probe_open(
+    replies: &mut ReplyTable,
+    payload: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, DispatchError> {
+    let (handle, seq, sealed, forget) = decode_strict(payload, |d| {
+        d.array(4)?;
+        Ok((d.uint()?, d.uint()?, d.bytes()?.to_vec(), d.uint()?))
+    })
+    .map_err(invalid)?;
+    let handle = u32::try_from(handle).map_err(invalid)?;
+    let seq = u32::try_from(seq).map_err(invalid)?;
+    if forget > 1 {
+        return Err(DispatchError::Invalid);
+    }
+    let Some((request_id, secret)) = replies.get(handle) else {
+        return Err(DispatchError::NotFound);
+    };
+    let opened = open_reply(secret, request_id, seq, &sealed);
+    if forget == 1 {
+        replies.forget(handle);
+    }
+    let body = Zeroizing::new(opened.map_err(|_| DispatchError::Invalid)?);
+    let mut e = Encoder::new();
+    e.array(1).bytes(&body);
+    Ok(Zeroizing::new(e.into_vec()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -618,6 +691,8 @@ mod tests {
         second_dsk: SignatureKeyPair,
         second_dsk_pub: [u8; 32],
         next_request: u8,
+        /// The Bot's own `[umk_pub, ssk_pub, sig_umk_ssk, device]` from its bootstrap.
+        registration: Vec<u8>,
     }
 
     impl Drop for World {
@@ -648,7 +723,8 @@ mod tests {
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         let store = Store::open(&dir, INSTANCE, COMMUNITY, INSTALLATION, &[0x42; 32]).unwrap();
         let mut core = ClientCore::open(store.conn.clone()).unwrap();
-        core.bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
+        let registration = core
+            .bot_bootstrap_begin(&INSTANCE, &COMMUNITY, &INSTALLATION, &[0x77; 32])
             .unwrap();
         core.bot_bootstrap_complete(&BOT_USER, "command bot", T0)
             .unwrap();
@@ -664,6 +740,7 @@ mod tests {
             second_dsk,
             second_dsk_pub,
             next_request: 1,
+            registration,
         }
     }
 
@@ -1606,5 +1683,143 @@ mod tests {
             Err(CommandRefusal::DeviceRevoked.code())
         );
         assert!(w.command_from(SECOND).is_ok());
+    }
+
+    // ---- the health probe (ops 25 and 26, Task 17 fix round 2) ----
+
+    impl World {
+        /// The Bot's own device list as dillad's feed pushes it, ingested like any member's.
+        fn anchor_bot(&mut self) -> [u8; 16] {
+            let (umk_pub, ssk_pub, sig_umk_ssk) = decode_strict(&self.registration, |d| {
+                d.array(4)?;
+                let keys = (
+                    d.bytes_exact::<32>()?,
+                    d.bytes_exact::<32>()?,
+                    d.bytes_exact::<64>()?,
+                );
+                d.skip()?;
+                Ok(keys)
+            })
+            .unwrap();
+            let list = self.bot_list();
+            let device = *list.unsigned.entries[0].device_id.as_bytes();
+            let push = DeviceListPush {
+                umk_pub,
+                ssk_pub,
+                sig_umk_ssk,
+                history: vec![row(&list)],
+            }
+            .encode();
+            let got = ingest(&self.store, &mut self.core, BOT_USER, &push, T0).unwrap();
+            assert_eq!(got.2, LIST_CURRENT);
+            device
+        }
+
+        fn probe_seal(
+            &self,
+            replies: &mut ReplyTable,
+            request: [u8; 16],
+            now: u64,
+        ) -> Result<(Vec<u8>, u32), DispatchError> {
+            let mut e = Encoder::new();
+            e.array(3).bytes(&COMMUNITY).bytes(&request).uint(now);
+            let answer = op_probe_seal(&self.store, &self.core, replies, &e.into_vec())?;
+            Ok(decode_strict(&answer, |d| {
+                d.array(2)?;
+                Ok((d.bytes()?.to_vec(), u32::try_from(d.uint()?).unwrap()))
+            })
+            .unwrap())
+        }
+    }
+
+    fn probe_open(
+        replies: &mut ReplyTable,
+        handle: u32,
+        seq: u32,
+        sealed: &[u8],
+        forget: bool,
+    ) -> Result<Vec<u8>, DispatchError> {
+        let mut e = Encoder::new();
+        e.array(4)
+            .uint(u64::from(handle))
+            .uint(u64::from(seq))
+            .bytes(sealed)
+            .uint(u64::from(forget));
+        let answer = op_probe_open(replies, &e.into_vec())?;
+        Ok(decode_strict(&answer, |d| {
+            d.array(1)?;
+            Ok(d.bytes()?.to_vec())
+        })
+        .unwrap())
+    }
+
+    #[test]
+    fn probe_is_a_command_from_the_bots_own_device_and_its_answer_opens() {
+        let mut w = world();
+        let device = w.anchor_bot();
+        let p = w.publication(T0);
+        let mut replies = ReplyTable::default();
+        let request = [0x9a; 16];
+        let (sealed, handle) = w.probe_seal(&mut replies, request, T0).unwrap();
+        // Opened by op 22 exactly as a member's command: the Bot's own cached list, its own device.
+        let opened = match open(&w.store, &w.core, &sealed, BOT_USER, device, T0 + 1).unwrap() {
+            Opened::Request(r) => r,
+            Opened::Refused(code, _) => panic!("the probe was refused: {code}"),
+            Opened::Replay { .. } => panic!("the probe was a replay"),
+        };
+        assert_eq!(opened.request_id, request);
+        assert_eq!(opened.operation, 90);
+        assert_eq!(opened.community_id, CommunityId::from_bytes(COMMUNITY));
+        assert!(opened.args.is_empty() && opened.channel_id.is_none());
+        // Sealed to the current key, and op 25 neither minted nor rotated one.
+        assert_eq!(sealed_command_key_id(&sealed).unwrap(), p.key_id);
+        assert_eq!(w.count("bot_command_keys"), 1);
+        // The answer, sealed by op 23 to the probe's reply key, opens with the handle (op 26).
+        let reply = seal_reply(opened.reply_key, opened.request_id, 0, b"answer").unwrap();
+        assert!(
+            probe_open(&mut replies, handle, 1, &reply, false).is_err(),
+            "another seq must not open"
+        );
+        assert_eq!(
+            probe_open(&mut replies, handle, 0, &reply, true).unwrap(),
+            b"answer"
+        );
+        // Forgotten after the final open.
+        assert_eq!(
+            probe_open(&mut replies, handle, 0, &reply, true),
+            Err(DispatchError::NotFound)
+        );
+        // Another device's attachment (a relay that lied about the sender) is refused.
+        assert!(matches!(
+            open(&w.store, &w.core, &sealed, BOT_USER, DEVICE, T0 + 2).unwrap(),
+            Opened::Refused(..)
+        ));
+    }
+
+    #[test]
+    fn probe_fails_without_a_current_key_or_for_another_community() {
+        let mut w = world();
+        w.anchor_bot();
+        let mut replies = ReplyTable::default();
+        // No key yet: the probe does not mint one (status 5).
+        assert_eq!(
+            w.probe_seal(&mut replies, [1; 16], T0).err(),
+            Some(DispatchError::Unavailable)
+        );
+        assert_eq!(w.count("bot_command_keys"), 0);
+        w.publication(T0);
+        assert!(w.probe_seal(&mut replies, [0; 16], T0).is_err());
+        let mut e = Encoder::new();
+        e.array(3).bytes(&[0x23; 16]).bytes(&[1; 16]).uint(T0);
+        assert_eq!(
+            op_probe_seal(&w.store, &w.core, &mut replies, &e.into_vec()).err(),
+            Some(DispatchError::Invalid)
+        );
+        // An expired key is purged, never used.
+        assert_eq!(
+            w.probe_seal(&mut replies, [2; 16], T0 + 9 * DAY).err(),
+            Some(DispatchError::Unavailable)
+        );
+        assert!(replies.is_empty());
     }
 }

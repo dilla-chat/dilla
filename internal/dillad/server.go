@@ -235,6 +235,11 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		preimage := append([]byte("dilla bot current interaction context v1\x00"), payload...)
 		return ed25519.Sign(private, preimage), nil
 	}
+	// Bot v2 Task 17 fix round 2 (I2): dillad's own failing-since stamp of each degraded Bot, kept for `dillad doctor`.
+	deps.BotHealth = api.NewBotHealth(o.Clock)
+	if o.Config.Instance.DataDir != "" {
+		deps.BotHealth.Persist(filepath.Join(o.Config.Instance.DataDir, api.BotHealthFile), o.Log)
+	}
 	// The pending path spends an enrolment assertion, and internal/auth cannot
 	// import internal/api, so the store is handed over through the interface.
 	sessions.Assertions = deps.Assertions

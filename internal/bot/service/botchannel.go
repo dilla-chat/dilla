@@ -64,8 +64,13 @@ type BotChannelMarks interface {
 
 var postGates sync.Map // community id.ID -> BotChannelMarks
 
-// SetPostGate registers the community's Bot channel marks: from then on every send into an ordinary group of that
-// community must target a marked Bot channel. A nil gate removes it (v1 behaviour, tests).
+// ungatedForTests lets this package's own tests send with no gate registered, as they did before the gate existed. Only
+// TestMain (main_test.go) sets it; production never does, so an unregistered community posts nowhere.
+var ungatedForTests bool
+
+// SetPostGate registers the community's Bot channel marks: every send into an ordinary group of that community must
+// target a marked Bot channel. A community with no gate registered posts nowhere (fix round 2, M1: the gate fails
+// closed, whatever order the features are built in); a nil gate removes it, which closes the community again.
 func SetPostGate(community id.ID, marks BotChannelMarks) {
 	if community.IsZero() {
 		return
@@ -77,12 +82,26 @@ func SetPostGate(community id.ID, marks BotChannelMarks) {
 	postGates.Store(community, marks)
 }
 
-// CheckBotChannel answers nil when the Bot may post into channel of community: no gate registered, or the channel is a
-// marked Bot channel. An unmarked channel is *NeedsBotChannelError; marks not yet known is ErrBotChannelsUnknown.
+// RetainPostGates forgets the gate of every community not in keep (an installation that was removed).
+func RetainPostGates(keep map[id.ID]bool) {
+	postGates.Range(func(key, _ any) bool {
+		if community, ok := key.(id.ID); ok && !keep[community] {
+			postGates.Delete(community)
+		}
+		return true
+	})
+}
+
+// CheckBotChannel answers nil when the Bot may post into channel of community: the channel is a marked Bot channel of
+// the community's registered gate. An unmarked channel is *NeedsBotChannelError; no gate, or marks not yet known, is
+// ErrBotChannelsUnknown.
 func CheckBotChannel(community, channel id.ID) error {
 	value, ok := postGates.Load(community)
 	if !ok {
-		return nil
+		if ungatedForTests {
+			return nil
+		}
+		return ErrBotChannelsUnknown
 	}
 	marks, _ := value.(BotChannelMarks)
 	if marks == nil {

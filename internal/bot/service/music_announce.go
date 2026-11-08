@@ -85,10 +85,12 @@ func (l *MusicAnnounceLimiter) reserve(user id.ID, item string, now time.Time) (
 	}, true
 }
 
-// NeutralizeBotMarkers keeps text a privileged member authors for the Bot to post (announcements, welcome messages,
-// role panels) from carrying a player marker clients would draw a card from (security review, L-related).
-func NeutralizeBotMarkers(text string) string {
-	return strings.ReplaceAll(text, "[dilla-music:", "(dilla-music:")
+// DefangMarkers keeps free text the Bot posts (welcome messages, announcements, role panels, poll questions and
+// answers, webhook text) from carrying any marker clients draw from: every "[dilla-" becomes "(dilla-", so no such
+// text can forge a player card, a poll card or a "via webhook" label under the Bot's authorship (Task 17 fix round 2,
+// M6: one rule for every Bot-authored text, before the marker line the Bot itself writes).
+func DefangMarkers(text string) string {
+	return strings.ReplaceAll(text, "[dilla-", "(dilla-")
 }
 
 // musicAnnounceChannelAuthority resolves the actor's effective bits in one channel, overrides included.

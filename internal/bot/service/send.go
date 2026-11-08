@@ -460,10 +460,10 @@ func equalHash(got []byte, want [32]byte) bool {
 	return true
 }
 
-// requireBotChannelGroup refuses a group that is not a text channel group (kind 0) of a marked Bot channel, when the
-// community registered its marks (SetPostGate).
+// requireBotChannelGroup refuses a group that is not a text channel group (kind 0) of a marked Bot channel of the
+// community's registered marks (SetPostGate); with none registered it refuses everything (fix round 2, M1).
 func (s *SendCoordinator) requireBotChannelGroup(group native.GroupInfo) error {
-	if _, gated := postGates.Load(s.binding.Community); !gated {
+	if _, gated := postGates.Load(s.binding.Community); !gated && ungatedForTests {
 		return nil
 	}
 	if group.Kind != 0 {

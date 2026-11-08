@@ -724,7 +724,7 @@ func TestSealedMusicMutationRetriesAConflictOnceWithTheCurrentRevision(t *testin
 	req := sealedRequest(protocol.OpMusicVolume, uint64(40))
 	req.ChannelID = interactionID(30)
 	got := collect(d, req)
-	if len(got) != 1 || got[0].Status != 200 || string(got[0].Body) != "Volume set to 40." {
+	if len(got) != 1 || got[0].Status != 200 || string(got[0].Body) != "Volume set to 40%." {
 		t.Fatalf("answers = %+v", got)
 	}
 	if len(h.calls) != 2 || *h.calls[1].req.Revision != 12 || *h.calls[1].req.ChannelID != interactionID(30) {

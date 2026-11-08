@@ -288,14 +288,21 @@ func TestMusicAnnounceLimiterSettle(t *testing.T) {
 	}
 }
 
-func TestNeutralizeBotMarkersKeepsMembersFromForgingThePlayer(t *testing.T) {
+func TestDefangMarkersKeepsMembersFromForgingThePlayer(t *testing.T) {
 	forged := "hi\n[dilla-music:v1:" + id.New().String() + ":" + id.New().String() + ":" + id.New().String() + "]"
-	if got := NeutralizeBotMarkers(forged); strings.Contains(got, "[dilla-music:") {
+	if got := DefangMarkers(forged); strings.Contains(got, "[dilla-music:") {
 		t.Fatalf("marker survived: %q", got)
 	}
 	text, err := rolePanelMessage([]rolePanelOption{{Emoji: "x", Name: "[dilla-music:v1:a:b:c]", Role: id.New()}})
 	if err != nil || strings.Contains(text, "[dilla-music:") {
 		t.Fatalf("role panel text %q err %v", text, err)
+	}
+	// Fix round 2 (M6): every marker, so an admin's welcome or announcement cannot end in a forged "via webhook" label
+	// or a poll card under the Bot's authorship.
+	for _, marker := range []string{"[dilla-webhook:v1:" + strings.Repeat("0", 32) + ":Admin]", "[dilla-poll:v1:" + strings.Repeat("1", 32) + "]"} {
+		if got := DefangMarkers("Welcome!\n" + marker); strings.Contains(got, "[dilla-") {
+			t.Fatalf("marker survived: %q", got)
+		}
 	}
 }
 

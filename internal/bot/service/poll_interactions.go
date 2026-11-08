@@ -169,6 +169,16 @@ func uintsToAny(v []uint64) []any {
 	}
 	return o
 }
+// channelHint tells a poll's channel that the poll changed, only when the channel is a Bot channel: dillad keeps channel
+// state for Bot channels alone and 404s any other (fix round 2, M7). A poll kept from v1 in an ordinary channel (G7)
+// gets no hint, so its card refreshes when it is opened, not live.
+func (h PollInteractions) channelHint(ctx context.Context, channel id.ID) {
+	if CheckBotChannel(h.CommunityID, channel) != nil {
+		return
+	}
+	hint(ctx, h.Hints, client.StateScopeChannel, channel)
+}
+
 func pollData(v any) ([]byte, error) {
 	b, e := cborx.Marshal(v)
 	if e != nil {
@@ -465,7 +475,7 @@ func (h PollInteractions) vote(ctx context.Context, actor InteractionActor, r pr
 	p = out.Poll
 	data, e := pollData([]any{uint64(1), pollSummary(h.present(p), out.Choice)})
 	rev := p.Revision
-	hint(ctx, h.Hints, client.StateScopeChannel, p.ChannelID)
+	h.channelHint(ctx, p.ChannelID)
 	return InteractionResult{Revision: &rev, Data: data}, e
 }
 func (h PollInteractions) close(ctx context.Context, actor InteractionActor, r protocol.Request) (InteractionResult, error) {
@@ -503,7 +513,7 @@ func (h PollInteractions) close(ctx context.Context, actor InteractionActor, r p
 	}
 	data, e := pollData([]any{uint64(1), pollSummary(h.present(p), my)})
 	rev := p.Revision
-	hint(ctx, h.Hints, client.StateScopeChannel, p.ChannelID)
+	h.channelHint(ctx, p.ChannelID)
 	return InteractionResult{Revision: &rev, Data: data}, e
 }
 func (h PollInteractions) voters(ctx context.Context, actor InteractionActor, r protocol.Request) (InteractionResult, error) {

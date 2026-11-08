@@ -5,51 +5,57 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/gatewayclient"
 	"github.com/dilla-chat/dilla/internal/bot/health"
-	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/intake"
-	"github.com/dilla-chat/dilla/internal/bot/protocol"
-	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
-// Bot v2 Task 17: the Bot's own health. Every 60 s it sends itself an OpProbe = 90 command through the real intake and
-// reports every 15 s whether the probe was answered, with the queue's depth and the oldest command's wait.
+// Bot v2 Task 17: the Bot's own health. Every 60 s it sends itself an OpProbe = 90 command along the whole command path
+// and reports every 15 s whether the probe was answered, with the backlog and the oldest command's wait.
 //
-// The probe is a command the Bot's own user "sends" from its own installation: it enters the same bounded queue as a
-// member's command, waits for one of the same workers, and is opened, checked for Held and readiness, answered and
-// replied to by the same intake code (internal/bot/intake). A wedged worker pool, a full queue, an intake that is not
-// ready (no feed snapshot) or a user held by a failed device-list ingest all fail it. Only the cryptographic seal is
-// local: the probe's bytes are a marker the entry recognises by a request id nobody else knows, and its answer goes to
-// the waiting probe, not to dillad (dillad would 404 a reply to a request it never relayed). dillad's own check is the
-// report: no report for 150 s and it marks the Bot offline.
-
-// probeMarker prefixes the sealed bytes of a probe; the request id follows.
-var probeMarker = []byte("dilla bot probe v1\x00")
+// Fix round 2 (C1, I1): the probe is the real thing. The helper seals an OpProbe to the community's current command key
+// as the Bot's own device (op 25) and keeps the reply secret. The Bot POSTs it to …/bot/commands like a member's device;
+// dillad attaches the Bot's own session and relays it back as op 64; the delivery loop hands it to the intake with the
+// feed barrier; a worker opens it in the helper (op 22: the Bot's own device list, as dillad's feed pushed it), checks
+// Held and readiness and answers through the helper's seal (op 23) and POST /v1/bot-runtime/replies; dillad delivers
+// op 62 to the Bot's own connection, and the helper opens it (op 26). A helper that errors or hangs, a stuck feed, a
+// wedged delivery loop, a full queue, workers that do not run, and a broken relay or reply route all fail it, because
+// each is on its path. Nothing short-circuits: a probe is a command among the others.
 
 // probeAnswerLimit bounds how long the probe waits for its answer (a variable for tests).
 var probeAnswerLimit = health.ProbeTimeout
 
-var errProbeQueueFull = errors.New("bot intake queue full")
-
-// probeTable is the probes waiting for their answer, by request id. The zero value is ready.
-type probeTable struct {
-	mu      sync.Mutex
-	pending map[id.ID]chan intake.Answer
+// probeHelper is the helper's half of the probe: op 25 seals it, op 26 opens its answers.
+type probeHelper interface {
+	SealProbe(ctx context.Context, community, request id.ID, now time.Time) ([]byte, uint32, error)
+	OpenProbeReply(ctx context.Context, handle, seq uint32, sealed []byte, forget bool) ([]byte, error)
 }
 
-func (p *probeTable) begin(request id.ID) (<-chan intake.Answer, func()) {
+// probeSender sends the sealed probe through dillad's relay (client.Session.SendCommand).
+type probeSender interface {
+	SendCommand(ctx context.Context, community, request id.ID, sealed []byte) error
+}
+
+// probeTable is the probes waiting for their answer (op 62), by request id. The zero value is ready.
+type probeTable struct {
+	mu      sync.Mutex
+	pending map[id.ID]chan gatewayclient.BotReply
+}
+
+func (p *probeTable) begin(request id.ID) (<-chan gatewayclient.BotReply, func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.pending == nil {
-		p.pending = map[id.ID]chan intake.Answer{}
+		p.pending = map[id.ID]chan gatewayclient.BotReply{}
 	}
-	ch := make(chan intake.Answer, intake.MaxAnswers)
+	ch := make(chan gatewayclient.BotReply, intake.MaxAnswers)
 	p.pending[request] = ch
 	return ch, func() {
 		p.mu.Lock()
@@ -58,92 +64,92 @@ func (p *probeTable) begin(request id.ID) (<-chan intake.Answer, func()) {
 	}
 }
 
-func (p *probeTable) has(request id.ID) bool {
+// deliver hands an op 62 to the probe waiting for it, and reports whether one was.
+func (p *probeTable) deliver(reply gatewayclient.BotReply) bool {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	_, ok := p.pending[request]
-	return ok
-}
-
-// probeBytes is the sealed field of a probe command.
-func probeBytes(request id.ID) []byte {
-	return append(append([]byte(nil), probeMarker...), request[:]...)
-}
-
-// probeRequest is the request id in sealed when it is a probe this table is waiting for.
-func (p *probeTable) probeRequest(sealed []byte) (id.ID, bool) {
-	var request id.ID
-	if len(sealed) != len(probeMarker)+len(request) || string(sealed[:len(probeMarker)]) != string(probeMarker) {
-		return request, false
-	}
-	copy(request[:], sealed[len(probeMarker):])
-	return request, p.has(request)
-}
-
-// deliver hands the answer a probe's intake sealed (EncodeAnswer's bytes, unsealed) to its waiter.
-func (p *probeTable) deliver(request id.ID, encoded []byte) {
-	var fields []any
-	if cborx.Unmarshal(encoded, &fields) != nil || len(fields) != 3 {
-		return
-	}
-	status, _ := fields[0].(uint64)
-	body, _ := fields[1].([]byte)
-	final, _ := fields[2].(uint64)
-	p.mu.Lock()
-	ch := p.pending[request]
+	ch := p.pending[reply.RequestID]
 	p.mu.Unlock()
 	if ch == nil {
-		return
+		return false
 	}
 	select {
-	case ch <- intake.Answer{Status: uint16(min(status, 65535)),
-		Body: body, Final: final == 1}:
+	case ch <- reply:
 	default:
 	}
+	return true
 }
 
-// openProbe is the opened command of a probe: what op 22 would answer for a verified OpProbe from the Bot's own user.
-func openProbe(request, community, user, device id.ID, now time.Time) helper.OpenedCommand {
-	return helper.OpenedCommand{Request: protocol.SealedRequest{
-		RequestID: request, CommunityID: community, Operation: uint64(protocol.OpProbe),
-		SentAt: uint64(max(now.Unix(), 0)), ReplyKey: [32]byte{1}, UserID: user, DeviceID: device,
-	}}
+// probeReply routes an op 62 that reached the installation's connection to its probe. The Bot sends no other command,
+// so any other answer is dropped.
+func (r *botGatewayRuntime) probeReply(installation id.ID, reply *gatewayclient.BotReply) {
+	if reply == nil {
+		return
+	}
+	if e := r.sealed.lookup(installation); e == nil || !e.probes.deliver(*reply) {
+		r.log.Debug("bot reply for no waiting probe dropped", "installation_id", installation.String())
+	}
 }
 
-// Probe sends one OpProbe through the installation's intake and returns nil when it was answered 200 within
-// probeAnswerLimit. A queue with no room, an intake that refuses it, and no answer are all failures.
+// Probe sends one OpProbe along the command path and returns nil when it was answered 200 within probeAnswerLimit.
 func (e *sealedEntry) Probe(ctx context.Context) error {
 	cfg, _ := e.current()
-	if cfg.helper == nil || cfg.botUser.IsZero() {
+	h, okHelper := cfg.helper.(probeHelper)
+	sender, okSender := cfg.session.(probeSender)
+	if !okHelper || !okSender || cfg.botUser.IsZero() {
 		return errSealedNotConfigured
 	}
+	clk := e.probeClock()
+	timeout := clk.NewTimer(probeAnswerLimit)
+	defer timeout.Stop()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-timeout.C():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	request := id.New()
 	answers, forget := e.probes.begin(request)
 	defer forget()
-	cmd := intake.RelayedCommand{RequestID: request, CommunityID: e.community, UserID: cfg.botUser, DeviceID: e.installation, Sealed: probeBytes(request)}
-	select {
-	case e.queue <- cmd:
-	default:
-		return errProbeQueueFull
+	sealed, handle, err := h.SealProbe(ctx, e.community, request, clk.Now())
+	if err != nil {
+		return probeFailure(ctx, "seal", err)
 	}
-	timeout := e.probeClock().NewTimer(probeAnswerLimit)
-	defer timeout.Stop()
+	if err := sender.SendCommand(ctx, e.community, request, sealed); err != nil {
+		return probeFailure(ctx, "relay", err)
+	}
 	for {
 		select {
-		case a := <-answers:
-			if !a.Final {
+		case reply := <-answers:
+			body, err := h.OpenProbeReply(ctx, handle, reply.Seq, reply.Sealed, reply.Final)
+			if err != nil {
+				return probeFailure(ctx, "open answer", err)
+			}
+			answer, err := intake.DecodeAnswer(body)
+			if err != nil {
+				return fmt.Errorf("bot probe answer: %w", err)
+			}
+			if !answer.Final {
 				continue
 			}
-			if a.Status != intake.StatusOK {
-				return errors.New("bot intake refused the probe: " + string(a.Body))
+			if answer.Status != intake.StatusOK {
+				return fmt.Errorf("bot intake refused the probe: %d %s", answer.Status, answer.Body)
 			}
 			return nil
-		case <-timeout.C():
-			return context.DeadlineExceeded
 		case <-ctx.Done():
-			return ctx.Err()
+			return probeFailure(ctx, "answer", ctx.Err())
 		}
 	}
+}
+
+// probeFailure names the step that failed; one cut off by the answer limit is a deadline failure.
+func probeFailure(ctx context.Context, step string, err error) error {
+	if ctx.Err() != nil && !errors.Is(err, context.DeadlineExceeded) {
+		err = errors.Join(context.DeadlineExceeded, err)
+	}
+	return fmt.Errorf("bot probe %s: %w", step, err)
 }
 
 // probeClock is the clock the probe's answer deadline runs on (the system's unless a test set one).
@@ -154,7 +160,8 @@ func (e *sealedEntry) probeClock() clock.Clock {
 	return clock.System()
 }
 
-// commandLoad tracks the commands relayed to an installation and not yet started by a worker. The zero value is ready.
+// commandLoad tracks the commands relayed to an installation and not yet answered (fix round 2, M3: a command a worker
+// took but has not finished, inside a hanging helper call or a blocked handler, still counts). The zero value is ready.
 type commandLoad struct {
 	mu     sync.Mutex
 	queued map[id.ID]time.Time
@@ -166,17 +173,19 @@ func (l *commandLoad) enqueue(request id.ID, at time.Time) {
 	if l.queued == nil {
 		l.queued = map[id.ID]time.Time{}
 	}
-	l.queued[request] = at
+	if _, ok := l.queued[request]; !ok {
+		l.queued[request] = at
+	}
 }
 
-// started drops a command a worker took.
-func (l *commandLoad) started(request id.ID) {
+// answered drops a command whose handling ended (its last answer sent, or dropped).
+func (l *commandLoad) answered(request id.ID) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.queued, request)
 }
 
-// snapshot is the commands still waiting for a worker and how long the oldest has waited.
+// snapshot is the commands not yet answered and how long the oldest has waited.
 func (l *commandLoad) snapshot(now time.Time) (depth uint64, oldest time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -193,8 +202,8 @@ type healthReporter interface {
 	ReportHealth(ctx context.Context, r client.HealthReport) error
 }
 
-// startHealth (called with e.mu held) starts the installation's health monitor, once: it probes the intake every 60 s and reports every 15 s
-// until ctx ends. musicP95 reads the installation's music start timings (zero without any).
+// startHealth (called with e.mu held) starts the installation's health monitor, once: it probes the command path every
+// 60 s and reports every 15 s until ctx ends. musicP95 reads the installation's music start timings (zero without any).
 func (e *sealedEntry) startHealth(ctx context.Context, musicP95 func() time.Duration, clk clock.Clock) {
 	reporter := health.ReporterFunc(func(reportCtx context.Context, r health.Report) error {
 		cfg, _ := e.current()

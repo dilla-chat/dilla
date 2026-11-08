@@ -66,7 +66,7 @@ func (s AnnouncementSender) SendAnnouncement(ctx context.Context, req announceme
 		return protocol.SendReceipt{}, err
 	}
 	// Security review (task 8b): text a member authors never carries the music player marker.
-	body, err := cborx.Marshal([]any{uint64(0), nil, NeutralizeBotMarkers(req.Text), []any{}, nil})
+	body, err := cborx.Marshal([]any{uint64(0), nil, DefangMarkers(req.Text), []any{}, nil})
 	if err != nil {
 		return protocol.SendReceipt{}, err
 	}

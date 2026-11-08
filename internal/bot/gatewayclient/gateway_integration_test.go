@@ -220,7 +220,12 @@ func TestRunResumesThroughServerReplayBarrierAndRotatesToken(t *testing.T) {
 		t.Fatalf("commit ack: %v", err)
 	}
 	delivery := testID(6)
-	if err := gw.WebhookAck(ctx, delivery, 0); err != nil {
+	// Fix round 2, M4: an ack goes only on the connection its delivery came on. message arrived before the second
+	// resume, on a socket that is gone: its ack is dropped, never sent on the new one.
+	if err := message.WebhookAck(ctx, delivery, 0); !errors.Is(err, ErrStaleDelivery) {
+		t.Fatalf("ack on a resumed-away connection = %v, want ErrStaleDelivery", err)
+	}
+	if err := resumed.WebhookAck(ctx, delivery, 0); err != nil {
 		t.Fatalf("webhook ack: %v", err)
 	}
 	for _, want := range []Opcode{OpSubscribe, OpCommitAck, OpBotWebhookAck} {

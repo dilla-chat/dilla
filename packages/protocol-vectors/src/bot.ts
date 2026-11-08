@@ -71,6 +71,8 @@ export async function botVectors() {
   ['helper_request','call join check helper operation',[1n,id(11),19n,encode([id(12)])]],['helper_request','call group forget helper operation',[1n,id(13),20n,encode([id(14)])]],
   ['helper_request','command key helper operation 21',[1n,id(17),21n,encode([id(18),1n])]],['helper_request','command open helper operation 22',[1n,id(19),22n,encode([new Uint8Array([0x80]),id(20),id(21),1n])]],
   ['helper_request','reply seal helper operation 23',[1n,id(22),23n,encode([new Uint8Array(32),id(23),0n,new Uint8Array([1])])]],['helper_request','device list ingest helper operation 24',[1n,id(24),24n,encode([id(25),encode(devicePush([pushRow(1n)])),1n])]],
+  // Bot v2 task 17 fix round 2: the health probe's seal and the opening of its answer.
+  ['helper_request','probe seal helper operation 25',[1n,id(26),25n,encode([id(27),id(28),1n])]],['helper_request','probe open helper operation 26',[1n,id(29),26n,encode([1n,0n,new Uint8Array([0x83]),1n])]],
   ['helper_response','helper response',[1n,id(10),0n,encode([])]],
  ] as const)cases.push({name,kind,hex:cbor(v)});
  cases.push({name:'generic helper op5 payload remains opaque',kind:'helper_request',hex:cbor([1n,id(0x95),5n,encode([32n,1n])])});
@@ -177,7 +179,7 @@ export async function botVectors() {
  rej('send receipt cross community context','receipt',receiptBase,{context:{...receiptContext,community:hex(id(0x23))}});
  rej('send receipt cross group context','receipt',receiptBase,{context:{...receiptContext,group:hex(id(0x34))}});
  rej('response unsupported status','response',[1n,id(1),comm,10n,null,new Uint8Array()]);
- rej('helper operation 25 is unknown','helper_request',[1n,id(1),25n,encode([])]);
+ rej('helper operation 27 is unknown','helper_request',[1n,id(1),27n,encode([])]);
  const oversizedPayload=encode([new Uint8Array(1_048_475)]);
  if(oversizedPayload.length!==1_048_481)throw new Error('helper payload fixture must exceed the payload bound by one byte');
  rejects.push({name:'helper payload one byte over bound',kind:'helper_request',hex:cbor([1n,id(1),1n,oversizedPayload])});

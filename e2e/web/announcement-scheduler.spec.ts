@@ -134,25 +134,25 @@ async function targetGroups(host: StartedHost, target: string): Promise<DebugGro
 async function botSendAttempts(host: StartedHost): Promise<BotSendAttempt[]> {
   const response = await fetch(`${host.control}/debug/bot-send-stats`);
   if (!response.ok) throw new Error(`Bot send stats = HTTP ${response.status}: ${await response.text()}`);
-  return (await response.json() as { attempts: BotSendAttempt[] }).attempts;
+  return (await response.json() as { attempts: BotSendAttempt[] | null }).attempts ?? [];
 }
 
 async function botRuntimeErrors(host: StartedHost): Promise<BotRuntimeError[]> {
   const response = await fetch(`${host.control}/debug/bot-runtime-errors`);
   if (!response.ok) throw new Error(`Bot runtime errors = HTTP ${response.status}: ${await response.text()}`);
-  return (await response.json() as { errors: BotRuntimeError[] }).errors;
+  return (await response.json() as { errors: BotRuntimeError[] | null }).errors ?? [];
 }
 
 async function groupHealAttempts(host: StartedHost): Promise<GroupHealAttempt[]> {
   const response = await fetch(`${host.control}/debug/group-heal-attempts`);
   if (!response.ok) throw new Error(`group heal attempts = HTTP ${response.status}: ${await response.text()}`);
-  return (await response.json() as { attempts: GroupHealAttempt[] }).attempts;
+  return (await response.json() as { attempts: GroupHealAttempt[] | null }).attempts ?? [];
 }
 
 async function botInteractionHealAttempts(host: StartedHost): Promise<BotInteractionHealAttempt[]> {
   const response = await fetch(`${host.control}/debug/bot-interaction-heal-attempts`);
   if (!response.ok) throw new Error(`Bot interaction heal attempts = HTTP ${response.status}: ${await response.text()}`);
-  return (await response.json() as { attempts: BotInteractionHealAttempt[] }).attempts;
+  return (await response.json() as { attempts: BotInteractionHealAttempt[] | null }).attempts ?? [];
 }
 
 appTest('creates and sends a one-off announcement through the browser client, then survives a Bot restart without a duplicate', async ({ page, instanceName }) => {

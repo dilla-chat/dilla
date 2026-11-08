@@ -656,6 +656,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "ready bot can publish its own community command key", pattern: "PUT /v1/bot-runtime/communities/{community}/command-key", method: http.MethodPut, pathName: "community", pathValue: community.ID.String()},
 		{name: "ready bot can reply to a relayed command", pattern: "POST /v1/bot-runtime/replies", method: http.MethodPost, pathName: "unused", pathValue: "x"},
 		{name: "ready bot can send a state hint", pattern: "POST /v1/bot-runtime/state-hints", method: http.MethodPost, pathName: "unused", pathValue: "x"},
+		{name: "ready bot can send its health probe to its own community", pattern: "POST /v1/communities/{community}/bot/commands", method: http.MethodPost, pathName: "community", pathValue: community.ID.String()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
@@ -683,7 +684,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "ready bot cannot publish a foreign community catalog", pattern: "PUT /v1/bot-runtime/communities/{community}/catalog", method: http.MethodPut, pathName: "community", pathValue: foreignCommunity.ID.String()},
 		{name: "ready bot cannot publish a foreign community command key", pattern: "PUT /v1/bot-runtime/communities/{community}/command-key", method: http.MethodPut, pathName: "community", pathValue: foreignCommunity.ID.String()},
 		{name: "ready bot cannot read a member's catalog", pattern: "GET /v1/communities/{community}/bot/catalog", method: http.MethodGet, pathName: "community", pathValue: community.ID.String()},
-		{name: "ready bot cannot send a member's sealed command", pattern: "POST /v1/communities/{community}/bot/commands", method: http.MethodPost, pathName: "community", pathValue: community.ID.String()},
+		{name: "ready bot cannot send a sealed command to a foreign community", pattern: "POST /v1/communities/{community}/bot/commands", method: http.MethodPost, pathName: "community", pathValue: foreignCommunity.ID.String()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false

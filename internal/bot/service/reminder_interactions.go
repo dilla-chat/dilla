@@ -9,6 +9,7 @@ import (
 	_ "time/tzdata"
 	"unicode/utf8"
 
+	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
 	"github.com/dilla-chat/dilla/internal/bot/reminders"
@@ -33,6 +34,10 @@ type ReminderInteractions struct {
 	// a reminder is created. Off refuses only creation: due reminders are still delivered and
 	// members can list, cancel and dismiss theirs. Nil allows creation.
 	CreateEnabled func(context.Context) (bool, error)
+	// Hints tells the member's own clients that their reminders changed (a user hint, scope the member; dillad pushes
+	// op 63 naming the community) after a create, cancel or dismiss succeeds, so an inbox open on another device
+	// refreshes (Task 17 fix round 2). Production passes client.AsyncHints: the reply never waits for it.
+	Hints HintSender
 }
 
 func (h ReminderInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
@@ -236,6 +241,7 @@ func (h ReminderInteractions) create(ctx context.Context, actor InteractionActor
 	if e != nil {
 		return InteractionResult{Status: reminderStatus(e)}, nil
 	}
+	hint(ctx, h.Hints, client.StateScopeUser, actor.User)
 	return reminderCreateResult(out)
 }
 func reminderCreateResult(out reminders.Reminder) (InteractionResult, error) {
@@ -339,6 +345,7 @@ func (h ReminderInteractions) mutation(ctx context.Context, actor InteractionAct
 	if e != nil {
 		return InteractionResult{Status: reminderStatus(e)}, nil
 	}
+	hint(ctx, h.Hints, client.StateScopeUser, actor.User)
 	out = h.withVisibleSource(ctx, actor.User, out)
 	data, e := reminderData([]any{uint64(1), reminderSummary(out)})
 	if e != nil {

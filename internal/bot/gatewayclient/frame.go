@@ -60,6 +60,10 @@ const (
 	// Bot v2: one HTTP-shaped app request over the socket (client to server) and its answer (server to client).
 	OpRequest  Opcode = 59
 	OpResponse Opcode = 60
+	// Bot v2 task 17 fix round 2: an answer to a sealed command this device sent, `[request_id, seq, sealed, final]`.
+	// The Bot sends only its own health probe, so the answers it receives are the probe's. Ringed (n > 0), or n = 0
+	// when the connection's ring had no room for it (gateway sendLocked).
+	OpBotReply Opcode = 62
 	// Bot v2 tasks 10 and 12: a member's sealed command and the Bot's event feed, on the Bot runtime's connection only.
 	// Both are sequenced in its ring; a cold-start snapshot's op 65 body frames are sent with n = 0.
 	OpBotCommand Opcode = 64
@@ -281,7 +285,20 @@ type Frame struct {
 	// user_id, device_id, sealed], op 65 is [kind, payload], op 66 is [delivery_id, webhook_id, community_id,
 	// channel_id, display_name, avatar_id(bstr 32)|null, text, allow_everyone]. Their consumers decode them.
 	BotPayload []cbor.RawMessage
+	// BotReply is an op 62's decoded payload.
+	BotReply *BotReply
 }
+
+// BotReply is op 62 bot_reply: answer number Seq of the sealed command RequestID, sealed to that command's reply key.
+type BotReply struct {
+	RequestID id.ID
+	Seq       uint32
+	Sealed    []byte
+	Final     bool
+}
+
+// maxSealedReplyBytes is dilla_core::bot::command::MAX_SEALED_REPLY_BYTES.
+const maxSealedReplyBytes = 65536
 
 // DecodeServerFrame applies deterministic CBOR, direction, shape, and scope checks
 // before decoding any frame fields. maxBytes must itself be within the protocol ceiling.
@@ -321,7 +338,7 @@ func DecodeServerFrame(raw []byte, maxBytes uint64) (Frame, error) {
 		return Frame{}, ErrProtocol
 	}
 	// Op 65 is the one opcode with both forms: ringed live, unringed inside a cold-start snapshot.
-	if out.Op != OpBotEvent && (replayable && out.N == 0 || !replayable && out.N != 0) {
+	if out.Op != OpBotEvent && out.Op != OpBotReply && (replayable && out.N == 0 || !replayable && out.N != 0) {
 		return Frame{}, ErrProtocol
 	}
 	bad := func() (Frame, error) { return Frame{}, ErrProtocol }
@@ -703,6 +720,28 @@ func DecodeServerFrame(raw []byte, maxBytes uint64) (Frame, error) {
 		out.CommunityID = &v
 	case OpBotCommand, OpBotEvent, OpBotWebhook:
 		out.BotPayload = payload
+	case OpBotReply:
+		if out.GroupID != nil {
+			return bad()
+		}
+		r := &BotReply{}
+		if r.RequestID, err = idAt(payload[0]); err != nil {
+			return bad()
+		}
+		seq, e := boundedUint(payload[1], 0, 1<<32-1)
+		if e != nil {
+			return bad()
+		}
+		r.Seq = uint32(seq) //nolint:gosec // G115: bounded to 2^32-1 above
+		if r.Sealed, err = bytesAt(payload[2], 1, maxSealedReplyBytes); err != nil {
+			return bad()
+		}
+		final, e := boundedUint(payload[3], 0, 1)
+		if e != nil {
+			return bad()
+		}
+		r.Final = final == 1
+		out.BotReply = r
 	default:
 		return bad()
 	}
@@ -757,6 +796,8 @@ func serverSpec(op Opcode) (int, bool, bool, bool) {
 		return 2, false, true, true
 	case OpBotWebhook:
 		return 8, false, false, true
+	case OpBotReply:
+		return 4, false, true, true
 	}
 	return 0, false, false, false
 }

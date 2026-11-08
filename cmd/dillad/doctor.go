@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"database/sql"
@@ -13,12 +14,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/dilla-chat/dilla/internal/api"
 	"github.com/dilla-chat/dilla/internal/blob"
 	"github.com/dilla-chat/dilla/internal/config"
 	"github.com/dilla-chat/dilla/internal/exit"
+	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/mlswasi"
 	"github.com/dilla-chat/dilla/internal/ops"
 	"github.com/dilla-chat/dilla/internal/store"
@@ -195,8 +199,38 @@ func runDoctor(args []string, stdout, stderr io.Writer) error {
 	add(ops.WebAuthnLeg(*cfg))
 	add(doctorBlobsLeg(ctx, cfg, repo))
 	add(doctorBotLeg(cfg))
+	add(doctorBotHealthLeg(cfg))
 
 	return finish()
+}
+
+// doctorBotHealthLeg prints, from the failing-since file the running dillad keeps in its data directory (Bot v2 Task 17
+// fix round 2), "commands failing since <time>" for each community whose Bot dillad judged degraded, by dillad's own
+// clock. Yellow, not red: a degraded Bot is not a fault of the server, and a container health check on doctor --quiet
+// must not restart dillad for it.
+func doctorBotHealthLeg(cfg *config.Config) ops.Leg {
+	const name = "bot_health"
+	if !cfg.Bot.Enabled {
+		return ops.Leg{Name: name, Status: ops.Green, Detail: "disabled ([bot] enabled = false)"}
+	}
+	failing, err := api.ReadBotHealthFile(filepath.Join(cfg.Instance.DataDir, api.BotHealthFile))
+	if err != nil {
+		return ops.Leg{Name: name, Status: ops.Yellow, Detail: err.Error(), Fix: "dillad rewrites the file on its next judgement"}
+	}
+	if len(failing) == 0 {
+		return ops.Leg{Name: name, Status: ops.Green, Detail: "no Bot's commands are failing"}
+	}
+	communities := make([]id.ID, 0, len(failing))
+	for community := range failing {
+		communities = append(communities, community)
+	}
+	slices.SortFunc(communities, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+	lines := make([]string, 0, len(communities))
+	for _, community := range communities {
+		lines = append(lines, fmt.Sprintf("commands failing since %s (community %s)", failing[community].UTC().Format(time.RFC3339), community.String()))
+	}
+	return ops.Leg{Name: name, Status: ops.Yellow, Detail: strings.Join(lines, "; "),
+		Fix: "read the Bot's log, or run dillabot doctor as the Bot's user"}
 }
 
 // doctorCertificateLeg looks at the certificate certmagic holds on disk. It
