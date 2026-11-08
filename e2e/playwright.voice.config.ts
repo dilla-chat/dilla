@@ -2,7 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FIREFOX_MEDIA_PREFS, chromiumMediaArgs, writeFixtures } from './media/support/fixtures.ts';
+import { FIREFOX_MEDIA_PREFS, chromiumMediaArgs, writeFixtures, writeMusicFixtures } from './media/support/fixtures.ts';
 import type { HostConfig } from './web/support/host.ts';
 import { e2ePort } from './web/support/ports.ts';
 
@@ -17,9 +17,14 @@ const dillaHost: HostConfig = { port: e2ePort(8481), control: e2ePort(8482), web
 // Written at config load, before any browser launches: the Chromium switches name the files (a 1 kHz tone, so the
 // microphone is never silent and voice activity always sends).
 const fixtures = writeFixtures(join(tmpdir(), 'dilla-media-fixtures'));
+// Bot v2 Task 19: the Bot's fixture stream (a 30 s and a 5 s Ogg Opus file) for voice/bot-music.spec.ts, which starts a
+// wall-clock host of its own with the supervised Bot (botRuntime: true) and copies these into the Bot's state directory.
+process.env.DILLA_BOT_MUSIC_FIXTURES = writeMusicFixtures(join(tmpdir(), 'dilla-bot-music-fixtures')).dir;
 
 export default defineConfig({
   testDir: resolve(here, 'voice'),
+  // The Bot runs in the Electron voice lane only (playwright.desktop-voice.config.ts).
+  testIgnore: '**/bot-music.spec.ts',
   globalSetup: resolve(here, 'web', 'support', 'host.ts'),
   // DILLA_E2E_OUTPUT_DIR: a run of its own (scripts/ci-local.mjs) keeps its traces and host logs apart from a parallel run's.
   outputDir: process.env.DILLA_E2E_OUTPUT_DIR ?? resolve(here, 'test-results'),

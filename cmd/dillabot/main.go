@@ -675,13 +675,22 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								musicProviderStatus = newMusicProviderStatusInteractions(installation.ID, installation.CommunityID, result.Session)
 								channels, channelsErr := result.Session.Channels(ctx, installation.CommunityID)
 								if channelsErr == nil {
+									musicPolicy := &musicPolicyCache{}
 									starterFor := func(channel id.ID) (session.QueueStarter, error) {
 										joinCallGroup := func(joinCtx context.Context) error {
-											communityRow, communityErr := result.Session.Community(joinCtx, installation.CommunityID)
-											if communityErr != nil {
-												return communityErr
+											// Bot v2 Task 19: the policy version is read once per musicPolicyFresh, not per join; a failed join reads it again.
+											policy, policyErr := musicPolicy.get(joinCtx, func(readCtx context.Context) (uint64, error) {
+												communityRow, communityErr := result.Session.Community(readCtx, installation.CommunityID)
+												return communityRow.PolicyVersion, communityErr
+											})
+											if policyErr != nil {
+												return policyErr
 											}
-											return ensureMusicCallGroupJoined(joinCtx, result.Session, nativeClient, installation.ID, installation.CommunityID, channel, communityRow.PolicyVersion)
+											joinErr := ensureMusicCallGroupJoined(joinCtx, result.Session, nativeClient, gateways.musicJoinTrust(installation.ID), installation.ID, installation.CommunityID, channel, policy)
+											if joinErr != nil {
+												musicPolicy.forget()
+											}
+											return joinErr
 										}
 										starter, starterErr := newInstallationMusicQueueStarter(cfg.InstanceID, installation.ID, installation.CommunityID, channel, result.Session, nativeClient, nil, joinCallGroup)
 										if starterErr == nil {
@@ -691,13 +700,8 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 												device = *result.Installation.BotDevice
 											}
 											starter.Logger = logger.With("installation_id", installation.ID.String(), "device_id", device.String(), "channel_id", channel.String())
-											starter.LogContext = func(logCtx context.Context) context.Context {
-												group := id.ID{}
-												if state, lookupErr := result.Session.ChannelCall(logCtx, channel); lookupErr == nil && state.GroupID != nil {
-													group = *state.GroupID
-												}
-												return music.WithPlaybackGroup(logCtx, group)
-											}
+											// Bot v2 Task 19: no LogContext call read per start (it sat on the cold /play's path behind the Bot's
+											// read limiter); the start tags its logs with the call group once the call is prepared.
 											notices := musicRegistry.SkipNotices(installation.ID)
 											starter.OnSkipped = func(skipCtx context.Context, skips []music.SkippedTrack) { notices.Notify(skipCtx, channel, skips) }
 											starter.OnCallEnded = func() { notices.Clear(channel) }

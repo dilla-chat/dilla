@@ -48,8 +48,32 @@ func NewFixtureResolver(dir string) (*FixtureResolver, error) {
 	return &FixtureResolver{dir: abs}, nil
 }
 
+// FixturesStateDir is where a test-host Bot also finds fixtures: <DILLA_BOT_STATE_DIR>/music-fixtures. The supervised
+// Bot's environment is fixed by bot-launch (it carries no DILLA_BOT_MUSIC_FIXTURES), so the e2e host copies the
+// fixtures into the Bot's state directory instead (Bot v2 Task 19).
+const FixturesStateDir = "music-fixtures"
+
+// fixturesDir is DILLA_BOT_MUSIC_FIXTURES, else the state directory's fixture directory when it exists.
+func fixturesDir() string {
+	if dir := os.Getenv(FixturesEnv); dir != "" {
+		return dir
+	}
+	state := os.Getenv("DILLA_BOT_STATE_DIR")
+	if state == "" {
+		return ""
+	}
+	dir := filepath.Join(state, FixturesStateDir)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() { // #nosec G703 -- test-host build; the Bot's own state directory.
+		return ""
+	}
+	return dir
+}
+
+// FixturesConfigured reports whether NewBackend will answer from fixtures instead of the sandboxed tools.
+func FixturesConfigured() bool { return fixturesDir() != "" }
+
 func fixtureBackend(cfg SandboxConfig) (*Backend, bool, error) {
-	dir := os.Getenv(FixturesEnv)
+	dir := fixturesDir()
 	if dir == "" {
 		return nil, false, nil
 	}
@@ -204,7 +228,7 @@ type localProcess struct {
 
 func startLocalStream(ctx context.Context, ffmpeg, path string, startMS int64) (io.ReadCloser, error) {
 	// Only a file inside the fixture directory is ever read, never an arbitrary path.
-	root, err := filepath.EvalSymlinks(os.Getenv(FixturesEnv))
+	root, err := filepath.EvalSymlinks(fixturesDir())
 	if err != nil || root == "" {
 		return nil, ErrStreamURL
 	}

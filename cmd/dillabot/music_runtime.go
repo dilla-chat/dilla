@@ -151,6 +151,13 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 	publisher := deps.Publisher
 	var resetConnection, closeConnection, leaveConnection func() error
 	var setCallEnded func(func())
+	var connect func(context.Context, client.Call) error
+	var holds func(client.Call) bool
+	if warmer, ok := publisher.(interface {
+		Warm(context.Context, client.Call) error
+	}); ok {
+		connect = warmer.Warm
+	}
 	if publisher == nil {
 		pool, err := livekit.NewPool(deps.Lifetime)
 		if err != nil {
@@ -163,7 +170,27 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 		publisher = session.RetainedLiveKitPublisher{Pool: pool}
 		resetConnection, closeConnection, leaveConnection = pool.Reset, pool.Close, pool.LeaveIdle
 		setCallEnded = pool.SetRoomEndedReporter
+		connect, holds = pool.Warm, pool.Holds
 	}
+	prepare := func(ctx context.Context) (client.Call, error) {
+		var joinErr error
+		if deps.JoinCallGroup != nil {
+			joinErr = deps.JoinCallGroup(ctx)
+		}
+		if err := music.StartStage(ctx, "call_group_join", joinErr); err != nil {
+			return client.Call{}, err
+		}
+		call, err := deps.Calls.StartCall(ctx, deps.Channel)
+		if err = music.StartStage(ctx, "call_token", err); err != nil {
+			return client.Call{}, err
+		}
+		if call.CallID.IsZero() || call.GroupID.IsZero() || call.CallID != deps.Channel || call.LiveKitURL == "" || call.Token == "" {
+			return client.Call{}, music.StartStage(ctx, "call_fields", session.ErrInvalid)
+		}
+		_ = music.StartStage(ctx, "call_fields", nil)
+		return call, nil
+	}
+	prep := &musicCallPrep{prepare: prepare, connect: connect, holds: holds}
 	options := func(ctx context.Context, track music.Track) (session.Options, error) {
 		if ctx == nil || track.CanonicalID == "" {
 			return session.Options{}, session.ErrInvalid
@@ -172,32 +199,135 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 			return session.Options{}, session.ErrInvalid
 		}
 		pcm := session.YouTubePCM{Source: deps.YouTubePCM}
-		prepareCall := func(ctx context.Context) (client.Call, error) {
-			var joinErr error
-			if deps.JoinCallGroup != nil {
-				joinErr = deps.JoinCallGroup(ctx)
-			}
-			if err := music.StartStage(ctx, "call_group_join", joinErr); err != nil {
-				return client.Call{}, err
-			}
-			call, err := deps.Calls.StartCall(ctx, deps.Channel)
-			if err = music.StartStage(ctx, "call_token", err); err != nil {
-				return client.Call{}, err
-			}
-			if call.CallID.IsZero() || call.GroupID.IsZero() || call.CallID != deps.Channel || call.LiveKitURL == "" || call.Token == "" {
-				return client.Call{}, music.StartStage(ctx, "call_fields", session.ErrInvalid)
-			}
-			_ = music.StartStage(ctx, "call_fields", nil)
-			return call, nil
-		}
 		return session.Options{
 			Community: deps.Community, Channel: deps.Channel, Provider: track.Provider,
-			Track: track.CanonicalID, PrepareCall: prepareCall,
+			Track: track.CanonicalID, PrepareCall: prep.take,
 			PCM:     pcm,
 			Encoder: deps.Encoder, Publisher: publisher, Epochs: deps.Epochs,
 		}, nil
 	}
-	return session.QueueStarter{SetCallEnded: setCallEnded, OptionsFor: options, ResetConnection: resetConnection, CloseConnection: closeConnection, LeaveConnection: leaveConnection}, nil
+	return session.QueueStarter{SetCallEnded: setCallEnded, OptionsFor: options, ResetConnection: resetConnection, CloseConnection: closeConnection, LeaveConnection: leaveConnection,
+		Warm: prep.warm}, nil
+}
+
+// musicCallPrepFresh is how long a call prepared by an opened /play waits for its start: the /play's resolve is far
+// shorter, and an older one is prepared again.
+const musicCallPrepFresh = 30 * time.Second
+
+// musicCallPrepTimeout bounds a warm join, token and room connection.
+const musicCallPrepTimeout = 30 * time.Second
+
+// musicCallPrep runs one voice room's call preparation (call-group join, call token, and through Warm also the room
+// connection) at most once at a time (Bot v2 Task 19). An opened /play warms it while its track resolves; the start
+// that follows takes the prepared call, or waits for the warm still running, instead of joining again. The join's
+// own single-writer rule holds: a warm and a start never join the same call group at once.
+type musicCallPrep struct {
+	prepare func(context.Context) (client.Call, error)
+	connect func(context.Context, client.Call) error
+	// holds reports whether the room is connected for call (livekit.Pool.Holds); nil never reuses a room.
+	holds func(client.Call) bool
+
+	mu       sync.Mutex
+	inflight chan struct{} // closed when the running preparation ends
+	ready    *preparedMusicCall
+	// last is the call the room was last prepared for: the next queued track plays in that room (Bot v2 Task 19).
+	last *client.Call
+}
+
+type preparedMusicCall struct {
+	call client.Call
+	at   time.Time
+}
+
+// warm starts a preparation in the background unless one runs or a fresh one waits. It never blocks. A /play into
+// the room the Bot is still connected to, for the call group the /play found current (music.PlaybackGroup of ctx),
+// prepares nothing: the room's call is used again (a repeated track, Bot v2 Task 19).
+func (p *musicCallPrep) warm(ctx context.Context) {
+	group := music.PlaybackGroup(ctx)
+	p.mu.Lock()
+	if p.inflight != nil || (p.ready != nil && time.Since(p.ready.at) < musicCallPrepFresh) {
+		p.mu.Unlock()
+		return
+	}
+	if last := p.last; last != nil && !group.IsZero() && last.GroupID == group && p.holds != nil && p.holds(*last) {
+		p.ready = &preparedMusicCall{call: *last, at: time.Now()}
+		p.mu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	p.inflight = done
+	p.mu.Unlock()
+	go func() {
+		warmCtx, cancel := context.WithTimeout(client.WithImmediateControl(ctx), musicCallPrepTimeout)
+		defer cancel()
+		call, err := p.prepare(warmCtx)
+		if err == nil && p.connect != nil {
+			// The room connection is best effort: the start connects itself if this one failed.
+			if connectErr := p.connect(warmCtx, call); connectErr != nil {
+				music.PlaybackLogger(warmCtx).InfoContext(warmCtx, "bot music warm room connection failed", "class", music.FailureClass(connectErr))
+			}
+		}
+		p.mu.Lock()
+		p.inflight = nil
+		if err == nil {
+			p.ready = &preparedMusicCall{call: call, at: time.Now()}
+			p.last = &call
+		}
+		p.mu.Unlock()
+		close(done)
+	}()
+}
+
+// take is the start's PrepareCall: the call a warm prepared (once, while fresh), else a preparation of its own. It
+// waits for a running warm rather than overlapping it. A failed warm is prepared again here, so its error is the
+// start's to report.
+//
+// The automatic advance to the next queued track joins nothing and asks for no new call token: the Bot stays joined
+// while the queue is non-empty (spec, Music), so the next track is published into the room the last one played in,
+// bound to that call. Those requests sat in the gap between two tracks behind the Bot's rate limiter. A room that has
+// ended refuses the start (it needs an explicit play to reconnect, as before), and a changed epoch is checked by the
+// publisher from the helper's own state.
+func (p *musicCallPrep) take(ctx context.Context) (client.Call, error) {
+	if !session.ExplicitStart(ctx) {
+		p.mu.Lock()
+		last := p.last
+		p.mu.Unlock()
+		if last != nil {
+			_ = music.StartStage(ctx, "call_group_join", nil)
+			return *last, nil
+		}
+	}
+	for {
+		p.mu.Lock()
+		if done := p.inflight; done != nil {
+			p.mu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return client.Call{}, ctx.Err()
+			}
+		}
+		ready := p.ready
+		p.ready = nil
+		if ready != nil && time.Since(ready.at) < musicCallPrepFresh {
+			p.mu.Unlock()
+			_ = music.StartStage(ctx, "call_group_join", nil)
+			return ready.call, nil
+		}
+		done := make(chan struct{})
+		p.inflight = done
+		p.mu.Unlock()
+		call, err := p.prepare(ctx)
+		p.mu.Lock()
+		p.inflight = nil
+		if err == nil {
+			p.last = &call
+		}
+		p.mu.Unlock()
+		close(done)
+		return call, err
+	}
 }
 
 func newInstallationYouTubeQueueStarter(instance, installation, community, channel id.ID, calls *client.Session, source installationMusicNative) (session.QueueStarter, error) {
@@ -269,6 +399,19 @@ type runtimeMusicAuthorityStore struct {
 	session      *client.Session
 	installation id.ID
 	community    id.ID
+	// recent keeps the installation row for musicInstallationFresh (Bot v2 Task 19): one command's authority checks
+	// (each reads it) share one read. Roles and permissions are never cached. Nil reads every time.
+	recent *recentMusicInstallation
+}
+
+// musicInstallationFresh is how long an installation row read for music authority is used again: shorter than one
+// command, so a disabled or replaced installation is seen by the next command.
+const musicInstallationFresh = 2 * time.Second
+
+type recentMusicInstallation struct {
+	mu  sync.Mutex
+	row store.BotInstallationRow
+	at  time.Time
 }
 
 func newRuntimeMusicInteractions(installation, community id.ID, capabilities uint64, runtime *client.Runtime, session *client.Session, registry *musicQueueRegistry, logger *slog.Logger) (*service.MusicInteractions, error) {
@@ -284,7 +427,7 @@ func newRuntimeMusicInteractions(installation, community id.ID, capabilities uin
 	}
 	authority := &service.CommunityMusicInteractionAuthority{
 		Session:        session,
-		Store:          runtimeMusicAuthorityStore{runtime: runtime, session: session, installation: installation, community: community},
+		Store:          runtimeMusicAuthorityStore{runtime: runtime, session: session, installation: installation, community: community, recent: &recentMusicInstallation{}},
 		InstallationID: installation, CommunityID: community,
 	}
 
@@ -295,6 +438,9 @@ func newRuntimeMusicInteractions(installation, community id.ID, capabilities uin
 		OnImmediateControl:  registry.applyImmediateControl,
 		OnPersistedSnapshot: musicSnapshotCommitCallback(registry, logger),
 		Hints:               client.NewAsyncHints(client.SessionHints{Session: session}), // never delays the reply (I4)
+		// Bot v2 Task 19: an opened /play joins the room while its track resolves, and answers once audio starts.
+		OnPlayOpened: registry.warmMusicCall,
+		OnPlay:       registry.playPersistedSnapshot,
 	}
 	if view, err := youtubeViewFor(community); err == nil {
 		handlers.Resolver = service.LoggingMusicTrackResolver{Resolver: view.Tracks, Logger: logger, InstallationID: installation}
@@ -331,6 +477,13 @@ var (
 func sharedYouTubeBackend() (*youtube.Backend, error) {
 	youtubeBackendOnce.Do(func() {
 		cfg, err := youtubeSandboxConfig()
+		if err != nil && youtube.FixturesConfigured() {
+			// A test-host Bot serving fixtures needs ffmpeg only (a shipped Bot refuses fixtures in NewBackend).
+			var ffmpeg string
+			if ffmpeg, err = exec.LookPath("ffmpeg"); err == nil {
+				cfg = youtube.SandboxConfig{FFmpeg: ffmpeg}
+			}
+		}
 		if err != nil {
 			youtubeBackendErr = err
 			return
@@ -371,6 +524,25 @@ func (s runtimeMusicAuthorityStore) GetActiveBotInstallationByCommunity(ctx cont
 	if s.runtime == nil || community.IsZero() || community != s.community {
 		return store.BotInstallationRow{}, store.ErrNotFound
 	}
+	if s.recent != nil {
+		s.recent.mu.Lock()
+		row, at := s.recent.row, s.recent.at
+		s.recent.mu.Unlock()
+		if !row.ID.IsZero() && time.Since(at) < musicInstallationFresh {
+			return row, nil
+		}
+		row, err := s.readInstallation(ctx, community)
+		if err == nil {
+			s.recent.mu.Lock()
+			s.recent.row, s.recent.at = row, time.Now()
+			s.recent.mu.Unlock()
+		}
+		return row, err
+	}
+	return s.readInstallation(ctx, community)
+}
+
+func (s runtimeMusicAuthorityStore) readInstallation(ctx context.Context, community id.ID) (store.BotInstallationRow, error) {
 	installations, err := s.runtime.ListInstallations(ctx)
 	if err != nil {
 		return store.BotInstallationRow{}, err
@@ -773,6 +945,32 @@ func (r *musicQueueRegistry) schedulePersistedSnapshot(ctx context.Context, inst
 		return 0, err
 	}
 	return s.SchedulePersistedSnapshot(ctx, state, revision, start)
+}
+
+// warmMusicCall begins the voice room's call-group join and room connection for an authorised /play that was just
+// opened, beside its resolve (Bot v2 Task 19). It never blocks and never starts audio; a room the Bot already plays
+// in is left alone.
+func (r *musicQueueRegistry) warmMusicCall(ctx context.Context, installation, community, channel id.ID) {
+	if s, err := r.supervisor(installation, community, channel); err == nil {
+		s.WarmCall(music.PlaybackGroup(ctx))
+	}
+}
+
+// errMusicPlayNotStarted is a /play whose start returned without a playing track (a newer pause or stop won).
+var errMusicPlayNotStarted = errors.New("music playback did not start")
+
+// playPersistedSnapshot hands a committed /play that starts playback to its supervisor and returns once the first
+// frame is published, so the /play can answer "Now playing" when audio starts (Bot v2 Task 19).
+func (r *musicQueueRegistry) playPersistedSnapshot(ctx context.Context, installation, community, channel id.ID, state music.State, revision uint64) (uint64, error) {
+	s, err := r.supervisor(installation, community, channel)
+	if err != nil {
+		return 0, err
+	}
+	applied, err := s.ApplyPersistedSnapshot(ctx, state, revision, true)
+	if err == nil && !s.Playing() {
+		err = errMusicPlayNotStarted
+	}
+	return applied, err
 }
 
 func (r *musicQueueRegistry) applyImmediateControl(ctx context.Context, installation, community, channel id.ID, op music.Operation) (music.State, error) {

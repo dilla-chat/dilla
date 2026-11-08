@@ -73,6 +73,33 @@ type Supervisor struct {
 // IdleLeaver is a TrackStarter that can leave its retained voice room while nothing plays.
 type IdleLeaver interface{ LeaveIdle() error }
 
+// CallWarmer is a TrackStarter that can join its voice room ahead of the first start (Bot v2 Task 19): an authorised
+// /play begins the call-group join and the room connection while its track resolves. WarmCall must not block; the
+// start that follows uses what it prepared.
+type CallWarmer interface{ WarmCall(context.Context) }
+
+// WarmCall asks the starter to join the voice room for a /play that was just opened, unless a track is already
+// playing, paused in place or starting (the room is joined then) or the supervisor is closed. group is the room's
+// current call group as the /play saw it (PlaybackGroup of the warm's context). It never starts audio and never
+// blocks.
+func (s *Supervisor) WarmCall(group id.ID) {
+	s.mu.Lock()
+	warmer, ok := s.starter.(CallWarmer)
+	busy := s.closed || s.playback != nil || s.starting != nil
+	ctx := s.ctx
+	s.mu.Unlock()
+	if ok && !busy {
+		warmer.WarmCall(WithPlaybackGroup(ctx, group))
+	}
+}
+
+// Playing reports whether a track is playing now (published and not paused).
+func (s *Supervisor) Playing() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.closed && s.playback != nil && !s.pausedPlayback
+}
+
 // WithIdleLeave makes the supervisor leave the voice room once nothing has played for idleFor()
 // (paused, stopped or the queue finished). Playing again cancels the timer; the next explicit
 // play reconnects. A non-positive duration disables it.

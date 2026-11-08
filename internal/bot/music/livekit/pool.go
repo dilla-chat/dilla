@@ -320,6 +320,54 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 	return s, nil
 }
 
+// Holds reports whether the pool's room is connected, alive and bound to call: a track for call can be published
+// into it without connecting again.
+func (p *Pool) Holds(call client.Call) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return !p.closed && !p.dead && p.connection != nil && p.bound != nil && *p.bound == bindingFor(call, call.GroupID)
+}
+
+// Warm connects the room for call before its first track, publishing nothing (Bot v2 Task 19: a cold /play connects
+// while its track resolves, so the start finds the room ready). It is called for an explicit /play only, so like an
+// explicit start it may replace a dead room or one bound to an earlier call. A pool that is connected, connecting or
+// publishing is left as it is.
+func (p *Pool) Warm(ctx context.Context, call client.Call) error {
+	if ctx == nil || call.CallID.IsZero() || call.GroupID.IsZero() || call.LiveKitURL == "" || call.Token == "" {
+		return ErrBinding
+	}
+	binding := bindingFor(call, call.GroupID)
+	for attempt := 0; ; attempt++ {
+		p.mu.Lock()
+		closed, dead := p.closed, p.dead
+		idle := p.connection == nil && !p.connecting && p.active == nil && p.connectDone == nil && p.startDone == nil
+		rebind := p.bound != nil && *p.bound != binding && p.active == nil && !p.connecting
+		p.mu.Unlock()
+		switch {
+		case closed:
+			return ErrPoolClosed
+		case (dead || rebind) && attempt == 0:
+			if rebind && !dead {
+				p.mu.Lock()
+				gen := p.generation
+				p.mu.Unlock()
+				p.markDead(gen, ErrBinding)
+			}
+			if err := p.Reset(); err != nil {
+				return err
+			}
+			continue
+		case !idle || dead:
+			return nil
+		}
+		_, _, _, err := p.acquireRoom(ctx, call, binding)
+		if errors.Is(err, ErrPoolBusy) {
+			return nil
+		}
+		return err
+	}
+}
+
 func (p *Pool) acquireRoom(ctx context.Context, call client.Call, binding poolBinding) (context.Context, *poolConnection, uint64, error) {
 	p.mu.Lock()
 	if p.closed {

@@ -235,3 +235,48 @@ func TestNextQueuedTrackGapUnder150ms(t *testing.T) {
 		t.Fatalf("the longest gap between the last frame of A and the first frame of B was %v, want <= 150ms (%v)", sorted[19], gaps)
 	}
 }
+
+// Bot v2 Task 19: the supervised Bot's environment carries no DILLA_BOT_MUSIC_FIXTURES (bot-launch fixes it), so a
+// test host also serves the fixtures copied into <DILLA_BOT_STATE_DIR>/music-fixtures.
+func TestFixturesInTheBotStateDirectoryAreServedWithoutTheVariable(t *testing.T) {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg is not installed")
+	}
+	state := t.TempDir()
+	t.Setenv(FixturesEnv, "")
+	t.Setenv("DILLA_BOT_STATE_DIR", state)
+	if FixturesConfigured() {
+		t.Fatal("fixtures configured with no fixture directory")
+	}
+	dir := filepath.Join(state, FixturesStateDir)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, dir, "fixture-05s", 0.5)
+	if !FixturesConfigured() {
+		t.Fatal("the state directory's fixtures are not configured")
+	}
+	backend, err := NewBackend(SandboxConfig{FFmpeg: ffmpegPath}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	view, err := backend.For("state-dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracks, err := view.Tracks.Resolve(context.Background(), "fixture-05s")
+	if err != nil || len(tracks) != 1 {
+		t.Fatalf("resolve = %+v, %v", tracks, err)
+	}
+	source, err := view.Streams.Start(context.Background(), "https://www.youtube.com/watch?v="+tracks[0].CanonicalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	got, err := io.ReadAll(source)
+	if err != nil || !bytes.HasPrefix(got, []byte("OggS")) {
+		t.Fatalf("stream = %d bytes, %v", len(got), err)
+	}
+}

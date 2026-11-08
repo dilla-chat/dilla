@@ -12,3 +12,7 @@ func fixtureBackend(SandboxConfig) (*Backend, bool, error) {
 	}
 	return nil, false, nil
 }
+
+// FixturesConfigured reports whether NewBackend will answer from fixtures instead of the sandboxed tools. A shipped
+// Bot answers it with the variable alone, so NewBackend still refuses it.
+func FixturesConfigured() bool { return os.Getenv(FixturesEnv) != "" }

@@ -1476,13 +1476,16 @@ func TestExplicitStartRunsAtInteractivePriority(t *testing.T) {
 	}
 	first := <-published
 	close(first.done)
+	// Bot v2 Task 19: the EOF successor plays in the room the first track played in; it joins nothing (so it waits on
+	// no request at any priority).
+	select {
+	case <-published:
+	case <-time.After(time.Second):
+		t.Fatal("EOF successor not published")
+	}
 	select {
 	case priority := <-priorities:
-		if priority != 0 {
-			t.Errorf("EOF JoinCallGroup priority=%d", priority)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("EOF join missing")
+		t.Errorf("EOF successor joined the call again (priority=%d)", priority)
+	default:
 	}
-	<-published
 }

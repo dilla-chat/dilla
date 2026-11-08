@@ -81,6 +81,39 @@ type MusicInteractions struct {
 	// Hints tells the room's members (a call hint, scope the voice channel) that the queue or the playing track
 	// changed, after a mutation committed (Bot v2 Task 17). Nil sends none.
 	Hints HintSender
+	// OnPlayOpened begins the voice room's call-group join and room connection for an authorised sealed /play,
+	// before its track resolves (Bot v2 Task 19: the join runs beside the resolve). ctx carries the room's current call
+	// group (music.PlaybackGroup). It must not block. Nil joins at the start, after the resolve.
+	OnPlayOpened func(ctx context.Context, installation, community, channel id.ID)
+	// OnPlay hands a committed sealed /play that starts playback to the supervisor and returns once the first frame is
+	// published, so the /play answers "Now playing" when audio starts. Nil hands it to OnPersistedSnapshot.
+	OnPlay func(ctx context.Context, installation, community, channel id.ID, state music.State, revision uint64) (uint64, error)
+}
+
+// sealedPlayRecheckAfter is how old a sealed /play's call and DJ check may be at its commit before they are read
+// again.
+const sealedPlayRecheckAfter = time.Second
+
+type sealedPlayKey struct{}
+
+// withSealedPlay marks ctx as a sealed /play (Bot v2 Task 19): the enqueue also plays when nothing plays, as the v1
+// client's /play did with its enqueue and resume, and answers once audio starts.
+func withSealedPlay(ctx context.Context) context.Context {
+	return context.WithValue(ctx, sealedPlayKey{}, true)
+}
+
+func sealedPlay(ctx context.Context) bool { v, _ := ctx.Value(sealedPlayKey{}).(bool); return v }
+
+// nowPlayingText is the established /nowplaying copy (web bot-handlers.ts): "Now playing: T — A."
+func nowPlayingText(state music.State) string {
+	if state.Current == nil {
+		return ""
+	}
+	text := state.Current.Title
+	if state.Current.Artist != "" {
+		text += " — " + state.Current.Artist
+	}
+	return "Now playing: " + text + "."
 }
 
 func (h MusicInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
@@ -107,6 +140,11 @@ func (h MusicInteractions) Handlers() map[protocol.Operation]InteractionHandlerS
 
 func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, req protocol.Request, op protocol.Operation) (result InteractionResult, failure error) {
 	immediate := op == protocol.OpMusicPause || op == protocol.OpMusicSkip
+	play := op == protocol.OpMusicEnqueue && sealedPlay(ctx)
+	if play {
+		// A /play has a latency target (G3): its requests take the Bot's next request token, as pause and skip do.
+		ctx = client.WithImmediateControl(ctx)
+	}
 	reason := "dependency_or_context"
 	var diagnostic error
 	var group id.ID
@@ -286,6 +324,7 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	if !allowed {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
+	authorizedAt := time.Now()
 	var opValue music.Operation
 	if op == protocol.OpMusicEnqueue {
 		reason = "invalid_args"
@@ -301,6 +340,10 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		reason = "provider_unavailable"
 		if h.Resolver == nil {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		if play && h.OnPlayOpened != nil {
+			// Authorised: join the room while the track resolves.
+			h.OnPlayOpened(music.WithPlaybackGroup(ctx, call.GroupID), h.InstallationID, h.CommunityID, channel)
 		}
 		tracks, resolveErr = h.Resolver.Resolve(ctx, input)
 		reason, diagnostic = "resolve_failed", resolveErr
@@ -383,40 +426,57 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 				return InteractionResult{}, err
 			}
 		}
-		// Recheck the call binding and role immediately before CAS persistence.
-		reason = "current_call_lookup"
-		current, err := h.Authority.CurrentCall(ctx, channel)
-		if err != nil {
-			return InteractionResult{}, err
+		startsPlay := false
+		if play && next.Paused {
+			// Nothing plays (or the player is paused): the /play starts it, in the same committed revision as its enqueue.
+			reason = "apply_failed"
+			resumed, resumeErr := music.Apply(next, next.Revision, music.Operation{Kind: music.OpResume, NowMS: opValue.NowMS})
+			diagnostic = resumeErr
+			if resumeErr != nil {
+				return InteractionResult{}, resumeErr
+			}
+			resumed.Revision = next.Revision
+			next, startsPlay = resumed, !resumed.Paused && resumed.Current != nil
 		}
-		reason = "call_changed"
-		if current != call {
-			return InteractionResult{Status: interactionStatusConflict}, nil
-		}
-		if op == protocol.OpMusicStop {
-			reason = "can_dj_lookup"
-			allowed, err = h.Authority.CanDJ(ctx, actor, current)
+		// Recheck the call binding and role immediately before CAS persistence. A sealed /play checked both moments ago
+		// (its resolve was quick): the recheck covers a slow resolve, and is made when the first check is older than
+		// sealedPlayRecheckAfter or on a retried attempt (Bot v2 Task 19: each authority read is one of the Bot's
+		// rate-limited requests on the path to the first frame).
+		if !play || attempt > 0 || time.Since(authorizedAt) >= sealedPlayRecheckAfter {
+			reason = "current_call_lookup"
+			current, err := h.Authority.CurrentCall(ctx, channel)
+			if err != nil {
+				return InteractionResult{}, err
+			}
+			reason = "call_changed"
+			if current != call {
+				return InteractionResult{Status: interactionStatusConflict}, nil
+			}
+			if op == protocol.OpMusicStop {
+				reason = "can_dj_lookup"
+				allowed, err = h.Authority.CanDJ(ctx, actor, current)
+				if err != nil {
+					return InteractionResult{}, err
+				}
+				reason = "forbidden"
+				if !allowed {
+					reason = "can_emergency_stop_lookup"
+					allowed, err = h.Authority.CanEmergencyStop(ctx, actor, current)
+					if err != nil {
+						return InteractionResult{}, err
+					}
+				}
+			} else {
+				reason = "can_dj_lookup"
+				allowed, err = h.Authority.CanDJ(ctx, actor, current)
+			}
 			if err != nil {
 				return InteractionResult{}, err
 			}
 			reason = "forbidden"
 			if !allowed {
-				reason = "can_emergency_stop_lookup"
-				allowed, err = h.Authority.CanEmergencyStop(ctx, actor, current)
-				if err != nil {
-					return InteractionResult{}, err
-				}
+				return InteractionResult{Status: interactionStatusForbidden}, nil
 			}
-		} else {
-			reason = "can_dj_lookup"
-			allowed, err = h.Authority.CanDJ(ctx, actor, current)
-		}
-		if err != nil {
-			return InteractionResult{}, err
-		}
-		reason = "forbidden"
-		if !allowed {
-			return InteractionResult{Status: interactionStatusForbidden}, nil
 		}
 		reason = "expired"
 		if req.Expires != nil {
@@ -463,8 +523,22 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 			return InteractionResult{}, err
 		}
 		appliedRevision := saved.Revision
+		if startsPlay && h.OnPlay != nil {
+			var handoffErr error
+			appliedRevision, handoffErr = h.OnPlay(ctx, h.InstallationID, h.CommunityID, channel, saved.State, saved.Revision)
+			reason, diagnostic = "snapshot_handoff", handoffErr
+			if handoffErr != nil {
+				appliedRevision = h.pauseUnstartedPlayback(ctx, channel, saved.Revision, appliedRevision)
+				if appliedRevision == 0 {
+					appliedRevision = saved.Revision
+				}
+				return InteractionResult{Status: interactionStatusUnavailable, Revision: &appliedRevision}, nil
+			}
+			revision := appliedRevision
+			return InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}, Note: nowPlayingText(saved.State)}, nil
+		}
 		if h.OnPersistedSnapshot != nil {
-			startPlayback := op == protocol.OpMusicResume || op == protocol.OpMusicSkip && !snapshot.State.Paused && next.Current != nil
+			startPlayback := op == protocol.OpMusicResume || op == protocol.OpMusicSkip && !snapshot.State.Paused && next.Current != nil || startsPlay
 			var handoffErr error
 			appliedRevision, handoffErr = h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, saved.State, saved.Revision, startPlayback)
 			reason, diagnostic = "snapshot_handoff", handoffErr

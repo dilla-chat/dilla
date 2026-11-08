@@ -22,6 +22,12 @@ import (
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
+// allowMusicJoinTrust holds no one and re-judges nothing.
+type allowMusicJoinTrust struct{}
+
+func (allowMusicJoinTrust) Held(id.ID) bool                      { return false }
+func (allowMusicJoinTrust) Changed(context.Context, id.ID) error { return nil }
+
 type musicCallMembershipReaderFake struct{ err error }
 
 func (f musicCallMembershipReaderFake) GroupPage(context.Context, id.ID, string, uint64, uint64) (client.Page, error) {
@@ -185,7 +191,7 @@ func TestMusicCallJoinConflictRefetchesAndSucceeds(t *testing.T) {
 	core := &musicJoinCoreFake{conflicts: 1}
 	var delays []time.Duration
 	wait := func(_ context.Context, d time.Duration) error { delays = append(delays, d); return nil }
-	err := retryMusicCallGroupJoin(t.Context(), calls, core, id.New(), id.New(), calls.channel, 1, wait)
+	err := retryMusicCallGroupJoin(t.Context(), calls, core, allowMusicJoinTrust{}, id.New(), id.New(), calls.channel, 1, wait)
 	if err != nil || core.joins != 2 || core.resolved != 1 || calls.reads != 2 || calls.infos != 2 || calls.trees != 2 || core.reads != 2 || len(delays) != 1 || delays[0] != 250*time.Millisecond {
 		t.Fatalf("join err=%v core=%+v calls=%+v delays=%v", err, core, calls, delays)
 	}
@@ -199,19 +205,19 @@ func TestMusicCallJoinPersistentConflictRemainsRetryable(t *testing.T) {
 	var delays []time.Duration
 	wait := func(_ context.Context, d time.Duration) error { delays = append(delays, d); return nil }
 	installation, community := id.New(), id.New()
-	err := retryMusicCallGroupJoin(t.Context(), calls, core, installation, community, calls.channel, 1, wait)
+	err := retryMusicCallGroupJoin(t.Context(), calls, core, allowMusicJoinTrust{}, installation, community, calls.channel, 1, wait)
 	var conflict *errMusicCallJoinConflict
 	if !errors.As(err, &conflict) || !conflict.Retryable() || core.joins != 4 || len(delays) != 3 || delays[0] != 250*time.Millisecond || delays[1] != time.Second || delays[2] != 2*time.Second {
 		t.Fatalf("err=%v joins=%d delays=%v", err, core.joins, delays)
 	}
-	if err = retryMusicCallGroupJoin(t.Context(), calls, core, installation, community, calls.channel, 1, wait); err != nil || core.joins != 5 || core.resolved != 1 {
+	if err = retryMusicCallGroupJoin(t.Context(), calls, core, allowMusicJoinTrust{}, installation, community, calls.channel, 1, wait); err != nil || core.joins != 5 || core.resolved != 1 {
 		t.Fatalf("next Resume: err=%v core=%+v", err, core)
 	}
 }
 func TestMusicCallJoinDiscardsNonResumableJoiningRecordOnce(t *testing.T) {
 	calls := &musicJoinCallsFake{channel: id.New(), group: id.New()}
 	core := &musicJoinCoreFake{group: calls.group, terminal: true}
-	err := retryMusicCallGroupJoin(t.Context(), calls, core, id.New(), id.New(), calls.channel, 1, func(context.Context, time.Duration) error { return nil })
+	err := retryMusicCallGroupJoin(t.Context(), calls, core, allowMusicJoinTrust{}, id.New(), id.New(), calls.channel, 1, func(context.Context, time.Duration) error { return nil })
 	if err != nil || core.discards != 1 || core.forgets != 1 || core.joins != 1 || calls.reads != 2 {
 		t.Fatalf("err=%v core=%+v reads=%d", err, core, calls.reads)
 	}
@@ -261,10 +267,10 @@ func TestMusicCallJoinResumeRecoversRetryOperation(t *testing.T) {
 	core := &musicJoinRecoveryCore{musicJoinCoreFake: musicJoinCoreFake{group: calls.group}}
 	installation, community := id.New(), id.New()
 	wait := func(context.Context, time.Duration) error { return nil }
-	if err := retryMusicCallGroupJoin(t.Context(), calls, core, installation, community, calls.channel, 1, wait); err == nil {
+	if err := retryMusicCallGroupJoin(t.Context(), calls, core, allowMusicJoinTrust{}, installation, community, calls.channel, 1, wait); err == nil {
 		t.Fatal("expected staged media gate failure")
 	}
-	if err := retryMusicCallGroupJoin(t.Context(), calls, core, installation, community, calls.channel, 1, wait); err != nil {
+	if err := retryMusicCallGroupJoin(t.Context(), calls, core, allowMusicJoinTrust{}, installation, community, calls.channel, 1, wait); err != nil {
 		t.Fatal(err)
 	}
 	if core.joins != 1 || core.resolved != 1 || core.discards != 0 || core.forgets != 0 || calls.trees != 1 {
@@ -293,7 +299,7 @@ func TestMusicCallJoinUnusablePendingOutsideJoiningIsTerminal(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
 	defer slog.SetDefault(previous)
 	waits := 0
-	err := retryMusicCallGroupJoin(t.Context(), calls, core, id.New(), id.New(), calls.channel, 1, func(context.Context, time.Duration) error { waits++; return nil })
+	err := retryMusicCallGroupJoin(t.Context(), calls, core, allowMusicJoinTrust{}, id.New(), id.New(), calls.channel, 1, func(context.Context, time.Duration) error { waits++; return nil })
 	var terminal *errMusicCallJoinUnusable
 	if !errors.As(err, &terminal) || terminal.Retryable() || waits != 0 || calls.reads != 1 || core.discards != 0 || core.forgets != 0 {
 		t.Fatalf("error=%v waits=%d reads=%d discards=%d forgets=%d", err, waits, calls.reads, core.discards, core.forgets)
@@ -342,7 +348,7 @@ func TestMusicCallJoinUnusablePendingLogsOnceAtInteraction(t *testing.T) {
 	defer slog.SetDefault(previous)
 	h := service.MusicInteractions{Store: store, Authority: joinFailureMusicAuthority{channel}, CommunityID: community, InstallationID: installation, Logger: logger,
 		OnPersistedSnapshot: func(ctx context.Context, _, _, _ id.ID, _ music.State, revision uint64, _ bool) (uint64, error) {
-			return revision, retryMusicCallGroupJoin(ctx, calls, core, installation, community, channel, 1, func(context.Context, time.Duration) error { t.Fatal("terminal error retried"); return nil })
+			return revision, retryMusicCallGroupJoin(ctx, calls, core, allowMusicJoinTrust{}, installation, community, channel, 1, func(context.Context, time.Duration) error { t.Fatal("terminal error retried"); return nil })
 		}}
 	result, err := h.Handlers()[protocol.OpMusicResume].Handle(t.Context(), service.InteractionActor{User: id.New()}, protocol.Request{CommunityID: community, ChannelID: &channel, Revision: &saved.Revision, Args: []any{}})
 	if err != nil || result.Status != 5 {
@@ -393,7 +399,7 @@ func TestMemberBranchMakesNoJoinWrites(t *testing.T) {
 	core := &memberCore{musicJoinCoreFake: musicJoinCoreFake{group: calls.group}}
 	var logs bytes.Buffer
 	ctx := music.WithPlaybackLogger(t.Context(), slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	if err := musicCallGroupJoinAttempt(ctx, calls, core, id.New(), id.New(), calls.channel, 1); err != nil {
+	if err := musicCallGroupJoinAttempt(ctx, calls, core, allowMusicJoinTrust{}, id.New(), id.New(), calls.channel, 1); err != nil {
 		t.Fatal(err)
 	}
 	if calls.httpReads != 2 || core.helperReads != 2 || core.joins != 0 || calls.writes != 0 || core.writes != 0 {

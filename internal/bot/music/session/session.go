@@ -60,6 +60,13 @@ type OptionsForTrack func(context.Context, music.Track) (Options, error)
 
 type explicitStartKey struct{}
 
+// ExplicitStart reports whether ctx is a start a member asked for (StartExplicit: a /play, a resume, a skip), not the
+// supervisor's automatic advance to the next queued track.
+func ExplicitStart(ctx context.Context) bool {
+	explicit, _ := ctx.Value(explicitStartKey{}).(bool)
+	return explicit
+}
+
 type QueueStarter struct {
 	LogContext func(context.Context) context.Context
 	Logger     *slog.Logger
@@ -83,6 +90,17 @@ type QueueStarter struct {
 	// track or the queue changed on its own (a track ended and the next began). Bot v2 Task 17 sends a call hint from
 	// it. Nil does nothing.
 	OnStateChange func(context.Context)
+	// Warm begins the voice room's call-group join, call token and room connection for an opened /play, while its
+	// track resolves (Bot v2 Task 19). It must not block; the next start's PrepareCall uses its result. Nil warms
+	// nothing.
+	Warm func(context.Context)
+}
+
+// WarmCall implements music.CallWarmer.
+func (s QueueStarter) WarmCall(ctx context.Context) {
+	if s.Warm != nil && ctx != nil {
+		s.Warm(ctx)
+	}
 }
 
 // LeaveIdle leaves the retained room when nothing is playing.

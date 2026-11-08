@@ -673,7 +673,14 @@ var sealedAdapters = map[protocol.Operation]sealedAdapter{
 			}
 			return ch, []any{strings.TrimSpace(query)}, true, ""
 		},
-		render: func(protocol.SealedRequest, InteractionResult) string { return "Track added to the music queue." }},
+		// The established client copy (bot-handlers.ts): a /play that started playback answers "Now playing: T — A."
+		// once its first frame is published (Bot v2 Task 19); one queued behind a playing track is added.
+		render: func(_ protocol.SealedRequest, r InteractionResult) string {
+			if r.Note != "" {
+				return r.Note
+			}
+			return "Track added to the music queue."
+		}},
 	// The established client copy (packages/web/src/screens/commands/bot-handlers.ts; Task 17 fix round 2 ruling: every
 	// sealed music, poll and reminder answer reads as the v1 client said it).
 	protocol.OpMusicPause:  musicControl(protocol.OpMusicPause, "Music paused.", false),
@@ -887,6 +894,9 @@ func (d *SealedDispatcher) Dispatch(ctx context.Context, req protocol.SealedRequ
 		reply(intake.Answer{Status: 202, Body: []byte(adapter.progress)})
 	}
 	actor := InteractionActor{User: req.UserID, Device: req.DeviceID, Channel: req.ChannelID}
+	if adapter.handler == protocol.OpMusicEnqueue {
+		ctx = withSealedPlay(ctx)
+	}
 	result, err := handler.Handle(ctx, actor, v1)
 	if err == nil && result.Status == interactionStatusConflict && adapter.retryConflict && mutation && result.Revision != nil {
 		current := *result.Revision
