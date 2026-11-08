@@ -194,10 +194,10 @@ impl ClientCore {
             // kind than a stored one that still verifies is refused and changes nothing. Without this the instance
             // could turn a human this device never pinned into a Bot and have `bot_device_list_pin` trust its keys.
             let stored = u.with_conn(|c| stored_row(c, user_id))?;
-            if let Some(row) = stored.as_ref() {
-                if stored_kind(row, user_id).is_some_and(|k| k != a.kind) {
-                    return Err(ClientError::new(E_ACCOUNT_KIND_CHANGED, "an account's kind never changes"));
-                }
+            if let Some(row) = stored.as_ref()
+                && stored_kind(row, user_id).is_some_and(|k| k != a.kind)
+            {
+                return Err(ClientError::new(E_ACCOUNT_KIND_CHANGED, "an account's kind never changes"));
             }
             u.with_conn(|c| {
                 let held: Option<StoredAttestation> = c
