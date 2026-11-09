@@ -401,6 +401,27 @@ impl CoreHandle {
             .with_core(|c| c.bot_device_list_pin(&bot_user_id, push, now))?
             .into_boxed_slice())
     }
+    /// Bot v2 (task 20b): pins the community's Bot user in the store on first sight. CBOR
+    /// [state, pinned_user]: 0 pinned now, 1 the pinned user, 2 another user (the pin stays).
+    pub fn bot_user_pin(
+        &self,
+        community_id: &[u8],
+        bot_user_id: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        let community_id = js_fixed_arg::<16>("community_id", community_id)?;
+        let bot_user_id = js_fixed_arg::<16>("bot_user_id", bot_user_id)?;
+        Ok(self
+            .with_core(|c| c.bot_user_pin(&community_id, &bot_user_id))?
+            .into_boxed_slice())
+    }
+    /// The community's pinned Bot user (16 bytes), or empty when none is pinned.
+    pub fn bot_user_pinned(&self, community_id: &[u8]) -> Result<Box<[u8]>, JsError> {
+        let community_id = js_fixed_arg::<16>("community_id", community_id)?;
+        Ok(self
+            .with_core(|c| c.bot_user_pinned(&community_id))?
+            .map_or_else(Vec::new, |u| u.to_vec())
+            .into_boxed_slice())
+    }
     /// Signs and seals a command to a publication `bot_command_key_verify` accepted (the exact
     /// bytes, before their `not_after`). The core re-verifies it against the Bot user's current
     /// device list and attestation before every seal, so a revocation since the verify is

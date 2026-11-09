@@ -20,7 +20,21 @@ const poll: CborInput = ['poll create', 'Ask the channel', 70, [['question', 0, 
 const catalogBody = (revision: number, commands: CborInput[], publication: Uint8Array | null = PUBLICATION, status: CborInput = [0, null]) =>
   encode([revision, commands, publication, status]);
 
-function fakeDeps(over: Partial<BotCatalogDeps> = {}) {
+/** The core's per-community Bot-user pin (CorePort.botUserPin / botUserPinned), as the store keeps it: a Map that outlives
+ *  a BotCatalogStore stands for the core store across a reload. */
+function corePins(pins = new Map<string, Uint8Array>()) {
+  return {
+    pins,
+    pinBotUser: vi.fn((communityId: string, botUserId: Uint8Array): { state: 0 | 1 | 2; pinned: Uint8Array } => {
+      const held = pins.get(communityId);
+      if (held === undefined) { pins.set(communityId, botUserId); return { state: 0, pinned: botUserId }; }
+      return { state: toHex(held) === toHex(botUserId) ? 1 : 2, pinned: held };
+    }),
+    pinnedBotUser: (communityId: string): Uint8Array | null => pins.get(communityId) ?? null,
+  };
+}
+
+function fakeDeps(over: Partial<BotCatalogDeps> = {}, pins = new Map<string, Uint8Array>()) {
   let catalog = catalogBody(3, [remind, play]);
   let revisions: CborInput[] = [[3, fid(0x0e), 3]];
   const fetchCatalog = vi.fn(() => Promise.resolve(catalog));
@@ -32,6 +46,8 @@ function fakeDeps(over: Partial<BotCatalogDeps> = {}) {
     fetchRevisions,
     botUserId: () => Promise.resolve(BOT_USER),
     verify,
+    ...corePins(pins),
+    pinBotDeviceList: vi.fn(() => Promise.resolve<0 | 1 | 2>(0)),
     ...over,
   };
   return { deps, fetchCatalog, fetchRevisions, verify,
@@ -265,5 +281,103 @@ describe('fix round 1', () => {
     await store.syncOnConnect(COMMUNITY);
     await vi.waitFor(() => expect(lookups).toHaveBeenCalledTimes(2));
     expect(store.get(COMMUNITY)?.status.state).toBe('unverified');
+  });
+});
+
+describe('task 20b: the Bot device list fetched and pinned, the Bot user pinned in the store', () => {
+  const stale = () => Object.assign(new Error('E_DEVICE_LIST_STALE'), { code: 'E_DEVICE_LIST_STALE' });
+  const settle = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+
+  it('a member who shares no group with the Bot: greyed, then working after one fetch and pin', async () => {
+    let pinned = false;
+    const verify = vi.fn<BotCatalogDeps['verify']>(() => { if (!pinned) throw stale(); return { keyId: KEY, fingerprint: '0123456789AB' }; });
+    const pinBotDeviceList = vi.fn((bot: Uint8Array) => { expect(toHex(bot)).toBe(toHex(BOT_USER)); pinned = true; return Promise.resolve<0 | 1 | 2>(0); });
+    const f = fakeDeps({ verify, pinBotDeviceList });
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    await vi.waitFor(() => expect(store.get(COMMUNITY)?.status.state).toBe('ready'));
+    expect(pinBotDeviceList).toHaveBeenCalledTimes(1);
+    expect(store.publication(COMMUNITY)).toEqual(PUBLICATION);
+    expect(store.get(COMMUNITY)?.keyId).toEqual(KEY);
+  });
+
+  it('fetches at most once per connect per Bot user; a failed fetch keeps it greyed unverified', async () => {
+    const verify = vi.fn<BotCatalogDeps['verify']>(() => { throw stale(); });
+    const pinBotDeviceList = vi.fn(() => Promise.reject(Object.assign(new Error('E_DEVICE_LIST_STALE'), { code: 'E_DEVICE_LIST_STALE' })));
+    const f = fakeDeps({ verify, pinBotDeviceList });
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    await settle();
+    expect(store.get(COMMUNITY)?.status.state).toBe('unverified');
+    // Every later check this connection is local: no second fetch.
+    store.reverify(COMMUNITY);
+    await store.reresolve(COMMUNITY);
+    await store.refresh(COMMUNITY);
+    await settle();
+    expect(pinBotDeviceList).toHaveBeenCalledTimes(1);
+    expect(store.get(COMMUNITY)?.status.state).toBe('unverified');
+    // The next connection may fetch once more.
+    store.newConnection();
+    await store.reresolve(COMMUNITY);
+    await settle();
+    expect(pinBotDeviceList).toHaveBeenCalledTimes(2);
+  });
+
+  it('a pin that is behind (state 2) keeps the commands greyed unverified', async () => {
+    const f = fakeDeps({ verify: vi.fn<BotCatalogDeps['verify']>(() => { throw stale(); }), pinBotDeviceList: vi.fn(() => Promise.resolve<0 | 1 | 2>(2)) });
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    await settle();
+    expect(store.get(COMMUNITY)?.status.state).toBe('unverified');
+    expect(store.publication(COMMUNITY)).toBeNull();
+  });
+
+  it('a held key change (state 1) greys the commands as changed', async () => {
+    let held = false;
+    const verify = vi.fn<BotCatalogDeps['verify']>(() => {
+      throw held ? Object.assign(new Error('E_UMK_CHANGED'), { code: 'E_UMK_CHANGED' }) : stale();
+    });
+    const f = fakeDeps({ verify, pinBotDeviceList: vi.fn(() => { held = true; return Promise.resolve<0 | 1 | 2>(1); }) });
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    await vi.waitFor(() => expect(store.get(COMMUNITY)?.status.state).toBe('changed'));
+    expect(store.publication(COMMUNITY)).toBeNull();
+  });
+
+  it('a key change the core already holds (after a reload) greys the commands as changed with no fetch', async () => {
+    const pinBotDeviceList = vi.fn(() => Promise.resolve<0 | 1 | 2>(0));
+    const f = fakeDeps({ pinBotDeviceList,
+      verify: vi.fn<BotCatalogDeps['verify']>(() => { throw Object.assign(new Error('E_UMK_CHANGED'), { code: 'E_UMK_CHANGED' }); }) });
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    await settle();
+    expect(store.get(COMMUNITY)?.status.state).toBe('changed');
+    expect(pinBotDeviceList).not.toHaveBeenCalled();
+  });
+
+  it('the Bot user pin is the core store’s: a different Bot user after a reload is greyed changed, never adopted', async () => {
+    const pins = new Map<string, Uint8Array>();
+    const first = fakeDeps({}, pins);
+    const before = new BotCatalogStore(first.deps);
+    await before.syncOnConnect(COMMUNITY);
+    expect(before.get(COMMUNITY)?.status.state).toBe('ready');
+    expect(toHex(pins.get(COMMUNITY)!)).toBe(toHex(BOT_USER));
+    // Reload: a new store (the worker's memory is gone), the same core store, and the server now names another account.
+    const other = fid(0x0c);
+    const after = fakeDeps({ botUserId: () => Promise.resolve(other) }, pins);
+    const reloaded = new BotCatalogStore(after.deps);
+    await reloaded.syncOnConnect(COMMUNITY);
+    expect(reloaded.get(COMMUNITY)).toMatchObject({ botUserId: toHex(BOT_USER), status: { state: 'changed' } });
+    expect(reloaded.publication(COMMUNITY)).toBeNull();
+    expect(after.verify.mock.calls.every(call => toHex(call[1]) === toHex(BOT_USER))).toBe(true);
+    expect(toHex(pins.get(COMMUNITY)!)).toBe(toHex(BOT_USER));
+  });
+
+  it('after a reload the stored pin is used before the server is asked again', async () => {
+    const pins = new Map<string, Uint8Array>([[COMMUNITY, BOT_USER]]);
+    const f = fakeDeps({ botUserId: () => Promise.resolve(null) }, pins);
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    expect(store.get(COMMUNITY)).toMatchObject({ botUserId: toHex(BOT_USER), status: { state: 'ready' } });
   });
 });

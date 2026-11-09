@@ -136,6 +136,16 @@ export interface BotCatalogDeps {
   botUserId(communityId: string): Promise<BotUserCandidate>;
   /** CorePort.botCommandKeyVerify: throws the refusal (E_BOT_SIGNATURE, E_CREDENTIAL, E_DEVICE_LIST_STALE, ...). */
   verify(publication: Uint8Array, botUserId: Uint8Array): { keyId: Uint8Array; fingerprint: string };
+  /** CorePort.botUserPin (task 20b): the community's Bot user, pinned in the core store on first sight. State 2 is
+   *  another user than the pinned one, which stays; only sign-out (a store wipe) clears a pin. Throws E_CREDENTIAL for an
+   *  account the instance attested as a human. */
+  pinBotUser(communityId: string, botUserId: Uint8Array): { state: 0 | 1 | 2; pinned: Uint8Array };
+  /** CorePort.botUserPinned: the stored pin, or null. */
+  pinnedBotUser(communityId: string): Uint8Array | null;
+  /** Task 20b (Jonas, 2026-11-07): reads the Bot user's device list (the head with its identity keys, the history from
+   *  version 1), builds the device_list_push and pins it in the core (CorePort.botDeviceListPin). Resolves the pin state:
+   *  0 current, 1 a key change held, 2 behind. Asked at most once per connection per Bot user, on E_DEVICE_LIST_STALE. */
+  pinBotDeviceList(botUserId: Uint8Array): Promise<0 | 1 | 2>;
   /** A catalog read or a key check that failed, by code (diagnostics); never its content. */
   onError?(code: string): void;
 }
@@ -146,6 +156,8 @@ interface Entry {
   publication: Uint8Array | null;
   /** The publication the core accepted; null when none was, so nothing is sealed. */
   verified: { publication: Uint8Array; keyId: Uint8Array; fingerprint: string } | null;
+  /** The core's last refusal of the publication (E_UMK_CHANGED greys it `changed`); null after an accept. */
+  refusal?: string | null;
   serverStatus: BotStatus;
   botChannels: string[] | null;
 }
@@ -157,8 +169,13 @@ export class BotCatalogStore {
   private readonly listeners = new Map<string, Set<() => void>>();
   private revisions: Promise<BotRevision[] | null> | null = null;
   private readonly inFlight = new Map<string, Promise<void>>();
-  /** community → the Bot user this device pinned on first sight (hex). Never replaced while the worker lives. */
+  /** community → the Bot user this device pinned on first sight (hex): a copy of the core store's pin (task 20b), which
+   *  survives a reload and is never replaced. */
   private readonly pins = new Map<string, string>();
+  /** Bot users (hex) whose device list was fetched and pinned on this connection (task 20b: at most once per connect). */
+  private readonly listFetched = new Set<string>();
+  /** Bot users (hex) whose pinned device list holds a key change (botDeviceListPin state 1): greyed `changed`. */
+  private readonly listHeld = new Set<string>();
   /** community → why its Bot user cannot be used: the server named another one, or more than one. */
   private readonly botProblem = new Map<string, 'changed' | 'ambiguous'>();
   private readonly resolving = new Map<string, Promise<void>>();
@@ -169,7 +186,7 @@ export class BotCatalogStore {
     const e = this.entries.get(communityId);
     if (e === undefined) return null;
     return { revision: e.revision, commands: e.commands, keyId: e.verified?.keyId ?? null, fingerprint: e.verified?.fingerprint ?? null,
-      status: this.statusOf(communityId, e), botChannels: e.botChannels, botUserId: this.pins.get(communityId) ?? null };
+      status: this.statusOf(communityId, e), botChannels: e.botChannels, botUserId: this.pinOf(communityId) ?? null };
   }
 
   /** The slice form of get(). */
@@ -205,7 +222,7 @@ export class BotCatalogStore {
     const serverStatus: BotStatus = held?.serverStatus.state === 'degraded' ? held.serverStatus : { state: 'ready', since: null };
     const entry: Entry = { revision: frame.revision, commands, publication, verified: null, serverStatus, botChannels: held?.botChannels ?? null };
     this.entries.set(communityId, entry);
-    if (this.pins.has(communityId) || publication === null) {
+    if (this.pinOf(communityId) !== undefined || publication === null) {
       this.verifyEntry(communityId, entry);
       this.notify(communityId);
       return;
@@ -218,7 +235,7 @@ export class BotCatalogStore {
   }
 
   /** A new gateway connection: the next sync reads the revisions again (op 61 is not replayed). */
-  newConnection(): void { this.revisions = null; }
+  newConnection(): void { this.revisions = null; this.listFetched.clear(); }
 
   /** The instance's revisions for this connection (one read, shared with the catalog sync); null when it could not be read. */
   readRevisions(): Promise<BotRevision[] | null> {
@@ -252,7 +269,7 @@ export class BotCatalogStore {
   reverify(communityId: string): boolean {
     const e = this.entries.get(communityId);
     if (e === undefined) return false;
-    if (e.verified === null && e.publication !== null && this.pins.has(communityId)) {
+    if (e.verified === null && e.publication !== null && this.pinOf(communityId) !== undefined) {
       this.verifyEntry(communityId, e);
       if (e.verified !== null) this.notify(communityId);
     }
@@ -284,6 +301,8 @@ export class BotCatalogStore {
     const held = [...this.entries.keys()];
     this.entries.clear();
     this.pins.clear();
+    this.listFetched.clear();
+    this.listHeld.clear();
     this.botProblem.clear();
     this.revisions = null;
     for (const id of held) this.notify(id);
@@ -297,12 +316,15 @@ export class BotCatalogStore {
     const task = (async () => {
       let candidate: BotUserCandidate;
       try { candidate = await this.deps.botUserId(communityId); } catch { return; }
-      const pinned = this.pins.get(communityId);
       if (candidate === 'ambiguous') { this.botProblem.set(communityId, 'ambiguous'); return; }
       if (candidate === null) return;
-      const id = toHex(candidate);
-      if (pinned === undefined) { this.pins.set(communityId, id); this.botProblem.delete(communityId); return; }
-      if (pinned === id) { if (this.botProblem.get(communityId) === 'ambiguous') this.botProblem.delete(communityId); return; }
+      // The pin is the core store's (task 20b): a first sight is written there, so a reload never re-pins.
+      let answer: { state: 0 | 1 | 2; pinned: Uint8Array };
+      try { answer = this.deps.pinBotUser(communityId, candidate); }
+      catch (e) { this.deps.onError?.(codeOf(e)); return; }
+      this.pins.set(communityId, toHex(answer.pinned));
+      if (answer.state === 0) { this.botProblem.delete(communityId); return; }
+      if (answer.state === 1) { if (this.botProblem.get(communityId) === 'ambiguous') this.botProblem.delete(communityId); return; }
       this.botProblem.set(communityId, 'changed');
       this.deps.onError?.('E_BOT_USER_CHANGED');
     })().finally(() => { this.resolving.delete(communityId); });
@@ -331,9 +353,22 @@ export class BotCatalogStore {
     this.notify(communityId);
   }
 
+  /** The community's pinned Bot user (hex): this worker's copy, else the core store's (after a reload); undefined if none. */
+  private pinOf(communityId: string): string | undefined {
+    const held = this.pins.get(communityId);
+    if (held !== undefined) return held;
+    let stored: Uint8Array | null;
+    try { stored = this.deps.pinnedBotUser(communityId); } catch { return undefined; }
+    if (stored === null) return undefined;
+    const id = toHex(stored);
+    this.pins.set(communityId, id);
+    return id;
+  }
+
   private verifyEntry(communityId: string, e: Entry): void {
     e.verified = null;
-    const pinned = this.pins.get(communityId);
+    e.refusal = null;
+    const pinned = this.pinOf(communityId);
     if (e.publication === null || pinned === undefined || this.botProblem.has(communityId)) return;
     // A publication for another community is refused here, before the core sees it (it would replace that community's key
     // in the core's verified set).
@@ -341,12 +376,32 @@ export class BotCatalogStore {
     try {
       const { keyId, fingerprint } = this.deps.verify(e.publication, fromHex(pinned));
       e.verified = { publication: e.publication, keyId, fingerprint };
+      this.listHeld.delete(pinned);
     } catch (err) {
       const code = codeOf(err);
+      e.refusal = code;
       this.deps.onError?.(code);
       // A refusal that may mean another Bot account: look it up again (it is greyed `changed` if so, never switched to).
       if (SIGNER_REFUSALS.has(code)) void this.resolveBot(communityId).then(() => { if (this.botProblem.has(communityId)) this.notify(communityId); });
+      // Task 20b: no device list for the Bot (this member shares no group with it), or one behind its head: read it and pin
+      // it once on this connection, then check again.
+      if (code === 'E_DEVICE_LIST_STALE') this.fetchBotList(pinned);
     }
+  }
+
+  /** Fetches and pins the Bot user's device list, at most once per connection, then checks every held publication signed
+   *  by that Bot user again. A failure keeps them greyed `unverified`; a held key change greys them `changed`. */
+  private fetchBotList(botUser: string): void {
+    if (this.listFetched.has(botUser)) return;
+    this.listFetched.add(botUser);
+    void this.deps.pinBotDeviceList(fromHex(botUser)).then((state) => {
+      if (state === 1) this.listHeld.add(botUser); else this.listHeld.delete(botUser);
+      for (const [communityId, e] of this.entries) {
+        if (this.pins.get(communityId) !== botUser || e.verified !== null) continue;
+        this.verifyEntry(communityId, e);
+        this.notify(communityId);
+      }
+    }, (err: unknown) => { this.deps.onError?.(codeOf(err)); });
   }
 
   /** The greyed reasons this device adds to the instance's status. */
@@ -354,6 +409,11 @@ export class BotCatalogStore {
     const problem = this.botProblem.get(communityId);
     if (problem === 'changed') return { state: 'changed', since: null };
     if (problem === 'ambiguous') return { state: 'unverified', since: null };
+    // A key change of the Bot's device list is held until it is verified (task 20b): its commands are paused.
+    const pinned = this.pins.get(communityId);
+    if (e.verified === null && e.publication !== null && (e.refusal === 'E_UMK_CHANGED' || (pinned !== undefined && this.listHeld.has(pinned)))) {
+      return { state: 'changed', since: null };
+    }
     if (e.verified !== null || e.serverStatus.state !== 'ready') return e.serverStatus;
     // Ready, but nothing to seal to: no key published yet is the Bot still starting (offline); a key this device could not
     // check has its own reason.

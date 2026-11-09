@@ -38,7 +38,7 @@ import {
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
 import { PENDING_JOIN_KEY, PENDING_ROLE_PANEL_ACTION_PREFIX, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
-import { chainRow, historyFrom, ingestAccountKind, readDeviceListHistory, signedHeadList } from '../state/trust';
+import { chainRow, historyFrom, ingestAccountKind, readBotDeviceListPush, readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
@@ -1254,6 +1254,28 @@ export class Controller {
         const core = this.core;
         if (core === null) throw new Refusal('E_NOT_READY', '');
         return core.botCommandKeyVerify(publication, botUserId);
+      },
+      // Task 20b: the community's Bot user is pinned in the core store (a reload never re-pins on first sight).
+      pinBotUser: (communityId, botUserId) => {
+        const core = this.core;
+        if (core === null) throw new Refusal('E_NOT_READY', '');
+        return core.botUserPin(fromHex(communityId), botUserId);
+      },
+      pinnedBotUser: (communityId) => {
+        const core = this.core;
+        if (core === null) throw new Refusal('E_NOT_READY', '');
+        return core.botUserPinned(fromHex(communityId));
+      },
+      // Task 20b (Jonas, 2026-11-07): a member who shares no group with the Bot reads its device list (the head's keys, the
+      // history from version 1) and pins it, trusted on first sight only for an account the instance attested as a Bot.
+      pinBotDeviceList: async (botUserId) => {
+        if (!(this.routes instanceof Routes)) throw new Refusal('E_UNAVAILABLE', '');
+        const { head, push } = await readBotDeviceListPush(this.routes, botUserId);
+        const core = this.core;
+        if (core === null) throw new Refusal('E_NOT_READY', '');
+        // The attestation goes in first: the pin refuses a user the core holds no Bot attestation for.
+        ingestAccountKind(core, botUserId, head, (code) => { this.recordError(code); });
+        return core.botDeviceListPin(botUserId, push).state;
       },
       onError: (code) => { this.recordError(code); },
     });

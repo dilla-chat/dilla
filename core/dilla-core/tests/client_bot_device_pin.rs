@@ -492,3 +492,171 @@ fn pin_of(alice: &Core, user: &[u8; 16]) -> Option<([u8; 32], Option<[u8; 32]>)>
     })
     .expect("trust state shape")
 }
+
+// ---- Task 20b ----
+
+const OTHER_BOT: [u8; 16] = [0xb9; 16];
+
+fn pinned_user(answer: &[u8]) -> (u64, [u8; 16]) {
+    decode_strict(answer, |d| {
+        d.array(2)?;
+        Ok((d.uint()?, d.bytes_exact::<16>()?))
+    })
+    .expect("[state, pinned]")
+}
+
+/// The per-community Bot-user pin lives in the store: first sight pins, the same user again is fine, another user is
+/// `changed` and never replaces the pin, and all of it survives a reopen (an in-memory pin re-pinned on every reload).
+#[test]
+fn the_community_bot_user_pin_survives_a_reopen_and_is_never_replaced() {
+    let mut alice = ready_core(0x0a, "alice");
+    assert_eq!(
+        alice.core.bot_user_pinned(&COMMUNITY).expect("read"),
+        None,
+        "nothing pinned yet"
+    );
+    assert_eq!(
+        pinned_user(
+            &alice
+                .core
+                .bot_user_pin(&COMMUNITY, &BOT)
+                .expect("first sight")
+        ),
+        (0, BOT)
+    );
+    assert_eq!(
+        pinned_user(&alice.core.bot_user_pin(&COMMUNITY, &BOT).expect("same")),
+        (1, BOT)
+    );
+    assert_eq!(
+        pinned_user(
+            &alice
+                .core
+                .bot_user_pin(&COMMUNITY, &OTHER_BOT)
+                .expect("another")
+        ),
+        (2, BOT),
+        "another Bot user is changed, and the pin stays"
+    );
+    let mut alice = alice.reopen();
+    assert_eq!(
+        alice.core.bot_user_pinned(&COMMUNITY).expect("read"),
+        Some(BOT),
+        "the pin survives a reopen"
+    );
+    assert_eq!(
+        pinned_user(
+            &alice
+                .core
+                .bot_user_pin(&COMMUNITY, &OTHER_BOT)
+                .expect("another")
+        ),
+        (2, BOT),
+        "a different Bot user after a reload is changed, not a first sight"
+    );
+    // Another community has its own pin.
+    assert_eq!(
+        pinned_user(
+            &alice
+                .core
+                .bot_user_pin(&[0x23; 16], &OTHER_BOT)
+                .expect("first sight")
+        ),
+        (0, OTHER_BOT)
+    );
+}
+
+/// An account the instance attested as a human is never pinned as a community's Bot.
+#[test]
+fn an_attested_human_is_not_pinned_as_the_community_bot() {
+    let mut alice = ready_core(0x0a, "alice");
+    alice
+        .core
+        .account_kind_ingest(&HUMAN, &attestation_for(&HUMAN, 0))
+        .expect("attested human");
+    assert_eq!(
+        code(alice.core.bot_user_pin(&COMMUNITY, &HUMAN)),
+        "E_CREDENTIAL"
+    );
+    assert_eq!(alice.core.bot_user_pinned(&COMMUNITY).expect("read"), None);
+}
+
+/// Re-review M-A: the behind mark is cleared by any ingest that brings the cache to the marked head, here a group-leaf
+/// ingest, with no further `bot_device_list_pin`.
+#[test]
+fn a_group_leaf_ingest_that_reaches_the_head_clears_the_behind_mark() {
+    let instance = Instance::generate();
+    let mut relay = Relay::new(GROUP);
+    let mut alice = ready_core(0xa1, "alice");
+    alice.create_and_register(&mut relay, &instance);
+    let mut bob = RawPeer::new(0xb2, 0xb3);
+    bob.join_external(&mut relay);
+    alice.sync(&relay);
+    alice
+        .core
+        .account_kind_ingest(&bob.user, &attestation_for(&bob.user, 1))
+        .expect("attested Bot");
+    // bob's real keys (RawPeer seeds: UMK 0xb2, SSK 0xf2), so the leaf path extends the pushed cache.
+    let real = Keys {
+        umk: UmkSigner::from_bytes(&[0xb2; 32]),
+        ssk: SskSigner::from_bytes(&[0xf2; 32]),
+    };
+    let bob_dsk: [u8; 32] = bob.signer.public().try_into().expect("dsk");
+    let v1 = real.list(bob.user, 1, None, vec![entry(bob.device, bob_dsk)]);
+    let v2 = real.list(bob.user, 2, Some(&v1), vec![entry(bob.device, bob_dsk)]);
+    let v3 = real.list(bob.user, 3, Some(&v2), vec![entry(bob.device, bob_dsk)]);
+    alice
+        .core
+        .bot_device_list_pin(&bob.user, &real.push(&[&v1]), NOW)
+        .expect("pinned");
+    assert_eq!(
+        state(
+            &alice
+                .core
+                .bot_device_list_pin(&bob.user, &real.push(&[&v3]), NOW)
+                .expect("behind")
+        ),
+        (2, 1)
+    );
+    let key = CommandKeyPublication::sign(
+        CommunityId::from_bytes(COMMUNITY),
+        [0x0a; 16],
+        [0x0c; 32],
+        NOW + 3600,
+        DeviceId::from_bytes(bob.device),
+        &bob.signer,
+    )
+    .expect("signed")
+    .encode();
+    assert_eq!(
+        code(alice.core.bot_command_key_verify(&key, &bob.user, NOW)),
+        "E_DEVICE_LIST_STALE",
+        "behind: refused"
+    );
+    // The group-leaf path reads the history from the cached v1 to the head v3.
+    let mut history = dilla_core::cbor::Encoder::new();
+    history.array(3);
+    for l in [&v1, &v2, &v3] {
+        history
+            .array(4)
+            .uint(l.unsigned.version)
+            .bytes(&l.encode())
+            .bytes(&l.sig_ssk)
+            .bytes(&l.unsigned.prev_hash);
+    }
+    alice
+        .core
+        .device_list_ingest(
+            &relay.group_id,
+            relay.leaf_of(bob.device),
+            &bob.user,
+            &history.into_vec(),
+            &v3.encode(),
+            NOW,
+        )
+        .expect("leaf ingest");
+    alice
+        .core
+        .bot_command_key_verify(&key, &bob.user, NOW)
+        .expect("the leaf ingest reached the head: the mark is gone");
+}

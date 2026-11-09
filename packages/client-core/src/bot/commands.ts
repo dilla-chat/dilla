@@ -38,6 +38,9 @@ export interface BotCommandRun {
   cancel(): void;
   /** After a timeout: the first answer that still arrives (before a retry or cancel, within 2 min) goes here. */
   onLate(listener: (answer: BotAnswer) => void): void;
+  /** Called once when the run takes nothing more: its last answer, a stop, a cancel, or the end of the 2-minute late window
+   *  after a timeout (task 20b, M-B: the host drops its run then). A listener added after the end is called at once. */
+  onDone(listener: () => void): void;
 }
 export interface BotCommandSubmit { communityId: string; channelId: string | null; operation: number; args: readonly BotArg[]; requestId: string }
 export interface BotAnswerEvent { requestId: string; seq: number; status: number; body: Uint8Array; final: boolean }
@@ -217,6 +220,7 @@ export function createBotCommands(port: BotCommandPort): { sendBotCommand(req: S
     let first: unknown = null;
     let idle: unknown = null;
     let late: ((answer: BotAnswer) => void) | null = null;
+    let ended: (() => void) | null = null;
     const clear = (): void => {
       if (first !== null) { port.clearTimer(first); first = null; }
       if (idle !== null) { port.clearTimer(idle); idle = null; }
@@ -228,6 +232,9 @@ export function createBotCommands(port: BotCommandPort): { sendBotCommand(req: S
       unsubscribe();
       queue.end();
       if (forget) port.forget(requestId);
+      const listener = ended;
+      ended = null;
+      listener?.();
     };
     const close = (item?: BotRunItem): void => {
       if (phase !== 'open') return;
@@ -281,6 +288,7 @@ export function createBotCommands(port: BotCommandPort): { sendBotCommand(req: S
       stop: () => { finish(false); },
       cancel: () => { finish(true); },
       onLate: (listener) => { late = listener; },
+      onDone: (listener) => { if (phase === 'done') listener(); else ended = listener; },
     };
   };
   return { sendBotCommand };

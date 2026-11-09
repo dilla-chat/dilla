@@ -468,4 +468,6 @@ export class FakeCore implements CorePort {
   botReplyOpen(replyHandle: number, requestId: Id, seq: number, sealed: Uint8Array): Uint8Array { return this.notModelled('botReplyOpen', replyHandle, requestId, seq, sealed); }
   botReplyForget(replyHandle: number): void { return this.notModelled('botReplyForget', replyHandle); }
   botDeviceListPin(botUserId: Id, push: Uint8Array): { state: 0 | 1 | 2; version: bigint } { return this.notModelled('botDeviceListPin', botUserId, push); }
+  botUserPin(communityId: Id, botUserId: Id): { state: 0 | 1 | 2; pinned: Uint8Array } { return this.notModelled('botUserPin', communityId, botUserId); }
+  botUserPinned(communityId: Id): Uint8Array | null { return this.notModelled('botUserPinned', communityId); }
 }

@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { encode, type CborInput } from '../cbor';
 import { readDeviceListHistory } from './trust';
 import { CoreError } from '../core-port';
-import { chainRow, decodePendingLeaves, decodeTrustState, headAttestation, historyFrom, ingestAccountKind, signedHeadList } from './trust';
+import { chainRow, decodePendingLeaves, decodeTrustState, headAttestation, headIdentity, historyFrom, ingestAccountKind, readBotDeviceListPush,
+  signedHeadList } from './trust';
+import { decodeDeviceListPush } from '../bot/protocol';
 
 const id16 = (n: number): Uint8Array => new Uint8Array(16).fill(n);
 const key32 = (n: number): Uint8Array => new Uint8Array(32).fill(n);
@@ -225,5 +227,51 @@ describe('the account-kind attestation on a wire-4 head', () => {
     }
     ingestAccountKind({ accountKindIngest: () => { throw new Error('boom'); } }, id16(2), head4(3), c => logged.push(c));
     expect(logged).toEqual(['E_CORE_STORAGE', 'E_CREDENTIAL', 'E_CORE_UNKNOWN']);
+  });
+});
+
+// Bot v2 task 20b: the wire-6 head adds the account's umk_pub, ssk_pub and sig_umk_ssk after the attestation, and a member
+// builds the Bot's device_list_push from it and the history from version 1.
+describe('the identity keys on a wire-6 head and the Bot device-list push', () => {
+  const ATTESTATION = encode([1, new Uint8Array(16).fill(3), 1, new Uint8Array(64).fill(4)]);
+  const UMK = key32(0x11); const SSK = key32(0x22); const SIG = new Uint8Array(64).fill(0x33);
+  const head8 = (version: number): Uint8Array =>
+    encode([version, new Uint8Array([version]), new Uint8Array(64), key32(version), ATTESTATION, UMK, SSK, SIG]);
+  const routes8 = (version: number, pages: Record<number, number[]>, head: (v: number) => Uint8Array = head8) => {
+    const getDeviceListHistory = vi.fn((_user: Uint8Array, after: bigint) => {
+      void _user;
+      const versions = pages[Number(after)] ?? [];
+      return Promise.resolve({ raw: history(versions), count: versions.length, lastVersion: versions.length ? BigInt(versions[versions.length - 1]) : null });
+    });
+    return { getDeviceList: () => Promise.resolve({ version: BigInt(version), blob: new Uint8Array([version]), raw: head(version) }), getDeviceListHistory };
+  };
+  const range = (from: number, to: number): number[] => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+
+  it('reads the chain row, the attestation and the keys of an eight-element head', () => {
+    expect(chainRow(head8(3))).toEqual(list(3));
+    expect(headAttestation(head8(3))).toEqual(ATTESTATION);
+    expect(signedHeadList(head8(3))).toEqual(new Uint8Array([3]));
+    expect(headIdentity(head8(3))).toEqual({ umk: UMK, ssk: SSK, sigUmkSsk: SIG });
+    expect(headIdentity(list(3))).toBeNull();
+    // A key of the wrong length is no identity.
+    const short = encode([3, new Uint8Array([3]), new Uint8Array(64), key32(3), ATTESTATION, new Uint8Array(31), SSK, SIG]);
+    expect(() => headIdentity(short)).toThrow(CoreError);
+  });
+
+  it('builds the push from the head keys and the whole history from version 1, across history pages', async () => {
+    const r = routes8(70, { 0: range(1, 64), 64: range(65, 70) });
+    const { head, push } = await readBotDeviceListPush(r, id16(2));
+    expect(head).toEqual(head8(70));
+    const decoded = decodeDeviceListPush(push);
+    expect(decoded.umk).toEqual(UMK);
+    expect(decoded.ssk).toEqual(SSK);
+    expect(decoded.sigUmkSsk).toEqual(SIG);
+    expect(decoded.history.map((row) => Number(row.version))).toEqual(range(1, 70));
+    expect(decoded.history[69]).toEqual({ version: 70n, blob: new Uint8Array([70]), sskSignature: new Uint8Array(64), prevHash: key32(70) });
+    expect(r.getDeviceListHistory.mock.calls.map((call) => call[1])).toEqual([0n, 64n]);
+  });
+
+  it('a head without the keys (an older wire, a tombstone) is stale', async () => {
+    await expect(readBotDeviceListPush(routes8(3, { 0: [1, 2, 3] }, (v) => list(v)), id16(2))).rejects.toMatchObject({ code: 'E_DEVICE_LIST_STALE' });
   });
 });

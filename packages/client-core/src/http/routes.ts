@@ -26,7 +26,8 @@ export interface Challenge { nonce: Uint8Array; expires: bigint; }
 export interface EstablishedSession { token: string; scope: 0 | 1 | 2; userId: Uint8Array; deviceId: Uint8Array;
   expires: bigint; idleExpires: bigint; generation: bigint; }
 /** A served device-list head; `raw` is the response body (on wire 4 it carries the account-kind attestation as a fifth
- *  element: state/trust.ts `chainRow` is the four-element list body the core decodes). */
+ *  element, and on wire 6 the account's umk_pub, ssk_pub and sig_umk_ssk after it: state/trust.ts `chainRow` is the
+ *  four-element list body the core decodes, `headIdentity` the keys). */
 export interface DeviceListRecord { version: bigint; blob: Uint8Array; raw: Uint8Array; }
 /** What a login assertion still owes (protocol/09 § Second factors): 0 nothing, 1 a TOTP code or a backup code, 2 a passkey
  *  login or a backup code (the account has passkeys and no app). `passkey` (wave B task 3): the answer's optional third

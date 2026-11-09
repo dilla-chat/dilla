@@ -511,6 +511,12 @@ func (d Deps) GetDeviceList(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		head = append(head, attestation)
+		// Wire 6 (Bot v2 task 20b): the account's identity keys follow, so a member who shares no group
+		// with a Bot can build the Bot's device_list_push (protocol/09). They are the bytes the account
+		// registered; the client checks them (the SSK under the UMK, every list under the SSK).
+		if sess.WireVersion >= deviceListKeysWire {
+			head = append(head, account.UMKPub, account.SSKPub, account.SigUMKSSK)
+		}
 	}
 	d.write(w, r, http.StatusOK, head)
 }

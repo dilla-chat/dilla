@@ -940,6 +940,14 @@ export class ModelCore implements CorePort {
     void push; this.log('botDeviceListPin', botUserId);
     throw coreError('E_CORE_STATE', 'not modelled');
   }
+  botUserPin(communityId: Id, botUserId: Id): { state: 0 | 1 | 2; pinned: Uint8Array } {
+    void botUserId; this.log('botUserPin', communityId);
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
+  botUserPinned(communityId: Id): Uint8Array | null {
+    this.log('botUserPinned', communityId);
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
 
   /** calls.rs call_row: E_CORE_NOT_FOUND for an unknown id, E_CORE_INPUT for a group that is not a call group. */
   private callRow(groupId: Id): MGroup {

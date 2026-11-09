@@ -215,8 +215,12 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
             text: result.message ?? commandPickerCopy.completedPrivately });
           setNoAnswer(current => (current?.key === key ? null : current));
         },
-        // Tracked until it settles, or (timed out, still listening for a late answer) until the composer closes.
-        started: run => { startedRun = run; botRuns.current.set(run.requestId, run); },
+        // Tracked until it settles, or (timed out, still listening for a late answer) until its late window ends or the composer closes.
+        started: run => {
+          startedRun = run; botRuns.current.set(run.requestId, run);
+          // M-B (task 20b): a run is dropped when it takes nothing more, the end of a timed-out run's late window included.
+          run.onDone(() => { if (botRuns.current.get(run.requestId) === run) botRuns.current.delete(run.requestId); });
+        },
       })
       : (handlers ?? {})[invocation.commandId] ?? builtinHandlers[invocation.commandId];
     const provider = definition?.provider === 'bot' ? 'bot' : 'builtin';

@@ -883,12 +883,13 @@ fn decode_served_list(d: &mut Decoder<'_>) -> Result<ServedDeviceList, CborError
 }
 
 /// The served head, `GET /v1/users/{id}/device-list`: the four row elements, plus on wire 6 (as on
-/// every wire since 4) the instance-signed account-kind attestation, which this client reads past.
+/// every wire since 4) the instance-signed account-kind attestation and (wire 6, Bot v2 task 20b)
+/// the account's `umk_pub`, `ssk_pub` and `sig_umk_ssk`, which this client reads past.
 fn decode_served_head(d: &mut Decoder<'_>) -> Result<ServedDeviceList, CborError> {
     let len = d.array_len()?;
-    if len != 4 && len != 5 {
+    if len != 4 && len != 5 && len != 8 {
         return Err(CborError::WrongArrayLen {
-            expected: 5,
+            expected: 8,
             actual: len,
         });
     }
@@ -898,7 +899,7 @@ fn decode_served_head(d: &mut Decoder<'_>) -> Result<ServedDeviceList, CborError
         ssk_signature: bytes_or_null(d)?,
         prev_hash: bytes_or_null(d)?,
     };
-    if len == 5 {
+    for _ in 4..len {
         bytes_or_null(d)?;
     }
     Ok(row)
@@ -4381,6 +4382,19 @@ mod tests {
         });
         assert_eq!(decode_strict(&attested, decode_served_head).unwrap(), row);
         assert_eq!(decode_strict(&served, decode_served_head).unwrap(), row);
+        // Wire 6 (Bot v2 task 20b): umk_pub, ssk_pub and sig_umk_ssk follow the attestation.
+        let keyed = cbor(|e| {
+            e.array(8)
+                .uint(2)
+                .bytes(&[0x03; 5])
+                .bytes(&[0x04; 64])
+                .bytes(&[0x05; 32])
+                .bytes(&[0x09; 3])
+                .bytes(&[0x0a; 32])
+                .bytes(&[0x0b; 32])
+                .bytes(&[0x0c; 64]);
+        });
+        assert_eq!(decode_strict(&keyed, decode_served_head).unwrap(), row);
         assert!(decode_strict(&attested, decode_served_list).is_err());
         let history = cbor(|e| {
             e.array(2);

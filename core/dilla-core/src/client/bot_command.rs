@@ -162,6 +162,61 @@ fn behind_head(c: &rusqlite::Connection, user: &[u8; 16]) -> Result<Option<u64>,
     .transpose()
 }
 
+/// Re-review M-A (task 20b): deletes a user's behind mark once the cached list under the pinned
+/// UMK is at or past the marked head, whichever ingest advanced it (a pinned push, a group leaf,
+/// a proposed add). Every write of `app_device_lists` calls it in the same unit, after the write.
+/// A list cached under another key than the pinned one never clears it.
+pub(super) fn clear_reached_behind(
+    c: &rusqlite::Connection,
+    user: &[u8; 16],
+) -> Result<(), StorageError> {
+    use rusqlite::OptionalExtension;
+    let Some(head) = behind_head(c, user)? else {
+        return Ok(());
+    };
+    let cached: Option<i64> = c
+        .query_row(
+            "SELECT l.version FROM app_device_lists l JOIN app_trust_pins p ON p.user_id=l.user_id \
+             WHERE l.user_id=?1 AND p.umk_pub=l.umk_pub",
+            [user.as_slice()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if cached
+        .and_then(|v| u64::try_from(v).ok())
+        .is_some_and(|v| v >= head)
+    {
+        c.execute("DELETE FROM app_meta WHERE k=?1", [behind_key(user)])?;
+    }
+    Ok(())
+}
+
+/// `app_meta` key of a community's pinned Bot user (task 20b).
+fn bot_user_key(community: &[u8; 16]) -> String {
+    let hex: String = community.iter().map(|b| format!("{b:02x}")).collect();
+    format!("bot_user/v1/{hex}")
+}
+
+/// The Bot user pinned for a community, if any. A malformed value fails closed.
+fn pinned_bot_user(
+    c: &rusqlite::Connection,
+    community: &[u8; 16],
+) -> Result<Option<[u8; 16]>, StorageError> {
+    use rusqlite::OptionalExtension;
+    let raw: Option<Vec<u8>> = c
+        .query_row(
+            "SELECT v FROM app_meta WHERE k=?1",
+            [bot_user_key(community)],
+            |r| r.get(0),
+        )
+        .optional()?;
+    raw.map(|v| {
+        <[u8; 16]>::try_from(v.as_slice())
+            .map_err(|_| StorageError::Codec("app_meta bot_user is malformed".into()))
+    })
+    .transpose()
+}
+
 impl ClientCore {
     /// The Bot side (Bot v2 task 8): signs the publication of its command key for `community_id`
     /// with this device's DSK, naming this device. Returns the encoded publication. The private
@@ -237,8 +292,10 @@ impl ClientCore {
                                 rusqlite::params![key, at.to_be_bytes().to_vec()],
                             )?;
                         }
-                    } else if held.is_some_and(|h| h <= at) {
-                        c.execute("DELETE FROM app_meta WHERE k=?1", [&key])?;
+                    } else {
+                        // The ingest's own cache write already ran this (M-A); a push that wrote nothing
+                        // (its head not newer than the cache) is checked here.
+                        clear_reached_behind(c, bot_user_id)?;
                     }
                     Ok(())
                 })
@@ -272,6 +329,58 @@ impl ClientCore {
             .bytes(&p.key_id)
             .text(&fingerprint(&p.public_key));
         Ok((p, e.into_vec()))
+    }
+
+    /// Bot v2 (task 20b): the community's Bot user, pinned in this account's store on first sight
+    /// (`app_meta` `bot_user/v1/<community>`, next to the trust pins). The same user again is
+    /// fine; another user is `changed` and never replaces the pin, so a reload cannot re-pin on
+    /// first sight. Only sign-out (which erases the store) clears it; there is no approval flow
+    /// yet. An account the instance attested as a human is never pinned (`E_CREDENTIAL`).
+    ///
+    /// Returns CBOR `[state, pinned_user]`: state 0 pinned now, 1 the pinned user, 2 another user
+    /// (the pin stays).
+    pub fn bot_user_pin(
+        &mut self,
+        community_id: &[u8; 16],
+        bot_user_id: &[u8; 16],
+    ) -> Result<Vec<u8>, ClientError> {
+        if community_id == &[0; 16] || bot_user_id == &[0; 16] {
+            return Err(input("community or Bot user id"));
+        }
+        let (state, pinned) = self
+            .write(|_, u| {
+                u.with_conn(|c| {
+                    if account_kind::attested_kind(c, bot_user_id)?
+                        .is_some_and(|k| k != Kind::Bot.as_u8())
+                    {
+                        return Ok(None);
+                    }
+                    if let Some(pinned) = pinned_bot_user(c, community_id)? {
+                        return Ok(Some((
+                            if &pinned == bot_user_id { 1u64 } else { 2 },
+                            pinned,
+                        )));
+                    }
+                    c.execute(
+                        "INSERT INTO app_meta(k,v) VALUES(?1,?2)",
+                        rusqlite::params![bot_user_key(community_id), bot_user_id.to_vec()],
+                    )?;
+                    Ok(Some((0, *bot_user_id)))
+                })
+                .map_err(ClientError::from)
+            })?
+            .ok_or_else(|| ClientError::new(E_CREDENTIAL, "not a Bot account"))?;
+        let mut e = Encoder::with_capacity(24);
+        e.array(2).uint(state).bytes(&pinned);
+        Ok(e.into_vec())
+    }
+
+    /// The Bot user pinned for `community_id` (`bot_user_pin`), if any.
+    pub fn bot_user_pinned(
+        &self,
+        community_id: &[u8; 16],
+    ) -> Result<Option<[u8; 16]>, ClientError> {
+        self.read(|c| pinned_bot_user(c, community_id))
     }
 
     /// Re-verifies the publication for `bot_user_id` at `now` against the store as it is now

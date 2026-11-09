@@ -115,6 +115,17 @@ describe('sealed Bot commands', () => {
     expect(caught(() => stub({ bot_device_list_pin: () => encode([3, 1]) }).port.botDeviceListPin(USER, push)).code).toBe('E_CORE_DECODE');
     expect(caught(() => s.port.botDeviceListPin(USER.slice(1), push)).code).toBe('E_CORE_INPUT');
   });
+  it('pins the community Bot user and reads [state, pinned] (task 20b)', () => {
+    const community = new Uint8Array(16).fill(0x22);
+    const s = stub({ bot_user_pin: () => encode([2, USER]), bot_user_pinned: () => USER });
+    expect(s.port.botUserPin(community, MSG)).toEqual({ state: 2, pinned: USER });
+    expect(s.port.botUserPinned(community)).toEqual(USER);
+    expect(s.calls.map((c) => [c.method, c.args])).toEqual([['bot_user_pin', [community, MSG]], ['bot_user_pinned', [community]]]);
+    expect(stub({ bot_user_pinned: () => new Uint8Array(0) }).port.botUserPinned(community)).toBeNull();
+    expect(caught(() => stub({ bot_user_pinned: () => new Uint8Array(3) }).port.botUserPinned(community)).code).toBe('E_CORE_DECODE');
+    expect(caught(() => stub({ bot_user_pin: () => encode([3, USER]) }).port.botUserPin(community, MSG)).code).toBe('E_CORE_DECODE');
+    expect(caught(() => s.port.botUserPin(community.slice(1), MSG)).code).toBe('E_CORE_INPUT');
+  });
 });
 
 it('passes moderator-removal signing inputs directly to ClientCore and returns only its signed body', () => {

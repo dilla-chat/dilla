@@ -23,7 +23,12 @@ func TestOwnDeviceListAcceptsTheWire6HeadWithItsAttestation(t *testing.T) {
 		"attestation not bytes": {body: append(append([]any{}, head...), "attestation"), ok: false},
 		"attestation empty":     {body: append(append([]any{}, head...), []byte{}), ok: false},
 		"six elements":          {body: append(append([]any{}, head...), []byte("a"), []byte("b")), ok: false},
-		"three elements":        {body: head[:3], ok: false},
+		// Bot v2 task 20b: the wire-6 head adds the account's umk_pub, ssk_pub and sig_umk_ssk.
+		"with identity keys": {body: append(append([]any{}, head...), []byte("attestation"), bytes.Repeat([]byte{1}, 32),
+			bytes.Repeat([]byte{2}, 32), bytes.Repeat([]byte{3}, 64)), ok: true},
+		"identity key short": {body: append(append([]any{}, head...), []byte("attestation"), bytes.Repeat([]byte{1}, 31),
+			bytes.Repeat([]byte{2}, 32), bytes.Repeat([]byte{3}, 64)), ok: false},
+		"three elements": {body: head[:3], ok: false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {

@@ -66,8 +66,9 @@ func TestAWire4DeviceListHeadCarriesTheInstanceSignedAccountKind(t *testing.T) {
 	putList(t, d, human.ID)
 
 	got := head(t, h, token, human.ID)
-	if len(got) != 5 {
-		t.Fatalf("wire-4 head has %d elements, want 5", len(got))
+	// Wire 6 (Bot v2 task 20b) adds umk_pub, ssk_pub and sig_umk_ssk after the attestation.
+	if len(got) != 8 {
+		t.Fatalf("wire-6 head has %d elements, want 8", len(got))
 	}
 	attestation, _ := got[4].([]byte)
 	pub := accountKindTestKey.Public().(ed25519.PublicKey)

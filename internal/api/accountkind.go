@@ -29,6 +29,10 @@ const AccountKindDomain = "dilla account kind v1"
 // attestation as its fifth element (protocol/07, wire 4).
 const accountKindWire = 4
 
+// deviceListKeysWire is the first wire version whose device-list head carries the account's
+// umk_pub, ssk_pub and sig_umk_ssk after the attestation (Bot v2 task 20b, wire 6).
+const deviceListKeysWire = 6
+
 // AccountKindMessage is the signed message of an account-kind attestation. It binds the instance,
 // the account and its kind, not a key: an account's kind never changes, so the statement holds for
 // every key the account ever presents (Ruling AW).

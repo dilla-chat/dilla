@@ -253,6 +253,12 @@ export interface CorePort {
    *  ([umk_pub, ssk_pub, sig_umk_ssk, history]); trust on first sight, another key held. State 0 current, 1 held, 2 behind.
    *  E_CREDENTIAL for a human, E_DEVICE_LIST_STALE with no attestation. */
   botDeviceListPin(botUserId: Id, push: Uint8Array): { state: 0 | 1 | 2; version: bigint };
+  /** Bot v2 (task 20b): pins the community's Bot user in the core store on first sight. State 0 pinned now, 1 the
+   *  pinned user, 2 another user (the pin stays: never replaced; sign-out erases the store). E_CREDENTIAL for an account
+   *  attested as a human. */
+  botUserPin(communityId: Id, botUserId: Id): { state: 0 | 1 | 2; pinned: Uint8Array };
+  /** The community's pinned Bot user, or null. */
+  botUserPinned(communityId: Id): Uint8Array | null;
 }
 
 /** A command for the Bot, before it is signed and sealed. Numbers are unsigned safe integers. */
@@ -430,6 +436,8 @@ export interface CoreHandle {
       bot_reply_open(handle: number, request_id: Uint8Array, seq: number, sealed: Uint8Array): Uint8Array;
       bot_reply_forget(handle: number): void;
       bot_device_list_pin(bot_user_id: Uint8Array, push: Uint8Array): Uint8Array;
+      bot_user_pin(community_id: Uint8Array, bot_user_id: Uint8Array): Uint8Array;
+      bot_user_pinned(community_id: Uint8Array): Uint8Array;
     }
     export interface StoreOpenConfigLike { directory: string; db_name: string; kek_hex: string; }
     export interface CoreWasmModule {
@@ -887,6 +895,21 @@ export function wrapCore(handle: CoreHandle): CorePort {
         if (state > 2) throw new CborError('E_CBOR_RANGE', 'pin state');
         return { state: state as 0 | 1 | 2, version: u64(field(a, 1)) };
       });
+    }),
+    botUserPin: (communityId, botUserId) => call(() => {
+      if (communityId.length !== 16 || botUserId.length !== 16) throw new CoreError('E_CORE_INPUT', 'community and Bot user ids must be 16 bytes');
+      return decoded('botUserPin', handle.bot_user_pin(communityId, botUserId), (v) => {
+        const a = arr(v, 2); const state = u53(field(a, 0));
+        if (state > 2) throw new CborError('E_CBOR_RANGE', 'pin state');
+        return { state: state as 0 | 1 | 2, pinned: bin(field(a, 1), 16) };
+      });
+    }),
+    botUserPinned: (communityId) => call(() => {
+      if (communityId.length !== 16) throw new CoreError('E_CORE_INPUT', 'community id must be 16 bytes');
+      const raw = handle.bot_user_pinned(communityId);
+      if (raw.length === 0) return null;
+      if (raw.length !== 16) throw new CoreError('E_CORE_DECODE', 'pinned Bot user');
+      return raw.slice();
     }),
   };
 }

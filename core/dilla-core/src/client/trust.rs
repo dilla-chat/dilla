@@ -1956,6 +1956,7 @@ impl ClientCore {
                     )?;
                     if n == 1 {
                         repin(c, user, prior, next)?;
+                        super::bot_command::clear_reached_behind(c, user)?;
                     }
                     Ok(n == 1)
                 })
@@ -2004,6 +2005,7 @@ impl ClientCore {
                             ssk.as_slice()
                         ],
                     )?;
+                    super::bot_command::clear_reached_behind(c, user)?;
                 }
                 Ok(())
             })
@@ -2283,6 +2285,8 @@ impl ClientCore {
                 };
                 write_pin(c, requested_user, &pin)?;
                 c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub,credential) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,list=excluded.list,umk_pub=excluded.umk_pub,ssk_pub=excluded.ssk_pub,credential=excluded.credential",params![validated.user_id.as_slice(),validated.version as i64,head_list,validated.umk_pub.as_slice(),validated.ssk_pub.as_slice(),validated.credential])?;
+                // Re-review M-A (task 20b): a leaf ingest that reaches a Bot's marked head clears the mark.
+                super::bot_command::clear_reached_behind(c, requested_user)?;
                 // First sight pins without changing anything displayed; a key change or its end does.
                 let mut touched = prior.is_some() && prior != Some(pin);
                 let mut quarantined = 0u64;

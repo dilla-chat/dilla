@@ -656,13 +656,21 @@ func (s *Session) OwnDeviceList(ctx context.Context, user id.ID) ([]byte, error)
 		return nil, decodeErr
 	}
 	// Wire 6 (as every wire since 4): the head carries the instance-signed account-kind attestation
-	// as a fifth element; a tombstoned account's head has none. The Bot's callers compare and parse
-	// the four signed elements, so the attestation is checked for shape and then dropped.
+	// as a fifth element; a tombstoned account's head has none. Wire 6 (Bot v2 task 20b) adds the
+	// account's umk_pub, ssk_pub and sig_umk_ssk after it. The Bot's callers compare and parse the
+	// four signed elements, so the rest is checked for shape and then dropped.
 	switch len(a) {
 	case 4:
-	case 5:
+	case 5, 8:
 		if attestation, ok := asBytes(a[4], -1); !ok || len(attestation) == 0 {
 			return nil, ErrProtocol
+		}
+		if len(a) == 8 {
+			for i, n := range []int{32, 32, 64} {
+				if _, ok := asBytes(a[5+i], n); !ok {
+					return nil, ErrProtocol
+				}
+			}
 		}
 	default:
 		return nil, ErrProtocol

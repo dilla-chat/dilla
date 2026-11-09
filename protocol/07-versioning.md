@@ -32,10 +32,12 @@ older clients (Jonas: "We dont need to care about old clients"), which sets § N
 aside before the first public release: an `identify` or `POST /v1/sessions/negotiate` offering only
 older wires is refused with `E_UPGRADE_REQUIRED` (gateway close 4006 whose reason is that code;
 HTTP 426), and the desktop app shows "Update dilla to continue" with its update button while a
-browser tab reloads once to the new client. On wire 6 the Bot is served the five-element
-device-list head; its client (`OwnDeviceList`) checks that the fifth element is a non-empty byte
-string and discards it without verifying the attestation, keeping the four signed elements. The
-paragraphs below describe the wires before 6.
+browser tab reloads once to the new client. On wire 6 the device-list head of a live account has
+eight elements: the four signed ones, the attestation, then the account's `umk_pub`, `ssk_pub` and
+`sig_umk_ssk` (Bot v2 task 20b, `09` § Accounts and devices); a tombstoned account's head keeps
+the four. The Bot's client (`OwnDeviceList`) checks that the fifth element is a non-empty byte
+string and the keys' lengths, and discards them without verifying, keeping the four signed
+elements. The paragraphs below describe the wires before 6.
 
 Wire 5 advertises `[5,4,3,2]` (Task S1 part 2: the account-kind attestation). Human clients offer
 `[5,4,3,2]`; managed Bots offer and negotiate wire 3 only (their routes require exactly 3), so a Bot
@@ -88,6 +90,7 @@ Encrypted envelopes and media stay at version1; no existing MLS group migrates.
 
 | date | version | change |
 |---|---|---|
+| 2026-11-07 | e2ee 1, media 1, wire 6 | Bot v2 task 20b, within unreleased wire 6: `09`'s unpaged `GET /v1/users/{user_id}/device-list` head adds the account's `umk_pub`, `ssk_pub` and `sig_umk_ssk` after the attestation (eight elements; a tombstoned account keeps four), so a member who shares no group with the community's Bot builds its `device_list_push` from the head and the history from `after=0`. The route's access rule is unchanged. |
 | 2026-11-06 | e2ee 1, media 1, wire 6 | **Wire 6 (Bot v2), breaking for every older client.** `hello` and `GET /v1/instance` offer `[6]`; people and managed Bots negotiate 6. An older `identify` is an `error` naming `E_UPGRADE_REQUIRED` with close 4006 (reason `E_UPGRADE_REQUIRED`); an older `POST /v1/sessions/negotiate` and a Bot or community route on a session still holding an older wire are `426 E_UPGRADE_REQUIRED`. `02` § Errors gains `E_UPGRADE_REQUIRED` (426) and `E_BUSY` (429). Sessions may record wire 6 (store migration 00056; its rollback maps 6 to 5). `vectors/frames.json`: `hello`, `identify` and `ready` carry 6. N-2 is set aside (no released client predates the public release). |
 | 2026-10-31 | e2ee 1, media 1, wire 5 | Ephemeral ops 56–58 move build notices, actual input activity and coarse call telemetry onto the existing gateway. Ready/resumed shapes and replay numbers are unchanged. Human offers `[5,4,3,2]`; managed Bots stay on 3; HTTP APIs remain available to existing clients, while the current web app uses WSS-only telemetry and no periodic version polling. |
 | 2026-10-29 | e2ee 1, media 1, wire 4 | `09` § Voice: `POST /v1/calls/{call_id}/rtt` (`[ms]` 0..5000 or `[]`) lets a call member report its RTT to the SFU, which the instance writes as its `dilla.rtt` participant attribute (one per 1.5 s per device, current leaves only); call tokens state that they never carry LiveKit's own-metadata right (an attribute flood). `08` records the RTT's visibility. The default `livekit.max_share_bitrate_kbps` rises from 2500 to 8000. A new route on the unreleased wire, no version bump. |

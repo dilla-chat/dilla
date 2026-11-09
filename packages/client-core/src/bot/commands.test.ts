@@ -354,6 +354,24 @@ describe('fix round 1: the page side', () => {
     expect(port.forgotten).toEqual([]);
   });
 
+  it('onDone fires once when a timed-out run’s 2-minute late window ends (task 20b, M-B)', async () => {
+    const port = fakePort();
+    const run = createBotCommands(port).sendBotCommand({ communityId: COMMUNITY, channelId: null, operation: 81, args: [], requestId: REQUEST });
+    const done = vi.fn();
+    run.onDone(done);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(done).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(BOT_REPLY_HOLD_MS);
+    expect(done).toHaveBeenCalledTimes(1);
+    expect(port.listening(REQUEST)).toBe(0);
+    run.stop();
+    expect(done).toHaveBeenCalledTimes(1);
+    // A listener added after the end is told at once.
+    const later = vi.fn();
+    run.onDone(later);
+    expect(later).toHaveBeenCalledTimes(1);
+  });
+
   it('cancel ends the run with no item and asks the worker to forget the reply secret (M5)', async () => {
     const port = fakePort();
     const run = createBotCommands(port).sendBotCommand({ communityId: COMMUNITY, channelId: null, operation: 81, args: [], requestId: REQUEST });
