@@ -145,27 +145,52 @@ func TestMusicAuthorityFollowsTheFeedState(t *testing.T) {
 	})
 }
 
-// A whole /play with the feed-state authority: one call read, no permission read.
-func TestSealedPlayMakesOneCallReadAndNoPermissionRead(t *testing.T) {
+// A whole /play with the feed-state authority: no permission read; the call is read for the check and read again for
+// the recheck before the commit (fix round 2).
+func TestSealedPlayMakesNoPermissionReadAndRereadsTheCallBeforeTheCommit(t *testing.T) {
 	r := newAuthzRig(t)
+	if got := sealedPlayStatus(t, r, staticMusicResolver{}); got != intake.StatusOK {
+		t.Fatalf("/play = %d", got)
+	}
+	if r.session.callReads != 2 || r.session.permissions != 0 {
+		t.Fatalf("call reads=%d permission reads=%d, want 2 (check and recheck) and 0", r.session.callReads, r.session.permissions)
+	}
+}
+
+// An actor who leaves the call while the track resolves cannot commit it: the recheck reads the call again.
+func TestSealedPlayByAnActorWhoLeftDuringTheResolveIsRefused(t *testing.T) {
+	r := newAuthzRig(t)
+	leave := func() {
+		r.session.mu.Lock()
+		r.session.call.Participants = []client.CallParticipant{{UserID: r.listener}}
+		r.session.mu.Unlock()
+	}
+	if got := sealedPlayStatus(t, r, leavingResolver{leave: leave}); got != 403 {
+		t.Fatalf("/play by an actor who left = %d, want 403", got)
+	}
+}
+
+func sealedPlayStatus(t *testing.T, r *authzRig, resolver MusicTrackResolver) uint16 {
+	t.Helper()
 	n := &playlistAcceptanceNative{binding: native.Binding{Instance: id.New(), Community: r.community, Installation: r.authority.InstallationID}, rows: map[string]native.StateValue{}}
 	stateStore, err := persistence.New(n, r.community)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := MusicInteractions{Store: stateStore, Authority: r.authority, InstallationID: r.authority.InstallationID, CommunityID: r.community,
-		Resolver: staticMusicResolver{}}
+	h := MusicInteractions{Store: stateStore, Authority: r.authority, InstallationID: r.authority.InstallationID, CommunityID: r.community, Resolver: resolver}
 	d := &SealedDispatcher{Community: r.community, Handlers: h.Handlers()}
 	req := protocol.SealedRequest{RequestID: id.New(), CommunityID: r.community, ChannelID: r.channel, Operation: uint64(protocol.OpMusicEnqueue),
 		Args: []any{"song"}, SentAt: uint64(time.Now().Unix()), UserID: r.dj, DeviceID: id.New()}
 	var last intake.Answer
 	d.Dispatch(t.Context(), req, func(a intake.Answer) { last = a })
-	if last.Status != intake.StatusOK {
-		t.Fatalf("/play = %d %q", last.Status, last.Body)
-	}
-	if r.session.callReads != 1 || r.session.permissions != 0 {
-		t.Fatalf("call reads=%d permission reads=%d, want 1 and 0", r.session.callReads, r.session.permissions)
-	}
+	return last.Status
+}
+
+type leavingResolver struct{ leave func() }
+
+func (l leavingResolver) Resolve(ctx context.Context, input string) ([]music.Track, error) {
+	l.leave()
+	return staticMusicResolver{}.Resolve(ctx, input)
 }
 
 type staticMusicResolver struct{}

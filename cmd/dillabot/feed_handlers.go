@@ -441,6 +441,9 @@ func (f *installationFeed) SnapshotBegin(context.Context) {
 // SnapshotDone replaces the state with the staged snapshot. The members it names that the Bot did not know joined
 // while it was away (after its first snapshot): each is welcomed and registered now.
 func (f *installationFeed) SnapshotDone(ctx context.Context) {
+	// The music path's reused installation row and policy version are read again after every applied snapshot (Bot v2
+	// Task 19 fix round 2).
+	musicSignals.communityChanged(f.installation)
 	f.mu.Lock()
 	snap := f.staging
 	if snap == nil {

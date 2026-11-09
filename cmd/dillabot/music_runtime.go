@@ -172,14 +172,7 @@ func newMusicQueueStarter(deps musicRuntimeDeps) (session.QueueStarter, error) {
 		// call group the Bot joined moments ago (its own commit was just accepted at the head) needs no catch-up before
 		// its first publication; a later commit reaches the track through its hint or the monitor tick.
 		guards := deps.CallGuards
-		if catchUp := guards.CatchUp; catchUp != nil {
-			guards.CatchUp = func(ctx context.Context, group id.ID) error {
-				if prep.joinedRecently(group) {
-					return nil
-				}
-				return catchUp(ctx, group)
-			}
-		}
+		guards.FreshJoin = prep.joinedRecently
 		pool.SetCallGuards(guards)
 		publisher = session.RetainedLiveKitPublisher{Pool: pool}
 		// A room that ended, was reset after dying, was left idle or closed forgets the call it was prepared for (I2).
@@ -283,11 +276,17 @@ type musicCallPrep struct {
 // musicJoinFresh is how long after its own join the Bot's call group is taken as current without a catch-up.
 const musicJoinFresh = 2 * time.Second
 
-// joinedRecently reports whether this room's preparation joined group within musicJoinFresh.
+// joinedRecently reports whether this room's preparation joined group within musicJoinFresh, once: only the first
+// publication after the Bot's own join skips its catch-up (fix round 2, N1); every later one, and every monitor tick and
+// hint, catches up.
 func (p *musicCallPrep) joinedRecently(group id.ID) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return !group.IsZero() && p.joinedGroup == group && time.Since(p.joinedAt) < musicJoinFresh
+	fresh := !group.IsZero() && p.joinedGroup == group && time.Since(p.joinedAt) < musicJoinFresh
+	if fresh {
+		p.joinedGroup = id.ID{}
+	}
+	return fresh
 }
 
 // prepared records a successful preparation of call (under p.mu).
@@ -299,6 +298,10 @@ func (p *musicCallPrep) preparedLocked(call client.Call) {
 type preparedMusicCall struct {
 	call client.Call
 	at   time.Time
+	// connected is a warm that connected the room itself: only such a warm leaves it when nobody takes it. A warm that
+	// reused a held room (a /play while the queue still holds a room, between two tracks) never leaves it (fix round 2,
+	// N5).
+	connected bool
 }
 
 // withoutToken is call with its LiveKit token dropped: kept only to bind a later track to the connected room.
@@ -321,7 +324,7 @@ func (p *musicCallPrep) abandon() {
 	ready := p.ready
 	p.ready = nil
 	p.mu.Unlock()
-	if ready != nil && p.leave != nil {
+	if ready != nil && ready.connected && p.leave != nil {
 		_ = p.leave()
 	}
 }
@@ -334,7 +337,7 @@ func (p *musicCallPrep) expire(prepared *preparedMusicCall) {
 		p.ready = nil
 	}
 	p.mu.Unlock()
-	if untaken && p.leave != nil {
+	if untaken && prepared.connected && p.leave != nil {
 		_ = p.leave()
 	}
 }
@@ -389,7 +392,7 @@ func (p *musicCallPrep) warm(ctx context.Context) {
 			if connected {
 				call = *withoutToken(call)
 			}
-			prepared = &preparedMusicCall{call: call, at: time.Now()}
+			prepared = &preparedMusicCall{call: call, at: time.Now(), connected: connected}
 			p.ready = prepared
 			p.preparedLocked(call)
 		}
@@ -533,8 +536,13 @@ type recentMusicInstallation struct {
 	mu         sync.Mutex
 	row        store.BotInstallationRow
 	generation uint64
+	at         time.Time
 	valid      bool
 }
+
+// musicInstallationMaxAge bounds a reused installation row even when no op 54 arrived (Bot v2 Task 19 fix round 2:
+// an op 54 lost without a reconnect is not waited for forever).
+const musicInstallationMaxAge = 30 * time.Second
 
 // newRuntimeMusicInteractions builds the music handlers. installationStore is the installation row reused until the
 // next op 54; authz is the feed-state permission cache and botUser the Bot's user (Bot v2 Task 19 fix round 1: every
@@ -584,7 +592,7 @@ func youtubeSandboxConfig() (youtube.SandboxConfig, error) {
 		name string
 		dst  *string
 	}{{"yt-dlp", &cfg.YTDLP}, {"node", &cfg.Node}, {"bwrap", &cfg.Bubblewrap}, {"python3", &cfg.Python}, {"ffmpeg", &cfg.FFmpeg}} {
-		if path := testhostTool(tool.name); path != "" {
+		if path := testhostTool(tool.name); tool.name == "yt-dlp" && path != "" {
 			*tool.dst = path
 			continue
 		}
@@ -658,7 +666,7 @@ func (s runtimeMusicAuthorityStore) GetActiveBotInstallationByCommunity(ctx cont
 	if s.recent != nil {
 		generation := musicSignals.generation(s.installation)
 		s.recent.mu.Lock()
-		row, valid := s.recent.row, s.recent.valid && s.recent.generation == generation
+		row, valid := s.recent.row, s.recent.valid && s.recent.generation == generation && time.Since(s.recent.at) < musicInstallationMaxAge
 		s.recent.mu.Unlock()
 		if valid {
 			return row, nil
@@ -666,7 +674,7 @@ func (s runtimeMusicAuthorityStore) GetActiveBotInstallationByCommunity(ctx cont
 		row, err := s.readInstallation(ctx, community)
 		if err == nil {
 			s.recent.mu.Lock()
-			s.recent.row, s.recent.generation, s.recent.valid = row, generation, true
+			s.recent.row, s.recent.generation, s.recent.at, s.recent.valid = row, generation, time.Now(), true
 			s.recent.mu.Unlock()
 		}
 		return row, err

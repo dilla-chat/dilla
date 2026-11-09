@@ -221,7 +221,7 @@ func TestWarmResolverAsksForProgressiveHTTPSAndNoCacheAndKeepsTheUserAgent(t *te
 	w.mu.Lock()
 	args := strings.Join(w.args[0], " ")
 	w.mu.Unlock()
-	for _, want := range []string{"--no-cache-dir", "--format bestaudio[protocol=https] ", "http_headers", "protocol"} {
+	for _, want := range []string{"--cache-dir " + workerCacheDir, "--format bestaudio[protocol=https] ", "http_headers", "protocol"} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("lookup args lack %q: %s", want, args)
 		}
@@ -229,12 +229,12 @@ func TestWarmResolverAsksForProgressiveHTTPSAndNoCacheAndKeepsTheUserAgent(t *te
 	if strings.Contains(args, "/bestaudio") {
 		t.Fatalf("a fallback format could hand a manifest to ffmpeg: %s", args)
 	}
-	// The queue-side metadata runner shares the worker and the no-cache rule.
+	// The queue-side metadata runner shares the worker and its private cache dir.
 	_, _ = r.MetadataResolver().Resolve(context.Background(), "https://www.youtube.com/playlist?list=PLabc")
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if last := w.args[len(w.args)-1]; !containsArg(last, "--no-cache-dir") {
-		t.Fatalf("metadata args %v lack --no-cache-dir", last)
+	if last := w.args[len(w.args)-1]; !containsArg(last, "--cache-dir") || containsArg(last, "--no-cache-dir") {
+		t.Fatalf("metadata args %v lack the worker's cache dir", last)
 	}
 }
 

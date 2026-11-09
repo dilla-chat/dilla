@@ -11,7 +11,7 @@ import (
 )
 
 // TestLiveYouTubeThroughTheSandbox runs the shipped path against real YouTube (Bot v2 Task 19 fix round 1): the warm
-// worker's one yt-dlp run (the %(.{...})j print template, --no-cache-dir), then one sandboxed ffmpeg fetching the
+// worker's one yt-dlp run (the %(.{...})j print template, the worker's cache dir, yt-dlp loaded as a library), then one sandboxed ffmpeg fetching the
 // googlevideo stream through the egress broker with the forwarded User-Agent and the protocol whitelist, to its first
 // Ogg Opus bytes. It needs network and the tools, so it runs only with DILLA_YOUTUBE_LIVE=1 (DILLA_YTDLP may name the
 // yt-dlp to use).
@@ -65,7 +65,7 @@ func TestLiveYouTubeThroughTheSandbox(t *testing.T) {
 		if _, err := view.Tracks.Resolve(ctx, video); err != nil {
 			t.Fatal(err)
 		}
-		t.Logf("video %d %q: cold resolve %v (--no-cache-dir, a fresh yt-dlp run), stream first Ogg bytes %v, repeated resolve %v (cache)",
+		t.Logf("video %d %q: cold resolve %v, stream first Ogg bytes %v, repeated resolve %v (cache)",
 			i, tracks[0].Title, resolved, firstByte, time.Since(again))
 	}
 }

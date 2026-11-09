@@ -11,6 +11,10 @@ import (
 // bot-launch gives the Bot a fixed PATH, so a test host without root installs yt-dlp there for the music lane (Bot v2
 // Task 19 fix round 1). Only a dilla_testhost build looks; a shipped Bot finds its tools on its PATH only.
 func testhostTool(name string) string {
+	// Only the provider (fix round 2, N6): never the sandbox (bwrap) or the interpreters around it.
+	if name != "yt-dlp" {
+		return ""
+	}
 	state := os.Getenv("DILLA_BOT_STATE_DIR")
 	if state == "" {
 		return ""

@@ -467,6 +467,9 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 		consumeDeliveries(ctx, gateway.Events(), acks, feed, log, func(delivery gatewayclient.Delivery) {
 			switch delivery.Frame.Op {
 			case gatewayclient.OpReady:
+				// A (re)started session may have missed an op 54: the music path reads its installation row and policy
+				// again (Bot v2 Task 19 fix round 2, N4).
+				musicSignals.communityChanged(installation)
 				r.gatewayReady(installation)
 				if ready := delivery.Frame.Ready; ready != nil && len(ready.Groups) > 0 {
 					groups := make([]id.ID, 0, len(ready.Groups))
@@ -513,6 +516,7 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 				r.requestPass(installation)
 			case gatewayclient.OpWelcome:
 				// A Welcome adds the Bot to a group: the pass joins it (and may then mark the installation ready).
+				musicSignals.communityChanged(installation)
 				r.notify()
 				r.requestPass(installation)
 			case gatewayclient.OpMessagePlain, gatewayclient.OpHandshake, gatewayclient.OpEpochChanged, gatewayclient.OpVoiceState:

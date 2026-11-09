@@ -73,6 +73,32 @@ MAX_CONCURRENT = 4
 MAX_ACTIVE = 64
 
 
+def load_ytdlp(ytdlp):
+    """yt-dlp as a library, from the configured yt-dlp itself: its zipapp, or the conventional venv it is installed
+    in (its own site-packages, for this interpreter's version). Anything else, or an import failure, answers None and
+    the worker runs one yt-dlp process per lookup instead. The code imported is the code the process would run."""
+    try:
+        import zipfile
+        path = os.path.realpath(ytdlp)
+        if zipfile.is_zipfile(path):
+            sys.path.insert(0, path)
+        else:
+            bindir = os.path.dirname(path)
+            root = os.path.dirname(bindir)
+            if os.path.basename(bindir) != "bin" or not os.path.isfile(os.path.join(root, "pyvenv.cfg")):
+                return None
+            site = os.path.join(root, "lib", "python%d.%d" % sys.version_info[:2], "site-packages")
+            if not os.path.isdir(site):
+                return None
+            sys.path.insert(0, site)
+        import yt_dlp
+        if not hasattr(yt_dlp, "parse_options") or not hasattr(yt_dlp, "YoutubeDL"):
+            return None
+        return yt_dlp
+    except Exception:
+        return None
+
+
 def serve(ytdlp, limit, env, children, stopping, stop):
     """Long-lived lookup worker: one JSON request per stdin line, one JSON reply per stdout line.
 
@@ -83,6 +109,15 @@ def serve(ytdlp, limit, env, children, stopping, stop):
     """
     out_lock = threading.Lock()
     slots = threading.BoundedSemaphore(MAX_CONCURRENT)
+    # The worker loads yt-dlp once and keeps one YoutubeDL per option set (the lookup's and the metadata runner's), so
+    # a lookup pays no interpreter start, no module import and, with the worker's cache dir in its private /tmp, no
+    # player download after the first. YoutubeDL is not thread safe: library lookups run one at a time.
+    library = load_ytdlp(ytdlp)
+    library_lock = threading.Lock()
+    instances = {}
+    if library is not None:
+        os.environ.clear()
+        os.environ.update(env)
 
     def reply(rid, code, out="", err=""):
         line = json.dumps({"id": rid, "code": code, "out": out, "err": err}, ensure_ascii=True)
@@ -113,7 +148,43 @@ def serve(ytdlp, limit, env, children, stopping, stop):
         except OSError:
             pass
 
+    def run_library(rid, args):
+        import io
+        split = args.index("--") if "--" in args else len(args)
+        options, urls = args[:split], args[split + 1:]
+        out, err = io.StringIO(), io.StringIO()
+        with library_lock:
+            with state_lock:
+                if rid in cancelled:
+                    reply(rid, -9)
+                    return
+            try:
+                ydl = instances.get(tuple(options))
+                if ydl is None:
+                    parsed = library.parse_options(options + ["--"] + urls)
+                    ydl = library.YoutubeDL(parsed.ydl_opts)
+                    instances[tuple(options)] = ydl
+                ydl._out_files = library.utils.Namespace(out=out, error=err, screen=err, console=None)
+                try:
+                    code = ydl.download(urls)
+                except library.utils.DownloadError:
+                    code = 1
+            except SystemExit as exit_:
+                code = exit_.code if isinstance(exit_.code, int) else 2
+            except Exception as failure:  # noqa: BLE001 - every failure is this lookup's, never the worker's
+                err.write("ERROR: %s\n" % type(failure).__name__)
+                code = 1
+        data = out.getvalue().encode("utf-8", "replace")
+        if len(data) > limit:
+            reply(rid, 75)
+            return
+        tail = err.getvalue().encode("utf-8", "replace")[-MAX_STDERR_REPLY:]
+        reply(rid, code, data.decode("utf-8", "replace"), tail.decode("utf-8", "replace"))
+
     def run(rid, args):
+        if library is not None:
+            run_library(rid, args)
+            return
         with state_lock:
             if rid in cancelled:
                 reply(rid, -9)

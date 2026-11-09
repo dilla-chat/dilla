@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/music"
 	"github.com/dilla-chat/dilla/internal/bot/music/livekit"
 	"github.com/dilla-chat/dilla/internal/bot/music/session"
 	"github.com/dilla-chat/dilla/internal/bot/native"
@@ -271,5 +272,39 @@ func TestCallCatchUpSyncsOnlyWhenBehind(t *testing.T) {
 	c = musicCallCatchUp{sync: gone, session: &client.Session{}, local: local(9), remote: remote(12)}
 	if err := c.run(t.Context(), group); !errors.Is(err, livekit.ErrCallCatchUpTerminal) {
 		t.Fatalf("a gone group = %v, want terminal", err)
+	}
+}
+
+// Fix round 2 (N1): the Bot's own fresh join spares one publication its catch-up, once.
+func TestAFreshJoinSparesOnlyTheFirstCatchUp(t *testing.T) {
+	r := newPrepRig()
+	if _, err := r.prep.take(explicitStartContext(t)); err != nil {
+		t.Fatal(err)
+	}
+	if !r.prep.joinedRecently(r.call.GroupID) {
+		t.Fatal("the first publication after the join is not spared")
+	}
+	if r.prep.joinedRecently(r.call.GroupID) {
+		t.Fatal("a second publication was spared its catch-up too")
+	}
+}
+
+// Fix round 2 (N5): a /play into a room the queue still holds (a reuse warm) never leaves it when nobody takes it.
+func TestAReuseWarmNeverLeavesTheHeldRoom(t *testing.T) {
+	r := newPrepRig()
+	if _, err := r.prep.take(explicitStartContext(t)); err != nil {
+		t.Fatal(err)
+	}
+	r.prep.warm(music.WithPlaybackGroup(t.Context(), r.call.GroupID))
+	r.prep.mu.Lock()
+	prepared := r.prep.ready
+	r.prep.mu.Unlock()
+	if prepared == nil || prepared.connected {
+		t.Fatalf("reuse warm = %+v, want a prepared call that did not connect the room", prepared)
+	}
+	r.prep.expire(prepared)
+	r.prep.abandon()
+	if r.leaves.Load() != 0 {
+		t.Fatalf("a reuse warm left the room %d times", r.leaves.Load())
 	}
 }

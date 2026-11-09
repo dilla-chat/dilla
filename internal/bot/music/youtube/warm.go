@@ -398,7 +398,7 @@ func (r *WarmResolver) evictLRULocked(match func(ownedKey) bool) bool {
 // lookupArgs is yt-dlp's whole command line for one lookup: one extraction that
 // prints the metadata and the chosen audio stream URL.
 func (r *WarmResolver) lookupArgs(kind, canonical string) []string {
-	args := []string{"--ignore-config", "--no-plugin-dirs", "--no-remote-components", "--no-cache-dir"}
+	args := []string{"--ignore-config", "--no-plugin-dirs", "--no-remote-components", "--cache-dir", workerCacheDir}
 	if r.cfg.Node != "" {
 		args = append(args, "--js-runtimes", "node:"+r.cfg.Node)
 	}
@@ -414,6 +414,11 @@ func (r *WarmResolver) lookupArgs(kind, canonical string) []string {
 	}
 	return append(args, canonical)
 }
+
+// workerCacheDir is yt-dlp's cache inside the worker's sandbox: its private tmpfs /tmp, gone with the worker (recycled
+// hourly or after 200 lookups). It holds YouTube's player code only, never a member's data, and spares every lookup
+// after the worker's first the player download (Bot v2 Task 19 fix round 2).
+const workerCacheDir = "/tmp/yt-dlp-cache"
 
 // printFields is what a lookup asks yt-dlp to print; printRequired must all come back.
 const printFields = ".{id,title,uploader,duration,availability,live_status,is_live,extractor_key,url,protocol,http_headers}"
@@ -726,8 +731,8 @@ func (w warmRunner) Run(ctx context.Context, executable string, args []string, o
 		}
 	}
 	input, _ := ctx.Value(diagnosticInputKey{}).(string)
-	if !containsString(args, "--no-cache-dir") {
-		args = append([]string{"--no-cache-dir"}, args...)
+	if !containsString(args, "--cache-dir") {
+		args = append([]string{"--cache-dir", workerCacheDir}, args...)
 	}
 	return w.r.run(ctx, args, outputLimit, input)
 }

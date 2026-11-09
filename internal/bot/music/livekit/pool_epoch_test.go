@@ -182,3 +182,53 @@ func TestAHintRekeysAPlayingTrack(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+func followRig(t *testing.T) (*Session, *movingEpochs, id.ID) {
+	t.Helper()
+	group := testID(9)
+	epochs := &movingEpochs{epoch: epochAt(4, 4, 1, 2), state: &counterStateStub{}}
+	sender, err := senderForReservedEpoch(context.Background(), epochs, group, epochs.epoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Session{sender: sender}, epochs, group
+}
+
+// Fix round 2 (N1): a fresh join spares only the first publication its catch-up; the monitor's ticks always catch up.
+func TestATickAfterAFreshJoinStillCatchesUp(t *testing.T) {
+	s, epochs, group := followRig(t)
+	caughtUp := 0
+	guards := CallGuards{CatchUp: func(context.Context, id.ID) error { caughtUp++; return nil }, FreshJoin: func(id.ID) bool { return true }}
+	failures := 0
+	if _, err := s.followEpoch(context.Background(), guards, group, epochs, epochs.epoch, &failures); err != nil || caughtUp != 1 {
+		t.Fatalf("a tick right after a fresh join: caught up %d times, err %v", caughtUp, err)
+	}
+}
+
+// Fix round 2 (N2): a catch-up that hangs counts as a failed tick at its own deadline.
+func TestAHangingCatchUpFailsAtItsDeadline(t *testing.T) {
+	defer func(d time.Duration) { catchUpDeadline = d }(catchUpDeadline)
+	catchUpDeadline = 50 * time.Millisecond
+	s, epochs, group := followRig(t)
+	hang := CallGuards{CatchUp: func(ctx context.Context, _ id.ID) error { <-ctx.Done(); return ctx.Err() }}
+	failures := 0
+	began := time.Now()
+	var err error
+	for i := 0; i < maxCatchUpFailures; i++ {
+		_, err = s.followEpoch(context.Background(), hang, group, epochs, epochs.epoch, &failures)
+	}
+	if !errors.Is(err, ErrCallBehind) || time.Since(began) > time.Second {
+		t.Fatalf("after %d hanging catch-ups: %v in %v, want ErrCallBehind at the deadlines", maxCatchUpFailures, err, time.Since(began))
+	}
+}
+
+// Fix round 2 (N3): every tick admits the epoch again, so losing speak or readiness stops the current track.
+func TestEveryTickAdmitsTheUnchangedEpoch(t *testing.T) {
+	s, epochs, group := followRig(t)
+	lost := errors.New("the Bot may no longer speak")
+	refuse := CallGuards{Admit: func(context.Context, native.CallMediaEpoch) error { return lost }}
+	failures := 0
+	if _, err := s.followEpoch(context.Background(), refuse, group, epochs, epochs.epoch, &failures); !errors.Is(err, lost) {
+		t.Fatalf("an unchanged epoch the Bot may no longer publish in = %v", err)
+	}
+}

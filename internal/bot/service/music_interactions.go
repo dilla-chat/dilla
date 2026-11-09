@@ -141,7 +141,7 @@ func (h MusicInteractions) Handlers() map[protocol.Operation]InteractionHandlerS
 func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, req protocol.Request, op protocol.Operation) (result InteractionResult, failure error) {
 	immediate := op == protocol.OpMusicPause || op == protocol.OpMusicSkip
 	play := op == protocol.OpMusicEnqueue && sealedPlay(ctx)
-	// One call read per command: CurrentCall, the in-call check and the recheck before the commit share it.
+	// CurrentCall and the in-call check share one call read; the recheck before the commit reads the call again.
 	ctx = withMusicCallMemo(ctx)
 	playStarted := false
 	if play {
@@ -447,8 +447,10 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 			resumed.Revision = next.Revision
 			next, startsPlay = resumed, !resumed.Paused && resumed.Current != nil
 		}
-		// Recheck the call binding and role immediately before CAS persistence. With the feed-state authority the
-		// recheck is in memory (the command's one call read is shared, withMusicCallMemo), so it is always made.
+		// Recheck the call binding and role immediately before CAS persistence: the permissions in memory (feed-state
+		// authority), the call read again from dillad after the resolve and on every retry (fix round 2), so a call that
+		// changed or an actor who left the call is seen.
+		refreshMusicCallMemo(ctx)
 		reason = "current_call_lookup"
 		current, err := h.Authority.CurrentCall(ctx, channel)
 		if err != nil {

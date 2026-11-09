@@ -36,6 +36,10 @@ var (
 // maxCatchUpFailures is how many monitor ticks in a row may fail to catch the call group up before the track stops.
 const maxCatchUpFailures = 3
 
+// catchUpDeadline bounds one monitor catch-up, so "maxCatchUpFailures failed ticks, then stop" stays near
+// maxCatchUpFailures * (epochPollInterval + catchUpDeadline) whatever dillad's latency (fix round 2, N2).
+var catchUpDeadline = 3 * time.Second
+
 // CallGuards keep a published track under the call's current epoch and current authority (Bot v2 Task 19 fix round
 // 1, C1, I2, M4). Each is optional.
 type CallGuards struct {
@@ -47,6 +51,9 @@ type CallGuards struct {
 	Admit func(context.Context, native.CallMediaEpoch) error
 	// Watch calls nudge on the group's handshake or epoch hints until stop is called.
 	Watch func(group id.ID, nudge func()) (stop func())
+	// FreshJoin reports a group the Bot joined moments ago (its own commit accepted at the head): its first
+	// publication needs no catch-up. It never mutes the monitor's ticks and hints (fix round 2, N1).
+	FreshJoin func(id.ID) bool
 }
 
 // SetCallGuards installs the guards for every later publication.
@@ -259,7 +266,7 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 		return nil, ErrBinding
 	}
 	guards := p.guards()
-	if guards.CatchUp != nil {
+	if guards.CatchUp != nil && (guards.FreshJoin == nil || !guards.FreshJoin(boundGroup)) {
 		// The helper's epoch must be the call's current one before any key is derived (C1).
 		if err := startStage(ctx, "call_catch_up", guards.CatchUp(ctx, boundGroup)); err != nil {
 			_ = source.Close()
@@ -789,7 +796,10 @@ func (s *Session) monitorPooled(ctx context.Context, groupID id.ID, epochs Epoch
 // group that stays behind stop the track (fail closed); the room is left, and only a member's play joins again.
 func (s *Session) followEpoch(ctx context.Context, guards CallGuards, group id.ID, epochs EpochSource, active native.CallMediaEpoch, failures *int) (native.CallMediaEpoch, error) {
 	if guards.CatchUp != nil {
-		if err := guards.CatchUp(ctx, group); err != nil {
+		catchCtx, cancel := context.WithTimeout(ctx, catchUpDeadline)
+		err := guards.CatchUp(catchCtx, group)
+		cancel()
+		if err != nil {
 			*failures++
 			if errors.Is(err, ErrCallCatchUpTerminal) || *failures >= maxCatchUpFailures {
 				return active, fmt.Errorf("%w: %w", ErrCallBehind, err)
@@ -803,6 +813,13 @@ func (s *Session) followEpoch(ctx context.Context, guards CallGuards, group id.I
 		return active, fmt.Errorf("music livekit: call media key lookup failed: %w", err)
 	}
 	if err := epochStillBound(current, active); err == nil {
+		// The epoch is unchanged, but the Bot's rights, the installation and the roster's holds may have moved: each
+		// tick admits it again, in memory (fix round 2, N3).
+		if guards.Admit != nil {
+			if err := guards.Admit(ctx, current); err != nil {
+				return active, err
+			}
+		}
 		return active, nil
 	} else if !errors.Is(err, ErrEpochChanged) {
 		return active, err

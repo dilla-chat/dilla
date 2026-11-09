@@ -84,6 +84,16 @@ func withMusicCallMemo(ctx context.Context) context.Context {
 	return context.WithValue(ctx, musicCallMemoKey{}, &musicCallMemo{states: map[id.ID]client.ChannelCallState{}})
 }
 
+// refreshMusicCallMemo makes the next call read of ctx's command go to dillad again: the recheck before a commit
+// (after the resolve, and on every retry) sees a call that changed and an actor who left (Bot v2 Task 19 fix round 2).
+func refreshMusicCallMemo(ctx context.Context) {
+	if memo, ok := ctx.Value(musicCallMemoKey{}).(*musicCallMemo); ok {
+		memo.mu.Lock()
+		clear(memo.states)
+		memo.mu.Unlock()
+	}
+}
+
 func (a *CommunityMusicInteractionAuthority) channelCall(ctx context.Context, channel id.ID) (client.ChannelCallState, error) {
 	memo, ok := ctx.Value(musicCallMemoKey{}).(*musicCallMemo)
 	if !ok || a.Authz == nil {
