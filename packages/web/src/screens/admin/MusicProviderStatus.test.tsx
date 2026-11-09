@@ -74,14 +74,15 @@ describe('music provider status', () => {
   it('says the Bot has not reported yet when the status goes unanswered, offers Check again and does not poll', async () => {
     vi.useFakeTimers();
     const { bot } = setup({ reply: () => null });
-    await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+    // The send and its one automatic resend each wait 5 s for an answer.
+    await act(async () => { await vi.advanceTimersByTimeAsync(9_000); });
     expect(screen.getByRole('status')).toHaveTextContent('Checking provider status…');
     await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
     expect(screen.getByRole('status')).toHaveTextContent('The bot answered, but has not reported provider status yet. Check again.');
     expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled();
     expect(screen.queryByText('ready')).not.toBeInTheDocument();
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-    expect(bot.calls).toHaveLength(1);
+    expect(bot.calls).toHaveLength(2);
   });
   it('keeps a completed observation until its freshness window expires', async () => {
     vi.useFakeTimers();

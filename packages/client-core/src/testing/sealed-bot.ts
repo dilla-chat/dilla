@@ -19,7 +19,7 @@ export interface SealedCall {
   /** The v1 arguments. */
   args: unknown[];
 }
-export type SealedReply = { status: number; revision?: string | null; data?: Uint8Array } | null;
+export type SealedReply = { status: number; revision?: string | null; data?: Uint8Array; extra?: unknown } | null;
 
 /** The v1 operations the test catalog offers to the app (as sealed operations). */
 export const APP_SURFACE_OPERATIONS = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 31, 50, 51, 52,
@@ -34,7 +34,8 @@ export function sealedBotFake(respond: (call: SealedCall) => SealedReply | Promi
   const offered = options.offered ?? APP_SURFACE_OPERATIONS;
   const answer = (requestId: string, reply: Exclude<SealedReply, null>): void => {
     const [status, body] = reply.status === 0
-      ? [200, encode([reply.revision === undefined || reply.revision === null ? null : BigInt(reply.revision), reply.data ?? encode([])])]
+      ? [200, encode([reply.revision === undefined || reply.revision === null ? null : BigInt(reply.revision), reply.data ?? encode([]),
+        ...(reply.extra === undefined ? [] : [reply.extra as never])])]
       : [CODES[reply.status]?.[0] ?? 500, new TextEncoder().encode(CODES[reply.status]?.[1] ?? 'E_INTERNAL')];
     answers.push({ n: ++n, requestId, seq: 0, status, body: toHex(body), final: true });
     for (const listener of [...listeners]) listener();

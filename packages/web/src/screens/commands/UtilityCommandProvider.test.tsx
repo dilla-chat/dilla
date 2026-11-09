@@ -19,7 +19,7 @@ const utf8 = (value: string): Uint8Array => new Uint8Array(new TextEncoder().enc
 const asBytes = (id: string) => fromHex(id); const toHex = (id: Uint8Array) => Array.from(id, byte => byte.toString(16).padStart(2, '0')).join('');
 function pollSummary(over: Partial<PollSummary> = {}): PollSummary { return { id: POLL, channelId: CHANNEL, threadId: null, creatorId: USER, question: 'Lunch?', answers: ['Soup', 'Salad'], multi: true, createdAt: 1_800_000_000n, dueAt: 1_800_003_600n, closed: false, counts: [0n, 0n], myChoices: [], revision: 1n, ...over }; }
 function pollWire(p: PollSummary): unknown[] { return [asBytes(p.id), asBytes(p.channelId), p.threadId === null ? null : asBytes(p.threadId), asBytes(p.creatorId), p.question, p.answers, p.multi ? 1n : 0n, p.createdAt, p.dueAt, p.closed ? 1n : 0n, p.counts, p.myChoices?.map(BigInt) ?? null, p.revision]; }
-type BotReply = { status: number; revision: string | null; data: Uint8Array };
+type BotReply = { status: number; revision: string | null; data: Uint8Array; extra?: unknown };
 type AnyCommand = ClientCore.Command | BotOperation;
 type BotOperation = { m: 'botOperation'; operation: number; requestId: string; channelId: string | null; args: unknown[]; revision: string | null };
 const MUTATIONS = new Set([70, 73, 74, 80, 82, 83]);
@@ -43,7 +43,8 @@ function utilityFixture() {
   let row = pollSummary(); let reminder: unknown[] | null = null; let answerN = 0; let failOperation: number | null = null; let failApplies = true;
   // The Bot's sealed answer to a request, as the worker publishes an opened op 62 in the botAnswers slice.
   const answer = (requestId: string, reply: BotReply): void => {
-    const [status, body] = reply.status === 0 ? [200, wire([reply.revision === null ? null : BigInt(reply.revision), reply.data])]
+    const [status, body] = reply.status === 0 ? [200, wire([reply.revision === null ? null : BigInt(reply.revision), reply.data,
+      ...(reply.extra === undefined ? [] : [reply.extra])])]
       : [[0, 400, 403, 408, 409, 503, 429, 404, 426, 500][reply.status] ?? 500, utf8(['', 'E_INVALID', 'E_FORBIDDEN', 'E_BOT_STALE', 'E_CONFLICT', 'E_UNAVAILABLE', 'E_BUSY', 'E_NOT_FOUND', 'E_UPGRADE_REQUIRED', 'E_INTERNAL'][reply.status] ?? 'E_INTERNAL')];
     core.set('botAnswers', [...(core.get('botAnswers') ?? []), { n: ++answerN, requestId, seq: 0, status, body: toHex(body), final: true }]);
   };
@@ -68,11 +69,13 @@ function utilityFixture() {
     const v1 = command as unknown as BotOperation;
     if (v1.m === 'botOperation') {
       const operation = v1.operation; const id = v1.requestId; const args = v1.args; requests.push({ operation, requestId: id, args, revision: v1.revision });
-      let data = wire([]); let revision: string | null = null; let status = 0;
+      let data = wire([]); let revision: string | null = null; let status = 0; let extra: unknown;
       if (operation === 70) { const payload = decode(args[0] as Uint8Array) as unknown[]; const answers = payload[4] as string[];
         row = pollSummary({ id, channelId: toHex(payload[1] as Uint8Array), threadId: payload[2] === null ? null : toHex(payload[2] as Uint8Array), question: String(payload[3]), answers, multi: payload[5] === 1n, dueAt: 1_800_000_000n + BigInt(payload[6] as bigint) });
         data = wire([1n, pollWire(row)]); revision = '1'; }
-      if (operation === 71) { data = wire([1n, pollWire(row)]); revision = row.revision.toString(); }
+      // The sealed poll.get (91) answers the voters too (Task 21b fix round 1): Ada in every answer that has votes.
+      if (operation === 71) { data = wire([1n, pollWire(row)]); revision = row.revision.toString();
+        extra = [row.counts.map(count => count > 0n ? [asBytes(USER)] : []), row.counts.some(count => count > 0n) ? 1n : 0n, 0n]; }
       if (operation === 72) data = wire([1n, [pollWire(row)], null]);
       if (operation === 73 && !(failOperation === operation && !failApplies)) { const choices = decode(args[1] as Uint8Array) as bigint[]; const next = row.revision + 1n;
         row = { ...row, revision: next, myChoices: choices.map(Number), counts: row.answers.map((_, index) => BigInt(choices.includes(BigInt(index)) ? 1 : 0)) };
@@ -87,7 +90,7 @@ function utilityFixture() {
       if (operation === 81) data = wire([1n, reminder === null ? [] : [reminder], null]);
       if (operation === 82 || operation === 83) if (reminder !== null && !(failOperation === operation && !failApplies)) { const next = BigInt(reminder[7] as bigint) + 1n; reminder = [...reminder.slice(0, 6), operation === 82 ? 2n : 3n, next]; data = wire([1n, reminder]); revision = String(next); }
       if (failOperation === operation) { status = 5; failOperation = null; failApplies = true; }
-      return { status, revision, data } satisfies BotReply;
+      return { status, revision, data, ...(extra === undefined ? {} : { extra }) } satisfies BotReply;
     }
     return null;
   });
@@ -549,59 +552,16 @@ describe('poll card binding', () => {
     act(() => { channelHint(f.client); });
     await waitFor(() => expect(f.requests.filter(row => row.operation === 71)).toHaveLength(2));
   });
-  it.each([false, true])('keeps a pending walk and refreshes changed revisions on the next cadence (%s)', async changed => {
-    const f = utilityFixture(); f.setPoll({ counts: [1n, 1n] }); let clock = performance.now(); vi.spyOn(performance, 'now').mockImplementation(() => clock); const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
-    let release!: () => void; let started = false;
-    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: async () => {
-      if (!started) { started = true; return new Promise(resolve => { release = () => resolve({ voters: [USER], nextCursor: null }); }); }
-      return { voters: [], nextCursor: null };
-    } });
-    render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
-      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
-    await waitFor(() => expect(release).toBeDefined());
-    await act(async () => { await Promise.resolve(); });
-    if (changed) f.setPoll({ revision: 2n });
-    act(() => { clock += 30_000; channelHint(f.client); });
-    await waitFor(() => expect(f.requests.filter(row => row.operation === 71)).toHaveLength(2));
-    await act(async () => { release(); await Promise.resolve(); });
-    await screen.findByText('Open for 1 hour · pick any · 1 voter');
-    if (changed) {
-      act(() => { clock += 30_000; channelHint(f.client); });
-      await screen.findByText('Open for 1 hour · pick any · 0 voters');
-      expect(screen.queryByRole('img', { name: 'Ada' })).not.toBeInTheDocument();
-    } else expect(await screen.findByRole('img', { name: 'Ada' })).toBeInTheDocument();
-  });
-  it('loads an independent first-page preview for every answer', async () => {
-    const f = utilityFixture(); f.setPoll({ counts: [1n, 1n] }); const real = ClientCore.createBotUtilities(f.client, COMMUNITY);
-    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: async input => {
-      await real.pollVoters(input); return { voters: input.option === 0 ? [USER] : [], nextCursor: null };
-    } });
+  // Task 21b fix round 1: the card's voters come with its poll read (poll.get answers both); no per-answer voter reads.
+  it('previews each answer\'s voters from the poll read, with no voter reads', async () => {
+    const f = utilityFixture(); f.setPoll({ counts: [1n, 0n] });
     render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
     expect(await screen.findByRole('img', { name: 'Ada' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Soup/ }).querySelector('[role="img"]')).not.toBeNull();
     expect(screen.getByRole('button', { name: /^Salad/ }).querySelector('[role="img"]')).toBeNull();
-  });
-  it.each(['access', 'owner', 'installation'] as const)('rejects a pending voter page after its %s context changes', async change => {
-    const f = utilityFixture(); f.setPoll({ counts: [1n, 1n] }); const base = f.client.handler; let replaced = false;
-    f.client.handler = command => replaced && command.m === 'getBotCommandStatus'
-      ? Promise.resolve({ installationId: 'ab'.repeat(16), botUserId: BOT, state: 3, revision: '1' }) : base(command);
-    const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let release: (() => void) | undefined;
-    vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; }, pollVoters: async input => {
-      const page = await real.pollVoters(input); if (input.option !== 0) return page; return new Promise(resolve => { release = () => resolve(page); });
-    } });
-    render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
-      body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: 0 }));
-    await screen.findByRole('heading', { name: 'Lunch?' });
-     await waitFor(() => expect(release).toBeDefined());
-    if (change === 'access') {
-      const access = f.client.get(`permissions:${COMMUNITY}`)!;
-      f.client.publish(`permissions:${COMMUNITY}`, { ...access, loaded: false });
-      f.client.publish(`permissions:${COMMUNITY}`, access);
-    } else if (change === 'owner') f.client.publish('account', { ...f.client.get('account')!, deviceId: 'ac'.repeat(16) });
-    else replaced = true;
-    await act(async () => { release!(); await Promise.resolve(); });
-    expect(screen.queryByRole('img', { name: 'Ada' })).not.toBeInTheDocument();
+    expect(f.requests.filter(row => row.operation === 75)).toHaveLength(0);
+    expect(f.requests.filter(row => row.operation === 71)).toHaveLength(1);
   });
   it('retries an uncertain poll vote with the same request id', async () => {
     const user = userEvent.setup(); const f = utilityFixture();
@@ -673,6 +633,7 @@ describe('utility outcome and privacy regressions', () => {
     vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; },
       // The card verifies from the shared Bot list, so its refresh read is pollGet (which does its own capability read).
       pollGet: (...args) => { if (failRead) { failRead = false; failedRead = true; return Promise.reject(new Error('backing read unavailable')); } return real.pollGet(...args); },
+      pollRead: (...args) => { if (failRead) { failRead = false; failedRead = true; return Promise.reject(new Error('backing read unavailable')); } return real.pollRead(...args); },
       pollVote: input => { attemptedIds.push(input.requestId); return observe(() => real.pollVote(input)); },
       pollClose: input => { attemptedIds.push(input.requestId); return observe(() => real.pollClose(input)); },
       read: async (id, op) => { const result = await real.read(id, op); if (op === operation && corrupt) failRead = true; return result; } });
@@ -699,6 +660,7 @@ describe('utility outcome and privacy regressions', () => {
     vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; },
       capabilities: () => { if (failRead && operation === 73) { failRead = false; failedRead = true; return Promise.reject(new Error('capability unavailable')); } return real.capabilities(); },
       pollGet: (...args) => { if (failRead && operation === 74) { failRead = false; failedRead = true; return Promise.reject(new Error('backing read unavailable')); } return real.pollGet(...args); },
+      pollRead: (...args) => { if (failRead && operation === 74) { failRead = false; failedRead = true; return Promise.reject(new Error('backing read unavailable')); } return real.pollRead(...args); },
       pollVote: input => accepted(input, () => real.pollVote(input)), pollClose: input => accepted(input, () => real.pollClose(input)),
       read: async (id, op) => { const result = await real.read(id, op); if (op === operation) failRead = true; return result; } });
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
@@ -728,7 +690,8 @@ describe('utility outcome and privacy regressions', () => {
     const f = utilityFixture(); const real = ClientCore.createBotUtilities(f.client, COMMUNITY); let rejectedStatus: number | null = null;     vi.spyOn(ClientCore, 'createBotUtilities').mockReturnValue({ ...real, get binding() { return real.binding; },
       capabilities: () => rejectedStatus === null ? real.capabilities() : Promise.reject(new ClientCore.BotUtilitiesStatusError(3, rejectedStatus, 'e1'.repeat(16), null)),
       // pollGet does its own capability read; the card's refresh goes through it.
-      pollGet: (...args) => rejectedStatus === null ? real.pollGet(...args) : Promise.reject(new ClientCore.BotUtilitiesStatusError(3, rejectedStatus, 'e1'.repeat(16), null)) });
+      pollGet: (...args) => rejectedStatus === null ? real.pollGet(...args) : Promise.reject(new ClientCore.BotUtilitiesStatusError(3, rejectedStatus, 'e1'.repeat(16), null)),
+      pollRead: (...args) => rejectedStatus === null ? real.pollRead(...args) : Promise.reject(new ClientCore.BotUtilitiesStatusError(3, rejectedStatus, 'e1'.repeat(16), null)) });
     const user = userEvent.setup(); const view = render(createElement(PollCard, { client: f.client, communityId: COMMUNITY, channelId: CHANNEL, threadId: null,
       body: `Lunch?\n[dilla-poll:v1:${POLL}]`, authorId: BOT, bot: true, edited: false, deleted: false, selfId: USER, bits: PERM.viewChannel | PERM.sendMessages }));
     await screen.findByRole('heading', { name: 'Lunch?' }); f.failNext(operation, false);

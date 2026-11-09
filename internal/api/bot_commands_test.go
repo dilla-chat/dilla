@@ -576,12 +576,13 @@ func TestRelayWithNoBotIsOffline(t *testing.T) {
 
 func TestRelayIsRateLimitedPerDevice(t *testing.T) {
 	r := newRelayFixture(t)
-	limited := false
-	for i := 0; i < 40 && !limited; i++ {
+	limited, accepted := false, 0
+	for i := 0; i < 100 && !limited; i++ {
 		requestID := id.New()
 		status, _ := r.send(t, r.memberTok, requestID, sealedCommand(t, requestID, 8))
 		switch status {
 		case http.StatusAccepted:
+			accepted++
 		case http.StatusTooManyRequests:
 			limited = true
 		default:
@@ -589,7 +590,11 @@ func TestRelayIsRateLimitedPerDevice(t *testing.T) {
 		}
 	}
 	if !limited {
-		t.Fatal("40 commands at once from one device were never rate limited")
+		t.Fatal("100 commands at once from one device were never rate limited")
+	}
+	// Task 21b fix round 1: the bucket runs at the read rate (burst 60), since the app's Bot surfaces read through it.
+	if accepted < 50 {
+		t.Fatalf("%d commands accepted before the limit, want the read burst (60)", accepted)
 	}
 	// The other device keeps its own allowance.
 	requestID := id.New()
@@ -781,14 +786,20 @@ func TestPreviousCommandKeyIsAcceptedForTheOverlapOnly(t *testing.T) {
 	r := newRelayFixture(t)
 	now := uint64(r.deps.Clock.Now().Unix())
 	path := "/v1/bot-runtime/communities/" + r.community.String() + "/command-key"
+	// The helper mints a key at its rotation with not_after = minted + 8 days - 10 minutes (dilla-bot-core command.rs), so
+	// the overlap runs from the rotation, not from when dillad hears of it (review M2).
+	lifetime := uint64(8*24*60*60 - 600)
+	mintedAt := map[id.ID]uint64{}
 	put := func(keyID id.ID) {
 		t.Helper()
-		if rec := putCBORAuth(r.h, path, commandKeyPublication(t, r.community, keyID, r.botDevice, now+3600, r.botKey), r.botTok); rec.Code != http.StatusNoContent {
+		if rec := putCBORAuth(r.h, path, commandKeyPublication(t, r.community, keyID, r.botDevice, mintedAt[keyID]+lifetime, r.botKey), r.botTok); rec.Code != http.StatusNoContent {
 			t.Fatalf("PUT command-key = %d %x", rec.Code, rec.Body.Bytes())
 		}
 	}
 	first, second, third := id.New(), id.New(), id.New()
+	mintedAt[first], mintedAt[second], mintedAt[third] = now, now-3600, now
 	put(first)
+	// The second key was minted an hour before it reached dillad (a publish that had to be retried).
 	put(second)
 	send := func(keyID id.ID) int {
 		t.Helper()
@@ -809,8 +820,8 @@ func TestPreviousCommandKeyIsAcceptedForTheOverlapOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row.KeyID != second || row.PrevKeyID != first || row.PrevUntil != int64(now)+24*60*60 {
-		t.Fatalf("stored key %s prev %s until %d, want %s, %s and now + 24 h", row.KeyID, row.PrevKeyID, row.PrevUntil, second, first)
+	if row.KeyID != second || row.PrevKeyID != first || row.PrevUntil != int64(now)-3600+24*60*60 {
+		t.Fatalf("stored key %s prev %s until %d, want %s, %s and the rotation (an hour ago) + 24 h", row.KeyID, row.PrevKeyID, row.PrevUntil, second, first)
 	}
 	// Re-publishing the current key (a later not_after) keeps the overlap as it was.
 	put(second)
@@ -832,5 +843,57 @@ func TestPreviousCommandKeyIsAcceptedForTheOverlapOnly(t *testing.T) {
 	}
 	if got := send(third); got != http.StatusAccepted {
 		t.Fatalf("the current key after 24 h = %d, want 202", got)
+	}
+}
+
+// Task 21b fix round 1: the Bot's sealed answers have their own per-Bot-device bucket (bot_reply, 200/s burst 400), so a
+// Bot whose state hints spent the bot_runtime bucket still answers every relayed command.
+func TestRepliesDoNotSpendTheHintBucket(t *testing.T) {
+	r := newRelayFixture(t)
+	limited := false
+	for range 200 {
+		if status, _ := r.hint(t, r.botTok, 0, r.member.ID); status == http.StatusTooManyRequests {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Fatal("200 hints were never rate limited: the bot_runtime bucket is not in force here")
+	}
+	for range 10 {
+		requestID := id.New()
+		status, body := r.send(t, r.memberTok, requestID, sealedCommand(t, requestID, 16))
+		wantAccepted(t, status, body)
+		if status, body := r.reply(t, r.botTok, r.memberDevice.ID, requestID, 0, []byte{1}, 1); status != http.StatusNoContent {
+			t.Fatalf("a reply after the hints ran out = %d %x, want 204", status, body)
+		}
+	}
+}
+
+// Review M2: a key whose rotation is more than 24 h old when it reaches dillad leaves no overlap; a not_after that would put
+// the rotation in the future counts it as now.
+func TestCommandKeyOverlapStartsAtTheRotation(t *testing.T) {
+	r := newRelayFixture(t)
+	now := uint64(r.deps.Clock.Now().Unix())
+	path := "/v1/bot-runtime/communities/" + r.community.String() + "/command-key"
+	lifetime := uint64(8*24*60*60 - 600)
+	put := func(keyID id.ID, notAfter uint64) {
+		t.Helper()
+		if rec := putCBORAuth(r.h, path, commandKeyPublication(t, r.community, keyID, r.botDevice, notAfter, r.botKey), r.botTok); rec.Code != http.StatusNoContent {
+			t.Fatalf("PUT command-key = %d %x", rec.Code, rec.Body.Bytes())
+		}
+	}
+	late := id.New()
+	put(late, now-25*3600+lifetime)
+	if row, _ := r.deps.Repo.GetBotCommandKey(context.Background(), r.community); row.PrevKeyID != relayKeyID || row.PrevUntil > int64(now) {
+		t.Fatalf("a rotation 25 h ago left an overlap until %d (now %d)", row.PrevUntil, now)
+	}
+	req := id.New()
+	if status, _ := r.send(t, r.memberTok, req, sealedCommandTo(t, relayKeyID, req, 16)); status != http.StatusGone {
+		t.Fatalf("the key retired 25 h ago = %d, want 410", status)
+	}
+	put(id.New(), now+lifetime+300)
+	if row, _ := r.deps.Repo.GetBotCommandKey(context.Background(), r.community); row.PrevKeyID != late || row.PrevUntil != int64(now)+24*3600 {
+		t.Fatalf("a forward rotation time gave an overlap until %d, want now + 24 h", row.PrevUntil)
 	}
 }

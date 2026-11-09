@@ -300,6 +300,17 @@ export class BotCatalogStore {
     if (e !== undefined) { this.verifyEntry(communityId, e); this.notify(communityId); }
   }
 
+  /** The trust refresh ingested account-kind attestations (review M6): a community whose first pin was refused for want of
+   *  the Bot's attestation is resolved again at once, and its key checked. */
+  async attestationsChanged(): Promise<void> {
+    const waiting = [...this.pinRefused];
+    this.pinRefused.clear();
+    for (const communityId of waiting) {
+      if (!this.entries.has(communityId) || this.pinOf(communityId) !== undefined) continue;
+      await this.reresolve(communityId);
+    }
+  }
+
   /** Every held community (sign-out drops them all). */
   communities(): string[] { return [...this.entries.keys()]; }
 
@@ -332,9 +343,13 @@ export class BotCatalogStore {
       // The core refuses any candidate it holds no Bot attestation for, even with a pin held (fef388bd); a held pin is
       // compared first, and its attestation read once when the core lacks it.
       if (this.pinRefused.has(communityId)) return;
+      // A head that could not be read (offline, a transient error) is no refusal (review M6): the pin is tried again on the
+      // next catalog read or trust refresh of this connection. Only a refusal after a successful read waits for the next
+      // connection (or for an attestation the trust refresh brings: attestationsChanged).
+      let readFailed = false;
       const ingest = async (): Promise<void> => {
-        try { await this.deps.ingestBotAttestation(candidate); }
-        catch (e) { this.deps.onError?.(codeOf(e)); }
+        try { await this.deps.ingestBotAttestation(candidate); readFailed = false; }
+        catch (e) { readFailed = true; this.deps.onError?.(codeOf(e)); }
       };
       let ingested = false;
       if (this.pinOf(communityId) === undefined) { await ingest(); ingested = true; }
@@ -343,7 +358,7 @@ export class BotCatalogStore {
         try { answer = this.deps.pinBotUser(communityId, candidate); break; }
         catch (e) {
           if (!ingested && codeOf(e) === 'E_DEVICE_LIST_STALE') { await ingest(); ingested = true; continue; }
-          this.pinRefused.add(communityId);
+          if (!readFailed) this.pinRefused.add(communityId);
           this.deps.onError?.(codeOf(e));
           return;
         }

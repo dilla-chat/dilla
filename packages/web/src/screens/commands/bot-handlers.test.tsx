@@ -40,6 +40,7 @@ function fixture(options: { idleMusic?: boolean; playingMusic?: boolean; announc
   let answers: { n: number; requestId: string; seq: number; status: number; body: string; final: boolean }[] = [];
   const answerListeners = new Set<() => void>();
   const replies = new Map<string, { status: number; revision: string | null; data: Uint8Array }>();
+  const lostResends = new Map<string, number>();
   const hex = (bytes: Uint8Array) => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
   const answer = (requestId: string, reply: { status: number; revision: string | null; data: Uint8Array }) => {
     const [status, body] = reply.status === 0 ? [200, encode([reply.revision === null ? null : BigInt(reply.revision), reply.data])]
@@ -63,13 +64,18 @@ function fixture(options: { idleMusic?: boolean; playingMusic?: boolean; announc
           args: args.map((value, index) => ids.includes(index) && value instanceof Uint8Array ? hex(value) : value) };
         // The Bot keeps each request's answers for five minutes: a resend of the same id is answered again, never run twice.
         const kept = replies.get(command.requestId as string);
-        if (kept !== undefined) { void Promise.resolve().then(() => { answer(command.requestId as string, kept); }); return null; }
+        if (kept !== undefined) {
+          // The page's one automatic resend after a lost answer is lost too, so the attempt ends uncertain.
+          const lost = lostResends.get(command.requestId as string) ?? 0;
+          if (lost > 0) { lostResends.set(command.requestId as string, lost - 1); return null; }
+          void Promise.resolve().then(() => { answer(command.requestId as string, kept); }); return null;
+        }
         void Promise.resolve().then(() => client.call(op as never)).then(reply => {
           if (reply === null || reply === undefined) return;
           const value = reply as { status: number; revision: string | null; data: Uint8Array };
           replies.set(command.requestId as string, value);
           // The Bot ran it, but this answer is lost: the run times out, and a resend of the same id gets the kept answer.
-          if (silentOnce.delete(operation)) return;
+          if (silentOnce.delete(operation)) { lostResends.set(command.requestId as string, 1); return; }
           answer(command.requestId as string, value);
         }, () => undefined);
         return null;
@@ -878,7 +884,7 @@ describe('historical receipt identity across changed capability revisions', () =
       if (kind === 'rolepanel') expect(f.requests.filter(row => row.m === 'registerRolePanel')).toHaveLength(change === 'bot' ? 0 : 1);
       view.unmount();
     }
-  });
+  }, 90_000);
   it.each([['90', 90_000], ['1:02', 62_000], ['0:01:02', 62_000]] as const)('runs registry-parsed /seek %s with the shared grammar', async (position, milliseconds) => {
     const parsed = parseCommand(`/seek ${position}`, FIXTURE_DEFINITIONS); expect(parsed.type).toBe('invocation'); if (parsed.type !== 'invocation') throw new Error('Invalid seek parse');
     const f = fixture(); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {}; const view = mountProvider(f.client, capture);

@@ -13,7 +13,7 @@ export { VoiceMusicError, VoiceMusicAcceptedUnconfirmedError } from './voice/mus
 export { createBotOperations, BotOperationUncertainError, BotOperationRefusedError, catalogOffers, sealedOperation, v1Operation, APP_OPERATION_BASE } from './bot/operations';
 export type { BotOperations, BotOperationRequest, BotOperationResult } from './bot/operations';
 export { createBotUtilities, decodePollVote, decodePollClose, BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError } from './bot/utilities';
-export type { BotUtilities, PollSummary, ReminderSummary, ReminderState, UtilityBinding, UtilityCapabilities, PollPage, ReminderPage, PollVotersPage } from './bot/utilities';
+export type { BotUtilities, PollSummary, PollVoters, ReminderSummary, ReminderState, UtilityBinding, UtilityCapabilities, PollPage, ReminderPage, PollVotersPage } from './bot/utilities';
 export { BotHints, watchBotHint, HINT_COALESCE_MS } from './bot/hints';
 export type { Hint, HintClient, HintRevision, HintScope } from './bot/hints';
 export { botCommands, createBotCommands, botCommandPort, BOT_FIRST_ANSWER_MS, BOT_KEY_STALE_STATUS } from './bot/commands';

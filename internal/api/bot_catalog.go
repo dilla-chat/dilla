@@ -687,6 +687,18 @@ func (d Deps) botListedDeviceKey(ctx context.Context, botUser, device id.ID) (ed
 	return key, nil
 }
 
+// commandKeyPublicationSlack is dilla_core's PUBLICATION_SLACK_SECS: the helper mints a key at its rotation with
+// not_after = minted + maxCommandKeyLifetime - commandKeyPublicationSlack.
+const commandKeyPublicationSlack = 600
+
+// commandKeyRotatedAt is when the helper rotated to the key whose publication says notAfter: the previous key's 24 h
+// overlap runs from then, not from when dillad heard of it (Task 21b fix round 1, review M2). A rotation time after now
+// (a clock ahead) counts as now.
+func commandKeyRotatedAt(notAfter uint64, now int64) int64 {
+	minted := int64(notAfter) - (maxCommandKeyLifetime - commandKeyPublicationSlack) //nolint:gosec // G115: not_after was checked to be at most now + 8 days
+	return min(minted, now)
+}
+
 // PutBotRuntimeCommandKey stores the community's command-key publication from its ready Bot after
 // checking it the way a client will: the installation's device signed it and is a listed, unrevoked
 // device of the Bot user, it names this community, and its not_after is neither past nor more than
@@ -775,7 +787,7 @@ func (d Deps) PutBotRuntimeCommandKey(w http.ResponseWriter, r *http.Request) {
 		// the same key keeps the overlap it had.
 		switch {
 		case rotated && !prevKey.KeyID.IsZero():
-			row.PrevKeyID, row.PrevUntil = prevKey.KeyID, now+int64(commandKeyOverlap.Seconds())
+			row.PrevKeyID, row.PrevUntil = prevKey.KeyID, commandKeyRotatedAt(p.NotAfter, now)+int64(commandKeyOverlap.Seconds())
 		case !rotated:
 			row.PrevKeyID, row.PrevUntil = prevKey.PrevKeyID, prevKey.PrevUntil
 		}

@@ -1293,7 +1293,7 @@ export class Controller {
       core: () => this.core,
       catalog: this.botCatalog,
       post: async (communityId, body, idem) => {
-        await botHttp({ method: 'POST', path: `/v1/communities/${communityId}/bot/commands`, body, bucket: 'write', idempotent: false,
+        await botHttp({ method: 'POST', path: `/v1/communities/${communityId}/bot/commands`, body, bucket: 'bot', idempotent: false,
           idem, ok: [202], retry429: false });
       },
       nowS: () => this.serverNowS(),
@@ -2723,7 +2723,9 @@ export class Controller {
     // I3: so can its trust refresh, which reads nothing before the phase is ready; this one does. It also republishes
     // the trust slice now that every member and DM slice has landed.
     if (this.trustRefresh !== null) this.trustRefreshAgain = true;
-    void this.barrier.track(this.refreshTrust()).catch(() => undefined);
+    // Review M6: the trust refresh may ingest the Bot's attestation after the catalog sync tried its first pin (a new
+    // device); a community left waiting for it is resolved again once the refresh has settled.
+    void this.barrier.track(this.refreshTrust()).then(() => this.botCatalog.attestationsChanged()).catch(() => undefined);
     // web3.7 3a-client: the call groups a page of this browser left behind are left now, before any join is served (a
     // join waits for it, bounded); its reads and proposals are socket requests, which wait for the gateway. Not tracked by the barrier: a resign stops it instead.
     this.calls.startSweep();

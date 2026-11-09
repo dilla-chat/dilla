@@ -7,7 +7,7 @@
 // sealed arguments; ids go as 16 bytes. The Bot answers [revision uint|null, data bstr] or a bare code, which comes back
 // here as the v1 status the surfaces already handle. Nothing polls: the answer is a pushed frame (op 62).
 import type { CoreClient } from '../bridge';
-import { arr, bin, decode, u53 } from '../cbor';
+import { bin, decode, u53, type CborValue } from '../cbor';
 import { fromHex } from '../hex';
 import { botCommands, type BotAnswer, type BotArg, type BotCommandRun, type createBotCommands } from './commands';
 
@@ -46,7 +46,8 @@ export function catalogOffers(client: CoreClient, communityId: string, v1: numbe
   return client.get(`botCatalog:${communityId}`)?.commands.some(command => command.operation === sealed) === true;
 }
 
-export interface BotOperationResult { requestId: string; status: number; revision: string | null; data: Uint8Array }
+/** `extra` is a sealed read's third element, when it answers one (poll.get's voters: Task 21b fix round 1). */
+export interface BotOperationResult { requestId: string; status: number; revision: string | null; data: Uint8Array; extra?: CborValue }
 export interface BotOperationRequest {
   operation: number;
   channelId?: string | null;
@@ -71,10 +72,13 @@ export class BotOperationRefusedError extends Error {
 }
 
 /** One answer of an app operation or sealed read: 200 [revision, data], or a refusal's v1 status. Throws on any other. */
-export function appOperationAnswer(answer: BotAnswer): { status: number; revision: string | null; data: Uint8Array } {
+export function appOperationAnswer(answer: BotAnswer): { status: number; revision: string | null; data: Uint8Array; extra?: CborValue } {
   if (answer.status === 200) {
-    const [revision, data] = arr(decode(answer.body), 2);
-    return { status: 0, revision: revision === null ? null : String(u53(revision)), data: bin(data) };
+    const fields = decode(answer.body);
+    if (!Array.isArray(fields) || fields.length < 2 || fields.length > 3) throw new BotOperationRefusedError('', 'E_BOT_ANSWER', 200);
+    const [revision, data, extra] = fields;
+    const out = { status: 0, revision: revision === null ? null : String(u53(revision)), data: bin(data) };
+    return fields.length === 3 ? { ...out, extra } : out;
   }
   const code = new TextDecoder().decode(answer.body);
   const status = STATUS_OF_CODE.get(code);
@@ -95,11 +99,18 @@ const SENT_LIMIT = 128;
 export function createBotOperationsOn(commands: ReturnType<typeof createBotCommands>, communityId: string): BotOperations {
   if (!ID.test(communityId)) throw new Error('Invalid community id.');
   const sent = new Map<string, { operation: number; channelId: string | null; args: BotArg[] }>();
-  const run = async (requestId: string, operation: number, channelId: string | null, args: BotArg[]): Promise<BotOperationResult> => {
+  // A command can be lost on its way (the Bot's connection was re-established while it was relayed): the first answer that
+  // does not come in time is followed by one resend of the same request, which the Bot runs or answers again, never twice
+  // (Task 21b fix round 1). Only then is it uncertain.
+  const run = async (requestId: string, operation: number, channelId: string | null, args: BotArg[], resent = false): Promise<BotOperationResult> => {
     const handle: BotCommandRun = commands.sendBotCommand({ communityId, channelId, operation, args, requestId });
     for await (const item of handle.answers) {
       if ('kind' in item) {
-        if (item.kind === 'timeout') { handle.stop(); throw new BotOperationUncertainError(requestId); }
+        if (item.kind === 'timeout') {
+          handle.stop();
+          if (!resent) return run(requestId, operation, channelId, args, true);
+          throw new BotOperationUncertainError(requestId);
+        }
         throw new BotOperationRefusedError(requestId, item.code, item.status);
       }
       if (!item.final) continue;

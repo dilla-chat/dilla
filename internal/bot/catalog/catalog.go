@@ -33,6 +33,11 @@ const (
 	FeatureReminders     Feature = 1 << 9
 )
 
+// FeatureExisting marks the operations on polls and reminders that already exist: they are offered whatever the
+// installation's features, as v1 kept them (protocol/10: with Polls or Reminders off only creating one is refused;
+// existing polls are still voted on, closed and read, and reminders still listed, cancelled, dismissed and delivered).
+const FeatureExisting Feature = 0
+
 // AllFeatures is every feature the catalog has commands for, in bit order.
 func AllFeatures() []Feature {
 	return []Feature{FeatureMusic, FeatureRoles, FeatureAnnouncements, FeaturePolls, FeatureReminders}
@@ -145,11 +150,11 @@ var commands = []Command{
 	{FeaturePolls, "poll create", "Ask a question with up to 10 answers", protocol.OpPollCreate, []Arg{
 		{"question", ArgText, false}, {"answers", ArgText, false}, {"multiple", ArgBool, false}, {"duration", ArgDuration, false}, {"channel", ArgChannel, false},
 	}, permSendMessages, true, HandlerCommand, ScopeChannel},
-	{FeaturePolls, "poll get", "A poll's state, for the app", protocol.OpReadPoll, []Arg{{"poll", ArgText, true}}, 0, false, HandlerRead, ScopeCommunity},
+	{FeatureExisting, "poll get", "A poll's state, for the app", protocol.OpReadPoll, []Arg{{"poll", ArgText, true}}, 0, false, HandlerRead, ScopeCommunity},
 	// Reminders.
 	{FeatureReminders, "remind", "Remind me later", protocol.OpReminderCreate, []Arg{{"when", ArgDuration, true}, {"text", ArgText, true}}, 0, false, HandlerCommand, ScopeCommunity},
 	{FeatureReminders, "reminders list", "Your upcoming reminders", protocol.OpReminderList, nil, 0, false, HandlerCommand, ScopeCommunity},
-	{FeatureReminders, "reminders due", "Your due reminders, for the app", protocol.OpReadRemindersDue, []Arg{{"cursor", ArgText, false}}, 0, false, HandlerRead, ScopeCommunity},
+	{FeatureExisting, "reminders due", "Your due reminders, for the app", protocol.OpReadRemindersDue, []Arg{{"cursor", ArgText, false}}, 0, false, HandlerRead, ScopeCommunity},
 	// App operations (Task 21b): the player and its dock act in the voice channel; the handlers check the call and DJ
 	// rights as before.
 	app(FeatureMusic, "music search", protocol.OpAppMusicSearch, 0, ScopeChannel),
@@ -175,14 +180,14 @@ var commands = []Command{
 	// The poll form posts into the command's channel (the dispatcher refuses a payload naming another one), so the
 	// intake authorises send_messages there.
 	app(FeaturePolls, "poll form", protocol.OpAppPollCreate, permSendMessages, ScopeChannel),
-	app(FeaturePolls, "poll list", protocol.OpAppPollList, 0, ScopeCommunity),
-	app(FeaturePolls, "poll vote", protocol.OpAppPollVote, 0, ScopeCommunity),
-	app(FeaturePolls, "poll close", protocol.OpAppPollClose, 0, ScopeCommunity),
-	app(FeaturePolls, "poll voters", protocol.OpAppPollVoters, 0, ScopeCommunity),
+	app(FeatureExisting, "poll list", protocol.OpAppPollList, 0, ScopeCommunity),
+	app(FeatureExisting, "poll vote", protocol.OpAppPollVote, 0, ScopeCommunity),
+	app(FeatureExisting, "poll close", protocol.OpAppPollClose, 0, ScopeCommunity),
+	app(FeatureExisting, "poll voters", protocol.OpAppPollVoters, 0, ScopeCommunity),
 	app(FeatureReminders, "reminder save", protocol.OpAppReminderCreate, 0, ScopeCommunity),
-	app(FeatureReminders, "reminders page", protocol.OpAppReminderList, 0, ScopeCommunity),
-	app(FeatureReminders, "reminder cancel", protocol.OpAppReminderCancel, 0, ScopeCommunity),
-	app(FeatureReminders, "reminder dismiss", protocol.OpAppReminderDismiss, 0, ScopeCommunity),
+	app(FeatureExisting, "reminders page", protocol.OpAppReminderList, 0, ScopeCommunity),
+	app(FeatureExisting, "reminder cancel", protocol.OpAppReminderCancel, 0, ScopeCommunity),
+	app(FeatureExisting, "reminder dismiss", protocol.OpAppReminderDismiss, 0, ScopeCommunity),
 }
 
 // Commands is the catalog's commands for features, in table order.
@@ -193,7 +198,7 @@ func Commands(features []Feature) []Command {
 	}
 	var out []Command
 	for _, c := range commands {
-		if mask&c.Feature != 0 {
+		if mask&c.Feature != 0 || c.Feature == FeatureExisting {
 			out = append(out, c)
 		}
 	}

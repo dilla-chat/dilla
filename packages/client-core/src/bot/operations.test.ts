@@ -85,19 +85,35 @@ describe('sealed Bot operations (Task 21b)', () => {
     const f = fakePort(() => (answered ? ok(4n, encode([])) : null));
     const ops = createBotOperationsOn(createBotCommands(f.port), COMMUNITY);
     const pending = ops.request({ operation: 74, args: [ITEM], revision: '3', requestId: '9'.repeat(32) });
-    await Promise.resolve();
-    f.fire();
-    await expect(pending).rejects.toBeInstanceOf(BotOperationUncertainError);
+    const settled = expect(pending).rejects.toBeInstanceOf(BotOperationUncertainError);
+    for (let round = 0; round < 2; round++) { for (let i = 0; i < 10; i++) await Promise.resolve(); f.fire(); }
+    await settled;
     expect(await ops.read('8'.repeat(32), 74)).toBeNull();
     answered = true;
     const read = await ops.read('9'.repeat(32), 74);
     expect(read).toMatchObject({ requestId: '9'.repeat(32), status: 0, revision: '4' });
-    expect(f.submits.map(s => s.requestId)).toEqual(['9'.repeat(32), '9'.repeat(32)]);
-    expect(f.submits[1].args).toEqual(f.submits[0].args);
+    expect(f.submits.map(s => s.requestId)).toEqual(['9'.repeat(32), '9'.repeat(32), '9'.repeat(32)]);
+    expect(f.submits[2].args).toEqual(f.submits[0].args);
+  });
+
+  // Task 21b fix round 1: a command can be lost on its way (the Bot's connection was re-established while it was relayed).
+  // The first answer that does not come is followed by one resend of the same request, which the Bot answers once.
+  it('resends an unanswered request once with its id before it is uncertain', async () => {
+    let sends = 0;
+    const f = fakePort(() => (++sends === 1 ? null : ok(2n, encode([]))));
+    const ops = createBotOperationsOn(createBotCommands(f.port), COMMUNITY);
+    const pending = ops.request({ operation: 71, args: [ITEM], requestId: '7'.repeat(32) });
+    await Promise.resolve(); await Promise.resolve();
+    f.fire();
+    await expect(pending).resolves.toMatchObject({ status: 0, revision: '2' });
+    expect(f.submits.map(s => s.requestId)).toEqual(['7'.repeat(32), '7'.repeat(32)]);
   });
 
   it('decodes only a well-formed answer', () => {
     expect(() => appOperationAnswer({ status: 200, body: encode(['x', new Uint8Array()]), final: true })).toThrow();
     expect(appOperationAnswer({ status: 200, body: encode([null, Uint8Array.of(1)]), final: true })).toEqual({ status: 0, revision: null, data: Uint8Array.of(1) });
+    // A sealed read may answer a third element (poll.get's voters).
+    expect(appOperationAnswer({ status: 200, body: encode([7n, Uint8Array.of(1), [1n]]), final: true })).toEqual({ status: 0, revision: '7', data: Uint8Array.of(1), extra: [1n] });
+    expect(() => appOperationAnswer({ status: 200, body: encode([7n, Uint8Array.of(1), 1n, 2n]), final: true })).toThrow();
   });
 });

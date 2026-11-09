@@ -437,15 +437,16 @@ it.each([13, 15])('an immediate operation %s the Bot did not answer in time stay
     const f = fixture(); const requestId = '89'.repeat(16);
     const first = operation === 13 ? f.adapter.pause(CHANNEL, true, { requestId }) : f.adapter.skip(CHANNEL, { requestId });
     const settled = expect(first).rejects.toMatchObject({ requestId });
-    await vi.advanceTimersByTimeAsync(5_000);
+    // No answer to the send or to its one automatic resend (Task 21b fix round 1).
+    await vi.advanceTimersByTimeAsync(10_000);
     await settled;
     // The retry is the same request: the Bot re-seals what it answered (or runs it once if it never arrived).
     const retry = operation === 13 ? f.adapter.pause(CHANNEL, true, { requestId }) : f.adapter.skip(CHANNEL, { requestId });
-    await vi.waitFor(() => expect(f.commands.filter(row => row.m === 'botOperation' && row.operation === operation)).toHaveLength(2));
+    await vi.waitFor(() => expect(f.commands.filter(row => row.m === 'botOperation' && row.operation === operation)).toHaveLength(3));
     const sends = f.commands.filter(row => row.m === 'botOperation' && row.operation === operation);
-    expect(sends.map(row => row.requestId)).toEqual([requestId, requestId]);
-    expect(sends[1].args).toEqual(sends[0].args);
-    f.answer(sends[1], 0, '3', snapshot(3n, operation === 13));
+    expect(sends.map(row => row.requestId)).toEqual([requestId, requestId, requestId]);
+    expect(sends[2].args).toEqual(sends[0].args);
+    f.answer(sends[2], 0, '3', snapshot(3n, operation === 13));
     await retry;
     expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: operation === 13 });
   } finally {

@@ -119,9 +119,11 @@ func decoded(t *testing.T, b []byte) map[string][]any {
 }
 
 func TestBuildHoldsOnlyTheEnabledFeatures(t *testing.T) {
-	none := decoded(t, Build(nil))
-	if len(none) != 0 {
-		t.Fatalf("no feature, commands %v", none)
+	// With no feature only the operations on existing polls and reminders remain (Task 21b fix round 1), all hidden.
+	for name, row := range decoded(t, Build(nil)) {
+		if row[6] != HandlerRead {
+			t.Fatalf("no feature, picker command %q", name)
+		}
 	}
 	reminders := decoded(t, Build([]Feature{FeatureReminders}))
 	if reminders["remind"] == nil || reminders["play"] != nil {
@@ -414,5 +416,25 @@ func TestAppOperationsAreHiddenAndOnlyTheirReadsAreReads(t *testing.T) {
 	}
 	if got := FeaturesOf(1<<2 | 1<<3); len(got) != 2 || got[0] != FeatureRoles || got[1] != FeatureAnnouncements {
 		t.Fatalf("features of roles and announcements = %v", got)
+	}
+}
+
+// Task 21b fix round 1 (ruling: feature-off parity): existing polls and reminders stay operable with their feature off,
+// as in v1. Only creating a poll or a reminder needs the feature.
+func TestExistingPollsAndRemindersStayOperableWithTheirFeatureOff(t *testing.T) {
+	ops := Operations([]Feature{FeatureMusic})
+	for _, op := range []protocol.Operation{protocol.OpReadPoll, protocol.OpAppPollList, protocol.OpAppPollVote, protocol.OpAppPollClose,
+		protocol.OpAppPollVoters, protocol.OpReadRemindersDue, protocol.OpAppReminderList, protocol.OpAppReminderCancel, protocol.OpAppReminderDismiss} {
+		if _, ok := ops[uint64(op)]; !ok {
+			t.Fatalf("operation %d is not offered with polls and reminders off", op)
+		}
+	}
+	for _, op := range []protocol.Operation{protocol.OpPollCreate, protocol.OpAppPollCreate, protocol.OpReminderCreate, protocol.OpAppReminderCreate, protocol.OpReminderList} {
+		if _, ok := ops[uint64(op)]; ok {
+			t.Fatalf("operation %d is offered with its feature off", op)
+		}
+	}
+	if len(Commands(nil)) == 0 || len(decoded(t, Build(nil))) == 0 {
+		t.Fatal("an installation with no feature offers nothing, but its existing polls and reminders must stay operable")
 	}
 }

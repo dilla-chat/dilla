@@ -899,3 +899,29 @@ func TestSealedAppPollCreateMustTargetTheCommandChannel(t *testing.T) {
 		t.Fatalf("a poll for the command's channel = %+v", got)
 	}
 }
+
+type channelPermsFake map[[2]id.ID]uint64
+
+func (f channelPermsFake) IsMember(id.ID) bool { return true }
+func (f channelPermsFake) ChannelPermissions(user, channel id.ID) uint64 {
+	return f[[2]id.ID{user, channel}]
+}
+
+// Task 21b fix round 1, review M4: a role panel (131) posts into the channel its first argument names. The dispatcher
+// checks view and send there from the feed (a Bot channel), before the handler applies its manage_roles check.
+func TestSealedRolePanelNeedsViewAndSendInItsTargetChannel(t *testing.T) {
+	d, h := sealedFixture(protocol.OpRolePanelPublish)
+	target, user, role := interactionID(50), interactionID(5), interactionID(51)
+	payload, _ := cborx.Marshal([]any{[]any{"📚", role[:], "Reader"}})
+	request := func() protocol.SealedRequest {
+		return sealedRequest(protocol.OpAppRolePanelPublish, uint64(0), target[:], payload)
+	}
+	d.Feed = channelPermsFake{{user, target}: 1}
+	if got := collect(d, request()); len(got) != 1 || got[0].Status != 403 || len(h.calls) != 0 {
+		t.Fatalf("a panel where the member cannot send = %+v (%d calls)", got, len(h.calls))
+	}
+	d.Feed = channelPermsFake{{user, target}: 1 | 2}
+	if got := collect(d, request()); len(got) != 1 || got[0].Status != 200 || len(h.calls) != 1 {
+		t.Fatalf("a panel where the member may view and send = %+v", got)
+	}
+}

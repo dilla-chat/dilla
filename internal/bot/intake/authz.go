@@ -317,6 +317,21 @@ func (a *Authz) resolveChannelLocked(user id.ID, c *authzChannel) uint64 {
 	return bits
 }
 
+// ChannelPermissions is user's permission bits in channel, from the feed state only (Task 21b fix round 1: the poll
+// handlers ask it instead of dillad). A channel the feed told the Bot nothing about, or a non-member, holds nothing.
+func (a *Authz) ChannelPermissions(user, channel id.ID) uint64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if _, member := a.resolveLocked(user); !member {
+		return 0
+	}
+	c, ok := a.live.channels[channel]
+	if !ok {
+		return 0
+	}
+	return a.resolveChannelLocked(user, c)
+}
+
 // Allowed reports whether user, a current member of community, holds every bit of permissionBit (0:
 // membership alone) in channel, from the feed state only. A non-zero bit in a channel the feed told the Bot
 // nothing about is refused (fail closed). With a zero channel a non-zero bit is resolved community-wide only

@@ -218,7 +218,7 @@ func registerBotCommands(m *server.Mux, d Deps) {
 	// Bot runtime routes, socket-only since Task 14. The session middleware runs the Bot allow-list
 	// (ready Bot only), then one token of the Bot device's bot_runtime bucket; each handler then binds
 	// the session to its community's ready installation (readyBotFor).
-	m.SocketAuthed("POST /v1/bot-runtime/replies", d.socketChain(auth.ScopeEnrolled, dsClassBotRuntime), http.HandlerFunc(d.PostBotReply))
+	m.SocketAuthed("POST /v1/bot-runtime/replies", d.socketChain(auth.ScopeEnrolled, dsClassBotReply), http.HandlerFunc(d.PostBotReply))
 	m.SocketAuthed("POST /v1/bot-runtime/state-hints", d.socketChain(auth.ScopeEnrolled, dsClassBotRuntime), http.HandlerFunc(d.PostBotStateHint))
 }
 

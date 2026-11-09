@@ -236,3 +236,19 @@ func TestAuthzIsNotReadyWhileASnapshotStreams(t *testing.T) {
 		t.Fatal("a cut-off snapshot left the cache ready")
 	}
 }
+
+// Task 21b fix round 1: the poll handlers' channel permissions come from the feed too (no dillad read per request).
+func TestAuthzChannelPermissionsResolveLikeAllowed(t *testing.T) {
+	a, _, everyone, _ := authzFixture(t)
+	member, stranger := id.New(), id.New()
+	a.Member(member, true, nil, false)
+	bot, unknown := id.New(), id.New()
+	a.ChannelOverwrites(bot, []Overwrite{{Kind: OverwriteEveryone, Target: everyone, Deny: PermSendMessages}}, false, false)
+	bits := a.ChannelPermissions(member, bot)
+	if bits&PermViewChannel == 0 || bits&PermSendMessages != 0 {
+		t.Fatalf("channel bits = %b, want view without send", bits)
+	}
+	if a.ChannelPermissions(member, unknown) != 0 || a.ChannelPermissions(stranger, bot) != 0 {
+		t.Fatal("an unknown channel or a non-member holds a bit")
+	}
+}

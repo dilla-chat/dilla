@@ -15,7 +15,7 @@ function open() {
   let resolve!: (row: PollSummary) => void;
   const read = new Promise<PollSummary>(done => { resolve = done; });
   vi.spyOn(Core, 'createBotUtilities').mockReturnValue({ binding: { installationId: INSTALL, botUserId: BOT },
-    capabilities: () => Promise.resolve({ installationId: INSTALL, botUserId: BOT }), pollGet: () => read,
+    capabilities: () => Promise.resolve({ installationId: INSTALL, botUserId: BOT }), pollGet: () => read, pollRead: async () => ({ poll: await read, voters: null }),
     pollVoters: () => Promise.resolve({ voters: [], nextCursor: null }) } as never);
   const mounted = renderConversation({ items: [peerRow(P1, '1', fallback, { senderUser: BOT, bot: true })], before: fake => {
     fake.set(`members:${A}`, [...MEMBERS, { userId: BOT, username: 'glenn', display: 'Glenn', kind: 1, roleIds: [] }]);
@@ -72,7 +72,7 @@ it('phone poll votes toggle the row toolbar and a closed winner retains the reve
   vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === PHONE_QUERY, media: query, addEventListener() {}, removeEventListener() {} }));
   let record = { ...poll, creatorId: ME.id, multi: true };
   vi.spyOn(Core, 'createBotUtilities').mockReturnValue({ binding: { installationId: INSTALL, botUserId: BOT },
-    capabilities: () => Promise.resolve({ installationId: INSTALL, botUserId: BOT }), pollGet: () => Promise.resolve(record),
+    capabilities: () => Promise.resolve({ installationId: INSTALL, botUserId: BOT }), pollGet: () => Promise.resolve(record), pollRead: () => Promise.resolve({ poll: record, voters: null }),
     pollVoters: () => Promise.resolve({ voters: [], nextCursor: null }),
     pollVote: ({ choices }: { choices: number[] }) => { record = { ...record, myChoices: choices, counts: [choices.includes(0) ? 1n : 0n, choices.includes(1) ? 1n : 0n], revision: record.revision + 1n }; return Promise.resolve(record); },
     pollClose: () => { record = { ...record, closed: true, counts: [2n, 1n], revision: record.revision + 1n }; return Promise.resolve(record); },

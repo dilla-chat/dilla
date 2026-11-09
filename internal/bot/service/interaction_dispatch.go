@@ -76,7 +76,19 @@ type InteractionResult struct {
 	// Note is text for the member, for the sealed path (Bot v2 Task 17): a command's reply when it succeeds ("Posted
 	// the poll in #bot.") and the reason when it is refused ("The Bot posts only in Bot channels.").
 	Note string
+	// Extra, for a sealed read only, is answered as a third element after [revision, data] (Task 21b fix round 1: the
+	// poll card's voters with its poll.get).
+	Extra any
 }
+
+type pollVotersKey struct{}
+
+// withPollVoters marks ctx as the sealed poll.get (91): the poll handler answers the voters too.
+func withPollVoters(ctx context.Context) context.Context {
+	return context.WithValue(ctx, pollVotersKey{}, true)
+}
+
+func wantPollVoters(ctx context.Context) bool { v, _ := ctx.Value(pollVotersKey{}).(bool); return v }
 
 // InteractionHandlerSpec allows mutations to check the current operator
 // configuration revision before performing their effect.
@@ -469,7 +481,13 @@ func interactionFingerprint(body string) [32]byte {
 type SealedDispatcher struct {
 	Community id.ID
 	Handlers  map[protocol.Operation]InteractionHandlerSpec
+	// Feed, when set, is the feed-state permission view: the role panel (131) needs view and send in the Bot channel it
+	// posts into (Task 21b fix round 1, review M4); nil refuses it.
+	Feed FeedPermissions
 }
+
+// rolePanelChannelBits is view_channel and send_messages: what a role panel's poster needs in its target channel.
+const rolePanelChannelBits = pollPermView | pollPermSend
 
 type sealedAdapter struct {
 	// handler is the v1 operation whose handler runs.
@@ -964,6 +982,13 @@ func (d *SealedDispatcher) Dispatch(ctx context.Context, req protocol.SealedRequ
 			return
 		}
 		mutation = v1.Revision != nil
+		if v1.Operation == protocol.OpRolePanelPublish {
+			target, ok := v1.Args[0].(id.ID)
+			if !ok || d.Feed == nil || d.Feed.ChannelPermissions(req.UserID, target)&rolePanelChannelBits != rolePanelChannelBits {
+				reply(sealedRefusal(interactionStatusForbidden, true))
+				return
+			}
+		}
 	} else {
 		channel, args, mut, problem := adapter.request(req)
 		if problem != "" {
@@ -989,6 +1014,9 @@ func (d *SealedDispatcher) Dispatch(ctx context.Context, req protocol.SealedRequ
 	// A picker /play plays when nothing does (Task 19); the player's own enqueue only queues, as the v1 operation did.
 	if adapter.handler == protocol.OpMusicEnqueue && adapter.v1 == nil {
 		ctx = withSealedPlay(ctx)
+	}
+	if protocol.Operation(req.Operation) == protocol.OpReadPoll {
+		ctx = withPollVoters(ctx)
 	}
 	result, err := handler.Handle(ctx, actor, v1)
 	if err == nil && result.Status == interactionStatusConflict && adapter.retryConflict && mutation && result.Revision != nil {
@@ -1017,7 +1045,11 @@ func (d *SealedDispatcher) Dispatch(ctx context.Context, req protocol.SealedRequ
 		if data == nil {
 			data = []byte{}
 		}
-		body, err := cborx.Marshal([]any{revision, data})
+		fields := []any{revision, data}
+		if result.Extra != nil {
+			fields = append(fields, result.Extra)
+		}
+		body, err := cborx.Marshal(fields)
 		if err != nil {
 			reply(sealedRefusal(interactionStatusInternal, true))
 			return

@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { openInviteInClient } from './support/invite';
 import { expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import type { Locator } from '@playwright/test';
@@ -238,7 +239,9 @@ async function pollFailureEvidence(page: Page, question: string): Promise<unknow
       matchingQuestionMessages: textMessages,
       observerTargets: observed?.targets.map(target => ({ html: (target as HTMLElement).outerHTML, containsQuestion: target.textContent?.includes(text) })) ?? [],
       observerTransitions: observed?.transitions.map(entry => ({ containsQuestion: entry.target.textContent?.includes(text), intersecting: entry.intersecting })) ?? [],
-      pollCalls: pollCalls.map(call => ({ id: call.id, operation: call.command?.operation, requestId: call.command?.requestId, channelId: call.command?.channelId })),
+      pollCalls: pollCalls.map(call => ({ id: call.id, operation: call.command?.operation, requestId: call.command?.requestId, channelId: call.command?.channelId,
+        at: ((trace as unknown as { events?: { direction: string; at: number; message: { id?: number } }[] }).events ?? [])
+          .filter(event => event.message?.id === call.id).map(event => `${event.direction}@${String(event.at)}`) })),
       pollCallReturns: returns, statusCalls: statusCalls.length,
       pollAnswers: (held ?? []).filter(answer => ids.has(answer.requestId)),
     };
@@ -476,6 +479,7 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     const joined = await secondPersona(browser, browserName, secondBrowser, guard, host.url);
     secondContext = joined.context;
     const member = joined.page;
+    await installWorkerPort(joined.context);
     await traceCoreWorker(member);
     const bea = await joinAs(member, host, invite, instanceName, 'Bea');
     expect(bea.username).not.toBe(owner.username);
@@ -537,7 +541,16 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
         .some(entry => entry.target === reattachedTarget && entry.intersecting);
     }), { timeout: WAIT, message: 'the browser IntersectionObserver must reactivate the card on return' }).toBe(true);
     await (await pollOption(memberCard, 'Soup')).click();
-    const soupResults = await pollOption(memberCard, 'Soup');
+    let soupResults: Locator;
+    try { soupResults = await pollOption(memberCard, 'Soup'); }
+    catch (error) {
+      const evidence = { cards: await logRegion(member, GENERAL).locator('.dw-poll-card').evaluateAll(cards => cards.map(card => (card as HTMLElement).outerHTML)),
+        worker: await pollFailureEvidence(member, question) };
+      const evidencePath = testInfo.outputPath('slash-poll-vote.json');
+      writeFileSync(evidencePath, JSON.stringify(evidence, null, 2));
+      await testInfo.attach('slash-poll-vote.json', { path: evidencePath, contentType: 'application/json' });
+      throw error;
+    }
     await expect(soupResults).toBeVisible({ timeout: BOT_WAIT });
     await expect(soupResults).toHaveAttribute('aria-pressed', 'true', { timeout: BOT_WAIT });
     try { await expect(memberCard.getByRole('img', { name: 'Bea' })).toBeVisible({ timeout: BOT_WAIT }); }
@@ -563,7 +576,13 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     const threadQuestion = `Thread poll ${Date.now()}?`;
     await openPollDialog(page, thread.getByRole('textbox', { name: copy('thread.composer'), exact: true }), threadQuestion);
     const threadCard = thread.locator('.dw-poll-card').filter({ hasText: threadQuestion });
-    await expect(threadCard).toBeVisible({ timeout: BOT_WAIT });
+    try { await expect(threadCard).toBeVisible({ timeout: BOT_WAIT }); }
+    catch (error) {
+      const evidencePath = testInfo.outputPath('slash-poll-thread.json');
+      writeFileSync(evidencePath, JSON.stringify(await pollFailureEvidence(page, threadQuestion), null, 2));
+      await testInfo.attach('slash-poll-thread.json', { path: evidencePath, contentType: 'application/json' });
+      throw error;
+    }
     await expect(logRegion(page, GENERAL).locator('.dw-poll-card').filter({ hasText: threadQuestion })).toHaveCount(0);
 
     await thread.getByRole('button', { name: copy('thread.close'), exact: true }).click();

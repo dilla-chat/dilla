@@ -418,3 +418,172 @@ func TestPollHandlersMapNativeCASStatusFourToConflict(t *testing.T) {
 		})
 	}
 }
+
+// countingPollState counts the poll store's state reads.
+type countingPollState struct {
+	pollTestState
+	reads int
+}
+
+func (s *countingPollState) StateGet(ctx context.Context, n uint64, key []byte) (native.StateValue, error) {
+	s.mu.Lock()
+	s.reads++
+	s.mu.Unlock()
+	return s.pollTestState.StateGet(ctx, n, key)
+}
+func (s *countingPollState) StateScan(ctx context.Context, n uint64, after []byte, limit uint64) (native.StatePage, error) {
+	s.mu.Lock()
+	s.reads++
+	s.mu.Unlock()
+	return s.pollTestState.StateScan(ctx, n, after, limit)
+}
+func (s *countingPollState) count() int { s.mu.Lock(); defer s.mu.Unlock(); return s.reads }
+
+func votedPoll(t *testing.T, state polls.State, voters map[byte]uint64) (*polls.Store, id.ID) {
+	t.Helper()
+	ctx := context.Background()
+	store := polls.NewStore(state, pollServiceID(1))
+	now := time.Unix(1000, 0)
+	pid := pollServiceID(3)
+	p := polls.Poll{ID: pid, CommunityID: pollServiceID(1), ChannelID: pollServiceID(4), CreatorID: pollServiceID(2), Question: "Q", Answers: []string{"A", "B"}, CreatedAt: 1000, DueAt: 4600}
+	if _, e := store.Create(ctx, pid, [32]byte{1}, p, now); e != nil {
+		t.Fatal(e)
+	}
+	for user := byte(10); user < 60; user++ {
+		option, ok := voters[user]
+		if !ok {
+			continue
+		}
+		current, e := store.Get(ctx, pid)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if _, e = store.Vote(ctx, pid, pollServiceID(user), pollServiceID(user+100), [32]byte{user}, []uint64{option}, current.Revision, now); e != nil {
+			t.Fatal(e)
+		}
+	}
+	return store, pid
+}
+
+// Task 21b fix round 1: a poll card reads its poll and its voters in one sealed poll.get (91): the answer is
+// [revision, data, [previews, distinct, capped]], previews the first five voters of each answer. No per-answer voter reads.
+func TestSealedPollReadAnswersThePollAndItsVoters(t *testing.T) {
+	store, pid := votedPoll(t, &pollTestState{}, map[byte]uint64{10: 0, 11: 0, 12: 0, 13: 1})
+	h := PollInteractions{Store: store, Authority: &pollAuthorityFake{bits: pollPermView | pollPermReadHistory, member: true}, CommunityID: pollServiceID(1),
+		Now: func() time.Time { return time.Unix(1000, 0) }, Reads: NewPollReadCache()}
+	d := &SealedDispatcher{Community: pollServiceID(1), Handlers: h.Handlers()}
+	req := protocol.SealedRequest{RequestID: pollServiceID(9), CommunityID: pollServiceID(1), Operation: uint64(protocol.OpReadPoll), Args: []any{pid[:]},
+		SentAt: 1000, UserID: pollServiceID(2), DeviceID: pollServiceID(5)}
+	got := collect(d, req)
+	if len(got) != 1 || got[0].Status != 200 {
+		t.Fatalf("answers = %+v", got)
+	}
+	var body []any
+	if err := cborx.Unmarshal(got[0].Body, &body); err != nil || len(body) != 3 {
+		t.Fatalf("poll read body %x: %v", got[0].Body, err)
+	}
+	voters, _ := body[2].([]any)
+	if len(voters) != 3 || voters[1] != uint64(4) || voters[2] != uint64(0) {
+		t.Fatalf("voters = %#v, want [previews, 4, 0]", body[2])
+	}
+	previews, _ := voters[0].([]any)
+	first, _ := previews[0].([]any)
+	second, _ := previews[1].([]any)
+	if len(previews) != 2 || len(first) != 3 || len(second) != 1 {
+		t.Fatalf("previews = %#v, want 3 and 1 voters", voters[0])
+	}
+	// The v1 read (and the picker's) still answers [revision, data] only.
+	if r, _ := h.get(context.Background(), InteractionActor{User: pollServiceID(2)}, protocol.Request{CommunityID: pollServiceID(1), Operation: protocol.OpPollGet, Args: []any{pid}}); r.Status != 0 || r.Extra != nil {
+		t.Fatalf("plain poll get = %+v", r)
+	}
+}
+
+// Many members' reads of one poll inside the coalescing window share one computation of the poll and its voters; each is
+// still authorised for its member and answers that member's own choices. A vote ends the window for that poll.
+func TestPollReadsCoalescePerPollAndStayPerMember(t *testing.T) {
+	state := &countingPollState{}
+	store, pid := votedPoll(t, state, map[byte]uint64{10: 0, 11: 1})
+	authority := &pollAuthorityFake{bits: pollPermView | pollPermReadHistory, member: true}
+	now := time.Unix(1000, 0)
+	h := PollInteractions{Store: store, Authority: authority, CommunityID: pollServiceID(1), Now: func() time.Time { return now }, Reads: NewPollReadCache()}
+	h.Reads.now = func() time.Time { return now }
+	d := &SealedDispatcher{Community: pollServiceID(1), Handlers: h.Handlers()}
+	read := func(user byte) []any {
+		t.Helper()
+		got := collect(d, protocol.SealedRequest{RequestID: pollServiceID(user + 120), CommunityID: pollServiceID(1), Operation: uint64(protocol.OpReadPoll),
+			Args: []any{pid[:]}, SentAt: 1000, UserID: pollServiceID(user), DeviceID: pollServiceID(5)})
+		if len(got) != 1 || got[0].Status != 200 {
+			t.Fatalf("read by %d = %+v", user, got)
+		}
+		var body []any
+		if err := cborx.Unmarshal(got[0].Body, &body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	before := state.count()
+	read(10)
+	one := state.count() - before
+	before = state.count()
+	for user := byte(20); user < 40; user++ {
+		read(user)
+	}
+	twenty := state.count() - before
+	if twenty > 20*2 || twenty >= 20*one {
+		t.Fatalf("20 reads in the window cost %d state reads (one read alone %d): not coalesced", twenty, one)
+	}
+	// Per member: the voter's own choices, and the authorisation of every reader.
+	var data []any
+	if err := cborx.Unmarshal(read(11)[1].([]byte), &data); err != nil {
+		t.Fatal(err)
+	}
+	if mine := data[1].([]any)[11].([]any); len(mine) != 1 || mine[0] != uint64(1) {
+		t.Fatalf("member 11's own choices = %#v", mine)
+	}
+	authority.bits = 0
+	got := collect(d, protocol.SealedRequest{RequestID: pollServiceID(200), CommunityID: pollServiceID(1), Operation: uint64(protocol.OpReadPoll),
+		Args: []any{pid[:]}, SentAt: 1000, UserID: pollServiceID(41), DeviceID: pollServiceID(5)})
+	if len(got) != 1 || got[0].Status != 403 {
+		t.Fatalf("a member without read access, with the poll cached = %+v", got)
+	}
+	authority.bits = pollPermView | pollPermReadHistory | pollPermSend
+	// A vote through the handler ends the window: the next read sees it.
+	current, err := store.Get(context.Background(), pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection, _ := cborx.Marshal([]any{uint64(0)})
+	rev, expires := current.Revision, uint64(4000)
+	if r, err := h.vote(context.Background(), InteractionActor{User: pollServiceID(42)}, protocol.Request{RequestID: pollServiceID(77), CommunityID: pollServiceID(1),
+		Operation: protocol.OpPollVote, Revision: &rev, Expires: &expires, Args: []any{pid, selection}}); err != nil || r.Status != 0 {
+		t.Fatalf("vote = %+v %v", r, err)
+	}
+	if voters := read(43)[2].([]any); voters[1] != uint64(3) {
+		t.Fatalf("distinct voters after a vote = %v, want 3", voters[1])
+	}
+}
+
+// The feed-state authority answers the poll handlers from pushed state, with no dillad read.
+func TestFeedPollAuthorityAnswersFromTheFeed(t *testing.T) {
+	member, channel := pollServiceID(2), pollServiceID(4)
+	a := FeedPollAuthority{Feed: feedPermsFake{member: member, channel: channel}}
+	if ok, err := a.PollMember(context.Background(), member); !ok || err != nil {
+		t.Fatal("a member is not a member")
+	}
+	if ok, _ := a.PollMember(context.Background(), pollServiceID(9)); ok {
+		t.Fatal("a stranger is a member")
+	}
+	if bits, _ := a.PollPermissions(context.Background(), member, channel); bits != pollPermView|pollPermReadHistory {
+		t.Fatalf("bits = %b", bits)
+	}
+}
+
+type feedPermsFake struct{ member, channel id.ID }
+
+func (f feedPermsFake) IsMember(user id.ID) bool { return user == f.member }
+func (f feedPermsFake) ChannelPermissions(user, channel id.ID) uint64 {
+	if user == f.member && channel == f.channel {
+		return pollPermView | pollPermReadHistory
+	}
+	return 0
+}

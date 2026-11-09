@@ -160,6 +160,9 @@ export type UtilityCapabilities = UtilityBinding & { version: 1; supportedOperat
 export type PollPage = { items: PollSummary[]; nextCursor: Uint8Array | null };
 export type ReminderPage = { items: ReminderSummary[]; nextCursor: Uint8Array | null };
 export type PollVotersPage = { voters: string[]; nextCursor: Uint8Array | null };
+/** What a poll card shows of its voters, answered with the poll in one read (Task 21b fix round 1): the first five
+ *  voters of each answer, how many distinct people voted, and whether that count is a lower bound. */
+export type PollVoters = { previews: string[][]; distinct: number; capped: boolean };
 
 function validPollText(value: unknown, maxChars: number): value is string {
   return typeof value === 'string' && !whiteSpaceOnly.test(value) && Array.from(value).length <= maxChars;
@@ -502,6 +505,8 @@ export type BotUtilities = {
   readonly binding: UtilityBinding | null;
   pollCreate(input: PollCreateInput): Promise<PollSummary>;
   pollGet(pollId: string, options: PollReadOptions): Promise<PollSummary>;
+  /** The poll and its voters in one sealed read (poll.get, 91). `voters` is null from a Bot that sends none. */
+  pollRead(pollId: string, options: PollReadOptions): Promise<{ poll: PollSummary; voters: PollVoters | null }>;
   pollList(input: PollListInput): Promise<PollPage>;
   pollVote(input: PollVoteInput): Promise<PollSummary>;
   pollClose(input: PollCloseInput): Promise<PollSummary>;
@@ -620,6 +625,15 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
     }
     return result;
   };
+  const pollRead = async (pollId: string, options: PollReadOptions): Promise<{ poll: PollSummary; voters: PollVoters | null }> => {
+    const targetId = idText(pollId);
+    const channelId = idText(options.channelId);
+    const threadId = options.threadId ?? null;
+    if (threadId !== null) idText(threadId);
+    const result = await send(71, [bytesFromHex(targetId)], { requestId: options.requestId });
+    const poll = decodePollGet(result.data, { pollId: targetId, channelId, threadId, responseRevision: result.revision });
+    return { poll, voters: result.extra === undefined ? null : decodePollVoters(result.extra, poll.answers.length) };
+  };
   const ownerId = (): string => currentUserId(client);
   const checkReminderSource = (summary: ReminderSummary, input: ReminderCreatePayloadInput): void => {
     const expectedChannel = input.sourceChannelId ?? null;
@@ -638,14 +652,8 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
       const result = await send(70, [payload], { requestId, revision: 0n, channelId: input.channelId });
       return decodeAcceptedMutation(70, requestId, () => decodePollCreate(result.data, requestId, { channelId: input.channelId, threadId: input.threadId ?? null, responseRevision: result.revision }));
     },
-    pollGet: async (pollId, options) => {
-      const targetId = idText(pollId);
-      const channelId = idText(options.channelId);
-      const threadId = options.threadId ?? null;
-      if (threadId !== null) idText(threadId);
-      const result = await send(71, [bytesFromHex(targetId)], { requestId: options.requestId });
-      return decodePollGet(result.data, { pollId: targetId, channelId, threadId, responseRevision: result.revision });
-    },
+    pollGet: async (pollId, options) => (await pollRead(pollId, options)).poll,
+    pollRead,
     pollList: async (input) => {
       const channelId = idText(input.channelId);
       const threadId = input.threadId ?? null;
@@ -675,10 +683,9 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
       const channelId = idText(input.channelId);
       const threadId = input.threadId ?? null;
       if (threadId !== null) idText(threadId);
+      // Task 21b fix round 1: no backing poll read per page; the Bot checks the poll, its channel and the option.
       if (!Number.isInteger(input.option) || input.option < 0 || input.option > 9) fail('invalid-payload');
-      const backing = await send(71, [bytesFromHex(pollId)], { requestId: generatedRequestId() });
-      const poll = decodePollGet(backing.data, { pollId, channelId, threadId, responseRevision: backing.revision });
-      if (!Number.isInteger(input.option) || input.option < 0 || input.option >= poll.answers.length) fail('invalid-payload');
+      void channelId;
       const cursor = normalizeCursor(input.cursor);
       if (cursor !== null) checkPollVoterCursor(cursor, pollId, input.option);
       const result = await send(75, [bytesFromHex(pollId), input.option, cursor], { requestId: input.requestId });
@@ -728,6 +735,15 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
   };
 }
 
+/** A poll read's voters, [previews (per answer, at most five 16-byte ids), distinct uint, capped 0|1], decoded strictly. */
+export function decodePollVoters(value: unknown, answers: number): PollVoters {
+  return guarded(() => {
+    const [previews, distinct, capped] = fields(value, 3);
+    const rows = list(previews, answers, answers).map(row => list(row, 0, 5).map(readId));
+    const flag = uint(capped, 0n, 1n);
+    return { previews: rows, distinct: Number(uint(distinct, 0n, 1_000_000n)), capped: flag === 1n };
+  });
+}
 export function isPollOperationSupported(capabilities: UtilityCapabilities, operation: number): boolean {
   return POLL_OPERATIONS.has(operation) && capabilities.supportedOperations.includes(operation);
 }

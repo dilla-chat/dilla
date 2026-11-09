@@ -34,6 +34,13 @@ type RateLimits struct {
 	ProposalBurst          int     `toml:"proposal_burst"`
 	KeyPackagePerSecond    float64 `toml:"keypackage_per_second"`
 	KeyPackageBurst        int     `toml:"keypackage_burst"`
+	// ReplyPerSecond and ReplyBurst pace POST bot-runtime/replies, the sealed answers (Task 21b fix round 1): every member
+	// command and app read is answered once, so this is sized for a whole community (dillad's bot_reply meter).
+	ReplyPerSecond float64 `toml:"reply_per_second"`
+	ReplyBurst     int     `toml:"reply_burst"`
+	// HintPerSecond and HintBurst pace POST bot-runtime/state-hints (coalesced per scope), apart from the Bot's reads.
+	HintPerSecond float64 `toml:"hint_per_second"`
+	HintBurst     int     `toml:"hint_burst"`
 }
 
 // Validate checks operator overrides without constructing a client or contacting an instance.
@@ -61,6 +68,7 @@ func (r RateLimits) defaults() (RateLimits, error) {
 	}{
 		{&r.CommitPerSecond, &r.CommitBurst, 1.5, 30}, {&r.ProposalPerSecond, &r.ProposalBurst, .4, 8}, {&r.KeyPackagePerSecond, &r.KeyPackageBurst, .4, 8},
 		{&r.WritePerSecond, &r.WriteBurst, 1.5, 20}, {&r.ReadPerSecond, &r.ReadBurst, 8, 40}, {&r.MessagePerSecond, &r.MessageBurst, .8, 10},
+		{&r.ReplyPerSecond, &r.ReplyBurst, 180, 360}, {&r.HintPerSecond, &r.HintBurst, 8, 40},
 	} {
 		if *v.rate == 0 {
 			*v.rate = v.defaultRate
@@ -206,9 +214,11 @@ func (l *priorityLimiter) Wait(ctx context.Context) error {
 
 type deviceLimiter struct {
 	write, read, message, commit, proposal *priorityLimiter
-	keypackages                            map[string]*priorityLimiter
-	lastUsed                               time.Time
-	inUse                                  int
+	// reply and hint (Task 21b fix round 1): the sealed answers and the state hints, apart from the Bot's reads.
+	reply, hint *priorityLimiter
+	keypackages map[string]*priorityLimiter
+	lastUsed    time.Time
+	inUse       int
 }
 
 func tokenKey(token string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(token))) }
@@ -279,10 +289,14 @@ func requestClass(method, path string) string {
 		if len(parts) == 6 && parts[0] == "bot-runtime" && parts[1] == "installations" && parts[3] == "interaction-groups" && parts[5] == "heal" {
 			return "commit"
 		}
-		// dillad meters the Bot's sealed answers and state hints as bot_runtime at the read rate (dsmeter.go): one
-		// answer per command must not wait on the write bucket (Bot v2 Task 15).
-		if len(parts) == 2 && parts[0] == "bot-runtime" && (parts[1] == "replies" || parts[1] == "state-hints") {
-			return "read"
+		// dillad meters the Bot's sealed answers as bot_reply and its state hints as bot_runtime (dsmeter.go). An answer
+		// is owed for every member command and app read, so neither waits on the write bucket (Task 15) nor spends the
+		// Bot's own read bucket (Task 21b fix round 1).
+		if len(parts) == 2 && parts[0] == "bot-runtime" && parts[1] == "replies" {
+			return "reply"
+		}
+		if len(parts) == 2 && parts[0] == "bot-runtime" && parts[1] == "state-hints" {
+			return "hint"
 		}
 	}
 	if method == http.MethodGet || method == http.MethodHead {
@@ -353,6 +367,10 @@ func (c *Client) waitRate(ctx context.Context, token, method, path string) error
 		limiter = b.read
 	case "message":
 		limiter = b.message
+	case "reply":
+		limiter = b.reply
+	case "hint":
+		limiter = b.hint
 	}
 	if err := waitLimiter(ctx, limiter); err != nil {
 		return err

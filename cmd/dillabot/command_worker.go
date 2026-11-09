@@ -433,8 +433,11 @@ type sealedIntakeConfig struct {
 	// reminders, when set, is served from the feed: membership from Authz, no capability read per create
 	// (the catalog only offers reminder operations while the capability is on).
 	reminders *service.ReminderInteractions
-	held      intake.HeldChecker
-	log       *slog.Logger
+	// polls are the poll handlers, served in the sealed path with the feed authority and a read cache (Task 21b fix
+	// round 1).
+	polls *service.PollInteractions
+	held  intake.HeldChecker
+	log   *slog.Logger
 	// musicStartP95 reads the installation's music start p95 for the health report (Bot v2 Task 17); nil is zero.
 	musicStartP95 func() time.Duration
 	// healthDir is where the health monitor leaves its last report for `dillabot doctor` (health_state.go); empty
@@ -648,11 +651,35 @@ func (f sealedFeed) SnapshotDone(ctx context.Context) {
 	f.Feed.SnapshotDone(ctx)
 }
 
-// sealedReminderAuthority answers the reminder handlers' membership question from the feed.
-type sealedReminderAuthority struct{ authz *intake.Authz }
+// sealedReminderAuthority answers the reminder handlers' membership question from the feed, and their source-channel
+// question through the pass's own authority (Task 21b fix round 1, review I1): a reminder's source may be any text
+// channel, which the feed names only when it is a Bot or voice channel. With no such authority every source is refused.
+type sealedReminderAuthority struct {
+	authz  *intake.Authz
+	source reminderSourceChecker
+}
+
+type reminderSourceChecker interface {
+	ReminderSource(context.Context, id.ID, id.ID) (bool, error)
+}
 
 func (a sealedReminderAuthority) ReminderMember(_ context.Context, user id.ID) (bool, error) {
 	return a.authz.IsMember(user), nil
+}
+
+func (a sealedReminderAuthority) ReminderSource(ctx context.Context, actor, channel id.ID) (bool, error) {
+	if a.source == nil {
+		return false, nil
+	}
+	return a.source.ReminderSource(ctx, actor, channel)
+}
+
+// sealedReminders is the pass's reminder handlers as the sealed path serves them.
+func sealedReminders(rem service.ReminderInteractions, authz *intake.Authz) service.ReminderInteractions {
+	source, _ := rem.Authority.(reminderSourceChecker)
+	rem.Authority = sealedReminderAuthority{authz: authz, source: source}
+	rem.CreateEnabled = nil
+	return rem
 }
 
 // sealedHandlers is the pass's handler map with the reminders served from the feed.
@@ -662,10 +689,18 @@ func sealedHandlers(cfg sealedIntakeConfig, authz *intake.Authz) map[protocol.Op
 		out[op] = h
 	}
 	if cfg.reminders != nil {
-		rem := *cfg.reminders
-		rem.Authority = sealedReminderAuthority{authz}
-		rem.CreateEnabled = nil
+		rem := sealedReminders(*cfg.reminders, authz)
 		for op, h := range rem.Handlers() {
+			out[op] = h
+		}
+	}
+	// Task 21b fix round 1: polls answer from the feed too (no dillad read per member), and many members' reads of one
+	// poll within 100 ms share one computation of the poll and its voters. Poll creation still checks the capability.
+	if cfg.polls != nil {
+		p := *cfg.polls
+		p.Authority = service.FeedPollAuthority{Feed: authz}
+		p.Reads = service.NewPollReadCache()
+		for op, h := range p.Handlers() {
 			out[op] = h
 		}
 	}
@@ -689,7 +724,7 @@ func (r *botGatewayRuntime) SetSealedIntake(cfg sealedIntakeConfig) {
 	// and the catalog are sent again whatever the publisher believes it sent.
 	renewed := e.started && e.cfg.session != cfg.session
 	e.cfg = cfg
-	e.dispatcher = &service.SealedDispatcher{Community: cfg.community, Handlers: sealedHandlers(cfg, e.authz)}
+	e.dispatcher = &service.SealedDispatcher{Community: cfg.community, Handlers: sealedHandlers(cfg, e.authz), Feed: e.authz}
 	e.operations = catalog.Operations(features)
 	start := !e.started
 	if start {
@@ -812,6 +847,8 @@ func newSealedIntakeConfig(r *botGatewayRuntime, installation, community, botUse
 	if utilities != nil {
 		reminders := utilities.reminders
 		cfg.reminders = &reminders
+		polls := utilities.polls
+		cfg.polls = &polls
 	}
 	return cfg
 }

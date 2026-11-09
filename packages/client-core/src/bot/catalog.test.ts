@@ -484,3 +484,63 @@ describe('task 21b: the Bot user is pinned only after its Bot attestation', () =
     expect(store.get(COMMUNITY)?.status.state).toBe('ready');
   });
 });
+
+// Task 21b fix round 1, review M6: a transient failure to read the candidate's head is not a refusal. It leaves the pin to
+// be tried again within the connection, and the trust refresh that ingests the Bot's attestation retries it at once.
+describe('task 21b fix round 1: a transient head-read failure does not grey the Bot for the connection', () => {
+  const settle = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  function core(server: Map<string, 'bot' | 'human'>, failReads: { n: number }) {
+    const held = new Map<string, 'bot' | 'human'>();
+    const pins = new Map<string, Uint8Array>();
+    return {
+      pins, held,
+      ingestBotAttestation: vi.fn((user: Uint8Array) => {
+        if (failReads.n > 0) { failReads.n--; return Promise.reject(Object.assign(new Error('E_UNAVAILABLE'), { code: 'E_UNAVAILABLE' })); }
+        const kind = server.get(toHex(user));
+        if (kind !== undefined) held.set(toHex(user), kind);
+        return Promise.resolve();
+      }),
+      pinBotUser: vi.fn((communityId: string, user: Uint8Array): { state: 0 | 1 | 2; pinned: Uint8Array } => {
+        const kind = held.get(toHex(user));
+        if (kind === undefined) throw Object.assign(new Error('E_DEVICE_LIST_STALE'), { code: 'E_DEVICE_LIST_STALE' });
+        if (kind === 'human') throw Object.assign(new Error('E_CREDENTIAL'), { code: 'E_CREDENTIAL' });
+        const prior = pins.get(communityId);
+        if (prior !== undefined) return { state: toHex(prior) === toHex(user) ? 1 : 2, pinned: prior };
+        pins.set(communityId, user);
+        return { state: 0, pinned: user };
+      }),
+      pinnedBotUser: (communityId: string) => pins.get(communityId) ?? null,
+    };
+  }
+
+  it('a head read that fails once is tried again on the next sync within the connection', async () => {
+    const c = core(new Map([[toHex(BOT_USER), 'bot']]), { n: 1 });
+    const store = new BotCatalogStore(fakeDeps({ ...c }).deps);
+    await store.syncOnConnect(COMMUNITY);
+    await settle();
+    expect(c.pins.size).toBe(0);
+    expect(store.get(COMMUNITY)?.status.state).toBe('unverified');
+    await store.refresh(COMMUNITY);
+    await settle();
+    expect(c.pins.get(COMMUNITY)).toEqual(BOT_USER);
+    expect(store.get(COMMUNITY)?.status.state).toBe('ready');
+  });
+
+  it('a refusal after the head was read waits, until the trust refresh brings the Bot attestation', async () => {
+    const server = new Map<string, 'bot' | 'human'>();
+    const c = core(server, { n: 0 });
+    const store = new BotCatalogStore(fakeDeps({ ...c }).deps);
+    await store.syncOnConnect(COMMUNITY);
+    await settle();
+    expect(c.pins.size).toBe(0);
+    await store.refresh(COMMUNITY);
+    await settle();
+    expect(c.ingestBotAttestation).toHaveBeenCalledTimes(1);
+    // The trust refresh ingested the Bot's attestation (from a leaf): the pin is tried again at once.
+    c.held.set(toHex(BOT_USER), 'bot');
+    await store.attestationsChanged();
+    await settle();
+    expect(c.pins.get(COMMUNITY)).toEqual(BOT_USER);
+    expect(store.get(COMMUNITY)?.status.state).toBe('ready');
+  });
+});

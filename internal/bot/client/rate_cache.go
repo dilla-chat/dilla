@@ -48,7 +48,7 @@ func fullLimiter(l *priorityLimiter, now time.Time) bool {
 	return l.TokensAt(now) >= float64(l.Burst())
 }
 func (b *deviceLimiter) limiters() []*priorityLimiter {
-	return []*priorityLimiter{b.write, b.read, b.message, b.commit, b.proposal}
+	return []*priorityLimiter{b.write, b.read, b.message, b.commit, b.proposal, b.reply, b.hint}
 }
 func (b *deviceLimiter) idleFull(now time.Time) bool {
 	if b.inUse != 0 || now.Sub(b.lastUsed) < rateCacheIdle {
@@ -100,7 +100,8 @@ func (c *Client) deviceBucketLocked(key string, now time.Time) (*deviceLimiter, 
 	if len(c.buckets) >= c.rates.DeviceCacheLimit && !c.evictDeviceLocked(now) {
 		return nil, c.rateCapacityLocked()
 	}
-	b := &deviceLimiter{write: newPriorityLimiter(rate.Limit(c.rates.WritePerSecond), c.rates.WriteBurst), read: newPriorityLimiter(rate.Limit(c.rates.ReadPerSecond), c.rates.ReadBurst), message: newPriorityLimiter(rate.Limit(c.rates.MessagePerSecond), c.rates.MessageBurst), commit: newPriorityLimiter(rate.Limit(c.rates.CommitPerSecond), c.rates.CommitBurst), proposal: newPriorityLimiter(rate.Limit(c.rates.ProposalPerSecond), c.rates.ProposalBurst), keypackages: map[string]*priorityLimiter{}, lastUsed: now}
+	b := &deviceLimiter{write: newPriorityLimiter(rate.Limit(c.rates.WritePerSecond), c.rates.WriteBurst), read: newPriorityLimiter(rate.Limit(c.rates.ReadPerSecond), c.rates.ReadBurst), message: newPriorityLimiter(rate.Limit(c.rates.MessagePerSecond), c.rates.MessageBurst), commit: newPriorityLimiter(rate.Limit(c.rates.CommitPerSecond), c.rates.CommitBurst), proposal: newPriorityLimiter(rate.Limit(c.rates.ProposalPerSecond), c.rates.ProposalBurst),
+		reply: newPriorityLimiter(rate.Limit(c.rates.ReplyPerSecond), c.rates.ReplyBurst), hint: newPriorityLimiter(rate.Limit(c.rates.HintPerSecond), c.rates.HintBurst), keypackages: map[string]*priorityLimiter{}, lastUsed: now}
 	c.buckets[key] = b
 	return b, nil
 }

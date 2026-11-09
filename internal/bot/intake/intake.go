@@ -412,6 +412,13 @@ func (i *Intake) run(ctx context.Context, log *slog.Logger, rec *record, req pro
 		i.answer(ctx, rec, Answer{Status: StatusOK, Final: true})
 		return
 	}
+	// The Bot's own account sends nothing but its probe (Task 21b fix round 1, review M1): it is no member acting through
+	// its own commands, whatever the feed lists for it.
+	if !botUser.IsZero() && req.UserID == botUser {
+		i.refused(ctx, log, "bot_self", StatusForbidden)
+		i.answer(ctx, rec, refusal(StatusForbidden, CodeForbidden))
+		return
+	}
 	rule, known := OperationRule{}, false
 	if operations != nil {
 		rule, known = operations(req.Operation)

@@ -1628,8 +1628,10 @@ minutes is `409 E_BOT_DUPLICATE`; the same device sending it again is accepted a
 (the Bot de-duplicates). The socket's `idem` replay record (`02` § `request`) answers a retry of the
 same request frame from its record without pushing again; a re-send with a new `idem` reaches the
 handler and is pushed again. Nothing about a command is stored: no row, no log line carries the
-sealed bytes. The route is metered per device in its own `bot_command` bucket at the `write` rate
-(`limits.rate.write_per_second` / `write_burst`, 2/s and burst 20 by default).
+sealed bytes. The route is metered per device in its own `bot_command` bucket at the `read` rate
+(`limits.rate.read_per_second` / `read_burst`, 10/s and burst 60 by default): since Task 21b the app's Bot surfaces
+(poll cards, the player and its dock, the reminders inbox) read and act through it, as they once read through
+interaction groups. Clients pace it in a bucket of their own at 80 % of that rate.
 
 The Bot answers through `POST /v1/bot-runtime/replies`, body `[device_id(bstr 16), request_id(bstr
 16), seq(uint ≤ 2^32−1), sealed(bstr 1..65536), final(uint 0|1)]` (the subset has no boolean).
@@ -1647,8 +1649,13 @@ user scope's revision is that user's in this community only, so one community's 
 nothing of another's hints. Gateway op 63 `bot_state_changed` `[scope_kind, scope_id, revision]`
 goes to the user's live connections (with `scope_id` the **community**: the user is the receiving
 connection's own), to the connections subscribed to the Bot channel's text group, or to the online
-devices of the call group of the channel's live call. Both runtime routes are metered per Bot device in a
-`bot_runtime` bucket at the `read` rate (10/s, burst 60 by default).
+devices of the call group of the channel's live call. State hints are metered per Bot device in a `bot_runtime`
+bucket at the `read` rate (10/s, burst 60 by default). Replies have their own `bot_reply` bucket per Bot device,
+200/s with a burst of 400 (Task 21b fix round 1): every member command and every app-surface read is answered once,
+so the budget is the community's (about one answer a second for each of 200 members, and one hint's worth of reads
+from every member's surfaces at once), and it cannot outrun the members' own `bot_command` budgets, since each reply
+needs a request the relay took within five minutes. The Bot paces itself below it (180/s, burst 360), apart from its
+own reads and its hints.
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
@@ -1664,7 +1671,12 @@ too; nothing in the app reads or writes the Bot through interaction groups any m
 They use catalog entries of `handler_kind` 1, which the picker never shows:
 
 - the sealed reads: `91` poll get `[poll_id]`, `92` music state `[]` (channel: the voice channel),
-  `93` reminders due `[cursor|null]`;
+  `93` reminders due `[cursor|null]`. Poll get answers the poll's voters too, as a third element
+  `[previews, distinct, capped]`: per answer the first five voters (16-byte user ids), the number of distinct voters
+  (counted up to 2000), and `1` when that count stopped at the bound. A card reads its poll once per hint and never
+  its voters page by page. Reads of one poll by many members within 100 ms are served from one computation of the poll
+  and its voters; each member is still authorised from the Bot's feed state and answered with their own choices, and a
+  vote or a close ends the window for that poll;
 - app operations, numbered 100 + the v1 operation they run: music `111`–`125` (search, enqueue,
   pause, resume, skip, stop, seek, volume, shuffle, repeat, remove, move, clear, provider status,
   announce; all but provider status act in the request's channel, the voice channel), role panel
@@ -1672,10 +1684,18 @@ They use catalog entries of `handler_kind` 1, which the picker never shows:
   create, `172` list, `173` vote, `174` close, `175` voters, reminders `180` create, `181` list, `182`
   cancel, `183` dismiss.
 
+The operations on existing polls and reminders (poll get, list, vote, close and voters; reminders due, list, cancel
+and dismiss) are offered whatever the installation's features, as v1 kept them; only creating a poll or a reminder needs
+Polls or Reminders on (Task 21b fix round 1).
+
 An app operation's sealed arguments are the v1 operation's arguments (ids as 16-byte byte strings),
 preceded for a mutation by the expected revision (uint); the Bot checks and normalises them with the
 v1 request decoder and runs the same handler. A poll created through `170` must name the request's
-channel, where the Bot authorised `send_messages`. Every one of them answers `[revision uint|null,
+channel, where the Bot authorised `send_messages`. The other app operations that name a channel in their arguments
+authorise it in their handler, as v1 did: `131` (the role panel's channel; the Bot also requires `view_channel` and
+`send_messages` there from its feed state, so only a Bot channel qualifies), `151` (an announcement's channel), `172`
+(the channel whose polls are listed) and `180` (a reminder's source channel, which needs `view_channel` and
+`read_message_history`). Every one of them answers `[revision uint|null,
 data bstr]` with the v1 response data, or a bare code (`E_INVALID`, `E_FORBIDDEN`, `E_BOT_STALE`,
 `E_CONFLICT`, `E_UNAVAILABLE`, `E_BUSY`, `E_NOT_FOUND`, `E_UPGRADE_REQUIRED`, `E_INTERNAL`). A
 mutation is not a read for the Bot's timeout rule: a timed-out member's vote or dismiss is refused.

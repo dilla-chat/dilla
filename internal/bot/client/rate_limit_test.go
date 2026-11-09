@@ -119,9 +119,10 @@ func TestRequestRateClassesMirrorServer(t *testing.T) {
 		{"POST", "groups/x/proposal", "proposal"},
 		{"GET", "devices/x/keypackage", "keypackage"},
 		{"POST", "bot-runtime/installations/x/interaction-groups/y/heal", "commit"},
-		// Bot v2 Task 15: dillad meters the Bot's replies and state hints as bot_runtime, at the read rate.
-		{"POST", "bot-runtime/replies", "read"},
-		{"POST", "bot-runtime/state-hints", "read"},
+		// Task 21b fix round 1: sealed answers have their own class (dillad: bot_reply); state hints keep their own coalesced
+		// class (dillad: bot_runtime at the read rate). Neither spends the Bot's read bucket.
+		{"POST", "bot-runtime/replies", "reply"},
+		{"POST", "bot-runtime/state-hints", "hint"},
 		{"PUT", "bot-runtime/communities/x/catalog", "write"},
 	} {
 		if got := requestClass(tc.method, tc.path); got != tc.want {
@@ -269,6 +270,9 @@ func TestSpecializedRateTableMatchesServerRegistrations(t *testing.T) {
 		{"groups.go", "POST /v1/groups/{id}/proposal", "dsClassProposal", "POST", "groups/x/proposal", "proposal"},
 		{"heal.go", "POST /v1/groups/{id}/heal", "dsClassCommit", "POST", "groups/x/heal", "commit"},
 		{"bot_interaction_group_heal.go", "mux.SocketAuthed(\"POST \"+base", "dsClassCommit", "POST", "bot-runtime/installations/x/interaction-groups/y/heal", "commit"},
+		// Task 21b fix round 1: the sealed answers' own meter, and the hints' coalesced one.
+		{"bot_commands.go", "POST /v1/bot-runtime/replies", "dsClassBotReply", "POST", "bot-runtime/replies", "reply"},
+		{"bot_commands.go", "POST /v1/bot-runtime/state-hints", "dsClassBotRuntime", "POST", "bot-runtime/state-hints", "hint"},
 	} {
 		raw, err := os.ReadFile("../../api/" + tc.file)
 		if err != nil {
@@ -299,7 +303,8 @@ func TestSpecializedRateTableMatchesServerRegistrations(t *testing.T) {
 	}
 	defaults, _ := (RateLimits{}).defaults()
 	server := config.Default().Limits.Rate
-	for _, pair := range [][2]float64{{defaults.CommitPerSecond, server.CommitPerSecond}, {defaults.ProposalPerSecond, server.ProposalPerSecond}, {defaults.KeyPackagePerSecond, server.ProposalPerSecond}} {
+	for _, pair := range [][2]float64{{defaults.CommitPerSecond, server.CommitPerSecond}, {defaults.ProposalPerSecond, server.ProposalPerSecond}, {defaults.KeyPackagePerSecond, server.ProposalPerSecond},
+		{defaults.ReplyPerSecond, serverBotReplyPerSecond(t)}, {defaults.HintPerSecond, server.ReadPerSecond}} {
 		if pair[0] <= 0 || pair[0] >= pair[1] {
 			t.Fatalf("client rate must stay below server: %v", pair)
 		}
@@ -519,4 +524,67 @@ func TestImmediateControlPrecedesReservedBackgroundToken(t *testing.T) {
 			}
 		}
 	})
+}
+
+// Task 21b fix round 1: one sealed answer per member command must not queue behind the Bot's own reads (authority lookups,
+// discovery) or its state hints. 40 reads, then 360 answers and 40 hints, all pass at once.
+func TestRepliesAndHintsHaveTheirOwnBudgets(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, err := New(Config{BaseURL: "https://example.invalid", InstanceID: testID(99)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		for range 40 {
+			if err := c.waitRate(t.Context(), "device", http.MethodGet, "groups/x/info"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for range 360 {
+			if err := c.waitRate(t.Context(), "device", http.MethodPost, "bot-runtime/replies"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for range 40 {
+			if err := c.waitRate(t.Context(), "device", http.MethodPost, "bot-runtime/state-hints"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if elapsed := time.Since(start); elapsed != 0 {
+			t.Fatalf("reads, answers and hints shared a budget: %s", elapsed)
+		}
+		// Past its burst an answer waits at the reply rate (180/s, below dillad's 200/s), not the read rate.
+		start = time.Now()
+		for range 180 {
+			if err := c.waitRate(t.Context(), "device", http.MethodPost, "bot-runtime/replies"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if elapsed := time.Since(start); elapsed > 1100*time.Millisecond {
+			t.Fatalf("180 answers past the burst took %s, want about 1 s", elapsed)
+		}
+	})
+}
+
+func TestReplyAndHintRateDefaults(t *testing.T) {
+	d, err := (RateLimits{}).defaults()
+	if err != nil || d.ReplyPerSecond != 180 || d.ReplyBurst != 360 || d.HintPerSecond != 8 || d.HintBurst != 40 {
+		t.Fatalf("defaults=%+v error=%v", d, err)
+	}
+	if _, err := (RateLimits{ReplyPerSecond: -1}).defaults(); err == nil {
+		t.Fatal("accepted a negative reply rate")
+	}
+}
+
+// serverBotReplyPerSecond reads dillad's sealed-answer rate (internal/api/dsmeter.go BotReplyPerSecond) from its source.
+func serverBotReplyPerSecond(t *testing.T) float64 {
+	t.Helper()
+	raw, err := os.ReadFile("../../api/dsmeter.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "BotReplyPerSecond = 200") {
+		t.Fatal("dillad's bot_reply rate changed: update the client's reply pacing and this check")
+	}
+	return 200
 }

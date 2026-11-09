@@ -230,7 +230,7 @@ function bytesFromHexForTest(value: string): Uint8Array {
  *  `silent` leaves it unanswered (the run times out after 5 s). */
 function fakeUtilityCore(options: {
   status?: () => unknown;
-  response?: (operation: number, requestId: string, command: Record<string, unknown>) => { status?: number; revision?: string | null; data: Uint8Array };
+  response?: (operation: number, requestId: string, command: Record<string, unknown>) => { status?: number; revision?: string | null; data: Uint8Array; extra?: unknown };
   silent?: (operation: number, sends: number) => boolean;
   /** Bot v2: the v1 operations whose sealed form the catalog held on this device offers (botCatalog:<community>). */
   catalog?: number[];
@@ -243,7 +243,7 @@ function fakeUtilityCore(options: {
     sends.set(call.operation, count);
     if (options.silent?.(call.operation, count) === true) return null;
     const result = options.response?.(call.operation, call.requestId, call as unknown as Record<string, unknown>) ?? { data: capabilityData(), revision: null };
-    return { status: result.status ?? 0, revision: result.revision ?? null, data: result.data };
+    return { status: result.status ?? 0, revision: result.revision ?? null, data: result.data, ...(result.extra === undefined ? {} : { extra: result.extra }) };
   });
   const catalog = { revision: '1', keyId: null, fingerprint: null, status: { state: 'ready', since: null }, botChannels: [],
     botUserId: options.catalogBotUser === undefined ? BOT_USER : options.catalogBotUser,
@@ -356,11 +356,12 @@ describe('createBotUtilities facade', () => {
   it('a mutation with no answer in time is uncertain; read() resends the same request and settles it', async () => {
     vi.useFakeTimers();
     try {
-      const f = fakeUtilityCore({ silent: (operation, sends) => operation === 73 && sends === 1, response: () => ({
+      // The first send and its one automatic resend both go unanswered.
+      const f = fakeUtilityCore({ silent: (operation, sends) => operation === 73 && sends <= 2, response: () => ({
         data: pollSummaryForId(hex(1), hex(2), null, [0n], 2n), revision: '2' }) });
       const api = createBotUtilities(f.client, COMMUNITY);
       const vote = api.pollVote({ requestId: REQUEST_ID, pollId: hex(1), channelId: hex(2), choices: [0], revision: '1' }).catch((value: unknown): unknown => value);
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(10_000);
       const error = await vote;
       expect(error).toBeInstanceOf(BotUtilitiesUncertainMutationError);
       if (error instanceof BotUtilitiesUncertainMutationError) {
@@ -369,8 +370,8 @@ describe('createBotUtilities facade', () => {
       }
       await expect(api.read(REQUEST_ID, 73)).resolves.toMatchObject({ status: 0, requestId: REQUEST_ID, revision: '2' });
       const sends = f.calls.filter(call => call.m === 'botOperation' && call.operation === 73);
-      expect(sends.map(call => call.requestId)).toEqual([REQUEST_ID, REQUEST_ID]);
-      expect(sends[1].args).toEqual(sends[0].args);
+      expect(sends.map(call => call.requestId)).toEqual([REQUEST_ID, REQUEST_ID, REQUEST_ID]);
+      expect(sends[2].args).toEqual(sends[0].args);
     } finally {
       vi.useRealTimers();
     }
@@ -406,25 +407,29 @@ describe('createBotUtilities facade', () => {
     expect(f.calls.find(call => call.m === 'botOperation' && call.operation === 74)).toMatchObject({ requestId: hex(11), revision: '2', args: [id(1)] });
   });
 
-  it('checks backing poll context before returning named voters', async () => {
+  // Task 21b fix round 1: a voter page is one read; the Bot checks the poll, its channel and the option (no backing poll read).
+  it('reads a page of named voters with no backing poll read', async () => {
     const voterPage = data([1n, [id(4)], null]);
-    const f = fakeUtilityCore({ response: (operation) => ({
-      data: operation === 3 ? capabilityData() : operation === 71 ? pollSummaryForId(hex(1), hex(2), null, []) : voterPage,
-      revision: operation === 3 || operation === 75 ? null : '1',
-    }) });
+    const f = fakeUtilityCore({ response: () => ({ data: voterPage, revision: null }) });
     await expect(createBotUtilities(f.client, COMMUNITY).pollVoters({ pollId: hex(1), channelId: hex(2), option: 1, requestId: REQUEST_ID }))
       .resolves.toEqual({ voters: [hex(4)], nextCursor: null });
-    const backing = f.calls.find(call => call.m === 'botOperation' && call.operation === 71)!;
-    const voters = f.calls.find(call => call.m === 'botOperation' && call.operation === 75)!;
-    expect(backing.requestId).not.toBe(REQUEST_ID);
-    expect(voters).toMatchObject({ requestId: REQUEST_ID, args: [id(1), 1, null] });
-    const fingerprints = new Map<string, string>();
-    for (const call of [backing, voters]) {
-      const requestId = call.requestId as string;
-      const fingerprint = JSON.stringify([call.operation, call.channelId, call.args, call.revision]);
-      if (fingerprints.has(requestId)) expect(fingerprints.get(requestId)).toBe(fingerprint);
-      fingerprints.set(requestId, fingerprint);
+    expect(f.calls.filter(call => call.m === 'botOperation').map(call => call.operation)).toEqual([75]);
+    expect(f.calls.find(call => call.m === 'botOperation' && call.operation === 75)).toMatchObject({ requestId: REQUEST_ID, sealed: 175, args: [id(1), 1, null] });
+  });
+
+  // Task 21b fix round 1: one sealed poll.get answers the poll and its voters.
+  it('reads a poll and its voters in one sealed poll.get, and refuses malformed voters', async () => {
+    const voters = [[[id(4), id(5)], []], 2n, 0n];
+    const f = fakeUtilityCore({ response: () => ({ data: pollSummaryForId(hex(1), hex(2), null, []), revision: '1', extra: voters }) });
+    await expect(createBotUtilities(f.client, COMMUNITY).pollRead(hex(1), { channelId: hex(2) })).resolves.toMatchObject({
+      poll: { id: hex(1) }, voters: { previews: [[hex(4), hex(5)], []], distinct: 2, capped: false } });
+    expect(f.calls.filter(call => call.m === 'botOperation').map(call => call.sealed)).toEqual([91]);
+    for (const bad of [[[[id(4)]], 1n, 0n], [[[], []], 1n, 2n], [[[id(4), id(4), id(4), id(4), id(4), id(4)], []], 6n, 0n], [[[new Uint8Array(15)], []], 1n, 0n]]) {
+      const g = fakeUtilityCore({ response: () => ({ data: pollSummaryForId(hex(1), hex(2), null, []), revision: '1', extra: bad }) });
+      await expect(createBotUtilities(g.client, COMMUNITY).pollRead(hex(1), { channelId: hex(2) })).rejects.toBeInstanceOf(BotUtilitiesError);
     }
+    const older = fakeUtilityCore({ response: () => ({ data: pollSummaryForId(hex(1), hex(2), null, []), revision: '1' }) });
+    await expect(createBotUtilities(older.client, COMMUNITY).pollRead(hex(1), { channelId: hex(2) })).resolves.toMatchObject({ voters: null });
   });
 
   it.each([

@@ -837,3 +837,20 @@ func TestAnswerCacheByteCountStaysExact(t *testing.T) {
 	wg.Wait()
 	expectExactBytes(t, w3.in, "concurrent retries")
 }
+
+// Task 21b fix round 1, review M1: the Bot's own account sends nothing but its health probe. Any other operation from it is
+// refused before authorisation or dispatch, even when the feed lists it as a member with every permission.
+func TestTheBotsOwnUserMayOnlyProbe(t *testing.T) {
+	w := newWorld(t)
+	bot := id.New()
+	w.in.SetBotUser(bot)
+	w.authz.Owner(bot, false)
+	w.authz.Member(bot, true, nil, false)
+	cmd, _ := w.command(opRemind, 1)
+	cmd.UserID = bot
+	w.in.Handle(context.Background(), cmd)
+	expectOne(t, w.sender.all(), 403, "E_FORBIDDEN")
+	if w.dispatch.count() != 0 {
+		t.Fatalf("the Bot's own command reached a handler (%d calls)", w.dispatch.count())
+	}
+}
