@@ -129,6 +129,10 @@ async function expectFirstAnswer(page: Page, host: StartedHost, expected: RegExp
     await expect(commandResult(page)).toContainText(expected, { timeout: BOT_WAIT });
   } catch (e) {
     console.log(`Bot intake refusals so far:\n${host.botRefusals().join('\n') || '(none)'}`);
+    // No refusal and no result row: the command may never have left this device (a greyed picker row says why).
+    const composer = await page.getByRole('region', { name: 'Command composer', exact: true }).innerText({ timeout: 1_000 })
+      .catch(() => '(no command composer open)');
+    console.log(`result rows: ${String(await page.locator('.d-bot-result').count())}; command composer: ${composer}`);
     throw e;
   }
 }
