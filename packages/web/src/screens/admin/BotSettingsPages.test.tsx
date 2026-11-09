@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient } from '../../test/fake-client.ts';
+import { installSealedBot } from '../../test/sealed-bot.ts';
 import { account } from '../../test/fixtures.ts';
 import { en } from '../../strings/index.ts';
 import { encodeWelcomeSettings } from './welcome-settings.ts';
@@ -46,7 +47,9 @@ describe('bot settings pages', () => {
     expect(client.callsOf('getBotInstallation')).toHaveLength(0);
   });
 
-  it('keeps an accepted welcome request owned and polls it across page changes', async () => {
+  // Task 22: the welcome read is a sealed command (101); its answer, arriving while another page shows, is kept for the
+  // welcome page, and the request is sent once.
+  it('keeps a welcome request owned across page changes and shows its late answer', async () => {
     const client = new FakeClient();
     client.set('account', account());
     client.set('factors', { owed: false, totp: null, passkeys: [], backupCodesLeft: 0, hasPassword: true });
@@ -56,20 +59,11 @@ describe('bot settings pages', () => {
       everyoneId: 'ab'.repeat(16), overwritesLoaded: true });
     const installation = { id: 'b2'.repeat(16), communityId: COMMUNITY, state: 3, revision: '7', userId: null,
       deviceId: null, capabilities: 1 << 1, updatedAt: '100' };
-    let responseReady = false;
-    client.handler = command => {
-      if (command.m === 'getBotInstallation') return Promise.resolve(installation);
-      if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
-      if (command.m === 'readBotInteractionResponses') return Promise.resolve(responseReady ? { through: '2', blocked: false, responses: [{
-        deliveryId: '1', sourceSeq: '1', requestId: 'previous-request', communityId: COMMUNITY,
-        operation: 1, channelId: null, status: 0, revision: '7', data: new Uint8Array(),
-      }, {
-        deliveryId: '2', sourceSeq: '2', requestId: client.callsOf('humanInteractionRequest').at(-1)?.requestId ?? '',
-        communityId: COMMUNITY, operation: 1, channelId: null, status: 0, revision: '8',
-        data: encodeWelcomeSettings({ channelId: 'cc'.repeat(16), template: 'Hello {member}!', serverName: 'Midgard' }),
-      }] } : { through: null, blocked: false, responses: [] });
-      return Promise.resolve(null);
-    };
+    client.handler = command => Promise.resolve(command.m === 'getBotInstallation' ? installation : null);
+    let release: (() => void) | null = null;
+    const bot = installSealedBot(client, COMMUNITY, () => new Promise(resolve => { release = () => resolve({ status: 0, revision: '8',
+      data: encodeWelcomeSettings({ channelId: 'cc'.repeat(16), template: 'Hello {member}!', serverName: 'Midgard' }) }); }));
+    client.set(`botCatalog:${COMMUNITY}`, { ...client.get(`botCatalog:${COMMUNITY}`)!, botChannels: ['cc'.repeat(16)] });
     client.set(`channels:${COMMUNITY}`, [{ id: 'cc'.repeat(16), communityId: COMMUNITY, name: 'general', kind: 0, mode: 0,
       topic: '', parentId: null, position: 0, slowmode: 0, announcement: false, group: 'active' }]);
     const page = (kind: 'welcome' | 'bot') => <CoreProvider client={client}>
@@ -79,15 +73,14 @@ describe('bot settings pages', () => {
     const view = render(page('welcome'));
     expect(screen.getByRole('dialog', { name: 'Server settings' })).toBeInTheDocument();
     await user.click(await screen.findByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
-    await waitFor(() => expect(client.callsOf('humanInteractionRequest')).toHaveLength(1));
+    await waitFor(() => expect(bot.calls).toHaveLength(1));
 
     view.rerender(page('bot'));
     expect(screen.queryByRole('button', { name: en['admin.bot.welcomeSettings.load'] })).not.toBeInTheDocument();
-    responseReady = true;
-    await waitFor(() => expect(client.callsOf('ackBotInteractionResponses')).toHaveLength(1));
+    await act(async () => { release?.(); await Promise.resolve(); await Promise.resolve(); });
 
     view.rerender(page('welcome'));
     expect(await screen.findByDisplayValue('Hello {member}!')).toBeInTheDocument();
-    expect(client.callsOf('humanInteractionRequest')).toHaveLength(1);
+    expect(bot.calls.filter(c => c.sealed === 101)).toHaveLength(1);
   });
 });

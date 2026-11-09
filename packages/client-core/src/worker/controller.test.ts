@@ -39,17 +39,15 @@ describe('Controller', () => {
       communityId: COMMUNITY, groupId: GROUP, channelId: CHANNEL, messageId: new Uint8Array(16).fill(0x73),
       targetSequence: 3n, reason: 'persisted reason', excerpt: 'persisted excerpt', signedBody, state: 2,
       createdAt: 1_700_000_000n, expires: 1_700_000_030n, evidenceExpires: 0n });
-    w.core.humanInteractionSendPrepare.mockImplementation((requestId) => {
-      w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: NOW_S, body: 'evidence request', type: 0, replyTo: null, attachments: [] });
-      return requestId;
-    });
+    // Task 22: evidence goes to the Bot as the sealed app operation 161 (Controller.sealedEvidence), not as a v1 interaction.
+    const sealed = vi.spyOn(w.controller as unknown as { sealedEvidence: (c: string, r: string, a: string[]) => Promise<string> }, 'sealedEvidence')
+      .mockResolvedValue('accepted');
     await toReady(w);
-    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(sealed).toHaveBeenCalledTimes(1));
     expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
-    const request = decode(w.core.humanInteractionSendPrepare.mock.calls[0][3]) as unknown[];
-    expect(request[1]).toEqual(evidenceRequestId);
-    expect(request[7]).toEqual([proofRequestId, 'persisted reason', 'persisted excerpt']);
-    expect(w.core.completeManualRemovalEvidence).toHaveBeenCalledWith(proofRequestId, 1_700_000_000n);
+    expect(w.core.humanInteractionSendPrepare).not.toHaveBeenCalled();
+    expect(sealed).toHaveBeenCalledWith(toHex(COMMUNITY), toHex(evidenceRequestId), [toHex(proofRequestId), 'persisted reason', 'persisted excerpt']);
+    await vi.waitFor(() => expect(w.core.completeManualRemovalEvidence).toHaveBeenCalledWith(proofRequestId, 1_700_000_000n));
   });
 
   it('rotates an expired op61 envelope after restart while preserving proof and exact evidence', async () => {
@@ -63,21 +61,20 @@ describe('Controller', () => {
       communityId: COMMUNITY, groupId: GROUP, channelId: CHANNEL, messageId: new Uint8Array(16).fill(0x79),
       targetSequence: 3n, reason: 'persisted reason', excerpt: 'persisted excerpt', signedBody, state: 2,
       createdAt: 1_700_000_000n, expires: 1_700_000_030n, evidenceExpires: 1_700_000_030n });
-    w.core.humanInteractionSendPrepare.mockImplementation((requestId) => {
-      w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: NOW_S, body: 'evidence request', type: 0, replyTo: null, attachments: [] });
-      return requestId;
-    });
+    // Task 22: evidence goes to the Bot as the sealed app operation 161 (Controller.sealedEvidence), not as a v1 interaction.
+    const sealed = vi.spyOn(w.controller as unknown as { sealedEvidence: (c: string, r: string, a: string[]) => Promise<string> }, 'sealedEvidence')
+      .mockResolvedValue('accepted');
     await toReady(w);
-    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(sealed).toHaveBeenCalledTimes(1));
     expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
     const [proof, candidate, now] = w.core.ensureManualRemovalEvidenceRequest.mock.calls[0];
     expect(proof).toEqual(proofRequestId);
     expect(now).toBe(1_700_000_040n);
     expect(candidate).not.toEqual(oldEvidenceRequestId);
-    const request = decode(w.core.humanInteractionSendPrepare.mock.calls[0][3]) as unknown[];
-    expect(request[1]).not.toEqual(oldEvidenceRequestId);
-    expect(request[6]).toBe(1_700_000_070n);
-    expect(request[7]).toEqual([proofRequestId, 'persisted reason', 'persisted excerpt']);
+    const [community, requestId, args] = sealed.mock.calls[0];
+    expect(community).toBe(toHex(COMMUNITY));
+    expect(requestId).not.toBe(toHex(oldEvidenceRequestId));
+    expect(args).toEqual([toHex(proofRequestId), 'persisted reason', 'persisted excerpt']);
   });
 
   it('uses the authenticated removal feed to resolve an interrupted POST before op61 and avoids replaying the removal', async () => {
@@ -102,17 +99,14 @@ describe('Controller', () => {
     w.routes.getDeviceList.mockResolvedValue({ version: 1n, blob: new Uint8Array([9]), raw: signedList });
     w.routes.getDeviceListHistory.mockResolvedValue({ raw: encode([[1, new Uint8Array([9]), new Uint8Array(64), new Uint8Array(32)]]), count: 1, lastVersion: 1n });
     w.core.ingestRemoval.mockImplementation(() => { saved.state = 2; return 1n; });
-    w.core.humanInteractionSendPrepare.mockImplementation((requestId) => {
-      w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: NOW_S, body: 'evidence request', type: 0, replyTo: null, attachments: [] });
-      return requestId;
-    });
+    // Task 22: evidence goes to the Bot as the sealed app operation 161 (Controller.sealedEvidence), not as a v1 interaction.
+    const sealed = vi.spyOn(w.controller as unknown as { sealedEvidence: (c: string, r: string, a: string[]) => Promise<string> }, 'sealedEvidence')
+      .mockResolvedValue('accepted');
     await toReady(w);
-    await vi.waitFor(() => expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(sealed).toHaveBeenCalledTimes(1));
     expect(getModerationRemovals).toHaveBeenCalledWith(GROUP, 0n, 250);
     expect(w.routes.postModerationRemoval).not.toHaveBeenCalled();
-    const request = decode(w.core.humanInteractionSendPrepare.mock.calls[0][3]) as unknown[];
-    expect(request[1]).toEqual(evidenceRequestId);
-    expect(request[7]).toEqual([proofRequestId, 'recovered reason', 'recovered excerpt']);
+    expect(sealed).toHaveBeenCalledWith(toHex(COMMUNITY), toHex(evidenceRequestId), [toHex(proofRequestId), 'recovered reason', 'recovered excerpt']);
   });
 
   it('returns unknown after a transport failure and retries the exact proof for the same target', async () => {
@@ -1007,10 +1001,9 @@ describe('Controller', () => {
     w.call(10_200, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
     await vi.waitFor(() => expect(w.ret(10_200)).toMatchObject({ ok: true, value: null }));
     w.state.groups.push(textGroup(2), { ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3, targetId: new Uint8Array(16).fill(0x53) });
-    w.core.humanInteractionSendPrepare.mockImplementation((requestId) => {
-      w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: NOW_S, body: 'evidence request', type: 0, replyTo: null, attachments: [] });
-      return requestId;
-    });
+    // Task 22: evidence goes to the Bot as the sealed app operation 161 (Controller.sealedEvidence), not as a v1 interaction.
+    const sealed = vi.spyOn(w.controller as unknown as { sealedEvidence: (c: string, r: string, a: string[]) => Promise<string> }, 'sealedEvidence')
+      .mockResolvedValue('accepted');
     w.state.rows.push(strangerRow(3));
     const msgId = toHex(w.state.rows[0].msgId!);
     w.call(10_201, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId, seq: '3', reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
@@ -1021,27 +1014,20 @@ describe('Controller', () => {
     expect(w.core.prepareManualRemovalEvidence).toHaveBeenCalledWith(expect.any(Uint8Array), expect.any(Uint8Array), COMMUNITY,
       GROUP, CHANNEL, w.state.rows[0].msgId, 3n, 'reviewed by moderator', 'bounded excerpt', 1_700_000_000n, 1_700_000_025n, 1_700_000_000n);
     expect(w.routes.postModerationRemoval).toHaveBeenCalledWith(GROUP, expect.any(Uint8Array));
-    const prepared = w.core.humanInteractionSendPrepare.mock.calls[0];
-    const evidenceRequest = decode(prepared[3]) as unknown[];
-    expect(evidenceRequest[4]).toBe(61n);
-    expect(evidenceRequest[5]).toBe(0n);
-    expect(evidenceRequest[6]).toBe(1_700_000_030n);
-    expect(evidenceRequest[1]).toEqual(prepared[0]);
     const removalRequest = w.core.prepareManualRemovalEvidence.mock.calls[0];
-    expect(evidenceRequest[1]).toEqual(prepared[0]);
     expect((w.ret(10_201) as { ok: true; value: { proofRequestId: string; evidenceRequestId: string } }).value)
       .toMatchObject({ proofRequestId: toHex(removalRequest[0]), evidenceRequestId: toHex(removalRequest[1]) });
-    expect(evidenceRequest[7]).toEqual([removalRequest[0], 'reviewed by moderator', 'bounded excerpt']);
+    expect(sealed).toHaveBeenCalledWith(toHex(COMMUNITY), toHex(removalRequest[1]), [toHex(removalRequest[0]), 'reviewed by moderator', 'bounded excerpt']);
     expect(w.core.markManualRemovalSubmitted.mock.invocationCallOrder[0]).toBeLessThan(w.routes.postModerationRemoval.mock.invocationCallOrder[0]);
-    expect(w.routes.postModerationRemoval.mock.invocationCallOrder[0]).toBeLessThan(w.core.humanInteractionSendPrepare.mock.invocationCallOrder[0]);
-    expect(w.routes.postMessage).toHaveBeenCalledWith(new Uint8Array(16).fill(0x52), expect.any(Uint8Array));
+    expect(w.routes.postModerationRemoval.mock.invocationCallOrder[0]).toBeLessThan(sealed.mock.invocationCallOrder[0]);
+    expect(w.core.humanInteractionSendPrepare).not.toHaveBeenCalled();
 
     w.routes.postModerationRemoval.mockRejectedValue(refusal(403, 'E_FORBIDDEN'));
     w.call(10_202, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId, seq: '3', reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
     await vi.waitFor(() => expect(w.ret(10_202)).toMatchObject({ ok: true, value: { removal: 'rejected' } }));
     expect(w.state.manualEvidence).toHaveLength(0);
     expect(w.core.rejectManualRemoval).toHaveBeenCalledTimes(1);
-    expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1);
+    expect(sealed).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -1074,12 +1060,10 @@ describe('Controller', () => {
     w.call(10_213, { m: 'selectCommunity', communityId: toHex(COMMUNITY) });
     await vi.waitFor(() => expect(w.ret(10_213)).toMatchObject({ ok: true, value: null }));
     w.state.groups.push(textGroup(2), { ...textGroup(2), groupId: new Uint8Array(16).fill(0x52), kind: 3, targetId: new Uint8Array(16).fill(0x53) });
-    w.core.humanInteractionSendPrepare.mockImplementation((requestId) => {
-      w.state.outbox.push({ msgId: requestId, state: 0, error: '', created: NOW_S, body: 'evidence request', type: 0, replyTo: null, attachments: [] });
-      return requestId;
-    });
+    // Task 22: the Bot refuses the sealed evidence (E_FORBIDDEN, v1 status 2).
+    const sealed = vi.spyOn(w.controller as unknown as { sealedEvidence: (c: string, r: string, a: string[]) => Promise<string> }, 'sealedEvidence')
+      .mockResolvedValue('rejected');
     w.state.rows.push(strangerRow(3));
-    w.routes.postMessage.mockRejectedValue(new DillaHttpError({ status: 403, code: 'E_FORBIDDEN', detail: '', retryAfterMs: null, extra: [] }));
     w.call(10_214, { m: 'moderateRemoveMessage', channelId: toHex(CHANNEL), msgId: toHex(w.state.rows[0].msgId!), seq: '3',
       reason: 'reviewed by moderator', excerpt: 'bounded excerpt' });
     await vi.waitFor(() => expect(w.ret(10_214)).toMatchObject({ ok: true, value: { removal: 'accepted', evidenceUpload: 'rejected' } }));
@@ -1087,8 +1071,8 @@ describe('Controller', () => {
     expect(rejectedEvidence.value.proofRequestId).toMatch(/^[0-9a-f]{32}$/u);
     expect(rejectedEvidence.value.evidenceRequestId).toMatch(/^[0-9a-f]{32}$/u);
     expect(w.routes.postModerationRemoval).toHaveBeenCalledTimes(1);
-    expect(w.core.humanInteractionSendPrepare).toHaveBeenCalledTimes(1);
-    expect(w.core.sendFail).toHaveBeenCalledWith(expect.any(Uint8Array), 'E_FORBIDDEN');
+    expect(sealed).toHaveBeenCalledTimes(1);
+    expect(w.core.completeManualRemovalEvidence).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1190,6 +1174,28 @@ describe('Controller', () => {
     expect(putMemberTimeout).not.toHaveBeenCalled();
   });
 
+  // Task 22: moderation evidence is the sealed app operation 161: revision 0, the receipt id and the texts, under the
+  // reserved request id; 'accepted' only when the Bot itself stored it.
+  it('sends moderation evidence as sealed operation 61→161 and maps the Bot\'s answer', async () => {
+    const w = world();
+    await toReady(w);
+    const request = vi.fn();
+    const internals = w.controller as unknown as { workerBotOperations: (c: string) => unknown;
+      sealedEvidence: (c: string, r: string, a: [string, string, string]) => Promise<string> };
+    vi.spyOn(internals, 'workerBotOperations').mockReturnValue({ request, read: vi.fn() });
+    const args: [string, string, string] = ['71'.repeat(16), 'spam', 'buy now'];
+    for (const [answer, want] of [[{ status: 0 }, 'accepted'], [{ status: 2 }, 'rejected'], [{ status: 1 }, 'rejected'], [{ status: 5 }, 'pending']] as const) {
+      request.mockResolvedValueOnce({ requestId: '72'.repeat(16), revision: null, data: new Uint8Array(), ...answer });
+      await expect(internals.sealedEvidence(toHex(COMMUNITY), '72'.repeat(16), args)).resolves.toBe(want);
+    }
+    expect(request).toHaveBeenCalledWith({ operation: 61, args, revision: '0', requestId: '72'.repeat(16) });
+    const { BotOperationRefusedError, BotOperationUncertainError } = await import('../bot/operations');
+    request.mockRejectedValueOnce(new BotOperationUncertainError('72'.repeat(16)));
+    await expect(internals.sealedEvidence(toHex(COMMUNITY), '72'.repeat(16), args)).resolves.toBe('unknown');
+    request.mockRejectedValueOnce(new BotOperationRefusedError('72'.repeat(16), 'E_BOT_OFFLINE', 503));
+    await expect(internals.sealedEvidence(toHex(COMMUNITY), '72'.repeat(16), args)).resolves.toBe('pending');
+  });
+
   it('returns the accepted manual warning action metadata', async () => {
     const w = world();
     const requestId = new Uint8Array(16).fill(0x55);
@@ -1197,14 +1203,10 @@ describe('Controller', () => {
     const warnMember = vi.fn(() => Promise.resolve({ requestId, actionId, revision: 7, acceptedAt: 1_800_000_000 }));
     Object.assign(w.routes, { warnMember });
     await toReady(w);
-    const groupId = new Uint8Array(16).fill(0x52);
-    w.state.groups.push({ ...textGroup(2), groupId, kind: 3, targetId: new Uint8Array(16).fill(0x53) });
-    warnMember.mockImplementation(() => {
-      const row = w.state.manualWarnings[0];
-      if (row !== undefined) w.state.outbox.push({ msgId: row.evidenceRequestId, state: 0, error: '', created: NOW_S,
-        body: 'sealed interaction', type: 0, replyTo: null, attachments: [] });
-      return Promise.resolve({ requestId, actionId, revision: 7, acceptedAt: 1_800_000_000 });
-    });
+    // Task 22: evidence goes to the Bot as the sealed app operation 161 (Controller.sealedEvidence), not as a v1 interaction.
+    const sealed = vi.spyOn(w.controller as unknown as { sealedEvidence: (c: string, r: string, a: string[]) => Promise<string> }, 'sealedEvidence')
+      .mockResolvedValue('accepted');
+
     w.call(996, { m: 'warnMember', communityId: toHex(COMMUNITY), userId: toHex(STRANGER), requestId: toHex(requestId), reason: 'follow the rules' });
     await vi.waitFor(() => expect(w.ret(996)).toMatchObject({ ok: true, value: {
       requestId: toHex(requestId), actionId: toHex(actionId), revision: '7', acceptedAt: 1_800_000_000, evidence: 'accepted',
@@ -1212,11 +1214,8 @@ describe('Controller', () => {
     expect(w.core.prepareManualWarningEvidence).toHaveBeenCalledWith(requestId, expect.any(Uint8Array), COMMUNITY, STRANGER, 'follow the rules', expect.any(BigInt), expect.any(BigInt));
     expect(w.core.markManualWarningAccepted).toHaveBeenCalledWith(requestId, actionId, 7n, 1_800_000_000n);
     expect(warnMember).toHaveBeenCalledWith(COMMUNITY, STRANGER, requestId);
-    const requestBody = w.core.humanInteractionSendPrepare.mock.calls[0]?.[3];
-    expect(requestBody).toBeInstanceOf(Uint8Array);
-    if (requestBody === undefined) throw new Error('manual warning did not prepare an interaction request');
-    const wire = decode(requestBody) as unknown[];
-    expect(wire[7]).toEqual([requestId, 'follow the rules', '']);
+    expect(sealed).toHaveBeenCalledWith(toHex(COMMUNITY), expect.stringMatching(/^[0-9a-f]{32}$/u), [toHex(requestId), 'follow the rules', '']);
+    expect(w.core.humanInteractionSendPrepare).not.toHaveBeenCalled();
   });
 
   it('returns full AFK settings through the authenticated settings route', async () => {

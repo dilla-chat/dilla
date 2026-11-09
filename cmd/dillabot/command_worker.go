@@ -19,6 +19,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/bot/health"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/intake"
+	"github.com/dilla-chat/dilla/internal/bot/music"
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
 	"github.com/dilla-chat/dilla/internal/bot/service"
 	"github.com/dilla-chat/dilla/internal/clock"
@@ -440,6 +441,8 @@ type sealedIntakeConfig struct {
 	log   *slog.Logger
 	// musicStartP95 reads the installation's music start p95 for the health report (Bot v2 Task 17); nil is zero.
 	musicStartP95 func() time.Duration
+	// musicStarts reads the installation's last music starts for the Bot page's status read (Task 22); nil is none.
+	musicStarts func() []music.StartTiming
 	// healthDir is where the health monitor leaves its last report for `dillabot doctor` (health_state.go); empty
 	// writes none.
 	healthDir string
@@ -724,7 +727,8 @@ func (r *botGatewayRuntime) SetSealedIntake(cfg sealedIntakeConfig) {
 	// and the catalog are sent again whatever the publisher believes it sent.
 	renewed := e.started && e.cfg.session != cfg.session
 	e.cfg = cfg
-	e.dispatcher = &service.SealedDispatcher{Community: cfg.community, Handlers: sealedHandlers(cfg, e.authz), Feed: e.authz}
+	e.dispatcher = &service.SealedDispatcher{Community: cfg.community, Handlers: sealedHandlers(cfg, e.authz), Feed: e.authz,
+		Status: r.botStatusSource(cfg.installation, cfg.musicStarts)}
 	e.operations = catalog.Operations(features)
 	start := !e.started
 	if start {

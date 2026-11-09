@@ -28,6 +28,7 @@ import { stage } from './stage.ts';
 import { signalSettings } from './signalSettings.ts';
 import { serverSettings } from './serverSettings.ts';
 import { afk } from './afk.ts';
+import { botAdmin } from './botAdmin.ts';
 import { layout } from './layout.ts';
 import { home } from './home.ts';
 import { profile } from './profile.ts';
@@ -88,6 +89,7 @@ export const en = {
   ...signalSettings,
   ...serverSettings,
   ...afk,
+  ...botAdmin,
   ...layout,
   ...home,
   ...profile,

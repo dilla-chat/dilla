@@ -1588,6 +1588,13 @@ the device list before sealing to it. A publication with a new `key_id` gives th
 revision and is pushed with it (gateway op 61 carries the publication), so a rotated key reaches
 connected clients at once and reconnecting ones through the revision sync.
 
+The Bot is a member of Bot channels' groups only (Task 22). The instance's group membership sync never proposes the
+community's Bot user into the text group of a channel that is not a Bot channel (it stays eligible there, so it is not
+proposed out either); marking a channel runs that channel's sync at once, which proposes the Bot's devices into its
+group, and a member of the group (the marking admin's device first) commits the Add, whose Welcome the Bot applies. A Bot
+whose Welcome to a Bot channel went stale says so in its status read (`94`), and the Bot page's re-add (below) proposes
+its old leaf out and then its devices in.
+
 A Bot channel is unmarked in the same transaction when its channel stops being an end-to-end text
 channel (a channel PATCH to readable), when the channel is deleted (which also deletes the webhooks
 that target it), and when the community is deleted (which also drops the community's catalog,
@@ -1602,6 +1609,7 @@ command key and webhooks).
 | `PUT /v1/communities/{community}/channels/{channel}/bot-channel` | E (manage_community), socket | — | `204`; `400` unless the channel is a live end-to-end text channel that is not the AFK channel; `404` for a channel outside the community |
 | `DELETE /v1/communities/{community}/channels/{channel}/bot-channel` | E (manage_community), socket | — | `204`, also when the channel was not marked |
 | `GET /v1/communities/{community}/bot/channels` | E (any human member), socket | — | `[[channel_id, marked_at, marked_by]…]` of the Bot channels the caller can view (`view_channel`), oldest mark first; 404 for a non-member |
+| `POST /v1/communities/{community}/channels/{channel}/bot-channel/re-add` | E (manage_community), socket | — | `[state]`: `1` while the Bot still holds a leaf in the channel's text group (each such leaf is proposed out; ask again once that commit lands), `0` once the Bot's devices are proposed in; `409 E_NOT_BOT_CHANNEL` for a channel that is not a Bot channel, `404` with no Bot |
 
 ## Sealed command relay, replies and state hints
 
@@ -1683,6 +1691,18 @@ They use catalog entries of `handler_kind` 1, which the picker never shows:
   publish `131` (`manage_roles`), announcements `150`–`152` (`manage_community`), polls `170`
   create, `172` list, `173` vote, `174` close, `175` voters, reminders `180` create, `181` list, `182`
   cancel, `183` dismiss.
+- the admin settings pages (Task 22): Welcome settings `101` read `[5]` and `102` save `[revision, 5, document]`
+  (feature Welcome, `manage_community`, which the handler checks again), and moderation evidence `161`
+  `[0, receipt_id, reason, excerpt]` (any moderation feature). Evidence is admitted, as v1 admitted it, only from a
+  member holding `view_audit_log` or `manage_messages` in the Bot's feed state (the dispatcher's check: a
+  `permission_bit` says "all of"), and its handler binds it to that member's own accepted removal or warning. The app's
+  device sends it itself when it resumes evidence after a reload, under the request id its protected outbox reserved;
+- the Bot page's status, the sealed read `94` `[]` (`manage_community`, offered whatever the features), answered by
+  the Bot from its own state: `[null, [1, needs_re_add, starts]]`, `needs_re_add` the Bot channels whose group the Bot
+  cannot join on its own (16-byte ids, ascending: its Welcome to that group went stale or never came), `starts` the last
+  20 music starts, oldest first, as `[first_frame_ms, cold(0|1)]`.
+
+Automatic moderation (`62`, `63`) has no sealed form: its page still uses interaction groups until it is removed.
 
 The operations on existing polls and reminders (poll get, list, vote, close and voters; reminders due, list, cancel
 and dismiss) are offered whatever the installation's features, as v1 kept them; only creating a poll or a reminder needs

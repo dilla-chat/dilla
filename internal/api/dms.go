@@ -312,8 +312,14 @@ func SyncGroupMembers(ctx context.Context, repo store.Repository, dsvc DS, ch st
 		if err != nil {
 			return err
 		}
+		// Bot v2 Task 22 (Task 16 ruling): the community's Bot is proposed only into its Bot channels' groups. It stays
+		// eligible everywhere it can view (so this sync never proposes it out); marking the channel proposes it in.
+		addable, err := withoutBotOutsideBotChannels(ctx, repo, ch, eligible)
+		if err != nil {
+			return err
+		}
 		for _, g := range groups {
-			if err := syncGroup(ctx, repo, dsvc, g, eligible, now, true); err != nil {
+			if err := syncGroup(ctx, repo, dsvc, g, eligible, addable, now, true); err != nil {
 				errs = append(errs, err)
 			}
 		}
@@ -334,7 +340,7 @@ func SyncGroupMembers(ctx context.Context, repo store.Repository, dsvc DS, ch st
 			return errors.Join(append(errs, err)...)
 		}
 		for _, g := range groups {
-			if err := syncGroup(ctx, repo, dsvc, g, callers, now, false); err != nil {
+			if err := syncGroup(ctx, repo, dsvc, g, callers, callers, now, false); err != nil {
 				errs = append(errs, err)
 			}
 		}
@@ -362,7 +368,7 @@ func withCallBits(ctx context.Context, repo store.Repository, ch store.ChannelRo
 
 // syncGroup is SyncGroupMembers for one group; adds is false for a call group.
 func syncGroup(ctx context.Context, repo store.Repository, dsvc DS, g store.GroupRow,
-	eligible []id.ID, now int64, adds bool) error {
+	eligible, addable []id.ID, now int64, adds bool) error {
 	// First the Adds no commit could carry any more (a participant removed, or a role revoked,
 	// while their Add was outstanding), so the Removes below land in a group that can commit.
 	voidErr := dsvc.VoidIneligibleAdds(ctx, g.GroupID)
@@ -416,7 +422,7 @@ func syncGroup(ctx context.Context, repo store.Repository, dsvc DS, g store.Grou
 	}
 
 	var want []id.ID
-	for _, u := range eligible {
+	for _, u := range addable {
 		devices, err := repo.ListDevicesByUser(ctx, u)
 		if err != nil {
 			return errors.Join(append(errs, err)...)
@@ -443,4 +449,31 @@ func syncGroup(ctx context.Context, repo store.Repository, dsvc DS, g store.Grou
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// withoutBotOutsideBotChannels is users less the community's Bot user, unless ch is one of the community's Bot channels
+// (Bot v2 Task 22). A channel outside a community, or a community with no Bot, keeps every user.
+func withoutBotOutsideBotChannels(ctx context.Context, repo store.Repository, ch store.ChannelRow, users []id.ID) ([]id.ID, error) {
+	if ch.CommunityID == nil || ch.Kind != ChannelText {
+		return users, nil
+	}
+	installation, err := repo.GetActiveBotInstallationByCommunity(ctx, *ch.CommunityID)
+	if errors.Is(err, store.ErrNotFound) || err == nil && installation.UserID == nil {
+		return users, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	bot := *installation.UserID
+	if !slices.Contains(users, bot) {
+		return users, nil
+	}
+	marked, err := repo.ListBotChannels(ctx, *ch.CommunityID)
+	if err != nil {
+		return nil, err
+	}
+	if slices.ContainsFunc(marked, func(row store.BotChannelRow) bool { return row.ChannelID == ch.ID }) {
+		return users, nil
+	}
+	return slices.DeleteFunc(slices.Clone(users), func(u id.ID) bool { return u == bot }), nil
 }

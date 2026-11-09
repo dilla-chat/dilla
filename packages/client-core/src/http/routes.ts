@@ -655,6 +655,60 @@ export class Routes {
     }
     return bin(ack[1], 16);
   }
+  // ---- Bot v2 Task 22: Bot channels and webhooks (socket routes; protocol/10 § Catalog, § Webhooks). ----
+
+  /** PUT …/channels/{channel}/bot-channel: marks a text channel as a Bot channel; the instance proposes the Bot into its
+   *  group, and a member of the group (this device first) commits that Add. */
+  async markBotChannel(communityId: Uint8Array, channelId: Uint8Array): Promise<void> {
+    await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/channels/${id('channelId', channelId)}/bot-channel`, 'write', true,
+      { ok: [204], maxBodyBytes: 0 });
+  }
+  /** DELETE …/channels/{channel}/bot-channel. */
+  async unmarkBotChannel(communityId: Uint8Array, channelId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/channels/${id('channelId', channelId)}/bot-channel`, 'write', true,
+      { ok: [204], maxBodyBytes: 0 });
+  }
+  /** POST …/bot-channel/re-add → [state]: 1 while the Bot's old leaf is being proposed out (ask again once it is
+   *  committed), 0 once the Bot is proposed in. */
+  async reAddBot(communityId: Uint8Array, channelId: Uint8Array): Promise<0 | 1> {
+    const a = arr(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/channels/${id('channelId', channelId)}/bot-channel/re-add`,
+      'write', true, { maxBodyBytes: 64 })), 1);
+    return oneOf(a[0], [0, 1] as const);
+  }
+  /** GET …/bot/webhooks: the raw list (decodeBotWebhooks). */
+  listBotWebhooks(communityId: Uint8Array): Promise<Uint8Array> {
+    return this.body('GET', `/v1/communities/${id('communityId', communityId)}/bot/webhooks`, 'read', true, { maxBodyBytes: 65_536 });
+  }
+  /** POST …/bot/webhooks [channel_id, name, avatar|null, allow_everyone] → [webhook_id, url]; the URL is shown once. */
+  async createBotWebhook(communityId: Uint8Array, channelId: Uint8Array, name: string, allowEveryone: boolean): Promise<{ webhookId: Uint8Array; url: string }> {
+    const a = arr(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/bot/webhooks`, 'write', false,
+      { body: encode([inputId('channelId', channelId), name, null, allowEveryone ? 1n : 0n]), ok: [201], maxBodyBytes: 4096 })), 2);
+    return { webhookId: bin(a[0], 16), url: str(a[1]) };
+  }
+  /** POST …/bot/webhooks/{webhook}/rotate → [url]: a new secret; the old address stops working. */
+  async rotateBotWebhook(communityId: Uint8Array, webhookId: Uint8Array): Promise<string> {
+    const a = arr(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/bot/webhooks/${id('webhookId', webhookId)}/rotate`,
+      'write', false, { maxBodyBytes: 4096 })), 1);
+    return str(a[0]);
+  }
+  /** PATCH …/bot/webhooks/{webhook} [name, avatar|null, allow_everyone]. */
+  async patchBotWebhook(communityId: Uint8Array, webhookId: Uint8Array, name: string, allowEveryone: boolean): Promise<void> {
+    await this.body('PATCH', `/v1/communities/${id('communityId', communityId)}/bot/webhooks/${id('webhookId', webhookId)}`, 'write', true,
+      { body: encode([name, null, allowEveryone ? 1n : 0n]), ok: [204], maxBodyBytes: 0 });
+  }
+  /** DELETE …/bot/webhooks/{webhook}. */
+  async deleteBotWebhook(communityId: Uint8Array, webhookId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/bot/webhooks/${id('webhookId', webhookId)}`, 'write', true,
+      { ok: [204], maxBodyBytes: 0 });
+  }
+  /** GET …/bot/webhook-avatars/{avatar}: the instance's re-encoded PNG (HTTP, like GIF media); null on 404 (the in-memory
+   *  cache is gone, or the id is unknown). The only place a webhook avatar is ever loaded from. */
+  async getWebhookAvatar(communityId: Uint8Array, avatarId: string): Promise<Uint8Array | null> {
+    if (!/^[0-9a-f]{64}$/u.test(avatarId)) throw new CborError('E_CBOR_SHAPE', 'invalid avatar id');
+    const response = await this.send({ method: 'GET', path: `/v1/communities/${id('communityId', communityId)}/bot/webhook-avatars/${avatarId}`,
+      bucket: 'read', idempotent: true, ok: [200, 404], maxBodyBytes: 1_048_576, accept: 'image/png' });
+    return response.status === 404 ? null : response.body;
+  }
   /** POST /v1/communities/{id}/bot/restart (Task 10c): asks the runtime to restart this installation; a request while
    *  one is pending joins it. Answers [restart_requested, restart_handled]. */
   async restartBot(communityId: Uint8Array, installationId: Uint8Array): Promise<{ requested: bigint; handled: bigint }> {

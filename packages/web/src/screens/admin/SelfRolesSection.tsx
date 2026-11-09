@@ -1,6 +1,6 @@
 // Server Settings → Self-service roles: managers approve eligible roles; members opt into approved roles.
 import { useEffect, useId, useRef, useState } from 'react';
-import { decode, encode, fromHex, toHex, type RoleSummary } from '@dilla/client-core';
+import { BotOperationUncertainError, createBotOperations, decode, encode, fromHex, toHex, type RoleSummary } from '@dilla/client-core';
 import { Button, SettingsRow } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
@@ -11,10 +11,11 @@ import { type SectionProps } from './shared.ts';
 
 type SelfRole = { id: string; name: string; position: number; selfSelected: boolean };
 type Installation = { communityId: string; state: number; capabilities: number };
-type PanelResponse = { deliveryId: string; requestId: string; communityId: string; operation: number; channelId: string | null;
-  status: number; data: Uint8Array };
 type PendingPanel = { requestId: string; channelId: string; roleIds: string[]; uploadUncertain: boolean };
 const requestId = (): string => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
+/** A sealed answer's v1 status, as the code it stands for (client-core operations' STATUS_OF_CODE, reversed). */
+const STATUS_CODE: Readonly<Record<number, string>> = { 1: 'E_INVALID', 2: 'E_FORBIDDEN', 3: 'E_BOT_STALE', 4: 'E_CONFLICT', 5: 'E_UNAVAILABLE',
+  6: 'E_BUSY', 7: 'E_NOT_FOUND', 8: 'E_UPGRADE_REQUIRED', 9: 'E_INTERNAL' };
 const SELF_ROLE_BITS = PERM.viewChannel | PERM.sendMessages | PERM.attachFiles | PERM.addReactions | PERM.readHistory
   | PERM.connect | PERM.speak | PERM.video | PERM.screenShare;
 
@@ -29,7 +30,9 @@ export function SelfRolesSection({ communityId, announce }: SectionProps): React
   const base = useId();
   const roles = useSlice(`roles:${communityId}`);
   const access = useSlice(`permissions:${communityId}`);
-  const channels = (useSlice(`channels:${communityId}`) ?? []).filter(channel => channel.kind === 0);
+  // Bot v2 Task 22: a role panel is posted by the Bot, into a Bot channel only.
+  const botChannels = useSlice(`botCatalog:${communityId}`)?.botChannels ?? [];
+  const channels = (useSlice(`channels:${communityId}`) ?? []).filter(channel => channel.kind === 0 && botChannels.includes(channel.id));
   const [selfRoles, setSelfRoles] = useState<SelfRole[]>([]);
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -118,61 +121,46 @@ export function SelfRolesSection({ communityId, announce }: SectionProps): React
     const requestGeneration = generation.current;
     const isCurrent = (): boolean => currentCommunity.current === requestCommunity && generation.current === requestGeneration;
     setBusy(true); setError(null); setPanelNotice(null);
-    let request: { requestId: string; upload: string };
+    // Bot v2 Task 22: the panel is the sealed app operation 131 (v1 31, revision 0). Its answer is the accepted message
+    // [channel, seq]; no answer in time keeps the request, and Retry resends the same id (the Bot answers it again).
+    setPendingPanel({ ...current, uploadUncertain: false });
+    setPanelNotice(t('admin.bot.rolePanel.pending'));
+    let result: { status: number; data: Uint8Array };
     try {
-      request = await client.call({ m: 'humanInteractionRequest', communityId, channelId: null, requestId: current.requestId,
-        operation: 31, args: [channelId, encodedMappings], revision: '0' }) as { requestId: string; upload: string };
+      result = await createBotOperations(client, requestCommunity).request({ operation: 31, args: [channelId, encodedMappings], revision: '0',
+        requestId: current.requestId });
     } catch (e: unknown) {
       if (!isCurrent()) return;
-      setError(t('admin.bot.rolePanel.error', { code: errorOf(e).code }));
+      if (e instanceof BotOperationUncertainError) {
+        setPendingPanel({ ...current, uploadUncertain: true });
+        setPanelNotice(t('admin.bot.rolePanel.uncertain'));
+      } else {
+        setPendingPanel(null); setPanelNotice(null);
+        setError(t('admin.bot.rolePanel.error', { code: errorOf(e).code }));
+      }
       setBusy(false);
       return;
     }
     if (!isCurrent()) return;
-    if (request.requestId !== current.requestId || request.upload === 'rejected') {
-      setError(t('admin.bot.rolePanel.error', { code: 'E_UNKNOWN' }));
-      setBusy(false);
-      return;
+    try {
+      if (result.status !== 0) throw new Error('bot rejected role panel');
+      const accepted = decode(result.data);
+      if (!Array.isArray(accepted) || accepted.length !== 2 || !(accepted[0] instanceof Uint8Array) || accepted[0].length !== 16
+        || typeof accepted[1] !== 'bigint' || accepted[1] < 1n || accepted[1] > 0x7fff_ffff_ffff_ffffn
+        || toHex(accepted[0]) !== current.channelId) throw new Error('invalid accepted role panel identity');
+      const roleOptions = current.roleIds.map(roleId => ({ emoji: emojis[roleId].trim(), roleId }));
+      await client.call({ m: 'registerRolePanel', communityId: requestCommunity, requestId: current.requestId, channelId: current.channelId,
+        messageSeq: accepted[1].toString(), options: roleOptions });
+      if (!isCurrent()) return;
+      setPendingPanel(null); setPanelNotice(t('admin.bot.rolePanel.published')); announce(t('admin.bot.rolePanel.published'));
+    } catch (e: unknown) {
+      if (!isCurrent()) return;
+      setPendingPanel(null); setPanelNotice(null);
+      setError(t('admin.bot.rolePanel.error', { code: result.status !== 0 ? STATUS_CODE[result.status] ?? 'E_UNKNOWN' : errorOf(e).code }));
+    } finally {
+      if (isCurrent()) setBusy(false);
     }
-    setPendingPanel({ ...current, uploadUncertain: request.upload !== 'accepted' });
-    setPanelNotice(t(request.upload === 'accepted' ? 'admin.bot.rolePanel.pending' : 'admin.bot.rolePanel.uncertain'));
-    if (isCurrent()) setBusy(false);
   };
-
-  useEffect(() => {
-    if (pendingPanel === null) return;
-    let canceled = false; let timer: number | undefined;
-    const poll = async (): Promise<void> => {
-      try {
-        const page = await client.call({ m: 'readBotInteractionResponses', communityId, operations: [31], requestIds: [pendingPanel.requestId] }) as {
-          through: string | null; responses: PanelResponse[] };
-        if (canceled) return;
-        const row = page.responses.find(item => item.requestId === pendingPanel.requestId && item.communityId === communityId
-          && item.operation === 31 && item.channelId === null);
-        if (row !== undefined) {
-          if (row.status !== 0) throw new Error('bot rejected role panel');
-          const accepted = decode(row.data);
-          if (!Array.isArray(accepted) || accepted.length !== 2 || !(accepted[0] instanceof Uint8Array) || accepted[0].length !== 16
-            || typeof accepted[1] !== 'bigint' || accepted[1] < 1n || accepted[1] > 0x7fff_ffff_ffff_ffffn
-            || toHex(accepted[0]) !== pendingPanel.channelId) throw new Error('invalid accepted role panel identity');
-          const roleOptions = pendingPanel.roleIds.map(roleId => ({ emoji: emojis[roleId].trim(), roleId }));
-          await client.call({ m: 'registerRolePanel', communityId, requestId: pendingPanel.requestId, channelId: pendingPanel.channelId,
-            messageSeq: accepted[1].toString(), options: roleOptions });
-          if (page.through !== null && page.responses.every(item => item.requestId === pendingPanel.requestId
-            && item.communityId === communityId && item.operation === 31 && item.channelId === null)) {
-            await client.call({ m: 'ackBotInteractionResponses', communityId, through: page.through });
-          }
-          if (!canceled) { setPendingPanel(null); setPanelNotice(t('admin.bot.rolePanel.published')); announce(t('admin.bot.rolePanel.published')); }
-          return;
-        }
-        if (!canceled) timer = window.setTimeout(() => { void poll(); }, 750);
-      } catch (e: unknown) {
-        if (!canceled) { setError(t('admin.bot.rolePanel.error', { code: errorOf(e).code })); timer = window.setTimeout(() => { void poll(); }, 1500); }
-      }
-    };
-    void poll();
-    return () => { canceled = true; if (timer !== undefined) window.clearTimeout(timer); };
-  }, [client, communityId, pendingPanel, emojis, announce]);
 
   const candidates: RoleSummary[] = (roles ?? []).filter(role => role.position > 0 && (role.allow & ~SELF_ROLE_BITS) === 0
     && (role.deny & ~SELF_ROLE_BITS) === 0 && (access?.owner === true || role.position < (access?.top ?? 0)));

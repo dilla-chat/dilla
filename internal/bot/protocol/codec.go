@@ -91,6 +91,10 @@ const (
 	OpReadPoll         Operation = 91
 	OpReadMusic        Operation = 92
 	OpReadRemindersDue Operation = 93
+	// OpReadBotStatus (Task 22) is the Bot page's read, for members who manage the community: no arguments, no channel;
+	// it answers [null, data], data being [1, needs_re_add, starts]: the Bot channels whose group the Bot cannot join on
+	// its own (16-byte ids, ascending), and the last 20 music starts, oldest first, as [first_frame_ms, cold(0|1)].
+	OpReadBotStatus Operation = 94
 )
 
 // Bot v2 Task 21b: the app's surfaces (the player and its dock, poll cards and the poll form, the reminders inbox, the
@@ -99,6 +103,10 @@ const (
 // mutation by the expected revision (uint); a player operation's channel is the voice channel. It answers like a sealed
 // read: [revision uint|null, data bstr] with the v1 response data, or a bare code (E_FORBIDDEN, E_CONFLICT, …).
 const (
+	// Task 22: the admin settings pages and moderation evidence.
+	OpAppSettingsGet          Operation = 101
+	OpAppSettingsPut          Operation = 102
+	OpAppModerationEvidence   Operation = 161
 	OpAppMusicSearch          Operation = 111
 	OpAppMusicEnqueue         Operation = 112
 	OpAppMusicPause           Operation = 113

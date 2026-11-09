@@ -851,6 +851,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 													runtimeOwnedNative = true
 													sealedConfig.healthDir = filepath.Join(cfg.StateDir, installation.ID.String())
 													sealedConfig.musicStartP95 = func() time.Duration { return musicRegistry.StartP95(installation.ID, installation.CommunityID) }
+													sealedConfig.musicStarts = func() []music.StartTiming {
+														return musicRegistry.StartTimings(installation.ID, installation.CommunityID)
+													}
 													gateways.SetSealedIntake(sealedConfig)
 													// Bot v2 Task 17: incoming webhooks are posted through this installation's send path.
 													gateways.SetWebhookPoster(installation.ID, newWebhookPoster(installation.CommunityID,

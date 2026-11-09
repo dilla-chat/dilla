@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, expect, it, vi } from 'vitest';
+import { expect, it } from 'vitest';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient } from '../../test/fake-client.ts';
+import { installSealedBot } from '../../test/sealed-bot.ts';
 import { BotSettingsProvider, useBotInteractionOperation } from './bot-settings-context.tsx';
 const communityId = '11'.repeat(16);
 function Fixture() {
@@ -14,34 +15,24 @@ function Fixture() {
     if (id) void controller!.waitOperation('test', id).then(value => setResult(value?.acked ? 'confirmed' : 'failed'));
   }}>Start</button><p>{result}</p></>;
 }
-afterEach(() => vi.useRealTimers());
-it.each([false, true])('reads exact pending request IDs and ACKs an opaque lease blocked=%s', async blocked => {
-  vi.useFakeTimers();
+// Task 22: a shared operation is a sealed command: the Bot's answer comes back to the send, with nothing to poll or ACK.
+it('sends a shared operation as its sealed app operation and confirms it on the Bot\'s answer', async () => {
   const client = new FakeClient();
   client.set(`permissions:${communityId}`, { loaded: true, manageCommunity: true, manageRoles: false, manageChannels: false,
     kickMembers: false, banMembers: false, createInvite: false, owner: false, top: 0, everyoneId: '', overwritesLoaded: true });
-  let response = false; let rejectAck = true;
-  client.handler = command => {
-    if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
-    if (command.m === 'readBotInteractionResponses') return Promise.resolve(response ? { through: 'f'.repeat(32), blocked, responses: [{
-      deliveryId: '1', requestId: client.callsOf('humanInteractionRequest')[0].requestId, communityId, operation: 2,
-      channelId: null, revision: '1', status: 0, data: new Uint8Array(),
-    }] } : { through: null, blocked: false, responses: [] });
-    if (command.m === 'ackBotInteractionResponses' && rejectAck) return Promise.reject(new Error('offline'));
-    return Promise.resolve(null);
-  };
+  let answer: (() => void) | null = null;
+  const bot = installSealedBot(client, communityId, () => new Promise(resolve => { answer = () => resolve({ status: 0, revision: '1' }); }));
   render(<CoreProvider client={client}><BotSettingsProvider communityId={communityId}><Fixture /></BotSettingsProvider></CoreProvider>);
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start' })); await Promise.resolve(); });
   expect(screen.getByText('pending')).toBeInTheDocument();
-  expect(client.callsOf('readBotInteractionResponses')).toHaveLength(1);
-  expect(client.callsOf('readBotInteractionResponses')[0].requestIds).toEqual([client.callsOf('humanInteractionRequest')[0].requestId]);
-  await act(async () => { await vi.advanceTimersByTimeAsync(749); });
-  expect(client.callsOf('readBotInteractionResponses')).toHaveLength(1);
-  response = true;
-  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-  expect(screen.getByText('pending')).toBeInTheDocument();
-  rejectAck = false;
-  await act(async () => { await vi.advanceTimersByTimeAsync(750); });
-  expect(screen.getByText('confirmed')).toBeInTheDocument();
-  expect(client.callsOf('ackBotInteractionResponses').every(call => call.through === 'f'.repeat(32))).toBe(true);
+  expect(bot.calls.map(c => [c.sealed, c.operation, c.revision])).toEqual([[102, 2, '0']]);
+  await act(async () => { answer?.(); await Promise.resolve(); await Promise.resolve(); });
+  expect(await screen.findByText('confirmed')).toBeInTheDocument();
+  expect(client.calls.some(c => c.m === 'humanInteractionRequest' || c.m === 'readBotInteractionResponses' || c.m === 'ackBotInteractionResponses')).toBe(false);
+});
+
+it('automatic moderation (v1) gets no shared operations', () => {
+  function V1() { return <p>{useBotInteractionOperation('automod-read', 'v1') === null ? 'none' : 'shared'}</p>; }
+  render(<CoreProvider client={new FakeClient()}><BotSettingsProvider communityId={communityId}><V1 /></BotSettingsProvider></CoreProvider>);
+  expect(screen.getByText('none')).toBeInTheDocument();
 });

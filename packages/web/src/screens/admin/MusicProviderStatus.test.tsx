@@ -1,6 +1,7 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { encodeMusicProviderStatus, fromHex } from '@dilla/client-core';
+import { encodeBotStatus, encodeMusicProviderStatus, fromHex } from '@dilla/client-core';
+import { en, t } from '../../strings/index.ts';
 import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
@@ -92,5 +93,37 @@ describe('music provider status', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
     expect(screen.getByRole('status')).toHaveTextContent('out of date');
     expect(screen.queryByText('ready')).not.toBeInTheDocument();
+  });
+});
+
+// Bot v2 Task 22: the Bot page's status read (94) carries the last 20 music starts; the music page lists them.
+describe('music start timings (Task 22)', () => {
+  it('music timings list the last 20 starts', async () => {
+    const fake = new FakeClient();
+    fake.set('account', account());
+    fake.set(`permissions:${cid}`, { loaded: true, manageCommunity: true, top: 0, owner: false, manageRoles: false, manageChannels: false, createInvite: false, banMembers: false, kickMembers: false, everyoneId: '', overwritesLoaded: true });
+    const starts = Array.from({ length: 20 }, (_, i) => ({ firstFrameMs: 100 + i, cold: i === 0 }));
+    const bot = installSealedBot(fake, cid, call => call.sealed === 94
+      ? { status: 0, revision: null, data: encodeBotStatus({ needsReAdd: [], musicStarts: starts }) }
+      : { status: 0, revision: null, data: encodeMusicProviderStatus({ version: 1, installationId: fromHex(installationId),
+        observedAt: BigInt(Math.floor(Date.now() / 1000)), youtubePlayback: 'configured', youtubePlaybackReason: 'none' }) },
+    { offered: [24, 94] });
+    render(<CoreProvider client={fake}><MusicProviderStatus communityId={cid} installationId={installationId} /></CoreProvider>);
+    const row = await screen.findByRole('group', { name: en['bot.music.timings'] });
+    const items = await within(row).findAllByRole('listitem');
+    expect(items).toHaveLength(20);
+    expect(items[0]).toHaveTextContent(t('bot.music.startCold', { ms: 100 }));
+    expect(items[19]).toHaveTextContent(t('bot.music.start', { ms: 119 }));
+    expect(bot.calls.map(c => c.sealed).sort()).toEqual([124, 94].sort());
+  });
+
+  it('says so when no music has started', async () => {
+    const fake = new FakeClient();
+    fake.set('account', account());
+    fake.set(`permissions:${cid}`, { loaded: true, manageCommunity: true, top: 0, owner: false, manageRoles: false, manageChannels: false, createInvite: false, banMembers: false, kickMembers: false, everyoneId: '', overwritesLoaded: true });
+    installSealedBot(fake, cid, call => call.sealed === 94 ? { status: 0, revision: null, data: encodeBotStatus({ needsReAdd: [], musicStarts: [] }) } : null,
+      { offered: [94] });
+    render(<CoreProvider client={fake}><MusicProviderStatus communityId={cid} installationId={installationId} /></CoreProvider>);
+    expect(await screen.findByText(en['bot.music.noStarts'])).toBeVisible();
   });
 });

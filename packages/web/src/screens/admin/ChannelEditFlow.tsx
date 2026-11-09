@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import { ChannelSettings, Select } from '@dilla/ui';
+import { ChannelSettings, Select, Toggle } from '@dilla/ui';
 import type { ChannelSummary } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
 import { t } from '../../strings/index.ts';
 import { CHANNEL_NAME_MAX_BYTES, channelName, nameProblem } from '../Create.tsx';
 import { ChannelPermissions } from './ChannelPermissions.tsx';
 import { forbidden, refused, statusIs, useRun, type Announce } from './shared.ts';
+import { errorOf } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { SLOW_STEPS } from '../conversation/slow.ts';
 
@@ -41,6 +42,20 @@ export function ChannelEditFlow({ channel, categories, announce, onClose }: {
   const initial: Draft = { id: channel?.id ?? '', name: channel?.name ?? '', topic: channel?.topic ?? '', parent: channel?.parentId != null && categories.some(c => c.id === channel.parentId) ? channel.parentId : 'top',
     slowmode: String(channel?.slowmode ?? 0) };
   const current = draft?.id === initial.id ? draft : initial;
+  // Bot v2 Task 22: a text channel that is not readable (and not the AFK channel) can be a Bot channel; only who manages the community
+  // marks one. The switch acts at once, beside the form: the mark is the instance's, not a field of the channel.
+  const catalog = useSlice(`botCatalog:${channel?.communityId ?? ''}`);
+  const botChannel = channel !== null && (catalog?.botChannels ?? []).includes(channel.id);
+  const [marking, setMarking] = useState(false);
+  const [markError, setMarkError] = useState<string | null>(null);
+  const canMark = channel !== null && kind === 'text' && channel.mode === 0 && !isAFK && access?.loaded === true && access.manageCommunity;
+  const mark = (on: boolean) => {
+    if (channel === null || marking) return;
+    setMarking(true); setMarkError(null);
+    void client.call({ m: 'markBotChannel', communityId: channel.communityId, channelId: channel.id, on })
+      .catch((e: unknown) => setMarkError(t('bot.channel.error', { code: errorOf(e).code })))
+      .finally(() => setMarking(false));
+  };
   const edit = (over: Partial<Draft>) => { setDraft({ ...current, ...over }); setLocal(null); action.reset(); };
 
   const close = () => { if (!action.busy) { setDraft(null); setLocal(null); action.reset(); onClose(); } };
@@ -84,6 +99,8 @@ export function ChannelEditFlow({ channel, categories, announce, onClose }: {
       onSubmit={submit} onClose={close}>
       {kind === 'text' ? <Select label={t('slow.label')} hint={t('slow.hint')} value={current.slowmode} options={SLOW_OPTIONS}
         onChange={v => edit({ slowmode: v })} /> : null}
+      {canMark ? <Toggle id={`bot-channel-${channel.id}`} label={t('bot.channel.toggle')} showLabel hint={markError ?? t('bot.channel.toggleHint')}
+        checked={botChannel} disabled={marking} onChange={mark} /> : null}
       {isAFK ? <p className="dw-afk-note">{t('afk.channel.note')}</p> : null}
       {channel !== null && kind !== 'category' && !isAFK && access?.manageRoles === true
         ? <ChannelPermissions channelId={channel.id} communityId={channel.communityId} announce={announce ?? NO_ANNOUNCE} /> : null}

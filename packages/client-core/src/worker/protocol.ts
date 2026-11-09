@@ -36,6 +36,19 @@ export type Command =
   | { m: 'syncBotCatalog'; communityId: string }
   // Bot v2 (task 20 fix round 1): the page closed this run; the worker forgets its reply secret now. → null.
   | { m: 'forgetBotCommand'; requestId: string }
+  // Bot v2 Task 22: mark (on) or unmark a Bot channel; → null. The worker reads the catalog and Bot channels again after it.
+  | { m: 'markBotChannel'; communityId: string; channelId: string; on: boolean }
+  // Bot v2 Task 22: add the Bot to a Bot channel's group again (its Welcome went stale); → 'added' once it is proposed in,
+  // 'pending' while its old leaf is still being proposed out.
+  | { m: 'reAddBot'; communityId: string; channelId: string }
+  // Bot v2 Task 22: the Bot page's webhooks. The address is answered once, by create and rotate, and never kept.
+  | { m: 'listBotWebhooks'; communityId: string }
+  | { m: 'createBotWebhook'; communityId: string; channelId: string; name: string; allowEveryone: boolean }
+  | { m: 'rotateBotWebhook'; communityId: string; webhookId: string }
+  | { m: 'updateBotWebhook'; communityId: string; webhookId: string; name: string; allowEveryone: boolean }
+  | { m: 'deleteBotWebhook'; communityId: string; webhookId: string }
+  // Bot v2 Task 22: a webhook post's avatar, only from the instance's member route; → PNG bytes, or null (404).
+  | { m: 'getWebhookAvatar'; communityId: string; avatarId: string }
   // Bot v2 (task 21): a surface shows (on) or stops showing a channel (kind 1) or call (kind 2, its voice channel) scope, so
   // that op 63 hints for it are fetched; the user scope needs no watch. Counted per scope. → null.
   | { m: 'watchBotScope'; kind: 1 | 2; channelId: string; on: boolean }

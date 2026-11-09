@@ -103,6 +103,7 @@ export const SOCKET_ROUTES: readonly SocketRoute[] = [
   { method: 'POST', pattern: '/v1/communities/{community}/bot/webhooks/{webhook}/rotate' },
   { method: 'DELETE', pattern: '/v1/communities/{community}/channels/{channel}/bot-channel' },
   { method: 'PUT', pattern: '/v1/communities/{community}/channels/{channel}/bot-channel' },
+  { method: 'POST', pattern: '/v1/communities/{community}/channels/{channel}/bot-channel/re-add' },
   { method: 'DELETE', pattern: '/v1/communities/{id}' },
   { method: 'GET', pattern: '/v1/communities/{id}' },
   { method: 'PATCH', pattern: '/v1/communities/{id}' },

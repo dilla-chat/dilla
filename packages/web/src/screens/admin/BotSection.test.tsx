@@ -10,6 +10,7 @@ import { decode, encode } from '@dilla/client-core';
 import { ServerSettings } from './ServerSettings.tsx';
 import { AutoModerationSettingsPanel } from './AutoModerationSettingsPanel.tsx';
 import { BotSection, type BotPageKind } from './BotSection.tsx';
+import { installSealedBot } from '../../test/sealed-bot.ts';
 
 
 const SERVER = 'a1'.repeat(16);
@@ -307,40 +308,29 @@ describe('the server bot settings', () => {
     expect(bytes.length).toBeLessThanOrEqual(2400);
   });
 
-  it('reaches welcome get and put through authenticated Bot interactions and waits for correlated responses', async () => {
+  // Task 22: Welcome settings are the sealed app operations 101 (read) and 102 (save), into a Bot channel.
+  it('reaches welcome get and put through sealed app operations and shows the Bot answers', async () => {
     const ready = { ...ROW, state: 3 as const, capabilities: 1 << 1, revision: '7' };
     const { fake, user } = setupPage('welcome', ready);
     const channelId = 'cc'.repeat(16);
     act(() => fake.set(`channels:${SERVER}`, [{ id: channelId, communityId: SERVER, kind: 0, mode: 0, name: 'general', topic: '',
       parentId: null, position: 1, slowmode: 0, announcement: false, group: 'active' }]));
-    let lastInteraction: { requestId: string; operation: number } | undefined;
     fake.handler = command => {
       if (command.m === 'getBotInstallation') return Promise.resolve(ready);
       if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ready.id });
-      if (command.m === 'humanInteractionRequest') {
-        lastInteraction = command;
-        return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
-      }
-      if (command.m === 'readBotInteractionResponses') return Promise.resolve({ through: '1', blocked: false, responses: lastInteraction === undefined ? [] : [{
-        deliveryId: '1', sourceSeq: '1', requestId: lastInteraction.requestId, communityId: SERVER, operation: lastInteraction.operation,
-        channelId: null, status: 0, revision: lastInteraction.operation === 1 ? '7' : '8', data: encode([]),
-      }] });
       return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
     };
+    const bot = installSealedBot(fake, SERVER, call => ({ status: 0, revision: call.operation === 1 ? '7' : '8', data: encode([]) }));
+    act(() => fake.set(`botCatalog:${SERVER}`, { ...fake.get(`botCatalog:${SERVER}`)!, botChannels: [channelId] }));
     await user.click(await screen.findByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
-    await waitFor(() => expect(fake.callsOf('humanInteractionRequest')).toMatchObject([
-      { communityId: SERVER, channelId: null, operation: 1, args: [5], revision: null },
-    ]));
+    await waitFor(() => expect(bot.calls.map(c => [c.sealed, c.communityId, c.channelId, c.args, c.revision]))
+      .toEqual([[101, SERVER, null, [5], null]]));
     expect(await screen.findByRole('combobox', { name: en['admin.bot.welcomeSettings.channel'] })).toHaveValue(channelId);
     await user.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.save'] }));
-    await waitFor(() => expect(fake.callsOf('humanInteractionRequest')).toHaveLength(2));
-    expect(fake.callsOf('humanInteractionRequest')[1]).toMatchObject({ communityId: SERVER, channelId: null,
-      operation: 2, revision: '7', args: [5, expect.any(Uint8Array)] });
+    await waitFor(() => expect(bot.calls).toHaveLength(2));
+    expect(bot.calls[1]).toMatchObject({ sealed: 102, communityId: SERVER, channelId: null, operation: 2, revision: '7', args: [5, expect.any(Uint8Array)] });
     expect(await screen.findByText(en['admin.bot.welcomeSettings.saved'])).toBeInTheDocument();
-    expect(fake.callsOf('readBotInteractionResponses').every(call => call.communityId === SERVER && call.operations.join(',') === '1,2')).toBe(true);
-    expect(fake.callsOf('ackBotInteractionResponses').every(call => call.communityId === SERVER && call.through === '1')).toBe(true);
-    await waitFor(() => expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(2));
-    await act(async () => { await Promise.resolve(); });
+    expect(fake.calls.some(c => c.m === 'humanInteractionRequest' || c.m === 'readBotInteractionResponses' || c.m === 'ackBotInteractionResponses')).toBe(false);
   });
 
   it('does not request or invent moderation details before the user asks', async () => {

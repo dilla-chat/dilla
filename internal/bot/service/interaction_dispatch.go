@@ -1,14 +1,17 @@
 package service
 
 import (
+	"bytes"
 	"container/list"
 	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/catalog"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
@@ -482,9 +485,43 @@ type SealedDispatcher struct {
 	Community id.ID
 	Handlers  map[protocol.Operation]InteractionHandlerSpec
 	// Feed, when set, is the feed-state permission view: the role panel (131) needs view and send in the Bot channel it
-	// posts into (Task 21b fix round 1, review M4); nil refuses it.
+	// posts into (Task 21b fix round 1, review M4); nil refuses it. Moderation evidence (161) and the Bot's status (94)
+	// read community-wide bits through it too (Task 22), when it offers them (CommunityPermissions); otherwise they are
+	// refused.
 	Feed FeedPermissions
+	// Status, when set, is what the Bot page's status read (94) answers (Task 22); nil answers it unavailable.
+	Status func() BotStatus
 }
+
+// CommunityPermissions is a feed view's community-wide bits (intake.Authz.Permissions): 0 for a non-member, every bit for
+// the owner and an administrator.
+type CommunityPermissions interface {
+	Permissions(user id.ID) uint64
+}
+
+// BotStatus is the Bot page's status (Task 22): the Bot channels whose group the Bot cannot join on its own (Task 16's
+// NeedsReAdd: a member's client must add it again) and the last music starts.
+type BotStatus struct {
+	NeedsReAdd  []id.ID
+	MusicStarts []MusicStart
+}
+
+// MusicStart is one track start's first-frame time; Cold when its lookup ran yt-dlp.
+type MusicStart struct {
+	FirstFrame time.Duration
+	Cold       bool
+}
+
+// Permission bits the dispatcher checks itself (internal/api/perm.go).
+const (
+	evidencePermManageMessages = uint64(1) << 2
+	evidencePermViewAuditLog   = uint64(1) << 17
+	statusPermManageCommunity  = uint64(1) << 16
+	// botStatusStartsKept is how many music starts the status read carries (the Bot keeps 20 per voice room).
+	botStatusStartsKept = 20
+	// botStatusChannelsKept bounds the needs-re-add list (dillad allows 64 Bot channels per community).
+	botStatusChannelsKept = 256
+)
 
 // rolePanelChannelBits is view_channel and send_messages: what a role panel's poster needs in its target channel.
 const rolePanelChannelBits = pollPermView | pollPermSend
@@ -927,9 +964,12 @@ func init() {
 		{protocol.OpAnnouncementsDelete, false}, {protocol.OpPollCreate, false}, {protocol.OpPollList, false}, {protocol.OpPollVote, false},
 		{protocol.OpPollClose, false}, {protocol.OpPollVoters, false}, {protocol.OpReminderCreate, false}, {protocol.OpReminderList, false},
 		{protocol.OpReminderCancel, false}, {protocol.OpReminderDismiss, false},
+		{protocol.OpSettingsGet, false}, {protocol.OpSettingsPut, false}, {protocol.OpModerationEvidence, false},
 	} {
 		sealedAdapters[a.v1+catalog.AppOperationBase] = appOperation(a.v1, a.channelled)
 	}
+	// The Bot page's status read is answered by the dispatcher itself (botStatus), from SealedDispatcher.Status.
+	sealedAdapters[protocol.OpReadBotStatus] = sealedAdapter{handler: protocol.OpReadBotStatus, read: true}
 }
 
 // sealedRefusal maps a v1 handler status to an answer: a bare code for a read, text for a command.
@@ -968,6 +1008,10 @@ func (d *SealedDispatcher) Dispatch(ctx context.Context, req protocol.SealedRequ
 		reply(unsupported)
 		return
 	}
+	if protocol.Operation(req.Operation) == protocol.OpReadBotStatus {
+		d.botStatus(req, reply)
+		return
+	}
 	handler, ok := d.Handlers[adapter.handler]
 	if !ok || handler.Handle == nil {
 		reply(unsupported)
@@ -982,6 +1026,12 @@ func (d *SealedDispatcher) Dispatch(ctx context.Context, req protocol.SealedRequ
 			return
 		}
 		mutation = v1.Revision != nil
+		// v1 admitted evidence only from a member holding view_audit_log or manage_messages (commandOperationAllowed);
+		// the handler then binds it to that member's own accepted removal or warning.
+		if v1.Operation == protocol.OpModerationEvidence && !d.communityAllows(req.UserID, evidencePermViewAuditLog|evidencePermManageMessages) {
+			reply(sealedRefusal(interactionStatusForbidden, true))
+			return
+		}
 		if v1.Operation == protocol.OpRolePanelPublish {
 			target, ok := v1.Args[0].(id.ID)
 			if !ok || d.Feed == nil || d.Feed.ChannelPermissions(req.UserID, target)&rolePanelChannelBits != rolePanelChannelBits {
@@ -1062,4 +1112,61 @@ func (d *SealedDispatcher) Dispatch(ctx context.Context, req protocol.SealedRequ
 		text = adapter.render(req, result)
 	}
 	reply(intake.Answer{Status: intake.StatusOK, Body: []byte(text), Final: true})
+}
+
+// communityAllows reports whether user holds any of bits community-wide in the feed state; false with no feed view.
+func (d *SealedDispatcher) communityAllows(user id.ID, anyOf uint64) bool {
+	view, ok := d.Feed.(CommunityPermissions)
+	return ok && view.Permissions(user)&anyOf != 0
+}
+
+// botStatus answers the Bot page's status read (94): [null, [1, needs_re_add, starts]] to a member who manages the
+// community, from the feed state; a bare code otherwise.
+func (d *SealedDispatcher) botStatus(req protocol.SealedRequest, reply func(intake.Answer)) {
+	if len(req.Args) != 0 || req.CommunityID != d.Community {
+		reply(sealedRefusal(interactionStatusInvalid, true))
+		return
+	}
+	if !d.communityAllows(req.UserID, statusPermManageCommunity) {
+		reply(sealedRefusal(interactionStatusForbidden, true))
+		return
+	}
+	if d.Status == nil {
+		reply(sealedRefusal(interactionStatusUnavailable, true))
+		return
+	}
+	status := d.Status()
+	channels := slices.Clone(status.NeedsReAdd)
+	slices.SortFunc(channels, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+	channels = slices.Compact(channels)
+	if len(channels) > botStatusChannelsKept {
+		channels = channels[:botStatusChannelsKept]
+	}
+	ids := make([]any, 0, len(channels))
+	for _, c := range channels {
+		ids = append(ids, c[:])
+	}
+	starts := status.MusicStarts
+	if len(starts) > botStatusStartsKept {
+		starts = starts[len(starts)-botStatusStartsKept:]
+	}
+	rows := make([]any, 0, len(starts))
+	for _, s := range starts {
+		cold := uint64(0)
+		if s.Cold {
+			cold = 1
+		}
+		rows = append(rows, []any{uint64(max(s.FirstFrame.Milliseconds(), 0)), cold})
+	}
+	data, err := cborx.Marshal([]any{uint64(1), ids, rows})
+	if err != nil {
+		reply(sealedRefusal(interactionStatusInternal, true))
+		return
+	}
+	body, err := cborx.Marshal([]any{nil, data})
+	if err != nil {
+		reply(sealedRefusal(interactionStatusInternal, true))
+		return
+	}
+	reply(intake.Answer{Status: intake.StatusOK, Body: body, Final: true})
 }

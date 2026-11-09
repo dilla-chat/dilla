@@ -517,6 +517,10 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	deps.BotCatalogGateway = gw
 	deps.BotChannelEvents = botFeed
 	deps.BotFeed = botFeed
+	// Bot v2 Task 22: a mark proposes the Bot into the channel's group, and the Bot page's re-add proposes it out and in.
+	deps.BotMembership = delivery
+	// Members re-read the Bot channels on a mark or an unmark (op 54); the Bot's feed hears the mark itself.
+	deps.BotChannelsNotify = api.NewStructureNotifier(gw, o.Repo, o.Log)
 	// Bot v2 Task 10: sealed commands go to the Bot runtime's connection, replies to the requesting
 	// device and state hints to their scope, all through the gateway.
 	deps.BotRelay = gw

@@ -1528,9 +1528,19 @@ func (d Deps) botReadiness(ctx context.Context, repo store.Repository, row store
 			}
 		}
 	}
+	// Bot v2 Task 22: the Bot is a member of Bot channels' groups only (SyncGroupMembers proposes it nowhere else), so only
+	// those must be joined before it is ready; with no Bot channel nothing is owed.
+	marked, err := repo.ListBotChannels(ctx, row.CommunityID)
+	if err != nil {
+		return false, nil, err
+	}
+	botChannel := make(map[id.ID]bool, len(marked))
+	for _, m := range marked {
+		botChannel[m.ChannelID] = true
+	}
 	var missing []id.ID
 	for _, channel := range channels {
-		if channel.DeletedAt != nil || channel.Kind != ChannelText || channel.Mode != ModeE2EE {
+		if channel.DeletedAt != nil || channel.Kind != ChannelText || channel.Mode != ModeE2EE || !botChannel[channel.ID] {
 			continue
 		}
 		resolver := NewResolver(repo)

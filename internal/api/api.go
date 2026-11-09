@@ -203,6 +203,13 @@ type Deps struct {
 	// BotChannelEvents hears Bot-channel marks and unmarks after they commit (Bot v2 Task 9; Task 12's
 	// Bot feed implements it). Nil is NoBotChannelEvents.
 	BotChannelEvents BotChannelEvents
+	// BotMembership is the delivery service a Bot-channel mark and the Bot page's re-add propose the Bot's devices
+	// through (Bot v2 Task 22); nil proposes nothing (the mark still lands).
+	BotMembership DS
+	// BotChannelsNotify sends op 54 community_changed to the community's members after a Bot-channel mark or unmark (Task
+	// 22), so their clients read the Bot channels again (the badge, the greying of commands that need one, the targets of
+	// the Bot's features). Nil sends nothing.
+	BotChannelsNotify *StructureNotifier
 	// BotFeed hears, after the commit, a device-list publish (Bot v2 Task 12): the Bot's event feed
 	// pushes the user's list to the Bot of each community they share with one. Nil tells nobody.
 	BotFeed BotFeedHooks

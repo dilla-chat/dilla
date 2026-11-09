@@ -244,6 +244,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const fallbackCommunity = lastCommunity !== null && communities?.some(c => c.id === lastCommunity) === true
     ? lastCommunity : communities?.[0]?.id ?? null;
   const communityId = routeCommunity ?? (dmId !== null || base.name === 'dms' ? fallbackCommunity : null);
+  const botChannelIds = new Set(useSlice(`botCatalog:${communityId ?? ''}`)?.botChannels ?? []);
   const navigateToUtilitySource = useCallback((sourceCommunityId: string, sourceChannelId: string, sourceThreadId: string | null) => {
     if (sourceThreadId !== null) requestThread(sourceChannelId, sourceThreadId);
     void navigate({ name: 'channel', communityId: sourceCommunityId, channelId: sourceChannelId });
@@ -1177,7 +1178,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const isAnnouncement = (c: ChannelSummary) => c.kind === 0 && (c.announcement || everyoneDenied(c.id));
   const channelRows: ListRow[] = ordered.map(c => ({
     id: c.id, name: c.name, kind: c.kind === 1 ? 'voice' : isAnnouncement(c) ? 'announcement' : 'text', readable: c.mode === 1, parentId: c.parentId,
-    ...(afkChannels.has(c.id) ? { afk: true } : {}), ...(c.slowmode > 0 ? { badge: t('slow.badge') } : {}), ...rowBadge(badges, settings, c.id, communityId ?? undefined),
+    // Bot v2 Task 22: a Bot channel this member can view says so (the Bot is in its group); otherwise slow mode.
+    ...(afkChannels.has(c.id) ? { afk: true } : {}), ...(botChannelIds.has(c.id) ? { badge: t('bot.channel.badge') } : c.slowmode > 0 ? { badge: t('slow.badge') } : {}),
+    ...rowBadge(badges, settings, c.id, communityId ?? undefined),
   }));
   // Task 11 (Jonas, Q2; the prototype's DM rows): a person's row is their avatar with the online dot over their status (or
   // "@handle"); a group's is the neutral avatar over its members ("Ada, Björn, you").
@@ -2250,7 +2253,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
             </ThreadPane>
             : membersShown && community !== null && self !== null ? <MemberPane communityId={community.id} selfId={self.id}
               onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })}
-              onMention={mentionFromMembers}
+              onMention={mentionFromMembers} channelId={channel?.id ?? null}
               announce={announce} messageCard={profileCard} onCardOpen={() => setProfileCard(null)}
               onClose={phone ? () => { memberSheet.close(); } : () => setMembersOpen(false)} /> : undefined}
         asideLabel={sideNow?.view === 'thread' ? t('thread.title') : sideNow?.view === 'empty' ? t('thread.title')

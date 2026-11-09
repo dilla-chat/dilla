@@ -767,6 +767,16 @@ func TestBotChannelSyncWaitsForKeyPackagesAndStaysBoundToItsInstallation(t *test
 	if err != nil || !resolved.Has(api.PermViewChannel) {
 		t.Fatalf("bot channel permissions = %v, %v; want view", resolved, err)
 	}
+	// Bot v2 Task 22: the Bot is proposed only into its Bot channels' groups, so an unmarked channel A gets nothing.
+	if err := api.SyncEnrolledBotChannels(ctx, deps.Repo, dsvc, botID, deviceID, now); err != nil {
+		t.Fatalf("sync after KeyPackages, nothing marked: %v", err)
+	}
+	if got := dsvc.Adds; len(got) != 0 {
+		t.Fatalf("Adds into channels that are not Bot channels = %+v, want none", got)
+	}
+	if _, err := deps.Repo.MarkBotChannel(ctx, store.BotChannelRow{ChannelID: channelA, CommunityID: cidA, MarkedAt: now, MarkedBy: ownerA.ID}); err != nil {
+		t.Fatal(err)
+	}
 	if err := api.SyncEnrolledBotChannels(ctx, deps.Repo, dsvc, botID, deviceID, now); err != nil {
 		t.Fatalf("sync after KeyPackages: %v", err)
 	}

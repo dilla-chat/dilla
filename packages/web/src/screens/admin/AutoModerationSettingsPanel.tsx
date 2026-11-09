@@ -26,8 +26,9 @@ export function AutoModerationSettingsPanel({ communityId, botReady, canManage, 
   communityId: string; botReady: boolean; canManage: boolean; canManageMessages: boolean; canModerateMembers: boolean; capabilities: number;
 }): React.JSX.Element {
   const client = useCore(); const base = useId(); const dirtyRef = useRef(false); const generation = useRef(0);
-  const readOperations = useBotInteractionOperation('automod-read');
-  const saveOperations = useBotInteractionOperation('automod-save');
+  // Task 22: the shared Bot operations are sealed commands; this page stays on v1 interactions until Task 23 deletes it.
+  const readOperations = useBotInteractionOperation('automod-read', 'v1');
+  const saveOperations = useBotInteractionOperation('automod-save', 'v1');
   const sharedRead = readOperations?.operation('automod-read') ?? null;
   const sharedSave = saveOperations?.operation('automod-save') ?? null;
   const factors = useSlice('factors');

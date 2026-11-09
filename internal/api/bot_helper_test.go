@@ -409,6 +409,10 @@ func testManagedBotReachesReady(t *testing.T, repo store.Repository) {
 	if err := deps.Repo.PutChannelMember(context.Background(), channelID, userID, deps.Clock.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	// Bot v2 Task 22: only a Bot channel's group is owed before ready (the Bot is proposed into no other).
+	if _, err := deps.Repo.MarkBotChannel(context.Background(), store.BotChannelRow{ChannelID: channelID, CommunityID: communityID, MarkedAt: deps.Clock.Now().Unix(), MarkedBy: userID}); err != nil {
+		t.Fatal(err)
+	}
 	if pending := postCBORAuth(h, readyPath, readyBody, botToken); pending.Code != http.StatusConflict {
 		t.Fatalf("ready before required MLS join = %d (%x), want 409", pending.Code, pending.Body.Bytes())
 	}

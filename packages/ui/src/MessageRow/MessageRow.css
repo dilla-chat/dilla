@@ -38,9 +38,11 @@
 .d-message-row__author[data-bot="true"] { color: var(--accent-2); }
 .d-message-row__time { font-size: var(--text-meta); color: var(--fg-faint); }
 .d-message-row__state { font-size: var(--text-meta); color: var(--fg-3); }
-.d-message-row__edited, .d-message-row__pinned { font-size: var(--text-meta); color: var(--fg-3); }
+.d-message-row__edited, .d-message-row__pinned, .d-message-row__via { font-size: var(--text-meta); color: var(--fg-3); }
+/* Bot v2 Task 22: a webhook's avatar image, in the 30px message avatar's box with the Bot's rounding. */
+.d-message-row__avatar-img { display: block; object-fit: cover; border-radius: var(--r-bot); }
 /* On a mention row's warm tint fg-3 drops under 4.5:1 (4.48): its meta takes fg-2 (the prototype draws no such meta). */
-.d-message-row[data-mention="true"] :is(.d-message-row__edited, .d-message-row__pinned, .d-message-row__pending:not([data-tone="failed"])) { color: var(--fg-2); }
+.d-message-row[data-mention="true"] :is(.d-message-row__edited, .d-message-row__pinned, .d-message-row__via, .d-message-row__pending:not([data-tone="failed"])) { color: var(--fg-2); }
 .d-message-row[data-state="failed"] .d-message-row__state { color: var(--danger); }
 .d-message-row[data-state="failed"] .d-message-row__state::before { content: "" / ""; display: inline-block; width: 0.875em; height: 0.875em; margin-right: 0.25em; vertical-align: -0.125em; background: currentColor; mask: var(--d-mask-x) center / contain no-repeat; }
 .d-message-row__body { margin: 0; font-size: var(--text-input); line-height: 1.55; color: var(--fg-body); white-space: pre-wrap; overflow-wrap: anywhere; }

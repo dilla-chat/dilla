@@ -15,8 +15,10 @@ import { Tray, type TrayEntry } from '../attachments/tray';
 import { CborError } from '../cbor';
 import { decodeBotResponse, encodeBotRequestBytes, validateBotResponseForRequest, validateBotContext } from '../bot/protocol';
 import { BotCatalogStore } from '../bot/catalog';
+import { decodeBotWebhooks } from '../bot/admin';
 import { BotHints } from '../bot/hints';
-import { BOT_ANSWER_LOG, BotCommandError, BotCommandRelay, type BotAnswerView } from '../bot/commands';
+import { BOT_ANSWER_LOG, BotCommandError, BotCommandRelay, createBotCommands, type BotAnswerEvent, type BotAnswerView } from '../bot/commands';
+import { BotOperationRefusedError, createBotOperationsOn, type BotOperations } from '../bot/operations';
 import { arr, decode as decodeCbor, type CborInput } from '../cbor';
 import {
   CoreError, storeNewerOf, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
@@ -182,6 +184,9 @@ export function sanitizeWorkerError(e: unknown): WorkerError {
 }
 /** The stable reasons a local refusal may carry to the page. None since web3.8 R5 removed 'announce.noHeldRole' (an
  *  announcement's creator gets her own send entry, so no create is refused for the roles she holds). */
+/** Task 22: the re-add's asks while the Bot's old leaf is proposed out, and the wait between them. */
+const REREADD_ATTEMPTS = 15;
+const REREADD_WAIT_MS = 2_000;
 const REFUSAL_REASONS: ReadonlySet<string> = new Set<string>();
 const errorOf = sanitizeWorkerError;
 function sanitizePageError(error: WorkerError): WorkerError {
@@ -234,6 +239,14 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'sendBotCommand',
   'syncBotCatalog',
   'forgetBotCommand',
+  'markBotChannel',
+  'reAddBot',
+  'listBotWebhooks',
+  'createBotWebhook',
+  'rotateBotWebhook',
+  'updateBotWebhook',
+  'deleteBotWebhook',
+  'getWebhookAvatar',
   'watchBotScope',
   'patchBotProfile',
   'listModerationCases',
@@ -430,6 +443,14 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   sendBotCommand: ['communityId', 'requestId'],
   syncBotCatalog: ['communityId'],
   forgetBotCommand: ['requestId'],
+  markBotChannel: ['communityId', 'channelId'],
+  reAddBot: ['communityId', 'channelId'],
+  listBotWebhooks: ['communityId'],
+  createBotWebhook: ['communityId', 'channelId'],
+  rotateBotWebhook: ['communityId'],
+  updateBotWebhook: ['communityId'],
+  deleteBotWebhook: ['communityId'],
+  getWebhookAvatar: ['communityId'],
   watchBotScope: ['channelId'],
   patchBotProfile: ['communityId'],
   listModerationCases: ['communityId', 'requestId'],
@@ -548,6 +569,14 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'sendBotCommand',
     'syncBotCatalog',
     'forgetBotCommand',
+    'markBotChannel',
+    'reAddBot',
+    'listBotWebhooks',
+    'createBotWebhook',
+    'rotateBotWebhook',
+    'updateBotWebhook',
+    'deleteBotWebhook',
+    'getWebhookAvatar',
     'watchBotScope',
     'patchBotProfile',
     'listModerationCases',
@@ -860,6 +889,12 @@ function invalid(command: Record<string, unknown>): string | null {
       if (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096) return 'stepUp is invalid';
     }
   }
+  if ((m === 'rotateBotWebhook' || m === 'updateBotWebhook' || m === 'deleteBotWebhook')
+    && (typeof command.webhookId !== 'string' || !ID.test(command.webhookId))) return 'webhookId is not 32 lowercase hex';
+  if ((m === 'createBotWebhook' || m === 'updateBotWebhook') && (typeof command.name !== 'string' || command.name.trim() === ''
+    || [...command.name].length > 80 || typeof command.allowEveryone !== 'boolean')) return 'webhook settings are invalid';
+  if (m === 'markBotChannel' && typeof command.on !== 'boolean') return 'on is not a boolean';
+  if (m === 'getWebhookAvatar' && (typeof command.avatarId !== 'string' || !/^[0-9a-f]{64}$/u.test(command.avatarId))) return 'avatarId is not 64 lowercase hex';
   if (m === 'patchBotProfile' && (typeof command.display !== 'string' || command.display.trim() === ''
     || profileTextProblem(command.display, DISPLAY_MAX_CHARS, false) !== null)) return 'bot display name is invalid';
   if (m === 'setMemberTimeout') {
@@ -1184,6 +1219,9 @@ export class Controller {
   /** Bot v2 (task 20): sealed commands out, sealed answers in (op 62), published as `botAnswers`. */
   private readonly botRelay: BotCommandRelay;
   private botAnswers: BotAnswerView[] = [];
+  /** Task 22: the worker's own sealed operations (moderation evidence, op 161), by community, and their answer listeners. */
+  private readonly workerBotOps = new Map<string, BotOperations>();
+  private readonly workerBotAnswers = new Map<string, (answer: BotAnswerEvent) => void>();
   private botAnswerN = 0;
   private readonly botCatalogWatched = new Set<string>();
   /** Bot v2 (task 21): op 63 hints decide when the page fetches (bot/hints.ts); a rise in `botHints[scope]` is the cue. */
@@ -1305,6 +1343,7 @@ export class Controller {
         this.botAnswers = [...this.botAnswers, { n: this.botAnswerN, requestId: answer.requestId, seq: answer.seq, status: answer.status,
           body: toHex(answer.body), final: answer.final }].slice(-BOT_ANSWER_LOG);
         this.slices.set('botAnswers', this.botAnswers);
+        this.workerBotAnswers.get(answer.requestId)?.(answer);
       },
     });
     this.botHints = new BotHints({
@@ -1578,6 +1617,19 @@ export class Controller {
       case 'sendBotCommand': return this.sendBotCommand(command);
       case 'syncBotCatalog': return this.syncBotCatalog(command.communityId);
       case 'forgetBotCommand': this.botRelay.forget(command.requestId); return Promise.resolve(null);
+      case 'markBotChannel': return this.markBotChannel(command.communityId, command.channelId, command.on);
+      case 'reAddBot': return this.reAddBot(command.communityId, command.channelId);
+      case 'listBotWebhooks': return this.botAdmin(command.communityId, async (c) => decodeBotWebhooks(await this.routes.listBotWebhooks(c)));
+      case 'createBotWebhook': return this.botAdmin(command.communityId, async (c) => {
+        const made = await this.routes.createBotWebhook(c, fromHex(command.channelId), command.name, command.allowEveryone);
+        return { webhookId: toHex(made.webhookId), url: made.url };
+      });
+      case 'rotateBotWebhook': return this.botAdmin(command.communityId, async (c) => ({ url: await this.routes.rotateBotWebhook(c, fromHex(command.webhookId)) }));
+      case 'updateBotWebhook': return this.botAdmin(command.communityId, async (c) => {
+        await this.routes.patchBotWebhook(c, fromHex(command.webhookId), command.name, command.allowEveryone); return null;
+      });
+      case 'deleteBotWebhook': return this.botAdmin(command.communityId, async (c) => { await this.routes.deleteBotWebhook(c, fromHex(command.webhookId)); return null; });
+      case 'getWebhookAvatar': return this.botAdmin(command.communityId, (c) => this.routes.getWebhookAvatar(c, command.avatarId));
       case 'watchBotScope': this.watchBotScope(command.kind, command.channelId, command.on); return Promise.resolve(null);
       case 'patchBotProfile': return this.patchBotProfile(command.communityId, command.display);
       case 'listModerationCases': return this.listModerationCases(command);
@@ -1756,6 +1808,33 @@ export class Controller {
     this.watchBotCatalog(communityId);
     await this.botCatalog.refresh(communityId);
     return null;
+  }
+
+  /** Task 22: a Bot-page route of a listed community. */
+  private botAdmin<T>(communityId: string, run: (community: Uint8Array) => Promise<T>): Promise<T> {
+    if (!this.listed(communityId)) return Promise.reject(new Refusal('E_BAD_INPUT', 'unknown community'));
+    return run(fromHex(communityId));
+  }
+
+  /** Task 22: marks or unmarks a Bot channel, then reads the catalog and Bot channels again (op 54 does not carry a mark).
+   *  On a mark the instance proposes the Bot into the channel's group; this device, a member, commits the Add as it
+   *  commits any pending proposal of a group it holds. */
+  private async markBotChannel(communityId: string, channelId: string, on: boolean): Promise<null> {
+    await this.botAdmin(communityId, (c) => on ? this.routes.markBotChannel(c, fromHex(channelId)) : this.routes.unmarkBotChannel(c, fromHex(channelId)));
+    this.watchBotCatalog(communityId);
+    await this.botCatalog.refresh(communityId).catch(() => undefined);
+    return null;
+  }
+
+  /** Task 22: the Bot page's re-add. While the Bot's old leaf is being proposed out the instance answers 1; this asks again
+   *  (every 2 s, at most 15 times) until it proposes the Bot in. */
+  private async reAddBot(communityId: string, channelId: string): Promise<'added' | 'pending'> {
+    for (let attempt = 0; attempt < REREADD_ATTEMPTS; attempt++) {
+      const state = await this.botAdmin(communityId, (c) => this.routes.reAddBot(c, fromHex(channelId)));
+      if (state === 0) return 'added';
+      await new Promise<void>(resolve => { this.deps.setTimeout(resolve, REREADD_WAIT_MS); });
+    }
+    return 'pending';
   }
 
   /** Publishes `botCatalog:<id>` on every change of that community's catalog (once per community). */
@@ -2333,9 +2412,7 @@ export class Controller {
       const row = core.manualWarningEvidence().find(item => toHex(item.requestId) === command.requestId);
       if (row === undefined) throw new CoreError('E_CORE_STATE', 'manual warning evidence was not staged');
       const reserved = core.ensureManualWarningEvidenceRequest(requestId, crypto.getRandomValues(new Uint8Array(16)), BigInt(Math.floor(this.deps.now() / 1000)));
-      const sent = await this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId: command.communityId, channelId: null,
-        requestId: toHex(reserved.requestId), operation: 61, args: [command.requestId, row.reason, ''], revision: '0' }, reserved.expires);
-      evidence = sent.upload;
+      evidence = await this.sealedEvidence(command.communityId, toHex(reserved.requestId), [command.requestId, row.reason, '']);
       if (evidence === 'accepted') core.completeManualWarningEvidence(requestId, BigInt(Math.floor(this.deps.now() / 1000)));
     } catch { evidence = 'unknown'; }
     return { requestId: toHex(receipt.requestId), actionId: toHex(receipt.actionId), revision: String(receipt.revision), acceptedAt: receipt.acceptedAt, evidence };
@@ -5951,8 +6028,41 @@ export class Controller {
     const core = this.requireCore();
     if (core.ensureManualRemovalEvidenceRequest === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
     const reserved = core.ensureManualRemovalEvidenceRequest(fromHex(input.proofRequestId), crypto.getRandomValues(new Uint8Array(16)), input.now);
-    return this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId: input.communityId, channelId: null,
-      requestId: toHex(reserved.requestId), operation: 61, args: [input.proofRequestId, input.reason, input.excerpt], revision: '0' }, reserved.expires);
+    return this.sealedEvidence(input.communityId, toHex(reserved.requestId), [input.proofRequestId, input.reason, input.excerpt])
+      .then(upload => ({ requestId: toHex(reserved.requestId), upload }));
+  }
+
+  /** Task 22: moderation evidence (v1 61) as the sealed app operation 161, sent by the worker itself (the resume after a
+   *  reload has no page). The reserved request id is reused on every resume: the Bot answers a repeat within 5 min from its
+   *  cache, and its handler stores one evidence row per accepted action. 'accepted' only on the Bot's own success. */
+  private async sealedEvidence(communityId: string, requestId: string, args: [string, string, string]): Promise<'accepted' | 'pending' | 'rejected' | 'unknown'> {
+    try {
+      const result = await this.workerBotOperations(communityId).request({ operation: 61, args, revision: '0', requestId });
+      return result.status === 0 ? 'accepted' : result.status === 1 || result.status === 2 ? 'rejected' : 'pending';
+    } catch (e) {
+      return e instanceof BotOperationRefusedError ? 'pending' : 'unknown';
+    }
+  }
+
+  private workerBotOperations(communityId: string): BotOperations {
+    let ops = this.workerBotOps.get(communityId);
+    if (ops === undefined) {
+      const commands = createBotCommands({
+        submit: async (req) => {
+          try { await this.botRelay.send(req); }
+          catch (e) { if (e instanceof BotCommandError) throw Object.assign(new Error(e.code), { code: e.code, status: e.status }); throw e; }
+        },
+        answers: (requestId, listener) => { this.workerBotAnswers.set(requestId, listener); return () => { this.workerBotAnswers.delete(requestId); }; },
+        refetchCatalog: (c) => this.botCatalog.refresh(c),
+        forget: (requestId) => { this.botRelay.forget(requestId); },
+        setTimer: (fn, ms) => this.deps.setTimeout(fn, ms),
+        clearTimer: (handle) => { this.deps.clearTimeout(handle as number); },
+        newRequestId: () => toHex(crypto.getRandomValues(new Uint8Array(16))),
+      });
+      ops = createBotOperationsOn(commands, communityId);
+      this.workerBotOps.set(communityId, ops);
+    }
+    return ops;
   }
 
   /** Replays the idempotent accepted warning and resumes its op61 case from the protected local outbox. */
@@ -5973,10 +6083,8 @@ export class Controller {
         if (row.state !== 1) continue;
         const now = BigInt(Math.floor(this.deps.now() / 1000));
         const reserved = core.ensureManualWarningEvidenceRequest(row.requestId, crypto.getRandomValues(new Uint8Array(16)), now);
-        const result = await this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId: toHex(row.communityId), channelId: null,
-          requestId: toHex(reserved.requestId), operation: 61,
-          args: [toHex(row.requestId), 'warn', row.reason, ''], revision: '0' }, reserved.expires);
-        if (result.upload === 'accepted') core.completeManualWarningEvidence(row.requestId, BigInt(Math.floor(this.deps.now() / 1000)));
+        const upload = await this.sealedEvidence(toHex(row.communityId), toHex(reserved.requestId), [toHex(row.requestId), row.reason, '']);
+        if (upload === 'accepted') core.completeManualWarningEvidence(row.requestId, BigInt(Math.floor(this.deps.now() / 1000)));
       } catch { /* retain the protected outbox row for the next ready */ }
     }
   }

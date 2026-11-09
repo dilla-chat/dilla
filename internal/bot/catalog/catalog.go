@@ -27,10 +27,14 @@ type Feature uint64
 
 const (
 	FeatureMusic         Feature = 1 << 0
+	FeatureWelcome       Feature = 1 << 1
 	FeatureRoles         Feature = 1 << 2
 	FeatureAnnouncements Feature = 1 << 3
 	FeaturePolls         Feature = 1 << 8
 	FeatureReminders     Feature = 1 << 9
+	// FeatureModeration is any of the four moderation capabilities (warnings, removal, kick, ban: bits 4 to 7), as v1
+	// offered moderation evidence (Task 22): a feature mask matches when any of its bits is enabled.
+	FeatureModeration Feature = 1<<4 | 1<<5 | 1<<6 | 1<<7
 )
 
 // FeatureExisting marks the operations on polls and reminders that already exist: they are offered whatever the
@@ -40,7 +44,7 @@ const FeatureExisting Feature = 0
 
 // AllFeatures is every feature the catalog has commands for, in bit order.
 func AllFeatures() []Feature {
-	return []Feature{FeatureMusic, FeatureRoles, FeatureAnnouncements, FeaturePolls, FeatureReminders}
+	return []Feature{FeatureMusic, FeatureWelcome, FeatureRoles, FeatureAnnouncements, FeatureModeration, FeaturePolls, FeatureReminders}
 }
 
 // FeaturesOf is the catalog features an installation's capability mask enables, in bit order.
@@ -122,6 +126,7 @@ var appMutations = map[protocol.Operation]bool{
 	protocol.OpAppMusicAnnounce: true, protocol.OpAppRolePanelPublish: true, protocol.OpAppAnnouncementsPut: true,
 	protocol.OpAppAnnouncementsDelete: true, protocol.OpAppPollCreate: true, protocol.OpAppPollVote: true, protocol.OpAppPollClose: true,
 	protocol.OpAppReminderCreate: true, protocol.OpAppReminderCancel: true, protocol.OpAppReminderDismiss: true,
+	protocol.OpAppSettingsPut: true, protocol.OpAppModerationEvidence: true,
 }
 
 // AppMutation reports whether op is an app operation that changes state.
@@ -188,6 +193,13 @@ var commands = []Command{
 	app(FeatureExisting, "reminders page", protocol.OpAppReminderList, 0, ScopeCommunity),
 	app(FeatureExisting, "reminder cancel", protocol.OpAppReminderCancel, 0, ScopeCommunity),
 	app(FeatureExisting, "reminder dismiss", protocol.OpAppReminderDismiss, 0, ScopeCommunity),
+	// Task 22: the admin settings pages and moderation evidence. The welcome handlers check manage_community again; the
+	// evidence's view_audit_log-or-manage_messages check is the dispatcher's (one permission_bit says "all of").
+	app(FeatureWelcome, "welcome settings", protocol.OpAppSettingsGet, permManageCommunity, ScopeCommunity),
+	app(FeatureWelcome, "welcome save", protocol.OpAppSettingsPut, permManageCommunity, ScopeCommunity),
+	app(FeatureModeration, "moderation evidence", protocol.OpAppModerationEvidence, 0, ScopeCommunity),
+	// The Bot page's status: the Bot channels it needs re-adding to and the last music starts.
+	app(FeatureExisting, "bot status", protocol.OpReadBotStatus, permManageCommunity, ScopeCommunity),
 }
 
 // Commands is the catalog's commands for features, in table order.

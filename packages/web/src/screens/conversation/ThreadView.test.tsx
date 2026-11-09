@@ -15,6 +15,7 @@ import { ThreadView } from './ThreadView.tsx';
 import { privateResults } from "../commands/private-results.ts";
 import type { ProfileOpener } from './MessageItem.tsx';
 import { toolbarButton, toolbarLabels } from '../../test/toolbar.ts';
+import { installSealedBot } from '../../test/sealed-bot.ts';
 
 const ROOT = P1;
 
@@ -189,7 +190,9 @@ describe('ThreadView (web3.7)', () => {
     fake.handler = command => command.m === 'moderateRemoveMessage' ? Promise.resolve({ removal: 'unknown',
       proofRequestId: '11'.repeat(16), evidenceRequestId: '22'.repeat(16), evidenceUpload: 'unknown' })
       : command.m === 'resolveManualRemoval' ? Promise.resolve({ removal: 'accepted', evidenceUpload: 'pending' })
-      : command.m === 'humanInteractionRequest' ? Promise.resolve({ upload: 'accepted' }) : Promise.resolve(null);
+      : Promise.resolve(null);
+    // Task 22: evidence is the sealed app operation 161; the test Bot stores it.
+    const bot = installSealedBot(fake, A, () => ({ status: 0, revision: null }));
     const everyone = 'e0'.repeat(16);
     const moderators = 'a0'.repeat(16);
     const self = account().user?.id ?? 'bb'.repeat(16);
@@ -223,8 +226,9 @@ describe('ThreadView (web3.7)', () => {
     await user.click(screen.getByRole('button', { name: en['shell.moderation.retryEvidence'] }));
     await waitFor(() => expect(screen.getByText(en['shell.moderation.evidenceSent'])).toBeInTheDocument());
     expect(fake.callsOf('moderateRemoveMessage')).toHaveLength(1);
-    expect(fake.callsOf('humanInteractionRequest')).toEqual([expect.objectContaining({ operation: 61, communityId: A,
-      channelId: null, args: ['11'.repeat(16), 'reviewed by moderator', 'first reply'], revision: '0' })]);
+    expect(fake.callsOf('humanInteractionRequest')).toEqual([]);
+    expect(bot.calls.map(c => [c.sealed, c.operation, c.communityId, c.channelId, c.revision])).toEqual([[161, 61, A, null, '0']]);
+    expect(bot.calls[0].args).toEqual([ClientCore.fromHex('11'.repeat(16)), 'reviewed by moderator', 'first reply']);
     expect(fake.callsOf('deleteMessage')).toEqual([]);
   });
   it('says there are no replies yet, but not while the thread is still being read', () => {

@@ -6,7 +6,7 @@ import { toHex } from '../hex';
 import { sealedOperation, v1Operation } from '../bot/operations';
 import type { BotAnswerView } from '../bot/commands';
 
-const MUTATIONS = new Set([12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 25, 31, 51, 52, 70, 73, 74, 80, 82, 83]);
+const MUTATIONS = new Set([2, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 25, 31, 51, 52, 61, 70, 73, 74, 80, 82, 83]);
 const CODES: Record<number, [number, string]> = { 1: [400, 'E_INVALID'], 2: [403, 'E_FORBIDDEN'], 3: [408, 'E_BOT_STALE'], 4: [409, 'E_CONFLICT'],
   5: [503, 'E_UNAVAILABLE'], 6: [429, 'E_BUSY'], 7: [404, 'E_NOT_FOUND'], 8: [426, 'E_UPGRADE_REQUIRED'], 9: [500, 'E_INTERNAL'] };
 
@@ -22,8 +22,8 @@ export interface SealedCall {
 export type SealedReply = { status: number; revision?: string | null; data?: Uint8Array; extra?: unknown } | null;
 
 /** The v1 operations the test catalog offers to the app (as sealed operations). */
-export const APP_SURFACE_OPERATIONS = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 31, 50, 51, 52,
-  70, 71, 72, 73, 74, 75, 80, 81, 82, 83, 84];
+export const APP_SURFACE_OPERATIONS = [1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 31, 50, 51, 52,
+  61, 70, 71, 72, 73, 74, 75, 80, 81, 82, 83, 84];
 
 export function sealedBotFake(respond: (call: SealedCall) => SealedReply | Promise<SealedReply>, options: { offered?: readonly number[] } = {}) {
   const calls: SealedCall[] = [];

@@ -25,6 +25,8 @@
 
 .dw-bot-settings code { overflow-wrap: anywhere; white-space: normal; }
 .dw-bot-settings .d-settings-row__control { min-width: 0; }
+/* Bot v2 Task 22: the last 20 music starts, a wrapping run of meta-sized times under the row's label. */
+.dw-music-starts { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--text-meta); color: var(--fg-2); font-variant-numeric: tabular-nums; }
 .dw-settings-section > .d-btn { align-self: flex-start; }
 .dw-settings-section > section { min-width: 0; }
 .dw-bot-overview { display: grid; gap: 1.5rem; padding-block: 0.75rem 1.5rem; border-bottom: 1px solid var(--hairline); }

@@ -18,16 +18,19 @@ export const APP_OPERATION_BASE = 100;
 const READS: ReadonlyMap<number, number> = new Map([[71, 91], [10, 92], [84, 93]]);
 const READ_OF: ReadonlyMap<number, number> = new Map([...READS].map(([v1, sealed]) => [sealed, v1]));
 /** The v1 operations a surface sends that change state: their sealed arguments start with the expected revision. */
-const MUTATIONS: ReadonlySet<number> = new Set([12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 25, 31, 51, 52, 70, 73, 74, 80, 82, 83]);
+const MUTATIONS: ReadonlySet<number> = new Set([2, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 25, 31, 51, 52, 61, 70, 73, 74, 80, 82, 83]);
 /** The v1 argument positions that hold an id (sent as 16 bytes when given as hex). */
-const ID_ARGS: ReadonlyMap<number, readonly number[]> = new Map([[21, [0]], [25, [0]], [22, [0, 1]], [31, [0]], [51, [0]], [52, [0]],
+const ID_ARGS: ReadonlyMap<number, readonly number[]> = new Map([[21, [0]], [25, [0]], [22, [0, 1]], [31, [0]], [51, [0]], [52, [0]], [61, [0]],
   [71, [0]], [72, [0, 1]], [73, [0]], [74, [0]], [75, [0]], [82, [0]], [83, [0]]]);
 /** A sealed answer's bare refusal code, as the v1 status it stands for (internal/bot/service sealedRefusal). */
 const STATUS_OF_CODE: ReadonlyMap<string, number> = new Map([['E_INVALID', 1], ['E_FORBIDDEN', 2], ['E_BOT_STALE', 3], ['E_CONFLICT', 4],
   ['E_UNAVAILABLE', 5], ['E_BUSY', 6], ['E_NOT_FOUND', 7], ['E_UPGRADE_REQUIRED', 8], ['E_INTERNAL', 9]]);
 
-/** The sealed operation that runs v1 operation `v1`. */
-export function sealedOperation(v1: number): number { return READS.get(v1) ?? v1 + APP_OPERATION_BASE; }
+/** Sealed reads with no v1 operation (90–99: the Bot page's status, 94, Task 22): sent as they are. */
+const SEALED_ONLY = (op: number): boolean => op >= 90 && op < APP_OPERATION_BASE;
+
+/** The sealed operation that runs v1 operation `v1` (a sealed-only read is itself). */
+export function sealedOperation(v1: number): number { return SEALED_ONLY(v1) ? v1 : READS.get(v1) ?? v1 + APP_OPERATION_BASE; }
 /** The v1 operation a sealed read or app operation runs, or null for a picker command. */
 export function v1Operation(sealed: number): number | null {
   const read = READ_OF.get(sealed);

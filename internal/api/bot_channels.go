@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -34,6 +36,7 @@ func registerBotChannels(m *server.Mux, d Deps) {
 	m.SocketAuthed("PUT /v1/communities/{community}/channels/{channel}/bot-channel", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.MarkBotChannel))
 	m.SocketAuthed("DELETE /v1/communities/{community}/channels/{channel}/bot-channel", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.UnmarkBotChannel))
 	m.SocketAuthed("GET /v1/communities/{community}/bot/channels", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.ListBotChannels))
+	m.SocketAuthed("POST /v1/communities/{community}/channels/{channel}/bot-channel/re-add", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.ReAddBot))
 }
 
 func (d Deps) botChannelEvents() BotChannelEvents {
@@ -124,8 +127,104 @@ func (d Deps) MarkBotChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	if created {
 		d.botChannelEvents().BotChannelMarked(cid, channelID)
+		d.BotChannelsNotify.Changed(afterCommit(r), cid)
+	}
+	// Task 22: the Bot is proposed into the channel's group now (a second mark proposes again what is still missing);
+	// a member of the group, the marking admin's client first, commits the Add, and the Bot joins from its Welcome.
+	if err := d.proposeBotInto(afterCommit(r), channelID); err != nil {
+		d.Log.WarnContext(r.Context(), "the Bot could not be proposed into its new Bot channel", "channel_id", channelID.String(), "error", err.Error())
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// proposeBotInto materialises the channel's members and runs its group membership sync, which proposes the Bot's
+// devices into a Bot channel's group (SyncGroupMembers). With no delivery service it proposes nothing.
+func (d Deps) proposeBotInto(ctx context.Context, channelID id.ID) error {
+	if d.BotMembership == nil {
+		return nil
+	}
+	ch, err := d.Repo.GetChannel(ctx, channelID)
+	if err != nil {
+		return err
+	}
+	return MaterialiseChannelMembers(ctx, d.Repo, d.BotMembership, ch, d.Clock.Now().Unix())
+}
+
+// ReAddBot is POST …/channels/{channel}/bot-channel/re-add (Task 22): the Bot page's "add the Bot again" for a Bot
+// channel whose group the Bot cannot join on its own (its Welcome went stale: Task 16's needs re-add). It takes the
+// authority a mark takes. While the Bot still holds a leaf in the channel's group, each such leaf is proposed out and the
+// answer is [1]: ask again once that commit lands. Otherwise the Bot is proposed in and the answer is [0]. A channel that
+// is not a Bot channel is 409 E_NOT_BOT_CHANNEL. A member of the group commits either proposal.
+func (d Deps) ReAddBot(w http.ResponseWriter, r *http.Request) {
+	s, ok := session(r)
+	if !ok {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, ""))
+		return
+	}
+	cid, channelID, err := botChannelPath(r)
+	if err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if _, _, err := humanForBot(r, d.Repo, cid, s); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	if err := requireBotWire(s.WireVersion); err != nil {
+		server.WriteError(w, err)
+		return
+	}
+	ctx := r.Context()
+	marked, err := d.Repo.ListBotChannels(ctx, cid)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	if !slices.ContainsFunc(marked, func(row store.BotChannelRow) bool { return row.ChannelID == channelID }) {
+		server.WriteError(w, server.Errorf(server.CodeNotBotChannel, "the channel is not a Bot channel"))
+		return
+	}
+	installation, err := d.Repo.GetActiveBotInstallationByCommunity(ctx, cid)
+	if err != nil || installation.UserID == nil {
+		server.WriteError(w, server.Errorf(server.CodeNotFound, "bot"))
+		return
+	}
+	if d.BotMembership == nil {
+		server.WriteError(w, server.Errorf(server.CodeUnavailable, "no delivery service"))
+		return
+	}
+	groups, err := d.Repo.GroupsForTarget(ctx, channelID, GroupText)
+	if err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	}
+	work := afterCommit(r)
+	removing := false
+	for _, g := range groups {
+		leaves, err := d.Repo.ListMembers(ctx, g.GroupID)
+		if err != nil {
+			server.WriteError(w, d.storeError(r, err))
+			return
+		}
+		for _, m := range leaves {
+			if m.RemovedEpoch != nil || m.UserID != *installation.UserID {
+				continue
+			}
+			removing = true
+			if err := d.BotMembership.ProposeRemoveOf(work, g.GroupID, m.LeafIndex, m.DeviceID, id.New()); err != nil {
+				d.Log.WarnContext(ctx, "the Bot's leaf could not be proposed out for a re-add", "channel_id", channelID.String(), "error", err.Error())
+			}
+		}
+	}
+	state := uint64(1)
+	if !removing {
+		state = 0
+		if err := d.proposeBotInto(work, channelID); err != nil {
+			server.WriteError(w, d.storeError(r, err))
+			return
+		}
+	}
+	d.write(w, r, http.StatusOK, []any{state})
 }
 
 // UnmarkBotChannel removes a channel's Bot-channel mark. The Bot feed hears it before the answer, so
@@ -169,6 +268,7 @@ func (d Deps) UnmarkBotChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	if removed {
 		d.botChannelEvents().BotChannelUnmarked(cid, channelID)
+		d.BotChannelsNotify.Changed(afterCommit(r), cid)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

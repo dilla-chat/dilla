@@ -178,8 +178,9 @@ func TestEveryCatalogCommandIsValidAndTheSealedReadsAreListed(t *testing.T) {
 }
 
 func TestFeaturesOfCapabilities(t *testing.T) {
-	got := FeaturesOf(1<<0 | 1<<9 | 1<<1)
-	if len(got) != 2 || got[0] != FeatureMusic || got[1] != FeatureReminders {
+	// Welcome (bit 1) has catalog entries since Task 22 (its settings page); bit 10 is no feature.
+	got := FeaturesOf(1<<0 | 1<<9 | 1<<1 | 1<<10)
+	if len(got) != 3 || got[0] != FeatureMusic || got[1] != FeatureWelcome || got[2] != FeatureReminders {
 		t.Fatalf("features = %v", got)
 	}
 }

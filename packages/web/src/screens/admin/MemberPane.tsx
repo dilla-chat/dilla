@@ -27,6 +27,9 @@ export interface MemberPaneProps {
   onMention?: (username: string) => void;
   /** The members head's close × (the shell's aside on a desktop; Signal §5.7). Absent: no ×. */
   onClose?: () => void;
+  /** Bot v2 Task 22: the open channel. In a text channel that is not a Bot channel the Bot is no member (it is in the
+   *  groups of Bot channels only), so it is left out; with the Bot channels unknown, or no channel, it stays. */
+  channelId?: string | null;
 }
 
 export function MemberPane(props: MemberPaneProps): React.JSX.Element {
@@ -72,7 +75,11 @@ export function MemberPane(props: MemberPaneProps): React.JSX.Element {
   });
 
   const ownerId = communities?.find(c => c.id === communityId)?.owner ?? '';
-  const list = members ?? [];
+  const botCatalog = useSlice(`botCatalog:${communityId}`);
+  const openChannel = props.channelId == null ? undefined : channels?.find(c => c.id === props.channelId);
+  const botAbsent = openChannel !== undefined && openChannel.kind === 0 && botCatalog?.botChannels != null
+    && !botCatalog.botChannels.includes(openChannel.id);
+  const list = (members ?? []).filter(m => !(botAbsent && m.kind === 1));
   const roleList = roles ?? [];
 
   // The status line (Signal §5.7): a custom status, else where they are in voice in this server ("in harbour" for yourself, "in voice"

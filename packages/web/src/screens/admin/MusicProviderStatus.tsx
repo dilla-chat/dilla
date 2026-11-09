@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { BotOperationUncertainError, catalogOffers, createBotOperations, decodeMusicProviderStatus, toHex, type MusicProviderStatusSnapshot } from '@dilla/client-core';
+import { BOT_STATUS_READ, BotOperationUncertainError, catalogOffers, createBotOperations, decodeBotStatus, decodeMusicProviderStatus, toHex,
+  type MusicProviderStatusSnapshot, type MusicStart } from '@dilla/client-core';
 import { Button, SettingsRow } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
@@ -47,6 +48,18 @@ export function MusicProviderStatus({ communityId, installationId }: { community
     })();
     return () => { stopped = true; };
   }, [client, communityId, installationId, authorized, offered, generation]);
+  // Bot v2 Task 22: the last 20 music starts, from the Bot page's status read (94), when the catalog offers it.
+  const startsOffered = catalog !== undefined && catalog !== null && catalogOffers(client, communityId, BOT_STATUS_READ);
+  const [starts, setStarts] = useState<MusicStart[] | null>(null);
+  useEffect(() => {
+    setStarts(null);
+    if (!authorized || !startsOffered) return;
+    let stopped = false;
+    void createBotOperations(client, communityId).request({ operation: BOT_STATUS_READ, args: [] }).then(result => {
+      if (!stopped && result.status === 0) setStarts(decodeBotStatus(result.data).musicStarts);
+    }).catch(() => undefined);
+    return () => { stopped = true; };
+  }, [client, communityId, authorized, startsOffered, generation]);
   const shown = authorized ? snapshot : null;
   const stale = shown !== null && now / 1000 - Number(shown.observedAt) > 60;
   const current = phase === 'known' && !stale;
@@ -65,5 +78,10 @@ export function MusicProviderStatus({ communityId, installationId }: { community
         onClick={() => { if (authorized && installationId !== null && !busy) refresh(value => value + 1); }}>{t('serverSettings.music.checkAgain')}</Button>
       <span className="d-sr-only" role="status">{youtubeHint}</span>
     </SettingsRow>
+    {starts !== null ? <SettingsRow id="music-start-timings" icon="timer" label={t('bot.music.timings')} layout="stacked"
+      {...(starts.length === 0 ? { hint: t('bot.music.noStarts') } : {})}>
+      {starts.length > 0 ? <ol className="dw-music-starts">{starts.map((start, index) => <li key={index}>
+        {t(start.cold ? 'bot.music.startCold' : 'bot.music.start', { ms: start.firstFrameMs })}</li>)}</ol> : null}
+    </SettingsRow> : null}
   </>;
 }
