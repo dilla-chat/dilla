@@ -196,11 +196,8 @@ func TestPollsRemindersSettingsEvidenceAndQueueSurviveUpgrade(t *testing.T) {
 		t.Fatalf("v1 queue read back as %+v (%v)", queue, err)
 	}
 
-	// Settings: the automatic moderation configuration v1 saved.
-	config, revision, err := moderation.NewStore(state).Load(ctx)
-	if err != nil || revision != 1 || !config.Enabled {
-		t.Fatalf("v1 settings = %+v rev %d (%v)", config, revision, err)
-	}
+	// The automatic moderation configuration v1 saved is no longer read: Bot v2 Task 23 removed AutoModeration, and the
+	// helper's one-time cleanup deletes the rows.
 
 	// Moderation evidence, read back through v2's reader, on a clock inside its 90-day retention window.
 	created := time.Unix(1_794_089_081, 0).UTC()

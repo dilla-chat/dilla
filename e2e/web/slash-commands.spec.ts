@@ -696,6 +696,13 @@ musicTest('music snapshot and clear report privately or explain unavailable encr
       realName = bot?.display || bot?.username || '';
       return realName;
     }, { timeout: BOT_WAIT }).not.toBe('');
+    // Task 23 fix round 1: the worker's error codes (never content) at this point, so a picker tag stuck on the fallback
+    // name shows why the Bot user was not pinned.
+    const diagnostics = await portSlice<{ errors: { code: string }[] }>(page, 'diagnostics');
+    const codes = (diagnostics?.errors ?? []).map(error => error.code);
+    const catalog = await portSlice<{ botUserId: string | null; status: { state: string } }>(page, `botCatalog:${communityId}`);
+    console.log(`slash-music diagnostics codes: ${JSON.stringify(codes)} catalog bot ${catalog?.botUserId ?? 'none'} (${catalog?.status.state ?? 'no catalog'}), installation bot ${identity.botUserId}`);
+    await testInfo.attach('slash-music-diagnostics-codes.json', { body: Buffer.from(JSON.stringify(codes)), contentType: 'application/json' });
     await expect(source).toHaveText(realName, { timeout: BOT_WAIT });
     const botName = await source.innerText();
     await commands.getByRole('textbox', { name: 'Command', exact: true }).fill('/queue');

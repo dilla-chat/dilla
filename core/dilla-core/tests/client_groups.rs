@@ -1466,12 +1466,86 @@ fn a_stored_kind3_group_is_removed_at_open() {
             rusqlite::params![GROUP.as_slice(), COMMUNITY.as_slice(), CHANNEL.as_slice()],
         )
         .expect("text row");
+        // Task 23 fix round 1: the kind-3 group's search, purge, removal and manual-evidence rows and its pending Bot
+        // intent go with it.
+        let g = [0x31u8; 16];
+        let sql: &[(&str, &str)] = &[
+            (
+                "search",
+                "INSERT INTO app_search_rows(group_id,user_id,device_id,seq,body,terms) VALUES(?1,zeroblob(16),zeroblob(16),1,'hi','hi')",
+            ),
+            (
+                "purge",
+                "INSERT INTO app_purges(group_id,seq,channel_id,blob_ids) VALUES(?1,1,zeroblob(16),x'80')",
+            ),
+            (
+                "cursor",
+                "INSERT INTO app_removal_cursor(group_id,revision) VALUES(?1,1)",
+            ),
+            (
+                "tombstone",
+                "INSERT INTO app_removal_tombstones(group_id,seq,revision) VALUES(?1,1,1)",
+            ),
+            (
+                "entry",
+                "INSERT INTO app_removal_entries(group_id,revision,seq,proof,signature,accepted_at) VALUES(?1,1,1,x'01',zeroblob(64),1)",
+            ),
+            (
+                "intent",
+                "INSERT INTO app_bot_intents(operation_id,installation_id,group_id,kind,input_hash,state,result) VALUES(x'01010101010101010101010101010101',zeroblob(16),?1,2,zeroblob(32),0,x'80')",
+            ),
+            (
+                "evidence",
+                "INSERT INTO app_manual_removal_evidence(proof_request_id,evidence_request_id,actor_user_id,actor_device_id,community_id,group_id,channel_id,message_id,target_sequence,reason,excerpt,signed_body,state,created_at,expires) \
+              VALUES(x'02020202020202020202020202020202',x'03030303030303030303030303030303',x'04040404040404040404040404040404',x'05050505050505050505050505050505',x'06060606060606060606060606060606',?1,x'07070707070707070707070707070707',x'08080808080808080808080808080808',1,'r','',x'01',0,1,2)",
+            ),
+        ];
+        for (name, statement) in sql {
+            c.execute(statement, [g.as_slice()]).expect(name);
+        }
     }
     let core = ClientCore::open(conn.clone()).expect("reopen");
     assert_eq!(core.interaction_groups_removed_at_open(), 1);
     drop(core);
     {
         let c = conn.lock().unwrap();
+        let g = [0x31u8; 16];
+        for table in [
+            "app_search_rows",
+            "app_purges",
+            "app_removal_cursor",
+            "app_removal_tombstones",
+            "app_removal_entries",
+            "app_manual_removal_evidence",
+        ] {
+            let n: i64 = c
+                .query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE group_id=?1"),
+                    [g.as_slice()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "{table} rows of the kind-3 group are gone");
+        }
+        let search: i64 = c
+            .query_row(
+                "SELECT count(*) FROM app_search WHERE app_search MATCH 'hi'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(search, 0, "the search index forgot the kind-3 group's rows");
+        let pending: i64 = c
+            .query_row(
+                "SELECT count(*) FROM app_bot_intents WHERE group_id=?1 AND state=0",
+                [g.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            pending, 0,
+            "the kind-3 group's pending Bot intent is discarded"
+        );
         let count = |kind: i64| -> i64 {
             c.query_row(
                 "SELECT count(*) FROM app_groups WHERE kind=?1",

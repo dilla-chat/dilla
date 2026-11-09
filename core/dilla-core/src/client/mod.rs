@@ -302,7 +302,19 @@ fn remove_interaction_groups(provider: &DillaProvider) -> Result<u64, ClientErro
                         .map_err(|e| ClientError::new(E_CORE_STORAGE, format!("{e:?}")))?;
                 }
                 u.with_conn(|c| {
+                    let group_id: [u8; 16] = id.as_slice().try_into().map_err(|_| {
+                        StorageError::Codec("app_groups group_id is not 16 bytes".into())
+                    })?;
+                    // Task 23 fix round 1: its pending Bot upload intent is discarded as a forgotten group's.
+                    bot_intents::discard_pending_for_forgotten_group(c, &group_id)?;
                     for table in [
+                        // The search rows' delete trigger takes them out of the FTS index too.
+                        "app_search_rows",
+                        "app_purges",
+                        "app_removal_cursor",
+                        "app_removal_tombstones",
+                        "app_removal_entries",
+                        "app_manual_removal_evidence",
                         "app_proposals",
                         "app_handshake_tail",
                         "app_quarantine",

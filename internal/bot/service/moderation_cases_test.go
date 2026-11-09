@@ -136,7 +136,7 @@ func (n *moderationCaseNativeFake) StateScan(_ context.Context, area uint64, aft
 
 func sampleModerationAction(n *moderationCaseNativeFake, revision uint64) ModerationAction {
 	return ModerationAction{Community: n.binding.Community.String(), Group: id.New().String(), Channel: id.New().String(), Actor: id.New().String(), Message: id.New().String(),
-		SourceRevision: revision, Decision: moderation.Decision{Action: moderation.ActionLog, Rules: []moderation.Rule{moderation.RuleMentions}}, Excerpt: "example", ReceivedAt: time.Unix(1_800_000_000, 0), runtimeGenerated: true}
+		SourceRevision: revision, Rules: []moderation.Rule{moderation.RuleMentions}, Excerpt: "example", ReceivedAt: time.Unix(1_800_000_000, 0), runtimeGenerated: true}
 }
 
 func TestModerationCasePurgeExpiresRowsInBoundedScans(t *testing.T) {

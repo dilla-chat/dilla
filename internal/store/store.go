@@ -213,10 +213,6 @@ type BotKeyPackagePublications interface {
 // atomically with the group and initial MLS state.
 type BotGroupRegistrationReceipts interface {
 	GetBotGroupRegistrationReceipt(context.Context, id.ID, id.ID) (BotGroupRegistrationReceipt, error)
-	// GetBotGroupRegistrationReceiptByGroup resolves the immutable accepted registration for a
-	// globally unique MLS group ID. It is a read-only lookup for authorization against an existing
-	// group; callers must still validate the live group state and installation authority.
-	GetBotGroupRegistrationReceiptByGroup(context.Context, id.ID) (BotGroupRegistrationReceipt, error)
 	CreateBotGroupRegistrationReceipt(context.Context, BotGroupRegistrationReceipt) error
 	DeleteBotGroupRegistrationReceiptsByInstallation(context.Context, id.ID) error
 }

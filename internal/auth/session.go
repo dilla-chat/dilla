@@ -1472,7 +1472,7 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 	case "GET /v1/communities/{community}/bot/receipts/{operation}",
 		"POST /v1/communities/{community}/bot/receipts/{operation}/resolve",
 		"POST /v1/groups/{group}/moderation/removals",
-		"GET /v1/groups/{group}/moderation/removals", "GET /v1/communities/{community}/moderation/actions":
+		"GET /v1/groups/{group}/moderation/removals":
 		if !ready {
 			return false, nil
 		}

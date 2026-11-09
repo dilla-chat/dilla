@@ -151,7 +151,14 @@ export interface BotCatalogDeps {
   pinBotDeviceList(botUserId: Uint8Array): Promise<0 | 1 | 2>;
   /** A catalog read or a key check that failed, by code (diagnostics); never its content. */
   onError?(code: string): void;
+  /** Task 23 fix round 1: the clock and timer a refused first pin's retry runs on (defaults: Date.now, setTimeout). */
+  now?(): number;
+  setTimer?(fn: () => void, ms: number): () => void;
 }
+
+/** A refused first pin is tried again after this backoff, doubling to the cap (Task 23 fix round 1). */
+export const PIN_RETRY_MS = 3_000;
+const PIN_RETRY_MAX_MS = 60_000;
 
 interface Entry {
   revision: bigint;
@@ -177,9 +184,10 @@ export class BotCatalogStore {
   private readonly pins = new Map<string, string>();
   /** Bot users (hex) whose device list was fetched and pinned on this connection (task 20b: at most once per connect). */
   private readonly listFetched = new Set<string>();
-  /** Communities whose first pin the core refused on this connection (no Bot attestation, or a human's): not asked again
-   *  until the next connection. */
-  private readonly pinRefused = new Set<string>();
+  /** Communities whose first pin the core refused (no Bot attestation yet, or a human's): not asked again before `until`.
+   *  Task 23 fix round 1: a newer op-61 revision, a catalog read, the trust refresh or the backoff timer (doubling from
+   *  PIN_RETRY_MS) clears it, so a refusal never holds for the whole connection. */
+  private readonly pinRefused = new Map<string, { until: number; backoff: number; cancel: () => void }>();
   /** Bot users (hex) whose pinned device list holds a key change (botDeviceListPin state 1): greyed `changed`. */
   private readonly listHeld = new Set<string>();
   /** community → why its Bot user cannot be used: the server named another one, or more than one. */
@@ -228,6 +236,7 @@ export class BotCatalogStore {
     const serverStatus: BotStatus = held?.serverStatus.state === 'degraded' ? held.serverStatus : { state: 'ready', since: null };
     const entry: Entry = { revision: frame.revision, commands, publication, verified: null, serverStatus, botChannels: held?.botChannels ?? null };
     this.entries.set(communityId, entry);
+    this.clearRefusal(communityId);
     if (this.pinOf(communityId) !== undefined || publication === null) {
       this.verifyEntry(communityId, entry);
       this.notify(communityId);
@@ -241,7 +250,7 @@ export class BotCatalogStore {
   }
 
   /** A new gateway connection: the next sync reads the revisions again (op 61 is not replayed). */
-  newConnection(): void { this.revisions = null; this.listFetched.clear(); this.pinRefused.clear(); }
+  newConnection(): void { this.revisions = null; this.listFetched.clear(); this.clearRefusals(); }
 
   /** The instance's revisions for this connection (one read, shared with the catalog sync); null when it could not be read. */
   readRevisions(): Promise<BotRevision[] | null> {
@@ -303,8 +312,8 @@ export class BotCatalogStore {
   /** The trust refresh ingested account-kind attestations (review M6): a community whose first pin was refused for want of
    *  the Bot's attestation is resolved again at once, and its key checked. */
   async attestationsChanged(): Promise<void> {
-    const waiting = [...this.pinRefused];
-    this.pinRefused.clear();
+    const waiting = [...this.pinRefused.keys()];
+    this.clearRefusals();
     for (const communityId of waiting) {
       if (!this.entries.has(communityId) || this.pinOf(communityId) !== undefined) continue;
       await this.reresolve(communityId);
@@ -319,7 +328,7 @@ export class BotCatalogStore {
     this.entries.clear();
     this.pins.clear();
     this.listFetched.clear();
-    this.pinRefused.clear();
+    this.clearRefusals();
     this.listHeld.clear();
     this.botProblem.clear();
     this.revisions = null;
@@ -342,7 +351,8 @@ export class BotCatalogStore {
       // commands greyed unverified, tried again on the next connection, never on this one.
       // The core refuses any candidate it holds no Bot attestation for, even with a pin held (fef388bd); a held pin is
       // compared first, and its attestation read once when the core lacks it.
-      if (this.pinRefused.has(communityId)) return;
+      const refused = this.pinRefused.get(communityId);
+      if (refused !== undefined && this.now() < refused.until) return;
       // A head that could not be read (offline, a transient error) is no refusal (review M6): the pin is tried again on the
       // next catalog read or trust refresh of this connection. Only a refusal after a successful read waits for the next
       // connection (or for an attestation the trust refresh brings: attestationsChanged).
@@ -358,7 +368,7 @@ export class BotCatalogStore {
         try { answer = this.deps.pinBotUser(communityId, candidate); break; }
         catch (e) {
           if (!ingested && codeOf(e) === 'E_DEVICE_LIST_STALE') { await ingest(); ingested = true; continue; }
-          if (!readFailed) this.pinRefused.add(communityId);
+          if (!readFailed) this.refuse(communityId);
           this.deps.onError?.(codeOf(e));
           return;
         }
@@ -382,6 +392,8 @@ export class BotCatalogStore {
       channels = list === null ? null : decodeBotChannels(list);
     } catch (e) { this.deps.onError?.(codeOf(e)); return; }
     // Every read looks the Bot user up again: a reinstall under another account is noticed (and greyed), never adopted.
+    // A refused first pin is tried again too (Task 23 fix round 1).
+    this.clearRefusal(communityId);
     if (decoded.publication !== null) await this.resolveBot(communityId);
     // Compared after every await: a push (op 61) that landed meanwhile and is newer than this read wins; this read's status
     // and channels are still current.
@@ -392,6 +404,33 @@ export class BotCatalogStore {
     if (!keep || entry.verified === null) this.verifyEntry(communityId, entry);
     this.entries.set(communityId, entry);
     this.notify(communityId);
+  }
+
+  private now(): number { return this.deps.now?.() ?? Date.now(); }
+
+  /** Records a refused first pin and arms its retry: the next attempt waits the backoff, which doubles to a minute. */
+  private refuse(communityId: string): void {
+    const prior = this.pinRefused.get(communityId);
+    prior?.cancel();
+    const backoff = prior === undefined ? PIN_RETRY_MS : Math.min(prior.backoff * 2, PIN_RETRY_MAX_MS);
+    const fire = (): void => {
+      if (this.pinRefused.get(communityId) !== entry || !this.entries.has(communityId) || this.pinOf(communityId) !== undefined) return;
+      void this.reresolve(communityId);
+    };
+    const cancel = this.deps.setTimer?.(fire, backoff) ?? (() => { const t = setTimeout(fire, backoff); return () => { clearTimeout(t); }; })();
+    const entry = { until: this.now() + backoff, backoff, cancel };
+    this.pinRefused.set(communityId, entry);
+  }
+
+  /** Lets the next resolve try the pin now; the backoff stays, so a refusal that repeats still waits longer each time. */
+  private clearRefusal(communityId: string): void {
+    const held = this.pinRefused.get(communityId);
+    if (held !== undefined) held.until = 0;
+  }
+
+  private clearRefusals(): void {
+    for (const held of this.pinRefused.values()) held.cancel();
+    this.pinRefused.clear();
   }
 
   /** The community's pinned Bot user (hex): this worker's copy, else the core store's (after a reload); undefined if none. */

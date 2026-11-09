@@ -16,23 +16,23 @@ import (
 type ModerationAction struct {
 	Community, Group, Channel, Actor, Message string
 	SourceRevision                            uint64
-	Decision                                  moderation.Decision
+	Rules                                     []moderation.Rule
 	Excerpt                                   string
 	ReceivedAt                                time.Time
 	runtimeGenerated                          bool
 }
 
 func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, a ModerationAction) error {
-	if !a.runtimeGenerated || a.Decision.Action != moderation.ActionLog || len(a.Decision.Rules) == 0 {
+	if !a.runtimeGenerated || len(a.Rules) == 0 || len(a.Excerpt) > moderation.ExcerptMaxBytes {
 		return ErrModerationCaseState
 	}
-	rules := make([]any, len(a.Decision.Rules))
-	for i, rule := range a.Decision.Rules {
+	rules := make([]any, len(a.Rules))
+	for i, rule := range a.Rules {
 		rules[i] = string(rule)
 	}
 	b := s.binding
 	raw, err := cborx.Marshal([]any{moderationCaseVersion, b.Instance, b.Community, b.Installation, a.Community, a.Group, a.Channel, a.Actor, a.Message,
-		a.SourceRevision, rules, string(moderation.ActionLog), uint64(0), moderation.Excerpt(a.Excerpt), uint64(a.ReceivedAt.UnixMilli()), id.ID{}, uint64(0), id.ID{}, uint64(0)})
+		a.SourceRevision, rules, string(moderation.ActionLog), uint64(0), a.Excerpt, uint64(a.ReceivedAt.UnixMilli()), id.ID{}, uint64(0), id.ID{}, uint64(0)})
 	if err != nil {
 		return err
 	}

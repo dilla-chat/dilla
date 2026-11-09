@@ -1,2 +1,1 @@
--- Bot v2 Task 23: the AutoModeration step-up grant tables are dropped by migration 00058_drop_bot_v1.
--- The number stays so the schema files run 001..049 with no gap.
+-- schema 040_automod_stepup_grants: the AutoModeration step-up grants are dropped by migration 00058_drop_bot_v1 (Bot v2 Task 23).

@@ -1,2 +1,1 @@
--- Bot v2 Task 23: bot_interaction_eligibility_revisions is dropped by migration 00058_drop_bot_v1.
--- The number stays so the schema files run 001..049 with no gap.
+-- schema 037_bot_interaction_eligibility_revisions: the table is dropped by migration 00058_drop_bot_v1 (Bot v2 Task 23).

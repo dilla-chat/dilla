@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/dilla-chat/dilla/internal/api"
@@ -153,7 +152,9 @@ func TestStructureChannelsGatesRegistrationOnMembership(t *testing.T) {
 		{"a DM channel row bound under a community", f.member, binding(c, f.dm, 0), ds.ErrBindingTarget},
 		// Not channel groups.
 		{"a pairing group", f.outsider, binding(nil, id.New(), 2), nil},
-		{"an interaction group", f.outsider, binding(nil, id.New(), 3), nil},
+		// Bot v2 Task 23 fix round 1: the interaction kind (3) is retired; nobody registers one.
+		{"an interaction group", f.outsider, binding(nil, id.New(), 3), ds.ErrBindingTarget},
+		{"a member's interaction group", f.member, binding(c, f.text, 3), ds.ErrBindingTarget},
 		{"an unknown group kind", f.member, binding(c, f.text, 4), ds.ErrBindingTarget},
 	} {
 		err := f.src.MayRegister(ctx, tc.user, tc.b)
@@ -255,13 +256,13 @@ func TestManagedBotGroupRegistrationUsesTypedCommunityBinding(t *testing.T) {
 	}{
 		{name: "foreign community", b: binding(&f.other, f.otherText, api.GroupText)},
 		{name: "DM", b: binding(nil, f.dm, api.GroupText)},
-		{name: "interaction", b: binding(nil, id.New(), 3)},
 	} {
 		if err := f.src.MayRegister(ctx, botID, tc.b); !errors.Is(err, ds.ErrNotEligible) {
 			t.Errorf("%s typed registration = %v, want ds.ErrNotEligible", tc.name, err)
-		} else if strings.Contains(tc.name, "interaction") && !strings.Contains(err.Error(), "human device is authenticated against the exact MLS roster") {
-			t.Errorf("%s typed registration refusal = %q, want the roster-bound human-device proof requirement", tc.name, err)
 		}
+	}
+	if err := f.src.MayRegister(ctx, botID, binding(nil, id.New(), 3)); !errors.Is(err, ds.ErrBindingTarget) {
+		t.Errorf("interaction typed registration = %v, want ds.ErrBindingTarget (kind 3 is retired)", err)
 	}
 	installation.State = store.BotInstallationReady
 	installation.Revision++
@@ -278,13 +279,13 @@ func TestManagedBotGroupRegistrationUsesTypedCommunityBinding(t *testing.T) {
 	}{
 		{name: "ready foreign community", b: binding(&f.other, f.otherText, api.GroupText)},
 		{name: "ready DM", b: binding(nil, f.dm, api.GroupText)},
-		{name: "ready interaction", b: binding(nil, id.New(), 3)},
 	} {
 		if err := f.src.MayRegister(ctx, botID, tc.b); !errors.Is(err, ds.ErrNotEligible) {
 			t.Errorf("%s typed registration = %v, want ds.ErrNotEligible", tc.name, err)
-		} else if strings.Contains(tc.name, "interaction") && !strings.Contains(err.Error(), "human device is authenticated against the exact MLS roster") {
-			t.Errorf("%s typed registration refusal = %q, want the roster-bound human-device proof requirement", tc.name, err)
 		}
+	}
+	if err := f.src.MayRegister(ctx, botID, binding(nil, id.New(), 3)); !errors.Is(err, ds.ErrBindingTarget) {
+		t.Errorf("ready interaction typed registration = %v, want ds.ErrBindingTarget (kind 3 is retired)", err)
 	}
 }
 

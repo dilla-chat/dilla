@@ -1174,14 +1174,12 @@ meanings. Owners and administrators are exempt from automatic moderation.
 | `DELETE /v1/communities/{community}/bot/role-panels/{panel}` | E, manage_roles | `[request_id, expected_revision]` | 204 |
 | `PUT /v1/communities/{community}/bot/role-panels/{panel}/selection` | E, own member | `[request_id, expected_revision, selected_roles]` | `[revision, own_roles]` |
 | `POST /v1/communities/{community}/bot/role-grants` | B | `[operation_id, member_id, source_kind, source_id, role_id, selected]` | 204 |
-| `PUT /v1/communities/{community}/members/{member}/timeout` | E or capability-approved B | `[request_id, expires]` | `[request_id, expires]` |
+| `PUT /v1/communities/{community}/members/{member}/timeout` | E | `[request_id, expires]` | `[request_id, expires]` |
 | `DELETE /v1/communities/{community}/members/{member}/timeout` | E, moderate_members | `[request_id]` | 204 |
 | `GET /v1/communities/{community}/members/{member}/timeout` | E, own member or moderate_members | — | `[expires|null]` |
 | `POST /v1/communities/{community}/members/{member}/warning` | E, moderate_members and actor outranks target | `[request_id]` | `[request_id, action_id, community_revision, accepted_at]` |
-| `POST /v1/communities/{community}/moderation/actions` | E or capability-approved B | `[request_id, action, target_user|null, expires|null]` | `[action_id]` |
-| `POST /v1/groups/{group}/moderation/removals` | E or capability-approved B | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |
+| `POST /v1/groups/{group}/moderation/removals` | E (a ready B's session is still admitted; no Bot code posts one since Task 23) | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |
 | `GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}` | B, ready installation with removal capability | — | `[action_id,community_id,group_id,actor_user_id,actor_device_id,target_seq,removal_revision,accepted_at]`; authoritative accepted-action lookup for encrypted case attachment |
-| `GET /v1/communities/{community}/moderation/actions?after=N&limit=L` | E, view_audit_log or B | — | `[structural_actions, next_seq]` |
 | `GET /v1/groups/{group}/moderation/removals?after=N&limit=L` | E or B, group access | — | `[removal_rows, next_revision]` |
 
 Removal request IDs are idempotency keys. An exact accepted proof/signature replay

@@ -427,12 +427,15 @@ describe('task 21b: the Bot user is pinned only after its Bot attestation', () =
     expect(core.pins.size).toBe(0);
     expect(store.get(COMMUNITY)?.status.state).toBe('unverified');
     expect(store.publication(COMMUNITY)).toBeNull();
-    // At most once per connection: later checks on this connection read and pin nothing.
+    // Task 23 fix round 1: within the backoff a reresolve asks nothing; a catalog read tries the pin again, and the core
+    // refuses the human again, so nothing is pinned.
     await store.reresolve(COMMUNITY);
+    expect(core.pinBotUser).toHaveBeenCalledTimes(1);
     await store.refresh(COMMUNITY);
     await settle();
-    expect(core.ingestBotAttestation).toHaveBeenCalledTimes(1);
-    expect(core.pinBotUser).toHaveBeenCalledTimes(1);
+    expect(core.pinBotUser).toHaveBeenCalledTimes(2);
+    expect(core.pins.size).toBe(0);
+    expect(store.publication(COMMUNITY)).toBeNull();
     // The server names the real Bot: on the next connection it is pinned and its key is used.
     named = BOT_USER;
     store.newConnection();
@@ -526,7 +529,7 @@ describe('task 21b fix round 1: a transient head-read failure does not grey the 
     expect(store.get(COMMUNITY)?.status.state).toBe('ready');
   });
 
-  it('a refusal after the head was read waits, until the trust refresh brings the Bot attestation', async () => {
+  it('a refusal after the head was read is retried, and the trust refresh that brings the Bot attestation pins it', async () => {
     const server = new Map<string, 'bot' | 'human'>();
     const c = core(server, { n: 0 });
     const store = new BotCatalogStore(fakeDeps({ ...c }).deps);
@@ -535,12 +538,75 @@ describe('task 21b fix round 1: a transient head-read failure does not grey the 
     expect(c.pins.size).toBe(0);
     await store.refresh(COMMUNITY);
     await settle();
-    expect(c.ingestBotAttestation).toHaveBeenCalledTimes(1);
+    // Task 23 fix round 1: the catalog read tried the pin again (refused again: no attestation yet).
+    expect(c.ingestBotAttestation).toHaveBeenCalledTimes(2);
+    expect(c.pins.size).toBe(0);
     // The trust refresh ingested the Bot's attestation (from a leaf): the pin is tried again at once.
     c.held.set(toHex(BOT_USER), 'bot');
     await store.attestationsChanged();
     await settle();
     expect(c.pins.get(COMMUNITY)).toEqual(BOT_USER);
     expect(store.get(COMMUNITY)?.status.state).toBe('ready');
+  });
+});
+
+// Bot v2 Task 23 fix round 1: a refused first pin (the Bot's attestation not on the instance yet: E_DEVICE_LIST_STALE)
+// no longer sticks for the connection. A newer op-61 revision or a catalog read tries it again, and so does a timer after
+// a few seconds' backoff, so the picker's source tag leaves the fallback name once the attestation arrives.
+describe('task 23 fix round 1: a refused first pin is tried again', () => {
+  const settle = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  function attestationLater() {
+    const held = new Set<string>();
+    const pins = new Map<string, Uint8Array>();
+    let attested = false;
+    return {
+      pins, attest: () => { attested = true; },
+      ingestBotAttestation: vi.fn((user: Uint8Array) => { if (attested) held.add(toHex(user)); return Promise.resolve(); }),
+      pinBotUser: vi.fn((communityId: string, user: Uint8Array): { state: 0 | 1 | 2; pinned: Uint8Array } => {
+        if (!held.has(toHex(user))) throw Object.assign(new Error('E_DEVICE_LIST_STALE'), { code: 'E_DEVICE_LIST_STALE' });
+        pins.set(communityId, user);
+        return { state: 0, pinned: user };
+      }),
+      pinnedBotUser: (communityId: string) => pins.get(communityId) ?? null,
+    };
+  }
+
+  it('a catalog read after the attestation arrived pins the Bot', async () => {
+    const c = attestationLater();
+    const store = new BotCatalogStore(fakeDeps({ ...c }).deps);
+    await store.syncOnConnect(COMMUNITY);
+    await settle();
+    expect(store.get(COMMUNITY)?.botUserId).toBeNull();
+    c.attest();
+    await store.refresh(COMMUNITY);
+    await settle();
+    expect(store.get(COMMUNITY)?.botUserId).toBe(toHex(BOT_USER));
+  });
+
+  it('a newer op-61 revision tries the refused pin again', async () => {
+    const c = attestationLater();
+    const store = new BotCatalogStore(fakeDeps({ ...c }).deps);
+    await store.syncOnConnect(COMMUNITY);
+    await settle();
+    c.attest();
+    store.apply({ communityId: fid(0x0e), revision: 9n, commands: [cv(remind)], publication: PUBLICATION });
+    await settle();
+    expect(store.get(COMMUNITY)?.botUserId).toBe(toHex(BOT_USER));
+    expect(store.get(COMMUNITY)?.status.state).toBe('ready');
+  });
+
+  it('with nothing else happening, the pin is tried again after a backoff', async () => {
+    vi.useFakeTimers();
+    try {
+      const c = attestationLater();
+      const store = new BotCatalogStore(fakeDeps({ ...c }).deps);
+      await store.syncOnConnect(COMMUNITY);
+      await settle();
+      c.attest();
+      expect(store.get(COMMUNITY)?.botUserId).toBeNull();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await settle();
+      expect(store.get(COMMUNITY)?.botUserId).toBe(toHex(BOT_USER));
+    } finally { vi.useRealTimers(); }
   });
 });

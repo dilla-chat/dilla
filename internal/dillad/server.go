@@ -41,6 +41,8 @@ import (
 
 type Server struct {
 	o Options
+	// lastEventPrune is when the maintenance tick last pruned the Bot structural events (sweep; Task 23 fix round 1).
+	lastEventPrune time.Time
 	// calls is the call route group; the maintenance tick runs its post-boot AFK clear (AW2).
 	calls *api.Calls
 	mux   *server.Mux
@@ -788,6 +790,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	return s, nil
 }
 
+// BotStructuralEventRetention is how long a Bot structural event is kept before the maintenance tick prunes it.
+const BotStructuralEventRetention = 7 * 24 * time.Hour
+
 // sweep is the maintenance tick's non-gateway half.
 func (s *Server) sweep(ctx context.Context) {
 	s.throttle.Sweep()
@@ -799,6 +804,18 @@ func (s *Server) sweep(ctx context.Context) {
 	if s.passkeys != nil {
 		if _, err := s.passkeys.PruneCeremonies(ctx); err != nil {
 			s.o.Log.Warn("pruning expired passkey ceremonies failed", "err", err)
+		}
+	}
+	// Bot v2 Task 23 fix round 1 (L5): the Bot's structural events are read by nothing any more, so they go after
+	// BotStructuralEventRetention, at most once an hour. Pruning keeps each stream's high water, which a manual
+	// warning's revision is drawn from, so revisions never repeat.
+	if now := s.o.Clock.Now(); now.Sub(s.lastEventPrune) >= time.Hour {
+		s.lastEventPrune = now
+		if err := s.o.Repo.Tx(ctx, func(tx store.Repository) error {
+			_, err := tx.PruneBotStructuralEvents(ctx, now.Add(-BotStructuralEventRetention).Unix())
+			return err
+		}); err != nil {
+			s.o.Log.Warn("pruning old bot structural events failed", "err", err)
 		}
 	}
 	// R-AW5: once, after the boot grace, the away rows of users with no gateway connection go, and a

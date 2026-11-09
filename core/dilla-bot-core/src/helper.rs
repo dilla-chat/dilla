@@ -771,9 +771,6 @@ mod send_abi_tests {
     use super::*;
 
     #[test]
-    fn expired_dispatch_status_is_frozen_status_three() {}
-
-    #[test]
     fn send_operations_require_exact_shapes_nonzero_ids_and_bounded_receipts() {
         let mut prepare = Encoder::new();
         prepare

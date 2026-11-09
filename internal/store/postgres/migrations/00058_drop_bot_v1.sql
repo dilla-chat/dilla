@@ -1,13 +1,13 @@
 -- +goose Up
--- Bot v2 Task 23: bot_interaction_eligibility_revisions is dropped by migration 00058_drop_bot_v1.
--- The number stays so the schema files run 001..049 with no gap.
--- Bot v2 Task 23: the AutoModeration step-up grant tables are dropped by migration 00058_drop_bot_v1.
--- The number stays so the schema files run 001..049 with no gap.
 -- Bot v2 (Task 23): the v1 interaction machinery is gone. Drop the kind-3 admission and eligibility tables and their
 -- triggers, the kind-3 group registration receipts, the AutoModeration step-up grants, and every kind-3 (interaction)
 -- group with its members, handshakes, proposals, messages, Welcomes, trees, cursors, queued joins and Bot send and
 -- registration rows. The child rows are deleted explicitly, ahead of the groups, so the purge does not depend on
 -- foreign-key enforcement.
+-- Schema files 037 and 040 keep their numbers (they run 001..049 with no gap) as these notes, which sqlc reads and
+-- goose must carry verbatim:
+-- schema 037_bot_interaction_eligibility_revisions: the table is dropped by migration 00058_drop_bot_v1 (Bot v2 Task 23).
+-- schema 040_automod_stepup_grants: the AutoModeration step-up grants are dropped by migration 00058_drop_bot_v1 (Bot v2 Task 23).
 DROP INDEX bot_interaction_admission_receipts_expiry;
 DROP INDEX bot_interaction_admission_receipts_live;
 
