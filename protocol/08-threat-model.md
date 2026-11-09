@@ -155,6 +155,10 @@ Stated plainly in the product's documentation and onboarding:
   - webhooks: the sender's text in transit. A webhook arrives over TLS at the instance, which forwards it to
     the Bot and keeps nothing of the body; the instance can read it while it passes;
   - the members, roles, permissions and device lists the Bot's feed carries, which the instance holds anyway.
+- **Bot answers in a state slice (a stated exception).** The core worker opens each Bot answer and publishes it, its
+  plain body as hex, in the `botAnswers` slice (the last 32 answers) for the page that shows it. A Bot answer is the
+  Bot's reply to this device's own command, not group content, so it is not under the rule that keeps plaintext out of
+  state slices; it lives in the worker's memory and the page, and the worker never stores, logs or sends it on.
 - **The command key's window.** The Bot rotates each community's command key weekly and keeps the previous one for
   24 hours, so a private key is held for at most 8 days. A leak of the current key lets the leaker open the
   requests sealed to it that they also captured, back to the last rotation and no further, since older keys are

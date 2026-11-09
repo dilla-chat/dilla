@@ -79,6 +79,12 @@ The Bot rotates the key weekly and keeps the previous private key for 24 hours, 
 the current key opens no reply (reply keys are one-time) and no request older than the rotation window.
 The Bot page shows the key's fingerprint.
 
+The rotation tail: dillad keeps relaying to the previous key until the new publication lands. If the Bot rotates while
+dillad is down, dillad still relays to the retired key after it comes back until the Bot's republish arrives; the Bot
+answers such a command `UnknownKey` (nothing reaches a handler), which triggers its throttled republish, and the
+client's next send is `410 E_BOT_KEY_STALE`, so it refetches the catalog and seals to the new key. The window heals
+itself and costs at most one refused send per client.
+
 ## Sealed request
 
 A member's device sends one sealed request per command. Its plaintext, before sealing, is the
@@ -1359,9 +1365,11 @@ restore that right. The music publisher also disables automatic subscriptions.
 
 Transport (Bot v2): every `B` route above is socket-only, a request frame on the Bot's gateway connection,
 except `PUT …/credential`, which the Bot sends while its installation is still enrolling and the gateway admits
-only a joining or ready Bot. The `R` routes run before and outside any device session and stay on HTTP; on a
-supervised instance the Bot reaches them, the credential finalize, discovery, the session ceremony and its own
-device list only over its Unix socket (`02` § The supervised Bot's socket). The Bot polls nothing: it reads its
+only a joining or ready Bot. The `R` routes run before and outside any device session and stay on HTTP, served
+only on the Bot's Unix socket: the public listener answers 404 to them and to the credential finalize, with or
+without `[bot]`. The Bot reaches them, the credential finalize, discovery, the session ceremony and its own device
+list only over its Unix socket (`02` § The supervised Bot's socket); the public `/gateway` refuses a managed Bot
+session. The Bot polls nothing: it reads its
 installations at start, on SIGHUP from dillad's supervisor after an installation change (configure, disable,
 remove, a restart request, the music defaults), after `community_changed` and after a `bot_event`.
 
@@ -1667,7 +1675,7 @@ meanings. Owners and administrators are exempt from automatic moderation.
 | `DELETE /v1/communities/{community}/members/{member}/timeout` | E, moderate_members | `[request_id]` | 204 |
 | `GET /v1/communities/{community}/members/{member}/timeout` | E, own member or moderate_members | — | `[expires|null]` |
 | `POST /v1/communities/{community}/members/{member}/warning` | E, moderate_members and actor outranks target | `[request_id]` | `[request_id, action_id, community_revision, accepted_at]` |
-| `POST /v1/groups/{group}/moderation/removals` | E (a ready B's session is still admitted; no Bot code posts one) | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |
+| `POST /v1/groups/{group}/moderation/removals` | E (a Bot session is refused 403) | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |
 | `GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}` | B, ready installation with removal capability | — | `[action_id,community_id,group_id,actor_user_id,actor_device_id,target_seq,removal_revision,accepted_at]`; authoritative accepted-action lookup for encrypted case attachment |
 | `GET /v1/groups/{group}/moderation/removals?after=N&limit=L` | E or B, group access | — | `[removal_rows, next_revision]` |
 

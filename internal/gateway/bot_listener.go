@@ -126,12 +126,11 @@ func (g *Gateway) ServeBot(l net.Listener) error {
 	return nil
 }
 
-// botOffSocket reports a managed-Bot session arriving on the public gateway while the instance runs a
-// supervised Bot (BotLaunch set): the Bot path has no network form (ruling 3), so such an identify or
-// resume is refused (Bot v2 task 12 fix round 1, M-5). Without a supervisor (a dev or test host that
-// runs the Bot itself) the public gateway still admits it.
+// botOffSocket reports a managed-Bot session arriving on the public gateway: the Bot path has no network
+// form (ruling 3), so such an identify or resume is refused whether or not the instance runs a supervised
+// Bot (Bot v2 task 12 fix round 1, M-5; final review I3: with `[bot]` off it was admitted).
 func (g *Gateway) botOffSocket(in Inbound, session auth.Session) bool {
-	return g.opts.BotLaunch != nil && session.Bot != nil && in.botPeer == nil
+	return session.Bot != nil && in.botPeer == nil
 }
 
 // botPeer is a connection that came in through the Bot listener.

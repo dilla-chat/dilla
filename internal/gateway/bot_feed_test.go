@@ -475,10 +475,32 @@ func (staticLaunch) Peer(int32, uint32) bool  { return false }
 func (staticLaunch) Spend(int32, []byte) bool { return false }
 func (staticLaunch) Authenticated(int32) bool { return false }
 
-// M-5: with a supervised Bot (BotLaunch set), a managed-Bot session identifying or resuming on the
-// public gateway, without the Bot socket's peer, is refused. Without a supervisor (dev, testhost) it
-// is admitted as before.
-func TestManagedBotIsRefusedOnThePublicGatewayWhenSupervised(t *testing.T) {
+// admitAllLaunch takes every peer for the current, authenticated Bot child: a test stands in for the Bot
+// socket with it, since the public gateway admits no managed Bot (final review I3).
+type admitAllLaunch struct{}
+
+func (admitAllLaunch) Peer(int32, uint32) bool  { return true }
+func (admitAllLaunch) Spend(int32, []byte) bool { return true }
+func (admitAllLaunch) Authenticated(int32) bool { return true }
+
+// botSocketPeer is a peer on the Bot's Unix socket, with a supervisor that admits it unless the test set one.
+func (h *harness) botSocketPeer() *botPeer {
+	if h.gw.opts.BotLaunch == nil {
+		h.gw.opts.BotLaunch = admitAllLaunch{}
+	}
+	return &botPeer{pid: 1}
+}
+
+// onBotSocket marks an identify as arriving on the Bot's Unix socket.
+func (h *harness) onBotSocket(in Inbound) Inbound {
+	in.botPeer = h.botSocketPeer()
+	return in
+}
+
+// M-5, final review I3: a managed-Bot session identifying or resuming on the public gateway, without the
+// Bot socket's peer, is refused 4003 whether or not the instance runs a supervised Bot (`[bot]` off is
+// BotLaunch nil).
+func TestManagedBotIsRefusedOnThePublicGateway(t *testing.T) {
 	for _, supervised := range []bool{true, false} {
 		h := newHarness(t)
 		h.gw.opts.WireVersions = []uint64{6}
@@ -490,26 +512,38 @@ func TestManagedBotIsRefusedOnThePublicGatewayWhenSupervised(t *testing.T) {
 		bot := auth.BotSessionBinding{InstallationID: id.New(), CommunityID: id.New(), State: store.BotInstallationReady}
 		token := scopedSession(h, device, auth.Session{Scope: auth.ScopeEnrolled, WireVersion: 6, TokenHash: []byte("01234567890123456789012345678901"), Bot: &bot})
 		sink := newRecordingSink(16, false)
-		_, ok := h.gw.identifyConnection(context.Background(), sink, identifyInbound(t, token, 6))
-		if ok == supervised {
-			t.Fatalf("supervised %v: public identify admitted = %v", supervised, ok)
+		if _, ok := h.gw.identifyConnection(context.Background(), sink, identifyInbound(t, token, 6)); ok {
+			t.Fatalf("supervised %v: a public identify of a managed Bot was admitted", supervised)
 		}
-		if supervised {
-			if in := h.readFrom(t, sink); in.Op != OpError {
-				t.Fatalf("op %d, want an error frame", in.Op)
-			}
+		if in := h.readFrom(t, sink); in.Op != OpError {
+			t.Fatalf("supervised %v: op %d, want an error frame", supervised, in.Op)
+		}
+		if got := h.waitCloseOn(t, sink); got != CloseUnauthenticated {
+			t.Fatalf("supervised %v: close %d, want %d", supervised, got, CloseUnauthenticated)
 		}
 	}
 }
 
-func TestManagedBotResumeIsRefusedOnThePublicGatewayWhenSupervised(t *testing.T) {
-	h := newHarness(t)
-	device := id.New()
-	c, token := h.finishedBot(t, device)
-	h.gw.suspend(c)
-	h.gw.opts.BotLaunch = staticLaunch{}
-	if _, resumed := h.resumeFrom(t, c, token, 2); resumed.Op != OpInvalidSession {
-		t.Fatalf("op %d, want invalid_session for a public resume of a supervised Bot", resumed.Op)
+func TestManagedBotResumeIsRefusedOnThePublicGateway(t *testing.T) {
+	for _, supervised := range []bool{true, false} {
+		h := newHarness(t)
+		device := id.New()
+		c, token := h.finishedBot(t, device)
+		h.gw.suspend(c)
+		if supervised {
+			h.gw.opts.BotLaunch = staticLaunch{}
+		}
+		s := newRecordingSink(16, false)
+		go h.gw.serve(context.Background(), s, "")
+		h.readFrom(t, s) // hello
+		p, err := payload(h.tokenFor(c.deviceID), token, h.generation, uint64(2))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.feed(mustEncode(t, Frame{Op: OpResume, Payload: p, Replay: true}, 2))
+		if resumed := h.readFrom(t, s); resumed.Op != OpInvalidSession {
+			t.Fatalf("supervised %v: op %d, want invalid_session for a public resume of a managed Bot", supervised, resumed.Op)
+		}
 	}
 }
 

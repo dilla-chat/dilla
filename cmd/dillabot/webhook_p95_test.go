@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -85,7 +86,7 @@ func TestWebhookPostVisibleWithin500msP95(t *testing.T) {
 	channel, group, webhook := id.New(), id.New(), id.New()
 	gw := gateway.New(gateway.Options{InstanceID: instance, Generation: 1, WireVersions: []uint64{6}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1},
 		Store: channelGroupStore{community: community}, ScopeResolver: channelGroupStore{community: community}, CommunityCompatibility: channelGroupStore{community: community},
-		TrustedOrigins: []string{"*"}, Log: log, FramesPerSecond: 1 << 20, FrameBurst: 1 << 20,
+		TrustedOrigins: []string{"*"}, Log: log, FramesPerSecond: 1 << 20, FrameBurst: 1 << 20, BotLaunch: admitAllLaunch{},
 		Auth: tokenAuth{
 			"bot": {UserID: botUser, DeviceID: botDevice, Scope: auth.ScopeEnrolled, TokenHash: make([]byte, 32), WireVersion: auth.WireVersion,
 				Bot: &botaccess.Binding{InstallationID: installation, CommunityID: community, State: store.BotInstallationReady}},
@@ -123,8 +124,22 @@ func TestWebhookPostVisibleWithin500msP95(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The Bot: its real gateway runtime, delivery loop and webhook poster.
-	runtime := newBotGatewayRuntime(ctx, api, true, log)
+	// The Bot: its real gateway runtime, delivery loop and webhook poster, on its Unix socket (the public /gateway
+	// refuses a managed Bot, final review I3).
+	socket := t.TempDir() + "/gateway.sock"
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = gw.ServeBot(ln) }()
+	t.Cleanup(func() { _ = ln.Close() })
+	botAPI, err := client.New(client.Config{BaseURL: supervisedOrigin, InstanceID: instance, AllowLoopbackHTTP: true,
+		HTTPClient: &http.Client{Transport: unixTransport(socket)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := newBotGatewayRuntime(ctx, botAPI, true, log)
+	runtime.httpClient = &http.Client{Transport: unixTransport(socket)}
 	t.Cleanup(runtime.Close)
 	runtime.SetWebhookPoster(installation, newWebhookPoster(community, &whDestination{group: group}, &fanoutSend{gw: gw, device: botDevice}, nil, log))
 	if err := runtime.Ensure(installation, community, botDevice, botUser, "bot"); err != nil {
@@ -210,3 +225,10 @@ func TestWebhookPostVisibleWithin500msP95(t *testing.T) {
 		t.Fatalf("webhook post visible p95 = %v, want <= 500ms", p95)
 	}
 }
+
+// admitAllLaunch takes this test process for the current, authenticated Bot child on the Bot socket.
+type admitAllLaunch struct{}
+
+func (admitAllLaunch) Peer(int32, uint32) bool  { return true }
+func (admitAllLaunch) Spend(int32, []byte) bool { return true }
+func (admitAllLaunch) Authenticated(int32) bool { return true }

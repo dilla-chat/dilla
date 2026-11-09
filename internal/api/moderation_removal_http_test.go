@@ -225,11 +225,37 @@ func doCBORAuth(h http.Handler, method, path string, body []byte, token string) 
 
 func TestBotWithoutRemovalCapabilityCanReadMarkersButCannotRemove(t *testing.T) {
 	h, deps := newTestAPI(t)
+	removalBotCase(t, h, deps, 0, nil)
+}
+
+// A ready Bot never removes a message, not even with the removal capability, a
+// manage_messages role and a target below it: the route is a human moderator's
+// (final review I1). The feed stays readable.
+func TestReadyRemovalCapableBotCannotPostRemoval(t *testing.T) {
+	h, deps := newTestAPI(t)
+	var group id.ID
+	removalBotCase(t, h, deps, 1<<5, func(g id.ID) {
+		group = g
+		ctx := t.Context()
+		now := deps.Clock.Now().Unix()
+		_, targetDevice, _ := seedAPIDevice(t, deps)
+		if err := deps.Repo.PutAppMessage(ctx, store.AppMessageRow{GroupID: g, Seq: 1, UploaderDevice: targetDevice.ID,
+			Blob: []byte("ciphertext"), FrankingTag: make([]byte, 32), Created: now, FrankingKeyID: deps.Instance.FrankingKeyID}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if row, err := deps.Repo.GetAppMessage(t.Context(), group, 1); err != nil || row.DeletedAt != nil {
+		t.Fatalf("message after a refused Bot removal = %+v, %v; want intact", row, err)
+	}
+}
+
+func removalBotCase(t *testing.T, h http.Handler, deps api.Deps, capabilities uint16, setup func(group id.ID)) {
+	t.Helper()
 	ctx := t.Context()
 	owner, _, _ := seedAPISession(t, deps)
 	community := seedBotCommunity(t, deps, owner.ID)
 	now := deps.Clock.Now().Unix()
-	bot, device, installation, runtime := id.New(), id.New(), id.New(), id.New()
+	bot, device, installation, runtime, botRole := id.New(), id.New(), id.New(), id.New(), id.New()
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x43}, ed25519.SeedSize))
 	verified := now
 	if err := deps.Repo.CreateUser(ctx, store.UserRow{ID: bot, Username: "feedbot" + bot.String()[:8], Display: "Feed Bot", Kind: 1,
@@ -242,11 +268,19 @@ func TestBotWithoutRemovalCapabilityCanReadMarkersButCannotRemove(t *testing.T) 
 	if err := deps.Repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: community, UserID: bot, Joined: now}); err != nil {
 		t.Fatal(err)
 	}
+	// The Bot's role holds manage_messages; only an approved removal capability lets it through the clamp.
+	if err := deps.Repo.PutRole(ctx, store.RoleRow{ID: botRole, CommunityID: community, Name: "Feed Bot", Position: 1,
+		Allow: uint64(api.PermViewChannel | api.PermReadHistory | api.PermManageMessages), Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Repo.PutMemberRole(ctx, community, bot, botRole); err != nil {
+		t.Fatal(err)
+	}
 	if err := deps.Repo.CreateBotRuntime(ctx, store.BotRuntimeRow{ID: runtime, TokenHash: bytes.Repeat([]byte{0x28}, 32), Created: now, Rotated: now}); err != nil {
 		t.Fatal(err)
 	}
 	if err := deps.Repo.CreateBotInstallation(ctx, store.BotInstallationRow{ID: installation, CommunityID: community, RuntimeID: &runtime,
-		UserID: &bot, DeviceID: &device, State: store.BotInstallationReady, Revision: 1,
+		UserID: &bot, DeviceID: &device, RoleID: &botRole, State: store.BotInstallationReady, Revision: 1, Capabilities: capabilities,
 		ApprovedBy: owner.ID, ApprovedAt: now, CredentialVerifiedAt: &verified, Created: now, Updated: now}); err != nil {
 		t.Fatal(err)
 	}
@@ -272,6 +306,9 @@ func TestBotWithoutRemovalCapabilityCanReadMarkersButCannotRemove(t *testing.T) 
 		SignatureKey: key.Public().(ed25519.PublicKey)}}); err != nil {
 		t.Fatal(err)
 	}
+	if setup != nil {
+		setup(group)
+	}
 	path := "/v1/groups/" + group.String() + "/moderation/removals"
 	if response := doCBORAuth(h, http.MethodGet, path+"?after=0&limit=1", nil, token); response.Code != http.StatusOK {
 		t.Fatalf("bot without removal capability cannot read feed: %d %x", response.Code, response.Body.Bytes())
@@ -283,7 +320,8 @@ func TestBotWithoutRemovalCapabilityCanReadMarkersButCannotRemove(t *testing.T) 
 		t.Fatal(err)
 	}
 	postBody, _ := cborx.Marshal([]any{preimage[len("dilla moderation removal v1"):], ed25519.Sign(key, preimage)})
-	if response := doCBORAuth(h, http.MethodPost, path, postBody, token); response.Code != http.StatusForbidden {
-		t.Fatalf("bot without removal capability posted removal: %d %x", response.Code, response.Body.Bytes())
+	response := doCBORAuth(h, http.MethodPost, path, postBody, token)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("bot posted removal: %d %x", response.Code, response.Body.Bytes())
 	}
 }

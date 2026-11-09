@@ -1503,43 +1503,6 @@ func (s *Session) advanceCursorAt(ctx context.Context, base string, group id.ID,
 	return e
 }
 
-func (s *Session) Communities(ctx context.Context) ([]Community, error) {
-	raw, _, e := s.do(ctx, http.MethodGet, "communities", nil, nil, MaxBody, false)
-	if e != nil {
-		return nil, e
-	}
-	a, e := decode(raw, -1)
-	if e != nil {
-		return nil, e
-	}
-	out := make([]Community, len(a))
-	seen := map[id.ID]bool{}
-	for i, row := range a {
-		v, ok := row.([]any)
-		if !ok || len(v) != 4 {
-			return nil, ErrProtocol
-		}
-		cid, ok := asID(v[0])
-		if !ok || seen[cid] {
-			return nil, ErrProtocol
-		}
-		name, ok := v[1].(string)
-		if !ok || name == "" {
-			return nil, ErrProtocol
-		}
-		owner, ok := asID(v[2])
-		if !ok {
-			return nil, ErrProtocol
-		}
-		policy, ok := asUint(v[3])
-		if !ok {
-			return nil, ErrProtocol
-		}
-		seen[cid] = true
-		out[i] = Community{ID: cid, Name: name, OwnerID: owner, PolicyVersion: policy}
-	}
-	return out, nil
-}
 func (s *Session) Channels(ctx context.Context, community id.ID) ([]Channel, error) {
 	c, e := pathID(community)
 	if e != nil {

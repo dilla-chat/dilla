@@ -296,9 +296,16 @@ func TestWebhookAcksFromTheBotAreNotChargedToTheInboundFrameBucket(t *testing.T)
 			}
 			token := scopedSession(h, device, session)
 			s := newRecordingSink(512, false)
-			go h.gw.serve(context.Background(), s, token)
+			identifyToken := token
+			if tc.bot {
+				// A managed Bot identifies on its socket, with the session on the upgrade (final review I3).
+				go h.gw.serveConn(context.Background(), s, token, h.botSocketPeer())
+				identifyToken = ""
+			} else {
+				go h.gw.serve(context.Background(), s, token)
+			}
 			h.readFrom(t, s) // hello
-			p, err := payload(token, auth.WireVersion, uint64(1), uint64(1), uint64(0))
+			p, err := payload(identifyToken, auth.WireVersion, uint64(1), uint64(1), uint64(0))
 			if err != nil {
 				t.Fatal(err)
 			}

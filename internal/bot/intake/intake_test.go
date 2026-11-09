@@ -156,6 +156,7 @@ func newWorld(t *testing.T) *world {
 	w.authz.Member(w.user, true, nil, true)
 	w.authz.SnapshotDone()
 	w.in = New(w.helper, w.authz, w.dispatch, w.sender, w.clk)
+	w.in.park = 0 // the gate tests below see the refusal at once; the parking tests set a budget
 	w.in.SetHeld(heldSet{w})
 	w.in.SetOperations(func(op uint64) (OperationRule, bool) {
 		switch op {
@@ -461,6 +462,48 @@ func TestCommandWithoutAFeedIsOfflineAndRetryable(t *testing.T) {
 		t.Fatalf("retry once the feed is bound = %+v", got)
 	}
 }
+
+// Final review I2: right after a Bot start the first command can meet a gate that opens within moments (the feed not
+// yet bound, the sender's ingest mid-retry, the barrier not yet settled). It is parked there, up to the first-answer
+// budget, and answered once the gate opens: never a retryable refusal the person sees as a failure.
+func TestFirstCommandIsParkedAtARetryableGateUntilItOpens(t *testing.T) {
+	for _, gate := range []string{"not_ready", "held", "feed_behind"} {
+		t.Run(gate, func(t *testing.T) {
+			w := newWorld(t)
+			w.in.park, w.in.parkStep = 5*time.Second, time.Millisecond
+			checks := 0
+			opens := func() bool { checks++; return checks > 3 }
+			cmd, _ := w.command(opRemind, 1)
+			switch gate {
+			case "not_ready":
+				w.in.SetReady(opens)
+			case "held":
+				w.in.SetHeld(heldFunc(func(id.ID) bool { return !opens() }))
+			case "feed_behind":
+				cmd.Ready = func(context.Context) bool { return opens() }
+			}
+			w.in.Handle(context.Background(), cmd)
+			expectOne(t, w.sender.all(), 200, "Saved")
+			if w.dispatch.count() != 1 {
+				t.Fatalf("dispatched %d times, want once", w.dispatch.count())
+			}
+		})
+	}
+}
+
+// A gate that stays closed past the budget is still the retryable refusal.
+func TestAParkedCommandIsRefusedOnceTheBudgetEnds(t *testing.T) {
+	w := newWorld(t)
+	w.in.park, w.in.parkStep = 20*time.Millisecond, time.Millisecond
+	w.in.SetReady(func() bool { return false })
+	cmd, _ := w.command(opRemind, 1)
+	w.in.Handle(context.Background(), cmd)
+	expectOne(t, w.sender.all(), 503, "E_BOT_OFFLINE")
+}
+
+type heldFunc func(id.ID) bool
+
+func (f heldFunc) Held(user id.ID) bool { return f(user) }
 
 func TestProbeIsAnsweredForTheBotOnly(t *testing.T) {
 	w := newWorld(t)

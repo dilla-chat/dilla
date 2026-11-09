@@ -102,7 +102,7 @@ var errBotDuplicate = server.Errorf(server.CodeBotDuplicate, "another device sen
 
 // admit records that device sent requestID to community. A request_id another device (or another
 // community) sent within BotRequestTTL is errBotDuplicate. The same device sending it again is
-// admitted and its entry refreshed; inserted reports whether the entry is new, so a relay that
+// admitted, its entry refreshed and its reply budget reset; inserted reports whether the entry is new, so a relay that
 // fails can take back exactly what it added. A device at its quota loses its own oldest entry.
 func (l *BotRequestLedger) admit(requestID, device, community id.ID) (inserted bool, err error) {
 	l.mu.Lock()
@@ -113,7 +113,9 @@ func (l *BotRequestLedger) admit(requestID, device, community id.ID) (inserted b
 		if r.device != device || r.community != community {
 			return false, errBotDuplicate
 		}
-		r.at = now
+		// A resend opens a fresh reply budget: the Bot re-sends every kept answer to the new seal, and
+		// the client keeps only the newest send's reply secret, so replies to an earlier send are dead.
+		r.at, r.replies, r.replyBytes = now, 0, 0
 		l.order.MoveToBack(r.all)
 		l.byDevice[device].MoveToBack(r.mine)
 		return false, nil

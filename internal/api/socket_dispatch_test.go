@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -86,7 +87,7 @@ func newSocketEnvWith(t *testing.T, tune func(*config.Config), dispatch func(*ap
 		Store: deps.Repo, Auth: deps.Sessions, Clock: clk, Log: deps.Log,
 		WireVersions: []uint64{auth.WireVersion}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1},
 		Requests:        e.disp,
-		FramesPerSecond: 1 << 20, FrameBurst: 1 << 20,
+		FramesPerSecond: 1 << 20, FrameBurst: 1 << 20, BotLaunch: admitAllLaunch{},
 	}
 	if gw != nil {
 		gw(&gopts)
@@ -103,6 +104,26 @@ func (e *socketEnv) dial(bearer string) *sockettest.Client {
 	e.t.Helper()
 	return sockettest.Dial(e.t, e.gwSrv.URL, bearer)
 }
+
+// dialBot connects a managed Bot session over the Bot's Unix socket, the only gateway that admits one (final review I3).
+func (e *socketEnv) dialBot(bearer string) *sockettest.Client {
+	e.t.Helper()
+	socket := e.t.TempDir() + "/gateway.sock"
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socket)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	go func() { _ = e.gw.ServeBot(ln) }()
+	e.t.Cleanup(func() { _ = ln.Close() })
+	return sockettest.DialBot(e.t, socket, bearer)
+}
+
+// admitAllLaunch takes this test process for the current, authenticated Bot child on the Bot socket.
+type admitAllLaunch struct{}
+
+func (admitAllLaunch) Peer(int32, uint32) bool  { return true }
+func (admitAllLaunch) Spend(int32, []byte) bool { return true }
+func (admitAllLaunch) Authenticated(int32) bool { return true }
 
 func (e *socketEnv) httpDo(method, path, bearer string, body []byte) (int, []byte) {
 	e.t.Helper()
@@ -609,7 +630,7 @@ func TestIneligibleBotRetryWithSameIdemGetsTheMiddlewareRefusal(t *testing.T) {
 	twin.Wrapped(api.SessionRoute(e.deps.Sessions, e.deps.Limiter)).Handle(pattern, h)
 	token, inst := seedSocketBot(t, e.deps)
 	route := "/v1/bot-runtime/installations/" + inst.ID.String() + "/ready"
-	c := e.dial(token)
+	c := e.dialBot(token)
 	idem := []byte("idem-then-disabled")
 	first := sockDo(t, c, http.MethodPost, route, nil, idem)
 	if first.Status >= 500 || first.Status == http.StatusUnauthorized || first.Status == http.StatusForbidden {

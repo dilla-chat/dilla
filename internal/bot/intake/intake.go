@@ -247,11 +247,14 @@ type Intake struct {
 	log        *slog.Logger
 	keyStale   func()
 	ready      func() bool
-	capacity   int
-	byteBudget int64
-	bytes      int64
-	records    map[id.ID]*record
-	order      list.List
+	// park is how long a command waits at a retryable gate (the feed barrier, Held, the feed bound) for it to open
+	// before it is refused; parkStep is how often the gate is checked again (final review I2).
+	park, parkStep time.Duration
+	capacity       int
+	byteBudget     int64
+	bytes          int64
+	records        map[id.ID]*record
+	order          list.List
 }
 
 // New is an intake answering for authz's community.
@@ -260,8 +263,15 @@ func New(h Helper, authz *Authz, dispatch Dispatcher, send ReplySender, clk cloc
 		clk = clock.System()
 	}
 	return &Intake{helper: h, authz: authz, dispatch: dispatch, send: send, clk: clk, log: slog.New(slog.DiscardHandler),
-		capacity: DefaultCapacity, byteBudget: DefaultByteBudget, records: map[id.ID]*record{}}
+		capacity: DefaultCapacity, byteBudget: DefaultByteBudget, records: map[id.ID]*record{},
+		park: ParkBudget, parkStep: parkStep}
 }
+
+// ParkBudget is the spec's first-answer budget ("Bot restart ready within 5 s"): a command that meets a retryable gate
+// right after a start waits this long for it to open before it is refused (final review I2).
+const ParkBudget = 5 * time.Second
+
+const parkStep = 250 * time.Millisecond
 
 // SetHeld sets the held-user query (Task 14's installationFeed.Held).
 func (i *Intake) SetHeld(h HeldChecker) { i.mu.Lock(); i.held = h; i.mu.Unlock() }
@@ -326,7 +336,7 @@ func (i *Intake) refused(ctx context.Context, log *slog.Logger, class string, st
 }
 
 // Handle answers one relayed command. It returns once the command's last answer was sent (or it was
-// dropped); it never waits on a clock.
+// dropped); it waits only at a retryable gate, at most ParkBudget (final review I2).
 func (i *Intake) Handle(ctx context.Context, cmd RelayedCommand) {
 	held, operations, botUser, log, keyStale := i.config()
 	if cmd.CommunityID != i.authz.Community() || cmd.RequestID.IsZero() || cmd.UserID.IsZero() || cmd.DeviceID.IsZero() || len(cmd.Sealed) == 0 {
@@ -334,7 +344,8 @@ func (i *Intake) Handle(ctx context.Context, cmd RelayedCommand) {
 		return
 	}
 	// Before the open (the helper's device lists come from the feed too) and before any authorisation.
-	settled := cmd.Ready == nil || cmd.Ready(ctx)
+	settle := func() bool { return cmd.Ready == nil || cmd.Ready(ctx) }
+	settled := settle()
 	now := i.clk.Now()
 	opened, err := i.helper.OpenCommand(ctx, cmd.Sealed, cmd.UserID, cmd.DeviceID, now)
 	if err != nil {
@@ -368,7 +379,7 @@ func (i *Intake) Handle(ctx context.Context, cmd RelayedCommand) {
 			i.refused(ctx, log, "replay_mismatch", 0)
 			return
 		}
-		i.replay(ctx, log, cmd, opened.ReplyKey, held, operations, botUser, settled)
+		i.replay(ctx, log, cmd, opened.ReplyKey, held, operations, botUser, settled, settle)
 		return
 	default:
 		i.refused(ctx, log, "unknown_refusal", 0)
@@ -380,7 +391,19 @@ func (i *Intake) Handle(ctx context.Context, cmd RelayedCommand) {
 		return
 	}
 	rec := i.remember(cmd, req.ReplyKey, now)
-	i.run(ctx, log, rec, req, held, operations, botUser, settled)
+	i.run(ctx, log, rec, req, held, operations, botUser, settled, settle)
+}
+
+// sleepCtx waits d, or until ctx ends (false).
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func refusalClass(r helper.CommandRefusal) string {
@@ -398,7 +421,7 @@ func refusalClass(r helper.CommandRefusal) string {
 }
 
 // run authorises a verified request and dispatches it, or refuses it, answering through rec.
-func (i *Intake) run(ctx context.Context, log *slog.Logger, rec *record, req protocol.SealedRequest, held HeldChecker, operations func(uint64) (OperationRule, bool), botUser id.ID, settled bool) {
+func (i *Intake) run(ctx context.Context, log *slog.Logger, rec *record, req protocol.SealedRequest, held HeldChecker, operations func(uint64) (OperationRule, bool), botUser id.ID, settled bool, settle func() bool) {
 	retryable := func(class string, status uint16, code string) {
 		i.refused(ctx, log, class, status)
 		rec.mu.Lock()
@@ -407,17 +430,36 @@ func (i *Intake) run(ctx context.Context, log *slog.Logger, rec *record, req pro
 		rec.mu.Unlock()
 		i.answer(ctx, rec, refusal(status, code))
 	}
-	if !settled {
-		retryable("feed_behind", StatusOffline, CodeOffline)
-		return
+	// The retryable gates: the feed barrier, the sender's held device list, the installation's feed. Right after a
+	// start each opens within moments, so the command is parked there for the first-answer budget, checked again every
+	// parkStep, before it is refused (final review I2): the first command after a start is answered, not failed.
+	gate := func() (string, uint16, string) {
+		switch {
+		case !settled:
+			return "feed_behind", StatusOffline, CodeOffline
+		case held != nil && held.Held(req.UserID):
+			return "held", StatusSignature, CodeSignature
+		case !i.isReady():
+			return "not_ready", StatusOffline, CodeOffline
+		}
+		return "", 0, ""
 	}
-	if held != nil && held.Held(req.UserID) {
-		retryable("held", StatusSignature, CodeSignature)
-		return
-	}
-	if !i.isReady() {
-		retryable("not_ready", StatusOffline, CodeOffline)
-		return
+	i.mu.Lock()
+	budget, step := i.park, i.parkStep
+	i.mu.Unlock()
+	deadline := time.Now().Add(budget)
+	for {
+		class, status, code := gate()
+		if class == "" {
+			break
+		}
+		if wait := min(step, time.Until(deadline)); wait <= 0 || !sleepCtx(ctx, wait) {
+			retryable(class, status, code)
+			return
+		}
+		if !settled && settle != nil {
+			settled = settle()
+		}
 	}
 	if req.Operation == uint64(protocol.OpProbe) {
 		if botUser.IsZero() || req.UserID != botUser {
@@ -477,7 +519,7 @@ func (i *Intake) run(ctx context.Context, log *slog.Logger, rec *record, req pro
 
 // replay answers a Retry: the answers already sent, re-sealed to the newest key, or the retryable
 // request handled now, or 409.
-func (i *Intake) replay(ctx context.Context, log *slog.Logger, cmd RelayedCommand, key [32]byte, held HeldChecker, operations func(uint64) (OperationRule, bool), botUser id.ID, settled bool) {
+func (i *Intake) replay(ctx context.Context, log *slog.Logger, cmd RelayedCommand, key [32]byte, held HeldChecker, operations func(uint64) (OperationRule, bool), botUser id.ID, settled bool, settle func() bool) {
 	rec := i.lookup(cmd.RequestID, i.clk.Now())
 	if rec == nil {
 		// Not kept (fix round 3, M5): a duplicate whose first copy is still being recorded, or one after a restart or
@@ -515,7 +557,7 @@ func (i *Intake) replay(ctx context.Context, log *slog.Logger, cmd RelayedComman
 		// The helper has just verified this seal's sent_at against now: the request is as fresh as the Retry (fix
 		// round 1 M-4), so a mutation's expiry follows it, not the first send's.
 		req.SentAt = uint64(max(i.clk.Now().Unix(), 0))
-		i.run(ctx, log, rec, req, held, operations, botUser, settled)
+		i.run(ctx, log, rec, req, held, operations, botUser, settled, settle)
 		return
 	}
 	defer rec.mu.Unlock()

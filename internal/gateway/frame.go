@@ -100,7 +100,7 @@ const (
 	// snapshot's body frames are sent with n = 0 and closed by a ringed snapshot_end (BotStream).
 	OpBotEvent Op = 65
 	// OpBotWebhook hands one incoming webhook POST to the Bot runtime's live connection (Bot v2 task 13):
-	// [delivery_id, webhook_id, community_id, channel_id, display_name, avatar_url|null, text,
+	// [delivery_id, webhook_id, community_id, channel_id, display_name, avatar_id|null, text,
 	// allow_everyone]. It is never ringed or held: a Bot that is offline, parked or mid-resume makes the
 	// POST a 503, so the text sits in no ring and a replay can never post it twice.
 	OpBotWebhook Op = 66

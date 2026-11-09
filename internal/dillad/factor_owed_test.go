@@ -292,8 +292,12 @@ func TestHumanSessionIsNotABotSession(t *testing.T) {
 		ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x7e}, 32)))
 	satisfyFactor(t, srv, user)
 
-	rec := call(t, h, http.MethodPut,
-		"/v1/bot-runtime/installations/0102030405060708090a0b0c0d0e0f10/credential", token, nil)
+	// The route is the Bot socket's alone (final review I3); on the socket a human bearer is still not a Bot's.
+	const path = "/v1/bot-runtime/installations/0102030405060708090a0b0c0d0e0f10/credential"
+	if rec := call(t, h, http.MethodPut, path, token, nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("Bot-only credential route on the public listener = %d %q, want 404", rec.Code, errorCode(rec))
+	}
+	rec := call(t, dillad.BotSocketHandler(http.NotFoundHandler(), h, nil), http.MethodPut, path, token, nil)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("human session on Bot-only credential route = %d %q, want 401", rec.Code, errorCode(rec))
 	}

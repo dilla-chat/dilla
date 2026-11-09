@@ -45,7 +45,8 @@ import (
 //     their type, and the body must be valid UTF-8;
 //   - the text, username and avatar_url are never stored or logged, and the secret travels only in the path, which
 //     server.RequestLog logs as the route pattern, never the URL.
-// dillad never fetches avatar_url; it passes it to the Bot.
+// An avatar_url is fetched by dillad itself (vetted, size-capped, re-encoded: internal/webhookavatar), never by the Bot,
+// which gets only the id of the avatar the instance fetched (op 66 avatar_id).
 
 // BotWebhookGateway is what the public route needs of the gateway. *gateway.Gateway is one.
 type BotWebhookGateway interface {

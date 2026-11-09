@@ -734,10 +734,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		h = client.DownloadsFallback(mux)
 	}
 	h = generationHeader(h, instance.Generation)
-	if o.BotLaunch != nil {
-		// Under a supervisor the Bot's enrollment is the socket's alone (fix round 1, M-1).
-		h = refuseEnrollmentOffSocket(h)
-	}
+	// The Bot's enrollment is the socket's alone (fix round 1, M-1), with or without a supervisor (final review I3).
+	h = refuseEnrollmentOffSocket(h)
 	h = mobileCORS(h, o.Config.HTTP.MobileOrigins)
 	// Recover sits INSIDE RequestLog, not outside it. server.RequestLog logs
 	// and calls observe after next.ServeHTTP returns, with no defer, so a panic
@@ -917,7 +915,7 @@ var BotEnrollmentRoutes = []string{
 type botSocketKey struct{}
 
 // refuseEnrollmentOffSocket answers 404 to a BotEnrollmentRoutes request that did not come over the Bot's socket
-// (fix round 1, M-1): under a supervisor nothing legitimate calls them on the public listener, and a leaked runtime
+// (fix round 1, M-1; final review I3: whether or not a supervisor runs): nothing legitimate calls them on the public listener, and a leaked runtime
 // credential must not be able to claim or enroll an installation from the network.
 func refuseEnrollmentOffSocket(next http.Handler) http.Handler {
 	mux := http.NewServeMux()

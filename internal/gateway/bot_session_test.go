@@ -86,7 +86,7 @@ func TestManagedBotIdentifyUsesSelectedWireAndPersistsIt(t *testing.T) {
 			bot := auth.BotSessionBinding{InstallationID: id.New(), CommunityID: id.New(), State: store.BotInstallationJoining}
 			session := auth.Session{Scope: auth.ScopeEnrolled, WireVersion: tc.persisted, TokenHash: hash, Bot: &bot}
 			token := scopedSession(h, device, session)
-			in := identifyInbound(t, token, 6)
+			in := h.onBotSocket(identifyInbound(t, token, 6))
 			sink := newRecordingSink(8, false)
 			c, ok := h.gw.identifyConnection(context.Background(), sink, in)
 			if !ok || c == nil {
@@ -114,7 +114,7 @@ func TestManagedBotIdentifySelectedWireTwoReturnsUpgradeRequired(t *testing.T) {
 	bot := auth.BotSessionBinding{InstallationID: id.New(), CommunityID: id.New(), State: store.BotInstallationJoining}
 	token := scopedSession(h, device, auth.Session{Scope: auth.ScopeEnrolled, WireVersion: 6, TokenHash: hash, Bot: &bot})
 	sink := newRecordingSink(8, false)
-	if _, ok := h.gw.identifyConnection(context.Background(), sink, identifyInbound(t, token, 2)); ok {
+	if _, ok := h.gw.identifyConnection(context.Background(), sink, h.onBotSocket(identifyInbound(t, token, 2))); ok {
 		t.Fatal("selected wire 2 was accepted for a managed bot")
 	}
 	frame := h.readFrom(t, sink)
@@ -143,7 +143,7 @@ func TestManagedBotConnectionIsNotSentAppBuild(t *testing.T) {
 	bot := auth.BotSessionBinding{InstallationID: id.New(), CommunityID: id.New(), State: store.BotInstallationJoining}
 	token := scopedSession(h, device, auth.Session{Scope: auth.ScopeEnrolled, WireVersion: 0, TokenHash: []byte("01234567890123456789012345678901"), Bot: &bot})
 	sink := newRecordingSink(16, false)
-	c, ok := h.gw.identifyConnection(context.Background(), sink, identifyInbound(t, token, 6))
+	c, ok := h.gw.identifyConnection(context.Background(), sink, h.onBotSocket(identifyInbound(t, token, 6)))
 	if !ok {
 		t.Fatal("a ready Bot on wire 6 was refused")
 	}

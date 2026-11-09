@@ -78,6 +78,25 @@ func TestReplyCapPerRequest(t *testing.T) {
 	}
 }
 
+// A same-device resend (Retry, or a carried redelivery) re-admits the request with a fresh reply
+// budget: the Bot re-sends every kept answer to the new seal, so a k-answer command must survive more
+// than BotRepliesPerRequest/k sends (final review I4).
+func TestResendResetsTheReplyBudget(t *testing.T) {
+	l := NewBotRequestLedger(clock.NewFake(time.Unix(1_700_000_000, 0)))
+	request, device, community := id.New(), id.New(), id.New()
+	const answers = 5
+	for send := range 2*BotRepliesPerRequest/answers + 1 {
+		if _, err := l.admit(request, device, community); err != nil {
+			t.Fatal(err)
+		}
+		for i := range answers {
+			if err := l.reply(request, device, community, 40<<10); err != nil {
+				t.Fatalf("send %d answer %d: %v", send, i, err)
+			}
+		}
+	}
+}
+
 func ledgerCode(err error) string {
 	var e *server.Error
 	if errors.As(err, &e) {

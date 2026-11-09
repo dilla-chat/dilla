@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -47,12 +49,36 @@ func Dial(t testing.TB, baseURL, bearer string) *Client {
 	return c
 }
 
+// DialBot connects as the supervised Bot does: over the Unix socket at socket (served by Gateway.ServeBot), with the
+// session as the upgrade's bearer and no launch token in the identify. A managed Bot is refused on the public /gateway
+// (Bot v2 final review I3).
+func DialBot(t testing.TB, socket, bearer string) *Client {
+	t.Helper()
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+	}}
+	t.Cleanup(transport.CloseIdleConnections)
+	c, err := dial(context.Background(), "ws://localhost/gateway", &websocket.DialOptions{
+		Subprotocols: []string{"dilla.v1"}, HTTPClient: &http.Client{Transport: transport},
+		HTTPHeader: http.Header{"Authorization": {"Bearer " + bearer}},
+	}, "")
+	if err != nil {
+		t.Fatalf("sockettest: %v", err)
+	}
+	t.Cleanup(c.Close)
+	return c
+}
+
 // DialContext is Dial without a testing.TB.
 func DialContext(ctx context.Context, baseURL, bearer string) (*Client, error) {
-	url := "ws" + strings.TrimPrefix(baseURL, "http")
-	ws, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{
-		Subprotocols: []string{"dilla.v1"},
-	})
+	return dial(ctx, "ws"+strings.TrimPrefix(baseURL, "http"), &websocket.DialOptions{Subprotocols: []string{"dilla.v1"}}, bearer)
+}
+
+func dial(ctx context.Context, url string, opts *websocket.DialOptions, bearer string) (*Client, error) {
+	ws, resp, err := websocket.Dial(ctx, url, opts)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}

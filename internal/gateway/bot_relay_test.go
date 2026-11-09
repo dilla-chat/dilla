@@ -32,7 +32,12 @@ func botReplyFrame(t *testing.T, requestID id.ID, seq uint64, sealed []byte, fin
 func (h *harness) resumeFrom(t *testing.T, c *conn, token []byte, lastN uint64) (*recordingSink, Inbound) {
 	t.Helper()
 	s := newRecordingSink(16, false)
-	go h.gw.serve(context.Background(), s, "")
+	if c.isBot {
+		// A managed Bot resumes only on its socket (final review I3).
+		go h.gw.serveConn(context.Background(), s, "", h.botSocketPeer())
+	} else {
+		go h.gw.serve(context.Background(), s, "")
+	}
 	h.readFrom(t, s) // hello
 	p, err := payload(h.tokenFor(c.deviceID), token, h.generation, lastN)
 	if err != nil {

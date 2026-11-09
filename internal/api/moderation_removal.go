@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/dilla-chat/dilla/internal/auth"
-	botaccess "github.com/dilla-chat/dilla/internal/bot/access"
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
 	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/server"
@@ -140,10 +138,9 @@ func (h *moderationRemovalAPI) accept(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, h.deps.storeError(r, err))
 		return
 	} else if user.Kind == 1 {
-		if err := h.requireBotRemoval(r, h.deps.Repo, s, communityID); err != nil {
-			server.WriteError(w, err)
-			return
-		}
+		// A Bot never removes a member's message: the route is a human moderator's (Bot v2 final review I1).
+		server.WriteError(w, botRemovalRefused())
+		return
 	}
 	actionID := id.New()
 	var accepted store.ModerationRemovalRow
@@ -180,9 +177,7 @@ func (h *moderationRemovalAPI) accept(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if actorUser.Kind == 1 {
-			if err := h.requireBotRemoval(r, tx, s, communityID); err != nil {
-				return err
-			}
+			return botRemovalRefused()
 		}
 		targetUser, err := authorizeMessageRemoval(r, tx, communityID, groupID, lockedGroup.TargetID, s.UserID, proof.TargetSequence)
 		if err != nil {
@@ -259,32 +254,8 @@ func authorizeMessageRemoval(r *http.Request, repo store.Repository, communityID
 	return uploader.UserID, nil
 }
 
-func (h *moderationRemovalAPI) requireBotRemoval(r *http.Request, repo store.Repository, s auth.Session, communityID id.ID) error {
-	if err := h.requireBotFeed(r, repo, s, communityID); err != nil {
-		return err
-	}
-	installation, err := repo.GetActiveBotInstallationByCommunity(r.Context(), communityID)
-	if err != nil || installation.Capabilities&uint16(botCapRemoval) == 0 {
-		return server.Errorf(server.CodeForbidden, "ready removal-capable Bot installation required")
-	}
-	return nil
-}
-
-// Bot requests must come from the ready installation bound to this community;
-// human clients read the proof feed through current group membership instead.
-func (h *moderationRemovalAPI) requireBotFeed(r *http.Request, repo store.Repository, s auth.Session, communityID id.ID) error {
-	if err := requireBotWire(s.WireVersion); err != nil {
-		return err
-	}
-	binding, _, err := botaccess.ForUserCommunity(r.Context(), repo, s.UserID, communityID)
-	if err != nil || binding.State != store.BotInstallationReady {
-		return server.Errorf(server.CodeForbidden, "ready removal-capable Bot installation required")
-	}
-	installation, err := repo.GetActiveBotInstallationByCommunity(r.Context(), communityID)
-	if err != nil || installation.UserID == nil || *installation.UserID != s.UserID || installation.DeviceID == nil || *installation.DeviceID != s.DeviceID {
-		return server.Errorf(server.CodeForbidden, "ready Bot installation required")
-	}
-	return nil
+func botRemovalRefused() error {
+	return server.Errorf(server.CodeForbidden, "a Bot cannot remove messages")
 }
 
 func (h *moderationRemovalAPI) list(w http.ResponseWriter, r *http.Request) {
