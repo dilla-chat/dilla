@@ -10,8 +10,8 @@ export { SETTINGS, VOICE_DEFAULTS, effectiveNotifyMode, isMuted, isSettingKey, i
 export { CALL_IDLE, VOICE_EMPTY, RINGS_EMPTY } from './state/types';
 export { createVoiceMusicAdapter, musicPlayheadMs, voiceMusicAdapter } from './voice/music';
 export { VoiceMusicError, VoiceMusicAcceptedUnconfirmedError } from './voice/music';
-export { createBotInteractionClient, BotInteractionUncertainError, BotInteractionRejectedError, BotInteractionBindingMismatchError } from './bot/interactions';
-export type { BotInteractionClient, BotInteractionRequest, BotInteractionResult, BotInteractionScope } from './bot/interactions';
+export { createBotOperations, BotOperationUncertainError, BotOperationRefusedError, catalogOffers, sealedOperation, v1Operation, APP_OPERATION_BASE } from './bot/operations';
+export type { BotOperations, BotOperationRequest, BotOperationResult } from './bot/operations';
 export { createBotUtilities, decodePollVote, decodePollClose, BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError } from './bot/utilities';
 export type { BotUtilities, PollSummary, ReminderSummary, ReminderState, UtilityBinding, UtilityCapabilities, PollPage, ReminderPage, PollVotersPage } from './bot/utilities';
 export { BotHints, watchBotHint, HINT_COALESCE_MS } from './bot/hints';

@@ -50,6 +50,9 @@ const (
 	BotReplyBytesPerRequest = 256 << 10
 	// sealedCommandVersion is the version element of the sealed form.
 	sealedCommandVersion = 1
+	// commandKeyOverlap is how long after a rotation dillad still relays commands sealed to the previous
+	// key: the Bot's helper opens it for 24 h after it rotated (spec "Key rotation": weekly, 24 h overlap).
+	commandKeyOverlap = 24 * time.Hour
 )
 
 // BotRelayGateway is what the relay needs of the gateway. *gateway.Gateway is one.
@@ -250,11 +253,11 @@ func rawArrayOf(b []byte, n int) ([]cbor.RawMessage, bool) {
 
 // decodeBotCommand reads the body [request_id(16), sealed] and the sealed form's outer array,
 // [1, key_id(16), request_id(16), enc(32), ciphertext], strictly: deterministic CBOR, version 1,
-// exact lengths, at most maxSealedCommand bytes, the two request_ids equal. It never looks inside
-// the ciphertext.
-func decodeBotCommand(body []byte) (id.ID, []byte, error) {
-	invalid := func(msg string) (id.ID, []byte, error) {
-		return id.ID{}, nil, server.Errorf(server.CodeInvalidRequest, "%s", msg)
+// exact lengths, at most maxSealedCommand bytes, the two request_ids equal. It returns the request_id,
+// the sealed bytes and the key_id. It never looks inside the ciphertext.
+func decodeBotCommand(body []byte) (id.ID, []byte, id.ID, error) {
+	invalid := func(msg string) (id.ID, []byte, id.ID, error) {
+		return id.ID{}, nil, id.ID{}, server.Errorf(server.CodeInvalidRequest, "%s", msg)
 	}
 	elems, ok := rawArrayOf(body, 2)
 	if !ok {
@@ -275,7 +278,8 @@ func decodeBotCommand(body []byte) (id.ID, []byte, error) {
 	if v, ok := rawUintOf(outer[0]); !ok || v != sealedCommandVersion {
 		return invalid("sealed version is 1")
 	}
-	if _, ok := rawIDOf(outer[1]); !ok {
+	keyID, ok := rawIDOf(outer[1])
+	if !ok {
 		return invalid("key_id is 16 bytes, not all zero")
 	}
 	inner, ok := rawIDOf(outer[2])
@@ -291,7 +295,24 @@ func decodeBotCommand(body []byte) (id.ID, []byte, error) {
 	if _, ok := rawBstrOf(outer[4]); !ok {
 		return invalid("ciphertext is a byte string")
 	}
-	return requestID, sealed, nil
+	return requestID, sealed, keyID, nil
+}
+
+// commandKeyCurrent reports whether keyID is a command key the community's Bot still opens: the one it
+// published, or the one before it for commandKeyOverlap after the rotation. A community with no stored
+// key has none.
+func (d Deps) commandKeyCurrent(r *http.Request, community, keyID id.ID) (bool, error) {
+	key, err := d.Repo.GetBotCommandKey(r.Context(), community)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	if keyID == key.KeyID {
+		return true, nil
+	}
+	return !key.PrevKeyID.IsZero() && keyID == key.PrevKeyID && d.Clock.Now().Unix() < key.PrevUntil, nil
 }
 
 // PostBotCommand relays one sealed command: 202 [0] once the Bot runtime's connection has it.
@@ -324,7 +345,7 @@ func (d Deps) PostBotCommand(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	requestID, sealed, err := decodeBotCommand(body)
+	requestID, sealed, keyID, err := decodeBotCommand(body)
 	if err != nil {
 		server.WriteError(w, err)
 		return
@@ -343,6 +364,16 @@ func (d Deps) PostBotCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	case installation.State != store.BotInstallationReady || installation.DeviceID == nil || d.BotRelay == nil:
 		server.WriteError(w, offline)
+		return
+	}
+	// A command sealed to a key the Bot no longer opens could get no answer at all (no reply key comes out of a
+	// seal that does not open): refuse it here, before anything is admitted, so the client reads the catalog
+	// and resends the same request_id (Task 15 concern 3).
+	if current, err := d.commandKeyCurrent(r, cid, keyID); err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
+	} else if !current {
+		server.WriteError(w, server.Errorf(server.CodeBotKeyStale, "the command is sealed to a command key the Bot no longer opens"))
 		return
 	}
 	inserted, err := d.BotRequests.admit(requestID, s.DeviceID, cid)

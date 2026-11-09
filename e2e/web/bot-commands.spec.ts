@@ -125,8 +125,9 @@ test('picker shows Bot commands with no network after sync', async ({ page, inst
     await expect(region.getByRole('option', { name: /^\/remind,/u })).toBeVisible();
     await expect(region.getByRole('option', { name: /^\/play,/u })).toBeVisible();
     await expect(region.getByText(copy('commands.loading'), { exact: true })).toHaveCount(0);
-    // Opening the list asked the worker for nothing: no status read, no capability round trip.
-    expect((await workerCalls(page)).slice(before)).toEqual([]);
+    // Opening the list asked the worker for nothing: no status read, no capability round trip. Typing `/` in the composer
+    // still tells the channel the member is typing (the composer's own `typing` call), which is no Bot request.
+    expect((await workerCalls(page)).slice(before).filter(m => m !== 'typing')).toEqual([]);
     await page.context().setOffline(false);
   } finally { await stopAppBeforeHost(page, host); }
 });
@@ -210,6 +211,6 @@ test('Enter to first answer is within RTT + 100 ms at p95', async ({ page, insta
     samples.sort((a, b) => a - b);
     const p95 = samples[Math.ceil(samples.length * 0.95) - 1];
     test.info().annotations.push({ type: 'G2', description: `rtt ${String(rtt)} ms, p95 ${p95.toFixed(1)} ms, samples ${samples.map(s => s.toFixed(0)).join(' ')}` });
-    expect(p95).toBeLessThanOrEqual(rtt + G2_HEADROOM_MS);
+    expect(p95, `rtt ${String(rtt)} ms, samples ${samples.map(s => s.toFixed(0)).join(' ')}`).toBeLessThanOrEqual(rtt + G2_HEADROOM_MS);
   } finally { await stopAppBeforeHost(page, host); }
 });

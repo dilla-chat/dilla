@@ -1,6 +1,6 @@
 import { decode, encode, type CborValue } from '../cbor/index.ts';
 import type { CoreClient } from '../bridge';
-import { BotInteractionBindingMismatchError, BotInteractionUncertainError, createBotInteractionClient, type BotInteractionClient, type BotInteractionResult, type BotInteractionScope } from './interactions.ts';
+import { BotOperationRefusedError, BotOperationUncertainError, createBotOperations, supportedV1Operations, type BotOperationResult, type BotOperations } from './operations.ts';
 import { normalizeReminderTimezone } from './utility-time.ts';
 
 const MAX_UINT = (1n << 64n) - 1n;
@@ -511,7 +511,7 @@ export type BotUtilities = {
   reminderCancel(input: ReminderMutationInput): Promise<ReminderSummary>;
   reminderDismiss(input: ReminderMutationInput): Promise<ReminderSummary>;
   reminderDue(cursor?: Uint8Array | null, requestId?: string): Promise<ReminderPage>;
-  read(requestId: string, operation: number): Promise<BotInteractionResult | null>;
+  read(requestId: string, operation: number): Promise<BotOperationResult | null>;
 };
 
 function validateRequestId(value: string): string { bytesFromHex(value); return value; }
@@ -535,8 +535,8 @@ function normalizeCursor(value?: Uint8Array | null): Uint8Array | null {
   if (!(value instanceof Uint8Array) || value.length < 1 || value.length > 256) fail('invalid-cursor');
   return value.slice();
 }
-function checkNoRevision(result: BotInteractionResult): void { if (result.revision !== null) fail('revision-mismatch'); }
-function assertSuccess(result: BotInteractionResult, operation: number): void {
+function checkNoRevision(result: BotOperationResult): void { if (result.revision !== null) fail('revision-mismatch'); }
+function assertSuccess(result: BotOperationResult, operation: number): void {
   if (result.status === 0) return;
   if (result.status === 5 && MUTATION_OPERATIONS.has(operation)) {
     throw new BotUtilitiesUncertainMutationError(operation, result.status, result.requestId);
@@ -544,7 +544,7 @@ function assertSuccess(result: BotInteractionResult, operation: number): void {
   if (result.status === 5) throw new BotUtilitiesProviderUnavailableError(operation, result.requestId);
   throw new BotUtilitiesStatusError(operation, result.status, result.requestId, result.revision);
 }
-function responseRequest(result: BotInteractionResult, requestId: string, operation: number): void {
+function responseRequest(result: BotOperationResult, requestId: string, operation: number): void {
   if (result.requestId !== requestId) fail('request-mismatch');
   assertSuccess(result, operation);
 }
@@ -555,84 +555,63 @@ function currentUserId(client: CoreClient): string {
   return idText(value);
 }
 
-/** Build strict poll/reminder clients on the shared scope-checked interaction transport. */
+/** Build strict poll/reminder clients on sealed Bot commands (Bot v2 Task 21b): each operation is sealed to the community's
+ *  verified command key and answered through op 62, so no interaction group and no response archive are involved. */
 export function createBotUtilities(client: CoreClient, communityId: string): BotUtilities {
   const community = idText(communityId);
-  const transport: BotInteractionClient = createBotInteractionClient(client, community);
+  const transport: BotOperations = createBotOperations(client, community);
   let lastBinding: UtilityBinding | null = null;
-  const sameScope = (left: BotInteractionScope, right: BotInteractionScope): boolean => left.installationId === right.installationId
-    && left.botUserId === right.botUserId && left.revision === right.revision;
 
-  const statusBinding = async (): Promise<UtilityBinding & { revision: string }> => {
+  const statusBinding = async (): Promise<UtilityBinding> => {
     const status = await client.call({ m: 'getBotCommandStatus', communityId: community }) as {
-      installationId?: unknown; botUserId?: unknown; state?: unknown; revision?: unknown;
+      installationId?: unknown; botUserId?: unknown; state?: unknown;
     } | null;
     if (status === null || status.state !== 3 || typeof status.installationId !== 'string' || typeof status.botUserId !== 'string'
       || !ID_HEX.test(status.installationId) || !ID_HEX.test(status.botUserId) || /^0{32}$/u.test(status.installationId)
-      || /^0{32}$/u.test(status.botUserId) || typeof status.revision !== 'string' || !/^(?:0|[1-9]\d*)$/u.test(status.revision)) {
+      || /^0{32}$/u.test(status.botUserId)) {
       lastBinding = null;
       throw new BotUtilitiesProviderUnavailableError(undefined, undefined, 'The Bot installation is not ready for utilities.');
     }
-    return { installationId: status.installationId, botUserId: status.botUserId, revision: status.revision };
+    return { installationId: status.installationId, botUserId: status.botUserId };
   };
+  // What the Bot offers is the catalog this device holds (pushed on change, read at connect when behind): no round trip.
+  // The Bot user is the one the catalog's key was verified for, when known; it must be the installation's.
   const capabilities = async (): Promise<UtilityCapabilities> => {
     lastBinding = null;
-    const before = await statusBinding();
-    const expectedScope: BotInteractionScope = before;
-    const result = await transport.request({ operation: 3, args: [], expectedScope });
-    responseRequest(result, result.requestId, 3);
-    checkNoRevision(result);
-    const caps = decodeBotUtilityCapabilities(result.data, before);
-    if (!caps.supportedOperations.includes(3)) fail('invalid-response');
-    const after = await statusBinding();
-    if (!sameScope(result.scope, before) || !sameScope(before, after)) {
-      lastBinding = null;
-      throw new BotUtilitiesProviderUnavailableError(3, result.requestId, 'The Bot installation changed while capabilities were loading.');
+    const binding = await statusBinding();
+    const catalog = client.get(`botCatalog:${community}`);
+    if (catalog === null || catalog === undefined || catalog.botUserId !== null && catalog.botUserId !== binding.botUserId) {
+      throw new BotUtilitiesProviderUnavailableError(3, undefined, 'The Bot installation changed while capabilities were loading.');
     }
-    lastBinding = { installationId: caps.installationId, botUserId: caps.botUserId };
-    return caps;
+    const supportedOperations = supportedV1Operations(catalog.commands).filter(op => KNOWN_OPERATIONS.has(op));
+    lastBinding = binding;
+    return { version: 1, ...binding, supportedOperations };
   };
-  // Bot v2 (task 20): an operation is authorised against the catalog this device holds (pushed on change, read at connect
-  // when behind), never by an op-3 capability round trip per operation; the live status read still binds the request to
-  // the current installation.
+  // Bot v2 (task 20, 21b): an operation is offered when the catalog this device holds lists its sealed form.
   // Ruling (fix round 1, automated review #5): the server-filtered catalog is display only. Hiding or listing an operation
   // here is no authority: the Bot authorises every operation itself, from the sender's permissions in its own feed, and
   // refuses what the member may not do whatever this check said.
-  const authorizeOperation = async (operation: number): Promise<BotInteractionScope> => {
+  // The live status still names the installation a card binds to (`binding`); the Bot itself is the catalog key's.
+  const authorizeOperation = async (operation: number): Promise<void> => {
     const catalog = client.get(`botCatalog:${community}`);
-    const listed = catalog?.commands.some(command => command.operation === operation) === true;
-    const supported = listed && (POLL_OPERATIONS.has(operation) || REMINDER_OPERATIONS.has(operation));
-    if (!supported) throw new BotUtilitiesProviderUnavailableError(operation);
-    const status = await statusBinding();
-    lastBinding = { installationId: status.installationId, botUserId: status.botUserId };
-    return { ...status };
+    const listed = catalog !== null && catalog !== undefined && supportedV1Operations(catalog.commands).includes(operation);
+    if (!listed || !(POLL_OPERATIONS.has(operation) || REMINDER_OPERATIONS.has(operation))) throw new BotUtilitiesProviderUnavailableError(operation);
+    lastBinding = await statusBinding();
   };
   const send = async (operation: number, args: readonly (string | number | Uint8Array | null)[], options: {
-    requestId?: string; revision?: string | bigint | null;
-  } = {}): Promise<BotInteractionResult> => {
+    requestId?: string; revision?: string | bigint | null; channelId?: string;
+  } = {}): Promise<BotOperationResult> => {
     const requestId = requestIdOrGenerate(options.requestId);
-    const expectedScope = await authorizeOperation(operation);
+    await authorizeOperation(operation);
     const revision = options.revision === undefined || options.revision === null ? null : revisionString(options.revision, options.revision !== 0n && options.revision !== '0');
-    let result: BotInteractionResult;
+    let result: BotOperationResult;
     try {
-      result = await transport.request({ operation, requestId, channelId: null, args, revision, expectedScope });
+      result = await transport.request({ operation, requestId, channelId: options.channelId ?? null, args, revision });
     } catch (cause) {
-      if (cause instanceof BotInteractionBindingMismatchError) {
-        lastBinding = null;
-        fail('binding-mismatch');
-      }
-      if (cause instanceof BotInteractionUncertainError) {
-        lastBinding = null;
-      }
-      if (MUTATION_OPERATIONS.has(operation) && cause instanceof BotInteractionUncertainError) {
-        return uncertainMutation(operation, requestId, cause, null);
-      }
+      // No answer in time: a mutation may have been taken; Retry with the same request id settles it.
+      if (MUTATION_OPERATIONS.has(operation) && cause instanceof BotOperationUncertainError) return uncertainMutation(operation, requestId, cause, null);
+      if (cause instanceof BotOperationRefusedError) throw new BotUtilitiesProviderUnavailableError(operation, requestId);
       throw cause;
-    }
-    if (!sameScope(result.scope, expectedScope)) {
-      lastBinding = null;
-      if (MUTATION_OPERATIONS.has(operation) && result.status === 0) return uncertainMutation(operation, requestId, 'installation changed after mutation acceptance');
-      fail('binding-mismatch');
     }
     try { responseRequest(result, requestId, operation); }
     catch (cause) {
@@ -656,7 +635,7 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
     pollCreate: async (input) => {
       const requestId = validateRequestId(input.requestId);
       const payload = encodePollCreatePayload(input);
-      const result = await send(70, [payload], { requestId, revision: 0n });
+      const result = await send(70, [payload], { requestId, revision: 0n, channelId: input.channelId });
       return decodeAcceptedMutation(70, requestId, () => decodePollCreate(result.data, requestId, { channelId: input.channelId, threadId: input.threadId ?? null, responseRevision: result.revision }));
     },
     pollGet: async (pollId, options) => {
@@ -743,7 +722,7 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
       return decodeReminderDuePage(result.data, { ownerId: owner });
     },
     read: (requestId, operation) => {
-      if (![3, ...POLL_OPERATIONS, ...REMINDER_OPERATIONS].includes(operation)) fail('invalid-operation');
+      if (![...POLL_OPERATIONS, ...REMINDER_OPERATIONS].includes(operation)) fail('invalid-operation');
       return transport.read(validateRequestId(requestId), operation);
     },
   };

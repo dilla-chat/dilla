@@ -1145,6 +1145,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 409 | `E_NOT_BOT_CHANNEL` | a webhook's channel is not a Bot channel of its community: when the webhook is created, or on a POST after the channel was unmarked | pick a Bot channel, or mark the channel again |
 | 410 | `E_PRUNED` | delivery retention has deleted a row of the requested stream at or above `from` (`from` is the first `seq` wanted; the instance records the highest `seq` delivery retention deleted from each stream, so the answer is exact; an archival deletion is not recorded, invariant 10) | resync; mark older messages "undecryptable (too old)" |
 | 410 | `E_INVITE_INVALID` | the invite is expired, exhausted or revoked | none |
+| 410 | `E_BOT_KEY_STALE` | a sealed Bot command names a `key_id` that is neither the community's published command key nor, for 24 hours after a rotation, the key it replaced | read the catalog once (the new publication) and resend the same `request_id` sealed to it |
 | 413 | `E_TOO_LARGE` | the object exceeds the instance limit | split or attach |
 | 422 | `E_COMMIT_INVALID` | structural or policy failure; `rule` names the clause | do not retry unchanged; resync if behind |
 | 422 | `E_COMMITMENT_INVALID` | `private_message.authenticated_data` is not exactly 32 bytes | recompute `C` and resend |
@@ -1190,7 +1191,9 @@ factors), distinct from `E_UNAUTHENTICATED` so the client can say which. `E_PASS
 whose passkey belongs to another account. None is a delivery-service code. Bot v2's sealed
 command relay (`10` § Sealed command relay, replies and state hints) adds two: `E_BOT_DUPLICATE`
 (409), a command `request_id` another device sent within five minutes, and `E_BOT_OFFLINE` (503),
-a command with no live Bot runtime connection to relay to. Incoming webhooks (`10` § Webhooks) add
+a command with no live Bot runtime connection to relay to. Task 21b adds `E_BOT_KEY_STALE` (410), a
+command sealed to a key the Bot no longer opens, refused before it is relayed (such a seal could
+never be answered: no reply key comes out of it). Incoming webhooks (`10` § Webhooks) add
 `E_NOT_BOT_CHANNEL` (409), a webhook whose channel is not a Bot channel; the public webhook route
 answers its refusals as JSON `{"code", "message"}` with these codes rather than as CBOR.
 

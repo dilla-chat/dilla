@@ -254,8 +254,9 @@ export interface CorePort {
    *  E_CREDENTIAL for a human, E_DEVICE_LIST_STALE with no attestation. */
   botDeviceListPin(botUserId: Id, push: Uint8Array): { state: 0 | 1 | 2; version: bigint };
   /** Bot v2 (task 20b): pins the community's Bot user in the core store on first sight. State 0 pinned now, 1 the
-   *  pinned user, 2 another user (the pin stays: never replaced; sign-out erases the store). E_CREDENTIAL for an account
-   *  attested as a human. */
+   *  pinned user, 2 another user (the pin stays: never replaced; sign-out erases the store). Refused before anything is read
+   *  or written, also with a pin held: E_DEVICE_LIST_STALE when the store holds no account-kind attestation for the
+   *  candidate (ingest its device-list head first), E_CREDENTIAL when it holds another kind than Bot. */
   botUserPin(communityId: Id, botUserId: Id): { state: 0 | 1 | 2; pinned: Uint8Array };
   /** The community's pinned Bot user, or null. */
   botUserPinned(communityId: Id): Uint8Array | null;

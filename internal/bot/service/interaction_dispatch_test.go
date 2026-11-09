@@ -815,3 +815,87 @@ func TestEveryCatalogOperationHasASealedAdapter(t *testing.T) {
 		}
 	}
 }
+
+// Task 21b: an app operation runs its v1 operation with the v1 arguments (ids as 16 bytes, normalised as the v1 decoder
+// does), a mutation's expected revision first; it answers [revision, data] like a sealed read, a refusal as a bare code.
+func TestSealedAppOperationsRunTheV1Handler(t *testing.T) {
+	d, h := sealedFixture(protocol.OpMusicRemove, protocol.OpPollVote, protocol.OpPollVoters, protocol.OpMusicSearch, protocol.OpMusicEnqueue)
+	voice, item, poll := interactionID(30), interactionID(31), interactionID(32)
+	rev := uint64(8)
+	h.results[protocol.OpMusicRemove] = []InteractionResult{{Revision: &rev, Data: []byte{0x80}}}
+	req := sealedRequest(protocol.OpAppMusicRemove, uint64(7), item[:])
+	req.ChannelID = voice
+	got := collect(d, req)
+	var body []any
+	if len(got) != 1 || got[0].Status != 200 || !got[0].Final || cborx.Unmarshal(got[0].Body, &body) != nil || len(body) != 2 || body[0] != uint64(8) {
+		t.Fatalf("remove answers = %+v", got)
+	}
+	r := h.calls[0].req
+	if r.Operation != protocol.OpMusicRemove || r.ChannelID == nil || *r.ChannelID != voice || r.Revision == nil || *r.Revision != 7 ||
+		r.Expires == nil || *r.Expires != 1_800_000_120 || len(r.Args) != 1 || r.Args[0] != item {
+		t.Fatalf("v1 remove = %+v", r)
+	}
+	// A poll vote: no channel, the revision first; the selection passes as given.
+	selection, _ := cborx.Marshal([]any{uint64(1)})
+	if got := collect(d, sealedRequest(protocol.OpAppPollVote, uint64(3), poll[:], selection)); len(got) != 1 || got[0].Status != 200 {
+		t.Fatalf("vote = %+v", got)
+	}
+	if r := h.calls[1].req; r.Operation != protocol.OpPollVote || r.ChannelID != nil || *r.Revision != 3 || r.Args[0] != poll {
+		t.Fatalf("v1 vote = %+v", r)
+	}
+	// A read has no revision.
+	if got := collect(d, sealedRequest(protocol.OpAppPollVoters, poll[:], uint64(0), nil)); len(got) != 1 || got[0].Status != 200 {
+		t.Fatalf("voters = %+v", got)
+	}
+	if r := h.calls[2].req; r.Operation != protocol.OpPollVoters || r.Revision != nil || r.Expires != nil {
+		t.Fatalf("v1 voters = %+v", r)
+	}
+	// The panel's enqueue only queues, as the v1 operation did (no sealed /play), and answers data.
+	enqueue := sealedRequest(protocol.OpAppMusicEnqueue, uint64(0), "https://youtu.be/x")
+	enqueue.ChannelID = voice
+	if got := collect(d, enqueue); len(got) != 1 || got[0].Status != 200 {
+		t.Fatalf("enqueue = %+v", got)
+	}
+	// Refusals: a v1 status is a bare code; malformed arguments and a player operation outside a channel are E_INVALID.
+	h.results[protocol.OpPollVote] = []InteractionResult{{Status: 4}}
+	if got := collect(d, sealedRequest(protocol.OpAppPollVote, uint64(3), poll[:], selection)); len(got) != 1 || got[0].Status != 409 || string(got[0].Body) != "E_CONFLICT" {
+		t.Fatalf("conflict = %+v", got)
+	}
+	calls := len(h.calls)
+	for name, bad := range map[string]protocol.SealedRequest{
+		"no revision":         sealedRequest(protocol.OpAppPollVote, poll[:], selection),
+		"short id":            sealedRequest(protocol.OpAppPollVote, uint64(3), poll[:15], selection),
+		"music with no voice": sealedRequest(protocol.OpAppMusicRemove, uint64(7), item[:]),
+		"extra argument":      sealedRequest(protocol.OpAppPollVoters, poll[:], uint64(0), nil, nil),
+	} {
+		if got := collect(d, bad); len(got) != 1 || got[0].Status != 400 || string(got[0].Body) != "E_INVALID" {
+			t.Fatalf("%s = %+v", name, got)
+		}
+	}
+	if len(h.calls) != calls {
+		t.Fatal("a malformed app operation reached its handler")
+	}
+}
+
+// The poll form's create posts only into the channel the command names, the one the intake authorised send_messages in.
+func TestSealedAppPollCreateMustTargetTheCommandChannel(t *testing.T) {
+	d, h := sealedFixture(protocol.OpPollCreate)
+	here, there := interactionID(40), interactionID(41)
+	payload := func(channel id.ID) []byte {
+		b, err := cborx.Marshal([]any{uint64(1), channel[:], nil, "Lunch?", []any{"Soup", "Salad"}, uint64(0), uint64(3600)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	req := sealedRequest(protocol.OpAppPollCreate, uint64(0), payload(there))
+	req.ChannelID = here
+	if got := collect(d, req); len(got) != 1 || got[0].Status != 403 || string(got[0].Body) != "E_FORBIDDEN" || len(h.calls) != 0 {
+		t.Fatalf("a poll for another channel = %+v (%d calls)", got, len(h.calls))
+	}
+	req = sealedRequest(protocol.OpAppPollCreate, uint64(0), payload(here))
+	req.ChannelID = here
+	if got := collect(d, req); len(got) != 1 || got[0].Status != 200 || len(h.calls) != 1 || h.calls[0].req.ChannelID != nil {
+		t.Fatalf("a poll for the command's channel = %+v", got)
+	}
+}

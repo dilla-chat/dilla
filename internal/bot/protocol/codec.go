@@ -93,6 +93,42 @@ const (
 	OpReadRemindersDue Operation = 93
 )
 
+// Bot v2 Task 21b: the app's surfaces (the player and its dock, poll cards and the poll form, the reminders inbox, the
+// music provider status, announcements, role panels) act through sealed commands too. An app operation is 100 + the v1
+// operation it runs. Its sealed arguments are that operation's arguments (ids as 16-byte byte strings), preceded for a
+// mutation by the expected revision (uint); a player operation's channel is the voice channel. It answers like a sealed
+// read: [revision uint|null, data bstr] with the v1 response data, or a bare code (E_FORBIDDEN, E_CONFLICT, …).
+const (
+	OpAppMusicSearch          Operation = 111
+	OpAppMusicEnqueue         Operation = 112
+	OpAppMusicPause           Operation = 113
+	OpAppMusicResume          Operation = 114
+	OpAppMusicSkip            Operation = 115
+	OpAppMusicStop            Operation = 116
+	OpAppMusicSeek            Operation = 117
+	OpAppMusicVolume          Operation = 118
+	OpAppMusicShuffle         Operation = 119
+	OpAppMusicRepeat          Operation = 120
+	OpAppMusicRemove          Operation = 121
+	OpAppMusicMove            Operation = 122
+	OpAppMusicClear           Operation = 123
+	OpAppMusicProvidersStatus Operation = 124
+	OpAppMusicAnnounce        Operation = 125
+	OpAppRolePanelPublish     Operation = 131
+	OpAppAnnouncementsList    Operation = 150
+	OpAppAnnouncementsPut     Operation = 151
+	OpAppAnnouncementsDelete  Operation = 152
+	OpAppPollCreate           Operation = 170
+	OpAppPollList             Operation = 172
+	OpAppPollVote             Operation = 173
+	OpAppPollClose            Operation = 174
+	OpAppPollVoters           Operation = 175
+	OpAppReminderCreate       Operation = 180
+	OpAppReminderList         Operation = 181
+	OpAppReminderCancel       Operation = 182
+	OpAppReminderDismiss      Operation = 183
+)
+
 type Request struct {
 	RequestID, CommunityID id.ID
 	ChannelID              *id.ID

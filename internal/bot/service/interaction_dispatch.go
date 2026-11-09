@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/dilla-chat/dilla/internal/bot/catalog"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/intake"
 	"github.com/dilla-chat/dilla/internal/bot/native"
@@ -481,6 +482,9 @@ type sealedAdapter struct {
 	read          bool
 	render        func(req protocol.SealedRequest, result InteractionResult) string
 	retryConflict bool
+	// v1, set for an app operation (Task 21b), builds the whole v1 request from the sealed one; problem is a bare
+	// code. It replaces request.
+	v1 func(req protocol.SealedRequest, community id.ID) (v1 protocol.Request, status uint64)
 }
 
 const (
@@ -834,6 +838,82 @@ var sealedAdapters = map[protocol.Operation]sealedAdapter{
 		}},
 }
 
+// appOperation is an app operation's adapter (Task 21b): it runs v1 with the sealed arguments, a mutation's expected
+// revision first. The arguments are checked and normalised (ids from 16-byte byte strings) by the v1 request decoder
+// itself, so an app operation admits exactly what the v1 operation admitted. channelled operations act in the request's
+// channel (the voice room); the rest carry none.
+func appOperation(v1 protocol.Operation, channelled bool) sealedAdapter {
+	op := v1 + catalog.AppOperationBase
+	mutation := catalog.AppMutation(op)
+	return sealedAdapter{handler: v1, read: true,
+		v1: func(req protocol.SealedRequest, community id.ID) (protocol.Request, uint64) {
+			args := req.Args
+			var revision, expires any
+			if mutation {
+				r, ok := sealedUint(args, 0)
+				if !ok {
+					return protocol.Request{}, interactionStatusInvalid
+				}
+				revision, expires, args = r, req.SentAt+sealedCommandWindow, args[1:]
+			}
+			var channel any
+			if channelled {
+				if req.ChannelID.IsZero() {
+					return protocol.Request{}, interactionStatusInvalid
+				}
+				channel = req.ChannelID[:]
+			}
+			if args == nil {
+				args = []any{}
+			}
+			raw, err := cborx.Marshal([]any{uint64(1), req.RequestID[:], community[:], channel, uint64(v1), revision, expires, args})
+			if err != nil {
+				return protocol.Request{}, interactionStatusInvalid
+			}
+			out, err := protocol.DecodeRequestCBOR(raw)
+			if err != nil {
+				return protocol.Request{}, interactionStatusInvalid
+			}
+			if v1 == protocol.OpPollCreate && !pollPayloadTargets(out.Args, req.ChannelID) {
+				return protocol.Request{}, interactionStatusForbidden
+			}
+			return out, 0
+		}}
+}
+
+// pollPayloadTargets reports whether a poll.create payload, [1, channel, thread|null, …], posts into channel: the poll
+// form's create may post only where the intake authorised send_messages.
+func pollPayloadTargets(args []any, channel id.ID) bool {
+	if len(args) != 1 || channel.IsZero() {
+		return false
+	}
+	raw, ok := args[0].([]byte)
+	var payload []any
+	if !ok || cborx.Unmarshal(raw, &payload) != nil || len(payload) < 2 {
+		return false
+	}
+	target, ok := payload[1].([]byte)
+	return ok && len(target) == len(id.ID{}) && id.ID(target) == channel
+}
+
+func init() {
+	for _, a := range []struct {
+		v1         protocol.Operation
+		channelled bool
+	}{
+		{protocol.OpMusicSearch, true}, {protocol.OpMusicEnqueue, true}, {protocol.OpMusicPause, true}, {protocol.OpMusicResume, true},
+		{protocol.OpMusicSkip, true}, {protocol.OpMusicStop, true}, {protocol.OpMusicSeek, true}, {protocol.OpMusicVolume, true},
+		{protocol.OpMusicShuffle, true}, {protocol.OpMusicRepeat, true}, {protocol.OpMusicRemove, true}, {protocol.OpMusicMove, true},
+		{protocol.OpMusicClear, true}, {protocol.OpMusicAnnounce, true}, {protocol.OpMusicProvidersStatus, false},
+		{protocol.OpRolePanelPublish, false}, {protocol.OpAnnouncementsList, false}, {protocol.OpAnnouncementsPut, false},
+		{protocol.OpAnnouncementsDelete, false}, {protocol.OpPollCreate, false}, {protocol.OpPollList, false}, {protocol.OpPollVote, false},
+		{protocol.OpPollClose, false}, {protocol.OpPollVoters, false}, {protocol.OpReminderCreate, false}, {protocol.OpReminderList, false},
+		{protocol.OpReminderCancel, false}, {protocol.OpReminderDismiss, false},
+	} {
+		sealedAdapters[a.v1+catalog.AppOperationBase] = appOperation(a.v1, a.channelled)
+	}
+}
+
 // sealedRefusal maps a v1 handler status to an answer: a bare code for a read, text for a command.
 func sealedRefusal(status uint64, read bool) intake.Answer {
 	type pair struct {
@@ -875,15 +955,27 @@ func (d *SealedDispatcher) Dispatch(ctx context.Context, req protocol.SealedRequ
 		reply(unsupported)
 		return
 	}
-	channel, args, mutation, problem := adapter.request(req)
-	if problem != "" {
-		reply(intake.Answer{Status: 400, Body: []byte(problem), Final: true})
-		return
-	}
-	v1 := protocol.Request{RequestID: req.RequestID, CommunityID: d.Community, ChannelID: channel, Operation: adapter.handler, Args: args}
-	if mutation {
-		revision, expires := uint64(0), req.SentAt+sealedCommandWindow
-		v1.Revision, v1.Expires = &revision, &expires
+	var v1 protocol.Request
+	var mutation bool
+	if adapter.v1 != nil {
+		var status uint64
+		if v1, status = adapter.v1(req, d.Community); status != 0 {
+			reply(sealedRefusal(status, true))
+			return
+		}
+		mutation = v1.Revision != nil
+	} else {
+		channel, args, mut, problem := adapter.request(req)
+		if problem != "" {
+			reply(intake.Answer{Status: 400, Body: []byte(problem), Final: true})
+			return
+		}
+		mutation = mut
+		v1 = protocol.Request{RequestID: req.RequestID, CommunityID: d.Community, ChannelID: channel, Operation: adapter.handler, Args: args}
+		if mutation {
+			revision, expires := uint64(0), req.SentAt+sealedCommandWindow
+			v1.Revision, v1.Expires = &revision, &expires
+		}
 	}
 	// The v1 request's own validation (argument shapes and bounds) applies to every sealed request.
 	if _, err := protocol.EncodeRequestCBOR(v1); err != nil || req.CommunityID != d.Community {
@@ -894,7 +986,8 @@ func (d *SealedDispatcher) Dispatch(ctx context.Context, req protocol.SealedRequ
 		reply(intake.Answer{Status: 202, Body: []byte(adapter.progress)})
 	}
 	actor := InteractionActor{User: req.UserID, Device: req.DeviceID, Channel: req.ChannelID}
-	if adapter.handler == protocol.OpMusicEnqueue {
+	// A picker /play plays when nothing does (Task 19); the player's own enqueue only queues, as the v1 operation did.
+	if adapter.handler == protocol.OpMusicEnqueue && adapter.v1 == nil {
 		ctx = withSealedPlay(ctx)
 	}
 	result, err := handler.Handle(ctx, actor, v1)

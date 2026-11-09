@@ -403,6 +403,8 @@ impl CoreHandle {
     }
     /// Bot v2 (task 20b): pins the community's Bot user in the store on first sight. CBOR
     /// [state, pinned_user]: 0 pinned now, 1 the pinned user, 2 another user (the pin stays).
+    /// Refused before anything is read or written, also with a pin held: E_DEVICE_LIST_STALE when
+    /// the store holds no account-kind attestation for the candidate, E_CREDENTIAL for another kind.
     pub fn bot_user_pin(
         &self,
         community_id: &[u8],

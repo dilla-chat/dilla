@@ -131,6 +131,32 @@ describe('sendBotCommand (the page side)', () => {
     expect(port.submits).toHaveLength(2);
   });
 
+  // Task 21b: dillad refuses a command sealed to a key the Bot no longer opens (410 E_BOT_KEY_STALE on the POST itself,
+  // since such a seal could never be answered). The run reads the catalog once and resends the same request id.
+  it('a send dillad refuses as sealed to a stale key refetches once and resends with the same id', async () => {
+    const port = fakePort();
+    port.submitError = Object.assign(new Error('E_BOT_KEY_STALE'), { code: 'E_BOT_KEY_STALE', status: 410 });
+    const run = createBotCommands(port).sendBotCommand({ communityId: COMMUNITY, channelId: null, operation: 80, args: [], requestId: REQUEST });
+    const all = collect(run.answers);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(port.refetches()).toBe(1);
+    expect(port.submits.map(s => s.requestId)).toEqual([REQUEST, REQUEST]);
+    // A second stale refusal ends the run; it never loops.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await all).toEqual([{ kind: 'refused', code: 'E_BOT_KEY_STALE', status: 410 }]);
+    expect(port.submits).toHaveLength(2);
+    // After one refetch the resend gets through and is answered.
+    const ok = fakePort();
+    ok.submitError = Object.assign(new Error('E_BOT_KEY_STALE'), { code: 'E_BOT_KEY_STALE', status: 410 });
+    ok.refetchMock.mockImplementation(() => { ok.submitError = null; return Promise.resolve(); });
+    const second = createBotCommands(ok).sendBotCommand({ communityId: COMMUNITY, channelId: null, operation: 80, args: [], requestId: REQUEST });
+    const answers = collect(second.answers);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ok.submits.map(s => s.requestId)).toEqual([REQUEST, REQUEST]);
+    ok.answer({ seq: 0, body: text('Saved'), final: true });
+    expect(await answers).toEqual([{ status: 200, body: text('Saved'), final: true }]);
+  });
+
   it('a refused send ends the run with the refusal', async () => {
     const port = fakePort();
     port.submitError = Object.assign(new Error('E_BOT_OFFLINE'), { code: 'E_BOT_OFFLINE', status: 503 });

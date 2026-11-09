@@ -142,6 +142,9 @@ export interface BotCatalogDeps {
   pinBotUser(communityId: string, botUserId: Uint8Array): { state: 0 | 1 | 2; pinned: Uint8Array };
   /** CorePort.botUserPinned: the stored pin, or null. */
   pinnedBotUser(communityId: string): Uint8Array | null;
+  /** Task 20b review I1: reads the candidate's device-list head and ingests its account-kind attestation, so the core can
+   *  tell a Bot from a human before anything is pinned. Asked before a first pin, at most once per connection. */
+  ingestBotAttestation(botUserId: Uint8Array): Promise<void>;
   /** Task 20b (Jonas, 2026-11-07): reads the Bot user's device list (the head with its identity keys, the history from
    *  version 1), builds the device_list_push and pins it in the core (CorePort.botDeviceListPin). Resolves the pin state:
    *  0 current, 1 a key change held, 2 behind. Asked at most once per connection per Bot user, on E_DEVICE_LIST_STALE. */
@@ -174,6 +177,9 @@ export class BotCatalogStore {
   private readonly pins = new Map<string, string>();
   /** Bot users (hex) whose device list was fetched and pinned on this connection (task 20b: at most once per connect). */
   private readonly listFetched = new Set<string>();
+  /** Communities whose first pin the core refused on this connection (no Bot attestation, or a human's): not asked again
+   *  until the next connection. */
+  private readonly pinRefused = new Set<string>();
   /** Bot users (hex) whose pinned device list holds a key change (botDeviceListPin state 1): greyed `changed`. */
   private readonly listHeld = new Set<string>();
   /** community → why its Bot user cannot be used: the server named another one, or more than one. */
@@ -235,7 +241,7 @@ export class BotCatalogStore {
   }
 
   /** A new gateway connection: the next sync reads the revisions again (op 61 is not replayed). */
-  newConnection(): void { this.revisions = null; this.listFetched.clear(); }
+  newConnection(): void { this.revisions = null; this.listFetched.clear(); this.pinRefused.clear(); }
 
   /** The instance's revisions for this connection (one read, shared with the catalog sync); null when it could not be read. */
   readRevisions(): Promise<BotRevision[] | null> {
@@ -302,6 +308,7 @@ export class BotCatalogStore {
     this.entries.clear();
     this.pins.clear();
     this.listFetched.clear();
+    this.pinRefused.clear();
     this.listHeld.clear();
     this.botProblem.clear();
     this.revisions = null;
@@ -318,10 +325,29 @@ export class BotCatalogStore {
       try { candidate = await this.deps.botUserId(communityId); } catch { return; }
       if (candidate === 'ambiguous') { this.botProblem.set(communityId, 'ambiguous'); return; }
       if (candidate === null) return;
-      // The pin is the core store's (task 20b): a first sight is written there, so a reload never re-pins.
-      let answer: { state: 0 | 1 | 2; pinned: Uint8Array };
-      try { answer = this.deps.pinBotUser(communityId, candidate); }
-      catch (e) { this.deps.onError?.(codeOf(e)); return; }
+      // The pin is the core store's (task 20b): a first sight is written there, so a reload never re-pins. It is written only
+      // for an account the core holds a Bot attestation for (Task 20b review I1): before a first pin the candidate's
+      // attestation is read and ingested, and a refusal (none yet: E_DEVICE_LIST_STALE; a human: E_CREDENTIAL) leaves the
+      // commands greyed unverified, tried again on the next connection, never on this one.
+      // The core refuses any candidate it holds no Bot attestation for, even with a pin held (fef388bd); a held pin is
+      // compared first, and its attestation read once when the core lacks it.
+      if (this.pinRefused.has(communityId)) return;
+      const ingest = async (): Promise<void> => {
+        try { await this.deps.ingestBotAttestation(candidate); }
+        catch (e) { this.deps.onError?.(codeOf(e)); }
+      };
+      let ingested = false;
+      if (this.pinOf(communityId) === undefined) { await ingest(); ingested = true; }
+      let answer: { state: 0 | 1 | 2; pinned: Uint8Array } | null = null;
+      for (;;) {
+        try { answer = this.deps.pinBotUser(communityId, candidate); break; }
+        catch (e) {
+          if (!ingested && codeOf(e) === 'E_DEVICE_LIST_STALE') { await ingest(); ingested = true; continue; }
+          this.pinRefused.add(communityId);
+          this.deps.onError?.(codeOf(e));
+          return;
+        }
+      }
       this.pins.set(communityId, toHex(answer.pinned));
       if (answer.state === 0) { this.botProblem.delete(communityId); return; }
       if (answer.state === 1) { if (this.botProblem.get(communityId) === 'ambiguous') this.botProblem.delete(communityId); return; }

@@ -2,12 +2,14 @@ import { createElement, useEffect } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { decode, encode, fromHex, PERM, parseCommand, type CoreClient, type CommandContext as Binding } from '@dilla/client-core';
+import { decode, encode, fromHex, PERM, parseCommand, sealedOperation, v1Operation, type CoreClient, type CommandContext as Binding } from '@dilla/client-core';
 import type { CommandExecutionContext } from './command-types.ts';
 import { useBotCommandProvider } from './bot-handlers.ts';
 import { CommandPicker } from './CommandPicker.tsx';
 import { FIXTURE_DEFINITIONS } from './bot-catalog.fixture.ts';
 
+// A Bot answer that never comes is the sealed run's 5 s timeout (BOT_FIRST_ANSWER_MS), which these tests wait out for real.
+vi.setConfig({ testTimeout: 30_000 });
 const COMMUNITY = '11'.repeat(16); const TEXT = '22'.repeat(16); const VOICE = '33'.repeat(16); const OTHER_VOICE = '34'.repeat(16); const USER = '44'.repeat(16);
 const INSTALLATION = '55'.repeat(16); const ITEM = '66'.repeat(16); const OTHER_ITEM = '67'.repeat(16); const CURRENT_ITEM = '65'.repeat(16); const PARENT = '77'.repeat(16);
 type Wire = Record<string, unknown>;
@@ -32,19 +34,53 @@ function fixture(options: { idleMusic?: boolean; playingMusic?: boolean; announc
     ? [[fromHex('99'.repeat(16)), fromHex(TEXT), 'Launch plan', 'one_off', 'Europe/Stockholm', '2099-01-01', 12n, 0n, 0n, options.disabledSchedule ? 0n : 1n, 1n]] : [];
   let failRegistrationOnce = options.failRegistrationOnce === true;
   const registeredPanels = new Map<string, Wire>();
-  const requests: Wire[] = []; const responses: { deliveryId: string; requestId: string; communityId: string; operation: number; channelId: string | null; status: number; revision: string | null; data: Uint8Array }[] = [];
-  const dispatchedOperations = new Set<number>();
-  let delivery = 0;
+  const requests: Wire[] = [];
+  // Bot v2 Task 21b: the first answer to an operation named here is lost (the run times out, uncertain); a resend gets it.
+  const silentOnce = new Set([...(options.unknownUploads ?? []), ...(options.readFailureOperations ?? [])]);
+  let answers: { n: number; requestId: string; seq: number; status: number; body: string; final: boolean }[] = [];
+  const answerListeners = new Set<() => void>();
+  const replies = new Map<string, { status: number; revision: string | null; data: Uint8Array }>();
+  const hex = (bytes: Uint8Array) => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  const answer = (requestId: string, reply: { status: number; revision: string | null; data: Uint8Array }) => {
+    const [status, body] = reply.status === 0 ? [200, encode([reply.revision === null ? null : BigInt(reply.revision), reply.data])]
+      : [[0, 400, 403, 408, 409, 503, 429, 404, 426, 500][reply.status] ?? 500, new TextEncoder().encode(['', 'E_INVALID', 'E_FORBIDDEN', 'E_BOT_STALE', 'E_CONFLICT',
+        'E_UNAVAILABLE', 'E_BUSY', 'E_NOT_FOUND', 'E_UPGRADE_REQUIRED', 'E_INTERNAL'][reply.status] ?? 'E_INTERNAL')];
+    answers = [...answers, { n: answers.length + 1, requestId, seq: 0, status, body: hex(body), final: true }];
+    for (const listener of [...answerListeners]) listener();
+  };
+  const MUTATIONS = new Set([12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 25, 31, 51, 52]);
   const client = {
     call: vi.fn(async (command: Wire): Promise<unknown> => {
+      if (command.m === 'syncBotCatalog' || command.m === 'forgetBotCommand') return null;
+      // A sealed command reaches the test Bot as the v1 operation it runs (`botOperation`, through client.call so a test may
+      // wrap it); the player's queue ids are given back as hex, as the page holds them.
+      if (command.m === 'sendBotCommand') {
+        const operation = v1Operation(command.operation as number) ?? command.operation as number;
+        const args = [...command.args as unknown[]];
+        const revision = MUTATIONS.has(operation) ? String(args.shift()) : null;
+        const ids = operation === 21 || operation === 25 ? [0] : operation === 22 ? [0, 1] : [];
+        const op = { m: 'botOperation', operation, requestId: command.requestId, channelId: command.channelId, revision,
+          args: args.map((value, index) => ids.includes(index) && value instanceof Uint8Array ? hex(value) : value) };
+        // The Bot keeps each request's answers for five minutes: a resend of the same id is answered again, never run twice.
+        const kept = replies.get(command.requestId as string);
+        if (kept !== undefined) { void Promise.resolve().then(() => { answer(command.requestId as string, kept); }); return null; }
+        void Promise.resolve().then(() => client.call(op as never)).then(reply => {
+          if (reply === null || reply === undefined) return;
+          const value = reply as { status: number; revision: string | null; data: Uint8Array };
+          replies.set(command.requestId as string, value);
+          // The Bot ran it, but this answer is lost: the run times out, and a resend of the same id gets the kept answer.
+          if (silentOnce.delete(operation)) return;
+          answer(command.requestId as string, value);
+        }, () => undefined);
+        return null;
+      }
       if (command.m === 'getBotCommandStatus') return { installationId, botUserId, state: botState, revision: installRevision };
       if (command.m === 'listSelfRoles') return [{ id: '88'.repeat(16), name: 'Reader' }];
       if (command.m === 'registerRolePanel') { requests.push(command); if (failRegistrationOnce) { failRegistrationOnce = false; throw new Error('temporary registration failure'); }
         registeredPanels.set(String(command.requestId), command); return null; }
-      if (command.m === 'humanInteractionRequest') {
+      if (command.m === 'botOperation') {
         requests.push(command);
-        const operation = command.operation as number; const id = command.requestId as string;
-        dispatchedOperations.add(operation);
+        const operation = command.operation as number;
         let status = 0; let revision: string | null = null; let data: Uint8Array = encode([]);
         if ([12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23].includes(operation)) {
           if (options.djControl === false) status = 2;
@@ -87,31 +123,34 @@ function fixture(options: { idleMusic?: boolean; playingMusic?: boolean; announc
           { positionMs, volume, shuffle, repeat, current: currentTrack, control: options.djControl !== false });
         if (operation === 13 && options.invalidMusicReceipt) data = Uint8Array.of(0xff);
         if (options.ambiguousOperations?.includes(operation)) status = 5;
-        responses.push({ deliveryId: String(++delivery), requestId: id, communityId: COMMUNITY, operation, channelId: command.channelId as string | null,
-          status, revision, data });
-        return { requestId: id, upload: options.unknownUploads?.includes(operation) ? 'unknown' : 'accepted' };
+        return { status, revision, data };
       }
-      if (command.m === 'readBotInteractionResponses') {
-        const operations = command.operations as number[]; const requestIds = command.requestIds as string[];
-        const readFailures = options.readFailureOperations ?? [];
-        const failedOperation = readFailures.find(operation => operations.includes(operation) && dispatchedOperations.has(operation));
-        if (failedOperation !== undefined) { options.readFailureOperations = readFailures.filter(operation => operation !== failedOperation); throw new Error(`response read failed for ${failedOperation}`); }
-        return { responses: responses.filter(row => operations.includes(row.operation) && requestIds.includes(row.requestId)), through: null, blocked: false };
-      }
-      if (command.m === 'ackBotInteractionResponses') return null;
       return null;
     }),
     get: (key: string) => key === 'account' ? { phase: 'ready', user: { id: USER }, deviceId: 'aa'.repeat(16), instance: { id: 'bb'.repeat(16) } }
       : key === 'communities' ? [{ id: COMMUNITY }] : key === `permissions:${COMMUNITY}` ? { loaded: true, manageCommunity: true, manageRoles: true }
       : key === `channels:${COMMUNITY}` ? [{ id: TEXT, communityId: COMMUNITY, kind: 0, name: 'announcements' }, { id: VOICE, communityId: COMMUNITY, kind: 1, name: 'voice' },
         { id: OTHER_VOICE, communityId: COMMUNITY, kind: 1, name: 'other voice' }]
-          : key === 'call' ? { channelId: joinedVoice } : undefined,
-    subscribe: () => () => undefined, onCallKeys: () => () => undefined, dispose: () => undefined,
+          : key === 'call' ? { channelId: joinedVoice } : key === 'botAnswers' ? answers
+            : key === `botCatalog:${COMMUNITY}` ? { revision: '1', keyId: null, fingerprint: null, status: { state: 'ready', since: null }, botChannels: [], botUserId,
+              commands: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 31, 50, 51, 52].map(op => ({ name: `app ${op}`, description: '',
+                operation: sealedOperation(op), args: [], permissionBit: 0, needsBotChannel: false, handlerKind: 1 })) } : undefined,
+    subscribe: (key: string, listener: () => void) => {
+      if (key !== 'botAnswers') return () => undefined;
+      answerListeners.add(listener); return () => { answerListeners.delete(listener); };
+    }, onCallKeys: () => () => undefined, dispose: () => undefined,
   } as unknown as CoreClient;
   return { client, requests, schedules, registeredPanels, get musicState() { return { queue, currentTrack, paused, positionMs, volume, shuffle, repeat }; },
     setInstallation(value: string) { installationId = value; }, setBotUser(value: string) { botUserId = value; },
     setInstallRevision(value: string) { installRevision = value; }, setBotState(value: number) { botState = value; }, setJoinedVoice(value: string) { joinedVoice = value; },
     getJoinedVoice() { return joinedVoice; }, reorderQueue() { queue = [...queue].reverse(); musicRevision++; } };
+}
+/** The worker refuses every sealed command while `set(true)`: no verified key to seal to, or no Bot connected (E_BOT_OFFLINE). */
+function botOffline(client: CoreClient): { set(value: boolean): void } {
+  let offline = false; const call = client.call.bind(client);
+  client.call = ((command: Wire) => offline && command.m === 'sendBotCommand'
+    ? Promise.reject(Object.assign(new Error('E_BOT_OFFLINE'), { code: 'E_BOT_OFFLINE', status: 503 })) : call(command as never));
+  return { set: (value) => { offline = value; } };
 }
 function commandContext(client: CoreClient, over: Partial<CommandExecutionContext> = {}): CommandExecutionContext {
   const binding: Binding = { communityId: COMMUNITY, channelId: TEXT, bits: PERM.manageCommunity | PERM.manageRoles };
@@ -140,12 +179,12 @@ describe('Bot slash command provider', () => {
     const context = commandContext(f.client);
     const result = await capture.value!.handlers.play!({ commandId: 'play', args: { 'query-or-url': 'harbor song' } }, context);
     expect(result).toMatchObject({ status: 'success', private: true });
-    const writes = f.requests.filter(row => row.m === 'humanInteractionRequest' && [11, 12, 14].includes(row.operation as number));
+    const writes = f.requests.filter(row => row.m === 'botOperation' && [11, 12, 14].includes(row.operation as number));
     expect(writes.map(row => row.operation)).toEqual([11, 12, 14]);
     expect(writes[1]?.args).toEqual(['https://www.youtube.com/watch?v=abcdefghijk']);
     expect(writes.map(row => row.requestId)).toHaveLength(new Set(writes.map(row => row.requestId)).size);
     expect(writes.every(row => row.requestId !== context.requestId)).toBe(true);
-    expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 12)).toHaveLength(1);
+    expect(f.requests.filter(row => row.m === 'botOperation' && row.operation === 12)).toHaveLength(1);
   });
 
   it.each(['play', 'resume'] as const)('registers the command text channel before %s starts playback', async commandId => {
@@ -153,7 +192,7 @@ describe('Bot slash command provider', () => {
     mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
     const args: Record<string, string> = commandId === 'play' ? { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } : {};
     expect(await capture.value!.handlers[commandId]!({ commandId, args }, commandContext(f.client))).toMatchObject({ status: 'success' });
-    const writes = f.requests.filter(row => row.m === 'humanInteractionRequest' && [12, 25, 14].includes(row.operation as number));
+    const writes = f.requests.filter(row => row.m === 'botOperation' && [12, 25, 14].includes(row.operation as number));
     expect(writes.map(row => row.operation)).toEqual(commandId === 'play' ? [12, 25, 14] : [25, 14]);
     const destination = writes.find(row => row.operation === 25);
     expect(destination).toMatchObject({ channelId: VOICE, args: [TEXT], revision: '0' });
@@ -166,7 +205,7 @@ describe('Bot slash command provider', () => {
     const result = await capture.value!.handlers.play!({ commandId: 'play', args: { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } }, commandContext(f.client));
     expect(result).toMatchObject({ status: 'success', private: true });
     await waitFor(() => expect(f.requests.filter(row => row.operation === 25)).toHaveLength(2));
-    const writes = f.requests.filter(row => row.m === 'humanInteractionRequest' && [12, 25, 14].includes(row.operation as number));
+    const writes = f.requests.filter(row => row.m === 'botOperation' && [12, 25, 14].includes(row.operation as number));
     expect(writes.map(row => row.operation)).toEqual([12, 25, 14, 25]);
     const notices = writes.filter(row => row.operation === 25);
     expect(notices.map(row => row.args)).toEqual([[TEXT], [TEXT]]);
@@ -231,7 +270,7 @@ describe('Bot slash command provider', () => {
       const call = f.client.call.bind(f.client); let changed = false;
       f.client.call = (async (command: Wire) => {
         const value = await call(command as never);
-        if (command.m === 'humanInteractionRequest' && command.operation === 25) { changed = true; if (change === 'voice') f.setJoinedVoice(OTHER_VOICE); }
+        if (command.m === 'botOperation' && command.operation === 25) { changed = true; if (change === 'voice') f.setJoinedVoice(OTHER_VOICE); }
         return value;
       });
       mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
@@ -249,7 +288,7 @@ describe('Bot slash command provider', () => {
     const call = f.client.call.bind(f.client); let changed = false;
     f.client.call = (async (command: Wire) => {
       const value = await call(command as never);
-      if (command.m === 'humanInteractionRequest' && command.operation === 25) { changed = true; f.setJoinedVoice(OTHER_VOICE); }
+      if (command.m === 'botOperation' && command.operation === 25) { changed = true; f.setJoinedVoice(OTHER_VOICE); }
       return value;
     });
     mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
@@ -295,7 +334,7 @@ describe('Bot slash command provider', () => {
     mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
     const result = await capture.value!.handlers.pause!({ commandId: 'pause', args: {} }, commandContext(f.client, { getCall: () => ({ channelId: VOICE, session: null } as never) }));
     expect(result).toMatchObject({ status: 'failure', private: true, message: 'Join a voice channel first. Glenn plays where you are.' });
-    expect(f.requests.filter(row => row.m === 'humanInteractionRequest')).toHaveLength(0);
+    expect(f.requests.filter(row => row.m === 'botOperation')).toHaveLength(0);
   });
 
   it('allows an authenticated DJ control without Manage Community while still requiring the live same call', async () => {
@@ -330,7 +369,7 @@ describe('Bot slash command provider', () => {
     if (handler === undefined) throw new Error(`Missing handler for ${commandId}.`);
     const result = await handler({ commandId, args }, commandContext(f.client));
     expect(result).toMatchObject({ status: 'success', private: true });
-    const mutation = f.requests.find(row => row.m === 'humanInteractionRequest' && row.operation === operation);
+    const mutation = f.requests.find(row => row.m === 'botOperation' && row.operation === operation);
     expect(mutation?.args).toEqual(wireArgs);
     expect(mutation?.revision).toBe(operation === 13 || operation === 15 ? '0' : '1');
     if (commandId === 'pause') expect(f.musicState.paused).toBe(true);
@@ -351,7 +390,7 @@ describe('Bot slash command provider', () => {
     const context = commandContext(f.client); const invocation = { commandId: 'play', args: { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } };
     expect(await capture.value!.handlers.play!(invocation, context)).toMatchObject({ status: 'uncertain', private: true });
     expect(await capture.value!.handlers.play!(invocation, context)).toMatchObject({ status: 'success', private: true });
-    const enqueueRequests = f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 12);
+    const enqueueRequests = f.requests.filter(row => row.m === 'botOperation' && row.operation === 12);
     expect(enqueueRequests).toHaveLength(1);
     expect(enqueueRequests[0]?.args).toEqual(['https://youtube.com/watch?v=abcdefghijk']);
   });
@@ -377,14 +416,15 @@ describe('Bot slash command provider', () => {
     });
   });
 
-  it('keeps status 5 with a revision uncertain and reconciles the same enqueue instead of uploading a second effect', async () => {
+  // Bot v2 Task 21b: a sealed refusal is a bare code with no revision, so an enqueue answered `E_UNAVAILABLE` is a definite
+  // failure; its retry is the same request, which the Bot answers from its kept answers and never runs twice.
+  it('a status 5 enqueue answer is a failure, and its retry never runs a second enqueue', async () => {
     const f = fixture({ ambiguousOperations: [12] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
     mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
     const context = commandContext(f.client); const invocation = { commandId: 'play', args: { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } };
-    expect(await capture.value!.handlers.play!(invocation, context)).toMatchObject({ status: 'uncertain' });
-    expect(await capture.value!.handlers.play!(invocation, context)).toMatchObject({ status: 'uncertain' });
+    expect(await capture.value!.handlers.play!(invocation, context)).toMatchObject({ status: 'failure' });
+    expect(await capture.value!.handlers.play!(invocation, context)).toMatchObject({ status: 'failure' });
     expect(f.requests.filter(row => row.operation === 12)).toHaveLength(1);
-    expect(f.musicState.queue).toHaveLength(1);
   });
 
   it('preserves an uncertain enqueue across DJ and call loss, then reconciles with the same parent ID', async () => {
@@ -406,12 +446,13 @@ describe('Bot slash command provider', () => {
 
   it('preserves an uncertain enqueue across Bot provider downtime and recovers on the same parent ID', async () => {
     const f = fixture({ unknownUploads: [12] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    const offline = botOffline(f.client);
     mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
     const context = commandContext(f.client); const invoke = { commandId: 'play', args: { 'query-or-url': 'https://youtube.com/watch?v=abcdefghijk' } };
     expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'uncertain' });
-    f.setBotState(4);
+    offline.set(true);
     expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'uncertain' });
-    f.setBotState(3);
+    offline.set(false);
     expect(await capture.value!.handlers.play!(invoke, context)).toMatchObject({ status: 'success' });
     expect(f.requests.filter(row => row.operation === 12)).toHaveLength(1);
     expect(f.musicState.queue).toHaveLength(1);
@@ -489,8 +530,8 @@ describe('Bot slash command provider', () => {
     expect(result).toMatchObject({ status: 'success', private: true });
     expect(result.message).toMatch(/already in the queue/u);
     await capture.value!.handlers.play!(invocation, context);
-    expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 12)).toHaveLength(1);
-    expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 14)).toHaveLength(1);
+    expect(f.requests.filter(row => row.m === 'botOperation' && row.operation === 12)).toHaveLength(1);
+    expect(f.requests.filter(row => row.m === 'botOperation' && row.operation === 14)).toHaveLength(1);
   });
 
   it('lists announcements from an authenticated response and keeps output private', async () => {
@@ -498,7 +539,7 @@ describe('Bot slash command provider', () => {
     mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
     const result = await capture.value!.handlers['announcement list']!({ commandId: 'announcement list', args: {} }, commandContext(f.client));
     expect(result).toMatchObject({ status: 'success', private: true, message: 'No scheduled announcements.' });
-    const reads = f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 50);
+    const reads = f.requests.filter(row => row.m === 'botOperation' && row.operation === 50);
     expect(reads.length).toBeGreaterThan(0);
     expect(new Set(reads.map(row => row.requestId)).size).toBe(reads.length);
   });
@@ -511,13 +552,13 @@ describe('Bot slash command provider', () => {
       const provider = capture.value!; const binding: Binding = { communityId: COMMUNITY, channelId: TEXT };
       const option = { name: 'query-or-url', kind: 'text' as const, description: 'query', required: true, freeText: true };
       await expect(provider.suggest('play', option, 'a', binding)).resolves.toEqual([]);
-      expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 11)).toHaveLength(0);
+      expect(f.requests.filter(row => row.m === 'botOperation' && row.operation === 11)).toHaveLength(0);
       const suggestions = provider.suggest('play', option, '  harbor music  ', binding);
       await vi.advanceTimersByTimeAsync(249);
-      expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 11)).toHaveLength(0);
+      expect(f.requests.filter(row => row.m === 'botOperation' && row.operation === 11)).toHaveLength(0);
       await vi.advanceTimersByTimeAsync(1);
       await expect(suggestions).resolves.toEqual([{ id: 'yt:abcdefghijk', value: 'https://www.youtube.com/watch?v=abcdefghijk', label: 'First result', description: 'Listener' }]);
-      expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 11)).toEqual([
+      expect(f.requests.filter(row => row.m === 'botOperation' && row.operation === 11)).toEqual([
         expect.objectContaining({ channelId: VOICE, args: ['harbor music'] }),
       ]);
     } finally { vi.useRealTimers(); }
@@ -533,7 +574,7 @@ describe('Bot slash command provider', () => {
         fireEvent.change(field, { target: { value: query } });
         await act(() => vi.advanceTimersByTimeAsync(250));
       }
-      expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 11)).toEqual([]);
+      expect(f.requests.filter(row => row.m === 'botOperation' && row.operation === 11)).toEqual([]);
     } finally { vi.useRealTimers(); }
   });
 
@@ -614,7 +655,7 @@ describe('Bot slash command provider', () => {
     expect(screen.getByLabelText('Date')).toHaveValue('2099-01-01');
     await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(await pending).toMatchObject({ status: 'success', private: true, message: 'Announcement updated.' });
-    const save = f.requests.find(row => row.m === 'humanInteractionRequest' && row.operation === 51)!;
+    const save = f.requests.find(row => row.m === 'botOperation' && row.operation === 51)!;
     expect(save.revision).toBe('1');
     expect((save.args as unknown[])[0]).toEqual(fromHex('99'.repeat(16)));
     const value = decode((save.args as unknown[])[1] as Uint8Array) as unknown[];
@@ -640,7 +681,7 @@ describe('Bot slash command provider', () => {
     const context = commandContext(f.client, { confirm: () => Promise.resolve(true) });
     const result = await capture.value!.handlers['announcement delete']!({ commandId: 'announcement delete', args: { announcement: '99'.repeat(16) } }, context);
     expect(result).toMatchObject({ status: 'success', private: true, message: 'Scheduled announcement deleted.' });
-    const deletion = f.requests.find(row => row.m === 'humanInteractionRequest' && row.operation === 52)!;
+    const deletion = f.requests.find(row => row.m === 'botOperation' && row.operation === 52)!;
     expect(deletion).toMatchObject({ revision: '1', args: [fromHex('99'.repeat(16)), 1] });
     expect(f.schedules).toHaveLength(0);
     const listed = await capture.value!.handlers['announcement list']!({ commandId: 'announcement list', args: {} },
@@ -657,7 +698,7 @@ describe('Bot slash command provider', () => {
     await user.click(screen.getByRole('button', { name: 'Publish panel' }));
     const result = await pending;
     expect(result).toMatchObject({ status: 'success', private: true });
-    const publication = f.requests.find(row => row.m === 'humanInteractionRequest' && row.operation === 31)!;
+    const publication = f.requests.find(row => row.m === 'botOperation' && row.operation === 31)!;
     const registration = f.requests.find(row => row.m === 'registerRolePanel')!;
     expect(publication.requestId).not.toBe(registration.requestId);
     expect(registration).toMatchObject({ communityId: COMMUNITY, channelId: TEXT, messageSeq: '99', options: [{ emoji: '📚', roleId: '88'.repeat(16) }] });
@@ -678,7 +719,7 @@ describe('Bot slash command provider', () => {
     context.getCurrentBinding = () => context.binding;
     const retry = await capture.value!.handlers['rolepanel create']!({ commandId: 'rolepanel create', args: {} }, context);
     expect(retry).toMatchObject({ status: 'success', private: true });
-    expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 31)).toHaveLength(1);
+    expect(f.requests.filter(row => row.m === 'botOperation' && row.operation === 31)).toHaveLength(1);
     const registrations = f.requests.filter(row => row.m === 'registerRolePanel');
     expect(registrations).toHaveLength(2);
     expect(registrations[0]).toEqual(registrations[1]);
@@ -689,8 +730,8 @@ describe('Bot slash command provider', () => {
     const f = fixture(); const call = f.client.call.bind(f.client);
     f.client.call = (async (command: Wire) => {
       const value = await call(command as never);
-      if (command.m === 'readBotInteractionResponses') return { ...(value as object), responses: (value as { responses: Wire[] }).responses
-        .map(row => row.operation === 31 ? { ...row, data: Uint8Array.of(0xff) } : row) };
+      // The Bot's answer to the publication carries a malformed receipt (and keeps answering it for that request).
+      if (command.m === 'botOperation' && command.operation === 31) return { ...(value as object), data: Uint8Array.of(0xff) };
       return value;
     });
     const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {}; const user = userEvent.setup();
@@ -709,12 +750,12 @@ describe('Bot slash command provider', () => {
     const user = userEvent.setup(); mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
     const pending = capture.value!.handlers['announcement create']!({ commandId: 'announcement create', args: { text: 'Meet at noon' } }, commandContext(f.client));
     await screen.findByRole('dialog', { name: 'Schedule an announcement' });
-    expect(f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 51)).toHaveLength(0);
+    expect(f.requests.filter(row => row.m === 'botOperation' && row.operation === 51)).toHaveLength(0);
     const destination = screen.getByLabelText('Destination channel'); fireEvent.change(destination, { target: { value: TEXT } });
     await user.click(screen.getByRole('button', { name: 'Save' }));
     const result = await pending;
     expect(result).toMatchObject({ status: 'success', private: true, message: 'Announcement scheduled.' });
-    const save = f.requests.find(row => row.m === 'humanInteractionRequest' && row.operation === 51)!;
+    const save = f.requests.find(row => row.m === 'botOperation' && row.operation === 51)!;
     expect(save.args).toHaveLength(2); expect(save.revision).toBe('1');
     expect((decode((save.args as unknown[])[1] as Uint8Array) as unknown[])[3]).toBe('Meet at noon');
     const listed = await capture.value!.handlers['announcement list']!({ commandId: 'announcement list', args: {} },
@@ -731,10 +772,10 @@ describe('Bot slash command provider', () => {
     await screen.findByRole('dialog', { name: 'Schedule an announcement' });
     await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(await pending).toMatchObject({ status: 'uncertain', private: true });
-    const first = f.requests.find(row => row.m === 'humanInteractionRequest' && row.operation === 51)!;
+    const first = f.requests.find(row => row.m === 'botOperation' && row.operation === 51)!;
     const originalBody = (first.args as unknown[])[1] as Uint8Array;
     expect(await capture.value!.handlers['announcement create']!(invocation, context)).toMatchObject({ status: 'uncertain', private: true });
-    const saves = f.requests.filter(row => row.m === 'humanInteractionRequest' && row.operation === 51);
+    const saves = f.requests.filter(row => row.m === 'botOperation' && row.operation === 51);
     expect(saves).toHaveLength(1);
     expect(saves.map(row => (row.args as unknown[])[1])).toEqual([originalBody]);
     expect(f.schedules).toHaveLength(1);
@@ -781,15 +822,16 @@ describe('Bot slash command provider', () => {
 
   it('keeps a pending announcement uncertain when the Bot becomes unavailable before scope preflight', async () => {
     const f = fixture({ readFailureOperations: [51] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+    const offline = botOffline(f.client);
     const user = userEvent.setup(); mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
     const context = commandContext(f.client); const invoke = { commandId: 'announcement create', args: { text: 'Scope recovery' } };
     const pending = capture.value!.handlers['announcement create']!(invoke, context);
     await screen.findByRole('dialog', { name: 'Schedule an announcement' }); await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(await pending).toMatchObject({ status: 'uncertain', private: true });
-    f.setBotState(4);
+    offline.set(true);
     expect(await capture.value!.handlers['announcement create']!(invoke, context)).toMatchObject({ status: 'uncertain', private: true });
     expect(f.requests.filter(row => row.operation === 51)).toHaveLength(1);
-    f.setBotState(3);
+    offline.set(false);
     const recovered = await capture.value!.handlers['announcement create']!(invoke, context);
     expect(recovered).toMatchObject({ status: 'success', private: true });
     expect(f.requests.filter(row => row.operation === 51)).toHaveLength(1);
@@ -811,11 +853,15 @@ describe('Bot slash command provider', () => {
 });
 
 
+// Bot v2 Task 21b: an answer is sealed by the Bot whose command key this device verified, so a new installation revision or id
+// in the status does not touch a pending request: its retry settles. Another Bot account greys the commands: nothing is sealed
+// (the send is refused), and the request stays uncertain rather than settling against a Bot this device never verified.
 describe('historical receipt identity across changed capability revisions', () => {
-  it.each(['music', 'announcement', 'rolepanel'] as const)('settles %s after a same-bot revision change, refusing identity replacements', async kind => {
+  it.each(['music', 'announcement', 'rolepanel'] as const)('settles %s after an installation change, never through another Bot account', async kind => {
     for (const change of ['revision', 'installation', 'bot'] as const) {
       const operation = kind === 'music' ? 13 : kind === 'announcement' ? 51 : 31;
       const f = fixture({ readFailureOperations: [operation] }); const capture: { value?: ReturnType<typeof useBotCommandProvider> } = {};
+      const offline = botOffline(f.client);
       const view = mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined()); const user = userEvent.setup();
       const context = commandContext(f.client); const commandId = kind === 'music' ? 'pause' : kind === 'announcement' ? 'announcement create' : 'rolepanel create';
       const invoke: { commandId: string; args: Record<string, string> } = { commandId, args: kind === 'announcement' ? { text: 'Historical receipt' } : {} };
@@ -826,10 +872,10 @@ describe('historical receipt identity across changed capability revisions', () =
       expect(await first).toMatchObject({ status: 'uncertain' });
       f.setInstallRevision('10');
       if (change === 'installation') f.setInstallation('ba'.repeat(16));
-      if (change === 'bot') f.setBotUser('bc'.repeat(16));
-      expect(await handler(invoke, context)).toMatchObject({ status: change === 'revision' ? 'success' : 'uncertain' });
+      if (change === 'bot') { f.setBotUser('bc'.repeat(16)); offline.set(true); }
+      expect(await handler(invoke, context)).toMatchObject({ status: change === 'bot' ? 'uncertain' : 'success' });
       expect(f.requests.filter(row => row.operation === operation)).toHaveLength(1);
-      if (kind === 'rolepanel') expect(f.requests.filter(row => row.m === 'registerRolePanel')).toHaveLength(change === 'revision' ? 1 : 0);
+      if (kind === 'rolepanel') expect(f.requests.filter(row => row.m === 'registerRolePanel')).toHaveLength(change === 'bot' ? 0 : 1);
       view.unmount();
     }
   });
@@ -847,7 +893,7 @@ it.each(['pause', 'skip'] as const)('dispatches %s before any state read or noti
   mountProvider(f.client, capture); await waitFor(() => expect(capture.value).toBeDefined());
   const result = await capture.value!.handlers[commandId]!({ commandId, args: {} }, commandContext(f.client));
   expect(result.status).toBe('success');
-  const operations = f.requests.filter(row => row.m === 'humanInteractionRequest').map(row => row.operation);
+  const operations = f.requests.filter(row => row.m === 'botOperation').map(row => row.operation);
   expect(operations).toEqual([commandId === 'pause' ? 13 : 15]);
 });
 

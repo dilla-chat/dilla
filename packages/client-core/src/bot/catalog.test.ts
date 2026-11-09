@@ -48,6 +48,7 @@ function fakeDeps(over: Partial<BotCatalogDeps> = {}, pins = new Map<string, Uin
     verify,
     ...corePins(pins),
     pinBotDeviceList: vi.fn(() => Promise.resolve<0 | 1 | 2>(0)),
+    ingestBotAttestation: vi.fn(() => Promise.resolve()),
     ...over,
   };
   return { deps, fetchCatalog, fetchRevisions, verify,
@@ -379,5 +380,107 @@ describe('task 20b: the Bot device list fetched and pinned, the Bot user pinned 
     const store = new BotCatalogStore(f.deps);
     await store.syncOnConnect(COMMUNITY);
     expect(store.get(COMMUNITY)).toMatchObject({ botUserId: toHex(BOT_USER), status: { state: 'ready' } });
+  });
+});
+
+// Task 20b review I1 (Task 21b): the community pin is written only for an account the core holds a Bot attestation for. The
+// client reads the candidate's device-list head and ingests its attestation first; the core refuses a pin with none
+// (E_DEVICE_LIST_STALE) and a human (E_CREDENTIAL). A refused pin leaves the commands greyed unverified, and is tried again
+// at most once per connection.
+describe('task 21b: the Bot user is pinned only after its Bot attestation', () => {
+  const HUMAN = fid(0x0c);
+  const settle = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  /** The core as the I1 fix makes it: attestations by user, and a pin that refuses an account without a Bot one. */
+  function attestingCore(server: Map<string, 'bot' | 'human'>) {
+    const held = new Map<string, 'bot' | 'human'>();
+    const pins = new Map<string, Uint8Array>();
+    const order: string[] = [];
+    const ingestBotAttestation = vi.fn((user: Uint8Array) => {
+      order.push(`ingest ${toHex(user)}`);
+      const kind = server.get(toHex(user));
+      if (kind !== undefined) held.set(toHex(user), kind);
+      return Promise.resolve();
+    });
+    const pinBotUser = vi.fn((communityId: string, user: Uint8Array): { state: 0 | 1 | 2; pinned: Uint8Array } => {
+      order.push(`pin ${toHex(user)}`);
+      // fef388bd: refused before anything is read or written, also with a pin held.
+      const kind = held.get(toHex(user));
+      if (kind === undefined) throw Object.assign(new Error('E_DEVICE_LIST_STALE'), { code: 'E_DEVICE_LIST_STALE' });
+      if (kind === 'human') throw Object.assign(new Error('E_CREDENTIAL'), { code: 'E_CREDENTIAL' });
+      const prior = pins.get(communityId);
+      if (prior !== undefined) return { state: toHex(prior) === toHex(user) ? 1 : 2, pinned: prior };
+      pins.set(communityId, user);
+      return { state: 0, pinned: user };
+    });
+    return { pins, held, order, ingestBotAttestation, pinBotUser, pinnedBotUser: (communityId: string) => pins.get(communityId) ?? null };
+  }
+
+  it('a human the server names as the Bot is never pinned, and the real Bot is pinned on a later connection', async () => {
+    const server = new Map<string, 'bot' | 'human'>([[toHex(HUMAN), 'human'], [toHex(BOT_USER), 'bot']]);
+    const core = attestingCore(server);
+    let named = HUMAN;
+    const f = fakeDeps({ ...core, botUserId: () => Promise.resolve(named) });
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    await settle();
+    expect(core.order).toEqual([`ingest ${toHex(HUMAN)}`, `pin ${toHex(HUMAN)}`]);
+    expect(core.pins.size).toBe(0);
+    expect(store.get(COMMUNITY)?.status.state).toBe('unverified');
+    expect(store.publication(COMMUNITY)).toBeNull();
+    // At most once per connection: later checks on this connection read and pin nothing.
+    await store.reresolve(COMMUNITY);
+    await store.refresh(COMMUNITY);
+    await settle();
+    expect(core.ingestBotAttestation).toHaveBeenCalledTimes(1);
+    expect(core.pinBotUser).toHaveBeenCalledTimes(1);
+    // The server names the real Bot: on the next connection it is pinned and its key is used.
+    named = BOT_USER;
+    store.newConnection();
+    await store.reresolve(COMMUNITY);
+    await settle();
+    expect(core.pins.get(COMMUNITY)).toEqual(BOT_USER);
+    expect(store.get(COMMUNITY)?.status.state).toBe('ready');
+    expect(store.publication(COMMUNITY)).toEqual(PUBLICATION);
+  });
+
+  it('the real Bot with no attestation yet stays unverified, and is pinned once its attestation arrives', async () => {
+    const server = new Map<string, 'bot' | 'human'>();
+    const core = attestingCore(server);
+    const f = fakeDeps({ ...core });
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    await settle();
+    expect(core.pins.size).toBe(0);
+    expect(store.get(COMMUNITY)?.status.state).toBe('unverified');
+    expect(f.verify).not.toHaveBeenCalled();
+    server.set(toHex(BOT_USER), 'bot');
+    store.newConnection();
+    await store.reresolve(COMMUNITY);
+    await settle();
+    expect(core.order.slice(-2)).toEqual([`ingest ${toHex(BOT_USER)}`, `pin ${toHex(BOT_USER)}`]);
+    expect(core.pins.get(COMMUNITY)).toEqual(BOT_USER);
+    expect(store.get(COMMUNITY)?.status.state).toBe('ready');
+  });
+
+  it('a Bot already pinned and attested is compared with no device-list read', async () => {
+    const core = attestingCore(new Map([[toHex(BOT_USER), 'bot']]));
+    core.pins.set(COMMUNITY, BOT_USER);
+    core.held.set(toHex(BOT_USER), 'bot');
+    const f = fakeDeps({ ...core });
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    expect(core.ingestBotAttestation).not.toHaveBeenCalled();
+    expect(store.get(COMMUNITY)?.status.state).toBe('ready');
+  });
+
+  it('a held pin whose attestation the core lacks reads it once, then compares', async () => {
+    const core = attestingCore(new Map([[toHex(BOT_USER), 'bot']]));
+    core.pins.set(COMMUNITY, BOT_USER);
+    const f = fakeDeps({ ...core });
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    await settle();
+    expect(core.order).toEqual([`pin ${toHex(BOT_USER)}`, `ingest ${toHex(BOT_USER)}`, `pin ${toHex(BOT_USER)}`]);
+    expect(store.get(COMMUNITY)?.status.state).toBe('ready');
   });
 });

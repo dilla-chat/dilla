@@ -8,11 +8,12 @@ ON CONFLICT(community_id) DO UPDATE SET revision = excluded.revision, body = exc
 SELECT community_id, revision, body FROM bot_catalogs WHERE community_id = ?;
 
 -- name: PutBotCommandKey :exec
-INSERT INTO bot_command_keys(community_id, key_id, publication, published_at) VALUES (?, ?, ?, ?)
-ON CONFLICT(community_id) DO UPDATE SET key_id = excluded.key_id, publication = excluded.publication, published_at = excluded.published_at;
+INSERT INTO bot_command_keys(community_id, key_id, publication, published_at, prev_key_id, prev_until) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(community_id) DO UPDATE SET key_id = excluded.key_id, publication = excluded.publication, published_at = excluded.published_at,
+  prev_key_id = excluded.prev_key_id, prev_until = excluded.prev_until;
 
 -- name: GetBotCommandKey :one
-SELECT community_id, key_id, publication, published_at FROM bot_command_keys WHERE community_id = ?;
+SELECT community_id, key_id, publication, published_at, prev_key_id, prev_until FROM bot_command_keys WHERE community_id = ?;
 
 -- name: MarkBotChannel :execrows
 INSERT INTO bot_channels(channel_id, community_id, marked_at, marked_by) VALUES (?, ?, ?, ?)

@@ -1,6 +1,6 @@
 import type { CoreClient } from '../bridge';
 import { decode, type CborValue } from '../cbor';
-import { BotInteractionBindingMismatchError, BotInteractionRejectedError, BotInteractionUncertainError, createBotInteractionClient, type BotInteractionResult, type BotInteractionScope } from '../bot/interactions';
+import { BotOperationRefusedError, BotOperationUncertainError, createBotOperations, type BotOperationResult } from '../bot/operations';
 
 export interface VoiceMusicTrack {
   id: string;
@@ -73,7 +73,8 @@ export interface VoiceMusicAdapter {
    *  posts only for the requester of the playing track, once per track, where the requester may post. */
   announce(channelId: string, textChannelId: string, attempt?: VoiceMusicAttempt): Promise<void>;
 }
-export interface VoiceMusicAttempt { requestId: string; expectedScope?: BotInteractionScope; }
+/** A music operation's request id: a retry of the same attempt resends it, and the Bot answers what it did (Task 21b). */
+export interface VoiceMusicAttempt { requestId: string; }
 
 const ID = /^[0-9a-f]{32}$/;
 const EMPTY: VoiceMusicState = { status: 'unavailable', reason: 'authenticated-transport-missing' };
@@ -91,33 +92,31 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
   const refreshStarted = new Map<string, number>();
   const refreshTasks = new Map<string, Promise<void>>();
   const refreshing = new Set<string>();
-  const interactions = createBotInteractionClient(client, communityId);
-  const channelScopes = new Map<string, BotInteractionScope>();
+  // Bot v2 Task 21b: every read and control is a sealed command (music state 92, app operations 100 + the v1 operation),
+  // sealed to the community's verified command key; the Bot identity is that key's, so no installation scope is tracked.
+  const ops = createBotOperations(client, communityId);
   interface MusicAttemptRecord { channelId: string; operation: number; args: readonly (string | number | Uint8Array | null)[];
-    revision: string; scope: BotInteractionScope | undefined; sent: boolean; acceptedRevision: string | null; }
+    revision: string; sent: boolean; acceptedRevision: string | null; }
   const attempts = new Map<string, MusicAttemptRecord>();
 
   const publish = (channelId: string, state: VoiceMusicState) => {
     states.set(channelId, state);
     for (const listener of [...(listeners.get(channelId) ?? [])]) listener();
   };
-  const applySnapshot = (channelId: string, snapshot: ReturnType<typeof decodeSnapshot>, scope: BotInteractionScope): void => {
+  const applySnapshot = (channelId: string, snapshot: ReturnType<typeof decodeSnapshot>): void => {
     const revision = revisions.get(channelId);
-    if (sameInteractionIdentity(channelScopes.get(channelId), scope) && revision !== undefined
-      && BigInt(revision) > BigInt(snapshot.revision)) return;
-    channelScopes.set(channelId, scope);
+    if (revision !== undefined && BigInt(revision) > BigInt(snapshot.revision)) return;
     revisions.set(channelId, snapshot.revision);
     publish(channelId, snapshot.state);
   };
   const request = async (channelId: string, operation: number, args: readonly (string | number | Uint8Array | null)[], revision: string | null, attempt?: VoiceMusicAttempt) => {
     if (!ID.test(channelId)) throw new Error('Invalid voice channel id.');
-    const result = await interactions.request({ requestId: attempt?.requestId ?? newRequestId(), operation, channelId, args, revision,
-      expectedScope: attempt?.expectedScope });
+    const result = await ops.request({ requestId: attempt?.requestId ?? newRequestId(), operation, channelId, args, revision });
     const response: InteractionResponse = { requestId: result.requestId, channelId, operation, status: result.status, revision: result.revision, data: result.data };
     if (operation === 10 && response.status === 0) {
       const snapshot = decodeSnapshot(response.data);
       if (response.revision === null || snapshot.revision !== response.revision) throw new Error('Music snapshot revision mismatch.');
-      applySnapshot(channelId, snapshot, result.scope);
+      applySnapshot(channelId, snapshot);
     } else if (operation === 10) publish(channelId, { status: 'unavailable', reason: 'bot-unavailable' });
     return response;
   };
@@ -151,8 +150,8 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
       throw new Error('The music attempt id is already bound to another operation.');
     }
     if (record === undefined && attempt !== undefined && !immediate) {
-      let prior: BotInteractionResult | null;
-      try { prior = await interactions.read(attempt.requestId, operation); }
+      let prior: BotOperationResult | null;
+      try { prior = await ops.read(attempt.requestId, operation); }
       catch (error) { throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, error); }
       if (prior !== null) {
         if (prior.status === 5 && prior.revision === null) throw definiteMusicFailure(operation);
@@ -183,13 +182,11 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
       if (operation === 22 && args[1] !== null && args[1] !== undefined
         && !(before?.status === 'available' && before.queue.some(item => item.id === args[1] && item.id !== args[0])))
         throw new Error('The destination queue item is no longer available. Refresh the queue and choose it again.');
-      const scope = attempt?.expectedScope ?? channelScopes.get(channelId);
-      if (!immediate && scope === undefined) throw new Error('The Bot music state has no authenticated installation scope.');
       // Bind every press to the item the person saw, including an empty queue.
       // An unavailable panel retains the legacy unconditional skip contract.
       const boundArgs = operation === 15 && before?.status === 'available' ? [before.track?.id ?? ''] : args;
       record = { channelId, operation, args: Object.freeze(boundArgs.map(value => value instanceof Uint8Array ? value.slice() : value)),
-        revision: immediate ? '0' : revisions.get(channelId) ?? '0', scope: scope === undefined ? undefined : Object.freeze({ ...scope }), sent: false, acceptedRevision: null };
+        revision: immediate ? '0' : revisions.get(channelId) ?? '0', sent: false, acceptedRevision: null };
       if (attempt !== undefined) {
         attempts.set(attempt.requestId, record);
         while (attempts.size > 128) attempts.delete(attempts.keys().next().value!);
@@ -197,39 +194,25 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
     }
     let result: InteractionResponse;
     if (attempt !== undefined && record.sent) {
-      let reconciled: BotInteractionResult | null;
-      try { reconciled = await interactions.read(attempt.requestId, operation); }
+      let reconciled: BotOperationResult | null;
+      try { reconciled = await ops.read(attempt.requestId, operation); }
       catch (error) { throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, error); }
       if (reconciled === null) throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, new Error('No durable result is available yet.'));
-      if (record.scope !== undefined && !sameInteractionIdentity(reconciled.scope, record.scope)) {
-        try { await refresh(channelId); } catch { /* a new read still uses the live installation scope */ }
-        throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, new Error('The original music attempt is bound to a previous Bot installation.'));
-      }
-      record.scope = reconciled.scope;
       result = { requestId: reconciled.requestId, channelId, operation, status: reconciled.status, revision: reconciled.revision, data: reconciled.data };
     } else {
       if (attempt !== undefined) record.sent = true;
       try {
-        const sentRecord = record;
-        const resultValue = await interactions.request({ requestId: attempt?.requestId ?? newRequestId(), operation, channelId,
-          args: record.args, revision: record.revision, expectedScope: record.scope,
-          onDispatch: scope => { sentRecord.scope = scope; } });
-        record.scope ??= resultValue.scope;
+        const resultValue = await ops.request({ requestId: attempt?.requestId ?? newRequestId(), operation, channelId,
+          args: record.args, revision: record.revision });
         result = { requestId: resultValue.requestId, channelId, operation, status: resultValue.status, revision: resultValue.revision, data: resultValue.data };
       } catch (error) {
-        if (attempt !== undefined && (error instanceof BotInteractionRejectedError || error instanceof BotInteractionBindingMismatchError)) attempts.delete(attempt.requestId);
-        if (immediate && attempt !== undefined && !(error instanceof BotInteractionRejectedError || error instanceof BotInteractionBindingMismatchError)
-          && (!(error instanceof BotInteractionUncertainError) || error.uploadCallFailed)) {
-          // A reload loses the in-memory args/expiry. The durable send intent
-          // refuses a changed resend; recover its authenticated receipt instead.
-          // An unresolved upload reply or a lost response stays uncertain until retry.
-          let prior: BotInteractionResult | null;
-          try { prior = await interactions.read(attempt.requestId, operation); }
+        // A refused send never ran: the attempt is over. No answer in time stays uncertain until a retry resends it.
+        if (attempt !== undefined && error instanceof BotOperationRefusedError) attempts.delete(attempt.requestId);
+        if (immediate && attempt !== undefined && !(error instanceof BotOperationRefusedError) && !(error instanceof BotOperationUncertainError)) {
+          let prior: BotOperationResult | null;
+          try { prior = await ops.read(attempt.requestId, operation); }
           catch (readError) { throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, readError); }
           if (prior === null) throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, error);
-          if (record.scope !== undefined && !sameInteractionIdentity(prior.scope, record.scope))
-            throw new VoiceMusicAcceptedUnconfirmedError(attempt.requestId, new Error('The original music attempt is bound to a previous Bot installation.'));
-          record.scope = prior.scope;
           result = { requestId: prior.requestId, channelId, operation, status: prior.status, revision: prior.revision, data: prior.data };
         } else {
           if (error instanceof Error && 'requestId' in error) throw error;
@@ -261,8 +244,7 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
       try {
         const snapshot = decodeSnapshot(result.data);
         if (result.revision === null || snapshot.revision !== result.revision) throw new Error('Music control snapshot revision mismatch.');
-        if (record.scope === undefined) throw new Error('Music control snapshot scope missing.');
-        applySnapshot(channelId, snapshot, record.scope);
+        applySnapshot(channelId, snapshot);
         staleChannels.delete(channelId);
         if (attempt !== undefined) attempts.delete(attempt.requestId);
         return;
@@ -286,8 +268,6 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
     // after the operation result so the panel only settles when the server-confirmed snapshot arrives.
     try { await refresh(channelId); }
     catch (error) { throw new VoiceMusicAcceptedUnconfirmedError(attempt?.requestId ?? result.requestId, error); }
-    if (record.scope === undefined || !sameInteractionIdentity(channelScopes.get(channelId), record.scope))
-      throw new VoiceMusicAcceptedUnconfirmedError(attempt?.requestId ?? result.requestId, new Error('The Bot installation changed before the accepted music state could be confirmed.'));
     if (record.acceptedRevision !== null) {
       const after = states.get(channelId);
       if (after?.status !== 'available' || BigInt(revisions.get(channelId) ?? '0') < BigInt(record.acceptedRevision)) {
@@ -331,8 +311,7 @@ export function createVoiceMusicAdapter(client: CoreClient, communityId: string)
     enqueue: (id, input, attempt) => mutate(id, 12, [validatedInput(input, 2048, 'queue input')], attempt),
     announce: async (id, textChannelId, attempt) => {
       if (!ID.test(id) || !ID.test(textChannelId)) throw new Error('Invalid music announcement channel.');
-      const result = await interactions.request({ requestId: attempt?.requestId ?? newRequestId(), operation: 25, channelId: id, args: [textChannelId],
-        revision: '0', ...(attempt?.expectedScope === undefined ? {} : { expectedScope: attempt.expectedScope }) });
+      const result = await ops.request({ requestId: attempt?.requestId ?? newRequestId(), operation: 25, channelId: id, args: [textChannelId], revision: '0' });
       if (result.status !== 0) throw responseError(result.status);
     },
     move: (id, queueId, destinationIndex, attempt) => {
@@ -364,9 +343,6 @@ export const voiceMusicAdapter: VoiceMusicAdapter = {
 
 interface InteractionResponse { requestId: string; channelId: string | null; operation: number; status: number; revision: string | null; data: Uint8Array; }
 function unavailable(): Promise<never> { return Promise.reject(new Error('Authenticated voice music transport is unavailable.')); }
-function sameInteractionIdentity(left: BotInteractionScope | undefined, right: BotInteractionScope): boolean {
-  return left !== undefined && left.installationId === right.installationId && left.botUserId === right.botUserId;
-}
 function responseError(status: number): Error {
   return status === 2 ? new VoiceMusicError('forbidden', 'You do not have permission to control this Bot.')
     : status === 4 ? new VoiceMusicError('conflict', 'Music state changed. Refresh and try again.')

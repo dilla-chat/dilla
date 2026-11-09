@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { decode, encode } from '../cbor';
 import type { CoreClient } from '../bridge';
-import { createVoiceMusicAdapter, musicPlayheadMs, VoiceMusicAcceptedUnconfirmedError, voiceMusicAdapter, type VoiceMusicState } from './music.ts';
+import { sealedBotFake } from '../testing/sealed-bot.ts';
+import { BotOperationRefusedError } from '../bot/operations.ts';
+import { fromHex } from '../hex';
+import { createVoiceMusicAdapter, musicPlayheadMs, voiceMusicAdapter, type VoiceMusicState } from './music.ts';
 
 const COMMUNITY = 'ab'.repeat(16);
 const CHANNEL = 'cd'.repeat(16);
@@ -12,40 +15,36 @@ function snapshot(revision: bigint, paused: boolean, canControl = true) {
     paused ? 1n : 0n, 75n, 0n, 0n, canControl ? 1n : 0n]);
 }
 
-function response(request: Record<string, unknown>, deliveryId: string, status: number, revision: string | null, data: Uint8Array) {
-  return { deliveryId, requestId: request.requestId as string, communityId: COMMUNITY, operation: request.operation as number,
-    channelId: CHANNEL, status, revision, data, sourceSeq: deliveryId };
-}
-
+/** The page's client over a test Bot behind sealed commands (Task 21b): every operation the adapter sends shows in `commands`
+ *  as `{ m: 'botOperation', operation (v1), requestId, channelId, revision, args }`, and `answer` delivers the Bot's answer. */
 function fixture() {
   const commands: Record<string, unknown>[] = [];
-  const events: ReturnType<typeof response>[] = [];
-  let id = 0;
+  const bot = sealedBotFake(() => null);
   const client = {
     call: vi.fn((command: Record<string, unknown>) => {
-      commands.push(command);
-      if (command.m === 'getBotCommandStatus') return Promise.resolve({ installationId: 'ab'.repeat(16), botUserId: null, state: 3, revision: '7' });
-      if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
-      if (command.m === 'readBotInteractionResponses') {
-        const operations = command.operations as number[]; const requestIds = command.requestIds as string[];
-        const matching = events.filter(row => operations.includes(row.operation) && requestIds.includes(row.requestId));
-        for (let i = events.length - 1; i >= 0; i--) if (matching.includes(events[i])) events.splice(i, 1);
-        return Promise.resolve({ responses: matching, through: null, blocked: false });
+      if (command.m !== 'sendBotCommand') commands.push(command);
+      const before = bot.calls.length;
+      const handled = bot.call(command);
+      if (handled !== undefined) {
+        const sent = bot.calls[before];
+        if (sent !== undefined) commands.push({ m: 'botOperation', ...sent });
+        return handled;
       }
+      if (command.m === 'getBotCommandStatus') return Promise.resolve({ installationId: 'ab'.repeat(16), botUserId: null, state: 3, revision: '7' });
       return Promise.resolve(null);
     }),
-    get: (key: string) => key === 'account' ? { phase: 'ready', user: { id: 'cd'.repeat(16) }, deviceId: 'ef'.repeat(16), instance: { id: '12'.repeat(16) } }
-      : key === 'communities' ? [{ id: COMMUNITY }] : key === `permissions:${COMMUNITY}` ? { viewChannel: true } : undefined,
-    subscribe: () => () => undefined,
+    get: (key: string) => bot.get(key) ?? (key === 'account' ? { phase: 'ready', user: { id: 'cd'.repeat(16) }, deviceId: 'ef'.repeat(16), instance: { id: '12'.repeat(16) } }
+      : key === 'communities' ? [{ id: COMMUNITY }] : key === `permissions:${COMMUNITY}` ? { viewChannel: true } : undefined),
+    subscribe: (key: string, listener: () => void) => bot.subscribe(key, listener) ?? (() => undefined),
     onCallKeys: () => () => undefined,
     dispose: () => undefined,
   } as unknown as CoreClient;
   return {
-    client, commands,
+    client, commands, bot,
     adapter: createVoiceMusicAdapter(client, COMMUNITY),
-    getRequest(operation: number) { return [...commands].reverse().find(command => command.m === 'humanInteractionRequest' && command.operation === operation)!; },
+    getRequest(operation: number) { return [...commands].reverse().find(command => command.m === 'botOperation' && command.operation === operation)!; },
     answer(request: Record<string, unknown>, status: number, revision: string | null, data: Uint8Array) {
-      events.push(response(request, String(++id), status, revision, data));
+      bot.answer(request.requestId as string, { status, revision, data });
     },
   };
 }
@@ -58,11 +57,11 @@ describe('authenticated voice music adapter', () => {
       f.client.call = vi.fn((command: Record<string, unknown>) => {
         f.commands.push(command);
         if (command.m === 'getBotCommandStatus') return Promise.resolve({ installationId: 'ab'.repeat(16), botUserId: null, state: 3, revision: '7' });
-        if (command.m === 'humanInteractionRequest') return Promise.reject(new Error('private group not ready'));
-        return Promise.resolve({ responses: [], through: null, blocked: false });
+        if (command.m === 'sendBotCommand') return Promise.reject(Object.assign(new Error('E_BOT_OFFLINE'), { code: 'E_BOT_OFFLINE', status: 503 }));
+        return Promise.resolve(null);
       });
       const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
-      const reads = () => f.commands.filter(command => command.m === 'humanInteractionRequest' && command.operation === 10).length;
+      const reads = () => f.commands.filter(command => command.m === 'sendBotCommand' && command.operation === 92).length;
       await vi.advanceTimersByTimeAsync(1_000);
       const first = reads();
       expect(first).toBeGreaterThanOrEqual(1);
@@ -162,7 +161,7 @@ describe('authenticated voice music adapter', () => {
     const done = f.adapter.announce(CHANNEL, TEXT);
     await vi.waitFor(() => expect(f.getRequest(25)).toBeDefined());
     const request = f.getRequest(25);
-    expect(request).toMatchObject({ channelId: CHANNEL, args: [TEXT], revision: '0' });
+    expect(request).toMatchObject({ channelId: CHANNEL, sealed: 125, args: [fromHex(TEXT)], revision: '0' });
     f.answer(request, 0, null, encode([]));
     await expect(done).resolves.toBeUndefined();
     await expect(f.adapter.announce(CHANNEL, 'nope')).rejects.toThrow(/announcement channel/);
@@ -195,8 +194,8 @@ describe('authenticated voice music adapter', () => {
     expect(f.getRequest(12).args).toEqual(['https://www.youtube.com/watch?v=abcdefghijk']);
     expect(f.getRequest(12).revision).toBe('1');
     f.answer(f.getRequest(12), 0, '2', encode([]));
-    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(2));
-    const reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'botOperation' && call.operation === 10)).toHaveLength(2));
+    const reads = f.commands.filter(call => call.m === 'botOperation' && call.operation === 10);
     f.answer(reads[1], 0, '2', snapshot(2n, false));
     await expect(enqueue).resolves.toBeUndefined();
     unsubscribe();
@@ -214,8 +213,8 @@ describe('authenticated voice music adapter', () => {
     await vi.waitFor(() => expect(f.getRequest(12)).toBeDefined());
     expect(f.getRequest(12).requestId).toBe(attemptId);
     f.answer(f.getRequest(12), 0, '2', encode([]));
-    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(2));
-    let reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'botOperation' && call.operation === 10)).toHaveLength(2));
+    let reads = f.commands.filter(call => call.m === 'botOperation' && call.operation === 10);
     f.answer(reads[1], 0, '2', snapshot(2n, false));
     await enqueue;
 
@@ -223,8 +222,8 @@ describe('authenticated voice music adapter', () => {
     await vi.waitFor(() => expect(f.getRequest(23)).toBeDefined());
     expect(f.getRequest(23)).toMatchObject({ requestId: '34'.repeat(16), args: [], revision: '2' });
     f.answer(f.getRequest(23), 0, '3', encode([]));
-    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(3));
-    reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'botOperation' && call.operation === 10)).toHaveLength(3));
+    reads = f.commands.filter(call => call.m === 'botOperation' && call.operation === 10);
     f.answer(reads[2], 0, '3', snapshot(3n, false));
     await clear;
     unsubscribe();
@@ -260,29 +259,17 @@ describe('authenticated voice music adapter', () => {
     unsubscribe();
   });
 
-  it.each([null, '2'])('classifies durable status 5 with revision %s when restoring an attempt', async revision => {
-    const f = fixture();
-    const original = f.client.call.bind(f.client);
-    f.client.call = vi.fn((command: Record<string, unknown>) => {
-      if (command.m === 'readBotInteractionResponses') return Promise.resolve({ responses: [{ requestId: '56'.repeat(16), operation: 12, status: 5, revision, data: encode([]) }], through: null });
-      return original(command as never);
-    });
-    const enqueue = f.adapter.enqueue(CHANNEL, 'https://youtu.be/abcdefghijk', { requestId: '56'.repeat(16) });
-    await expect(enqueue).rejects.toMatchObject(revision === null ? { code: 'unavailable' } : { requestId: '56'.repeat(16) });
-    expect(f.commands.filter(command => command.operation === 12)).toHaveLength(0);
-  });
-
-  it('keeps status 5 with a revision uncertain because the mutation may have persisted', async () => {
+  it('a status 5 answer to a mutation is a definite failure: the sealed refusal names no revision', async () => {
     const f = fixture();
     const unsubscribe = f.adapter.subscribe(CHANNEL, () => undefined);
     await vi.waitFor(() => expect(f.getRequest(10)).toBeDefined());
     f.answer(f.getRequest(10), 0, '1', snapshot(1n, false));
     await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
 
-    const enqueue = f.adapter.enqueue(CHANNEL, 'https://youtu.be/abcdefghijk');
+    const enqueue = f.adapter.enqueue(CHANNEL, 'https://youtu.be/abcdefghijk', { requestId: '56'.repeat(16) });
     await vi.waitFor(() => expect(f.getRequest(12)).toBeDefined());
     f.answer(f.getRequest(12), 5, '1', encode([]));
-    await expect(enqueue).rejects.toBeInstanceOf(VoiceMusicAcceptedUnconfirmedError);
+    await expect(enqueue).rejects.toMatchObject({ code: 'unavailable' });
     unsubscribe();
   });
 
@@ -302,8 +289,8 @@ describe('authenticated voice music adapter', () => {
     expect(settled).toBe(false);
 
     f.answer(f.getRequest(13), 0, '2', encode([]));
-    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(2));
-    const reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'botOperation' && call.operation === 10)).toHaveLength(2));
+    const reads = f.commands.filter(call => call.m === 'botOperation' && call.operation === 10);
     f.answer(reads[1], 0, '2', snapshot(2n, true));
     await command;
     expect(settled).toBe(true);
@@ -343,23 +330,23 @@ describe('authenticated voice music adapter', () => {
     await vi.waitFor(() => expect(f.adapter.state(CHANNEL).status).toBe('available'));
 
     const conflict = Promise.resolve(f.adapter.setVolume(CHANNEL, 75));
-    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 18)).toHaveLength(1));
-    const firstMutation = f.commands.find(call => call.m === 'humanInteractionRequest' && call.operation === 18)!;
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'botOperation' && call.operation === 18)).toHaveLength(1));
+    const firstMutation = f.commands.find(call => call.m === 'botOperation' && call.operation === 18)!;
     expect(firstMutation.revision).toBe('1');
     f.answer(firstMutation, 4, '2', encode([]));
-    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(2));
-    const reads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'botOperation' && call.operation === 10)).toHaveLength(2));
+    const reads = f.commands.filter(call => call.m === 'botOperation' && call.operation === 10);
     f.answer(reads[1], 0, '2', snapshot(2n, false));
     await expect(conflict).rejects.toThrow(/state changed/);
     expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: false });
 
     const retry = Promise.resolve(f.adapter.setVolume(CHANNEL, 75));
-    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 18)).toHaveLength(2));
-    const secondMutation = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 18)[1];
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'botOperation' && call.operation === 18)).toHaveLength(2));
+    const secondMutation = f.commands.filter(call => call.m === 'botOperation' && call.operation === 18)[1];
     expect(secondMutation.revision).toBe('2');
     f.answer(secondMutation, 0, '3', encode([]));
-    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10)).toHaveLength(3));
-    const updatedReads = f.commands.filter(call => call.m === 'humanInteractionRequest' && call.operation === 10);
+    await vi.waitFor(() => expect(f.commands.filter(call => call.m === 'botOperation' && call.operation === 10)).toHaveLength(3));
+    const updatedReads = f.commands.filter(call => call.m === 'botOperation' && call.operation === 10);
     f.answer(updatedReads[2], 0, '3', snapshot(3n, true));
     await retry;
     expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: true });
@@ -371,12 +358,12 @@ it.each([[13, true], [15, false]] as const)('sends immediate control %s without 
   const f = fixture();
   const command = operation === 13 ? f.adapter.pause(CHANNEL, true) : f.adapter.skip(CHANNEL);
   await vi.waitFor(() => expect(f.getRequest(operation)).toBeDefined());
-  expect(f.commands.filter(row => row.m === 'humanInteractionRequest').map(row => row.operation)).toEqual([operation]);
+  expect(f.commands.filter(row => row.m === 'botOperation').map(row => row.operation)).toEqual([operation]);
   expect(f.getRequest(operation).revision).toBe('0');
   f.answer(f.getRequest(operation), 0, '3', snapshot(3n, paused));
   await command;
   expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused });
-  expect(f.commands.filter(row => row.m === 'humanInteractionRequest').map(row => row.operation)).toEqual([operation]);
+  expect(f.commands.filter(row => row.m === 'botOperation').map(row => row.operation)).toEqual([operation]);
 });
 
 it('keeps a newer control snapshot when an older control response arrives late', async () => {
@@ -424,12 +411,12 @@ it('binds two skips to the same visible item without fetching another state', as
   await refresh;
   const first = f.adapter.skip(CHANNEL);
   const second = f.adapter.skip(CHANNEL);
-  await vi.waitFor(() => expect(f.commands.filter(row => row.m === 'humanInteractionRequest' && row.operation === 15)).toHaveLength(2));
-  const skips = f.commands.filter(row => row.m === 'humanInteractionRequest' && row.operation === 15);
+  await vi.waitFor(() => expect(f.commands.filter(row => row.m === 'botOperation' && row.operation === 15)).toHaveLength(2));
+  const skips = f.commands.filter(row => row.m === 'botOperation' && row.operation === 15);
   expect(skips.map(row => row.args)).toEqual([['ef'.repeat(16)], ['ef'.repeat(16)]]);
   for (const row of skips) f.answer(row, 0, '2', snapshot(2n, false));
   await Promise.all([first, second]);
-  expect(f.commands.filter(row => row.m === 'humanInteractionRequest' && row.operation === 10)).toHaveLength(1);
+  expect(f.commands.filter(row => row.m === 'botOperation' && row.operation === 10)).toHaveLength(1);
 });
 
 it('guards a skip of an empty visible state instead of advancing a newly started track', async () => {
@@ -444,49 +431,31 @@ it('guards a skip of an empty visible state instead of advancing a newly started
   f.answer(f.getRequest(15), 0, '1', encode(value as never)); await skip;
 });
 
-it.each([13, 15])('reconciles the saved receipt for immediate operation %s when a reload resend conflicts with its original body', async operation => {
-  const f = fixture(); const requestId = '89'.repeat(16);
-  f.answer({ requestId, operation }, 0, '3', snapshot(3n, operation === 13));
-  const call = f.client.call.bind(f.client);
-  const retryCall = vi.fn((command: Parameters<CoreClient['call']>[0]) => command.m === 'humanInteractionRequest'
-    ? Promise.reject(new Error('interaction request id conflicts with a prior request')) : call(command));
-  f.client.call = retryCall;
-  await (operation === 13 ? f.adapter.pause(CHANNEL, true, { requestId }) : f.adapter.skip(CHANNEL, { requestId }));
-  expect(retryCall.mock.calls.filter(([row]) => row.m === 'humanInteractionRequest')).toHaveLength(1);
-  expect(f.commands.filter(row => row.m === 'humanInteractionRequest')).toEqual([]);
-  expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: operation === 13 });
+it.each([13, 15])('an immediate operation %s the Bot did not answer in time stays uncertain; its retry resends the same request id and settles', async operation => {
+  vi.useFakeTimers();
+  try {
+    const f = fixture(); const requestId = '89'.repeat(16);
+    const first = operation === 13 ? f.adapter.pause(CHANNEL, true, { requestId }) : f.adapter.skip(CHANNEL, { requestId });
+    const settled = expect(first).rejects.toMatchObject({ requestId });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settled;
+    // The retry is the same request: the Bot re-seals what it answered (or runs it once if it never arrived).
+    const retry = operation === 13 ? f.adapter.pause(CHANNEL, true, { requestId }) : f.adapter.skip(CHANNEL, { requestId });
+    await vi.waitFor(() => expect(f.commands.filter(row => row.m === 'botOperation' && row.operation === operation)).toHaveLength(2));
+    const sends = f.commands.filter(row => row.m === 'botOperation' && row.operation === operation);
+    expect(sends.map(row => row.requestId)).toEqual([requestId, requestId]);
+    expect(sends[1].args).toEqual(sends[0].args);
+    f.answer(sends[1], 0, '3', snapshot(3n, operation === 13));
+    await retry;
+    expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: operation === 13 });
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
-it.each(['missing', 'failed'] as const)('keeps an immediate retry uncertain when its prior receipt is %s', async outcome => {
-  const f = fixture(); const requestId = '90'.repeat(16); const call = f.client.call.bind(f.client);
-  f.client.call = vi.fn((command: Parameters<CoreClient['call']>[0]) => {
-    if (command.m === 'humanInteractionRequest') return Promise.reject(new Error('interaction request id conflicts with a prior request'));
-    if (command.m === 'readBotInteractionResponses' && outcome === 'failed') return Promise.reject(new Error('receipt read failed'));
-    return call(command);
-  });
-  await expect(f.adapter.skip(CHANNEL, { requestId })).rejects.toMatchObject({ requestId });
-  expect(f.commands.some(row => row.m === 'humanInteractionRequest' && row.operation === 10)).toBe(false);
-});
-
-it.each(['upload-unresolved', 'response-read-failed'] as const)('keeps the first immediate %s uncertain until the person reconciles the same attempt', async failure => {
-  const f = fixture(); const requestId = '91'.repeat(16); const call = f.client.call.bind(f.client);
-  let uploads = 0; let reads = 0;
-  f.client.call = vi.fn((command: Parameters<CoreClient['call']>[0]) => {
-    if (command.m === 'humanInteractionRequest') {
-      uploads++;
-      f.answer(command, 0, '3', snapshot(3n, true));
-      if (failure === 'upload-unresolved') return Promise.resolve({ requestId, upload: 'unknown' });
-    }
-    if (command.m === 'readBotInteractionResponses') {
-      reads++;
-      if (failure === 'response-read-failed' && reads === 1) return Promise.reject(new Error('response read failed'));
-    }
-    return call(command);
-  });
-  await expect(f.adapter.pause(CHANNEL, true, { requestId })).rejects.toMatchObject({ requestId });
-  expect(reads).toBe(failure === 'response-read-failed' ? 1 : 0);
-  await expect(f.adapter.pause(CHANNEL, true, { requestId })).resolves.toBeUndefined();
-  expect(uploads).toBe(1);
-  expect(f.adapter.state(CHANNEL)).toMatchObject({ status: 'available', paused: true });
-  expect(f.commands.some(row => row.m === 'humanInteractionRequest' && row.operation === 10)).toBe(false);
+it('a refused send of an immediate operation is a failure, not uncertain', async () => {
+  const f = fixture(); const call = f.client.call.bind(f.client);
+  f.client.call = vi.fn((command: Parameters<CoreClient['call']>[0]) => command.m === 'sendBotCommand'
+    ? Promise.reject(Object.assign(new Error('E_BOT_OFFLINE'), { code: 'E_BOT_OFFLINE', status: 503 })) : call(command));
+  await expect(f.adapter.skip(CHANNEL, { requestId: '90'.repeat(16) })).rejects.toBeInstanceOf(BotOperationRefusedError);
 });

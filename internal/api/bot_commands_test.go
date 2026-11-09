@@ -157,8 +157,16 @@ func newRelayFixture(t *testing.T) *relayFixture {
 	r.member = r.catalogFixture.member
 	r.device2, r.device2Tok = seedDeviceOf(t, r.deps, r.member.ID)
 	r.disp = api.NewSocketDispatcher(muxOf(t, r.h), api.SocketDispatchOptions{Clock: r.deps.Clock})
+	// The Bot's published command key: sealedCommand seals to it (the core vector's key id too).
+	if err := repo.PutBotCommandKey(context.Background(), store.BotCommandKeyRow{CommunityID: r.community, KeyID: relayKeyID,
+		Publication: []byte{1}, PublishedAt: r.deps.Clock.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
 	return r
 }
+
+// relayKeyID is the command key the relay fixture publishes; it is the core vector's key id.
+var relayKeyID = id.ID(bytes.Repeat([]byte{0x33}, 16))
 
 // seedDeviceOf adds a device to an existing user and establishes an enrolled wire-6 session for it.
 func seedDeviceOf(t *testing.T, d api.Deps, user id.ID) (store.DeviceRow, string) {
@@ -193,13 +201,19 @@ func seedDeviceOf(t *testing.T, d api.Deps, user id.ID) (store.DeviceRow, string
 // ciphertext], around a random ciphertext.
 func sealedCommand(t *testing.T, requestID id.ID, ciphertextLen int) []byte {
 	t.Helper()
-	keyID, enc, ct := make([]byte, 16), make([]byte, 32), make([]byte, ciphertextLen)
-	for _, b := range [][]byte{keyID, enc, ct} {
+	return sealedCommandTo(t, relayKeyID, requestID, ciphertextLen)
+}
+
+// sealedCommandTo is sealedCommand to the command key keyID.
+func sealedCommandTo(t *testing.T, keyID, requestID id.ID, ciphertextLen int) []byte {
+	t.Helper()
+	enc, ct := make([]byte, 32), make([]byte, ciphertextLen)
+	for _, b := range [][]byte{enc, ct} {
 		if _, err := rand.Read(b); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return mustCBOR(t, []any{uint64(1), keyID, requestID[:], enc, ct})
+	return mustCBOR(t, []any{uint64(1), keyID[:], requestID[:], enc, ct})
 }
 
 func (r *relayFixture) commandsPath() string {
@@ -731,5 +745,92 @@ func TestHintCarriesNoContentAndReachesOnlyScope(t *testing.T) {
 				t.Fatalf("a refused hint stored revision %+v", row)
 			}
 		}
+	}
+}
+
+// Task 15 concern 3 (Task 21b): dillad refuses a command sealed to a key that is neither the published one nor, for the
+// 24 h overlap after a rotation, the one before it, with 410 E_BOT_KEY_STALE. Nothing reaches the Bot and nothing is
+// remembered, so the client refetches the catalog and resends the same request id.
+func TestCommandSealedToAnUnknownKeyIs410AndNotRelayed(t *testing.T) {
+	r := newRelayFixture(t)
+	requestID := id.New()
+	status, body := r.send(t, r.memberTok, requestID, sealedCommandTo(t, id.New(), requestID, 16))
+	if status != http.StatusGone || bodyCode(t, body) != "E_BOT_KEY_STALE" {
+		t.Fatalf("a command sealed to an unknown key = %d %x, want 410 E_BOT_KEY_STALE", status, body)
+	}
+	if n := len(r.relay.frames(r.relay.bot, r.botDevice)); n != 0 {
+		t.Fatalf("the stale command reached the Bot (%d frames)", n)
+	}
+	// Nothing was admitted: the same id sealed to the current key, even from the other device, is relayed.
+	status, body = r.send(t, r.device2Tok, requestID, sealedCommand(t, requestID, 16))
+	wantAccepted(t, status, body)
+
+	// No key published at all (a store reset): every sealed command is stale.
+	if err := r.deps.Repo.Tx(context.Background(), func(tx store.Repository) error {
+		return tx.PutBotCommandKey(context.Background(), store.BotCommandKeyRow{CommunityID: r.community, KeyID: id.New(), Publication: []byte{1}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	next := id.New()
+	if status, body := r.send(t, r.memberTok, next, sealedCommand(t, next, 16)); status != http.StatusGone || bodyCode(t, body) != "E_BOT_KEY_STALE" {
+		t.Fatalf("a command sealed to a replaced key with no overlap = %d %x, want 410", status, body)
+	}
+}
+
+func TestPreviousCommandKeyIsAcceptedForTheOverlapOnly(t *testing.T) {
+	r := newRelayFixture(t)
+	now := uint64(r.deps.Clock.Now().Unix())
+	path := "/v1/bot-runtime/communities/" + r.community.String() + "/command-key"
+	put := func(keyID id.ID) {
+		t.Helper()
+		if rec := putCBORAuth(r.h, path, commandKeyPublication(t, r.community, keyID, r.botDevice, now+3600, r.botKey), r.botTok); rec.Code != http.StatusNoContent {
+			t.Fatalf("PUT command-key = %d %x", rec.Code, rec.Body.Bytes())
+		}
+	}
+	first, second, third := id.New(), id.New(), id.New()
+	put(first)
+	put(second)
+	send := func(keyID id.ID) int {
+		t.Helper()
+		req := id.New()
+		status, _ := r.send(t, r.memberTok, req, sealedCommandTo(t, keyID, req, 16))
+		return status
+	}
+	if got := send(second); got != http.StatusAccepted {
+		t.Fatalf("the current key = %d, want 202", got)
+	}
+	if got := send(first); got != http.StatusAccepted {
+		t.Fatalf("the previous key inside the overlap = %d, want 202", got)
+	}
+	if got := send(relayKeyID); got != http.StatusGone {
+		t.Fatalf("the key before the previous one = %d, want 410", got)
+	}
+	row, err := r.deps.Repo.GetBotCommandKey(context.Background(), r.community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.KeyID != second || row.PrevKeyID != first || row.PrevUntil != int64(now)+24*60*60 {
+		t.Fatalf("stored key %s prev %s until %d, want %s, %s and now + 24 h", row.KeyID, row.PrevKeyID, row.PrevUntil, second, first)
+	}
+	// Re-publishing the current key (a later not_after) keeps the overlap as it was.
+	put(second)
+	if again, _ := r.deps.Repo.GetBotCommandKey(context.Background(), r.community); again.PrevKeyID != first || again.PrevUntil != row.PrevUntil {
+		t.Fatalf("re-publishing the same key changed the overlap: prev %s until %d", again.PrevKeyID, again.PrevUntil)
+	}
+	// A further rotation makes the second key the previous one and forgets the first.
+	put(third)
+	if got := send(second); got != http.StatusAccepted {
+		t.Fatalf("the newly previous key = %d, want 202", got)
+	}
+	if got := send(first); got != http.StatusGone {
+		t.Fatalf("the key two rotations back = %d, want 410", got)
+	}
+	// Past the overlap the previous key is stale; the current one is still relayed.
+	r.deps.Clock.(*clock.Fake).Advance(24*time.Hour + time.Second)
+	if got := send(second); got != http.StatusGone {
+		t.Fatalf("the previous key after 24 h = %d, want 410", got)
+	}
+	if got := send(third); got != http.StatusAccepted {
+		t.Fatalf("the current key after 24 h = %d, want 202", got)
 	}
 }

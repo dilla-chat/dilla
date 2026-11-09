@@ -57,6 +57,11 @@ describe('command registry', () => {
       .toEqual(['queue clear']);
   });
 
+  it('offers only picker commands (handler kind 0): the app\'s sealed reads and operations, and other kinds, stay hidden', () => {
+    const hidden = [1, 2, 7].map(handlerKind => ({ ...CATALOG[1], name: `music state ${handlerKind}`, operation: 92, handlerKind }));
+    expect(botCommandDefinitions([...CATALOG, ...hidden]).map(c => c.id)).toEqual(['play', 'queue', 'queue remove', 'remind', 'poll create']);
+  });
+
   it('validates required and optional arguments across schema kinds', () => {
     expect(validateCommandArgs(commandById('dm')!, {})).toMatchObject({ valid: false });
     expect(validateCommandArgs(commandById('dm')!, { user: 'user-123' })).toMatchObject({ valid: true });

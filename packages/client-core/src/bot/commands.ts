@@ -253,7 +253,17 @@ export function createBotCommands(port: BotCommandPort): { sendBotCommand(req: S
       }, BOT_FIRST_ANSWER_MS);
     };
     const send = (): void => {
-      void port.submit(submit).catch((e: unknown) => { close({ kind: 'refused', code: codeOf(e), status: statusOf(e) }); });
+      void port.submit(submit).catch((e: unknown) => {
+        // dillad refuses a command sealed to a key the Bot no longer opens (Task 21b): read the catalog once (the new key)
+        // and resend the same request id, as for a stale answer; a second refusal ends the run.
+        if (codeOf(e) === 'E_BOT_KEY_STALE' && !staleResent && phase === 'open') {
+          staleResent = true;
+          clear();
+          void port.refetchCatalog(req.communityId).catch(() => undefined).then(() => { if (phase === 'open') { armFirst(); send(); } });
+          return;
+        }
+        close({ kind: 'refused', code: codeOf(e), status: statusOf(e) });
+      });
     };
     const unsubscribe = port.answers(requestId, (a) => {
       if (phase === 'done') return;

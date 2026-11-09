@@ -26,13 +26,17 @@ import (
 type Feature uint64
 
 const (
-	FeatureMusic     Feature = 1 << 0
-	FeaturePolls     Feature = 1 << 8
-	FeatureReminders Feature = 1 << 9
+	FeatureMusic         Feature = 1 << 0
+	FeatureRoles         Feature = 1 << 2
+	FeatureAnnouncements Feature = 1 << 3
+	FeaturePolls         Feature = 1 << 8
+	FeatureReminders     Feature = 1 << 9
 )
 
 // AllFeatures is every feature the catalog has commands for, in bit order.
-func AllFeatures() []Feature { return []Feature{FeatureMusic, FeaturePolls, FeatureReminders} }
+func AllFeatures() []Feature {
+	return []Feature{FeatureMusic, FeatureRoles, FeatureAnnouncements, FeaturePolls, FeatureReminders}
+}
 
 // FeaturesOf is the catalog features an installation's capability mask enables, in bit order.
 func FeaturesOf(capabilities uint64) []Feature {
@@ -55,9 +59,9 @@ const (
 	ArgBool     uint8 = 5
 )
 
-// Handler kinds. 0 is a picker command, answered with UTF-8 text. 1 is a sealed read an app surface
-// sends (a poll card, the player, the reminders inbox), answered with CBOR; the picker does not offer it
-// (the client filters it: see the Task 15 report).
+// Handler kinds. 0 is a picker command, answered with UTF-8 text. 1 is an operation an app surface sends
+// (a sealed read, or an app operation: Task 21b), answered with CBOR; the picker does not offer it (the client
+// shows only handler kind 0).
 const (
 	HandlerCommand uint64 = 0
 	HandlerRead    uint64 = 1
@@ -94,8 +98,34 @@ const (
 	ScopeChannel   Scope = 2
 )
 
-// permSendMessages is dillad's send_messages bit (internal/api/perm.go).
-const permSendMessages uint64 = 1 << 1
+// dillad's permission bits (internal/api/perm.go).
+const (
+	permSendMessages    uint64 = 1 << 1
+	permManageRoles     uint64 = 1 << 15
+	permManageCommunity uint64 = 1 << 16
+)
+
+// AppOperationBase is what an app operation adds to the v1 operation it runs (protocol.OpApp*).
+const AppOperationBase protocol.Operation = 100
+
+// appMutations are the app operations that change state: they carry an expected revision and, unlike the sealed reads,
+// are refused to a timed-out member.
+var appMutations = map[protocol.Operation]bool{
+	protocol.OpAppMusicEnqueue: true, protocol.OpAppMusicPause: true, protocol.OpAppMusicResume: true, protocol.OpAppMusicSkip: true,
+	protocol.OpAppMusicStop: true, protocol.OpAppMusicSeek: true, protocol.OpAppMusicVolume: true, protocol.OpAppMusicShuffle: true,
+	protocol.OpAppMusicRepeat: true, protocol.OpAppMusicRemove: true, protocol.OpAppMusicMove: true, protocol.OpAppMusicClear: true,
+	protocol.OpAppMusicAnnounce: true, protocol.OpAppRolePanelPublish: true, protocol.OpAppAnnouncementsPut: true,
+	protocol.OpAppAnnouncementsDelete: true, protocol.OpAppPollCreate: true, protocol.OpAppPollVote: true, protocol.OpAppPollClose: true,
+	protocol.OpAppReminderCreate: true, protocol.OpAppReminderCancel: true, protocol.OpAppReminderDismiss: true,
+}
+
+// AppMutation reports whether op is an app operation that changes state.
+func AppMutation(op protocol.Operation) bool { return appMutations[op] }
+
+// app is an app operation's hidden catalog entry (Task 21b).
+func app(f Feature, name string, op protocol.Operation, perm uint64, scope Scope) Command {
+	return Command{Feature: f, Name: name, Description: "For the app", Operation: op, Permission: perm, HandlerKind: HandlerRead, Scope: scope}
+}
 
 var commands = []Command{
 	// Music: the voice room is the request's channel. The handlers check the call and DJ rights.
@@ -120,6 +150,39 @@ var commands = []Command{
 	{FeatureReminders, "remind", "Remind me later", protocol.OpReminderCreate, []Arg{{"when", ArgDuration, true}, {"text", ArgText, true}}, 0, false, HandlerCommand, ScopeCommunity},
 	{FeatureReminders, "reminders list", "Your upcoming reminders", protocol.OpReminderList, nil, 0, false, HandlerCommand, ScopeCommunity},
 	{FeatureReminders, "reminders due", "Your due reminders, for the app", protocol.OpReadRemindersDue, []Arg{{"cursor", ArgText, false}}, 0, false, HandlerRead, ScopeCommunity},
+	// App operations (Task 21b): the player and its dock act in the voice channel; the handlers check the call and DJ
+	// rights as before.
+	app(FeatureMusic, "music search", protocol.OpAppMusicSearch, 0, ScopeChannel),
+	app(FeatureMusic, "music enqueue", protocol.OpAppMusicEnqueue, 0, ScopeChannel),
+	app(FeatureMusic, "music pause", protocol.OpAppMusicPause, 0, ScopeChannel),
+	app(FeatureMusic, "music resume", protocol.OpAppMusicResume, 0, ScopeChannel),
+	app(FeatureMusic, "music skip", protocol.OpAppMusicSkip, 0, ScopeChannel),
+	app(FeatureMusic, "music stop", protocol.OpAppMusicStop, 0, ScopeChannel),
+	app(FeatureMusic, "music seek", protocol.OpAppMusicSeek, 0, ScopeChannel),
+	app(FeatureMusic, "music volume", protocol.OpAppMusicVolume, 0, ScopeChannel),
+	app(FeatureMusic, "music shuffle", protocol.OpAppMusicShuffle, 0, ScopeChannel),
+	app(FeatureMusic, "music repeat", protocol.OpAppMusicRepeat, 0, ScopeChannel),
+	app(FeatureMusic, "music remove", protocol.OpAppMusicRemove, 0, ScopeChannel),
+	app(FeatureMusic, "music move", protocol.OpAppMusicMove, 0, ScopeChannel),
+	app(FeatureMusic, "music clear", protocol.OpAppMusicClear, 0, ScopeChannel),
+	app(FeatureMusic, "music announce", protocol.OpAppMusicAnnounce, 0, ScopeChannel),
+	// The provider status names no channel; its handler admits only those who manage the community.
+	app(FeatureMusic, "music providers", protocol.OpAppMusicProvidersStatus, 0, ScopeCommunity),
+	app(FeatureRoles, "rolepanel publish", protocol.OpAppRolePanelPublish, permManageRoles, ScopeCommunity),
+	app(FeatureAnnouncements, "announcement rows", protocol.OpAppAnnouncementsList, permManageCommunity, ScopeCommunity),
+	app(FeatureAnnouncements, "announcement save", protocol.OpAppAnnouncementsPut, permManageCommunity, ScopeCommunity),
+	app(FeatureAnnouncements, "announcement remove", protocol.OpAppAnnouncementsDelete, permManageCommunity, ScopeCommunity),
+	// The poll form posts into the command's channel (the dispatcher refuses a payload naming another one), so the
+	// intake authorises send_messages there.
+	app(FeaturePolls, "poll form", protocol.OpAppPollCreate, permSendMessages, ScopeChannel),
+	app(FeaturePolls, "poll list", protocol.OpAppPollList, 0, ScopeCommunity),
+	app(FeaturePolls, "poll vote", protocol.OpAppPollVote, 0, ScopeCommunity),
+	app(FeaturePolls, "poll close", protocol.OpAppPollClose, 0, ScopeCommunity),
+	app(FeaturePolls, "poll voters", protocol.OpAppPollVoters, 0, ScopeCommunity),
+	app(FeatureReminders, "reminder save", protocol.OpAppReminderCreate, 0, ScopeCommunity),
+	app(FeatureReminders, "reminders page", protocol.OpAppReminderList, 0, ScopeCommunity),
+	app(FeatureReminders, "reminder cancel", protocol.OpAppReminderCancel, 0, ScopeCommunity),
+	app(FeatureReminders, "reminder dismiss", protocol.OpAppReminderDismiss, 0, ScopeCommunity),
 }
 
 // Commands is the catalog's commands for features, in table order.
@@ -171,7 +234,7 @@ type Rule struct {
 func Operations(features []Feature) map[uint64]Rule {
 	out := map[uint64]Rule{}
 	for _, c := range Commands(features) {
-		r := Rule{Permission: c.Permission, Read: c.HandlerKind == HandlerRead, ChannelScoped: c.Scope != ScopeCommunity}
+		r := Rule{Permission: c.Permission, Read: c.HandlerKind == HandlerRead && !AppMutation(c.Operation), ChannelScoped: c.Scope != ScopeCommunity}
 		for i, a := range c.Args {
 			if a.Type == ArgChannel {
 				r.ChannelArgs = append(r.ChannelArgs, i)

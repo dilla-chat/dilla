@@ -27,6 +27,10 @@ type BotCommandKeyRow struct {
 	KeyID       id.ID
 	Publication []byte
 	PublishedAt int64
+	// PrevKeyID is the key KeyID replaced (zero for none); dillad still relays commands sealed to it until
+	// PrevUntil (unix seconds), the 24 h the Bot's helper keeps opening it (Task 21b).
+	PrevKeyID id.ID
+	PrevUntil int64
 }
 
 // BotChannelRow mirrors bot_channels.

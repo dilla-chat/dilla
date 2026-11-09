@@ -35,10 +35,11 @@ func (r *Repo) GetBotCatalog(ctx context.Context, community id.ID) (store.BotCat
 }
 
 func (r *Repo) PutBotCommandKey(ctx context.Context, row store.BotCommandKeyRow) error {
-	if row.CommunityID.IsZero() || row.KeyID.IsZero() || len(row.Publication) == 0 || row.PublishedAt < 0 {
+	if row.CommunityID.IsZero() || row.KeyID.IsZero() || len(row.Publication) == 0 || row.PublishedAt < 0 || row.PrevUntil < 0 {
 		return store.ErrConflict
 	}
-	return wrap(r.w.PutBotCommandKey(ctx, pgdb.PutBotCommandKeyParams{CommunityID: row.CommunityID, KeyID: row.KeyID, Publication: row.Publication, PublishedAt: row.PublishedAt}))
+	return wrap(r.w.PutBotCommandKey(ctx, pgdb.PutBotCommandKeyParams{CommunityID: row.CommunityID, KeyID: row.KeyID, Publication: row.Publication, PublishedAt: row.PublishedAt,
+		PrevKeyID: row.PrevKeyID, PrevUntil: row.PrevUntil}))
 }
 
 func (r *Repo) GetBotCommandKey(ctx context.Context, community id.ID) (store.BotCommandKeyRow, error) {
@@ -46,7 +47,8 @@ func (r *Repo) GetBotCommandKey(ctx context.Context, community id.ID) (store.Bot
 	if err != nil {
 		return store.BotCommandKeyRow{}, wrap(err)
 	}
-	return store.BotCommandKeyRow{CommunityID: k.CommunityID, KeyID: k.KeyID, Publication: k.Publication, PublishedAt: k.PublishedAt}, nil
+	return store.BotCommandKeyRow{CommunityID: k.CommunityID, KeyID: k.KeyID, Publication: k.Publication, PublishedAt: k.PublishedAt,
+		PrevKeyID: k.PrevKeyID, PrevUntil: k.PrevUntil}, nil
 }
 
 func (r *Repo) MarkBotChannel(ctx context.Context, row store.BotChannelRow) (bool, error) {

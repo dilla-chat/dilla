@@ -192,7 +192,7 @@ func (q *Queries) GetBotCatalog(ctx context.Context, arg GetBotCatalogParams) (B
 }
 
 const getBotCommandKey = `-- name: GetBotCommandKey :one
-SELECT community_id, key_id, publication, published_at FROM bot_command_keys WHERE community_id = $1
+SELECT community_id, key_id, publication, published_at, prev_key_id, prev_until FROM bot_command_keys WHERE community_id = $1
 `
 
 type GetBotCommandKeyParams struct {
@@ -207,6 +207,8 @@ func (q *Queries) GetBotCommandKey(ctx context.Context, arg GetBotCommandKeyPara
 		&i.KeyID,
 		&i.Publication,
 		&i.PublishedAt,
+		&i.PrevKeyID,
+		&i.PrevUntil,
 	)
 	return i, err
 }
@@ -399,8 +401,9 @@ func (q *Queries) PutBotCatalog(ctx context.Context, arg PutBotCatalogParams) er
 }
 
 const putBotCommandKey = `-- name: PutBotCommandKey :exec
-INSERT INTO bot_command_keys(community_id, key_id, publication, published_at) VALUES ($1, $2, $3, $4)
-ON CONFLICT(community_id) DO UPDATE SET key_id = excluded.key_id, publication = excluded.publication, published_at = excluded.published_at
+INSERT INTO bot_command_keys(community_id, key_id, publication, published_at, prev_key_id, prev_until) VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT(community_id) DO UPDATE SET key_id = excluded.key_id, publication = excluded.publication, published_at = excluded.published_at,
+  prev_key_id = excluded.prev_key_id, prev_until = excluded.prev_until
 `
 
 type PutBotCommandKeyParams struct {
@@ -408,6 +411,8 @@ type PutBotCommandKeyParams struct {
 	KeyID       id.ID
 	Publication []byte
 	PublishedAt int64
+	PrevKeyID   id.ID
+	PrevUntil   int64
 }
 
 func (q *Queries) PutBotCommandKey(ctx context.Context, arg PutBotCommandKeyParams) error {
@@ -416,6 +421,8 @@ func (q *Queries) PutBotCommandKey(ctx context.Context, arg PutBotCommandKeyPara
 		arg.KeyID,
 		arg.Publication,
 		arg.PublishedAt,
+		arg.PrevKeyID,
+		arg.PrevUntil,
 	)
 	return err
 }

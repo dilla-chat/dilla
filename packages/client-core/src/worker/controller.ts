@@ -1266,6 +1266,16 @@ export class Controller {
         if (core === null) throw new Refusal('E_NOT_READY', '');
         return core.botUserPinned(fromHex(communityId));
       },
+      // Task 20b review I1: the candidate's attestation is in the core before its first pin, so a human the server names
+      // as the Bot is refused (E_CREDENTIAL) instead of pinned.
+      ingestBotAttestation: async (botUserId) => {
+        if (!(this.routes instanceof Routes)) throw new Refusal('E_UNAVAILABLE', '');
+        const head = await this.routes.getDeviceList(botUserId);
+        if (head === null) throw new Refusal('E_DEVICE_LIST_STALE', '');
+        const core = this.core;
+        if (core === null) throw new Refusal('E_NOT_READY', '');
+        ingestAccountKind(core, botUserId, head.raw, (code) => { this.recordError(code); });
+      },
       // Task 20b (Jonas, 2026-11-07): a member who shares no group with the Bot reads its device list (the head's keys, the
       // history from version 1) and pins it, trusted on first sight only for an account the instance attested as a Bot.
       pinBotDeviceList: async (botUserId) => {

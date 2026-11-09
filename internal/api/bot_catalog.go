@@ -761,6 +761,7 @@ func (d Deps) PutBotRuntimeCommandKey(w http.ResponseWriter, r *http.Request) {
 		if current.ID != installation.ID || *current.UserID != *installation.UserID || *current.DeviceID != p.BotDeviceID {
 			return server.Errorf(server.CodeForbidden, "the Bot installation changed")
 		}
+		row := store.BotCommandKeyRow{CommunityID: cid, KeyID: p.KeyID, Publication: body, PublishedAt: now}
 		prevKey, err := tx.GetBotCommandKey(ctx, cid)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
@@ -770,7 +771,15 @@ func (d Deps) PutBotRuntimeCommandKey(w http.ResponseWriter, r *http.Request) {
 		default:
 			rotated = prevKey.KeyID != p.KeyID
 		}
-		if err := tx.PutBotCommandKey(ctx, store.BotCommandKeyRow{CommunityID: cid, KeyID: p.KeyID, Publication: body, PublishedAt: now}); err != nil {
+		// The relay keeps accepting the replaced key for the helper's 24 h overlap (Task 21b); a re-publication of
+		// the same key keeps the overlap it had.
+		switch {
+		case rotated && !prevKey.KeyID.IsZero():
+			row.PrevKeyID, row.PrevUntil = prevKey.KeyID, now+int64(commandKeyOverlap.Seconds())
+		case !rotated:
+			row.PrevKeyID, row.PrevUntil = prevKey.PrevKeyID, prevKey.PrevUntil
+		}
+		if err := tx.PutBotCommandKey(ctx, row); err != nil {
 			return err
 		}
 		// A new key reaches clients the way a changed catalog does: the catalog takes the next

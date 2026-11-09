@@ -15,7 +15,11 @@ CREATE TABLE bot_command_keys (
                       REFERENCES communities(id) ON DELETE CASCADE,
   key_id       BYTEA  NOT NULL CHECK (octet_length(key_id) = 16),
   publication  BYTEA  NOT NULL,
-  published_at BIGINT NOT NULL CHECK (published_at >= 0)
+  published_at BIGINT NOT NULL CHECK (published_at >= 0),
+  -- The key this one replaced (all zero for none), which dillad still relays sealed commands to until
+  -- prev_until (published_at + 24 h, the helper's overlap); then only key_id is current (Task 21b).
+  prev_key_id  BYTEA  NOT NULL CHECK (octet_length(prev_key_id) = 16),
+  prev_until   BIGINT NOT NULL CHECK (prev_until >= 0)
 );
 -- A text channel an admin marked as a Bot channel: the only channels the Bot is an MLS member of
 -- and posts in.

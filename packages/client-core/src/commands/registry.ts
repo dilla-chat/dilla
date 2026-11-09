@@ -144,8 +144,9 @@ const ENTITY_TEXT: Readonly<Record<string, CommandArgumentKind>> = { poll: 'poll
  */
 export function botCommandDefinitions(commands: readonly BotCatalogCommand[]): CommandDefinition[] {
   // M9: a name whose first word is a built-in's first word is dropped too, so `/shrug hello` or `/role list` never routes
-  // a built-in's text to the Bot (the parser takes the longest match).
-  return commands.filter(command => !BUILTIN_FIRST_WORDS.has(command.name.split(' ')[0])).map(command => {
+  // a built-in's text to the Bot (the parser takes the longest match). Only handler kind 0 is a picker command: kind 1 is
+  // what the app's surfaces send (sealed reads and app operations), and other kinds are reserved for outgoing integrations.
+  return commands.filter(command => command.handlerKind === 0 && !BUILTIN_FIRST_WORDS.has(command.name.split(' ')[0])).map(command => {
     const lastText = command.args.map(arg => arg.type).lastIndexOf(0);
     return {
       id: command.name,

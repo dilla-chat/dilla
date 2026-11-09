@@ -1566,8 +1566,10 @@ needs_bot_channel, handler_kind]…]`: `name` 1–64 bytes of text and unique in
 uint, 2 user, 3 channel, 4 duration (uint seconds), 5 bool (uint 0|1) — a user or channel argument
 is a 16-byte id the member picks, never one the catalog carries; anything else is refused, `permission_bit` a mask of the permission bits of `09` § Permissions (0
 means every member), `needs_bot_channel` uint 0 or 1 (the subset has no boolean), and
-`handler_kind` a uint: 0 is a built-in feature, the other values are reserved for outgoing
-integrations and kept as sent. At most 256 commands.
+`handler_kind` a uint, kept as sent: 0 is a picker command, 1 an operation an app surface sends
+(a sealed read or an app operation, § Sealed command relay, replies and state hints; clients never
+show it in the picker), the other values are reserved for outgoing integrations. At most 256
+commands.
 
 A member is shown only the commands they may use. A command is shown when `permission_bit` is 0,
 or when the member's community-wide permissions hold every bit of it and, for a bit a channel
@@ -1607,9 +1609,13 @@ A member's device sends a sealed command (`dilla_core::bot::command`, `[1, key_i
 request_id(bstr 16), enc(bstr 32), ciphertext(bstr)]`, at most 16384 bytes) over its gateway
 socket as `POST /v1/communities/{community}/bot/commands`, body `[request_id(bstr 16), sealed]`.
 The instance decodes only that outer array, strictly: deterministic CBOR, version 1, exact lengths,
-non-zero ids, and the sealed `request_id` equal to the body's (else `400`). It never opens the seal
-and does not check `key_id` (it stores only the current publication, so it cannot tell a
-previous key still inside its 24-hour overlap from an unknown one; the Bot refuses an unknown key).
+non-zero ids, and the sealed `request_id` equal to the body's (else `400`). It never opens the seal.
+It does check `key_id` against the command keys it holds (Task 21b): the published one, and, for
+24 hours after a new `key_id` is published, the one it replaced (the Bot's helper keeps opening that
+key for the same 24 hours). Any other `key_id`, or any at all before a key was published, is
+`410 E_BOT_KEY_STALE`, nothing is relayed or remembered, and the client reads the catalog once and
+resends the same `request_id` sealed to the published key. Such a command could not be answered
+otherwise: a seal the Bot cannot open yields no reply key.
 It pushes gateway op 64 `bot_command` `[request_id, community_id, user_id, device_id, sealed]` to
 the Bot runtime's connection, where `user_id` and `device_id` are the sending connection's
 authenticated session, never anything from the body, and answers `202 [0]`.
@@ -1646,9 +1652,35 @@ devices of the call group of the channel's live call. Both runtime routes are me
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
-| `POST /v1/communities/{community}/bot/commands` | E (community member; also the ready Bot of `community`, for its health probe only), socket | `[request_id, sealed]` | `202 [0]`; `400` for a malformed body or sealed form; `404` for a non-member; `403` when the installation is disabled; `409 E_BOT_DUPLICATE`; `503 E_BOT_OFFLINE` with no installation, an installation that is not ready, or no live Bot runtime connection |
+| `POST /v1/communities/{community}/bot/commands` | E (community member; also the ready Bot of `community`, for its health probe only), socket | `[request_id, sealed]` | `202 [0]`; `400` for a malformed body or sealed form; `404` for a non-member; `403` when the installation is disabled; `409 E_BOT_DUPLICATE`; `410 E_BOT_KEY_STALE` for a `key_id` that is neither the published key nor the replaced one inside its 24 hours; `503 E_BOT_OFFLINE` with no installation, an installation that is not ready, or no live Bot runtime connection |
 | `POST /v1/bot-runtime/replies` | B (ready, own community) | `[device_id, request_id, seq, sealed, final]` | `204`; `404` for a request not relayed from that device into the Bot's community in the last five minutes; `413 E_TOO_LARGE` past 16 replies or 256 KiB for the request |
 | `POST /v1/bot-runtime/state-hints` | B (ready, own community) | `[scope_kind, scope_id]` | `200 [revision]`; `404` for a scope outside the Bot's community or a channel that is not a Bot channel; `400` for another scope kind |
+
+### App surfaces on sealed commands
+
+The app's own Bot surfaces (the player and its dock, poll cards and the poll form, the reminders
+inbox, the music provider status, scheduled announcements and role panels) send sealed commands
+too; nothing in the app reads or writes the Bot through interaction groups any more (Task 21b).
+They use catalog entries of `handler_kind` 1, which the picker never shows:
+
+- the sealed reads: `91` poll get `[poll_id]`, `92` music state `[]` (channel: the voice channel),
+  `93` reminders due `[cursor|null]`;
+- app operations, numbered 100 + the v1 operation they run: music `111`–`125` (search, enqueue,
+  pause, resume, skip, stop, seek, volume, shuffle, repeat, remove, move, clear, provider status,
+  announce; all but provider status act in the request's channel, the voice channel), role panel
+  publish `131` (`manage_roles`), announcements `150`–`152` (`manage_community`), polls `170`
+  create, `172` list, `173` vote, `174` close, `175` voters, reminders `180` create, `181` list, `182`
+  cancel, `183` dismiss.
+
+An app operation's sealed arguments are the v1 operation's arguments (ids as 16-byte byte strings),
+preceded for a mutation by the expected revision (uint); the Bot checks and normalises them with the
+v1 request decoder and runs the same handler. A poll created through `170` must name the request's
+channel, where the Bot authorised `send_messages`. Every one of them answers `[revision uint|null,
+data bstr]` with the v1 response data, or a bare code (`E_INVALID`, `E_FORBIDDEN`, `E_BOT_STALE`,
+`E_CONFLICT`, `E_UNAVAILABLE`, `E_BUSY`, `E_NOT_FOUND`, `E_UPGRADE_REQUIRED`, `E_INTERNAL`). A
+mutation is not a read for the Bot's timeout rule: a timed-out member's vote or dismiss is refused.
+A client reconciles a mutation that went unanswered by sending the same request again: the Bot
+answers what it did, from its five-minute answer cache, and never runs it twice.
 
 ## Bot health
 

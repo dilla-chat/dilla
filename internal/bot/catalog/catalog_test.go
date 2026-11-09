@@ -165,7 +165,8 @@ func TestEveryCatalogCommandIsValidAndTheSealedReadsAreListed(t *testing.T) {
 		t.Fatalf("Operations = %v, catalog = %v", ops, perms)
 	}
 	for op, bit := range perms {
-		if got, ok := ops[op]; !ok || got.Permission != bit || got.Read != (all[nameOf(all, op)][6] == HandlerRead) {
+		read := all[nameOf(all, op)][6] == HandlerRead && !AppMutation(protocol.Operation(op))
+		if got, ok := ops[op]; !ok || got.Permission != bit || got.Read != read {
 			t.Fatalf("Operations[%d] = %+v %v, want permission %d", op, got, ok, bit)
 		}
 	}
@@ -352,4 +353,66 @@ func TestStaleKeyRepublishIsThrottled(t *testing.T) {
 	waitFor(t, func() bool { return len(session.all()) == 6 })
 	cancel()
 	<-done
+}
+
+// Task 21b: the app's surfaces act through sealed app operations (100 + the v1 operation). Each is a hidden entry
+// (handler_kind 1, never shown in the picker); a mutation among them is not a read for the intake, so a timed-out member
+// cannot vote, dismiss or steer the music through one; the player's operations act in the voice channel.
+func TestAppOperationsAreHiddenAndOnlyTheirReadsAreReads(t *testing.T) {
+	rules := Operations(AllFeatures())
+	want := map[protocol.Operation]struct {
+		v1                   protocol.Operation
+		mutation, channelled bool
+	}{
+		protocol.OpAppMusicSearch: {protocol.OpMusicSearch, false, true}, protocol.OpAppMusicEnqueue: {protocol.OpMusicEnqueue, true, true},
+		protocol.OpAppMusicPause: {protocol.OpMusicPause, true, true}, protocol.OpAppMusicResume: {protocol.OpMusicResume, true, true},
+		protocol.OpAppMusicSkip: {protocol.OpMusicSkip, true, true}, protocol.OpAppMusicStop: {protocol.OpMusicStop, true, true},
+		protocol.OpAppMusicSeek: {protocol.OpMusicSeek, true, true}, protocol.OpAppMusicVolume: {protocol.OpMusicVolume, true, true},
+		protocol.OpAppMusicShuffle: {protocol.OpMusicShuffle, true, true}, protocol.OpAppMusicRepeat: {protocol.OpMusicRepeat, true, true},
+		protocol.OpAppMusicRemove: {protocol.OpMusicRemove, true, true}, protocol.OpAppMusicMove: {protocol.OpMusicMove, true, true},
+		protocol.OpAppMusicClear: {protocol.OpMusicClear, true, true}, protocol.OpAppMusicAnnounce: {protocol.OpMusicAnnounce, true, true},
+		protocol.OpAppMusicProvidersStatus: {protocol.OpMusicProvidersStatus, false, false},
+		protocol.OpAppRolePanelPublish:     {protocol.OpRolePanelPublish, true, false},
+		protocol.OpAppAnnouncementsList:    {protocol.OpAnnouncementsList, false, false},
+		protocol.OpAppAnnouncementsPut:     {protocol.OpAnnouncementsPut, true, false},
+		protocol.OpAppAnnouncementsDelete:  {protocol.OpAnnouncementsDelete, true, false},
+		protocol.OpAppPollCreate:           {protocol.OpPollCreate, true, true}, protocol.OpAppPollList: {protocol.OpPollList, false, false},
+		protocol.OpAppPollVote: {protocol.OpPollVote, true, false}, protocol.OpAppPollClose: {protocol.OpPollClose, true, false},
+		protocol.OpAppPollVoters: {protocol.OpPollVoters, false, false}, protocol.OpAppReminderCreate: {protocol.OpReminderCreate, true, false},
+		protocol.OpAppReminderList: {protocol.OpReminderList, false, false}, protocol.OpAppReminderCancel: {protocol.OpReminderCancel, true, false},
+		protocol.OpAppReminderDismiss: {protocol.OpReminderDismiss, true, false},
+	}
+	for op, w := range want {
+		if op != w.v1+AppOperationBase {
+			t.Fatalf("app operation %d does not run v1 operation %d", op, w.v1)
+		}
+		var c *Command
+		for _, cmd := range Commands(AllFeatures()) {
+			if cmd.Operation == op {
+				c = &cmd
+			}
+		}
+		if c == nil || c.HandlerKind != HandlerRead {
+			t.Fatalf("app operation %d is not a hidden catalog entry: %+v", op, c)
+		}
+		r := rules[uint64(op)]
+		if r.Read == w.mutation || AppMutation(op) != w.mutation || r.ChannelScoped != w.channelled {
+			t.Fatalf("app operation %d rule %+v, want read %v channel-scoped %v", op, r, !w.mutation, w.channelled)
+		}
+	}
+	if r := rules[uint64(protocol.OpAppAnnouncementsPut)]; r.Permission != permManageCommunity {
+		t.Fatalf("announcement put rule = %+v, want manage_community", r)
+	}
+	if r := rules[uint64(protocol.OpAppRolePanelPublish)]; r.Permission != permManageRoles {
+		t.Fatalf("role panel rule = %+v, want manage_roles", r)
+	}
+	if r := rules[uint64(protocol.OpAppPollCreate)]; r.Permission != permSendMessages {
+		t.Fatalf("app poll create rule = %+v, want send_messages", r)
+	}
+	if _, ok := Operations([]Feature{FeatureMusic})[uint64(protocol.OpAppAnnouncementsList)]; ok {
+		t.Fatal("announcements are offered without their feature")
+	}
+	if got := FeaturesOf(1<<2 | 1<<3); len(got) != 2 || got[0] != FeatureRoles || got[1] != FeatureAnnouncements {
+		t.Fatalf("features of roles and announcements = %v", got)
+	}
 }

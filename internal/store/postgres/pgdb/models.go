@@ -105,6 +105,8 @@ type BotCommandKeys struct {
 	KeyID       id.ID
 	Publication []byte
 	PublishedAt int64
+	PrevKeyID   id.ID
+	PrevUntil   int64
 }
 
 type BotEventAcks struct {
