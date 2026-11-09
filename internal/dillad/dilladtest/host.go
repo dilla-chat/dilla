@@ -217,22 +217,21 @@ type Host struct {
 	// webhookURL is where the in-process LiveKit posts its webhooks ("" without an SFU); hook serves
 	// it and hookHandler verifies each event (both stopped with the SFU). current is the instance the
 	// events go to: an atomic, so the receiver's workers never wait on mu while Close holds it.
-	webhookURL                 string
-	hook                       *http.Server
-	hookHandler                http.Handler
-	current                    atomic.Pointer[dillad.Server]
-	botSendRequests            atomic.Uint64
-	botSendAccepted            atomic.Uint64
-	botSendRefused             atomic.Uint64
-	botSendMu                  sync.Mutex
-	botSendAttempts            []BotSendAttempt
-	observeOnce                sync.Once
-	observed                   chan socketObservation
-	groupHealMu                sync.Mutex
-	groupHealAttempts          []GroupHealAttempt
-	botRuntimeMu               sync.Mutex
-	botRuntimeErrors           []BotRuntimeError
-	botInteractionHealAttempts []BotInteractionHealAttempt
+	webhookURL        string
+	hook              *http.Server
+	hookHandler       http.Handler
+	current           atomic.Pointer[dillad.Server]
+	botSendRequests   atomic.Uint64
+	botSendAccepted   atomic.Uint64
+	botSendRefused    atomic.Uint64
+	botSendMu         sync.Mutex
+	botSendAttempts   []BotSendAttempt
+	observeOnce       sync.Once
+	observed          chan socketObservation
+	groupHealMu       sync.Mutex
+	groupHealAttempts []GroupHealAttempt
+	botRuntimeMu      sync.Mutex
+	botRuntimeErrors  []BotRuntimeError
 	// withhold is the set of webhook event names (a map[string]struct{}, replaced whole) the receiver
 	// drops instead of delivering: POST /debug/sfu/withhold, on the control listener only.
 	withhold   atomic.Value
@@ -705,38 +704,11 @@ func (h *Host) Handler() http.Handler {
 		if trackRuntime {
 			wrapped := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 			server.Handler().ServeHTTP(wrapped, r)
-			parts := strings.Split(r.URL.Path, "/")
-			if len(parts) == 8 && parts[1] == "v1" && parts[2] == "bot-runtime" && parts[5] == "interaction-groups" && parts[7] == "heal" {
-				attempt := BotInteractionHealAttempt{Method: r.Method,
-					Route:  "/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal",
-					Status: wrapped.status, ErrorCode: responseErrorCode(wrapped.body.Bytes())}
-				if groupID, err := id.Parse(parts[6]); err == nil {
-					attempt.Group = groupID.String()
-					if group, err := server.Repo().GetGroup(r.Context(), groupID); err == nil {
-						attempt.Epoch = group.Epoch
-						attempt.EpochUnknown = group.EpochUnknown
-					}
-				}
-				h.botRuntimeMu.Lock()
-				h.botInteractionHealAttempts = append(h.botInteractionHealAttempts, attempt)
-				if len(h.botInteractionHealAttempts) > 64 {
-					h.botInteractionHealAttempts = append([]BotInteractionHealAttempt(nil), h.botInteractionHealAttempts[len(h.botInteractionHealAttempts)-64:]...)
-				}
-				h.botRuntimeMu.Unlock()
-			}
 			if wrapped.status >= 400 {
 				h.botRuntimeMu.Lock()
 				observation := BotRuntimeError{Method: r.Method, Path: redactedBotRuntimeRoute(r.URL.Path), Status: wrapped.status, ErrorCode: responseErrorCode(wrapped.body.Bytes())}
 				if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/ready") && wrapped.status == http.StatusConflict {
 					observation.ErrorDetail = readinessConflictDetail(wrapped.body.Bytes())
-				}
-				if len(parts) == 8 && parts[1] == "v1" && parts[2] == "bot-runtime" && parts[5] == "interaction-groups" {
-					if groupID, err := id.Parse(parts[6]); err == nil {
-						if group, err := server.Repo().GetGroup(r.Context(), groupID); err == nil {
-							observation.GroupEpoch = group.Epoch
-							observation.GroupEpochUnknown = group.EpochUnknown
-						}
-					}
 				}
 				h.botRuntimeErrors = append(h.botRuntimeErrors, observation)
 				if len(h.botRuntimeErrors) > 64 {
@@ -769,9 +741,7 @@ func (h *Host) observeSocket(method, route string, status int, body []byte, repl
 	parts := strings.Split(path, "/")
 	botSend := method == http.MethodPost && len(parts) == 6 && parts[1] == "v1" && parts[2] == "groups" && parts[4] == "bot" && parts[5] == "messages"
 	heal := (method == http.MethodGet || method == http.MethodPost) && len(parts) == 5 && parts[1] == "v1" && parts[2] == "groups" && parts[4] == "heal"
-	interactionHeal := (method == http.MethodGet || method == http.MethodPost) && len(parts) == 8 && parts[1] == "v1" && parts[2] == "bot-runtime" &&
-		parts[3] == "installations" && parts[5] == "interaction-groups" && parts[7] == "heal"
-	if !botSend && !heal && !interactionHeal {
+	if !botSend && !heal {
 		return
 	}
 	h.observeOnce.Do(func() {
@@ -802,14 +772,6 @@ func (h *Host) observeLoop(in <-chan socketObservation) {
 					epoch, unknown = row.Epoch, row.EpochUnknown
 				}
 			}
-		}
-		if len(parts) == 8 {
-			h.botRuntimeMu.Lock()
-			h.botInteractionHealAttempts = append(h.botInteractionHealAttempts, BotInteractionHealAttempt{Method: o.method,
-				Route: "/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal", Status: o.status, ErrorCode: o.code,
-				Group: group, Epoch: epoch, EpochUnknown: unknown})
-			h.botRuntimeMu.Unlock()
-			continue
 		}
 		if len(parts) == 6 {
 			attempt := BotSendAttempt{Method: o.method, Route: "/v1/groups/{group}/bot/messages", Status: o.status, ErrorCode: o.code,
@@ -847,9 +809,6 @@ func redactedBotRuntimeRoute(path string) string {
 	parts[4] = "{installation}"
 	if len(parts) == 7 && parts[5] == "groups" {
 		parts[6] = "{operation}"
-	}
-	if len(parts) == 8 && parts[5] == "interaction-groups" {
-		parts[6] = "{group}"
 	}
 	return strings.Join(parts, "/")
 }
@@ -890,17 +849,6 @@ func readinessConflictDetail(body []byte) string {
 	default:
 		return "unrecognized fixed readiness conflict"
 	}
-}
-
-// BotInteractionHealAttempt is a body-free testhost observation of the restore-only scoped Bot heal path.
-type BotInteractionHealAttempt struct {
-	Method       string `json:"method"`
-	Route        string `json:"route"`
-	Group        string `json:"group"`
-	Status       int    `json:"status"`
-	ErrorCode    string `json:"error_code"`
-	Epoch        uint64 `json:"epoch"`
-	EpochUnknown bool   `json:"epoch_unknown"`
 }
 
 // BotSendAttempt is a redacted testhost observation of a managed Bot message route.

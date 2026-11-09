@@ -23,10 +23,10 @@ func (s *testSource) Read([]byte) (int, error) {
 }
 func (s *testSource) Close() error { s.once.Do(func() { close(s.closed) }); return nil }
 
-func TestStartExposesBoundedProviderAndClosesOnCancel(t *testing.T) {
+func TestStartOggExposesBoundedProviderAndClosesOnCancel(t *testing.T) {
 	source := &testSource{closed: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
-	s, err := Start(ctx, source, PCMFormat{SampleRate: 48000, Channels: 2}, 2, Options{FFmpegPath: "/missing/ffmpeg"})
+	s, err := StartOgg(ctx, source, 2, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,21 +49,18 @@ func TestStartExposesBoundedProviderAndClosesOnCancel(t *testing.T) {
 	}
 }
 
-func TestStartRejectsInvalidArguments(t *testing.T) {
-	if _, err := Start(context.Background(), nil, PCMFormat{SampleRate: 48000, Channels: 2}, 1, Options{}); err == nil {
-		t.Fatal("Start(nil source) succeeded")
+func TestStartOggRejectsInvalidArguments(t *testing.T) {
+	if _, err := StartOgg(context.Background(), nil, 1, Options{}); err == nil {
+		t.Fatal("StartOgg(nil source) succeeded")
 	}
-	if _, err := Start(context.Background(), &testSource{closed: make(chan struct{})}, PCMFormat{SampleRate: 1, Channels: 2}, 1, Options{}); err == nil {
-		t.Fatal("Start(invalid format) succeeded")
-	}
-	if _, err := Start(context.Background(), &testSource{closed: make(chan struct{})}, PCMFormat{SampleRate: 48000, Channels: 2}, 0, Options{}); err == nil {
-		t.Fatal("Start(invalid queue size) succeeded")
+	if _, err := StartOgg(context.Background(), &testSource{closed: make(chan struct{})}, 0, Options{}); err == nil {
+		t.Fatal("StartOgg(invalid queue size) succeeded")
 	}
 }
 
 func TestSessionCloseIsSafeWhenRepeated(t *testing.T) {
 	source := &testSource{closed: make(chan struct{})}
-	s, err := Start(context.Background(), source, PCMFormat{SampleRate: 48000, Channels: 2}, 1, Options{FFmpegPath: "/missing/ffmpeg"})
+	s, err := StartOgg(context.Background(), source, 1, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

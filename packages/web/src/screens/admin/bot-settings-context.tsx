@@ -136,17 +136,16 @@ export function BotSettingsProvider({ communityId, children }: { communityId: st
   return <BotPageContext.Provider value={value}>{children}</BotPageContext.Provider>;
 }
 
-/** The shared operations of the Bot settings pages, which are sealed commands (Task 22). `v1` (automatic moderation, which
- *  Task 23 deletes) gets null: that page keeps its own v1 interaction requests. */
-export function useBotInteractionOperation(scope: string, transport: 'sealed' | 'v1' = 'sealed'): Pick<BotPageRegistration, 'startOperation' | 'retryOperation' | 'waitOperation' | 'clearOperation' | 'operation'> | null {
+/** The shared operations of the Bot settings pages, which are sealed commands (Task 22). */
+export function useBotInteractionOperation(scope: string): Pick<BotPageRegistration, 'startOperation' | 'retryOperation' | 'waitOperation' | 'clearOperation' | 'operation'> | null {
   const context = useContext(BotPageContext);
-  return useMemo(() => context === null || transport === 'v1' ? null : ({
+  return useMemo(() => context === null ? null : ({
     startOperation: (name: string, input: OperationInput) => context.startOperation(name, input),
     retryOperation: (name: string) => context.retryOperation(name),
     waitOperation: (name: string, requestId: string) => context.waitOperation(name, requestId),
     clearOperation: (name: string) => context.clearOperation(name),
     operation: (name: string) => name === scope ? context.operation(name) : null,
-  }), [context, scope, transport]);
+  }), [context, scope]);
 }
 
 export function useBotMutation(): (() => () => void) | null {

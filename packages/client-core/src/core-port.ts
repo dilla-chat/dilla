@@ -107,11 +107,6 @@ export interface ManualWarningEvidence {
   requestId: Id; evidenceRequestId: Id; actorUserId: Id; actorDeviceId: Id; communityId: Id; targetUserId: Id;
   reason: string; state: 0 | 1; createdAt: bigint; actionId: Id; revision: bigint; acceptedAt: bigint; evidenceExpires: bigint;
 }
-export interface HumanInteractionEvent {
-  deliveryId: bigint; groupId: Id; communityId: Id; requestId: Id; sourceSeq: bigint; epoch: bigint; receivedAt: bigint;
-  senderUser: Id; senderDevice: Id; messageId: Id; body: string; operation: number; channelId: Id | null;
-}
-export interface HumanInteractionEventPage { events: HumanInteractionEvent[]; next: bigint; highWater: bigint; }
 export interface CorePort {
   pause(): void; resume(): Promise<void>; close(): void;
   identity(): IdentityInfo;
@@ -152,13 +147,6 @@ export interface CorePort {
   groupJoinExternal(g: ExpectedGroup, infoBody: Uint8Array, treeBody: Uint8Array): Uint8Array;
   groupJoined(groupId: Id, seq: bigint): void;
   welcomesApply(welcomesBody: Uint8Array, expected: ExpectedGroup[]): WelcomeOutcome[];
-  /** The core verifies this opaque signed context and derives the expected kind-3 binding itself. */
-  humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array, now: bigint): WelcomeOutcome[];
-  humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id;
-  humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage;
-  humanInteractionReceiptsRead(communityId: Id, installationId: Id, botUserId: Id, requestIds: readonly Id[]): HumanInteractionEvent[];
-  humanInteractionEventsAck(through: bigint): void;
-  humanInteractionEventsAckSelected(deliveryIds: readonly bigint[]): void;
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult;
   commitBuild(groupId: Id, proposalsBody: Uint8Array): Uint8Array;
   commitConfirm(groupId: Id): ApplyResult; commitAbort(groupId: Id): void;
@@ -364,12 +352,6 @@ export interface CoreHandle {
       group_join_external(group_id: Uint8Array, community_id: Uint8Array | null | undefined, channel_id: Uint8Array, policy_version: bigint, info_body: Uint8Array, tree_body: Uint8Array): Uint8Array;
       group_joined(group_id: Uint8Array, seq: bigint): void;
       welcomes_apply(welcomes_body: Uint8Array, expected: Uint8Array): Uint8Array;
-      human_interaction_welcome_apply(welcomes_body: Uint8Array, current_context_proof: Uint8Array, now: bigint): Uint8Array;
-      human_interaction_send_prepare(request_id: Uint8Array, community_id: Uint8Array, group_id: Uint8Array, request_body: Uint8Array, now: bigint): Uint8Array;
-      human_interaction_events_read(after: bigint, limit: bigint): Uint8Array;
-      human_interaction_receipts_read(community_id: Uint8Array, installation_id: Uint8Array, bot_user_id: Uint8Array, request_ids: Uint8Array): Uint8Array;
-      human_interaction_events_ack(through: bigint): void;
-      human_interaction_events_ack_selected(delivery_ids: Uint8Array): void;
       group_apply(group_id: Uint8Array, handshakes: Uint8Array, messages: Uint8Array, through: bigint): Uint8Array;
       commit_build(group_id: Uint8Array, proposals_body: Uint8Array): Uint8Array;
       commit_confirm(group_id: Uint8Array): Uint8Array;
@@ -696,47 +678,6 @@ export function wrapCore(handle: CoreHandle): CorePort {
     groupJoined: (groupId, seq) => call(() => handle.group_joined(groupId, seq)),
     welcomesApply: (welcomesBody, expected) => call(() => decoded('welcomesApply', handle.welcomes_apply(welcomesBody,
       encode(expected.map((e) => [e.groupId, e.communityId, e.channelId, e.policyVersion]))), (v) => arr(v).map(readWelcome))),
-    humanInteractionWelcomeApply: (welcomesBody, currentContextProof, now) => call(() => decoded(
-      'humanInteractionWelcomeApply',
-      handle.human_interaction_welcome_apply(welcomesBody, currentContextProof, now),
-      (v) => arr(v).map(readWelcome),
-    )),
-    humanInteractionSendPrepare: (requestId, communityId, groupId, requestBody, now) => call(() => decoded(
-      'humanInteractionSendPrepare',
-      handle.human_interaction_send_prepare(requestId, communityId, groupId, requestBody, now),
-      (v) => bin(field(arr(v, 1), 0), 16),
-    )),
-    humanInteractionEventsRead: (after, limit) => call(() => decoded(
-      'humanInteractionEventsRead', handle.human_interaction_events_read(after, BigInt(limit)), (v) => {
-        const page = arr(v, 3);
-        return {
-          events: arr(page[0]).map((item) => {
-            const row = arr(item, 13);
-            return {
-              deliveryId: u64(row[0]), groupId: bin(row[1], 16), communityId: bin(row[2], 16),
-              requestId: bin(row[3], 16), sourceSeq: u64(row[4]), epoch: u64(row[5]), receivedAt: u64(row[6]),
-              senderUser: bin(row[7], 16), senderDevice: bin(row[8], 16), messageId: bin(row[9], 16), body: str(row[10]),
-              operation: u53(row[11]), channelId: opt(row[12], v => bin(v, 16)),
-            };
-          }),
-          next: u64(page[1]), highWater: u64(page[2]),
-        };
-      },
-    )),
-    humanInteractionReceiptsRead: (communityId, installationId, botUserId, requestIds) => call(() => decoded(
-      'humanInteractionReceiptsRead', handle.human_interaction_receipts_read(communityId, installationId, botUserId, encode(requestIds)),
-      (v) => arr(v).map((item) => {
-        const row = arr(item, 13);
-        return {
-          deliveryId: u64(row[0]), groupId: bin(row[1], 16), communityId: bin(row[2], 16),
-          requestId: bin(row[3], 16), sourceSeq: u64(row[4]), epoch: u64(row[5]), receivedAt: u64(row[6]),
-          senderUser: bin(row[7], 16), senderDevice: bin(row[8], 16), messageId: bin(row[9], 16), body: str(row[10]),
-          operation: u53(row[11]), channelId: opt(row[12], v => bin(v, 16)),
-        };
-      }),
-    )),
-    humanInteractionEventsAck: (through) => call(() => handle.human_interaction_events_ack(through)),
-    humanInteractionEventsAckSelected: (deliveryIds) => call(() => handle.human_interaction_events_ack_selected(encode(deliveryIds))),
     groupApply: (groupId, handshakes, messages, through) => call(() => decoded('groupApply', handle.group_apply(groupId, handshakes, messages, through), readApply)),
     commitBuild: (groupId, proposalsBody) => call(() => handle.commit_build(groupId, proposalsBody)),
     commitConfirm: (groupId) => call(() => decoded('commitConfirm', handle.commit_confirm(groupId), readApply)),

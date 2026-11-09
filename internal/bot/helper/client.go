@@ -129,7 +129,7 @@ func (c *Client) Open(ctx context.Context, instance, community, installation id.
 // Operation 6 is deliberately reserved for GroupApply, which always uses the
 // staged transfer path so a large result cannot be lost to a direct frame cap.
 func (c *Client) Call(ctx context.Context, operation protocol.HelperOperation, payload []any) ([]any, error) {
-	if operation < protocol.HelperBootstrap || operation > protocol.HelperProbeOpen ||
+	if operation < protocol.HelperBootstrap || operation > protocol.HelperGroupForget ||
 		operation == protocol.HelperGroupApply || operation == protocol.HelperShutdown || operation == protocol.HelperGroupTransfer {
 		return nil, ErrInvalidOperation
 	}

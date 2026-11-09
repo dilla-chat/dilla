@@ -286,9 +286,6 @@ func requestClass(method, path string) string {
 				return "proposal"
 			}
 		}
-		if len(parts) == 6 && parts[0] == "bot-runtime" && parts[1] == "installations" && parts[3] == "interaction-groups" && parts[5] == "heal" {
-			return "commit"
-		}
 		// dillad meters the Bot's sealed answers as bot_reply and its state hints as bot_runtime (dsmeter.go). An answer
 		// is owed for every member command and app read, so neither waits on the write bucket (Task 15) nor spends the
 		// Bot's own read bucket (Task 21b fix round 1).

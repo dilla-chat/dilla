@@ -6,13 +6,10 @@ import (
 	_ "embed"
 	"errors"
 	"io"
-	"log/slog"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -27,65 +24,6 @@ import (
 var sandboxWorker string
 
 const defaultSandboxStartupTimeout = 20 * time.Second
-
-func (s PCMStarter) startIsolated(ctx context.Context, source string) (io.ReadCloser, error) {
-	bwrap, err := s.executable(s.Bubblewrap, "bwrap")
-	if err != nil {
-		return nil, ErrSandboxUnavailable
-	}
-	python, err := s.executable(s.Python, "python3")
-	if err != nil {
-		return nil, ErrSandboxUnavailable
-	}
-	ytdlp, err := s.executable(s.YTDLP, "yt-dlp")
-	if err != nil {
-		return nil, ErrPCMStart
-	}
-	ffmpeg, err := s.executable(s.FFmpeg, "ffmpeg")
-	if err != nil {
-		return nil, ErrPCMStart
-	}
-	var node string
-	if s.Node != "" {
-		node, err = s.executable(s.Node, "node")
-		if err != nil {
-			return nil, ErrPCMStart
-		}
-	}
-	limit := s.MaxPCMBytes
-	if limit <= 0 || limit > DefaultMaxPCMBytes {
-		limit = DefaultMaxPCMBytes
-	}
-	maxDuration := s.MaxDuration
-	if maxDuration <= 0 || maxDuration > MaxDuration {
-		maxDuration = MaxDuration
-	}
-	startupTimeout := s.Timeout
-	if startupTimeout <= 0 || startupTimeout > 2*time.Minute {
-		startupTimeout = defaultSandboxStartupTimeout
-	}
-	tools := []string{ytdlp, ffmpeg}
-	if node != "" {
-		tools = append(tools, node)
-	}
-	args := []string{"pcm", ytdlp, ffmpeg, node, source, strconv.FormatInt(limit, 10), strconv.FormatFloat(float64(max(0, s.StartAtMS))/1000, 'f', 3, 64)}
-	process, err := launchNetworkWorker(ctx, bwrap, python, tools, args, startupTimeout, maxDuration)
-	if err != nil {
-		return nil, err
-	}
-	return &boundedProcessPCM{process: process, limit: limit}, nil
-}
-
-func (s PCMStarter) executable(path, name string) (string, error) {
-	if path == "" {
-		path = name
-	}
-	resolved, err := exec.LookPath(path)
-	if err != nil {
-		return "", err
-	}
-	return resolveExecutable(resolved, name)
-}
 
 func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, workerArgs []string, startupTimeout, maxDuration time.Duration) (_ *isolatedPCM, failure error) {
 	ctx = client.WithoutCooperativeStop(client.WithBackground(ctx))
@@ -110,9 +48,7 @@ func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, worke
 	}
 	var inputs []string
 	if len(workerArgs) > 0 {
-		if workerArgs[0] == "pcm" && len(workerArgs) > 4 {
-			inputs = append(inputs, workerArgs[4])
-		} else if workerArgs[0] == "exec" {
+		if workerArgs[0] == "exec" {
 			inputs = append(inputs, workerArgs[len(workerArgs)-1])
 		}
 	}
@@ -232,7 +168,7 @@ func sandboxCommand(ctx context.Context, bwrap, python string, tools, workerArgs
 	}
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C"}
-	cmd.Stderr = &sandboxStderr{ctx: ctx, logger: diagnosticLogger(ctx)}
+	cmd.Stderr = &sandboxStderr{}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, err
@@ -350,30 +286,17 @@ func (r *boundedProcessPCM) Close() error {
 
 var _ io.ReadCloser = (*boundedProcessPCM)(nil)
 
-// sandboxStderr bounds memory while continuing to drain the subprocess pipe.
+// sandboxStderr bounds memory while continuing to drain the subprocess pipe. Bot v2 Task 23 removed the timing marks
+// the "pcm" worker mode wrote here.
 type sandboxStderr struct {
-	mu        sync.Mutex
-	data      bytes.Buffer
-	ctx       context.Context
-	logger    *slog.Logger
-	line      []byte
-	seenMarks uint8
+	mu   sync.Mutex
+	data bytes.Buffer
 }
 
 func (b *sandboxStderr) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	n := len(p)
-	if b.logger != nil {
-		for _, c := range p {
-			if c == '\n' {
-				b.logMark(string(b.line))
-				b.line = b.line[:0]
-			} else if len(b.line) < 512 {
-				b.line = append(b.line, c)
-			}
-		}
-	}
 	if remaining := 4096 - b.data.Len(); remaining > 0 {
 		_, _ = b.data.Write(p[:min(len(p), remaining)])
 	}
@@ -440,31 +363,4 @@ func (r *boundedProcessPCM) SourceGone() bool {
 	default:
 		return false
 	}
-}
-
-func (b *sandboxStderr) logMark(line string) {
-	fields := strings.Fields(line)
-	if len(fields) != 3 || fields[0] != "DILLA_YT_TIMING" {
-		return
-	}
-	var bit uint8
-	switch fields[1] {
-	case "spawn":
-		bit = 1
-	case "first_yt_dlp_byte":
-		bit = 2
-	case "first_pcm":
-		bit = 4
-	default:
-		return
-	}
-	ns, err := strconv.ParseInt(fields[2], 10, 64)
-	if err != nil || ns <= 0 {
-		return
-	}
-	if b.seenMarks&bit != 0 {
-		return
-	}
-	b.seenMarks |= bit
-	b.logger.DebugContext(b.ctx, "youtube worker timing", "mark", fields[1], "monotonic_ns", ns)
 }

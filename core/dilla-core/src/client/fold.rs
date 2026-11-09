@@ -162,7 +162,6 @@ pub(super) fn refold(
                 if deleted {
                     c.execute("UPDATE app_messages SET body = '', envelope = NULL WHERE group_id = ?1 AND seq = ?2", params![g, tr.seq as i64])?;
                     super::bot_events::suppress_source(c, group_id, tr.seq as i64)?;
-                    super::human_interaction_events::suppress_source(c, group_id, tr.seq as i64)?;
                 }
             }
             (FoldScope::Delete { user }, Some(tr)) => {
@@ -214,7 +213,6 @@ pub(super) fn refold(
             if tr.ty == 1 {
                 c.execute("UPDATE app_messages SET body = '', envelope = NULL WHERE group_id = ?1 AND seq = ?2", params![g, tr.seq as i64])?;
                 super::bot_events::suppress_source(c, group_id, tr.seq as i64)?;
-                super::human_interaction_events::suppress_source(c, group_id, tr.seq as i64)?;
             }
             return Ok(());
         }
@@ -267,7 +265,6 @@ pub(super) fn refold(
         }
         c.execute("UPDATE app_messages SET status = 2, body = '', envelope = NULL, reason = '', edit_body = NULL, edit_seq = 0 WHERE group_id = ?1 AND seq = ?2", params![g, t.seq as i64])?;
         super::bot_events::suppress_source(c, group_id, t.seq as i64)?;
-        super::human_interaction_events::suppress_source(c, group_id, t.seq as i64)?;
         if let Some(user) = t.sender_user {
             c.execute(BLANK_EDITS, params![g, id, user.as_slice(), bound])?;
             super::bot_events::suppress_edits_of(c, group_id, id, &user, Some(bound))?;

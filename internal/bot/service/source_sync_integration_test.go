@@ -185,11 +185,16 @@ func TestSourceSyncWithCompiledHelperAndRealRustPeer(t *testing.T) {
 	if session.cursorCalls != 2 || !session.cursorAccepted || session.acceptedSequence != acceptedSequence || session.acceptedEpoch != acceptedEpoch {
 		t.Fatalf("server cursor was not retried idempotently: calls=%d accepted=%v cursor=(%d,%d) want=(%d,%d)", session.cursorCalls, session.cursorAccepted, session.acceptedSequence, session.acceptedEpoch, acceptedSequence, acceptedEpoch)
 	}
-	trust, err := NewSourceTrust(n)
+	// The peer's signed device-list history judged by the native core, then the group revalidated (Bot v2 Task 23:
+	// the v1 SourceTrust wrapper is gone; membership trust is internal/bot/trust).
+	history, head, _, err := readSenderHistory(ctx, session, peerUser, 0)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("sender history: %v", err)
 	}
-	recovered, err := trust.trustSender(ctx, session, group, leaf, peerUser, 0)
+	if _, err = n.TrustSender(ctx, group, leaf, peerUser, history, head, uint64(time.Now().Unix())); err != nil {
+		t.Fatalf("native sender trust: %v", err)
+	}
+	recovered, err := n.RevalidateGroup(ctx, group, leaf, 256)
 	if err != nil || recovered < 2 {
 		t.Fatalf("native trust/revalidation: recovered=%d err=%v", recovered, err)
 	}

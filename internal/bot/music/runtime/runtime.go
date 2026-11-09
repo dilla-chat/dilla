@@ -1,4 +1,4 @@
-// Package runtime connects a closable PCM source to the bounded live Opus
+// Package runtime connects a closable Ogg Opus source to the bounded live Opus
 // provider consumed by media.PublishLiveOpus.
 package runtime
 
@@ -18,13 +18,7 @@ import (
 
 var ErrInvalidConfig = errors.New("music runtime: invalid configuration")
 
-// PCMFormat describes the signed 16-bit little-endian PCM emitted by a source.
-type PCMFormat struct {
-	SampleRate int
-	Channels   int
-}
-
-// Options configures the existing PCM-to-Opus encoder.
+// Options configures the Ogg Opus forwarder.
 type Options = encode.Options
 
 // Session owns one encoder and its source. Provider can be passed directly to
@@ -38,33 +32,8 @@ type Session struct {
 	source   *gatedPCM
 }
 
-// Start creates a bounded Opus provider and starts encoding source in the
-// background. The source must implement io.ReadCloser so encoder cancellation
-// can interrupt reads. Session owns and closes it after Start succeeds.
-func Start(ctx context.Context, source io.ReadCloser, format PCMFormat, capacity int, options Options) (*Session, error) {
-	if ctx == nil || source == nil || format.SampleRate < 8000 || format.SampleRate > 192000 ||
-		(format.Channels != 1 && format.Channels != 2) {
-		return nil, ErrInvalidConfig
-	}
-	provider, err := media.NewLiveOpusProvider(capacity)
-	if err != nil {
-		return nil, err
-	}
-	runCtx, cancel := context.WithCancel(client.WithoutCooperativeStop(client.WithBackground(ctx)))
-	s := &Session{provider: provider, cancel: cancel, done: make(chan struct{})}
-	s.source = &gatedPCM{ReadCloser: source, provider: provider, ctx: runCtx}
-	go func() {
-		err := encode.BridgeWithOptions(runCtx, s.source, format.SampleRate, format.Channels, provider, options)
-		s.mu.Lock()
-		s.err = err
-		s.mu.Unlock()
-		close(s.done)
-	}()
-	return s, nil
-}
-
-// StartOgg is Start for a finished 48 kHz stereo Ogg Opus stream, the output
-// of the sandboxed stream worker's single ffmpeg. No second encoder runs: the
+// StartOgg creates a bounded Opus provider and forwards a finished 48 kHz stereo Ogg Opus stream, the output
+// of the sandboxed stream worker's single ffmpeg, in the background; the session owns and closes the source. No second encoder runs: the
 // stream's 20 ms packets are validated and forwarded as they arrive.
 func StartOgg(ctx context.Context, source io.ReadCloser, capacity int, options Options) (*Session, error) {
 	if ctx == nil || source == nil {

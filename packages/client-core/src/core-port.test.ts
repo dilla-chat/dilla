@@ -177,51 +177,6 @@ it('bridges authoritative rejection of a submitted manual-removal proof', () => 
   expect(s.calls).toEqual([{ method: 'reject_manual_removal', args: [proof, 123n] }]);
 });
 
-it('passes an opaque human interaction context proof to the dedicated Welcome export', () => {
-  const welcomes = encode([[1, G, 2, 9, new Uint8Array([1]), new Uint8Array([2]), new Uint8Array(32)]]);
-  const proof = new Uint8Array([0x81, 0x00]);
-  const result = encode([[1, G, 0, '']]);
-  const s = stub({ human_interaction_welcome_apply: (...args) => {
-    expect(args).toEqual([welcomes, proof, 100n]);
-    return result;
-  } });
-  expect(s.port.humanInteractionWelcomeApply(welcomes, proof, 100n)).toEqual([
-    { welcomeId: 1n, groupId: G, outcome: 0, reason: '' },
-  ]);
-  expect(s.calls).toEqual([{ method: 'human_interaction_welcome_apply', args: [welcomes, proof, 100n] }]);
-});
-
-it('decodes authenticated human interaction events and passes a durable cursor', () => {
-  const event = [5, G, COMM, MSG, 8, 3, 99, USER, DEV, MSG2, 'dilla.bot/1:response', 13, CHAN];
-  const page = encode([[event], 5, 7]);
-  const s = stub({ human_interaction_events_read: (...args) => { expect(args).toEqual([2n, 10n]); return page; },
-    human_interaction_events_ack: (...args) => { expect(args).toEqual([5n]); },
-    human_interaction_events_ack_selected: (...args) => { expect(args).toEqual([encode([5n, 9n])]); } });
-  expect(s.port.humanInteractionEventsRead(2n, 10)).toEqual({
-    events: [{ deliveryId: 5n, groupId: G, communityId: COMM, requestId: MSG, sourceSeq: 8n, epoch: 3n,
-      receivedAt: 99n, senderUser: USER, senderDevice: DEV, messageId: MSG2, body: 'dilla.bot/1:response',
-      operation: 13, channelId: CHAN }],
-    next: 5n, highWater: 7n,
-  });
-  s.port.humanInteractionEventsAck(5n);
-  s.port.humanInteractionEventsAckSelected([5n, 9n]);
-  expect(s.calls.map((call) => call.method)).toEqual(['human_interaction_events_read', 'human_interaction_events_ack', 'human_interaction_events_ack_selected']);
-});
-
-it('decodes exact archived human interaction receipts without a cursor', () => {
-  const event = [5, G, COMM, MSG, 8, 3, 99, USER, DEV, MSG2, 'dilla.bot/1:response', 84, null];
-  const requests = [MSG];
-  const s = stub({ human_interaction_receipts_read: (...args) => {
-    expect(args).toEqual([COMM, CHAN, USER, encode(requests)]);
-    return encode([event]);
-  } });
-  expect(s.port.humanInteractionReceiptsRead(COMM, CHAN, USER, requests)).toEqual([{
-    deliveryId: 5n, groupId: G, communityId: COMM, requestId: MSG, sourceSeq: 8n, epoch: 3n,
-    receivedAt: 99n, senderUser: USER, senderDevice: DEV, messageId: MSG2,
-    body: 'dilla.bot/1:response', operation: 84, channelId: null,
-  }]);
-});
-
 it('fails closed when the generated WASM handle predates moderator-removal signing', () => {
   const staleHandle = { sign_removal: undefined } as unknown as CoreHandle;
   const error = caught(() => wrapCore(staleHandle).signRemoval(new Uint8Array(16), G, 9n, 140n, 110n));

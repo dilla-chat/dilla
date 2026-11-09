@@ -787,20 +787,15 @@ def main(argv):
     if not argv:
         return 125
     mode = argv[0]
-    if mode == "pcm" and len(argv) in (6, 7):
-        ytdlp, ffmpeg, node, source, max_pcm = argv[1:6]
-        start_at = argv[6] if len(argv) == 7 else "0.000"
-        command = None
-        output_limit = max_pcm
-    elif mode == "serve" and len(argv) == 3:
+    # Bot v2 Task 23 removed the "pcm" mode (yt-dlp into a PCM ffmpeg): streams run in "exec" mode as one Ogg Opus ffmpeg.
+    if mode == "serve" and len(argv) == 3:
         output_limit = argv[1]
         command = None
         ytdlp = argv[2]
-        ffmpeg = node = source = max_pcm = None
     elif mode == "exec" and len(argv) >= 3:
         output_limit = argv[1]
         command = argv[2:]
-        ytdlp = ffmpeg = node = source = max_pcm = None
+        ytdlp = None
     else:
         return 125
     try:
@@ -909,90 +904,6 @@ def main(argv):
         finally:
             stopping.set()
             server.close()
-    args = [
-        ytdlp, "--ignore-config", "--no-plugin-dirs", "--no-remote-components",
-        "--no-warnings", "--no-progress", "--socket-timeout", "10",
-        "--extractor-retries", "1", "--format", "bestaudio", "--output", "-",
-        "--", source,
-    ]
-    if node:
-        args[1:1] = ["--js-runtimes", "node:" + node]
-    def mark(stage):
-        print("DILLA_YT_TIMING", stage, time.monotonic_ns(), file=sys.stderr, flush=True)
-
-    try:
-        mark("spawn")
-        yt = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=None, env=env, close_fds=True)
-        children.append(yt)
-        ff = subprocess.Popen(
-            [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-ss", start_at, "-f", "s16le", "-ar", "44100", "-ac", "2", "pipe:1"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None, env=env, close_fds=True,
-        )
-        children.append(ff)
-        def watch_failure(child):
-            if child.wait() != 0 and not stopping.is_set():
-                os._exit(1)
-        for child in (yt, ff):
-            threading.Thread(target=watch_failure, args=(child,), daemon=True).start()
-        def pump_ytdlp():
-            first = True
-            try:
-                while True:
-                    chunk = os.read(yt.stdout.fileno(), 32768)
-                    if not chunk:
-                        break
-                    if first:
-                        mark("first_yt_dlp_byte")
-                        first = False
-                    ff.stdin.write(chunk)
-                    ff.stdin.flush()
-            except (OSError, BrokenPipeError):
-                pass
-            finally:
-                yt.stdout.close()
-                try:
-                    ff.stdin.close()
-                except OSError:
-                    pass
-        threading.Thread(target=pump_ytdlp, daemon=True).start()
-        total = 0
-        too_large = False
-        while True:
-            chunk = os.read(ff.stdout.fileno(), 32768)
-            if not chunk:
-                break
-            if total == 0:
-                mark("first_pcm")
-            if total + len(chunk) > limit:
-                allowed = max(0, limit - total)
-                if allowed:
-                    sys.stdout.buffer.write(chunk[:allowed])
-                    sys.stdout.buffer.flush()
-                too_large = True
-                stop(signal.SIGTERM, None)
-                break
-            total += len(chunk)
-            sys.stdout.buffer.write(chunk)
-            sys.stdout.buffer.flush()
-        ff.stdout.close()
-        ff_code = ff.wait()
-        yt_code = yt.wait()
-        if too_large:
-            return 75
-        if stopping.is_set() or ff_code != 0 or yt_code != 0:
-            return 1
-        return 0
-    except OSError:
-        stop(signal.SIGTERM, None)
-        for child in children:
-            try:
-                child.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                child.kill()
-        return 1
-    finally:
-        stopping.set()
-        server.close()
-
+    return 125
 
 raise SystemExit(main(sys.argv[1:]))

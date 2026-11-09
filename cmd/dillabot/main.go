@@ -344,9 +344,6 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "doctor" {
 		os.Exit(runDoctorCommand(os.Args[2:], os.Stdout, os.Stderr))
 	}
-	if len(os.Args) > 1 && os.Args[1] == "interaction-recovery" {
-		os.Exit(runInteractionRecoveryCommand(os.Args[2:], os.Stdout, os.Stderr))
-	}
 	// SIGHUP is dillad's "your installations changed" (Supervisor.Nudge). It is caught before anything else, so the
 	// default action (exit) cannot end a Bot that dillad nudges while it starts.
 	reload := make(chan os.Signal, 1)
@@ -436,19 +433,17 @@ func run(ctx context.Context, cfg config, logger *slog.Logger, reload <-chan os.
 			logger.Error("bot music queue shutdown incomplete", "error", err.Error())
 		}
 	}()
-	autoModerationState := newAutoModerationEventState()
 	gateways := newBotGatewayRuntime(ctx, api, cfg.AllowLoopbackHTTP, logger)
 	if cfg.Socket != "" {
 		gateways.httpClient, gateways.launch = cfg.httpClient(0), cfg.launch
 	}
-	gateways.StartCommandWorkers()
 	defer gateways.Close()
 	statuses := newRuntimeStatusTracker(Version)
 	// Bot v2 task 14: no reconcile interval. A pass runs at start and then on an event (event_loop.go).
 	loop := botLoop{
 		clock: clock.System(), log: logger,
 		pass: func(passCtx context.Context, targets map[id.ID]bool) error {
-			return reconcile(passCtx, cfg, api, runtime, wasm, musicRegistry, autoModerationState, gateways, statuses, logger, targets)
+			return reconcile(passCtx, cfg, api, runtime, wasm, musicRegistry, gateways, statuses, logger, targets)
 		},
 		passes: gateways.Pass(), take: gateways.takePassTargets, reload: reload,
 		wake: gateways.Wake(), poll: gateways.PollText,
@@ -462,7 +457,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger, reload <-chan os.
 
 // reconcile runs one pass: over targets, or over every installation when targets is nil (fix round 1, I-3: an event
 // of one installation runs that installation only). The installation list itself is always read.
-func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, autoModerationState *autoModerationEventState, gateways *botGatewayRuntime, statuses *runtimeStatusTracker, logger *slog.Logger, targets map[id.ID]bool) error {
+func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *client.Runtime, wasm *mlswasi.Runtime, musicRegistry *musicQueueRegistry, gateways *botGatewayRuntime, statuses *runtimeStatusTracker, logger *slog.Logger, targets map[id.ID]bool) error {
 	// Refresh inventory before retained maintenance so removed installations are
 	// pruned before their tasks can run.
 	installations, err := runtime.ListInstallations(ctx)
@@ -488,7 +483,6 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 	if err := musicRegistry.RetainOnly(activeInstallations); err != nil {
 		logger.Error("stale bot music runtime cleanup incomplete", "error", err.Error())
 	}
-	autoModerationState.RetainOnly(activeInstallations)
 	statuses.RetainOnly(activeInstallations)
 	maintained := make(map[id.ID]bool)
 	maintenanceErr := gateways.maintain(ctx, maintained)
@@ -506,18 +500,16 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		}
 		if installation.State >= 4 {
 			_ = musicRegistry.Disable(installation.ID)
-			autoModerationState.Disable(installation.ID)
 			continue
 		}
 		eligible++
 		unsucceeded[installation.ID] = true
 		// Task 10c: a manager's Restart. Tear down everything this process holds for the
-		// installation (native helper, music queues and voice rooms, automatic moderation state,
+		// installation (native helper, music queues and voice rooms,
 		// gateway connection); the rest of this pass starts them again from durable state.
 		if statuses.Observe(installation) {
 			logger.Info("bot installation restarting on a manager's request", "installation_id", installation.ID.String())
 			gateways.Drop(installation.ID)
-			autoModerationState.Disable(installation.ID)
 			if err := musicRegistry.DisableAndWait(ctx, installation.ID); err != nil {
 				logger.Error("bot installation restart deferred until native helper closes", "installation_id", installation.ID.String(), "error", err)
 				failed++
@@ -537,7 +529,6 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			logger.Warn("bot runtime status report deferred", "installation_id", installation.ID.String())
 		}
 		oldTextPoller := gateways.TextPoller(installation.ID)
-		oldInteractionPoller := gateways.InteractionPoller(installation.ID)
 		// Keep the current callbacks live during slow dependency rebuilding.
 		// Successful publication swaps in the callbacks for the rebuilt runtime.
 		nativeClient, retainedNative := retainedNativeClient(musicRegistry, installation.ID, installation.CommunityID)
@@ -597,22 +588,14 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			var membership *service.MembershipReconciler
 			membership, ensureErr = service.NewMembershipReconciler(nativeClient, service.SourceSyncOptions{}, 32)
 			if ensureErr == nil {
-				membership.UseInteractionPollSchedule(gateways.InteractionPollSchedule(installation.ID))
 				// Bot v2 Task 16: the Bot stays in Bot channel groups only, as its feed last applied them.
 				membership.UseBotChannels(gateways.BotChannels(installation.ID), logger.With("installation_id", installation.ID.String()))
 				// Bot v2 Task 17: the same marks gate every post the Bot makes, at the send layer.
 				service.SetPostGate(installation.CommunityID, gateways.BotChannels(installation.ID))
 			}
 			if ensureErr == nil {
-				var trust *service.SourceTrust
-				trust, ensureErr = service.NewSourceTrust(nativeClient)
-				if ensureErr == nil {
-					var healed int
-					// Senders whose signed device-list history is stale: held in this pass's drain.
-					ready, healed, reconcileStage, _, ensureErr = reconcileMembershipReadiness(ctx, result.Installation, nativeClient, result.Session, commandOwnedMembership{membership, nativeClient, gateways, installation.ID}, trust, unrefreshedSendersLogger(logger, installation.ID))
-					if ensureErr == nil && healed > 0 {
-						logger.Info("bot interaction groups healed after restore", "installation_id", installation.ID.String(), "groups", healed)
-					}
+				{
+					ready, reconcileStage, ensureErr = reconcileReadiness(ctx, result.Installation, result.Session, membership)
 					if ensureErr == nil {
 						// A 409 means required MLS joins are still pending. Keep
 						// reconciling membership, but do not call Ready-only bot APIs.
@@ -623,50 +606,22 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							}
 							// Bot v2 Task 14: dillad pushes membership, roles, device lists, Bot channels and channel groups as
 							// op 65 on this Bot's gateway connection; the installation's feed handler (feed_handlers.go) gets
-							// this pass's helper and session here, and the feed applies what it buffered. Interaction
-							// registration still stages from the current member list too.
-							registration, registrationErr := service.NewInteractionRegistrationCoordinator(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, api, result.Session)
-							if registrationErr != nil {
-								ensureErr = registrationErr
-							} else if catchup, catchupErr := service.NewMemberRegistrationCatchup(nativeClient, service.MemberRegistrationCatchupOptions{}); catchupErr != nil {
-								ensureErr = catchupErr
+							// this pass's helper and session here, and the feed applies what it buffered.
+							members, membersErr := result.Session.CommunityMembers(installation.CommunityID)
+							if membersErr != nil {
+								logger.Info("bot member welcome unavailable", "installation_id", installation.ID.String(), "stage", "member_lookup")
 							} else {
-								members, membersErr := result.Session.CommunityMembers(installation.CommunityID)
-								if membersErr != nil {
-									logger.Info("bot interaction registration worker unavailable", "installation_id", installation.ID.String(), "stage", "member_lookup")
-								} else {
-									welcomeHandler, welcomeErr := newWelcomeHandler(nativeClient, result.Session, api, installation.CommunityID, installation.ID, result.Installation.Capabilities)
-									if welcomeErr != nil {
-										logger.Warn("bot welcome and join role unavailable", "installation_id", installation.ID.String(), "error", welcomeErr.Error())
-									}
-									botUser := id.ID{}
-									if result.Installation.BotUser != nil {
-										botUser = *result.Installation.BotUser
-									}
-									gateways.feedFor(installation.ID, installation.CommunityID, botUser, feedDeps{
-										core: nativeClient, episodes: members, stage: registration.QueueMemberJoin, welcome: welcomeHandler,
-									})
-									catchupResult, stageErr := catchup.StageOnce(ctx, members, registration)
-									if stageErr != nil {
-										logger.Info("bot member registration catch-up remains pending", "installation_id", installation.ID.String(), "error", stageErr.Error())
-									} else if catchupResult.More {
-										logger.Info("bot member registration catch-up remains bounded", "installation_id", installation.ID.String(), "members_visited", catchupResult.MembersVisited, "pages", catchupResult.Pages)
-									}
-									registration.WithLogger(logger).WithBackoff(registrationBackoff)
-									jobsBefore, _ := registration.PendingJobs(ctx)
-									workErr := registration.ProcessPending(ctx, 4, 8, members, result.Session)
-									if registrationWorkReports.changed(installation.ID, workErr) {
-										logger.Info("bot interaction registration work remains pending", "installation_id", installation.ID.String(), "error", workErr.Error())
-									}
-									// An interaction group registered just now is not among the groups subscribed above: subscribe it now, or the
-									// member's first command never reaches the Bot as a hint (Bot v2 task 14: no periodic pass re-subscribes).
-									if err := gateways.SubscribeNativeGroups(ctx, installation.ID, nativeClient); err != nil {
-										logger.Warn("bot gateway native group discovery unavailable", "installation_id", installation.ID.String())
-									}
-									if after, again := registrationRetry(ctx, registration, jobsBefore, workErr, nativeClient, installation.ID, time.Now()); again {
-										incomplete[installation.ID] = after
-									}
+								welcomeHandler, welcomeErr := newWelcomeHandler(nativeClient, result.Session, api, installation.CommunityID, installation.ID, result.Installation.Capabilities)
+								if welcomeErr != nil {
+									logger.Warn("bot welcome and join role unavailable", "installation_id", installation.ID.String(), "error", welcomeErr.Error())
 								}
+								botUser := id.ID{}
+								if result.Installation.BotUser != nil {
+									botUser = *result.Installation.BotUser
+								}
+								gateways.feedFor(installation.ID, installation.CommunityID, botUser, feedDeps{
+									core: nativeClient, episodes: members, welcome: welcomeHandler,
+								})
 							}
 							var musicDeferred error
 							var musicInteractions *service.MusicInteractions
@@ -753,7 +708,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									}
 								}
 							}
-							interactionPoller, interactionErr := service.NewGroupEventPoller(nativeClient)
+							eventPoller, interactionErr := service.NewGroupEventPoller(nativeClient)
 							if musicDeferred != nil {
 								// Keep the prior music handlers until their dependencies can be rebuilt.
 								interactionErr = errors.Join(interactionErr, musicDeferred)
@@ -777,20 +732,13 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								var coordinator *service.SendCoordinator
 								coordinator, interactionErr = service.NewSendCoordinator(nativeClient, api)
 								if interactionErr == nil {
-									var outbox *service.InteractionResponseOutbox
-									outbox, interactionErr = service.NewInteractionResponseOutbox(nativeClient, coordinator, result.Session)
-									if interactionErr == nil {
-										var dispatcher *service.InteractionDispatcher
-										// The sealed intake (Bot v2 Task 15) serves the same handlers; it is configured once the
+									{
+										// The sealed intake (Bot v2 Task 15) serves the feature handlers; it is configured once the
 										// helper is retained by the runtime.
 										var sealedConfig sealedIntakeConfig
-										var snapshots *service.InteractionRegistrationCoordinator
-										snapshots, interactionErr = service.NewInteractionRegistrationCoordinator(cfg.InstanceID, installation.CommunityID, installation.ID, nativeClient, api, result.Session)
+										var caseSink *service.ModerationCaseSink
+										caseSink, interactionErr = service.NewModerationCaseSink(nativeClient, time.Now)
 										if interactionErr == nil {
-											_, replayThrough, replayReceivedThrough, caseSink, moderationErr := configureAutoModeration(ctx, autoModerationState, nativeClient, result.Session, installation.ID, installation.CommunityID, logger)
-											if moderationErr != nil {
-												logger.Warn("bot automatic moderation configuration unavailable; retaining the last active policy", "installation_id", installation.ID.String(), "error", moderationErr.Error())
-											}
 											var caseReader *service.ModerationCaseReader
 											caseReader, interactionErr = service.NewModerationCaseReader(caseSink, result.Session)
 											if interactionErr == nil {
@@ -807,10 +755,6 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 															ManualWarningLookup: manualWarningLookup{Session: result.Session}},
 														musicInteractions,
 														nativeClient,
-														autoModerationGrantRedeemer{Session: result.Session, InstallationID: installation.ID},
-														autoModerationState.ConfigRuntime(nativeClient, installation.ID, installation.CommunityID, func(cfg moderation.Config) (service.ModerationActorAuthority, service.ModerationActionSink, error) {
-															return prepareAutoModerationDependencies(nativeClient, result.Session, installation.CommunityID, cfg)
-														}),
 														musicProviderStatus,
 													)
 													for operation, handler := range runtimeRolePanelHandlers(result.Installation.Capabilities, service.RolePanelInteractions{
@@ -836,17 +780,11 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 													if result.Installation.BotUser != nil {
 														botUser = *result.Installation.BotUser
 													}
-													dispatcher, interactionErr = newRuntimeUtilityDispatcher(nativeClient, handlers, utilities, result.Session,
-														installation.CommunityID, installation.ID, botUser, result.Installation.Capabilities,
-														func() uint64 { return unixSecondsOrZero(time.Now()) }, snapshots)
 													sealedConfig = newSealedIntakeConfig(gateways, installation.ID, installation.CommunityID, botUser,
 														result.Installation.Capabilities, nativeClient, result.Session, handlers, utilities)
 												}
 											}
 											if interactionErr == nil {
-												eventHandler := newInteractionEventHandler(nativeClient, dispatcher, durableInteractionResponseSender{api: api, outbox: outbox})
-												eventHandler = newGroupEventRouter(nativeClient, eventHandler, autoModerationState.EventHandler(installation.ID, installation.CommunityID), replayThrough, replayReceivedThrough, newMusicReplyRecovery(installation.CommunityID, nativeClient, result.Session, api, coordinator))
-												eventRuntime := newInteractionEventRuntime(interactionPoller, eventHandler)
 												if interactionErr = musicRegistry.RetainInteractions(installation.ID, installation.CommunityID, nativeClient); interactionErr == nil {
 													runtimeOwnedNative = true
 													sealedConfig.healthDir = filepath.Join(cfg.StateDir, installation.ID.String())
@@ -860,16 +798,10 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														service.WelcomeDestinationResolver{Session: result.Session, Native: nativeClient, Feature: "webhooks"},
 														coordinatorWebhookSend{coordinator: coordinator, session: result.Session, authority: api}, time.Now,
 														logger.With("installation_id", installation.ID.String())))
-													reportUnrefreshed := unrefreshedSendersLogger(logger, installation.ID)
-													intakeEvents := countSkipped{holdingEventDrainer: eventRuntime, reportSkipped: func(events []service.SkippedGroupEvent) {
-														logSkippedCommandEvents(logger, installation.ID, events)
-													}}
-													gateways.SetTextPoller(installation.ID, newCommandIntakePoller(commandOwnedMembership{membership, nativeClient, gateways, installation.ID}, trust, result.Session,
+													gateways.SetTextPoller(installation.ID, newTextPoller(membership, result.Session,
 														func(pollCtx context.Context) error {
 															return gateways.SubscribeNativeGroups(pollCtx, installation.ID, nativeClient)
-														}, queuedInteractionDrainer{gateways, installation.ID}, reportUnrefreshed))
-													gateways.SetInteractionPoller(installation.ID, retainedInteractionPoller(musicRegistry, installation.ID, installation.CommunityID, nativeClient,
-														newInteractionIntakePoller(membership, trust, result.Session, intakeEvents, reportUnrefreshed)))
+														}, eventPoller))
 													gateways.SetMaintenance(installation.ID, backgroundMaintenance{
 														current: func() bool { return musicRegistry.Native(installation.ID, installation.CommunityID) == nativeClient },
 														run: func(maintenanceCtx context.Context) error {
@@ -882,9 +814,6 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 													})
 												}
 
-												if interactionErr == nil {
-													gateways.notifyBackgroundInteraction(installation.ID, id.ID{})
-												}
 											}
 										}
 									}
@@ -911,7 +840,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							}
 							scheduleErr = errors.Join(scheduleErr, gateways.maintainOne(ctx, installation.ID, maintained))
 							reconcileStage = "moderation_evidence"
-							caseSink, caseErr := service.NewModerationCaseSink(nativeClient, nil, time.Now)
+							caseSink, caseErr := service.NewModerationCaseSink(nativeClient, time.Now)
 							if caseErr == nil {
 								caseErr = maintainModerationEvidence(ctx, logger, installation.ID, caseSink)
 							}
@@ -922,7 +851,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			}
 		}
 		ensureErr = withGatewayStartup(ensureErr, gatewayErr)
-		cleanupUnreadyInstallation(installation.ID, membershipReady, ensureErr, musicRegistry, autoModerationState)
+		cleanupUnreadyInstallation(installation.ID, membershipReady, ensureErr, musicRegistry)
 		var closeErr error
 		if !retainedNative && !runtimeOwnedNative {
 			closeErr = nativeClient.Close()
@@ -930,9 +859,6 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		if client.IsDeferred(ensureErr) && closeErr == nil {
 			if gateways.TextPoller(installation.ID) == nil {
 				gateways.SetTextPoller(installation.ID, oldTextPoller)
-			}
-			if gateways.InteractionPoller(installation.ID) == nil {
-				gateways.SetInteractionPoller(installation.ID, oldInteractionPoller)
 			}
 			if refusal := reconciliationRateLimit(ensureErr); refusal != nil {
 				logBotRateLimit(logger, installation.ID, refusal)
@@ -948,11 +874,6 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			if errors.As(ensureErr, &membershipErr) {
 				attrs = append(attrs, "membership_phase", membershipErr.Phase.String())
 				attrs = append(attrs, safeMembershipErrorAttrs(membershipErr)...)
-			}
-			var trustErr *service.TrustPhaseError
-			if errors.As(ensureErr, &trustErr) {
-				attrs = append(attrs, "trust_phase", trustErr.Phase.String())
-				attrs = append(attrs, safeTrustErrorAttrs(trustErr)...)
 			}
 			logger.Error("bot installation reconciliation failed", attrs...)
 			continue
@@ -1024,96 +945,6 @@ func safeMembershipErrorAttrs(err error) []any {
 		return []any{"membership_failure", "api", "api_status", apiErr.Status, "api_code", code}
 	}
 	return []any{"membership_failure", "other"}
-}
-
-func safeTrustErrorAttrs(err error) []any {
-	var helperErr *helper.StatusError
-	if errors.As(err, &helperErr) {
-		name := "other"
-		switch helperErr.Status {
-		case 1:
-			name = "invalid"
-		case 2:
-			name = "forbidden"
-		case 3:
-			name = "expired"
-		case 4:
-			name = "conflict"
-		case 5:
-			name = "unavailable"
-		case 6:
-			name = "busy"
-		case 7:
-			name = "not_found"
-		case 8:
-			name = "upgrade_required"
-		case 9:
-			name = "internal"
-		}
-		return []any{"trust_failure", "native_helper", "helper_status", name}
-	}
-	var apiErr *client.APIError
-	if errors.As(err, &apiErr) {
-		code := "other"
-		switch apiErr.Code {
-		case "E_BAD_INPUT", "E_CONFLICT", "E_FORBIDDEN", "E_INTERNAL", "E_NOT_FOUND", "E_PRUNED", "E_UNAVAILABLE":
-			code = apiErr.Code
-		}
-		return []any{"trust_failure", "api", "api_status", apiErr.Status, "api_code", code}
-	}
-	return []any{"trust_failure", "other"}
-}
-
-// unrefreshedSendersLogger reports senders whose signed device-list history was stale in a
-// command-intake trust pass. Their commands stay held (not dispatched) until a later pass makes
-// their trust current; only the count is logged, never the user identities.
-func unrefreshedSendersLogger(logger *slog.Logger, installation id.ID) func(service.TrustRefresh) {
-	return func(refresh service.TrustRefresh) {
-		logger.Warn("bot commands from senders with stale device-list history held",
-			"installation_id", installation.String(), "trust_failure", "sender_history_stale", "senders", len(refresh.Unrefreshed))
-	}
-}
-
-// registrationRetry decides whether an installation's interaction registrations need its pass to run again, and after
-// how long (fix round 1, M-3). A registered group not active yet: on the loop's joining backoff (0). Jobs that made
-// progress with work left (the pass's bounded budget): after passMinSpacing. A job waiting on a backed-off device
-// (no KeyPackages yet): when that device's registration backoff (30 s up to 1 h) is due. Otherwise, a job that made no
-// progress (failed, or a member with no device yet) waits for an event: the member's device-list change, a join, a
-// failed intake turn, never a timer.
-func registrationRetry(ctx context.Context, reg *service.InteractionRegistrationCoordinator, jobsBefore int, workErr error, groups notificationGroupSource, installation id.ID, now time.Time) (time.Duration, bool) {
-	if interactionGroupsPending(ctx, groups) {
-		return 0, true
-	}
-	jobs, err := reg.PendingJobs(ctx)
-	switch {
-	case err != nil:
-		return 0, true
-	case jobs == 0:
-		return 0, false
-	case jobs < jobsBefore:
-		return passMinSpacing, true
-	}
-	if at, ok := registrationBackoff.NextDue(installation); ok {
-		return max(at.Sub(now), passMinSpacing), true
-	}
-	_ = workErr // reported by registrationWorkReports; it waits for an event
-	return 0, false
-}
-
-// interactionGroupsPending reports a private interaction group the helper holds that is not active yet (below state 2,
-// the active one; 3 is gone): its participant's commands reach the Bot as hints only once it is subscribed as active. A read failure
-// counts as pending, so the pass is run again rather than left waiting.
-func interactionGroupsPending(ctx context.Context, n notificationGroupSource) bool {
-	groups, err := n.InteractionGroups(ctx)
-	if err != nil {
-		return true
-	}
-	for _, g := range groups {
-		if g.State < 2 {
-			return true
-		}
-	}
-	return false
 }
 
 // withGatewayStartup joins a failed gateway start into the pass result. The joined error is never deferred

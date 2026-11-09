@@ -436,11 +436,6 @@ func ControlHandler(h *Host) http.Handler {
 		defer h.groupHealMu.Unlock()
 		writeJSON(w, map[string]any{"attempts": append([]GroupHealAttempt(nil), h.groupHealAttempts...)})
 	})
-	mux.HandleFunc("GET /debug/bot-interaction-heal-attempts", func(w http.ResponseWriter, _ *http.Request) {
-		h.botRuntimeMu.Lock()
-		defer h.botRuntimeMu.Unlock()
-		writeJSON(w, map[string]any{"attempts": append([]BotInteractionHealAttempt(nil), h.botInteractionHealAttempts...)})
-	})
 	mux.HandleFunc("GET /debug/bot-runtime-errors", func(w http.ResponseWriter, _ *http.Request) {
 		h.botRuntimeMu.Lock()
 		defer h.botRuntimeMu.Unlock()

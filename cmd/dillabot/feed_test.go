@@ -640,7 +640,6 @@ type fakeFeedDeps struct {
 	state    native.DeviceListState
 	changed  bool
 	ingested []id.ID
-	staged   [][2]id.ID
 	welcomed []protocol.Event
 	episodes map[id.ID]id.ID
 }
@@ -654,12 +653,6 @@ func (f *fakeFeedDeps) deps() feedDeps {
 			return native.DeviceListIngest{Changed: f.changed, Version: 2, State: f.state}, nil
 		},
 		episodes: f,
-		stage: func(_ context.Context, user, episode id.ID) error {
-			f.mu.Lock()
-			defer f.mu.Unlock()
-			f.staged = append(f.staged, [2]id.ID{user, episode})
-			return nil
-		},
 		welcome: func(_ context.Context, ev protocol.Event) error {
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -675,9 +668,9 @@ func (f *fakeFeedDeps) ResolveCurrentEpisode(_ context.Context, user id.ID) (id.
 }
 
 // TestInstallationFeedAppliesMembersAndDeviceLists: a snapshot states members without welcoming them; a live join
-// welcomes the member (with an event id and time fixed per episode) and stages its interaction registration; a live
-// device-list change of a member goes to helper op 24 and stages the new device's registration; a held list is
-// ingested and stages nothing; the Bot's own events are not welcomed; a later snapshot welcomes the joins it missed.
+// welcomes the member (with an event id and time fixed per episode); a live device-list change of a member goes to
+// helper op 24; a held list is ingested; the Bot's own events are not welcomed; a later snapshot welcomes the joins it
+// missed. Nothing is staged: the v1 interaction registration is gone (Bot v2 Task 23).
 func TestInstallationFeedAppliesMembersAndDeviceLists(t *testing.T) {
 	ctx := t.Context()
 	community, bot, ada, bea, cid := feedID(1), feedID(2), feedID(3), feedID(4), feedID(5)
@@ -690,33 +683,25 @@ func TestInstallationFeedAppliesMembersAndDeviceLists(t *testing.T) {
 	f.Member(ctx, MemberEvent{Community: community, User: ada, Joined: true, Snapshot: true})
 	f.Member(ctx, MemberEvent{Community: community, User: bot, Joined: true, Snapshot: true})
 	f.SnapshotDone(ctx)
-	if len(deps.welcomed) != 0 || len(deps.staged) != 0 || len(deps.ingested) != 1 {
-		t.Fatalf("after the first snapshot: welcomed %d, staged %d, ingested %d; want 0, 0, 1", len(deps.welcomed), len(deps.staged), len(deps.ingested))
+	if len(deps.welcomed) != 0 || len(deps.ingested) != 1 {
+		t.Fatalf("after the first snapshot: welcomed %d, ingested %d; want 0, 1", len(deps.welcomed), len(deps.ingested))
 	}
 	f.Member(ctx, MemberEvent{Community: community, User: bea, Joined: true})
 	f.Member(ctx, MemberEvent{Community: community, User: bea, Joined: true}) // a repeat of a known member is no join
-	if len(deps.welcomed) != 1 || deps.welcomed[0].Data[0] != bea || deps.welcomed[0].Data[1] != feedID(0x32) || len(deps.staged) != 1 {
-		t.Fatalf("live join: welcomed %v, staged %v", deps.welcomed, deps.staged)
+	if len(deps.welcomed) != 1 || deps.welcomed[0].Data[0] != bea || deps.welcomed[0].Data[1] != feedID(0x32) {
+		t.Fatalf("live join: welcomed %v", deps.welcomed)
 	}
 	first := deps.welcomed[0]
 	_ = f.DeviceList(ctx, bea, []byte{2}, false)
-	// Staging runs off the trust worker (fix round 3, N-4).
-	waitFor(t, "bea's new device staged", time.Second, func() bool {
-		deps.mu.Lock()
-		defer deps.mu.Unlock()
-		return len(deps.staged) == 2 && deps.staged[1] == [2]id.ID{bea, feedID(0x32)}
-	})
 	deps.mu.Lock()
 	deps.state, deps.changed = native.DeviceListHeld, false
 	deps.mu.Unlock()
 	_ = f.DeviceList(ctx, ada, []byte{3}, false)
-	time.Sleep(50 * time.Millisecond)
-	deps.mu.Lock()
-	staged, ingested := len(deps.staged), len(deps.ingested)
-	deps.mu.Unlock()
-	if staged != 2 || ingested != 3 {
-		t.Fatalf("a held list staged %d (ingested %d), want nothing staged", staged, ingested)
-	}
+	waitFor(t, "both lists ingested", time.Second, func() bool {
+		deps.mu.Lock()
+		defer deps.mu.Unlock()
+		return len(deps.ingested) == 3
+	})
 	// Bea leaves and rejoins under the same episode id: the welcome sees the same event id and time.
 	f.Member(ctx, MemberEvent{Community: community, User: bea, Joined: false})
 	f.Member(ctx, MemberEvent{Community: community, User: bea, Joined: true})

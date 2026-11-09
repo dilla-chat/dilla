@@ -33,8 +33,6 @@ import {
   type SignedLists,
   type PendingLeaf, type TrustRecord, type SearchHit, type TrustBlock, trustBlock,
   type CallMediaEpoch, readCallMediaEpoch,
-  type HumanInteractionEventPage,
-  type HumanInteractionEvent,
 } from '../../core-port';
 import { FAILED_LEAF } from '../errors';
 import type { Frame } from '../../gateway/frames';
@@ -1343,35 +1341,6 @@ export class ModelCore implements CorePort {
     return out;
   }
 
-  humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array, _now: bigint): WelcomeOutcome[] {
-    void welcomesBody;
-    void currentContextProof;
-    void _now;
-    this.log('humanInteractionWelcomeApply', new Uint8Array(16));
-    throw new CoreError('E_CORE_STATE', 'human interaction Welcome context is not modelled');
-  }
-
-  humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id {
-    void requestId; void communityId; void groupId; void requestBody; void now;
-    throw new CoreError('E_CORE_STATE', 'human interaction sends are not modelled');
-  }
-  humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage {
-    void after; void limit;
-    throw new CoreError('E_CORE_STATE', 'human interaction events are not modelled');
-  }
-  humanInteractionReceiptsRead(communityId: Id, installationId: Id, botUserId: Id, requestIds: readonly Id[]): HumanInteractionEvent[] {
-    void communityId; void installationId; void botUserId; void requestIds;
-    throw new CoreError('E_CORE_STATE', 'human interaction receipts are not modelled');
-  }
-  humanInteractionEventsAck(through: bigint): void {
-    void through;
-    throw new CoreError('E_CORE_STATE', 'human interaction events are not modelled');
-  }
-  humanInteractionEventsAckSelected(deliveryIds: readonly bigint[]): void {
-    void deliveryIds;
-    throw new CoreError('E_CORE_STATE', 'human interaction events are not modelled');
-  }
-
   // --- ordered processing (L-CORE-08) ---
 
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult {
@@ -2272,7 +2241,6 @@ export class ModelCore implements CorePort {
 export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
   | 'getGroupHealState' | 'postGroupHeal'
   | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome'
-  | 'getInteractionAdmissionContext'
   | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory' | 'deleteGroupMessage'
   | 'getModerationRemovals'
   // web-3 calls (L-HTTP-100..104): the call routes of 09 § Voice as the instance answers them.
@@ -2966,9 +2934,6 @@ export class ModelDs {
         }),
       postResync: (id, body) => this.call(d, 'postResync', id, null, () => this.postResync(dev, id, body)),
       getWelcomes: (after) => this.call(d, 'getWelcomes', null, after, () => this.welcomePage(d, after)),
-      getInteractionAdmissionContext: (groupId) => this.call(d, 'getInteractionAdmissionContext', groupId, null, () => {
-        throw httpError(403, 'E_FORBIDDEN');
-      }),
       deleteWelcome: (welcomeId) =>
         this.call(d, 'deleteWelcome', null, null, () => {
           const i = this.welcomes.findIndex((w) => w.dev === d && w.id === welcomeId);

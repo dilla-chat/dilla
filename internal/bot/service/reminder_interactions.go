@@ -42,11 +42,11 @@ type ReminderInteractions struct {
 
 func (h ReminderInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
 	return map[protocol.Operation]InteractionHandlerSpec{
-		protocol.OpReminderCreate:  {RevisionInHandler: true, Handle: h.create},
-		protocol.OpReminderList:    {RecomputeOnReplay: true, Handle: h.list},
-		protocol.OpReminderCancel:  {RevisionInHandler: true, Handle: h.cancel},
-		protocol.OpReminderDismiss: {RevisionInHandler: true, Handle: h.dismiss},
-		protocol.OpReminderDue:     {RecomputeOnReplay: true, Handle: h.due},
+		protocol.OpReminderCreate:   {RevisionInHandler: true, Handle: h.create},
+		protocol.OpReminderList:     {RecomputeOnReplay: true, Handle: h.list},
+		protocol.OpReminderCancel:   {RevisionInHandler: true, Handle: h.cancel},
+		protocol.OpReminderDismiss:  {RevisionInHandler: true, Handle: h.dismiss},
+		protocol.OpReadRemindersDue: {RecomputeOnReplay: true, Handle: h.due},
 	}
 }
 func (h ReminderInteractions) now() time.Time {
@@ -270,7 +270,7 @@ func (h ReminderInteractions) list(ctx context.Context, actor InteractionActor, 
 	return h.readPage(ctx, actor, r, protocol.OpReminderList, false)
 }
 func (h ReminderInteractions) due(ctx context.Context, actor InteractionActor, r protocol.Request) (InteractionResult, error) {
-	return h.readPage(ctx, actor, r, protocol.OpReminderDue, true)
+	return h.readPage(ctx, actor, r, protocol.OpReadRemindersDue, true)
 }
 func (h ReminderInteractions) readPage(ctx context.Context, actor InteractionActor, r protocol.Request, op protocol.Operation, dueOnly bool) (InteractionResult, error) {
 	if !h.valid(r, op, false) {

@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"net/http"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,9 +16,7 @@ import (
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/gatewayclient"
-	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/gateway"
-	"github.com/dilla-chat/dilla/internal/id"
 )
 
 // TestAnEndedConnectionsFeedWorkerStops (N-7's trigger): dillad ends a connection with a terminal error after ready.
@@ -70,67 +67,5 @@ func TestAnEndedConnectionsFeedWorkerStops(t *testing.T) {
 	h.mu.Unlock()
 	if lists != 0 {
 		t.Fatalf("the ended connection's feed worker applied %d device lists after the connection ended; want none", lists)
-	}
-}
-
-// countingEpisodes counts the episode reads in flight and the most at once; each read hangs until released or its
-// context ends.
-type countingEpisodes struct {
-	release                 chan struct{}
-	inFlight, peak, started atomic.Int64
-}
-
-func (c *countingEpisodes) ResolveCurrentEpisode(ctx context.Context, _ id.ID) (id.ID, bool, error) {
-	c.started.Add(1)
-	n := c.inFlight.Add(1)
-	for {
-		p := c.peak.Load()
-		if n <= p || c.peak.CompareAndSwap(p, n) {
-			break
-		}
-	}
-	defer c.inFlight.Add(-1)
-	select {
-	case <-c.release:
-	case <-ctx.Done():
-	}
-	return id.ID{}, false, ctx.Err()
-}
-
-// TestStagingIsBoundedAndEndsWithTheFeed (N-8): twelve known members' lists change at once. At most
-// maxConcurrentStagings episode reads run at a time; when the feed is closed the reads in flight end at once and the
-// waiting stagings never start.
-func TestStagingIsBoundedAndEndsWithTheFeed(t *testing.T) {
-	ctx := t.Context()
-	community := feedID(1)
-	eps := &countingEpisodes{release: make(chan struct{})}
-	defer close(eps.release)
-	h := newInstallationFeed(feedID(9), community, feedID(8), quietLogger(), func() {})
-	h.setDeps(feedDeps{
-		ingest: func(context.Context, id.ID, []byte) (native.DeviceListIngest, error) {
-			return native.DeviceListIngest{Changed: true, Version: 2}, nil
-		},
-		episodes: eps,
-		stage:    func(context.Context, id.ID, id.ID) error { return nil },
-	})
-	const members = 12
-	h.SnapshotBegin(ctx)
-	for i := range members {
-		h.Member(ctx, MemberEvent{Community: community, User: feedID(0x40 + byte(i)), Joined: true, Snapshot: true})
-	}
-	h.SnapshotDone(ctx)
-	for i := range members {
-		_ = h.DeviceList(ctx, feedID(0x40+byte(i)), []byte{1}, false)
-	}
-	waitFor(t, "the first stagings in flight", time.Second, func() bool { return eps.inFlight.Load() == maxConcurrentStagings })
-	time.Sleep(50 * time.Millisecond)
-	if peak, started := eps.peak.Load(), eps.started.Load(); peak != maxConcurrentStagings || started != maxConcurrentStagings {
-		t.Fatalf("%d stagings at once (peak %d) for %d changed lists, want %d", started, peak, members, maxConcurrentStagings)
-	}
-	h.close()
-	waitFor(t, "the stagings in flight ended", time.Second, func() bool { return eps.inFlight.Load() == 0 })
-	time.Sleep(50 * time.Millisecond)
-	if started := eps.started.Load(); started != maxConcurrentStagings {
-		t.Fatalf("%d stagings started in all; want only the %d in flight at close, none of the waiting ones", started, maxConcurrentStagings)
 	}
 }

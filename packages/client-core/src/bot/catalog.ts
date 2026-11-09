@@ -30,7 +30,7 @@ export interface BotCatalog {
   /** The Bot user this device pinned for the community (hex), the key's signer; null while unknown. */
   botUserId: string | null;
 }
-/** One kind/scope/revision of GET /v1/bot/revisions; kind 3 is a community's catalog (scope_id the community). */
+/** One kind/scope/revision of GET /v1/bot/revisions; kind = 3 is a community's catalog (scope_id the community). */
 export interface BotRevision { kind: number; scopeId: string; revision: bigint }
 
 /** The slice view of a catalog (state/types `botCatalog:<community>`): no bigint and no bytes. */

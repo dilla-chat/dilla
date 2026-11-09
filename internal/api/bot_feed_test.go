@@ -760,6 +760,50 @@ func TestStructuralEventRoutesAreGone(t *testing.T) {
 	}
 }
 
+// Bot v2 Task 23: the AutoModeration step-up routes and the v1 interaction routes (admissions, their context and
+// group-absence proofs, the kind-3 group reads and heal, the member's admission context) are no longer registered: each
+// answers 404 over the socket, to the Bot and to a member. Control: the member's group info route still answers.
+func TestAutomodRoutesAreGone(t *testing.T) {
+	f := newFeedFixture(t)
+	botTok := "feed-bot-session-" + f.install.String()
+	now := f.deps.Clock.Now().Unix()
+	ctx := context.Background()
+	if err := f.deps.Repo.CreateSession(ctx, store.SessionRow{TokenHash: auth.TokenHash(botTok), DeviceID: f.botDevice, UserID: f.botUser, Scope: uint8(auth.ScopeEnrolled), Created: now, Expires: now + 3600, IdleExpires: now + 3600}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.deps.Repo.SetSessionVersions(ctx, auth.TokenHash(botTok), 6, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.deps.Repo.CreateBotSessionBinding(ctx, store.BotSessionBindingRow{TokenHash: auth.TokenHash(botTok), InstallationID: f.install, UserID: f.botUser, DeviceID: f.botDevice, Created: now}); err != nil {
+		t.Fatal(err)
+	}
+	disp := api.NewSocketDispatcher(muxOf(t, f.h), api.SocketDispatchOptions{Clock: f.deps.Clock})
+	bot := auth.Session{TokenHash: auth.TokenHash(botTok), DeviceID: f.botDevice}
+	group, request := id.New().String(), id.New().String()
+	runtime := "/v1/bot-runtime/installations/" + f.install.String()
+	for _, route := range []struct{ method, path string }{
+		{http.MethodPost, runtime + "/automod-grants/redeem"},
+		{http.MethodPost, runtime + "/interaction-admissions"},
+		{http.MethodPost, runtime + "/interaction-admissions/context"},
+		{http.MethodGet, runtime + "/interaction-admissions/" + request + "/group-absence"},
+		{http.MethodGet, runtime + "/interaction-groups/" + group + "/info"},
+		{http.MethodGet, runtime + "/interaction-groups/" + group + "/handshakes"},
+		{http.MethodGet, runtime + "/interaction-groups/" + group + "/messages"},
+		{http.MethodPost, runtime + "/interaction-groups/" + group + "/cursor"},
+		{http.MethodGet, runtime + "/interaction-groups/" + group + "/heal"},
+		{http.MethodPost, runtime + "/interaction-groups/" + group + "/heal"},
+		{http.MethodPost, "/v1/groups/" + group + "/automod-grants/arm"},
+		{http.MethodGet, "/v1/groups/" + group + "/interaction-admission-context"},
+	} {
+		// An unregistered route answers exactly what a path no route ever matched answers (a handler's own 404 differs).
+		_, unrouted := sockettest.Do(t, disp, bot, route.method, runtime+"/no-such-route", nil)
+		status, body := sockettest.Do(t, disp, bot, route.method, route.path, nil)
+		if status != http.StatusNotFound || !bytes.Equal(body, unrouted) {
+			t.Errorf("socket %s %s = %d %x, want the unrouted 404 %x", route.method, route.path, status, body, unrouted)
+		}
+	}
+}
+
 type heardCommunities struct {
 	mu  sync.Mutex
 	got []id.ID

@@ -576,35 +576,6 @@ func TestMusicStateReportsCurrentDJControlGrant(t *testing.T) {
 
 func uint64Ptr(v uint64) *uint64 { return &v }
 
-func TestMusicMutationDefersRevisionCheckUntilAuthorization(t *testing.T) {
-	channel := interactionID(5)
-	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 7}}
-	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: false, dj: true}
-	h := MusicInteractions{Store: store, Authority: authority, CommunityID: interactionID(2)}
-	for operation, spec := range h.Handlers() {
-		if operation != protocol.OpMusicState && operation != protocol.OpMusicSearch && (spec.CurrentRevision != nil || !spec.RevisionInHandler) {
-			t.Fatalf("operation %v exposes revision before handler authorization", operation)
-		}
-	}
-	d, event, _ := interactionFixture(t, h.Handlers())
-	stale := uint64(1)
-	expires := uint64(120)
-	body, err := protocol.EncodeRequest(protocol.Request{RequestID: id.New(), CommunityID: h.CommunityID, ChannelID: &channel,
-		Operation: protocol.OpMusicPause, Revision: &stale, Expires: &expires, Args: []any{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	event.Body = &body
-	encoded, err := d.Dispatch(context.Background(), event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := interactionResponse(t, encoded)
-	if response.Status != interactionStatusForbidden || response.Revision != nil {
-		t.Fatalf("unauthorized stale request response=%+v, want forbidden without revision", response)
-	}
-}
-
 func TestMusicEnqueueResolveFailureIsDefiniteUnavailable(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
@@ -1101,40 +1072,6 @@ func TestMusicSkipAcceptsOptionalExpectedCurrentItem(t *testing.T) {
 		if _, ok := musicOperation(protocol.OpMusicSkip, args); ok {
 			t.Errorf("accepted malformed skip args=%v", args)
 		}
-	}
-}
-
-func TestImmediateMusicSkipReplaysExactRequestWithoutAdvancingAgain(t *testing.T) {
-	channel := interactionID(5)
-	current := id.New().String()
-	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState()}}
-	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
-	calls := 0
-	h := MusicInteractions{Store: store, Authority: authority, CommunityID: interactionID(2), Now: func() time.Time { return time.Unix(100, 0) },
-		OnImmediateControl: func(_ context.Context, _, _, _ id.ID, op music.Operation) (music.State, error) {
-			calls++
-			if op.ExpectedCurrentItemID == nil || *op.ExpectedCurrentItemID != current {
-				t.Error("skip lost its expected current item")
-			}
-			state := music.InitialState()
-			state.Revision = 1
-			return state, nil
-		},
-	}
-	dispatcher, event, _ := interactionFixture(t, h.Handlers())
-	body, err := protocol.EncodeRequest(protocol.Request{RequestID: id.New(), CommunityID: h.CommunityID, ChannelID: &channel,
-		Operation: protocol.OpMusicSkip, Revision: uint64Ptr(0), Expires: uint64Ptr(120), Args: []any{current}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	event.Body = &body
-	first, err := dispatcher.Dispatch(context.Background(), event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	replay, err := dispatcher.Dispatch(context.Background(), event)
-	if err != nil || first != replay || calls != 1 || interactionResponse(t, first).Status != 0 {
-		t.Fatalf("replay=%v calls=%d err=%v response=%+v", first == replay, calls, err, interactionResponse(t, first))
 	}
 }
 

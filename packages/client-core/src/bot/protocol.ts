@@ -66,16 +66,17 @@ export interface BotContext {
   now: bigint;
 }
 const ops: Record<number, { channel: boolean; mutation: boolean; count: number }> = {
-  0:{channel:false,mutation:false,count:0},3:{channel:false,mutation:false,count:0},1:{channel:false,mutation:false,count:1},2:{channel:false,mutation:true,count:2},
+  // Bot v2 Task 23: capabilities (3), AutoModeration (62, 63) and due reminders (84) are retired.
+  0:{channel:false,mutation:false,count:0},1:{channel:false,mutation:false,count:1},2:{channel:false,mutation:true,count:2},
   10:{channel:true,mutation:false,count:0},11:{channel:true,mutation:false,count:1},12:{channel:true,mutation:true,count:1},
   13:{channel:true,mutation:true,count:0},14:{channel:true,mutation:true,count:0},15:{channel:true,mutation:true,count:0},16:{channel:true,mutation:true,count:0},
   17:{channel:true,mutation:true,count:1},18:{channel:true,mutation:true,count:1},19:{channel:true,mutation:true,count:0},20:{channel:true,mutation:true,count:1},
   21:{channel:true,mutation:true,count:1},22:{channel:true,mutation:true,count:2},23:{channel:true,mutation:true,count:0},24:{channel:false,mutation:false,count:0},25:{channel:true,mutation:true,count:1},
   30:{channel:false,mutation:false,count:1},31:{channel:false,mutation:true,count:2},40:{channel:false,mutation:false,count:1},50:{channel:false,mutation:false,count:1},
   51:{channel:false,mutation:true,count:2},52:{channel:false,mutation:true,count:2},60:{channel:false,mutation:false,count:1},61:{channel:false,mutation:true,count:3},
-  62:{channel:false,mutation:false,count:0},63:{channel:false,mutation:true,count:2},64:{channel:false,mutation:false,count:1},
+  64:{channel:false,mutation:false,count:1},
   70:{channel:false,mutation:true,count:1},71:{channel:false,mutation:false,count:1},72:{channel:false,mutation:false,count:3},73:{channel:false,mutation:true,count:2},74:{channel:false,mutation:true,count:1},75:{channel:false,mutation:false,count:3},
-  80:{channel:false,mutation:true,count:1},81:{channel:false,mutation:false,count:1},82:{channel:false,mutation:true,count:1},83:{channel:false,mutation:true,count:1},84:{channel:false,mutation:false,count:1},
+  80:{channel:false,mutation:true,count:1},81:{channel:false,mutation:false,count:1},82:{channel:false,mutation:true,count:1},83:{channel:false,mutation:true,count:1},
 };
 function cursor(v: unknown): Uint8Array | null {
   if (v === null) return null;
@@ -146,14 +147,13 @@ function validateArgs(op: number, a: unknown[]): void {
       else if (a.length === 4 && a[1] === 'warn') { t(2,1,1024); t(3,0,0); }
       else fail('E_BOT_SHAPE');
       break;
-    case 63: t(0,1,512,true); a[1]=cborBytes(a[1],1,2400); break;
     case 70: a[0]=validateUtilityPayload(a[0], true); break;
     case 80: a[0]=validateUtilityPayload(a[0], false); break;
     case 71: case 74: case 82: case 83: ident(0); break;
     case 72: ident(0); a[1]=nullable(a[1],id); a[2]=cursor(a[2]); break;
     case 73: ident(0); a[1]=validatePollSelection(a[1]); break;
     case 75: ident(0); u(1,0n,9n); a[2]=cursor(a[2]); break;
-    case 81: case 84: a[0]=cursor(a[0]); break;
+    case 81: a[0]=cursor(a[0]); break;
   }
 }
 function requestValue(x: BotRequest): CborInput[] {
@@ -626,7 +626,7 @@ function helperValue(
   const operation = isResponse
     ? (envelope as HelperResponse).status
     : (envelope as HelperEnvelope).operation;
-  uint(operation, isResponse ? 0n : 1n, isResponse ? 9n : 26n);
+  uint(operation, isResponse ? 0n : 1n, isResponse ? 9n : 27n);
   if (!Number.isInteger(operation)) fail('E_BOT_RANGE');
 
   const payload = bytes(envelope.payload);

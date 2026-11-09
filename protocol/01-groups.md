@@ -2,14 +2,14 @@
 
 ## Group kinds
 
-Every end-to-end encrypted conversation or session is one MLS group. There are four kinds:
+Every end-to-end encrypted conversation or session is one MLS group. There are three kinds in use:
 
 | kind | value | one per | members (leaves) | external sender |
 |---|---|---|---|---|
 | `text` | 0 | e2ee text channel, DM or group DM | every device of every member | the instance |
 | `call` | 1 | voice session in a voice channel, DM call or group-DM call | every device present in the call | the instance |
 | `pairing` | 2 | device enrolment | exactly two leaves: the authorising device and the new device | none |
-| `interaction` | 3 | (user, bot) pair | every device of the user plus the bot's device(s) | none |
+| `interaction` | 3 | retired (Bot v2): refused, never created | — | — |
 
 A `readable` text channel has no group. A call in any voice channel, including a voice channel of
 a community whose text channels are `readable`, always has a `call` group: calls are always
@@ -33,8 +33,7 @@ Group configuration:
   `[basic]`. `external_senders` is not listed in `extension_types` because RFC 9420 §7.2 forbids
   listing default extension types in `required_capabilities`.
 - Past epoch secrets: a client keeps the message secrets of past epochs for 300 seconds in `text`
-  groups, 10 seconds in `call` groups, and 0 seconds in `pairing` and `interaction` groups, then
-  deletes them.
+  groups, 10 seconds in `call` groups, and 0 seconds in `pairing` groups, then deletes them.
 
 ## dilla_binding
 
@@ -45,42 +44,19 @@ Every group carries a GroupContext extension of type `0xF001` (RFC 9420 private-
 [
   v,               ; uint, = 1
   instance_id,     ; bstr, 16 bytes
-  community_id,    ; bstr, 16 bytes, or null for DMs, group DMs, pairing and interaction groups
+  community_id,    ; bstr, 16 bytes, or null for DMs, group DMs and pairing
   target_id,       ; bstr, 16 bytes: channel_id for text and call groups in a community;
-                   ;   dm_id for DMs and their calls; the new device_id for pairing;
-                   ;   the bot's user_id for interaction groups
-  kind,            ; uint, 0..3 as in the table above
+                   ;   dm_id for DMs and their calls; the new device_id for pairing
+  kind,            ; uint, 0..2 as in the table above (3 is retired)
   policy_version,  ; uint, the instance's policy version at group creation (see 02, invariant 1)
   e2ee_version,    ; uint, = 1
   media_version    ; uint, = 1 for call groups, 0 for the other kinds
 ]
 ```
 
-Bot interaction groups use the following typed v2 form; it is a separate encoding, not an extension
-of the legacy v1 kind-3 binding:
-
-```
-[
-  2,                       ; version
-  instance_id,             ; bstr, 16 bytes
-  null,                    ; legacy community slot stays null for kind 3
-  bot_user_id,             ; bstr, 16 bytes, the interaction target
-  3,                       ; kind = interaction
-  policy_version,          ; uint, snapshot at creation
-  1,                       ; e2ee_version
-  0,                       ; media_version
-  installation_id,         ; bstr, 16 bytes
-  community_id,            ; bstr, 16 bytes, installation's community scope
-  participant_user_id,     ; bstr, 16 bytes, the single eligible human participant
-  participant_device_id    ; bstr, 16 bytes, the authenticated human device admitted as a leaf
-]
-```
-
-All six IDs in the v2 form MUST be nonzero. A v2 decoder MUST require exactly twelve fields,
-the null legacy community slot, kind 3, and the stated protocol versions. Legacy v1 kind-3
-bindings remain valid for existing human interaction groups; Bot admission MUST require v2 and
-must also validate the installation, participant user and participant device against the server-authoritative admission
-contract. This binding format alone does not authorize a participant or enable Bot admission.
+The interaction kind (3) and its typed v2 binding are retired (Bot v2 Task 23, `10` § Retired v1
+surfaces): a client, the Bot and the instance refuse a kind-3 binding, and each deletes any kind-3
+group it still holds.
 
 Rules:
 

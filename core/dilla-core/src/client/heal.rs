@@ -94,17 +94,6 @@ impl ClientCore {
                     return Err(refused());
                 }
             }
-            GroupKind::Interaction => {
-                let binding = group.interaction_binding().map_err(|_| refused())?;
-                if binding.instance_id.as_bytes() != &own.instance_id
-                    || Some(binding.community_id.as_bytes().as_slice()) != community.as_deref()
-                    || binding.bot_user_id.as_slice() != target.as_slice()
-                    || binding.participant_user_id.as_slice() != own.user_id.as_slice()
-                    || binding.participant_device_id.as_bytes() != &own.device_id
-                {
-                    return Err(refused());
-                }
-            }
             GroupKind::Pairing => return Err(refused()),
         }
 

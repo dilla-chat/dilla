@@ -26,3 +26,13 @@ func (c *Client) CallGroupForget(ctx context.Context, call id.ID) error {
 	_, err := c.call(ctx, protocol.HelperCallGroupForget, []any{call}, true, voidResult)
 	return err
 }
+
+// GroupForget drops a text group's local MLS state (helper op 27, Bot v2 Task 23): the Bot keeps none for a group whose
+// channel is not a Bot channel, or that it was removed from. An unknown group is a no-op.
+func (c *Client) GroupForget(ctx context.Context, group id.ID) error {
+	if group.IsZero() {
+		return errors.New("invalid group forget input")
+	}
+	_, err := c.call(ctx, protocol.HelperGroupForget, []any{group}, true, voidResult)
+	return err
+}

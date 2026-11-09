@@ -20,10 +20,9 @@ func logBotRateLimit(logger *slog.Logger, installation id.ID, refusal *client.AP
 // A joined maintenance error is deferred only when every cause is transient.
 func reconciliationRateLimit(err error) *client.APIError { return client.RateLimitError(err) }
 
-func cleanupUnreadyInstallation(installation id.ID, ready bool, passErr error, registry *musicQueueRegistry, moderation *autoModerationEventState) {
+func cleanupUnreadyInstallation(installation id.ID, ready bool, passErr error, registry *musicQueueRegistry) {
 	if !ready && !client.IsDeferred(passErr) {
 		_ = registry.Disable(installation)
-		moderation.Disable(installation)
 	}
 }
 

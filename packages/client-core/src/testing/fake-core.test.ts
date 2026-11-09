@@ -126,7 +126,6 @@ describe('FakeCore group half', () => {
         new Uint8Array([0x80]), new Uint8Array([0x80]))],
       ['groupJoined', () => core.groupJoined(GROUP, 1n)],
       ['welcomesApply', () => core.welcomesApply(new Uint8Array([0x80]), [])],
-      ['humanInteractionWelcomeApply', () => core.humanInteractionWelcomeApply(new Uint8Array([0x80]), new Uint8Array([0x80]), 1n)],
       ['commitBuild', () => core.commitBuild(GROUP, new Uint8Array([0x80]))],
       ['commitConfirm', () => core.commitConfirm(GROUP)],
       ['commitAbort', () => core.commitAbort(GROUP)],

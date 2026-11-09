@@ -1,7 +1,6 @@
 package store_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -40,59 +39,6 @@ func TestBotRuntimeRotationAndRevocationAreDurable(t *testing.T) {
 			}
 			if err := repo.RotateBotRuntime(ctx, runtime.ID, nextHash, runtime.TokenHash, 40); !errors.Is(err, store.ErrConflict) {
 				t.Fatalf("rotate revoked runtime = %v, want conflict", err)
-			}
-		})
-	}
-}
-
-func TestAutoModerationGrantIsOneUseAndExactRetryKeepsReceipt(t *testing.T) {
-	ctx := context.Background()
-	for engine, repo := range engines(t) {
-		t.Run(engine, func(t *testing.T) {
-			community := seedCommunity(ctx, t, repo)
-			approver, bot := seedUser(ctx, t, repo), seedUser(ctx, t, repo)
-			device := store.DeviceRow{ID: id.New(), UserID: bot.ID, DSKPub: make([]byte, 32), CredentialBlob: []byte{1}, Created: 10}
-			if err := repo.CreateDevice(ctx, device); err != nil {
-				t.Fatal(err)
-			}
-			runtime := store.BotRuntimeRow{ID: id.New(), TokenHash: bytes.Repeat([]byte{1}, 32), Created: 10, Rotated: 10}
-			if err := repo.CreateBotRuntime(ctx, runtime); err != nil {
-				t.Fatal(err)
-			}
-			uid, did, rid := bot.ID, device.ID, runtime.ID
-			inst := store.BotInstallationRow{ID: id.New(), CommunityID: community, RuntimeID: &rid, UserID: &uid, DeviceID: &did, State: store.BotInstallationReady, Revision: 1, ApprovedBy: approver.ID, ApprovedAt: 10, Created: 10, Updated: 10}
-			if err := repo.CreateBotInstallation(ctx, inst); err != nil {
-				t.Fatal(err)
-			}
-			row := store.BotAutoModerationGrantRow{TokenHash: bytes.Repeat([]byte{2}, 32), CommunityID: community, InstallationID: inst.ID, GroupID: id.New(), RequestID: id.New(), ActorUser: approver.ID, ActorDevice: id.New(), ExpectedRevision: 0, RequestExpires: 90, ConfigHash: bytes.Repeat([]byte{3}, 32), Expires: 80}
-			if err := repo.CreateBotAutoModerationGrant(ctx, row); err != nil {
-				t.Fatal(err)
-			}
-			got, err := repo.GetBotAutoModerationGrant(ctx, row.TokenHash)
-			if err != nil || got.ExpectedRevision != 0 || !bytes.Equal(got.ConfigHash, row.ConfigHash) {
-				t.Fatalf("grant read=%+v err=%v", got, err)
-			}
-			accepted := row
-			accepted.ConsumedAt = 40
-			accepted.RequestHash = bytes.Repeat([]byte{4}, 32)
-			accepted.Receipt = bytes.Repeat([]byte{5}, 16)
-			first, retry, err := repo.AcceptBotAutoModerationGrant(ctx, accepted)
-			if err != nil || retry || !bytes.Equal(first.Receipt, accepted.Receipt) {
-				t.Fatalf("first accept=%+v retry=%v err=%v", first, retry, err)
-			}
-			accepted.Receipt = bytes.Repeat([]byte{6}, 16)
-			second, retry, err := repo.AcceptBotAutoModerationGrant(ctx, accepted)
-			if err != nil || !retry || !bytes.Equal(second.Receipt, first.Receipt) {
-				t.Fatalf("exact retry=%+v retry=%v err=%v", second, retry, err)
-			}
-			accepted.RequestHash = bytes.Repeat([]byte{7}, 32)
-			if _, _, err = repo.AcceptBotAutoModerationGrant(ctx, accepted); !errors.Is(err, store.ErrConflict) {
-				t.Fatalf("changed request reuse=%v, want conflict", err)
-			}
-			accepted.RequestHash = first.RequestHash
-			accepted.InstallationID = id.New()
-			if _, _, err = repo.AcceptBotAutoModerationGrant(ctx, accepted); !errors.Is(err, store.ErrConflict) {
-				t.Fatalf("cross-installation reuse=%v, want conflict", err)
 			}
 		})
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/bot/catalog"
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
@@ -21,7 +22,6 @@ import (
 	"github.com/dilla-chat/dilla/internal/bot/service"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
-	"github.com/dilla-chat/dilla/internal/store"
 )
 
 const utilityPollSendPermission = uint64(api.PermViewChannel | api.PermSendMessages | api.PermReadHistory)
@@ -618,8 +618,8 @@ func (u *utilityRuntime) gateCreation(current func(context.Context) (uint16, err
 			return caps&bit != 0, nil
 		}
 	}
-	u.polls.CreateEnabled = gate(service.CommandCapPolls)
-	u.reminders.CreateEnabled = gate(service.CommandCapReminders)
+	u.polls.CreateEnabled = gate(uint16(catalog.FeaturePolls))
+	u.reminders.CreateEnabled = gate(uint16(catalog.FeatureReminders))
 }
 
 func (u *utilityRuntime) handlers() map[protocol.Operation]service.InteractionHandlerSpec {
@@ -648,29 +648,10 @@ func (u *utilityRuntime) maintain(ctx context.Context) error {
 	}
 	return errors.Join(errs...)
 }
-func addCapabilityDiscoveryHandler(handlers map[protocol.Operation]service.InteractionHandlerSpec, session *client.Session, community, installation, botUser id.ID, capabilities uint16) {
-	if handlers == nil || session == nil || community.IsZero() || installation.IsZero() || botUser.IsZero() {
-		return
-	}
-	supported := []protocol.Operation{protocol.OpCapabilities}
-	for op := range handlers {
-		if op != protocol.OpCapabilities {
-			supported = append(supported, op)
-		}
-	}
-	for op, h := range (service.CommandCapabilitiesInteractions{Authority: session, CommunityID: community, InstallationID: installation, BotUserID: botUser, Capabilities: capabilities, Supported: supported}).Handlers() {
-		handlers[op] = h
-	}
-}
 
-type runtimeCommandAuthority interface {
-	BotActorAuthority(context.Context, id.ID, id.ID) (client.ActorAuthority, bool, error)
-}
-
-// assembleUtilityInteractionHandlers is the production assembly seam shared by
-// main.go and the dispatcher integration test. Capability discovery is derived
-// only after utility handlers have joined the actual handler map.
-func assembleUtilityInteractionHandlers(existing map[protocol.Operation]service.InteractionHandlerSpec, utilities *utilityRuntime, authority runtimeCommandAuthority, community, installation, botUser id.ID, capabilities uint16) map[protocol.Operation]service.InteractionHandlerSpec {
+// assembleUtilityInteractionHandlers adds the utility (poll and reminder) handlers to the existing handler map: the
+// handlers the sealed intake dispatches to.
+func assembleUtilityInteractionHandlers(existing map[protocol.Operation]service.InteractionHandlerSpec, utilities *utilityRuntime) map[protocol.Operation]service.InteractionHandlerSpec {
 	handlers := make(map[protocol.Operation]service.InteractionHandlerSpec, len(existing)+12)
 	for op, handler := range existing {
 		handlers[op] = handler
@@ -678,24 +659,5 @@ func assembleUtilityInteractionHandlers(existing map[protocol.Operation]service.
 	for op, handler := range utilities.handlers() {
 		handlers[op] = handler
 	}
-	if authority != nil && !community.IsZero() && !installation.IsZero() && !botUser.IsZero() {
-		supported := []protocol.Operation{protocol.OpCapabilities}
-		for op := range handlers {
-			if op != protocol.OpCapabilities {
-				supported = append(supported, op)
-			}
-		}
-		for op, handler := range (service.CommandCapabilitiesInteractions{Authority: authority, CommunityID: community, InstallationID: installation, BotUserID: botUser, Capabilities: capabilities, Supported: supported}).Handlers() {
-			handlers[op] = handler
-		}
-	}
 	return handlers
-}
-
-func newRuntimeUtilityDispatcher(nativeBoundary service.InteractionNative, handlers map[protocol.Operation]service.InteractionHandlerSpec, utilities *utilityRuntime, authority runtimeCommandAuthority, community, installation, botUser id.ID, capabilities uint64, now func() uint64, snapshots service.InteractionSnapshotProvider) (*service.InteractionDispatcher, error) {
-	if capabilities > uint64(store.BotKnownCapabilities) {
-		return nil, errors.New("utility capabilities exceed the known capability mask")
-	}
-	assembled := assembleUtilityInteractionHandlers(handlers, utilities, authority, community, installation, botUser, uint16(capabilities))
-	return service.NewInteractionDispatcherWithSnapshots(nativeBoundary, assembled, now, snapshots)
 }

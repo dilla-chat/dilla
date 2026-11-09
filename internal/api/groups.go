@@ -49,9 +49,6 @@ type Groups struct {
 	// outside any transaction; a failure is the hook's to log, because the registration itself has
 	// succeeded.
 	AfterRegister func(ctx context.Context, groupID id.ID)
-	// LoadBotInteractionPreflight supplies fresh trusted context for a kind-3 registration. The
-	// handler obtains its identifiers from an authenticated MLS GroupContext before invoking it.
-	LoadBotInteractionPreflight func(context.Context, BotInteractionPreflightRequest) (ds.InteractionRegistrationPreflight, error)
 	// AfterKeyPackages, when set, runs after the delivery service stored a device's KeyPackages,
 	// the same way AfterRegister does: after the 201, on its own goroutine, under a context the
 	// request's cancellation does not reach, drained by Drain. SyncGroupMembers proposes only a
@@ -99,11 +96,9 @@ func (h *Groups) Register(mux *server.Mux, sessions *auth.Sessions) {
 	// routes of task 24 are the only ones that also accept a provisional session, and they say so
 	// at their own Register.
 	mux.SocketAuthed("POST /v1/groups", socketMeter(sessions, h.Limiter, dsClassWrite), http.HandlerFunc(h.create))
-	h.registerBotInteractionGroupReads(mux, sessions)
 	h.RegisterBotRegistration(mux, sessions)
 	h.RegisterBotMessages(mux, sessions)
 	mux.SocketAuthed("GET /v1/groups/{id}/info", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.info))
-	mux.SocketAuthed("GET /v1/groups/{id}/interaction-admission-context", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.currentInteractionAdmissionContext))
 	mux.SocketAuthed("GET /v1/groups/{id}/tree", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.tree))
 }
 

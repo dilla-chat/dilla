@@ -141,9 +141,7 @@ func TestOneFfmpegFromStreamToOpus(t *testing.T) {
 	stream := testOgg(t, 1.0)
 	ffmpeg := fakeStreamFFmpeg(t, dir, stream, "")
 	starter, log := streamStarterForTest(t, dir, ffmpeg, &fakeResolver{})
-	// The Go side must never start a second ffmpeg: point the encoder at one that records its use.
-	marker := filepath.Join(dir, "second-ffmpeg-ran")
-	second := writeScript(t, dir, "second-ffmpeg", `touch "`+marker+`"; exit 1`)
+	// The Go side never starts a second ffmpeg (Bot v2 Task 23 removed its PCM encoder): one ffmpeg runs per track.
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -159,7 +157,7 @@ func TestOneFfmpegFromStreamToOpus(t *testing.T) {
 	if marked, ok := source.(interface{ OggOpus() bool }); !ok || !marked.OggOpus() {
 		t.Fatal("the stream is not marked Ogg Opus, so the session would run a second encoder over it")
 	}
-	session, err := musicruntime.StartOgg(ctx, source, 100, musicruntime.Options{FFmpegPath: second})
+	session, err := musicruntime.StartOgg(ctx, source, 100, musicruntime.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,9 +185,6 @@ func TestOneFfmpegFromStreamToOpus(t *testing.T) {
 	}
 	if err := session.Wait(); err != nil {
 		t.Fatalf("stream ended with %v", err)
-	}
-	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("a second ffmpeg ran in the Bot after the sandboxed one")
 	}
 	if n := launches(t, log); n != 1 {
 		t.Fatalf("one track launched %d sandboxes, want 1", n)

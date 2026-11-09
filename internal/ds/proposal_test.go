@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1309,5 +1310,29 @@ func TestVoidAddsOfVoidsOnlyTheNamedDevicesAdds(t *testing.T) {
 	}
 	if n, err := h.ds.VoidAddsOf(ctx, reg.GroupID, []id.ID{bot}); err != nil || n != 0 {
 		t.Fatalf("a second VoidAddsOf = %d, %v; want 0", n, err)
+	}
+}
+
+// Task 23 (R1 a): a Bot device still queued in the group's pending_joins (an epoch with no Add room, or a drain that
+// stopped on a fault) would be proposed by a later drain, after the unmark. VoidAddsOf takes the named devices out of
+// the queue too, and leaves every other queued device in its place.
+func TestVoidAddsOfAlsoDropsTheDevicesQueuedJoins(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	bot := h.eligibleDeviceWithKeyPackage(t)
+	carol := h.eligibleDeviceWithKeyPackage(t)
+	if err := h.repo.QueuePendingJoins(ctx, reg.GroupID, []id.ID{bot, carol}, h.clk.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ds.VoidAddsOf(ctx, reg.GroupID, []id.ID{bot}); err != nil {
+		t.Fatalf("VoidAddsOf: %v", err)
+	}
+	queued, err := h.repo.ListPendingJoins(ctx, reg.GroupID, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(queued, bot) || !slices.Contains(queued, carol) {
+		t.Fatalf("pending_joins = %v, want the Bot's device gone and the other device kept", queued)
 	}
 }

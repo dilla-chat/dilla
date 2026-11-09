@@ -1,10 +1,7 @@
 //! Group configuration: the ciphersuite, the three GroupContext extensions, the leaf capabilities
 //! and the KeyPackage builder (protocol/01-groups.md, R11).
 
-use super::{
-    DILLA_BINDING, DillaBinding, DillaInteractionBinding, DillaProvider, GroupKind, MlsError,
-    past_epoch_policy,
-};
+use super::{DILLA_BINDING, DillaBinding, DillaProvider, GroupKind, MlsError, past_epoch_policy};
 use crate::error::ProtocolError;
 use openmls::extensions::ExternalSendersExtension;
 use openmls::prelude::*;
@@ -81,31 +78,6 @@ pub fn create_config(
         .wire_format_policy(PURE_PLAINTEXT_WIRE_FORMAT_POLICY)
         .set_past_epoch_deletion_policy(past_epoch_policy(binding.kind))
         .with_group_context_extensions(group_context_extensions(binding, ext_senders)?)
-        .capabilities(leaf_capabilities())
-        .build())
-}
-
-/// The kind-3 initial group carries the typed v2 interaction binding. Interaction groups never
-/// accept an instance external sender, so this constructor deliberately has no sender parameter.
-pub fn create_interaction_config(
-    binding: &DillaInteractionBinding,
-) -> Result<MlsGroupCreateConfig, MlsError> {
-    let exts = Extensions::try_from(vec![
-        Extension::RequiredCapabilities(RequiredCapabilitiesExtension::new(
-            &[DILLA_BINDING],
-            &[],
-            &[CredentialType::Basic],
-        )),
-        binding.to_extension(),
-    ])
-    .map_err(|e| MlsError::OpenMls(format!("{e:?}")))?;
-    Ok(MlsGroupCreateConfig::builder()
-        .ciphersuite(CIPHERSUITE)
-        .use_ratchet_tree_extension(false)
-        .padding_size(PADDING_SIZE)
-        .wire_format_policy(PURE_PLAINTEXT_WIRE_FORMAT_POLICY)
-        .set_past_epoch_deletion_policy(past_epoch_policy(GroupKind::Interaction))
-        .with_group_context_extensions(exts)
         .capabilities(leaf_capabilities())
         .build())
 }
@@ -213,9 +185,10 @@ mod tests {
     }
 
     #[test]
-    fn pairing_and_interaction_groups_refuse_an_external_sender() {
+    fn pairing_groups_refuse_an_external_sender() {
         let senders = ExternalSendersExtension::new();
-        for kind in [GroupKind::Pairing, GroupKind::Interaction] {
+        {
+            let kind = GroupKind::Pairing;
             let err = group_context_extensions(&binding(kind), Some(senders.clone())).unwrap_err();
             assert!(
                 matches!(

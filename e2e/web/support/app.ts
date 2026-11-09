@@ -394,8 +394,7 @@ function newGuard(projectName: string): Guard {
     // Chromium and WebKit print every 4xx/5xx response as "Failed to load resource: …" (WebKit
     // measured on CI's first run: the expired session's 401 of the reload spec). Only the statuses the
     // client answers or retries by design are exempt: 401, 404, 409 and 410 (L-TS-02, L-TS-06) and the
-    // paced 429 and 503. Any other status or a line of another shape still fails the test (E2E-CI-01). (The 403 of the
-    // interaction-admission-context probe was exempt here while it was an HTTP response; it is a socket answer now.)
+    // paced 429 and 503. Any other status or a line of another shape still fails the test (E2E-CI-01).
     // Firefox printed nothing for them and keeps the full guard.
     const resourceLine = (projectName === 'chromium-web' || projectName === 'webkit-web') && BY_DESIGN_RESOURCE_LINE.test(m.text());
     // web3.9 V-2, extended to the web suite: on a reload in a call, Firefox closes the signal socket before the

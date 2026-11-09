@@ -42,7 +42,7 @@ func (h *Groups) registerBotGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var tuple []any
-	if cborx.ExpectMajor(raw, cborx.MajorArray) != nil || cborx.Unmarshal(raw, &tuple) != nil || (len(tuple) != 3 && len(tuple) != 4) {
+	if cborx.ExpectMajor(raw, cborx.MajorArray) != nil || cborx.Unmarshal(raw, &tuple) != nil || len(tuple) != 3 {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "body is not a managed group registration"))
 		return
 	}
@@ -54,15 +54,6 @@ func (h *Groups) registerBotGroup(w http.ResponseWriter, r *http.Request) {
 	operation, ok := registrationID(tuple[0])
 	generation, generationOK := tuple[1].(uint64)
 	body, bodyOK := tuple[2].([]byte)
-	var admissionRequestID id.ID
-	if len(tuple) == 4 {
-		var admissionOK bool
-		admissionRequestID, admissionOK = registrationID(tuple[3])
-		if !admissionOK {
-			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "body is not a managed group registration"))
-			return
-		}
-	}
 	if !ok || !generationOK || generation > math.MaxInt64 || !bodyOK {
 		server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "body is not a managed group registration"))
 		return
@@ -86,66 +77,9 @@ func (h *Groups) registerBotGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	registration.Session = session
-	if len(tuple) == 4 {
-		// Without the trusted context loader, fail closed before either replay or acceptance.
-		if h.LoadBotInteractionPreflight == nil {
-			server.WriteError(w, server.Errorf(server.CodeForbidden, "kind-3 interaction registration is unavailable"))
-			return
-		}
-		if admissionRequestID.IsZero() {
-			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "admission request id must be nonzero"))
-			return
-		}
-		intent := ds.BotInteractionRegisterRequest{Session: session, InstallationID: installation, OperationID: operation,
-			ExpectedGeneration: generation, AdmissionRequestID: admissionRequestID, RegistrationBody: body, Registration: registration}
-		if receipt, found, replayErr := h.DS.ReplayBotInteractionGroup(r.Context(), intent); replayErr != nil {
-			server.WriteError(w, dsError(replayErr))
-			return
-		} else if found {
-			writeBotGroupReceipt(w, http.StatusOK, receipt)
-			return
-		}
-		binding, bindingErr := h.DS.AuthenticatedBotInteractionBinding(r.Context(), registration)
-		if bindingErr != nil {
-			server.WriteError(w, dsError(bindingErr))
-			return
-		}
-		if binding.InstallationID != installation {
-			server.WriteError(w, server.Errorf(server.CodeForbidden, "kind-3 interaction registration is unavailable"))
-			return
-		}
-		preflight, preflightErr := h.LoadBotInteractionPreflight(r.Context(), BotInteractionPreflightRequest{
-			Session: session, InstallationID: installation, AdmissionRequestID: admissionRequestID,
-			GroupID: registration.GroupID, ParticipantUserID: binding.ParticipantUserID, ParticipantDeviceID: binding.ParticipantDeviceID,
-		})
-		if preflightErr != nil {
-			server.WriteError(w, server.Errorf(server.CodeForbidden, "kind-3 interaction context is unavailable or stale"))
-			return
-		}
-		var admission botInteractionAdmissionPayload
-		if cborx.Unmarshal(preflight.ReceiptPayload, &admission) != nil || admission.AdmissionID.IsZero() {
-			server.WriteError(w, server.Errorf(server.CodeForbidden, "kind-3 interaction admission is invalid"))
-			return
-		}
-		receipt, created, registerErr := h.DS.RegisterBotInteractionGroup(r.Context(), ds.BotInteractionRegisterRequest{
-			Session: session, InstallationID: installation, OperationID: operation, ExpectedGeneration: generation,
-			AdmissionRequestID: admissionRequestID, AdmissionID: admission.AdmissionID, RegistrationBody: body,
-			Registration: registration, TrustedPreflight: preflight,
-		})
-		if registerErr != nil {
-			server.WriteError(w, dsError(registerErr))
-			return
-		}
-		status := http.StatusOK
-		if created {
-			status = http.StatusCreated
-		}
-		writeBotGroupReceipt(w, status, receipt)
-		return
-	}
 	receipt, created, err := h.DS.RegisterWithBotReceipt(r.Context(), ds.BotRegisterRequest{
 		Session: session, InstallationID: installation, OperationID: operation, ExpectedGeneration: generation,
-		RegistrationBody: body, Registration: registration, AdmissionRequestID: admissionRequestID,
+		RegistrationBody: body, Registration: registration,
 	})
 	if err != nil {
 		server.WriteError(w, dsError(err))
@@ -162,7 +96,7 @@ func (h *Groups) registerBotGroup(w http.ResponseWriter, r *http.Request) {
 	// idempotent reconciliation hook closes that gap. Receipt GETs do not trigger
 	// work, and refused POSTs never reach this point. This route is device-metered,
 	// which bounds retry-driven hook submissions at the API edge.
-	if len(tuple) == 3 && h.AfterRegister != nil {
+	if h.AfterRegister != nil {
 		groupID := receipt.GroupID
 		h.runAfter(w, r, func(ctx context.Context) { h.AfterRegister(ctx, groupID) })
 	}

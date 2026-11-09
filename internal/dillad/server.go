@@ -217,16 +217,6 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// delivery service signs with, so the two cannot disagree. An ed25519.PrivateKey is
 	// seed || public, so its second half is the public key.
 	deps.ExternalSenderPub = []byte(ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])[ed25519.SeedSize:])
-	deps.SignBotInteractionAdmission = func(payload []byte) ([]byte, error) {
-		private := ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])
-		preimage := append([]byte("dilla bot interaction admission v1\x00"), payload...)
-		return ed25519.Sign(private, preimage), nil
-	}
-	deps.SignBotInteractionContext = func(payload []byte) ([]byte, error) {
-		private := ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])
-		preimage := append([]byte("dilla bot interaction context snapshot v1\x00"), payload...)
-		return ed25519.Sign(private, preimage), nil
-	}
 	deps.SignAccountKind = func(message []byte) ([]byte, error) {
 		return ed25519.Sign(ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:]), message), nil
 	}
@@ -451,7 +441,6 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	deps.CurrentBotInteractionGroupContext = delivery.CurrentBotInteractionGroupContext
 	deps.MessageDeleted = delivery.NotifyMessageDeleted
 	// A `dillad restore` left pending finishes here (invariant 11): the CLI ran the restore's SQL
 	// with no delivery service, and OnRestore — the same call the in-process path makes — re-arms
@@ -621,8 +610,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// exist (deviation B35).
 	// Every delivery-service route is metered per device session from [limits.rate], on the
 	// same limiter the unauthenticated routes use (its keys are class-prefixed).
-	groups := &api.Groups{DS: delivery, Deps: deps, Limiter: limiter,
-		LoadBotInteractionPreflight: deps.LoadBotInteractionRegistrationPreflight}
+	groups := &api.Groups{DS: delivery, Deps: deps, Limiter: limiter}
 	// A channel's freshly registered group is populated by batched delivery-service Adds (Plan 2
 	// task 7, protocol/01 § Joining: "creating a private channel … is done by the DS issuing Add
 	// proposals in batches"). Groups runs the hook after the 201 is flushed, on its own goroutine

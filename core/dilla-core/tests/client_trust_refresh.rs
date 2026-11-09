@@ -841,7 +841,11 @@ mod pushed {
             .core
             .revalidate_pending(&rows[0].0, rows[0].1 as u32, 256)
             .expect("judge it again");
-        assert_eq!(pending(&f.bot), Vec::new(), "judged under v2: current again");
+        assert_eq!(
+            pending(&f.bot),
+            Vec::new(),
+            "judged under v2: current again"
+        );
     }
 
     #[test]

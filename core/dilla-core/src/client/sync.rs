@@ -204,7 +204,6 @@ fn apply_message(
         )?;
         if changed > 0 {
             super::bot_events::suppress_source(c, id, row.seq as i64)?;
-            super::human_interaction_events::suppress_source(c, id, row.seq as i64)?;
             c.execute(
                 "DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2",
                 params![id.as_slice(), row.seq as i64],
@@ -404,10 +403,6 @@ impl ClientCore {
                                 envelope.msg_id.as_bytes(), envelope.kind.as_u8(), &envelope.body,
                                 envelope.reply_to.as_ref().map(|v| v.as_bytes()),
                                 envelope.thread_id.as_ref().map(|v| v.as_bytes()),
-                            )?;
-                            super::human_interaction_events::record_accepted(
-                                c, &group, id, *seq, &own, &sender, *leaf, &member.signature_key,
-                                *epoch, *recv_ts, envelope.msg_id.as_bytes(), envelope.kind.as_u8(), &envelope.body,
                             )?;
                             refold_insert(c, id, *seq, &envelope, sender.user_id.as_bytes(),
                                 sender.device_id.as_bytes(), Some(&own))?;
@@ -709,7 +704,6 @@ impl ClientCore {
             let changed = c.execute("UPDATE app_messages SET status=2,body='',envelope=NULL,reason='' WHERE group_id=?1 AND seq=?2 AND status<>2", params![id.as_slice(), seq_i])?;
             if changed > 0 {
                 super::bot_events::suppress_source(c, id, seq_i)?;
-                super::human_interaction_events::suppress_source(c, id, seq_i)?;
             }
             c.execute("DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2", params![id.as_slice(), seq_i])?;
             if changed == 1 { refold_deleted(c, id, stored)?; }
@@ -744,27 +738,7 @@ impl ClientCore {
         messages: &[u8],
         through: u64,
     ) -> Result<Vec<u8>, ClientError> {
-        self.group_apply_scoped(id, handshakes, messages, through, None)
-    }
-
-    /// Kind-3 source apply is available only to the caller that just verified its signed
-    /// interaction admission snapshot. Generic group apply remains unable to load kind 3.
-    pub(super) fn group_apply_interaction(
-        &mut self,
-        id: &[u8; 16],
-        participant_user: &[u8; 16],
-        participant_device: &[u8; 16],
-        handshakes: &[u8],
-        messages: &[u8],
-        through: u64,
-    ) -> Result<Vec<u8>, ClientError> {
-        self.group_apply_scoped(
-            id,
-            handshakes,
-            messages,
-            through,
-            Some((participant_user, participant_device)),
-        )
+        self.group_apply_scoped(id, handshakes, messages, through)
     }
 
     fn group_apply_scoped(
@@ -773,7 +747,6 @@ impl ClientCore {
         handshakes: &[u8],
         messages: &[u8],
         through: u64,
-        bot_interaction_roster: Option<(&[u8; 16], &[u8; 16])>,
     ) -> Result<Vec<u8>, ClientError> {
         let own = self.own()?;
         let handshakes = wire::decode_handshake_rows(handshakes)?;
@@ -803,17 +776,6 @@ impl ClientCore {
             return Err(ClientError::new(E_CORE_INPUT, "through out of range"));
         }
         let r = self.read(|c| group_row(c, id))?.ok_or_else(absent)?;
-        let is_interaction = r.kind == super::groups::row_kind(crate::mls::GroupKind::Interaction);
-        if (is_interaction
-            && bot_interaction_roster.is_some()
-            && own.kind != crate::identity::Kind::Bot.as_u8())
-            || (is_interaction
-                && bot_interaction_roster.is_none()
-                && own.kind != crate::identity::Kind::User.as_u8())
-            || (!is_interaction && bot_interaction_roster.is_some())
-        {
-            return Err(super::mismatched());
-        }
         if r.state != STATE_ACTIVE {
             return Err(ClientError::new(
                 E_CORE_STATE,
@@ -832,12 +794,7 @@ impl ClientCore {
             }
             checked("seq", seq)?;
             let (changed, adopted, epoch_changed, stop) = self.retry_reload(id, |this| {
-                let loaded = if let Some((participant_user, participant_device)) = bot_interaction_roster {
-                    this.take_bot_interaction_group(id, participant_user, participant_device)?
-                } else {
-                    this.take_group(id)?
-                };
-                let mut group = loaded.ok_or_else(absent)?;
+                let mut group = this.take_group(id)?.ok_or_else(absent)?;
                 let mut mls_failed = false;
                 let result = this.write(|ctx, u| {
                     let mut changed = false;
@@ -1059,11 +1016,6 @@ impl ClientCore {
                                                 r.envelope.kind.as_u8(), &r.envelope.body,
                                                 r.envelope.reply_to.as_ref().map(|v| v.as_bytes()),
                                                 r.envelope.thread_id.as_ref().map(|v| v.as_bytes()),
-                                            )?;
-                                            super::human_interaction_events::record_accepted(
-                                                c, &group, id, m.seq, &own, &r.sender, r.sender_leaf,
-                                                &member.signature_key, r.epoch, m.recv_ts,
-                                                r.envelope.msg_id.as_bytes(), r.envelope.kind.as_u8(), &r.envelope.body,
                                             )?;
                                         }
                                         refold_insert(c, id, m.seq, &r.envelope, r.sender.user_id.as_bytes(), r.sender.device_id.as_bytes(), Some(&own))?;

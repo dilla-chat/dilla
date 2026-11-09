@@ -21,11 +21,8 @@ import (
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
-// interactionRegistrationStageFunc queues a member's interaction registration under (user, episode).
-type interactionRegistrationStageFunc func(context.Context, id.ID, id.ID) error
-
-// interactionRegistrationEpisodeResolver resolves a member's current membership episode (client.CommunityMembers).
-type interactionRegistrationEpisodeResolver interface {
+// memberEpisodeResolver resolves a member's current membership episode (client.CommunityMembers).
+type memberEpisodeResolver interface {
 	ResolveCurrentEpisode(context.Context, id.ID) (id.ID, bool, error)
 }
 
@@ -39,10 +36,7 @@ type feedDeps struct {
 	// ingest is helper op 24 alone, for tests without MLS groups (no leaves to re-judge). core wins when both are set.
 	ingest func(ctx context.Context, user id.ID, push []byte) (native.DeviceListIngest, error)
 	// episodes resolves a member's current membership episode (the Bot-scoped episode route).
-	episodes interactionRegistrationEpisodeResolver
-	// stage queues a member's interaction registration for that episode (InteractionRegistrationCoordinator); the
-	// next pass registers it.
-	stage interactionRegistrationStageFunc
+	episodes memberEpisodeResolver
 	// welcome runs a member-join episode through the welcome and join-role handler; nil when neither is enabled.
 	welcome func(context.Context, protocol.Event) error
 }
@@ -68,16 +62,15 @@ func newFeedState() *feedState {
 //     makes the user Held, which the Bot's command intake refuses (fail closed). A transient failure (a closed helper,
 //     a timeout, a busy, unavailable or internal status) is retried out of band on trust.DefaultRetry, per user: the
 //     event is acknowledged in order, so a failing user never delays another user's events or the snapshot. A
-//     definitive refusal is applied as it is. A live, changed list of a member also stages the member's interaction
-//     registration, so a new device gets its own interaction group.
-//   - member: a live join runs the welcome and join-role handler and stages the member's interaction registration;
-//     a leave forgets the member. Either asks for a pass of this installation.
+//     definitive refusal is applied as it is.
+//   - member: a live join runs the welcome and join-role handler; a leave forgets the member. Either asks for a pass
+//     of this installation.
 //   - role, community, channel_group: state only (Task 15 authorises commands from them, Task 16 joins Bot channels);
 //     they ask for no pass (fix round 1, I-3). A channel group keeps its highest epoch (M-4). bot_channel asks for one.
 //   - a snapshot (SnapshotBegin … SnapshotDone) is staged whole and replaces the state at SnapshotDone (fix round 1,
 //     I-1): a role deleted or a channel unmarked while the Bot was away is gone after it, and a snapshot cut off before
 //     snapshot_end leaves the state untouched. A later snapshot's members the Bot did not know joined while it was away:
-//     each is welcomed and registered then.
+//     each is welcomed then.
 type installationFeed struct {
 	installation, community, botUser id.ID
 	log                              *slog.Logger
@@ -100,11 +93,6 @@ type installationFeed struct {
 	// firstSeen is when a join episode was first heard: the welcome handler keys its pending state on the event's id
 	// and time, so a retried episode must present the same ones.
 	firstSeen map[id.ID]uint64
-	// stageCtx is the context of the staging goroutines (stageAsync), cancelled by close; stageSlots bounds how many
-	// stage at once (fix round 4, N-8).
-	stageCtx    context.Context
-	stageCancel context.CancelFunc
-	stageSlots  chan struct{}
 }
 
 var _ Feed = (*installationFeed)(nil)
@@ -114,9 +102,8 @@ var feedTrustRetry = trust.DefaultRetry
 
 func newInstallationFeed(installation, community, botUser id.ID, log *slog.Logger, requestPass func()) *installationFeed {
 	f := &installationFeed{installation: installation, community: community, botUser: botUser, log: log, requestPass: requestPass, now: time.Now,
-		state: newFeedState(), firstSeen: map[id.ID]uint64{}, stageSlots: make(chan struct{}, maxConcurrentStagings)}
-	f.stageCtx, f.stageCancel = context.WithCancel(context.Background())
-	f.trust = trust.New(feedTrustCore{f}, feedTrustRetry).WithLogger(log).WithGroups(f.inTrustGroup).WithApplied(f.listApplied)
+		state: newFeedState(), firstSeen: map[id.ID]uint64{}}
+	f.trust = trust.New(feedTrustCore{f}, feedTrustRetry).WithLogger(log).WithGroups(f.inTrustGroup)
 	return f
 }
 
@@ -127,10 +114,8 @@ func (f *installationFeed) inTrustGroup(group id.ID) bool {
 	return !f.left[group]
 }
 
-// close stops the feed's trust retries and its stagings: the installation's feed is dropped (fix round 1, M-3; fix
-// round 4, N-8).
+// close stops the feed's trust retries: the installation's feed is dropped (fix round 1, M-3).
 func (f *installationFeed) close() {
-	f.stageCancel()
 	f.trust.Close()
 }
 
@@ -155,9 +140,6 @@ func (f *installationFeed) setDeps(d feedDeps) {
 	}
 	if d.episodes != nil {
 		f.deps.episodes = d.episodes
-	}
-	if d.stage != nil {
-		f.deps.stage = d.stage
 	}
 	if d.welcome != nil {
 		f.deps.welcome = d.welcome
@@ -262,57 +244,8 @@ func (f *installationFeed) DeviceList(ctx context.Context, user id.ID, push []by
 	return nil
 }
 
-// listApplied is told by trust of every pushed list that applied and changed, inline, deferred or retried, live or
-// from a snapshot (fix round 2 and 3, N-4): a known member's new device needs its own interaction group, also when the
-// list arrived in a snapshot or applied after one. A user not yet a known member is covered elsewhere: a join stages
-// through joined (live, or at SnapshotDone for a member who joined while the Bot was away), and on the Bot's first
-// snapshot the pass's member registration catch-up registers everyone.
-func (f *installationFeed) listApplied(_ context.Context, user id.ID, got native.DeviceListIngest) {
-	if user == f.botUser || !got.Changed {
-		return
-	}
-	f.mu.Lock()
-	member := f.state.members[user]
-	f.mu.Unlock()
-	if member {
-		f.stageAsync(user)
-	}
-}
-
-// stageTimeout bounds one staging of a member's new device (an episode read on the socket). maxConcurrentStagings
-// bounds how many run at once per feed: a snapshot after a long outage can change many members' lists in a burst
-// (fix round 4, N-8).
-const (
-	stageTimeout          = 30 * time.Second
-	maxConcurrentStagings = 4
-)
-
-// stageAsync stages user's new device off the caller (the user's trust worker must not wait on the network) within
-// stageTimeout, at most maxConcurrentStagings at once, then asks for a pass. A closed feed stages nothing more: the
-// stagings in flight end with its context, and the waiting ones never start.
-func (f *installationFeed) stageAsync(user id.ID) {
-	d := f.current()
-	go func() {
-		select {
-		case f.stageSlots <- struct{}{}:
-		case <-f.stageCtx.Done():
-			return
-		}
-		defer func() { <-f.stageSlots }()
-		if f.stageCtx.Err() != nil {
-			return
-		}
-		ctx, cancel := context.WithTimeout(f.stageCtx, stageTimeout)
-		defer cancel()
-		f.stage(ctx, d, user)
-		if f.stageCtx.Err() == nil {
-			f.changed()
-		}
-	}()
-}
-
-// stage queues the member's interaction registration under its current episode.
-func (f *installationFeed) stage(ctx context.Context, d feedDeps, user id.ID) (episode id.ID, ok bool) {
+// episode reads the member's current membership episode.
+func (f *installationFeed) episode(ctx context.Context, d feedDeps, user id.ID) (episode id.ID, ok bool) {
 	if d.episodes == nil {
 		return id.ID{}, false
 	}
@@ -324,22 +257,20 @@ func (f *installationFeed) stage(ctx context.Context, d feedDeps, user id.ID) (e
 	if !present || episode.IsZero() {
 		return id.ID{}, false
 	}
-	if d.stage != nil {
-		if err := d.stage(ctx, user, episode); err != nil {
-			f.log.Warn("bot feed interaction registration not staged", "error", err.Error())
-		}
-	}
 	return episode, true
 }
 
-// joined handles a member join: the welcome and join role, then the interaction registration.
+// joined handles a member join: the welcome and join role.
 func (f *installationFeed) joined(ctx context.Context, user id.ID) {
 	if user == f.botUser {
 		return
 	}
 	d := f.current()
-	episode, ok := f.stage(ctx, d, user)
-	if !ok || d.welcome == nil {
+	if d.welcome == nil {
+		return
+	}
+	episode, ok := f.episode(ctx, d, user)
+	if !ok {
 		return
 	}
 	f.mu.Lock()
@@ -439,7 +370,7 @@ func (f *installationFeed) SnapshotBegin(context.Context) {
 }
 
 // SnapshotDone replaces the state with the staged snapshot. The members it names that the Bot did not know joined
-// while it was away (after its first snapshot): each is welcomed and registered now.
+// while it was away (after its first snapshot): each is welcomed now.
 func (f *installationFeed) SnapshotDone(ctx context.Context) {
 	// The music path's reused installation row and policy version are read again after every applied snapshot (Bot v2
 	// Task 19 fix round 2).

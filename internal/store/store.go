@@ -71,72 +71,9 @@ type Repository interface {
 	BotGroupRegistrationReceipts
 	BotSendOperations
 	BotStructuralEvents
-	BotInteractionEligibility
-	BotInteractionAdmissionReceipts
-	BotGroupRegistrationAdmissionReceipts
-	BotAutoModerationGrants
 	ModerationRemovals
 	// Bot v2 Task 9 — 00057_bot_v2.sql
 	BotV2
-}
-
-// BotAutoModerationGrantRow stores only a digest of the opaque bearer grant and a
-// digest of the encrypted op63 document. Plaintext moderation config never enters storage.
-type BotAutoModerationGrantRow struct {
-	TokenHash, RequestHash, ConfigHash                    []byte
-	CommunityID, InstallationID, GroupID, RequestID       id.ID
-	ActorUser, ActorDevice                                id.ID
-	ExpectedRevision, RequestExpires, Expires, ConsumedAt int64
-	Receipt                                               []byte
-}
-
-type BotAutoModerationGrants interface {
-	CreateBotAutoModerationGrant(context.Context, BotAutoModerationGrantRow) error
-	GetBotAutoModerationGrant(context.Context, []byte) (BotAutoModerationGrantRow, error)
-	// Accept is atomic: one grant accepts one exact installation/request/ciphertext tuple.
-	// Exact retries return the original receipt; any changed tuple conflicts.
-	AcceptBotAutoModerationGrant(context.Context, BotAutoModerationGrantRow) (BotAutoModerationGrantRow, bool, error)
-}
-
-// BotInteractionEligibility exposes the monotonic eligibility fence for one
-// user in one community. Reads happen in a transaction and lock the row on
-// PostgreSQL so admission issuance and group registration can share a fence.
-// Database triggers advance it whenever membership, bans, or device state
-// changes. This primitive does not itself authorize interaction admission.
-type BotInteractionEligibility interface {
-	GetBotInteractionEligibilityRevision(context.Context, id.ID, id.ID) (uint64, error)
-}
-
-type BotInteractionAdmissionReceipt struct {
-	InstallationID id.ID
-	RequestID      id.ID
-	RequestHash    []byte
-	Payload        []byte
-	Signature      []byte
-	NotAfter       int64
-}
-
-type BotInteractionAdmissionReceipts interface {
-	GetBotInteractionAdmissionReceipt(context.Context, id.ID, id.ID) (BotInteractionAdmissionReceipt, error)
-	CreateBotInteractionAdmissionReceipt(context.Context, BotInteractionAdmissionReceipt) error
-	UpdateBotInteractionAdmissionReceipt(context.Context, BotInteractionAdmissionReceipt) error
-	// Compaction removes expired payloads immediately and forgets request hashes after
-	// 30 days past expiry. IDs are immutable during that window; after it, reuse is allowed.
-	// One call forgets at most BotInteractionAdmissionTombstoneBatch hashes, oldest first, so a
-	// backlog (after an upgrade or a long Bot outage) drains over later admissions instead of
-	// holding the single writer; a hash may therefore outlive its 30 days, never fall short of them.
-	CompactExpiredBotInteractionAdmissionReceipts(context.Context, id.ID, int64) error
-}
-
-// BotInteractionAdmissionTombstoneBatch bounds the tombstones one compaction deletes.
-const BotInteractionAdmissionTombstoneBatch = 512
-
-// BotGroupRegistrationAdmissionReceipts atomically records the accepted
-// registration consumed by one kind-3 admission request. The bool is true for
-// an exact retry; reusing a request ID for different registration data conflicts.
-type BotGroupRegistrationAdmissionReceipts interface {
-	AcceptBotGroupRegistrationAdmission(context.Context, id.ID, BotGroupRegistrationReceipt) (BotGroupRegistrationReceipt, bool, error)
-	GetBotGroupRegistrationAdmission(context.Context, id.ID, id.ID) (BotGroupRegistrationReceipt, error)
 }
 
 // BotJoinRolePolicy stores the single human-approved role a ready bot may

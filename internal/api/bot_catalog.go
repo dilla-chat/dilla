@@ -830,7 +830,7 @@ const botScopeCatalog uint64 = 3
 // three elements op 63 carries. It holds the caller's own user scope in each community it is in
 // (kind 0; scope_id is the community, since the user is the caller), every channel or call scope
 // with a stored revision in a channel the caller can view now, and the catalog of every community
-// the caller is in (kind 3). A client fetches a scope's Bot state, or a catalog, only when it is
+// the caller is in (scope kind = 3). A client fetches a scope's Bot state, or a catalog, only when it is
 // behind.
 func (d Deps) GetBotRevisions(w http.ResponseWriter, r *http.Request) {
 	s, ok := session(r)
@@ -908,7 +908,7 @@ func (d Deps) GetBotRevisions(w http.ResponseWriter, r *http.Request) {
 			out = append(out, []any{uint64(row.ScopeKind), row.ScopeID, row.Revision})
 		}
 	}
-	// Each community's catalog revision rides along as scope kind 3, so the one read tells a client
+	// Each community's catalog revision rides along as scope kind = 3, so the one read tells a client
 	// which catalogs to fetch again.
 	for _, c := range communities {
 		catalog, err := d.Repo.GetBotCatalog(ctx, c.ID)

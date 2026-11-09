@@ -41,8 +41,6 @@ type Client struct {
 	binding Binding
 	usable  bool
 	closed  bool
-	sources map[id.ID]bool
-	trust   map[id.ID]bool
 }
 
 // Usable reports whether the helper can still serve calls: false once it was closed, or invalidated by a mutation

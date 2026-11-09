@@ -105,7 +105,7 @@ describe('utility request payloads', () => {
 describe('utility response decoders', () => {
   it('decodes the exact capability tuple and binds installation and bot IDs', () => {
     const caps = decodeBotUtilityCapabilities(data([1n, id(7), id(8), 1n, [3n, 70n, 71n, 72n, 73n, 74n, 75n, 80n, 81n, 82n, 83n, 84n]]));
-    expect(caps).toEqual({ installationId: hex(7), botUserId: hex(8), version: 1, supportedOperations: [3, 70, 71, 72, 73, 74, 75, 80, 81, 82, 83, 84] });
+    expect(caps).toEqual({ installationId: hex(7), botUserId: hex(8), version: 1, supportedOperations: [70, 71, 72, 73, 74, 75, 80, 81, 82, 83, 84] });
     expect(() => decodeBotUtilityCapabilities(data([1n, id(7), id(8), 1n, [3n]]), { installationId: hex(9) })).toThrow(BotUtilitiesError);
   });
 
@@ -121,7 +121,7 @@ describe('utility response decoders', () => {
 
   it('drops an operation this client does not know and keeps the rest of the report', () => {
     const caps = decodeBotUtilityCapabilities(data([1n, id(7), id(8), 1n, [3n, 70n, 199n, 255n]]));
-    expect(caps.supportedOperations).toEqual([3, 70]);
+    expect(caps.supportedOperations).toEqual([70]);
   });
 
   it('rejects duplicate, unsorted, or malformed capability entries', () => {
@@ -284,7 +284,7 @@ describe('createBotUtilities facade', () => {
     const operations = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 70, 71, 72, 73, 74, 75, 80, 81, 82, 83, 84];
     const f = fakeUtilityCore({ catalog: operations });
     const api = createBotUtilities(f.client, COMMUNITY);
-    expect(await api.capabilities()).toEqual({ version: 1, installationId: INSTALLATION, botUserId: BOT_USER, supportedOperations: [3, ...operations] });
+    expect(await api.capabilities()).toEqual({ version: 1, installationId: INSTALLATION, botUserId: BOT_USER, supportedOperations: [...operations] });
     expect(api.binding).toEqual({ installationId: INSTALLATION, botUserId: BOT_USER });
     expect(f.calls.filter(call => call.m === 'botOperation')).toEqual([]);
   });

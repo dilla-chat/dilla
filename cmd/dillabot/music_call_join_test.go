@@ -131,7 +131,6 @@ func (f *musicJoinCallsFake) Resync(context.Context, id.ID, []byte, []byte) (cli
 }
 
 type musicJoinCoreFake struct {
-	musicCallJoinCore
 	group                                                id.ID
 	conflicts, joins, reads, resolved, discards, forgets int
 	terminal                                             bool

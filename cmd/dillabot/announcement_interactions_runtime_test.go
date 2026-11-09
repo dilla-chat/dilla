@@ -21,20 +21,17 @@ import (
 func TestRuntimeInteractionHandlersRegisterAnnouncementMutationsWithInHandlerRevisionChecks(t *testing.T) {
 	community := id.New()
 	state := &runtimeWelcomeSettingsNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: id.New()}}
-	var unavailableRuntime *service.AutoModerationRuntime
 	handlers := runtimeInteractionHandlers(
 		service.OverviewInteractions{CommunityID: community},
 		service.AnnouncementInteractions{Authority: runtimeWelcomeAuthority{}, CommunityID: community},
 		service.ModerationInteractions{CommunityID: community, InstallationID: id.New(), EvidenceReader: runtimeModerationEvidenceReader{}},
 		nil,
 		state,
-		nil,
-		unavailableRuntime,
 	)
-	if len(handlers) != 11 {
-		t.Fatalf("runtime handlers has %d operations, want overview, announcements, welcome, moderation reads, and automatic moderation settings", len(handlers))
+	if len(handlers) != 9 {
+		t.Fatalf("runtime handlers has %d operations, want overview, announcements, welcome and moderation reads", len(handlers))
 	}
-	if handlers[protocol.OpOverviewGet].Handle == nil || handlers[protocol.OpAnnouncementsList].Handle == nil || handlers[protocol.OpWelcomePreview].Handle == nil || handlers[protocol.OpModerationCases].Handle == nil || handlers[protocol.OpModerationEvidenceList].Handle == nil || handlers[protocol.OpSettingsGet].Handle == nil || handlers[protocol.OpAutoModerationGet].Handle == nil {
+	if handlers[protocol.OpOverviewGet].Handle == nil || handlers[protocol.OpAnnouncementsList].Handle == nil || handlers[protocol.OpWelcomePreview].Handle == nil || handlers[protocol.OpModerationCases].Handle == nil || handlers[protocol.OpModerationEvidenceList].Handle == nil || handlers[protocol.OpSettingsGet].Handle == nil {
 		t.Fatalf("runtime handlers missing read operations: %v", handlers)
 	}
 	if put, ok := handlers[protocol.OpSettingsPut]; !ok || put.Handle == nil || !put.RevisionInHandler || put.CurrentRevision != nil {
@@ -45,9 +42,6 @@ func TestRuntimeInteractionHandlersRegisterAnnouncementMutationsWithInHandlerRev
 	}
 	if remove, ok := handlers[protocol.OpAnnouncementsDelete]; !ok || remove.Handle == nil || !remove.RevisionInHandler || remove.CurrentRevision != nil {
 		t.Fatalf("runtime announcements.delete handler=%+v; want in-handler atomic revision check", remove)
-	}
-	if put, ok := handlers[protocol.OpAutoModerationPut]; !ok || put.Handle == nil || !put.RevisionInHandler || put.CurrentRevision != nil {
-		t.Fatalf("runtime automod.put handler=%+v; want in-handler atomic revision check", put)
 	}
 	if _, ok := handlers[protocol.OpModerationEvidence]; ok {
 		t.Fatal("runtime handlers registered moderation.evidence")
@@ -67,12 +61,12 @@ func TestRuntimeInteractionHandlersRegisterProviderStatusAsRecomputedRead(t *tes
 		return service.MusicProviderStatusSnapshot{InstallationID: id.New(), ObservedAt: 1, YouTubePlayback: service.ProviderSetupUnknown,
 			YouTubePlaybackReason: service.ProviderReasonUnavailable}
 	}}
-	base := runtimeInteractionHandlers(service.OverviewInteractions{CommunityID: community}, service.AnnouncementInteractions{CommunityID: community}, service.ModerationInteractions{CommunityID: community}, nil, nil, nil, nil)
+	base := runtimeInteractionHandlers(service.OverviewInteractions{CommunityID: community}, service.AnnouncementInteractions{CommunityID: community}, service.ModerationInteractions{CommunityID: community}, nil, nil)
 	if _, ok := base[protocol.OpMusicProvidersStatus]; ok {
 		t.Fatal("provider status registered without explicit runtime provider")
 	}
 	incomplete := runtimeInteractionHandlers(service.OverviewInteractions{Authority: runtimeProviderStatusAuthority{}, CommunityID: community},
-		service.AnnouncementInteractions{CommunityID: community}, service.ModerationInteractions{CommunityID: community}, nil, nil, nil, nil,
+		service.AnnouncementInteractions{CommunityID: community}, service.ModerationInteractions{CommunityID: community}, nil, nil,
 		service.MusicProviderStatusInteractions{Authority: runtimeProviderStatusAuthority{}})
 	if _, ok := incomplete[protocol.OpMusicProvidersStatus]; ok {
 		t.Fatal("provider status registered without a snapshot handler")
@@ -85,7 +79,7 @@ func TestRuntimeInteractionHandlersRegisterProviderStatusAsRecomputedRead(t *tes
 	if err := cborx.Unmarshal(legacy.Data, &legacyPayload); err != nil || len(legacyPayload) != 5 || legacyPayload[0] != uint64(1) {
 		t.Fatalf("incomplete provider overview capability = %#v, err=%v; want legacy version 1", legacyPayload, err)
 	}
-	registered := runtimeInteractionHandlers(service.OverviewInteractions{Authority: runtimeProviderStatusAuthority{}, CommunityID: community}, service.AnnouncementInteractions{CommunityID: community}, service.ModerationInteractions{CommunityID: community}, nil, nil, nil, nil, status)
+	registered := runtimeInteractionHandlers(service.OverviewInteractions{Authority: runtimeProviderStatusAuthority{}, CommunityID: community}, service.AnnouncementInteractions{CommunityID: community}, service.ModerationInteractions{CommunityID: community}, nil, nil, status)
 	handler, ok := registered[protocol.OpMusicProvidersStatus]
 	if !ok || handler.Handle == nil || !handler.RecomputeOnReplay {
 		t.Fatalf("provider status handler = %+v, present=%v", handler, ok)
@@ -188,7 +182,7 @@ func (runtimeMusicAuthorityFake) CanEmergencyStop(context.Context, service.Inter
 func TestRuntimeInteractionHandlersRegisterMusicOnlyWithCompleteAuthorityAndStore(t *testing.T) {
 	community := id.New()
 	base := func(music *service.MusicInteractions) map[protocol.Operation]service.InteractionHandlerSpec {
-		return runtimeInteractionHandlers(service.OverviewInteractions{CommunityID: community}, service.AnnouncementInteractions{CommunityID: community}, service.ModerationInteractions{CommunityID: community}, music, nil, nil, nil)
+		return runtimeInteractionHandlers(service.OverviewInteractions{CommunityID: community}, service.AnnouncementInteractions{CommunityID: community}, service.ModerationInteractions{CommunityID: community}, music, nil)
 	}
 	if handlers := base(&service.MusicInteractions{Authority: runtimeMusicAuthorityFake{}}); len(handlers) != 8 {
 		t.Fatalf("music handlers registered without encrypted queue store: got %d operations", len(handlers))
@@ -214,7 +208,7 @@ func TestRuntimeInteractionHandlersRegisterManualEvidenceOnlyWithBothReceiptLook
 	base := service.ModerationInteractions{CommunityID: community, InstallationID: installation,
 		EvidenceReader: runtimeModerationEvidenceReader{}, EvidenceWriter: runtimeManualEvidenceWriter{}}
 	build := func(m service.ModerationInteractions) map[protocol.Operation]service.InteractionHandlerSpec {
-		return runtimeInteractionHandlers(service.OverviewInteractions{CommunityID: community}, service.AnnouncementInteractions{CommunityID: community}, m, nil, nil, nil, nil)
+		return runtimeInteractionHandlers(service.OverviewInteractions{CommunityID: community}, service.AnnouncementInteractions{CommunityID: community}, m, nil, nil)
 	}
 	for _, partial := range []service.ModerationInteractions{
 		base,

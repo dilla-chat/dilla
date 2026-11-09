@@ -104,21 +104,17 @@ func TestDeviceLimiterWritePacingAndIndependentClasses(t *testing.T) {
 
 func TestRequestRateClassesMirrorServer(t *testing.T) {
 	for _, tc := range []struct{ method, path, want string }{
-		{"GET", "bot-runtime/installations/x/interaction-groups/y/info", "read"},
 		{"HEAD", "channels/x/messages", "read"},
 		{"POST", "groups/x/message", "message"},
 		{"POST", "channels/x/messages", "message"},
 		{"POST", "groups/x/bot/messages", "write"},
-		{"POST", "bot-runtime/installations/x/interaction-admissions/context", "write"},
 		{"POST", "communities/x/bot/receipts/y/resolve", "write"},
-		{"POST", "bot-runtime/installations/x/interaction-groups/y/cursor", "write"},
 		{"PUT", "devices/x/credential", "write"},
 		{"POST", "groups/x/commit", "commit"},
 		{"POST", "groups/x/resync", "commit"},
 		{"POST", "groups/x/heal", "commit"},
 		{"POST", "groups/x/proposal", "proposal"},
 		{"GET", "devices/x/keypackage", "keypackage"},
-		{"POST", "bot-runtime/installations/x/interaction-groups/y/heal", "commit"},
 		// Task 21b fix round 1: sealed answers have their own class (dillad: bot_reply); state hints keep their own coalesced
 		// class (dillad: bot_runtime at the read rate). Neither spends the Bot's read bucket.
 		{"POST", "bot-runtime/replies", "reply"},
@@ -269,7 +265,6 @@ func TestSpecializedRateTableMatchesServerRegistrations(t *testing.T) {
 		{"groups.go", "POST /v1/groups/{id}/resync", "dsClassCommit", "POST", "groups/x/resync", "commit"},
 		{"groups.go", "POST /v1/groups/{id}/proposal", "dsClassProposal", "POST", "groups/x/proposal", "proposal"},
 		{"heal.go", "POST /v1/groups/{id}/heal", "dsClassCommit", "POST", "groups/x/heal", "commit"},
-		{"bot_interaction_group_heal.go", "mux.SocketAuthed(\"POST \"+base", "dsClassCommit", "POST", "bot-runtime/installations/x/interaction-groups/y/heal", "commit"},
 		// Task 21b fix round 1: the sealed answers' own meter, and the hints' coalesced one.
 		{"bot_commands.go", "POST /v1/bot-runtime/replies", "dsClassBotReply", "POST", "bot-runtime/replies", "reply"},
 		{"bot_commands.go", "POST /v1/bot-runtime/state-hints", "dsClassBotRuntime", "POST", "bot-runtime/state-hints", "hint"},

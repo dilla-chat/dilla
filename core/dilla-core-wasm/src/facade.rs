@@ -127,24 +127,6 @@ pub fn role_ids_arg(bytes: &[u8]) -> Result<(), ClientError> {
     }
 }
 
-/// The strict protocol/10 CBOR request is kept opaque at the WASM boundary and is validated by
-/// `ClientCore`. Its encoded request is bounded before it crosses into the core (protocol/10 §
-/// Application requests: 4000-byte encoded body, less the prefix and base64url expansion).
-#[doc(hidden)]
-pub fn human_interaction_request_arg(bytes: &[u8]) -> Result<(), ClientError> {
-    if bytes.len() <= 2991 {
-        Ok(())
-    } else {
-        Err(ClientError {
-            code: "E_CORE_INPUT",
-            detail: format!(
-                "request_body: expected at most 2991 bytes, got {}",
-                bytes.len()
-            ),
-        })
-    }
-}
-
 #[doc(hidden)]
 pub fn nonzero_id_arg(name: &'static str, bytes: &[u8]) -> Result<[u8; 16], ClientError> {
     let id = fixed_arg::<16>(name, bytes)?;
@@ -997,19 +979,6 @@ impl CoreHandle {
         self.with_core(|c| c.welcomes_apply(welcomes_body, expected))
             .map(Vec::into_boxed_slice)
     }
-    /// Calls ClientCore::human_interaction_welcome_apply with opaque context proof bytes; the core
-    /// derives the expected group binding from the verified proof before accepting the Welcome.
-    pub fn human_interaction_welcome_apply(
-        &self,
-        welcomes_body: &[u8],
-        current_context_proof: &[u8],
-        now: u64,
-    ) -> Result<Box<[u8]>, JsError> {
-        self.with_core(|c| {
-            c.human_interaction_welcome_apply(welcomes_body, current_context_proof, now)
-        })
-        .map(Vec::into_boxed_slice)
-    }
     /// Calls ClientCore::group_apply; CBOR [state, epoch, next_seq, new_seqs, proposals_pending, flags].
     pub fn group_apply(
         &self,
@@ -1075,78 +1044,6 @@ impl CoreHandle {
         let group_id = js_fixed_arg::<16>("group_id", group_id)?;
         self.with_core(|c| c.send_prepare(&group_id, request, now))
             .map(Vec::into_boxed_slice)
-    }
-    /// Prepare a read-only Bot interaction request for the authenticated human device.
-    /// `request_body` is strict protocol/10 deterministic CBOR, limited to 2991 bytes. The
-    /// plaintext is consumed by the core and is never returned; the result is CBOR `[request_id]`
-    /// while the encrypted send intent remains in the encrypted outbox.
-    pub fn human_interaction_send_prepare(
-        &self,
-        request_id: &[u8],
-        community_id: &[u8],
-        group_id: &[u8],
-        request_body: &[u8],
-        now: u64,
-    ) -> Result<Box<[u8]>, JsError> {
-        let request_id = nonzero_id_arg("request_id", request_id).map_err(owned_js_error)?;
-        let community_id = nonzero_id_arg("community_id", community_id).map_err(owned_js_error)?;
-        let group_id = nonzero_id_arg("group_id", group_id).map_err(owned_js_error)?;
-        human_interaction_request_arg(request_body).map_err(owned_js_error)?;
-        self.with_core(|c| {
-            c.human_interaction_send_prepare(
-                &request_id,
-                &community_id,
-                &group_id,
-                request_body,
-                now,
-            )
-        })
-        .map(Vec::into_boxed_slice)
-    }
-    /// Reads durable human kind-3 responses as CBOR `[events,next,high_water]`. Each plaintext
-    /// body is returned only after the core rechecks the exact admitted Bot MLS leaf and local
-    /// moderation request against the current interaction group and trust state.
-    pub fn human_interaction_events_read(
-        &self,
-        after: u64,
-        limit: u64,
-    ) -> Result<Box<[u8]>, JsError> {
-        self.with_core(|c| c.human_interaction_events_read(after, limit))
-            .map(Vec::into_boxed_slice)
-    }
-    /// Reads only archived consumed responses matching the exact current community, installation,
-    /// and request-id set. CBOR result is `[events]`, using the event tuple from journal reads.
-    pub fn human_interaction_receipts_read(
-        &self,
-        community_id: &[u8],
-        installation_id: &[u8],
-        bot_user_id: &[u8],
-        request_ids: &[u8],
-    ) -> Result<Box<[u8]>, JsError> {
-        let community_id = js_fixed_arg::<16>("community_id", community_id)?;
-        let installation_id = js_fixed_arg::<16>("installation_id", installation_id)?;
-        let bot_user_id = js_fixed_arg::<16>("bot_user_id", bot_user_id)?;
-        self.with_core(|c| {
-            c.human_interaction_receipts_read(
-                &community_id,
-                &installation_id,
-                &bot_user_id,
-                request_ids,
-            )
-        })
-        .map(Vec::into_boxed_slice)
-    }
-    /// Durably acknowledges and clears human interaction response bodies through a delivery id.
-    pub fn human_interaction_events_ack(&self, through: u64) -> Result<(), JsError> {
-        self.with_core(|c| c.human_interaction_events_ack(through))
-    }
-    /// Consumes only the human interaction response delivery ids explicitly selected by the
-    /// authenticated worker, encoded as deterministic CBOR `uint[]`.
-    pub fn human_interaction_events_ack_selected(
-        &self,
-        delivery_ids: &[u8],
-    ) -> Result<(), JsError> {
-        self.with_core(|c| c.human_interaction_events_ack_selected(delivery_ids))
     }
     /// Calls ClientCore::send_encrypt; CBOR [group_id, message_body].
     pub fn send_encrypt(&self, msg_id: &[u8]) -> Result<Box<[u8]>, JsError> {

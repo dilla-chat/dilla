@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -202,7 +203,14 @@ func resolveSandboxConfig(cfg SandboxConfig, needFFmpeg bool) (SandboxConfig, er
 }
 
 func lookupTool(path, name string) (string, error) {
-	return PCMStarter{}.executable(path, name)
+	if path == "" {
+		path = name
+	}
+	resolved, err := exec.LookPath(path)
+	if err != nil {
+		return "", err
+	}
+	return resolveExecutable(resolved, name)
 }
 
 func newWarmResolver(cfg SandboxConfig, ttl time.Duration, deps warmDeps) *WarmResolver {

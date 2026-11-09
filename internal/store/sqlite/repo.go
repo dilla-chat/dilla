@@ -2623,24 +2623,6 @@ func (r *Repo) DeleteMember(ctx context.Context, communityID, userID id.ID) erro
 	return nil
 }
 
-// GetBotInteractionEligibilityRevision returns the transaction-fenced
-// revision for an existing community/user eligibility row. SQLite write
-// transactions already serialize all writers through BEGIN IMMEDIATE.
-func (r *Repo) GetBotInteractionEligibilityRevision(ctx context.Context, communityID, userID id.ID) (uint64, error) {
-	if !r.inTx {
-		return 0, errors.New("store: GetBotInteractionEligibilityRevision outside a transaction")
-	}
-	var revision int64
-	err := r.tx.QueryRowContext(ctx, `SELECT revision FROM bot_interaction_eligibility_revisions WHERE community_id=? AND user_id=?`, communityID, userID).Scan(&revision)
-	if err != nil {
-		return 0, wrap(err)
-	}
-	if revision < 0 {
-		return 0, errors.New("store: negative bot interaction eligibility revision")
-	}
-	return uint64(revision), nil
-}
-
 func (r *Repo) ListMembersOfCommunity(ctx context.Context, communityID, after id.ID, limit int32) ([]store.MemberOfCommunityRow, error) {
 	rows, err := r.r.ListMembersOfCommunity(ctx, sqlitedb.ListMembersOfCommunityParams{
 		CommunityID: communityID, UserID: after, MaxRows: int64(limit),

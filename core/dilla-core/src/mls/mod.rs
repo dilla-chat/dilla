@@ -22,8 +22,6 @@ mod policy;
 mod config;
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 mod group;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod interaction_create_tests;
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 mod provider;
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
@@ -32,8 +30,8 @@ mod storage;
 mod tx;
 
 pub use binding::{
-    DILLA_BINDING, DILLA_BINDING_ID, DillaBinding, DillaInteractionBinding, GroupKind,
-    external_senders, instance_credential, instance_credential_identity, instance_sender_index,
+    DILLA_BINDING, DILLA_BINDING_ID, DillaBinding, GroupKind, external_senders,
+    instance_credential, instance_credential_identity, instance_sender_index,
 };
 pub use policy::{
     CALL_SWEEP, PAST_EPOCHS_CALL, PAST_EPOCHS_TEXT, TEXT_SWEEP, past_epoch_policy,
@@ -48,8 +46,7 @@ pub(crate) use policy::{
 pub use config::{
     CIPHERSUITE, INACTIVITY_REMOVE_DAYS, KEY_PACKAGE_LIFETIME_DAYS, MAX_ADDS_PER_COMMIT,
     PADDING_SIZE, build_key_package, build_key_package_with_expiry, create_config,
-    create_interaction_config, group_context_extensions, join_config, leaf_capabilities,
-    rotate_external_senders_extensions,
+    group_context_extensions, join_config, leaf_capabilities, rotate_external_senders_extensions,
 };
 #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]
 pub use group::{

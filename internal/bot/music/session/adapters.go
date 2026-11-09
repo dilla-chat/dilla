@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"os/exec"
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
@@ -91,8 +90,7 @@ type prefetchedYouTubePCM struct {
 	source *ownedPCM
 }
 
-func (p *prefetchedYouTubePCM) Close() error                      { return p.source.Close() }
-func (p *prefetchedYouTubePCM) PCMFormat() musicruntime.PCMFormat { return p.source.PCMFormat() }
+func (p *prefetchedYouTubePCM) Close() error { return p.source.Close() }
 
 // OggOpus reports that the provider already delivers 48 kHz Ogg Opus from its
 // single ffmpeg, so no second encoder runs over it.
@@ -106,29 +104,23 @@ func isOggOpus(source io.Reader) bool {
 type EncoderConfig struct {
 	Capacity int
 	Options  encode.Options
-	start    func(context.Context, io.ReadCloser, musicruntime.PCMFormat, int, encode.Options) (Encoder, error)
 	startOgg func(context.Context, io.ReadCloser, int, encode.Options) (Encoder, error)
 }
 type RuntimeEncoder struct{ Config EncoderConfig }
 
-const youtubePCMRate = 44100
-
+// Start forwards the provider's Ogg Opus: one ffmpeg in the stream worker already produced 48 kHz Opus in 20 ms
+// frames. Bot v2 Task 23 removed the PCM-to-Opus path, so any other source is refused.
 func (e RuntimeEncoder) Start(ctx context.Context, pcm io.ReadCloser) (Encoder, error) {
-	if isOggOpus(pcm) {
-		// One ffmpeg already produced 48 kHz Opus in 20 ms frames; forward it as is.
-		if e.Config.startOgg != nil {
-			return e.Config.startOgg(ctx, pcm, e.Config.Capacity, e.Config.Options)
+	if !isOggOpus(pcm) {
+		if pcm != nil {
+			_ = pcm.Close()
 		}
-		return musicruntime.StartOgg(ctx, pcm, e.Config.Capacity, e.Config.Options)
+		return nil, ErrInvalid
 	}
-	format := musicruntime.PCMFormat{SampleRate: youtubePCMRate, Channels: 2}
-	if source, ok := pcm.(interface{ PCMFormat() musicruntime.PCMFormat }); ok {
-		format = source.PCMFormat()
+	if e.Config.startOgg != nil {
+		return e.Config.startOgg(ctx, pcm, e.Config.Capacity, e.Config.Options)
 	}
-	if e.Config.start != nil {
-		return e.Config.start(ctx, pcm, format, e.Config.Capacity, e.Config.Options)
-	}
-	return musicruntime.Start(ctx, pcm, format, e.Config.Capacity, e.Config.Options)
+	return musicruntime.StartOgg(ctx, pcm, e.Config.Capacity, e.Config.Options)
 }
 
 type LiveKitPublisher struct{ Lifetime time.Duration }
@@ -167,27 +159,6 @@ func (s YouTubePCM) Check(ctx context.Context) error {
 	}
 	if checked, ok := s.Source.(interface{ Check(context.Context) error }); ok {
 		return checked.Check(ctx)
-	}
-	source, production := s.Source.(youtube.PCMStarter)
-	if !production {
-		return nil
-	}
-	for _, path := range []string{source.YTDLP, source.FFmpeg, source.Node} {
-		if path == "" {
-			return youtube.ErrRunnerRequired
-		}
-		if _, err := exec.LookPath(path); err != nil {
-			return youtube.ErrRunnerRequired
-		}
-	}
-	for _, path := range []struct{ configured, fallback string }{{source.Bubblewrap, "bwrap"}, {source.Python, "python3"}} {
-		name := path.configured
-		if name == "" {
-			name = path.fallback
-		}
-		if _, err := exec.LookPath(name); err != nil {
-			return youtube.ErrSandboxUnavailable
-		}
 	}
 	return nil
 }

@@ -32,8 +32,6 @@ const HASH = fill(32, 0x10);
 const REF = fill(32, 0x11);
 const WIN = fill(48, 0x12);
 const STORED = fill(5, 0x1a);
-const ADMISSION_PAYLOAD = fill(128, 0x1b);
-const ADMISSION_SIGNATURE = fill(64, 0x1c);
 
 function octetReply(status: number, body: Uint8Array): Response {
   return new Response(body.slice(), { status, headers: { 'Content-Type': 'application/octet-stream', 'X-Dilla-Generation': '7' } });
@@ -105,28 +103,6 @@ it('submits only a bounded explicit panel action after an accepted panel event',
     body: encode([GROUP, 11n, '✅', 1]), bucket: 'write', idempotent: true, retry429: false, ok: [204] });
   await expect(routes.applyRolePanelReaction(COMMUNITY, CHANNEL, 0n, GROUP, 11n, '✅', true)).rejects.toThrow(/invalid role panel reaction/u);
   await expect(routes.applyRolePanelReaction(COMMUNITY, CHANNEL, 9n, GROUP, 0n, '✅', false)).rejects.toThrow(/invalid role panel reaction/u);
-});
-
-it('returns the current interaction admission proof without interpreting its signed payload', async () => {
-  const { routes, t, http } = setup();
-  t.replies.push(cborReply(200, [ADMISSION_PAYLOAD, ADMISSION_SIGNATURE]));
-  await expect(routes.getInteractionAdmissionContext(GROUP)).resolves.toEqual({
-    payload: ADMISSION_PAYLOAD, signature: ADMISSION_SIGNATURE,
-  });
-  expect(http.requests[0]).toMatchObject({ method: 'GET', path: `/v1/groups/${hex(GROUP)}/interaction-admission-context`,
-    bucket: 'read', idempotent: true, maxBodyBytes: 160 * 1024 });
-});
-
-it('rejects malformed current interaction admission proof envelopes', async () => {
-  const { routes, t } = setup();
-  t.replies.push(cborReply(200, [ADMISSION_PAYLOAD, fill(63, 0x1c)]));
-  await expect(routes.getInteractionAdmissionContext(GROUP)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
-});
-
-it('bounds the current interaction admission proof response to 160 KiB', async () => {
-  const { routes, t } = setup();
-  t.replies.push(bytesReply(200, fill(160 * 1024 + 1, 0)));
-  await expect(routes.getInteractionAdmissionContext(GROUP)).rejects.toMatchObject({ code: 'E_BODY_TOO_LARGE', status: 200 });
 });
 
 it('reads the active bot join-role setting and writes it with a request ID', async () => {
@@ -1591,16 +1567,6 @@ describe('Routes: server admin and moderation', () => {
     return { result, seen: t.seen[0], http };
   };
 
-  it('arms automatic moderation with the exact config digest and decodes the opaque one-use grant', async () => {
-    const token='opaque-grant-token'; const digest=new Uint8Array(32).fill(0x61); const request=fill(16,0x62);
-    const fixture=setup(); fixture.t.replies.push(cborReply(200,[token,900n]));
-    const result=await fixture.routes.armAutoModerationGrant(GROUP,request,COMMUNITY,7n,800n,digest,'step-up-once');
-    expect(result).toEqual({token,expires:900n});
-    expect(fixture.http.requests[0]).toMatchObject({method:'POST',path:`/v1/groups/${hex(GROUP)}/automod-grants/arm`,bucket:'write',idempotent:true,
-      body:encode([request,COMMUNITY,7n,800n,digest,'step-up-once'])});
-    expect(fixture.http.requests[0].body).not.toContain('plaintext config');
-  });
-
   it('posts the opaque ClientCore-signed removal body to the group route and surfaces server refusal', async () => {
     const body = encode([new Uint8Array([1, 2]), new Uint8Array(64).fill(0x7a)]);
     const ok = setup();
@@ -2209,7 +2175,6 @@ describe('Routes: the messaging area goes over the socket (Bot v2 task 5)', () =
     ['GET', `/v1/groups/${G}/heal-state`], ['POST', `/v1/groups/${G}/heal`], ['POST', `/v1/groups/${G}/message`],
     ['GET', `/v1/groups/${G}/messages?from=0&limit=64`], ['DELETE', `/v1/groups/${G}/messages/3`], ['POST', `/v1/groups/${G}/cursor`],
     ['GET', `/v1/groups/${G}/moderation/removals?after=0&limit=64`], ['POST', `/v1/groups/${G}/moderation/removals`],
-    ['POST', `/v1/groups/${G}/automod-grants/arm`], ['GET', `/v1/groups/${G}/interaction-admission-context`],
     ['POST', '/v1/dms'], ['GET', '/v1/dms'],
     ['POST', `/v1/channels/${C}/messages`], ['GET', `/v1/channels/${C}/messages?limit=50`], ['PATCH', `/v1/channels/${C}/messages/4`],
     ['DELETE', `/v1/channels/${C}/messages/4`], ['GET', `/v1/channels/${C}/search?q=x`], ['PUT', `/v1/channels/${C}/read-state`],

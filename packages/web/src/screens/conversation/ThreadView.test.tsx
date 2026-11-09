@@ -226,7 +226,6 @@ describe('ThreadView (web3.7)', () => {
     await user.click(screen.getByRole('button', { name: en['shell.moderation.retryEvidence'] }));
     await waitFor(() => expect(screen.getByText(en['shell.moderation.evidenceSent'])).toBeInTheDocument());
     expect(fake.callsOf('moderateRemoveMessage')).toHaveLength(1);
-    expect(fake.callsOf('humanInteractionRequest')).toEqual([]);
     expect(bot.calls.map(c => [c.sealed, c.operation, c.communityId, c.channelId, c.revision])).toEqual([[161, 61, A, null, '0']]);
     expect(bot.calls[0].args).toEqual([ClientCore.fromHex('11'.repeat(16)), 'reviewed by moderator', 'first reply']);
     expect(fake.callsOf('deleteMessage')).toEqual([]);

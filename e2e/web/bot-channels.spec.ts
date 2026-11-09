@@ -124,7 +124,9 @@ test('mark a channel, enable welcome, a new member is welcomed there', async ({ 
     await openInviteInClient(bea, invite);
     await completeSignUp(bea, newAccount('Bea', host.control), instanceName);
     await openChannel(page, SERVER, 'general');
-    // {member} is the new member's username (welcome.Preview), not their display name.
+    // {member} is the member's name as of the join: nick, then display name, then username (MemberProfile.Name). The
+    // display name is server-readable, so the Bot can use it, but this account sets its display name only after joining
+    // (completeSignUp), so the welcome names the username. Hence the looser match.
     const welcome = page.getByRole('log', { name: copy('shell.log.label', { channel: 'general' }), exact: true }).locator('.d-message-row')
       .filter({ hasText: new RegExp(`Welcome \\S+ to ${SERVER}!`, 'u') });
     await expect(welcome).toBeVisible({ timeout: 60_000 });

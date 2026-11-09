@@ -81,7 +81,7 @@ func ExpectedBinding(instanceID id.ID, ch store.ChannelRow) Binding {
 	}
 }
 
-// DMs serves POST /v1/dms and GET /v1/dms (protocol/09 § DMs). A DM (kind 3)
+// DMs serves POST /v1/dms and GET /v1/dms (protocol/09 § DMs). A DM (channel kind = 3)
 // or group DM (kind 4) is a channel row with no community, always end-to-end
 // encrypted and private; its participants are channel_members, the only place
 // that list is stored.
@@ -312,17 +312,20 @@ func SyncGroupMembers(ctx context.Context, repo store.Repository, dsvc DS, ch st
 		if err != nil {
 			return err
 		}
-		// Bot v2 Task 22 (Task 16 ruling): the community's Bot is proposed only into its Bot channels' groups. It stays
-		// eligible everywhere it can view (so this sync never proposes it out); marking the channel proposes it in.
-		// A failure to read that rule fails closed for the Bot alone (Task 22 fix round 1, L1): it is left out of the Adds,
-		// and the Removes of members who lost access still run.
+		// Bot v2 Task 22 (Task 16 ruling): the community's Bot is a member of its Bot channels' groups only. Marking the
+		// channel proposes it in; outside a Bot channel it is never proposed in, and a live leaf it holds there is
+		// proposed out (Task 23, R1 c: a commit in flight across an unmark, or a stale sync read, carried it in).
+		// A failure to read that rule fails closed for the Bot's Adds alone (Task 22 fix round 1, L1): it is left out of
+		// the Adds, no Bot leaf is proposed out on that guess, and the Removes of members who lost access still run.
 		addable, botErr := withoutBotOutsideBotChannels(ctx, repo, ch, eligible)
+		members := addable
 		if botErr != nil {
 			errs = append(errs, botErr)
 			addable = withoutCommunityBot(ctx, repo, ch, eligible)
+			members = eligible
 		}
 		for _, g := range groups {
-			if err := syncGroup(ctx, repo, dsvc, g, eligible, addable, now, true); err != nil {
+			if err := syncGroup(ctx, repo, dsvc, g, members, addable, now, true); err != nil {
 				errs = append(errs, err)
 			}
 		}

@@ -9,7 +9,6 @@ import { t, type StringKey } from '../../strings/index.ts';
 import { StepUpDialog } from '../settings/StepUpDialog.tsx';
 import { useSettingsEdit, type SettingsEditState } from '../../settings/edit-state.tsx';
 import { ModerationLog } from './ModerationLog.tsx';
-import { AutoModerationSettingsPanel } from './AutoModerationSettingsPanel.tsx';
 import { WelcomeSettingsPanel, type WelcomeSettingsGateway } from './WelcomeSettingsPanel.tsx';
 import { type SectionProps } from './shared.ts';
 import { MusicProviderStatus } from './MusicProviderStatus.tsx';
@@ -21,7 +20,7 @@ import { invalidateCommandBot } from '../commands/command-bot-store.ts';
 import { BotHealth } from './BotHealth.tsx';
 import { BotWebhooks } from './BotWebhooks.tsx';
 
-export type BotPageKind = 'bot' | 'welcome' | 'joinRoles' | 'music' | 'automoderation' | 'moderationLog';
+export type BotPageKind = 'bot' | 'welcome' | 'joinRoles' | 'music' | 'moderationLog';
 
 type Installation = { id: string; communityId: string; state: 0 | 1 | 2 | 3 | 4 | 5; revision: string;
   userId: string | null; deviceId: string | null; capabilities: number; updatedAt: string;
@@ -501,7 +500,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
 
   const pageTitle: StringKey = page === 'bot' ? 'admin.bot.title' : page === 'welcome' ? 'admin.bot.welcomeSettings.title'
     : page === 'joinRoles' ? 'admin.bot.joinRole.title' : page === 'music' ? 'serverSettings.music.title'
-      : page === 'automoderation' ? 'admin.bot.automod.title' : 'admin.bot.moderationLog.title';
+      : 'admin.bot.moderationLog.title';
 
   return (
     <section className="dw-settings-section dw-bot-settings" data-measure="full" aria-labelledby={`${base}-title`}>
@@ -597,11 +596,6 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
       {page === 'welcome' ? <WelcomeSettingsPanel communityId={communityId} serverName={serverName} channels={textChannels}
         enabled={welcomeEnabled} canManage={access?.loaded === true && access.manageCommunity} gateway={welcomeGateway} />
         : null}
-      {page === 'automoderation' ? <AutoModerationSettingsPanel communityId={communityId} botReady={currentInstallation?.state === 3}
-        canManage={access?.loaded === true && access.manageCommunity}
-        canManageMessages={access?.loaded === true && (access.manageMessages ?? access.owner)}
-        canModerateMembers={access?.loaded === true && (access.moderateMembers ?? access.owner)}
-        capabilities={currentInstallation?.capabilities ?? 0} /> : null}
       {page === 'moderationLog' ? <ModerationLog communityId={communityId} showHeading={false} /> : null}
       {page === 'bot' && currentError !== null ? <p role="alert">{currentError}</p> : null}
       {page === 'bot' && statusRefreshError !== null ? <p role="alert">{statusRefreshError}</p> : null}

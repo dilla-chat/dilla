@@ -32,7 +32,6 @@ export const settingsWorkspace = {
   'workspace.welcome': 'Welcome messages',
   'workspace.joinRoles': 'Join roles',
   'workspace.music': 'Music',
-  'workspace.automoderation': 'Automoderation',
   'workspace.moderationLog': 'Moderation log',
   'workspace.danger': 'Ownership / Leave',
   'workspace.bans': 'Bans',

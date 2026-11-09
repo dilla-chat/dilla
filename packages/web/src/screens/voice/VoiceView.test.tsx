@@ -41,9 +41,8 @@ async function inVoice(o: VoiceHarnessOptions = {}) {
 
 describe('voice in the shell', () => {
   it('keeps playback controls out of the voice view', async () => {
-    const app = await inVoice();
+    await inVoice();
     expect(screen.queryByRole('region', { name: 'Music' })).toBeNull();
-    expect(app.client.callsOf('humanInteractionRequest')).toHaveLength(0);
   });
   it('shows a voice channel the shell does not know as AFK as an ordinary voice view with a join button', async () => {
     renderVoiceShell({ path: `/c/${A}/${MUSIC}`, voice: { [MUSIC]: { callId: MUSIC, participants: [

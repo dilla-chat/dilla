@@ -42,7 +42,7 @@ describe('sealed Bot operations (Task 21b)', () => {
     expect([71, 10, 84].map(sealedOperation)).toEqual([91, 92, 93]);
     expect([11, 21, 24, 31, 50, 70, 73, 83].map(sealedOperation)).toEqual([111, 121, 124, 131, 150, 170, 173, 183]);
     for (const op of [10, 11, 21, 31, 50, 71, 73, 84]) expect(v1Operation(sealedOperation(op))).toBe(op);
-    expect(supportedV1Operations([{ operation: 91 }, { operation: 173 }, { operation: 80 }, { operation: 92 }])).toEqual([3, 10, 71, 73]);
+    expect(supportedV1Operations([{ operation: 91 }, { operation: 173 }, { operation: 80 }, { operation: 92 }])).toEqual([10, 71, 73]);
   });
 
   it('a mutation sends its revision first and its ids as bytes, on the voice channel, and reads the answer', async () => {

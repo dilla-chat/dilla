@@ -57,7 +57,7 @@ func TestYouTubeQueueStarterRejectsUnsupportedProvider(t *testing.T) {
 	community, channel := id.New(), id.New()
 	calls := &runtimeCalls{call: client.Call{CallID: channel, GroupID: id.New(), LiveKitURL: "wss://media.example", Token: "token"}}
 	starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel, Calls: calls,
-		YouTubePCM: youtube.PCMStarter{YTDLP: "yt-dlp", FFmpeg: "ffmpeg"}, Encoder: runtimeEncoder{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
+		YouTubePCM: unavailableYouTubeSource{err: youtube.ErrRunnerRequired}, Encoder: runtimeEncoder{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -589,7 +589,7 @@ func TestInstallationYouTubeStarterUsesScopedCallAndNativeMediaDependencies(t *t
 		t.Fatalf("YouTube source = %T, want the community's warm-backend view", pcm.Source)
 	}
 	encoder, ok := options.Encoder.(session.RuntimeEncoder)
-	if !ok || encoder.Config.Options.FFmpegPath != "ffmpeg" {
+	if !ok || encoder.Config.Capacity != 50 {
 		t.Fatalf("encoder = %#v", options.Encoder)
 	}
 	if _, ok := options.Publisher.(session.RetainedLiveKitPublisher); !ok || options.Epochs != epochs {
@@ -967,6 +967,26 @@ func (p boundaryPublisher) Start(context.Context, client.Call, id.ID, livekit.Ep
 	track := &liveRuntimePublisher{done: make(chan struct{})}
 	p.started <- track
 	return track, nil
+}
+
+// probeIntakePriority checks the request priority at a boundary and makes a client request there.
+type probeIntakePriority struct {
+	api   *client.Client
+	calls int
+	want  int
+}
+
+func (p *probeIntakePriority) probe(ctx context.Context) error {
+	if got := client.RequestPriority(ctx); got != p.want {
+		return fmt.Errorf("priority = %d, want %d", got, p.want)
+	}
+	p.calls++
+	_, err := p.api.Discover(ctx)
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusServiceUnavailable {
+		return fmt.Errorf("priority was lost: %w", err)
+	}
+	return nil
 }
 
 type boundaryCalls struct {

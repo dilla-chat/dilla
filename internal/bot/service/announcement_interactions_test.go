@@ -233,30 +233,6 @@ func TestAnnouncementInteractionsReadOnlyHandlersAuthorizeCurrentManagerAndScope
 	}
 }
 
-func TestAnnouncementListDispatchRechecksPermissionOnIdenticalRetry(t *testing.T) {
-	h, auth := announcementInteractionsFixture(t)
-	dispatcher, event, binding := interactionFixture(t, h.ReadOnlyHandlers())
-	body, err := protocol.EncodeRequest(protocol.Request{RequestID: interactionID(8), CommunityID: binding.Community, Operation: protocol.OpAnnouncementsList, Args: []any{uint64(0)}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	event.Body = &body
-	first, err := dispatcher.Dispatch(context.Background(), event)
-	if err != nil || interactionResponse(t, first).Status != 0 {
-		t.Fatalf("first response=%q err=%v; want authorized list", first, err)
-	}
-
-	auth.allowed = false
-	second, err := dispatcher.Dispatch(context.Background(), event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := interactionResponse(t, second)
-	if response.Status != interactionStatusForbidden || len(response.Data) != 0 || auth.calls != 2 {
-		t.Fatalf("revoked duplicate response=%+v lookups=%d; want fresh forbidden response", response, auth.calls)
-	}
-}
-
 func TestAnnouncementListUsesFreshCommunityActorAuthority(t *testing.T) {
 	h, _ := announcementInteractionsFixture(t)
 	community, actor := interactionID(2), interactionID(6)

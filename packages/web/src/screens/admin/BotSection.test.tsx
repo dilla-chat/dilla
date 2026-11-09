@@ -6,9 +6,8 @@ import { CoreProvider } from '../../core/context.tsx';
 import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
 import { en } from '../../strings/index.ts';
-import { decode, encode } from '@dilla/client-core';
+import { encode } from '@dilla/client-core';
 import { ServerSettings } from './ServerSettings.tsx';
-import { AutoModerationSettingsPanel } from './AutoModerationSettingsPanel.tsx';
 import { BotSection, type BotPageKind } from './BotSection.tsx';
 import { installSealedBot } from '../../test/sealed-bot.ts';
 
@@ -79,236 +78,7 @@ describe('the server bot settings', () => {
     await waitFor(() => expect(fake.callsOf('patchBotProfile')).toEqual([{ m: 'patchBotProfile', communityId: SERVER, display: 'Music Bot' }]));
     expect(announce).toHaveBeenCalledWith('Bot name saved.');
   });
-  it('discards an op 62 upload response after the Server Settings community changes', async () => {
-    const fake=new FakeClient(); let release!: (value:{requestId:string;upload:string})=>void;
-    fake.handler=command=>command.m==='humanInteractionRequest'?new Promise(resolve=>{release=resolve;}):Promise.resolve(null);
-    const user=userEvent.setup(); const other='ee'.repeat(16);
-    const panel=(cid:string)=><CoreProvider client={fake}><AutoModerationSettingsPanel communityId={cid} botReady={true} canManage={true}
-      canManageMessages={true} canModerateMembers={true} capabilities={(1<<4)|(1<<5)}/></CoreProvider>;
-    const view=render(panel(SERVER));
-    await user.click(screen.getByRole('button',{name:en['admin.bot.automod.load']}));
-    await waitFor(()=>expect(fake.callsOf('humanInteractionRequest')).toHaveLength(1));
-    const request=fake.callsOf('humanInteractionRequest')[0];
-    view.rerender(panel(other));
-    await act(async()=>{release({requestId:request.requestId,upload:'accepted'});await Promise.resolve();});
-    expect(screen.queryByText(en['admin.bot.automod.loaded'])).not.toBeInTheDocument();
-    expect(screen.getByRole('button',{name:en['admin.bot.automod.load']})).toBeInTheDocument();
-  });
 
-  it('waits for automatic settings response acknowledgement before reporting loaded', async () => {
-    const ready = { ...ROW, state: 3 as const, capabilities: (1 << 4) | (1 << 5), revision: '7' };
-    const { fake, user } = setupPage('automoderation', ready);
-    let releaseAck!: (value: null) => void;
-    fake.handler = command => {
-      if (command.m === 'getBotInstallation') return Promise.resolve(ready);
-      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ready.id });
-      if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
-      if (command.m === 'readBotInteractionResponses') return Promise.resolve({ through: '1', blocked: false, responses: [{
-        deliveryId: '1', sourceSeq: '1', requestId: fake.callsOf('humanInteractionRequest').at(-1)?.requestId ?? '',
-        communityId: SERVER, operation: 62, channelId: null, status: 0, revision: '7',
-        data: encode([1n, 0n, 'log', 'log', 'log', 600000n, []]),
-      }] });
-      if (command.m === 'ackBotInteractionResponses') return new Promise(resolve => { releaseAck = resolve; });
-      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
-    };
-    await user.click(await screen.findByRole('button', { name: en['admin.bot.automod.load'] }));
-    await waitFor(() => expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(1));
-    expect(screen.queryByText(en['admin.bot.automod.loaded'])).not.toBeInTheDocument();
-    await act(async () => { releaseAck(null); await Promise.resolve(); });
-    await screen.findByText(en['admin.bot.automod.loaded']);
-  });
-
-  it('waits for the exact settings response and acknowledges its opaque lease', async () => {
-    vi.useFakeTimers();
-    let view: ReturnType<typeof setupPage>['view'] | undefined;
-    try {
-      const ready = { ...ROW, state: 3 as const, capabilities: (1 << 4) | (1 << 5), revision: '7' };
-      const setup = setupPage('automoderation', ready, false, false, true, true);
-      const { fake } = setup;
-      view = setup.view;
-      let prefixOpen = false;
-      fake.handler = command => {
-        if (command.m === 'getBotInstallation') return Promise.resolve(ready);
-        if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ready.id });
-        if (command.m === 'humanInteractionRequest') return Promise.resolve({ requestId: command.requestId, upload: 'accepted' });
-        if (command.m === 'readBotInteractionResponses') return Promise.resolve({ through: prefixOpen ? 'a'.repeat(32) : null, blocked: !prefixOpen, responses: prefixOpen ? [{
-          deliveryId: '4', sourceSeq: '8', requestId: fake.callsOf('humanInteractionRequest').at(-1)?.requestId ?? '',
-          communityId: SERVER, operation: 62, channelId: null, status: 0, revision: '7',
-          data: encode([1n, 0n, 'log', 'log', 'log', 600000n, []]),
-        }] : [] });
-        return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
-      };
-      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-      await act(async () => { fireEvent.click(screen.getByRole('button', { name: en['admin.bot.automod.load'] })); await Promise.resolve(); });
-      expect(fake.callsOf('readBotInteractionResponses')).toHaveLength(1);
-      expect(screen.queryByText(en['admin.bot.automod.loaded'])).not.toBeInTheDocument();
-      expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(0);
-      prefixOpen = true;
-      await act(async () => { await vi.advanceTimersToNextTimerAsync(); });
-      expect(screen.getByText(en['admin.bot.automod.loaded'])).toBeInTheDocument();
-      expect(fake.callsOf('ackBotInteractionResponses')).toEqual([{ m: 'ackBotInteractionResponses', communityId: SERVER, through: 'a'.repeat(32) }]);
-    } finally {
-      view?.unmount();
-      vi.useRealTimers();
-    }
-  });
-
-  it('loads automatic moderation over op 62 and prepares a step-up protected op 63 save', async () => {
-    const ready = { ...ROW, state: 3 as const, capabilities: (1 << 4) | (1 << 5), revision: '7' };
-    const { fake, user } = setupPage('automoderation', ready);
-    const latest = new Map<number, { requestId: string; operation: number }>();
-    fake.handler = command => {
-      if (command.m === 'getBotInstallation') return Promise.resolve(ready);
-      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ready.id });
-      if (command.m === 'stepUp') return Promise.resolve({ token: 'short-lived-step-up' });
-      if (command.m === 'humanInteractionRequest') { latest.set(command.operation, command); return Promise.resolve({ requestId: command.requestId, upload: 'accepted' }); }
-      if (command.m === 'readBotInteractionResponses') { const last=latest.get(command.operations[0]); return Promise.resolve({ through: '1', blocked: false, responses: last === undefined ? [] : [{
-        deliveryId: '1', sourceSeq: '1', requestId: last.requestId, communityId: SERVER, operation: last.operation,
-        channelId: null, status: 0, revision: last.operation === 62 ? '7' : '8',
-        data: last.operation === 62 ? encode([1n,0n,'log','log','log',600000n,[]]) : encode([]),
-      }] }); }
-      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
-    };
-    await user.click(await screen.findByRole('button', { name: en['admin.bot.automod.load'] }));
-    await waitFor(() => expect(fake.callsOf('humanInteractionRequest')).toMatchObject([{ operation: 62, channelId: null, revision: null, args: [] }]));
-    await screen.findByText(en['admin.bot.automod.loaded']);
-    const timeout=screen.getByRole('spinbutton',{name:en['admin.bot.automod.timeout']});
-    await user.clear(timeout);await user.type(timeout,'0');
-    await user.click(screen.getByRole('button',{name:en['admin.bot.automod.save']}));
-    expect(await screen.findByRole('alert')).toHaveTextContent(en['admin.bot.automod.prepareError']);
-    expect(fake.callsOf('humanInteractionRequest').filter(c=>c.operation===63)).toHaveLength(0);
-    await user.clear(timeout);await user.type(timeout,'600000');
-    await user.click(screen.getByRole('button', { name: en['admin.bot.automod.save'] }));
-    const dialog = await screen.findByRole('dialog', { name: en['factorSettings.stepUp.title'] });
-    await user.type(within(dialog).getByLabelText(en['factorSettings.stepUp.password']), 'password');
-    await user.click(within(dialog).getByRole('button', { name: en['factorSettings.stepUp.confirm'] }));
-    await waitFor(() => expect(fake.callsOf('humanInteractionRequest').some(c => c.operation === 63)).toBe(true));
-    const save = fake.callsOf('humanInteractionRequest').find(c => c.operation === 63)!;
-    expect(save).toMatchObject({ communityId: SERVER, channelId: null, revision: '7', stepUp: 'short-lived-step-up', args: ['', expect.any(Uint8Array)] });
-    expect(save.args[1]).toBeInstanceOf(Uint8Array);
-    await waitFor(() => expect(screen.getByText(en['admin.bot.automod.loaded'])).toBeInTheDocument());
-    expect(fake.callsOf('humanInteractionRequest').filter(c => c.operation === 62)).toHaveLength(2);
-  });
-
-  it.each(['E_CORE_STATE','E_FORBIDDEN'] as const)('does not poll responses after a definite %s save rejection', async code => {
-    const ready={...ROW,state:3 as const,capabilities:(1<<4)|(1<<5)}; const {fake,user}=setupPage('automoderation', ready);const responseReads:number[][]=[];
-    fake.handler=command=>{
-      if(command.m==='getBotInstallation')return Promise.resolve(ready);
-      if(command.m==='getBotJoinRole')return Promise.resolve({roleId:null,installationId:ready.id});
-      if(command.m==='stepUp')return Promise.resolve({token:'short-lived-step-up'});
-      if(command.m==='humanInteractionRequest'){
-        if(command.operation===63)return Promise.reject(refusal({code,status:code==='E_FORBIDDEN'?403:0}));
-        return Promise.resolve({requestId:command.requestId,upload:'accepted'});
-      }
-      if(command.m==='readBotInteractionResponses'){
-        responseReads.push([...command.operations]);
-        return Promise.resolve({through:'1',blocked:false,responses:[{deliveryId:'1',sourceSeq:'1',requestId:fake.callsOf('humanInteractionRequest').at(-1)?.requestId??'',
-          communityId:SERVER,operation:62,channelId:null,status:0,revision:'7',data:encode([1n,0n,'log','log','log',600000n,[]])}]});
-      }
-      return Promise.resolve(command.m==='getAFKSettings'?{channelId:null,timeoutSeconds:300}:null);
-    };
-    await user.click(await screen.findByRole('button',{name:en['admin.bot.automod.load']}));
-    await screen.findByText(en['admin.bot.automod.loaded']);
-    await user.click(screen.getByRole('button',{name:en['admin.bot.automod.save']}));
-    const dialog=await screen.findByRole('dialog',{name:en['factorSettings.stepUp.title']});
-    await user.type(within(dialog).getByLabelText(en['factorSettings.stepUp.password']),'password');
-    await user.click(within(dialog).getByRole('button',{name:en['factorSettings.stepUp.confirm']}));
-    expect(await screen.findByRole('alert')).toHaveTextContent(en['admin.bot.automod.saveError']);
-    expect(responseReads).not.toContainEqual([63]);
-    expect(screen.queryByRole('button',{name:en['admin.bot.automod.retry']})).not.toBeInTheDocument();
-  });
-
-  it('does not send automatic moderation config when step-up is denied', async () => {
-    const ready={...ROW,state:3 as const,capabilities:(1<<4)|(1<<5)}; const {fake,user}=setupPage('automoderation', ready);
-    fake.handler=command=>{
-      if(command.m==='getBotInstallation')return Promise.resolve(ready);
-      if(command.m==='getBotJoinRole')return Promise.resolve({roleId:null,installationId:ready.id});
-      if(command.m==='humanInteractionRequest')return Promise.resolve({requestId:command.requestId,upload:'accepted'});
-      if(command.m==='readBotInteractionResponses')return Promise.resolve({through:'1',blocked:false,responses:[{deliveryId:'1',sourceSeq:'1',
-        requestId:fake.callsOf('humanInteractionRequest').at(-1)?.requestId??'',communityId:SERVER,operation:62,channelId:null,status:0,revision:'7',
-        data:encode([1n,0n,'log','log','log',600000n,[]])}]});
-      if(command.m==='stepUp')return Promise.reject(refusal({code:'E_STEP_UP',status:403}));
-      return Promise.resolve(command.m==='getAFKSettings'?{channelId:null,timeoutSeconds:300}:null);
-    };
-    await user.click(await screen.findByRole('button',{name:en['admin.bot.automod.load']}));
-    await screen.findByText(en['admin.bot.automod.loaded']);
-    await user.click(screen.getByRole('button',{name:en['admin.bot.automod.save']}));
-    const dialog=await screen.findByRole('dialog',{name:en['factorSettings.stepUp.title']});
-    await user.type(within(dialog).getByLabelText(en['factorSettings.stepUp.password']),'wrong');
-    await user.click(within(dialog).getByRole('button',{name:en['factorSettings.stepUp.confirm']}));
-    expect(await within(dialog).findByRole('alert')).toHaveTextContent(en['factorSettings.stepUp.failed']);
-    expect(fake.callsOf('humanInteractionRequest').filter(c=>c.operation===63)).toHaveLength(0);
-  });
-
-  it('retries an uncertain automatic moderation upload with the same request ID and document', async () => {
-    const ready={...ROW,state:3 as const,capabilities:(1<<4)|(1<<5)}; const {fake,user}=setupPage('automoderation', ready);
-    const latest=new Map<number,{requestId:string;operation:number}>(); let saves=0;
-    fake.handler=command=>{
-      if(command.m==='getBotInstallation')return Promise.resolve(ready);
-      if(command.m==='getBotJoinRole')return Promise.resolve({roleId:null,installationId:ready.id});
-      if(command.m==='stepUp')return Promise.resolve({token:'short-lived-step-up'});
-      if(command.m==='humanInteractionRequest'){
-        latest.set(command.operation,command);
-        if(command.operation===63){saves++;return Promise.resolve({requestId:command.requestId,upload:saves===1?'unknown':'accepted'});}
-        return Promise.resolve({requestId:command.requestId,upload:'accepted'});
-      }
-      if(command.m==='readBotInteractionResponses'){
-        const row=latest.get(command.operations[0]);
-        if(row===undefined||row.operation===63&&saves<2)return Promise.resolve({through:null,blocked:false,responses:[]});
-        return Promise.resolve({through:'1',blocked:false,responses:[{deliveryId:'1',sourceSeq:'1',requestId:row.requestId,communityId:SERVER,
-          operation:row.operation,channelId:null,status:0,revision:row.operation===62?'7':'8',
-          data:row.operation===62?encode([1n,0n,'log','log','log',600000n,[]]):encode([])}]});
-      }
-      return Promise.resolve(command.m==='getAFKSettings'?{channelId:null,timeoutSeconds:300}:null);
-    };
-    await user.click(await screen.findByRole('button',{name:en['admin.bot.automod.load']}));
-    await screen.findByText(en['admin.bot.automod.loaded']);
-    await user.click(screen.getByRole('button',{name:en['admin.bot.automod.save']}));
-    const dialog=await screen.findByRole('dialog',{name:en['factorSettings.stepUp.title']});
-    await user.type(within(dialog).getByLabelText(en['factorSettings.stepUp.password']),'password');
-    await user.click(within(dialog).getByRole('button',{name:en['factorSettings.stepUp.confirm']}));
-    await screen.findByText(en['admin.bot.automod.uncertain']);
-    await user.click(screen.getByRole('button',{name:en['admin.bot.automod.retry']}));
-    await waitFor(()=>expect(saves).toBe(2));
-    const calls=fake.callsOf('humanInteractionRequest').filter(c=>c.operation===63);
-    expect(calls).toHaveLength(2);expect(calls[1].requestId).toBe(calls[0].requestId);expect(calls[1].args[1]).toEqual(calls[0].args[1]);
-    await screen.findByText(en['admin.bot.automod.loaded']);
-  });
-
-  it('loads more than 64 exemptions and preserves them on an unrelated save within the encoded size limit', async () => {
-    const ready={...ROW,state:3 as const,capabilities:(1<<4)|(1<<5)};const {fake,user}=setupPage('automoderation', ready);
-    const exemptions=Array.from({length:68},(_,i)=>i.toString(16).padStart(32,'0'));
-    expect(encode([1n,0n,'log','log','log',601000n,exemptions]).length).toBeLessThanOrEqual(2400);
-    const latest=new Map<number,{requestId:string;operation:number}>();
-    fake.handler=command=>{
-      if(command.m==='getBotInstallation')return Promise.resolve(ready);
-      if(command.m==='getBotJoinRole')return Promise.resolve({roleId:null,installationId:ready.id});
-      if(command.m==='stepUp')return Promise.resolve({token:'short-lived-step-up'});
-      if(command.m==='humanInteractionRequest'){latest.set(command.operation,command);return Promise.resolve({requestId:command.requestId,upload:'accepted'});}
-      if(command.m==='readBotInteractionResponses'){
-        const row=latest.get(command.operations[0]);if(row===undefined)return Promise.resolve({through:null,blocked:false,responses:[]});
-        return Promise.resolve({through:'1',blocked:false,responses:[{deliveryId:'1',sourceSeq:'1',requestId:row.requestId,communityId:SERVER,
-          operation:row.operation,channelId:null,status:0,revision:row.operation===62?'7':'8',
-          data:row.operation===62?encode([1n,0n,'log','log','log',600000n,exemptions]):encode([])}]});
-      }
-      return Promise.resolve(command.m==='getAFKSettings'?{channelId:null,timeoutSeconds:300}:null);
-    };
-    await user.click(await screen.findByRole('button',{name:en['admin.bot.automod.load']}));
-    await screen.findByText(en['admin.bot.automod.loaded']);
-    await user.clear(screen.getByRole('spinbutton',{name:en['admin.bot.automod.timeout']}));
-    await user.type(screen.getByRole('spinbutton',{name:en['admin.bot.automod.timeout']}),'601000');
-    await user.click(screen.getByRole('button',{name:en['admin.bot.automod.save']}));
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    const dialog=await screen.findByRole('dialog',{name:en['factorSettings.stepUp.title']});
-    await user.type(within(dialog).getByLabelText(en['factorSettings.stepUp.password']),'password');
-    await user.click(within(dialog).getByRole('button',{name:en['factorSettings.stepUp.confirm']}));
-    await waitFor(()=>expect(fake.callsOf('humanInteractionRequest').some(c=>c.operation===63)).toBe(true));
-    const bytes=fake.callsOf('humanInteractionRequest').find(c=>c.operation===63)!.args[1] as Uint8Array;
-    expect(decode(bytes)).toEqual([1n,0n,'log','log','log',601000n,exemptions]);
-    expect(bytes.length).toBeLessThanOrEqual(2400);
-  });
-
-  // Task 22: Welcome settings are the sealed app operations 101 (read) and 102 (save), into a Bot channel.
   it('reaches welcome get and put through sealed app operations and shows the Bot answers', async () => {
     const ready = { ...ROW, state: 3 as const, capabilities: 1 << 1, revision: '7' };
     const { fake, user } = setupPage('welcome', ready);
@@ -330,150 +100,43 @@ describe('the server bot settings', () => {
     await waitFor(() => expect(bot.calls).toHaveLength(2));
     expect(bot.calls[1]).toMatchObject({ sealed: 102, communityId: SERVER, channelId: null, operation: 2, revision: '7', args: [5, expect.any(Uint8Array)] });
     expect(await screen.findByText(en['admin.bot.welcomeSettings.saved'])).toBeInTheDocument();
-    expect(fake.calls.some(c => c.m === 'humanInteractionRequest' || c.m === 'readBotInteractionResponses' || c.m === 'ackBotInteractionResponses')).toBe(false);
   });
 
-  it('does not request or invent moderation details before the user asks', async () => {
-    const { fake } = setupPage('moderationLog', { ...ROW, state: 3 });
-    expect(await screen.findByRole('heading', { name: en['admin.bot.moderationLog.title'] })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: en['admin.bot.moderationLog.load'] })).toBeInTheDocument();
-    expect(fake.calls.map(call => call.m)).not.toContain('listModerationCases');
-    expect(fake.calls.map(call => call.m)).not.toContain('listManualModerationEvidence');
-    expect(fake.calls.map(call => call.m)).not.toContain('readHumanInteractionResponses');
-    expect(fake.calls.map(call => call.m)).not.toContain('getModerationCases');
-    expect(screen.queryByText(/reason|excerpt|case #/i)).not.toBeInTheDocument();
-  });
-
-  it('keeps automatic case retrieval available alongside the manual evidence view', async () => {
-    const { fake, user } = setupPage('moderationLog', { ...ROW, state: 3 });
-    fake.handler = command => {
-      if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
-      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
-      if (command.m === 'listModerationCases') return Promise.resolve({ requestId: command.requestId, status: 'accepted' });
-      if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: null, responses: [] });
-      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
-    };
+  // Bot v2 Task 23: the moderation log's pages are sealed Bot reads (160 automatic cases, 164 manual evidence).
+  it('reads the moderation log pages as sealed Bot reads and renders their rows', async () => {
+    const ready = { ...ROW, state: 3 as const, revision: '7' };
+    const { fake, user } = setupPage('moderationLog', ready);
+    const caseRow = [SERVER, 'b2'.repeat(16), 'cc'.repeat(16), 'dd'.repeat(16), 'ee'.repeat(16), 3n, 'rate', 'remove', 'spam spam', 1_800_000_000n];
+    const evidence = [new Uint8Array(16).fill(0x45), 'warn', 'rude reply', 'you are', 1_800_000_100n];
+    const bot = installSealedBot(fake, SERVER, call => ({ status: 0, revision: null,
+      data: call.operation === 60 ? encode([1n, [caseRow], null]) : encode([1n, [evidence], new Uint8Array([9])]) }),
+    { offered: [60, 64] });
+    expect(bot.calls).toEqual([]);
     await user.click(await screen.findByRole('button', { name: en['admin.bot.moderationLog.loadAutomatic'] }));
-    await waitFor(() => expect(fake.callsOf('listModerationCases')).toHaveLength(1));
-    expect(screen.getByRole('button', { name: en['admin.bot.moderationLog.load'] })).toBeInTheDocument();
-  });
-
-  it('renders a case once when overlapping response snapshots arrive in one journal page', async () => {
-    const { fake, user } = setupPage('moderationLog', { ...ROW, state: 3 });
-    let requestId = '';
-    const sharedCase = { key: 'a'.repeat(32) + ':1', channelId: 'b'.repeat(32), actorId: 'c'.repeat(32),
-      messageId: 'a'.repeat(32), revision: '1', reason: 'duplicate_body', action: 'warn',
-      excerpt: 'one durable warning', receivedAt: '1800000000' };
-    fake.handler = command => {
-      if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
-      if (command.m === 'listModerationCases') { requestId = command.requestId; return Promise.resolve({ requestId, status: 'accepted' }); }
-      if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: '3', responses: [
-        { deliveryId: '2', requestId: '55'.repeat(16), status: 0, hasMore: false, nextCursor: null, cases: [sharedCase] },
-        { deliveryId: '3', requestId, status: 0, hasMore: false, nextCursor: null, cases: [sharedCase,
-          { ...sharedCase, key: 'd'.repeat(32) + ':1', messageId: 'd'.repeat(32), excerpt: 'a distinct warning' }] },
-      ] });
-      return Promise.resolve(null);
-    };
-    await user.click(await screen.findByRole('button', { name: en['admin.bot.moderationLog.loadAutomatic'] }));
-    await waitFor(() => expect(fake.callsOf('ackHumanInteractionResponses')).toEqual([
-      { m: 'ackHumanInteractionResponses', communityId: SERVER, through: '3' },
-    ]));
-    expect(screen.getAllByRole('article')).toHaveLength(2);
-    expect(screen.getAllByText('one durable warning')).toHaveLength(1);
-    expect(screen.getByText('a distinct warning')).toBeInTheDocument();
-  });
-
-  it('shows a typed response page, then acknowledges it after rendering', async () => {
-    const { fake, user } = setupPage('moderationLog', { ...ROW, state: 3 });
-    let requestId = '';
-    fake.handler = command => {
-      if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
-      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
-      if (command.m === 'listManualModerationEvidence') { requestId = command.requestId; return Promise.resolve({ requestId, status: 'accepted' }); }
-      if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: '3', responses: [
-        { deliveryId: '3', requestId, status: 0, hasMore: true, nextCursor: '0102', cases: [{ key: 'a'.repeat(32) + ':1',
-          channelId: 'b'.repeat(32), actorId: 'c'.repeat(32), messageId: 'a'.repeat(32), revision: '1',
-          reason: 'duplicate', action: 'remove', excerpt: 'bounded response excerpt', receivedAt: '1800000000' }] },
-      ] });
-      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
-    };
-    await user.click(await screen.findByRole('button', { name: en['admin.bot.moderationLog.load'] }));
-    expect(await screen.findByText('bounded response excerpt')).toBeInTheDocument();
-    await waitFor(() => expect(fake.callsOf('ackHumanInteractionResponses')).toEqual([
-      { m: 'ackHumanInteractionResponses', communityId: SERVER, through: '3' },
-    ]));
-    expect(fake.callsOf('listManualModerationEvidence')).toEqual([{ m: 'listManualModerationEvidence', communityId: SERVER, requestId, cursor: null }]);
+    expect(await screen.findByText('spam spam')).toBeInTheDocument();
+    expect(bot.calls.map(c => [c.sealed, c.channelId, c.args, c.revision])).toEqual([[160, null, [null], null]]);
+    await user.click(screen.getByRole('button', { name: en['admin.bot.moderationLog.load'] }));
+    expect(await screen.findByText('you are')).toBeInTheDocument();
+    expect(screen.queryByText('spam spam')).toBeNull();
+    expect(bot.calls[1]).toMatchObject({ sealed: 164, channelId: null, args: [null] });
     await user.click(screen.getByRole('button', { name: en['admin.bot.moderationLog.more'] }));
-    await waitFor(() => expect(fake.callsOf('listManualModerationEvidence')).toHaveLength(2));
-    expect(fake.callsOf('listManualModerationEvidence')[1]).toMatchObject({ cursor: '0102' });
+    await waitFor(() => expect(bot.calls).toHaveLength(3));
+    expect(bot.calls[2]).toMatchObject({ sealed: 164, args: [new Uint8Array([9])] });
   });
 
-  it('renders every response in the acknowledged prefix before acknowledging it', async () => {
-    const { fake, user } = setupPage('moderationLog', { ...ROW, state: 3 });
-    let requestId = '';
-    const priorRequestId = '55'.repeat(16);
-    fake.handler = command => {
-      if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
-      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
-      if (command.m === 'listManualModerationEvidence') { requestId = command.requestId; return Promise.resolve({ requestId, status: 'accepted' }); }
-      if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: '3', responses: [
-        { deliveryId: '2', requestId: priorRequestId, status: 0, hasMore: false, nextCursor: null, cases: [{ key: 'a'.repeat(32) + ':1',
-          channelId: 'b'.repeat(32), actorId: 'c'.repeat(32), messageId: 'a'.repeat(32), revision: '1',
-          reason: 'prior reason', action: 'warn', excerpt: 'prior response evidence', receivedAt: '1800000000' }] },
-        { deliveryId: '3', requestId, status: 0, hasMore: false, nextCursor: null, cases: [{ key: 'd'.repeat(32) + ':1',
-          channelId: 'b'.repeat(32), actorId: 'c'.repeat(32), messageId: 'd'.repeat(32), revision: '1',
-          reason: 'current reason', action: 'remove', excerpt: 'current response evidence', receivedAt: '1800000000' }] },
-      ] });
-      if (command.m === 'ackHumanInteractionResponses') {
-        expect(screen.getByText('prior response evidence')).toBeInTheDocument();
-        expect(screen.getByText('current response evidence')).toBeInTheDocument();
-        return Promise.resolve(null);
-      }
-      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
-    };
+  it('names a refused moderation log read and renders a safe date fallback', async () => {
+    const ready = { ...ROW, state: 3 as const, revision: '7' };
+    const { fake, user } = setupPage('moderationLog', ready);
+    let refuse = true;
+    const evidence = [new Uint8Array(16).fill(0x46), 'remove', 'off topic', 'x', 18_446_744_073_709_551_615n];
+    installSealedBot(fake, SERVER, () => refuse ? { status: 2 } : { status: 0, revision: null, data: encode([1n, [evidence], null]) },
+      { offered: [60, 64] });
     await user.click(await screen.findByRole('button', { name: en['admin.bot.moderationLog.load'] }));
-    await waitFor(() => expect(fake.callsOf('ackHumanInteractionResponses')).toHaveLength(1));
-  });
-
-  it('renders an older response before acknowledging it while the current request is pending', async () => {
-    const { fake, user } = setupPage('moderationLog', { ...ROW, state: 3 });
-    fake.handler = command => {
-      if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
-      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
-      if (command.m === 'listManualModerationEvidence') return Promise.resolve({ requestId: command.requestId, status: 'accepted' });
-      if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: '2', responses: [
-        { deliveryId: '2', requestId: '55'.repeat(16), status: 0, hasMore: false, nextCursor: null, cases: [{ key: 'a'.repeat(32) + ':1',
-          channelId: 'b'.repeat(32), actorId: 'c'.repeat(32), messageId: 'a'.repeat(32), revision: '1',
-          reason: 'earlier reason', action: 'warn', excerpt: 'earlier evidence', receivedAt: '1800000000' }] },
-      ] });
-      if (command.m === 'ackHumanInteractionResponses') {
-        expect(screen.getByText('earlier evidence')).toBeInTheDocument();
-        return Promise.resolve(null);
-      }
-      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
-    };
-    await user.click(await screen.findByRole('button', { name: en['admin.bot.moderationLog.load'] }));
-    await waitFor(() => expect(fake.callsOf('ackHumanInteractionResponses')).toHaveLength(1));
-    expect(screen.getByText('earlier evidence')).toBeInTheDocument();
-  });
-
-  it('renders a safe date fallback for an out-of-range received timestamp', async () => {
-    const { fake, user } = setupPage('moderationLog', { ...ROW, state: 3 });
-    let requestId = '';
-    fake.handler = command => {
-      if (command.m === 'getBotInstallation') return Promise.resolve({ ...ROW, state: 3 });
-      if (command.m === 'getBotJoinRole') return Promise.resolve({ roleId: null, installationId: ROW.id });
-      if (command.m === 'listManualModerationEvidence') { requestId = command.requestId; return Promise.resolve({ requestId, status: 'accepted' }); }
-      if (command.m === 'readHumanInteractionResponses') return Promise.resolve({ authorized: true, blocked: false, through: null, responses: [
-        { deliveryId: '3', requestId, status: 0, hasMore: false, nextCursor: null, cases: [{ key: 'a'.repeat(32) + ':1',
-          channelId: 'b'.repeat(32), actorId: 'c'.repeat(32), messageId: 'a'.repeat(32), revision: '1',
-          reason: 'duplicate', action: 'remove', excerpt: 'safe date fallback case', receivedAt: '8640000000000001' }] },
-      ] });
-      return Promise.resolve(command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
-    };
-    await user.click(await screen.findByRole('button', { name: en['admin.bot.moderationLog.load'] }));
-    expect(await screen.findByText('safe date fallback case')).toBeInTheDocument();
-    expect(screen.getByText(/Date unavailable/)).toBeInTheDocument();
+    expect(await screen.findByText(en['admin.bot.moderationLog.denied'])).toBeInTheDocument();
+    refuse = false;
+    await user.click(screen.getByRole('button', { name: en['admin.bot.moderationLog.load'] }));
+    expect(await screen.findByText(en['admin.bot.moderationLog.caseMeta'].replace('{action}', 'remove').replace('{reason}', 'off topic')
+      .replace('{date}', en['admin.bot.moderationLog.unknownDate']))).toBeInTheDocument();
   });
 
   it('manually refreshes installation status and capabilities from the server', async () => {

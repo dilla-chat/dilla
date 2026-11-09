@@ -16,7 +16,6 @@ const anID = "0102030405060708090a0b0c0d0e0f10"
 var messagingSocketRoutes = []struct{ pattern, path string }{
 	{"POST /v1/groups", "/v1/groups"},
 	{"GET /v1/groups/{id}/info", "/v1/groups/" + anID + "/info"},
-	{"GET /v1/groups/{id}/interaction-admission-context", "/v1/groups/" + anID + "/interaction-admission-context"},
 	{"GET /v1/groups/{id}/tree", "/v1/groups/" + anID + "/tree"},
 	{"GET /v1/groups/{id}/handshakes", "/v1/groups/" + anID + "/handshakes"},
 	{"POST /v1/groups/{id}/commit", "/v1/groups/" + anID + "/commit"},
@@ -36,7 +35,6 @@ var messagingSocketRoutes = []struct{ pattern, path string }{
 	{"POST /v1/communities/{community}/bot/receipts/{operation}/resolve", "/v1/communities/" + anID + "/bot/receipts/" + anID + "/resolve"},
 	{"POST /v1/groups/{group}/moderation/removals", "/v1/groups/" + anID + "/moderation/removals"},
 	{"GET /v1/groups/{group}/moderation/removals", "/v1/groups/" + anID + "/moderation/removals"},
-	{"POST /v1/groups/{group}/automod-grants/arm", "/v1/groups/" + anID + "/automod-grants/arm"},
 	{"POST /v1/dms", "/v1/dms"},
 	{"GET /v1/dms", "/v1/dms"},
 	{"POST /v1/channels/{id}/messages", "/v1/channels/" + anID + "/messages"},

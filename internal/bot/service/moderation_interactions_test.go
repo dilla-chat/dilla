@@ -10,7 +10,6 @@ import (
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/moderation"
-	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -206,7 +205,7 @@ func TestModerationInteractionsTruncatesAtEncodedLimitWithoutSkippingRows(t *tes
 func TestModerationInteractionsRechecksPermissionBeforeReturningSecondPage(t *testing.T) {
 	state := &countedCaseState{moderationCaseNativeFake: newModerationCaseNative()}
 	state.binding.Community = interactionID(2)
-	sink, err := NewModerationCaseSink(state, nil, func() time.Time { return time.Unix(1_800_000_100, 0) })
+	sink, err := NewModerationCaseSink(state, func() time.Time { return time.Unix(1_800_000_100, 0) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,40 +237,6 @@ func TestModerationInteractionsRechecksPermissionBeforeReturningSecondPage(t *te
 	page2, err := handler.Handle(context.Background(), actor, protocol.Request{CommunityID: state.binding.Community, Args: []any{cursor}})
 	if !errors.Is(err, ErrModerationCaseUnauthorized) || page2.Data != nil || authority.calls != 2 || state.scans != 1 {
 		t.Fatalf("revoked second page=%+v err=%v lookups=%d scans=%d", page2, err, authority.calls, state.scans)
-	}
-}
-
-func TestModerationCaseDispatchRechecksPermissionOnIdenticalRetry(t *testing.T) {
-	state := &countedCaseState{moderationCaseNativeFake: newModerationCaseNative()}
-	state.binding.Community = interactionID(2)
-	sink, err := NewModerationCaseSink(state, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	authority := &caseReadAuthority{result: client.ActorAuthority{EffectiveBits: moderationViewAuditLogBit}, present: true}
-	reader, err := NewModerationCaseReader(sink, authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dispatcher, event, binding := interactionFixture(t, (ModerationInteractions{Reader: reader, CommunityID: state.binding.Community}).Handlers())
-	body, err := protocol.EncodeRequest(protocol.Request{RequestID: interactionID(8), CommunityID: binding.Community, Operation: protocol.OpModerationCases, Args: []any{nil}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	event.Body = &body
-	first, err := dispatcher.Dispatch(context.Background(), event)
-	if err != nil || interactionResponse(t, first).Status != 0 {
-		t.Fatalf("first response=%q err=%v; want authorized case list", first, err)
-	}
-
-	authority.result.EffectiveBits = 0
-	second, err := dispatcher.Dispatch(context.Background(), event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := interactionResponse(t, second)
-	if response.Status != interactionStatusInternal || len(response.Data) != 0 || authority.calls != 2 || state.scans != 1 {
-		t.Fatalf("revoked duplicate response=%+v lookups=%d scans=%d; want no new scan and no data", response, authority.calls, state.scans)
 	}
 }
 
@@ -310,84 +275,5 @@ func TestModerationInteractionsEvidenceMutationFailsClosedWithoutReceiptLookup(t
 	})
 	if err != nil || result.Status == 0 {
 		t.Fatalf("unwired manual evidence handler result=%+v err=%v, want fail-closed refusal", result, err)
-	}
-}
-
-func TestModerationInteractionsRemainUnreachableForUnboundInteractionGroups(t *testing.T) {
-	reader := &moderationInteractionReaderFake{}
-	h := ModerationInteractions{Reader: reader, CommunityID: interactionID(2)}
-	d, event, binding := interactionFixture(t, h.Handlers())
-	body := interactionBody(t, nil, interactionID(8), protocol.OpModerationCases, nil, nil, []any{nil})
-	event.Body = &body
-	d.native = &interactionNativeFake{binding: binding, group: native.GroupInfo{
-		ID: event.Group, Kind: 3, Community: &binding.Community, Target: event.Channel, State: 2,
-	}}
-	if _, err := d.Dispatch(context.Background(), event); !errors.Is(err, protocol.ErrContext) {
-		t.Fatalf("unbound interaction dispatch error = %v, want context refusal", err)
-	}
-	if !reader.actor.IsZero() {
-		t.Fatal("case reader was called before native interaction group binding")
-	}
-}
-
-func TestModerationCaseDispatchUsesNativeActorAndHidesExcerptWhenPermissionIsDenied(t *testing.T) {
-	state := &countedCaseState{moderationCaseNativeFake: newModerationCaseNative()}
-	state.binding.Community = interactionID(2)
-	sink, err := NewModerationCaseSink(state, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	actor := interactionID(6)
-	authority := &caseReadAuthority{present: true} // current permission lookup denies access
-	reader, err := NewModerationCaseReader(sink, authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	handlers := (ModerationInteractions{Reader: reader, CommunityID: state.binding.Community}).Handlers()
-	d, event, binding := interactionFixture(t, handlers)
-	body := interactionBody(t, nil, interactionID(8), protocol.OpModerationCases, nil, nil, []any{nil})
-	event.Body = &body
-	event.SenderUser = actor
-	got, err := d.Dispatch(context.Background(), event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := interactionResponse(t, got)
-	if response.Status != interactionStatusInternal || len(response.Data) != 0 {
-		t.Fatalf("denied response = %+v; excerpt data leaked or unexpected status", response)
-	}
-	if authority.calls != 1 || authority.actor != actor || authority.community != binding.Community {
-		t.Fatalf("permission lookup did not use the native sender and bound community: %+v", authority)
-	}
-	if state.scans != 0 {
-		t.Fatalf("denied actor reached encrypted state scan %d times", state.scans)
-	}
-}
-
-func TestModerationCaseDispatchRejectsWrongCommunityBeforePermissionLookup(t *testing.T) {
-	state := &countedCaseState{moderationCaseNativeFake: newModerationCaseNative()}
-	state.binding.Community = interactionID(2)
-	sink, err := NewModerationCaseSink(state, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	authority := &caseReadAuthority{result: client.ActorAuthority{EffectiveBits: uint64(1 << 17)}, present: true}
-	reader, err := NewModerationCaseReader(sink, authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	d, event, _ := interactionFixture(t, (ModerationInteractions{Reader: reader, CommunityID: state.binding.Community}).Handlers())
-	body, err := protocol.EncodeRequest(protocol.Request{RequestID: interactionID(8), CommunityID: interactionID(90), Operation: protocol.OpModerationCases, Args: []any{nil}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	event.Body = &body
-	got, err := d.Dispatch(context.Background(), event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := interactionResponse(t, got)
-	if response.Status != interactionStatusForbidden || len(response.Data) != 0 || authority.calls != 0 || state.scans != 0 {
-		t.Fatalf("wrong-community response=%+v authority=%+v scans=%d", response, authority, state.scans)
 	}
 }

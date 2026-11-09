@@ -234,7 +234,13 @@ describe('ServerSettings tabs', () => {
   });
   it('shows every tab to an owner, with the delete tab last', () => {
     setup(FULL);
-    expect(navNames()).toEqual(['Overview', 'Roles', 'Invites', 'Bot', 'Music', 'Channels', 'GIFs', 'Members', 'Self-assignable roles', 'Welcome messages', 'Join roles', 'Automoderation', 'Bans', 'Ownership / Leave']);
+    expect(navNames()).toEqual(['Overview', 'Roles', 'Invites', 'Bot', 'Music', 'Channels', 'GIFs', 'Members', 'Self-assignable roles', 'Welcome messages', 'Join roles', 'Bans', 'Ownership / Leave']);
+  });
+  // Bot v2 Task 23: AutoModeration (v1 interactions) is gone; no page, no nav entry, even for an owner.
+  it('server settings has no Automoderation page', () => {
+    setup(FULL);
+    expect(navNames()).not.toContain('Automoderation');
+    expect(navNames()).toEqual(['Overview', 'Roles', 'Invites', 'Bot', 'Music', 'Channels', 'GIFs', 'Members', 'Self-assignable roles', 'Welcome messages', 'Join roles', 'Bans', 'Ownership / Leave']);
   });
   it('shows the roles tab only with manageRoles, before extra sections', () => {
     setup({ ...NONE, manageChannels: true, manageRoles: true });

@@ -1,4 +1,4 @@
-import { arr, bin, decode, encode, u64, type CborValue } from '../cbor';
+import { arr, bin, encode, u64 } from '../cbor';
 import { CoreError, type ExpectedGroup, type Id, type WelcomeOutcome } from '../core-port';
 import type { Frame } from '../gateway/frames';
 import { toHex } from '../hex';
@@ -8,33 +8,6 @@ import { SyncError } from './errors';
 import type { SyncInternals } from './internals';
 
 const groupKey = (g: Id): string => `g:${toHex(g)}`;
-/** The core's INTERACTION_CLOCK_TOLERANCE_SECS (core/dilla-core/src/bot/mod.rs): an instance-clock issued_at may lie this
- *  far ahead of this device's clock. Used here only to name a refusal; the core alone decides acceptance. */
-export const INTERACTION_CLOCK_TOLERANCE_S = 5n;
-
-/** Diagnostics only: whether a current-context proof the core refused lies outside the core's clock window for `now`
- *  (issued_at more than the tolerance ahead, or not_after already passed). A freshly fetched proof can only do so when
- *  this device's clock is off from the instance's. Reads the two timestamps of the signed payload
- *  `[version,instance_id,instance_key_id,instance_signer_pub,issued_at,not_after,...]` and nothing else. */
-export function proofOutsideClockWindow(payload: Uint8Array, now: bigint): boolean {
-  try {
-    const fields = arr(decode(payload), 18);
-    const issuedAt = u64(fields[4]);
-    const notAfter = u64(fields[5]);
-    return issuedAt > now + INTERACTION_CLOCK_TOLERANCE_S || notAfter <= now;
-  } catch {
-    return false;
-  }
-}
-/** Diagnostics only: the community id in the proof's binding (`payload[7][2]`), or null when unreadable. Unverified,
- *  like proofOutsideClockWindow: it only scopes the clock-skew name to the community whose Bot request waits. */
-export function proofCommunity(payload: Uint8Array): Id | null {
-  try {
-    return bin(arr(arr(decode(payload), 18)[7], 9)[2], 16);
-  } catch {
-    return null;
-  }
-}
 const same = (a: Id, b: Id): boolean => toHex(a) === toHex(b);
 function reportUnexpected(s: SyncInternals, group: Id): void {
   const hex = toHex(group);
@@ -43,60 +16,10 @@ function reportUnexpected(s: SyncInternals, group: Id): void {
   s.deps.onUnexpectedWelcome(group);
 }
 
-async function applyWelcomeRows(s: SyncInternals, raw: Uint8Array, rows: CborValue[], expected: ExpectedGroup[]): Promise<void> {
-  const expectedGroups = new Set(expected.map((item) => toHex(item.groupId)));
-  const genericRows: CborValue[] = [];
-  for (const row of rows) {
-    const fields = arr(row, 7);
-    const welcomeId = u64(fields[0]);
-    const group = bin(fields[1], 16);
-    if (expectedGroups.has(toHex(group))) {
-      genericRows.push(row);
-      continue;
-    }
-
-    let proof: { payload: Uint8Array; signature: Uint8Array };
-    try {
-      proof = await s.deps.routes.getInteractionAdmissionContext(group);
-    } catch {
-      // Ordinary unexpected Welcomes and unavailable/stale interaction proofs both stay on the
-      // existing unexpected path. Its outcome 3 preserves the row and cannot admit the group.
-      genericRows.push(row);
-      continue;
-    }
-    if (s.stopped()) return;
-
-    const now = BigInt(Math.floor(s.deps.now() / 1000));
-    // A refusal of a proof outside the clock window repeats on every poll while this device's clock is off: retrying
-    // cannot fix it, so it is named (diagnostics E_CLOCK_SKEW, and the Bot request's refusal detail) rather than silent.
-    const refused = (): void => {
-      if (proofOutsideClockWindow(proof.payload, now)) s.deps.onWelcomeClockSkew?.(group, proofCommunity(proof.payload));
-      reportUnexpected(s, group);
-    };
-    let outcomes: WelcomeOutcome[];
-    try {
-      outcomes = s.deps.core.humanInteractionWelcomeApply(encode([row]), encode([proof.payload, proof.signature]), now);
-    } catch {
-      // A successful proof lookup identifies a kind-3 candidate. Any local verification or
-      // storage refusal leaves the Welcome queued for recovery; generic apply could delete it.
-      refused();
-      continue;
-    }
-    const outcome = outcomes[0];
-    if (outcomes.length !== 1 || outcome?.welcomeId !== welcomeId || !same(outcome.groupId, group)
-      || (outcome.outcome !== 0 && outcome.outcome !== 1)) {
-      refused();
-      continue;
-    }
-
-    try { await s.deps.routes.deleteWelcome(welcomeId); } catch { /* accepted receipt makes the next poll safe */ }
-    if (outcome.outcome === 0 && !s.stopped()) void s.queues.run(groupKey(group), () => s.activate(group)).catch(() => undefined);
-  }
-
-  if (genericRows.length > 0) {
-    const body = genericRows.length === rows.length ? raw : encode(genericRows);
-    await judgeWelcomes(s, s.deps.core.welcomesApply(body, expected));
-  }
+/** Applies a page of Welcome rows. Bot v2 Task 23: every Welcome is an ordinary one (the kind-3 path is gone); one for a
+ *  group this device does not expect is kept and reported. */
+async function applyWelcomeRows(s: SyncInternals, raw: Uint8Array, expected: ExpectedGroup[]): Promise<void> {
+  await judgeWelcomes(s, s.deps.core.welcomesApply(raw, expected));
 }
 
 export async function judgeWelcomes(s: SyncInternals, outcomes: WelcomeOutcome[]): Promise<void> {
@@ -118,7 +41,7 @@ export async function welcomeStep(s: SyncInternals): Promise<void> {
       if (s.stopped()) return;
       const page = await s.deps.routes.getWelcomes(after);
       if (page.count === 0) return;
-      await applyWelcomeRows(s, page.raw, arr(decode(page.raw)), s.expected());
+      await applyWelcomeRows(s, page.raw, s.expected());
       if (page.lastId === null || page.count < 64) return;
       after = page.lastId;
     }
@@ -131,7 +54,7 @@ export async function welcomeFrame(s: SyncInternals, f: Frame): Promise<void> {
     const id = u64(p[0]); const epoch = u64(p[1]); const seq = u64(p[2]);
     const blob = bin(p[3]); const tree = bin(p[4]); const hash = bin(p[5], 32);
     const body = encode([[id, g, epoch, seq, blob, tree, hash]]);
-    await applyWelcomeRows(s, body, arr(decode(body)), s.expected());
+    await applyWelcomeRows(s, body, s.expected());
   } catch (e) { if (!(e instanceof CoreError)) return; }
 }
 export async function externalJoin(s: SyncInternals, eg: ExpectedGroup, budget: { joins: number }): Promise<void> {

@@ -44,17 +44,6 @@ func rawDB(t *testing.T, repo store.Repository) *sql.DB {
 	return db
 }
 
-func rawWriteDB(t *testing.T, repo store.Repository) *sql.DB {
-	t.Helper()
-	rawMu.Lock()
-	defer rawMu.Unlock()
-	db, ok := rawWriteDBs[repo]
-	if !ok {
-		t.Fatal("no raw write handle registered for this repository")
-	}
-	return db
-}
-
 // freshPostgresDSN creates a database named for this test alone on the server dsn names and
 // returns a DSN for it. The database is dropped WITH (FORCE) at cleanup, after the
 // repository's own Cleanup has closed its pool (cleanups run last-registered first).

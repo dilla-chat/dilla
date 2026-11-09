@@ -1,9 +1,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use dilla_core::bot::interaction_admission::Expected;
 use dilla_core::cbor::decode_strict;
 use dilla_core::client::ClientCore;
-use dilla_core::ids::MsgId;
 use dilla_core::mls::ConnHandle;
 use std::path::PathBuf;
 use std::sync::{
@@ -696,59 +694,6 @@ fn human_incomplete_and_interaction_group_upload_intents_are_refused() {
 }
 
 #[test]
-fn rejected_interaction_snapshot_leaves_no_group_or_create_intent() {
-    let connection = conn();
-    let mut bot = ready_bot(connection.clone());
-    let openmls_before = openmls_row_count(&connection.lock().expect("connection lock"));
-    let bot_device = decode_strict(&bot.identity().expect("Bot identity"), |d| {
-        d.array(6)?;
-        d.uint()?;
-        d.opt_bytes_exact::<16>()?;
-        d.opt_bytes_exact::<16>()?;
-        let device = d.opt_bytes_exact::<16>()?;
-        d.text()?;
-        d.uint()?;
-        Ok(device)
-    })
-    .expect("Bot identity shape")
-    .expect("Bot device");
-    let expected = Expected {
-        instance: MsgId::from_bytes(INSTANCE),
-        installation: MsgId::from_bytes(INSTALLATION),
-        community: MsgId::from_bytes(COMMUNITY),
-        bot_user: MsgId::from_bytes(USER),
-        bot_device: MsgId::from_bytes(bot_device),
-        participant_user: MsgId::from_bytes([0x90; 16]),
-        participant_device: MsgId::from_bytes([0x91; 16]),
-        group: MsgId::from_bytes([0x92; 16]),
-        minimum_eligibility_revision: 1,
-        server_now: 1_800_000_000,
-        policy_version: 1,
-    };
-    assert!(
-        bot.bot_interaction_group_create(
-            &OPERATION,
-            &[0x92; 16],
-            b"invalid snapshot",
-            &expected,
-            b""
-        )
-        .is_err()
-    );
-    let connection = connection.lock().expect("connection lock");
-    let app_counts: (i64, i64) = connection
-        .query_row(
-            "SELECT (SELECT count(*) FROM app_groups),(SELECT count(*) FROM app_bot_intents)",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("app state counts");
-    let openmls_after = openmls_row_count(&connection);
-    assert_eq!(app_counts, (0, 0));
-    assert_eq!(openmls_after, openmls_before);
-}
-
-#[test]
 fn a_commit_intent_retains_all_256_real_welcome_bodies() {
     let instance = support::Instance::generate();
     let external_sender = instance.public();
@@ -1102,4 +1047,48 @@ fn bot_call_group_forget_discards_create_and_commit_only_for_forgotten_group() {
         bot.call_group_forget(&GROUP)
             .expect("gone forget remains idempotent");
     }
+}
+
+/// Bot v2 Task 23 (R1 d): the Bot keeps no MLS state for a text group whose channel is not a Bot channel, or that it was
+/// removed from. `bot_group_forget` deletes the group's MLS state and per-group rows and sets its row gone (state 4), so
+/// a later Welcome (a fresh Add after a mark) can join it again. It is idempotent, an unknown group is a no-op, and a
+/// call group is refused (calls forget through `call_group_forget`).
+#[test]
+fn bot_group_forget_drops_a_text_groups_mls_state() {
+    let connection = conn();
+    let mut bot = ready_bot(connection.clone());
+    let before = openmls_row_count(&connection.lock().unwrap());
+    bot.bot_group_create(&OPERATION, &GROUP, &CHANNEL, 0, 1, &[0x88; 32])
+        .expect("create text");
+    bot.bot_group_registered(&OPERATION, &GROUP, 1)
+        .expect("register text");
+    assert!(openmls_row_count(&connection.lock().unwrap()) > before);
+    bot.bot_group_forget(&GROUP).expect("forget");
+    {
+        let c = connection.lock().unwrap();
+        assert_eq!(
+            openmls_row_count(&c),
+            before,
+            "the group's MLS state is gone"
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT state FROM app_groups WHERE group_id=?1",
+                [GROUP.as_slice()],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            4
+        );
+    }
+    bot.bot_group_forget(&GROUP)
+        .expect("a second forget is a no-op");
+    bot.bot_group_forget(&GROUP_TWO)
+        .expect("an unknown group is a no-op");
+    bot.bot_group_create(&OP_JOIN, &GROUP_THREE, &[0x79; 16], 1, 1, &[0x88; 32])
+        .expect("create call");
+    bot.bot_group_registered(&OP_JOIN, &GROUP_THREE, 1)
+        .expect("register call");
+    bot.bot_group_forget(&GROUP_THREE)
+        .expect_err("a call group is not forgotten here");
 }

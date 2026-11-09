@@ -461,8 +461,6 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "joining can publish through its installation", pattern: "POST /v1/bot-runtime/installations/{installation}/keypackages", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
 		{name: "joining can read its publication receipt", pattern: "GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}", method: http.MethodGet, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
 		{name: "joining can register its first group through the scoped route", pattern: "POST /v1/bot-runtime/installations/{installation}/groups", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
-		{name: "joining can request admission only for its installation", pattern: "POST /v1/bot-runtime/installations/{installation}/interaction-admissions", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
-		{name: "joining cannot request admission for another installation", pattern: "POST /v1/bot-runtime/installations/{installation}/interaction-admissions", method: http.MethodPost, pathName: "installation", pathValue: id.New().String(), wantNext: false},
 		{name: "joining can probe a foreign registration path for indistinguishable 404", pattern: "GET /v1/bot-runtime/installations/{installation}/groups/{operation}", method: http.MethodGet, pathName: "installation", pathValue: id.New().String(), wantNext: true},
 		{name: "joining can list its device-scoped welcomes", pattern: "GET /v1/welcomes", method: http.MethodGet, wantNext: true},
 		{name: "joining can acknowledge its device-scoped welcome", pattern: "DELETE /v1/welcomes/{welcome_id}", method: http.MethodDelete, wantNext: true},
@@ -543,15 +541,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		name, pattern, method, installation, group string
 		allow                                      bool
 	}{
-		{name: "ready bot can enter dedicated interaction info route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info", method: http.MethodGet, allow: true},
-		{name: "ready bot can enter dedicated interaction messages route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages", method: http.MethodGet, allow: true},
-		{name: "ready bot can enter dedicated interaction handshakes route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes", method: http.MethodGet, allow: true},
-		{name: "ready bot can enter dedicated interaction heal status route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal", method: http.MethodGet, allow: true},
-		{name: "ready bot can enter dedicated interaction heal route", pattern: "POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal", method: http.MethodPost, allow: true},
-		{name: "ready bot can enter dedicated interaction cursor route", pattern: "POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor", method: http.MethodPost, allow: true},
 		{name: "ready bot cannot enter human command status route", pattern: "GET /v1/communities/{community}/bot/command-status", method: http.MethodGet},
-		{name: "ready bot cannot use a foreign installation path", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info", method: http.MethodGet, installation: id.New().String()},
-		{name: "ready bot cannot use a foreign community group", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info", method: http.MethodGet, group: foreignGroup.String()},
 		{name: "ready bot cannot use generic group messages route", pattern: "GET /v1/groups/{id}/messages", method: http.MethodGet},
 		{name: "ready bot cannot use generic group cursor route", pattern: "POST /v1/groups/{id}/cursor", method: http.MethodPost},
 		{name: "ready bot cannot use generic group heal status route", pattern: "GET /v1/groups/{id}/heal", method: http.MethodGet},
@@ -642,9 +632,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		name, pattern, method, pathName, pathValue string
 	}{
 		{name: "ready bot can register a typed group binding", pattern: "POST /v1/groups", method: http.MethodPost},
-		{name: "ready bot can redeem its automatic moderation grant", pattern: "POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String()},
 		{name: "ready bot can upload to own community group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: ownGroup.String()},
-		{name: "ready bot can send to its accepted interaction group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: interactionGroupRow.GroupID.String()},
 		{name: "ready bot can read own community send receipt", pattern: "GET /v1/communities/{community}/bot/receipts/{operation}", method: http.MethodGet, pathName: "community", pathValue: community.ID.String()},
 		{name: "ready bot can resolve own community send receipt", pattern: "POST /v1/communities/{community}/bot/receipts/{operation}/resolve", method: http.MethodPost, pathName: "community", pathValue: community.ID.String()},
 		{name: "ready bot can start own community channel call", pattern: "POST /v1/channels/{id}/calls", method: http.MethodPost, pathName: "id", pathValue: voiceChannel.ID.String()},
@@ -679,6 +667,8 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		name, pattern, method, pathName, pathValue string
 	}{
 		{name: "ready bot cannot upload to foreign community group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: foreignGroup.String()},
+		// Bot v2 Task 23: kind-3 groups are gone; the Bot sends into its own community's text and call groups only.
+		{name: "ready bot cannot send to a kind-3 group, even one registered to it", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: interactionGroupRow.GroupID.String()},
 		{name: "ready bot cannot send to an unregistered interaction group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: unregisteredInteraction.GroupID.String()},
 		{name: "ready bot cannot send to an interaction group registered to another device", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: foreignInstallInteraction.GroupID.String()},
 		{name: "ready bot cannot read foreign community send receipt", pattern: "GET /v1/communities/{community}/bot/receipts/{operation}", method: http.MethodGet, pathName: "community", pathValue: foreignCommunity.ID.String()},

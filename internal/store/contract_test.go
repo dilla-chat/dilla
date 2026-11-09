@@ -219,7 +219,6 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"CreateBotWebhook", "DeleteBotWebhook", "DeleteBotWebhooksOfChannel", "GetBotWebhook", "ListBotWebhooks",
 			"RotateBotWebhookSecret", "UpdateBotWebhook",
 		}},
-		{"BotGroupRegistrationAdmissionReceipts", reflect.TypeOf((*store.BotGroupRegistrationAdmissionReceipts)(nil)).Elem(), []string{"AcceptBotGroupRegistrationAdmission", "GetBotGroupRegistrationAdmission"}},
 		// Overwrites is the slice of Structure Plan 2 task 3's table supports.
 		{"Overwrites", reflect.TypeOf((*store.Overwrites)(nil)).Elem(), []string{
 			"DeleteOverwrite", "DeleteUserOverwrites", "ListOverwrites", "PutOverwrite",
@@ -375,12 +374,6 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.BotGroupRegistrationReceipts)(nil)).Elem(),
 		// Task 6: durable structural events, cursors, and retention floor.
 		reflect.TypeOf((*store.BotStructuralEvents)(nil)).Elem(),
-		// Kind-3 admission groundwork: transaction-fenced participant eligibility revision.
-		reflect.TypeOf((*store.BotInteractionEligibility)(nil)).Elem(),
-		// Kind-3 admission issuance: immutable idempotent signed response receipts.
-		reflect.TypeOf((*store.BotInteractionAdmissionReceipts)(nil)).Elem(),
-		reflect.TypeOf((*store.BotGroupRegistrationAdmissionReceipts)(nil)).Elem(),
-		reflect.TypeOf((*store.BotAutoModerationGrants)(nil)).Elem(),
 		// Task 7: permanent signed moderation-removal proofs and group revision feeds.
 		reflect.TypeOf((*store.ModerationRemovals)(nil)).Elem(),
 		// Bot v2 Task 9: 00057_bot_v2.sql.

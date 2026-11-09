@@ -12,6 +12,8 @@ export { createVoiceMusicAdapter, musicPlayheadMs, voiceMusicAdapter } from './v
 export { VoiceMusicError, VoiceMusicAcceptedUnconfirmedError } from './voice/music';
 export { createBotOperations, BotOperationUncertainError, BotOperationRefusedError, catalogOffers, sealedOperation, v1Operation, APP_OPERATION_BASE } from './bot/operations';
 export type { BotOperations, BotOperationRequest, BotOperationResult } from './bot/operations';
+export { readModerationPage, decodeModerationPage, ModerationPageError, MODERATION_CASES, MODERATION_EVIDENCE } from './bot/moderation-log';
+export type { ModerationCase, ModerationPage } from './bot/moderation-log';
 export { BOT_STATUS_READ, MUSIC_STARTS_KEPT, decodeBotStatus, encodeBotStatus, decodeBotWebhooks, decodeWebhookLabel } from './bot/admin';
 export type { BotPageStatus, MusicStart, BotWebhook, WebhookLabel } from './bot/admin';
 export { createBotUtilities, decodePollVote, decodePollClose, BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError } from './bot/utilities';

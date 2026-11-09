@@ -64,7 +64,6 @@ export interface RowsPage { raw: Uint8Array; count: number; lastSeq: bigint | nu
 export interface ModerationRemoval { revision: bigint; proof: Uint8Array; signature: Uint8Array; acceptedAt: bigint; }
 export interface ModerationRemovalPage { rows: ModerationRemoval[]; nextRevision: bigint; }
 /** Opaque current-interaction-context proof; only the core can verify or interpret its signed payload. */
-export interface InteractionAdmissionContextProof { payload: Uint8Array; signature: Uint8Array; }
 export interface BotCommandStatusRow { installationId: Uint8Array; botUserId: Uint8Array | null; state: number; revision: bigint; }
 export interface WelcomesPage { raw: Uint8Array; count: number; lastId: bigint | null; }
 export interface MessageUploaded { raw: Uint8Array; seq: bigint; }
@@ -799,17 +798,6 @@ export class Routes {
     return botInstallationRow(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bot?v=2`,
       'write', true, { body, retry429: false, idem: requestId })), communityId);
   }
-  /** Arms a one-use automatic moderation grant. Config plaintext is represented only by its digest here. */
-  async armAutoModerationGrant(groupId: Uint8Array, requestId: Uint8Array, communityId: Uint8Array,
-    expectedRevision: bigint, requestExpires: bigint, configHash: Uint8Array, stepUp: string): Promise<{ token: string; expires: bigint }> {
-    if (expectedRevision < 0n || expectedRevision > (1n << 63n) - 1n || requestExpires <= 0n
-      || configHash.length !== 32 || stepUp.length < 1 || stepUp.length > 4096) throw new RangeError('E_ROUTE_INPUT: invalid automatic moderation grant tuple');
-    const raw = await this.body('POST', `/v1/groups/${id('groupId', groupId)}/automod-grants/arm`, 'write', true,
-      { body: encode([inputId('requestId', requestId), inputId('communityId', communityId), expectedRevision, requestExpires, configHash, stepUp]), retry429: false, idem: requestId });
-    const fields = arr(decode(raw), 2);
-    if (typeof fields[0] !== 'string' || fields[0].length < 1 || fields[0].length > 128) throw new CborError('E_CBOR_SHAPE', 'invalid automatic moderation grant token');
-    return { token: fields[0], expires: u64(fields[1]) };
-  }
   async disableBotInstallation(communityId: Uint8Array, requestId: Uint8Array, expectedRevision: bigint): Promise<BotInstallationRow> {
     if (expectedRevision < 1n) throw new RangeError('E_ROUTE_INPUT: revision must be positive');
     const body = encode([inputId('requestId', requestId), expectedRevision]);
@@ -980,14 +968,6 @@ export class Routes {
     const a = arr(decode(await this.body('POST', `/v1/groups/${id('groupId', groupId)}/heal`, 'write', false, { body: snapshot })));
     if (a.length !== 2) throw new CborError('E_CBOR_SHAPE', 'group heal result has two elements');
     return { epoch: u64(a[0]), nextSeq: u64(a[1]) };
-  }
-  /** GET /v1/groups/{id}/interaction-admission-context: preserve the signed payload for core verification. */
-  async getInteractionAdmissionContext(groupId: Uint8Array, signal?: AbortSignal): Promise<InteractionAdmissionContextProof> {
-    const raw = await this.body('GET', `/v1/groups/${id('groupId', groupId)}/interaction-admission-context`, 'read', true,
-      { ok: [200], maxBodyBytes: 160 * 1024, signal });
-    const proof = arr(decode(raw));
-    if (proof.length !== 2) throw new CborError('E_CBOR_SHAPE', 'expected current interaction admission payload and signature');
-    return { payload: bin(proof[0]), signature: bin(proof[1], 64) };
   }
   async getHandshakes(groupId: Uint8Array, from: bigint, limitValue: number): Promise<RowsPage> {
     const path = `/v1/groups/${id('groupId', groupId)}/handshakes?from=${count('from', from)}&limit=${limit('limit', limitValue, HANDSHAKES_MAX)}`;

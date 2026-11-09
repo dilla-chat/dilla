@@ -62,7 +62,8 @@ func TestBotRuntimeRoutesAreSocketOnly(t *testing.T) {
 			t.Errorf("enrollment route %s: on HTTP %v, on the socket %v; want HTTP only", p, slices.Contains(httpPatterns, p), slices.Contains(socket, p))
 		}
 	}
-	if len(runtime) < 20 {
+	// Bot v2 Task 23 removed the v1 interaction, admission, AutoModeration and automatic action routes: 13 remain.
+	if len(runtime) < 12 {
 		t.Fatalf("only %d /v1/bot-runtime/ routes are on the socket mux: %v", len(runtime), runtime)
 	}
 	for _, p := range runtime {

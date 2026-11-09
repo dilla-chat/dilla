@@ -1226,28 +1226,8 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		}
 		return group.Kind <= 1, nil
 	}
-	interactionGroupPath := func() (bool, error) {
-		if !ready || !pathIDEquals(r, "installation", bot.InstallationID) {
-			return false, nil
-		}
-		allowed, err := communityPathForBot(ctx, s.repo, bot)
-		if err != nil || !allowed {
-			return false, err
-		}
-		groupID, ok := pathID(r, "group")
-		if !ok {
-			return false, nil
-		}
-		group, err := s.repo.GetGroup(ctx, groupID)
-		if errors.Is(err, store.ErrNotFound) {
-			return false, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		return group.CommunityID != nil && *group.CommunityID == bot.CommunityID && group.Kind == 3 && group.ClosedAt == nil, nil
-	}
-	interactionSendGroupPath := func() (bool, error) {
+	// The Bot posts into its own community's text and call groups only (Bot v2 Task 23: kind-3 groups are gone).
+	sendGroupPath := func() (bool, error) {
 		if !ready {
 			return false, nil
 		}
@@ -1269,21 +1249,7 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		if group.CommunityID == nil || *group.CommunityID != bot.CommunityID || group.ClosedAt != nil {
 			return false, nil
 		}
-		if group.Kind <= 1 {
-			return true, nil
-		}
-		if group.Kind != 3 {
-			return false, nil
-		}
-		receipt, err := s.repo.GetBotGroupRegistrationReceiptByGroup(ctx, groupID)
-		if errors.Is(err, store.ErrNotFound) {
-			return false, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		return receipt.InstallationID == bot.InstallationID && receipt.UserID == session.UserID &&
-			receipt.DeviceID == session.DeviceID && receipt.CommunityID == bot.CommunityID && receipt.GroupID == groupID, nil
+		return group.Kind <= 1, nil
 	}
 	channelPath := func(name string) (bool, error) {
 		allowed, err := communityPathForBot(ctx, s.repo, bot)
@@ -1340,19 +1306,8 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		return (phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "POST /v1/bot-runtime/installations/{installation}/ready":
 		return (phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
-	case "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info",
-		"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes",
-		"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages",
-		"POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor",
-		"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal",
-		"POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal":
-		return interactionGroupPath()
-	case "POST /v1/bot-runtime/installations/{installation}/moderation/actions":
-		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}",
 		"GET /v1/bot-runtime/installations/{installation}/moderation/warnings/{request}":
-		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
-	case "POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem":
 		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "PUT /v1/bot-runtime/communities/{community}/catalog",
 		"PUT /v1/bot-runtime/communities/{community}/command-key":
@@ -1401,11 +1356,6 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		// Letting the session reach it reveals no receipt and keeps the cross-installation result
 		// independent of middleware's otherwise-global 403 refusal.
 		return phase == store.BotInstallationJoining || phase == store.BotInstallationReady, nil
-	case "POST /v1/bot-runtime/installations/{installation}/interaction-admissions",
-		"POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context":
-		return joining && pathIDEquals(r, "installation", bot.InstallationID), nil
-	case "GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence":
-		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "PUT /v1/users/{user_id}/device-list":
 		return joining && pathIDEquals(r, "user_id", session.UserID), nil
 	case "GET /v1/users/{user_id}/device-list":
@@ -1518,7 +1468,7 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		}
 		return communityPathForBot(ctx, s.repo, bot)
 	case "POST /v1/groups/{group}/bot/messages":
-		return interactionSendGroupPath()
+		return sendGroupPath()
 	case "GET /v1/communities/{community}/bot/receipts/{operation}",
 		"POST /v1/communities/{community}/bot/receipts/{operation}/resolve",
 		"POST /v1/groups/{group}/moderation/removals",

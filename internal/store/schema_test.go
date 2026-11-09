@@ -280,7 +280,7 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 // runtime, installation, claim and session-binding tables, task 5B4B adds publication receipts,
 // and Task5 adds managed group-registration receipts.
 var wantTables = []string{
-	"audit_log", "automod_stepup_grants", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "bot_catalogs", "bot_channels", "bot_claims", "bot_command_keys", "bot_event_acks", "bot_event_streams", "bot_group_registration_admission_receipts", "bot_group_registration_receipts", "bot_installations", "bot_interaction_admission_receipts", "bot_interaction_eligibility_revisions", "bot_join_role_grant_receipts", "bot_join_role_grant_sources", "bot_join_role_policy", "bot_keypackage_publication_receipts", "bot_operations", "bot_runtimes", "bot_send_attempts", "bot_send_operations", "bot_session_bindings", "bot_state_revisions", "bot_structural_events", "bot_webhooks", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "community_afk_away", "community_member_episodes", "community_member_timeouts", "device_cursors", "device_lists", "devices", "fork_reports",
+	"audit_log", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "bot_catalogs", "bot_channels", "bot_claims", "bot_command_keys", "bot_event_acks", "bot_event_streams", "bot_group_registration_receipts", "bot_installations", "bot_join_role_grant_receipts", "bot_join_role_grant_sources", "bot_join_role_policy", "bot_keypackage_publication_receipts", "bot_operations", "bot_runtimes", "bot_send_attempts", "bot_send_operations", "bot_session_bindings", "bot_state_revisions", "bot_structural_events", "bot_webhooks", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "community_afk_away", "community_member_episodes", "community_member_timeouts", "device_cursors", "device_lists", "devices", "fork_reports",
 	"instance_settings", "instances", "invite_signups", "invites", "key_packages", "login_attempts",
 	"manual_warning_actions", "member_role_grant_sources", "member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",
@@ -696,6 +696,128 @@ func TestMigration00057UpAndDown(t *testing.T) {
 			}
 			if _, err := p.UpTo(ctx, 57); err != nil {
 				t.Fatalf("up to 00057 again: %v", err)
+			}
+		})
+	}
+}
+
+// Bot v2 Task 23: migration 00058 drops the v1 interaction and AutoModeration tables (and the eligibility triggers that
+// wrote to them) and purges every kind-3 group with its members, messages and Welcomes; other groups are untouched. Its
+// Down recreates the dropped tables, empty, so a rollback to a 00057 binary finds the schema that binary knows.
+func TestMigration00058DropsV1Tables(t *testing.T) {
+	tables := []string{"bot_interaction_admission_receipts", "bot_interaction_eligibility_revisions",
+		"bot_group_registration_admission_receipts", "automod_stepup_grants"}
+	type leg struct {
+		name     string
+		db       *sql.DB
+		dialect  goose.Dialect
+		fs       fs.FS
+		exists   string
+		triggers string
+		pg       bool
+	}
+	legs := []leg{{name: "sqlite", db: openSQLite(t), dialect: goose.DialectSQLite3, fs: sqlitemigrations.FS,
+		exists:   `SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?`,
+		triggers: `SELECT count(*) FROM sqlite_schema WHERE type = 'trigger' AND name LIKE 'bot_interaction_eligibility%'`}}
+	if dsn := os.Getenv("DILLA_TEST_PG"); dsn != "" {
+		db, err := sql.Open("pgx", freshPostgresDSN(t, dsn))
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		legs = append(legs, leg{name: "postgres", db: db, dialect: goose.DialectPostgres, fs: pgmigrations.FS, pg: true,
+			exists:   `SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1`,
+			triggers: `SELECT count(*) FROM information_schema.triggers WHERE trigger_name LIKE 'bot_interaction_eligibility%'`})
+	} else {
+		t.Log("DILLA_TEST_PG is unset: the Postgres leg runs in CI's go-postgres jobs")
+	}
+	for _, l := range legs {
+		t.Run(l.name, func(t *testing.T) {
+			ctx := context.Background()
+			p, err := goose.NewProvider(l.dialect, l.db, l.fs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			q := func(s string) string {
+				if !l.pg {
+					return s
+				}
+				for n := 1; strings.Contains(s, "?"); n++ {
+					s = strings.Replace(s, "?", "$"+strconv.Itoa(n), 1)
+				}
+				return s
+			}
+			exec := func(s string, args ...any) {
+				t.Helper()
+				if _, err := l.db.ExecContext(ctx, q(s), args...); err != nil {
+					t.Fatalf("%s: %v", s, err)
+				}
+			}
+			count := func(s string, args ...any) int {
+				t.Helper()
+				var n int
+				if err := l.db.QueryRowContext(ctx, q(s), args...).Scan(&n); err != nil {
+					t.Fatalf("%s: %v", s, err)
+				}
+				return n
+			}
+			if _, err := p.UpTo(ctx, 57); err != nil {
+				t.Fatalf("up to 00057: %v", err)
+			}
+			for _, table := range tables {
+				if count(l.exists, table) != 1 {
+					t.Fatalf("%s missing before migration 00058", table)
+				}
+			}
+			interaction, text := bytes.Repeat([]byte{3}, 16), bytes.Repeat([]byte{4}, 16)
+			for i, g := range [][]byte{interaction, text} {
+				kind := []int{3, 0}[i]
+				exec(`INSERT INTO mls_groups (group_id, binding, kind, target_id, external_sender_key_id, e2ee_version, media_version, policy_version, created) VALUES (?, ?, ?, ?, ?, 1, 1, 1, 1)`,
+					g, []byte{0x80}, kind, bytes.Repeat([]byte{9}, 16), bytes.Repeat([]byte{8}, 16))
+				exec(`INSERT INTO mls_members (group_id, leaf_index, user_id, device_id, signature_key, added_epoch) VALUES (?, 0, ?, ?, ?, 1)`,
+					g, bytes.Repeat([]byte{5}, 16), bytes.Repeat([]byte{6}, 16), make([]byte, 32))
+				exec(`INSERT INTO mls_app_messages (group_id, seq, epoch, uploader_device, blob, franking_tag, size, created) VALUES (?, 1, 1, ?, ?, ?, 1, 1)`,
+					g, bytes.Repeat([]byte{6}, 16), []byte{1}, make([]byte, 32))
+				hash := bytes.Repeat([]byte{byte(0x70 + i)}, 32)
+				exec(`INSERT INTO mls_welcome_payloads (blob_sha256, group_id, epoch, blob, created) VALUES (?, ?, 1, ?, 1)`, hash, g, []byte{1})
+				exec(`INSERT INTO mls_welcomes (device_id, group_id, epoch, commit_seq, blob_sha256, created, expires) VALUES (?, ?, 1, 1, ?, 1, 9)`,
+					bytes.Repeat([]byte{6}, 16), g, hash)
+			}
+			if _, err := p.UpTo(ctx, 58); err != nil {
+				t.Fatalf("up to 00058: %v", err)
+			}
+			for _, table := range tables {
+				if count(l.exists, table) != 0 {
+					t.Fatalf("%s survives migration 00058", table)
+				}
+			}
+			if n := count(l.triggers); n != 0 {
+				t.Fatalf("%d eligibility triggers survive migration 00058", n)
+			}
+			for _, table := range []string{"mls_groups", "mls_members", "mls_app_messages", "mls_welcomes", "mls_welcome_payloads"} {
+				if n := count(`SELECT count(*) FROM `+table+` WHERE group_id = ?`, interaction); n != 0 {
+					t.Fatalf("%s keeps %d rows of the kind-3 group", table, n)
+				}
+				if n := count(`SELECT count(*) FROM `+table+` WHERE group_id = ?`, text); n != 1 {
+					t.Fatalf("%s has %d rows of the text group, want it untouched", table, n)
+				}
+			}
+			if _, err := p.DownTo(ctx, 57); err != nil {
+				t.Fatalf("down to 00057: %v", err)
+			}
+			for _, table := range tables {
+				if count(l.exists, table) != 1 {
+					t.Fatalf("%s not recreated by the 00058 rollback", table)
+				}
+				if n := count(`SELECT count(*) FROM ` + table); n != 0 {
+					t.Fatalf("%s recreated with %d rows, want empty", table, n)
+				}
+			}
+			if n := count(l.triggers); n == 0 {
+				t.Fatal("the eligibility triggers were not recreated by the rollback")
+			}
+			if _, err := p.UpTo(ctx, 58); err != nil {
+				t.Fatalf("up to 00058 again: %v", err)
 			}
 		})
 	}

@@ -64,10 +64,7 @@ const (
 	OpAnnouncementsDelete    Operation = 52
 	OpModerationCases        Operation = 60
 	OpModerationEvidence     Operation = 61
-	OpAutoModerationGet      Operation = 62
-	OpAutoModerationPut      Operation = 63
 	OpModerationEvidenceList Operation = 64
-	OpCapabilities           Operation = 3
 	OpPollCreate             Operation = 70
 	OpPollGet                Operation = 71
 	OpPollList               Operation = 72
@@ -78,15 +75,15 @@ const (
 	OpReminderList           Operation = 81
 	OpReminderCancel         Operation = 82
 	OpReminderDismiss        Operation = 83
-	OpReminderDue            Operation = 84
 	// Bot v2 sealed commands (Task 15). OpProbe is the Bot's own health probe (Task 17), answered
 	// 200 with an empty body, final. The three reads serve the app's surfaces over sealed commands
-	// (Task 21's swap off interactions.ts). Their arguments are the v1 operation's arguments (ids as
+	// (Task 21's swap off the interaction-group client). Their arguments are the v1 operation's arguments (ids as
 	// 16-byte byte strings, a cursor as bytes or null), and their answer body is the deterministic
 	// CBOR [revision uint|null, data bstr], data being the v1 operation's response data:
 	//   OpReadPoll [poll_id]           -> OpPollGet's data       (channel: none)
 	//   OpReadMusic []                 -> OpMusicState's data    (channel: the voice channel)
-	//   OpReadRemindersDue [cursor|null] -> OpReminderDue's data (channel: none)
+	//   OpReadRemindersDue [cursor|null] -> the due reminders page (channel: none); its handler is registered
+	//     under 93 itself (Task 23 removed the v1 operation 84)
 	OpProbe            Operation = 90
 	OpReadPoll         Operation = 91
 	OpReadMusic        Operation = 92
@@ -104,37 +101,40 @@ const (
 // read: [revision uint|null, data bstr] with the v1 response data, or a bare code (E_FORBIDDEN, E_CONFLICT, …).
 const (
 	// Task 22: the admin settings pages and moderation evidence.
-	OpAppSettingsGet          Operation = 101
-	OpAppSettingsPut          Operation = 102
-	OpAppModerationEvidence   Operation = 161
-	OpAppMusicSearch          Operation = 111
-	OpAppMusicEnqueue         Operation = 112
-	OpAppMusicPause           Operation = 113
-	OpAppMusicResume          Operation = 114
-	OpAppMusicSkip            Operation = 115
-	OpAppMusicStop            Operation = 116
-	OpAppMusicSeek            Operation = 117
-	OpAppMusicVolume          Operation = 118
-	OpAppMusicShuffle         Operation = 119
-	OpAppMusicRepeat          Operation = 120
-	OpAppMusicRemove          Operation = 121
-	OpAppMusicMove            Operation = 122
-	OpAppMusicClear           Operation = 123
-	OpAppMusicProvidersStatus Operation = 124
-	OpAppMusicAnnounce        Operation = 125
-	OpAppRolePanelPublish     Operation = 131
-	OpAppAnnouncementsList    Operation = 150
-	OpAppAnnouncementsPut     Operation = 151
-	OpAppAnnouncementsDelete  Operation = 152
-	OpAppPollCreate           Operation = 170
-	OpAppPollList             Operation = 172
-	OpAppPollVote             Operation = 173
-	OpAppPollClose            Operation = 174
-	OpAppPollVoters           Operation = 175
-	OpAppReminderCreate       Operation = 180
-	OpAppReminderList         Operation = 181
-	OpAppReminderCancel       Operation = 182
-	OpAppReminderDismiss      Operation = 183
+	OpAppSettingsGet        Operation = 101
+	OpAppSettingsPut        Operation = 102
+	OpAppModerationEvidence Operation = 161
+	// Task 23: the moderation log's two pages (automatic cases and manual evidence), off the v1 interaction groups.
+	OpAppModerationCases        Operation = 160
+	OpAppModerationEvidenceList Operation = 164
+	OpAppMusicSearch            Operation = 111
+	OpAppMusicEnqueue           Operation = 112
+	OpAppMusicPause             Operation = 113
+	OpAppMusicResume            Operation = 114
+	OpAppMusicSkip              Operation = 115
+	OpAppMusicStop              Operation = 116
+	OpAppMusicSeek              Operation = 117
+	OpAppMusicVolume            Operation = 118
+	OpAppMusicShuffle           Operation = 119
+	OpAppMusicRepeat            Operation = 120
+	OpAppMusicRemove            Operation = 121
+	OpAppMusicMove              Operation = 122
+	OpAppMusicClear             Operation = 123
+	OpAppMusicProvidersStatus   Operation = 124
+	OpAppMusicAnnounce          Operation = 125
+	OpAppRolePanelPublish       Operation = 131
+	OpAppAnnouncementsList      Operation = 150
+	OpAppAnnouncementsPut       Operation = 151
+	OpAppAnnouncementsDelete    Operation = 152
+	OpAppPollCreate             Operation = 170
+	OpAppPollList               Operation = 172
+	OpAppPollVote               Operation = 173
+	OpAppPollClose              Operation = 174
+	OpAppPollVoters             Operation = 175
+	OpAppReminderCreate         Operation = 180
+	OpAppReminderList           Operation = 181
+	OpAppReminderCancel         Operation = 182
+	OpAppReminderDismiss        Operation = 183
 )
 
 type Request struct {
@@ -295,7 +295,7 @@ func validateRequest(r Request) error {
 }
 func requestShape(op Operation) (mutation, channel bool, count int) {
 	switch op {
-	case OpOverviewGet, OpCapabilities, OpMusicProvidersStatus:
+	case OpOverviewGet, OpMusicProvidersStatus:
 		return false, false, 0
 	case OpMusicState:
 		return false, true, 0
@@ -323,10 +323,6 @@ func requestShape(op Operation) (mutation, channel bool, count int) {
 		return false, false, 1
 	case OpModerationEvidence:
 		return true, false, 3
-	case OpAutoModerationGet:
-		return false, false, 0
-	case OpAutoModerationPut:
-		return true, false, 2
 	case OpPollCreate, OpReminderCreate:
 		return true, false, 1
 	case OpPollGet, OpPollClose, OpReminderCancel, OpReminderDismiss:
@@ -335,7 +331,7 @@ func requestShape(op Operation) (mutation, channel bool, count int) {
 		return false, false, 3
 	case OpPollVote:
 		return true, false, 2
-	case OpReminderList, OpReminderDue:
+	case OpReminderList, OpReadRemindersDue:
 		return false, false, 1
 	default:
 		return false, false, -1
@@ -366,7 +362,7 @@ func validateArgs(op Operation, a []any) error {
 		return ok && len(v) >= minimum && len(v) <= maximum && validArray(v)
 	}
 	switch op {
-	case OpOverviewGet, OpCapabilities, OpMusicState, OpMusicProvidersStatus, OpMusicPause, OpMusicResume, OpMusicStop, OpMusicShuffle, OpMusicClear:
+	case OpOverviewGet, OpMusicState, OpMusicProvidersStatus, OpMusicPause, OpMusicResume, OpMusicStop, OpMusicShuffle, OpMusicClear:
 		return nil
 	case OpMusicSkip:
 		if len(a) == 0 {
@@ -427,10 +423,6 @@ func validateArgs(op Operation, a []any) error {
 		return boolErr(nullableID(a[0]) && data(1, 1, 2200))
 	case OpModerationEvidence:
 		return boolErr(idarg(0) && str(1, 0, 1024, false) && str(2, 0, 512, false))
-	case OpAutoModerationGet:
-		return nil
-	case OpAutoModerationPut:
-		return boolErr(str(0, 1, 512, true) && data(1, 1, 2400))
 	case OpPollCreate:
 		return boolErr(validateUtilityPayload(a[0], true) == nil)
 	case OpReminderCreate:
@@ -443,7 +435,7 @@ func validateArgs(op Operation, a []any) error {
 		return boolErr(idarg(0) && validatePollSelection(a[1]) == nil)
 	case OpPollVoters:
 		return boolErr(idarg(0) && u(1, 9) && validCursor(a[2]))
-	case OpReminderList, OpReminderDue:
+	case OpReminderList, OpReadRemindersDue:
 		return boolErr(validCursor(a[0]))
 	default:
 		return invalid()
@@ -1074,6 +1066,8 @@ const (
 	// own device (25), and open an answer to it (26).
 	HelperProbeSeal
 	HelperProbeOpen
+	// The Bot forgets a text group whose channel is not a Bot channel, or that it was removed from (Bot v2 task 23).
+	HelperGroupForget
 )
 
 type HelperRequest struct {
@@ -1097,7 +1091,7 @@ func encodeHelper(req bool, request id.ID, code uint64, payload []any) ([]byte, 
 	if !isID(request) {
 		return nil, invalid()
 	}
-	if req && (code < 1 || code > uint64(HelperProbeOpen)) || !req && code > 9 {
+	if req && (code < 1 || code > uint64(HelperGroupForget)) || !req && code > 9 {
 		return nil, invalid()
 	}
 	if payload == nil {
@@ -1152,7 +1146,7 @@ func DecodeHelperRequestFrame(frame []byte) (HelperRequest, error) {
 		return z, invalid()
 	}
 	r := HelperRequest{RequestID: nodeID(a[1]), Operation: HelperOperation(a[2].u), Payload: nodesToAny(payload.a)}
-	if !isID(r.RequestID) || r.Operation < 1 || r.Operation > HelperProbeOpen || len(b) > MaxHelperBytes || len(frame)-4 > MaxHelperBytes {
+	if !isID(r.RequestID) || r.Operation < 1 || r.Operation > HelperGroupForget || len(b) > MaxHelperBytes || len(frame)-4 > MaxHelperBytes {
 		return z, invalid()
 	}
 	return r, nil

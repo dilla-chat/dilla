@@ -13,7 +13,6 @@ import (
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/music"
 	"github.com/dilla-chat/dilla/internal/bot/music/livekit"
-	musicruntime "github.com/dilla-chat/dilla/internal/bot/music/runtime"
 	"github.com/dilla-chat/dilla/internal/bot/music/youtube"
 	"github.com/dilla-chat/dilla/internal/id"
 )
@@ -426,12 +425,6 @@ func (p *ownedPCM) Close() error { p.once.Do(func() { p.err = p.ReadCloser.Close
 
 // OggOpus forwards the provider's marker that its stream is already Opus.
 func (p *ownedPCM) OggOpus() bool { return isOggOpus(p.ReadCloser) }
-func (p *ownedPCM) PCMFormat() musicruntime.PCMFormat {
-	if formatted, ok := p.ReadCloser.(interface{ PCMFormat() musicruntime.PCMFormat }); ok {
-		return formatted.PCMFormat()
-	}
-	return musicruntime.PCMFormat{SampleRate: youtubePCMRate, Channels: 2}
-}
 
 // providerStage retains provider-specific, bounded diagnostic classes.
 func providerStage(ctx context.Context, stage string, err error) error {

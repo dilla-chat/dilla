@@ -8,7 +8,7 @@
 /** Scope kinds of op 63: 0 the user's own (its id the community), 1 a channel, 2 a call (its id the voice channel). */
 export interface HintScope { kind: 0 | 1 | 2; id: string }
 export interface Hint extends HintScope { revision: bigint }
-/** One row of `GET /v1/bot/revisions`; kind 3 (the catalog) is not a hint scope. */
+/** One row of `GET /v1/bot/revisions`; kind = 3 (the catalog) is not a hint scope. */
 export interface HintRevision { kind: number; scopeId: string; revision: bigint }
 
 export interface BotHintsDeps {

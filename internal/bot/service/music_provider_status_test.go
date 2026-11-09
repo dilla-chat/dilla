@@ -71,60 +71,6 @@ func TestMusicProviderStatusRejectsWrongSnapshotIdentityAndBoundsPayload(t *test
 	}
 }
 
-func TestMusicProviderStatusDispatcherRecomputesFreshReplayAndAuthorization(t *testing.T) {
-	community, installation := interactionID(2), interactionID(7)
-	authority := &overviewAuthorityFake{result: clientAuthorityWithBits(1 << 16), present: true}
-	observed, reads := uint64(100), 0
-	handler := MusicProviderStatusInteractions{Authority: authority, CommunityID: community, Snapshot: func(context.Context) MusicProviderStatusSnapshot {
-		reads++
-		return MusicProviderStatusSnapshot{InstallationID: installation, ObservedAt: observed,
-			YouTubePlayback: ProviderSetupUnknown}
-	}}
-	dispatcher, event, binding := interactionFixture(t, handler.Handlers())
-	body, err := protocol.EncodeRequest(protocol.Request{RequestID: interactionID(8), CommunityID: binding.Community,
-		Operation: protocol.OpMusicProvidersStatus, Args: []any{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	event.Body = &body
-	firstBody, err := dispatcher.Dispatch(context.Background(), event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	observed = 101
-	secondBody, err := dispatcher.Dispatch(context.Background(), event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := protocol.DecodeResponse(firstBody)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := protocol.DecodeResponse(secondBody)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var firstData, secondData []any
-	if err := cborx.Unmarshal(first.Data, &firstData); err != nil {
-		t.Fatal(err)
-	}
-	if err := cborx.Unmarshal(second.Data, &secondData); err != nil {
-		t.Fatal(err)
-	}
-	if reads != 2 || authority.calls != 2 || firstData[2] != uint64(100) || secondData[2] != uint64(101) {
-		t.Fatalf("replay reused old snapshot: reads=%d authority=%d first=%v second=%v", reads, authority.calls, firstData, secondData)
-	}
-	authority.result = clientAuthorityWithBits(1 << 17)
-	deniedBody, err := dispatcher.Dispatch(context.Background(), event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	denied, err := protocol.DecodeResponse(deniedBody)
-	if err != nil || denied.Status != interactionStatusForbidden || reads != 2 || authority.calls != 3 {
-		t.Fatalf("revoked replay response=%+v err=%v reads=%d authority=%d", denied, err, reads, authority.calls)
-	}
-}
-
 func TestMusicProviderStatusRejectsReservedReasonValues(t *testing.T) {
 	community := interactionID(2)
 	for reason := ProviderReason(1); reason < ProviderReasonDependenciesMissing; reason++ {

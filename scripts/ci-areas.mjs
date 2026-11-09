@@ -40,8 +40,6 @@ export const DOC_RULES = [
 export const PATH_RULES = [
   { areas: ['ci'], patterns: ['.github/**', 'scripts/**'] },
   { areas: ['go'], patterns: ['internal/**', 'cmd/**', 'go.mod', 'go.sum', 'sqlc*', 'deploy/**', '.golangci.yml'] },
-  // Rust MLS conformance tests read these shared delivery-service fixtures.
-  { areas: ['core'], patterns: ['internal/ds/dstest/testdata/kind3-interaction/**'] },
   { areas: ['core'], patterns: ['core/**', 'testkit/**', 'Cargo.*', 'rust-toolchain.toml', 'deny.toml', '.cargo/**', 'protocol/vectors/**'] },
   { areas: ['web'], patterns: ['packages/**', 'package*.json', '.nvmrc', 'eslint.config.js'] },
   { areas: ['e2e'], patterns: ['e2e/**'] },

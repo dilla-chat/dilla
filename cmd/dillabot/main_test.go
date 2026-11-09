@@ -14,20 +14,6 @@ import (
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 )
 
-func TestSafeTrustErrorAttrsUseFixedClassifications(t *testing.T) {
-	if got, want := safeTrustErrorAttrs(&helper.StatusError{Status: 9}), []any{"trust_failure", "native_helper", "helper_status", "internal"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("helper attrs = %#v, want %#v", got, want)
-	}
-	secretCode := "E_PRIVATE_BODY_SHOULD_NOT_LOG"
-	got := safeTrustErrorAttrs(&client.APIError{Status: 403, Code: secretCode})
-	if want := []any{"trust_failure", "api", "api_status", 403, "api_code", "other"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("API attrs = %#v, want %#v", got, want)
-	}
-	if fmt.Sprint(got) == secretCode {
-		t.Fatal("API code was not filtered through the fixed allowlist")
-	}
-}
-
 func TestSafeMembershipErrorAttrsExposeOnlyFixedStatus(t *testing.T) {
 	if got, want := safeMembershipErrorAttrs(&helper.StatusError{Status: 3}), []any{"membership_failure", "native_helper", "helper_status", "expired"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("helper attrs = %#v, want %#v", got, want)

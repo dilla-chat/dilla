@@ -88,7 +88,7 @@ func TestCleanupAfterChildAlreadyExitedUsesTrackedProcessHandle(t *testing.T) {
 
 func TestCallRejectsOperationOutsideFrozenRange(t *testing.T) {
 	c := startFixture(t, "")
-	for _, operation := range []protocol.HelperOperation{protocol.HelperShutdown, protocol.HelperGroupTransfer, 27} {
+	for _, operation := range []protocol.HelperOperation{protocol.HelperShutdown, protocol.HelperGroupTransfer, 28} {
 		if _, err := c.Call(context.Background(), operation, []any{}); !errors.Is(err, ErrInvalidOperation) {
 			t.Fatalf("operation %d error = %v, want ErrInvalidOperation", operation, err)
 		}
@@ -257,7 +257,7 @@ func TestCommandRefusalNumbersAreFixed(t *testing.T) {
 
 func TestCallAcceptsCallGroupJoinOperations(t *testing.T) {
 	c := startFixture(t, "")
-	for _, operation := range []protocol.HelperOperation{protocol.HelperCallJoinCheck, protocol.HelperCallGroupForget} {
+	for _, operation := range []protocol.HelperOperation{protocol.HelperCallJoinCheck, protocol.HelperCallGroupForget, protocol.HelperGroupForget} {
 		if _, err := c.Call(context.Background(), operation, []any{fixtureID(9)}); err != nil {
 			t.Fatalf("helper operation %d: %v", operation, err)
 		}

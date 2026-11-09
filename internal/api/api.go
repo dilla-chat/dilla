@@ -20,7 +20,6 @@ import (
 	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/config"
 	"github.com/dilla-chat/dilla/internal/desktopauth"
-	"github.com/dilla-chat/dilla/internal/ds"
 	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/obs"
 	"github.com/dilla-chat/dilla/internal/server"
@@ -61,14 +60,6 @@ type Deps struct {
 	// group's external_senders extension. The composition root derives it from the key history;
 	// the history itself is never served.
 	ExternalSenderPub []byte
-
-	// SignBotInteractionAdmission signs only the versioned admission payload with the
-	// current instance external-sender key. The composition root owns the secret.
-	SignBotInteractionAdmission func(payload []byte) ([]byte, error)
-
-	// SignBotInteractionContext signs a versioned context snapshot under its own
-	// domain, using the same instance key as admission proofs.
-	SignBotInteractionContext func(payload []byte) ([]byte, error)
 
 	// SignBotCurrentInteractionContext signs a human-authenticated current-group context
 	// proof under the dedicated current-interaction domain.
@@ -117,8 +108,6 @@ type Deps struct {
 	// StepUps holds the step-up tokens the factor-changing routes spend (protocol/09 § Second
 	// factors). Register builds one when it is nil; it is memory only, like Assertions.
 	StepUps *StepUps
-	// CurrentBotInteractionGroupContext reloads and verifies the persisted MLS roster for an op63 grant.
-	CurrentBotInteractionGroupContext func(context.Context, id.ID) (ds.CurrentBotInteractionGroupContext, error)
 
 	// enrolments remembers whether each enrolment in flight began with a valid step-up, for the
 	// confirm and finish legs' re-check under the user lock. Register builds it.
@@ -295,7 +284,6 @@ func Register(m *server.Mux, d Deps) {
 	registerBotChannels(m, d)
 	registerBotCommands(m, d)
 	registerBotWebhooks(m, d)
-	registerAutoModerationGrants(m, d)
 	registerModerationRemovals(m, d)
 
 	// Unauthenticated. The invite landing page and the two registration routes

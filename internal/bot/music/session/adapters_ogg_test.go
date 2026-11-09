@@ -2,13 +2,14 @@ package session
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/music"
 	"github.com/dilla-chat/dilla/internal/bot/music/encode"
-	musicruntime "github.com/dilla-chat/dilla/internal/bot/music/runtime"
 )
 
 // oggStub is a provider stream that already is Ogg Opus (the single ffmpeg's output).
@@ -35,15 +36,11 @@ func (s *oggProviderStub) Check(context.Context) error { return nil }
 
 func TestRuntimeEncoderForwardsOggOpusWithoutASecondEncoder(t *testing.T) {
 	wantEncoder := &encoderStub{done: make(chan struct{})}
-	var oggCalls, pcmCalls int
-	e := RuntimeEncoder{Config: EncoderConfig{Capacity: 7, Options: encode.Options{FFmpegPath: "ffmpeg-test"},
-		start: func(context.Context, io.ReadCloser, musicruntime.PCMFormat, int, encode.Options) (Encoder, error) {
-			pcmCalls++
-			return wantEncoder, nil
-		},
+	var oggCalls int
+	e := RuntimeEncoder{Config: EncoderConfig{Capacity: 7, Options: encode.Options{StallTimeout: time.Second},
 		startOgg: func(_ context.Context, _ io.ReadCloser, capacity int, options encode.Options) (Encoder, error) {
 			oggCalls++
-			if capacity != 7 || options.FFmpegPath != "ffmpeg-test" {
+			if capacity != 7 || options.StallTimeout != time.Second {
 				t.Fatalf("config not forwarded: %d %+v", capacity, options)
 			}
 			return wantEncoder, nil
@@ -56,8 +53,8 @@ func TestRuntimeEncoderForwardsOggOpusWithoutASecondEncoder(t *testing.T) {
 	if _, err := e.Start(context.Background(), &ownedPCM{ReadCloser: stream}); err != nil {
 		t.Fatal(err)
 	}
-	if oggCalls != 1 || pcmCalls != 0 {
-		t.Fatalf("Ogg path %d times, PCM encoder %d times; an Ogg Opus stream must not be encoded again", oggCalls, pcmCalls)
+	if oggCalls != 1 {
+		t.Fatalf("Ogg path %d times; an Ogg Opus stream is forwarded once", oggCalls)
 	}
 }
 
@@ -85,3 +82,22 @@ func TestYouTubePCMCheckUsesTheProviderOwnCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Bot v2 Task 23: the PCM-to-Opus encoder is gone; a source that is not the stream worker's Ogg Opus is refused and closed.
+func TestRuntimeEncoderRefusesASourceThatIsNotOggOpus(t *testing.T) {
+	closed := false
+	source := closeTracker{Reader: strings.NewReader("raw pcm"), closed: &closed}
+	if _, err := (RuntimeEncoder{Config: EncoderConfig{Capacity: 1}}).Start(context.Background(), source); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Start(PCM) = %v, want ErrInvalid", err)
+	}
+	if !closed {
+		t.Fatal("a refused source was left open")
+	}
+}
+
+type closeTracker struct {
+	io.Reader
+	closed *bool
+}
+
+func (c closeTracker) Close() error { *c.closed = true; return nil }

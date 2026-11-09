@@ -5,42 +5,7 @@ import (
 	"io"
 	"strings"
 	"testing"
-
-	"github.com/dilla-chat/dilla/internal/bot/music/encode"
-	musicruntime "github.com/dilla-chat/dilla/internal/bot/music/runtime"
 )
-
-func TestRuntimeEncoderUsesProviderPCMFormat(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		pcm  io.ReadCloser
-		rate int
-	}{
-		{"youtube", io.NopCloser(nilReader{}), 44100},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var got musicruntime.PCMFormat
-			wantEncoder := &encoderStub{done: make(chan struct{})}
-			e := RuntimeEncoder{Config: EncoderConfig{Capacity: 7, Options: encode.Options{FFmpegPath: "ffmpeg-test"}, start: func(_ context.Context, _ io.ReadCloser, format musicruntime.PCMFormat, capacity int, options encode.Options) (Encoder, error) {
-				got = format
-				if capacity != 7 || options.FFmpegPath != "ffmpeg-test" {
-					t.Fatalf("config not forwarded: capacity=%d options=%+v", capacity, options)
-				}
-				return wantEncoder, nil
-			}}}
-			if _, err := e.Start(context.Background(), tc.pcm); err != nil {
-				t.Fatal(err)
-			}
-			if got != (musicruntime.PCMFormat{SampleRate: tc.rate, Channels: 2}) {
-				t.Fatalf("PCM format=%+v", got)
-			}
-		})
-	}
-}
-
-type nilReader struct{}
-
-func (nilReader) Read([]byte) (int, error) { return 0, io.EOF }
 
 type youtubePCMStub struct {
 	input string

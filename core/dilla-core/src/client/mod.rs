@@ -6,17 +6,14 @@ mod account_kind;
 mod bot_command;
 mod bot_events;
 mod bot_identity;
-mod bot_probe;
-pub use bot_identity::BotInteractionGroupDescriptor;
 mod bot_intents;
-mod bot_interaction_create;
 mod bot_keypackages;
+mod bot_probe;
 mod calls;
 mod error;
 mod fold;
 mod groups;
 mod heal;
-mod human_interaction_events;
 mod identity;
 mod messages;
 mod moderation;
@@ -38,7 +35,7 @@ pub use schema::test_force_missing_fts5;
 pub use schema::{APP_SCHEMA_SUPPORTED, HANDSHAKE_TAIL, migrate_app};
 pub use trust::PushedList;
 
-use crate::identity::{CredentialIdentity, Kind, Tier};
+use crate::identity::CredentialIdentity;
 use crate::mls::{
     CIPHERSUITE, ConnHandle, DillaGroup, DillaProvider, DillaStorage, StorageError, UnitScope,
 };
@@ -52,6 +49,8 @@ pub struct ClientCore {
     provider: DillaProvider,
     signer: Option<SignatureKeyPair>,
     groups: BTreeMap<[u8; 16], DillaGroup>,
+    /// The kind-3 groups `open` removed (Bot v2 Task 23); the native Bot helper logs it once.
+    interaction_groups_removed: u64,
 }
 
 struct Ctx<'a> {
@@ -117,54 +116,20 @@ impl ClientCore {
     }
 
     /// The group, from the cache or loaded from the store. A loaded group must be the one its
-    /// row describes: its MLS group id and its authenticated binding match the row and, for an
-    /// interaction group, this identity's instance/user/device. Otherwise `E_CORE_STATE` and
-    /// nothing is cached; the caller repairs the row with a
+    /// row describes: its MLS group id and its authenticated binding match the row. Otherwise
+    /// `E_CORE_STATE` and nothing is cached; the caller repairs the row with a
     /// resync (`group_join_external`, states 2 and 3), which replaces the stored group. The cache
     /// only ever holds a group that passed this check or that a join of this core wrote.
     fn take_group(&mut self, group_id: &[u8; 16]) -> Result<Option<DillaGroup>, ClientError> {
         if let Some(group) = self.groups.remove(group_id) {
-            if group.kind() == crate::mls::GroupKind::Interaction {
-                let row = self
-                    .read(|c| groups::group_row(c, group_id))?
-                    .ok_or_else(mismatched)?;
-                let own = self.own()?;
-                if !matches_row(&group, group_id, &row, &own) {
-                    return Err(mismatched());
-                }
-            }
             return Ok(Some(group));
         }
         let Some(group) = self.take_group_unchecked(group_id)? else {
             return Ok(None);
         };
         let row = self.read(|c| groups::group_row(c, group_id))?;
-        if let Some(row) = row {
-            let own = self.own()?;
-            if !matches_row(&group, group_id, &row, &own) {
-                return Err(mismatched());
-            }
-        }
-        Ok(Some(group))
-    }
-
-    /// Load a kind-3 group only from the proof-bearing Bot sync path. The caller has already
-    /// revalidated the signed admission snapshot; this check binds the stored Bot leaf and row.
-    fn take_bot_interaction_group(
-        &mut self,
-        group_id: &[u8; 16],
-        participant_user: &[u8; 16],
-        participant_device: &[u8; 16],
-    ) -> Result<Option<DillaGroup>, ClientError> {
-        let Some(group) = self.take_group_unchecked(group_id)? else {
-            return Ok(None);
-        };
-        let row = self
-            .read(|c| groups::group_row(c, group_id))?
-            .ok_or_else(mismatched)?;
-        let own = self.own()?;
-        if !matches_bot_interaction_row(&group, group_id, &row, &own)
-            || !matches_bot_interaction_roster(&group, &own, participant_user, participant_device)
+        if let Some(row) = row
+            && !matches_row(&group, group_id, &row)
         {
             return Err(mismatched());
         }
@@ -208,6 +173,7 @@ impl ClientCore {
             provider,
             signer,
             groups,
+            ..
         } = self;
         let result = provider
             .storage()
@@ -273,6 +239,7 @@ impl ClientCore {
                 other => ClientError::new(E_CORE_STORAGE, other.to_string()),
             })?;
         let phase = identity::decode_phase(identity, signup, enrol)?;
+        let interaction_groups_removed = remove_interaction_groups(&provider)?;
         let bot_pending_dsk = bot_identity::validate_open(&provider, &phase)?;
         let dsk_pub = match &phase {
             identity::Phase::None => None,
@@ -297,7 +264,14 @@ impl ClientCore {
             provider,
             signer,
             groups: BTreeMap::new(),
+            interaction_groups_removed,
         })
+    }
+
+    /// How many kind-3 (Bot interaction) groups this open removed from the store (Bot v2 Task 23). A
+    /// later open finds none.
+    pub fn interaction_groups_removed_at_open(&self) -> u64 {
+        self.interaction_groups_removed
     }
 
     pub fn unload(&mut self) {
@@ -305,22 +279,68 @@ impl ClientCore {
     }
 }
 
+/// Bot v2 Task 23: kind-3 (Bot interaction) groups are gone. A store that still holds one is cleaned
+/// at open: the group's MLS state, its per-group rows and its `app_groups` row are deleted, each group in
+/// one unit. It answers how many it removed. The MLS state is loaded without its binding, which no
+/// longer decodes.
+fn remove_interaction_groups(provider: &DillaProvider) -> Result<u64, ClientError> {
+    let ids: Vec<Vec<u8>> = provider.storage().read(|c| {
+        let mut stmt = c.prepare("SELECT group_id FROM app_groups WHERE kind = 3")?;
+        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+        rows.collect::<Result<_, _>>().map_err(StorageError::from)
+    })?;
+    for id in &ids {
+        provider
+            .storage()
+            .unit(|u| -> Result<(), ClientError> {
+                if let Some(mut group) =
+                    openmls::group::MlsGroup::load(provider.storage(), &GroupId::from_slice(id))
+                        .map_err(|e| ClientError::new(E_CORE_STORAGE, format!("{e:?}")))?
+                {
+                    group
+                        .delete(provider.storage())
+                        .map_err(|e| ClientError::new(E_CORE_STORAGE, format!("{e:?}")))?;
+                }
+                u.with_conn(|c| {
+                    for table in [
+                        "app_proposals",
+                        "app_handshake_tail",
+                        "app_quarantine",
+                        "app_trust_audit",
+                        "app_pending_history",
+                        "app_messages",
+                        "app_outbox",
+                        "app_read_state",
+                        "app_pins",
+                        "app_reactions",
+                        "app_authority",
+                        "app_authority_known",
+                        "app_authority_mentionable",
+                        "app_bot_events",
+                        "app_groups",
+                    ] {
+                        c.execute(
+                            &format!("DELETE FROM {table} WHERE group_id = ?1"),
+                            [id.as_slice()],
+                        )?;
+                    }
+                    Ok(())
+                })?;
+                Ok(())
+            })
+            .map_err(|e| match e {
+                crate::mls::TxError::RolledBack(e) => e,
+                other => ClientError::new(E_CORE_STORAGE, other.to_string()),
+            })?;
+    }
+    Ok(ids.len() as u64)
+}
+
 /// Whether a loaded group is the one its row describes: its MLS group id and authenticated
-/// binding match the row, including this identity's participant tuple for interaction groups.
-fn matches_row(group: &DillaGroup, group_id: &[u8; 16], row: &groups::GroupRow, own: &Own) -> bool {
+/// binding match the row.
+fn matches_row(group: &DillaGroup, group_id: &[u8; 16], row: &groups::GroupRow) -> bool {
     if group.group_id().as_slice() != group_id {
         return false;
-    }
-    if group.kind() == crate::mls::GroupKind::Interaction {
-        let Ok(binding) = group.interaction_binding() else {
-            return false;
-        };
-        return row.kind == i64::from(crate::mls::GroupKind::Interaction.as_u8())
-            && binding.community_id.as_bytes().as_slice()
-                == row.community_id.as_deref().unwrap_or_default()
-            && interaction_binding_matches_own(&binding, own)
-            && binding.bot_user_id.as_slice() == row.target_id.as_slice()
-            && interaction_row_device_scope_matches(&binding, row);
     }
     let Ok(binding) = group.binding() else {
         return false;
@@ -335,272 +355,6 @@ fn matches_row(group: &DillaGroup, group_id: &[u8; 16], row: &groups::GroupRow, 
             .as_ref()
             .map(|c| c.as_bytes().as_slice())
             == row.community_id.as_deref()
-}
-
-fn matches_bot_interaction_row(
-    group: &DillaGroup,
-    group_id: &[u8; 16],
-    row: &groups::GroupRow,
-    own: &Own,
-) -> bool {
-    if group.group_id().as_slice() != group_id
-        || row.kind != i64::from(crate::mls::GroupKind::Interaction.as_u8())
-    {
-        return false;
-    }
-    let Ok(binding) = group.interaction_binding() else {
-        return false;
-    };
-    binding.community_id.as_bytes().as_slice() == row.community_id.as_deref().unwrap_or_default()
-        && interaction_binding_matches_bot(group, &binding, row, own)
-}
-
-fn interaction_row_device_scope_matches(
-    binding: &crate::mls::DillaInteractionBinding,
-    row: &groups::GroupRow,
-) -> bool {
-    match (
-        row.interaction_installation_id.as_deref(),
-        row.interaction_device_id.as_deref(),
-    ) {
-        (None, None) => true,
-        (Some(installation), Some(device)) => {
-            installation == binding.installation_id.as_slice()
-                && device == binding.participant_device_id.as_bytes()
-        }
-        _ => false,
-    }
-}
-
-fn matches_bot_interaction_roster(
-    group: &DillaGroup,
-    own: &Own,
-    participant_user: &[u8; 16],
-    participant_device: &[u8; 16],
-) -> bool {
-    if group.member_count() != 2 {
-        return false;
-    }
-    let Ok(binding) = group.interaction_binding() else {
-        return false;
-    };
-    if binding.participant_user_id.as_slice() != participant_user
-        || binding.participant_device_id.as_bytes() != participant_device
-    {
-        return false;
-    }
-    let mut own_seen = false;
-    let mut participant_seen = false;
-    for member in group.members() {
-        let Ok(basic) = openmls::prelude::BasicCredential::try_from(member.credential) else {
-            return false;
-        };
-        let Ok(credential) = CredentialIdentity::decode(basic.identity()) else {
-            return false;
-        };
-        if member.index.u32() == group.own_leaf_index().u32() {
-            own_seen = credential.kind == Kind::Bot
-                && credential.tier == Tier::Native
-                && credential.user_id.as_bytes() == &own.user_id
-                && credential.device_id.as_bytes() == &own.device_id;
-        } else {
-            participant_seen = credential.kind == Kind::User
-                && credential.user_id.as_bytes() == participant_user
-                && credential.device_id.as_bytes() == participant_device;
-        }
-    }
-    own_seen && participant_seen
-}
-
-fn interaction_binding_matches_own(
-    binding: &crate::mls::DillaInteractionBinding,
-    own: &Own,
-) -> bool {
-    own.kind == Kind::User.as_u8()
-        && binding.instance_id.as_bytes() == &own.instance_id
-        && binding.participant_user_id.as_slice() == own.user_id
-        && binding.participant_device_id.as_bytes() == &own.device_id
-}
-
-fn interaction_binding_matches_bot(
-    group: &DillaGroup,
-    binding: &crate::mls::DillaInteractionBinding,
-    row: &groups::GroupRow,
-    own: &Own,
-) -> bool {
-    if !interaction_bot_binding_matches_identity(binding, &row.target_id, own)
-        || !interaction_row_device_scope_matches(binding, row)
-        || group.members().len() != 2
-    {
-        return false;
-    }
-    let Some(own_leaf) = group.member_at(group.own_leaf_index().u32()) else {
-        return false;
-    };
-    let Ok(basic) = openmls::prelude::BasicCredential::try_from(own_leaf.credential) else {
-        return false;
-    };
-    interaction_bot_leaf_identity_matches(own, basic.identity(), &own_leaf.signature_key)
-}
-
-fn interaction_bot_binding_matches_identity(
-    binding: &crate::mls::DillaInteractionBinding,
-    row_target: &[u8],
-    own: &Own,
-) -> bool {
-    own.kind == Kind::Bot.as_u8()
-        && own.tier == Tier::Native.as_u8()
-        && binding.instance_id.as_bytes() == &own.instance_id
-        && binding.bot_user_id == own.user_id
-        && row_target == binding.participant_user_id
-}
-
-fn interaction_bot_leaf_identity_matches(
-    own: &Own,
-    credential: &[u8],
-    signature_key: &[u8],
-) -> bool {
-    let Ok(identity) = CredentialIdentity::decode(credential) else {
-        return false;
-    };
-    own.kind == Kind::Bot.as_u8()
-        && own.tier == Tier::Native.as_u8()
-        && credential == own.credential.as_slice()
-        && signature_key == own.dsk_pub
-        && identity.kind == Kind::Bot
-        && identity.tier == Tier::Native
-        && identity.user_id.as_bytes() == &own.user_id
-        && identity.device_id.as_bytes() == &own.device_id
-}
-
-#[cfg(test)]
-#[expect(
-    clippy::items_after_test_module,
-    reason = "The reload tests stay beside the identity predicates they cover."
-)]
-mod interaction_reload_tests {
-    use super::{
-        Own, interaction_binding_matches_own, interaction_bot_binding_matches_identity,
-        interaction_bot_leaf_identity_matches,
-    };
-    use crate::{
-        ids::{CommunityId, DeviceId, InstanceId},
-        mls::DillaInteractionBinding,
-    };
-
-    fn binding() -> DillaInteractionBinding {
-        DillaInteractionBinding {
-            instance_id: InstanceId::from_bytes([1; 16]),
-            bot_user_id: [2; 16],
-            installation_id: [3; 16],
-            community_id: CommunityId::from_bytes([4; 16]),
-            participant_user_id: [5; 16],
-            participant_device_id: DeviceId::from_bytes([6; 16]),
-            policy_version: 1,
-            e2ee_version: 1,
-            media_version: 1,
-        }
-    }
-
-    fn own() -> Own {
-        Own {
-            instance_id: [1; 16],
-            user_id: [5; 16],
-            device_id: [6; 16],
-            dsk_pub: [0; 32],
-            credential: Vec::new(),
-            kind: crate::identity::Kind::User.as_u8(),
-            tier: 1,
-        }
-    }
-
-    fn bot() -> Own {
-        let mut own = own();
-        own.user_id = [2; 16];
-        own.device_id = [3; 16];
-        own.dsk_pub = [9; 32];
-        own.credential = vec![0x42];
-        own.kind = crate::identity::Kind::Bot.as_u8();
-        own.tier = crate::identity::Tier::Native.as_u8();
-        own
-    }
-
-    #[test]
-    fn interaction_reload_binding_must_belong_to_this_instance_user_and_device() {
-        let mut b = binding();
-        assert!(interaction_binding_matches_own(&b, &own()));
-        b.instance_id = InstanceId::from_bytes([9; 16]);
-        assert!(
-            !interaction_binding_matches_own(&b, &own()),
-            "wrong instance"
-        );
-        b = binding();
-        b.participant_user_id = [9; 16];
-        assert!(
-            !interaction_binding_matches_own(&b, &own()),
-            "wrong participant user"
-        );
-        b = binding();
-        b.participant_device_id = DeviceId::from_bytes([9; 16]);
-        assert!(
-            !interaction_binding_matches_own(&b, &own()),
-            "wrong participant device"
-        );
-        let mut human = own();
-        human.kind = crate::identity::Kind::Bot.as_u8();
-        assert!(
-            !interaction_binding_matches_own(&binding(), &human),
-            "Bot identity cannot load the human participant path"
-        );
-    }
-
-    #[test]
-    fn bot_interaction_reload_binds_bot_identity_and_participant_target() {
-        let b = binding();
-        let own = bot();
-        assert!(interaction_bot_binding_matches_identity(&b, &[5; 16], &own));
-
-        let mut wrong_user = bot();
-        wrong_user.user_id = [9; 16];
-        assert!(!interaction_bot_binding_matches_identity(
-            &b,
-            &[5; 16],
-            &wrong_user
-        ));
-
-        assert!(!interaction_bot_binding_matches_identity(
-            &b, &[9; 16], &own
-        ));
-
-        let mut wrong_instance = bot();
-        wrong_instance.instance_id = [9; 16];
-        assert!(!interaction_bot_binding_matches_identity(
-            &b,
-            &[5; 16],
-            &wrong_instance
-        ));
-
-        let mut wrong_tier = bot();
-        wrong_tier.tier = crate::identity::Tier::Browser.as_u8();
-        assert!(!interaction_bot_binding_matches_identity(
-            &b,
-            &[5; 16],
-            &wrong_tier
-        ));
-
-        let mut wrong_device = bot();
-        wrong_device.device_id = [8; 16];
-        assert!(!interaction_bot_leaf_identity_matches(
-            &wrong_device,
-            &[0x42],
-            &[9; 32],
-        ));
-        assert!(!interaction_bot_leaf_identity_matches(
-            &own,
-            &[0x43],
-            &[9; 32],
-        ));
-    }
 }
 
 fn mismatched() -> ClientError {

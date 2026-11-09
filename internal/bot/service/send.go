@@ -43,7 +43,6 @@ func (e sendNotPreparedError) FailureClass() string { return "send_not_prepared"
 type SendNative interface {
 	Binding() native.Binding
 	InspectGroup(context.Context, id.ID) (native.GroupInfo, error)
-	InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error)
 	PrepareSend(context.Context, id.ID, id.ID, id.ID, []byte, uint64, uint64) (native.PreparedSend, error)
 	ConfirmSendReceipt(context.Context, id.ID, []byte) error
 }
@@ -67,15 +66,6 @@ type SendSession interface {
 }
 
 type sendSession = SendSession
-
-type interactionSendSession interface {
-	IssueBotInteractionAdmission(context.Context, id.ID, id.ID, id.ID, id.ID, id.ID) ([]byte, error)
-	BotInteractionContextSnapshot(context.Context, id.ID, id.ID, id.ID, id.ID, id.ID) ([]byte, error)
-}
-
-type interactionSendNative interface {
-	PrepareInteractionSend(context.Context, native.InteractionGroupExpected, []byte, id.ID, id.ID, []byte, uint64, uint64) (native.PreparedSend, error)
-}
 
 // SendCoordinator serializes one bot send against the identity binding and the
 // server generation advertised by discovery. Calls with the same input are
@@ -230,21 +220,18 @@ func (s *SendCoordinator) sendAttempt(ctx context.Context, session sendSession, 
 			return protocol.SendReceipt{}, err
 		}
 	}
-	group, interaction, err := s.inspectSendGroup(ctx, in.GroupID)
+	group, err := s.native.InspectGroup(ctx, in.GroupID)
 	if err != nil {
 		return protocol.SendReceipt{}, err
 	}
 	if group.ID != in.GroupID || group.State != 2 || group.Community == nil || *group.Community != s.binding.Community || group.Epoch > math.MaxInt64 {
 		return protocol.SendReceipt{}, errors.New("native send group does not match identity binding")
 	}
-	// Bot v2 Task 17: the Bot posts only into a marked Bot channel's group. The private interaction groups carry
-	// replies to one member and are not channels; every other group must be a channel group of a Bot channel. The gate
-	// sits here, below every feature and the webhook post, so no caller can bypass it.
-	if interaction == nil {
-		if err := s.requireBotChannelGroup(group); err != nil {
-			logRefusal(ctx, "send", group.Target, err)
-			return protocol.SendReceipt{}, err
-		}
+	// Bot v2 Task 17: the Bot posts only into a marked Bot channel's group. The gate sits here, below every feature and
+	// the webhook post, so no caller can bypass it.
+	if err := s.requireBotChannelGroup(group); err != nil {
+		logRefusal(ctx, "send", group.Target, err)
+		return protocol.SendReceipt{}, err
 	}
 	if in.PredecessorAttemptID != nil {
 		previous, lookupErr := session.BotMessageReceipt(ctx, s.binding.Community, in.OperationID, *in.PredecessorAttemptID, in.GroupID)
@@ -263,12 +250,7 @@ func (s *SendCoordinator) sendAttempt(ctx context.Context, session sendSession, 
 		}
 	}
 
-	var prepared native.PreparedSend
-	if interaction == nil {
-		prepared, err = s.native.PrepareSend(ctx, in.OperationID, in.AttemptID, in.GroupID, in.RequestBody, in.OriginalNow, in.ExpectedGeneration)
-	} else {
-		prepared, err = s.prepareInteractionSend(ctx, session, *interaction, in)
-	}
+	prepared, err := s.native.PrepareSend(ctx, in.OperationID, in.AttemptID, in.GroupID, in.RequestBody, in.OriginalNow, in.ExpectedGeneration)
 	if err != nil {
 		return protocol.SendReceipt{}, err
 	}
@@ -328,76 +310,6 @@ func preparedSendArtifacts(in SendInput, prepared native.PreparedSend) (client.B
 	upload := client.BotMessageUpload{OperationID: in.OperationID, AttemptID: in.AttemptID, PredecessorAttemptID: predecessor, ExpectedGeneration: in.ExpectedGeneration, Epoch: prepared.Epoch, PrivateMessage: append([]byte(nil), prepared.Ciphertext...), Class: prepared.Class}
 	resolution := client.BotMessageResolution{AttemptID: in.AttemptID, PredecessorAttemptID: cloneID(predecessor), GroupID: in.GroupID, ExpectedGeneration: in.ExpectedGeneration, Epoch: prepared.Epoch, Class: prepared.Class, CiphertextSHA256: sha256.Sum256(prepared.Ciphertext)}
 	return upload, resolution, nil
-}
-
-// Ordinary groups use the generic helper inspection. A managed Bot interaction is listed only by
-// its dedicated native descriptor operation; the server still authorizes the actual message POST.
-func (s *SendCoordinator) inspectSendGroup(ctx context.Context, groupID id.ID) (native.GroupInfo, *native.InteractionGroupDescriptor, error) {
-	group, err := s.native.InspectGroup(ctx, groupID)
-	if err == nil {
-		return group, nil, nil
-	}
-	var status *helper.StatusError
-	if !errors.As(err, &status) || status.Status != 2 {
-		return native.GroupInfo{}, nil, err
-	}
-	descriptors, listErr := s.native.InteractionGroups(ctx)
-	if listErr != nil {
-		return native.GroupInfo{}, nil, listErr
-	}
-	var found *native.InteractionGroupDescriptor
-	for i := range descriptors {
-		if descriptors[i].Group == groupID {
-			if found != nil {
-				return native.GroupInfo{}, nil, errors.New("duplicate native interaction send group")
-			}
-			found = &descriptors[i]
-		}
-	}
-	if found == nil {
-		return native.GroupInfo{}, nil, err
-	}
-	b := found.Binding
-	if found.Group.IsZero() || found.State != 2 || found.Epoch == 0 || found.BotDevice.IsZero() ||
-		b.Instance != s.binding.Instance || b.Installation != s.binding.Installation || b.Community != s.binding.Community ||
-		b.BotUser.IsZero() || b.ParticipantUser.IsZero() || b.ParticipantDevice.IsZero() ||
-		b.BotUser == b.ParticipantUser || found.BotDevice == b.ParticipantDevice ||
-		b.PolicyVersion == 0 || b.E2EEVersion != 1 || b.MediaVersion != 0 {
-		return native.GroupInfo{}, nil, errors.New("native interaction send group does not match installation")
-	}
-	community := b.Community
-	return native.GroupInfo{ID: found.Group, Kind: 3, Community: &community, Target: b.ParticipantUser,
-		State: found.State, Epoch: found.Epoch}, found, nil
-}
-
-func (s *SendCoordinator) prepareInteractionSend(ctx context.Context, session sendSession, descriptor native.InteractionGroupDescriptor, in SendInput) (native.PreparedSend, error) {
-	remote, ok := session.(interactionSendSession)
-	if !ok {
-		return native.PreparedSend{}, errors.New("private send admission is unavailable")
-	}
-	local, ok := s.native.(interactionSendNative)
-	if !ok {
-		return native.PreparedSend{}, errors.New("native private send is unavailable")
-	}
-	b := descriptor.Binding
-	requestID := id.New()
-	if _, err := remote.IssueBotInteractionAdmission(ctx, s.binding.Installation, requestID, descriptor.Group, b.ParticipantUser, b.ParticipantDevice); err != nil {
-		return native.PreparedSend{}, err
-	}
-	wire, err := remote.BotInteractionContextSnapshot(ctx, s.binding.Installation, requestID, descriptor.Group, b.ParticipantUser, b.ParticipantDevice)
-	if err != nil {
-		return native.PreparedSend{}, err
-	}
-	details, err := interactionSnapshotDetailsFromWire(wire)
-	if err != nil || details.Request != requestID || details.Instance != b.Instance || details.Installation != b.Installation || details.Community != b.Community ||
-		details.BotUser != b.BotUser || details.BotDevice != descriptor.BotDevice || details.ParticipantUser != b.ParticipantUser || details.ParticipantDevice != b.ParticipantDevice ||
-		details.Group != descriptor.Group || details.PolicyVersion != b.PolicyVersion || details.E2EEVersion != b.E2EEVersion || details.MediaVersion != b.MediaVersion {
-		return native.PreparedSend{}, errors.New("private send admission does not match the installed group")
-	}
-	expected := native.InteractionGroupExpected{Instance: b.Instance, Installation: b.Installation, Community: b.Community,
-		BotUser: b.BotUser, BotDevice: descriptor.BotDevice, ParticipantUser: b.ParticipantUser, ParticipantDevice: b.ParticipantDevice,
-		Group: descriptor.Group, MinimumEligibilityRevision: details.MinimumRevision, ServerNow: details.Now, PolicyVersion: details.PolicyVersion}
-	return local.PrepareInteractionSend(ctx, expected, wire, in.OperationID, in.AttemptID, in.RequestBody, in.OriginalNow, in.ExpectedGeneration)
 }
 
 func receiptMatchesInput(receipt protocol.SendReceipt, community id.ID, in SendInput) bool {

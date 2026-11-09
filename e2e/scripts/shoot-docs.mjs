@@ -1300,7 +1300,7 @@ async function main(argv) {
       const serverSettings = adaPage.getByRole('dialog', { name: t('admin.title'), exact: true });
       await serverSettings.waitFor({ timeout: WAIT });
       for (const [section, name] of [
-        ['overview', 'overview'], ['members', 'members'], ['music', 'music'], ['automoderation', 'automod'],
+        ['overview', 'overview'], ['members', 'members'], ['music', 'music'],
       ]) {
         await serverSettings.getByRole('navigation', { name: t('admin.nav'), exact: true })
           .getByRole('button', { name: t(`workspace.${section}`), exact: true }).click();

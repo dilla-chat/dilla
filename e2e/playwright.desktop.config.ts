@@ -11,7 +11,7 @@ export default defineConfig({
  // Native minimum-size and enrollment/storage acceptance replace browser-only
  // mobile emulation and Safari's ephemeral-context restriction on desktop.
  testIgnore: [...(Array.isArray(web.testIgnore) ? web.testIgnore : web.testIgnore ? [web.testIgnore] : []), '**/phone.spec.ts', '**/private-window.spec.ts', ...(process.platform === 'linux' ? [] : [
-  '**/announcement-scheduler.spec.ts', '**/bot-channels.spec.ts', '**/bot-runtime.spec.ts', '**/bot-commands.spec.ts', '**/moderation-evidence.spec.ts', '**/automod.spec.ts', '**/slash-commands.spec.ts',
+  '**/announcement-scheduler.spec.ts', '**/bot-channels.spec.ts', '**/bot-runtime.spec.ts', '**/bot-commands.spec.ts', '**/moderation-evidence.spec.ts', '**/slash-commands.spec.ts',
  ])],
  projects: [{ name: 'electron-client', use: { browserName: 'chromium' } }],
  reporter: [['list'], ['html', { open: 'never', outputFolder: 'desktop-client-report' }]],

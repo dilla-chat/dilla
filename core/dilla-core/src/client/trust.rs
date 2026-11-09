@@ -535,7 +535,6 @@ fn retract_matching(
         for (seq, own_id, reply_to) in rows {
             c.execute("UPDATE app_messages SET status=1,reason=?3,body='',envelope=NULL,edit_body=NULL,mention=0 WHERE group_id=?1 AND seq=?2", params![group_id.as_slice(),seq,code])?;
             super::bot_events::suppress_source(c, group_id, seq)?;
-            super::human_interaction_events::suppress_source(c, group_id, seq)?;
             c.execute(
                 "DELETE FROM app_search_rows WHERE group_id=?1 AND seq=?2",
                 params![group_id.as_slice(), seq],
@@ -1094,39 +1093,6 @@ fn validate_cached_leaf(c: &rusqlite::Connection, leaf: &LeafEvidence) -> Result
     leaf_verdict(c, leaf)
         .map_err(ClientError::from)?
         .map_err(failure)
-}
-
-/// Bind a server-signed current-context list to the MLS leaf's complete identity chain and this
-/// device's existing pin/cache. The proof's signature cannot establish a user's UMK or SSK pin.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Each argument is part of the authenticated MLS leaf context."
-)]
-pub(super) fn validate_interaction_leaf(
-    c: &rusqlite::Connection,
-    group_id: &[u8; 16],
-    epoch: u64,
-    tree_hash: [u8; 32],
-    leaf_index: u32,
-    credential: &CredentialIdentity,
-    dsk_pub: [u8; 32],
-    snapshot: &crate::bot::interaction_snapshot::SnapshotList,
-) -> Result<Result<(), &'static str>, StorageError> {
-    if snapshot.user.as_bytes() != credential.user_id.as_bytes()
-        || snapshot.umk != credential.umk_pub
-        || snapshot.ssk != credential.ssk_pub
-    {
-        return Ok(Err(E_CREDENTIAL));
-    }
-    let leaf = LeafEvidence {
-        group_id: *group_id,
-        epoch,
-        tree_hash,
-        leaf_index,
-        credential: credential.clone(),
-        dsk_pub,
-    };
-    leaf_verdict(c, &leaf)
 }
 
 /// The one judgement of an authenticated leaf against its user's pin and cached signed list.
@@ -1698,7 +1664,14 @@ impl ClientCore {
                 .ok_or_else(|| failure(E_CORE_NOT_FOUND))?;
             let result = this.write(|_, u| {
                 u.with_conn(|c| {
-                    audit_sender(c, &group, group_id, &own.user_id, &own.device_id, leaf_index)
+                    audit_sender(
+                        c,
+                        &group,
+                        group_id,
+                        &own.user_id,
+                        &own.device_id,
+                        leaf_index,
+                    )
                 })
                 .map_err(ClientError::from)
             });
@@ -2531,26 +2504,7 @@ mod tests {
     };
     use crate::ids::{DeviceId, UserId};
 
-    fn interaction_snapshot(
-        leaf: &LeafEvidence,
-        list: &DeviceList,
-    ) -> crate::bot::interaction_snapshot::SnapshotList {
-        use crate::ids::MsgId;
-        let blob = list.encode();
-        crate::bot::interaction_snapshot::SnapshotList {
-            user: MsgId::from_bytes(*leaf.credential.user_id.as_bytes()),
-            umk: leaf.credential.umk_pub,
-            ssk: leaf.credential.ssk_pub,
-            binding_signature: leaf.credential.sig_umk_ssk,
-            version: list.unsigned.version,
-            signature: list.sig_ssk,
-            prev_hash: list.unsigned.prev_hash,
-            hash: crate::identity::sha256(&blob),
-            blob,
-        }
-    }
-
-    fn interaction_trust_db(
+    fn pinned_trust_db(
         leaf: &LeafEvidence,
         list: &DeviceList,
         with_pin: bool,
@@ -2673,67 +2627,6 @@ mod tests {
             dsk_pub,
         };
         (leaf, list)
-    }
-
-    #[test]
-    fn interaction_welcome_rejects_self_consistent_substituted_identity_keys() {
-        let (trusted_leaf, list) = fixture();
-        let trusted_snapshot = interaction_snapshot(&trusted_leaf, &list);
-        let db = interaction_trust_db(&trusted_leaf, &list, true);
-        let mut substituted = trusted_leaf.clone();
-        let substituted_list = substitute_leaf_keys(&mut substituted, 0x90);
-        assert_ne!(substituted.credential.umk_pub, trusted_snapshot.umk);
-        assert_ne!(substituted.credential.ssk_pub, trusted_snapshot.ssk);
-        substituted
-            .credential
-            .verify_signatures(&substituted.dsk_pub)
-            .expect("the substituted key chain is internally valid");
-
-        let mismatched_snapshot = validate_interaction_leaf(
-            &db,
-            &substituted.group_id,
-            substituted.epoch,
-            substituted.tree_hash,
-            substituted.leaf_index,
-            &substituted.credential,
-            substituted.dsk_pub,
-            &trusted_snapshot,
-        )
-        .expect("signed-list key comparison");
-        assert_eq!(mismatched_snapshot, Err(E_CREDENTIAL));
-
-        let self_consistent_snapshot = interaction_snapshot(&substituted, &substituted_list);
-        let unpinned_key = validate_interaction_leaf(
-            &db,
-            &substituted.group_id,
-            substituted.epoch,
-            substituted.tree_hash,
-            substituted.leaf_index,
-            &substituted.credential,
-            substituted.dsk_pub,
-            &self_consistent_snapshot,
-        )
-        .expect("local pin lookup");
-        assert_eq!(unpinned_key, Err(E_CREDENTIAL));
-    }
-
-    #[test]
-    fn interaction_welcome_requires_an_existing_user_pin() {
-        let (leaf, list) = fixture();
-        let snapshot = interaction_snapshot(&leaf, &list);
-        let db = interaction_trust_db(&leaf, &list, false);
-        let result = validate_interaction_leaf(
-            &db,
-            &leaf.group_id,
-            leaf.epoch,
-            leaf.tree_hash,
-            leaf.leaf_index,
-            &leaf.credential,
-            leaf.dsk_pub,
-            &snapshot,
-        )
-        .expect("trust lookup");
-        assert_eq!(result, Err(E_DEVICE_LIST_STALE));
     }
 
     #[test]
@@ -3269,6 +3162,7 @@ mod tests {
             provider,
             signer: None,
             groups: Default::default(),
+            interaction_groups_removed: 0,
         };
         core.trust_verify(
             owner.credential.user_id.as_bytes().try_into().unwrap(),
@@ -3698,21 +3592,21 @@ mod tests {
     #[test]
     fn account_kind_absent_and_never_seen_keeps_the_earlier_rule() {
         let (leaf, list) = fixture();
-        let db = interaction_trust_db(&leaf, &list, true);
+        let db = pinned_trust_db(&leaf, &list, true);
         assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
     }
 
     #[test]
     fn a_valid_attestation_of_the_credentials_kind_passes() {
         let (leaf, list) = fixture();
-        let db = interaction_trust_db(&leaf, &list, true);
+        let db = pinned_trust_db(&leaf, &list, true);
         let user = *leaf.credential.user_id.as_bytes();
         attest(&db, &user, 0, (&INSTANCE, &user, 0), &instance_key());
         assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
         // An existing Bot account keeps working: a Bot-kind leaf attested as a Bot passes.
         let (mut bot, bot_list) = fixture();
         bot_leaf(&mut bot);
-        let db = interaction_trust_db(&bot, &bot_list, true);
+        let db = pinned_trust_db(&bot, &bot_list, true);
         attest(&db, &user, 1, (&INSTANCE, &user, 1), &instance_key());
         assert_eq!(leaf_verdict(&db, &bot).expect("verdict"), Ok(()));
     }
@@ -3721,7 +3615,7 @@ mod tests {
     fn a_human_whose_credential_claims_bot_kind_is_refused() {
         let (mut leaf, list) = fixture();
         bot_leaf(&mut leaf);
-        let db = interaction_trust_db(&leaf, &list, true);
+        let db = pinned_trust_db(&leaf, &list, true);
         let user = *leaf.credential.user_id.as_bytes();
         attest(&db, &user, 0, (&INSTANCE, &user, 0), &instance_key());
         assert_eq!(
@@ -3751,7 +3645,7 @@ mod tests {
             ),
         ];
         for (name, signed, key) in cases {
-            let db = interaction_trust_db(&leaf, &list, true);
+            let db = pinned_trust_db(&leaf, &list, true);
             attest(&db, &user, 0, (&signed.0, &signed.1, signed.2), key);
             assert_eq!(
                 leaf_verdict(&db, &leaf).expect("verdict"),
@@ -3766,7 +3660,7 @@ mod tests {
     #[test]
     fn once_an_attestation_was_seen_a_missing_one_is_refused_even_under_a_verified_key() {
         let (leaf, list) = fixture();
-        let db = interaction_trust_db(&leaf, &list, true); // the fixture's pin is person-verified
+        let db = pinned_trust_db(&leaf, &list, true); // the fixture's pin is person-verified
         schema::meta_put(&db, super::super::account_kind::ACCOUNT_KIND_SEEN, &[1]).expect("seen");
         assert_eq!(
             leaf_verdict(&db, &leaf).expect("verdict"),
@@ -3781,7 +3675,7 @@ mod tests {
         let (mut leaf, _) = fixture();
         let user = *leaf.credential.user_id.as_bytes();
         let list = substitute_leaf_keys(&mut leaf, 0x91);
-        let db = interaction_trust_db(&leaf, &list, true);
+        let db = pinned_trust_db(&leaf, &list, true);
         attest(&db, &user, 0, (&INSTANCE, &user, 0), &instance_key());
         assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
         leaf.credential.kind = Kind::Bot;

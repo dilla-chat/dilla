@@ -428,6 +428,13 @@ func TestManagedBotJoinAndSendGatesUseLiveInstallation(t *testing.T) {
 				t.Fatalf("CreateBotInstallation: %v", err)
 			}
 			acl := api.ResolverACL{Repo: repo}
+			// The Bot is a member of Bot channels' text groups only (Task 23, R1 b).
+			if ok, err := acl.Eligible(ctx, f.group.GroupID, botID); err != nil || ok {
+				t.Fatalf("joining bot ACL outside a Bot channel = %v, %v; want denied", ok, err)
+			}
+			if _, err := repo.MarkBotChannel(ctx, store.BotChannelRow{ChannelID: f.channel.ID, CommunityID: f.cid, MarkedAt: policyT0, MarkedBy: f.user}); err != nil {
+				t.Fatalf("MarkBotChannel: %v", err)
+			}
 			if ok, err := acl.Eligible(ctx, f.group.GroupID, botID); err != nil || !ok {
 				t.Fatalf("joining bot own-community ACL = %v, %v; want eligible", ok, err)
 			}

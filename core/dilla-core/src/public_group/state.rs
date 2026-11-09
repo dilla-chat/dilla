@@ -5,9 +5,8 @@ use super::{PublicStore, PublicStoreError};
 use crate::error::ProtocolError;
 use crate::identity::CredentialIdentity;
 use crate::mls::{
-    DILLA_BINDING, DillaBinding, DillaInteractionBinding, commit_extensions_unchanged,
-    instance_sender_index, leaf_credentials_unchanged, proposal_credential_verdict,
-    proposal_extensions_unchanged,
+    DILLA_BINDING, DillaBinding, commit_extensions_unchanged, instance_sender_index,
+    leaf_credentials_unchanged, proposal_credential_verdict, proposal_extensions_unchanged,
 };
 // None of these four is re-exported by `openmls::prelude` in 0.9.0 (the same finding as
 // `mls::group`: the prelude re-exports `hash_ref::KeyPackageRef` but not `ProposalRef`,
@@ -81,13 +80,11 @@ pub struct DillaPublicGroup {
     binding: PublicGroupBinding,
 }
 
-/// The public tree can carry either the established eight-field v1 binding or the typed v2
-/// interaction binding. Keep the original shape so state export and recovery never downgrade a
-/// v2 group to its legacy projection.
+/// The binding the public tree carries: the eight-field v1 binding. The typed v2 binding of the Bot
+/// interaction groups is gone with them (Bot v2 Task 23); a v2 GroupContext is refused.
 #[derive(Clone, Debug)]
 enum PublicGroupBinding {
     Legacy(DillaBinding),
-    InteractionV2(DillaInteractionBinding),
 }
 
 impl PublicGroupBinding {
@@ -101,9 +98,6 @@ impl PublicGroupBinding {
         let version = decoder.uint().map_err(|_| ProtocolError::Binding)?;
         match version {
             1 => Ok(Self::Legacy(DillaBinding::from_group_context(ctx)?)),
-            2 => Ok(Self::InteractionV2(DillaInteractionBinding::decode(
-                &raw.0,
-            )?)),
             _ => Err(ProtocolError::Binding),
         }
     }
@@ -111,14 +105,6 @@ impl PublicGroupBinding {
     fn encode(&self) -> Vec<u8> {
         match self {
             Self::Legacy(binding) => binding.encode(),
-            Self::InteractionV2(binding) => binding.encode(),
-        }
-    }
-
-    fn interaction(&self) -> Option<&DillaInteractionBinding> {
-        match self {
-            Self::InteractionV2(binding) => Some(binding),
-            Self::Legacy(_) => None,
         }
     }
 }
@@ -421,23 +407,17 @@ impl DillaPublicGroup {
         self.group.group_context().epoch().as_u64()
     }
 
-    /// Returns the established v1 binding when this group uses the legacy format. V2 interaction
-    /// groups have a distinct typed API and never appear as an invalid `DillaBinding` projection.
+    /// The group's v1 binding.
     pub fn binding(&self) -> Option<&DillaBinding> {
         match &self.binding {
             PublicGroupBinding::Legacy(binding) => Some(binding),
-            PublicGroupBinding::InteractionV2(_) => None,
         }
     }
 
-    /// The binding exactly as carried in the authenticated GroupContext, preserving v2 for
-    /// consumers that persist or compare the protocol bytes.
+    /// The binding exactly as carried in the authenticated GroupContext, for consumers that persist
+    /// or compare the protocol bytes.
     pub fn binding_bytes(&self) -> Vec<u8> {
         self.binding.encode()
-    }
-
-    pub fn interaction_binding(&self) -> Option<&DillaInteractionBinding> {
-        self.binding.interaction()
     }
 
     /// The number of occupied leaves in the tree, every one of them: `members()` leaves out a leaf
@@ -761,49 +741,6 @@ mod tests {
             .0
     }
 
-    const INTERACTION_FIXTURE_TREE: &[u8] = include_bytes!(
-        "../../../../internal/ds/dstest/testdata/kind3-interaction/ratchet_tree.mls"
-    );
-    const INTERACTION_FIXTURE_GROUP_INFO: &[u8] =
-        include_bytes!("../../../../internal/ds/dstest/testdata/kind3-interaction/group_info.mls");
-
-    #[test]
-    fn external_kind3_v2_interaction_binding_imports_and_recovers() {
-        let tree = RatchetTreeIn::tls_deserialize_exact(INTERACTION_FIXTURE_TREE)
-            .expect("interaction ratchet tree decodes");
-        let info = match MlsMessageIn::tls_deserialize_exact(INTERACTION_FIXTURE_GROUP_INFO)
-            .expect("interaction GroupInfo decodes")
-            .extract()
-        {
-            MlsMessageBodyIn::GroupInfo(info) => info,
-            other => panic!("expected GroupInfo, got {other:?}"),
-        };
-        let group = DillaPublicGroup::from_external(&RustCrypto::default(), tree, info)
-            .expect("kind-3 v2 interaction binding imports")
-            .0;
-        assert_eq!(group.members().len(), 2);
-        let binding = group
-            .interaction_binding()
-            .expect("v2 interaction binding remains typed");
-        assert!(
-            group.binding().is_none(),
-            "legacy accessor must fail closed for v2 rather than expose a malformed projection"
-        );
-        assert_eq!(binding.instance_id.as_bytes(), &[0x11; 16]);
-        assert_eq!(binding.bot_user_id, [0x22; 16]);
-        assert_eq!(binding.installation_id, [0x33; 16]);
-        assert_eq!(binding.community_id.as_bytes(), &[0x44; 16]);
-        assert_eq!(binding.participant_user_id, [0x55; 16]);
-        assert_eq!(binding.participant_device_id.as_bytes(), &[0x77; 16]);
-        assert_eq!(binding.policy_version, 3);
-        let state = group.export_state();
-        let restored = DillaPublicGroup::import_state(&state, group.group_id())
-            .expect("kind-3 v2 interaction binding recovers from public state");
-        assert_eq!(restored.binding_bytes(), group.binding_bytes());
-        assert_eq!(restored.interaction_binding(), Some(binding));
-        assert_eq!(restored.members().len(), group.members().len());
-    }
-
     /// DS-MEMBERSHIP-01: the view reports the group context's external senders as the fixture's
     /// generator put them there - one entry, a basic credential `[1, "instance", instance_id]`
     /// naming the fixture's instance, and a 32-byte Ed25519 key. The fixture's external Remove,
@@ -840,7 +777,6 @@ mod tests {
         assert_eq!(binding.v, 1);
         assert_eq!(DillaBinding::decode(&binding.encode()).unwrap(), *binding);
         assert_eq!(public.binding_bytes(), binding.encode());
-        assert!(public.interaction_binding().is_none());
     }
 
     /// ABI v2 §3.2's key source: a leaf inside the tree yields a verification key tagged with the

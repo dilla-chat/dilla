@@ -272,3 +272,86 @@ func TestABotChannelReadFailureStillRunsTheRemoves(t *testing.T) {
 		t.Fatalf("Adds = %v, want the member's device and not the Bot's", added)
 	}
 }
+
+// Task 23 (R1 b): the commit-time Add clause (invariant 4, checkAddedMember, through ResolverACL) refuses the community's
+// Bot in a text group whose channel is not a Bot channel, so a member commit built before an unmark, or an Add a stale
+// sync proposed, is refused add_acl and its committer retries without the voided Add. A Bot channel admits the Bot; the
+// voice channel's call group is not narrowed (the Bot plays music there); a human member is unaffected.
+func TestTheCommitTimeACLRefusesTheBotOutsideBotChannels(t *testing.T) {
+	f, _, group := botMembershipFixture(t)
+	ctx := context.Background()
+	acl := api.ResolverACL{Repo: f.deps.Repo}
+	eligible := func(g, u id.ID) bool {
+		t.Helper()
+		ok, err := acl.Eligible(ctx, g, u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if eligible(group, f.botUser) {
+		t.Fatal("the Bot is eligible for the group of a channel that is not a Bot channel")
+	}
+	if !eligible(group, f.member.ID) {
+		t.Fatal("a member is not eligible for the text group")
+	}
+	if rec := putCBORAuth(f.h, f.botChannelPath(f.text), nil, f.ownerTok); rec.Code != http.StatusNoContent {
+		t.Fatalf("mark = %d", rec.Code)
+	}
+	if !eligible(group, f.botUser) {
+		t.Fatal("the Bot is not eligible for a Bot channel's group")
+	}
+	cid := f.community
+	call := store.GroupRow{GroupID: id.New(), Binding: []byte{0x80}, Kind: 1, CommunityID: &cid, TargetID: f.voice,
+		Ciphersuite: 1, ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 1, PolicyVersion: 1, Created: f.deps.Clock.Now().Unix()}
+	if err := f.deps.Repo.CreateGroup(ctx, call); err != nil {
+		t.Fatal(err)
+	}
+	if !eligible(call.GroupID, f.botUser) {
+		t.Fatal("the Bot is not eligible for a voice channel's call group")
+	}
+	if rec := deleteAuthCBOR(f.h, f.botChannelPath(f.text), f.ownerTok); rec.Code != http.StatusNoContent {
+		t.Fatalf("unmark = %d", rec.Code)
+	}
+	if eligible(group, f.botUser) {
+		t.Fatal("the Bot is still eligible for the group after the unmark")
+	}
+}
+
+// botLeafIn gives group two live leaves: one of owner's, and the Bot's device at leaf 1.
+func botLeafIn(t *testing.T, f *catalogFixture, group id.ID) {
+	t.Helper()
+	if err := f.deps.Repo.ReplaceMembers(context.Background(), group, 3, []store.MemberRow{
+		{GroupID: group, LeafIndex: 0, UserID: f.owner.ID, DeviceID: id.New(), SignatureKey: make([]byte, 32), AddedEpoch: 1},
+		{GroupID: group, LeafIndex: 1, UserID: f.botUser, DeviceID: f.botDevice, SignatureKey: make([]byte, 32), AddedEpoch: 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Task 23 (R1 c): the membership sync proposes out a live Bot leaf it finds in the group of a channel that is not a Bot
+// channel (a commit in flight across an unmark, or a stale sync read, carried it in), and keeps it in a Bot channel.
+func TestTheSyncProposesOutABotLeafOutsideABotChannel(t *testing.T) {
+	f, dsvc, group := botMembershipFixture(t)
+	ctx := context.Background()
+	botLeafIn(t, f, group)
+	ch, err := f.deps.Repo.GetChannel(ctx, f.text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := api.MaterialiseChannelMembers(ctx, f.deps.Repo, dsvc, ch, f.deps.Clock.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if devices := dsvc.leafDevices(); !slices.Contains(devices, f.botDevice) {
+		t.Fatalf("the sync left the Bot's leaf in a channel that is not a Bot channel: %v", devices)
+	}
+
+	g, marked, group2 := botMembershipFixture(t)
+	botLeafIn(t, g, group2)
+	if rec := putCBORAuth(g.h, g.botChannelPath(g.text), nil, g.ownerTok); rec.Code != http.StatusNoContent {
+		t.Fatalf("mark = %d", rec.Code)
+	}
+	if devices := marked.leafDevices(); slices.Contains(devices, g.botDevice) {
+		t.Fatalf("the sync proposed the Bot out of a Bot channel: %v", devices)
+	}
+}

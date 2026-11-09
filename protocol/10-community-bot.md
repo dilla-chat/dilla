@@ -55,10 +55,9 @@ Operation, arguments, channel requirement, mutation:
 - 52 announcements.delete: [schedule_id, expected_schedule_revision], no channel, mutation; request revision is the expected scheduler document revision and the argument's positive revision must match the stored schedule
 - 60 moderation.cases: [cursor bstr(1..256)|null], no channel, read; null requests the first page
 - 61 moderation.evidence: legacy removal `[action_request_id, reason tstr(1..1024 UTF8 bytes), excerpt tstr(0..512 UTF8 bytes)]`, or manual warning `[action_request_id, "warn", reason tstr(1..1024 UTF8 bytes), ""]`; no channel, mutation. The warning form is accepted only after authoritative lookup of the matching human warning receipt.
-- 62 automod.config.get: [], no channel, read
-- 63 automod.config.put: [grant_token tstr(1..512 UTF8 bytes), config_document bstr(1..2400)], no channel, mutation
+- 62, 63: retired (Bot v2 Task 23: AutoModeration, § Retired v1 surfaces)
 - 64 moderation.evidence.list: [cursor bstr(1..256)|null], no channel, read; null requests the first page
-- 3 capabilities: [], no channel, read
+- 3: retired (Bot v2 Task 23: the capabilities report, § Retired v1 surfaces)
 - 70 poll.create: [payload bstr(1..2200)], no channel, mutation with revision 0. Payload is canonical CBOR `[1, channel_id, thread_id|null, question, answers, multi, duration_seconds]`; channel_id is required bstr16, question is 1..300 Unicode scalar values, answers are 2..10 unique nonblank strings of 1..100 Unicode scalar values, multi is 0 or 1, and duration is one of 3600, 14400, 28800, 86400, 259200, 604800 seconds. The encoded payload is capped at 1800 bytes so a result fits the response cap.
 - 71 poll.get: [poll_id], no channel, read
 - 72 poll.list: [channel_id, thread_id|null, cursor bstr(1..256)|null], no channel, read
@@ -69,7 +68,7 @@ Operation, arguments, channel requirement, mutation:
 - 81 reminder.list: [cursor bstr(1..256)|null], no channel, read
 - 82 reminder.cancel: [reminder_id], no channel, mutation
 - 83 reminder.dismiss: [reminder_id], no channel, mutation
-- 84 reminder.due: [cursor bstr(1..256)|null], no channel, read
+- 84: retired as a request (Bot v2 Task 23); the due reminders are the sealed read 93
 
 Before requesting operation 24, clients negotiate through operation 0. Its legacy
 response is `[1, actor_id, effective_permission_bits, owner, administrator]`.
@@ -177,75 +176,22 @@ recheck the current human moderator's `view_audit_log` authority through the aut
 API. MLS sender authentication and request correlation do not establish the receiving human's
 current permission.
 
-`automod.config.get` returns the encrypted-state revision and the canonical
-configuration document `[1, enabled 0|1, rate_action, duplicate_action,
-mention_action, timeout_ms, exempt_user_ids]`. Actions are `log`, `remove`,
-`warn`, or `timeout`; timeout is `1..2419200000` ms, and there are at most 256
-unique nonempty exempt user IDs of at most 128 UTF-8 bytes each. An absent row
-reads as disabled, all rules log-only, a 600000 ms timeout, and no exemptions.
-Both configuration operations bind the encrypted state to the bot installation,
-community, and instance as the existing area-8 store does.
+### Retired v1 surfaces
 
-Each read and write resolves the authenticated MLS sender's current server
-membership and permissions. The actor must currently be an owner, administrator,
-or hold `manage_community`; writing a config that names `remove` additionally
-requires current `manage_messages`, and `warn` or `timeout` additionally requires
-current `moderate_members`. Owners and administrators satisfy those action
-requirements. A denied actor or cross-community request is refused before the
-encrypted row is read or changed. This check uses the authenticated bot session's
-current actor-authority endpoint, never actor data in `args`.
+Bot v2 Task 23 removed the v1 Bot machinery the sealed commands replaced. A server, a Bot
+and a client of this version neither offer nor accept any of it:
 
-`automod.config.put` compares the top-level request revision atomically with the
-encrypted-state revision. A stale or racing update returns status 4 and the
-current revision, without changing the row. Its `grant_token` is an opaque,
-one-use grant issued after the configuring human's current step-up; it carries no
-configuration plaintext. Redemption is bound to the exact authenticated actor
-and interaction context plus community, request ID, operation 63, expected
-revision, request expiry, and SHA-256 of the exact canonical configuration
-document. The bot sends only that digest to the redemption endpoint; plaintext
-configuration remains inside the MLS-decrypting bot process. It redeems before
-attempting the state transaction. The state transaction ID is the request ID, so exact retries of a
-committed write recover the original revision receipt. Grant redemption must
-return the same receipt for an exact retry, including after restart: if a grant
-was redeemed but the state transaction then conflicted or failed, the row is
-unchanged and the same request can retry with that receipt. Reusing a grant for a
-different request tuple is refused.
+- the private per-member interaction groups (MLS group kind 3), their admission, signed
+  context, synchronization, heal and registration paths; a kind-3 binding is refused and
+  stored kind-3 groups are deleted (dillad migration 00058, the client core at open, the
+  Bot helper's one-time cleanup);
+- AutoModeration (operations 62 and 63, its grant routes and its stored configuration and
+  state) and the Bot's automatic moderation action route;
+- the capabilities report (operation 3) and the v1 due-reminders request (operation 84).
 
-A successful settings write activates the evaluator, fresh action dependencies,
-revision and replay boundary before its acknowledgement. Later reconciliation
-of that revision preserves the activated evaluator and rolling observations;
-an exact successful retry also preserves them. Dependency or replay-source
-readiness failures refuse the write. Receipt timestamps have second resolution,
-so events from the activation's own receipt second remain conservatively
-replay-only; the first strictly later receipt second is eligible for live
-evaluation. Pre-activation history arriving through delayed source sync never
-becomes a new punitive action.
+The moderation log reads its pages, operations 60 and 64, as sealed app operations 160
+and 164 (§ App surfaces on sealed commands), for members with `view_audit_log`.
 
-The config service does not treat stored bot capability bits as actor authority.
-At event enforcement time, the moderation action endpoint rechecks the active
-installation's approved warning/timeout or removal capability and the actor's
-current moderation permission. If either has been revoked, the action fails
-closed and no punitive action is accepted. The human step-up grant implementation
-is required for op 63; deployments without a configured redeemer return status 5.
-
-The human arms a config write with `POST /v1/groups/{group}/automod-grants/arm`
-using `[request_id, community_id, expected_revision, request_expires,
-config_hash32, step_up_token]`; the response is `[grant_token,
-grant_expires_unix]`. This requires the current human group context, community
-membership, bot installation, and a valid session-bound step-up. Revision zero
-is valid for the first write. The server stores the digest and exact interaction
-tuple, and stores only a hash of the opaque grant token.
-
-The bot redeems through
-`POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem` with
-`[grant_token, community_id, group_id, request_id, expected_revision,
-request_expires, actor_user, actor_device, config_hash32]`; success returns
-`[true, receipt_id]`. The request must come from the matching ready installation
-and current bot session. The server validates the current interaction group,
-roster, participant device, actor membership, exact config digest, and every
-stored tuple field. An exact duplicate redemption returns the original stable
-receipt; changed or expired tuples fail. Config plaintext is never sent to these
-HTTP endpoints.
 Nonempty data is strict deterministic CBOR array. Empty data allowed. status:
 0 ok,1 invalid,2 forbidden,3 expired,4 conflict,5 unavailable,6 busy,7 not_found,
 8 upgrade_required,9 internal. Validate expected community on response separately;
@@ -367,52 +313,6 @@ and now < expires <= now+30 on new acceptance. The native core signs this
 preimage with its device key; the server verifies it against the authenticated
 session and current authority.
 Accepted stored proofs remain evidence after expiry; decoding never applies time.
-
-## Automatic warning and timeout acceptance
-
-`POST /v1/bot-runtime/installations/{installation}/moderation/actions` accepts
-`[request_id, group_id, source_seq, action, rules, timeout_ms, expires]` and
-returns `[action_id, community_revision, expires|null]`. The request is accepted
-only for an enrolled session bound to that exact Ready installation and when
-both the current installation and session capabilities include warnings/timeouts.
-The server rechecks the active installation, source text group and recent
-undeleted message, uploader membership, current `moderate_members` permission,
-and role hierarchy in the same transaction that records the event and receipt.
-The source sequence and group determine a stable operation ID; an exact replay
-returns the original receipt, including after the request acceptance window.
-Timeouts update the member timeout row, which applies to every upload class.
-
-Both this route and `POST /v1/groups/{group}/moderation/removals` accept
-`?receipt_only=1` for reconciliation. They validate the same authenticated
-installation/device and exact operation payload (including the signed removal
-proof). An existing matching receipt returns its original result. An absent
-receipt returns `404 E_NOT_FOUND` before any new effect, regardless of whether
-the source would otherwise still be eligible. Unknown transport results remain
-retryable; a lookup is never promoted into a new acceptance request.
-
-The Bot checkpoints rolling observations, source deduplication, the processed
-frontier and any pending decision in one protected native state transaction
-before acknowledging a delivery. There are 256 fixed actor shards (each bounded
-by the native 256 KiB value limit) and 1,024 reusable pending slots per
-installation. Full or unpersistable state defers intake before acknowledgement;
-logs expose only the refusal stage and counter. Activation barriers are persisted
-before a configuration update is acknowledged and reused after restart. A legacy
-installation without a checkpoint seeds one conservative barrier. Pending
-old-policy decisions can reconcile existing receipts but cannot authorize new
-effects after disablement, policy change or source expiry. Accepted case receipts
-are saved before evidence attachment, allowing local evidence recovery after
-revocation. Protected case format v3 adds an explicit enforcement-refused flag;
-v2 records remain readable. Checkpoint-only native transactions in this new
-area-8 namespace retain their latest 64 transaction receipts; configuration and
-command receipts keep their existing retention. An older checkpoint retry is
-still guarded by CAS revisions and recovered through row/frontier reconciliation.
-Rolling/dedup snapshots omit observations outside their evaluation windows.
-None of these state formats changes MLS or wire versions.
-
-The server can verify the source message and authorization, but it cannot inspect
-the encrypted message or independently attest that a listed rule matched. Rule
-IDs and the runtime-generated action are inputs from the authenticated bot
-session. This endpoint does not claim cryptographic evaluator attestation.
 
 ## Durable structural event
 
@@ -611,163 +511,11 @@ Group suboperations are: 0 list `[]`; 1 inspect `[group_id]`;
 17 pending_leaves `[]`; 18 events_read `[after_delivery_id,limit]`;
 19 events_ack `[through_delivery_id]`; 20 intent_result `[operation_id]`.
 Here argument arrays expand after the suboperation number rather than adding a
-nested array. Kind is the existing text, call or interaction group kind. Text and
-The Bot helper currently admits only text (0) and call (1) group creation,
-external join and Welcome expectations. Pairing (2) and interaction (3) are
-refused before MLS or durable-intent mutation. Text and call groups require
-this installation's community. An interaction binding, when decoded by the
-shared protocol library, preserves `01`'s null legacy community slot and carries
-the Bot account, installation community, one participant user and one
-participant device in its typed v2 extension. That shape is structural data;
-it does not authenticate the participant or authorize admission. Do not create
-an interaction group by trusting those fields from the helper request.
-
-### Kind-3 Bot admission contract proposal
-
-Kind-3 Bot admission remains unavailable until the server and native core can
-bind an authenticated admission decision to the exact MLS roster. Existing
-evidence does not supply that decision: a Bot session authenticates the acting
-installation, community, Bot account and Bot device; the current group
-registration receipt binds that session to the submitted group body and
-generation; and a signed device list authenticates a device's account
-credential. None of those proves that a selected human is currently eligible
-for this Bot interaction or binds that selection to the resulting group.
-The current registration check also authenticates only the registering Bot
-leaf. A participant tuple copied from an event, URL, helper request or MLS
-binding remains caller-declared data.
-
-The issuance-only route is
-`POST /v1/bot-runtime/installations/{installation}/interaction-admissions`,
-under the current wire-3 Bot session for that installation, in joining or ready
-state. Its request is `[request_id,group_id,participant_user,participant_device]`.
-The server requires the participant to be an active human account and current,
-non-banned member of the
-installation community and the selected device to be active in that user's
-latest valid signed device list. The proof records that eligibility decision;
-it does not currently admit the interaction group. Once admission is wired,
-the Bot dispatcher must still check each operation's permissions at use time.
-
-Issuance is fenced by the participant user row and a durable per-community,
-per-user eligibility revision. A repeated request ID with the same group and
-participant tuple returns the same 30-second proof while it remains current;
-conflicting reuse fails. Expired proofs can be refreshed for the same tuple.
-After 30 days, the request-hash tombstone may be compacted and the ID reused.
-An admission receipt is not a group-registration receipt.
-
-The response is `[payload_bstr,signature_bstr]`. The payload is strict
-deterministic CBOR `[1,admission_id,instance_id,installation_id,community_id,
-bot_user_id,bot_device_id,participant_user_id,participant_device_id,group_id,
-eligibility_revision,not_after]`. All IDs are nonzero bstr16; revision and
-`not_after` are server uint values at most signed-int64 max. The instance signs
-`ASCII("dilla bot interaction admission v1") || 0x00 || payload` with the
-Ed25519 private key corresponding to its published instance external-sender
-public key. The Go client obtains that key from authenticated `GET /v1/instance`
-discovery and passes it to native bootstrap over private helper IPC. The client
-requires HTTPS except for explicitly enabled loopback HTTP, disables redirects,
-and checks the configured instance id. The native core stores the key in its
-encrypted Bot store alongside the installation binding. An existing ready Bot
-store without a pin requires operator recovery; bootstrap never silently assigns
-it a new key. A caller-supplied key or expected tuple is never a trust anchor.
-Every later identity reconciliation checks discovery against the stored key.
-Changing the pinned key requires an explicit trusted instance-key transition,
-not an admission retry.
-
-The read-only context endpoint returns `[snapshot_payload_bstr,
-snapshot_signature_bstr]`. Its canonical CBOR payload is array v1
-`[1,request_id,admission_id,admission_payload,admission_signature,server_now,
-eligibility_revision,policy_version,e2ee_version,media_version,instance_id,
-external_sender_key_id,instance_signer_pub,expected_tuple,bot_list,
-participant_list]`. `expected_tuple` is the eight IDs in the admission tuple order.
-Each list is `[user_id,umk_pub32,ssk_pub32,sig_umk_ssk64,version,blob,
-ssk_signature64,prev_hash32,sha256_blob32]`. The instance signs
-`ASCII("dilla bot interaction context snapshot v1") || 0x00 || payload` with
-the same pinned external-sender key. The included public key must equal the
-client's stored pin. The key ID is included in the signed payload, but this client
-version does not persist a separate key-ID pin and therefore treats that ID as
-descriptive. Each list blob is at most 64 KiB and the snapshot payload is at most
-160 KiB. This snapshot proves which
-server context was read together; it is not authorization to register a group.
-The registrar still checks current state and consumes the admission receipt
-atomically with registration.
-
-For the human participant, the Bot accepts either an already verified UMK pin or
-an unchanged first-seen pin. First-seen acceptance is limited to this operation:
-the pin must exist, its UMK must equal the snapshot UMK, and it must have no
-pending changed key; the snapshot's participant list must also be byte-for-byte
-equal to the list already ingested and cached by the native core, including its
-version and UMK/SSK. The snapshot signature and the device-list signatures and
-cross-signatures are still verified. A missing pin, changed key, or any mismatch
-between the signed snapshot and cached list refuses interaction. This lets a Bot
-serve a newly joined member under the existing first-seen trust model without
-marking that member verified. The Bot's own identity always requires its own
-verified pin.
-
-The core rejects an invalid signature, any tuple mismatch, `not_after` at or before
-than authenticated server time, an admission replayed for another operation or
-group, or an `eligibility_revision` older than the latest admission known for
-that installation and participant. The server increments that revision when
-membership, ban state, account disable/deletion or the participant's active device set changes, and
-rechecks it under the same transaction fence as group registration. Registration
-and recovery receipts bind the admission id and payload hash in addition to
-the existing installation, operation, body and generation fields. This receipt
-does not replace authenticated group state or permit a stale retry to regenerate
-an MLS mutation.
-
-After verifying that result, the core must inspect the authenticated MLS
-GroupInfo and tree and require a v2 interaction binding equal to the result in
-all immutable fields. The initial authenticated roster contains exactly two
-leaves: the Bot's registered device and the selected human device. Each leaf
-credential must match its account's current signature-verified device list,
-including the complete Bot credential match required by managed Bot
-registration. Binding equality alone is insufficient. The server must
-independently enforce the same admission tuple and exact roster when it accepts
-registration, later Adds or Removes, Welcome acknowledgement or resync; a
-valid initial receipt must not authorize a changed roster. A participant device
-replacement requires a fresh admission and a committed removal of the old leaf
-before the new device becomes actionable.
-
-The core must persist the verified admission tuple and receipt atomically with
-the group state and its registration or Welcome outcome. Recovery and duplicate
-handling must compare the exact receipt and group body, and any participant
-eligibility change or removal must stop new interaction sends and invalidate
-the admission for subsequent membership changes. Event attribution must come
-from the MLS-authenticated sender and pass the same current device-list checks;
-the binding's participant fields never override the authenticated sender.
-Until all these checks and recovery rules exist end to end, kind 3 creation,
-join, Welcome admission, synchronization and event delivery stay unavailable.
-
-For the currently supported text and call paths, sender validation uses the
-existing credential/device-list chain; unvalidated pending history must never
-produce actionable bot messages.
-Revalidation limit1..256; leaf index at most uint32 max. Network pages are bounded
-by encoded size; indivisible large group objects use group_transfer below.
-Actionable decrypted messages are delivered through the durable event journal,
-retaining the core-authenticated sender and server receipt time. A user field in
-application content cannot replace attribution.
-
-For suboperation7, `expected_bindings_body` is a deterministic CBOR array of
-`[group_id,community_id,target_id,kind,policy_version]` tuples. IDs are nonzero
-bstr16, kind is0 text or1 call, and each community is the helper's installation
-community. There is exactly one expectation for each distinct group in the
-Welcome batch. Validate all expectations before applying any Welcome; reject
-duplicates, missing or unrelated expectations and unsupported kinds. Mixed text
-and call batches preserve the native per-Welcome outcome order. Both the actual
-cryptographic binding and an existing active group's binding must match the
-expectation before a Welcome can be treated as accepted or already processed.
-Interaction expectations require the later typed participant contract and remain
-unavailable until then. The existing human native Welcome API keeps its original
-four-field expected tuples and behavior.
-
-For a Bot Welcome that successfully activates a group, the helper stores one
-versioned, fixed-size receipt in encrypted `app_meta`, keyed by group id. Its
-digest covers the exact Welcome bytes, ratchet tree, group/epoch/commit/tree-hash
-labels, installation, and immutable MLS binding (instance, community, target,
-kind and protocol versions); it excludes delivery id and policy-version snapshot.
-An already-active Bot group is acknowledged as a duplicate only when its current
-validated MLS binding and the submitted content match that receipt. Missing or
-changed content is refused without mutation. Group creation, discard, and
-external-join replacement clear the receipt in the same storage transaction as
-their state change, so stale Welcome evidence cannot survive another admission.
+nested array. Kind is the existing text or call group kind. Text and
+The Bot helper admits only text (0) and call (1) group creation, external join and
+Welcome expectations. Pairing (2) and the retired interaction kind (3) are refused
+before MLS or durable-intent mutation. Text and call groups require this
+installation's community.
 
 ### Group upload intents and recovery
 
@@ -799,8 +547,8 @@ For first registration, the Go service also obtains the current server generatio
 and durably commits `(operation_id, expected_generation)` before it asks the native
 core to create the group. A retry or restart reuses both values exactly; it never
 substitutes a newly sampled generation or host clock. The native create intent's
-pending result is the exact deterministic-CBOR kind-3 registration body
-`[group_id,binding,group_info,ratchet_tree,initial_welcome]` as bstr. The Go service sends those
+pending result is the exact deterministic-CBOR registration body
+`[group_id,binding,group_info,ratchet_tree]` as bstr. The Go service sends those
 same bytes to the scoped HTTP route and retains them until a receipt resolves the
 intent. The generation fence therefore covers the native MLS mutation that
 produced the body, even though the generation is carried outside that body.
@@ -977,9 +725,7 @@ account and instance operations with no community binding remain available.
 Publishing one's account KeyPackages and fetching a device's public KeyPackage
 remain unscoped directory operations: those requests carry no group binding.
 The subsequent group registration, Add or resync admission and each Welcome are
-checked against the actual group's scope. Bot interaction groups
-retain their existing null-community binding but require wire 3 for registration,
-synchronization and delivery independently, as do bot application endpoints.
+checked against the actual group's scope. Bot application endpoints require wire 3.
 
 Resolve and authorize the actual resource before reporting an upgrade refusal.
 Unknown or hidden resources keep their existing refusal, including reader-ACL
@@ -1119,12 +865,8 @@ restore that right. The music publisher also disables automatic subscriptions.
 | `POST /v1/bot-runtime/installations/{installation}/keypackages` | B, joining/ready | `[operation_id, expected_generation, upload_body]` | `201 [count]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages` | B, joining/ready | — | `[generation, server_time, ordinary_active_count, has_current_fallback]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}` | B, joining/ready | — | `[expected_generation, upload_sha256, count]` or 404 |
-| `POST /v1/bot-runtime/installations/{installation}/groups` | B, joining/ready | `[operation_id,expected_generation,registration_body]` or kind-3 `[operation_id,expected_generation,registration_body,admission_request_id]` | `201` new / `200` exact replay: registration receipt |
+| `POST /v1/bot-runtime/installations/{installation}/groups` | B, joining/ready | `[operation_id,expected_generation,registration_body]` | `201` new / `200` exact replay: registration receipt |
 | `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` | B, joining/ready | — | registration receipt or 404 |
-| `POST /v1/bot-runtime/installations/{installation}/interaction-admissions` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[payload_bstr, signature_bstr]`; issues the short-lived proof consumed by kind-3 registration |
-| `GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence` | B, ready, wire 3 | — | CBOR boolean; true only while the matching admission is live and its exact group ID is absent |
-| `POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[snapshot_payload_bstr, snapshot_signature_bstr]`; read-only v1 snapshot signed with the instance context-snapshot domain, max 160 KiB |
-| `GET /v1/groups/{id}/interaction-admission-context` | enrolled human participant device | no body | `[current_payload_bstr, signature_bstr]`; read-only v1 current-group proof signed with the dedicated current-interaction-context domain, max 160 KiB |
 
 Transport (Bot v2): every `B` route above is socket-only, a request frame on the Bot's gateway connection,
 except `PUT …/credential`, which the Bot sends while its installation is still enrolling and the gateway admits
@@ -1144,49 +886,6 @@ bound to the runtime credential and installation, and repeat requests return the
 same unexpired claim. Enrollment stores its operation result transactionally;
 repeat matching requests return the same account/device, not a second identity.
 
-The human `GET /v1/groups/{id}/interaction-admission-context` is a read-only
-Welcome-processing input. The path id is only a lookup hint: the server resolves
-the immutable accepted registration receipt, imports the currently persisted MLS
-public state, and refuses unless its canonical v2 binding and exact two-leaf
-authenticated roster still agree with that receipt. The enrolled, non-Bot session
-must be the participant user and device named by that binding. At issuance the
-server also requires that participant and Bot accounts/devices remain active,
-both remain community members and are not currently banned, both devices remain
-in their users' verified signed device lists, the Bot installation remains
-joining or ready, and the current policy still matches the binding. This route
-does not mutate group, admission, receipt, or Welcome state.
-
-The payload is deterministic CBOR fixed-position array v1:
-`[version,instance_id,instance_key_id,instance_signer_pub,issued_at,not_after,
-registration,binding,current_epoch,leaf_count,tree_hash,roster,
-eligibility_revision,policy_version,e2ee_version,media_version,bot_device_list,
-participant_device_list]`. `registration` is
-`[installation_id,operation_id,bot_user_id,bot_device_id,community_id,group_id,
-body_sha256,generation,accepted_epoch,next_seq,accepted_at]`; `binding` is
-`[instance_id,installation_id,community_id,bot_user_id,participant_user_id,
-participant_device_id,policy_version,e2ee_version,media_version]`; each roster
-entry is `[leaf_index,user_id,device_id,signature_key]`. Each device-list record
-uses the existing snapshot tuple `[user_id,umk_pub,ssk_pub,ssk_binding_signature,
-version,blob,signature,prev_hash,hash]`. The response signature is Ed25519 over
-`ASCII("dilla bot current interaction context v1") || 0x00 || payload`; clients MUST treat
-the proof as a short-lived snapshot (30 seconds), verify the signature against
-the persisted instance signing-key pin, and check its current-state fields before offering
-or processing a Welcome. `issued_at` and `accepted_at` are instance-clock values while the
-client checks them against its own clock `now`. The human client allows 5 seconds before
-them: it accepts `accepted_at <= issued_at <= now + 5`. It allows nothing past `not_after`,
-which must be strictly after `now`; `issued_at < not_after` and `not_after - issued_at <= 30`
-hold exactly. The Bot side's pre-registration snapshot check differs: it allows the same 5
-seconds for its `now` ahead of the Bot's clock and also 5 seconds past its `not_after`. A
-client clock more than 5 seconds behind the instance cannot process interaction Welcomes
-until its clock is corrected.
-A human client establishes its first pin from `/v1/instance` over the
-bearer-authenticated session created by account enrollment, and stores that key atomically with
-local enrollment. Neither unauthenticated discovery nor a key included in a proof may establish a
-pin. A later discovery key mismatch fails closed; this version defines no silent key rotation or
-repair. Existing ready identities created before this pin existed have no authenticated pin to
-migrate and must refuse this proof until an explicit trusted migration is defined. An interrupted
-pending enrollment may resume its pin after it establishes a session and reads authenticated
-discovery. This is distinct from the Bot-only pre-registration context snapshot above.
 For an already committed enrollment, a live runtime credential may replay the
 same operation id and exact payload for that installation after claim expiry.
 The stored result is bound to the original runtime credential id; authorization
@@ -1312,17 +1011,13 @@ installation's community. Generic human `POST /v1/groups` refuses B sessions
 with `403 E_FORBIDDEN`; its human authorization, four-field request and response
 remain unchanged.
 
-The POST tuple is `[operation_id,expected_generation,registration_body]` for
-existing non-kind-3 registration. Initial kind-3 interaction registration adds
-the nonzero `admission_request_id` as a fourth element.
+The POST tuple is `[operation_id,expected_generation,registration_body]`.
 `operation_id` is a nonzero bstr16, `expected_generation` is uint 0 through
-signed-int64 max (nonzero for kind-3), and `registration_body` is a bstr of at most 65,505 bytes
+signed-int64 max, and `registration_body` is a bstr of at most 65,505 bytes
 (the whole CBOR request is capped at 64 KiB) containing
 the exact canonical deterministic-CBOR four-element registration array
-`[group_id(bstr16),binding(bstr),group_info(bstr),ratchet_tree(bstr)]` for existing
-non-kind-3 groups. Kind-3 initial registration appends `initial_welcome(bstr)`
-as a fifth element. That Welcome must address exactly one KeyPackageRef
-published by the admitted participant device. The body must
+`[group_id(bstr16),binding(bstr),group_info(bstr),ratchet_tree(bstr)]`. A kind-3
+(interaction) binding is refused (§ Retired v1 surfaces). The body must
 decode strictly, have no trailing bytes and be byte-for-byte canonical; malformed
 or noncanonical input is `400 E_INVALID_REQUEST`, a wrong media type is `415`,
 and an oversized request is `413 E_TOO_LARGE`. The handler hashes the supplied
@@ -1334,8 +1029,8 @@ The first acceptance compares `expected_generation` with the instance generation
 under the same transaction/serialization fence as group creation. A stale value
 is `409 E_INVALID_REQUEST` and writes nothing. A fresh acceptance applies the
 current registration ACL and every existing DS group validation, then commits
-the group row, serialized public MLS state, initial member rows, the kind-3
-participant Welcome outbox row and immutable receipt in one transaction. The exact receipt tuple is
+the group row, serialized public MLS state, initial member rows and immutable
+receipt in one transaction. The exact receipt tuple is
 `[operation_id,group_id,registration_sha256,accepted_generation,initial_epoch,
 next_seq]`; new acceptance returns `201`, with `next_seq = 1`, the exact value
 from the original registration response. No gateway, state-cache or hook failure
@@ -1355,22 +1050,6 @@ A different operation colliding with an existing group is `409 E_GROUP_EXISTS`
 without group metadata. Uniqueness races roll back before the winner is read in a
 new transaction; identical requests return the winner's receipt, conflicts reveal
 no group metadata.
-
-For a kind-3 request, the server first imports GroupInfo and the ratchet tree
-through OpenMLS, then reads the canonical v2 binding from the authenticated
-GroupContext. Its participant IDs are routing hints for loading the matching
-admission preflight. Fresh acceptance requires that trusted preflight and
-repeats installation, account, device-list, membership, ban, eligibility,
-policy, generation and receipt checks in the final transaction that stores the
-group, its two initial members and the consumed admission. A kind-3 group is
-already populated by those two leaves, so the channel `AfterRegister` hook does
-not run.
-
-Before loading fresh context, a kind-3 retry checks the session-fenced durable
-operation and consumed-admission receipts. An exact operation, admission,
-generation and body retry returns the original receipt even after the admission
-proof expires or its signed payload is compacted. Reusing either the operation
-or admission request with changed data is `409 E_INVALID_REQUEST`.
 
 The GET requires the same current installation-bound B authority. It returns the
 exact six-field receipt or `404 E_NOT_FOUND`; an installation cannot distinguish
@@ -1639,8 +1318,7 @@ same request frame from its record without pushing again; a re-send with a new `
 handler and is pushed again. Nothing about a command is stored: no row, no log line carries the
 sealed bytes. The route is metered per device in its own `bot_command` bucket at the `read` rate
 (`limits.rate.read_per_second` / `read_burst`, 10/s and burst 60 by default): since Task 21b the app's Bot surfaces
-(poll cards, the player and its dock, the reminders inbox) read and act through it, as they once read through
-interaction groups. Clients pace it in a bucket of their own at 80 % of that rate.
+(poll cards, the player and its dock, the reminders inbox) read and act through it. Clients pace it in a bucket of their own at 80 % of that rate.
 
 The Bot answers through `POST /v1/bot-runtime/replies`, body `[device_id(bstr 16), request_id(bstr
 16), seq(uint ≤ 2^32−1), sealed(bstr 1..65536), final(uint 0|1)]` (the subset has no boolean).
@@ -1704,7 +1382,8 @@ They use catalog entries of `handler_kind` 1, which the picker never shows:
   came), `starts` the last
   20 music starts, oldest first, as `[first_frame_ms, cold(0|1)]`.
 
-Automatic moderation (`62`, `63`) has no sealed form: its page still uses interaction groups until it is removed.
+The moderation log (Task 23) reads its two pages as the app operations `160` (`moderation.cases`) and `164`
+(`moderation.evidence.list`), `[cursor bstr(1..256)|null]`, offered to members with `view_audit_log`.
 
 The operations on existing polls and reminders (poll get, list, vote, close and voters; reminders due, list, cancel
 and dismiss) are offered whatever the installation's features, as v1 kept them; only creating a poll or a reminder needs
@@ -1948,13 +1627,17 @@ provider authentication and store atomicity have independent integration tests.
 
 ## Native helper call-join operations
 
-The local encrypted helper request envelope accepts operation codes 1 through 20.
-Codes 19 and 20 are private IPC operations, not Bot interaction operation codes:
+The local encrypted helper request envelope accepts operation codes 1 through 27.
+Codes 19, 20 and 27 are private IPC operations, not Bot request operation codes:
 
 - 19 `call_join_check`: payload `[call_channel_id]`; checks a staged external call-group
   join against the native media-key and trust gate before the commit is posted.
 - 20 `call_group_forget`: payload `[call_channel_id]`; forgets a gone local call group
   so the same channel can be joined in a later call.
+- 27 `group_forget` (Bot v2 Task 23): payload `[group_id]`; forgets the local MLS state of
+  a text group of this installation's community the Bot was removed from or that is not a
+  Bot channel, so a later mark rejoins it afresh. An unknown group is no error; a call group
+  or another community's group is refused.
 
 Installation reconciliation may retain local groups from calls that have ended.
 A call-source `403 E_FORBIDDEN` or member-only `404 E_NOT_FOUND` leaves that

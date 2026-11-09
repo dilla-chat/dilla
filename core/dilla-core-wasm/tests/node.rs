@@ -7,9 +7,8 @@
 use dilla_core::cbor::{CborError, Decoder, Encoder, decode_strict};
 use dilla_core::client::ClientError;
 use dilla_core_wasm::facade::{
-    authority_ids_arg, client_js_error, community_arg, core_open, fixed_arg,
-    human_interaction_request_arg, login_arg, media_epoch_out, nonzero_id_arg, purpose_arg,
-    role_ids_arg,
+    authority_ids_arg, client_js_error, community_arg, core_open, fixed_arg, login_arg,
+    media_epoch_out, nonzero_id_arg, purpose_arg, role_ids_arg,
 };
 use dilla_core_wasm::store::redacted_sqlite_message;
 use dilla_core_wasm::{
@@ -38,14 +37,11 @@ fn hex(b: &[u8]) -> String {
 }
 
 #[wasm_bindgen_test]
-fn human_interaction_send_inputs_are_typed_bounded_and_nonzero() {
+fn nonzero_ids_are_typed_and_nonzero() {
     let id = [0x31; 16];
     assert_eq!(nonzero_id_arg("request_id", &id).unwrap(), id);
     assert!(nonzero_id_arg("request_id", &[0x31; 15]).is_err());
     assert!(nonzero_id_arg("request_id", &[0; 16]).is_err());
-
-    assert!(human_interaction_request_arg(&[0x01; 2991]).is_ok());
-    assert!(human_interaction_request_arg(&[0x01; 2992]).is_err());
 }
 
 const VECTOR_ENVELOPE_CBOR: &str = "89015011111111111111111111111111111111035012121212121212121212121212121212501313131313131313131313131313131363e29b8f808058201616161616161616161616161616161616161616161616161616161616161616";

@@ -32,11 +32,10 @@ function setup(options: { status?: number; wrongInstallation?: boolean; age?: nu
 }
 afterEach(() => vi.useRealTimers());
 describe('music provider status', () => {
-  it('reads the runtime evidence through one sealed command, with no interaction request', async () => {
-    const { fake, bot } = setup();
+  it('reads the runtime evidence through one sealed command', async () => {
+    const { bot } = setup();
     expect(await screen.findByText('ready')).toBeVisible();
     expect(bot.calls.map(call => [call.sealed, call.operation, call.channelId, call.args, call.revision])).toEqual([[124, 24, null, [], null]]);
-    expect(fake.calls.some(call => call.m === 'humanInteractionRequest' || call.m === 'readBotInteractionResponses')).toBe(false);
   });
   it('does not send to a Bot whose catalog does not offer provider status', async () => {
     const { bot } = setup({ offered: [10] });

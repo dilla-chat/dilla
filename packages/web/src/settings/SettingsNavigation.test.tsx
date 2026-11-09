@@ -26,7 +26,7 @@ describe('the one settings workspace nav', () => {
     expect(within(nav).getAllByRole('button').map(button => button.textContent)).toEqual([
       'Profile', 'Sign-in', 'Devices', 'Notifications', 'Voice', 'Keyboard', 'Appearance', 'Privacy', 'Diagnostics',
       'Overview', 'Roles', 'Invites', 'Bot', 'Music', 'Channels', 'GIFs', 'Members', 'Self-assignable roles',
-      'Welcome messages', 'Join roles', 'Automoderation', 'Moderation log', 'Bans', 'Ownership / Leave',
+      'Welcome messages', 'Join roles', 'Moderation log', 'Bans', 'Ownership / Leave',
     ]);
   });
   it('lists "You" first, then the selected server under its name with only the sections the person may use', () => {

@@ -32,8 +32,7 @@ passkey legs, `POST /v1/auth/factors/remove` and `POST /v1/auth/recovery/codes`;
 service's `GET /v1/devices/{device_id}/keypackage`, `GET /v1/welcomes` and
 `DELETE /v1/welcomes/{welcome_id}` are socket routes too. So is the messaging area: every `/v1/groups/…` route (create, info, tree, handshakes, commit,
 proposal, proposals, resync, fork-report, heal, heal-state, message, messages, cursor, the managed
-Bot send and its receipts, the moderation removals, the automod grant arm and the interaction
-admission context), `/v1/dms`, `/v1/reports`, the readable channel routes (`POST`/`GET
+Bot send and its receipts, the moderation removals), `/v1/dms`, `/v1/reports`, the readable channel routes (`POST`/`GET
 /v1/channels/{id}/messages`, `PATCH`/`DELETE …/messages/{seq}`, `GET …/search`, `PUT …/read-state`),
 the call routes (`POST /v1/channels/{id}/calls`, `GET /v1/channels/{id}/call`,
 `GET /v1/communities/{id}/calls`, `DELETE /v1/calls/{call_id}`, `…/share`, `…/rtt`, `…/decline`,
@@ -292,28 +291,14 @@ a second factor.
 | `POST /v1/bot-runtime/installations/{installation}/keypackages` | B (joining/ready) | `[operation_id,expected_generation,upload_body]` | `201 [count]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages` | B (joining/ready) | — | `[generation,server_time,ordinary_active_count,has_current_fallback]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}` | B (joining/ready) | — | `[expected_generation,upload_sha256,count]` or 404 |
-| `POST /v1/bot-runtime/installations/{installation}/groups` | B (joining/ready) | `[operation_id,expected_generation,registration_body]`; kind-3 adds `admission_request_id` | `201` new / `200` exact replay: registration receipt |
+| `POST /v1/bot-runtime/installations/{installation}/groups` | B (joining/ready) | `[operation_id,expected_generation,registration_body]` | `201` new / `200` exact replay: registration receipt |
 | `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` | B (joining/ready) | — | registration receipt or 404 |
-| `GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence` | B (ready, matching live admission receipt) | — | strict CBOR boolean; true only when the receipt's exact group ID is absent |
-| `GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info` | B (ready, exact current registered kind-3 interaction group) | — | `[epoch,group_info,tree_hash32,next_seq]` |
-| `GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes?from=N&limit=L` | B (ready, exact current registered kind-3 interaction group) | — | handshake rows, same format and bounds as ordinary group sync |
-| `GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages?from=N&limit=L` | B (ready, exact current registered kind-3 interaction group) | — | application-message rows, same format and bounds as ordinary group sync |
-| `POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor` | B (ready, exact current registered kind-3 interaction group) | `[last_seq,last_epoch]` | 204; advances this Bot device's cursor monotonically |
-| `GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal` | B (ready, exact current registered kind-3 interaction group, including after restore) | — | `[epoch,next_seq,generation,need_from_seq,needs_heal]`; `needs_heal` is uint 0 or 1 |
-| `POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal` | B (ready, exact current registered kind-3 interaction group) | `[group_info(bstr),tail([[seq,epoch,kind,sender,blob]]),ratchet_tree(bstr\|null)]` | `[epoch,next_seq]`; proof and heal-window rules match ordinary group heal |
-| `POST /v1/bot-runtime/installations/{installation}/moderation/actions` | B (ready, warnings/timeouts capability, owning installation) | `[request_id,group_id,source_seq,action,rules,timeout_ms,expires]` | `[action_id,community_revision,expires|null]` |
 | `GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}` | B (ready, removal capability, owning installation) | — | `[action_id,community_id,group_id,actor_user_id,actor_device_id,target_seq,removal_revision,accepted_at]`; accepted signed removal only |
-| `POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` | B (joining/ready) | `[request_id,group_id,participant_user_id,participant_device_id]` | `[snapshot_payload,signature]`; read-only signed context v1, max 160 KiB |
-| `GET /v1/groups/{id}/interaction-admission-context` | E (enrolled human session bound to the accepted participant device) | — | `[current_context_payload,signature]`; read-only current kind-3 context v1, max 160 KiB; requires current membership and exact authenticated two-leaf group state |
-| `POST /v1/groups/{group}/automod-grants/arm` | E (human, current interaction participant, `manage_community`, fresh step-up) | `[request_id,community_id,expected_revision,request_expires,config_hash32,step_up]` | `[opaque_grant,expires_unix]`; one minute maximum; grant binds the current interaction group, participant user/device, operation 63, revision, expiry and config digest |
-| `POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem` | B (ready installation) | `[opaque_grant,community_id,group_id,request_id,expected_revision,request_expires,actor_user_id,actor_device_id,config_hash32]` | `[1,receipt_id]`; exact retries return the same receipt; changed tuple or config digest is refused |
 
-Managed Bot synchronization of private kind-3 interaction groups uses only the four
-installation-scoped routes above. Each read and cursor update validates the exact
-accepted registration, current two-leaf MLS state, Ready installation, Bot session,
-participant membership/device, signed device lists and current eligibility while
-holding the group fence through the database operation. Generic group read routes
-remain limited to kinds 0 and 1; Bot interaction routes do not grant group writes.
+Bot v2 removed the private kind-3 interaction groups with their admission, context,
+synchronization and heal routes, the AutoModeration grant routes and the Bot's automatic
+moderation action route (`10`, Retired v1 surfaces). Members reach the Bot through sealed
+commands. The server holds no kind-3 group and refuses a kind-3 registration.
 
 Managed Bots use this scoped publication route, with the durable retry and
 generation rules in `10`; their generic `POST /v1/keypackages` is refused. Human
@@ -325,9 +310,8 @@ A human device reads its own directory with `GET /v1/keypackages` (`02`), `[ordi
 same count and the same uint 0 or 1 flag, without the generation and the clock.
 
 Managed Bots register groups only through the installation-scoped routes above;
-their generic `POST /v1/groups` is refused with `403 E_FORBIDDEN`. Existing
-non-kind-3 Bot registration keeps its three-field outer tuple; an initial kind-3
-interaction adds the nonzero admission request ID as field four. Human group
+their generic `POST /v1/groups` is refused with `403 E_FORBIDDEN`. Bot
+registration keeps its three-field outer tuple. Human group
 registration and its four-field CBOR tuple remain unchanged. `registration_body`
 is a bstr of at most 65,505 bytes (the whole CBOR request is capped at 64 KiB)
 containing the exact deterministic-CBOR encoding of
@@ -434,8 +418,8 @@ The warning route writes an immutable warning action and audit metadata. It does
 not accept or store a plaintext reason. The request ID is idempotent for the same
 actor, device, community, and target; reusing it for another action conflicts.
 The human client stages the reason in its encrypted local outbox before posting
-the action, then sends operation 61 over the installation's encrypted interaction
-group. The Bot attaches the case only when the authoritative receipt matches the
+the action, then sends operation 61 to the Bot as a sealed command (app operation
+161, `10`). The Bot attaches the case only when the authoritative receipt matches the
 request, actor, device, community, and target. The encrypted case expires after
 90 days; plaintext reason is never stored by the server.
 

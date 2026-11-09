@@ -56,31 +56,6 @@ func TestPrepareSendUsesTypedABIAndPreservesExactCiphertext(t *testing.T) {
 	}
 }
 
-func TestPrepareInteractionSendCarriesSignedAdmissionToNativeCore(t *testing.T) {
-	request, _ := cborx.Marshal([]any{uint64(0), nil, "private response", []any{}})
-	snapshot := []byte{0x81, 0x01}
-	message := testID(31)
-	upload, _ := cborx.Marshal([]any{uint64(12), []byte{0x00, 0xff}, uint64(0)})
-	responseBody, _ := cborx.Marshal([]any{message[:], upload})
-	f := &sendTransport{response: []any{responseBody}}
-	c, _ := newClient(f, testBinding())
-	expected := InteractionGroupExpected{
-		Instance: testBinding().Instance, Installation: testBinding().Installation, Community: testBinding().Community,
-		BotUser: testID(41), BotDevice: testID(42), ParticipantUser: testID(43), ParticipantDevice: testID(44),
-		Group: testID(23), MinimumEligibilityRevision: 1, ServerNow: 1_800_000_000, PolicyVersion: 1,
-	}
-	got, err := c.PrepareInteractionSend(context.Background(), expected, snapshot, testID(21), testID(22), request, 1_800_000_000, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.MessageID != message || got.Epoch != 12 || string(got.UploadBody) != string(upload) {
-		t.Fatalf("prepared interaction send = %#v", got)
-	}
-	if f.op != protocol.HelperGroupApply || len(f.groupPayload) != 8 || f.groupPayload[0] != uint64(26) || string(f.groupPayload[2].([]byte)) != string(snapshot) || f.groupPayload[3] != testID(21) || f.groupPayload[4] != testID(22) {
-		t.Fatalf("helper ABI = op %d payload %#v", f.op, f.groupPayload)
-	}
-}
-
 func TestPrepareSendRejectsMalformedMutationResultAndClosesClient(t *testing.T) {
 	f := &sendTransport{response: []any{[]byte("not an array")}}
 	c, _ := newClient(f, testBinding())

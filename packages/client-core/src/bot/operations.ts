@@ -37,9 +37,10 @@ export function v1Operation(sealed: number): number | null {
   if (read !== undefined) return read;
   return sealed > APP_OPERATION_BASE && sealed < 2 * APP_OPERATION_BASE ? sealed - APP_OPERATION_BASE : null;
 }
-/** The v1 operations a catalog's commands offer to the app's surfaces (plus 3, the report itself), ascending. */
+/** The v1 operations a catalog's commands offer to the app's surfaces, ascending. 84 names the due-reminders read (sealed
+ *  93), which has no v1 request any more (Task 23). */
 export function supportedV1Operations(commands: readonly { operation: number }[]): number[] {
-  const out = new Set<number>([3]);
+  const out = new Set<number>();
   for (const command of commands) { const op = v1Operation(command.operation); if (op !== null) out.add(op); }
   return [...out].sort((a, b) => a - b);
 }

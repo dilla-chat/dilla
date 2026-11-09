@@ -39,28 +39,6 @@ func (c *Client) PrepareSend(ctx context.Context, operation, attempt, group id.I
 	return resultAs[PreparedSend](v)
 }
 
-// PrepareInteractionSend prepares an encrypted Bot response only after the native core verifies
-// the current signed interaction admission and exact two-member MLS roster.
-func (c *Client) PrepareInteractionSend(ctx context.Context, expected InteractionGroupExpected, snapshotWire []byte, operation, attempt id.ID, request []byte, originalNow, expectedGeneration uint64) (PreparedSend, error) {
-	if validateInteractionExpected(expected, c.binding, expected.Group) != nil ||
-		len(snapshotWire) == 0 || len(snapshotWire) > maxInteractionSnapshot ||
-		operation.IsZero() || attempt.IsZero() || len(request) == 0 || len(request) > maxSendRequestBody ||
-		!validSendRequest(request) || originalNow > math.MaxInt64 || expectedGeneration > math.MaxInt64 {
-		return PreparedSend{}, errors.New("invalid interaction send prepare")
-	}
-	v, err := c.groupCall(ctx, []any{uint64(26), expectedTuple(expected), append([]byte(nil), snapshotWire...), operation, attempt, append([]byte(nil), request...), originalNow, expectedGeneration}, true, groupWrapped(func(b []byte) (any, error) {
-		var tuple []any
-		if err := cborx.Unmarshal(b, &tuple); err != nil {
-			return nil, err
-		}
-		return decodePreparedSend(tuple)
-	}))
-	if err != nil {
-		return PreparedSend{}, err
-	}
-	return resultAs[PreparedSend](v)
-}
-
 func validSendRequest(body []byte) bool {
 	if cborx.CheckDeterministic(body) != nil {
 		return false

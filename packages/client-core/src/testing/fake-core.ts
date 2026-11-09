@@ -3,8 +3,8 @@ import { arr, bin, decode, encode, u64 } from '../cbor';
 import { CoreError, type CorePort, type Id, type IdentityInfo, type SessionRecord, type GroupInfo, type ExpectedGroup,
   type WelcomeOutcome, type ApplyResult, type OutboxRow, type TimelineRow, type ActivityRow, type OwnDeviceList,
   type SealedObjects, type SignedLists, type AttachmentDescriptor, type PinRow, type PurgeRow, type SendRequest, type ThreadRow,
-  type PendingLeaf, type TrustRecord, type SearchHit, type CallMediaEpoch, type HumanInteractionEventPage,
-  type HumanInteractionEvent, type BotCommandRequest } from '../core-port';
+  type PendingLeaf, type TrustRecord, type SearchHit, type CallMediaEpoch,
+  type BotCommandRequest } from '../core-port';
 import { toHex } from '../hex';
 import { entryKey, fakeDskPub, fakeListBlob, fakeListNames, readFakeList, type FakeList } from './fake-list';
 
@@ -404,16 +404,6 @@ export class FakeCore implements CorePort {
   groupJoinExternal(g: ExpectedGroup, infoBody: Uint8Array, treeBody: Uint8Array): Uint8Array { return this.notModelled('groupJoinExternal', g, infoBody, treeBody); }
   groupJoined(groupId: Id, seq: bigint): void { return this.notModelled('groupJoined', groupId, seq); }
   welcomesApply(welcomesBody: Uint8Array, expected: ExpectedGroup[]): WelcomeOutcome[] { return this.notModelled('welcomesApply', welcomesBody, expected); }
-  humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array, now: bigint): WelcomeOutcome[] {
-    return this.notModelled('humanInteractionWelcomeApply', welcomesBody, currentContextProof, now);
-  }
-  humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id {
-    return this.notModelled('humanInteractionSendPrepare', requestId, communityId, groupId, requestBody, now);
-  }
-  humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage { return this.notModelled('humanInteractionEventsRead', after, limit); }
-  humanInteractionReceiptsRead(communityId: Uint8Array, installationId: Uint8Array, botUserId: Uint8Array, requestIds: readonly Uint8Array[]): HumanInteractionEvent[] { return this.notModelled('humanInteractionReceiptsRead', communityId, installationId, botUserId, requestIds); }
-  humanInteractionEventsAck(through: bigint): void { return this.notModelled('humanInteractionEventsAck', through); }
-  humanInteractionEventsAckSelected(deliveryIds: readonly bigint[]): void { return this.notModelled('humanInteractionEventsAckSelected', deliveryIds); }
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult { return this.notModelled('groupApply', groupId, handshakes, messages, through); }
   commitBuild(groupId: Id, proposalsBody: Uint8Array): Uint8Array { return this.notModelled('commitBuild', groupId, proposalsBody); }
   commitConfirm(groupId: Id): ApplyResult { return this.notModelled('commitConfirm', groupId); }

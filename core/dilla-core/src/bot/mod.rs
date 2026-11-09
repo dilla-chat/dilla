@@ -6,9 +6,6 @@
 pub mod command;
 pub mod device_list_push;
 pub mod group_registration;
-pub mod human_interaction_context;
-pub mod interaction_admission;
-pub mod interaction_snapshot;
 pub mod keypackage;
 
 use crate::cbor::{CborError, Decoder, Encoder, decode_strict};
@@ -164,10 +161,6 @@ pub enum RequestArgs {
         reason: String,
         excerpt: String,
     },
-    AutoModerationPut {
-        grant_token: String,
-        document: Vec<u8>,
-    },
     UtilityPayload(Vec<u8>),
     UtilityId(MsgId),
     PollList {
@@ -300,7 +293,8 @@ impl Request {
         if self.revision.is_some() != self.expires.is_some() {
             return Err(CodecError::Value);
         }
-        if !matches!(self.operation, 0|1|2|3|10..=25|30|31|40|50..=52|60..=64|70..=75|80..=84) {
+        // Bot v2 Task 23: capabilities (3), AutoModeration (62, 63) and due reminders (84) are retired.
+        if !matches!(self.operation, 0|1|2|10..=25|30|31|40|50..=52|60|61|64|70..=75|80..=83) {
             return Err(CodecError::Operation);
         }
         if matches!(self.operation, 25 | 31 | 70 | 80) && self.revision != Some(0) {
@@ -311,18 +305,6 @@ impl Request {
         }
         match &self.args {
             RequestArgs::SettingsPut { document, .. } => {
-                if document.is_empty() || document.len() > 2400 {
-                    return Err(CodecError::Limit);
-                }
-                check_root_array(document)?;
-            }
-            RequestArgs::AutoModerationPut {
-                grant_token,
-                document,
-            } => {
-                if !text_valid(grant_token, 1, 512, true) {
-                    return Err(CodecError::Value);
-                }
                 if document.is_empty() || document.len() > 2400 {
                     return Err(CodecError::Limit);
                 }
@@ -605,12 +587,12 @@ fn validate_utility_payload(op: u64, bytes: &[u8]) -> Result<(), CodecError> {
 fn is_mutation(op: u64) -> bool {
     matches!(
         op,
-        2 | 12..=23 | 25 | 31 | 51 | 52 | 61 | 63 | 70 | 73 | 74 | 80 | 82 | 83
+        2 | 12..=23 | 25 | 31 | 51 | 52 | 61 | 70 | 73 | 74 | 80 | 82 | 83
     )
 }
 fn args_match(op: u64, a: &RequestArgs) -> bool {
     match op {
-        0 | 3 | 10 | 13 | 14 | 16 | 19 | 23 | 24 => matches!(a, RequestArgs::None),
+        0 | 10 | 13 | 14 | 16 | 19 | 23 | 24 => matches!(a, RequestArgs::None),
         15 => {
             matches!(a, RequestArgs::None)
                 || matches!(a, RequestArgs::Text(s) if s.is_empty()
@@ -638,16 +620,12 @@ fn args_match(op: u64, a: &RequestArgs) -> bool {
         61 => {
             matches!(a,RequestArgs::Evidence{reason,excerpt,..} if reason.len()<=1024 && excerpt.len()<=512)
         }
-        62 => matches!(a, RequestArgs::None),
-        63 => {
-            matches!(a,RequestArgs::AutoModerationPut{grant_token,document} if text_valid(grant_token,1,512,true) && !document.is_empty() && document.len()<=2400)
-        }
         70 | 80 => matches!(a, RequestArgs::UtilityPayload(_)),
         71 | 74 | 82 | 83 => matches!(a, RequestArgs::UtilityId(_)),
         72 => matches!(a, RequestArgs::PollList { .. }),
         73 => matches!(a, RequestArgs::PollVote { .. }),
         75 => matches!(a, RequestArgs::PollVoters { .. }),
-        81 | 84 => {
+        81 => {
             matches!(a, RequestArgs::Cursor(cursor) if cursor.as_ref().is_none_or(|v| (1..=256).contains(&v.len())))
         }
         _ => false,
@@ -714,12 +692,6 @@ fn encode_args(e: &mut Encoder, a: &RequestArgs) {
                 .text(reason)
                 .text(excerpt);
         }
-        RequestArgs::AutoModerationPut {
-            grant_token,
-            document,
-        } => {
-            e.array(2).text(grant_token).bytes(document);
-        }
         RequestArgs::RolePanel { channel, mappings } => {
             e.array(2).bytes(channel.as_bytes()).bytes(mappings);
         }
@@ -760,7 +732,7 @@ fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
         offset: d.position(),
     };
     Ok(match op {
-        0 | 3 | 10 | 13 | 14 | 16 | 19 | 23 | 24 => {
+        0 | 10 | 13 | 14 | 16 | 19 | 23 | 24 => {
             d.array(0)?;
             RequestArgs::None
         }
@@ -858,17 +830,6 @@ fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
                 excerpt: bounded_text(d, 0, 512, false)?,
             }
         }
-        62 => {
-            d.array(0)?;
-            RequestArgs::None
-        }
-        63 => {
-            d.array(2)?;
-            RequestArgs::AutoModerationPut {
-                grant_token: bounded_text(d, 1, 512, true)?,
-                document: bounded_bytes(d, 1, 2400, true)?,
-            }
-        }
         70 | 80 => {
             d.array(1)?;
             RequestArgs::UtilityPayload(bounded_bytes(
@@ -908,7 +869,7 @@ fn decode_args(d: &mut Decoder<'_>, op: u64) -> Result<RequestArgs, CborError> {
                 cursor: read_opt_cursor(d)?,
             }
         }
-        81 | 84 => {
+        81 => {
             d.array(1)?;
             RequestArgs::Cursor(read_opt_cursor(d)?)
         }
@@ -1689,7 +1650,7 @@ fn helper_encode(id: MsgId, n: u64, p: &[u8], request: bool) -> Result<Vec<u8>, 
     check_id16(id.as_bytes())?;
     if p.is_empty()
         || p.len() > HELPER_PAYLOAD_MAX
-        || (request && !(1..=26).contains(&n))
+        || (request && !(1..=27).contains(&n))
         || (!request && n > 9)
     {
         return Err(CodecError::Value);
@@ -1714,7 +1675,7 @@ fn helper_decode(b: &[u8], request: bool) -> Result<(MsgId, u64, Vec<u8>), Codec
         let id = read_msg(d)?;
         let n = d.uint()?;
         let p = bounded_bytes(d, 1, HELPER_PAYLOAD_MAX, false)?;
-        if v != 1 || (request && !(1..=26).contains(&n)) || (!request && n > 9) {
+        if v != 1 || (request && !(1..=27).contains(&n)) || (!request && n > 9) {
             return Err(CborError::TypeMismatch {
                 expected: "helper envelope",
                 offset: 0,
@@ -1810,8 +1771,9 @@ mod tests {
     use super::*;
     use crate::cbor::Encoder;
     #[test]
-    fn helper_protocol_accepts_call_group_and_command_operations_only_through_twenty_six() {
-        for operation in [19, 20, 21, 22, 23, 24, 25, 26] {
+    fn helper_protocol_accepts_call_group_and_command_operations_only_through_twenty_seven() {
+        // Bot v2 Task 23: 27 forgets a group's local MLS state.
+        for operation in [19, 20, 21, 22, 23, 24, 25, 26, 27] {
             let request = HelperRequest {
                 request_id: MsgId::from_bytes([1; 16]),
                 operation,
@@ -1825,7 +1787,7 @@ mod tests {
         }
         let unknown = HelperRequest {
             request_id: MsgId::from_bytes([1; 16]),
-            operation: 27,
+            operation: 28,
             payload: vec![0x80],
         };
         assert!(unknown.encode().is_err());

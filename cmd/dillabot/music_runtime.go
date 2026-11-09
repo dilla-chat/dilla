@@ -486,7 +486,7 @@ func newInstallationMusicQueueStarter(instance, installation, community, channel
 			return youtubeStreamsFor(community, installation)
 		}(),
 		Encoder: session.RuntimeEncoder{Config: session.EncoderConfig{
-			Capacity: 50, Options: encode.Options{FFmpegPath: "ffmpeg"},
+			Capacity: 50, Options: encode.Options{},
 		}},
 		Epochs: source, Lifetime: 30 * time.Minute,
 	})

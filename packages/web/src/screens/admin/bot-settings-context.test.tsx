@@ -28,11 +28,4 @@ it('sends a shared operation as its sealed app operation and confirms it on the 
   expect(bot.calls.map(c => [c.sealed, c.operation, c.revision])).toEqual([[102, 2, '0']]);
   await act(async () => { answer?.(); await Promise.resolve(); await Promise.resolve(); });
   expect(await screen.findByText('confirmed')).toBeInTheDocument();
-  expect(client.calls.some(c => c.m === 'humanInteractionRequest' || c.m === 'readBotInteractionResponses' || c.m === 'ackBotInteractionResponses')).toBe(false);
-});
-
-it('automatic moderation (v1) gets no shared operations', () => {
-  function V1() { return <p>{useBotInteractionOperation('automod-read', 'v1') === null ? 'none' : 'shared'}</p>; }
-  render(<CoreProvider client={new FakeClient()}><BotSettingsProvider communityId={communityId}><V1 /></BotSettingsProvider></CoreProvider>);
-  expect(screen.getByText('none')).toBeInTheDocument();
 });

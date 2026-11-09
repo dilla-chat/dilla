@@ -19,23 +19,6 @@ type AuditLog struct {
 	At     int64
 }
 
-type AutomodStepupGrants struct {
-	TokenHash           []byte
-	CommunityID         id.ID
-	InstallationID      id.ID
-	GroupID             id.ID
-	RequestID           id.ID
-	ActorUser           []byte
-	ActorDevice         []byte
-	ExpectedRevision    int64
-	RequestExpires      int64
-	ConfigHash          []byte
-	Expires             int64
-	ConsumedAt          sql.NullInt64
-	AcceptedRequestHash []byte
-	Receipt             []byte
-}
-
 type Backups struct {
 	UserID      id.ID
 	Kind        int64
@@ -157,12 +140,6 @@ type BotInstallations struct {
 	RestartRequested     int64
 	RestartHandled       int64
 	RuntimeVersion       sql.NullString
-}
-
-type BotInteractionEligibilityRevisions struct {
-	CommunityID id.ID
-	UserID      id.ID
-	Revision    int64
 }
 
 type BotJoinRoleGrantReceipts struct {

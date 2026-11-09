@@ -5,12 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"log/slog"
 	"net"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -56,96 +52,5 @@ func TestBrokerTimingKeepsAllPublicAddressValidation(t *testing.T) {
 	})
 	if !errors.Is(err, errEgressPolicy) || called {
 		t.Fatalf("mixed public/private answer dialed: err=%v dialed=%v", err, called)
-	}
-}
-func TestWorkerWritesMonotonicStartMarksWithoutChangingPCM(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 unavailable")
-	}
-	dir := t.TempDir()
-	socket := filepath.Join(dir, "egress.sock")
-	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	ready := make(chan error, 1)
-	go func() {
-		c, err := listener.Accept()
-		if err != nil {
-			ready <- err
-			return
-		}
-		defer c.Close()
-		raw := make([]byte, len(egressReady))
-		_, err = io.ReadFull(c, raw)
-		if err == nil {
-			_, err = c.Write([]byte(egressAck))
-		}
-		ready <- err
-	}()
-	yt := writeScript(t, dir, "yt", `printf encoded`)
-	ff := writeScript(t, dir, "ff", `cat`)
-	// Run the embedded worker with a private broker socket; no production mount or network is changed.
-	worker := strings.ReplaceAll(sandboxWorker, "/run/egress.sock", socket)
-	cmd := exec.CommandContext(t.Context(), python, "-I", "-c", worker, "pcm", yt, ff, "", "https://www.youtube.com/watch?v=abcdefghijk", "1024", "0.000")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("worker=%v stderr=%s", err, stderr.String())
-	}
-	if err = <-ready; err != nil {
-		t.Fatal(err)
-	}
-	if string(out) != "encoded" {
-		t.Fatalf("PCM changed: %q", out)
-	}
-	marks := map[string]int64{}
-	for _, line := range strings.Split(stderr.String(), "\n") {
-		var mark string
-		var stamp int64
-		if _, err := fmt.Sscanf(line, "DILLA_YT_TIMING %s %d", &mark, &stamp); err == nil {
-			marks[mark] = stamp
-		}
-	}
-	if marks["spawn"] <= 0 || marks["first_yt_dlp_byte"] < marks["spawn"] || marks["first_pcm"] < marks["first_yt_dlp_byte"] {
-		t.Fatalf("missing or unordered marks: %s", stderr.String())
-	}
-	if strings.Contains(stderr.String(), "abcdefghijk") || strings.Contains(stderr.String(), "https://") {
-		t.Fatalf("worker timing leaked source: %s", stderr.String())
-	}
-}
-
-func TestWorkerTimingLogsOnlyValidatedMarks(t *testing.T) {
-	var logs bytes.Buffer
-	b := &sandboxStderr{ctx: t.Context(), logger: slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
-	for _, part := range []string{"DILLA_YT_TIMING first_yt_", "dlp_byte 123\n", "DILLA_YT_TIMING https://private.invalid/video 456\n", "DILLA_YT_TIMING first_pcm https://private.invalid/secret\n"} {
-		if _, err := b.Write([]byte(part)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if !strings.Contains(logs.String(), `"mark":"first_yt_dlp_byte"`) || !strings.Contains(logs.String(), `"monotonic_ns":123`) || strings.Contains(logs.String(), "private.invalid") {
-		t.Fatalf("worker logs=%s", logs.String())
-	}
-}
-
-func TestWorkerTimingLogsEachKnownMarkOncePerProcess(t *testing.T) {
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	for range 2 {
-		b := &sandboxStderr{ctx: t.Context(), logger: logger}
-		for range 20 {
-			_, _ = b.Write([]byte("DILLA_YT_TIMING spawn 1\nDILLA_YT_TIMING first_yt_dlp_byte 2\nDILLA_YT_TIMING first_pcm 3\nDILLA_YT_TIMING extra 4\n"))
-		}
-	}
-	for _, mark := range []string{"spawn", "first_yt_dlp_byte", "first_pcm"} {
-		if got := strings.Count(logs.String(), "\"mark\":\""+mark+"\""); got != 2 {
-			t.Fatalf("%s logs=%d want 2", mark, got)
-		}
-	}
-	if strings.Count(logs.String(), "youtube worker timing") != 6 {
-		t.Fatalf("unexpected logs: %s", logs.String())
 	}
 }

@@ -112,6 +112,7 @@ const (
 	permSendMessages    uint64 = 1 << 1
 	permManageRoles     uint64 = 1 << 15
 	permManageCommunity uint64 = 1 << 16
+	permViewAuditLog    uint64 = 1 << 17
 )
 
 // AppOperationBase is what an app operation adds to the v1 operation it runs (protocol.OpApp*).
@@ -198,6 +199,9 @@ var commands = []Command{
 	app(FeatureWelcome, "welcome settings", protocol.OpAppSettingsGet, permManageCommunity, ScopeCommunity),
 	app(FeatureWelcome, "welcome save", protocol.OpAppSettingsPut, permManageCommunity, ScopeCommunity),
 	app(FeatureModeration, "moderation evidence", protocol.OpAppModerationEvidence, 0, ScopeCommunity),
+	// Task 23: the moderation log's pages, for those who view the audit log (the readers check it again, fresh).
+	app(FeatureModeration, "moderation log", protocol.OpAppModerationCases, permViewAuditLog, ScopeCommunity),
+	app(FeatureModeration, "moderation evidence log", protocol.OpAppModerationEvidenceList, permViewAuditLog, ScopeCommunity),
 	// The Bot page's status: the Bot channels it needs re-adding to and the last music starts.
 	app(FeatureExisting, "bot status", protocol.OpReadBotStatus, permManageCommunity, ScopeCommunity),
 }

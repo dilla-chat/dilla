@@ -8,7 +8,6 @@ import (
 	"strconv"
 
 	"github.com/dilla-chat/dilla/internal/auth"
-	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/mlswasi"
 	"github.com/dilla-chat/dilla/internal/store"
@@ -930,20 +929,6 @@ func (d *DS) requireRestoredMember(ctx context.Context, groupID, deviceID id.ID)
 // group. The GroupInfo checks only tie the tree to the group id; without this a reseed could move
 // a group to another target or kind. Rule "reseed".
 func checkReseededBinding(stored, uploaded []byte) error {
-	wantV2, wantV2Err := decodeReseededInteractionBinding(stored)
-	gotV2, gotV2Err := decodeReseededInteractionBinding(uploaded)
-	if wantV2Err == nil || gotV2Err == nil {
-		if wantV2Err != nil || gotV2Err != nil {
-			return errCommitInvalid("reseed", "the stored and reseeded dilla_binding versions do not match")
-		}
-		if wantV2.InstanceID != gotV2.InstanceID || wantV2.BotUserID != gotV2.BotUserID ||
-			wantV2.Kind != gotV2.Kind || wantV2.E2EEVersion != gotV2.E2EEVersion || wantV2.MediaVersion != gotV2.MediaVersion ||
-			wantV2.InstallationID != gotV2.InstallationID || wantV2.CommunityID != gotV2.CommunityID ||
-			wantV2.ParticipantUserID != gotV2.ParticipantUserID || wantV2.ParticipantDeviceID != gotV2.ParticipantDeviceID {
-			return errCommitInvalid("reseed", "the reseeded v2 dilla_binding identity or protocol versions are not the group's")
-		}
-		return nil
-	}
 	want, err := decodeBinding(stored)
 	if err != nil {
 		return errCommitInvalid("reseed", "the instance's stored binding does not decode: "+err.Error())
@@ -953,7 +938,7 @@ func checkReseededBinding(stored, uploaded []byte) error {
 		return errCommitInvalid("reseed", "the reseeded tree's binding does not decode: "+err.Error())
 	}
 	if want.V != 1 || got.V != 1 {
-		return errCommitInvalid("reseed", "the stored and reseeded legacy dilla_binding versions must both be 1")
+		return errCommitInvalid("reseed", "the stored and reseeded dilla_binding versions must both be 1")
 	}
 	sameCommunity := (want.CommunityID == nil) == (got.CommunityID == nil) &&
 		(want.CommunityID == nil || *want.CommunityID == *got.CommunityID)
@@ -962,22 +947,6 @@ func checkReseededBinding(stored, uploaded []byte) error {
 			"the reseeded tree's dilla_binding (kind, community, target) is not the group's")
 	}
 	return nil
-}
-
-// decodeReseededInteractionBinding is the strict v2 shape used for Bot interaction groups. The
-// policy version intentionally is not compared: like v1, it records the policy snapshot at group
-// creation and is not part of the group's immutable identity.
-func decodeReseededInteractionBinding(raw []byte) (interactionBindingV2, error) {
-	var b interactionBindingV2
-	if err := cborx.Unmarshal(raw, &b); err != nil {
-		return interactionBindingV2{}, err
-	}
-	if b.Version != 2 || b.LegacyCommunityID != nil || b.Kind != 3 || b.PolicyVersion == 0 || b.E2EEVersion != 1 || b.MediaVersion != 0 ||
-		b.InstanceID.IsZero() || b.BotUserID.IsZero() || b.InstallationID.IsZero() || b.CommunityID.IsZero() ||
-		b.ParticipantUserID.IsZero() || b.ParticipantDeviceID.IsZero() {
-		return interactionBindingV2{}, errors.New("invalid v2 interaction binding")
-	}
-	return b, nil
 }
 
 // eligibleUsers is the ACL's verdict for many users of one group: one question when the ACL

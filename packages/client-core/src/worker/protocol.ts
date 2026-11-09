@@ -23,11 +23,6 @@ export type Command =
   | { m: 'getBotInstallation'; communityId: string }
   | { m: 'getBotCommandStatus'; communityId: string }
   | { m: 'patchBotProfile'; communityId: string; display: string }
-  // Typed future request contract only. The worker refuses it until human kind-3 interaction groups are authenticated.
-  | { m: 'listModerationCases'; communityId: string; requestId: string; offset: 0 }
-  | { m: 'listManualModerationEvidence'; communityId: string; requestId: string; cursor: string | null }
-  | { m: 'humanInteractionRequest'; communityId: string; channelId: string | null; requestId: string; operation: number;
-      args: readonly (string | number | Uint8Array | null)[]; revision: string | null; stepUp?: string }
   // Bot v2 (task 20): seal one command to the community's verified command key and send it over the socket; → null once the
   // instance accepted it (202). Its answers arrive in the botAnswers slice. A retry passes the same requestId.
   | { m: 'sendBotCommand'; communityId: string; channelId: string | null; requestId: string; operation: number;
@@ -52,10 +47,6 @@ export type Command =
   // Bot v2 (task 21): a surface shows (on) or stops showing a channel (kind 1) or call (kind 2, its voice channel) scope, so
   // that op 63 hints for it are fetched; the user scope needs no watch. Counted per scope. → null.
   | { m: 'watchBotScope'; kind: 1 | 2; channelId: string; on: boolean }
-  | { m: 'readBotInteractionResponses'; communityId: string; operations: readonly number[]; requestIds?: readonly string[] }
-  | { m: 'ackBotInteractionResponses'; communityId: string; through: string }
-  | { m: 'readHumanInteractionResponses'; communityId: string; requestIds?: readonly string[] }
-  | { m: 'ackHumanInteractionResponses'; communityId: string; through: string }
   | { m: 'getBotJoinRole'; communityId: string }
   | { m: 'configureBotJoinRole'; communityId: string; requestId: string; roleId: string; installationId: string }
   | { m: 'restartBot'; communityId: string; installationId: string }

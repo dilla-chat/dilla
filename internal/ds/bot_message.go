@@ -125,25 +125,7 @@ func (d *DS) AcceptBotMessage(ctx context.Context, r BotMessageRequest) (BotMess
 		if group.EpochUnknown {
 			return errLeafNotCurrent()
 		}
-		if group.Kind == 3 {
-			registration, registrationErr := tx.GetBotGroupRegistrationReceiptByGroup(ctx, r.GroupID)
-			if registrationErr != nil {
-				if errors.Is(registrationErr, store.ErrNotFound) {
-					return errForbidden("the interaction group is not registered to this Bot installation")
-				}
-				return registrationErr
-			}
-			instance, instanceErr := tx.GetInstance(ctx)
-			if instanceErr != nil {
-				return instanceErr
-			}
-			if !validCurrentInteractionRegistration(group, registration, d.opts.Keys.InstanceID) ||
-				registration.InstallationID != r.InstallationID || registration.UserID != r.Session.UserID ||
-				registration.DeviceID != r.Session.DeviceID || registration.CommunityID != r.CommunityID ||
-				instance.InstanceID != d.opts.Keys.InstanceID {
-				return errForbidden("the interaction group registration does not match this Bot session")
-			}
-		} else if err := d.requireGroupCapabilityTx(ctx, tx, r.Session, group); err != nil {
+		if err := d.requireGroupCapabilityTx(ctx, tx, r.Session, group); err != nil {
 			return err
 		}
 		attempt, attemptErr := tx.GetBotSendAttempt(ctx, r.InstallationID, r.OperationID, r.AttemptID)
