@@ -102,7 +102,7 @@ func ResponsePayload(r SocketResponse) (cbor.RawMessage, error) {
 	if r.Status < 100 || r.Status > 599 {
 		return nil, fmt.Errorf("gateway: response status %d", r.Status)
 	}
-	return payload(r.ID, uint64(r.Status), body) //nolint:gosec // G115: checked 100..599 above
+	return payload(r.ID, uint64(r.Status), body)
 }
 
 // DecodeResponseFrame reads a whole op 60 frame. Clients and tests use it.

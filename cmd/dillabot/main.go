@@ -693,7 +693,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 								if channelsErr != nil {
 									musicDeferred = cleanupFailedMusicRestore(installation.ID, channelsErr, musicRegistry)
 									logger.Error("bot music queue restore paused", "installation_id", installation.ID.String(), "error", channelsErr.Error())
-									ensureErr = errors.Join(ensureErr, channelsErr)
+									ensureErr = errors.Join(ensureErr, channelsErr) //nolint:nilnesserr // false positive: channelsErr is non-nil here (the != nil guard above), the analyzer loses it across the reassigning if block
 								} else {
 									var musicErr error
 									musicInteractions, musicErr = newRuntimeMusicInteractions(installation.ID, installation.CommunityID, result.Installation.Capabilities, runtime, result.Session, musicRegistry, logger, musicInstallationStore, musicAuthz, musicBotUser)

@@ -161,7 +161,7 @@ func decodeResponseFrame(b []byte) (SocketResponse, error) {
 		return SocketResponse{}, errNotDeterministic
 	}
 	size, off, err := want(off, 2)
-	if err != nil || uint64(len(b)-off) != size {
+	if rest := len(b) - off; err != nil || rest < 0 || uint64(rest) != size {
 		return SocketResponse{}, errNotDeterministic
 	}
 	return SocketResponse{ID: reqID, Status: int(status), Body: append([]byte(nil), b[off:]...)}, nil

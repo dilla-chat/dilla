@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -24,12 +25,12 @@ func TestSocketRoutesAreOnlyOnTheSocketMux(t *testing.T) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 	rec := httptest.NewRecorder()
-	m.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/socket/1", nil))
+	m.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/socket/1", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("the HTTP mux answered a socket route with %d", rec.Code)
 	}
 	rec = httptest.NewRecorder()
-	m.SocketMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/socket/1", nil))
+	m.SocketMux().ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/socket/1", nil))
 	if rec.Code != http.StatusTeapot || wrapped != 1 {
 		t.Fatalf("the socket mux answered %d, wrap ran %d times", rec.Code, wrapped)
 	}
@@ -66,7 +67,7 @@ func TestSocketRoutesFailClosedAndRunTheGuardInnermost(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	rec := httptest.NewRecorder()
-	m.SocketMux().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/socket/guarded", nil))
+	m.SocketMux().ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/socket/guarded", nil))
 	if rec.Code != http.StatusUnauthorized || len(order) != 1 || order[0] != "wrap" {
 		t.Fatalf("unguarded = %d, ran %v; want 401 and no handler", rec.Code, order)
 	}
@@ -76,7 +77,7 @@ func TestSocketRoutesFailClosedAndRunTheGuardInnermost(t *testing.T) {
 		next.ServeHTTP(w, r)
 	})
 	rec = httptest.NewRecorder()
-	m.SocketMux().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/socket/guarded", nil))
+	m.SocketMux().ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/socket/guarded", nil))
 	if rec.Code != http.StatusNoContent || len(order) != 3 || order[0] != "wrap" || order[1] != "guard" || order[2] != "handler" {
 		t.Fatalf("guarded = %d, order %v; want wrap, guard, handler", rec.Code, order)
 	}

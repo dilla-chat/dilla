@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -105,7 +106,7 @@ func (e *socketEnv) dial(bearer string) *sockettest.Client {
 
 func (e *socketEnv) httpDo(method, path, bearer string, body []byte) (int, []byte) {
 	e.t.Helper()
-	req, err := http.NewRequest(method, e.http.URL+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), method, e.http.URL+path, bytes.NewReader(body))
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -162,7 +163,7 @@ func TestSocketRequestReachesTheSameHandler(t *testing.T) {
 	c := e.dial(bearer)
 	resp := sockDo(t, c, http.MethodGet, "/v1/test/echo", nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/test/echo", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/test/echo", nil)
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	rec := httptest.NewRecorder()
 	direct.ServeHTTP(rec, req)
@@ -207,7 +208,8 @@ func TestRevokedSessionIsRefusedOnTheNextRequest(t *testing.T) {
 	}
 	resp := sockDo(t, c, http.MethodGet, "/v1/test/echo", nil, nil)
 	_, resolveErr := e.deps.Sessions.Resolve(context.Background(), bearer)
-	want, _ := resolveErr.(*server.Error)
+	var want *server.Error
+	_ = errors.As(resolveErr, &want)
 	if want == nil {
 		t.Fatalf("Resolve after the revoke = %v", resolveErr)
 	}
@@ -223,7 +225,7 @@ func TestBearerHeaderCannotForgeSocketCaller(t *testing.T) {
 	_, _, bearer := seedAPISession(t, e.deps)
 	// The socket route does not exist over HTTP, whatever the request carries.
 	for _, h := range []string{"X-Socket-Caller", "X-Dilla-Socket", "Upgrade"} {
-		req, _ := http.NewRequest(http.MethodGet, e.http.URL+"/v1/test/echo", nil)
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, e.http.URL+"/v1/test/echo", nil)
 		req.Header.Set(h, hex.EncodeToString(auth.TokenHash(bearer)))
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -619,7 +621,7 @@ func TestIneligibleBotRetryWithSameIdemGetsTheMiddlewareRefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp := sockDo(t, c, http.MethodPost, route, nil, idem)
-	req := httptest.NewRequest(http.MethodPost, route, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, route, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/cbor")
 	rec := httptest.NewRecorder()
@@ -799,7 +801,7 @@ func TestSocketRequestCostsNoMoreThanHTTP(t *testing.T) {
 	_, _, bearer := seedAPISession(t, e.deps)
 	c := e.dial(bearer)
 	viaHTTP := func() {
-		req, _ := http.NewRequest(http.MethodGet, keepAlive.URL+"/v1/test/echo", nil)
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, keepAlive.URL+"/v1/test/echo", nil)
 		req.Header.Set("Authorization", "Bearer "+bearer)
 		resp, err := client.Do(req)
 		if err != nil {

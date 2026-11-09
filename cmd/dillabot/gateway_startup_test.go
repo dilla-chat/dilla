@@ -23,7 +23,7 @@ func TestAGatewayStartFailureIsNotDeferred(t *testing.T) {
 	if !errors.Is(joined, startup) {
 		t.Fatal("the startup error is lost")
 	}
-	if got := withGatewayStartup(noGateway, nil); got != noGateway {
+	if got := withGatewayStartup(noGateway, nil); !errors.Is(got, noGateway) {
 		t.Fatal("no startup failure leaves the pass result alone")
 	}
 }

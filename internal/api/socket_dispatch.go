@@ -205,8 +205,8 @@ func (d *SocketDispatcher) guard(w http.ResponseWriter, r *http.Request, next ht
 	entry, running := d.running[hook.key]
 	if !running {
 		if el, ok := d.done[hook.key]; ok {
-			entry = el.Value.(*replayEntry) //nolint:forcetypeassert // the list holds only *replayEntry
-			if now.Sub(entry.at) > d.opts.ReplayWindow {
+			entry, _ = el.Value.(*replayEntry) // the list holds only *replayEntry
+			if entry == nil || now.Sub(entry.at) > d.opts.ReplayWindow {
 				d.dropLocked(el)
 				entry = nil
 			} else {
@@ -328,8 +328,11 @@ func recordable(status int) bool {
 // dropLocked removes one record. A record past the window is dropped when its key is next looked
 // up; until then it only takes a place in the bounded list.
 func (d *SocketDispatcher) dropLocked(el *list.Element) {
-	e := el.Value.(*replayEntry) //nolint:forcetypeassert // the list holds only *replayEntry
+	e, _ := el.Value.(*replayEntry) // the list holds only *replayEntry
 	d.lru.Remove(el)
+	if e == nil {
+		return
+	}
 	delete(d.done, e.key)
 	d.bytes -= len(e.resp.Body)
 }

@@ -50,7 +50,7 @@ func Dial(t testing.TB, baseURL, bearer string) *Client {
 // DialContext is Dial without a testing.TB.
 func DialContext(ctx context.Context, baseURL, bearer string) (*Client, error) {
 	url := "ws" + strings.TrimPrefix(baseURL, "http")
-	ws, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{ //nolint:bodyclose // websocket.Dial documents that the handshake response body never needs closing
+	ws, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{
 		Subprotocols: []string{"dilla.v1"},
 	})
 	if err != nil {
@@ -128,10 +128,9 @@ func (c *Client) readLoop() {
 			}
 			c.mu.Lock()
 			c.order = append(c.order, resp.ID)
+			// An id this client never sent: nothing waits for it.
 			if ch, ok := c.pending[resp.ID]; ok {
 				ch <- resp
-			} else {
-				// An id this client never sent: nothing waits for it.
 			}
 			c.mu.Unlock()
 		case gateway.OpError:

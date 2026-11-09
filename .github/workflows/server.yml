@@ -389,7 +389,7 @@ jobs:
     needs: [changes, rust-wasi]
     if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     # The delivery service's tests drive the real wasm core over a 1,500-leaf fixture, and under the
     # race detector they are among the slowest of the module (1,099 s in run 41658420078), so they have a
     # job of their own, split by test name into shards (scripts/go-shard.mjs); the go job runs everything
@@ -413,7 +413,7 @@ jobs:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - name: The delivery service's tests with the race detector
-        run: node scripts/go-shard.mjs run go-ds ${{ matrix.shard }} -- -race -shuffle=on -timeout 25m
+        run: node scripts/go-shard.mjs run go-ds ${{ matrix.shard }} -- -race -shuffle=on -timeout 40m
         env:
           GORACE: halt_on_error=1
 
@@ -422,7 +422,7 @@ jobs:
     needs: [changes, rust-wasi]
     if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     # internal/api took 1,196 s under -race alone (run 41658420078) and once reached a 38-minute package
     # limit on a loaded runner (2026-10-24), so it is split by test name into shards. The go job leaves
     # this package out.
@@ -444,7 +444,7 @@ jobs:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - name: The API package's tests with the race detector
-        run: node scripts/go-shard.mjs run go-api ${{ matrix.shard }} -- -race -shuffle=on -timeout 25m
+        run: node scripts/go-shard.mjs run go-api ${{ matrix.shard }} -- -race -shuffle=on -timeout 40m
         env:
           GORACE: halt_on_error=1
 

@@ -332,8 +332,6 @@ const RequestFrameReadTimeout = 60 * time.Second
 // requestFrameReadTimeout is RequestFrameReadTimeout, a variable so a test can shorten it.
 var requestFrameReadTimeout = RequestFrameReadTimeout
 
-func newWSSink(c *websocket.Conn) sink { return &wsSink{c: c} }
-
 func newLimitedWSSink(c *websocket.Conn, limit int64) sink { return &wsSink{c: c, limit: limit} }
 
 // allowRequestFrames lets an identified connection's request frames past the read limit.

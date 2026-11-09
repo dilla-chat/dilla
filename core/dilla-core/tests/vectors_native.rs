@@ -2,6 +2,8 @@
 //! `cargo test -p dilla-core --target wasm32-unknown-unknown` (task 16) and the Go wazero test
 //! (Plan B task 4); all three drive this same module.
 
+#![cfg(feature = "vectors")]
+
 use dilla_core::cbor::decode_strict;
 use dilla_core::vectors::{
     run_all, run_attachment, run_envelope, run_frames, run_franking, run_identity, run_rejects,

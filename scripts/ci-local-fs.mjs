@@ -239,6 +239,9 @@ export function buildCleanTree(root, dir, files) {
   // The node_modules link is a file to git (`/node_modules/` ignores only a directory): keep it out of the index.
   writeFileSync(join(dir, '.git', 'info', 'exclude'), '/node_modules\n', { flag: 'a' });
   git(['add', '-A']);
+  // HEAD must name this copy's own files, not the source repository's commit: the checkout a runner builds is one commit
+  // of exactly these files, and the tests that read `git rev-parse HEAD` compare against it.
+  git(['-c', 'user.name=ci-local', '-c', 'user.email=ci-local@localhost', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '--no-verify', '-m', 'ci-local clean tree']);
   return dir;
 }
 

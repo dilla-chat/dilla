@@ -148,7 +148,7 @@ func DecodeResponseFrame(raw []byte) (ResponseFrame, error) {
 	if err != nil {
 		return ResponseFrame{}, ErrProtocol
 	}
-	out.Status = int(status)
+	out.Status = int(status) //nolint:gosec // G115: boundedUint limited it to 100..599 above
 	if out.Body, err = bytesAt(payload[2], 0, MaxResponseFrameBytes); err != nil {
 		return ResponseFrame{}, ErrProtocol
 	}

@@ -129,8 +129,8 @@ export const MIN_BROWSER_WEB_TIMEOUT = 20;
  */
 export const GO_SHARD_FLAGS = {
   go: '-race -shuffle=on -timeout 20m',
-  'go-api': '-race -shuffle=on -timeout 25m',
-  'go-ds': '-race -shuffle=on -timeout 25m',
+  'go-api': '-race -shuffle=on -timeout 40m',
+  'go-ds': '-race -shuffle=on -timeout 40m',
   'go-harness': '-race -shuffle=on -timeout 25m',
   'go-postgres': '-race -shuffle=on -timeout 20m',
 };
@@ -352,7 +352,7 @@ const REQUIRED_STEPS = {
   ],
   // The one package the go job leaves out, with the wasi core it needs and a budget of its own.
   'go-ds': [
-    'timeout-minutes: 35',
+    'timeout-minutes: 50',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
@@ -360,7 +360,7 @@ const REQUIRED_STEPS = {
   ],
   // The other package the go job leaves out, with the same wasi hand-off and a budget that leaves margin.
   'go-api': [
-    'timeout-minutes: 35',
+    'timeout-minutes: 50',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',

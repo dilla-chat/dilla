@@ -21,6 +21,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/ds"
 	"github.com/dilla-chat/dilla/internal/gateway"
 	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/sfu/sfutest"
 	"github.com/dilla-chat/dilla/internal/store"
 )
 
@@ -89,6 +90,11 @@ func Start(tb testing.TB, o Options) *Harness {
 			"and copy it there (CI downloads the rust-wasi job's artifact): %v", core, err)
 	}
 
+	// Free ports, never the 7880/7882 default: parallel shards and jobs each start their own SFU.
+	var sfuPort, sfuUDPPort int
+	if o.SFU {
+		sfuPort, sfuUDPPort = sfutest.FreePorts(tb)
+	}
 	host, err := dilladtest.NewHost(context.Background(), dilladtest.HostOptions{
 		DataDir:       o.DataDir,
 		CorePath:      core,
@@ -96,6 +102,8 @@ func Start(tb testing.TB, o Options) *Harness {
 		LogLevel:      o.LogLevel,
 		ProductionACL: o.ProductionACL,
 		SFU:           o.SFU,
+		SFUPort:       sfuPort,
+		SFUUDPPort:    sfuUDPPort,
 	})
 	if err != nil {
 		tb.Fatalf("dilladtest.NewHost: %v", err)

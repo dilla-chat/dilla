@@ -817,14 +817,11 @@ func TestBotClientUsesSocketForSocketRoutes(t *testing.T) {
 	if err := s.AcknowledgeWelcome(context.Background(), 10); !errors.Is(err, ErrNoGateway) {
 		t.Fatalf("after the transport is withdrawn the DELETE = %v, want ErrNoGateway", err)
 	}
-	mu.Lock()
-	after := len(overHTTP)
-	mu.Unlock()
 	if err := s.AcknowledgeWelcome(context.Background(), 11); !IsDeferred(err) {
 		t.Fatalf("ErrNoGateway = %v must be a deferred (retryable) error, not a failed reconcile", err)
 	}
 	mu.Lock()
-	after = len(overHTTP)
+	after := len(overHTTP)
 	mu.Unlock()
 	if after != before {
 		t.Fatalf("a socket route with no gateway reached the HTTP server (%d requests, was %d)", after, before)
