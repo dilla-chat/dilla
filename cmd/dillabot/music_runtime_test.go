@@ -426,7 +426,7 @@ func TestNewMusicQueueStarterResolvesTrackToRoomCallAndProvider(t *testing.T) {
 	if calls.starts != 0 {
 		t.Fatal("inert options touched call")
 	}
-	o.Call, err = o.PrepareCall(context.Background())
+	o.Call, err = o.PrepareCall(session.WithExplicitStart(context.Background()))
 	o.Group = o.Call.GroupID
 	if err != nil {
 		t.Fatal(err)
@@ -458,7 +458,7 @@ func TestMusicQueueStarterJoinsCallGroupBeforeMintingCallCredentials(t *testing.
 	}
 	o, err := starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk"})
 	if err == nil {
-		_, err = o.PrepareCall(context.Background())
+		_, err = o.PrepareCall(session.WithExplicitStart(context.Background()))
 	}
 	if !errors.Is(err, joinErr) {
 		t.Fatalf("OptionsFor error = %v, want call-group join error", err)
@@ -478,7 +478,7 @@ func TestMusicQueueStarterJoinsCallGroupBeforeMintingCallCredentials(t *testing.
 	}
 	o, err = starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk"})
 	if err == nil {
-		_, err = o.PrepareCall(context.Background())
+		_, err = o.PrepareCall(session.WithExplicitStart(context.Background()))
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -565,7 +565,7 @@ func TestInstallationYouTubeStarterUsesScopedCallAndNativeMediaDependencies(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	options.Call, err = options.PrepareCall(context.Background())
+	options.Call, err = options.PrepareCall(session.WithExplicitStart(context.Background()))
 	options.Group = options.Call.GroupID
 	if err != nil {
 		t.Fatal(err)
@@ -628,7 +628,7 @@ func TestMusicQueueStarterRejectsCallForDifferentChannel(t *testing.T) {
 	}
 	options, err := starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "https://www.youtube.com/watch?v=abcdefghijk"})
 	if err == nil {
-		_, err = options.PrepareCall(context.Background())
+		_, err = options.PrepareCall(session.WithExplicitStart(context.Background()))
 	}
 	if err == nil {
 		t.Fatal("expected mismatched call group to be rejected")

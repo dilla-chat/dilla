@@ -60,6 +60,11 @@ type OptionsForTrack func(context.Context, music.Track) (Options, error)
 
 type explicitStartKey struct{}
 
+// WithExplicitStart marks ctx as a start a member asked for, as StartExplicit does.
+func WithExplicitStart(ctx context.Context) context.Context {
+	return context.WithValue(ctx, explicitStartKey{}, true)
+}
+
 // ExplicitStart reports whether ctx is a start a member asked for (StartExplicit: a /play, a resume, a skip), not the
 // supervisor's automatic advance to the next queued track.
 func ExplicitStart(ctx context.Context) bool {
@@ -94,6 +99,18 @@ type QueueStarter struct {
 	// track resolves (Bot v2 Task 19). It must not block; the next start's PrepareCall uses its result. Nil warms
 	// nothing.
 	Warm func(context.Context)
+	// OnStartFailed is told of every failed start attempt: what was prepared for the call is not reused (Bot v2 Task 19
+	// fix round 1, I2), so a retry reads membership, credentials and the epoch again. Nil does nothing.
+	OnStartFailed func(error)
+	// Abandon is a /play that ended without starting: a call its warm prepared is dropped and the idle room left (M3).
+	Abandon func()
+}
+
+// AbandonWarm implements music.CallWarmer's abandon.
+func (s QueueStarter) AbandonWarm() {
+	if s.Abandon != nil {
+		s.Abandon()
+	}
 }
 
 // WarmCall implements music.CallWarmer.
@@ -173,6 +190,9 @@ func (s QueueStarter) Start(ctx context.Context, track music.Track) (music.Playb
 			attemptCtx = s.LogContext(attemptCtx)
 		}
 		playback, err := s.startOnce(attemptCtx, track)
+		if err != nil && s.OnStartFailed != nil {
+			s.OnStartFailed(err)
+		}
 		// A previous publisher's departure can remove the replacement during
 		// its handshake. No source was published successfully: close resources
 		// and re-read membership, call credentials and epoch on a bounded retry.

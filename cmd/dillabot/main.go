@@ -673,26 +673,42 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 							var musicProviderStatus service.MusicProviderStatusInteractions
 							if result.Installation.Capabilities&botMusicCapability != 0 {
 								musicProviderStatus = newMusicProviderStatusInteractions(installation.ID, installation.CommunityID, result.Session)
+								// Bot v2 Task 19 fix round 1: one installation row per installation, read again after an op 54, and the
+								// feed-state permissions; each room's guards follow its call group and admit every epoch it publishes in.
+								musicInstallationStore := runtimeMusicAuthorityStore{runtime: runtime, session: result.Session, installation: installation.ID, community: installation.CommunityID, recent: &recentMusicInstallation{}}
+								musicAuthz := gateways.musicAuthz(installation.ID, installation.CommunityID)
+								musicBotUser := id.ID{}
+								if result.Installation.BotUser != nil {
+									musicBotUser = *result.Installation.BotUser
+								}
+								musicSourceSync, musicSyncErr := service.NewSourceSync(nativeClient, service.SourceSyncOptions{})
+								if musicSyncErr != nil {
+									logger.Warn("bot music call catch-up unavailable", "installation_id", installation.ID.String())
+								}
 								channels, channelsErr := result.Session.Channels(ctx, installation.CommunityID)
 								if channelsErr == nil {
-									musicPolicy := &musicPolicyCache{}
+									musicPolicy := &musicPolicyCache{installation: installation.ID}
 									starterFor := func(channel id.ID) (session.QueueStarter, error) {
+										catchUp := musicCallCatchUp{sync: musicSourceSync, session: result.Session, community: installation.CommunityID, channel: channel,
+											local: nativeClient.InspectGroup, remote: result.Session.GroupInfo}
 										joinCallGroup := func(joinCtx context.Context) error {
-											// Bot v2 Task 19: the policy version is read once per musicPolicyFresh, not per join; a failed join reads it again.
-											policy, policyErr := musicPolicy.get(joinCtx, func(readCtx context.Context) (uint64, error) {
+											// Bot v2 Task 19: the policy version is read once per op 54, not per join (fix round 1, M2); an
+											// already-member join catches the call group up first (C1).
+											joinCtx = withMusicCatchUp(joinCtx, catchUp.run)
+											return musicPolicy.joinWithPolicy(joinCtx, func(readCtx context.Context) (uint64, error) {
 												communityRow, communityErr := result.Session.Community(readCtx, installation.CommunityID)
 												return communityRow.PolicyVersion, communityErr
+											}, func(ctx context.Context, policy uint64) error {
+												return ensureMusicCallGroupJoined(ctx, result.Session, nativeClient, gateways.musicJoinTrust(installation.ID), installation.ID, installation.CommunityID, channel, policy)
 											})
-											if policyErr != nil {
-												return policyErr
-											}
-											joinErr := ensureMusicCallGroupJoined(joinCtx, result.Session, nativeClient, gateways.musicJoinTrust(installation.ID), installation.ID, installation.CommunityID, channel, policy)
-											if joinErr != nil {
-												musicPolicy.forget()
-											}
-											return joinErr
 										}
-										starter, starterErr := newInstallationMusicQueueStarter(cfg.InstanceID, installation.ID, installation.CommunityID, channel, result.Session, nativeClient, nil, joinCallGroup)
+										guards := newMusicCallGuards(installation.ID, catchUp,
+											musicAdmission{community: installation.CommunityID, channel: channel, botUser: musicBotUser, authz: musicAuthz,
+												trust: gateways.musicJoinTrust(installation.ID), ready: installationMusicReady(musicInstallationStore)},
+											func(subCtx context.Context, groups []id.ID) {
+												gateways.SubscribeGroups(subCtx, installation.ID, groups)
+											})
+										starter, starterErr := newInstallationMusicQueueStarter(cfg.InstanceID, installation.ID, installation.CommunityID, channel, result.Session, nativeClient, nil, guards, joinCallGroup)
 										if starterErr == nil {
 											starter.IdleLeaveAfter = func() time.Duration { return musicRegistry.IdleLeave(installation.ID) }
 											device := id.ID{}
@@ -725,7 +741,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									ensureErr = errors.Join(ensureErr, channelsErr)
 								} else {
 									var musicErr error
-									musicInteractions, musicErr = newRuntimeMusicInteractions(installation.ID, installation.CommunityID, result.Installation.Capabilities, runtime, result.Session, musicRegistry, logger)
+									musicInteractions, musicErr = newRuntimeMusicInteractions(installation.ID, installation.CommunityID, result.Installation.Capabilities, runtime, result.Session, musicRegistry, logger, musicInstallationStore, musicAuthz, musicBotUser)
 									if musicErr != nil {
 										logger.Warn("bot music interaction handlers unavailable", "installation_id", installation.ID.String(), "error", musicErr.Error())
 									}

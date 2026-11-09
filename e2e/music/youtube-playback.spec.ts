@@ -179,45 +179,55 @@ test('two communities run isolated YouTube playback with independent Bot identit
   await joinVoice(djTwoPage, SERVER_TWO, 'general');
   // Jonas 2026-10-28: results stay private; only a /play that starts the music adds Glenn's one public "started music" message
   // (with the live player card) in the channel where it ran.
-  const command = async (musicPage: typeof page, server: string, commandText: string, expected: RegExp, announces = 0) => {
+  // A click on the voice row would leave the call on a desktop (it toggles the join): the stage is opened by its route.
+  const showStage = async (musicPage: typeof page) => {
+    const channelId = (await callSlice(musicPage))?.channelId;
+    if (channelId === null || channelId === undefined) return;
+    const communityId = new URL(musicPage.url()).pathname.split('/')[2] ?? '';
+    await musicPage.evaluate(([c, v]) => {
+      window.history.pushState(null, '', `/c/${c}/${v}`);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }, [communityId, channelId]);
+    await expect(musicPage.locator('.dw-voice-stage')).toBeVisible({ timeout: WAIT });
+  };
+  // Bot v2 (Task 19 fix round 1): commands are sealed. /play takes its argument in the picker and runs on Enter; a
+  // command without arguments is typed whole and sent. The private result row is reused by each run, so a run's answer
+  // is the first text other than the last run's. A sealed /play posts no public card: music needs no text channel.
+  const command = async (musicPage: typeof page, server: string, commandText: string, expected: RegExp) => {
     await openChannel(musicPage, server, 'general');
     const commandId = commandText.slice(1).split(/\s/u, 1)[0] ?? '';
     const argument = commandText.slice(commandId.length + 2).trim();
     const composer = composerBox(musicPage, 'general');
-    await composer.fill('/');
     const region = musicPage.getByRole('region', { name: 'Command composer', exact: true });
-    const picker = region.getByRole('textbox', { name: 'Command', exact: true });
-    await picker.fill(commandId);
-    const option = region.getByRole('option').filter({ has: musicPage.getByText(`/${commandId}`, { exact: true }) });
-    await expect(option).toBeVisible({ timeout: WAIT });
-    await picker.press('Enter');
+    const row = musicPage.locator('.d-bot-result .d-message-row__body').last();
+    const previous = await row.count() > 0 ? await row.innerText() : '';
     if (commandId === 'play') {
+      await composer.fill('/');
+      const picker = region.getByRole('textbox', { name: 'Command', exact: true });
+      await picker.fill('/play');
+      await expect(region.getByRole('option', { name: /^\/play,/u })).toBeVisible({ timeout: WAIT });
+      await picker.press('Enter');
       const query = region.getByRole('combobox', { name: 'query-or-url', exact: true });
       await query.fill(argument);
       await expect(query).toHaveValue(argument);
+      await query.press('Enter');
+    } else {
+      await composer.fill(commandText);
+      await expect(region).toBeVisible({ timeout: WAIT });
+      await region.getByRole('button', { name: copy('shell.composer.send'), exact: true }).click();
     }
-    const log = musicPage.getByRole('log', { name: 'messages in #general', exact: true });
-    // A bot-authored row, grouped or not: MessageRow marks its author `data-bot` (the sr-only author of a grouped row too),
-    // which also counts the grouped bot rows the old `[data-kind="bot"]` locator missed.
-    const publicBotMessages = log.locator('.d-message-row:has(.d-message-row__author[data-bot])');
-    const publicCount = await publicBotMessages.count();
-    await region.getByRole('button', { name: 'send', exact: true }).click();
-    // Signal wave B Task 2: a run that ends well leaves command mode; the host speaks its result.
-    const status = musicPage.locator('[data-command-result]');
-    await expect(status).toContainText(expected, { timeout: 90_000 });
-    const result = await status.innerText();
-    await expect(publicBotMessages).toHaveCount(publicCount + announces, { timeout: 30_000 });
-    if (announces > 0) {
-      const announcement = publicBotMessages.last();
-      await expect(announcement).toContainText('started music in general');
-      await expect(announcement.getByRole('group', { name: 'Music player', exact: true })).toBeVisible();
-    }
+    let result = '';
+    await expect.poll(async () => {
+      result = await row.innerText().catch(() => '');
+      return result !== previous && expected.test(result);
+    }, { timeout: 90_000, intervals: [250, 500, 1_000], message: `${commandText} answered ${String(expected)}` }).toBe(true);
     if (await region.count() > 0) { await region.locator('input, textarea').first().focus(); await musicPage.keyboard.press('Escape'); }
-    await voiceRow(musicPage, 'general').click();
+    await showStage(musicPage);
     return result;
   };
-  await command(djPage, SERVER, `/play ${YOUTUBE_PLAYLIST}`, /Track added to the music queue\./, 1);
-  await command(djTwoPage, SERVER_TWO, `/play ${YOUTUBE_SAMPLE}`, /Track added to the music queue\./, 1);
+  // A /play into an empty player starts it and answers once audio starts (Task 19); the next one only queues.
+  await command(djPage, SERVER, `/play ${YOUTUBE_PLAYLIST}`, /Now playing: /);
+  await command(djTwoPage, SERVER_TWO, `/play ${YOUTUBE_SAMPLE}`, /Now playing: /);
   await command(djPage, SERVER, `/play ${YOUTUBE_SAMPLE}`, /Track added to the music queue\./);
   const queueA = await command(djPage, SERVER, '/queue', /Now playing:/);
   expect(queueA).toContain('Deep Learning State of the Art (2020)');

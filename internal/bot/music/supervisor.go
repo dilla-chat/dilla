@@ -93,6 +93,18 @@ func (s *Supervisor) WarmCall(group id.ID) {
 	}
 }
 
+// PlayAbandoned tells the starter that a /play whose warm it began ended without starting a track (Bot v2 Task 19
+// fix round 1, M3): the call prepared for it is dropped and the room, if nothing plays in it, is left.
+func (s *Supervisor) PlayAbandoned() {
+	s.mu.Lock()
+	abandoner, ok := s.starter.(interface{ AbandonWarm() })
+	busy := s.closed || s.playback != nil || s.starting != nil
+	s.mu.Unlock()
+	if ok && !busy {
+		abandoner.AbandonWarm()
+	}
+}
+
 // Playing reports whether a track is playing now (published and not paused).
 func (s *Supervisor) Playing() bool {
 	s.mu.Lock()

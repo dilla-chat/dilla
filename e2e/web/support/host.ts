@@ -318,6 +318,16 @@ async function startBotRuntime(control: number, dataDir: string, port: number, h
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   chmodSync(stateDir, 0o700);
   chmodSync(dataDir, 0o700);
+  // Bot v2 Task 19 fix round 1: bot-launch gives the Bot a fixed PATH, so a host without root hands the music lane's
+  // provider tools (yt-dlp) to the dilla_testhost Bot through its state directory.
+  const tools = process.env.DILLA_BOT_TOOLS_DIR;
+  if (tools !== undefined && tools !== '') {
+    mkdirSync(join(stateDir, 'bot-tools'), { recursive: true, mode: 0o700 });
+    for (const name of readdirSync(tools)) {
+      copyFileSync(join(tools, name), join(stateDir, 'bot-tools', name));
+      chmodSync(join(stateDir, 'bot-tools', name), 0o755);
+    }
+  }
   chmodSync(botRuntimeToken(dataDir), 0o600);
   const before = healthy.count();
   await postControl(control, '/debug/bot/start', {});

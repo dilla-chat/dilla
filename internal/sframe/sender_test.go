@@ -84,6 +84,43 @@ func TestReservedSenderRejectsInvalidRange(t *testing.T) {
 	}
 }
 
+// Bot v2 Task 19 fix round 1 (C1): a reserved sender moves to the next epoch with that epoch's own range; the next
+// frame carries the new epoch's KID and counter, and an older epoch is refused.
+func TestReservedSenderRekeysWithTheNewEpochsRange(t *testing.T) {
+	s, err := NewSenderRange(testBase, 3, 5, 100, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opus := []byte{0xfc, 1, 2}
+	first, err := s.Encrypt(Opus, Mic, 0, opus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kid, _, _, _ := DecodeHeader(first); kid != KID(3, 5) {
+		t.Fatalf("epoch 5 kid = %d", kid)
+	}
+	if err := s.RekeyRange(testBase, 3, 6, 1000, 1100); err != nil {
+		t.Fatal(err)
+	}
+	next, err := s.Encrypt(Opus, Mic, 0, opus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kid, ctr, _, _ := DecodeHeader(next); kid != KID(3, 6) || ctr&MaxSeq != 1000 {
+		t.Fatalf("after the rekey kid=%d ctr=%d, want epoch 6's kid and its range start", kid, ctr&MaxSeq)
+	}
+	if err := s.RekeyRange(testBase, 3, 5, 0, 10); !errors.Is(err, ErrStaleEpoch) {
+		t.Fatalf("rekey to an older epoch = %v", err)
+	}
+	plain, err := NewSender(testBase, 3, 5, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plain.RekeyRange(testBase, 3, 6, 0, 10); err == nil {
+		t.Fatal("an unreserved sender took a reserved range")
+	}
+}
+
 // N1: a sender made after its device committed epoch min_epoch never encrypts below it.
 func TestTheSenderRefusesEpochsBelowItsFloor(t *testing.T) {
 	if _, err := NewSender(testBase, 1, 4, 5); !errors.Is(err, ErrStaleEpoch) {

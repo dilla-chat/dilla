@@ -72,6 +72,29 @@ func (s *Sender) Rekey(baseKey [16]byte, leaf uint16, epoch uint64) {
 	s.epoch, s.kid, s.keys = epoch, kid, keys
 }
 
+// RekeyRange moves a reserved sender to a newer epoch's key with that epoch's own durable Mic/0 counter interval, in
+// one step: the next frame is under the new key, and no frame after it under an older one. The caller must persist
+// the reservation first, as for NewSenderRange. An older epoch than the current is ErrStaleEpoch.
+func (s *Sender) RekeyRange(baseKey [16]byte, leaf uint16, epoch, start, end uint64) error {
+	if start >= end || end > MaxSeq+1 {
+		return ErrCounterExhausted
+	}
+	kid := KID(leaf, epoch)
+	keys := DeriveKeys(baseKey, kid)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.reserved {
+		return ErrSlotMismatch
+	}
+	if epoch < s.epoch {
+		return ErrStaleEpoch
+	}
+	s.epoch, s.kid, s.keys, s.minEpoch = epoch, kid, keys, epoch
+	s.reservedEpoch, s.reservedEnd, s.reservedInvalid = epoch, end, false
+	s.next[counterKey{epoch: epoch, slot: Mic, layer: 0}] = start
+	return nil
+}
+
 // Encrypt checks the frame's codec shape first, so a refused frame spends no counter, then takes
 // the next counter and runs Protect. A reserved slot (above ScreenAudio) is ErrSlotMismatch before
 // anything else, as the wasm sender's slot parse is. An H.264 frame whose prefix carries an SPS a

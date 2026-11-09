@@ -3,6 +3,7 @@ package livekit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -24,7 +25,42 @@ var (
 	ErrPoolClosed    = errors.New("music livekit: publisher pool is closed")
 	ErrPoolDead      = errors.New("music livekit: publisher room ended; explicit reset required")
 	ErrPoolBusy      = errors.New("music livekit: publisher track is already active")
+	// ErrCallCatchUpTerminal marks a catch-up failure no retry can mend (the group is gone or needs a resync): the
+	// track stops at once.
+	ErrCallCatchUpTerminal = errors.New("music livekit: the call group cannot be caught up")
+	// ErrCallBehind stops a track whose call group could not be caught up: its media might not be under the call's
+	// current epoch (fail closed).
+	ErrCallBehind = errors.New("music livekit: the call group is behind its current epoch")
 )
+
+// maxCatchUpFailures is how many monitor ticks in a row may fail to catch the call group up before the track stops.
+const maxCatchUpFailures = 3
+
+// CallGuards keep a published track under the call's current epoch and current authority (Bot v2 Task 19 fix round
+// 1, C1, I2, M4). Each is optional.
+type CallGuards struct {
+	// CatchUp applies the call group's newer handshakes and messages (the members' commits) to the helper, so the
+	// helper's epoch is the call's current one. It runs before every publication and on every monitor tick or nudge.
+	CatchUp func(context.Context, id.ID) error
+	// Admit refuses publishing under an epoch: a held user in its roster, the Bot no longer allowed to connect and
+	// speak, an installation that is not ready. It runs before every publication and at every re-key.
+	Admit func(context.Context, native.CallMediaEpoch) error
+	// Watch calls nudge on the group's handshake or epoch hints until stop is called.
+	Watch func(group id.ID, nudge func()) (stop func())
+}
+
+// SetCallGuards installs the guards for every later publication.
+func (p *Pool) SetCallGuards(g CallGuards) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.callGuards = g
+}
+
+func (p *Pool) guards() CallGuards {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.callGuards
+}
 
 type poolRoom interface{ Disconnect() }
 
@@ -110,6 +146,8 @@ type Pool struct {
 	rtt      func(context.Context, id.ID, uint32) error
 	roomRTT  func(poolRoom) (time.Duration, bool)
 	rttEvery time.Duration
+
+	callGuards CallGuards
 }
 
 // RTTStep is how far the room's RTT must move before it is reported again.
@@ -211,16 +249,29 @@ func (p *Pool) Start(ctx context.Context, call client.Call, boundGroup id.ID, ep
 }
 
 func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.ID, epochs EpochSource, source sourceLifecycle) (*Session, error) {
+	// The token may be absent: a later track of a connected room carries none (Bot v2 Task 19 fix round 1, I2);
+	// acquireRoom refuses to connect without one.
 	if ctx == nil || source == nil || epochs == nil || call.CallID.IsZero() || call.GroupID.IsZero() || boundGroup.IsZero() ||
-		call.GroupID != boundGroup || call.LiveKitURL == "" || call.Token == "" {
+		call.GroupID != boundGroup || call.LiveKitURL == "" {
 		if source != nil {
 			_ = source.Close()
 		}
 		return nil, ErrBinding
 	}
+	guards := p.guards()
+	if guards.CatchUp != nil {
+		// The helper's epoch must be the call's current one before any key is derived (C1).
+		if err := startStage(ctx, "call_catch_up", guards.CatchUp(ctx, boundGroup)); err != nil {
+			_ = source.Close()
+			return nil, err
+		}
+	}
 	initial, err := epochs.CallMediaEpoch(ctx, boundGroup)
 	if err == nil {
 		err = validateSenderEpoch(initial)
+	}
+	if err == nil && guards.Admit != nil {
+		err = guards.Admit(ctx, initial)
 	}
 	if err = startStage(ctx, "media_epoch", err); err != nil {
 		_ = source.Close()
@@ -320,6 +371,13 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 	return s, nil
 }
 
+// Dead reports whether the room ended and waits for an explicit Reset.
+func (p *Pool) Dead() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.dead && !p.closed
+}
+
 // Holds reports whether the pool's room is connected, alive and bound to call: a track for call can be published
 // into it without connecting again.
 func (p *Pool) Holds(call client.Call) bool {
@@ -394,6 +452,11 @@ func (p *Pool) acquireRoom(ctx context.Context, call client.Call, binding poolBi
 		gen := p.generation
 		p.mu.Unlock()
 		return ctx, conn, gen, nil
+	}
+	if call.Token == "" {
+		// Only a fresh call prepared by a member's play may connect a room.
+		p.mu.Unlock()
+		return nil, nil, 0, ErrBinding
 	}
 	if p.bound == nil {
 		b := binding
@@ -679,6 +742,18 @@ func (s *Session) monitorPooled(ctx context.Context, groupID id.ID, epochs Epoch
 	defer s.pool.releaseTrack(s)
 	ticker := time.NewTicker(epochPollInterval)
 	defer ticker.Stop()
+	guards := s.pool.guards()
+	nudge := make(chan struct{}, 1)
+	if guards.Watch != nil {
+		stop := guards.Watch(groupID, func() {
+			select {
+			case nudge <- struct{}{}:
+			default:
+			}
+		})
+		defer stop()
+	}
+	active, failures := initial, 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -692,13 +767,69 @@ func (s *Session) monitorPooled(ctx context.Context, groupID id.ID, epochs Epoch
 			s.finish(s.source.Wait())
 			return
 		case <-ticker.C:
-			if err := revalidateEpoch(ctx, groupID, epochs, initial); err != nil {
-				s.pool.markDead(s.generation, err)
-				s.finish(err)
-				return
+		case <-nudge:
+		}
+		next, err := s.followEpoch(ctx, guards, groupID, epochs, active, &failures)
+		if err != nil {
+			if ctx.Err() != nil {
+				continue // the ctx case ends the track with its own cause
 			}
+			s.pool.markDead(s.generation, err)
+			s.finish(err)
+			return
+		}
+		active = next
+	}
+}
+
+// followEpoch keeps the track under the call's current epoch (Bot v2 Task 19 fix round 1, C1). It catches the call
+// group up, reads the helper's epoch and, when the epoch moved, admits it and moves the sender to the new key with a
+// fresh durable counter range, in place: the next frame is under the new epoch's key, and a member removed by the
+// commit cannot decrypt it. An epoch the Bot's own leaf left, a refused admission, a failed reservation or a call
+// group that stays behind stop the track (fail closed); the room is left, and only a member's play joins again.
+func (s *Session) followEpoch(ctx context.Context, guards CallGuards, group id.ID, epochs EpochSource, active native.CallMediaEpoch, failures *int) (native.CallMediaEpoch, error) {
+	if guards.CatchUp != nil {
+		if err := guards.CatchUp(ctx, group); err != nil {
+			*failures++
+			if errors.Is(err, ErrCallCatchUpTerminal) || *failures >= maxCatchUpFailures {
+				return active, fmt.Errorf("%w: %w", ErrCallBehind, err)
+			}
+			return active, nil
+		}
+		*failures = 0
+	}
+	current, err := epochs.CallMediaEpoch(ctx, group)
+	if err != nil {
+		return active, fmt.Errorf("music livekit: call media key lookup failed: %w", err)
+	}
+	if err := epochStillBound(current, active); err == nil {
+		return active, nil
+	} else if !errors.Is(err, ErrEpochChanged) {
+		return active, err
+	}
+	if current.Epoch < active.Epoch || current.OwnLeaf != active.OwnLeaf {
+		return active, ErrEpochChanged
+	}
+	if err := validateSenderEpoch(current); err != nil {
+		return active, err
+	}
+	if guards.Admit != nil {
+		if err := guards.Admit(ctx, current); err != nil {
+			return active, err
 		}
 	}
+	state, ok := epochs.(counter.State)
+	if !ok || s.sender == nil {
+		return active, ErrBinding
+	}
+	reserved, err := counter.Reserve(ctx, state, group, current.Epoch, uint16(current.OwnLeaf)) //nolint:gosec // G115: validateSenderEpoch bounds OwnLeaf to uint16
+	if err != nil {
+		return active, fmt.Errorf("music livekit: sender counter reservation failed: %w", err)
+	}
+	if err := s.sender.RekeyRange(current.BaseKey, uint16(current.OwnLeaf), current.Epoch, reserved.Start, reserved.End); err != nil { //nolint:gosec // G115: as above
+		return active, err
+	}
+	return current, nil
 }
 
 func (p *Pool) deadCause(generation uint64, fallback error) error {

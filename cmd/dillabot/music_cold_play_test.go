@@ -19,6 +19,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
 	"github.com/dilla-chat/dilla/internal/bot/service"
+	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
@@ -28,14 +29,17 @@ import (
 type coldPlayResolver struct {
 	delay time.Duration
 	calls atomic.Int32
+	wait  func(context.Context, string, time.Duration) error
+	fail  bool
 }
 
 func (r *coldPlayResolver) Resolve(ctx context.Context, _ string) ([]music.Track, error) {
 	r.calls.Add(1)
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-time.After(r.delay):
+	if err := r.wait(ctx, "resolve", r.delay); err != nil {
+		return nil, err
+	}
+	if r.fail {
+		return nil, errors.New("no such track")
 	}
 	return []music.Track{{ID: "resolved", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Song", Artist: "Band", DurationMS: 30_000}}, nil
 }
@@ -54,11 +58,16 @@ func (c *coldPlayCalls) StartCall(context.Context, id.ID) (client.Call, error) {
 type coldPlayPublisher struct {
 	mu        sync.Mutex
 	published []time.Time
+	now       func() time.Time
 }
 
 func (p *coldPlayPublisher) Start(context.Context, client.Call, id.ID, livekit.EpochSource, session.Encoder) (session.Publisher, error) {
 	p.mu.Lock()
-	p.published = append(p.published, time.Now())
+	now := time.Now
+	if p.now != nil {
+		now = p.now
+	}
+	p.published = append(p.published, now())
 	p.mu.Unlock()
 	return &liveRuntimePublisher{done: make(chan struct{})}, nil
 }
@@ -108,11 +117,50 @@ type coldPlayRig struct {
 	joinStarted                      atomic.Int64
 	djChecks                         atomic.Int32
 	dispatcher                       *service.SealedDispatcher
+	handlers                         *service.MusicInteractions
+	// clk, when set, drives the join and the resolve: each reports on waiting when its timer is set.
+	clk     *clock.Fake
+	waiting chan string
 }
 
-func newColdPlayRig(t *testing.T, join, resolve time.Duration, dj bool) *coldPlayRig {
+func (r *coldPlayRig) now() time.Time {
+	if r.clk != nil {
+		return r.clk.Now()
+	}
+	return time.Now()
+}
+
+// wait is a delay of d on the rig's clock.
+func (r *coldPlayRig) wait(ctx context.Context, what string, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	if r.clk == nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(d):
+			return nil
+		}
+	}
+	timer := r.clk.NewTimer(d)
+	r.waiting <- what
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C():
+		return nil
+	}
+}
+
+func newColdPlayRig(t *testing.T, join, resolve time.Duration, dj bool, clk ...*clock.Fake) *coldPlayRig {
 	t.Helper()
-	r := &coldPlayRig{installation: id.New(), community: id.New(), channel: id.New(), publisher: &coldPlayPublisher{}, resolver: &coldPlayResolver{delay: resolve}}
+	r := &coldPlayRig{installation: id.New(), community: id.New(), channel: id.New(), publisher: &coldPlayPublisher{}, resolver: &coldPlayResolver{delay: resolve}, waiting: make(chan string, 4)}
+	if len(clk) == 1 {
+		r.clk = clk[0]
+		r.publisher.now = r.clk.Now
+	}
+	r.resolver.wait = r.wait
 	group := id.New()
 	r.calls = &coldPlayCalls{call: client.Call{CallID: r.channel, GroupID: group, LiveKitURL: "wss://media.example", Token: "token"}}
 	n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: r.community, Installation: r.installation}, rows: map[string]native.StateValue{}}
@@ -123,13 +171,8 @@ func newColdPlayRig(t *testing.T, join, resolve time.Duration, dj bool) *coldPla
 	starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: r.community, Channel: r.channel, Calls: r.calls,
 		JoinCallGroup: func(ctx context.Context) error {
 			r.joins.Add(1)
-			r.joinStarted.CompareAndSwap(0, time.Now().UnixNano())
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(join):
-			}
-			return nil
+			r.joinStarted.CompareAndSwap(0, r.now().UnixNano())
+			return r.wait(ctx, "join", join)
 		},
 		YouTubePCM: liveRuntimePCM{}, Encoder: liveRuntimeEncoderStarter{}, Publisher: r.publisher, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
 	if err != nil {
@@ -147,6 +190,7 @@ func newColdPlayRig(t *testing.T, join, resolve time.Duration, dj bool) *coldPla
 		CurrentState: registry.CurrentState, OnPersistedSnapshot: musicSnapshotCommitCallback(registry, nil),
 		OnImmediateControl: registry.applyImmediateControl,
 		OnPlayOpened:       registry.warmMusicCall, OnPlay: registry.playPersistedSnapshot}
+	r.handlers = h
 	r.dispatcher = &service.SealedDispatcher{Community: r.community, Handlers: h.Handlers()}
 	return r
 }
@@ -167,18 +211,40 @@ func (r *coldPlayRig) send(t *testing.T, op protocol.Operation, args ...any) []t
 	return out
 }
 
+// M5: the join and the resolve wait on a fake clock. The /play's join begins before its resolve ends, and the first
+// frame is published when the slower of the two (the 500 ms resolve) is done: 500 ms of clock time, not 900.
 func TestColdPlayJoinsAndResolvesInParallel(t *testing.T) {
 	const join, resolve = 400 * time.Millisecond, 500 * time.Millisecond
-	// The first frame may follow the slower of the two by the encoder's start and the hand-off; -race slows both.
-	const encode = 150 * time.Millisecond
-	r := newColdPlayRig(t, join, resolve, true)
-	enter := time.Now()
-	answers := r.send(t, protocol.OpMusicEnqueue, "never gonna")
+	clk := clock.NewFake(time.Unix(1_800_000_000, 0))
+	r := newColdPlayRig(t, join, resolve, true, clk)
+	enter := clk.Now()
+	done := make(chan []timedAnswer, 1)
+	go func() { done <- r.send(t, protocol.OpMusicEnqueue, "never gonna") }()
+	waitingFor := map[string]bool{}
+	for len(waitingFor) < 2 {
+		select {
+		case what := <-r.waiting:
+			waitingFor[what] = true
+		case <-time.After(5 * time.Second):
+			t.Fatalf("waiting = %v, want the join and the resolve both under way before any time passed", waitingFor)
+		}
+	}
+	if started := time.Unix(0, r.joinStarted.Load()); !started.Equal(enter) {
+		t.Fatalf("the call join started at +%v, want at Enter, beside the resolve", started.Sub(enter))
+	}
+	clk.Advance(join)
+	clk.Advance(resolve - join)
+	var answers []timedAnswer
+	select {
+	case answers = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the /play did not finish after the resolve")
+	}
 	if len(answers) != 2 {
 		t.Fatalf("answers = %+v", answers)
 	}
-	if a := answers[0]; a.Final || string(a.Body) != "Searching…" || a.at.Sub(enter) > 100*time.Millisecond {
-		t.Fatalf("first answer = %q final=%v after %v, want an immediate Searching…", a.Body, a.Final, a.at.Sub(enter))
+	if a := answers[0]; a.Final || string(a.Body) != "Searching…" {
+		t.Fatalf("first answer = %q final=%v, want Searching…", a.Body, a.Final)
 	}
 	published, publishes := r.publisher.first()
 	if publishes != 1 {
@@ -188,17 +254,10 @@ func TestColdPlayJoinsAndResolvesInParallel(t *testing.T) {
 	if !final.Final || final.Status != intake.StatusOK || string(final.Body) != "Now playing: Song — Band." {
 		t.Fatalf("final answer = %d %q final=%v", final.Status, final.Body, final.Final)
 	}
-	if final.at.Before(published) {
-		t.Fatal(`"Now playing" was answered before the first frame was published`)
-	}
-	started := time.Unix(0, r.joinStarted.Load())
-	if r.joinStarted.Load() == 0 || started.Sub(enter) > 100*time.Millisecond {
-		t.Fatalf("the call join started %v after Enter, want it beside the resolve", started.Sub(enter))
-	}
 	firstFrame := published.Sub(enter)
-	t.Logf("Enter → first frame %v (join %v ∥ resolve %v)", firstFrame, join, resolve)
-	if firstFrame > resolve+50*time.Millisecond+encode {
-		t.Fatalf("first frame after %v, want at most %v plus encode (%v): the join and the resolve ran one after the other", firstFrame, resolve+50*time.Millisecond, encode)
+	t.Logf("Enter → first frame %v of clock time (join %v ∥ resolve %v)", firstFrame, join, resolve)
+	if firstFrame > resolve+50*time.Millisecond {
+		t.Fatalf("first frame after %v of clock time, want at most %v: the join and the resolve ran one after the other", firstFrame, resolve+50*time.Millisecond)
 	}
 	if n := r.joins.Load(); n != 1 {
 		t.Fatalf("call-group joins = %d, want 1 (the start uses the join the /play began)", n)
@@ -210,6 +269,7 @@ func TestColdPlayJoinsAndResolvesInParallel(t *testing.T) {
 		t.Fatalf("resolves = %d, want 1", n)
 	}
 	// A second /play while the first track plays only queues it: no second join, no second start.
+	r.resolver.delay = 0
 	again := r.send(t, protocol.OpMusicEnqueue, "next one")
 	if last := again[len(again)-1]; !last.Final || string(last.Body) != "Track added to the music queue." {
 		t.Fatalf("queued /play = %+v", again)
@@ -219,18 +279,13 @@ func TestColdPlayJoinsAndResolvesInParallel(t *testing.T) {
 	}
 }
 
-// A sealed /play whose resolve was quick commits on the call and DJ check it just made; one whose resolve took longer
-// than sealedPlayRecheckAfter checks both again before its commit.
-func TestColdPlayRechecksTheDJOnlyAfterASlowResolve(t *testing.T) {
+// Fix round 1 (I1): the call and DJ checks are made again right before every commit, in memory, however quick the
+// resolve was.
+func TestColdPlayAlwaysRechecksTheDJBeforeTheCommit(t *testing.T) {
 	quick := newColdPlayRig(t, 10*time.Millisecond, 10*time.Millisecond, true)
 	quick.send(t, protocol.OpMusicEnqueue, "song")
-	if n := quick.djChecks.Load(); n != 1 {
-		t.Fatalf("DJ checks after a quick resolve = %d, want 1", n)
-	}
-	slow := newColdPlayRig(t, 10*time.Millisecond, 1100*time.Millisecond, true)
-	slow.send(t, protocol.OpMusicEnqueue, "song")
-	if n := slow.djChecks.Load(); n != 2 {
-		t.Fatalf("DJ checks after a slow resolve = %d, want 2", n)
+	if n := quick.djChecks.Load(); n != 2 {
+		t.Fatalf("DJ checks after a quick resolve = %d, want 2 (the check and the recheck before the commit)", n)
 	}
 }
 
@@ -456,25 +511,44 @@ func TestQueuedTrackStartReusesTheRoomsCall(t *testing.T) {
 	}
 }
 
-func TestColdJoinReadsThePolicyVersionOncePerWindow(t *testing.T) {
-	var cache musicPolicyCache
-	reads := 0
-	read := func(context.Context) (uint64, error) { reads++; return 7, nil }
+// M2: the policy version is read once until the installation's next op 54; a join that fails on a reused version
+// reads it again and is tried once more.
+func TestColdJoinReadsThePolicyVersionOncePerCommunityChange(t *testing.T) {
+	installation := id.New()
+	cache := musicPolicyCache{installation: installation}
+	reads, version := 0, uint64(7)
+	read := func(context.Context) (uint64, error) { reads++; return version, nil }
+	var joined []uint64
+	join := func(_ context.Context, policy uint64) error { joined = append(joined, policy); return nil }
 	for range 3 {
-		if v, err := cache.get(t.Context(), read); err != nil || v != 7 {
-			t.Fatalf("policy = %d, %v", v, err)
+		if err := cache.joinWithPolicy(t.Context(), read, join); err != nil {
+			t.Fatal(err)
 		}
 	}
 	if reads != 1 {
-		t.Fatalf("policy reads = %d, want 1 within the window", reads)
+		t.Fatalf("policy reads = %d, want 1 until the community changes", reads)
 	}
-	// A failed join forgets it: the next join reads it again.
-	cache.forget()
-	if _, err := cache.get(t.Context(), read); err != nil || reads != 2 {
-		t.Fatalf("after forget: reads=%d err=%v", reads, err)
+	musicSignals.communityChanged(installation)
+	version = 8
+	if err := cache.joinWithPolicy(t.Context(), read, join); err != nil || reads != 2 || joined[len(joined)-1] != 8 {
+		t.Fatalf("after op 54: reads=%d joined=%v err=%v", reads, joined, err)
 	}
-	cache.forget()
-	if _, err := cache.get(t.Context(), func(context.Context) (uint64, error) { return 0, errors.New("unavailable") }); err == nil {
-		t.Fatal("a failed read was cached")
+	// The policy changed without an op 54 reaching the Bot: the join refuses the stale version once, reads it again
+	// and joins.
+	version = 9
+	refusals := 0
+	refusing := func(_ context.Context, policy uint64) error {
+		if policy != 9 {
+			refusals++
+			return errors.New("binding refused")
+		}
+		joined = append(joined, policy)
+		return nil
+	}
+	if err := cache.joinWithPolicy(t.Context(), read, refusing); err != nil || refusals != 1 || reads != 3 || joined[len(joined)-1] != 9 {
+		t.Fatalf("stale policy: err=%v refusals=%d reads=%d joined=%v", err, refusals, reads, joined)
+	}
+	if err := cache.joinWithPolicy(t.Context(), func(context.Context) (uint64, error) { return 0, errors.New("unavailable") }, join); err != nil {
+		t.Fatalf("a cached version needs no read: %v", err)
 	}
 }

@@ -267,7 +267,9 @@ async function run(page: Page, id: string, expected: RegExp, argument?: string):
 async function timedPlay(sender: Page, receiver: Page, track: string): Promise<number> {
   await listen(receiver);
   const { enter, result, previous } = await command(sender, 'play', track);
-  const heard = await firstAudio(receiver, enter);
+  const heard = await firstAudio(receiver, enter).catch(async (error: unknown) => {
+    throw new Error(`${String(error)}\nthe /play's result row shows ${JSON.stringify(await result.innerText().catch(() => ''))}`);
+  });
   await answer(result, previous, /Now playing: /u);
   await settle(sender);
   console.info(`G3 run /play ${track}: ${String(Math.round(heard - enter))} ms`);
@@ -277,7 +279,7 @@ async function timedPlay(sender: Page, receiver: Page, track: string): Promise<n
 /** The voice room of cold run `i`: a channel whose call the Bot has never been in (the first run uses general). */
 const coldRoom = (i: number): string => (i === 0 ? VOICE : `cold-${String(i)}`);
 /** The rooms of the later tests, one each: their people are seated before the Bot first joins. */
-const ROOMS = { gap: 'gap-room', repeat: 'repeat-room', device: 'device-room', restart: 'restart-room' } as const;
+const ROOMS = { gap: 'gap-room', repeat: 'repeat-room', device: 'device-room', restart: 'restart-room', late: 'late-room' } as const;
 
 test('play from Enter to first audio frame meets G3', async ({ peerBrowser }) => {
   test.setTimeout(1_200_000);
@@ -352,21 +354,8 @@ test('a repeated track starts within 500 ms at p95', async ({ peerBrowser }) => 
   expect(percentile(runs, 95), 'repeated track p95 (ms)').toBeLessThanOrEqual(500);
 });
 
-test('a new device uses /play within its first session', async ({ peerBrowser }) => {
-  test.setTimeout(600_000);
-  const seats = await seatBoth(peerBrowser, ROOMS.device);
-  const listener = seats.ada.person.page;
-  await quiet(listener);
-  // A fresh device of Bea, enrolled here: it signs in, joins the room and plays, with no registration step between.
-  if (bea === undefined) throw new Error('no Bea');
-  const device = await peerBrowser.open('bea-new-device');
-  await signIn(device.page, bea, instance);
-  await seatInVoice(device.page, ROOMS.device);
-  const elapsed = await timedPlay(device.page, listener, MUSIC_FIXTURES.long);
-  console.info(`G3 new-device first /play: ${String(elapsed)} ms`);
-  expect(elapsed, 'a new device is heard within the cold budget').toBeLessThanOrEqual(2000);
-});
-
+// Runs before the tests that sign in more devices: each TOTP sign-in moves the host's clock to a fresh code window, and
+// the Bot's restart checks that clock against the wall.
 test('a Bot restart mid-queue resumes', async ({ peerBrowser }) => {
   test.setTimeout(600_000);
   if (host === undefined) throw new Error('no host');
@@ -397,4 +386,51 @@ test('a Bot restart mid-queue resumes', async ({ peerBrowser }) => {
   expect(resumed).toContain(MUSIC_FIXTURES.long);
   expect(resumed).toContain(`1. ${MUSIC_FIXTURES.short}`);
   await expect.poll(() => audibleLevel(receiver), { timeout: WAIT }).toBeGreaterThan(AUDIBLE_RMS);
+});
+
+// Fix round 1 (C1, I4): a device that joins a call where the Bot already plays hears it. The join's commit moves the
+// call to a new epoch; the Bot applies it and re-keys its sender, so the newcomer (who never held the old epoch's key)
+// can decrypt the Bot's frames.
+test('a device that joins while the Bot plays hears it', async ({ peerBrowser }) => {
+  test.setTimeout(600_000);
+  if (ada === undefined || bea === undefined) {
+    // This test can run alone (-g): the community is made by the first seating.
+    const seats = await seatBoth(peerBrowser);
+    await peerBrowser.close(seats.ada.person);
+    await peerBrowser.close(seats.bea.person);
+  }
+  // Bea's new device signs in first, outside the call, so it joins while the Bot is still playing.
+  const late = await peerBrowser.open(`bea-late-${String(++seatings)}`);
+  await signIn(late.page, bea!, instance);
+  const first = await peerBrowser.open(`ada-late-${String(++seatings)}`);
+  await signIn(first.page, ada!, instance);
+  await seatInVoice(first.page, ROOMS.late);
+  await quiet(first.page);
+  await timedPlay(first.page, first.page, MUSIC_FIXTURES.long);
+  // A second track queued behind it keeps the Bot playing through the join.
+  await run(first.page, 'play', /Track added to the music queue\./u, MUSIC_FIXTURES.long);
+  // Bea's device joins the room the Bot is playing in.
+  await listen(late.page);
+  const joinedAt = await late.page.evaluate(() => performance.timeOrigin + performance.now());
+  await seatInVoice(late.page, ROOMS.late);
+  const heard = await firstAudio(late.page, joinedAt);
+  console.info(`G3 late joiner heard the Bot ${String(Math.round(heard - joinedAt))} ms after starting to join`);
+  await expect.poll(() => audibleLevel(late.page), { timeout: WAIT }).toBeGreaterThan(AUDIBLE_RMS);
+  // The first listener still hears it too (the Bot re-keyed in place, without stopping).
+  await expect.poll(() => audibleLevel(first.page), { timeout: WAIT }).toBeGreaterThan(AUDIBLE_RMS);
+});
+
+test('a new device uses /play within its first session', async ({ peerBrowser }) => {
+  test.setTimeout(600_000);
+  const seats = await seatBoth(peerBrowser, ROOMS.device);
+  const listener = seats.ada.person.page;
+  await quiet(listener);
+  // A fresh device of Bea, enrolled here: it signs in, joins the room and plays, with no registration step between.
+  if (bea === undefined) throw new Error('no Bea');
+  const device = await peerBrowser.open('bea-new-device');
+  await signIn(device.page, bea, instance);
+  await seatInVoice(device.page, ROOMS.device);
+  const elapsed = await timedPlay(device.page, listener, MUSIC_FIXTURES.long);
+  console.info(`G3 new-device first /play: ${String(elapsed)} ms`);
+  expect(elapsed, 'a new device is heard within the cold budget').toBeLessThanOrEqual(2000);
 });

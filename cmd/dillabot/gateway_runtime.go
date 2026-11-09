@@ -508,6 +508,7 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 				r.deliverWebhook(ctx, installation, delivery.WebhookAck, delivery.Frame.BotPayload)
 			case gatewayclient.OpCommunityChanged:
 				// The community's channels, settings or the Bot's own installation changed (op 54): read them again.
+				musicSignals.communityChanged(installation)
 				r.notify()
 				r.requestPass(installation)
 			case gatewayclient.OpWelcome:
@@ -515,6 +516,10 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 				r.notify()
 				r.requestPass(installation)
 			case gatewayclient.OpMessagePlain, gatewayclient.OpHandshake, gatewayclient.OpEpochChanged, gatewayclient.OpVoiceState:
+				if op := delivery.Frame.Op; (op == gatewayclient.OpHandshake || op == gatewayclient.OpEpochChanged) && delivery.Frame.GroupID != nil {
+					// A playing room in this call group applies the commit and re-keys now (Bot v2 Task 19 fix round 1, C1).
+					musicSignals.callGroupChanged(installation, *delivery.Frame.GroupID)
+				}
 				r.notify()
 			}
 		})

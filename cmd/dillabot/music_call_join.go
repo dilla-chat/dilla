@@ -111,40 +111,77 @@ func (t feedJoinTrust) Changed(ctx context.Context, user id.ID) error {
 	return f.trust.Changed(ctx, user)
 }
 
-// musicPolicyFresh is how long a community's policy version read for a call join is used again (Bot v2 Task 19: the
-// read is one of the rate-limited requests on a cold /play's path).
-const musicPolicyFresh = 30 * time.Second
-
-// musicPolicyCache keeps a community's policy version for the music call joins of one pass.
+// musicPolicyCache keeps a community's policy version for the music call joins of one pass, until the installation's
+// next op 54 (Bot v2 Task 19 fix round 1, M2: dillad pushes op 54 when the community changes). The read is one of the
+// rate-limited requests on a cold /play's path. A stale version fails closed: the core refuses the join's binding.
 type musicPolicyCache struct {
-	mu      sync.Mutex
-	version uint64
-	at      time.Time
+	mu           sync.Mutex
+	installation id.ID
+	version      uint64
+	generation   uint64
 }
 
-func (c *musicPolicyCache) get(ctx context.Context, read func(context.Context) (uint64, error)) (uint64, error) {
+// get answers the policy version and whether it was read just now.
+func (c *musicPolicyCache) get(ctx context.Context, read func(context.Context) (uint64, error)) (uint64, bool, error) {
+	generation := musicSignals.generation(c.installation)
 	c.mu.Lock()
-	if c.version != 0 && time.Since(c.at) < musicPolicyFresh {
+	if c.version != 0 && c.generation == generation {
 		version := c.version
 		c.mu.Unlock()
-		return version, nil
+		return version, false, nil
 	}
 	c.mu.Unlock()
 	version, err := read(ctx)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	c.mu.Lock()
-	c.version, c.at = version, time.Now()
+	c.version, c.generation = version, generation
 	c.mu.Unlock()
-	return version, nil
+	return version, true, nil
 }
 
-// forget makes the next join read the policy version again (after a join that failed, which a newer policy can cause).
+// forget makes the next join read the policy version again.
 func (c *musicPolicyCache) forget() {
 	c.mu.Lock()
 	c.version = 0
 	c.mu.Unlock()
+}
+
+// joinWithPolicy runs join with the reused policy version; a join that fails on a reused version reads it again and
+// is tried once more (the version may have changed), so a policy change costs no failed /play.
+func (c *musicPolicyCache) joinWithPolicy(ctx context.Context, read func(context.Context) (uint64, error), join func(context.Context, uint64) error) error {
+	policy, fresh, err := c.get(ctx, read)
+	if err != nil {
+		return err
+	}
+	err = join(ctx, policy)
+	if err == nil {
+		return nil
+	}
+	c.forget()
+	if fresh || ctx.Err() != nil {
+		return err
+	}
+	if policy, _, err = c.get(ctx, read); err != nil {
+		return err
+	}
+	if err = join(ctx, policy); err != nil {
+		c.forget()
+	}
+	return err
+}
+
+type musicCatchUpKey struct{}
+
+// withMusicCatchUp gives the call join the room's catch-up (musicCallCatchUp.run) for its already-member branch.
+func withMusicCatchUp(ctx context.Context, catchUp func(context.Context, id.ID) error) context.Context {
+	return context.WithValue(ctx, musicCatchUpKey{}, catchUp)
+}
+
+func musicCatchUpFrom(ctx context.Context) func(context.Context, id.ID) error {
+	catchUp, _ := ctx.Value(musicCatchUpKey{}).(func(context.Context, id.ID) error)
+	return catchUp
 }
 
 // errMusicCallJoinHeld refuses a join while a user in the call is held by membership trust (their newest pushed list
@@ -251,6 +288,13 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 			}
 			if current {
 				branch = "already_member"
+				// The Bot is a member already, but members may have committed since: apply their commits first, so the
+				// media epoch is the call's current one (Bot v2 Task 19 fix round 1, C1).
+				if catchUp := musicCatchUpFrom(ctx); catchUp != nil {
+					if err = timing.run("callCatchUp", func() error { return catchUp(ctx, group) }); err != nil {
+						return musicCallJoinStageError("catch_up", err)
+					}
+				}
 				_, err = timedMusicJoinCall(timing, "CallMediaEpoch", func() (native.CallMediaEpoch, error) { return core.CallMediaEpoch(ctx, group) })
 				return musicCallJoinStageError("active_media_gate", err)
 			}
