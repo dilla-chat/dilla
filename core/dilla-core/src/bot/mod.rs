@@ -1810,8 +1810,8 @@ mod tests {
     use super::*;
     use crate::cbor::Encoder;
     #[test]
-    fn helper_protocol_accepts_call_group_and_command_operations_only_through_twenty_four() {
-        for operation in [19, 20, 21, 22, 23, 24] {
+    fn helper_protocol_accepts_call_group_and_command_operations_only_through_twenty_six() {
+        for operation in [19, 20, 21, 22, 23, 24, 25, 26] {
             let request = HelperRequest {
                 request_id: MsgId::from_bytes([1; 16]),
                 operation,
@@ -1825,7 +1825,7 @@ mod tests {
         }
         let unknown = HelperRequest {
             request_id: MsgId::from_bytes([1; 16]),
-            operation: 25,
+            operation: 27,
             payload: vec![0x80],
         };
         assert!(unknown.encode().is_err());
