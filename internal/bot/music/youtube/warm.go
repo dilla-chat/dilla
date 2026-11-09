@@ -63,7 +63,14 @@ type SandboxConfig struct {
 	MaxStreamBytes int64
 	// StreamTimeout bounds how long ffmpeg may run for one track. Zero selects the maximum track length.
 	StreamTimeout time.Duration
+	// WarmUpLookup makes every new lookup worker run one lookup of warmUpVideo in the background before any member's
+	// does: the worker's challenge solver starts and parses YouTube's current player then, so a fresh worker's first
+	// /play is as fast as a warm one's (Bot v2 Task 19 fix round 4). The lookup names no member or community.
+	WarmUpLookup bool
 }
+
+// warmUpVideo is the public video a new worker looks up to warm itself: "Me at the zoo", YouTube's first upload.
+const warmUpVideo = "jNQXAC9IVRw"
 
 // Resolved is one cached lookup: the queue descriptor and the audio stream URL
 // yt-dlp chose. Expires is when the cache stops serving it.
@@ -104,8 +111,10 @@ type warmDeps struct {
 	start func(ctx context.Context) (lookupWorker, error)
 	now   func() time.Time
 	sleep func(ctx context.Context, d time.Duration) error
+	// warm runs a new worker's warm-up lookup (SandboxConfig.WarmUpLookup); nil skips it.
+	warm func(w lookupWorker)
 	// prime dials a spare connection to a resolved stream's host ahead of its stream (egress_pool.go); nil skips it.
-	prime func(host string)
+	prime func(ctx context.Context, owner, host string)
 }
 
 // cacheEntry is one cached lookup; used orders entries for LRU eviction.
@@ -156,6 +165,9 @@ func NewWarmResolver(cfg SandboxConfig, cache time.Duration) (*WarmResolver, err
 	r := newWarmResolver(cfg, cache, warmDeps{})
 	r.deps.start = func(ctx context.Context) (lookupWorker, error) { return startSandboxWorker(ctx, cfg) }
 	r.deps.prime = upstreams.prime
+	if cfg.WarmUpLookup {
+		r.deps.warm = r.warmUpWorker
+	}
 	go r.warmUp()
 	return r, nil
 }
@@ -495,7 +507,7 @@ func (r *WarmResolver) lookup(ctx context.Context, input, kind, canonical string
 		// The stream that follows a /play connects to this googlevideo host: its spare is dialed now, while the Bot
 		// answers and joins (Bot v2 Task 19 fix round 3).
 		if u, err := url.Parse(streamURL); err == nil {
-			r.deps.prime(strings.ToLower(u.Hostname()))
+			r.deps.prime(r.ctx, "lookups:"+ownerOf(ctx), strings.ToLower(u.Hostname()))
 		}
 	}
 	now := r.deps.now()
@@ -633,9 +645,20 @@ func (r *WarmResolver) acquire(ctx context.Context) (lookupWorker, error) {
 		}
 		r.worker = w
 		r.mu.Unlock()
+		if r.deps.warm != nil {
+			go r.deps.warm(w)
+		}
 		return w, nil
 	}
 	return nil, lastErr
+}
+
+// warmUpWorker runs w's warm-up lookup and discards its answer. It is not a member's lookup: it is not cached and
+// does not count toward the worker's recycling.
+func (r *WarmResolver) warmUpWorker(w lookupWorker) {
+	ctx, cancel := context.WithTimeout(r.ctx, r.timeout)
+	defer cancel()
+	_, _ = w.Do(ctx, r.lookupArgs("video", videoURL(warmUpVideo)), MaxMetadataBytes)
 }
 
 // liveWorker returns the current worker, forgetting one that has exited.

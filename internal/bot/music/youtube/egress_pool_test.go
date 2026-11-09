@@ -111,7 +111,7 @@ func waitIdle(t *testing.T, p *upstreamPool, want int) {
 func TestASpareGoesOnlyToItsOwnHost(t *testing.T) {
 	u := newLoopbackUpstreams(t)
 	p, dials := testPool(t, u)
-	p.prime("www.youtube.com")
+	p.prime(t.Context(), "test", "www.youtube.com")
 	waitIdle(t, p, 1)
 	if conn := p.take("rr1---sn-abc.googlevideo.com"); conn != nil {
 		t.Fatal("a spare to www.youtube.com was handed to another host")
@@ -131,33 +131,85 @@ func TestThePoolIsBoundedAndAllowlisted(t *testing.T) {
 	u := newLoopbackUpstreams(t)
 	p, dials := testPool(t, u)
 	for _, host := range []string{"example.com", "youtube.com.evil.example", "127.0.0.1"} {
-		p.prime(host)
+		p.prime(t.Context(), "test", host)
 		if p.take(host) != nil || dialCount(dials, host) != 0 {
 			t.Fatalf("%s was dialed or handed over", host)
 		}
 	}
 	for i := 0; i < 5; i++ {
-		p.prime("www.youtube.com")
+		p.prime(t.Context(), "test", "www.youtube.com")
 	}
 	waitIdle(t, p, maxIdlePerHost)
 	for i := 0; i < 2*maxIdleTotal; i++ {
-		p.prime("rr" + string(rune('a'+i)) + "---sn-abc.googlevideo.com")
+		p.prime(t.Context(), "owner-"+string(rune('a'+i)), "rr"+string(rune('a'+i))+"---sn-abc.googlevideo.com")
 	}
 	waitIdle(t, p, maxIdleTotal)
+}
+
+// Fix round 4 (M3-1): one owner (a sandbox's broker, or one community's lookups) holds at most maxIdlePerOwner
+// spares, so it cannot fill the pool; another owner still finds room. A spare handed over frees its owner's slot.
+func TestOneOwnerCannotFillThePool(t *testing.T) {
+	u := newLoopbackUpstreams(t)
+	p, _ := testPool(t, u)
+	for i := 0; i < maxIdleTotal; i++ {
+		p.prime(t.Context(), "greedy", "rr"+string(rune('a'+i))+"---sn-abc.googlevideo.com")
+	}
+	waitIdle(t, p, maxIdlePerOwner)
+	p.prime(t.Context(), "other", "www.youtube.com")
+	waitIdle(t, p, maxIdlePerOwner+1)
+	if conn := p.take("rra---sn-abc.googlevideo.com"); conn != nil {
+		_ = conn.Close()
+	} else if conn := p.take("rre---sn-abc.googlevideo.com"); conn == nil {
+		t.Fatal("no greedy spare to take")
+	} else {
+		_ = conn.Close()
+	}
+	p.prime(t.Context(), "greedy", "rrz---sn-abc.googlevideo.com")
+	waitIdle(t, p, maxIdlePerOwner+1)
+}
+
+// Fix round 4 (M3-1): a spare is dialed under its owner's context: an owner that closed dials nothing more, and a
+// dial that finishes after its owner closed is dropped.
+func TestASpareIsDialedUnderItsOwnersContext(t *testing.T) {
+	u := newLoopbackUpstreams(t)
+	p, dials := testPool(t, u)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	p.prime(ctx, "closed", "www.youtube.com")
+	time.Sleep(50 * time.Millisecond)
+	if dialCount(dials, "www.youtube.com") != 0 || p.idleCount() != 0 {
+		t.Fatal("a closed owner primed a spare")
+	}
+	block := make(chan struct{})
+	p.dial = func(dialCtx context.Context, host string) (net.Conn, error) {
+		<-block
+		var d net.Dialer
+		return d.DialContext(t.Context(), "tcp", u.listener.Addr().String())
+	}
+	ctx, cancel = context.WithCancel(t.Context())
+	p.prime(ctx, "closing", "www.youtube.com")
+	cancel()
+	close(block)
+	time.Sleep(50 * time.Millisecond)
+	if p.idleCount() != 0 {
+		t.Fatal("a spare dialed for an owner that closed was kept")
+	}
+	p.prime(t.Context(), "closing", "www.youtube.com")
+	waitIdle(t, p, 1) // its slot was released
 }
 
 // A spare the server closed, or wrote to, is never handed over; one past its TTL is closed and dropped.
 func TestASpareIsVerifiedAgainBeforeItIsHandedOver(t *testing.T) {
 	u := newLoopbackUpstreams(t)
 	p, _ := testPool(t, u)
-	p.prime("www.youtube.com")
+	p.prime(t.Context(), "test", "www.youtube.com")
 	waitIdle(t, p, 1)
 	_ = u.last().Close()
 	time.Sleep(20 * time.Millisecond)
 	if conn := p.take("www.youtube.com"); conn != nil {
 		t.Fatal("a closed spare was handed over")
 	}
-	p.prime("www.youtube.com")
+	p.prime(t.Context(), "test", "www.youtube.com")
 	waitIdle(t, p, 1)
 	if _, err := u.last().Write([]byte("unsolicited")); err != nil {
 		t.Fatal(err)
@@ -167,7 +219,7 @@ func TestASpareIsVerifiedAgainBeforeItIsHandedOver(t *testing.T) {
 		t.Fatal("a spare that received bytes was handed over")
 	}
 	p.ttl = 30 * time.Millisecond
-	p.prime("www.youtube.com")
+	p.prime(t.Context(), "test", "www.youtube.com")
 	waitIdle(t, p, 1)
 	waitIdle(t, p, 0)
 }
@@ -198,7 +250,7 @@ func TestTheBrokerUsesAndRefillsSpares(t *testing.T) {
 	b := newEgressBroker(context.Background(), listener)
 	b.pool = p
 	t.Cleanup(b.close)
-	p.prime("www.youtube.com")
+	p.prime(t.Context(), "test", "www.youtube.com")
 	waitIdle(t, p, 1)
 	connect := func() {
 		t.Helper()

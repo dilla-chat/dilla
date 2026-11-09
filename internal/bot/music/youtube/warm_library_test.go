@@ -84,6 +84,12 @@ func writeYtDlpZipapp(t *testing.T, dir string) string {
 // site-packages (for the sandbox's python3) holds the fake library.
 func writeYtDlpVenv(t *testing.T, dir string) string {
 	t.Helper()
+	return writeYtDlpVenvWith(t, dir, map[string]string{"__init__.py": fakeYtDlpLibrary})
+}
+
+// writeYtDlpVenvWith writes the venv layout with files (paths relative to the yt_dlp package).
+func writeYtDlpVenvWith(t *testing.T, dir string, files map[string]string) string {
+	t.Helper()
 	version, err := exec.CommandContext(t.Context(), "python3", "-I", "-c", `import sys; print("%d.%d" % sys.version_info[:2])`).Output()
 	if err != nil {
 		t.Skipf("python3: %v", err)
@@ -96,11 +102,17 @@ func writeYtDlpVenv(t *testing.T, dir string) string {
 	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for path, body := range map[string]string{
+	all := map[string]string{
 		filepath.Join(root, "pyvenv.cfg"):    "home = /usr/bin\n",
-		filepath.Join(pkg, "__init__.py"):    fakeYtDlpLibrary,
 		filepath.Join(root, "bin", "yt-dlp"): "#!/bin/sh\nexit 3\n",
-	} {
+	}
+	for rel, body := range files {
+		all[filepath.Join(pkg, rel)] = body
+	}
+	for path, body := range all {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
 			t.Fatal(err)
 		}

@@ -23,16 +23,20 @@ import (
 //     remote address is checked to be public and on 443 again, and it is checked to be open with nothing received;
 //   - a spare has carried no bytes: the tunnel it becomes is counted against the tunnel and process budgets as any
 //     other, from its first byte;
-//   - the pool is small and short-lived (maxIdlePerHost, maxIdleTotal, idleUpstreamTTL).
+//   - the pool is small and short-lived (maxIdlePerHost, maxIdleTotal, idleUpstreamTTL), and no one owner (a
+//     sandbox's broker, or one community's lookups) holds more than maxIdlePerOwner of it (fix round 4, M3-1);
+//   - a spare is dialed under its owner's context, so a broker or resolver that closes stops its dials.
 const (
 	maxIdlePerHost  = 2
 	maxIdleTotal    = 8
+	maxIdlePerOwner = 4
 	idleUpstreamTTL = 8 * time.Second
 	primeDeadline   = 4 * time.Second
 )
 
 type idleUpstream struct {
 	conn  net.Conn
+	owner string
 	timer *time.Timer
 }
 
@@ -40,6 +44,7 @@ type upstreamPool struct {
 	mu      sync.Mutex
 	idle    map[string][]*idleUpstream
 	pending map[string]int
+	owners  map[string]int // idle and pending spares by owner
 	total   int
 	dial    func(context.Context, string) (net.Conn, error)
 	verify  func(host string, conn net.Conn) bool
@@ -47,7 +52,7 @@ type upstreamPool struct {
 }
 
 func newUpstreamPool(dial func(context.Context, string) (net.Conn, error)) *upstreamPool {
-	return &upstreamPool{idle: map[string][]*idleUpstream{}, pending: map[string]int{}, dial: dial, verify: verifyIdleUpstream, ttl: idleUpstreamTTL}
+	return &upstreamPool{idle: map[string][]*idleUpstream{}, pending: map[string]int{}, owners: map[string]int{}, dial: dial, verify: verifyIdleUpstream, ttl: idleUpstreamTTL}
 }
 
 // upstreams is the Bot's one pool, shared by every broker.
@@ -75,9 +80,9 @@ func (p *upstreamPool) take(host string) net.Conn {
 	}
 }
 
-// prime dials a spare to host in the background when the pool has room for it.
-func (p *upstreamPool) prime(host string) {
-	if p == nil || !allowedYouTubeHost(host) {
+// prime dials a spare to host for owner in the background, under ctx, when the pool has room for it.
+func (p *upstreamPool) prime(ctx context.Context, owner, host string) {
+	if p == nil || ctx == nil || ctx.Err() != nil || !allowedYouTubeHost(host) {
 		return
 	}
 	p.mu.Lock()
@@ -85,29 +90,30 @@ func (p *upstreamPool) prime(host string) {
 	for _, n := range p.pending {
 		pendingTotal += n
 	}
-	if len(p.idle[host])+p.pending[host] >= maxIdlePerHost || p.total+pendingTotal >= maxIdleTotal {
+	if len(p.idle[host])+p.pending[host] >= maxIdlePerHost || p.total+pendingTotal >= maxIdleTotal || p.owners[owner] >= maxIdlePerOwner {
 		p.mu.Unlock()
 		return
 	}
 	p.pending[host]++
+	p.owners[owner]++
 	p.mu.Unlock()
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), primeDeadline)
-		conn, err := p.dial(ctx, host)
+		dialCtx, cancel := context.WithTimeout(ctx, primeDeadline)
+		conn, err := p.dial(dialCtx, host)
 		cancel()
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		if p.pending[host]--; p.pending[host] <= 0 {
 			delete(p.pending, host)
 		}
-		if err != nil {
+		if err != nil || ctx.Err() != nil || len(p.idle[host]) >= maxIdlePerHost || p.total >= maxIdleTotal {
+			p.releaseOwnerLocked(owner)
+			if conn != nil {
+				_ = conn.Close()
+			}
 			return
 		}
-		if len(p.idle[host]) >= maxIdlePerHost || p.total >= maxIdleTotal {
-			_ = conn.Close()
-			return
-		}
-		spare := &idleUpstream{conn: conn}
+		spare := &idleUpstream{conn: conn, owner: owner}
 		spare.timer = time.AfterFunc(p.ttl, func() { p.expire(host, spare) })
 		p.idle[host] = append(p.idle[host], spare)
 		p.total++
@@ -140,9 +146,16 @@ func (p *upstreamPool) removeLocked(host string, spare *idleUpstream) bool {
 			p.idle[host] = list
 		}
 		p.total--
+		p.releaseOwnerLocked(spare.owner)
 		return true
 	}
 	return false
+}
+
+func (p *upstreamPool) releaseOwnerLocked(owner string) {
+	if p.owners[owner]--; p.owners[owner] <= 0 {
+		delete(p.owners, owner)
+	}
 }
 
 // idleCount is the number of spares held (tests).

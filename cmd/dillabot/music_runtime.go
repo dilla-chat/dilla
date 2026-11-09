@@ -576,6 +576,9 @@ func newRuntimeMusicInteractions(installation, community id.ID, capabilities uin
 		OnPlayOpened:    registry.warmMusicCall,
 		OnPlay:          registry.playPersistedSnapshot,
 		OnPlayAbandoned: registry.abandonMusicPlay,
+		// A call hint makes the call's members read the state at once: one computation answers them for 100 ms, each
+		// member still authorised and answered on their own (Bot v2 Task 19 fix round 4).
+		StateReads: service.NewMusicStateReads(),
 	}
 	if view, err := youtubeViewFor(community); err == nil {
 		handlers.Resolver = service.LoggingMusicTrackResolver{Resolver: view.Tracks, Logger: logger, InstallationID: installation}
@@ -602,6 +605,9 @@ func youtubeSandboxConfig() (youtube.SandboxConfig, error) {
 		}
 		*tool.dst = path
 	}
+	// A new lookup worker warms its challenge solver with one public lookup before a member's (Bot v2 Task 19 fix
+	// round 4); a test host's fixture yt-dlp has nothing to warm.
+	cfg.WarmUpLookup = testhostTool("yt-dlp") == ""
 	return cfg, nil
 }
 

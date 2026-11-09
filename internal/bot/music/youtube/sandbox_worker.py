@@ -6,6 +6,7 @@ import resource
 import selectors
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -102,6 +103,260 @@ def load_ytdlp(ytdlp):
         return None
 
 
+# The JS challenge solver kept alive across lookups (Bot v2 Task 19 fix round 4, Jonas's decision of 2026-11-09).
+#
+# yt-dlp solves YouTube's JS challenges by starting `node --permission -` per lookup with the solver's lib and core
+# scripts and the player JS on stdin (about 0.46 s, most of it parsing the player). The worker instead runs one node,
+# the same binary the lookup names with --js-runtimes, inside the same sandbox (same mounts, same egress: none), under
+# the same --permission flag, listening on a socket in the worker's private /tmp. Each request runs in a new vm
+# context: no global, object or closure of one lookup is seen by another, whichever community asked. What is kept
+# between requests is immutable and the same for every caller: the compiled solver script, and each player's
+# preprocessed form keyed by the player's own sha256 (a pure function of YouTube's public player JS). The worker
+# starts the node on the first lookup that names it and starts it again when it has exited; a lookup that cannot use
+# it (no node, a failed request, a yt-dlp whose stdin template changed) runs yt-dlp's own per-lookup node instead.
+JSC_SOCKET = "/tmp/dilla-jsc.sock"
+JSC_MAX_FRAME = 64 * 1024 * 1024
+JSC_TIMEOUT = 20.0
+JSC_RESTART_BACKOFF = 5.0
+JSC_SERVER = r"""
+'use strict';
+const net = require('net');
+const vm = require('vm');
+const crypto = require('crypto');
+const SOCKET = process.argv[1];
+const MAX_REQUEST = 64 * 1024 * 1024;
+const TIMEOUT_MS = 15000;
+const scripts = new Map();
+const players = new Map();
+const hash = (text) => crypto.createHash('sha256').update(text).digest('hex');
+function remember(map, key, value, limit) {
+  if (map.size >= limit) map.delete(map.keys().next().value);
+  map.set(key, value);
+}
+function solve(request) {
+  if (!request || typeof request.lib !== 'string' || typeof request.core !== 'string' || !request.data || typeof request.data !== 'object') {
+    throw new Error('malformed request');
+  }
+  const source = request.lib + '\nObject.assign(globalThis, lib);\n' + request.core + '\n';
+  const scriptKey = hash(source);
+  let script = scripts.get(scriptKey);
+  if (!script) {
+    script = new vm.Script(source, { filename: 'jsc-solver.js' });
+    remember(scripts, scriptKey, script, 2);
+  }
+  let data = request.data;
+  let playerKey = null;
+  if (data.type === 'player' && typeof data.player === 'string') {
+    playerKey = hash(data.player);
+    const preprocessed = players.get(playerKey);
+    if (preprocessed !== undefined) {
+      data = { type: 'preprocessed', preprocessed_player: preprocessed, requests: data.requests };
+      playerKey = null;
+    }
+  }
+  const quiet = () => {};
+  const context = vm.createContext({ URL, URLSearchParams, TextEncoder, TextDecoder, atob, btoa,
+    console: { log: quiet, warn: quiet, error: quiet, info: quiet, debug: quiet } });
+  script.runInContext(context, { timeout: TIMEOUT_MS });
+  context.__dillaRequest = JSON.stringify(data);
+  const text = vm.runInContext('JSON.stringify(jsc(JSON.parse(__dillaRequest)))', context, { timeout: TIMEOUT_MS });
+  if (playerKey !== null) {
+    const result = JSON.parse(text);
+    if (result && result.type === 'result' && typeof result.preprocessed_player === 'string') {
+      remember(players, playerKey, result.preprocessed_player, 4);
+    }
+  }
+  return text + '\n';
+}
+function frame(value) {
+  const payload = Buffer.from(JSON.stringify(value), 'utf8');
+  const head = Buffer.alloc(4);
+  head.writeUInt32BE(payload.length, 0);
+  return Buffer.concat([head, payload]);
+}
+const server = net.createServer((conn) => {
+  const chunks = [];
+  let size = 0;
+  let expected = -1;
+  conn.setTimeout(30000, () => conn.destroy());
+  conn.on('error', () => {});
+  conn.on('data', (chunk) => {
+    chunks.push(chunk);
+    size += chunk.length;
+    if (expected < 0 && size >= 4) {
+      expected = Buffer.concat(chunks, 4).readUInt32BE(0);
+      if (expected > MAX_REQUEST) { conn.destroy(); return; }
+    }
+    if (expected >= 0 && size >= 4 + expected) {
+      conn.removeAllListeners('data');
+      let reply;
+      try {
+        const body = Buffer.concat(chunks, 4 + expected).subarray(4);
+        reply = { ok: true, out: solve(JSON.parse(body.toString('utf8'))) };
+      } catch (error) {
+        reply = { ok: false, error: String((error && error.message) || error).slice(0, 2000) };
+      }
+      conn.end(frame(reply));
+    }
+  });
+});
+server.on('error', () => process.exit(1));
+server.listen(SOCKET, () => process.stdout.write('ready\n'));
+"""
+
+
+def runtime_node(args):
+    """The node a lookup names (--js-runtimes node:<path>), or None."""
+    for i, arg in enumerate(args[:-1]):
+        if arg == "--js-runtimes" and args[i + 1].startswith("node:"):
+            node = args[i + 1][len("node:"):]
+            return node if os.path.isabs(node) else None
+    return None
+
+
+class JscServer:
+    """The worker's one long-lived challenge solver: started on demand, started again when it has exited."""
+
+    def __init__(self, env, children):
+        self.lock = threading.Lock()
+        self.env = env
+        self.children = children
+        self.proc = None
+        self.node = None
+        self.failed_at = None
+
+    def _stop_locked(self):
+        if self.proc is None:
+            return
+        try:
+            self.proc.kill()
+            self.proc.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        try:
+            self.children.remove(self.proc)
+        except ValueError:
+            pass
+        self.proc = None
+
+    def ensure(self, node):
+        if node is None:
+            return
+        with self.lock:
+            if self.proc is not None and self.proc.poll() is None and self.node == node:
+                return
+            self._stop_locked()
+            if self.failed_at is not None and time.monotonic() - self.failed_at < JSC_RESTART_BACKOFF:
+                return
+            try:
+                os.unlink(JSC_SOCKET)
+            except OSError:
+                pass
+            try:
+                proc = subprocess.Popen([node, "--permission", "-e", JSC_SERVER, JSC_SOCKET], stdin=subprocess.DEVNULL,
+                                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=self.env, close_fds=True,
+                                        start_new_session=True)
+            except OSError:
+                self.failed_at = time.monotonic()
+                return
+            ready = False
+            sel = selectors.DefaultSelector()
+            try:
+                sel.register(proc.stdout, selectors.EVENT_READ)
+                if sel.select(5):
+                    ready = os.read(proc.stdout.fileno(), 64) == b"ready\n"
+            except OSError:
+                ready = False
+            finally:
+                sel.close()
+                proc.stdout.close()
+            if not ready:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+                self.failed_at = time.monotonic()
+                return
+            self.proc, self.node, self.failed_at = proc, node, None
+            self.children.append(proc)
+
+
+def jsc_request(request):
+    """One request to the worker's solver; any failure raises (the caller runs node itself)."""
+    payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
+    if len(payload) > JSC_MAX_FRAME:
+        raise ValueError("request too large")
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    conn.settimeout(JSC_TIMEOUT)
+    try:
+        conn.connect(JSC_SOCKET)
+        conn.sendall(struct.pack(">I", len(payload)) + payload)
+
+        def exact(n):
+            buf = bytearray()
+            while len(buf) < n:
+                chunk = conn.recv(min(1 << 20, n - len(buf)))
+                if not chunk:
+                    raise OSError("solver closed")
+                buf.extend(chunk)
+            return bytes(buf)
+
+        (length,) = struct.unpack(">I", exact(4))
+        if length > JSC_MAX_FRAME:
+            raise ValueError("reply too large")
+        reply = json.loads(exact(length).decode("utf-8"))
+    finally:
+        conn.close()
+    if not isinstance(reply, dict) or reply.get("ok") is not True or not isinstance(reply.get("out"), str):
+        raise ValueError("solver error")
+    return reply["out"]
+
+
+def install_jsc_client():
+    """Routes yt-dlp's node challenge solving to the worker's solver. The request is built from the same parts as
+    yt-dlp's stdin, and used only when yt-dlp's stdin is exactly that template: any other yt-dlp keeps its own path."""
+    try:
+        from yt_dlp.extractor.youtube.jsc._builtin import ejs as ejs_module
+        from yt_dlp.extractor.youtube.jsc._builtin import node as node_module
+    except Exception:
+        return False
+    original_construct = getattr(ejs_module.EJSBaseJCP, "_construct_stdin", None)
+    original_run = getattr(node_module.NodeJCP, "_run_js_runtime", None)
+    if original_construct is None or original_run is None:
+        return False
+
+    def construct(self, player, preprocessed, requests, /):
+        stdin = original_construct(self, player, preprocessed, requests)
+        self._dilla_jsc = None
+        try:
+            json_requests = [{"type": request.type.value, "challenges": request.input.challenges} for request in requests]
+            data = {"type": "preprocessed", "preprocessed_player": player, "requests": json_requests} if preprocessed else {
+                "type": "player", "player": player, "requests": json_requests, "output_preprocessed": True}
+            lib, core = self._lib_script.code, self._core_script.code
+            expected = ("        " + lib + "\n        Object.assign(globalThis, lib);\n        " + core +
+                        "\n        console.log(JSON.stringify(jsc(" + json.dumps(data) + ")));\n        ")
+            if stdin == expected:
+                self._dilla_jsc = (stdin, {"lib": lib, "core": core, "data": data})
+        except Exception:
+            self._dilla_jsc = None
+        return stdin
+
+    def run(self, stdin, /):
+        pending = getattr(self, "_dilla_jsc", None)
+        self._dilla_jsc = None
+        if pending is not None and pending[0] is stdin:
+            try:
+                return jsc_request(pending[1])
+            except Exception:
+                pass
+        return original_run(self, stdin)
+
+    ejs_module.EJSBaseJCP._construct_stdin = construct
+    node_module.NodeJCP._run_js_runtime = run
+    return True
+
+
 class ForkedLookup:
     """One lookup child: its own session, so its process group (with any node it starts) is killed as one."""
 
@@ -168,9 +423,12 @@ def serve(ytdlp, limit, env, children, stopping, stop):
     # from another lookup), is killed with its process group on cancel or timeout, and runs beside the others up to
     # MAX_CONCURRENT. The parent never constructs a YoutubeDL and never makes a request.
     library = load_ytdlp(ytdlp)
+    jsc = None
     if library is not None:
         import warnings
         warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*fork.*")
+        if install_jsc_client():
+            jsc = JscServer(env, children)
 
     def reply(rid, code, out="", err=""):
         line = json.dumps({"id": rid, "code": code, "out": out, "err": err}, ensure_ascii=True)
@@ -220,6 +478,8 @@ def serve(ytdlp, limit, env, children, stopping, stop):
             if rid in cancelled:
                 reply(rid, -9)
                 return
+        if jsc is not None:
+            jsc.ensure(runtime_node(args))
         try:
             out_r, out_w = os.pipe()
             err_r, err_w = os.pipe()
@@ -227,7 +487,10 @@ def serve(ytdlp, limit, env, children, stopping, stop):
             reply(rid, 1)
             return
         try:
-            pid = os.fork()
+            # Under out_lock (M3-2): no other thread is between a reply's write and its flush, so the child's copy of
+            # the reply buffer is empty.
+            with out_lock:
+                pid = os.fork()
         except OSError:
             for fd in (out_r, out_w, err_r, err_w):
                 os.close(fd)
@@ -235,14 +498,15 @@ def serve(ytdlp, limit, env, children, stopping, stop):
             return
         if pid == 0:
             lookup_child(library, args, env, out_w, err_w)
-        os.close(out_w)
-        os.close(err_w)
+        reaped = False
         proc = ForkedLookup(pid)
-        with state_lock:
-            procs[rid] = proc
-            was_cancelled = rid in cancelled
-        children.append(proc)
         try:
+            os.close(out_w)
+            os.close(err_w)
+            with state_lock:
+                procs[rid] = proc
+                was_cancelled = rid in cancelled
+            children.append(proc)
             if was_cancelled:
                 kill_group(proc)
             err_tail = bytearray()
@@ -264,6 +528,7 @@ def serve(ytdlp, limit, env, children, stopping, stop):
             except OSError:
                 kill_group(proc)
             _, status = os.waitpid(pid, 0)
+            reaped = True
             err_thread.join(1)
             if too_large:
                 reply(rid, 75)
@@ -271,6 +536,13 @@ def serve(ytdlp, limit, env, children, stopping, stop):
             code = os.waitstatus_to_exitcode(status)
             reply(rid, code, bytes(data).decode("utf-8", "replace"), bytes(err_tail).decode("utf-8", "replace"))
         finally:
+            if not reaped:
+                # Something failed between the fork and the wait (M3-3): the child is killed and reaped here.
+                kill_group(proc)
+                try:
+                    os.waitpid(pid, 0)
+                except OSError:
+                    pass
             for fd in (out_r, err_r):
                 try:
                     os.close(fd)

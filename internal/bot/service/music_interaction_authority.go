@@ -94,6 +94,28 @@ func refreshMusicCallMemo(ctx context.Context) {
 	}
 }
 
+// seedMusicCallMemo gives ctx's command a call state already read (a shared music.state read, Task 19 fix round 4):
+// its in-call checks use it instead of reading the call again.
+func seedMusicCallMemo(ctx context.Context, channel id.ID, state client.ChannelCallState) {
+	if memo, ok := ctx.Value(musicCallMemoKey{}).(*musicCallMemo); ok {
+		memo.mu.Lock()
+		memo.states[channel] = state
+		memo.mu.Unlock()
+	}
+}
+
+// musicCallMemoState is the call state ctx's command has read for channel, if any.
+func musicCallMemoState(ctx context.Context, channel id.ID) (client.ChannelCallState, bool) {
+	memo, ok := ctx.Value(musicCallMemoKey{}).(*musicCallMemo)
+	if !ok {
+		return client.ChannelCallState{}, false
+	}
+	memo.mu.Lock()
+	defer memo.mu.Unlock()
+	state, seen := memo.states[channel]
+	return state, seen
+}
+
 func (a *CommunityMusicInteractionAuthority) channelCall(ctx context.Context, channel id.ID) (client.ChannelCallState, error) {
 	memo, ok := ctx.Value(musicCallMemoKey{}).(*musicCallMemo)
 	if !ok || a.Authz == nil {

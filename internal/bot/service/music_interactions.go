@@ -81,6 +81,10 @@ type MusicInteractions struct {
 	// Hints tells the room's members (a call hint, scope the voice channel) that the queue or the playing track
 	// changed, after a mutation committed (Bot v2 Task 17). Nil sends none.
 	Hints HintSender
+	// StateReads shares one music.state computation per voice channel (the call scope) over MusicStateReadWindow:
+	// the call read and the state read; each member is still authorised and gets their own answer (Bot v2 Task 19
+	// fix round 4, Task 21b ruling 3). Nil computes every read.
+	StateReads *MusicStateReads
 	// OnPlayOpened begins the voice room's call-group join and room connection for an authorised sealed /play,
 	// before its track resolves (Bot v2 Task 19: the join runs beside the resolve). ctx carries the room's current call
 	// group (music.PlaybackGroup). It must not block. Nil joins at the start, after the resolve.
@@ -154,6 +158,8 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	defer func() {
 		if result.Status == 0 && failure == nil {
 			if op != protocol.OpMusicState && op != protocol.OpMusicSearch && req.ChannelID != nil {
+				// A committed change ends the call's shared state window: the next state read sees it.
+				h.StateReads.forget(*req.ChannelID)
 				hint(ctx, h.Hints, client.StateScopeCall, *req.ChannelID)
 			}
 			return
@@ -183,6 +189,9 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		return InteractionResult{}, errors.New("missing music interaction dependency or context")
 	}
 	channel := *req.ChannelID
+	if op == protocol.OpMusicState && h.StateReads != nil {
+		return h.coalescedState(ctx, actor, channel, &reason, &group)
+	}
 	reason = "current_call_lookup"
 	call, err := h.Authority.CurrentCall(ctx, channel)
 	group = call.GroupID
@@ -251,36 +260,15 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	directImmediate := immediate && h.OnImmediateControl != nil
 	var snapshot persistence.Snapshot
 	if !directImmediate {
-		reason = "state_read"
-		snapshot, err = h.Store.Load(ctx, channel)
+		var mismatch bool
+		snapshot, mismatch, reason, err = h.readSnapshot(ctx, channel)
 		if err != nil {
 			return InteractionResult{}, err
 		}
-		if h.CurrentState != nil {
-			reason = "runtime_state_read"
-			state, revision, err := h.CurrentState(ctx, h.InstallationID, h.CommunityID, channel)
-			if err != nil {
-				return InteractionResult{}, err
-			}
-			if revision != snapshot.Revision || state.Revision != snapshot.Revision {
-				// A playback transition may have committed since the first read. State reads
-				// always have a durable answer, and a missed hand-off adopts without starting.
-				snapshot, err = h.Store.Load(ctx, channel)
-				if err != nil {
-					return InteractionResult{}, err
-				}
-				if revision < snapshot.Revision && h.OnPersistedSnapshot != nil {
-					_, _ = h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, snapshot.State, snapshot.Revision, false)
-				}
-			}
-			if revision == snapshot.Revision && state.Revision == snapshot.Revision {
-				snapshot.State = state
-			}
-			if op != protocol.OpMusicState && op != protocol.OpMusicEnqueue && !immediate && (revision != snapshot.Revision || state.Revision != snapshot.Revision) {
-				reason = "runtime_revision_mismatch"
-				currentRevision := snapshot.Revision
-				return InteractionResult{Status: interactionStatusConflict, Revision: &currentRevision}, nil
-			}
+		if op != protocol.OpMusicState && op != protocol.OpMusicEnqueue && !immediate && mismatch {
+			reason = "runtime_revision_mismatch"
+			currentRevision := snapshot.Revision
+			return InteractionResult{Status: interactionStatusConflict, Revision: &currentRevision}, nil
 		}
 	}
 	if op == protocol.OpMusicState {

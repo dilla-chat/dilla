@@ -27,7 +27,8 @@ func TestLiveYouTubeThroughTheSandbox(t *testing.T) {
 		}
 		return path
 	}
-	cfg := SandboxConfig{Bubblewrap: look("bwrap"), Python: look("python3"), FFmpeg: look("ffmpeg"), Node: look("node"), YTDLP: os.Getenv("DILLA_YTDLP")}
+	cfg := SandboxConfig{Bubblewrap: look("bwrap"), Python: look("python3"), FFmpeg: look("ffmpeg"), Node: look("node"), YTDLP: os.Getenv("DILLA_YTDLP"),
+		WarmUpLookup: os.Getenv("DILLA_YOUTUBE_LIVE_WARM") != "0"}
 	if cfg.YTDLP == "" {
 		cfg.YTDLP = look("yt-dlp")
 	}
@@ -42,7 +43,11 @@ func TestLiveYouTubeThroughTheSandbox(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	for i, video := range []string{"https://www.youtube.com/watch?v=aqz-KE-bpKQ", "https://www.youtube.com/watch?v=jNQXAC9IVRw"} {
+	if cfg.WarmUpLookup {
+		// A Bot's worker starts with the Bot, before any /play: its warm-up lookup has run by then.
+		time.Sleep(4 * time.Second)
+	}
+	for i, video := range []string{"https://www.youtube.com/watch?v=aqz-KE-bpKQ", "https://www.youtube.com/watch?v=jNQXAC9IVRw", "https://www.youtube.com/watch?v=M7lc1UVf-VE"} {
 		began := time.Now()
 		tracks, err := view.Tracks.Resolve(ctx, video)
 		if err != nil || len(tracks) != 1 || tracks[0].Title == "" {
