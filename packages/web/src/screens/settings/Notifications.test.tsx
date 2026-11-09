@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ChannelSummary, DmSummary } from '@dilla/client-core';
 import { CoreProvider } from '../../core/context.tsx';
@@ -120,5 +120,19 @@ describe('the sounds', () => {
     fake.handler = () => Promise.reject(refusal({ code: 'E_STORE' }));
     await user.click(within(group('Join, leave and ring sounds')).getByRole('switch'));
     expect(await screen.findByText('That did not work (E_STORE). Try again.')).toBeInTheDocument();
+  });
+});
+
+describe('inside the mobile app', () => {
+  it('shows the bridge permission and clicking the toggle from default calls requestNotificationPermission', async () => {
+    const requestNotificationPermission = vi.fn((): Promise<NotificationPermission> => Promise.resolve('granted'));
+    vi.stubGlobal('dillaMobile', { requestNotificationPermission, notificationPermission: () => Promise.resolve('default'), onEvent: () => () => {}, send: async () => {} });
+    const { user } = setup({ permission: null });
+    const toggle = screen.getByRole('switch', { name: 'Desktop notifications' });
+    expect(toggle).not.toBeDisabled();
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    expect(requestNotificationPermission).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Desktop notifications' })).toBeChecked());
   });
 });

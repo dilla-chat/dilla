@@ -386,6 +386,12 @@ the unit by hand (`install.sh --upgrade` does). The Bot has no unit of its own: 
 runs it as its supervised child, as the `dillabot` user inside `dilla.service`'s sandbox, so restarting `dilla`
 restarts the Bot and stopping `dilla` stops it. `dillad media --rooms --config=/etc/dilla/dilla.toml` lists the live
 rooms and their participants (`no live rooms` when the SFU is empty), and `dillad media --probe` prints the room count.
+`install.sh --upgrade` runs `media --rooms` itself and refuses while a room has participants. To confirm a room is
+really in use rather than leaked, look for `POST /v1/calls/{call_id}/rtt` in the API journal (field `route`): a device
+in a call posts its round-trip time there whenever it moves, usually several times a minute, though a very steady link
+posts less, so few posts are a hint and `media --rooms` stays the authority. Call stats travel over the gateway since v0.1.0-signal1.4,
+so `calls/{id}/stats` no longer appears in the journal. Test any grep against a window in which you were in a call
+yourself; a pattern that matches nothing looks the same as an empty server.
 
 ```sh
 sudo install -m 0755 dillad-linux-amd64 /usr/local/bin/dillad
@@ -975,6 +981,13 @@ factor up, until it adds one. This section is what the operator does about that.
 - **`auth.webauthn.rp_origins`** lists the origins a browser may use, and defaults to `https://<instance.domain>` plus
   `http.trusted_origins`. The browser's origin includes its port, and the host of each `http` or `https` entry
   must be `rp_id` or a subdomain of it.
+- **`http.mobile_origins`** lists the mobile app's origins, `capacitor://localhost` (iOS) and `https://localhost`
+  (Android) by default. They may call `/v1/` and `/i/` cross-origin with a bearer token (CORS, never cookies) and
+  open the gateway; `/desktop-auth/` stays same-origin, and the app reaches it without an `Origin` header. Each entry
+  is a whole, lowercase origin, scheme included, so `http://localhost` stays refused; an entry with a glob
+  character, a backslash, an uppercase letter, userinfo, no scheme, or a path, query or fragment is refused at
+  start. They are never added to `rp_origins`, so a passkey ceremony from the app's origin does not verify here. The default also applies to an existing instance on
+  upgrade: a `dilla.toml` without `mobile_origins` accepts the app after the new release starts.
 
 Behind a proxy (`tls.mode = "behind_proxy"`) the address the browser uses is the proxy's, so set both explicitly when
 the public address is not `https://<instance.domain>` on 443. An instance reached at `https://chat.example.org:8443`:

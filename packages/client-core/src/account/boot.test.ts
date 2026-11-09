@@ -262,3 +262,19 @@ describe('opfsDirectoryExists', () => {
     await expect(opfsDirectoryExists(denied as unknown as FileSystemDirectoryHandle, 'dilla/x')).rejects.toThrow('denied');
   });
 });
+
+// Review C1 (Task 6): the mobile worker passes its own storage key; the directory and the KEK record follow it.
+describe('boot with a storage key', () => {
+  it('opens dilla/<key> under the KEK record <key>, and without one keeps dilla/<instance hex>', async () => {
+    const KEY = 'c3'.repeat(32);
+    const keyed = setup({ storeKey: KEY });
+    expect((await boot(keyed.deps)).kind).toBe('opened');
+    expect(keyed.probedDirs).toEqual([`dilla/${KEY}`]);
+    expect(keyed.opened[0]?.directory).toBe(`dilla/${KEY}`);
+    expect([...keyed.kek.records.keys()]).toEqual([KEY]);
+    const plain = setup();
+    expect((await boot(plain.deps)).kind).toBe('opened');
+    expect(plain.opened[0]?.directory).toBe(`dilla/${HEX}`);
+    expect([...plain.kek.records.keys()]).toEqual([HEX]);
+  });
+});

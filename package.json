@@ -13,6 +13,7 @@
     "e2e"
   ],
   "scripts": {
+    "postinstall": "patch-package --error-on-fail",
     "test": "npm run check:docs && npm run check:brief && npm run check:copy && npm run check:css && npm run check:ci && npm run test:bot-ops-check && npm run check:bot-ops && npm run test:socket-routes-check && npm run check:socket-routes && node scripts/test-workspaces.mjs && npm run lint",
     "lint": "eslint --max-warnings 0 --no-error-on-unmatched-pattern packages/client-core packages/web",
     "check:docs": "node scripts/check-protocol-docs.mjs",
@@ -51,6 +52,7 @@
     "eslint": "10.14.0",
     "eslint-plugin-jsx-a11y": "6.10.2",
     "eslint-plugin-react-hooks": "7.1.1",
+    "patch-package": "8.0.1",
     "typescript-eslint": "8.72.1"
   },
   "overrides": {

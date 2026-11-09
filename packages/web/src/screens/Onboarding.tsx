@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom';
 import type { FormEvent, ReactNode } from 'react';
 import { Banner, Button, CodeList, Icon, OnboardingFrame, RecoveryKey, Splash, TextField, type IconName } from '@dilla/ui';
 import { browser } from '../browser.ts';
+import { mobileBridge } from '../mobile.ts';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
 import { useSlice, useSlices } from '../core/use-slice.ts';
@@ -79,7 +80,7 @@ function refusalView(e: UiError, instanceName: string): RefusalView {
     };
   }
   if (e.code === 'E_NETWORK' || e.status >= 500) {
-    return { banner: { tone: 'danger', key: 'onboarding.error.network', vars: {}, reload: true } };
+    return { banner: { tone: 'danger', key: mobileBridge() === undefined ? 'onboarding.error.network' : 'mobile.onboarding.error.network', vars: {}, reload: true } };
   }
   return { banner: { tone: 'danger', key: 'onboarding.error.other', vars: { code: e.code }, reload: false } };
 }
@@ -373,7 +374,7 @@ export function Onboarding(props: { onFinish(result: SignupResult): void }): Rea
     </>
   );
   const bannerEl = banner === null ? null : (
-    <Banner tone={banner.tone} action={banner.reload ? { label: t('onboarding.error.reload'), onAction: () => browser.reload() } : undefined}>
+    <Banner tone={banner.tone} action={banner.reload ? { label: t(mobileBridge() === undefined ? 'onboarding.error.reload' : 'mobile.retry'), onAction: () => browser.reload() } : undefined}>
       {t(banner.key, banner.vars)}
     </Banner>
   );

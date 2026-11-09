@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Full-bleed dilla app icon. Artwork from packages/desktop/assets/icons/src/linux.svg (the source of
+       packages/desktop/assets/icon.png) without the rounded face, base and shadow: iOS and Android mask it.
+       The 896-wide desktop face maps to the 1024 square, so the glyph scale is 0.82 * 1024 / 896. -->
+  <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0B6AB3"/><stop offset="1" stop-color="#005799"/></linearGradient></defs>
+  <rect width="1024" height="1024" fill="url(#g)"/>
+  <g transform="translate(512 512) scale(0.937143) translate(-512 -512)"><g transform="translate(-34 0)"><path fill="#fff" fill-rule="evenodd" d="M256,292H436A220,220 0 0 1 436,732H256Z M376,412H436A100,100 0 0 1 436,612H376Z"/><rect x="700" y="672" width="140" height="60" rx="8" fill="#8CC4F0"/></g></g>
+</svg>

@@ -1,0 +1,17 @@
+diff --git a/node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/MessageHandler.java b/node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/MessageHandler.java
+index dc91c9b..bab5772 100644
+--- a/node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/MessageHandler.java
++++ b/node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/MessageHandler.java
+@@ -26,8 +26,11 @@ public class MessageHandler {
+         if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) && !bridge.getConfig().isUsingLegacyBridge()) {
+             WebViewCompat.WebMessageListener capListener = (view, message, sourceOrigin, isMainFrame, replyProxy) -> {
+                 if (isMainFrame) {
+-                    postMessage(message.getData());
++                    // dilla patch: set the reply proxy before dispatching. postMessage hands the call to the plugin
++                    // thread, and a fast plugin can answer before the assignment runs; after a navigation the answer
++                    // then goes to the previous page's proxy and the new page's first call never resolves.
+                     javaScriptReplyProxy = replyProxy;
++                    postMessage(message.getData());
+                 } else {
+                     Logger.warn("Plugin execution is allowed in Main Frame only");
+                 }

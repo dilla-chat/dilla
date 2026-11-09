@@ -1,0 +1,39 @@
+{
+  "name": "@dilla/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dilla for iOS and Android: a Capacitor shell around the bundled web client",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "icons": "node scripts/icons.mjs",
+    "sync": "cap sync",
+    "test": "node --test test/*.test.ts test/*.test.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "android:run": "cap run android",
+    "ios:open": "cap open ios",
+    "e2e:android": "node e2e/android-smoke.mjs",
+    "android:check-release": "node scripts/check-apk-network-config.mjs android/app/build/outputs/apk/release/app-release-unsigned.apk --release",
+    "android:check-release-signed": "node scripts/check-apk-network-config.mjs android/app/build/outputs/apk/release/app-release.apk --release",
+    "android:check-signer": "node scripts/check-apk-signer.mjs android/app/build/outputs/apk/release/app-release.apk"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.6.0",
+    "@capacitor/app": "8.1.2",
+    "@capacitor/browser": "8.0.5",
+    "@capacitor/core": "8.6.0",
+    "@capacitor/haptics": "8.0.2",
+    "@capacitor/ios": "8.6.0",
+    "@capacitor/local-notifications": "8.3.1",
+    "@capacitor/preferences": "8.0.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.6.0",
+    "@playwright/test": "1.63.0",
+    "@resvg/resvg-js": "2.6.2",
+    "@types/node": "^24",
+    "esbuild": "^0.28.1",
+    "typescript": "5.9.3"
+  }
+}

@@ -3,6 +3,14 @@ name: release
 # the real web client embedded, the wasm32-wasip1 core, deploy/install.sh, deploy/install-bot.sh
 # and SHA256SUMS over all assets. The two installers handle dillad and dillabot independently. No container image is built or pushed here.
 #
+# The release is created as a DRAFT. Releases in this repository are immutable once published (no asset can be added),
+# and the Android APK is signed outside this workflow: a v* tag run uses the workflow file at the tagged commit, so
+# no job here may reach the signing secrets (this workflow has no environment and reads no secret). mobile-release.yml,
+# which always runs main's workflow file in the main-only `mobile-release` environment, signs the APK from the tag's
+# commit, attaches it and its checksum to the draft, adds the APK's line to SHA256SUMS and then publishes the release.
+# Until then the release is a draft: install.sh and Homelab see nothing. If the APK fails, the release stays a draft
+# (server and mobile releases move in lockstep).
+#
 # Each attached installer has the tag stamped into its release tag variable, so it installs this release by
 # default: there is no "latest" (GitHub never serves a prerelease as latest, and every hyphenated tag
 # is a prerelease here).
@@ -14,7 +22,7 @@ name: release
 #
 # workflow_dispatch builds the release for an existing tag that has none yet (say, after a failed
 # run): choose the tag itself as the ref in "Use workflow from" and type the same tag; the tag job
-# refuses a mismatch. A release that already exists is refused; delete it first to rebuild it.
+# refuses a mismatch. A release that already exists (draft or published) is refused; delete a draft first to rebuild it.
 on:
   push:
     tags: ['v*']
@@ -296,5 +304,6 @@ jobs:
           if [ "$PRERELEASE" = true ]; then flags="--prerelease"; fi
           notes=(--generate-notes)
           if [ -f "docs/deploy/releases/$TAG.md" ]; then notes=(--notes-file "docs/deploy/releases/$TAG.md"); fi
-          gh release create "$TAG" --verify-tag --title "$TAG" "${notes[@]}" $flags \
+          # A draft: mobile-release.yml adds the signed APK and publishes it (see the header).
+          gh release create "$TAG" --verify-tag --draft --title "$TAG" "${notes[@]}" $flags \
             release/dillad-linux-amd64 release/dillad-linux-arm64 release/dillabot-linux-amd64 release/dillabot-linux-arm64 release/dilla-bot-core-linux-amd64 release/dilla-bot-core-linux-arm64 release/dilla_core_wasi.wasm release/install.sh release/install-bot.sh release/SHA256SUMS

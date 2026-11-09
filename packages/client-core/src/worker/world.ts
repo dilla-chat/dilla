@@ -218,6 +218,9 @@ export function world(opts: {
   owed?: boolean; realGateway?: boolean; WebSocket?: typeof WebSocket; httpTicket?: boolean;
   /** S2 review M5: getInstance through the real Routes and HttpClient over `fetch` (the bearer it sends is observable). */
   httpInstance?: boolean;
+  /** Review C1 (Task 6): the store key the worker derives (deps.storageKey) and a boot that consults it, so a test can
+   *  model two instances sharing one origin's storage. */
+  storageKey?: ControllerDeps['storageKey']; boot?: ControllerDeps['boot']; origin?: string;
 } = {}) {
   // An account that is already registered (phase 2) is already a member of the community, so that a
   // selectCommunity of it passes pre-flight ruling 1(v); a signup or sign-in world starts outside it.
@@ -592,7 +595,12 @@ export function world(opts: {
   };
   const bootCount = { value: 0 };
   const h = harness({
-    boot: (instance) => { bootCount.value += 1; return Promise.resolve({ kind: 'opened', core: core as unknown as CorePort, instance }); },
+    boot: (instance) => {
+      bootCount.value += 1;
+      return opts.boot ? opts.boot(instance) : Promise.resolve({ kind: 'opened', core: core as unknown as CorePort, instance });
+    },
+    ...(opts.storageKey ? { storageKey: opts.storageKey } : {}),
+    ...(opts.origin ? { origin: opts.origin } : {}),
     resetDevice: (instance) => { calls.push('resetDevice'); wiped.push(toHex(instance.instanceId)); return Promise.resolve(); },
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
     ...(opts.realRoutes === true && opts.fetch ? { socketRoutes: [] } : {}),

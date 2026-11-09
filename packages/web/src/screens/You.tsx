@@ -3,6 +3,7 @@ import { Avatar, Icon } from '@dilla/ui';
 import { useCore } from '../core/context.tsx';
 import { useSlice, useSlices } from '../core/use-slice.ts';
 import type { SettingsSection } from '../router.ts';
+import { mobileBridge } from '../mobile.ts';
 import { t } from '../strings/index.ts';
 import { mergeMembers, selfName } from './shell-model.ts';
 import { useSignOut } from './settings/SignOut.tsx';
@@ -11,6 +12,7 @@ import { suggestDeviceName } from './settings/device-name.ts';
 const SETTINGS_ICON = 'settings';
 const CHEVRON = 'chevron-right';
 const SIGN_OUT_ICON = 'log-out';
+const INSTANCE_ICON = 'server';
 
 /**
  * The phone's You tab (flow 12; Task 11, Jonas Q3: the prototype's). Who this is ("@mira · packing rope"), one box with the
@@ -37,6 +39,7 @@ export function You(props: { onOpenSettings(section: SettingsSection | null): vo
   const deviceLine = parts === null ? t('you.deviceUnknown', { id: deviceId }) : t('you.device', { browser: parts.browser, os: parts.os, id: deviceId });
 
   const signOut = useSignOut();
+  const mobile = mobileBridge();
   useEffect(() => { client.call({ m: 'refreshDevices' }).catch(() => undefined); }, [client]);
 
   return (
@@ -58,6 +61,12 @@ export function You(props: { onOpenSettings(section: SettingsSection | null): vo
         <button type="button" className="dw-you__row" data-settings-section="index" onClick={() => props.onOpenSettings(null)}>
           <Icon name={SETTINGS_ICON} size={16} /><span className="dw-you__label">{t('you.settings')}</span><Icon name={CHEVRON} size={15} />
         </button>
+        {mobile === undefined ? null : (
+          // The mobile app's way back to its instance picker (final review I2); the account here stays signed in.
+          <button type="button" className="dw-you__row" onClick={() => { void mobile.send({ type: 'switch-instance' }).catch(() => undefined); }}>
+            <Icon name={INSTANCE_ICON} size={16} /><span className="dw-you__label">{t('mobile.switchInstance')}</span><Icon name={CHEVRON} size={15} />
+          </button>
+        )}
         <button type="button" className="dw-you__row" data-danger="true" onClick={signOut.requestOpen}>
           <Icon name={SIGN_OUT_ICON} size={16} /><span className="dw-you__label">{t('workspace.signOut')}</span>
         </button>

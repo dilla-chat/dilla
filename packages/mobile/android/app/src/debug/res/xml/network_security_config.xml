@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: also trust user-installed CAs, so the emulator e2e can reach a local dillad over HTTPS
+     with a development CA (e2e/android-smoke.mjs). Still no cleartext. Release uses src/main's strict file. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

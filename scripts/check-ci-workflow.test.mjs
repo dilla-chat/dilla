@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES, WORKFLOWS } from './ci-areas.mjs';
-import { checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkElectronInstalls, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkServerWorkflow, DESKTOP_RELEASE_ACTIONS, REQUIRED_JOBS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
+import { checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkElectronInstalls, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, DESKTOP_RELEASE_ACTIONS, REQUIRED_JOBS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -18,6 +18,9 @@ const SCRIPT_PATH = fileURLToPath(new URL('./check-ci-workflow.mjs', import.meta
 const REPO_ROOT = join(dirname(SCRIPT_PATH), '..');
 const REAL_SERVER = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'server.yml'), 'utf8');
 const REAL_DESKTOP_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'desktop-ci.yml'), 'utf8');
+// mobile.yml is not part of the server/desktop fixture text: fixture() writes the real file beside them (ci-local's
+// mirror check reads every CI workflow), and the mobile tests below edit it on their own.
+const REAL_MOBILE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'mobile.yml'), 'utf8');
 // A fixture holds both CI workflows in one text, server.yml first, split at this line (fixture() writes them apart): a
 // test edits either file with one replace. A job both carry is edited in server.yml, its first occurrence.
 const SPLIT = '\n# ---- desktop-ci.yml ----\n';
@@ -1051,6 +1054,7 @@ const CHANGES_JOB = `  changes:
       web: \${{ steps.areas.outputs.web }}
       e2e: \${{ steps.areas.outputs.e2e }}
       text: \${{ steps.areas.outputs.text }}
+      mobile: \${{ steps.areas.outputs.mobile }}
       code: \${{ steps.areas.outputs.code }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1169,8 +1173,11 @@ function fixture(body, gated = GATED) {
   assert.equal(rest.length, 0, 'fixture sanity: one split');
   writeFileSync(join(dir, '.github', 'workflows', 'server.yml'), desktop === undefined ? server : `${server}\n`);
   if (desktop !== undefined) writeFileSync(join(dir, '.github', 'workflows', 'desktop-ci.yml'), desktop);
+  writeFileSync(join(dir, '.github', 'workflows', 'mobile.yml'), REAL_MOBILE);
   // The CLI also checks release.yml.
   writeFileSync(join(dir, '.github', 'workflows', 'release.yml'), REAL_RELEASE);
+  // ... and mobile-release.yml, which signs the APK and publishes the draft release.
+  writeFileSync(join(dir, '.github', 'workflows', 'mobile-release.yml'), readFileSync(join(REPO_ROOT, '.github', 'workflows', 'mobile-release.yml'), 'utf8'));
   writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
   // ... and the desktop release trampoline with the key scripts it pins.
   releaseRoots.push(dir);
@@ -2335,6 +2342,102 @@ test('the real release workflow passes every rule', () => {
   assert.deepEqual(checkReleaseWorkflow(REPO_ROOT), []);
 });
 
+// 2026-11-06 "Draft, sign on main": release.yml, the tag's own file, leaves the release a draft and holds no
+// environment or secret; mobile-release.yml (main's file) signs, attaches and publishes (review H1, M1).
+test('release.yml creates a draft', () => {
+  assertReported(releaseProblems((t) => t.replace(' --verify-tag --draft ', ' --verify-tag ')), '--draft');
+});
+
+test('an environment, a secret, a status if: or a checkout ref in release.yml is reported', () => {
+  assertReported(releaseProblems((t) => t.replace('  rust-wasi:\n    runs-on: ubuntu-latest\n', '  rust-wasi:\n    runs-on: ubuntu-latest\n    environment: mobile-release\n')), 'enters an environment');
+  assertReported(releaseProblems((t) => t.replace('          GH_TOKEN: ${{ github.token }}\n          TAG: ${{ needs.tag.outputs.tag }}\n', '          GH_TOKEN: ${{ github.token }}\n          TAG: ${{ needs.tag.outputs.tag }}\n          K: ${{ secrets.ANDROID_KEY_PASSWORD }}\n')), 'reads no secret');
+  assertReported(releaseProblems((t) => t.replace('  release:\n    runs-on: ubuntu-latest\n', "  release:\n    if: ${{ !cancelled() }}\n    runs-on: ubuntu-latest\n")), 'status check');
+  assertReported(releaseProblems((t) => t.replace('  release:\n    runs-on: ubuntu-latest\n', '  release:\n    if: success() || failure()\n    runs-on: ubuntu-latest\n')), 'status check');
+  assertReported(releaseProblems((t) => t.replace('  rust-wasi:\n    runs-on: ubuntu-latest\n    needs: [tag]\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\n', '  rust-wasi:\n    runs-on: ubuntu-latest\n    needs: [tag]\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\n        with:\n          ref: main\n')), 'checks out ref main');
+});
+
+const REAL_MOBILE_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'mobile-release.yml'), 'utf8');
+function mobileReleaseProblems(edit) {
+  const edited = edit(REAL_MOBILE_RELEASE);
+  assert.notEqual(edited, REAL_MOBILE_RELEASE, 'the edit changed nothing; the fixture drifted from mobile-release.yml');
+  const dir = mkdtempSync(join(TEST_ROOT, 'dilla-mobile-release-'));
+  mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+  writeFileSync(join(dir, '.github', 'workflows', 'mobile-release.yml'), edited);
+  return checkMobileReleaseWorkflow(dir);
+}
+const DRAFT_IF = "    if: needs.resolve.outputs.draft == 'true'\n";
+const ANDROID_HEAD = '  android-release:\n    needs: [resolve, mobile-bundle]\n';
+const PUBLISH_HEAD = '  publish:\n    needs: [resolve, android-release]\n';
+const IOS_HEAD = '  ios-testflight:\n    needs: [resolve, mobile-bundle]\n';
+
+test('the real mobile-release workflow passes every rule', () => {
+  assert.deepEqual(checkMobileReleaseWorkflow(REPO_ROOT), []);
+});
+
+test('the Android jobs carry exactly the draft if:, which keeps their needs; the real file passes with it', () => {
+  assert.ok(REAL_MOBILE_RELEASE.includes(ANDROID_HEAD + DRAFT_IF) && REAL_MOBILE_RELEASE.includes(PUBLISH_HEAD + DRAFT_IF), 'fixture sanity: both jobs carry the draft condition');
+  assert.deepEqual(checkMobileReleaseWorkflow(REPO_ROOT), []);
+  assertReported(mobileReleaseProblems((t) => t.replace(ANDROID_HEAD + DRAFT_IF, ANDROID_HEAD)), 'job "android-release" must carry exactly if:');
+});
+
+test('a job-level if: that runs a secret or publishing job past its needs is reported', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace(ANDROID_HEAD + DRAFT_IF, `${ANDROID_HEAD}    if: always()\n`)), 'job "android-release" must carry exactly if:');
+  assertReported(mobileReleaseProblems((t) => t.replace(ANDROID_HEAD + DRAFT_IF, `${ANDROID_HEAD}    if: \${{ !cancelled() && needs.resolve.outputs.draft == 'true' }}\n`)), 'job "android-release" must carry exactly if:');
+  assertReported(mobileReleaseProblems((t) => t.replace(PUBLISH_HEAD + DRAFT_IF, `${PUBLISH_HEAD}    if: success() || failure()\n`)), 'job "publish" must carry exactly if:');
+  assertReported(mobileReleaseProblems((t) => t.replace('  mobile-bundle:\n    needs: [resolve]\n', '  mobile-bundle:\n    needs: [resolve]\n    if: always()\n')), 'job "mobile-bundle" has a job-level if:');
+  assertReported(mobileReleaseProblems((t) => t.replace(IOS_HEAD, `${IOS_HEAD}    if: always()\n`)), 'job "ios-testflight" has a job-level if:');
+});
+
+test('a secret outside the signing and export steps is reported', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace('          DILLA_ANDROID_VERSION_CODE: ${{ steps.build.outputs.number }}\n', '          DILLA_ANDROID_VERSION_CODE: ${{ steps.build.outputs.number }}\n          KS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}\n')), 'names a secret it may not');
+  assertReported(mobileReleaseProblems((t) => t.replace('\n      TAG: ${{ needs.resolve.outputs.tag }}\n      GH_TOKEN: ${{ github.token }}\n', '\n      TAG: ${{ needs.resolve.outputs.tag }}\n      GH_TOKEN: ${{ github.token }}\n      K: ${{ secrets.ANDROID_KEY_PASSWORD }}\n')), 'names a secret at job level');
+  // The export step may hold the ASC key, not the Android keystore.
+  assertReported(mobileReleaseProblems((t) => t.replace('          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}\n          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}\n', '          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}\n          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}\n          KS: ${{ secrets.ANDROID_KEYSTORE_B64 }}\n')), 'names a secret it may not');
+});
+
+test('a commented-out gate line does not count (review L2)', () => {
+  // A whole comment line, and a gate pushed into a trailing comment after a no-op.
+  assertReported(mobileReleaseProblems((t) => t.replace('          git merge-base --is-ancestor "$sha" origin/main ||', '          # git merge-base --is-ancestor "$sha" origin/main ||')), 'git merge-base --is-ancestor "$sha" origin/main');
+  assertReported(mobileReleaseProblems((t) => t.replace('          [ "$RUN_REF" = refs/heads/main ] ||', '          true # [ "$RUN_REF" = refs/heads/main ] ||')), '[ "$RUN_REF" = refs/heads/main ]');
+  assertReported(mobileReleaseProblems((t) => t.replace('          [ "$RUN_REF" = refs/heads/main ] ||', '          # [ "$RUN_REF" = refs/heads/main ] ||')), '[ "$RUN_REF" = refs/heads/main ]');
+});
+
+test('a workflow_run gate without the push event or the tag-to-head_sha match is reported (review L1)', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace('[ "$RUN_EVENT" = push ]', 'true')), '[ "$RUN_EVENT" = push ]');
+  assertReported(mobileReleaseProblems((t) => t.replace('[ "$sha" = "$RUN_SHA" ]', 'true')), '[ "$sha" = "$RUN_SHA" ]');
+});
+
+test('a publish that trusts the artifact alone is reported (review L3)', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace('          digest-mismatch: error\n', '')), 'digest-mismatch');
+  assertReported(mobileReleaseProblems((t) => t.replace(`          printf '%s  %s\\n' "$APK_SHA256" "$apk" | sha256sum -c --strict\n`, '')), '"$APK_SHA256" "$apk" | sha256sum -c --strict');
+  assertReported(mobileReleaseProblems((t) => t.replace('          APK_SHA256: ${{ needs.android-release.outputs.apk_sha256 }}\n', '          APK_SHA256: ${{ needs.resolve.outputs.sha }}\n')), 'needs.android-release.outputs.apk_sha256');
+});
+
+test('toJSON(secrets) anywhere is reported', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace('\n      TAG: ${{ needs.resolve.outputs.tag }}\n      GH_TOKEN: ${{ github.token }}\n', '\n      TAG: ${{ needs.resolve.outputs.tag }}\n      GH_TOKEN: ${{ github.token }}\n      ALL: ${{ toJSON(secrets) }}\n')), 'toJSON(secrets)');
+});
+
+test('a checkout of anything but the gated commit in a secret job, or any checkout in publish, is reported', () => {
+  const at = REAL_MOBILE_RELEASE.indexOf(ANDROID_HEAD);
+  const edited = (t) => t.slice(0, at) + t.slice(at).replace('          ref: ${{ needs.resolve.outputs.sha }}\n', '          ref: ${{ github.event.workflow_run.head_branch }}\n');
+  assertReported(mobileReleaseProblems(edited), 'job "android-release" must check out ref');
+  assertReported(mobileReleaseProblems((t) => t.replace(`${PUBLISH_HEAD}`, PUBLISH_HEAD).replace('    steps:\n      - name: The release is a draft\n', '    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\n      - name: The release is a draft\n')), 'job "publish" checks out the repository');
+});
+
+test('a key file whose trap leaves the step that writes it is reported', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace(`          trap 'rm -f "$ks"' EXIT\n`, '').replace('        run: npm run android:check-signer -w @dilla/mobile\n', `        run: |\n          trap 'rm -f "$ks"' EXIT\n          npm run android:check-signer -w @dilla/mobile\n`)), 'the key file is written in one step only');
+  assertReported(mobileReleaseProblems((t) => t.replace(`          trap 'rm -f "$RUNNER_TEMP/asc-key.p8"' EXIT\n`, '')), 'the key file is written in one step only');
+});
+
+test('an environment or write access outside their jobs, or a publish that skips the APK, is reported', () => {
+  assertReported(mobileReleaseProblems((t) => t.replace(PUBLISH_HEAD + DRAFT_IF, `${PUBLISH_HEAD + DRAFT_IF}    environment: mobile-release\n`)), 'job "publish" enters an environment');
+  assertReported(mobileReleaseProblems((t) => t.replace(ANDROID_HEAD + DRAFT_IF, `${ANDROID_HEAD + DRAFT_IF}    permissions:\n      contents: write\n`)), 'only publish writes');
+  assertReported(mobileReleaseProblems((t) => t.replace(PUBLISH_HEAD, '  publish:\n    needs: [resolve]\n')), 'job "publish" must list "android-release"');
+  assertReported(mobileReleaseProblems((t) => t.replace('            echo "draft=$draft"\n', '')), 'echo "draft=$draft"');
+  assertReported(mobileReleaseProblems((t) => t.replace('[ "$RUN_REF" = refs/heads/main ]', 'true')), 'refs/heads/main');
+  assertReported(mobileReleaseProblems((t) => t.replace('[ "$draft" = true ]', 'true')), '[ "$draft" = true ]');
+});
+
 
 test('a release workflow without the release job is reported', () => {
   assertReported(releaseProblems((t) => t.replace(/\n {2}release:\n[\s\S]*$/, '\n')), 'missing job "release"');
@@ -3346,3 +3449,96 @@ for (const [workflow, text] of [['server', REAL_SERVER], ['desktop', REAL_DESKTO
     assert.equal(okJobPasses(gutted, results({ [need]: 'failure' }), MAIN_PUSH), true);
   });
 }
+
+// ---------------------------------------------------------------- mobile.yml (plan 2026-11-05 mobile M1, Task 7)
+
+/** A fixture whose mobile.yml is `text` (the real server and desktop workflows beside it), checked as the mobile workflow. */
+function checkMobile(text) {
+  const dir = fixture(GOOD);
+  writeFileSync(join(dir, '.github', 'workflows', 'mobile.yml'), text);
+  return checkMobileCiWorkflow(dir);
+}
+const mobileEdit = (from, to) => {
+  assert.ok(REAL_MOBILE.includes(from), `fixture sanity: mobile.yml has ${from}`);
+  const changed = REAL_MOBILE.replace(from, to);
+  assert.notEqual(changed, REAL_MOBILE);
+  return changed;
+};
+
+test('the committed mobile.yml has no problems, and neither does the fixture that carries it', () => {
+  assert.deepEqual(checkMobileCiWorkflow(REPO_ROOT), []);
+  assert.deepEqual(checkMobile(REAL_MOBILE), []);
+});
+
+test('mobile.yml keeps every load-bearing command: unit tests, the client build, the APKs and their release check, the smoke test, the iOS build', () => {
+  for (const [from, what] of [
+    ['      - run: npm test -w @dilla/mobile\n', 'npm test -w @dilla/mobile'],
+    ['      - run: npm run typecheck -w @dilla/mobile\n', 'npm run typecheck -w @dilla/mobile'],
+    ['      - run: npm run build -w @dilla/mobile\n', 'npm run build -w @dilla/mobile'],
+    ['      - run: npm run android:check-release -w @dilla/mobile\n', 'android:check-release'],
+    [' --no-daemon assembleDebug assembleRelease', 'assembleDebug assembleRelease'],
+    ['        run: npm run e2e:android -w @dilla/mobile -- --skip-build\n', 'e2e:android'],
+    ['      - run: bash scripts/ci-android.sh avd\n', 'ci-android.sh avd'],
+    ["-sdk iphonesimulator -destination 'generic/platform=iOS Simulator'", 'iphonesimulator'],
+    ['      - run: go build -o target/dilla-testhost ./cmd/dilla-testhost\n', 'dilla-testhost'],
+  ]) {
+    const problems = checkMobile(mobileEdit(from, from.startsWith('      - run:') || from.startsWith('        run:') ? from.replace(/run: .*/, 'run: echo skipped') : ' build'));
+    assert.ok(problems.some((p) => p.startsWith('mobile.yml: job "') && p.includes('is missing:')), `${what}: ${problems.join('\n')}`);
+  }
+});
+
+test('mobile.yml is filtered by the changes job, never at the trigger, and keeps its nightly run and watcher', () => {
+  const cases = [
+    ['a paths filter', mobileEdit('  pull_request:\n', "  pull_request:\n    paths: ['packages/mobile/**']\n"), 'must trigger'],
+    ['no schedule', mobileEdit(`  schedule:\n    - cron: '${NIGHTLY_CRON}'\n`, ''), 'must trigger'],
+    ['a watcher that skips the nightly run', mobileEdit("|| github.event_name == 'schedule' ", ''), 'unsafe watchdog'],
+    ['a job without its gate', mobileEdit("  mobile-ios:\n    needs: [changes, mobile-bundle]\n    if: needs.changes.outputs.mobile != 'false'\n", '  mobile-ios:\n    needs: [changes, mobile-bundle]\n'), 'job-level if:'],
+    ['a job gated on another area', mobileEdit("  mobile-unit:\n    needs: [changes]\n    if: needs.changes.outputs.mobile != 'false'\n", "  mobile-unit:\n    needs: [changes]\n    if: needs.changes.outputs.web != 'false'\n"), 'job-level if:'],
+    ['an ok job that misses a job', mobileEdit('    needs: [ci-watchdog, mobile-work-complete, changes, mobile-unit, ', '    needs: [ci-watchdog, mobile-work-complete, changes, '), 'mobile-ok'],
+  ];
+  for (const [what, changed, message] of cases) {
+    const problems = checkMobile(changed);
+    assert.ok(problems.some((p) => p.startsWith('mobile.yml') && p.includes(message)), `${what}: ${problems.join('\n')}`);
+  }
+});
+
+test('every mobile artifact consumer waits for its producer', () => {
+  for (const [from, to, need] of [
+    ['  mobile-bundle:\n    needs: [changes, mobile-core-wasm]\n', '  mobile-bundle:\n    needs: [changes]\n', 'mobile-core-wasm'],
+    ['  mobile-android:\n    needs: [changes, mobile-bundle, mobile-e2e-tools]\n', '  mobile-android:\n    needs: [changes, mobile-bundle]\n', 'mobile-e2e-tools'],
+    ['  mobile-android:\n    needs: [changes, mobile-bundle, mobile-e2e-tools]\n', '  mobile-android:\n    needs: [changes, mobile-e2e-tools]\n', 'mobile-bundle'],
+    ['  mobile-ios:\n    needs: [changes, mobile-bundle]\n', '  mobile-ios:\n    needs: [changes]\n', 'mobile-bundle'],
+  ]) {
+    const problems = checkMobile(mobileEdit(from, to));
+    assert.ok(problems.some((p) => p.includes(`has no "needs: ${need}"`)), `${need}: ${problems.join('\n')}`);
+  }
+});
+
+test('mobile.yml uses GitHub-owned pinned actions only, and its uploads fail closed', () => {
+  const third = checkMobile(mobileEdit('      - run: bash scripts/ci-android.sh avd\n', '      - uses: reactivecircus/android-emulator-runner@62dbb605bba737720e10b196cb4220d374026a6d\n      - run: bash scripts/ci-android.sh avd\n'));
+  assert.ok(third.some((p) => p.includes('reactivecircus/android-emulator-runner') && p.includes('not a GitHub-owned action')), third.join('\n'));
+  const floating = checkMobile(mobileEdit('uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0', 'uses: actions/cache/restore@v6'));
+  assert.ok(floating.some((p) => p.includes('must use a 40-hex commit SHA')), floating.join('\n'));
+  const silent = checkMobile(mobileEdit('          path: target/mobile-android-e2e\n          if-no-files-found: error\n', '          path: target/mobile-android-e2e\n'));
+  assert.ok(silent.some((p) => p.includes('if-no-files-found: error')), silent.join('\n'));
+  const unguarded = checkMobile(mobileEdit("        if: failure() && hashFiles('target/mobile-android-e2e/**') != ''\n", '        if: failure()\n'));
+  assert.ok(unguarded.some((p) => p.includes('hashFiles(...)')), unguarded.join('\n'));
+  const escape = checkMobile(mobileEdit('        run: npm run e2e:android -w @dilla/mobile -- --skip-build\n', '        run: npm run e2e:android -w @dilla/mobile -- --skip-build\n        continue-on-error: true\n'));
+  assert.ok(escape.some((p) => p.includes('continue-on-error')), escape.join('\n'));
+});
+
+test('mobile.yml builds the wasm core alone, uploads the emulator evidence from a non-hidden path and pins Xcode', () => {
+  assert.ok(!/^  web-build:$/m.test(REAL_MOBILE), 'no copy of desktop-ci.yml\'s web-build');
+  for (const [from, to, what] of [
+    ['      - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm\n', '', 'check-wasm-size'],
+    ["        if: failure() && hashFiles('target/mobile-android-e2e/**') != ''", "        if: failure() && hashFiles('packages/mobile/e2e/.out/**') != ''", 'hidden evidence path'],
+    ['          DILLA_ANDROID_E2E_OUT: ${{ github.workspace }}/target/mobile-android-e2e\n', '', 'evidence directory'],
+    ['          sudo xcode-select -s /Applications/Xcode_26.6.app\n', '', 'xcode-select'],
+  ]) {
+    const problems = checkMobile(mobileEdit(from, to));
+    assert.ok(problems.some((p) => p.startsWith('mobile.yml: job "') && p.includes('is missing:')), `${what}: ${problems.join('\n')}`);
+  }
+  // The slim job is still a wasm job: the pinned clang 23 block applies to it.
+  const clang = checkMobile(mobileEdit('        run: bash scripts/ci-llvm.sh install\n', '        run: echo no clang\n'));
+  assert.ok(clang.some((p) => p.includes('job "mobile-core-wasm" builds for wasm32-unknown-unknown')), clang.join('\n'));
+});

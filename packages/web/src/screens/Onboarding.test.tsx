@@ -517,6 +517,26 @@ describe('refusals of I saved it', () => {
   });
 });
 
+// Item 5: in the mobile app a lost response says "Try again", not "Reload the page"; the action still re-runs the resume.
+describe('a lost response in the mobile app', () => {
+  it('uses app wording and a Try again action', async () => {
+    vi.stubGlobal('dillaMobile', { send: () => Promise.resolve(), onEvent: () => () => {} });
+    try {
+      const reload = vi.spyOn(browser, 'reload').mockImplementation(() => {});
+      const { user, fake } = setup();
+      await ticked(user);
+      refuseSubmit(fake, { code: 'E_NETWORK', detail: '', status: 0, retryAfterMs: null });
+      await user.click(button('I saved it'));
+      const banner = screen.getByRole('alert');
+      expect(banner).toHaveTextContent('The connection dropped while creating your account. Try again to finish.');
+      expect(banner).not.toHaveTextContent(/reload the page/i);
+      await user.click(within(banner).getByRole('button', { name: 'Try again' }));
+      expect(reload).toHaveBeenCalledTimes(1);
+      reload.mockRestore();
+    } finally { vi.unstubAllGlobals(); }
+  });
+});
+
 describe('signing in instead (the prototype\'s "Already have an account? Sign in")', () => {
   const SIGN_IN = 'Already have an account? Sign in';
   it('sits under the button at the right on step 1 when the instance takes passwords', async () => {

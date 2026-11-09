@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import type { AccountState } from '@dilla/client-core';
+import type { MobileBridge } from '../../../mobile/src/contract.ts';
 import { Button, Dialog, Splash } from '@dilla/ui';
 import { browser } from '../browser.ts';
+import { mobileBridge } from '../mobile.ts';
 import { useCore } from '../core/context.tsx';
 import { errorOf, type UiError } from '../core/errors.ts';
 import { useSlice } from '../core/use-slice.ts';
@@ -18,6 +20,14 @@ function bootPhase(account: AccountState | undefined, fatal: UiError | null, res
     case 'unsupported': case 'other-tab': case 'store-lost': case 'revoked': case 'error': return account.phase;
     default: return 'loading';
   }
+}
+
+/** The mobile app's error splash: Try again, or back to its instance picker. It needs no core, so startup can show
+ *  it before the worker exists (main.tsx, when the native shell never answers). */
+export function MobileBootError(props: { bridge: MobileBridge; detail: string }): React.JSX.Element {
+  return <Splash status={t('boot.error.status')} detail={props.detail}
+    action={{ label: t('mobile.retry'), onAction: () => browser.reload() }}
+    secondary={{ label: t('mobile.switchInstance'), onAction: () => { void props.bridge.send({ type: 'switch-instance' }).catch(() => undefined); } }} />;
 }
 
 export function Boot(props: { fatal: UiError | null }): React.JSX.Element {
@@ -59,9 +69,14 @@ export function Boot(props: { fatal: UiError | null }): React.JSX.Element {
       case 'store-newer': return <Splash status={t('boot.storeNewer.status')}
         detail={t('boot.storeNewer.detail', { found: account?.error?.store?.found ?? 0, supported: account?.error?.store?.supported ?? 0 })}
         action={{ label: t('boot.storeNewer.action'), onAction: () => browser.reload() }} />;
-      case 'error': return <Splash status={t('boot.error.status')}
-        detail={t('boot.error.detail', { code: (props.fatal ?? resetError ?? account?.error)?.code ?? 'E_UNKNOWN' })}
-        action={{ label: t('boot.error.action'), onAction: () => browser.reload() }} />;
+      case 'error': {
+        const code = (props.fatal ?? resetError ?? account?.error)?.code ?? 'E_UNKNOWN';
+        // The mobile app (final review I2): app words, and a way back to its instance picker when this one fails.
+        const mobile = mobileBridge();
+        if (mobile !== undefined) return <MobileBootError bridge={mobile} detail={t('mobile.boot.error.detail', { code })} />;
+        return <Splash status={t('boot.error.status')} detail={t('boot.error.detail', { code })}
+          action={{ label: t('boot.error.action'), onAction: () => browser.reload() }} />;
+      }
       default: return <Splash status={t('boot.loading.status')} />;
     }
   })();

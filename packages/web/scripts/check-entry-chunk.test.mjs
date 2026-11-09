@@ -37,6 +37,39 @@ beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'dilla-web-entry-')); });
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
 describe('checkEntryChunk (L-WEB-51, decision 5)', () => {
+  // Review I1 (Task 6): the mobile app's worker branch exists only in the mobile build (__DILLA_MOBILE__ true).
+  it('fails a web or desktop build that still carries the mobile worker branch, and passes it in the mobile build', () => {
+    cleanDist();
+    put('assets/entry-Wrk000.js', 'const o=self.location.origin;if(o==="capacitor://localhost"||o==="https://localhost");\n');
+    expect(checkEntryChunk(dir)).toEqual(['assets/entry-Wrk000.js: the mobile-only worker branch is in a web or desktop build']);
+    expect(checkEntryChunk(dir, { mobile: true })).toEqual([]);
+  });
+  // Review round 2, item 5: DILLA_MOBILE_BUILD is valid only for the mobile app's own output, packages/mobile/.web-build.
+  it('refuses mobile mode for any output but packages/mobile/.web-build, packages/web/dist included', () => {
+    cleanDist();
+    const run = (target) => spawnSync(process.execPath, [SCRIPT, target], { encoding: 'utf8', env: { ...process.env, DILLA_MOBILE_BUILD: '1' } });
+    const tmp = run(dir);
+    expect(tmp.status).toBe(1);
+    expect(tmp.stderr).toContain('DILLA_MOBILE_BUILD is set, but this output is not packages/mobile/.web-build');
+    const webDist = run(join(dirname(SCRIPT), '..', 'dist'));
+    expect(webDist.status).toBe(1);
+    expect(webDist.stderr).toContain('DILLA_MOBILE_BUILD is set, but this output is not packages/mobile/.web-build');
+  });
+  // Final fix wave: the checker reads DILLA_MOBILE_BUILD as vite.config.ts does, set only when it is exactly '1'. Any other
+  // value is a web or desktop build: checked as one, so it neither fails for its output path nor allows the mobile branch.
+  it('treats DILLA_MOBILE_BUILD other than 1 as a web or desktop build, as vite.config.ts does', () => {
+    for (const value of ['0', '', 'true']) {
+      dir = mkdtempSync(join(tmpdir(), 'dilla-web-entry-'));
+      cleanDist();
+      const run = () => spawnSync(process.execPath, [SCRIPT, dir], { encoding: 'utf8', env: { ...process.env, DILLA_MOBILE_BUILD: value } });
+      const clean = run();
+      expect(clean.status, value).toBe(0);
+      put('assets/entry-Wrk000.js', 'const o=self.location.origin;if(o==="capacitor://localhost"||o==="https://localhost");\n');
+      const branch = run();
+      expect(branch.status, value).toBe(1);
+      expect(branch.stderr, value).toContain('the mobile-only worker branch is in a web or desktop build');
+    }
+  });
   it('passes a clean dist', () => {
     cleanDist();
     expect(checkEntryChunk(dir)).toEqual([]);

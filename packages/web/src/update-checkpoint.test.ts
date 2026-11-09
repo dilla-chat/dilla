@@ -1,7 +1,7 @@
 import { IDBFactory } from 'fake-indexeddb';
 import { webcrypto } from 'node:crypto';
 import { expect, it } from 'vitest';
-import { createUpdateCheckpointStore, updateTabId } from './update-checkpoint.ts';
+import { checkpointScope, createUpdateCheckpointStore, updateTabId } from './update-checkpoint.ts';
 
 const scope = { instance: 'ab'.repeat(16), user: 'cd'.repeat(16), tab: 'ef'.repeat(16) };
 
@@ -47,4 +47,19 @@ it('expires a checkpoint and removes it after restoration', async () => {
   await first.save(scope, { draft: 'second' }, []);
   await first.remove(scope);
   expect(await first.load(scope)).toBeNull();
+});
+
+// Review round 2, item 1 (Task 6): in the mobile app instances share one origin and one IndexedDB. The scope uses the
+// worker's storage key (instance URL bound) there, so an instance asserting another's instanceId and userId finds nothing.
+it('keys the scope on the storage key when the worker publishes one, and on the instance id otherwise', async () => {
+  const id = 'ab'.repeat(16), user = 'cd'.repeat(16), tab = 'ef'.repeat(16);
+  expect(checkpointScope({ id }, user, tab)).toEqual({ instance: id, user, tab });
+  const a = checkpointScope({ id, storageKey: '1f'.repeat(32) }, user, tab);
+  const b = checkpointScope({ id, storageKey: 'd9'.repeat(32) }, user, tab);
+  expect(a.instance).toBe('1f'.repeat(32));
+  const idb = new IDBFactory();
+  const store = createUpdateCheckpointStore(idb, webcrypto as Crypto, () => 1000);
+  await store.save(a, { draft: 'A only' }, []);
+  expect(await createUpdateCheckpointStore(idb, webcrypto as Crypto, () => 1001).load(b)).toBeNull();
+  expect((await createUpdateCheckpointStore(idb, webcrypto as Crypto, () => 1002).load(a))?.state).toEqual({ draft: 'A only' });
 });

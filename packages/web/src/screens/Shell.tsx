@@ -47,8 +47,9 @@ import { You } from './You.tsx';
 import { UserPanel } from './UserPanel.tsx';
 import type { watchUpdates } from '../update.ts';
 import type { createUpdateCheckpointStore } from '../update-checkpoint.ts';
-import { updateTabId } from '../update-checkpoint.ts';
+import { checkpointScope, updateTabId } from '../update-checkpoint.ts';
 import { clearUpgradeReload, desktopBridge, setDesktopGuard, upgradeRequired, type UpgradeRequiredSurface } from '../desktop.ts';
+import { mobileBridge } from '../mobile.ts';
 import { captureViewPlace, restoreViewPlace, validViewPlace, type ViewPlace } from '../update-view.ts';
 import { browser } from '../browser.ts';
 import { CommandProvider } from './commands/CommandContext.tsx';
@@ -1234,7 +1235,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
     return { id: c.id, name: c.name, unread: counts.unread, mentions: counts.mentions };
   });
   const nativeUnread = Math.min(9999, Object.values(badges ?? {}).reduce((total, value) => total + value.unread, 0));
-  useEffect(() => { void desktopBridge()?.send({ type: 'badge', count: nativeUnread }).catch(() => {}); }, [nativeUnread]);
+  useEffect(() => {
+    void desktopBridge()?.send({ type: 'badge', count: nativeUnread }).catch(() => {});
+    void mobileBridge()?.send({ type: 'badge', count: nativeUnread }).catch(() => {});
+  }, [nativeUnread]);
 
   // Flow 07: the instance serves no role bits before the permissions read, so ownership stands in for ManageChannels until then.
   const owner = community !== null && self !== null && community.owner === self.id;
@@ -1840,7 +1844,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           {t(ownTrust === 'changed' ? 'privacy.ownChanged' : 'privacy.ownUnlisted')}
         </Banner>
       ) : null}
-      {offline && linkReason === 'version' ? (
+      {offline && linkReason === 'version' && mobileBridge() !== undefined ? (
+        // The mobile app bundles its client: a reload cannot fetch a newer one, so the banner asks for an app update.
+        <Banner tone="warn">{t('mobile.shell.banner.clientTooOld')}</Banner>
+      ) : offline && linkReason === 'version' ? (
         <Banner tone="warn" action={{ label: t('reload.action'), onAction: () => {
           // The update effect checkpoints the draft, route and files, then reloads; with no update flow or storage it is a plain reload.
           if (update === undefined || updateScope === null) browser.reload();
@@ -2025,15 +2032,20 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   useEffect(() => { if (call.recoverySharing) setSharingStopped(true); }, [call.recoverySharing]);
   const updating = useRef(false);
   const update = props.update;
+  // Keyed on the strings, not the instance object: a re-posted account slice (a new object, same instance) must not
+  // re-run the restore below while one is in flight (final review I1).
+  const instanceId = account?.instance?.id;
+  const instanceStorageKey = account?.instance?.storageKey;
+  const userId = account?.user?.id;
   const updateScope = useMemo(() => {
-    if (update === undefined || account?.instance?.id === undefined || account.user?.id === undefined) return null;
+    if (update === undefined || instanceId === undefined || userId === undefined) return null;
     try {
       // eslint-disable-next-line no-restricted-globals -- only a random content-free tab identifier enters Web Storage
       const tab = updateTabId(sessionStorage, crypto);
-      return { instance: account.instance.id, user: account.user.id, tab };
+      return checkpointScope({ id: instanceId, storageKey: instanceStorageKey }, userId, tab);
     }
     catch { return null; }
-  }, [update, account?.instance?.id, account?.user?.id]);
+  }, [update, instanceId, instanceStorageKey, userId]);
   useEffect(() => {
     if (update === undefined || updateScope === null) { setRestoreDone(true); return; }
     let active = true;

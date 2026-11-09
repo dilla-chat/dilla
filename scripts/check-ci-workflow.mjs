@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
-import { gateExpression, JOB_GATES, jobRuns, reachableOutputs, WORKFLOWS } from './ci-areas.mjs';
+import { AREAS, gateExpression, JOB_GATES, jobRuns, reachableOutputs, WORKFLOWS } from './ci-areas.mjs';
 import { localMirrorProblems } from './ci-local-plan.mjs';
 import { checkNativeStockFeasibility } from './check-native-stock-feasibility.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
@@ -12,7 +12,8 @@ const yaml = createRequire(import.meta.url)('js-yaml');
  * two). Ruling L added the two Go jobs: they landed with Plan B task 8, and leaving them merely "checked if present"
  * meant deleting them was the one way to make the Go half of the tree ungated without this gate saying a word. The
  * `go` job additionally has to declare its `needs: rust-wasi` edge (see below). Artifacts never cross workflows, so
- * a job whose output both need (rust-native, rust-wasi, web-build) is in both, unchanged.
+ * a job whose output several need (rust-native, rust-wasi, web-build) is in each of them, unchanged. mobile.yml
+ * (plan 2026-11-05 mobile M1, Task 7) is the third: the iOS and Android apps.
  */
 export const REQUIRED_JOBS = {
   server: [
@@ -72,15 +73,34 @@ export const REQUIRED_JOBS = {
     'desktop',
     // core-integration: BROWSER_WEB_JOBS.
   ],
+  mobile: [
+    'changes',
+    'ci-watchdog',
+    'mobile-work-complete',
+    'mobile-ok',
+    // npm test and typecheck of @dilla/mobile.
+    'mobile-unit',
+    // The wasm core only (desktop's web-build runs the typechecks and dist guards): mobile-bundle's input.
+    'mobile-core-wasm',
+    // The mobile client (packages/mobile/dist), once for both apps.
+    'mobile-bundle',
+    // The smoke test's test host, WASI core and native peer.
+    'mobile-e2e-tools',
+    // The APKs, the release network-config check and the emulator smoke test.
+    'mobile-android',
+    // The iOS simulator build.
+    'mobile-ios',
+  ],
 };
 
-/** A workflow's file name, for messages. */
-/** The desktop workflow's nightly run (02:17 UTC), on main. */
+/** The nightly run (02:17 UTC) on main of the workflows WORKFLOWS marks `nightly` (desktop, mobile). */
 export const NIGHTLY_CRON = '17 2 * * *';
 
-// The watcher runs for every trusted event; a scheduled run is one (GitHub starts it on main), so desktop-ok keeps
-// failing a skipped watcher there.
-const watchdogIf = (workflow) => `    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || ${workflow === 'desktop' ? "github.event_name == 'schedule' || " : ''}(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)`;
+// The watcher runs for every trusted event; a scheduled run is one (GitHub starts it on main), so desktop-ok and
+// mobile-ok keep failing a skipped watcher there.
+const watchdogIf = (workflow) => `    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || ${WORKFLOWS[workflow].nightly ? "github.event_name == 'schedule' || " : ''}(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)`;
+
+/** A workflow's file name, for messages. */
 
 const fileOf = (workflow) => WORKFLOWS[workflow].file;
 
@@ -196,7 +216,7 @@ const REQUIRED_STEPS = {
     'node scripts/ci-areas.mjs',
     'EVENT_NAME: ${{ github.event_name }}',
     'BASE_SHA: ${{ github.event.pull_request.base.sha }}',
-    ...['go', 'core', 'web', 'e2e', 'text', 'code'].map((area) => `${area}: \${{ steps.areas.outputs.${area} }}`),
+    ...[...AREAS, 'code'].map((area) => `${area}: \${{ steps.areas.outputs.${area} }}`),
   ],
   // The cheap docs gates, for every change.
   // Their unit tests and the real checks against the real files; check:ci reads the Go tree for the race and Postgres rules.
@@ -207,6 +227,32 @@ const REQUIRED_STEPS = {
   // The final gate of each workflow runs regardless of dependency results, alongside its no-op completion barrier.
   'server-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
   'desktop-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
+  'mobile-ok': ["contains(needs.*.result, 'failure')", "contains(needs.*.result, 'cancelled')"],
+  // The mobile lane (plan 2026-11-05 mobile M1, Task 7): each job's load-bearing commands.
+  'mobile-unit': ['- run: npm test -w @dilla/mobile', '- run: npm run typecheck -w @dilla/mobile'],
+  'mobile-core-wasm': ['- run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg', '- run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm', 'name: mobile-core-wasm\n          path: packages/core-wasm/pkg/\n          if-no-files-found: error'],
+  'mobile-bundle': ['name: mobile-core-wasm\n          path: packages/core-wasm/pkg', '- run: npm run build -w @dilla/mobile', 'name: dilla-mobile-dist\n          path: packages/mobile/dist/\n          if-no-files-found: error'],
+  'mobile-e2e-tools': ['- run: go build -o target/dilla-testhost ./cmd/dilla-testhost', '- run: cargo build -p dilla-testkit --release --locked', '- run: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked', 'name: mobile-e2e-tools'],
+  'mobile-android': [
+    'name: dilla-mobile-dist\n          path: packages/mobile/dist',
+    'name: mobile-e2e-tools',
+    'run: echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"',
+    '- run: cd packages/mobile && npx cap sync android',
+    ' -- packages/mobile/android/gradlew -p packages/mobile/android --no-daemon assembleDebug assembleRelease',
+    // Review finding M2: the release APK trusts system CAs only and refuses cleartext.
+    '- run: npm run android:check-release -w @dilla/mobile',
+    'run: bash scripts/ci-android.sh kvm',
+    ' -- bash scripts/ci-android.sh sdk',
+    '- run: bash scripts/ci-android.sh avd',
+    'run: npm run e2e:android -w @dilla/mobile -- --skip-build\n        env:\n          DILLA_ANDROID_E2E_OUT: ${{ github.workspace }}/target/mobile-android-e2e',
+    "if: failure() && hashFiles('target/mobile-android-e2e/**') != ''\n        with:\n          name: mobile-android-results\n          path: target/mobile-android-e2e\n          if-no-files-found: error",
+  ],
+  'mobile-ios': [
+    '- run: cd packages/mobile && npx cap sync ios',
+    'sudo xcode-select -s /Applications/Xcode_26.6.app',
+    ' -- xcodebuild -resolvePackageDependencies -project packages/mobile/ios/App/App.xcodeproj -scheme App -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm"',
+    "run: xcodebuild -project packages/mobile/ios/App/App.xcodeproj -scheme App -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -clonedSourcePackagesDirPath \"$RUNNER_TEMP/spm\" -disableAutomaticPackageResolution -derivedDataPath \"$RUNNER_TEMP/DerivedData\" CODE_SIGNING_ALLOWED=NO build",
+  ],
   // The testkit artifact hand-off: rust-native builds and uploads it, go downloads it.
   'rust-native': [
     'cargo fmt --all --check',
@@ -795,7 +841,7 @@ const ELECTRON_INSTALL_STEP = [
 ];
 const ELECTRON_STEPS = [ELECTRON_VERSION_STEP, ELECTRON_CACHE_STEP, ELECTRON_INSTALL_STEP].map((step) => step.join('\n')).join('\n');
 
-const ELECTRON_INSTALLS_PER_FILE = { 'desktop.yml': 5, 'desktop-ci.yml': 1, 'server.yml': 0 };
+const ELECTRON_INSTALLS_PER_FILE = { 'desktop.yml': 5, 'desktop-ci.yml': 1, 'server.yml': 0, 'mobile.yml': 0 };
 
 /** Every step that runs electron/install.js is the one retried step, byte for byte, behind the version and cache steps. */
 export function checkElectronInstalls(jobs, problems, file) {
@@ -986,8 +1032,9 @@ function checkActionReference(line, file, number, problems) {
 }
 
 /**
- * One CI workflow (server.yml or desktop-ci.yml) against its own job list, gates, watchdog barrier and ok check. Both
- * run on every pull request and push to main, never filtered at the trigger, so a required check always reports.
+ * One CI workflow (server.yml, desktop-ci.yml or mobile.yml) against its own job list, gates, watchdog barrier and ok
+ * check. Each runs on every pull request and push to main, never filtered at the trigger, so a required check always
+ * reports.
  */
 function checkCiWorkflow(root, workflow) {
   const file = fileOf(workflow);
@@ -1004,10 +1051,12 @@ function checkCiWorkflow(root, workflow) {
   let doc = null;
   try { doc = yaml.load(text); } catch (error) { problems.push(`${file}: invalid YAML (${error.message.split('\n')[0]})`); }
   if (doc !== null && doc?.name !== workflowName) problems.push(`${file}: the workflow must be named "${workflowName}" (the release gates and ci-rerun-starved.yml read it)`);
-  // Only the desktop workflow also runs nightly (every area on, see scripts/ci-areas.mjs); server.yml has no schedule.
-  const triggers = { push: { branches: ['main'] }, pull_request: null, ...(workflow === 'desktop' ? { schedule: [{ cron: NIGHTLY_CRON }] } : {}) };
+  // Only the nightly workflows (desktop, mobile) also run on a schedule (every area on, see scripts/ci-areas.mjs);
+  // server.yml has none.
+  const { nightly } = WORKFLOWS[workflow];
+  const triggers = { push: { branches: ['main'] }, pull_request: null, ...(nightly ? { schedule: [{ cron: NIGHTLY_CRON }] } : {}) };
   if (doc !== null && !drSame(doc?.on, triggers)) {
-    problems.push(`${file}: must trigger on every pull_request and every push to main${workflow === 'desktop' ? `, and nightly on schedule cron '${NIGHTLY_CRON}'` : ''}, with no paths or other filter at the trigger (area skipping is the changes job's)`);
+    problems.push(`${file}: must trigger on every pull_request and every push to main${nightly ? `, and nightly on schedule cron '${NIGHTLY_CRON}'` : ''}, with no paths or other filter at the trigger (area skipping is the changes job's)`);
   }
 
   let currentJob = null;
@@ -1238,6 +1287,9 @@ function checkCiWorkflow(root, workflow) {
     ...Object.keys(BROWSER_WEB_JOBS).map((job) => [job, ['rust-native', 'rust-wasi', 'web-build']]),
     ['go-release', ['web-build']],
     ['desktop', ['web-build']],
+    ['mobile-bundle', ['mobile-core-wasm']],
+    ['mobile-android', ['mobile-bundle', 'mobile-e2e-tools']],
+    ['mobile-ios', ['mobile-bundle']],
   ]) {
     if (!(job in jobs)) continue;
     for (const need of needs) {
@@ -1264,6 +1316,7 @@ function checkCiWorkflow(root, workflow) {
 
 export const checkServerWorkflow = (root) => checkCiWorkflow(root, 'server');
 export const checkDesktopCiWorkflow = (root) => checkCiWorkflow(root, 'desktop');
+export const checkMobileCiWorkflow = (root) => checkCiWorkflow(root, 'mobile');
 
 /**
  * The release workflow (install-release, 2026-10-14): a v* tag builds the assets deploy/install.sh downloads and
@@ -1338,7 +1391,8 @@ const RELEASE_STEPS = {
     'gh release view "$TAG"',
     `sha256sum ${RELEASE_ASSETS.join(' ')} > SHA256SUMS`,
     'sha256sum -c --strict SHA256SUMS',
-    'gh release create "$TAG" --verify-tag',
+    // A draft: mobile-release.yml signs the APK on main, attaches it and publishes (Jonas, 2026-11-06).
+    'gh release create "$TAG" --verify-tag --draft',
     'flags="--prerelease"',
     `${RELEASE_ASSETS.map((a) => `release/${a}`).join(' ')} release/SHA256SUMS`,
   ],
@@ -1447,6 +1501,138 @@ export function checkReleaseWorkflow(root) {
   assertEveryUploadFailsOnNoFiles(text, problems, file);
   assertWasmPackUsesTheSizeProfile(text, problems, file);
   assertWasmJobsUseClang23(text, jobs, problems, file);
+  // A v* tag run uses the workflow file at the tagged commit, which any tag pusher controls: no job here may enter an
+  // environment or name a secret, no job may run past a failed gate, and every checkout is the tag's own commit.
+  let doc;
+  try { doc = yaml.load(text); } catch (error) { problems.push(`${file}: invalid YAML (${error.message.split('\n')[0]})`); return problems; }
+  for (const [name, job] of Object.entries(doc?.jobs ?? {})) {
+    if (Object.hasOwn(job ?? {}, 'environment')) problems.push(`${file}: job "${name}" enters an environment; a tag run's workflow file is the tag's, so release.yml holds no environment (signing is mobile-release.yml's, on main)`);
+    if (typeof job?.if === 'string' && STATUS_CHECK.test(job.if)) problems.push(`${file}: job "${name}" has a job-level if: with a status check (${job.if}), which runs it past a failed need`);
+    for (const step of job?.steps ?? []) {
+      if (isCheckout(step) && Object.hasOwn(step.with ?? {}, 'ref')) problems.push(`${file}: job "${name}" checks out ref ${step.with.ref}; a release builds the tagged commit only`);
+    }
+  }
+  for (const expr of expressions(text)) {
+    if (/\bsecrets\b/.test(expr)) problems.push(`${file}: names secrets (\${{${expr}}}); release.yml reads no secret`);
+  }
+  return problems;
+}
+
+/** A job-level `if:` with a status check runs the job even when a need failed or was skipped. */
+const STATUS_CHECK = /\b(?:always|cancelled|failure|success)\s*\(/;
+const isCheckout = (step) => typeof step?.uses === 'string' && step.uses.startsWith('actions/checkout@');
+/** Every `${{ … }}` expression body in a text. */
+const expressions = (text) => [...text.matchAll(/\$\{\{([\s\S]*?)\}\}/g)].map((m) => m[1]);
+
+/**
+ * mobile-release.yml (2026-11-06, "Draft, sign on main"): release.yml leaves each v* release a draft; this workflow,
+ * always main's file in the main-only mobile-release environment, signs the APK from the tag's commit, attaches it to
+ * the draft, adds it to SHA256SUMS and publishes. The rules keep the secrets in the steps that use them (review M1).
+ */
+export const MOBILE_RELEASE_NEEDS = { 'mobile-bundle': ['resolve'], 'android-release': ['resolve', 'mobile-bundle'], publish: ['resolve', 'android-release'], 'ios-testflight': ['resolve', 'mobile-bundle'] };
+const ANDROID_SECRETS = ['ANDROID_KEYSTORE_B64', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_PASSWORD'];
+const ASC_SECRETS = ['ASC_KEY_ID', 'ASC_ISSUER_ID', 'ASC_KEY_P8'];
+/** job -> step name -> the secrets that step's env may name. No other step, and no job-level key, names a secret. */
+export const MOBILE_SECRET_STEPS = {
+  'android-release': { 'The signing secrets are set': ANDROID_SECRETS, 'Sign the APK with the release key (the keystore exists only during this step)': ANDROID_SECRETS },
+  'ios-testflight': { 'The App Store Connect secrets and team id are set': ASC_SECRETS, 'Export and upload to TestFlight': ASC_SECRETS },
+};
+/** The one step of a job that writes a key file, the trap that removes it, and the write, which the trap precedes. */
+const MOBILE_KEY_FILES = {
+  'android-release': { step: 'Sign the APK with the release key (the keystore exists only during this step)', trap: `trap 'rm -f "$ks"' EXIT`, write: 'base64 -d > "$ks"' },
+  'ios-testflight': { step: 'Export and upload to TestFlight', trap: `trap 'rm -f "$RUNNER_TEMP/asc-key.p8"' EXIT`, write: '> "$RUNNER_TEMP/asc-key.p8"' },
+};
+const RESOLVE_SHA = '${{ needs.resolve.outputs.sha }}';
+/** The jobs that change the release run only while it is a draft; this exact condition keeps their needs in force. */
+export const MOBILE_DRAFT_IF = "needs.resolve.outputs.draft == 'true'";
+const MOBILE_DRAFT_ONLY = { 'android-release': true, publish: true };
+const MOBILE_RELEASE_STEPS = {
+  resolve: [
+    '[ "$RUN_REF" = refs/heads/main ]',
+    'git merge-base --is-ancestor "$sha" origin/main',
+    '[ "$RUN_EVENT" = push ]',
+    '[ "$sha" = "$RUN_SHA" ]',
+    'actions/workflows/release.yml/runs?branch=$tag&status=success',
+    'published releases are immutable',
+    'echo "draft=$draft"',
+  ],
+  'android-release': ['npm run android:check-signer -w @dilla/mobile', 'npm run android:check-release-signed -w @dilla/mobile', 'if [ "$RUN_ATTEMPT" -gt 9 ]', 'dilla-android-apk'],
+  publish: ['[ "$draft" = true ]', 'dilla-android-apk', '"digest-mismatch":"error"', '"APK_SHA256":"${{ needs.android-release.outputs.apk_sha256 }}"', 'printf \'%s  %s\\n\' "$APK_SHA256" "$apk" | sha256sum -c --strict', '--clobber', 'sha256sum -c --strict SHA256SUMS', 'gh release edit "$TAG" --draft=false'],
+};
+
+export function checkMobileReleaseWorkflow(root) {
+  const file = 'mobile-release.yml';
+  let text;
+  try { text = readFileSync(join(root, '.github', 'workflows', file), 'utf8'); }
+  catch (error) { if (error.code === 'ENOENT') return [`${file}: missing`]; throw error; }
+  const problems = [];
+  let doc;
+  try { doc = yaml.load(text); } catch (error) { return [`${file}: invalid YAML (${error.message.split('\n')[0]})`]; }
+  text.split('\n').forEach((line, i) => checkActionReference(line, file, i + 1, problems));
+  const on = doc?.on ?? doc?.true ?? {};
+  if (JSON.stringify(on.workflow_run?.workflows) !== '["release"]' || JSON.stringify(on.workflow_run?.types) !== '["completed"]') problems.push(`${file}: must run on workflow_run of [release], types [completed]`);
+  if (!on.workflow_dispatch?.inputs?.tag) problems.push(`${file}: must offer workflow_dispatch with a tag input`);
+  if (Object.keys(on).some((event) => !['workflow_run', 'workflow_dispatch'].includes(event))) problems.push(`${file}: runs only on workflow_run and workflow_dispatch (main's file)`);
+  if (JSON.stringify(doc?.permissions) !== '{"contents":"read"}') problems.push(`${file}: the workflow-level token must be read-only (permissions: contents: read)`);
+  for (const expr of expressions(text)) {
+    if (/toJSON\s*\(\s*secrets\b/i.test(expr)) problems.push(`${file}: toJSON(secrets) exposes every secret`);
+  }
+  const jobs = doc?.jobs ?? {};
+  for (const name of ['resolve', ...Object.keys(MOBILE_RELEASE_NEEDS)]) if (!(name in jobs)) problems.push(`${file}: missing job "${name}"`);
+  // A step as text for the required lines, its run without comment lines and trailing ` # …` comments, so a
+  // commented-out gate does not count (review L2).
+  const uncomment = (run) => run.split('\n').filter((line) => !/^\s*#/.test(line)).map((line) => line.replace(/\s+#.*$/, '')).join('\n');
+  const stepLines = (step) => JSON.stringify(typeof step?.run === 'string' ? { ...step, run: uncomment(step.run) } : step);
+  for (const [name, job] of Object.entries(jobs)) {
+    const steps = job?.steps ?? [];
+    for (const want of MOBILE_RELEASE_STEPS[name] ?? []) {
+      // A wanted line is script text (JSON-escaped to match) or, written as JSON, a with:/env: entry.
+      if (!steps.some((step) => stepLines(step).includes(JSON.stringify(want).slice(1, -1)) || stepLines(step).includes(want))) problems.push(`${file}: job "${name}" is missing: ${want}`);
+    }
+    const needs = typeof job?.needs === 'string' ? [job.needs] : job?.needs ?? [];
+    for (const need of MOBILE_RELEASE_NEEDS[name] ?? []) if (!needs.includes(need)) problems.push(`${file}: job "${name}" must list "${need}" in its needs:`);
+    // Only resolve, which has no needs, may carry a free job-level if:. The Android jobs carry exactly the draft
+    // condition, which has no status check and so still runs them only when their needs succeeded; every other job
+    // carries none (always(), !cancelled() or success() || failure() would run a job past a failed gate).
+    if (name in MOBILE_DRAFT_ONLY) {
+      if (job?.if !== MOBILE_DRAFT_IF) problems.push(`${file}: job "${name}" must carry exactly if: ${MOBILE_DRAFT_IF} (a published release is immutable), got ${job?.if === undefined ? 'none' : `if: ${job.if}`}`);
+    } else if (name !== 'resolve' && Object.hasOwn(job ?? {}, 'if')) problems.push(`${file}: job "${name}" has a job-level if: (${job.if}); it must run only when its needs succeeded`);
+    const environment = job?.environment;
+    if (name in MOBILE_SECRET_STEPS) {
+      if (environment !== 'mobile-release') problems.push(`${file}: job "${name}" must run in environment: mobile-release, which holds its secrets`);
+    } else if (environment !== undefined) problems.push(`${file}: job "${name}" enters an environment; only ${Object.keys(MOBILE_SECRET_STEPS).join(' and ')} do`);
+    if (name === 'publish' ? JSON.stringify(job?.permissions) !== '{"contents":"write"}' : job?.permissions !== undefined && JSON.stringify(job.permissions).includes('write')) {
+      problems.push(name === 'publish' ? `${file}: job "publish" needs exactly permissions: contents: write` : `${file}: job "${name}" asks for write access; only publish writes`);
+    }
+    // Secrets only in the env of the steps that use them; nowhere at job level, in a with:, or in a script.
+    const { steps: _steps, ...jobKeys } = job ?? {};
+    for (const expr of expressions(JSON.stringify(jobKeys))) if (/\bsecrets\b/.test(expr)) problems.push(`${file}: job "${name}" names a secret at job level (\${{${expr}}})`);
+    steps.forEach((step, index) => {
+      const label = step?.name ?? step?.uses ?? step?.run?.split('\n')[0] ?? `step ${index + 1}`;
+      const allowed = MOBILE_SECRET_STEPS[name]?.[step?.name];
+      const { env = {}, ...rest } = step ?? {};
+      for (const expr of expressions(JSON.stringify(rest))) if (/\bsecrets\b/.test(expr)) problems.push(`${file}: job "${name}" step "${label}" names a secret outside its env (\${{${expr}}})`);
+      for (const [key, value] of Object.entries(env ?? {})) {
+        for (const expr of expressions(String(value))) {
+          if (!/\bsecrets\b/.test(expr)) continue;
+          const secret = /^\s*secrets\.([A-Z0-9_]+)\s*$/.exec(expr)?.[1];
+          if (allowed === undefined || secret === undefined || !allowed.includes(secret)) problems.push(`${file}: job "${name}" step "${label}" names a secret it may not (${key}: \${{${expr}}}); secrets live only in ${Object.entries(MOBILE_SECRET_STEPS).map(([j, s]) => `${j}: ${Object.keys(s).join(', ')}`).join('; ')}`);
+        }
+      }
+      if (isCheckout(step) && name !== 'resolve') {
+        if (name === 'publish') problems.push(`${file}: job "publish" checks out the repository; the job that writes runs no repository code`);
+        else if (step.with?.ref !== RESOLVE_SHA || step.with?.['persist-credentials'] !== false) problems.push(`${file}: job "${name}" must check out ref: ${RESOLVE_SHA} (the gated commit) with persist-credentials: false`);
+      }
+    });
+    const keyFile = MOBILE_KEY_FILES[name];
+    if (keyFile) {
+      const writers = steps.filter((step) => typeof step?.run === 'string' && step.run.includes(keyFile.write));
+      const run = writers[0]?.run ?? '';
+      if (writers.length !== 1 || writers[0].name !== keyFile.step || !run.includes(keyFile.trap) || run.indexOf(keyFile.trap) > run.indexOf(keyFile.write)) {
+        problems.push(`${file}: job "${name}": the key file is written in one step only, "${keyFile.step}", whose ${keyFile.trap} comes before the write`);
+      }
+    }
+  }
   return problems;
 }
 
@@ -2139,7 +2325,7 @@ export function checkLocalMirror(root) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkDesktopWorkflow(root), ...checkDesktopReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkLocalMirror(root)];
+  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkMobileReleaseWorkflow(root), ...checkDesktopWorkflow(root), ...checkDesktopReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkLocalMirror(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }

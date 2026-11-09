@@ -1,0 +1,230 @@
+# @dilla/mobile: Dilla for iOS and Android
+
+A Capacitor 8.6 shell around the bundled `@dilla/web` client. The app ships the client itself (`webDir: dist`, no
+`server.url`) and talks to whichever Dilla instance the person picks, over HTTPS:
+
+- Origin: `capacitor://localhost` on iOS, `https://localhost` on Android. Instances accept those two through
+  `http.mobile_origins` (CORS on `/v1/` and `/i/`, and the gateway).
+- `window.dillaMobile` (`src/bridge.ts`) implements the `MobileBridge` contract (`src/contract.ts`) that
+  `packages/web/src/mobile.ts` reads: instance info, local notifications and their permission, haptics, pause/resume,
+  switching instance, and browser sign-in.
+- Browser sign-in (`src/browser-auth.ts`) is the desktop poll flow: the system browser (`@capacitor/browser`: SFSafariViewController /
+  Custom Tabs) opens `/desktop-auth/<id>`, and the app polls over **native HTTP** (`CapacitorHttp`), which sends no
+  `Origin` header. `/desktop-auth/` refuses any foreign Origin, so the WebView's own `fetch` cannot be used there.
+- The instance picker (`src/picker.html`, `src/picker.ts`) keeps `instances` and `current` in `@capacitor/preferences`.
+  Instances are HTTPS origins with a DNS name (no base path, no IP literal), validated with a copy of desktop's
+  `canonicalInstance`, and probed with `GET <instance>/v1/instance` through the WebView's `fetch` (so through the
+  server's CORS) before they are stored. The client's **Switch instance** (You, and the boot error screen) sends
+  `switch-instance`, which returns to the picker.
+- App data is not backed up: Android sets `allowBackup="false"`, and iOS marks `Library/WebKit`, `Library/Cookies`
+  and `Library/Application Support` as excluded from backup at launch (`AppDelegate.swift`).
+- All instances share the app's one origin, so the core worker keys each instance's OPFS store, KEK record and leader
+  lock on `SHA-256(instance URL, 0x00, instanceId)` (client-core `worker/storage-key.ts`), never on the instanceId alone.
+- CSP (a `<meta>` in every page): desktop's policy with `'self'` for the local assets. Capacitor's native bridge
+  is injected as a document-start script, which page CSP does not govern.
+
+## Commands
+
+```sh
+npm run build -w @dilla/mobile        # builds @dilla/web with __DILLA_MOBILE__ into .web-build/, then dist/ (CSP, bridge, picker, manifest)
+npx cap sync                          # from packages/mobile: copies dist/ into ios/ and android/
+npm test -w @dilla/mobile             # unit tests (browser-auth, picker, build, native project settings)
+npm run typecheck -w @dilla/mobile
+npm run e2e:android -w @dilla/mobile  # the emulator smoke test (below)
+```
+
+`npm run build` needs `packages/core-wasm/pkg` (the wasm-pack build of `core/dilla-core-wasm`), like any web build:
+
+```sh
+wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
+```
+
+## iPhone (Mac, Xcode 27)
+
+The iOS project is committed: Swift Package Manager (no CocoaPods), bundle id `chat.dilla.app`, deployment target
+iOS 17, the UIScene lifecycle (`SceneDelegate.swift`, `SceneDelegateProxy`). The root view controller comes from
+`Main.storyboard` only (`CAPBridgeViewController`); the scene delegate does not build a window in code.
+
+Mac prerequisites:
+
+- Xcode 27, opened once; `xcode-select -p` should print `/Applications/Xcode.app/Contents/Developer`
+  (else `sudo xcode-select -s /Applications/Xcode.app`).
+- Node 24 or newer: `nvm install 24 && nvm use 24`.
+- The wasm toolchain (Path B, as verified in the M0 spike with Node 24.22.2, Homebrew rustup + llvm + wasm-pack and
+  wasm-bindgen-cli 0.2.128):
+
+```sh
+brew install rustup llvm wasm-pack
+# Homebrew's rustup has no rustup-init and its proxies are keg-only: put them on PATH.
+export PATH="$(brew --prefix rustup)/bin:$HOME/.cargo/bin:$PATH"
+rustup default 1.98.1          # rust-toolchain.toml pins 1.98.1 + wasm32-unknown-unknown; cargo adds the target
+# --mode no-install needs a wasm-bindgen CLI whose version matches wasm-bindgen in Cargo.lock (currently 0.2.128):
+#   grep -A1 '^name = "wasm-bindgen"$' Cargo.lock
+cargo install wasm-bindgen-cli --version 0.2.128 --locked
+# Apple's clang has no wasm32 target; the bundled SQLite C build needs Homebrew's llvm.
+export CC_wasm32_unknown_unknown=$(brew --prefix llvm)/bin/clang AR_wasm32_unknown_unknown=$(brew --prefix llvm)/bin/llvm-ar
+```
+
+Build and run, from the repo root:
+
+1. `npm install` (npm 11 may reformat unrelated lines of `package-lock.json`; do not commit those).
+2. The `wasm-pack build` command above.
+3. `npm run build -w @dilla/mobile`
+4. `cd packages/mobile && npx cap sync ios` (copies `dist/` into `ios/App/App/public`, writes `CapApp-SPM/Package.swift`).
+5. `npx cap open ios` (or open `ios/App/App.xcodeproj`). Xcode resolves `capacitor-swift-pm` 8.6.0 on first open; wait
+   until "Resolving package graph" finishes. Commit any `Package.resolved` Xcode writes: Capacitor 8.6's template
+   `.gitignore` does not ignore it.
+6. Select the **App** target → Signing & Capabilities → tick "Automatically manage signing" and pick your Team. If
+   `chat.dilla.app` is not available to your team, use a suffix there only (do not commit it).
+7. Plug in the iPhone (Developer Mode on: Settings → Privacy & Security → Developer Mode). Pick it as the run
+   destination and press Run (⌘R). Xcode 27 has no Simulator.app: simulators and devices are listed in
+   **Device Hub** (Xcode → Open Developer Tool → Device Hub, `/Applications/Xcode.app/Contents/Applications/DeviceHub.app`),
+   which replaces "Simulator" and the "Devices and Simulators" window. To run on a simulator, boot one in Device Hub
+   and pick it as the destination.
+8. In the app: the picker asks for an instance (`https://dilla.chat`); sign in or sign up; the phone shell opens.
+   Web Inspector: Safari → Develop → <iPhone> → Dilla → `localhost`.
+
+After each `npm run build`, repeat step 4 before running again.
+
+## Android emulator
+
+Host setup (as in the M0 spike): Android SDK at `~/Android/Sdk` (platform-tools, emulator, platform 36, a
+`google_apis` x86_64 system image), JDK 21 (`~/.local/jdk/jdk-21*`; Gradle rejects newer JDKs), KVM, and an AVD, here
+`dilla35` (API 35).
+
+```sh
+export ANDROID_HOME=~/Android/Sdk JAVA_HOME=$(ls -d ~/.local/jdk/jdk-21*)
+npm run build -w @dilla/mobile
+cd packages/mobile && npx cap sync android
+npx cap run android --target dilla35          # or: cd android && ./gradlew assembleDebug
+```
+
+Network trust: the **release** build trusts system CAs only and refuses cleartext
+(`android/app/src/main/res/xml/network_security_config.xml`). The **debug** build also trusts user-installed CAs
+(`android/app/src/debug/res/xml/network_security_config.xml`), so a local instance with a development CA works on the
+emulator. `test/native-projects.test.mjs` keeps the sources that way, and
+`npm run android:check-release -w @dilla/mobile` checks a built release APK (after `./gradlew assembleRelease`).
+
+For a local signed build, set all four of `DILLA_ANDROID_KEYSTORE` (an absolute path to the keystore file), `DILLA_ANDROID_KEYSTORE_PASSWORD`, `DILLA_ANDROID_KEY_ALIAS` and `DILLA_ANDROID_KEY_PASSWORD` before `./gradlew assembleRelease`. It is all or nothing: if any is set, all four must be non-empty or the build fails. With none set the build is unsigned. CI sets none of them; it builds unsigned and signs with `apksigner`.
+
+### The smoke test
+
+`npm run e2e:android -w @dilla/mobile` (add `-- --skip-build` to reuse the last APK, `-- --keep-emulator` to leave an
+emulator it started running). It needs `target/dilla-testhost` (`go build -o target/dilla-testhost ./cmd/dilla-testhost`),
+`target/release/dilla-testkit` (`cargo build -p dilla-testkit --release --locked`), openssl, and an AVD on a
+debuggable `google_apis` image with Chrome (it uses `adb root` to install a throwaway CA as a user CA, and Chrome's
+debug command-line file to skip Chrome's first run).
+
+It starts two test hosts behind HTTPS proxies at `https://a.dilla.test:18443/` and `https://b.dilla.test:18444/`.
+DNS is hermetic: the emulator's global HTTP proxy (`settings put global http_proxy 10.0.2.2:18480`, reset afterwards)
+is a local CONNECT proxy that maps exactly those two names and ports to this machine, so the WebView, the Custom Tab
+and CapacitorHttp all reach them with no outside DNS (a WebView `--host-resolver-rules` flag would miss CapacitorHttp;
+dnsmasq behind `-dns-server` would need the privileged port 53). It installs a fresh debug APK, and through Playwright's Android driver (the WebView DevTools
+socket): adds instance A in the picker, signs up, joins a native peer's server and sees the peer's message (and the peer
+sees the reply); adds instance B and signs up there; checks that browser sign-in goes out over native HTTP with no
+Origin and opens Custom Tabs; sends the app to the background for 120 s while the peer posts, resumes and sees it;
+force-stops and relaunches into the same account on A with both instances in the picker; and fails on any CSP
+violation. Screenshots, logcat on failure and the emulator's own log (`emulator.log`, when the test started it) land in
+`e2e/.out/` (`DILLA_ANDROID_E2E_OUT` moves them; CI uses `target/mobile-android-e2e`).
+
+## Releases
+
+A server release and its Android APK are published together, as one release, by two workflows:
+
+1. `.github/workflows/release.yml` runs for a `v*` tag. Its `tag` job checks that the tag's commit is on `main` with a
+   green server run. It builds the server assets, writes `SHA256SUMS` over them and creates the release as a
+   **draft**. It holds no secret and enters no environment: a tag run uses the workflow file at the tagged commit,
+   which anyone who can push a tag could edit.
+2. `.github/workflows/mobile-release.yml` runs after `release.yml` succeeds, always from `main`'s workflow file (a
+   dispatch from another branch is refused). `resolve` refuses a commit that is not on `main` and, by hand, a tag
+   without a successful `release.yml` run for that commit. If the release is already published (immutable), it says
+   so in the log and skips the two Android jobs (`draft=false`); TestFlight still runs.
+   - **Android:** Gradle builds the APK unsigned. One step signs it with `apksigner` using the keystore from the
+     main-only `mobile-release` environment, and later steps check the signer against the pin in
+     `release-trust.json` and the network config. The `publish` job, which holds no secret and is the only job that
+     may write, attaches `dilla-<tag>.apk` and `dilla-<tag>.apk.sha256` (`sha256sum` format) to the draft, adds the
+     APK's line to `SHA256SUMS`, checks the draft's assets against it and publishes the release.
+   - **iOS:** an unsigned archive, a cloud-signed export, and an upload to TestFlight. It attaches nothing, and
+     publishing does not wait for it.
+
+**What Homelab and install.sh see:** nothing until `publish` finishes. A draft is invisible to them; the release
+appears, published, only with the APK attached and listed in `SHA256SUMS`. If the Android build fails, the release
+stays a draft (server and mobile move in lockstep): fix the cause and dispatch `mobile-release.yml` for the tag.
+
+**Version numbers:** the marketing version comes from the tag (`v0.1.0-mobile1` gives `0.1.0`). The Android
+`versionCode` and the iOS build number are both `1000 + run_number*10 + run_attempt` of `mobile-release.yml`, at most
+9 attempts per run; TestFlight numbers and the Android `versionCode` are independent. They stay monotonic only while
+`mobile-release.yml` keeps its workflow id: renaming or re-adding the file resets `run_number`, and Android refuses an
+update with a lower `versionCode`.
+
+### The `mobile-release` environment
+
+The deployment branch policy is `main` only, and must stay so (a `v*` tag policy would hand the secrets to whatever
+workflow file a pushed tag carries). The secrets and the variable live only here.
+
+| Name | Kind | Value |
+| --- | --- | --- |
+| `ANDROID_KEYSTORE_B64` | secret | the release keystore, base64 |
+| `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_PASSWORD` | secret | keystore password, key password (the key alias, `dilla`, is set in the workflow) |
+| `ASC_KEY_ID`, `ASC_ISSUER_ID` | secret | from the App Store Connect API key |
+| `ASC_KEY_P8` | secret | the contents of the `.p8` file |
+| `APPLE_TEAM_ID` | variable | developer.apple.com, Membership |
+
+Set them with `gh secret set --env mobile-release NAME` and `gh variable set --env mobile-release APPLE_TEAM_ID`.
+The Android secrets are already set.
+
+### One-time setup (Jonas)
+
+1. App Store Connect, Apps, **+ New App**: iOS, name Dilla (Dilla Chat if taken), bundle id `chat.dilla.app`, SKU
+   `dilla-ios`.
+2. Users and Access, Integrations, **App Store Connect API**: create a **Team** key with the **Admin** role. App
+   Manager is not enough, because cloud signing needs Admin. Set `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` and the
+   variable `APPLE_TEAM_ID`.
+3. TestFlight: add the beta app description and a feedback email, then create an **external group** with a **public
+   link** and send the first build to beta review. Put the public link in one place, the marked `TestFlight link` line in [`docs/user/mobile.md`](../../docs/user/mobile.md#install).
+4. First build, export compliance: `Info.plist` declares `ITSAppUsesNonExemptEncryption` as `YES` (standard
+   published algorithms). Answer App Store Connect's questionnaire with "standard encryption algorithms". If Apple
+   issues an `ITSEncryptionExportComplianceCode`, add it to `Info.plist`.
+5. Keep the Android keystore file and its password in your password manager. That is its only offline copy. If you
+   lose it, users cannot update and must uninstall, which deletes the device and its messages.
+
+TestFlight builds expire after 90 days, so release at least that often.
+
+### Backfill or rerun by hand
+
+```sh
+gh workflow run mobile-release.yml -f tag=vX.Y.Z-...
+```
+
+Run it from `main`. Replace `vX.Y.Z-...` with a real server release tag. The tag must have a successful `release.yml`
+run. While its release is a draft, the run builds the APK, attaches it and publishes. Once it is published
+(immutable), the run only rebuilds TestFlight, for example after adding the App Store Connect secrets. A release that
+was published without an APK (such as `v0.1.0-mobile2`) stays without one; the next tag carries it.
+
+Only tags cut after this branch merged can build: older tags (such as `v0.1.0-mobile1`) lack the signer pin, the export options and the Gradle version variables the workflow needs. There is no backfill. The first real run is the next server release tag.
+
+### Rotating the Android key
+
+1. Add the new certificate's SHA-256 as a second entry in `release-trust.json` (`android.certSha256`) and release.
+2. Then switch the three Android secrets to the new keystore (and the alias in the workflow, if it changes).
+
+Android only updates an app over one signed by the same key. An APK signed by a different key will not install over
+an existing one. For users who already have the app, rotation needs APK signature scheme v3 key rotation
+(`apksigner --lineage`). This is not set up. Without it, those users must uninstall first.
+
+### If a job fails halfway
+
+- Android or `publish`: rerun the failed jobs (or dispatch the tag). The release is still a draft, so the uploads
+  replace (`--clobber`) whatever an earlier attempt left, and `publish` checks the draft's assets before it publishes.
+  Once published, nothing can change.
+- iOS: rerun the job. Each attempt gets a new build number, so TestFlight accepts it. A missing secret or variable is
+  named in the job's error.
+- iOS and Android are independent: TestFlight can succeed while the release stays a draft, and the release can be
+  published while TestFlight fails.
+
+## Not yet
+
+- App-icon badge counts (no core Capacitor API; push brings them in wave M2). `send({ type: 'badge' })` is accepted
+  and ignored.
+- Voice calls (untested in the app), push, and background calls: waves M2 and M3. Android uses ConnectionService; iOS uses
+  no CallKit in v1 (see the spec's "iOS calls after the M0 device spike").
