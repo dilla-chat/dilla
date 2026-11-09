@@ -3,7 +3,10 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -59,8 +62,22 @@ type rolePanelOption struct {
 // and durable send receipt; the human registers that exact sequence separately.
 func (h RolePanelInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
 	return map[protocol.Operation]InteractionHandlerSpec{
-		protocol.OpRolePanelPublish: {RevisionInHandler: true, Handle: h.publish},
+		protocol.OpRolePanelPublish: {RevisionInHandler: true, Handle: h.publishLogged},
 	}
+}
+
+// publishLogged answers one publish and logs the op 31 answer's status (never content): a panel the client reports
+// as not published can be told apart from one the Bot refused.
+func (h RolePanelInteractions) publishLogged(ctx context.Context, actor InteractionActor, request protocol.Request) (InteractionResult, error) {
+	started := time.Now()
+	result, err := h.publish(ctx, actor, request)
+	errText := ""
+	if err != nil {
+		errText = err.Error()
+	}
+	slog.InfoContext(ctx, "bot role panel answered", "request_id", request.RequestID.String(), "status", result.Status,
+		"error", errText, "after", time.Since(started))
+	return result, err
 }
 
 //nolint:nilerr // Invalid client input intentionally maps to an unavailable protocol result.
@@ -87,6 +104,7 @@ func (h RolePanelInteractions) publish(ctx context.Context, actor InteractionAct
 	}
 	// Bot v2 Task 17: a role panel is posted into a Bot channel only.
 	if err := CheckBotChannel(h.CommunityID, channel); err != nil {
+		slog.InfoContext(ctx, "bot role panel not posted", "stage", "check", "reason", refusalReason(err))
 		if errors.Is(err, ErrNeedsBotChannel) {
 			FlagNeedsBotChannel(h.CommunityID, "role_panels", channel)
 			logRefusal(ctx, "role_panels", channel, err)
@@ -94,8 +112,11 @@ func (h RolePanelInteractions) publish(ctx context.Context, actor InteractionAct
 		}
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
-	group, err := h.resolveGroup(ctx, channel)
+	wait, poll := h.joinTiming()
+	deadline := time.Now().Add(wait)
+	group, err := h.resolveGroup(ctx, channel, deadline, poll)
 	if err != nil || group.IsZero() {
+		slog.InfoContext(ctx, "bot role panel not posted", "stage", "resolve", "reason", refusalReason(err), "error", fmt.Sprint(err))
 		return InteractionResult{Status: interactionStatusUnavailable}, nil
 	}
 	discovery, _, err := h.Discovery.DiscoverObserved(ctx)
@@ -121,17 +142,41 @@ func (h RolePanelInteractions) publish(ctx context.Context, actor InteractionAct
 	if err != nil {
 		return InteractionResult{}, err
 	}
-	attempt := rolePanelAttemptID(request.RequestID)
-	receipt, err := h.Sender.Send(ctx, h.Session, SendInput{OperationID: request.RequestID, AttemptID: attempt, GroupID: group,
-		RequestBody: body, OriginalNow: uint64(created), ExpectedGeneration: discovery.Generation})
-	if err != nil {
-		return InteractionResult{}, err
-	}
-	if receipt.OperationID != request.RequestID || receipt.AttemptID != attempt || receipt.CommunityID != h.CommunityID || receipt.GroupID != group || receipt.ExpectedGeneration != discovery.Generation {
-		return InteractionResult{}, client.ErrProtocol
-	}
-	if receipt.Outcome != protocol.ReceiptAccepted || receipt.SendResponse == nil || receipt.SendResponse.Sequence == 0 {
-		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	// A Bot that has just joined a newly marked channel from its kept Welcome sits at that Welcome's epoch until it has
+	// applied the commits since; a post sealed meanwhile is closed, not accepted (the delivery service takes only the
+	// group's current epoch). The closed attempt allows a successor (protocol/10 "Send attempts and resolution"), so
+	// the panel is sent again, as a successor of the attempt before it, until it is accepted or the join wait ends.
+	// Every attempt id derives from the request, so a replayed request walks the same chain and posts at most once.
+	var receipt protocol.SendReceipt
+	var predecessor *id.ID
+	for n := uint64(0); ; n++ {
+		attempt := rolePanelAttemptID(request.RequestID)
+		if n > 0 {
+			attempt = rolePanelSuccessorID(request.RequestID, n)
+		}
+		receipt, err = h.Sender.Send(ctx, h.Session, SendInput{OperationID: request.RequestID, AttemptID: attempt, PredecessorAttemptID: predecessor,
+			GroupID: group, RequestBody: body, OriginalNow: uint64(created), ExpectedGeneration: discovery.Generation})
+		if err != nil {
+			return InteractionResult{}, err
+		}
+		if receipt.OperationID != request.RequestID || receipt.AttemptID != attempt || receipt.CommunityID != h.CommunityID || receipt.GroupID != group || receipt.ExpectedGeneration != discovery.Generation {
+			return InteractionResult{}, client.ErrProtocol
+		}
+		if receipt.Outcome == protocol.ReceiptAccepted && receipt.SendResponse != nil && receipt.SendResponse.Sequence != 0 {
+			break
+		}
+		if receipt.Outcome != protocol.ReceiptClosedNotAccepted || n+1 >= rolePanelMaxAttempts || !time.Now().Add(poll).Before(deadline) {
+			slog.InfoContext(ctx, "bot role panel not posted", "stage", "send", "outcome", receipt.Outcome, "attempts", n+1)
+			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		slog.InfoContext(ctx, "bot role panel attempt closed; sending a successor", "attempt", n+1)
+		closed := attempt
+		predecessor = &closed
+		select {
+		case <-time.After(poll):
+		case <-ctx.Done():
+			return InteractionResult{}, ctx.Err()
+		}
 	}
 	data, err := cborx.Marshal([]any{channel, receipt.SendResponse.Sequence})
 	if err != nil {
@@ -140,17 +185,26 @@ func (h RolePanelInteractions) publish(ctx context.Context, actor InteractionAct
 	return InteractionResult{Data: data}, nil
 }
 
-// resolveGroup resolves the channel's group, waiting (bounded) while the refusal is temporary: the Bot has not joined a
-// newly marked channel yet, or has not learned the Bot channels yet. The post is then sent as soon as the Bot is in.
-func (h RolePanelInteractions) resolveGroup(ctx context.Context, channel id.ID) (id.ID, error) {
-	wait, poll := h.JoinWait, h.JoinPoll
+// rolePanelMaxAttempts bounds the successors one publish sends while the Bot catches up with a newly joined group.
+const rolePanelMaxAttempts = 16
+
+// joinTiming is JoinWait and JoinPoll with their defaults, 45 s and 1 s.
+func (h RolePanelInteractions) joinTiming() (wait, poll time.Duration) {
+	wait, poll = h.JoinWait, h.JoinPoll
 	if wait <= 0 {
 		wait = 45 * time.Second
 	}
 	if poll <= 0 {
 		poll = time.Second
 	}
-	deadline := time.NewTimer(wait)
+	return wait, poll
+}
+
+// resolveGroup resolves the channel's group, waiting (until deadline) while the refusal is temporary: the Bot has not
+// joined a newly marked channel yet, or has not learned the Bot channels yet. The post is then sent as soon as the Bot
+// is in.
+func (h RolePanelInteractions) resolveGroup(ctx context.Context, channel id.ID, until time.Time, poll time.Duration) (id.ID, error) {
+	deadline := time.NewTimer(time.Until(until))
 	defer deadline.Stop()
 	logged := false
 	for {
@@ -230,6 +284,17 @@ func rolePanelMessage(options []rolePanelOption) (string, error) {
 	}
 	// Security review (task 8b): option names never carry the music player marker.
 	return DefangMarkers(builder.String()), nil
+}
+
+// rolePanelSuccessorID is the n-th successor attempt (n >= 1) of a panel publish: fixed by the request, so a replay
+// reuses the same chain.
+func rolePanelSuccessorID(operation id.ID, n uint64) id.ID {
+	seed := append([]byte("dilla role panel successor v1\x00"), operation[:]...)
+	seed = binary.BigEndian.AppendUint64(seed, n)
+	digest := sha256.Sum256(seed)
+	var attempt id.ID
+	copy(attempt[:], digest[:len(attempt)])
+	return attempt
 }
 
 func rolePanelAttemptID(operation id.ID) id.ID {

@@ -41,7 +41,12 @@ type rolePanelSendFake struct {
 func (f *rolePanelSendFake) Send(_ context.Context, _ *client.Session, input SendInput) (protocol.SendReceipt, error) {
 	f.calls++
 	f.input = input
-	return f.receipt, f.err
+	r := f.receipt
+	if r.Outcome == protocol.ReceiptClosedNotAccepted {
+		// A closed receipt names the attempt it closed (a successor's, after the first).
+		r.AttemptID, r.PredecessorAttemptID = input.AttemptID, input.PredecessorAttemptID
+	}
+	return r, f.err
 }
 
 type rolePanelDiscoveryFake struct {
@@ -115,7 +120,8 @@ func TestRolePanelPublishRefusesUnauthorizedOrUnacceptedMessage(t *testing.T) {
 			sender := &rolePanelSendFake{receipt: protocol.SendReceipt{OperationID: reqID, AttemptID: rolePanelAttemptID(reqID), CommunityID: community,
 				GroupID: group, ExpectedGeneration: 2, Outcome: tc.outcome, SendResponse: tc.response}}
 			handler := RolePanelInteractions{Authority: authority, Destination: destination, Sender: sender, Discovery: discovery,
-				Session: &client.Session{}, CommunityID: community, Now: func() time.Time { return time.Unix(100, 0) }}.Handlers()[protocol.OpRolePanelPublish]
+				Session: &client.Session{}, CommunityID: community, Now: func() time.Time { return time.Unix(100, 0) },
+				JoinPoll: time.Millisecond, JoinWait: 50 * time.Millisecond}.Handlers()[protocol.OpRolePanelPublish]
 			result, err := handler.Handle(context.Background(), InteractionActor{User: actor, Kind: 0}, protocol.Request{RequestID: reqID, CommunityID: community,
 				Operation: protocol.OpRolePanelPublish, Revision: rolePanelU64Ptr(0), Expires: rolePanelU64Ptr(130), Args: []any{channel, payload}})
 			if err != nil || result.Status == 0 {

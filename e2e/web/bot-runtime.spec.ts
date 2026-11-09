@@ -3,8 +3,9 @@ import { expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import {
   FIREFOX_FAVICON_LINE, WAIT, addServerVia, completeSignUp, composerBox, copy, isFirefoxBrowserFaviconViolation, makeInviteLink, messageRow, newAccount,
-  openChannel, reactionChip, rowAction, sendText, signIn, signUp, test, makeRole, roleButton,
+  openChannel, reactionChip, rowAction, sendText, signIn, signUp, test, makeRole, roleButton, ensureMembersOpen,
 } from './support/app';
+import { restoreDesktopWindow } from './support/electron.ts';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { installWorkerPort, portCall } from './support/worker-port';
@@ -562,6 +563,10 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     await expect(reactionChip(secondPanel, copy('shell.emoji.01'), 1)).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 });
     const members = secondPage.getByRole('complementary', { name: copy('members.region', { server: SERVER }), exact: true });
     const memberRole = (count: number) => members.getByRole('heading', { name: copy('members.group', { name: roleName, count }), exact: true });
+    // A second desktop app can leave a window too narrow for the member pane (a tiling window manager shrinks it), and
+    // the shell then closes the pane (moderation-evidence.spec, admin.spec and roles.spec do the same).
+    await restoreDesktopWindow(secondPage);
+    await ensureMembersOpen(secondPage, members);
     await expect(memberRole(1)).toBeVisible({ timeout: 30_000 });
 
     // The panel reaction and the member's ordinary self-service choice are separate grants.
