@@ -12,6 +12,7 @@ import (
 
 	"github.com/dilla-chat/dilla/internal/api"
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/bot/polls"
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
@@ -86,6 +87,21 @@ type pollPublicationAuthority interface {
 type pollPublicationReceiptSession interface {
 	BotMessageReceipt(context.Context, id.ID, id.ID, id.ID, id.ID) (protocol.SendReceipt, error)
 }
+
+// pollThreadSync pages a text group's newer handshakes and messages into the helper (service.SourceSync bound to the
+// Bot's session): a thread poll whose root the helper does not hold yet waits on it (Task 21b fix round 2).
+type pollThreadSync func(context.Context, native.GroupExpected) (service.SourceSyncResult, error)
+
+// pollThreadRootWait bounds how long a thread poll waits for its root to reach the helper; pollThreadRootRetry is the
+// pause between catch-up passes. Variables so tests can shorten them.
+var (
+	pollThreadRootWait  = 10 * time.Second
+	pollThreadRootRetry = 200 * time.Millisecond
+)
+
+// pollThreadCatchUpPasses bounds one catch-up's sync passes (each is itself bounded to two paired page reads).
+const pollThreadCatchUpPasses = 16
+
 type pollChannelAuthority interface {
 	BotActorChannelAuthority(context.Context, id.ID, id.ID, id.ID) (uint64, bool, error)
 	BotActorAuthority(context.Context, id.ID, id.ID) (client.ActorAuthority, bool, error)
@@ -101,6 +117,8 @@ type durablePollPublisher struct {
 	actorAuthority          pollChannelAuthority
 	community, installation id.ID
 	now                     func() time.Time
+	// threadSync catches the poll's text group up when a thread poll's root is not held yet; nil sends once.
+	threadSync pollThreadSync
 }
 
 func publicationKey(poll id.ID) []byte {
@@ -396,7 +414,10 @@ func (p *durablePollPublisher) PublishPoll(ctx context.Context, poll polls.Poll)
 		return client.ErrInstanceChanged
 	}
 	input := service.SendInput{OperationID: record.operation, AttemptID: record.attempt, PredecessorAttemptID: record.predecessor, GroupID: record.group, RequestBody: body, OriginalNow: record.originalNow, ExpectedGeneration: record.generation}
-	receipt, sendErr := p.coordinator.SendAuthorized(ctx, p.session, input, func(preflight context.Context) error { return p.authorize(preflight, poll) })
+	receipt, sendErr := p.send(ctx, input, poll)
+	if receipt.OperationID == (id.ID{}) && poll.ThreadID != nil && threadRootNotHeld(sendErr) {
+		receipt, sendErr = p.sendAfterThreadCatchUp(ctx, input, poll, sendErr)
+	}
 	if receipt.OperationID != (id.ID{}) {
 		encoded, e := protocol.EncodeReceipt(receipt)
 		if e != nil {
@@ -424,6 +445,78 @@ func (p *durablePollPublisher) PublishPoll(ctx context.Context, poll polls.Poll)
 	}
 	return nil
 }
+func (p *durablePollPublisher) send(ctx context.Context, input service.SendInput, poll polls.Poll) (protocol.SendReceipt, error) {
+	return p.coordinator.SendAuthorized(ctx, p.session, input, func(preflight context.Context) error { return p.authorize(preflight, poll) })
+}
+
+// threadRootNotHeld is the helper's not_found for a send: a thread poll's root the helper has not applied yet (a member
+// starts a thread and runs /poll in it before the Bot's group sync reaches the root).
+func threadRootNotHeld(err error) bool {
+	var status *helper.StatusError
+	return errors.As(err, &status) && status.Status == 7
+}
+
+// sendAfterThreadCatchUp catches the poll's text group up into the helper and sends again, until the root is held or
+// pollThreadRootWait passes (Task 21b fix round 2). Each retry is the same native attempt: PrepareSend failed before
+// it queued or encrypted anything, so the attempt resumes unchanged. Without a group sync it returns first.
+func (p *durablePollPublisher) sendAfterThreadCatchUp(ctx context.Context, input service.SendInput, poll polls.Poll, first error) (protocol.SendReceipt, error) {
+	if p.threadSync == nil {
+		return protocol.SendReceipt{}, first
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, pollThreadRootWait)
+	defer cancel()
+	expected := native.GroupExpected{Group: input.GroupID, Community: p.community, Channel: poll.ChannelID, Kind: 0}
+	last := first
+	for {
+		if err := p.catchUpThreadGroup(waitCtx, expected); err != nil {
+			if ctx.Err() == nil && waitCtx.Err() != nil {
+				return protocol.SendReceipt{}, fmt.Errorf("thread root not held after %s: %w", pollThreadRootWait, last)
+			}
+			return protocol.SendReceipt{}, fmt.Errorf("thread poll group catch-up: %w", err)
+		}
+		receipt, err := p.send(ctx, input, poll)
+		if receipt.OperationID != (id.ID{}) || !threadRootNotHeld(err) {
+			return receipt, err
+		}
+		last = err
+		timer := time.NewTimer(pollThreadRootRetry)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			if ctx.Err() != nil {
+				return protocol.SendReceipt{}, ctx.Err()
+			}
+			return protocol.SendReceipt{}, fmt.Errorf("thread root not held after %s: %w", pollThreadRootWait, last)
+		case <-timer.C:
+		}
+	}
+}
+
+// catchUpThreadGroup runs sync passes until the group has no more pages. A pass of the same group already running (a
+// hint and a tick at once) is waited for briefly, then looked at again.
+func (p *durablePollPublisher) catchUpThreadGroup(ctx context.Context, expected native.GroupExpected) error {
+	for pass := 0; pass < pollThreadCatchUpPasses; pass++ {
+		result, err := p.threadSync(ctx, expected)
+		switch {
+		case errors.Is(err, service.ErrSourceSyncBusy):
+			timer := time.NewTimer(20 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+			continue
+		case err != nil:
+			return err
+		}
+		if !result.More {
+			return nil
+		}
+	}
+	return nil
+}
+
 func (p *durablePollPublisher) nowOrTime() time.Time {
 	if p.now != nil {
 		return p.now()
@@ -449,7 +542,14 @@ func newUtilityRuntime(n *native.Client, session *client.Session, authority *cli
 		return nil, err
 	}
 	actor := utilityActorAuthority{session: session, community: community}
-	publisher := &durablePollPublisher{state: n, coordinator: coordinator, destination: service.WelcomeDestinationResolver{Session: session, Native: n, Feature: "polls"}, authority: authority, session: session, receipts: session, actorAuthority: session, community: community, installation: installation, now: now}
+	threadSync, err := service.NewSourceSync(n, service.SourceSyncOptions{})
+	if err != nil {
+		return nil, err
+	}
+	publisher := &durablePollPublisher{state: n, coordinator: coordinator, destination: service.WelcomeDestinationResolver{Session: session, Native: n, Feature: "polls"}, authority: authority, session: session, receipts: session, actorAuthority: session, community: community, installation: installation, now: now,
+		threadSync: func(ctx context.Context, expected native.GroupExpected) (service.SourceSyncResult, error) {
+			return threadSync.Sync(ctx, session, expected)
+		}}
 	pollStore := polls.NewStore(n, community)
 	reminderStore := reminders.NewStore(n, binding, now)
 	// Bot v2 Task 17: a reminder that comes due tells its owner's clients (a user hint), and a poll vote or close tells

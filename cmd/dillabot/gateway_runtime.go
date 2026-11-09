@@ -533,6 +533,14 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 		// keep applying this stream's device lists (the rest of a snapshot, applyHeld's retries) beside the next
 		// connection's snapshot: two Pushed callers for one user on one installationFeed.
 		cancel()
+		// Its waiting commands go to the installation's next connection, after that one's snapshot (Task 21b fix
+		// round 2): a session reset must not answer them offline.
+		feed.end(func() *feedConsumer {
+			if next := r.entry(installation); next != nil && next != e {
+				return next.feed
+			}
+			return nil
+		})
 		if err != nil && onItsOwn {
 			log.Warn("bot gateway requires session reconciliation")
 			r.notify()

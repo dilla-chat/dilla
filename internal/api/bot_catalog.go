@@ -687,8 +687,10 @@ func (d Deps) botListedDeviceKey(ctx context.Context, botUser, device id.ID) (ed
 	return key, nil
 }
 
-// commandKeyPublicationSlack is dilla_core's PUBLICATION_SLACK_SECS: the helper mints a key at its rotation with
-// not_after = minted + maxCommandKeyLifetime - commandKeyPublicationSlack.
+// commandKeyPublicationSlack is the Bot helper's PUBLICATION_SLACK_SECS: the helper mints a key at its rotation with
+// not_after = minted + maxCommandKeyLifetime - commandKeyPublicationSlack. Both sides are checked against
+// protocol/vectors/bot.json command_key_timing (TestCommandKeyTimingMatchesTheVector here, and
+// command_key_timing_matches_the_vector in dilla-bot-core), so dillad and the helper cannot drift.
 const commandKeyPublicationSlack = 600
 
 // commandKeyRotatedAt is when the helper rotated to the key whose publication says notAfter: the previous key's 24 h

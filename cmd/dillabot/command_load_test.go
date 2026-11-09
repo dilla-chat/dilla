@@ -25,6 +25,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/bot/reminders"
 	"github.com/dilla-chat/dilla/internal/bot/service"
 	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/gateway"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
@@ -666,10 +667,10 @@ func roleDelivery(t *testing.T, community id.ID) gatewayclient.Delivery {
 	return gatewayclient.Delivery{Frame: gatewayclient.Frame{Op: gatewayclient.OpBotEvent, BotPayload: raw}}
 }
 
-// Fix round 2, N-1 (first scenario): a command of the old stream waiting on an event that was never applied is not
-// released by a fresh identify. The new stream's snapshot supersedes that event, but the command was sent against the
-// old one: it is answered offline (its Retry arrives on the new stream after the snapshot).
-func TestOldStreamCommandIsNotReleasedByAFreshIdentify(t *testing.T) {
+// Fix round 2, N-1 (first scenario), as Task 21b fix round 2 changed it: a command of the old stream waiting on an
+// event that was never applied is not released by the fresh identify alone. It waits for the new stream's snapshot,
+// which supersedes that event, and runs then: a session reset does not answer it offline.
+func TestOldStreamCommandWaitsForTheNewStreamsSnapshot(t *testing.T) {
 	community := id.New()
 	fc := newFeedConsumer(community, &orderedAcks{log: quietLogger()}, quietLogger())
 	// No handler: the role event waits, unapplied.
@@ -680,12 +681,82 @@ func TestOldStreamCommandIsNotReleasedByAFreshIdentify(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	fc.resetStream()
 	select {
+	case <-result:
+		t.Fatal("the fresh identify alone answered a command whose earlier event was never applied")
+	case <-time.After(100 * time.Millisecond):
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	fc.setFeed(&recordingFeed{})
+	go fc.run(ctx)
+	deliverSnapshot(t, fc, community)
+	select {
 	case ok := <-result:
-		if ok {
-			t.Fatal("the fresh identify released a command whose earlier event was never applied")
+		if !ok {
+			t.Fatal("the old stream's command was answered offline after the new stream's snapshot")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("the waiting command was not answered at the reset")
+	case <-time.After(2 * time.Second):
+		t.Fatal("the new stream's snapshot did not release the waiting command")
+	}
+}
+
+// deliverSnapshot hands fc an empty cold-start snapshot (begin, end) on its current stream.
+func deliverSnapshot(t *testing.T, fc *feedConsumer, community id.ID) {
+	t.Helper()
+	for _, kind := range []uint64{gateway.BotEventSnapshotBegin, gateway.BotEventSnapshotEnd} {
+		fc.deliver(gatewayclient.Delivery{Frame: gatewayclient.Frame{Op: gatewayclient.OpBotEvent, BotPayload: botEventRaw(t, kind, []any{community})}}, nil)
+	}
+}
+
+// Task 21b fix round 2: a command waiting on a connection that ended ("bot gateway requires session reconciliation")
+// runs once the installation's next connection applied its snapshot; with no next connection it is answered offline
+// past the bound, never held for ever.
+func TestEndedConnectionsCommandRunsAfterTheNextConnectionsSnapshot(t *testing.T) {
+	community := id.New()
+	old := newFeedConsumer(community, &orderedAcks{log: quietLogger()}, quietLogger())
+	old.deliver(roleDelivery(t, community), nil) // never applied: the connection ends first
+	wait := old.barrier()
+	result := make(chan bool, 1)
+	go func() { result <- wait(context.Background()) }()
+	var mu sync.Mutex
+	var next *feedConsumer
+	old.end(func() *feedConsumer { mu.Lock(); defer mu.Unlock(); return next })
+	select {
+	case <-result:
+		t.Fatal("the ended connection answered its command before a next connection was ready")
+	case <-time.After(150 * time.Millisecond):
+	}
+	fresh := newFeedConsumer(community, &orderedAcks{log: quietLogger()}, quietLogger())
+	fresh.setFeed(&recordingFeed{})
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go fresh.run(ctx)
+	mu.Lock()
+	next = fresh
+	mu.Unlock()
+	select {
+	case <-result:
+		t.Fatal("the command ran before the next connection's snapshot")
+	case <-time.After(150 * time.Millisecond):
+	}
+	deliverSnapshot(t, fresh, community)
+	select {
+	case ok := <-result:
+		if !ok {
+			t.Fatal("the command was answered offline after the next connection's snapshot")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the next connection's snapshot did not release the command")
+	}
+
+	feedNextStreamBound = 100 * time.Millisecond
+	defer func() { feedNextStreamBound = readyBudget }()
+	lone := newFeedConsumer(community, &orderedAcks{log: quietLogger()}, quietLogger())
+	lone.deliver(roleDelivery(t, community), nil)
+	wait = lone.barrier()
+	lone.end(func() *feedConsumer { return nil })
+	if wait(context.Background()) {
+		t.Fatal("a command of an ended connection with no successor was released")
 	}
 }
 

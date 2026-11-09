@@ -362,13 +362,21 @@ type feedConsumer struct {
 	// settled those applied or dropped, in delivery order; settledCh is closed and replaced whenever settled moves or
 	// the stream changes. A sealed command waits until settled reaches the posted count at its arrival, so it is
 	// authorised only after every event dillad sent before it. gen is the stream (fix round 2, N-1): a fresh identify
-	// starts a new one with both counts at zero; a command of an older stream is never released (its barrier
-	// returns false, so it is answered offline and its Retry arrives on the new stream), and a job of an older
-	// stream settles nothing. snapFrames counts the snapshot streaming now.
+	// starts a new one with both counts at zero, and a job of an older stream settles nothing. snapFrames counts the
+	// snapshot streaming now.
+	//
+	// A command of an older stream, or of a connection that ended (ended), waits for the next stream's snapshot
+	// instead (Task 21b fix round 2): that snapshot supersedes every event sent before the command, and answering it
+	// offline would lose it for its member, whose client resends only an unanswered command. snapped is the gen+1 of
+	// the last stream whose snapshot was applied (0: none yet); successor is the installation's connection after
+	// this one ended (nil until there is one).
 	gen             uint64
 	posted, settled uint64
 	snapFrames      uint64
 	settledCh       chan struct{}
+	snapped         uint64
+	ended           bool
+	successor       func() *feedConsumer
 }
 
 func newFeedConsumer(community id.ID, acks *orderedAcks, log *slog.Logger) *feedConsumer {
@@ -379,6 +387,13 @@ func newFeedConsumer(community id.ID, acks *orderedAcks, log *slog.Logger) *feed
 // feedBarrierBound is how long a command waits for the feed to apply the events delivered before it; past it the
 // command is answered offline (retryable).
 var feedBarrierBound = 2 * time.Second
+
+// feedNextStreamBound is how long a command of an older stream or an ended connection waits for the next stream's
+// snapshot: the spec's ready budget (a Bot restart is ready within 5 s). Past it the command is answered offline.
+var feedNextStreamBound = readyBudget
+
+// feedSuccessorPoll is how often a command of an ended connection looks for the installation's next one.
+const feedSuccessorPoll = 50 * time.Millisecond
 
 // settleLocked marks n more deliveries settled and wakes the commands waiting on them. f.mu is held.
 func (f *feedConsumer) settleLocked(n uint64) {
@@ -400,9 +415,66 @@ func (f *feedConsumer) settle(n uint64) {
 func (f *feedConsumer) settleJob(job *feedJob) {
 	f.mu.Lock()
 	if job.gen == f.gen {
+		if job.snapshot {
+			f.snapped = job.gen + 1
+		}
 		f.settleLocked(job.frames)
 	}
 	f.mu.Unlock()
+}
+
+// end marks the connection over (its gateway client returned): the commands waiting on its stream look for the
+// installation's next connection, which successor names once it exists.
+func (f *feedConsumer) end(successor func() *feedConsumer) {
+	f.mu.Lock()
+	f.ended, f.successor = true, successor
+	close(f.settledCh)
+	f.settledCh = make(chan struct{})
+	f.mu.Unlock()
+}
+
+// awaitNextStream is the barrier of a command whose stream was replaced (a fresh identify on this connection) or
+// whose connection ended: true once a later stream's snapshot is applied, on this connection or a successor; false
+// past feedNextStreamBound or when ctx ends.
+func (f *feedConsumer) awaitNextStream(ctx context.Context, gen uint64) bool {
+	t := time.NewTimer(feedNextStreamBound)
+	defer t.Stop()
+	cur := f
+	for {
+		cur.mu.Lock()
+		ended, snapped, curGen, ch, successor := cur.ended, cur.snapped, cur.gen, cur.settledCh, cur.successor
+		cur.mu.Unlock()
+		if !ended && (cur != f || curGen != gen) && snapped == curGen+1 {
+			return true
+		}
+		var poll *time.Timer
+		var wake <-chan time.Time
+		if ended {
+			if successor != nil {
+				if next := successor(); next != nil && next != cur {
+					cur = next
+					continue
+				}
+			}
+			poll = time.NewTimer(feedSuccessorPoll)
+			wake = poll.C
+		}
+		expired := false
+		select {
+		case <-ch:
+		case <-wake:
+		case <-t.C:
+			expired = true
+		case <-ctx.Done():
+			expired = true
+		}
+		if poll != nil {
+			poll.Stop()
+		}
+		if expired {
+			return false
+		}
+	}
 }
 
 // barrier is called on the delivery loop for an op 64: it returns the wait a sealed command makes before it is
@@ -417,10 +489,10 @@ func (f *feedConsumer) barrier() func(context.Context) bool {
 		defer t.Stop()
 		for {
 			f.mu.Lock()
-			stale, done, ch := f.gen != gen, f.settled >= target, f.settledCh
+			stale, done, ch := f.gen != gen || f.ended, f.settled >= target, f.settledCh
 			f.mu.Unlock()
 			if stale {
-				return false
+				return f.awaitNextStream(ctx, gen)
 			}
 			if done {
 				return true

@@ -1,5 +1,9 @@
 {
   "version": 1,
+  "command_key_timing": {
+    "max_lifetime_secs": 691200,
+    "publication_slack_secs": 600
+  },
   "cases": [
     {
       "name": "capabilities",

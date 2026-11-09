@@ -1688,6 +1688,12 @@ The operations on existing polls and reminders (poll get, list, vote, close and 
 and dismiss) are offered whatever the installation's features, as v1 kept them; only creating a poll or a reminder needs
 Polls or Reminders on (Task 21b fix round 1).
 
+A v1 poll the Bot posted in a channel that is not a Bot channel stays as read-only history. The Bot authorises poll
+reads, votes and closes from its feed state, which carries the channels it was told of, the Bot channels; in any other
+channel a member holds no permission there, so `91` poll get, `173` vote, `174` close and `175` voters answer
+`E_FORBIDDEN` for such a poll. Its message stays in the channel with its question and answers; a card that reads it
+is refused, so it shows no live tally and takes no vote. New polls are created only in Bot channels.
+
 An app operation's sealed arguments are the v1 operation's arguments (ids as 16-byte byte strings),
 preceded for a mutation by the expected revision (uint); the Bot checks and normalises them with the
 v1 request decoder and runs the same handler. A poll created through `170` must name the request's

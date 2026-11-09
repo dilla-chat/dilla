@@ -6,6 +6,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fxamacker/cbor/v2"
+
+	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
@@ -35,6 +38,99 @@ func (c *conn) botPendingCap() int {
 type botIndex struct {
 	mu       sync.Mutex
 	byDevice map[id.ID][]*conn
+	// carry is each device's op 64 commands a Bot connection was still holding (ringed and not
+	// acknowledged, or waiting in botPending) when it was replaced or dropped, and the ones relayed
+	// while the device had no connection inside its resume window. The device's next identify takes
+	// them (Task 21b fix round 2): a Bot that identifies afresh after a refused resume ("requires
+	// session reconciliation") would otherwise lose every command relayed around its reset, each one
+	// already answered 202 to its member. Op 65 events are not carried: the new connection's
+	// snapshot supersedes them.
+	carry map[id.ID]*botCarry
+}
+
+// botCarry is one device's carried commands and, once its last connection was dropped, until when
+// a command relayed with no connection is still carried rather than refused as offline.
+type botCarry struct {
+	frames []carriedCommand
+	gone   time.Time // zero while a connection of the device is indexed
+}
+
+type carriedCommand struct {
+	f       Frame
+	expires time.Time
+}
+
+// botCarryCap bounds one device's carried commands; the oldest go first.
+const botCarryCap = 64
+
+// commandsHeldLocked is c's op 64 frames that may not have reached the Bot: its ring's (not yet
+// acknowledged, so possibly sent and lost with the socket) and its botPending's, oldest first. c.mu
+// is held.
+func (c *conn) commandsHeldLocked(now time.Time) []carriedCommand {
+	var out []carriedCommand
+	for _, e := range c.ring.entriesSince(0) {
+		var elems []cbor.RawMessage
+		var op uint64
+		if cborx.Unmarshal(e.bytes, &elems) != nil || len(elems) != 4 || cborx.Unmarshal(elems[0], &op) != nil || Op(op) != OpBotCommand {
+			continue
+		}
+		out = append(out, carriedCommand{f: Frame{Op: OpBotCommand, Payload: append(cbor.RawMessage(nil), elems[3]...), Replay: true, Scope: e.scope.clone()}, expires: e.expires})
+	}
+	for _, f := range c.botPending {
+		if f.Op == OpBotCommand {
+			out = append(out, carriedCommand{f: f, expires: now.Add(c.gw.opts.RingTTL)})
+		}
+	}
+	return out
+}
+
+// carryLocked keeps frames for device's next connection, dropping expired and over-cap ones. b.mu is held.
+func (b *botIndex) carryLocked(device id.ID, frames []carriedCommand, now time.Time) *botCarry {
+	if b.carry == nil {
+		b.carry = map[id.ID]*botCarry{}
+	}
+	bc := b.carry[device]
+	if bc == nil {
+		bc = &botCarry{}
+		b.carry[device] = bc
+	}
+	bc.frames = slices.DeleteFunc(append(bc.frames, frames...), func(x carriedCommand) bool { return now.After(x.expires) })
+	if over := len(bc.frames) - botCarryCap; over > 0 {
+		bc.frames = slices.Delete(bc.frames, 0, over)
+	}
+	return bc
+}
+
+// carryRelayed keeps an op 64 relayed while the device has no Bot connection, when its last one was
+// dropped within the resume window: the Bot is reconnecting, and its next identify takes the
+// command. It reports whether it kept it; false is the Bot being offline.
+func (b *botIndex) carryRelayed(device id.ID, f Frame, now time.Time, window, ttl time.Duration) bool {
+	if f.Op != OpBotCommand {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.byDevice[device]) > 0 {
+		return false
+	}
+	bc := b.carry[device]
+	if bc == nil || bc.gone.IsZero() || now.Sub(bc.gone) > window {
+		return false
+	}
+	f.Replay = true
+	b.carryLocked(device, []carriedCommand{{f: f, expires: now.Add(ttl)}}, now)
+	return true
+}
+
+// sweepCarry forgets the carried commands of devices whose last connection went more than window ago.
+func (b *botIndex) sweepCarry(now time.Time, window time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for device, bc := range b.carry {
+		if !bc.gone.IsZero() && now.Sub(bc.gone) > window {
+			delete(b.carry, device)
+		}
+	}
 }
 
 // add indexes c as its device's one Bot runtime connection. A device has at most one (Bot v2 task 14, fix round 2,
@@ -43,6 +139,7 @@ type botIndex struct {
 // resumable. Each live connection streams its own snapshot, so the replaced ones would otherwise multiply that cost; the
 // supervised Bot keeps one gateway per installation, and an identify reaching ready means it moved to the new one.
 func (b *botIndex) add(c *conn) {
+	now := c.gw.opts.Clock.Now()
 	b.mu.Lock()
 	if b.byDevice == nil {
 		b.byDevice = map[id.ID][]*conn{}
@@ -50,11 +147,15 @@ func (b *botIndex) add(c *conn) {
 	replaced := b.byDevice[c.deviceID]
 	b.byDevice[c.deviceID] = []*conn{c}
 	b.mu.Unlock()
+	var carried []carriedCommand
 	for _, old := range replaced {
 		if old == c {
 			continue
 		}
 		old.mu.Lock()
+		if !old.botDead {
+			carried = append(carried, old.commandsHeldLocked(now)...)
+		}
 		old.botDead = true
 		old.botPending = nil
 		old.noResume = true
@@ -66,22 +167,51 @@ func (b *botIndex) add(c *conn) {
 			w.sink.close(CloseSessionRevoked, "replaced by a newer Bot connection")
 		}
 	}
+	// The commands the replaced and dropped connections held follow on this one: after its snapshot
+	// when it streams one (botPending), otherwise now.
+	b.mu.Lock()
+	bc := b.carryLocked(c.deviceID, carried, now)
+	carried = bc.frames
+	delete(b.carry, c.deviceID)
+	b.mu.Unlock()
+	for _, x := range carried {
+		c.deliverBot(x.f)
+	}
 }
 
 // drop marks the connection as never fed again and forgets it, with whatever it was holding.
+// Its op 64 commands not yet acknowledged are carried to the device's next connection.
 func (b *botIndex) drop(c *conn) {
 	if !c.isBot {
 		return
 	}
+	now := c.gw.opts.Clock.Now()
 	c.mu.Lock()
+	var held []carriedCommand
+	if !c.botDead {
+		held = c.commandsHeldLocked(now)
+	}
+	// The Bot went away when its socket closed: a connection parked for the whole resume window is
+	// long gone, and a relayed command is no longer carried for it.
+	gone := now
+	if c.state == stateClosed && !c.suspendedAt.IsZero() {
+		gone = c.suspendedAt
+	}
 	c.botDead = true
 	c.botPending = nil
 	c.mu.Unlock()
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	was := len(b.byDevice[c.deviceID])
 	list := slices.DeleteFunc(b.byDevice[c.deviceID], func(x *conn) bool { return x == c })
+	if was == len(list) {
+		// Already replaced by a newer identify, which took what it held.
+		return
+	}
+	bc := b.carryLocked(c.deviceID, held, now)
 	if len(list) == 0 {
 		delete(b.byDevice, c.deviceID)
+		bc.gone = gone
 		return
 	}
 	b.byDevice[c.deviceID] = list

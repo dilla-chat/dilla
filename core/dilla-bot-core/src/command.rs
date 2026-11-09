@@ -52,6 +52,8 @@ const PREVIOUS_KEPT_SECS: i64 = DAY;
 const REPLAY_WINDOW_SECS: i64 = 300;
 /// The publication's `not_after` is 10 minutes short of the clients' 8-day cap, so a client
 /// whose clock runs up to 10 minutes behind still accepts a fresh key (clients allow no skew).
+/// dillad computes the previous key's overlap from it: both are checked against
+/// protocol/vectors/bot.json `command_key_timing` (Task 21b fix round 2).
 const PUBLICATION_SLACK_SECS: u64 = 600;
 /// The `sent_at` window, and the most a current key's `created_at` may lie ahead of `now` before
 /// op 21 treats it as forward-dated (minted under a clock that later stepped back) and replaces it.
@@ -615,6 +617,31 @@ mod tests {
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
     };
+
+    /// The helper's command-key timing is protocol/vectors/bot.json `command_key_timing`, which
+    /// dillad checks too (internal/api TestCommandKeyTimingMatchesTheVector): the two cannot drift.
+    #[test]
+    fn command_key_timing_matches_the_vector() {
+        let corpus = include_str!("../../../protocol/vectors/bot.json");
+        let timing = &corpus[corpus
+            .find("\"command_key_timing\"")
+            .expect("bot.json carries command_key_timing")..];
+        let timing = &timing[..timing.find('}').expect("command_key_timing is an object")];
+        let field = |name: &str| -> u64 {
+            let key = format!("\"{name}\":");
+            let at = timing
+                .find(&key)
+                .unwrap_or_else(|| panic!("command_key_timing.{name}"));
+            timing[at + key.len()..]
+                .trim_start()
+                .split(|c: char| !c.is_ascii_digit())
+                .next()
+                .and_then(|digits| digits.parse().ok())
+                .unwrap_or_else(|| panic!("command_key_timing.{name} is a number"))
+        };
+        assert_eq!(field("publication_slack_secs"), PUBLICATION_SLACK_SECS);
+        assert_eq!(field("max_lifetime_secs"), MAX_COMMAND_KEY_LIFETIME_SECS);
+    }
 
     const INSTANCE: [u8; 16] = [0x11; 16];
     const COMMUNITY: [u8; 16] = [0x22; 16];

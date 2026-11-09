@@ -576,6 +576,7 @@ func (g *Gateway) sweepSuspended() {
 		}
 		return true
 	})
+	g.bots.sweepCarry(now, g.opts.ResumeWindow)
 }
 
 // rotateResume issues a fresh resume token, which happens on every resumed frame.
@@ -649,6 +650,11 @@ func (g *Gateway) DeliverBot(deviceID id.ID, f Frame) bool {
 		if c.deliverBot(f) {
 			delivered = true
 		}
+	}
+	// An op 64 relayed while the Bot reconnects (its last connection dropped within the resume
+	// window, no new one yet) is carried to its next identify (Task 21b fix round 2).
+	if !delivered && g.bots.carryRelayed(deviceID, f, g.opts.Clock.Now(), g.opts.ResumeWindow, g.opts.RingTTL) {
+		delivered = true
 	}
 	if delivered {
 		g.countFrame(f)
