@@ -617,9 +617,15 @@ and writer queue (4096 frames and 16 MiB, 1024 frames and 8 MiB by default); eve
 keeps its own budget unchanged.
 
 `bot_command` carries a member's sealed command; `user_id` and `device_id` are the sending
-connection's authenticated session. With no Bot runtime connection, live or in its resume window, the
-sender is answered `503 E_BOT_OFFLINE`; an unanswered command is retried by the client with the same
-`request_id`.
+connection's authenticated session. The `bot_command` frames a Bot connection still held when it was
+replaced or dropped (not acknowledged, or waiting behind a snapshot or resume), and those relayed while
+the device has no connection but its last one dropped within the resume window, are carried to the
+device's next identify and follow its snapshot. At most 64 are carried per Bot device, and at most 8 per
+sending device, the oldest going first, and each expires with the ring TTL. A connection closed as revoked
+(4004, or 4003) carries nothing and opens no such window. With no Bot runtime connection, live, parked
+or inside that window, the sender is answered `503 E_BOT_OFFLINE`; an unanswered command is retried by
+the client with the same `request_id`. A carried command can reach the Bot twice; the Bot answers a
+redelivered seal from what it answered before and never runs it again.
 
 `bot_event` is the Bot's event feed. Everything in it is about the installation's own community, and
 it is emitted only after the change committed. The kinds:
@@ -1155,7 +1161,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 429 | `E_BUSY` | the instance or the managed Bot is at capacity for this kind of work | retry later |
 | 500 | `E_INTERNAL` | an unexpected server fault; the detail is always empty | retry with backoff |
 | 503 | `E_UNAVAILABLE` | the instance could not take a resource the request needs within its bound (a call whose SFU work is stuck) | wait `retry_after_ms`, then retry |
-| 503 | `E_BOT_OFFLINE` | a sealed Bot command found no live Bot runtime connection (or no ready installation) to relay to | show the Bot as offline; Retry reuses the `request_id` |
+| 503 | `E_BOT_OFFLINE` | a sealed Bot command found no Bot runtime connection to relay to (none live, parked, or dropped within the resume window), or no ready installation | show the Bot as offline; Retry reuses the `request_id` |
 | 507 | `E_STORAGE_FULL` | the instance or the user's quota is exhausted | none |
 
 A **syntactically invalid** identifier in a path is `400 E_INVALID_REQUEST`; a syntactically valid
@@ -1191,7 +1197,7 @@ factors), distinct from `E_UNAUTHENTICATED` so the client can say which. `E_PASS
 whose passkey belongs to another account. None is a delivery-service code. Bot v2's sealed
 command relay (`10` § Sealed command relay, replies and state hints) adds two: `E_BOT_DUPLICATE`
 (409), a command `request_id` another device sent within five minutes, and `E_BOT_OFFLINE` (503),
-a command with no live Bot runtime connection to relay to. Task 21b adds `E_BOT_KEY_STALE` (410), a
+a command with no Bot runtime connection to relay to or carry for (§ Bot runtime). Task 21b adds `E_BOT_KEY_STALE` (410), a
 command sealed to a key the Bot no longer opens, refused before it is relayed (such a seal could
 never be answered: no reply key comes out of it). Incoming webhooks (`10` § Webhooks) add
 `E_NOT_BOT_CHANNEL` (409), a webhook whose channel is not a Bot channel; the public webhook route

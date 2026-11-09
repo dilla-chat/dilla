@@ -42,7 +42,8 @@ type threadSyncFake struct {
 	expected []native.GroupExpected
 	busy     int
 	coord    *threadRootCoordinator
-	holdAt   int // the sync pass after which the root is held (0: never)
+	holdAt   int  // the sync pass after which the root is held (0: never)
+	applies  bool // each pass applies a message (the group advanced)
 }
 
 func (f *threadSyncFake) sync(_ context.Context, expected native.GroupExpected) (service.SourceSyncResult, error) {
@@ -57,6 +58,9 @@ func (f *threadSyncFake) sync(_ context.Context, expected native.GroupExpected) 
 		f.coord.mu.Lock()
 		f.coord.notHeld = 0
 		f.coord.mu.Unlock()
+	}
+	if f.applies {
+		return service.SourceSyncResult{Messages: 1}, nil
 	}
 	return service.SourceSyncResult{}, nil
 }
@@ -82,7 +86,7 @@ func threadRootPublisher(notHeld int) (*durablePollPublisher, *threadRootCoordin
 func TestThreadPollCatchesTheGroupUpWhenTheRootIsNotHeld(t *testing.T) {
 	shortThreadRootWait(t, 2*time.Second)
 	p, coord, state := threadRootPublisher(1 << 20)
-	syncer := &threadSyncFake{busy: 1, coord: coord, holdAt: 2}
+	syncer := &threadSyncFake{busy: 1, coord: coord, holdAt: 2, applies: true}
 	p.threadSync = syncer.sync
 	poll := utilityPoll()
 	root := utilityID(9)
@@ -116,7 +120,7 @@ func TestThreadPollCatchesTheGroupUpWhenTheRootIsNotHeld(t *testing.T) {
 func TestThreadPollRootWaitIsBounded(t *testing.T) {
 	shortThreadRootWait(t, 60*time.Millisecond)
 	p, coord, _ := threadRootPublisher(1 << 20)
-	syncer := &threadSyncFake{coord: coord}
+	syncer := &threadSyncFake{coord: coord, applies: true}
 	p.threadSync = syncer.sync
 	poll := utilityPoll()
 	root := utilityID(9)
@@ -148,5 +152,55 @@ func TestChannelPollNotFoundDoesNotWait(t *testing.T) {
 	}
 	if len(coord.tries) != 1 || len(syncer.expected) != 0 {
 		t.Fatalf("a channel poll retried: %d tries, %d syncs", len(coord.tries), len(syncer.expected))
+	}
+}
+
+// Task 21b fix round 3, I2: a member-supplied thread id that names no root (the catch-up applies nothing) does not hold
+// the command worker for pollThreadRootWait: one catch-up, one more send, then the helper's not_found.
+func TestThreadPollWithAnUnknownRootDoesNotWait(t *testing.T) {
+	shortThreadRootWait(t, 3*time.Second)
+	p, coord, _ := threadRootPublisher(1 << 20)
+	syncer := &threadSyncFake{coord: coord}
+	p.threadSync = syncer.sync
+	poll := utilityPoll()
+	root := utilityID(9)
+	poll.ThreadID = &root
+	started := time.Now()
+	err := p.PublishPoll(context.Background(), poll)
+	elapsed := time.Since(started)
+	var status *helper.StatusError
+	if !errors.As(err, &status) || status.Status != 7 {
+		t.Fatalf("want the helper's not_found, got %v", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("an unknown thread root held the worker for %s", elapsed)
+	}
+	if len(coord.tries) != 2 || len(syncer.expected) != 1 {
+		t.Fatalf("%d sends and %d sync passes, want 2 and 1", len(coord.tries), len(syncer.expected))
+	}
+}
+
+// Task 21b fix round 3, I2: at most one thread poll per installation waits on an advancing group; another one gets its
+// one catch-up and send, then answers at once.
+func TestOnlyOneThreadPollWaitsAtATime(t *testing.T) {
+	shortThreadRootWait(t, 3*time.Second)
+	p, coord, _ := threadRootPublisher(1 << 20)
+	syncer := &threadSyncFake{coord: coord, applies: true}
+	p.threadSync = syncer.sync
+	p.threadWaiting.Store(true) // another thread poll is waiting
+	poll := utilityPoll()
+	root := utilityID(9)
+	poll.ThreadID = &root
+	started := time.Now()
+	err := p.PublishPoll(context.Background(), poll)
+	var status *helper.StatusError
+	if !errors.As(err, &status) || status.Status != 7 {
+		t.Fatalf("want the helper's not_found, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("a second thread poll waited %s", elapsed)
+	}
+	if !p.threadWaiting.Load() {
+		t.Fatal("the second poll released the first one's wait")
 	}
 }

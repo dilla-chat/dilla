@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/api"
@@ -119,6 +120,9 @@ type durablePollPublisher struct {
 	now                     func() time.Time
 	// threadSync catches the poll's text group up when a thread poll's root is not held yet; nil sends once.
 	threadSync pollThreadSync
+	// threadWaiting is set while one thread poll of this installation waits for its root (Task 21b fix round 3, I2):
+	// another one gets one catch-up and one send, never the wait, so thread ids cannot hold the command workers.
+	threadWaiting atomic.Bool
 }
 
 func publicationKey(poll id.ID) []byte {
@@ -459,6 +463,11 @@ func threadRootNotHeld(err error) bool {
 // sendAfterThreadCatchUp catches the poll's text group up into the helper and sends again, until the root is held or
 // pollThreadRootWait passes (Task 21b fix round 2). Each retry is the same native attempt: PrepareSend failed before
 // it queued or encrypted anything, so the attempt resumes unchanged. Without a group sync it returns first.
+//
+// The thread id is the member's (Task 21b fix round 3, I2), so it may name no root at all. The publisher waits only
+// while the group advances: a catch-up that applied nothing, followed by a send that still finds no root, answers
+// the helper's not_found at once. And only one thread poll of the installation waits at a time; another gets its one
+// catch-up and send. A thread id that names nothing therefore costs one catch-up, never a command worker for 10 s.
 func (p *durablePollPublisher) sendAfterThreadCatchUp(ctx context.Context, input service.SendInput, poll polls.Poll, first error) (protocol.SendReceipt, error) {
 	if p.threadSync == nil {
 		return protocol.SendReceipt{}, first
@@ -467,8 +476,15 @@ func (p *durablePollPublisher) sendAfterThreadCatchUp(ctx context.Context, input
 	defer cancel()
 	expected := native.GroupExpected{Group: input.GroupID, Community: p.community, Channel: poll.ChannelID, Kind: 0}
 	last := first
+	waiting := false
+	defer func() {
+		if waiting {
+			p.threadWaiting.Store(false)
+		}
+	}()
 	for {
-		if err := p.catchUpThreadGroup(waitCtx, expected); err != nil {
+		advanced, err := p.catchUpThreadGroup(waitCtx, expected)
+		if err != nil {
 			if ctx.Err() == nil && waitCtx.Err() != nil {
 				return protocol.SendReceipt{}, fmt.Errorf("thread root not held after %s: %w", pollThreadRootWait, last)
 			}
@@ -479,6 +495,15 @@ func (p *durablePollPublisher) sendAfterThreadCatchUp(ctx context.Context, input
 			return receipt, err
 		}
 		last = err
+		if !advanced {
+			return protocol.SendReceipt{}, fmt.Errorf("thread root not held, the group is caught up: %w", last)
+		}
+		if !waiting {
+			if !p.threadWaiting.CompareAndSwap(false, true) {
+				return protocol.SendReceipt{}, fmt.Errorf("thread root not held, another thread poll is waiting: %w", last)
+			}
+			waiting = true
+		}
 		timer := time.NewTimer(pollThreadRootRetry)
 		select {
 		case <-waitCtx.Done():
@@ -492,9 +517,11 @@ func (p *durablePollPublisher) sendAfterThreadCatchUp(ctx context.Context, input
 	}
 }
 
-// catchUpThreadGroup runs sync passes until the group has no more pages. A pass of the same group already running (a
-// hint and a tick at once) is waited for briefly, then looked at again.
-func (p *durablePollPublisher) catchUpThreadGroup(ctx context.Context, expected native.GroupExpected) error {
+// catchUpThreadGroup runs sync passes until the group has no more pages, and reports whether any pass applied a
+// handshake or message (or left more to read). A pass of the same group already running (a hint and a tick at once)
+// is waited for briefly, then looked at again.
+func (p *durablePollPublisher) catchUpThreadGroup(ctx context.Context, expected native.GroupExpected) (bool, error) {
+	advanced := false
 	for pass := 0; pass < pollThreadCatchUpPasses; pass++ {
 		result, err := p.threadSync(ctx, expected)
 		switch {
@@ -503,18 +530,21 @@ func (p *durablePollPublisher) catchUpThreadGroup(ctx context.Context, expected 
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return ctx.Err()
+				return advanced, ctx.Err()
 			case <-timer.C:
 			}
 			continue
 		case err != nil:
-			return err
+			return advanced, err
+		}
+		if result.Handshakes+result.Messages > 0 || result.More {
+			advanced = true
 		}
 		if !result.More {
-			return nil
+			return advanced, nil
 		}
 	}
-	return nil
+	return advanced, nil
 }
 
 func (p *durablePollPublisher) nowOrTime() time.Time {

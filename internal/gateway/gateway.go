@@ -511,7 +511,7 @@ func (g *Gateway) removeLive(c *conn) {
 // come back through the resume window with the token it already holds.
 func (g *Gateway) closeConn(c *conn, code CloseCode, reason string) *writer {
 	if !code.Resumable() {
-		c.denyResume()
+		c.denyResumeFor(code)
 	}
 	w := c.currentWriter()
 	w.sink.close(code, reason)
@@ -745,7 +745,7 @@ func (g *Gateway) CloseDevice(deviceID id.ID, code CloseCode, reason string) {
 		budget := c.requests
 		c.mu.Unlock()
 		if budget != nil && !code.Resumable() && budget.isSelfRevoking() {
-			c.denyResume()
+			c.denyResumeFor(code)
 			c.sealed.Store(true)
 			g.removeLive(c)
 			g.deferred.Store(c, struct{}{})
@@ -767,8 +767,10 @@ func (g *Gateway) CloseDevice(deviceID id.ID, code CloseCode, reason string) {
 		if !ok || c.deviceID != deviceID {
 			return true
 		}
-		c.denyResume()
+		c.denyResumeFor(code)
 		g.suspended.Delete(k)
+		// A parked Bot connection leaves the index with what it held (Task 21b fix round 3, M3).
+		g.bots.drop(c)
 		return true
 	})
 }

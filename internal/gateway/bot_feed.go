@@ -58,10 +58,30 @@ type botCarry struct {
 type carriedCommand struct {
 	f       Frame
 	expires time.Time
+	sender  id.ID // the member's device that sent it (element 3 of the op 64 payload); zero when unreadable
 }
 
-// botCarryCap bounds one device's carried commands; the oldest go first.
-const botCarryCap = 64
+func newCarried(f Frame, expires time.Time) carriedCommand {
+	return carriedCommand{f: f, expires: expires, sender: commandSender(f)}
+}
+
+// commandSender is the sending device of an op 64 `[request_id, community_id, user_id, device_id, sealed]`.
+func commandSender(f Frame) id.ID {
+	var elems []cbor.RawMessage
+	var sender id.ID
+	if cborx.Unmarshal(f.Payload, &elems) != nil || len(elems) != 5 || cborx.Unmarshal(elems[3], &sender) != nil {
+		return id.ID{}
+	}
+	return sender
+}
+
+const (
+	// botCarryCap bounds one device's carried commands; the oldest go first.
+	botCarryCap = 64
+	// botCarrySenderCap bounds the carried commands of one sending device inside botCarryCap (Task 21b fix round 3,
+	// M1): a member's burst keeps its newest few and cannot evict the other members' commands, each answered 202.
+	botCarrySenderCap = 8
+)
 
 // commandsHeldLocked is c's op 64 frames that may not have reached the Bot: its ring's (not yet
 // acknowledged, so possibly sent and lost with the socket) and its botPending's, oldest first. c.mu
@@ -74,17 +94,18 @@ func (c *conn) commandsHeldLocked(now time.Time) []carriedCommand {
 		if cborx.Unmarshal(e.bytes, &elems) != nil || len(elems) != 4 || cborx.Unmarshal(elems[0], &op) != nil || Op(op) != OpBotCommand {
 			continue
 		}
-		out = append(out, carriedCommand{f: Frame{Op: OpBotCommand, Payload: append(cbor.RawMessage(nil), elems[3]...), Replay: true, Scope: e.scope.clone()}, expires: e.expires})
+		out = append(out, newCarried(Frame{Op: OpBotCommand, Payload: append(cbor.RawMessage(nil), elems[3]...), Replay: true, Scope: e.scope.clone()}, e.expires))
 	}
 	for _, f := range c.botPending {
 		if f.Op == OpBotCommand {
-			out = append(out, carriedCommand{f: f, expires: now.Add(c.gw.opts.RingTTL)})
+			out = append(out, newCarried(f, now.Add(c.gw.opts.RingTTL)))
 		}
 	}
 	return out
 }
 
-// carryLocked keeps frames for device's next connection, dropping expired and over-cap ones. b.mu is held.
+// carryLocked keeps frames for device's next connection, dropping expired and over-cap ones: past
+// botCarrySenderCap for one sending device, then past botCarryCap in all, the oldest go first. b.mu is held.
 func (b *botIndex) carryLocked(device id.ID, frames []carriedCommand, now time.Time) *botCarry {
 	if b.carry == nil {
 		b.carry = map[id.ID]*botCarry{}
@@ -95,6 +116,21 @@ func (b *botIndex) carryLocked(device id.ID, frames []carriedCommand, now time.T
 		b.carry[device] = bc
 	}
 	bc.frames = slices.DeleteFunc(append(bc.frames, frames...), func(x carriedCommand) bool { return now.After(x.expires) })
+	perSender := map[id.ID]int{}
+	keep := make([]bool, len(bc.frames))
+	for i := len(bc.frames) - 1; i >= 0; i-- {
+		s := bc.frames[i].sender
+		perSender[s]++
+		keep[i] = perSender[s] <= botCarrySenderCap
+	}
+	kept := bc.frames[:0]
+	for i, x := range bc.frames {
+		if keep[i] {
+			kept = append(kept, x)
+		}
+	}
+	clear(bc.frames[len(kept):])
+	bc.frames = kept
 	if over := len(bc.frames) - botCarryCap; over > 0 {
 		bc.frames = slices.Delete(bc.frames, 0, over)
 	}
@@ -118,7 +154,7 @@ func (b *botIndex) carryRelayed(device id.ID, f Frame, now time.Time, window, tt
 		return false
 	}
 	f.Replay = true
-	b.carryLocked(device, []carriedCommand{{f: f, expires: now.Add(ttl)}}, now)
+	b.carryLocked(device, []carriedCommand{newCarried(f, now.Add(ttl))}, now)
 	return true
 }
 
@@ -153,7 +189,7 @@ func (b *botIndex) add(c *conn) {
 			continue
 		}
 		old.mu.Lock()
-		if !old.botDead {
+		if !old.botDead && !old.revoked {
 			carried = append(carried, old.commandsHeldLocked(now)...)
 		}
 		old.botDead = true
@@ -180,7 +216,8 @@ func (b *botIndex) add(c *conn) {
 }
 
 // drop marks the connection as never fed again and forgets it, with whatever it was holding.
-// Its op 64 commands not yet acknowledged are carried to the device's next connection.
+// Its op 64 commands not yet acknowledged are carried to the device's next connection, unless it
+// was revoked.
 func (b *botIndex) drop(c *conn) {
 	if !c.isBot {
 		return
@@ -188,7 +225,8 @@ func (b *botIndex) drop(c *conn) {
 	now := c.gw.opts.Clock.Now()
 	c.mu.Lock()
 	var held []carriedCommand
-	if !c.botDead {
+	revoked := c.revoked
+	if !c.botDead && !revoked {
 		held = c.commandsHeldLocked(now)
 	}
 	// The Bot went away when its socket closed: a connection parked for the whole resume window is
@@ -206,6 +244,17 @@ func (b *botIndex) drop(c *conn) {
 	list := slices.DeleteFunc(b.byDevice[c.deviceID], func(x *conn) bool { return x == c })
 	if was == len(list) {
 		// Already replaced by a newer identify, which took what it held.
+		return
+	}
+	if revoked {
+		// Revoked (Task 21b fix round 3, M3): what it held, and anything carried for the device, is dropped, and no
+		// carry window opens. A command relayed now is offline; one accepted before the revocation never runs after it.
+		delete(b.carry, c.deviceID)
+		if len(list) == 0 {
+			delete(b.byDevice, c.deviceID)
+		} else {
+			b.byDevice[c.deviceID] = list
+		}
 		return
 	}
 	bc := b.carryLocked(c.deviceID, held, now)

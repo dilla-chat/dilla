@@ -384,8 +384,9 @@ func newFeedConsumer(community id.ID, acks *orderedAcks, log *slog.Logger) *feed
 		settledCh: make(chan struct{})}
 }
 
-// feedBarrierBound is how long a command waits for the feed to apply the events delivered before it; past it the
-// command is answered offline (retryable).
+// feedBarrierBound is how long a command of the current stream waits for the feed to apply the events delivered
+// before it; past it the command is answered offline (retryable). A command whose stream ended or was replaced waits
+// on the next stream's snapshot instead (feedNextStreamBound).
 var feedBarrierBound = 2 * time.Second
 
 // feedNextStreamBound is how long a command of an older stream or an ended connection waits for the next stream's
@@ -530,7 +531,8 @@ func (f *feedConsumer) resetStream() {
 	f.mu.Lock()
 	f.jobs, f.snapshot, f.inSnap, f.afterSnap = nil, nil, false, nil
 	// A new stream (fix round 2, N-1): nothing of the old one is marked applied. Its waiting commands see the
-	// generation change and are answered offline; its counts start again at zero.
+	// generation change and wait for this stream's snapshot (awaitNextStream, Task 21b fix round 2), answered offline
+	// only past feedNextStreamBound; its counts start again at zero.
 	f.gen++
 	f.posted, f.settled, f.snapFrames = 0, 0, 0
 	close(f.settledCh)

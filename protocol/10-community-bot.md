@@ -1659,7 +1659,7 @@ own reads and its hints.
 
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
-| `POST /v1/communities/{community}/bot/commands` | E (community member; also the ready Bot of `community`, for its health probe only), socket | `[request_id, sealed]` | `202 [0]`; `400` for a malformed body or sealed form; `404` for a non-member; `403` when the installation is disabled; `409 E_BOT_DUPLICATE`; `410 E_BOT_KEY_STALE` for a `key_id` that is neither the published key nor the replaced one inside its 24 hours; `503 E_BOT_OFFLINE` with no installation, an installation that is not ready, or no live Bot runtime connection |
+| `POST /v1/communities/{community}/bot/commands` | E (community member; also the ready Bot of `community`, for its health probe only), socket | `[request_id, sealed]` | `202 [0]`; `400` for a malformed body or sealed form; `404` for a non-member; `403` when the installation is disabled; `409 E_BOT_DUPLICATE`; `410 E_BOT_KEY_STALE` for a `key_id` that is neither the published key nor the replaced one inside its 24 hours; `503 E_BOT_OFFLINE` with no installation, an installation that is not ready, or no Bot runtime connection: none live, none parked in its resume window, and none dropped within the last 120 s (the resume window). A command relayed in that last window is carried to the Bot's next identify and answered `202` (`02` § Bot runtime) |
 | `POST /v1/bot-runtime/replies` | B (ready, own community) | `[device_id, request_id, seq, sealed, final]` | `204`; `404` for a request not relayed from that device into the Bot's community in the last five minutes; `413 E_TOO_LARGE` past 16 replies or 256 KiB for the request |
 | `POST /v1/bot-runtime/state-hints` | B (ready, own community) | `[scope_kind, scope_id]` | `200 [revision]`; `404` for a scope outside the Bot's community or a channel that is not a Bot channel; `400` for another scope kind |
 
@@ -1818,7 +1818,9 @@ Bot runtime's live connection (`02` § Bot runtime) and waits at most 2 s for it
 `bot_webhook_ack`. `display_name` is the cleaned `username`, else the webhook's `name`. A Bot that is
 offline, parked, resuming or streaming its snapshot, an installation that is not ready, an ack
 timeout, an ack whose status is not 0, and a Bot device that already has 32 deliveries waiting are all
-`503 E_BOT_OFFLINE` with `Retry-After: 5`. Delivery
+`503 E_BOT_OFFLINE` with `Retry-After: 5`. Unlike a sealed command, a webhook delivery is never carried across
+a Bot reconnect: a Bot inside its resume window, or reconnecting after a drop, is offline for it, while a command
+relayed then is answered `202` and carried to the Bot's next connection. Delivery
 is at least once from the sender's side: a POST answered `503` after the Bot posted (its ack was lost)
 and retried by the sender posts twice; a `503` before the frame was sent posts nothing.
 

@@ -50,6 +50,10 @@ type conn struct {
 	// resumable (4004 session_revoked, 4009 session_timeout). suspend refuses to park such a
 	// connection in the resume window, so its token dies with the socket.
 	noResume bool
+	// revoked is set when the connection's session ended (4004 session_revoked, 4003 unauthenticated), not
+	// merely timed out: a Bot connection's commands are then dropped, never carried to its next identify
+	// (Bot v2 Task 21b fix round 3, M3).
+	revoked bool
 	// sealed is set when a self-revoking request's close is deferred until its answer is written: from then
 	// on the read loop drops every inbound frame, so the revoked session can do nothing on this socket.
 	sealed atomic.Bool
@@ -93,6 +97,16 @@ type conn struct {
 func (c *conn) denyResume() {
 	c.mu.Lock()
 	c.noResume = true
+	c.mu.Unlock()
+}
+
+// denyResumeFor is denyResume for a close with code, which also records a revocation (revoked).
+func (c *conn) denyResumeFor(code CloseCode) {
+	c.mu.Lock()
+	c.noResume = true
+	if code.revokes() {
+		c.revoked = true
+	}
 	c.mu.Unlock()
 }
 

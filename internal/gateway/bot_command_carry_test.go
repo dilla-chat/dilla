@@ -126,3 +126,107 @@ func TestCarriedCommandsEndWithTheResumeWindow(t *testing.T) {
 		t.Fatal("the sweep kept a gone device's carried commands")
 	}
 }
+
+func carryCommandFrom(t *testing.T, sender id.ID) Frame {
+	t.Helper()
+	p, err := BotCommandPayload(id.New(), id.New(), id.New(), sender, []byte{0x85})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Frame{Op: OpBotCommand, Payload: p, Replay: true}
+}
+
+func carriedSenders(h *harness, device id.ID) map[id.ID]int {
+	h.gw.bots.mu.Lock()
+	defer h.gw.bots.mu.Unlock()
+	out := map[id.ID]int{}
+	if bc := h.gw.bots.carry[device]; bc != nil {
+		for _, x := range bc.frames {
+			out[x.sender]++
+		}
+	}
+	return out
+}
+
+// Task 21b fix round 3, M1: one member's burst cannot evict another member's carried commands. Each sending device
+// keeps at most botCarrySenderCap carried commands, its newest, inside the device total.
+func TestOneSendersBurstDoesNotEvictAnothersCarriedCommands(t *testing.T) {
+	h := newHarness(t)
+	device := id.New()
+	streams := newBotStreams()
+	c := h.connectBot(t, device, streams)
+	h.readyResumeToken(t, c)
+	streams.next(t)
+	h.gw.bots.drop(c)
+	quiet, loud := id.New(), id.New()
+	for range 3 {
+		if !h.gw.DeliverBot(device, carryCommandFrom(t, quiet)) {
+			t.Fatal("a command relayed while the Bot reconnects was refused")
+		}
+	}
+	for range botCarryCap + 10 {
+		if !h.gw.DeliverBot(device, carryCommandFrom(t, loud)) {
+			t.Fatal("a command relayed while the Bot reconnects was refused")
+		}
+	}
+	got := carriedSenders(h, device)
+	if got[quiet] != 3 || got[loud] != botCarrySenderCap {
+		t.Fatalf("carried %d of the quiet member's and %d of the loud member's, want 3 and %d", got[quiet], got[loud], botCarrySenderCap)
+	}
+}
+
+// Task 21b fix round 3, M3: a Bot connection closed as revoked (4004) carries nothing and opens no carry window: what it
+// held is dropped, and a command relayed after it is offline.
+func TestARevokedBotConnectionCarriesNothing(t *testing.T) {
+	h := newHarness(t)
+	device := id.New()
+	c, _ := h.finishedBot(t, device)
+	if !h.gw.DeliverBot(device, carryCommand(t)) {
+		t.Fatal("the command was not taken")
+	}
+	h.gw.closeConn(c, CloseSessionRevoked, "session ended")
+	h.gw.suspend(c)
+	if h.gw.DeliverBot(device, carryCommand(t)) {
+		t.Fatal("a command relayed after the revocation was carried")
+	}
+	if n := len(carriedSenders(h, device)); n != 0 {
+		t.Fatalf("the revoked connection's commands were carried (%d senders)", n)
+	}
+
+	// A parked connection whose device is revoked is dropped the same way.
+	h2 := newHarness(t)
+	device2 := id.New()
+	c2, _ := h2.finishedBot(t, device2)
+	h2.gw.suspend(c2)
+	if !h2.gw.DeliverBot(device2, carryCommand(t)) {
+		t.Fatal("the command was not held for the parked connection")
+	}
+	h2.gw.CloseDevice(device2, CloseSessionRevoked, "device revoked")
+	if got := h2.gw.bots.of(device2); len(got) != 0 {
+		t.Fatalf("%d Bot connections after the revocation, want none", len(got))
+	}
+	if h2.gw.DeliverBot(device2, carryCommand(t)) {
+		t.Fatal("a command relayed after the parked connection's revocation was carried")
+	}
+	if n := len(carriedSenders(h2, device2)); n != 0 {
+		t.Fatal("the parked revoked connection's commands were carried")
+	}
+}
+
+// A heartbeat timeout (4009) is not a revocation: the Bot reconnects, and what it held is carried.
+func TestATimedOutBotConnectionStillCarries(t *testing.T) {
+	h := newHarness(t)
+	device := id.New()
+	c, _ := h.finishedBot(t, device)
+	if !h.gw.DeliverBot(device, carryCommand(t)) {
+		t.Fatal("the command was not taken")
+	}
+	h.gw.closeConn(c, CloseSessionTimeout, "heartbeat overdue")
+	h.gw.suspend(c)
+	if !h.gw.DeliverBot(device, carryCommand(t)) {
+		t.Fatal("a command relayed after a heartbeat timeout was refused")
+	}
+	if n := len(carriedSenders(h, device)); n != 2 {
+		t.Fatalf("carried from %d senders, want 2", n)
+	}
+}

@@ -140,6 +140,12 @@ func (c CloseCode) Resumable() bool {
 	}
 }
 
+// revokes reports whether a close with this code ends the session itself, not just the socket: a revoked
+// session or one that may no longer authenticate.
+func (c CloseCode) revokes() bool {
+	return c == CloseSessionRevoked || c == CloseUnauthenticated
+}
+
 // opSpec fixes each opcode's direction, element count and whether it is group-scoped. A frame of
 // the wrong element count for its opcode is E_FRAME_SHAPE; an opcode outside this table is
 // E_FRAME_TYPE, never ignored.

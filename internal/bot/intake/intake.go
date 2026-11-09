@@ -14,7 +14,8 @@
 //	5 device unlisted, 6 device revoked
 //	7 stale sent_at                        408 E_BOT_STALE
 //	8 replay                               the answers already sent, re-sealed to this send's key;
-//	                                       409 E_BOT_REPLAY when none are known
+//	                                       none when the request is not kept (dropped and logged);
+//	                                       409 E_BOT_REPLAY for another user's or device's request
 //	the user is Held (a failed ingest)     401 E_BOT_SIGNATURE (retryable: see below)
 //	no feed bound, or no snapshot applied  503 E_BOT_OFFLINE (retryable)
 //	operation not in the catalog           404 E_BOT_UNSUPPORTED
@@ -29,13 +30,23 @@
 // their own seq, to the new key; answers still streaming go to the newest key. The handler never runs
 // twice. A retryable refusal (held, not ready) keeps the verified request instead, and a Retry after the
 // cause cleared handles it then.
+//
+// Redelivery (Task 21b fix round 3). dillad carries a Bot connection's unacknowledged commands to its next
+// connection, so the same sealed bytes can arrive twice. The intake keeps a hash of every seal it verified for a
+// request: a seal it has seen is a redelivery, answered with the kept answers to the newest key and never run, even
+// after a retryable refusal (the member was told it failed). Only a new seal, the member's own Retry, runs a
+// retryable request again. A Replay of a request the intake does not keep (the Bot restarted, the request was
+// forgotten, or the duplicate opened before the first copy was recorded) is dropped and logged, not answered
+// E_BOT_REPLAY: the first copy's answers, or the client's own timeout, settle it.
 package intake
 
 import (
 	"container/list"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -98,6 +109,8 @@ const (
 	DefaultByteBudget = 32 << 20
 	// MaxAnswers is the most answers one command gets, final included: dillad's BotRepliesPerRequest.
 	MaxAnswers = 16
+	// maxSeals bounds the seal hashes kept per request: the first send and the newest Retries.
+	maxSeals = 8
 )
 
 // Status codes and bodies of the intake's own answers.
@@ -213,6 +226,9 @@ type record struct {
 	final   bool
 	// retry is the verified request of a retryable refusal: a Retry handles it once the cause cleared.
 	retry *protocol.SealedRequest
+	// seals is the SHA-256 of each seal verified for this request, newest last, at most maxSeals (Task 21b fix
+	// round 3, I1): a seal seen before is a redelivery, never the member's Retry.
+	seals [][sha256.Size]byte
 	elem  *list.Element
 }
 
@@ -463,12 +479,31 @@ func (i *Intake) run(ctx context.Context, log *slog.Logger, rec *record, req pro
 // request handled now, or 409.
 func (i *Intake) replay(ctx context.Context, log *slog.Logger, cmd RelayedCommand, key [32]byte, held HeldChecker, operations func(uint64) (OperationRule, bool), botUser id.ID, settled bool) {
 	rec := i.lookup(cmd.RequestID, i.clk.Now())
-	if rec == nil || rec.user != cmd.UserID || rec.device != cmd.DeviceID || key == ([32]byte{}) {
+	if rec == nil {
+		// Not kept (fix round 3, M5): a duplicate whose first copy is still being recorded, or one after a restart or
+		// eviction. Whatever the first copy answered stands; a 409 here could end a client still waiting on it.
+		i.refused(ctx, log, "replay_unknown", 0)
+		return
+	}
+	if rec.user != cmd.UserID || rec.device != cmd.DeviceID || key == ([32]byte{}) {
 		i.refused(ctx, log, "replay", StatusReplay)
 		i.sendOnce(ctx, cmd, key, refusal(StatusReplay, CodeReplay))
 		return
 	}
+	seal := sha256.Sum256(cmd.Sealed)
 	rec.mu.Lock()
+	if slices.Contains(rec.seals, seal) {
+		// A redelivery (fix round 3, I1): the kept answers again, to the newest key, and nothing runs.
+		defer rec.mu.Unlock()
+		i.refused(ctx, log, "redelivery", 0)
+		var seq uint32
+		for _, a := range rec.answers {
+			i.sendLocked(ctx, rec, seq, a)
+			seq++
+		}
+		return
+	}
+	rec.addSeal(seal)
 	rec.replyKey = key
 	if retry := rec.retry; retry != nil {
 		// A retryable refusal: forget it and handle the request now, answering to the new key.
@@ -546,9 +581,18 @@ func (i *Intake) remember(cmd RelayedCommand, key [32]byte, now time.Time) *reco
 		i.dropLocked(i.order.Front())
 	}
 	rec := &record{requestID: cmd.RequestID, user: cmd.UserID, device: cmd.DeviceID, at: now, replyKey: key}
+	rec.addSeal(sha256.Sum256(cmd.Sealed))
 	rec.elem = i.order.PushBack(rec)
 	i.records[cmd.RequestID] = rec
 	return rec
+}
+
+// addSeal keeps a verified seal's hash, forgetting the oldest past maxSeals. rec.mu is held, or rec is not shared yet.
+func (rec *record) addSeal(seal [sha256.Size]byte) {
+	rec.seals = append(rec.seals, seal)
+	if over := len(rec.seals) - maxSeals; over > 0 {
+		rec.seals = slices.Delete(rec.seals, 0, over)
+	}
 }
 
 func (i *Intake) lookup(request id.ID, now time.Time) *record {

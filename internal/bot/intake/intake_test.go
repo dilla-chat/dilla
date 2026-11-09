@@ -233,7 +233,6 @@ func TestIntakeRefusesWrongSignatureWrongDeviceAndReplay(t *testing.T) {
 	}{
 		{"wrong signature", helper.RefusalBadSignature, 401, "E_BOT_SIGNATURE"},
 		{"wrong device", helper.RefusalWrongDevice, 401, "E_BOT_SIGNATURE"},
-		{"replay", helper.RefusalReplay, 409, "E_BOT_REPLAY"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -383,11 +382,11 @@ func TestRetryResealsAnswersToTheNewestReplyKey(t *testing.T) {
 			t.Fatalf("re-sent %d = %+v, want the same answer sealed to key 9 at seq %d", i, r, i)
 		}
 	}
-	// After five minutes the request is forgotten: a replay is refused.
+	// After five minutes the request is forgotten: a replay is dropped (fix round 3, M5), never run.
 	w.clk.Advance(5*time.Minute + time.Second)
 	w.in.Handle(context.Background(), w.retry(cmd, 10))
-	if got := w.sender.all(); len(got) != 5 || got[4].answer.Status != 409 || got[4].key != 10 {
-		t.Fatalf("late replay = %+v", got)
+	if got := w.sender.all(); len(got) != 4 || w.dispatch.count() != 1 {
+		t.Fatalf("late replay = %+v, %d runs", got, w.dispatch.count())
 	}
 }
 
@@ -516,11 +515,10 @@ func TestAnswerCacheIsBounded(t *testing.T) {
 	if n := w.in.cached(); n != 3 {
 		t.Fatalf("cached = %d, want 3", n)
 	}
-	// The oldest was evicted: its Retry is refused, never dispatched again.
+	// The oldest was evicted: its Retry is dropped (fix round 3, M5), never dispatched again.
 	w.in.Handle(context.Background(), w.retry(first, 50))
-	got := w.sender.all()
-	if last := got[len(got)-1]; last.answer.Status != 409 || w.dispatch.count() != 5 {
-		t.Fatalf("evicted retry = %+v, handler calls %d", last, w.dispatch.count())
+	if got := w.sender.all(); len(got) != 5 || w.dispatch.count() != 5 {
+		t.Fatalf("evicted retry = %+v, handler calls %d", got, w.dispatch.count())
 	}
 }
 
@@ -750,9 +748,8 @@ func TestAnswerCacheIsBoundedInBytes(t *testing.T) {
 		t.Fatalf("cached %d requests, %d bytes", n, b)
 	}
 	w.in.Handle(context.Background(), w.retry(first, 50))
-	got := w.sender.all()
-	if last := got[len(got)-1]; last.answer.Status != 409 {
-		t.Fatalf("evicted retry = %+v", last)
+	if got := w.sender.all(); len(got) != 4 || w.dispatch.count() != 4 {
+		t.Fatalf("evicted retry = %+v, %d runs", got, w.dispatch.count())
 	}
 }
 
@@ -852,5 +849,58 @@ func TestTheBotsOwnUserMayOnlyProbe(t *testing.T) {
 	expectOne(t, w.sender.all(), 403, "E_FORBIDDEN")
 	if w.dispatch.count() != 0 {
 		t.Fatalf("the Bot's own command reached a handler (%d calls)", w.dispatch.count())
+	}
+}
+
+// redeliver is dillad relaying the very same sealed bytes again (a carried op 64 after the Bot's session reset): the
+// helper has recorded the request, so the same seal now opens as Replay with its own reply key.
+func (w *world) redeliver(cmd RelayedCommand, k byte) RelayedCommand {
+	var key [32]byte
+	key[0] = k
+	w.helper.opens[string(cmd.Sealed)] = helper.OpenedCommand{Refusal: helper.RefusalReplay, ReplyKey: key, ReplayRequestID: cmd.RequestID}
+	return cmd
+}
+
+// Task 21b fix round 3, I1: a carried duplicate of a command whose first copy got a retryable refusal is a redelivery,
+// not the member's Retry. It gets the refusal again and runs nothing; the member's own Retry (a new seal) still runs.
+func TestARedeliveredSealOfARetryableRefusalDoesNotRun(t *testing.T) {
+	w := newWorld(t)
+	w.held[w.user] = true
+	cmd, _ := w.command(opRemind, 1)
+	w.in.Handle(context.Background(), cmd)
+	expectOne(t, w.sender.all(), 401, "E_BOT_SIGNATURE")
+	delete(w.held, w.user)
+	w.in.Handle(context.Background(), w.redeliver(cmd, 1))
+	got := w.sender.all()
+	if w.dispatch.count() != 0 {
+		t.Fatal("a redelivered seal ran the command the member was told failed")
+	}
+	if len(got) != 2 || got[1].answer.Status != 401 || got[1].key != 1 || got[1].seq != 0 || !got[1].final {
+		t.Fatalf("redelivery answered %+v, want the kept 401 again", got)
+	}
+	w.in.Handle(context.Background(), w.retry(cmd, 2))
+	if got := w.sender.all(); len(got) != 3 || got[2].answer.Status != 200 || got[2].key != 2 || w.dispatch.count() != 1 {
+		t.Fatalf("the member's Retry after the redelivery = %+v, %d runs", got, w.dispatch.count())
+	}
+	// A redelivery of the Retry's own seal, or of the first one, after it ran runs nothing more.
+	w.in.Handle(context.Background(), w.retry(cmd, 2))
+	w.in.Handle(context.Background(), w.redeliver(cmd, 1))
+	if w.dispatch.count() != 1 {
+		t.Fatalf("redeliveries after the Retry ran the handler %d times", w.dispatch.count())
+	}
+}
+
+// Task 21b fix round 3, M5: a Replay the intake keeps no record of (the Bot restarted, or the duplicate opened before
+// the first copy was recorded) is dropped: the first copy answers, and a client still waiting on it is never told
+// E_BOT_REPLAY.
+func TestAReplayWithNoRecordIsDropped(t *testing.T) {
+	w := newWorld(t)
+	cmd, _ := w.command(opRemind, 1)
+	w.in.Handle(context.Background(), w.redeliver(cmd, 1))
+	if got := w.sender.all(); len(got) != 0 {
+		t.Fatalf("a replay with no record was answered: %+v", got)
+	}
+	if w.dispatch.count() != 0 {
+		t.Fatal("a replay with no record ran")
 	}
 }
