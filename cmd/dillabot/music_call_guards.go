@@ -101,8 +101,19 @@ type musicAdmission struct {
 	ready                       func(context.Context) bool
 }
 
+// musicAdmitReadDeadline bounds admission's installation read (the row is read again from dillad when its cached copy
+// is past its max age): a slow dillad fails that tick's admission closed instead of holding the monitor, and with it
+// the catch-up a removed member's window depends on (Bot v2 Task 19 fix round 3, R2-4).
+var musicAdmitReadDeadline = 2 * time.Second
+
 func (a musicAdmission) admit(ctx context.Context, epoch native.CallMediaEpoch) error {
-	if a.ready == nil || !a.ready(ctx) {
+	if a.ready == nil {
+		return errMusicInstallationNotReady
+	}
+	readCtx, cancel := context.WithTimeout(ctx, musicAdmitReadDeadline)
+	ready := a.ready(readCtx)
+	cancel()
+	if !ready {
 		return errMusicInstallationNotReady
 	}
 	if a.authz == nil || !a.authz.Ready() || a.botUser.IsZero() || !a.authz.Allowed(a.community, a.channel, a.botUser, musicBotConnectSpeak, false) {

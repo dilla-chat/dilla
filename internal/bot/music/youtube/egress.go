@@ -36,11 +36,13 @@ type egressBroker struct {
 	active    map[net.Conn]struct{}
 	wg        sync.WaitGroup
 	used      int64
+	// pool holds spare upstream connections (egress_pool.go); nil dials every CONNECT.
+	pool *upstreamPool
 }
 
 func newEgressBroker(parent context.Context, listener net.Listener) *egressBroker {
 	ctx, cancel := context.WithCancel(parent)
-	b := &egressBroker{listener: listener, ready: make(chan struct{}), ctx: ctx, cancel: cancel, sem: make(chan struct{}, 32), active: map[net.Conn]struct{}{}}
+	b := &egressBroker{listener: listener, ready: make(chan struct{}), ctx: ctx, cancel: cancel, sem: make(chan struct{}, 32), active: map[net.Conn]struct{}{}, pool: upstreams}
 	b.wg.Add(1)
 	go b.accept()
 	return b
@@ -88,13 +90,20 @@ func (b *egressBroker) handle(conn net.Conn) {
 		_, _ = io.WriteString(conn, "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
 		return
 	}
-	ctx, cancel := context.WithTimeout(b.ctx, 4*time.Second)
-	upstream, err := dialPublicHTTPS(ctx, host)
-	cancel()
-	if err != nil {
-		_, _ = io.WriteString(conn, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
-		return
+	// A spare dialed ahead to exactly this host, verified again, or a new dial; either way the next CONNECT to the
+	// host finds a spare (Bot v2 Task 19 fix round 3).
+	upstream := b.pool.take(host)
+	if upstream == nil {
+		ctx, cancel := context.WithTimeout(b.ctx, 4*time.Second)
+		dialed, err := dialPublicHTTPS(ctx, host)
+		cancel()
+		if err != nil {
+			_, _ = io.WriteString(conn, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+			return
+		}
+		upstream = dialed
 	}
+	b.pool.prime(host)
 	defer func() { _ = upstream.Close() }()
 	_ = conn.SetDeadline(time.Time{})
 	_ = upstream.SetDeadline(time.Time{})

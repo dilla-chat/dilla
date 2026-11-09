@@ -104,6 +104,8 @@ type warmDeps struct {
 	start func(ctx context.Context) (lookupWorker, error)
 	now   func() time.Time
 	sleep func(ctx context.Context, d time.Duration) error
+	// prime dials a spare connection to a resolved stream's host ahead of its stream (egress_pool.go); nil skips it.
+	prime func(host string)
 }
 
 // cacheEntry is one cached lookup; used orders entries for LRU eviction.
@@ -153,6 +155,7 @@ func NewWarmResolver(cfg SandboxConfig, cache time.Duration) (*WarmResolver, err
 	}
 	r := newWarmResolver(cfg, cache, warmDeps{})
 	r.deps.start = func(ctx context.Context) (lookupWorker, error) { return startSandboxWorker(ctx, cfg) }
+	r.deps.prime = upstreams.prime
 	go r.warmUp()
 	return r, nil
 }
@@ -405,7 +408,9 @@ func (r *WarmResolver) lookupArgs(kind, canonical string) []string {
 	args = append(args,
 		"--no-warnings", "--no-progress", "--color", "never",
 		"--socket-timeout", "10", "--extractor-retries", "1", "--no-playlist",
-		// Progressive https only: a manifest (HLS, DASH) is never handed to ffmpeg.
+		// Progressive https only: a manifest (HLS, DASH) is never handed to ffmpeg, so none is fetched either (about
+		// 0.14 s of every lookup, Bot v2 Task 19 fix round 3).
+		"--extractor-args", "youtube:skip=hls,dash",
 		"--format", "bestaudio[protocol=https]",
 		"--print", "%("+printFields+")j",
 		"--")
@@ -485,6 +490,13 @@ func (r *WarmResolver) lookup(ctx context.Context, input, kind, canonical string
 	streamURL, urlExpiry, err := checkStreamURL(data.URL)
 	if err != nil {
 		return Resolved{}, err
+	}
+	if r.deps.prime != nil {
+		// The stream that follows a /play connects to this googlevideo host: its spare is dialed now, while the Bot
+		// answers and joins (Bot v2 Task 19 fix round 3).
+		if u, err := url.Parse(streamURL); err == nil {
+			r.deps.prime(strings.ToLower(u.Hostname()))
+		}
 	}
 	now := r.deps.now()
 	expires := now.Add(r.ttl)

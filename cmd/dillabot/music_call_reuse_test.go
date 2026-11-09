@@ -308,3 +308,21 @@ func TestAReuseWarmNeverLeavesTheHeldRoom(t *testing.T) {
 		t.Fatalf("a reuse warm left the room %d times", r.leaves.Load())
 	}
 }
+
+// Fix round 3 (R2-4): admission's installation read has its own deadline, so a slow dillad fails that tick closed at
+// the deadline instead of holding the monitor's catch-up.
+func TestAdmissionsInstallationReadHasItsOwnDeadline(t *testing.T) {
+	defer func(d time.Duration) { musicAdmitReadDeadline = d }(musicAdmitReadDeadline)
+	musicAdmitReadDeadline = 50 * time.Millisecond
+	bot := id.New()
+	a := musicAdmission{community: id.New(), channel: id.New(), botUser: bot,
+		authz: &fakeMusicAuthz{ready: true, allowed: map[id.ID]uint64{bot: musicBotConnectSpeak}}, trust: &joinTrustFake{held: map[id.ID]bool{}},
+		ready: func(ctx context.Context) bool { <-ctx.Done(); return false }}
+	began := time.Now()
+	if err := a.admit(t.Context(), native.CallMediaEpoch{}); !errors.Is(err, errMusicInstallationNotReady) {
+		t.Fatalf("a hanging installation read = %v", err)
+	}
+	if waited := time.Since(began); waited > time.Second {
+		t.Fatalf("admission waited %v on a hanging read", waited)
+	}
+}

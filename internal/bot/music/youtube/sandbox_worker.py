@@ -92,11 +92,64 @@ def load_ytdlp(ytdlp):
                 return None
             sys.path.insert(0, site)
         import yt_dlp
-        if not hasattr(yt_dlp, "parse_options") or not hasattr(yt_dlp, "YoutubeDL"):
+        if not callable(getattr(yt_dlp, "main", None)):
             return None
+        # The extractor classes load now, once, so no lookup child imports them again.
+        if hasattr(yt_dlp, "extractor") and callable(getattr(yt_dlp.extractor, "gen_extractor_classes", None)):
+            yt_dlp.extractor.gen_extractor_classes()
         return yt_dlp
     except Exception:
         return None
+
+
+class ForkedLookup:
+    """One lookup child: its own session, so its process group (with any node it starts) is killed as one."""
+
+    def __init__(self, pid):
+        self.pid = pid
+
+    def terminate(self):
+        for kill in (os.killpg, os.kill):
+            try:
+                kill(self.pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+
+def lookup_child(library, args, env, out_fd, err_fd):
+    """The child's whole life: yt-dlp's own command line entry, with this lookup's argv, its stdout and stderr on the
+    parent's pipes. It never returns."""
+    code = 1
+    try:
+        os.setsid()
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        null = os.open(os.devnull, os.O_RDONLY)
+        os.dup2(null, 0)
+        os.dup2(out_fd, 1)
+        os.dup2(err_fd, 2)
+        # Nothing else of the worker's: not its reply channel, not another lookup's pipes, not the relay's sockets.
+        os.closerange(3, resource.getrlimit(resource.RLIMIT_NOFILE)[0])
+        os.environ.clear()
+        os.environ.update(env)
+        sys.stdin = open(0, "r", closefd=False)
+        sys.stdout = open(1, "w", encoding="utf-8", errors="replace", closefd=False)
+        sys.stderr = open(2, "w", encoding="utf-8", errors="replace", closefd=False)
+        try:
+            library.main(args)
+            code = 0
+        except SystemExit as exit_:
+            code = exit_.code if isinstance(exit_.code, int) else (0 if exit_.code is None else 1)
+        except BaseException as failure:  # noqa: BLE001 - this lookup's failure, reported as its exit code
+            sys.stderr.write("ERROR: %s\n" % type(failure).__name__)
+            code = 1
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.flush()
+            except (OSError, ValueError):
+                pass
+    finally:
+        os._exit(code & 0xFF)
 
 
 def serve(ytdlp, limit, env, children, stopping, stop):
@@ -109,15 +162,15 @@ def serve(ytdlp, limit, env, children, stopping, stop):
     """
     out_lock = threading.Lock()
     slots = threading.BoundedSemaphore(MAX_CONCURRENT)
-    # The worker loads yt-dlp once and keeps one YoutubeDL per option set (the lookup's and the metadata runner's), so
-    # a lookup pays no interpreter start, no module import and, with the worker's cache dir in its private /tmp, no
-    # player download after the first. YoutubeDL is not thread safe: library lookups run one at a time.
+    # The worker imports yt-dlp once; each lookup is a child forked after the import (Bot v2 Task 19 fix round 3). A
+    # lookup pays no interpreter start and no module import and, with the worker's cache dir in its private /tmp, no
+    # player download after the first; it still gets a fresh YoutubeDL (no error state, cookie jar or visitor identity
+    # from another lookup), is killed with its process group on cancel or timeout, and runs beside the others up to
+    # MAX_CONCURRENT. The parent never constructs a YoutubeDL and never makes a request.
     library = load_ytdlp(ytdlp)
-    library_lock = threading.Lock()
-    instances = {}
     if library is not None:
-        os.environ.clear()
-        os.environ.update(env)
+        import warnings
+        warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*fork.*")
 
     def reply(rid, code, out="", err=""):
         line = json.dumps({"id": rid, "code": code, "out": out, "err": err}, ensure_ascii=True)
@@ -142,44 +195,93 @@ def serve(ytdlp, limit, env, children, stopping, stop):
     cancelled = set()  # ids cancelled before their yt-dlp started
 
     def kill_group(proc):
-        # The whole group: yt-dlp may have started node, and an orphan would keep the stdout pipe open.
+        # The whole group: yt-dlp may have started node, and an orphan would keep the stdout pipe open. A forked
+        # lookup that has not reached its setsid yet is killed by pid.
+        for kill in (os.killpg, os.kill):
+            try:
+                kill(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+    def drain_tail(fd, sink):
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
+            while True:
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    return
+                sink.extend(chunk)
+                if len(sink) > MAX_STDERR_REPLY:
+                    del sink[: len(sink) - MAX_STDERR_REPLY]
         except OSError:
-            pass
+            return
 
     def run_library(rid, args):
-        import io
-        split = args.index("--") if "--" in args else len(args)
-        options, urls = args[:split], args[split + 1:]
-        out, err = io.StringIO(), io.StringIO()
-        with library_lock:
-            with state_lock:
-                if rid in cancelled:
-                    reply(rid, -9)
-                    return
-            try:
-                ydl = instances.get(tuple(options))
-                if ydl is None:
-                    parsed = library.parse_options(options + ["--"] + urls)
-                    ydl = library.YoutubeDL(parsed.ydl_opts)
-                    instances[tuple(options)] = ydl
-                ydl._out_files = library.utils.Namespace(out=out, error=err, screen=err, console=None)
-                try:
-                    code = ydl.download(urls)
-                except library.utils.DownloadError:
-                    code = 1
-            except SystemExit as exit_:
-                code = exit_.code if isinstance(exit_.code, int) else 2
-            except Exception as failure:  # noqa: BLE001 - every failure is this lookup's, never the worker's
-                err.write("ERROR: %s\n" % type(failure).__name__)
-                code = 1
-        data = out.getvalue().encode("utf-8", "replace")
-        if len(data) > limit:
-            reply(rid, 75)
+        with state_lock:
+            if rid in cancelled:
+                reply(rid, -9)
+                return
+        try:
+            out_r, out_w = os.pipe()
+            err_r, err_w = os.pipe()
+        except OSError:
+            reply(rid, 1)
             return
-        tail = err.getvalue().encode("utf-8", "replace")[-MAX_STDERR_REPLY:]
-        reply(rid, code, data.decode("utf-8", "replace"), tail.decode("utf-8", "replace"))
+        try:
+            pid = os.fork()
+        except OSError:
+            for fd in (out_r, out_w, err_r, err_w):
+                os.close(fd)
+            reply(rid, 1)
+            return
+        if pid == 0:
+            lookup_child(library, args, env, out_w, err_w)
+        os.close(out_w)
+        os.close(err_w)
+        proc = ForkedLookup(pid)
+        with state_lock:
+            procs[rid] = proc
+            was_cancelled = rid in cancelled
+        children.append(proc)
+        try:
+            if was_cancelled:
+                kill_group(proc)
+            err_tail = bytearray()
+            err_thread = threading.Thread(target=drain_tail, args=(err_r, err_tail), daemon=True)
+            err_thread.start()
+            # The output is capped as it is read: a lookup that prints past the limit is killed there.
+            data = bytearray()
+            too_large = False
+            try:
+                while True:
+                    chunk = os.read(out_r, 32768)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    if len(data) > limit:
+                        too_large = True
+                        kill_group(proc)
+                        break
+            except OSError:
+                kill_group(proc)
+            _, status = os.waitpid(pid, 0)
+            err_thread.join(1)
+            if too_large:
+                reply(rid, 75)
+                return
+            code = os.waitstatus_to_exitcode(status)
+            reply(rid, code, bytes(data).decode("utf-8", "replace"), bytes(err_tail).decode("utf-8", "replace"))
+        finally:
+            for fd in (out_r, err_r):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            with state_lock:
+                procs.pop(rid, None)
+            try:
+                children.remove(proc)
+            except ValueError:
+                pass
 
     def run(rid, args):
         if library is not None:
