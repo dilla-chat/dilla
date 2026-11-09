@@ -808,11 +808,22 @@ func decodeRelayedCommand(payload []cbor.RawMessage) (intake.RelayedCommand, err
 
 // relayCommand queues one op 64 for the installation's sealed intake. It never blocks the delivery loop.
 func (r *botGatewayRuntime) relayCommand(installation id.ID, payload []cbor.RawMessage, ready func(context.Context) bool) {
+	r.relayCommandFor(installation, id.ID{}, payload, ready)
+}
+
+// relayCommandFor is relayCommand on the connection of the installation's community: a command that arrives before
+// the installation's first pass configured its sealed intake (a restarted Bot gets the commands dillad carried across
+// its reset right after its snapshot, Task 21b fix round 2) waits in the intake's queue, whose workers start with the
+// pass, instead of being dropped.
+func (r *botGatewayRuntime) relayCommandFor(installation, community id.ID, payload []cbor.RawMessage, ready func(context.Context) bool) {
 	cmd, err := decodeRelayedCommand(payload)
 	// The feed barrier (fix round 1 I-3): the command is opened and authorised only after the events dillad sent
 	// before it are applied.
 	cmd.Ready = ready
 	e := r.sealed.lookup(installation)
+	if e == nil && err == nil && !community.IsZero() && cmd.CommunityID == community {
+		e = r.sealed.entry(installation, community)
+	}
 	switch {
 	case err != nil:
 		r.log.Warn("bot command relay malformed", "installation_id", installation.String())

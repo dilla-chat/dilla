@@ -501,7 +501,7 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 				}
 			case gatewayclient.OpBotCommand:
 				// A member's sealed command (Task 15): queued for the installation's sealed intake, acknowledged here.
-				r.relayCommand(installation, delivery.Frame.BotPayload, feed.barrier())
+				r.relayCommandFor(installation, community, delivery.Frame.BotPayload, feed.barrier())
 			case gatewayclient.OpBotReply:
 				// The answer to the Bot's own health probe (Task 17 fix round 2), through dillad's reply route.
 				r.probeReply(installation, delivery.Frame.BotReply)

@@ -789,3 +789,27 @@ func TestAJobRunningAtTheResetDoesNotAdvanceTheNewStream(t *testing.T) {
 		t.Fatal("a command after the applied new event was not released")
 	}
 }
+
+// Task 21b fix round 2: a restarted Bot gets the commands dillad carried across its reset right after its snapshot,
+// before its first pass configured the sealed intake. They wait in the intake's queue for the pass instead of being
+// dropped ("bot command relay for no sealed intake"); one for another community is still dropped.
+func TestACommandBeforeTheFirstPassWaitsForTheSealedIntake(t *testing.T) {
+	r := newBotGatewayRuntime(context.Background(), nil, true, quietLogger())
+	installation, community := id.New(), id.New()
+	command := func(c id.ID) []cbor.RawMessage {
+		request, user, device := id.New(), id.New(), id.New()
+		return []cbor.RawMessage{rawCBOR(t, request[:]), rawCBOR(t, c[:]), rawCBOR(t, user[:]), rawCBOR(t, device[:]), rawCBOR(t, []byte("sealed"))}
+	}
+	r.relayCommandFor(installation, community, command(id.New()), nil)
+	if r.sealed.lookup(installation) != nil {
+		t.Fatal("a command of another community created the installation's intake")
+	}
+	r.relayCommandFor(installation, community, command(community), nil)
+	e := r.sealed.lookup(installation)
+	if e == nil || len(e.queue) != 1 {
+		t.Fatal("the command before the first pass was not kept for the sealed intake")
+	}
+	if r.sealed.entry(installation, community) != e {
+		t.Fatal("the pass does not find the entry the early command waits in")
+	}
+}
