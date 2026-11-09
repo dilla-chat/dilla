@@ -123,6 +123,30 @@ func TestDegradedWhenQueueGrowsFor60s(t *testing.T) {
 	}
 }
 
+// The picker learns the Bot's status without a reload: a report that changes the judged state (offline → ready,
+// ready → degraded, degraded → ready) tells the change hook once, which dillad turns into op 54 so members re-read the
+// catalog; a report that keeps the state tells nobody.
+func TestAReportThatChangesTheJudgedStateTellsTheHook(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_800_000_000, 0))
+	tracker := api.NewBotHealth(clk)
+	var told []id.ID
+	tracker.OnChange(func(c id.ID) { told = append(told, c) })
+	community := id.New()
+	clk.Advance(151 * time.Second) // never reported: offline
+	tracker.Record(community, healthReportAt(true, clk.Now(), 0, 0))
+	if len(told) != 1 || told[0] != community {
+		t.Fatalf("offline → ready told %v, want the community once", told)
+	}
+	tracker.Record(community, healthReportAt(true, clk.Now(), 0, 0))
+	if len(told) != 1 {
+		t.Fatalf("a report that keeps ready told %v", told)
+	}
+	tracker.Record(community, healthReportAt(true, clk.Now(), 0, 20_000)) // a request waiting over 10 s: degraded
+	if len(told) != 2 {
+		t.Fatalf("ready → degraded told %v, want a second call", told)
+	}
+}
+
 func TestOfflineWithoutReportFor150s(t *testing.T) {
 	clk := clock.NewFake(time.Unix(1_800_000_000, 0))
 	tracker := api.NewBotHealth(clk)

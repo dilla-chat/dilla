@@ -237,6 +237,35 @@ describe('fix round 1', () => {
     expect(f.verify).toHaveBeenCalledTimes(3);
   });
 
+  // The picker learns the Bot's status without a reload: a refresh asked for while a read is in flight (op 54 after the
+  // Bot came up, say) reads again once that read ends, so a status that changed after the first read started is seen.
+  it('a refresh asked for during a read reads again after it, and its status wins', async () => {
+    const f = fakeDeps();
+    const releases: ((body: Uint8Array) => void)[] = [];
+    const fetchCatalog = vi.fn(() => new Promise<Uint8Array>(resolve => { releases.push(resolve); }));
+    const store = new BotCatalogStore({ ...f.deps, fetchCatalog });
+    const first = store.refresh(COMMUNITY);
+    await Promise.resolve();
+    const second = store.refresh(COMMUNITY); // the Bot came up meanwhile
+    releases[0]?.(catalogBody(3, [remind], PUBLICATION, [2, 1758659040]));
+    await first;
+    await vi.waitFor(() => { expect(fetchCatalog).toHaveBeenCalledTimes(2); });
+    releases[1]?.(catalogBody(3, [remind], PUBLICATION, [0, null]));
+    await second;
+    expect(store.get(COMMUNITY)?.status.state).toBe('ready');
+    // Two more asks during one read coalesce into one more read.
+    const third = store.refresh(COMMUNITY);
+    void store.refresh(COMMUNITY);
+    const fourth = store.refresh(COMMUNITY);
+    await vi.waitFor(() => { expect(fetchCatalog).toHaveBeenCalledTimes(3); });
+    releases[2]?.(catalogBody(3, [remind]));
+    await third;
+    await vi.waitFor(() => { expect(fetchCatalog).toHaveBeenCalledTimes(4); });
+    releases[3]?.(catalogBody(3, [remind]));
+    await fourth;
+    expect(fetchCatalog).toHaveBeenCalledTimes(4);
+  });
+
   it('a push that lands during a catalog read wins over the older read (M7)', async () => {
     let release!: (body: Uint8Array) => void;
     const f = fakeDeps();

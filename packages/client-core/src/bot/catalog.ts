@@ -179,6 +179,8 @@ export class BotCatalogStore {
   private readonly listeners = new Map<string, Set<() => void>>();
   private revisions: Promise<BotRevision[] | null> | null = null;
   private readonly inFlight = new Map<string, Promise<void>>();
+  /** A read asked for while one is in flight: it runs once that read ends (every ask meanwhile shares it). */
+  private readonly queued = new Map<string, Promise<void>>();
   /** community → the Bot user this device pinned on first sight (hex): a copy of the core store's pin (task 20b), which
    *  survives a reload and is never replaced. */
   private readonly pins = new Map<string, string>();
@@ -270,11 +272,24 @@ export class BotCatalogStore {
     await this.refresh(communityId);
   }
 
-  /** Reads the catalog and the Bot channels now (a structure change, op 54, or a stale key). A failure keeps what is held. */
+  /** Reads the catalog and the Bot channels now (a structure change, op 54, or a stale key). A failure keeps what is held.
+   *  An ask while a read is in flight is one more read after it: that read may have started before the change the ask is
+   *  for (the Bot coming up), and its status would otherwise stand until a reload. */
   refresh(communityId: string): Promise<void> {
     const running = this.inFlight.get(communityId);
-    if (running !== undefined) return running;
-    const task = this.load(communityId).finally(() => { this.inFlight.delete(communityId); });
+    if (running === undefined) return this.start(communityId);
+    const waiting = this.queued.get(communityId);
+    if (waiting !== undefined) return waiting;
+    const next = running.catch(() => undefined).then(() => {
+      this.queued.delete(communityId);
+      return this.inFlight.get(communityId) ?? this.start(communityId);
+    });
+    this.queued.set(communityId, next);
+    return next;
+  }
+
+  private start(communityId: string): Promise<void> {
+    const task = this.load(communityId).finally(() => { if (this.inFlight.get(communityId) === task) this.inFlight.delete(communityId); });
     this.inFlight.set(communityId, task);
     return task;
   }

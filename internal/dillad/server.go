@@ -586,6 +586,11 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		}
 	}
 	deps.BotProfileChanged = botRoleNotify.Changed
+	// A health report that changes the Bot's judged state (offline, ready, degraded) is op 54 to the members, who re-read
+	// the catalog and its status: the picker learns the Bot came up without a reload. The Bot's own feed is not told:
+	// nothing in the community's structure changed.
+	statusNotify := api.NewStructureNotifier(gw, o.Repo, o.Log)
+	deps.BotHealth.OnChange(func(community id.ID) { go statusNotify.Changed(context.Background(), community) })
 	// Bot v2 task 14: the supervised Bot polls nothing; an installation change is a SIGHUP to it (Supervisor.Nudge).
 	if n, ok := o.BotLaunch.(interface{ Nudge() }); ok {
 		deps.BotInstallationsChanged = n.Nudge

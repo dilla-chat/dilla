@@ -87,6 +87,24 @@ async function enableBot(page: Page, password: string, capabilities: string[] = 
     .toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
   await settings.getByRole('button', { name: copy('settings.close'), exact: true }).click();
   await expect(settings).toBeHidden();
+  await expectPickerReady(page);
+}
+
+/**
+ * The settings page's "ready" is the installation's; the picker's is this device's catalog status. Wait for that one too:
+ * `/remind` (Reminders is on after every enable) offered and not greyed in #general's picker, then leave the picker.
+ */
+async function expectPickerReady(page: Page): Promise<void> {
+  const box = composerBox(page, GENERAL);
+  if (!(await box.isVisible())) return;
+  await box.fill('/');
+  const region = page.getByRole('region', { name: 'Command composer', exact: true });
+  const remind = region.getByRole('option', { name: /^\/remind,/ });
+  await expect(remind).toBeVisible({ timeout: WAIT });
+  await expect(remind).not.toHaveAttribute('aria-disabled', 'true', { timeout: BOT_WAIT });
+  await page.keyboard.press('Escape');
+  await expect(region).toBeHidden({ timeout: WAIT });
+  await box.fill('');
 }
 
 async function disableBot(page: Page): Promise<void> {

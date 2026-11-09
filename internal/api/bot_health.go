@@ -89,7 +89,13 @@ type BotHealth struct {
 	failing map[id.ID]time.Time
 	file    string
 	log     *slog.Logger
+	// onChange hears a report that changed the judged state: dillad sends op 54, so members re-read the catalog's
+	// status instead of keeping the one they read before (the picker would show the Bot offline until a reload).
+	onChange func(community id.ID)
 }
+
+// OnChange sets the hook a state-changing report calls, after the tracker's lock is released. Set it before serving.
+func (h *BotHealth) OnChange(f func(community id.ID)) { h.mu.Lock(); h.onChange = f; h.mu.Unlock() }
 
 // BotHealthFile is the name of dillad's failing-since file in its data directory.
 const BotHealthFile = "bot-health"
@@ -198,7 +204,15 @@ func writeFileAtomic(path string, data []byte) error {
 func (h *BotHealth) Record(community id.ID, r BotHealthReport) {
 	now := h.clk.Now()
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	before, _ := h.statusLocked(community, now)
+	defer func() {
+		after, _ := h.statusLocked(community, now)
+		hook := h.onChange
+		h.mu.Unlock()
+		if after != before && hook != nil {
+			hook(community)
+		}
+	}()
 	st := h.state[community]
 	if st == nil {
 		st = &botHealthState{since: now}
@@ -279,6 +293,10 @@ func (h *BotHealth) Status(community id.ID) (state, since uint64) {
 	now := h.clk.Now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	return h.statusLocked(community, now)
+}
+
+func (h *BotHealth) statusLocked(community id.ID, now time.Time) (state, since uint64) {
 	st := h.state[community]
 	last := h.start
 	if st != nil && st.lastReport.After(last) {
