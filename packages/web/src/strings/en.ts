@@ -56,6 +56,8 @@ export const en = {
   'commands.botUnverified': "This device can't check the Bot yet",
   'commands.botChanged': "This server's Bot account changed, so its commands are paused",
   'commands.botForbidden': "You can't use this command here",
+  // Final review I2 (new copy, for Jonas's approval): the Bot refused the sender's device as one it cannot check yet.
+  'commands.botCantCheckDevice': "The Bot can't check this device yet. Try again in a moment",
   ...utility,
   ...botCommand,
   ...settingsWorkspace,
@@ -319,6 +321,8 @@ export const en = {
   'shell.openFailed.action': 'try again',
   'shell.banner.offline': 'Connection lost. Reconnecting…',
   'shell.banner.clientTooOld': 'This server needs a newer client. Reload the page.',
+  // Final review M5 (new copy, for Jonas's approval): the server speaks only an older protocol than this app.
+  'shell.banner.instanceTooOld': 'This server needs an update before this app can connect. Ask its admin.',
   'shell.banner.commandError': 'That did not work ({code}). Try again, or reload the page.',
   'update.failed': 'The update is ready, but this tab could not save your work. Try again.',
   'update.restoreFailed': 'The update is ready, but this tab could not restore your work. Try again.',

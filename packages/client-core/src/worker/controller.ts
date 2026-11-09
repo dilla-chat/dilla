@@ -2396,6 +2396,12 @@ export class Controller {
       this.safely(() => { this.incomingAFKAway(afkAwayOf(e.frame)); });
     } else if (e.type === 'revoked') {
       void this.barrier.track(this.onRevokedSocket());
+    } else if (e.type === 'instanceOutdated') {
+      // Final review M5: the instance speaks only older wires; the page tells its user the instance needs the update.
+      if (this.connectionState.reason === 'version') {
+        this.connectionState = { ...this.connectionState, reason: 'instance' };
+        this.slices.set('connection', this.connectionState);
+      }
     } else if (e.type === 'upgradeRequired') {
       // Bot v2: the version refusal named E_UPGRADE_REQUIRED; the page shows the update surface instead of a plain reload.
       if (this.connectionState.reason === 'version') {

@@ -178,6 +178,16 @@ describe('Bot commands from the catalog on this device', () => {
     await waitFor(() => expect(h.fake.callsOf('sendBotCommand')).toHaveLength(3));
     h.answer({ seq: 0, status: 403, body: '', final: true });
     await waitFor(() => expect(h.results().at(-1)?.text).toBe("You can't use this command here"));
+    // Final review I2: a Bot that cannot check this device yet (401 E_BOT_SIGNATURE) is sent the same request once more
+    // while the catalog says ready; a second refusal says why, not a bare "failed".
+    h.open('/pause');
+    await h.user.click(await screen.findByRole('button', { name: 'send' }));
+    await waitFor(() => expect(h.fake.callsOf('sendBotCommand')).toHaveLength(4));
+    h.answer({ seq: 0, status: 401, body: text('E_BOT_SIGNATURE'), final: true });
+    await waitFor(() => expect(h.fake.callsOf('sendBotCommand')).toHaveLength(5), { timeout: 3_000 });
+    expect(h.fake.callsOf('sendBotCommand')[4].requestId).toBe(h.fake.callsOf('sendBotCommand')[3].requestId);
+    h.answer({ seq: 0, status: 401, body: text('E_BOT_SIGNATURE'), final: true });
+    await waitFor(() => expect(h.results().at(-1)?.text).toBe("The Bot can't check this device yet. Try again in a moment"));
   });
 
   it('an answer that comes after the timeout, before Retry, is shown and the Retry offer goes (M4)', async () => {

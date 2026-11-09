@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -463,27 +464,54 @@ func TestCommandWithoutAFeedIsOfflineAndRetryable(t *testing.T) {
 	}
 }
 
-// Final review I2: right after a Bot start the first command can meet a gate that opens within moments (the feed not
-// yet bound, the sender's ingest mid-retry, the barrier not yet settled). It is parked there, up to the first-answer
-// budget, and answered once the gate opens: never a retryable refusal the person sees as a failure.
-func TestFirstCommandIsParkedAtARetryableGateUntilItOpens(t *testing.T) {
-	for _, gate := range []string{"not_ready", "held", "feed_behind"} {
+// startUp opens the intake's start-up park window now: budget long, gates checked every millisecond.
+func (w *world) startUp(budget time.Duration) {
+	w.in.mu.Lock()
+	w.in.park, w.in.parkStep, w.in.started = budget, time.Millisecond, time.Now()
+	w.in.mu.Unlock()
+}
+
+// commandAs is command sent by another member of the community.
+func (w *world) commandAs(user id.ID, op uint64, k byte) RelayedCommand {
+	cmd, _ := w.command(op, k)
+	cmd.UserID = user
+	return cmd
+}
+
+// waitReplies waits (real time, bounded) until the sender holds n replies.
+func (w *world) waitReplies(n int) []sentReply {
+	w.t.Helper()
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		if got := w.sender.all(); len(got) >= n {
+			return got
+		}
+	}
+	w.t.Fatalf("replies = %+v, want %d", w.sender.all(), n)
+	return nil
+}
+
+// Final review I2: right after a Bot start the first command can meet a start-up gate that opens within moments (the
+// feed not yet bound, the barrier not yet settled). Inside the start-up window it is parked, off the worker, and
+// answered once the gate opens: never a retryable refusal the person sees as a failure.
+func TestFirstCommandIsParkedAtAStartUpGateUntilItOpens(t *testing.T) {
+	for _, gate := range []string{"not_ready", "feed_behind"} {
 		t.Run(gate, func(t *testing.T) {
 			w := newWorld(t)
-			w.in.park, w.in.parkStep = 5*time.Second, time.Millisecond
-			checks := 0
-			opens := func() bool { checks++; return checks > 3 }
+			w.startUp(5 * time.Second)
+			var open atomic.Bool
 			cmd, _ := w.command(opRemind, 1)
 			switch gate {
 			case "not_ready":
-				w.in.SetReady(opens)
-			case "held":
-				w.in.SetHeld(heldFunc(func(id.ID) bool { return !opens() }))
+				w.in.SetReady(open.Load)
 			case "feed_behind":
-				cmd.Ready = func(context.Context) bool { return opens() }
+				cmd.Ready = func(context.Context) bool { return open.Load() }
 			}
 			w.in.Handle(context.Background(), cmd)
-			expectOne(t, w.sender.all(), 200, "Saved")
+			if got := w.sender.all(); len(got) != 0 {
+				t.Fatalf("a parked command was answered at once: %+v", got)
+			}
+			open.Store(true)
+			expectOne(t, w.waitReplies(1), 200, "Saved")
 			if w.dispatch.count() != 1 {
 				t.Fatalf("dispatched %d times, want once", w.dispatch.count())
 			}
@@ -491,19 +519,75 @@ func TestFirstCommandIsParkedAtARetryableGateUntilItOpens(t *testing.T) {
 	}
 }
 
-// A gate that stays closed past the budget is still the retryable refusal.
-func TestAParkedCommandIsRefusedOnceTheBudgetEnds(t *testing.T) {
+// A start-up gate that stays closed past the window is still the retryable refusal.
+func TestAParkedCommandIsRefusedOnceTheWindowEnds(t *testing.T) {
 	w := newWorld(t)
-	w.in.park, w.in.parkStep = 20*time.Millisecond, time.Millisecond
+	w.startUp(20 * time.Millisecond)
 	w.in.SetReady(func() bool { return false })
 	cmd, _ := w.command(opRemind, 1)
 	w.in.Handle(context.Background(), cmd)
-	expectOne(t, w.sender.all(), 503, "E_BOT_OFFLINE")
+	expectOne(t, w.waitReplies(1), 503, "E_BOT_OFFLINE")
+	// After the window nothing parks: the next command is refused at once.
+	next, _ := w.command(opRemind, 2)
+	w.in.Handle(context.Background(), next)
+	if got := w.sender.all(); len(got) != 2 || got[1].answer.Status != 503 {
+		t.Fatalf("after the window = %+v, want a 503 at once", got)
+	}
 }
 
-type heldFunc func(id.ID) bool
+// The coordinator's I2 fix: a held sender ties nothing up. Even inside the start-up window, each of its commands is
+// answered 401 at once, on the caller's goroutine, and another member's command right after is answered as usual.
+func TestAHeldSendersCommandsAreAnsweredAtOnceAndBlockNoOne(t *testing.T) {
+	w := newWorld(t)
+	w.startUp(5 * time.Second)
+	w.held[w.user] = true
+	start := time.Now()
+	for k := range byte(6) {
+		cmd, _ := w.command(opRemind, k+1)
+		w.in.Handle(context.Background(), cmd)
+		if got := w.sender.all(); len(got) != int(k)+1 || got[k].answer.Status != 401 {
+			t.Fatalf("held command %d: replies %+v, want a 401 at once", k, got)
+		}
+	}
+	other := id.New()
+	w.authz.Member(other, true, nil, true)
+	w.in.Handle(context.Background(), w.commandAs(other, opRemind, 9))
+	got := w.sender.all()
+	if len(got) != 7 || got[6].answer.Status != 200 || w.dispatch.count() != 1 {
+		t.Fatalf("another member's command after a held sender's = %+v", got)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("a held sender's commands took %v", elapsed)
+	}
+}
 
-func (f heldFunc) Held(user id.ID) bool { return f(user) }
+// At most one parked command per sender and parkCap in all; the rest are refused retryable at once.
+func TestParkedCommandsAreCappedPerSenderAndInAll(t *testing.T) {
+	w := newWorld(t)
+	w.startUp(5 * time.Second)
+	w.in.SetParkCap(2)
+	var open atomic.Bool
+	w.in.SetReady(open.Load)
+	a, b, c := id.New(), id.New(), id.New()
+	for _, u := range []id.ID{a, b, c} {
+		w.authz.Member(u, true, nil, true)
+	}
+	w.in.Handle(context.Background(), w.commandAs(a, opRemind, 1))
+	w.in.Handle(context.Background(), w.commandAs(a, opRemind, 2)) // a's second: over the per-sender cap
+	w.in.Handle(context.Background(), w.commandAs(b, opRemind, 3))
+	w.in.Handle(context.Background(), w.commandAs(c, opRemind, 4)) // over the total cap
+	got := w.sender.all()
+	if len(got) != 2 || got[0].answer.Status != 503 || got[0].key != 2 || got[1].answer.Status != 503 || got[1].key != 4 {
+		t.Fatalf("over the caps = %+v, want 503 at once for keys 2 and 4", got)
+	}
+	open.Store(true)
+	got = w.waitReplies(4)
+	for _, r := range got[2:] {
+		if r.answer.Status != 200 || (r.key != 1 && r.key != 3) {
+			t.Fatalf("parked answers = %+v, want 200 for keys 1 and 3", got)
+		}
+	}
+}
 
 func TestProbeIsAnsweredForTheBotOnly(t *testing.T) {
 	w := newWorld(t)

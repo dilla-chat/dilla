@@ -32,6 +32,8 @@ export type GatewayEvent =
   /** Bot v2: the instance refused this client's wire as too old (E_UPGRADE_REQUIRED, close 4006). The gateway stays idle;
    *  the app asks its user to update. */
   | { type: 'upgradeRequired' }
+  /** Final review M5: the instance's hello offers only wires older than this client's: the instance is the side to update. */
+  | { type: 'instanceOutdated' }
   /** Task 11 (Jonas, Q3): a heartbeat's round trip, in ms (the phone's You tab: "Connected to {host} · {ping}"). */
   | { type: 'rtt'; ms: number }
   /** Bot v2: the answer (op 60) to a request frame this socket sent; SocketRequests matches it by id. */
@@ -80,6 +82,10 @@ function readHello(payload: CborValue[]): HelloInfo {
 /** True when the instance offers wires and every one is above every wire this client speaks. */
 function newerThanAll(offered: bigint[], preference: readonly bigint[]): boolean {
   return offered.length > 0 && offered.every((version) => preference.every((own) => version > own));
+}
+
+function olderThanAll(offered: bigint[], preference: readonly bigint[]): boolean {
+  return offered.length > 0 && offered.every((version) => preference.every((own) => version < own));
 }
 
 function highestCommon(offered: bigint[], preference: readonly bigint[]): bigint | null {
@@ -263,6 +269,7 @@ export class Gateway {
         // The instance's "older than all" rule, read from its hello: every wire it offers is newer than any this client
         // speaks, so this client is the one to update. Only lower or mixed unknown wires stay the plain version state.
         if (wire === null && newerThanAll(versions[0], WIRE_PREFERENCE)) this.emit({ type: 'upgradeRequired' });
+        else if (wire === null && olderThanAll(versions[0], WIRE_PREFERENCE)) this.emit({ type: 'instanceOutdated' });
         return;
       }
       hello.selectedVersions = { wire, e2ee, media };

@@ -247,9 +247,15 @@ type Intake struct {
 	log        *slog.Logger
 	keyStale   func()
 	ready      func() bool
-	// park is how long a command waits at a retryable gate (the feed barrier, Held, the feed bound) for it to open
-	// before it is refused; parkStep is how often the gate is checked again (final review I2).
+	// The start-up park (final review I2): for park after started, a command that meets a start-up gate (the feed
+	// barrier not settled, the Authz without its first snapshot, the feed handler not bound) waits for it to open off
+	// the worker, checked every parkStep, before it is refused. At most parkCap commands are parked at once, and at
+	// most one per sender; anything over is refused at once. Held never parks. After the window nothing parks.
 	park, parkStep time.Duration
+	started        time.Time
+	parkCap        int
+	parked         int
+	parkedBy       map[id.ID]bool
 	capacity       int
 	byteBudget     int64
 	bytes          int64
@@ -264,11 +270,40 @@ func New(h Helper, authz *Authz, dispatch Dispatcher, send ReplySender, clk cloc
 	}
 	return &Intake{helper: h, authz: authz, dispatch: dispatch, send: send, clk: clk, log: slog.New(slog.DiscardHandler),
 		capacity: DefaultCapacity, byteBudget: DefaultByteBudget, records: map[id.ID]*record{},
-		park: ParkBudget, parkStep: parkStep}
+		park: ParkBudget, parkStep: parkStep, started: time.Now(), parkCap: DefaultParkCap, parkedBy: map[id.ID]bool{}}
 }
 
-// ParkBudget is the spec's first-answer budget ("Bot restart ready within 5 s"): a command that meets a retryable gate
-// right after a start waits this long for it to open before it is refused (final review I2).
+// DefaultParkCap is the most commands parked at once: one per sealed worker of the runtime.
+const DefaultParkCap = 4
+
+// SetParkCap sets the most commands parked at once (one per worker); 0 parks nothing.
+func (i *Intake) SetParkCap(n int) { i.mu.Lock(); i.parkCap = max(n, 0); i.mu.Unlock() }
+
+// SetParkWindow sets how long after its start the intake parks start-up commands; 0 parks nothing.
+func (i *Intake) SetParkWindow(d time.Duration) { i.mu.Lock(); i.park = max(d, 0); i.mu.Unlock() }
+
+// tryPark takes a park slot for user while the start-up window is open and the caps allow it.
+func (i *Intake) tryPark(user id.ID) (time.Time, bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	deadline := i.started.Add(i.park)
+	if !time.Now().Before(deadline) || i.parked >= i.parkCap || i.parkedBy[user] {
+		return time.Time{}, false
+	}
+	i.parked++
+	i.parkedBy[user] = true
+	return deadline, true
+}
+
+func (i *Intake) unpark(user id.ID) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.parked--
+	delete(i.parkedBy, user)
+}
+
+// ParkBudget is the spec's first-answer budget ("Bot restart ready within 5 s"): for this long after the intake starts,
+// a command that meets a start-up gate is parked until it opens instead of refused (final review I2).
 const ParkBudget = 5 * time.Second
 
 const parkStep = 250 * time.Millisecond
@@ -336,7 +371,8 @@ func (i *Intake) refused(ctx context.Context, log *slog.Logger, class string, st
 }
 
 // Handle answers one relayed command. It returns once the command's last answer was sent (or it was
-// dropped); it waits only at a retryable gate, at most ParkBudget (final review I2).
+// dropped), or once it was parked at a start-up gate, which answers it later off the caller's goroutine (final
+// review I2).
 func (i *Intake) Handle(ctx context.Context, cmd RelayedCommand) {
 	held, operations, botUser, log, keyStale := i.config()
 	if cmd.CommunityID != i.authz.Community() || cmd.RequestID.IsZero() || cmd.UserID.IsZero() || cmd.DeviceID.IsZero() || len(cmd.Sealed) == 0 {
@@ -391,7 +427,25 @@ func (i *Intake) Handle(ctx context.Context, cmd RelayedCommand) {
 		return
 	}
 	rec := i.remember(cmd, req.ReplyKey, now)
-	i.run(ctx, log, rec, req, held, operations, botUser, settled, settle)
+	i.run(ctx, log, rec, req, held, operations, botUser, settled, settle, true)
+}
+
+// parkThenRun waits, holding one park slot, until the start-up gates open or deadline passes, then runs the command
+// once more without parking: it is answered, or refused retryable if a gate is still closed.
+func (i *Intake) parkThenRun(ctx context.Context, log *slog.Logger, rec *record, req protocol.SealedRequest, held HeldChecker, operations func(uint64) (OperationRule, bool), botUser id.ID, settled bool, settle func() bool, deadline time.Time) {
+	defer i.unpark(req.UserID)
+	i.mu.Lock()
+	step := i.parkStep
+	i.mu.Unlock()
+	for !settled || !i.isReady() {
+		if wait := min(step, time.Until(deadline)); wait <= 0 || !sleepCtx(ctx, wait) {
+			break
+		}
+		if !settled && settle != nil {
+			settled = settle()
+		}
+	}
+	i.run(ctx, log, rec, req, held, operations, botUser, settled, settle, false)
 }
 
 // sleepCtx waits d, or until ctx ends (false).
@@ -421,7 +475,7 @@ func refusalClass(r helper.CommandRefusal) string {
 }
 
 // run authorises a verified request and dispatches it, or refuses it, answering through rec.
-func (i *Intake) run(ctx context.Context, log *slog.Logger, rec *record, req protocol.SealedRequest, held HeldChecker, operations func(uint64) (OperationRule, bool), botUser id.ID, settled bool, settle func() bool) {
+func (i *Intake) run(ctx context.Context, log *slog.Logger, rec *record, req protocol.SealedRequest, held HeldChecker, operations func(uint64) (OperationRule, bool), botUser id.ID, settled bool, settle func() bool, mayPark bool) {
 	retryable := func(class string, status uint16, code string) {
 		i.refused(ctx, log, class, status)
 		rec.mu.Lock()
@@ -430,36 +484,25 @@ func (i *Intake) run(ctx context.Context, log *slog.Logger, rec *record, req pro
 		rec.mu.Unlock()
 		i.answer(ctx, rec, refusal(status, code))
 	}
-	// The retryable gates: the feed barrier, the sender's held device list, the installation's feed. Right after a
-	// start each opens within moments, so the command is parked there for the first-answer budget, checked again every
-	// parkStep, before it is refused (final review I2): the first command after a start is answered, not failed.
-	gate := func() (string, uint16, string) {
-		switch {
-		case !settled:
-			return "feed_behind", StatusOffline, CodeOffline
-		case held != nil && held.Held(req.UserID):
-			return "held", StatusSignature, CodeSignature
-		case !i.isReady():
-			return "not_ready", StatusOffline, CodeOffline
-		}
-		return "", 0, ""
-	}
-	i.mu.Lock()
-	budget, step := i.park, i.parkStep
-	i.mu.Unlock()
-	deadline := time.Now().Add(budget)
-	for {
-		class, status, code := gate()
-		if class == "" {
-			break
-		}
-		if wait := min(step, time.Until(deadline)); wait <= 0 || !sleepCtx(ctx, wait) {
-			retryable(class, status, code)
+	// The retryable gates: the feed barrier, the sender's held device list, the installation's feed. Held answers at once
+	// (a held sender must not tie anything up). The start-up gates (barrier, feed) open within moments of a start, so
+	// inside the start-up window the command is parked off this goroutine until they open (final review I2).
+	if mayPark && (!settled || !i.isReady()) {
+		if deadline, ok := i.tryPark(req.UserID); ok {
+			go i.parkThenRun(ctx, log, rec, req, held, operations, botUser, settled, settle, deadline)
 			return
 		}
-		if !settled && settle != nil {
-			settled = settle()
-		}
+	}
+	switch {
+	case !settled:
+		retryable("feed_behind", StatusOffline, CodeOffline)
+		return
+	case held != nil && held.Held(req.UserID):
+		retryable("held", StatusSignature, CodeSignature)
+		return
+	case !i.isReady():
+		retryable("not_ready", StatusOffline, CodeOffline)
+		return
 	}
 	if req.Operation == uint64(protocol.OpProbe) {
 		if botUser.IsZero() || req.UserID != botUser {
@@ -557,7 +600,7 @@ func (i *Intake) replay(ctx context.Context, log *slog.Logger, cmd RelayedComman
 		// The helper has just verified this seal's sent_at against now: the request is as fresh as the Retry (fix
 		// round 1 M-4), so a mutation's expiry follows it, not the first send's.
 		req.SentAt = uint64(max(i.clk.Now().Unix(), 0))
-		i.run(ctx, log, rec, req, held, operations, botUser, settled, settle)
+		i.run(ctx, log, rec, req, held, operations, botUser, settled, settle, true)
 		return
 	}
 	defer rec.mu.Unlock()

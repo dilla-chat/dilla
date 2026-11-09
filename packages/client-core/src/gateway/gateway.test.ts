@@ -252,7 +252,7 @@ describe('Gateway connect', () => {
     expect(s.closedWith?.code).toBe(4006);
     expect(s.sent).toHaveLength(0);
     expect(h.gw.status).toBe('idle');
-    expect(h.events.at(-1)).toEqual({ type: 'status', status: 'idle', closeCode: 4006 });
+    expect(h.events.slice(-2)).toEqual([{ type: 'status', status: 'idle', closeCode: 4006 }, { type: 'instanceOutdated' }]);
     expect(h.clock.pending()).toEqual([]);
     h.clock.advance(600_000);
     await flush();
@@ -784,17 +784,30 @@ describe('Gateway server version close', () => {
     expect(h.minted()).toBe(1);
   });
 
-  it('a hello offering only older or mixed unknown wires keeps the plain version state', async () => {
-    for (const wire of [[5, 4, 3, 2], [5, 7], [1]]) {
+  // Final review M5: an instance whose hello offers only older wires is the side to update; the page must not tell this
+  // client to reload or update itself.
+  it('a hello offering only older wires goes idle 4006 and emits instanceOutdated', async () => {
+    for (const wire of [[5, 4, 3, 2], [1]]) {
       const h = harness();
       h.gw.start();
       await flush();
       const s = h.last();
       s.open();
       s.receive(hello({ wire }));
-      expect(h.events.at(-1)).toEqual({ type: 'status', status: 'idle', closeCode: 4006 });
+      expect(h.events.slice(-2)).toEqual([{ type: 'status', status: 'idle', closeCode: 4006 }, { type: 'instanceOutdated' }]);
       expect(h.events.some((e) => e.type === 'upgradeRequired')).toBe(false);
     }
+  });
+
+  it('a hello offering mixed unknown wires keeps the plain version state', async () => {
+    const h = harness();
+    h.gw.start();
+    await flush();
+    const s = h.last();
+    s.open();
+    s.receive(hello({ wire: [5, 7] }));
+    expect(h.events.at(-1)).toEqual({ type: 'status', status: 'idle', closeCode: 4006 });
+    expect(h.events.some((e) => e.type === 'upgradeRequired' || e.type === 'instanceOutdated')).toBe(false);
   });
 
   it('a plain version close does not claim an update is required', async () => {

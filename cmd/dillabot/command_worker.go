@@ -369,6 +369,8 @@ func (r *botGatewayRuntime) SetSealedIntake(cfg sealedIntakeConfig) {
 		e.started = true
 		e.in = intake.New(e, e.authz, e, e, clock.System())
 		e.in.SetHeld(e)
+		// At most one parked start-up command per worker (final review I2).
+		e.in.SetParkCap(sealedWorkers)
 		e.in.SetOperations(e.operation)
 		e.in.SetLogger(cfg.log)
 		e.publisher = catalog.NewPublisher(e, e, clock.System(), e.features)

@@ -329,9 +329,10 @@ describe('the global E_FACTOR_REQUIRED hook (web3.6 C2)', () => {
 });
 
 // web3.8 (R2): an instance whose hello offers only wire 1 is one this client cannot speak to. The real gateway closes
-// 4006 without an identify and the worker publishes reason 'version' (the reload banner), with no reconnect.
+// 4006 without an identify, with no reconnect, and the worker publishes reason 'instance' (final review M5: the instance
+// is older than this client, so it is the side to update, not this client).
 describe('wire version 6 (web3.8 C2, Bot v2)', () => {
-  it('a hello offering only wire 1 leaves the connection offline with reason version and sends nothing', async () => {
+  it('a hello offering only wire 1 leaves the connection offline with reason instance and sends nothing', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const { w, tickets } = socketWorld(minted);
     w.call(1, { m: 'start' });
@@ -339,8 +340,8 @@ describe('wire version 6 (web3.8 C2, Bot v2)', () => {
     const socket = Sock.all[0];
     socket.open();
     socket.receive(encodeFrame(Op.hello, 0, null, [[1], [1], [1], 30_000, 131_584, INSTANCE_ID, 1, 300, 300]));
-    await until(() => w.connection()?.reason === 'version');
-    expect(w.connection()).toMatchObject({ status: 'offline', reason: 'version' });
+    await until(() => w.connection()?.reason === 'instance');
+    expect(w.connection()).toMatchObject({ status: 'offline', reason: 'instance' });
     expect(socket.sent).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(600_000);
     expect(Sock.all).toHaveLength(1);

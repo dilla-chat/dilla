@@ -122,6 +122,17 @@ function commandResult(page: Page): Locator {
   return page.locator('.d-bot-result .d-message-row__body').last();
 }
 
+/** The first command after a Bot start must be answered (final review I2); when it is not, the Bot's refusal classes
+ *  (feed_behind, held, not_ready, …) go to the log so the failure names its gate. */
+async function expectFirstAnswer(page: Page, host: StartedHost, expected: RegExp): Promise<void> {
+  try {
+    await expect(commandResult(page)).toContainText(expected, { timeout: BOT_WAIT });
+  } catch (e) {
+    console.log(`Bot intake refusals so far:\n${host.botRefusals().join('\n') || '(none)'}`);
+    throw e;
+  }
+}
+
 async function chooseCommand(box: ReturnType<typeof composerBox>, page: Page, command: string): Promise<Locator> {
   await box.fill('/');
   const region = page.getByRole('region', { name: 'Command composer', exact: true });
@@ -817,7 +828,7 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     await enableBot(page, owner.password);
     const reminderText = `cross-device reminder ${Date.now()}`;
     await invoke(composerBox(page, GENERAL), page, `/remind when:1m text:"${reminderText}"`);
-    await expect(commandResult(page)).toContainText(new RegExp(`^Saved\\. I’ll remind you .+: ${reminderText}$`, 'u'), { timeout: BOT_WAIT });
+    await expectFirstAnswer(page, host, new RegExp(`^Saved\\. I’ll remind you .+: ${reminderText}$`, 'u'));
     // Bot v2 Task 21b: `/remind` is one sealed command (operation 80), and its receipt is the Bot's sealed final answer that
     // this device opened, not an interaction response read back from an archive.
     await expect.poll(() => lastReminderRequestId(page), { timeout: BOT_WAIT }).toMatch(/^[0-9a-f]{32}$/u);
@@ -893,7 +904,7 @@ test('a reminder set from the picker chips appears under Upcoming', async ({ pag
     const text = region.getByRole('textbox', { name: 'text', exact: true });
     await text.fill(reminderText);
     await text.press('Enter');
-    await expect(commandResult(page)).toContainText(new RegExp(`^Saved\\. I’ll remind you .+: ${reminderText}$`, 'u'), { timeout: BOT_WAIT });
+    await expectFirstAnswer(page, host, new RegExp(`^Saved\\. I’ll remind you .+: ${reminderText}$`, 'u'));
     await expect(region).toHaveCount(0);
     const list = await chooseCommand(composerBox(page, GENERAL), page, 'reminders list');
     await list.getByRole('textbox', { name: 'press ↵ to run', exact: true }).press('Enter');

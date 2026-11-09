@@ -3061,6 +3061,18 @@ describe('Controller in the ready phase', () => {
     expect(w.connection()).toStrictEqual({ status: 'online', generation: '7' });
   });
 
+  // Final review M5: an instance older than this client publishes reason 'instance': the page names the instance as the side
+  // to update.
+  it("an instance older than this client publishes connection reason 'instance'", async () => {
+    const w = world();
+    await toReady(w);
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    w.gateway.emit({ type: 'status', status: 'idle', closeCode: CLIENT_CLOSE.version });
+    w.gateway.emit({ type: 'instanceOutdated' });
+    expect(w.connection()).toStrictEqual({ status: 'offline', generation: '7', reason: 'instance' });
+  });
+
   it('a request that cannot re-authenticate ends in revoked', async () => {
     const paths: string[] = [];
     const instanceAndLimits = fakeFetch(paths);

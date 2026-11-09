@@ -463,6 +463,8 @@ func TestSealedIntakeFailsClosedUntilTheFeedIsReady(t *testing.T) {
 		c.Sealed = resealed
 		e.in.Handle(ctx, c)
 	}
+	// After the start-up window (no park, final review I2), the fail-closed answers come at once.
+	e.in.SetParkWindow(0)
 	// No feed at all: Held cannot know, so the intake is offline.
 	e.in.Handle(ctx, cmd)
 	if a := last(); a.Status != 503 || string(a.Body) != "E_BOT_OFFLINE" {
@@ -616,6 +618,7 @@ func TestCommandBehindAStalledFeedIsOffline(t *testing.T) {
 	defer func() { feedBarrierBound = 2 * time.Second }()
 	cmd := w.commands[0]
 	cmd.Ready = fc.barrier()
+	w.entry.in.SetParkWindow(0) // past the start-up window (final review I2): no park
 	w.entry.in.Handle(ctx, cmd)
 	w.transport.mu.Lock()
 	defer w.transport.mu.Unlock()

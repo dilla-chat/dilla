@@ -29,7 +29,8 @@ function fakePort() {
   const refetchCatalog = vi.fn(() => { refetches++; return Promise.resolve(); });
   const forgotten: string[] = [];
   const port: BotCommandPort & { submits: BotCommandSubmit[]; answer(a: Partial<BotAnswerEvent> & { seq: number }): void; refetches(): number;
-    submitError: Error | null; submitMock: typeof submit; refetchMock: typeof refetchCatalog; forgotten: string[]; listening(id: string): number } = {
+    submitError: Error | null; submitMock: typeof submit; refetchMock: typeof refetchCatalog; forgotten: string[]; listening(id: string): number;
+    catalogReady?: (communityId: string) => boolean } = {
     submits,
     submitError: null,
     forgotten,
@@ -155,6 +156,63 @@ describe('sendBotCommand (the page side)', () => {
     expect(ok.submits.map(s => s.requestId)).toEqual([REQUEST, REQUEST]);
     ok.answer({ seq: 0, body: text('Saved'), final: true });
     expect(await answers).toEqual([{ status: 200, body: text('Saved'), final: true }]);
+  });
+
+  // Final review I2: right after a Bot start its first answer can be a retryable refusal (503 E_BOT_OFFLINE, 401
+  // E_BOT_SIGNATURE). While the catalog says ready, the run resends the same request id once, after 1 s.
+  for (const [status, code] of [[503, 'E_BOT_OFFLINE'], [401, 'E_BOT_SIGNATURE']] as const) {
+    it(`a ${status} answer while the catalog says ready is resent once with the same id`, async () => {
+      const port = fakePort();
+      port.catalogReady = () => true;
+      const run = createBotCommands(port).sendBotCommand({ communityId: COMMUNITY, channelId: null, operation: 80, args: [], requestId: REQUEST });
+      const all = collect(run.answers);
+      await vi.advanceTimersByTimeAsync(0);
+      port.answer({ seq: 0, status, body: text(code), final: true });
+      await vi.advanceTimersByTimeAsync(999);
+      expect(port.submits).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(port.submits.map(s => s.requestId)).toEqual([REQUEST, REQUEST]);
+      port.answer({ seq: 0, body: text('Saved'), final: true });
+      expect(await all).toEqual([{ status: 200, body: text('Saved'), final: true }]);
+    });
+  }
+
+  it('a second retryable refusal ends the run with it, and never loops', async () => {
+    const port = fakePort();
+    port.catalogReady = () => true;
+    const run = createBotCommands(port).sendBotCommand({ communityId: COMMUNITY, channelId: null, operation: 80, args: [], requestId: REQUEST });
+    const all = collect(run.answers);
+    await vi.advanceTimersByTimeAsync(0);
+    port.answer({ seq: 0, status: 503, body: text('E_BOT_OFFLINE'), final: true });
+    await vi.advanceTimersByTimeAsync(1_000);
+    port.answer({ seq: 0, status: 503, body: text('E_BOT_OFFLINE'), final: true });
+    expect(await all).toEqual([{ status: 503, body: text('E_BOT_OFFLINE'), final: true }]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(port.submits).toHaveLength(2);
+  });
+
+  it('a 503 that is not the Bot’s start-up refusal (a handler’s own E_UNAVAILABLE) is the answer, with no resend', async () => {
+    const port = fakePort();
+    port.catalogReady = () => true;
+    const run = createBotCommands(port).sendBotCommand({ communityId: COMMUNITY, channelId: null, operation: 80, args: [], requestId: REQUEST });
+    const all = collect(run.answers);
+    await vi.advanceTimersByTimeAsync(0);
+    port.answer({ seq: 0, status: 503, body: text('E_UNAVAILABLE'), final: true });
+    expect(await all).toEqual([{ status: 503, body: text('E_UNAVAILABLE'), final: true }]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(port.submits).toHaveLength(1);
+  });
+
+  it('a retryable refusal while the catalog is not ready is the answer, with no resend', async () => {
+    const port = fakePort();
+    port.catalogReady = () => false;
+    const run = createBotCommands(port).sendBotCommand({ communityId: COMMUNITY, channelId: null, operation: 80, args: [], requestId: REQUEST });
+    const all = collect(run.answers);
+    await vi.advanceTimersByTimeAsync(0);
+    port.answer({ seq: 0, status: 503, body: text('E_BOT_OFFLINE'), final: true });
+    expect(await all).toEqual([{ status: 503, body: text('E_BOT_OFFLINE'), final: true }]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(port.submits).toHaveLength(1);
   });
 
   it('a refused send ends the run with the refusal', async () => {

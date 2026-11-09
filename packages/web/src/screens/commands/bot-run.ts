@@ -101,8 +101,8 @@ function codeText(code: string, view: BotCatalogView | null | undefined): string
   switch (code) {
     case 'E_BOT_OFFLINE': return t('commands.botOffline', { time: botSince(view?.status.since ?? null) });
     case 'E_NOT_BOT_CHANNEL': return t('commands.needsBotChannel');
-    // The command route answers 403 only when the community's Bot is turned off.
-    case 'E_BOT_DISABLED': return t('commands.botDisabled');
+    // The Bot cannot check this device's list yet (its ingest of the sender is still catching up, final review I2).
+    case 'E_BOT_SIGNATURE': return t('commands.botCantCheckDevice');
     case 'E_BOT_KEY_STALE': case 'E_BOT_STALE': return t('commands.botUnverified');
     default: return null;
   }

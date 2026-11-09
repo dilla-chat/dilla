@@ -1834,7 +1834,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
       onChange: setUpgradeSurface }));
   }, [upgradeNeeded]);
   useEffect(() => { if (status === 'online') clearUpgradeReload(tabStorage()); }, [status]);
-  const banner = (offline && linkReason === 'version') || (upgradeNeeded && upgradeSurface !== null) || removalNotices.length > 0 || commandError !== null || rootMismatch || ownTrust !== null || removedHere || changedHere.length > 0 ? (
+  const banner = (offline && (linkReason === 'version' || linkReason === 'instance')) || (upgradeNeeded && upgradeSurface !== null) || removalNotices.length > 0 || commandError !== null || rootMismatch || ownTrust !== null || removedHere || changedHere.length > 0 ? (
     <>
       {rootMismatch ? (
         <Banner tone="danger">{t('devices.rootMismatch', { instance: account.instance?.name ?? t('shell.status.unknown') })}</Banner>
@@ -1854,6 +1854,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           else setUpdateEntry(update.currentEntry);
         } }}>{t('shell.banner.clientTooOld')}</Banner>
       ) : null}
+      {offline && linkReason === 'instance' ? <Banner tone="warn">{t('shell.banner.instanceTooOld')}</Banner> : null}
       {upgradeNeeded && upgradeSurface !== null ? (
         <Banner tone="warn" action={{ label: t(upgradeSurface.action), onAction: upgradeSurface.onAction }}>{t(upgradeSurface.message)}</Banner>
       ) : null}
@@ -2248,7 +2249,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         </>}
         composer={composer}
         banner={<>
-          {linkReason === 'version' || linkReason === 'upgrade' ? null : <LinkBanner status={status} labels={{ offline: t('nav.link.offline'),
+          {linkReason === 'version' || linkReason === 'upgrade' || linkReason === 'instance' ? null : <LinkBanner status={status} labels={{ offline: t('nav.link.offline'),
             connecting: t('nav.link.connecting', { node: account?.instance?.name ?? t('shell.status.unknown') }) }} />}
           {banner}
         </>}

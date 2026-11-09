@@ -124,7 +124,10 @@ export interface StartedHost { url: string; control: string; invite: string; run
   stopBotRuntime(): Promise<void>; startBotRuntimeNow(): Promise<void>; restartBotRuntime(): Promise<void>;
   snapshotServer(name: string): Promise<void>; restoreServer(name: string): Promise<void>;
   snapshotBotRuntime(name: string): Promise<void>; restoreBotRuntime(name: string): Promise<void>;
-  snapshotPair(name: string): Promise<void>; restorePair(name: string): Promise<void>; stop(): Promise<void> }
+  snapshotPair(name: string): Promise<void>; restorePair(name: string): Promise<void>; stop(): Promise<void>;
+  /** The Bot intake's "bot command refused" lines so far (their class and status): a failing first command prints them so
+   *  it names the gate that refused it (final review I2). */
+  botRefusals(): string[] }
 
 /**
  * Starts target/dilla-testhost (already built) with `c`, in a fresh data directory under `DILLA_E2E_HOST_DATA_ROOT`
@@ -161,6 +164,7 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
   // The Bot logs into the host's output (it is the host's child): count its "bot service healthy" lines to tell when a
   // start has come up.
   const botHealthy = healthyCounter(host);
+  const botRefusals = refusalLines(host);
   let clockTicker: NodeJS.Timeout | null = null;
   let clockTickInFlight = false;
   const teardown = async () => {
@@ -260,7 +264,7 @@ export async function startTestHost(c: HostConfig): Promise<StartedHost> {
     return { url, control: `http://127.0.0.1:${c.control}`, invite,
       ...(c.botRuntime === true ? { runtimeCredentialFile: botRuntimeToken(dataDir) } : {}),
       stopBotRuntime, startBotRuntimeNow, restartBotRuntime, snapshotServer, restoreServer, snapshotBotRuntime, restoreBotRuntime,
-      snapshotPair, restorePair, stop: teardown };
+      snapshotPair, restorePair, stop: teardown, botRefusals };
   } catch (e) { await teardown(); throw e; }
 }
 
@@ -284,6 +288,20 @@ export async function prepareBotRuntimeBinaries(): Promise<void> {
 
 /** Counts "bot service healthy" lines in the host's output (the supervised Bot logs there), across chunk boundaries. */
 interface HealthyCounter { count(): number }
+/** Collects the Bot intake's refusal log lines (`bot command refused`, with their class) from the host's output. */
+function refusalLines(host: ChildProcess): () => string[] {
+  const lines: string[] = [];
+  let partial = '';
+  const onData = (chunk: Buffer): void => {
+    const parts = (partial + chunk.toString()).split('\n');
+    partial = parts.pop() ?? '';
+    for (const line of parts) if (line.includes('bot command refused')) lines.push(line);
+  };
+  host.stdout?.on('data', onData);
+  host.stderr?.on('data', onData);
+  return () => [...lines];
+}
+
 function healthyCounter(host: ChildProcess): HealthyCounter {
   const needle = 'bot service healthy';
   let n = 0;

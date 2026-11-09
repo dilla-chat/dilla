@@ -20,6 +20,10 @@ export const BOT_FIRST_ANSWER_MS = 5_000;
 export const BOT_REPLY_HOLD_MS = 120_000;
 /** The Bot's refusal of a command sealed to a key it no longer holds (410 E_BOT_KEY_STALE). */
 export const BOT_KEY_STALE_STATUS = 410;
+/** The Bot's retryable refusals right after it starts (503 E_BOT_OFFLINE, 401 E_BOT_SIGNATURE): while the catalog says
+ *  ready, a run resends the same request id once, this long after the refusal (final review I2). */
+export const BOT_TRANSIENT_REFUSALS: ReadonlyMap<number, string> = new Map([[401, 'E_BOT_SIGNATURE'], [503, 'E_BOT_OFFLINE']]);
+export const BOT_TRANSIENT_RESEND_MS = 1_000;
 /** Answers the worker keeps in the `botAnswers` slice for the page to read. */
 export const BOT_ANSWER_LOG = 32;
 
@@ -61,6 +65,11 @@ export function encodeBotAnswer(answer: BotAnswer): Uint8Array { return encode([
 
 const codeOf = (e: unknown): string => (typeof e === 'object' && e !== null && 'code' in e && typeof e.code === 'string' ? e.code : 'E_BOT_SEND');
 const statusOf = (e: unknown): number => (typeof e === 'object' && e !== null && 'status' in e && typeof e.status === 'number' ? e.status : 0);
+/** A Bot answer that is one of its start-up refusals: the status and, as the body, exactly that status's code. */
+function isTransientRefusal(status: number, body: Uint8Array): boolean {
+  const code = BOT_TRANSIENT_REFUSALS.get(status);
+  return code !== undefined && body.length === code.length && body.every((b, i) => b === code.charCodeAt(i));
+}
 const STALE_SEAL: ReadonlySet<string> = new Set(['E_BOT_KEY_STALE', 'E_BOT_STALE']);
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -180,6 +189,8 @@ export interface BotCommandPort {
   submit(req: BotCommandSubmit): Promise<void>;
   answers(requestId: string, listener: (answer: BotAnswerEvent) => void): () => void;
   refetchCatalog(communityId: string): Promise<void>;
+  /** Whether the community's held catalog status is ready: only then is a retryable refusal resent. */
+  catalogReady?(communityId: string): boolean;
   /** The run is over for the page: the worker may forget the reply secret now. */
   forget(requestId: string): void;
   setTimer(fn: () => void, ms: number): unknown;
@@ -216,6 +227,8 @@ export function createBotCommands(port: BotCommandPort): { sendBotCommand(req: S
     let phase: 'open' | 'late' | 'done' = 'open';
     let answered = false;
     let staleResent = false;
+    let transientResent = false;
+    let resend: unknown = null;
     let lastSeq = -1;
     let first: unknown = null;
     let idle: unknown = null;
@@ -224,6 +237,7 @@ export function createBotCommands(port: BotCommandPort): { sendBotCommand(req: S
     const clear = (): void => {
       if (first !== null) { port.clearTimer(first); first = null; }
       if (idle !== null) { port.clearTimer(idle); idle = null; }
+      if (resend !== null) { port.clearTimer(resend); resend = null; }
     };
     const finish = (forget: boolean): void => {
       if (phase === 'done') return;
@@ -281,6 +295,15 @@ export function createBotCommands(port: BotCommandPort): { sendBotCommand(req: S
         void port.refetchCatalog(req.communityId).catch(() => undefined).then(() => { if (phase === 'open') { armFirst(); send(); } });
         return;
       }
+      if (a.final && a.seq === 0 && !transientResent && isTransientRefusal(a.status, a.body)
+        && port.catalogReady?.(req.communityId) === true) {
+        // The Bot was only just starting (its feed not yet bound, the sender's device list mid-ingest): send the same
+        // request id once more, a moment later; the Bot runs a request it refused this way on the new seal.
+        transientResent = true; answered = false; lastSeq = -1;
+        clear();
+        resend = port.setTimer(() => { resend = null; if (phase === 'open') { armFirst(); send(); } }, BOT_TRANSIENT_RESEND_MS);
+        return;
+      }
       if (a.seq <= lastSeq) return;
       lastSeq = a.seq;
       answered = true;
@@ -326,6 +349,7 @@ export function botCommandPort(client: CoreClient): BotCommandPort {
       });
     },
     refetchCatalog: async (communityId) => { await client.call({ m: 'syncBotCatalog', communityId }); },
+    catalogReady: (communityId) => client.get(`botCatalog:${communityId}`)?.status.state === 'ready',
     forget: (requestId) => { void client.call({ m: 'forgetBotCommand', requestId }).catch(() => undefined); },
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (handle) => { clearTimeout(handle as ReturnType<typeof setTimeout>); },
