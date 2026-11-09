@@ -507,9 +507,16 @@ fn pinned_user(answer: &[u8]) -> (u64, [u8; 16]) {
 
 /// The per-community Bot-user pin lives in the store: first sight pins, the same user again is fine, another user is
 /// `changed` and never replaces the pin, and all of it survives a reopen (an in-memory pin re-pinned on every reload).
+/// Every user here is attested as a Bot first: nothing else is ever pinned (fix round 1, I1).
 #[test]
 fn the_community_bot_user_pin_survives_a_reopen_and_is_never_replaced() {
     let mut alice = ready_core(0x0a, "alice");
+    for user in [&BOT, &OTHER_BOT] {
+        alice
+            .core
+            .account_kind_ingest(user, &attestation_for(user, 1))
+            .expect("attested Bot");
+    }
     assert_eq!(
         alice.core.bot_user_pinned(&COMMUNITY).expect("read"),
         None,
@@ -579,6 +586,43 @@ fn an_attested_human_is_not_pinned_as_the_community_bot() {
         "E_CREDENTIAL"
     );
     assert_eq!(alice.core.bot_user_pinned(&COMMUNITY).expect("read"), None);
+}
+
+/// Fix round 1 (I1): an account with no verified attestation is never pinned as a community's Bot, so a server cannot
+/// lock the pin onto a member before its kind is known. Nothing is written; once attested as a Bot it pins.
+#[test]
+fn an_unattested_account_is_not_pinned_as_the_community_bot() {
+    let mut alice = ready_core(0x0a, "alice");
+    assert_eq!(
+        code(alice.core.bot_user_pin(&COMMUNITY, &BOT)),
+        "E_DEVICE_LIST_STALE"
+    );
+    assert_eq!(alice.core.bot_user_pinned(&COMMUNITY).expect("read"), None);
+    alice
+        .core
+        .account_kind_ingest(&BOT, &attestation_for(&BOT, 1))
+        .expect("attested Bot");
+    assert_eq!(
+        pinned_user(&alice.core.bot_user_pin(&COMMUNITY, &BOT).expect("pinned")),
+        (0, BOT)
+    );
+    // With a pin held, an unattested or human candidate is still refused, and the pin stays.
+    assert_eq!(
+        code(alice.core.bot_user_pin(&COMMUNITY, &OTHER_BOT)),
+        "E_DEVICE_LIST_STALE"
+    );
+    alice
+        .core
+        .account_kind_ingest(&HUMAN, &attestation_for(&HUMAN, 0))
+        .expect("attested human");
+    assert_eq!(
+        code(alice.core.bot_user_pin(&COMMUNITY, &HUMAN)),
+        "E_CREDENTIAL"
+    );
+    assert_eq!(
+        alice.core.bot_user_pinned(&COMMUNITY).expect("read"),
+        Some(BOT)
+    );
 }
 
 /// Re-review M-A: the behind mark is cleared by any ingest that brings the cache to the marked head, here a group-leaf

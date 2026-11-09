@@ -899,8 +899,15 @@ fn decode_served_head(d: &mut Decoder<'_>) -> Result<ServedDeviceList, CborError
         ssk_signature: bytes_or_null(d)?,
         prev_hash: bytes_or_null(d)?,
     };
-    for _ in 4..len {
+    if len >= 5 {
         bytes_or_null(d)?;
+    }
+    // Fix round 1 (m1): the wire-6 keys are exact, as the Go and TS decoders read them, so a
+    // server shape regression fails here.
+    if len == 8 {
+        d.bytes_exact::<32>()?;
+        d.bytes_exact::<32>()?;
+        d.bytes_exact::<64>()?;
     }
     Ok(row)
 }
@@ -4395,6 +4402,31 @@ mod tests {
                 .bytes(&[0x0c; 64]);
         });
         assert_eq!(decode_strict(&keyed, decode_served_head).unwrap(), row);
+        // A short key, or a null one, is refused.
+        let short = cbor(|e| {
+            e.array(8)
+                .uint(2)
+                .bytes(&[0x03; 5])
+                .bytes(&[0x04; 64])
+                .bytes(&[0x05; 32])
+                .bytes(&[0x09; 3])
+                .bytes(&[0x0a; 31])
+                .bytes(&[0x0b; 32])
+                .bytes(&[0x0c; 64]);
+        });
+        assert!(decode_strict(&short, decode_served_head).is_err());
+        let null = cbor(|e| {
+            e.array(8)
+                .uint(2)
+                .bytes(&[0x03; 5])
+                .bytes(&[0x04; 64])
+                .bytes(&[0x05; 32])
+                .bytes(&[0x09; 3])
+                .bytes(&[0x0a; 32])
+                .null()
+                .bytes(&[0x0c; 64]);
+        });
+        assert!(decode_strict(&null, decode_served_head).is_err());
         assert!(decode_strict(&attested, decode_served_list).is_err());
         let history = cbor(|e| {
             e.array(2);

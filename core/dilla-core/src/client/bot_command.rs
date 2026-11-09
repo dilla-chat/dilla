@@ -335,7 +335,8 @@ impl ClientCore {
     /// (`app_meta` `bot_user/v1/<community>`, next to the trust pins). The same user again is
     /// fine; another user is `changed` and never replaces the pin, so a reload cannot re-pin on
     /// first sight. Only sign-out (which erases the store) clears it; there is no approval flow
-    /// yet. An account the instance attested as a human is never pinned (`E_CREDENTIAL`).
+    /// yet. Only an account the instance attested as a Bot is pinned or compared: no verified
+    /// attestation is `E_DEVICE_LIST_STALE`, any other kind `E_CREDENTIAL`, and nothing is written.
     ///
     /// Returns CBOR `[state, pinned_user]`: state 0 pinned now, 1 the pinned user, 2 another user
     /// (the pin stays).
@@ -350,26 +351,25 @@ impl ClientCore {
         let (state, pinned) = self
             .write(|_, u| {
                 u.with_conn(|c| {
-                    if account_kind::attested_kind(c, bot_user_id)?
-                        .is_some_and(|k| k != Kind::Bot.as_u8())
-                    {
-                        return Ok(None);
+                    // Fix round 1 (I1): only an account the instance attested as a Bot, before anything is read or
+                    // written; no attestation is E_DEVICE_LIST_STALE, any other kind E_CREDENTIAL.
+                    match account_kind::attested_kind(c, bot_user_id)? {
+                        Some(k) if k == Kind::Bot.as_u8() => {}
+                        Some(_) => return Ok(Err(E_CREDENTIAL)),
+                        None => return Ok(Err(E_DEVICE_LIST_STALE)),
                     }
                     if let Some(pinned) = pinned_bot_user(c, community_id)? {
-                        return Ok(Some((
-                            if &pinned == bot_user_id { 1u64 } else { 2 },
-                            pinned,
-                        )));
+                        return Ok(Ok((if &pinned == bot_user_id { 1u64 } else { 2 }, pinned)));
                     }
                     c.execute(
                         "INSERT INTO app_meta(k,v) VALUES(?1,?2)",
                         rusqlite::params![bot_user_key(community_id), bot_user_id.to_vec()],
                     )?;
-                    Ok(Some((0, *bot_user_id)))
+                    Ok(Ok((0, *bot_user_id)))
                 })
                 .map_err(ClientError::from)
             })?
-            .ok_or_else(|| ClientError::new(E_CREDENTIAL, "not a Bot account"))?;
+            .map_err(|code| ClientError::new(code, "not an attested Bot account"))?;
         let mut e = Encoder::with_capacity(24);
         e.array(2).uint(state).bytes(&pinned);
         Ok(e.into_vec())

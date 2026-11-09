@@ -58,7 +58,7 @@ func head(t *testing.T, h http.Handler, token string, user id.ID) []any {
 	return out
 }
 
-func TestAWire4DeviceListHeadCarriesTheInstanceSignedAccountKind(t *testing.T) {
+func TestAWire6DeviceListHeadCarriesTheInstanceSignedAccountKindAtFive(t *testing.T) {
 	h, d := accountKindAPI(t)
 	reader, _, token := seedAPISession(t, d)
 	negotiateWire(t, h, token, 6)
