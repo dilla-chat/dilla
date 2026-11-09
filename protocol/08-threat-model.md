@@ -19,7 +19,7 @@ In scope, in the order the design defends against them:
 
 ## Guarantees
 
-For `text`, `call`, `pairing` and `interaction` groups, against adversaries 1–3:
+For `text`, `call` and `pairing` groups, against adversaries 1–3:
 
 - Confidentiality of envelopes, attachments and media frames: only current members' devices hold
   the epoch secrets (RFC 9420 §16).
@@ -143,6 +143,33 @@ Stated plainly in the product's documentation and onboarding:
 - History before a member joined is not shared with them at this version.
 - A user who loses every device and the recovery key loses their history.
 - A `browser`-tier session trusts the code the instance serves.
+- **The community Bot (Bot v2).** A command is sealed to a key only the Bot holds (`10` § Sealed request), so the
+  instance relays it and cannot read it, and the Bot's keys and a command's plain text never enter `dillad`'s
+  memory. The Bot runs on the instance's host, though: an operator with root there can read the Bot's state
+  directory and memory, so against adversary 1 the Bot is trust in the operator, as the host is. What `dillad`
+  sees of the Bot:
+  - the catalog: command names, descriptions, argument shapes, who may use each command, and the Bot's command key;
+  - for each command, that a device of a member sent a sealed request of some size to the Bot at some time, and
+    that the Bot answered (and the size of each reply), never the command, its arguments or its answers;
+  - hints: which user, Bot channel or call had a state change, and when (never what changed);
+  - webhooks: the sender's text in transit. A webhook arrives over TLS at the instance, which forwards it to
+    the Bot and keeps nothing of the body; the instance can read it while it passes;
+  - the members, roles, permissions and device lists the Bot's feed carries, which the instance holds anyway.
+- **The command key's window.** The Bot rotates each community's command key weekly and keeps the previous one for
+  24 hours, so a private key is held for at most 8 days. A leak of the current key lets the leaker open the
+  requests sealed to it that they also captured, back to the last rotation and no further, since older keys are
+  deleted; it opens no reply (every reply is sealed to a one-time key of the request), and a leaker cannot sign as
+  a member. There is no per-request forward secrecy inside the window; this is the trade accepted against MLS's
+  per-epoch updates.
+- **The keeper.** `dilla.service` keeps two capabilities, `CAP_SETUID` and `CAP_SETGID`, only in a small keeper
+  process that `dillad` starts before it serves. The keeper starts and stops the Bot on commands from `dillad`
+  over a pipe and does nothing else; the serving `dillad` drops both capabilities from every set before it
+  opens a listener. The Bot itself holds none and cannot gain one. A compromise of the serving `dillad` can ask
+  the keeper to start or stop the Bot and nothing more; a compromise of the keeper is a compromise of the host.
+- **First sight of a user by the Bot** is trust on first push: the Bot pins the account key the instance pushes
+  with a user's first device list, as a client trusts a first key until a person compares numbers. The instance
+  can therefore hold back or choose that first list; a later push under a different key is held as a pending key
+  change and refuses that user's commands (`03` § The community Bot).
 - Whether an account is a Bot is the instance's statement. From wire 4 clients judge every leaf's
   credential kind against the instance-signed account-kind attestation (`03` § Account kind
   attestation), so a member cannot make its messages appear as a Bot's; the instance, which holds

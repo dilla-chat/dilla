@@ -294,7 +294,7 @@ does.
 
 | op | label | dir | payload |
 |---|---|---|---|
-| 0 | `hello` | S→C | `[wire_versions([uint]), e2ee_versions([uint]), media_versions([uint]), heartbeat_ms(uint), max_frame_bytes(uint), instance_id(bstr 16), generation(uint), backoff_ms(uint), backoff_jitter_ms(uint)]` — the last two are invariant 7's back-off window: a device that is not sent `mls.commit_needed` waits `backoff_ms + random(0..backoff_jitter_ms)` before volunteering a commit. `wire_versions` is `[3,2]`: wire 3 adds the community bot capability in `10`, while wire 2 remains supported outside bot-enabled communities. Both versions require every upload to name its class (§ Upload class), and `GET /v1/instance` advertises the same list (`09` § Instance) |
+| 0 | `hello` | S→C | `[wire_versions([uint]), e2ee_versions([uint]), media_versions([uint]), heartbeat_ms(uint), max_frame_bytes(uint), instance_id(bstr 16), generation(uint), backoff_ms(uint), backoff_jitter_ms(uint)]` — the last two are invariant 7's back-off window: a device that is not sent `mls.commit_needed` waits `backoff_ms + random(0..backoff_jitter_ms)` before volunteering a commit. `wire_versions` is `[6]`: wire 6 (Bot v2) is the only wire, with no compatibility with older ones (`07` § Versions). An `identify` that offers nothing at or above 6 gets `E_UPGRADE_REQUIRED` and close 4006. Every upload names its class (§ Upload class), and `GET /v1/instance` advertises the same list (`09` § Instance) |
 | 1 | `identify` | C→S | `[session_token(tstr), wire_version(uint), e2ee_version(uint), media_version(uint), caps(uint)]` — each version is one the `hello` offered; any other, wire version 1 included, is an `error` naming `E_VERSION` and close 4006 (`version_unsupported`), except a wire version older than every one offered, which is an `error` naming `E_UPGRADE_REQUIRED` and close 4006 whose reason is that code (Bot v2: wire 6, no older clients) |
 | 2 | `resume` | C→S | `[session_token(tstr), resume_token(bstr 32), generation(uint), last_n(uint)]` |
 | 3 | `ready` | S→C | `[device_id(bstr 16), user_id(bstr 16), generation(uint), resume_token(bstr 32), wire_version(uint), e2ee_version(uint), media_version(uint), keypackages_remaining(uint), groups([[group_id(bstr 16), epoch(uint), last_seq(uint), proposals_outstanding(uint)]]), boot_id(bstr 16)]` — `boot_id` is random per dillad process and never persisted: a client that wrote a request and lost the socket does not write a mutation again on a ready with another `boot_id`, `generation` or instance id (the process that took it, and its replay record, is gone), and treats the outcome as unknown. `epoch` and `last_seq` are the device's own acknowledged cursor for the group (`POST …/cursor`; `0, 0` before the first), not the group head |
@@ -392,7 +392,7 @@ dense on every device of its audience; `group_id` is null.
 `bot_reply` (Bot v2) is the one exception to this range's heading: it is replayable and carries
 `n ≠ 0`, except a reply over the reply budget below, which carries `n = 0`; a client accepts
 both for op 62. It is one sealed answer of the community Bot to a command, delivered to the one device
-that sent the command (`10` § Sealed command relay, replies and state hints); `final` is 1 on the
+that sent the command (`10` § Sealed request, § Reply and § State hints); `final` is 1 on the
 last answer. A connection of that device that is suspended in the resume window when the answer
 arrives holds it in its replay ring, and it is replayed on resume like any replayable frame. Its
 ring entry expires two minutes after it was added (the spec's offline reply drop) or at the ring's
@@ -431,8 +431,13 @@ the only order is the order a client writes them, and a client that needs one ap
 another waits for the first answer. A connection has at most 64 requests and 32 MiB of request plus
 response body in flight; over either the answer is `429 E_BUSY` at once. The byte budget may be
 overshot by at most one in-flight frame read (a request frame is read whole before it is admitted)
-and one body answered from the replay record. Request frames do not spend the inbound frame
-allowance; those three bounds and each route's own rate limit are theirs. A request frame may be
+and one body answered from the replay record. An admitted request frame does not spend the
+connection's inbound frame allowance (the bucket that closes a connection with 4008 when a client floods it);
+the 64 in flight, the byte budget and the route's own rate limit bound it instead. That covers the cheap
+answers the dispatcher gives without running a handler: `426` for a connection not on wire 6, `400` for a
+malformed route or body, `404` for a route that is not on the socket table, and the guard's `401`. None of
+them is charged to that allowance, and at most 64 of them can be in flight at once. A frame the instance
+refuses before admitting it (`E_BUSY`, no dispatcher, shutting down) is charged to the allowance. A request frame may be
 larger than `max_frame_bytes`, up to 16 MiB of body (a larger one is `E_FRAME_LIMIT` and closes the
 connection); a response over its route's cap is `E_FRAME_LIMIT`. A dispatch runs at most 60 s.
 Neither frame is replayed: a client re-sends an unanswered request after a reconnect. A non-GET
@@ -442,7 +447,8 @@ a handler that ran and answered `5xx`, or whose answer the byte budget refused, 
 retry, and the routes' own ids (`msg_id`, `request_id`) remain the dedupe. The record is consulted only after the route's session, scope,
 factor, Bot and rate checks pass for the retry itself, an `idem` reused for a different request is
 `409`, a duplicate of a request still running waits for its answer (`503 E_UNAVAILABLE` past the
-60 s), and refusals that ran nothing (`401`, `426`, `429`) and every `5xx` are not recorded.
+60 s), and an answer that asks the client to come back is not recorded, so the retry runs: `401`, `426`,
+`429` (a route's rate refusal, or `E_BUSY`) and every `5xx`.
 
 `app_build` follows ready/resumed and names the entry from the verified, currently served web
 handler. It is at most 512 characters, matches `/assets/[A-Za-z0-9_./-]+.js`, and contains no `..`.
@@ -1195,7 +1201,7 @@ came with them: a passkey login whose credential this instance does not hold (`0
 factors), distinct from `E_UNAUTHENTICATED` so the client can say which. `E_PASSKEY_OTHER_ACCOUNT`
 (403) came with wave B task 3: a passkey login bound to a password or OIDC login (`09` § Second factors)
 whose passkey belongs to another account. None is a delivery-service code. Bot v2's sealed
-command relay (`10` § Sealed command relay, replies and state hints) adds two: `E_BOT_DUPLICATE`
+command relay (`10` § Sealed request, § Reply and § State hints) adds two: `E_BOT_DUPLICATE`
 (409), a command `request_id` another device sent within five minutes, and `E_BOT_OFFLINE` (503),
 a command with no Bot runtime connection to relay to or carry for (§ Bot runtime). Task 21b adds `E_BOT_KEY_STALE` (410), a
 command sealed to a key the Bot no longer opens, refused before it is relayed (such a seal could

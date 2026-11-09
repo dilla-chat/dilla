@@ -38,6 +38,10 @@ change them; they save as you pick them):
   it disconnects from the call, as it does when its connection ends any other way,
   and drops off the channel's list of people in voice. The next play brings it back.
 
+The page also lists **Last 20 music starts**: how long each took from the command to the first sound, for
+example "640 ms". A start that needed a first lookup of the track says "1180 ms, first lookup". A track that is
+queued next, or one you played a moment ago, starts faster.
+
 New installations start at volume 50 and 15 minutes. An instance that already saved its settings keeps them.
 
 Join a voice channel and open the command picker by typing `/` at the start of a
@@ -48,9 +52,9 @@ permissions before sending. The complete music command list is in
 
 Music results are private to the requester. Playback itself is heard in the
 voice channel. One thing is public: when your `/play` starts the music, the bot
-posts "{you} started music in {voice channel}" in the channel where you ran it,
-with a live player card (title, who asked for it, progress, and the queue under
-**Up next**). Everyone in that channel sees it. The card follows that track and
+posts "{you} started music in {voice channel}" in the channel where you ran it, if that channel is a
+[Bot channel](bot-commands.md#bot-channels), with a live player card (title, who asked for it, progress, and the queue under
+**Up next**). In any other channel the music still plays and no card is posted. Everyone in that channel sees it. The card follows that track and
 shows it finished once another plays or the bot leaves voice. The bot posts it
 only for the person whose track just started, at most once a minute, and only in
 a channel where that person may post. Queuing more tracks, pausing, skipping and

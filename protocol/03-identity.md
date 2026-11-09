@@ -289,6 +289,20 @@ The history is at most 1024 versions and 4 MiB. Only version 1 may carry a zero 
 An instance can withhold newer history even on first sight: trust on first use cannot detect this
 freeze, and the UI must not call first sight verified.
 
+### The community Bot
+
+A community's Bot is an account of kind 1 with devices of its own, and it checks members' device lists
+like a client does, with one difference in how it learns them. It does not read them: the instance
+pushes each member's list on the Bot's feed (`10` § Bot connection and feed, kind 1), as the user's account key
+(UMK), its certificate over the self-signing key, and the signed list history from version 1. The Bot
+pins a user's UMK the first time it is pushed (trust on first push, as a client trusts a first key until
+a person compares numbers), verifies every later list against that pin, and holds a push under another UMK as
+a pending key change that refuses the user's commands until it is resolved: by the user's own MLS leaf, a newer
+list under the old key, or an admin re-pin. A sealed command is signed by a listed, unrevoked device key
+(DSK) of the member and checked against the pushed list, never against a fetch made for the command
+(`10` § Sealed request). A mention of a member in text the Bot posts is a plain `<@` token; the Bot's own
+account is attested as kind 1 like any other (§ Account kind attestation).
+
 ## Custody by tier
 
 | secret | native device | browser device |

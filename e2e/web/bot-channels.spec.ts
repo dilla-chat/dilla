@@ -101,6 +101,16 @@ test('mark a channel, enable welcome, a new member is welcomed there', async ({ 
     await expect(settings.getByRole('heading', { name: copy('bot.channels.title'), exact: true })).toBeVisible();
     await expect(settings.getByRole('group', { name: /^#general/ })).toBeVisible();
     await expect(settings.getByText(copy('bot.health.ok'), { exact: true })).toBeVisible({ timeout: 30_000 });
+    // A mark that lands while the Bot is still joining shows "needs adding again" until its Welcome is applied: wait it out,
+    // so the shot shows a settled Bot channel.
+    await expect(async () => {
+      await page.keyboard.press('Escape');
+      await expect(settings).toBeHidden();
+      const again = await openServerSettings(page);
+      await navItem(again, 'admin.nav.bot').click();
+      await expect(again.getByRole('group', { name: /^#general/ })).toBeVisible();
+      await expect(again.getByText(copy('bot.channels.needsReAdd'), { exact: true })).toBeHidden({ timeout: 2_000 });
+    }).toPass({ timeout: 90_000, intervals: [3_000] });
     await settings.getByRole('heading', { name: copy('bot.channels.title'), exact: true }).scrollIntoViewIfNeeded();
     await shoot(page, 'bot-page-channels-health');
 
@@ -144,13 +154,18 @@ test('a webhook POST appears in the channel', async ({ page, instanceName, reque
     host = await startTestHost(HOST);
     await serverWithReadyBot(page, host, instanceName, 'serverSettings.bot.cap.welcome');
     if (process.env.DILLA_SHOTS !== undefined && process.env.DILLA_SHOTS !== '') {
-      // With no Bot channel yet, the picker greys the commands that need one ("Needs a Bot channel"): /poll create.
+      // With no Bot channel yet, the picker greys the commands that need one ("Mark a channel as a Bot channel first"):
+      // /poll create. The Bot reports its health every 15 s, and until its first report the catalog status is offline,
+      // which the picker would show instead. Wait for that report, then reload so the app reads the ready status.
+      await page.waitForTimeout(20_000);
+      await page.reload();
       await openChannel(page, SERVER, 'general');
       await composerBox(page, 'general').fill('/');
       const picker = page.getByRole('region', { name: 'Command composer', exact: true });
       await expect(picker.getByRole('textbox', { name: 'Command', exact: true })).toBeVisible({ timeout: 30_000 });
       await picker.getByRole('textbox', { name: 'Command', exact: true }).fill('/poll');
       await expect(picker.locator('[aria-disabled="true"]').first()).toBeVisible({ timeout: 30_000 });
+      await expect(picker.locator('[aria-disabled="true"]').first()).toContainText(copy('commands.needsBotChannel'), { timeout: 30_000 });
       await shoot(page, 'picker-greyed-commands');
       await picker.getByRole('textbox', { name: 'Command', exact: true }).press('Escape');
     }

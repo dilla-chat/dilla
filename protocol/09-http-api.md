@@ -7,7 +7,7 @@ freezes with "DS API v1" at the end of W5; this document does **not** freeze the
 instance document and limits, accounts, devices, sessions, invites, auth ceremonies, communities and
 content, rate limits and the `users.flags` bit layout, all of which stay editable as dillad grows.
 
-The built-in community bot's wire-3 installation, event, role, moderation and
+The built-in community bot's installation, event, role, moderation, command, webhook and
 provider-setup endpoints are specified in [10-community-bot.md](10-community-bot.md).
 
 ## Encoding
@@ -18,13 +18,29 @@ whose `Content-Type` is not `application/cbor` is `415`; a body that fails to de
 deterministic CBOR is `400 E_INVALID_REQUEST`. Blob bodies are the one exception: raw octets,
 `Content-Type: application/octet-stream`.
 
-### Routes served on the gateway socket only
+## Socket requests
 
 From wire 6 the routes an identified session uses are request frames on its gateway connection
-(op 59 request, op 60 response), not HTTP requests: the frame carries the method, the route with its
-query string, the CBOR body and, for a mutation, an idempotency key; the response carries a status
-and the CBOR body, and no headers. The route's session class, rate bucket, body shapes and refusals
-are the ones the table rows give. These routes have no HTTP form: the instance answers `404` to one.
+(op 59 request, op 60 response), not HTTP requests. This is the one place that says which routes
+those are and which stay on HTTP. The rows in the sections below give each route's session class,
+rate bucket, body shapes and refusals; their `socket` mark means the route has no HTTP form.
+
+**The frame.** `request` is `[id, method, route, body, idem|null]` and `response` is `[id, status,
+body]` (`02` § Gateway frames, ops 59 and 60). The instance runs the request through the same handler
+chain an HTTP request would take, with the connection's own session in place of a header, and answers
+by `id`, in any order. A connection has at most 64 requests in flight. A 65th, or one that would take
+the connection's request and response bytes past 32 MiB, is answered `429 E_BUSY` at once and the client
+queues it. A client whose socket is down queues its requests, keeps each mutation's `idem`, and sends
+them in order after it reconnects. A connection that is not on wire 6 is answered `426 E_UPGRADE_REQUIRED`
+to every request, and an `identify` or `POST /v1/sessions/negotiate` that offers only older wires is
+refused with the same code (`07` § Versions).
+
+**No REST form.** A moved route is not registered for HTTP: the instance answers `404` to one. The
+route table lists only socket routes and the HTTP exceptions below, and every test drives the socket.
+
+**What is on the socket.** The frame carries the method, the route with its query string, the CBOR
+body and, for a mutation, an idempotency key; the response carries a status and the CBOR body, and no
+headers.
 The account area is `PATCH` and `DELETE /v1/accounts/me`, `PATCH /v1/accounts/me/presence`,
 `POST /v1/accounts/me/presence/activity`, `GET` and `POST /v1/devices`, `PATCH` and
 `DELETE /v1/devices/{device_id}`, `POST /v1/auth/password`, `POST /v1/auth/stepup` and its two
@@ -55,18 +71,32 @@ authority, join-role-grants, member episode, events and event ack, and the webho
 `…/bot/webhooks`). The managed Bot's runtime routes under `/v1/bot-runtime/` are socket-only too, apart from its
 enrollment: the runtime credential's `GET /v1/bot-runtime/installations`, `…/{installation}/claim`, `…/enroll` and
 `…/status`, which run before and outside any device session, and the device session's `…/credential`, sent while the
-installation is still enrolling, which the gateway does not admit (`10` § Bot runtime). The retired `POST` and `DELETE
-/v1/communities/{id}/afk` of web3.8 are not registered. What stays on HTTP is the binary and the
-pre-socket surface: blob routes, GIF media bytes (`GET …/gifs/media/{gif_id}`) and the backup chunks (a body
-above a frame), the invite preview `GET /i/{code}`, and the invite landing
-(unauthenticated, metered by client address), incoming webhooks `POST /hooks/{webhook_id}/{secret}`
-(unauthenticated JSON, metered by client address, network and webhook; `10` § Webhooks) and the
-webhook avatars the instance fetched (`GET /v1/communities/{community}/bot/webhook-avatars/{avatar_id}`,
-image bytes like GIF media), the instance document and limits, and the routes a client calls
-before its socket exists: sign-up and sign-in, the session ceremonies and `POST /v1/sessions/negotiate`,
-`DELETE /v1/devices/{device_id}/sessions`, the device lists, `GET` and `POST /v1/keypackages`,
-backups, `GET /v1/accounts/me`, the second-factor setup an owed account uses, and `POST /v1/gateway/ticket`.
-An owed account has no socket. Nothing a handler wrote to a response header (`X-Dilla-Generation`,
+installation is still enrolling, which the gateway does not admit. The retired `POST` and `DELETE
+/v1/communities/{id}/afk` of web3.8 are not registered.
+
+**Stays on HTTP, and why.** Four classes, each for one reason:
+
+- *Before a session exists.* Sign-up and sign-in, the session ceremonies, the passkey, TOTP and
+  recovery legs, device enrollment, and `POST /v1/gateway/ticket` (the one-time ticket a browser's
+  socket upgrade spends). There is no socket yet to carry them.
+- *Large binary bodies.* Blob upload and download (`/v1/channels/{id}/blobs/…`), GIF media bytes
+  (`GET …/gifs/media/{gif_id}`), the webhook avatars the instance fetched (`GET
+  /v1/communities/{community}/bot/webhook-avatars/{avatar_id}`) and the backup chunks
+  (`/v1/backups/…`, bodies up to 1 MiB, above the 197120-byte frame). They stream, or are larger than
+  a frame.
+- *Unauthenticated or public.* `GET /v1/instance` and `/v1/instance/limits`, the invite preview
+  `GET /i/{code}` and the invite landing (metered by client address), the web assets and the desktop
+  downloads, `/healthz`, and incoming webhooks `POST /hooks/{webhook_id}/{secret}` (unauthenticated
+  JSON; the secret in the path is the credential; metered by client address, network and webhook;
+  `10` § Webhooks). They have no session to put on a socket.
+- *What an owed account and a new device use before they have a socket.* `POST
+  /v1/sessions/negotiate`, `DELETE /v1/devices/{device_id}/sessions`, the device lists, `GET` and
+  `POST /v1/keypackages`, `GET /v1/accounts/me`, and the second-factor setup an owed account uses
+  (the `F` allow-list). An owed account has no socket.
+
+The managed Bot's enrollment routes (`GET /v1/bot-runtime/installations`, `…/claim`, `…/enroll`,
+`…/status` and the device session's `…/credential`) also run before its gateway connection exists
+(`10` § Bot connection and feed). Nothing a handler wrote to a response header (`X-Dilla-Generation`,
 `Cache-Control`, `Retry-After`) reaches a socket client; the generation is the gateway's `ready`, and a
 refusal that carried `Retry-After` carries `retry_after_ms` in its body.
 
@@ -78,11 +108,12 @@ identifier is `400 E_INVALID_REQUEST`; a well-formed but unknown one is `404 E_N
 
 ## Sessions
 
-Wire-3 session capability negotiation uses authenticated
+Session capability negotiation uses authenticated
 `POST /v1/sessions/negotiate`, with request `[[wire_versions], [e2ee_versions],
 [media_versions]]` and response `[wire,e2ee,media]`. Each offered list contains
 1..8 distinct positive uints. The highest common versions are bound to this
-bearer session; a missing intersection is `400 E_VERSION` and changes nothing.
+bearer session. The instance supports wire 6 only: an offer whose highest wire is below 6 is `426
+E_UPGRADE_REQUIRED`, and any other missing intersection is `400 E_VERSION`; neither changes anything.
 Gateway identify/resume records its selected versions with the same binding.
 Negotiation admits enrolled humans and live installation-bound bot sessions in
 enrolling, joining or ready installation state. These bot sessions use enrolled
@@ -264,8 +295,8 @@ assertion registration is for browser devices; `03`'s pairing ceremony is the na
 
 These routes are the installation subset of `10-community-bot.md`. That document
 defines the tuples, phase transitions, idempotent receipts, capability approval
-and recovery semantics. Human and bot device sessions require negotiated wire 3;
-runtime credentials use the explicit wire 3 provisioning contract. An ordinary
+and recovery semantics. Human and bot device sessions require negotiated wire 6;
+runtime credentials use the explicit wire 6 provisioning contract. An ordinary
 human bearer cannot call an `R` route, and a runtime credential grants no general
 instance-admin authority. A `B` endpoint still applies enrolled-session middleware
 before checking its managed-bot binding; it is not an exception for humans who owe
@@ -382,7 +413,7 @@ permission checks still apply.
 | `GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority` | B (ready, channel visible to bot) | — | `[community_id,actor_id,channel_id,effective_permission_bits]` for the current human member; 403/404 if installation, membership or visibility checks fail; no-store |
 | `PUT /v1/bot-runtime/communities/{community}/catalog` | B (ready, path community) | the command catalog (`10` § Command catalog, command key and Bot channels) | `[revision]`; a changed catalog is pushed as gateway op 61 to each connected member, filtered for that member |
 | `PUT /v1/bot-runtime/communities/{community}/command-key` | B (ready, path community) | the signed command-key publication | `204`; `403` unless the installation's listed, unrevoked device signed it; `400` for another community or a `not_after` past or more than 8 days ahead; a new `key_id` bumps the catalog revision and pushes op 61 |
-| `POST /v1/bot-runtime/replies` | B (ready, own community) | `[device_id, request_id, seq, sealed, final]` (`10` § Sealed command relay, replies and state hints) | `204`; gateway op 62 to that device only; `404` unless that device sent the request into the Bot's community in the last five minutes; `413 E_TOO_LARGE` past 16 replies or 256 KiB for the request; metered in the Bot device's `bot_reply` bucket (200/s, burst 400) |
+| `POST /v1/bot-runtime/replies` | B (ready, own community) | `[device_id, request_id, seq, sealed, final]` (`10` § Sealed request, § Reply and § State hints) | `204`; gateway op 62 to that device only; `404` unless that device sent the request into the Bot's community in the last five minutes; `413 E_TOO_LARGE` past 16 replies or 256 KiB for the request; metered in the Bot device's `bot_reply` bucket (200/s, burst 400) |
 | `POST /v1/bot-runtime/state-hints` | B (ready, own community) | `[scope_kind, scope_id]` | `[revision]`; gateway op 63 to the scope's audience only; `404` for a scope outside the Bot's community or a channel that is not a Bot channel |
 | `PUT /v1/bot-runtime/health` | B (ready, own community), socket | `[probe_ok(0\|1), probe_at, queue_depth, oldest_wait_ms, music_start_p95_ms, failing_since\|null]` (`10` § Bot health) | `204`; `400` for another shape |
 | `POST /v1/groups/{group}/moderation/removals` | E or B | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |
@@ -1873,6 +1904,19 @@ matched (30 a minute, burst 5). Avatar fetches have `webhook_avatar` (per webhoo
 2), `webhook_avatar_community` (one per 5 s, burst 5) and `webhook_avatar_all` (the instance, 2 per
 second, burst 10). Its body cap is 8192 bytes, read before anything is parsed.
 
+The Bot's socket routes have buckets of their own (`10` § Sealed request, § Reply, § State hints), keyed by
+device, and they are the one place a Bot community's limits differ from a person's:
+
+- `bot_command` meters `POST /v1/communities/{community}/bot/commands` per device and runs at the `read`
+  rate (`limits.rate.read_per_second` and `read_burst`, 10 per second with a burst of 60 by default), so a
+  command does not spend a device's write allowance. A person's client paces itself below it in a bucket of its
+  own (`bot`, 8 per second with a burst of 48, 80 % of the server's).
+- `bot_runtime` meters the Bot's other runtime routes (state hints, health) per Bot device at the same `read`
+  rate.
+- `bot_reply` meters `POST /v1/bot-runtime/replies` per Bot device at 200 per second with a burst of 400,
+  because one Bot answers a whole community (about one answer a second for each of 200 members). The Bot
+  paces its own replies below it, at 180 per second with a burst of 360, apart from its reads and hints.
+
 Body caps: `max_ciphertext_bytes + 4096` on `POST /v1/groups/{id}/message`; `max_ciphertext_bytes` (default 196608) on
 `POST /v1/channels/{id}/messages`, `PATCH /v1/channels/{id}/messages/{seq}` and `POST /v1/reports`
 (`protocol/04`'s own worst-case legal envelope, ten attachments and two previews, is ≈ 129 KiB, so a
@@ -1905,7 +1949,7 @@ The discovery document is an eleven-element array, in this order:
 ]
 ```
 
-`wire_versions` is the list the gateway's `hello` offers, from the same value: `[3,2]` in this
+`wire_versions` is the list the gateway's `hello` offers, from the same value: `[6]` in this
 version (`02` § Gateway frames, op 0; `10` § Session capability and compatibility). `e2ee_versions` and `media_versions` are `[1]`.
 
 `external_sender_key_id` and `external_sender_pub` are the key id and the Ed25519 public key of the
@@ -2042,18 +2086,18 @@ can be built on; it is not itself served.
 Every other bit is reserved, MUST be written as 0 and MUST be ignored on read.
 
 
-### Wire-5 ephemeral transport compatibility
+### Wire-6 transport
 
-Human clients offer wires `[5,4,3,2]` to session negotiation and the gateway. Managed Bots continue
-to negotiate exactly 3. Wire 5 retains the wire-4 HTTP response baseline, including account-kind
-attestation, and adds the ephemeral ops of `02`. `/app-version.json` remains the authoritative
-manifest check following a build notice or startup/foreground/online/reconnect; no endpoint is removed. The current web app has no periodic version polling or HTTP telemetry fallback.
+Human clients and managed Bots offer `[6]` to session negotiation and the gateway, and the instance
+supports only 6 (`07` § Versions). A client that offers nothing at or above 6 is `426
+E_UPGRADE_REQUIRED` on `POST /v1/sessions/negotiate` and on a session's first socket request, and the
+gateway closes its `identify` with 4006. The desktop app turns that into "Update dilla to continue"
+with its update button; a browser tab reloads once to the new client.
 
-The HTTP presence activity API remains available to existing clients; the current web app sends presence input only through WSS and drops it when unavailable. Its gateway device
-allowance is the same one charged by op 57, so switching transports cannot refresh activity more
-than once per five seconds. Activity inbox reads and voice AFK policy updates are separate routes.
-
-Call statistics on op 58 and `POST /v1/calls/{call_id}/stats` use the same typed acceptance service
-and atomic per-device five-second reservation. Rejected/cancelled reports release the reservation;
-accepted reports update only the existing coarse in-memory counters. HTTP stays available on older
-instances or unavailable gateways. No HTTP retry follows an ambiguously delivered WSS sample.
+The ephemeral ops of `02` (typing, presence activity, call statistics, build notices) are socket-only.
+Presence activity and call statistics are also socket requests (`POST /v1/accounts/me/presence/activity`
+and `POST /v1/calls/{call_id}/stats`). They charge the same single five-second reservation per device
+as op 57 and op 58, so no path refreshes activity more than once per five seconds. Rejected or cancelled call reports release the reservation;
+accepted reports update only the existing coarse in-memory counters. `/app-version.json` remains the
+authoritative manifest check following a build notice or a startup, foreground, online or reconnect.
+There is no HTTP telemetry fallback and no retry follows an ambiguously delivered sample.

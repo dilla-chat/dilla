@@ -39,6 +39,14 @@ the four. The Bot's client (`OwnDeviceList`) checks that the fifth element is a 
 string and the keys' lengths, and discards them without verifying, keeping the four signed
 elements. The paragraphs below describe the wires before 6.
 
+**Rolling back from wire 6.** A binary rollback of `dillad` to the last wire-5 release (signal3) needs more than
+the binary. Every client has to be on the signal3 desktop app again, because a wire-6 client is refused by a
+wire-5 instance and the reverse. The interaction groups the Bot used have to exist again; they self-register when
+the old Bot and clients run, and nothing in the rollback creates them. The migrations 00056 to 00058 have downs, and the down of 00058 recreates the dropped v1 tables empty. Stored
+AutoModeration settings and kind-3 groups were deleted by the upgrade and do not come back. A Postgres backup
+taken before the upgrade names tables that 00058 dropped, so the wire-6 binary refuses to restore it (its dump
+reader accepts only the tables it knows); restore such a backup with the binary that took it. The release notes for `v0.1.0-bot2` say so too.
+
 Wire 5 advertises `[5,4,3,2]` (Task S1 part 2: the account-kind attestation). Human clients offer
 `[5,4,3,2]`; managed Bots offer and negotiate wire 3 only (their routes require exactly 3), so a Bot
 session reads the four-element device-list head and its core keeps the transition rule of
@@ -90,6 +98,7 @@ Encrypted envelopes and media stay at version1; no existing MLS group migrates.
 
 | date | version | change |
 |---|---|---|
+| 2026-11-09 | e2ee 1, media 1, wire 6 | Bot v2 release (`v0.1.0-bot2`), documentation only: `10` is rewritten around the sealed request (§ Command catalog, § Command key, § Sealed request, § Reply, § State hints, § Bot channels, § Webhooks, § Bot connection and feed, § Health); `09` gains § Socket requests (the routes on the socket and the four classes that stay on HTTP); `01` states where the Bot may be a member and reserves group kind 3; `02` states what a request frame costs; `03` and `08` state what the Bot trusts and what `dillad` sees. No wire or format change. |
 | 2026-11-09 | e2ee 1, media 1, wire 6 | Bot v2 task 23, within unreleased wire 6: **removals.** `01` group kind 3 (interaction) and its v2 binding are retired; `09` and `10` drop the interaction admission, context, synchronization and heal routes, the AutoModeration grant routes and the Bot's automatic moderation action route; `10` request operations 3, 62, 63 and 84 are rejected (`vectors/bot.json` adds four rejects and drops their cases); helper operation 27 (`group_forget`) is added; the moderation log reads as app operations 160 and 164. dillad migration 00058 drops the v1 tables. |
 | 2026-11-09 | e2ee 1, media 1, wire 6 | Bot v2 task 22, within unreleased wire 6: the Bot offers the admin pages' app operations `101`/`102` (Welcome settings) and `161` (moderation evidence), and the sealed read `94`, the Bot page's status (the Bot channels it needs re-adding to, the last 20 music starts) (`10` § App surfaces on sealed commands). The instance proposes the community's Bot only into Bot channels' groups, a mark proposes it at once, and the new `POST /v1/communities/{community}/channels/{channel}/bot-channel/re-add` proposes it out and in again (`10` § Command catalog, command key and Bot channels). |
 | 2026-11-09 | e2ee 1, media 1, wire 6 | Bot v2 task 21b, within unreleased wire 6: `POST /v1/communities/{community}/bot/commands` checks the sealed form's `key_id` and refuses one that is neither the published command key nor, for 24 hours after a rotation, the key it replaced, with the new `410 E_BOT_KEY_STALE` (`02` § Errors); nothing is relayed and the client refetches the catalog once and resends the same `request_id`. The instance stores the replaced key with its end (`bot_command_keys.prev_key_id`, `prev_until`, migration 00057 on both engines). The catalog's `handler_kind` 1 marks an app-surface operation; the Bot offers the app operations 111–125, 131, 150–152, 170–175 and 180–183 (`10` § App surfaces on sealed commands), and the app's poll, music, reminder, announcement and role-panel surfaces use them instead of interaction groups. |

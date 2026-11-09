@@ -13,8 +13,8 @@ export const REQUIRED = {
   '06-backup-archive.md': ['## Keys', '## Header', '## Archive', '## Restore'],
   '07-versioning.md': ['## Versions', '## Negotiation', '## Change process'],
   '08-threat-model.md': ['## Adversaries', '## Guarantees', '## Residual trust', '## Out of scope'],
-  '09-http-api.md': ['## Scope', '## Encoding', '## Identifiers', '## Sessions', '## Accounts and devices', '## Auth ceremonies', '## Instance', '## Rate limits', '## Flags'],
-  '10-community-bot.md': ['## Scope', '## Encoding', '## Application requests', '## Signed moderation removal', '## Durable structural event', '## Send receipt', '## Helper transport envelope', '## Session capability and compatibility', '## Vectors'],
+  '09-http-api.md': ['## Scope', '## Encoding', '## Socket requests', '## Identifiers', '## Sessions', '## Accounts and devices', '## Auth ceremonies', '## Instance', '## Rate limits', '## Flags'],
+  '10-community-bot.md': ['## Scope', '## Encoding', '## Command catalog', '## Command key', '## Sealed request', '## Reply', '## State hints', '## Bot channels', '## Webhooks', '## Bot connection and feed', '## Health', '## Vectors'],
 };
 
 const PLACEHOLDER = /\b(TBD|TODO|FIXME|XXX)\b|lorem ipsum|fill in later/i;
