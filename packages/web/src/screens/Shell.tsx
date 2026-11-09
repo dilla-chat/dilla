@@ -147,7 +147,7 @@ function focusEmptyAction(pane: 'content' | 'sidebar'): boolean {
  * when focus is not in the row (a pointer that does not focus buttons).
  */
 /** A channel row's or DM row's props: what ChannelList draws, with the badge of requirement 6. */
-type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; badge?: string; readable: boolean; unread: number; mentions: number; muted: boolean; parentId?: string | null;
+type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; badge?: string; badges?: readonly string[]; readable: boolean; unread: number; mentions: number; muted: boolean; parentId?: string | null;
   person?: { sub?: string; presence?: 'online' | 'idle' | 'dnd' | 'offline'; group?: boolean; initials?: string } };
 
 /** What the aside shows instead of the member list (web3.7): a channel's thread, or its empty thread aside. */
@@ -1178,8 +1178,9 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const isAnnouncement = (c: ChannelSummary) => c.kind === 0 && (c.announcement || everyoneDenied(c.id));
   const channelRows: ListRow[] = ordered.map(c => ({
     id: c.id, name: c.name, kind: c.kind === 1 ? 'voice' : isAnnouncement(c) ? 'announcement' : 'text', readable: c.mode === 1, parentId: c.parentId,
-    // Bot v2 Task 22: a Bot channel this member can view says so (the Bot is in its group); otherwise slow mode.
-    ...(afkChannels.has(c.id) ? { afk: true } : {}), ...(botChannelIds.has(c.id) ? { badge: t('bot.channel.badge') } : c.slowmode > 0 ? { badge: t('slow.badge') } : {}),
+    // Bot v2 Task 22: a Bot channel this member can view says so (the Bot is in its group), beside slow mode (Jonas's ruling).
+    ...(afkChannels.has(c.id) ? { afk: true } : {}), ...(botChannelIds.has(c.id) || c.slowmode > 0
+      ? { badges: [...(botChannelIds.has(c.id) ? [t('bot.channel.badge')] : []), ...(c.slowmode > 0 ? [t('slow.badge')] : [])] } : {}),
     ...rowBadge(badges, settings, c.id, communityId ?? undefined),
   }));
   // Task 11 (Jonas, Q2; the prototype's DM rows): a person's row is their avatar with the online dot over their status (or

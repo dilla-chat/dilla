@@ -1286,3 +1286,28 @@ func TestAnInstanceRemoveWithoutTargetLeafDoesNotPanicAfterPersisting(t *testing
 		t.Fatalf("durable proposals = %+v, %v; want one", proposals, err)
 	}
 }
+
+// Bot v2 Task 22 fix round 1 (M1): a Bot channel unmarked while the Bot's Add is outstanding. The Add stays eligible by the
+// channel ACL, so VoidIneligibleAdds keeps it; VoidAddsOf voids exactly the named devices' Adds and nobody else's.
+func TestVoidAddsOfVoidsOnlyTheNamedDevicesAdds(t *testing.T) {
+	h := newDSHarness(t)
+	ctx := context.Background()
+	reg, _ := h.mustRegister(t)
+	bot := h.eligibleDeviceWithKeyPackage(t)
+	carol := h.eligibleDeviceWithKeyPackage(t)
+	botAdd := h.putAddFor(t, reg.GroupID, bot)
+	carolAdd := h.putAddFor(t, reg.GroupID, carol)
+	n, err := h.ds.VoidAddsOf(ctx, reg.GroupID, []id.ID{bot})
+	if err != nil || n != 1 {
+		t.Fatalf("VoidAddsOf = %d, %v; want 1", n, err)
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, botAdd); !ok || v == nil {
+		t.Fatalf("the Bot's Add: void_at %v (found %v), want it voided", v, ok)
+	}
+	if v, ok := h.voidAtOf(t, reg.GroupID, carolAdd); !ok || v != nil {
+		t.Fatalf("another member's Add: void_at %v (found %v), want it outstanding", v, ok)
+	}
+	if n, err := h.ds.VoidAddsOf(ctx, reg.GroupID, []id.ID{bot}); err != nil || n != 0 {
+		t.Fatalf("a second VoidAddsOf = %d, %v; want 0", n, err)
+	}
+}

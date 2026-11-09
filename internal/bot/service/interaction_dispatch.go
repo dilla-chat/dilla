@@ -1139,6 +1139,8 @@ func (d *SealedDispatcher) botStatus(req protocol.SealedRequest, reply func(inta
 	channels := slices.Clone(status.NeedsReAdd)
 	slices.SortFunc(channels, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
 	channels = slices.Compact(channels)
+	// Only the Bot channels the caller can view, as the Bot channel list (Task 22 fix round 1, L3).
+	channels = slices.DeleteFunc(channels, func(c id.ID) bool { return d.Feed.ChannelPermissions(req.UserID, c)&pollPermView == 0 })
 	if len(channels) > botStatusChannelsKept {
 		channels = channels[:botStatusChannelsKept]
 	}

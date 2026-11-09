@@ -50,13 +50,16 @@ func (d Deps) botChannelEvents() BotChannelEvents {
 // cid that is not its AFK channel: the Bot joins the channel's MLS group, which a voice channel, a
 // category, a readable channel and a DM do not offer it. A channel of another community, or none,
 // is 404.
-func botChannelTarget(r *http.Request, repo store.Repository, cid, channelID id.ID) error {
+func botChannelTarget(r *http.Request, repo store.Repository, cid, channelID, actor id.ID) error {
 	ch, err := repo.GetChannel(r.Context(), channelID)
 	if err != nil {
 		return notFound(err)
 	}
 	if ch.CommunityID == nil || *ch.CommunityID != cid || ch.DeletedAt != nil {
 		return server.Errorf(server.CodeNotFound, "channel")
+	}
+	if err := actorViews(r.Context(), repo, actor, ch); err != nil {
+		return err
 	}
 	if ch.Kind != ChannelText || ch.Mode != ModeE2EE {
 		return server.Errorf(server.CodeInvalidRequest, "only a text channel can be a Bot channel")
@@ -100,7 +103,7 @@ func (d Deps) MarkBotChannel(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	if err := botChannelTarget(r, d.Repo, cid, channelID); err != nil {
+	if err := botChannelTarget(r, d.Repo, cid, channelID, s.UserID); err != nil {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
@@ -112,7 +115,7 @@ func (d Deps) MarkBotChannel(w http.ResponseWriter, r *http.Request) {
 		if _, _, err := humanForBot(r, tx, cid, s); err != nil {
 			return err
 		}
-		if err := botChannelTarget(r, tx, cid, channelID); err != nil {
+		if err := botChannelTarget(r, tx, cid, channelID, s.UserID); err != nil {
 			return err
 		}
 		now := d.Clock.Now().Unix()
@@ -150,6 +153,73 @@ func (d Deps) proposeBotInto(ctx context.Context, channelID id.ID) error {
 	return MaterialiseChannelMembers(ctx, d.Repo, d.BotMembership, ch, d.Clock.Now().Unix())
 }
 
+// botAddVoider is the delivery service's VoidAddsOf (*ds.DS has it): it voids the named devices' outstanding Adds.
+type botAddVoider interface {
+	VoidAddsOf(ctx context.Context, groupID id.ID, devices []id.ID) (int, error)
+}
+
+// proposeBotOutOf takes the Bot out of an unmarked channel's text groups (Task 22 fix round 1, M1): its outstanding Adds
+// are voided, so no member's commit carries it into a channel that is no longer a Bot channel, and a leaf it holds there
+// is proposed out. Every group is attempted; the failures are returned together.
+func (d Deps) proposeBotOutOf(ctx context.Context, cid, channelID id.ID) error {
+	if d.BotMembership == nil {
+		return nil
+	}
+	installation, err := d.Repo.GetActiveBotInstallationByCommunity(ctx, cid)
+	if errors.Is(err, store.ErrNotFound) || err == nil && installation.UserID == nil {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	bot := *installation.UserID
+	devices, err := d.Repo.ListDevicesByUser(ctx, bot)
+	if err != nil {
+		return err
+	}
+	ids := make([]id.ID, 0, len(devices))
+	for _, dev := range devices {
+		ids = append(ids, dev.ID)
+	}
+	groups, err := d.Repo.GroupsForTarget(ctx, channelID, GroupText)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, g := range groups {
+		if voider, ok := d.BotMembership.(botAddVoider); ok && len(ids) > 0 {
+			if _, err := voider.VoidAddsOf(ctx, g.GroupID, ids); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		leaves, err := d.Repo.ListMembers(ctx, g.GroupID)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for _, m := range leaves {
+			if m.RemovedEpoch == nil && m.UserID == bot {
+				if err := d.BotMembership.ProposeRemoveOf(ctx, g.GroupID, m.LeafIndex, m.DeviceID, id.New()); err != nil {
+					errs = append(errs, err)
+				}
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// actorViews is 404 unless actor holds view_channel in ch: a mark or unmark never acts in a channel its maker cannot see.
+func actorViews(ctx context.Context, repo store.Repository, actor id.ID, ch store.ChannelRow) error {
+	bits, err := NewResolver(repo).Resolve(ctx, actor, ch)
+	if err != nil {
+		return err
+	}
+	if !bits.Has(PermViewChannel) {
+		return server.Errorf(server.CodeNotFound, "channel")
+	}
+	return nil
+}
+
 // ReAddBot is POST …/channels/{channel}/bot-channel/re-add (Task 22): the Bot page's "add the Bot again" for a Bot
 // channel whose group the Bot cannot join on its own (its Welcome went stale: Task 16's needs re-add). It takes the
 // authority a mark takes. While the Bot still holds a leaf in the channel's group, each such leaf is proposed out and the
@@ -184,6 +254,13 @@ func (d Deps) ReAddBot(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeNotBotChannel, "the channel is not a Bot channel"))
 		return
 	}
+	if ch, err := d.Repo.GetChannel(ctx, channelID); err != nil {
+		server.WriteError(w, notFound(err))
+		return
+	} else if err := actorViews(ctx, d.Repo, s.UserID, ch); err != nil {
+		server.WriteError(w, err)
+		return
+	}
 	installation, err := d.Repo.GetActiveBotInstallationByCommunity(ctx, cid)
 	if err != nil || installation.UserID == nil {
 		server.WriteError(w, server.Errorf(server.CodeNotFound, "bot"))
@@ -215,6 +292,11 @@ func (d Deps) ReAddBot(w http.ResponseWriter, r *http.Request) {
 				d.Log.WarnContext(ctx, "the Bot's leaf could not be proposed out for a re-add", "channel_id", channelID.String(), "error", err.Error())
 			}
 		}
+	}
+	if err := d.Repo.Audit(ctx, store.AuditRow{Actor: &s.UserID, Action: "bot.channel_readd", Target: channelID.String(), Detail: cid.String(),
+		At: d.Clock.Now().Unix()}); err != nil {
+		server.WriteError(w, d.storeError(r, err))
+		return
 	}
 	state := uint64(1)
 	if !removing {
@@ -249,6 +331,13 @@ func (d Deps) UnmarkBotChannel(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	// Task 22 fix round 1: an unmark, like a mark, needs view_channel there (a channel deleted since is no channel).
+	if ch, err := d.Repo.GetChannel(r.Context(), channelID); err == nil && ch.CommunityID != nil && *ch.CommunityID == cid && ch.DeletedAt == nil {
+		if err := actorViews(r.Context(), d.Repo, s.UserID, ch); err != nil {
+			server.WriteError(w, err)
+			return
+		}
+	}
 	removed := false
 	err = d.Repo.Tx(r.Context(), func(tx store.Repository) error {
 		if err := tx.LockBotCommunity(r.Context(), cid); err != nil {
@@ -269,6 +358,9 @@ func (d Deps) UnmarkBotChannel(w http.ResponseWriter, r *http.Request) {
 	if removed {
 		d.botChannelEvents().BotChannelUnmarked(cid, channelID)
 		d.BotChannelsNotify.Changed(afterCommit(r), cid)
+		if err := d.proposeBotOutOf(afterCommit(r), cid, channelID); err != nil {
+			d.Log.WarnContext(r.Context(), "the Bot could not be taken out of an unmarked channel", "channel_id", channelID.String(), "error", err.Error())
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

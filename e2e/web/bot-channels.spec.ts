@@ -5,7 +5,7 @@
 import { openInviteInClient } from './support/invite';
 import { expect, type Locator, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
-import { addServerVia, completeSignUp, copy, makeInviteLink, messageRow, newAccount, openChannel, signUp, test } from './support/app';
+import { addServerVia, completeSignUp, composerBox, copy, makeInviteLink, messageRow, newAccount, openChannel, signUp, test } from './support/app';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
 import { e2ePort } from './support/ports';
@@ -124,7 +124,9 @@ test('mark a channel, enable welcome, a new member is welcomed there', async ({ 
     await openInviteInClient(bea, invite);
     await completeSignUp(bea, newAccount('Bea', host.control), instanceName);
     await openChannel(page, SERVER, 'general');
-    const welcome = messageRow(page, 'general', `Welcome Bea to ${SERVER}!`);
+    // {member} is the new member's username (welcome.Preview), not their display name.
+    const welcome = page.getByRole('log', { name: copy('shell.log.label', { channel: 'general' }), exact: true }).locator('.d-message-row')
+      .filter({ hasText: new RegExp(`Welcome \\S+ to ${SERVER}!`, 'u') });
     await expect(welcome).toBeVisible({ timeout: 60_000 });
     await expect(welcome.getByText('bot', { exact: true })).toBeVisible();
     await shoot(page, 'channel-bot-badge-welcome');
@@ -139,6 +141,17 @@ test('a webhook POST appears in the channel', async ({ page, instanceName, reque
   try {
     host = await startTestHost(HOST);
     await serverWithReadyBot(page, host, instanceName, 'serverSettings.bot.cap.welcome');
+    if (process.env.DILLA_SHOTS !== undefined && process.env.DILLA_SHOTS !== '') {
+      // With no Bot channel yet, the picker greys the commands that need one ("Needs a Bot channel"): /poll create.
+      await openChannel(page, SERVER, 'general');
+      await composerBox(page, 'general').fill('/');
+      const picker = page.getByRole('region', { name: 'Command composer', exact: true });
+      await expect(picker.getByRole('textbox', { name: 'Command', exact: true })).toBeVisible({ timeout: 30_000 });
+      await picker.getByRole('textbox', { name: 'Command', exact: true }).fill('/poll');
+      await expect(picker.locator('[aria-disabled="true"]').first()).toBeVisible({ timeout: 30_000 });
+      await shoot(page, 'picker-greyed-commands');
+      await picker.getByRole('textbox', { name: 'Command', exact: true }).press('Escape');
+    }
     await setBotChannel(page, 'general', true);
 
     const settings = await openServerSettings(page);

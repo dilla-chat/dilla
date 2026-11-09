@@ -121,3 +121,36 @@ func TestSealedBotStatusAnswersNeedsReAddAndMusicStarts(t *testing.T) {
 		t.Fatalf("no status source = %+v", got)
 	}
 }
+
+// channelViewFake is a feed view whose community bits are `community` and whose channel bits are per channel.
+type channelViewFake struct {
+	community uint64
+	channels  map[id.ID]uint64
+}
+
+func (f channelViewFake) IsMember(id.ID) bool                         { return true }
+func (f channelViewFake) Permissions(id.ID) uint64                    { return f.community }
+func (f channelViewFake) ChannelPermissions(_ id.ID, ch id.ID) uint64 { return f.channels[ch] }
+
+// Task 22 fix round 1 (L3): the status read names only the Bot channels the caller can view, as the Bot channel list does.
+func TestSealedBotStatusNamesOnlyChannelsTheCallerViews(t *testing.T) {
+	d, _ := sealedFixture()
+	seen, hidden := interactionID(80), interactionID(81)
+	d.Status = func() BotStatus { return BotStatus{NeedsReAdd: []id.ID{seen, hidden}} }
+	d.Feed = channelViewFake{community: 1<<0 | 1<<16, channels: map[id.ID]uint64{seen: 1, hidden: 0}}
+	got := collect(d, sealedRequest(protocol.OpReadBotStatus))
+	var body []any
+	if len(got) != 1 || got[0].Status != 200 || cborx.Unmarshal(got[0].Body, &body) != nil || len(body) != 2 {
+		t.Fatalf("status = %+v", got)
+	}
+	raw, _ := body[1].([]byte)
+	var data []any
+	if cborx.Unmarshal(raw, &data) != nil || len(data) != 3 {
+		t.Fatalf("status data = %v", body)
+	}
+	channels, _ := data[1].([]any)
+	first, _ := channels[0].([]byte)
+	if len(channels) != 1 || string(first) != string(seen[:]) {
+		t.Fatalf("needs re-add = %v, want only the channel the caller can view", channels)
+	}
+}

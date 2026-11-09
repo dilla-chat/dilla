@@ -61,6 +61,13 @@ describe('the Bot page: health, command key and Bot channels (Task 22)', () => {
     expect(screen.getByText(t('bot.health.offline', { time: formatDayTime(1_800_000_060) }))).toBeVisible();
   });
 
+  // Fix round 1 (L4): with no server time the line says the state alone, never "since " followed by nothing.
+  it.each([['degraded', 'bot.health.failingNow'], ['offline', 'bot.health.offlineNow']] as const)('health with no since shows the plain %s line', (state, key) => {
+    setup({ catalog: { status: { state, since: null } } });
+    expect(screen.getByText(en[key])).toBeVisible();
+    expect(screen.queryByText(/since\s*$/u)).toBeNull();
+  });
+
   it('a Bot channel the Bot needs re-adding to says so, and the button adds it again', async () => {
     const { fake, bot, user } = setup({ needsReAdd: [QUEST] });
     const row = await screen.findByRole('group', { name: /^#quests/ });

@@ -472,6 +472,9 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "joining cannot sync foreign group", pattern: "GET /v1/groups/{id}/info", method: http.MethodGet, pathName: "id", pathValue: foreignGroup.String(), wantNext: false},
 		{name: "joining cannot sync DM group", pattern: "GET /v1/groups/{id}/info", method: http.MethodGet, pathName: "id", pathValue: dmGroup.String(), wantNext: false},
 		{name: "joining cannot upload application message", pattern: "POST /v1/groups/{id}/message", method: http.MethodPost, pathName: "id", pathValue: ownGroup.String(), wantNext: false},
+		// Task 22 fix round 1 (H1): the welcome looks up the new member (Session.MemberProfile), under /members' gate.
+		{name: "joining can read one member of its community", pattern: "GET /v1/communities/{id}/members/{user_id}", method: http.MethodGet, pathName: "id", pathValue: community.ID.String(), wantNext: true},
+		{name: "joining cannot read a member of a foreign community", pattern: "GET /v1/communities/{id}/members/{user_id}", method: http.MethodGet, pathName: "id", pathValue: foreignCommunity.ID.String(), wantNext: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false

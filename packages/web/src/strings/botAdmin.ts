@@ -27,6 +27,9 @@ export const botAdmin = {
   'bot.channels.reAddPending': 'Still adding the Bot. Check again in a minute.',
   'bot.channels.reAddError': 'Could not add the Bot ({code}). Try again.',
   'bot.health.title': 'Health',
+  // Fix round 1 (L4): the state with no server time (new copy).
+  'bot.health.failingNow': 'Commands are failing',
+  'bot.health.offlineNow': 'The Bot is offline',
   'bot.music.noStarts': 'No music started yet.',
   'bot.music.start': '{ms} ms',
   'bot.music.startCold': '{ms} ms, first lookup',

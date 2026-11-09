@@ -10,7 +10,7 @@ import { useRovingFocus } from '../internal/roving.ts';
 import './ChannelList.css';
 
 export interface ChannelListChannel {
-  id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; readable: boolean; unread?: number; mentions?: number; muted?: boolean; badge?: string;
+  id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; readable: boolean; unread?: number; mentions?: number; muted?: boolean; badge?: string; badges?: readonly string[];
   /** The category this channel sits in; absent, null or an unknown id is top level. */
   parentId?: string | null;
   /** This device is in this voice channel (a collapsed category keeps the row, R23). */
@@ -197,7 +197,7 @@ export function ChannelList({ sectionLabel, label, title, channels, categories =
     const unread = c.unread ?? 0;
     const mentions = c.mentions ?? 0;
     const muted = c.muted ?? false;
-    const ariaLabel = rowLabel && (unread > 0 || mentions > 0 || muted) ? rowLabel({ name: c.badge === undefined ? c.name : `${c.name}, ${c.badge}`, unread, mentions, muted }) : undefined;
+    const ariaLabel = rowLabel && (unread > 0 || mentions > 0 || muted) ? rowLabel({ name: [c.name, ...(c.badge === undefined ? [] : [c.badge]), ...(c.badges ?? [])].join(', '), unread, mentions, muted }) : undefined;
     if (c.kind === 'voice' && voice !== undefined) {
       const room = Object.hasOwn(voice.rooms, c.id) ? voice.rooms[c.id] : undefined;
       const joined = room?.joined ?? false;
@@ -214,7 +214,7 @@ export function ChannelList({ sectionLabel, label, title, channels, categories =
     return (
       <li key={c.id} {...rowHandlers(c)}>
         <ChannelRow name={c.name} kind={c.afk === true ? 'afk' : c.kind} readable={c.readable} active={c.id === activeId} selected={activeId === null && c.id === selectedId}
-          unread={unread} mentions={mentions} muted={muted} badge={c.badge} ariaLabel={ariaLabel} newLabel={newLabel} onSelect={() => onSelect(c.id)}
+          unread={unread} mentions={mentions} muted={muted} badge={c.badge} badges={c.badges} ariaLabel={ariaLabel} newLabel={newLabel} onSelect={() => onSelect(c.id)}
           {...(c.person !== undefined ? { person: c.person } : {})} />
       </li>
     );

@@ -314,9 +314,12 @@ func SyncGroupMembers(ctx context.Context, repo store.Repository, dsvc DS, ch st
 		}
 		// Bot v2 Task 22 (Task 16 ruling): the community's Bot is proposed only into its Bot channels' groups. It stays
 		// eligible everywhere it can view (so this sync never proposes it out); marking the channel proposes it in.
-		addable, err := withoutBotOutsideBotChannels(ctx, repo, ch, eligible)
-		if err != nil {
-			return err
+		// A failure to read that rule fails closed for the Bot alone (Task 22 fix round 1, L1): it is left out of the Adds,
+		// and the Removes of members who lost access still run.
+		addable, botErr := withoutBotOutsideBotChannels(ctx, repo, ch, eligible)
+		if botErr != nil {
+			errs = append(errs, botErr)
+			addable = withoutCommunityBot(ctx, repo, ch, eligible)
 		}
 		for _, g := range groups {
 			if err := syncGroup(ctx, repo, dsvc, g, eligible, addable, now, true); err != nil {
@@ -449,6 +452,18 @@ func syncGroup(ctx context.Context, repo store.Repository, dsvc DS, g store.Grou
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// withoutCommunityBot is users less every Bot account among them (account kind 1): the fallback when the Bot-channel rule
+// cannot be read. A user whose kind cannot be read is left out too.
+func withoutCommunityBot(ctx context.Context, repo store.Repository, ch store.ChannelRow, users []id.ID) []id.ID {
+	if ch.CommunityID == nil {
+		return users
+	}
+	return slices.DeleteFunc(slices.Clone(users), func(u id.ID) bool {
+		user, err := repo.GetUser(ctx, u)
+		return err != nil || user.Kind != kindHuman
+	})
 }
 
 // withoutBotOutsideBotChannels is users less the community's Bot user, unless ch is one of the community's Bot channels

@@ -1589,8 +1589,9 @@ revision and is pushed with it (gateway op 61 carries the publication), so a rot
 connected clients at once and reconnecting ones through the revision sync.
 
 The Bot is a member of Bot channels' groups only (Task 22). The instance's group membership sync never proposes the
-community's Bot user into the text group of a channel that is not a Bot channel (it stays eligible there, so it is not
-proposed out either); marking a channel runs that channel's sync at once, which proposes the Bot's devices into its
+community's Bot user into the text group of a channel that is not a Bot channel (it stays eligible there, so the sync does not
+propose it out; when the Bot-channel rule cannot be read the Bot is left out of the Adds and the Removes still run);
+unmarking a channel voids the Bot's outstanding Adds there and proposes out a leaf it holds; marking a channel runs that channel's sync at once, which proposes the Bot's devices into its
 group, and a member of the group (the marking admin's device first) commits the Add, whose Welcome the Bot applies. A Bot
 whose Welcome to a Bot channel went stale says so in its status read (`94`), and the Bot page's re-add (below) proposes
 its old leaf out and then its devices in.
@@ -1606,10 +1607,10 @@ command key and webhooks).
 | `GET /v1/bot/revisions` | E, socket | — | `[[scope_kind, scope_id, revision]…]`, the elements of gateway op 63: kind 0 the caller's own user scope in each of its communities that holds one (scope_id the community), kinds 1 channel and 2 call (scope_id the voice channel) for channels the caller can view, kind 3 each of the caller's communities' catalog revision |
 | `PUT /v1/bot-runtime/communities/{community}/catalog` | B (ready, path community) | the catalog | `[revision]`; a changed catalog takes the next revision and is pushed as gateway op 61 to every connected member, filtered for that member, after the answer; an unchanged one keeps its revision |
 | `PUT /v1/bot-runtime/communities/{community}/command-key` | B (ready, path community) | the publication | `204`; `403` when the signer is not the installation's listed, unrevoked device or the signature fails, `400` for another community or a `not_after` in the past or more than 8 days ahead; a new `key_id` bumps the catalog revision and pushes op 61 |
-| `PUT /v1/communities/{community}/channels/{channel}/bot-channel` | E (manage_community), socket | — | `204`; `400` unless the channel is a live end-to-end text channel that is not the AFK channel; `404` for a channel outside the community |
-| `DELETE /v1/communities/{community}/channels/{channel}/bot-channel` | E (manage_community), socket | — | `204`, also when the channel was not marked |
+| `PUT /v1/communities/{community}/channels/{channel}/bot-channel` | E (manage_community and `view_channel` in the channel), socket | — | `204`; `400` unless the channel is a live end-to-end text channel that is not the AFK channel; `404` for a channel outside the community or one the caller cannot view |
+| `DELETE /v1/communities/{community}/channels/{channel}/bot-channel` | E (manage_community and `view_channel` in the channel), socket | — | `204`, also when the channel was not marked; `404` for a channel the caller cannot view. An unmark voids the Bot's outstanding Adds in the channel's text group and proposes out a leaf it holds there |
 | `GET /v1/communities/{community}/bot/channels` | E (any human member), socket | — | `[[channel_id, marked_at, marked_by]…]` of the Bot channels the caller can view (`view_channel`), oldest mark first; 404 for a non-member |
-| `POST /v1/communities/{community}/channels/{channel}/bot-channel/re-add` | E (manage_community), socket | — | `[state]`: `1` while the Bot still holds a leaf in the channel's text group (each such leaf is proposed out; ask again once that commit lands), `0` once the Bot's devices are proposed in; `409 E_NOT_BOT_CHANNEL` for a channel that is not a Bot channel, `404` with no Bot |
+| `POST /v1/communities/{community}/channels/{channel}/bot-channel/re-add` | E (manage_community and `view_channel`), socket, audited (`bot.channel_readd`) | — | `[state]`: `1` while the Bot still holds a leaf in the channel's text group (each such leaf is proposed out; ask again once that commit lands), `0` once the Bot's devices are proposed in; `409 E_NOT_BOT_CHANNEL` for a channel that is not a Bot channel, `404` with no Bot |
 
 ## Sealed command relay, replies and state hints
 
@@ -1699,7 +1700,8 @@ They use catalog entries of `handler_kind` 1, which the picker never shows:
   device sends it itself when it resumes evidence after a reload, under the request id its protected outbox reserved;
 - the Bot page's status, the sealed read `94` `[]` (`manage_community`, offered whatever the features), answered by
   the Bot from its own state: `[null, [1, needs_re_add, starts]]`, `needs_re_add` the Bot channels whose group the Bot
-  cannot join on its own (16-byte ids, ascending: its Welcome to that group went stale or never came), `starts` the last
+  cannot join on its own and the caller can view (16-byte ids, ascending: its Welcome to that group went stale or never
+  came), `starts` the last
   20 music starts, oldest first, as `[first_frame_ms, cold(0|1)]`.
 
 Automatic moderation (`62`, `63`) has no sealed form: its page still uses interaction groups until it is removed.

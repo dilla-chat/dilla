@@ -1478,7 +1478,8 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 			return false, nil
 		}
 		return groupPath("id")
-	case "GET /v1/communities/{id}", "GET /v1/communities/{id}/members",
+	// GET …/members/{user_id} is the welcome's lookup of a new member (Session.MemberProfile; Task 22 fix round 1).
+	case "GET /v1/communities/{id}", "GET /v1/communities/{id}/members", "GET /v1/communities/{id}/members/{user_id}",
 		"GET /v1/communities/{id}/permissions", "GET /v1/communities/{id}/channels":
 		if !joining || !communityPath("id") {
 			return false, nil

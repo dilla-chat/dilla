@@ -47,6 +47,17 @@ describe('ChannelList', () => {
     expect(screen.getByRole('button', { name: 'quiet slow mode' })).toBeInTheDocument();
   });
 
+  // Bot v2 Task 22 fix round 1 (Jonas's ruling): a Bot channel with slow mode shows both badges, Bot first.
+  it('shows every badge of a row, in order, and names the row by all of them', () => {
+    render(<ChannelList {...props({ rowLabel, channels: [
+      { id: 'b', name: 'bots', kind: 'text', readable: false, badges: ['Bot', 'slow mode'] },
+      { id: 'u', name: 'updates', kind: 'text', readable: false, badges: ['Bot', 'slow mode'], unread: 2 },
+    ] })} />);
+    const row = screen.getByRole('button', { name: 'bots Bot slow mode' });
+    expect([...row.querySelectorAll('.d-chrow__badge')].map(b => b.textContent)).toEqual(['Bot', 'slow mode']);
+    expect(screen.getByRole('button', { name: 'updates, Bot, slow mode, unread 2, mentions 0' })).toBeInTheDocument();
+  });
+
   it('passes an announcement kind and a badge through to the row (R36)', () => {
     render(<ChannelList {...props({ channels: [
       { id: 'n', name: 'news', kind: 'announcement', readable: false, badge: 'slow mode' },

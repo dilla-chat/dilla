@@ -721,8 +721,10 @@ export function escapeRegExp(text: string): string { return text.replace(/[.*+?^
  *  by the row's badge ("general slow mode", slow.badge; "general Bot", bot.channel.badge, Task 22) and by ", " and the counts
  *  (shell.rail.itemLabel, shell.channels.rowLabel, shell.channels.rowLabelMuted). */
 export function namedRow(scope: Locator, name: string): Locator {
-  const badge = `(${escapeRegExp(copy('slow.badge'))}|${escapeRegExp(copy('bot.channel.badge'))})`;
-  return scope.getByRole('button', { name: new RegExp(`^${escapeRegExp(name)}( ${badge})?(, |$)`) });
+  // A Bot channel with slow mode carries both, Bot first (Task 22 fix round 1).
+  const bot = `( ${escapeRegExp(copy('bot.channel.badge'))})?`;
+  const slow = `( ${escapeRegExp(copy('slow.badge'))})?`;
+  return scope.getByRole('button', { name: new RegExp(`^${escapeRegExp(name)}${bot}${slow}(, |$)`) });
 }
 export function railItem(page: Page, community: string): Locator { return namedRow(railNav(page), community); }
 export function channelRow(page: Page, channel: string): Locator { return namedRow(channelsNav(page), channel); }

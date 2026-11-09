@@ -14,8 +14,9 @@ import type { Announce } from './shared.ts';
 /** The health line: ready, failing (degraded) or offline, each with the instance's own time; null for any other state. */
 export function healthText(status: BotCatalogView['status']): string | null {
   if (status.state === 'ready') return t('bot.health.ok');
-  if (status.state === 'degraded') return t('bot.health.failing', { time: status.since === null ? '' : formatDayTime(status.since) });
-  if (status.state === 'offline') return t('bot.health.offline', { time: status.since === null ? '' : formatDayTime(status.since) });
+  // With no server time the state stands alone (fix round 1, L4).
+  if (status.state === 'degraded') return status.since === null ? t('bot.health.failingNow') : t('bot.health.failing', { time: formatDayTime(status.since) });
+  if (status.state === 'offline') return status.since === null ? t('bot.health.offlineNow') : t('bot.health.offline', { time: formatDayTime(status.since) });
   if (status.state === 'unverified') return t('commands.botUnverified');
   if (status.state === 'changed') return t('commands.botChanged');
   return null;
