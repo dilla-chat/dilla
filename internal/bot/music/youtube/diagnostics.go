@@ -66,7 +66,7 @@ func processFailureClass(raw string) string {
 		return "http_429"
 	case contains("not a bot", "bot check", "bot-check", "automated requests"):
 		return "bot_check"
-	case contains("http error 403", "http 403"):
+	case contains("http error 403", "http 403", "403 forbidden"):
 		return "http_403"
 	case contains("name resolution", "name or service not known", "network is unreachable", "connection refused", "connection reset", "timed out", "temporary failure", "unable to download webpage", "unable to download api page"):
 		return "network"

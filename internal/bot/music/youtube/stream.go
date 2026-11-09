@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -251,8 +252,15 @@ func canonicalVideo(source string) (string, error) {
 func (s *StreamStarter) open(resolveCtx, processCtx context.Context, canonical string, startMS int64) (*bufferedStream, error) {
 	var lastErr error
 	refreshed := false
+	var refused *Resolved // a stream googlevideo refused (403): the retry asks the next player client
 	for attempt := 0; attempt < 2; attempt++ {
-		resolved, err := s.resolver.Resolve(resolveCtx, canonical)
+		var resolved Resolved
+		var err error
+		if next, ok := s.resolver.(nextClientResolver); ok && refused != nil {
+			resolved, err = next.ResolveNextClient(resolveCtx, canonical, *refused)
+		} else {
+			resolved, err = s.resolver.Resolve(resolveCtx, canonical)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -279,11 +287,38 @@ func (s *StreamStarter) open(resolveCtx, processCtx context.Context, canonical s
 			if errors.Is(err, ErrSandboxUnavailable) || errors.Is(err, ErrPCMLimit) {
 				return nil, err
 			}
+			if _, ok := s.resolver.(nextClientResolver); ok && streamRefused(err) && nextPlayerClient(resolved.Client) != "" {
+				failed := resolved
+				refused = &failed
+				s.logger().WarnContext(resolveCtx, "youtube stream refused at its start; trying the next player client",
+					"client", resolved.Client, "next_client", nextPlayerClient(resolved.Client))
+			}
 			continue
+		}
+		if refused != nil {
+			s.logger().InfoContext(resolveCtx, "youtube stream started on the next player client", "client", resolved.Client, "refused_client", refused.Client)
 		}
 		return stream, nil
 	}
 	return nil, lastErr
+}
+
+// nextClientResolver is a resolver that can look a video up again with the next player client (WarmResolver).
+type nextClientResolver interface {
+	ResolveNextClient(ctx context.Context, input string, failed Resolved) (Resolved, error)
+}
+
+// streamRefused reports a stream start googlevideo refused with a 403.
+func streamRefused(err error) bool {
+	var process *ProcessError
+	return errors.As(err, &process) && process.class == "http_403"
+}
+
+func (s *StreamStarter) logger() *slog.Logger {
+	if s.cfg.Logger != nil {
+		return s.cfg.Logger
+	}
+	return slog.Default()
 }
 
 func (s *StreamStarter) invalidate(ctx context.Context, canonical string) {

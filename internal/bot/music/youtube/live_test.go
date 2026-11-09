@@ -47,7 +47,7 @@ func TestLiveYouTubeThroughTheSandbox(t *testing.T) {
 		// A Bot's worker starts with the Bot, before any /play: its warm-up lookup has run by then.
 		time.Sleep(4 * time.Second)
 	}
-	for i, video := range []string{"https://www.youtube.com/watch?v=aqz-KE-bpKQ", "https://www.youtube.com/watch?v=jNQXAC9IVRw", "https://www.youtube.com/watch?v=M7lc1UVf-VE"} {
+	for i, video := range []string{"https://www.youtube.com/watch?v=aqz-KE-bpKQ", "https://www.youtube.com/watch?v=jNQXAC9IVRw", "https://www.youtube.com/watch?v=M7lc1UVf-VE", "https://www.youtube.com/watch?v=9bZkp7q19f0"} {
 		began := time.Now()
 		tracks, err := view.Tracks.Resolve(ctx, video)
 		if err != nil || len(tracks) != 1 || tracks[0].Title == "" {

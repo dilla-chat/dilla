@@ -78,6 +78,9 @@ type Resolved struct {
 	Track     music.Track
 	StreamURL string
 	Expires   time.Time
+	// Client is the YouTube player client the lookup asked for (playerClients); a stream googlevideo refuses is
+	// looked up again with the next one.
+	Client string
 	// UserAgent is the User-Agent of the format yt-dlp chose; the stream is fetched with it.
 	UserAgent string
 }
@@ -413,6 +416,27 @@ func (r *WarmResolver) evictLRULocked(match func(ownedKey) bool) bool {
 // lookupArgs is yt-dlp's whole command line for one lookup: one extraction that
 // prints the metadata and the chosen audio stream URL.
 func (r *WarmResolver) lookupArgs(kind, canonical string) []string {
+	return r.lookupArgsFor(kind, canonical, playerClients[0])
+}
+
+// playerClients are the YouTube player clients a lookup may ask for, in order, one per lookup (Bot v2 Task 19 fix
+// round 5, the 403 ruling, option A): none needs a PO token today. visionos comes first: on 2026-11-09 it answered
+// every sampled video with a stream googlevideo served, while tv_samsung's streams for popular music videos were
+// refused (403); tv answers no progressive https audio at all, so it is not listed. One client per lookup also names
+// the client a stream came from, and saves the second client's player request.
+var playerClients = []string{"visionos", "tv_samsung"}
+
+// nextPlayerClient is the client after client, or "" when there is none.
+func nextPlayerClient(client string) string {
+	for i, c := range playerClients {
+		if c == client && i+1 < len(playerClients) {
+			return playerClients[i+1]
+		}
+	}
+	return ""
+}
+
+func (r *WarmResolver) lookupArgsFor(kind, canonical, client string) []string {
 	args := []string{"--ignore-config", "--no-plugin-dirs", "--no-remote-components", "--cache-dir", workerCacheDir}
 	if r.cfg.Node != "" {
 		args = append(args, "--js-runtimes", "node:"+r.cfg.Node)
@@ -422,7 +446,7 @@ func (r *WarmResolver) lookupArgs(kind, canonical string) []string {
 		"--socket-timeout", "10", "--extractor-retries", "1", "--no-playlist",
 		// Progressive https only: a manifest (HLS, DASH) is never handed to ffmpeg, so none is fetched either (about
 		// 0.14 s of every lookup, Bot v2 Task 19 fix round 3).
-		"--extractor-args", "youtube:skip=hls,dash",
+		"--extractor-args", "youtube:skip=hls,dash;player_client="+client,
 		"--format", "bestaudio[protocol=https]",
 		"--print", "%("+printFields+")j",
 		"--")
@@ -466,8 +490,40 @@ func userAgentFrom(headers map[string]string) string {
 }
 
 func (r *WarmResolver) lookup(ctx context.Context, input, kind, canonical string) (Resolved, error) {
+	return r.lookupClient(ctx, input, kind, canonical, playerClients[0])
+}
+
+// ResolveNextClient looks input up again with the player client after failed's, for a stream googlevideo refused
+// (403) at its start, and caches that answer in place of the refused one. It fails when there is no next client.
+func (r *WarmResolver) ResolveNextClient(ctx context.Context, input string, failed Resolved) (Resolved, error) {
+	client := nextPlayerClient(failed.Client)
+	if client == "" || ctx == nil {
+		return Resolved{}, ErrExtractFailed
+	}
+	kind, canonical, err := NormalizeInput(input)
+	if err != nil {
+		return Resolved{}, err
+	}
+	if kind == "playlist" {
+		return Resolved{}, ErrInvalidInput
+	}
+	owner, err := ownerFrom(ctx)
+	if err != nil {
+		return Resolved{}, err
+	}
+	res, err := r.lookupClient(ctx, input, kind, canonical, client)
+	if err != nil {
+		return Resolved{}, err
+	}
+	r.mu.Lock()
+	r.storeLocked(owner, ownedKey{owner, cacheKey(kind, canonical)}, res)
+	r.mu.Unlock()
+	return res, nil
+}
+
+func (r *WarmResolver) lookupClient(ctx context.Context, input, kind, canonical, client string) (Resolved, error) {
 	ctx = context.WithValue(ctx, diagnosticInputKey{}, input)
-	out, err := r.run(ctx, r.lookupArgs(kind, canonical), MaxMetadataBytes, input)
+	out, err := r.run(ctx, r.lookupArgsFor(kind, canonical, client), MaxMetadataBytes, input)
 	if err != nil {
 		return Resolved{}, err
 	}
@@ -515,7 +571,7 @@ func (r *WarmResolver) lookup(ctx context.Context, input, kind, canonical string
 	if !urlExpiry.IsZero() && urlExpiry.Add(-streamURLSlack).Before(expires) {
 		expires = urlExpiry.Add(-streamURLSlack)
 	}
-	return Resolved{Track: track, StreamURL: streamURL, Expires: expires, UserAgent: userAgentFrom(data.Headers)}, nil
+	return Resolved{Track: track, StreamURL: streamURL, Expires: expires, Client: client, UserAgent: userAgentFrom(data.Headers)}, nil
 }
 
 // checkStreamURL accepts only an https URL on the hosts the egress broker

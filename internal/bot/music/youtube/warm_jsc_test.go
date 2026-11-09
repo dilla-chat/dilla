@@ -7,46 +7,74 @@ import (
 	"time"
 )
 
-// The fake yt-dlp below has the parts of yt-dlp's node challenge provider the worker routes (Bot v2 Task 19 fix round
-// 4): EJSBaseJCP._construct_stdin with yt-dlp's exact stdin template, and NodeJCP._run_js_runtime, which here stands
-// for yt-dlp's own per-lookup node and answers "own-node". Its solver reports what it saw: the request type (a player,
-// or the preprocessed player the long-lived solver kept), a per-context counter (1 in a fresh context) and whether
-// node's process object was reachable. A "killsolver" lookup first kills the worker's solver, as a crash would.
+// The fake yt-dlp below has the parts of yt-dlp's node challenge provider the worker routes (Bot v2 Task 19 fix rounds
+// 4 and 5): EJSBaseJCP._construct_stdin with yt-dlp's exact stdin template over the bundled solver (yt_dlp_ejs), and
+// NodeJCP._run_js_runtime, which here stands for yt-dlp's own per-lookup node and answers "own-node". Its solver
+// reports what it saw: the request type (a player, or the preprocessed player the long-lived solver kept), a
+// per-context counter (1 in a fresh context) and whether node's process object was reachable. The search text steers
+// a lookup: "killsolver" kills the worker's solver first (a crash), "stopsolver" stops it and solves nothing (a hung
+// solver, found by the worker's ping), "hangsolver" stops it and then solves (a hung solver, found by the request's
+// deadline), "microloop" sends a player whose solve leaves an endless Promise job, "otherscript" carries a script
+// other than the bundled one.
 const fakeJscCore = `function jsc(data) {
   globalThis.__count = (globalThis.__count || 0) + 1;
+  if (data.player === 'MICROLOOP') Promise.resolve().then(function () { for (;;) {} });
   var result = { type: 'result', responses: [{ type: 'result', data: { seen: data.type, count: globalThis.__count, process: typeof process } }] };
   if (data.type === 'player') result.preprocessed_player = 'PRE:' + data.player;
   return result;
 }`
 
-const fakeJscLibrary = `import json, os, sys
+const fakeJscSolver = `def lib():
+    return "var lib = {};"
+
+
+def core():
+    return ` + "'''" + fakeJscCore + "'''" + `
+`
+
+const fakeJscLibrary = `import json, os, signal, sys
 PRINT = ` + "'''" + fakePrintJSON + "'''" + `
 
+
+def solver_pids():
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open("/proc/%s/cmdline" % pid, "rb") as f:
+                args = f.read().split(b"\0")
+        except OSError:
+            continue
+        if len(args) > 3 and args[1] == b"--permission" and args[2] == b"-e":
+            yield int(pid)
+
+
 def main(argv):
+    from yt_dlp.extractor.youtube.jsc._builtin import ejs as ejs_module
     from yt_dlp.extractor.youtube.jsc._builtin import node as node_module
     split = argv.index("--")
     url = argv[split + 1] if len(argv) > split + 1 else ""
-    if "killsolver" in url:
-        for pid in os.listdir("/proc"):
-            if not pid.isdigit():
-                continue
-            try:
-                with open("/proc/%s/cmdline" % pid, "rb") as f:
-                    cmdline = f.read()
-            except OSError:
-                continue
-            args = cmdline.split(b"\0")
-            if len(args) > 2 and args[1] == b"--permission" and args[-2].endswith(b"dilla-jsc.sock"):
-                os.kill(int(pid), 9)
-    provider = node_module.NodeJCP()
-    stdin = provider._construct_stdin("PLAYER-ONE", False, [node_module.Request("n", ["abc"])])
-    seen = json.loads(provider._run_js_runtime(stdin))["responses"][0]["data"]
+    for marker, sig in (("killsolver", signal.SIGKILL), ("stopsolver", signal.SIGSTOP), ("hangsolver", signal.SIGSTOP)):
+        if marker in url:
+            for pid in solver_pids():
+                os.kill(pid, sig)
     info = json.loads(PRINT)
+    if "stopsolver" in url:
+        info["title"] = "stopped"
+        sys.stdout.write(json.dumps(info) + "\n")
+        return
+    provider = node_module.NodeJCP()
+    if "otherscript" in url:
+        provider._core_script = ejs_module._Script(provider._core_script.code + "\n// another script")
+    player = "MICROLOOP" if "microloop" in url else "PLAYER-ONE"
+    stdin = provider._construct_stdin(player, False, [node_module.Request("n", ["abc"])])
+    seen = json.loads(provider._run_js_runtime(stdin))["responses"][0]["data"]
     info["title"] = "seen=%s count=%s process=%s" % (seen["seen"], seen["count"], seen["process"])
     sys.stdout.write(json.dumps(info) + "\n")
 `
 
 const fakeJscEJS = `import json
+from yt_dlp_ejs.yt import solver
 
 
 class _Script:
@@ -55,8 +83,8 @@ class _Script:
 
 
 class EJSBaseJCP:
-    _lib_script = _Script("var lib = {};")
-    _core_script = _Script(` + "'''" + fakeJscCore + "'''" + `)
+    _lib_script = _Script(solver.lib())
+    _core_script = _Script(solver.core())
 
     def _construct_stdin(self, player, preprocessed, requests, /):
         json_requests = [{
@@ -116,6 +144,9 @@ func writeJscVenv(t *testing.T, dir string) string {
 		"extractor/youtube/jsc/_builtin/__init__.py": "",
 		"extractor/youtube/jsc/_builtin/ejs.py":      fakeJscEJS,
 		"extractor/youtube/jsc/_builtin/node.py":     fakeJscNode,
+		"../yt_dlp_ejs/__init__.py":                  "",
+		"../yt_dlp_ejs/yt/__init__.py":               "",
+		"../yt_dlp_ejs/yt/solver.py":                 fakeJscSolver,
 	})
 }
 
@@ -193,5 +224,67 @@ func TestANewWorkerWarmsItselfWithAPublicLookup(t *testing.T) {
 	}
 	if warmUps != 1 {
 		t.Fatalf("warm-up lookups = %d in %v", warmUps, w.args)
+	}
+}
+
+// Fix round 5 (M4-1): a solver that stops answering is found by the worker's ping before the next lookup and
+// replaced at once; the lookup is served by the new one.
+func TestAHungSolverIsFoundByThePingAndReplaced(t *testing.T) {
+	r := jscResolver(t)
+	if title, err := resolveTitle(t, r, "first song"); err != nil || title != "seen=player count=1 process=undefined" {
+		t.Fatalf("first lookup = %q, %v", title, err)
+	}
+	if title, err := resolveTitle(t, r, "stopsolver song"); err != nil || title != "stopped" {
+		t.Fatalf("the lookup that stopped the solver = %q, %v", title, err)
+	}
+	began := time.Now()
+	title, err := resolveTitle(t, r, "after song")
+	if err != nil || title != "seen=player count=1 process=undefined" {
+		t.Fatalf("the lookup after = %q, %v, want a new solver", title, err)
+	}
+	if waited := time.Since(began); waited > 4*time.Second {
+		t.Fatalf("the lookup after a hung solver took %v", waited)
+	}
+}
+
+// Fix round 5 (M4-1): a solver that hangs during a request is killed at the request's deadline; that lookup runs
+// yt-dlp's own node, and the next gets a new solver.
+func TestASolverThatHangsMidRequestIsKilledAtItsDeadline(t *testing.T) {
+	r := jscResolver(t)
+	if title, err := resolveTitle(t, r, "first song"); err != nil || !strings.HasPrefix(title, "seen=player ") {
+		t.Fatalf("first lookup = %q, %v", title, err)
+	}
+	if title, err := resolveTitle(t, r, "hangsolver song"); err != nil || !strings.HasPrefix(title, "seen=own-node ") {
+		t.Fatalf("the lookup whose solver hung = %q, %v, want yt-dlp's own node", title, err)
+	}
+	if title, err := resolveTitle(t, r, "after song"); err != nil || title != "seen=player count=1 process=undefined" {
+		t.Fatalf("the lookup after = %q, %v, want a new solver", title, err)
+	}
+}
+
+// Fix round 5 (M4-1): an endless Promise job runs inside the evaluation and its timeout (microtaskMode
+// 'afterEvaluate'): that request fails alone, and the same solver, its cache intact, answers the next lookup.
+func TestAnEndlessPromiseJobFailsItsOwnRequestOnly(t *testing.T) {
+	r := jscResolver(t)
+	if title, err := resolveTitle(t, r, "first song"); err != nil || title != "seen=player count=1 process=undefined" {
+		t.Fatalf("first lookup = %q, %v", title, err)
+	}
+	if title, err := resolveTitle(t, r, "microloop song"); err != nil || !strings.HasPrefix(title, "seen=own-node ") {
+		t.Fatalf("the endless Promise job = %q, %v, want its request refused", title, err)
+	}
+	if title, err := resolveTitle(t, r, "after song"); err != nil || title != "seen=preprocessed count=1 process=undefined" {
+		t.Fatalf("the lookup after = %q, %v, want the same solver (its preprocessed player kept)", title, err)
+	}
+}
+
+// Fix round 5 (M4-2): the solver runs only the bundled script; a request for another is refused, and that lookup
+// runs yt-dlp's own node.
+func TestASolverRequestForAnotherScriptIsRefused(t *testing.T) {
+	r := jscResolver(t)
+	if title, err := resolveTitle(t, r, "otherscript song"); err != nil || !strings.HasPrefix(title, "seen=own-node ") {
+		t.Fatalf("another script = %q, %v, want yt-dlp's own node", title, err)
+	}
+	if title, err := resolveTitle(t, r, "first song"); err != nil || title != "seen=player count=1 process=undefined" {
+		t.Fatalf("the bundled script after = %q, %v", title, err)
 	}
 }

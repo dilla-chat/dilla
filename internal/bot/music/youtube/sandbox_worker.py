@@ -3,6 +3,7 @@
 import json
 import os
 import resource
+import select
 import selectors
 import signal
 import socket
@@ -103,70 +104,87 @@ def load_ytdlp(ytdlp):
         return None
 
 
-# The JS challenge solver kept alive across lookups (Bot v2 Task 19 fix round 4, Jonas's decision of 2026-11-09).
+# The JS challenge solver kept alive across lookups (Bot v2 Task 19 fix rounds 4 and 5, Jonas's decision of 2026-11-09).
 #
 # yt-dlp solves YouTube's JS challenges by starting `node --permission -` per lookup with the solver's lib and core
 # scripts and the player JS on stdin (about 0.46 s, most of it parsing the player). The worker instead runs one node,
 # the same binary the lookup names with --js-runtimes, inside the same sandbox (same mounts, same egress: none), under
-# the same --permission flag, listening on a socket in the worker's private /tmp. Each request runs in a new vm
-# context: no global, object or closure of one lookup is seen by another, whichever community asked. What is kept
-# between requests is immutable and the same for every caller: the compiled solver script, and each player's
-# preprocessed form keyed by the player's own sha256 (a pure function of YouTube's public player JS). The worker
-# starts the node on the first lookup that names it and starts it again when it has exited; a lookup that cannot use
-# it (no node, a failed request, a yt-dlp whose stdin template changed) runs yt-dlp's own per-lookup node instead.
-JSC_SOCKET = "/tmp/dilla-jsc.sock"
+# the same --permission flag.
+#
+# - No path: the worker talks to the node over the node's own stdin and stdout, and each lookup child talks to the
+#   worker over one end of a socketpair it inherits; the worker relays. Nothing in the sandbox can reach the solver
+#   except through the worker.
+# - One script: the node runs only the solver bundled with yt-dlp (yt_dlp_ejs), sent once at start; the worker pins
+#   its sha256 then, and a request for any other script is refused (the lookup then runs yt-dlp's own node).
+# - A new, empty vm context per request (nothing of node's is passed in; the solver needs only the language's own
+#   builtins), with its microtasks run inside the evaluation and its timeout. No global, object or closure of one
+#   lookup is seen by another, whichever community asked. Kept between requests: the compiled script, and each
+#   player's preprocessed form keyed by the script's sha256 and the player's (a pure function of both).
+# - A solver that does not answer is replaced: the worker pings it before each lookup (when no request is in flight)
+#   and kills it on a missed ping or a request past its deadline; the next lookup starts a new one.
+#
+# The vm context is not a security boundary (a context escape was shown in review); the bwrap sandbox and its
+# broker-only egress are, unchanged.
 JSC_MAX_FRAME = 64 * 1024 * 1024
-JSC_TIMEOUT = 20.0
+JSC_TIMEOUT = 5.0
+JSC_PING_TIMEOUT = 1.0
+JSC_START_TIMEOUT = 5.0
 JSC_RESTART_BACKOFF = 5.0
 JSC_SERVER = r"""
 'use strict';
-const net = require('net');
 const vm = require('vm');
 const crypto = require('crypto');
-const SOCKET = process.argv[1];
-const MAX_REQUEST = 64 * 1024 * 1024;
-const TIMEOUT_MS = 15000;
-const scripts = new Map();
-const players = new Map();
+const MAX_FRAME = 64 * 1024 * 1024;
+const TIMEOUT_MS = 3000;
 const hash = (text) => crypto.createHash('sha256').update(text).digest('hex');
-function remember(map, key, value, limit) {
-  if (map.size >= limit) map.delete(map.keys().next().value);
-  map.set(key, value);
+let script = null;
+let scriptKey = null;
+const players = new Map();
+function remember(key, value) {
+  if (players.size >= 4) players.delete(players.keys().next().value);
+  players.set(key, value);
 }
-function solve(request) {
-  if (!request || typeof request.lib !== 'string' || typeof request.core !== 'string' || !request.data || typeof request.data !== 'object') {
-    throw new Error('malformed request');
-  }
-  const source = request.lib + '\nObject.assign(globalThis, lib);\n' + request.core + '\n';
-  const scriptKey = hash(source);
-  let script = scripts.get(scriptKey);
-  if (!script) {
-    script = new vm.Script(source, { filename: 'jsc-solver.js' });
-    remember(scripts, scriptKey, script, 2);
-  }
-  let data = request.data;
+function solve(data) {
+  if (!data || typeof data !== 'object') throw new Error('malformed request');
   let playerKey = null;
   if (data.type === 'player' && typeof data.player === 'string') {
-    playerKey = hash(data.player);
+    playerKey = scriptKey + ':' + hash(data.player);
     const preprocessed = players.get(playerKey);
     if (preprocessed !== undefined) {
       data = { type: 'preprocessed', preprocessed_player: preprocessed, requests: data.requests };
       playerKey = null;
     }
   }
-  const quiet = () => {};
-  const context = vm.createContext({ URL, URLSearchParams, TextEncoder, TextDecoder, atob, btoa,
-    console: { log: quiet, warn: quiet, error: quiet, info: quiet, debug: quiet } });
+  const context = vm.createContext({}, { microtaskMode: 'afterEvaluate' });
   script.runInContext(context, { timeout: TIMEOUT_MS });
   context.__dillaRequest = JSON.stringify(data);
   const text = vm.runInContext('JSON.stringify(jsc(JSON.parse(__dillaRequest)))', context, { timeout: TIMEOUT_MS });
   if (playerKey !== null) {
     const result = JSON.parse(text);
     if (result && result.type === 'result' && typeof result.preprocessed_player === 'string') {
-      remember(players, playerKey, result.preprocessed_player, 4);
+      remember(playerKey, result.preprocessed_player);
     }
   }
   return text + '\n';
+}
+function handle(message) {
+  if (!message || typeof message !== 'object') throw new Error('malformed message');
+  switch (message.op) {
+    case 'ping':
+      return {};
+    case 'init': {
+      if (script !== null) throw new Error('already started');
+      if (typeof message.lib !== 'string' || typeof message.core !== 'string') throw new Error('malformed script');
+      const source = message.lib + '\nObject.assign(globalThis, lib);\n' + message.core + '\n';
+      script = new vm.Script(source, { filename: 'jsc-solver.js' });
+      scriptKey = hash(source);
+      return { script: scriptKey };
+    }
+    case 'solve':
+      if (script === null || message.script !== scriptKey) throw new Error('script refused');
+      return { out: solve(message.data) };
+  }
+  throw new Error('unknown operation');
 }
 function frame(value) {
   const payload = Buffer.from(JSON.stringify(value), 'utf8');
@@ -174,35 +192,50 @@ function frame(value) {
   head.writeUInt32BE(payload.length, 0);
   return Buffer.concat([head, payload]);
 }
-const server = net.createServer((conn) => {
-  const chunks = [];
-  let size = 0;
-  let expected = -1;
-  conn.setTimeout(30000, () => conn.destroy());
-  conn.on('error', () => {});
-  conn.on('data', (chunk) => {
-    chunks.push(chunk);
-    size += chunk.length;
-    if (expected < 0 && size >= 4) {
-      expected = Buffer.concat(chunks, 4).readUInt32BE(0);
-      if (expected > MAX_REQUEST) { conn.destroy(); return; }
+let chunks = [];
+let size = 0;
+process.stdin.on('data', (chunk) => {
+  chunks.push(chunk);
+  size += chunk.length;
+  for (;;) {
+    if (size < 4) return;
+    const all = chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, size);
+    const expected = all.readUInt32BE(0);
+    if (expected > MAX_FRAME) process.exit(2);
+    if (size < 4 + expected) { chunks = [all]; return; }
+    const body = all.subarray(4, 4 + expected);
+    const rest = all.subarray(4 + expected);
+    chunks = rest.length ? [rest] : [];
+    size = rest.length;
+    let reply;
+    try {
+      reply = Object.assign({ ok: true }, handle(JSON.parse(body.toString('utf8'))));
+    } catch (error) {
+      reply = { ok: false, error: String((error && error.message) || error).slice(0, 2000) };
     }
-    if (expected >= 0 && size >= 4 + expected) {
-      conn.removeAllListeners('data');
-      let reply;
-      try {
-        const body = Buffer.concat(chunks, 4 + expected).subarray(4);
-        reply = { ok: true, out: solve(JSON.parse(body.toString('utf8'))) };
-      } catch (error) {
-        reply = { ok: false, error: String((error && error.message) || error).slice(0, 2000) };
-      }
-      conn.end(frame(reply));
-    }
-  });
+    process.stdout.write(frame(reply));
+  }
 });
-server.on('error', () => process.exit(1));
-server.listen(SOCKET, () => process.stdout.write('ready\n'));
+process.stdin.on('end', () => process.exit(0));
 """
+
+
+def jsc_script_key(lib, core):
+    """The sha256 the solver gives its script (the same source text it compiles)."""
+    import hashlib
+    return hashlib.sha256((lib + "\nObject.assign(globalThis, lib);\n" + core + "\n").encode("utf-8")).hexdigest()
+
+
+def bundled_solver():
+    """The solver yt-dlp ships (yt_dlp_ejs, the source yt-dlp itself prefers), or None."""
+    try:
+        from yt_dlp_ejs.yt import solver
+        lib, core = solver.lib(), solver.core()
+    except Exception:
+        return None
+    if not isinstance(lib, str) or not isinstance(core, str):
+        return None
+    return lib, core
 
 
 def runtime_node(args):
@@ -214,108 +247,179 @@ def runtime_node(args):
     return None
 
 
-class JscServer:
-    """The worker's one long-lived challenge solver: started on demand, started again when it has exited."""
+def write_frame(write, value):
+    payload = json.dumps(value, ensure_ascii=False).encode("utf-8")
+    if len(payload) > JSC_MAX_FRAME:
+        raise ValueError("frame too large")
+    write(struct.pack(">I", len(payload)) + payload)
 
-    def __init__(self, env, children):
-        self.lock = threading.Lock()
+
+def read_exact(read, n):
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = read(min(1 << 20, n - len(buf)))
+        if not chunk:
+            raise OSError("closed")
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def read_frame(read):
+    (length,) = struct.unpack(">I", read_exact(read, 4))
+    if length > JSC_MAX_FRAME:
+        raise ValueError("frame too large")
+    return json.loads(read_exact(read, length).decode("utf-8"))
+
+
+class JscServer:
+    """The worker's one long-lived challenge solver and the relay its lookup children reach it through."""
+
+    def __init__(self, env, children, lib, core):
+        self.lock = threading.Lock()  # the node's lifecycle
+        self.io = threading.Lock()  # one exchange with the node at a time
         self.env = env
         self.children = children
+        self.lib, self.core = lib, core
+        self.script_key = jsc_script_key(lib, core)
         self.proc = None
         self.node = None
         self.failed_at = None
 
-    def _stop_locked(self):
-        if self.proc is None:
-            return
+    def _kill(self, proc):
         try:
-            self.proc.kill()
-            self.proc.wait(timeout=2)
+            proc.kill()
+            proc.wait(timeout=2)
         except (OSError, subprocess.TimeoutExpired):
             pass
         try:
-            self.children.remove(self.proc)
+            self.children.remove(proc)
         except ValueError:
             pass
-        self.proc = None
+
+    def _exchange(self, proc, message, timeout):
+        """One request and its reply, under self.io; any failure (no answer by timeout included) raises."""
+        write_frame(proc.stdin.write, message)
+        proc.stdin.flush()
+        deadline = time.monotonic() + timeout
+        fd = proc.stdout.fileno()
+
+        def read(n):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("solver did not answer")
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                raise TimeoutError("solver did not answer")
+            return os.read(fd, n)
+
+        reply = read_frame(read)
+        if not isinstance(reply, dict) or reply.get("ok") is not True:
+            raise ValueError("solver error")
+        return reply
+
+    def call(self, message, timeout):
+        """A request to the node; a node that fails to answer is killed (the next lookup starts a new one)."""
+        with self.io:
+            proc = self.proc
+            if proc is None or proc.poll() is not None:
+                raise OSError("no solver")
+            try:
+                return self._exchange(proc, message, timeout)
+            except TimeoutError:
+                # Not under self.lock (ensure may hold it while it waits for self.io): the next ensure sees the
+                # node gone and starts a new one.
+                self._kill(proc)
+                raise
 
     def ensure(self, node):
+        """Whether a live, answering solver for node is there, starting one when needed."""
         if node is None:
-            return
+            return False
         with self.lock:
-            if self.proc is not None and self.proc.poll() is None and self.node == node:
-                return
-            self._stop_locked()
+            proc = self.proc
+            if proc is not None and proc.poll() is None and self.node == node:
+                # A ping when nothing is in flight (a request in flight has its own deadline).
+                if not self.io.acquire(blocking=False):
+                    return True
+                try:
+                    self._exchange(proc, {"op": "ping"}, JSC_PING_TIMEOUT)
+                    return True
+                except Exception:
+                    pass
+                finally:
+                    self.io.release()
+            if proc is not None:
+                self.proc = None
+                self._kill(proc)
             if self.failed_at is not None and time.monotonic() - self.failed_at < JSC_RESTART_BACKOFF:
-                return
+                return False
             try:
-                os.unlink(JSC_SOCKET)
-            except OSError:
-                pass
-            try:
-                proc = subprocess.Popen([node, "--permission", "-e", JSC_SERVER, JSC_SOCKET], stdin=subprocess.DEVNULL,
+                proc = subprocess.Popen([node, "--permission", "-e", JSC_SERVER], stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=self.env, close_fds=True,
                                         start_new_session=True)
             except OSError:
                 self.failed_at = time.monotonic()
-                return
-            ready = False
-            sel = selectors.DefaultSelector()
-            try:
-                sel.register(proc.stdout, selectors.EVENT_READ)
-                if sel.select(5):
-                    ready = os.read(proc.stdout.fileno(), 64) == b"ready\n"
-            except OSError:
-                ready = False
-            finally:
-                sel.close()
-                proc.stdout.close()
-            if not ready:
-                try:
-                    proc.kill()
-                    proc.wait(timeout=2)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
-                self.failed_at = time.monotonic()
-                return
-            self.proc, self.node, self.failed_at = proc, node, None
+                return False
             self.children.append(proc)
+            try:
+                with self.io:
+                    started = self._exchange(proc, {"op": "init", "lib": self.lib, "core": self.core}, JSC_START_TIMEOUT)
+                if started.get("script") != self.script_key:
+                    raise ValueError("unexpected script")
+            except Exception:
+                self._kill(proc)
+                self.failed_at = time.monotonic()
+                return False
+            self.proc, self.node, self.failed_at = proc, node, None
+            return True
+
+    def relay(self, sock):
+        """Serves one lookup child's solver requests until it closes its end."""
+        try:
+            while True:
+                try:
+                    request = read_frame(sock.recv)
+                except (OSError, ValueError):
+                    return
+                reply = {"ok": False, "error": "script refused"}
+                if isinstance(request, dict) and request.get("script") == self.script_key:
+                    try:
+                        answer = self.call({"op": "solve", "script": self.script_key, "data": request.get("data")}, JSC_TIMEOUT)
+                        if isinstance(answer.get("out"), str):
+                            reply = {"ok": True, "out": answer["out"]}
+                        else:
+                            reply = {"ok": False, "error": "solver error"}
+                    except Exception:
+                        reply = {"ok": False, "error": "solver unavailable"}
+                try:
+                    write_frame(sock.sendall, reply)
+                except (OSError, ValueError):
+                    return
+        finally:
+            sock.close()
+
+
+# The lookup child's end of its socketpair to the worker's relay (set in lookup_child), or None.
+JSC_CHANNEL = None
 
 
 def jsc_request(request):
-    """One request to the worker's solver; any failure raises (the caller runs node itself)."""
-    payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
-    if len(payload) > JSC_MAX_FRAME:
-        raise ValueError("request too large")
-    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    conn.settimeout(JSC_TIMEOUT)
-    try:
-        conn.connect(JSC_SOCKET)
-        conn.sendall(struct.pack(">I", len(payload)) + payload)
-
-        def exact(n):
-            buf = bytearray()
-            while len(buf) < n:
-                chunk = conn.recv(min(1 << 20, n - len(buf)))
-                if not chunk:
-                    raise OSError("solver closed")
-                buf.extend(chunk)
-            return bytes(buf)
-
-        (length,) = struct.unpack(">I", exact(4))
-        if length > JSC_MAX_FRAME:
-            raise ValueError("reply too large")
-        reply = json.loads(exact(length).decode("utf-8"))
-    finally:
-        conn.close()
+    """One solver request from a lookup child; any failure raises (the caller runs node itself)."""
+    channel = JSC_CHANNEL
+    if channel is None:
+        raise OSError("no solver channel")
+    channel.settimeout(JSC_TIMEOUT + 1.0)
+    write_frame(channel.sendall, request)
+    reply = read_frame(channel.recv)
     if not isinstance(reply, dict) or reply.get("ok") is not True or not isinstance(reply.get("out"), str):
         raise ValueError("solver error")
     return reply["out"]
 
 
 def install_jsc_client():
-    """Routes yt-dlp's node challenge solving to the worker's solver. The request is built from the same parts as
-    yt-dlp's stdin, and used only when yt-dlp's stdin is exactly that template: any other yt-dlp keeps its own path."""
+    """Routes yt-dlp's node challenge solving to the worker's solver. The request carries the data yt-dlp would put on
+    node's stdin and its script's sha256, and is used only when yt-dlp's stdin is exactly that template: any other
+    yt-dlp keeps its own path. The worker refuses a script other than the one it pinned."""
     try:
         from yt_dlp.extractor.youtube.jsc._builtin import ejs as ejs_module
         from yt_dlp.extractor.youtube.jsc._builtin import node as node_module
@@ -337,7 +441,7 @@ def install_jsc_client():
             expected = ("        " + lib + "\n        Object.assign(globalThis, lib);\n        " + core +
                         "\n        console.log(JSON.stringify(jsc(" + json.dumps(data) + ")));\n        ")
             if stdin == expected:
-                self._dilla_jsc = (stdin, {"lib": lib, "core": core, "data": data})
+                self._dilla_jsc = (stdin, {"script": jsc_script_key(lib, core), "data": data})
         except Exception:
             self._dilla_jsc = None
         return stdin
@@ -371,9 +475,10 @@ class ForkedLookup:
                 pass
 
 
-def lookup_child(library, args, env, out_fd, err_fd):
+def lookup_child(library, args, env, out_fd, err_fd, jsc_fd=None):
     """The child's whole life: yt-dlp's own command line entry, with this lookup's argv, its stdout and stderr on the
-    parent's pipes. It never returns."""
+    parent's pipes, and jsc_fd its end of the socketpair to the worker's solver relay. It never returns."""
+    global JSC_CHANNEL
     code = 1
     try:
         os.setsid()
@@ -383,8 +488,15 @@ def lookup_child(library, args, env, out_fd, err_fd):
         os.dup2(null, 0)
         os.dup2(out_fd, 1)
         os.dup2(err_fd, 2)
-        # Nothing else of the worker's: not its reply channel, not another lookup's pipes, not the relay's sockets.
-        os.closerange(3, resource.getrlimit(resource.RLIMIT_NOFILE)[0])
+        # Nothing else of the worker's: not its reply channel, not another lookup's pipes, not the relay's sockets;
+        # only this lookup's own end of its solver channel.
+        top = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+        if jsc_fd is not None and jsc_fd >= 3:
+            os.closerange(3, jsc_fd)
+            os.closerange(jsc_fd + 1, top)
+            JSC_CHANNEL = socket.socket(fileno=jsc_fd)
+        else:
+            os.closerange(3, top)
         os.environ.clear()
         os.environ.update(env)
         sys.stdin = open(0, "r", closefd=False)
@@ -427,8 +539,9 @@ def serve(ytdlp, limit, env, children, stopping, stop):
     if library is not None:
         import warnings
         warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*fork.*")
-        if install_jsc_client():
-            jsc = JscServer(env, children)
+        solver = bundled_solver()
+        if solver is not None and install_jsc_client():
+            jsc = JscServer(env, children, *solver)
 
     def reply(rid, code, out="", err=""):
         line = json.dumps({"id": rid, "code": code, "out": out, "err": err}, ensure_ascii=True)
@@ -478,12 +591,19 @@ def serve(ytdlp, limit, env, children, stopping, stop):
             if rid in cancelled:
                 reply(rid, -9)
                 return
-        if jsc is not None:
-            jsc.ensure(runtime_node(args))
+        relay_end = child_end = None
+        if jsc is not None and jsc.ensure(runtime_node(args)):
+            try:
+                relay_end, child_end = socket.socketpair()
+            except OSError:
+                relay_end = child_end = None
         try:
             out_r, out_w = os.pipe()
             err_r, err_w = os.pipe()
         except OSError:
+            for end in (relay_end, child_end):
+                if end is not None:
+                    end.close()
             reply(rid, 1)
             return
         try:
@@ -494,10 +614,16 @@ def serve(ytdlp, limit, env, children, stopping, stop):
         except OSError:
             for fd in (out_r, out_w, err_r, err_w):
                 os.close(fd)
+            for end in (relay_end, child_end):
+                if end is not None:
+                    end.close()
             reply(rid, 1)
             return
         if pid == 0:
-            lookup_child(library, args, env, out_w, err_w)
+            lookup_child(library, args, env, out_w, err_w, child_end.fileno() if child_end is not None else None)
+        if child_end is not None:
+            child_end.close()
+            threading.Thread(target=jsc.relay, args=(relay_end,), daemon=True).start()
         reaped = False
         proc = ForkedLookup(pid)
         try:
