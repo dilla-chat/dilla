@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { decode, encode, type CborInput, type CborValue } from '../cbor';
 import { toHex } from '../hex';
-import { BotCatalogStore, decodeBotCatalogResponse, decodeBotChannels, decodeBotRevisions, type BotCatalogDeps } from './catalog';
+import { BotCatalogStore, PIN_RETRY_MS, decodeBotCatalogResponse, decodeBotChannels, decodeBotRevisions, type BotCatalogDeps } from './catalog';
 
 const fid = (byte: number): Uint8Array => new Uint8Array(16).fill(byte);
 /** A command as a decoded frame carries it (bigints). */
@@ -415,26 +415,100 @@ describe('task 20b: the Bot device list fetched and pinned, the Bot user pinned 
     expect(store.get(COMMUNITY)?.keyId).toEqual(KEY);
   });
 
-  it('fetches at most once per connect per Bot user; a failed fetch keeps it greyed unverified', async () => {
-    const verify = vi.fn<BotCatalogDeps['verify']>(() => { throw stale(); });
-    const pinBotDeviceList = vi.fn(() => Promise.reject(Object.assign(new Error('E_DEVICE_LIST_STALE'), { code: 'E_DEVICE_LIST_STALE' })));
-    const f = fakeDeps({ verify, pinBotDeviceList });
+  // A Bot device-list read that fails, or pins a list behind the Bot's signed head (state 2), no longer greys the commands
+  // until the next connection: a catalog read or an op-61 push tries it again at once, and with nothing else happening a
+  // timer does (3 s doubling to 60 s). Local checks (reverify, the reconnect's re-resolve) stay local, and once the key
+  // checks nothing is read again and no timer is left armed.
+  it('a failed fetch keeps it greyed, is tried again on a catalog read, and stops once the key checks', async () => {
+    let pinned = false;
+    const verify = vi.fn<BotCatalogDeps['verify']>(() => { if (!pinned) throw stale(); return { keyId: KEY, fingerprint: 'F' }; });
+    let fail = true;
+    const pinBotDeviceList = vi.fn(() => {
+      if (fail) return Promise.reject(Object.assign(new Error('E_NETWORK'), { code: 'E_NETWORK' }));
+      pinned = true;
+      return Promise.resolve<0 | 1 | 2>(0);
+    });
+    const timers: { fn: () => void; ms: number; live: boolean }[] = [];
+    const setTimer = (fn: () => void, ms: number) => { const t = { fn, ms, live: true }; timers.push(t); return () => { t.live = false; }; };
+    const f = fakeDeps({ verify, pinBotDeviceList, setTimer });
     const store = new BotCatalogStore(f.deps);
     await store.syncOnConnect(COMMUNITY);
     await settle();
     expect(store.get(COMMUNITY)?.status.state).toBe('unverified');
-    // Every later check this connection is local: no second fetch.
+    expect(pinBotDeviceList).toHaveBeenCalledTimes(1);
+    // Local checks before the backoff ends read nothing.
     store.reverify(COMMUNITY);
     await store.reresolve(COMMUNITY);
-    await store.refresh(COMMUNITY);
     await settle();
     expect(pinBotDeviceList).toHaveBeenCalledTimes(1);
-    expect(store.get(COMMUNITY)?.status.state).toBe('unverified');
-    // The next connection may fetch once more.
-    store.newConnection();
-    await store.reresolve(COMMUNITY);
+    // A catalog read tries it again at once; it fails again.
+    await store.refresh(COMMUNITY);
     await settle();
     expect(pinBotDeviceList).toHaveBeenCalledTimes(2);
+    expect(store.get(COMMUNITY)?.status.state).toBe('unverified');
+    // An op-61 push tries it again too; this time the list is read and pinned.
+    fail = false;
+    store.apply({ communityId: fid(0x0e), revision: 9n, commands: [cv(remind)], publication: PUBLICATION });
+    await vi.waitFor(() => { expect(store.get(COMMUNITY)?.status.state).toBe('ready'); });
+    expect(pinBotDeviceList).toHaveBeenCalledTimes(3);
+    // Settled: no timer left armed, and later reads and checks read nothing more.
+    expect(timers.filter(t => t.live)).toEqual([]);
+    await store.refresh(COMMUNITY);
+    store.reverify(COMMUNITY);
+    await settle();
+    expect(pinBotDeviceList).toHaveBeenCalledTimes(3);
+  });
+
+  it('with nothing else happening, a failed or behind fetch is tried again after a doubling backoff', async () => {
+    let pinned = false;
+    const verify = vi.fn<BotCatalogDeps['verify']>(() => { if (!pinned) throw stale(); return { keyId: KEY, fingerprint: 'F' }; });
+    const answers: (0 | 2 | 'fail')[] = ['fail', 2, 0];
+    const pinBotDeviceList = vi.fn(() => {
+      const next = answers.shift();
+      if (next === 'fail') return Promise.reject(Object.assign(new Error('E_NETWORK'), { code: 'E_NETWORK' }));
+      if (next === 0) pinned = true;
+      return Promise.resolve(next ?? 0);
+    });
+    const timers: { fn: () => void; ms: number; live: boolean }[] = [];
+    const setTimer = (fn: () => void, ms: number) => { const t = { fn, ms, live: true }; timers.push(t); return () => { t.live = false; }; };
+    let clock = 1_000_000;
+    const f = fakeDeps({ verify, pinBotDeviceList, setTimer, now: () => clock });
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    await settle();
+    expect(pinBotDeviceList).toHaveBeenCalledTimes(1);
+    const fire = async () => {
+      const t = timers.filter(x => x.live).at(-1)!;
+      clock += t.ms; t.live = false; t.fn();
+      await settle();
+      return t.ms;
+    };
+    expect(await fire()).toBe(PIN_RETRY_MS);
+    expect(pinBotDeviceList).toHaveBeenCalledTimes(2); // behind (state 2): still greyed
+    expect(store.get(COMMUNITY)?.status.state).toBe('unverified');
+    expect(await fire()).toBe(PIN_RETRY_MS * 2);
+    await vi.waitFor(() => { expect(store.get(COMMUNITY)?.status.state).toBe('ready'); });
+    expect(pinBotDeviceList).toHaveBeenCalledTimes(3);
+    expect(timers.filter(t => t.live)).toEqual([]);
+  });
+
+  it('the backoff is dropped with the connection and at sign-out', async () => {
+    const pinBotDeviceList = vi.fn(() => Promise.reject(Object.assign(new Error('E_NETWORK'), { code: 'E_NETWORK' })));
+    const timers: { fn: () => void; ms: number; live: boolean }[] = [];
+    const setTimer = (fn: () => void, ms: number) => { const t = { fn, ms, live: true }; timers.push(t); return () => { t.live = false; }; };
+    const f = fakeDeps({ verify: vi.fn<BotCatalogDeps['verify']>(() => { throw stale(); }), pinBotDeviceList, setTimer });
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    await settle();
+    expect(timers.filter(t => t.live)).toHaveLength(1);
+    store.newConnection();
+    expect(timers.filter(t => t.live)).toEqual([]);
+    await store.reresolve(COMMUNITY); // the next connection reads it again
+    await settle();
+    expect(pinBotDeviceList).toHaveBeenCalledTimes(2);
+    expect(timers.filter(t => t.live)).toHaveLength(1);
+    store.clear();
+    expect(timers.filter(t => t.live)).toEqual([]);
   });
 
   it('a pin that is behind (state 2) keeps the commands greyed unverified', async () => {

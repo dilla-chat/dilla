@@ -147,7 +147,8 @@ export interface BotCatalogDeps {
   ingestBotAttestation(botUserId: Uint8Array): Promise<void>;
   /** Task 20b (Jonas, 2026-11-07): reads the Bot user's device list (the head with its identity keys, the history from
    *  version 1), builds the device_list_push and pins it in the core (CorePort.botDeviceListPin). Resolves the pin state:
-   *  0 current, 1 a key change held, 2 behind. Asked at most once per connection per Bot user, on E_DEVICE_LIST_STALE. */
+   *  0 current, 1 a key change held, 2 behind. Asked on E_DEVICE_LIST_STALE; once it pins (0 or 1) not again on that
+   *  connection; a failure or 2 is asked again on a catalog read, an op-61 push or a backoff timer. */
   pinBotDeviceList(botUserId: Uint8Array): Promise<0 | 1 | 2>;
   /** A catalog read or a key check that failed, by code (diagnostics); never its content. */
   onError?(code: string): void;
@@ -174,6 +175,9 @@ interface Entry {
 
 const codeOf = (e: unknown): string => (typeof e === 'object' && e !== null && 'code' in e && typeof e.code === 'string' ? e.code : 'E_BOT_CATALOG');
 
+type ListRead = { state: 'reading'; backoff: number } | { state: 'settled' }
+  | { state: 'waiting'; until: number; backoff: number; cancel: () => void };
+
 export class BotCatalogStore {
   private readonly entries = new Map<string, Entry>();
   private readonly listeners = new Map<string, Set<() => void>>();
@@ -191,8 +195,11 @@ export class BotCatalogStore {
   /** community → the Bot user this device pinned on first sight (hex): a copy of the core store's pin (task 20b), which
    *  survives a reload and is never replaced. */
   private readonly pins = new Map<string, string>();
-  /** Bot users (hex) whose device list was fetched and pinned on this connection (task 20b: at most once per connect). */
-  private readonly listFetched = new Set<string>();
+  /** Bot users (hex) whose device list this connection read (task 20b): `settled` once it pinned (current, or a held key
+   *  change), so nothing is read again while it holds; a read that failed or pinned a list behind the Bot's signed head
+   *  (state 2) `waiting` until `until`, when a catalog read, an op-61 push or the backoff timer (doubling from PIN_RETRY_MS
+   *  to a minute) tries it again. A settled Bot user has no timer armed: nothing is read while everything checks. */
+  private readonly listRead = new Map<string, ListRead>();
   /** Communities whose first pin the core refused (no Bot attestation yet, or a human's): not asked again before `until`.
    *  Task 23 fix round 1: a newer op-61 revision, a catalog read, the trust refresh or the backoff timer (doubling from
    *  PIN_RETRY_MS) clears it, so a refusal never holds for the whole connection. */
@@ -246,6 +253,7 @@ export class BotCatalogStore {
     const entry: Entry = { revision: frame.revision, commands, publication, verified: null, serverStatus, botChannels: held?.botChannels ?? null };
     this.entries.set(communityId, entry);
     this.clearRefusal(communityId);
+    this.clearListWait(communityId);
     if (this.pinOf(communityId) !== undefined || publication === null) {
       this.verifyEntry(communityId, entry);
       this.notify(communityId);
@@ -263,7 +271,7 @@ export class BotCatalogStore {
   }
 
   /** A new gateway connection: the next sync reads the revisions again (op 61 is not replayed). */
-  newConnection(): void { this.revisions = null; this.listFetched.clear(); this.clearRefusals(); }
+  newConnection(): void { this.revisions = null; this.clearListReads(); this.clearRefusals(); }
 
   /** The instance's revisions for this connection (one read, shared with the catalog sync); null when it could not be read. */
   readRevisions(): Promise<BotRevision[] | null> {
@@ -353,7 +361,7 @@ export class BotCatalogStore {
     const held = [...this.entries.keys()];
     this.entries.clear();
     this.pins.clear();
-    this.listFetched.clear();
+    this.clearListReads();
     this.clearRefusals();
     this.listHeld.clear();
     this.botProblem.clear();
@@ -435,8 +443,9 @@ export class BotCatalogStore {
       channels = list === null ? null : decodeBotChannels(list);
     } catch (e) { this.deps.onError?.(codeOf(e)); return; }
     // Every read looks the Bot user up again: a reinstall under another account is noticed (and greyed), never adopted.
-    // A refused first pin is tried again too (Task 23 fix round 1).
+    // A refused first pin is tried again too (Task 23 fix round 1), and so is a Bot device-list read that failed or was behind.
     this.clearRefusal(communityId);
+    this.clearListWait(communityId);
     if (decoded.publication !== null) await this.resolveBot(communityId);
     // An older read than one that already landed (or one from before clear()) is dropped whole: its status is the older.
     if (seq <= this.clearedAt || seq < (this.landedSeq.get(communityId) ?? 0)) return;
@@ -463,7 +472,7 @@ export class BotCatalogStore {
       if (this.pinRefused.get(communityId) !== entry || !this.entries.has(communityId) || this.pinOf(communityId) !== undefined) return;
       void this.reresolve(communityId);
     };
-    const cancel = this.deps.setTimer?.(fire, backoff) ?? (() => { const t = setTimeout(fire, backoff); return () => { clearTimeout(t); }; })();
+    const cancel = this.arm(fire, backoff);
     const entry = { until: this.now() + backoff, backoff, cancel };
     this.pinRefused.set(communityId, entry);
   }
@@ -472,6 +481,24 @@ export class BotCatalogStore {
   private clearRefusal(communityId: string): void {
     const held = this.pinRefused.get(communityId);
     if (held !== undefined) held.until = 0;
+  }
+
+  /** Lets the next check of the community's key read its Bot user's device list again now (a catalog read or an op-61
+   *  push): a failed or behind read is not left waiting for its timer. The backoff stays. */
+  private clearListWait(communityId: string): void {
+    const bot = this.pins.get(communityId);
+    const held = bot === undefined ? undefined : this.listRead.get(bot);
+    if (held?.state === 'waiting') held.until = 0;
+  }
+
+  private clearListReads(): void {
+    for (const held of this.listRead.values()) if (held.state === 'waiting') held.cancel();
+    this.listRead.clear();
+  }
+
+  /** A timer the deps' clock runs (setTimeout by default); returns its cancel. */
+  private arm(fn: () => void, ms: number): () => void {
+    return this.deps.setTimer?.(fn, ms) ?? (() => { const t = setTimeout(fn, ms); return () => { clearTimeout(t); }; })();
   }
 
   private clearRefusals(): void {
@@ -515,19 +542,49 @@ export class BotCatalogStore {
     }
   }
 
-  /** Fetches and pins the Bot user's device list, at most once per connection, then checks every held publication signed
-   *  by that Bot user again. A failure keeps them greyed `unverified`; a held key change greys them `changed`. */
+  /** Fetches and pins the Bot user's device list, then checks every held publication signed by that Bot user again. A
+   *  pinned list (current, or a held key change: greyed `changed`) is read once per connection; a failed or behind read
+   *  keeps them greyed `unverified` and is tried again (listRead). */
   private fetchBotList(botUser: string): void {
-    if (this.listFetched.has(botUser)) return;
-    this.listFetched.add(botUser);
+    const held = this.listRead.get(botUser);
+    if (held !== undefined && (held.state !== 'waiting' || this.now() < held.until)) return;
+    if (held?.state === 'waiting') held.cancel();
+    const read: ListRead = { state: 'reading', backoff: held?.state === 'waiting' ? held.backoff : 0 };
+    this.listRead.set(botUser, read);
     void this.deps.pinBotDeviceList(fromHex(botUser)).then((state) => {
+      // Dropped with the connection or at sign-out: the next connection reads it again if it still needs to.
+      if (this.listRead.get(botUser) !== read) return;
+      if (state === 2) this.waitList(botUser, read.backoff); else this.listRead.set(botUser, { state: 'settled' });
       if (state === 1) this.listHeld.add(botUser); else this.listHeld.delete(botUser);
-      for (const [communityId, e] of this.entries) {
-        if (this.pins.get(communityId) !== botUser || e.verified !== null) continue;
-        this.verifyEntry(communityId, e);
-        this.notify(communityId);
-      }
-    }, (err: unknown) => { this.deps.onError?.(codeOf(err)); });
+      this.recheckBot(botUser);
+    }, (err: unknown) => {
+      if (this.listRead.get(botUser) !== read) return;
+      this.deps.onError?.(codeOf(err));
+      this.waitList(botUser, read.backoff);
+    });
+  }
+
+  /** A failed or behind Bot device-list read waits the backoff (doubling to a minute), then the held publications that still
+   *  do not check are checked again, which reads the list again; with none left, nothing is read. */
+  private waitList(botUser: string, prior: number): void {
+    const backoff = prior === 0 ? PIN_RETRY_MS : Math.min(prior * 2, PIN_RETRY_MAX_MS);
+    const fire = (): void => {
+      if (this.listRead.get(botUser) !== wait) return;
+      wait.until = 0;
+      this.recheckBot(botUser);
+    };
+    const wait: ListRead & { state: 'waiting' } = { state: 'waiting', until: this.now() + backoff, backoff, cancel: () => undefined };
+    wait.cancel = this.arm(fire, backoff);
+    this.listRead.set(botUser, wait);
+  }
+
+  /** Checks again every held publication of a community pinned to this Bot user that has not checked yet. */
+  private recheckBot(botUser: string): void {
+    for (const [communityId, e] of this.entries) {
+      if (this.pins.get(communityId) !== botUser || e.verified !== null) continue;
+      this.verifyEntry(communityId, e);
+      this.notify(communityId);
+    }
   }
 
   /** The greyed reasons this device adds to the instance's status. */
