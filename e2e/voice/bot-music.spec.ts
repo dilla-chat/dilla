@@ -378,7 +378,11 @@ test('a Bot restart mid-queue resumes', async ({ peerBrowser }) => {
   expect(after).toContain(`1. ${MUSIC_FIXTURES.short}`);
   await listen(receiver);
   const { enter, result, previous } = await command(sender, 'resume');
-  const heard = await firstAudio(receiver, enter);
+  const heard = await firstAudio(receiver, enter).catch(async (error: unknown) => {
+    // Name the Bot's side of a silent resume: its answer (resumed, or a start failure) and any refusal.
+    throw new Error(`${String(error)}\nthe /resume's result row shows ${JSON.stringify(await result.innerText().catch(() => ''))}`
+      + ` (before: ${JSON.stringify(previous)})\nBot refusals: ${JSON.stringify(host?.botRefusals() ?? [])}`);
+  });
   await answer(result, previous, /Music resumed\./u);
   await settle(sender);
   console.info(`G3 resume after a Bot restart: ${String(heard - enter)} ms`);
