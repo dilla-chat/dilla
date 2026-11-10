@@ -87,6 +87,10 @@ ${initialization}`);
   source = source.replace(identity, identity + `
 let __accountStart=null;try{const s=__accountFS.readFileSync('/proc/self/stat','utf8');__accountStart=s.slice(s.lastIndexOf(')')+2).split(' ')[19];}catch{}
 __accountFS.appendFileSync(__accountReports+'/processes.jsonl',JSON.stringify({pid:process.pid,role:__accountRole,start:__accountStart,version:app.getVersion(),executable:process.execPath})+'\\n');
+// The fixture apps are ad-hoc signed, so each version has its own cdhash: the login keychain's "Safe Storage" item
+// 1.0.0 creates answers 1.0.1 with an ACL prompt no CI user accepts, and the cookie store (which the gateway
+// WebSocket waits on) never loads. Developer ID builds share a designated requirement and keep access.
+if(process.platform==='darwin')app.commandLine.appendSwitch('use-mock-keychain');
 if(__accountRole==='ordinary'){app.commandLine.appendSwitch('remote-debugging-address','127.0.0.1');app.commandLine.appendSwitch('remote-debugging-port','0');app.commandLine.appendSwitch('log-net-log',__accountReports+'/netlog-'+app.getVersion()+'.json');}
 const __accountDialog=dialog.showMessageBox.bind(dialog);
 dialog.showMessageBox=(async(...args:any[])=>{const o=args.at(-1);if(o.title==='Dilla permission')return{response:1,checkboxChecked:false};if(o.title==='Quit Dilla?'){__accountFS.writeFileSync(__accountReports+'/protected-quit.json',JSON.stringify({version:app.getVersion(),pid:process.pid,buttons:o.buttons,cancelId:o.cancelId}));return{response:o.cancelId,checkboxChecked:false};}return(__accountDialog as any)(...args);}) as typeof dialog.showMessageBox;
