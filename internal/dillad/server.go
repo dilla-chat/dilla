@@ -92,6 +92,9 @@ type Server struct {
 	// stopAvatars stops the webhook avatar fetcher's background refresh of instance.domain (Bot v2 task 13 fix
 	// round 3); until its first lookup succeeds no avatar is fetched.
 	stopAvatars func()
+	// stopBotHealth stops the Bot health watcher, which tells members (op 54) when a Bot falls silent long enough to be
+	// offline; Shutdown calls it before the gateway the op goes through stops.
+	stopBotHealth func()
 
 	// throttle and limiter are swept by the gateway's maintenance loop, whose stop function
 	// Shutdown calls before it stops the gateway.
@@ -586,8 +589,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		}
 	}
 	deps.BotProfileChanged = botRoleNotify.Changed
-	// A health report that changes the Bot's judged state (offline, ready, degraded) is op 54 to the members, who re-read
-	// the catalog and its status: the picker learns the Bot came up without a reload. The Bot's own feed is not told:
+	// A health report that changes the Bot's judged state (offline, ready, degraded), or a silence long enough to make it
+	// offline (BotHealth.Watch, started below), is op 54 to the members, who re-read the catalog and its status: the
+	// picker learns the Bot came up, or went away, without a reload. The Bot's own feed is not told:
 	// nothing in the community's structure changed.
 	statusNotify := api.NewStructureNotifier(gw, o.Repo, o.Log)
 	deps.BotHealth.OnChange(func(community id.ID) { go statusNotify.Changed(context.Background(), community) })
@@ -795,6 +799,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	}
 	s.stopIdleClose = callRoutes.StartIdleClose(api.CallRetryInterval)
 	s.stopAvatars = deps.WebhookAvatars.Start()
+	s.stopBotHealth = deps.BotHealth.Watch()
 	return s, nil
 }
 
@@ -1051,6 +1056,9 @@ func (s *Server) shutdown(ctx context.Context) error {
 	}
 	if s.stopAvatars != nil {
 		s.stopAvatars()
+	}
+	if s.stopBotHealth != nil {
+		s.stopBotHealth()
 	}
 	// AW2 (R3): the op 55 drainer and any AFK maintenance pass stop, and are waited for, before the
 	// delivery service and the gateway they use: a pass that ran on would clear the rows of users who

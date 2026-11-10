@@ -77,6 +77,8 @@ type botHealthState struct {
 	samples    []depthSample
 	degraded   bool
 	since      time.Time // when the current ready or degraded judgement began
+	// offlineTold is set when Watch told the hook this Bot went offline by silence; the next report clears it.
+	offlineTold bool
 }
 
 // BotHealth is dillad's view of each community Bot's health.
@@ -92,6 +94,8 @@ type BotHealth struct {
 	// onChange hears a report that changed the judged state: dillad sends op 54, so members re-read the catalog's
 	// status instead of keeping the one they read before (the picker would show the Bot offline until a reload).
 	onChange func(community id.ID)
+	// wake tells Watch a report moved a deadline (buffered 1: a pending wake covers every later one).
+	wake chan struct{}
 }
 
 // OnChange sets the hook a state-changing report calls, after the tracker's lock is released. Set it before serving.
@@ -105,7 +109,7 @@ func NewBotHealth(clk clock.Clock) *BotHealth {
 	if clk == nil {
 		clk = clock.System()
 	}
-	return &BotHealth{clk: clk, start: clk.Now(), state: map[id.ID]*botHealthState{}, failing: map[id.ID]time.Time{}}
+	return &BotHealth{clk: clk, start: clk.Now(), state: map[id.ID]*botHealthState{}, failing: map[id.ID]time.Time{}, wake: make(chan struct{}, 1)}
 }
 
 // Persist keeps the failing-since times in path (0600, written whole on every change) and reads back what a previous
@@ -212,6 +216,10 @@ func (h *BotHealth) Record(community id.ID, r BotHealthReport) {
 		if after != before && hook != nil {
 			hook(community)
 		}
+		select {
+		case h.wake <- struct{}{}:
+		default:
+		}
 	}()
 	st := h.state[community]
 	if st == nil {
@@ -219,6 +227,7 @@ func (h *BotHealth) Record(community id.ID, r BotHealthReport) {
 		h.state[community] = st
 	}
 	st.lastReport = now
+	st.offlineTold = false
 	if r.ProbeAt != st.lastProbe {
 		// A new probe: a failure counts once however many reports repeat it.
 		st.lastProbe = r.ProbeAt
@@ -257,6 +266,81 @@ func (h *BotHealth) Record(community id.ID, r BotHealthReport) {
 		delete(h.failing, community)
 		h.writeLocked()
 	}
+}
+
+// Watch tells the change hook when a Bot that reported falls silent for BotHealthOfflineAfter: no report arrives to
+// call it, so without this the members' pickers would show the Bot ready until someone read its status. One goroutine
+// sleeps on the clock until the earliest silence deadline (a report wakes it to re-plan), tells the hook once per
+// silence, and sleeps again. stop ends it and waits for it; it is safe to call twice.
+func (h *BotHealth) Watch() (stop func()) {
+	quit := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			told, next, hook := h.expire()
+			if hook != nil {
+				for _, community := range told {
+					hook(community)
+				}
+			}
+			var fire <-chan time.Time
+			var timer clock.Timer
+			if !next.IsZero() {
+				timer = h.clk.NewTimer(next.Sub(h.clk.Now()))
+				fire = timer.C()
+				if !h.clk.Now().Before(next) {
+					// The clock passed the deadline while the timer was built: sweep again now.
+					timer.Stop()
+					continue
+				}
+			}
+			select {
+			case <-quit:
+			case <-h.wake:
+			case <-fire:
+			}
+			if timer != nil {
+				timer.Stop()
+			}
+			select {
+			case <-quit:
+				return
+			default:
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(quit)
+			<-done
+		})
+	}
+}
+
+// expire marks every reported Bot silent past BotHealthOfflineAfter as told and returns them with the hook, and the
+// earliest deadline still pending (zero when none is).
+func (h *BotHealth) expire() (told []id.ID, next time.Time, hook func(id.ID)) {
+	now := h.clk.Now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for community, st := range h.state {
+		if st.offlineTold {
+			continue
+		}
+		// Offline is strictly over BotHealthOfflineAfter (statusLocked): the deadline is the first instant past it.
+		deadline := st.lastReport.Add(BotHealthOfflineAfter + time.Nanosecond)
+		if !now.Before(deadline) {
+			st.offlineTold = true
+			told = append(told, community)
+			continue
+		}
+		if next.IsZero() || deadline.Before(next) {
+			next = deadline
+		}
+	}
+	return told, next, h.onChange
 }
 
 // FailingSince is when the community's Bot was first judged degraded, by dillad's clock, while it still is.

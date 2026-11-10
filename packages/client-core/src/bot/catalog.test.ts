@@ -266,6 +266,33 @@ describe('fix round 1', () => {
     expect(fetchCatalog).toHaveBeenCalledTimes(4);
   });
 
+  // Reads are numbered when they start: an older read that answers after a newer one landed is dropped, so its status (the
+  // Bot offline, read before it came up) never overwrites the newer one; a read from before clear() lands nowhere.
+  it('an older catalog read answering after a newer one is ignored', async () => {
+    const f = fakeDeps();
+    const releases: ((body: Uint8Array) => void)[] = [];
+    const fetchCatalog = vi.fn(() => new Promise<Uint8Array>(resolve => { releases.push(resolve); }));
+    const store = new BotCatalogStore({ ...f.deps, fetchCatalog });
+    const older = store.refresh(COMMUNITY);
+    await vi.waitFor(() => { expect(fetchCatalog).toHaveBeenCalledTimes(1); });
+    store.clear(); // sign-out and back in: the next read does not wait for the one in flight
+    const newer = store.refresh(COMMUNITY);
+    await vi.waitFor(() => { expect(fetchCatalog).toHaveBeenCalledTimes(2); });
+    releases[1]?.(catalogBody(3, [remind], PUBLICATION, [0, null]));
+    await newer;
+    expect(store.get(COMMUNITY)?.status.state).toBe('ready');
+    releases[0]?.(catalogBody(3, [remind], PUBLICATION, [2, 1758659040])); // the older read answers last: offline
+    await older;
+    expect(store.get(COMMUNITY)?.status.state).toBe('ready');
+    // A read in flight across clear() with nothing newer does not bring the cleared catalog back either.
+    const stale = store.refresh(COMMUNITY);
+    await vi.waitFor(() => { expect(fetchCatalog).toHaveBeenCalledTimes(3); });
+    store.clear();
+    releases[2]?.(catalogBody(3, [remind]));
+    await stale;
+    expect(store.get(COMMUNITY)).toBeNull();
+  });
+
   it('a push that lands during a catalog read wins over the older read (M7)', async () => {
     let release!: (body: Uint8Array) => void;
     const f = fakeDeps();

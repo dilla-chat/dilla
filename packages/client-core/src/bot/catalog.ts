@@ -181,6 +181,12 @@ export class BotCatalogStore {
   private readonly inFlight = new Map<string, Promise<void>>();
   /** A read asked for while one is in flight: it runs once that read ends (every ask meanwhile shares it). */
   private readonly queued = new Map<string, Promise<void>>();
+  /** Every catalog read is numbered when it starts; a read lands only when no later-started read of its community landed
+   *  first, so an older status (offline, read before the Bot came up) never overwrites a newer one. */
+  private readSeq = 0;
+  private readonly landedSeq = new Map<string, number>();
+  /** The last number handed out before clear(): a read started before it lands nowhere (another account's catalog). */
+  private clearedAt = 0;
   /** community → the Bot user this device pinned on first sight (hex): a copy of the core store's pin (task 20b), which
    *  survives a reload and is never replaced. */
   private readonly pins = new Map<string, string>();
@@ -281,7 +287,7 @@ export class BotCatalogStore {
     const waiting = this.queued.get(communityId);
     if (waiting !== undefined) return waiting;
     const next = running.catch(() => undefined).then(() => {
-      this.queued.delete(communityId);
+      if (this.queued.get(communityId) === next) this.queued.delete(communityId);
       return this.inFlight.get(communityId) ?? this.start(communityId);
     });
     this.queued.set(communityId, next);
@@ -347,6 +353,11 @@ export class BotCatalogStore {
     this.listHeld.clear();
     this.botProblem.clear();
     this.revisions = null;
+    // A read still in flight belongs to the account before: it lands nowhere, and the next refresh does not wait for it.
+    this.clearedAt = this.readSeq;
+    this.landedSeq.clear();
+    this.inFlight.clear();
+    this.queued.clear();
     for (const id of held) this.notify(id);
   }
 
@@ -399,6 +410,7 @@ export class BotCatalogStore {
   }
 
   private async load(communityId: string): Promise<void> {
+    const seq = ++this.readSeq;
     let decoded: ReturnType<typeof decodeBotCatalogResponse>;
     let channels: string[] | null;
     try {
@@ -410,6 +422,9 @@ export class BotCatalogStore {
     // A refused first pin is tried again too (Task 23 fix round 1).
     this.clearRefusal(communityId);
     if (decoded.publication !== null) await this.resolveBot(communityId);
+    // An older read than one that already landed (or one from before clear()) is dropped whole: its status is the older.
+    if (seq <= this.clearedAt || seq < (this.landedSeq.get(communityId) ?? 0)) return;
+    this.landedSeq.set(communityId, seq);
     // Compared after every await: a push (op 61) that landed meanwhile and is newer than this read wins; this read's status
     // and channels are still current.
     const current = this.entries.get(communityId);

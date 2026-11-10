@@ -147,6 +147,69 @@ func TestAReportThatChangesTheJudgedStateTellsTheHook(t *testing.T) {
 	}
 }
 
+// A Bot that falls silent goes offline with nobody reading its status, so no report calls the hook: Watch tells it
+// once when the silence passes BotHealthOfflineAfter (op 54, the picker greys the Bot), never again while the silence
+// lasts, and again only after a report brought the Bot back and it fell silent once more.
+func TestASilentBotTellsTheHookOnceWhenItGoesOffline(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_800_000_000, 0))
+	tracker := api.NewBotHealth(clk)
+	told := make(chan id.ID, 16)
+	tracker.OnChange(func(c id.ID) { told <- c })
+	stop := tracker.Watch()
+	defer stop()
+	community := id.New()
+	tracker.Record(community, healthReportAt(true, clk.Now(), 0, 0))
+	reported := clk.Now()
+	// advanceUntilTold steps the fake clock a second at a time (the watcher arms its timer on its own goroutine, so
+	// one big step could land before the timer exists) until the hook is told, and returns the fake time it was.
+	advanceUntilTold := func() time.Time {
+		t.Helper()
+		for range 400 {
+			clk.Advance(time.Second)
+			select {
+			case c := <-told:
+				if c != community {
+					t.Fatalf("the hook was told %v, want %v", c, community)
+				}
+				return clk.Now()
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+		t.Fatal("the hook was never told the silent Bot went offline")
+		return time.Time{}
+	}
+	at := advanceUntilTold()
+	if silent := at.Sub(reported); silent <= api.BotHealthOfflineAfter {
+		t.Fatalf("the hook was told after %s of silence, want over %s", silent, api.BotHealthOfflineAfter)
+	}
+	if state, _ := tracker.Status(community); state != healthOffline {
+		t.Fatalf("state when the hook was told = %d, want offline", state)
+	}
+	// The silence goes on: nobody is told again.
+	for range 20 {
+		clk.Advance(time.Minute)
+	}
+	select {
+	case c := <-told:
+		t.Fatalf("a Bot still silent told the hook again (%v)", c)
+	case <-time.After(50 * time.Millisecond):
+	}
+	// A report brings it back (Record tells the hook: offline -> ready); a second silence tells it once more.
+	tracker.Record(community, healthReportAt(true, clk.Now(), 0, 0))
+	select {
+	case <-told:
+	case <-time.After(time.Second):
+		t.Fatal("offline -> ready did not tell the hook")
+	}
+	reported = clk.Now()
+	at = advanceUntilTold()
+	if silent := at.Sub(reported); silent <= api.BotHealthOfflineAfter {
+		t.Fatalf("the second silence told the hook after %s, want over %s", silent, api.BotHealthOfflineAfter)
+	}
+	stop()
+	stop() // safe twice
+}
+
 func TestOfflineWithoutReportFor150s(t *testing.T) {
 	clk := clock.NewFake(time.Unix(1_800_000_000, 0))
 	tracker := api.NewBotHealth(clk)
