@@ -236,6 +236,44 @@ func TestNextQueuedTrackGapUnder150ms(t *testing.T) {
 	}
 }
 
+// A fixture backend needs ffmpeg only: on a host without bubblewrap or python3 (the CI runner of the Bot music e2e)
+// it still builds and starts a fixture stream.
+func TestFixtureBackendNeedsOnlyFfmpeg(t *testing.T) {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg is not installed")
+	}
+	fixtures := t.TempDir()
+	writeFixture(t, fixtures, "fixture-05s", 0.5)
+	t.Setenv(FixturesEnv, fixtures)
+	bin := t.TempDir()
+	if err := os.Symlink(ffmpegPath, filepath.Join(bin, "ffmpeg")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin) // no bwrap, no python3
+	backend, err := NewBackend(SandboxConfig{}, 0)
+	if err != nil {
+		t.Fatalf("a fixture backend with ffmpeg alone: %v", err)
+	}
+	defer backend.Close()
+	view, err := backend.For("no-sandbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracks, err := view.Tracks.Resolve(context.Background(), "fixture-05s")
+	if err != nil || len(tracks) != 1 {
+		t.Fatalf("resolve = %+v, %v", tracks, err)
+	}
+	source, err := view.Streams.Start(context.Background(), "https://www.youtube.com/watch?v="+tracks[0].CanonicalID)
+	if err != nil {
+		t.Fatalf("start without bwrap: %v", err)
+	}
+	if _, err := io.ReadAll(source); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	_ = source.Close()
+}
+
 // Bot v2 Task 19: the supervised Bot's environment carries no DILLA_BOT_MUSIC_FIXTURES (bot-launch fixes it), so a
 // test host also serves the fixtures copied into <DILLA_BOT_STATE_DIR>/music-fixtures.
 func TestFixturesInTheBotStateDirectoryAreServedWithoutTheVariable(t *testing.T) {

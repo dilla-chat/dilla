@@ -68,8 +68,13 @@ func NewStreamStarter(cfg SandboxConfig, resolver Resolver) (*StreamStarter, err
 	if cfg, err = resolveSandboxConfig(cfg, true); err != nil {
 		return nil, err
 	}
+	return newStreamStarter(cfg, resolver), nil
+}
+
+// newStreamStarter builds a StreamStarter from an already resolved cfg.
+func newStreamStarter(cfg SandboxConfig, resolver Resolver) *StreamStarter {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &StreamStarter{cfg: cfg, resolver: resolver, ctx: ctx, cancel: cancel, prefetched: map[prefetchID]*prefetchedStream{}}, nil
+	return &StreamStarter{cfg: cfg, resolver: resolver, ctx: ctx, cancel: cancel, prefetched: map[prefetchID]*prefetchedStream{}}
 }
 
 // Check reports whether the tools the stream needs are present.

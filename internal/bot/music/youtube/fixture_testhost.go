@@ -81,14 +81,13 @@ func fixtureBackend(cfg SandboxConfig) (*Backend, bool, error) {
 	if err != nil {
 		return nil, true, err
 	}
-	if cfg.FFmpeg == "" {
-		cfg.FFmpeg = "ffmpeg"
+	// A fixture plays through startLocalStream, an unsandboxed ffmpeg reading the file, so ffmpeg is the only tool it
+	// needs. NewStreamStarter also requires bubblewrap and python3, which a host without bwrap (the CI runner of the
+	// Bot music e2e) does not have: the backend failed and every /play answered "can't do that here right now".
+	if cfg.FFmpeg, err = lookupTool(cfg.FFmpeg, "ffmpeg"); err != nil {
+		return nil, true, ErrPCMStart
 	}
-	streams, err := NewStreamStarter(cfg, fixtures)
-	if err != nil {
-		return nil, true, err
-	}
-	return &Backend{streams: streams, tracks: fixtureTracks{fixtures}}, true, nil
+	return &Backend{streams: newStreamStarter(cfg, fixtures), tracks: fixtureTracks{fixtures}}, true, nil
 }
 
 // fixtureID maps a file stem to a queue-valid 11-character video id.
