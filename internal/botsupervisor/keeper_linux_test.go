@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -172,6 +173,9 @@ func startUserNSKeeper(t *testing.T, cfg KeeperConfig) *PipeKeeper {
 // startUserNSKeeperProcess is startUserNSKeeper that also returns the keeper's process.
 func startUserNSKeeperProcess(t *testing.T, cfg KeeperConfig) (*PipeKeeper, *os.Process) {
 	t.Helper()
+	if reason := userNSCapabilities(); reason != "" {
+		t.Skip(reason)
+	}
 	pair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
 		t.Fatalf("socketpair: %v", err)
@@ -728,4 +732,33 @@ func TestPidfdBindsAChildThatExitedAtOnce(t *testing.T) {
 	if h.alive() {
 		t.Fatal("the pidfd reads alive after the reap")
 	}
+}
+
+var (
+	userNSProbe     sync.Once
+	userNSProbeSkip string
+)
+
+// userNSCapabilities reports why a fresh user namespace here holds no capabilities, or "" when it does. Ubuntu
+// 24.04's AppArmor (kernel.apparmor_restrict_unprivileged_userns=1) lets the namespace be created but strips its
+// capabilities, so a keeper started in one cannot narrow its own; such a host cannot run the keeper's tests.
+func userNSCapabilities() string {
+	userNSProbe.Do(func() {
+		cmd := exec.Command("grep", "^CapEff:", "/proc/self/status")
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Cloneflags:  syscall.CLONE_NEWUSER,
+			UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+			GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+		}
+		out, err := cmd.Output()
+		if err != nil {
+			userNSProbeSkip = fmt.Sprintf("no unprivileged user namespaces here (%v): the launch's capability drop needs a keeper that holds capabilities", err)
+			return
+		}
+		fields := strings.Fields(string(out))
+		if len(fields) != 2 || strings.Trim(fields[1], "0") == "" {
+			userNSProbeSkip = fmt.Sprintf("a user namespace here holds no capabilities (%s, AppArmor's unprivileged_userns restriction?): the keeper cannot narrow its own", strings.TrimSpace(string(out)))
+		}
+	})
+	return userNSProbeSkip
 }
