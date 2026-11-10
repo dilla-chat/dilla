@@ -382,12 +382,19 @@ func TestBotMakesNoPeriodicRequestsWithTheRealMaintenance(t *testing.T) {
 			return runBackgroundMaintenance(client.WithBackground(ctx), scheduler.RunDue, utilities.maintain)
 		}}
 	go func() { _ = loop.run(ctx) }()
-	for range 600 {
+	// Advance until fifty real maintenance passes ran (at least 500 idle seconds at dueInterval). The clock keeps moving
+	// while a pass runs the real helper, so a loaded runner that coalesces a tick still reaches fifty instead of
+	// running out of advances.
+	var advanced time.Duration
+	for deadline := time.Now().Add(30 * time.Second); maintained.Load() < 50; {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for the due ticks: %d maintenance passes in %v of idle time", maintained.Load(), advanced)
+		}
 		clk.Advance(time.Second)
+		advanced += time.Second
 		time.Sleep(200 * time.Microsecond)
 	}
-	waitFor(t, "the due ticks", 10*time.Second, func() bool { return maintained.Load() >= 50 })
 	if got := requests.Load(); got != 0 {
-		t.Fatalf("%d requests reached dillad in 10 idle minutes of real maintenance, want 0", got)
+		t.Fatalf("%d requests reached dillad in %v of idle real maintenance, want 0", got, advanced)
 	}
 }
