@@ -766,13 +766,15 @@ func (c *Client) readPump(conn *connection, out chan<- []byte, done chan<- error
 			c.signalRoom()
 			continue
 		}
+		// The hand-off to runConnection's decode loop waits for room. That loop never blocks on the consumer
+		// (enqueueEvent reports a full delivery queue as ErrBackpressure, the one consumer-backpressure signal), so
+		// the wait is only for the decoder to be scheduled. Failing it instead turned a burst read faster than it
+		// was decoded, such as a cold snapshot on a host with few CPUs, into a fresh identify that replayed the
+		// same burst and failed again.
 		select {
 		case out <- b:
 		case <-conn.ctx.Done():
 			done <- conn.ctx.Err()
-			return
-		default:
-			done <- ErrBackpressure
 			return
 		}
 	}
