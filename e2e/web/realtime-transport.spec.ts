@@ -63,14 +63,14 @@ async function notice(worker: Worker, entry: string) {
 
 const connection = (page: Page) => portSlice<{ status: string; wireVersion?: number; appBuild?: string }>(page, 'connection');
 
-test('wire 5 stays free of periodic version/activity/stats HTTP for fifteen idle minutes and reconciles reconnects', async ({ page, context, peer, instanceName }) => {
+test('wire 6 (Bot v2) stays free of periodic version/activity/stats HTTP for fifteen idle minutes and reconciles reconnects', async ({ page, context, peer, instanceName }) => {
   await installWorkerPort(context);
   await page.clock.install();
   const seen = requests(context);
   const setup = await peer.setup(); await peer.register();
   await signUp(page, instanceInvite(), instanceName);
   await joinCommunity(page, peer, setup); await openChannel(page, peer.communityName, peer.channelName);
-  await expect.poll(() => connection(page)).toMatchObject({ status: 'online', wireVersion: 5 });
+  await expect.poll(() => connection(page)).toMatchObject({ status: 'online', wireVersion: 6 });
   await expect.poll(async () => (await connection(page))?.appBuild).toMatch(/^\/assets\/.+\.js$/);
   await page.waitForLoadState('networkidle');
   const current = (await connection(page))!.appBuild!;
@@ -97,7 +97,7 @@ test('wire 5 stays free of periodic version/activity/stats HTTP for fifteen idle
   for (let i = 0; i < 3; i++) {
     await worker.evaluate(() => { (globalThis as unknown as { __realtime: Probe }).__realtime.socket!.close(4000, 'reconnect probe'); });
     await expect.poll(() => connection(page)).toMatchObject({ status: 'offline' });
-    await expect.poll(() => connection(page), { timeout: WAIT }).toMatchObject({ status: 'online', wireVersion: 5 });
+    await expect.poll(() => connection(page), { timeout: WAIT }).toMatchObject({ status: 'online', wireVersion: 6 });
     await expect.poll(() => seen.version).toBe(afterInput + (desktopE2E() ? 0 : i + 1));
   }
   expect((await ops(worker)).filter(op => op === 57)).toHaveLength(3);
