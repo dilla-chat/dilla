@@ -301,7 +301,9 @@ describe('fix round 1', () => {
     let core = before;
     const lookups: ((user: Uint8Array) => void)[] = [];
     let answer: Uint8Array | null = null;
+    const ingestBotAttestation = vi.fn(() => Promise.resolve());
     const f = fakeDeps({
+      ingestBotAttestation,
       botUserId: () => answer === null ? new Promise<Uint8Array>(resolve => { lookups.push(resolve); }) : Promise.resolve(answer),
       pinBotUser: (communityId, user) => core.pinBotUser(communityId, user),
       pinnedBotUser: (communityId) => core.pinnedBotUser(communityId),
@@ -315,7 +317,7 @@ describe('fix round 1', () => {
     await stale;
     expect(before.pinBotUser).not.toHaveBeenCalled();
     expect(after.pinBotUser).not.toHaveBeenCalled();
-    expect(f.deps.ingestBotAttestation).not.toHaveBeenCalled();
+    expect(ingestBotAttestation).not.toHaveBeenCalled();
     // The next account's community has another Bot: it is pinned on first sight, not greyed as a changed Bot.
     const other = fid(0x0c);
     answer = other;
