@@ -47,6 +47,11 @@ type botGatewayRuntime struct {
 	// gatewayEnds is each installation's backoff for restarting a gateway that ended with an error, reset by its ready
 	// (guarded by mu; fix round 2, N-3).
 	gatewayEnds map[id.ID]time.Duration
+	// helperRespawns is each installation's backoff for replacing a helper the due tick found gone, reset when a
+	// replacement serves a maintenance run (guarded by mu; fix round, I-1).
+	helperRespawns map[id.ID]*helperRespawn
+	// starts runs the native helper starts off the loop (fix round, I-2; helper_start.go).
+	starts helperStarts
 	// feeds is each installation's feed handler, which outlives a pass and a gateway connection (guarded by mu).
 	feeds       map[id.ID]*installationFeed
 	pollers     map[id.ID]func(context.Context) error
@@ -60,7 +65,9 @@ type botGatewayRuntime struct {
 }
 
 func newBotGatewayRuntime(ctx context.Context, api *client.Client, loopback bool, log *slog.Logger) *botGatewayRuntime {
-	return &botGatewayRuntime{now: time.Now, startedAt: unixSecondsOrZero(time.Now()) * 1000, ctx: client.WithBackground(ctx), api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), pass: make(chan struct{}, 1), feeds: map[id.ID]*installationFeed{}, pollers: map[id.ID]func(context.Context) error{}}
+	r := &botGatewayRuntime{now: time.Now, startedAt: unixSecondsOrZero(time.Now()) * 1000, ctx: client.WithBackground(ctx), api: api, loopback: loopback, log: log, entries: map[id.ID]*botGatewayEntry{}, wake: make(chan struct{}, 1), pass: make(chan struct{}, 1), feeds: map[id.ID]*installationFeed{}, pollers: map[id.ID]func(context.Context) error{}}
+	r.starts.ctx, r.starts.finished = r.ctx, r.requestPass
+	return r
 }
 
 func (r *botGatewayRuntime) Wake() <-chan struct{} { return r.wake }
@@ -320,6 +327,11 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 			delete(r.maintenance, installation)
 		}
 	}
+	for installation := range r.helperRespawns {
+		if !keep[installation] {
+			delete(r.helperRespawns, installation)
+		}
+	}
 	for installation, f := range r.feeds {
 		if !keep[installation] {
 			f.close() // its trust retries stop (Bot v2 Task 16, fix round 1 M-3)
@@ -329,12 +341,18 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 	r.sealed.retain(keep)
 	r.webhooks.retain(keep)
 	r.mu.Unlock()
+	r.starts.retain(keep)
 	for _, e := range removed {
 		e.cancel()
 		<-e.done
 	}
 }
-func (r *botGatewayRuntime) Close() { r.RetainOnly(nil) }
+
+// Close stops every installation's intake, cancels the helper starts in flight and waits for them to end.
+func (r *botGatewayRuntime) Close() {
+	r.RetainOnly(nil)
+	r.starts.close()
+}
 
 // Drop stops intake and waits for its borrowed helper to be returned before a
 // manager can reopen the same state directory.

@@ -940,8 +940,12 @@ LimitMEMLOCK=256M
 # after starting the keeper; `dillad bot-launch` drops every capability before it execs the Bot.
 # CAP_SETPCAP: what lets the serving process and bot-launch remove those from the bounding set; both drop it
 # as well, so only the keeper keeps it.
-AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP
+# CAP_KILL: only for the keeper too, which stops the Bot (SIGTERM, then SIGKILL) and tells it its
+# installations changed (SIGHUP). The Bot runs as another user, and signalling another user's process needs
+# CAP_KILL; without it every stop waits out TimeoutStopSec. The serving dillad drops it with the others, and
+# bot-launch drops it before it execs the Bot, so only the keeper keeps it.
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

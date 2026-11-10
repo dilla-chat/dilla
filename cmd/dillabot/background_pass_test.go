@@ -6,16 +6,21 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/cborx"
+	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
@@ -214,4 +219,169 @@ func TestRemovedInstallationDoesNotRunMaintenance(t *testing.T) {
 	if _, exists := r.maintenance[installation]; exists {
 		t.Fatal("removed installation retained maintenance")
 	}
+}
+
+// A helper that died after a good pass must be replaced: maintenance meeting a closed helper asks for a pass of that
+// installation, and only that one (v0.1.0-bot2 on CT 144 logged "helper client is closed" every 10 s forever).
+func TestMaintenanceMeetingAClosedHelperAsksForAPassOfThatInstallation(t *testing.T) {
+	r := newBotGatewayRuntime(context.Background(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	dead, healthy := id.New(), id.New()
+	r.SetMaintenance(dead, backgroundMaintenance{run: func(context.Context) error {
+		return fmt.Errorf("reminder tick: %w", helper.ErrClosed)
+	}})
+	r.SetMaintenance(healthy, backgroundMaintenance{run: func(context.Context) error { return errors.New("transient") }})
+	if err := r.maintainDue(context.Background()); !errors.Is(err, helper.ErrClosed) {
+		t.Fatalf("maintainDue = %v, want the closed helper reported", err)
+	}
+	select {
+	case <-r.Pass():
+	default:
+		t.Fatal("no pass was requested for the installation whose helper is closed")
+	}
+	targets, _ := r.takePassTargets()
+	if !targets[dead] || targets[healthy] || len(targets) != 1 {
+		t.Fatalf("pass targets = %v, want only the dead helper's installation", targets)
+	}
+}
+
+// Fix round, I-1 (a) and (c): the maintenance at the start of a pass, which runs before the pass replaces unusable
+// helpers, asks for no pass when it meets a gone helper, does not fail the pass, and leaves the installation's own run
+// on the replacement to the pass. The installation's own run on a replacement that is gone fails that installation.
+func TestPassStartMaintenanceMeetingAGoneHelperAsksForNothing(t *testing.T) {
+	r := newBotGatewayRuntime(t.Context(), nil, true, quietLogger())
+	defer r.Close()
+	installation := id.New()
+	r.SetMaintenance(installation, backgroundMaintenance{run: func(context.Context) error {
+		return fmt.Errorf("reminder tick: %w", helper.ErrClosed)
+	}})
+	done := map[id.ID]bool{}
+	if err := r.maintain(t.Context(), done); err != nil {
+		t.Fatalf("pass-start maintenance = %v, want a gone helper left to the pass, not an error of it", err)
+	}
+	select {
+	case <-r.Pass():
+		t.Fatal("the pass-start maintenance asked for another pass from inside the pass")
+	default:
+	}
+	if done[installation] {
+		t.Fatal("the gone helper's installation is marked done: its replacement's run would be skipped")
+	}
+	runs := 0
+	r.SetMaintenance(installation, backgroundMaintenance{run: func(context.Context) error { runs++; return nil }})
+	if err := r.maintainOne(t.Context(), installation, done); err != nil || runs != 1 {
+		t.Fatalf("replacement's run in the pass: err=%v runs=%d, want one run", err, runs)
+	}
+	// A replacement that is gone in its own run fails the installation (the loop retries it on instFail), asking for
+	// no pass itself.
+	r.SetMaintenance(installation, backgroundMaintenance{run: func(context.Context) error { return nil }, usable: func() bool { return false }})
+	if err := r.maintainOne(t.Context(), installation, map[id.ID]bool{}); !errors.Is(err, helper.ErrClosed) {
+		t.Fatalf("in-pass run on an unusable helper = %v, want ErrClosed", err)
+	}
+	select {
+	case <-r.Pass():
+		t.Fatal("the in-pass run asked for a pass")
+	default:
+	}
+}
+
+// Fix round, I-1 (b): the due tick asks for a pass at once the first time a helper is gone, then on a doubling backoff
+// up to helperRespawnCap; the ticks in between ask for nothing; a replacement that serves a run resets it.
+func TestHelperRespawnBackoffDoublesAndResetsWhenAReplacementServes(t *testing.T) {
+	var delays []time.Duration
+	var scheduled []func()
+	defer func(f func(time.Duration, func())) { helperRespawnAfter = f }(helperRespawnAfter)
+	helperRespawnAfter = func(d time.Duration, f func()) { delays = append(delays, d); scheduled = append(scheduled, f) }
+	r := newBotGatewayRuntime(t.Context(), nil, true, quietLogger())
+	defer r.Close()
+	installation := id.New()
+	gone := backgroundMaintenance{run: func(context.Context) error { return helper.ErrClosed }}
+	asked := func() bool {
+		targets, _ := r.takePassTargets()
+		return targets[installation]
+	}
+	r.SetMaintenance(installation, gone)
+	_ = r.maintainDue(t.Context())
+	if !asked() || len(delays) != 0 {
+		t.Fatalf("first gone helper: asked=false or delayed %v, want a pass at once", delays)
+	}
+	for range 8 {
+		// Two ticks while an ask is scheduled schedule one ask.
+		_ = r.maintainDue(t.Context())
+		_ = r.maintainDue(t.Context())
+		if asked() {
+			t.Fatal("a tick during the backoff asked for a pass at once")
+		}
+		scheduled[len(scheduled)-1]()
+		if !asked() {
+			t.Fatal("the scheduled ask asked for no pass")
+		}
+	}
+	want := []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second, 300 * time.Second, 300 * time.Second, 300 * time.Second}
+	if !slices.Equal(delays, want) {
+		t.Fatalf("respawn delays %v, want %v", delays, want)
+	}
+	r.SetMaintenance(installation, backgroundMaintenance{run: func(context.Context) error { return nil }})
+	_ = r.maintainDue(t.Context())
+	r.SetMaintenance(installation, gone)
+	delays = nil
+	_ = r.maintainDue(t.Context())
+	if !asked() || len(delays) != 0 {
+		t.Fatalf("after a replacement served, the next gone helper waited %v, want a pass at once", delays)
+	}
+}
+
+// Fix round, I-1: a helper that dies on its first maintenance call after every respawn. Before, the pass-start
+// maintenance of each replacing pass asked for the next pass, and the helper was respawned every ~2 s for good. Now
+// the Bot's loop runs passes for it no faster than the respawn backoff: at once, then 10 s doubling to 5 min.
+func TestAHelperThatDiesAfterEveryRespawnIsNotRespawnedFasterThanTheBackoff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		r := newBotGatewayRuntime(ctx, nil, true, quietLogger())
+		installation := id.New()
+		respawns := 0
+		alwaysGone := func() backgroundMaintenance {
+			return backgroundMaintenance{run: func(context.Context) error { return fmt.Errorf("reminder tick: %w", helper.ErrClosed) }}
+		}
+		var passes []time.Time
+		start := time.Now()
+		loop := botLoop{clock: clock.System(), log: quietLogger(), passes: r.Pass(), take: r.takePassTargets,
+			reload: make(chan os.Signal), wake: make(chan struct{}), poll: func(context.Context) {},
+			maintain: r.maintainDue, due: dueInterval,
+			pass: func(passCtx context.Context, targets map[id.ID]bool) error {
+				passes = append(passes, time.Now())
+				// As reconcile: maintenance first, then each covered installation; its helper is gone, so the pass
+				// starts another, which will die on its first maintenance call too.
+				done := map[id.ID]bool{}
+				if err := r.maintain(passCtx, done); err != nil {
+					return err
+				}
+				if targets == nil || targets[installation] {
+					respawns++
+					r.SetMaintenance(installation, alwaysGone())
+				}
+				return nil
+			}}
+		finished := make(chan struct{})
+		go func() { _ = loop.run(ctx); close(finished) }()
+		time.Sleep(30 * time.Minute)
+		cancel()
+		<-finished
+		r.Close()
+		var gaps []time.Duration
+		for i := 1; i < len(passes); i++ {
+			gaps = append(gaps, passes[i].Sub(passes[i-1]))
+		}
+		// At once, then 10, 20, 40, 80, 160 s and 5 min apart, shifted by up to a 10 s tick: about 11 in 30 min.
+		// Without the backoff it would be one every 10 s (180); with the pass-start ask, one every 2 s (about 900).
+		if len(passes) > 13 {
+			t.Fatalf("%d passes (%d respawns) in 30 min, want at most 13 on the respawn backoff", len(passes), respawns)
+		}
+		t.Logf("%d passes in 30 min, %d respawns, gaps %v", len(passes), respawns, gaps)
+		if len(gaps) < 3 || gaps[len(gaps)-1] < helperRespawnCap || gaps[len(gaps)-2] < helperRespawnCap {
+			t.Fatalf("pass gaps %v, want the backoff at its %v cap by the end", gaps, helperRespawnCap)
+		}
+		if time.Since(start) < 30*time.Minute {
+			t.Fatal("fake time did not advance")
+		}
+	})
 }

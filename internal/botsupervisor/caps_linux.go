@@ -17,6 +17,7 @@ import (
 
 // Capability numbers (linux/capability.h).
 const (
+	capKill           = 5
 	capSetgid         = 6
 	capSetuid         = 7
 	capSetpcap        = 8
@@ -166,16 +167,19 @@ var readCaps = func() (s capSets, ambient, bounding uint64, err error) {
 	return s, ambient, bounding, nil
 }
 
-// DropServingCapabilities removes CAP_SETUID, CAP_SETGID and CAP_SETPCAP from every set of every thread of the
-// serving dillad: the keeper, already started, is the only process left that holds them. A process that holds none
-// of them in its effective, permitted, inheritable or ambient set (a development run, a test) has nothing to drop.
+// servingDrops is what DropServingCapabilities removes: every capability the keeper keeps.
+var servingDrops = []int{capSetuid, capSetgid, capSetpcap, capKill}
+
+// DropServingCapabilities removes CAP_SETUID, CAP_SETGID, CAP_SETPCAP and CAP_KILL from every set of every thread of
+// the serving dillad: the keeper, already started, is the only process left that holds them. A process that holds
+// none of them in its effective, permitted, inheritable or ambient set (a development run, a test) has nothing to drop.
 //
 // It fails closed: holding one of them without CAP_SETPCAP (so the bounding set cannot shrink), or being unable to
 // change every thread (a cgo build: syscall.AllThreadsSyscall is ENOTSUP), is an error, in every mode. The one
 // exception is rootDevTest (dev_same_user) in a process whose euid is 0, a development or test run as root, where
-// dropping three capabilities from uid 0 buys nothing; it is logged.
+// dropping four capabilities from uid 0 buys nothing; it is logged.
 func DropServingCapabilities(log *slog.Logger, rootDevTest bool) error {
-	drop := []int{capSetuid, capSetgid, capSetpcap}
+	drop := servingDrops
 	s, ambient, _, err := readCaps()
 	if err != nil {
 		return err
@@ -190,22 +194,42 @@ func DropServingCapabilities(log *slog.Logger, rootDevTest bool) error {
 		return nil
 	}
 	if !canBound {
-		err = errors.New("dillad holds CAP_SETUID or CAP_SETGID without CAP_SETPCAP, so it cannot remove them from its bounding set; give the unit CAP_SETPCAP as deploy/dilla.service does")
+		err = errors.New("dillad holds CAP_SETUID, CAP_SETGID or CAP_KILL without CAP_SETPCAP, so it cannot remove them from its bounding set; give the unit CAP_SETPCAP as deploy/dilla.service does")
 	} else {
 		err = dropOnAllThreads(drop, true)
 	}
 	if err != nil && rootDevTest && os.Geteuid() == 0 {
 		if log != nil {
-			log.Warn("dev_same_user as root: keeping CAP_SETUID and CAP_SETGID", "err", err)
+			log.Warn("dev_same_user as root: keeping CAP_SETUID, CAP_SETGID and CAP_KILL", "err", err)
 		}
 		return nil
 	}
 	return err
 }
 
-// keeperCapabilities is what the keeper keeps: CAP_SETUID and CAP_SETGID to start the Bot as its user, and
-// CAP_SETPCAP, which passes to bot-launch so it can empty its own bounding set.
-const keeperCapabilities = uint64(1)<<capSetuid | uint64(1)<<capSetgid | uint64(1)<<capSetpcap
+// keeperCapabilities is what the keeper keeps: CAP_SETUID and CAP_SETGID to start the Bot as its user; CAP_SETPCAP,
+// which passes to bot-launch so it can empty its own bounding set; and CAP_KILL, to signal the Bot (stop it, and tell
+// it its installations changed), which runs as another user. bot-launch drops all four before it execs the Bot.
+const keeperCapabilities = uint64(1)<<capSetuid | uint64(1)<<capSetgid | uint64(1)<<capSetpcap | uint64(1)<<capKill
+
+// errKeeperLacksKill is the keeper's warning, at its start, that it cannot signal a Bot of another user.
+var errKeeperLacksKill = errors.New("the bot keeper lacks CAP_KILL, so it cannot stop the Bot or tell it its installations changed (the Bot runs as another user), and every stop of dillad waits out systemd's timeout; give dilla.service CAP_KILL as deploy/dilla.service does (install-bot.sh --upgrade installs it)")
+
+// keeperKillCheck is nil when the keeper can signal its Bot: it holds CAP_KILL in its effective set, or the Bot runs
+// as dillad's own user (sameUser, dev_same_user), where signalling needs no capability.
+func keeperKillCheck(sameUser bool) error {
+	if sameUser {
+		return nil
+	}
+	s, _, _, err := readCaps()
+	if err != nil {
+		return err
+	}
+	if s.effective&(1<<capKill) == 0 {
+		return errKeeperLacksKill
+	}
+	return nil
+}
 
 // narrowKeeperCapabilities leaves the keeper only keeperCapabilities, in every set of every thread. Failing to is
 // fatal for the keeper: without CAP_SETPCAP it cannot, and in a cgo build it cannot change every thread (allowCgo,
@@ -229,7 +253,7 @@ func narrowKeeperCapabilities(allowCgo bool) error {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("narrow its capabilities to CAP_SETUID, CAP_SETGID and CAP_SETPCAP: %w", err)
+		return fmt.Errorf("narrow its capabilities to CAP_SETUID, CAP_SETGID, CAP_SETPCAP and CAP_KILL: %w", err)
 	}
 	return nil
 }

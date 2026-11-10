@@ -93,7 +93,8 @@ func read(t *testing.T, path string) string {
 }
 
 // Bot v2 task 11: dillad supervises the Bot. The keeper keeps CAP_SETUID and CAP_SETGID to start it as the dillabot
-// user (CAP_SETPCAP lets the serving process and the launcher drop them from the bounding set); the Bot's bubblewrap
+// user (CAP_SETPCAP lets the serving process and the launcher drop them from the bounding set), and CAP_KILL to
+// signal it (v0.1.0-bot2.1: the Bot runs as another user, so without it every stop timed out); the Bot's bubblewrap
 // sandbox needs the device and set-id rules the dillabot unit already had; its state directory is writable beside
 // dillad's; the socket lives under dillad's runtime directory. Each of these lines carries its reason in the unit.
 func TestDillaServiceAllowsBubblewrapAndKeeper(t *testing.T) {
@@ -116,8 +117,8 @@ func TestDillaServiceAllowsBubblewrapAndKeeper(t *testing.T) {
 	for key, want := range map[string]string{
 		"RuntimeDirectory":      "dillad",
 		"ReadWritePaths":        "-/var/lib/dillabot",
-		"AmbientCapabilities":   "CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP",
-		"CapabilityBoundingSet": "CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP",
+		"AmbientCapabilities":   "CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL",
+		"CapabilityBoundingSet": "CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL",
 		"DevicePolicy":          "closed",
 		"LimitMEMLOCK":          "256M",
 		"NoNewPrivileges":       "yes",

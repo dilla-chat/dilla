@@ -108,19 +108,27 @@ func newOpenedClient(t transport, binding Binding, open ...func() ([]any, error)
 	}
 	if len(result) != 2 || result[0] != uint64(storeVersion) {
 		_ = t.Close()
-		return nil, errors.New("native open returned an unsupported store response")
+		return nil, &openResponseError{cause: errors.New("native open returned an unsupported store response")}
 	}
 	body, ok := result[1].([]byte)
 	if !ok {
 		_ = t.Close()
-		return nil, errors.New("native open returned an invalid identity response")
+		return nil, &openResponseError{cause: errors.New("native open returned an invalid identity response")}
 	}
 	if _, err := decodeIdentity(body, binding); err != nil {
 		_ = t.Close()
-		return nil, err
+		return nil, &openResponseError{cause: err}
 	}
 	return &Client{gate: prioritygate.New(1), t: t, binding: binding, usable: true}, nil
 }
+
+// openResponseError keeps an open-response failure's own text and matches helper.ErrOpenResponse, so helper.Class
+// names it "open_response".
+type openResponseError struct{ cause error }
+
+func (e *openResponseError) Error() string        { return e.cause.Error() }
+func (e *openResponseError) Unwrap() error        { return e.cause }
+func (e *openResponseError) Is(target error) bool { return target == helper.ErrOpenResponse }
 
 func (b Binding) valid() bool {
 	return !b.Instance.IsZero() && !b.Community.IsZero() && !b.Installation.IsZero()

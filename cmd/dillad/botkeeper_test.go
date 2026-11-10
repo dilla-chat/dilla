@@ -102,8 +102,21 @@ func TestRootServeRefusesTheBot(t *testing.T) {
 	if _, err := startBotKeeper(c, "/nonexistent/dilla.toml"); !errors.Is(err, errRootServe) {
 		t.Fatalf("startBotKeeper as root = %v", err)
 	}
+	oldOwner := dataDirOwner
+	t.Cleanup(func() { dataDirOwner = oldOwner })
+	dataDirOwner = func(string) (int, bool) { return 0, true }
 	if leg := doctorBotLeg(c); leg.Status != ops.Red || !strings.Contains(leg.Detail, "runs as root") {
-		t.Fatalf("doctor as root = %+v", leg)
+		t.Fatalf("doctor as root over a root-owned data directory = %+v", leg)
+	}
+	dataDirOwner = func(string) (int, bool) { return 0, false }
+	if leg := doctorBotLeg(c); !strings.Contains(leg.Detail, "runs as root") {
+		t.Fatalf("doctor as root over a data directory it cannot judge = %+v", leg)
+	}
+	// An operator's root shell on a normal install (v0.1.0-bot2 on CT 144): the data directory is dillad's, so the
+	// serve is not root and doctor must not send the operator after a problem that does not exist.
+	dataDirOwner = func(string) (int, bool) { return 997, true }
+	if leg := doctorBotLeg(c); strings.Contains(leg.Detail, "runs as root") {
+		t.Fatalf("doctor as root over dillad's data directory blamed the serve: %+v", leg)
 	}
 	c.Bot.DevSameUser = true
 	if err := refuseRootKeeper(c.Bot); err != nil {

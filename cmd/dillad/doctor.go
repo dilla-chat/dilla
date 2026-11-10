@@ -230,7 +230,7 @@ func doctorBotHealthLeg(cfg *config.Config) ops.Leg {
 		lines = append(lines, fmt.Sprintf("commands failing since %s (community %s)", failing[community].UTC().Format(time.RFC3339), community.String()))
 	}
 	return ops.Leg{Name: name, Status: ops.Yellow, Detail: strings.Join(lines, "; "),
-		Fix: "read the Bot's log, or run dillabot doctor as the Bot's user"}
+		Fix: "read the Bot's lines in the service journal (journalctl -u dilla); stage and error_class name the failing step"}
 }
 
 // doctorCertificateLeg looks at the certificate certmagic holds on disk. It

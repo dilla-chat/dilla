@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"sync"
 	"time"
@@ -48,11 +49,17 @@ func (e *OutcomeUnknownError) Is(target error) bool { return target == ErrOutcom
 func (e *OutcomeUnknownError) Unwrap() error        { return e.cause }
 
 type Options struct {
-	Executable      string
-	StateDir        string
-	CallTimeout     time.Duration
+	Executable  string
+	StateDir    string
+	CallTimeout time.Duration
+	// OpenTimeout bounds Open alone. Opening an existing store can run one-off upgrade work in the helper (the Bot
+	// v2 removal of v1 interaction groups, under secure_delete), which takes far longer than an ordinary call on a
+	// store with many groups. Under CallTimeout the helper was killed mid-upgrade on every pass and never opened.
+	OpenTimeout     time.Duration
 	ShutdownTimeout time.Duration
 	KillTimeout     time.Duration
+	// Logger, when set, receives one line when the client stops the helper after a call whose outcome is unknown.
+	Logger *slog.Logger
 
 	launcher func(*exec.Cmd) error // test seam; production always uses os/exec.
 }
@@ -67,6 +74,8 @@ type Client struct {
 	gate      *prioritygate.Gate
 	transport exchange
 	callTime  time.Duration
+	openTime  time.Duration
+	log       *slog.Logger
 	stopTime  time.Duration
 	closed    bool
 	opened    bool
@@ -76,8 +85,20 @@ type Client struct {
 // helper receives only its nonsecret state directory on argv; the database key
 // is sent later by Open over the inherited private socket.
 func Start(options Options) (*Client, error) {
+	applyDefaults(&options)
+	t, err := launch(options)
+	if err != nil {
+		return nil, &launchError{cause: err}
+	}
+	return &Client{gate: prioritygate.New(1), transport: t, callTime: options.CallTimeout, openTime: options.OpenTimeout, log: options.Logger, stopTime: options.ShutdownTimeout}, nil
+}
+
+func applyDefaults(options *Options) {
 	if options.CallTimeout <= 0 {
 		options.CallTimeout = 15 * time.Second
+	}
+	if options.OpenTimeout <= 0 {
+		options.OpenTimeout = 10 * time.Minute
 	}
 	if options.ShutdownTimeout <= 0 {
 		options.ShutdownTimeout = 2 * time.Second
@@ -85,11 +106,6 @@ func Start(options Options) (*Client, error) {
 	if options.KillTimeout <= 0 {
 		options.KillTimeout = 2 * time.Second
 	}
-	t, err := launch(options)
-	if err != nil {
-		return nil, err
-	}
-	return &Client{gate: prioritygate.New(1), transport: t, callTime: options.CallTimeout, stopTime: options.ShutdownTimeout}, nil
 }
 
 // Open binds the helper's encrypted store to the supplied instance,
@@ -101,7 +117,7 @@ func (c *Client) Open(ctx context.Context, instance, community, installation id.
 	if len(databaseKey) != 32 || instance.IsZero() || community.IsZero() || installation.IsZero() {
 		return nil, errors.New("invalid helper open parameters")
 	}
-	callCtx, cancel := boundedContext(ctx, c.callTime)
+	callCtx, cancel := boundedContext(ctx, c.openTime)
 	defer cancel()
 	release, err := c.acquire(callCtx)
 	if err != nil {
@@ -117,7 +133,7 @@ func (c *Client) Open(ctx context.Context, instance, community, installation id.
 		return nil, errors.New("helper client is already open")
 	}
 	payload := []any{instance, community, installation, databaseKey}
-	response, err := c.request(callCtx, protocol.HelperOpen, payload)
+	response, err := c.requestWithin(callCtx, protocol.HelperOpen, payload, c.openTime)
 	if err != nil {
 		return nil, err
 	}
@@ -429,7 +445,24 @@ func (c *Client) serial(ctx context.Context, fn func() ([]any, error)) ([]any, e
 	return fn()
 }
 
+// logStopped records, once per helper, why the client stopped it: the operation, the error class and how the process
+// ended. Without it a helper that died left only "helper client is closed" on every later call (v0.1.0-bot2).
+func (c *Client) logStopped(operation protocol.HelperOperation, err error) {
+	if c.log == nil {
+		return
+	}
+	exit := "unknown"
+	if e, ok := c.transport.(interface{ exit() string }); ok {
+		exit = e.exit()
+	}
+	c.log.Error("bot native helper stopped", "operation", uint64(operation), "error_class", Class(err), "exit", exit)
+}
+
 func (c *Client) request(ctx context.Context, operation protocol.HelperOperation, payload []any) ([]any, error) {
+	return c.requestWithin(ctx, operation, payload, c.callTime)
+}
+
+func (c *Client) requestWithin(ctx context.Context, operation protocol.HelperOperation, payload []any, timeout time.Duration) ([]any, error) {
 	var requestID id.ID
 	for requestID.IsZero() {
 		requestID = id.New()
@@ -437,10 +470,11 @@ func (c *Client) request(ctx context.Context, operation protocol.HelperOperation
 	if err := validateBounded(payload, protocol.MaxHelperPayload); err != nil {
 		return nil, errors.New("invalid helper payload")
 	}
-	response, err := c.transport.request(ctx, requestID, operation, payload, c.callTime)
+	response, err := c.transport.request(ctx, requestID, operation, payload, timeout)
 	if err != nil {
 		if errors.Is(err, ErrOutcomeUnknown) {
 			c.abortCurrent()
+			c.logStopped(operation, err)
 		}
 		return nil, err
 	}

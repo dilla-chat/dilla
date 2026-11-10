@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
+	"golang.org/x/sys/unix"
 )
 
 // The test binary plays three parts besides the tests (TestMain):
@@ -265,7 +266,7 @@ func TestLaunchedChildHasNoCapabilities(t *testing.T) {
 		t.Errorf("SigIgn = %q, want 0000000000000000", got)
 	}
 	// The keeper (root in its namespace, so holding every capability) ran the Bot as uid 0 there: the drop, not the
-	// uid, is what emptied the sets.
+	// uid, is what emptied the sets. The keeper's own CAP_KILL included: the Bot cannot signal anyone else's process.
 	if !strings.HasPrefix(r.Status["Uid"], "0\t") {
 		t.Errorf("Uid = %q, want the configured target 0", r.Status["Uid"])
 	}
@@ -683,6 +684,73 @@ func TestDropServingCapabilitiesFailsClosed(t *testing.T) {
 	}
 	if err := narrowKeeperCapabilities(true); err == nil {
 		t.Fatal("a keeper without CAP_SETPCAP narrowed")
+	}
+}
+
+// CAP_KILL (v0.1.0-bot2.1): the keeper keeps it, because it signals a Bot that runs as another user; the serving
+// process drops it with the keeper's other capabilities; a keeper without it says so, unless the Bot is its own user.
+func TestKeeperKeepsCapKillAndServeDropsIt(t *testing.T) {
+	if keeperCapabilities&(1<<capKill) == 0 {
+		t.Fatalf("keeperCapabilities = %016x lacks CAP_KILL", keeperCapabilities)
+	}
+	var dropped uint64
+	for _, c := range servingDrops {
+		dropped |= 1 << c
+	}
+	if dropped != keeperCapabilities {
+		t.Fatalf("the serving process drops %016x, want exactly the keeper's %016x", dropped, keeperCapabilities)
+	}
+
+	oldRead, oldAll := readCaps, allThreadsSyscall
+	t.Cleanup(func() { readCaps, allThreadsSyscall = oldRead, oldAll })
+
+	// A serving process that holds CAP_KILL (and CAP_SETPCAP) but no CAP_SETUID still drops it, from the bounding
+	// and ambient sets as well.
+	held := capSets{effective: 1<<capKill | 1<<capSetpcap, permitted: 1<<capKill | 1<<capSetpcap}
+	readCaps = func() (capSets, uint64, uint64, error) { return held, 1 << capKill, keeperCapabilities, nil }
+	var bounding, ambient []uintptr
+	allThreadsSyscall = func(trap, a1, a2, a3 uintptr) (uintptr, uintptr, syscall.Errno) {
+		if trap == unix.SYS_PRCTL && a1 == unix.PR_CAPBSET_DROP {
+			bounding = append(bounding, a2)
+		}
+		if trap == unix.SYS_PRCTL && a1 == unix.PR_CAP_AMBIENT && a2 == unix.PR_CAP_AMBIENT_LOWER {
+			ambient = append(ambient, a3)
+		}
+		return 0, 0, 0
+	}
+	if err := DropServingCapabilities(quietLog(), false); err != nil {
+		t.Fatalf("DropServingCapabilities: %v", err)
+	}
+	if !slices.Contains(bounding, capKill) || !slices.Contains(ambient, capKill) {
+		t.Fatalf("CAP_KILL was not dropped: bounding %v, ambient %v", bounding, ambient)
+	}
+	// Held without CAP_SETPCAP, CAP_KILL is refused like CAP_SETUID.
+	readCaps = func() (capSets, uint64, uint64, error) {
+		return capSets{permitted: 1 << capKill}, 0, keeperCapabilities, nil
+	}
+	if err := DropServingCapabilities(quietLog(), false); err == nil || !strings.Contains(err.Error(), "CAP_KILL") {
+		t.Fatalf("CAP_KILL held without CAP_SETPCAP = %v", err)
+	}
+
+	// The keeper's start-up check: missing CAP_KILL is named, unless the Bot runs as dillad's own user.
+	readCaps = func() (capSets, uint64, uint64, error) {
+		s := keeperCapabilities &^ (1 << capKill)
+		return capSets{effective: s, permitted: s}, 0, s, nil
+	}
+	if err := keeperKillCheck(false); !errors.Is(err, errKeeperLacksKill) {
+		t.Fatalf("a keeper without CAP_KILL = %v, want errKeeperLacksKill", err)
+	}
+	if !strings.Contains(errKeeperLacksKill.Error(), "deploy/dilla.service") {
+		t.Fatalf("the warning does not say where CAP_KILL comes from: %v", errKeeperLacksKill)
+	}
+	if err := keeperKillCheck(true); err != nil {
+		t.Fatalf("dev_same_user needs no CAP_KILL, got %v", err)
+	}
+	readCaps = func() (capSets, uint64, uint64, error) {
+		return capSets{effective: keeperCapabilities, permitted: keeperCapabilities}, 0, keeperCapabilities, nil
+	}
+	if err := keeperKillCheck(false); err != nil {
+		t.Fatalf("a keeper with CAP_KILL = %v", err)
 	}
 }
 
