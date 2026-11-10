@@ -88,7 +88,7 @@ func Start(options Options) (*Client, error) {
 	applyDefaults(&options)
 	t, err := launch(options)
 	if err != nil {
-		return nil, err
+		return nil, &launchError{cause: err}
 	}
 	return &Client{gate: prioritygate.New(1), transport: t, callTime: options.CallTimeout, openTime: options.OpenTimeout, log: options.Logger, stopTime: options.ShutdownTimeout}, nil
 }

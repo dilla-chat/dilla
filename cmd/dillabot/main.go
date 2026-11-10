@@ -448,7 +448,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger, reload <-chan os.
 		passes: gateways.Pass(), take: gateways.takePassTargets, reload: reload,
 		wake: gateways.Wake(), poll: gateways.PollText,
 		maintain: func(maintainCtx context.Context) error {
-			return gateways.maintain(client.WithBackground(maintainCtx), map[id.ID]bool{})
+			return gateways.maintainDue(client.WithBackground(maintainCtx))
 		},
 		due: dueInterval,
 	}
@@ -533,17 +533,36 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		// Successful publication swaps in the callbacks for the rebuilt runtime.
 		nativeClient, retainedNative := retainedNativeClient(musicRegistry, installation.ID, installation.CommunityID)
 		if !retainedNative {
-			key, _, keyErr := loadDatabaseKey(cfg.StateDir, installation.ID.String())
-			if keyErr != nil {
-				_ = musicRegistry.Disable(installation.ID)
-				logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "state_key")
-				continue
-			}
-			nativeClient, err = native.Start(ctx, helper.Options{Executable: cfg.HelperExecutable, StateDir: filepath.Join(cfg.StateDir, installation.ID.String()), Logger: logger.With("installation_id", installation.ID.String())}, native.Binding{Instance: cfg.InstanceID, Community: installation.CommunityID, Installation: installation.ID}, key)
-			clear(key)
+			// Fix round, I-2: the helper starts off the loop (helper_start.go). Its Open may run the one-off v1 cleanup
+			// for minutes; meanwhile the loop serves every other installation, and this one waits for the pass its
+			// start asks for when it ends.
+			var pending bool
+			nativeClient, pending, err = passHelper(&gateways.starts, installation.ID)
 			if err != nil {
 				_ = musicRegistry.Disable(installation.ID)
 				logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "helper_start", "error_class", helper.Class(err))
+				continue
+			}
+			if nativeClient == nil && !pending {
+				key, _, keyErr := loadDatabaseKey(cfg.StateDir, installation.ID.String())
+				if keyErr != nil {
+					_ = musicRegistry.Disable(installation.ID)
+					logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "state_key")
+					continue
+				}
+				startOptions := helper.Options{Executable: cfg.HelperExecutable, StateDir: filepath.Join(cfg.StateDir, installation.ID.String()), Logger: logger.With("installation_id", installation.ID.String())}
+				binding := native.Binding{Instance: cfg.InstanceID, Community: installation.CommunityID, Installation: installation.ID}
+				beginPassHelper(&gateways.starts, installation.ID, key, func(startCtx context.Context, key []byte) (*native.Client, error) {
+					return native.Start(startCtx, startOptions, binding, key)
+				})
+				logger.Info("bot native helper starting", "installation_id", installation.ID.String())
+				pending = true
+			}
+			if pending {
+				// Not a failure: the pass the start asks for when it ends reconciles the installation.
+				succeeded++
+				delete(unsucceeded, installation.ID)
+				incomplete[installation.ID] = helperStartRecheck
 				continue
 			}
 		}
@@ -804,6 +823,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														}, eventPoller))
 													gateways.SetMaintenance(installation.ID, backgroundMaintenance{
 														current: func() bool { return musicRegistry.Native(installation.ID, installation.CommunityID) == nativeClient },
+														usable:  nativeClient.Usable,
 														run: func(maintenanceCtx context.Context) error {
 															var utilityTask func(context.Context) error
 															if utilities != nil {

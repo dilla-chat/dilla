@@ -118,6 +118,19 @@ func TestOpenRejectsInstanceMismatch(t *testing.T) {
 	if f.closed != 1 {
 		t.Fatalf("invalid opened helper left alive: %d", f.closed)
 	}
+	if !errors.Is(err, helper.ErrOpenResponse) || helper.Class(err) != "open_response" {
+		t.Fatalf("mismatched open = %v (class %q), want an open_response", err, helper.Class(err))
+	}
+}
+
+// Every answer to Open the client cannot accept is an open_response for helper.Class (fix round, M-1).
+func TestOpenResponseFailuresAreClassified(t *testing.T) {
+	for _, answer := range [][]any{{uint64(99), []byte{}}, {uint64(1), "not bytes"}} {
+		_, err := newOpenedClient(&fakeTransport{}, testBinding(), func() ([]any, error) { return answer, nil })
+		if !errors.Is(err, helper.ErrOpenResponse) || helper.Class(err) != "open_response" || !strings.HasPrefix(err.Error(), "native open returned") {
+			t.Fatalf("open answer %v = %v (class %q), want an open_response keeping its text", answer, err, helper.Class(err))
+		}
+	}
 }
 
 func TestSessionFormattingRedactsToken(t *testing.T) {
