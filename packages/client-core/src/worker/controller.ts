@@ -2197,7 +2197,14 @@ export class Controller {
       gateway.start();
     }
     // (h) every community's channels and members, then the DMs, so join-all expects every visible group.
-    await this.refreshCommunities();
+    try { await this.refreshCommunities(); }
+    catch (e) {
+      // Bot v2: the list is a socket read. A gateway the instance refused (its version: reason version, upgrade or
+      // instance) carries nothing until a reload, so the account still reaches ready and the shell says why (its version
+      // banner) instead of the start-up error. Any other failure is the start-up error, as before.
+      if (this.connectionState.reason === undefined) throw e;
+      if (this.slices.get('communities') === undefined) this.slices.set('communities', []);
+    }
     if (this.revoked()) return;
     for (const community of this.slices.get('communities') ?? []) {
       try { await this.loadCommunity(community.id); } catch { /* the next ready retries */ }

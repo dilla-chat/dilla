@@ -4,7 +4,9 @@
 // hello). The desktop app shows `update.required` with its update button (`update.requiredAction`) and does not reload itself;
 // a browser tab reloads once to the host's current client (checkpointing the draft first, WS3) and, still refused, shows
 // `update.required` with `reload.action`. A plain version refusal (the server's close 4006 naming E_VERSION) keeps the older
-// state: `shell.banner.clientTooOld` with `reload.action`, whose press checkpoints the draft before the page reloads.
+// state: `shell.banner.clientTooOld` with `reload.action`, whose press checkpoints the draft before the page reloads. The
+// community list is a socket read (Bot v2), so a tab refused from its start shows the banner over an empty shell; the draft
+// is checked on a tab refused while open (its host restarts and the next socket is refused).
 // Ada's account lives in /tmp/dw/host-8515, which the three hosts of this suite share (`keepData`).
 import { expect, type Page, type TestInfo } from '@playwright/test';
 import { addServerVia, TEST_TIMEOUT, WAIT, copy, composerBox, expectAccessible, expectComposerReady, railNav, signUp, test } from './support/app';
@@ -170,11 +172,26 @@ test('a tab older than the host is refused two ways: banner, no reconnect, and R
   await expectNoReconnect(page, seen.sockets);
   expect(seen.sockets() - before, 'one socket after the reload, refused once').toBe(1);
   await expectAccessible(page, 'version refused: banner shown');
-  // Reload checkpoints the draft first; the page loads once more and the draft is in the composer again.
+
+  // A tab refused while it is open: the page loads normally, the host restarts (the open socket is lost) and the next
+  // socket is refused. The banner comes over the channel, and its Reload checkpoints the draft first; with the refusal
+  // lifted, the page loads once more with the draft in the composer and no banner.
+  await seen.refuse(false);
+  await page.reload();
+  await expectComposerReady(page, 'general');
+  await expect(banner(page)).toHaveCount(0);
   await composerBox(page, 'general').fill(DRAFT);
+  await seen.refuse(true);
+  const live = seen.sockets();
+  await swapHost(WIRE6);
+  await expect(banner(page)).toBeVisible({ timeout: BACKOFF_WAIT });
+  await expect(updateBanner(page)).toHaveCount(0);
+  await expectNoReconnect(page, seen.sockets);
+  expect(seen.sockets() - live, 'one socket after the host came back, refused once').toBe(1);
+  await seen.refuse(false);
   const loadsBefore = seen.loads();
   await reloadButton(page).click();
   await expect.poll(seen.loads, { timeout: WAIT }).toBe(loadsBefore + 1);
   await expect(composerBox(page, 'general')).toHaveValue(DRAFT, { timeout: WAIT });
-  await expect(banner(page)).toBeVisible({ timeout: WAIT });
+  await expect(banner(page)).toHaveCount(0);
 });

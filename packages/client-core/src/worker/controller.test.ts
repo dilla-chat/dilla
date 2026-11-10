@@ -3043,6 +3043,26 @@ describe('Controller in the ready phase', () => {
     expect(w.connection()).toStrictEqual({ status: 'offline', generation: '7' });
   });
 
+  // Bot v2: the community list is a socket read. A gateway refused for its version while the account starts still reaches
+  // ready (empty list, reason 'version'), so the page shows the version banner and never "dilla could not start".
+  it('a version refusal while the community list is read still reaches ready with the version reason', async () => {
+    const w = world();
+    w.routes.listCommunities.mockImplementationOnce(() => {
+      w.gateway.emit({ type: 'status', status: 'idle', closeCode: CLIENT_CLOSE.version });
+      return Promise.reject(refusal(0, 'E_VERSION'));
+    });
+    await toReady(w);
+    expect(w.last<CommunitySummary[]>('communities')).toEqual([]);
+    expect(w.connection()).toMatchObject({ status: 'offline', reason: 'version' });
+  });
+
+  it('a community list failure with no version refusal is still the start-up error', async () => {
+    const w = world();
+    w.routes.listCommunities.mockImplementationOnce(() => Promise.reject(refusal(0, 'E_NETWORK')));
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_NETWORK' } }));
+  });
+
   // Bot v2 Task 1: a version refusal that names E_UPGRADE_REQUIRED tells the page to show the update surface.
   it("an upgrade-required refusal publishes connection reason 'upgrade' and no reconnect", async () => {
     const w = world();
