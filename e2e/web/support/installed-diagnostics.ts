@@ -8,8 +8,8 @@ type Status = 'ok' | 'missing' | 'unsafe' | 'oversized' | 'malformed' | 'unavail
 const versions = ['1.0.0', '1.0.1'] as const;
 const phases = ['idle', 'checking', 'downloading', 'ready', 'installing', 'error'];
 const roles = ['ordinary', 'watchdog', 'bootstrap'];
-const startupStages = ['fetch-begin', 'fetch-response', 'fetch-reject', 'request-complete', 'request-error', 'request-blocked', 'document-loaded', 'load-failed', 'renderer-gone'];
-const startupRoutes = ['instance', 'limits', 'session', 'factor', 'backup', 'device', 'account', 'other-api', 'asset-wasm', 'asset-script', 'asset-style', 'other-asset', 'other'];
+const startupStages = ['fetch-begin', 'fetch-response', 'fetch-reject', 'request-complete', 'request-error', 'request-blocked', 'ws-send', 'ws-headers', 'document-loaded', 'load-failed', 'renderer-gone'];
+const startupRoutes = ['instance', 'limits', 'session', 'factor', 'backup', 'device', 'account', 'gateway', 'other-api', 'asset-wasm', 'asset-script', 'asset-style', 'other-asset', 'other'];
 const startupMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'OTHER'];
 interface StartupEvent { seq: number; stage: string; route: string; method: string; status: number; code: number; elapsedMs: number }
 interface Input { reports: string; profile: string; installed: string; platform: string; expectedVersion: string; previousPort?: number }
