@@ -138,6 +138,9 @@ async function startConnectProxy() {
   const { connect: tcp } = await import('node:net');
   const allowed = new Map([[`${HOST_A}:18443`, 18443], [`${HOST_B}:18444`, 18444]]);
   const server = createServer((_request, response) => { response.writeHead(403).end(); });
+  // Tunnels are hijacked sockets that closeAllConnections() does not see; a live one (the app's gateway) would keep
+  // server.close() from ever calling back, so the cleanup ends them first.
+  const live = new Set();
   server.on('connect', (request, client, head) => {
     const port = allowed.get(request.url ?? '');
     // Refused tunnels (Android's own background traffic, e.g. connectivity checks, also goes through the global proxy)
@@ -146,12 +149,13 @@ async function startConnectProxy() {
     const entry = { target: request.url, opened: Date.now(), closed: null };
     tunnels.push(entry);
     const upstream = tcp(port, '127.0.0.1', () => { client.write('HTTP/1.1 200 Connection Established\r\n\r\n'); if (head.length) upstream.write(head); upstream.pipe(client).pipe(upstream); });
-    const close = () => { entry.closed ??= Date.now(); upstream.destroy(); client.destroy(); };
+    const close = () => { entry.closed ??= Date.now(); live.delete(close); upstream.destroy(); client.destroy(); };
+    live.add(close);
     upstream.on('error', close); client.on('error', close); upstream.on('close', close); client.on('close', close);
   });
   server.on('clientError', (_error, socket) => { socket.destroy(); });
   await new Promise((ok, fail) => { server.once('error', fail); server.listen(CONNECT_PORT, '127.0.0.1', ok); });
-  cleanups.push(() => new Promise(ok => { server.closeAllConnections?.(); server.close(() => ok()); }));
+  cleanups.push(() => new Promise(ok => { for (const end of [...live]) end(); server.closeAllConnections?.(); server.close(() => ok()); }));
 }
 
 // ---- the emulator, the CA and the app ------------------------------------------------------------------------------
@@ -594,7 +598,8 @@ catch (error) {
   try { writeFileSync(join(OUT, 'failure.png'), execFileSync(ADB, ['exec-out', 'screencap', '-p'], { env, maxBuffer: 64 << 20 })); } catch { /* best effort */ }
 }
 finally {
-  for (const cleanup of cleanups.reverse()) { try { await cleanup(); } catch { /* best effort */ } }
+  // Each cleanup is bounded: a stuck one must not hold the job until its step timeout after the run has passed.
+  for (const cleanup of cleanups.reverse()) { try { await Promise.race([cleanup(), sleep(15_000)]); } catch { /* best effort */ } }
   rmSync(work, { recursive: true, force: true });
 }
 process.exit(failed ? 1 : 0);
