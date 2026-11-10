@@ -6,10 +6,13 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -46,7 +49,17 @@ type conn struct {
 	// noResume is set when this connection was closed with a code protocol/02 marks as NOT
 	// resumable (4004 session_revoked, 4009 session_timeout). suspend refuses to park such a
 	// connection in the resume window, so its token dies with the socket.
-	noResume    bool
+	noResume bool
+	// revoked is set when the connection's session ended (4004 session_revoked, 4003 unauthenticated), not
+	// merely timed out: a Bot connection's commands are then dropped, never carried to its next identify
+	// (Bot v2 Task 21b fix round 3, M3).
+	revoked bool
+	// sealed is set when a self-revoking request's close is deferred until its answer is written: from then
+	// on the read loop drops every inbound frame, so the revoked session can do nothing on this socket.
+	sealed atomic.Bool
+	// resuming is set when a resume took its snapshot of this suspended connection's ring, and
+	// cleared when the connection is suspended again: from the snapshot on, hold adds nothing.
+	resuming    bool
 	n           uint64
 	groups      map[id.ID]struct{}
 	lastLive    time.Time
@@ -55,10 +68,28 @@ type conn struct {
 	pingAt      time.Time
 	// The versions this connection negotiated at identify, echoed in ready.
 	wire, e2ee, media uint64
+	// remoteAddr is the upgrade request's client address (Options.ClientAddr), which socket
+	// requests are attributed to; requests is the in-flight request budget of the current socket.
+	remoteAddr string
+	requests   *requestBudget
 
 	ring   *ring
 	writer *writer
 	gw     *Gateway
+
+	// The Bot runtime connection's feed state (Bot v2 task 12, bot_feed.go). botInstallation and
+	// botCommunity are its session's binding. botSnapshot is set when a cold-start snapshot is owed on
+	// this connection, and botSnapshotEnd is the n of its ringed snapshot_end once sent: a resume is
+	// accepted only from an ack at or above it. While botHolding, DeliverBot's frames wait in
+	// botPending (a snapshot or a resume is in progress); botOverflow records that more waited than
+	// botPendingCap, and botDead that the connection can never be fed again.
+	botInstallation, botCommunity id.ID
+	botSnapshot                   bool
+	botSnapshotEnd                uint64
+	botHolding                    bool
+	botPending                    []Frame
+	botOverflow                   bool
+	botDead                       bool
 }
 
 // denyResume marks the connection dead for resume purposes. It is called before the socket is
@@ -66,6 +97,16 @@ type conn struct {
 func (c *conn) denyResume() {
 	c.mu.Lock()
 	c.noResume = true
+	c.mu.Unlock()
+}
+
+// denyResumeFor is denyResume for a close with code, which also records a revocation (revoked).
+func (c *conn) denyResumeFor(code CloseCode) {
+	c.mu.Lock()
+	c.noResume = true
+	if code.revokes() {
+		c.revoked = true
+	}
 	c.mu.Unlock()
 }
 
@@ -89,18 +130,57 @@ func (c *conn) currentWriter() *writer {
 func (c *conn) send(f Frame) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.sendLocked(f)
+}
+
+// sendLocked is send with c.mu already held.
+func (c *conn) sendLocked(f Frame) {
 	var n uint64
 	if f.Replay {
 		c.n++
 		n = c.n
-		if b, err := Encode(f, n); err == nil {
-			c.ring.add(n, b, f.Scope)
+		if b, err := Encode(f, n); err == nil && !c.ring.addOp(n, b, f.Scope, f.Op) {
+			// Only an op 62 reply over its ring budget is refused: it goes out unringed, with n = 0,
+			// so the replay sequence keeps no hole.
+			c.n--
+			n = 0
+			f.Replay = false
 		}
 	}
 	if c.writer == nil {
 		return
 	}
 	c.writer.enqueue(f, n)
+}
+
+// hold rings a replayable frame for a connection parked in the resume window, without queueing it:
+// the suspended writer is stopped, and a resume replays from the ring. It is how an op 62 reply
+// reaches a device whose socket dropped (Bot v2 task 10). It reports false, and holds nothing, once
+// a resume has taken its snapshot of the ring (resuming): a frame stamped after that snapshot would
+// sit between the announced replay range and `resumed`, an n the client was never told about. Nor
+// does it hold for a connection that may not resume (noResume: revoked or timed out).
+func (c *conn) hold(f Frame) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state != stateClosed || c.resuming || c.noResume || !f.Replay {
+		return false
+	}
+	return c.holdLocked(f)
+}
+
+// holdLocked is hold's ringing, with c.mu held and the state already checked.
+func (c *conn) holdLocked(f Frame) bool {
+	c.n++
+	b, err := Encode(f, c.n)
+	if err != nil {
+		c.n--
+		return false
+	}
+	if !c.ring.addOp(c.n, b, f.Scope, f.Op) {
+		c.n--
+		return false
+	}
+	return true
 }
 
 // mark records a liveness signal: ready, resumed or a heartbeat frame. Online is defined over
@@ -183,7 +263,21 @@ func (c *conn) tryResumeSnapshot(token []byte, generation, lastN, current uint64
 	if floor != 0 && lastN < floor-1 {
 		return resumeOutcome{}, errNotResumable
 	}
+	// An ack below the highest frame the ring dropped unacknowledged is refused too (Bot v2 task 12 fix
+	// round 1, I-3, extended to every connection by Jonas's ruling): with the whole gap aged out the ring
+	// is empty and floor says nothing, so the resume would replay nothing and lose the gap silently.
+	// The client identifies again: a person heals through ready's digest and the ?from= catch-up, the
+	// Bot through a fresh snapshot.
+	if lastN < c.ring.evictedThrough() {
+		return resumeOutcome{}, errNotResumable
+	}
 	entries := c.ring.entriesSince(lastN)
+	c.resuming = true
+	// A Bot connection's frames from here until the replay is queued wait in botPending
+	// (flushBotPending), instead of being lost between the snapshot and the connection going live.
+	if c.isBot {
+		c.botHolding = true
+	}
 	return resumeOutcome{from: lastN + 1, to: c.n, entries: entries}, nil
 }
 
@@ -222,16 +316,65 @@ var errNotEnrolledSession = errors.New("gateway: only an enrolled session opens 
 
 // wsSink adapts a coder/websocket connection to the writer's sink. Binary frames only: dilla's
 // wire is CBOR, never text.
-type wsSink struct{ c *websocket.Conn }
+type wsSink struct {
+	c *websocket.Conn
+	// limit is the configured read limit; zero leaves every frame to the library's own bound.
+	limit int64
+	// requests is set once the connection is identified: from then on a request frame may be
+	// read past limit, up to maxRequestFrameBytes.
+	requests atomic.Bool
+}
 
-func newWSSink(c *websocket.Conn) sink { return &wsSink{c: c} }
+// RequestFrameReadTimeout bounds how long the rest of a request frame longer than the read limit may take to arrive; a
+// slower connection is dropped. 16 MiB in 60 s is about 2.2 Mbit/s.
+const RequestFrameReadTimeout = 60 * time.Second
+
+// requestFrameReadTimeout is RequestFrameReadTimeout, a variable so a test can shorten it.
+var requestFrameReadTimeout = RequestFrameReadTimeout
+
+func newLimitedWSSink(c *websocket.Conn, limit int64) sink { return &wsSink{c: c, limit: limit} }
+
+// allowRequestFrames lets an identified connection's request frames past the read limit.
+func (s *wsSink) allowRequestFrames() { s.requests.Store(true) }
 
 func (s *wsSink) write(ctx context.Context, b []byte) error {
 	return s.c.Write(ctx, websocket.MessageBinary, b)
 }
 
+// read reads one message. With a limit, it reads at most limit+1 bytes of it and stops there,
+// unless the connection is identified and the head says it is a request frame, which is read on
+// up to maxRequestFrameBytes+1. An over-long message comes back truncated one byte past its
+// bound, so Decode refuses it as E_FRAME_LIMIT without the rest ever being buffered; the
+// connection then closes.
 func (s *wsSink) read(ctx context.Context) (websocket.MessageType, []byte, error) {
-	return s.c.Read(ctx)
+	if s.limit <= 0 {
+		return s.c.Read(ctx)
+	}
+	typ, r, err := s.c.Reader(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+	b, err := io.ReadAll(io.LimitReader(r, s.limit+1))
+	if err != nil {
+		return 0, nil, err
+	}
+	if int64(len(b)) <= s.limit || !s.requests.Load() || !isRequestFrame(b) {
+		return typ, b, nil
+	}
+	// The rest of a long request frame must arrive within RequestFrameReadTimeout (the 60 s an HTTP commit's body had): a
+	// device that trickles a 16 MiB frame and stops would otherwise hold that memory for as long as TCP stays up.
+	slow := time.AfterFunc(requestFrameReadTimeout, func() {
+		slog.Default().Warn("gateway: a request frame did not arrive in time; connection dropped", "bound", requestFrameReadTimeout.String())
+		// Tell the client why (policy violation: it reconnects like any lost socket). The close handshake gives a peer
+		// that does not answer at most 5 s more before the connection ends and the blocked read fails.
+		go func() { _ = s.c.Close(websocket.StatusPolicyViolation, "request frame too slow") }()
+	})
+	rest, err := io.ReadAll(io.LimitReader(r, int64(maxRequestFrameBytes)+1-int64(len(b))))
+	slow.Stop()
+	if err != nil {
+		return 0, nil, err
+	}
+	return typ, append(b, rest...), nil
 }
 
 func (s *wsSink) close(code CloseCode, reason string) {
@@ -300,6 +443,13 @@ func decodeAny(b []byte) (Inbound, error) {
 // detector flags even against the recording double. `writer.stop` closes a channel; it does not
 // wait for a goroutine already inside sink.write.
 func (g *Gateway) serve(ctx context.Context, s sink, token string) {
+	g.serveConn(ctx, s, token, nil)
+}
+
+// serveConn is serve for either listener; peer is non-nil on the Bot's Unix socket (BotHandler), where the session
+// must be a managed Bot's and the launch check applies: a resume needs a child that already spent its token, and an
+// identify's token (readBotLaunch) is spent only once its session resolved (admitBotSession).
+func (g *Gateway) serveConn(ctx context.Context, s sink, token string, peer *botPeer) {
 	wire, e2ee, media := g.advertised()
 	hello, err := HelloPayload(wire, e2ee, media,
 		g.opts.HeartbeatMS, g.opts.MaxFrameBytes, g.opts.InstanceID, g.Generation(),
@@ -341,6 +491,22 @@ func (g *Gateway) serve(ctx context.Context, s sink, token string) {
 	// The credential may have travelled on the HTTP upgrade instead of in the identify payload.
 	in.handshakeToken = token
 
+	if peer != nil {
+		switch in.Op {
+		case OpIdentify:
+			if !readBotLaunch(&in) {
+				g.refuse(ctx, s, frameErr("E_UNAUTHENTICATED", "launch token", CloseUnauthenticated))
+				return
+			}
+		case OpResume:
+			if !g.opts.BotLaunch.Authenticated(peer.pid) {
+				s.close(CloseUnauthenticated, "launch token")
+				return
+			}
+		}
+		in.botPeer = peer
+	}
+
 	switch in.Op {
 	case OpResume:
 		if c, ok := g.resumeConnection(ctx, s, in); ok {
@@ -362,9 +528,20 @@ func (g *Gateway) serve(ctx context.Context, s sink, token string) {
 	}
 }
 
+// olderThanAdvertised reports whether v is below every advertised version: the client is older
+// than anything this instance speaks, not merely different.
+func olderThanAdvertised(v uint64, set []uint64) bool {
+	for _, a := range set {
+		if v >= a {
+			return false
+		}
+	}
+	return len(set) > 0
+}
+
 // advertised is the instance's version sets, defaulting to {1} for all three. The {1} wire default
 // serves this package's unit tests only: the real list comes from dillad.New, the one composition
-// root, which passes dillad.Options.WireVersions ({4, 3, 2} since wire 4: people 4, managed Bots 3). A
+// root, which passes dillad.Options.WireVersions ({6} since Bot v2: people and managed Bots alike). A
 // root that left it nil would offer wire 1 while the delivery service refuses its uploads.
 func (g *Gateway) advertised() (wire, e2ee, media []uint64) {
 	pick := func(v []uint64) []uint64 {
@@ -397,6 +574,14 @@ func (g *Gateway) identifyConnection(ctx context.Context, s sink, in Inbound) (*
 			return nil, false
 		}
 		if !slices.Contains(set, v) {
+			if i == 0 && olderThanAdvertised(v, set) {
+				// Bot v2: the instance speaks wire 6 only. An older client is told to update; the
+				// close reason carries the code so a client can tell it from a plain mismatch.
+				g.refuse(ctx, s, frameErr("E_UPGRADE_REQUIRED",
+					fmt.Sprintf("wire version %d is older than this instance supports (%v); update the app", v, set),
+					CloseVersion))
+				return nil, false
+			}
 			g.refuse(ctx, s, frameErr("E_VERSION",
 				fmt.Sprintf("version %d is not advertised; this instance offers %v", v, set),
 				CloseVersion))
@@ -408,12 +593,20 @@ func (g *Gateway) identifyConnection(ctx context.Context, s sink, in Inbound) (*
 		bearer = tokenFromHandshake(in)
 	}
 	session, err := g.identify(ctx, bearer)
-	if err != nil {
+	if err != nil || (in.botPeer != nil && session.Bot == nil) || g.botOffSocket(in, session) {
 		g.refuse(ctx, s, frameErr("E_UNAUTHENTICATED", "identify", CloseUnauthenticated))
 		return nil, false
 	}
-	if session.Bot != nil && chosen[0] < 3 {
-		g.refuse(ctx, s, frameErr("E_VERSION", "managed bots require wire version 3; supported versions are [3]", CloseVersion))
+	if session.Bot != nil && chosen[0] != auth.WireVersion {
+		g.refuse(ctx, s, frameErr("E_UPGRADE_REQUIRED", fmt.Sprintf("managed Bots require wire version %d", auth.WireVersion), CloseVersion))
+		return nil, false
+	}
+	// The launch token is spent last (Bot v2 task 14 fix round 1, I-4): after every other check, immediately before
+	// registerVersions writes ready, so an identify refused for anything else leaves it unspent. A ready that is then
+	// lost costs the client one retry without the token, which only the same live child is admitted with
+	// (BotLaunch.Authenticated).
+	if in.botPeer != nil && !g.admitBotSession(in.botPeer, &in) {
+		g.refuse(ctx, s, frameErr("E_UNAUTHENTICATED", "identify", CloseUnauthenticated))
 		return nil, false
 	}
 	c, err := g.registerVersions(ctx, session, s, chosen)
@@ -474,7 +667,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 		bearer = tokenFromHandshake(in)
 	}
 	session, err := g.identify(ctx, bearer)
-	if err != nil {
+	if err != nil || (in.botPeer != nil && session.Bot == nil) || g.botOffSocket(in, session) {
 		return refuse("unauthenticated")
 	}
 	if session.DeviceID != c.deviceID {
@@ -486,12 +679,28 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	if c.isBot != (session.Bot != nil) {
 		return refuse("resume session type changed")
 	}
-	if session.Bot != nil && (c.wire < 3 || session.WireVersion < 3) {
+	c.mu.Lock()
+	replaced := c.isBot && c.botDead
+	c.mu.Unlock()
+	if replaced {
+		// A newer identify of the device replaced this Bot connection (fix round 2, N-2).
+		g.suspended.Delete(string(token))
+		return refuse("a newer Bot connection replaced this one; identify again")
+	}
+	if session.Bot != nil && (c.wire != auth.WireVersion || session.WireVersion != auth.WireVersion) {
 		return refuse("managed bot wire capability is not resumable; identify again")
+	}
+	// A Bot that has not acknowledged the whole cold-start snapshot identifies again, which streams a
+	// fresh one (Bot v2 task 12): the snapshot's body frames are not ringed.
+	if !c.botSnapshotAcked(lastN) {
+		g.suspended.Delete(string(token))
+		g.bots.drop(c)
+		return refuse("the Bot's snapshot is incomplete; identify again")
 	}
 	out, err := c.tryResumeSnapshot(token, generation, lastN, g.Generation())
 	if err != nil {
 		g.suspended.Delete(string(token))
+		g.bots.drop(c)
 		return refuse("resume window elapsed or n below the ring floor")
 	}
 	// Replay is all-or-nothing: skipping a newly blocked entry would create an n hole and hide
@@ -500,14 +709,25 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	originalWire := g.connectionWire(c)
 	for _, entry := range out.entries {
 		requiresWire3, scopeErr := g.scopeRequiresWire3(ctx, entry.scope)
-		if scopeErr != nil || (requiresWire3 && originalWire < 3) {
+		if scopeErr != nil || (requiresWire3 && originalWire < auth.WireVersion) {
 			g.suspended.Delete(string(token))
+			g.bots.drop(c)
 			return refuse("replay scope is no longer resumable; identify again")
 		}
 		out.frames = append(out.frames, entry.bytes)
 	}
 	versions := [3]uint64{c.wire, c.e2ee, c.media}
 	if err := g.recordCapabilities(ctx, session.TokenHash, versions); err != nil {
+		// The connection stays parked under its token, so it must hold op 62 replies again: the
+		// snapshot that set resuming led to no resume.
+		c.mu.Lock()
+		c.resuming = false
+		c.mu.Unlock()
+		// And the Bot frames that waited during the attempt go into its ring, in order.
+		if !c.parkBotPending() {
+			g.suspended.Delete(string(token))
+			g.bots.drop(c)
+		}
 		return refuse("session capability persistence failed")
 	}
 
@@ -515,15 +735,22 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	g.suspended.Delete(string(token))
 	now := g.opts.Clock.Now()
 	c.mu.Lock()
+	// A newer identify of the device may have replaced this Bot connection after the check above (Bot v2 Task 16,
+	// R2-2). botDead is checked again where the resume commits, under the same lock add sets it under: a replaced
+	// connection is refused here, and one replaced after this point is closed by add through the new writer.
+	if c.isBot && c.botDead {
+		c.mu.Unlock()
+		return refuse("a newer Bot connection replaced this one; identify again")
+	}
 	c.state = stateReady
 	c.lastLive = now
 	c.tokenHash = append(c.tokenHash[:0], session.TokenHash...)
+	// Requests of the old socket settle against their own budget; this socket starts afresh, and
+	// its requests are attributed to the address it came from.
+	c.requests = newRequestBudget()
+	c.remoteAddr = remoteAddrFrom(ctx)
 	// Paused until the connection is live again, as on identify: see newPausedWriter.
-	c.writer = newPausedWriter(s, writerLimits{
-		Frames:   g.opts.QueueFrames,
-		Bytes:    g.opts.QueueBytes,
-		Deadline: g.opts.WriteDeadline,
-	}, g.opts.Clock, g.opts.Log)
+	c.writer = newPausedWriter(s, g.writerLimitsFor(c.isBot), g.opts.Clock, g.opts.Log)
 	w := c.writer
 	c.mu.Unlock()
 
@@ -532,6 +759,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	// answers what it reads here, so a stale read would leave it holding the spent token.
 	if err := g.rotateResume(c); err != nil {
 		w.stop()
+		g.bots.drop(c)
 		s.close(CloseUnknown, "rotate")
 		return nil, false
 	}
@@ -542,6 +770,7 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	p, err := resumedPayload(out.from, out.to, c.resumeToken())
 	if err != nil {
 		w.stop()
+		g.bots.drop(c)
 		s.close(CloseUnknown, "resumed")
 		return nil, false
 	}
@@ -549,6 +778,13 @@ func (g *Gateway) resumeConnection(ctx context.Context, s sink, in Inbound) (*co
 	g.sendAppBuild(c)
 	for _, frame := range out.frames {
 		w.enqueueRaw(frame)
+	}
+	// A Bot connection's frames that arrived during the resume follow the replay, on the next n.
+	if !c.flushBotPending() {
+		w.stop()
+		g.bots.drop(c)
+		s.close(CloseUnknown, "bot feed overflow during the resume")
+		return nil, false
 	}
 	// Only now does the connection go back into the live registry. Publishing it before `resumed`
 	// and the replay are on the writer lets a concurrent fan-out land ahead of `resumed` or in
@@ -594,7 +830,7 @@ func (g *Gateway) sendReady(ctx context.Context, c *conn) error {
 		if scopeErr != nil {
 			return scopeErr
 		}
-		if requiresWire3 && c.wire < 3 {
+		if requiresWire3 && c.wire < auth.WireVersion {
 			continue
 		}
 		cursor, err := g.opts.Store.GetCursor(ctx, c.deviceID, groupID)
@@ -625,7 +861,7 @@ func (g *Gateway) sendReady(ctx context.Context, c *conn) error {
 		return err
 	}
 	p, err := ReadyPayload(c.deviceID, c.userID, g.Generation(), c.resume,
-		c.wire, c.e2ee, c.media, uint64(remaining), digests) //nolint:gosec // G115: a COUNT(*) result, never negative
+		c.wire, c.e2ee, c.media, uint64(remaining), digests, g.bootID) //nolint:gosec // G115: a COUNT(*) result, never negative
 	if err != nil {
 		return err
 	}
@@ -673,7 +909,7 @@ func (g *Gateway) subscribe(ctx context.Context, c *conn, cid uint64, groups []i
 			refuse("E_UNAVAILABLE", "group compatibility state is unavailable")
 			continue
 		}
-		if requiresWire3 && g.connectionWire(c) < 3 {
+		if requiresWire3 && g.olderWire(c) {
 			versionRefused++
 			continue
 		}
@@ -695,7 +931,7 @@ func (g *Gateway) subscribe(ctx context.Context, c *conn, cid uint64, groups []i
 		refuse("E_FORBIDDEN", fmt.Sprintf("%d of the groups are not this device's", refused))
 	}
 	if versionRefused > 0 {
-		refuse("E_VERSION", fmt.Sprintf("%d groups require wire version 3", versionRefused))
+		refuse("E_UPGRADE_REQUIRED", fmt.Sprintf("%d groups require wire version %d", versionRefused, auth.WireVersion))
 	}
 	if full {
 		refuse("E_FRAME_LIMIT", fmt.Sprintf("the subscription set is full at %d groups", maxSubscribedGroups))
@@ -706,6 +942,9 @@ func (g *Gateway) subscribe(ctx context.Context, c *conn, cid uint64, groups []i
 // decoder: coder/websocket's reader grows 2*cap+512 without bound.
 func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 	defer g.suspend(c)
+	if rs, ok := s.(interface{ allowRequestFrames() }); ok {
+		rs.allowRequestFrames()
+	}
 	inbound := rate.NewLimiter(rate.Limit(g.opts.FramesPerSecond), g.opts.FrameBurst)
 	for {
 		typ, b, err := s.read(ctx)
@@ -716,19 +955,30 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 			}
 			return
 		}
-		// The injected clock, not the wall clock x/time/rate would read by itself.
-		if !inbound.AllowN(g.opts.Clock.Now(), 1) {
-			if p, perr := ErrorPayload(0, "E_RATE_LIMITED", "inbound frame rate"); perr == nil {
-				c.send(Frame{Op: OpError, Payload: p})
-			}
-			g.closeConn(c, CloseRateLimited, "inbound frame rate")
+		if c.sealed.Load() {
+			continue // a deferred close: only the answers already in flight are written
+		}
+		// The injected clock, not the wall clock x/time/rate would read by itself. An ADMITTED
+		// request frame (op 59) does not spend the bucket (controller rulings M2 and B): it is
+		// bounded by the 64 in-flight cap, the 32 MiB byte budget and its route's own rate meter. A
+		// refused one (E_BUSY, no dispatcher, shutting down) is charged below once it is refused;
+		// a malformed one closes the connection at Decode. The op is read from the head alone.
+		overRate := func() bool { return !inbound.AllowN(g.opts.Clock.Now(), 1) }
+		// A Bot connection's op 67 webhook ack is not charged either (Bot v2 task 14): it answers one op 66 dillad sent,
+		// so its rate is the webhook posts' (metered per address, network and webhook), and a burst of posts must not
+		// close the Bot 4008. Only an ack of a delivery this connection is awaiting is free (fix round 1, M-5): any other
+		// op 67 is charged once decoded, below, and then dropped by handleWebhookAck.
+		op, ok := frameOp(b)
+		uncharged := ok && (op == OpRequest || (op == OpBotWebhookAck && c.isBot))
+		if !uncharged && overRate() {
+			g.closeOverRate(c)
 			return
 		}
 		if typ != websocket.MessageBinary {
 			s.close(CloseDecode, "text frame")
 			return
 		}
-		in, err := Decode(b, int(g.opts.ReadLimit))
+		in, err := Decode(b, frameReadLimit(b, int(g.opts.ReadLimit)))
 		if err != nil {
 			var fe *FrameError
 			if errors.As(err, &fe) {
@@ -740,14 +990,41 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 			}
 			return
 		}
+		if in.Op == OpRequest {
+			admitted := g.handleRequest(ctx, c, in)
+			if g.opts.Metrics != nil {
+				g.opts.Metrics.GatewayFrames.WithLabelValues(opLabel(in.Op), "in").Inc()
+			}
+			if !admitted && overRate() {
+				g.closeOverRate(c)
+				return
+			}
+			continue
+		}
+		if in.Op == OpBotWebhookAck && uncharged {
+			if a, err := webhookAckFields(in.Payload); (err != nil || !g.webhooks.awaiting(c, a.delivery)) && overRate() {
+				g.closeOverRate(c)
+				return
+			}
+		}
 		g.handle(ctx, c, in)
 	}
+}
+
+// closeOverRate answers a connection past its inbound frame bucket: E_RATE_LIMITED, then 4008.
+func (g *Gateway) closeOverRate(c *conn) {
+	if p, err := ErrorPayload(0, "E_RATE_LIMITED", "inbound frame rate"); err == nil {
+		c.send(Frame{Op: OpError, Payload: p})
+	}
+	g.closeConn(c, CloseRateLimited, "inbound frame rate")
 }
 
 // handle dispatches one inbound frame. heartbeat marks liveness and trims the ring; subscribe and
 // unsubscribe adjust this connection's group set.
 func (g *Gateway) handle(ctx context.Context, c *conn, in Inbound) {
 	switch in.Op {
+	case OpRequest:
+		_ = g.handleRequest(ctx, c, in) // the read loop routes requests itself; this keeps handle total
 	case OpCallStats:
 		g.handleCallStats(c, in)
 	case OpPresenceActivity:
@@ -756,6 +1033,8 @@ func (g *Gateway) handle(ctx context.Context, c *conn, in Inbound) {
 		g.handleTypingSet(ctx, c, in)
 	case OpVoiceSelf:
 		g.handleVoiceSelf(ctx, c, in)
+	case OpBotWebhookAck:
+		g.handleWebhookAck(c, in)
 	case OpHeartbeat:
 		lastN, err := rawUint(in.Payload[0])
 		if err != nil {
@@ -777,7 +1056,7 @@ func (g *Gateway) handle(ctx context.Context, c *conn, in Inbound) {
 			return
 		}
 		requiresWire3, scopeErr := g.scopeRequiresWire3(ctx, FrameScope{Groups: []id.ID{*in.GroupID}})
-		if scopeErr != nil || (requiresWire3 && g.connectionWire(c) < 3) {
+		if scopeErr != nil || (requiresWire3 && g.olderWire(c)) {
 			return
 		}
 		round, err := rawUint(in.Payload[0])
@@ -851,8 +1130,8 @@ func (g *Gateway) handleTypingSet(ctx context.Context, c *conn, in Inbound) {
 		g.signalError(c, "E_UNAVAILABLE")
 		return
 	}
-	if requiresWire3 && g.connectionWire(c) < 3 {
-		g.signalError(c, "E_VERSION")
+	if requiresWire3 && g.olderWire(c) {
+		g.signalError(c, "E_UPGRADE_REQUIRED")
 		return
 	}
 	if !g.acceptTyping(channel, c.userID, c.deviceID, on == 1) {
@@ -905,8 +1184,8 @@ func (g *Gateway) handleVoiceSelf(ctx context.Context, c *conn, in Inbound) {
 		g.signalError(c, "E_UNAVAILABLE")
 		return
 	}
-	if requiresWire3 && g.connectionWire(c) < 3 {
-		g.signalError(c, "E_VERSION")
+	if requiresWire3 && g.olderWire(c) {
+		g.signalError(c, "E_UPGRADE_REQUIRED")
 		return
 	}
 	// The callback proves live SFU membership. Bit zero is server-owned; client bits

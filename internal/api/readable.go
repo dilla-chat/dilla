@@ -115,15 +115,15 @@ func (h *Readable) active(ctx context.Context, user, channel id.ID) {
 }
 
 func (h *Readable) Register(mux *server.Mux) {
-	mux.HandleFunc("POST /v1/channels/{id}/messages", h.post)
-	mux.HandleFunc("GET /v1/channels/{id}/messages", h.list)
+	mux.Socket("POST /v1/channels/{id}/messages", http.HandlerFunc(h.post))
+	mux.Socket("GET /v1/channels/{id}/messages", http.HandlerFunc(h.list))
 	// The canonical spelling of an edit and a delete. A type-1 or type-2
 	// envelope on POST is the alias (P2-D15), which lands in the same
 	// applyEdit/applyDelete.
-	mux.HandleFunc("PATCH /v1/channels/{id}/messages/{seq}", h.patch)
-	mux.HandleFunc("DELETE /v1/channels/{id}/messages/{seq}", h.delete)
-	mux.HandleFunc("GET /v1/channels/{id}/search", h.search)
-	mux.HandleFunc("PUT /v1/channels/{id}/read-state", h.readState)
+	mux.Socket("PATCH /v1/channels/{id}/messages/{seq}", http.HandlerFunc(h.patch))
+	mux.Socket("DELETE /v1/channels/{id}/messages/{seq}", http.HandlerFunc(h.delete))
+	mux.Socket("GET /v1/channels/{id}/search", http.HandlerFunc(h.search))
+	mux.Socket("PUT /v1/channels/{id}/read-state", http.HandlerFunc(h.readState))
 }
 
 // channel loads {id} for a caller holding every bit of want (view_channel is

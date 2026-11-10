@@ -1,8 +1,9 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CoreClient, MemberSummary, VoiceMusicState } from '@dilla/client-core';
+import type { MemberSummary, VoiceMusicState } from '@dilla/client-core';
 import { t } from '../../strings/index.ts';
+import { FakeClient } from '../../test/fake-client.ts';
 
 const adapter = vi.hoisted(() => {
   let state: VoiceMusicState = { status: 'unavailable', reason: 'bot-unavailable' };
@@ -23,7 +24,8 @@ vi.mock('@dilla/client-core', async importOriginal => ({ ...await importOriginal
 const { heldMusicRefreshers, isCommunityBot, MusicPlayer, musicMarker, useBotRoomLine, useMusicCard, useMusicPlayer } = await import('./music.tsx');
 
 const COMMUNITY = 'ab'.repeat(16);
-const CLIENT = {} as CoreClient;
+const CLIENT = new FakeClient();
+const callHint = () => { CLIENT.set('botHints', { [`2:${CHANNEL}`]: (CLIENT.get('botHints')?.[`2:${CHANNEL}`] ?? 0) + 1 }); };
 const CHANNEL = 'cd'.repeat(16);
 const ADA = '0a'.repeat(16);
 const BJORN = '0b'.repeat(16);
@@ -115,29 +117,40 @@ describe('useMusicPlayer', () => {
     expect(screen.queryByRole('group', { name: 'Music player' })).toBeNull();
   });
 
-  it('re-reads the snapshot every 25 s while open, not while the page is hidden, and once when it shows again', () => {
+  it('updates on a call hint and has no interval', () => {
     vi.useFakeTimers();
     const hiddenProp = Object.getOwnPropertyDescriptor(Document.prototype, 'hidden');
     let pageHidden = false;
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => pageHidden });
+    const interval = vi.spyOn(globalThis, 'setInterval');
     try {
       const { unmount } = render(<Harness />);
-      act(() => { vi.advanceTimersByTime(25_000); });
+      expect(CLIENT.calls).toContainEqual({ m: 'watchBotScope', kind: 2, channelId: CHANNEL, on: true });
+      // Minutes pass with no hint: nothing reads the Bot.
+      act(() => { vi.advanceTimersByTime(300_000); });
+      expect(adapter.refresh).not.toHaveBeenCalled();
+      act(() => { callHint(); });
       expect(adapter.refresh).toHaveBeenCalledWith(CHANNEL);
       adapter.refresh.mockClear();
+      // A hint for another call is not this player's.
+      act(() => { CLIENT.set('botHints', { ...CLIENT.get('botHints'), [`2:${'99'.repeat(16)}`]: 1 }); });
+      expect(adapter.refresh).not.toHaveBeenCalled();
       pageHidden = true;
-      act(() => { vi.advanceTimersByTime(50_000); });
+      act(() => { callHint(); });
       expect(adapter.refresh).not.toHaveBeenCalled();
       pageHidden = false;
       act(() => { document.dispatchEvent(new Event('visibilitychange')); });
       expect(adapter.refresh).toHaveBeenCalledTimes(1);
       unmount();
+      expect(CLIENT.calls).toContainEqual({ m: 'watchBotScope', kind: 2, channelId: CHANNEL, on: false });
       adapter.refresh.mockClear();
-      act(() => { vi.advanceTimersByTime(60_000); });
+      act(() => { callHint(); vi.advanceTimersByTime(60_000); });
       expect(adapter.refresh).not.toHaveBeenCalled();
+      expect(interval).not.toHaveBeenCalledWith(expect.any(Function), 25_000);
     } finally {
       Reflect.deleteProperty(document, 'hidden');
       if (hiddenProp !== undefined) Object.defineProperty(Document.prototype, 'hidden', hiddenProp);
+      vi.restoreAllMocks();
       vi.useRealTimers();
     }
   });

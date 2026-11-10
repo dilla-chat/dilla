@@ -67,7 +67,7 @@ func TestBotActorAuthorityIsBoundToReadyCommunityAndCurrentMember(t *testing.T) 
 	if err := deps.Repo.CreateBotSessionBinding(ctx, store.BotSessionBindingRow{TokenHash: auth.TokenHash(token), InstallationID: installation, UserID: bot, DeviceID: device, Created: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 3, 1, 1); err != nil {
+	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	path := "/v1/communities/" + cid.String() + "/bot/actors/" + target.String() + "/authority"

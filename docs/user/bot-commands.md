@@ -23,8 +23,49 @@ upload receipt alone does not mean the requested action completed. Commands run
 through the built-in or managed bot and obey current community, channel, and role
 permissions. Inaccessible users, roles, and channels are not suggested.
 
+Commands go to the Bot in one step and the answer comes straight back. The list of commands is already on your
+device when you type `/`, so the picker never waits for the server.
+
 If Bot commands are missing on a device after a server update, quit and relaunch the app, or reload the browser tab.
 A resume is not enough.
+
+## Bot channels
+
+The Bot joins only the text channels an admin marks as **Bot channels**. It posts only there. A Bot channel
+shows a **Bot** tag in the channel list, and the Bot is in its member list.
+
+To mark one, open **Server settings → Channels**, choose **edit** on a text channel and turn on **Bot channel**.
+It takes effect at once. You need the permission to manage the server. **Server settings → Bot** lists every Bot
+channel. Turning the switch off removes the Bot from that channel.
+
+Commands work in any channel or direct message. What needs a Bot channel is anything the Bot posts: welcome
+messages, scheduled announcements, role panels, polls, the "Music started" card and webhook posts. Pick the Bot
+channel for each of these in its settings. Nothing is marked for you, so after the update those features keep their
+settings and post nothing until you pick one. The Bot page marks them "Needs a Bot channel". Posts the Bot made
+earlier stay where they are. A poll in a channel that is not a Bot channel stays readable but takes no more votes.
+
+![A text channel's settings with the Bot channel switch on](screenshots/bot-channel-toggle-desktop.png)
+
+![Server settings → Bot: health, Bot channels and webhooks](screenshots/bot-page-health-channels-desktop.png)
+
+If the Bot page says **The Bot needs adding to this channel again**, press **Add the Bot again**. This can happen when
+marking a channel and a Bot restart land at the same moment. It takes a minute at most.
+
+## Greyed commands
+
+A command that cannot run now stays in the picker, greyed, with the reason under it. It does not disappear.
+
+- **Mark a channel as a Bot channel first.** The command posts into a Bot channel and the server has none you
+  can see. Ask an admin to mark one.
+- **The Bot is offline since 06:24.** The Bot is not running. The time is when it was last seen.
+- **The Bot is having trouble since 06:24.** The Bot is running but not answering in time. **Server settings →
+  Bot** says "Commands failing since" with the same time.
+- **The Bot is turned off in this server**, or **This server has no Bot.**
+
+![The picker with a greyed command and its reason](screenshots/bot-picker-greyed-desktop.png)
+
+If you send a command and nothing comes back within 5 seconds, the card says "The Bot didn't answer" and offers
+**Retry**. Retry sends the same command again and never runs it twice.
 
 ## Available commands
 
@@ -77,9 +118,59 @@ next time it checks in with the server, and the page says "Restarting…" until 
 has. Pending results recover on their own. The card's menu (right-click, a long
 press or Shift+F10) has **Rename**, **Refresh status** and **Disable**.
 
+## Webhooks
+
+A webhook lets anything that can send an HTTPS request post into one Bot channel: a game server, a weather feed,
+a script. The post appears in the channel under the name you choose, with the label "via webhook" and that name.
+
+On **Server settings → Bot**, under **Webhooks**, choose **Create webhook**, give it a name and a Bot channel. The
+address is shown once, so copy it then. It looks like `https://dilla.example.org/hooks/<id>/<secret>`. The secret in
+it is the only thing that lets someone post, so treat the address like a password. **Rotate address** gives a new
+one and the old one stops at once. **Delete webhook** removes it. A server can have 50 webhooks.
+
+Post with a JSON body. Only `text` is needed:
+
+```sh
+curl -X POST 'https://dilla.example.org/hooks/<id>/<secret>' \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "Build 812 passed", "username": "CI"}'
+```
+
+`text` is up to 4000 bytes. `username` (up to 80 bytes) replaces the webhook's name on that post. `avatar_url` (an
+`https` address) shows a picture beside it. The server fetches that picture itself, so no member's device ever
+loads it. Discord's `content` field is read when `text` is missing, so many existing integrations work unchanged.
+Other fields are ignored.
+
+A post is plain text with links. It cannot run a command, and it does not ping anyone: mentions of people and roles
+are made harmless. `@everyone` and `@here` work only if you turned on **Allow @everyone** for that webhook.
+
+![A webhook post in a Bot channel, labelled "via webhook CI"](screenshots/bot-webhook-post-desktop.png)
+
+A successful post answers `204` with no body. The other answers:
+
+| answer | meaning |
+| --- | --- |
+| `401` | The address or secret is wrong, or the webhook was rotated or deleted. |
+| `409` | The channel is no longer a Bot channel. Mark it again. |
+| `413` | The body or the text is too long. |
+| `429` | Too many posts. Wait the number of seconds in `Retry-After`. A webhook takes 30 posts a minute, with a burst of 5. |
+| `503` | The Bot did not take it. Try again after 5 seconds. A channel you just marked answers this for a few seconds, until the Bot has joined it. |
+
+A `503` can come after the Bot already posted, if its reply was lost, so a sender that retries may post twice.
+
+If the server sits behind a reverse proxy, its owner should keep `/hooks/` addresses out of the proxy's access log.
+Anyone who can read the log could post to the channel.
+
+## Update dilla to continue
+
+This version changed how the app talks to the server, and older apps cannot connect to it. The desktop app shows
+**Update dilla to continue** with an **Update** button. Press it and the app downloads the new version and restarts.
+If no update is ready yet, it says so; try again in a little while. A browser tab reloads on its own the first
+time.
+
 ## Polls
 
-Create polls in bot-enabled community channels and threads. A poll has 2–10
+Create polls in Bot channels and their threads. A poll has 2–10
 answers, a question of up to 300 Unicode code points, and answers up to 100
 code points. The counter matches the server: 🔥 counts as one code point, while a combined
 emoji can contain several. Open **/poll create**, type the question and answers, then press **Post poll**.
@@ -102,7 +193,7 @@ answer you tapped; the other answers wait until it settles.
 Choose a duration of 1, 4, 8, or 24 hours, or 3 or 7 days; the default is 24 hours.
 A community can have at most 128 open polls. The creator or a member with Manage
 Messages can close a poll. Closed polls stay readable. Poll records and votes are
-authoritative in the encrypted bot state. The bot publishes one authenticated poll
+kept by the bot, which is the only place that counts them. The bot publishes one poll
 card, with a readable fallback when cards are unavailable.
 
 ## Reminders

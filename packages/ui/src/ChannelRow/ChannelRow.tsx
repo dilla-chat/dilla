@@ -11,6 +11,8 @@ export type ChannelRowProps = {
   ariaLabel?: string;
   /** A short note after the name ("slow mode"). It is part of the row's accessible name unless `ariaLabel` replaces it. */
   badge?: string;
+  /** Several such notes, in order ("Bot", "slow mode"; Bot v2 Task 22). Drawn after `badge`. */
+  badges?: readonly string[];
   /**
    * The unread tag's visible text for a count (`layout.row.new`, '{n} new'; README §5.4). Without it the tag shows the bare
    * count. The tag's hidden "{n} unread" names it either way.
@@ -42,7 +44,7 @@ const cap = (n: number) => (n > 99 ? '99+' : String(n));
  * "@2" mention tag, else the "1 new" unread tag, else nothing. Active is the selected fill, a 600 name, the accent glyph and
  * a 2px accent bar at the left edge that grows with scaleY; unread or a mention is a bright 600 name.
  */
-export function ChannelRow({ name, kind, active, selected, unread = 0, mentions = 0, muted, readable, private: isPrivate, onSelect, ariaLabel, badge, newLabel, person }: ChannelRowProps) {
+export function ChannelRow({ name, kind, active, selected, unread = 0, mentions = 0, muted, readable, private: isPrivate, onSelect, ariaLabel, badge, badges, newLabel, person }: ChannelRowProps) {
   // A muted channel hides its unread count; its mention count still shows (ruling 15).
   const shown = muted ? 0 : unread;
   if (person !== undefined) {
@@ -72,6 +74,7 @@ export function ChannelRow({ name, kind, active, selected, unread = 0, mentions 
       <Glyph kind={kind} />
       <span className="d-chrow__name">{name}</span>
       {badge !== undefined ? <span className="d-chrow__badge">{badge}</span> : null}
+      {badges?.map(b => <span key={b} className="d-chrow__badge">{b}</span>)}
       {readable ? <Tag kind="readable" /> : null}
       {isPrivate ? <span className="d-chrow__lock" role="img" aria-label="Private"><Icon name="lock" size={12} /></span> : null}
       <span className="d-chrow__spacer" />

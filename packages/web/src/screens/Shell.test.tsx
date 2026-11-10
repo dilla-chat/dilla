@@ -1502,6 +1502,17 @@ describe('connection', () => {
     expect(screen.queryByText(TOO_OLD)).toBeNull();
   });
 
+  // Final review M5: an instance older than this client is the side to update: no reload, no client update.
+  it('names the server as the side to update when it is older than this client', () => {
+    const { fake } = setup(`/c/${A}/${GEN}`);
+    act(() => fake.set('connection', { status: 'offline', generation: '7', reason: 'instance' }));
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getByRole('alert')).toHaveTextContent(en['shell.banner.instanceTooOld']);
+    expect(screen.queryByRole('button', { name: en['reload.action'] })).toBeNull();
+    expect(screen.queryByText(en['shell.banner.clientTooOld'])).toBeNull();
+    expect(document.querySelector('.d-link-banner')).toBeNull();
+  });
+
   it('offers a reload button on the newer-client banner, and only there', async () => {
     const reload = vi.spyOn(browser, 'reload').mockImplementation(() => undefined);
     const { fake, user } = setup(`/c/${A}/${GEN}`);

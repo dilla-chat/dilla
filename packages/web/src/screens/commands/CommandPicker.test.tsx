@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { COMMANDS, type CommandResult } from '@dilla/client-core';
+import type { CommandResult } from '@dilla/client-core';
+import { FIXTURE_DEFINITIONS } from './bot-catalog.fixture.ts';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CommandPicker, type CommandComposerProps, type CommandSuggestion } from './CommandPicker.tsx';
 import { CoreProvider } from '../../core/context.tsx';
@@ -14,7 +15,8 @@ import type { CommandProviderHandlers } from './command-types.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 
 const success: CommandResult = { status: 'success', message: 'Done privately', private: true };
-const definitions = COMMANDS;
+// Bot v2: the built-ins and a catalog's Bot commands, as a composer with that catalog offers them.
+const definitions = FIXTURE_DEFINITIONS;
 const suggestion = (id: string, label: string, value = id, description?: string): CommandSuggestion => ({ id, label, value, ...(description !== undefined ? { description } : {}) });
 // Friday 30 October 2026, 18:00 in Stockholm (CET, UTC+1).
 const NOW = new Date('2026-10-30T17:00:00Z');
@@ -159,11 +161,13 @@ describe('CommandPicker: chips', () => {
     expect(props.onExecute).not.toHaveBeenCalled();
   });
 
-  it('validates a bounded number with the prototype copy', async () => {
+  // Bot v2: a catalog's uint has no upper bound (the Bot checks its own range); the picker still refuses what is no number.
+  it('validates a Bot command’s number before it runs', async () => {
     const user = userEvent.setup();
     const { props } = renderPicker({ initialText: '/volume' });
-    await user.type(screen.getByRole('combobox', { name: '0..100' }), '150{Enter}');
-    expect(screen.getByRole('alert')).toHaveTextContent('A whole number from 0 to 100');
+    await user.type(screen.getByRole('combobox', { name: '0..100' }), 'loud{Enter}');
+    expect(screen.getByRole('alert')).toHaveTextContent('level must be a number from 0 to ∞');
+    expect(props.onExecute).not.toHaveBeenCalled();
     await user.clear(screen.getByRole('combobox', { name: '0..100' }));
     await user.type(screen.getByRole('combobox', { name: '0..100' }), '42{Enter}');
     await waitFor(() => expect(props.onExecute).toHaveBeenCalledWith({ commandId: 'volume', args: { level: '42' } }));

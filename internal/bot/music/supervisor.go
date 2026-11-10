@@ -64,10 +64,53 @@ type Supervisor struct {
 	idleFor   func() time.Duration
 	idleTimer Timer
 	idleGen   uint64
+	// Bot v2 task 18: stage timings of the last 20 starts, and the timer that pre-buffers the next track.
+	timings       []StartTiming
+	prefetch      *prefetchPlan
+	prefetchAfter func(time.Duration, func()) Timer
 }
 
 // IdleLeaver is a TrackStarter that can leave its retained voice room while nothing plays.
 type IdleLeaver interface{ LeaveIdle() error }
+
+// CallWarmer is a TrackStarter that can join its voice room ahead of the first start (Bot v2 Task 19): an authorised
+// /play begins the call-group join and the room connection while its track resolves. WarmCall must not block; the
+// start that follows uses what it prepared.
+type CallWarmer interface{ WarmCall(context.Context) }
+
+// WarmCall asks the starter to join the voice room for a /play that was just opened, unless a track is already
+// playing, paused in place or starting (the room is joined then) or the supervisor is closed. group is the room's
+// current call group as the /play saw it (PlaybackGroup of the warm's context). It never starts audio and never
+// blocks.
+func (s *Supervisor) WarmCall(group id.ID) {
+	s.mu.Lock()
+	warmer, ok := s.starter.(CallWarmer)
+	busy := s.closed || s.playback != nil || s.starting != nil
+	ctx := s.ctx
+	s.mu.Unlock()
+	if ok && !busy {
+		warmer.WarmCall(WithPlaybackGroup(ctx, group))
+	}
+}
+
+// PlayAbandoned tells the starter that a /play whose warm it began ended without starting a track (Bot v2 Task 19
+// fix round 1, M3): the call prepared for it is dropped and the room, if nothing plays in it, is left.
+func (s *Supervisor) PlayAbandoned() {
+	s.mu.Lock()
+	abandoner, ok := s.starter.(interface{ AbandonWarm() })
+	busy := s.closed || s.playback != nil || s.starting != nil
+	s.mu.Unlock()
+	if ok && !busy {
+		abandoner.AbandonWarm()
+	}
+}
+
+// Playing reports whether a track is playing now (published and not paused).
+func (s *Supervisor) Playing() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.closed && s.playback != nil && !s.pausedPlayback
+}
 
 // WithIdleLeave makes the supervisor leave the voice room once nothing has played for idleFor()
 // (paused, stopped or the queue finished). Playing again cancels the timer; the next explicit
@@ -84,6 +127,7 @@ func WithIdleLeave(idleFor func() time.Duration, afterFunc func(time.Duration, f
 // idleCheckLocked starts the idle-leave timer when nothing plays and stops it when something
 // does. It runs after every state change.
 func (s *Supervisor) idleCheckLocked() {
+	s.prefetchCheckLocked()
 	if s.idleFor == nil {
 		return
 	}
@@ -541,7 +585,8 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool, budget *sta
 			continue
 		}
 		track := *s.state.Current
-		startCtx := WithStartAtMS(runCtx, s.state.PositionMS)
+		startCtx, startTimer := withStartTimer(WithStartAtMS(runCtx, s.state.PositionMS))
+		startBegan := time.Now()
 		s.mu.Unlock()
 		var p Playback
 		var err error
@@ -607,6 +652,7 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool, budget *sta
 			}
 			return skips, errors.New("music track starter returned invalid playback")
 		}
+		s.recordTimingLocked(startTimer.finish(track.ID, startBegan, time.Now()))
 		budget.succeeded()
 		successful = true
 		timeout.Stop()
@@ -814,6 +860,7 @@ func (s *Supervisor) Close() error {
 		s.idleTimer = nil
 	}
 	s.closePlaybackLocked()
+	s.cancelPrefetchLocked()
 	var pending <-chan struct{}
 	if s.starting != nil {
 		pending = s.starting.done

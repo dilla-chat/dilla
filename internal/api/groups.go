@@ -49,9 +49,6 @@ type Groups struct {
 	// outside any transaction; a failure is the hook's to log, because the registration itself has
 	// succeeded.
 	AfterRegister func(ctx context.Context, groupID id.ID)
-	// LoadBotInteractionPreflight supplies fresh trusted context for a kind-3 registration. The
-	// handler obtains its identifiers from an authenticated MLS GroupContext before invoking it.
-	LoadBotInteractionPreflight func(context.Context, BotInteractionPreflightRequest) (ds.InteractionRegistrationPreflight, error)
 	// AfterKeyPackages, when set, runs after the delivery service stored a device's KeyPackages,
 	// the same way AfterRegister does: after the 201, on its own goroutine, under a context the
 	// request's cancellation does not reach, drained by Drain. SyncGroupMembers proposes only a
@@ -98,16 +95,11 @@ func (h *Groups) Register(mux *server.Mux, sessions *auth.Sessions) {
 	// Every delivery-service route needs an enrolled device session. The KeyPackage and Welcome
 	// routes of task 24 are the only ones that also accept a provisional session, and they say so
 	// at their own Register.
-	enrolled := func(f http.HandlerFunc) http.Handler {
-		return sessions.Middleware(f, auth.ScopeEnrolled)
-	}
-	mux.Handle("POST /v1/groups", enrolled(dsMeter(h.Limiter, dsClassWrite, h.create)))
-	h.registerBotInteractionGroupReads(mux, sessions)
+	mux.SocketAuthed("POST /v1/groups", socketMeter(sessions, h.Limiter, dsClassWrite), http.HandlerFunc(h.create))
 	h.RegisterBotRegistration(mux, sessions)
 	h.RegisterBotMessages(mux, sessions)
-	mux.Handle("GET /v1/groups/{id}/info", enrolled(dsMeter(h.Limiter, dsClassRead, h.info)))
-	mux.Handle("GET /v1/groups/{id}/interaction-admission-context", enrolled(dsMeter(h.Limiter, dsClassRead, h.currentInteractionAdmissionContext)))
-	mux.Handle("GET /v1/groups/{id}/tree", enrolled(dsMeter(h.Limiter, dsClassRead, h.tree)))
+	mux.SocketAuthed("GET /v1/groups/{id}/info", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.info))
+	mux.SocketAuthed("GET /v1/groups/{id}/tree", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.tree))
 }
 
 // RegisterSequencer mounts the four routes of the sequencer and the commit path: endpoints 4
@@ -116,14 +108,10 @@ func (h *Groups) Register(mux *server.Mux, sessions *auth.Sessions) {
 // one named group per task, and so a composition root that wants the registry without the
 // sequencer — there is none yet, but task 27a decides that, not this file — has the choice.
 func (h *Groups) RegisterSequencer(mux *server.Mux, sessions *auth.Sessions) {
-	enrolled := func(f http.HandlerFunc) http.Handler {
-		return sessions.Middleware(f, auth.ScopeEnrolled)
-	}
-	mux.Handle("GET /v1/groups/{id}/handshakes", enrolled(dsMeter(h.Limiter, dsClassRead, h.handshakes)))
-	mux.Handle("POST /v1/groups/{id}/commit",
-		withReadDeadline(commitReadTimeout, enrolled(dsMeter(h.Limiter, dsClassCommit, h.commit))))
-	mux.Handle("POST /v1/groups/{id}/proposal", enrolled(dsMeter(h.Limiter, dsClassProposal, h.proposal)))
-	mux.Handle("GET /v1/groups/{id}/proposals", enrolled(dsMeter(h.Limiter, dsClassRead, h.proposals)))
+	mux.SocketAuthed("GET /v1/groups/{id}/handshakes", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.handshakes))
+	mux.SocketAuthed("POST /v1/groups/{id}/commit", socketMeter(sessions, h.Limiter, dsClassCommit), http.HandlerFunc(h.commit))
+	mux.SocketAuthed("POST /v1/groups/{id}/proposal", socketMeter(sessions, h.Limiter, dsClassProposal), http.HandlerFunc(h.proposal))
+	mux.SocketAuthed("GET /v1/groups/{id}/proposals", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.proposals))
 }
 
 // RegisterRecovery mounts the two routes a device out of step with the epoch uses: endpoint 8
@@ -132,11 +120,8 @@ func (h *Groups) RegisterSequencer(mux *server.Mux, sessions *auth.Sessions) {
 // third method for the reason RegisterSequencer is a second one: the delivery service's surface
 // grows one named group per task.
 func (h *Groups) RegisterRecovery(mux *server.Mux, sessions *auth.Sessions) {
-	enrolled := func(f http.HandlerFunc) http.Handler {
-		return sessions.Middleware(f, auth.ScopeEnrolled)
-	}
-	mux.Handle("POST /v1/groups/{id}/resync", enrolled(dsMeter(h.Limiter, dsClassCommit, h.resync)))
-	mux.Handle("POST /v1/groups/{id}/fork-report", enrolled(dsMeter(h.Limiter, dsClassWrite, h.forkReport)))
+	mux.SocketAuthed("POST /v1/groups/{id}/resync", socketMeter(sessions, h.Limiter, dsClassCommit), http.HandlerFunc(h.resync))
+	mux.SocketAuthed("POST /v1/groups/{id}/fork-report", socketMeter(sessions, h.Limiter, dsClassWrite), http.HandlerFunc(h.forkReport))
 }
 
 // sessionOf is the one place this file reads the request's session. It is a helper in package api,
@@ -197,13 +182,14 @@ func (h *Groups) create(w http.ResponseWriter, r *http.Request) {
 	if h.AfterRegister == nil {
 		return
 	}
-	// The 201 goes on the wire FIRST (protocol/02, POST /v1/groups): the hook fans instance
-	// proposals and a commit_needed election out to the creator, which must not overtake the
-	// answer that tells it the group exists, and populating a large channel is work the
-	// registrant does not wait for. A writer that cannot flush still answers when the handler
-	// returns, which is at once, because the hook runs on its own goroutine. The request's
-	// cancellation must not reach the hook: the group exists whether or not the client is still
-	// connected.
+	// The hook fans instance proposals and a commit_needed election out to the creator, and
+	// populating a large channel is work the registrant does not wait for. It runs on its own
+	// goroutine, so the handler returns at once. Over HTTP the 201 was flushed first; on the
+	// gateway socket the dispatcher's recorder cannot flush, so the hook's frames may precede the
+	// op 60 answer. The client holds or drops group frames until its group is registered
+	// (groupRegistered), and the election, re-election and ready-volunteer paths recover what was
+	// dropped. The request's cancellation must not reach the hook: the group exists whether or
+	// not the client is still connected.
 	groupID := out.GroupID
 	h.runAfter(w, r, func(ctx context.Context) { h.AfterRegister(ctx, groupID) })
 }
@@ -341,7 +327,7 @@ func (h *Groups) tree(w http.ResponseWriter, r *http.Request) {
 func dsError(err error) error {
 	var upgrade *capability.UpgradeRequired
 	if errors.As(err, &upgrade) {
-		return server.Version([]uint64{3}, []uint64{1}, []uint64{1})
+		return server.Errorf(server.CodeUpgradeRequired, "wire version %d is required", auth.WireVersion)
 	}
 	var e *ds.Error
 	if !errors.As(err, &e) {

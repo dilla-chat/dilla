@@ -608,6 +608,65 @@ func (s *Store) Counts(ctx context.Context, pid, actor id.ID) ([]uint64, []uint6
 	}
 	return p.Counts, choices, nil
 }
+
+// MyChoices is actor's current choices in poll pid (one state read; the poll itself is not read).
+func (s *Store) MyChoices(ctx context.Context, pid, actor id.ID) ([]uint64, error) {
+	v, e := s.get(ctx, voteKey(pid, actor))
+	if e != nil {
+		return nil, e
+	}
+	var choices []uint64
+	if v.Revision > 0 && !v.Tombstone {
+		if e = cborx.Unmarshal(v.Value, &choices); e != nil {
+			return nil, e
+		}
+	}
+	return choices, nil
+}
+
+// VoterSummary is what a poll card shows of its voters, read in one pass over the poll's votes (Task 21b fix round 1):
+// the first `preview` voters of each of `answers` answers, how many distinct people voted, and whether the pass stopped
+// at `limit` voters before the end (then distinct is a lower bound).
+func (s *Store) VoterSummary(ctx context.Context, pid id.ID, answers, preview, limit int) ([][]id.ID, int, bool, error) {
+	previews := make([][]id.ID, answers)
+	prefix := []byte(votePrefix + idhex(pid) + "/")
+	cursor := prefix
+	distinct := 0
+	for {
+		page, e := s.state.StateScan(ctx, 8, cursor, 100)
+		if e != nil {
+			return nil, 0, false, e
+		}
+		for _, ent := range page.Entries {
+			if !strings.HasPrefix(string(ent.Key), string(prefix)) {
+				return previews, distinct, false, nil
+			}
+			cursor = ent.Key
+			var choices []uint64
+			if ent.Tombstone || cborx.Unmarshal(ent.Value, &choices) != nil || len(choices) == 0 {
+				continue
+			}
+			raw, e := hex.DecodeString(string(ent.Key[len(prefix):]))
+			if e != nil || len(raw) != 16 {
+				continue
+			}
+			if distinct >= limit {
+				return previews, distinct, true, nil
+			}
+			distinct++
+			user := id.ID(raw)
+			for _, option := range choices {
+				if option < uint64(answers) && len(previews[option]) < preview { //nolint:gosec // G115: answers is a poll's answer count, at most 10
+					previews[option] = append(previews[option], user)
+				}
+			}
+		}
+		if len(page.Entries) < 100 {
+			return previews, distinct, false, nil
+		}
+	}
+}
+
 func (s *Store) Voters(ctx context.Context, pid id.ID, option uint64, after []byte, limit int) ([]id.ID, []byte, error) {
 	if limit < 1 || limit > 100 {
 		return nil, nil, ErrInvalid

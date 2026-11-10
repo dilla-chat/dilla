@@ -51,6 +51,8 @@ type Config struct {
 	AllowLoopbackHTTP bool
 	Timeout           time.Duration
 	RateLimits        RateLimits
+	// SocketRoutes overrides the package's SocketRoutes (tests); nil keeps them.
+	SocketRoutes []string
 }
 
 type Client struct {
@@ -66,6 +68,10 @@ type Client struct {
 	devices                        map[string]string
 	targetBuckets                  int
 	cacheEvictions, cacheDeferrals uint64
+	// Bot v2: routes sent over a device's gateway socket, and each device's transport (UseTransport).
+	socketRoutes socketRouteTable
+	transportMu  sync.Mutex
+	transports   map[string]Transport
 }
 
 type Runtime struct {
@@ -125,7 +131,12 @@ func New(cfg Config) (*Client, error) {
 		return nil, err
 	}
 	u.Path, u.RawPath, u.RawQuery, u.Fragment = "", "", "", ""
-	return &Client{base: u, http: &hcopy, instance: cfg.InstanceID, timeout: timeout, allowLoopback: cfg.AllowLoopbackHTTP, rates: rates, buckets: make(map[string]*deviceLimiter), devices: make(map[string]string)}, nil
+	routes := cfg.SocketRoutes
+	if routes == nil {
+		routes = SocketRoutes
+	}
+	return &Client{base: u, http: &hcopy, instance: cfg.InstanceID, timeout: timeout, allowLoopback: cfg.AllowLoopbackHTTP, rates: rates, buckets: make(map[string]*deviceLimiter), devices: make(map[string]string),
+		socketRoutes: compileSocketRoutes(routes)}, nil
 }
 
 func (c *Client) Runtime(token string) (*Runtime, error) {
@@ -250,6 +261,15 @@ func (c *Client) doObserved(ctx context.Context, token, method, path string, que
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
+	// Bot v2: a socket route of a device session goes through its gateway; the key is fixed once per call.
+	transport, transportErr := c.socketTransport(ctx, method, path)
+	if transportErr != nil {
+		return nil, 0, ResponseObservation{}, transportErr
+	}
+	var idem []byte
+	if transport != nil {
+		idem = idempotencyKey(ctx, method)
+	}
 	var last error
 	for attempt := 0; ; attempt++ {
 		if err := c.waitRate(ctx, token, method, path); err != nil {
@@ -258,7 +278,7 @@ func (c *Client) doObserved(ctx context.Context, token, method, path string, que
 			}
 			return nil, 0, ResponseObservation{}, err
 		}
-		raw, status, observation, err := c.doObservedOnce(ctx, token, method, path, query, body, maxBytes, mutation)
+		raw, status, observation, err := c.doObservedOnce(ctx, token, method, path, query, body, maxBytes, mutation, transport, idem)
 		refusal := RateLimitError(err)
 		if refusal == nil {
 			return raw, status, observation, err
@@ -270,7 +290,7 @@ func (c *Client) doObserved(ctx context.Context, token, method, path string, que
 	}
 }
 
-func (c *Client) doObservedOnce(ctx context.Context, token, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool) ([]byte, int, ResponseObservation, error) {
+func (c *Client) doObservedOnce(ctx context.Context, token, method, path string, query url.Values, body []byte, maxBytes int64, mutation bool, transport Transport, idem []byte) ([]byte, int, ResponseObservation, error) {
 	var observation ResponseObservation
 	if err := CooperativeCheckpoint(ctx); err != nil {
 		return nil, 0, observation, err
@@ -301,7 +321,12 @@ func (c *Client) doObservedOnce(ctx context.Context, token, method, path string,
 		req.Header.Set("Content-Type", "application/cbor")
 	}
 	req.Header.Set("Accept", "application/cbor")
-	resp, err := c.http.Do(req)
+	var resp *http.Response
+	if transport != nil {
+		resp, err = socketRoundTrip(ctx, transport, method, req.URL.RequestURI(), body, idem)
+	} else {
+		resp, err = c.http.Do(req)
+	}
 	if err != nil {
 		if mutation {
 			return nil, 0, observation, &APIError{Status: 0, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
@@ -393,27 +418,13 @@ func (c *Client) doObservedOnce(ctx context.Context, token, method, path string,
 		}
 		return nil, resp.StatusCode, observation, nil
 	}
-	validStrictBoolean := method == http.MethodGet && botInteractionGroupAbsencePath(path) && len(b) == 1 && (b[0] == 0xf4 || b[0] == 0xf5)
-	if len(b) == 0 || cborx.CheckDeterministic(b) != nil && !validStrictBoolean {
+	if len(b) == 0 || cborx.CheckDeterministic(b) != nil {
 		if mutation {
 			return nil, resp.StatusCode, observation, &APIError{Status: resp.StatusCode, Code: "E_OUTCOME_UNKNOWN", Outcome: OutcomeUnknown}
 		}
 		return nil, resp.StatusCode, observation, ErrProtocol
 	}
 	return b, resp.StatusCode, observation, nil
-}
-
-func botInteractionGroupAbsencePath(path string) bool {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) != 6 || parts[0] != "bot-runtime" || parts[1] != "installations" || parts[2] == "" || parts[3] != "interaction-admissions" || parts[4] == "" || parts[5] != "group-absence" {
-		return false
-	}
-	_, err := id.Parse(parts[2])
-	if err != nil {
-		return false
-	}
-	_, err = id.Parse(parts[4])
-	return err == nil
 }
 
 func errorBodyLimit(path string) int64 {
@@ -521,7 +532,7 @@ func byteRows(v any) bool {
 }
 func knownErrorCode(s string) bool {
 	switch s {
-	case "E_INVALID_REQUEST", "E_REMOVAL_PROOF_EXPIRED", "E_BINDING_INVALID", "E_UNAUTHENTICATED", "E_FORBIDDEN", "E_LEAF_NOT_CURRENT", "E_MODE_READABLE", "E_NOT_UPLOADER", "E_NOT_FOUND", "E_KEYPACKAGES_EXHAUSTED", "E_GROUP_EXISTS", "E_COMMIT_CONFLICT", "E_CALL_FULL", "E_CALL_SHARERS_FULL", "E_CALL_NOT_ALONE", "E_REMOVE_PENDING", "E_PRUNED", "E_INVITE_INVALID", "E_TOO_LARGE", "E_COMMIT_INVALID", "E_COMMITMENT_INVALID", "E_COMMIT_REQUIRED", "E_RATE_LIMITED", "E_STORAGE_FULL", "E_UNAVAILABLE", "E_VERSION", "E_INTERNAL", "E_PROVISIONAL_OUTSIDE_PAIRING", "E_ENVELOPE_SHAPE", "E_ENVELOPE_TYPE", "E_ENVELOPE_LIMIT", "E_CHANNEL_MODE", "E_FACTOR_REQUIRED", "E_TARGET_NO_FACTOR", "E_STEP_UP", "E_PASSKEY_UNKNOWN", "E_PASSKEY_OTHER_ACCOUNT":
+	case "E_INVALID_REQUEST", "E_REMOVAL_PROOF_EXPIRED", "E_BINDING_INVALID", "E_UNAUTHENTICATED", "E_FORBIDDEN", "E_LEAF_NOT_CURRENT", "E_MODE_READABLE", "E_NOT_UPLOADER", "E_NOT_FOUND", "E_KEYPACKAGES_EXHAUSTED", "E_GROUP_EXISTS", "E_COMMIT_CONFLICT", "E_CALL_FULL", "E_CALL_SHARERS_FULL", "E_CALL_NOT_ALONE", "E_REMOVE_PENDING", "E_PRUNED", "E_INVITE_INVALID", "E_TOO_LARGE", "E_COMMIT_INVALID", "E_COMMITMENT_INVALID", "E_COMMIT_REQUIRED", "E_RATE_LIMITED", "E_BUSY", "E_STORAGE_FULL", "E_UNAVAILABLE", "E_VERSION", "E_UPGRADE_REQUIRED", "E_INTERNAL", "E_PROVISIONAL_OUTSIDE_PAIRING", "E_ENVELOPE_SHAPE", "E_ENVELOPE_TYPE", "E_ENVELOPE_LIMIT", "E_CHANNEL_MODE", "E_FACTOR_REQUIRED", "E_TARGET_NO_FACTOR", "E_STEP_UP", "E_PASSKEY_UNKNOWN", "E_PASSKEY_OTHER_ACCOUNT":
 		return true
 	default:
 		return false
@@ -582,18 +593,29 @@ func expectedStatus(method, path string) (int, bool) {
 	if len(parts) == 2 && parts[0] == "instance" && parts[1] == "limits" && method == http.MethodGet {
 		return 200, true
 	}
-	if len(parts) >= 2 && parts[0] == "bot-runtime" && parts[1] == "installations" {
-		if len(parts) == 6 && parts[3] == "interaction-groups" {
-			if parts[5] == "heal" && (method == http.MethodGet || method == http.MethodPost) {
-				return 200, true
-			}
-			if method == http.MethodGet && (parts[5] == "info" || parts[5] == "handshakes" || parts[5] == "messages") {
-				return 200, true
-			}
-			if method == http.MethodPost && parts[5] == "cursor" {
-				return 204, true
-			}
+	// Bot v2 Task 9: the catalog answers [revision], the command key 204.
+	if len(parts) == 4 && parts[0] == "bot-runtime" && parts[1] == "communities" && method == http.MethodPut {
+		switch parts[3] {
+		case "catalog":
+			return 200, true
+		case "command-key":
+			return 204, true
 		}
+	}
+	// Bot v2 Task 17: a health report answers 204.
+	if len(parts) == 2 && parts[0] == "bot-runtime" && parts[1] == "health" && method == http.MethodPut {
+		return 204, true
+	}
+	// Bot v2 Task 10: a reply answers 204, a state hint [revision].
+	if len(parts) == 2 && parts[0] == "bot-runtime" && method == http.MethodPost {
+		switch parts[1] {
+		case "replies":
+			return 204, true
+		case "state-hints":
+			return 200, true
+		}
+	}
+	if len(parts) >= 2 && parts[0] == "bot-runtime" && parts[1] == "installations" {
 		if len(parts) == 2 && method == http.MethodGet {
 			return 200, true
 		}
@@ -618,15 +640,6 @@ func expectedStatus(method, path string) (int, bool) {
 		if len(parts) == 4 && parts[3] == "groups" && method == http.MethodPost {
 			return 201, true
 		}
-		if len(parts) == 4 && parts[3] == "interaction-admissions" && method == http.MethodPost {
-			return 200, true
-		}
-		if len(parts) == 6 && parts[3] == "interaction-admissions" && parts[5] == "group-absence" && method == http.MethodGet {
-			return 200, true
-		}
-		if len(parts) == 5 && parts[3] == "interaction-admissions" && parts[4] == "context" && method == http.MethodPost {
-			return 200, true
-		}
 		if len(parts) == 5 && parts[3] == "moderation" && parts[4] == "actions" && method == http.MethodPost {
 			return 200, true
 		}
@@ -634,9 +647,6 @@ func expectedStatus(method, path string) (int, bool) {
 			return 200, true
 		}
 		if len(parts) == 6 && parts[3] == "moderation" && parts[4] == "warnings" && method == http.MethodGet {
-			return 200, true
-		}
-		if len(parts) == 5 && parts[3] == "automod-grants" && parts[4] == "redeem" && method == http.MethodPost {
 			return 200, true
 		}
 		if len(parts) == 4 && parts[3] == "keypackages" && method == http.MethodGet {
@@ -741,6 +751,10 @@ func expectedStatus(method, path string) (int, bool) {
 	}
 	if len(parts) == 6 && parts[0] == "communities" && parts[2] == "bot" && parts[3] == "members" && parts[5] == "episode" && method == http.MethodGet {
 		return http.StatusOK, true
+	}
+	// Bot v2 Task 17 fix round 2: the health probe's relay answers 202 [0].
+	if len(parts) == 4 && parts[0] == "communities" && parts[2] == "bot" && parts[3] == "commands" && method == http.MethodPost {
+		return http.StatusAccepted, true
 	}
 	if len(parts) == 4 && parts[0] == "communities" && parts[2] == "bot" && parts[3] == "join-role-grants" && method == http.MethodPost {
 		return http.StatusOK, true

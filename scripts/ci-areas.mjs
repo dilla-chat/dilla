@@ -35,14 +35,12 @@ export const DOC_RULES = [
   { areas: ['web'], patterns: ['docs/design/flows/**'] },
   // internal/dillad/factor_owed_test.go parses the route tables of 02 and 09; check:docs (the docs job) reads the rest.
   { areas: ['go'], patterns: ['protocol/*.md'] },
-  // core/vendor/sqlite-wasm-vfs/src/lib.rs: #![doc = include_str!("../README.md")].
+  // core/**: a crate there may compile any file beside it (include_str!/include_bytes!, `#![doc = include_str!(...)]`).
   { areas: ['core'], patterns: ['core/**'] },
 ];
 export const PATH_RULES = [
   { areas: ['ci'], patterns: ['.github/**', 'scripts/**'] },
   { areas: ['go'], patterns: ['internal/**', 'cmd/**', 'go.mod', 'go.sum', 'sqlc*', 'deploy/**', '.golangci.yml'] },
-  // Rust MLS conformance tests read these shared delivery-service fixtures.
-  { areas: ['core'], patterns: ['internal/ds/dstest/testdata/kind3-interaction/**'] },
   { areas: ['core'], patterns: ['core/**', 'testkit/**', 'Cargo.*', 'rust-toolchain.toml', 'deny.toml', '.cargo/**', 'protocol/vectors/**'] },
   // patches/: patch-package fixes the root postinstall applies to node_modules (every JS job installs them).
   { areas: ['web'], patterns: ['packages/**', 'package*.json', '.nvmrc', 'eslint.config.js', 'patches/**'] },
@@ -72,6 +70,8 @@ export const PATH_RULES = [
   { areas: ['go'], patterns: ['packages/desktop/release-trust.json', 'packages/desktop/src/update-keys.ts'] },
   // internal/api/invites_test.go (TestLandingTokensMatchMesh) reads dist/tokens.css.
   { areas: ['go'], patterns: ['packages/design-tokens/**'] },
+  // internal/dillad/socket_routes_manifest_test.go holds the mux to the client's socket-route manifest.
+  { areas: ['go'], patterns: ['packages/client-core/src/http/socket-routes.ts'] },
   { areas: ['go'], patterns: ['packages/web/dist', 'packages/web/dist/**'] },
   // packages/client-core/src/profile-text.test.ts reads the RGI sequences the generator writes for the Go tests too.
   { areas: ['web'], patterns: ['internal/auth/testdata/rgi-zwj-sequences.txt'] },

@@ -1,0 +1,611 @@
+// Bot v2 (task 20): the community Bot's command catalog, held on this device. The picker reads only this copy; the network
+// is asked for it once on connect when the instance's revision is newer than the held one (GET /v1/bot/revisions, then the
+// catalog GET), and op 61 bot_catalog replaces it live. The catalog is not secret (names and argument shapes only); it is
+// display only: the Bot authorises every operation itself. Its command-key publication is checked against the Bot user's
+// device list in the core before anything is sealed to it.
+import { arr, bin, decode, str, u53, u64, type CborValue } from '../cbor';
+import { fromHex, toHex } from '../hex';
+import type { BotCatalogFrame } from '../gateway/frames';
+
+/** The instance's states, plus two of this device's own: `unverified`, a published key this device cannot check (or more
+ *  than one Bot account to check it against), and `changed`, a Bot account other than the one this device pinned. */
+export type BotState = 'ready' | 'degraded' | 'offline' | 'disabled' | 'absent' | 'unverified' | 'changed';
+/** Argument type codes: 0 text, 1 uint, 2 user, 3 channel, 4 duration (uint seconds), 5 bool (uint 0|1). */
+export type ArgType = 0 | 1 | 2 | 3 | 4 | 5;
+export interface ArgShape { name: string; type: ArgType; required: boolean }
+export interface BotCommandSpec { name: string; description: string; operation: number; args: ArgShape[]; permissionBit: number;
+  needsBotChannel: boolean; handlerKind: number }
+export interface BotStatus { state: BotState; since: number | null }
+export interface BotCatalog {
+  revision: bigint;
+  commands: BotCommandSpec[];
+  /** The verified command key's id; null with no publication or one this device could not check (commands greyed). */
+  keyId: Uint8Array | null;
+  /** The verified key's fingerprint, for admins (the Bot page, task 22). */
+  fingerprint: string | null;
+  /** The instance's status, except where this device's own check says `unverified` or `changed`. */
+  status: BotStatus;
+  /** The Bot channels this member can view (hex ids); null until read. A command that needs one is greyed without one. */
+  botChannels: string[] | null;
+  /** The Bot user this device pinned for the community (hex), the key's signer; null while unknown. */
+  botUserId: string | null;
+}
+/** One kind/scope/revision of GET /v1/bot/revisions; kind = 3 is a community's catalog (scope_id the community). */
+export interface BotRevision { kind: number; scopeId: string; revision: bigint }
+
+/** The slice view of a catalog (state/types `botCatalog:<community>`): no bigint and no bytes. */
+export interface BotCatalogView { revision: string; commands: BotCommandSpec[]; keyId: string | null; fingerprint: string | null;
+  status: BotStatus; botChannels: string[] | null; botUserId: string | null }
+
+export const CATALOG_KIND = 3;
+const STATES: readonly BotState[] = ['ready', 'degraded', 'offline', 'disabled', 'absent'];
+const MAX_COMMANDS = 256;
+const MAX_ARGS = 16;
+const MAX_PUBLICATION = 256;
+/** A command name the picker can show and parse: lower-case words of letters, digits and hyphens, at most 32 bytes. */
+const COMMAND_NAME = /^[a-z0-9][a-z0-9-]*(?: [a-z0-9][a-z0-9-]*)*$/u;
+/** An argument name: one such word (it is a chip label and a `name:` key). */
+const ARG_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/u;
+const utf8 = new TextEncoder();
+const bytes = (s: string): number => utf8.encode(s).length;
+/** A held catalog or publication the core refused this way may name another Bot account: the Bot user is looked up again. */
+const SIGNER_REFUSALS: ReadonlySet<string> = new Set(['E_BOT_SIGNATURE', 'E_DEVICE_UNLISTED', 'E_CREDENTIAL']);
+
+class CatalogError extends Error {
+  readonly code = 'E_BOT_CATALOG';
+  constructor(detail: string) { super(`E_BOT_CATALOG: ${detail}`); }
+}
+const refuse = (detail: string): never => { throw new CatalogError(detail); };
+const bit = (v: CborValue): boolean => { const n = u53(v); if (n !== 0 && n !== 1) refuse('flag'); return n === 1; };
+
+function readArg(value: CborValue): ArgShape {
+  const [name, type, required] = arr(value, 3);
+  const n = str(name);
+  if (bytes(n) < 1 || bytes(n) > 32) refuse('argument name');
+  const t = u53(type);
+  if (t > 5) refuse('argument type');
+  return { name: n, type: t as ArgType, required: bit(required) };
+}
+
+function readCommand(value: CborValue): BotCommandSpec {
+  const [name, description, operation, shape, permission, needs, handler] = arr(value, 7);
+  const n = str(name); const d = str(description);
+  if (bytes(n) < 1 || bytes(n) > 64 || bytes(d) > 512) refuse('name or description');
+  const args = arr(shape).map(readArg);
+  if (args.length > MAX_ARGS || new Set(args.map(a => a.name)).size !== args.length) refuse('arguments');
+  return { name: n, description: d, operation: u53(operation), args, permissionBit: u53(permission), needsBotChannel: bit(needs),
+    handlerKind: u53(handler) };
+}
+
+/** Whether the picker can show a command: its name and its argument names in the picker's grammar. */
+const showable = (c: BotCommandSpec): boolean => bytes(c.name) <= 32 && COMMAND_NAME.test(c.name) && c.args.every(a => ARG_NAME.test(a.name));
+
+/** A catalog array, read whole or refused (at most 256 commands with unique names); a command whose name or argument names
+ *  are outside the picker's grammar is dropped, since the names reach chips, ids and the parser. */
+export function decodeBotCommands(values: readonly CborValue[]): BotCommandSpec[] {
+  if (values.length > MAX_COMMANDS) refuse('too many commands');
+  const commands = values.map(readCommand);
+  if (new Set(commands.map(c => c.name)).size !== commands.length) refuse('duplicate name');
+  return commands.filter(showable);
+}
+
+function readPublication(value: CborValue): Uint8Array | null {
+  if (value === null) return null;
+  const p = bin(value);
+  if (p.length === 0 || p.length > MAX_PUBLICATION) refuse('publication');
+  return p;
+}
+
+/** The community a publication `[1, community_id, key_id, …]` names, or null when it is no publication. */
+function publicationCommunity(publication: Uint8Array): string | null {
+  try {
+    const a = arr(decode(publication));
+    return a.length >= 2 && a[0] === 1n && a[1] instanceof Uint8Array && a[1].length === 16 ? toHex(a[1]) : null;
+  } catch { return null; }
+}
+
+/** GET /v1/communities/{community}/bot/catalog → [revision, commands, publication | null, [state, since | null]]. */
+export function decodeBotCatalogResponse(body: Uint8Array): { revision: bigint; commands: BotCommandSpec[]; publication: Uint8Array | null; status: BotStatus } {
+  const [revision, commands, publication, status] = arr(decode(body), 4);
+  const [state, since] = arr(status, 2);
+  const s = u53(state);
+  if (s > 4) refuse('state');
+  return { revision: u64(revision), commands: decodeBotCommands(arr(commands)), publication: readPublication(publication),
+    status: { state: STATES[s], since: since === null ? null : u53(since) } };
+}
+
+/** GET /v1/bot/revisions → [[kind, scope_id, revision]…]. */
+export function decodeBotRevisions(body: Uint8Array): BotRevision[] {
+  return arr(decode(body)).map(row => { const [kind, scope, revision] = arr(row, 3); return { kind: u53(kind), scopeId: toHex(bin(scope, 16)), revision: u64(revision) }; });
+}
+
+/** GET /v1/communities/{community}/bot/channels → [[channel_id, marked_at, marked_by]…], filtered by the instance to the
+ *  channels this member can view; only the ids are kept. */
+export function decodeBotChannels(body: Uint8Array): string[] {
+  return arr(decode(body)).map(row => toHex(bin(arr(row, 3)[0], 16)));
+}
+
+/** What the server names as a community's Bot user: one id, none, or more than one kind-1 account (refused). */
+export type BotUserCandidate = Uint8Array | null | 'ambiguous';
+
+export interface BotCatalogDeps {
+  fetchCatalog(communityId: string): Promise<Uint8Array>;
+  fetchBotChannels(communityId: string): Promise<Uint8Array>;
+  fetchRevisions(): Promise<Uint8Array>;
+  /** The server's Bot user for the community (the key's signer). Pinned on first sight; a later different one is never used. */
+  botUserId(communityId: string): Promise<BotUserCandidate>;
+  /** CorePort.botCommandKeyVerify: throws the refusal (E_BOT_SIGNATURE, E_CREDENTIAL, E_DEVICE_LIST_STALE, ...). */
+  verify(publication: Uint8Array, botUserId: Uint8Array): { keyId: Uint8Array; fingerprint: string };
+  /** CorePort.botUserPin (task 20b): the community's Bot user, pinned in the core store on first sight. State 2 is
+   *  another user than the pinned one, which stays; only sign-out (a store wipe) clears a pin. Throws E_CREDENTIAL for an
+   *  account the instance attested as a human. */
+  pinBotUser(communityId: string, botUserId: Uint8Array): { state: 0 | 1 | 2; pinned: Uint8Array };
+  /** CorePort.botUserPinned: the stored pin, or null. */
+  pinnedBotUser(communityId: string): Uint8Array | null;
+  /** Task 20b review I1: reads the candidate's device-list head and ingests its account-kind attestation, so the core can
+   *  tell a Bot from a human before anything is pinned. Asked before a first pin, at most once per connection. */
+  ingestBotAttestation(botUserId: Uint8Array): Promise<void>;
+  /** Task 20b (Jonas, 2026-11-07): reads the Bot user's device list (the head with its identity keys, the history from
+   *  version 1), builds the device_list_push and pins it in the core (CorePort.botDeviceListPin). Resolves the pin state:
+   *  0 current, 1 a key change held, 2 behind. Asked on E_DEVICE_LIST_STALE; once it pins (0 or 1) not again on that
+   *  connection; a failure or 2 is asked again on a catalog read, an op-61 push or a backoff timer. */
+  pinBotDeviceList(botUserId: Uint8Array): Promise<0 | 1 | 2>;
+  /** A catalog read or a key check that failed, by code (diagnostics); never its content. */
+  onError?(code: string): void;
+  /** Task 23 fix round 1: the clock and timer a refused first pin's retry runs on (defaults: Date.now, setTimeout). */
+  now?(): number;
+  setTimer?(fn: () => void, ms: number): () => void;
+}
+
+/** A refused first pin is tried again after this backoff, doubling to the cap (Task 23 fix round 1). */
+export const PIN_RETRY_MS = 3_000;
+const PIN_RETRY_MAX_MS = 60_000;
+
+interface Entry {
+  revision: bigint;
+  commands: BotCommandSpec[];
+  publication: Uint8Array | null;
+  /** The publication the core accepted; null when none was, so nothing is sealed. */
+  verified: { publication: Uint8Array; keyId: Uint8Array; fingerprint: string } | null;
+  /** The core's last refusal of the publication (E_UMK_CHANGED greys it `changed`); null after an accept. */
+  refusal?: string | null;
+  serverStatus: BotStatus;
+  botChannels: string[] | null;
+}
+
+const codeOf = (e: unknown): string => (typeof e === 'object' && e !== null && 'code' in e && typeof e.code === 'string' ? e.code : 'E_BOT_CATALOG');
+
+type ListRead = { state: 'reading'; backoff: number } | { state: 'settled' }
+  | { state: 'waiting'; until: number; backoff: number; cancel: () => void };
+
+export class BotCatalogStore {
+  private readonly entries = new Map<string, Entry>();
+  private readonly listeners = new Map<string, Set<() => void>>();
+  private revisions: Promise<BotRevision[] | null> | null = null;
+  private readonly inFlight = new Map<string, Promise<void>>();
+  /** A read asked for while one is in flight: it runs once that read ends (every ask meanwhile shares it). */
+  private readonly queued = new Map<string, Promise<void>>();
+  /** Every catalog read is numbered when it starts; a read lands only when no later-started read of its community landed
+   *  first, so an older status (offline, read before the Bot came up) never overwrites a newer one. */
+  private readSeq = 0;
+  private readonly landedSeq = new Map<string, number>();
+  /** The last number handed out before clear(): a read or Bot-user lookup started before it lands nowhere (another
+   *  account's catalog and pin). */
+  private clearedAt = 0;
+  /** community → the Bot user this device pinned on first sight (hex): a copy of the core store's pin (task 20b), which
+   *  survives a reload and is never replaced. */
+  private readonly pins = new Map<string, string>();
+  /** Bot users (hex) whose device list this connection read (task 20b): `settled` once it pinned (current, or a held key
+   *  change), so nothing is read again while it holds; a read that failed or pinned a list behind the Bot's signed head
+   *  (state 2) `waiting` until `until`, when a catalog read, an op-61 push or the backoff timer (doubling from PIN_RETRY_MS
+   *  to a minute) tries it again. A settled Bot user has no timer armed: nothing is read while everything checks. */
+  private readonly listRead = new Map<string, ListRead>();
+  /** Communities whose first pin the core refused (no Bot attestation yet, or a human's): not asked again before `until`.
+   *  Task 23 fix round 1: a newer op-61 revision, a catalog read, the trust refresh or the backoff timer (doubling from
+   *  PIN_RETRY_MS) clears it, so a refusal never holds for the whole connection. */
+  private readonly pinRefused = new Map<string, { until: number; backoff: number; cancel: () => void }>();
+  /** Bot users (hex) whose pinned device list holds a key change (botDeviceListPin state 1): greyed `changed`. */
+  private readonly listHeld = new Set<string>();
+  /** community → why its Bot user cannot be used: the server named another one, or more than one. */
+  private readonly botProblem = new Map<string, 'changed' | 'ambiguous'>();
+  private readonly resolving = new Map<string, Promise<void>>();
+
+  constructor(private readonly deps: BotCatalogDeps) {}
+
+  get(communityId: string): BotCatalog | null {
+    const e = this.entries.get(communityId);
+    if (e === undefined) return null;
+    return { revision: e.revision, commands: e.commands, keyId: e.verified?.keyId ?? null, fingerprint: e.verified?.fingerprint ?? null,
+      status: this.statusOf(communityId, e), botChannels: e.botChannels, botUserId: this.pinOf(communityId) ?? null };
+  }
+
+  /** The slice form of get(). */
+  view(communityId: string): BotCatalogView | null {
+    const c = this.get(communityId);
+    return c === null ? null : { ...c, revision: c.revision.toString(), keyId: c.keyId === null ? null : toHex(c.keyId) };
+  }
+
+  /** The publication the core accepted, which is the only one anything is sealed to; null otherwise. */
+  publication(communityId: string): Uint8Array | null {
+    if (this.botProblem.has(communityId)) return null;
+    return this.entries.get(communityId)?.verified?.publication ?? null;
+  }
+
+  subscribe(communityId: string, fn: () => void): () => void {
+    const set = this.listeners.get(communityId) ?? new Set();
+    set.add(fn);
+    this.listeners.set(communityId, set);
+    return () => { set.delete(fn); };
+  }
+
+  /** op 61: a newer revision replaces the held catalog with no request (the key check is local); an older one is ignored. */
+  apply(frame: BotCatalogFrame): void {
+    const communityId = toHex(frame.communityId);
+    let commands: BotCommandSpec[];
+    let publication: Uint8Array | null;
+    try { commands = decodeBotCommands(frame.commands); publication = readPublication(frame.publication); }
+    catch (e) { this.deps.onError?.(codeOf(e)); return; }
+    const held = this.entries.get(communityId);
+    if (held !== undefined && frame.revision <= held.revision) return;
+    // op 61 carries no status, but only a running Bot publishes: a held absent, disabled or offline reads as ready now; a
+    // degraded one stays degraded until the next read says otherwise.
+    const serverStatus: BotStatus = held?.serverStatus.state === 'degraded' ? held.serverStatus : { state: 'ready', since: null };
+    const entry: Entry = { revision: frame.revision, commands, publication, verified: null, serverStatus, botChannels: held?.botChannels ?? null };
+    this.entries.set(communityId, entry);
+    this.clearRefusal(communityId);
+    this.clearListWait(communityId);
+    if (this.pinOf(communityId) !== undefined || publication === null) {
+      this.verifyEntry(communityId, entry);
+      this.notify(communityId);
+      return;
+    }
+    // Once the first pin is written, the entry held then is checked, whichever it is: a catalog read that landed during the
+    // lookup (served before the Bot published, it keeps this push's key) was checked with no pin to check against and
+    // waits for nothing else, so skipping it left the commands greyed `unverified` for the whole connection.
+    void this.resolveBot(communityId).then(() => {
+      const held = this.entries.get(communityId);
+      if (held === undefined || held.verified !== null) return;
+      this.verifyEntry(communityId, held);
+      this.notify(communityId);
+    });
+  }
+
+  /** A new gateway connection: the next sync reads the revisions again (op 61 is not replayed). */
+  newConnection(): void { this.revisions = null; this.clearListReads(); this.clearRefusals(); }
+
+  /** The instance's revisions for this connection (one read, shared with the catalog sync); null when it could not be read. */
+  readRevisions(): Promise<BotRevision[] | null> {
+    this.revisions ??= this.deps.fetchRevisions().then(decodeBotRevisions).catch((e: unknown) => { this.deps.onError?.(codeOf(e)); return null; });
+    return this.revisions;
+  }
+
+  /** Connect sync: fetch the catalog only when none is held or the instance's revision is newer than the held one. */
+  async syncOnConnect(communityId: string): Promise<void> {
+    const revisions = await this.readRevisions();
+    const held = this.entries.get(communityId);
+    if (held !== undefined) {
+      if (revisions === null) return;
+      const server = revisions.find(r => r.kind === CATALOG_KIND && r.scopeId === communityId);
+      if (server === undefined || server.revision <= held.revision) return;
+    }
+    await this.refresh(communityId);
+  }
+
+  /** Reads the catalog and the Bot channels now (a structure change, op 54, or a stale key). A failure keeps what is held.
+   *  An ask while a read is in flight is one more read after it: that read may have started before the change the ask is
+   *  for (the Bot coming up), and its status would otherwise stand until a reload. */
+  refresh(communityId: string): Promise<void> {
+    const running = this.inFlight.get(communityId);
+    if (running === undefined) return this.start(communityId);
+    const waiting = this.queued.get(communityId);
+    if (waiting !== undefined) return waiting;
+    const next = running.catch(() => undefined).then(() => {
+      if (this.queued.get(communityId) === next) this.queued.delete(communityId);
+      return this.inFlight.get(communityId) ?? this.start(communityId);
+    });
+    this.queued.set(communityId, next);
+    return next;
+  }
+
+  private start(communityId: string): Promise<void> {
+    const task = this.load(communityId).finally(() => { if (this.inFlight.get(communityId) === task) this.inFlight.delete(communityId); });
+    this.inFlight.set(communityId, task);
+    return task;
+  }
+
+  /** Checks a held publication the core has not accepted yet again (its signer's device list may have arrived since); local,
+   *  no request. True when it is usable now. */
+  reverify(communityId: string): boolean {
+    const e = this.entries.get(communityId);
+    if (e === undefined) return false;
+    if (e.verified === null && e.publication !== null && this.pinOf(communityId) !== undefined) {
+      this.verifyEntry(communityId, e);
+      if (e.verified !== null) this.notify(communityId);
+    }
+    return this.publication(communityId) !== null;
+  }
+
+  /** The core no longer holds the key as verified (expired, or evicted from its table): drop this device's verdict too, so
+   *  the next check is a real one. */
+  invalidate(communityId: string): void {
+    const e = this.entries.get(communityId);
+    if (e === undefined || e.verified === null) return;
+    e.verified = null;
+    this.notify(communityId);
+  }
+
+  /** Reconnect: the server's Bot user is looked up again (a reinstall is noticed, never adopted silently), then the key is
+   *  checked again locally. */
+  async reresolve(communityId: string): Promise<void> {
+    if (!this.entries.has(communityId)) return;
+    await this.resolveBot(communityId);
+    const e = this.entries.get(communityId);
+    if (e !== undefined) { this.verifyEntry(communityId, e); this.notify(communityId); }
+  }
+
+  /** The trust refresh ingested account-kind attestations (review M6): a community whose first pin was refused for want of
+   *  the Bot's attestation is resolved again at once, and its key checked. */
+  async attestationsChanged(): Promise<void> {
+    const waiting = [...this.pinRefused.keys()];
+    this.clearRefusals();
+    for (const communityId of waiting) {
+      if (!this.entries.has(communityId) || this.pinOf(communityId) !== undefined) continue;
+      await this.reresolve(communityId);
+    }
+  }
+
+  /** Every held community (sign-out drops them all). */
+  communities(): string[] { return [...this.entries.keys()]; }
+
+  clear(): void {
+    const held = [...this.entries.keys()];
+    this.entries.clear();
+    this.pins.clear();
+    this.clearListReads();
+    this.clearRefusals();
+    this.listHeld.clear();
+    this.botProblem.clear();
+    this.revisions = null;
+    // A read still in flight belongs to the account before: it lands nowhere, and the next refresh does not wait for it.
+    this.clearedAt = this.readSeq;
+    this.landedSeq.clear();
+    this.inFlight.clear();
+    this.queued.clear();
+    this.resolving.clear();
+    for (const id of held) this.notify(id);
+  }
+
+  /** Asks the server for the community's Bot user and applies the pin rule: the first one seen is pinned; the same one again
+   *  is fine; another one is `changed` and is never used; more than one kind-1 account is refused. */
+  private resolveBot(communityId: string): Promise<void> {
+    const running = this.resolving.get(communityId);
+    if (running !== undefined) return running;
+    // Numbered like a catalog read: a lookup that started before clear() (sign-out) writes nothing after an await, not the
+    // pin (this copy or the core store's), not an attestation, not a problem or a refusal: they were the account before's.
+    const seq = ++this.readSeq;
+    const cleared = (): boolean => seq <= this.clearedAt;
+    const task = (async () => {
+      let candidate: BotUserCandidate;
+      try { candidate = await this.deps.botUserId(communityId); } catch { return; }
+      if (cleared()) return;
+      if (candidate === 'ambiguous') { this.botProblem.set(communityId, 'ambiguous'); return; }
+      if (candidate === null) return;
+      // The pin is the core store's (task 20b): a first sight is written there, so a reload never re-pins. It is written only
+      // for an account the core holds a Bot attestation for (Task 20b review I1): before a first pin the candidate's
+      // attestation is read and ingested, and a refusal (none yet: E_DEVICE_LIST_STALE; a human: E_CREDENTIAL) leaves the
+      // commands greyed unverified, tried again on the next connection, never on this one.
+      // The core refuses any candidate it holds no Bot attestation for, even with a pin held (fef388bd); a held pin is
+      // compared first, and its attestation read once when the core lacks it.
+      const refused = this.pinRefused.get(communityId);
+      if (refused !== undefined && this.now() < refused.until) return;
+      // A head that could not be read (offline, a transient error) is no refusal (review M6): the pin is tried again on the
+      // next catalog read or trust refresh of this connection. Only a refusal after a successful read waits for the next
+      // connection (or for an attestation the trust refresh brings: attestationsChanged).
+      let readFailed = false;
+      const ingest = async (): Promise<void> => {
+        try { await this.deps.ingestBotAttestation(candidate); readFailed = false; }
+        catch (e) { readFailed = true; if (!cleared()) this.deps.onError?.(codeOf(e)); }
+      };
+      let ingested = false;
+      if (this.pinOf(communityId) === undefined) { await ingest(); ingested = true; }
+      if (cleared()) return;
+      let answer: { state: 0 | 1 | 2; pinned: Uint8Array } | null = null;
+      for (;;) {
+        try { answer = this.deps.pinBotUser(communityId, candidate); break; }
+        catch (e) {
+          if (!ingested && codeOf(e) === 'E_DEVICE_LIST_STALE') {
+            await ingest(); ingested = true;
+            if (cleared()) return;
+            continue;
+          }
+          if (!readFailed) this.refuse(communityId);
+          this.deps.onError?.(codeOf(e));
+          return;
+        }
+      }
+      this.pins.set(communityId, toHex(answer.pinned));
+      if (answer.state === 0) { this.botProblem.delete(communityId); return; }
+      if (answer.state === 1) { if (this.botProblem.get(communityId) === 'ambiguous') this.botProblem.delete(communityId); return; }
+      this.botProblem.set(communityId, 'changed');
+      this.deps.onError?.('E_BOT_USER_CHANGED');
+    })().finally(() => { if (this.resolving.get(communityId) === task) this.resolving.delete(communityId); });
+    this.resolving.set(communityId, task);
+    return task;
+  }
+
+  private async load(communityId: string): Promise<void> {
+    const seq = ++this.readSeq;
+    let decoded: ReturnType<typeof decodeBotCatalogResponse>;
+    let channels: string[] | null;
+    try {
+      const [body, list] = await Promise.all([this.deps.fetchCatalog(communityId), this.deps.fetchBotChannels(communityId).catch(() => null)]);
+      decoded = decodeBotCatalogResponse(body);
+      channels = list === null ? null : decodeBotChannels(list);
+    } catch (e) { this.deps.onError?.(codeOf(e)); return; }
+    // Every read looks the Bot user up again: a reinstall under another account is noticed (and greyed), never adopted.
+    // A refused first pin is tried again too (Task 23 fix round 1), and so is a Bot device-list read that failed or was behind.
+    this.clearRefusal(communityId);
+    this.clearListWait(communityId);
+    if (decoded.publication !== null) await this.resolveBot(communityId);
+    // An older read than one that already landed (or one from before clear()) is dropped whole: its status is the older.
+    if (seq <= this.clearedAt || seq < (this.landedSeq.get(communityId) ?? 0)) return;
+    this.landedSeq.set(communityId, seq);
+    // Compared after every await: a push (op 61) that landed meanwhile and is newer than this read wins; this read's status
+    // and channels are still current.
+    const current = this.entries.get(communityId);
+    const keep = current !== undefined && current.revision > decoded.revision;
+    const base = keep ? current : { revision: decoded.revision, commands: decoded.commands, publication: decoded.publication, verified: null };
+    const entry: Entry = { ...base, serverStatus: decoded.status, botChannels: channels ?? current?.botChannels ?? null };
+    if (!keep || entry.verified === null) this.verifyEntry(communityId, entry);
+    this.entries.set(communityId, entry);
+    this.notify(communityId);
+  }
+
+  private now(): number { return this.deps.now?.() ?? Date.now(); }
+
+  /** Records a refused first pin and arms its retry: the next attempt waits the backoff, which doubles to a minute. */
+  private refuse(communityId: string): void {
+    const prior = this.pinRefused.get(communityId);
+    prior?.cancel();
+    const backoff = prior === undefined ? PIN_RETRY_MS : Math.min(prior.backoff * 2, PIN_RETRY_MAX_MS);
+    const fire = (): void => {
+      if (this.pinRefused.get(communityId) !== entry || !this.entries.has(communityId) || this.pinOf(communityId) !== undefined) return;
+      void this.reresolve(communityId);
+    };
+    const cancel = this.arm(fire, backoff);
+    const entry = { until: this.now() + backoff, backoff, cancel };
+    this.pinRefused.set(communityId, entry);
+  }
+
+  /** Lets the next resolve try the pin now; the backoff stays, so a refusal that repeats still waits longer each time. */
+  private clearRefusal(communityId: string): void {
+    const held = this.pinRefused.get(communityId);
+    if (held !== undefined) held.until = 0;
+  }
+
+  /** Lets the next check of the community's key read its Bot user's device list again now (a catalog read or an op-61
+   *  push): a failed or behind read is not left waiting for its timer. The backoff stays. */
+  private clearListWait(communityId: string): void {
+    const bot = this.pins.get(communityId);
+    const held = bot === undefined ? undefined : this.listRead.get(bot);
+    if (held?.state === 'waiting') held.until = 0;
+  }
+
+  private clearListReads(): void {
+    for (const held of this.listRead.values()) if (held.state === 'waiting') held.cancel();
+    this.listRead.clear();
+  }
+
+  /** A timer the deps' clock runs (setTimeout by default); returns its cancel. */
+  private arm(fn: () => void, ms: number): () => void {
+    return this.deps.setTimer?.(fn, ms) ?? (() => { const t = setTimeout(fn, ms); return () => { clearTimeout(t); }; })();
+  }
+
+  private clearRefusals(): void {
+    for (const held of this.pinRefused.values()) held.cancel();
+    this.pinRefused.clear();
+  }
+
+  /** The community's pinned Bot user (hex): this worker's copy, else the core store's (after a reload); undefined if none. */
+  private pinOf(communityId: string): string | undefined {
+    const held = this.pins.get(communityId);
+    if (held !== undefined) return held;
+    let stored: Uint8Array | null;
+    try { stored = this.deps.pinnedBotUser(communityId); } catch { return undefined; }
+    if (stored === null) return undefined;
+    const id = toHex(stored);
+    this.pins.set(communityId, id);
+    return id;
+  }
+
+  private verifyEntry(communityId: string, e: Entry): void {
+    e.verified = null;
+    e.refusal = null;
+    const pinned = this.pinOf(communityId);
+    if (e.publication === null || pinned === undefined || this.botProblem.has(communityId)) return;
+    // A publication for another community is refused here, before the core sees it (it would replace that community's key
+    // in the core's verified set).
+    if (publicationCommunity(e.publication) !== communityId) { this.deps.onError?.('E_BOT_CONTEXT'); return; }
+    try {
+      const { keyId, fingerprint } = this.deps.verify(e.publication, fromHex(pinned));
+      e.verified = { publication: e.publication, keyId, fingerprint };
+      this.listHeld.delete(pinned);
+    } catch (err) {
+      const code = codeOf(err);
+      e.refusal = code;
+      this.deps.onError?.(code);
+      // A refusal that may mean another Bot account: look it up again (it is greyed `changed` if so, never switched to).
+      if (SIGNER_REFUSALS.has(code)) void this.resolveBot(communityId).then(() => { if (this.botProblem.has(communityId)) this.notify(communityId); });
+      // Task 20b: no device list for the Bot (this member shares no group with it), or one behind its head: read it and pin
+      // it once on this connection, then check again.
+      if (code === 'E_DEVICE_LIST_STALE') this.fetchBotList(pinned);
+    }
+  }
+
+  /** Fetches and pins the Bot user's device list, then checks every held publication signed by that Bot user again. A
+   *  pinned list (current, or a held key change: greyed `changed`) is read once per connection; a failed or behind read
+   *  keeps them greyed `unverified` and is tried again (listRead). */
+  private fetchBotList(botUser: string): void {
+    const held = this.listRead.get(botUser);
+    if (held !== undefined && (held.state !== 'waiting' || this.now() < held.until)) return;
+    if (held?.state === 'waiting') held.cancel();
+    const read: ListRead = { state: 'reading', backoff: held?.state === 'waiting' ? held.backoff : 0 };
+    this.listRead.set(botUser, read);
+    void this.deps.pinBotDeviceList(fromHex(botUser)).then((state) => {
+      // Dropped with the connection or at sign-out: the next connection reads it again if it still needs to.
+      if (this.listRead.get(botUser) !== read) return;
+      if (state === 2) this.waitList(botUser, read.backoff); else this.listRead.set(botUser, { state: 'settled' });
+      if (state === 1) this.listHeld.add(botUser); else this.listHeld.delete(botUser);
+      this.recheckBot(botUser);
+    }, (err: unknown) => {
+      if (this.listRead.get(botUser) !== read) return;
+      this.deps.onError?.(codeOf(err));
+      this.waitList(botUser, read.backoff);
+    });
+  }
+
+  /** A failed or behind Bot device-list read waits the backoff (doubling to a minute), then the held publications that still
+   *  do not check are checked again, which reads the list again; with none left, nothing is read. */
+  private waitList(botUser: string, prior: number): void {
+    const backoff = prior === 0 ? PIN_RETRY_MS : Math.min(prior * 2, PIN_RETRY_MAX_MS);
+    const fire = (): void => {
+      if (this.listRead.get(botUser) !== wait) return;
+      wait.until = 0;
+      this.recheckBot(botUser);
+    };
+    const wait: ListRead & { state: 'waiting' } = { state: 'waiting', until: this.now() + backoff, backoff, cancel: () => undefined };
+    wait.cancel = this.arm(fire, backoff);
+    this.listRead.set(botUser, wait);
+  }
+
+  /** Checks again every held publication of a community pinned to this Bot user that has not checked yet. */
+  private recheckBot(botUser: string): void {
+    for (const [communityId, e] of this.entries) {
+      if (this.pins.get(communityId) !== botUser || e.verified !== null) continue;
+      this.verifyEntry(communityId, e);
+      this.notify(communityId);
+    }
+  }
+
+  /** The greyed reasons this device adds to the instance's status. */
+  private statusOf(communityId: string, e: Entry): BotStatus {
+    const problem = this.botProblem.get(communityId);
+    if (problem === 'changed') return { state: 'changed', since: null };
+    if (problem === 'ambiguous') return { state: 'unverified', since: null };
+    // A key change of the Bot's device list is held until it is verified (task 20b): its commands are paused.
+    const pinned = this.pins.get(communityId);
+    if (e.verified === null && e.publication !== null && (e.refusal === 'E_UMK_CHANGED' || (pinned !== undefined && this.listHeld.has(pinned)))) {
+      return { state: 'changed', since: null };
+    }
+    if (e.verified !== null || e.serverStatus.state !== 'ready') return e.serverStatus;
+    // Ready, but nothing to seal to: no key published yet is the Bot still starting (offline); a key this device could not
+    // check has its own reason.
+    return e.publication === null ? { state: 'offline', since: e.serverStatus.since } : { state: 'unverified', since: null };
+  }
+
+  private notify(communityId: string): void {
+    for (const fn of [...(this.listeners.get(communityId) ?? [])]) {
+      try { fn(); } catch { /* a listener's failure is its own */ }
+    }
+  }
+}

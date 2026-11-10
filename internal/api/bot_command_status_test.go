@@ -27,19 +27,19 @@ func TestBotCommandStatusIsMemberReadableAndExposesLifecycleOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(memberToken), 3, 1, 1); err != nil {
+	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(memberToken), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	path := "/v1/communities/" + cid.String() + "/bot/command-status"
 	noInstallation := getAuth(h, path, memberToken)
-	if noInstallation.Code != http.StatusOK || noInstallation.Header().Get("Cache-Control") != "no-store" || !bytes.Equal(noInstallation.Body.Bytes(), []byte{0xf6}) {
-		t.Fatalf("missing bot status = %d cache=%q body=%x, want no-store null", noInstallation.Code, noInstallation.Header().Get("Cache-Control"), noInstallation.Body.Bytes())
+	if noInstallation.Code != http.StatusOK || !bytes.Equal(noInstallation.Body.Bytes(), []byte{0xf6}) {
+		t.Fatalf("missing bot status = %d body=%x, want null (a socket answer has no Cache-Control)", noInstallation.Code, noInstallation.Body.Bytes())
 	}
 	if denied := getAuth(h, "/v1/communities/"+id.New().String()+"/bot/command-status", memberToken); denied.Code != http.StatusNotFound {
 		t.Fatalf("foreign community status = %d, want hidden 404", denied.Code)
 	}
 	outsider, _, outsiderToken := seedAPISession(t, deps)
-	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(outsiderToken), 3, 1, 1); err != nil {
+	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(outsiderToken), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	if denied := getAuth(h, path, outsiderToken); denied.Code != http.StatusNotFound {

@@ -48,15 +48,3 @@ func (l *installationLifecycle) lock(installation id.ID) func() {
 		release()
 	}
 }
-
-func (l *installationLifecycle) tryLock(installation id.ID) (func(), bool) {
-	op, release := l.operation(installation)
-	if !op.mu.TryLock() {
-		release()
-		return nil, false
-	}
-	return func() {
-		op.mu.Unlock()
-		release()
-	}, true
-}

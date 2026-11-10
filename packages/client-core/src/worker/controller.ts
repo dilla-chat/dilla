@@ -13,16 +13,22 @@ import { safeName } from '../attachments/name';
 import type { ThumbDeps } from '../attachments/thumb';
 import { Tray, type TrayEntry } from '../attachments/tray';
 import { CborError } from '../cbor';
-import { decodeBotResponse, encodeBotRequestBytes, validateBotResponseForRequest, validateBotContext } from '../bot/protocol';
-import { arr, decode as decodeCbor, type CborInput } from '../cbor';
+import { BotCatalogStore } from '../bot/catalog';
+import { decodeBotWebhooks } from '../bot/admin';
+import { BotHints } from '../bot/hints';
+import { BOT_ANSWER_LOG, BotCommandError, BotCommandRelay, createBotCommands, type BotAnswerEvent, type BotAnswerView } from '../bot/commands';
+import { BotOperationRefusedError, createBotOperationsOn, type BotOperations } from '../bot/operations';
 import {
   CoreError, storeNewerOf, type ActivityRow, type ApplyResult, type AttachmentDescriptor, type CorePort, type ExpectedGroup, type GroupInfo, type Id,
-  type HumanInteractionEvent, type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
+  type OutboxRow, type SearchCursor, type SendRequest, type SignedLists, type TimelineRow, type TrustRecord,
 } from '../core-port';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent, type ReadyInfo } from '../gateway/gateway';
-import { Op, afkAwayOf, communityChangedOf, voiceStateOf, type AFKAwayFrame, type Frame } from '../gateway/frames';
+import { Op, afkAwayOf, botCatalogOf, botReplyOf, botStateChangedOf, communityChangedOf, voiceStateOf, type AFKAwayFrame, type Frame } from '../gateway/frames';
 import { fromHex, toHex } from '../hex';
-import { HttpClient } from '../http/client';
+import { HttpClient, type HttpRequest, type HttpResponse } from '../http/client';
+import type { SocketRoute } from '../http/socket-routes';
+import { RouteRtt } from '../http/route-rtt';
+import { SocketRequests } from '../gateway/requests';
 import { DillaHttpError } from '../http/errors';
 import {
   BIO_MAX_CHARS, CHANNEL_NAME_MAX_BYTES, COMMUNITY_NAME_MAX_BYTES, DISPLAY_MAX_CHARS, GIF_OFFSET_MAX, GIF_QUERY_MAX_BYTES,
@@ -32,7 +38,7 @@ import {
 import { NOTICE_READ_MAX, appendNotices, buildBadges, noticeOf, type NoticeDraft } from '../state/badges';
 import { buildTimeline, channelGroup, channelGroupState, type GroupMembership } from '../state/derive';
 import { PENDING_JOIN_KEY, PENDING_ROLE_PANEL_ACTION_PREFIX, isSettingKey, isSettingValue, pageSettings } from '../state/settings';
-import { chainRow, historyFrom, ingestAccountKind, readDeviceListHistory, signedHeadList } from '../state/trust';
+import { chainRow, historyFrom, ingestAccountKind, readBotDeviceListPush, readDeviceListHistory, signedHeadList } from '../state/trust';
 import { SliceStore } from '../state/store';
 import {
   TIMELINE_PAGE, type AccountState, type BootPhase, type ChannelGroupState, type ChannelSummary, type ConnectionState,
@@ -56,6 +62,9 @@ import { authorityFor } from '../admin/authority';
 export interface ControllerDeps {
   origin: string;                                  // the page origin, e.g. http://127.0.0.1:8453
   fetch: typeof fetch; WebSocket: typeof WebSocket; locks: LockManagerLike;
+  /** The socket route table (HttpDeps.socketRoutes); SOCKET_ROUTES when absent. A test seam: a controller test that
+   *  serves a route through its fake fetch passes [] so that no route goes to the (fake) gateway. */
+  socketRoutes?: readonly SocketRoute[];
   now(): number;                                   // ms
   /** A monotonic clock (ms, performance.now): elapsed-time bounds that a wall-clock step must not stretch or cut
    *  (task-10 fix review N2). Defaults to now. */
@@ -138,23 +147,13 @@ E_READ_MAX E_RECOVERY_KEY E_REGISTER_RACE E_ROOT_MISMATCH E_ROUTE_INPUT E_SENDER
 E_SETTING_KEY E_SIGNIN_EVICTED E_SIGNIN_EXPIRED E_STORAGE_FULL E_STORE_BUSY E_STORE_KEY E_STORE_NEWER E_STORE_OPEN E_STORE_PAUSED E_SYNC_STOPPED
 E_TIER_MISMATCH E_TRAY_NOT_READY E_UMK_CHANGED E_UNAUTHENTICATED E_UNAVAILABLE E_UNREADABLE E_UNSUPPORTED
 E_CALL_FULL E_CALL_SHARERS_FULL E_CALL_ACTIVE E_REMOVE_PENDING E_NO_CALL E_DISCONNECTED E_MEDIA_MISROUTE E_BOT_CAPABILITIES
-E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_PASSKEY_OTHER_ACCOUNT E_STEP_UP E_TARGET_NO_FACTOR E_KEYPACKAGES_EXHAUSTED`.split(/\s+/));
+E_FACTOR_REQUIRED E_PASSKEY_UNKNOWN E_PASSKEY_OTHER_ACCOUNT E_STEP_UP E_TARGET_NO_FACTOR E_KEYPACKAGES_EXHAUSTED
+E_BOT_OFFLINE E_BOT_DUPLICATE E_BOT_KEY_STALE E_BOT_STALE E_BOT_SIGNATURE E_BOT_CATALOG`.split(/\s+/));
 
-/** Catch-up fetch delays while a request waits for its interaction group's Welcome (45 s in all). */
-const WELCOME_BACKOFF_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000, 15_000, 15_000];
-const NO_GROUP_MEMORY_MS = 30_000;
-/** The Welcome wait's window: the backoff schedule's sum (45 s), held as a deadline so a wake never shortens it. */
-const WELCOME_WAIT_MS = WELCOME_BACKOFF_MS.reduce((sum, ms) => sum + ms, 0);
-const NO_INTERACTION_GROUP = 'no active interaction group for this community';
-const AMBIGUOUS_INTERACTION_GROUP = 'multiple active interaction groups make the Bot target ambiguous';
-const INTERACTION_CLOCK_SKEW = 'no active interaction group: its Welcome was refused because this device clock is off from the instance clock';
 /** The only E_CORE_STATE refusals whose detail leaves the worker, each as a fixed code: a bounded allowlist of local
- *  states, never message content, ids or key material. Every other refusal keeps detail ''. */
-const CORE_STATE_DETAILS: ReadonlyMap<string, string> = new Map([
-  [NO_INTERACTION_GROUP, 'missing_interaction_group'],
-  [AMBIGUOUS_INTERACTION_GROUP, 'ambiguous_interaction_group'],
-  [INTERACTION_CLOCK_SKEW, 'interaction_clock_skew'],
-]);
+ *  states, never message content, ids or key material. Every other refusal keeps detail ''. Bot v2 Task 23 removed the
+ *  interaction group states, the last entries. */
+const CORE_STATE_DETAILS: ReadonlyMap<string, string> = new Map();
 
 /** The sole mapping of worker-local exceptions into page-bound data. */
 export function sanitizeWorkerError(e: unknown): WorkerError {
@@ -175,6 +174,9 @@ export function sanitizeWorkerError(e: unknown): WorkerError {
 }
 /** The stable reasons a local refusal may carry to the page. None since web3.8 R5 removed 'announce.noHeldRole' (an
  *  announcement's creator gets her own send entry, so no create is refused for the roles she holds). */
+/** Task 22: the re-add's asks while the Bot's old leaf is proposed out, and the wait between them. */
+const REREADD_ATTEMPTS = 15;
+const REREADD_WAIT_MS = 2_000;
 const REFUSAL_REASONS: ReadonlySet<string> = new Set<string>();
 const errorOf = sanitizeWorkerError;
 function sanitizePageError(error: WorkerError): WorkerError {
@@ -224,14 +226,19 @@ const COMMANDS: ReadonlySet<string> = new Set<Method>([
   'refreshCommunities',
   'getBotInstallation',
   'getBotCommandStatus',
+  'sendBotCommand',
+  'syncBotCatalog',
+  'forgetBotCommand',
+  'markBotChannel',
+  'reAddBot',
+  'listBotWebhooks',
+  'createBotWebhook',
+  'rotateBotWebhook',
+  'updateBotWebhook',
+  'deleteBotWebhook',
+  'getWebhookAvatar',
+  'watchBotScope',
   'patchBotProfile',
-  'listModerationCases',
-  'listManualModerationEvidence',
-  'humanInteractionRequest',
-  'readBotInteractionResponses',
-  'ackBotInteractionResponses',
-  'readHumanInteractionResponses',
-  'ackHumanInteractionResponses',
   'getBotJoinRole',
   'configureBotJoinRole',
   'restartBot',
@@ -416,14 +423,19 @@ const ID_FIELDS: Partial<Record<Method, readonly ('communityId' | 'channelId' | 
   selectCommunity: ['communityId'],
   getBotInstallation: ['communityId'],
   getBotCommandStatus: ['communityId'],
+  sendBotCommand: ['communityId', 'requestId'],
+  syncBotCatalog: ['communityId'],
+  forgetBotCommand: ['requestId'],
+  markBotChannel: ['communityId', 'channelId'],
+  reAddBot: ['communityId', 'channelId'],
+  listBotWebhooks: ['communityId'],
+  createBotWebhook: ['communityId', 'channelId'],
+  rotateBotWebhook: ['communityId'],
+  updateBotWebhook: ['communityId'],
+  deleteBotWebhook: ['communityId'],
+  getWebhookAvatar: ['communityId'],
+  watchBotScope: ['channelId'],
   patchBotProfile: ['communityId'],
-  listModerationCases: ['communityId', 'requestId'],
-  listManualModerationEvidence: ['communityId', 'requestId'],
-  humanInteractionRequest: ['communityId', 'requestId'],
-  readBotInteractionResponses: ['communityId'],
-  ackBotInteractionResponses: ['communityId'],
-  readHumanInteractionResponses: ['communityId'],
-  ackHumanInteractionResponses: ['communityId'],
   getBotJoinRole: ['communityId'],
   configureBotJoinRole: ['communityId', 'requestId', 'roleId', 'installationId'],
   restartBot: ['communityId', 'installationId'],
@@ -530,14 +542,19 @@ export const ACCEPTS: Record<BootPhase, readonly Method[]> = {
     'refreshCommunities',
     'getBotInstallation',
     'getBotCommandStatus',
+    'sendBotCommand',
+    'syncBotCatalog',
+    'forgetBotCommand',
+    'markBotChannel',
+    'reAddBot',
+    'listBotWebhooks',
+    'createBotWebhook',
+    'rotateBotWebhook',
+    'updateBotWebhook',
+    'deleteBotWebhook',
+    'getWebhookAvatar',
+    'watchBotScope',
     'patchBotProfile',
-    'listModerationCases',
-    'listManualModerationEvidence',
-    'humanInteractionRequest',
-    'readBotInteractionResponses',
-    'ackBotInteractionResponses',
-    'readHumanInteractionResponses',
-    'ackHumanInteractionResponses',
     'getBotJoinRole',
     'configureBotJoinRole',
     'restartBot',
@@ -761,66 +778,13 @@ function invalid(command: Record<string, unknown>): string | null {
       emojis.add(option.emoji); roles.add(option.roleId);
     }
   }
-  if (m === 'listModerationCases' && command.offset !== 0) return 'offset must be zero';
-  if (m === 'listModerationCases' && command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
-  if (m === 'listManualModerationEvidence' && (command.requestId === '0'.repeat(32)
-    || command.cursor !== null && (typeof command.cursor !== 'string' || !/^(?:[0-9a-f]{2}){1,256}$/u.test(command.cursor)))) return 'manual evidence cursor is invalid';
-  if (m === 'humanInteractionRequest') {
-    const operation = command.operation;
-    if (typeof operation !== 'number' || !Number.isInteger(operation)
-      || !(operation === 0 || operation === 1 || operation === 2 || operation === 3 || operation >= 10 && operation <= 25 || operation === 31
-        || operation >= 50 && operation <= 52 || operation >= 61 && operation <= 63 || operation >= 70 && operation <= 75
-        || operation >= 80 && operation <= 84)) return 'interaction operation is invalid';
+  if (m === 'sendBotCommand') {
     if (command.requestId === '0'.repeat(32)) return 'requestId must be nonzero';
-    const music = operation >= 10 && operation <= 23 || operation === 25;
     if (command.channelId !== null && (typeof command.channelId !== 'string' || !ID.test(command.channelId))) return 'channelId is invalid';
-    if (music !== (typeof command.channelId === 'string')) return 'interaction channel context is invalid';
-    const count = operation === 1 || operation === 50 || [11, 12, 17, 18, 20, 21, 25, 70, 71, 74, 80, 81, 82, 83, 84].includes(operation) ? 1
-      : operation === 2 || operation === 22 || operation === 31 || operation === 51 || operation === 52 || operation === 63 || operation === 73 ? 2
-        : operation === 61 || operation === 72 || operation === 75 ? 3 : 0;
-    if (!Array.isArray(command.args) || command.args.length !== count && !(operation === 15 && command.args.length === 1)) return 'interaction arguments are invalid';
-    if (operation === 15 && command.args.length === 1 && (typeof command.args[0] !== 'string' || command.args[0] !== ''
-      && (!ID.test(command.args[0]) || command.args[0] === '0'.repeat(32)))) return 'skip current item is invalid';
-    if (operation === 62 && command.args.length !== 0) return 'automatic moderation read arguments are invalid';
-    if ((operation === 1 || operation === 2) && (typeof command.args[0] !== 'number' || !Number.isInteger(command.args[0]) || command.args[0] < 0 || command.args[0] > 5)) return 'settings section is invalid';
-    if (operation === 2 && (!(command.args[1] instanceof Uint8Array) || command.args[1].length === 0 || command.args[1].length > 2400)) return 'settings document is invalid';
-    if (operation === 31 && (typeof command.args[0] !== 'string' || !ID.test(command.args[0])
-      || !(command.args[1] instanceof Uint8Array) || command.args[1].length === 0 || command.args[1].length > 2200)) return 'role panel request is invalid';
-    if (operation === 50 && (typeof command.args[0] !== 'number' || !Number.isSafeInteger(command.args[0]) || command.args[0] < 0)) return 'announcement list offset is invalid';
-    if (operation === 51 && (command.args[0] !== null && (typeof command.args[0] !== 'string' || !ID.test(command.args[0]))
-      || !(command.args[1] instanceof Uint8Array) || command.args[1].length === 0 || command.args[1].length > 2200)) return 'announcement schedule is invalid';
-    if (operation === 52 && (typeof command.args[0] !== 'string' || !ID.test(command.args[0])
-      || typeof command.args[1] !== 'number' || !Number.isSafeInteger(command.args[1]) || command.args[1] < 1)) return 'announcement delete is invalid';
-    if (operation === 61 && (typeof command.args[0] !== 'string' || !ID.test(command.args[0])
-      || typeof command.args[1] !== 'string' || new TextEncoder().encode(command.args[1]).length < 1 || new TextEncoder().encode(command.args[1]).length > 1024
-      || typeof command.args[2] !== 'string' || new TextEncoder().encode(command.args[2]).length > 512)) return 'manual moderation evidence is invalid';
-    if (operation === 63 && (typeof command.args[0] !== 'string' || !(command.args[1] instanceof Uint8Array)
-      || command.args[1].length === 0 || command.args[1].length > 2400 || typeof command.stepUp !== 'string'
-      || command.stepUp.length < 1 || command.stepUp.length > 4096)) return 'automatic moderation save is invalid';
-    if ((operation === 11 || operation === 12) && (typeof command.args[0] !== 'string' || command.args[0].trim().length === 0)) return 'music query is invalid';
-    if ([17, 18, 20].includes(operation) && (typeof command.args[0] !== 'number' || !Number.isSafeInteger(command.args[0])
-      || command.args[0] < 0 || command.args[0] > (operation === 18 ? 100 : operation === 20 ? 2 : Number.MAX_SAFE_INTEGER))) return 'music numeric argument is invalid';
-    if ((operation === 21 || operation === 22) && (typeof command.args[0] !== 'string' || !ID.test(command.args[0]))) return 'music queue item id is invalid';
-    if (operation === 25 && (typeof command.args[0] !== 'string' || !ID.test(command.args[0]) || command.revision !== '0')) return 'music announcement is invalid';
-    if (operation === 22 && command.args[1] !== null && (typeof command.args[1] !== 'string' || !ID.test(command.args[1]))) return 'music destination id is invalid';
-    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 25 || operation === 31 || operation === 51 || operation === 52
-      || operation === 61 || operation === 63 || operation === 70 || operation === 73 || operation === 74 || operation === 80
-      || operation === 82 || operation === 83;
-    const revision = command.revision;
-    if (mutation ? typeof revision !== 'string' || !/^(0|[1-9][0-9]{0,19})$/u.test(revision) || BigInt(revision) > 0xffff_ffff_ffff_ffffn
-      : revision !== null) return 'interaction revision is invalid';
+    if (typeof command.operation !== 'number' || !Number.isSafeInteger(command.operation) || command.operation < 0) return 'operation is invalid';
+    if (!Array.isArray(command.args) || command.args.length > 32 || !command.args.every((a: unknown) => a === null || typeof a === 'string'
+      || typeof a === 'boolean' || a instanceof Uint8Array || (typeof a === 'number' && Number.isSafeInteger(a) && a >= 0))) return 'arguments are invalid';
   }
-  if (m === 'readBotInteractionResponses' && (!Array.isArray(command.operations) || command.operations.length === 0
-    || command.operations.length > 35 || command.operations.some((op: unknown) => typeof op !== 'number' || !Number.isInteger(op)
-    || !(op === 0 || op === 1 || op === 2 || op === 3 || op >= 10 && op <= 25 || op === 31 || op >= 50 && op <= 52
-      || op >= 61 && op <= 63 || op >= 70 && op <= 75 || op >= 80 && op <= 84))
-    || new Set(command.operations).size !== command.operations.length)) return 'response operations are invalid';
-  if ((m === 'readBotInteractionResponses' || m === 'readHumanInteractionResponses') && command.requestIds !== undefined
-    && (!Array.isArray(command.requestIds) || command.requestIds.length < 1 || command.requestIds.length > 100
-      || command.requestIds.some((id: unknown) => typeof id !== 'string' || !ID.test(id))
-      || new Set(command.requestIds).size !== command.requestIds.length)) return 'response request ids are invalid';
-  if (m === 'ackHumanInteractionResponses' && (typeof command.through !== 'string' || !/^[0-9a-f]{32}$/u.test(command.through))) return 'through is invalid';
-  if (m === 'ackBotInteractionResponses' && (typeof command.through !== 'string' || !/^[0-9a-f]{32}$/u.test(command.through))) return 'through is invalid';
   if (m === 'selectSelfRole' && typeof command.enabled !== 'boolean') return 'enabled is invalid';
   if (m === 'configureBotInstallation' || m === 'disableBotInstallation') {
     const revision = command.expectedRevision;
@@ -834,6 +798,12 @@ function invalid(command: Record<string, unknown>): string | null {
       if (typeof command.stepUp !== 'string' || command.stepUp.length < 1 || command.stepUp.length > 4096) return 'stepUp is invalid';
     }
   }
+  if ((m === 'rotateBotWebhook' || m === 'updateBotWebhook' || m === 'deleteBotWebhook')
+    && (typeof command.webhookId !== 'string' || !ID.test(command.webhookId))) return 'webhookId is not 32 lowercase hex';
+  if ((m === 'createBotWebhook' || m === 'updateBotWebhook') && (typeof command.name !== 'string' || command.name.trim() === ''
+    || [...command.name].length > 80 || typeof command.allowEveryone !== 'boolean')) return 'webhook settings are invalid';
+  if (m === 'markBotChannel' && typeof command.on !== 'boolean') return 'on is not a boolean';
+  if (m === 'getWebhookAvatar' && (typeof command.avatarId !== 'string' || !/^[0-9a-f]{64}$/u.test(command.avatarId))) return 'avatarId is not 64 lowercase hex';
   if (m === 'patchBotProfile' && (typeof command.display !== 'string' || command.display.trim() === ''
     || profileTextProblem(command.display, DISPLAY_MAX_CHARS, false) !== null)) return 'bot display name is invalid';
   if (m === 'setMemberTimeout') {
@@ -933,6 +903,7 @@ function invalid(command: Record<string, unknown>): string | null {
   if (m === 'safetyNumber' && (typeof command.umk !== 'string' || !/^[0-9a-f]{64}$/.test(command.umk))) return 'umk is not 64 lowercase hex';
   if (m === 'voiceSelf' && (typeof command.flags !== 'number' || !Number.isInteger(command.flags) || command.flags < 0 || command.flags > 3)) return 'flags are not 0..3';
   if (m === 'typing' && typeof command.on !== 'boolean') return 'on is not a boolean';
+  if (m === 'watchBotScope' && ((command.kind !== 1 && command.kind !== 2) || typeof command.on !== 'boolean')) return 'kind or on is invalid';
   if (m === 'callJoin' && !validVdec(command.vdec)) return 'vdec is not a list of distinct decoders';
   if (m === 'callLeave' && command.reason !== 'user' && command.reason !== 'pagehide' && command.reason !== 'switch' && command.reason !== 'lost') return 'invalid leave reason';
   if (m === 'callShare' && typeof command.on !== 'boolean') return 'on is not a boolean';
@@ -1015,11 +986,6 @@ export class Controller {
   };
   private connectionState: ConnectionState = { status: 'offline', generation: null };
   private core: CorePort | null = null;
-  private readonly acceptedHumanInteractionSends = new Set<string>();
-  private readonly autoModerationGrants = new Map<string, { token: string; groupId: Id; requestExpires: bigint; revision: string; document: Uint8Array }>();
-  private readonly pendingHumanInteractionAcks = new Map<string, bigint[]>();
-  private readonly pendingBotInteractionAcks = new Map<string, bigint[]>();
-  private interactionAckLeaseGeneration = 0;
   /** The store this worker paused when it released the lead: resumed, not opened again, when it leads again (C2). */
   private pausedCore: CorePort | null = null;
   private me: { userId: Id; deviceId: Id } | null = null;
@@ -1051,6 +1017,8 @@ export class Controller {
   private gateway: Gateway | null = null;
   private sync: SyncEngine | null = null;
   private wasDown = false;
+  /** Start-up's list read waits through the gateway's first connection attempt only: called when it fails (waiting). */
+  private onGatewayDown: (() => void) | null = null;
   private lastPresenceActivityAt = -Infinity;
   private selected: string | null = null;
   /** The pending debounced list read per community (op 54 and the unexpected-Welcome belt), by community hex. */
@@ -1148,17 +1116,25 @@ export class Controller {
   /** The one pending expiry sweep per channel, and the deadline (deps.now() ms) it is set for. */
   private readonly typingSweeps = new Map<string, { handle: number; at: number }>();
   private readonly diagnosticsErrors: { code: string; at: number }[] = [];
-  /** Community hex → when its remembered "no interaction group" answer lapses (ms). */
-  private readonly noInteractionGroupUntil = new Map<string, number>();
-  /** Requests waiting for a Welcome push; each is woken when a group turns active. */
-  /** community hex → wakers of requests waiting for that community's interaction group (kind 3) to become active. */
-  private readonly interactionGroupWaiters = new Map<string, Set<() => void>>();
-  /** Per kept kind-3 Welcome group (hex): its community (hex, from the proof; '' when unreadable) and the deps.now() ms
-   *  it was last refused for clock skew (sync's onWelcomeClockSkew). A Bot request names the skew only for its own
-   *  community. The last E_CLOCK_SKEW diagnostics entry: a kept Welcome is refused on every poll, so the entry repeats
-   *  at most once a minute. */
-  private readonly welcomeClockSkew = new Map<string, { communityHex: string; atMs: number }>();
-  private welcomeClockSkewLoggedMs: number | null = null;
+  /** Bot v2: each socket request's round trip by route pattern, for Diagnostics' slowest requests. */
+  private readonly routeRtt = new RouteRtt();
+  /** Bot v2: the request transport of the current gateway; socket routes go through it (HttpDeps.socket). */
+  private socketRequests: SocketRequests | null = null;
+  /** Bot v2 (task 20): each community Bot's command catalog, held on this device and published as `botCatalog:<id>`. */
+  private readonly botCatalog: BotCatalogStore;
+  /** Bot v2 (task 20): sealed commands out, sealed answers in (op 62), published as `botAnswers`. */
+  private readonly botRelay: BotCommandRelay;
+  private botAnswers: BotAnswerView[] = [];
+  /** Task 22: the worker's own sealed operations (moderation evidence, op 161), by community, and their answer listeners. */
+  private readonly workerBotOps = new Map<string, BotOperations>();
+  private readonly workerBotAnswers = new Map<string, (answer: BotAnswerEvent) => void>();
+  private botAnswerN = 0;
+  private readonly botCatalogWatched = new Set<string>();
+  /** Bot v2 (task 21): op 63 hints decide when the page fetches (bot/hints.ts); a rise in `botHints[scope]` is the cue. */
+  private botHints!: BotHints;
+  private botHintSignals: Record<string, number> = {};
+  /** Counts every hint fetch cue across scopes and accounts, so a counter never falls back below what a page already saw. */
+  private botHintSeq = 0;
   private deviceCount = 0;
   /** web-3: voice presence, calls and rings (L-TS-56). */
   private readonly calls: CallController;
@@ -1187,6 +1163,8 @@ export class Controller {
       random: () => deps.random(),
       token: () => this.session?.token() ?? null,
       reauthenticate: () => this.reauthenticate(),
+      socket: () => this.socketRequests,
+      ...(deps.socketRoutes === undefined ? {} : { socketRoutes: deps.socketRoutes }),
       onGeneration: (generation) => { this.setConnection({ generation: generation.toString() }); },
       // web3.6: an instance that answers E_FACTOR_REQUIRED to a ready account (an operator reset) owns the next step.
       // Once per transition: onFactorRequired leaves 'ready' synchronously, so the refusals that follow (and any while
@@ -1195,6 +1173,85 @@ export class Controller {
       onRefusal: (code) => { if (code === 'E_FACTOR_REQUIRED' && this.phase === 'ready') this.onFactorRequired(); },
     });
     this.routes = this.parts.routes(http);
+    // Bot v2 (task 20): the catalog and sealed commands go over the socket only (socket-routes.ts); nothing here polls.
+    // They share the routes' transport: a parts double of Routes (a controller test's) has no Bot routes, so none are sent.
+    const botHttp = (r: HttpRequest): Promise<HttpResponse> => this.routes instanceof Routes ? http.request(r)
+      : Promise.reject(new Refusal('E_UNAVAILABLE', ''));
+    const botGet = async (path: string): Promise<Uint8Array> => (await botHttp({ method: 'GET', path, bucket: 'read', idempotent: true })).body;
+    this.botCatalog = new BotCatalogStore({
+      fetchCatalog: (communityId) => botGet(`/v1/communities/${communityId}/bot/catalog`),
+      fetchBotChannels: (communityId) => botGet(`/v1/communities/${communityId}/bot/channels`),
+      fetchRevisions: () => botGet('/v1/bot/revisions'),
+      botUserId: (communityId) => this.botUserOf(communityId),
+      verify: (publication, botUserId) => {
+        const core = this.core;
+        if (core === null) throw new Refusal('E_NOT_READY', '');
+        return core.botCommandKeyVerify(publication, botUserId);
+      },
+      // Task 20b: the community's Bot user is pinned in the core store (a reload never re-pins on first sight).
+      pinBotUser: (communityId, botUserId) => {
+        const core = this.core;
+        if (core === null) throw new Refusal('E_NOT_READY', '');
+        return core.botUserPin(fromHex(communityId), botUserId);
+      },
+      pinnedBotUser: (communityId) => {
+        const core = this.core;
+        if (core === null) throw new Refusal('E_NOT_READY', '');
+        return core.botUserPinned(fromHex(communityId));
+      },
+      // Task 20b review I1: the candidate's attestation is in the core before its first pin, so a human the server names
+      // as the Bot is refused (E_CREDENTIAL) instead of pinned.
+      ingestBotAttestation: async (botUserId) => {
+        if (!(this.routes instanceof Routes)) throw new Refusal('E_UNAVAILABLE', '');
+        const head = await this.routes.getDeviceList(botUserId);
+        if (head === null) throw new Refusal('E_DEVICE_LIST_STALE', '');
+        const core = this.core;
+        if (core === null) throw new Refusal('E_NOT_READY', '');
+        ingestAccountKind(core, botUserId, head.raw, (code) => { this.recordError(code); });
+      },
+      // Task 20b (Jonas, 2026-11-07): a member who shares no group with the Bot reads its device list (the head's keys, the
+      // history from version 1) and pins it, trusted on first sight only for an account the instance attested as a Bot.
+      pinBotDeviceList: async (botUserId) => {
+        if (!(this.routes instanceof Routes)) throw new Refusal('E_UNAVAILABLE', '');
+        const { head, push } = await readBotDeviceListPush(this.routes, botUserId);
+        const core = this.core;
+        if (core === null) throw new Refusal('E_NOT_READY', '');
+        // The attestation goes in first: the pin refuses a user the core holds no Bot attestation for.
+        ingestAccountKind(core, botUserId, head, (code) => { this.recordError(code); });
+        return core.botDeviceListPin(botUserId, push).state;
+      },
+      onError: (code) => { this.recordError(code); },
+    });
+    this.botRelay = new BotCommandRelay({
+      core: () => this.core,
+      catalog: this.botCatalog,
+      post: async (communityId, body, idem) => {
+        await botHttp({ method: 'POST', path: `/v1/communities/${communityId}/bot/commands`, body, bucket: 'bot', idempotent: false,
+          idem, ok: [202], retry429: false });
+      },
+      nowS: () => this.serverNowS(),
+      random: (n) => crypto.getRandomValues(new Uint8Array(n)),
+      setTimer: (fn, ms) => deps.setTimeout(fn, ms),
+      clearTimer: (handle) => { deps.clearTimeout(handle); },
+      emit: (answer) => {
+        this.botAnswerN += 1;
+        this.botAnswers = [...this.botAnswers, { n: this.botAnswerN, requestId: answer.requestId, seq: answer.seq, status: answer.status,
+          body: toHex(answer.body), final: answer.final }].slice(-BOT_ANSWER_LOG);
+        this.slices.set('botAnswers', this.botAnswers);
+        this.workerBotAnswers.get(answer.requestId)?.(answer);
+      },
+    });
+    this.botHints = new BotHints({
+      fetch: (scope) => {
+        const key = `${scope.kind}:${scope.id}`;
+        this.botHintSignals = { ...this.botHintSignals, [key]: ++this.botHintSeq };
+        this.slices.set('botHints', this.botHintSignals);
+        return Promise.resolve();
+      },
+      now: () => deps.now(),
+      setTimer: (fn, ms) => { const handle = deps.setTimeout(fn, ms); return () => { deps.clearTimeout(handle); }; },
+      visible: (scope) => this.botHints.shown(scope),
+    });
     this.calls = new CallController({
       core: () => this.core,
       routes: this.routes,
@@ -1452,14 +1509,24 @@ export class Controller {
       case 'refreshCommunities': return this.refreshCommunities().then(() => null);
       case 'getBotInstallation': return this.getBotInstallation(command.communityId);
       case 'getBotCommandStatus': return this.getBotCommandStatus(command.communityId);
+      case 'sendBotCommand': return this.sendBotCommand(command);
+      case 'syncBotCatalog': return this.syncBotCatalog(command.communityId);
+      case 'forgetBotCommand': this.botRelay.forget(command.requestId); return Promise.resolve(null);
+      case 'markBotChannel': return this.markBotChannel(command.communityId, command.channelId, command.on);
+      case 'reAddBot': return this.reAddBot(command.communityId, command.channelId);
+      case 'listBotWebhooks': return this.botAdmin(command.communityId, async (c) => decodeBotWebhooks(await this.routes.listBotWebhooks(c)));
+      case 'createBotWebhook': return this.botAdmin(command.communityId, async (c) => {
+        const made = await this.routes.createBotWebhook(c, fromHex(command.channelId), command.name, command.allowEveryone);
+        return { webhookId: toHex(made.webhookId), url: made.url };
+      });
+      case 'rotateBotWebhook': return this.botAdmin(command.communityId, async (c) => ({ url: await this.routes.rotateBotWebhook(c, fromHex(command.webhookId)) }));
+      case 'updateBotWebhook': return this.botAdmin(command.communityId, async (c) => {
+        await this.routes.patchBotWebhook(c, fromHex(command.webhookId), command.name, command.allowEveryone); return null;
+      });
+      case 'deleteBotWebhook': return this.botAdmin(command.communityId, async (c) => { await this.routes.deleteBotWebhook(c, fromHex(command.webhookId)); return null; });
+      case 'getWebhookAvatar': return this.botAdmin(command.communityId, (c) => this.routes.getWebhookAvatar(c, command.avatarId));
+      case 'watchBotScope': this.watchBotScope(command.kind, command.channelId, command.on); return Promise.resolve(null);
       case 'patchBotProfile': return this.patchBotProfile(command.communityId, command.display);
-      case 'listModerationCases': return this.listModerationCases(command);
-      case 'listManualModerationEvidence': return this.listManualModerationEvidence(command);
-      case 'humanInteractionRequest': return this.humanInteractionRequest(command);
-      case 'readBotInteractionResponses': return this.readBotInteractionResponses(command.communityId, command.operations, command.requestIds);
-      case 'ackBotInteractionResponses': return Promise.resolve(this.ackBotInteractionResponses(command.communityId, command.through));
-      case 'readHumanInteractionResponses': return this.readHumanInteractionResponses(command.communityId, command.requestIds);
-      case 'ackHumanInteractionResponses': return this.ackHumanInteractionResponses(command.communityId, command.through);
       case 'getBotJoinRole': return this.getBotJoinRole(command.communityId);
       case 'configureBotJoinRole': return this.configureBotJoinRole(command);
       case 'restartBot': return this.restartBot(command);
@@ -1607,461 +1674,91 @@ export class Controller {
       botUserId: row.botUserId === null ? null : toHex(row.botUserId), state: row.state, revision: row.revision.toString() };
   }
 
+  // ---- Bot v2 (task 20): the catalog on this device and sealed commands ----
+
+  /** Seals one command to the community's verified command key and sends it; null once the instance accepted it. The
+   *  answers arrive as op 62 and are published in the `botAnswers` slice. */
+  private async sendBotCommand(command: Extract<Command, { m: 'sendBotCommand' }>): Promise<null> {
+    if (!this.listed(command.communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    try {
+      await this.botRelay.send({ communityId: command.communityId, channelId: command.channelId, operation: command.operation,
+        args: command.args, requestId: command.requestId });
+    } catch (e) {
+      if (e instanceof BotCommandError) throw new Refusal(e.code, '');
+      throw e;
+    }
+    return null;
+  }
+
+  /** Reads the catalog and Bot channels now (a stale command key, or a structure change). */
+  private async syncBotCatalog(communityId: string): Promise<null> {
+    if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
+    this.watchBotCatalog(communityId);
+    await this.botCatalog.refresh(communityId);
+    return null;
+  }
+
+  /** Task 22: a Bot-page route of a listed community. */
+  private botAdmin<T>(communityId: string, run: (community: Uint8Array) => Promise<T>): Promise<T> {
+    if (!this.listed(communityId)) return Promise.reject(new Refusal('E_BAD_INPUT', 'unknown community'));
+    return run(fromHex(communityId));
+  }
+
+  /** Task 22: marks or unmarks a Bot channel, then reads the catalog and Bot channels again (op 54 does not carry a mark).
+   *  On a mark the instance proposes the Bot into the channel's group; this device, a member, commits the Add as it
+   *  commits any pending proposal of a group it holds. */
+  private async markBotChannel(communityId: string, channelId: string, on: boolean): Promise<null> {
+    await this.botAdmin(communityId, (c) => on ? this.routes.markBotChannel(c, fromHex(channelId)) : this.routes.unmarkBotChannel(c, fromHex(channelId)));
+    this.watchBotCatalog(communityId);
+    await this.botCatalog.refresh(communityId).catch(() => undefined);
+    return null;
+  }
+
+  /** Task 22: the Bot page's re-add. While the Bot's old leaf is being proposed out the instance answers 1; this asks again
+   *  (every 2 s, at most 15 times) until it proposes the Bot in. */
+  private async reAddBot(communityId: string, channelId: string): Promise<'added' | 'pending'> {
+    for (let attempt = 0; attempt < REREADD_ATTEMPTS; attempt++) {
+      const state = await this.botAdmin(communityId, (c) => this.routes.reAddBot(c, fromHex(channelId)));
+      if (state === 0) return 'added';
+      await new Promise<void>(resolve => { this.deps.setTimeout(resolve, REREADD_WAIT_MS); });
+    }
+    return 'pending';
+  }
+
+  /** Publishes `botCatalog:<id>` on every change of that community's catalog (once per community). */
+  private watchBotCatalog(communityId: string): void {
+    if (this.botCatalogWatched.has(communityId)) return;
+    this.botCatalogWatched.add(communityId);
+    this.botCatalog.subscribe(communityId, () => { this.slices.set(`botCatalog:${communityId}`, this.botCatalog.view(communityId)); });
+  }
+
+  /** Connect sync for every listed community: one revisions read per connection, a catalog read only when behind. */
+  private async syncBotCatalogs(): Promise<void> {
+    for (const community of this.slices.get('communities') ?? []) {
+      if (this.revoked() || this.storeCleared) return;
+      this.watchBotCatalog(community.id);
+      // The Bot user is looked up again (a different one is greyed, never adopted: M8) and a key that could not be checked
+      // at its push (the Bot's device list arrived since) is checked again, locally.
+      await this.botCatalog.reresolve(community.id).catch(() => undefined);
+      await this.botCatalog.syncOnConnect(community.id).catch(() => undefined);
+    }
+  }
+
+  /** The server's Bot user for a community: its one member row of account kind 1 (more than one is refused), else the
+   *  instance's command status. The catalog store pins the first one it sees and never switches to another. */
+  private async botUserOf(communityId: string): Promise<Uint8Array | null | 'ambiguous'> {
+    const bots = this.slices.get(`members:${communityId}`)?.filter((row) => row.kind === 1) ?? [];
+    if (bots.length > 1) return 'ambiguous';
+    if (bots.length === 1) return fromHex(bots[0].userId);
+    const status = await this.routes.getBotCommandStatus(fromHex(communityId)).catch(() => null);
+    return status?.botUserId ?? null;
+  }
+
   private async patchBotProfile(communityId: string, display: string): Promise<string> {
     if (!this.listed(communityId)) throw new Refusal('E_BAD_INPUT', 'unknown community');
     const saved = await this.routes.patchBotProfile(fromHex(communityId), display);
     void this.reloadMembers(communityId).catch(() => undefined);
     return saved;
-  }
-
-  /**
-   * Resolves `true` when this community's interaction group becomes active (the gateway's Welcome push applied), or
-   * `false` after `ms`, whichever is first. Traffic in any other group does not wake it.
-   */
-  private async waitForInteractionWelcome(communityHex: string, ms: number): Promise<boolean> {
-    const abort = new AbortController();
-    let wake: () => void = () => undefined;
-    const pushed = new Promise<true>((resolve) => { wake = () => { resolve(true); }; });
-    let waiters = this.interactionGroupWaiters.get(communityHex);
-    if (waiters === undefined) { waiters = new Set(); this.interactionGroupWaiters.set(communityHex, waiters); }
-    waiters.add(wake);
-    try { return await Promise.race([this.deps.sleep(ms, abort.signal).then(() => false, () => false), pushed]); }
-    finally {
-      abort.abort();
-      waiters.delete(wake);
-      if (waiters.size === 0 && this.interactionGroupWaiters.get(communityHex) === waiters) this.interactionGroupWaiters.delete(communityHex);
-    }
-  }
-
-  private async waitForActiveInteractionGroup(communityHex: string): Promise<ReturnType<CorePort['groups']>> {
-    const core = this.requireCore();
-    const sync = this.requireSync();
-    const activeGroups = () => core.groups().filter((row) => row.kind === 3 && row.state === 2
-      && row.communityId !== null && toHex(row.communityId) === communityHex);
-    let rows = activeGroups();
-    const startedMs = this.deps.now();
-    // A "no group" answer is remembered per community for 30 s, so repeated capability reads fail fast and do not each
-    // wait out the registration window.
-    const knownEmptyUntil = this.noInteractionGroupUntil.get(communityHex);
-    const knownEmpty = knownEmptyUntil !== undefined && startedMs < knownEmptyUntil;
-    if (rows.length === 0 && !knownEmpty) {
-      // Check once. Registration follows the daemon's 30-second reconciliation interval, so the original request stays
-      // pending until a 45 s deadline: the gateway's Welcome push wakes it (only an apply that activates this
-      // community's interaction group does), and a catch-up fetch backs off (1 s doubling to 15 s) as the net. A wake
-      // never uses up a backoff step; only an expired step polls.
-      if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
-      await sync.pollWelcomes();
-      rows = activeGroups();
-      const deadlineMs = startedMs + WELCOME_WAIT_MS;
-      let step = 0;
-      while (rows.length === 0 && step < WELCOME_BACKOFF_MS.length) {
-        const leftMs = deadlineMs - this.deps.now();
-        if (leftMs <= 0) break;
-        if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
-        const woken = await this.waitForInteractionWelcome(communityHex, Math.min(WELCOME_BACKOFF_MS[step], leftMs));
-        if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
-        rows = activeGroups();
-        if (rows.length === 0 && !woken) { step++; await sync.pollWelcomes(); rows = activeGroups(); }
-      }
-      if (rows.length === 0) this.noInteractionGroupUntil.set(communityHex, this.deps.now() + NO_GROUP_MEMORY_MS);
-    }
-    if (rows.length > 0) this.noInteractionGroupUntil.delete(communityHex);
-    // A Welcome refused for clock skew during this wait is refused again on every poll while the skew lasts, so the
-    // request names that instead of the generic missing group.
-    if (rows.length === 0 && [...this.welcomeClockSkew.values()]
-      .some(seen => seen.communityHex === communityHex && seen.atMs >= startedMs)) {
-      throw new Refusal('E_CORE_STATE', INTERACTION_CLOCK_SKEW);
-    }
-    if (rows.length === 0) throw new Refusal('E_CORE_STATE', NO_INTERACTION_GROUP);
-    return rows;
-  }
-
-  /** Sends a revision-bound built-in Bot request. The result describes ciphertext upload only. */
-  private async humanInteractionRequest(command: Extract<Command, { m: 'humanInteractionRequest' }>, reservedExpires?: bigint): Promise<{
-    requestId: string; upload: 'accepted' | 'pending' | 'rejected' | 'unknown';
-  }> {
-    const { communityId: communityHex, channelId: channelHex, requestId: requestHex, operation } = command;
-    if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const channelId = channelHex === null ? null : fromHex(channelHex);
-    if (channelHex !== null) {
-      const channel = this.channels.get(channelHex);
-      if (channel === undefined || channel.communityId !== communityHex || channel.row.kind !== 1) {
-        throw new Refusal('E_BAD_INPUT', 'music requests require a voice channel in this community');
-      }
-    }
-    const acceptedKey = `interaction:${operation}:${communityHex}:${requestHex}`;
-    if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: requestHex, upload: 'accepted' };
-    const communityId = fromHex(communityHex);
-    const requestId = fromHex(requestHex);
-    const groupRows = await this.waitForActiveInteractionGroup(communityHex);
-    if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', AMBIGUOUS_INTERACTION_GROUP);
-    const groupId = groupRows[0].groupId;
-    const mutation = operation === 2 || operation >= 12 && operation <= 23 || operation === 25 || operation === 31 || operation === 51 || operation === 52
-      || operation === 61 || operation === 63 || operation === 70 || operation === 73 || operation === 74 || operation === 80
-      || operation === 82 || operation === 83;
-    const idArgument = (index: number): boolean =>
-      ((operation === 21 || operation === 25) && index === 0 || operation === 22 && (index === 0 || index === 1) || operation === 31 && index === 0
-        || operation === 51 && index === 0 || operation === 52 && index === 0 || operation === 61 && index === 0
-        || operation === 71 && index === 0 || operation === 72 && (index === 0 || index === 1) || operation === 73 && index === 0
-        || operation === 74 && index === 0 || operation === 75 && index === 0 || (operation === 82 || operation === 83) && index === 0);
-    const args: CborInput[] = command.args.map((value, index) =>
-      idArgument(index) && typeof value === 'string'
-        ? fromHex(value) : value);
-    const sync = this.requireSync();
-    return sync.runOnGroup(groupId, async () => {
-      if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
-      if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: requestHex, upload: 'accepted' };
-      const now = BigInt(Math.floor(this.deps.now() / 1000));
-      let requestExpires = mutation ? (reservedExpires ?? now + 30n) : null;
-      const request = { requestId, communityId, channelId, operation, revision: mutation ? BigInt(command.revision!) : null,
-        expires: requestExpires, args };
-      if (operation === 63) {
-        if (command.stepUp === undefined || requestExpires === null) throw new Refusal('E_BAD_INPUT', 'automatic moderation step-up is required');
-        const document = command.args[1];
-        if (!(document instanceof Uint8Array)) throw new Refusal('E_BAD_INPUT', 'automatic moderation document is invalid');
-        const prior = this.autoModerationGrants.get(acceptedKey);
-        let token: string;
-        if (prior !== undefined) {
-          if (toHex(prior.groupId) !== toHex(groupId) || prior.revision !== command.revision || prior.document.length !== document.length
-            || prior.document.some((byte, index) => byte !== document[index])) throw new Refusal('E_BAD_INPUT', 'request id is already bound to another automatic moderation document');
-          if (prior.requestExpires <= now) throw new Refusal('E_CONFLICT', 'automatic moderation request expired; reload and start a new save');
-          token = prior.token; requestExpires = prior.requestExpires; request.expires = requestExpires;
-        } else {
-          const digestInput = new Uint8Array(document.length); digestInput.set(document);
-          const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', digestInput.buffer));
-          const grant = await this.routes.armAutoModerationGrant(groupId, requestId, communityId, BigInt(command.revision!),
-            requestExpires, digest, command.stepUp);
-          token = grant.token;
-          this.autoModerationGrants.set(acceptedKey, { token, groupId, requestExpires, revision: command.revision!, document: document.slice() });
-          while (this.autoModerationGrants.size > 64) {
-            const oldest = this.autoModerationGrants.keys().next().value; if (oldest === undefined) break;
-            this.autoModerationGrants.delete(oldest);
-          }
-        }
-        request.args[0] = token;
-      }
-      validateBotContext(request, { community: communityId, now });
-      const requestBody = encodeBotRequestBytes(request);
-      const prepared = this.requireCore().humanInteractionSendPrepare(requestId, communityId, groupId, requestBody, now);
-      if (toHex(prepared) !== requestHex) throw new Refusal('E_CORE_STATE', 'interaction request id changed during preparation');
-      const core = this.requireCore();
-      const outbox = core.outbox(groupId).find((row) => toHex(row.msgId) === requestHex);
-      if (outbox === undefined) return { requestId: requestHex, upload: 'unknown' };
-      if (outbox.state === 1) return { requestId: requestHex, upload: 'pending' };
-      if (outbox.state === 2) core.sendRetry(prepared);
-      const ciphertext = core.sendEncrypt(prepared);
-      if (toHex(ciphertext.groupId) !== toHex(groupId)) throw new Refusal('E_CORE_STATE', 'prepared interaction upload changed groups');
-      let receipt: Awaited<ReturnType<Routes['postMessage']>>;
-      try {
-        receipt = await this.routes.postMessage(groupId, ciphertext.messageBody);
-      } catch (error) {
-        if (error instanceof DillaHttpError && error.status > 0 && error.status < 500) {
-          core.sendFail(prepared, error.code);
-          return { requestId: requestHex, upload: 'rejected' };
-        }
-        return { requestId: requestHex, upload: 'pending' };
-      }
-      try { core.sendConfirm(prepared, receipt.raw); }
-      catch { return { requestId: requestHex, upload: 'pending' }; }
-      this.acceptedHumanInteractionSends.add(acceptedKey);
-      if (this.acceptedHumanInteractionSends.size > 128) {
-        const oldest = this.acceptedHumanInteractionSends.values().next().value;
-        if (oldest !== undefined) this.acceptedHumanInteractionSends.delete(oldest);
-      }
-      return { requestId: requestHex, upload: 'accepted' };
-    });
-  }
-
-  /**
-   * The Bot command status the interaction poll gates archived-receipt reads on. Every pending request polls every 200 ms, so
-   * 25 of them would spend the device's whole read budget (http/pacing.ts, 8/s) on this one GET: concurrent polls share one
-   * request and its answer is reused for a second. A failure is never kept.
-   */
-  private readonly botStatusForPoll = new Map<string, { at: number; read: ReturnType<Routes['getBotCommandStatus']> }>();
-  private pollBotCommandStatus(communityHex: string): ReturnType<Routes['getBotCommandStatus']> {
-    const kept = this.botStatusForPoll.get(communityHex);
-    if (kept !== undefined && this.deps.now() - kept.at < 1_000) return kept.read;
-    const read = this.routes.getBotCommandStatus(fromHex(communityHex));
-    const entry = { at: this.deps.now(), read };
-    this.botStatusForPoll.set(communityHex, entry);
-    read.catch(() => { if (this.botStatusForPoll.get(communityHex) === entry) this.botStatusForPoll.delete(communityHex); });
-    return read;
-  }
-
-  private async readBotInteractionResponses(communityHex: string, operations: readonly number[], requestIds?: readonly string[]): Promise<{
-    responses: { deliveryId: string; requestId: string; communityId: string; operation: number; channelId: string | null;
-      status: number; revision: string | null; data: Uint8Array; sourceSeq: string }[];
-    through: string | null; blocked: boolean;
-  }> {
-    if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const allowed = new Set(operations);
-    const requested = requestIds === undefined ? null : new Set(requestIds);
-    const rows = this.readAllHumanInteractionEvents();
-    const pendingEvents = rows.filter(event => toHex(event.communityId) === communityHex && allowed.has(event.operation)
-      && (requested === null || requested.has(toHex(event.requestId)))).slice(0, 100);
-    let archivedEvents: HumanInteractionEvent[] = [];
-    if (requestIds !== undefined && requestIds.length > 0) {
-      const status = await this.pollBotCommandStatus(communityHex);
-      if (status === null || status.state !== 3 || status.botUserId === null) {
-        throw new Refusal('E_FORBIDDEN', 'current active Bot installation and community membership are required');
-      }
-      archivedEvents = this.requireCore().humanInteractionReceiptsRead(
-        fromHex(communityHex), status.installationId, status.botUserId, requestIds.map(fromHex))
-        .filter(event => toHex(event.communityId) === communityHex && allowed.has(event.operation)
-          && requested?.has(toHex(event.requestId)));
-    }
-    const byRequest = new Map<string, HumanInteractionEvent>();
-    for (const event of [...pendingEvents, ...archivedEvents]) {
-      const requestId = toHex(event.requestId);
-      const prior = byRequest.get(requestId);
-      if (prior !== undefined) {
-        if (prior.deliveryId !== event.deliveryId || prior.body !== event.body || prior.operation !== event.operation
-          || toHex(prior.groupId) !== toHex(event.groupId)) {
-          throw new Refusal('E_CORE_STATE', 'contradictory duplicate Bot interaction receipts');
-        }
-        continue;
-      }
-      byRequest.set(requestId, event);
-    }
-    const events = [...byRequest.values()].slice(0, 100);
-    const mapResponse = (event: HumanInteractionEvent) => {
-      const response = decodeBotResponse(event.body);
-      validateBotResponseForRequest(response, fromHex(communityHex), event.requestId);
-      return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), communityId: communityHex,
-        operation: event.operation, channelId: event.channelId === null ? null : toHex(event.channelId),
-        status: response.status, revision: response.revision?.toString() ?? null, data: response.data,
-        sourceSeq: String(event.sourceSeq) };
-      };
-    const responses = events.map(mapResponse);
-    const through = this.issueInteractionAckLease(communityHex, pendingEvents
-      .filter(event => byRequest.get(toHex(event.requestId))?.deliveryId === event.deliveryId)
-      .map(event => event.deliveryId), this.pendingBotInteractionAcks);
-    return { responses, through, blocked: false };
-  }
-
-  private ackBotInteractionResponses(communityHex: string, through: string): null {
-    const key = `${communityHex}:${through}`;
-    const deliveryIds = this.pendingBotInteractionAcks.get(key);
-    if (!this.listed(communityHex) || deliveryIds === undefined) {
-      throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement was not authorized');
-    }
-    const core = this.requireCore();
-    core.humanInteractionEventsAckSelected(deliveryIds);
-    this.pendingBotInteractionAcks.delete(key);
-    return null;
-  }
-
-  private readAllHumanInteractionEvents(): HumanInteractionEvent[] {
-    const events: HumanInteractionEvent[] = [];
-    let cursor = 0n;
-    let targetHighWater: bigint | null = null;
-    for (let pageNo = 0; pageNo < 41; pageNo++) {
-      const page = this.requireCore().humanInteractionEventsRead(cursor, 100);
-      targetHighWater ??= page.highWater;
-      events.push(...page.events.filter(event => event.deliveryId <= targetHighWater!));
-      if (page.next <= cursor || page.next >= targetHighWater) break;
-      cursor = page.next;
-    }
-    return events;
-  }
-
-  private issueInteractionAckLease(communityHex: string, deliveryIds: bigint[], leases: Map<string, bigint[]>): string | null {
-    if (deliveryIds.length === 0) return null;
-    let token: string;
-    do {
-      token = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
-    } while (leases.has(`${communityHex}:${token}`));
-    const key = `${communityHex}:${token}`;
-    leases.set(key, deliveryIds);
-    while (leases.size > 128) {
-      const oldest = leases.keys().next().value;
-      if (oldest === undefined) break;
-      leases.delete(oldest);
-    }
-    return token;
-  }
-
-  /** The first shipping human-side Bot request is a read-only moderation page. Its plaintext and
-   *  ciphertext stay inside the worker/core boundary; the page receives only the stable request id
-   *  and whether the upload was accepted, remains uncertain, was refused, or cannot be resolved. */
-  private listModerationCases(command: Extract<Command, { m: 'listModerationCases' }>) {
-    return this.sendModerationPage(command.communityId, command.requestId, 60, [null]);
-  }
-
-  private listManualModerationEvidence(command: Extract<Command, { m: 'listManualModerationEvidence' }>) {
-    const cursor = command.cursor === null ? null : fromHex(command.cursor);
-    return this.sendModerationPage(command.communityId, command.requestId, 64, [cursor]);
-  }
-
-  private async sendModerationPage(communityHex: string, requestHex: string, operation: 60 | 64,
-    args: (Uint8Array | null)[]): Promise<{ requestId: string; status: 'accepted' | 'pending' | 'rejected' | 'unknown' }> {
-    if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const acceptedKey = `${communityHex}:${requestHex}`;
-    if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: requestHex, status: 'accepted' };
-    const core = this.requireCore();
-    const sync = this.requireSync();
-    const communityId = fromHex(communityHex);
-    const groupRows = await this.waitForActiveInteractionGroup(communityHex);
-    if (groupRows.length !== 1) throw new Refusal('E_CORE_STATE', AMBIGUOUS_INTERACTION_GROUP);
-    const groupId = groupRows[0].groupId;
-    const requestId = fromHex(requestHex);
-    return sync.runOnGroup(groupId, async () => {
-      if (sync.stopped()) throw new SyncError('E_SYNC_STOPPED');
-      if (this.acceptedHumanInteractionSends.has(acceptedKey)) return { requestId: requestHex, status: 'accepted' };
-      const now = BigInt(Math.floor(this.deps.now() / 1000));
-      const request = { requestId, communityId, channelId: null, operation, revision: null, expires: null, args };
-      // Structural encoding enforces operation 60, its sole null cursor, and read-only null
-      // revision/expiry. Context validation binds it to this community and the trusted clock.
-      validateBotContext(request, { community: communityId, now });
-      const requestBody = encodeBotRequestBytes(request);
-      const prepared = core.humanInteractionSendPrepare(requestId, communityId, groupId, requestBody, now);
-      if (toHex(prepared) !== requestHex) throw new Refusal('E_CORE_STATE', 'interaction request id changed during preparation');
-
-      const outbox = core.outbox(groupId).find((row) => toHex(row.msgId) === requestHex);
-      if (outbox === undefined) return { requestId: requestHex, status: 'unknown' };
-      if (outbox.state === 1) return { requestId: requestHex, status: 'pending' };
-      if (outbox.state === 2) core.sendRetry(prepared);
-
-      const ciphertext = core.sendEncrypt(prepared);
-      if (toHex(ciphertext.groupId) !== toHex(groupId)) throw new Refusal('E_CORE_STATE', 'prepared interaction upload changed groups');
-      let receipt: Awaited<ReturnType<Routes['postMessage']>>;
-      try {
-        receipt = await this.routes.postMessage(groupId, ciphertext.messageBody);
-      } catch (error) {
-        if (error instanceof DillaHttpError && error.status > 0 && error.status < 500) {
-          core.sendFail(prepared, error.code);
-          return { requestId: requestHex, status: 'rejected' };
-        }
-        // A timeout or server failure does not establish whether the upload committed. The durable
-        // in-flight outbox is retained and the sync lane can resolve it after this POST has settled.
-        return { requestId: requestHex, status: 'pending' };
-      }
-      try {
-        core.sendConfirm(prepared, receipt.raw);
-      } catch {
-        // The server accepted the ciphertext, but the local receipt commit did not complete.
-        return { requestId: requestHex, status: 'pending' };
-      }
-      this.acceptedHumanInteractionSends.add(acceptedKey);
-      if (this.acceptedHumanInteractionSends.size > 128) {
-        const oldest = this.acceptedHumanInteractionSends.values().next().value;
-        if (oldest !== undefined) this.acceptedHumanInteractionSends.delete(oldest);
-      }
-      return { requestId: requestHex, status: 'accepted' };
-    });
-  }
-  private async readHumanInteractionResponses(communityHex: string, requestIds?: readonly string[]): Promise<{
-    authorized: boolean; responses: { deliveryId: string; requestId: string; status: number;
-      cases: { key: string; channelId: string; actorId: string; messageId: string; revision: string;
-        reason: string; action: string; excerpt: string; receivedAt: string }[]; hasMore: boolean; nextCursor: string | null }[];
-    through: string | null; blocked: boolean;
-  }> {
-    if (!this.listed(communityHex)) throw new Refusal('E_BAD_INPUT', 'unknown community');
-    const communityId = fromHex(communityHex);
-    // This is deliberately independent of the cached permissions slice. The response can contain
-    // private excerpts, so the authority decision must come from the instance on every read.
-    const permissions = await this.routes.getPermissions(communityId);
-    if ((permissions.bits & BigInt(PERM.viewAuditLog)) === 0n) {
-      return { authorized: false, responses: [], through: null, blocked: false };
-    }
-    const requested = requestIds === undefined ? null : new Set(requestIds);
-    const rows = this.readAllHumanInteractionEvents();
-    const isModerationRead = (operation: number): boolean => operation === 60 || operation === 64;
-    const pendingEvents = rows.filter(event => toHex(event.communityId) === communityHex && isModerationRead(event.operation)
-      && (requested === null || requested.has(toHex(event.requestId)))).slice(0, 100);
-    let archivedEvents: HumanInteractionEvent[] = [];
-    if (requestIds !== undefined) {
-      const status = await this.routes.getBotCommandStatus(communityId);
-      if (status === null || status.state !== 3 || status.botUserId === null) {
-        return { authorized: false, responses: [], through: null, blocked: false };
-      }
-      archivedEvents = this.requireCore().humanInteractionReceiptsRead(
-        communityId, status.installationId, status.botUserId, requestIds.map(fromHex))
-        .filter(event => toHex(event.communityId) === communityHex && isModerationRead(event.operation)
-          && requested?.has(toHex(event.requestId)));
-    }
-    const eventsByRequest = new Map<string, HumanInteractionEvent>();
-    for (const event of [...pendingEvents, ...archivedEvents]) {
-      const requestId = toHex(event.requestId);
-      const prior = eventsByRequest.get(requestId);
-      if (prior !== undefined) {
-        if (prior.deliveryId !== event.deliveryId || prior.body !== event.body || prior.operation !== event.operation) {
-          throw new Refusal('E_CORE_STATE', 'contradictory duplicate moderation receipts');
-        }
-        continue;
-      }
-      eventsByRequest.set(requestId, event);
-    }
-    const visibleEvents = [...eventsByRequest.values()].slice(0, 100);
-    const responses = visibleEvents.map(event => {
-      const response = decodeBotResponse(event.body);
-      validateBotResponseForRequest(response, communityId, event.requestId);
-      const cases: { key: string; channelId: string; actorId: string; messageId: string; revision: string;
-        reason: string; action: string; excerpt: string; receivedAt: string }[] = [];
-      let hasMore = false;
-      let nextCursor: string | null = null;
-      if (response.status === 0) {
-        const data = arr(decodeCbor(response.data));
-        if (data.length !== 3 || data[0] !== 1n || !Array.isArray(data[1])
-          || (data[2] !== null && !(data[2] instanceof Uint8Array)) || data[1].length > 8) {
-          throw new Refusal('E_CORE_STATE', 'moderation response shape is invalid');
-        }
-        hasMore = data[2] !== null;
-        if (event.operation === 64 && data[2] instanceof Uint8Array) nextCursor = toHex(data[2]);
-        for (const value of data[1]) {
-          const row = arr(value);
-          if (event.operation === 64) {
-            if (row.length !== 5 || !(row[0] instanceof Uint8Array) || row[0].length !== 16 || typeof row[1] !== 'string'
-              || !['remove', 'warn'].includes(row[1]) || typeof row[2] !== 'string' || row[2].length < 1 || row[2].length > 1024
-              || typeof row[3] !== 'string' || row[3].length > 512 || typeof row[4] !== 'bigint') {
-              throw new Refusal('E_CORE_STATE', 'manual evidence response shape is invalid');
-            }
-            const evidenceId = toHex(row[0]);
-            cases.push({ key: `manual:${evidenceId}`, channelId: '0'.repeat(32), actorId: '0'.repeat(32), messageId: evidenceId,
-              revision: '1', reason: String(row[2]), action: String(row[1]), excerpt: String(row[3]), receivedAt: String(row[4]) });
-            continue;
-          }
-          if (row.length !== 10 || row.slice(0, 5).some(v => typeof v !== 'string' || !/^[0-9a-f]{32}$/u.test(v))
-            || typeof row[5] !== 'bigint' || typeof row[6] !== 'string'
-            || !['log', 'remove', 'warn', 'timeout'].includes(String(row[7])) || typeof row[8] !== 'string'
-            || typeof row[9] !== 'bigint' || row[8].length > 700) {
-            throw new Refusal('E_CORE_STATE', 'moderation case shape is invalid');
-          }
-          const rowCommunity = String(row[0]);
-          const channelId = String(row[2]);
-          const actorId = String(row[3]);
-          const messageId = String(row[4]);
-          if (rowCommunity !== communityHex) throw new Refusal('E_CORE_STATE', 'moderation case community changed');
-          cases.push({ key: `${messageId}:${String(row[5])}`, channelId, actorId, messageId,
-            revision: String(row[5]), reason: String(row[6]), action: String(row[7]),
-            excerpt: String(row[8]), receivedAt: String(row[9]) });
-        }
-      }
-      return { deliveryId: String(event.deliveryId), requestId: toHex(event.requestId), status: response.status, cases, hasMore, nextCursor };
-    });
-    const ackable = pendingEvents.filter(event => eventsByRequest.get(toHex(event.requestId))?.deliveryId === event.deliveryId);
-    const through = this.issueInteractionAckLease(communityHex, ackable.map(event => event.deliveryId), this.pendingHumanInteractionAcks);
-    return { authorized: true, responses, through, blocked: false };
-  }
-
-  private async ackHumanInteractionResponses(communityHex: string, through: string): Promise<null> {
-    const key = `${communityHex}:${through}`;
-    const deliveryIds = this.pendingHumanInteractionAcks.get(key);
-    if (!this.listed(communityHex) || deliveryIds === undefined) {
-      throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement was not authorized');
-    }
-    const core = this.requireCore();
-    const generation = this.interactionAckLeaseGeneration;
-    const permissions = await this.routes.getPermissions(fromHex(communityHex));
-    if (generation !== this.interactionAckLeaseGeneration || core !== this.core || this.pendingHumanInteractionAcks.get(key) !== deliveryIds) {
-      throw new Refusal('E_BAD_INPUT', 'interaction response acknowledgement is stale');
-    }
-    if ((permissions.bits & BigInt(PERM.viewAuditLog)) === 0n) {
-      throw new Refusal('E_FORBIDDEN', 'current view-audit-log permission is required');
-    }
-    core.humanInteractionEventsAckSelected(deliveryIds);
-    this.pendingHumanInteractionAcks.delete(key);
-    return null;
   }
 
   private async getBotJoinRole(communityId: string): Promise<{ roleId: string | null; installationId: string } | null> {
@@ -2153,9 +1850,7 @@ export class Controller {
       const row = core.manualWarningEvidence().find(item => toHex(item.requestId) === command.requestId);
       if (row === undefined) throw new CoreError('E_CORE_STATE', 'manual warning evidence was not staged');
       const reserved = core.ensureManualWarningEvidenceRequest(requestId, crypto.getRandomValues(new Uint8Array(16)), BigInt(Math.floor(this.deps.now() / 1000)));
-      const sent = await this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId: command.communityId, channelId: null,
-        requestId: toHex(reserved.requestId), operation: 61, args: [command.requestId, row.reason, ''], revision: '0' }, reserved.expires);
-      evidence = sent.upload;
+      evidence = await this.sealedEvidence(command.communityId, toHex(reserved.requestId), [command.requestId, row.reason, '']);
       if (evidence === 'accepted') core.completeManualWarningEvidence(requestId, BigInt(Math.floor(this.deps.now() / 1000)));
     } catch { evidence = 'unknown'; }
     return { requestId: toHex(receipt.requestId), actionId: toHex(receipt.actionId), revision: String(receipt.revision), acceptedAt: receipt.acceptedAt, evidence };
@@ -2197,19 +1892,6 @@ export class Controller {
     this.publishDiagnostics();
   }
 
-  private onWelcomeClockSkew(groupId: Id, communityId: Id | null): void {
-    const now = this.deps.now();
-    // Bounded: one entry per kept interaction Welcome group, re-inserted on each report so the least recent goes first.
-    const groupHex = toHex(groupId);
-    this.welcomeClockSkew.delete(groupHex);
-    this.welcomeClockSkew.set(groupHex, { communityHex: communityId === null ? '' : toHex(communityId), atMs: now });
-    const oldest = this.welcomeClockSkew.size > 64 ? this.welcomeClockSkew.keys().next().value : undefined;
-    if (oldest !== undefined) this.welcomeClockSkew.delete(oldest);
-    if (this.welcomeClockSkewLoggedMs !== null && now - this.welcomeClockSkewLoggedMs < 60_000) return;
-    this.welcomeClockSkewLoggedMs = now;
-    this.recordError('E_CLOCK_SKEW');
-  }
-
   private recordError(code: string): void {
     this.diagnosticsErrors.push({ code, at: this.deps.now() });
     if (this.diagnosticsErrors.length > 20) this.diagnosticsErrors.shift();
@@ -2219,7 +1901,13 @@ export class Controller {
   private publishDiagnostics(): void {
     this.slices.set('diagnostics', { connection: this.connectionState.status, generation: this.connectionState.generation,
       instance: this.instance === null ? '' : toHex(this.instance.instanceId), devices: this.deviceCount,
-      errors: [...this.diagnosticsErrors], keyPackages: { ...this.keyPackages } });
+      errors: [...this.diagnosticsErrors], keyPackages: { ...this.keyPackages }, slowRoutes: this.routeRtt.slowest(5) });
+  }
+
+  /** The gateway is being dropped: its queued and in-flight socket requests fail (E_NETWORK) rather than wait for ever. */
+  private closeSocketRequests(): void {
+    this.socketRequests?.close();
+    this.socketRequests = null;
   }
 
   /**
@@ -2336,7 +2024,6 @@ export class Controller {
       }
       if (outcome.kind === 'store-lost') { this.setAccount({ phase: 'store-lost' }); return; }
       const core = outcome.core;
-      if (this.core !== core) this.clearInteractionAckLeases();
       this.core = core;
       this.seenTrustGeneration = core.trustGeneration();
       const now = (): number => this.deps.now();
@@ -2505,13 +2192,21 @@ export class Controller {
         WebSocket: this.deps.WebSocket, now, random, setTimeout, clearTimeout,
       });
       this.gateway = gateway;
+      this.socketRequests = new SocketRequests(gateway, { now, random, rtt: this.routeRtt, setTimeout, clearTimeout });
       gateway.subscribe((e) => { this.onGateway(e); });
       this.startEngine();
       this.wasDown = false;
       gateway.start();
     }
     // (h) every community's channels and members, then the DMs, so join-all expects every visible group.
-    await this.refreshCommunities();
+    try { await this.startupCommunities(); }
+    catch (e) {
+      // Bot v2: the list is a socket read. A gateway the instance refused (its version: reason version, upgrade or
+      // instance) carries nothing until a reload, so the account still reaches ready and the shell says why (its version
+      // banner) instead of the start-up error. Any other failure is the start-up error, as before.
+      if (this.connectionState.reason === undefined) throw e;
+      if (this.slices.get('communities') === undefined) this.slices.set('communities', []);
+    }
     if (this.revoked()) return;
     for (const community of this.slices.get('communities') ?? []) {
       try { await this.loadCommunity(community.id); } catch { /* the next ready retries */ }
@@ -2545,12 +2240,34 @@ export class Controller {
     // I3: so can its trust refresh, which reads nothing before the phase is ready; this one does. It also republishes
     // the trust slice now that every member and DM slice has landed.
     if (this.trustRefresh !== null) this.trustRefreshAgain = true;
-    void this.barrier.track(this.refreshTrust()).catch(() => undefined);
+    // Review M6: the trust refresh may ingest the Bot's attestation after the catalog sync tried its first pin (a new
+    // device); a community left waiting for it is resolved again once the refresh has settled.
+    void this.barrier.track(this.refreshTrust()).then(() => this.botCatalog.attestationsChanged()).catch(() => undefined);
     // web3.7 3a-client: the call groups a page of this browser left behind are left now, before any join is served (a
-    // join waits for it, bounded); it needs no gateway. Not tracked by the barrier: a resign stops it instead.
+    // join waits for it, bounded); its reads and proposals are socket requests, which wait for the gateway. Not tracked by the barrier: a resign stops it instead.
     this.calls.startSweep();
     void this.barrier.track(this.resumeManualRemovalEvidence()).catch(() => undefined);
     void this.barrier.track(this.resumeManualWarningEvidence()).catch(() => undefined);
+  }
+
+  /** Start-up's community list (a socket read). It waits for the gateway's first connection attempt, not past it: when
+   *  the gateway is down (an attempt failed and it waits to retry), start-up goes on with the list it has (empty on a
+   *  boot), the shell shows the offline state, and the gateway's ready reads the list and loads every community
+   *  (refreshAfterReady). The abandoned read stays queued and is applied if it lands (listSeq orders it). A refusal or a
+   *  served failure rejects as before. */
+  private async startupCommunities(): Promise<void> {
+    const read = this.refreshCommunities();
+    const down = this.wasDown ? Promise.resolve('down' as const)
+      : new Promise<'down'>((resolve) => { this.onGatewayDown = () => { resolve('down'); }; });
+    try {
+      const first = await Promise.race([read.then(() => 'read' as const), down]);
+      if (first === 'down') {
+        read.catch(() => undefined);
+        if (this.slices.get('communities') === undefined) this.slices.set('communities', []);
+      }
+    } finally {
+      this.onGatewayDown = null;
+    }
   }
 
   /** The engine with the controller's report handlers; enterReady and resume() build it (requirement 23). */
@@ -2580,7 +2297,6 @@ export class Controller {
         void this.barrier.track(this.reloadDms().catch(() => {}));
         if (this.selected !== null) this.scheduleCommunityReload(this.selected);
       },
-      onWelcomeClockSkew: (g, community) => { this.onWelcomeClockSkew(g, community); },
       beforeSend: (g, row) => this.beforeSend(g, row),
       onDiscarded: (g, row) => { this.onDiscarded(g, row); },
       refreshGroupTrust: (g) => this.refreshGroupTrust(g),
@@ -2626,6 +2342,7 @@ export class Controller {
     this.clearKeyPackageRetry();
     this.typingOff();
     this.calls.reset();
+    this.botRelay.forgetAll();
     this.sync?.stop();
     this.gateway?.stop();
     this.setAccount({ phase: 'revoked', recoveryKey: null });
@@ -2643,7 +2360,7 @@ export class Controller {
           // run this ready, this starts nothing (startSweep is memoised per ready).
           if (this.phase === 'ready') this.safely(() => { this.calls.startSweep(); });
           break;
-        case 'waiting': this.wasDown = true; status = 'offline'; break;
+        case 'waiting': this.wasDown = true; status = 'offline'; this.onGatewayDown?.(); break;
         case 'connecting': status = this.wasDown ? 'offline' : 'connecting'; break;
         case 'idle': status = 'offline'; break;
       }
@@ -2683,15 +2400,50 @@ export class Controller {
       const changeSlice = `communityChanges:${communityId}` as const;
       this.slices.set(changeSlice, (this.slices.get(changeSlice) ?? 0) + 1);
       this.safely(() => { this.scheduleCommunityReload(communityId); });
+      // Bot v2 (task 9 ruling): a role, grant or overwrite change can change which commands this member may use, and a
+      // channel change which Bot channels it can view: the catalog and the Bot channels are read again.
+      if (this.listed(communityId)) { this.watchBotCatalog(communityId); void this.botCatalog.refresh(communityId); }
+    } else if (e.type === 'frame' && e.frame.op === Op.botCatalog) {
+      this.safely(() => {
+        const frame = botCatalogOf(e.frame);
+        const communityId = toHex(frame.communityId);
+        if (!this.listed(communityId)) return;
+        this.watchBotCatalog(communityId);
+        this.botCatalog.apply(frame);
+      });
+    } else if (e.type === 'frame' && e.frame.op === Op.botStateChanged) {
+      this.safely(() => {
+        const frame = botStateChangedOf(e.frame);
+        const id = toHex(frame.scopeId);
+        // The user scope's id is the community: a community this account is not in is not a hint for it.
+        if (frame.scopeKind === 0 && !this.listed(id)) return;
+        this.botHints.onHint({ kind: frame.scopeKind, id, revision: frame.revision });
+      });
+    } else if (e.type === 'frame' && e.frame.op === Op.botReply) {
+      this.safely(() => { this.botRelay.onReply(botReplyOf(e.frame)); });
     } else if (e.type === 'frame' && e.frame.op === Op.afkAway) {
       this.safely(() => { this.incomingAFKAway(afkAwayOf(e.frame)); });
     } else if (e.type === 'revoked') {
       void this.barrier.track(this.onRevokedSocket());
+    } else if (e.type === 'instanceOutdated') {
+      // Final review M5: the instance speaks only older wires; the page tells its user the instance needs the update.
+      if (this.connectionState.reason === 'version') {
+        this.connectionState = { ...this.connectionState, reason: 'instance' };
+        this.slices.set('connection', this.connectionState);
+      }
+    } else if (e.type === 'upgradeRequired') {
+      // Bot v2: the version refusal named E_UPGRADE_REQUIRED; the page shows the update surface instead of a plain reload.
+      if (this.connectionState.reason === 'version') {
+        this.connectionState = { ...this.connectionState, reason: 'upgrade' };
+        this.slices.set('connection', this.connectionState);
+      }
     }
   }
 
   private onReady(info: ReadyInfo): void {
     this.fetchedLeaves.clear();
+    // Bot v2: op 61 is not replayed, so every connection compares the catalog revisions once (refreshAfterReady).
+    this.botCatalog.newConnection();
     if (this.trustRefresh !== null) this.trustRefreshAgain = true;
     void this.barrier.track(this.refreshTrust().catch(() => undefined));
     this.setConnection({ generation: info.generation.toString() });
@@ -2736,6 +2488,16 @@ export class Controller {
     }
     if (this.revoked() || this.storeCleared) return;
     try { await this.reloadDms(); } catch { /* the next ready retries */ }
+    if (this.revoked() || this.storeCleared) return;
+    await this.syncBotCatalogs();
+    if (this.revoked() || this.storeCleared) return;
+    // Op 63 is not replayed either: a scope the instance is ahead of is fetched once (the same read the catalog sync made).
+    const revisions = await this.botCatalog.readRevisions();
+    if (revisions !== null && !this.revoked() && !this.storeCleared) this.botHints.onConnect(revisions);
+  }
+
+  private watchBotScope(kind: 1 | 2, channelId: string, on: boolean): void {
+    this.botHints.watch({ kind, id: channelId }, on);
   }
 
   private incomingTypingFrame(payload: readonly unknown[]): void {
@@ -2921,6 +2683,7 @@ export class Controller {
     this.gateway?.stop();
     // enterReady builds a fresh gateway and engine after factorSetupDone (a stopped engine cannot restart).
     this.gateway = null;
+    this.closeSocketRequests();
     this.sync = null;
     // Contract 6: what each ready reads once is read again at the next.
     this.fetchedLeaves.clear();
@@ -4510,8 +4273,12 @@ export class Controller {
    * else or reset the store before this one leads again, so the next lead rebuilds from the store alone.
    */
   private forgetAccount(): void {
-    this.botStatusForPoll.clear();
-    this.clearInteractionAckLeases();
+    // Bot v2: every reply secret goes, and another account must not see this one's catalogs or answers.
+    this.botRelay.forgetAll();
+    this.botCatalog.clear();
+    this.botHints.clear();
+    if (Object.keys(this.botHintSignals).length > 0) { this.botHintSignals = {}; this.slices.set('botHints', {}); }
+    if (this.botAnswers.length > 0) { this.botAnswers = []; this.slices.set('botAnswers', []); }
     this.selfDisplay = null;
     this.clearReauthTimer();
     for (const handle of this.communityReloads.values()) this.deps.clearTimeout(handle);
@@ -4522,7 +4289,7 @@ export class Controller {
     this.unlistedUsers.clear(); this.changedLeafGroups = new Map(); this.removedGroups.clear();
     this.historyFailedUsers.clear(); this.pendingUsers = new Set(); this.ownRefusedLeaves.clear();
     this.fetchedLeaves.clear(); this.trustRefreshAgain = false;
-    this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.sync = null;
+    this.core = null; this.seenTrustGeneration = null; this.session = null; this.signup = null; this.enrol = null; this.gateway = null; this.closeSocketRequests(); this.sync = null;
     this.me = null; this.selected = null; this.fetched = null; this.noticeFloor = null; this.heldLive = []; this.clearHeldReads(); this.ticketTime = null;
     this.pendingJoin = null; this.keyPackagesOwed = false;
     this.clearKeyPackageRetry();
@@ -4572,12 +4339,6 @@ export class Controller {
     this.calls.reset();
     this.lastVoiceSelf = null; this.ownInCall.clear(); this.selfResends = null; this.selfOffline = null;
     this.setConnection({ status: 'offline', generation: null });
-  }
-
-  private clearInteractionAckLeases(): void {
-    this.interactionAckLeaseGeneration++;
-    this.pendingBotInteractionAcks.clear();
-    this.pendingHumanInteractionAcks.clear();
   }
 
   // ---- channels and timelines ----
@@ -4883,15 +4644,6 @@ export class Controller {
     // catch-up the DS served ('member').
     if (result.state === 2) {
       this.resyncing.delete(hex);
-      // Final review I1: only an apply that leaves this community's interaction group (kind 3) active ends that
-      // community's Welcome wait and its "no group" memory. Chat in any other group proves nothing.
-      this.safely(() => {
-        const row = this.core?.groups().find((g) => toHex(g.groupId) === hex);
-        if (row === undefined || row.kind !== 3 || row.state !== 2 || row.communityId === null) return;
-        const communityHex = toHex(row.communityId);
-        this.noInteractionGroupUntil.delete(communityHex);
-        for (const wake of [...(this.interactionGroupWaiters.get(communityHex) ?? [])]) wake();
-      });
     }
     const seen: { groups: readonly GroupInfo[] | null } = { groups: null };
     this.safely(() => { this.refreshTrustGeneration(); seen.groups = this.touchGroup(groupId); });
@@ -5724,8 +5476,41 @@ export class Controller {
     const core = this.requireCore();
     if (core.ensureManualRemovalEvidenceRequest === undefined) throw new CoreError('E_CORE_STATE', 'durable moderation evidence is not available in this WASM build');
     const reserved = core.ensureManualRemovalEvidenceRequest(fromHex(input.proofRequestId), crypto.getRandomValues(new Uint8Array(16)), input.now);
-    return this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId: input.communityId, channelId: null,
-      requestId: toHex(reserved.requestId), operation: 61, args: [input.proofRequestId, input.reason, input.excerpt], revision: '0' }, reserved.expires);
+    return this.sealedEvidence(input.communityId, toHex(reserved.requestId), [input.proofRequestId, input.reason, input.excerpt])
+      .then(upload => ({ requestId: toHex(reserved.requestId), upload }));
+  }
+
+  /** Task 22: moderation evidence (v1 61) as the sealed app operation 161, sent by the worker itself (the resume after a
+   *  reload has no page). The reserved request id is reused on every resume: the Bot answers a repeat within 5 min from its
+   *  cache, and its handler stores one evidence row per accepted action. 'accepted' only on the Bot's own success. */
+  private async sealedEvidence(communityId: string, requestId: string, args: [string, string, string]): Promise<'accepted' | 'pending' | 'rejected' | 'unknown'> {
+    try {
+      const result = await this.workerBotOperations(communityId).request({ operation: 61, args, revision: '0', requestId });
+      return result.status === 0 ? 'accepted' : result.status === 1 || result.status === 2 ? 'rejected' : 'pending';
+    } catch (e) {
+      return e instanceof BotOperationRefusedError ? 'pending' : 'unknown';
+    }
+  }
+
+  private workerBotOperations(communityId: string): BotOperations {
+    let ops = this.workerBotOps.get(communityId);
+    if (ops === undefined) {
+      const commands = createBotCommands({
+        submit: async (req) => {
+          try { await this.botRelay.send(req); }
+          catch (e) { if (e instanceof BotCommandError) throw Object.assign(new Error(e.code), { code: e.code, status: e.status }); throw e; }
+        },
+        answers: (requestId, listener) => { this.workerBotAnswers.set(requestId, listener); return () => { this.workerBotAnswers.delete(requestId); }; },
+        refetchCatalog: (c) => this.botCatalog.refresh(c),
+        forget: (requestId) => { this.botRelay.forget(requestId); },
+        setTimer: (fn, ms) => this.deps.setTimeout(fn, ms),
+        clearTimer: (handle) => { this.deps.clearTimeout(handle as number); },
+        newRequestId: () => toHex(crypto.getRandomValues(new Uint8Array(16))),
+      });
+      ops = createBotOperationsOn(commands, communityId);
+      this.workerBotOps.set(communityId, ops);
+    }
+    return ops;
   }
 
   /** Replays the idempotent accepted warning and resumes its op61 case from the protected local outbox. */
@@ -5746,10 +5531,8 @@ export class Controller {
         if (row.state !== 1) continue;
         const now = BigInt(Math.floor(this.deps.now() / 1000));
         const reserved = core.ensureManualWarningEvidenceRequest(row.requestId, crypto.getRandomValues(new Uint8Array(16)), now);
-        const result = await this.humanInteractionRequest({ m: 'humanInteractionRequest', communityId: toHex(row.communityId), channelId: null,
-          requestId: toHex(reserved.requestId), operation: 61,
-          args: [toHex(row.requestId), 'warn', row.reason, ''], revision: '0' }, reserved.expires);
-        if (result.upload === 'accepted') core.completeManualWarningEvidence(row.requestId, BigInt(Math.floor(this.deps.now() / 1000)));
+        const upload = await this.sealedEvidence(toHex(row.communityId), toHex(reserved.requestId), [toHex(row.requestId), row.reason, '']);
+        if (upload === 'accepted') core.completeManualWarningEvidence(row.requestId, BigInt(Math.floor(this.deps.now() / 1000)));
       } catch { /* retain the protected outbox row for the next ready */ }
     }
   }

@@ -27,7 +27,7 @@ pub fn past_epoch_policy(kind: GroupKind) -> PastEpochDeletionPolicy {
         GroupKind::Text => PastEpochDeletionPolicy::MaxEpochs(PAST_EPOCHS_TEXT),
         GroupKind::Call => PastEpochDeletionPolicy::MaxEpochs(PAST_EPOCHS_CALL),
         // Structural: nothing is ever written, so nothing can be recovered.
-        GroupKind::Pairing | GroupKind::Interaction => PastEpochDeletionPolicy::MaxEpochs(0),
+        GroupKind::Pairing => PastEpochDeletionPolicy::MaxEpochs(0),
     }
 }
 
@@ -37,7 +37,7 @@ pub fn past_epoch_sweep(kind: GroupKind) -> Option<PastEpochDeletion> {
     match kind {
         GroupKind::Text => Some(PastEpochDeletion::older_than_duration(TEXT_SWEEP)),
         GroupKind::Call => Some(PastEpochDeletion::older_than_duration(CALL_SWEEP)),
-        GroupKind::Pairing | GroupKind::Interaction => None,
+        GroupKind::Pairing => None,
     }
 }
 
@@ -54,7 +54,7 @@ pub fn past_epoch_sweep(kind: GroupKind) -> Option<PastEpochDeletion> {
 ///   committer's for a Remove carried by value, the proposing member's for a referenced member
 ///   proposal (a member leaving, DEV-47) — (`E_MEMBER_REMOVE_FORBIDDEN`). Removing other users is
 ///   the instance's job.
-/// - `Add`: accept only in pairing and interaction groups; reject in text and call groups.
+/// - `Add`: accept only in pairing groups; reject in text and call groups.
 /// - An external commit's `Remove` must target only the joiner's own leaf
 ///   (`E_EXTERNAL_COMMIT_REMOVE`).
 /// - `PreSharedKey`: reject.
@@ -140,9 +140,8 @@ pub fn validate_staged_commit(
     }
     for remove in staged.remove_proposals() {
         // An instance Remove is accepted outright in `text` and `call` groups (protocol/01, the
-        // external-sender table). `pairing` and `interaction` groups carry no external sender at
-        // all (`group_context_extensions` refuses one), so an `External` sender cannot occur
-        // there.
+        // external-sender table). A `pairing` group carries no external sender at all
+        // (`group_context_extensions` refuses one), so an `External` sender cannot occur there.
         if matches!(remove.sender(), Sender::External(_)) {
             continue;
         }
@@ -433,13 +432,9 @@ mod tests {
             past_epoch_policy(GroupKind::Call),
             PastEpochDeletionPolicy::MaxEpochs(PAST_EPOCHS_CALL)
         );
-        // Structural: nothing is ever written for these two, so nothing can leak.
+        // Structural: nothing is ever written for a pairing group, so nothing can leak.
         assert_eq!(
             past_epoch_policy(GroupKind::Pairing),
-            PastEpochDeletionPolicy::MaxEpochs(0)
-        );
-        assert_eq!(
-            past_epoch_policy(GroupKind::Interaction),
             PastEpochDeletionPolicy::MaxEpochs(0)
         );
     }
@@ -449,7 +444,6 @@ mod tests {
         assert!(past_epoch_sweep(GroupKind::Text).is_some());
         assert!(past_epoch_sweep(GroupKind::Call).is_some());
         assert!(past_epoch_sweep(GroupKind::Pairing).is_none());
-        assert!(past_epoch_sweep(GroupKind::Interaction).is_none());
     }
 
     #[test]

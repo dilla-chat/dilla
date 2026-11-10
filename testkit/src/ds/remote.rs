@@ -29,14 +29,17 @@ use super::{
 
 /// The gateway subprotocol `internal/gateway.Handler` negotiates.
 const SUBPROTOCOL: &str = "dilla.v1";
-/// The current wire version this client identifies with. Human upload and media shapes remain
-/// unchanged in wire 3, which the media test host offers by default.
-const WIRE_VERSION: u64 = 3;
+/// The one wire version this client identifies with (Bot v2: wire 6, the only wire the instance
+/// offers; human upload and media shapes are unchanged since wire 2).
+const WIRE_VERSION: u64 = 6;
 /// How long a pump waits on an empty socket before it returns. Short, because `drain` is called
 /// once per scenario step and the harness runs every step against loopback.
 const PUMP_WAIT: Duration = Duration::from_millis(50);
 /// How long the upgrade, `hello`, `identify` and `ready` may take together.
 const HANDSHAKE_WAIT: Duration = Duration::from_secs(10);
+/// How long a socket request may wait for its answer: the HTTP agent's global timeout, since the
+/// routes that moved to the socket (a 1,000-join commit among them) kept their HTTP-era cost.
+const REQUEST_WAIT: Duration = Duration::from_secs(60);
 /// Row 4's and row 12's page sizes, the handlers' own defaults.
 const HANDSHAKE_PAGE: usize = 256;
 const MESSAGE_PAGE: usize = 128;
@@ -764,6 +767,28 @@ fn decode_frame(bytes: &[u8]) -> Result<(u64, Inbound), DsError> {
     .map_err(|e| DsError::Protocol(format!("gateway frame: {e}")))
 }
 
+/// Decodes `[60, n, null, [id, status, body]]`, the response frame of a socket request (Bot v2). `None`
+/// for any other frame, which the caller handles as it handles every inbound frame.
+fn decode_response(bytes: &[u8]) -> Option<(u64, u16, Vec<u8>)> {
+    decode_strict(bytes, |d: &mut Decoder<'_>| {
+        d.array(4)?;
+        if d.uint()? != 60 {
+            return Ok(None);
+        }
+        let _n = d.uint()?;
+        let _group = d.opt_bytes()?;
+        d.array(3)?;
+        let id = d.uint()?;
+        let status = u16::try_from(d.uint()?).unwrap_or(0);
+        let body = d.bytes()?.to_vec();
+        Ok(Some((id, status, body)))
+    })
+    .ok()
+    .flatten()
+}
+
+static SOCKET_REQUEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 fn read_timeout(ws: &mut WebSocket<TcpStream>, wait: Duration) -> Result<(), DsError> {
     ws.get_mut().set_read_timeout(Some(wait)).map_err(transport)
 }
@@ -858,6 +883,36 @@ fn decode_served_list(d: &mut Decoder<'_>) -> Result<ServedDeviceList, CborError
         ssk_signature: bytes_or_null(d)?,
         prev_hash: bytes_or_null(d)?,
     })
+}
+
+/// The served head, `GET /v1/users/{id}/device-list`: the four row elements, plus on wire 6 (as on
+/// every wire since 4) the instance-signed account-kind attestation and (wire 6, Bot v2 task 20b)
+/// the account's `umk_pub`, `ssk_pub` and `sig_umk_ssk`, which this client reads past.
+fn decode_served_head(d: &mut Decoder<'_>) -> Result<ServedDeviceList, CborError> {
+    let len = d.array_len()?;
+    if len != 4 && len != 5 && len != 8 {
+        return Err(CborError::WrongArrayLen {
+            expected: 8,
+            actual: len,
+        });
+    }
+    let row = ServedDeviceList {
+        version: d.uint()?,
+        blob: bytes_or_null(d)?,
+        ssk_signature: bytes_or_null(d)?,
+        prev_hash: bytes_or_null(d)?,
+    };
+    if len >= 5 {
+        bytes_or_null(d)?;
+    }
+    // Fix round 1 (m1): the wire-6 keys are exact, as the Go and TS decoders read them, so a
+    // server shape regression fails here.
+    if len == 8 {
+        d.bytes_exact::<32>()?;
+        d.bytes_exact::<32>()?;
+        d.bytes_exact::<64>()?;
+    }
+    Ok(row)
 }
 
 fn decode_history(bytes: &[u8]) -> Result<Vec<ServedDeviceList>, CborError> {
@@ -985,7 +1040,7 @@ fn get_device_list_with(
     let path = format!("/v1/users/{}/device-list", hex::encode(user_id));
     decode_strict(
         &get_device_list_bounded(agent, base, token, &path)?,
-        decode_served_list,
+        decode_served_head,
     )
     .map_err(protocol)
 }
@@ -1453,7 +1508,7 @@ impl HttpDs {
         Ok(code)
     }
 
-    /// `POST /v1/auth/stepup [method, secret]` → `[stepup, expires]`. It spends a backup code (method 2) while one is
+    /// `POST /v1/auth/stepup [method, secret]` → `[stepup, expires]`, a socket request. It spends a backup code (method 2) while one is
     /// left, which never moves the test host's shared clock, and falls back to a TOTP code (method 1).
     pub fn step_up(&mut self) -> Result<String, TestkitError> {
         let backup = self.totp.as_mut().and_then(|s| s.backup_codes.pop());
@@ -1461,7 +1516,7 @@ impl HttpDs {
             Some(code) => (2, code),
             None => (1, self.next_totp_code()?),
         };
-        let token = self.post_decoded(
+        let token = self.socket_post_decoded(
             "/v1/auth/stepup",
             &encode(|e| {
                 e.array(2).uint(method).text(&secret);
@@ -1571,7 +1626,7 @@ impl HttpDs {
 
     /// Opens or joins the channel's call: the body is `[]`, or `[vdec]` with the comma-separated
     /// decode list dillad writes into the token's `dilla.vdec` attribute (DEV-07).
-    pub fn start_call(&self, channel: &[u8; 16], vdec: &str) -> Result<CallStarted, DsError> {
+    pub fn start_call(&mut self, channel: &[u8; 16], vdec: &str) -> Result<CallStarted, DsError> {
         let body = encode(|e| {
             if vdec.is_empty() {
                 e.array(0);
@@ -1580,30 +1635,25 @@ impl HttpDs {
             }
         });
         let path = format!("/v1/channels/{}/calls", hex::encode(channel));
-        let (status, out) = call(
-            &self.agent,
-            "POST",
-            &self.url(&path),
-            Some(&self.token),
-            Some(("application/cbor", &body)),
-        )?;
+        let (status, out) = self.socket_call("POST", &path, &body)?;
         check_status(status, &out)?;
         decode_call_started(&out, status == 201)
             .map_err(|e| DsError::Protocol(format!("POST {path}: {e}")))
     }
 
     /// `GET /v1/channels/{id}/call` (web-3, L-HTTP-100).
-    pub fn get_channel_call(&self, channel: &[u8; 16]) -> Result<ChannelCall, DsError> {
+    pub fn get_channel_call(&mut self, channel: &[u8; 16]) -> Result<ChannelCall, DsError> {
         let path = format!("/v1/channels/{}/call", hex::encode(channel));
-        decode_channel_call(&get_with(&self.agent, &self.base, &self.token, &path)?)
-            .map_err(protocol)
+        let (status, out) = self.socket_call("GET", &path, &[])?;
+        check_status(status, &out)?;
+        decode_channel_call(&out).map_err(protocol)
     }
 
     /// `POST /v1/calls/{call_id}/decline [expires_ts]` (web-3, L-HTTP-104): `204`. It acts only on the ring whose
     /// `expires_ts` equals the body's, so a decline of an earlier ring stops nothing.
-    pub fn decline_call(&self, call_id: &[u8; 16], expires_ts: u64) -> Result<(), DsError> {
+    pub fn decline_call(&mut self, call_id: &[u8; 16], expires_ts: u64) -> Result<(), DsError> {
         let path = format!("/v1/calls/{}/decline", hex::encode(call_id));
-        self.post_status(
+        self.socket_post_status(
             &path,
             &encode(|e| {
                 e.array(1).uint(expires_ts);
@@ -1633,9 +1683,9 @@ impl HttpDs {
 
     /// Takes the call's publisher lease for this device (`POST /v1/calls/{call_id}/share`, `204`):
     /// dillad then pushes the camera and screen sources to the live participant (DEV-02, F1).
-    pub fn share_call(&self, call_id: &[u8; 16]) -> Result<(), DsError> {
+    pub fn share_call(&mut self, call_id: &[u8; 16]) -> Result<(), DsError> {
         let path = format!("/v1/calls/{}/share", hex::encode(call_id));
-        self.post_status(
+        self.socket_post_status(
             &path,
             &encode(|e| {
                 e.array(0);
@@ -1719,7 +1769,7 @@ impl HttpDs {
             Some(_) => Some(self.step_up()?),
             None => None,
         };
-        self.post_status(
+        self.socket_post_status(
             "/v1/auth/password",
             &encode(|e| {
                 e.array(3).null().text(password);
@@ -1757,20 +1807,14 @@ impl HttpDs {
     }
 
     /// `POST /v1/dms [recipients]`: the DM's channel id and whether this call created it (`201`).
-    pub fn post_dm(&self, recipients: &[[u8; 16]]) -> Result<([u8; 16], bool), DsError> {
+    pub fn post_dm(&mut self, recipients: &[[u8; 16]]) -> Result<([u8; 16], bool), DsError> {
         let body = encode(|e| {
             e.array(1).array(recipients.len());
             for id in recipients {
                 e.bytes(id);
             }
         });
-        let (status, out) = call(
-            &self.agent,
-            "POST",
-            &self.url("/v1/dms"),
-            Some(&self.token),
-            Some(("application/cbor", &body)),
-        )?;
+        let (status, out) = self.socket_call("POST", "/v1/dms", &body)?;
         check_status(status, &out)?;
         let id = decode_strict(&out, |d| {
             d.array(1)?;
@@ -1781,14 +1825,18 @@ impl HttpDs {
     }
 
     /// `GET /v1/dms`: the caller's DMs.
-    pub fn list_dms(&self) -> Result<Vec<DmInfo>, DsError> {
-        decode_dms(&get_with(&self.agent, &self.base, &self.token, "/v1/dms")?).map_err(protocol)
+    pub fn list_dms(&mut self) -> Result<Vec<DmInfo>, DsError> {
+        let (status, out) = self.socket_call("GET", "/v1/dms", &[])?;
+        check_status(status, &out)?;
+        decode_dms(&out).map_err(protocol)
     }
 
     /// `GET /v1/channels/{id}`: its id, kind and text group.
-    pub fn get_channel(&self, channel_id: &[u8; 16]) -> Result<ChannelInfo, DsError> {
+    pub fn get_channel(&mut self, channel_id: &[u8; 16]) -> Result<ChannelInfo, DsError> {
         let path = format!("/v1/channels/{}", hex::encode(channel_id));
-        decode_channel(&get_with(&self.agent, &self.base, &self.token, &path)?).map_err(protocol)
+        let (status, out) = self.socket_call("GET", &path, &[])?;
+        check_status(status, &out)?;
+        decode_channel(&out).map_err(protocol)
     }
 
     fn blob_path(channel_id: &[u8; 16], blob_id: &[u8; 32]) -> String {
@@ -1799,16 +1847,10 @@ impl HttpDs {
         )
     }
 
-    pub fn delete_message(&self, group_id: &[u8], seq: u64) -> Result<(), DsError> {
+    pub fn delete_message(&mut self, group_id: &[u8], seq: u64) -> Result<(), DsError> {
         let group: &GroupId = group_id;
         let path = Self::group_path(group, &format!("/messages/{seq}"));
-        let (status, out) = call(
-            &self.agent,
-            "DELETE",
-            &self.url(&path),
-            Some(&self.token),
-            None,
-        )?;
+        let (status, out) = self.socket_call("DELETE", &path, &[])?;
         check_status(status, &out)
     }
 
@@ -1896,8 +1938,8 @@ impl HttpDs {
     }
 
     /// POST /v1/communities [name, policy bstr "{}", 0, 0].
-    pub fn create_community(&self, name: &str) -> Result<[u8; 16], DsError> {
-        self.post_decoded(
+    pub fn create_community(&mut self, name: &str) -> Result<[u8; 16], DsError> {
+        self.socket_post_decoded(
             "/v1/communities",
             &encode(|e| {
                 e.array(4).text(name).bytes(b"{}").uint(0).uint(0);
@@ -1915,9 +1957,10 @@ impl HttpDs {
     /// What the owner's roles tab does to give everyone a right (flow 09): `GET /v1/communities/{id}/roles` finds
     /// @everyone (position 0), then `PATCH /v1/roles/{everyone}` `[null, null, null, allow | bits, null, null, null]`.
     /// Answers the new mask.
-    pub fn allow_everyone(&self, community: &[u8; 16], bits: u64) -> Result<u64, DsError> {
+    pub fn allow_everyone(&mut self, community: &[u8; 16], bits: u64) -> Result<u64, DsError> {
         let path = format!("/v1/communities/{}/roles", hex::encode(community));
-        let roles = get_with(&self.agent, &self.base, &self.token, &path)?;
+        let (roles_status, roles) = self.socket_call("GET", &path, &[])?;
+        check_status(roles_status, &roles)?;
         let (everyone, allow) = decode_strict(&roles, |d| {
             let mut found = None;
             for _ in 0..d.array_len()? {
@@ -1950,20 +1993,14 @@ impl HttpDs {
                 .null();
         });
         let role_path = format!("/v1/roles/{}", hex::encode(everyone));
-        let (status, out) = call(
-            &self.agent,
-            "PATCH",
-            &self.url(&role_path),
-            Some(&self.token),
-            Some(("application/cbor", &body)),
-        )?;
+        let (status, out) = self.socket_call("PATCH", &role_path, &body)?;
         check_status(status, &out)?;
         Ok(mask)
     }
 
     /// POST /v1/communities/{id}/channels [0, 0, 0, null, name, "", 0, 0].
     pub fn create_text_channel(
-        &self,
+        &mut self,
         community: &[u8; 16],
         name: &str,
     ) -> Result<([u8; 16], u64, u64), DsError> {
@@ -1972,13 +2009,13 @@ impl HttpDs {
 
     /// POST /v1/communities/{id}/channels [kind, 0, 0, null, name, "", 0, 0]: kind 0 text, 1 voice.
     pub fn create_channel(
-        &self,
+        &mut self,
         community: &[u8; 16],
         kind: u64,
         name: &str,
     ) -> Result<([u8; 16], u64, u64), DsError> {
         let path = format!("/v1/communities/{}/channels", hex::encode(community));
-        self.post_decoded(
+        self.socket_post_decoded(
             &path,
             &encode(|e| {
                 e.array(8)
@@ -2000,13 +2037,13 @@ impl HttpDs {
 
     /// POST /v1/communities/{id}/invites [max_uses, ttl_seconds, 0].
     pub fn create_invite(
-        &self,
+        &mut self,
         community: &[u8; 16],
         max_uses: u64,
         ttl_seconds: u64,
     ) -> Result<String, DsError> {
         let path = format!("/v1/communities/{}/invites", hex::encode(community));
-        self.post_decoded(
+        self.socket_post_decoded(
             &path,
             &encode(|e| {
                 e.array(3).uint(max_uses).uint(ttl_seconds).uint(0);
@@ -2023,9 +2060,9 @@ impl HttpDs {
     }
 
     /// POST /v1/communities/{id}/join [code].
-    pub fn join_community(&self, community: &[u8; 16], code: &str) -> Result<(), DsError> {
+    pub fn join_community(&mut self, community: &[u8; 16], code: &str) -> Result<(), DsError> {
         let path = format!("/v1/communities/{}/join", hex::encode(community));
-        self.post_decoded(
+        self.socket_post_decoded(
             &path,
             &encode(|e| {
                 e.array(1).text(code);
@@ -2083,7 +2120,7 @@ impl HttpDs {
             }
         };
         // protocol/07 "Negotiation": the client takes the highest version it shares with the
-        // instance. This client speaks wire version 3 and version 1 of e2ee and media.
+        // instance. This client speaks wire version 6 and version 1 of e2ee and media.
         for (name, offered, speaks) in [
             ("wire", &wire, WIRE_VERSION),
             ("e2ee", &e2ee, 1),
@@ -2110,6 +2147,18 @@ impl HttpDs {
         loop {
             match Self::read_one(&mut socket)? {
                 (_, Inbound::Ready) => break,
+                // A session the instance no longer holds is refused here, as an HTTP request
+                // with its token met a 401: the scenario sees the same E_UNAUTHENTICATED.
+                (_, Inbound::Frame(Frame::GatewayError { code, detail, .. }))
+                    if code == "E_UNAUTHENTICATED" =>
+                {
+                    return Err(DsError::from_code(
+                        401,
+                        &code,
+                        &detail,
+                        ErrorExtras::default(),
+                    ));
+                }
                 (_, Inbound::Frame(Frame::GatewayError { code, detail, .. })) => {
                     return Err(DsError::Protocol(format!(
                         "identify refused: {code}: {detail}"
@@ -2398,12 +2447,148 @@ impl HttpDs {
         format!("{}{path}", self.base)
     }
 
-    fn get_decoded<T>(
-        &self,
+    /// Sends one request frame (op 59) on the gateway socket and reads until its response frame
+    /// (op 60), keeping every frame that arrives meanwhile as `barrier` does. The routes that moved
+    /// to the socket have no HTTP form. The socket is opened when it is not.
+    ///
+    /// A connection the gateway ended before answering (a 4009 after an `advance_clock` outlived
+    /// the heartbeat grace, a 4004 after the device's own list revoked it) is reopened and the
+    /// request sent once more with the same id and idem, as protocol/02 asks of every client: the
+    /// dispatcher's replay record answers a mutation that already ran. A reopen whose identify is
+    /// refused is that refusal (`E_UNAUTHENTICATED`), the answer the request met over HTTP.
+    pub(crate) fn socket_call(
+        &mut self,
+        method: &str,
+        route: &str,
+        body: &[u8],
+    ) -> Result<(u16, Vec<u8>), DsError> {
+        if self.ws.is_none() {
+            self.open_socket()?;
+        }
+        let id = SOCKET_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // The idem of a mutation: unique per call, and the same on the one re-send below.
+        let mut idem = [0u8; 16];
+        idem[..8].copy_from_slice(&id.to_be_bytes());
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        idem[8..].copy_from_slice(&nanos.to_be_bytes());
+        let frame = encode(|e| {
+            e.array(4).uint(59).uint(0).null();
+            e.array(5).uint(id).text(method).text(route).bytes(body);
+            if method == "GET" {
+                e.null();
+            } else {
+                e.bytes(&idem);
+            }
+        });
+        match self.socket_attempt(id, &frame, method, route)? {
+            Ok(answer) => Ok(answer),
+            Err(why) => {
+                self.socket_lost(why);
+                self.open_socket()?;
+                self.socket_attempt(id, &frame, method, route)?
+                    .map_err(|why| {
+                        self.socket_lost(why.clone());
+                        DsError::Transport(format!(
+                            "the gateway closed the connection twice before answering \
+                             {method} {route}: {why}"
+                        ))
+                    })
+            }
+        }
+    }
+
+    /// One send of a request frame and the read of its answer. `Ok(Err(why))` is a connection the
+    /// gateway ended before answering; `socket_call` reopens it and sends again.
+    fn socket_attempt(
+        &mut self,
+        id: u64,
+        frame: &[u8],
+        method: &str,
+        route: &str,
+    ) -> Result<Result<(u16, Vec<u8>), String>, DsError> {
+        let Some(ws) = self.ws.as_mut() else {
+            return Err(DsError::Transport("no gateway connection".into()));
+        };
+        match ws.send(Message::Binary(frame.to_vec().into())) {
+            Ok(()) => {}
+            Err(
+                e @ (tungstenite::Error::ConnectionClosed
+                | tungstenite::Error::AlreadyClosed
+                | tungstenite::Error::Protocol(_)
+                | tungstenite::Error::Io(_)),
+            ) => {
+                self.ws = None;
+                return Ok(Err(format!("send error: {e}")));
+            }
+            Err(e) => return Err(transport(e)),
+        }
+        let deadline = Instant::now() + REQUEST_WAIT;
+        loop {
+            let Some(ws) = self.ws.as_mut() else {
+                return Ok(Err(
+                    "the gateway closed the connection before answering a request".into(),
+                ));
+            };
+            match ws.read() {
+                Ok(Message::Binary(bytes)) => {
+                    if let Some((answer, status, out)) = decode_response(&bytes) {
+                        if answer == id {
+                            return Ok(Ok((status, out)));
+                        }
+                        continue;
+                    }
+                    let (n, inbound) = decode_frame(&bytes)?;
+                    self.last_n = self.last_n.max(n);
+                    self.ack_since = Instant::now();
+                    match inbound {
+                        Inbound::HeartbeatAck => self.acked(),
+                        Inbound::Frame(frame) => self.accept(frame),
+                        Inbound::Ring(ring) => self.keep_ring(ring),
+                        Inbound::Closing(reason) => {
+                            self.ws = None;
+                            return Ok(Err(format!("closing: {reason}")));
+                        }
+                        Inbound::Hello { .. }
+                        | Inbound::Ready
+                        | Inbound::Ignored
+                        | Inbound::Signal { .. } => {}
+                    }
+                }
+                Ok(Message::Close(frame)) => {
+                    self.ws = None;
+                    return Ok(Err(format!("close frame: {frame:?}")));
+                }
+                Ok(_) => {}
+                Err(e) if is_timeout(&e) => {
+                    if Instant::now() >= deadline {
+                        return Err(DsError::Transport(format!(
+                            "no response to {method} {route}"
+                        )));
+                    }
+                }
+                Err(
+                    e @ (tungstenite::Error::ConnectionClosed
+                    | tungstenite::Error::AlreadyClosed
+                    | tungstenite::Error::Protocol(_)
+                    | tungstenite::Error::Io(_)),
+                ) => {
+                    self.ws = None;
+                    return Ok(Err(format!("read error: {e}")));
+                }
+                Err(e) => return Err(transport(e)),
+            }
+        }
+    }
+
+    /// `get_decoded` for a socket route.
+    fn socket_get_decoded<T>(
+        &mut self,
         path: &str,
         f: impl FnOnce(&mut Decoder<'_>) -> Result<T, CborError>,
     ) -> Result<T, DsError> {
-        let (status, out) = call(&self.agent, "GET", &self.url(path), Some(&self.token), None)?;
+        let (status, out) = self.socket_call("GET", path, &[])?;
         check_status(status, &out)?;
         decode_strict(&out, f).map_err(|e| DsError::Protocol(format!("GET {path}: {e}")))
     }
@@ -2418,10 +2603,22 @@ impl HttpDs {
         decode_strict(&out, f).map_err(|e| DsError::Protocol(format!("POST {path}: {e}")))
     }
 
-    /// A POST whose success is a status and no body the client reads (`204`, or row 9's
-    /// `202 []`).
-    fn post_status(&self, path: &str, body: &[u8]) -> Result<(), DsError> {
-        post_cbor(&self.agent, &self.url(path), Some(&self.token), body).map(|_| ())
+    /// `post_decoded` for a socket route.
+    fn socket_post_decoded<T>(
+        &mut self,
+        path: &str,
+        body: &[u8],
+        f: impl FnOnce(&mut Decoder<'_>) -> Result<T, CborError>,
+    ) -> Result<T, DsError> {
+        let (status, out) = self.socket_call("POST", path, body)?;
+        check_status(status, &out)?;
+        decode_strict(&out, f).map_err(|e| DsError::Protocol(format!("POST {path}: {e}")))
+    }
+
+    /// `post_status` for a socket route.
+    fn socket_post_status(&mut self, path: &str, body: &[u8]) -> Result<(), DsError> {
+        let (status, out) = self.socket_call("POST", path, body)?;
+        check_status(status, &out)
     }
 
     fn group_path(g: &GroupId, tail: &str) -> String {
@@ -2557,7 +2754,7 @@ impl DeliveryService for HttpDs {
                 .bytes(&r.group_info)
                 .bytes(&r.ratchet_tree);
         });
-        let registered = self.post_decoded("/v1/groups", &body, |d| {
+        let registered = self.socket_post_decoded("/v1/groups", &body, |d| {
             d.array(2)?;
             Ok(RegisterResult {
                 group_id: d.bytes()?.to_vec(),
@@ -2570,7 +2767,7 @@ impl DeliveryService for HttpDs {
 
     /// Row 2: `[epoch, group_info, tree_hash, next_seq]`.
     fn group_info(&mut self, g: &GroupId) -> Result<GroupInfoResp, DsError> {
-        self.get_decoded(&Self::group_path(g, "/info"), |d| {
+        self.socket_get_decoded(&Self::group_path(g, "/info"), |d| {
             d.array(4)?;
             Ok(GroupInfoResp {
                 epoch: d.uint()?,
@@ -2583,7 +2780,7 @@ impl DeliveryService for HttpDs {
 
     /// Row 3: `[epoch, ratchet_tree, tree_hash]`.
     fn ratchet_tree(&mut self, g: &GroupId) -> Result<TreeResp, DsError> {
-        self.get_decoded(&Self::group_path(g, "/tree"), |d| {
+        self.socket_get_decoded(&Self::group_path(g, "/tree"), |d| {
             d.array(3)?;
             Ok(TreeResp {
                 epoch: d.uint()?,
@@ -2602,7 +2799,7 @@ impl DeliveryService for HttpDs {
                 g,
                 &format!("/handshakes?from={next}&limit={HANDSHAKE_PAGE}"),
             );
-            let page = self.get_decoded(&path, |d| {
+            let page = self.socket_get_decoded(&path, |d| {
                 let n = array_or_null(d)?;
                 (0..n)
                     .map(|_| handshake_item(d))
@@ -2622,7 +2819,7 @@ impl DeliveryService for HttpDs {
     /// Row 11: `[blob, last_resort(uint), kp_ref]`.
     fn take_key_package(&mut self, target: &DeviceId) -> Result<KeyPackageResp, DsError> {
         let path = format!("/v1/devices/{}/keypackage", hex::encode(target.as_bytes()));
-        self.get_decoded(&path, |d| {
+        self.socket_get_decoded(&path, |d| {
             d.array(3)?;
             Ok(KeyPackageResp {
                 blob: bytes_or_null(d)?,
@@ -2646,7 +2843,7 @@ impl DeliveryService for HttpDs {
             }
             e.null();
         });
-        self.post_decoded(&Self::group_path(g, "/commit"), &body, |d| {
+        self.socket_post_decoded(&Self::group_path(g, "/commit"), &body, |d| {
             d.array(2)?;
             Ok(CommitResult {
                 seq: d.uint()?,
@@ -2667,7 +2864,7 @@ impl DeliveryService for HttpDs {
         let body = encode(|e| {
             e.array(2).bytes(&c.external_commit).bytes(&c.group_info);
         });
-        let committed = self.post_decoded(&Self::group_path(g, "/resync"), &body, |d| {
+        let committed = self.socket_post_decoded(&Self::group_path(g, "/resync"), &body, |d| {
             d.array(2)?;
             Ok(CommitResult {
                 seq: d.uint()?,
@@ -2688,7 +2885,7 @@ impl DeliveryService for HttpDs {
         let body = encode(|e| {
             e.array(2).uint(epoch).bytes(&proposal);
         });
-        self.post_decoded(&Self::group_path(g, "/proposal"), &body, |d| {
+        self.socket_post_decoded(&Self::group_path(g, "/proposal"), &body, |d| {
             d.array(1)?;
             d.uint()
         })
@@ -2707,7 +2904,7 @@ impl DeliveryService for HttpDs {
         let body = encode(|e| {
             e.array(3).uint(epoch).bytes(&pm).uint(u64::from(class));
         });
-        self.post_decoded(&Self::group_path(g, "/message"), &body, |d| {
+        self.socket_post_decoded(&Self::group_path(g, "/message"), &body, |d| {
             d.array(3)?;
             Ok(UploadResult {
                 seq: d.uint()?,
@@ -2726,7 +2923,7 @@ impl DeliveryService for HttpDs {
         let mut next = from;
         loop {
             let path = Self::group_path(g, &format!("/messages?from={next}&limit={MESSAGE_PAGE}"));
-            let page = self.get_decoded(&path, |d| {
+            let page = self.socket_get_decoded(&path, |d| {
                 let n = array_or_null(d)?;
                 let mut items = Vec::with_capacity(n);
                 for _ in 0..n {
@@ -2753,7 +2950,7 @@ impl DeliveryService for HttpDs {
         let mut after = 0u64;
         loop {
             let path = format!("/v1/welcomes?after={after}&limit={WELCOME_PAGE}");
-            let page = self.get_decoded(&path, |d| {
+            let page = self.socket_get_decoded(&path, |d| {
                 let n = array_or_null(d)?;
                 let mut items = Vec::with_capacity(n);
                 for _ in 0..n {
@@ -2787,16 +2984,11 @@ impl DeliveryService for HttpDs {
         }
     }
 
-    /// Row 16: `DELETE /v1/welcomes/{welcome_id}` -> `204`. The id is the table's decimal
+    /// Row 16: `DELETE /v1/welcomes/{welcome_id}` -> `204`, a socket request. The id is the table's decimal
     /// surrogate key, the one protocol identifier that is not 16 random bytes.
     fn ack_welcome(&mut self, welcome_id: u64) -> Result<(), DsError> {
-        let (status, out) = call(
-            &self.agent,
-            "DELETE",
-            &self.url(&format!("/v1/welcomes/{welcome_id}")),
-            Some(&self.token),
-            None,
-        )?;
+        let (status, out) =
+            self.socket_call("DELETE", &format!("/v1/welcomes/{welcome_id}"), &[])?;
         check_status(status, &out)
     }
 
@@ -2811,7 +3003,7 @@ impl DeliveryService for HttpDs {
         let body = encode(|e| {
             e.array(3).uint(epoch).uint(seq).text(reason);
         });
-        self.post_status(&Self::group_path(g, "/fork-report"), &body)
+        self.socket_post_status(&Self::group_path(g, "/fork-report"), &body)
     }
 
     /// Row 14: `[group_info, tail([[seq, epoch, kind, sender, blob]]), ratchet_tree|null]` ->
@@ -2831,7 +3023,7 @@ impl DeliveryService for HttpDs {
             }
             e.opt_bytes(h.ratchet_tree.as_deref());
         });
-        self.post_decoded(&Self::group_path(g, "/heal"), &body, |d| {
+        self.socket_post_decoded(&Self::group_path(g, "/heal"), &body, |d| {
             d.array(2)?;
             let epoch = d.uint()?;
             let next_seq = d.uint()?;
@@ -2847,7 +3039,7 @@ impl DeliveryService for HttpDs {
         let body = encode(|e| {
             e.array(2).uint(seq).uint(epoch);
         });
-        self.post_status(&Self::group_path(g, "/cursor"), &body)
+        self.socket_post_status(&Self::group_path(g, "/cursor"), &body)
     }
 
     /// Frames received since the last drain. Offline, nothing is read and nothing is returned —
@@ -2938,7 +3130,7 @@ impl DeliveryService for HttpDs {
 
     /// Row 19: `[[ref, kind, target_leaf|null, blob, void(uint)]]`.
     fn proposals(&mut self, g: &GroupId) -> Result<Vec<ProposalItem>, DsError> {
-        self.get_decoded(&Self::group_path(g, "/proposals"), |d| {
+        self.socket_get_decoded(&Self::group_path(g, "/proposals"), |d| {
             let n = array_or_null(d)?;
             (0..n)
                 .map(|_| {
@@ -3675,6 +3867,53 @@ mod tests {
         }
     }
 
+    /// A gateway that answers each request frame (op 59) from `route`, as `instance` answers an HTTP
+    /// request; the client end of a socket the instance would have opened.
+    fn gateway_answering(
+        route: fn(&str, &str) -> (u16, Vec<u8>),
+        log: &Seen,
+    ) -> WebSocket<TcpStream> {
+        let log = std::sync::Arc::clone(log);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            while let Ok(message) = ws.read() {
+                let Message::Binary(bytes) = message else {
+                    continue;
+                };
+                let (id, method, path) = decode_strict(&bytes, |d: &mut Decoder<'_>| {
+                    d.array(4)?;
+                    assert_eq!(d.uint()?, 59);
+                    let _n = d.uint()?;
+                    let _group = d.opt_bytes()?;
+                    d.array(5)?;
+                    let id = d.uint()?;
+                    let method = d.text()?.to_owned();
+                    let path = d.text()?.to_owned();
+                    d.skip()?;
+                    d.skip()?;
+                    Ok((id, method, path))
+                })
+                .unwrap();
+                log.lock().unwrap().push(format!("{method} {path}"));
+                let (status, out) = route(&method, &path);
+                let answer = encode(|e| {
+                    e.array(4).uint(60).uint(0).null();
+                    e.array(3).uint(id).uint(u64::from(status)).bytes(&out);
+                });
+                if ws.send(Message::Binary(answer.into())).is_err() {
+                    return;
+                }
+            }
+        });
+        let stream = TcpStream::connect(addr).unwrap();
+        let (mut socket, _) = tungstenite::client(format!("ws://{addr}/gateway"), stream).unwrap();
+        read_timeout(&mut socket, PUMP_WAIT).unwrap();
+        socket
+    }
+
     type Seen = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
     /// A throwaway HTTP/1.1 origin, one request per connection, answering from `route` and
@@ -3738,7 +3977,8 @@ mod tests {
         use dilla_core::mls::{DillaBinding, GroupKind};
 
         let (base, seen) = origin(instance);
-        let mut ds = connected(&base, None);
+        // The Welcome list is a socket route: it is answered on a gateway socket, the rest over HTTP.
+        let mut ds = connected(&base, Some(gateway_answering(instance, &seen)));
         let binding = DillaBinding {
             v: 1,
             instance_id: InstanceId::from_bytes([0x11; 16]),
@@ -3818,6 +4058,49 @@ mod tests {
             if matches!(message, Message::Binary(_))
                 && ws.send(Message::Binary(heartbeat_ack().into())).is_err()
             {
+                return;
+            }
+        }
+    }
+
+    /// Answers every request frame (op 59) on `ws` from `route`, recording `METHOD path` in `log`, and every other binary
+    /// frame with a `heartbeat_ack`, until the client lets go.
+    fn serve_requests(
+        mut ws: WebSocket<TcpStream>,
+        route: fn(&str, &str) -> (u16, Vec<u8>),
+        log: &Seen,
+    ) {
+        while let Ok(message) = ws.read() {
+            let Message::Binary(bytes) = message else {
+                continue;
+            };
+            let request = decode_strict(&bytes, |d: &mut Decoder<'_>| {
+                d.array(4)?;
+                if d.uint()? != 59 {
+                    return Ok(None);
+                }
+                let _n = d.uint()?;
+                let _group = d.opt_bytes()?;
+                d.array(5)?;
+                let id = d.uint()?;
+                let method = d.text()?.to_owned();
+                let path = d.text()?.to_owned();
+                d.skip()?;
+                d.skip()?;
+                Ok(Some((id, method, path)))
+            });
+            let answer = match request {
+                Ok(Some((id, method, path))) => {
+                    log.lock().unwrap().push(format!("{method} {path}"));
+                    let (status, out) = route(&method, &path);
+                    encode(|e| {
+                        e.array(4).uint(60).uint(0).null();
+                        e.array(3).uint(id).uint(u64::from(status)).bytes(&out);
+                    })
+                }
+                _ => heartbeat_ack(),
+            };
+            if ws.send(Message::Binary(answer.into())).is_err() {
                 return;
             }
         }
@@ -3963,7 +4246,8 @@ mod tests {
                 ws.send(Message::Binary(hello.into())).unwrap();
                 ws.read().unwrap(); // identify
                 ws.send(Message::Binary(ready.into())).unwrap();
-                std::thread::spawn(move || ack_every_frame(ws));
+                let requests = std::sync::Arc::clone(&log);
+                std::thread::spawn(move || serve_requests(ws, stalled_instance, &requests));
             }
         });
 
@@ -4159,6 +4443,57 @@ mod tests {
             prev_hash: vec![0x05; 32],
         };
         assert_eq!(decode_strict(&served, decode_served_list).unwrap(), row);
+        // Wire 6 (as every wire since 4): the head carries the account-kind attestation as a fifth
+        // element, which this client reads past; history rows stay four elements.
+        let attested = cbor(|e| {
+            e.array(5)
+                .uint(2)
+                .bytes(&[0x03; 5])
+                .bytes(&[0x04; 64])
+                .bytes(&[0x05; 32])
+                .bytes(&[0x09; 3]);
+        });
+        assert_eq!(decode_strict(&attested, decode_served_head).unwrap(), row);
+        assert_eq!(decode_strict(&served, decode_served_head).unwrap(), row);
+        // Wire 6 (Bot v2 task 20b): umk_pub, ssk_pub and sig_umk_ssk follow the attestation.
+        let keyed = cbor(|e| {
+            e.array(8)
+                .uint(2)
+                .bytes(&[0x03; 5])
+                .bytes(&[0x04; 64])
+                .bytes(&[0x05; 32])
+                .bytes(&[0x09; 3])
+                .bytes(&[0x0a; 32])
+                .bytes(&[0x0b; 32])
+                .bytes(&[0x0c; 64]);
+        });
+        assert_eq!(decode_strict(&keyed, decode_served_head).unwrap(), row);
+        // A short key, or a null one, is refused.
+        let short = cbor(|e| {
+            e.array(8)
+                .uint(2)
+                .bytes(&[0x03; 5])
+                .bytes(&[0x04; 64])
+                .bytes(&[0x05; 32])
+                .bytes(&[0x09; 3])
+                .bytes(&[0x0a; 31])
+                .bytes(&[0x0b; 32])
+                .bytes(&[0x0c; 64]);
+        });
+        assert!(decode_strict(&short, decode_served_head).is_err());
+        let null = cbor(|e| {
+            e.array(8)
+                .uint(2)
+                .bytes(&[0x03; 5])
+                .bytes(&[0x04; 64])
+                .bytes(&[0x05; 32])
+                .bytes(&[0x09; 3])
+                .bytes(&[0x0a; 32])
+                .null()
+                .bytes(&[0x0c; 64]);
+        });
+        assert!(decode_strict(&null, decode_served_head).is_err());
+        assert!(decode_strict(&attested, decode_served_list).is_err());
         let history = cbor(|e| {
             e.array(2);
             e.array(4)

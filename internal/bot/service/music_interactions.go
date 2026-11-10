@@ -78,6 +78,46 @@ type MusicInteractions struct {
 	// DefaultVolume is the installation's Music page default (Task 10c). A new session, a track
 	// enqueued while nothing is playing or queued, starts at it. Nil keeps the queue's volume.
 	DefaultVolume func() uint8
+	// Hints tells the room's members (a call hint, scope the voice channel) that the queue or the playing track
+	// changed, after a mutation committed (Bot v2 Task 17). Nil sends none.
+	Hints HintSender
+	// StateReads shares one music.state computation per voice channel (the call scope) over MusicStateReadWindow:
+	// the call read and the state read; each member is still authorised and gets their own answer (Bot v2 Task 19
+	// fix round 4, Task 21b ruling 3). Nil computes every read.
+	StateReads *MusicStateReads
+	// OnPlayOpened begins the voice room's call-group join and room connection for an authorised sealed /play,
+	// before its track resolves (Bot v2 Task 19: the join runs beside the resolve). ctx carries the room's current call
+	// group (music.PlaybackGroup). It must not block. Nil joins at the start, after the resolve.
+	OnPlayOpened func(ctx context.Context, installation, community, channel id.ID)
+	// OnPlay hands a committed sealed /play that starts playback to the supervisor and returns once the first frame is
+	// published, so the /play answers "Now playing" when audio starts. Nil hands it to OnPersistedSnapshot.
+	OnPlay func(ctx context.Context, installation, community, channel id.ID, state music.State, revision uint64) (uint64, error)
+	// OnPlayAbandoned is a sealed /play that began a warm and ended without starting a track (refused, not resolved,
+	// or only queued): the warmed call is dropped and the idle room left (Bot v2 Task 19 fix round 1, M3). Nil does
+	// nothing.
+	OnPlayAbandoned func(ctx context.Context, installation, community, channel id.ID)
+}
+
+type sealedPlayKey struct{}
+
+// withSealedPlay marks ctx as a sealed /play (Bot v2 Task 19): the enqueue also plays when nothing plays, as the v1
+// client's /play did with its enqueue and resume, and answers once audio starts.
+func withSealedPlay(ctx context.Context) context.Context {
+	return context.WithValue(ctx, sealedPlayKey{}, true)
+}
+
+func sealedPlay(ctx context.Context) bool { v, _ := ctx.Value(sealedPlayKey{}).(bool); return v }
+
+// nowPlayingText is the established /nowplaying copy (web bot-handlers.ts): "Now playing: T — A."
+func nowPlayingText(state music.State) string {
+	if state.Current == nil {
+		return ""
+	}
+	text := state.Current.Title
+	if state.Current.Artist != "" {
+		text += " — " + state.Current.Artist
+	}
+	return "Now playing: " + text + "."
 }
 
 func (h MusicInteractions) Handlers() map[protocol.Operation]InteractionHandlerSpec {
@@ -104,11 +144,24 @@ func (h MusicInteractions) Handlers() map[protocol.Operation]InteractionHandlerS
 
 func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, req protocol.Request, op protocol.Operation) (result InteractionResult, failure error) {
 	immediate := op == protocol.OpMusicPause || op == protocol.OpMusicSkip
+	play := op == protocol.OpMusicEnqueue && sealedPlay(ctx)
+	// CurrentCall and the in-call check share one call read; the recheck before the commit reads the call again.
+	ctx = withMusicCallMemo(ctx)
+	playStarted := false
+	if play {
+		// A /play has a latency target (G3): its requests take the Bot's next request token, as pause and skip do.
+		ctx = client.WithImmediateControl(ctx)
+	}
 	reason := "dependency_or_context"
 	var diagnostic error
 	var group id.ID
 	defer func() {
 		if result.Status == 0 && failure == nil {
+			if op != protocol.OpMusicState && op != protocol.OpMusicSearch && req.ChannelID != nil {
+				// A committed change ends the call's shared state window: the next state read sees it.
+				h.StateReads.forget(*req.ChannelID)
+				hint(ctx, h.Hints, client.StateScopeCall, *req.ChannelID)
+			}
 			return
 		}
 		logger := h.Logger
@@ -136,6 +189,9 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		return InteractionResult{}, errors.New("missing music interaction dependency or context")
 	}
 	channel := *req.ChannelID
+	if op == protocol.OpMusicState && h.StateReads != nil {
+		return h.coalescedState(ctx, actor, channel, &reason, &group)
+	}
 	reason = "current_call_lookup"
 	call, err := h.Authority.CurrentCall(ctx, channel)
 	group = call.GroupID
@@ -204,36 +260,15 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	directImmediate := immediate && h.OnImmediateControl != nil
 	var snapshot persistence.Snapshot
 	if !directImmediate {
-		reason = "state_read"
-		snapshot, err = h.Store.Load(ctx, channel)
+		var mismatch bool
+		snapshot, mismatch, reason, err = h.readSnapshot(ctx, channel)
 		if err != nil {
 			return InteractionResult{}, err
 		}
-		if h.CurrentState != nil {
-			reason = "runtime_state_read"
-			state, revision, err := h.CurrentState(ctx, h.InstallationID, h.CommunityID, channel)
-			if err != nil {
-				return InteractionResult{}, err
-			}
-			if revision != snapshot.Revision || state.Revision != snapshot.Revision {
-				// A playback transition may have committed since the first read. State reads
-				// always have a durable answer, and a missed hand-off adopts without starting.
-				snapshot, err = h.Store.Load(ctx, channel)
-				if err != nil {
-					return InteractionResult{}, err
-				}
-				if revision < snapshot.Revision && h.OnPersistedSnapshot != nil {
-					_, _ = h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, snapshot.State, snapshot.Revision, false)
-				}
-			}
-			if revision == snapshot.Revision && state.Revision == snapshot.Revision {
-				snapshot.State = state
-			}
-			if op != protocol.OpMusicState && op != protocol.OpMusicEnqueue && !immediate && (revision != snapshot.Revision || state.Revision != snapshot.Revision) {
-				reason = "runtime_revision_mismatch"
-				currentRevision := snapshot.Revision
-				return InteractionResult{Status: interactionStatusConflict, Revision: &currentRevision}, nil
-			}
+		if op != protocol.OpMusicState && op != protocol.OpMusicEnqueue && !immediate && mismatch {
+			reason = "runtime_revision_mismatch"
+			currentRevision := snapshot.Revision
+			return InteractionResult{Status: interactionStatusConflict, Revision: &currentRevision}, nil
 		}
 	}
 	if op == protocol.OpMusicState {
@@ -295,6 +330,17 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		reason = "provider_unavailable"
 		if h.Resolver == nil {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
+		}
+		if play && h.OnPlayOpened != nil {
+			// Authorised: join the room while the track resolves.
+			h.OnPlayOpened(music.WithPlaybackGroup(ctx, call.GroupID), h.InstallationID, h.CommunityID, channel)
+			if h.OnPlayAbandoned != nil {
+				defer func() {
+					if !playStarted {
+						h.OnPlayAbandoned(context.WithoutCancel(ctx), h.InstallationID, h.CommunityID, channel)
+					}
+				}()
+			}
 		}
 		tracks, resolveErr = h.Resolver.Resolve(ctx, input)
 		reason, diagnostic = "resolve_failed", resolveErr
@@ -377,7 +423,22 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 				return InteractionResult{}, err
 			}
 		}
-		// Recheck the call binding and role immediately before CAS persistence.
+		startsPlay := false
+		if play && next.Paused {
+			// Nothing plays (or the player is paused): the /play starts it, in the same committed revision as its enqueue.
+			reason = "apply_failed"
+			resumed, resumeErr := music.Apply(next, next.Revision, music.Operation{Kind: music.OpResume, NowMS: opValue.NowMS})
+			diagnostic = resumeErr
+			if resumeErr != nil {
+				return InteractionResult{}, resumeErr
+			}
+			resumed.Revision = next.Revision
+			next, startsPlay = resumed, !resumed.Paused && resumed.Current != nil
+		}
+		// Recheck the call binding and role immediately before CAS persistence: the permissions in memory (feed-state
+		// authority), the call read again from dillad after the resolve and on every retry (fix round 2), so a call that
+		// changed or an actor who left the call is seen.
+		refreshMusicCallMemo(ctx)
 		reason = "current_call_lookup"
 		current, err := h.Authority.CurrentCall(ctx, channel)
 		if err != nil {
@@ -457,8 +518,23 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 			return InteractionResult{}, err
 		}
 		appliedRevision := saved.Revision
+		if startsPlay && h.OnPlay != nil {
+			var handoffErr error
+			appliedRevision, handoffErr = h.OnPlay(ctx, h.InstallationID, h.CommunityID, channel, saved.State, saved.Revision)
+			reason, diagnostic = "snapshot_handoff", handoffErr
+			if handoffErr != nil {
+				appliedRevision = h.pauseUnstartedPlayback(ctx, channel, saved.Revision, appliedRevision)
+				if appliedRevision == 0 {
+					appliedRevision = saved.Revision
+				}
+				return InteractionResult{Status: interactionStatusUnavailable, Revision: &appliedRevision}, nil
+			}
+			playStarted = true
+			revision := appliedRevision
+			return InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}, Note: nowPlayingText(saved.State)}, nil
+		}
 		if h.OnPersistedSnapshot != nil {
-			startPlayback := op == protocol.OpMusicResume || op == protocol.OpMusicSkip && !snapshot.State.Paused && next.Current != nil
+			startPlayback := op == protocol.OpMusicResume || op == protocol.OpMusicSkip && !snapshot.State.Paused && next.Current != nil || startsPlay
 			var handoffErr error
 			appliedRevision, handoffErr = h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, saved.State, saved.Revision, startPlayback)
 			reason, diagnostic = "snapshot_handoff", handoffErr

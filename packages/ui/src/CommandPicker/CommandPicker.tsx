@@ -10,7 +10,9 @@ import './CommandPicker.css';
  * owns state: the web's CommandPicker holds the draft, the active field and the run.
  */
 
-export interface CommandListItem { id: string; icon: IconName; name: string; args: string; description: string; source: string }
+export interface CommandListItem { id: string; icon: IconName; name: string; args: string; description: string; source: string;
+  /** Greyed: still listed (its description says why), drawn dimmed and announced as unavailable (aria-disabled). */
+  disabled?: boolean }
 
 export interface CommandListProps {
   id: string;
@@ -27,7 +29,14 @@ export interface CommandListProps {
 }
 
 /** The option id a command row carries: the field that drives the list points at it with `aria-activedescendant`. */
-export const commandOptionId = (listId: string, itemId: string): string => `${listId}-${itemId.replaceAll(' ', '-')}`;
+export const commandOptionId = (listId: string, itemId: string): string => `${listId}-${hexOf(itemId)}`;
+
+const utf8 = new TextEncoder();
+/** The item id's UTF-8 bytes as lower-case hex: an injective, always-valid id part (Bot v2 fix round 2, N4: "a b" and
+ *  "a-b" are both valid command names and must not share a DOM id). */
+function hexOf(itemId: string): string {
+  return Array.from(utf8.encode(itemId), b => b.toString(16).padStart(2, '0')).join('');
+}
 
 /**
  * The commands that match the `/` draft, as a listbox the draft field points at: no row takes focus. A pointer down on a
@@ -53,6 +62,7 @@ export function CommandList({ id, items, activeId, showHint, labels, query, onAc
         <div role="listbox" id={id} aria-label={labels.title} aria-activedescendant={items.length > 0 ? active : undefined} className="d-cmd-list__list">
           {items.map(item => (
             <div key={item.id} role="option" id={commandOptionId(id, item.id)} aria-selected={item.id === activeId}
+              {...(item.disabled === true ? { 'aria-disabled': true } : {})}
               aria-label={`/${item.name}, ${item.description}`} className="d-cmd-row"
               onMouseEnter={() => onActive(item.id)}
               onMouseDown={(e: MouseEvent<HTMLDivElement>) => { e.preventDefault(); onPick(item.id); }}>

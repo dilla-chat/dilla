@@ -12,10 +12,12 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/blob"
 	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/config"
 	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/gateway"
 	"github.com/dilla-chat/dilla/internal/mlswasi"
 	"github.com/dilla-chat/dilla/internal/obs"
 	"github.com/dilla-chat/dilla/internal/server"
@@ -24,14 +26,10 @@ import (
 	"github.com/dilla-chat/dilla/internal/store/sqlite"
 )
 
-// WireVersion is the current production wire version (wire 5: ephemeral realtime extensions; wire 4: account-kind attestation, Task S1
-// part 2). BotWireVersion is the version managed Bots negotiate; LegacyWireVersion remains available for
-// existing clients that have not moved to the bot-capable protocol.
-const (
-	WireVersion       = 5
-	BotWireVersion    = 3
-	LegacyWireVersion = 2
-)
+// WireVersion is the one wire version dillad offers (Bot v2: wire 6 for people and managed Bots;
+// no older client is served, and one that identifies or negotiates below it is told
+// E_UPGRADE_REQUIRED).
+const WireVersion = auth.WireVersion
 
 // Options is everything New needs. Only Config is required; every other
 // collaborator is built when it is nil, because part 1b's test harness calls
@@ -46,6 +44,9 @@ type Options struct {
 	Metrics     *obs.Metrics     // optional: over a fresh prometheus.NewRegistry()
 	Health      *obs.Health      // optional: obs.NewHealth(Clock)
 	ScrapeToken string
+	// SocketObserve, when set, sees every socket request's method, route, answer status and body
+	// (api.SocketDispatchOptions.Observe). The test host reads the Bot's sends and heals through it. Production sets none.
+	SocketObserve func(method, route string, status int, body []byte, replayed bool)
 
 	// Extra runs after every route New mounts itself — Plan 1's and Plan 2's —
 	// and gets the same *server.Mux (deviation ID14). The production binary
@@ -95,11 +96,15 @@ type Options struct {
 	// ws:// listener, which a browser on loopback can reach (web-3 task 3).
 	LiveKitURL string
 	// WireVersions is the wire version list the gateway's hello offers and GET /v1/instance
-	// advertises; nil defaults to [3,2]. `dillad serve` never sets it: the test
+	// advertises; nil defaults to [WireVersion] (6). `dillad serve` never sets it: the test
 	// host's -wire flag does, so a browser test can meet an instance that offers another version.
 	WireVersions  []uint64
 	E2EEVersions  []uint64
 	MediaVersions []uint64
+
+	// BotLaunch is the Bot supervisor's launch gate (internal/botsupervisor.Supervisor): who may connect to the Bot's
+	// Unix socket (ServeBot), and its single-use launch token. Nil, as without [bot], admits nobody there.
+	BotLaunch gateway.BotLaunch
 
 	// closeRepo records that New opened the repository itself, so Shutdown
 	// closes it. A caller that supplied its own keeps ownership of it: closing
@@ -128,7 +133,7 @@ func (o *Options) validate(ctx context.Context) error {
 		o.Health = obs.NewHealth(o.Clock)
 	}
 	if len(o.WireVersions) == 0 {
-		o.WireVersions = []uint64{WireVersion, 4, BotWireVersion, LegacyWireVersion}
+		o.WireVersions = []uint64{WireVersion}
 	}
 	if len(o.E2EEVersions) == 0 {
 		o.E2EEVersions = []uint64{1}

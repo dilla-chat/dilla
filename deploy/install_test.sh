@@ -52,13 +52,44 @@ stub() {
 	printf '#!/bin/sh\n%s\n' "$2" >"$STUBS/$1"
 	chmod 0755 "$STUBS/$1"
 }
-stub id 'if [ "$#" -eq 1 ] && [ "$1" = "-u" ]; then echo "${STUB_UID:-0}"; exit 0; fi; exit 1'
+stub id 'if [ "$#" -eq 1 ] && [ "$1" = "-u" ]; then echo "${STUB_UID:-0}"; exit 0; fi
+# The dillabot account, once useradd made it (uid 990, the uid of the fake Bot process below).
+if [ "$*" = "-u dillabot" ]; then echo 990; exit 0; fi; exit 1'
 stub uname 'if [ "$1" = "-m" ]; then echo "${STUB_ARCH:-x86_64}"; else echo Linux; fi'
 stub getent 'echo "getent $*" >>"'"$LOG"'"; exit 2'
 stub useradd 'echo "useradd $*" >>"'"$LOG"'"'
+stub usermod 'echo "usermod $*" >>"'"$LOG"'"'
 stub chown 'echo "chown $*" >>"'"$LOG"'"'
 stub apt-get 'echo "apt-get $*" >>"'"$LOG"'"'
-stub systemctl 'echo "systemctl $*" >>"'"$LOG"'"; if [ "$1" = is-active ] && [ -n "${STUB_MEDIA_INACTIVE:-}" ]; then exit 3; fi; if [ "${STUB_SYSTEMCTL_FAIL:-}" = 1 ] || { [ "${STUB_SYSTEMCTL_FAIL:-}" = restart ] && [ "$1" = restart ] && [ "$2" = dilla ]; }; then exit 1; fi
+# install -o/-g need root: logged, then installed without them.
+stub install 'echo "install $*" >>"'"$LOG"'"
+args=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	-o | -g) shift 2 ;;
+	*) args="$args '"'"'$1'"'"'"; shift ;;
+	esac
+done
+eval exec /usr/bin/install $args'
+# Bot v2: once dilla starts, its control group holds dillad and the supervised Bot (uid 990, argv[0] the Bot
+# executable); STUB_BOT=caps gives the Bot a bounding set, STUB_BOT=none starts no Bot.
+stub systemctl 'echo "systemctl $*" >>"'"$LOG"'"
+if [ "$1 $2 $3 $4 $5" = "show -p ControlGroup --value dilla" ]; then echo /system.slice/dilla.service; exit 0; fi
+if [ "$1 $2 $3" = "enable --now dilla" ] && [ -z "${STUB_SYSTEMCTL_FAIL:-}" ]; then
+	R="${DILLA_INSTALL_ROOT:?}"
+	mkdir -p "$R/sys/fs/cgroup/system.slice/dilla.service" "$R/proc/4000" "$R/proc/4001"
+	printf "/usr/local/bin/dillad\\0serve\\0" >"$R/proc/4000/cmdline"
+	printf "Uid:\\t995\\t995\\t995\\t995\\nCapBnd:\\t0000000000000400\\n" >"$R/proc/4000/status"
+	echo 4000 >"$R/sys/fs/cgroup/system.slice/dilla.service/cgroup.procs"
+	bnd=0000000000000000; [ "${STUB_BOT:-}" != caps ] || bnd=00000000000000c0
+	if [ "${STUB_BOT:-}" != none ]; then
+		printf "/usr/local/bin/dillabot\\0" >"$R/proc/4001/cmdline"
+		ln -sfn /usr/local/bin/dillabot "$R/proc/4001/exe"
+		printf "Uid:\\t990\\t990\\t990\\t990\\nCapInh:\\t0000000000000000\\nCapPrm:\\t0000000000000000\\nCapEff:\\t0000000000000000\\nCapBnd:\\t%s\\nCapAmb:\\t0000000000000000\\nNoNewPrivs:\\t1\\n" "$bnd" >"$R/proc/4001/status"
+		echo 4001 >>"$R/sys/fs/cgroup/system.slice/dilla.service/cgroup.procs"
+	fi
+fi
+if [ "$1" = is-active ] && [ -n "${STUB_MEDIA_INACTIVE:-}" ]; then exit 3; fi; if [ "${STUB_SYSTEMCTL_FAIL:-}" = 1 ] || { [ "${STUB_SYSTEMCTL_FAIL:-}" = restart ] && [ "$1" = restart ] && [ "$2" = dilla ]; }; then exit 1; fi
 # With FAKE_SCHEMA (a file holding the database schema version), a restart models dillad serve:
 # the new release (fake v2) migrates to STUB_RESTART_MIGRATES_TO at start and then fails when
 # STUB_FAIL_V2 is set; the old one (v1, highest migration 16) refuses a newer schema. With
@@ -156,6 +187,17 @@ init)
   tcp_port = 0
   node_ip = '$ip'
   api_secret_file = '$dir/livekit.secret'
+
+[bot]
+  # The bundled Bot, which dillad runs as user in its own sandbox. install.sh sets it to true.
+  enabled = false
+  executable = '/usr/local/bin/dillabot'
+  helper_executable = '/usr/local/lib/dilla/dilla-bot-core'
+  wasi_module = ''
+  state_dir = '/var/lib/dillabot'
+  user = 'dillabot'
+  socket_dir = '/run/dillad/bot'
+  dev_same_user = false
 EOF
 	chmod 0600 "$cfg"
 	if [ -n "${FAKE_INIT_BAD:-}" ]; then
@@ -172,9 +214,21 @@ doctor)
 	if [ -n "${FAKE_DOCTOR:-}" ]; then
 		cat "$FAKE_DOCTOR"
 	else
-		printf 'OK    config       parsed and validated\nOK    wasi         abi_version=10\nWARN  udp          not probed\n'
+		printf 'OK    config       parsed and validated\nOK    wasi         abi_version=10\nWARN  udp          not probed\nOK    bot          runs /usr/local/bin/dillabot as user dillabot\n'
 	fi
 	exit "${FAKE_DOCTOR_EXIT:-0}"
+	;;
+admin)
+	# admin bot-runtime create --config=F --out=FILE: registers a runtime and writes its credential to FILE only.
+	[ "$1 $2" = "bot-runtime create" ] || exit 64
+	for a in "$@"; do
+		case "$a" in
+		--out=*) out="${a#*=}" ;;
+		esac
+	done
+	[ -n "$out" ] && [ ! -e "$out" ] || { echo "admin bot-runtime create: --out must name a new file" >&2; exit 64; }
+	printf 'dbr_secret-runtime-credential-value\n' >"$out"
+	echo "created bot runtime 03030303030303030303030303030303; secret written to protected file"
 	;;
 media)
 	case "$1" in
@@ -235,9 +289,16 @@ make_release() {
 	cp "${2:-$FAKE}" "$1/dillad-linux-amd64"
 	cp "${2:-$FAKE}" "$1/dillad-linux-arm64"
 	printf '\0asm fake core %s\n' "$1" >"$1/dilla_core_wasi.wasm"
+	for arch in amd64 arm64; do
+		printf 'fake dillabot %s\n' "$arch" >"$1/dillabot-linux-$arch"
+		printf 'fake dilla-bot-core %s\n' "$arch" >"$1/dilla-bot-core-linux-$arch"
+	done
 	cp "$INSTALL" "$1/install.sh" 2>/dev/null || : >"$1/install.sh"
-	(cd "$1" && sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm install.sh >SHA256SUMS)
+	(cd "$1" && sha256sum dillad-linux-amd64 dillad-linux-arm64 dilla_core_wasi.wasm dillabot-linux-amd64 dillabot-linux-arm64 \
+		dilla-bot-core-linux-amd64 dilla-bot-core-linux-arm64 install.sh >SHA256SUMS)
 }
+# The supervised Bot must keep its pid under dilla.service this long, and may take this long to appear: no waiting here.
+export DILLA_BOT_HEALTH_SECONDS=0 DILLA_BOT_START_SECONDS=0
 
 REL="$TMP/release"
 make_release "$REL"
@@ -394,10 +455,39 @@ expect_refusal "a release that cannot be fetched is refused" "download"
 
 # Offline: local files checked against a SHA256SUMS they do not match.
 # shellcheck disable=SC2086
-run $PUBLIC_ARGS --binary "$BAD/dillad-linux-amd64" --core "$REL/dilla_core_wasi.wasm" --sums "$REL/SHA256SUMS"
+run $PUBLIC_ARGS --binary "$BAD/dillad-linux-amd64" --core "$REL/dilla_core_wasi.wasm" --sums "$REL/SHA256SUMS" \
+	--bot-binary "$REL/dillabot-linux-amd64" --bot-helper "$REL/dilla-bot-core-linux-amd64"
 expect_refusal "an offline binary that does not match --sums is refused" "checksum"
 
 # ------------------------------------------------- behind_proxy install ----
+# check_bot_install prints a "|"-joined problem list for the Bot half of a fresh install, empty when it is right: the
+# dillabot user (dillad in its group), /var/lib/dillabot 0700 dillabot with the runtime credential 0600 dillabot,
+# root-owned binaries where [bot] expects them, [bot] enabled = true, the Bot checked under dilla.service, and no
+# dillabot.service anywhere.
+check_bot_install() {
+	calls="$(cat "$LOG")"
+	has "$calls" "useradd --system --user-group --no-create-home --home-dir /var/lib/dillabot --shell /usr/sbin/nologin dillabot" || printf '|no dillabot system user was created'
+	has "$calls" "usermod -aG dillabot dillad" || printf '|dillad was not added to the dillabot group'
+	has "$calls" "install -d -m 0700 -o dillabot -g dillabot $ROOT/var/lib/dillabot" || printf '|/var/lib/dillabot was not made 0700 dillabot:dillabot'
+	[ "$(mode_of "$ROOT/var/lib/dillabot")" = 700 ] || printf '|/var/lib/dillabot mode %s, want 700' "$(mode_of "$ROOT/var/lib/dillabot")"
+	cmp -s "$ROOT/usr/local/bin/dillabot" "$REL/dillabot-linux-amd64" || printf '|/usr/local/bin/dillabot is not the release Bot'
+	cmp -s "$ROOT/usr/local/lib/dilla/dilla-bot-core" "$REL/dilla-bot-core-linux-amd64" || printf '|/usr/local/lib/dilla/dilla-bot-core is not the release helper'
+	echo "$calls" | grep -q "^install -m 0755 -o root -g root .*/dillabot-linux-amd64 $ROOT/usr/local/bin/dillabot.new$" || printf '|dillabot was not installed root:root 0755'
+	echo "$calls" | grep -q "^install -m 0755 -o root -g root .*/dilla-bot-core-linux-amd64 $ROOT/usr/local/lib/dilla/dilla-bot-core.new$" || printf '|dilla-bot-core was not installed root:root 0755'
+	has "$calls" "install -d -m 0755 -o root -g root $ROOT/usr/local/lib/dilla" || printf '|/usr/local/lib/dilla was not made root:root 0755'
+	has "$calls" "dillad admin bot-runtime create --config=$ROOT/etc/dilla/dilla.toml --out=" || printf '|no runtime credential was registered'
+	[ "$(mode_of "$ROOT/var/lib/dillabot/runtime.token")" = 600 ] || printf '|runtime.token mode %s, want 600' "$(mode_of "$ROOT/var/lib/dillabot/runtime.token")"
+	echo "$calls" | grep -q "^install -T -m 0600 -o dillabot -g dillabot .* $ROOT/var/lib/dillabot/runtime.token$" || printf '|runtime.token was not installed -T 0600 dillabot:dillabot'
+	has "$ERR" "dbr_secret" && printf '|the runtime credential reached stderr'
+	[ "$(toml_get "$ROOT/etc/dilla/dilla.toml" bot enabled)" = true ] || printf '|bot.enabled = %s, want true' "$(toml_get "$ROOT/etc/dilla/dilla.toml" bot enabled)"
+	has "$ERR" "the Bot runs under dilla.service as dillabot (pid 4001), holding no capabilities" || printf '|the Bot was not checked under dilla.service'
+	# Fresh install has no dillabot.service.
+	[ ! -e "$ROOT/etc/systemd/system/dillabot.service" ] || printf '|a dillabot.service was installed'
+	[ ! -e "$ROOT/etc/dillabot" ] || printf '|/etc/dillabot was created'
+	has "$calls" "systemctl enable --now dillabot" && printf '|dillabot.service was enabled'
+	return 0
+}
+
 check_common_install() { # NAME
 	name="$1"
 	problems=""
@@ -432,6 +522,8 @@ check_common_install() { # NAME
 	has "$calls" "systemctl enable --now dilla-media" || problems="$problems|the media service was not enabled and started"
 	has "$calls" "doctor --config=$ROOT/etc/dilla/dilla.toml" || problems="$problems|doctor did not run against /etc/dilla/dilla.toml"
 	has "$calls" "apt-get" && problems="$problems|apt-get ran although curl and ca-certificates were present"
+	# Bot v2 task 24: the Bot ships with dillad and runs as its supervised child.
+	problems="$problems$(check_bot_install)"
 	if [ -z "$problems" ]; then pass "$name"; else
 		old_ifs="$IFS"
 		IFS='|'
@@ -756,6 +848,39 @@ if [ -z "$TOML_PROBLEMS" ]; then pass "public: dilla.toml keeps acme_tls_alpn an
 	IFS='
 '
 fi
+problems="$(check_bot_install)"
+if [ -z "$problems" ]; then pass "fresh install has no dillabot.service: dillad supervises the Bot"; else
+	IFS='|'
+	# shellcheck disable=SC2086
+	fail "fresh install has no dillabot.service: dillad supervises the Bot" $problems
+	IFS='
+'
+fi
+
+# Bot v2 task 24: the Bot must hold no capability once dillad started it as dillabot (the keeper's non-root chain).
+# A Bot with a bounding set, or none at all, fails the install; the link is still printed once.
+for bot in caps none; do
+	seed_root
+	# shellcheck disable=SC2086
+	STUB_BOT="$bot" KEEP_ROOT=1 run $PUBLIC_ARGS $URL
+	case "$bot" in
+	caps) want="RED bot: the Bot (pid 4001) holds capabilities: CapBnd=00000000000000c0; it must hold none" ;;
+	none) want="no Bot process runs under dilla.service" ;;
+	esac
+	# The Bot is turned off and dilla restarted without it, so a Bot that may hold capabilities is not left running.
+	if [ "$RC" -ne 0 ] && [ "$OUT" = "https://chat.example.org/i/SECRETINVITECODE" ] && has "$ERR" "$want" &&
+		[ "$(toml_get "$ROOT/etc/dilla/dilla.toml" bot enabled)" = false ] && has "$(cat "$LOG")" "systemctl restart dilla" &&
+		has "$ERR" "turned the Bot off ([bot] enabled = false) and restarted dilla"; then
+		pass "a fresh install whose Bot check fails ($bot) fails, and still prints the link"
+	else
+		fail "a fresh install whose Bot check fails ($bot) fails, and still prints the link" "rc $RC" "out: $OUT" "stderr: $ERR"
+	fi
+done
+
+# Local Bot assets without --sums are refused like dillad's.
+# shellcheck disable=SC2086
+run $PUBLIC_ARGS $URL --bot-binary "$REL/dillabot-linux-amd64"
+expect_refusal "a local --bot-binary without --sums is refused" "--sums"
 
 # behind-proxy without --public-ip or --node-ip is refused (M3) ...
 run $PROXY_BASE $URL
@@ -818,8 +943,9 @@ fi
 # Offline with --sums: no download, no apt.
 seed_root
 # shellcheck disable=SC2086
-KEEP_ROOT=1 run $PUBLIC_ARGS --binary "$REL/dillad-linux-amd64" --core "$REL/dilla_core_wasi.wasm" --sums "$REL/SHA256SUMS" --release-url "file://$TMP/nowhere"
-if [ "$RC" -eq 0 ] && cmp -s "$ROOT/usr/local/bin/dillad" "$FAKE" && ! has "$(cat "$LOG")" "apt-get"; then
+KEEP_ROOT=1 run $PUBLIC_ARGS --binary "$REL/dillad-linux-amd64" --core "$REL/dilla_core_wasi.wasm" --sums "$REL/SHA256SUMS" --release-url "file://$TMP/nowhere" \
+	--bot-binary "$REL/dillabot-linux-amd64" --bot-helper "$REL/dilla-bot-core-linux-amd64"
+if [ "$RC" -eq 0 ] && cmp -s "$ROOT/usr/local/bin/dillad" "$FAKE" && cmp -s "$ROOT/usr/local/bin/dillabot" "$REL/dillabot-linux-amd64" && ! has "$(cat "$LOG")" "apt-get"; then
 	pass "an offline install with --sums needs no network"
 else
 	fail "an offline install with --sums needs no network" "rc $RC" "stderr: $ERR"
@@ -882,7 +1008,8 @@ fi
 run $PUBLIC_ARGS --binary "$REL/dillad-linux-amd64" --core "$REL/dilla_core_wasi.wasm"
 expect_refusal "local --binary and --core without --sums are refused" "--sums"
 seed_root
-KEEP_ROOT=1 run $PUBLIC_ARGS --binary "$REL/dillad-linux-amd64" --core "$REL/dilla_core_wasi.wasm" --insecure-skip-verify
+KEEP_ROOT=1 run $PUBLIC_ARGS --binary "$REL/dillad-linux-amd64" --core "$REL/dilla_core_wasi.wasm" --insecure-skip-verify \
+	--bot-binary "$REL/dillabot-linux-amd64" --bot-helper "$REL/dilla-bot-core-linux-amd64"
 if [ "$RC" -eq 0 ] && has "$ERR" "unverified"; then
 	pass "--insecure-skip-verify installs local files with a warning"
 else
@@ -1022,7 +1149,11 @@ if [ -n "${DILLA_TEST_DILLAD:-}" ]; then
 			STUB_MEDIA_PROBE_SUCCESS=1 KEEP_ROOT=1 run $PUBLIC_ARGS --udp-port 7999 --release-url "file://$REAL"
 		fi
 		# The fake core fails the wasi leg; the config leg is what this checks.
-		if has "$ERR" "OK    config" && has "$OUT" "https://chat.example.org/i/"; then
+		# Bot v2: the real admin bot-runtime create wrote the credential, and the real init's [bot] was turned on.
+		if has "$ERR" "OK    config" && has "$OUT" "https://chat.example.org/i/" &&
+			has "$ERR" "dillad registered the Bot's runtime credential: created bot runtime " &&
+			[ "$(mode_of "$ROOT/var/lib/dillabot/runtime.token")" = 600 ] &&
+			[ "$(toml_get "$ROOT/etc/dilla/dilla.toml" bot enabled)" = true ]; then
 			pass "real dillad ($mode): the edited dilla.toml passes doctor's config leg"
 		else
 			fail "real dillad ($mode): the edited dilla.toml passes doctor's config leg" "out: $OUT" "stderr: $ERR"
@@ -1035,6 +1166,7 @@ fi
 # ----------------------------------------------------------- shellcheck ----
 if command -v shellcheck >/dev/null 2>&1; then
 	if out="$(shellcheck -s sh "$INSTALL" 2>&1)"; then pass "shellcheck install.sh"; else fail "shellcheck install.sh" "$out"; fi
+	if out="$(shellcheck -s sh "$HERE/install-bot.sh" 2>&1)"; then pass "shellcheck install-bot.sh"; else fail "shellcheck install-bot.sh" "$out"; fi
 	if out="$(shellcheck "$HERE/proxmox-lxc.sh" 2>&1)"; then pass "shellcheck proxmox-lxc.sh"; else fail "shellcheck proxmox-lxc.sh" "$out"; fi
 else
 	echo "skip shellcheck: not installed"

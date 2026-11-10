@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -279,7 +280,7 @@ func TestEverySQLiteTableIsStrictAndTyped(t *testing.T) {
 // runtime, installation, claim and session-binding tables, task 5B4B adds publication receipts,
 // and Task5 adds managed group-registration receipts.
 var wantTables = []string{
-	"audit_log", "automod_stepup_grants", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "bot_claims", "bot_event_acks", "bot_event_streams", "bot_group_registration_admission_receipts", "bot_group_registration_receipts", "bot_installations", "bot_interaction_admission_receipts", "bot_interaction_eligibility_revisions", "bot_join_role_grant_receipts", "bot_join_role_grant_sources", "bot_join_role_policy", "bot_keypackage_publication_receipts", "bot_operations", "bot_runtimes", "bot_send_attempts", "bot_send_operations", "bot_session_bindings", "bot_structural_events", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "community_afk_away", "community_member_episodes", "community_member_timeouts", "device_cursors", "device_lists", "devices", "fork_reports",
+	"audit_log", "backups", "bans", "blob_refs", "blob_tombstones", "blobs", "bot_catalogs", "bot_channels", "bot_claims", "bot_command_keys", "bot_event_acks", "bot_event_streams", "bot_group_registration_receipts", "bot_installations", "bot_join_role_grant_receipts", "bot_join_role_grant_sources", "bot_join_role_policy", "bot_keypackage_publication_receipts", "bot_operations", "bot_runtimes", "bot_send_attempts", "bot_send_operations", "bot_session_bindings", "bot_state_revisions", "bot_structural_events", "bot_webhooks", "channel_members", "channel_overwrites", "channels", "communities", "community_afk", "community_afk_away", "community_member_episodes", "community_member_timeouts", "device_cursors", "device_lists", "devices", "fork_reports",
 	"instance_settings", "instances", "invite_signups", "invites", "key_packages", "login_attempts",
 	"manual_warning_actions", "member_role_grant_sources", "member_roles", "members",
 	"mls_app_messages", "mls_epoch_trees", "mls_groups", "mls_handshakes", "mls_members",
@@ -565,5 +566,259 @@ func TestGeneratedQueriesRoundTripOnSQLite(t *testing.T) {
 	}
 	if none == nil || len(none) != 0 {
 		t.Fatalf("ListWebauthnCredentials (empty) = %#v, want an empty non-nil slice", none)
+	}
+}
+
+// Bot v2 Task 1: migration 00056 admits wire 6 on sessions; rolling it back rewrites wire 6
+// selections to 5 so the wire-5 column check holds again.
+func TestMigration00056AdmitsWire6(t *testing.T) {
+	db := openSQLite(t)
+	ctx := context.Background()
+	p, err := goose.NewProvider(goose.DialectSQLite3, db, sqlitemigrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 55); err != nil {
+		t.Fatalf("up to the migration before wire 6: %v", err)
+	}
+	user, device, token := bytes.Repeat([]byte{1}, 16), bytes.Repeat([]byte{2}, 16), bytes.Repeat([]byte{3}, 32)
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO users (id, username, display, kind, umk_pub, ssk_pub, sig_umk_ssk, created) VALUES (?, 'u', 'u', 0, ?, ?, ?, 1)`,
+			[]any{user, make([]byte, 32), make([]byte, 32), make([]byte, 64)}},
+		{`INSERT INTO devices (id, user_id, dsk_pub, tier, signer_tier, credential_blob, last_seen, created) VALUES (?, ?, ?, 1, 1, x'01', 1, 1)`,
+			[]any{device, user, make([]byte, 32)}},
+		{`INSERT INTO sessions (token_hash, device_id, user_id, scope, tier, created, expires, idle_expires) VALUES (?, ?, ?, 0, 1, 1, 9, 9)`,
+			[]any{token, device, user}},
+		{`UPDATE sessions SET wire_version = 5, e2ee_version = 1, media_version = 1 WHERE token_hash = ?`, []any{token}},
+	} {
+		if _, err := db.ExecContext(ctx, stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("%s: %v", stmt.sql, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE sessions SET wire_version = 6 WHERE token_hash = ?`, token); err == nil {
+		t.Fatal("wire 6 was accepted before migration 00056")
+	}
+	if _, err := p.UpTo(ctx, 56); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	var wire int
+	if err := db.QueryRowContext(ctx, `SELECT wire_version FROM sessions WHERE token_hash = ?`, token).Scan(&wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire != 5 {
+		t.Fatalf("after the migration: wire %d, want the stored 5", wire)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE sessions SET wire_version = 6 WHERE token_hash = ?`, token); err != nil {
+		t.Fatalf("wire 6 refused after migration 00056: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE sessions SET wire_version = 7 WHERE token_hash = ?`, token); err == nil {
+		t.Fatal("wire 7 was accepted")
+	}
+	if _, err := p.DownTo(ctx, 55); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT wire_version FROM sessions WHERE token_hash = ?`, token).Scan(&wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire != 5 {
+		t.Fatalf("rollback: wire %d, want 6 rewritten to 5", wire)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE sessions SET wire_version = 6 WHERE token_hash = ?`, token); err == nil {
+		t.Fatal("wire 6 accepted after rollback")
+	}
+}
+
+// Bot v2 Task 9: migration 00057 adds the five Bot v2 tables on both engines; its Down removes
+// them again, so a rollback to a 00056 binary finds the schema that binary knows.
+func TestMigration00057UpAndDown(t *testing.T) {
+	tables := []string{"bot_catalogs", "bot_command_keys", "bot_channels", "bot_webhooks", "bot_state_revisions"}
+	type leg struct {
+		name    string
+		db      *sql.DB
+		dialect goose.Dialect
+		fs      fs.FS
+		exists  string
+	}
+	legs := []leg{{name: "sqlite", db: openSQLite(t), dialect: goose.DialectSQLite3, fs: sqlitemigrations.FS,
+		exists: `SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?`}}
+	if dsn := os.Getenv("DILLA_TEST_PG"); dsn != "" {
+		db, err := sql.Open("pgx", freshPostgresDSN(t, dsn))
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		legs = append(legs, leg{name: "postgres", db: db, dialect: goose.DialectPostgres, fs: pgmigrations.FS,
+			exists: `SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1`})
+	} else {
+		t.Log("DILLA_TEST_PG is unset: the Postgres leg runs in CI's go-postgres jobs")
+	}
+	for _, l := range legs {
+		t.Run(l.name, func(t *testing.T) {
+			ctx := context.Background()
+			p, err := goose.NewProvider(l.dialect, l.db, l.fs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			count := func(table string) int {
+				t.Helper()
+				var n int
+				if err := l.db.QueryRowContext(ctx, l.exists, table).Scan(&n); err != nil {
+					t.Fatalf("%s: %v", table, err)
+				}
+				return n
+			}
+			if _, err := p.UpTo(ctx, 56); err != nil {
+				t.Fatalf("up to 00056: %v", err)
+			}
+			for _, table := range tables {
+				if count(table) != 0 {
+					t.Fatalf("%s exists before migration 00057", table)
+				}
+			}
+			if _, err := p.UpTo(ctx, 57); err != nil {
+				t.Fatalf("up to 00057: %v", err)
+			}
+			for _, table := range tables {
+				if count(table) != 1 {
+					t.Fatalf("%s missing after migration 00057", table)
+				}
+			}
+			if _, err := p.DownTo(ctx, 56); err != nil {
+				t.Fatalf("down to 00056: %v", err)
+			}
+			for _, table := range tables {
+				if count(table) != 0 {
+					t.Fatalf("%s survives the 00057 rollback", table)
+				}
+			}
+			if _, err := p.UpTo(ctx, 57); err != nil {
+				t.Fatalf("up to 00057 again: %v", err)
+			}
+		})
+	}
+}
+
+// Bot v2 Task 23: migration 00058 drops the v1 interaction and AutoModeration tables (and the eligibility triggers that
+// wrote to them) and purges every kind-3 group with its members, messages and Welcomes; other groups are untouched. Its
+// Down recreates the dropped tables, empty, so a rollback to a 00057 binary finds the schema that binary knows.
+func TestMigration00058DropsV1Tables(t *testing.T) {
+	tables := []string{"bot_interaction_admission_receipts", "bot_interaction_eligibility_revisions",
+		"bot_group_registration_admission_receipts", "automod_stepup_grants"}
+	type leg struct {
+		name     string
+		db       *sql.DB
+		dialect  goose.Dialect
+		fs       fs.FS
+		exists   string
+		triggers string
+		pg       bool
+	}
+	legs := []leg{{name: "sqlite", db: openSQLite(t), dialect: goose.DialectSQLite3, fs: sqlitemigrations.FS,
+		exists:   `SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?`,
+		triggers: `SELECT count(*) FROM sqlite_schema WHERE type = 'trigger' AND name LIKE 'bot_interaction_eligibility%'`}}
+	if dsn := os.Getenv("DILLA_TEST_PG"); dsn != "" {
+		db, err := sql.Open("pgx", freshPostgresDSN(t, dsn))
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		legs = append(legs, leg{name: "postgres", db: db, dialect: goose.DialectPostgres, fs: pgmigrations.FS, pg: true,
+			exists:   `SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1`,
+			triggers: `SELECT count(*) FROM information_schema.triggers WHERE trigger_name LIKE 'bot_interaction_eligibility%'`})
+	} else {
+		t.Log("DILLA_TEST_PG is unset: the Postgres leg runs in CI's go-postgres jobs")
+	}
+	for _, l := range legs {
+		t.Run(l.name, func(t *testing.T) {
+			ctx := context.Background()
+			p, err := goose.NewProvider(l.dialect, l.db, l.fs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			q := func(s string) string {
+				if !l.pg {
+					return s
+				}
+				for n := 1; strings.Contains(s, "?"); n++ {
+					s = strings.Replace(s, "?", "$"+strconv.Itoa(n), 1)
+				}
+				return s
+			}
+			exec := func(s string, args ...any) {
+				t.Helper()
+				if _, err := l.db.ExecContext(ctx, q(s), args...); err != nil {
+					t.Fatalf("%s: %v", s, err)
+				}
+			}
+			count := func(s string, args ...any) int {
+				t.Helper()
+				var n int
+				if err := l.db.QueryRowContext(ctx, q(s), args...).Scan(&n); err != nil {
+					t.Fatalf("%s: %v", s, err)
+				}
+				return n
+			}
+			if _, err := p.UpTo(ctx, 57); err != nil {
+				t.Fatalf("up to 00057: %v", err)
+			}
+			for _, table := range tables {
+				if count(l.exists, table) != 1 {
+					t.Fatalf("%s missing before migration 00058", table)
+				}
+			}
+			interaction, text := bytes.Repeat([]byte{3}, 16), bytes.Repeat([]byte{4}, 16)
+			for i, g := range [][]byte{interaction, text} {
+				kind := []int{3, 0}[i]
+				exec(`INSERT INTO mls_groups (group_id, binding, kind, target_id, external_sender_key_id, e2ee_version, media_version, policy_version, created) VALUES (?, ?, ?, ?, ?, 1, 1, 1, 1)`,
+					g, []byte{0x80}, kind, bytes.Repeat([]byte{9}, 16), bytes.Repeat([]byte{8}, 16))
+				exec(`INSERT INTO mls_members (group_id, leaf_index, user_id, device_id, signature_key, added_epoch) VALUES (?, 0, ?, ?, ?, 1)`,
+					g, bytes.Repeat([]byte{5}, 16), bytes.Repeat([]byte{6}, 16), make([]byte, 32))
+				exec(`INSERT INTO mls_app_messages (group_id, seq, epoch, uploader_device, blob, franking_tag, size, created) VALUES (?, 1, 1, ?, ?, ?, 1, 1)`,
+					g, bytes.Repeat([]byte{6}, 16), []byte{1}, make([]byte, 32))
+				hash := bytes.Repeat([]byte{byte(0x70 + i)}, 32)
+				exec(`INSERT INTO mls_welcome_payloads (blob_sha256, group_id, epoch, blob, created) VALUES (?, ?, 1, ?, 1)`, hash, g, []byte{1})
+				exec(`INSERT INTO mls_welcomes (device_id, group_id, epoch, commit_seq, blob_sha256, created, expires) VALUES (?, ?, 1, 1, ?, 1, 9)`,
+					bytes.Repeat([]byte{6}, 16), g, hash)
+			}
+			if _, err := p.UpTo(ctx, 58); err != nil {
+				t.Fatalf("up to 00058: %v", err)
+			}
+			for _, table := range tables {
+				if count(l.exists, table) != 0 {
+					t.Fatalf("%s survives migration 00058", table)
+				}
+			}
+			if n := count(l.triggers); n != 0 {
+				t.Fatalf("%d eligibility triggers survive migration 00058", n)
+			}
+			for _, table := range []string{"mls_groups", "mls_members", "mls_app_messages", "mls_welcomes", "mls_welcome_payloads"} {
+				if n := count(`SELECT count(*) FROM `+table+` WHERE group_id = ?`, interaction); n != 0 {
+					t.Fatalf("%s keeps %d rows of the kind-3 group", table, n)
+				}
+				if n := count(`SELECT count(*) FROM `+table+` WHERE group_id = ?`, text); n != 1 {
+					t.Fatalf("%s has %d rows of the text group, want it untouched", table, n)
+				}
+			}
+			if _, err := p.DownTo(ctx, 57); err != nil {
+				t.Fatalf("down to 00057: %v", err)
+			}
+			for _, table := range tables {
+				if count(l.exists, table) != 1 {
+					t.Fatalf("%s not recreated by the 00058 rollback", table)
+				}
+				if n := count(`SELECT count(*) FROM ` + table); n != 0 {
+					t.Fatalf("%s recreated with %d rows, want empty", table, n)
+				}
+			}
+			if n := count(l.triggers); n == 0 {
+				t.Fatal("the eligibility triggers were not recreated by the rollback")
+			}
+			if _, err := p.UpTo(ctx, 58); err != nil {
+				t.Fatalf("up to 00058 again: %v", err)
+			}
+		})
 	}
 }

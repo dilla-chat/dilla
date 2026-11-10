@@ -485,7 +485,7 @@ jobs:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber libgtk-3-dev pkg-config xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64 dunst
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev pipewire wireplumber libgtk-3-dev pkg-config xvfb openbox x11-utils dbus-x11 libgbm1 libnss3 libasound2t64 dunst ffmpeg
       - run: npm ci
       - name: Read the Electron version
         id: electron-version

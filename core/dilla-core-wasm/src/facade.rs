@@ -3,10 +3,12 @@
 
 use std::cell::{Cell, RefCell, RefMut};
 
+use dilla_core::bot::command::{ReplyTable, VerifiedKeys, open_reply};
 use dilla_core::cbor::Encoder;
 use dilla_core::client::{
     ClientCore, ClientError, ManualRemovalEvidence, ManualWarningEvidence, RemovalFeedEntry,
 };
+use dilla_core::ids::UserId;
 use wasm_bindgen::prelude::*;
 use zeroize::Zeroizing;
 
@@ -125,24 +127,6 @@ pub fn role_ids_arg(bytes: &[u8]) -> Result<(), ClientError> {
     }
 }
 
-/// The strict protocol/10 CBOR request is kept opaque at the WASM boundary and is validated by
-/// `ClientCore`. Its encoded request is bounded before it crosses into the core (protocol/10 §
-/// Application requests: 4000-byte encoded body, less the prefix and base64url expansion).
-#[doc(hidden)]
-pub fn human_interaction_request_arg(bytes: &[u8]) -> Result<(), ClientError> {
-    if bytes.len() <= 2991 {
-        Ok(())
-    } else {
-        Err(ClientError {
-            code: "E_CORE_INPUT",
-            detail: format!(
-                "request_body: expected at most 2991 bytes, got {}",
-                bytes.len()
-            ),
-        })
-    }
-}
-
 #[doc(hidden)]
 pub fn nonzero_id_arg(name: &'static str, bytes: &[u8]) -> Result<[u8; 16], ClientError> {
     let id = fixed_arg::<16>(name, bytes)?;
@@ -199,6 +183,12 @@ fn owned_js_error(e: ClientError) -> JsError {
     client_js_error(&e)
 }
 
+/// The page's wall clock in whole seconds, for checks the core makes against its own clock (a
+/// command key's `not_after`). JavaScript's clock is the only one a browser core has.
+fn now_secs() -> u64 {
+    (js_sys::Date::now() / 1000.0) as u64
+}
+
 /// Opens the store and constructs its sole ClientCore owner.
 #[wasm_bindgen]
 pub async fn core_open(cfg: StoreOpenConfig) -> Result<CoreHandle, JsValue> {
@@ -208,6 +198,8 @@ pub async fn core_open(cfg: StoreOpenConfig) -> Result<CoreHandle, JsValue> {
         Ok(core) => Ok(CoreHandle {
             store,
             core: RefCell::new(Some(core)),
+            replies: RefCell::default(),
+            verified: RefCell::default(),
             phase: Cell::new(Phase::Open),
         }),
         Err(e) => {
@@ -222,6 +214,10 @@ pub struct CoreHandle {
     store: StoreHandle,
     core: RefCell<Option<ClientCore>>,
     phase: Cell<Phase>,
+    /// Reply secrets of sealed Bot commands, behind handles; zeroized on forget, eviction and drop.
+    replies: RefCell<ReplyTable>,
+    /// Command-key publications verified against the Bot user's stored device list.
+    verified: RefCell<VerifiedKeys>,
 }
 
 impl CoreHandle {
@@ -350,9 +346,117 @@ impl CoreHandle {
             store,
             core,
             phase: _,
+            replies: _,
+            verified: _,
         } = self;
         drop(core);
         store.close()
+    }
+    /// Verifies a Bot command-key publication against the stored, trusted device list of
+    /// `bot_user_id` and remembers it for `bot_command_seal`; CBOR [key_id, fingerprint].
+    pub fn bot_command_key_verify(
+        &self,
+        publication: &[u8],
+        bot_user_id: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        let bot_user_id = js_fixed_arg::<16>("bot_user_id", bot_user_id)?;
+        let now = now_secs();
+        let (verified, out) =
+            self.with_core(|c| c.bot_command_key_verify(publication, &bot_user_id, now))?;
+        self.verified
+            .borrow_mut()
+            .remember(&verified, UserId::from_bytes(bot_user_id));
+        Ok(out.into_boxed_slice())
+    }
+    /// Bot v2 (task 20 fix round 1): pins the device list of an account the instance signed as a
+    /// Bot from a `DeviceListPush` (trust on first sight; another key is held, never put in place).
+    /// CBOR [state, version]: 0 current, 1 key change held, 2 behind. A human is E_CREDENTIAL, a
+    /// user with no attestation E_DEVICE_LIST_STALE.
+    pub fn bot_device_list_pin(
+        &self,
+        bot_user_id: &[u8],
+        push: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        let bot_user_id = js_fixed_arg::<16>("bot_user_id", bot_user_id)?;
+        let now = now_secs();
+        Ok(self
+            .with_core(|c| c.bot_device_list_pin(&bot_user_id, push, now))?
+            .into_boxed_slice())
+    }
+    /// Bot v2 (task 20b): pins the community's Bot user in the store on first sight. CBOR
+    /// [state, pinned_user]: 0 pinned now, 1 the pinned user, 2 another user (the pin stays).
+    /// Refused before anything is read or written, also with a pin held: E_DEVICE_LIST_STALE when
+    /// the store holds no account-kind attestation for the candidate, E_CREDENTIAL for another kind.
+    pub fn bot_user_pin(
+        &self,
+        community_id: &[u8],
+        bot_user_id: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        let community_id = js_fixed_arg::<16>("community_id", community_id)?;
+        let bot_user_id = js_fixed_arg::<16>("bot_user_id", bot_user_id)?;
+        Ok(self
+            .with_core(|c| c.bot_user_pin(&community_id, &bot_user_id))?
+            .into_boxed_slice())
+    }
+    /// The community's pinned Bot user (16 bytes), or empty when none is pinned.
+    pub fn bot_user_pinned(&self, community_id: &[u8]) -> Result<Box<[u8]>, JsError> {
+        let community_id = js_fixed_arg::<16>("community_id", community_id)?;
+        Ok(self
+            .with_core(|c| c.bot_user_pinned(&community_id))?
+            .map_or_else(Vec::new, |u| u.to_vec())
+            .into_boxed_slice())
+    }
+    /// Signs and seals a command to a publication `bot_command_key_verify` accepted (the exact
+    /// bytes, before their `not_after`). The core re-verifies it against the Bot user's current
+    /// device list and attestation before every seal, so a revocation since the verify is
+    /// refused here. `request_cbor` is [request_id, community_id, channel_id|null, operation,
+    /// args, sent_at]. CBOR [sealed, reply_secret_handle]; the reply secret stays here, bound to
+    /// the request id.
+    pub fn bot_command_seal(
+        &self,
+        publication: &[u8],
+        request_cbor: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        let now = now_secs();
+        let (_, bot_user) = self
+            .verified
+            .borrow()
+            .check(publication, now)
+            .map_err(|r| JsError::new(&r.to_string()))?;
+        let (request_id, sealed, secret) = self.with_core(|c| {
+            c.bot_command_seal(publication, bot_user.as_bytes(), request_cbor, now)
+        })?;
+        let handle = self.replies.borrow_mut().insert(request_id, secret);
+        let mut out = Encoder::with_capacity(sealed.len() + 16);
+        out.array(2).bytes(&sealed).uint(u64::from(handle));
+        Ok(out.into_vec().into_boxed_slice())
+    }
+    /// Opens answer `seq` of `request_id` with the reply secret behind `handle`. The handle is
+    /// bound to the request it was made for: another `request_id` is refused, not tried.
+    pub fn bot_reply_open(
+        &self,
+        handle: u32,
+        request_id: &[u8],
+        seq: u32,
+        sealed: &[u8],
+    ) -> Result<Box<[u8]>, JsError> {
+        let request_id = js_fixed_arg::<16>("request_id", request_id)?;
+        let replies = self.replies.borrow();
+        let (bound, secret) = replies
+            .get(handle)
+            .ok_or_else(|| JsError::new("E_BOT_REPLY_UNKNOWN: no reply secret for this handle"))?;
+        if bound != request_id {
+            return Err(JsError::new(
+                "E_CORE_INPUT: request_id is not the request of this reply handle",
+            ));
+        }
+        open_reply(secret, bound, seq, sealed)
+            .map(Vec::into_boxed_slice)
+            .map_err(|_| JsError::new("E_BOT_MALFORMED: the reply does not open"))
+    }
+    /// Zeroizes and drops the reply secret behind `handle` (a no-op for an unknown handle).
+    pub fn bot_reply_forget(&self, handle: u32) {
+        self.replies.borrow_mut().forget(handle);
     }
     /// Calls ClientCore::identity; CBOR [phase, instance_id, user_id, device_id, username, list_published].
     pub fn identity(&self) -> Result<Box<[u8]>, JsError> {
@@ -875,19 +979,6 @@ impl CoreHandle {
         self.with_core(|c| c.welcomes_apply(welcomes_body, expected))
             .map(Vec::into_boxed_slice)
     }
-    /// Calls ClientCore::human_interaction_welcome_apply with opaque context proof bytes; the core
-    /// derives the expected group binding from the verified proof before accepting the Welcome.
-    pub fn human_interaction_welcome_apply(
-        &self,
-        welcomes_body: &[u8],
-        current_context_proof: &[u8],
-        now: u64,
-    ) -> Result<Box<[u8]>, JsError> {
-        self.with_core(|c| {
-            c.human_interaction_welcome_apply(welcomes_body, current_context_proof, now)
-        })
-        .map(Vec::into_boxed_slice)
-    }
     /// Calls ClientCore::group_apply; CBOR [state, epoch, next_seq, new_seqs, proposals_pending, flags].
     pub fn group_apply(
         &self,
@@ -953,78 +1044,6 @@ impl CoreHandle {
         let group_id = js_fixed_arg::<16>("group_id", group_id)?;
         self.with_core(|c| c.send_prepare(&group_id, request, now))
             .map(Vec::into_boxed_slice)
-    }
-    /// Prepare a read-only Bot interaction request for the authenticated human device.
-    /// `request_body` is strict protocol/10 deterministic CBOR, limited to 2991 bytes. The
-    /// plaintext is consumed by the core and is never returned; the result is CBOR `[request_id]`
-    /// while the encrypted send intent remains in the encrypted outbox.
-    pub fn human_interaction_send_prepare(
-        &self,
-        request_id: &[u8],
-        community_id: &[u8],
-        group_id: &[u8],
-        request_body: &[u8],
-        now: u64,
-    ) -> Result<Box<[u8]>, JsError> {
-        let request_id = nonzero_id_arg("request_id", request_id).map_err(owned_js_error)?;
-        let community_id = nonzero_id_arg("community_id", community_id).map_err(owned_js_error)?;
-        let group_id = nonzero_id_arg("group_id", group_id).map_err(owned_js_error)?;
-        human_interaction_request_arg(request_body).map_err(owned_js_error)?;
-        self.with_core(|c| {
-            c.human_interaction_send_prepare(
-                &request_id,
-                &community_id,
-                &group_id,
-                request_body,
-                now,
-            )
-        })
-        .map(Vec::into_boxed_slice)
-    }
-    /// Reads durable human kind-3 responses as CBOR `[events,next,high_water]`. Each plaintext
-    /// body is returned only after the core rechecks the exact admitted Bot MLS leaf and local
-    /// moderation request against the current interaction group and trust state.
-    pub fn human_interaction_events_read(
-        &self,
-        after: u64,
-        limit: u64,
-    ) -> Result<Box<[u8]>, JsError> {
-        self.with_core(|c| c.human_interaction_events_read(after, limit))
-            .map(Vec::into_boxed_slice)
-    }
-    /// Reads only archived consumed responses matching the exact current community, installation,
-    /// and request-id set. CBOR result is `[events]`, using the event tuple from journal reads.
-    pub fn human_interaction_receipts_read(
-        &self,
-        community_id: &[u8],
-        installation_id: &[u8],
-        bot_user_id: &[u8],
-        request_ids: &[u8],
-    ) -> Result<Box<[u8]>, JsError> {
-        let community_id = js_fixed_arg::<16>("community_id", community_id)?;
-        let installation_id = js_fixed_arg::<16>("installation_id", installation_id)?;
-        let bot_user_id = js_fixed_arg::<16>("bot_user_id", bot_user_id)?;
-        self.with_core(|c| {
-            c.human_interaction_receipts_read(
-                &community_id,
-                &installation_id,
-                &bot_user_id,
-                request_ids,
-            )
-        })
-        .map(Vec::into_boxed_slice)
-    }
-    /// Durably acknowledges and clears human interaction response bodies through a delivery id.
-    pub fn human_interaction_events_ack(&self, through: u64) -> Result<(), JsError> {
-        self.with_core(|c| c.human_interaction_events_ack(through))
-    }
-    /// Consumes only the human interaction response delivery ids explicitly selected by the
-    /// authenticated worker, encoded as deterministic CBOR `uint[]`.
-    pub fn human_interaction_events_ack_selected(
-        &self,
-        delivery_ids: &[u8],
-    ) -> Result<(), JsError> {
-        self.with_core(|c| c.human_interaction_events_ack_selected(delivery_ids))
     }
     /// Calls ClientCore::send_encrypt; CBOR [group_id, message_body].
     pub fn send_encrypt(&self, msg_id: &[u8]) -> Result<Box<[u8]>, JsError> {

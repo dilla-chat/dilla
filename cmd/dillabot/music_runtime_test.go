@@ -57,7 +57,7 @@ func TestYouTubeQueueStarterRejectsUnsupportedProvider(t *testing.T) {
 	community, channel := id.New(), id.New()
 	calls := &runtimeCalls{call: client.Call{CallID: channel, GroupID: id.New(), LiveKitURL: "wss://media.example", Token: "token"}}
 	starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel, Calls: calls,
-		YouTubePCM: youtube.PCMStarter{YTDLP: "yt-dlp", FFmpeg: "ffmpeg"}, Encoder: runtimeEncoder{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
+		YouTubePCM: unavailableYouTubeSource{err: youtube.ErrRunnerRequired}, Encoder: runtimeEncoder{}, Publisher: runtimePublisher{}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +426,7 @@ func TestNewMusicQueueStarterResolvesTrackToRoomCallAndProvider(t *testing.T) {
 	if calls.starts != 0 {
 		t.Fatal("inert options touched call")
 	}
-	o.Call, err = o.PrepareCall(context.Background())
+	o.Call, err = o.PrepareCall(session.WithExplicitStart(context.Background()))
 	o.Group = o.Call.GroupID
 	if err != nil {
 		t.Fatal(err)
@@ -458,7 +458,7 @@ func TestMusicQueueStarterJoinsCallGroupBeforeMintingCallCredentials(t *testing.
 	}
 	o, err := starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk"})
 	if err == nil {
-		_, err = o.PrepareCall(context.Background())
+		_, err = o.PrepareCall(session.WithExplicitStart(context.Background()))
 	}
 	if !errors.Is(err, joinErr) {
 		t.Fatalf("OptionsFor error = %v, want call-group join error", err)
@@ -478,7 +478,7 @@ func TestMusicQueueStarterJoinsCallGroupBeforeMintingCallCredentials(t *testing.
 	}
 	o, err = starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk"})
 	if err == nil {
-		_, err = o.PrepareCall(context.Background())
+		_, err = o.PrepareCall(session.WithExplicitStart(context.Background()))
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -525,7 +525,7 @@ func TestInstallationYouTubeStarterUsesScopedCallAndNativeMediaDependencies(t *t
 		var response any
 		switch r.URL.Path {
 		case "/v1/instance":
-			response = []any{[]any{uint64(3), uint64(2)}, []any{uint64(1)}, []any{uint64(1)}, instance, uint64(1), "chat.example", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)}
+			response = []any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}, instance, uint64(1), "chat.example", uint64(0), []any{uint64(0)}, uint64(1), id.New(), make([]byte, 32)}
 		case "/v1/channels/" + channel.String() + "/calls":
 			calls++
 			if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer installation-session" {
@@ -565,7 +565,7 @@ func TestInstallationYouTubeStarterUsesScopedCallAndNativeMediaDependencies(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	options.Call, err = options.PrepareCall(context.Background())
+	options.Call, err = options.PrepareCall(session.WithExplicitStart(context.Background()))
 	options.Group = options.Call.GroupID
 	if err != nil {
 		t.Fatal(err)
@@ -577,15 +577,19 @@ func TestInstallationYouTubeStarterUsesScopedCallAndNativeMediaDependencies(t *t
 	if !ok {
 		t.Fatalf("YouTube PCM = %T", options.PCM)
 	}
-	source, ok := pcm.Source.(youtube.PCMStarter)
-	if !ok {
-		t.Fatalf("YouTube source = %T, want sandboxed PCMStarter", pcm.Source)
-	}
-	if source.Node == "" {
-		t.Fatal("production YouTube PCM starter must enable its qualified Node JS runtime")
+	// Task 18 wiring: the source is this community's view of the one warm backend, or, on a host without the
+	// sandbox tools, a source that refuses every start. Never the per-request PCMStarter.
+	switch source := pcm.Source.(type) {
+	case *youtube.OwnedStreams:
+	case unavailableYouTubeSource:
+		if source.err == nil {
+			t.Fatal("an unavailable YouTube source must carry its reason")
+		}
+	default:
+		t.Fatalf("YouTube source = %T, want the community's warm-backend view", pcm.Source)
 	}
 	encoder, ok := options.Encoder.(session.RuntimeEncoder)
-	if !ok || encoder.Config.Options.FFmpegPath != "ffmpeg" {
+	if !ok || encoder.Config.Capacity != 50 {
 		t.Fatalf("encoder = %#v", options.Encoder)
 	}
 	if _, ok := options.Publisher.(session.RetainedLiveKitPublisher); !ok || options.Epochs != epochs {
@@ -624,7 +628,7 @@ func TestMusicQueueStarterRejectsCallForDifferentChannel(t *testing.T) {
 	}
 	options, err := starter.OptionsFor(context.Background(), music.Track{Provider: music.ProviderYouTube, CanonicalID: "https://www.youtube.com/watch?v=abcdefghijk"})
 	if err == nil {
-		_, err = options.PrepareCall(context.Background())
+		_, err = options.PrepareCall(session.WithExplicitStart(context.Background()))
 	}
 	if err == nil {
 		t.Fatal("expected mismatched call group to be rejected")
@@ -963,6 +967,26 @@ func (p boundaryPublisher) Start(context.Context, client.Call, id.ID, livekit.Ep
 	track := &liveRuntimePublisher{done: make(chan struct{})}
 	p.started <- track
 	return track, nil
+}
+
+// probeIntakePriority checks the request priority at a boundary and makes a client request there.
+type probeIntakePriority struct {
+	api   *client.Client
+	calls int
+	want  int
+}
+
+func (p *probeIntakePriority) probe(ctx context.Context) error {
+	if got := client.RequestPriority(ctx); got != p.want {
+		return fmt.Errorf("priority = %d, want %d", got, p.want)
+	}
+	p.calls++
+	_, err := p.api.Discover(ctx)
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusServiceUnavailable {
+		return fmt.Errorf("priority was lost: %w", err)
+	}
+	return nil
 }
 
 type boundaryCalls struct {
@@ -1472,13 +1496,16 @@ func TestExplicitStartRunsAtInteractivePriority(t *testing.T) {
 	}
 	first := <-published
 	close(first.done)
+	// Bot v2 Task 19: the EOF successor plays in the room the first track played in; it joins nothing (so it waits on
+	// no request at any priority).
+	select {
+	case <-published:
+	case <-time.After(time.Second):
+		t.Fatal("EOF successor not published")
+	}
 	select {
 	case priority := <-priorities:
-		if priority != 0 {
-			t.Errorf("EOF JoinCallGroup priority=%d", priority)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("EOF join missing")
+		t.Errorf("EOF successor joined the call again (priority=%d)", priority)
+	default:
 	}
-	<-published
 }

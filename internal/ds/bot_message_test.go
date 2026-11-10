@@ -102,7 +102,7 @@ func TestManagedBotSendAcceptReplayAndResolveAreDurable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = competitor.Shutdown(context.Background()) })
 	session := auth.Session{
-		UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, WireVersion: 3,
+		UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, WireVersion: 6,
 		Bot: &auth.BotSessionBinding{InstallationID: installation.ID, CommunityID: community, State: store.BotInstallationReady},
 	}
 	instance, err := h.repo.GetInstance(ctx)
@@ -345,7 +345,7 @@ func TestManagedBotSendAcceptReplayOnPostgres(t *testing.T) {
 		t.Fatalf("ds.New(Postgres transactional policy): %v", err)
 	}
 	t.Cleanup(func() { _ = delivery.Shutdown(context.Background()) })
-	session := auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, WireVersion: 3, Bot: &auth.BotSessionBinding{InstallationID: installation.ID, CommunityID: community, State: store.BotInstallationReady}}
+	session := auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, WireVersion: 6, Bot: &auth.BotSessionBinding{InstallationID: installation.ID, CommunityID: community, State: store.BotInstallationReady}}
 	instance, err := repo.GetInstance(ctx)
 	if err != nil {
 		t.Fatal(err)

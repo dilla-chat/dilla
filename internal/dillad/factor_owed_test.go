@@ -94,7 +94,7 @@ func docRoutes(t *testing.T, name string) []docRoute {
 			}
 			continue
 		}
-		if header == nil || strings.HasPrefix(line, "|---") {
+		if header == nil || strings.HasPrefix(line, "|---") || (len(cells) > 0 && strings.Trim(cells[0], "-: ") == "") {
 			continue
 		}
 		m := routeCell.FindStringSubmatch(cells[0])
@@ -178,7 +178,7 @@ func concrete(t *testing.T, r docRoute) string {
 			return "abc123"
 		case "{id}", "{user_id}", "{device_id}", "{role_id}", "{target_id}", "{call_id}", "{channel_id}", "{community}", "{installation}", "{operation}", "{group}", "{actor}", "{member}", "{attempt}", "{request}":
 			return hex32
-		case "{blob_id}":
+		case "{blob_id}", "{avatar_id}": // a webhook avatar id is a SHA-256 in hex, like a blob id
 			return hex32 + hex32
 		case "{kind}", "{chunk_seq}":
 			return "0"
@@ -247,27 +247,32 @@ func TestEveryMountedRouteIsADocumentedRoute(t *testing.T) {
 	srv, _, _ := newInstance(t)
 	defer srv.Shutdown(context.Background())
 	documented := map[string]bool{}
-	for _, doc := range []string{"09-http-api.md", "02-delivery-service.md"} {
+	// protocol/10 tables the Bot routes (fix round 1, M-6: the socket routes are checked too).
+	for _, doc := range []string{"09-http-api.md", "02-delivery-service.md", "10-community-bot.md"} {
 		for _, r := range docRoutes(t, doc) {
 			path, _, _ := strings.Cut(r.path, "?")
 			documented[r.method+" "+pathParameter.ReplaceAllString(path, "{}")] = true
 		}
 	}
-	// protocol/10-community-bot.md defines this new installation-scoped route.
-	documented["POST /v1/bot-runtime/installations/{}/interaction-admissions"] = true
 	anyParameter := regexp.MustCompile(`\{[A-Za-z_.]+\}`)
 	mounted := 0
-	for _, pattern := range srv.Mux().Patterns() {
+	httpPatterns := srv.Mux().Patterns()
+	// The socket-only routes too (Bot v2 task 14 fix round 1, M-6): moving a route to the socket must not take it out
+	// of this check.
+	for i, pattern := range append(slices.Clone(httpPatterns), srv.Mux().SocketPatterns()...) {
 		method, path, ok := strings.Cut(pattern, " ")
 		if !ok || !strings.HasPrefix(path, "/v1/") {
 			continue
 		}
-		mounted++
+		if i < len(httpPatterns) {
+			mounted++
+		}
 		if key := method + " " + anyParameter.ReplaceAllString(path, "{}"); !documented[key] {
 			t.Errorf("%s is mounted but no protocol/09 or protocol/02 table lists it, so the owed sweep never sends it", pattern)
 		}
 	}
-	if mounted < 50 {
+	// Bot v2 tasks 4-6 and 14 moved most routes to the socket mux: 41 /v1 HTTP routes remain.
+	if mounted < 38 {
 		t.Fatalf("only %d /v1 patterns were recorded; the mux is not reporting its routes", mounted)
 	}
 }
@@ -287,8 +292,12 @@ func TestHumanSessionIsNotABotSession(t *testing.T) {
 		ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x7e}, 32)))
 	satisfyFactor(t, srv, user)
 
-	rec := call(t, h, http.MethodPut,
-		"/v1/bot-runtime/installations/0102030405060708090a0b0c0d0e0f10/credential", token, nil)
+	// The route is the Bot socket's alone (final review I3); on the socket a human bearer is still not a Bot's.
+	const path = "/v1/bot-runtime/installations/0102030405060708090a0b0c0d0e0f10/credential"
+	if rec := call(t, h, http.MethodPut, path, token, nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("Bot-only credential route on the public listener = %d %q, want 404", rec.Code, errorCode(rec))
+	}
+	rec := call(t, dillad.BotSocketHandler(http.NotFoundHandler(), h, nil), http.MethodPut, path, token, nil)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("human session on Bot-only credential route = %d %q, want 401", rec.Code, errorCode(rec))
 	}

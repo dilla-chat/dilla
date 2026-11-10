@@ -101,15 +101,15 @@ func (h *Roles) syncCallGrants(ctx context.Context, communityID id.ID, userID, c
 
 func (h *Roles) Register(mux *server.Mux) {
 	h.RegisterSelfRoles(mux)
-	mux.HandleFunc("GET /v1/communities/{id}/roles", h.list)
-	mux.HandleFunc("GET /v1/communities/{id}/overwrites", h.listOverwrites)
-	mux.HandleFunc("POST /v1/communities/{id}/roles", h.create)
-	mux.HandleFunc("PATCH /v1/roles/{id}", h.patch)
-	mux.HandleFunc("DELETE /v1/roles/{id}", h.delete)
-	mux.HandleFunc("PUT /v1/communities/{id}/members/{user_id}/roles/{role_id}", h.grant)
-	mux.HandleFunc("DELETE /v1/communities/{id}/members/{user_id}/roles/{role_id}", h.revoke)
-	mux.HandleFunc("PUT /v1/channels/{id}/overwrites/{kind}/{target_id}", h.putOverwrite)
-	mux.HandleFunc("DELETE /v1/channels/{id}/overwrites/{kind}/{target_id}", h.deleteOverwrite)
+	mux.Socket("GET /v1/communities/{id}/roles", http.HandlerFunc(h.list))
+	mux.Socket("GET /v1/communities/{id}/overwrites", http.HandlerFunc(h.listOverwrites))
+	mux.Socket("POST /v1/communities/{id}/roles", http.HandlerFunc(h.create))
+	mux.Socket("PATCH /v1/roles/{id}", http.HandlerFunc(h.patch))
+	mux.Socket("DELETE /v1/roles/{id}", http.HandlerFunc(h.delete))
+	mux.Socket("PUT /v1/communities/{id}/members/{user_id}/roles/{role_id}", http.HandlerFunc(h.grant))
+	mux.Socket("DELETE /v1/communities/{id}/members/{user_id}/roles/{role_id}", http.HandlerFunc(h.revoke))
+	mux.Socket("PUT /v1/channels/{id}/overwrites/{kind}/{target_id}", http.HandlerFunc(h.putOverwrite))
+	mux.Socket("DELETE /v1/channels/{id}/overwrites/{kind}/{target_id}", http.HandlerFunc(h.deleteOverwrite))
 }
 
 // requireSecondFactor returns nil when the user holds a confirmed TOTP secret or

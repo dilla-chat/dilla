@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 
@@ -77,7 +78,7 @@ func TestManagedBotIdentifyUsesSelectedWireAndPersistsIt(t *testing.T) {
 	}{{name: "unnegotiated", persisted: 0}, {name: "wire-two", persisted: 2}} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
-			h.gw.opts.WireVersions = []uint64{3, 2}
+			h.gw.opts.WireVersions = []uint64{6}
 			recorder := &capabilityRecordingAuth{Authenticator: h}
 			h.gw.opts.Auth = recorder
 			device := id.New()
@@ -85,14 +86,14 @@ func TestManagedBotIdentifyUsesSelectedWireAndPersistsIt(t *testing.T) {
 			bot := auth.BotSessionBinding{InstallationID: id.New(), CommunityID: id.New(), State: store.BotInstallationJoining}
 			session := auth.Session{Scope: auth.ScopeEnrolled, WireVersion: tc.persisted, TokenHash: hash, Bot: &bot}
 			token := scopedSession(h, device, session)
-			in := identifyInbound(t, token, 3)
+			in := h.onBotSocket(identifyInbound(t, token, 6))
 			sink := newRecordingSink(8, false)
 			c, ok := h.gw.identifyConnection(context.Background(), sink, in)
 			if !ok || c == nil {
-				t.Fatal("selected wire 3 was refused for a valid Joining bot")
+				t.Fatal("selected wire 6 was refused for a valid Joining bot")
 			}
-			if got, ok := recorder.selected(hash); !ok || got != [3]uint64{3, 1, 1} {
-				t.Fatalf("selected capabilities persisted = %v, %v; want [3 1 1]", got, ok)
+			if got, ok := recorder.selected(hash); !ok || got != [3]uint64{6, 1, 1} {
+				t.Fatalf("selected capabilities persisted = %v, %v; want [6 1 1]", got, ok)
 			}
 			if ready := h.readFrom(t, sink); ready.Op != OpReady {
 				t.Fatalf("first frame op=%d, want ready", ready.Op)
@@ -101,17 +102,19 @@ func TestManagedBotIdentifyUsesSelectedWireAndPersistsIt(t *testing.T) {
 	}
 }
 
-func TestManagedBotIdentifySelectedWireTwoReturnsVersionRefusal(t *testing.T) {
+// Bot v2: a managed Bot identifies on wire 6 only, even where the instance still advertises an
+// older wire to someone else; anything older is E_UPGRADE_REQUIRED with close 4006.
+func TestManagedBotIdentifySelectedWireTwoReturnsUpgradeRequired(t *testing.T) {
 	h := newHarness(t)
-	h.gw.opts.WireVersions = []uint64{3, 2}
+	h.gw.opts.WireVersions = []uint64{6, 2}
 	recorder := &capabilityRecordingAuth{Authenticator: h}
 	h.gw.opts.Auth = recorder
 	device := id.New()
 	hash := []byte("01234567890123456789012345678901")
 	bot := auth.BotSessionBinding{InstallationID: id.New(), CommunityID: id.New(), State: store.BotInstallationJoining}
-	token := scopedSession(h, device, auth.Session{Scope: auth.ScopeEnrolled, WireVersion: 3, TokenHash: hash, Bot: &bot})
+	token := scopedSession(h, device, auth.Session{Scope: auth.ScopeEnrolled, WireVersion: 6, TokenHash: hash, Bot: &bot})
 	sink := newRecordingSink(8, false)
-	if _, ok := h.gw.identifyConnection(context.Background(), sink, identifyInbound(t, token, 2)); ok {
+	if _, ok := h.gw.identifyConnection(context.Background(), sink, h.onBotSocket(identifyInbound(t, token, 2))); ok {
 		t.Fatal("selected wire 2 was accepted for a managed bot")
 	}
 	frame := h.readFrom(t, sink)
@@ -119,14 +122,44 @@ func TestManagedBotIdentifySelectedWireTwoReturnsVersionRefusal(t *testing.T) {
 		t.Fatalf("refusal op=%d, want error", frame.Op)
 	}
 	code, err := rawText(frame.Payload[1])
-	if err != nil || code != "E_VERSION" {
-		t.Fatalf("error code=%q err=%v, want E_VERSION", code, err)
+	if err != nil || code != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("error code=%q err=%v, want E_UPGRADE_REQUIRED", code, err)
 	}
 	if got := h.waitCloseOn(t, sink); got != CloseVersion {
 		t.Fatalf("close code=%d, want %d", got, CloseVersion)
 	}
 	if _, ok := recorder.selected(hash); ok {
 		t.Fatal("wire-2 refusal persisted unsupported bot capability")
+	}
+}
+
+// app_build tells a web client to update; a managed Bot connection is not sent it (Bot v2 task 5, review M6).
+func TestManagedBotConnectionIsNotSentAppBuild(t *testing.T) {
+	h := newHarness(t)
+	h.gw.opts.WireVersions = []uint64{6}
+	h.gw.opts.Auth = &capabilityRecordingAuth{Authenticator: h}
+	h.gw.opts.CurrentAppEntry = func() string { return "/assets/index-current.js" }
+	device := id.New()
+	bot := auth.BotSessionBinding{InstallationID: id.New(), CommunityID: id.New(), State: store.BotInstallationJoining}
+	token := scopedSession(h, device, auth.Session{Scope: auth.ScopeEnrolled, WireVersion: 0, TokenHash: []byte("01234567890123456789012345678901"), Bot: &bot})
+	sink := newRecordingSink(16, false)
+	c, ok := h.gw.identifyConnection(context.Background(), sink, h.onBotSocket(identifyInbound(t, token, 6)))
+	if !ok {
+		t.Fatal("a ready Bot on wire 6 was refused")
+	}
+	if !c.isBot {
+		t.Fatal("the connection is not marked as a Bot's")
+	}
+	h.gw.sendAppBuild(c)
+	for {
+		select {
+		case raw := <-sink.frames:
+			if in, err := Decode(raw, 1<<20); err == nil && in.Op == OpAppBuild {
+				t.Fatal("a managed Bot connection was sent app_build")
+			}
+		case <-time.After(50 * time.Millisecond):
+			return
+		}
 	}
 }
 
@@ -143,13 +176,13 @@ func identifyInbound(t *testing.T, token string, wire uint64) Inbound {
 	return Inbound{Payload: raw}
 }
 
-func TestManagedBotResumeRequiresOriginalAndCurrentBearerWireThree(t *testing.T) {
+func TestManagedBotResumeRequiresOriginalAndCurrentBearerWireSix(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		original, auth uint64
 	}{
-		{name: "cannot borrow replacement bearer wire", original: 2, auth: 3},
-		{name: "replacement bearer must have negotiated wire", original: 3, auth: 2},
+		{name: "cannot borrow replacement bearer wire", original: 5, auth: 6},
+		{name: "replacement bearer must have negotiated wire", original: 6, auth: 5},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -159,19 +192,19 @@ func TestManagedBotResumeRequiresOriginalAndCurrentBearerWireThree(t *testing.T)
 			bot := auth.BotSessionBinding{InstallationID: id.New(), CommunityID: id.New(), State: store.BotInstallationJoining}
 			originalHash := make([]byte, 32)
 			originalHash[0] = 1
-			original := auth.Session{Scope: auth.ScopeEnrolled, WireVersion: 3, TokenHash: originalHash, Bot: &bot}
+			original := auth.Session{Scope: auth.ScopeEnrolled, WireVersion: 6, TokenHash: originalHash, Bot: &bot}
 			firstToken := scopedSession(h, device, original)
 			original, err := h.gw.identify(context.Background(), firstToken)
 			if err != nil {
 				t.Fatal(err)
 			}
-			conn, err := h.gw.registerVersions(context.Background(), original, newRecordingSink(8, false), [3]uint64{3, 1, 1})
+			conn, err := h.gw.registerVersions(context.Background(), original, newRecordingSink(8, false), [3]uint64{6, 1, 1})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.original == 2 {
+			if tc.original == 5 {
 				conn.mu.Lock()
-				conn.wire = 2 // legacy suspended connection fixture
+				conn.wire = 5 // legacy suspended connection fixture
 				conn.mu.Unlock()
 			}
 			oldResume := conn.resumeToken()
@@ -194,7 +227,7 @@ func TestManagedBotResumeRequiresOriginalAndCurrentBearerWireThree(t *testing.T)
 			}
 			sink := newRecordingSink(8, false)
 			if _, ok := h.gw.resumeConnection(context.Background(), sink, Inbound{Payload: raw}); ok {
-				t.Fatal("bot resumed without wire 3 on both original connection and current bearer")
+				t.Fatal("bot resumed without wire 6 on both original connection and current bearer")
 			}
 			frame := h.readFrom(t, sink)
 			if frame.Op != OpInvalidSession || len(frame.Payload) == 0 {

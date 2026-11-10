@@ -13,6 +13,7 @@ import { decodeBoundedArray } from '../../state/bounded';
 import {
   CoreError,
   type ApplyResult,
+  type BotCommandRequest,
   type CorePort,
   type ExpectedGroup,
   type GroupInfo,
@@ -32,8 +33,6 @@ import {
   type SignedLists,
   type PendingLeaf, type TrustRecord, type SearchHit, type TrustBlock, trustBlock,
   type CallMediaEpoch, readCallMediaEpoch,
-  type HumanInteractionEventPage,
-  type HumanInteractionEvent,
 } from '../../core-port';
 import { FAILED_LEAF } from '../errors';
 import type { Frame } from '../../gateway/frames';
@@ -918,6 +917,36 @@ export class ModelCore implements CorePort {
     this.dropCallLeaves(groupId);
   }
 
+  // Sealed Bot commands are not part of the group half; the model refuses them like any unmodelled call.
+  botCommandKeyVerify(publication: Uint8Array, botUserId: Id): { keyId: Uint8Array; fingerprint: string } {
+    void publication; this.log('botCommandKeyVerify', botUserId);
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
+  botCommandSeal(publication: Uint8Array, request: BotCommandRequest): { sealed: Uint8Array; replyHandle: number } {
+    void publication; this.log('botCommandSeal', request.communityId);
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
+  botReplyOpen(replyHandle: number, requestId: Id, seq: number, sealed: Uint8Array): Uint8Array {
+    void replyHandle; void seq; void sealed; this.log('botReplyOpen', requestId);
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
+  botReplyForget(replyHandle: number): void {
+    void replyHandle;
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
+  botDeviceListPin(botUserId: Id, push: Uint8Array): { state: 0 | 1 | 2; version: bigint } {
+    void push; this.log('botDeviceListPin', botUserId);
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
+  botUserPin(communityId: Id, botUserId: Id): { state: 0 | 1 | 2; pinned: Uint8Array } {
+    void botUserId; this.log('botUserPin', communityId);
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
+  botUserPinned(communityId: Id): Uint8Array | null {
+    this.log('botUserPinned', communityId);
+    throw coreError('E_CORE_STATE', 'not modelled');
+  }
+
   /** calls.rs call_row: E_CORE_NOT_FOUND for an unknown id, E_CORE_INPUT for a group that is not a call group. */
   private callRow(groupId: Id): MGroup {
     const g = this.gs.get(toHex(groupId));
@@ -1310,35 +1339,6 @@ export class ModelCore implements CorePort {
       out.push({ welcomeId, groupId, outcome: 0, reason: '' });
     }
     return out;
-  }
-
-  humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array, _now: bigint): WelcomeOutcome[] {
-    void welcomesBody;
-    void currentContextProof;
-    void _now;
-    this.log('humanInteractionWelcomeApply', new Uint8Array(16));
-    throw new CoreError('E_CORE_STATE', 'human interaction Welcome context is not modelled');
-  }
-
-  humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id {
-    void requestId; void communityId; void groupId; void requestBody; void now;
-    throw new CoreError('E_CORE_STATE', 'human interaction sends are not modelled');
-  }
-  humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage {
-    void after; void limit;
-    throw new CoreError('E_CORE_STATE', 'human interaction events are not modelled');
-  }
-  humanInteractionReceiptsRead(communityId: Id, installationId: Id, botUserId: Id, requestIds: readonly Id[]): HumanInteractionEvent[] {
-    void communityId; void installationId; void botUserId; void requestIds;
-    throw new CoreError('E_CORE_STATE', 'human interaction receipts are not modelled');
-  }
-  humanInteractionEventsAck(through: bigint): void {
-    void through;
-    throw new CoreError('E_CORE_STATE', 'human interaction events are not modelled');
-  }
-  humanInteractionEventsAckSelected(deliveryIds: readonly bigint[]): void {
-    void deliveryIds;
-    throw new CoreError('E_CORE_STATE', 'human interaction events are not modelled');
   }
 
   // --- ordered processing (L-CORE-08) ---
@@ -2241,7 +2241,6 @@ export class ModelCore implements CorePort {
 export type RouteName = 'listChannels' | 'postGroup' | 'getGroupInfo' | 'getGroupTree' | 'getHandshakes' | 'getMessages'
   | 'getGroupHealState' | 'postGroupHeal'
   | 'getProposals' | 'postCommit' | 'postMessage' | 'postCursor' | 'postResync' | 'getWelcomes' | 'deleteWelcome'
-  | 'getInteractionAdmissionContext'
   | 'getChannel' | 'postDm' | 'listDms' | 'putDeviceList' | 'getDeviceList' | 'getDeviceListHistory' | 'deleteGroupMessage'
   | 'getModerationRemovals'
   // web-3 calls (L-HTTP-100..104): the call routes of 09 § Voice as the instance answers them.
@@ -2935,9 +2934,6 @@ export class ModelDs {
         }),
       postResync: (id, body) => this.call(d, 'postResync', id, null, () => this.postResync(dev, id, body)),
       getWelcomes: (after) => this.call(d, 'getWelcomes', null, after, () => this.welcomePage(d, after)),
-      getInteractionAdmissionContext: (groupId) => this.call(d, 'getInteractionAdmissionContext', groupId, null, () => {
-        throw httpError(403, 'E_FORBIDDEN');
-      }),
       deleteWelcome: (welcomeId) =>
         this.call(d, 'deleteWelcome', null, null, () => {
           const i = this.welcomes.findIndex((w) => w.dev === d && w.id === welcomeId);

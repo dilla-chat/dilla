@@ -249,7 +249,6 @@ pub(super) fn ingest(
                         params![group_id.as_slice(), target])?;
                     c.execute("DELETE FROM app_pending_history WHERE group_id=?1 AND seq=?2", params![group_id.as_slice(), target])?;
                     super::bot_events::suppress_source(c, group_id, target)?;
-                    super::human_interaction_events::suppress_source(c, group_id, target)?;
                     if let Some((ty, msg, reply)) = stored
                         && let (Some(target_id), Some(ty)) = (msg.as_deref().and_then(|v| <[u8;16]>::try_from(v).ok()), ty)
                         && let Some(fold_target) = fold::target_of(Some(ty), Some(target_id), reply.as_deref().and_then(|v| <[u8;16]>::try_from(v).ok()))

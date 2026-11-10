@@ -1,5 +1,5 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { BotInteractionBindingMismatchError, BotInteractionRejectedError, BotInteractionUncertainError, createBotInteractionClient, createVoiceMusicAdapter, decode, encode, fromHex, PERM, type BotInteractionResult, type BotInteractionScope, type CoreClient,
+import { BotOperationRefusedError, BotOperationUncertainError, catalogOffers, createBotOperations, createVoiceMusicAdapter, decode, encode, fromHex, PERM, type BotOperationResult, type CoreClient,
   COMMANDS, parseSeekPosition, type CommandContext as Binding, type CommandInvocation, type CommandResult } from '@dilla/client-core';
 import type { CommandExecutionContext, CommandProviderHandlers, CommandSuggestionProvider } from './command-types.ts';
 import { privateResultCopy } from './copy.ts';
@@ -18,8 +18,8 @@ const uncertain = (message: string): CommandResult => ({ status: 'uncertain', me
 const resultError = (error: unknown): CommandResult => {
   if (error instanceof Error && 'code' in error && error.code === 'operation-unavailable') return fail(t('music.error.operation-unavailable'));
   if (error instanceof Error && 'code' in error && error.code === 'unavailable') return fail(t('music.error.unavailable'));
-  if (error instanceof BotInteractionRejectedError || error instanceof BotInteractionBindingMismatchError)
-    return fail(error.message);
+  // A refused send never ran (the Bot is offline or does not offer the operation): a plain failure, nothing to reconcile.
+  if (error instanceof BotOperationRefusedError) return fail(error.message);
   const requestId = typeof error === 'object' && error !== null && 'requestId' in error ? String(error.requestId) : '';
   const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
   if (requestId !== '' || error instanceof Error && /uncertain|timed out|accepted.*confirm/iu.test(error.message))
@@ -75,7 +75,7 @@ function musicReadSummary(commandId: string, invocation: CommandInvocation, cont
 interface ScheduleRow { id: string; channelId: string; text: string; kind: 'one_off' | 'daily' | 'weekly'; timezone: string; date: string;
   hour: number; minute: number; weekday: number; enabled: boolean; revision: number }
 interface AnnouncementList { rows: ScheduleRow[]; revision: string }
-interface PendingAnnouncementMutation { scopeKey: string; operation: 51 | 52; requestId: string; args: readonly (string | number | Uint8Array | null)[]; revision: string; scope: BotInteractionScope; sent: boolean }
+interface PendingAnnouncementMutation { operation: 51 | 52; requestId: string; args: readonly (string | number | Uint8Array | null)[]; revision: string; sent: boolean }
 const announcementAttempts = new WeakMap<CoreClient, Map<string, PendingAnnouncementMutation>>();
 function announcementAttemptStore(client: CoreClient): Map<string, PendingAnnouncementMutation> {
   let store = announcementAttempts.get(client); if (store === undefined) { store = new Map(); announcementAttempts.set(client, store); }
@@ -104,40 +104,37 @@ function markMusicCommandAttempt(client: CoreClient, communityId: string, reques
 function clearMusicCommandAttempt(client: CoreClient, communityId: string, requestId: string): void {
   musicCommandAttemptStore(client).delete(accountScopeKey(client, communityId, requestId));
 }
+// Bot v2 Task 21b: a schedule mutation is a sealed command. Reconciling an attempt sends the same request again: the Bot
+// answers what it did (it keeps each request's answers for five minutes) and never runs it twice.
 async function runAnnouncementMutation(client: CoreClient, communityId: string, parentId: string, stage: string, operation: 51 | 52,
-  args: readonly (string | number | Uint8Array | null)[], revision: string, scope: BotInteractionScope): Promise<BotInteractionResult> {
+  args: readonly (string | number | Uint8Array | null)[], revision: string): Promise<BotOperationResult> {
   const store = announcementAttemptStore(client); const key = accountScopeKey(client, communityId, parentId);
   let attempt = store.get(key);
-  if (attempt !== undefined && (attempt.operation !== operation || attempt.revision !== revision || attempt.scopeKey !== JSON.stringify(scope))) {
-    if (!attempt.sent || attempt.operation !== operation) throw new BotInteractionUncertainError(attempt.requestId,
-      'This announcement attempt is bound to a different schedule revision or Bot installation. Reconcile it before starting another command.');
-    const prior = await createBotInteractionClient(client, communityId).read(attempt.requestId, operation);
-    if (prior === null) throw new BotInteractionUncertainError(attempt.requestId, 'The prior announcement result is still pending.');
+  const api = createBotOperations(client, communityId);
+  if (attempt !== undefined && (attempt.operation !== operation || attempt.revision !== revision)) {
+    if (!attempt.sent || attempt.operation !== operation) throw new BotOperationUncertainError(attempt.requestId,
+      'This announcement attempt is bound to a different schedule revision. Reconcile it before starting another command.');
+    const prior = await api.read(attempt.requestId, operation);
+    if (prior === null) throw new BotOperationUncertainError(attempt.requestId, 'The prior announcement result is still pending.');
     return prior;
   }
   if (attempt === undefined) {
-    attempt = { scopeKey: JSON.stringify(scope), operation, requestId: childId(parentId, `announcement:${stage}`), args: args.map(value => value instanceof Uint8Array ? value.slice() : value), revision, scope, sent: false };
+    attempt = { operation, requestId: childId(parentId, `announcement:${stage}`), args: args.map(value => value instanceof Uint8Array ? value.slice() : value), revision, sent: false };
     store.set(key, attempt);
     while (store.size > 128) store.delete(store.keys().next().value!);
   }
-  const api = createBotInteractionClient(client, communityId);
   if (attempt.sent) {
-    let prior: BotInteractionResult | null;
+    let prior: BotOperationResult | null;
     try { prior = await api.read(attempt.requestId, operation); }
-    catch (error) { throw new BotInteractionUncertainError(attempt.requestId, `Could not reconcile the prior schedule mutation: ${error instanceof Error ? error.message : 'read failed'}`); }
-    if (prior === null) throw new BotInteractionUncertainError(attempt.requestId, 'The prior announcement result is still pending. Reconcile this same request before editing the schedule again.');
+    catch (error) { throw new BotOperationUncertainError(attempt.requestId, `Could not reconcile the prior schedule mutation: ${error instanceof Error ? error.message : 'read failed'}`); }
+    if (prior === null) throw new BotOperationUncertainError(attempt.requestId, 'The prior announcement result is still pending. Reconcile this same request before editing the schedule again.');
     return prior;
   }
-  let persisted: BotInteractionResult | null;
-  try { persisted = await api.read(attempt.requestId, operation); }
-  catch (error) { throw new BotInteractionUncertainError(attempt.requestId,
-    `Could not reconcile the prior schedule request ID: ${error instanceof Error ? error.message : 'read failed'}`); }
-  if (persisted !== null) { attempt.sent = true; return persisted; }
   attempt.sent = true;
   try {
-    return await api.request({ requestId: attempt.requestId, operation, args: attempt.args, revision: attempt.revision, expectedScope: attempt.scope });
+    return await api.request({ requestId: attempt.requestId, operation, args: attempt.args, revision: attempt.revision });
   } catch (error) {
-    if (error instanceof BotInteractionBindingMismatchError || error instanceof BotInteractionRejectedError) store.delete(key);
+    if (error instanceof BotOperationRefusedError) store.delete(key);
     throw error;
   }
 }
@@ -171,15 +168,11 @@ function confirmedAnnouncementMutation(response: { revision: string | null; data
     return Array.isArray(decoded) && decoded.length === 0;
   } catch { return false; }
 }
-// Historical receipts keep their original native provenance while the current config revision may change.
-function sameInteractionIdentity(left: BotInteractionScope, right: BotInteractionScope): boolean {
-  return left.installationId === right.installationId && left.botUserId === right.botUserId;
-}
-async function listAnnouncements(client: CoreClient, communityId: string, requestId: string, expectedScope?: { installationId: string; botUserId: string | null; revision: string }) {
-  const api = createBotInteractionClient(client, communityId);
+async function listAnnouncements(client: CoreClient, communityId: string, requestId: string) {
+  const api = createBotOperations(client, communityId);
   let offset = 0; const rows: ScheduleRow[] = []; let revision = ''; let expectedTotal: number | null = null;
   for (;;) {
-    const response = await api.request({ requestId: childId(requestId, `announcement:list:${offset}`), operation: 50, args: [offset], expectedScope });
+    const response = await api.request({ requestId: childId(requestId, `announcement:list:${offset}`), operation: 50, args: [offset] });
     if (response.status !== 0) throw new Error(response.status === 2 ? 'Manage Community permission is required.' : 'The announcement list is unavailable.');
     const page = decodeAnnouncementList(response.data, response.revision, offset);
     if (expectedTotal !== null && (page.total !== expectedTotal || page.revision !== revision)) throw new Error('The announcement list changed between pages. Refresh it before editing.');
@@ -391,25 +384,14 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
       ? uncertain('This schedule attempt is still pending. Restore Manage Community permission in its original community to reconcile it.')
       : fail('Manage Community permission is required.');
     try {
-      let scope: BotInteractionScope;
-      if (pendingAttempt?.sent === true) {
-        // Reconciliation reads the immutable original request under its captured installation scope.
-        // A fresh scope preflight could fail independently and must not block or retire that attempt.
-        scope = pendingAttempt.scope;
-      } else {
-        const api = createBotInteractionClient(client, cid);
-        const scopeResult = await api.request({ requestId: childId(context.requestId, 'announcement:scope'), operation: 50, args: [0] });
-        if (!context.isCurrent() || !validateCurrent(context, cid, 'manageCommunity')) return fail('The community or permission changed before the announcement request.');
-        if (scopeResult.status !== 0) return fail(scopeResult.status === 2 ? 'Manage Community permission is required.' : 'Announcements are unavailable.');
-        scope = scopeResult.scope;
-      }
+      // Reconciling a sent attempt resends its own request; a new one needs the Bot to offer announcements (its catalog).
+      if (pendingAttempt?.sent !== true && !catalogOffers(client, cid, 50)) return fail('Announcements are unavailable.');
       const pending = pendingAttempt;
       if (pending !== undefined) {
         const reconciled = await runAnnouncementMutation(client, cid, context.requestId, pending.operation === 52 ? 'delete' : 'save', pending.operation,
-          pending.args, pending.revision, scope);
+          pending.args, pending.revision);
         if (reconciled.status === 0) {
           if (!validateCurrent(context, cid, 'manageCommunity')) return uncertain('The schedule result is available, but Manage Community permission changed before confirmation. Retry this same attempt when permission is restored.');
-          if (!sameInteractionIdentity(reconciled.scope, pending.scope)) return uncertain('The original schedule attempt is bound to a previous Bot installation. Reconcile that result before starting another edit.');
           if (!confirmedAnnouncementMutation(reconciled, pending.revision)) return uncertain('The Bot accepted the schedule change, but its revision receipt was malformed. Refresh the list before retrying.');
           announcementAttemptStore(client).delete(attemptKey);
           return ok(pending.operation === 52 ? 'Scheduled announcement deleted.' : invocation.commandId === 'announcement edit' ? 'Announcement updated.' : 'Announcement scheduled.');
@@ -420,10 +402,10 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
           : fail(reconciled.status === 2 ? 'Manage Community permission is required.' : 'The announcement could not be saved.');
       }
       if (invocation.commandId === 'announcement list') {
-        const listed = await listAnnouncements(client, cid, context.requestId, scope);
+        const listed = await listAnnouncements(client, cid, context.requestId);
         return ok(listed.rows.length === 0 ? 'No scheduled announcements.' : listed.rows.map(row => `${row.id}: ${announcementSummary(row)}`).join('\n'));
       }
-      const listed = await listAnnouncements(client, cid, context.requestId, scope);
+      const listed = await listAnnouncements(client, cid, context.requestId);
       if (invocation.commandId === 'announcement delete') {
         const selectedId = invocation.args.announcement ?? '';
         const row = listed.rows.find(item => item.id === selectedId);
@@ -432,10 +414,9 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         if (!confirmed || !context.isCurrent()) return fail('Announcement deletion cancelled.');
         if (!validateCurrent(context, cid, 'manageCommunity')) return fail('Manage Community permission changed before deletion.');
         const storeKey = accountScopeKey(client, cid, context.requestId);
-        const result = await runAnnouncementMutation(client, cid, context.requestId, 'delete', 52, [fromHex(row.id), row.revision], listed.revision, scope);
+        const result = await runAnnouncementMutation(client, cid, context.requestId, 'delete', 52, [fromHex(row.id), row.revision], listed.revision);
         if (result.status === 0) {
           if (!validateCurrent(context, cid, 'manageCommunity')) return uncertain('The deletion was accepted, but Manage Community permission changed before confirmation. Retry this same attempt when permission is restored.');
-          if (!sameInteractionIdentity(result.scope, scope)) return uncertain('The deletion was accepted, but the Bot installation changed before its result could be confirmed.');
           if (!confirmedAnnouncementMutation(result, listed.revision)) return uncertain('The Bot accepted deletion, but its revision receipt was malformed. Refresh the list before retrying.');
           announcementAttemptStore(client).delete(storeKey); return ok('Scheduled announcement deleted.');
         }
@@ -458,10 +439,9 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         BigInt(schedule.hour), BigInt(schedule.minute), BigInt(schedule.weekday), existing?.enabled === false ? 0n : 1n, BigInt(itemRevision)]);
       const storeKey = accountScopeKey(client, cid, context.requestId);
       const saved = await runAnnouncementMutation(client, cid, context.requestId, 'save', 51,
-        [existing === undefined ? null : fromHex(existing.id), encoded], listed.revision, scope);
+        [existing === undefined ? null : fromHex(existing.id), encoded], listed.revision);
       if (saved.status === 0) {
         if (!validateCurrent(context, cid, 'manageCommunity')) return uncertain('The schedule was accepted, but Manage Community permission changed before confirmation. Retry this same attempt when permission is restored.');
-        if (!sameInteractionIdentity(saved.scope, scope)) return uncertain('The schedule save was accepted, but the Bot installation changed before its result could be confirmed.');
         if (!confirmedAnnouncementMutation(saved, listed.revision)) return uncertain('The Bot accepted the schedule, but its revision receipt was malformed. Refresh the list before retrying.');
         announcementAttemptStore(client).delete(storeKey);
         return ok(existing === undefined ? 'Announcement scheduled.' : 'Announcement updated.');
@@ -490,10 +470,8 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
       : fail('Manage Roles permission is required.');
     try {
       if (pending === undefined) {
-        const api = createBotInteractionClient(client, cid);
-        const scopeRead = await api.request({ requestId: childId(context.requestId, 'rolepanel:scope'), operation: 3, args: [] });
-        if (!context.isCurrent() || !validateCurrent(context, cid, 'manageRoles')) return fail('The community or permission changed before opening the role panel.');
-        if (scopeRead.status !== 0) return fail('The Bot installation is unavailable for role panel publication.');
+        // The Bot offers panel publication when its catalog lists it (Task 21b; no capability round trip).
+        if (!catalogOffers(client, cid, 31)) return fail('The Bot installation is unavailable for role panel publication.');
         const roles = await client.call({ m: 'listSelfRoles', communityId: cid }) as { id: string; name: string }[];
         if (!context.isCurrent() || !validateCurrent(context, cid, 'manageRoles')) return fail('The community or permission changed before opening the role panel.');
         if (roles.length === 0) return fail('Approve at least one self-service role before creating a panel.');
@@ -510,40 +488,28 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
         const payload = encode(options);
         pending = { communityId: cid, channelId: selected.channelId, roles: selected.roles, emojis: selected.emojis,
           publishId: childId(context.requestId, 'rolepanel:publish'), registerId: childId(context.requestId, 'rolepanel:register'), payload,
-          scope: scopeRead.scope, sent: false, published: false, bodyKnown: true, accepted: null };
+          sent: false, published: false, bodyKnown: true, accepted: null };
         rolePanelAttempts(client).set(roleAttemptKey, pending);
         while (rolePanelAttempts(client).size > 128) rolePanelAttempts(client).delete(rolePanelAttempts(client).keys().next().value!);
       }
       if (pending.accepted === null) {
-        const api = createBotInteractionClient(client, cid);
+        const api = createBotOperations(client, cid);
         let published;
         if (pending.sent) {
+          // Resending the same request reconciles it: the Bot answers what it did and never publishes a second panel.
           try { published = await api.read(pending.publishId, 31); }
-          catch (error) { throw new BotInteractionUncertainError(pending.publishId,
+          catch (error) { throw new BotOperationUncertainError(pending.publishId,
             `Could not reconcile the prior role panel publication: ${error instanceof Error ? error.message : 'read failed'}`); }
           if (published === null) return uncertain('The role panel publication may still be pending. Retry to reconcile the same request; it will not publish a second panel.');
         } else {
-          try { published = await api.read(pending.publishId, 31); }
-          catch (error) { throw new BotInteractionUncertainError(pending.publishId,
-            `Could not reconcile the prior role panel request ID: ${error instanceof Error ? error.message : 'read failed'}`); }
-          if (published !== null) {
-            pending.sent = true;
-            pending.published = true;
-            pending.bodyKnown = false;
-            return uncertain('A prior panel publication exists for this command ID, but its original role selection is no longer available. Inspect the channel before creating another panel.');
-          }
           pending.sent = true;
-          published = await api.request({ requestId: pending.publishId, operation: 31, args: [pending.channelId, pending.payload], revision: '0', expectedScope: pending.scope });
+          published = await api.request({ requestId: pending.publishId, operation: 31, args: [pending.channelId, pending.payload], revision: '0' });
         }
         if (published.status !== 0) {
           if (published.status === 2) { rolePanelAttempts(client).delete(roleAttemptKey); return fail('Manage Roles permission is required.'); }
           return uncertain('The role panel publication result is not confirmed. Retry this command to reconcile it.');
         }
-        if (pending.scope !== undefined && (pending.scope.installationId !== published.scope.installationId
-          || pending.scope.botUserId !== published.scope.botUserId))
-          return uncertain('The Bot installation changed after publication. Verify the channel before continuing registration.');
         pending.published = true;
-        pending.scope = published.scope;
         let decoded;
         try { decoded = decode(published.data); }
         catch { return uncertain('The role panel was published, but its receipt could not be decoded. Retry this same attempt to reconcile it.'); }
@@ -551,19 +517,10 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
           || toHex(decoded[0]) !== pending.channelId || decoded[1] < 1n) return uncertain('The role panel was accepted with an invalid receipt. Inspect the channel before retrying.');
         pending.accepted = { channelId: pending.channelId, messageSeq: decoded[1].toString() };
       }
-      if (pending?.accepted !== null && pending?.accepted !== undefined) {
-        const receipt = await createBotInteractionClient(client, cid).read(pending.publishId, 31);
-        if (receipt === null || pending.scope === undefined || receipt.scope.installationId !== pending.scope.installationId
-          || receipt.scope.botUserId !== pending.scope.botUserId)
-          return uncertain('The panel message was accepted, but the Bot installation binding changed before registration. Verify the channel and reconcile safely.');
-      }
       if (pending?.bodyKnown === false) return uncertain('The accepted panel cannot be matched to the current role selection. Inspect the channel before retrying.');
       if (!context.isCurrent() || !validateCurrent(context, cid, 'manageRoles')) return uncertain('The role panel was published, but current authority changed before registration. Retry to finish registration.');
       if (pending?.accepted === null || pending?.accepted === undefined) return uncertain('The role panel publication is not confirmed yet.');
-      const registrationScope = await createBotInteractionClient(client, cid).request({
-        requestId: randomId(), operation: 3, args: [],
-      });
-      if (registrationScope.status !== 0 || pending.scope === undefined || !sameInteractionIdentity(registrationScope.scope, pending.scope))
+      if (!catalogOffers(client, cid, 31))
         return uncertain('The original Bot installation must be ready before panel registration can finish.');
       if (!context.isCurrent() || !validateCurrent(context, cid, 'manageRoles'))
         return uncertain('Current authority changed before panel registration. Retry to finish registration.');
@@ -644,7 +601,7 @@ export function useBotCommandProvider(client: CoreClient, communityId: string | 
 }
 
 interface RolePanelPending { communityId: string; channelId: string; roles: { id: string; name: string }[]; emojis: Record<string, string>;
-  publishId: string; registerId: string; payload: Uint8Array; scope?: { installationId: string; botUserId: string | null; revision: string };
+  publishId: string; registerId: string; payload: Uint8Array;
   sent: boolean; published: boolean; bodyKnown: boolean; accepted: { channelId: string; messageSeq: string } | null }
 const rolePanelStores = new WeakMap<CoreClient, Map<string, RolePanelPending>>();
 function rolePanelAttempts(client: CoreClient): Map<string, RolePanelPending> {

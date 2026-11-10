@@ -47,6 +47,8 @@ export function ChannelsSection({ communityId, serverName, announce }: SectionPr
   const overwrites = useSlice(`overwrites:${communityId}`);
   // Private means @everyone is denied viewing; with the overwrites unknown nothing is tagged.
   const tagged = (c: ChannelSummary): boolean => access?.overwritesLoaded === true && access.everyoneId !== '' && isPrivate(overwrites?.[c.id] ?? [], access.everyoneId);
+  // Bot v2 Task 22: the Bot channels this member can view carry the Bot badge.
+  const botChannels = new Set(useSlice(`botCatalog:${communityId}`)?.botChannels ?? []);
   const [target, setTarget] = useState<Target>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
   const [moveAttempt, setMoveAttempt] = useState(0);
@@ -127,6 +129,7 @@ export function ChannelsSection({ communityId, serverName, announce }: SectionPr
                 <li key={c.id} className="dw-admin-row d-manage-list__row" data-row>
                   <span className="dw-admin-name" title={shown(c)}>{shown(c)}</span>
                   {tagged(c) ? <span className="dw-admin-tag">{t('chperm.privateTag')}</span> : null}
+                  {botChannels.has(c.id) ? <span className="dw-admin-tag">{t('bot.channel.badge')}</span> : null}
                   {controls(c, movable.indexOf(c), movable.length)}
                 </li>
               ))}

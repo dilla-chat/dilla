@@ -50,9 +50,9 @@ func (b *Bans) WithCalls(calls *Calls) *Bans {
 }
 
 func (b *Bans) Register(mux *server.Mux) {
-	mux.HandleFunc("PUT /v1/communities/{id}/bans/{user_id}", b.put)
-	mux.HandleFunc("DELETE /v1/communities/{id}/bans/{user_id}", b.delete)
-	mux.HandleFunc("GET /v1/communities/{id}/bans", b.list)
+	mux.Socket("PUT /v1/communities/{id}/bans/{user_id}", http.HandlerFunc(b.put))
+	mux.Socket("DELETE /v1/communities/{id}/bans/{user_id}", http.HandlerFunc(b.delete))
+	mux.Socket("GET /v1/communities/{id}/bans", http.HandlerFunc(b.list))
 }
 
 type putBanReq struct {

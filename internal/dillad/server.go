@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -36,17 +37,27 @@ import (
 	"github.com/dilla-chat/dilla/internal/server"
 	"github.com/dilla-chat/dilla/internal/store"
 	"github.com/dilla-chat/dilla/internal/web"
+	"github.com/dilla-chat/dilla/internal/webhookavatar"
 )
 
 type Server struct {
 	o Options
+	// lastEventPrune is when the maintenance tick last pruned the Bot structural events (sweep; Task 23 fix round 1).
+	lastEventPrune time.Time
 	// calls is the call route group; the maintenance tick runs its post-boot AFK clear (AW2).
-	calls    *api.Calls
-	mux      *server.Mux
+	calls *api.Calls
+	mux   *server.Mux
+	// requests runs gateway request frames against the mux's socket routes.
+	requests *api.SocketDispatcher
 	handler  http.Handler
 	sessions *auth.Sessions
 	httpSrv  *http.Server
 	instance store.InstanceRow
+	// botSrvs are the servers ServeBot runs on the Bot's Unix socket; Shutdown closes them beside httpSrv.
+	botMu   sync.Mutex
+	botSrvs []*http.Server
+	// botFeed is the Bot's event feed (Bot v2 task 12); Shutdown stops its workers before the store closes.
+	botFeed *api.BotFeed
 
 	// Part 1b's three subsystems (task 27a). ownsWasm records that New compiled
 	// the runtime itself, so Shutdown closes it; a runtime passed in through
@@ -78,6 +89,12 @@ type Server struct {
 	// stopIdleClose stops the idle call-group close (web-3, L-HTTP-105), which runs with or without
 	// an SFU; Shutdown calls it before it stops the delivery service the close goes through.
 	stopIdleClose func()
+	// stopAvatars stops the webhook avatar fetcher's background refresh of instance.domain (Bot v2 task 13 fix
+	// round 3); until its first lookup succeeds no avatar is fetched.
+	stopAvatars func()
+	// stopBotHealth stops the Bot health watcher, which tells members (op 54) when a Bot falls silent long enough to be
+	// offline; Shutdown calls it before the gateway the op goes through stops.
+	stopBotHealth func()
 
 	// throttle and limiter are swept by the gateway's maintenance loop, whose stop function
 	// Shutdown calls before it stops the gateway.
@@ -206,16 +223,6 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// delivery service signs with, so the two cannot disagree. An ed25519.PrivateKey is
 	// seed || public, so its second half is the public key.
 	deps.ExternalSenderPub = []byte(ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])[ed25519.SeedSize:])
-	deps.SignBotInteractionAdmission = func(payload []byte) ([]byte, error) {
-		private := ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])
-		preimage := append([]byte("dilla bot interaction admission v1\x00"), payload...)
-		return ed25519.Sign(private, preimage), nil
-	}
-	deps.SignBotInteractionContext = func(payload []byte) ([]byte, error) {
-		private := ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])
-		preimage := append([]byte("dilla bot interaction context snapshot v1\x00"), payload...)
-		return ed25519.Sign(private, preimage), nil
-	}
 	deps.SignAccountKind = func(message []byte) ([]byte, error) {
 		return ed25519.Sign(ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:]), message), nil
 	}
@@ -223,6 +230,11 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		private := ed25519.NewKeyFromSeed(keys.ExternalSenderPriv[:])
 		preimage := append([]byte("dilla bot current interaction context v1\x00"), payload...)
 		return ed25519.Sign(private, preimage), nil
+	}
+	// Bot v2 Task 17 fix round 2 (I2): dillad's own failing-since stamp of each degraded Bot, kept for `dillad doctor`.
+	deps.BotHealth = api.NewBotHealth(o.Clock)
+	if o.Config.Instance.DataDir != "" {
+		deps.BotHealth.Persist(filepath.Join(o.Config.Instance.DataDir, api.BotHealthFile), o.Log)
 	}
 	// The pending path spends an enrolment assertion, and internal/auth cannot
 	// import internal/api, so the store is handed over through the interface.
@@ -299,8 +311,36 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		}
 	}
 
+	// The mux exists before the gateway: the socket request dispatcher (Bot v2 task 2) serves into
+	// its socket-only routes, which the route groups below register, and the gateway hands every
+	// request frame to it.
+	mux := server.NewMux()
+	requests := api.NewSocketDispatcher(mux, api.SocketDispatchOptions{Clock: o.Clock, Log: o.Log, Observe: o.SocketObserve})
+	trustedProxies := o.Config.Server.TrustedProxyCIDRs
+
 	var presence *api.PresenceService
+	// The Bot's event feed (Bot v2 task 12) needs the gateway, and the gateway hands it each Bot identify:
+	// the hook reads the variable set right after New, before anything is served.
+	var botFeed *api.BotFeed
 	gw := gateway.New(gateway.Options{
+		OnBotIdentified: func(s *gateway.BotStream) {
+			if botFeed != nil {
+				botFeed.BotIdentified(s)
+			}
+		},
+		// The supervised Bot's Unix socket (ServeBot) admits the child the supervisor started, by its peer
+		// credentials and its launch token.
+		BotLaunch: o.BotLaunch,
+		// Request frames run against the mux's socket routes, attributed to the client address the
+		// HTTP layer would resolve for the upgrade request (the same trusted-proxy rule).
+		Requests: requests,
+		ClientAddr: func(r *http.Request) string {
+			addr := server.RealIP(r, trustedProxies)
+			if !addr.IsValid() {
+				return r.RemoteAddr
+			}
+			return net.JoinHostPort(addr.String(), "0")
+		},
 		CurrentAppEntry: client.BuildEntry,
 		OnPresenceChanged: func(user id.ID) {
 			if presence != nil {
@@ -371,6 +411,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	})
 	presence = api.NewPresenceService(o.Repo, gw, o.Clock, o.Log)
 	deps.Presence = presence
+	// Its workers outlive New's context: Shutdown stops them.
+	botFeed = api.NewBotFeed(context.WithoutCancel(ctx), api.BotFeedOptions{Repo: o.Repo, Gateway: gw, Log: o.Log, Skipped: o.Metrics.BotFeedSkip})
 	channels, acl := deliverySeams(o)
 	delivery, err = ds.New(ds.Options{
 		Store:         o.Repo,
@@ -401,11 +443,13 @@ func New(ctx context.Context, o Options) (*Server, error) {
 				events.Evict(ctx, groupID, removed)
 			}
 		},
+		// Bot v2 task 12: an epoch of a Bot channel's group or of a call the Bot is in reaches the Bot's
+		// event feed as channel_group. The feed only queues; it runs under the group lock.
+		OnEpoch: botFeed.GroupEpoch,
 	})
 	if err != nil {
 		return nil, err
 	}
-	deps.CurrentBotInteractionGroupContext = delivery.CurrentBotInteractionGroupContext
 	deps.MessageDeleted = delivery.NotifyMessageDeleted
 	// A `dillad restore` left pending finishes here (invariant 11): the CLI ran the restore's SQL
 	// with no delivery service, and OnRestore — the same call the in-process path makes — re-arms
@@ -466,13 +510,38 @@ func New(ctx context.Context, o Options) (*Server, error) {
 				"user", userID, "err", err)
 		}
 	}
-	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log)
+	// Bot v2 Task 9: a published catalog goes to each connected member as op 61, filtered for that
+	// member. Task 12: Bot-channel marks and unmarks, and device-list publishes, reach the Bot's event feed.
+	deps.BotCatalogGateway = gw
+	deps.BotChannelEvents = botFeed
+	deps.BotFeed = botFeed
+	// Bot v2 Task 22: a mark proposes the Bot into the channel's group, and the Bot page's re-add proposes it out and in.
+	deps.BotMembership = delivery
+	// Members re-read the Bot channels on a mark or an unmark (op 54); the Bot's feed hears the mark itself.
+	deps.BotChannelsNotify = api.NewStructureNotifier(gw, o.Repo, o.Log)
+	// Bot v2 Task 10: sealed commands go to the Bot runtime's connection, replies to the requesting
+	// device and state hints to their scope, all through the gateway.
+	deps.BotRelay = gw
+	// Bot v2 Task 13: an incoming webhook POST goes to the Bot's live connection (op 66) and waits for its ack.
+	deps.BotWebhooks = gw
+	// Fix round 1: a sender's avatar_url is fetched by dillad (hardened, internal/webhookavatar), re-encoded and
+	// served to members, so no viewer's address reaches the sender. The instance's own addresses are refused targets.
+	avatarSelf := webhookavatar.LocalAddrs()
+	if o.Config.Instance.PublicIP.IsValid() {
+		avatarSelf = append(avatarSelf, o.Config.Instance.PublicIP)
+	}
+	// instance.domain is resolved too (fix round 2 N-4), in the background every 10 minutes (Start, below): behind a proxy it names the
+	// proxy's public address, which public_ip may not be set to.
+	deps.WebhookAvatars = webhookavatar.New(webhookavatar.Options{Clock: o.Clock, Limiter: limiter, Self: avatarSelf, SelfDomain: o.Config.Instance.Domain})
+	botRoleNotify := api.NewStructureNotifier(gw, o.Repo, o.Log).WithBotFeed(botFeed)
 	deps.BotRevoked = func(ctx context.Context, installation store.BotInstallationRow, remove bool) {
 		if remove {
 			// Removal deletes the Bot's member row and managed role: a leave, so live members re-read the
 			// member list (op 54) instead of keeping the Bot until a focus or reconnect.
 			defer botRoleNotify.Changed(ctx, installation.CommunityID)
 		}
+		// The disabled or removed Bot's event feed goes with it (Task 12 fix round 1 M-4).
+		botFeed.Forget(installation.ID)
 		if installation.DeviceID == nil {
 			return
 		}
@@ -520,6 +589,16 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		}
 	}
 	deps.BotProfileChanged = botRoleNotify.Changed
+	// A health report that changes the Bot's judged state (offline, ready, degraded), or a silence long enough to make it
+	// offline (BotHealth.Watch, started below), is op 54 to the members, who re-read the catalog and its status: the
+	// picker learns the Bot came up, or went away, without a reload. The Bot's own feed is not told:
+	// nothing in the community's structure changed.
+	statusNotify := api.NewStructureNotifier(gw, o.Repo, o.Log)
+	deps.BotHealth.OnChange(func(community id.ID) { go statusNotify.Changed(context.Background(), community) })
+	// Bot v2 task 14: the supervised Bot polls nothing; an installation change is a SIGHUP to it (Supervisor.Nudge).
+	if n, ok := o.BotLaunch.(interface{ Nudge() }); ok {
+		deps.BotInstallationsChanged = n.Nudge
+	}
 	deps.BotJoinRoleGranted = func(ctx context.Context, communityID, memberID id.ID) {
 		if err := api.SyncBotChannelEligibility(ctx, o.Repo, delivery, communityID, memberID, o.Clock.Now().Unix()); err != nil {
 			o.Log.ErrorContext(ctx, "bringing channel groups in line after bot join role grant failed",
@@ -531,7 +610,6 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		botRoleNotify.Changed(ctx, communityID)
 	}
 
-	mux := server.NewMux()
 	api.Register(mux, deps)
 
 	// The upgrade is HTTP/1.1 only: a WebSocket needs Hijacker, so this route
@@ -547,8 +625,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// exist (deviation B35).
 	// Every delivery-service route is metered per device session from [limits.rate], on the
 	// same limiter the unauthenticated routes use (its keys are class-prefixed).
-	groups := &api.Groups{DS: delivery, Deps: deps, Limiter: limiter,
-		LoadBotInteractionPreflight: deps.LoadBotInteractionRegistrationPreflight}
+	groups := &api.Groups{DS: delivery, Deps: deps, Limiter: limiter}
 	// A channel's freshly registered group is populated by batched delivery-service Adds (Plan 2
 	// task 7, protocol/01 § Joining: "creating a private channel … is done by the DS issuing Add
 	// proposals in batches"). Groups runs the hook after the 201 is flushed, on its own goroutine
@@ -588,6 +665,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	callRoutes, roles := mountPlanTwo(mux, planTwo{
 		ctx: ctx, o: o, instance: instance, sessions: sessions, limiter: limiter, delivery: delivery, gw: gw,
 		blobs: blobs, uploads: deps.UploadMeter, keys: franking, calls: calls, diagnose: diagnostics(o, wasm, blobs),
+		botEvents: deps.BotChannelEvents, botFeed: botFeed,
 	})
 	stopAFK = callRoutes.StopAFK
 	(&api.Messages{
@@ -665,6 +743,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		h = client.DownloadsFallback(mux)
 	}
 	h = generationHeader(h, instance.Generation)
+	// The Bot's enrollment is the socket's alone (fix round 1, M-1), with or without a supervisor (final review I3).
+	h = refuseEnrollmentOffSocket(h)
 	h = mobileCORS(h, o.Config.HTTP.MobileOrigins)
 	// Recover sits INSIDE RequestLog, not outside it. server.RequestLog logs
 	// and calls observe after next.ServeHTTP returns, with no defer, so a panic
@@ -677,11 +757,11 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	h = server.RequestLog(o.Log, o.Clock, o.Metrics.ObserveHTTP)(h)
 
 	s := &Server{
-		o: o, mux: mux, handler: h, sessions: sessions, instance: instance,
+		o: o, mux: mux, requests: requests, handler: h, sessions: sessions, instance: instance,
 		wasm: wasm, ownsWasm: ownsWasm, gw: gw, cutDevice: cutFromCalls, ds: delivery, groups: groups, presence: presence, events: events,
 		calls: callRoutes,
 		blobs: blobs, ownsBlobs: ownsBlobs,
-		throttle: throttle, limiter: limiter, passkeys: passkeys,
+		throttle: throttle, limiter: limiter, passkeys: passkeys, botFeed: botFeed,
 	}
 	// One http.Server for whichever listener tls.mode chooses (Plan 2 task 16):
 	// ReadHeaderTimeout is never zero, ReadTimeout and WriteTimeout stay unset
@@ -718,8 +798,13 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		s.stopCallRetries = callRoutes.StartRetries(api.CallRetryInterval)
 	}
 	s.stopIdleClose = callRoutes.StartIdleClose(api.CallRetryInterval)
+	s.stopAvatars = deps.WebhookAvatars.Start()
+	s.stopBotHealth = deps.BotHealth.Watch()
 	return s, nil
 }
+
+// BotStructuralEventRetention is how long a Bot structural event is kept before the maintenance tick prunes it.
+const BotStructuralEventRetention = 7 * 24 * time.Hour
 
 // sweep is the maintenance tick's non-gateway half.
 func (s *Server) sweep(ctx context.Context) {
@@ -734,6 +819,18 @@ func (s *Server) sweep(ctx context.Context) {
 			s.o.Log.Warn("pruning expired passkey ceremonies failed", "err", err)
 		}
 	}
+	// Bot v2 Task 23 fix round 1 (L5): the Bot's structural events are read by nothing any more, so they go after
+	// BotStructuralEventRetention, at most once an hour. Pruning keeps each stream's high water, which a manual
+	// warning's revision is drawn from, so revisions never repeat.
+	if now := s.o.Clock.Now(); now.Sub(s.lastEventPrune) >= time.Hour {
+		s.lastEventPrune = now
+		if err := s.o.Repo.Tx(ctx, func(tx store.Repository) error {
+			_, err := tx.PruneBotStructuralEvents(ctx, now.Add(-BotStructuralEventRetention).Unix())
+			return err
+		}); err != nil {
+			s.o.Log.Warn("pruning old bot structural events failed", "err", err)
+		}
+	}
 	// R-AW5: once, after the boot grace, the away rows of users with no gateway connection go, and a
 	// boot-time AFK-call end that failed is retried. It runs on its own goroutine (one pass at a time,
 	// AFKMaintenance's own guard; tracked and cancelled by StopAFK in shutdown), so a large walk never
@@ -746,10 +843,14 @@ func (s *Server) sweep(ctx context.Context) {
 // Throttle is the login throttle New built; the maintenance loop sweeps it.
 func (s *Server) Throttle() *auth.Throttle { return s.throttle }
 
-func (s *Server) Handler() http.Handler    { return s.handler }
-func (s *Server) Mux() *server.Mux         { return s.mux }
-func (s *Server) Repo() store.Repository   { return s.o.Repo }
-func (s *Server) Sessions() *auth.Sessions { return s.sessions }
+func (s *Server) Handler() http.Handler { return s.handler }
+func (s *Server) Mux() *server.Mux      { return s.mux }
+
+// SocketDispatcher runs a request frame against the socket routes, as the gateway does for a connection. Tests drive
+// the routes that moved to the socket through it (internal/api/sockettest).
+func (s *Server) SocketDispatcher() *api.SocketDispatcher { return s.requests }
+func (s *Server) Repo() store.Repository                  { return s.o.Repo }
+func (s *Server) Sessions() *auth.Sessions                { return s.sessions }
 
 // DS returns the delivery service New built. It is one of three harness accessors of
 // deviation B17 (with Gateway and Now): plain getters over what New built.
@@ -787,6 +888,105 @@ func (s *Server) DebugState(ctx context.Context) (DebugState, error) {
 // doctor leg and a test can both assert that unencrypted HTTP/2 is on.
 func (s *Server) Protocols() *http.Protocols { return s.httpSrv.Protocols }
 
+// BotSocketHTTPRoutes is everything but /gateway that the supervised Bot's Unix socket serves (Bot v2 task 14, Task 11
+// review M-7): the HTTP routes the Bot calls before it has a gateway connection to send request frames on. They are its
+// discovery (the instance document and limits), its enrollment (the runtime credential's installation list, claim,
+// enroll and status, and the credential finalize the device session sends while the installation is enrolling, which
+// the gateway does not admit), the session ceremony and negotiate, and its own device list, which it reads and
+// publishes before the device session is joining. Every route the Bot calls once its gateway runs is a socket route,
+// sent as a request frame (internal/bot/client.SocketRoutes); the rest of dillad's HTTP surface answers 404 here.
+var BotSocketHTTPRoutes = []string{
+	"GET /v1/instance",
+	"GET /v1/instance/limits",
+	"POST /v1/devices/{device_id}/sessions/challenge",
+	"POST /v1/devices/{device_id}/sessions",
+	"POST /v1/sessions/negotiate",
+	"GET /v1/users/{user_id}/device-list",
+	"PUT /v1/users/{user_id}/device-list",
+	"GET /v1/bot-runtime/installations",
+	"POST /v1/bot-runtime/installations/{installation}/claim",
+	"POST /v1/bot-runtime/installations/{installation}/enroll",
+	"PUT /v1/bot-runtime/installations/{installation}/credential",
+	"PUT /v1/bot-runtime/installations/{installation}/status",
+}
+
+// BotEnrollmentRoutes are the Bot runtime routes that stay on HTTP (Bot v2 task 14 ruling): the runtime credential's
+// list, claim, enroll and status, and the device session's credential finalize while enrolling.
+var BotEnrollmentRoutes = []string{
+	"GET /v1/bot-runtime/installations",
+	"POST /v1/bot-runtime/installations/{installation}/claim",
+	"POST /v1/bot-runtime/installations/{installation}/enroll",
+	"PUT /v1/bot-runtime/installations/{installation}/credential",
+	"PUT /v1/bot-runtime/installations/{installation}/status",
+}
+
+// botSocketKey marks a request BotSocketHandler forwards: it came over the supervised Bot's Unix socket, behind the
+// peer check.
+type botSocketKey struct{}
+
+// refuseEnrollmentOffSocket answers 404 to a BotEnrollmentRoutes request that did not come over the Bot's socket
+// (fix round 1, M-1; final review I3: whether or not a supervisor runs): nothing legitimate calls them on the public listener, and a leaked runtime
+// credential must not be able to claim or enroll an installation from the network.
+func refuseEnrollmentOffSocket(next http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	guard := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if on, _ := r.Context().Value(botSocketKey{}).(bool); !on {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+	for _, pattern := range BotEnrollmentRoutes {
+		mux.Handle(pattern, guard)
+	}
+	mux.Handle("/", next)
+	return mux
+}
+
+// BotSocketHandler is the supervised Bot's socket surface: GET /gateway is gw (the Bot's upgrade, gateway.BotHandler),
+// each BotSocketHTTPRoutes pattern is app (dillad's own HTTP handler, which applies the route's ordinary middleware),
+// and every other request is 404. A refusal is logged with its method only: a path can name a webhook's secret.
+func BotSocketHandler(gw, app http.Handler, log *slog.Logger) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("GET /gateway", gw)
+	onSocket := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		app.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), botSocketKey{}, true)))
+	})
+	for _, pattern := range BotSocketHTTPRoutes {
+		mux.Handle(pattern, onSocket)
+	}
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if log != nil {
+			log.Warn("bot socket: a request outside the Bot's allow-list was refused", "method", r.Method)
+		}
+		http.NotFound(w, r)
+	})
+	return mux
+}
+
+// ServeBot serves the supervised Bot's Unix socket until ln closes (Bot v2 task 11). Every connection must come from
+// the current Bot child (its SO_PEERCRED pid and uid, gateway.BotPeerListener); /gateway is the Bot's upgrade, which
+// takes its launch token and binds its managed session (gateway.BotHandler); beside it only BotSocketHTTPRoutes are
+// served (BotSocketHandler), so the Bot's pre-session HTTP calls stay on the socket and never cross the public
+// listener. Only a Unix listener is served: there is no network form of this path.
+func (s *Server) ServeBot(ln net.Listener) error {
+	pl, err := gateway.BotPeerListener(ln, s.o.BotLaunch)
+	if err != nil {
+		return err
+	}
+	mux := BotSocketHandler(s.gw.BotHandler(), s.handler, s.o.Log)
+	// The public listener's limits and timeouts (server.NewHTTPServer), and the peer's pid in every request context.
+	srv := server.NewHTTPServer(mux, s.o.Config)
+	srv.ConnContext = gateway.BotConnContext
+	s.botMu.Lock()
+	s.botSrvs = append(s.botSrvs, srv)
+	s.botMu.Unlock()
+	if err := srv.Serve(pl); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+		return fmt.Errorf("dillad: serve the Bot socket: %w", err)
+	}
+	return nil
+}
+
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	if err := s.httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("dillad: serve: %w", err)
@@ -821,6 +1021,16 @@ func (s *Server) shutdown(ctx context.Context) error {
 	if serr := s.httpSrv.Shutdown(ctx); serr != nil {
 		keep(s.httpSrv.Close())
 	}
+	// The Bot's socket: its HTTP requests drain like the public listener's; its upgraded gateway connections are the
+	// gateway's, closed with the rest below.
+	s.botMu.Lock()
+	bots := s.botSrvs
+	s.botMu.Unlock()
+	for _, srv := range bots {
+		if serr := srv.Shutdown(ctx); serr != nil {
+			_ = srv.Close()
+		}
+	}
 	// No request is being served any more, so no AfterRegister run can start; the ones still
 	// populating a registered group finish before the delivery service they propose through stops.
 	if gerr := s.groups.Drain(ctx); gerr != nil {
@@ -828,6 +1038,10 @@ func (s *Server) shutdown(ctx context.Context) error {
 	}
 	if perr := s.presence.Drain(ctx); perr != nil {
 		keep(fmt.Errorf("dillad: drain profile hints: %w", perr))
+	}
+	// No write path can queue Bot feed work any more; its workers stop before the store closes.
+	if s.botFeed != nil {
+		s.botFeed.Stop()
 	}
 	if s.maintenance != nil {
 		s.maintenance()
@@ -839,6 +1053,12 @@ func (s *Server) shutdown(ctx context.Context) error {
 	}
 	if s.stopIdleClose != nil {
 		s.stopIdleClose()
+	}
+	if s.stopAvatars != nil {
+		s.stopAvatars()
+	}
+	if s.stopBotHealth != nil {
+		s.stopBotHealth()
 	}
 	// AW2 (R3): the op 55 drainer and any AFK maintenance pass stop, and are waited for, before the
 	// delivery service and the gateway they use: a pass that ran on would clear the rows of users who

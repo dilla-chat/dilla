@@ -10,13 +10,13 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/music"
 	"github.com/dilla-chat/dilla/internal/bot/native"
-	"github.com/dilla-chat/dilla/internal/bot/service"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
 )
@@ -34,27 +34,32 @@ type musicCallMembershipForgetter interface {
 	CallGroupForget(context.Context, id.ID) error
 }
 
+// The call join reads no device list (Bot v2 Task 19): its leaves are judged against the pushed device-list cache.
 type musicCallJoinReader interface {
 	musicCallMembershipReader
 	ChannelCall(context.Context, id.ID) (client.ChannelCallState, error)
 	GroupInfo(context.Context, id.ID) (client.GroupInfo, error)
 	GroupTree(context.Context, id.ID) (client.GroupTree, error)
 	Resync(context.Context, id.ID, []byte, []byte) (client.SequenceResult, error)
-	OwnDeviceList(context.Context, id.ID) ([]byte, error)
-	DeviceListHistory(context.Context, id.ID, uint64) ([][]any, error)
 }
 type musicCallJoinCore interface {
-	TryClaimTrust(id.ID) (func(), bool)
 	musicCallMembershipForgetter
 	Groups(context.Context) ([]native.GroupInfo, error)
 	GroupIntentResult(context.Context, id.ID) (*native.GroupIntentResult, error)
 	ExternalJoin(context.Context, id.ID, id.ID, id.ID, uint64, uint64, []byte, []byte) (native.GroupExternalJoinResult, error)
 	DiscardGroup(context.Context, id.ID, id.ID) error
 	PendingLeaves(context.Context) ([]native.GroupPendingLeaf, error)
-	TrustSender(context.Context, id.ID, uint64, id.ID, []byte, []byte, uint64) (native.GroupTrustVerdict, error)
 	CallJoinCheck(context.Context, id.ID) error
 	GroupJoined(context.Context, id.ID, id.ID, uint64) error
 	CallMediaEpoch(context.Context, id.ID) (native.CallMediaEpoch, error)
+}
+
+// musicJoinTrust is the installation's membership trust (trust.Trust, Task 16) as the call join uses it: Held refuses a
+// user whose pushed list has not applied (fail closed), Changed re-judges one user's leaves whose list or pin changed
+// since they were judged. Neither reads a device list.
+type musicJoinTrust interface {
+	Held(id.ID) bool
+	Changed(context.Context, id.ID) error
 }
 
 // This carries no core free text or MLS bytes. A later Resume always gets a fresh retry budget.
@@ -79,6 +84,119 @@ func (*errMusicCallJoinUnusable) Retryable() bool { return false }
 
 var errMusicCallJoinDiscarded = errors.New("music call-group non-resumable join discarded")
 
+// musicJoinTrust is installation's membership trust as its music call join sees it: the trust of the installation's
+// feed (installationFeed.trust), read at each call so a feed created after the starter is used. Without a feed nothing
+// has been applied, so every user is held and nothing can be re-judged (fail closed).
+func (r *botGatewayRuntime) musicJoinTrust(installation id.ID) musicJoinTrust {
+	return feedJoinTrust{r: r, installation: installation}
+}
+
+type feedJoinTrust struct {
+	r            *botGatewayRuntime
+	installation id.ID
+}
+
+var errMusicCallJoinNoTrust = errors.New("music call-group trust: the installation has no feed yet")
+
+func (t feedJoinTrust) Held(user id.ID) bool {
+	f := t.r.feedHandler(t.installation)
+	return f == nil || f.trust.Held(user)
+}
+
+func (t feedJoinTrust) Changed(ctx context.Context, user id.ID) error {
+	f := t.r.feedHandler(t.installation)
+	if f == nil {
+		return errMusicCallJoinNoTrust
+	}
+	return f.trust.Changed(ctx, user)
+}
+
+// musicPolicyCache keeps a community's policy version for the music call joins of one pass, until the installation's
+// next op 54 (Bot v2 Task 19 fix round 1, M2: dillad pushes op 54 when the community changes). The read is one of the
+// rate-limited requests on a cold /play's path. A stale version fails closed: the core refuses the join's binding.
+type musicPolicyCache struct {
+	mu           sync.Mutex
+	installation id.ID
+	version      uint64
+	generation   uint64
+}
+
+// get answers the policy version and whether it was read just now.
+func (c *musicPolicyCache) get(ctx context.Context, read func(context.Context) (uint64, error)) (uint64, bool, error) {
+	generation := musicSignals.generation(c.installation)
+	c.mu.Lock()
+	if c.version != 0 && c.generation == generation {
+		version := c.version
+		c.mu.Unlock()
+		return version, false, nil
+	}
+	c.mu.Unlock()
+	version, err := read(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	c.mu.Lock()
+	c.version, c.generation = version, generation
+	c.mu.Unlock()
+	return version, true, nil
+}
+
+// forget makes the next join read the policy version again.
+func (c *musicPolicyCache) forget() {
+	c.mu.Lock()
+	c.version = 0
+	c.mu.Unlock()
+}
+
+// joinWithPolicy runs join with the reused policy version; a join that fails on a reused version reads it again and
+// is tried once more (the version may have changed), so a policy change costs no failed /play.
+func (c *musicPolicyCache) joinWithPolicy(ctx context.Context, read func(context.Context) (uint64, error), join func(context.Context, uint64) error) error {
+	policy, fresh, err := c.get(ctx, read)
+	if err != nil {
+		return err
+	}
+	err = join(ctx, policy)
+	if err == nil {
+		return nil
+	}
+	c.forget()
+	if fresh || ctx.Err() != nil {
+		return err
+	}
+	if policy, _, err = c.get(ctx, read); err != nil {
+		return err
+	}
+	if err = join(ctx, policy); err != nil {
+		c.forget()
+	}
+	return err
+}
+
+type musicCatchUpKey struct{}
+
+// withMusicCatchUp gives the call join the room's catch-up (musicCallCatchUp.run) for its already-member branch.
+func withMusicCatchUp(ctx context.Context, catchUp func(context.Context, id.ID) error) context.Context {
+	return context.WithValue(ctx, musicCatchUpKey{}, catchUp)
+}
+
+func musicCatchUpFrom(ctx context.Context) func(context.Context, id.ID) error {
+	catchUp, _ := ctx.Value(musicCatchUpKey{}).(func(context.Context, id.ID) error)
+	return catchUp
+}
+
+// errMusicCallJoinHeld refuses a join while a user in the call is held by membership trust (their newest pushed list
+// has not applied). It carries no user id. A held user is usually released by the push applying within moments, so the
+// join retries on the conflict schedule.
+type errMusicCallJoinHeld struct{}
+
+func (*errMusicCallJoinHeld) Error() string {
+	return "music call-group trust: a user in the call is held"
+}
+func (*errMusicCallJoinHeld) Retryable() bool { return true }
+
+// errMusicCallJoinUnjudged refuses a join whose staged group still has a leaf the trust cache could not judge.
+var errMusicCallJoinUnjudged = errors.New("music call-group trust: a leaf is still unjudged")
+
 func waitMusicCallJoin(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
@@ -90,17 +208,18 @@ func waitMusicCallJoin(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-func retryMusicCallGroupJoin(ctx context.Context, calls musicCallJoinReader, core musicCallJoinCore, installation, community, channel id.ID, policy uint64, wait func(context.Context, time.Duration) error) error {
+func retryMusicCallGroupJoin(ctx context.Context, calls musicCallJoinReader, core musicCallJoinCore, trust musicJoinTrust, installation, community, channel id.ID, policy uint64, wait func(context.Context, time.Duration) error) error {
 	delays := [...]time.Duration{250 * time.Millisecond, time.Second, 2 * time.Second}
 	conflicts, discarded := 0, false
 	for {
-		err := musicCallGroupJoinAttempt(ctx, calls, core, installation, community, channel, policy)
+		err := musicCallGroupJoinAttempt(ctx, calls, core, trust, installation, community, channel, policy)
 		if errors.Is(err, errMusicCallJoinDiscarded) && !discarded {
 			discarded = true
 			continue
 		}
 		var conflict *errMusicCallJoinConflict
-		if (!errors.As(err, &conflict) && !errors.Is(err, service.ErrSourceTrustBusy)) || conflicts == len(delays) {
+		var held *errMusicCallJoinHeld
+		if (!errors.As(err, &conflict) && !errors.As(err, &held)) || conflicts == len(delays) {
 			return err
 		}
 		if err = wait(ctx, delays[conflicts]); err != nil {
@@ -111,16 +230,17 @@ func retryMusicCallGroupJoin(ctx context.Context, calls musicCallJoinReader, cor
 }
 
 // ensureMusicCallGroupJoined performs the same security sequence as the browser call join:
-// stage an external join, refresh signed device-list pins, gate the staged call epoch, post the
-// exact commit, and resolve the helper intent from the accepted resync sequence.
-func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core *native.Client, installation, community, channel id.ID, policy uint64) error {
-	if ctx == nil || calls == nil || core == nil || installation.IsZero() || community.IsZero() || channel.IsZero() || policy == 0 {
+// stage an external join, judge the staged group's leaves against the pushed device-list cache (Bot v2 Task 19: no
+// device-list reads), gate the staged call epoch, post the exact commit, and resolve the helper intent from the
+// accepted resync sequence.
+func ensureMusicCallGroupJoined(ctx context.Context, calls *client.Session, core *native.Client, trust musicJoinTrust, installation, community, channel id.ID, policy uint64) error {
+	if ctx == nil || calls == nil || core == nil || trust == nil || installation.IsZero() || community.IsZero() || channel.IsZero() || policy == 0 {
 		return errors.New("music call-group join dependencies unavailable")
 	}
-	return retryMusicCallGroupJoin(ctx, calls, core, installation, community, channel, policy, waitMusicCallJoin)
+	return retryMusicCallGroupJoin(ctx, calls, core, trust, installation, community, channel, policy, waitMusicCallJoin)
 }
 
-func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, core musicCallJoinCore, installation, community, channel id.ID, policy uint64) error {
+func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, core musicCallJoinCore, trust musicJoinTrust, installation, community, channel id.ID, policy uint64) error {
 	branch := "external_join"
 	timing := &musicJoinTimings{}
 	defer func() {
@@ -168,6 +288,13 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 			}
 			if current {
 				branch = "already_member"
+				// The Bot is a member already, but members may have committed since: apply their commits first, so the
+				// media epoch is the call's current one (Bot v2 Task 19 fix round 1, C1).
+				if catchUp := musicCatchUpFrom(ctx); catchUp != nil {
+					if err = timing.run("callCatchUp", func() error { return catchUp(ctx, group) }); err != nil {
+						return musicCallJoinStageError("catch_up", err)
+					}
+				}
 				_, err = timedMusicJoinCall(timing, "CallMediaEpoch", func() (native.CallMediaEpoch, error) { return core.CallMediaEpoch(ctx, group) })
 				return musicCallJoinStageError("active_media_gate", err)
 			}
@@ -271,7 +398,7 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 			return musicCallJoinStageError("external_join", err)
 		}
 	}
-	if err = timing.run("refreshMusicCallJoinLeaves", func() error { return refreshMusicCallJoinLeaves(ctx, calls, core, group) }); err != nil {
+	if err = timing.run("verifyMusicCallJoinLeaves", func() error { return verifyMusicCallJoinLeaves(ctx, core, trust, group, call.Participants) }); err != nil {
 		return musicCallJoinStageError("trust_refresh", err)
 	}
 	if err = timing.run("CallJoinCheck", func() error { return core.CallJoinCheck(ctx, group) }); err != nil {
@@ -395,119 +522,76 @@ func decodeMusicExternalJoinResult(body []byte) (native.GroupExternalJoinResult,
 	return native.GroupExternalJoinResult{Commit: append([]byte(nil), commit...), GroupInfo: append([]byte(nil), info...)}, nil
 }
 
-func refreshMusicCallJoinLeaves(ctx context.Context, calls musicCallJoinReader, core musicCallJoinCore, group id.ID) error {
+// verifyMusicCallJoinLeaves judges the staged call group's leaves through membership trust (Task 16), with no
+// device-list read:
+//   - every user in the call (the call's participants and the users of the group's pending leaves) must not be Held:
+//     a user whose newest pushed list has not applied is refused, fail closed;
+//   - only the users with a pending leaf in this group (for a Bot core: no cached list, or a list or pin that changed
+//     since the leaf was judged) are re-judged, once each, through trust.Changed;
+//   - a leaf of the group still pending afterwards refuses the join.
+//
+// The cost is one pending-leaves read, one Changed per changed user and, when any was re-judged, one more read: O(the
+// call), never O(the community), and no device-list read.
+func verifyMusicCallJoinLeaves(ctx context.Context, core musicCallJoinCore, trust musicJoinTrust, group id.ID, participants []client.CallParticipant) error {
+	if trust == nil {
+		return errors.New("music call-group trust unavailable")
+	}
+	if len(participants) > maxMusicCallJoinLeaves {
+		return errors.New("music call-group trust refresh exceeds limit")
+	}
 	leaves, err := core.PendingLeaves(ctx)
 	if err != nil {
 		return err
 	}
-	var pending []native.GroupPendingLeaf
+	var changed []id.ID
+	seen := make(map[id.ID]bool)
+	pending := 0
 	for _, leaf := range leaves {
-		if leaf.Group == group {
-			pending = append(pending, leaf)
-		}
-	}
-	if len(pending) > maxMusicCallJoinLeaves {
-		return errors.New("music call-group trust refresh exceeds limit")
-	}
-
-	refreshed := make(map[id.ID]bool)
-	for _, leaf := range pending {
-		if refreshed[leaf.User] {
+		if leaf.Group != group {
 			continue
 		}
-		release, claimed := core.TryClaimTrust(leaf.User)
-		if !claimed {
-			return service.ErrSourceTrustBusy
+		if pending++; pending > maxMusicCallJoinLeaves {
+			return errors.New("music call-group trust refresh exceeds limit")
 		}
-		err = func() error {
-			defer release()
-			// The user cache can have advanced after the initial pending snapshot but before this claim.
-			current, err := core.PendingLeaves(ctx)
-			if err != nil {
-				return err
-			}
-			for _, fresh := range current {
-				if fresh.User == leaf.User && fresh.CachedVersion > leaf.CachedVersion {
-					leaf.CachedVersion = fresh.CachedVersion
-				}
-			}
-			history, head, err := musicDeviceListHistory(ctx, calls, leaf.User, leaf.CachedVersion)
-			if err != nil {
-				return err
-			}
-			now := time.Now().Unix()
-			if now < 0 {
-				return errors.New("music call-group trust refresh clock is invalid")
-			}
-			_, err = core.TrustSender(ctx, group, uint64(leaf.Leaf), leaf.User, history, head, uint64(now))
-			return err
-		}()
-		if err != nil {
-			return err
+		if !seen[leaf.User] {
+			seen[leaf.User] = true
+			changed = append(changed, leaf.User)
 		}
-		refreshed[leaf.User] = true
 	}
-
-	return nil
-}
-
-func musicDeviceListHistory(ctx context.Context, calls musicCallJoinReader, user id.ID, cachedVersion uint64) ([]byte, []byte, error) {
-	const maxVersions = 1024
-	headRaw, err := calls.OwnDeviceList(ctx, user)
+	inCall := append([]id.ID(nil), changed...)
+	for _, p := range participants {
+		if !p.UserID.IsZero() && !seen[p.UserID] {
+			seen[p.UserID] = true
+			inCall = append(inCall, p.UserID)
+		}
+	}
+	for _, user := range inCall {
+		if trust.Held(user) {
+			return &errMusicCallJoinHeld{}
+		}
+	}
+	for _, user := range changed {
+		if err := trust.Changed(ctx, user); err != nil {
+			return err
+		}
+		// A push that arrived while the user was re-judged may hold them now.
+		if trust.Held(user) {
+			return &errMusicCallJoinHeld{}
+		}
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	after, err := core.PendingLeaves(ctx)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
-	var head []any
-	if cborx.Unmarshal(headRaw, &head) != nil || len(head) != 4 {
-		return nil, nil, client.ErrProtocol
-	}
-	version, ok := head[0].(uint64)
-	if !ok || version == 0 || version < cachedVersion {
-		return nil, nil, client.ErrProtocol
-	}
-	headList, ok := head[1].([]byte)
-	if !ok || len(headList) == 0 {
-		return nil, nil, client.ErrProtocol
-	}
-	count := version - cachedVersion + 1
-	capacity := maxVersions
-	if count < uint64(maxVersions) {
-		capacity = int(count)
-	}
-	rows := make([]any, 0, capacity)
-	after := cachedVersion
-	if cachedVersion > 0 {
-		after = cachedVersion - 1
-	}
-	for after < version {
-		page, pageErr := calls.DeviceListHistory(ctx, user, after)
-		if pageErr != nil || len(page) == 0 {
-			return nil, nil, client.ErrProtocol
-		}
-		for _, row := range page {
-			rowVersion, valid := row[0].(uint64)
-			if !valid || rowVersion != after+1 || rowVersion > version || len(rows) >= maxVersions {
-				return nil, nil, client.ErrProtocol
-			}
-			rows = append(rows, row)
-			after = rowVersion
-			if after == version {
-				break
-			}
+	for _, leaf := range after {
+		if leaf.Group == group {
+			return errMusicCallJoinUnjudged
 		}
 	}
-	if len(rows) == 0 || version-cachedVersion+1 > maxVersions {
-		return nil, nil, client.ErrProtocol
-	}
-	last, err := cborx.Marshal(rows[len(rows)-1])
-	if err != nil || !bytes.Equal(last, headRaw) {
-		return nil, nil, client.ErrProtocol
-	}
-	history, err := cborx.Marshal(rows)
-	if err != nil || len(history) > maxMusicCallJoinBytes {
-		return nil, nil, client.ErrProtocol
-	}
-	return history, headList, nil
+	return nil
 }
 
 type musicJoinTiming struct {

@@ -287,7 +287,7 @@ func (r MetadataResolver) resolve(ctx context.Context, input string, profile met
 		"--ignore-config", "--no-plugin-dirs", "--no-remote-components", "--flat-playlist",
 		"--js-runtimes", "node:" + r.Node, "--no-warnings", "--no-progress", "--color", "never",
 		"--socket-timeout", "10", "--extractor-retries", "1", "--playlist-end", "501",
-		"--dump-single-json", canonical,
+		"--dump-single-json", "--", canonical,
 	}
 	deadline := r.Timeout
 	if deadline <= 0 || deadline > 2*time.Minute {

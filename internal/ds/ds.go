@@ -237,6 +237,23 @@ type Options struct {
 	// and outside any group lock, on the fork-report request's goroutine, so it must return at once:
 	// the composition root's hook only queues the cut (api.Calls.CutDevice); nil means nobody is told.
 	OnQuarantine func(ctx context.Context, device id.ID)
+
+	// OnEpoch is told every epoch a commit moved a group to, after the commit's transaction and with
+	// the group's member devices as they now stand (Bot v2 task 12: the Bot's event feed sends
+	// channel_group events for Bot channels and the calls the Bot is in). It runs under the group lock,
+	// before the fan-out returns, so it must only queue; nil means nobody is told.
+	OnEpoch func(EpochChange)
+}
+
+// EpochChange is one committed epoch of a group (Options.OnEpoch).
+type EpochChange struct {
+	GroupID     id.ID
+	Kind        uint8
+	CommunityID *id.ID
+	TargetID    id.ID
+	Epoch       uint64
+	// Devices is the group's member devices after the commit; the hook may keep it.
+	Devices []id.ID
 }
 
 // PostPolicy is the host's rule for one application message upload, by its upload class (web3.7

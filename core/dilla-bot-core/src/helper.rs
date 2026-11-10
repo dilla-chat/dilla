@@ -31,6 +31,8 @@ pub struct Helper {
     store: Option<Store>,
     core: Option<ClientCore>,
     transfer: Option<Transfer>,
+    /// The health probe's reply secrets (ops 25 and 26), in memory only and bounded.
+    probe_replies: dilla_core::bot::command::ReplyTable,
 }
 
 impl Helper {
@@ -40,6 +42,7 @@ impl Helper {
             store: None,
             core: None,
             transfer: None,
+            probe_replies: Default::default(),
         }
     }
 
@@ -56,7 +59,6 @@ impl Helper {
             Ok((body, stop)) => (0, body, stop),
             Err(DispatchError::Invalid) => (1, empty(), false),
             Err(DispatchError::Forbidden) => (2, empty(), false),
-            Err(DispatchError::Expired) => (3, empty(), false),
             Err(DispatchError::Conflict) => (4, empty(), false),
             Err(DispatchError::Unavailable) => (5, empty(), false),
             Err(DispatchError::Busy) => (6, empty(), false),
@@ -157,6 +159,36 @@ impl Helper {
             16 => self.group_transfer(payload, request_id),
             19 => self.call_join_check(payload),
             20 => self.call_group_forget(payload),
+            21 => crate::command::op_key_current(
+                self.store.as_ref().expect("opened"),
+                self.core.as_ref().expect("opened"),
+                payload,
+            )
+            .map(|v| (v, false)),
+            22 => crate::command::op_open(
+                self.store.as_ref().expect("opened"),
+                self.core.as_ref().expect("opened"),
+                payload,
+            )
+            .map(|v| (v, false)),
+            23 => crate::command::op_reply_seal(payload).map(|v| (v, false)),
+            24 => crate::command::op_device_list_ingest(
+                self.store.as_ref().expect("opened"),
+                self.core.as_mut().expect("opened"),
+                payload,
+            )
+            .map(|v| (v, false)),
+            25 => crate::command::op_probe_seal(
+                self.store.as_ref().expect("opened"),
+                self.core.as_ref().expect("opened"),
+                &mut self.probe_replies,
+                payload,
+            )
+            .map(|v| (v, false)),
+            26 => {
+                crate::command::op_probe_open(&mut self.probe_replies, payload).map(|v| (v, false))
+            }
+            27 => self.group_forget(payload),
             _ => Err(DispatchError::Invalid),
         }
     }
@@ -357,6 +389,14 @@ impl Helper {
             .map_err(map_store)?;
         key.zeroize();
         let core = ClientCore::open(store.conn.clone()).map_err(map_client)?;
+        // Bot v2 Task 23: the v1 interaction groups (removed by the core as it opened) and the v1 state that went with
+        // them, once.
+        let mut store = store;
+        for line in state::cleanup_v1(&mut store, core.interaction_groups_removed_at_open())
+            .map_err(|_| DispatchError::Internal)?
+        {
+            eprintln!("{line}");
+        }
         let identity = core.identity().map_err(map_client)?;
         let mut e = Encoder::new();
         e.array(2).uint(1).bytes(&identity);
@@ -524,6 +564,21 @@ impl Helper {
         Ok((empty(), false))
     }
 
+    /// Helper op 27 `[group]` (Bot v2 Task 23, R1 d): forgets a text group of the Bot's community whose channel is not
+    /// a Bot channel, or that the Bot was removed from. An unknown group is a no-op.
+    fn group_forget(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<(Zeroizing<Vec<u8>>, bool), DispatchError> {
+        let group = decode_call_epoch(payload)?;
+        self.core
+            .as_mut()
+            .expect("opened")
+            .bot_group_forget(&group)
+            .map_err(map_client)?;
+        Ok((empty(), false))
+    }
+
     fn keypackage_resolve(
         &mut self,
         payload: &[u8],
@@ -657,7 +712,6 @@ fn dispatch_status(error: DispatchError) -> u64 {
     match error {
         DispatchError::Invalid => 1,
         DispatchError::Forbidden => 2,
-        DispatchError::Expired => 3,
         DispatchError::Conflict => 4,
         DispatchError::Unavailable => 5,
         DispatchError::Busy => 6,
@@ -666,11 +720,10 @@ fn dispatch_status(error: DispatchError) -> u64 {
         DispatchError::Internal => 9,
     }
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum DispatchError {
     Invalid,
     Forbidden,
-    Expired,
     Conflict,
     Unavailable,
     Busy,
@@ -716,11 +769,6 @@ pub(crate) fn map_client(e: dilla_core::client::ClientError) -> DispatchError {
 #[cfg(test)]
 mod send_abi_tests {
     use super::*;
-
-    #[test]
-    fn expired_dispatch_status_is_frozen_status_three() {
-        assert_eq!(dispatch_status(DispatchError::Expired), 3);
-    }
 
     #[test]
     fn send_operations_require_exact_shapes_nonzero_ids_and_bounded_receipts() {

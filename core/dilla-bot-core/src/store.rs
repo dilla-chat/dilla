@@ -85,6 +85,7 @@ impl Store {
             }
             Err(_) => return Err(StoreError::File),
         };
+        ensure_command_tables(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             _dir: dir_fd,
@@ -200,6 +201,52 @@ fn validate_binding(
         }
     }
     Ok(())
+}
+
+/// The sealed-command tables (Bot v2 task 8), additive on a validated store: no version change,
+/// and a store that never sees a command only gains two empty tables.
+///
+/// `bot_command_keys` holds the private command keys. It is its own table, not a `bot_state`
+/// area, because state areas are read and written by the Go side (ops 11 and 12); this table is
+/// reachable only through ops 21 and 22. At most one current key (`retired_at` NULL) per
+/// community, and one retired key until it is deleted 24 h after its retirement.
+///
+/// `command_replay` holds the request ids of opened, verified commands for 5 minutes;
+/// `command_replay_floor` holds the highest prune bound ever applied, so a command old enough to
+/// have been pruned is refused whatever the caller's clock does later.
+///
+/// `bot_device_list_behind` marks users whose pushed device list did not chain from the cache:
+/// their commands are refused until a history reaching `head` is ingested.
+///
+/// The key boundary is a protocol boundary, not a privilege boundary: no helper op returns or
+/// accepts a private command key, but the Go process holds the store key (`database.key`) and
+/// owns the state directory, so a compromised Go process can read this table directly, as it
+/// can the DSK and MLS secrets in the same store.
+fn ensure_command_tables(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS bot_command_keys (\
+            key_id BLOB PRIMARY KEY, \
+            community_id BLOB NOT NULL, \
+            created_at INTEGER NOT NULL, \
+            retired_at INTEGER, \
+            private_key BLOB NOT NULL, \
+            publication BLOB NOT NULL); \
+         CREATE UNIQUE INDEX IF NOT EXISTS bot_command_keys_current \
+            ON bot_command_keys(community_id) WHERE retired_at IS NULL; \
+         CREATE INDEX IF NOT EXISTS bot_command_keys_retired \
+            ON bot_command_keys(retired_at) WHERE retired_at IS NOT NULL; \
+         CREATE TABLE IF NOT EXISTS command_replay (\
+            request_id BLOB PRIMARY KEY, \
+            seen_at INTEGER NOT NULL) WITHOUT ROWID; \
+         CREATE INDEX IF NOT EXISTS command_replay_seen ON command_replay(seen_at); \
+         CREATE TABLE IF NOT EXISTS command_replay_floor (\
+            id INTEGER PRIMARY KEY CHECK (id = 1), \
+            floor INTEGER NOT NULL); \
+         CREATE TABLE IF NOT EXISTS bot_device_list_behind (\
+            user_id BLOB PRIMARY KEY, \
+            head INTEGER NOT NULL) WITHOUT ROWID;",
+    )
+    .map_err(|_| StoreError::Database)
 }
 
 fn initialize_schema(

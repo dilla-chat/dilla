@@ -168,7 +168,7 @@ func testManagedBotGroupRegistrationReceipt(t *testing.T, h *groupsAPI) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := h.do(t, http.MethodPost, "/v1/sessions/negotiate", token, mustCBOR(t, []any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})); got.Code != http.StatusOK {
+	if got := h.do(t, http.MethodPost, "/v1/sessions/negotiate", token, mustCBOR(t, []any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})); got.Code != http.StatusOK {
 		t.Fatalf("negotiate Bot session: %d %x", got.Code, got.Body.Bytes())
 	}
 

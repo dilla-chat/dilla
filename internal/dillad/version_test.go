@@ -3,6 +3,7 @@ package dillad_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"slices"
@@ -20,8 +21,8 @@ import (
 	"github.com/dilla-chat/dilla/internal/store"
 )
 
-// Session capability negotiation adds bot wire 3 while preserving wire 2. Wire 1 remains
-// unsupported, and discovery must match the hello offer.
+// Bot v2: wire 6 is the only wire, for people and managed Bots alike. An older wire is told to
+// update (E_UPGRADE_REQUIRED), and discovery must match the hello offer.
 
 // dialHello opens /gateway without a credential on the upgrade and returns the connection and the
 // hello payload.
@@ -54,12 +55,12 @@ func identifyWith(t *testing.T, ctx context.Context, c *websocket.Conn, bearer s
 	}
 }
 
-func TestTheGatewayOffersWireFiveFourThreeAndTwo(t *testing.T) {
+func TestTheGatewayOffersWireSixOnly(t *testing.T) {
 	_, ts, _ := newGreetedServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_, hello := dialHello(t, ctx, ts.URL)
-	for i, want := range [][]uint64{{5, 4, 3, 2}, {1}, {1}} {
+	for i, want := range [][]uint64{{6}, {1}, {1}} {
 		names := []string{"wire_versions", "e2ee_versions", "media_versions"}
 		if got := uints(t, hello[i], names[i]); !slices.Equal(got, want) {
 			t.Fatalf("hello %s = %v, want %v", names[i], got, want)
@@ -67,60 +68,67 @@ func TestTheGatewayOffersWireFiveFourThreeAndTwo(t *testing.T) {
 	}
 }
 
-// The refusal and its control differ in the wire version alone: the same session token in the
-// identify's first element.
-func TestIdentifyWithWireOneIsRefused(t *testing.T) {
+// The refusals and their control differ in the wire version alone: the same session token in the
+// identify's first element. An older wire (5, or 1) is told to update; a wire this instance does
+// not know yet (7) is a plain E_VERSION. Both close 4006.
+func TestIdentifyWithAnOlderWireIsToldToUpdate(t *testing.T) {
 	_, ts, token := newGreetedServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	c, _ := dialHello(t, ctx, ts.URL)
-	identifyWith(t, ctx, c, token, 1)
-	op, payload := readFrame(t, ctx, c)
-	if op != 9 || len(payload) < 2 || payload[1] != "E_VERSION" {
-		t.Fatalf("identify with wire 1: op %d %v, want an error frame (9) naming E_VERSION", op, payload)
-	}
-	_, _, err := c.Read(ctx)
-	if got := websocket.CloseStatus(err); got != 4006 {
-		t.Fatalf("identify with wire 1 ended with %v (close %d), want close 4006", err, got)
+	for _, tc := range []struct {
+		wire uint64
+		code string
+	}{{5, "E_UPGRADE_REQUIRED"}, {1, "E_UPGRADE_REQUIRED"}, {7, "E_VERSION"}} {
+		c, _ := dialHello(t, ctx, ts.URL)
+		identifyWith(t, ctx, c, token, tc.wire)
+		op, payload := readFrame(t, ctx, c)
+		if op != 9 || len(payload) < 2 || payload[1] != tc.code {
+			t.Fatalf("identify with wire %d: op %d %v, want an error frame (9) naming %s", tc.wire, op, payload, tc.code)
+		}
+		_, _, err := c.Read(ctx)
+		var closeErr websocket.CloseError
+		if got := websocket.CloseStatus(err); got != 4006 || !errors.As(err, &closeErr) || closeErr.Reason != tc.code {
+			t.Fatalf("identify with wire %d ended with %v (close %d), want close 4006 with reason %s", tc.wire, err, got, tc.code)
+		}
 	}
 
-	// Control: the same identify with wire 2 reaches ready.
+	// Control: the same identify with wire 6 reaches ready.
 	c2, _ := dialHello(t, ctx, ts.URL)
-	identifyWith(t, ctx, c2, token, 2)
+	identifyWith(t, ctx, c2, token, 6)
 	if op, payload := readFrame(t, ctx, c2); op != 3 {
-		t.Fatalf("control: identify with wire 2: op %d %v, want ready (3)", op, payload)
+		t.Fatalf("control: identify with wire 6: op %d %v, want ready (3)", op, payload)
 	}
 }
 
-func TestIdentifyWithWireThreeReachesReady(t *testing.T) {
+func TestIdentifyWithWireSixReachesReady(t *testing.T) {
 	srv, ts, token := newGreetedServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	c, _ := dialHello(t, ctx, ts.URL)
-	identifyWith(t, ctx, c, token, 3)
+	identifyWith(t, ctx, c, token, 6)
 	if op, payload := readFrame(t, ctx, c); op != 3 {
-		t.Fatalf("identify with wire 3: op %d %v, want ready (3)", op, payload)
+		t.Fatalf("identify with wire 6: op %d %v, want ready (3)", op, payload)
 	}
 	session, err := srv.Sessions().Resolve(ctx, token)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session.WireVersion != 3 || session.E2EEVersion != 1 || session.MediaVersion != 1 {
-		t.Fatalf("identify persisted versions = [%d %d %d], want [3 1 1]", session.WireVersion, session.E2EEVersion, session.MediaVersion)
+	if session.WireVersion != 6 || session.E2EEVersion != 1 || session.MediaVersion != 1 {
+		t.Fatalf("identify persisted versions = [%d %d %d], want [6 1 1]", session.WireVersion, session.E2EEVersion, session.MediaVersion)
 	}
 }
 
 // The composed gateway resolves group ownership and current installation state through the real
-// repository. An already identified wire-2 socket sees ordinary community traffic before an
-// installation exists, is filtered as soon as one is committed, and resumes receiving after the
-// installation is disabled.
+// repository. Since Bot v2 every socket is on wire 6 (an older one cannot identify), so an
+// identified socket sees ordinary community traffic before an installation exists, while one is
+// committed, and after it is disabled: the installation never filters a current client.
 func TestComposedGatewayReadsCurrentCommunityCompatibility(t *testing.T) {
 	srv, ts, token := newGreetedServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	c, _ := dialHello(t, ctx, ts.URL)
-	identifyWith(t, ctx, c, token, 2)
+	identifyWith(t, ctx, c, token, 6)
 	if op, _ := readFrame(t, ctx, c); op != 3 {
 		t.Fatalf("identify op %d, want ready", op)
 	}
@@ -158,15 +166,14 @@ func TestComposedGatewayReadsCurrentCommunityCompatibility(t *testing.T) {
 	if op, _ := readFrame(t, ctx, c); op != uint64(gateway.OpMessageCT) {
 		t.Fatalf("pre-install delivery op %d, want message", op)
 	}
-	beforeBlocked := srv.Gateway().Debug(session.DeviceID, groupID).Conns[0].N
 	installation := store.BotInstallationRow{ID: id.New(), CommunityID: communityID, State: store.BotInstallationPending,
 		Revision: 1, ApprovedBy: session.UserID, ApprovedAt: now, Created: now, Updated: now}
 	if err := srv.Repo().CreateBotInstallation(ctx, installation); err != nil {
 		t.Fatalf("CreateBotInstallation: %v", err)
 	}
 	deliver()
-	if got := srv.Gateway().Debug(session.DeviceID, groupID).Conns[0].N; got != beforeBlocked {
-		t.Fatalf("wire-2 replay n advanced after installation became active: %d -> %d", beforeBlocked, got)
+	if op, _ := readFrame(t, ctx, c); op != uint64(gateway.OpMessageCT) {
+		t.Fatalf("delivery with an active installation op %d, want message", op)
 	}
 	installation.State = store.BotInstallationDisabled
 	installation.Revision++
@@ -185,7 +192,7 @@ func TestGatewayResumePersistsOriginalCapabilitiesOnReplacementBearer(t *testing
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	c, hello := dialHello(t, ctx, ts.URL)
-	identifyWith(t, ctx, c, token, 3)
+	identifyWith(t, ctx, c, token, 6)
 	op, ready := readFrame(t, ctx, c)
 	if op != 3 {
 		t.Fatalf("identify op %d, want ready", op)
@@ -241,15 +248,15 @@ func TestGatewayResumePersistsOriginalCapabilitiesOnReplacementBearer(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.WireVersion != 3 || second.E2EEVersion != 1 || second.MediaVersion != 1 {
-		t.Fatalf("resume persisted versions = [%d %d %d], want [3 1 1]", second.WireVersion, second.E2EEVersion, second.MediaVersion)
+	if second.WireVersion != 6 || second.E2EEVersion != 1 || second.MediaVersion != 1 {
+		t.Fatalf("resume persisted versions = [%d %d %d], want [6 1 1]", second.WireVersion, second.E2EEVersion, second.MediaVersion)
 	}
 	if bytes.Equal(first.TokenHash, second.TokenHash) {
 		t.Fatal("replacement bearer reused the original token hash")
 	}
 }
 
-func TestTheInstanceDocumentAdvertisesWireFourThreeAndTwo(t *testing.T) {
+func TestTheInstanceDocumentAdvertisesWireSix(t *testing.T) {
 	_, ts, _ := newGreetedServer(t)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/v1/instance", nil)
 	if err != nil {
@@ -274,7 +281,7 @@ func TestTheInstanceDocumentAdvertisesWireFourThreeAndTwo(t *testing.T) {
 	if len(doc) != 11 {
 		t.Fatalf("the instance document has %d elements, want 11", len(doc))
 	}
-	if got := uints(t, doc[0], "wire_versions"); !slices.Equal(got, []uint64{5, 4, 3, 2}) {
-		t.Fatalf("wire_versions = %v, want [5 4 3 2], the hello's list", got)
+	if got := uints(t, doc[0], "wire_versions"); !slices.Equal(got, []uint64{6}) {
+		t.Fatalf("wire_versions = %v, want [6], the hello's list", got)
 	}
 }

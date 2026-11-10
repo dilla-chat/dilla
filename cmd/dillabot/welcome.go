@@ -27,22 +27,30 @@ func configuredWelcomeChannel(rows []client.Channel, community, channel id.ID) (
 	return client.Channel{}, errors.New("configured welcome destination is unavailable")
 }
 
-type welcomeRoleGranter struct {
-	members      *client.CommunityMembers
-	installation id.ID
-}
-
+// The installation's welcome and roles capability bits.
 const (
 	botWelcomeCapability uint64 = 1 << 1
 	botRolesCapability   uint64 = 1 << 2
 )
+
+type welcomeRoleGranter struct {
+	members      *client.CommunityMembers
+	installation id.ID
+}
 
 func (g welcomeRoleGranter) GrantJoinRole(ctx context.Context, member, episode id.ID) error {
 	_, _, err := g.members.GrantJoinRole(ctx, g.installation, member, episode)
 	return err
 }
 
+// newWelcomeHandler is the member-join handler: the configured join role (Roles capability) and the welcome message
+// (Welcome capability). Bot v2 task 14: the feed (feed_handlers.go) calls it for each member join it hears on op 65,
+// with an event whose id and time are fixed per membership episode; it was a structural-event consumer until Task 12.
+// With neither capability it is nil.
 func newWelcomeHandler(n *native.Client, session *client.Session, authority *client.Client, community, installation id.ID, capabilities uint64) (func(context.Context, protocol.Event) error, error) {
+	if capabilities&(botWelcomeCapability|botRolesCapability) == 0 {
+		return nil, nil
+	}
 	if n == nil || session == nil || authority == nil || community.IsZero() || installation.IsZero() {
 		return nil, errors.New("missing welcome runtime dependency")
 	}
@@ -54,7 +62,7 @@ func newWelcomeHandler(n *native.Client, session *client.Session, authority *cli
 	if err != nil {
 		return nil, err
 	}
-	destination := service.WelcomeDestinationResolver{Session: session, Native: n}
+	destination := service.WelcomeDestinationResolver{Session: session, Native: n, Feature: "welcome"}
 	var granter welcome.JoinRoleGranter
 	if capabilities&botRolesCapability != 0 {
 		granter = welcomeRoleGranter{members: members, installation: installation}

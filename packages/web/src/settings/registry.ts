@@ -2,7 +2,7 @@ import type { IconName } from '@dilla/ui/icons';
 import { t, type StringKey } from '../strings/index.ts';
 
 export type SettingsSection = 'profile' | 'signin' | 'devices' | 'appearance' | 'notifications' | 'voice' | 'keyboard' | 'privacy' | 'diagnostics';
-export type ServerSettingsSection = 'overview' | 'channels' | 'gifs' | 'members' | 'roles' | 'invites' | 'selfRoles' | 'bot' | 'welcome' | 'joinRoles' | 'music' | 'automoderation' | 'moderationLog' | 'bans' | 'danger';
+export type ServerSettingsSection = 'overview' | 'channels' | 'gifs' | 'members' | 'roles' | 'invites' | 'selfRoles' | 'bot' | 'welcome' | 'joinRoles' | 'music' | 'moderationLog' | 'bans' | 'danger';
 export type SettingsScope = 'user' | 'server';
 /** Advisory UI gates; the worker and runtime independently authorize every operation. */
 export interface SettingsAccess {
@@ -85,7 +85,6 @@ export const SETTINGS_REGISTRY: readonly SettingsEntry[] = [
   server('music', 'workspace.group.automation', can('manageCommunity'), ['dj roles', 'youtube', 'provider', 'playback'], [
     anchor('music-providers', 'workspace.providers.title', 'youtube', 'playback'),
   ]),
-  server('automoderation', 'workspace.group.moderation', can('manageCommunity'), ['automatic', 'rules', 'actions', 'exemptions', 'filter']),
   server('moderationLog', 'workspace.group.moderation', can('viewAuditLog'), ['audit', 'cases', 'evidence', 'manual'], [], true),
   server('bans', 'workspace.group.moderation', can('banMembers'), ['unban', 'banned'], [], true),
   server('danger', 'workspace.group.actions', member, ['ownership', 'transfer', 'delete', 'leave']),
@@ -100,7 +99,7 @@ export const SETTINGS_ICONS: Readonly<Partial<Record<SettingsEntry['id'], IconNa
   profile: 'user', signin: 'lock', devices: 'monitor-smartphone', appearance: 'palette', notifications: 'bell', voice: 'mic',
   keyboard: 'keyboard', privacy: 'fingerprint', diagnostics: 'activity',
   overview: 'server', channels: 'hash', gifs: 'smile', members: 'users', roles: 'shield', invites: 'link', selfRoles: 'user',
-  bot: 'bot', welcome: 'megaphone', joinRoles: 'user-plus', music: 'music', automoderation: 'shield', moderationLog: 'scroll-text', bans: 'ban',
+  bot: 'bot', welcome: 'megaphone', joinRoles: 'user-plus', music: 'music', moderationLog: 'scroll-text', bans: 'ban',
   danger: 'triangle-alert',
 };
 

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"os/exec"
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
@@ -91,27 +90,37 @@ type prefetchedYouTubePCM struct {
 	source *ownedPCM
 }
 
-func (p *prefetchedYouTubePCM) Close() error                      { return p.source.Close() }
-func (p *prefetchedYouTubePCM) PCMFormat() musicruntime.PCMFormat { return p.source.PCMFormat() }
+func (p *prefetchedYouTubePCM) Close() error { return p.source.Close() }
+
+// OggOpus reports that the provider already delivers 48 kHz Ogg Opus from its
+// single ffmpeg, so no second encoder runs over it.
+func (p *prefetchedYouTubePCM) OggOpus() bool { return isOggOpus(p.source.ReadCloser) }
+
+func isOggOpus(source io.Reader) bool {
+	marked, ok := source.(interface{ OggOpus() bool })
+	return ok && marked.OggOpus()
+}
 
 type EncoderConfig struct {
 	Capacity int
 	Options  encode.Options
-	start    func(context.Context, io.ReadCloser, musicruntime.PCMFormat, int, encode.Options) (Encoder, error)
+	startOgg func(context.Context, io.ReadCloser, int, encode.Options) (Encoder, error)
 }
 type RuntimeEncoder struct{ Config EncoderConfig }
 
-const youtubePCMRate = 44100
-
+// Start forwards the provider's Ogg Opus: one ffmpeg in the stream worker already produced 48 kHz Opus in 20 ms
+// frames. Bot v2 Task 23 removed the PCM-to-Opus path, so any other source is refused.
 func (e RuntimeEncoder) Start(ctx context.Context, pcm io.ReadCloser) (Encoder, error) {
-	format := musicruntime.PCMFormat{SampleRate: youtubePCMRate, Channels: 2}
-	if source, ok := pcm.(interface{ PCMFormat() musicruntime.PCMFormat }); ok {
-		format = source.PCMFormat()
+	if !isOggOpus(pcm) {
+		if pcm != nil {
+			_ = pcm.Close()
+		}
+		return nil, ErrInvalid
 	}
-	if e.Config.start != nil {
-		return e.Config.start(ctx, pcm, format, e.Config.Capacity, e.Config.Options)
+	if e.Config.startOgg != nil {
+		return e.Config.startOgg(ctx, pcm, e.Config.Capacity, e.Config.Options)
 	}
-	return musicruntime.Start(ctx, pcm, format, e.Config.Capacity, e.Config.Options)
+	return musicruntime.StartOgg(ctx, pcm, e.Config.Capacity, e.Config.Options)
 }
 
 type LiveKitPublisher struct{ Lifetime time.Duration }
@@ -148,28 +157,29 @@ func (s YouTubePCM) Check(ctx context.Context) error {
 	if s.Source == nil {
 		return youtube.ErrRunnerRequired
 	}
-	source, production := s.Source.(youtube.PCMStarter)
-	if !production {
-		return nil
-	}
-	for _, path := range []string{source.YTDLP, source.FFmpeg, source.Node} {
-		if path == "" {
-			return youtube.ErrRunnerRequired
-		}
-		if _, err := exec.LookPath(path); err != nil {
-			return youtube.ErrRunnerRequired
-		}
-	}
-	for _, path := range []struct{ configured, fallback string }{{source.Bubblewrap, "bwrap"}, {source.Python, "python3"}} {
-		name := path.configured
-		if name == "" {
-			name = path.fallback
-		}
-		if _, err := exec.LookPath(name); err != nil {
-			return youtube.ErrSandboxUnavailable
-		}
+	if checked, ok := s.Source.(interface{ Check(context.Context) error }); ok {
+		return checked.Check(ctx)
 	}
 	return nil
 }
 
 func (p *prefetchedYouTubePCM) SourceGone() bool { return p.source.SourceGone() }
+
+// Prefetch asks the provider to resolve and buffer a track ahead of its start.
+// A provider without pre-buffering is not an error: the track then starts cold.
+func (s YouTubePCM) Prefetch(ctx context.Context, track string) error {
+	if ctx == nil || s.Source == nil {
+		return ErrInvalid
+	}
+	source, ok := s.Source.(interface {
+		Prefetch(context.Context, string) error
+	})
+	if !ok {
+		return nil
+	}
+	canonical := "https://www.youtube.com/watch?v=" + track
+	if kind, normalized, err := youtube.NormalizeInput(canonical); err != nil || kind != "video" || normalized != canonical {
+		return youtube.ErrInvalidInput
+	}
+	return source.Prefetch(youtube.WithDiagnosticLogger(ctx, music.PlaybackLogger(ctx)), canonical)
+}

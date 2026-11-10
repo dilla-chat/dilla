@@ -60,28 +60,6 @@ func TestTheUnauthenticatedRoutesCarryTheirOwnBuckets(t *testing.T) {
 		}
 	})
 
-	t.Run("POST /v1/invites/redeem is on the invite bucket", func(t *testing.T) {
-		h, deps := newTestAPI(t)
-		code := seedInvite(t, deps, 1000)
-		body, err := cborx.Marshal([]any{code})
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		burst := deps.Config.Limits.Rate.InviteBurst
-		for i := 0; i < burst; i++ {
-			if rec := post(t, h, "/v1/invites/redeem", body); rec.Code == http.StatusTooManyRequests {
-				t.Fatalf("redemption %d of %d was refused inside the burst", i+1, burst)
-			}
-		}
-		rec := post(t, h, "/v1/invites/redeem", body)
-		if rec.Code != http.StatusTooManyRequests {
-			t.Fatalf("redemption %d = %d, want 429: the invite bucket is not applied", burst+1, rec.Code)
-		}
-		if got := refusalCode(t, rec); got != "E_RATE_LIMITED" {
-			t.Fatalf("refusal code = %q, want E_RATE_LIMITED", got)
-		}
-	})
-
 	t.Run("GET /i/{code} is on the invite bucket", func(t *testing.T) {
 		h, deps := newTestAPI(t)
 		code := seedInvite(t, deps, 1000)

@@ -49,7 +49,7 @@ func TestModerationCaseReaderChecksFreshViewAuditPermissionBeforeScanning(t *tes
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := &countedCaseState{moderationCaseNativeFake: newModerationCaseNative()}
-			sink, err := NewModerationCaseSink(state, nil, nil)
+			sink, err := NewModerationCaseSink(state, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -78,7 +78,7 @@ func TestModerationCaseReaderChecksFreshViewAuditPermissionBeforeScanning(t *tes
 
 func TestModerationCaseReaderRechecksPermissionForEveryPage(t *testing.T) {
 	state := &countedCaseState{moderationCaseNativeFake: newModerationCaseNative()}
-	sink, err := NewModerationCaseSink(state, nil, nil)
+	sink, err := NewModerationCaseSink(state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

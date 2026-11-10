@@ -39,7 +39,7 @@ func TestTheReadableCapFollowsAConfiguredCiphertextCap(t *testing.T) {
 				t.Fatalf("dillad.New: %v", err)
 			}
 			t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
-			h := srv.Handler()
+			h := socketHandler(srv)
 			owner := accountToken(t, srv, code)
 			rec := call(t, h, http.MethodPost, "/v1/communities", owner, []any{"cap", []byte("{}"), uint64(0), uint64(0)})
 			if rec.Code != http.StatusCreated {

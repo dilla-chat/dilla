@@ -177,7 +177,7 @@ export const test = appTest.extend<{ installed: InstalledAccountApp }>({
         }
         await installed.stop();
         if (info.status !== info.expectedStatus) {
-          for (const [name, file] of [['Installed packaging log', join(packages.root, 'package.log')]]) {
+          for (const [name, file] of [['Installed packaging log', join(packages.root, 'package.log')], ['Installed net log 1.0.0', join(packages.reports, 'netlog-1.0.0.json')], ['Installed net log 1.0.1', join(packages.reports, 'netlog-1.0.1.json')]]) {
             try { await info.attach(name, { body: await readFile(file), contentType: name.endsWith('error') ? 'application/json' : 'text/plain' }); } catch { /* A report may not have been produced. */ }
           }
         }

@@ -111,17 +111,28 @@ impl CredentialIdentity {
         m
     }
 
+    /// The UMK's certificate over the SSK (`sig_umk_ssk` over `ssk_message`), alone: the half of
+    /// rule 1 that needs no device. A pushed device list (Bot v2) carries this certificate instead
+    /// of a leaf credential.
+    pub fn verify_ssk_cert(
+        umk_pub: &[u8; 32],
+        ssk_pub: &[u8; 32],
+        sig_umk_ssk: &[u8; 64],
+    ) -> Result<(), ProtocolError> {
+        let umk = VerifyingKey::from_bytes(umk_pub).map_err(|_| ProtocolError::Credential)?;
+        umk.verify_strict(
+            &Self::ssk_message(ssk_pub),
+            &Signature::from_bytes(sig_umk_ssk),
+        )
+        .map_err(|_| ProtocolError::Credential)
+    }
+
     /// Rule 1 of protocol/03: both signatures verify, with `dsk_pub` taken from the MLS leaf.
     ///
     /// `verify_strict` rather than `verify`: it rejects small-order and non-canonical public keys
     /// and gives the strongly-binding semantics a device list needs (gap-10 section 4).
     pub fn verify_signatures(&self, dsk_pub: &[u8; 32]) -> Result<(), ProtocolError> {
-        let umk = VerifyingKey::from_bytes(&self.umk_pub).map_err(|_| ProtocolError::Credential)?;
-        umk.verify_strict(
-            &Self::ssk_message(&self.ssk_pub),
-            &Signature::from_bytes(&self.sig_umk_ssk),
-        )
-        .map_err(|_| ProtocolError::Credential)?;
+        Self::verify_ssk_cert(&self.umk_pub, &self.ssk_pub, &self.sig_umk_ssk)?;
 
         let ssk = VerifyingKey::from_bytes(&self.ssk_pub).map_err(|_| ProtocolError::Credential)?;
         ssk.verify_strict(

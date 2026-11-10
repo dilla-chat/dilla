@@ -454,7 +454,6 @@ fn parse_stmt(line_no: usize, tokens: &[&str], rest: &str) -> Result<Stmt, Parse
                 Some("text") => GroupKind::Text,
                 Some("call") => GroupKind::Call,
                 Some("pairing") => GroupKind::Pairing,
-                Some("interaction") => GroupKind::Interaction,
                 Some(other) => return Err(err(line_no, format!("unknown group kind {other:?}"))),
                 None => return Err(err(line_no, "group needs kind=")),
             };

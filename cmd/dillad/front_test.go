@@ -293,13 +293,13 @@ func TestServeStartsTheSFU(t *testing.T) {
 	if code, _, err := get(client, fmt.Sprintf("http://127.0.0.1:%d/", port)); err != nil || code != http.StatusOK {
 		t.Fatalf("the SFU on livekit.port answered %d, %v", code, err)
 	}
-	// Plan 2 is served by the binary (task 19): a community route is behind the session
+	// Plan 2 is served by the binary (task 19): an authenticated HTTP route (the community routes are socket-only) is behind the session
 	// middleware, not missing, and LiveKit's signalling path answers on the instance's own
 	// listener, proxied to the SFU — LiveKit's own refusal of a validate with no token, not the
 	// mux's 404.
-	if code, body, err := get(client, "http://"+addr+"/v1/communities/0102030405060708090a0b0c0d0e0f10"); err != nil ||
+	if code, body, err := get(client, "http://"+addr+"/v1/auth/factors"); err != nil ||
 		code != http.StatusUnauthorized {
-		t.Fatalf("GET /v1/communities/{id} through serve = %d %q %v, want 401", code, body, err)
+		t.Fatalf("GET /v1/auth/factors through serve = %d %q %v, want 401", code, body, err)
 	}
 	if code, body, err := get(client, "http://"+addr+"/rtc/validate"); err != nil || code == http.StatusNotFound {
 		t.Fatalf("GET /rtc/validate through serve = %d %q %v, want LiveKit's answer", code, body, err)

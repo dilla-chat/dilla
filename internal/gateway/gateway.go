@@ -110,6 +110,32 @@ type Options struct {
 	// it is sent E_RATE_LIMITED and closed 4008, which is resumable.
 	FramesPerSecond float64
 	FrameBurst      int
+
+	// Requests runs op 59 request frames against the socket routes (Bot v2 task 2). Nil answers
+	// every request 404 E_NOT_FOUND.
+	Requests RequestDispatcher
+	// ClientAddr resolves the upgrade request's client address, which every socket request of the
+	// connection is attributed to for rate limits and audit. The composition root passes the HTTP
+	// layer's trusted-proxy rule (server.RealIP); nil uses the peer address.
+	ClientAddr func(*http.Request) string
+
+	// BotLaunch admits the supervised Bot on its Unix socket (BotPeerListener, BotHandler; Bot v2 task 11): the
+	// peer check and the launch token. Nil admits nobody there.
+	BotLaunch BotLaunch
+
+	// OnBotIdentified hears every managed Bot identify (not a resume), with the stream its cold-start
+	// snapshot goes out on (Bot v2 task 12, BotStream). It must return at once. With it set, a Bot
+	// connection holds its live op 64 and 65 frames until the snapshot finishes, and a Bot connection
+	// whose snapshot did not finish cannot resume. Nil streams nothing.
+	OnBotIdentified func(*BotStream)
+	// BotQueueFrames, BotQueueBytes, BotRingFrames and BotRingBytes are the Bot runtime connection's
+	// own writer queue and replay ring (Bot v2 task 12): its feed carries device-list pushes of up to
+	// 1 MiB and a cold-start snapshot, so the user connections' 1 MiB budget is too small for it.
+	// Every other connection keeps QueueFrames, QueueBytes, RingFrames and RingBytes.
+	BotQueueFrames int
+	BotQueueBytes  int
+	BotRingFrames  int
+	BotRingBytes   int
 }
 
 // withDefaults fills zero values and enforces the ring-vs-queue contract. The ring must be at
@@ -167,6 +193,26 @@ func (o Options) withDefaults() Options {
 	if o.RingBytes < o.QueueBytes {
 		o.RingBytes = o.QueueBytes
 	}
+	if o.BotQueueFrames == 0 {
+		o.BotQueueFrames = 1024
+	}
+	if o.BotQueueBytes == 0 {
+		o.BotQueueBytes = 8 << 20
+	}
+	if o.BotRingFrames == 0 {
+		o.BotRingFrames = 4096
+	}
+	if o.BotRingBytes == 0 {
+		o.BotRingBytes = 16 << 20
+	}
+	// The same ring-vs-queue contract for the Bot connection: whatever its queue dropped is still in
+	// its ring when it resumes.
+	if o.BotRingFrames < o.BotQueueFrames {
+		o.BotRingFrames = o.BotQueueFrames
+	}
+	if o.BotRingBytes < o.BotQueueBytes {
+		o.BotRingBytes = o.BotQueueBytes
+	}
 	return o
 }
 
@@ -215,12 +261,21 @@ type OnlineDevice struct {
 }
 
 type Gateway struct {
+	// bootID is random per process and never persisted: it is element 9 of ready, so a client can tell that the instance
+	// it reconnected to is not the process its unanswered request went to (and that process's replay record is gone).
+	bootID    id.ID
 	opts      Options
 	reg       *registry
 	tickets   *Tickets
 	presence  *presence
 	beat      heartbeatPolicy
 	suspended sync.Map // resume token string -> *conn, inside the resume window
+	// bots indexes the Bot runtime connections by device, live, suspended or mid-resume (bot_feed.go):
+	// DeliverBot reaches a Bot connection through every state change, not only while it is registered.
+	bots botIndex
+	// webhooks is the in-memory table of op 66 deliveries waiting for their op 67 ack (bot_webhook.go).
+	webhooks webhookWaits
+	deferred sync.Map // *conn -> struct{}: revoked connections waiting for their self-revoking answer (CloseDevice)
 
 	// Test seams for the two steps of a resume that cannot fail with real inputs; nil means the
 	// real one. They are set before the Gateway serves and never after.
@@ -242,6 +297,8 @@ type Gateway struct {
 	mu        sync.Mutex
 	draining  bool
 	telemetry *telemetryPool
+	// workers runs socket requests (request.go).
+	workers *workerPool
 }
 
 func New(o Options) *Gateway {
@@ -253,11 +310,13 @@ func New(o Options) *Gateway {
 		o.Log = slog.Default()
 	}
 	g := &Gateway{
+		bootID:   id.New(),
 		opts:     o,
 		reg:      newRegistry(),
 		tickets:  NewTickets(o.Clock),
 		presence: newPresence(o.Clock),
 		beat:     newHeartbeatPolicy(time.Duration(o.HeartbeatMS) * time.Millisecond), //nolint:gosec // G115: a non-negative duration in milliseconds
+		workers:  newWorkerPool(),
 	}
 	g.generation.Store(o.Generation)
 	return g
@@ -301,7 +360,7 @@ func (g *Gateway) register(ctx context.Context, session auth.Session, s sink) (*
 // connection BEFORE ready is built: ready's elements 4, 5 and 6 are the echo, and a connection
 // that learned its versions after sendReady would echo three zeros.
 func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s sink, chosen [3]uint64) (*conn, error) {
-	if session.Bot != nil && (session.Bot.State != store.BotInstallationJoining && session.Bot.State != store.BotInstallationReady || chosen[0] < 3) {
+	if session.Bot != nil && (session.Bot.State != store.BotInstallationJoining && session.Bot.State != store.BotInstallationReady || chosen[0] != auth.WireVersion) {
 		return nil, errNotEnrolledSession
 	}
 	if err := g.recordCapabilities(ctx, session.TokenHash, chosen); err != nil {
@@ -322,22 +381,23 @@ func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s 
 		tokenHash:    session.TokenHash,
 		resume:       token,
 		groups:       map[id.ID]struct{}{},
+		remoteAddr:   remoteAddrFrom(ctx),
+		requests:     newRequestBudget(),
 		lastLive:     now,
 		ready:        now,
 		gw:           g,
-		ring: newRing(ringLimits{
-			Frames: g.opts.RingFrames,
-			Bytes:  g.opts.RingBytes,
-			TTL:    g.opts.RingTTL,
-		}, g.opts.Clock),
+		ring:         newRing(g.ringLimitsFor(session.Bot != nil), g.opts.Clock),
+	}
+	if session.Bot != nil {
+		c.botInstallation, c.botCommunity = session.Bot.InstallationID, session.Bot.CommunityID
+		// With a feed, the connection holds its live op 64 and 65 frames until the cold-start snapshot
+		// has finished (BotStream.Finish), and may resume only after it.
+		c.botSnapshot = g.opts.OnBotIdentified != nil
+		c.botHolding = c.botSnapshot
 	}
 	c.wire, c.e2ee, c.media = chosen[0], chosen[1], chosen[2]
 	// Paused until the connection is live: see newPausedWriter.
-	c.writer = newPausedWriter(s, writerLimits{
-		Frames:   g.opts.QueueFrames,
-		Bytes:    g.opts.QueueBytes,
-		Deadline: g.opts.WriteDeadline,
-	}, g.opts.Clock, g.opts.Log)
+	c.writer = newPausedWriter(s, g.writerLimitsFor(c.isBot), g.opts.Clock, g.opts.Log)
 	// The server's own ping ticker starts at a jittered offset so 1,500 clients reconnecting
 	// after a restart do not synchronise onto one second (task 17's firstDelay, which nothing
 	// else calls).
@@ -352,10 +412,16 @@ func (g *Gateway) registerVersions(ctx context.Context, session auth.Session, s 
 	// so a DeliverGroup landing in that window takes n = 1 and `ready` then carries n = 2 —
 	// against protocol/02's "n ... the per-session replay sequence, starting at 1" and against
 	// the hello/identify/ready handshake order a client is written to.
+	if c.isBot {
+		g.bots.add(c)
+	}
 	g.addLive(c)
 	// Only now may `ready` reach the wire: a client that has read it is a device Online counts.
 	c.currentWriter().open()
 	g.touch(ctx, c.deviceID, now)
+	if c.isBot && g.opts.OnBotIdentified != nil {
+		g.opts.OnBotIdentified(&BotStream{c: c})
+	}
 	return c, nil
 }
 
@@ -399,8 +465,9 @@ func (g *Gateway) touch(ctx context.Context, device id.ID, now time.Time) {
 // connections and not the number ever opened.
 func (g *Gateway) addLive(c *conn) {
 	g.reg.add(c)
-	// Legacy clients retain their connection-time initial presence. Wire 5 only counts real input.
-	if g.connectionWire(c) < 5 {
+	// A connection older than the current wire keeps the connection-time initial presence; the
+	// current wire (5 and later) counts only real input.
+	if g.olderWire(c) {
 		g.presence.activity(c.deviceID, c.userID)
 	}
 	if g.opts.OnPresenceChanged != nil {
@@ -444,7 +511,7 @@ func (g *Gateway) removeLive(c *conn) {
 // come back through the resume window with the token it already holds.
 func (g *Gateway) closeConn(c *conn, code CloseCode, reason string) *writer {
 	if !code.Resumable() {
-		c.denyResume()
+		c.denyResumeFor(code)
 	}
 	w := c.currentWriter()
 	w.sink.close(code, reason)
@@ -463,6 +530,7 @@ func (g *Gateway) suspend(c *conn) {
 	c.mu.Lock()
 	c.state = stateClosed
 	c.suspendedAt = now
+	c.resuming = false
 	token := string(c.resume)
 	w := c.writer
 	resumable := !c.noResume
@@ -474,6 +542,8 @@ func (g *Gateway) suspend(c *conn) {
 	// ResumeWindow with nothing but its old resume token.
 	if resumable {
 		g.suspended.Store(token, c)
+	} else {
+		g.bots.drop(c)
 	}
 	if w != nil {
 		w.stop()
@@ -502,9 +572,11 @@ func (g *Gateway) sweepSuspended() {
 		c.mu.Unlock()
 		if expired {
 			g.suspended.Delete(k)
+			g.bots.drop(c)
 		}
 		return true
 	})
+	g.bots.sweepCarry(now, g.opts.ResumeWindow)
 }
 
 // rotateResume issues a fresh resume token, which happens on every resumed frame.
@@ -548,6 +620,63 @@ func (g *Gateway) DeliverDevice(deviceID id.ID, f Frame) {
 	}
 	for _, c := range g.reg.connsOfDevice(deviceID) {
 		if g.allowWire3Scoped(c, requiresWire3) {
+			c.send(f)
+		}
+	}
+	// An op 62 reply also goes into the ring of every connection of the device that is parked in
+	// the resume window (Bot v2 task 10): a device whose socket dropped gets the answer on resume,
+	// for at most BotReplyHold. No other opcode reaches a suspended connection.
+	if f.Op == OpBotReply && f.Replay {
+		g.suspended.Range(func(_, v any) bool {
+			if c, ok := v.(*conn); ok && c.deviceID == deviceID && g.allowWire3Scoped(c, requiresWire3) {
+				c.hold(f)
+			}
+			return true
+		})
+	}
+	g.countFrame(f)
+}
+
+// DeliverBot hands a frame for the Bot runtime, a sealed command (op 64, Bot v2 task 10) or a feed
+// event (op 65, task 12), to the Bot runtime connections of deviceID, the installation's managed
+// device. Both are sequenced in the Bot connection's ring: a live connection gets the frame now, one
+// whose snapshot or resume is in progress gets it right after, and one parked in the resume window
+// holds it for the resume. It reports whether any connection took it: none is the Bot being offline.
+// A connection of the device that is not a Bot runtime session gets nothing.
+func (g *Gateway) DeliverBot(deviceID id.ID, f Frame) bool {
+	f.Scope = normalizeFrameScope(f)
+	delivered := false
+	for _, c := range g.bots.of(deviceID) {
+		if c.deliverBot(f) {
+			delivered = true
+		}
+	}
+	// An op 64 relayed while the Bot reconnects (its last connection dropped within the resume
+	// window, no new one yet) is carried to its next identify (Task 21b fix round 2).
+	if !delivered && g.bots.carryRelayed(deviceID, f, g.opts.Clock.Now(), g.opts.ResumeWindow, g.opts.RingTTL) {
+		delivered = true
+	}
+	if delivered {
+		g.countFrame(f)
+	}
+	return delivered
+}
+
+// DeliverSubscribed sends a frame to the live connections of the group's member devices that are
+// subscribed to the group (subscribe / unsubscribe): the connections showing it. A Bot state hint
+// for a channel (op 63, Bot v2 task 10) goes this way.
+func (g *Gateway) DeliverSubscribed(groupID id.ID, f Frame) {
+	f.Scope = normalizeFrameScope(f)
+	f.Scope.Groups = appendScopeID(f.Scope.Groups, groupID)
+	requiresWire3, err := g.scopeRequiresWire3(context.Background(), f.Scope)
+	if err != nil {
+		return
+	}
+	for _, c := range g.reg.connsOfGroup(groupID) {
+		c.mu.Lock()
+		_, subscribed := c.groups[groupID]
+		c.mu.Unlock()
+		if subscribed && g.allowWire3Scoped(c, requiresWire3) {
 			c.send(f)
 		}
 	}
@@ -607,6 +736,22 @@ func (g *Gateway) countFrame(f Frame) {
 // sessions (protocol/02, "Device sessions", rule 6).
 func (g *Gateway) CloseDevice(deviceID id.ID, code CloseCode, reason string) {
 	for _, c := range g.reg.connsOfDevice(deviceID) {
+		// A socket request that revokes its own session (DELETE /v1/accounts/me, a device deleting its own row)
+		// declared it (SelfRevoking) and is still in flight here: the close of THAT connection waits for the
+		// answer to be written, so the caller gets its 204. The connection leaves the registry (no fan-out), may
+		// not resume, and is sealed: its read loop drops every inbound frame. Any other cause, and every other
+		// connection, closes at once. The wait is bounded by revokedCloseGrace, and Shutdown closes it too.
+		c.mu.Lock()
+		budget := c.requests
+		c.mu.Unlock()
+		if budget != nil && !code.Resumable() && budget.isSelfRevoking() {
+			c.denyResumeFor(code)
+			c.sealed.Store(true)
+			g.removeLive(c)
+			g.deferred.Store(c, struct{}{})
+			go g.closeAfterAnswers(c, budget, code, reason)
+			continue
+		}
 		w := g.closeConn(c, code, reason)
 		g.removeLive(c)
 		w.stop()
@@ -622,10 +767,32 @@ func (g *Gateway) CloseDevice(deviceID id.ID, code CloseCode, reason string) {
 		if !ok || c.deviceID != deviceID {
 			return true
 		}
-		c.denyResume()
+		c.denyResumeFor(code)
 		g.suspended.Delete(k)
+		// A parked Bot connection leaves the index with what it held (Task 21b fix round 3, M3).
+		g.bots.drop(c)
 		return true
 	})
+}
+
+// revokedCloseGrace bounds how long a revoked connection waits for its in-flight requests' answers.
+const revokedCloseGrace = 5 * time.Second
+
+// requestDrainTimeout bounds how long Shutdown waits for running socket requests to finish and answer.
+const requestDrainTimeout = 10 * time.Second
+
+// closeAfterAnswers closes c once its in-flight socket requests were answered, or after revokedCloseGrace.
+func (g *Gateway) closeAfterAnswers(c *conn, budget *requestBudget, code CloseCode, reason string) {
+	defer g.deferred.Delete(c)
+	timer := g.opts.Clock.NewTimer(revokedCloseGrace)
+	defer timer.Stop()
+	select {
+	case <-budget.whenIdle():
+	case <-timer.C():
+	}
+	w := g.closeConn(c, code, reason)
+	g.removeLive(c)
+	w.stop()
 }
 
 // SetGroupMembers is written by the delivery service after every merge: it is the fan-out list and
@@ -689,7 +856,7 @@ func (g *Gateway) OnlineIn(groupID id.ID) []OnlineDevice {
 	}
 	minWire := uint64(0)
 	if requiresWire3 {
-		minWire = 3
+		minWire = auth.WireVersion
 	}
 	return g.reg.onlineIn(groupID, g.opts.Clock.Now(), g.opts.IdleClose, minWire)
 }
@@ -798,6 +965,12 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Socket requests running now finish, and their answers are written, BEFORE reconnect goes out: a client stops
+	// reading at reconnect, and a mutation whose answer is lost to the shutdown is resent to the next process, which has
+	// no replay record for it. Bounded, so a stuck handler cannot hold the shutdown.
+	drainCtx, cancelDrain := context.WithTimeout(ctx, requestDrainTimeout)
+	g.workers.wait(drainCtx)
+	cancelDrain()
 	for _, c := range conns {
 		c.send(Frame{Op: OpReconnect, Payload: p})
 	}
@@ -807,6 +980,18 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 		w.sink.close(CloseGoingAway, "going away")
 		g.removeLive(c)
 	}
+	// Socket requests still running finish (or ctx ends) before the gateway reports it is down:
+	// the composition root closes the store after this, under a handler that is mid-request.
+	g.workers.wait(ctx)
+	// A revoked connection still waiting for its answer (CloseDevice) is out of the registry: close it now.
+	g.deferred.Range(func(k, _ any) bool {
+		if c, ok := k.(*conn); ok {
+			w := c.currentWriter()
+			w.drain(ctx)
+			w.sink.close(CloseGoingAway, "going away")
+		}
+		return true
+	})
 	return telemetryErr
 }
 
@@ -828,8 +1013,11 @@ func (g *Gateway) Handler() http.Handler {
 		if err != nil {
 			return
 		}
-		c.SetReadLimit(g.opts.ReadLimit)
-		g.serve(r.Context(), newWSSink(c), bearerOrTicket(r, g.tickets))
+		// The library's own bound is the request frame's; wsSink applies the configured read limit
+		// to every other frame and to every frame before identify (see wsSink.read).
+		c.SetReadLimit(int64(max(maxRequestFrameBytes, int(g.opts.ReadLimit))) + 1)
+		ctx := withRemoteAddr(r.Context(), g.clientAddr(r))
+		g.serve(ctx, newLimitedWSSink(c, g.opts.ReadLimit), bearerOrTicket(r, g.tickets))
 	})
 }
 
@@ -853,4 +1041,7 @@ var opNames = map[Op]string{
 	OpTypingSet: "typing_set", OpVoiceSelf: "voice_self", OpCallRing: "call_ring",
 	OpCommunityChanged: "community_changed", OpAFKAway: "afk_away",
 	OpAppBuild: "app_build", OpPresenceActivity: "presence_activity", OpCallStats: "call_stats",
+	OpRequest: "request", OpResponse: "response", OpBotCatalog: "bot_catalog",
+	OpBotReply: "bot_reply", OpBotStateChanged: "bot_state_changed", OpBotCommand: "bot_command",
+	OpBotEvent: "bot_event", OpBotWebhook: "bot_webhook", OpBotWebhookAck: "bot_webhook_ack",
 }

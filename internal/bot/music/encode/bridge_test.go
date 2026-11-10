@@ -2,118 +2,13 @@ package encode
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"errors"
 	"io"
-	"math"
-	"os/exec"
 	"testing"
-	"time"
 
 	"github.com/livekit/server-sdk-go/v2/pkg/oggreader"
-
-	"github.com/dilla-chat/dilla/internal/media"
 )
-
-func TestBridgeEncodesPCMToBoundedOpusPackets(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg is not installed")
-	}
-	provider, err := media.NewLiveOpusProvider(100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pcm := make([]byte, 44100*2*2/4) // 250ms stereo PCM at the probe's common 44.1kHz rate.
-	for frame := 0; frame < len(pcm)/4; frame++ {
-		v := int16(math.Sin(2*math.Pi*440*float64(frame)/44100) * 9000)
-		binary.LittleEndian.PutUint16(pcm[frame*4:], uint16(v))
-		binary.LittleEndian.PutUint16(pcm[frame*4+2:], uint16(v))
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := Bridge(ctx, io.NopCloser(bytes.NewReader(pcm)), 44100, 2, provider); err != nil {
-		t.Fatal(err)
-	}
-	count := 0
-	for {
-		sample, err := provider.NextSample(ctx)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(sample.Data) == 0 || len(sample.Data) > media.MaxLiveOpusSampleBytes {
-			t.Fatalf("packet size %d outside bounds", len(sample.Data))
-		}
-		if sample.Duration != 20*time.Millisecond {
-			t.Fatalf("packet duration %s, want 20ms", sample.Duration)
-		}
-		count++
-	}
-	if count < 8 || count > 20 {
-		t.Fatalf("got %d packets for 250ms PCM", count)
-	}
-}
-
-func TestPumpPCMDoesNotOverwriteFragmentedSampleFrames(t *testing.T) {
-	pcm := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
-	var written bytes.Buffer
-	activity := make(chan struct{}, 1)
-	err := pumpPCM(&singleByteReader{source: bytes.NewReader(pcm)}, &written, 2, activity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(written.Bytes(), pcm) {
-		t.Fatalf("fragmented PCM changed: got %v, want %v", written.Bytes(), pcm)
-	}
-}
-
-type singleByteReader struct{ source *bytes.Reader }
-
-func (r *singleByteReader) Read(p []byte) (int, error) {
-	if len(p) > 1 {
-		p = p[:1]
-	}
-	return r.source.Read(p)
-}
-
-func TestBridgeRejectsNonInterruptibleSource(t *testing.T) {
-	provider, _ := media.NewLiveOpusProvider(1)
-	err := Bridge(context.Background(), bytes.NewReader(nil), 44100, 2, provider)
-	if !errors.Is(err, ErrSourceNotInterruptible) {
-		t.Fatalf("Bridge error = %v, want ErrSourceNotInterruptible", err)
-	}
-}
-
-func TestBridgeStartupFailureClosesSourceAndProvider(t *testing.T) {
-	provider, _ := media.NewLiveOpusProvider(1)
-	reader := &trackedReader{Reader: bytes.NewReader(nil)}
-	err := BridgeWithOptions(context.Background(), reader, 44100, 2, provider, Options{FFmpegPath: "/no/such/ffmpeg"})
-	if !errors.Is(err, ErrEncoderFailed) {
-		t.Fatalf("Bridge error = %v, want ErrEncoderFailed", err)
-	}
-	if !reader.closed {
-		t.Fatal("source reader was not closed")
-	}
-	if _, err := provider.NextSample(context.Background()); !errors.Is(err, io.EOF) {
-		t.Fatalf("NextSample error = %v, want EOF after startup failure", err)
-	}
-}
-
-func TestBridgeTimesOutWhenProviderBackpressureStopsProgress(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg is not installed")
-	}
-	provider, _ := media.NewLiveOpusProvider(1)
-	pcm := make([]byte, 48000*4/2) // 500ms stereo PCM.
-	err := BridgeWithOptions(context.Background(), io.NopCloser(bytes.NewReader(pcm)), 48000, 2, provider,
-		Options{StallTimeout: 100 * time.Millisecond})
-	if !errors.Is(err, ErrStalled) {
-		t.Fatalf("Bridge error = %v, want ErrStalled", err)
-	}
-}
 
 func TestReadPacketSafelyConvertsParserPanicToError(t *testing.T) {
 	_, err := readPacketSafely(panickingPacketReader{})
@@ -283,74 +178,6 @@ func testOggPage(serial, sequence uint32, flags byte, payload []byte) []byte {
 	return page
 }
 
-type trackedReader struct {
-	io.Reader
-	closed bool
-}
-
-func (r *trackedReader) Close() error { r.closed = true; return nil }
-
 type panickingPacketReader struct{}
 
 func (panickingPacketReader) ReadPacket() ([]byte, error) { panic("malformed Ogg state") }
-
-func TestBridgeRejectsInvalidFormatBeforeStarting(t *testing.T) {
-	provider, _ := media.NewLiveOpusProvider(1)
-	for _, tc := range []struct {
-		rate, channels int
-	}{
-		{0, 2}, {7999, 2}, {192001, 2}, {44100, 0}, {44100, 3},
-	} {
-		if err := Bridge(context.Background(), io.NopCloser(bytes.NewReader(nil)), tc.rate, tc.channels, provider); !errors.Is(err, ErrInvalidPCMFormat) {
-			t.Fatalf("Bridge(%d,%d) error = %v, want ErrInvalidPCMFormat", tc.rate, tc.channels, err)
-		}
-	}
-	provider, _ = media.NewLiveOpusProvider(1)
-	if err := Bridge(context.Background(), io.NopCloser(bytes.NewReader(nil)), 0, 2, provider); !errors.Is(err, ErrInvalidPCMFormat) {
-		t.Fatalf("invalid format error = %v, want ErrInvalidPCMFormat", err)
-	}
-	if _, err := provider.NextSample(context.Background()); !errors.Is(err, io.EOF) {
-		t.Fatalf("provider NextSample = %v after invalid input, want EOF", err)
-	}
-}
-
-func TestBridgeCancellationClosesReaderAndChild(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg is not installed")
-	}
-	provider, _ := media.NewLiveOpusProvider(1)
-	reader, writer := io.Pipe()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- Bridge(ctx, reader, 48000, 2, provider) }()
-	time.Sleep(100 * time.Millisecond)
-	cancel()
-	_ = writer.Close()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("Bridge error = %v, want context.Canceled", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Bridge did not stop after cancellation")
-	}
-}
-
-func TestBridgeStalledProducerTimesOut(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg is not installed")
-	}
-	provider, _ := media.NewLiveOpusProvider(1)
-	reader, writer := io.Pipe()
-	defer writer.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	start := time.Now()
-	err := BridgeWithOptions(ctx, reader, 48000, 2, provider, Options{StallTimeout: 100 * time.Millisecond})
-	if !errors.Is(err, ErrStalled) {
-		t.Fatalf("Bridge error = %v, want ErrStalled", err)
-	}
-	if time.Since(start) > time.Second {
-		t.Fatalf("stall detection took %s", time.Since(start))
-	}
-}

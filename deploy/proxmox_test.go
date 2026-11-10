@@ -107,13 +107,15 @@ esac`)
 	}
 	work := t.TempDir()
 	binary, core := filepath.Join(work, "dillad"), filepath.Join(work, "core.wasm")
-	for _, f := range []string{binary, core} {
+	// Bot v2 task 24: the Bot ships with dillad, so local Bot binaries go into the container beside dillad's.
+	bot, helper := filepath.Join(work, "dillabot"), filepath.Join(work, "dilla-bot-core")
+	for _, f := range []string{binary, core, bot, helper} {
 		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	cmd := exec.CommandContext(t.Context(), bash, "proxmox-lxc.sh", "--domain=chat.example.org", "--public-ip=192.0.2.10",
-		"--agree-tos", "--insecure-skip-verify", "--binary="+binary, "--core="+core)
+		"--agree-tos", "--insecure-skip-verify", "--binary="+binary, "--core="+core, "--bot-binary="+bot, "--bot-helper="+helper)
 	cmd.Env = []string{"PATH=" + bin}
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -132,7 +134,9 @@ esac`)
 	}
 	for _, want := range []string{
 		"pct push 4242 " + filepath.Join(mustAbs(t, "."), "install.sh") + " /root/dilla-install/install.sh",
-		"pct exec 4242 -- sh /root/dilla-install/install.sh --public --domain=chat.example.org --public-ip=192.0.2.10 --agree-tos --insecure-skip-verify --binary=/root/dilla-install/dillad --core=/root/dilla-install/dilla_core_wasi.wasm",
+		"pct push 4242 " + bot + " /root/dilla-install/dillabot --perms 0755",
+		"pct push 4242 " + helper + " /root/dilla-install/dilla-bot-core --perms 0755",
+		"pct exec 4242 -- sh /root/dilla-install/install.sh --public --domain=chat.example.org --public-ip=192.0.2.10 --agree-tos --insecure-skip-verify --binary=/root/dilla-install/dillad --core=/root/dilla-install/dilla_core_wasi.wasm --bot-binary=/root/dilla-install/dillabot --bot-helper=/root/dilla-install/dilla-bot-core",
 	} {
 		if !strings.Contains(string(log), want) {
 			t.Errorf("pct was never called as %q; calls:\n%s", want, log)

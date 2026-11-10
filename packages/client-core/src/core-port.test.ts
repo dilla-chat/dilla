@@ -68,6 +68,66 @@ it('adapts the ABI-8 trust and search exports', () => {
   expect(s.calls[5]?.args).toEqual([G]);
 });
 
+describe('sealed Bot commands', () => {
+  const PUB = new Uint8Array([0x87, 1]);
+  const KEY = new Uint8Array(16).fill(0x33);
+  it('verifies the command key and returns its id and fingerprint', () => {
+    const s = stub({ bot_command_key_verify: () => encode([KEY, '0123456789AB']) });
+    expect(s.port.botCommandKeyVerify(PUB, USER)).toEqual({ keyId: KEY, fingerprint: '0123456789AB' });
+    expect(s.calls[0]?.args).toEqual([PUB, USER]);
+    const bad = stub({ bot_command_key_verify: () => encode([new Uint8Array(15), 'x']) });
+    expect(caught(() => bad.port.botCommandKeyVerify(PUB, USER)).code).toBe('E_CORE_DECODE');
+    const refused = stub({ bot_command_key_verify: () => { throw new Error('E_BOT_SIGNATURE: command key publication'); } });
+    expect(caught(() => refused.port.botCommandKeyVerify(PUB, USER)).code).toBe('E_BOT_SIGNATURE');
+  });
+  it('seals the request as CBOR and keeps only a handle to the reply secret', () => {
+    const sealed = new Uint8Array([0x85, 1, 2]);
+    const s = stub({ bot_command_seal: () => encode([sealed, 7]) });
+    const out = s.port.botCommandSeal(PUB, {
+      requestId: MSG, communityId: COMM, channelId: null, operation: 11,
+      args: ['hello', 3, new Uint8Array([1]), null], sentAt: 1790000000n,
+    });
+    expect(out).toEqual({ sealed, replyHandle: 7 });
+    expect(s.calls[0]?.args[0]).toEqual(PUB);
+    expect(decode(s.calls[0]?.args[1] as Uint8Array)).toEqual([MSG, COMM, null, 11n, ['hello', 3n, new Uint8Array([1]), null], 1790000000n]);
+    expect(caught(() => s.port.botCommandSeal(PUB, {
+      requestId: new Uint8Array(15), communityId: COMM, channelId: null, operation: 1, args: [], sentAt: 1n,
+    })).code).toBe('E_CORE_INPUT');
+    expect(caught(() => s.port.botCommandSeal(PUB, {
+      requestId: MSG, communityId: COMM, channelId: null, operation: 1, args: [1.5], sentAt: 1n,
+    })).code).toBe('E_CORE_INPUT');
+  });
+  it('opens and forgets replies by handle', () => {
+    const body = new Uint8Array([0x68, 0x69]);
+    const s = stub({ bot_reply_open: () => body, bot_reply_forget: () => undefined });
+    const sealed = new Uint8Array([0x83]);
+    expect(s.port.botReplyOpen(7, MSG, 2, sealed)).toEqual(body);
+    s.port.botReplyForget(7);
+    expect(s.calls.map((c) => [c.method, c.args])).toEqual([['bot_reply_open', [7, MSG, 2, sealed]], ['bot_reply_forget', [7]]]);
+    expect(caught(() => s.port.botReplyOpen(-1, MSG, 0, sealed)).code).toBe('E_CORE_INPUT');
+    expect(caught(() => s.port.botReplyOpen(7, MSG, 2 ** 32, sealed)).code).toBe('E_CORE_INPUT');
+  });
+  it('pins a Bot device list and reads [state, version]', () => {
+    const push = new Uint8Array([0x84]);
+    const s = stub({ bot_device_list_pin: () => encode([1, 3]) });
+    expect(s.port.botDeviceListPin(USER, push)).toEqual({ state: 1, version: 3n });
+    expect(s.calls.map((c) => [c.method, c.args])).toEqual([['bot_device_list_pin', [USER, push]]]);
+    expect(caught(() => stub({ bot_device_list_pin: () => encode([3, 1]) }).port.botDeviceListPin(USER, push)).code).toBe('E_CORE_DECODE');
+    expect(caught(() => s.port.botDeviceListPin(USER.slice(1), push)).code).toBe('E_CORE_INPUT');
+  });
+  it('pins the community Bot user and reads [state, pinned] (task 20b)', () => {
+    const community = new Uint8Array(16).fill(0x22);
+    const s = stub({ bot_user_pin: () => encode([2, USER]), bot_user_pinned: () => USER });
+    expect(s.port.botUserPin(community, MSG)).toEqual({ state: 2, pinned: USER });
+    expect(s.port.botUserPinned(community)).toEqual(USER);
+    expect(s.calls.map((c) => [c.method, c.args])).toEqual([['bot_user_pin', [community, MSG]], ['bot_user_pinned', [community]]]);
+    expect(stub({ bot_user_pinned: () => new Uint8Array(0) }).port.botUserPinned(community)).toBeNull();
+    expect(caught(() => stub({ bot_user_pinned: () => new Uint8Array(3) }).port.botUserPinned(community)).code).toBe('E_CORE_DECODE');
+    expect(caught(() => stub({ bot_user_pin: () => encode([3, USER]) }).port.botUserPin(community, MSG)).code).toBe('E_CORE_DECODE');
+    expect(caught(() => s.port.botUserPin(community.slice(1), MSG)).code).toBe('E_CORE_INPUT');
+  });
+});
+
 it('passes moderator-removal signing inputs directly to ClientCore and returns only its signed body', () => {
   const signed = encode([new Uint8Array([1]), new Uint8Array(64).fill(7)]);
   const requestId = new Uint8Array(16).fill(0x41);
@@ -115,51 +175,6 @@ it('bridges authoritative rejection of a submitted manual-removal proof', () => 
   const s = stub({ reject_manual_removal: (...args) => { expect(args).toEqual([proof, 123n]); } });
   s.port.rejectManualRemoval?.(proof, 123n);
   expect(s.calls).toEqual([{ method: 'reject_manual_removal', args: [proof, 123n] }]);
-});
-
-it('passes an opaque human interaction context proof to the dedicated Welcome export', () => {
-  const welcomes = encode([[1, G, 2, 9, new Uint8Array([1]), new Uint8Array([2]), new Uint8Array(32)]]);
-  const proof = new Uint8Array([0x81, 0x00]);
-  const result = encode([[1, G, 0, '']]);
-  const s = stub({ human_interaction_welcome_apply: (...args) => {
-    expect(args).toEqual([welcomes, proof, 100n]);
-    return result;
-  } });
-  expect(s.port.humanInteractionWelcomeApply(welcomes, proof, 100n)).toEqual([
-    { welcomeId: 1n, groupId: G, outcome: 0, reason: '' },
-  ]);
-  expect(s.calls).toEqual([{ method: 'human_interaction_welcome_apply', args: [welcomes, proof, 100n] }]);
-});
-
-it('decodes authenticated human interaction events and passes a durable cursor', () => {
-  const event = [5, G, COMM, MSG, 8, 3, 99, USER, DEV, MSG2, 'dilla.bot/1:response', 13, CHAN];
-  const page = encode([[event], 5, 7]);
-  const s = stub({ human_interaction_events_read: (...args) => { expect(args).toEqual([2n, 10n]); return page; },
-    human_interaction_events_ack: (...args) => { expect(args).toEqual([5n]); },
-    human_interaction_events_ack_selected: (...args) => { expect(args).toEqual([encode([5n, 9n])]); } });
-  expect(s.port.humanInteractionEventsRead(2n, 10)).toEqual({
-    events: [{ deliveryId: 5n, groupId: G, communityId: COMM, requestId: MSG, sourceSeq: 8n, epoch: 3n,
-      receivedAt: 99n, senderUser: USER, senderDevice: DEV, messageId: MSG2, body: 'dilla.bot/1:response',
-      operation: 13, channelId: CHAN }],
-    next: 5n, highWater: 7n,
-  });
-  s.port.humanInteractionEventsAck(5n);
-  s.port.humanInteractionEventsAckSelected([5n, 9n]);
-  expect(s.calls.map((call) => call.method)).toEqual(['human_interaction_events_read', 'human_interaction_events_ack', 'human_interaction_events_ack_selected']);
-});
-
-it('decodes exact archived human interaction receipts without a cursor', () => {
-  const event = [5, G, COMM, MSG, 8, 3, 99, USER, DEV, MSG2, 'dilla.bot/1:response', 84, null];
-  const requests = [MSG];
-  const s = stub({ human_interaction_receipts_read: (...args) => {
-    expect(args).toEqual([COMM, CHAN, USER, encode(requests)]);
-    return encode([event]);
-  } });
-  expect(s.port.humanInteractionReceiptsRead(COMM, CHAN, USER, requests)).toEqual([{
-    deliveryId: 5n, groupId: G, communityId: COMM, requestId: MSG, sourceSeq: 8n, epoch: 3n,
-    receivedAt: 99n, senderUser: USER, senderDevice: DEV, messageId: MSG2,
-    body: 'dilla.bot/1:response', operation: 84, channelId: null,
-  }]);
 });
 
 it('fails closed when the generated WASM handle predates moderator-removal signing', () => {

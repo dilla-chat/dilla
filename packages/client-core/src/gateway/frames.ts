@@ -12,12 +12,14 @@ export const Op = {
   reconnect: 8, error: 9, commitAck: 12, handshake: 16, commitNeeded: 17,
   epochChanged: 18, messageCt: 19, welcome: 20, messageDeleted: 21,
   presence: 48, typing: 49, voiceState: 50, typingSet: 51, voiceSelf: 52, callRing: 53, communityChanged: 54, afkAway: 55, appBuild: 56, presenceActivity: 57, callStats: 58,
+  request: 59, response: 60, botCatalog: 61, botReply: 62, botStateChanged: 63,
 } as const;
 
 const SPECS: ReadonlyMap<number, { elements: number; grouped: boolean }> = new Map([
-  [0, 9], [1, 5], [2, 4], [3, 9], [4, 3], [5, 2], [6, 2], [7, 1], [8, 2],
+  [0, 9], [1, 5], [2, 4], [3, 10], [4, 3], [5, 2], [6, 2], [7, 1], [8, 2],
   [9, 3], [10, 1], [11, 1], [12, 1], [16, 5], [17, 4], [18, 2], [19, 7],
-  [20, 6], [21, 2], [32, 7], [33, 4], [48, 4], [49, 5], [50, 4], [51, 2], [52, 2], [53, 5], [54, 1], [55, 3], [56, 1], [57, 0], [58, 2],
+  [20, 6], [21, 2], [32, 7], [33, 4], [48, 4], [49, 5], [50, 4], [51, 2], [52, 2], [53, 5], [54, 1], [55, 3], [56, 1], [57, 0], [58, 2], [59, 5], [60, 3],
+  [61, 4], [62, 4], [63, 3],
 ].map(([op, elements]) => [op, { elements, grouped: op === 12 || (op >= 16 && op <= 21) }]));
 
 function shape(): never {
@@ -55,7 +57,70 @@ export function decodeFrame(bytes: Uint8Array): Frame {
   // op 55 afk_away (AW4): [community_id, user_id, since_ts], since_ts 0 = cleared.
   if (op === 55n && (n !== 0n || !isId(payload[0]) || !isId(payload[1]) || !uint(payload[2]))) shape();
   if (op === 56n && (n !== 0n || !validAppEntry(payload[0]))) shape();
+  // op 59 request (Bot v2): [id, method, route, body, idem | null]; op 60 response: [id, status 100..599, body].
+  if (op === 59n && !validRequestPayload(payload)) shape();
+  if (op === 60n && (n !== 0n || !uint(payload[0]) || !httpStatus(payload[1]) || !(payload[2] instanceof Uint8Array))) shape();
+  // op 61 bot_catalog [community_id, revision, filtered_catalog, publication | null]: never replayed (n = 0); the commands
+  // themselves are read by bot/catalog.ts.
+  if (op === 61n && (n !== 0n || !isId(payload[0]) || !uint(payload[1]) || !Array.isArray(payload[2])
+    || !(payload[3] === null || payload[3] instanceof Uint8Array))) shape();
+  // op 62 bot_reply [request_id, seq, sealed, final]: replayable, so n is set, or 0 for a reply over the ring budget.
+  if (op === 62n && (!isId(payload[0]) || !u32(payload[1]) || !(payload[2] instanceof Uint8Array) || !bit(payload[3]))) shape();
+  // op 63 bot_state_changed [scope_kind 0..2, scope_id, revision]: never replayed.
+  if (op === 63n && (n !== 0n || !ringState(payload[0]) || !isId(payload[1]) || !uint(payload[2]))) shape();
   return { op: Number(op), n, groupId, payload };
+}
+
+/** The socket request shim (Bot v2): one HTTP-shaped request over the gateway, answered by op 60 with its id. */
+export interface SocketRequestFrame { id: number; method: string; route: string; body: Uint8Array; idem: Uint8Array | null }
+export interface SocketResponseFrame { id: number; status: number; body: Uint8Array }
+
+/** The instance's bounds on op 59 (internal/gateway/request.go): a method of at most 16 bytes, a route of at most
+ *  8192, an idem of 1..64 bytes or null. */
+const MAX_METHOD = 16;
+const MAX_ROUTE = 8192;
+const MAX_IDEM = 64;
+/** The instance's request body cap (gateway.MaxRequestBodyBytes): a larger body is refused E_FRAME_LIMIT and closes the
+ *  socket, so a client that queued it would re-send it after every resume. */
+export const MAX_REQUEST_BODY = 16 * 1024 * 1024;
+/** The largest response frame a client reads: a route's answer is capped at MAX_REQUEST_BODY by default, plus the frame's
+ *  own bytes (the instance's maxRequestFrameBytes is the same bound). It applies to op 60 only; every other frame keeps the
+ *  hello's max_frame_bytes. */
+export const MAX_RESPONSE_FRAME = MAX_REQUEST_BODY + 16 * 1024;
+
+/** True when the bytes begin a four-element frame whose op is 60 (0x84, then uint8 60), read without decoding the body. */
+export function isResponseFrameHead(bytes: Uint8Array): boolean {
+  return bytes.length >= 3 && bytes[0] === 0x84 && bytes[1] === 0x18 && bytes[2] === Op.response;
+}
+
+function validRequestPayload(payload: CborValue[]): boolean {
+  const [id, method, route, body, idem] = payload;
+  return uint(id) && typeof method === 'string' && method.length > 0 && utf8Length(method) <= MAX_METHOD
+    && typeof route === 'string' && route.length > 0 && utf8Length(route) <= MAX_ROUTE && body instanceof Uint8Array
+    && (idem === null || (idem instanceof Uint8Array && idem.length > 0 && idem.length <= MAX_IDEM));
+}
+
+const utf8Length = (s: string): number => new TextEncoder().encode(s).length;
+const httpStatus = (value: CborValue | undefined): boolean => typeof value === 'bigint' && value >= 100n && value <= 599n;
+
+/** op 59 [id, method, route, body, idem | null], n = 0 and no group: neither frame is replayable. A request the instance
+ *  would refuse as E_FRAME_SHAPE is refused here, before it is sent. */
+export function encodeRequestFrame(r: SocketRequestFrame): Uint8Array {
+  if (!Number.isSafeInteger(r.id) || r.id < 0) shape();
+  if (r.body.length > MAX_REQUEST_BODY) throw new Error('E_FRAME_LIMIT');
+  const payload = [r.id, r.method, r.route, r.body, r.idem];
+  if (!validRequestPayload(payload.map((v) => (typeof v === 'number' ? BigInt(v) : v)))) shape();
+  return encodeFrame(Op.request, 0, null, payload);
+}
+
+/** op 60 [id, status, body], checked as decodeFrame checks it; any other frame, or an id past the safe integers, is
+ *  E_FRAME_SHAPE. */
+export function decodeResponseFrame(bytes: Uint8Array): SocketResponseFrame {
+  const frame = decodeFrame(bytes);
+  const [id, status, body] = frame.payload;
+  if (frame.op !== Op.response || frame.groupId !== null || frame.payload.length !== 3 || !uint(id)
+    || (id as bigint) > BigInt(Number.MAX_SAFE_INTEGER) || !httpStatus(status) || !(body instanceof Uint8Array)) shape();
+  return { id: Number(id), status: Number(status), body };
 }
 
 const isId = (value: CborValue | undefined): boolean => value instanceof Uint8Array && value.length === 16;
@@ -65,11 +130,42 @@ const classOrNull = (value: CborValue | undefined): boolean => value === null ||
 const ringState = (value: CborValue | undefined): boolean => value === 0n || value === 1n || value === 2n;
 const flags = (value: CborValue | undefined): boolean => typeof value === 'bigint' && value >= 0n && value <= 3n;
 const voiceFlags = (value: CborValue | undefined): boolean => typeof value === 'bigint' && value >= 0n && value <= 31n;
+const u32 = (value: CborValue | undefined): boolean => typeof value === 'bigint' && value >= 0n && value <= 0xffffffffn;
 
 /** The ops whose malformed frame the gateway drops without closing the socket: the server's ephemeral voice signals
- *  (L-GW-32, L-GW-33), the structure notice (op 54) and the away roster notice (op 55, AW4). A bad frame of any other op
- *  is still a protocol failure that closes it. */
-export const DROPPABLE_OPS: ReadonlySet<number> = new Set([Op.voiceState, Op.callRing, Op.communityChanged, Op.afkAway, Op.appBuild]);
+ *  (L-GW-32, L-GW-33), the structure notice (op 54), the away roster notice (op 55, AW4) and the Bot's frames (ops 61-63,
+ *  Bot v2: a bad Bot frame costs one answer or one catalog push, never the connection). A bad frame of any other op is
+ *  still a protocol failure that closes it. */
+export const DROPPABLE_OPS: ReadonlySet<number> = new Set([Op.voiceState, Op.callRing, Op.communityChanged, Op.afkAway, Op.appBuild,
+  Op.botCatalog, Op.botReply, Op.botStateChanged]);
+
+export interface BotCatalogFrame { communityId: Uint8Array; revision: bigint; commands: CborValue[]; publication: Uint8Array | null }
+export interface BotReplyFrame { requestId: Uint8Array; seq: number; sealed: Uint8Array; final: boolean }
+export interface BotStateChangedFrame { scopeKind: 0 | 1 | 2; scopeId: Uint8Array; revision: bigint }
+
+/** op 61 [community_id, revision, filtered_catalog, publication | null], as decodeFrame checked it. */
+export function botCatalogOf(frame: Frame): BotCatalogFrame {
+  const [community, revision, commands, publication] = frame.payload;
+  if (frame.op !== Op.botCatalog || frame.payload.length !== 4 || !isId(community) || !uint(revision) || !Array.isArray(commands)
+    || !(publication === null || publication instanceof Uint8Array)) shape();
+  return { communityId: community as Uint8Array, revision: revision as bigint, commands,
+    publication };
+}
+
+/** op 62 [request_id, seq, sealed, final], as decodeFrame checked it; n may be 0 (an unringed reply) or not. */
+export function botReplyOf(frame: Frame): BotReplyFrame {
+  const [request, seq, sealed, final] = frame.payload;
+  if (frame.op !== Op.botReply || frame.payload.length !== 4 || !isId(request) || !u32(seq) || !(sealed instanceof Uint8Array)
+    || !bit(final)) shape();
+  return { requestId: request as Uint8Array, seq: Number(seq), sealed, final: final === 1n };
+}
+
+/** op 63 [scope_kind, scope_id, revision], as decodeFrame checked it; kind 0 is the user's own scope (its id the community). */
+export function botStateChangedOf(frame: Frame): BotStateChangedFrame {
+  const [kind, scope, revision] = frame.payload;
+  if (frame.op !== Op.botStateChanged || frame.payload.length !== 3 || !ringState(kind) || !isId(scope) || !uint(revision)) shape();
+  return { scopeKind: Number(kind) as 0 | 1 | 2, scopeId: scope as Uint8Array, revision: revision as bigint };
+}
 
 /** The op of a frame whose envelope is a four-element array with an op of at most 255, else null; nothing else is read. */
 export function frameOp(bytes: Uint8Array): number | null {

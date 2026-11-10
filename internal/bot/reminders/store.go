@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/cborx"
@@ -60,6 +61,10 @@ type Store struct {
 	state                   State
 	community, installation id.ID
 	Now                     func() time.Time
+	// Hints, when set, is told (a user hint, scope the owner) once a batch of reminders has been persisted as due
+	// (Bot v2 Task 17). The Bot delivers nothing: the owner's clients read their due reminders with a sealed read when
+	// they hear the hint. Nil sends none.
+	Hints client.HintSender
 }
 
 func NewStore(s State, binding native.Binding, clock ...func() time.Time) *Store {
@@ -516,6 +521,7 @@ func (s *Store) Tick(ctx context.Context) error {
 			return e
 		}
 		changes := make([]native.StateChange, 0, maxTx)
+		var owners []id.ID // the owners of the batch's reminders, each once, in order
 		for _, entry := range p.Entries {
 			if !strings.HasPrefix(string(entry.Key), reminderPrefix) {
 				break
@@ -535,11 +541,13 @@ func (s *Store) Tick(ctx context.Context) error {
 					return e
 				}
 				changes = append(changes, native.StateChange{Area: 8, Key: entry.Key, ExpectedRevision: entry.Revision, Value: b})
+				owners = appendOnce(owners, r.OwnerID)
 				if len(changes) == maxTx {
 					if _, e = s.transact(ctx, id.New(), changes); e != nil {
 						return e
 					}
-					changes = changes[:0]
+					s.hint(ctx, owners)
+					changes, owners = changes[:0], nil
 				}
 			}
 		}
@@ -547,6 +555,7 @@ func (s *Store) Tick(ctx context.Context) error {
 			if _, e = s.transact(ctx, id.New(), changes); e != nil {
 				return e
 			}
+			s.hint(ctx, owners)
 		}
 		if len(p.Entries) == 0 || len(p.Entries) < 100 || (len(p.Entries) > 0 && !strings.HasPrefix(string(p.Entries[len(p.Entries)-1].Key), reminderPrefix)) {
 			return nil
@@ -556,5 +565,27 @@ func (s *Store) Tick(ctx context.Context) error {
 		} else {
 			return nil
 		}
+	}
+}
+
+func appendOnce(owners []id.ID, owner id.ID) []id.ID {
+	for _, o := range owners {
+		if o == owner {
+			return owners
+		}
+	}
+	return append(owners, owner)
+}
+
+// hint tells each owner's clients, best effort, that reminders came due. A hint carries no content, a missed one is
+// recovered when the client compares revisions at connect, and it never fails the tick.
+func (s *Store) hint(ctx context.Context, owners []id.ID) {
+	if s.Hints == nil {
+		return
+	}
+	for _, owner := range owners {
+		hintCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		_ = s.Hints.Hint(hintCtx, client.StateScopeUser, owner)
+		cancel()
 	}
 }

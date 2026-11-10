@@ -47,7 +47,6 @@ const (
 var DumpTables = []string{
 	// Restored before its source rows so their revision triggers run during replay.
 	// This can only advance the fence and conservatively invalidates old tickets.
-	"bot_interaction_eligibility_revisions",
 	"instances", "instance_settings", "users", "user_presence", "devices", "device_lists", "sessions",
 	"password_credentials", "totp_secrets", "recovery_codes", "webauthn_users",
 	"webauthn_credentials", "webauthn_ceremonies", "oidc_identities", "login_attempts",
@@ -111,7 +110,7 @@ var DumpTables = []string{
 	// restore that dropped it would reset every end-to-end encrypted channel's slow mode.
 	"slowmode_marks",
 	// 020_bot_installations.sql: runtime before installation, then claim/operation/session children.
-	"bot_runtimes", "bot_installations", "automod_stepup_grants", "bot_join_role_policy", "bot_join_role_grant_receipts", "bot_claims", "bot_operations", "bot_session_bindings", "bot_interaction_admission_receipts",
+	"bot_runtimes", "bot_installations", "bot_join_role_policy", "bot_join_role_grant_receipts", "bot_claims", "bot_operations", "bot_session_bindings",
 	// 032_role_panels.sql: panels reference both channels and installations;
 	// options reference panels and roles. Restore them only after all parents.
 	"role_panels", "role_panel_options", "reaction_role_grant_sources", "bot_join_role_grant_sources",
@@ -122,10 +121,10 @@ var DumpTables = []string{
 	// 025_bot_group_registration_receipts.sql: immutable receipts scoped to an installation.
 	"bot_event_streams", "bot_structural_events",
 	"bot_group_registration_receipts",
-	// Admission consumption bindings depend on the installation and accompany
-	// the accepted registration in logical backups.
-	"bot_group_registration_admission_receipts",
 	"bot_event_acks",
+	// 051_bot_v2.sql (Bot v2 Task 9): catalogs, command keys, Bot channels and webhooks are
+	// children of communities (and channels, users); the state revisions have no parent.
+	"bot_catalogs", "bot_command_keys", "bot_channels", "bot_webhooks", "bot_state_revisions",
 }
 
 // DumpPostgres writes a logical dump of dillad's tables to w using COPY TO.

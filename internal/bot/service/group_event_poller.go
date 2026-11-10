@@ -14,38 +14,19 @@ import (
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
-// The age limits bound how long one event may fail at the head of the shared queue. After this
-// long since its first failed handling attempt, the poller acknowledges it as undeliverable,
-// whatever the cause, so a cause no handler classifies (a terminal send after restore, a resync
-// that never finishes, a future bug) cannot stall every Bot reply indefinitely. The first-failure
-// time and the count of failed passes are durable in the helper's state store; a skip also needs
-// at least groupEventMinFailedPasses failed passes. Jonas 2026-10-30:
-//
-//   - InteractionEventMaxPendingAge (one hour) for an event from a private interaction group: a command
-//     whose reply is an hour late is worthless, and it blocks every other user's commands.
-//   - TextEventMaxPendingAge (24 hours) for every other event, in particular text-channel
-//     messages awaiting automatic moderation, which keep their value much longer. An event whose
-//     group cannot be positively identified as an interaction group also gets the longer limit.
-//   - HeldEventMaxPendingAge (one hour) for an event HELD because its sender's trust could not be
-//     refreshed (ErrGroupEventHeld), whatever its group: it is never dispatched while held, and an
-//     unverifiable sender must not block every later event for a day.
-const (
-	InteractionEventMaxPendingAge = time.Hour
-	TextEventMaxPendingAge        = 24 * time.Hour
-	HeldEventMaxPendingAge        = time.Hour
-)
-
-// groupEventKindSource identifies interaction groups; *native.Client implements it. The generic
-// InspectGroup refuses kind-3 groups, so the authenticated descriptor list is the positive proof.
-type groupEventKindSource interface {
-	InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error)
-}
+// TextEventMaxPendingAge bounds how long one event may fail at the head of the shared queue. After
+// this long since its first failed handling attempt, the poller acknowledges it as undeliverable,
+// whatever the cause, so a cause no handler classifies cannot stall the queue indefinitely. The
+// first-failure time and the count of failed passes are durable in the helper's state store; a skip
+// also needs at least groupEventMinFailedPasses failed passes.
+const TextEventMaxPendingAge = 24 * time.Hour
 
 const (
 	groupEventFailureArea = uint64(8)
 	groupEventFailureKey  = "dilla.bot.group-event-failure.v1/"
-	// Version 3 adds the hold fields (HeldFirst, HeldAttempts). A version-2 record is replaced by a
-	// fresh one, which only restarts an age, never shortens it.
+	// Version 3 added hold fields (HeldFirst, HeldAttempts), unused since Bot v2 Task 23 removed the
+	// sender trust holds; the record keeps its shape. An older record is replaced by a fresh one,
+	// which only restarts an age, never shortens it.
 	groupEventFailureVersion = uint64(3)
 	// groupEventMinFailedPasses failed passes are required besides the age limit, so a forward
 	// clock jump alone can never skip an event.
@@ -191,7 +172,7 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 		eventCtx := client.WithoutCooperativeStop(ctx)
 		var skipped *SkippedGroupEvent
 		handlingErr := handler.HandleGroupEvent(eventCtx, event)
-		if errors.Is(handlingErr, ErrGroupEventTrustBusy) || errors.Is(handlingErr, client.ErrCooperativeStop) {
+		if errors.Is(handlingErr, client.ErrCooperativeStop) {
 			result.More = true
 			return result, &GroupEventHandlerError{DeliveryID: event.DeliveryID, Err: handlingErr}
 		}
@@ -203,13 +184,6 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 			return result, nil // The refusal is reported as pending work in result.RateLimited, not a failed pass.
 		}
 		if err := handlingErr; err != nil {
-			var moderationErr AutoModerationStageError
-			if errors.As(err, &moderationErr) || errors.Is(err, ErrModerationCheckpoint) || errors.Is(err, ErrModerationPendingCapacity) {
-				// Durable moderation has not transferred completion responsibility
-				// away from this journal entry. Aging it out would orphan accepted
-				// effects or ACK an evaluation that was never committed.
-				return result, &GroupEventHandlerError{DeliveryID: event.DeliveryID, Err: err}
-			}
 			if ctx.Err() != nil {
 				// Never skip, and never start an event's age, on a cancelled pass.
 				return result, &GroupEventHandlerError{DeliveryID: event.DeliveryID, Err: err}
@@ -217,7 +191,7 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 			if isUndeliverableGroupEvent(err) {
 				skipped = &SkippedGroupEvent{DeliveryID: event.DeliveryID, Cause: err}
 			} else {
-				first, aged, ageErr := p.failureAge(eventCtx, event, errors.Is(err, ErrGroupEventHeld))
+				first, aged, ageErr := p.failureAge(eventCtx, event)
 				if ageErr != nil || !aged || ctx.Err() != nil {
 					return result, &GroupEventHandlerError{DeliveryID: event.DeliveryID, Err: errors.Join(err, ageErr)}
 				}
@@ -256,9 +230,7 @@ type groupEventFailureRecord struct {
 	Sequence uint64
 	First    uint64 // unix seconds of the first failed pass
 	Attempts uint64 // failed passes, at least 1
-	// HeldFirst and HeldAttempts count only the current run of consecutive HELD passes
-	// (ErrGroupEventHeld); a pass that fails for any other reason resets both to zero, so the
-	// held-event age limit is bound to the hold reason.
+	// HeldFirst and HeldAttempts are always zero (the sender trust holds are gone, Bot v2 Task 23).
 	HeldFirst    uint64
 	HeldAttempts uint64
 }
@@ -273,9 +245,8 @@ func (r groupEventFailureRecord) matches(event native.GroupEvent) bool {
 // while real downtime still counts towards the age. A first-failure time more than
 // groupEventClockTolerance in the future (the clock went backwards) restarts the record at now.
 // A record that does not decode, or has an unknown version, is replaced by a fresh one. Every
-// write carries a revision check; any state error keeps the event pending. A held event (its
-// sender's trust could not be refreshed) uses HeldEventMaxPendingAge whatever its group.
-func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEvent, held bool) (time.Time, bool, error) {
+// write carries a revision check; any state error keeps the event pending.
+func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEvent) (time.Time, bool, error) {
 	state, ok := p.native.(groupEventFailureState)
 	if !ok {
 		return time.Time{}, false, nil
@@ -291,9 +262,6 @@ func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEve
 		return time.Time{}, false, err
 	}
 	next := groupEventFailureRecord{Version: groupEventFailureVersion, Delivery: event.DeliveryID, Group: event.Group, Sequence: event.SourceSequence, First: nowUnix, Attempts: 1}
-	if held {
-		next.HeldFirst, next.HeldAttempts = nowUnix, 1
-	}
 	if !current.Tombstone && len(current.Value) > 0 {
 		var stored groupEventFailureRecord
 		if cborx.Unmarshal(current.Value, &stored) == nil && stored.Version == groupEventFailureVersion &&
@@ -301,14 +269,6 @@ func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEve
 			if storedFirst, inRange := checkedInt64(stored.First); inRange &&
 				time.Unix(storedFirst, 0).Before(now.Add(groupEventClockTolerance+time.Second)) {
 				next.First, next.Attempts = stored.First, stored.Attempts+1
-				// Continue the run of held passes only if this pass is held too and the stored
-				// run is sane; any other failure leaves the hold fields at zero (reset).
-				if held && stored.HeldFirst > 0 && stored.HeldAttempts > 0 && stored.HeldAttempts < math.MaxInt64 {
-					if heldFirst, ok := checkedInt64(stored.HeldFirst); ok &&
-						time.Unix(heldFirst, 0).Before(now.Add(groupEventClockTolerance+time.Second)) {
-						next.HeldFirst, next.HeldAttempts = stored.HeldFirst, stored.HeldAttempts+1
-					}
-				}
 			}
 		}
 	}
@@ -324,107 +284,7 @@ func (p *GroupEventPoller) failureAge(ctx context.Context, event native.GroupEve
 		return time.Time{}, false, errors.New("invalid group event first-failure time")
 	}
 	first := time.Unix(firstUnix, 0)
-	if held {
-		// A held event's age counts only the current run of consecutive held passes.
-		heldUnix, ok := checkedInt64(next.HeldFirst)
-		if !ok {
-			return time.Time{}, false, errors.New("invalid held-event first time")
-		}
-		heldFirst := time.Unix(heldUnix, 0)
-		return heldFirst, next.HeldAttempts >= groupEventMinFailedPasses && now.Sub(heldFirst) >= HeldEventMaxPendingAge, nil
-	}
-	age := now.Sub(first)
-	if next.Attempts < groupEventMinFailedPasses || age < InteractionEventMaxPendingAge {
-		return first, false, nil
-	}
-	return first, age >= p.maxPendingAge(ctx, event), nil
+	return first, next.Attempts >= groupEventMinFailedPasses && now.Sub(first) >= TextEventMaxPendingAge, nil
 }
 
 var _ groupEventFailureState = (*native.Client)(nil)
-
-// maxPendingAge picks the age limit by the event's group kind: one hour only for an event whose
-// group the native descriptor list proves is a private interaction group, else 24 hours.
-func (p *GroupEventPoller) maxPendingAge(ctx context.Context, event native.GroupEvent) time.Duration {
-	source, ok := p.native.(groupEventKindSource)
-	if !ok {
-		return TextEventMaxPendingAge
-	}
-	descriptors, err := source.InteractionGroups(ctx)
-	if err != nil {
-		return TextEventMaxPendingAge
-	}
-	for _, descriptor := range descriptors {
-		if descriptor.Group == event.Group {
-			return InteractionEventMaxPendingAge
-		}
-	}
-	return TextEventMaxPendingAge
-}
-
-var _ groupEventKindSource = (*native.Client)(nil)
-
-// ErrGroupEventHeld marks an event from a sender whose trust could not be refreshed in this pass
-// (TrustRefresh.Unrefreshed). It is an ordinary handler failure: the event is neither dispatched
-// nor acknowledged, stays at the head of the queue and is retried on every pass, and is dispatched
-// once the sender's trust is current. It is never undeliverable, so only the queue's own age limit
-// can acknowledge it, and then without dispatch.
-var ErrGroupEventHeld = errors.New("group event held: its sender's trust is not current")
-
-type holdUnrefreshedSenders struct {
-	next GroupEventHandler
-	hold map[id.ID]bool
-}
-
-// HoldUnrefreshedSenders wraps handler so that an event from any user in unrefreshed is held
-// (ErrGroupEventHeld) instead of dispatched. With no unrefreshed users it is transparent. The
-// check is by user, not device, so a revoked device whose revocation was not processed is held too.
-func HoldUnrefreshedSenders(handler GroupEventHandler, unrefreshed map[id.ID]bool) GroupEventHandler {
-	if len(unrefreshed) == 0 {
-		return handler
-	}
-	hold := make(map[id.ID]bool, len(unrefreshed))
-	for user, held := range unrefreshed {
-		if held {
-			hold[user] = true
-		}
-	}
-	return holdUnrefreshedSenders{next: handler, hold: hold}
-}
-
-func (h holdUnrefreshedSenders) HandleGroupEvent(ctx context.Context, event native.GroupEvent) error {
-	if h.hold[event.SenderUser] {
-		return ErrGroupEventHeld
-	}
-	return h.next.HandleGroupEvent(ctx, event)
-}
-
-// ErrGroupEventTrustBusy holds an event while another pass refreshes its sender.
-// Contention does not start or advance durable failed-handling history.
-var ErrGroupEventTrustBusy = errors.New("group event held: sender trust refresh is active")
-
-// HoldBusySenders holds events for senders whose refresh is owned by another pass.
-// The poller leaves their journal entries and failure history untouched.
-func HoldBusySenders(handler GroupEventHandler, busy map[id.ID]bool) GroupEventHandler {
-	if len(busy) == 0 {
-		return handler
-	}
-	hold := make(map[id.ID]bool, len(busy))
-	for user, busy := range busy {
-		if busy {
-			hold[user] = true
-		}
-	}
-	return holdBusySenders{next: handler, hold: hold}
-}
-
-type holdBusySenders struct {
-	next GroupEventHandler
-	hold map[id.ID]bool
-}
-
-func (h holdBusySenders) HandleGroupEvent(ctx context.Context, event native.GroupEvent) error {
-	if h.hold[event.SenderUser] {
-		return ErrGroupEventTrustBusy
-	}
-	return h.next.HandleGroupEvent(ctx, event)
-}

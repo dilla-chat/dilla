@@ -1,6 +1,6 @@
 import { decode, encode, type CborValue } from '../cbor/index.ts';
 import type { CoreClient } from '../bridge';
-import { BotInteractionBindingMismatchError, BotInteractionUncertainError, createBotInteractionClient, type BotInteractionClient, type BotInteractionResult, type BotInteractionScope } from './interactions.ts';
+import { BotOperationRefusedError, BotOperationUncertainError, createBotOperations, supportedV1Operations, type BotOperationResult, type BotOperations } from './operations.ts';
 import { normalizeReminderTimezone } from './utility-time.ts';
 
 const MAX_UINT = (1n << 64n) - 1n;
@@ -9,8 +9,8 @@ const encoder = new TextEncoder();
 const whiteSpaceOnly = /^\p{White_Space}*$/u;
 const ID_HEX = /^[0-9a-f]{32}$/u;
 const POLL_DURATIONS = new Set([3600n, 14_400n, 28_800n, 86_400n, 259_200n, 604_800n]);
-const KNOWN_OPERATIONS = new Set([0, 1, 2, 3, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
-  30, 31, 40, 50, 51, 52, 60, 61, 62, 63, 64, 70, 71, 72, 73, 74, 75, 80, 81, 82, 83, 84]);
+const KNOWN_OPERATIONS = new Set([0, 1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+  30, 31, 40, 50, 51, 52, 60, 61, 64, 70, 71, 72, 73, 74, 75, 80, 81, 82, 83, 84]);
 const POLL_OPERATIONS = new Set([70, 71, 72, 73, 74, 75]);
 const REMINDER_OPERATIONS = new Set([80, 81, 82, 83, 84]);
 const MUTATION_OPERATIONS = new Set([70, 73, 74, 80, 82, 83]);
@@ -160,6 +160,9 @@ export type UtilityCapabilities = UtilityBinding & { version: 1; supportedOperat
 export type PollPage = { items: PollSummary[]; nextCursor: Uint8Array | null };
 export type ReminderPage = { items: ReminderSummary[]; nextCursor: Uint8Array | null };
 export type PollVotersPage = { voters: string[]; nextCursor: Uint8Array | null };
+/** What a poll card shows of its voters, answered with the poll in one read (Task 21b fix round 1): the first five
+ *  voters of each answer, how many distinct people voted, and whether that count is a lower bound. */
+export type PollVoters = { previews: string[][]; distinct: number; capped: boolean };
 
 function validPollText(value: unknown, maxChars: number): value is string {
   return typeof value === 'string' && !whiteSpaceOnly.test(value) && Array.from(value).length <= maxChars;
@@ -502,6 +505,8 @@ export type BotUtilities = {
   readonly binding: UtilityBinding | null;
   pollCreate(input: PollCreateInput): Promise<PollSummary>;
   pollGet(pollId: string, options: PollReadOptions): Promise<PollSummary>;
+  /** The poll and its voters in one sealed read (poll.get, 91). `voters` is null from a Bot that sends none. */
+  pollRead(pollId: string, options: PollReadOptions): Promise<{ poll: PollSummary; voters: PollVoters | null }>;
   pollList(input: PollListInput): Promise<PollPage>;
   pollVote(input: PollVoteInput): Promise<PollSummary>;
   pollClose(input: PollCloseInput): Promise<PollSummary>;
@@ -511,7 +516,7 @@ export type BotUtilities = {
   reminderCancel(input: ReminderMutationInput): Promise<ReminderSummary>;
   reminderDismiss(input: ReminderMutationInput): Promise<ReminderSummary>;
   reminderDue(cursor?: Uint8Array | null, requestId?: string): Promise<ReminderPage>;
-  read(requestId: string, operation: number): Promise<BotInteractionResult | null>;
+  read(requestId: string, operation: number): Promise<BotOperationResult | null>;
 };
 
 function validateRequestId(value: string): string { bytesFromHex(value); return value; }
@@ -535,8 +540,8 @@ function normalizeCursor(value?: Uint8Array | null): Uint8Array | null {
   if (!(value instanceof Uint8Array) || value.length < 1 || value.length > 256) fail('invalid-cursor');
   return value.slice();
 }
-function checkNoRevision(result: BotInteractionResult): void { if (result.revision !== null) fail('revision-mismatch'); }
-function assertSuccess(result: BotInteractionResult, operation: number): void {
+function checkNoRevision(result: BotOperationResult): void { if (result.revision !== null) fail('revision-mismatch'); }
+function assertSuccess(result: BotOperationResult, operation: number): void {
   if (result.status === 0) return;
   if (result.status === 5 && MUTATION_OPERATIONS.has(operation)) {
     throw new BotUtilitiesUncertainMutationError(operation, result.status, result.requestId);
@@ -544,7 +549,7 @@ function assertSuccess(result: BotInteractionResult, operation: number): void {
   if (result.status === 5) throw new BotUtilitiesProviderUnavailableError(operation, result.requestId);
   throw new BotUtilitiesStatusError(operation, result.status, result.requestId, result.revision);
 }
-function responseRequest(result: BotInteractionResult, requestId: string, operation: number): void {
+function responseRequest(result: BotOperationResult, requestId: string, operation: number): void {
   if (result.requestId !== requestId) fail('request-mismatch');
   assertSuccess(result, operation);
 }
@@ -555,83 +560,63 @@ function currentUserId(client: CoreClient): string {
   return idText(value);
 }
 
-/** Build strict poll/reminder clients on the shared scope-checked interaction transport. */
+/** Build strict poll/reminder clients on sealed Bot commands (Bot v2 Task 21b): each operation is sealed to the community's
+ *  verified command key and answered through op 62, so no interaction group and no response archive are involved. */
 export function createBotUtilities(client: CoreClient, communityId: string): BotUtilities {
   const community = idText(communityId);
-  const transport: BotInteractionClient = createBotInteractionClient(client, community);
+  const transport: BotOperations = createBotOperations(client, community);
   let lastBinding: UtilityBinding | null = null;
-  let lastCapabilityScope: BotInteractionScope | null = null;
-  const sameScope = (left: BotInteractionScope, right: BotInteractionScope): boolean => left.installationId === right.installationId
-    && left.botUserId === right.botUserId && left.revision === right.revision;
 
-  const statusBinding = async (): Promise<UtilityBinding & { revision: string }> => {
+  const statusBinding = async (): Promise<UtilityBinding> => {
     const status = await client.call({ m: 'getBotCommandStatus', communityId: community }) as {
-      installationId?: unknown; botUserId?: unknown; state?: unknown; revision?: unknown;
+      installationId?: unknown; botUserId?: unknown; state?: unknown;
     } | null;
     if (status === null || status.state !== 3 || typeof status.installationId !== 'string' || typeof status.botUserId !== 'string'
       || !ID_HEX.test(status.installationId) || !ID_HEX.test(status.botUserId) || /^0{32}$/u.test(status.installationId)
-      || /^0{32}$/u.test(status.botUserId) || typeof status.revision !== 'string' || !/^(?:0|[1-9]\d*)$/u.test(status.revision)) {
+      || /^0{32}$/u.test(status.botUserId)) {
       lastBinding = null;
       throw new BotUtilitiesProviderUnavailableError(undefined, undefined, 'The Bot installation is not ready for utilities.');
     }
-    return { installationId: status.installationId, botUserId: status.botUserId, revision: status.revision };
+    return { installationId: status.installationId, botUserId: status.botUserId };
   };
+  // What the Bot offers is the catalog this device holds (pushed on change, read at connect when behind): no round trip.
+  // The Bot user is the one the catalog's key was verified for, when known; it must be the installation's.
   const capabilities = async (): Promise<UtilityCapabilities> => {
     lastBinding = null;
-    lastCapabilityScope = null;
-    const before = await statusBinding();
-    const expectedScope: BotInteractionScope = before;
-    const result = await transport.request({ operation: 3, args: [], expectedScope });
-    responseRequest(result, result.requestId, 3);
-    checkNoRevision(result);
-    const caps = decodeBotUtilityCapabilities(result.data, before);
-    if (!caps.supportedOperations.includes(3)) fail('invalid-response');
-    const after = await statusBinding();
-    if (!sameScope(result.scope, before) || !sameScope(before, after)) {
-      lastBinding = null;
-      throw new BotUtilitiesProviderUnavailableError(3, result.requestId, 'The Bot installation changed while capabilities were loading.');
+    const binding = await statusBinding();
+    const catalog = client.get(`botCatalog:${community}`);
+    if (catalog === null || catalog === undefined || catalog.botUserId !== null && catalog.botUserId !== binding.botUserId) {
+      throw new BotUtilitiesProviderUnavailableError(3, undefined, 'The Bot installation changed while capabilities were loading.');
     }
-    lastBinding = { installationId: caps.installationId, botUserId: caps.botUserId };
-    lastCapabilityScope = result.scope;
-    return caps;
+    const supportedOperations = supportedV1Operations(catalog.commands).filter(op => KNOWN_OPERATIONS.has(op));
+    lastBinding = binding;
+    return { version: 1, ...binding, supportedOperations };
   };
-  const authorizeOperation = async (operation: number): Promise<BotInteractionScope> => {
-    const caps = await capabilities();
-    const supported = operation >= 70 && operation <= 75 ? isPollOperationSupported(caps, operation)
-      : operation >= 80 && operation <= 84 ? isReminderOperationSupported(caps, operation) : false;
-    if (!supported) throw new BotUtilitiesProviderUnavailableError(operation);
-    if (lastCapabilityScope === null) fail('binding-mismatch');
-    return { ...lastCapabilityScope };
+  // Bot v2 (task 20, 21b): an operation is offered when the catalog this device holds lists its sealed form.
+  // Ruling (fix round 1, automated review #5): the server-filtered catalog is display only. Hiding or listing an operation
+  // here is no authority: the Bot authorises every operation itself, from the sender's permissions in its own feed, and
+  // refuses what the member may not do whatever this check said.
+  // The live status still names the installation a card binds to (`binding`); the Bot itself is the catalog key's.
+  const authorizeOperation = async (operation: number): Promise<void> => {
+    const catalog = client.get(`botCatalog:${community}`);
+    const listed = catalog !== null && catalog !== undefined && supportedV1Operations(catalog.commands).includes(operation);
+    if (!listed || !(POLL_OPERATIONS.has(operation) || REMINDER_OPERATIONS.has(operation))) throw new BotUtilitiesProviderUnavailableError(operation);
+    lastBinding = await statusBinding();
   };
   const send = async (operation: number, args: readonly (string | number | Uint8Array | null)[], options: {
-    requestId?: string; revision?: string | bigint | null;
-  } = {}): Promise<BotInteractionResult> => {
+    requestId?: string; revision?: string | bigint | null; channelId?: string;
+  } = {}): Promise<BotOperationResult> => {
     const requestId = requestIdOrGenerate(options.requestId);
-    const expectedScope = await authorizeOperation(operation);
+    await authorizeOperation(operation);
     const revision = options.revision === undefined || options.revision === null ? null : revisionString(options.revision, options.revision !== 0n && options.revision !== '0');
-    let result: BotInteractionResult;
+    let result: BotOperationResult;
     try {
-      result = await transport.request({ operation, requestId, channelId: null, args, revision, expectedScope });
+      result = await transport.request({ operation, requestId, channelId: options.channelId ?? null, args, revision });
     } catch (cause) {
-      if (cause instanceof BotInteractionBindingMismatchError) {
-        lastBinding = null;
-        lastCapabilityScope = null;
-        fail('binding-mismatch');
-      }
-      if (cause instanceof BotInteractionUncertainError) {
-        lastBinding = null;
-        lastCapabilityScope = null;
-      }
-      if (MUTATION_OPERATIONS.has(operation) && cause instanceof BotInteractionUncertainError) {
-        return uncertainMutation(operation, requestId, cause, null);
-      }
+      // No answer in time: a mutation may have been taken; Retry with the same request id settles it.
+      if (MUTATION_OPERATIONS.has(operation) && cause instanceof BotOperationUncertainError) return uncertainMutation(operation, requestId, cause, null);
+      if (cause instanceof BotOperationRefusedError) throw new BotUtilitiesProviderUnavailableError(operation, requestId);
       throw cause;
-    }
-    if (!sameScope(result.scope, expectedScope)) {
-      lastBinding = null;
-      lastCapabilityScope = null;
-      if (MUTATION_OPERATIONS.has(operation) && result.status === 0) return uncertainMutation(operation, requestId, 'installation changed after mutation acceptance');
-      fail('binding-mismatch');
     }
     try { responseRequest(result, requestId, operation); }
     catch (cause) {
@@ -639,6 +624,15 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
       throw cause;
     }
     return result;
+  };
+  const pollRead = async (pollId: string, options: PollReadOptions): Promise<{ poll: PollSummary; voters: PollVoters | null }> => {
+    const targetId = idText(pollId);
+    const channelId = idText(options.channelId);
+    const threadId = options.threadId ?? null;
+    if (threadId !== null) idText(threadId);
+    const result = await send(71, [bytesFromHex(targetId)], { requestId: options.requestId });
+    const poll = decodePollGet(result.data, { pollId: targetId, channelId, threadId, responseRevision: result.revision });
+    return { poll, voters: result.extra === undefined ? null : decodePollVoters(result.extra, poll.answers.length) };
   };
   const ownerId = (): string => currentUserId(client);
   const checkReminderSource = (summary: ReminderSummary, input: ReminderCreatePayloadInput): void => {
@@ -655,17 +649,11 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
     pollCreate: async (input) => {
       const requestId = validateRequestId(input.requestId);
       const payload = encodePollCreatePayload(input);
-      const result = await send(70, [payload], { requestId, revision: 0n });
+      const result = await send(70, [payload], { requestId, revision: 0n, channelId: input.channelId });
       return decodeAcceptedMutation(70, requestId, () => decodePollCreate(result.data, requestId, { channelId: input.channelId, threadId: input.threadId ?? null, responseRevision: result.revision }));
     },
-    pollGet: async (pollId, options) => {
-      const targetId = idText(pollId);
-      const channelId = idText(options.channelId);
-      const threadId = options.threadId ?? null;
-      if (threadId !== null) idText(threadId);
-      const result = await send(71, [bytesFromHex(targetId)], { requestId: options.requestId });
-      return decodePollGet(result.data, { pollId: targetId, channelId, threadId, responseRevision: result.revision });
-    },
+    pollGet: async (pollId, options) => (await pollRead(pollId, options)).poll,
+    pollRead,
     pollList: async (input) => {
       const channelId = idText(input.channelId);
       const threadId = input.threadId ?? null;
@@ -695,10 +683,9 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
       const channelId = idText(input.channelId);
       const threadId = input.threadId ?? null;
       if (threadId !== null) idText(threadId);
+      // Task 21b fix round 1: no backing poll read per page; the Bot checks the poll, its channel and the option.
       if (!Number.isInteger(input.option) || input.option < 0 || input.option > 9) fail('invalid-payload');
-      const backing = await send(71, [bytesFromHex(pollId)], { requestId: generatedRequestId() });
-      const poll = decodePollGet(backing.data, { pollId, channelId, threadId, responseRevision: backing.revision });
-      if (!Number.isInteger(input.option) || input.option < 0 || input.option >= poll.answers.length) fail('invalid-payload');
+      void channelId;
       const cursor = normalizeCursor(input.cursor);
       if (cursor !== null) checkPollVoterCursor(cursor, pollId, input.option);
       const result = await send(75, [bytesFromHex(pollId), input.option, cursor], { requestId: input.requestId });
@@ -742,12 +729,21 @@ export function createBotUtilities(client: CoreClient, communityId: string): Bot
       return decodeReminderDuePage(result.data, { ownerId: owner });
     },
     read: (requestId, operation) => {
-      if (![3, ...POLL_OPERATIONS, ...REMINDER_OPERATIONS].includes(operation)) fail('invalid-operation');
+      if (![...POLL_OPERATIONS, ...REMINDER_OPERATIONS].includes(operation)) fail('invalid-operation');
       return transport.read(validateRequestId(requestId), operation);
     },
   };
 }
 
+/** A poll read's voters, [previews (per answer, at most five 16-byte ids), distinct uint, capped 0|1], decoded strictly. */
+export function decodePollVoters(value: unknown, answers: number): PollVoters {
+  return guarded(() => {
+    const [previews, distinct, capped] = fields(value, 3);
+    const rows = list(previews, answers, answers).map(row => list(row, 0, 5).map(readId));
+    const flag = uint(capped, 0n, 1n);
+    return { previews: rows, distinct: Number(uint(distinct, 0n, 1_000_000n)), capped: flag === 1n };
+  });
+}
 export function isPollOperationSupported(capabilities: UtilityCapabilities, operation: number): boolean {
   return POLL_OPERATIONS.has(operation) && capabilities.supportedOperations.includes(operation);
 }

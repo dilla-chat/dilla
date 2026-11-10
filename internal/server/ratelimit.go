@@ -18,6 +18,42 @@ type Class struct {
 	Burst     int
 }
 
+// The incoming-webhook buckets (Bot v2 task 13). POST /hooks/{webhook_id}/{secret} is unauthenticated:
+//   - WebhookAddressAllClass is spent by every request of a client address (RateKey of RealIP) and bounds the work
+//     any one address causes.
+//   - WebhookAddressClass and WebhookPrefixClass count failures only (fix round 2 S1): a request whose id or secret
+//     did not match, or that failed before the check. An address whose failure bucket is empty is refused before any
+//     work; a network's failure bucket only turns its failures' 401 into 429. A request with the right secret never
+//     touches either, so junk from a network cannot throttle a valid sender on it. Guessing a random 128-bit id with
+//     a 256-bit secret is hopeless at any of these rates.
+//   - WebhookClass is keyed by the webhook id and spent only once the secret matched: 30 a minute with a burst of 5
+//     (spec G5).
+var (
+	// WebhookAddressClass: one address's failures, 2 a second with a burst of 20.
+	WebhookAddressClass = Class{Name: "webhook_address", PerSecond: 2, Burst: 20}
+	// WebhookPrefixAllClass is spent by every webhook request of a network (RatePrefixKey: IPv4 /24, IPv6 /48),
+	// before any work (fix round 3 S4/R2-1): a flood spread over a network's addresses meets one ceiling. 50 a
+	// second with a burst of 250 is far above what valid senders on one network send to webhooks at 0.5 a second
+	// each, so junk must be very heavy before it can throttle them.
+	WebhookPrefixAllClass = Class{Name: "webhook_prefix_all", PerSecond: 50, Burst: 250}
+	// WebhookAddressAllClass is spent by every webhook request of an address, whatever its outcome (fix round 2 S1):
+	// 10 a second with a burst of 50 bounds the work one address causes, valid secrets included, well above what a
+	// host feeding even a dozen webhooks at their own 0.5 a second sends.
+	WebhookAddressAllClass = Class{Name: "webhook_address_all", PerSecond: 10, Burst: 50}
+	// WebhookPrefixClass is keyed by RatePrefixKey (IPv4 /24, IPv6 /48) and counts the network's failures
+	// (fix round 1 M-3): one network spreading attempts over its 65 536 /64s still meets one bucket.
+	WebhookPrefixClass = Class{Name: "webhook_prefix", PerSecond: 20, Burst: 100}
+	// WebhookAvatarClass (per webhook) and WebhookAvatarGlobalClass (the instance) meter avatar fetches (fix round
+	// 1): a webhook starts at most one fetch per 30 s after a burst of 2, and the instance at most 2 a second
+	// after a burst of 10. A refused fetch posts without an avatar.
+	WebhookAvatarClass       = Class{Name: "webhook_avatar", PerSecond: 1.0 / 30, Burst: 2}
+	WebhookAvatarGlobalClass = Class{Name: "webhook_avatar_all", PerSecond: 2, Burst: 10}
+	// WebhookAvatarCommunityClass (fix round 2 N-2) is one community's share: one fetch per 5 s after a burst of 5,
+	// so a community's 50 webhooks cannot fill the instance's 2 a second by themselves.
+	WebhookAvatarCommunityClass = Class{Name: "webhook_avatar_community", PerSecond: 0.2, Burst: 5}
+	WebhookClass                = Class{Name: "webhook", PerSecond: 0.5, Burst: 5}
+)
+
 type bucket struct {
 	lim  *rate.Limiter
 	seen time.Time
@@ -61,9 +97,18 @@ func (l *RateLimiter) Allow(class Class, key string) (bool, time.Duration) {
 	if !l.cfg.Enabled {
 		return true, 0
 	}
-	k := class.Name + "\x00" + key
 	now := l.clk.Now()
+	b := l.bucketFor(class, key, now)
+	if b.lim.AllowN(now, 1) {
+		return true, 0
+	}
+	return false, l.retryAfter(b.lim.TokensAt(now), class)
+}
+
+func (l *RateLimiter) bucketFor(class Class, key string, now time.Time) *bucket {
+	k := class.Name + "\x00" + key
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	b, ok := l.buckets[k]
 	if !ok {
 		if len(l.buckets) >= l.cfg.MaxKeys {
@@ -73,12 +118,37 @@ func (l *RateLimiter) Allow(class Class, key string) (bool, time.Duration) {
 		l.buckets[k] = b
 	}
 	b.seen = now
-	l.mu.Unlock()
+	return b
+}
 
-	if b.lim.AllowN(now, 1) {
-		return true, 0
+// Take is Allow for a token the caller may give back: it spends one token of (class, key) now and, when it did,
+// returns refund, which restores it (once). A refused Take spends nothing, as a refused Allow does. It is how a
+// failure bucket is reserved before work whose outcome is not yet known and refunded when the work succeeded
+// (webhook fix round 3 R2-2): requests running at the same time each hold a token, so they cannot all pass a check
+// that only one token would have allowed.
+func (l *RateLimiter) Take(class Class, key string) (bool, time.Duration, func()) {
+	if !l.cfg.Enabled {
+		return true, 0, func() {}
 	}
-	return false, l.retryAfter(b.lim.TokensAt(now), class)
+	now := l.clk.Now()
+	b := l.bucketFor(class, key, now)
+	// AllowN, not ReserveN plus CancelAt: a refused AllowN changes nothing, where a refused reservation briefly
+	// takes the bucket below zero and, cancelled at a later instant or interleaved with refunds, leaks or mints a token.
+	if !b.lim.AllowN(now, 1) {
+		return false, l.retryAfter(b.lim.TokensAt(now), class), nil
+	}
+	var once sync.Once
+	return true, 0, func() { once.Do(func() { l.refund(b) }) }
+}
+
+// refund gives one token back to b, never past its burst. Reservation.CancelAt cannot do it: it restores nothing
+// once its time to act has passed, which for an immediately granted reservation is the instant it was taken, so a
+// refund after any work at all would be a silent no-op. AllowN with -1 adds one token at the current time. There is
+// no burst check before the add: x/time/rate clips the bucket at its burst on every read (advance), so a token added
+// to a nearly full bucket is capped there, where skipping the add below burst-1 would lose a whole token to a few
+// milliseconds of refill. Take refuses with AllowN, which changes nothing, so no open reservation is ever disturbed.
+func (l *RateLimiter) refund(b *bucket) {
+	b.lim.AllowN(l.clk.Now(), -1)
 }
 
 // retryAfter is §5.3's number: computed from the bucket's DEFICIT and rounded

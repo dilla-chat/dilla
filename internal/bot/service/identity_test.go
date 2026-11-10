@@ -241,7 +241,7 @@ func (h *fakeIdentityHTTP) DiscoverObserved(context.Context) (client.Discovery, 
 	if key == nil {
 		key = []byte{0x77, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 	}
-	return client.Discovery{InstanceID: h.instance, Generation: 1, WireVersions: []uint64{3}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1}, ExternalSenderPub: key}, client.ResponseObservation{ServerTime: 1_800_000_000, HasServerTime: true, Generation: 1, HasGeneration: true}, nil
+	return client.Discovery{InstanceID: h.instance, Generation: 1, WireVersions: []uint64{6}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1}, ExternalSenderPub: key}, client.ResponseObservation{ServerTime: 1_800_000_000, HasServerTime: true, Generation: 1, HasGeneration: true}, nil
 }
 func (*fakeIdentityHTTP) InstanceLimits(context.Context) (client.Limits, error) {
 	return client.Limits{}, nil
@@ -278,7 +278,7 @@ type fakeIdentitySession struct {
 }
 
 func (s *fakeIdentitySession) Negotiate(context.Context, []uint64, []uint64, []uint64) (client.Negotiated, error) {
-	return client.Negotiated{Wire: 3, E2EE: 1, Media: 1}, nil
+	return client.Negotiated{Wire: 6, E2EE: 1, Media: 1}, nil
 }
 func (s *fakeIdentitySession) FinalizeCredential(_ context.Context, _, request id.ID, revision uint64, _ []byte) (client.Installation, error) {
 	s.finalizeRequests = append(s.finalizeRequests, request)

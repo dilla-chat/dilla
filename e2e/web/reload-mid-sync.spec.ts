@@ -3,19 +3,20 @@
 // device" on her phone). The phone holds the messages for their sender's signed list (E_DEVICE_LIST_STALE) while its own
 // account's history is still on its way; the reload restarts the trust pass with every leaf of the account at cached
 // version 0, and each of them must be ingested and its held rows released, not only the first one's.
-import { expect, type Page, type Request } from '@playwright/test';
+import { expect, type Page, type Worker } from '@playwright/test';
 import {
   TEST_TIMEOUT, WAIT, addServerVia, channelRow, composerBox, copy, expectComposerReady, expectShell, instanceInvite,
   messageRow, newChannelButton, railItem, signIn, signUp, tag,
 } from './support/app';
 import { test } from './support/second';
+import { watchSocketRequests, type SocketRequestSeen } from './support/socket-requests';
 
 test.describe.configure({ timeout: TEST_TIMEOUT * 2 });
 
 const SERVER = 'Mid Sync';
 const CHANNELS = ['general', 'raid', 'news'];
-const UPLOAD = /\/v1\/groups\/([0-9a-f]{32})\/message$/;
-const RESYNC = /\/v1\/groups\/([0-9a-f]{32})\/resync$/;
+const UPLOAD = /^\/v1\/groups\/([0-9a-f]{32})\/message$/;
+const HANDSHAKES = /^\/v1\/groups\/([0-9a-f]{32})\/handshakes$/;
 /** How long the phone's reads of a signed device-list history take: the CI runner's worker took this long and more. */
 const SLOW_HISTORY_MS = 8000;
 
@@ -28,17 +29,42 @@ async function makeChannel(page: Page, name: string): Promise<void> {
   await expectComposerReady(page, name);
 }
 
-/** Sends in a channel and answers the group the upload went to. */
-async function sendIn(page: Page, channel: string, text: string): Promise<string> {
+/** Holds every group join (the external commit, `POST /v1/groups/{id}/resync`) of the worker after the first two groups, for as
+ *  long as the worker lives. The join is a gateway request frame, so the page's HTTP routes never see it: the frame is held in
+ *  the worker's WebSocket.send, which it matches by the route text inside the frame. `joined` is the groups let through. */
+function holdJoinsAfterTwo(): void {
+  const proto = WebSocket.prototype;
+  if ((proto as WebSocket & { dillaHolding?: true }).dillaHolding === true) return;
+  (proto as WebSocket & { dillaHolding?: true }).dillaHolding = true;
+  const joined: string[] = [];
+  (globalThis as unknown as { dillaJoined: string[] }).dillaJoined = joined;
+  const send = proto.send;
+  proto.send = function (this: WebSocket, data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
+    if (typeof data !== 'string' && !(data instanceof Blob)) {
+      const bytes = ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
+      const head = String.fromCharCode(...bytes.subarray(0, 200));
+      const m = /\/v1\/groups\/([0-9a-f]{32})\/resync/.exec(head);
+      if (m !== null) {
+        const group = m[1]!;
+        if (joined.length < 2 && !joined.includes(group)) joined.push(group);
+        if (!joined.includes(group)) return;
+      }
+    }
+    send.call(this, data);
+  };
+}
+
+/** Sends in a channel and answers the group the upload went to. `seen` is the page's socket request log
+ *  (watchSocketRequests): the upload is a request frame on the gateway socket, not an HTTP request. */
+async function sendIn(page: Page, channel: string, text: string, seen: SocketRequestSeen[]): Promise<string> {
   await channelRow(page, channel).click();
   const box = composerBox(page, channel);
   await box.fill(text, { timeout: WAIT });
   // A trust refresh may disable the native button between actionability and mouse-up.
   // Observe native submit before the click: only an unsubmitted, untouched draft can be
   // clicked again. Once any submit happened, its real upload must succeed without retry.
-  const uploads: Request[] = [];
-  const onRequest = (r: Request): void => { if (r.method() === 'POST' && UPLOAD.test(r.url())) uploads.push(r); };
-  page.on('request', onRequest);
+  const before = seen.length;
+  const uploads = (): SocketRequestSeen[] => seen.slice(before).filter((r) => r.method === 'POST' && UPLOAD.test(r.path));
   await page.evaluate(() => {
     const state = { submits: 0, dispose: () => {} };
     const observe = (event: Event): void => {
@@ -51,7 +77,7 @@ async function sendIn(page: Page, channel: string, text: string): Promise<string
   const deadline = Date.now() + WAIT;
   const remaining = (): number => Math.max(1, deadline - Date.now());
   const attempts: { submits: number; uploads: number }[] = [];
-  let upload: Request;
+  let upload: SocketRequestSeen;
   try {
     const send = page.locator('.d-app-shell__main .d-composer').getByRole('button', { name: copy('shell.composer.send'), exact: true });
     for (;;) {
@@ -59,25 +85,25 @@ async function sendIn(page: Page, channel: string, text: string): Promise<string
       await expect(send).toBeEnabled({ timeout: remaining() });
       await send.click({ timeout: remaining() });
       const submits = await page.evaluate(() => (window as unknown as { __midSyncSubmit: { submits: number } }).__midSyncSubmit.submits);
-      attempts.push({ submits, uploads: uploads.length });
-      if (submits > 0 || uploads.length > 0) break;
+      attempts.push({ submits, uploads: uploads().length });
+      if (submits > 0 || uploads().length > 0) break;
       await expect(box).toHaveValue(text, { timeout: remaining() });
       if (Date.now() >= deadline || attempts.length >= 3) throw new Error('Send did not dispatch a native submit within the bounded attempts');
     }
-    await expect.poll(() => uploads.length, { timeout: remaining(), message: 'the submitted message produces its real upload' }).toBeGreaterThan(0);
-    upload = uploads[0]!;
+    await expect.poll(() => uploads().length, { timeout: remaining(), message: 'the submitted message produces its real upload' }).toBeGreaterThan(0);
+    upload = uploads()[0]!;
   } finally {
     await page.evaluate(() => (window as unknown as { __midSyncSubmit: { dispose(): void } }).__midSyncSubmit.dispose());
-    page.off('request', onRequest);
     await test.info().attach(`mid-sync-send-${channel}-${text.split(' ').at(-1)}.json`, {
-      body: Buffer.from(JSON.stringify({ attempts, uploads: uploads.length })), contentType: 'application/json',
+      body: Buffer.from(JSON.stringify({ attempts, uploads: uploads().length })), contentType: 'application/json',
     });
   }
   await expect(messageRow(page, channel, text)).toHaveAttribute('data-state', 'ok', { timeout: WAIT });
-  return UPLOAD.exec(upload.url())![1]!;
+  return UPLOAD.exec(upload.path)![1]!;
 }
 
 test('messages that reach a second device mid-sync are readable after it reloads, in every group it joined', async ({ page, second, instanceName }) => {
+  const adaSeen = watchSocketRequests(page);
   const ada = await signUp(page, instanceInvite(), instanceName);
   await addServerVia(page, 'create');
   const start = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
@@ -88,18 +114,21 @@ test('messages that reach a second device mid-sync are readable after it reloads
   for (const name of CHANNELS.slice(1)) await makeChannel(page, name);
   // One message per channel before the phone, which also names each channel's group.
   const channelOf = new Map<string, string>();
-  for (const name of CHANNELS) channelOf.set(await sendIn(page, name, `before the phone ${tag()}`), name);
+  for (const name of CHANNELS) channelOf.set(await sendIn(page, name, `before the phone ${tag()}`, adaSeen), name);
   const serverPath = new URL(page.url()).pathname;
 
   // The phone joins two groups, and the rest of its joins wait: it is mid-sync when the messages reach it.
   const phone = await second.open();
-  const joined: string[] = [];
-  await phone.context.route(RESYNC, async (route) => {
-    const group = RESYNC.exec(route.request().url())![1]!;
-    if (joined.length < 2 && !joined.includes(group)) joined.push(group);
-    if (joined.includes(group)) await route.continue();
-    // Held for the rest of the test: the context closes with it.
-  });
+  // The joins are request frames: they are held in the phone's worker, which lets the first two groups' through.
+  // Every worker the page starts, now and after a navigation, holds them: the patch is on the prototype, so it applies to
+  // a socket the worker opens later.
+  const hold = (worker: Worker): void => { void worker.evaluate(holdJoinsAfterTwo).catch(() => undefined); };
+  phone.page.on('worker', hold);
+  for (const worker of phone.page.workers()) hold(worker);
+  const joinedNow = async (): Promise<string[]> => {
+    const lists = await Promise.all(phone.page.workers().map((w) => w.evaluate(() => (globalThis as unknown as { dillaJoined?: string[] }).dillaJoined ?? []).catch(() => [] as string[])));
+    return lists.flat();
+  };
   // Its own account's signed history is slow to arrive (the CI runner): the messages are held for their sender's list.
   await phone.context.route(/\/device-list\?after=/, async (route) => {
     await new Promise((r) => setTimeout(r, SLOW_HISTORY_MS));
@@ -107,16 +136,17 @@ test('messages that reach a second device mid-sync are readable after it reloads
   });
   // A joined group is caught up once its handshakes were read (the catch-up after the join).
   const caughtUp = new Set<string>();
-  phone.context.on('requestfinished', (r) => { const m = /\/v1\/groups\/([0-9a-f]{32})\/handshakes/.exec(r.url()); if (m !== null) caughtUp.add(m[1]!); });
+  watchSocketRequests(phone.page, (r) => { const m = r.method === 'GET' ? HANDSHAKES.exec(r.path) : null; if (m !== null) caughtUp.add(m[1]!); });
   await signIn(phone.page, ada, instanceName);
-  await expect.poll(() => joined.length === 2 && joined.every((g) => caughtUp.has(g)), { timeout: WAIT }).toBe(true);
+  let joined: string[] = [];
+  await expect.poll(async () => { joined = await joinedNow(); return joined.length === 2 && joined.every((g) => caughtUp.has(g)); }, { timeout: WAIT }).toBe(true);
 
   // Ada writes in both of those channels; the phone reloads while the messages reach it.
   const sent: [string, string][] = [];
   for (const group of joined) {
     const channel = channelOf.get(group)!;
     const text = `mid sync in ${channel} ${tag()}`;
-    await sendIn(page, channel, text);
+    await sendIn(page, channel, text, adaSeen);
     sent.push([channel, text]);
   }
   await phone.page.waitForTimeout(120);

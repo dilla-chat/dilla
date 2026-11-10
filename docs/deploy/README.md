@@ -8,6 +8,23 @@ the updated client reopens community voice during the upgrade window. This page 
 script (`deploy/install.sh`, the one supported install: a native systemd install), the systemd units it
 writes, and the Proxmox LXC helper. There is no container image.
 
+### Upgrading to Bot v2 (wire 6)
+
+Bot v2 is wire 6 with no compatibility: every desktop app has to update, and a browser tab reloads once. The
+[release notes](releases/v0.1.0-bot2.md) have the order. In short, upgrade `dillad` first, then the Bot, in one
+maintenance window:
+
+```sh
+sudo sh install.sh --upgrade --yes
+sudo sh install-bot.sh --upgrade --yes
+```
+
+`--yes` lets each script restart `dilla` while calls are live (restarting `dilla` restarts `dilla-media` and ends
+them). Without it, a script refuses while a room has people in it. Between the two scripts the Bot is down, because
+a v1 Bot is refused by the new `dillad`; the scripts say what to run next. The Bot is no longer a service of its
+own (see [Dilla Bot installation](#dilla-bot-installation)). Read the backup of your old `bot.toml` before you
+rely on the new defaults: a custom `reconcile_interval` or `[rate_limits]` in it is not carried over.
+
 ### Retired music provider settings and queues
 
 Spotify integration has been removed. Older generated server configurations can
@@ -365,9 +382,9 @@ certificate issuance and a migration. It runs as the `dillad` user with only
 `/etc/dilla/dilla.toml`.
 `deploy/dilla-media.service` runs the SFU as a separate `Type=simple` service. It has `PartOf=dilla.service`, so
 stopping or restarting `dilla` stops or restarts the media sidecar with it; run `systemctl daemon-reload` after copying
-the unit by hand (`install.sh --upgrade` does). The Bot works the same way: `dillabot.service` has `Requires=dilla.service`
-and `PartOf=dilla.service`, so restarting `dilla` also restarts `dillabot` when it is installed, and stopping `dilla`
-stops it. `dillad media --rooms --config=/etc/dilla/dilla.toml` lists the live
+the unit by hand (`install.sh --upgrade` does). The Bot has no unit of its own: with `[bot] enabled = true`, dillad
+runs it as its supervised child, as the `dillabot` user inside `dilla.service`'s sandbox, so restarting `dilla`
+restarts the Bot and stopping `dilla` stops it. `dillad media --rooms --config=/etc/dilla/dilla.toml` lists the live
 rooms and their participants (`no live rooms` when the SFU is empty), and `dillad media --probe` prints the room count.
 `install.sh --upgrade` runs `media --rooms` itself and refuses while a room has participants. To confirm a room is
 really in use rather than leaked, look for `POST /v1/calls/{call_id}/rtt` in the API journal (field `route`): a device
@@ -446,12 +463,16 @@ What it does, in order:
 
 1. It checks every argument against what dillad accepts. It refuses to run as anyone but root, and
    refuses if `/etc/dilla/dilla.toml` or a non-empty `/var/lib/dillad` already holds an instance.
-2. It downloads `dillad-linux-<amd64|arm64>`, `dilla_core_wasi.wasm` and `SHA256SUMS`
-   from `releases/download/<tag>/`. It uses curl, else wget, and apt installs only
+2. It downloads `dillad-linux-<amd64|arm64>`, `dilla_core_wasi.wasm`, the Bot's `dillabot-linux-<arch>` and
+   `dilla-bot-core-linux-<arch>`, and `SHA256SUMS` from `releases/download/<tag>/`. It uses curl, else wget, and apt installs only
    what is missing of `curl` and `ca-certificates`. Every downloaded file is checked with
    `sha256sum -c` before anything is installed. Any of these stops it: a mismatch, an empty
    `SHA256SUMS`, or one without a line for an asset.
-3. It installs `dillad`, the core beside it, the unit, and creates the `dillad` user.
+3. It installs `dillad`, the core beside it, the unit, and creates the `dillad` user. It also sets up the Bot, which
+   dillad supervises: the `dillabot` user (with `dillad` in its group), `/usr/local/bin/dillabot` and
+   `/usr/local/lib/dilla/dilla-bot-core` (root-owned, 0755), and `/var/lib/dillabot` (0700 `dillabot`). After init it
+   registers the Bot's runtime credential with `dillad admin bot-runtime create`, stores it as
+   `/var/lib/dillabot/runtime.token` (0600 `dillabot`), and sets `[bot] enabled = true`. There is no `dillabot.service`.
 4. It runs `dillad init --config=/etc/dilla/dilla.toml` and edits that file for the mode. In both modes it sets
    `livekit.udp_port` (`--udp-port`, 7882) and `livekit.node_ip` (`--node-ip`, when given).
    - `--behind-proxy` sets:
@@ -472,7 +493,10 @@ What it does, in order:
    The `clock`, `certificate` and `turn` legs need DNS or the proxy, so they are shown as pending,
    not as a failed install. The `udp` leg reads WARN "not probed" by default and never proves the
    UDP forward, because dillad cannot see it from inside; check the forward from outside instead.
-   Any other red leg fails the install.
+   Any other red leg fails the install. Then it checks the Bot from outside: one process in `dilla.service`'s
+   control group runs `/usr/local/bin/dillabot` as `dillabot`, keeps its pid for 15 seconds, and its
+   `/proc/<pid>/status` shows every capability set (`CapInh`, `CapPrm`, `CapEff`, `CapBnd`, `CapAmb`) empty. A Bot
+   that fails this (`RED bot: ...`) fails the install.
 7. It prints the next steps on stderr (the DNS record and forwards for `--public`; the Pangolin
    resource and the UDP forward for `--behind-proxy`). Then it prints the bootstrap invite link
    alone on stdout.
@@ -481,14 +505,15 @@ The link is printed on every exit after init, even a failed one, because it cann
 It is valid for 24 hours and one sign-up: open it in a browser to make the first account, then start a server and
 invite people from the web client ([Start a server](../user/getting-started.md#start-a-server)).
 If a step after init fails, the script says how to start over:
-`systemctl disable --now dilla; rm -rf /var/lib/dillad /etc/dilla/dilla.toml`, then run it again.
+`systemctl disable --now dilla; rm -rf /var/lib/dillad /var/lib/dillabot /etc/dilla/dilla.toml`, then run it again.
 
 The instance keys and the TURN and LiveKit secrets stay in the files init writes; the script never
 prints them. More flags:
 
 - `--version <tag>` installs another release.
 - `--release-url` points at another download location.
-- `--binary`, `--core` and `--sums` install from local files, checked against that `SHA256SUMS`.
+- `--binary`, `--core`, `--bot-binary`, `--bot-helper` and `--sums` install from local files, checked against that
+  `SHA256SUMS`.
   Without `--sums`, local files are refused unless you pass `--insecure-skip-verify`.
 - `--check-args` validates the arguments and changes nothing.
 
@@ -506,8 +531,9 @@ sh install.sh --upgrade
 Add `--check-args` to the same command first: it checks the arguments and changes nothing, and exits 0 when they are valid, printing `arguments are valid; the release was not checked` on stderr: it does not look up the release, so a mistyped `--version` still passes here and is refused later, at the download, before anything on disk changes.
 
 It checks the new binary and core against `SHA256SUMS`, restarts the API while the sidecar SFU
-stays up, runs doctor, then restarts the media service. Restarting `dilla` also restarts `dillabot` (its unit is
-`PartOf=dilla.service`), so the Bot restarts with the API, and the rollback's stop stops it too. The previous pair stays as `dillad.prev`
+stays up, runs doctor, then restarts the media service. Restarting `dilla` also restarts the Bot it supervises, and
+the rollback's stop stops it too. `install.sh --upgrade` does not replace the Bot's binaries: run
+`install-bot.sh --upgrade` from the same release afterwards (see [Dilla Bot installation](#dilla-bot-installation)). The previous pair stays as `dillad.prev`
 and `dilla_core_wasi.wasm.prev`. For a first upgrade from `in_process`, it saves `dilla.toml.prev`,
 stops the old combined process, changes `livekit.mode` to `sidecar`, and starts the two services.
 That one-time migration briefly interrupts calls. Later API restarts leave the SFU running;
@@ -632,112 +658,183 @@ and run `install.sh` inside it directly.
 
 ### Dilla Bot installation
 
-The Bot's `[rate_limits]` in `/etc/dillabot/bot.toml` also bounds its limiter
-caches: `device_cache_limit` defaults to 1,024, `target_cache_limit` to 2,048
-KeyPackage targets per device, and `global_target_cache_limit` to 16,384 targets
-per client. Zero or absent selects the default; negative or excessively large
-capacities fail configuration validation. A cache entry can be evicted only
-after five minutes idle, with its allowance fully replenished and no request
-waiting on it. Session renewal shares the device budget, including allowance
-spent before an anonymous token was bound to the device. Full caches defer
-before sending an HTTP request (`E_UNAVAILABLE`, retry after 1 second).
-Aggregate cache counts, evictions and capacity-deferral counters contain no
-tokens or identities; the Bot logs deferral milestones without flooding logs.
+The Bot has no config file of its own, and there is no `/etc/dillabot/bot.toml` or `/var/lib/dillabot/bot.toml`.
+Its operator settings are the `[bot]` table of `/etc/dilla/dilla.toml`, which `dillad init` writes and the
+installers fill in:
 
+| key | default | what |
+|---|---|---|
+| `enabled` | `false` until an installer sets it | whether `dillad` runs the Bot at all |
+| `executable` | `/usr/local/bin/dillabot` | the Bot binary |
+| `helper_executable` | `/usr/local/lib/dilla/dilla-bot-core` | its native helper |
+| `wasi_module` | `''` | the core the Bot loads; empty is the `dilla_core_wasi.wasm` beside `dillad` |
+| `state_dir` | `/var/lib/dillabot` | its keys and state; `dilla.service` makes only this directory writable to it |
+| `user` | `dillabot` | the Bot's own OS user |
+| `socket_dir` | `/run/dillad/bot` | where `gateway.sock` lives |
+| `dev_same_user` | `false` | development only: run the Bot as `dillad`'s own user, which can then read its keys |
 
-The release includes `install-bot.sh` alongside `install.sh`. Run the Bot installer as root on the
-Linux host after `dillad` is installed and its instance is initialized. The installer downloads and
-checksum-verifies the architecture-matched `dillabot`, native `dilla-bot-core`, and
-`dilla_core_wasi.wasm`; creates the dedicated `dillabot` account; registers one protected runtime
-credential through `dillad admin bot-runtime create`; writes Bot files under `/etc/dillabot` and
-`/var/lib/dillabot`; runs `dillabot doctor`; and enables `dillabot.service`.
-Tagged release builds report their embedded tag with `dillabot version`; development builds report
-`0.0.0-dev`.
+The Bot's rate limits are built in. It paces itself below `dillad`'s meters: sealed replies 180 a second (burst 360)
+against the server's 200 and 400, and reads and hints 8 a second (burst 40) against the server's 10 and 60 (the
+`limits.rate.read_*` keys of `dilla.toml`). Raise the server's limits there, not in a Bot file. A v1 `bot.toml` held
+`reconcile_interval` and `[rate_limits]` (including the limiter cache sizes); the Bot polls nothing now, and these
+are not read.
 
-Get the lowercase hexadecimal instance ID from the `instance_id` field of the server's
-`GET /v1/instance` discovery document. The server must permit discovery without a session for that
-lookup. Supply the public HTTPS origin without a trailing slash:
+The Bot ships with dillad. `install.sh` sets it up on a fresh install (step 3 above), and dillad runs it as its
+supervised child: a `bot-keeper` starts `/usr/local/bin/dillabot` as the `dillabot` user inside `dilla.service`'s
+sandbox, with every capability dropped, and the Bot reaches dillad only over `/run/dillad/bot/gateway.sock`. There is
+no `dillabot.service`. The files:
 
-```sh
-sudo sh install-bot.sh \
-  --base-url https://chat.example.org \
-  --instance-id 32_LOWERCASE_HEX_CHARACTERS
-```
+| path | owner, mode | what |
+|---|---|---|
+| `/usr/local/bin/dillabot` | root:root 0755 | the Bot |
+| `/usr/local/lib/dilla/dilla-bot-core` | root:root 0755 | its native helper |
+| `/usr/local/bin/dilla_core_wasi.wasm` | root:root 0644 | the core, shared with dillad (`bot.wasi_module = ''`) |
+| `/var/lib/dillabot` | dillabot 0700 | its state: one directory per installation, with its `database.key` |
+| `/var/lib/dillabot/runtime.token` | dillabot 0600 | its runtime credential |
 
-For a checkout copy rather than the tagged release script, also pass `--version TAG` (or
-`--release-url URL`). To install locally built assets, pass `--binary FILE --helper FILE --module
-FILE --sums SHA256SUMS`. The script refuses to overwrite an existing Bot account, config, service,
-credential, binaries or state. It creates an instance-scoped runtime credential; after it starts,
-use **Server Settings > Bot** to enable the Bot for a community. If setup fails after dillad created
-the runtime record, the installer prints its runtime ID; revoke that record with
-`dillad admin bot-runtime revoke --id=ID --config=/etc/dilla/dilla.toml` after inspecting the
-partial installation.
+The keeper refuses a Bot binary, helper or core that is not root's, that group or others can write, or that sits in a
+directory that is not root's or that group or others can write. `dillad` must be in the `dillabot` group: it hands the
+socket's directory to that group, and serve refuses to start the Bot otherwise.
 
-To upgrade, use the tagged installer on the same host with `--upgrade`:
+`install-bot.sh` is the Bot's upgrade path. Upgrade dillad first with `install.sh --upgrade`, then run the
+`install-bot.sh` of the same release as root:
 
 ```sh
-sudo sh install-bot.sh --upgrade --version TAG
+sudo sh install-bot.sh --upgrade
 ```
 
-The upgrade keeps `bot.toml`, the runtime credential and service state. It runs the existing local
-doctor, stops the Bot if it is active, saves a root-only cold copy of state and the previous
-binaries/unit under `/var/backups/dillabot`, installs the checked assets, runs doctor again, and
-restarts the service if it was active before. If installation, doctor or restart fails, it restores
-the previous assets and state. The retained copy contains `database.key` and must be protected as a
-secret. The upgrade path has not yet been exercised against a prior released Bot database schema.
+It checks `dillabot-linux-<arch>` and `dilla-bot-core-linux-<arch>` against `SHA256SUMS`, then logs one line for each
+step it takes:
 
-Each upgrade run writes one such copy, as a new directory `/var/backups/dillabot/<UTC timestamp>-<suffix>`, root-only,
-holding the whole state directory (with the database key) plus the three Bot binaries and the unit. After a successful
-upgrade the installer keeps the 3 newest copies, the new one included, and removes the older ones; it logs each path
-it removes and never prunes after a failed or rolled-back upgrade. `--keep-backups N` (N of at least 1) keeps N
-instead. Only directories named like the installer's own copies are touched. This pruning starts with the release after
-`v0.1.0-signal1`: on `v0.1.0-signal1` and earlier, remove old copies by hand, keeping the newest.
+1. On a v1 Bot (`dillabot.service` and `/etc/dillabot`), it backs up the unit, `bot.toml` and the `dilla.service` it
+   replaces to `/var/backups/dilla/bot-v1-<UTC timestamp>/` (root-only). The backup holds no database key and no
+   runtime credential. It then stops and disables `dillabot.service`.
+2. It creates the `dillabot` user and `/var/lib/dillabot` if they are missing, and adds `dillad` to the `dillabot` group.
+3. It moves the runtime credential, unchanged, from `/etc/dillabot/runtime.token` to `/var/lib/dillabot/runtime.token`
+   (0600 `dillabot`). Without a credential, it registers one with `dillad admin bot-runtime create`.
+4. It installs the Bot binaries and this release's `dilla.service`, which carries the keeper's capabilities and the
+   Bot's sandbox rules. It removes `dillabot.service` and `/etc/dillabot/bot.toml`, and sets `[bot] enabled = true`
+   with `state_dir = '/var/lib/dillabot'` in `dilla.toml`.
+5. It requires `dillad doctor`'s `config` and `bot` legs to be OK, restarts `dilla`, and checks the Bot the way the
+   fresh install does (the right user, a steady pid for 15 seconds, no capabilities).
+6. Then it removes the v1 leftovers: the old credential copy, `/usr/local/libexec/dilla-bot-core`,
+   `/usr/local/lib/dilla/dilla_core_wasi.wasm`, and every pre-upgrade copy an older `install-bot.sh` left under
+   `/var/backups/dillabot` (those hold the database key).
 
-For a cold operator backup of the complete Bot files, including its config and runtime credential:
+`/var/lib/dillabot/<installation>` is never touched: the Bot keeps its keys and state where they are. A v1 `bot.toml`
+whose `state_dir` is not `/var/lib/dillabot` is refused, because `dilla.service` makes only that directory writable;
+so are two different runtime credentials. If doctor, the restart or the Bot check fails, it puts every changed file
+back, restarts `dilla` on the previous `dilla.toml`, and starts the v1 Bot again. A second run changes nothing and
+logs `nothing to change: the Bot already runs under dillad from this release`, then checks the Bot again.
+
+`install-bot.sh` also does the following:
+
+- **Live calls.** It refuses while a room has people in it, or when it cannot list the rooms, and changes nothing.
+  The refusal names the rooms and the counts, not who is in them. `--yes` goes ahead and warns, as
+  `install.sh --upgrade --yes` does.
+- **Interrupted runs.** The backup carries a `pending` mark until the Bot is healthy. A killed run leaves the
+  backup (`bot-v1-*` for a v1 host, `bot-upgrade-*` otherwise) and `dilla.toml.bot-prev` beside `dilla.toml`
+  (copied with its owner and mode). The next run says `resuming the interrupted upgrade recorded in …` and
+  keeps the original material, so the rollback still puts the first state back. An incomplete rollback lists what
+  is missing and keeps what it has.
+- **State owned by someone else.** If entries under `/var/lib/dillabot` are not owned by `dillabot` (a restore
+  done as root, for example), it stops `dilla` and gives the directories and plain files to `dillabot`, entry
+  by entry, without following links. It refuses, and changes nothing, when it finds a symlink, a special file
+  or a file with more than one link that `dillabot` does not own, and names it.
+- **A root-owned `runtime.token`.** It is refused, not repaired. Give it back with
+  `sudo chown dillabot:dillabot /var/lib/dillabot/runtime.token` (or `chown -R` the state directory after a
+  root restore), then run the script again. The Bot itself accepts only a 0600 regular file that `dillabot` owns.
+- **Old key copies.** The copies an older `install-bot.sh` left under `/var/backups/dillabot` (they hold the
+  database key) are removed only after the Bot is healthy, on a no-op run as well, and are named if kept.
+- **Fresh installs.** If the Bot check fails after `install.sh`, the script sets `[bot] enabled = false`,
+  restarts `dilla`, and logs it. It still exits 1 and still prints the invite link.
+
+For a checkout copy rather than the tagged release script, also pass `--version TAG` (or `--release-url URL`). To
+install locally built assets, pass `--binary FILE --helper FILE --sums SHA256SUMS`. `--base-url`, `--instance-id`
+and `--module` are gone: the Bot learns the instance from dillad and loads the core beside dillad. After the
+upgrade, use **Server Settings > Bot** to enable the Bot for a community. Tagged release builds report their
+embedded tag with `dillabot version`; development builds report `0.0.0-dev`.
+
+**Redact `/hooks/*` in your reverse proxy's access log.** Incoming webhooks (`POST https://<instance>/hooks/<id>/<secret>`)
+carry their secret in the URL path. `dillad` itself logs only the route pattern, never the URL, but a reverse proxy
+logs full URLs by default, and anyone who reads those logs can post to the channel. Turn access logging off for
+`/hooks/`, or strip the path. In nginx:
+
+```nginx
+location /hooks/ {
+    access_log off;
+    proxy_pass http://127.0.0.1:8080;   # your dillad listener
+}
+```
+
+In Caddy:
+
+```caddyfile
+@hooks path /hooks/*
+log_skip @hooks
+```
+
+(`log_skip` needs a Caddy version that has it; check yours.)
+
+In Traefik and Pangolin, turn the access log off for that router or drop the request path from the log fields, then
+check a log line after a test post. A secret that reached a log is compromised: rotate the webhook on **Server
+settings → Bot**.
+
+The Bot's files are `/var/lib/dillabot`: its `database.key`, its state, and `runtime.token`. Its settings are `[bot]`
+in `dilla.toml`, which `dillad backup` archives with the instance. For a cold operator backup of the Bot's files,
+stop `dilla`, which stops the Bot and also `dilla-media` (live calls end):
 
 ```sh
 sudo install -d -m 0700 /srv/backups/dillabot
 archive="/srv/backups/dillabot/dillabot-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
 sudo sh -c 'set -eu
-systemctl stop dillabot
-trap "systemctl start dillabot" EXIT
+systemctl stop dilla
+trap "systemctl start dilla" EXIT
 umask 077
-tar -C / -czf "$1" etc/dillabot var/lib/dillabot
+tar -C / -czf "$1" var/lib/dillabot
 tar -tzf "$1" >/dev/null
-systemctl start dillabot
+systemctl start dilla
 trap - EXIT' sh "$archive"
 ```
 
-Restore only with the matching Dilla server database/runtime record available, while dillabot is
-stopped. Restore as root to `/`, run the local doctor, then start the service:
+Restore only with the matching Dilla server database and runtime record available, while `dilla` is stopped.
+Restore as root to `/`, check the files, run `dillad doctor`, then start the service:
 
 ```sh
-sudo systemctl stop dillabot
+sudo systemctl stop dilla
 sudo tar --same-owner -C / -xzf /srv/backups/dillabot/BACKUP.tar.gz
-sudo -u dillabot dillabot doctor --config=/etc/dillabot/bot.toml
-sudo systemctl start dillabot
+sudo ls -ln /var/lib/dillabot                  # every entry should belong to dillabot
+sudo -u dillad /usr/local/bin/dillad doctor --config=/etc/dilla/dilla.toml
+sudo systemctl start dilla
 ```
 
-This is an operator procedure, not a coordinated Bot/dillad backup and restore acceptance run.
-`dillad backup` does not include Bot config, credential or state, so a server restore alone is not a
-complete Bot restore. Keep the Bot archive protected: it includes the credential and database key.
+If a restore left the files root-owned (an archive extracted without `--same-owner`, or as another user), the Bot
+refuses a root-owned `runtime.token`: it accepts only a 0600 regular file that `dillabot` owns. Give the files back
+with `sudo chown -R dillabot:dillabot /var/lib/dillabot` and `sudo chmod 0700 /var/lib/dillabot` before you start
+`dilla`.
 
-`dillabot doctor` reads `/etc/dillabot/bot.toml` by default, the file the installer writes and the
-unit passes to the service; it prints which config path it read. It reports a missing file
-(`no such file at PATH`), an invalid config and an unusable runtime credential as three different
-failures, and never prints the credential. Its YouTube tool check prints the `PATH` it searched.
-The installer runs the doctor with the service's `PATH` (an `Environment=PATH=` in the unit, else
-systemd's default from `systemctl show-environment`, else `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`),
-so `pct exec`, whose `PATH` lacks `/usr/local/bin`, does not report installed tools as unavailable.
-Run by hand, `dillabot doctor` uses your shell's `PATH`; under `pct exec` run it as
-`PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin dillabot doctor`.
+This is an operator procedure. For a coordinated server and Bot snapshot with an acceptance run, see
+[Dilla Bot backup and restore acceptance](bot-backup-restore-acceptance.md). `dillad backup` does not include the Bot's
+state, so a server restore alone is not a complete Bot restore. Keep the archive protected: it holds the runtime
+credential and the database key. A restore of a backup taken before Bot v2 on Postgres is refused by the new
+`dillad` (the dump names tables migration 00058 dropped); restore it with the binary that took it, then upgrade.
 
-`dillabot doctor --config=/etc/dillabot/bot.toml` checks the local owner-only runtime credential,
-native identity helper, compiled WASI identity module and private
-state directory. The installer runs it as `dillabot` before enabling the unit. It does not contact
-the Dilla server or prove that an installation is reconciled; use `systemctl status dillabot` and
-`journalctl -u dillabot` for process and reconciliation diagnostics. A healthy local doctor is not
-qualification of Bot interactions or music.
+### `dillad doctor` and the Bot
+
+`dillad doctor` has two Bot legs. `bot` checks that `[bot] user` exists and is neither root nor the user `dillad` runs as, that the Bot
+binary, helper and core are root's and not writable by group or others (and sit in directories that are not), and that
+`state_dir` exists. A problem is red. `dev_same_user = true` is a warning. With `[bot] enabled = false` the leg says
+`disabled`. `bot_health` reads the file `dillad` keeps in its data directory and prints
+`commands failing since <time> (community <id>)` (a warning, not a failure) for each community whose Bot is judged
+degraded; otherwise `no Bot's commands are failing`. It answers whether the files are right and whether the
+command path is working. It does not look at the running Bot's capabilities: `install.sh` and `install-bot.sh` check
+that once, after they restart `dilla`.
+
+Run it as `sudo -u dillad /usr/local/bin/dillad doctor --config=/etc/dilla/dilla.toml`. For the running Bot, use
+`systemctl status dilla` and `journalctl -u dilla`. The Bot logs there, one JSON line per event, and
+`bot installation identity and membership reconciled` with `ready=true` marks a ready installation.
+`dillabot doctor --config=PATH` is the v1 doctor. It reads a v1 `bot.toml`, which the upgrade has moved to the
+backup, so it has nothing to read on a v2 host; use `dillad doctor`.
 
 YouTube extraction and playback need separate host tools; the Bot installer does not install them.
 On Debian 13, install the system tools and a Node runtime, then install the hash-pinned Python pair
@@ -762,13 +859,14 @@ sudo /usr/local/lib/dillabot/.youtube-venv/bin/python -m pip install \
   --require-hashes --only-binary=:all: --no-deps \
   -r experiments/bot-providers/youtube-requirements.txt
 sudo ln -sfn /usr/local/lib/dillabot/.youtube-venv/bin/yt-dlp /usr/local/bin/yt-dlp
-sudo -u dillabot dillabot doctor --config=/etc/dillabot/bot.toml --youtube
+for tool in yt-dlp ffmpeg bwrap node; do sudo -u dillabot "$tool" --version | head -n 1; done
 ```
 
 That lock pins `yt-dlp` 2026.10.21 and its matching `yt-dlp-ejs` 0.8.0 with wheel hashes.
-`--youtube` checks that exact yt-dlp version, Node 22 or newer, Python 3.10 or newer, `bwrap`,
-`ffmpeg`, and FFmpeg's `libopus` encoder are locally available. The recorded host smoke used Node
-24.15.0, Python 3.14.8, bubblewrap 0.13.1 and FFmpeg 9.0.2. `--youtube` also runs
+The last command prints each tool's version as the Bot's user, which shows that it can run them. The `dillabot doctor
+--youtube` check needs a v1 `bot.toml`, so it is not available on a v2 host. It checked that exact yt-dlp version,
+Node 22 or newer, Python 3.10 or newer, `bwrap`, `ffmpeg`, and FFmpeg's `libopus` encoder. The recorded host smoke used Node
+24.15.0, Python 3.14.8, bubblewrap 0.13.1 and FFmpeg 9.0.2. `--youtube` also ran
 `yt-dlp --version` through the real isolated metadata runner to test sandbox startup without
 contacting YouTube. `youtube_sandbox` reports OK or FAIL with a failure class and stderr
 collapsed to one printable line and truncated to 512 bytes. It does not inspect the
@@ -788,27 +886,9 @@ Per-installation state includes `database.key` and an encrypted SQLite database 
 WAL/journal sidecars under `/var/lib/dillabot`. Keep the key and database files together; losing the
 key makes that local state unreadable, while replacing it beside existing state is refused.
 
-For a registration whose server response is uncertain, the Bot retains the exact pending native
-group and stops automatic retries. In a development installation, stop `dillabot` before running
-the offline recovery command because the helper holds an exclusive state lock:
-
-```sh
-sudo systemctl stop dillabot
-sudo -u dillabot dillabot interaction-recovery --config=/etc/dillabot/bot.toml
-sudo -u dillabot dillabot interaction-recovery --config=/etc/dillabot/bot.toml --installation INSTALLATION_ID --recover GROUP_ID
-# If the exact receipt is absent, retry the same staged group with fresh admission:
-sudo -u dillabot dillabot interaction-recovery --config=/etc/dillabot/bot.toml --installation INSTALLATION_ID --readmit GROUP_ID
-sudo systemctl start dillabot
-```
-
-The first command lists only identifiers, a registration hash, and server status. The recovery
-`--recover` succeeds only when the server returns a receipt matching the stored operation, group,
-registration body hash, and generation. If the receipt is absent, `--readmit` obtains a fresh
-admission and signed context, verifies the staged local MLS group, and submits the original
-operation ID, group ID, and registration body. A changed identity, policy, generation, roster, or
-missing KeyPackage refuses the retry. Keep the bot stopped during both commands and restart it
-even if a retry fails. Do not discard the staged group or reissue a registration by hand. This is
-an operator repair path, not a completed installation or backup workflow.
+Bot v2 has no interaction groups, so there is no registration to recover and no `dillabot interaction-recovery`
+command. A Bot channel whose group the Bot cannot join on its own shows **The Bot needs adding to this channel
+again** on **Server settings → Bot**, and **Add the Bot again** fixes it.
 
 ## 4. Backup and restore
 

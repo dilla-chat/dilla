@@ -7,9 +7,8 @@
 use dilla_core::cbor::{CborError, Decoder, Encoder, decode_strict};
 use dilla_core::client::ClientError;
 use dilla_core_wasm::facade::{
-    authority_ids_arg, client_js_error, community_arg, core_open, fixed_arg,
-    human_interaction_request_arg, login_arg, media_epoch_out, nonzero_id_arg, purpose_arg,
-    role_ids_arg,
+    authority_ids_arg, client_js_error, community_arg, core_open, fixed_arg, login_arg,
+    media_epoch_out, nonzero_id_arg, purpose_arg, role_ids_arg,
 };
 use dilla_core_wasm::store::redacted_sqlite_message;
 use dilla_core_wasm::{
@@ -38,14 +37,11 @@ fn hex(b: &[u8]) -> String {
 }
 
 #[wasm_bindgen_test]
-fn human_interaction_send_inputs_are_typed_bounded_and_nonzero() {
+fn nonzero_ids_are_typed_and_nonzero() {
     let id = [0x31; 16];
     assert_eq!(nonzero_id_arg("request_id", &id).unwrap(), id);
     assert!(nonzero_id_arg("request_id", &[0x31; 15]).is_err());
     assert!(nonzero_id_arg("request_id", &[0; 16]).is_err());
-
-    assert!(human_interaction_request_arg(&[0x01; 2991]).is_ok());
-    assert!(human_interaction_request_arg(&[0x01; 2992]).is_err());
 }
 
 const VECTOR_ENVELOPE_CBOR: &str = "89015011111111111111111111111111111111035012121212121212121212121212121212501313131313131313131313131313131363e29b8f808058201616161616161616161616161616161616161616161616161616161616161616";
@@ -249,10 +245,10 @@ fn errors_cross_the_boundary_as_values_not_panics() {
 /// only renderer either probe may use: it keeps SQLite's own primary message — the string the spike
 /// asserts on — and withholds every other variant's `Display`, several of which embed text the
 /// caller handed to SQLite. `Error::SqlInputError` is the worst of them (it renders as
-/// `"{msg} in {sql} at offset {offset}"`, i.e. the whole statement — rusqlite-0.40.2/src/error.rs
-/// lines 346-351, produced by `error_with_offset` at lines 502-509); this build cannot construct it,
-/// because `modern_sqlite` is off under the `ffi-sqlite-wasm-rs` backend and the variant is
-/// `#[cfg(feature = "modern_sqlite")]`, so `InvalidParameterName` stands in for the whole class.
+/// `"{msg} in {sql} at offset {offset}"`, i.e. the whole statement — rusqlite-0.41.1/src/error.rs
+/// lines 341-346, produced by `error_with_offset` at lines 493-500). rusqlite 0.41 no longer gates
+/// that variant on `modern_sqlite`, so this build can construct it and the test asserts on it
+/// directly, next to `InvalidParameterName`.
 #[wasm_bindgen_test]
 fn a_redacted_probe_message_never_carries_the_statement() {
     const KEK: &str = "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b";
@@ -270,7 +266,7 @@ fn a_redacted_probe_message_never_carries_the_statement() {
     );
 
     // Any variant whose Display embeds text handed to SQLite is withheld whole.
-    let leaky = rusqlite::Error::InvalidParameterName(statement);
+    let leaky = rusqlite::Error::InvalidParameterName(statement.clone());
     assert!(
         leaky.to_string().contains(KEK),
         "premise of this test: this variant's Display does carry the statement"
@@ -283,6 +279,23 @@ fn a_redacted_probe_message_never_carries_the_statement() {
     assert!(
         !rendered.contains("PRAGMA"),
         "the redacted message leaked the statement: {rendered}"
+    );
+
+    // The variant `execute_batch` really produces for a prepare-time failure with an offset.
+    let input = rusqlite::Error::SqlInputError {
+        error: rusqlite::ffi::Error::new(1),
+        msg: "near \"raw\": syntax error".to_owned(),
+        sql: statement,
+        offset: 40,
+    };
+    assert!(
+        input.to_string().contains(KEK),
+        "premise of this test: SqlInputError's Display does carry the statement"
+    );
+    let rendered = redacted_sqlite_message(&input);
+    assert!(
+        !rendered.contains(KEK) && !rendered.contains("PRAGMA"),
+        "the redacted SqlInputError leaked the statement: {rendered}"
     );
 }
 

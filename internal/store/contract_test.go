@@ -142,7 +142,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"AddMemberRoleGrant", "CreateChannel", "CreateCommunity", "DeleteBan", "DeleteChannel",
 			"DeleteChannelMember", "DeleteMember", "DeleteMemberRole", "EndVoiceSession",
 			"GetBan", "GetChannel", "GetCommunity", "HasMemberRoleGrant", "ListChannelMembers", "ListChannels",
-			"ListMemberRoles", "ListMembersOfCommunity", "ListOverwrites", "ListRoles",
+			"ListCommunityMemberRoles", "ListMemberRoles", "ListMembersOfCommunity", "ListOverwrites", "ListRoles",
 			"PutBan", "PutChannelMember", "PutMember", "PutMemberRole", "PutOverwrite",
 			"PutRole", "PutVoiceSession", "RemoveMemberRoleGrant", "RevokeMemberRole", "UpdateChannel", "UpdateCommunityPolicy",
 			// §4.1 plus four, all reached through the embedded Communities: GetMember,
@@ -211,7 +211,14 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 			"AddReactionRoleGrant", "ListReactionRolePanelGrantUsers", "RemoveReactionRoleChannelGrants", "RemoveReactionRoleGrant", "RemoveReactionRolePanelGrants",
 		}},
 		{"BotJoinRoleGrants", reflect.TypeOf((*store.BotJoinRoleGrants)(nil)).Elem(), []string{"GrantBotJoinRoleForEpisode"}},
-		{"BotGroupRegistrationAdmissionReceipts", reflect.TypeOf((*store.BotGroupRegistrationAdmissionReceipts)(nil)).Elem(), []string{"AcceptBotGroupRegistrationAdmission", "GetBotGroupRegistrationAdmission"}},
+		// Bot v2 Task 9: the catalog, the command key, Bot channels and the state revisions.
+		{"BotV2", reflect.TypeOf((*store.BotV2)(nil)).Elem(), []string{
+			"BotStateRevisions", "BumpBotStateRevision", "DeleteBotCommunityState", "GetBotCatalog", "GetBotCommandKey",
+			"ListBotChannels", "MarkBotChannel", "PutBotCatalog", "PutBotCommandKey", "UnmarkBotChannel",
+			// Task 13: incoming webhooks.
+			"CreateBotWebhook", "DeleteBotWebhook", "DeleteBotWebhooksOfChannel", "GetBotWebhook", "ListBotWebhooks",
+			"RotateBotWebhookSecret", "UpdateBotWebhook",
+		}},
 		// Overwrites is the slice of Structure Plan 2 task 3's table supports.
 		{"Overwrites", reflect.TypeOf((*store.Overwrites)(nil)).Elem(), []string{
 			"DeleteOverwrite", "DeleteUserOverwrites", "ListOverwrites", "PutOverwrite",
@@ -226,7 +233,7 @@ func TestSubInterfacesMatchTheContract(t *testing.T) {
 		{"Communities", reflect.TypeOf((*store.Communities)(nil)).Elem(), []string{
 			"AFKAwayExists", "AFKAwayExistsUser", "ClearAFKAway", "ClearAFKAwayUser", "ListAFKAway", "ListAFKAwayFirst", "SetAFKAway",
 			"AddMemberRoleGrant", "CreateCommunity", "DeleteMember", "DeleteMemberRole", "DeleteRole", "GetCommunity", "GetCommunityAFK",
-			"GetMember", "GetRole", "HasMemberRoleGrant", "ListCommunities", "ListCommunitiesForUser", "ListMemberRoles",
+			"GetMember", "GetRole", "HasMemberRoleGrant", "ListCommunities", "ListCommunitiesForUser", "ListCommunityMemberRoles", "ListMemberRoles",
 			"ListMembersOfCommunity",
 			"ListRoles", "ListSelfRoleGrantUsers", "ListSelfRolePolicy", "LockCommunity", "PutMember", "PutMemberRole", "PutRole", "RemoveMemberRoleGrant", "RevokeMemberRole", "SetCommunityAFK", "SetCommunityOwner", "SetSelfRolePolicy",
 			"SoftDeleteCommunity", "UpdateCommunityMeta", "UpdateCommunityPolicy",
@@ -367,14 +374,10 @@ func TestRepositoryEmbedsOnlyThe1aSubInterfaces(t *testing.T) {
 		reflect.TypeOf((*store.BotGroupRegistrationReceipts)(nil)).Elem(),
 		// Task 6: durable structural events, cursors, and retention floor.
 		reflect.TypeOf((*store.BotStructuralEvents)(nil)).Elem(),
-		// Kind-3 admission groundwork: transaction-fenced participant eligibility revision.
-		reflect.TypeOf((*store.BotInteractionEligibility)(nil)).Elem(),
-		// Kind-3 admission issuance: immutable idempotent signed response receipts.
-		reflect.TypeOf((*store.BotInteractionAdmissionReceipts)(nil)).Elem(),
-		reflect.TypeOf((*store.BotGroupRegistrationAdmissionReceipts)(nil)).Elem(),
-		reflect.TypeOf((*store.BotAutoModerationGrants)(nil)).Elem(),
 		// Task 7: permanent signed moderation-removal proofs and group revision feeds.
 		reflect.TypeOf((*store.ModerationRemovals)(nil)).Elem(),
+		// Bot v2 Task 9: 00057_bot_v2.sql.
+		reflect.TypeOf((*store.BotV2)(nil)).Elem(),
 	} {
 		for i := range embedded.NumMethod() {
 			want = append(want, embedded.Method(i).Name)
@@ -426,6 +429,10 @@ func TestDeferredRowTypesAreDeclared(t *testing.T) {
 		"BotClaimRow":          store.BotClaimRow{},
 		"BotOperationRow":      store.BotOperationRow{},
 		"BotSessionBindingRow": store.BotSessionBindingRow{},
+		"BotCatalogRow":        store.BotCatalogRow{},
+		"BotCommandKeyRow":     store.BotCommandKeyRow{},
+		"BotChannelRow":        store.BotChannelRow{},
+		"BotStateRevisionRow":  store.BotStateRevisionRow{},
 	}
 	for name, v := range rows {
 		if k := reflect.TypeOf(v).Kind(); k != reflect.Struct {

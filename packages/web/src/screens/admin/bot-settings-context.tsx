@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { BotOperationRefusedError, createBotOperations } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
-import { errorOf } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { useSettingsPendingOperation } from '../../settings/edit-state.tsx';
 
@@ -45,21 +45,22 @@ export function BotSettingsProvider({ communityId, children }: { communityId: st
   const pendingOperations = Object.values(operations).some(item => item.phase === 'sending' || item.phase === 'waiting'
     || item.phase === 'response' && !item.acked);
   useSettingsPendingOperation(pendingOperations || pendingMutations > 0);
+  // Bot v2 Task 22: an operation is a sealed command (an app operation, 100 + its v1 operation): the Bot's answer comes back
+  // to this send, so there is nothing to poll or acknowledge. No answer in time leaves it waiting, with Retry, which resends
+  // the same request id: the Bot answers it again from its cache, never running it twice.
   const dispatch = useCallback((item: BotInteractionOperation) => {
     setOperations(current => ({ ...current, [item.scope]: { ...item, phase: 'sending', uploadStatus: null, error: null } }));
-    void client.call({ m: 'humanInteractionRequest', communityId: item.communityId, channelId: null, requestId: item.requestId,
-      operation: item.operation, args: item.args, revision: item.revision, ...(item.stepUp === undefined ? {} : { stepUp: item.stepUp }) })
-      .then(value => {
-        const result = value as { requestId?: unknown; upload?: unknown };
-        if (result.requestId !== item.requestId || result.upload === 'rejected') throw new Error('request rejected');
-        setOperations(current => current[item.scope]?.requestId !== item.requestId ? current : ({ ...current,
-          [item.scope]: { ...current[item.scope], phase: 'waiting', uploadStatus: String(result.upload), error: null } }));
-      }).catch(error => {
-        const parsed = errorOf(error);
-        const definite = parsed.status === 403 || parsed.code === 'E_FORBIDDEN' || parsed.code === 'E_CORE_STATE';
-        setOperations(current => current[item.scope]?.requestId !== item.requestId ? current : ({ ...current,
-          [item.scope]: { ...current[item.scope], phase: definite ? 'failed' : 'waiting', uploadStatus: 'unknown', error: 'upload' } }));
-      });
+    void createBotOperations(client, item.communityId).request({ operation: item.operation, args: item.args, revision: item.revision,
+      requestId: item.requestId }).then(result => {
+      const response: BotInteractionResponse = { deliveryId: item.requestId, requestId: item.requestId, communityId: item.communityId,
+        operation: item.operation, channelId: null, status: result.status, revision: result.revision, data: result.data };
+      setOperations(current => current[item.scope]?.requestId !== item.requestId ? current : ({ ...current,
+        [item.scope]: { ...current[item.scope], phase: 'response', uploadStatus: 'accepted', response, acked: true, error: null } }));
+    }).catch((error: unknown) => {
+      const definite = error instanceof BotOperationRefusedError;
+      setOperations(current => current[item.scope]?.requestId !== item.requestId ? current : ({ ...current,
+        [item.scope]: { ...current[item.scope], phase: definite ? 'failed' : 'waiting', uploadStatus: 'unknown', error: 'upload' } }));
+    });
   }, [client]);
   const startOperation = useCallback((scope: string, input: OperationInput): string | null => {
     const existing = liveOperations.current[scope];
@@ -120,82 +121,13 @@ export function BotSettingsProvider({ communityId, children }: { communityId: st
   }, []);
 
   useEffect(() => {
-    if (!authorized) {
-      setOperations(current => Object.keys(current).length === 0 ? current : {});
-      setDrafts(current => Object.keys(current).length === 0 ? current : {});
-      setPendingMutations(0);
-      for (const waiters of operationWaiters.current.values()) for (const resolve of waiters) resolve(null);
-      operationWaiters.current.clear();
-      return;
-    }
-    const waiting = Object.values(operations).filter(item => item.phase === 'waiting' || item.phase === 'response' && !item.acked);
-    if (waiting.length === 0) return;
-    let canceled = false;
-    let timer: number | undefined;
-    const poll = async (): Promise<void> => {
-      const communities = [...new Set(waiting.map(item => item.communityId))];
-      const results = await Promise.allSettled(communities.map(async cid => {
-        const owned = waiting.filter(item => item.communityId === cid);
-        const requestIds = [...new Set(owned.map(item => item.requestId))].slice(0, 100);
-        return { cid, requestIds, owned,
-        page: await client.call({ m: 'readBotInteractionResponses', communityId: cid,
-          operations: [...new Set(owned.map(item => item.operation))], requestIds }) as {
-          responses: BotInteractionResponse[]; through: string | null; blocked: boolean;
-        } }; }));
-      if (canceled) return;
-      for (let index = 0; index < results.length; index += 1) {
-        const result = results[index];
-        if (result.status !== 'fulfilled') {
-          const cid = communities[index];
-          setOperations(current => {
-            const next = { ...current };
-            for (const item of waiting) if (item.communityId === cid && next[item.scope]?.requestId === item.requestId && next[item.scope].error !== 'read')
-              next[item.scope] = { ...next[item.scope], error: 'read' };
-            return Object.keys(next).every(key => next[key] === current[key]) && Object.keys(next).length === Object.keys(current).length ? current : next;
-          });
-          continue;
-        }
-        const { cid, page, requestIds, owned } = result.value;
-        setOperations(current => {
-          const next = { ...current };
-          for (const item of owned) if (next[item.scope]?.requestId === item.requestId && next[item.scope].error === 'read')
-            next[item.scope] = { ...next[item.scope], error: null };
-          return Object.keys(next).every(key => next[key] === current[key]) && Object.keys(next).length === Object.keys(current).length ? current : next;
-        });
-        const delivered = page.responses.filter(row => requestIds.includes(row.requestId)
-          && row.communityId === cid && row.channelId === null
-          && owned.some(item => item.requestId === row.requestId && item.operation === row.operation));
-        if (delivered.length === 0) continue;
-        setOperations(current => {
-          const next = { ...current };
-          for (const row of delivered) {
-            const item = Object.values(current).find(candidate => candidate.requestId === row.requestId
-              && candidate.communityId === row.communityId && candidate.operation === row.operation);
-            if (item !== undefined && item.response === null) next[item.scope] = { ...item, phase: 'response', response: row, acked: false };
-          }
-          return Object.keys(next).every(key => next[key] === current[key]) && Object.keys(next).length === Object.keys(current).length ? current : next;
-        });
-        // This is an opaque, read-bound ACK capability, never a delivery cursor.
-        // Persist exact request responses above before consuming selected rows.
-        if (page.through === null) continue;
-        try {
-          await client.call({ m: 'ackBotInteractionResponses', communityId: cid, through: page.through });
-          setOperations(current => {
-            const next = { ...current };
-            for (const row of delivered) {
-              const item = Object.values(current).find(candidate => candidate.requestId === row.requestId
-                && candidate.communityId === row.communityId && candidate.operation === row.operation);
-              if (item !== undefined && !item.acked && item.response?.requestId === row.requestId) next[item.scope] = { ...item, acked: true };
-            }
-            return Object.keys(next).every(key => next[key] === current[key]) && Object.keys(next).length === Object.keys(current).length ? current : next;
-          });
-        } catch { /* re-read the same request IDs and retry with a fresh lease */ }
-      }
-      if (!canceled) timer = window.setTimeout(() => { void poll(); }, 750);
-    };
-    void poll().catch(() => { if (!canceled) timer = window.setTimeout(() => { void poll(); }, 1500); });
-    return () => { canceled = true; if (timer !== undefined) window.clearTimeout(timer); };
-  }, [authorized, client, operations]);
+    if (authorized) return;
+    setOperations(current => Object.keys(current).length === 0 ? current : {});
+    setDrafts(current => Object.keys(current).length === 0 ? current : {});
+    setPendingMutations(0);
+    for (const waiters of operationWaiters.current.values()) for (const resolve of waiters) resolve(null);
+    operationWaiters.current.clear();
+  }, [authorized]);
   const value = useMemo<BotPageRegistration>(() => ({
     communityId,
     startOperation, retryOperation, waitOperation, clearOperation, operation: getOperation, draft: getDraft, saveDraft,
@@ -204,6 +136,7 @@ export function BotSettingsProvider({ communityId, children }: { communityId: st
   return <BotPageContext.Provider value={value}>{children}</BotPageContext.Provider>;
 }
 
+/** The shared operations of the Bot settings pages, which are sealed commands (Task 22). */
 export function useBotInteractionOperation(scope: string): Pick<BotPageRegistration, 'startOperation' | 'retryOperation' | 'waitOperation' | 'clearOperation' | 'operation'> | null {
   const context = useContext(BotPageContext);
   return useMemo(() => context === null ? null : ({

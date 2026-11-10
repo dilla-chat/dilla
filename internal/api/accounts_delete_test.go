@@ -92,7 +92,7 @@ func TestDeleteMeWithoutAConfigRefusesRatherThanSkippingTheStepUp(t *testing.T) 
 	m := server.NewMux()
 	api.Register(m, unwired)
 
-	rec := deleteMe(m, token)
+	rec := deleteMe(viaSocket(t, m, unwired), token)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500: a missing config must fail closed", rec.Code)
 	}

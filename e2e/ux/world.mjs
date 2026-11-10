@@ -31,7 +31,7 @@ import { existsSync } from 'node:fs';
   const need = [
     ['packages/web/dist/index.html', 'npm run build -w @dilla/web'],
     ['target/dilla-testhost', 'go build -o target/dilla-testhost ./cmd/dilla-testhost'],
-    ['target/dillabot', 'go build -o target/dillabot ./cmd/dillabot'],
+    ['target/dillabot', 'go build -tags dilla_testhost -o target/dillabot ./cmd/dillabot'],
     ['internal/mlswasi/testdata/dilla_core_wasi.wasm', 'cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked (then copy to internal/mlswasi/testdata)'],
   ].filter(([f]) => !existsSync(path.join(REPO, f)));
   if (need.length > 0) { console.error('ux:world needs built artifacts:\n' + need.map(([f, c]) => `  ${f}: ${c}`).join('\n')); process.exit(2); }

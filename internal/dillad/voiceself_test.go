@@ -57,7 +57,7 @@ func TestVoiceSelfReachesTheCallSnapshot(t *testing.T) {
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	h := srv.Handler()
+	h := socketHandler(srv)
 	tok := accountToken(t, srv, code)
 	repo, ctx := srv.Repo(), t.Context()
 

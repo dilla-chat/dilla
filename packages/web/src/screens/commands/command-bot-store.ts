@@ -1,3 +1,8 @@
+// Bot v2 (task 20): the command picker no longer reads this store. Its Bot commands are the catalog held on this device
+// (capabilities.ts, the `botCatalog:<community>` slice), which costs no request at open. What is left here serves the v1 poll
+// card's Bot identity check (PollCard) until Task 21 moves the card to sealed reads; COMMAND_LIST_WAIT_MS bounds the picker's
+// wait for a first catalog sync.
+//
 // The Bot's command list, kept per community outside any component: a picker closing or a CommandHost unmounting
 // must not discard a load (it takes 4-6 s: status, an op-3 request over the interaction group and the Bot's reply, status again).
 // An idle client makes no periodic HTTP (the wire-5 rule), so the store has no background timer. A community's list loads once

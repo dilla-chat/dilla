@@ -8,7 +8,9 @@ import { expect, type Locator, type Page } from '@playwright/test';
 import { addServerVia,
   TEST_TIMEOUT, WAIT, makeInviteLink, completeSignUp, copy, escapeRegExp, expectAccessible, newAccount, openChannel, railItem, railNav,
   signUp, test, channelRow, expectComposerReady, membersToggle,
+  ensureMembersOpen,
 } from './support/app';
+import { restoreDesktopWindow } from './support/electron.ts';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { launchSecond, secondProfileDir } from './support/second-harness';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
@@ -119,6 +121,7 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
 
   const secondDir = secondProfileDir(testInfo.project.name, testInfo.workerIndex);
   const second = await launchSecond(playwright, browserName, { launchOptions, headless, channel, viewport, baseURL: h.url }, secondDir);
+  await restoreDesktopWindow(page);
   try {
     const page2 = second.pages()[0] ?? (await second.newPage());
     await openInviteInClient(page2, link, () => guard.attach(second));
@@ -127,7 +130,7 @@ test('a server run from an empty instance: members, rename, channel edit, kick, 
     await openChannel(page2, SERVER, 'general');
 
     // 3. Ada's member list shows Björn.
-    await expect(membersRegion(page, SERVER)).toBeVisible({ timeout: WAIT });
+    await ensureMembersOpen(page, membersRegion(page, SERVER));
     await expect(memberRow(page, SERVER, FRIEND)).toBeVisible({ timeout: WAIT });
     await expect(memberRow(page, SERVER, OWNER)).toBeVisible();
     await expectAccessible(page, 'the members pane');

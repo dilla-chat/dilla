@@ -5,39 +5,25 @@ import { HttpClient } from './client';
 import { negotiateSession } from './negotiate-session';
 
 describe('negotiateSession', () => {
-  it('posts the version preferences with the authenticated bearer and returns typed accepted capabilities', async () => {
+  it('negotiate offers only wire 6', async () => {
     const transport = fakeTransport({ token: 'enrolled-token' });
-    transport.replies.push(cborReply(200, [3, 1, 1]));
+    transport.replies.push(cborReply(200, [6, 1, 1]));
     const accepted = await negotiateSession(new HttpClient(transport.deps));
-    expect(accepted).toEqual({ wire: 3, e2ee: 1, media: 1, botAvailable: true });
+    expect(accepted).toEqual({ wire: 6, e2ee: 1, media: 1, botAvailable: true });
     const request = transport.seen[0];
     expect(request.url).toBe('https://dilla.test/v1/sessions/negotiate');
     expect(request.method).toBe('POST');
     expect(request.headers.get('authorization')).toBe('Bearer enrolled-token');
     expect(request.headers.get('content-type')).toBe('application/cbor');
-    // Task S1 part 2: wire 4 (the account-kind attestation) first, then 3 and 2.
-    expect(decode(request.body!)).toEqual([[5n, 4n, 3n, 2n], [1n], [1n]]);
+    // Bot v2 Task 1: wire 6 is the only wire; older instances answer E_VERSION.
+    expect(decode(request.body!)).toEqual([[6n], [1n], [1n]]);
   });
 
-  it('accepts wire 5 realtime capability', async () => {
+  it('passes an upgrade-required refusal through', async () => {
     const transport = fakeTransport();
-    transport.replies.push(cborReply(200, [5, 1, 1]));
-    await expect(negotiateSession(new HttpClient(transport.deps))).resolves.toEqual({ wire: 5, e2ee: 1, media: 1, botAvailable: true });
-  });
-
-  it('accepts wire 4 with bot capability', async () => {
-    const transport = fakeTransport();
-    transport.replies.push(cborReply(200, [4, 1, 1]));
-    await expect(negotiateSession(new HttpClient(transport.deps))).resolves.toEqual({
-      wire: 4, e2ee: 1, media: 1, botAvailable: true,
-    });
-  });
-
-  it('reports wire 2 as available without bot capability', async () => {
-    const transport = fakeTransport();
-    transport.replies.push(cborReply(200, [2, 1, 1]));
-    await expect(negotiateSession(new HttpClient(transport.deps))).resolves.toEqual({
-      wire: 2, e2ee: 1, media: 1, botAvailable: false,
+    transport.replies.push(refusal(426, 'E_UPGRADE_REQUIRED'));
+    await expect(negotiateSession(new HttpClient(transport.deps))).rejects.toMatchObject({
+      status: 426, code: 'E_UPGRADE_REQUIRED',
     });
   });
 
@@ -49,7 +35,7 @@ describe('negotiateSession', () => {
     });
   });
 
-  it.each([[[]], [[3, 1]], [[3, 1, 1, 1]], [[0, 1, 1]], [['3', 1, 1]], [[6, 1, 1]], [[1, 1, 1]], [[3, 2, 1]]])
+  it.each([[[]], [[6, 1]], [[6, 1, 1, 1]], [[0, 1, 1]], [['6', 1, 1]], [[5, 1, 1]], [[4, 1, 1]], [[3, 1, 1]], [[2, 1, 1]], [[7, 1, 1]], [[6, 2, 1]], [[6, 1, 2]]])
     ('rejects malformed or invalid accepted versions %j', async (reply) => {
     const transport = fakeTransport();
     transport.replies.push(cborReply(200, reply));

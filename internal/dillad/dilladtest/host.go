@@ -31,12 +31,14 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/api/sockettest"
 	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/config"
 	"github.com/dilla-chat/dilla/internal/dillad"
 	"github.com/dilla-chat/dilla/internal/ds"
+	"github.com/dilla-chat/dilla/internal/gateway"
 	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/mlswasi"
 	"github.com/dilla-chat/dilla/internal/obs"
@@ -118,10 +120,13 @@ type HostOptions struct {
 	// accepts it too. "" keeps the instance domain's own relying party.
 	WebAuthnOrigin string
 	// WireVersions is the wire version list the hello offers and GET /v1/instance advertises
-	// (dillad.Options.WireVersions, web3.8 S1); nil keeps dillad's own list, {5, 4, 3, 2} since wire 5.
+	// (dillad.Options.WireVersions, web3.8 S1); nil keeps dillad's own list, {6} since Bot v2.
 	// dilla-testhost sets it from -wire, so a browser test can meet an instance its client is too
 	// old for.
 	WireVersions []uint64
+	// BotLaunch is the Bot supervisor's launch gate (dillad.Options.BotLaunch): dilla-testhost -bot passes its
+	// supervisor, so the Bot it starts can connect over BotHandler's socket. Nil admits nobody there.
+	BotLaunch gateway.BotLaunch
 }
 
 // AllowEveryone is the harness's channel ACL: every enrolled user is eligible for every group.
@@ -212,20 +217,21 @@ type Host struct {
 	// webhookURL is where the in-process LiveKit posts its webhooks ("" without an SFU); hook serves
 	// it and hookHandler verifies each event (both stopped with the SFU). current is the instance the
 	// events go to: an atomic, so the receiver's workers never wait on mu while Close holds it.
-	webhookURL                 string
-	hook                       *http.Server
-	hookHandler                http.Handler
-	current                    atomic.Pointer[dillad.Server]
-	botSendRequests            atomic.Uint64
-	botSendAccepted            atomic.Uint64
-	botSendRefused             atomic.Uint64
-	botSendMu                  sync.Mutex
-	botSendAttempts            []BotSendAttempt
-	groupHealMu                sync.Mutex
-	groupHealAttempts          []GroupHealAttempt
-	botRuntimeMu               sync.Mutex
-	botRuntimeErrors           []BotRuntimeError
-	botInteractionHealAttempts []BotInteractionHealAttempt
+	webhookURL        string
+	hook              *http.Server
+	hookHandler       http.Handler
+	current           atomic.Pointer[dillad.Server]
+	botSendRequests   atomic.Uint64
+	botSendAccepted   atomic.Uint64
+	botSendRefused    atomic.Uint64
+	botSendMu         sync.Mutex
+	botSendAttempts   []BotSendAttempt
+	observeOnce       sync.Once
+	observed          chan socketObservation
+	groupHealMu       sync.Mutex
+	groupHealAttempts []GroupHealAttempt
+	botRuntimeMu      sync.Mutex
+	botRuntimeErrors  []BotRuntimeError
 	// withhold is the set of webhook event names (a map[string]struct{}, replaced whole) the receiver
 	// drops instead of delivering: POST /debug/sfu/withhold, on the control listener only.
 	withhold   atomic.Value
@@ -404,7 +410,9 @@ func (h *Host) newServer(ctx context.Context) (*dillad.Server, error) {
 		ScrapeToken: h.o.ScrapeToken,
 		LiveKitURL:  h.o.LiveKitURL,
 		// nil keeps dillad's own default list, {5, 4, 3, 2} since wire 5.
-		WireVersions: h.o.WireVersions,
+		WireVersions:  h.o.WireVersions,
+		SocketObserve: h.observeSocket,
+		BotLaunch:     h.o.BotLaunch,
 	}
 	// Left nil under ProductionACL, so New wires api.ResolverACL and api.StructureChannels. (An
 	// interface holding a nil *ChannelModes would not be nil; the fields are simply not set.)
@@ -565,7 +573,8 @@ func (h *Host) AsDevice(ctx context.Context, device id.ID, method, path string, 
 		req.Header.Set("Content-Type", "application/cbor")
 	}
 	rec := httptest.NewRecorder()
-	h.Handler().ServeHTTP(rec, req)
+	// A route that moved to the gateway socket is sent as the device session's request frame.
+	sockettest.NewBridge(h.Handler(), s.Mux(), s.SocketDispatcher(), s.Repo(), s.Now).ServeHTTP(rec, req)
 	return rec.Code, rec.Body.Bytes(), nil
 }
 
@@ -686,72 +695,20 @@ func (h *Host) Server() *dillad.Server {
 // to the server that is current when it arrives.
 func (h *Host) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		track := r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/groups/") && strings.HasSuffix(r.URL.Path, "/bot/messages")
-		trackHeal := (r.Method == http.MethodGet || r.Method == http.MethodPost) && strings.HasPrefix(r.URL.Path, "/v1/groups/") && strings.HasSuffix(r.URL.Path, "/heal")
 		trackRuntime := strings.HasPrefix(r.URL.Path, "/v1/bot-runtime/")
 		server := h.Server()
-		if !track && !trackHeal && !trackRuntime {
+		if !trackRuntime {
 			server.Handler().ServeHTTP(w, r)
-			return
-		}
-		if trackHeal {
-			wrapped := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-			server.Handler().ServeHTTP(wrapped, r)
-			parts := strings.Split(r.URL.Path, "/")
-			attempt := GroupHealAttempt{Method: r.Method, Route: "/v1/groups/{group}/heal", Status: wrapped.status,
-				ErrorCode: responseErrorCode(wrapped.body.Bytes())}
-			if len(parts) == 5 {
-				if group, err := id.Parse(parts[3]); err == nil {
-					attempt.Group = group.String()
-					if row, getErr := server.Repo().GetGroup(r.Context(), group); getErr == nil {
-						attempt.Epoch = row.Epoch
-						attempt.EpochUnknown = row.EpochUnknown
-					}
-				}
-			}
-			h.groupHealMu.Lock()
-			h.groupHealAttempts = append(h.groupHealAttempts, attempt)
-			if len(h.groupHealAttempts) > 64 {
-				h.groupHealAttempts = append([]GroupHealAttempt(nil), h.groupHealAttempts[len(h.groupHealAttempts)-64:]...)
-			}
-			h.groupHealMu.Unlock()
 			return
 		}
 		if trackRuntime {
 			wrapped := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 			server.Handler().ServeHTTP(wrapped, r)
-			parts := strings.Split(r.URL.Path, "/")
-			if len(parts) == 8 && parts[1] == "v1" && parts[2] == "bot-runtime" && parts[5] == "interaction-groups" && parts[7] == "heal" {
-				attempt := BotInteractionHealAttempt{Method: r.Method,
-					Route:  "/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal",
-					Status: wrapped.status, ErrorCode: responseErrorCode(wrapped.body.Bytes())}
-				if groupID, err := id.Parse(parts[6]); err == nil {
-					attempt.Group = groupID.String()
-					if group, err := server.Repo().GetGroup(r.Context(), groupID); err == nil {
-						attempt.Epoch = group.Epoch
-						attempt.EpochUnknown = group.EpochUnknown
-					}
-				}
-				h.botRuntimeMu.Lock()
-				h.botInteractionHealAttempts = append(h.botInteractionHealAttempts, attempt)
-				if len(h.botInteractionHealAttempts) > 64 {
-					h.botInteractionHealAttempts = append([]BotInteractionHealAttempt(nil), h.botInteractionHealAttempts[len(h.botInteractionHealAttempts)-64:]...)
-				}
-				h.botRuntimeMu.Unlock()
-			}
 			if wrapped.status >= 400 {
 				h.botRuntimeMu.Lock()
 				observation := BotRuntimeError{Method: r.Method, Path: redactedBotRuntimeRoute(r.URL.Path), Status: wrapped.status, ErrorCode: responseErrorCode(wrapped.body.Bytes())}
 				if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/ready") && wrapped.status == http.StatusConflict {
 					observation.ErrorDetail = readinessConflictDetail(wrapped.body.Bytes())
-				}
-				if len(parts) == 8 && parts[1] == "v1" && parts[2] == "bot-runtime" && parts[5] == "interaction-groups" {
-					if groupID, err := id.Parse(parts[6]); err == nil {
-						if group, err := server.Repo().GetGroup(r.Context(), groupID); err == nil {
-							observation.GroupEpoch = group.Epoch
-							observation.GroupEpochUnknown = group.EpochUnknown
-						}
-					}
 				}
 				h.botRuntimeErrors = append(h.botRuntimeErrors, observation)
 				if len(h.botRuntimeErrors) > 64 {
@@ -761,36 +718,87 @@ func (h *Host) Handler() http.Handler {
 			}
 			return
 		}
-		attempt := BotSendAttempt{Method: r.Method, Route: "/v1/groups/{group}/bot/messages"}
-		h.botSendRequests.Add(1)
-		parts := strings.Split(r.URL.Path, "/")
-		if len(parts) == 6 {
-			if group, err := id.Parse(parts[3]); err == nil {
-				attempt.Group = group.String()
-			}
-		}
-		wrapped := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		server.Handler().ServeHTTP(wrapped, r)
-		attempt.Status = wrapped.status
-		attempt.ErrorCode = responseErrorCode(wrapped.body.Bytes())
-		if group, err := id.Parse(attempt.Group); err == nil {
-			if row, getErr := server.Repo().GetGroup(r.Context(), group); getErr == nil {
-				attempt.Epoch = row.Epoch
-				attempt.EpochUnknown = row.EpochUnknown
-			}
-		}
-		h.botSendMu.Lock()
-		h.botSendAttempts = append(h.botSendAttempts, attempt)
-		if len(h.botSendAttempts) > 64 {
-			h.botSendAttempts = append([]BotSendAttempt(nil), h.botSendAttempts[len(h.botSendAttempts)-64:]...)
-		}
-		h.botSendMu.Unlock()
-		if wrapped.status >= 200 && wrapped.status < 300 {
-			h.botSendAccepted.Add(1)
-		} else {
-			h.botSendRefused.Add(1)
-		}
+		panic("unreachable: only bot-runtime requests are tracked on the HTTP handler")
 	})
+}
+
+// socketObservation is one socket request the dispatcher handed to observeSocket.
+type socketObservation struct {
+	method, route string
+	status        int
+	code          string
+}
+
+// observeSocket sees every socket request of the current instance. The Bot's managed message sends and its group heals
+// are socket requests (Bot v2), so the attempts the host records for the e2e specs are read here, from the dispatcher,
+// instead of from the HTTP handler they no longer cross. It runs inside Dispatch, so it only queues: the group's epoch is
+// read by observeLoop. A retry answered from the replay record is not a new attempt, as it was not over HTTP.
+func (h *Host) observeSocket(method, route string, status int, body []byte, replayed bool) {
+	if replayed {
+		return
+	}
+	path, _, _ := strings.Cut(route, "?")
+	parts := strings.Split(path, "/")
+	botSend := method == http.MethodPost && len(parts) == 6 && parts[1] == "v1" && parts[2] == "groups" && parts[4] == "bot" && parts[5] == "messages"
+	heal := (method == http.MethodGet || method == http.MethodPost) && len(parts) == 5 && parts[1] == "v1" && parts[2] == "groups" && parts[4] == "heal"
+	if !botSend && !heal {
+		return
+	}
+	h.observeOnce.Do(func() {
+		h.observed = make(chan socketObservation, 256)
+		go h.observeLoop(h.observed)
+	})
+	defer func() { _ = recover() }() // a send after Close
+	select {
+	case h.observed <- socketObservation{method: method, route: path, status: status, code: responseErrorCode(body)}:
+	default: // a flood of attempts: the host keeps the newest 64 anyway
+	}
+}
+
+// observeLoop records the queued observations with the group's epoch at the time it gets to them.
+func (h *Host) observeLoop(in <-chan socketObservation) {
+	ctx := context.Background()
+	for o := range in {
+		parts := strings.Split(o.route, "/")
+		var group, epoch, unknown = "", uint64(0), false
+		groupPart := parts[3]
+		if len(parts) == 8 {
+			groupPart = parts[6]
+		}
+		if g, err := id.Parse(groupPart); err == nil {
+			group = g.String()
+			if server := h.Server(); server != nil {
+				if row, getErr := server.Repo().GetGroup(ctx, g); getErr == nil {
+					epoch, unknown = row.Epoch, row.EpochUnknown
+				}
+			}
+		}
+		if len(parts) == 6 {
+			attempt := BotSendAttempt{Method: o.method, Route: "/v1/groups/{group}/bot/messages", Status: o.status, ErrorCode: o.code,
+				Group: group, Epoch: epoch, EpochUnknown: unknown}
+			h.botSendRequests.Add(1)
+			h.botSendMu.Lock()
+			h.botSendAttempts = append(h.botSendAttempts, attempt)
+			if len(h.botSendAttempts) > 64 {
+				h.botSendAttempts = append([]BotSendAttempt(nil), h.botSendAttempts[len(h.botSendAttempts)-64:]...)
+			}
+			h.botSendMu.Unlock()
+			if o.status >= 200 && o.status < 300 {
+				h.botSendAccepted.Add(1)
+			} else {
+				h.botSendRefused.Add(1)
+			}
+			continue
+		}
+		attempt := GroupHealAttempt{Method: o.method, Route: "/v1/groups/{group}/heal", Status: o.status, ErrorCode: o.code,
+			Group: group, Epoch: epoch, EpochUnknown: unknown}
+		h.groupHealMu.Lock()
+		h.groupHealAttempts = append(h.groupHealAttempts, attempt)
+		if len(h.groupHealAttempts) > 64 {
+			h.groupHealAttempts = append([]GroupHealAttempt(nil), h.groupHealAttempts[len(h.groupHealAttempts)-64:]...)
+		}
+		h.groupHealMu.Unlock()
+	}
 }
 
 func redactedBotRuntimeRoute(path string) string {
@@ -801,9 +809,6 @@ func redactedBotRuntimeRoute(path string) string {
 	parts[4] = "{installation}"
 	if len(parts) == 7 && parts[5] == "groups" {
 		parts[6] = "{operation}"
-	}
-	if len(parts) == 8 && parts[5] == "interaction-groups" {
-		parts[6] = "{group}"
 	}
 	return strings.Join(parts, "/")
 }
@@ -844,17 +849,6 @@ func readinessConflictDetail(body []byte) string {
 	default:
 		return "unrecognized fixed readiness conflict"
 	}
-}
-
-// BotInteractionHealAttempt is a body-free testhost observation of the restore-only scoped Bot heal path.
-type BotInteractionHealAttempt struct {
-	Method       string `json:"method"`
-	Route        string `json:"route"`
-	Group        string `json:"group"`
-	Status       int    `json:"status"`
-	ErrorCode    string `json:"error_code"`
-	Epoch        uint64 `json:"epoch"`
-	EpochUnknown bool   `json:"epoch_unknown"`
 }
 
 // BotSendAttempt is a redacted testhost observation of a managed Bot message route.
@@ -1005,6 +999,11 @@ func (h *Host) Close(ctx context.Context) error {
 	h.stopSFU(ctx)
 	h.current.Store(nil)
 	err := h.server.Shutdown(ctx)
+	// After Shutdown no dispatch is left to observe; the observer's queue ends now.
+	h.observeOnce.Do(func() {})
+	if h.observed != nil {
+		close(h.observed)
+	}
 	h.closeWasm(ctx)
 	return err
 }

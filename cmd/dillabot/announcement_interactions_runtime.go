@@ -3,12 +3,11 @@
 package main
 
 import (
-	"github.com/dilla-chat/dilla/internal/bot/moderation"
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
 	"github.com/dilla-chat/dilla/internal/bot/service"
 )
 
-func runtimeInteractionHandlers(overview service.OverviewInteractions, announcements service.AnnouncementInteractions, moderationInteractions service.ModerationInteractions, music *service.MusicInteractions, nativeClient service.WelcomeSettingsNative, automodGrant service.AutoModerationGrantRedeemer, automodRuntime service.AutoModerationConfigRuntime, providerStatus ...service.MusicProviderStatusInteractions) map[protocol.Operation]service.InteractionHandlerSpec {
+func runtimeInteractionHandlers(overview service.OverviewInteractions, announcements service.AnnouncementInteractions, moderationInteractions service.ModerationInteractions, music *service.MusicInteractions, nativeClient service.WelcomeSettingsNative, providerStatus ...service.MusicProviderStatusInteractions) map[protocol.Operation]service.InteractionHandlerSpec {
 	statusRegistered := len(providerStatus) > 0 && providerStatus[0].Authority != nil && providerStatus[0].Snapshot != nil
 	overview.SupportsMusicProviderStatus = statusRegistered
 	handlers := overview.Handlers()
@@ -17,12 +16,6 @@ func runtimeInteractionHandlers(overview service.OverviewInteractions, announcem
 	}
 	for operation, handler := range (service.WelcomeInteractions{Authority: announcements.Authority, CommunityID: announcements.CommunityID, Native: nativeClient}).Handlers() {
 		handlers[operation] = handler
-	}
-	if nativeClient != nil {
-		config := service.AutoModerationConfigInteractions{Authority: overview.Authority, Store: moderation.NewStore(nativeClient), GrantRedeemer: automodGrant, Runtime: automodRuntime, CommunityID: overview.CommunityID}
-		for operation, handler := range config.Handlers() {
-			handlers[operation] = handler
-		}
 	}
 	if cases, ok := moderationInteractions.Handlers()[protocol.OpModerationCases]; ok {
 		handlers[protocol.OpModerationCases] = cases

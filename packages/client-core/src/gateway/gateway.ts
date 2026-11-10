@@ -1,7 +1,8 @@
 import type { CallStats } from '../http/routes';
 import { arr, bin, u53, u64, type CborValue } from '../cbor';
 import { DillaHttpError } from '../http/errors';
-import { DROPPABLE_OPS, encodeFrame, decodeFrame, frameOp, Op, type Frame } from './frames';
+import { DROPPABLE_OPS, MAX_RESPONSE_FRAME, encodeFrame, decodeFrame, decodeResponseFrame, frameOp, isResponseFrameHead, Op,
+  type Frame, type SocketResponseFrame } from './frames';
 import { toHex } from '../hex';
 
 export type GatewayStatus = 'idle' | 'connecting' | 'ready' | 'waiting';
@@ -10,6 +11,10 @@ export interface ReadyInfo {
   deviceId: Uint8Array;
   userId: Uint8Array;
   generation: bigint;
+  /** The instance id the hello named: with `generation`, which instance incarnation this socket reached (SocketRequests). */
+  instanceId?: Uint8Array;
+  /** Random per instance process (ready element 9): a restart changes it, so a request lost to one is not written again. */
+  bootId?: Uint8Array;
   versions: { wire: bigint; e2ee: bigint; media: bigint };
   keypackagesRemaining: number;
   groups: { groupId: Uint8Array; epoch: bigint; lastSeq: bigint; proposalsOutstanding: number }[];
@@ -24,8 +29,15 @@ export type GatewayEvent =
   | { type: 'ready'; info: ReadyInfo }
   | { type: 'frame'; frame: Frame }
   | { type: 'revoked' }
+  /** Bot v2: the instance refused this client's wire as too old (E_UPGRADE_REQUIRED, close 4006). The gateway stays idle;
+   *  the app asks its user to update. */
+  | { type: 'upgradeRequired' }
+  /** Final review M5: the instance's hello offers only wires older than this client's: the instance is the side to update. */
+  | { type: 'instanceOutdated' }
   /** Task 11 (Jonas, Q3): a heartbeat's round trip, in ms (the phone's You tab: "Connected to {host} · {ping}"). */
-  | { type: 'rtt'; ms: number };
+  | { type: 'rtt'; ms: number }
+  /** Bot v2: the answer (op 60) to a request frame this socket sent; SocketRequests matches it by id. */
+  | { type: 'response'; response: SocketResponseFrame };
 
 export interface GatewayDeps {
   url: string;
@@ -48,10 +60,12 @@ export const CLIENT_CLOSE = {
 } as const;
 
 const DEFAULT_MAX_FRAME_BYTES = 131584;
-const WIRE_PREFERENCE = [5n, 4n, 3n, 2n] as const;
+/** Bot v2: wire 6 is the only wire this client speaks. */
+const WIRE_PREFERENCE = [6n] as const;
+const UPGRADE_REQUIRED = 'E_UPGRADE_REQUIRED';
 type TimerName = 'reconnectTimer' | 'handshakeTimer' | 'heartbeatTimer' | 'ackTimer';
 type HelloInfo = Pick<ReadyInfo, 'heartbeatMs' | 'maxFrameBytes' | 'backoffMs' | 'backoffJitterMs'> & {
-  versions: bigint[][]; selectedVersions: { wire: bigint; e2ee: bigint; media: bigint };
+  instanceId: Uint8Array; versions: bigint[][]; selectedVersions: { wire: bigint; e2ee: bigint; media: bigint };
 };
 
 function readHello(payload: CborValue[]): HelloInfo {
@@ -59,10 +73,19 @@ function readHello(payload: CborValue[]): HelloInfo {
   const versions = [arr(p[0]).map(u64), arr(p[1]).map(u64), arr(p[2]).map(u64)];
   const heartbeatMs = u53(p[3]);
   const maxFrameBytes = u53(p[4]);
-  bin(p[5], 16);
+  const instanceId = bin(p[5], 16);
   u64(p[6]);
-  return { versions, selectedVersions: { wire: 0n, e2ee: 1n, media: 1n }, heartbeatMs, maxFrameBytes,
+  return { instanceId, versions, selectedVersions: { wire: 0n, e2ee: 1n, media: 1n }, heartbeatMs, maxFrameBytes,
     backoffMs: u53(p[7]), backoffJitterMs: u53(p[8]) };
+}
+
+/** True when the instance offers wires and every one is above every wire this client speaks. */
+function newerThanAll(offered: bigint[], preference: readonly bigint[]): boolean {
+  return offered.length > 0 && offered.every((version) => preference.every((own) => version > own));
+}
+
+function olderThanAll(offered: bigint[], preference: readonly bigint[]): boolean {
+  return offered.length > 0 && offered.every((version) => preference.every((own) => version < own));
 }
 
 function highestCommon(offered: bigint[], preference: readonly bigint[]): bigint | null {
@@ -70,7 +93,7 @@ function highestCommon(offered: bigint[], preference: readonly bigint[]): bigint
 }
 
 function readReady(payload: CborValue[], hello: HelloInfo): ReadyInfo {
-  const p = arr(payload, 9);
+  const p = arr(payload, 10);
   const deviceId = bin(p[0], 16);
   const userId = bin(p[1], 16);
   const generation = u64(p[2]);
@@ -79,11 +102,12 @@ function readReady(payload: CborValue[], hello: HelloInfo): ReadyInfo {
   if (versions.wire !== hello.selectedVersions.wire || versions.e2ee !== hello.selectedVersions.e2ee
     || versions.media !== hello.selectedVersions.media) throw new Error('ready version mismatch');
   const keypackagesRemaining = u53(p[7]);
+  const bootId = bin(p[9], 16);
   const groups = arr(p[8]).map((entry) => {
     const group = arr(entry, 4);
     return { groupId: bin(group[0], 16), epoch: u64(group[1]), lastSeq: u64(group[2]), proposalsOutstanding: u53(group[3]) };
   });
-  return { deviceId, userId, generation, versions, keypackagesRemaining, groups,
+  return { deviceId, userId, generation, instanceId: hello.instanceId, bootId, versions, keypackagesRemaining, groups,
     heartbeatMs: hello.heartbeatMs, maxFrameBytes: hello.maxFrameBytes,
     backoffMs: hello.backoffMs, backoffJitterMs: hello.backoffJitterMs };
 }
@@ -96,6 +120,8 @@ export class Gateway {
   private socket: WebSocket | null = null;
   private phase: 'minting' | 'hello' | 'ready-wait' | 'ready' = 'minting';
   private hello: HelloInfo | null = null;
+  /** The newest ready this socket produced, set before the 'ready' status is announced (SocketRequests reads it). */
+  readyInfo: ReadyInfo | null = null;
   private lastN = 0n;
   private failures = 0;
   private afterMs = 0;
@@ -107,6 +133,8 @@ export class Gateway {
   private beatSentAt: number | null = null;
   private readonly lastTyping = new Map<string, number>();
   private accepted: ReadyInfo['versions'] | null = null;
+  /** The code of an `error` frame this socket received before ready (Bot v2: E_UPGRADE_REQUIRED). */
+  private refusedCode: string | null = null;
 
   constructor(deps: GatewayDeps) { this.deps = deps; }
   get status(): GatewayStatus { return this.current; }
@@ -187,6 +215,7 @@ export class Gateway {
     ws.binaryType = 'arraybuffer';
     this.lastN = 0n;
     this.hello = null;
+    this.refusedCode = null;
     // Fix round 2: a beat of an earlier socket (closed by the server or torn down here) is never timed against this one's ack.
     this.beatSentAt = null;
     this.phase = 'hello';
@@ -198,12 +227,23 @@ export class Gateway {
 
   private onMessage(event: MessageEvent): void {
     if (!(event.data instanceof ArrayBuffer)) { this.teardown(CLIENT_CLOSE.undecodable, true); return; }
-    if (event.data.byteLength > (this.hello?.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES)) {
+    const bytes = new Uint8Array(event.data);
+    // Bot v2: a response (op 60) of a ready session may be as large as a route's answer; every other frame keeps the
+    // hello's bound.
+    const bound = this.phase === 'ready' && isResponseFrameHead(bytes) ? MAX_RESPONSE_FRAME
+      : (this.hello?.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES);
+    if (bytes.byteLength > bound) {
       this.teardown(CLIENT_CLOSE.tooLarge, true);
       return;
     }
+    if (this.phase === 'ready' && isResponseFrameHead(bytes)) {
+      let response: SocketResponseFrame;
+      try { response = decodeResponseFrame(bytes); }
+      catch { this.teardown(CLIENT_CLOSE.undecodable, true); return; }
+      this.emit({ type: 'response', response });
+      return;
+    }
     let frame: Frame;
-    const bytes = new Uint8Array(event.data);
     try { frame = decodeFrame(bytes); }
     catch {
       // web-3 (L-GW-33): a malformed voice_state or call_ring of a ready session is dropped, never acted on, and the
@@ -226,6 +266,10 @@ export class Gateway {
       if (wire === null || e2ee === null || media === null) {
         this.teardown(CLIENT_CLOSE.version, false);
         this.setStatus('idle', CLIENT_CLOSE.version);
+        // The instance's "older than all" rule, read from its hello: every wire it offers is newer than any this client
+        // speaks, so this client is the one to update. Only lower or mixed unknown wires stay the plain version state.
+        if (wire === null && newerThanAll(versions[0], WIRE_PREFERENCE)) this.emit({ type: 'upgradeRequired' });
+        else if (wire === null && olderThanAll(versions[0], WIRE_PREFERENCE)) this.emit({ type: 'instanceOutdated' });
         return;
       }
       hello.selectedVersions = { wire, e2ee, media };
@@ -244,10 +288,12 @@ export class Gateway {
         this.failures = 0;
         this.phase = 'ready';
         this.accepted = info.versions;
+        this.readyInfo = info;
         this.setStatus('ready', null);
         this.emit({ type: 'ready', info });
         this.scheduleBeat();
       } else if (frame.op === Op.invalidSession || frame.op === Op.reconnect) this.reconnectFrame(frame);
+      else if (frame.op === Op.error && frame.payload[1] === UPGRADE_REQUIRED) this.refusedCode = UPGRADE_REQUIRED;
       return;
     }
     if (this.phase === 'ready') {
@@ -261,9 +307,11 @@ export class Gateway {
       }
       // The group frames, the relayed typing signal the worker publishes as typing:<channel> (L-HTTP-96 op 49), and the
       // voice presence and DM ring signals of web-3 (ops 50 and 53, L-GW-32, L-GW-33), the structure notice of
-      // web-3.1 (op 54), and the away roster notice (op 55, AW4).
+      // web-3.1 (op 54), the away roster notice (op 55, AW4), and the Bot v2 catalog push, sealed answer and state hint
+      // (ops 61-63), without which no catalog, Bot answer or hint ever reaches the worker.
       else if ((frame.op >= Op.handshake && frame.op <= Op.messageDeleted) || frame.op === Op.presence || frame.op === Op.typing
         || frame.op === Op.voiceState || frame.op === Op.callRing || frame.op === Op.communityChanged || frame.op === Op.afkAway
+        || frame.op === Op.botCatalog || frame.op === Op.botReply || frame.op === Op.botStateChanged
         || (frame.op === Op.appBuild && (this.acceptedVersions?.wire ?? 0) >= 5)) {
         this.emit({ type: 'frame', frame });
       }
@@ -296,6 +344,15 @@ export class Gateway {
     if (this.socket?.readyState === 1) this.socket.send(bytes);
   }
 
+  /** Bot v2: writes one encoded request frame (op 59) on the ready socket. False when there is none, so the caller keeps
+   *  the request queued; its answer arrives as a `response` event. */
+  sendRequest(frame: Uint8Array): boolean {
+    if (this.phase !== 'ready' || this.current !== 'ready' || this.socket?.readyState !== 1) return false;
+    try { this.socket.send(frame); }
+    catch { return false; }
+    return true;
+  }
+
   private onClose(event: CloseEvent): void {
     if (event.code === 4004) {
       this.goIdle();
@@ -306,8 +363,11 @@ export class Gateway {
     // C2 review finding 1: the instance refused this client's wire (E_VERSION, close 4006). As with a hello without
     // WIRE, the refusal stands until the page is reloaded: no reconnect, no new ticket.
     if (event.code === CLIENT_CLOSE.version) {
+      // Bot v2: a wire 6 instance names E_UPGRADE_REQUIRED, in the close reason and in the error frame before it.
+      const upgrade = event.reason === UPGRADE_REQUIRED || this.refusedCode === UPGRADE_REQUIRED;
       this.goIdle();
       this.setStatus('idle', CLIENT_CLOSE.version);
+      if (upgrade) this.emit({ type: 'upgradeRequired' });
       return;
     }
     this.fail(event.code);

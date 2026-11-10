@@ -24,7 +24,7 @@ func TestCommunityManagerCanRenameOnlyItsManagedBot(t *testing.T) {
 	if err := deps.Repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: cid, UserID: member.ID, Joined: now}); err != nil {
 		t.Fatal(err)
 	}
-	negotiate, _ := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
+	negotiate, _ := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
 	for _, token := range []string{ownerToken, memberToken} {
 		if rec := postCBORAuth(h, "/v1/sessions/negotiate", negotiate, token); rec.Code != http.StatusOK {
 			t.Fatalf("negotiate = %d", rec.Code)

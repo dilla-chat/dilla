@@ -8,8 +8,8 @@ type Status = 'ok' | 'missing' | 'unsafe' | 'oversized' | 'malformed' | 'unavail
 const versions = ['1.0.0', '1.0.1'] as const;
 const phases = ['idle', 'checking', 'downloading', 'ready', 'installing', 'error'];
 const roles = ['ordinary', 'watchdog', 'bootstrap'];
-const startupStages = ['fetch-begin', 'fetch-response', 'fetch-reject', 'request-complete', 'request-error', 'request-blocked', 'document-loaded', 'load-failed', 'renderer-gone'];
-const startupRoutes = ['instance', 'limits', 'session', 'factor', 'backup', 'device', 'account', 'other-api', 'asset-wasm', 'asset-script', 'asset-style', 'other-asset', 'other'];
+const startupStages = ['fetch-begin', 'fetch-response', 'fetch-reject', 'request-complete', 'request-error', 'request-blocked', 'ws-send', 'ws-headers', 'perm-check-allow', 'perm-check-deny', 'perm-request-allow', 'perm-request-deny', 'document-loaded', 'load-failed', 'renderer-gone'];
+const startupRoutes = ['instance', 'limits', 'session', 'factor', 'backup', 'device', 'account', 'gateway', 'other-api', 'asset-wasm', 'asset-script', 'asset-style', 'other-asset', 'other'];
 const startupMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'OTHER'];
 interface StartupEvent { seq: number; stage: string; route: string; method: string; status: number; code: number; elapsedMs: number }
 interface Input { reports: string; profile: string; installed: string; platform: string; expectedVersion: string; previousPort?: number }
@@ -98,14 +98,14 @@ export async function installedAccountDiagnostics(input: Input) {
   const startup = rawStartup.map((raw, i) => {
     const records: StartupEvent[] = []; let status = raw.status;
     if (status === 'ok') {
-      const lines = raw.text!.split('\n').filter(Boolean); if (lines.length > 96) status = 'truncated';
+      const lines = raw.text!.split('\n').filter(Boolean); if (lines.length > 192) status = 'truncated';
       // Preserve the earliest startup operation; later abort/teardown noise may
       // not displace the first pending request or its observed outcome.
-      for (const line of lines.slice(0, 96)) {
+      for (const line of lines.slice(0, 192)) {
         try {
           const value = object(JSON.parse(line));
           const integer = (field: unknown, min: number, max: number): field is number => Number.isSafeInteger(field) && Number(field) >= min && Number(field) <= max;
-          if (!value || !integer(value.seq, 1, 96) || typeof value.stage !== 'string' || !startupStages.includes(value.stage)
+          if (!value || !integer(value.seq, 1, 192) || typeof value.stage !== 'string' || !startupStages.includes(value.stage)
             || typeof value.route !== 'string' || !startupRoutes.includes(value.route) || typeof value.method !== 'string' || !startupMethods.includes(value.method)
             || !integer(value.status, 0, 599) || (value.status !== 0 && value.status < 100) || !integer(value.code, -2147483648, 2147483647)
             || !integer(value.elapsedMs, 0, 600000)) throw new Error();

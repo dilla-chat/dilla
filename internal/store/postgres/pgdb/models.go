@@ -19,23 +19,6 @@ type AuditLog struct {
 	At     int64
 }
 
-type AutomodStepupGrants struct {
-	TokenHash           []byte
-	CommunityID         id.ID
-	InstallationID      id.ID
-	GroupID             id.ID
-	RequestID           id.ID
-	ActorUser           []byte
-	ActorDevice         []byte
-	ExpectedRevision    int64
-	RequestExpires      int64
-	ConfigHash          []byte
-	Expires             int64
-	ConsumedAt          sql.NullInt64
-	AcceptedRequestHash []byte
-	Receipt             []byte
-}
-
 type Backups struct {
 	UserID      id.ID
 	Kind        int64
@@ -79,12 +62,34 @@ type Blobs struct {
 	UnrefSince sql.NullInt64
 }
 
+type BotCatalogs struct {
+	CommunityID id.ID
+	Revision    int64
+	Body        []byte
+}
+
+type BotChannels struct {
+	ChannelID   id.ID
+	CommunityID id.ID
+	MarkedAt    int64
+	MarkedBy    id.ID
+}
+
 type BotClaims struct {
 	InstallationID id.ID
 	RuntimeID      id.ID
 	ClaimID        id.ID
 	RequestID      id.ID
 	Expires        int64
+}
+
+type BotCommandKeys struct {
+	CommunityID id.ID
+	KeyID       id.ID
+	Publication []byte
+	PublishedAt int64
+	PrevKeyID   id.ID
+	PrevUntil   int64
 }
 
 type BotEventAcks struct {
@@ -135,12 +140,6 @@ type BotInstallations struct {
 	RestartRequested     int64
 	RestartHandled       int64
 	RuntimeVersion       sql.NullString
-}
-
-type BotInteractionEligibilityRevisions struct {
-	CommunityID id.ID
-	UserID      id.ID
-	Revision    int64
 }
 
 type BotJoinRoleGrantReceipts struct {
@@ -234,12 +233,31 @@ type BotSessionBindings struct {
 	Created        int64
 }
 
+type BotStateRevisions struct {
+	ScopeKind   int64
+	ScopeID     id.ID
+	CommunityID id.ID
+	Revision    int64
+}
+
 type BotStructuralEvents struct {
 	EventID     id.ID
 	CommunityID id.ID
 	Sequence    int64
 	OccurredAt  int64
 	Body        []byte
+}
+
+type BotWebhooks struct {
+	WebhookID     id.ID
+	CommunityID   id.ID
+	ChannelID     id.ID
+	Name          string
+	AvatarBlob    []byte
+	SecretHash    []byte
+	AllowEveryone int64
+	CreatedAt     int64
+	RotatedAt     sql.NullInt64
 }
 
 type ChannelMembers struct {

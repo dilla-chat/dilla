@@ -32,9 +32,9 @@ func (h *MemberTimeouts) WithNotifier(n *StructureNotifier) *MemberTimeouts {
 }
 
 func (h *MemberTimeouts) Register(mux *server.Mux) {
-	mux.HandleFunc("PUT /v1/communities/{id}/members/{user_id}/timeout", h.put)
-	mux.HandleFunc("DELETE /v1/communities/{id}/members/{user_id}/timeout", h.delete)
-	mux.HandleFunc("GET /v1/communities/{id}/members/{user_id}/timeout", h.get)
+	mux.Socket("PUT /v1/communities/{id}/members/{user_id}/timeout", http.HandlerFunc(h.put))
+	mux.Socket("DELETE /v1/communities/{id}/members/{user_id}/timeout", http.HandlerFunc(h.delete))
+	mux.Socket("GET /v1/communities/{id}/members/{user_id}/timeout", http.HandlerFunc(h.get))
 }
 
 type timeoutPutReq struct {

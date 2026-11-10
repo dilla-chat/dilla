@@ -160,13 +160,6 @@ pub(crate) fn transaction(store: &mut Store, payload: &[u8]) -> Result<Vec<u8>, 
     })
     .map_err(|_| StateError::Invalid)?;
     let digest = Sha256::digest(&changes_bytes[..]);
-    // Only the new fixed checkpoint namespace opts into bounded receipts.
-    // Ordinary settings/command transactions keep their existing replay
-    // contract. Old checkpoint retries remain CAS-safe after receipt eviction:
-    // the coordinator reconciles rows and the durable processed frontier.
-    let checkpoint = changes
-        .iter()
-        .all(|(area, key, _, _)| *area == 8 && key.starts_with(b"dilla.bot.automod-state.v1/"));
     let mut conn = store.conn.lock().map_err(|_| StateError::Internal)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -214,21 +207,79 @@ pub(crate) fn transaction(store: &mut Store, payload: &[u8]) -> Result<Vec<u8>, 
         params![id.as_slice(), digest.as_slice(), result],
     )
     .map_err(|_| StateError::Internal)?;
-    if checkpoint {
-        // Additive, optional index: old stores need no version migration and
-        // helpers that never checkpoint create no additional table.
-        tx.execute_batch("CREATE TABLE IF NOT EXISTS bot_checkpoint_receipts (seq INTEGER PRIMARY KEY AUTOINCREMENT, id BLOB UNIQUE NOT NULL);")
-            .map_err(|_| StateError::Internal)?;
-        tx.execute(
-            "INSERT INTO bot_checkpoint_receipts(id) VALUES(?1)",
-            [id.as_slice()],
-        )
-        .map_err(|_| StateError::Internal)?;
-        tx.execute_batch("DELETE FROM bot_state_receipts WHERE id IN (SELECT id FROM bot_checkpoint_receipts ORDER BY seq DESC LIMIT -1 OFFSET 64); DELETE FROM bot_checkpoint_receipts WHERE seq IN (SELECT seq FROM bot_checkpoint_receipts ORDER BY seq DESC LIMIT -1 OFFSET 64);")
-            .map_err(|_| StateError::Internal)?;
-    }
     tx.commit().map_err(|_| StateError::Internal)?;
     Ok(result)
+}
+
+/// The `bot_helper_meta` key that marks the v1 cleanup done.
+const CLEANUP_V1_MARKER: &str = "bot_v2_cleanup_v1";
+
+/// The v1 interaction-group state the Go Bot kept: (area, key prefix). Registrations and their queue (area 6), the
+/// private response outbox (area 3) and the member-registration catch-up (area 9).
+const V1_INTERACTION_STATE: [(i64, &[u8]); 3] = [
+    (6, b"dilla.bot.interaction-registration."),
+    (3, b"dilla.bot.interaction-response.v1/"),
+    (9, b"dilla.bot.member-registration-catchup.v1"),
+];
+
+/// The AutoModeration state the Go Bot kept in area 8: its config and its pending decisions.
+const V1_AUTOMOD_STATE: [(i64, &[u8]); 2] = [
+    (8, b"dilla.bot.moderation.v1/"),
+    (8, b"dilla.bot.automod-state.v1/"),
+];
+
+/// Bot v2 Task 23: deletes the v1 interaction-group state and the AutoModeration config and pending state, once (a
+/// marker in `bot_helper_meta`). `groups` is how many kind-3 groups the core removed when it opened this store. It
+/// answers the log lines to print; a second run answers none.
+pub(crate) fn cleanup_v1(store: &mut Store, groups: u64) -> Result<Vec<String>, StateError> {
+    let mut conn = store.conn.lock().map_err(|_| StateError::Internal)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| StateError::Internal)?;
+    let done: Option<i64> = tx
+        .query_row(
+            "SELECT 1 FROM bot_helper_meta WHERE k=?1",
+            [CLEANUP_V1_MARKER],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|_| StateError::Internal)?;
+    if done.is_some() {
+        return Ok(Vec::new());
+    }
+    let delete = |area: i64, prefix: &[u8]| -> Result<usize, StateError> {
+        tx.execute(
+            "DELETE FROM bot_state WHERE area=?1 AND substr(key,1,?2)=?3",
+            params![
+                area,
+                i64::try_from(prefix.len()).map_err(|_| StateError::Internal)?,
+                prefix
+            ],
+        )
+        .map_err(|_| StateError::Internal)
+    };
+    for (area, prefix) in V1_INTERACTION_STATE {
+        delete(area, prefix)?;
+    }
+    let mut config_rows = 0;
+    for (area, prefix) in V1_AUTOMOD_STATE {
+        config_rows += delete(area, prefix)?;
+    }
+    tx.execute_batch("DROP TABLE IF EXISTS bot_checkpoint_receipts;")
+        .map_err(|_| StateError::Internal)?;
+    tx.execute(
+        "INSERT INTO bot_helper_meta(k,v) VALUES(?1,x'01')",
+        [CLEANUP_V1_MARKER],
+    )
+    .map_err(|_| StateError::Internal)?;
+    tx.commit().map_err(|_| StateError::Internal)?;
+    let mut lines = vec![format!(
+        "bot v2 cleanup: removed interaction groups n={groups}"
+    )];
+    if config_rows > 0 {
+        lines.push("bot v2 cleanup: removed automod config".to_string());
+    }
+    Ok(lines)
 }
 
 fn read_area(d: &mut Decoder<'_>) -> Result<i64, dilla_core::cbor::CborError> {
@@ -313,34 +364,69 @@ mod tests {
         .unwrap()
     }
 
+    /// Bot v2 Task 23: the one-time cleanup deletes the v1 interaction-group state (registrations, their queue, the
+    /// response outbox and the member-registration catch-up) and the AutoModeration config and pending state, logs
+    /// two lines, and keeps every other row. A second run deletes and logs nothing.
     #[test]
-    fn automod_checkpoint_receipts_are_bounded_without_pruning_commands() {
+    fn cleanup_removes_interaction_state_and_automod_once() {
         let path = temp_dir();
-        let mut s = store(&path, [0x36; 32]);
-        let regular = build_transaction([9; 16], &[change(b"settings", 0, Some(&[0x80]))]);
-        let original = transaction(&mut s, &regular).unwrap();
-        let mut last = Vec::new();
-        for i in 0..256u64 {
-            let mut id = [0; 16];
-            id[..8].copy_from_slice(&(i + 1000).to_be_bytes());
+        let mut s = store(&path, [0x37; 32]);
+        let put = |s: &mut Store, area: u64, key: &[u8]| {
             let mut c = Encoder::new();
             c.array(4)
-                .uint(8)
-                .bytes(b"dilla.bot.automod-state.v1/meta")
-                .uint(i)
+                .uint(area)
+                .bytes(key)
+                .uint(0)
                 .opt_bytes(Some(&[0x80]));
-            last = build_transaction(id, &[c.into_vec()]);
-            transaction(&mut s, &last).unwrap();
+            let mut id = [0; 16];
+            id[..key.len().min(16)].copy_from_slice(&key[key.len().saturating_sub(16)..]);
+            id[0] ^= area as u8 + 1;
+            transaction(s, &build_transaction(id, &[c.into_vec()])).unwrap();
+        };
+        let removed: [(u64, &[u8]); 6] = [
+            (6, b"dilla.bot.interaction-registration.v1/group-a"),
+            (6, b"dilla.bot.interaction-registration.queue.v1"),
+            (3, b"dilla.bot.interaction-response.v1/event-b"),
+            (9, b"dilla.bot.member-registration-catchup.v1"),
+            (
+                8,
+                b"dilla.bot.moderation.v1/instance/community/installation",
+            ),
+            (8, b"dilla.bot.automod-state.v1/meta"),
+        ];
+        for (area, key) in removed {
+            put(&mut s, area, key);
         }
-        let count: i64 = s
-            .conn
-            .lock()
-            .unwrap()
-            .query_row("SELECT count(*) FROM bot_state_receipts", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 65, "checkpoint hot path retained unlimited receipts");
-        assert_eq!(transaction(&mut s, &regular).unwrap(), original);
-        assert!(transaction(&mut s, &last).is_ok());
+        put(&mut s, 8, b"dilla.bot.welcome.config.v1");
+        let lines = cleanup_v1(&mut s, 2).unwrap();
+        assert_eq!(
+            lines,
+            vec![
+                "bot v2 cleanup: removed interaction groups n=2".to_string(),
+                "bot v2 cleanup: removed automod config".to_string(),
+            ]
+        );
+        let rows = |s: &Store| -> Vec<(i64, Vec<u8>)> {
+            let c = s.conn.lock().unwrap();
+            let mut stmt = c
+                .prepare("SELECT area,key FROM bot_state ORDER BY area,key")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        assert_eq!(rows(&s), vec![(8, b"dilla.bot.welcome.config.v1".to_vec())]);
+        assert!(
+            cleanup_v1(&mut s, 0).unwrap().is_empty(),
+            "the second run logs nothing"
+        );
+        drop(s);
+        let mut s = store(&path, [0x37; 32]);
+        assert!(
+            cleanup_v1(&mut s, 0).unwrap().is_empty(),
+            "nor after a reopen"
+        );
         drop(s);
         let _ = fs::remove_dir_all(path);
     }

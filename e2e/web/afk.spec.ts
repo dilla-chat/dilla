@@ -45,6 +45,7 @@ import { closeSettings, connected, dock, micLive, noiseOff, openVoiceSettings, p
 import { markSignalLifecycle, signalLifecycleDiagnostics } from '../voice/support/signal-lifecycle.ts';
 import { observeSignalConsole, signalCloseGuard } from '../voice/support/signal-close-guard.ts';
 import { arr, decode, encode, type CborInput, type CborValue } from '../../packages/client-core/src/cbor/index';
+import { socketRequestOnce, watchSocketRequests, type SocketRequestSeen } from './support/socket-requests';
 import { e2ePort } from './support/ports';
 
 /** Its own ports (web3.9 reservation): the host, its control listener, and its LiveKit's signalling and ICE ports. */
@@ -68,7 +69,7 @@ let bjornAccount: Account | null = null;
 
 /** One person's client: a persistent context of its own (Electron in the desktop lane, otherwise the project's browser), its page, the bearer the
  *  page's worker last sent (for the spec's reads), and what it printed that the guard refuses. */
-interface Person { name: string; diagnosticActor: 'ada' | 'bjorn' | 'phone'; context: BrowserContext; page: Page; bearer: string; errors: string[]; afkPosts: number; awayPuts: number; signal: ReturnType<typeof signalCloseGuard> }
+interface Person { name: string; diagnosticActor: 'ada' | 'bjorn' | 'phone'; context: BrowserContext; page: Page; bearer: string; errors: string[]; afkPosts: number; awayPuts: number; socketSeen: SocketRequestSeen[]; signal: ReturnType<typeof signalCloseGuard> }
 let ada: Person | null = null;
 let bjorn: Person | null = null;
 let phone: Person | null = null;
@@ -120,7 +121,7 @@ async function openPerson(name: string, f: Launch, projectName: string, workerIn
 /** Attach the same evidence collectors after an actual desktop process restart as after its first launch. */
 async function observePerson(name: string, context: BrowserContext, firefox = false, prior?: Person, actor: Person['diagnosticActor'] = prior?.diagnosticActor ?? 'bjorn'): Promise<Person> {
   const p: Person = { name, diagnosticActor: actor, context, page: context.pages()[0] ?? (await context.newPage()),
-    bearer: prior?.bearer ?? '', errors: prior?.errors ?? [], afkPosts: prior?.afkPosts ?? 0, awayPuts: prior?.awayPuts ?? 0, signal: signalCloseGuard() };
+    bearer: prior?.bearer ?? '', errors: prior?.errors ?? [], afkPosts: prior?.afkPosts ?? 0, awayPuts: prior?.awayPuts ?? 0, socketSeen: [], signal: signalCloseGuard() };
   if (desktopE2E()) {
     // A secondary person must exercise the shipping native transport and sandbox too. A browser launched directly
     // here used to make the desktop AFK lane pass through an unrelated, unused Electron fixture.
@@ -138,17 +139,22 @@ async function observePerson(name: string, context: BrowserContext, firefox = fa
       }), `${name}'s shipping renderer sandbox`).toEqual({ sandbox: true, contextIsolation: true, nodeIntegration: false });
     } finally { await win.dispose(); }
   }
+  // A call start or token mint is a gateway request frame now, not an HTTP request.
+  // AW5 (R-AW1): any call start or token mint this client asks for in the AFK channel, and each away mark it sends.
+  p.socketSeen = watchSocketRequests(p.page, (r) => {
+    if (afkId !== '' && r.method === 'POST' && r.path.startsWith(`/v1/channels/${afkId}/`)) p.afkPosts += 1;
+    if (r.method === 'PUT' && r.path === `/v1/communities/${communityId}/afk/away`) p.awayPuts += 1;
+  });
   context.on('request', (r: Request) => {
     if (!r.url().startsWith(`${ORIGIN}/v1/`)) return;
-    // AW5 (R-AW1): any call start or token mint this client asks for in the AFK channel, and each away mark it sends.
-    if (afkId !== '' && r.method() === 'POST' && r.url().startsWith(`${ORIGIN}/v1/channels/${afkId}/`)) p.afkPosts += 1;
-    if (r.method() === 'PUT' && r.url() === `${ORIGIN}/v1/communities/${communityId}/afk/away`) p.awayPuts += 1;
+    // The bearer: the community area is socket-only, so it is read from an authenticated request that stays on HTTP.
     void r.allHeaders().then((h) => { const a = h.authorization; if (a?.startsWith('Bearer ') === true) p.bearer = a; }).catch(() => undefined);
   });
   if (desktopE2E()) {
-    // Ordinary native request reports omit headers. Observe this existing authenticated read through the fixture's
-    // pass-through route, so API checks keep using the person's real session without changing any response.
-    await context.route(`${ORIGIN}/v1/communities`, route => route.continue());
+    // Ordinary native request reports omit headers. Observe this existing authenticated read (enterReady's factor gate,
+    // an HTTP route: it runs before the socket exists) through the fixture's pass-through route, so API checks keep
+    // using the person's real session without changing any response.
+    await context.route(`${ORIGIN}/v1/auth/factors`, route => route.continue());
   }
   observeSignalConsole(context, p.signal, text => {
     if (!firefox && BY_DESIGN_RESOURCE_LINE.test(text)) return;
@@ -199,12 +205,13 @@ const hex = (b: unknown): string => {
   if (!(b instanceof Uint8Array)) throw new Error('not a byte string');
   return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
 };
-/** A read of the instance's API with this person's session (the client sends the same request). */
+/** A read of the instance's API with this person's session (the client sends the same request frame). The routes have no
+ *  HTTP form, so this is one request on a second gateway connection of the person's session. */
 async function read(p: Person, path: string): Promise<CborValue> {
   expect(p.bearer, `${p.name}'s session bearer`).toMatch(/^Bearer /);
-  const res = await fetch(`${ORIGIN}${path}`, { headers: { accept: 'application/cbor', authorization: p.bearer } });
+  const res = await socketRequestOnce(ORIGIN, p.bearer, 'GET', path);
   expect(res.status, `GET ${path}`).toBe(200);
-  return decode(new Uint8Array(await res.arrayBuffer()));
+  return decode(res.body);
 }
 /** GET /v1/communities/{id}/afk (R33, AW3): [channel_id|null, timeout_seconds, [], pending, [[user_id, since_ts]]]; `away`
  *  is how many people the roster lists. */
@@ -221,20 +228,19 @@ async function channelsOf(p: Person): Promise<{ id: string; kind: number; parent
 }
 /** A write to the instance's API with this person's session, as the client sends it; answers the status and the error code. */
 async function write(p: Person, method: 'PATCH' | 'PUT' | 'DELETE', path: string, body?: CborInput): Promise<{ status: number; code: string | null }> {
-  const res = await fetch(`${ORIGIN}${path}`, {
-    method, headers: { accept: 'application/cbor', 'content-type': 'application/cbor', authorization: p.bearer },
-    ...(body === undefined ? {} : { body: Buffer.from(encode(body)) }),
-  });
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  const code = res.status >= 400 && bytes.length > 0 ? String(arr(decode(bytes))[0]) : null;
+  const res = await socketRequestOnce(ORIGIN, p.bearer, method, path, body === undefined ? new Uint8Array() : encode(body));
+  const code = res.status >= 400 && res.body.length > 0 ? String(arr(decode(res.body))[0]) : null;
   return { status: res.status, code };
 }
 /** The next activity report of this person's device that the instance accepts (204): arm it before the action that sends it. */
-function activityAccepted(p: Person): Promise<unknown> {
-  return p.context.waitForEvent('response', { timeout: WAIT, predicate: (r) => r.request().method() === 'POST'
-    && r.url() === `${ORIGIN}/v1/communities/${communityId}/afk/activity` }).then((r) => {
-    expect(r.status(), `${p.name}'s activity report`).toBe(204);
-  });
+async function activityAccepted(p: Person): Promise<void> {
+  const from = p.socketSeen.length;
+  let status: number | null = null;
+  await expect.poll(() => {
+    status = p.socketSeen.slice(from).find((r) => r.method === 'POST' && r.path === `/v1/communities/${communityId}/afk/activity` && r.status !== null)?.status ?? null;
+    return status;
+  }, { timeout: WAIT, message: `${p.name}'s activity report is answered` }).not.toBeNull();
+  expect(status, `${p.name}'s activity report`).toBe(204);
 }
 /** Moves the instance clock forward (POST /debug/clock); the AFK sweep runs on its own 5 s tick. */
 async function advanceClock(seconds: number): Promise<void> {
@@ -463,14 +469,12 @@ test('3. no delete, no permissions and no reorder for AFK in server settings, th
   await closeServerSettings(a.page);
 
   // The instance refuses the delete with Ada's own session.
-  const refused = await a.page.request.delete(`${ORIGIN}/v1/channels/${afkId}`, { headers: { authorization: a.bearer, accept: 'application/cbor' } });
-  expect(refused.status(), 'DELETE of the AFK channel').toBe(403);
-  expect(arr(decode(new Uint8Array(await refused.body())))[0]).toBe('E_FORBIDDEN');
+  expect(await write(a, 'DELETE', `/v1/channels/${afkId}`), 'DELETE of the AFK channel').toEqual({ status: 403, code: 'E_FORBIDDEN' });
   // Its control, one input apart: an ordinary voice channel she makes deletes.
   await makeVoice(a.page, 'spare');
   const spare = (await channelsOf(a)).find((c) => c.name === 'spare');
-  const deleted = await a.page.request.delete(`${ORIGIN}/v1/channels/${spare?.id ?? ''}`, { headers: { authorization: a.bearer, accept: 'application/cbor' } });
-  expect(deleted.ok(), `DELETE of an ordinary voice channel (${String(deleted.status())})`).toBe(true);
+  const deleted = await write(a, 'DELETE', `/v1/channels/${spare?.id ?? ''}`);
+  expect(deleted.status, `DELETE of an ordinary voice channel (${String(deleted.status)})`).toBe(204);
   await expect(voiceRow(a.page, 'spare')).toHaveCount(0, { timeout: WAIT });
   expect((await channelsOf(a)).filter((c) => c.id === afkId), 'AFK is still there').toHaveLength(1);
 
@@ -668,14 +672,13 @@ test('6. a phone in general is never cut, its desktop twin cut beside it is not 
   await ph.page.goto(`/c/${communityId}/${generalVoiceId}`);
   // R5: the phone's first activity report after the join says it is exempt ([channel, 1]). The clock moves only once the
   // instance has it; before it the phone is tracked like any admission (the report follows the session's start).
-  const exempt = ph.context.waitForEvent('requestfinished', { timeout: WAIT, predicate: (r) => {
-    const body = r.postDataBuffer();
-    return r.method() === 'POST' && r.url() === `${ORIGIN}/v1/communities/${communityId}/afk/activity`
-      && body !== null && body.length === 19 && body[0] === 0x82 && body[18] === 0x01;
-  } });
+  const exemptFrom = ph.socketSeen.length;
+  const exemptReport = (): SocketRequestSeen | undefined => ph.socketSeen.slice(exemptFrom).find((r) => r.method === 'POST'
+    && r.path === `/v1/communities/${communityId}/afk/activity` && r.body.length === 19 && r.body[0] === 0x82 && r.body[18] === 0x01);
   // Visiting the voice channel's address opens the stage without joining (only a tap on its list row joins, as the prototype's phone does): join from the stage.
   await button(stage(ph.page), 'callStage.preview.join').click();
-  expect((await (await exempt).response())?.status(), 'the exempt report').toBe(204);
+  await expect.poll(() => exemptReport()?.status ?? null, { timeout: WAIT, message: 'the exempt report is answered' }).not.toBeNull();
+  expect(exemptReport()?.status, 'the exempt report').toBe(204);
   // A phone has no dock (flow 12): the stage's phase says it is in.
   await expect(phaseOf(ph.page)).toHaveAttribute('data-call-phase', 'in', { timeout: WAIT });
   // A voice channel lists each person once, whatever their devices (67fcebb7): the phone's phase and the desktop's dock
@@ -897,8 +900,7 @@ async function restart(people: Person[]): Promise<void> {
       await markSignalLifecycle(p.page, 'after-page-reload');
     }
     // The page's worker sends its bearer again once it is up.
-    await expect.poll(async () => (await fetch(`${ORIGIN}/v1/communities/${communityId}/afk`, {
-      headers: { accept: 'application/cbor', authorization: people[0]?.bearer ?? '' } })).status, { timeout: WAIT }).toBe(200);
+    await expect.poll(async () => (await socketRequestOnce(ORIGIN, people[0]?.bearer ?? '', 'GET', `/v1/communities/${communityId}/afk`).catch(() => ({ status: 0 }))).status, { timeout: WAIT }).toBe(200);
   } finally {
     restarting = false;
   }

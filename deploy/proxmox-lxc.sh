@@ -44,10 +44,13 @@ container options:
 passed to install.sh:
   --version TAG        the release to install (default: the tag stamped into the
                        install.sh beside this script; a copy from git has none)
-  --release-url URL    where dillad-linux-<arch>, dilla_core_wasi.wasm and
+  --release-url URL    where dillad-linux-<arch>, dilla_core_wasi.wasm, the Bot's
+                       dillabot-linux-<arch> and dilla-bot-core-linux-<arch>, and
                        SHA256SUMS are downloaded from (default: releases/download/TAG)
   --binary PATH        use this dillad binary instead of downloading one
   --core PATH          use this dilla_core_wasi.wasm instead of downloading one
+  --bot-binary PATH    use this dillabot binary instead of downloading one
+  --bot-helper PATH    use this dilla-bot-core helper instead of downloading one
   --sums PATH          check local files against this SHA256SUMS
   --insecure-skip-verify  install local files without a --sums check
   --udp-port N         LiveKit's media port (default 7882)
@@ -62,6 +65,8 @@ STORAGE="local-lvm"
 TEMPLATE_STORAGE="local"
 BINARY=""
 CORE=""
+BOT_BINARY=""
+BOT_HELPER=""
 SUMS=""
 RELEASE_URL=""
 BEHIND_PROXY=0
@@ -99,6 +104,8 @@ while [ "$#" -gt 0 ]; do
 	--template-storage) TEMPLATE_STORAGE="$value" ;;
 	--binary) BINARY="$value" ;;
 	--core) CORE="$value" ;;
+	--bot-binary) BOT_BINARY="$value" ;;
+	--bot-helper) BOT_HELPER="$value" ;;
 	--sums) SUMS="$value" ;;
 	--behind-proxy) BEHIND_PROXY=1 ;;
 	--agree-tos | --insecure-skip-verify | --no-media-ip) INSTALL_ARGS+=("$flag") ;;
@@ -140,6 +147,8 @@ INSTALLER="$SCRIPT_DIR/install.sh"
 FILE_ARGS=()
 [ -z "$BINARY" ] || FILE_ARGS+=(--binary=/root/dilla-install/dillad)
 [ -z "$CORE" ] || FILE_ARGS+=(--core=/root/dilla-install/dilla_core_wasi.wasm)
+[ -z "$BOT_BINARY" ] || FILE_ARGS+=(--bot-binary=/root/dilla-install/dillabot)
+[ -z "$BOT_HELPER" ] || FILE_ARGS+=(--bot-helper=/root/dilla-install/dilla-bot-core)
 [ -z "$SUMS" ] || FILE_ARGS+=(--sums=/root/dilla-install/SHA256SUMS)
 
 # install.sh validates the arguments here, before a container exists.
@@ -178,12 +187,12 @@ if pct status "$CTID" >/dev/null 2>&1; then
 	die "container $CTID already exists; choose another --ctid"
 fi
 
-for f in "$BINARY" "$CORE" "$SUMS"; do
+for f in "$BINARY" "$CORE" "$BOT_BINARY" "$BOT_HELPER" "$SUMS"; do
 	[ -z "$f" ] || [ -s "$f" ] || die "$f is missing or empty"
 done
 # Whatever is not local is downloaded inside the container; a release URL that
 # does not answer fails here, before a container exists.
-if [ -z "$BINARY" ] || [ -z "$CORE" ]; then
+if [ -z "$BINARY" ] || [ -z "$CORE" ] || [ -z "$BOT_BINARY" ] || [ -z "$BOT_HELPER" ]; then
 	# install.sh --check-args has refused a download with neither a version nor a URL.
 	probe="${RELEASE_URL:-https://github.com/dilla-chat/dilla/releases/download/$VERSION}"
 	log "checking $probe/SHA256SUMS"
@@ -200,7 +209,8 @@ if ! pveam list "$TEMPLATE_STORAGE" | grep -q "$TEMPLATE"; then
 fi
 
 # Unprivileged, with nesting: the unit's sandboxing directives (PrivateTmp,
-# ProtectSystem, ...) need it to start inside a container.
+# ProtectSystem, ...) need it to start inside a container, and so does the
+# bubblewrap sandbox of the Bot that dillad supervises.
 log "creating container $CTID ($CT_HOSTNAME)"
 pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$TEMPLATE" \
 	--hostname "$CT_HOSTNAME" \
@@ -228,6 +238,8 @@ pct exec "$CTID" -- install -d -m 0700 /root/dilla-install >&2
 pct push "$CTID" "$INSTALLER" /root/dilla-install/install.sh --perms 0700 >&2
 [ -z "$BINARY" ] || pct push "$CTID" "$BINARY" /root/dilla-install/dillad --perms 0755 >&2
 [ -z "$CORE" ] || pct push "$CTID" "$CORE" /root/dilla-install/dilla_core_wasi.wasm --perms 0644 >&2
+[ -z "$BOT_BINARY" ] || pct push "$CTID" "$BOT_BINARY" /root/dilla-install/dillabot --perms 0755 >&2
+[ -z "$BOT_HELPER" ] || pct push "$CTID" "$BOT_HELPER" /root/dilla-install/dilla-bot-core --perms 0755 >&2
 [ -z "$SUMS" ] || pct push "$CTID" "$SUMS" /root/dilla-install/SHA256SUMS --perms 0644 >&2
 
 log "running install.sh in container $CTID"

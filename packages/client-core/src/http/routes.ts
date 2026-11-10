@@ -2,7 +2,7 @@
 import { CborError, arr, bin, decode, encode, opt, str, u53, u64, type CborInput, type CborValue } from '../cbor';
 import { decodeBoundedArray } from '../state/bounded';
 import { toHex } from '../hex';
-import { HttpClient, type Bucket, type HttpRequest } from './client';
+import { HttpClient, type Bucket, type HttpRequest, type HttpResponse } from './client';
 import { DillaHttpError } from './errors';
 import { negotiateSession, type SessionCapabilities } from './negotiate-session';
 import { BIO_MAX_CHARS, DISPLAY_MAX_CHARS, STATUS_MAX_CHARS, profileTextProblem, profileTextValue, type ProfileTextProblem } from '../profile-text';
@@ -26,7 +26,8 @@ export interface Challenge { nonce: Uint8Array; expires: bigint; }
 export interface EstablishedSession { token: string; scope: 0 | 1 | 2; userId: Uint8Array; deviceId: Uint8Array;
   expires: bigint; idleExpires: bigint; generation: bigint; }
 /** A served device-list head; `raw` is the response body (on wire 4 it carries the account-kind attestation as a fifth
- *  element: state/trust.ts `chainRow` is the four-element list body the core decodes). */
+ *  element, and on wire 6 the account's umk_pub, ssk_pub and sig_umk_ssk after it: state/trust.ts `chainRow` is the
+ *  four-element list body the core decodes, `headIdentity` the keys). */
 export interface DeviceListRecord { version: bigint; blob: Uint8Array; raw: Uint8Array; }
 /** What a login assertion still owes (protocol/09 § Second factors): 0 nothing, 1 a TOTP code or a backup code, 2 a passkey
  *  login or a backup code (the account has passkeys and no app). `passkey` (wave B task 3): the answer's optional third
@@ -63,7 +64,6 @@ export interface RowsPage { raw: Uint8Array; count: number; lastSeq: bigint | nu
 export interface ModerationRemoval { revision: bigint; proof: Uint8Array; signature: Uint8Array; acceptedAt: bigint; }
 export interface ModerationRemovalPage { rows: ModerationRemoval[]; nextRevision: bigint; }
 /** Opaque current-interaction-context proof; only the core can verify or interpret its signed payload. */
-export interface InteractionAdmissionContextProof { payload: Uint8Array; signature: Uint8Array; }
 export interface BotCommandStatusRow { installationId: Uint8Array; botUserId: Uint8Array | null; state: number; revision: bigint; }
 export interface WelcomesPage { raw: Uint8Array; count: number; lastId: bigint | null; }
 export interface MessageUploaded { raw: Uint8Array; seq: bigint; }
@@ -396,6 +396,17 @@ function passkeyRow(value: CborValue): PasskeyRow {
   const a = atLeast(value, 4);
   return { credId: bin(a[0]), name: str(a[1]), created: u53(a[2]), lastUsed: opt(a[3], u53) };
 }
+const MESSAGE_IDEM_DOMAIN = new TextEncoder().encode('dilla/message-idem/v1\0');
+
+/** The idempotency key of one message send: 16 bytes of SHA-256 over a domain, the message id and the ciphertext body. */
+export async function messageIdem(msgId: Uint8Array, body: Uint8Array): Promise<Uint8Array> {
+  const preimage = new Uint8Array(MESSAGE_IDEM_DOMAIN.length + msgId.length + body.length);
+  preimage.set(MESSAGE_IDEM_DOMAIN, 0);
+  preimage.set(msgId, MESSAGE_IDEM_DOMAIN.length);
+  preimage.set(body, MESSAGE_IDEM_DOMAIN.length + msgId.length);
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', preimage)).slice(0, 16);
+}
+
 export class Routes {
   constructor(private readonly http: HttpClient) {}
 
@@ -404,9 +415,15 @@ export class Routes {
     return negotiateSession(this.http);
   }
 
+  /** Every request of a typed route. Bot v2: a mutation carries an idempotency key for the socket, the route's own
+   *  request id when it has one, else a fresh random id; it is fixed here, once per call, so every retry keeps it. */
+  private send(r: HttpRequest): Promise<HttpResponse> {
+    return this.http.request(r.method === 'GET' || r.idem !== undefined ? r : { ...r, idem: crypto.getRandomValues(new Uint8Array(16)) });
+  }
+
   private async body(method: HttpRequest['method'], path: string, bucket: Bucket, idempotent: boolean,
-    options: Pick<HttpRequest, 'body' | 'auth' | 'accept' | 'ok' | 'retry429' | 'contentType' | 'maxBodyBytes' | 'signal'> = {}): Promise<Uint8Array> {
-    return (await this.http.request({ method, path, bucket, idempotent, ...options })).body;
+    options: Pick<HttpRequest, 'body' | 'auth' | 'accept' | 'ok' | 'retry429' | 'contentType' | 'maxBodyBytes' | 'signal' | 'idem'> = {}): Promise<Uint8Array> {
+    return (await this.send({ method, path, bucket, idempotent, ...options })).body;
   }
 
   /** GET /v1/instance with the session's bearer whenever one exists (`E, F` under instance.discovery = "session"); before
@@ -443,7 +460,7 @@ export class Routes {
     await this.body('PUT', `/v1/users/${id('userId', userId)}/device-list`, 'write', true, { body });
   }
   async getDeviceList(userId: Uint8Array): Promise<DeviceListRecord | null> {
-    const response = await this.http.request({ method: 'GET', path: `/v1/users/${id('userId', userId)}/device-list`,
+    const response = await this.send({ method: 'GET', path: `/v1/users/${id('userId', userId)}/device-list`,
       bucket: 'read', idempotent: true, ok: [200, 404], maxBodyBytes: 1024 * 1024 });
     if (response.status === 404) return null;
     const a = atLeast(decode(response.body), 2);
@@ -456,7 +473,7 @@ export class Routes {
   /** The session device's own directory: the ordinary count `ready` reports, and whether a last-resort package stands behind it.
    *  null on an older server without the route (404 behind a proxy, 405 from the mux): the count is then unknown. */
   async getKeyPackageCount(): Promise<{ ordinary: number; fallback: boolean } | null> {
-    const response = await this.http.request({ method: 'GET', path: '/v1/keypackages', bucket: 'read', idempotent: true, ok: [200, 404, 405] });
+    const response = await this.send({ method: 'GET', path: '/v1/keypackages', bucket: 'read', idempotent: true, ok: [200, 404, 405] });
     if (response.status !== 200) return null;
     const a = atLeast(decode(response.body), 2);
     return { ordinary: u53(a[0]), fallback: oneOf(a[1], [0, 1] as const) === 1 };
@@ -631,11 +648,65 @@ export class Routes {
   /** Request ID is retained across HTTP retries; a zero role ID clears the setting. */
   async configureBotJoinRole(communityId: Uint8Array, requestId: Uint8Array, roleId: Uint8Array, installationId: Uint8Array): Promise<Uint8Array> {
     const ack = arr(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bot-join-role`, 'write', true,
-      { body: encode([inputId('requestId', requestId), inputId('roleId', roleId), inputId('installationId', installationId)]), retry429: false })));
+      { body: encode([inputId('requestId', requestId), inputId('roleId', roleId), inputId('installationId', installationId)]), retry429: false, idem: requestId })));
     if (ack.length !== 2 || !bin(ack[0], 16).every((v, i) => v === requestId[i])) {
       throw new CborError('E_CBOR_SHAPE', 'invalid bot join-role acknowledgement');
     }
     return bin(ack[1], 16);
+  }
+  // ---- Bot v2 Task 22: Bot channels and webhooks (socket routes; protocol/10 § Catalog, § Webhooks). ----
+
+  /** PUT …/channels/{channel}/bot-channel: marks a text channel as a Bot channel; the instance proposes the Bot into its
+   *  group, and a member of the group (this device first) commits that Add. */
+  async markBotChannel(communityId: Uint8Array, channelId: Uint8Array): Promise<void> {
+    await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/channels/${id('channelId', channelId)}/bot-channel`, 'write', true,
+      { ok: [204], maxBodyBytes: 0 });
+  }
+  /** DELETE …/channels/{channel}/bot-channel. */
+  async unmarkBotChannel(communityId: Uint8Array, channelId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/channels/${id('channelId', channelId)}/bot-channel`, 'write', true,
+      { ok: [204], maxBodyBytes: 0 });
+  }
+  /** POST …/bot-channel/re-add → [state]: 1 while the Bot's old leaf is being proposed out (ask again once it is
+   *  committed), 0 once the Bot is proposed in. */
+  async reAddBot(communityId: Uint8Array, channelId: Uint8Array): Promise<0 | 1> {
+    const a = arr(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/channels/${id('channelId', channelId)}/bot-channel/re-add`,
+      'write', true, { maxBodyBytes: 64 })), 1);
+    return oneOf(a[0], [0, 1] as const);
+  }
+  /** GET …/bot/webhooks: the raw list (decodeBotWebhooks). */
+  listBotWebhooks(communityId: Uint8Array): Promise<Uint8Array> {
+    return this.body('GET', `/v1/communities/${id('communityId', communityId)}/bot/webhooks`, 'read', true, { maxBodyBytes: 65_536 });
+  }
+  /** POST …/bot/webhooks [channel_id, name, avatar|null, allow_everyone] → [webhook_id, url]; the URL is shown once. */
+  async createBotWebhook(communityId: Uint8Array, channelId: Uint8Array, name: string, allowEveryone: boolean): Promise<{ webhookId: Uint8Array; url: string }> {
+    const a = arr(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/bot/webhooks`, 'write', false,
+      { body: encode([inputId('channelId', channelId), name, null, allowEveryone ? 1n : 0n]), ok: [201], maxBodyBytes: 4096 })), 2);
+    return { webhookId: bin(a[0], 16), url: str(a[1]) };
+  }
+  /** POST …/bot/webhooks/{webhook}/rotate → [url]: a new secret; the old address stops working. */
+  async rotateBotWebhook(communityId: Uint8Array, webhookId: Uint8Array): Promise<string> {
+    const a = arr(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/bot/webhooks/${id('webhookId', webhookId)}/rotate`,
+      'write', false, { maxBodyBytes: 4096 })), 1);
+    return str(a[0]);
+  }
+  /** PATCH …/bot/webhooks/{webhook} [name, avatar|null, allow_everyone]. */
+  async patchBotWebhook(communityId: Uint8Array, webhookId: Uint8Array, name: string, allowEveryone: boolean): Promise<void> {
+    await this.body('PATCH', `/v1/communities/${id('communityId', communityId)}/bot/webhooks/${id('webhookId', webhookId)}`, 'write', true,
+      { body: encode([name, null, allowEveryone ? 1n : 0n]), ok: [204], maxBodyBytes: 0 });
+  }
+  /** DELETE …/bot/webhooks/{webhook}. */
+  async deleteBotWebhook(communityId: Uint8Array, webhookId: Uint8Array): Promise<void> {
+    await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/bot/webhooks/${id('webhookId', webhookId)}`, 'write', true,
+      { ok: [204], maxBodyBytes: 0 });
+  }
+  /** GET …/bot/webhook-avatars/{avatar}: the instance's re-encoded PNG (HTTP, like GIF media); null on 404 (the in-memory
+   *  cache is gone, or the id is unknown). The only place a webhook avatar is ever loaded from. */
+  async getWebhookAvatar(communityId: Uint8Array, avatarId: string): Promise<Uint8Array | null> {
+    if (!/^[0-9a-f]{64}$/u.test(avatarId)) throw new CborError('E_CBOR_SHAPE', 'invalid avatar id');
+    const response = await this.send({ method: 'GET', path: `/v1/communities/${id('communityId', communityId)}/bot/webhook-avatars/${avatarId}`,
+      bucket: 'read', idempotent: true, ok: [200, 404], maxBodyBytes: 1_048_576, accept: 'image/png' });
+    return response.status === 404 ? null : response.body;
   }
   /** POST /v1/communities/{id}/bot/restart (Task 10c): asks the runtime to restart this installation; a request while
    *  one is pending joins it. Answers [restart_requested, restart_handled]. */
@@ -671,15 +742,15 @@ export class Routes {
     const seen = new Set<string>();
     for (const roleId of roleIds) { const hex = id('roleId', roleId); if (seen.has(hex)) throw new RangeError('E_ROUTE_INPUT: duplicate role'); seen.add(hex); }
     const ack = arr(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/self-roles/policy`, 'write', true,
-      { body: encode([inputId('requestId', requestId), roleIds]), retry429: false })));
+      { body: encode([inputId('requestId', requestId), roleIds]), retry429: false, idem: requestId })));
     if (ack.length !== 2 || !bin(ack[0], 16).every((v, i) => v === requestId[i]) || u53(ack[1]) !== roleIds.length) {
       throw new CborError('E_CBOR_SHAPE', 'invalid self-role policy acknowledgement');
     }
   }
   async selectSelfRole(communityId: Uint8Array, roleId: Uint8Array, requestId: Uint8Array, enabled: boolean): Promise<void> {
-    await this.http.request({ method: 'PUT', path: `/v1/communities/${id('communityId', communityId)}/self-roles/${id('roleId', roleId)}`,
+    await this.send({ method: 'PUT', path: `/v1/communities/${id('communityId', communityId)}/self-roles/${id('roleId', roleId)}`,
       bucket: 'write', idempotent: true, body: encode([inputId('requestId', requestId), enabled ? 1 : 0]), retry429: false,
-      ok: [204], maxBodyBytes: 0 });
+      ok: [204], maxBodyBytes: 0, idem: requestId });
   }
   /** Registers mappings only after the Bot-authored message has an accepted sequence. */
   async registerRolePanel(communityId: Uint8Array, requestId: Uint8Array, channelId: Uint8Array, messageSeq: bigint,
@@ -698,7 +769,7 @@ export class Routes {
       return [emoji, inputId('roleId', option.roleId)];
     });
     const ack = arr(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/role-panels`, 'write', true,
-      { body: encode([inputId('requestId', requestId), inputId('channelId', channelId), messageSeq, rows]), retry429: false })));
+      { body: encode([inputId('requestId', requestId), inputId('channelId', channelId), messageSeq, rows]), retry429: false, idem: requestId })));
     if (ack.length !== 2 || !bin(ack[0], 16).every((v, i) => v === requestId[i]) || u53(ack[1]) !== options.length) {
       throw new CborError('E_CBOR_SHAPE', 'invalid role panel acknowledgement');
     }
@@ -710,7 +781,7 @@ export class Routes {
       || new TextEncoder().encode(emoji).length < 1 || new TextEncoder().encode(emoji).length > 32) {
       throw new RangeError('E_ROUTE_INPUT: invalid role panel reaction');
     }
-    await this.http.request({ method: 'POST',
+    await this.send({ method: 'POST',
       path: `/v1/communities/${id('communityId', communityId)}/role-panels/${id('channelId', channelId)}/${messageSeq}/reaction`,
       bucket: 'write', idempotent: true, body: encode([inputId('groupId', groupId), eventSeq, emoji, enabled ? 1 : 0]),
       retry429: false, ok: [204], maxBodyBytes: 0 });
@@ -725,24 +796,13 @@ export class Routes {
     // v=2 (Task 10c fix round 1): this client sends the widened mask, Polls and Reminders included; without it
     // the server keeps those two bits as they are.
     return botInstallationRow(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/bot?v=2`,
-      'write', true, { body, retry429: false })), communityId);
-  }
-  /** Arms a one-use automatic moderation grant. Config plaintext is represented only by its digest here. */
-  async armAutoModerationGrant(groupId: Uint8Array, requestId: Uint8Array, communityId: Uint8Array,
-    expectedRevision: bigint, requestExpires: bigint, configHash: Uint8Array, stepUp: string): Promise<{ token: string; expires: bigint }> {
-    if (expectedRevision < 0n || expectedRevision > (1n << 63n) - 1n || requestExpires <= 0n
-      || configHash.length !== 32 || stepUp.length < 1 || stepUp.length > 4096) throw new RangeError('E_ROUTE_INPUT: invalid automatic moderation grant tuple');
-    const raw = await this.body('POST', `/v1/groups/${id('groupId', groupId)}/automod-grants/arm`, 'write', true,
-      { body: encode([inputId('requestId', requestId), inputId('communityId', communityId), expectedRevision, requestExpires, configHash, stepUp]), retry429: false });
-    const fields = arr(decode(raw), 2);
-    if (typeof fields[0] !== 'string' || fields[0].length < 1 || fields[0].length > 128) throw new CborError('E_CBOR_SHAPE', 'invalid automatic moderation grant token');
-    return { token: fields[0], expires: u64(fields[1]) };
+      'write', true, { body, retry429: false, idem: requestId })), communityId);
   }
   async disableBotInstallation(communityId: Uint8Array, requestId: Uint8Array, expectedRevision: bigint): Promise<BotInstallationRow> {
     if (expectedRevision < 1n) throw new RangeError('E_ROUTE_INPUT: revision must be positive');
     const body = encode([inputId('requestId', requestId), expectedRevision]);
     return botInstallationRow(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/bot/disable`,
-      'write', true, { body, retry429: false })), communityId);
+      'write', true, { body, retry429: false, idem: requestId })), communityId);
   }
   /** GET /v1/communities/{id}/roles: [[id, name, color, position, allow, deny, hoist, mentionable]], at most ROLES_MAX. */
   async listRoles(communityId: Uint8Array): Promise<RoleRow[]> {
@@ -805,7 +865,7 @@ export class Routes {
   async putMemberTimeout(communityId: Uint8Array, userId: Uint8Array, requestId: Uint8Array, expires: bigint): Promise<bigint> {
     if (expires < 0n || expires > 0xffff_ffff_ffff_ffffn) throw new RangeError('E_ROUTE_INPUT: expires must be uint64');
     const a = atLeast(decode(await this.body('PUT', `/v1/communities/${id('communityId', communityId)}/members/${id('userId', userId)}/timeout`,
-      'write', true, { body: encode([inputId('requestId', requestId), expires]) })), 2);
+      'write', true, { body: encode([inputId('requestId', requestId), expires]), idem: requestId })), 2);
     if (!bin(a[0], 16).every((v, i) => v === requestId[i])) throw new CborError('E_CBOR_SHAPE', 'timeout response request id mismatch');
     const answeredExpires = u64(a[1]);
     if (answeredExpires !== expires) throw new CborError('E_CBOR_SHAPE', 'timeout response expiry mismatch');
@@ -814,12 +874,12 @@ export class Routes {
   /** DELETE .../timeout: [request_id]; the server answers 204 No Content. */
   async deleteMemberTimeout(communityId: Uint8Array, userId: Uint8Array, requestId: Uint8Array): Promise<void> {
     await this.body('DELETE', `/v1/communities/${id('communityId', communityId)}/members/${id('userId', userId)}/timeout`, 'write', true,
-      { body: encode([inputId('requestId', requestId)]), ok: [204] });
+      { body: encode([inputId('requestId', requestId)]), ok: [204], idem: requestId });
   }
   /** POST .../warning: [request_id] → [request_id, action_id, community_revision, accepted_at]. The request carries no reason. */
   async warnMember(communityId: Uint8Array, userId: Uint8Array, requestId: Uint8Array): Promise<{ requestId: Uint8Array; actionId: Uint8Array; revision: number; acceptedAt: number }> {
     const a = atLeast(decode(await this.body('POST', `/v1/communities/${id('communityId', communityId)}/members/${id('userId', userId)}/warning`,
-      'write', true, { body: encode([inputId('requestId', requestId)]) })), 4);
+      'write', true, { body: encode([inputId('requestId', requestId)]), idem: requestId })), 4);
     if (!bin(a[0], 16).every((v, i) => v === requestId[i])) throw new CborError('E_CBOR_SHAPE', 'warning response request id mismatch');
     return { requestId: bin(a[0], 16), actionId: bin(a[1], 16), revision: u53(a[2]), acceptedAt: u53(a[3]) };
   }
@@ -909,14 +969,6 @@ export class Routes {
     if (a.length !== 2) throw new CborError('E_CBOR_SHAPE', 'group heal result has two elements');
     return { epoch: u64(a[0]), nextSeq: u64(a[1]) };
   }
-  /** GET /v1/groups/{id}/interaction-admission-context: preserve the signed payload for core verification. */
-  async getInteractionAdmissionContext(groupId: Uint8Array, signal?: AbortSignal): Promise<InteractionAdmissionContextProof> {
-    const raw = await this.body('GET', `/v1/groups/${id('groupId', groupId)}/interaction-admission-context`, 'read', true,
-      { ok: [200], maxBodyBytes: 160 * 1024, signal });
-    const proof = arr(decode(raw));
-    if (proof.length !== 2) throw new CborError('E_CBOR_SHAPE', 'expected current interaction admission payload and signature');
-    return { payload: bin(proof[0]), signature: bin(proof[1], 64) };
-  }
   async getHandshakes(groupId: Uint8Array, from: bigint, limitValue: number): Promise<RowsPage> {
     const path = `/v1/groups/${id('groupId', groupId)}/handshakes?from=${count('from', from)}&limit=${limit('limit', limitValue, HANDSHAKES_MAX)}`;
     const p = page(await this.body('GET', path, 'read', true));
@@ -952,10 +1004,15 @@ export class Routes {
     const a = atLeast(decode(await this.body('POST', `/v1/groups/${id('groupId', groupId)}/commit`, 'commit', false, { body })), 2);
     return { seq: u64(a[0]), epoch: u64(a[1]) };
   }
-  async postMessage(groupId: Uint8Array, body: Uint8Array): Promise<MessageUploaded> {
+  /** msgId, when given, is the outbox row's message id: the request's idempotency key derives from it (and the ciphertext it
+   *  sent), so a send that is written again after a lost socket, or after a restart, is answered from the instance's replay
+   *  record instead of storing a second message. A re-sealed body (a reframe) is another request with its own key. */
+  async postMessage(groupId: Uint8Array, body: Uint8Array, msgId?: Uint8Array): Promise<MessageUploaded> {
     // CB2: a 429 (slow mode) goes back to the send lane, which requeues the row and arms its own timer; a sleep here
     // would hold the group's lane (frames and catch-up) for up to RETRY.maxWaitMs.
-    const raw = await this.body('POST', `/v1/groups/${id('groupId', groupId)}/message`, 'message', false, { body, retry429: false });
+    const idem = msgId === undefined ? undefined : await messageIdem(msgId, body);
+    const raw = await this.body('POST', `/v1/groups/${id('groupId', groupId)}/message`, 'message', false,
+      { body, retry429: false, ...(idem === undefined ? {} : { idem }) });
     return { raw, seq: u64(atLeast(decode(raw), 1)[0]) };
   }
   async postCursor(groupId: Uint8Array, body: Uint8Array): Promise<void> {
@@ -1020,14 +1077,14 @@ export class Routes {
     });
   }
   async getBackup(kind: 0 | 1): Promise<BackupObject | null> {
-    const response = await this.http.request({ method: 'GET', path: `/v1/backups/${kindOf(kind)}/0`, bucket: 'read',
+    const response = await this.send({ method: 'GET', path: `/v1/backups/${kindOf(kind)}/0`, bucket: 'read',
       idempotent: true, ok: [200, 404], timeoutMs: BACKUP_TIMEOUT_MS });
     if (response.status === 404) return null;
     const a = atLeast(decode(response.body), 2);
     return { object: bin(a[0]), created: u64(a[1]) };
   }
   async putBackup(kind: 0 | 1, object: Uint8Array): Promise<BackupStored> {
-    const response = await this.http.request({ method: 'PUT', path: `/v1/backups/${kindOf(kind)}/0`, bucket: 'write',
+    const response = await this.send({ method: 'PUT', path: `/v1/backups/${kindOf(kind)}/0`, bucket: 'write',
       idempotent: true, body: encode([object]), timeoutMs: BACKUP_TIMEOUT_MS });
     const a = atLeast(decode(response.body), 2);
     return { blobId: bin(a[0], 32), size: u53(a[1]), created: response.status === 201 };
@@ -1057,7 +1114,7 @@ export class Routes {
   async postDm(recipients: Uint8Array[]): Promise<DmOpened> {
     if (recipients.length < 1 || recipients.length > 64) throw new RangeError('E_ROUTE_INPUT: recipients must be 1..64');
     recipients.forEach((recipient) => id('recipient', recipient));
-    const response = await this.http.request({ method: 'POST', path: '/v1/dms', bucket: 'write', idempotent: false,
+    const response = await this.send({ method: 'POST', path: '/v1/dms', bucket: 'write', idempotent: false,
       body: encode([recipients]) });
     return { channelId: bin(atLeast(decode(response.body), 1)[0], 16), created: response.status === 201 };
   }
@@ -1078,7 +1135,7 @@ export class Routes {
     await this.body('DELETE', `/v1/devices/${id('deviceId', deviceId)}`, 'write', false, { ok: [204] });
   }
   async deleteGroupMessage(groupId: Uint8Array, seq: bigint): Promise<'deleted' | 'gone'> {
-    const response = await this.http.request({ method: 'DELETE', path: `/v1/groups/${id('groupId', groupId)}/messages/${count('seq', seq)}`,
+    const response = await this.send({ method: 'DELETE', path: `/v1/groups/${id('groupId', groupId)}/messages/${count('seq', seq)}`,
       bucket: 'write', idempotent: true, ok: [204, 404] });
     if (response.status === 204) return 'deleted';
     // The DS also says 404 when this device lost membership. A member-only read distinguishes that refusal from
@@ -1092,7 +1149,7 @@ export class Routes {
     return 'gone';
   }
   async putBlob(channelId: Uint8Array, blobId: Uint8Array, stored: Uint8Array): Promise<{ created: boolean; size: number }> {
-    const response = await this.http.request({ method: 'PUT', path: blobPath(channelId, blobId), body: stored,
+    const response = await this.send({ method: 'PUT', path: blobPath(channelId, blobId), body: stored,
       contentType: 'application/octet-stream', bucket: 'upload', idempotent: true, ok: [200, 201], timeoutMs: null });
     const a = atLeast(decode(response.body), 2);
     return { created: response.status === 201, size: u53(a[1]) };
@@ -1101,7 +1158,7 @@ export class Routes {
     await this.body('POST', blobPath(channelId, blobId) + '/confirm', 'write', true, { ok: [204] });
   }
   async getBlob(channelId: Uint8Array, blobId: Uint8Array, maxBytes?: number): Promise<Uint8Array | null> {
-    const response = await this.http.request({ method: 'GET', path: blobPath(channelId, blobId),
+    const response = await this.send({ method: 'GET', path: blobPath(channelId, blobId),
       bucket: 'read', idempotent: true, ok: [200, 404], maxBodyBytes: maxBytes, timeoutMs: null });
     return response.status === 404 ? null : response.body;
   }
@@ -1185,7 +1242,7 @@ export class Routes {
   }
   /** POST /v1/channels/{id}/calls: 201 opens the call, 200 joins the live one; the body names the decoders, if any. */
   async startCall(channelId: Uint8Array, vdec: string): Promise<CallStarted> {
-    const response = await this.http.request({ method: 'POST', path: `/v1/channels/${id('channelId', channelId)}/calls`,
+    const response = await this.send({ method: 'POST', path: `/v1/channels/${id('channelId', channelId)}/calls`,
       bucket: 'write', idempotent: false, body: encode(vdec === '' ? [] : [vdec]), ok: [200, 201] });
     const a = atLeast(decode(response.body), 6);
     const caps = arr(a[5]);

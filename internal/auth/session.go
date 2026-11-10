@@ -1002,10 +1002,14 @@ func (s *Sessions) currentBotBinding(ctx context.Context, session store.SessionR
 	return binding, true, nil
 }
 
+// WireVersion is the one wire version this instance speaks (Bot v2: wire 6 for people and managed
+// Bots alike; older clients are refused with E_UPGRADE_REQUIRED).
+const WireVersion = 6
+
 // RecordCapabilities persists a negotiated selection against the exact bearer session hash.
 // The caller must first resolve the bearer; a deleted/revoked row then makes this write fail.
 func (s *Sessions) RecordCapabilities(ctx context.Context, tokenHash []byte, wire, e2ee, media uint64) error {
-	if len(tokenHash) != 32 || wire < 2 || wire > 5 || e2ee != 1 || media != 1 {
+	if len(tokenHash) != 32 || wire != WireVersion || e2ee != 1 || media != 1 {
 		return errors.New("auth: invalid negotiated capabilities")
 	}
 	return s.repo.SetSessionVersions(ctx, tokenHash, wire, e2ee, media)
@@ -1072,6 +1076,46 @@ func (s *Sessions) RevokeUser(ctx context.Context, userID id.ID) error {
 
 type ctxKey struct{}
 
+// socketCallerKey is unexported, so no package but this one can read or forge the value, and the
+// only setter is WithSocketCaller.
+type socketCallerKey struct{}
+
+// WithSocketCaller marks a request as a gateway socket request from the connection whose session
+// token hashes to tokenHash. The socket request dispatcher (internal/api.SocketDispatcher) is its
+// one caller: it builds the *http.Request itself, from a frame of an identified connection, with
+// no client header copied onto it. Nothing an HTTP client sends — header, query or body — reaches
+// a context value; an HTTP request still needs its Authorization header.
+func WithSocketCaller(ctx context.Context, tokenHash []byte) context.Context {
+	return context.WithValue(ctx, socketCallerKey{}, &socketCall{hash: append([]byte(nil), tokenHash...)})
+}
+
+// socketCall is one socket request's credential and its verdict. passed is set by the session
+// middleware only once every check of the request has passed (resolve, Bot allow-list and
+// eligibility, Bot wire, scope, factor); the socket routes' innermost guard refuses a request
+// whose call has not passed, so a route mounted without the middleware fails closed.
+type socketCall struct {
+	hash   []byte
+	passed atomic.Bool
+}
+
+func socketCallFrom(ctx context.Context) *socketCall {
+	c, _ := ctx.Value(socketCallerKey{}).(*socketCall)
+	if c == nil || len(c.hash) != 32 {
+		return nil
+	}
+	return c
+}
+
+// SocketCallPassed reports whether ctx is a socket request's (WithSocketCaller) and whether the
+// session middleware passed it. The socket guard is its reader.
+func SocketCallPassed(ctx context.Context) (socket, passed bool) {
+	c := socketCallFrom(ctx)
+	if c == nil {
+		return false, false
+	}
+	return true, c.passed.Load()
+}
+
 // Middleware resolves the bearer token and enforces the wanted scope. An enrolled session whose
 // account owes a second factor is refused with E_FACTOR_REQUIRED on every route that does not also
 // admit a pending session (protocol/02 § Device sessions item 8): default-deny, so a route added
@@ -1089,8 +1133,19 @@ func (s *Sessions) MiddlewareOwedOK(next http.Handler, want Scope) http.Handler 
 
 func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		sess, err := s.Resolve(r.Context(), bearer)
+		var sess Session
+		var err error
+		call := socketCallFrom(r.Context())
+		if call != nil && r.Header.Get("Authorization") == "" {
+			// A socket request: the connection's session, re-resolved on every request with the
+			// same revocation, expiry, device-list and Bot checks a bearer gets (Resolve is
+			// ResolveHash over the bearer's hash), and the scope, factor and wire checks below.
+			sess, err = s.ResolveHash(r.Context(), call.hash)
+		} else {
+			call = nil // a header-carrying request is never a passed socket call
+			bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			sess, err = s.Resolve(r.Context(), bearer)
+		}
 		if err != nil {
 			server.WriteError(w, err)
 			return
@@ -1109,8 +1164,8 @@ func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.H
 				server.WriteError(w, server.Errorf(server.CodeForbidden, "managed bot session is not allowed on this route or resource"))
 				return
 			}
-			if r.Pattern != "POST /v1/sessions/negotiate" && sess.WireVersion < 3 {
-				server.WriteError(w, server.Version([]uint64{3}, []uint64{1}, []uint64{1}))
+			if r.Pattern != "POST /v1/sessions/negotiate" && sess.WireVersion != WireVersion {
+				server.WriteError(w, server.Errorf(server.CodeUpgradeRequired, "managed Bots negotiate wire version %d", WireVersion))
 				return
 			}
 		}
@@ -1131,6 +1186,9 @@ func (s *Sessions) middleware(next http.Handler, want Scope, owedOK bool) http.H
 		if sess.FactorOwed && want != ScopePending && !owedOK {
 			server.WriteError(w, server.Errorf(server.CodeFactorRequired, "the account owes a second factor"))
 			return
+		}
+		if call != nil {
+			call.passed.Store(true)
 		}
 		next.ServeHTTP(w, r.WithContext(WithSession(r.Context(), sess)))
 	})
@@ -1168,28 +1226,8 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		}
 		return group.Kind <= 1, nil
 	}
-	interactionGroupPath := func() (bool, error) {
-		if !ready || !pathIDEquals(r, "installation", bot.InstallationID) {
-			return false, nil
-		}
-		allowed, err := communityPathForBot(ctx, s.repo, bot)
-		if err != nil || !allowed {
-			return false, err
-		}
-		groupID, ok := pathID(r, "group")
-		if !ok {
-			return false, nil
-		}
-		group, err := s.repo.GetGroup(ctx, groupID)
-		if errors.Is(err, store.ErrNotFound) {
-			return false, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		return group.CommunityID != nil && *group.CommunityID == bot.CommunityID && group.Kind == 3 && group.ClosedAt == nil, nil
-	}
-	interactionSendGroupPath := func() (bool, error) {
+	// The Bot posts into its own community's text and call groups only (Bot v2 Task 23: kind-3 groups are gone).
+	sendGroupPath := func() (bool, error) {
 		if !ready {
 			return false, nil
 		}
@@ -1211,21 +1249,7 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		if group.CommunityID == nil || *group.CommunityID != bot.CommunityID || group.ClosedAt != nil {
 			return false, nil
 		}
-		if group.Kind <= 1 {
-			return true, nil
-		}
-		if group.Kind != 3 {
-			return false, nil
-		}
-		receipt, err := s.repo.GetBotGroupRegistrationReceiptByGroup(ctx, groupID)
-		if errors.Is(err, store.ErrNotFound) {
-			return false, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		return receipt.InstallationID == bot.InstallationID && receipt.UserID == session.UserID &&
-			receipt.DeviceID == session.DeviceID && receipt.CommunityID == bot.CommunityID && receipt.GroupID == groupID, nil
+		return group.Kind <= 1, nil
 	}
 	channelPath := func(name string) (bool, error) {
 		allowed, err := communityPathForBot(ctx, s.repo, bot)
@@ -1282,20 +1306,23 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		return (phase == store.BotInstallationEnrolling || phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "POST /v1/bot-runtime/installations/{installation}/ready":
 		return (phase == store.BotInstallationJoining || phase == store.BotInstallationReady) && pathIDEquals(r, "installation", bot.InstallationID), nil
-	case "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info",
-		"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes",
-		"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages",
-		"POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor",
-		"GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal",
-		"POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal":
-		return interactionGroupPath()
-	case "POST /v1/bot-runtime/installations/{installation}/moderation/actions":
-		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}",
 		"GET /v1/bot-runtime/installations/{installation}/moderation/warnings/{request}":
 		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
-	case "POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem":
-		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
+	case "PUT /v1/bot-runtime/communities/{community}/catalog",
+		"PUT /v1/bot-runtime/communities/{community}/command-key":
+		// Bot v2 Task 9: only the ready Bot of the path's community publishes its catalog and command key.
+		return ready && communityPath("community"), nil
+	case "POST /v1/bot-runtime/replies", "POST /v1/bot-runtime/state-hints", "PUT /v1/bot-runtime/health":
+		// Bot v2 Task 10: only a ready Bot replies or sends hints; the handler binds both to the
+		// session's own community (a reply to its relayed requests, a hint to its own scopes). Task 17: and reports
+		// its health, for its own community.
+		return ready, nil
+	case "POST /v1/communities/{community}/bot/commands":
+		// Bot v2 Task 17 fix round 2: the ready Bot's health probe, a sealed OpProbe to its own command key, sent
+		// through the relay like a member's command. Its own community only; the handler attaches the session's own
+		// user and device, so the Bot can relay nothing as anyone else.
+		return ready && communityPath("community"), nil
 	case "GET /v1/communities/{community}/bot/actors/{actor}/authority":
 		if !ready || !communityPath("community") {
 			return false, nil
@@ -1329,11 +1356,6 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		// Letting the session reach it reveals no receipt and keeps the cross-installation result
 		// independent of middleware's otherwise-global 403 refusal.
 		return phase == store.BotInstallationJoining || phase == store.BotInstallationReady, nil
-	case "POST /v1/bot-runtime/installations/{installation}/interaction-admissions",
-		"POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context":
-		return joining && pathIDEquals(r, "installation", bot.InstallationID), nil
-	case "GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence":
-		return ready && pathIDEquals(r, "installation", bot.InstallationID), nil
 	case "PUT /v1/users/{user_id}/device-list":
 		return joining && pathIDEquals(r, "user_id", session.UserID), nil
 	case "GET /v1/users/{user_id}/device-list":
@@ -1406,7 +1428,8 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 			return false, nil
 		}
 		return groupPath("id")
-	case "GET /v1/communities/{id}", "GET /v1/communities/{id}/members",
+	// GET …/members/{user_id} is the welcome's lookup of a new member (Session.MemberProfile; Task 22 fix round 1).
+	case "GET /v1/communities/{id}", "GET /v1/communities/{id}/members", "GET /v1/communities/{id}/members/{user_id}",
 		"GET /v1/communities/{id}/permissions", "GET /v1/communities/{id}/channels":
 		if !joining || !communityPath("id") {
 			return false, nil
@@ -1445,12 +1468,10 @@ func (s *Sessions) botRouteAllowed(ctx context.Context, r *http.Request, bot Bot
 		}
 		return communityPathForBot(ctx, s.repo, bot)
 	case "POST /v1/groups/{group}/bot/messages":
-		return interactionSendGroupPath()
-	case "GET /v1/communities/{community}/bot/events", "PUT /v1/communities/{community}/bot/events/ack",
-		"GET /v1/communities/{community}/bot/receipts/{operation}",
+		return sendGroupPath()
+	case "GET /v1/communities/{community}/bot/receipts/{operation}",
 		"POST /v1/communities/{community}/bot/receipts/{operation}/resolve",
-		"POST /v1/groups/{group}/moderation/removals",
-		"GET /v1/groups/{group}/moderation/removals", "GET /v1/communities/{community}/moderation/actions":
+		"GET /v1/groups/{group}/moderation/removals":
 		if !ready {
 			return false, nil
 		}

@@ -39,17 +39,6 @@ describe('connectCore', () => {
     await expect(second).resolves.toBeNull();
   });
 
-  it('carries the human Bot request id unchanged and exposes only the worker status result', async () => {
-    const { worker, client } = connected();
-    const requestId = 'ab'.repeat(16);
-    const pending = client.call({ m: 'listModerationCases', communityId: 'cd'.repeat(16), requestId, offset: 0 });
-    expect(worker.posted).toEqual([{ t: 'call', id: 1, command: {
-      m: 'listModerationCases', communityId: 'cd'.repeat(16), requestId, offset: 0,
-    } }]);
-    worker.emit({ t: 'ret', id: 1, ok: true, value: { requestId, status: 'pending' } });
-    await expect(pending).resolves.toEqual({ requestId, status: 'pending' });
-  });
-
   it("rejects with the worker's error: code, detail, status and wait", async () => {
     const { worker, client } = connected();
     const pending = client.call({ m: 'send', channelId: 'a'.repeat(32), text: 'x' });

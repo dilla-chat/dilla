@@ -5,6 +5,7 @@ import { arr, decode, encode } from '../../packages/client-core/src/cbor/index';
 import { test as appTest, addServerVia, completeSignUp, copy, makeInviteLink, newAccount, signUp, type Account } from './support/app';
 import { prepareBotRuntimeBinaries, startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { e2ePort } from './support/ports';
+import { markBotChannel, watchBearer } from './support/bot-channel';
 
 const HOST: HostConfig = { port: e2ePort(8521), control: e2ePort(8522), webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
 const SERVER = 'Announcement Scheduler Acceptance';
@@ -24,6 +25,8 @@ function installCoreWorkerBridge(): void {
   type Pending = { command: Call['command']; resolve?: (value: unknown) => void; reject?: (error: Error) => void };
   const state = window as unknown as { __dillaAnnouncementBridge?: {
     replies: { command: Call['command']; reply: Reply }[];
+    /** The worker's latest botAnswers slice (Bot v2 Task 23: sealed answers, op 62). */
+    answers: { requestId: string; status: number; body: string; final: boolean }[];
     invoke(command: Call['command']): Promise<unknown>;
   } };
   const NativeWorker = window.Worker;
@@ -36,6 +39,10 @@ function installCoreWorkerBridge(): void {
       workers.push(this);
       this.addEventListener('message', event => {
         const reply = event.data as Reply;
+        const slice = event.data as { t?: string; name?: string; value?: unknown };
+        if (slice?.t === 'slice' && slice.name === 'botAnswers' && Array.isArray(slice.value) && state.__dillaAnnouncementBridge !== undefined) {
+          state.__dillaAnnouncementBridge.answers = slice.value as typeof state.__dillaAnnouncementBridge.answers;
+        }
         if (reply?.t !== 'ret' || typeof reply.id !== 'number') return;
         const active = pending.get(reply.id);
         if (active === undefined) return;
@@ -57,6 +64,7 @@ function installCoreWorkerBridge(): void {
   Object.defineProperty(window, 'Worker', { value: ObservedWorker, configurable: true, writable: true });
   state.__dillaAnnouncementBridge = {
     replies: [],
+    answers: [],
     invoke(command) {
       const worker = workers.at(-1);
       if (worker === undefined) return Promise.reject(new Error('shipping core worker is not ready'));
@@ -69,7 +77,6 @@ function installCoreWorkerBridge(): void {
   };
 }
 
-type InteractionPage = { responses: { requestId: string; operation: number; status: number; revision: string | null; data: number[] }[]; through: string | null };
 
 async function coreCall<T>(page: import('@playwright/test').Page, command: Record<string, unknown>): Promise<T> {
   return page.evaluate(async (input) => {
@@ -81,26 +88,29 @@ async function coreCall<T>(page: import('@playwright/test').Page, command: Recor
 
 function requestId(): string { return randomBytes(16).toString('hex'); }
 
+/** Bot v2 Task 23: a Bot read or mutation is a sealed command (an app operation, 100 + its v1 operation; a mutation's expected
+ *  revision goes first), sent through the shipping worker as the app's surfaces send it. */
 async function botInteraction(page: import('@playwright/test').Page, communityId: string, operation: number, args: unknown[], revision: string | null): Promise<string> {
   const id = requestId();
-  const result = await coreCall<{ requestId: string; upload: string }>(page, {
-    m: 'humanInteractionRequest', communityId, channelId: null, requestId: id, operation, args, revision,
-  });
-  expect(result).toEqual({ requestId: id, upload: 'accepted' });
+  const sealedArgs = revision === null ? args : [Number(revision), ...args];
+  await coreCall(page, { m: 'sendBotCommand', communityId, channelId: null, requestId: id, operation: 100 + operation, args: sealedArgs });
   return id;
 }
 
-async function interactionResponse(page: import('@playwright/test').Page, communityId: string, operation: number, requestId: string): Promise<{ status: number; revision: string | null; data: Uint8Array }> {
-  let found: { status: number; revision: string | null; data: Uint8Array } | undefined;
+/** The Bot's final answer to `requestId`: 200 [revision, data] as v1 status 0, a bare refusal code as a nonzero status. */
+async function interactionResponse(page: import('@playwright/test').Page, _communityId: string, operation: number, requestId: string): Promise<{ status: number; revision: string | null; data: Uint8Array }> {
+  let found: { status: number; body: string } | undefined;
   await expect.poll(async () => {
-    const result = await coreCall<InteractionPage & { blocked: boolean }>(page, { m: 'readBotInteractionResponses', communityId, operations: [operation] });
-    const row = result.responses.find(response => response.requestId === requestId);
-    if (row !== undefined) found = { status: row.status, revision: row.revision, data: new Uint8Array(row.data) };
-    if (result.through !== null) await coreCall(page, { m: 'ackBotInteractionResponses', communityId, through: result.through });
+    const answers = await page.evaluate(() => (window as unknown as { __dillaAnnouncementBridge?: { answers: { requestId: string; status: number; body: string; final: boolean }[] } })
+      .__dillaAnnouncementBridge?.answers ?? []);
+    found = answers.find(answer => answer.requestId === requestId && answer.final);
     return found !== undefined;
   }, { timeout: 12_000, intervals: [250, 500, 1_000] }).toBe(true);
-  if (found === undefined) throw new Error(`Bot interaction ${String(operation)} had no response`);
-  return found;
+  if (found === undefined) throw new Error(`Bot operation ${String(operation)} had no answer`);
+  const body = Uint8Array.from(Buffer.from(found.body, 'hex'));
+  if (found.status !== 200) return { status: found.status, revision: null, data: new Uint8Array() };
+  const fields = arr(decode(body));
+  return { status: 0, revision: fields[0] === null ? null : String(fields[0]), data: fields[1] as Uint8Array };
 }
 
 function stockholmMinuteAfterWithTime(seconds: number): { date: string; hour: number; minute: number; at: number } {
@@ -120,7 +130,6 @@ type DebugGroup = { id: string; epoch: number; seq: number; epoch_unknown: boole
 type BotSendAttempt = { method: string; route: string; group: string; status: number; error_code: string; epoch: number; epoch_unknown: boolean };
 type BotRuntimeError = { method: string; path: string; status: number; error_code: string; error_detail?: string; group_epoch: number; group_epoch_unknown: boolean };
 type GroupHealAttempt = { method: string; route: string; group: string; status: number; error_code: string; epoch: number; epoch_unknown: boolean };
-type BotInteractionHealAttempt = { method: string; route: string; group: string; status: number; error_code: string; epoch: number; epoch_unknown: boolean };
 
 async function targetGroups(host: StartedHost, target: string): Promise<DebugGroup[]> {
   const response = await fetch(`${host.control}/debug/group-state`, {
@@ -133,25 +142,19 @@ async function targetGroups(host: StartedHost, target: string): Promise<DebugGro
 async function botSendAttempts(host: StartedHost): Promise<BotSendAttempt[]> {
   const response = await fetch(`${host.control}/debug/bot-send-stats`);
   if (!response.ok) throw new Error(`Bot send stats = HTTP ${response.status}: ${await response.text()}`);
-  return (await response.json() as { attempts: BotSendAttempt[] }).attempts;
+  return (await response.json() as { attempts: BotSendAttempt[] | null }).attempts ?? [];
 }
 
 async function botRuntimeErrors(host: StartedHost): Promise<BotRuntimeError[]> {
   const response = await fetch(`${host.control}/debug/bot-runtime-errors`);
   if (!response.ok) throw new Error(`Bot runtime errors = HTTP ${response.status}: ${await response.text()}`);
-  return (await response.json() as { errors: BotRuntimeError[] }).errors;
+  return (await response.json() as { errors: BotRuntimeError[] | null }).errors ?? [];
 }
 
 async function groupHealAttempts(host: StartedHost): Promise<GroupHealAttempt[]> {
   const response = await fetch(`${host.control}/debug/group-heal-attempts`);
   if (!response.ok) throw new Error(`group heal attempts = HTTP ${response.status}: ${await response.text()}`);
-  return (await response.json() as { attempts: GroupHealAttempt[] }).attempts;
-}
-
-async function botInteractionHealAttempts(host: StartedHost): Promise<BotInteractionHealAttempt[]> {
-  const response = await fetch(`${host.control}/debug/bot-interaction-heal-attempts`);
-  if (!response.ok) throw new Error(`Bot interaction heal attempts = HTTP ${response.status}: ${await response.text()}`);
-  return (await response.json() as { attempts: BotInteractionHealAttempt[] }).attempts;
+  return (await response.json() as { attempts: GroupHealAttempt[] | null }).attempts ?? [];
 }
 
 appTest('creates and sends a one-off announcement through the browser client, then survives a Bot restart without a duplicate', async ({ page, instanceName }) => {
@@ -160,6 +163,7 @@ appTest('creates and sends a one-off announcement through the browser client, th
   let host: StartedHost | null = null;
   try {
     host = await startTestHost(HOST);
+    const bearerOf = watchBearer(page);
     const account = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await addServerVia(page, 'create');
     const create = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
@@ -194,8 +198,8 @@ appTest('creates and sends a one-off announcement through the browser client, th
     await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.ready') })).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
     await page.keyboard.press('Escape');
 
-    const welcomeSettingsId = await botInteraction(page, communityId, 1, [5], null);
-    expect((await interactionResponse(page, communityId, 1, welcomeSettingsId)).status).toBe(0);
+    // Bot v2 Task 17: the Bot posts only into Bot channels.
+    await markBotChannel(page, host.url, bearerOf, 'general');
 
     // The schedule stores minute precision. Thirty seconds ahead can truncate back to the
     // current, already elapsed minute when this request happens early in that minute.
@@ -243,6 +247,7 @@ appTest('paired restore refuses a stale managed Bot announcement until a member 
   let intentionalOfflineConsoleStart: number | null = null;
   try {
     host = await startTestHost(HOST);
+    const bearerOf = watchBearer(page);
     const account = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await addServerVia(page, 'create');
     const create = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
@@ -274,8 +279,13 @@ appTest('paired restore refuses a stale managed Bot announcement until a member 
     await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.ready') })).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
     await page.keyboard.press('Escape');
 
-    const welcomeSettingsId = await botInteraction(page, communityId, 1, [5], null);
-    expect((await interactionResponse(page, communityId, 1, welcomeSettingsId)).status).toBe(0);
+    // Bot v2 Task 17: the Bot posts only into Bot channels.
+    const beforeMark = (await targetGroups(host, channelId))[0]?.epoch ?? 0;
+    await markBotChannel(page, host.url, bearerOf, 'general');
+    // Bot v2 Task 23: wait for the member's commit that adds the Bot (its Welcome is then on the instance and in the
+    // snapshot below). The v1 warm-up read this replaced used to give it that time.
+    await expect.poll(async () => (await targetGroups(host!, channelId))[0]?.epoch ?? 0, { timeout: 60_000, intervals: [250, 500, 1_000] })
+      .toBeGreaterThan(beforeMark);
     const runAt = stockholmMinuteAfterWithTime(300);
     const schedule = encode([1n, new Uint8Array(16).fill(0x42), Uint8Array.from(channelId.match(/../gu)!.map(byte => Number.parseInt(byte, 16))),
       MESSAGE, 'one_off', 'Europe/Stockholm', runAt.date, runAt.hour, runAt.minute, 0, 1, 1]);
@@ -314,17 +324,6 @@ appTest('paired restore refuses a stale managed Bot announcement until a member 
     expect(restored?.epoch).toBe(original.epoch);
     expect(restored?.epoch_unknown).toBe(true);
     expect(restored?.messages).toBe(original.messages);
-
-    let interactionHeal: BotInteractionHealAttempt | undefined;
-    await expect.poll(async () => {
-      interactionHeal = (await botInteractionHealAttempts(host!)).find(attempt => attempt.method === 'POST' && attempt.status >= 200 && attempt.status < 300);
-      return interactionHeal;
-    }, { timeout: 60_000, intervals: [250, 500, 1_000] }).toBeDefined();
-    expect(interactionHeal?.route).toBe('/v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal');
-    expect(interactionHeal?.group).not.toBe(original.id);
-    expect(interactionHeal?.epoch_unknown).toBe(false);
-    expect((await targetGroups(host, channelId)).find(group => group.id === original.id)?.epoch_unknown,
-      'healing the private Bot interaction group leaves the channel group stale').toBe(true);
 
     await expect.poll(() => Date.now(), { timeout: 360_000, intervals: [250, 500] }).toBeGreaterThanOrEqual(runAt.at);
     let refused: BotSendAttempt | undefined;

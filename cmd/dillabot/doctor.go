@@ -22,6 +22,9 @@ import (
 type botDoctorCheck struct {
 	name   string
 	status string
+	// line, when set, is printed as it is instead of "name status" (Bot v2 Task 17: "commands failing since <time>").
+	line   string
+	failed bool
 }
 
 const qualifiedYouTubeYTDLPVersion = "2026.10.21"
@@ -99,10 +102,18 @@ func runDoctorCommand(args []string, stdout, stderr io.Writer) int {
 		checks = append(checks, botDoctorCheck{name: "state_directory", status: "OK: private service-owned directory is ready"})
 	}
 
+	// What the running Bot's last health report says about its commands (health_state.go).
+	commands, commandsFailed := doctorCommandsLine(cfg.StateDir, time.Now())
+	checks = append(checks, botDoctorCheck{line: commands, failed: commandsFailed})
+
 	failed := false
 	for _, check := range checks {
-		fmt.Fprintf(stdout, "%s %s\n", check.name, check.status)
-		if len(check.status) >= 4 && check.status[:4] == "FAIL" {
+		if check.line != "" {
+			fmt.Fprintln(stdout, check.line)
+		} else {
+			fmt.Fprintf(stdout, "%s %s\n", check.name, check.status)
+		}
+		if check.failed || len(check.status) >= 4 && check.status[:4] == "FAIL" {
 			failed = true
 		}
 	}

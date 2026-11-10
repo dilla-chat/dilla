@@ -48,7 +48,7 @@ import { UserPanel } from './UserPanel.tsx';
 import type { watchUpdates } from '../update.ts';
 import type { createUpdateCheckpointStore } from '../update-checkpoint.ts';
 import { checkpointScope, updateTabId } from '../update-checkpoint.ts';
-import { desktopBridge, setDesktopGuard } from '../desktop.ts';
+import { clearUpgradeReload, desktopBridge, setDesktopGuard, upgradeRequired, type UpgradeRequiredSurface } from '../desktop.ts';
 import { mobileBridge } from '../mobile.ts';
 import { captureViewPlace, restoreViewPlace, validViewPlace, type ViewPlace } from '../update-view.ts';
 import { browser } from '../browser.ts';
@@ -148,11 +148,17 @@ function focusEmptyAction(pane: 'content' | 'sidebar'): boolean {
  * when focus is not in the row (a pointer that does not focus buttons).
  */
 /** A channel row's or DM row's props: what ChannelList draws, with the badge of requirement 6. */
-type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; badge?: string; readable: boolean; unread: number; mentions: number; muted: boolean; parentId?: string | null;
+type ListRow = { id: string; name: string; kind: 'text' | 'voice' | 'dm' | 'announcement'; badge?: string; badges?: readonly string[]; readable: boolean; unread: number; mentions: number; muted: boolean; parentId?: string | null;
   person?: { sub?: string; presence?: 'online' | 'idle' | 'dnd' | 'offline'; group?: boolean; initials?: string } };
 
 /** What the aside shows instead of the member list (web3.7): a channel's thread, or its empty thread aside. */
 type Side = { channelId: string; view: 'empty' } | { channelId: string; view: 'thread'; rootMsgId: string };
+
+/** This tab's sessionStorage, or null where the browser blocks it. */
+function tabStorage(): Storage | null {
+  // eslint-disable-next-line no-restricted-globals -- only the content-free upgrade-reload flag enters Web Storage
+  try { return sessionStorage; } catch { return null; }
+}
 
 function restoredConversationUi(value: unknown): ConversationUi | null {
   if (typeof value !== 'object' || value === null) return null;
@@ -239,6 +245,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const fallbackCommunity = lastCommunity !== null && communities?.some(c => c.id === lastCommunity) === true
     ? lastCommunity : communities?.[0]?.id ?? null;
   const communityId = routeCommunity ?? (dmId !== null || base.name === 'dms' ? fallbackCommunity : null);
+  const botChannelIds = new Set(useSlice(`botCatalog:${communityId ?? ''}`)?.botChannels ?? []);
   const navigateToUtilitySource = useCallback((sourceCommunityId: string, sourceChannelId: string, sourceThreadId: string | null) => {
     if (sourceThreadId !== null) requestThread(sourceChannelId, sourceThreadId);
     void navigate({ name: 'channel', communityId: sourceCommunityId, channelId: sourceChannelId });
@@ -1172,7 +1179,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const isAnnouncement = (c: ChannelSummary) => c.kind === 0 && (c.announcement || everyoneDenied(c.id));
   const channelRows: ListRow[] = ordered.map(c => ({
     id: c.id, name: c.name, kind: c.kind === 1 ? 'voice' : isAnnouncement(c) ? 'announcement' : 'text', readable: c.mode === 1, parentId: c.parentId,
-    ...(afkChannels.has(c.id) ? { afk: true } : {}), ...(c.slowmode > 0 ? { badge: t('slow.badge') } : {}), ...rowBadge(badges, settings, c.id, communityId ?? undefined),
+    // Bot v2 Task 22: a Bot channel this member can view says so (the Bot is in its group), beside slow mode (Jonas's ruling).
+    ...(afkChannels.has(c.id) ? { afk: true } : {}), ...(botChannelIds.has(c.id) || c.slowmode > 0
+      ? { badges: [...(botChannelIds.has(c.id) ? [t('bot.channel.badge')] : []), ...(c.slowmode > 0 ? [t('slow.badge')] : [])] } : {}),
+    ...rowBadge(badges, settings, c.id, communityId ?? undefined),
   }));
   // Task 11 (Jonas, Q2; the prototype's DM rows): a person's row is their avatar with the online dot over their status (or
   // "@handle"); a group's is the neutral avatar over its members ("Ada, Björn, you").
@@ -1809,7 +1819,22 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   // Privacy lists no own row; what the core reports about the own key stands here, persistent, while the worker reports it.
   const ownTrust = account?.ownTrust ?? null;
   const removalNotices = (removals ?? []).filter(r => !dismissedRemovals.has(r.id));
-  const banner = (offline && linkReason === 'version') || removalNotices.length > 0 || commandError !== null || rootMismatch || ownTrust !== null || removedHere || changedHere.length > 0 ? (
+  // Bot v2 Task 1: the instance said this client is too old (E_UPGRADE_REQUIRED). The desktop app offers its update; a
+  // browser tab reloads once to the instance's current client, keeping drafts as the update banner's reload does.
+  const upgradeNeeded = offline && linkReason === 'upgrade';
+  const [upgradeSurface, setUpgradeSurface] = useState<UpgradeRequiredSurface | null>(null);
+  const reloadKeepingWork = useRef<() => void>(() => { browser.reload(); });
+  reloadKeepingWork.current = () => {
+    if (update === undefined || updateScope === null) browser.reload();
+    else setUpdateEntry(update.currentEntry);
+  };
+  useEffect(() => {
+    if (!upgradeNeeded) { setUpgradeSurface(null); return; }
+    setUpgradeSurface(upgradeRequired({ bridge: desktopBridge(), storage: tabStorage(), reload: () => { reloadKeepingWork.current(); },
+      onChange: setUpgradeSurface }));
+  }, [upgradeNeeded]);
+  useEffect(() => { if (status === 'online') clearUpgradeReload(tabStorage()); }, [status]);
+  const banner = (offline && (linkReason === 'version' || linkReason === 'instance')) || (upgradeNeeded && upgradeSurface !== null) || removalNotices.length > 0 || commandError !== null || rootMismatch || ownTrust !== null || removedHere || changedHere.length > 0 ? (
     <>
       {rootMismatch ? (
         <Banner tone="danger">{t('devices.rootMismatch', { instance: account.instance?.name ?? t('shell.status.unknown') })}</Banner>
@@ -1828,6 +1853,10 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           if (update === undefined || updateScope === null) browser.reload();
           else setUpdateEntry(update.currentEntry);
         } }}>{t('shell.banner.clientTooOld')}</Banner>
+      ) : null}
+      {offline && linkReason === 'instance' ? <Banner tone="warn">{t('shell.banner.instanceTooOld')}</Banner> : null}
+      {upgradeNeeded && upgradeSurface !== null ? (
+        <Banner tone="warn" action={{ label: t(upgradeSurface.action), onAction: upgradeSurface.onAction }}>{t(upgradeSurface.message)}</Banner>
       ) : null}
       {removalNotices.map(r => (
         <Banner key={r.id} tone="warn" action={{ label: t('shell.banner.dismiss'), onAction: () => {
@@ -2220,7 +2249,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
         </>}
         composer={composer}
         banner={<>
-          {linkReason === 'version' ? null : <LinkBanner status={status} labels={{ offline: t('nav.link.offline'),
+          {linkReason === 'version' || linkReason === 'upgrade' || linkReason === 'instance' ? null : <LinkBanner status={status} labels={{ offline: t('nav.link.offline'),
             connecting: t('nav.link.connecting', { node: account?.instance?.name ?? t('shell.status.unknown') }) }} />}
           {banner}
         </>}
@@ -2238,7 +2267,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
             </ThreadPane>
             : membersShown && community !== null && self !== null ? <MemberPane communityId={community.id} selfId={self.id}
               onMessage={startDm} onCompare={userId => void navigate({ name: 'settings', section: 'privacy', from: null, compare: userId })}
-              onMention={mentionFromMembers}
+              onMention={mentionFromMembers} channelId={channel?.id ?? null}
               announce={announce} messageCard={profileCard} onCardOpen={() => setProfileCard(null)}
               onClose={phone ? () => { memberSheet.close(); } : () => setMembersOpen(false)} /> : undefined}
         asideLabel={sideNow?.view === 'thread' ? t('thread.title') : sideNow?.view === 'empty' ? t('thread.title')

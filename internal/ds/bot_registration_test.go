@@ -28,54 +28,6 @@ func TestManagedRegistrationRejectsNoncanonicalBodyBeforeStoreAccess(t *testing.
 	}
 }
 
-func TestManagedRegistrationRejectsAdmissionIDOutsideKindThree(t *testing.T) {
-	h := newDSHarness(t)
-	installation := id.New()
-	registration := ds.RegisterRequest{GroupID: id.New(), Binding: []byte("not a binding"), GroupInfo: []byte{1}, RatchetTree: []byte{2}}
-	body, err := cborx.Marshal([]any{registration.GroupID, registration.Binding, registration.GroupInfo, registration.RatchetTree})
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := ds.BotRegisterRequest{
-		Session:        auth.Session{Scope: auth.ScopeEnrolled, Bot: &auth.BotSessionBinding{InstallationID: installation, State: store.BotInstallationJoining}},
-		InstallationID: installation, OperationID: id.New(), ExpectedGeneration: 1, AdmissionRequestID: id.New(),
-		RegistrationBody: body, Registration: registration,
-	}
-	_, _, err = h.ds.RegisterWithBotReceipt(context.Background(), request)
-	var refusal *ds.Error
-	if !errors.As(err, &refusal) || refusal.Code != "E_INVALID_REQUEST" || !bytes.Contains([]byte(refusal.Detail), []byte("admission_request_id is only valid")) {
-		t.Fatalf("admission ID on a non-kind-3 registration = %v, want explicit E_INVALID_REQUEST", err)
-	}
-}
-
-func TestManagedRegistrationKeepsV2KindThreeFailClosedBeforeStoreAccess(t *testing.T) {
-	h := newDSHarness(t)
-	installation, community := id.New(), id.New()
-	registration := ds.RegisterRequest{GroupID: id.New(), GroupInfo: []byte{1}, RatchetTree: []byte{2}}
-	var err error
-	registration.Binding, err = cborx.Marshal([]any{uint64(2), id.New(), nil, id.New(), uint64(3), uint64(1), uint64(1), uint64(0), installation, community, id.New(), id.New()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := cborx.Marshal([]any{registration.GroupID, registration.Binding, registration.GroupInfo, registration.RatchetTree})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, admissionRequestID := range []id.ID{{}, id.New()} {
-		request := ds.BotRegisterRequest{
-			Session: auth.Session{Scope: auth.ScopeEnrolled, Bot: &auth.BotSessionBinding{
-				InstallationID: installation, CommunityID: community, State: store.BotInstallationJoining}},
-			InstallationID: installation, OperationID: id.New(), ExpectedGeneration: 1,
-			AdmissionRequestID: admissionRequestID, RegistrationBody: body, Registration: registration,
-		}
-		_, _, err := h.ds.RegisterWithBotReceipt(context.Background(), request)
-		var refusal *ds.Error
-		if !errors.As(err, &refusal) || refusal.Code != "E_FORBIDDEN" || !bytes.Contains([]byte(refusal.Detail), []byte("unavailable")) {
-			t.Fatalf("kind-3 admission %s = %v, want explicit fail-closed refusal", admissionRequestID, err)
-		}
-	}
-}
-
 func TestManagedRegistrationKeepsLegacyKindThreeFailClosedBeforeStoreAccess(t *testing.T) {
 	h := newDSHarness(t)
 	installation := id.New()
@@ -93,8 +45,8 @@ func TestManagedRegistrationKeepsLegacyKindThreeFailClosedBeforeStoreAccess(t *t
 		InstallationID: installation, OperationID: id.New(), ExpectedGeneration: 1, RegistrationBody: body, Registration: registration,
 	})
 	var refusal *ds.Error
-	if !errors.As(err, &refusal) || refusal.Code != "E_FORBIDDEN" || !bytes.Contains([]byte(refusal.Detail), []byte("unavailable")) {
-		t.Fatalf("legacy kind-3 registration = %v, want explicit fail-closed refusal", err)
+	if !errors.As(err, &refusal) || refusal.Code != "E_FORBIDDEN" || !bytes.Contains([]byte(refusal.Detail), []byte("kind-3 groups are not registered")) {
+		t.Fatalf("kind-3 registration = %v, want explicit fail-closed refusal", err)
 	}
 }
 

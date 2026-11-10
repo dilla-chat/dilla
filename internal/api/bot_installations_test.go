@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,14 +48,14 @@ func TestBotOnlyCommunityRouteChecksAuthorityBeforeWireRequirement(t *testing.T)
 	}
 	path := "/v1/communities/" + cid.String() + "/bot"
 	if rec := getAuth(h, path, memberToken); rec.Code != http.StatusForbidden {
-		t.Fatalf("unauthorized bot route = %d, want 403 before E_VERSION", rec.Code)
+		t.Fatalf("unauthorized bot route = %d, want 403 before E_UPGRADE_REQUIRED", rec.Code)
 	}
-	if rec := getAuth(h, path, ownerToken); rec.Code != http.StatusBadRequest || refusalCode(t, rec) != "E_VERSION" {
-		t.Fatalf("authorized wire-0 bot route = %d, want 400 E_VERSION", rec.Code)
+	if rec := getAuth(h, path, ownerToken); rec.Code != http.StatusUpgradeRequired || refusalCode(t, rec) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("authorized wire-0 bot route = %d, want 426 E_UPGRADE_REQUIRED", rec.Code)
 	}
 	unknown := "/v1/communities/" + id.New().String() + "/bot"
 	if rec := getAuth(h, unknown, ownerToken); rec.Code != http.StatusNotFound {
-		t.Fatalf("unknown community bot route = %d, want 404 before E_VERSION", rec.Code)
+		t.Fatalf("unknown community bot route = %d, want 404 before E_UPGRADE_REQUIRED", rec.Code)
 	}
 }
 
@@ -62,7 +63,7 @@ func TestBotInstallationAbsentIsTypedNullAfterAuthorization(t *testing.T) {
 	h, deps := newTestAPI(t)
 	owner, _, token := seedAPISession(t, deps)
 	cid := seedBotCommunity(t, deps, owner.ID)
-	negotiate, err := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
+	negotiate, err := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,9 +110,8 @@ func TestConfigureBotChecksCapabilityAuthorityBeforeWireUpgrade(t *testing.T) {
 	}{
 		{name: "wire 0", setup: func() {}},
 		{name: "wire 2", setup: func() {
-			negotiate, _ := cborx.Marshal([]any{[]any{uint64(2)}, []any{uint64(1)}, []any{uint64(1)}})
-			if rec := postCBORAuth(h, "/v1/sessions/negotiate", negotiate, managerToken); rec.Code != http.StatusOK {
-				t.Fatalf("manager negotiate wire 2 = %d (%x)", rec.Code, rec.Body.Bytes())
+			if err := deps.Repo.SetSessionVersions(ctx, auth.TokenHash(managerToken), 2, 1, 1); err != nil {
+				t.Fatal(err)
 			}
 		}},
 	} {
@@ -128,13 +128,12 @@ func TestConfigureBotChecksCapabilityAuthorityBeforeWireUpgrade(t *testing.T) {
 	}
 
 	// The owner remains authorized, but wire 2 must refuse before creating or changing an installation.
-	negotiate, _ := cborx.Marshal([]any{[]any{uint64(2)}, []any{uint64(1)}, []any{uint64(1)}})
-	if rec := postCBORAuth(h, "/v1/sessions/negotiate", negotiate, ownerToken); rec.Code != http.StatusOK {
-		t.Fatalf("owner negotiate wire 2 = %d (%x)", rec.Code, rec.Body.Bytes())
+	if err := deps.Repo.SetSessionVersions(ctx, auth.TokenHash(ownerToken), 2, 1, 1); err != nil {
+		t.Fatal(err)
 	}
 	upgraded := putCBORAuth(h, path, encode(), ownerToken)
-	if upgraded.Code != http.StatusBadRequest || refusalCode(t, upgraded) != "E_VERSION" {
-		t.Fatalf("authorized wire-2 configure = %d (%x), want 400 E_VERSION", upgraded.Code, upgraded.Body.Bytes())
+	if upgraded.Code != http.StatusUpgradeRequired || refusalCode(t, upgraded) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("authorized wire-2 configure = %d (%x), want 426 E_UPGRADE_REQUIRED", upgraded.Code, upgraded.Body.Bytes())
 	}
 	if _, err := deps.Repo.GetActiveBotInstallationByCommunity(ctx, cid); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("wire-refused configure installation lookup = %v, want no installation", err)
@@ -205,8 +204,8 @@ func TestConfigureBotReplayPrecedesCurrentManagedRoleCeiling(t *testing.T) {
 			t.Fatalf("negotiate wire %d = %d (%x)", version, rec.Code, rec.Body.Bytes())
 		}
 	}
-	negotiate(managerToken, 3)
-	negotiate(ownerToken, 3)
+	negotiate(managerToken, 6)
+	negotiate(ownerToken, 6)
 	issueStepUp := func(user id.ID, token string) string {
 		t.Helper()
 		sess, err := deps.Sessions.Resolve(ctx, token)
@@ -279,14 +278,17 @@ func TestConfigureBotReplayPrecedesCurrentManagedRoleCeiling(t *testing.T) {
 		t.Fatalf("wire-3 replay result = %#v, want historical revision 1 / capabilities 16|768", replayValue)
 	}
 
-	negotiate(managerToken, 2)
+	// A session still on wire 2 (only the store can write one now).
+	if err := deps.Repo.SetSessionVersions(ctx, auth.TokenHash(managerToken), 2, 1, 1); err != nil {
+		t.Fatal(err)
+	}
 	oldWireReplay := putCBORAuth(h, path, encode(receiptA, nil, 16, ""), managerToken)
-	if oldWireReplay.Code != http.StatusBadRequest || refusalCode(t, oldWireReplay) != "E_VERSION" {
-		t.Fatalf("wire-2 replay A = %d (%x), want 400 E_VERSION", oldWireReplay.Code, oldWireReplay.Body.Bytes())
+	if oldWireReplay.Code != http.StatusUpgradeRequired || refusalCode(t, oldWireReplay) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("wire-2 replay A = %d (%x), want 426 E_UPGRADE_REQUIRED", oldWireReplay.Code, oldWireReplay.Body.Bytes())
 	}
 
 	// A fresh configure is a new action, so the current managed-role ceiling still
-	// refuses it before E_VERSION and before recording an operation.
+	// refuses it before E_UPGRADE_REQUIRED and before recording an operation.
 	freshID := id.New()
 	currentRevision := current.Revision
 	fresh := putCBORAuth(h, path, encode(freshID, &currentRevision, 16, ""), managerToken)
@@ -303,8 +305,19 @@ func TestConfigureBotReplayPrecedesCurrentManagedRoleCeiling(t *testing.T) {
 }
 
 func testBotInstallationEnableRequiresStepUpAndReplaysOnlyTheSameRequest(t *testing.T, repo store.Repository) {
+	var profileMu sync.Mutex
+	var profileChanged []id.ID
+	var installationsChanged atomic.Int64
 	h, deps := newTestAPIWithRepository(t, repo, func(d *api.Deps) {
 		d.StepUps = api.NewStepUps(d.Clock, time.Minute)
+		// Bot v2 task 12 fix round 1 M-2: a committed configure tells members and the Bot feed.
+		d.BotProfileChanged = func(_ context.Context, c id.ID) {
+			profileMu.Lock()
+			defer profileMu.Unlock()
+			profileChanged = append(profileChanged, c)
+		}
+		// Bot v2 task 14: and the supervised Bot is told to read its installations again (it polls nothing).
+		d.BotInstallationsChanged = func() { installationsChanged.Add(1) }
 	})
 	owner, _, token := seedAPISession(t, deps)
 	cid := id.New()
@@ -318,7 +331,7 @@ func testBotInstallationEnableRequiresStepUpAndReplaysOnlyTheSameRequest(t *test
 	if err := deps.Repo.PutRole(ctx, store.RoleRow{ID: id.New(), CommunityID: cid, Name: "@everyone", Position: 0, Created: deps.Clock.Now().Unix()}); err != nil {
 		t.Fatal(err)
 	}
-	negotiate, _ := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
+	negotiate, _ := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
 	nonManager, _, nonManagerToken := seedAPISession(t, deps)
 	if err := deps.Repo.PutMember(ctx, store.MemberOfCommunityRow{CommunityID: cid, UserID: nonManager.ID, Joined: deps.Clock.Now().Unix()}); err != nil {
 		t.Fatal(err)
@@ -358,6 +371,14 @@ func testBotInstallationEnableRequiresStepUpAndReplaysOnlyTheSameRequest(t *test
 	first := putCBORAuth(h, path, encode(step), token)
 	if first.Code != http.StatusCreated {
 		t.Fatalf("enable = %d (%x), want 201", first.Code, first.Body.Bytes())
+	}
+	profileMu.Lock()
+	if len(profileChanged) != 1 || profileChanged[0] != cid {
+		t.Fatalf("a committed configure announced %v, want [%s]", profileChanged, cid)
+	}
+	profileMu.Unlock()
+	if got := installationsChanged.Load(); got != 1 {
+		t.Fatalf("a committed configure nudged the Bot %d times, want once", got)
 	}
 	page, err := deps.Repo.ListBotStructuralEvents(ctx, cid, 0, 10)
 	if err != nil || len(page.Events) != 1 || page.Events[0].Kind != botprotocol.EventInstallation || page.Events[0].Data[1] != uint64(store.BotInstallationPending) || page.Events[0].Data[2] != uint64(1) {
@@ -613,7 +634,7 @@ func TestRemoveManagedBotInstallationEmitsMembershipLeave(t *testing.T) {
 			h, deps := newTestAPIWithRepository(t, repo, nil)
 			owner, _, token := seedAPISession(t, deps)
 			cid := seedBotCommunity(t, deps, owner.ID)
-			negotiate, _ := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
+			negotiate, _ := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
 			if rec := postCBORAuth(h, "/v1/sessions/negotiate", negotiate, token); rec.Code != http.StatusOK {
 				t.Fatalf("negotiate wire 3 = %d (%x)", rec.Code, rec.Body.Bytes())
 			}
@@ -746,6 +767,16 @@ func TestBotChannelSyncWaitsForKeyPackagesAndStaysBoundToItsInstallation(t *test
 	if err != nil || !resolved.Has(api.PermViewChannel) {
 		t.Fatalf("bot channel permissions = %v, %v; want view", resolved, err)
 	}
+	// Bot v2 Task 22: the Bot is proposed only into its Bot channels' groups, so an unmarked channel A gets nothing.
+	if err := api.SyncEnrolledBotChannels(ctx, deps.Repo, dsvc, botID, deviceID, now); err != nil {
+		t.Fatalf("sync after KeyPackages, nothing marked: %v", err)
+	}
+	if got := dsvc.Adds; len(got) != 0 {
+		t.Fatalf("Adds into channels that are not Bot channels = %+v, want none", got)
+	}
+	if _, err := deps.Repo.MarkBotChannel(ctx, store.BotChannelRow{ChannelID: channelA, CommunityID: cidA, MarkedAt: now, MarkedBy: ownerA.ID}); err != nil {
+		t.Fatal(err)
+	}
 	if err := api.SyncEnrolledBotChannels(ctx, deps.Repo, dsvc, botID, deviceID, now); err != nil {
 		t.Fatalf("sync after KeyPackages: %v", err)
 	}
@@ -772,7 +803,7 @@ func testRuntimeClaimEnrollmentAndReplayUseVerifiedBotCredential(t *testing.T, r
 	})
 	owner, _, humanToken := seedAPISession(t, deps)
 	cid := seedBotCommunity(t, deps, owner.ID)
-	negotiate, _ := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
+	negotiate, _ := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
 	if rec := postCBORAuth(h, "/v1/sessions/negotiate", negotiate, humanToken); rec.Code != http.StatusOK {
 		t.Fatalf("negotiate wire 3 = %d (%x)", rec.Code, rec.Body.Bytes())
 	}

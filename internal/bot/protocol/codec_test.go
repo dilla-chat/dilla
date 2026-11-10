@@ -143,37 +143,6 @@ func TestAnnouncementDeleteRequiresScheduleRevision(t *testing.T) {
 	}
 }
 
-func TestAutoModerationConfigOperationShapes(t *testing.T) {
-	community := fixtureID(34)
-	requestID := fixtureID(80)
-	document, err := cborx.Marshal([]any{uint64(1), uint64(0), "log", "log", "log", uint64(600000), []any{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	get := Request{RequestID: requestID, CommunityID: community, Operation: OpAutoModerationGet}
-	if _, err := EncodeRequestCBOR(get); err != nil {
-		t.Fatalf("encode get: %v", err)
-	}
-	revision, expires := uint64(4), uint64(120)
-	put := Request{RequestID: requestID, CommunityID: community, Operation: OpAutoModerationPut, Revision: &revision, Expires: &expires, Args: []any{"grant-token", document}}
-	if _, err := EncodeRequestCBOR(put); err != nil {
-		t.Fatalf("encode put: %v", err)
-	}
-	for name, bad := range map[string]Request{
-		"get args":             {RequestID: requestID, CommunityID: community, Operation: OpAutoModerationGet, Args: []any{uint64(0)}},
-		"put without revision": {RequestID: requestID, CommunityID: community, Operation: OpAutoModerationPut, Args: []any{"grant-token", document}},
-		"missing grant":        {RequestID: requestID, CommunityID: community, Operation: OpAutoModerationPut, Revision: &revision, Expires: &expires, Args: []any{"", document}},
-		"oversized document":   {RequestID: requestID, CommunityID: community, Operation: OpAutoModerationPut, Revision: &revision, Expires: &expires, Args: []any{"grant-token", make([]byte, 2401)}},
-		"non-array document":   {RequestID: requestID, CommunityID: community, Operation: OpAutoModerationPut, Revision: &revision, Expires: &expires, Args: []any{"grant-token", []byte{0x01}}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := EncodeRequestCBOR(bad); err == nil {
-				t.Fatal("accepted malformed request")
-			}
-		})
-	}
-}
-
 func TestKeyPackageResultWorstCaseFitsHelperPayload(t *testing.T) {
 	resultBytes := 1 + 5 + MaxKeyPackageUploadBody + 2 + 33*34 + 9
 	if resultBytes != 1_048_435 || MaxHelperPayload-resultBytes != 45 {
@@ -439,6 +408,12 @@ func roundTripVector(t *testing.T, tc vectorCase, raw []byte) []byte {
 		if err == nil {
 			got, err = EncodeGroupRegistrationReceipt(v)
 		}
+	case "device_list_push":
+		var v DeviceListPush
+		v, err = DecodeDeviceListPush(raw)
+		if err == nil {
+			got, err = EncodeDeviceListPush(v)
+		}
 	default:
 		t.Fatalf("unknown vector kind %q", tc.Kind)
 	}
@@ -546,6 +521,12 @@ func roundTripVectorErr(tc vectorCase, raw []byte) ([]byte, error) {
 			return nil, e
 		}
 		return EncodeGroupRegistrationReceipt(v)
+	case "device_list_push":
+		v, e := DecodeDeviceListPush(raw)
+		if e != nil {
+			return nil, e
+		}
+		return EncodeDeviceListPush(v)
 	default:
 		return nil, invalid()
 	}
@@ -707,8 +688,62 @@ func TestNewCallJoinHelperOperationsRoundTrip(t *testing.T) {
 			t.Fatalf("decode helper operation %d: %#v %v", operation, got, err)
 		}
 	}
-	if _, err := EncodeHelperRequest(HelperRequest{RequestID: fixtureID(2), Operation: HelperCallGroupForget + 1, Payload: []any{}}); err == nil {
+	if _, err := EncodeHelperRequest(HelperRequest{RequestID: fixtureID(2), Operation: HelperGroupForget + 1, Payload: []any{}}); err == nil {
 		t.Fatal("helper operation after the frozen range accepted")
+	}
+}
+
+func TestCommandHelperOperationsAreNumbered21To24AndRoundTrip(t *testing.T) {
+	for want, operation := range map[HelperOperation]HelperOperation{21: HelperCommandKey, 22: HelperCommandOpen, 23: HelperReplySeal, 24: HelperDeviceListIngest, 25: HelperProbeSeal, 26: HelperProbeOpen, 27: HelperGroupForget} {
+		if operation != want {
+			t.Fatalf("operation %d is numbered %d", want, operation)
+		}
+		frame, err := EncodeHelperRequest(HelperRequest{RequestID: fixtureID(2), Operation: operation, Payload: []any{fixtureID(3)}})
+		if err != nil {
+			t.Fatalf("encode helper operation %d: %v", operation, err)
+		}
+		got, err := DecodeHelperRequestFrame(frame)
+		if err != nil || got.Operation != operation {
+			t.Fatalf("decode helper operation %d: %#v %v", operation, got, err)
+		}
+	}
+}
+
+func TestSealedRequestDecodesStrictly(t *testing.T) {
+	reply := make([]byte, 32)
+	reply[0] = 1
+	good := []any{idBytes(fixtureID(1)), idBytes(fixtureID(2)), idBytes(fixtureID(3)), uint64(7), []any{"x", uint64(3), []byte{9}, nil}, uint64(100), reply}
+	b, _ := cborx.Marshal(good)
+	r, err := DecodeSealedRequest(b)
+	if err != nil || r.RequestID != fixtureID(1) || r.CommunityID != fixtureID(2) || r.ChannelID != fixtureID(3) || r.Operation != 7 || r.SentAt != 100 || r.ReplyKey[0] != 1 || len(r.Args) != 4 {
+		t.Fatalf("decoded = %#v, %v", r, err)
+	}
+	bad := func(edit func([]any) []any) []byte {
+		v := append([]any(nil), good...)
+		out, _ := cborx.Marshal(edit(v))
+		return out
+	}
+	for name, input := range map[string][]byte{
+		"trailing":     append(append([]byte(nil), b...), 0),
+		"short":        bad(func(v []any) []any { return v[:6] }),
+		"zero request": bad(func(v []any) []any { v[0] = make([]byte, 16); return v }),
+		"short id":     bad(func(v []any) []any { v[1] = make([]byte, 15); return v }),
+		"nested arg":   bad(func(v []any) []any { v[4] = []any{[]any{}}; return v }),
+		"short reply":  bad(func(v []any) []any { v[6] = reply[:31]; return v }),
+		"zero reply":   bad(func(v []any) []any { v[6] = make([]byte, 32); return v }),
+		"text channel": bad(func(v []any) []any { v[2] = "c"; return v }),
+		"too many args": bad(func(v []any) []any {
+			a := make([]any, 33)
+			for i := range a {
+				a[i] = uint64(i)
+			}
+			v[4] = a
+			return v
+		}),
+	} {
+		if _, err := DecodeSealedRequest(input); err == nil {
+			t.Fatalf("%s accepted", name)
+		}
 	}
 }
 
@@ -990,3 +1025,5 @@ func TestMusicSkipOptionalCurrentItemGuard(t *testing.T) {
 		}
 	}
 }
+
+func idBytes(v id.ID) []byte { return v[:] }

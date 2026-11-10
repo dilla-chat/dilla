@@ -13,7 +13,7 @@ import (
 
 func TestInteractiveRequestIsNotQueuedBehindSweep(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		c, err := New(Config{BaseURL: "https://example.invalid", InstanceID: testID(99), HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		c, err := New(Config{BaseURL: "https://example.invalid", InstanceID: testID(99), SocketRoutes: []string{}, HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			status, body := http.StatusOK, "\x80"
 			if strings.HasSuffix(r.URL.Path, "/cursor") {
 				status, body = http.StatusNoContent, ""

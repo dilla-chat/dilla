@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError, PERM, createBotUtilities, decodePollVote, decodePollClose, type CoreClient, type PollSummary } from '@dilla/client-core';
+import { BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError, PERM, createBotUtilities, watchBotHint, decodePollVote, decodePollClose, type CoreClient, type PollSummary } from '@dilla/client-core';
 import { PollCard as SignalPollCard, showToast } from '@dilla/ui';
 import { utilityText as t } from './utility-copy.ts';
 import { botDefinitelyUnavailable, loadedCommandBot, refreshCommandBot } from './command-bot-store.ts';
-import { walkPollVoters } from './poll-voters.ts';
 import './UtilityCards.css';
 
 const RETRY_DELAYS = [2_000, 5_000, 10_000];
@@ -78,7 +77,7 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
   const [active, setActive] = useState(false);
   // Verification failed for good (a refusal, or the 2/5/10 s retries ran out): the card steps aside so the post's own text stands.
   const [gaveUp, setGaveUp] = useState(false);
-  // A refusal (not a failure) was the reason: the quick retries are pointless, only the 30 s tick tries again.
+  // A refusal (not a failure) was the reason: the quick retries are pointless, only the next pushed hint tries again.
   const definitive = useRef(false);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -96,13 +95,10 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     setStoredAttempt({ key: attemptKey, value: next });
   };
   const [voterData, setVoterData] = useState<{ scope: string; revision: bigint; previews: string[][]; distinct: number; capped: boolean } | null>(null);
-  const ref = useRef<HTMLDivElement>(null); const generation = useRef(0); const voterGeneration = useRef(0);
-  const voterTarget = useRef<string | null>(null);
-  const voterPending = useRef(false);
-  const lastVoterWalk = useRef<number | null>(null);
+  const ref = useRef<HTMLDivElement>(null); const generation = useRef(0);
   const utilities = useMemo(() => createBotUtilities(props.client, props.communityId!), [props.client, props.communityId]);
-  const invalidate = useCallback(() => { voterGeneration.current++; voterTarget.current = null; setRecord(null); setVerifiedScope(null); setVoterData(null); }, []);
-  const refresh = useCallback(async (walkVoters = false): Promise<PollSummary | null> => {
+  const invalidate = useCallback(() => { setRecord(null); setVerifiedScope(null); setVoterData(null); }, []);
+  const refresh = useCallback(async (): Promise<PollSummary | null> => {
     const current = ++generation.current;
     try {
       // The Bot's identity comes from the shared per-community store (one load for every card and the composer); pollGet's own
@@ -129,7 +125,8 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
         return null;
       }
       setInstallationId(caps.installationId);
-      const poll = await utilities.pollGet(props.pollId, { channelId: props.channelId, threadId: props.threadId });
+      // One sealed poll.get answers the poll and its voters (Task 21b fix round 1): no per-answer voter reads.
+      const { poll, voters } = await utilities.pollRead(props.pollId, { channelId: props.channelId, threadId: props.threadId });
       const latest = utilities.binding;
       if (generation.current !== current || !isSameOwner() || !sourceAccessible || accessScope !== accessScopeRef.current || latest === null
         || latest.installationId !== caps.installationId || latest.botUserId !== props.authorId
@@ -141,29 +138,9 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       definitive.current = false; setGaveUp(false);
       const boundScope = `${identityScope}:${caps.installationId}`;
       setRecord({ client: props.client, scope: boundScope, poll }); setVerifiedScope(boundScope);
-      // Only the initial/cadence refresh may start a full walk. Mutation refreshes
-      // preserve the last completed count; a pending read survives record revisions.
-      const voterKey = `${boundScope}:${poll.revision}:${accessScope}`;
-      if (walkVoters && !voterPending.current && voterTarget.current !== voterKey
-        && (lastVoterWalk.current === null || performance.now() - lastVoterWalk.current >= 30_000)) {
-        voterTarget.current = voterKey; voterPending.current = true; lastVoterWalk.current = performance.now();
-        const voterRequest = ++voterGeneration.current;
-        const votersCurrent = () => voterGeneration.current === voterRequest && isSameOwner()
-          && sourceAccessibleRef.current && accessScope === accessScopeRef.current;
-        void (async () => {
-          try {
-            const data = await walkPollVoters(poll.counts, poll.multi, (option, cursor) => utilities.pollVoters({ pollId: poll.id,
-              channelId: poll.channelId, threadId: poll.threadId, option, cursor }), votersCurrent);
-            if (!votersCurrent()) return;
-            // The walk's pages were bound when each was read; a status read (no Bot round trip) confirms the installation did not change since.
-            const latest = await props.client.call({ m: 'getBotCommandStatus', communityId: props.communityId! }) as { installationId?: unknown; botUserId?: unknown; state?: unknown } | null;
-            if (!votersCurrent() || latest?.state !== 3 || latest.installationId !== caps.installationId || latest.botUserId !== props.authorId) return;
-            setVoterData({ scope: boundScope, revision: poll.revision, ...data });
-          } catch {
-            if (votersCurrent()) { voterTarget.current = null; setError(t('poll.readError')); }
-          } finally { voterPending.current = false; }
-        })();
-      }
+      // The voters came with the poll, on every read (a hint's, or a vote's own refresh); a read answered with no voters (an
+      // older Bot) leaves the last shown ones as they were.
+      if (voters !== null) setVoterData({ scope: boundScope, revision: poll.revision, ...voters });
 
       const retained = [...attemptMap(props.client)].find(([key]) => key.startsWith(`${identityScope}:`))?.[1];
       if (!busyRef.current || retained === undefined || poll.closed) setSelected(retained?.kind === 'vote' ? retained.choices : poll.myChoices ?? []);
@@ -188,9 +165,8 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     observer.observe(node); return () => observer.disconnect();
   }, []);
   useEffect(() => {
-    if (!active) { generation.current++; voterGeneration.current++; voterTarget.current = null; return; }
+    if (!active) { generation.current++; return; }
     const currentGeneration = generation;
-    const currentVoterGeneration = voterGeneration;
     // A complete authenticated refresh can span several Bot gateway rounds. A
     // cadence tick must not supersede that read before its record can be shown.
     // Mutations also own their refresh until the action finishes.
@@ -202,9 +178,9 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
       overdue = false;
       pending = true;
       try {
-        const poll = await refresh(true);
+        const poll = await refresh();
         window.clearTimeout(retry); retry = undefined;
-        // A failed verification retries quickly (2, 5, 10 s) before it waits for the 30 s tick.
+        // A failed verification retries quickly (2, 5, 10 s) before it waits for the next pushed hint.
         if (poll === null && !definitive.current && failures < RETRY_DELAYS.length) retry = window.setTimeout(() => { void update(); }, RETRY_DELAYS[failures++]);
         else if (poll !== null) failures = 0;
         else setGaveUp(true);
@@ -212,9 +188,11 @@ function VerifiedPollCard(props: PollCardProps & { pollId: string }): React.JSX.
     };
     const shown = () => { if (overdue && document.visibilityState === 'visible') void update(); };
     document.addEventListener('visibilitychange', shown);
-    void update(false); const timer = window.setInterval(() => { void update(); }, 30_000);
-    return () => { document.removeEventListener('visibilitychange', shown); window.clearInterval(timer); window.clearTimeout(retry); currentGeneration.current++; currentVoterGeneration.current++; voterTarget.current = null; };
-  }, [active, refresh]);
+    void update(false);
+    // Bot v2: a pushed channel hint (the tally changed) is the only cue to read again; nothing runs on a timer.
+    const stopHints = watchBotHint(props.client, { kind: 1, id: props.channelId }, () => { void update(); });
+    return () => { document.removeEventListener('visibilitychange', shown); stopHints(); window.clearTimeout(retry); currentGeneration.current++; };
+  }, [active, refresh, props.client, props.channelId]);
   const poll = sourceAccessible && record?.client === props.client && record.scope === scopeKey && verifiedScope === scopeKey ? record.poll : null;
   const { onVerified, onGaveUp } = props;
   useLayoutEffect(() => {

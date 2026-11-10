@@ -3,10 +3,11 @@ import { decode, encode, type CborInput } from '../cbor';
 import { toHex } from '../hex';
 import { type Bucket } from './client';
 import { DillaHttpError } from './errors';
+import { socketRouteFor } from './socket-routes';
 import {
   RecordingClient, bytesReply, cborReply, fakeTransport, noContent, refusal, textReply, type FakeOptions,
 } from './fake-fetch';
-import { HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, MODERATION_REMOVALS_PAGE, Routes, WELCOMES_PAGE, profileTextProblem, profileTextValue } from './routes';
+import { messageIdem, HANDSHAKES_MAX, MEMBERS_PAGE, MESSAGES_MAX, MODERATION_REMOVALS_PAGE, Routes, WELCOMES_PAGE, profileTextProblem, profileTextValue } from './routes';
 
 const fill = (n: number, b: number): Uint8Array => new Uint8Array(n).fill(b);
 const INSTANCE = fill(16, 0x01);
@@ -31,8 +32,6 @@ const HASH = fill(32, 0x10);
 const REF = fill(32, 0x11);
 const WIN = fill(48, 0x12);
 const STORED = fill(5, 0x1a);
-const ADMISSION_PAYLOAD = fill(128, 0x1b);
-const ADMISSION_SIGNATURE = fill(64, 0x1c);
 
 function octetReply(status: number, body: Uint8Array): Response {
   return new Response(body.slice(), { status, headers: { 'Content-Type': 'application/octet-stream', 'X-Dilla-Generation': '7' } });
@@ -104,28 +103,6 @@ it('submits only a bounded explicit panel action after an accepted panel event',
     body: encode([GROUP, 11n, '✅', 1]), bucket: 'write', idempotent: true, retry429: false, ok: [204] });
   await expect(routes.applyRolePanelReaction(COMMUNITY, CHANNEL, 0n, GROUP, 11n, '✅', true)).rejects.toThrow(/invalid role panel reaction/u);
   await expect(routes.applyRolePanelReaction(COMMUNITY, CHANNEL, 9n, GROUP, 0n, '✅', false)).rejects.toThrow(/invalid role panel reaction/u);
-});
-
-it('returns the current interaction admission proof without interpreting its signed payload', async () => {
-  const { routes, t, http } = setup();
-  t.replies.push(cborReply(200, [ADMISSION_PAYLOAD, ADMISSION_SIGNATURE]));
-  await expect(routes.getInteractionAdmissionContext(GROUP)).resolves.toEqual({
-    payload: ADMISSION_PAYLOAD, signature: ADMISSION_SIGNATURE,
-  });
-  expect(http.requests[0]).toMatchObject({ method: 'GET', path: `/v1/groups/${hex(GROUP)}/interaction-admission-context`,
-    bucket: 'read', idempotent: true, maxBodyBytes: 160 * 1024 });
-});
-
-it('rejects malformed current interaction admission proof envelopes', async () => {
-  const { routes, t } = setup();
-  t.replies.push(cborReply(200, [ADMISSION_PAYLOAD, fill(63, 0x1c)]));
-  await expect(routes.getInteractionAdmissionContext(GROUP)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
-});
-
-it('bounds the current interaction admission proof response to 160 KiB', async () => {
-  const { routes, t } = setup();
-  t.replies.push(bytesReply(200, fill(160 * 1024 + 1, 0)));
-  await expect(routes.getInteractionAdmissionContext(GROUP)).rejects.toMatchObject({ code: 'E_BODY_TOO_LARGE', status: 200 });
 });
 
 it('reads the active bot join-role setting and writes it with a request ID', async () => {
@@ -830,14 +807,47 @@ describe('Routes: one request per call, decoded as the server answers it', () =>
       const s = t.seen[0];
       expect(s.method).toBe(c.method);
       expect(s.url).toBe(`https://dilla.test${c.path}`);
-      expect(s.headers.get('authorization')).toBe(c.auth ? 'Bearer tok-1' : null);
+      // A socket request frame carries no headers: the connection's session is its credential.
+      expect(s.headers.get('authorization')).toBe(c.auth && s.socket !== true ? 'Bearer tok-1' : null);
+      expect(s.socket === true).toBe(socketRouteFor(c.method, c.path) !== null);
       expect(s.headers.get('accept')).toBe(c.accept ?? null);
       expect(s.body).toEqual(c.sent);
       expect(http.requests[0].bucket).toBe(c.bucket);
       expect(http.requests[0].idempotent).toBe(c.idempotent);
       expect(http.requests[0].auth ?? true).toBe(c.auth);
+      // Bot v2: every mutation carries an idempotency key for the socket; a read carries none.
+      if (c.method === 'GET') expect(http.requests[0].idem).toBeUndefined();
+      else expect(http.requests[0].idem).toHaveLength(16);
     });
   }
+});
+
+describe('Routes: the idempotency key of a mutation', () => {
+  it('is the request id a route already carries', async () => {
+    const { routes, t, http } = setup();
+    const request = fill(16, 0x31);
+    t.replies.push(noContent());
+    await routes.selectSelfRole(COMMUNITY, ROLE, request, true);
+    t.replies.push(cborReply(200, [request, 1]));
+    await routes.configureSelfRoles(COMMUNITY, request, [ROLE]);
+    t.replies.push(cborReply(200, [request, 77]));
+    await routes.putMemberTimeout(COMMUNITY, USER, request, 77n);
+    expect(http.requests.map((r) => r.idem)).toEqual([request, request, request]);
+  });
+
+  it('is a fresh random id per call, kept by every retry of that call', async () => {
+    const { routes, t, http } = setup();
+    t.replies.push(refusal(503, 'E_UNAVAILABLE', '', 10), noContent(), noContent());
+    // A route that stays on HTTP (the retry is the HTTP client's); a socket route's retry is the socket layer's.
+    await routes.putDeviceList(USER, fill(8, 1));
+    await routes.putDeviceList(USER, fill(8, 1));
+    expect(t.seen).toHaveLength(3);
+    expect(http.requests).toHaveLength(2);
+    const [first, second] = http.requests.map((r) => r.idem);
+    expect(first).toHaveLength(16);
+    expect(second).toHaveLength(16);
+    expect(first).not.toEqual(second);
+  });
 });
 
 describe('GET /v1/instance before sign-in', () => {
@@ -1093,12 +1103,12 @@ describe('Routes: retries and inputs', () => {
     expect(outcome).toMatchObject({ status: 500, code: 'E_INTERNAL' });
   });
 
-  it('a read is retried after a network failure', async () => {
+  it('a read on the socket is not retried by the typed route: the socket layer owns the retry and the idem (Bot v2)', async () => {
     const { t, routes } = setup();
     t.replies.push(new TypeError('fetch failed'), bytesReply(200, MESSAGES));
-    expect(await routes.getMessages(GROUP, 3n, 256)).toEqual({ raw: MESSAGES, count: 1, lastSeq: 3n });
-    expect(t.seen).toHaveLength(2);
-    expect(t.sleeps).toEqual([625]);
+    await expect(routes.getMessages(GROUP, 3n, 256)).rejects.toMatchObject({ status: 0, code: 'E_NETWORK' });
+    expect(t.seen).toHaveLength(1);
+    expect(t.seen[0]).toMatchObject({ socket: true });
   });
 
   it('decodes a contiguous moderation removal page and refuses gaps or cursor mismatch', async () => {
@@ -1211,21 +1221,22 @@ describe('Routes: patchMe', () => {
     const { t, routes } = setup();
     t.replies.push(noContent());
     await routes.patchMe({ statusMsg: 'on a call' });
-    expect(t.seen[0].init.method).toBe('PATCH');
+    expect(t.seen[0].method).toBe('PATCH');
+    expect(t.seen[0].socket).toBe(true);
     expect(t.seen[0].url).toBe('https://dilla.test/v1/accounts/me');
-    expect(decode(t.seen[0].init.body as Uint8Array)).toEqual([null, 'on a call', null]);
+    expect(decode(t.seen[0].body as Uint8Array)).toEqual([null, 'on a call', null]);
   });
   it('sends an empty string to clear a field', async () => {
     const { t, routes } = setup();
     t.replies.push(noContent());
     await routes.patchMe({ display: 'Ada', bio: '' });
-    expect(decode(t.seen[0].init.body as Uint8Array)).toEqual(['Ada', null, '']);
+    expect(decode(t.seen[0].body as Uint8Array)).toEqual(['Ada', null, '']);
   });
   it('sends the text trimmed', async () => {
     const { t, routes } = setup();
     t.replies.push(noContent());
     await routes.patchMe({ statusMsg: '  hello  ', bio: '\nbio\n' });
-    expect(decode(t.seen[0].init.body as Uint8Array)).toEqual([null, 'hello', 'bio']);
+    expect(decode(t.seen[0].body as Uint8Array)).toEqual([null, 'hello', 'bio']);
   });
   it('refuses a too long field before any request', async () => {
     const { t, routes } = setup();
@@ -1513,13 +1524,13 @@ describe('Routes: web-3 calls (L-TS-55)', () => {
     expect(http.requests.map((r) => r.signal)).toEqual([abort.signal, abort.signal, abort.signal]);
   });
 
-  it('an end retrying on 503 stops once its signal aborts: no further attempt is sent', async () => {
+  it('an end whose signal is already aborted sends nothing (the socket layer owns the 503 retry and its abort)', async () => {
     const { t, routes } = setup();
     const abort = new AbortController();
-    t.replies.push(() => { abort.abort(); return refusal(503, 'E_UNAVAILABLE', '', 1000); });
+    abort.abort();
     t.replies.push(noContent());
     await expect(routes.endCallIfAlone(CALL, abort.signal)).rejects.toMatchObject({ name: 'AbortError' });
-    expect(t.seen).toHaveLength(1);
+    expect(t.seen).toHaveLength(0);
   });
 
   it('declineCall(callId, 1700000030) sends [1700000030] and gives 204; its 404 is surfaced as E_NOT_FOUND', async () => {
@@ -1555,16 +1566,6 @@ describe('Routes: server admin and moderation', () => {
     const result = await call(routes);
     return { result, seen: t.seen[0], http };
   };
-
-  it('arms automatic moderation with the exact config digest and decodes the opaque one-use grant', async () => {
-    const token='opaque-grant-token'; const digest=new Uint8Array(32).fill(0x61); const request=fill(16,0x62);
-    const fixture=setup(); fixture.t.replies.push(cborReply(200,[token,900n]));
-    const result=await fixture.routes.armAutoModerationGrant(GROUP,request,COMMUNITY,7n,800n,digest,'step-up-once');
-    expect(result).toEqual({token,expires:900n});
-    expect(fixture.http.requests[0]).toMatchObject({method:'POST',path:`/v1/groups/${hex(GROUP)}/automod-grants/arm`,bucket:'write',idempotent:true,
-      body:encode([request,COMMUNITY,7n,800n,digest,'step-up-once'])});
-    expect(fixture.http.requests[0].body).not.toContain('plaintext config');
-  });
 
   it('posts the opaque ClientCore-signed removal body to the group route and surfaces server refusal', async () => {
     const body = encode([new Uint8Array([1, 2]), new Uint8Array(64).fill(0x7a)]);
@@ -2131,4 +2132,133 @@ it('sends "never" and "∞" as zeros and reads a never-expiring answer', async (
   t.replies.push(cborReply(201, [BOT, 'code1234', 'https://dilla.test/i/code1234', 0]));
   await expect(routes.createInvite(COMMUNITY, { maxUses: 0, ttlSeconds: 0 })).resolves.toMatchObject({ expires: 0n });
   expect(http.requests[0].body).toEqual(encode([0, 0, 0]));
+});
+
+describe('Routes: the account area goes over the socket (Bot v2 task 4)', () => {
+  const DEVICE_HEX = toHex(DEVICE);
+  const socket: [string, string][] = [
+    ['PATCH', '/v1/accounts/me'], ['DELETE', '/v1/accounts/me'],
+    ['PATCH', '/v1/accounts/me/presence'], ['POST', '/v1/accounts/me/presence/activity'],
+    ['GET', '/v1/devices'], ['POST', '/v1/devices'], ['PATCH', `/v1/devices/${DEVICE_HEX}`], ['DELETE', `/v1/devices/${DEVICE_HEX}`],
+    ['GET', `/v1/devices/${DEVICE_HEX}/keypackage`],
+    ['POST', '/v1/auth/password'], ['POST', '/v1/auth/stepup'], ['POST', '/v1/auth/stepup/passkey/begin'],
+    ['POST', '/v1/auth/stepup/passkey/finish'], ['POST', '/v1/auth/factors/remove'], ['POST', '/v1/auth/recovery/codes'],
+    ['GET', '/v1/welcomes?after=0&limit=64'], ['DELETE', '/v1/welcomes/5'],
+  ];
+  // Called before the gateway exists (PRE_GATEWAY_ROUTES) or without a session: these stay on HTTP.
+  const http: [string, string][] = [
+    ['GET', '/v1/accounts/me'], ['POST', '/v1/accounts'],
+    ['GET', `/v1/users/${hex(USER)}/device-list`], ['PUT', `/v1/users/${hex(USER)}/device-list`],
+    ['GET', '/v1/keypackages'], ['POST', '/v1/keypackages'],
+    ['POST', `/v1/devices/${DEVICE_HEX}/sessions`], ['DELETE', `/v1/devices/${DEVICE_HEX}/sessions`],
+    ['POST', `/v1/devices/${DEVICE_HEX}/sessions/challenge`], ['GET', '/v1/auth/factors'],
+    ['POST', '/v1/auth/totp/enroll'], ['POST', '/v1/auth/totp/confirm'],
+    ['POST', '/v1/auth/passkey/register/begin'], ['POST', '/v1/auth/passkey/register/finish'],
+    ['GET', '/v1/backups'], ['GET', '/v1/instance'], ['GET', '/v1/instance/limits'], ['POST', '/v1/gateway/ticket'],
+  ];
+  it.each(socket)('%s %s is a socket route', (method, path) => {
+    expect(socketRouteFor(method, path)).not.toBeNull();
+  });
+  it.each(http)('%s %s stays on HTTP', (method, path) => {
+    expect(socketRouteFor(method, path)).toBeNull();
+  });
+});
+
+describe('Routes: the messaging area goes over the socket (Bot v2 task 5)', () => {
+  const G = hex(GROUP);
+  const C = hex(CHANNEL);
+  const CALL = hex(fill(16, 0x21));
+  const socket: [string, string][] = [
+    ['POST', '/v1/groups'], ['GET', `/v1/groups/${G}/info`], ['GET', `/v1/groups/${G}/tree`],
+    ['GET', `/v1/groups/${G}/handshakes?from=0&limit=64`], ['POST', `/v1/groups/${G}/commit`], ['POST', `/v1/groups/${G}/proposal`],
+    ['GET', `/v1/groups/${G}/proposals`], ['POST', `/v1/groups/${G}/resync`], ['POST', `/v1/groups/${G}/fork-report`],
+    ['GET', `/v1/groups/${G}/heal-state`], ['POST', `/v1/groups/${G}/heal`], ['POST', `/v1/groups/${G}/message`],
+    ['GET', `/v1/groups/${G}/messages?from=0&limit=64`], ['DELETE', `/v1/groups/${G}/messages/3`], ['POST', `/v1/groups/${G}/cursor`],
+    ['GET', `/v1/groups/${G}/moderation/removals?after=0&limit=64`], ['POST', `/v1/groups/${G}/moderation/removals`],
+    ['POST', '/v1/dms'], ['GET', '/v1/dms'],
+    ['POST', `/v1/channels/${C}/messages`], ['GET', `/v1/channels/${C}/messages?limit=50`], ['PATCH', `/v1/channels/${C}/messages/4`],
+    ['DELETE', `/v1/channels/${C}/messages/4`], ['GET', `/v1/channels/${C}/search?q=x`], ['PUT', `/v1/channels/${C}/read-state`],
+    ['POST', '/v1/reports'], ['GET', '/v1/reports'], ['PATCH', `/v1/reports/${C}`],
+    ['POST', `/v1/channels/${C}/calls`], ['GET', `/v1/channels/${C}/call`], ['GET', `/v1/communities/${hex(COMMUNITY)}/calls`],
+    ['DELETE', `/v1/calls/${CALL}`], ['POST', `/v1/calls/${CALL}/share`], ['DELETE', `/v1/calls/${CALL}/share`],
+    ['POST', `/v1/calls/${CALL}/rtt`], ['POST', `/v1/calls/${CALL}/decline`], ['POST', `/v1/calls/${CALL}/stats`],
+  ];
+  // Blob bodies are binary and above a frame: they stay on HTTP.
+  const http: [string, string][] = [
+    ['PUT', `/v1/channels/${C}/blobs/${hex(fill(32, 0x22))}`], ['GET', `/v1/channels/${C}/blobs/${hex(fill(32, 0x22))}`],
+    ['DELETE', `/v1/channels/${C}/blobs/${hex(fill(32, 0x22))}`], ['POST', `/v1/channels/${C}/blobs/${hex(fill(32, 0x22))}/confirm`],
+  ];
+  it.each(socket)('%s %s is a socket route', (method, path) => {
+    expect(socketRouteFor(method, path)).not.toBeNull();
+  });
+  it.each(http)('%s %s stays on HTTP', (method, path) => {
+    expect(socketRouteFor(method, path)).toBeNull();
+  });
+  it('send idem is stable per message', async () => {
+    const { routes, t } = setup();
+    const msgA = fill(16, 0x31);
+    const msgB = fill(16, 0x32);
+    t.replies.push(bytesReply(200, UPLOADED), bytesReply(200, UPLOADED), bytesReply(200, UPLOADED), bytesReply(200, UPLOADED));
+    await routes.postMessage(GROUP, BODY, msgA);
+    await routes.postMessage(GROUP, BODY, msgA); // the same send, written again by the socket layer after a lost socket (within the resend window)
+    await routes.postMessage(GROUP, BODY, msgB);
+    await routes.postMessage(GROUP, fill(40, 0x44), msgA); // re-sealed: another request, another key
+    const idems = t.seen.map((r) => (r.idem === undefined ? '' : toHex(r.idem)));
+    expect(idems.every((i) => i.length === 32)).toBe(true);
+    expect(idems[0]).toBe(idems[1]);
+    expect(idems[2]).not.toBe(idems[0]);
+    expect(idems[3]).not.toBe(idems[0]);
+  });
+  it('the message idem matches the shared vector (internal/api send_retry_socket_test.go checks the same bytes)', async () => {
+    // msg id 0x31 x16, body 0x44 x40: SHA-256("dilla/message-idem/v1\0" || msgId || body)[:16].
+    expect(toHex(await messageIdem(fill(16, 0x31), fill(40, 0x44)))).toBe('0cf6fce80c1e9d827699c5296e842471');
+  });
+});
+
+describe('Routes: the community area goes over the socket (Bot v2 task 6)', () => {
+  const C = hex(COMMUNITY);
+  const CH = hex(CHANNEL);
+  const U = hex(USER);
+  const R = hex(ROLE);
+  const socket: [string, string][] = [
+    ['GET', '/v1/communities'], ['POST', '/v1/communities'], ['GET', `/v1/communities/${C}`], ['PATCH', `/v1/communities/${C}`],
+    ['DELETE', `/v1/communities/${C}`], ['GET', `/v1/communities/${C}/members?limit=50`], ['GET', `/v1/communities/${C}/members/${U}`],
+    ['DELETE', `/v1/communities/${C}/members/${U}`], ['GET', `/v1/communities/${C}/permissions`], ['POST', `/v1/communities/${C}/join`],
+    ['POST', `/v1/communities/${C}/leave`], ['POST', `/v1/communities/${C}/owner`], ['GET', `/v1/communities/${C}/presence`],
+    ['GET', `/v1/communities/${C}/afk`], ['POST', `/v1/communities/${C}/afk/activity`], ['PUT', `/v1/communities/${C}/afk/away`],
+    ['GET', `/v1/communities/${C}/afk/settings`], ['PUT', `/v1/communities/${C}/afk/settings`],
+    ['GET', `/v1/communities/${C}/channels`], ['POST', `/v1/communities/${C}/channels`], ['GET', `/v1/channels/${CH}`],
+    ['PATCH', `/v1/channels/${CH}`], ['DELETE', `/v1/channels/${CH}`], ['GET', `/v1/channels/${CH}/permissions`],
+    ['GET', `/v1/channels/${CH}/members`], ['PUT', `/v1/channels/${CH}/members/${U}`], ['DELETE', `/v1/channels/${CH}/members/${U}`],
+    ['PUT', `/v1/channels/${CH}/overwrites/role/${R}`], ['DELETE', `/v1/channels/${CH}/overwrites/role/${R}`],
+    ['GET', `/v1/communities/${C}/roles`], ['POST', `/v1/communities/${C}/roles`], ['GET', `/v1/communities/${C}/overwrites`],
+    ['PATCH', `/v1/roles/${R}`], ['DELETE', `/v1/roles/${R}`], ['PUT', `/v1/communities/${C}/members/${U}/roles/${R}`],
+    ['DELETE', `/v1/communities/${C}/members/${U}/roles/${R}`], ['GET', `/v1/communities/${C}/self-roles`],
+    ['PUT', `/v1/communities/${C}/self-roles/policy`], ['PUT', `/v1/communities/${C}/self-roles/${R}`],
+    ['PUT', `/v1/communities/${C}/role-panels`], ['POST', `/v1/communities/${C}/role-panels/${CH}/4/reaction`],
+    ['GET', `/v1/communities/${C}/bot-join-role`], ['PUT', `/v1/communities/${C}/bot-join-role`],
+    ['GET', `/v1/communities/${C}/bans`], ['PUT', `/v1/communities/${C}/bans/${U}`], ['DELETE', `/v1/communities/${C}/bans/${U}`],
+    ['GET', `/v1/communities/${C}/members/${U}/timeout`], ['PUT', `/v1/communities/${C}/members/${U}/timeout`],
+    ['DELETE', `/v1/communities/${C}/members/${U}/timeout`], ['POST', `/v1/communities/${C}/members/${U}/warning`],
+    ['GET', `/v1/communities/${C}/invites`], ['POST', `/v1/communities/${C}/invites`], ['DELETE', `/v1/invites/${R}`],
+    ['GET', `/v1/communities/${C}/gifs`], ['PUT', `/v1/communities/${C}/gifs/key`], ['DELETE', `/v1/communities/${C}/gifs/key`],
+    ['PUT', `/v1/communities/${C}/gifs/rating`], ['GET', `/v1/communities/${C}/gifs/search?q=cat&offset=0`],
+    ['GET', '/v1/admin/audit'], ['GET', '/v1/admin/diagnostics'], ['POST', `/v1/admin/users/${U}/disable`],
+    ['DELETE', `/v1/admin/blobs/${hex(fill(32, 0x22))}`],
+    ['GET', `/v1/communities/${C}/bot`], ['PUT', `/v1/communities/${C}/bot?v=2`], ['DELETE', `/v1/communities/${C}/bot`],
+    ['PATCH', `/v1/communities/${C}/bot/profile`], ['POST', `/v1/communities/${C}/bot/disable`], ['POST', `/v1/communities/${C}/bot/restart`],
+    ['PUT', `/v1/communities/${C}/bot/music-settings`], ['GET', `/v1/communities/${C}/bot/command-status`],
+  ];
+  // Large binary bodies, the pre-session routes and the unauthenticated ones stay on HTTP.
+  const http: [string, string][] = [
+    ['GET', `/v1/communities/${C}/gifs/media/abc123?r=full`], ['GET', '/v1/instance'],
+    ['GET', '/v1/accounts/me'], ['POST', '/v1/accounts'], ['GET', '/v1/auth/factors'], ['POST', '/v1/gateway/ticket'],
+    ['PUT', '/v1/backups/0/0'], ['GET', `/v1/channels/${CH}/blobs/${hex(fill(32, 0x22))}`], ['POST', '/v1/sessions/negotiate'],
+  ];
+  it.each(socket)('%s %s is a socket route', (method, path) => {
+    expect(socketRouteFor(method, path)).not.toBeNull();
+  });
+  it.each(http)('%s %s stays on HTTP', (method, path) => {
+    expect(socketRouteFor(method, path)).toBeNull();
+  });
 });

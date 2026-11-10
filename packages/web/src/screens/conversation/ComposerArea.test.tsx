@@ -64,6 +64,9 @@ describe('poll form composer focus', () => {
       const { fake, user } = renderConversation({ before: core => {
         core.set('communities', [{ id: A, name: 'Midgard', owner: core.get('account')!.user!.id }]);
         core.set(`roles:${A}`, []); core.set(`overwrites:${A}`, {});
+        // Bot v2: the picker's Bot commands are the catalog held on this device.
+        core.set(`botCatalog:${A}`, { revision: '1', keyId: 'd3'.repeat(16), fingerprint: 'F', status: { state: 'ready', since: null }, botChannels: ['d4'.repeat(16)],
+          botUserId: 'd2'.repeat(16), commands: [{ name: 'poll create', description: 'Create a poll', operation: 70, args: [], permissionBit: 0, needsBotChannel: true, handlerKind: 0 }] });
         core.set(`permissions:${A}`, { loaded: true, top: 0, owner: true, manageCommunity: true, kickMembers: true,
           banMembers: true, manageMessages: true, manageRoles: true, manageChannels: true, createInvite: true,
           everyoneId: 'e0'.repeat(16), overwritesLoaded: true });

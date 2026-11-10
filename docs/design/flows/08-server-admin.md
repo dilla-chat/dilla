@@ -319,9 +319,7 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.bot.moderationLog.load='Load manual evidence'`
 - `admin.bot.moderationLog.loadAutomatic='Load automatic cases'`
 - `admin.bot.moderationLog.loading='Sending request…'`
-- `admin.bot.moderationLog.waiting='Waiting for the bot response…'`
-- `admin.bot.moderationLog.denied='The instance did not grant view audit log. Response details remain unread.'`
-- `admin.bot.moderationLog.blocked='A response from another server is waiting. Open that server’s Bot settings to read it first.'`
+- `admin.bot.moderationLog.denied='Reading the moderation log needs View audit log. The Bot refused.'`
 - `admin.bot.moderationLog.error='Could not load manual moderation evidence. Try again.'`
 - `admin.bot.moderationLog.responseUnavailable='The bot could not load manual moderation evidence. Try again.'`
 - `admin.bot.moderationLog.empty='No manual moderation evidence was returned.'`
@@ -358,38 +356,6 @@ Every key below is one string of `packages/web/src/strings/en.ts`, byte for byte
 - `admin.bot.rolePanel.retry='Retry publishing'`
 - `admin.bot.rolePanel.invalid='Choose a text channel and at least one approved role with a unique emoji.'`
 - `admin.bot.rolePanel.error='Could not publish the role panel ({code}). Try again.'`
-- `admin.bot.automod.title='Automatic moderation'`
-- `admin.bot.automod.help='The ready bot checks message rate, repeated messages, and mention bursts. Settings are sent to the bot for this server.'`
-- `admin.bot.automod.capabilityHelp='Remove actions require Manage Messages and the bot’s message removal capability. Warnings and timeouts require Moderate Members and the bot’s warnings capability. The server checks permissions again when it handles the change.'`
-- `admin.bot.automod.defaults='Defaults are disabled and log-only. The bot does not remove messages or timeout members until you choose an action.'`
-- `admin.bot.automod.requiresBot='A ready bot installation is required to load or save automatic moderation settings.'`
-- `admin.bot.automod.requiresManager='Only current server managers can read or change automatic moderation settings.'`
-- `admin.bot.automod.load='Load automatic moderation settings'`
-- `admin.bot.automod.waiting='Waiting for the bot response…'`
-- `admin.bot.automod.loaded='Automatic moderation settings loaded.'`
-- `admin.bot.automod.enabled='Enable automatic moderation'`
-- `admin.bot.automod.rate='Message rate action'`
-- `admin.bot.automod.duplicate='Repeated message action'`
-- `admin.bot.automod.mention='Mention burst action'`
-- `admin.bot.automod.action.log='Log only'`
-- `admin.bot.automod.action.remove='Remove message'`
-- `admin.bot.automod.action.warn='Warn member'`
-- `admin.bot.automod.action.timeout='Timeout member'`
-- `admin.bot.automod.timeout='Timeout duration in milliseconds'`
-- `admin.bot.automod.exemptions='Exempt user IDs (up to 256 unique IDs, each 32 lowercase hexadecimal characters; the encoded settings document has a size limit)'`
-- `admin.bot.automod.save='Save automatic moderation settings'`
-- `admin.bot.automod.saved='Automatic moderation settings saved.'`
-- `admin.bot.automod.conflict='The settings changed at the same time. Reload before saving again.'`
-- `admin.bot.automod.conflictCurrent='The server is now at revision {revision}. Reload its settings before saving again.'`
-- `admin.bot.automod.loadError='Could not send the settings request. Try again.'`
-- `admin.bot.automod.readError='Could not read the bot response. Try loading settings again.'`
-- `admin.bot.automod.readDenied='The bot refused to read these settings. Check manager access and bot status.'`
-- `admin.bot.automod.saveError='Could not start or send the save request. Check server access and bot status, then try again.'`
-- `admin.bot.automod.saveDenied='The bot refused this change. Check your current permissions and bot capabilities.'`
-- `admin.bot.automod.uncertain='The send result is uncertain. The same request remains pending; wait for its response before starting another save.'`
-- `admin.bot.automod.invalidExemptions='Use up to 256 unique user IDs, each 32 lowercase hexadecimal characters.'`
-- `admin.bot.automod.prepareError='Could not prepare these settings locally. Nothing was sent.'`
-- `admin.bot.automod.retry='Retry the same save request'`
 - `mod.warn.menu='Warn member'`
 - `mod.warn.title='Warn {name} in {server}'`
 - `mod.warn.body='The warning will be added to the moderation log. Its case is private to moderators and retained for 90 days.'`
@@ -416,7 +382,7 @@ inaccessible draft and chooses an allowed section. The moderation journal remain
 separate from bot configuration responses.
 
 GIF configuration is its own section. Bot installation, Welcome messages, Join
-roles, Music, Automoderation and Moderation log each have their own section. See
+roles, Music and Moderation log each have their own section. See
 [fullscreen settings](18-fullscreen-settings.md) for the coverage inventory and
 partial-save, pending-operation and provider-status contracts.
 

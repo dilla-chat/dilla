@@ -61,6 +61,24 @@ const (
 	CodeUnavailable Code = "E_UNAVAILABLE"
 	CodeVersion     Code = "E_VERSION"
 	CodeInternal    Code = "E_INTERNAL"
+	// CodeUpgradeRequired is 426: the client speaks only wire versions older than every one the
+	// instance supports (Bot v2: wire 6, no older clients). The client stops and asks its user to update.
+	CodeUpgradeRequired Code = "E_UPGRADE_REQUIRED"
+	// CodeBusy is 429: the instance or the managed Bot is at capacity for this kind of work; retry later.
+	CodeBusy Code = "E_BUSY"
+	// CodeBotOffline is 503: a sealed Bot command found no live Bot runtime connection to relay to
+	// (Bot v2 task 10). The client shows the Bot as offline and offers Retry.
+	CodeBotOffline Code = "E_BOT_OFFLINE"
+	// CodeBotDuplicate is 409: another device sent a sealed Bot command with this request_id in the
+	// last five minutes (Bot v2 task 10). The client mints a new request_id.
+	CodeBotDuplicate Code = "E_BOT_DUPLICATE"
+	// CodeBotKeyStale is 410: a sealed Bot command names a command key that is neither the community's published key nor,
+	// for the 24 h after a rotation, the one before it (Bot v2 Task 21b). Nothing is relayed; the client reads the
+	// catalog once and resends the same request_id sealed to the published key.
+	CodeBotKeyStale Code = "E_BOT_KEY_STALE"
+	// CodeNotBotChannel is 409: a webhook's target channel is not a Bot channel of its community (Bot v2 task 13),
+	// at create time or, after an unmark, on every POST. Mark the channel again or pick a Bot channel.
+	CodeNotBotChannel Code = "E_NOT_BOT_CHANNEL"
 	// CodeProvisionalOutsidePairing is protocol/02 § Device sessions item 4:
 	// a provisional session reaching anything but its one pairing group.
 	CodeProvisionalOutsidePairing Code = "E_PROVISIONAL_OUTSIDE_PAIRING"
@@ -135,9 +153,9 @@ func (e *Error) Status() int {
 		return http.StatusForbidden
 	case CodeNotFound, CodeKeyPackagesExhausted:
 		return http.StatusNotFound
-	case CodeGroupExists, CodeCommitConflict, CodeRemovePending, CodeCallFull, CodeCallSharersFull, CodeCallNotAlone:
+	case CodeGroupExists, CodeCommitConflict, CodeRemovePending, CodeCallFull, CodeCallSharersFull, CodeCallNotAlone, CodeBotDuplicate, CodeNotBotChannel:
 		return http.StatusConflict
-	case CodePruned, CodeInviteInvalid:
+	case CodePruned, CodeInviteInvalid, CodeBotKeyStale:
 		return http.StatusGone
 	case CodeTooLarge:
 		return http.StatusRequestEntityTooLarge
@@ -145,11 +163,13 @@ func (e *Error) Status() int {
 		return http.StatusUnprocessableEntity
 	case CodeCommitRequired:
 		return http.StatusTooEarly
-	case CodeRateLimited:
+	case CodeUpgradeRequired:
+		return http.StatusUpgradeRequired
+	case CodeRateLimited, CodeBusy:
 		return http.StatusTooManyRequests
 	case CodeStorageFull:
 		return http.StatusInsufficientStorage
-	case CodeUnavailable:
+	case CodeUnavailable, CodeBotOffline:
 		return http.StatusServiceUnavailable
 	case CodeInternal:
 		return http.StatusInternalServerError

@@ -101,6 +101,9 @@ DELETE FROM member_roles WHERE community_id = ? AND user_id = ? AND role_id = ?;
 -- name: ListMemberRoles :many
 SELECT role_id FROM member_roles WHERE community_id = ? AND user_id = ? ORDER BY role_id;
 
+-- name: ListCommunityMemberRoles :many
+SELECT user_id, role_id FROM member_roles WHERE community_id = ? ORDER BY user_id, role_id;
+
 -- Channels (Plan 2 task 2, 00005_channels.sql).
 
 -- name: CreateChannel :exec

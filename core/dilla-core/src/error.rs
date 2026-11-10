@@ -131,6 +131,9 @@ pub enum CoreError {
     Cbor(#[from] crate::cbor::CborError),
     #[error("crypto: {0}")]
     Crypto(String),
+    /// A Bot codec refusal (sealed commands: a shape, context or size the seal does not allow).
+    #[error(transparent)]
+    Bot(#[from] crate::bot::CodecError),
     #[error(transparent)]
     Storage(#[from] crate::mls::StorageError),
     #[cfg(any(not(target_arch = "wasm32"), target_os = "unknown"))]

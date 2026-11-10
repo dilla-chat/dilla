@@ -5,6 +5,6 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],
-    exclude: ['test/**/*.wasm.test.ts', 'node_modules/**'],
+    exclude: ['test/**/*.wasm.test.ts', '**/node_modules/**', '**/target/**'],
   },
 });

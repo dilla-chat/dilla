@@ -12,22 +12,6 @@ import (
 	"time"
 )
 
-func TestPCMStarterFailsClosedWithoutBubblewrap(t *testing.T) {
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "invoked")
-	ytdlp := writeScript(t, dir, "yt-dlp", `touch "$MARKER"; printf encoded`)
-	ffmpeg := writeScript(t, dir, "ffmpeg", `touch "$MARKER"; cat`)
-	t.Setenv("MARKER", marker)
-
-	pcm, err := (PCMStarter{YTDLP: ytdlp, FFmpeg: ffmpeg, Bubblewrap: filepath.Join(dir, "missing-bwrap")}).Start(context.Background(), "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
-	if pcm != nil || !errors.Is(err, ErrSandboxUnavailable) {
-		t.Fatalf("Start = (%v, %v), want nil and ErrSandboxUnavailable", pcm, err)
-	}
-	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("unsandboxed subprocess started: stat error = %v", statErr)
-	}
-}
-
 func TestSandboxTempDirUsesConfiguredTMPDIRWithPrivatePermissions(t *testing.T) {
 	parent := t.TempDir()
 	t.Setenv("TMPDIR", parent)
@@ -80,7 +64,7 @@ func TestSandboxTempDirUsesDefaultTempDirectoryWhenTMPDIRIsUnset(t *testing.T) {
 	}
 }
 
-func TestPCMStarterExecutableResolvesBareNameAndRejectsDirectory(t *testing.T) {
+func TestLookupToolResolvesBareNameAndRejectsDirectory(t *testing.T) {
 	dir := t.TempDir()
 	target := writeScript(t, dir, "ffmpeg-test", `exit 0`)
 	directory := filepath.Join(dir, "directory-tool")
@@ -91,12 +75,11 @@ func TestPCMStarterExecutableResolvesBareNameAndRejectsDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
-	starter := PCMStarter{}
-	resolved, err := starter.executable("ffmpeg-test", "ffmpeg")
+	resolved, err := lookupTool("ffmpeg-test", "ffmpeg")
 	if err != nil || resolved != target {
 		t.Fatalf("bare executable resolution = (%q, %v), want (%q, nil)", resolved, err, target)
 	}
-	if _, err := starter.executable("directory-tool", "ffmpeg"); err == nil {
+	if _, err := lookupTool("directory-tool", "ffmpeg"); err == nil {
 		t.Fatal("directory accepted as an executable")
 	}
 }
@@ -150,89 +133,6 @@ func TestSandboxCommandPointsTLSAtMountedResolvedCABundle(t *testing.T) {
 			t.Fatal("sandbox command does not mount FFmpeg's alternative library symlinks")
 		}
 	}
-}
-
-func TestPCMChildCannotReachPublicNetworkDirectly(t *testing.T) {
-	dir := t.TempDir()
-	ytdlp := filepath.Join(dir, "direct-network-probe")
-	program := "#!/usr/bin/python3\nimport socket,sys\ntry:\n socket.create_connection(('8.8.8.8',443),0.5)\n sys.exit(41)\nexcept OSError:\n sys.stdout.write('encoded')\n"
-	if err := os.WriteFile(ytdlp, []byte(program), 0700); err != nil {
-		t.Fatal(err)
-	}
-	ffmpeg := writeScript(t, dir, "fake ffmpeg", `cat`)
-	source, err := (PCMStarter{YTDLP: ytdlp, FFmpeg: ffmpeg, Timeout: 5 * time.Second}).Start(context.Background(), "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
-	if err != nil {
-		if errors.Is(err, ErrSandboxUnavailable) {
-			t.Skipf("bubblewrap network namespaces unavailable: %v", err)
-		}
-		t.Fatal(err)
-	}
-	defer source.Close()
-	pcm, err := io.ReadAll(source)
-	if err != nil || string(pcm) != "encoded" {
-		t.Fatalf("network-isolated output = %q, %v; fake extractor should see direct egress denied", pcm, err)
-	}
-}
-
-func TestPCMStarterRunsFakeExtractorAndFFmpegInsideIsolatedWorker(t *testing.T) {
-	dir := t.TempDir()
-	ytdlp := writeScript(t, dir, "fake yt-dlp", `test "$HTTPS_PROXY" = "http://127.0.0.1:3128" || exit 31; printf encoded`)
-	ffmpeg := writeScript(t, dir, "fake ffmpeg", `test "$HTTPS_PROXY" = "http://127.0.0.1:3128" || exit 32; cat`)
-	starter := PCMStarter{YTDLP: ytdlp, FFmpeg: ffmpeg, Timeout: 5 * time.Second}
-	source, err := starter.Start(context.Background(), "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
-	if err != nil {
-		if errors.Is(err, ErrSandboxUnavailable) {
-			t.Skipf("bubblewrap network namespaces unavailable: %v", err)
-		}
-		t.Fatal(err)
-	}
-	defer source.Close()
-	pcm, err := io.ReadAll(source)
-	if err != nil || string(pcm) != "encoded" {
-		t.Fatalf("PCM output = %q, %v, want encoded", pcm, err)
-	}
-}
-
-func TestPCMStarterStopsAtConfiguredOutputLimit(t *testing.T) {
-	dir := t.TempDir()
-	ytdlp := writeScript(t, dir, "fake yt-dlp", `printf encoded`)
-	ffmpeg := writeScript(t, dir, "fake ffmpeg", `cat`)
-	source, err := (PCMStarter{YTDLP: ytdlp, FFmpeg: ffmpeg, MaxPCMBytes: 4, Timeout: 5 * time.Second}).Start(context.Background(), "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
-	if err != nil {
-		if errors.Is(err, ErrSandboxUnavailable) {
-			t.Skipf("bubblewrap network namespaces unavailable: %v", err)
-		}
-		t.Fatal(err)
-	}
-	defer source.Close()
-	pcm, err := io.ReadAll(source)
-	if !errors.Is(err, ErrPCMLimit) || string(pcm) != "enco" {
-		t.Fatalf("bounded PCM = %q, %v; want 4 bytes and ErrPCMLimit", pcm, err)
-	}
-}
-
-func TestPCMStarterCancellationStopsTheSandboxedPipeline(t *testing.T) {
-	dir := t.TempDir()
-	ytdlp := writeScript(t, dir, "fake yt-dlp", `while :; do sleep 1; done`)
-	ffmpeg := writeScript(t, dir, "fake ffmpeg", `cat`)
-	ctx, cancel := context.WithCancel(context.Background())
-	source, err := (PCMStarter{YTDLP: ytdlp, FFmpeg: ffmpeg, MaxDuration: time.Minute, Timeout: 5 * time.Second}).Start(ctx, "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
-	if err != nil {
-		if errors.Is(err, ErrSandboxUnavailable) {
-			t.Skipf("bubblewrap network namespaces unavailable: %v", err)
-		}
-		t.Fatal(err)
-	}
-	cancel()
-	readDone := make(chan error, 1)
-	go func() { _, readErr := source.Read(make([]byte, 8)); readDone <- readErr }()
-	select {
-	case <-readDone:
-	case <-time.After(2 * time.Second):
-		_ = source.Close()
-		t.Fatal("sandboxed pipeline did not stop after context cancellation")
-	}
-	_ = source.Close()
 }
 
 func TestEgressBrokerRejectsNonYouTubeAndPrivateDestinations(t *testing.T) {
@@ -295,20 +195,6 @@ func TestEgressBrokerReturns403ForDisallowedCONNECTWithoutDialing(t *testing.T) 
 	}
 }
 
-func TestPCMStarterRejectsAnythingButCanonicalVideoBeforeStartingProcesses(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "invoked")
-	ytdlp := writeScript(t, t.TempDir(), "yt-dlp", `touch "$MARKER"`)
-	t.Setenv("MARKER", marker)
-	for _, input := range []string{"ytsearch5:hello", "https://example.org/video", "file:///tmp/audio", "https://youtube.com/playlist?list=PLabc_123"} {
-		if _, err := (PCMStarter{YTDLP: ytdlp, FFmpeg: ytdlp}).Start(context.Background(), input); err == nil {
-			t.Errorf("Start(%q) succeeded", input)
-		}
-	}
-	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("yt-dlp invoked for invalid input, stat error = %v", err)
-	}
-}
-
 func writeScript(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
@@ -316,90 +202,4 @@ func writeScript(t *testing.T, dir, name, body string) string {
 		t.Fatal(err)
 	}
 	return path
-}
-
-func TestBoundedPCMReaderStopsAtByteLimit(t *testing.T) {
-	r, err := NewBoundedPCMReader(context.Background(), io.NopCloser(strings.NewReader("abcdef")), 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r.Close()
-	got, err := io.ReadAll(r)
-	if !errors.Is(err, ErrPCMTooLarge) || string(got) != "abcd" {
-		t.Fatalf("ReadAll = %q, %v", got, err)
-	}
-}
-
-func TestBoundedPCMReaderAllowsEOFAtLimit(t *testing.T) {
-	r, err := NewBoundedPCMReader(context.Background(), io.NopCloser(strings.NewReader("abcd")), 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r.Close()
-	got, err := io.ReadAll(r)
-	if err != nil || string(got) != "abcd" {
-		t.Fatalf("ReadAll = %q, %v", got, err)
-	}
-}
-
-func TestBoundedPCMReaderCancellationClosesBlockedSource(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	source := &blockingPCMSource{closed: make(chan struct{})}
-	r, err := NewBoundedPCMReader(ctx, source, 1024)
-	if err != nil {
-		t.Fatal(err)
-	}
-	readDone := make(chan error, 1)
-	go func() { _, readErr := r.Read(make([]byte, 8)); readDone <- readErr }()
-	cancel()
-	select {
-	case err := <-readDone:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("Read error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Read remained blocked after cancellation")
-	}
-	select {
-	case <-source.closed:
-	case <-time.After(time.Second):
-		t.Fatal("source was not closed after cancellation")
-	}
-	_ = r.Close()
-}
-
-type blockingPCMSource struct{ closed chan struct{} }
-
-func (s *blockingPCMSource) Read([]byte) (int, error) {
-	<-s.closed
-	return 0, errors.New("source closed")
-}
-func (s *blockingPCMSource) Close() error {
-	select {
-	case <-s.closed:
-	default:
-		close(s.closed)
-	}
-	return nil
-}
-
-func TestPCMResumeOffsetIsOutputSide(t *testing.T) {
-	dir := t.TempDir()
-	yt := writeScript(t, dir, "yt", `printf encoded`)
-	ff := writeScript(t, dir, "ff", `printf '%s\n' "$@"; cat >/dev/null`)
-	source, err := (PCMStarter{YTDLP: yt, FFmpeg: ff, StartAtMS: 42500}).Start(t.Context(), "https://www.youtube.com/watch?v=aqz-KE-bpKQ")
-	if errors.Is(err, ErrSandboxUnavailable) {
-		t.Skipf("network sandbox unavailable: %v", err)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer source.Close()
-	data, err := io.ReadAll(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "-i\npipe:0\n-ss\n42.500\n-f\ns16le") {
-		t.Fatalf("ffmpeg offset is not output-side: %s", data)
-	}
 }

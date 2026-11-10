@@ -33,6 +33,38 @@ bridges its sandboxed 44.1 kHz stereo PCM into the existing bounded Opus runtime
 It returns the sample source without creating a LiveKit publisher or opening a
 voice call; an owning playback lifecycle must make that separate decision.
 
+## Warm resolver and the single ffmpeg (Bot v2 task 18)
+
+`NewBackend` builds a `WarmResolver` and a `StreamStarter`. The resolver keeps one
+long-lived worker (`sandbox_worker.py serve`) in the same bubblewrap sandbox, with
+the same mounts (yt-dlp and Node) and the same egress broker as the per-request
+metadata worker; `TestWarmWorkerSandboxArgvMatchesTheMetadataWorker` pins that.
+A lookup is one yt-dlp run that prints the metadata and the chosen audio stream URL;
+results are cached for 6 h by normalised query and by video URL. Each lookup has a
+timeout; a worker that exceeds it, or exits, is killed and restarted with backoff
+(100 ms doubling to 10 s), and it is replaced every 200 lookups so its 1 GiB egress
+budget is never reached.
+
+The stream URL is fetched by one ffmpeg in a new sandbox (only ffmpeg is mounted),
+through the same broker, and encoded straight to 48 kHz stereo Ogg Opus in 20 ms
+frames. The Bot forwards those packets (`encode.BridgeOgg`) with no second ffmpeg.
+`Prefetch` starts that ffmpeg for the next track ahead of time, buffering at most
+128 KiB until the track's own start claims it. `PCMStarter` and its PCM pipeline
+remain for the qualification tests only.
+
+Fix round 1: lookups and pre-buffers are partitioned by owner (`Backend.For(communityID)`;
+the cache key and the pre-buffer key include it, one held stream per owner), so one community
+never hits or claims another's entry. yt-dlp keeps its cache in the worker's private tmpfs (`--cache-dir /tmp/yt-dlp-cache` since Task 19 fix round 2; it was `--no-cache-dir`) and the long-lived worker loads yt-dlp as a library, progressive `https`
+audio only, and its chosen User-Agent is passed to ffmpeg, which runs with
+`-protocol_whitelist https,tls,tcp,httpproxy`. A timed-out lookup is cancelled alone (the worker
+kills that yt-dlp's process group); the worker is killed only when it answers nothing, and is
+replaced after 200 lookups, 3 failures in a row, half its egress budget, or 1 h.
+
+`FixtureResolver` (`-tags dilla_testhost`, `fixture_testhost.go`) serves `.opus`
+files from `DILLA_BOT_MUSIC_FIXTURES` through the same ffmpeg arguments. A build
+without the tag refuses to start while the variable is set, and release.yml and
+server.yml fail a release whose dillad or dillabot carries the tag.
+
 The tests launch fake extractor and FFmpeg processes in the real local
 bubblewrap namespace, confirm direct public-network access fails, check the
 broker hostname/IP policy, and verify argument, cancellation, and output bounds.

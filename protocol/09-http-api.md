@@ -7,7 +7,7 @@ freezes with "DS API v1" at the end of W5; this document does **not** freeze the
 instance document and limits, accounts, devices, sessions, invites, auth ceremonies, communities and
 content, rate limits and the `users.flags` bit layout, all of which stay editable as dillad grows.
 
-The built-in community bot's wire-3 installation, event, role, moderation and
+The built-in community bot's installation, event, role, moderation, command, webhook and
 provider-setup endpoints are specified in [10-community-bot.md](10-community-bot.md).
 
 ## Encoding
@@ -18,6 +18,88 @@ whose `Content-Type` is not `application/cbor` is `415`; a body that fails to de
 deterministic CBOR is `400 E_INVALID_REQUEST`. Blob bodies are the one exception: raw octets,
 `Content-Type: application/octet-stream`.
 
+## Socket requests
+
+From wire 6 the routes an identified session uses are request frames on its gateway connection
+(op 59 request, op 60 response), not HTTP requests. This is the one place that says which routes
+those are and which stay on HTTP. The rows in the sections below give each route's session class,
+rate bucket, body shapes and refusals; their `socket` mark means the route has no HTTP form.
+
+**The frame.** `request` is `[id, method, route, body, idem|null]` and `response` is `[id, status,
+body]` (`02` § Gateway frames, ops 59 and 60). The instance runs the request through the same handler
+chain an HTTP request would take, with the connection's own session in place of a header, and answers
+by `id`, in any order. A connection has at most 64 requests in flight. A 65th, or one that would take
+the connection's request and response bytes past 32 MiB, is answered `429 E_BUSY` at once and the client
+queues it. A client whose socket is down queues its requests, keeps each mutation's `idem`, and sends
+them in order after it reconnects. A connection that is not on wire 6 is answered `426 E_UPGRADE_REQUIRED`
+to every request, and an `identify` or `POST /v1/sessions/negotiate` that offers only older wires is
+refused with the same code (`07` § Versions).
+
+**No REST form.** A moved route is not registered for HTTP: the instance answers `404` to one. The
+route table lists only socket routes and the HTTP exceptions below, and every test drives the socket.
+
+**What is on the socket.** The frame carries the method, the route with its query string, the CBOR
+body and, for a mutation, an idempotency key; the response carries a status and the CBOR body, and no
+headers.
+The account area is `PATCH` and `DELETE /v1/accounts/me`, `PATCH /v1/accounts/me/presence`,
+`POST /v1/accounts/me/presence/activity`, `GET` and `POST /v1/devices`, `PATCH` and
+`DELETE /v1/devices/{device_id}`, `POST /v1/auth/password`, `POST /v1/auth/stepup` and its two
+passkey legs, `POST /v1/auth/factors/remove` and `POST /v1/auth/recovery/codes`; the delivery
+service's `GET /v1/devices/{device_id}/keypackage`, `GET /v1/welcomes` and
+`DELETE /v1/welcomes/{welcome_id}` are socket routes too. So is the messaging area: every `/v1/groups/…` route (create, info, tree, handshakes, commit,
+proposal, proposals, resync, fork-report, heal, heal-state, message, messages, cursor, the managed
+Bot send and its receipts, the moderation removals), `/v1/dms`, `/v1/reports`, the readable channel routes (`POST`/`GET
+/v1/channels/{id}/messages`, `PATCH`/`DELETE …/messages/{seq}`, `GET …/search`, `PUT …/read-state`),
+the call routes (`POST /v1/channels/{id}/calls`, `GET /v1/channels/{id}/call`,
+`GET /v1/communities/{id}/calls`, `DELETE /v1/calls/{call_id}`, `…/share`, `…/rtt`, `…/decline`,
+`…/stats`). The blob routes (`/v1/channels/{id}/blobs/…`) carry binary bodies above a frame and
+stay on HTTP. A message send's idempotency key derives from its message id and its ciphertext, so a
+send written again after a reconnect to the same dillad process within four minutes of its first write
+is answered from the instance's five-minute in-memory replay record and stores one message. Past four
+minutes, or when the socket reaches another incarnation (another instance id, restore generation or
+per-process `boot_id`, the last in `ready`; a restart changes it), the client does not write a mutation again:
+it fails with `E_OUTCOME_UNKNOWN`, and the caller's own lost-answer handling (for a message, the catch-up that
+proves whether the upload exists) decides. A graceful shutdown lets running requests finish and answer first.
+The community area is socket-only too: communities (`/v1/communities`, `/v1/communities/{id}` and its
+members, permissions, join, leave, owner, presence, AFK and `afk/settings`, channels, invites, bans, member
+timeouts and warnings, roles, self-roles, role panels and the Bot join role), channels
+(`/v1/channels/{id}`, its permissions, members and overwrites), `/v1/roles/{id}`, `DELETE /v1/invites/{id}`,
+`/v1/admin/…` (audit, diagnostics, a blob purge and a user disable), the GIF picker (`GET /v1/communities/{id}/gifs`,
+`…/gifs/key`, `…/gifs/rating`, `…/gifs/search`) and the human-facing Bot admin routes
+(`/v1/communities/{community}/bot` and its profile, disable, restart, music-settings, command-status, actor
+authority, join-role-grants, member episode, events and event ack, and the webhook admin routes under
+`…/bot/webhooks`). The managed Bot's runtime routes under `/v1/bot-runtime/` are socket-only too, apart from its
+enrollment: the runtime credential's `GET /v1/bot-runtime/installations`, `…/{installation}/claim`, `…/enroll` and
+`…/status`, which run before and outside any device session, and the device session's `…/credential`, sent while the
+installation is still enrolling, which the gateway does not admit. The retired `POST` and `DELETE
+/v1/communities/{id}/afk` of web3.8 are not registered.
+
+**Stays on HTTP, and why.** Four classes, each for one reason:
+
+- *Before a session exists.* Sign-up and sign-in, the session ceremonies, the passkey, TOTP and
+  recovery legs, device enrollment, and `POST /v1/gateway/ticket` (the one-time ticket a browser's
+  socket upgrade spends). There is no socket yet to carry them.
+- *Large binary bodies.* Blob upload and download (`/v1/channels/{id}/blobs/…`), GIF media bytes
+  (`GET …/gifs/media/{gif_id}`), the webhook avatars the instance fetched (`GET
+  /v1/communities/{community}/bot/webhook-avatars/{avatar_id}`) and the backup chunks
+  (`/v1/backups/…`, bodies up to 1 MiB, above the 197120-byte frame). They stream, or are larger than
+  a frame.
+- *Unauthenticated or public.* `GET /v1/instance` and `/v1/instance/limits`, the invite preview
+  `GET /i/{code}` and the invite landing (metered by client address), the web assets and the desktop
+  downloads, `/healthz`, and incoming webhooks `POST /hooks/{webhook_id}/{secret}` (unauthenticated
+  JSON; the secret in the path is the credential; metered by client address, network and webhook;
+  `10` § Webhooks). They have no session to put on a socket.
+- *What an owed account and a new device use before they have a socket.* `POST
+  /v1/sessions/negotiate`, `DELETE /v1/devices/{device_id}/sessions`, the device lists, `GET` and
+  `POST /v1/keypackages`, `GET /v1/accounts/me`, and the second-factor setup an owed account uses
+  (the `F` allow-list). An owed account has no socket.
+
+The managed Bot's enrollment routes (`GET /v1/bot-runtime/installations`, `…/claim`, `…/enroll`,
+`…/status` and the device session's `…/credential`) also run before its gateway connection exists
+(`10` § Bot connection and feed). Nothing a handler wrote to a response header (`X-Dilla-Generation`,
+`Cache-Control`, `Retry-After`) reaches a socket client; the generation is the gateway's `ready`, and a
+refusal that carried `Retry-After` carries `retry_after_ms` in its body.
+
 ## Identifiers
 
 Path identifiers are 32 lowercase hex characters (`^[0-9a-f]{32}$`); `{blob_id}` is 64 lowercase
@@ -26,11 +108,12 @@ identifier is `400 E_INVALID_REQUEST`; a well-formed but unknown one is `404 E_N
 
 ## Sessions
 
-Wire-3 session capability negotiation uses authenticated
+Session capability negotiation uses authenticated
 `POST /v1/sessions/negotiate`, with request `[[wire_versions], [e2ee_versions],
 [media_versions]]` and response `[wire,e2ee,media]`. Each offered list contains
 1..8 distinct positive uints. The highest common versions are bound to this
-bearer session; a missing intersection is `400 E_VERSION` and changes nothing.
+bearer session. The instance supports wire 6 only: an offer whose highest wire is below 6 is `426
+E_UPGRADE_REQUIRED`, and any other missing intersection is `400 E_VERSION`; neither changes anything.
 Gateway identify/resume records its selected versions with the same binding.
 Negotiation admits enrolled humans and live installation-bound bot sessions in
 enrolling, joining or ready installation state. These bot sessions use enrolled
@@ -77,7 +160,7 @@ before it ("every route below is `E`").
 | `PATCH /v1/devices/{device_id}` | E | `[label\|null]` | `204` names the device (null clears the name); the label is under the shared text rule below (NFC, trimmed, 1 to 64 characters, one line, no control, bidirectional or other invisible character), and the label is not part of the signed device list, so the server can see and change it; else `400 E_INVALID_REQUEST`; the device may be the caller's own or another live device of the same user; `404 E_NOT_FOUND` for another user's, an unknown or a removed (revoked) device; `403 E_FACTOR_REQUIRED` while the session owes a second factor; spends the device session's write bucket |
 | `DELETE /v1/devices/{device_id}` | E | — | `204` for an unlisted row — revokes, deletes sessions, closes sockets; `409 E_INVALID_REQUEST` for a listed device (its `device_id` and `dsk_pub` in one unrevoked entry of the newest list), which is revoked by a signed device list, and for an unlisted row created less than 10 minutes ago unless the caller's session is that device's own; `404 E_NOT_FOUND` for another user's device |
 | `PUT /v1/users/{user_id}/device-list` | E or P (own list only for P) | `[version(uint), blob(bstr), ssk_signature(bstr64), prev_hash(bstr32)]` | `204`; `400 E_INVALID_REQUEST` when `blob`'s outer elements disagree with the body or the list does not verify; `409 E_INVALID_REQUEST` when `version` is not the newest plus one or `prev_hash` does not chain |
-| `GET /v1/users/{user_id}/device-list` | E or P (own list only for P) | — | `[version, blob, ssk_signature, prev_hash]`; on a wire-4 session `[version, blob, ssk_signature, prev_hash, attestation]`, the account-kind attestation of `03` § Account kind attestation (a `500 E_INTERNAL` when the instance cannot sign it, never a head without it) |
+| `GET /v1/users/{user_id}/device-list` | E or P (own list only for P) | — | `[version, blob, ssk_signature, prev_hash]`; on a wire-4 session `[version, blob, ssk_signature, prev_hash, attestation]`, the account-kind attestation of `03` § Account kind attestation (a `500 E_INTERNAL` when the instance cannot sign it, never a head without it); on a wire-6 session `[version, blob, ssk_signature, prev_hash, attestation, umk_pub(bstr32), ssk_pub(bstr32), sig_umk_ssk(bstr64)]`, the account's keys as registered (below); a tombstoned account's head is the four elements on every wire |
 | `GET /v1/users/{user_id}/device-list?after=N` | E or P (own list only for P) | — | `[[version, blob, ssk_signature, prev_hash]]` of the stored versions greater than `N`, ascending, at most 64; `[]` when none; a malformed `N` is `400` |
 
 For trust validation, the unpaged `GET /v1/users/{user_id}/device-list` supplies a signed
@@ -92,6 +175,17 @@ version, or final signed bytes/hash different from the candidate. Read the unpag
 after paging; if it changed, retry once within 1024 versions and 4 MiB total or leave the leaf
 untrusted. A 403, 404 or malformed body also leaves it untrusted. A server that withholds all
 newer history can freeze first-sight trust; the client cannot prove freshness from these routes.
+
+On wire 6 (Bot v2 task 20b) the head's sixth to eighth elements are the account's `umk_pub`,
+`ssk_pub` and `sig_umk_ssk` (`users`, as `POST /v1/accounts` or the Bot's enrolment registered
+them). They carry no authority of their own: they let a member who shares no MLS group with the
+community's Bot build the Bot's `device_list_push` (`[umk_pub, ssk_pub, sig_umk_ssk, history]`,
+Bot v2 task 8) from the head and the history pages read from `after=0` (64 rows a page, within
+the 1024-version and 4 MiB bounds above), and hand it to the core, which checks `sig_umk_ssk`
+under the UMK and every list under the SSK and pins it only for an account the instance attested
+as a Bot (trust on first sight; another UMK later is held until it is verified). The access rule
+is the route's: an enrolled session reads any user's head, a pending session only its own. The
+keys are no secret: every leaf credential and KeyPackage of the account carries them.
 
 `POST /v1/accounts` is the sole exception to the device-session proof rule: it creates the device
 and its first session in the same transaction, because the device's key is the one being
@@ -201,8 +295,8 @@ assertion registration is for browser devices; `03`'s pairing ceremony is the na
 
 These routes are the installation subset of `10-community-bot.md`. That document
 defines the tuples, phase transitions, idempotent receipts, capability approval
-and recovery semantics. Human and bot device sessions require negotiated wire 3;
-runtime credentials use the explicit wire 3 provisioning contract. An ordinary
+and recovery semantics. Human and bot device sessions require negotiated wire 6;
+runtime credentials use the explicit wire 6 provisioning contract. An ordinary
 human bearer cannot call an `R` route, and a runtime credential grants no general
 instance-admin authority. A `B` endpoint still applies enrolled-session middleware
 before checking its managed-bot binding; it is not an exception for humans who owe
@@ -212,6 +306,7 @@ a second factor.
 |---|---|---|---|
 | `GET /v1/communities/{community}/bot/command-status` | E (human, current community member, wire v3) | — | `null` when no active installation; otherwise `[1,installation_id,bot_user_id|null,state,revision]`; no-store; omits configuration, capabilities and credentials |
 | `GET /v1/communities/{community}/bot` | E (human, manage_community) | — | installation or 404 |
+| `GET /v1/communities/{community}/bot/webhook-avatars/{avatar_id}` | E (community member), HTTP | — | `200 image/png`, a webhook avatar the instance fetched and re-encoded (`10` § Webhooks); `nosniff`, `Cache-Control: private`; 404 for a non-member or an avatar not cached |
 | `PATCH /v1/communities/{community}/bot/profile` | E (human, manage_community, wire v3) | `[display_name]` | `[normalized_display_name]`; changes only the installed bot account's display name and not its handle |
 | `PUT /v1/communities/{community}/bot` | E (human, manage_community and capability approval) | `[request_id,expected_revision\|null,capabilities,step_up]` | installation; 201 new, 200 existing. Without `v=2` only bits 0–7 may be sent and Polls/Reminders (bits 8, 9) keep their value, both on for a new installation (10-community-bot.md) |
 | `POST /v1/communities/{community}/bot/disable` | E (human, manage_community) | `[request_id,expected_revision]` | installation |
@@ -227,28 +322,14 @@ a second factor.
 | `POST /v1/bot-runtime/installations/{installation}/keypackages` | B (joining/ready) | `[operation_id,expected_generation,upload_body]` | `201 [count]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages` | B (joining/ready) | — | `[generation,server_time,ordinary_active_count,has_current_fallback]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}` | B (joining/ready) | — | `[expected_generation,upload_sha256,count]` or 404 |
-| `POST /v1/bot-runtime/installations/{installation}/groups` | B (joining/ready) | `[operation_id,expected_generation,registration_body]`; kind-3 adds `admission_request_id` | `201` new / `200` exact replay: registration receipt |
+| `POST /v1/bot-runtime/installations/{installation}/groups` | B (joining/ready) | `[operation_id,expected_generation,registration_body]` | `201` new / `200` exact replay: registration receipt |
 | `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` | B (joining/ready) | — | registration receipt or 404 |
-| `GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence` | B (ready, matching live admission receipt) | — | strict CBOR boolean; true only when the receipt's exact group ID is absent |
-| `GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info` | B (ready, exact current registered kind-3 interaction group) | — | `[epoch,group_info,tree_hash32,next_seq]` |
-| `GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes?from=N&limit=L` | B (ready, exact current registered kind-3 interaction group) | — | handshake rows, same format and bounds as ordinary group sync |
-| `GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages?from=N&limit=L` | B (ready, exact current registered kind-3 interaction group) | — | application-message rows, same format and bounds as ordinary group sync |
-| `POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor` | B (ready, exact current registered kind-3 interaction group) | `[last_seq,last_epoch]` | 204; advances this Bot device's cursor monotonically |
-| `GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal` | B (ready, exact current registered kind-3 interaction group, including after restore) | — | `[epoch,next_seq,generation,need_from_seq,needs_heal]`; `needs_heal` is uint 0 or 1 |
-| `POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal` | B (ready, exact current registered kind-3 interaction group) | `[group_info(bstr),tail([[seq,epoch,kind,sender,blob]]),ratchet_tree(bstr\|null)]` | `[epoch,next_seq]`; proof and heal-window rules match ordinary group heal |
-| `POST /v1/bot-runtime/installations/{installation}/moderation/actions` | B (ready, warnings/timeouts capability, owning installation) | `[request_id,group_id,source_seq,action,rules,timeout_ms,expires]` | `[action_id,community_revision,expires|null]` |
 | `GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}` | B (ready, removal capability, owning installation) | — | `[action_id,community_id,group_id,actor_user_id,actor_device_id,target_seq,removal_revision,accepted_at]`; accepted signed removal only |
-| `POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` | B (joining/ready) | `[request_id,group_id,participant_user_id,participant_device_id]` | `[snapshot_payload,signature]`; read-only signed context v1, max 160 KiB |
-| `GET /v1/groups/{id}/interaction-admission-context` | E (enrolled human session bound to the accepted participant device) | — | `[current_context_payload,signature]`; read-only current kind-3 context v1, max 160 KiB; requires current membership and exact authenticated two-leaf group state |
-| `POST /v1/groups/{group}/automod-grants/arm` | E (human, current interaction participant, `manage_community`, fresh step-up) | `[request_id,community_id,expected_revision,request_expires,config_hash32,step_up]` | `[opaque_grant,expires_unix]`; one minute maximum; grant binds the current interaction group, participant user/device, operation 63, revision, expiry and config digest |
-| `POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem` | B (ready installation) | `[opaque_grant,community_id,group_id,request_id,expected_revision,request_expires,actor_user_id,actor_device_id,config_hash32]` | `[1,receipt_id]`; exact retries return the same receipt; changed tuple or config digest is refused |
 
-Managed Bot synchronization of private kind-3 interaction groups uses only the four
-installation-scoped routes above. Each read and cursor update validates the exact
-accepted registration, current two-leaf MLS state, Ready installation, Bot session,
-participant membership/device, signed device lists and current eligibility while
-holding the group fence through the database operation. Generic group read routes
-remain limited to kinds 0 and 1; Bot interaction routes do not grant group writes.
+Bot v2 removed the private kind-3 interaction groups with their admission, context,
+synchronization and heal routes, the AutoModeration grant routes and the Bot's automatic
+moderation action route (`10`, Retired v1 surfaces). Members reach the Bot through sealed
+commands. The server holds no kind-3 group and refuses a kind-3 registration.
 
 Managed Bots use this scoped publication route, with the durable retry and
 generation rules in `10`; their generic `POST /v1/keypackages` is refused. Human
@@ -260,9 +341,8 @@ A human device reads its own directory with `GET /v1/keypackages` (`02`), `[ordi
 same count and the same uint 0 or 1 flag, without the generation and the clock.
 
 Managed Bots register groups only through the installation-scoped routes above;
-their generic `POST /v1/groups` is refused with `403 E_FORBIDDEN`. Existing
-non-kind-3 Bot registration keeps its three-field outer tuple; an initial kind-3
-interaction adds the nonzero admission request ID as field four. Human group
+their generic `POST /v1/groups` is refused with `403 E_FORBIDDEN`. Bot
+registration keeps its three-field outer tuple. Human group
 registration and its four-field CBOR tuple remain unchanged. `registration_body`
 is a bstr of at most 65,505 bytes (the whole CBOR request is capped at 64 KiB)
 containing the exact deterministic-CBOR encoding of
@@ -331,9 +411,12 @@ permission checks still apply.
 |---|---|---|---|
 | `GET /v1/communities/{community}/bot/actors/{actor}/authority` | B (ready) | — | `[effective_permission_bits, is_owner(uint), is_administrator(uint)]`; 404 if the community, installation or actor is absent |
 | `GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority` | B (ready, channel visible to bot) | — | `[community_id,actor_id,channel_id,effective_permission_bits]` for the current human member; 403/404 if installation, membership or visibility checks fail; no-store |
-| `GET /v1/communities/{community}/bot/events?after=N&limit=L` | B | — | `[events, next_seq, high_water, floor]`; `after` is exclusive, default limit 100, maximum 250 |
-| `PUT /v1/communities/{community}/bot/events/ack` | B | `[through]` | `204` |
-| `POST /v1/groups/{group}/moderation/removals` | E or B | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |
+| `PUT /v1/bot-runtime/communities/{community}/catalog` | B (ready, path community) | the command catalog (`10` § Command catalog, command key and Bot channels) | `[revision]`; a changed catalog is pushed as gateway op 61 to each connected member, filtered for that member |
+| `PUT /v1/bot-runtime/communities/{community}/command-key` | B (ready, path community) | the signed command-key publication | `204`; `403` unless the installation's listed, unrevoked device signed it; `400` for another community or a `not_after` past or more than 8 days ahead; a new `key_id` bumps the catalog revision and pushes op 61 |
+| `POST /v1/bot-runtime/replies` | B (ready, own community) | `[device_id, request_id, seq, sealed, final]` (`10` § Sealed request, § Reply and § State hints) | `204`; gateway op 62 to that device only; `404` unless that device sent the request into the Bot's community in the last five minutes; `413 E_TOO_LARGE` past 16 replies or 256 KiB for the request; metered in the Bot device's `bot_reply` bucket (200/s, burst 400) |
+| `POST /v1/bot-runtime/state-hints` | B (ready, own community) | `[scope_kind, scope_id]` | `[revision]`; gateway op 63 to the scope's audience only; `404` for a scope outside the Bot's community or a channel that is not a Bot channel |
+| `PUT /v1/bot-runtime/health` | B (ready, own community), socket | `[probe_ok(0\|1), probe_at, queue_depth, oldest_wait_ms, music_start_p95_ms, failing_since\|null]` (`10` § Bot health) | `204`; `400` for another shape |
+| `POST /v1/groups/{group}/moderation/removals` | E (a Bot is refused 403) | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |
 | `GET /v1/groups/{group}/moderation/removals?after=N&limit=L` | E or B | — | `[removal_rows, next_revision]` |
 | `GET /v1/communities/{id}/self-roles` | E (community member) | — | `[[role_id, role_name, position, selected(uint)]]` |
 | `PUT /v1/communities/{id}/self-roles/policy` | E (manage_roles) | `[request_id, role_ids]` | `[request_id, accepted_count]` |
@@ -366,8 +449,8 @@ The warning route writes an immutable warning action and audit metadata. It does
 not accept or store a plaintext reason. The request ID is idempotent for the same
 actor, device, community, and target; reusing it for another action conflicts.
 The human client stages the reason in its encrypted local outbox before posting
-the action, then sends operation 61 over the installation's encrypted interaction
-group. The Bot attaches the case only when the authoritative receipt matches the
+the action, then sends operation 61 to the Bot as a sealed command (app operation
+161, `10`). The Bot attaches the case only when the authoritative receipt matches the
 request, actor, device, community, and target. The encrypted case expires after
 90 days; plaintext reason is never stored by the server.
 
@@ -390,7 +473,6 @@ its options must be approved self-service roles.
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `GET /i/{code}` | — | — | `text/html`, or CBOR when the request asks for `application/cbor`: `[instance(tstr), community_id(bstr16\|null), expires(uint), community_name(tstr\|null)]`. Never mutates; `Cache-Control: no-store`, `Referrer-Policy: no-referrer` |
-| `POST /v1/invites/redeem` | — | `[code(tstr)]` | `[invite_id(bstr16), community_id(bstr16\|null), grants_admin(uint)]` |
 | `POST /v1/communities/{id}/invites` | E | `[max_uses(uint), ttl_seconds(uint), grants_admin(uint)]` | `201 [invite_id(bstr16), code(tstr), url(tstr), expires(uint)]` |
 | `GET /v1/communities/{id}/invites` | E | — | `[[invite_id, community_id\|null, created_by\|null, grants_admin, max_uses, used_count, created, expires_at, revoked_at\|null]]`, newest first, revoked and spent invites included, never a code |
 | `DELETE /v1/invites/{id}` | E | — | `204` |
@@ -433,7 +515,7 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
 - `GET /i/{code}` of a community invite names the community; an invite of a deleted community
   answers as an unknown one. A code is accepted as a person types it: hyphens and spaces stripped,
   case ignored, and `0`, `8` and `1` read as `O`, `B` and `I` or `L`.
-- `GET /i/{code}`, `POST /v1/invites/redeem` and `POST /v1/communities/{id}/join` share one
+- `GET /i/{code}` and `POST /v1/communities/{id}/join` share one
   bucket, `limits.rate.invite_per_second` (0.1) with `invite_burst` (5), keyed by the client
   address, so a join is not a way round the limit on guessing codes. A refusal is `429
   E_RATE_LIMITED`; the landing page carries `Retry-After` too.
@@ -1153,8 +1235,6 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
 | `GET /v1/communities/{id}/afk` | — | `200 [channel_id(bstr16\|null), timeout_seconds(uint), [], pending(uint), away([[user_id(bstr16), since_ts(uint)]])]`: the built-in AFK channel; the third element is always the empty array (web3.8's retired occupant list, kept so a web3.8 parser still reads it); `pending` is the calling device's pending cut, a reason code (the dilla CBOR subset has no booleans): `0` none, `1` the sweep moved the device, `2` the device was cut because its user chose AFK (`PUT …/afk/away`); it is device-scoped, so every community's snapshot reports it to that device, a read does not consume it, and it lasts through gateway disconnects until an admission of that device clears it, at most 24 hours (held in memory; a restart drops it with the calls); a client reads any value it does not know as pending; `away` is the community's away roster (below), sorted by `user_id`, at most 1024 entries, `since_ts` the unix second each member became away. A client that reads four elements is unaffected. A community with no live AFK channel gets one here first; `channel_id` is `null` only if that fails. `away` is empty whenever `channel_id` is `null` for the caller, so the roster goes only to those who may reach the AFK channel, the audience of `afk_away` | community membership |
 | `PUT /v1/communities/{id}/afk/away` | `[]` | `204`; the caller's user goes to the AFK channel: the user is first marked away in this community (a member already away keeps the earlier `since_ts`; a user who holds no gateway connection, or one of whose devices was admitted to a call meanwhile, is not marked), then every device of the user is cut from every call room it is in (a community's or a DM's, in any community). Each device it cuts gets pending `2` (the snapshot above) before its removal, so its first read already says why; so does every other device of the user that was admitted to a call in the last 2 minutes and that no room lists now (a call recovering after the media server dropped it), so that its recovery does not rejoin. A cut that fails is logged, the device keeps pending `2`, and the answer is still `204`. `400 E_INVALID_REQUEST` for any other body; `404 E_NOT_FOUND` for a non-member (also when a kick lands during the request) and for a community whose AFK channel the caller cannot reach. There is no `DELETE`: only the instance clears away | community membership |
 | `POST /v1/communities/{id}/afk/activity` | `[channel_id(bstr16)]` or `[channel_id(bstr16), exempt(uint)]` | `204`; records this authenticated device's activity in that live community voice call. `exempt` is `0` or `1` (`400 E_INVALID_REQUEST` otherwise, and for a CBOR boolean); with `1` the device is never moved out of that call's room, even when the report precedes its admission | community membership |
-| `POST /v1/communities/{id}/afk` | any | `404 E_NOT_FOUND` `retired in web3.9` (web3.8's manual move) | — |
-| `DELETE /v1/communities/{id}/afk` | — | `404 E_NOT_FOUND` `retired in web3.9` (web3.8's leave) | — |
 
 - **The built-in AFK channel.** Every community has exactly one AFK channel, written by the
   instance: a voice channel named `AFK`, end-to-end encrypted and private, at the top level, at
@@ -1814,6 +1894,29 @@ header carries the same value in whole seconds. The commit and proposal paths ar
 separately and loosely, so the delivery service's own throttle never becomes the reason its
 committer-election watchdog removes a device.
 
+The public webhook route `POST /hooks/{webhook_id}/{secret}` has buckets of its own (`10` §
+Webhooks): `webhook_address_all` (per client address, 10 per second, burst 50) and `webhook_prefix_all`
+(per network, IPv4 /24 or IPv6 /48, 50 per second, burst 250), spent by every request before any work;
+the failure buckets `webhook_address` (per address, 2 per second, burst 20; reserved before the work
+and given back when the secret matched) and `webhook_prefix` (per network, 20 per second, burst 100;
+spent only by a request that fails before or at the secret check); and `webhook`, keyed by the webhook and spent once its secret
+matched (30 a minute, burst 5). Avatar fetches have `webhook_avatar` (per webhook, one per 30 s, burst
+2), `webhook_avatar_community` (one per 5 s, burst 5) and `webhook_avatar_all` (the instance, 2 per
+second, burst 10). Its body cap is 8192 bytes, read before anything is parsed.
+
+The Bot's socket routes have buckets of their own (`10` § Sealed request, § Reply, § State hints), keyed by
+device, and they are the one place a Bot community's limits differ from a person's:
+
+- `bot_command` meters `POST /v1/communities/{community}/bot/commands` per device and runs at the `read`
+  rate (`limits.rate.read_per_second` and `read_burst`, 10 per second with a burst of 60 by default), so a
+  command does not spend a device's write allowance. A person's client paces itself below it in a bucket of its
+  own (`bot`, 8 per second with a burst of 48, 80 % of the server's).
+- `bot_runtime` meters the Bot's other runtime routes (state hints, health) per Bot device at the same `read`
+  rate.
+- `bot_reply` meters `POST /v1/bot-runtime/replies` per Bot device at 200 per second with a burst of 400,
+  because one Bot answers a whole community (about one answer a second for each of 200 members). The Bot
+  paces its own replies below it, at 180 per second with a burst of 360, apart from its reads and hints.
+
 Body caps: `max_ciphertext_bytes + 4096` on `POST /v1/groups/{id}/message`; `max_ciphertext_bytes` (default 196608) on
 `POST /v1/channels/{id}/messages`, `PATCH /v1/channels/{id}/messages/{seq}` and `POST /v1/reports`
 (`protocol/04`'s own worst-case legal envelope, ten attachments and two previews, is ≈ 129 KiB, so a
@@ -1846,7 +1949,7 @@ The discovery document is an eleven-element array, in this order:
 ]
 ```
 
-`wire_versions` is the list the gateway's `hello` offers, from the same value: `[3,2]` in this
+`wire_versions` is the list the gateway's `hello` offers, from the same value: `[6]` in this
 version (`02` § Gateway frames, op 0; `10` § Session capability and compatibility). `e2ee_versions` and `media_versions` are `[1]`.
 
 `external_sender_key_id` and `external_sender_pub` are the key id and the Ed25519 public key of the
@@ -1904,7 +2007,7 @@ content="placeholder">`.
 **Which requests the client answers.** A request for which the instance has a route — every route
 of this document and of `02`, `GET /gateway`, `/rtc`, `GET /i/{code}` and the operational
 endpoints — is answered by that route when its method is routed. A path equal to or below one of the
-reserved prefixes `/v1/`, `/gateway`, `/rtc`, `/i/`, `/healthz`, `/readyz`, `/metrics` and `/debug/`
+reserved prefixes `/v1/`, `/gateway`, `/rtc`, `/i/`, `/hooks/`, `/healthz`, `/readyz`, `/metrics` and `/debug/`
 (each also without its trailing `/`) is never answered by the client: an unknown one is
 `404` with the body `404 page not found`, a known one asked with the wrong method `405` with
 `Allow`. Every other request is the client's, in this order:
@@ -1983,18 +2086,18 @@ can be built on; it is not itself served.
 Every other bit is reserved, MUST be written as 0 and MUST be ignored on read.
 
 
-### Wire-5 ephemeral transport compatibility
+### Wire-6 transport
 
-Human clients offer wires `[5,4,3,2]` to session negotiation and the gateway. Managed Bots continue
-to negotiate exactly 3. Wire 5 retains the wire-4 HTTP response baseline, including account-kind
-attestation, and adds the ephemeral ops of `02`. `/app-version.json` remains the authoritative
-manifest check following a build notice or startup/foreground/online/reconnect; no endpoint is removed. The current web app has no periodic version polling or HTTP telemetry fallback.
+Human clients and managed Bots offer `[6]` to session negotiation and the gateway, and the instance
+supports only 6 (`07` § Versions). A client that offers nothing at or above 6 is `426
+E_UPGRADE_REQUIRED` on `POST /v1/sessions/negotiate` and on a session's first socket request, and the
+gateway closes its `identify` with 4006. The desktop app turns that into "Update dilla to continue"
+with its update button; a browser tab reloads once to the new client.
 
-The HTTP presence activity API remains available to existing clients; the current web app sends presence input only through WSS and drops it when unavailable. Its gateway device
-allowance is the same one charged by op 57, so switching transports cannot refresh activity more
-than once per five seconds. Activity inbox reads and voice AFK policy updates are separate routes.
-
-Call statistics on op 58 and `POST /v1/calls/{call_id}/stats` use the same typed acceptance service
-and atomic per-device five-second reservation. Rejected/cancelled reports release the reservation;
-accepted reports update only the existing coarse in-memory counters. HTTP stays available on older
-instances or unavailable gateways. No HTTP retry follows an ambiguously delivered WSS sample.
+The ephemeral ops of `02` (typing, presence activity, call statistics, build notices) are socket-only.
+Presence activity and call statistics are also socket requests (`POST /v1/accounts/me/presence/activity`
+and `POST /v1/calls/{call_id}/stats`). They charge the same single five-second reservation per device
+as op 57 and op 58, so no path refreshes activity more than once per five seconds. Rejected or cancelled call reports release the reservation;
+accepted reports update only the existing coarse in-memory counters. `/app-version.json` remains the
+authoritative manifest check following a build notice or a startup, foreground, online or reconnect.
+There is no HTTP telemetry fallback and no retry follows an ambiguously delivered sample.

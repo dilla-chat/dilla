@@ -26,7 +26,7 @@ func statsInbound(t *testing.T, call id.ID, rtt uint32) Inbound {
 
 func TestTelemetryPoolBoundsAndCoalescesWithoutBlockingHeartbeat(t *testing.T) {
 	h := newHarness(t)
-	h.gw.opts.WireVersions = []uint64{5}
+	h.gw.opts.WireVersions = []uint64{6}
 	a := &activityAuth{capabilityRecordingAuth: &capabilityRecordingAuth{Authenticator: h}}
 	h.gw.opts.Auth = a
 	c := h.connect(t, id.New())
@@ -99,7 +99,7 @@ func (a *telemetryAuth) ResolveHash(ctx context.Context, hash []byte) (auth.Sess
 
 func TestTelemetryPoolSaturationCancellationAndCleanup(t *testing.T) {
 	h := newHarness(t)
-	h.gw.opts.WireVersions = []uint64{5}
+	h.gw.opts.WireVersions = []uint64{6}
 	h.gw.opts.Auth = &telemetryAuth{capabilityRecordingAuth: &capabilityRecordingAuth{Authenticator: h}, h: h}
 	entered := make(chan id.ID, telemetryDeviceCap)
 	release := make(chan struct{})
@@ -152,7 +152,7 @@ func TestTelemetryPoolSaturationCancellationAndCleanup(t *testing.T) {
 
 func TestTelemetryDisconnectCancelsRunningWork(t *testing.T) {
 	h := newHarness(t)
-	h.gw.opts.WireVersions = []uint64{5}
+	h.gw.opts.WireVersions = []uint64{6}
 	h.gw.opts.Auth = &telemetryAuth{capabilityRecordingAuth: &capabilityRecordingAuth{Authenticator: h}, h: h}
 	c := h.connect(t, id.New())
 	h.drainReady(t, c)
@@ -180,7 +180,7 @@ func TestTelemetryDisconnectCancelsRunningWork(t *testing.T) {
 
 func TestTelemetryRejectsLegacyAndMalformedBeforeQueueing(t *testing.T) {
 	h := newHarness(t)
-	h.gw.opts.WireVersions = []uint64{5}
+	h.gw.opts.WireVersions = []uint64{6}
 	h.gw.opts.Auth = &telemetryAuth{capabilityRecordingAuth: &capabilityRecordingAuth{Authenticator: h}, h: h}
 	c := h.connect(t, id.New())
 	h.drainReady(t, c)
@@ -204,7 +204,7 @@ func TestTelemetryRejectsLegacyAndMalformedBeforeQueueing(t *testing.T) {
 			in = statsInbound(t, id.New(), 60001)
 		}
 		h.gw.handle(context.Background(), c, in)
-		c.wire = 5
+		c.wire = 6
 	}
 	if got := h.gw.TelemetryStats(); got.Devices != 0 {
 		t.Fatalf("invalid sample queued: %+v", got)

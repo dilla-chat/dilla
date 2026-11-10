@@ -65,7 +65,7 @@ func TestRevokingADeviceCutsItFromLiveCallsAtOnce(t *testing.T) {
 		t.Fatalf("dillad.New: %v", err)
 	}
 	defer srv.Shutdown(context.Background())
-	h := srv.Handler()
+	h := socketHandler(srv)
 	tok := accountToken(t, srv, code)
 	rec := call(t, h, http.MethodPost, "/v1/communities", tok, []any{"lounge", []byte("{}"), uint64(0), uint64(0)})
 	if rec.Code != http.StatusCreated {

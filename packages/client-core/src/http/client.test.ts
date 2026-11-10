@@ -109,7 +109,8 @@ describe('refusals', () => {
     const t = fakeTransport();
     t.replies.push(refusal(409, 'E_COMMIT_CONFLICT', 'another commit won this epoch', null, [WIN, [REF]]));
     const err = await failure(new HttpClient(t.deps).request({
-      method: 'POST', path: '/v1/groups/x/commit', body: encode([1]), bucket: 'commit', idempotent: false,
+      // An HTTP route: a socket route's answer carries no X-Dilla-Generation header.
+      method: 'POST', path: '/v1/keypackages', body: encode([1]), bucket: 'write', idempotent: false,
     }));
     expect(err.status).toBe(409);
     expect(err.code).toBe('E_COMMIT_CONFLICT');

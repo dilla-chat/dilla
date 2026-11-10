@@ -225,3 +225,34 @@ describe('welcome settings panel', () => {
     expect(ackCalls).not.toContainEqual([communityB, '12']);
   });
 });
+
+// Bot v2 Task 22 (Review Focus 5): Welcome posts only into a Bot channel. Its picker offers the Bot channels, and a saved
+// target that is no longer one says so.
+describe('welcome settings and Bot channels (Task 22)', () => {
+  const loadedGateway = (): WelcomeSettingsGateway => {
+    let requestId: string | null = null;
+    return {
+      request: input => { requestId = input.requestId; return Promise.resolve({ requestId: input.requestId, upload: 'accepted' }); },
+      read: () => Promise.resolve({ responses: requestId === null ? [] : [{ deliveryId: '1', sourceSeq: '1', communityId: COMMUNITY,
+        channelId: null, requestId, operation: 1, status: 0, revision: '7', data: encodeWelcomeSettings(CONFIG) }],
+        through: requestId === null ? null : '1', blocked: false }),
+      ack: () => Promise.resolve(null),
+    };
+  };
+
+  it('a feature whose channel was unmarked shows Needs a Bot channel', async () => {
+    // CHANNEL was the welcome target; only another channel is a Bot channel now.
+    render(<WelcomeSettingsPanel communityId={COMMUNITY} serverName="Midgard" channels={[{ id: 'c9'.repeat(16), name: 'bots' }]}
+      enabled canManage gateway={loadedGateway()} />);
+    fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
+    expect(await screen.findByText(en['bot.feature.needsChannel'])).toBeVisible();
+  });
+
+  it('a target that is still a Bot channel shows no such note', async () => {
+    render(<WelcomeSettingsPanel communityId={COMMUNITY} serverName="Midgard" channels={[{ id: CHANNEL, name: 'general' }]}
+      enabled canManage gateway={loadedGateway()} />);
+    fireEvent.click(screen.getByRole('button', { name: en['admin.bot.welcomeSettings.load'] }));
+    await screen.findByDisplayValue(CONFIG.template);
+    expect(screen.queryByText(en['bot.feature.needsChannel'])).toBeNull();
+  });
+});

@@ -276,6 +276,9 @@ export function classifyStep(step, job = {}) {
   if (/^sudo apt-get update && sudo apt-get install -y libgtk-3-dev(?: pkg-config)?$/.test(script)) return { kind: 'prereq', tool: 'gtk', reason: 'GTK3 headers and pkg-config must be installed locally' };
   if (script === 'sudo apt-get update && sudo apt-get install -y libarchive-tools') return { kind: 'prereq', tool: 'bsdtar', reason: 'libarchive-tools: bsdtar must be installed locally' };
   if (APT_RUNS.some((re) => re.test(script))) return { kind: 'noop', reason: 'apt cache: no apt here' };
+  // The runner's AppArmor strips capabilities from unprivileged user namespaces; a local host either allows them,
+  // and the Bot keeper's tests run, or they skip with that reason (internal/botsupervisor/keeper_linux_test.go).
+  if (script === 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0') return { kind: 'noop', reason: 'runner AppArmor userns restriction: the keeper tests probe and skip locally' };
   const pw = PLAYWRIGHT_INSTALL.exec(script);
   if (pw) {
     const engines = pw[1].split(' ').sort();

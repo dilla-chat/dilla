@@ -57,16 +57,13 @@ func (h *Messages) max() int64 {
 }
 
 func (h *Messages) Register(mux *server.Mux, sessions *auth.Sessions) {
-	enrolled := func(f http.HandlerFunc) http.Handler {
-		return sessions.Middleware(f, auth.ScopeEnrolled)
-	}
 	// The ciphertext route is the one with a raised body cap; every other route uses MaxBody. The
 	// cap is applied by DecodeBody's `max` argument, because plan-1a's internal/server has no
 	// per-route limiting wrapper.
-	mux.Handle("POST /v1/groups/{id}/message", enrolled(dsMeter(h.Limiter, dsClassMessage, h.upload)))
-	mux.Handle("GET /v1/groups/{id}/messages", enrolled(dsMeter(h.Limiter, dsClassRead, h.list)))
-	mux.Handle("DELETE /v1/groups/{id}/messages/{seq}", enrolled(dsMeter(h.Limiter, dsClassWrite, h.delete)))
-	mux.Handle("POST /v1/groups/{id}/cursor", enrolled(dsMeter(h.Limiter, dsClassWrite, h.cursor)))
+	mux.SocketAuthed("POST /v1/groups/{id}/message", socketMeter(sessions, h.Limiter, dsClassMessage), http.HandlerFunc(h.upload))
+	mux.SocketAuthed("GET /v1/groups/{id}/messages", socketMeter(sessions, h.Limiter, dsClassRead), http.HandlerFunc(h.list))
+	mux.SocketAuthed("DELETE /v1/groups/{id}/messages/{seq}", socketMeter(sessions, h.Limiter, dsClassWrite), http.HandlerFunc(h.delete))
+	mux.SocketAuthed("POST /v1/groups/{id}/cursor", socketMeter(sessions, h.Limiter, dsClassWrite), http.HandlerFunc(h.cursor))
 }
 
 type uploadRequest struct {

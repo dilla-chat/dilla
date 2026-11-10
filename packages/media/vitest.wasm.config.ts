@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.wasm.test.ts'],
+    exclude: ['**/node_modules/**', '**/target/**'],
     testTimeout: 120_000,
   },
 });

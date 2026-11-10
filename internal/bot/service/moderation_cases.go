@@ -13,9 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/moderation"
-	"github.com/dilla-chat/dilla/internal/bot/moderation/operationid"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -57,11 +55,10 @@ func decodeModerationPurgeCursor(raw []byte) ([]byte, error) {
 }
 
 var (
-	ErrModerationCaseState              = errors.New("invalid moderation case state")
-	ErrModerationCaseConflict           = errors.New("moderation case conflicts with existing source revision")
-	ErrModerationCaseBinding            = errors.New("moderation case belongs to another installation or community")
-	ErrModerationEnforcementUnavailable = errors.New("moderation enforcement backend unavailable")
-	ErrModerationAcceptanceMismatch     = errors.New("accepted moderation action does not match requested source")
+	ErrModerationCaseState          = errors.New("invalid moderation case state")
+	ErrModerationCaseConflict       = errors.New("moderation case conflicts with existing source revision")
+	ErrModerationCaseBinding        = errors.New("moderation case belongs to another installation or community")
+	ErrModerationAcceptanceMismatch = errors.New("accepted moderation action does not match requested source")
 )
 
 type moderationCaseNative interface {
@@ -69,45 +66,6 @@ type moderationCaseNative interface {
 	StateGet(context.Context, uint64, []byte) (native.StateValue, error)
 	StateScan(context.Context, uint64, []byte, uint64) (native.StatePage, error)
 	StateTransaction(context.Context, id.ID, []native.StateChange) ([]uint64, error)
-}
-
-// ModerationEnforcementBackend must apply an action idempotently by source
-// message and revision. That lets a retry recover after an uncertain helper
-// response without repeating the enforcement effect.
-type ModerationEnforcementBackend interface {
-	EnforceModerationAction(context.Context, ModerationAction) error
-}
-
-type acceptedModerationEnforcementBackend interface {
-	AcceptModerationAction(context.Context, ModerationAction) (AcceptedModerationAction, error)
-}
-
-// AcceptedModerationAction is created only after the authenticated server
-// endpoint returns its immutable action ID and community revision.
-type AcceptedModerationAction struct {
-	actionID       id.ID
-	serverRevision uint64
-	community      id.ID
-	group          id.ID
-	targetSequence uint64
-	operationID    id.ID
-	action         moderation.Action
-}
-
-func (a AcceptedModerationAction) matches(request ModerationAction, binding native.Binding) bool {
-	community, cErr := id.Parse(request.Community)
-	group, gErr := id.Parse(request.Group)
-	message, mErr := id.Parse(request.Message)
-	if cErr != nil || gErr != nil || mErr != nil || community != binding.Community || request.Decision.Action != a.action {
-		return false
-	}
-	operation := operationid.Automatic(group, request.SourceRevision)
-	if a.action == moderation.ActionRemove {
-		operation = moderationRemovalOperationID(group, message, request.SourceRevision)
-	}
-	return (a.action == moderation.ActionRemove || a.action == moderation.ActionWarn || a.action == moderation.ActionTimeout) &&
-		!a.actionID.IsZero() && a.serverRevision > 0 && a.serverRevision <= math.MaxInt64 && a.community == binding.Community && a.community == community &&
-		a.group == group && a.targetSequence == request.SourceRevision && a.operationID == operation
 }
 
 // ModerationCase is an installation-bound record stored in encrypted helper
@@ -143,18 +101,16 @@ func (c ModerationCase) Reason() string {
 	return "automatic moderation: " + strings.Join(rules, ", ")
 }
 
-// ModerationCaseSink stores one case per source message revision. Non-log
-// actions require a real enforcement backend and are stored only after it
-// reports success.
+// ModerationCaseSink reads and purges the automatic moderation cases an earlier version stored, one per source message
+// revision (the moderation log's automatic list). Bot v2 Task 23 removed the producer: nothing writes new cases.
 type ModerationCaseSink struct {
 	native         moderationCaseNative
-	backend        ModerationEnforcementBackend
 	evidenceWriter *moderation.EvidenceWriter
 	binding        native.Binding
 	now            func() time.Time
 }
 
-func NewModerationCaseSink(n moderationCaseNative, backend ModerationEnforcementBackend, now func() time.Time) (*ModerationCaseSink, error) {
+func NewModerationCaseSink(n moderationCaseNative, now func() time.Time) (*ModerationCaseSink, error) {
 	if now == nil {
 		now = time.Now
 	}
@@ -165,176 +121,7 @@ func NewModerationCaseSink(n moderationCaseNative, backend ModerationEnforcement
 	if b.Instance.IsZero() || b.Community.IsZero() || b.Installation.IsZero() {
 		return nil, ErrModerationCaseBinding
 	}
-	return &ModerationCaseSink{native: n, backend: backend, evidenceWriter: moderation.NewEvidenceWriter(n), binding: b, now: now}, nil
-}
-
-// PrepareModerationAction signs a removal while the local MLS membership is available.
-// The runtime commits it with the decision before the first external effect, so
-// a later lost membership cannot prevent receipt-only reconciliation.
-func (s *ModerationCaseSink) PrepareModerationAction(ctx context.Context, action ModerationAction) (ModerationAction, error) {
-	if action.Decision.Action != moderation.ActionRemove {
-		return action, nil
-	}
-	if _, err := s.makeCase(action); err != nil {
-		return action, err
-	}
-	preparer, ok := s.backend.(interface {
-		PrepareModerationAction(context.Context, ModerationAction) (ModerationAction, error)
-	})
-	if !ok {
-		return action, ErrModerationEnforcementUnavailable
-	}
-	return preparer.PrepareModerationAction(ctx, action)
-}
-
-func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action ModerationAction) error {
-	if s == nil || ctx == nil {
-		return ErrModerationCaseState
-	}
-	row, err := s.makeCase(action)
-	if err != nil {
-		return AutoModerationStageError{Stage: "case_validation", cause: err}
-	}
-	key := moderationCaseKey(row.Message, row.SourceRevision)
-	current, err := s.native.StateGet(ctx, moderationCaseStateArea, key)
-	if err != nil {
-		return AutoModerationStageError{Stage: "case_state_read", cause: err}
-	}
-	if current.Revision > 0 && !current.Tombstone {
-		existing, decodeErr := decodeModerationCase(current.Value, s.binding)
-		if decodeErr != nil {
-			return AutoModerationStageError{Stage: "case_state_decode", cause: decodeErr}
-		}
-		if existing.EnforcementRefused && !row.EnforcementRefused {
-			// A terminal refusal can commit before its pending slot is released.
-			// Match the same source/decision with only its terminal representation
-			// normalized; the runtime will resume durable refusal completion.
-			refused := row
-			refused.Action, refused.Timeout, refused.EnforcementRefused = moderation.ActionLog, 0, true
-			if sameModerationCaseRequest(existing, refused) {
-				return ErrModerationActionRefused
-			}
-		}
-		if !sameModerationCaseRequest(existing, row) {
-			return ErrModerationCaseConflict
-		}
-		return s.finishCaseEvidence(ctx, existing)
-	}
-	if action.Decision.Action != moderation.ActionLog {
-		backend, ok := s.backend.(acceptedModerationEnforcementBackend)
-		if !ok {
-			return AutoModerationStageError{Stage: "action_backend_unavailable", cause: ErrModerationEnforcementUnavailable}
-		}
-		accepted, acceptErr := backend.AcceptModerationAction(ctx, action)
-		if acceptErr != nil {
-			if errors.Is(acceptErr, ErrModerationActionRefused) {
-				return ErrModerationActionRefused
-			}
-			stageErr := AutoModerationStageError{Stage: "action_acceptance", cause: ErrModerationEnforcementUnavailable}
-			var apiErr *client.APIError
-			if errors.As(acceptErr, &apiErr) && len(apiErr.Code) <= 64 && strings.HasPrefix(apiErr.Code, "E_") {
-				stageErr.Code = apiErr.Code
-				if apiErr.Status >= 100 && apiErr.Status <= 599 {
-					stageErr.Status = apiErr.Status
-				}
-			}
-			return stageErr
-		}
-		if !accepted.matches(action, s.binding) {
-			return AutoModerationStageError{Stage: "action_receipt_validation", cause: ErrModerationAcceptanceMismatch}
-		}
-		row.ServerActionID = accepted.actionID
-		row.ServerOperationID = accepted.operationID
-		row.ServerRevision = accepted.serverRevision
-	}
-	encoded, err := encodeModerationCase(row, s.binding)
-	if err != nil {
-		return AutoModerationStageError{Stage: "case_encoding", cause: err}
-	}
-	if _, err = s.native.StateTransaction(ctx, id.New(), []native.StateChange{{Area: moderationCaseStateArea, Key: key,
-		ExpectedRevision: current.Revision, Value: encoded}}); err == nil {
-		return s.finishCaseEvidence(ctx, row)
-	}
-	// Helper responses may be lost after commit. A lookup distinguishes that
-	// case from a real write failure without recording message contents in logs.
-	actual, readErr := s.native.StateGet(ctx, moderationCaseStateArea, key)
-	if readErr == nil && actual.Revision > 0 && !actual.Tombstone {
-		if matchErr := s.matchExisting(actual.Value, encoded); matchErr == nil {
-			return s.finishCaseEvidence(ctx, row)
-		} else if errors.Is(matchErr, ErrModerationCaseConflict) {
-			return matchErr
-		}
-	}
-	return AutoModerationStageError{Stage: "case_state_write", cause: err}
-}
-
-// Persist the validated server receipt in the protected case before evidence.
-// A restart can finish local evidence even if the authority that accepted the
-// action has since gone away; it does not submit another enforcement request.
-func (s *ModerationCaseSink) finishCaseEvidence(ctx context.Context, row ModerationCase) error {
-	if row.Action != moderation.ActionRemove {
-		return nil
-	}
-	group, _ := id.Parse(row.Group)
-	accepted := AcceptedModerationAction{actionID: row.ServerActionID, serverRevision: row.ServerRevision, community: s.binding.Community,
-		group: group, targetSequence: row.SourceRevision, operationID: row.ServerOperationID, action: row.Action}
-	if err := s.attachAcceptedEvidence(ctx, row, accepted); err != nil {
-		return AutoModerationStageError{Stage: "evidence_persistence", cause: err}
-	}
-	return nil
-}
-
-// attachAcceptedEvidence persists sensitive details only after the server's
-// immutable receipt has been matched against this runtime-generated request.
-func (s *ModerationCaseSink) attachAcceptedEvidence(ctx context.Context, row ModerationCase, accepted AcceptedModerationAction) error {
-	if s == nil || s.evidenceWriter == nil || row.Action != moderation.ActionRemove || accepted.operationID.IsZero() ||
-		accepted.actionID.IsZero() || accepted.community != s.binding.Community {
-		return ErrModerationAcceptanceMismatch
-	}
-	message, err := id.Parse(row.Message)
-	if err != nil || len(row.Rules) == 0 {
-		return ErrModerationCaseState
-	}
-	rules := append([]moderation.Rule(nil), row.Rules...)
-	sort.Slice(rules, func(i, j int) bool { return rules[i] < rules[j] })
-	return s.evidenceWriter.Save(ctx, moderation.EvidenceInput{
-		OperationID: accepted.operationID,
-		MessageID:   message,
-		Action:      moderation.ActionRemove,
-		Rule:        rules[0],
-		Reason:      row.Reason(),
-		Excerpt:     row.Excerpt,
-		CreatedAt:   row.ReceivedAt,
-	})
-}
-
-func (s *ModerationCaseSink) makeCase(a ModerationAction) (ModerationCase, error) {
-	if !a.runtimeGenerated || a.Community != s.binding.Community.String() || a.SourceRevision == 0 || a.ReceivedAt.IsZero() || a.ReceivedAt.UnixMilli() <= 0 || a.ReceivedAt.After(s.now().Add(time.Minute)) ||
-		!validModerationCaseID(a.Group) || !validModerationCaseID(a.Channel) || !validModerationCaseID(a.Actor) || !validModerationCaseID(a.Message) || len(a.Decision.Rules) == 0 {
-		return ModerationCase{}, ErrModerationCaseState
-	}
-	if a.Decision.Action != moderation.ActionLog && a.Decision.Action != moderation.ActionRemove && a.Decision.Action != moderation.ActionWarn && a.Decision.Action != moderation.ActionTimeout {
-		return ModerationCase{}, ErrModerationCaseState
-	}
-	rules := make([]moderation.Rule, 0, len(a.Decision.Rules))
-	seen := map[moderation.Rule]bool{}
-	for _, rule := range a.Decision.Rules {
-		if rule != moderation.RuleRate && rule != moderation.RuleDuplicate && rule != moderation.RuleMentions {
-			return ModerationCase{}, ErrModerationCaseState
-		}
-		if !seen[rule] {
-			seen[rule] = true
-			rules = append(rules, rule)
-		}
-	}
-	if a.Decision.Action == moderation.ActionTimeout && (a.Decision.Timeout <= 0 || a.Decision.Timeout > moderation.MaxTimeout) {
-		return ModerationCase{}, ErrModerationCaseState
-	}
-	if a.Decision.Action != moderation.ActionTimeout && a.Decision.Timeout != 0 {
-		return ModerationCase{}, ErrModerationCaseState
-	}
-	return ModerationCase{Community: a.Community, Group: a.Group, Channel: a.Channel, Actor: a.Actor, Message: a.Message, SourceRevision: a.SourceRevision,
-		EnforcementRefused: a.Decision.EnforcementRefused, Rules: rules, Action: a.Decision.Action, Timeout: a.Decision.Timeout, Excerpt: moderation.Excerpt(a.Excerpt), ReceivedAt: a.ReceivedAt}, nil
+	return &ModerationCaseSink{native: n, evidenceWriter: moderation.NewEvidenceWriter(n), binding: b, now: now}, nil
 }
 
 func validModerationCaseID(value string) bool {
@@ -348,46 +135,6 @@ func moderationCaseKey(message string, revision uint64) []byte {
 	base, _ := cborx.Marshal([]any{message, revision})
 	sum := sha256.Sum256(base)
 	return []byte("mc1-" + hex.EncodeToString(sum[:]))
-}
-
-func encodeModerationCase(c ModerationCase, b native.Binding) ([]byte, error) {
-	if c.EnforcementRefused && c.Action != moderation.ActionLog {
-		return nil, ErrModerationCaseState
-	}
-	if c.Timeout < 0 || c.ReceivedAt.UnixMilli() <= 0 {
-		return nil, ErrModerationCaseState
-	}
-	rules := make([]any, len(c.Rules))
-	for i, rule := range c.Rules {
-		rules[i] = string(rule)
-	}
-	if c.Action == moderation.ActionLog {
-		if !c.ServerActionID.IsZero() || !c.ServerOperationID.IsZero() || c.ServerRevision != 0 {
-			return nil, ErrModerationCaseState
-		}
-	} else {
-		group, groupErr := id.Parse(c.Group)
-		message, messageErr := id.Parse(c.Message)
-		operation := operationid.Automatic(group, c.SourceRevision)
-		if c.Action == moderation.ActionRemove {
-			operation = moderationRemovalOperationID(group, message, c.SourceRevision)
-		}
-		if (c.Action != moderation.ActionRemove && c.Action != moderation.ActionWarn && c.Action != moderation.ActionTimeout) ||
-			c.ServerActionID.IsZero() || c.ServerOperationID.IsZero() || c.ServerRevision == 0 || c.ServerRevision > math.MaxInt64 ||
-			groupErr != nil || messageErr != nil || operation.IsZero() || c.ServerOperationID != operation {
-			return nil, ErrModerationAcceptanceMismatch
-		}
-	}
-	var refused uint64
-	if c.EnforcementRefused {
-		refused = 1
-	}
-	raw, err := cborx.Marshal([]any{moderationCaseVersion, b.Instance, b.Community, b.Installation, c.Community, c.Group, c.Channel, c.Actor, c.Message,
-		c.SourceRevision, rules, string(c.Action), uint64(c.Timeout / time.Millisecond), c.Excerpt, uint64(c.ReceivedAt.UnixMilli()), c.ServerActionID, c.ServerRevision, c.ServerOperationID, refused})
-	if err != nil || len(raw) > moderationCaseMaxValue {
-		return nil, ErrModerationCaseState
-	}
-	return raw, nil
 }
 
 func decodeModerationCase(raw []byte, binding native.Binding) (ModerationCase, error) {
@@ -482,33 +229,14 @@ func decodeModerationCase(raw []byte, binding native.Binding) (ModerationCase, e
 			return ModerationCase{}, ErrModerationCaseState
 		}
 	} else {
-		group, groupErr := id.Parse(c.Group)
-		message, messageErr := id.Parse(c.Message)
-		operation := operationid.Automatic(group, c.SourceRevision)
-		if c.Action == moderation.ActionRemove {
-			operation = moderationRemovalOperationID(group, message, c.SourceRevision)
-		}
+		_, groupErr := id.Parse(c.Group)
+		_, messageErr := id.Parse(c.Message)
 		if (c.Action != moderation.ActionRemove && c.Action != moderation.ActionWarn && c.Action != moderation.ActionTimeout) || c.ServerActionID.IsZero() || c.ServerOperationID.IsZero() || c.ServerRevision == 0 || c.ServerRevision > math.MaxInt64 ||
-			groupErr != nil || messageErr != nil || operation.IsZero() || c.ServerOperationID != operation {
+			groupErr != nil || messageErr != nil {
 			return ModerationCase{}, ErrModerationCaseState
 		}
 	}
 	return c, nil
-}
-
-func sameModerationCaseRequest(existing, requested ModerationCase) bool {
-	if existing.Community != requested.Community || existing.Group != requested.Group || existing.Channel != requested.Channel ||
-		existing.Actor != requested.Actor || existing.Message != requested.Message || existing.SourceRevision != requested.SourceRevision ||
-		existing.EnforcementRefused != requested.EnforcementRefused || existing.Action != requested.Action || existing.Timeout != requested.Timeout || existing.Excerpt != requested.Excerpt ||
-		!existing.ReceivedAt.Equal(requested.ReceivedAt) || len(existing.Rules) != len(requested.Rules) {
-		return false
-	}
-	for i := range existing.Rules {
-		if existing.Rules[i] != requested.Rules[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func moderationCaseID(v any) (id.ID, bool) {
@@ -519,16 +247,6 @@ func moderationCaseID(v any) (id.ID, bool) {
 	var out id.ID
 	copy(out[:], b)
 	return out, true
-}
-
-func (s *ModerationCaseSink) matchExisting(raw, expected []byte) error {
-	if _, err := decodeModerationCase(raw, s.binding); err != nil {
-		return err
-	}
-	if !bytes.Equal(raw, expected) {
-		return ErrModerationCaseConflict
-	}
-	return nil
 }
 
 // list is the unguarded storage primitive. Callers must use ModerationCaseReader

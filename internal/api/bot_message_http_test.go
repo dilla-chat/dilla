@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/dilla-chat/dilla/internal/api"
 	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -31,12 +33,14 @@ func TestMountedBotSendRouteRejectsMalformedBodyAndHumanActor(t *testing.T) {
 	}
 }
 
-func TestMountedReadyBotSendReceiptAndResolveReachScopedDS(t *testing.T) {
-	h := newGroupsAPI(t)
+// readyBotSession seeds a ready managed Bot installation, its account, device, community and one
+// community text group, and a bearer session bound to it that has negotiated nothing yet.
+func readyBotSession(t *testing.T, h *groupsAPI) (token string, communityID, groupID id.ID) {
+	t.Helper()
 	ctx := context.Background()
 	now := h.deps.Clock.Now().Unix()
 	owner, _, _ := seedAPIDevice(t, h.deps)
-	communityID := id.New()
+	communityID = id.New()
 	if err := h.deps.Repo.CreateCommunity(ctx, store.CommunityRow{ID: communityID, Owner: owner.ID, Name: "mounted-bot-send", PolicyJSON: []byte(`{}`), PolicyVersion: 1, Created: now}); err != nil {
 		t.Fatal(err)
 	}
@@ -57,18 +61,28 @@ func TestMountedReadyBotSendReceiptAndResolveReachScopedDS(t *testing.T) {
 	if err := h.deps.Repo.CreateBotInstallation(ctx, store.BotInstallationRow{ID: installationID, CommunityID: communityID, RuntimeID: &runtimeID, UserID: &botID, DeviceID: &deviceID, State: store.BotInstallationReady, Revision: 1, ApprovedBy: owner.ID, ApprovedAt: now, CredentialVerifiedAt: &verified, Created: now, Updated: now}); err != nil {
 		t.Fatal(err)
 	}
-	groupID, targetID := id.New(), id.New()
+	groupID = id.New()
+	targetID := id.New()
 	if err := h.deps.Repo.CreateGroup(ctx, store.GroupRow{GroupID: groupID, Binding: []byte{0x80}, Kind: 0, CommunityID: &communityID, TargetID: targetID, Ciphersuite: 1, Epoch: 4, ExternalSenderKeyID: id.New(), E2EEVersion: 1, MediaVersion: 1, PolicyVersion: 1, Created: now}); err != nil {
 		t.Fatal(err)
 	}
-	token := "mounted-ready-bot-session"
+	// The group's channel is a Bot channel (Task 17 fix round 2, M2: dillad takes Bot posts into no other).
+	markBotChannel(t, h.deps, communityID, targetID, owner.ID)
+	token = "mounted-ready-bot-session"
 	if err := h.deps.Repo.CreateSession(ctx, store.SessionRow{TokenHash: auth.TokenHash(token), DeviceID: deviceID, UserID: botID, Scope: uint8(auth.ScopeEnrolled), Created: now, Expires: now + 3600, IdleExpires: now + 3600}); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.deps.Repo.CreateBotSessionBinding(ctx, store.BotSessionBindingRow{TokenHash: auth.TokenHash(token), InstallationID: installationID, UserID: botID, DeviceID: deviceID, Created: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 3, 1, 1); err != nil {
+	return token, communityID, groupID
+}
+
+func TestMountedReadyBotSendReceiptAndResolveReachScopedDS(t *testing.T) {
+	h := newGroupsAPI(t)
+	ctx := context.Background()
+	token, communityID, groupID := readyBotSession(t, h)
+	if err := h.deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	instance, err := h.deps.Repo.GetInstance(ctx)
@@ -91,5 +105,99 @@ func TestMountedReadyBotSendReceiptAndResolveReachScopedDS(t *testing.T) {
 		mustCBOR(t, []any{attemptID, nil, groupID, instance.Generation, uint64(4), uint64(1), ciphertextHash[:]}))
 	if resolve.Code != http.StatusForbidden || errorCode(t, resolve) != "E_LEAF_NOT_CURRENT" {
 		t.Fatalf("ready Bot resolve POST = %d %x, want DS current-leaf refusal", resolve.Code, resolve.Body.Bytes())
+	}
+}
+
+// Bot v2 Task 1: a managed Bot negotiates wire 6 like every other client, and a Bot still offering
+// wire 3 is told to update instead of being admitted.
+func TestBotSessionNegotiatesWire6(t *testing.T) {
+	h := newGroupsAPI(t)
+	token, _, groupID := readyBotSession(t, h)
+	instance, err := h.deps.Repo.GetInstance(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := h.do(t, http.MethodPost, "/v1/sessions/negotiate", token, mustCBOR(t, []any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}}))
+	if old.Code != http.StatusUpgradeRequired || errorCode(t, old) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("Bot wire 3 negotiation = %d %x, want 426 E_UPGRADE_REQUIRED", old.Code, old.Body.Bytes())
+	}
+	send := func() *httptest.ResponseRecorder {
+		return h.do(t, http.MethodPost, "/v1/groups/"+groupID.String()+"/bot/messages", token,
+			mustCBOR(t, []any{id.New(), id.New(), nil, instance.Generation, uint64(4), []byte{0x80}, uint64(1)}))
+	}
+	if refused := send(); refused.Code != http.StatusUpgradeRequired || errorCode(t, refused) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("un-negotiated Bot POST = %d %x, want 426 E_UPGRADE_REQUIRED", refused.Code, refused.Body.Bytes())
+	}
+	// A Bot session that negotiated wire 5 before the upgrade (only the store can still write one).
+	if err := h.deps.Repo.SetSessionVersions(context.Background(), auth.TokenHash(token), 5, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if refused := send(); refused.Code != http.StatusUpgradeRequired || errorCode(t, refused) != "E_UPGRADE_REQUIRED" {
+		t.Fatalf("stored wire 5 Bot POST = %d %x, want 426 E_UPGRADE_REQUIRED", refused.Code, refused.Body.Bytes())
+	}
+	current := h.do(t, http.MethodPost, "/v1/sessions/negotiate", token, mustCBOR(t, []any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}}))
+	if current.Code != http.StatusOK {
+		t.Fatalf("Bot wire 6 negotiation = %d %x, want 200", current.Code, current.Body.Bytes())
+	}
+	var selected []uint64
+	if err := cborx.Unmarshal(current.Body.Bytes(), &selected); err != nil || len(selected) != 3 || selected[0] != 6 {
+		t.Fatalf("Bot negotiated %v (%v), want wire 6", selected, err)
+	}
+	if post := send(); post.Code != http.StatusForbidden || errorCode(t, post) != "E_LEAF_NOT_CURRENT" {
+		t.Fatalf("wire 6 Bot POST = %d %x, want the delivery service's current-leaf refusal", post.Code, post.Body.Bytes())
+	}
+}
+
+// markBotChannel creates channel as a live end-to-end text channel of community if it does not exist, and marks it.
+func markBotChannel(t *testing.T, d api.Deps, community, channel, by id.ID) {
+	t.Helper()
+	ctx := context.Background()
+	now := d.Clock.Now().Unix()
+	if _, err := d.Repo.GetChannel(ctx, channel); err != nil {
+		if err := d.Repo.CreateChannel(ctx, store.ChannelRow{ID: channel, CommunityID: &community, Kind: api.ChannelText, Mode: api.ModeE2EE,
+			Visibility: api.VisPrivate, SettingsJSON: []byte(`{}`), HostPolicyVersion: 1, Created: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.Repo.MarkBotChannel(ctx, store.BotChannelRow{ChannelID: channel, CommunityID: community, MarkedAt: now, MarkedBy: by}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Task 17 fix round 2 (M2): dillad's own check beside the Bot's send gate. A Bot post into a channel group (kind 0)
+// whose channel is not a Bot channel is 409 E_NOT_BOT_CHANNEL before the delivery service sees it; marked, it reaches
+// the delivery service again.
+func TestBotPostIntoAChannelThatIsNotABotChannelIs409(t *testing.T) {
+	h := newGroupsAPI(t)
+	ctx := context.Background()
+	token, communityID, groupID := readyBotSession(t, h)
+	if err := h.deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 6, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := h.deps.Repo.GetInstance(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := h.deps.Repo.GetGroup(ctx, groupID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.deps.Repo.UnmarkBotChannel(ctx, communityID, group.TargetID); err != nil {
+		t.Fatal(err)
+	}
+	post := func() *httptest.ResponseRecorder {
+		return h.do(t, http.MethodPost, "/v1/groups/"+groupID.String()+"/bot/messages", token,
+			mustCBOR(t, []any{id.New(), id.New(), nil, instance.Generation, uint64(4), []byte{0x80}, uint64(1)}))
+	}
+	if rec := post(); rec.Code != http.StatusConflict || errorCode(t, rec) != "E_NOT_BOT_CHANNEL" {
+		t.Fatalf("a Bot post into an unmarked channel = %d %x, want 409 E_NOT_BOT_CHANNEL", rec.Code, rec.Body.Bytes())
+	}
+	owner, err := h.deps.Repo.GetCommunity(ctx, communityID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markBotChannel(t, h.deps, communityID, group.TargetID, owner.Owner)
+	if rec := post(); rec.Code == http.StatusConflict {
+		t.Fatalf("a Bot post into a marked channel = %d %x, want the delivery service's answer", rec.Code, rec.Body.Bytes())
 	}
 }

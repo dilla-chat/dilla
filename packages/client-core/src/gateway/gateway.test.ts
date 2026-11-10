@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { decode, encode, type CborInput, type CborValue } from '../cbor';
 import { fromHex, toHex } from '../hex';
 import { DillaHttpError } from '../http/errors';
-import { decodeFrame, encodeFrame, Op, type Frame } from './frames';
+import { decodeFrame, encodeFrame, encodeRequestFrame, Op, type Frame } from './frames';
 import { CLIENT_CLOSE, GATEWAY, Gateway, type GatewayDeps, type GatewayEvent } from './gateway';
 
 it('sends bounded client signals and throttles typing per channel', async () => {
@@ -35,13 +35,15 @@ const USER = new Uint8Array(16).fill(0x09);
 const GROUP = new Uint8Array(16).fill(0x07);
 
 function hello(over: { wire?: number[]; e2ee?: number[]; media?: number[]; heartbeatMs?: number; maxFrameBytes?: number } = {}): Uint8Array {
-  return encodeFrame(Op.hello, 0, null, [over.wire ?? [2], over.e2ee ?? [1], over.media ?? [1], over.heartbeatMs ?? 30000,
+  return encodeFrame(Op.hello, 0, null, [over.wire ?? [6], over.e2ee ?? [1], over.media ?? [1], over.heartbeatMs ?? 30000,
     over.maxFrameBytes ?? 131584, INSTANCE, 1, 300, 300]);
 }
 
+const BOOT = new Uint8Array(16).fill(0x5b);
+
 function ready(over: { wire?: number; e2ee?: number; media?: number } = {}): Uint8Array {
-  return encodeFrame(Op.ready, 1, null, [DEVICE, USER, 7, new Uint8Array(32).fill(0x0b), over.wire ?? 2, over.e2ee ?? 1,
-    over.media ?? 1, 32, [[GROUP, 6, 4127, 2]]]);
+  return encodeFrame(Op.ready, 1, null, [DEVICE, USER, 7, new Uint8Array(32).fill(0x0b), over.wire ?? 6, over.e2ee ?? 1,
+    over.media ?? 1, 32, [[GROUP, 6, 4127, 2]], BOOT]);
 }
 
 /** A manual clock: timers run only inside advance(), in deadline order, ties in creation order. */
@@ -123,9 +125,9 @@ class FakeSocket {
   receive(data: Uint8Array | string): void {
     this.emit('message', { data: typeof data === 'string' ? data : data.slice().buffer });
   }
-  serverClose(code: number): void {
+  serverClose(code: number, reason = ''): void {
     this.readyState = 3;
-    this.emit('close', { code, reason: '', wasClean: true });
+    this.emit('close', { code, reason, wasClean: true });
   }
   sentFrames(): Frame[] {
     return this.sent.map((b) => decodeFrame(b));
@@ -210,16 +212,16 @@ describe('Gateway connect', () => {
     expect(s.sent).toHaveLength(0);
     expect(h.gw.acceptedVersions).toBeNull();
     s.receive(hello());
-    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
+    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 6, 1, 1, 0])]);
     s.receive(ready());
     expect(h.gw.status).toBe('ready');
-    expect(h.gw.acceptedVersions).toEqual({ wire: 2n, e2ee: 1n, media: 1n });
+    expect(h.gw.acceptedVersions).toEqual({ wire: 6n, e2ee: 1n, media: 1n });
     expect(h.events.find((e) => e.type === 'ready')).toEqual({
       type: 'ready',
       info: {
-        deviceId: DEVICE, userId: USER, generation: 7n, keypackagesRemaining: 32,
+        deviceId: DEVICE, userId: USER, generation: 7n, instanceId: INSTANCE, bootId: BOOT, keypackagesRemaining: 32,
         groups: [{ groupId: GROUP, epoch: 6n, lastSeq: 4127n, proposalsOutstanding: 2 }],
-        versions: { wire: 2n, e2ee: 1n, media: 1n },
+        versions: { wire: 6n, e2ee: 1n, media: 1n },
         heartbeatMs: 30000, maxFrameBytes: 131584, backoffMs: 300, backoffJitterMs: 300,
       },
     });
@@ -232,24 +234,25 @@ describe('Gateway connect', () => {
     await flush();
     const s = h.last();
     s.open();
-    s.receive(hello({ wire: [2, 3] }));
-    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 3, 1, 1, 0])]);
+    s.receive(hello({ wire: [7, 2, 6] }));
+    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 6, 1, 1, 0])]);
     expect(h.events.some((e) => e.type === 'ready')).toBe(false);
-    s.receive(ready({ wire: 3 }));
-    expect(h.events.find((e) => e.type === 'ready')).toMatchObject({ info: { versions: { wire: 3n, e2ee: 1n, media: 1n } } });
+    s.receive(ready({ wire: 6 }));
+    expect(h.events.find((e) => e.type === 'ready')).toMatchObject({ info: { versions: { wire: 6n, e2ee: 1n, media: 1n } } });
   });
 
-  it('falls back to wire 2 and refuses a hello without wire version 2', async () => {
+  // Bot v2: wire 6 is the only wire this client speaks; an older instance's hello (wire 5 down to 2) is refused.
+  it('refuses a hello without wire version 6', async () => {
     const h = harness();
     h.gw.start();
     await flush();
     const s = h.last();
     s.open();
-    s.receive(hello({ wire: [1] }));
+    s.receive(hello({ wire: [5, 4, 3, 2] }));
     expect(s.closedWith?.code).toBe(4006);
     expect(s.sent).toHaveLength(0);
     expect(h.gw.status).toBe('idle');
-    expect(h.events.at(-1)).toEqual({ type: 'status', status: 'idle', closeCode: 4006 });
+    expect(h.events.slice(-2)).toEqual([{ type: 'status', status: 'idle', closeCode: 4006 }, { type: 'instanceOutdated' }]);
     expect(h.clock.pending()).toEqual([]);
     h.clock.advance(600_000);
     await flush();
@@ -261,33 +264,33 @@ describe('Gateway connect', () => {
     await flush();
     const f = fallback.last();
     f.open();
-    f.receive(hello({ wire: [2] }));
-    expect(f.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
+    f.receive(hello({ wire: [6] }));
+    expect(f.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 6, 1, 1, 0])]);
   });
 
   it('rejects ready when the server echoes a different selected version', async () => {
-    for (const echo of [{ wire: 2 }, { e2ee: 2 }, { media: 2 }]) {
+    for (const echo of [{ wire: 5 }, { e2ee: 2 }, { media: 2 }]) {
       const h = harness();
       h.gw.start();
       await flush();
       const s = h.last();
       s.open();
-      s.receive(hello({ wire: [3, 2] }));
+      s.receive(hello({ wire: [6, 5] }));
       s.receive(ready(echo));
       expect(s.closedWith?.code).toBe(CLIENT_CLOSE.undecodable);
       expect(h.events.some((e) => e.type === 'ready')).toBe(false);
     }
   });
 
-  it('identifies with the selected wire when the hello offers 2 and 3, and refuses one without e2ee or media version 1', async () => {
+  it('identifies with wire 6 when the hello offers it among others, and refuses one without e2ee or media version 1', async () => {
     const h = harness();
     h.gw.start();
     await flush();
     const s = h.last();
     s.open();
-    s.receive(hello({ wire: [1, 2, 3] }));
-    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 3, 1, 1, 0])]);
-    for (const bad of [[[2, 3], [2], [1]], [[2, 3], [1], [2]]]) {
+    s.receive(hello({ wire: [1, 6, 7] }));
+    expect(s.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 6, 1, 1, 0])]);
+    for (const bad of [[[6], [2], [1]], [[6], [1], [2]]]) {
       const g = harness();
       g.gw.start();
       await flush();
@@ -540,6 +543,20 @@ describe('Gateway input checks', () => {
     expect(h.events.slice(before)).toEqual([]);
     expect(s.closedWith).toBeNull();
   });
+
+  // Bot v2: the catalog push (61), a sealed answer (62) and a state hint (63) reach the worker once ready.
+  it('emits bot_catalog, bot_reply and bot_state_changed (ops 61-63) once ready', async () => {
+    const h = harness();
+    const s = await connected(h);
+    const frames = [
+      encodeFrame(Op.botCatalog, 0, null, [GROUP, 3, [], null]),
+      encodeFrame(Op.botReply, 0, null, [GROUP, 1, new Uint8Array([1, 2, 3]), 1]),
+      encodeFrame(Op.botStateChanged, 0, null, [1, GROUP, 4]),
+    ];
+    for (const f of frames) s.receive(f);
+    expect(h.events.flatMap((e) => (e.type === 'frame' ? [e.frame.op] : []))).toEqual([Op.botCatalog, Op.botReply, Op.botStateChanged]);
+    expect(s.closedWith).toBeNull();
+  });
 });
 
 describe('Gateway reconnect', () => {
@@ -588,7 +605,7 @@ describe('Gateway reconnect', () => {
   it('honours reconnect.after_ms and treats invalid_session as a reconnect', async () => {
     const h = harness();
     const s1 = await connected(h);
-    expect(h.gw.acceptedVersions).toEqual({ wire: 2n, e2ee: 1n, media: 1n });
+    expect(h.gw.acceptedVersions).toEqual({ wire: 6n, e2ee: 1n, media: 1n });
     s1.receive(encodeFrame(Op.reconnect, 0, null, ['going away', 2500]));
     expect(h.gw.acceptedVersions).toBeNull();
     expect(s1.closedWith?.code).toBe(1000);
@@ -598,10 +615,10 @@ describe('Gateway reconnect', () => {
     await flush();
     const s2 = h.last();
     s2.open();
-    s2.receive(hello({ wire: [3, 2] }));
+    s2.receive(hello({ wire: [7, 6] }));
     expect(h.gw.acceptedVersions).toBeNull();
-    s2.receive(ready({ wire: 3 }));
-    expect(h.gw.acceptedVersions).toEqual({ wire: 3n, e2ee: 1n, media: 1n });
+    s2.receive(ready({ wire: 6 }));
+    expect(h.gw.acceptedVersions).toEqual({ wire: 6n, e2ee: 1n, media: 1n });
     s2.receive(encodeFrame(Op.invalidSession, 0, null, [0, 'unknown resume token']));
     expect(s2.closedWith?.code).toBe(1000);
     expect(h.clock.pending()).toEqual([500]);
@@ -670,7 +687,7 @@ describe('Gateway reconnect', () => {
     h.gw.commitAck(GROUP, 3n);
     const ops = [...s1.sentFrames(), ...s2.sentFrames()].map((f) => f.op);
     expect(ops).toEqual([Op.identify, Op.heartbeat, Op.identify, Op.commitAck]);
-    expect(s2.sent[0]).toEqual(encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0]));
+    expect(s2.sent[0]).toEqual(encodeFrame(Op.identify, 1, null, ['', 6, 1, 1, 0]));
     expect(s2.protocols).toEqual(['dilla.v1', 'dilla.ticket.t2']);
   });
 });
@@ -727,6 +744,81 @@ describe('Gateway server version close', () => {
     await flush();
     expect(FakeSocket.instances).toHaveLength(1);
     expect(h.minted()).toBe(1);
+  });
+
+  // Bot v2 Task 1: a wire 6 instance refuses an older identify with an error frame naming E_UPGRADE_REQUIRED and
+  // close 4006 whose reason is that code. The client stays down and tells the app to update.
+  it('an upgrade-required refusal stops reconnecting and emits upgradeRequired', async () => {
+    const h = harness();
+    h.gw.start();
+    await flush();
+    const s = h.last();
+    s.open();
+    s.receive(hello());
+    s.receive(encodeFrame(Op.error, 0, null, [0, 'E_UPGRADE_REQUIRED', 'update']));
+    s.serverClose(4006, 'E_UPGRADE_REQUIRED');
+    expect(h.gw.status).toBe('idle');
+    expect(h.events.slice(-2)).toEqual([{ type: 'status', status: 'idle', closeCode: 4006 }, { type: 'upgradeRequired' }]);
+    expect(h.clock.pending()).toEqual([]);
+    h.clock.advance(600_000);
+    await flush();
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(h.minted()).toBe(1);
+  });
+
+  // Fix round 1: an instance whose hello offers only wires newer than this client's is the real "update" case. The
+  // client never identifies, so it reads that from the hello itself (the server's own "older than all" rule).
+  it('a hello offering only newer wires goes idle 4006 and emits upgradeRequired', async () => {
+    const h = harness();
+    h.gw.start();
+    await flush();
+    const s = h.last();
+    s.open();
+    s.receive(hello({ wire: [7] }));
+    expect(s.closedWith?.code).toBe(4006);
+    expect(s.sent).toHaveLength(0);
+    expect(h.events.slice(-2)).toEqual([{ type: 'status', status: 'idle', closeCode: 4006 }, { type: 'upgradeRequired' }]);
+    h.clock.advance(600_000);
+    await flush();
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(h.minted()).toBe(1);
+  });
+
+  // Final review M5: an instance whose hello offers only older wires is the side to update; the page must not tell this
+  // client to reload or update itself.
+  it('a hello offering only older wires goes idle 4006 and emits instanceOutdated', async () => {
+    for (const wire of [[5, 4, 3, 2], [1]]) {
+      const h = harness();
+      h.gw.start();
+      await flush();
+      const s = h.last();
+      s.open();
+      s.receive(hello({ wire }));
+      expect(h.events.slice(-2)).toEqual([{ type: 'status', status: 'idle', closeCode: 4006 }, { type: 'instanceOutdated' }]);
+      expect(h.events.some((e) => e.type === 'upgradeRequired')).toBe(false);
+    }
+  });
+
+  it('a hello offering mixed unknown wires keeps the plain version state', async () => {
+    const h = harness();
+    h.gw.start();
+    await flush();
+    const s = h.last();
+    s.open();
+    s.receive(hello({ wire: [5, 7] }));
+    expect(h.events.at(-1)).toEqual({ type: 'status', status: 'idle', closeCode: 4006 });
+    expect(h.events.some((e) => e.type === 'upgradeRequired' || e.type === 'instanceOutdated')).toBe(false);
+  });
+
+  it('a plain version close does not claim an update is required', async () => {
+    const h = harness();
+    h.gw.start();
+    await flush();
+    const s = h.last();
+    s.open();
+    s.receive(hello());
+    s.serverClose(4006, 'E_VERSION');
+    expect(h.events.some((e) => e.type === 'upgradeRequired')).toBe(false);
   });
 
   it('control: an ordinary close still waits and reconnects', async () => {
@@ -881,20 +973,20 @@ describe('Gateway revocation and stop', () => {
 });
 
 
-it.each([2, 3, 4, 5])('uses the selected wire %i to gate build notices', async wire => {
+it('passes build notices on wire 6', async () => {
   const h = harness(); h.gw.start(); await flush();
-  const s = h.last(); s.open(); s.receive(hello({ wire: [wire] })); s.receive(ready({ wire }));
-  expect(h.gw.acceptedVersions?.wire).toBe(BigInt(wire));
+  const s = h.last(); s.open(); s.receive(hello({ wire: [6] })); s.receive(ready({ wire: 6 }));
+  expect(h.gw.acceptedVersions?.wire).toBe(6n);
   s.receive(encode([56, 0, null, ['/assets/../bad.js']]));
   expect(h.gw.status).toBe('ready');
   s.receive(encode([56, 0, null, ['/assets/new.js']]));
-  expect(h.events.filter(e => e.type === 'frame' && e.frame.op === 56)).toHaveLength(wire === 5 ? 1 : 0);
+  expect(h.events.filter(e => e.type === 'frame' && e.frame.op === 56)).toHaveLength(1);
   h.gw.stop(); expect(h.gw.acceptedVersions).toBeNull();
 });
 
-it('coalesces real activity on wire 5, drops congestion and never replays it', async () => {
+it('coalesces real activity on wire 6, drops congestion and never replays it', async () => {
   const h = harness(); h.gw.start(); await flush(); const s = h.last(); s.open();
-  s.receive(hello({ wire: [5,4,3,2] })); s.receive(ready({ wire: 5 }));
+  s.receive(hello({ wire: [6] })); s.receive(ready({ wire: 6 }));
   expect(h.gw.sendPresenceActivity()).toBe(true);
   h.gw.sendPresenceActivity(); h.clock.advance(4999); h.gw.sendPresenceActivity();
   expect(s.sentFrames().filter(f => f.op === 57)).toHaveLength(1);
@@ -905,9 +997,9 @@ it('coalesces real activity on wire 5, drops congestion and never replays it', a
   s.serverClose(1006); expect(h.gw.sendPresenceActivity()).toBe(false);
 });
 
-it('sends ninety current call samples over wire 5 in fifteen minutes, bounded and never replayed', async () => {
+it('sends ninety current call samples over wire 6 in fifteen minutes, bounded and never replayed', async () => {
   const h = harness(); h.gw.start(); await flush(); const s = h.last(); s.open();
-  s.receive(hello({ wire: [5,4,3,2] })); s.receive(ready({ wire: 5 }));
+  s.receive(hello({ wire: [6] })); s.receive(ready({ wire: 6 }));
   for (let i = 0; i < 90; i++) {
     expect(h.gw.sendCallStats(GROUP, [1,null,25,0,0,20])).toBe(true);
     h.gw.sendCallStats(GROUP, [1,null,26,0,0,20]);
@@ -921,4 +1013,29 @@ it('sends ninety current call samples over wire 5 in fifteen minutes, bounded an
   expect(s.sentFrames().filter(f => f.op === 58)).toHaveLength(90);
   s.serverClose(1006);
   expect(h.gw.sendCallStats(GROUP,[1,null,25,0,0,20])).toBe(false);
+});
+
+describe('Gateway request frames (Bot v2)', () => {
+  it('writes a request frame only while ready and hands each response to its listeners', async () => {
+    const h = harness();
+    const frame = encodeRequestFrame({ id: 1, method: 'GET', route: '/v1/x', body: new Uint8Array(), idem: null });
+    expect(h.gw.sendRequest(frame)).toBe(false);
+    const s = await connected(h);
+    expect(h.gw.sendRequest(frame)).toBe(true);
+    expect(s.sentFrames().filter((f) => f.op === Op.request).map((f) => f.payload)).toEqual([[1n, 'GET', '/v1/x', new Uint8Array(), null]]);
+    s.receive(encodeFrame(Op.response, 0, null, [1, 204, new Uint8Array()]));
+    expect(h.events.filter((e) => e.type === 'response')).toEqual([{ type: 'response', response: { id: 1, status: 204, body: new Uint8Array() } }]);
+    expect(h.gw.status).toBe('ready');
+  });
+
+  it('accepts a response frame above the hello frame size, up to the response bound', async () => {
+    const h = harness();
+    const s = await connected(h, hello({ maxFrameBytes: 131584 }));
+    s.receive(encodeFrame(Op.response, 0, null, [2, 200, new Uint8Array(2 * 1024 * 1024)]));
+    expect(h.gw.status).toBe('ready');
+    expect(h.events.flatMap((e) => (e.type === 'response' ? [e.response.body.length] : []))).toEqual([2 * 1024 * 1024]);
+    // Any other frame above the hello's bound still closes the socket.
+    s.receive(encodeFrame(Op.presence, 0, null, [new Uint8Array(16), 0, 0, 'x'.repeat(140_000)]));
+    expect(s.closedWith?.code).toBe(CLIENT_CLOSE.tooLarge);
+  });
 });

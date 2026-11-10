@@ -209,6 +209,22 @@ type EvidenceReader struct {
 	state     configStateClient
 	authority evidenceAuthorityClient
 	binding   native.Binding
+	now       func() time.Time // the retention check's clock; nil is the system's
+}
+
+// WithClock reads with now as the retention check's clock (tests with fixed evidence).
+func (r *EvidenceReader) WithClock(now func() time.Time) *EvidenceReader {
+	if r != nil {
+		r.now = now
+	}
+	return r
+}
+
+func (r *EvidenceReader) clock() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
 }
 
 func NewEvidenceReader(state configStateClient, authority evidenceAuthorityClient) *EvidenceReader {
@@ -296,7 +312,7 @@ func (r *EvidenceReader) Read(ctx context.Context, actor, evidenceID id.ID) (Evi
 	if expiresUnix <= 0 || expires != uint64(expiresUnix) {
 		return Evidence{}, ErrEvidenceAccess
 	}
-	if !time.Now().UTC().Before(expiresAt) {
+	if !r.clock().UTC().Before(expiresAt) {
 		return Evidence{}, fmt.Errorf("%w: %w", ErrEvidenceAccess, errEvidenceExpired)
 	}
 	return Evidence{ID: storedID, OperationID: operationID, MessageID: messageID, AcceptedActionID: acceptedActionID, AcceptedRevision: acceptedRevision,

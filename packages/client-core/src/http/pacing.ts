@@ -1,11 +1,14 @@
 // Per-device token buckets at 80 % of the server rates (ruling 20).
-export type Bucket = 'read' | 'write' | 'message' | 'commit' | 'proposal' | 'upload' | 'none';
+export type Bucket = 'read' | 'write' | 'message' | 'commit' | 'proposal' | 'upload' | 'bot' | 'none';
 export const PACING = {
   read: { perSecond: 8, burst: 48 }, write: { perSecond: 1.6, burst: 16 },
   message: { perSecond: 0.8, burst: 16 }, commit: { perSecond: 1.6, burst: 32 },
   proposal: { perSecond: 0.4, burst: 8 },
   // 80 % of blobs.uploads_per_minute (20, internal/api/blobmeter.go), per user.
   upload: { perSecond: 16 / 60, burst: 16 },
+  // Task 21b fix round 1: POST …/bot/commands, the picker's commands and every Bot surface's reads and actions, in its own
+  // bucket (dillad's bot_command meter at the read rate), so typing and other writes never hold a Bot answer back.
+  bot: { perSecond: 8, burst: 48 },
 } as const;
 
 type MeteredBucket = Exclude<Bucket, 'none'>;

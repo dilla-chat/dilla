@@ -20,6 +20,8 @@ const fixtures = writeFixtures(join(tmpdir(), 'dilla-media-fixtures'));
 
 export default defineConfig({
   testDir: resolve(here, 'voice'),
+  // The Bot runs in the Electron voice lane only (playwright.desktop-voice.config.ts).
+  testIgnore: '**/bot-music.spec.ts',
   globalSetup: resolve(here, 'web', 'support', 'host.ts'),
   // DILLA_E2E_OUTPUT_DIR: a run of its own (scripts/ci-local.mjs) keeps its traces and host logs apart from a parallel run's.
   outputDir: process.env.DILLA_E2E_OUTPUT_DIR ?? resolve(here, 'test-results'),

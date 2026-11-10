@@ -12,6 +12,7 @@
 import type { BrowserContext, Page } from '@playwright/test';
 import { expect, mediaWorkers, test } from './support/peer-browser';
 import { watchContexts } from './support/leaks';
+import { watchSocketRequests } from '../web/support/socket-requests';
 import {
   POLL, VoicePeer, WAIT, callSlice, changedSeen, connected, copy, dock, framesPass, heard, heardCount, introduce, joinVoice, noiseOff,
   onboard, openVoiceOnly, peerName, self, sentCount, stage, stripButton, tile,
@@ -27,16 +28,27 @@ function notice(page: Page, text: string) {
   return page.locator('.dw-voice-stage, .dw-call-strip').getByText(text, { exact: true });
 }
 
-/** Every call-path write a context sends from now on (its pages and their workers): a call group's registration or
- *  external commit, a call start (task-10 review M11). */
+/** A call group's registration or external commit, a call start (task-10 review M11). */
 const CALL_WRITE = /^\/v1\/(groups|groups\/[0-9a-f]{32}\/resync|channels\/[0-9a-f]{32}\/calls)$/;
-function callWrites(context: BrowserContext): string[] {
-  const seen: string[] = [];
-  context.on('request', (r) => {
+
+/** Records a person's call-path writes from the moment they are opened, before their gateway socket exists: since Bot v2
+ *  task 6 (f506cf20) the group and call routes are gateway request frames sent by the core worker, which Playwright's
+ *  `request` event never sees, and a socket's frames are only seen if the listener was there when it opened. HTTP is still
+ *  recorded, so a write that fell back to HTTP counts too. `since()` marks a point; `writes(mark)` lists what came after. */
+function recordCallWrites(person: { context: BrowserContext; page: Page }) {
+  const http: string[] = [];
+  person.context.on('request', (r) => {
     const path = new URL(r.url()).pathname;
-    if (r.method() === 'POST' && CALL_WRITE.test(path)) seen.push(`POST ${path}`);
+    if (r.method() === 'POST' && CALL_WRITE.test(path)) http.push(`POST ${path}`);
   });
-  return seen;
+  const frames = watchSocketRequests(person.page);
+  return {
+    since: (): { http: number; frames: number } => ({ http: http.length, frames: frames.length }),
+    writes: (mark: { http: number; frames: number }): string[] => [
+      ...http.slice(mark.http),
+      ...frames.slice(mark.frames).filter((f) => f.method === 'POST' && CALL_WRITE.test(f.path)).map((f) => `POST ${f.path}`),
+    ],
+  };
 }
 
 /** Frames `listener` authenticated from `device` while `speaker` encrypts a fixed number of its own frames (its frame
@@ -60,6 +72,9 @@ test('(a) a changed contact in the call group refuses the join before any call w
   const peer = peerBrowser.track(await VoicePeer.start());
   const alice = await peerBrowser.open('alice');
   const bob = await peerBrowser.open('bob');
+  // Listening before either signs in: the gateway socket opens during onboarding and is never seen again otherwise.
+  const aliceRecorder = recordCallWrites(alice);
+  const bobRecorder = recordCallWrites(bob);
   try {
     const s = await peer.setup();
     const call = s.voice_channel_id;
@@ -74,12 +89,12 @@ test('(a) a changed contact in the call group refuses the join before any call w
     await changedSeen(alice.page, s.user_id);
     await peer.callJoin(call);
     await openVoiceOnly(alice.page, peer.communityName, peer);
-    const aliceWrites = callWrites(alice.context);
+    const aliceMark = aliceRecorder.since();
     await stage(alice.page).getByRole('button', { name: copy('callStage.preview.join'), exact: true }).click();
     await expect(stage(alice.page)).toHaveAttribute('data-call-phase', 'blocked', { timeout: WAIT });
     expect((await callSlice(alice.page))?.error?.code).toBe('E_UMK_CHANGED');
     // Nothing of the join left the browser: no registration, no external commit, no call start.
-    expect(aliceWrites, 'call writes alice sent for the refused join').toEqual([]);
+    expect(aliceRecorder.writes(aliceMark), 'call writes alice sent for the refused join').toEqual([]);
     // The native peer holds a leaf of the group but never enters the room: the core's refusal names it from the call
     // tree, so the notice names the changed contact (task 10, concern 3).
     const name = peerName(s);
@@ -108,13 +123,14 @@ test('(a) a changed contact in the call group refuses the join before any call w
     await onboard(bob, peer, 'bob');
     await introduce(peer, [bob], 2);
     const b = await self(bob.page);
-    const bobWrites = callWrites(bob.context);
+    const bobMark = bobRecorder.since();
     await joinVoice(bob.page, peer.communityName, peer.voiceName);
     await peer.waitForCallMembers(call, (d) => d.includes(b.device), 'lists bob');
+    const bobWrites = bobRecorder.writes(bobMark);
     // The recorder sees a join's writes (worker requests included): bob's external commit and his call start.
     expect(bobWrites.some((w) => w.endsWith('/resync')), `bob's call writes ${JSON.stringify(bobWrites)}`).toBe(true);
     expect(bobWrites.some((w) => w.endsWith('/calls')), `bob's call writes ${JSON.stringify(bobWrites)}`).toBe(true);
-    expect(aliceWrites, 'call writes alice sent at any time').toEqual([]);
+    expect(aliceRecorder.writes(aliceMark), 'call writes alice sent at any time').toEqual([]);
     await expect.poll(async () => (await peer.callRead(call)).participants.map((p) => p.device), POLL).toContain(b.device);
     const members = (await peer.callMembers(call)).devices;
     const room = (await peer.callRead(call)).participants.map((p) => p.device);

@@ -47,123 +47,6 @@ func TestGroupEventPollerGivesTextEventsTwentyFourHours(t *testing.T) {
 	}
 }
 
-func TestGroupEventPollerNeverAgesOutDurableModerationCompletion(t *testing.T) {
-	for _, stage := range []string{"checkpoint_persistence", "pending_capacity", "case_state_write", "pending_completion"} {
-		t.Run(stage, func(t *testing.T) {
-			q := ageTestQueue()
-			q.interaction = q.interaction[1:]
-			fail := AutoModerationStageError{Stage: stage, cause: ErrModerationCheckpoint}
-			handler := failingHead(fail)
-			start := time.Unix(1_800_000_000, 0)
-			for _, at := range []time.Time{start, start.Add(time.Hour), start.Add(2 * time.Hour), start.Add(48 * time.Hour)} {
-				result, err := pollAt(t, t.Context(), q, at, handler)
-				if err == nil || q.acked != 0 || len(result.Skipped) != 0 {
-					t.Fatalf("durable %s abandoned at %s: result=%+v ack=%d err=%v", stage, at.Sub(start), result, q.acked, err)
-				}
-			}
-			result, err := pollAt(t, t.Context(), q, start.Add(49*time.Hour), groupEventHandlerFunc(func(context.Context, native.GroupEvent) error { return nil }))
-			if err != nil || result.Handled != 2 || q.acked != 2 {
-				t.Fatalf("completion did not resume: %+v ack=%d err=%v", result, q.acked, err)
-			}
-		})
-	}
-}
-
-// Jonas 2026-10-30: an event HELD because its sender's trust cannot be refreshed is dropped after
-// one hour (with the same three failed passes), whether it is a command or a text-channel event;
-// it is never dispatched. A text event failing for any other reason keeps its 24 hours.
-func TestGroupEventPollerDropsAHeldEventAfterAnHourWhateverItsGroup(t *testing.T) {
-	for _, kind := range []string{"text", "interaction"} {
-		t.Run(kind, func(t *testing.T) {
-			q := ageTestQueue()
-			if kind == "text" {
-				q.interaction = q.interaction[1:] // event 1 is from a text group
-			}
-			stale := id.New()
-			q.events[0].SenderUser = stale
-			dispatched := 0
-			handler := HoldUnrefreshedSenders(groupEventHandlerFunc(func(_ context.Context, e native.GroupEvent) error {
-				if e.DeliveryID == 1 {
-					dispatched++
-				}
-				return nil
-			}), map[id.ID]bool{stale: true})
-			start := time.Unix(1_800_000_000, 0)
-			for _, at := range []time.Time{start, start.Add(10 * time.Minute), start.Add(InteractionEventMaxPendingAge - time.Second)} {
-				result, err := pollAt(t, context.Background(), q, at, handler)
-				if !errors.Is(err, ErrGroupEventHeld) || q.acked != 0 || len(result.Skipped) != 0 {
-					t.Fatalf("at +%s: err=%v acked=%d skipped=%v; a held event younger than an hour stays pending", at.Sub(start), err, q.acked, result.Skipped)
-				}
-			}
-			result, err := pollAt(t, context.Background(), q, start.Add(HeldEventMaxPendingAge), handler)
-			if err != nil || len(result.Skipped) != 1 || result.Skipped[0].DeliveryID != 1 || !errors.Is(result.Skipped[0].Cause, ErrGroupEventHeld) {
-				t.Fatalf("at one hour: err=%v skipped=%+v; the held event must be dropped", err, result.Skipped)
-			}
-			if dispatched != 0 {
-				t.Fatalf("the held event was dispatched %d times", dispatched)
-			}
-		})
-	}
-}
-
-// The held-event age counts only consecutive HELD passes: a pass that fails for another reason
-// resets it, so an event that was held, then failed otherwise, then is held again only becomes
-// droppable an hour (and three held passes) after the hold resumed.
-func TestGroupEventPollerHeldAgeCountsOnlyConsecutiveHeldPasses(t *testing.T) {
-	q := ageTestQueue()
-	q.interaction = q.interaction[1:] // a text event: its non-held limit is 24 hours
-	stale := id.New()
-	q.events[0].SenderUser = stale
-	other := errors.New("moderation action endpoint unavailable")
-	held := HoldUnrefreshedSenders(groupEventHandlerFunc(func(context.Context, native.GroupEvent) error { return nil }), map[id.ID]bool{stale: true})
-	failing := groupEventHandlerFunc(func(_ context.Context, e native.GroupEvent) error {
-		if e.DeliveryID == 1 {
-			return other
-		}
-		return nil
-	})
-	start := time.Unix(1_800_000_000, 0)
-	pass := func(at time.Duration, handler GroupEventHandler) GroupEventPollResult {
-		t.Helper()
-		result, _ := pollAt(t, context.Background(), q, start.Add(at), handler)
-		return result
-	}
-	pass(0, held)
-	pass(20*time.Minute, held)
-	pass(40*time.Minute, failing) // a non-held failure resets the hold age
-	resumed := 50 * time.Minute
-	for _, at := range []time.Duration{resumed, resumed + 20*time.Minute, resumed + 40*time.Minute, resumed + HeldEventMaxPendingAge - time.Second} {
-		if result := pass(at, held); len(result.Skipped) != 0 || q.acked != 0 {
-			t.Fatalf("at +%s: skipped=%v acked=%d; the hold resumed at +%s, so it is younger than an hour", at, result.Skipped, q.acked, resumed)
-		}
-	}
-	result := pass(resumed+HeldEventMaxPendingAge, held)
-	if len(result.Skipped) != 1 || !result.Skipped[0].FirstFailure.Equal(start.Add(resumed)) || !errors.Is(result.Skipped[0].Cause, ErrGroupEventHeld) {
-		t.Fatalf("an hour after the hold resumed: skipped=%+v; want the held event dropped with the resumed hold time", result.Skipped)
-	}
-}
-
-// A text event that fails for a reason other than a held sender still keeps 24 hours, even after
-// held events got the shorter limit.
-func TestGroupEventPollerKeepsTwentyFourHoursForAFailingTextEventThatIsNotHeld(t *testing.T) {
-	q := ageTestQueue()
-	q.interaction = q.interaction[1:]
-	fail := errors.New("moderation action endpoint unavailable")
-	handler := HoldUnrefreshedSenders(groupEventHandlerFunc(func(_ context.Context, e native.GroupEvent) error {
-		if e.DeliveryID == 1 {
-			return fail
-		}
-		return nil
-	}), map[id.ID]bool{id.New(): true}) // someone else is held; event 1's sender is not
-	start := time.Unix(1_800_000_000, 0)
-	for _, at := range []time.Time{start, start.Add(time.Hour), start.Add(2 * time.Hour)} {
-		result, err := pollAt(t, context.Background(), q, at, handler)
-		if !errors.Is(err, fail) || q.acked != 0 || len(result.Skipped) != 0 {
-			t.Fatalf("at +%s: err=%v acked=%d skipped=%v; a failing text event keeps 24 h", at.Sub(start), err, q.acked, result.Skipped)
-		}
-	}
-}
-
 // pollAt builds a fresh poller per call, as every reconcile pass and every restart does.
 func pollAt(t *testing.T, ctx context.Context, q *durableGroupEventQueue, at time.Time, handler GroupEventHandler) (GroupEventPollResult, error) {
 	t.Helper()
@@ -188,14 +71,14 @@ func TestGroupEventPollerAgeLimitSkipsOnlyAfterAnHourOfFailuresAndSurvivesRestar
 	})
 	start := time.Unix(1_800_000_000, 0)
 	// Failing for just under the limit, across several fresh pollers (restarts), stays pending.
-	for _, at := range []time.Time{start, start.Add(10 * time.Minute), start.Add(InteractionEventMaxPendingAge - time.Second)} {
+	for _, at := range []time.Time{start, start.Add(10 * time.Minute), start.Add(TextEventMaxPendingAge - time.Second)} {
 		result, err := pollAt(t, context.Background(), q, at, handler)
 		if !errors.Is(err, transient) || q.acked != 0 || len(result.Skipped) != 0 || len(handled) != 0 {
 			t.Fatalf("at +%s: err=%v acked=%d skipped=%v; a failure younger than the limit must stay pending", at.Sub(start), err, q.acked, result.Skipped)
 		}
 	}
 	// At the limit the first-failure time recorded by the first poller still counts.
-	result, err := pollAt(t, context.Background(), q, start.Add(InteractionEventMaxPendingAge), handler)
+	result, err := pollAt(t, context.Background(), q, start.Add(TextEventMaxPendingAge), handler)
 	if err != nil || q.acked != 2 || len(handled) != 1 || handled[0] != 2 || len(result.Skipped) != 1 {
 		t.Fatalf("at the limit: err=%v acked=%d handled=%v skipped=%v", err, q.acked, handled, result.Skipped)
 	}
@@ -213,7 +96,7 @@ func TestGroupEventPollerAgeRestartsForANewHeadEvent(t *testing.T) {
 	if _, err := pollAt(t, context.Background(), q, start, groupEventHandlerFunc(func(context.Context, native.GroupEvent) error { return fail })); !errors.Is(err, fail) {
 		t.Fatal(err)
 	}
-	late := start.Add(3 * InteractionEventMaxPendingAge)
+	late := start.Add(3 * TextEventMaxPendingAge)
 	result, err := pollAt(t, context.Background(), q, late, groupEventHandlerFunc(func(_ context.Context, e native.GroupEvent) error {
 		if e.DeliveryID == 2 {
 			return fail
@@ -247,7 +130,7 @@ func TestGroupEventPollerNeverSkipsUnderCancellation(t *testing.T) {
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		_, err := pollAt(t, ctx, q, start.Add(2*InteractionEventMaxPendingAge), groupEventHandlerFunc(func(context.Context, native.GroupEvent) error {
+		_, err := pollAt(t, ctx, q, start.Add(2*TextEventMaxPendingAge), groupEventHandlerFunc(func(context.Context, native.GroupEvent) error {
 			cancel()
 			return fail
 		}))
@@ -262,7 +145,7 @@ func TestGroupEventPollerKeepsEventPendingWhenItsAgeCannotBeRecorded(t *testing.
 	q.stateErr = errors.New("helper state unavailable")
 	fail := errors.New("transient")
 	start := time.Unix(1_800_000_000, 0)
-	for _, at := range []time.Time{start, start.Add(5 * InteractionEventMaxPendingAge)} {
+	for _, at := range []time.Time{start, start.Add(5 * TextEventMaxPendingAge)} {
 		if _, err := pollAt(t, context.Background(), q, at, groupEventHandlerFunc(func(context.Context, native.GroupEvent) error { return fail })); !errors.Is(err, fail) || q.acked != 0 {
 			t.Fatalf("err=%v acked=%d; an unprovable age must keep the event pending", err, q.acked)
 		}
@@ -322,7 +205,7 @@ func TestGroupEventPollerResetsAFirstFailureFromTheFuture(t *testing.T) {
 	}
 	// The clock is corrected a year back: the age restarts at start, and the skip comes an hour later.
 	got := pollUntil(t, q, failingHead(fail), start, start.Add(10*time.Minute), start.Add(20*time.Minute),
-		start.Add(InteractionEventMaxPendingAge-time.Second), start.Add(InteractionEventMaxPendingAge))
+		start.Add(TextEventMaxPendingAge-time.Second), start.Add(TextEventMaxPendingAge))
 	if got != 4 || q.acked != 2 {
 		t.Fatalf("skipped at pass %d acked=%d; want the skip exactly one hour after the reset", got, q.acked)
 	}
@@ -332,7 +215,7 @@ func TestGroupEventPollerResetsAFirstFailureFromTheFuture(t *testing.T) {
 		t.Fatal("skipped on the first pass")
 	}
 	if got := pollUntil(t, q2, failingHead(fail), start, start.Add(time.Minute),
-		start.Add(4*time.Minute+InteractionEventMaxPendingAge-time.Second), start.Add(4*time.Minute+InteractionEventMaxPendingAge)); got != 3 {
+		start.Add(4*time.Minute+TextEventMaxPendingAge-time.Second), start.Add(4*time.Minute+TextEventMaxPendingAge)); got != 3 {
 		t.Fatalf("skipped at pass %d; a first failure within the 5-minute tolerance must be kept", got)
 	}
 }
@@ -342,10 +225,10 @@ func TestGroupEventPollerNeedsThreeFailedPassesBesidesTheAge(t *testing.T) {
 	q := ageTestQueue()
 	fail := errors.New("transient")
 	start := time.Unix(1_800_000_000, 0)
-	if got := pollUntil(t, q, failingHead(fail), start, start.Add(2*time.Hour)); got != -1 {
-		t.Fatalf("skipped at pass %d after a 2 h jump with two failed passes", got)
+	if got := pollUntil(t, q, failingHead(fail), start, start.Add(25*time.Hour)); got != -1 {
+		t.Fatalf("skipped at pass %d after a 25 h jump with two failed passes", got)
 	}
-	if got := pollUntil(t, q, failingHead(fail), start.Add(2*time.Hour+time.Second)); got != 0 || q.acked != 2 {
+	if got := pollUntil(t, q, failingHead(fail), start.Add(25*time.Hour+time.Second)); got != 0 || q.acked != 2 {
 		t.Fatalf("third failed pass past the age: skipped=%d acked=%d", got, q.acked)
 	}
 }
@@ -363,7 +246,7 @@ func TestGroupEventPollerReplacesAnUnreadableFailureRecord(t *testing.T) {
 			q.state = map[string]native.StateValue{key: {Revision: 7, Value: value}}
 			fail := errors.New("transient")
 			start := time.Unix(1_800_000_000, 0)
-			got := pollUntil(t, q, failingHead(fail), start, start.Add(time.Minute), start.Add(2*time.Minute), start.Add(InteractionEventMaxPendingAge))
+			got := pollUntil(t, q, failingHead(fail), start, start.Add(time.Minute), start.Add(2*time.Minute), start.Add(TextEventMaxPendingAge))
 			if got != 3 || q.acked != 2 {
 				t.Fatalf("skipped at pass %d acked=%d; an unreadable record must be replaced and the limit applied", got, q.acked)
 			}
@@ -412,7 +295,7 @@ func TestGroupEventPollerRecoversFromAFailureRecordWriteConflict(t *testing.T) {
 	if _, err := pollAt(t, context.Background(), q, start, failingHead(fail)); !errors.Is(err, fail) || q.acked != 0 {
 		t.Fatalf("conflicting pass: err=%v acked=%d", err, q.acked)
 	}
-	if got := pollUntil(t, q, failingHead(fail), start.Add(time.Minute), start.Add(2*time.Minute), start.Add(3*time.Minute), start.Add(time.Minute+InteractionEventMaxPendingAge)); got != 3 || q.acked != 2 {
+	if got := pollUntil(t, q, failingHead(fail), start.Add(time.Minute), start.Add(2*time.Minute), start.Add(3*time.Minute), start.Add(time.Minute+TextEventMaxPendingAge)); got != 3 || q.acked != 2 {
 		t.Fatalf("skipped at pass %d acked=%d; the next pass must start the record", got, q.acked)
 	}
 }
@@ -424,60 +307,6 @@ func mustCBOR(t *testing.T, v any) []byte {
 		t.Fatal(err)
 	}
 	return b
-}
-
-func TestBusyTrustHoldDoesNotStartFailureAge(t *testing.T) {
-	q := ageTestQueue()
-	busy := id.New()
-	q.events[0].SenderUser = busy
-	dispatched := 0
-	next := groupEventHandlerFunc(func(context.Context, native.GroupEvent) error { dispatched++; return nil })
-	handler := HoldBusySenders(next, map[id.ID]bool{busy: true})
-	start := time.Unix(1800000000, 0)
-	for _, at := range []time.Time{start, start.Add(time.Hour), start.Add(24 * time.Hour)} {
-		result, err := pollAt(t, t.Context(), q, at, handler)
-		if !errors.Is(err, ErrGroupEventTrustBusy) || q.acked != 0 || len(result.Skipped) != 0 || dispatched != 0 {
-			t.Fatalf("busy hold: result=%+v err=%v ack=%d dispatched=%d", result, err, q.acked, dispatched)
-		}
-		if len(q.state) != 0 {
-			t.Fatal("trust contention persisted failure age")
-		}
-	}
-	held := HoldUnrefreshedSenders(next, map[id.ID]bool{busy: true})
-	if _, err := pollAt(t, t.Context(), q, start.Add(25*time.Hour), held); !errors.Is(err, ErrGroupEventHeld) {
-		t.Fatal(err)
-	}
-	for _, value := range q.state {
-		var record groupEventFailureRecord
-		if err := cborx.Unmarshal(value.Value, &record); err != nil {
-			t.Fatal(err)
-		}
-		if record.HeldAttempts != 1 || record.HeldFirst != uint64(start.Add(25*time.Hour).Unix()) {
-			t.Fatalf("actual trust failure inherited busy age: %+v", record)
-		}
-	}
-}
-
-func TestBusyTrustHoldLeavesExistingFailureHistoryUntouched(t *testing.T) {
-	q := ageTestQueue()
-	busy := id.New()
-	q.events[0].SenderUser = busy
-	next := groupEventHandlerFunc(func(context.Context, native.GroupEvent) error { return nil })
-	start := time.Unix(1800000000, 0)
-	_, _ = pollAt(t, t.Context(), q, start, HoldUnrefreshedSenders(next, map[id.ID]bool{busy: true}))
-	before := make(map[string]native.StateValue)
-	for key, value := range q.state {
-		before[key] = value
-	}
-	_, err := pollAt(t, t.Context(), q, start.Add(2*time.Hour), HoldBusySenders(next, map[id.ID]bool{busy: true}))
-	if !errors.Is(err, ErrGroupEventTrustBusy) || q.acked != 0 {
-		t.Fatalf("busy hold err=%v ack=%d", err, q.acked)
-	}
-	for key, value := range q.state {
-		if value.Revision != before[key].Revision || !bytesEqual(value.Value, before[key].Value) {
-			t.Fatal("busy hold mutated existing failure record")
-		}
-	}
 }
 
 func TestGroupEventCooperativeStopFinishesCurrentHandlerAndAcknowledgement(t *testing.T) {

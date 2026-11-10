@@ -66,11 +66,10 @@ func (c StructureChannels) Channel(ctx context.Context, targetID id.ID) (uint8, 
 //     must be a live DM channel (ds.ErrBindingTarget otherwise, a community
 //     channel included) and the user one of its participants, its
 //     channel_members (ds.ErrNotEligible otherwise).
-//   - pairing and interaction: not channel groups. Pairing is gated by the
-//     session scope rules of auth. Human interaction registration has no
-//     structure row to check; managed Bot interaction registration is refused
-//     until the server can authenticate a human device against the exact MLS
-//     roster.
+//   - pairing: not a channel group, gated by the session scope rules of auth;
+//     a managed Bot never binds one.
+//   - interaction (kind 3): retired in Bot v2 (Task 23); refused for everyone
+//     as ds.ErrBindingTarget.
 //
 // A refusal wraps ds.ErrNotEligible (403 E_FORBIDDEN) or ds.ErrBindingTarget (400
 // E_BINDING_INVALID); any other error is the store's.
@@ -86,14 +85,7 @@ func (c StructureChannels) MayRegister(ctx context.Context, userID id.ID, b ds.B
 		}
 		return nil
 	case groupInteraction:
-		bot, err := botaccess.IsBotUser(ctx, c.Repo, userID)
-		if err != nil {
-			return err
-		}
-		if bot {
-			return fmt.Errorf("%w: managed bot interaction admission is unavailable until a human device is authenticated against the exact MLS roster", ds.ErrNotEligible)
-		}
-		return nil
+		return fmt.Errorf("%w: the interaction group kind is retired", ds.ErrBindingTarget)
 	case groupText, groupCall:
 	default:
 		return fmt.Errorf("%w: unknown group kind %d", ds.ErrBindingTarget, b.Kind)

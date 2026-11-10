@@ -115,13 +115,3 @@ func (c *coreDeviceLists) WithVerification(ctx context.Context, fn func(context.
 	}
 	return withBorrowedDeviceListVerifier(ctx, c.wasm, inst, fn)
 }
-
-// WithDeviceListVerification lends this read callback's already-owned guest to
-// signed-list checks. It must be called synchronously inside the fenced read
-// callback; saved contexts or proof values cannot extend that guest's lifetime.
-func (c CurrentBotInteractionGroupContext) WithDeviceListVerification(ctx context.Context, fn func(context.Context) error) error {
-	if c.verification == nil {
-		return errors.New("ds: current interaction verification scope is unavailable")
-	}
-	return c.verification.run(ctx, fn)
-}

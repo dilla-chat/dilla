@@ -91,7 +91,8 @@ describe('the copy rules', () => {
     // Task 11: the DM composer's placeholder, the prototype's 'Message {name}' (the label keeps 'message @{name}').
     expect(en['shell.dm.placeholder']).toBe('Message {name}');
     // Task 11 (Jonas, Q2): the DM list's head: shell.dms.title, section, online and count.
-    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(220);
+    // Bot v2 final review M5: shell.banner.instanceTooOld, the banner for a server older than this client.
+    expect(Object.keys(en).filter(k => k.startsWith('shell.'))).toHaveLength(221);
   });
   it('holds the conversation copy of L-COPY-03: chrome lower case, dialogs and refusals sentence case', () => {
     expect(Object.keys(en).filter(k => k.startsWith('shell.emoji.'))).toHaveLength(33);

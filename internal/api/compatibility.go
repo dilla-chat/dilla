@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/bot/capability"
 	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/server"
@@ -18,7 +19,7 @@ func requireCommunityWire(ctx context.Context, repo store.Repository, wireVersio
 	err := policy.RequireCommunity(ctx, wireVersion, communityID)
 	var upgrade *capability.UpgradeRequired
 	if errors.As(err, &upgrade) {
-		return server.Version([]uint64{3}, []uint64{1}, []uint64{1})
+		return server.Errorf(server.CodeUpgradeRequired, "this community needs wire version %d", auth.WireVersion)
 	}
 	if err != nil {
 		return server.Unavailable(1000, "compatibility state unavailable")
@@ -26,9 +27,10 @@ func requireCommunityWire(ctx context.Context, repo store.Repository, wireVersio
 	return nil
 }
 
+// requireBotWire admits a managed Bot session only on the current wire (Bot v2: wire 6).
 func requireBotWire(wireVersion uint64) error {
-	if wireVersion >= 3 {
+	if wireVersion == auth.WireVersion {
 		return nil
 	}
-	return server.Version([]uint64{3}, []uint64{1}, []uint64{1})
+	return server.Errorf(server.CodeUpgradeRequired, "managed Bots negotiate wire version %d", auth.WireVersion)
 }

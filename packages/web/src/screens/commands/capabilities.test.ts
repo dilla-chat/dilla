@@ -1,26 +1,40 @@
 import { describe, expect, it } from 'vitest';
-import { COMMANDS, commandById } from '@dilla/client-core';
-import { COMMAND_OPERATIONS, commandListed } from './capabilities.ts';
+import { commandBotOf } from './capabilities.ts';
+import { botSince } from './bot-run.ts';
+import { FIXTURE_BOT_USER, fixtureCatalog } from './bot-catalog.fixture.ts';
 
-const command = (id: string) => commandById(id)!;
+const COMMUNITY = '55'.repeat(16);
 
-describe('command capabilities', () => {
-  it('hides poll create without operation 70 and keeps poll vote with 73', () => {
-    const ops = new Set([71, 73, 74, 80, 81]);
-    expect(commandListed(command('poll create'), ops)).toBe(false);
-    expect(commandListed(command('poll vote'), ops)).toBe(true);
-    expect(commandListed(command('remind'), ops)).toBe(true);
+describe('the picker’s Bot commands (Bot v2)', () => {
+  it('come from the catalog on this device, each with its operation', () => {
+    const bot = commandBotOf(fixtureCatalog(), COMMUNITY);
+    expect(bot.definitions.find(d => d.id === 'remind')?.bot?.operation).toBe(80);
+    expect(bot.definitions.find(d => d.id === 'play')?.provider).toBe('bot');
+    expect(bot.botUserId).toBe(FIXTURE_BOT_USER);
+    expect(bot.greyed.size).toBe(0);
+    expect(bot.waiting).toBe(false);
   });
 
-  it('hides every Bot command while the operations are unknown, never a built-in', () => {
-    for (const entry of COMMANDS) expect(commandListed(entry, null)).toBe(entry.provider !== 'bot');
+  it('are none in a DM, and none (waiting) before the first sync of a community', () => {
+    expect(commandBotOf(fixtureCatalog(), null).definitions).toEqual([]);
+    expect(commandBotOf(undefined, COMMUNITY)).toMatchObject({ definitions: [], waiting: true });
+    expect(commandBotOf(null, COMMUNITY)).toMatchObject({ definitions: [], waiting: false });
   });
 
-  it('names an operation for every Bot command', () => {
-    for (const entry of COMMANDS.filter(row => row.provider === 'bot')) expect(COMMAND_OPERATIONS[entry.id]).toBeTypeOf('number');
-    expect(COMMAND_OPERATIONS).toMatchObject({ play: 12, pause: 13, resume: 14, skip: 15, stop: 16, queue: 10, nowplaying: 10, seek: 17, volume: 18,
-      shuffle: 19, repeat: 20, 'queue remove': 21, 'queue move': 22, 'queue clear': 23, music: 10, 'music help': 10, 'rolepanel create': 31,
-      'announcement list': 50, 'announcement create': 51, 'announcement edit': 51, 'announcement delete': 52,
-      'poll create': 70, 'poll results': 71, 'poll vote': 73, 'poll close': 74, remind: 80, 'reminders list': 81, 'reminders cancel': 82, 'reminders dismiss': 83 });
+  it('are greyed, never hidden, with the Bot’s state and since', () => {
+    const since = 1_758_659_040;
+    const offline = commandBotOf(fixtureCatalog({ status: { state: 'offline', since } }), COMMUNITY);
+    expect(offline.definitions.length).toBeGreaterThan(0);
+    expect(offline.greyed.get('play')).toBe(`The Bot is offline since ${botSince(since)}`);
+    expect(commandBotOf(fixtureCatalog({ status: { state: 'degraded', since } }), COMMUNITY).greyed.get('remind'))
+      .toBe(`The Bot is having trouble since ${botSince(since)}`);
+    expect(commandBotOf(fixtureCatalog({ status: { state: 'disabled', since: null } }), COMMUNITY).greyed.get('remind')).toBe('The Bot is turned off in this server');
+    expect(commandBotOf(fixtureCatalog({ status: { state: 'absent', since: null } }), COMMUNITY).greyed.get('remind')).toBe('This server has no Bot');
+  });
+
+  it('that post in a channel are greyed when this member can view no Bot channel', () => {
+    const bot = commandBotOf(fixtureCatalog({ botChannels: [] }), COMMUNITY);
+    expect(bot.greyed.get('poll create')).toBe('Mark a channel as a Bot channel first');
+    expect(bot.greyed.get('remind')).toBeUndefined();
   });
 });

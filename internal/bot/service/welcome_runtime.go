@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/community/welcome"
@@ -14,17 +15,40 @@ import (
 
 // WelcomeDestinationResolver checks the authenticated current channel view and
 // the local MLS group binding before returning a text destination.
+//
+// Bot v2 Task 17: the channel must also be a Bot channel (CheckBotChannel). A feature aimed at any other channel posts
+// nothing, is flagged needs_bot_channel under Feature, and gets an error matching ErrNeedsBotChannel. Welcome messages,
+// scheduled announcements, role panels, polls and music cards all resolve their group here.
 type WelcomeDestinationResolver struct {
-	Session *client.Session
+	Session channelLister
 	Native  interface {
 		InspectGroup(context.Context, id.ID) (native.GroupInfo, error)
 	}
+	// Feature names the caller in the needs_bot_channel flag ("welcome", "announcements", "polls", "role_panels",
+	// "music"); empty is "post".
+	Feature string
+}
+
+type channelLister interface {
+	Channels(context.Context, id.ID) ([]client.Channel, error)
 }
 
 func (r WelcomeDestinationResolver) ResolveTextGroup(ctx context.Context, community, channel id.ID) (id.ID, error) {
-	if r.Session == nil || r.Native == nil || community.IsZero() || channel.IsZero() {
+	if isNilSession(r.Session) || r.Native == nil || community.IsZero() || channel.IsZero() {
 		return id.ID{}, errors.New("missing welcome destination dependency")
 	}
+	feature := r.Feature
+	if feature == "" {
+		feature = "post"
+	}
+	if err := CheckBotChannel(community, channel); err != nil {
+		if errors.Is(err, ErrNeedsBotChannel) {
+			FlagNeedsBotChannel(community, feature, channel)
+		}
+		logRefusal(ctx, feature, channel, err)
+		return id.ID{}, err
+	}
+	ClearNeedsBotChannel(community, feature)
 	channels, err := r.Session.Channels(ctx, community)
 	if err != nil {
 		return id.ID{}, err
@@ -38,10 +62,18 @@ func (r WelcomeDestinationResolver) ResolveTextGroup(ctx context.Context, commun
 		}
 		group, err := r.Native.InspectGroup(ctx, *ch.TextGroupID)
 		if err != nil {
+			// Not (yet) in the Bot's native state: a Bot channel marked a moment ago is joined from its kept Welcome later.
+			err = fmt.Errorf("%w: %w", ErrBotNotJoined, err)
+			logRefusal(ctx, feature, channel, err)
 			return id.ID{}, err
 		}
 		if group.ID != *ch.TextGroupID || group.State != 2 || group.Community == nil || *group.Community != community || group.Target != channel {
-			return id.ID{}, errors.New("welcome destination MLS group is not authorized for this channel")
+			err = errors.New("welcome destination MLS group is not authorized for this channel")
+			if group.State != 2 {
+				err = ErrBotNotJoined
+			}
+			logRefusal(ctx, feature, channel, err)
+			return id.ID{}, err
 		}
 		return group.ID, nil
 	}
@@ -72,7 +104,7 @@ func (s WelcomeSender) SendWelcome(ctx context.Context, req welcome.SendRequest)
 		return protocol.SendReceipt{}, err
 	}
 	// Security review (task 8b): text a member authors never carries the music player marker.
-	body, err := cborx.Marshal([]any{uint64(0), nil, NeutralizeBotMarkers(req.Text), []any{}, nil})
+	body, err := cborx.Marshal([]any{uint64(0), nil, DefangMarkers(req.Text), []any{}, nil})
 	if err != nil {
 		return protocol.SendReceipt{}, err
 	}
@@ -98,4 +130,13 @@ func (s WelcomeSender) ResolveWelcome(ctx context.Context, operation, attempt id
 		return protocol.SendReceipt{}, false, err
 	}
 	return receipt, true, nil
+}
+
+// isNilSession reports a missing session, including a typed nil *client.Session in the interface.
+func isNilSession(s channelLister) bool {
+	if s == nil {
+		return true
+	}
+	session, ok := s.(*client.Session)
+	return ok && session == nil
 }

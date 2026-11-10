@@ -8,7 +8,6 @@ use std::{
 use zeroize::{Zeroize, Zeroizing};
 
 pub(crate) const MAX_LOGICAL: usize = 32 * 1024 * 1024;
-pub(crate) const MAX_INTERACTION_SNAPSHOT: usize = 160 * 1024;
 pub(crate) const MAX_CHUNK: usize = 768 * 1024;
 const UPLOAD_TTL: Duration = Duration::from_secs(30);
 const RESULT_TTL: Duration = Duration::from_secs(30);
@@ -350,8 +349,8 @@ fn validate_group_apply(d: &mut Decoder<'_>) -> Result<(), CborError> {
     let n = d.array_len()?;
     let sub = d.uint()?;
     let valid = match (sub, n) {
-        (0 | 17 | 23, 1) => true,
-        (1 | 12 | 27, 2) => {
+        (0 | 17, 1) => true,
+        (1 | 12, 2) => {
             id(d)?;
             true
         }
@@ -362,75 +361,6 @@ fn validate_group_apply(d: &mut Decoder<'_>) -> Result<(), CborError> {
         }
         (20, 2) => {
             id(d)?;
-            true
-        }
-        (21, 6) => {
-            id(d)?; // operation ID
-            id(d)?; // group ID
-            bounded_bytes(d, 1, MAX_INTERACTION_SNAPSHOT)?; // signed snapshot wire
-            d.array(11)?;
-            for _ in 0..8 {
-                id(d)?;
-            }
-            nonzero(d.uint()?)?; // minimum eligibility revision
-            nonzero(d.uint()?)?; // server_now
-            nonzero(d.uint()?)?; // policy version
-            bounded_bytes(d, 1, MAX_LOGICAL)?; // participant KeyPackage
-            true
-        }
-        (22, 4) => {
-            id(d)?; // group ID
-            bounded_bytes(d, 1, MAX_INTERACTION_SNAPSHOT)?; // signed context snapshot
-            d.array(11)?;
-            for _ in 0..8 {
-                id(d)?;
-            }
-            nonzero(d.uint()?)?;
-            nonzero(d.uint()?)?;
-            nonzero(d.uint()?)?;
-            true
-        }
-        (24, 7) => {
-            id(d)?; // group ID
-            bounded_bytes(d, 1, MAX_INTERACTION_SNAPSHOT)?;
-            d.array(11)?;
-            for _ in 0..8 {
-                id(d)?;
-            }
-            nonzero(d.uint()?)?;
-            nonzero(d.uint()?)?;
-            nonzero(d.uint()?)?;
-            array_body(d)?;
-            array_body(d)?;
-            d.uint()?;
-            true
-        }
-        (25, 4) => {
-            id(d)?;
-            bounded_bytes(d, 1, MAX_INTERACTION_SNAPSHOT)?;
-            d.array(11)?;
-            for _ in 0..8 {
-                id(d)?;
-            }
-            nonzero(d.uint()?)?;
-            nonzero(d.uint()?)?;
-            nonzero(d.uint()?)?;
-            true
-        }
-        (26, 8) => {
-            d.array(11)?; // exact Bot interaction admission tuple
-            for _ in 0..8 {
-                id(d)?;
-            }
-            nonzero(d.uint()?)?; // minimum eligibility revision
-            nonzero(d.uint()?)?; // server_now
-            nonzero(d.uint()?)?; // policy version
-            bounded_bytes(d, 1, MAX_INTERACTION_SNAPSHOT)?;
-            id(d)?; // operation ID
-            id(d)?; // attempt ID
-            bounded_bytes(d, 1, MAX_LOGICAL)?; // deterministic send request, checked by adapter
-            nonzero(d.uint()?)?; // original_now
-            nonzero(d.uint()?)?; // expected generation
             true
         }
         (2, 7) => {
@@ -807,23 +737,12 @@ mod tests {
             .bytes(&[0x01]);
         assert!(validate_target_payload(&wrong_nested_body.into_vec()).is_err());
 
-        let mut interaction = Encoder::new();
-        interaction
-            .array(6)
-            .uint(21)
-            .bytes(&[1; 16])
-            .bytes(&[2; 16])
-            .bytes(&[0x40]);
-        interaction.array(11);
-        for byte in 3..=10 {
-            interaction.bytes(&[byte; 16]);
+        // Bot v2 Task 23: the kind-3 suboperations 21 to 27 are gone.
+        for sub in 21..=27u64 {
+            let mut retired = Encoder::new();
+            retired.array(1).uint(sub);
+            assert!(validate_target_payload(&retired.into_vec()).is_err());
         }
-        interaction.uint(1).uint(100).uint(1).bytes(&[0x41]);
-        assert!(validate_target_payload(&interaction.into_vec()).is_ok());
-
-        let mut interaction_discovery = Encoder::new();
-        interaction_discovery.array(1).uint(23);
-        assert!(validate_target_payload(&interaction_discovery.into_vec()).is_ok());
     }
 
     #[test]
@@ -835,13 +754,13 @@ mod tests {
             e.bytes(&[0x80]);
         }
 
-        for sub in 0..=27 {
+        for sub in 0..=20 {
             let mut e = Encoder::new();
             match sub {
-                0 | 17 | 23 => {
+                0 | 17 => {
                     e.array(1).uint(sub);
                 }
-                1 | 12 | 27 => {
+                1 | 12 => {
                     e.array(2).uint(sub);
                     id(&mut e, 1);
                 }
@@ -927,63 +846,6 @@ mod tests {
                     e.array(2).uint(sub);
                     id(&mut e, 1);
                 }
-                21 => {
-                    e.array(6).uint(sub);
-                    id(&mut e, 1);
-                    id(&mut e, 2);
-                    body(&mut e);
-                    e.array(11);
-                    for byte in 3..=10 {
-                        id(&mut e, byte);
-                    }
-                    e.uint(1).uint(1).uint(1);
-                    body(&mut e);
-                }
-                24 => {
-                    e.array(7).uint(sub);
-                    id(&mut e, 1);
-                    body(&mut e);
-                    e.array(11);
-                    for byte in 2..=9 {
-                        id(&mut e, byte);
-                    }
-                    e.uint(1).uint(1).uint(1);
-                    body(&mut e);
-                    body(&mut e);
-                    e.uint(0);
-                }
-                25 => {
-                    e.array(4).uint(sub);
-                    id(&mut e, 1);
-                    body(&mut e);
-                    e.array(11);
-                    for byte in 2..=9 {
-                        id(&mut e, byte);
-                    }
-                    e.uint(1).uint(1).uint(1);
-                }
-                26 => {
-                    e.array(8).uint(sub).array(11);
-                    for byte in 1..=8 {
-                        id(&mut e, byte);
-                    }
-                    e.uint(1).uint(1).uint(1);
-                    body(&mut e);
-                    id(&mut e, 9);
-                    id(&mut e, 10);
-                    body(&mut e);
-                    e.uint(1).uint(1);
-                }
-                22 => {
-                    e.array(4).uint(sub);
-                    id(&mut e, 1);
-                    body(&mut e);
-                    e.array(11);
-                    for byte in 2..=9 {
-                        id(&mut e, byte);
-                    }
-                    e.uint(1).uint(1).uint(1);
-                }
                 _ => unreachable!(),
             }
             assert!(
@@ -991,22 +853,6 @@ mod tests {
                 "minimal contract payload for group suboperation {sub} must validate"
             );
         }
-    }
-
-    #[test]
-    fn accepts_proof_bound_interaction_response_prepare_payload() {
-        let mut request = Encoder::new();
-        request.array(4).uint(0).null().text("response").array(0);
-        let mut payload = Encoder::new();
-        payload.array(8).uint(26).array(11);
-        for byte in 1..=8 {
-            payload.bytes(&[byte; 16]);
-        }
-        payload.uint(1).uint(1).uint(1);
-        payload.bytes(&[0x80]);
-        payload.bytes(&[9; 16]).bytes(&[10; 16]);
-        payload.bytes(&request.into_vec()).uint(1).uint(1);
-        assert!(validate_target_payload(&payload.into_vec()).is_ok());
     }
 
     #[test]

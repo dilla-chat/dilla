@@ -158,11 +158,11 @@ func NewGifs(repo store.Repository, limiter *server.RateLimiter, clk clock.Clock
 
 // Register mounts the routes.
 func (g *Gifs) Register(mux *server.Mux) {
-	mux.HandleFunc("GET /v1/communities/{id}/gifs", g.status)
-	mux.HandleFunc("PUT /v1/communities/{id}/gifs/key", g.putKey)
-	mux.HandleFunc("DELETE /v1/communities/{id}/gifs/key", g.deleteKey)
-	mux.HandleFunc("PUT /v1/communities/{id}/gifs/rating", g.putRating)
-	mux.HandleFunc("GET /v1/communities/{id}/gifs/search", g.search)
+	mux.Socket("GET /v1/communities/{id}/gifs", http.HandlerFunc(g.status))
+	mux.Socket("PUT /v1/communities/{id}/gifs/key", http.HandlerFunc(g.putKey))
+	mux.Socket("DELETE /v1/communities/{id}/gifs/key", http.HandlerFunc(g.deleteKey))
+	mux.Socket("PUT /v1/communities/{id}/gifs/rating", http.HandlerFunc(g.putRating))
+	mux.Socket("GET /v1/communities/{id}/gifs/search", http.HandlerFunc(g.search))
 	mux.HandleFunc("GET /v1/communities/{id}/gifs/media/{gif_id}", g.media)
 }
 

@@ -13,6 +13,21 @@ import (
 
 const MaxGatewayFrameBytes = (1 << 20) + 512
 
+// MaxBotEventFrameBytes bounds one op 65 bot_event frame (Bot v2 task 14): a device-list push of up to 1 MiB, the most
+// dillad sends (api.BotFeedMaxDeviceListBytes; a larger one it leaves out), plus the frame's own bytes. It is above
+// the hello's max_frame_bytes on purpose; every other server frame stays held to that.
+const MaxBotEventFrameBytes = MaxGatewayFrameBytes
+
+// serverFrameLimit is the size bound of one server frame read after the handshake: MaxBotEventFrameBytes for an op 65,
+// read from the frame's head (a four-element array whose op is the one-byte-argument uint 65), and the hello's
+// maxFrame for everything else.
+func serverFrameLimit(raw []byte, maxFrame uint64) uint64 {
+	if len(raw) >= 3 && raw[0] == 0x84 && raw[1] == 0x18 && raw[2] == byte(OpBotEvent) {
+		return MaxBotEventFrameBytes
+	}
+	return min(maxFrame, MaxGatewayFrameBytes)
+}
+
 type Opcode uint64
 
 const (
@@ -42,7 +57,103 @@ const (
 	OpVoiceState       Opcode = 50
 	OpCallRing         Opcode = 53
 	OpCommunityChanged Opcode = 54
+	// Bot v2: one HTTP-shaped app request over the socket (client to server) and its answer (server to client).
+	OpRequest  Opcode = 59
+	OpResponse Opcode = 60
+	// Bot v2 task 17 fix round 2: an answer to a sealed command this device sent, `[request_id, seq, sealed, final]`.
+	// The Bot sends only its own health probe, so the answers it receives are the probe's. Ringed (n > 0), or n = 0
+	// when the connection's ring had no room for it (gateway sendLocked).
+	OpBotReply Opcode = 62
+	// Bot v2 tasks 10 and 12: a member's sealed command and the Bot's event feed, on the Bot runtime's connection only.
+	// Both are sequenced in its ring; a cold-start snapshot's op 65 body frames are sent with n = 0.
+	OpBotCommand Opcode = 64
+	OpBotEvent   Opcode = 65
+	// Bot v2 task 13: an incoming webhook for the Bot to post, never ringed (n = 0). Its consumer, which answers
+	// with op 67 bot_webhook_ack, comes in a later task; until then the frame is decoded and dropped.
+	OpBotWebhook    Opcode = 66
+	OpBotWebhookAck Opcode = 67
 )
+
+const (
+	// MaxRequestBodyBytes is the instance's request body cap (gateway.MaxRequestBodyBytes).
+	MaxRequestBodyBytes = 16 << 20
+	// MaxResponseFrameBytes bounds a response frame: a route's answer (16 MiB by default) plus the frame's own bytes,
+	// the instance's request-frame bound. Only op 60 may be this large; every other frame keeps the hello's bound.
+	MaxResponseFrameBytes = MaxRequestBodyBytes + 16<<10
+	maxRequestMethod      = 16
+	maxRequestRoute       = 8192
+	maxRequestIdem        = 64
+)
+
+// ResponseFrame is one decoded op 60 answer: the request's id, its HTTP status and its body.
+type ResponseFrame struct {
+	ID     uint64
+	Status int
+	Body   []byte
+}
+
+// EncodeRequestFrame builds op 59 [id, method, route, body, idem|null] with n 0 and no group. It refuses what the
+// instance would refuse: an empty or long method or route, an idem of 0 or more than 64 bytes, a body over the cap.
+func EncodeRequestFrame(requestID uint64, method, route string, body, idem []byte) ([]byte, error) {
+	if len(method) == 0 || len(method) > maxRequestMethod || len(route) == 0 || len(route) > maxRequestRoute || len(body) > MaxRequestBodyBytes {
+		return nil, ErrProtocol
+	}
+	var key any
+	if idem != nil {
+		if len(idem) == 0 || len(idem) > maxRequestIdem {
+			return nil, ErrProtocol
+		}
+		key = idem
+	}
+	if body == nil {
+		body = []byte{}
+	}
+	b, err := cborx.Marshal([]any{uint64(OpRequest), uint64(0), nil, []any{requestID, method, route, body, key}})
+	if err != nil {
+		return nil, ErrProtocol
+	}
+	return b, nil
+}
+
+// isResponseFrame reports whether raw begins a four-element frame whose op is 60, without decoding the rest.
+func isResponseFrame(raw []byte) bool {
+	return len(raw) >= 3 && raw[0] == 0x84 && raw[1] == 0x18 && raw[2] == byte(OpResponse)
+}
+
+// DecodeResponseFrame checks op 60 strictly: deterministic CBOR, n 0, no group, [id uint, status 100..599, body bytes].
+func DecodeResponseFrame(raw []byte) (ResponseFrame, error) {
+	var out ResponseFrame
+	if len(raw) > MaxResponseFrameBytes {
+		return out, ErrProtocol
+	}
+	var elems []cbor.RawMessage
+	if err := cborx.Unmarshal(raw, &elems); err != nil || len(elems) != 4 {
+		return out, ErrProtocol
+	}
+	if op, err := uintAt(elems[0]); err != nil || Opcode(op) != OpResponse {
+		return out, ErrProtocol
+	}
+	if n, err := uintAt(elems[1]); err != nil || n != 0 || !isNull(elems[2]) {
+		return out, ErrProtocol
+	}
+	var payload []cbor.RawMessage
+	if cborx.ExpectMajor(elems[3], cborx.MajorArray) != nil || cborx.Unmarshal(elems[3], &payload) != nil || len(payload) != 3 {
+		return out, ErrProtocol
+	}
+	var err error
+	if out.ID, err = uintAt(payload[0]); err != nil {
+		return ResponseFrame{}, ErrProtocol
+	}
+	status, err := boundedUint(payload[1], 100, 599)
+	if err != nil {
+		return ResponseFrame{}, ErrProtocol
+	}
+	out.Status = int(status) //nolint:gosec // G115: boundedUint limited it to 100..599 above
+	if out.Body, err = bytesAt(payload[2], 0, MaxResponseFrameBytes); err != nil {
+		return ResponseFrame{}, ErrProtocol
+	}
+	return out, nil
+}
 
 var (
 	ErrProtocol         = errors.New("bot gateway: invalid protocol frame")
@@ -55,6 +166,8 @@ var (
 	errHeartbeatOverdue = errors.New("bot gateway: heartbeat overdue; re-identification required")
 	errReplayGap        = errors.New("bot gateway: replay gap; authoritative sync required")
 	errTransport        = errors.New("bot gateway: transport disconnected")
+	// errLaunchRefused is an identify carrying the launch token refused E_UNAUTHENTICATED: retried once without it.
+	errLaunchRefused = errors.New("bot gateway: launch token refused; retrying without it")
 )
 
 type Hello struct {
@@ -71,6 +184,8 @@ type Ready struct {
 	WireVersion, E2EEVersion, MediaVersion uint64
 	KeyPackagesRemaining                   uint64
 	Groups                                 []ReadyGroup
+	// BootID is random per dillad process (ready element 9): a restart changes it.
+	BootID id.ID
 }
 type ReadyGroup struct {
 	GroupID                              id.ID
@@ -166,7 +281,24 @@ type Frame struct {
 	CommunityID      *id.ID
 	ServerTimestamp  *uint64
 	ErrorCode        string
+	// BotPayload is an op 64, 65 or 66 frame's payload elements, shape-checked only: op 64 is [request_id, community_id,
+	// user_id, device_id, sealed], op 65 is [kind, payload], op 66 is [delivery_id, webhook_id, community_id,
+	// channel_id, display_name, avatar_id(bstr 32)|null, text, allow_everyone]. Their consumers decode them.
+	BotPayload []cbor.RawMessage
+	// BotReply is an op 62's decoded payload.
+	BotReply *BotReply
 }
+
+// BotReply is op 62 bot_reply: answer number Seq of the sealed command RequestID, sealed to that command's reply key.
+type BotReply struct {
+	RequestID id.ID
+	Seq       uint32
+	Sealed    []byte
+	Final     bool
+}
+
+// maxSealedReplyBytes is dilla_core::bot::command::MAX_SEALED_REPLY_BYTES.
+const maxSealedReplyBytes = 65536
 
 // DecodeServerFrame applies deterministic CBOR, direction, shape, and scope checks
 // before decoding any frame fields. maxBytes must itself be within the protocol ceiling.
@@ -205,7 +337,8 @@ func DecodeServerFrame(raw []byte, maxBytes uint64) (Frame, error) {
 	if grouped != (out.GroupID != nil) {
 		return Frame{}, ErrProtocol
 	}
-	if replayable && out.N == 0 || !replayable && out.N != 0 {
+	// Op 65 is the one opcode with both forms: ringed live, unringed inside a cold-start snapshot.
+	if out.Op != OpBotEvent && out.Op != OpBotReply && (replayable && out.N == 0 || !replayable && out.N != 0) {
 		return Frame{}, ErrProtocol
 	}
 	bad := func() (Frame, error) { return Frame{}, ErrProtocol }
@@ -267,6 +400,9 @@ func DecodeServerFrame(raw []byte, maxBytes uint64) (Frame, error) {
 			return bad()
 		}
 		if r.KeyPackagesRemaining, err = uintAt(payload[7]); err != nil {
+			return bad()
+		}
+		if r.BootID, err = idAt(payload[9]); err != nil {
 			return bad()
 		}
 		var rows []cbor.RawMessage
@@ -582,6 +718,30 @@ func DecodeServerFrame(raw []byte, maxBytes uint64) (Frame, error) {
 			return bad()
 		}
 		out.CommunityID = &v
+	case OpBotCommand, OpBotEvent, OpBotWebhook:
+		out.BotPayload = payload
+	case OpBotReply:
+		if out.GroupID != nil {
+			return bad()
+		}
+		r := &BotReply{}
+		if r.RequestID, err = idAt(payload[0]); err != nil {
+			return bad()
+		}
+		seq, e := boundedUint(payload[1], 0, 1<<32-1)
+		if e != nil {
+			return bad()
+		}
+		r.Seq = uint32(seq) //nolint:gosec // G115: bounded to 2^32-1 above
+		if r.Sealed, err = bytesAt(payload[2], 1, maxSealedReplyBytes); err != nil {
+			return bad()
+		}
+		final, e := boundedUint(payload[3], 0, 1)
+		if e != nil {
+			return bad()
+		}
+		r.Final = final == 1
+		out.BotReply = r
 	default:
 		return bad()
 	}
@@ -593,7 +753,7 @@ func serverSpec(op Opcode) (int, bool, bool, bool) {
 	case OpHello:
 		return 9, false, false, true
 	case OpReady:
-		return 9, false, true, true
+		return 10, false, true, true
 	case OpResumed:
 		return 3, false, true, true
 	case OpInvalidSession:
@@ -630,6 +790,14 @@ func serverSpec(op Opcode) (int, bool, bool, bool) {
 		return 5, false, false, true
 	case OpCommunityChanged:
 		return 1, false, false, true
+	case OpBotCommand:
+		return 5, false, true, true
+	case OpBotEvent:
+		return 2, false, true, true
+	case OpBotWebhook:
+		return 8, false, false, true
+	case OpBotReply:
+		return 4, false, true, true
 	}
 	return 0, false, false, false
 }
@@ -700,8 +868,14 @@ func uintsAt(raw cbor.RawMessage, maximum int) ([]uint64, error) {
 }
 func isNull(raw cbor.RawMessage) bool { return len(raw) == 1 && raw[0] == 0xf6 }
 
+// opAppBuild is the gateway's app_build notice (op 56): the build the instance serves, pushed to web clients on wire 6.
+// The instance does not send it to managed Bot connections, but an older or other instance might; the Bot has no web
+// client to update, so it drops the frame (an unknown opcode would end the socket as a protocol error).
+const opAppBuild Opcode = 56
+
 // dropMalformedEphemeral mirrors protocol/02: malformed voice_state, call_ring,
-// and community_changed notifications are dropped without terminating the socket.
+// and community_changed notifications are dropped without terminating the socket. So is the app_build notice, which the
+// Bot never reads.
 func dropMalformedEphemeral(raw []byte) bool {
 	var envelope []cbor.RawMessage
 	if cborx.Unmarshal(raw, &envelope) != nil || len(envelope) != 4 {
@@ -712,7 +886,7 @@ func dropMalformedEphemeral(raw []byte) bool {
 		return false
 	}
 	switch Opcode(op) {
-	case OpVoiceState, OpCallRing, OpCommunityChanged:
+	case OpVoiceState, OpCallRing, OpCommunityChanged, opAppBuild:
 		return true
 	default:
 		return false

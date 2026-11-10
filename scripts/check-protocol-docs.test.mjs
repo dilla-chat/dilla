@@ -24,8 +24,8 @@ test('passes when every required document exists with its required headings and 
     '06-backup-archive.md': '# Backup\n\n## Keys\n\n## Header\n\n## Archive\n\n## Restore\n',
     '07-versioning.md': '# Versioning\n\n## Versions\n\n## Negotiation\n\n## Change process\n',
     '08-threat-model.md': '# Threat model\n\n## Adversaries\n\n## Guarantees\n\n## Residual trust\n\n## Out of scope\n',
-    '09-http-api.md': '# HTTP API\n\n## Scope\n\n## Encoding\n\n## Identifiers\n\n## Sessions\n\n## Accounts and devices\n\n## Auth ceremonies\n\n## Instance\n\n## Rate limits\n\n## Flags\n',
-    '10-community-bot.md': '# Community bot\n\n## Scope\n\n## Encoding\n\n## Application requests\n\n## Signed moderation removal\n\n## Durable structural event\n\n## Send receipt\n\n## Helper transport envelope\n\n## Session capability and compatibility\n\n## Vectors\n',
+    '09-http-api.md': '# HTTP API\n\n## Scope\n\n## Encoding\n\n## Socket requests\n\n## Identifiers\n\n## Sessions\n\n## Accounts and devices\n\n## Auth ceremonies\n\n## Instance\n\n## Rate limits\n\n## Flags\n',
+    '10-community-bot.md': '# Community bot\n\n## Scope\n\n## Encoding\n\n## Command catalog\n\n## Command key\n\n## Sealed request\n\n## Reply\n\n## State hints\n\n## Bot channels\n\n## Webhooks\n\n## Bot connection and feed\n\n## Health\n\n## Vectors\n',
   });
   assert.deepEqual(checkDocs(dir), []);
 });
@@ -58,7 +58,7 @@ test('recursively detects placeholders in all files under protocol/', () => {
     writeFileSync(join(protocolDir, '06-backup-archive.md'), '# Backup\n\n## Keys\n\n## Header\n\n## Archive\n\n## Restore\n');
     writeFileSync(join(protocolDir, '07-versioning.md'), '# Versioning\n\n## Versions\n\n## Negotiation\n\n## Change process\n');
     writeFileSync(join(protocolDir, '08-threat-model.md'), '# Threat model\n\n## Adversaries\n\n## Guarantees\n\n## Residual trust\n\n## Out of scope\n');
-    writeFileSync(join(protocolDir, '09-http-api.md'), '# HTTP API\n\n## Scope\n\n## Encoding\n\n## Identifiers\n\n## Sessions\n\n## Accounts and devices\n\n## Auth ceremonies\n\n## Instance\n\n## Rate limits\n\n## Flags\n');
+    writeFileSync(join(protocolDir, '09-http-api.md'), '# HTTP API\n\n## Scope\n\n## Encoding\n\n## Socket requests\n\n## Identifiers\n\n## Sessions\n\n## Accounts and devices\n\n## Auth ceremonies\n\n## Instance\n\n## Rate limits\n\n## Flags\n');
 
     // Create extra files with placeholders in nested directories
     mkdirSync(join(protocolDir, 'vectors'), { recursive: true });

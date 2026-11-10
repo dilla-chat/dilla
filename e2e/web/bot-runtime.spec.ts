@@ -3,67 +3,20 @@ import { expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import {
   FIREFOX_FAVICON_LINE, WAIT, addServerVia, completeSignUp, composerBox, copy, isFirefoxBrowserFaviconViolation, makeInviteLink, messageRow, newAccount,
-  openChannel, reactionChip, rowAction, sendText, signIn, signUp, test, makeRole, roleButton,
+  openChannel, reactionChip, rowAction, sendText, signIn, signUp, test, makeRole, roleButton, ensureMembersOpen,
 } from './support/app';
+import { restoreDesktopWindow } from './support/electron.ts';
 import { startTestHost, type HostConfig, type StartedHost } from './support/host';
 import { arr, decode } from '../../packages/client-core/src/cbor/index';
-import { installWorkerPort, portCall } from './support/worker-port';
-import { advanceClock } from './support/totp';
 import { e2ePort } from './support/ports';
+import { markBotChannel, watchBearer } from './support/bot-channel';
 
 const BOT_RUNTIME_PORT = Number(process.env.DILLA_E2E_BOT_RUNTIME_PORT ?? e2ePort(8491));
 const HOST: HostConfig = { port: BOT_RUNTIME_PORT, control: BOT_RUNTIME_PORT + 1, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
 const ROLE_PANEL_PORT = Number(process.env.DILLA_E2E_ROLE_PANEL_PORT ?? HOST.port);
 const ROLE_PANEL_HOST: HostConfig = { ...HOST, port: ROLE_PANEL_PORT, control: ROLE_PANEL_PORT + 1, advanceClockWithWall: true };
 const SERVER = 'Runtime Bot Acceptance';
-const RECOVERY_SERVER = 'Bot Response Recovery';
-
-async function traceCoreWorker(page: import('@playwright/test').Page): Promise<void> {
-  await page.addInitScript(() => {
-    const root = window as unknown as { __dillaWorkerTrace?: { calls: unknown[]; returns: unknown[] } };
-    root.__dillaWorkerTrace = { calls: [], returns: [] };
-    const OriginalWorker = window.Worker;
-    window.Worker = new Proxy(OriginalWorker, {
-      construct(target, args, newTarget) {
-        const worker = Reflect.construct(target, args, newTarget) as Worker;
-        const post = worker.postMessage.bind(worker);
-        worker.postMessage = (message: unknown, transfer?: Transferable[] | StructuredSerializeOptions) => {
-          root.__dillaWorkerTrace?.calls.push(message);
-          post(message, transfer as Transferable[]);
-        };
-        worker.addEventListener('message', event => root.__dillaWorkerTrace?.returns.push(event.data));
-        return worker;
-      },
-    }) as typeof Worker;
-  });
-}
-
-async function lastWorkerCommandOutcome(page: import('@playwright/test').Page, commandName: string): Promise<{
-  requestId: string | null; state: 'waiting' | 'accepted' | 'pending' | 'rejected' | 'unknown' | 'refused'; code: string | null; detail: string | null;
-}> {
-  return page.evaluate(name => {
-    const trace = (window as unknown as { __dillaWorkerTrace?: { calls: unknown[]; returns: unknown[] } }).__dillaWorkerTrace;
-    const calls = trace?.calls.map(value => value as { id?: number; command?: { m?: string; requestId?: string } }).reverse() ?? [];
-    const call = calls.find(value => value.command?.m === name);
-    if (call === undefined) return { requestId: null, state: 'waiting', code: null, detail: null };
-    const returned = trace?.returns.map(value => value as { t?: string; id?: number; ok?: boolean; error?: { code?: string; detail?: string }; value?: { status?: string } })
-      .find(value => value.t === 'ret' && value.id === call.id);
-    if (returned === undefined) return { requestId: call.command?.requestId ?? null, state: 'waiting', code: null, detail: null };
-    if (returned.ok === false) {
-      const safeCodes = new Set(['E_CORE_STATE', 'E_SYNC_STOPPED', 'E_BAD_INPUT', 'E_FORBIDDEN', 'E_UNAVAILABLE', 'E_INTERNAL']);
-      // The worker sends a detail only as one of its fixed E_CORE_STATE codes (sanitizeWorkerError); anything else is
-      // reported as 'other' so a failure message never carries free text.
-      const detailCode = returned.error?.detail ?? '';
-      const safeDetails = new Set(['missing_interaction_group', 'ambiguous_interaction_group', 'interaction_clock_skew']);
-      return { requestId: call.command?.requestId ?? null, state: 'refused',
-        code: safeCodes.has(returned.error?.code ?? '') ? returned.error?.code ?? null : 'other',
-        detail: safeDetails.has(detailCode) ? detailCode : 'other' };
-    }
-    const status = returned.value?.status;
-    const state = status === 'accepted' || status === 'pending' || status === 'rejected' || status === 'unknown' ? status : 'unknown';
-    return { requestId: call.command?.requestId ?? null, state, code: null, detail: null };
-  }, commandName);
-}
+const RECOVERY_SERVER = 'Bot Moderation Log';
 
 test.use({ baseURL: `http://127.0.0.1:${ROLE_PANEL_PORT}` });
 
@@ -105,7 +58,8 @@ test('a bot enabled through server settings reaches ready through the native run
     if (runtimeCredentialFile === undefined) throw new Error('test host did not expose its protected runtime credential path');
     await expect.poll(async () => {
       const token = readFileSync(runtimeCredentialFile, 'utf8').trim();
-      const response = await fetch(`${host!.url}/v1/bot-runtime/installations`, {
+      // The runtime credential's list is the Bot socket's alone under a supervisor; the host serves it on its control listener.
+      const response = await fetch(`${host!.control}/debug/bot/installations`, {
         headers: { authorization: `Bearer ${token}`, accept: 'application/cbor' },
       });
       if (!response.ok) return `HTTP ${response.status}`;
@@ -154,7 +108,8 @@ test('literal music command text never executes through the native runtime', asy
     if (runtimeCredentialFile === undefined) throw new Error('test host did not expose its protected runtime credential path');
     await expect.poll(async () => {
       const token = readFileSync(runtimeCredentialFile, 'utf8').trim();
-      const response = await fetch(`${host!.url}/v1/bot-runtime/installations`, {
+      // The runtime credential's list is the Bot socket's alone under a supervisor; the host serves it on its control listener.
+      const response = await fetch(`${host!.control}/debug/bot/installations`, {
         headers: { authorization: `Bearer ${token}`, accept: 'application/cbor' },
       });
       if (!response.ok) return `HTTP ${response.status}`;
@@ -195,12 +150,12 @@ test('literal music command text never executes through the native runtime', asy
   }
 });
 
-test('device 1 recovers its exact encrypted Bot response after Bot and browser restart; device 2 uses its own group', async ({ page, instanceName, relaunch, browser, guard }) => {
+// Bot v2 Task 23: the moderation log's pages are sealed Bot reads (160, 164), answered in the socket frame, with no
+// per-device interaction group or response journal. Each device reads them itself, before and after a Bot restart.
+test('the moderation log reads through sealed Bot commands on each device, across a Bot restart', async ({ page, instanceName, browser, guard }) => {
   let host: StartedHost | null = null;
   let secondContext: import('@playwright/test').BrowserContext | null = null;
-  let secondPage: import('@playwright/test').Page | null = null;
   try {
-    await traceCoreWorker(page);
     host = await startTestHost(HOST);
     const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await addServerVia(page, 'create');
@@ -209,7 +164,7 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     await page.keyboard.press('Enter');
 
     await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
-    let settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
+    const settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
     await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
       .getByRole('button', { name: copy('admin.nav.bot'), exact: true }).click();
     await settings.getByRole('switch', { name: copy('serverSettings.bot.cap.warnings'), exact: true }).click();
@@ -218,129 +173,34 @@ test('device 1 recovers its exact encrypted Bot response after Bot and browser r
     await stepUp.getByLabel(copy('factorSettings.stepUp.password'), { exact: true }).fill(owner.password);
     await stepUp.getByRole('button', { name: copy('factorSettings.stepUp.confirm'), exact: true }).click();
     await expect(settings.locator('.dw-bot-settings').getByRole('status').filter({ hasText: copy('admin.bot.status.ready') })).toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
-    // Establish this device's private group before taking its issuer offline.
-    await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
-      .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
-    await settings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true }).click();
-    await expect(settings.getByText(copy('admin.bot.moderationLog.empty'), { exact: true })).toBeVisible({ timeout: 90_000 });
-    await settings.getByRole('button', { name: copy('settings.close'), exact: true }).click();
-    await expect(settings).toBeHidden();
 
-    // Device 1 submits a real encrypted request while the Bot is offline. The pending response
-    // must remain available in this device's native journal after both processes restart.
-    await host.stopBotRuntime();
-    await page.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => page.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
-    settings = page.getByRole('dialog', { name: copy('admin.title'), exact: true });
-    await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
-      .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
-    const loadAutomatic = settings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true });
-    await loadAutomatic.click();
-    await expect(settings.getByText(copy('admin.bot.moderationLog.waiting'), { exact: true })).toBeVisible();
-    await expect.poll(async () => page.evaluate(() => {
-      const trace = (window as unknown as { __dillaWorkerTrace?: { calls: unknown[] } }).__dillaWorkerTrace;
-      const call = trace?.calls.map(value => value as { command?: { m?: string; requestId?: string } }).reverse()
-        .find(value => value.command?.m === 'listModerationCases');
-      return call?.command?.requestId ?? null;
-    })).toMatch(/^[0-9a-f]{32}$/u);
-    const requestOneId = await page.evaluate(() => {
-      const trace = (window as unknown as { __dillaWorkerTrace?: { calls: unknown[] } }).__dillaWorkerTrace;
-      const call = trace?.calls.map(value => value as { command?: { m?: string; requestId?: string } }).reverse()
-        .find(value => value.command?.m === 'listModerationCases');
-      return call?.command?.requestId ?? null;
-    });
-    expect(requestOneId).toMatch(/^[0-9a-f]{32}$/u);
-    const communityId = await page.evaluate(requestId => {
-      const trace = (window as unknown as { __dillaWorkerTrace?: { calls: unknown[] } }).__dillaWorkerTrace;
-      const request = trace?.calls.map(value => value as { command?: { m?: string; requestId?: string; communityId?: string } })
-        .find(value => value.command?.m === 'listModerationCases' && value.command.requestId === requestId);
-      return request?.command?.communityId;
-    }, requestOneId);
-    expect(communityId).toMatch(/^[0-9a-f]{32}$/u);
+    const readLog = async (dialog: import('@playwright/test').Locator): Promise<void> => {
+      await dialog.getByRole('navigation', { name: copy('admin.nav'), exact: true })
+        .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
+      await dialog.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true }).click();
+      await expect(dialog.getByText(copy('admin.bot.moderationLog.empty'), { exact: true })).toBeVisible({ timeout: 90_000 });
+      await dialog.getByRole('button', { name: copy('admin.bot.moderationLog.load'), exact: true }).click();
+      await expect(dialog.getByText(copy('admin.bot.moderationLog.empty'), { exact: true })).toBeVisible({ timeout: 90_000 });
+    };
+    await readLog(settings);
 
-    const reopened = await relaunch();
-    let deviceOne = reopened.page;
-    await installWorkerPort(reopened.context);
-    await traceCoreWorker(deviceOne);
-    await deviceOne.goto(host.url);
-    await expect(deviceOne.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
-      .getByRole('button', { name: RECOVERY_SERVER, exact: true })).toBeVisible({ timeout: 90_000 });
-    await host.startBotRuntimeNow();
-    await deviceOne.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => deviceOne.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
-    settings = deviceOne.getByRole('dialog', { name: copy('admin.title'), exact: true });
-    await settings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
-      .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
-    await settings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true }).click();
-    await expect(settings.getByText(copy('admin.bot.moderationLog.empty'), { exact: true })).toBeVisible({ timeout: 90_000 });
-    // Consumers now read only their active request IDs. Ask the real reopened worker for
-    // the exact original ID; a fresh UI read has a different ID and cannot establish recovery.
-    type Receipt = { requestId: string; status: number; cases: unknown[]; hasMore: boolean; nextCursor: string | null };
-    let originalReceipt: Receipt | undefined;
-    await expect.poll(async () => {
-      const read = await portCall(deviceOne, { m: 'readHumanInteractionResponses', communityId: communityId!, requestIds: [requestOneId!] });
-      expect(read).toMatchObject({ ok: true, value: { authorized: true } });
-      originalReceipt = (read.value as { responses: Receipt[] }).responses.find(row => row.requestId === requestOneId);
-      return originalReceipt ?? null;
-    }, { timeout: 90_000, intervals: [500, 1_000, 2_000] }).toMatchObject({ requestId: requestOneId, status: 0, cases: [], hasMore: false, nextCursor: null });
-    expect(originalReceipt!.cases).toEqual([]); // The worker strictly decodes the authenticated CBOR [1, [], null] body.
-    expect(await deviceOne.evaluate(requestId => {
-      const trace = (window as unknown as { __dillaWorkerTrace?: { calls: unknown[] } }).__dillaWorkerTrace;
-      return trace?.calls.some(value => {
-        const call = value as { command?: { m?: string; requestId?: string } };
-        return call.command?.m === 'listModerationCases' && call.command.requestId === requestId;
-      }) ?? false;
-    }, requestOneId)).toBe(false);
+    await host.restartBotRuntime();
+    await readLog(settings);
 
-    // Device 2 enrolls from the same recovery key, gets its own per-device interaction group,
-    // and proves that its own encrypted Bot request/response path is usable. This is not a claim
-    // that device 2 receives device 1's request ID or response group.
-    // The instance clock runs 2 s ahead of this browser's from here on, within the 5 s the protocol allows: device 2's
-    // interaction Welcome proof is then always issued "in its future", which the core refused outright before
-    // (the intermittent CI failure of this test when the host clock drifted 1 s ahead after the Bot restart).
-    await advanceClock(host.control, 2);
+    // Device 2 signs in from the same recovery key and reads the log itself.
     secondContext = await browser.newContext({ baseURL: host.url });
     await guard.attach(secondContext);
-    secondPage = await secondContext.newPage();
-    await installWorkerPort(secondContext);
-    await traceCoreWorker(secondPage);
+    const secondPage = await secondContext.newPage();
     await signIn(secondPage, owner, instanceName);
     await expect(secondPage.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
       .getByRole('button', { name: RECOVERY_SERVER, exact: true })).toBeVisible({ timeout: 90_000 });
-    await secondPage.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => secondPage!.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
-    const secondSettings = secondPage.getByRole('dialog', { name: copy('admin.title'), exact: true });
-    await secondSettings.getByRole('navigation', { name: copy('admin.nav'), exact: true })
-      .getByRole('button', { name: copy('workspace.moderationLog'), exact: true }).click();
-    await secondSettings.getByRole('button', { name: copy('admin.bot.moderationLog.loadAutomatic'), exact: true }).click();
-    // Device 2's first request also establishes its own interaction group with the Bot, which took over 20 s on a
-    // loaded Linux host (run 635); the acceptance gets the wait every other Bot step of this spec has.
-    await expect.poll(() => lastWorkerCommandOutcome(secondPage!, 'listModerationCases'),
-      { timeout: 90_000, intervals: [500, 1_000, 2_000] }).toEqual({
-      requestId: expect.stringMatching(/^[0-9a-f]{32}$/u), state: 'accepted', code: null, detail: null,
-    });
-    const secondRequestId = (await lastWorkerCommandOutcome(secondPage, 'listModerationCases')).requestId;
-    expect(secondRequestId).toMatch(/^[0-9a-f]{32}$/u);
-    expect(secondRequestId).not.toBe(requestOneId);
-    await expect.poll(async () => secondPage!.evaluate(requestId => {
-      const trace = (window as unknown as { __dillaWorkerTrace?: { returns: unknown[] } }).__dillaWorkerTrace;
-      return trace?.returns.some(value => {
-        const result = value as { t?: string; value?: { responses?: { requestId?: string }[] } };
-        return result.t === 'ret' && result.value?.responses?.some(response => response.requestId === requestId) === true;
-      }) ?? false;
-    }, secondRequestId), { timeout: 90_000, intervals: [500, 1_000, 2_000] }).toBe(true);
-    const isolated = await portCall(secondPage, { m: 'readHumanInteractionResponses', communityId: communityId!, requestIds: [requestOneId!] });
-    expect(isolated).toMatchObject({ ok: true, value: { authorized: true } });
-    expect((isolated.value as { responses: Receipt[] }).responses).toEqual([]);
-    const ownRead = await portCall(secondPage, { m: 'readHumanInteractionResponses', communityId: communityId!, requestIds: [secondRequestId!] });
-    expect(ownRead).toMatchObject({ ok: true, value: { authorized: true } });
-    const ownResponses = (ownRead.value as { responses: Receipt[] }).responses;
-    expect(ownResponses).toHaveLength(1);
-    expect(ownResponses[0]).toMatchObject({ requestId: secondRequestId, status: 0, cases: [], hasMore: false, nextCursor: null });
-    expect(ownResponses[0]!.cases).toEqual(originalReceipt!.cases);
+    await secondPage.getByRole('button', { name: copy('admin.open'), exact: true }).click().then(() => secondPage.getByRole('menuitem', { name: copy('signalSettings.menu.serverSettings'), exact: true }).click());
+    await readLog(secondPage.getByRole('dialog', { name: copy('admin.title'), exact: true }));
   } finally {
     await secondContext?.close();
     await host?.stop();
   }
 });
-
 
 test('a Roles-enabled bot applies the configured join role on join and rejoin', async ({ page, instanceName, browser, guard }) => {
   let host: StartedHost | null = null;
@@ -377,7 +237,8 @@ test('a Roles-enabled bot applies the configured join role on join and rejoin', 
     if (runtimeCredentialFile === undefined) throw new Error('test host did not expose its protected runtime credential path');
     await expect.poll(async () => {
       const token = readFileSync(runtimeCredentialFile, 'utf8').trim();
-      const response = await fetch(`${host!.url}/v1/bot-runtime/installations`, {
+      // The runtime credential's list is the Bot socket's alone under a supervisor; the host serves it on its control listener.
+      const response = await fetch(`${host!.control}/debug/bot/installations`, {
         headers: { authorization: `Bearer ${token}`, accept: 'application/cbor' },
       });
       if (!response.ok) return `HTTP ${response.status}`;
@@ -465,6 +326,7 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
   const roleName = 'Readers';
   try {
     host = await startTestHost(ROLE_PANEL_HOST);
+    const bearerOf = watchBearer(page);
     const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await addServerVia(page, 'create');
     const create = page.getByRole('dialog', { name: copy('create.server.title'), exact: true });
@@ -489,7 +351,8 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     if (runtimeCredentialFile === undefined) throw new Error('test host did not expose its protected runtime credential path');
     await expect.poll(async () => {
       const token = readFileSync(runtimeCredentialFile, 'utf8').trim();
-      const response = await fetch(`${host!.url}/v1/bot-runtime/installations`, {
+      // The runtime credential's list is the Bot socket's alone under a supervisor; the host serves it on its control listener.
+      const response = await fetch(`${host!.control}/debug/bot/installations`, {
         headers: { authorization: `Bearer ${token}`, accept: 'application/cbor' },
       });
       if (!response.ok) return `HTTP ${response.status}`;
@@ -529,6 +392,8 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     nav = settings.getByRole('navigation', { name: copy('admin.nav'), exact: true });
     await nav.getByRole('button', { name: copy('admin.nav.selfRoles'), exact: true }).click();
 
+    // Bot v2 Task 17: the Bot posts only into Bot channels; the panel's target is marked first.
+    await markBotChannel(page, host.url, bearerOf, 'general');
     await settings.getByLabel(`${copy('admin.bot.rolePanel.emoji')} for ${roleName}`, { exact: true }).fill('👍');
     await settings.getByRole('combobox', { name: copy('admin.bot.rolePanel.channel'), exact: true }).selectOption({ label: 'general' });
     await settings.getByRole('button', { name: copy('admin.bot.rolePanel.publish'), exact: true }).click();
@@ -554,6 +419,10 @@ test('a human publishes a bot-authored self-service role panel and its reaction 
     await expect(reactionChip(secondPanel, copy('shell.emoji.01'), 1)).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 });
     const members = secondPage.getByRole('complementary', { name: copy('members.region', { server: SERVER }), exact: true });
     const memberRole = (count: number) => members.getByRole('heading', { name: copy('members.group', { name: roleName, count }), exact: true });
+    // A second desktop app can leave a window too narrow for the member pane (a tiling window manager shrinks it), and
+    // the shell then closes the pane (moderation-evidence.spec, admin.spec and roles.spec do the same).
+    await restoreDesktopWindow(secondPage);
+    await ensureMembersOpen(secondPage, members);
     await expect(memberRole(1)).toBeVisible({ timeout: 30_000 });
 
     // The panel reaction and the member's ordinary self-service choice are separate grants.

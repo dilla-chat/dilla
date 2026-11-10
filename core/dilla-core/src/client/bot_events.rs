@@ -4,7 +4,7 @@ use super::error::{E_CORE_INPUT, E_CORE_LIMIT, E_CORE_RELOAD, E_CORE_STATE, E_CO
 use super::{ClientCore, ClientError, bot_identity, schema, trust};
 use crate::cbor::Encoder;
 use crate::identity::CredentialIdentity;
-use crate::mls::{DillaGroup, DillaInteractionBinding, GroupKind, StorageError};
+use crate::mls::{DillaGroup, GroupKind, StorageError};
 use rusqlite::{OptionalExtension, params};
 
 pub(super) type GroupBindingRow = (i64, Option<Vec<u8>>, Vec<u8>, i64);
@@ -66,74 +66,6 @@ fn bot_community(core: &ClientCore) -> Result<[u8; 16], ClientError> {
     Ok(bot_binding(core)?.community_id)
 }
 
-fn interaction_binding_matches_event(
-    binding: &DillaInteractionBinding,
-    instance: &[u8],
-    installation: &[u8],
-    community: &[u8],
-    bot_user: &[u8],
-    sender_user: &[u8],
-    sender_device: &[u8],
-) -> bool {
-    binding.instance_id.as_bytes() == instance
-        && binding.installation_id.as_slice() == installation
-        && binding.community_id.as_bytes() == community
-        && binding.bot_user_id.as_slice() == bot_user
-        && binding.participant_user_id.as_slice() == sender_user
-        && binding.participant_device_id.as_bytes() == sender_device
-}
-
-#[cfg(test)]
-#[expect(
-    clippy::items_after_test_module,
-    reason = "The test module stays beside its focused binding helper."
-)]
-mod interaction_event_binding_tests {
-    use super::interaction_binding_matches_event;
-    use crate::ids::{CommunityId, DeviceId, InstanceId};
-    use crate::mls::DillaInteractionBinding;
-
-    fn binding() -> DillaInteractionBinding {
-        DillaInteractionBinding {
-            instance_id: InstanceId::from_bytes([1; 16]),
-            bot_user_id: [2; 16],
-            installation_id: [3; 16],
-            community_id: CommunityId::from_bytes([4; 16]),
-            participant_user_id: [5; 16],
-            participant_device_id: DeviceId::from_bytes([6; 16]),
-            policy_version: 7,
-            e2ee_version: 1,
-            media_version: 0,
-        }
-    }
-
-    #[test]
-    fn interaction_event_binding_requires_exact_native_scope_and_participant() {
-        let b = binding();
-        assert!(interaction_binding_matches_event(
-            &b, &[1; 16], &[3; 16], &[4; 16], &[2; 16], &[5; 16], &[6; 16]
-        ));
-        assert!(!interaction_binding_matches_event(
-            &b, &[9; 16], &[3; 16], &[4; 16], &[2; 16], &[5; 16], &[6; 16]
-        ));
-        assert!(!interaction_binding_matches_event(
-            &b, &[1; 16], &[9; 16], &[4; 16], &[2; 16], &[5; 16], &[6; 16]
-        ));
-        assert!(!interaction_binding_matches_event(
-            &b, &[1; 16], &[3; 16], &[9; 16], &[2; 16], &[5; 16], &[6; 16]
-        ));
-        assert!(!interaction_binding_matches_event(
-            &b, &[1; 16], &[3; 16], &[4; 16], &[2; 16], &[9; 16], &[6; 16]
-        ));
-        assert!(!interaction_binding_matches_event(
-            &b, &[1; 16], &[3; 16], &[4; 16], &[2; 16], &[5; 16], &[9; 16]
-        ));
-        assert!(!interaction_binding_matches_event(
-            &b, &[1; 16], &[3; 16], &[4; 16], &[9; 16], &[5; 16], &[6; 16]
-        ));
-    }
-}
-
 /// Persist one accepted application snapshot in the source row's write unit. The authenticated
 /// sender credential and leaf key stay internal so each drain can repeat current trust checks.
 #[allow(clippy::too_many_arguments)] // Each field is authenticated MLS/envelope provenance for one atomic snapshot.
@@ -189,20 +121,6 @@ pub(super) fn record_accepted(
                     .as_ref()
                     .is_some_and(|id| id.as_bytes().as_slice() == community.as_slice())
                     && b.target_id.as_slice() == channel.as_slice()
-            })
-    } else if kind == 3 {
-        sender.kind.as_u8() == 0
-            && group.kind() == GroupKind::Interaction
-            && group.interaction_binding().is_ok_and(|b| {
-                interaction_binding_matches_event(
-                    &b,
-                    &bot_binding.instance_id,
-                    &bot_binding.installation_id,
-                    &bot_binding.community_id,
-                    &own.user_id,
-                    sender.user_id.as_bytes(),
-                    sender.device_id.as_bytes(),
-                ) && channel.as_slice() == b.participant_user_id
             })
     } else {
         false
@@ -347,7 +265,7 @@ impl ClientCore {
     ) -> Result<Vec<u8>, ClientError> {
         let scope = bot_binding(self)?;
         let community = scope.community_id;
-        let bot_user = self.own()?.user_id;
+        self.own()?;
         if !(1..=PAGE_LIMIT).contains(&limit) || after_delivery_id > i64::MAX as u64 {
             return Err(ClientError::new(
                 E_CORE_INPUT,
@@ -398,28 +316,13 @@ impl ClientCore {
                                     .as_ref()
                                     .is_some_and(|id| id.as_bytes() == community.as_slice())
                                 && binding.target_id == row.channel_id.as_slice()
-                        })
-                        || (row.sender_kind == 0
-                            && group.kind() == GroupKind::Interaction
-                            && group.interaction_binding().is_ok_and(|binding| {
-                                interaction_binding_matches_event(
-                                    &binding,
-                                    &scope.instance_id,
-                                    &scope.installation_id,
-                                    &scope.community_id,
-                                    &bot_user,
-                                    &row.sender_user,
-                                    &row.sender_device,
-                                ) && binding.community_id.as_bytes() == row.community_id.as_slice()
-                                    && binding.participant_user_id.as_slice()
-                                        == row.channel_id.as_slice()
-                            }));
+                        });
                     let signature_matches = binding_matches && member_matches;
                     if signature_matches {
                         let state = self.write(|_, u| {
                             Ok(u.with_conn(|c| {
                                 let live: bool = c.query_row(
-                                    "SELECT EXISTS(SELECT 1 FROM app_messages m JOIN app_groups g ON g.group_id=m.group_id WHERE m.group_id=?1 AND m.seq=?2 AND m.status=0 AND m.sender_user=?3 AND m.sender_device=?4 AND m.sender_leaf=?5 AND m.sender_sig_key=?6 AND g.state=2 AND g.kind IN (0,3) AND g.community_id=?7 AND g.target_id=?8)",
+                                    "SELECT EXISTS(SELECT 1 FROM app_messages m JOIN app_groups g ON g.group_id=m.group_id WHERE m.group_id=?1 AND m.seq=?2 AND m.status=0 AND m.sender_user=?3 AND m.sender_device=?4 AND m.sender_leaf=?5 AND m.sender_sig_key=?6 AND g.state=2 AND g.kind=0 AND g.community_id=?7 AND g.target_id=?8)",
                                     params![row.group_id, row.source_seq, row.sender_user, row.sender_device, row.sender_leaf, row.sender_sig_key, community.as_slice(), row.channel_id],
                                     |r| r.get(0),
                                 )?;

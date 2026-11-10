@@ -165,7 +165,7 @@ test('installed startup events retain the first pending request and cap writes b
     const aborted = new Error('net::ERR_ABORTED PRIVATE_SECRET'); reject(aborted); await assert.rejects(pending, e => e === aborted);
     for (let i = 0; i < 500; i++) diagnostic.emit('request-blocked', 'http://PRIVATE_SECRET/v1/instance', 'GET', 0, -20);
     const raw = await readFile(join(root, 'startup-1.0.1.jsonl'), 'utf8'); events = raw.trim().split('\n').map(JSON.parse);
-    assert.equal(events.length, 96); assert.equal(events[1].stage, 'fetch-reject'); assert.equal(events[1].code, -3);
+    assert.equal(events.length, 192); assert.equal(events[1].stage, 'fetch-reject'); assert.equal(events[1].code, -3);
     assert.ok(Buffer.byteLength(raw) <= 32768); assert.doesNotMatch(raw, /PRIVATE_SECRET|http:/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

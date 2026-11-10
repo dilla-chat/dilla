@@ -45,7 +45,7 @@ var contentTypes = map[string]string{
 	".txt":   "text/plain; charset=utf-8",
 }
 
-var reservedPrefixes = []string{"/v1/", "/gateway", "/rtc", "/i/", "/healthz", "/readyz", "/metrics", "/debug/"}
+var reservedPrefixes = []string{"/v1/", "/gateway", "/rtc", "/i/", "/hooks/", "/healthz", "/readyz", "/metrics", "/debug/"}
 
 // belowRootData matches a data prefix one or more segments below the root: a client whose saved
 // instance address has a path asks /<path>/v1/instance, and the client page must not answer that.

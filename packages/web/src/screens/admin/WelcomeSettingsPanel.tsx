@@ -269,6 +269,10 @@ export function WelcomeSettingsPanel({ communityId, serverName, channels, enable
     {!enabled ? <p role="note">{t('admin.bot.welcomeSettings.requiresCapability')}</p> : null}
     {!canManage ? <p role="note">{t('admin.bot.welcomeSettings.readOnly')}</p> : null}
     {channels.length === 0 ? <p role="note">{t('admin.bot.welcomeSettings.noChannels')}</p> : null}
+    {/* Bot v2 Task 22: Welcome posts only into a Bot channel (`channels` are the Bot channels); a saved target that was
+        unmarked since posts nothing until another is chosen. */}
+    {loaded && config !== null && !channels.some(channel => channel.id === config.channelId)
+      ? <p role="note">{t('bot.feature.needsChannel')}</p> : null}
     {!loaded ? <Button aria-disabled={unavailable || pending !== null || operationBusy || undefined} onClick={load}>
       {pending?.operation === 1 || sharedPending?.operation === 1 && operationBusy ? t('admin.bot.welcomeSettings.loading') : t('admin.bot.welcomeSettings.load')}
     </Button> : <>

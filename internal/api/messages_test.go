@@ -20,6 +20,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 
 	"github.com/dilla-chat/dilla/internal/api"
+	"github.com/dilla-chat/dilla/internal/api/sockettest"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/ds"
 	"github.com/dilla-chat/dilla/internal/gateway"
@@ -230,8 +231,11 @@ func TestAZeroValuedMessagesFallsBackToTheDefaultCaps(t *testing.T) {
 	h.mustCreate(t)
 	member := h.memberToken(t)
 
-	mux := server.NewMux()
-	(&api.Messages{DS: h.ds}).Register(mux, h.deps.Sessions)
+	bare := server.NewMux()
+	(&api.Messages{DS: h.ds}).Register(bare, h.deps.Sessions)
+	// The routes are socket routes: this mux's requests go through the socket dispatcher.
+	mux := sockettest.NewBridge(bare, bare, api.NewSocketDispatcher(bare, api.SocketDispatchOptions{Clock: h.deps.Clock}),
+		h.deps.Repo, h.deps.Clock.Now)
 
 	res := doOn(t, mux, http.MethodPost, "/v1/groups/"+h.groupID.String()+"/message", member,
 		h.uploadBody(t, 64))
@@ -307,7 +311,7 @@ func (h *groupsAPI) mustUpload(t *testing.T, token string, ctLen int) uploaded {
 	return uploaded{seq: out.Seq, pm: pm}
 }
 
-func doOn(t *testing.T, mux *server.Mux, method, path, token string, body []byte) *httptest.ResponseRecorder {
+func doOn(t *testing.T, mux http.Handler, method, path, token string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	var req *http.Request
 	if body == nil {
@@ -445,7 +449,7 @@ func (h *groupsAPI) listen(t *testing.T, token string) func() []cbor.RawMessage 
 		t.Fatalf("first frame op %d, want hello", op)
 	}
 	identify, err := gateway.Encode(gateway.Frame{Op: gateway.OpIdentify,
-		Payload: cborx.Raw(mustCBOR(t, []any{"", uint64(3), uint64(1), uint64(1), uint64(0)}))}, 1)
+		Payload: cborx.Raw(mustCBOR(t, []any{"", uint64(6), uint64(1), uint64(1), uint64(0)}))}, 1)
 	if err != nil {
 		t.Fatalf("encode identify: %v", err)
 	}

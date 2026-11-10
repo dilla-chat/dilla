@@ -26,8 +26,6 @@ type sendNativeFake struct {
 	binding                    native.Binding
 	group                      native.GroupInfo
 	inspectErr                 error
-	interactionGroups          []native.InteractionGroupDescriptor
-	interactionPrepareCalls    int
 	prepared                   native.PreparedSend
 	prepareCalls, confirmCalls int
 	confirmed                  [][]byte
@@ -37,20 +35,10 @@ func (f *sendNativeFake) Binding() native.Binding { return f.binding }
 func (f *sendNativeFake) InspectGroup(context.Context, id.ID) (native.GroupInfo, error) {
 	return f.group, f.inspectErr
 }
-func (f *sendNativeFake) InteractionGroups(context.Context) ([]native.InteractionGroupDescriptor, error) {
-	return f.interactionGroups, nil
-}
 func (f *sendNativeFake) PrepareSend(context.Context, id.ID, id.ID, id.ID, []byte, uint64, uint64) (native.PreparedSend, error) {
 	f.prepareCalls++
 	if f.inspectErr != nil {
 		return native.PreparedSend{}, errors.New("generic send prepare cannot encrypt kind 3")
-	}
-	return f.prepared, nil
-}
-func (f *sendNativeFake) PrepareInteractionSend(_ context.Context, expected native.InteractionGroupExpected, snapshot []byte, _, _ id.ID, _ []byte, _, _ uint64) (native.PreparedSend, error) {
-	f.interactionPrepareCalls++
-	if expected.Group != f.interactionGroups[0].Group || expected.ParticipantDevice != f.interactionGroups[0].Binding.ParticipantDevice || len(snapshot) == 0 {
-		return native.PreparedSend{}, errors.New("wrong private send proof")
 	}
 	return f.prepared, nil
 }
@@ -75,13 +63,6 @@ type sendSessionFake struct {
 	posts, lookups, resolves int
 	uploads                  []client.BotMessageUpload
 	resolutions              []client.BotMessageResolution
-}
-
-func (f *sendSessionFake) IssueBotInteractionAdmission(context.Context, id.ID, id.ID, id.ID, id.ID, id.ID) ([]byte, error) {
-	return []byte{1}, nil
-}
-func (f *sendSessionFake) BotInteractionContextSnapshot(_ context.Context, _, request, group, participant, participantDevice id.ID) ([]byte, error) {
-	return makeSignedSnapshotFixtureFor(request, []any{sendID(1), sendID(3), sendID(2), sendID(11), sendID(10), participant, participantDevice, group}, 100)
 }
 
 func (f *sendSessionFake) BotMessageReceipt(_ context.Context, _, operation, attempt, group id.ID) (protocol.SendReceipt, error) {
@@ -131,38 +112,6 @@ func sendFixture() (*SendCoordinator, *sendNativeFake, *sendSessionFake, SendInp
 	a := sendAuthorityFake{discovery: client.Discovery{InstanceID: b.Instance, Generation: 12}}
 	c, _ := newSendCoordinator(n, a)
 	return c, n, s, SendInput{OperationID: sendID(6), AttemptID: sendID(7), GroupID: group, RequestBody: []byte{0x84, 0, 0xf6, 0x60, 0x80}, OriginalNow: 100, ExpectedGeneration: 12}
-}
-
-func TestSendAcceptsActiveInstallationBoundInteractionGroup(t *testing.T) {
-	c, n, s, in := sendFixture()
-	n.inspectErr = &helper.StatusError{Status: 2} // Generic helper inspection refuses kind 3.
-	n.interactionGroups = []native.InteractionGroupDescriptor{{
-		Group: in.GroupID, BotDevice: sendID(10), Epoch: 9, State: 2,
-		Binding: native.InteractionGroupBinding{Instance: n.binding.Instance, Installation: n.binding.Installation,
-			Community: n.binding.Community, BotUser: sendID(11), ParticipantUser: sendID(12), ParticipantDevice: sendID(13),
-			PolicyVersion: 3, E2EEVersion: 1, MediaVersion: 0},
-	}}
-	accepted := sendReceipt(in.OperationID, in.AttemptID, in.GroupID, in.ExpectedGeneration, 9, protocol.ReceiptAccepted)
-	s.postErr = errors.New("lost HTTP response")
-	s.resolveReceipt = &accepted
-	got, err := c.send(context.Background(), s, in)
-	if err != nil || got.Outcome != protocol.ReceiptAccepted || s.posts != 1 || n.prepareCalls != 0 || n.interactionPrepareCalls != 1 {
-		t.Fatalf("interaction send outcome=%v err=%v posts=%d generic prepares=%d private prepares=%d", got.Outcome, err, s.posts, n.prepareCalls, n.interactionPrepareCalls)
-	}
-}
-
-func TestSendRejectsInteractionDescriptorWithOverlappingIdentities(t *testing.T) {
-	c, n, s, in := sendFixture()
-	n.inspectErr = &helper.StatusError{Status: 2}
-	n.interactionGroups = []native.InteractionGroupDescriptor{{
-		Group: in.GroupID, BotDevice: sendID(10), Epoch: 9, State: 2,
-		Binding: native.InteractionGroupBinding{Instance: n.binding.Instance, Installation: n.binding.Installation,
-			Community: n.binding.Community, BotUser: sendID(12), ParticipantUser: sendID(12), ParticipantDevice: sendID(13),
-			PolicyVersion: 3, E2EEVersion: 1, MediaVersion: 0},
-	}}
-	if _, err := c.send(context.Background(), s, in); err == nil || n.prepareCalls != 0 || s.posts != 0 {
-		t.Fatalf("overlapping interaction identities reached send: err=%v prepares=%d posts=%d", err, n.prepareCalls, s.posts)
-	}
 }
 
 func TestSendRecoversLostAcceptedResponseAndRestartDoesNotPostAgain(t *testing.T) {

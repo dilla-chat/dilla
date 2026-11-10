@@ -1,4 +1,5 @@
-// Package encode bridges bounded signed 16-bit PCM input to the live Opus transport.
+// Package encode forwards the stream worker's checked Ogg Opus to the live Opus transport. Bot v2 Task 23 removed
+// the PCM-to-Opus encoder.
 package encode
 
 import (
@@ -7,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"time"
 
 	"github.com/livekit/server-sdk-go/v2/pkg/oggreader"
@@ -16,13 +16,12 @@ import (
 )
 
 const (
-	outputRate        = 48000
-	outputChannels    = 2
-	outputBitrate     = "96k"
-	maxInputRate      = 192000
-	maxPCMReadBytes   = 32 * 1024
-	maxActiveEncoders = 4
-	maxOpusTagsBytes  = 32 * 1024
+	outputRate       = 48000
+	outputChannels   = 2
+	outputBitrate    = "96k"
+	maxInputRate     = 192000
+	maxPCMReadBytes  = 32 * 1024
+	maxOpusTagsBytes = 32 * 1024
 )
 
 var (
@@ -31,59 +30,48 @@ var (
 	ErrEncoderFailed          = errors.New("music encode: ffmpeg failed")
 	ErrInvalidOpus            = errors.New("music encode: ffmpeg emitted invalid Opus stream")
 	ErrSourceNotInterruptible = errors.New("music encode: PCM source must implement io.ReadCloser")
-	encoderSlots              = make(chan struct{}, maxActiveEncoders)
 )
 
-// Options controls liveness detection. FFmpegPath defaults to "ffmpeg". A nonpositive
-// StallTimeout selects the 10-second default. The cap of four bounds child processes and pipes.
+// Options controls liveness detection. A nonpositive StallTimeout selects the 10-second default.
 type Options struct {
-	FFmpegPath   string
 	StallTimeout time.Duration
 }
 
-// Bridge takes ownership of a closable PCM source and closes it before returning. Its Close
-// method must unblock a concurrent Read; cancellation and stall handling depend on that contract.
-// Bridge encodes interleaved signed 16-bit little-endian PCM into live 48 kHz stereo Opus.
-// sampleRate and channels describe the PCM source itself; callers must pass the actual format
-// reported by their source because source output rates can vary by track/device.
-func Bridge(ctx context.Context, pcm io.Reader, sampleRate, channels int, provider *media.LiveOpusProvider) error {
-	return BridgeWithOptions(ctx, pcm, sampleRate, channels, provider, Options{})
-}
-
-// BridgeWithOptions is Bridge with an explicit ffmpeg path and stall deadline.
-func BridgeWithOptions(ctx context.Context, pcm io.Reader, sampleRate, channels int, provider *media.LiveOpusProvider, options Options) error {
+// BridgeOgg forwards a finished 48 kHz stereo Ogg Opus stream (one ffmpeg,
+// stream to Opus, started by the sandboxed worker) to the live provider. It
+// starts no process: every Ogg page is checked, and every packet must be one
+// 20 ms Opus frame. It takes ownership of the closable source and closes it before returning.
+func BridgeOgg(ctx context.Context, source io.Reader, provider *media.LiveOpusProvider, options Options) error {
 	if provider != nil {
 		defer func() { _ = provider.CloseInput() }()
 	}
-	closer, closable := pcm.(io.ReadCloser)
+	closer, closable := source.(io.ReadCloser)
 	if closable {
 		defer func() { _ = closer.Close() }()
 	}
-	if pcm == nil || !closable {
+	if source == nil || !closable {
 		return ErrSourceNotInterruptible
 	}
-	if ctx == nil || pcm == nil || provider == nil || sampleRate < 8000 || sampleRate > maxInputRate || (channels != 1 && channels != 2) {
+	if ctx == nil || provider == nil {
 		return ErrInvalidPCMFormat
-	}
-	if options.FFmpegPath == "" {
-		options.FFmpegPath = "ffmpeg"
 	}
 	if options.StallTimeout <= 0 {
 		options.StallTimeout = 10 * time.Second
 	}
-	select {
-	case encoderSlots <- struct{}{}:
-		defer func() { <-encoderSlots }()
-	case <-ctx.Done():
-		_ = provider.CloseInput()
-		return ctx.Err()
-	}
+	return supervise(ctx, source, provider, options, func(runCtx context.Context, activity chan<- struct{}) error {
+		return forwardOgg(runCtx, source, provider, activity)
+	})
+}
 
+// supervise runs one producer under the stall deadline. A paused provider
+// holds the deadline; cancellation and stalls close the source so a blocked
+// read returns.
+func supervise(ctx context.Context, source io.Reader, provider *media.LiveOpusProvider, options Options, produce func(context.Context, chan<- struct{}) error) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	activity := make(chan struct{}, 1)
 	result := make(chan error, 1)
-	go func() { result <- run(runCtx, pcm, sampleRate, channels, provider, options.FFmpegPath, activity) }()
+	go func() { result <- produce(runCtx, activity) }()
 	timer := time.NewTimer(options.StallTimeout)
 	defer timer.Stop()
 	resetTimer := func() {
@@ -104,7 +92,7 @@ func BridgeWithOptions(ctx context.Context, pcm io.Reader, sampleRate, channels 
 			return err
 		case <-ctx.Done():
 			cancel()
-			closeReader(pcm)
+			closeReader(source)
 			<-result
 			_ = provider.CloseInput()
 			return ctx.Err()
@@ -114,7 +102,7 @@ func BridgeWithOptions(ctx context.Context, pcm io.Reader, sampleRate, channels 
 				continue
 			}
 			cancel()
-			closeReader(pcm)
+			closeReader(source)
 			<-result
 			_ = provider.CloseInput()
 			return ErrStalled
@@ -124,121 +112,31 @@ func BridgeWithOptions(ctx context.Context, pcm io.Reader, sampleRate, channels 
 	}
 }
 
-func run(ctx context.Context, pcm io.Reader, sampleRate, channels int, provider *media.LiveOpusProvider, ffmpeg string, activity chan<- struct{}) error {
-	cmd := exec.CommandContext(ctx, ffmpeg, // #nosec G204 -- FFmpegPath is operator-configured; all arguments are fixed.
-		"-hide_banner", "-loglevel", "error", "-nostdin",
-		"-f", "s16le", "-ar", fmt.Sprint(sampleRate), "-ac", fmt.Sprint(channels), "-i", "pipe:0",
-		"-map", "0:a:0", "-ar", fmt.Sprint(outputRate), "-ac", fmt.Sprint(outputChannels),
-		"-c:a", "libopus", "-application", "audio", "-b:a", outputBitrate, "-vbr", "off", "-dtx", "0", "-frame_duration", "20",
-		"-flush_packets", "1", "-page_duration", "20000", "-f", "ogg", "pipe:1")
-	cmd.Stderr = io.Discard // Never expose provider bytes or source-specific diagnostics in logs.
-	configureProcessGroup(cmd)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("%w: stdin pipe: %w", ErrEncoderFailed, err)
-	}
-	defer func() { _ = stdin.Close() }()
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("%w: stdout pipe: %w", ErrEncoderFailed, err)
-	}
-	defer func() { _ = stdout.Close() }()
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("%w: start: %w", ErrEncoderFailed, err)
-	}
-	pumpErr := make(chan error, 1)
-	go func() {
-		pumpErr <- pumpPCM(pcm, stdin, channels, activity)
-		_ = stdin.Close()
-	}()
-
-	checked := &checkedOggReader{source: stdout}
+// forwardOgg validates and forwards every Opus packet of one Ogg stream.
+func forwardOgg(ctx context.Context, source io.Reader, provider *media.LiveOpusProvider, activity chan<- struct{}) error {
+	checked := &checkedOggReader{source: source}
 	reader, header, err := oggreader.NewOggReader(checked)
 	if err != nil {
-		_ = cmd.Cancel()
-		_ = stdin.Close()
-		<-pumpErr
-		_ = cmd.Wait()
 		return fmt.Errorf("%w: Ogg headers: %w", ErrInvalidOpus, err)
 	}
 	if !validOpusHeader(header) {
-		_ = cmd.Cancel()
-		_ = stdin.Close()
-		<-pumpErr
-		_ = cmd.Wait()
 		return fmt.Errorf("%w: unexpected output format", ErrInvalidOpus)
 	}
 	for {
 		packet, readErr := readPacketSafely(reader)
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
-				_ = cmd.Cancel()
-				_ = stdin.Close()
-				<-pumpErr
-				_ = cmd.Wait()
 				return fmt.Errorf("%w: Ogg packet: %w", ErrInvalidOpus, readErr)
 			}
-			break
+			return nil
 		}
 		duration, durationErr := oggreader.ParsePacketDuration(packet)
 		if durationErr != nil || len(packet) == 0 || len(packet) > media.MaxLiveOpusSampleBytes || duration != media.LiveOpusSampleDuration {
-			_ = cmd.Cancel()
-			_ = stdin.Close()
-			<-pumpErr
-			_ = cmd.Wait()
 			return ErrInvalidOpus
 		}
 		signal(activity)
 		if err := provider.WriteSample(ctx, packet); err != nil {
-			_ = cmd.Cancel()
-			_ = stdin.Close()
-			<-pumpErr
-			_ = cmd.Wait()
 			return err
-		}
-	}
-	if err := <-pumpErr; err != nil {
-		_ = cmd.Cancel()
-		_ = cmd.Wait()
-		return fmt.Errorf("music encode: read PCM: %w", err)
-	}
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("%w: process exited unsuccessfully", ErrEncoderFailed)
-	}
-	_ = provider.CloseInput()
-	return nil
-}
-
-// pumpPCM preserves incomplete interleaved sample frames across short reads.
-// Write the complete prefix before moving the trailing bytes to the front;
-// moving them first corrupts the prefix that is about to be encoded.
-func pumpPCM(source io.Reader, target io.Writer, channels int, activity chan<- struct{}) error {
-	buf := make([]byte, maxPCMReadBytes)
-	frameBytes := channels * 2
-	pending := 0
-	for {
-		read, readErr := source.Read(buf[pending:])
-		total := pending + read
-		complete := total - total%frameBytes
-		if complete > 0 {
-			if err := writeAll(target, buf[:complete]); err != nil {
-				return err
-			}
-			signal(activity)
-		}
-		pending = total - complete
-		copy(buf[:pending], buf[complete:total])
-		if readErr != nil {
-			if readErr != io.EOF {
-				return readErr
-			}
-			if pending != 0 {
-				return io.ErrUnexpectedEOF
-			}
-			return nil
-		}
-		if read == 0 {
-			return io.ErrNoProgress
 		}
 	}
 }
@@ -493,20 +391,6 @@ func readPacketSafely(reader oggPacketReader) (packet []byte, err error) {
 		}
 	}()
 	return reader.ReadPacket()
-}
-
-func writeAll(w io.Writer, data []byte) error {
-	for len(data) > 0 {
-		n, err := w.Write(data)
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
-		data = data[n:]
-	}
-	return nil
 }
 
 func signal(ch chan<- struct{}) {

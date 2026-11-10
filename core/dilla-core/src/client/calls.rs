@@ -238,7 +238,7 @@ impl ClientCore {
         }
         let group = DillaGroup::load(&self.provider, &GroupId::from_slice(id))?
             .ok_or_else(|| ClientError::new(E_CORE_NOT_FOUND, ""))?;
-        if !super::matches_row(&group, id, row, &self.own()?) {
+        if !super::matches_row(&group, id, row) {
             return Err(super::mismatched());
         }
         Ok(slot.insert(group))
@@ -355,6 +355,30 @@ impl ClientCore {
     pub fn call_group_forget(&mut self, id: &[u8; 16]) -> Result<(), ClientError> {
         self.own()?;
         let row = self.call_row(id)?;
+        self.forget_group_row(id, &row)
+    }
+
+    /// Bot v2 Task 23 (R1 d): the Bot forgets a text group of its own community, as `call_group_forget` does a call
+    /// group: its MLS state and per-group rows are deleted and its row is gone (state 4), so a later Welcome can join
+    /// it again. The Bot calls it for a group whose channel is not a Bot channel and for a group it was removed from.
+    /// An unknown group is a no-op; a call group, or a group of another community, is refused.
+    pub fn bot_group_forget(&mut self, id: &[u8; 16]) -> Result<(), ClientError> {
+        let bot = super::bot_intents::binding(self)?;
+        let Some(row) = self.read(|c| group_row(c, id))? else {
+            return Ok(());
+        };
+        if row.kind != row_kind(GroupKind::Text)
+            || row.community_id.as_deref() != Some(bot.community_id.as_slice())
+        {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "not a text group of the Bot's community",
+            ));
+        }
+        self.forget_group_row(id, &row)
+    }
+
+    fn forget_group_row(&mut self, id: &[u8; 16], row: &GroupRow) -> Result<(), ClientError> {
         if row.state == STATE_GONE {
             return self.write(|_, u| {
                 u.with_conn(|c| super::bot_intents::discard_pending_for_forgotten_group(c, id))?;

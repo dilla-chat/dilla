@@ -5,6 +5,10 @@ instance with no real community members or provider credentials. The server arch
 instance keys and server-readable content; the Bot archive contains the runtime credential and the
 key that decrypts its local database. Store both as secrets.
 
+Since Bot v2 the Bot is a child of `dilla.service`: there is one service to stop and start, no
+`dillabot.service` and no `/etc/dillabot`. The Bot's files are `/var/lib/dillabot`, and its settings are `[bot]`
+in `dilla.toml`, which the server archive carries.
+
 Local evidence is partial. These commands check the server restore lifecycle, Bot local state and
 paused queue startup, and the server's stale-generation send refusal. They do not restore the server
 and a Bot archive from one installation together.
@@ -29,7 +33,8 @@ The existing offline checks establish:
 
 - The cold archive fixture round trip preserves `database.key`, `state.db`, and SQLite `-wal`, `-shm`, and
   `-journal` files byte for byte with mode `0600`; the restored state directory remains `0700` and
-  `dillabot doctor` accepts it.
+  `dillabot doctor` (the v1 doctor) accepts it. That doctor reads a v1 `bot.toml` and is not part of the
+  procedure below; there the check is that every file belongs to `dillabot` and `dillad doctor`'s `bot` leg is green.
 - Queue tests retain the current track as paused and do not resolve or start a provider; they use an in-memory native-state seam.
 - The stale-send test refuses a Bot message request while the group is `epoch_unknown` and verifies no additional application message was stored. It calls `DS.OnRestore` directly; it does not submit from a restored Bot process.
 - `TestCompiledHelperNativeSendIntentIntegration` (Linux, with `DILLA_BOT_HELPER_INTEGRATION=1` and `DILLA_BOT_HELPER_BIN`) now copies the compiled helper's real encrypted SQLite state into a fresh restore directory and confirms that the restored native client replays the exact durable send intent. This is a reusable native-state restore leg, but still does not pair with a restored server or start `dillabot` itself.
@@ -40,14 +45,13 @@ the installation is reconciled. The queue fixture does not create a queue in tha
 
 ## Staging procedure
 
-Use an isolated staging host with `dilla` and `dillabot` installed and working. Set `ARCHIVE_DIR` to a
-directory on separate backup storage. The test must stop both writers before taking either
-archive so the two files describe one coordinated point in time.
+Use an isolated staging host with `dilla` installed and the Bot running under it. Set `ARCHIVE_DIR` to a
+directory on separate backup storage. The test must stop the writers before taking either archive so the two files
+describe one coordinated point in time. Stopping `dilla` stops the Bot and `dilla-media` with it.
 
 ```sh
 ARCHIVE_DIR=/srv/backups/dilla-staging
 sudo install -d -m 0700 -o dillad -g dillad "$ARCHIVE_DIR"
-sudo systemctl stop dillabot
 sudo systemctl stop dilla
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -60,23 +64,23 @@ sudo dillad backup verify --from="$server"
 # Check every installation's state files and key before archiving. This must
 # print 0600 for database.key and each present state.db sidecar.
 sudo find /var/lib/dillabot -mindepth 2 -maxdepth 2 -type f \
-  \( -name database.key -o -name 'state.db*' \) -printf '%m %p\n' | sort
-sudo sh -c 'umask 077; tar -C / -czf "$1" etc/dillabot var/lib/dillabot' sh "$bot"
+  \( -name database.key -o -name 'state.db*' \) -printf '%m %U %p\n' | sort
+sudo ls -ln /var/lib/dillabot/runtime.token   # 0600, owned by the dillabot user
+sudo sh -c 'umask 077; tar -C / -czf "$1" var/lib/dillabot' sh "$bot"
 sudo chmod 0600 "$server" "$bot"
 sudo tar -tzf "$bot" | sort
 
-# Start the restored baseline only after both snapshots have completed.
+# Start the baseline only after both snapshots have completed.
 sudo systemctl start dilla
-sudo systemctl start dillabot
 ```
 
 Record the file listings and hashes (`sha256sum "$server" "$bot"`) in the staging change record.
 Confirm the Bot listing includes each active installation's `database.key`, `state.db`, and any
-present `state.db-wal`, `state.db-shm`, or `state.db-journal`, along with `/etc/dillabot/bot.toml`
-and `runtime.token`. An absent sidecar is expected when SQLite has none; never synthesize one.
+present `state.db-wal`, `state.db-shm`, or `state.db-journal`, along with `runtime.token`. An absent sidecar is
+expected when SQLite has none; never synthesize one.
 
-For the restore leg, stop both services again, preserve the live staging directories as rollback
-copies, then restore the server archive first while both services remain stopped:
+For the restore leg, stop `dilla` again, preserve the live staging directories as rollback
+copies, then restore the server archive first while it stays stopped:
 
 ```sh
 ARCHIVE_DIR=/srv/backups/dilla-staging
@@ -86,7 +90,6 @@ stamp="${stamp%.tar.gz}"
 bot="$ARCHIVE_DIR/dillabot-$stamp.tar.gz"
 test -s "$server" && test -s "$bot"
 
-sudo systemctl stop dillabot
 sudo systemctl stop dilla
 sudo -u dillad dillad restore --config=/etc/dilla/dilla.toml --from="$server" --dry-run
 sudo -u dillad dillad restore --config=/etc/dilla/dilla.toml --from="$server"
@@ -94,32 +97,42 @@ sudo tar --same-owner -C / -xzf "$bot"
 
 # Check the restored DB key and state files before allowing the Bot to start.
 sudo find /var/lib/dillabot -mindepth 2 -maxdepth 2 -type f \
-  \( -name database.key -o -name 'state.db*' \) -printf '%m %p\n' | sort
-sudo -u dillabot dillabot doctor --config=/etc/dillabot/bot.toml
-sudo systemctl start dilla
+  \( -name database.key -o -name 'state.db*' \) -printf '%m %U %p\n' | sort
+sudo ls -ln /var/lib/dillabot/runtime.token
+sudo -u dillad /usr/local/bin/dillad doctor --config=/etc/dilla/dilla.toml
 ```
 
-Verify the server is healthy and its instance generation is newer than the one recorded before the
-restore. Keep `dillabot` stopped while doing this. Then start it and inspect its journal:
+Every restored file must belong to the `dillabot` user. A restore done as root without `--same-owner` leaves
+`runtime.token` root-owned, and the Bot refuses it; fix it with
+`sudo chown -R dillabot:dillabot /var/lib/dillabot` before going on. `dillad doctor`'s `bot` leg must be green.
+
+Start `dilla`, check that the server is healthy and that its instance generation is newer than the one recorded
+before the restore, and read the journal. The Bot starts with `dilla` and logs there:
 
 ```sh
 since="$(date --iso-8601=seconds)"
-sudo systemctl start dillabot
-sudo journalctl -u dillabot --since "$since" --no-pager
+sudo systemctl start dilla
+sudo journalctl -u dilla --since "$since" --no-pager
 ```
 
 Acceptance requires the restored installation to report `bot installation identity and membership
 reconciled` with `ready=true` before operators permit Bot-triggered sends or playback. A
-`ready=false`, degraded reconciliation, missing key, or doctor failure is a stop condition: stop
-`dillabot`, keep the queue paused, and investigate. Do not manually resume a restored music queue
-or provoke a Bot action while it is still reconciling. Keep at least one staging MLS group with
-active members online so its restored epoch can heal; verify clients resync and the group becomes
-usable before testing an outbound Bot action. No outbound action may be observed before that point.
+`ready=false`, degraded reconciliation, missing key, or a red `bot` leg is a stop condition: stop
+`dilla`, keep the queue paused, and investigate. Do not manually resume a restored music queue
+or provoke a Bot action while it is still reconciling. Also check that `dillad doctor` shows no
+`commands failing since` line for the community, which is the health probe of the whole command path. Keep at
+least one staging MLS group with active members online so its restored epoch can heal; verify clients resync and
+the group becomes usable before testing an outbound Bot action. No outbound action may be observed before that
+point.
+
+A Bot channel's group is in the same position as any text group after a restore: the Bot rejoins it with the
+members' heal. If a Bot channel still says **The Bot needs adding to this channel again** on **Server settings →
+Bot** after the heal, press **Add the Bot again**.
 
 ## Evidence boundary
 
 The paired acceptance test is still open. The local harness has no disposable way to start a
-`dillabot` process from an extracted Bot archive and trigger one of its real outbound actions against
+Bot process from an extracted Bot archive and trigger one of its real outbound actions against
 the restored `dillad` instance. In particular:
 
 - `TestManagedBotSendAcceptReplayAndResolveAreDurable` calls `DS.OnRestore` and then invokes

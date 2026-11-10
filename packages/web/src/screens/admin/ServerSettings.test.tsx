@@ -11,6 +11,7 @@ import { account, ME } from '../../test/fixtures.ts';
 import { expectNoAxeViolations } from '../../test/setup.ts';
 import { en } from '../../strings/index.ts';
 import { ServerSettings, type AdminTab } from './ServerSettings.tsx';
+import { installSealedBot, type SealedCall, type SealedReply } from '../../test/sealed-bot.ts';
 
 const SERVER = 'a1'.repeat(16);
 const OTHER_SERVER = 'b2'.repeat(16);
@@ -30,25 +31,22 @@ function setup(access: CommunityAccess | undefined, over: { name?: string; tab?:
   missingCommunity?: boolean; phone?: boolean;
   selfRoles?: { id: string; name: string; position: number; selfSelected: boolean }[] | ((communityId: string) => { id: string; name: string; position: number; selfSelected: boolean }[]);
   roles?: RoleSummary[]; channels?: ChannelSummary[]; installation?: FakeInstallation | null | ((communityId: string) => FakeInstallation | null);
-  interaction?: boolean | (() => boolean); upload?: 'accepted' | 'pending' | 'unknown';
-  uploadHandler?: (requestId: string) => Promise<unknown> } = {}) {
+  interaction?: boolean | (() => boolean);
+  /** Task 22: the role panel is the sealed app operation 131; this answers it (default: `interaction`'s accepted message). */
+  panel?: (call: SealedCall) => SealedReply | Promise<SealedReply> } = {}) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', over.missingCommunity ? [] : [{ id: SERVER, name: over.name ?? NAME, owner: access?.owner === true ? ME.id : BOB }]);
   fake.handler = command => Promise.resolve(command.m === 'listSelfRoles' ? (typeof over.selfRoles === 'function' ? over.selfRoles(command.communityId) : over.selfRoles ?? [])
     : command.m === 'getBotInstallation' ? (typeof over.installation === 'function' ? over.installation(command.communityId) : over.installation ?? null)
-    : command.m === 'humanInteractionRequest' ? over.uploadHandler?.(command.requestId) ?? { requestId: command.requestId, upload: over.upload ?? 'accepted' }
-    : command.m === 'readBotInteractionResponses' ? (() => {
-      const sent = fake.callsOf('humanInteractionRequest').at(-1);
-      const sentChannel = sent?.args[0];
-      const interaction = over.interaction;
-      const responseReady = typeof interaction === 'function' ? interaction() : interaction === true;
-      return { through: '1', blocked: false, responses: responseReady && sent !== undefined && typeof sentChannel === 'string' ? [{
-        deliveryId: '1', requestId: sent.requestId, communityId: SERVER, operation: 31, channelId: null, status: 0,
-        revision: '1', data: encode([fromHex(sentChannel), 9n]), sourceSeq: '1',
-      }] : [] };
-    })()
     : command.m === 'getAFKSettings' ? { channelId: null, timeoutSeconds: 300 } : null);
+  const bot = installSealedBot(fake, SERVER, call => {
+    if (over.panel !== undefined) return over.panel(call);
+    const ready = typeof over.interaction === 'function' ? over.interaction() : over.interaction === true;
+    return ready && call.args[0] instanceof Uint8Array ? { status: 0, revision: null, data: encode([call.args[0], 9n]) } : null;
+  });
+  // The role panel's channel is picked from the Bot channels: every channel given is one.
+  fake.set(`botCatalog:${SERVER}`, { ...fake.get(`botCatalog:${SERVER}`)!, botChannels: (over.channels ?? []).map(c => c.id) });
   if (access !== undefined) fake.set(`permissions:${SERVER}`, access);
   if (over.roles !== undefined) fake.set(`roles:${SERVER}`, over.roles);
   if (over.channels !== undefined) fake.set(`channels:${SERVER}`, over.channels);
@@ -68,7 +66,7 @@ function setup(access: CommunityAccess | undefined, over: { name?: string; tab?:
   const view = render(<div className="d-root"><PhoneLayoutProvider value={over.phone ?? false}><CoreProvider client={fake}>
     <ServerSettings communityId={SERVER} tab={over.tab === undefined ? 'overview' : over.tab} onTab={onTab} onClose={onClose} announce={announce} />
   </CoreProvider></PhoneLayoutProvider></div>);
-  return { fake, user, view, onClose, onTab, announce };
+  return { fake, user, view, onClose, onTab, announce, bot };
 }
 /** The pane beside the tab list: "delete server" is both a tab and a button, so a query for the button looks only here. */
 const pane = () => within(document.querySelector<HTMLElement>('.d-settings-frame__body')!);
@@ -113,7 +111,7 @@ describe('ServerSettings tabs', () => {
   });
   it('publishes a bot-authored role panel and registers only its accepted exact message', async () => {
     const roleId = 'c3'.repeat(16); const channelId = 'd4'.repeat(16);
-    const { fake, user, announce } = setup(FULL, { tab: 'selfRoles',
+    const { fake, user, announce, bot } = setup(FULL, { tab: 'selfRoles',
       selfRoles: [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }],
       roles: [{ id: roleId, name: 'Readers', position: 2, allow: PERM.viewChannel, deny: 0, color: 0, hoist: false, mentionable: false, members: 0 }],
       channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
@@ -125,15 +123,14 @@ describe('ServerSettings tabs', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelId);
     await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
     await waitFor(() => expect(fake.callsOf('registerRolePanel')).toHaveLength(1));
-    const sent = fake.callsOf('humanInteractionRequest')[0];
-    expect(sent).toMatchObject({ operation: 31, channelId: null });
+    expect(bot.calls[0]).toMatchObject({ sealed: 131, operation: 31, channelId: null, revision: '0', args: [fromHex(channelId), expect.any(Uint8Array)] });
     expect(fake.callsOf('registerRolePanel')[0]).toMatchObject({ communityId: SERVER, channelId, messageSeq: '9', options: [{ emoji: '📚', roleId }] });
     expect(document.querySelector('.d-settings-frame .d-sr-only[role="status"]')).toHaveTextContent('The bot published and registered the role panel.');
     expect(announce).not.toHaveBeenCalledWith('The bot published and registered the role panel.');
   });
   it('rejects duplicate reaction mappings before sending or changing role policy', async () => {
     const one = 'c3'.repeat(16); const two = 'c4'.repeat(16); const channelId = 'd4'.repeat(16);
-    const { fake, user } = setup(FULL, { tab: 'selfRoles', selfRoles: [
+    const { fake, user, bot } = setup(FULL, { tab: 'selfRoles', selfRoles: [
       { id: one, name: 'Readers', position: 2, selfSelected: false }, { id: two, name: 'Writers', position: 3, selfSelected: false },
     ], channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
       position: 0, slowmode: 0, announcement: false, group: 'active' }],
@@ -143,25 +140,32 @@ describe('ServerSettings tabs', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelId);
     await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Choose a text channel');
-    expect(fake.callsOf('humanInteractionRequest')).toHaveLength(0);
+    expect(bot.calls).toHaveLength(0);
     expect(fake.callsOf('configureSelfRoles')).toHaveLength(0);
   });
-  it.each(['pending', 'unknown'] as const)('keeps polling after an %s upload until its late accepted response', async upload => {
-    const roleId = 'c3'.repeat(16); const channelId = 'd4'.repeat(16); let responseReady = false;
-    const { fake, user } = setup(FULL, { tab: 'selfRoles', selfRoles: [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }],
-      channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
-        position: 0, slowmode: 0, announcement: false, group: 'active' }],
-      installation: { id: 'f6'.repeat(16), communityId: SERVER, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' },
-      interaction: () => responseReady, upload });
-    await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '📚');
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelId);
-    await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
-    await screen.findByText('The send result is uncertain. Retry with the same request to safely continue.');
-    expect(fake.callsOf('humanInteractionRequest')).toHaveLength(1);
-    responseReady = true;
-    await waitFor(() => expect(fake.callsOf('registerRolePanel')).toHaveLength(1));
-    expect(fake.callsOf('humanInteractionRequest')).toHaveLength(1);
-    expect(fake.callsOf('registerRolePanel')[0]).toMatchObject({ channelId, messageSeq: '9', options: [{ emoji: '📚', roleId }] });
+  // Task 22: a panel the Bot does not answer in time (5 s, then one resend) is uncertain; Retry resends the same request
+  // id, which the Bot answers (or runs) once.
+  it('keeps an unanswered panel uncertain and finishes it when Retry gets the late answer', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const roleId = 'c3'.repeat(16); const channelId = 'd4'.repeat(16); let responseReady = false;
+      const { fake, user, bot } = setup(FULL, { tab: 'selfRoles', selfRoles: [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }],
+        channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
+          position: 0, slowmode: 0, announcement: false, group: 'active' }],
+        installation: { id: 'f6'.repeat(16), communityId: SERVER, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' },
+        interaction: () => responseReady });
+      await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '📚');
+      await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelId);
+      await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_500); });
+      await screen.findByText('The send result is uncertain. Retry with the same request to safely continue.');
+      expect(fake.callsOf('registerRolePanel')).toHaveLength(0);
+      responseReady = true;
+      await user.click(screen.getByRole('button', { name: 'Retry publishing' }));
+      await waitFor(() => expect(fake.callsOf('registerRolePanel')).toHaveLength(1));
+      expect(new Set(bot.calls.map(c => c.requestId)).size).toBe(1);
+      expect(fake.callsOf('registerRolePanel')[0]).toMatchObject({ channelId, messageSeq: '9', options: [{ emoji: '📚', roleId }] });
+    } finally { vi.useRealTimers(); }
   });
   it('shows a deterministic local send-preparation error without calling it an uncertain upload', async () => {
     const roleId = 'c3'.repeat(16); const channelId = 'd4'.repeat(16);
@@ -169,40 +173,40 @@ describe('ServerSettings tabs', () => {
       channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
         position: 0, slowmode: 0, announcement: false, group: 'active' }],
       installation: { id: 'f6'.repeat(16), communityId: SERVER, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' },
-      uploadHandler: () => Promise.reject(refusal({ code: 'E_CORE_INPUT' })) });
+      interaction: true });
+    const handle = fake.handler;
+    fake.handler = command => command.m === 'sendBotCommand' ? Promise.reject(refusal({ code: 'E_CORE_INPUT' })) : handle(command);
     await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '📚');
     await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelId);
     await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not publish the role panel (E_CORE_INPUT). Try again.');
     expect(screen.queryByText('The send result is uncertain. Retry with the same request to safely continue.')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Retry publishing' })).not.toBeInTheDocument();
-    expect(fake.callsOf('readBotInteractionResponses')).toHaveLength(0);
     expect(fake.callsOf('registerRolePanel')).toHaveLength(0);
   });
-  it('shows a bounded error code when polling the bot response fails', async () => {
+  it('shows the Bot\'s refusal as a bounded error code', async () => {
     const roleId = 'c3'.repeat(16); const channelId = 'd4'.repeat(16);
-    const { fake, user } = setup(FULL, { tab: 'selfRoles', selfRoles: [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }],
+    const { fake, user, bot } = setup(FULL, { tab: 'selfRoles', selfRoles: [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }],
       channels: [{ id: channelId, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
         position: 0, slowmode: 0, announcement: false, group: 'active' }],
-      installation: { id: 'f6'.repeat(16), communityId: SERVER, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' } });
-    const handle = fake.handler;
-    fake.handler = command => command.m === 'readBotInteractionResponses'
-      ? Promise.reject(refusal({ code: 'E_UNAVAILABLE' })) : handle(command);
+      installation: { id: 'f6'.repeat(16), communityId: SERVER, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' },
+      panel: () => ({ status: 5 }) });
     await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '📚');
     await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelId);
     await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not publish the role panel (E_UNAVAILABLE). Try again.');
-    expect(fake.callsOf('humanInteractionRequest')).toHaveLength(1);
+    expect(bot.calls).toHaveLength(1);
+    expect(fake.callsOf('registerRolePanel')).toHaveLength(0);
   });
   it('does not restore a delayed upload into a different community or retry it there', async () => {
     const roleId = 'c3'.repeat(16); const channelA = 'd4'.repeat(16); const channelB = 'd5'.repeat(16);
-    let resolveUpload!: (value: { requestId: string; upload: 'pending' }) => void;
-    const { fake, user, view } = setup(FULL, { tab: 'selfRoles',
+    let resolveUpload!: () => void;
+    const { fake, user, view, bot } = setup(FULL, { tab: 'selfRoles',
       selfRoles: () => [{ id: roleId, name: 'Readers', position: 2, selfSelected: false }],
       channels: [{ id: channelA, communityId: SERVER, name: 'general', kind: 0, mode: 0, topic: '', parentId: null,
         position: 0, slowmode: 0, announcement: false, group: 'active' }],
       installation: communityId => ({ id: 'f6'.repeat(16), communityId, state: 3, revision: '0', userId: null, deviceId: null, capabilities: 4, updatedAt: '' }),
-      uploadHandler: requestId => new Promise(resolve => { resolveUpload = value => resolve({ ...value, requestId }); }) });
+      panel: call => call.communityId === SERVER ? new Promise(resolve => { resolveUpload = () => resolve(null); }) : null });
     fake.publish(`communities`, [{ id: SERVER, name: NAME, owner: ME.id }, { id: OTHER_SERVER, name: 'Other', owner: ME.id }]);
     fake.set(`permissions:${OTHER_SERVER}`, FULL);
     fake.set(`roles:${OTHER_SERVER}`, [{ id: roleId, name: 'Readers', position: 2, allow: PERM.viewChannel, deny: 0, color: 0, hoist: false, mentionable: false, members: 0 }]);
@@ -211,25 +215,32 @@ describe('ServerSettings tabs', () => {
     await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '📚');
     await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelA);
     await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
-    await waitFor(() => expect(fake.callsOf('humanInteractionRequest')).toHaveLength(1));
-    const oldRequestId = fake.callsOf('humanInteractionRequest')[0].requestId;
+    fake.set(`botCatalog:${OTHER_SERVER}`, { ...fake.get(`botCatalog:${SERVER}`)!, botChannels: [channelB] });
+    await waitFor(() => expect(bot.calls).toHaveLength(1));
+    const oldRequestId = bot.calls[0].requestId;
     view.rerender(<div className="d-root"><CoreProvider client={fake}>
       <ServerSettings communityId={OTHER_SERVER} tab="selfRoles" onTab={vi.fn()} onClose={vi.fn()} announce={vi.fn()} />
     </CoreProvider></div>);
-    resolveUpload({ requestId: oldRequestId, upload: 'pending' });
+    resolveUpload();
     await screen.findByRole('heading', { name: en['admin.bot.rolePanel.title'] });
     expect(screen.queryByRole('button', { name: 'Retry publishing' })).not.toBeInTheDocument();
     await user.type(await screen.findByRole('textbox', { name: 'Emoji for Readers' }), '🖋️');
     await user.selectOptions(screen.getByRole('combobox', { name: 'Text channel' }), channelB);
     await user.click(screen.getByRole('button', { name: 'Publish role panel' }));
-    await waitFor(() => expect(fake.callsOf('humanInteractionRequest')).toHaveLength(2));
-    expect(fake.callsOf('humanInteractionRequest')[1]).toMatchObject({ communityId: OTHER_SERVER });
-    expect(fake.callsOf('humanInteractionRequest')[1].args[0]).toBe(channelB);
-    expect(fake.callsOf('humanInteractionRequest')[1].requestId).not.toBe(oldRequestId);
+    await waitFor(() => expect(bot.calls).toHaveLength(2));
+    expect(bot.calls[1]).toMatchObject({ communityId: OTHER_SERVER, sealed: 131 });
+    expect(bot.calls[1].args[0]).toEqual(fromHex(channelB));
+    expect(bot.calls[1].requestId).not.toBe(oldRequestId);
   });
   it('shows every tab to an owner, with the delete tab last', () => {
     setup(FULL);
-    expect(navNames()).toEqual(['Overview', 'Roles', 'Invites', 'Bot', 'Music', 'Channels', 'GIFs', 'Members', 'Self-assignable roles', 'Welcome messages', 'Join roles', 'Automoderation', 'Bans', 'Ownership / Leave']);
+    expect(navNames()).toEqual(['Overview', 'Roles', 'Invites', 'Bot', 'Music', 'Channels', 'GIFs', 'Members', 'Self-assignable roles', 'Welcome messages', 'Join roles', 'Bans', 'Ownership / Leave']);
+  });
+  // Bot v2 Task 23: AutoModeration (v1 interactions) is gone; no page, no nav entry, even for an owner.
+  it('server settings has no Automoderation page', () => {
+    setup(FULL);
+    expect(navNames()).not.toContain('Automoderation');
+    expect(navNames()).toEqual(['Overview', 'Roles', 'Invites', 'Bot', 'Music', 'Channels', 'GIFs', 'Members', 'Self-assignable roles', 'Welcome messages', 'Join roles', 'Bans', 'Ownership / Leave']);
   });
   it('shows the roles tab only with manageRoles, before extra sections', () => {
     setup({ ...NONE, manageChannels: true, manageRoles: true });

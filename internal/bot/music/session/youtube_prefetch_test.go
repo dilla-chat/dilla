@@ -4,21 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/music"
-	"github.com/dilla-chat/dilla/internal/bot/music/youtube"
-	"github.com/dilla-chat/dilla/internal/id"
 )
 
 type youtubeSourceFunc func(context.Context, string) (io.ReadCloser, error)
@@ -108,80 +101,6 @@ func TestYouTubePCMEmptyOrTruncatedAudioPauses(t *testing.T) {
 		if failure.ProviderFailure() {
 			t.Fatal("unknown/empty audio must pause")
 		}
-	}
-}
-
-func TestYouTubeDeferredProcessRefusalFailsBeforeCallJoin(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tool, err := exec.LookPath("true")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		name, raw, class string
-		permanent        bool
-	}{
-		{"private", "ERROR: This video is private", "video_private", true},
-		{"rate limit", "ERROR: HTTP Error 429: Too Many Requests", "http_429", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			release := filepath.Join(dir, "release")
-			shim := filepath.Join(dir, "bwrap")
-			script := fmt.Sprintf(`#!%s
-import os,socket,sys,time
-args=sys.argv[1:]
-s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
-s.connect(args[args.index("--bind")+1])
-s.sendall(b"DILLA-EGRESS-READY /1.0\r\n\r\n")
-s.recv(4096)
-s.close()
-while not os.path.exists(%q): time.sleep(0.001)
-sys.stderr.write(%q+"\n")
-sys.exit(1)
-`, python, release, tc.raw)
-			if err := os.WriteFile(shim, []byte(script), 0700); err != nil {
-				t.Fatal(err)
-			}
-			production := youtube.PCMStarter{Bubblewrap: shim, Python: python, YTDLP: tool, FFmpeg: tool, Node: tool, Timeout: time.Second}
-			source := youtubeSourceFunc(func(ctx context.Context, input string) (io.ReadCloser, error) {
-				pcm, err := production.Start(ctx, input)
-				if err != nil {
-					return nil, err
-				}
-				if err := os.WriteFile(release, nil, 0600); err != nil {
-					_ = pcm.Close()
-					return nil, err
-				}
-				return pcm, nil
-			})
-			joined := false
-			group := id.New()
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-			defer cancel()
-			session, failure := Start(ctx, Options{
-				Community: id.New(), Channel: id.New(), Provider: music.ProviderYouTube, Track: "aqz-KE-bpKQ",
-				PCM: YouTubePCM{Source: source}, Encoder: encStart{enc: &encoderStub{done: make(chan struct{})}}, Publisher: pubStart{pub: &pubStub{done: make(chan struct{})}}, Epochs: epochStub{},
-				PrepareCall: func(context.Context) (client.Call, error) {
-					joined = true
-					return client.Call{CallID: id.New(), GroupID: group}, nil
-				},
-			})
-			if session != nil {
-				_ = session.Close()
-			}
-			if joined {
-				t.Fatal("call joined before first PCM frame proved provider readiness")
-			}
-			var process *youtube.ProcessError
-			var start *music.StartError
-			if !errors.As(failure, &process) || !errors.As(failure, &start) || start.ProviderFailure() != tc.permanent || music.FailureClass(failure) != tc.class {
-				t.Fatalf("error=%v class=%s want class=%s permanent=%v", failure, music.FailureClass(failure), tc.class, tc.permanent)
-			}
-		})
 	}
 }
 

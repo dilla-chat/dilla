@@ -133,36 +133,34 @@ func appendBotInstallationEvent(ctx context.Context, tx store.Repository, row st
 }
 
 func registerBotInstallations(m *server.Mux, d Deps) {
+	// The human-facing Bot admin routes are socket-only. Each keeps the chain BotSessionRoute built (the enrolled session,
+	// whose Bot allow-list runs in the session middleware, then the device session's bucket of routeClass: read for a GET,
+	// write otherwise), as socketChain; the socket has no headers, so the Cache-Control: no-store that command-status and
+	// the channel authority route set is dropped.
+	m.SocketAuthed("GET /v1/communities/{community}/bot", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.GetBotInstallation))
+	m.SocketAuthed("PATCH /v1/communities/{community}/bot/profile", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.PatchBotProfile))
+	m.SocketAuthed("PUT /v1/communities/{community}/bot", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.ConfigureBotInstallation))
+	m.SocketAuthed("POST /v1/communities/{community}/bot/disable", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.DisableBotInstallation))
+	m.SocketAuthed("DELETE /v1/communities/{community}/bot", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.RemoveBotInstallation))
+	m.SocketAuthed("GET /v1/communities/{community}/bot/command-status", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.GetBotCommandStatus))
+	m.SocketAuthed("GET /v1/communities/{community}/bot/actors/{actor}/authority", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.GetBotActorAuthority))
+	m.SocketAuthed("GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.GetBotActorChannelAuthority))
+	m.SocketAuthed("POST /v1/communities/{community}/bot/join-role-grants", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.GrantBotJoinRole))
+	m.SocketAuthed("GET /v1/communities/{community}/bot/members/{member}/episode", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.GetBotMemberEpisode))
 	botSession := BotSessionRoute(d.Sessions, d.Limiter)
-	m.Handle("GET /v1/communities/{community}/bot", botSession("GET /v1/communities/{community}/bot", http.HandlerFunc(d.GetBotInstallation)))
-	m.Handle("PATCH /v1/communities/{community}/bot/profile", botSession("PATCH /v1/communities/{community}/bot/profile", http.HandlerFunc(d.PatchBotProfile)))
-	m.Handle("PUT /v1/communities/{community}/bot", botSession("PUT /v1/communities/{community}/bot", http.HandlerFunc(d.ConfigureBotInstallation)))
-	m.Handle("POST /v1/communities/{community}/bot/disable", botSession("POST /v1/communities/{community}/bot/disable", http.HandlerFunc(d.DisableBotInstallation)))
-	m.Handle("DELETE /v1/communities/{community}/bot", botSession("DELETE /v1/communities/{community}/bot", http.HandlerFunc(d.RemoveBotInstallation)))
-	commandStatusPath := "GET /v1/communities/{community}/bot/command-status"
-	commandStatus := SessionRoute(d.Sessions, d.Limiter)(commandStatusPath, http.HandlerFunc(d.GetBotCommandStatus))
-	m.Handle(commandStatusPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		commandStatus.ServeHTTP(w, r)
-	}))
-	m.Handle("GET /v1/communities/{community}/bot/actors/{actor}/authority", botSession("GET /v1/communities/{community}/bot/actors/{actor}/authority", http.HandlerFunc(d.GetBotActorAuthority)))
-	channelAuthorityPath := "GET /v1/communities/{community}/bot/actors/{actor}/channels/{channel}/authority"
-	channelAuthority := botSession(channelAuthorityPath, http.HandlerFunc(d.GetBotActorChannelAuthority))
-	m.Handle(channelAuthorityPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		channelAuthority.ServeHTTP(w, r)
-	}))
-	m.Handle("POST /v1/communities/{community}/bot/join-role-grants", botSession("POST /v1/communities/{community}/bot/join-role-grants", http.HandlerFunc(d.GrantBotJoinRole)))
-	m.Handle("GET /v1/communities/{community}/bot/members/{member}/episode", botSession("GET /v1/communities/{community}/bot/members/{member}/episode", http.HandlerFunc(d.GetBotMemberEpisode)))
 	m.HandleFunc("GET /v1/bot-runtime/installations", d.ListRuntimeInstallations)
 	m.HandleFunc("POST /v1/bot-runtime/installations/{installation}/claim", d.ClaimBotInstallation)
 	m.HandleFunc("POST /v1/bot-runtime/installations/{installation}/enroll", d.EnrollBotInstallation)
+	// The Bot's enrollment stays on HTTP (Bot v2 task 14): the runtime-credential routes above run before the Bot has
+	// a device session, and the credential finalize runs while the installation is still enrolling, which the gateway
+	// does not admit (only a joining or ready Bot identifies). Every other route the Bot's device session calls is a
+	// socket route.
 	m.Handle("PUT /v1/bot-runtime/installations/{installation}/credential", botSession("PUT /v1/bot-runtime/installations/{installation}/credential", http.HandlerFunc(d.FinalizeBotCredential)))
-	m.Handle("POST /v1/bot-runtime/installations/{installation}/ready", botSession("POST /v1/bot-runtime/installations/{installation}/ready", http.HandlerFunc(d.MarkBotReady)))
-	m.Handle("POST /v1/bot-runtime/installations/{installation}/moderation/actions", botSession("POST /v1/bot-runtime/installations/{installation}/moderation/actions", http.HandlerFunc(d.AcceptBotModerationAction)))
+	// Bot v2 Task 17: the Bot's health report, socket-only like the other runtime routes (bot_health.go).
+	m.SocketAuthed("PUT /v1/bot-runtime/health", d.socketChain(auth.ScopeEnrolled, dsClassBotRuntime), http.HandlerFunc(d.PutBotRuntimeHealth))
+	m.SocketAuthed("POST /v1/bot-runtime/installations/{installation}/ready", botSocketChain(d.Sessions, d.Limiter, "POST /v1/bot-runtime/installations/{installation}/ready"), http.HandlerFunc(d.MarkBotReady))
 	d.registerBotRemovalReceipt(m)
 	d.registerBotWarningReceipt(m)
-	d.registerBotInteractionAdmissions(m)
 	registerBotSettings(m, d)
 }
 
@@ -441,6 +439,12 @@ func (d Deps) ConfigureBotInstallation(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
+	// The managed role's bits may have changed in that commit: members re-read (op 54) and the Bot's
+	// event feed diffs the roles (Bot v2 task 12, fix round 1 M-2).
+	if d.BotProfileChanged != nil {
+		d.BotProfileChanged(context.WithoutCancel(r.Context()), cid)
+	}
+	d.botInstallationsChanged()
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
@@ -765,6 +769,9 @@ func (d Deps) setBotDisabled(w http.ResponseWriter, r *http.Request, remove bool
 	}
 	if changed && d.BotRevoked != nil {
 		d.BotRevoked(context.WithoutCancel(r.Context()), result, remove)
+	}
+	if changed {
+		d.botInstallationsChanged()
 	}
 	if remove {
 		d.noContent(w, r)
@@ -1448,6 +1455,11 @@ func (d Deps) MarkBotReady(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, d.storeError(r, err))
 		return
 	}
+	// Ready rewrote the managed role's bits: members re-read (op 54) and the Bot's event feed diffs the
+	// roles (Bot v2 task 12, fix round 1 M-2).
+	if d.BotProfileChanged != nil {
+		d.BotProfileChanged(context.WithoutCancel(r.Context()), row.CommunityID)
+	}
 	d.writeRuntimeBotInstallation(w, r, http.StatusOK, row)
 }
 
@@ -1514,9 +1526,19 @@ func (d Deps) botReadiness(ctx context.Context, repo store.Repository, row store
 			}
 		}
 	}
+	// Bot v2 Task 22: the Bot is a member of Bot channels' groups only (SyncGroupMembers proposes it nowhere else), so only
+	// those must be joined before it is ready; with no Bot channel nothing is owed.
+	marked, err := repo.ListBotChannels(ctx, row.CommunityID)
+	if err != nil {
+		return false, nil, err
+	}
+	botChannel := make(map[id.ID]bool, len(marked))
+	for _, m := range marked {
+		botChannel[m.ChannelID] = true
+	}
 	var missing []id.ID
 	for _, channel := range channels {
-		if channel.DeletedAt != nil || channel.Kind != ChannelText || channel.Mode != ModeE2EE {
+		if channel.DeletedAt != nil || channel.Kind != ChannelText || channel.Mode != ModeE2EE || !botChannel[channel.ID] {
 			continue
 		}
 		resolver := NewResolver(repo)
@@ -1532,4 +1554,18 @@ func (d Deps) botReadiness(ctx context.Context, repo store.Repository, row store
 		return false, missing, nil
 	}
 	return true, nil, nil
+}
+
+// withDeviceListTransaction reserves a native verifier before the write transaction.
+// The verifier and all current authorization checks remain inside that transaction.
+func (d Deps) withDeviceListTransaction(ctx context.Context, fn func(context.Context, store.Repository) error) error {
+	if d.DeviceLists == nil {
+		// No native verifier exists to reserve. Preserve readiness's original
+		// transaction-scoped dependency refusal (pending prerequisites), including
+		// its earlier authority and replay checks. Non-nil providers must scope.
+		return d.Repo.Tx(ctx, func(tx store.Repository) error { return fn(ctx, tx) })
+	}
+	return d.DeviceLists.WithVerification(ctx, func(scoped context.Context) error {
+		return d.Repo.Tx(scoped, func(tx store.Repository) error { return fn(scoped, tx) })
+	})
 }

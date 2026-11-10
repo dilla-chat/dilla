@@ -2,14 +2,14 @@
 
 ## Group kinds
 
-Every end-to-end encrypted conversation or session is one MLS group. There are four kinds:
+Every end-to-end encrypted conversation or session is one MLS group. There are three kinds in use:
 
 | kind | value | one per | members (leaves) | external sender |
 |---|---|---|---|---|
 | `text` | 0 | e2ee text channel, DM or group DM | every device of every member | the instance |
 | `call` | 1 | voice session in a voice channel, DM call or group-DM call | every device present in the call | the instance |
 | `pairing` | 2 | device enrolment | exactly two leaves: the authorising device and the new device | none |
-| `interaction` | 3 | (user, bot) pair | every device of the user plus the bot's device(s) | none |
+| (reserved) | 3 | the retired `interaction` kind: refused, never created; the value is reserved and is never reused | — | — |
 
 A `readable` text channel has no group. A call in any voice channel, including a voice channel of
 a community whose text channels are `readable`, always has a `call` group: calls are always
@@ -33,8 +33,22 @@ Group configuration:
   `[basic]`. `external_senders` is not listed in `extension_types` because RFC 9420 §7.2 forbids
   listing default extension types in `required_capabilities`.
 - Past epoch secrets: a client keeps the message secrets of past epochs for 300 seconds in `text`
-  groups, 10 seconds in `call` groups, and 0 seconds in `pairing` and `interaction` groups, then
-  deletes them.
+  groups, 10 seconds in `call` groups, and 0 seconds in `pairing` groups, then deletes them.
+
+## The Bot in groups
+
+A community's Bot is a member of two kinds of group, and no other:
+
+- the `text` group of each **Bot channel** (an end-to-end text channel an admin marked, `10` § Bot channels);
+- a `call` group while it plays music in that call.
+
+The rule is enforced from both sides. Marking a channel adds the Bot's devices to its group. Unmarking voids
+the Bot's outstanding Adds there and proposes it out. The instance's commit-time access check refuses the Bot
+for the `text` group of any channel that is not a Bot channel, and its membership sync proposes out a stray
+Bot leaf found in one. The Bot forgets its local state of a text group it was removed from or that is not a
+Bot channel (the helper's operation 27 `group_forget`, `10` § Native helper call-join operations) and refuses
+a Welcome into one. A member of a group can read it, which is why the Bot is in no other text group. Commands do not travel in
+groups; they are sealed requests (`10` § Sealed request).
 
 ## dilla_binding
 
@@ -45,42 +59,19 @@ Every group carries a GroupContext extension of type `0xF001` (RFC 9420 private-
 [
   v,               ; uint, = 1
   instance_id,     ; bstr, 16 bytes
-  community_id,    ; bstr, 16 bytes, or null for DMs, group DMs, pairing and interaction groups
+  community_id,    ; bstr, 16 bytes, or null for DMs, group DMs and pairing
   target_id,       ; bstr, 16 bytes: channel_id for text and call groups in a community;
-                   ;   dm_id for DMs and their calls; the new device_id for pairing;
-                   ;   the bot's user_id for interaction groups
-  kind,            ; uint, 0..3 as in the table above
+                   ;   dm_id for DMs and their calls; the new device_id for pairing
+  kind,            ; uint, 0..2 as in the table above (3 is retired)
   policy_version,  ; uint, the instance's policy version at group creation (see 02, invariant 1)
   e2ee_version,    ; uint, = 1
   media_version    ; uint, = 1 for call groups, 0 for the other kinds
 ]
 ```
 
-Bot interaction groups use the following typed v2 form; it is a separate encoding, not an extension
-of the legacy v1 kind-3 binding:
-
-```
-[
-  2,                       ; version
-  instance_id,             ; bstr, 16 bytes
-  null,                    ; legacy community slot stays null for kind 3
-  bot_user_id,             ; bstr, 16 bytes, the interaction target
-  3,                       ; kind = interaction
-  policy_version,          ; uint, snapshot at creation
-  1,                       ; e2ee_version
-  0,                       ; media_version
-  installation_id,         ; bstr, 16 bytes
-  community_id,            ; bstr, 16 bytes, installation's community scope
-  participant_user_id,     ; bstr, 16 bytes, the single eligible human participant
-  participant_device_id    ; bstr, 16 bytes, the authenticated human device admitted as a leaf
-]
-```
-
-All six IDs in the v2 form MUST be nonzero. A v2 decoder MUST require exactly twelve fields,
-the null legacy community slot, kind 3, and the stated protocol versions. Legacy v1 kind-3
-bindings remain valid for existing human interaction groups; Bot admission MUST require v2 and
-must also validate the installation, participant user and participant device against the server-authoritative admission
-contract. This binding format alone does not authorize a participant or enable Bot admission.
+The interaction kind (3) and its typed v2 binding are retired (Bot v2, `10` § Retired v1
+surfaces). The value 3 is reserved and is never given another meaning. A client, the Bot and the instance refuse a kind-3 binding, and each deletes any kind-3
+group it still holds.
 
 Rules:
 
@@ -114,13 +105,13 @@ Rules:
 
 `text` and `call` groups carry the instance signing key in the `external_senders` GroupContext
 extension (RFC 9420 §12.1.8.1), with a `basic` credential whose identity is the CBOR array
-`[v = 1, "instance", instance_id]`. `pairing` and `interaction` groups MUST NOT carry any external
-sender; a client MUST reject a `pairing` or `interaction` GroupInfo or Welcome that has one
+`[v = 1, "instance", instance_id]`. `pairing` groups MUST NOT carry any external
+sender; a client MUST reject a `pairing` GroupInfo or Welcome that has one
 (`E_EXTERNAL_SENDER_FORBIDDEN`).
 
 Client policy for proposals from the external sender:
 
-| proposal | text / call | pairing / interaction |
+| proposal | text / call | pairing |
 |---|---|---|
 | Add | accept if the credential passes `03-identity.md` checks and the user is eligible per the client's role snapshot | reject |
 | Remove | accept | reject |
@@ -165,8 +156,7 @@ Client policy for proposals from members:
   order it received them in, and keeps both queued. A commit that applies the member's instead is
   still accepted: it removes the same device, and the DS counts the instance's `Remove` as
   satisfied (`02-delivery-service.md`, invariant 4).
-- `Add`: accept only in `pairing` (first join of the second leaf) and `interaction` groups (the
-  user's device adding the bot device or a new own device); reject in `text` and `call` groups.
+- `Add`: accept only in `pairing` (first join of the second leaf); reject in `text` and `call` groups.
 - `GroupContextExtensions`, `ReInit`, `PreSharedKey`: reject. dilla has no feature that changes a
   group's context extensions after creation, so a `GroupContextExtensions` proposal is refused
   standalone (before queueing) and in a commit, by value or by reference, whoever sent it, and the
@@ -246,7 +236,7 @@ the send block for that group alone; it does not verify the changed key or relea
   the instance's periodic reconcile proposes again for as long as the device holds a leaf there
   with no DS `Remove` of it outstanding (`02` invariants 9 and 11). Each such `Remove` freezes its
   group until a member commits it, so a revocation is followed by a membership commit in every
-  group the device was in. `pairing` and `interaction` groups carry no external sender: there a
+  group the device was in. `pairing` groups carry no external sender: there a
   member removes a revoked device of its own user itself (§ External senders, member `Remove`s).
 - **Epoch rotation on membership change:** every Add or Remove is a new epoch; senders MUST NOT
   send application data in an epoch whose commit they have not processed.

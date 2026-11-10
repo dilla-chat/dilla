@@ -32,12 +32,12 @@ type GroupDigest struct {
 	ProposalsOutstanding uint64
 }
 
-func ReadyPayload(deviceID, userID id.ID, generation uint64, resumeToken []byte, wire, e2ee, media uint64, keypackagesRemaining uint64, groups []GroupDigest) (cbor.RawMessage, error) {
+func ReadyPayload(deviceID, userID id.ID, generation uint64, resumeToken []byte, wire, e2ee, media uint64, keypackagesRemaining uint64, groups []GroupDigest, bootID id.ID) (cbor.RawMessage, error) {
 	rows := make([]any, 0, len(groups))
 	for _, g := range groups {
 		rows = append(rows, []any{g.GroupID, g.Epoch, g.LastSeq, g.ProposalsOutstanding})
 	}
-	return payload(deviceID, userID, generation, resumeToken, wire, e2ee, media, keypackagesRemaining, rows)
+	return payload(deviceID, userID, generation, resumeToken, wire, e2ee, media, keypackagesRemaining, rows, bootID)
 }
 
 // ResumedPayload answers a resume. resumeToken is the ROTATED token, not the one the client just
@@ -116,6 +116,72 @@ func VoiceStatePayload(userID, deviceID, callID id.ID, flags uint64) (cbor.RawMe
 // declined; expires_ts is the ring's end in unix seconds, the same in all three.
 func CallRingPayload(callID, channelID, userID id.ID, state, expires uint64) (cbor.RawMessage, error) {
 	return payload(callID, channelID, userID, state, expires)
+}
+
+// BotCatalogPayload is op 61 bot_catalog's `[community_id, revision, filtered_catalog,
+// publication|null]` (Bot v2 task 9). commands is the CBOR array of the commands this one member
+// may use, already encoded; publication is the Bot's command-key publication as stored, nil for
+// none (CBOR null).
+func BotCatalogPayload(communityID id.ID, revision uint64, commands cbor.RawMessage, publication []byte) (cbor.RawMessage, error) {
+	var pub any
+	if publication != nil {
+		pub = publication
+	}
+	return payload(communityID, revision, commands, pub)
+}
+
+// BotReplyPayload is op 62 bot_reply's `[request_id, seq, sealed, final]` (Bot v2 task 10): one
+// sealed answer of the Bot to a command, for the device that sent it. final travels as uint 0 or
+// 1: the deterministic-CBOR subset has no boolean.
+func BotReplyPayload(requestID id.ID, seq uint64, sealed []byte, final bool) (cbor.RawMessage, error) {
+	var f uint64
+	if final {
+		f = 1
+	}
+	return payload(requestID, seq, sealed, f)
+}
+
+// BotStateChangedPayload is op 63 bot_state_changed's `[scope_kind, scope_id, revision]` (Bot v2
+// task 10): a content-free hint that the Bot's state for one user, channel or call changed.
+func BotStateChangedPayload(scopeKind uint8, scopeID id.ID, revision uint64) (cbor.RawMessage, error) {
+	return payload(uint64(scopeKind), scopeID, revision)
+}
+
+// BotCommandPayload is op 64 bot_command's `[request_id, community_id, user_id, device_id, sealed]`
+// (Bot v2 task 10): a member's sealed command for the Bot runtime, with the identity dillad
+// authenticated attached outside the seal.
+func BotCommandPayload(requestID, communityID, userID, deviceID id.ID, sealed []byte) (cbor.RawMessage, error) {
+	return payload(requestID, communityID, userID, deviceID, sealed)
+}
+
+// The kinds of an op 65 bot_event (Bot v2 task 12). protocol/02 § Bot runtime fixes each payload.
+const (
+	// BotEventDeviceList is `[user_id, device_list_push]`: the user's whole signed history from version 1.
+	BotEventDeviceList uint64 = 1
+	// BotEventMember is `[community_id, user_id, joined(uint 0|1), role_ids]`; joined 0 is a leave.
+	BotEventMember uint64 = 2
+	// BotEventRole is `[community_id, role_id, [allow, deny, position], deleted(uint 0|1)]`.
+	BotEventRole uint64 = 3
+	// BotEventChannelGroup is `[community_id, channel_id, group_id, epoch]`.
+	BotEventChannelGroup uint64 = 4
+	// BotEventBotChannel is `[community_id, channel_id, marked(uint 0|1)]`.
+	BotEventBotChannel uint64 = 5
+	// BotEventSnapshotBegin and BotEventSnapshotEnd bracket a cold start: `[community_id]`.
+	BotEventSnapshotBegin uint64 = 6
+	BotEventSnapshotEnd   uint64 = 7
+	// BotEventCommunity is `[community_id, owner_user_id]`: who holds the owner short-circuit.
+	BotEventCommunity uint64 = 8
+	// BotEventChannelOverwrites is `[community_id, channel_id, [[target_kind, target_id, allow, deny]…], deleted(uint
+	// 0|1)]` (Bot v2 task 15): a Bot channel's or voice channel's overwrites, target_kind 0 @everyone, 1 role, 2
+	// member. deleted 1 (with no entries) means the channel is gone or no longer a Bot or voice channel.
+	BotEventChannelOverwrites uint64 = 9
+	// BotEventMemberTimeout is `[community_id, user_id, until_unix | 0]` (Bot v2 task 15).
+	BotEventMemberTimeout uint64 = 10
+)
+
+// BotEventPayload is op 65 bot_event's `[kind, payload]` (Bot v2 task 12).
+func BotEventPayload(kind uint64, body any) (cbor.RawMessage, error) {
+	return payload(kind, body)
 }
 
 // CommunityChangedPayload is op 54 community_changed's `[community_id]` (dilla-web-3.1): the

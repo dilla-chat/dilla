@@ -5,8 +5,8 @@
 // active chip and the one run in flight.
 import { privateResultCopy } from './copy.ts';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { parseCommand, validateCommandArgs, type CommandDefinition, type CommandInvocation, type CommandOption, type CommandResult } from '@dilla/client-core';
-import { CommandBar, CommandChips, CommandField, CommandList, CommandSuggestions, Composer, commandOptionId, type CommandListItem, type CommandSuggestion as UiSuggestion, type IconName } from '@dilla/ui';
+import { COMMANDS, parseCommand, validateCommandArgs, type CommandDefinition, type CommandInvocation, type CommandOption, type CommandResult } from '@dilla/client-core';
+import { Button, CommandBar, CommandChips, CommandField, CommandList, CommandSuggestions, Composer, commandOptionId, type CommandListItem, type CommandSuggestion as UiSuggestion, type IconName } from '@dilla/ui';
 import { t } from '../../strings/index.ts';
 import { commandPickerCopy as copy } from './copy.ts';
 import { COMMAND_LIST_WAIT_MS } from './command-bot-store.ts';
@@ -54,6 +54,17 @@ export interface CommandComposerProps {
   /** The reminder's zone (Q10: the browser's) and clock; tests pin them. */
   timeZone?: string;
   now?: () => Date;
+  /** Bot v2: command id → why it is greyed (the Bot's state and since, or no Bot channel). The row stays and says why; the
+   *  command does not run. */
+  greyed?: ReadonlyMap<string, string>;
+  /** Bot v2: the last run of this draft got no answer: the bar says so and offers Retry (the same request id). */
+  retry?: string;
+}
+
+/** What a draft is parsed against: the host's commands (with the Bot's catalog), then every other built-in. */
+function parseSetOf(definitions: readonly CommandDefinition[]): readonly CommandDefinition[] {
+  const ids = new Set(definitions.map(command => command.id));
+  return [...definitions, ...COMMANDS.filter(command => !ids.has(command.id))];
 }
 
 interface FieldState { text: string; selected?: Picked; suggestions: CommandSuggestionList }
@@ -84,7 +95,7 @@ function remindValues(args: Readonly<Record<string, string>>, timeZone: string, 
 
 /** The chips' values a typed draft would open (the remind split included), for comparing a round trip. */
 function reopened(text: string, command: CommandDefinition, timeZone: string, now: Date): Record<string, string> | null {
-  const parsed = parseCommand(text);
+  const parsed = parseCommand(text, [command, ...COMMANDS.filter(entry => entry.id !== command.id)]);
   const id = parsed.type === 'invocation' ? parsed.invocation.commandId : parsed.type === 'incomplete' ? parsed.commandId : '';
   if (id !== command.id) return null;
   const args = parsed.type === 'invocation' ? parsed.invocation.args : parsed.type === 'incomplete' ? parsed.validation.args : {};
@@ -132,7 +143,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
 
   // The first render reads the draft the host hands over: a typed command opens its chips, anything else the list.
   const [initial] = useState(() => {
-    const parsed = parseCommand(initialText);
+    const parsed = parseCommand(initialText, parseSetOf(definitions));
     const id = parsed.type === 'invocation' ? parsed.invocation.commandId : parsed.type === 'incomplete' && parsed.subcommands === undefined ? parsed.commandId : '';
     const args = parsed.type === 'invocation' ? parsed.invocation.args : parsed.type === 'incomplete' ? parsed.validation.args : {};
     const command = definitions.find(entry => entry.id === id) ?? null;
@@ -160,6 +171,8 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   contextNow.current = props.contextKey;
 
   const definitionsById = useMemo(() => new Map(definitions.map(command => [command.id, command])), [definitions]);
+  const parseSet = useMemo(() => parseSetOf(definitions), [definitions]);
+  const disabledReason = props.disabledReason ?? (selected === null ? undefined : props.greyed?.get(selected.id));
   const botName = props.botName ?? privateResultCopy.author.bot;
   const entries = useMemo(() => new Map(definitions.map(command => [command.id, pickerEntry(command, botName)])), [definitions, botName]);
   const listedCommands = useMemo(() => definitions.filter(command => props.listed === undefined || props.listed.has(command.id)), [definitions, props.listed]);
@@ -221,7 +234,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   const listOpenNow = useRef(props.onListOpen); listOpenNow.current = props.onListOpen;
   const listState = useMemo((): { open: false } | { open: true; items: CommandDefinition[] } => {
     if (selected !== null || !draft.startsWith('/') || draft.startsWith('//')) return { open: false };
-    const parsed = parseCommand(draft);
+    const parsed = parseCommand(draft, parseSet);
     const typedId = parsed.type === 'invocation' ? parsed.invocation.commandId : parsed.type === 'incomplete' ? parsed.commandId : '';
     const typedArgs = parsed.type === 'invocation' ? parsed.invocation.args : parsed.type === 'incomplete' ? parsed.validation.args : {};
     if (definitionsById.has(typedId) && Object.keys(typedArgs).length > 0) return { open: false };
@@ -230,7 +243,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
     const starts = listedCommands.filter(command => command.id.startsWith(query));
     const contains = listedCommands.filter(command => !command.id.startsWith(query) && command.id.includes(query));
     return { open: true, items: [...starts, ...contains] };
-  }, [selected, draft, definitionsById, listedCommands]);
+  }, [selected, draft, definitionsById, listedCommands, parseSet]);
   const listIsOpen = listState.open;
   useEffect(() => {
     if (!listIsOpen) return undefined;
@@ -264,7 +277,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   };
 
   const enterTyped = (): boolean => {
-    const parsed = parseCommand(draft);
+    const parsed = parseCommand(draft, parseSet);
     const id = parsed.type === 'invocation' ? parsed.invocation.commandId : parsed.type === 'incomplete' && parsed.subcommands === undefined ? parsed.commandId : '';
     const command = definitionsById.get(id);
     if (command === undefined || (props.listed !== undefined && !props.listed.has(id))) return false;
@@ -513,7 +526,7 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
   };
 
   const run = async () => {
-    if (selected === null || inFlight.current || pending || props.disabledReason !== undefined) return;
+    if (selected === null || inFlight.current || pending || disabledReason !== undefined) return;
     const valid = validate();
     if (valid === null) return;
     inFlight.current = true;
@@ -583,7 +596,8 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
     bar = { icon: entry.icon, text: entry.description, tone: 'info' };
     const notice = activeOption === undefined ? undefined : fields[activeOption.name]?.suggestions.notice;
     if (error !== null) bar = { icon: 'triangle-alert', text: error.message, tone: 'danger' };
-    else if (props.disabledReason !== undefined) bar = { icon: entry.icon, text: props.disabledReason, tone: 'info' };
+    else if (props.retry !== undefined) bar = { icon: 'triangle-alert', text: props.retry, tone: 'danger' };
+    else if (disabledReason !== undefined) bar = { icon: entry.icon, text: disabledReason, tone: 'info' };
     else if (activeField?.suggest === 'when' && activeText !== '') {
       const result = whenOf(activeText);
       const chosen = activeSelected?.chosen;
@@ -599,7 +613,10 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
 
   const listItemsUi: CommandListItem[] = listItems.map(command => {
     const e = entries.get(command.id)!;
-    return { id: command.id, icon: e.icon, name: command.id, args: e.args, description: e.description, source: e.source };
+    // A greyed Bot command stays in the list, dimmed and aria-disabled, and says why instead of what it does.
+    const reason = props.greyed?.get(command.id);
+    return { id: command.id, icon: e.icon, name: command.id, args: e.args, description: reason ?? e.description, source: e.source,
+      ...(reason === undefined ? {} : { disabled: true }) };
   });
   const listOpen = listState.open;
   const activeListId = listItemsUi[listSel]?.id ?? null;
@@ -613,6 +630,8 @@ export function CommandPicker(props: CommandComposerProps): React.JSX.Element | 
       onActive={id => setSugSel(Math.max(sg.findIndex(s => s.id === id), 0))}
       onPick={id => { const pick = sg.find(s => s.id === id); if (pick !== undefined) accept(pick); }} /> : null}
     {bar !== null ? <CommandBar icon={bar.icon} text={bar.text} tone={bar.tone} hint={copy.fieldHint} /> : null}
+    {props.retry !== undefined && selected !== null && error === null && !pending
+      ? <div className="dw-command-retry"><Button onClick={() => { void run(); }}>{t('commands.retry')}</Button></div> : null}
   </>;
 
   const input = selected === null || entry === null

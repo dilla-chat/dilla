@@ -46,6 +46,8 @@ sql:
           - { column: "bot_installations.role_id", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "bot_operations.actor_device", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "bot_installations.approved_by", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          # 051_bot_v2.sql (Bot v2 Task 9): the admin who marked a Bot channel.
+          - { column: "bot_channels.marked_by", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
           # 2. nullable ids: a `column` override IGNORES nullability, so each is
           #    named explicitly with pointer: true, BEFORE the wildcards.
           - { column: "invites.community_id",
@@ -116,6 +118,8 @@ sql:
           - { column: "bot_installations.role_id", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "bot_operations.actor_device", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID", pointer: true } }
           - { column: "bot_installations.approved_by", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
+          # 051_bot_v2.sql (Bot v2 Task 9): the admin who marked a Bot channel.
+          - { column: "bot_channels.marked_by", go_type: { import: "github.com/dilla-chat/dilla/internal/id", package: "id", type: "ID" } }
           # 1b. the SMALLINT enum columns. §4.2 spells every enum SMALLINT on
           #     Postgres, which sqlc types int16, while the same column is
           #     INTEGER (int64) on SQLite — so the two Querier interfaces would

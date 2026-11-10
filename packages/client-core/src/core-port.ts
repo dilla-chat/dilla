@@ -107,11 +107,6 @@ export interface ManualWarningEvidence {
   requestId: Id; evidenceRequestId: Id; actorUserId: Id; actorDeviceId: Id; communityId: Id; targetUserId: Id;
   reason: string; state: 0 | 1; createdAt: bigint; actionId: Id; revision: bigint; acceptedAt: bigint; evidenceExpires: bigint;
 }
-export interface HumanInteractionEvent {
-  deliveryId: bigint; groupId: Id; communityId: Id; requestId: Id; sourceSeq: bigint; epoch: bigint; receivedAt: bigint;
-  senderUser: Id; senderDevice: Id; messageId: Id; body: string; operation: number; channelId: Id | null;
-}
-export interface HumanInteractionEventPage { events: HumanInteractionEvent[]; next: bigint; highWater: bigint; }
 export interface CorePort {
   pause(): void; resume(): Promise<void>; close(): void;
   identity(): IdentityInfo;
@@ -152,13 +147,6 @@ export interface CorePort {
   groupJoinExternal(g: ExpectedGroup, infoBody: Uint8Array, treeBody: Uint8Array): Uint8Array;
   groupJoined(groupId: Id, seq: bigint): void;
   welcomesApply(welcomesBody: Uint8Array, expected: ExpectedGroup[]): WelcomeOutcome[];
-  /** The core verifies this opaque signed context and derives the expected kind-3 binding itself. */
-  humanInteractionWelcomeApply(welcomesBody: Uint8Array, currentContextProof: Uint8Array, now: bigint): WelcomeOutcome[];
-  humanInteractionSendPrepare(requestId: Id, communityId: Id, groupId: Id, requestBody: Uint8Array, now: bigint): Id;
-  humanInteractionEventsRead(after: bigint, limit: number): HumanInteractionEventPage;
-  humanInteractionReceiptsRead(communityId: Id, installationId: Id, botUserId: Id, requestIds: readonly Id[]): HumanInteractionEvent[];
-  humanInteractionEventsAck(through: bigint): void;
-  humanInteractionEventsAckSelected(deliveryIds: readonly bigint[]): void;
   groupApply(groupId: Id, handshakes: Uint8Array, messages: Uint8Array, through: bigint): ApplyResult;
   commitBuild(groupId: Id, proposalsBody: Uint8Array): Uint8Array;
   commitConfirm(groupId: Id): ApplyResult; commitAbort(groupId: Id): void;
@@ -239,6 +227,51 @@ export interface CorePort {
   callRotate(groupId: Id): Uint8Array;
   /** Deletes the call group's state and sets its row to gone. */
   callGroupForget(groupId: Id): void;
+  /** Verifies the Bot's signed command key against the Bot user's stored device list (now, by the page's clock) and
+   *  remembers it for botCommandSeal. Throws the refusal (E_BOT_SIGNATURE, E_DEVICE_UNLISTED, E_BOT_STALE, ...). */
+  botCommandKeyVerify(publication: Uint8Array, botUserId: Id): { keyId: Uint8Array; fingerprint: string };
+  /** Signs the request with this device's key and seals it to a publication botCommandKeyVerify accepted. The one-time
+   *  reply key is made inside the core; its secret never leaves it, only `replyHandle` does. */
+  botCommandSeal(publication: Uint8Array, request: BotCommandRequest): { sealed: Uint8Array; replyHandle: number };
+  /** Opens answer `seq` of `requestId` with the reply secret behind `replyHandle`. */
+  botReplyOpen(replyHandle: number, requestId: Id, seq: number, sealed: Uint8Array): Uint8Array;
+  /** Zeroizes the reply secret behind `replyHandle`. The core keeps at most 256 and evicts the oldest. */
+  botReplyForget(replyHandle: number): void;
+  /** Bot v2 (task 20 fix round 1): pins the device list of an account the instance signed as a Bot from a DeviceListPush
+   *  ([umk_pub, ssk_pub, sig_umk_ssk, history]); trust on first sight, another key held. State 0 current, 1 held, 2 behind.
+   *  E_CREDENTIAL for a human, E_DEVICE_LIST_STALE with no attestation. */
+  botDeviceListPin(botUserId: Id, push: Uint8Array): { state: 0 | 1 | 2; version: bigint };
+  /** Bot v2 (task 20b): pins the community's Bot user in the core store on first sight. State 0 pinned now, 1 the
+   *  pinned user, 2 another user (the pin stays: never replaced; sign-out erases the store). Refused before anything is read
+   *  or written, also with a pin held: E_DEVICE_LIST_STALE when the store holds no account-kind attestation for the
+   *  candidate (ingest its device-list head first), E_CREDENTIAL when it holds another kind than Bot. */
+  botUserPin(communityId: Id, botUserId: Id): { state: 0 | 1 | 2; pinned: Uint8Array };
+  /** The community's pinned Bot user, or null. */
+  botUserPinned(communityId: Id): Uint8Array | null;
+}
+
+/** A command for the Bot, before it is signed and sealed. Numbers are unsigned safe integers. */
+export interface BotCommandRequest { requestId: Id; communityId: Id; channelId: Id | null; operation: number;
+  args: readonly (string | number | Uint8Array | null)[]; sentAt: bigint }
+
+const U32_MAX = 0xffffffff;
+const u32 = (v: number): boolean => Number.isInteger(v) && v >= 0 && v <= U32_MAX;
+const safeUint = (v: number): boolean => Number.isSafeInteger(v) && v >= 0;
+
+/** CBOR [request_id, community_id, channel_id|null, operation, args, sent_at], the facade's bot_command_seal input. */
+export function encodeBotCommandRequest(r: BotCommandRequest): Uint8Array {
+  if (r.requestId.length !== 16 || r.communityId.length !== 16 || (r.channelId !== null && r.channelId.length !== 16))
+    throw new CoreError('E_CORE_INPUT', 'bot command ids must be 16 bytes');
+  if (!safeUint(r.operation) || r.sentAt < 0n || r.sentAt > 0xffffffffffffffffn || r.args.length > 32)
+    throw new CoreError('E_CORE_INPUT', 'bot command operation, sent_at or argument count');
+  const args = r.args.map((a) => {
+    if (typeof a === 'number') {
+      if (!safeUint(a)) throw new CoreError('E_CORE_INPUT', 'bot command number arguments are unsigned integers');
+      return BigInt(a);
+    }
+    return a;
+  });
+  return encode([r.requestId, r.communityId, r.channelId, BigInt(r.operation), args, r.sentAt]);
 }
 
 /** One epoch of a call group (L-TS-55). `baseKey` is a fresh 16-byte buffer the worker transfers once; nothing else
@@ -319,12 +352,6 @@ export interface CoreHandle {
       group_join_external(group_id: Uint8Array, community_id: Uint8Array | null | undefined, channel_id: Uint8Array, policy_version: bigint, info_body: Uint8Array, tree_body: Uint8Array): Uint8Array;
       group_joined(group_id: Uint8Array, seq: bigint): void;
       welcomes_apply(welcomes_body: Uint8Array, expected: Uint8Array): Uint8Array;
-      human_interaction_welcome_apply(welcomes_body: Uint8Array, current_context_proof: Uint8Array, now: bigint): Uint8Array;
-      human_interaction_send_prepare(request_id: Uint8Array, community_id: Uint8Array, group_id: Uint8Array, request_body: Uint8Array, now: bigint): Uint8Array;
-      human_interaction_events_read(after: bigint, limit: bigint): Uint8Array;
-      human_interaction_receipts_read(community_id: Uint8Array, installation_id: Uint8Array, bot_user_id: Uint8Array, request_ids: Uint8Array): Uint8Array;
-      human_interaction_events_ack(through: bigint): void;
-      human_interaction_events_ack_selected(delivery_ids: Uint8Array): void;
       group_apply(group_id: Uint8Array, handshakes: Uint8Array, messages: Uint8Array, through: bigint): Uint8Array;
       commit_build(group_id: Uint8Array, proposals_body: Uint8Array): Uint8Array;
       commit_confirm(group_id: Uint8Array): Uint8Array;
@@ -387,6 +414,13 @@ export interface CoreHandle {
       call_leave_proposal(group_id: Uint8Array): Uint8Array;
       call_rotate(group_id: Uint8Array): Uint8Array;
       call_group_forget(group_id: Uint8Array): void;
+      bot_command_key_verify(publication: Uint8Array, bot_user_id: Uint8Array): Uint8Array;
+      bot_command_seal(publication: Uint8Array, request_cbor: Uint8Array): Uint8Array;
+      bot_reply_open(handle: number, request_id: Uint8Array, seq: number, sealed: Uint8Array): Uint8Array;
+      bot_reply_forget(handle: number): void;
+      bot_device_list_pin(bot_user_id: Uint8Array, push: Uint8Array): Uint8Array;
+      bot_user_pin(community_id: Uint8Array, bot_user_id: Uint8Array): Uint8Array;
+      bot_user_pinned(community_id: Uint8Array): Uint8Array;
     }
     export interface StoreOpenConfigLike { directory: string; db_name: string; kek_hex: string; }
     export interface CoreWasmModule {
@@ -644,47 +678,6 @@ export function wrapCore(handle: CoreHandle): CorePort {
     groupJoined: (groupId, seq) => call(() => handle.group_joined(groupId, seq)),
     welcomesApply: (welcomesBody, expected) => call(() => decoded('welcomesApply', handle.welcomes_apply(welcomesBody,
       encode(expected.map((e) => [e.groupId, e.communityId, e.channelId, e.policyVersion]))), (v) => arr(v).map(readWelcome))),
-    humanInteractionWelcomeApply: (welcomesBody, currentContextProof, now) => call(() => decoded(
-      'humanInteractionWelcomeApply',
-      handle.human_interaction_welcome_apply(welcomesBody, currentContextProof, now),
-      (v) => arr(v).map(readWelcome),
-    )),
-    humanInteractionSendPrepare: (requestId, communityId, groupId, requestBody, now) => call(() => decoded(
-      'humanInteractionSendPrepare',
-      handle.human_interaction_send_prepare(requestId, communityId, groupId, requestBody, now),
-      (v) => bin(field(arr(v, 1), 0), 16),
-    )),
-    humanInteractionEventsRead: (after, limit) => call(() => decoded(
-      'humanInteractionEventsRead', handle.human_interaction_events_read(after, BigInt(limit)), (v) => {
-        const page = arr(v, 3);
-        return {
-          events: arr(page[0]).map((item) => {
-            const row = arr(item, 13);
-            return {
-              deliveryId: u64(row[0]), groupId: bin(row[1], 16), communityId: bin(row[2], 16),
-              requestId: bin(row[3], 16), sourceSeq: u64(row[4]), epoch: u64(row[5]), receivedAt: u64(row[6]),
-              senderUser: bin(row[7], 16), senderDevice: bin(row[8], 16), messageId: bin(row[9], 16), body: str(row[10]),
-              operation: u53(row[11]), channelId: opt(row[12], v => bin(v, 16)),
-            };
-          }),
-          next: u64(page[1]), highWater: u64(page[2]),
-        };
-      },
-    )),
-    humanInteractionReceiptsRead: (communityId, installationId, botUserId, requestIds) => call(() => decoded(
-      'humanInteractionReceiptsRead', handle.human_interaction_receipts_read(communityId, installationId, botUserId, encode(requestIds)),
-      (v) => arr(v).map((item) => {
-        const row = arr(item, 13);
-        return {
-          deliveryId: u64(row[0]), groupId: bin(row[1], 16), communityId: bin(row[2], 16),
-          requestId: bin(row[3], 16), sourceSeq: u64(row[4]), epoch: u64(row[5]), receivedAt: u64(row[6]),
-          senderUser: bin(row[7], 16), senderDevice: bin(row[8], 16), messageId: bin(row[9], 16), body: str(row[10]),
-          operation: u53(row[11]), channelId: opt(row[12], v => bin(v, 16)),
-        };
-      }),
-    )),
-    humanInteractionEventsAck: (through) => call(() => handle.human_interaction_events_ack(through)),
-    humanInteractionEventsAckSelected: (deliveryIds) => call(() => handle.human_interaction_events_ack_selected(encode(deliveryIds))),
     groupApply: (groupId, handshakes, messages, through) => call(() => decoded('groupApply', handle.group_apply(groupId, handshakes, messages, through), readApply)),
     commitBuild: (groupId, proposalsBody) => call(() => handle.commit_build(groupId, proposalsBody)),
     commitConfirm: (groupId) => call(() => decoded('commitConfirm', handle.commit_confirm(groupId), readApply)),
@@ -817,5 +810,48 @@ export function wrapCore(handle: CoreHandle): CorePort {
     callLeaveProposal: (groupId) => call(() => handle.call_leave_proposal(groupId)),
     callRotate: (groupId) => call(() => handle.call_rotate(groupId)),
     callGroupForget: (groupId) => call(() => handle.call_group_forget(groupId)),
+    botCommandKeyVerify: (publication, botUserId) => call(() => {
+      if (botUserId.length !== 16) throw new CoreError('E_CORE_INPUT', 'bot user id must be 16 bytes');
+      return decoded('botCommandKeyVerify', handle.bot_command_key_verify(publication, botUserId), (v) => {
+        const a = arr(v, 2); return { keyId: bin(field(a, 0), 16), fingerprint: str(field(a, 1)) };
+      });
+    }),
+    botCommandSeal: (publication, request) => call(() => decoded('botCommandSeal',
+      handle.bot_command_seal(publication, encodeBotCommandRequest(request)), (v) => {
+        const a = arr(v, 2); const replyHandle = u53(field(a, 1));
+        if (!u32(replyHandle) || replyHandle === 0) throw new CborError('E_CBOR_RANGE', 'reply handle');
+        return { sealed: bin(field(a, 0)), replyHandle };
+      })),
+    botReplyOpen: (replyHandle, requestId, seq, sealed) => call(() => {
+      if (!u32(replyHandle) || !u32(seq) || requestId.length !== 16) throw new CoreError('E_CORE_INPUT', 'reply handle, seq or request id');
+      return handle.bot_reply_open(replyHandle, requestId, seq, sealed);
+    }),
+    botReplyForget: (replyHandle) => call(() => {
+      if (!u32(replyHandle)) throw new CoreError('E_CORE_INPUT', 'reply handle');
+      handle.bot_reply_forget(replyHandle);
+    }),
+    botDeviceListPin: (botUserId, push) => call(() => {
+      if (botUserId.length !== 16) throw new CoreError('E_CORE_INPUT', 'bot user id must be 16 bytes');
+      return decoded('botDeviceListPin', handle.bot_device_list_pin(botUserId, push), (v) => {
+        const a = arr(v, 2); const state = u53(field(a, 0));
+        if (state > 2) throw new CborError('E_CBOR_RANGE', 'pin state');
+        return { state: state as 0 | 1 | 2, version: u64(field(a, 1)) };
+      });
+    }),
+    botUserPin: (communityId, botUserId) => call(() => {
+      if (communityId.length !== 16 || botUserId.length !== 16) throw new CoreError('E_CORE_INPUT', 'community and Bot user ids must be 16 bytes');
+      return decoded('botUserPin', handle.bot_user_pin(communityId, botUserId), (v) => {
+        const a = arr(v, 2); const state = u53(field(a, 0));
+        if (state > 2) throw new CborError('E_CBOR_RANGE', 'pin state');
+        return { state: state as 0 | 1 | 2, pinned: bin(field(a, 1), 16) };
+      });
+    }),
+    botUserPinned: (communityId) => call(() => {
+      if (communityId.length !== 16) throw new CoreError('E_CORE_INPUT', 'community id must be 16 bytes');
+      const raw = handle.bot_user_pinned(communityId);
+      if (raw.length === 0) return null;
+      if (raw.length !== 16) throw new CoreError('E_CORE_DECODE', 'pinned Bot user');
+      return raw.slice();
+    }),
   };
 }

@@ -1,4 +1,4 @@
-import type { CoreClient } from '@dilla/client-core';
+import { BotOperationRefusedError, createBotOperations, type CoreClient } from '@dilla/client-core';
 
 export type EvidenceUpload = 'accepted' | 'pending' | 'rejected' | 'unknown';
 export type ManualRemovalPhase = 'confirm' | 'sending' | 'result';
@@ -40,12 +40,12 @@ export async function sendManualRemovalEvidence(client: CoreClient, communityId:
   // idempotent for the same reason and excerpt, so a late duplicate is safe.
   const requestId = newEvidenceRequestId();
   if (state.proofRequestId === null) return { requestId, upload: 'unknown' };
+  // Bot v2 Task 22: evidence is the sealed app operation 161 (v1 61, revision 0); 'accepted' only when the Bot stored it.
   try {
-    const result = await client.call({ m: 'humanInteractionRequest', communityId, channelId: null, requestId,
-      operation: 61, args: [state.proofRequestId, state.reason, state.excerpt], revision: '0' }) as { upload?: unknown };
-    const upload = result?.upload;
-    return { requestId, upload: upload === 'accepted' || upload === 'pending' || upload === 'rejected' ? upload : 'unknown' };
-  } catch {
-    return { requestId, upload: 'unknown' };
+    const result = await createBotOperations(client, communityId).request({ operation: 61, args: [state.proofRequestId, state.reason, state.excerpt],
+      revision: '0', requestId });
+    return { requestId, upload: result.status === 0 ? 'accepted' : result.status === 1 || result.status === 2 ? 'rejected' : 'pending' };
+  } catch (e) {
+    return { requestId, upload: e instanceof BotOperationRefusedError ? 'pending' : 'unknown' };
   }
 }

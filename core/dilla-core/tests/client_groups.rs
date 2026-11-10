@@ -131,26 +131,7 @@ fn a_registration_that_lost_is_discarded_and_leaves_nothing() {
             &instance.public(),
         )
         .expect("create");
-    a.probe
-        .lock()
-        .expect("probe")
-        .execute(
-            "INSERT INTO app_human_interaction_response_claims(group_id,request_id,source_seq) VALUES(?1,?2,1)",
-            rusqlite::params![GROUP.as_slice(), [0x77u8; 16].as_slice()],
-        )
-        .expect("record interaction response claim");
     a.core.group_discard(&GROUP).expect("discard");
-    let remaining: i64 = a
-        .probe
-        .lock()
-        .expect("probe")
-        .query_row(
-            "SELECT count(*) FROM app_human_interaction_response_claims WHERE group_id=?1",
-            [GROUP.as_slice()],
-            |r| r.get(0),
-        )
-        .expect("query discarded response claims");
-    assert_eq!(remaining, 0, "discard removes durable claims for the group");
     assert!(groups(&a.core).is_empty());
     assert_eq!(code(a.core.group_discard(&GROUP)), "E_CORE_NOT_FOUND");
 
@@ -497,29 +478,7 @@ fn a_resync_replaces_the_local_group_and_a_discarded_resync_returns_to_needs_res
         )),
         "E_CORE_STATE"
     );
-    b.probe
-        .lock()
-        .expect("probe")
-        .execute(
-            "INSERT INTO app_human_interaction_response_claims(group_id,request_id,source_seq) VALUES(?1,?2,1)",
-            rusqlite::params![GROUP.as_slice(), [0x78u8; 16].as_slice()],
-        )
-        .expect("record acknowledged interaction response claim");
     b.core.group_discard(&GROUP).expect("discard");
-    let preserved: i64 = b
-        .probe
-        .lock()
-        .expect("probe")
-        .query_row(
-            "SELECT count(*) FROM app_human_interaction_response_claims WHERE group_id=?1",
-            [GROUP.as_slice()],
-            |r| r.get(0),
-        )
-        .expect("read response claim after preserving history");
-    assert_eq!(
-        preserved, 1,
-        "resync discard must retain response claims with message history"
-    );
     let row = b.group(&GROUP).expect("the row stays");
     assert_eq!(row.state, 3);
     assert_eq!(
@@ -644,30 +603,6 @@ fn a_welcome_joins_against_the_expected_binding_and_reports_every_outcome() {
         assert_eq!((row.sender_kind, row.sender_tier), (Some(0), Some(0)));
         assert_eq!(row.body, "welcome aboard");
     }
-}
-
-#[test]
-fn a_human_interaction_welcome_refuses_a_forged_context_without_storing_a_group() {
-    let mut human = ready_core(0xa1, "alice");
-    let mut welcome = Encoder::new();
-    welcome
-        .array(1)
-        .array(7)
-        .uint(1)
-        .bytes(&GROUP)
-        .uint(1)
-        .uint(1)
-        .bytes(&[])
-        .bytes(&[])
-        .bytes(&[0; 32]);
-
-    let error = code(human.core.human_interaction_welcome_apply(
-        &welcome.into_vec(),
-        &[0x80],
-        1_800_000_000,
-    ));
-    assert_eq!(error, "E_BINDING");
-    assert!(groups(&human.core).is_empty());
 }
 
 #[test]
@@ -1508,4 +1443,120 @@ fn an_external_join_of_a_dm_with_a_community_is_refused_with_e_binding() {
         b.group(&DM_GROUP).map(|g| (g.state, g.community_id)),
         Some((2, None))
     );
+}
+
+/// Bot v2 Task 23: kind-3 (interaction) groups are gone. A store that still holds one is cleaned at open: the row is
+/// deleted (once, with one log line), every other group stays, and a later open finds nothing more to remove.
+#[test]
+fn a_stored_kind3_group_is_removed_at_open() {
+    let conn: dilla_core::mls::ConnHandle = std::sync::Arc::new(std::sync::Mutex::new(
+        rusqlite::Connection::open_in_memory().expect("sqlite"),
+    ));
+    drop(ClientCore::open(conn.clone()).expect("open"));
+    {
+        let c = conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state,interaction_installation_id,interaction_device_id) \
+             VALUES(?1,3,?2,?3,2,?4,?5)",
+            rusqlite::params![[0x31u8; 16].as_slice(), COMMUNITY.as_slice(), [0x32u8; 16].as_slice(), [0x33u8; 16].as_slice(), [0x34u8; 16].as_slice()],
+        )
+        .expect("kind-3 row");
+        c.execute(
+            "INSERT INTO app_groups(group_id,kind,community_id,target_id,state) VALUES(?1,0,?2,?3,2)",
+            rusqlite::params![GROUP.as_slice(), COMMUNITY.as_slice(), CHANNEL.as_slice()],
+        )
+        .expect("text row");
+        // Task 23 fix round 1: the kind-3 group's search, purge, removal and manual-evidence rows and its pending Bot
+        // intent go with it.
+        let g = [0x31u8; 16];
+        let sql: &[(&str, &str)] = &[
+            (
+                "search",
+                "INSERT INTO app_search_rows(group_id,user_id,device_id,seq,body,terms) VALUES(?1,zeroblob(16),zeroblob(16),1,'hi','hi')",
+            ),
+            (
+                "purge",
+                "INSERT INTO app_purges(group_id,seq,channel_id,blob_ids) VALUES(?1,1,zeroblob(16),x'80')",
+            ),
+            (
+                "cursor",
+                "INSERT INTO app_removal_cursor(group_id,revision) VALUES(?1,1)",
+            ),
+            (
+                "tombstone",
+                "INSERT INTO app_removal_tombstones(group_id,seq,revision) VALUES(?1,1,1)",
+            ),
+            (
+                "entry",
+                "INSERT INTO app_removal_entries(group_id,revision,seq,proof,signature,accepted_at) VALUES(?1,1,1,x'01',zeroblob(64),1)",
+            ),
+            (
+                "intent",
+                "INSERT INTO app_bot_intents(operation_id,installation_id,group_id,kind,input_hash,state,result) VALUES(x'01010101010101010101010101010101',zeroblob(16),?1,2,zeroblob(32),0,x'80')",
+            ),
+            (
+                "evidence",
+                "INSERT INTO app_manual_removal_evidence(proof_request_id,evidence_request_id,actor_user_id,actor_device_id,community_id,group_id,channel_id,message_id,target_sequence,reason,excerpt,signed_body,state,created_at,expires) \
+              VALUES(x'02020202020202020202020202020202',x'03030303030303030303030303030303',x'04040404040404040404040404040404',x'05050505050505050505050505050505',x'06060606060606060606060606060606',?1,x'07070707070707070707070707070707',x'08080808080808080808080808080808',1,'r','',x'01',0,1,2)",
+            ),
+        ];
+        for (name, statement) in sql {
+            c.execute(statement, [g.as_slice()]).expect(name);
+        }
+    }
+    let core = ClientCore::open(conn.clone()).expect("reopen");
+    assert_eq!(core.interaction_groups_removed_at_open(), 1);
+    drop(core);
+    {
+        let c = conn.lock().unwrap();
+        let g = [0x31u8; 16];
+        for table in [
+            "app_search_rows",
+            "app_purges",
+            "app_removal_cursor",
+            "app_removal_tombstones",
+            "app_removal_entries",
+            "app_manual_removal_evidence",
+        ] {
+            let n: i64 = c
+                .query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE group_id=?1"),
+                    [g.as_slice()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "{table} rows of the kind-3 group are gone");
+        }
+        let search: i64 = c
+            .query_row(
+                "SELECT count(*) FROM app_search WHERE app_search MATCH 'hi'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(search, 0, "the search index forgot the kind-3 group's rows");
+        let pending: i64 = c
+            .query_row(
+                "SELECT count(*) FROM app_bot_intents WHERE group_id=?1 AND state=0",
+                [g.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            pending, 0,
+            "the kind-3 group's pending Bot intent is discarded"
+        );
+        let count = |kind: i64| -> i64 {
+            c.query_row(
+                "SELECT count(*) FROM app_groups WHERE kind=?1",
+                [kind],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(count(3), 0, "the kind-3 row is gone");
+        assert_eq!(count(0), 1, "the text group stays");
+    }
+    let core = ClientCore::open(conn).expect("open again");
+    assert_eq!(core.interaction_groups_removed_at_open(), 0);
 }

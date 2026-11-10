@@ -357,11 +357,16 @@ func (s *Scheduler) validateMutationInput(requestID id.ID, expires uint64) error
 		return errors.New("invalid announcement mutation receipt input")
 	}
 	now := s.now().UTC().Unix()
-	if now < 0 || uint64(now) >= expires || uint64(now) > math.MaxInt64-30 || expires > uint64(now)+30 {
+	if now < 0 || uint64(now) >= expires || uint64(now) > math.MaxInt64-maxMutationLifetime || expires > uint64(now)+maxMutationLifetime {
 		return ErrMutationExpired
 	}
 	return nil
 }
+
+// maxMutationLifetime bounds how far ahead a mutation's expiry may lie: a sealed command's 120 s window (sent_at + 120,
+// internal/bot/service sealedCommandWindow) plus 60 s of clock skew between the sender and the Bot. The v1 interaction
+// path's 30 s bound refused every sealed save as expired.
+const maxMutationLifetime = 180
 
 func (s *Scheduler) nextMutationReceipts(requestID id.ID, fingerprint [32]byte, expires uint64, outcome MutationOutcome) ([]mutationReceipt, error) {
 	nowSeconds := s.now().UTC().Unix()

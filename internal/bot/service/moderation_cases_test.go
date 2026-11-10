@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -135,95 +134,15 @@ func (n *moderationCaseNativeFake) StateScan(_ context.Context, area uint64, aft
 	return page, nil
 }
 
-type moderationCaseEnforcerFunc func(context.Context, ModerationAction) error
-
-func (f moderationCaseEnforcerFunc) EnforceModerationAction(ctx context.Context, action ModerationAction) error {
-	return f(ctx, action)
-}
-
 func sampleModerationAction(n *moderationCaseNativeFake, revision uint64) ModerationAction {
 	return ModerationAction{Community: n.binding.Community.String(), Group: id.New().String(), Channel: id.New().String(), Actor: id.New().String(), Message: id.New().String(),
-		SourceRevision: revision, Decision: moderation.Decision{Action: moderation.ActionLog, Rules: []moderation.Rule{moderation.RuleMentions}}, Excerpt: "example", ReceivedAt: time.Unix(1_800_000_000, 0), runtimeGenerated: true}
-}
-
-func TestModerationCaseSinkDeduplicatesAndRejectsConflictingSourceRevision(t *testing.T) {
-	n := newModerationCaseNative()
-	sink, err := NewModerationCaseSink(n, nil, func() time.Time { return time.Unix(1_800_000_100, 0) })
-	if err != nil {
-		t.Fatal(err)
-	}
-	action := sampleModerationAction(n, 7)
-	n.failAfterWrite = true
-	if err = sink.ApplyModerationAction(context.Background(), action); err != nil {
-		t.Fatalf("first write should recover after uncertain response: %v", err)
-	}
-	if err = sink.ApplyModerationAction(context.Background(), action); err != nil {
-		t.Fatalf("exact replay should recover after uncertain response: %v", err)
-	}
-	if len(n.rows) != 1 {
-		t.Fatalf("stored rows = %d, want 1", len(n.rows))
-	}
-	conflict := action
-	conflict.Excerpt = "different content"
-	if err = sink.ApplyModerationAction(context.Background(), conflict); !errors.Is(err, ErrModerationCaseConflict) {
-		t.Fatalf("conflicting replay error = %v", err)
-	}
-}
-
-func TestModerationCaseSinkRejectsPunitiveActionWithoutEnforcement(t *testing.T) {
-	n := newModerationCaseNative()
-	sink, err := NewModerationCaseSink(n, nil, func() time.Time { return time.Unix(1_800_000_100, 0) })
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, actionType := range []moderation.Action{moderation.ActionRemove, moderation.ActionWarn, moderation.ActionTimeout} {
-		action := sampleModerationAction(n, uint64(len(actionType)))
-		action.Decision.Action = actionType
-		if actionType == moderation.ActionTimeout {
-			action.Decision.Timeout = time.Minute
-		}
-		if err := sink.ApplyModerationAction(context.Background(), action); !errors.Is(err, ErrModerationEnforcementUnavailable) {
-			t.Fatalf("action %q error = %v", actionType, err)
-		}
-	}
-	if len(n.rows) != 0 {
-		t.Fatalf("punitive action persisted %d misleading cases", len(n.rows))
-	}
-}
-
-func TestModerationCaseSinkBoundsExcerptAndRejectsMalformedOrWrongBindingState(t *testing.T) {
-	n := newModerationCaseNative()
-	sink, _ := NewModerationCaseSink(n, nil, func() time.Time { return time.Unix(1_800_000_100, 0) })
-	action := sampleModerationAction(n, 3)
-	action.Excerpt = strings.Repeat("x", 700)
-	if err := sink.ApplyModerationAction(context.Background(), action); err != nil {
-		t.Fatal(err)
-	}
-	cases, _, err := sink.list(context.Background(), nil, 10)
-	if err != nil || len(cases) != 1 {
-		t.Fatalf("list = %d cases, %v", len(cases), err)
-	}
-	if len(cases[0].Excerpt) > 512 {
-		t.Fatalf("excerpt size = %d", len(cases[0].Excerpt))
-	}
-	other := *n
-	other.binding = native.Binding{Instance: id.New(), Community: id.New(), Installation: id.New()}
-	wrongSink, _ := NewModerationCaseSink(&other, nil, time.Now)
-	if _, _, err := wrongSink.list(context.Background(), nil, 10); !errors.Is(err, ErrModerationCaseBinding) {
-		t.Fatalf("wrong binding list error = %v", err)
-	}
-	bad := newModerationCaseNative()
-	bad.rows["mc1-malformed"] = native.StateValue{Revision: 1, Value: []byte{0x80}}
-	badSink, _ := NewModerationCaseSink(bad, nil, time.Now)
-	if _, _, err := badSink.list(context.Background(), nil, 10); !errors.Is(err, ErrModerationCaseState) {
-		t.Fatalf("malformed state error = %v", err)
-	}
+		SourceRevision: revision, Rules: []moderation.Rule{moderation.RuleMentions}, Excerpt: "example", ReceivedAt: time.Unix(1_800_000_000, 0), runtimeGenerated: true}
 }
 
 func TestModerationCasePurgeExpiresRowsInBoundedScans(t *testing.T) {
 	n := newModerationCaseNative()
 	now := time.Unix(1_800_000_000, 0)
-	sink, _ := NewModerationCaseSink(n, nil, func() time.Time { return now })
+	sink, _ := NewModerationCaseSink(n, func() time.Time { return now })
 	old := sampleModerationAction(n, 1)
 	old.ReceivedAt = now.Add(-91 * 24 * time.Hour)
 	fresh := sampleModerationAction(n, 2)
@@ -251,7 +170,7 @@ func TestModerationCasePurgeExpiresRowsInBoundedScans(t *testing.T) {
 func TestModerationCasePurgeResumesAfterRestartFromEncryptedCursor(t *testing.T) {
 	n := newModerationCaseNative()
 	now := time.Unix(1_800_000_000, 0)
-	sink, _ := NewModerationCaseSink(n, nil, func() time.Time { return now })
+	sink, _ := NewModerationCaseSink(n, func() time.Time { return now })
 	for i := uint64(0); i < moderationCaseScanLimit+1; i++ {
 		action := sampleModerationAction(n, i+1)
 		action.ReceivedAt = now.Add(-91 * 24 * time.Hour)
@@ -266,7 +185,7 @@ func TestModerationCasePurgeResumesAfterRestartFromEncryptedCursor(t *testing.T)
 
 	// A new sink represents a process restart. It must continue from encrypted
 	// state rather than begin at the first page again.
-	restarted, _ := NewModerationCaseSink(n, nil, func() time.Time { return now })
+	restarted, _ := NewModerationCaseSink(n, func() time.Time { return now })
 	removed, err = restarted.PurgeExpiredResumable(context.Background())
 	if err != nil || removed != 1 {
 		t.Fatalf("resumed purge = %d, cursor=%+v, err=%v", removed, n.cursor, err)
@@ -285,7 +204,7 @@ func TestModerationCasePurgeResumesAfterRestartFromEncryptedCursor(t *testing.T)
 func TestModerationCaseMaintenanceAlsoTombstonesExpiredEvidence(t *testing.T) {
 	n := newModerationCaseNative()
 	now := time.Now().UTC().Truncate(time.Second)
-	sink, err := NewModerationCaseSink(n, nil, func() time.Time { return now })
+	sink, err := NewModerationCaseSink(n, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}

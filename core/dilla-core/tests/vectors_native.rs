@@ -2,6 +2,8 @@
 //! `cargo test -p dilla-core --target wasm32-unknown-unknown` (task 16) and the Go wazero test
 //! (Plan B task 4); all three drive this same module.
 
+#![cfg(feature = "vectors")]
+
 use dilla_core::cbor::decode_strict;
 use dilla_core::vectors::{
     run_all, run_attachment, run_envelope, run_frames, run_franking, run_identity, run_rejects,
@@ -36,10 +38,13 @@ fn each_suite_reports_the_expected_number_of_cases() {
     // `mls.handshake` (instance-sent, `sender = null`), plus task-1's `typing_set` and
     // `voice_self` cases, web-3 task 1's three `call_ring` cases (op 53, states 1, 0 and 2), and
     // web-3.1's `community_changed` (op 54) and web3.7's `message.ct with a null class` (op 19's
-    // 7th element) and AW3's two `afk_away` cases (op 55, set and cleared), checked as one
-    // `frame` field each. Pinned exactly, for the same reason the
-    // reject suite is.
-    assert_eq!(run_frames().cases.len(), 34);
+    // 7th element) and AW3's two `afk_away` cases (op 55, set and cleared) and Bot v2's socket
+    // `request` (op 59, with and without an idem) and `response` (op 60), checked as one
+    // `frame` field each, and Bot v2 task 9's `bot_catalog` (op 61) and task 10's `bot_reply`
+    // (op 62), `bot_state_changed` (op 63) and `bot_command` (op 64), task 12's `bot_event` (op 65)
+    // and task 13's `bot_webhook` and `bot_webhook_ack` (ops 66, 67). Pinned exactly, for the
+    // same reason the reject suite is.
+    assert_eq!(run_frames().cases.len(), 44);
     // protocol/04 § Attachments (web-2b task 1): four cases, `stored`, `blob_id` and `open` each,
     // plus `thumb` and `thumb_open` for the one with a thumbnail: 3 + 3 + 5 + 3
     assert_eq!(run_attachment().cases.len(), 14);

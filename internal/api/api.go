@@ -20,11 +20,11 @@ import (
 	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/config"
 	"github.com/dilla-chat/dilla/internal/desktopauth"
-	"github.com/dilla-chat/dilla/internal/ds"
 	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/obs"
 	"github.com/dilla-chat/dilla/internal/server"
 	"github.com/dilla-chat/dilla/internal/store"
+	"github.com/dilla-chat/dilla/internal/webhookavatar"
 )
 
 // Deps is everything the handlers need, declared once so no handler reaches for
@@ -60,14 +60,6 @@ type Deps struct {
 	// group's external_senders extension. The composition root derives it from the key history;
 	// the history itself is never served.
 	ExternalSenderPub []byte
-
-	// SignBotInteractionAdmission signs only the versioned admission payload with the
-	// current instance external-sender key. The composition root owns the secret.
-	SignBotInteractionAdmission func(payload []byte) ([]byte, error)
-
-	// SignBotInteractionContext signs a versioned context snapshot under its own
-	// domain, using the same instance key as admission proofs.
-	SignBotInteractionContext func(payload []byte) ([]byte, error)
 
 	// SignBotCurrentInteractionContext signs a human-authenticated current-group context
 	// proof under the dedicated current-interaction domain.
@@ -116,8 +108,6 @@ type Deps struct {
 	// StepUps holds the step-up tokens the factor-changing routes spend (protocol/09 § Second
 	// factors). Register builds one when it is nil; it is memory only, like Assertions.
 	StepUps *StepUps
-	// CurrentBotInteractionGroupContext reloads and verifies the persisted MLS roster for an op63 grant.
-	CurrentBotInteractionGroupContext func(context.Context, id.ID) (ds.CurrentBotInteractionGroupContext, error)
 
 	// enrolments remembers whether each enrolment in flight began with a valid step-up, for the
 	// confirm and finish legs' re-check under the user lock. Register builds it.
@@ -178,6 +168,10 @@ type Deps struct {
 	BotEnrolled func(context.Context, store.BotInstallationRow)
 	// BotProfileChanged prompts live community members to refresh the bot's display name.
 	BotProfileChanged func(context.Context, id.ID)
+	// BotInstallationsChanged runs after a commit that changes what the Bot runtime reads from its installation list
+	// (configure, disable, remove, a restart request, the music defaults). The Bot polls nothing (Bot v2 task 14), so
+	// the composition root tells the supervised Bot to read its installations again. Nil tells nobody.
+	BotInstallationsChanged func()
 	// BotMembershipPending repairs missing eligible MLS joins after a Ready
 	// transaction has rolled back. It must never run inside Repository.Tx.
 	BotMembershipPending func(context.Context, store.BotInstallationRow, []id.ID)
@@ -185,6 +179,43 @@ type Deps struct {
 	// after an episode-bound automatic role grant commits or its accepted receipt
 	// is replayed. Replay repairs a crash after commit but before refresh.
 	BotJoinRoleGranted func(context.Context, id.ID, id.ID)
+
+	// BotCatalogGateway delivers a published Bot command catalog (op 61) to each connected member,
+	// filtered for that member (Bot v2 Task 9). Nil pushes nothing; members read the catalog at
+	// connect sync.
+	BotCatalogGateway BotCatalogGateway
+	// BotCatalogPushes runs those fan-outs in the background, bounded. Register builds one when nil.
+	BotCatalogPushes *BotCatalogPusher
+	// BotHealth is dillad's view of each community Bot's health, from the Bot's reports (Bot v2 Task 17). Register
+	// builds one when nil.
+	BotHealth *BotHealth
+	// BotChannelEvents hears Bot-channel marks and unmarks after they commit (Bot v2 Task 9; Task 12's
+	// Bot feed implements it). Nil is NoBotChannelEvents.
+	BotChannelEvents BotChannelEvents
+	// BotMembership is the delivery service a Bot-channel mark and the Bot page's re-add propose the Bot's devices
+	// through (Bot v2 Task 22); nil proposes nothing (the mark still lands).
+	BotMembership DS
+	// BotChannelsNotify sends op 54 community_changed to the community's members after a Bot-channel mark or unmark (Task
+	// 22), so their clients read the Bot channels again (the badge, the greying of commands that need one, the targets of
+	// the Bot's features). Nil sends nothing.
+	BotChannelsNotify *StructureNotifier
+	// BotFeed hears, after the commit, a device-list publish (Bot v2 Task 12): the Bot's event feed
+	// pushes the user's list to the Bot of each community they share with one. Nil tells nobody.
+	BotFeed BotFeedHooks
+	// BotRelay carries sealed commands to the Bot runtime's connection, the Bot's sealed replies to
+	// the requesting device and its state hints to their scope (Bot v2 Task 10). Nil relays nothing:
+	// a command is 503 E_BOT_OFFLINE, a reply 404.
+	BotRelay BotRelayGateway
+	// BotRequests is the relay's request_id -> device ledger. Register builds one when nil.
+	BotRequests *BotRequestLedger
+	// BotWebhooks hands an incoming webhook POST to the Bot's live connection (op 66) and waits for its ack
+	// (Bot v2 Task 13). Nil answers every POST 503.
+	BotWebhooks BotWebhookGateway
+	// WebhookAckTimeout is how long a webhook POST waits for the Bot's ack; 0 is DefaultWebhookAckTimeout.
+	WebhookAckTimeout time.Duration
+	// WebhookAvatars fetches, re-encodes and caches a webhook sender's avatar_url, and serves the result to
+	// members (fix round 1). Nil posts every webhook without an avatar.
+	WebhookAvatars *webhookavatar.Service
 }
 
 // GatewayTickets is the one-method view api needs of internal/gateway's ticket
@@ -234,11 +265,25 @@ func Register(m *server.Mux, d Deps) {
 	if d.enrolments == nil {
 		d.enrolments = newEnrolments(d.Clock, enrolmentTTL)
 	}
+	if d.BotChannelEvents == nil {
+		d.BotChannelEvents = NoBotChannelEvents{}
+	}
+	if d.BotCatalogPushes == nil {
+		d.BotCatalogPushes = NewBotCatalogPusher()
+	}
+	if d.BotHealth == nil {
+		d.BotHealth = NewBotHealth(d.Clock)
+	}
+	if d.BotRequests == nil {
+		d.BotRequests = NewBotRequestLedger(d.Clock)
+	}
 	// Discovery. The two routes a client reads before it has anything else.
 	registerInstance(m, d)
 	registerBotInstallations(m, d)
-	registerAutoModerationGrants(m, d)
-	registerBotStructuralEvents(m, d)
+	registerBotCatalog(m, d)
+	registerBotChannels(m, d)
+	registerBotCommands(m, d)
+	registerBotWebhooks(m, d)
 	registerModerationRemovals(m, d)
 
 	// Unauthenticated. The invite landing page and the two registration routes
@@ -259,7 +304,7 @@ func Register(m *server.Mux, d Deps) {
 	m.Handle("POST /v1/auth/password/login", http.HandlerFunc(d.PasswordLogin))
 	m.Handle("POST /v1/auth/totp/verify", http.HandlerFunc(d.VerifyTOTP))
 	m.Handle("POST /v1/auth/recovery/verify", http.HandlerFunc(d.VerifyRecovery))
-	m.Handle("POST /v1/auth/password", d.enrolled(d.ChangePassword))
+	m.SocketAuthed("POST /v1/auth/password", d.socketChain(auth.ScopeEnrolled, ""), http.HandlerFunc(d.ChangePassword))
 	m.Handle("POST /v1/auth/totp/enroll", d.owedOK(d.EnrollTOTP))
 	m.Handle("POST /v1/auth/totp/confirm", d.owedOK(d.ConfirmTOTP))
 
@@ -284,29 +329,29 @@ func Register(m *server.Mux, d Deps) {
 	// what it has while it sets one up. Step-up, removal and fresh backup codes are `E`: an owed
 	// account holds nothing to step up with or remove.
 	m.Handle("GET /v1/auth/factors", d.owedOK(d.Factors))
-	m.Handle("POST /v1/auth/stepup", d.enrolled(d.StepUp))
-	m.Handle("POST /v1/auth/stepup/passkey/begin", d.enrolled(d.BeginPasskeyStepUp))
-	m.Handle("POST /v1/auth/stepup/passkey/finish", d.enrolled(d.FinishPasskeyStepUp))
-	m.Handle("POST /v1/auth/factors/remove", d.enrolled(d.RemoveFactor))
-	m.Handle("POST /v1/auth/recovery/codes", d.enrolled(d.RecoveryCodes))
+	m.SocketAuthed("POST /v1/auth/stepup", d.socketChain(auth.ScopeEnrolled, ""), http.HandlerFunc(d.StepUp))
+	m.SocketAuthed("POST /v1/auth/stepup/passkey/begin", d.socketChain(auth.ScopeEnrolled, ""), http.HandlerFunc(d.BeginPasskeyStepUp))
+	m.SocketAuthed("POST /v1/auth/stepup/passkey/finish", d.socketChain(auth.ScopeEnrolled, ""), http.HandlerFunc(d.FinishPasskeyStepUp))
+	m.SocketAuthed("POST /v1/auth/factors/remove", d.socketChain(auth.ScopeEnrolled, ""), http.HandlerFunc(d.RemoveFactor))
+	m.SocketAuthed("POST /v1/auth/recovery/codes", d.socketChain(auth.ScopeEnrolled, ""), http.HandlerFunc(d.RecoveryCodes))
 
 	// Accounts. Every one of these is an enrolled session; GET is also an owed one's (`E, F`).
 	m.Handle("GET /v1/accounts/me", d.owedOK(d.GetMe))
-	m.Handle("PATCH /v1/accounts/me/presence", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PatchPresence)))
-	m.Handle("POST /v1/accounts/me/presence/activity", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PresenceActivity)))
-	m.Handle("GET /v1/communities/{community_id}/presence", d.enrolled(dsMeter(d.Limiter, dsClassRead, d.PresenceSnapshot)))
-	m.Handle("PATCH /v1/accounts/me", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PatchMe)))
-	m.Handle("DELETE /v1/accounts/me", d.enrolled(d.DeleteMe))
+	m.SocketAuthed("PATCH /v1/accounts/me/presence", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.PatchPresence))
+	m.SocketAuthed("POST /v1/accounts/me/presence/activity", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.PresenceActivity))
+	m.SocketAuthed("GET /v1/communities/{community_id}/presence", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.PresenceSnapshot))
+	m.SocketAuthed("PATCH /v1/accounts/me", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.PatchMe))
+	m.SocketAuthed("DELETE /v1/accounts/me", d.socketChain(auth.ScopeEnrolled, ""), http.HandlerFunc(d.DeleteMe))
 
 	// Devices. POST /v1/devices is enrolled only. The enrolling browser registers inside
 	// establish; while pending it reads and publishes only its own device list. The
 	// /v1/devices routes spend the device session's read and write buckets like the device-list and
 	// backup routes (branch review REGISTRATION-DEVICES-03: unmetered, a stolen session polled GET
 	// for a recovering owner's new row).
-	m.Handle("POST /v1/devices", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.CreateDevice)))
-	m.Handle("GET /v1/devices", d.enrolled(dsMeter(d.Limiter, dsClassRead, d.ListDevices)))
-	m.Handle("PATCH /v1/devices/{device_id}", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.PatchDevice)))
-	m.Handle("DELETE /v1/devices/{device_id}", d.enrolled(dsMeter(d.Limiter, dsClassWrite, d.DeleteDevice)))
+	m.SocketAuthed("POST /v1/devices", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.CreateDevice))
+	m.SocketAuthed("GET /v1/devices", d.socketChain(auth.ScopeEnrolled, dsClassRead), http.HandlerFunc(d.ListDevices))
+	m.SocketAuthed("PATCH /v1/devices/{device_id}", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.PatchDevice))
+	m.SocketAuthed("DELETE /v1/devices/{device_id}", d.socketChain(auth.ScopeEnrolled, dsClassWrite), http.HandlerFunc(d.DeleteDevice))
 	m.Handle("PUT /v1/users/{user_id}/device-list", d.scoped(dsMeter(d.Limiter, dsClassWrite, d.PutDeviceList), auth.ScopePending))
 	m.Handle("GET /v1/users/{user_id}/device-list", d.scoped(dsMeter(d.Limiter, dsClassRead, d.GetDeviceList), auth.ScopePending))
 
@@ -399,6 +444,28 @@ func (d Deps) enrolled(h http.HandlerFunc) http.Handler {
 
 func (d Deps) scoped(h http.HandlerFunc, want auth.Scope) http.Handler {
 	return d.Sessions.Middleware(h, want)
+}
+
+// socketChain is the middleware of a route that moved to the gateway socket (server.Mux.SocketAuthed): the chain its
+// HTTP form built inline, the session middleware for want and then, when class is not empty, one token from the
+// device session's bucket of that delivery-service class (dsMeter).
+func (d Deps) socketChain(want auth.Scope, class string) func(http.Handler) http.Handler {
+	return socketSessionChain(d.Sessions, d.Limiter, want, class)
+}
+
+// socketMeter is socketChain for an enrolled session, for the delivery-service groups that hold the session store
+// and the limiter themselves (Groups, Messages, the bot message routes).
+func socketMeter(sessions *auth.Sessions, l *server.RateLimiter, class string) func(http.Handler) http.Handler {
+	return socketSessionChain(sessions, l, auth.ScopeEnrolled, class)
+}
+
+func socketSessionChain(sessions *auth.Sessions, l *server.RateLimiter, want auth.Scope, class string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if class != "" {
+			next = dsMeter(l, class, next.ServeHTTP)
+		}
+		return sessions.Middleware(next, want)
+	}
 }
 
 // owedOK mounts one of protocol/09's `E, F` routes: an enrolled session, also one whose account

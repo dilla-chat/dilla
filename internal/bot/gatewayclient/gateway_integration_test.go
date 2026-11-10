@@ -219,11 +219,26 @@ func TestRunResumesThroughServerReplayBarrierAndRotatesToken(t *testing.T) {
 	if err := gw.CommitAck(ctx, group, 9); err != nil {
 		t.Fatalf("commit ack: %v", err)
 	}
-	for _, want := range []Opcode{OpSubscribe, OpCommitAck} {
+	delivery := testID(6)
+	// Fix round 2, M4: an ack goes only on the connection its delivery came on. message arrived before the second
+	// resume, on a socket that is gone: its ack is dropped, never sent on the new one.
+	if err := message.WebhookAck(ctx, delivery, 0); !errors.Is(err, ErrStaleDelivery) {
+		t.Fatalf("ack on a resumed-away connection = %v, want ErrStaleDelivery", err)
+	}
+	if err := resumed.WebhookAck(ctx, delivery, 0); err != nil {
+		t.Fatalf("webhook ack: %v", err)
+	}
+	for _, want := range []Opcode{OpSubscribe, OpCommitAck, OpBotWebhookAck} {
 		select {
 		case got := <-seenOps:
 			if got.Op != want {
 				t.Fatalf("outbound opcode=%d, want %d", got.Op, want)
+			}
+			if want == OpBotWebhookAck {
+				b, ok := got.Payload[0].([]byte)
+				if !ok || !bytesEqual(b, delivery[:]) || len(got.Payload) != 2 || got.Payload[1] != uint64(0) {
+					t.Fatalf("webhook ack payload=%v, want [delivery_id bstr, 0]", got.Payload)
+				}
 			}
 			if want == OpCommitAck {
 				bytes, ok := got.GroupID.([]byte)
@@ -430,8 +445,9 @@ func TestRunRejectsChangedInstanceAndWireDowngrade(t *testing.T) {
 		wire          []uint64
 		want          error
 	}{
-		{name: "changed instance", helloInstance: testID(9), wire: []uint64{3, 2}, want: ErrIdentity},
+		{name: "changed instance", helloInstance: testID(9), wire: []uint64{6}, want: ErrIdentity},
 		{name: "wire 2 only", helloInstance: testID(1), wire: []uint64{2}, want: ErrVersion},
+		{name: "wire 5 only", helloInstance: testID(1), wire: []uint64{5, 4, 3, 2}, want: ErrVersion},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -527,7 +543,7 @@ func TestRunRejectsMismatchedReadyIdentityGenerationAndVersions(t *testing.T) {
 		{"device", func(p []any) { p[0] = testID(70) }, ErrIdentity},
 		{"user", func(p []any) { p[1] = testID(71) }, ErrIdentity},
 		{"generation", func(p []any) { p[2] = uint64(2) }, ErrIdentity},
-		{"wire version", func(p []any) { p[4] = uint64(2) }, ErrVersion},
+		{"wire version", func(p []any) { p[4] = uint64(5) }, ErrVersion},
 		{"e2ee version", func(p []any) { p[5] = uint64(2) }, ErrVersion},
 		{"media version", func(p []any) { p[6] = uint64(2) }, ErrVersion},
 	} {
@@ -1170,10 +1186,15 @@ func sendServerFrame(ctx context.Context, ws *websocket.Conn, op Opcode, n uint6
 const testBackoffMS uint64 = 300
 
 func helloPayload(instance id.ID, generation uint64) []any {
-	return []any{[]any{uint64(3), uint64(2)}, []any{uint64(1)}, []any{uint64(1)}, uint64(1000), uint64(131584), instance, generation, testBackoffMS, testBackoffMS}
+	return []any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}, uint64(1000), uint64(131584), instance, generation, testBackoffMS, testBackoffMS}
 }
 func readyPayload(device, user id.ID, generation uint64, token []byte) []any {
-	return []any{device, user, generation, token, uint64(3), uint64(1), uint64(1), uint64(0), []any{}}
+	return readyPayloadBoot(device, user, generation, token, testID(0x77))
+}
+
+// readyPayloadBoot is a ready whose element 9 is the dillad process's boot id.
+func readyPayloadBoot(device, user id.ID, generation uint64, token []byte, boot id.ID) []any {
+	return []any{device, user, generation, token, uint64(6), uint64(1), uint64(1), uint64(0), []any{}, boot}
 }
 func testID(v byte) id.ID    { var x id.ID; x[0] = v; return x }
 func bytes32(v uint8) []byte { b := make([]byte, 32); b[0] = v; return b }

@@ -13,7 +13,6 @@ import (
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/music"
 	"github.com/dilla-chat/dilla/internal/bot/music/livekit"
-	musicruntime "github.com/dilla-chat/dilla/internal/bot/music/runtime"
 	"github.com/dilla-chat/dilla/internal/bot/music/youtube"
 	"github.com/dilla-chat/dilla/internal/id"
 )
@@ -60,6 +59,18 @@ type OptionsForTrack func(context.Context, music.Track) (Options, error)
 
 type explicitStartKey struct{}
 
+// WithExplicitStart marks ctx as a start a member asked for, as StartExplicit does.
+func WithExplicitStart(ctx context.Context) context.Context {
+	return context.WithValue(ctx, explicitStartKey{}, true)
+}
+
+// ExplicitStart reports whether ctx is a start a member asked for (StartExplicit: a /play, a resume, a skip), not the
+// supervisor's automatic advance to the next queued track.
+func ExplicitStart(ctx context.Context) bool {
+	explicit, _ := ctx.Value(explicitStartKey{}).(bool)
+	return explicit
+}
+
 type QueueStarter struct {
 	LogContext func(context.Context) context.Context
 	Logger     *slog.Logger
@@ -79,6 +90,33 @@ type QueueStarter struct {
 	// IdleLeaveAfter is the installation's current "Leave voice when idle" time; the supervisor
 	// that owns this starter leaves the room once nothing has played for that long. Nil disables.
 	IdleLeaveAfter func() time.Duration
+	// OnStateChange is called after the channel's queue state was persisted by the playback supervisor: the playing
+	// track or the queue changed on its own (a track ended and the next began). Bot v2 Task 17 sends a call hint from
+	// it. Nil does nothing.
+	OnStateChange func(context.Context)
+	// Warm begins the voice room's call-group join, call token and room connection for an opened /play, while its
+	// track resolves (Bot v2 Task 19). It must not block; the next start's PrepareCall uses its result. Nil warms
+	// nothing.
+	Warm func(context.Context)
+	// OnStartFailed is told of every failed start attempt: what was prepared for the call is not reused (Bot v2 Task 19
+	// fix round 1, I2), so a retry reads membership, credentials and the epoch again. Nil does nothing.
+	OnStartFailed func(error)
+	// Abandon is a /play that ended without starting: a call its warm prepared is dropped and the idle room left (M3).
+	Abandon func()
+}
+
+// AbandonWarm implements music.CallWarmer's abandon.
+func (s QueueStarter) AbandonWarm() {
+	if s.Abandon != nil {
+		s.Abandon()
+	}
+}
+
+// WarmCall implements music.CallWarmer.
+func (s QueueStarter) WarmCall(ctx context.Context) {
+	if s.Warm != nil && ctx != nil {
+		s.Warm(ctx)
+	}
 }
 
 // LeaveIdle leaves the retained room when nothing is playing.
@@ -151,6 +189,9 @@ func (s QueueStarter) Start(ctx context.Context, track music.Track) (music.Playb
 			attemptCtx = s.LogContext(attemptCtx)
 		}
 		playback, err := s.startOnce(attemptCtx, track)
+		if err != nil && s.OnStartFailed != nil {
+			s.OnStartFailed(err)
+		}
 		// A previous publisher's departure can remove the replacement during
 		// its handshake. No source was published successfully: close resources
 		// and re-read membership, call credentials and epoch on a bounded retry.
@@ -189,6 +230,27 @@ func (s QueueStarter) startOnce(ctx context.Context, track music.Track) (music.P
 	return Start(ctx, o)
 }
 
+// Prefetch pre-resolves and pre-buffers track, so the Start that follows when
+// the current track ends has its audio ready. It never joins a call or touches
+// the room: only the provider is asked. A provider that cannot pre-buffer, or
+// a track it refuses, simply starts cold later.
+func (s QueueStarter) Prefetch(ctx context.Context, track music.Track) error {
+	if ctx == nil || s.OptionsFor == nil || track.Provider != music.ProviderYouTube {
+		return ErrInvalid
+	}
+	o, err := s.OptionsFor(ctx, track)
+	if err != nil {
+		return err
+	}
+	prefetcher, ok := o.PCM.(interface {
+		Prefetch(context.Context, string) error
+	})
+	if !ok {
+		return nil
+	}
+	return prefetcher.Prefetch(ctx, track.CanonicalID)
+}
+
 // Start owns every resource through publisher completion.
 func Start(ctx context.Context, o Options) (*Session, error) {
 	if ctx == nil {
@@ -201,6 +263,7 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 	if o.Community.IsZero() || o.Channel.IsZero() || o.Track == "" || o.PCM == nil || o.Encoder == nil || o.Publisher == nil || o.Epochs == nil || (o.PrepareCall == nil && (o.Call.CallID.IsZero() || o.Group.IsZero() || o.Call.GroupID != o.Group)) || provider != music.ProviderYouTube {
 		return nil, music.StartStage(ctx, "provider_check", ErrInvalid)
 	}
+	began := time.Now()
 	ctx = music.WithCallJoinTrace(client.WithoutCooperativeStop(ctx))
 	if !o.Group.IsZero() {
 		ctx = music.WithPlaybackGroup(ctx, o.Group)
@@ -252,6 +315,7 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 		return nil, err
 	}
 	_ = music.StartStage(ctx, "published", nil)
+	music.MarkFirstFrame(ctx, time.Since(began))
 	s := &Session{startAtMS: music.StartAtMS(ctx), pcm: pcm, encoder: encoder, publisher: pub, done: make(chan struct{}), stop: make(chan struct{})}
 	go s.monitor(ctx)
 	return s, nil
@@ -358,12 +422,9 @@ type ownedPCM struct {
 }
 
 func (p *ownedPCM) Close() error { p.once.Do(func() { p.err = p.ReadCloser.Close() }); return p.err }
-func (p *ownedPCM) PCMFormat() musicruntime.PCMFormat {
-	if formatted, ok := p.ReadCloser.(interface{ PCMFormat() musicruntime.PCMFormat }); ok {
-		return formatted.PCMFormat()
-	}
-	return musicruntime.PCMFormat{SampleRate: youtubePCMRate, Channels: 2}
-}
+
+// OggOpus forwards the provider's marker that its stream is already Opus.
+func (p *ownedPCM) OggOpus() bool { return isOggOpus(p.ReadCloser) }
 
 // providerStage retains provider-specific, bounded diagnostic classes.
 func providerStage(ctx context.Context, stage string, err error) error {

@@ -9,8 +9,8 @@ import { commandBotSnapshot } from './command-bot-store.ts';
 const communityId = '11'.repeat(16), channelId = '22'.repeat(16), selfId = '33'.repeat(16), authorId = '44'.repeat(16), installationId = '55'.repeat(16), id = '66'.repeat(16);
 // The clock starts on a whole millisecond: from a fractional start, 30 s later minus the start can fall a hair under 30 000 and skip the walk.
 function fixture(over: Partial<PollSummary> = {}, capabilities: () => Promise<unknown> = () => Promise.resolve({ installationId, botUserId: authorId, supportedOperations: [3, 70] })) {
-  let tick!: () => void; let clock = Math.round(performance.now()); vi.spyOn(performance, 'now').mockImplementation(() => clock); const interval = window.setInterval.bind(window);
-  vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void, ms: number) => { if (ms === 30_000) { tick = fn; return 900001; } return interval(fn, ms); }) as never);
+  let clock = Math.round(performance.now()); vi.spyOn(performance, 'now').mockImplementation(() => clock);
+  const interval = vi.spyOn(window, 'setInterval');
   const client = new FakeClient(); const base = client.handler;
   client.handler = command => command.m === 'getBotCommandStatus' ? Promise.resolve({ installationId, botUserId: authorId, state: 3, revision: '1' }) : base(command);
   client.set('account', { instance: { id: 'instance' }, user: { id: selfId }, deviceId: 'device' } as never);
@@ -21,12 +21,40 @@ function fixture(over: Partial<PollSummary> = {}, capabilities: () => Promise<un
   const pollGet = vi.fn(() => Promise.resolve(poll));
   const pollVoters = vi.fn(({ option, cursor }: { option: number; cursor?: Uint8Array | null }) => Promise.resolve({ voters: cursor || option === 1 ? ['other'] : [selfId], nextCursor: poll.multi && option === 0 && !cursor ? new Uint8Array([1]) : null }));
   const capabilitiesSpy = vi.fn(capabilities);
-  vi.spyOn(Core, 'createBotUtilities').mockReturnValue({ binding: { installationId, botUserId: authorId }, capabilities: capabilitiesSpy, pollGet, pollVote, pollVoters } as never);
+  // Task 21b fix round 1: the card reads the poll and its voters in one sealed poll.get. The voters it answers: you in the
+  // first answer, Bea in the second (and in the first too for a multi-choice poll), each only where the answer has votes.
+  let voters: { previews: string[][]; distinct: number; capped: boolean } | 'none' | null = null;
+  const votersOf = (p: PollSummary) => {
+    if (voters === 'none') return null;
+    if (voters !== null) return voters;
+    const mine = (option: number) => p.myChoices?.includes(option) === true ? [selfId] : [];
+    const previews = p.counts.map((count, option) => count === 0n ? [] : [...mine(option), ...(option === 1 || p.multi ? ['other'] : [])]);
+    return { previews, distinct: new Set(previews.flat()).size, capped: false };
+  };
+  const pollRead = vi.fn(async (...args: Parameters<typeof pollGet>) => { const read = await pollGet(...args); return { poll: read, voters: votersOf(read) }; });
+  vi.spyOn(Core, 'createBotUtilities').mockReturnValue({ binding: { installationId, botUserId: authorId }, capabilities: capabilitiesSpy, pollGet, pollRead, pollVote, pollVoters } as never);
   render(<PollCard {...{ client, communityId, channelId, selfId, authorId }} threadId={null} body={`[dilla-poll:v1:${id}]`} bot edited={false} deleted={false} bits={0} />);
-  return { client, capabilities: capabilitiesSpy, pollVote, pollVoters, pollGet, tick: () => { clock += 30_000; tick(); }, refreshNow: () => tick(), get poll() { return poll; }, setPoll(over: Partial<PollSummary>) { poll = { ...poll, ...over }; }, close() { poll = { ...poll, closed: true }; } };
+  // The worker's cue for a channel hint: its counter in the botHints slice rises.
+  let hints = 0; const hint = () => { client.set('botHints', { [`1:${channelId}`]: ++hints }); };
+  return { client, interval, capabilities: capabilitiesSpy, pollVote, pollVoters, pollGet, pollRead, setVoters(value: typeof voters) { voters = value; }, tick: () => { clock += 30_000; hint(); }, refreshNow: hint, get poll() { return poll; }, setPoll(over: Partial<PollSummary>) { poll = { ...poll, ...over }; }, close() { poll = { ...poll, closed: true }; } };
 }
 afterEach(() => vi.restoreAllMocks());
 describe('Signal poll adapter', () => {
+  it('updates on a channel hint and has no interval', async () => {
+    const f = fixture();
+    await waitFor(() => expect(f.pollGet).toHaveBeenCalledTimes(1));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(f.pollGet).toHaveBeenCalledTimes(1);
+    expect(f.client.calls).toContainEqual({ m: 'watchBotScope', kind: 1, channelId, on: true });
+    f.setPoll({ counts: [4n, 2n], revision: 2n });
+    await act(async () => { f.tick(); await Promise.resolve(); });
+    await waitFor(() => expect(f.pollGet).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(/6 voters/)).toBeInTheDocument();
+    // A hint for another channel is not this card's.
+    await act(async () => { f.client.set('botHints', { [`1:${'99'.repeat(16)}`]: 1 }); await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(f.pollGet).toHaveBeenCalledTimes(2);
+    expect(f.interval.mock.calls.filter(([, ms]) => ms === 30_000)).toEqual([]);
+  });
   it('shows a Loading poll… skeleton before verification and retries a failed verification at 2 s, 5 s and 10 s', async () => {
     vi.useFakeTimers();
     try {
@@ -108,7 +136,7 @@ describe('Signal poll adapter', () => {
     await waitFor(() => expect(screen.getAllByText('Raid?')).toHaveLength(2));
     expect(f.capabilities).toHaveBeenCalledTimes(1);
   });
-  it('pauses its 30 s refresh while the window is hidden and refreshes once when it is shown again, only if overdue', async () => {
+  it('pauses its hint refresh while the window is hidden and refreshes once when it is shown again, only if overdue', async () => {
     vi.useFakeTimers();
     let state: DocumentVisibilityState = 'visible';
     const spy = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => state);
@@ -129,8 +157,8 @@ describe('Signal poll adapter', () => {
     } finally { spy.mockRestore(); vi.restoreAllMocks(); vi.useRealTimers(); }
   });
   it('single choice switches to [1] and clicking your pick withdraws []', async () => { const f = fixture(); await userEvent.click(await screen.findByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenCalledWith(expect.objectContaining({ choices: [1] }))); await userEvent.click(screen.getByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenLastCalledWith(expect.objectContaining({ choices: [] }))); });
-  it('multi toggles within the set and counts distinct voters across every page', async () => { const f = fixture({ multi: true, counts: [2n, 2n] }); await userEvent.click(await screen.findByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenCalledWith(expect.objectContaining({ choices: [0, 1] }))); await userEvent.click(screen.getByRole('button', { name: /Bridge/ })); await waitFor(() => expect(f.pollVote).toHaveBeenLastCalledWith(expect.objectContaining({ choices: [1] })));  await waitFor(() => expect(screen.getByText('Open for 24 hours · pick any · 2 voters')).toBeInTheDocument()); expect(f.pollVoters).toHaveBeenCalledWith(expect.objectContaining({ option: 0, cursor: new Uint8Array([1]) })); expect(screen.queryByRole('img', { name: 'other' })).not.toBeInTheDocument(); });
-  it('uses dueAt minus createdAt, rounds vote percentages and previews first-page voters per answer', async () => { const f = fixture(); expect(await screen.findByText('Open for 24 hours · pick one · 3 voters')).toBeInTheDocument(); expect(screen.getByText('33%')).toBeInTheDocument(); await waitFor(() => expect(screen.getAllByRole('img', { name: 'Ada' })).toHaveLength(1)); expect(f.pollVoters).toHaveBeenCalledWith(expect.objectContaining({ option: 1, cursor: null })); });
+  it('multi toggles within the set and counts distinct voters across every page', async () => { const f = fixture({ multi: true, counts: [2n, 2n] }); await userEvent.click(await screen.findByRole('button', { name: /Harbour/ })); await waitFor(() => expect(f.pollVote).toHaveBeenCalledWith(expect.objectContaining({ choices: [0, 1] }))); await userEvent.click(screen.getByRole('button', { name: /Bridge/ })); await waitFor(() => expect(f.pollVote).toHaveBeenLastCalledWith(expect.objectContaining({ choices: [1] })));  await waitFor(() => expect(screen.getByText('Open for 24 hours · pick any · 2 voters')).toBeInTheDocument()); expect(f.pollVoters).not.toHaveBeenCalled(); expect(screen.queryByRole('img', { name: 'other' })).not.toBeInTheDocument(); });
+  it('uses dueAt minus createdAt, rounds vote percentages and previews first-page voters per answer', async () => { const f = fixture(); expect(await screen.findByText('Open for 24 hours · pick one · 3 voters')).toBeInTheDocument(); expect(screen.getByText('33%')).toBeInTheDocument(); await waitFor(() => expect(screen.getAllByRole('img', { name: 'Ada' })).toHaveLength(1)); expect(f.pollRead).toHaveBeenCalledTimes(1); expect(f.pollVoters).not.toHaveBeenCalled(); });
   it('refreshes to the closed card when a vote races a close', async () => { const f = fixture(); f.pollVote.mockImplementationOnce((input) => { f.close(); return Promise.reject(new Core.BotUtilitiesStatusError(73, 4, (input as unknown as { requestId: string }).requestId, null)); }); await userEvent.click(await screen.findByRole('button', { name: /Harbour/ })); await screen.findByText('CLOSED'); await userEvent.click(screen.getByRole('button', { name: /Bridge/ })); expect(f.pollVote).toHaveBeenCalledOnce(); });
 });
 
@@ -159,38 +187,33 @@ it('retains optimistic pressed state through a 30 second refresh while voting', 
   f.setPoll({ revision: 2n, myChoices: [1] }); release(f.poll);
   await waitFor(() => expect(answer).toHaveAttribute('aria-disabled', 'false')); expect(answer).toHaveAttribute('aria-pressed', 'true');
 });
-it('walks once per cadence across two vote revisions and keeps the last count while the next walk loads', async () => {
+// Task 21b fix round 1: the voters come with the poll in one sealed read per hint; nothing reads them per answer.
+it('takes the voters from each hint\'s poll read, with no voter reads of its own', async () => {
   const f = fixture({ multi: true, counts: [2n, 2n] });
-  await screen.findByText('Open for 24 hours · pick any · 2 voters'); const calls = f.pollVoters.mock.calls.length;
+  await screen.findByText('Open for 24 hours · pick any · 2 voters');
   await userEvent.click(screen.getByRole('button', { name: /Harbour/ }));
   await waitFor(() => expect(screen.getByRole('button', { name: /Harbour/ })).toHaveAttribute('aria-disabled', 'false'));
-  await userEvent.click(screen.getByRole('button', { name: /Bridge/ }));
-  await waitFor(() => expect(f.pollVote).toHaveBeenCalledTimes(2));
-  await waitFor(() => expect(screen.getByRole('button', { name: /Bridge/ })).toHaveAttribute('aria-disabled', 'false'));
-  const reads = f.pollGet.mock.calls.length; f.refreshNow();
-  await waitFor(() => expect(f.pollGet).toHaveBeenCalledTimes(reads + 1)); await act(async () => { await Promise.resolve(); });
-  expect(f.pollVoters).toHaveBeenCalledTimes(calls);
-  let release!: (value: { voters: string[]; nextCursor: null }) => void;
-  f.pollVoters.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
-  f.tick(); await waitFor(() => expect(release).toBeDefined());
-  expect(screen.getByText('Open for 24 hours · pick any · 2 voters')).toBeInTheDocument();
-  expect(screen.queryByRole('img', { name: 'Ada' })).toBeNull();
-  expect(screen.getByRole('img', { name: 'Bea' })).toBeInTheDocument();
-  release({ voters: [selfId, 'new1', 'new2'], nextCursor: null });
+  f.setVoters({ previews: [[selfId, 'new1'], ['other', 'new2']], distinct: 4, capped: false });
+  const reads = f.pollRead.mock.calls.length; f.tick();
+  await waitFor(() => expect(f.pollRead).toHaveBeenCalledTimes(reads + 1));
   await screen.findByText('Open for 24 hours · pick any · 4 voters');
+  expect(f.pollVoters).not.toHaveBeenCalled();
 });
-it('shows the distinct count read so far with a plus at the multi-choice budget cap', async () => {
-  const f = fixture({ multi: true, counts: [1000n, 1000n] }); let p = 0;
-  f.pollVoters.mockImplementation(() => { const n = ++p; return Promise.resolve({ voters: Array.from({ length: 20 }, (_, i) => `${n}-${i}`), nextCursor: new Uint8Array([n]) }); });
-  expect(await screen.findByText('Open for 24 hours · pick any · 200+ voters')).toBeInTheDocument(); expect(f.pollVoters).toHaveBeenCalledTimes(10);
+it('shows a capped distinct count with a plus', async () => {
+  const f = fixture({ multi: true, counts: [1000n, 1000n] });
+  f.setVoters({ previews: [['other'], ['other']], distinct: 2000, capped: true });
+  f.tick();
+  expect(await screen.findByText('Open for 24 hours · pick any · 2000+ voters')).toBeInTheDocument(); expect(f.pollVoters).not.toHaveBeenCalled();
 });
-it('keeps the last distinct count after a voter read fails', async () => {
+it('keeps the last voters when a read answers none (an older Bot)', async () => {
   const f = fixture({ multi: true, counts: [2n, 2n] }); await screen.findByText('Open for 24 hours · pick any · 2 voters');
-  f.setPoll({ revision: 2n }); f.pollVoters.mockRejectedValueOnce(new Error('read failed')); f.tick();
-  await screen.findByText('Could not load voter names.'); expect(screen.getByText('Open for 24 hours · pick any · 2 voters')).toBeInTheDocument();
+  f.setPoll({ revision: 2n }); f.setVoters('none'); const reads = f.pollRead.mock.calls.length; f.tick();
+  await waitFor(() => expect(f.pollRead).toHaveBeenCalledTimes(reads + 1)); await act(async () => { await Promise.resolve(); });
+  expect(screen.getByText('Open for 24 hours · pick any · 2 voters')).toBeInTheDocument();
+  expect(screen.queryByRole('alert')).toBeNull();
 });
 
-it('drops your own withdrawn avatar immediately while keeping other voters until the next walk', async () => {
+it('drops your own withdrawn avatar immediately while keeping other voters', async () => {
   const f = fixture({ myChoices: [0], counts: [1n, 1n] });
   await waitFor(() => expect(screen.getByRole('img', { name: 'Ada' })).toBeInTheDocument());
   await userEvent.click(screen.getByRole('button', { name: /Bridge/ }));
@@ -200,13 +223,3 @@ it('drops your own withdrawn avatar immediately while keeping other voters until
 });
 
 
-it('keeps a voter read error across a successful periodic refresh', async () => {
-  const f = fixture({ multi: true, counts: [2n, 2n] });
-  await screen.findByText('Open for 24 hours · pick any · 2 voters');
-  f.setPoll({ revision: 2n }); f.pollVoters.mockRejectedValueOnce(new Error('read failed')); f.tick();
-  await screen.findByText('Could not load voter names.');
-  f.setPoll({ revision: 3n }); const reads = f.pollGet.mock.calls.length; f.tick();
-  await waitFor(() => expect(f.pollGet).toHaveBeenCalledTimes(reads + 1));
-  await act(async () => { await Promise.resolve(); });
-  expect(screen.getByRole('alert')).toHaveTextContent('Could not load voter names.');
-});

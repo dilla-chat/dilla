@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { DesktopBridge, DesktopCommand, DesktopEvent } from '../../desktop/src/contract.ts';
-import { desktopNotificationCtor, startDesktopLifecycle, setDesktopGuard, startDesktopWindowLayout } from './desktop.ts';
+import { UPGRADE_RELOAD_KEY, clearUpgradeReload, desktopNotificationCtor, startDesktopLifecycle, setDesktopGuard, startDesktopWindowLayout, upgradeRequired } from './desktop.ts';
+import { t } from './strings/index.ts';
 
 function bridge() {
   const commands: DesktopCommand[] = [];
@@ -10,7 +11,7 @@ function bridge() {
     send: command => { commands.push(command); return Promise.resolve(); },
     onEvent: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },
   };
-  return { desktop, commands, emit(event: DesktopEvent) { for (const listener of listeners) listener(event); } };
+  return { desktop, commands, listenerCount: () => listeners.size, emit(event: DesktopEvent) { for (const listener of [...listeners]) listener(event); } };
 }
 
 describe('desktop integration', () => {
@@ -105,4 +106,117 @@ it('initializes the desktop workspace only after the native resize has reached t
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 820 });
   frame?.(0); expect(ready).toHaveBeenCalledOnce();
  } finally { stop(); Object.defineProperty(window, 'innerWidth', width); Object.defineProperty(window, 'innerHeight', height); vi.unstubAllGlobals(); }
+});
+
+/** A sessionStorage stand-in; `blocked` throws on every access, as a browser with blocked storage does. */
+function memoryStorage(blocked = false) {
+  const items = new Map<string, string>();
+  const guard = () => { if (blocked) throw new DOMException('blocked', 'SecurityError'); };
+  return {
+    items,
+    getItem: (key: string) => { guard(); return items.get(key) ?? null; },
+    setItem: (key: string, value: string) => { guard(); items.set(key, value); },
+    removeItem: (key: string) => { guard(); items.delete(key); },
+  };
+}
+
+// Bot v2 Task 1: a wire 6 instance refuses an older client with E_UPGRADE_REQUIRED.
+describe('upgrade required', () => {
+  it('desktop shows Update dilla to continue with the update button', () => {
+    const fixture = bridge(), reload = vi.fn(), storage = memoryStorage();
+    const surface = upgradeRequired({ bridge: fixture.desktop, storage, reload });
+    expect(surface).not.toBeNull();
+    expect(t(surface!.message)).toBe('Update dilla to continue');
+    expect(t(surface!.action)).toBe('Update');
+    expect(reload).not.toHaveBeenCalled();
+    expect(fixture.commands).toEqual([]);
+    surface!.onAction();
+    expect(fixture.commands).toEqual([{ type: 'check-update' }]);
+    // The shell's updater downloads; once it is ready, the app installs it and restarts.
+    fixture.emit({ type: 'update', phase: 'downloading' });
+    expect(fixture.commands).toEqual([{ type: 'check-update' }]);
+    fixture.emit({ type: 'update', phase: 'ready' });
+    expect(fixture.commands).toEqual([{ type: 'check-update' }, { type: 'restart-update' }]);
+    fixture.emit({ type: 'update', phase: 'ready' });
+    expect(fixture.commands).toHaveLength(2);
+  });
+
+  it('repeat presses while an update runs send nothing more, and one subscription serves the attempt', () => {
+    const fixture = bridge();
+    const surface = upgradeRequired({ bridge: fixture.desktop, storage: null, reload: vi.fn() })!;
+    const before = fixture.listenerCount();
+    surface.onAction(); surface.onAction(); surface.onAction();
+    expect(fixture.commands).toEqual([{ type: 'check-update' }]);
+    expect(fixture.listenerCount()).toBe(before + 1);
+    fixture.emit({ type: 'update', phase: 'ready' });
+    surface.onAction();
+    fixture.emit({ type: 'update', phase: 'ready' });
+    expect(fixture.commands).toEqual([{ type: 'check-update' }, { type: 'restart-update' }]);
+  });
+
+  it('an attempt that ends without an update unsubscribes and says why, and the button tries again', () => {
+    for (const [phase, message] of [['idle', 'No update is ready for this app yet. Try again later.'], ['error', 'The update did not install. Try again.'],
+      ['available', 'Update dilla with your package manager to continue.']] as const) {
+      const fixture = bridge(), changes: string[] = [];
+      let current = upgradeRequired({ bridge: fixture.desktop, storage: null, reload: vi.fn(), onChange: next => { current = next; changes.push(t(next.message)); } })!;
+      const before = fixture.listenerCount();
+      current.onAction();
+      fixture.emit({ type: 'update', phase: 'checking' });
+      fixture.emit({ type: 'update', phase });
+      expect(changes).toEqual([message]);
+      expect(t(current.action)).toBe('Update');
+      expect(fixture.listenerCount()).toBe(before);
+      current.onAction();
+      expect(fixture.commands).toEqual([{ type: 'check-update' }, { type: 'check-update' }]);
+      expect(fixture.listenerCount()).toBe(before + 1);
+    }
+  });
+
+  it('a restart the shell cancels reports the failure', () => {
+    const fixture = bridge(), changes: string[] = [];
+    const surface = upgradeRequired({ bridge: fixture.desktop, storage: null, reload: vi.fn(), onChange: next => { changes.push(next.message); } })!;
+    surface.onAction();
+    fixture.emit({ type: 'update', phase: 'ready' });
+    fixture.emit({ type: 'update', phase: 'installing' });
+    fixture.emit({ type: 'update', phase: 'error', message: 'Restart was cancelled.' });
+    expect(changes).toEqual(['update.requiredFailed']);
+  });
+
+  it('an update the shell already downloaded installs on the first press', () => {
+    const fixture = bridge();
+    const stop = startDesktopLifecycle(fixture.desktop);
+    fixture.emit({ type: 'update', phase: 'ready' });
+    const surface = upgradeRequired({ bridge: fixture.desktop, storage: null, reload: vi.fn() })!;
+    surface.onAction();
+    expect(fixture.commands.filter(c => c.type === 'check-update' || c.type === 'restart-update')).toEqual([{ type: 'restart-update' }]);
+    stop();
+  });
+
+  it('a browser tab reloads once on upgradeRequired', () => {
+    const storage = memoryStorage(), reload = vi.fn();
+    expect(upgradeRequired({ bridge: undefined, storage, reload })).toBeNull();
+    expect(reload).toHaveBeenCalledOnce();
+    expect(storage.items.get(UPGRADE_RELOAD_KEY)).toBe('1');
+    // Still refused after that reload: no second reload, the tab says why and offers one by hand.
+    const surface = upgradeRequired({ bridge: undefined, storage, reload });
+    expect(reload).toHaveBeenCalledOnce();
+    expect(t(surface!.message)).toBe('Update dilla to continue');
+    expect(surface!.action).toBe('reload.action');
+    surface!.onAction();
+    expect(reload).toHaveBeenCalledTimes(2);
+    // Once a socket is ready again, a later upgrade may reload once more.
+    clearUpgradeReload(storage);
+    expect(storage.items.has(UPGRADE_RELOAD_KEY)).toBe(false);
+    expect(upgradeRequired({ bridge: undefined, storage, reload })).toBeNull();
+    expect(reload).toHaveBeenCalledTimes(3);
+  });
+
+  it('a browser tab without storage never reloads by itself', () => {
+    const reload = vi.fn();
+    for (const storage of [memoryStorage(true), null]) {
+      const surface = upgradeRequired({ bridge: undefined, storage, reload });
+      expect(reload).not.toHaveBeenCalled();
+      expect(t(surface!.message)).toBe('Update dilla to continue');
+    }
+  });
 });

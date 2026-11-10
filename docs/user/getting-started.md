@@ -212,6 +212,25 @@ moderator who has since left the server shows as "a former member", and an accou
 back." An empty list says "Nobody is banned from {server}." If the list does not load, **Try again** loads it
 again.
 
+### Bot channels, webhooks and the Bot page
+
+The server's Bot answers commands and posts for features such as music, polls, reminders and welcome messages. It
+joins only the text channels you mark as **Bot channels**, and it posts only there. In **Server settings → Channels**,
+**edit** a text channel and turn on **Bot channel**. The channel then shows a **Bot** tag. Nothing is marked for you:
+the features that post (welcome messages, announcements, role panels, polls, the music card) wait until you pick a
+Bot channel for them.
+
+**Server settings → Bot** is the Bot's page. It has a switch for each part of the Bot, a health line ("Commands
+are working", "Commands failing since 06:24" or "The Bot is offline since 06:24") with the Bot's command key, the list
+of Bot channels, and **Webhooks**. A webhook lets a script or a game server post into one Bot channel with a
+`curl` command. Its address is shown once when you create it. How to create one, what to send and what the answers
+mean are in [Bot commands](bot-commands.md#webhooks).
+
+A command you cannot run yet stays in the picker, greyed, with the reason. See [Greyed
+commands](bot-commands.md#greyed-commands).
+
+![The Bot page: health, Bot channels and webhooks](screenshots/bot-page-health-channels-desktop.png)
+
 ### Members
 
 The **members** button in the channel header opens the list of "members of {server}", grouped by role: one group
@@ -1596,6 +1615,22 @@ npm run docs:shots -w @dilla/e2e -- --wave-b-state "$PWD/target/ui-screens/task-
 ```
 
 This posts a reminder and a poll. Stop and restart the world before another parity run.
+
+The Bot v2 shots (`bot-page-health-channels-desktop.png`, `bot-picker-greyed-desktop.png`,
+`bot-channel-toggle-desktop.png`, `bot-webhook-post-desktop.png`) are not made by `shoot-docs.mjs`. Its host has no Bot
+runtime, and the UX world of the wave B run does not mark a Bot channel, so neither can show the Bot page, a Bot
+channel or a webhook. They come from the Linux-only desktop spec `e2e/web/bot-channels.spec.ts`, which starts a host with
+the native Bot. With `DILLA_SHOTS` set it writes each view at 1240×820, 900×600 and 390×844; the docs use the
+1240×820 files:
+
+```sh
+npm run build -w @dilla/web
+DILLA_E2E_HOST_DATA_ROOT=/tmp/dwb DILLA_E2E_PORT_OFFSET=16000 DILLA_SHOTS=/tmp/dwb-shots \
+  npm run test:e2e:desktop -w @dilla/e2e -- web/bot-channels.spec.ts
+```
+
+The picker shot waits 20 seconds for the Bot's first health report and reloads, so it shows "Mark a channel as a Bot
+channel first" and not "The Bot is offline since …".
 
 Chromium keeps sockets in its profile directories, so the script needs a short temporary directory: when
 `TMPDIR` is a long path, run it with `TMPDIR=/tmp`.

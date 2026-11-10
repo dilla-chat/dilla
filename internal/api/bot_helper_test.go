@@ -99,9 +99,11 @@ func testManagedBotReachesReady(t *testing.T, repo store.Repository) {
 		}
 		groups.RegisterBotDirectory(mux, d.Sessions)
 	})
+	// The routes that moved to the gateway socket are sent as request frames.
+	h = viaSocket(t, h, deps)
 	owner, ownerDevice, humanToken := seedAPISession(t, deps)
 	cid := seedBotCommunity(t, deps, owner.ID) // no accessible text channels are required here
-	negotiate, _ := cborx.Marshal([]any{[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}})
+	negotiate, _ := cborx.Marshal([]any{[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}})
 	if rec := postCBORAuth(h, "/v1/sessions/negotiate", negotiate, humanToken); rec.Code != http.StatusOK {
 		t.Fatalf("human negotiate wire 3 = %d (%x)", rec.Code, rec.Body.Bytes())
 	}
@@ -405,6 +407,10 @@ func testManagedBotReachesReady(t *testing.T, repo store.Repository) {
 		t.Fatal(err)
 	}
 	if err := deps.Repo.PutChannelMember(context.Background(), channelID, userID, deps.Clock.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	// Bot v2 Task 22: only a Bot channel's group is owed before ready (the Bot is proposed into no other).
+	if _, err := deps.Repo.MarkBotChannel(context.Background(), store.BotChannelRow{ChannelID: channelID, CommunityID: communityID, MarkedAt: deps.Clock.Now().Unix(), MarkedBy: userID}); err != nil {
 		t.Fatal(err)
 	}
 	if pending := postCBORAuth(h, readyPath, readyBody, botToken); pending.Code != http.StatusConflict {

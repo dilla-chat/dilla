@@ -50,13 +50,6 @@ func TestBotGroupRegistrationReceiptIsImmutableScopedAndTransactional(t *testing
 			if err != nil || !reflect.DeepEqual(got, receipt) {
 				t.Fatalf("get receipt: %+v, %v", got, err)
 			}
-			got, err = repo.GetBotGroupRegistrationReceiptByGroup(ctx, group)
-			if err != nil || !reflect.DeepEqual(got, receipt) {
-				t.Fatalf("get receipt by accepted group: %+v, %v", got, err)
-			}
-			if _, err := repo.GetBotGroupRegistrationReceiptByGroup(ctx, id.New()); !errors.Is(err, store.ErrNotFound) {
-				t.Fatalf("unknown group receipt lookup: %v", err)
-			}
 			if _, err := repo.GetBotGroupRegistrationReceipt(ctx, id.New(), op); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("foreign installation lookup: %v", err)
 			}

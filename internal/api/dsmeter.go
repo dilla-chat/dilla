@@ -25,6 +25,31 @@ const (
 	// bound would exhaust the target's directory (32 + 1 last resort) and leave it unaddable. The
 	// requester's read bucket still applies on top.
 	dsClassKeyPackage = "keypackage"
+	// dsClassBotCommand meters POST /v1/communities/{community}/bot/commands per device in its own bucket (Bot v2
+	// Task 10): one device cannot flood the Bot, and commands do not spend the device's write allowance for everything
+	// else. Since Task 21b the app's Bot surfaces read through it too (poll cards, the player, the reminders inbox), so it
+	// runs at the read rate (10/s, burst 60 by default), like the reads it replaced; the Bot's own intake queue and its
+	// bot_reply budget bound what a community's devices can ask of it together.
+	dsClassBotCommand = "bot_command"
+	// dsClassBotRuntime meters the Bot's state hints (and its other runtime routes) per Bot device at the read rate
+	// (10/s, burst 60 by default): the one Bot answers the whole community, so its allowance is the
+	// larger one. Every reply answers a command that was itself metered per device.
+	dsClassBotRuntime = "bot_runtime"
+	// dsClassBotReply meters POST /v1/bot-runtime/replies per Bot device (Task 21b fix round 1). Every member command and
+	// every app read (poll cards, the player, the reminders inbox) is answered by one reply, so this budget is the
+	// community's, not one person's: BotReplyPerSecond and BotReplyBurst.
+	dsClassBotReply = "bot_reply"
+)
+
+// BotReplyPerSecond and BotReplyBurst size the Bot's sealed-answer meter for a 200-member community (Task 21b fix round
+// 1). Answers cannot outrun commands: each needs a request the relay took from a member's device within five minutes,
+// and members send at most 2/s each (bot_command, burst 20). The sustained rate allows every member of a 200-member
+// community about one answer a second (a command, or a poll card, player or inbox read on a hint); the burst lets a hint
+// that 200 members' surfaces answer at once (two reads each) be served without a queue. The Bot paces itself below this
+// (internal/bot/client: 180/s, burst 360).
+const (
+	BotReplyPerSecond = 200
+	BotReplyBurst     = 400
 )
 
 func dsRateClass(r config.Rate, name string) server.Class {
@@ -39,6 +64,12 @@ func dsRateClass(r config.Rate, name string) server.Class {
 		return server.Class{Name: name, PerSecond: r.ProposalPerSecond, Burst: r.ProposalBurst}
 	case dsClassWrite:
 		return server.Class{Name: name, PerSecond: r.WritePerSecond, Burst: r.WriteBurst}
+	case dsClassBotCommand:
+		return server.Class{Name: name, PerSecond: r.ReadPerSecond, Burst: r.ReadBurst}
+	case dsClassBotRuntime:
+		return server.Class{Name: name, PerSecond: r.ReadPerSecond, Burst: r.ReadBurst}
+	case dsClassBotReply:
+		return server.Class{Name: name, PerSecond: BotReplyPerSecond, Burst: BotReplyBurst}
 	default:
 		return server.Class{Name: dsClassRead, PerSecond: r.ReadPerSecond, Burst: r.ReadBurst}
 	}

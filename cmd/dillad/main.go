@@ -72,6 +72,9 @@ func dispatch(args []string, stdout, stderr io.Writer) error {
 	}
 	v, ok := verbs()[args[0]]
 	if !ok {
+		v, ok = internalVerbs()[args[0]]
+	}
+	if !ok {
 		fmt.Fprintf(stderr, "dillad: unknown verb %q\n", args[0])
 		usage(stderr)
 		return exit.Usage

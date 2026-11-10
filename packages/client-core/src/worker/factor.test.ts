@@ -40,7 +40,7 @@ const plain = (v: unknown): string => JSON.stringify(v, (_k, x: unknown) => (typ
 describe('the factor-setup phase (web3.6 C2)', () => {
   it('a signup owing a factor stops at factor-setup; factorSetupDone refuses while owed, then enters ready and joins', async () => {
     const w = world({ phase: 0, owed: true });
-    const negotiation = vi.fn(() => Promise.resolve({ wire: 3, e2ee: 1, media: 1, botAvailable: true }));
+    const negotiation = vi.fn(() => Promise.resolve({ wire: 6, e2ee: 1, media: 1, botAvailable: true }));
     (w.routes as unknown as { negotiateSession: typeof negotiation }).negotiateSession = negotiation;
     w.routes.getInvite.mockImplementation(() => Promise.resolve({ communityId: COMMUNITY, communityName: 'friends', expires: 0n }));
     await toKeys(w);
@@ -225,12 +225,12 @@ class Sock {
   }
   open(): void { this.readyState = 1; this.emit('open', {}); }
   receive(bytes: Uint8Array): void { this.emit('message', { data: bytes.slice().buffer }); }
-  serverClose(code: number): void { this.readyState = 3; this.emit('close', { code, reason: '', wasClean: true }); }
+  serverClose(code: number, reason = ''): void { this.readyState = 3; this.emit('close', { code, reason, wasClean: true }); }
   private emit(type: string, event: unknown): void { for (const fn of this.listeners.get(type) ?? []) fn(event); }
 }
 
-const HELLO = encodeFrame(Op.hello, 0, null, [[2], [1], [1], 30_000, 131_584, INSTANCE_ID, 1, 300, 300]);
-const READY = encodeFrame(Op.ready, 1, null, [DEVICE, USER, 7, new Uint8Array(32).fill(0x0b), 2, 1, 1, 32, []]);
+const HELLO = encodeFrame(Op.hello, 0, null, [[6], [1], [1], 30_000, 131_584, INSTANCE_ID, 1, 300, 300]);
+const READY = encodeFrame(Op.ready, 1, null, [DEVICE, USER, 7, new Uint8Array(32).fill(0x0b), 6, 1, 1, 32, [], new Uint8Array(16).fill(0x5b)]);
 
 /** A world on the real Gateway, whose tickets go through the real HttpClient to `ticket` (the n-th request, 1-based). */
 function socketWorld(ticket: (n: number) => Promise<Response>) {
@@ -329,9 +329,10 @@ describe('the global E_FACTOR_REQUIRED hook (web3.6 C2)', () => {
 });
 
 // web3.8 (R2): an instance whose hello offers only wire 1 is one this client cannot speak to. The real gateway closes
-// 4006 without an identify and the worker publishes reason 'version' (the reload banner), with no reconnect.
-describe('wire version 2 (web3.8 C2)', () => {
-  it('a hello offering only wire 1 leaves the connection offline with reason version and sends nothing', async () => {
+// 4006 without an identify, with no reconnect, and the worker publishes reason 'instance' (final review M5: the instance
+// is older than this client, so it is the side to update, not this client).
+describe('wire version 6 (web3.8 C2, Bot v2)', () => {
+  it('a hello offering only wire 1 leaves the connection offline with reason instance and sends nothing', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const { w, tickets } = socketWorld(minted);
     w.call(1, { m: 'start' });
@@ -339,8 +340,8 @@ describe('wire version 2 (web3.8 C2)', () => {
     const socket = Sock.all[0];
     socket.open();
     socket.receive(encodeFrame(Op.hello, 0, null, [[1], [1], [1], 30_000, 131_584, INSTANCE_ID, 1, 300, 300]));
-    await until(() => w.connection()?.reason === 'version');
-    expect(w.connection()).toMatchObject({ status: 'offline', reason: 'version' });
+    await until(() => w.connection()?.reason === 'instance');
+    expect(w.connection()).toMatchObject({ status: 'offline', reason: 'instance' });
     expect(socket.sent).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(600_000);
     expect(Sock.all).toHaveLength(1);
@@ -364,7 +365,24 @@ describe('wire version 2 (web3.8 C2)', () => {
     expect(tickets.n).toBe(1);
   });
 
-  it('control: a hello offering wire 2 gets an identify with 2 and goes online', async () => {
+  // Bot v2 Task 1: the instance's refusal names E_UPGRADE_REQUIRED, so the page is told to show the update surface.
+  it('a server close 4006 naming E_UPGRADE_REQUIRED publishes offline with reason upgrade and mints no second ticket', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { w, tickets } = socketWorld(minted);
+    w.call(1, { m: 'start' });
+    await until(() => w.account()?.phase === 'ready' && Sock.all.length === 1);
+    const socket = Sock.all[0];
+    socket.open();
+    socket.receive(HELLO);
+    socket.serverClose(4006, 'E_UPGRADE_REQUIRED');
+    await until(() => w.connection()?.reason === 'upgrade');
+    expect(w.connection()).toMatchObject({ status: 'offline', reason: 'upgrade' });
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(Sock.all).toHaveLength(1);
+    expect(tickets.n).toBe(1);
+  });
+
+  it('control: a hello offering wire 6 gets an identify with 6 and goes online', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const { w } = socketWorld(minted);
     w.call(1, { m: 'start' });
@@ -372,7 +390,7 @@ describe('wire version 2 (web3.8 C2)', () => {
     const socket = Sock.all[0];
     socket.open();
     socket.receive(HELLO);
-    expect(socket.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 2, 1, 1, 0])]);
+    expect(socket.sent).toEqual([encodeFrame(Op.identify, 1, null, ['', 6, 1, 1, 0])]);
     socket.receive(READY);
     await until(() => w.connection()?.status === 'online');
     expect(w.connection()?.reason).toBeUndefined();

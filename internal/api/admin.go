@@ -62,10 +62,10 @@ func (a *Admin) WithDiagnostics(run func(context.Context) ops.Report) *Admin {
 }
 
 func (a *Admin) Register(mux *server.Mux) {
-	mux.HandleFunc("DELETE /v1/admin/blobs/{blob_id}", a.purgeBlob)
-	mux.HandleFunc("GET /v1/admin/audit", a.audit)
-	mux.HandleFunc("POST /v1/admin/users/{id}/disable", a.disableUser)
-	mux.HandleFunc("GET /v1/admin/diagnostics", a.diagnostics)
+	mux.Socket("DELETE /v1/admin/blobs/{blob_id}", http.HandlerFunc(a.purgeBlob))
+	mux.Socket("GET /v1/admin/audit", http.HandlerFunc(a.audit))
+	mux.Socket("POST /v1/admin/users/{id}/disable", http.HandlerFunc(a.disableUser))
+	mux.Socket("GET /v1/admin/diagnostics", http.HandlerFunc(a.diagnostics))
 }
 
 // diagnosticsLeg is one element of the diagnostics body: `[name(tstr),

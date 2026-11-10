@@ -1,7 +1,7 @@
 // Server Settings → Bot: inspect the managed installation and enable/disable it through the core worker.
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Segmented, SettingsRow, TextField, Toggle, type IconName } from '@dilla/ui';
-import { BOT_MUSIC_IDLE_MINUTES, BOT_MUSIC_VOLUMES, PERM } from '@dilla/client-core';
+import { BOT_MUSIC_IDLE_MINUTES, BOT_MUSIC_VOLUMES, BotOperationUncertainError, createBotOperations, PERM } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
 import { errorOf, type UiError } from '../../core/errors.ts';
 import { useSlice } from '../../core/use-slice.ts';
@@ -9,7 +9,6 @@ import { t, type StringKey } from '../../strings/index.ts';
 import { StepUpDialog } from '../settings/StepUpDialog.tsx';
 import { useSettingsEdit, type SettingsEditState } from '../../settings/edit-state.tsx';
 import { ModerationLog } from './ModerationLog.tsx';
-import { AutoModerationSettingsPanel } from './AutoModerationSettingsPanel.tsx';
 import { WelcomeSettingsPanel, type WelcomeSettingsGateway } from './WelcomeSettingsPanel.tsx';
 import { type SectionProps } from './shared.ts';
 import { MusicProviderStatus } from './MusicProviderStatus.tsx';
@@ -18,8 +17,10 @@ import { useBotDraftState, useBotMutation } from './bot-settings-context.tsx';
 import { openRoleOnNextVisit } from './RolesSection.tsx';
 import { communityBotMember } from '../bot-member.ts';
 import { invalidateCommandBot } from '../commands/command-bot-store.ts';
+import { BotHealth } from './BotHealth.tsx';
+import { BotWebhooks } from './BotWebhooks.tsx';
 
-export type BotPageKind = 'bot' | 'welcome' | 'joinRoles' | 'music' | 'automoderation' | 'moderationLog';
+export type BotPageKind = 'bot' | 'welcome' | 'joinRoles' | 'music' | 'moderationLog';
 
 type Installation = { id: string; communityId: string; state: 0 | 1 | 2 | 3 | 4 | 5; revision: string;
   userId: string | null; deviceId: string | null; capabilities: number; updatedAt: string;
@@ -102,19 +103,54 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
   selectedCommunity.current = communityId;
   editingCapabilitiesRef.current = editingCapabilities;
   const serverName = communities?.find(community => community.id === communityId)?.name ?? '';
-  const textChannels = useMemo(() => (channelsState ?? []).filter(channel => channel.kind === 0)
-    .map(channel => ({ id: channel.id, name: channel.name })), [channelsState]);
-  const welcomeGateway = useMemo<WelcomeSettingsGateway>(() => ({
-    request: async input => {
-      const result = await client.call({ m: 'humanInteractionRequest', ...input });
-      return result as Awaited<ReturnType<WelcomeSettingsGateway['request']>>;
-    },
-    read: async (id, operations, requestIds) => {
-      const page = await client.call({ m: 'readBotInteractionResponses', communityId: id, operations, requestIds });
-      return page as Awaited<ReturnType<WelcomeSettingsGateway['read']>>;
-    },
-    ack: async (id, through) => { await client.call({ m: 'ackBotInteractionResponses', communityId: id, through }); return null; },
-  }), [client]);
+  // Bot v2 Task 22: the Bot posts only into Bot channels, so a feature's target is picked from the Bot channels this admin can
+  // view (the catalog's list, Task 9).
+  const botCatalog = useSlice(`botCatalog:${communityId}`);
+  const botChannelKey = (botCatalog?.botChannels ?? []).join(',');
+  const textChannels = useMemo(() => {
+    const marked = new Set(botChannelKey === '' ? [] : botChannelKey.split(','));
+    return (channelsState ?? []).filter(channel => channel.kind === 0 && marked.has(channel.id))
+      .map(channel => ({ id: channel.id, name: channel.name }));
+  }, [channelsState, botChannelKey]);
+  // The Welcome settings' operations (1 read, 2 save) are sealed app operations 101 and 102 (Task 22): the answer comes back
+  // to the send; read() hands it to the panel, and an unanswered one is resent with its request id (the Bot answers again).
+  const welcomeGateway = useMemo<WelcomeSettingsGateway>(() => {
+    type Read = Awaited<ReturnType<WelcomeSettingsGateway['read']>>;
+    const answers = new Map<string, Read['responses'][number]>();
+    const unanswered = new Map<string, { communityId: string; operation: number; inFlight: boolean }>();
+    const keep = (communityId: string, requestId: string, operation: number, result: { status: number; revision: string | null; data: Uint8Array }) => {
+      unanswered.delete(requestId);
+      answers.set(requestId, { deliveryId: requestId, requestId, communityId, operation, channelId: null, status: result.status,
+        revision: result.revision, data: result.data, sourceSeq: '0' });
+      while (answers.size > 32) answers.delete(answers.keys().next().value!);
+    };
+    return {
+      request: async input => {
+        try {
+          keep(input.communityId, input.requestId, input.operation, await createBotOperations(client, input.communityId)
+            .request({ operation: input.operation, args: input.args, revision: input.revision, requestId: input.requestId }));
+          return { requestId: input.requestId, upload: 'accepted' };
+        } catch (e) {
+          if (!(e instanceof BotOperationUncertainError)) return { requestId: input.requestId, upload: 'rejected' };
+          unanswered.set(input.requestId, { communityId: input.communityId, operation: input.operation, inFlight: false });
+          return { requestId: input.requestId, upload: 'unknown' };
+        }
+      },
+      read: (id, _operations, requestIds) => {
+        for (const requestId of requestIds) {
+          const waiting = unanswered.get(requestId);
+          if (waiting === undefined || waiting.inFlight) continue;
+          waiting.inFlight = true;
+          void createBotOperations(client, waiting.communityId).read(requestId, waiting.operation).then(result => {
+            if (result !== null) keep(waiting.communityId, requestId, waiting.operation, result);
+          }).catch(() => undefined).finally(() => { waiting.inFlight = false; });
+        }
+        const responses = requestIds.flatMap(requestId => { const row = answers.get(requestId); return row !== undefined && row.communityId === id ? [row] : []; });
+        return Promise.resolve({ responses, through: responses[0]?.requestId ?? null, blocked: false });
+      },
+      ack: () => Promise.resolve(null),
+    };
+  }, [client]);
 
   useEffect(() => {
     const generation = ++readGeneration.current;
@@ -464,7 +500,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
 
   const pageTitle: StringKey = page === 'bot' ? 'admin.bot.title' : page === 'welcome' ? 'admin.bot.welcomeSettings.title'
     : page === 'joinRoles' ? 'admin.bot.joinRole.title' : page === 'music' ? 'serverSettings.music.title'
-      : page === 'automoderation' ? 'admin.bot.automod.title' : 'admin.bot.moderationLog.title';
+      : 'admin.bot.moderationLog.title';
 
   return (
     <section className="dw-settings-section dw-bot-settings" data-measure="full" aria-labelledby={`${base}-title`}>
@@ -505,6 +541,11 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
         <SettingsRow id={`${base}-voice`} icon="lock" label={t('serverSettings.bot.voice')} hint={t('serverSettings.bot.voiceHint', { bot: botName })}>
           <Button size="sm" onClick={() => void navigate({ name: 'serverSettings', communityId, section: 'roles', from: null })}>{t('serverSettings.bot.voiceRoles')}</Button>
         </SettingsRow>
+        {/* Bot v2 Task 22: health and the command key, the Bot channels, and the webhooks. */}
+        {currentInstallation !== null && enabled ? <>
+          <BotHealth communityId={communityId} announce={announce} />
+          {manager ? <BotWebhooks communityId={communityId} channels={textChannels} canManage={manager} announce={announce} /> : null}
+        </> : null}
         {canEditInstallationCapabilities && capabilityDirty && !managedBotForm ? <div className="dw-settings-actions">
           <Button variant="accent" aria-disabled={busy || enableUnavailable || undefined} onClick={enable}>{t('admin.bot.capabilities.save')}</Button>
           <Button aria-disabled={busy || undefined} onClick={() => {
@@ -555,11 +596,6 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
       {page === 'welcome' ? <WelcomeSettingsPanel communityId={communityId} serverName={serverName} channels={textChannels}
         enabled={welcomeEnabled} canManage={access?.loaded === true && access.manageCommunity} gateway={welcomeGateway} />
         : null}
-      {page === 'automoderation' ? <AutoModerationSettingsPanel communityId={communityId} botReady={currentInstallation?.state === 3}
-        canManage={access?.loaded === true && access.manageCommunity}
-        canManageMessages={access?.loaded === true && (access.manageMessages ?? access.owner)}
-        canModerateMembers={access?.loaded === true && (access.moderateMembers ?? access.owner)}
-        capabilities={currentInstallation?.capabilities ?? 0} /> : null}
       {page === 'moderationLog' ? <ModerationLog communityId={communityId} showHeading={false} /> : null}
       {page === 'bot' && currentError !== null ? <p role="alert">{currentError}</p> : null}
       {page === 'bot' && statusRefreshError !== null ? <p role="alert">{statusRefreshError}</p> : null}

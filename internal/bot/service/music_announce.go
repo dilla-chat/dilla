@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -84,10 +85,12 @@ func (l *MusicAnnounceLimiter) reserve(user id.ID, item string, now time.Time) (
 	}, true
 }
 
-// NeutralizeBotMarkers keeps text a privileged member authors for the Bot to post (announcements, welcome messages,
-// role panels) from carrying a player marker clients would draw a card from (security review, L-related).
-func NeutralizeBotMarkers(text string) string {
-	return strings.ReplaceAll(text, "[dilla-music:", "(dilla-music:")
+// DefangMarkers keeps free text the Bot posts (welcome messages, announcements, role panels, poll questions and
+// answers, webhook text) from carrying any marker clients draw from: every "[dilla-" becomes "(dilla-", so no such
+// text can forge a player card, a poll card or a "via webhook" label under the Bot's authorship (Task 17 fix round 2,
+// M6: one rule for every Bot-authored text, before the marker line the Bot itself writes).
+func DefangMarkers(text string) string {
+	return strings.ReplaceAll(text, "[dilla-", "(dilla-")
 }
 
 // musicAnnounceChannelAuthority resolves the actor's effective bits in one channel, overrides included.
@@ -177,6 +180,16 @@ func (h MusicAnnouncements) announce(ctx context.Context, actor InteractionActor
 	if !visible || bits&musicAnnounceChannelSend != musicAnnounceChannelSend {
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
+	// Bot v2 Task 17: the card goes only into a Bot channel. A target that is not one gets no card and no destination
+	// registration, and the feature is flagged needs_bot_channel; /play itself needs no text channel at all.
+	if err := CheckBotChannel(h.CommunityID, text); err != nil {
+		if errors.Is(err, ErrNeedsBotChannel) {
+			FlagNeedsBotChannel(h.CommunityID, "music", text)
+			return InteractionResult{Status: interactionStatusUnavailable, Note: "The Bot posts only in Bot channels."}, nil
+		}
+		return InteractionResult{Status: interactionStatusUnavailable}, nil
+	}
+	ClearNeedsBotChannel(h.CommunityID, "music")
 	// The existing request also registers the command's text destination before playback.
 	// Resolve the channel's MLS binding now, before remembering it or acknowledging registration.
 	group, err := h.Destination.ResolveTextGroup(ctx, h.CommunityID, text)

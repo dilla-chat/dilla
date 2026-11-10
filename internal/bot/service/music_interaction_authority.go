@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
+	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -33,13 +35,128 @@ type musicAuthorityStore interface {
 	GetActiveBotInstallationByCommunity(context.Context, id.ID) (store.BotInstallationRow, error)
 }
 
+// MusicAuthz is the Bot's feed-state permission cache for the community (intake.Authz, Bot v2 Task 15): roles,
+// channel overwrites of voice channels (feed kind 9) and member timeouts (kind 10), in memory and ordered by the feed
+// barrier before a command's intake check.
+type MusicAuthz interface {
+	Ready() bool
+	Allowed(community, channel, user id.ID, permissionBit uint64, communityScoped bool) bool
+	Permissions(user id.ID) uint64
+	TimedOut(user id.ID, now time.Time) bool
+}
+
+// ErrMusicAuthzNotReady refuses a music check while the feed's first snapshot is not applied (retryable).
+var ErrMusicAuthzNotReady = errors.New("music authority: the feed state is not ready")
+
+// musicAuthzAdministrator is api.PermAdministrator (owners resolve to every bit, this one included).
+const musicAuthzAdministrator uint64 = 1 << 20
+
 // CommunityMusicInteractionAuthority resolves permissions, installation state,
 // and the live call roster afresh for each authorization check.
+//
+// With Authz set (Bot v2 Task 19, ruling on I1/I3) every permission and membership check, the Bot's own connect and
+// speak included, resolves from the feed state in memory, and the only request left is the call read (ChannelCall)
+// for "is the actor in this call", made once per command (withMusicCallMemo) and shared by CurrentCall and the
+// in-call check. A recheck right before a commit is therefore in memory and always made.
 type CommunityMusicInteractionAuthority struct {
 	Session        musicAuthoritySession
 	Store          musicAuthorityStore
 	InstallationID id.ID
 	CommunityID    id.ID
+	Authz          MusicAuthz
+	BotUser        id.ID
+	Now            func() time.Time
+}
+
+type musicCallMemoKey struct{}
+
+// musicCallMemo keeps one command's call reads: the call state of a channel is read once per command.
+type musicCallMemo struct {
+	mu     sync.Mutex
+	states map[id.ID]client.ChannelCallState
+}
+
+// withMusicCallMemo makes the music authority read each channel's call once for the rest of ctx (one command).
+func withMusicCallMemo(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(musicCallMemoKey{}).(*musicCallMemo); ok {
+		return ctx
+	}
+	return context.WithValue(ctx, musicCallMemoKey{}, &musicCallMemo{states: map[id.ID]client.ChannelCallState{}})
+}
+
+// refreshMusicCallMemo makes the next call read of ctx's command go to dillad again: the recheck before a commit
+// (after the resolve, and on every retry) sees a call that changed and an actor who left (Bot v2 Task 19 fix round 2).
+func refreshMusicCallMemo(ctx context.Context) {
+	if memo, ok := ctx.Value(musicCallMemoKey{}).(*musicCallMemo); ok {
+		memo.mu.Lock()
+		clear(memo.states)
+		memo.mu.Unlock()
+	}
+}
+
+// seedMusicCallMemo gives ctx's command a call state already read (a shared music.state read, Task 19 fix round 4):
+// its in-call checks use it instead of reading the call again.
+func seedMusicCallMemo(ctx context.Context, channel id.ID, state client.ChannelCallState) {
+	if memo, ok := ctx.Value(musicCallMemoKey{}).(*musicCallMemo); ok {
+		memo.mu.Lock()
+		memo.states[channel] = state
+		memo.mu.Unlock()
+	}
+}
+
+// musicCallMemoState is the call state ctx's command has read for channel, if any.
+func musicCallMemoState(ctx context.Context, channel id.ID) (client.ChannelCallState, bool) {
+	memo, ok := ctx.Value(musicCallMemoKey{}).(*musicCallMemo)
+	if !ok {
+		return client.ChannelCallState{}, false
+	}
+	memo.mu.Lock()
+	defer memo.mu.Unlock()
+	state, seen := memo.states[channel]
+	return state, seen
+}
+
+func (a *CommunityMusicInteractionAuthority) channelCall(ctx context.Context, channel id.ID) (client.ChannelCallState, error) {
+	memo, ok := ctx.Value(musicCallMemoKey{}).(*musicCallMemo)
+	if !ok || a.Authz == nil {
+		return a.Session.ChannelCall(ctx, channel)
+	}
+	memo.mu.Lock()
+	state, seen := memo.states[channel]
+	memo.mu.Unlock()
+	if seen {
+		return state, nil
+	}
+	state, err := a.Session.ChannelCall(ctx, channel)
+	if err == nil {
+		memo.mu.Lock()
+		memo.states[channel] = state
+		memo.mu.Unlock()
+	}
+	return state, err
+}
+
+func (a *CommunityMusicInteractionAuthority) now() time.Time {
+	if a.Now != nil {
+		return a.Now()
+	}
+	return time.Now()
+}
+
+// authzReady is the feed state, or ErrMusicAuthzNotReady.
+func (a *CommunityMusicInteractionAuthority) authzReady() error {
+	if !a.Authz.Ready() || a.BotUser.IsZero() {
+		return ErrMusicAuthzNotReady
+	}
+	return nil
+}
+
+// BotCanSpeak reports whether the Bot itself may connect and speak in channel, from the feed state (no request).
+func (a *CommunityMusicInteractionAuthority) BotCanSpeak(channel id.ID) bool {
+	if a == nil || a.Authz == nil || a.authzReady() != nil {
+		return false
+	}
+	return a.Authz.Allowed(a.CommunityID, channel, a.BotUser, musicPermissionConnect|musicPermissionSpeak, false)
 }
 
 func (a *CommunityMusicInteractionAuthority) CurrentCall(ctx context.Context, channel id.ID) (MusicCallBinding, error) {
@@ -53,7 +170,7 @@ func (a *CommunityMusicInteractionAuthority) CurrentCall(ctx context.Context, ch
 	if installation.ID.IsZero() {
 		return MusicCallBinding{}, nil
 	}
-	state, err := a.Session.ChannelCall(ctx, channel)
+	state, err := a.channelCall(ctx, channel)
 	if err != nil {
 		return MusicCallBinding{}, err
 	}
@@ -71,6 +188,13 @@ func (a *CommunityMusicInteractionAuthority) CanUse(ctx context.Context, actor I
 	installation, err := a.currentInstallation(ctx)
 	if err != nil || installation.ID.IsZero() {
 		return false, err
+	}
+	if a.Authz != nil {
+		if err := a.authzReady(); err != nil {
+			return false, err
+		}
+		// The Bot may connect and speak there, and the actor may see the voice channel (security review M2).
+		return a.BotCanSpeak(call.ChannelID) && a.Authz.Allowed(a.CommunityID, call.ChannelID, actor.User, musicPermissionView, false), nil
 	}
 	bits, err := a.Session.ChannelPermissions(ctx, call.ChannelID)
 	if err != nil || bits&(musicPermissionConnect|musicPermissionSpeak) != musicPermissionConnect|musicPermissionSpeak {
@@ -108,6 +232,16 @@ func (a *CommunityMusicInteractionAuthority) CanDJ(ctx context.Context, actor In
 	if err != nil || installation.ID.IsZero() {
 		return false, err
 	}
+	if a.Authz != nil {
+		if err := a.authzReady(); err != nil {
+			return false, err
+		}
+		if !a.Authz.Allowed(a.CommunityID, call.ChannelID, actor.User, musicPermissionView|musicPermissionControl, false) ||
+			a.Authz.TimedOut(actor.User, a.now()) || !a.BotCanSpeak(call.ChannelID) {
+			return false, nil
+		}
+		return a.actorInCall(ctx, actor.User, call)
+	}
 	_, present, err := a.Session.BotActorAuthority(ctx, a.CommunityID, actor.User)
 	if err != nil || !present {
 		return false, err
@@ -132,12 +266,18 @@ func (a *CommunityMusicInteractionAuthority) CanEmergencyStop(ctx context.Contex
 	if err != nil || installation.ID.IsZero() {
 		return false, err
 	}
+	if a.Authz != nil {
+		if err := a.authzReady(); err != nil {
+			return false, err
+		}
+		return a.Authz.Permissions(actor.User)&musicAuthzAdministrator != 0, nil
+	}
 	resolved, present, err := a.Session.BotActorAuthority(ctx, a.CommunityID, actor.User)
 	return present && (resolved.Owner || resolved.Administrator), err
 }
 
 func (a *CommunityMusicInteractionAuthority) actorInCall(ctx context.Context, user id.ID, binding MusicCallBinding) (bool, error) {
-	state, err := a.Session.ChannelCall(ctx, binding.ChannelID)
+	state, err := a.channelCall(ctx, binding.ChannelID)
 	if err != nil {
 		return false, err
 	}

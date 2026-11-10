@@ -46,7 +46,7 @@ func TestTheAwayRosterIsWiredThroughTheCompositionRoot(t *testing.T) {
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	h := srv.Handler()
+	h := socketHandler(srv)
 
 	owner := accountToken(t, srv, code)
 	member := namedAccount(t, srv, mintInvite(t, srv), "friend")
@@ -123,7 +123,7 @@ func TestTheAwayRosterIsWiredThroughTheCompositionRoot(t *testing.T) {
 // snapshot then lists nobody.
 func TestTheOfflineGraceIsWiredThroughTheCompositionRoot(t *testing.T) {
 	s, ts, owner, clk := newGreetedServerAt(t)
-	h := s.Handler()
+	h := socketHandler(s)
 	// Past the boot grace first (R-AW5): its one pass clears the rows of users with no connection,
 	// which would hide whether the offline grace waited.
 	for range 95 {

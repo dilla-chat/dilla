@@ -41,6 +41,11 @@ export interface MessageRowProps {
   active?: boolean;
   editedLabel?: string;
   pinnedLabel?: string;
+  /** Bot v2 Task 22: "via webhook <name>" after the author, for a webhook post of the community's Bot. */
+  viaLabel?: string;
+  /** Bot v2 Task 22: an image for the avatar (a webhook's, from the instance's member route as an object URL); without
+   *  it, or while it loads, the author's initials avatar. */
+  avatarSrc?: string;
   reply?: {
     label: string; author: string; excerpt: string; state: 'ok' | 'missing' | 'deleted'; stateText?: string; jumpLabel: string; onJump?(): void;
     onJumpPointerDown?(e: PointerEvent<HTMLButtonElement>): void;
@@ -176,7 +181,7 @@ function ReplyLine({ reply, tabIndex }: { reply: NonNullable<MessageRowProps['re
  * and Escape on the row itself, goes to `onKeyDown`.
  */
 export function MessageRow({
-  author, authorId, onOpenProfile, time, gutterTime, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, reply, attachments, card,
+  author, authorId, onOpenProfile, time, gutterTime, body, own, tag, state, stateLabel, detail, actions, active, editedLabel, pinnedLabel, viaLabel, avatarSrc, reply, attachments, card,
   reactions, thread, toolbar, editor, pendingAction, flash, mention, onKeyDown, rowRef, seq, msgId, grouped, revealed, onReveal,
   nameColor, codeLabels, replying, forceHover,
 }: MessageRowProps) {
@@ -240,7 +245,9 @@ export function MessageRow({
       {grouped === true
         ? <span className="d-message-row__avatar" aria-hidden="true" />
         : <span className="d-message-row__avatar" aria-hidden="true" data-profile={opens ? 'true' : undefined}
-          onClick={opens ? e => onOpenProfile(authorId, authorEl.current ?? e.currentTarget, 'author') : undefined}><Avatar name={author} size="msg" shape={tag === 'bot' ? 'bot' : 'circle'} /></span>}
+          onClick={opens ? e => onOpenProfile(authorId, authorEl.current ?? e.currentTarget, 'author') : undefined}>{avatarSrc !== undefined
+            ? <img className="d-avatar d-message-row__avatar-img" data-size="msg" src={avatarSrc} alt="" />
+            : <Avatar name={author} size="msg" shape={tag === 'bot' ? 'bot' : 'circle'} />}</span>}
       <div className="d-message-row__main">
         <p className="d-message-row__head" id={headId} style={nameStyle}>
           <span className={grouped === true ? 'd-message-row__author d-sr-only' : 'd-message-row__author'} data-bot={flag(tag === 'bot')}>
@@ -249,6 +256,7 @@ export function MessageRow({
               : author}
           </span>
           {tag && grouped !== true ? <Tag kind={tag} /> : null}
+          {viaLabel !== undefined ? <span className="d-message-row__via">{viaLabel}</span> : null}
           {/* Desktop: the time stands in the gutter, so the head's copy is for a screen reader; a phone shows it beside the name. */}
           <span className={phone && grouped !== true ? 'd-message-row__time' : 'd-message-row__time d-sr-only'}>{time}</span>
           {editedLabel !== undefined ? <span className="d-message-row__edited">{editedLabel}</span> : null}

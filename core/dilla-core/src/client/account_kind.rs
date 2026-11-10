@@ -22,7 +22,9 @@
 //! one, a client that has seen an attestation leaves the leaf pending (`E_DEVICE_LIST_STALE`) and a
 //! client that has not keeps the earlier rule (the transition window `protocol/07` describes).
 
-use super::error::{E_CORE_INPUT, E_CORE_STATE, E_CREDENTIAL, E_DEVICE_LIST_STALE};
+use super::error::{
+    E_ACCOUNT_KIND_CHANGED, E_CORE_INPUT, E_CORE_STATE, E_CREDENTIAL, E_DEVICE_LIST_STALE,
+};
 use super::{ClientCore, ClientError, schema};
 use crate::identity::CredentialIdentity;
 pub use crate::identity::{AccountKindAttestation, account_kind_message};
@@ -98,6 +100,41 @@ fn stored_kind(stored: &StoredAttestation, user: &[u8; 16]) -> Option<u8> {
     verifies(&key, &instance, user, kind, &signature).then_some(kind)
 }
 
+/// The one reader of a user's stored attestation row.
+fn stored_row(
+    c: &rusqlite::Connection,
+    user: &[u8; 16],
+) -> Result<Option<StoredAttestation>, StorageError> {
+    c.query_row(
+        "SELECT kind,signature,instance_key,instance_id FROM app_account_kinds WHERE user_id=?1",
+        [user.as_slice()],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// The kind the instance attests for `user`: a stored attestation that verifies (`stored_kind`)
+/// and was made under the currently pinned instance key for this store's instance id. `None`
+/// when there is none, it does not verify, or it is under another key or instance. Unlike
+/// `leaf_kind_verdict` there is no transition window: a caller that needs the kind fails closed
+/// on `None` (sealed Bot commands: only an attested Bot account's command key is sealed to).
+pub(super) fn attested_kind(
+    c: &rusqlite::Connection,
+    user: &[u8; 16],
+) -> Result<Option<u8>, StorageError> {
+    let Some((key, instance)) = pinned_instance(c)? else {
+        return Ok(None);
+    };
+    let Some(row) = stored_row(c, user)? else {
+        return Ok(None);
+    };
+    if row.2.as_slice() != key.as_slice() || row.3.as_slice() != instance.as_slice() {
+        return Ok(None);
+    }
+    Ok(stored_kind(&row, user))
+}
+
 /// The leaf's account-kind verdict: `None` when it passes (or the transition window keeps the
 /// earlier rule), else the code that refuses it.
 pub(super) fn leaf_kind_verdict(
@@ -105,13 +142,7 @@ pub(super) fn leaf_kind_verdict(
     leaf: &CredentialIdentity,
 ) -> Result<Option<&'static str>, StorageError> {
     let user = leaf.user_id.as_bytes();
-    let row: Option<StoredAttestation> = c
-        .query_row(
-            "SELECT kind,signature,instance_key,instance_id FROM app_account_kinds WHERE user_id=?1",
-            [user.as_slice()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .optional()?;
+    let row = stored_row(c, user)?;
     if let Some(kind) = row.as_ref().and_then(|r| stored_kind(r, user)) {
         // The instance's statement of the account's kind, whatever key the leaf is under.
         return Ok(if kind == leaf.kind.as_u8() {
@@ -158,6 +189,15 @@ impl ClientCore {
                     E_CORE_INPUT,
                     "account-kind attestation does not verify",
                 ));
+            }
+            // An account's kind is final once stored (task 20 fix round 2, N3): a verifying attestation naming another
+            // kind than a stored one that still verifies is refused and changes nothing. Without this the instance
+            // could turn a human this device never pinned into a Bot and have `bot_device_list_pin` trust its keys.
+            let stored = u.with_conn(|c| stored_row(c, user_id))?;
+            if let Some(row) = stored.as_ref()
+                && stored_kind(row, user_id).is_some_and(|k| k != a.kind)
+            {
+                return Err(ClientError::new(E_ACCOUNT_KIND_CHANGED, "an account's kind never changes"));
             }
             u.with_conn(|c| {
                 let held: Option<StoredAttestation> = c

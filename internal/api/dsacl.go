@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"slices"
 
 	botaccess "github.com/dilla-chat/dilla/internal/bot/access"
 	"github.com/dilla-chat/dilla/internal/ds"
@@ -55,6 +56,7 @@ func (a ResolverACL) Eligible(ctx context.Context, groupID, userID id.ID) (bool,
 	if err != nil {
 		return false, err
 	}
+	isBot := false
 	if g.CommunityID == nil {
 		bot, err := botaccess.IsBotUser(ctx, a.Repo, userID)
 		if err != nil || bot {
@@ -62,6 +64,7 @@ func (a ResolverACL) Eligible(ctx context.Context, groupID, userID id.ID) (bool,
 		}
 	} else {
 		binding, bot, err := botaccess.ForUserCommunity(ctx, a.Repo, userID, *g.CommunityID)
+		isBot = bot
 		if err != nil {
 			if errors.Is(err, botaccess.ErrIneligible) {
 				return false, nil
@@ -102,6 +105,18 @@ func (a ResolverACL) Eligible(ctx context.Context, groupID, userID id.ID) (bool,
 	// server-readable now, and the group is being closed (fix wave I3).
 	if g.Kind == groupText && !TextGroupAllowed(ch) {
 		return false, nil
+	}
+	// The community's Bot is a member of its Bot channels' text groups only (Bot v2 Task 22; Task 23, R1 b): an Add of
+	// the Bot into another text group is refused at commit time (add_acl), its outstanding Add is voided, a queued join
+	// is dropped at the drain, and the sweeper proposes a leaf it holds there out. Call groups are not narrowed.
+	if isBot && g.Kind == groupText {
+		marked, err := a.Repo.ListBotChannels(ctx, *g.CommunityID)
+		if err != nil {
+			return false, err
+		}
+		if !slices.ContainsFunc(marked, func(row store.BotChannelRow) bool { return row.ChannelID == ch.ID }) {
+			return false, nil
+		}
 	}
 	bits, err := NewResolver(a.Repo).Resolve(ctx, userID, ch)
 	if err != nil {

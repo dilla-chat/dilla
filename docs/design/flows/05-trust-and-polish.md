@@ -210,6 +210,12 @@ The compare dialog traps focus and returns it to a surviving opener on close. Ac
 | diagnostics.devices | Devices | diagnostics field (own-device count is its value) |
 | diagnostics.keyPackages | Key packages | diagnostics field (the count, when a publish was last tried and the last error code are its value) |
 | diagnostics.empty | No errors recorded | diagnostics, no stored code |
+| diagnostics.slowRoutes | Slowest requests | diagnostics subheading and table name (Bot v2: the five socket routes with the highest p95 round trip; hidden until one is timed) |
+| diagnostics.slowRoutes.route | Request | slowest requests column (the route pattern, never a path with its ids) |
+| diagnostics.slowRoutes.p50 | p50 | slowest requests column |
+| diagnostics.slowRoutes.p95 | p95 | slowest requests column |
+| diagnostics.slowRoutes.count | Count | slowest requests column (requests timed) |
+| diagnostics.slowRoutes.ms | {ms} ms | slowest requests p50 and p95 cells |
 | tabs.use | Use this tab | follower action |
 | tabs.wait | Moving to this tab… | waiting status |
 | tabs.failed | Close the other tab, then try again. | failure status |

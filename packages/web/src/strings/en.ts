@@ -28,6 +28,7 @@ import { stage } from './stage.ts';
 import { signalSettings } from './signalSettings.ts';
 import { serverSettings } from './serverSettings.ts';
 import { afk } from './afk.ts';
+import { botAdmin } from './botAdmin.ts';
 import { layout } from './layout.ts';
 import { home } from './home.ts';
 import { profile } from './profile.ts';
@@ -41,6 +42,22 @@ export const en = {
   'privateResult.failed': 'That didn’t work. Try again.',
   'privateResult.cancelled.kick': 'Kick cancelled. Nothing changed.',
   'privateResult.cancelled.ban': 'Ban cancelled. Nothing changed.',
+  // Bot v2 (task 20): sealed Bot commands, the picker's greyed reasons and the no-answer state.
+  'commands.botNoAnswer': "The Bot didn't answer",
+  'commands.retry': 'Retry',
+  'commands.botOffline': 'The Bot is offline since {time}',
+  'commands.botDegraded': 'The Bot is having trouble since {time}',
+  'commands.needsBotChannel': 'Mark a channel as a Bot channel first',
+  'commands.postedIn': '{what} posted in #{channel}',
+  'commands.botDisabled': 'The Bot is turned off in this server',
+  'commands.botNotOnInstance': 'This server has no Bot',
+  // Task 20 fix round 1 (new copy, for Jonas's approval): a Bot key this device cannot check yet, a Bot account other than
+  // the one this device first saw, and a Bot refusal for a member without the right.
+  'commands.botUnverified': "This device can't check the Bot yet",
+  'commands.botChanged': "This server's Bot account changed, so its commands are paused",
+  'commands.botForbidden': "You can't use this command here",
+  // Final review I2 (new copy, for Jonas's approval): the Bot refused the sender's device as one it cannot check yet.
+  'commands.botCantCheckDevice': "The Bot can't check this device yet. Try again in a moment",
   ...utility,
   ...botCommand,
   ...settingsWorkspace,
@@ -74,6 +91,7 @@ export const en = {
   ...signalSettings,
   ...serverSettings,
   ...afk,
+  ...botAdmin,
   ...layout,
   ...home,
   ...profile,
@@ -113,6 +131,12 @@ export const en = {
   'diagnostics.devices': 'Devices',
   'diagnostics.keyPackages': 'Key packages',
   'diagnostics.empty': 'No errors recorded',
+  'diagnostics.slowRoutes': 'Slowest requests',
+  'diagnostics.slowRoutes.route': 'Request',
+  'diagnostics.slowRoutes.p50': 'p50',
+  'diagnostics.slowRoutes.p95': 'p95',
+  'diagnostics.slowRoutes.count': 'Count',
+  'diagnostics.slowRoutes.ms': '{ms} ms',
   'tabs.use': 'Use this tab',
   'tabs.wait': 'Moving to this tab…',
   'tabs.failed': 'Close the other tab, then try again.',
@@ -297,6 +321,8 @@ export const en = {
   'shell.openFailed.action': 'try again',
   'shell.banner.offline': 'Connection lost. Reconnecting…',
   'shell.banner.clientTooOld': 'This server needs a newer client. Reload the page.',
+  // Final review M5 (new copy, for Jonas's approval): the server speaks only an older protocol than this app.
+  'shell.banner.instanceTooOld': 'This server needs an update before this app can connect. Ask its admin.',
   'shell.banner.commandError': 'That did not work ({code}). Try again, or reload the page.',
   'update.failed': 'The update is ready, but this tab could not save your work. Try again.',
   'update.restoreFailed': 'The update is ready, but this tab could not restore your work. Try again.',
@@ -306,6 +332,11 @@ export const en = {
   'update.finishDialog': 'An update is ready. Finish your edit or close the current dialog to apply it.',
   'update.noStorage': 'An update is ready, but this browser cannot save your unsent work. Finish or copy it before reloading.',
   'update.reloadNow': 'Reload now',
+  'update.required': 'Update dilla to continue',
+  'update.requiredAction': 'Update',
+  'update.requiredFailed': 'The update did not install. Try again.',
+  'update.requiredUnavailable': 'No update is ready for this app yet. Try again later.',
+  'update.requiredManual': 'Update dilla with your package manager to continue.',
   'update.rejoiningVoice': 'Voice disconnected. Rejoining automatically.',
   'update.sharingStopped': 'Screen sharing stopped while the call reconnected. Start sharing again when ready.',
   'shell.banner.dismiss': 'dismiss',

@@ -93,6 +93,26 @@ func TestCallGroupForgetUsesTypedHelperAndRejectsZeroCallID(t *testing.T) {
 	}
 }
 
+// Task 23 (R1 d): the Bot forgets a text group through helper op 27.
+func TestGroupForgetUsesTypedHelperAndRejectsZeroGroupID(t *testing.T) {
+	f := &fakeTransport{responses: [][]any{{}}}
+	c := newFakeClient(t, f)
+	if err := c.GroupForget(context.Background(), testID(7)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 || f.calls[0] != protocol.HelperGroupForget || protocol.HelperGroupForget != 27 {
+		t.Fatalf("group forget dispatched as %v", f.calls)
+	}
+	f = &fakeTransport{}
+	c = newFakeClient(t, f)
+	if err := c.GroupForget(context.Background(), id.Zero); err == nil {
+		t.Fatal("zero group ID accepted")
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("zero group ID dispatched: %v", f.calls)
+	}
+}
+
 func TestCallMediaEpochRejectsLeafOutsideSFrameSenderRange(t *testing.T) {
 	body, _ := cborx.Marshal([]any{uint64(3), []byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, uint64(65536), []any{[]any{uint64(65536), testID(8), testID(9)}}, "12345 23456 34567 45678 56789 67890"})
 	c := newFakeClient(t, &fakeTransport{responses: [][]any{{body}}})

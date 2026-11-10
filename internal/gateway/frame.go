@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 
@@ -68,7 +69,50 @@ const (
 	OpAppBuild         Op = 56
 	OpPresenceActivity Op = 57
 	OpCallStats        Op = 58
+	// OpRequest and OpResponse are the socket request shim (Bot v2 task 2): a client's HTTP-shaped
+	// request [id, method, route, body, idem|null] and the instance's answer [id, status, body].
+	// Neither is replayable; see request.go.
+	OpRequest  Op = 59
+	OpResponse Op = 60
+	// OpBotCatalog pushes a community's Bot command catalog to one member, filtered for that member,
+	// with the Bot's command-key publication (Bot v2 task 9): [community_id, revision,
+	// filtered_catalog, publication|null]. S->C only and not replayed: a member who missed it
+	// compares revisions at connect sync.
+	OpBotCatalog Op = 61
+	// OpBotReply carries one sealed answer of the Bot to the device that sent the command (Bot v2
+	// task 10): [request_id, seq, sealed, final]. It is the one replayable opcode of the ephemeral
+	// range: a connection suspended when the answer arrives holds it in its ring for at most
+	// BotReplyHold, then it is dropped (ring.go).
+	OpBotReply Op = 62
+	// OpBotStateChanged is a content-free hint that the Bot's state for one scope changed (Bot v2
+	// task 10): [scope_kind, scope_id, revision]. Not replayed: a client that missed one compares
+	// revisions at connect sync (GET /v1/bot/revisions).
+	OpBotStateChanged Op = 63
+	// OpBotCommand carries a member's sealed command to the Bot runtime's connection, with the
+	// identity dillad authenticated (Bot v2 task 10): [request_id, community_id, user_id, device_id,
+	// sealed]. Wire 6 opens 64 from the reserved range for it. Since Task 12 it is sequenced in the
+	// Bot connection's ring like op 65, so a resume from the Bot's last ack replays a command sent
+	// while its socket was down; a command that still goes unanswered is retried by the client with
+	// the same request_id.
+	OpBotCommand Op = 64
+	// OpBotEvent is the Bot's event feed (Bot v2 task 12): [kind, payload], on the Bot runtime's
+	// connection only. A live event is sequenced in the Bot connection's ring; a cold-start
+	// snapshot's body frames are sent with n = 0 and closed by a ringed snapshot_end (BotStream).
+	OpBotEvent Op = 65
+	// OpBotWebhook hands one incoming webhook POST to the Bot runtime's live connection (Bot v2 task 13):
+	// [delivery_id, webhook_id, community_id, channel_id, display_name, avatar_id|null, text,
+	// allow_everyone]. It is never ringed or held: a Bot that is offline, parked or mid-resume makes the
+	// POST a 503, so the text sits in no ring and a replay can never post it twice.
+	OpBotWebhook Op = 66
+	// OpBotWebhookAck is the Bot's answer to one op 66, on the connection it came in on (Bot v2 task 13):
+	// [delivery_id, status], status 0 posted and any other value not posted. Any other connection's ack,
+	// an unknown delivery id and a second ack are ignored.
+	OpBotWebhookAck Op = 67
 )
+
+// BotReplyHold bounds how long a suspended connection's ring holds an op 62 reply: the spec's
+// offline reply drop.
+const BotReplyHold = 2 * time.Minute
 
 // CloseCode is a WebSocket close code from RFC 6455's private range.
 type CloseCode uint16
@@ -96,6 +140,12 @@ func (c CloseCode) Resumable() bool {
 	}
 }
 
+// revokes reports whether a close with this code ends the session itself, not just the socket: a revoked
+// session or one that may no longer authenticate.
+func (c CloseCode) revokes() bool {
+	return c == CloseSessionRevoked || c == CloseUnauthenticated
+}
+
 // opSpec fixes each opcode's direction, element count and whether it is group-scoped. A frame of
 // the wrong element count for its opcode is E_FRAME_SHAPE; an opcode outside this table is
 // E_FRAME_TYPE, never ignored.
@@ -114,7 +164,7 @@ var opSpecs = map[Op]opSpec{
 	// `resumed` are the two control frames a client must be able to replay — a resumed connection
 	// whose `resumed` frame was dropped has no record of the replay window it was given. They are
 	// the only two exceptions.
-	OpReady: {elements: 9, replayable: true},
+	OpReady: {elements: 10, replayable: true},
 	// `resumed` is [replayed_from, replayed_to, resume_token]: the token rotates on every resume
 	// (facts-gateway-design.md §1.3), so the frame that announces one also issues the credential
 	// for the next. A two-element `resumed` would cap a client at one resume per identify.
@@ -154,6 +204,24 @@ var opSpecs = map[Op]opSpec{
 	OpAppBuild:         {elements: 1},
 	OpPresenceActivity: {elements: 0, fromClient: true},
 	OpCallStats:        {elements: 2, fromClient: true},
+	// Not replayable on resume: a request lost in a disconnect is re-sent by the client with the
+	// same idem, and its response belongs to the socket the request came in on.
+	OpRequest:  {elements: 5, fromClient: true},
+	OpResponse: {elements: 3},
+	// [community_id, revision, filtered_catalog, publication|null]. Server-to-client, so a client
+	// op 61 is E_FRAME_TYPE at the opcode check.
+	OpBotCatalog: {elements: 4},
+	// Bot v2 tasks 10 and 12. All four are server-to-client, so a client op 62, 63, 64 or 65 is
+	// E_FRAME_TYPE at the opcode check. 62 is replayable (with its own two-minute hold), 63 is not;
+	// 64 and 65 are replayable on the Bot runtime's connection, the only one they reach.
+	OpBotReply:        {elements: 4, replayable: true},
+	OpBotStateChanged: {elements: 3},
+	OpBotCommand:      {elements: 5, replayable: true},
+	OpBotEvent:        {elements: 2, replayable: true},
+	// Bot v2 task 13. 66 is server-to-client and never replayed; 67 is the Bot's ack, a client frame
+	// whose shape Decode checks: [delivery_id(bstr 16), status(uint)].
+	OpBotWebhook:    {elements: 8},
+	OpBotWebhookAck: {elements: 2, fromClient: true},
 }
 
 // FrameError is a structured refusal. Code is the E_FRAME_* string the client sees in an error
@@ -215,6 +283,12 @@ type Inbound struct {
 	// handshake carries an empty one in its payload and must still resolve. It is unexported
 	// because it never comes off the wire.
 	handshakeToken string
+	// botPeer marks a first frame that came in over the Bot's Unix socket: the session it resolves to must be a
+	// managed Bot's, and botToken (an identify's launch token, nil without one) must then pass the launch check.
+	botPeer  *botPeer
+	botToken []byte
+	// request is op 59's payload, decoded once by Decode.
+	request *SocketRequest
 }
 
 // Decode parses one inbound frame. maxBytes is gateway.read_limit_bytes; a longer frame is
@@ -291,11 +365,27 @@ func Decode(b []byte, maxBytes int) (Inbound, error) {
 			return Inbound{}, frameErr("E_FRAME_SHAPE", "signal n must be zero", CloseDecode)
 		}
 	}
+	if code == OpBotWebhookAck {
+		if _, err := webhookAckFields(payload); err != nil {
+			return Inbound{}, frameErr("E_FRAME_SHAPE", "bot_webhook_ack: "+err.Error(), CloseDecode)
+		}
+		if cid != 0 {
+			return Inbound{}, frameErr("E_FRAME_SHAPE", "bot_webhook_ack n must be zero", CloseDecode)
+		}
+	}
+	var request *SocketRequest
+	if code == OpRequest {
+		r, err := decodeRequest(Inbound{Payload: payload})
+		if err != nil {
+			return Inbound{}, err
+		}
+		request = &r
+	}
 	if !spec.fromClient {
 		return Inbound{}, frameErr("E_FRAME_TYPE",
 			fmt.Sprintf("opcode %d is not a client frame in this wire_version", op), CloseDecode)
 	}
-	return Inbound{Op: code, CID: cid, GroupID: gid, Payload: payload}, nil
+	return Inbound{Op: code, CID: cid, GroupID: gid, Payload: payload, request: request}, nil
 }
 
 // lookupOp resolves a wire opcode to its catalogue entry. An opcode is a uint8, so 256+6 is an

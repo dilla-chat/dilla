@@ -265,15 +265,10 @@ func TestADumpRoundTripsTheUploadClass(t *testing.T) {
 		t.Fatalf("CreateBotKeyPackagePublicationReceipt: %v", err)
 	}
 	registration := store.BotGroupRegistrationReceipt{InstallationID: installation.ID, OperationID: id.New(), UserID: owner.ID, DeviceID: device.ID, CommunityID: community.ID, GroupID: id.New(), BodySHA256: bytes.Repeat([]byte{0x63}, 32), Generation: 3, Epoch: 0, NextSeq: 1, AcceptedAt: 4}
-	admissionRequestID := id.New()
 	if err := src.Tx(ctx, func(tx store.Repository) error {
-		_, replay, err := tx.AcceptBotGroupRegistrationAdmission(ctx, admissionRequestID, registration)
-		if replay && err == nil {
-			t.Fatal("first admission acceptance reported replay")
-		}
-		return err
+		return tx.CreateBotGroupRegistrationReceipt(ctx, registration)
 	}); err != nil {
-		t.Fatalf("AcceptBotGroupRegistrationAdmission: %v", err)
+		t.Fatalf("CreateBotGroupRegistrationReceipt: %v", err)
 	}
 	sendOpID, sendAttemptID := id.New(), id.New()
 	sendOp := store.BotSendOperationRow{InstallationID: installation.ID, OperationID: sendOpID, UserID: owner.ID, DeviceID: device.ID, CommunityID: community.ID, GroupID: id.New(), CurrentAttempt: sendAttemptID, State: uint8(store.BotSendOperationActive)}
@@ -325,15 +320,6 @@ func TestADumpRoundTripsTheUploadClass(t *testing.T) {
 	}
 	if got, err := dst.GetBotGroupRegistrationReceipt(ctx, installation.ID, registration.OperationID); err != nil || got.GroupID != registration.GroupID || got.Generation != registration.Generation || got.NextSeq != registration.NextSeq || !bytes.Equal(got.BodySHA256, registration.BodySHA256) {
 		t.Fatalf("restored group-registration receipt: %+v %v", got, err)
-	}
-	var restored store.BotGroupRegistrationReceipt
-	var replay bool
-	if err := dst.Tx(ctx, func(tx store.Repository) error {
-		var err error
-		restored, replay, err = tx.AcceptBotGroupRegistrationAdmission(ctx, admissionRequestID, registration)
-		return err
-	}); err != nil || !replay || restored.GroupID != registration.GroupID {
-		t.Fatalf("restored admission consumption: %+v replay=%v err=%v", restored, replay, err)
 	}
 	if got, err := dst.GetBotSendAttempt(ctx, installation.ID, sendOpID, sendAttemptID); err != nil || got.Generation != sendAttempt.Generation || got.Epoch != sendAttempt.Epoch || !bytes.Equal(got.Receipt, sendAttempt.Receipt) || !bytes.Equal(got.FingerprintSHA256, sendAttempt.FingerprintSHA256) {
 		t.Fatalf("restored Bot send attempt: %+v %v", got, err)

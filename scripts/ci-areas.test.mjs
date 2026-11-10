@@ -42,8 +42,8 @@ test('Markdown that a test or a build reads is code of the area that reads it', 
   for (const doc of ['protocol/09-http-api.md', 'protocol/02-delivery-service.md', 'protocol/00-overview.md']) {
     assert.deepEqual(areasFor([doc]), { go: true, core: false, web: false, e2e: false, text: false, mobile: false, code: true }, doc);
   }
-  // core/vendor/sqlite-wasm-vfs/README.md: #![doc = include_str!("../README.md")] compiles it into the wasm core.
-  assert.deepEqual(areasFor(['core/vendor/sqlite-wasm-vfs/README.md']), { ...ALL, text: false });
+  // A doc under core/ can be compiled into a crate (include_str!), so it runs the core area like the code.
+  assert.deepEqual(areasFor(['core/vendor/README.md']), { ...ALL, text: false });
   // A flow doc next to docs-only files is still web.
   assert.equal(areasFor(['README.md', 'docs/design/flows/07-create.md']).web, true);
 });
@@ -319,7 +319,7 @@ test('every path the code reads from another place is covered by a rule', () => 
   assert.ok(found.length > 30, `the scan found ${found.length} reads; it must have rotted`);
   assert.ok(found.some((f) => f.target.endsWith('design-tokens/dist/tokens.css')), 'the scan sees the Go test that reads the tokens');
   assert.ok(found.some((f) => f.target === 'docs/design/flows/06-voice.md'), 'the scan sees the strings tests that read the flows');
-  assert.ok(found.some((f) => f.target === 'core/vendor/sqlite-wasm-vfs/README.md'), 'the scan sees include_str! of a README');
+  assert.ok(found.some((f) => f.target === 'protocol/vectors/envelope.json'), 'the scan sees include_str! of a vector file');
   assert.ok(found.some((f) => f.target.endsWith('livekit-signal-schema.json')), 'the scan sees the schema check that reads the Go golden');
   const uncovered = found.filter((f) => !areasFor([f.probe])[f.area]);
   assert.deepEqual(uncovered.map((f) => `${f.file} reads ${f.target}: a change there does not run ${f.area}`), []);

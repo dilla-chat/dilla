@@ -16,6 +16,8 @@ const CALL = new Uint8Array(16).fill(0x0d);
 const COMMUNITY = new Uint8Array(16).fill(0x0e);
 const TAG = new Uint8Array(32).fill(0x0a);
 const TOKEN = new Uint8Array(32).fill(0x0b);
+const IDEM = new Uint8Array(16).fill(0x0f);
+const REQUEST = new Uint8Array(16).fill(0x10);
 
 type Case = { name: string; op: number; n: number; group_id: string; payload: string; frame: string };
 
@@ -35,12 +37,12 @@ function frame(name: string, op: number, n: number, group: Uint8Array | null, pa
 export function frameVectors() {
   const cases: Case[] = [
     // The last two elements are invariant 7's back-off window, backoff_ms and backoff_jitter_ms.
-    // web3.8 S1: the instance offers wire version 2 alone, the client identifies with it, and ready
-    // echoes it (fix round 1 ruling).
-    frame('hello', 0, 0, null, [[2], [1], [1], 30000, 131584, new Uint8Array(16).fill(0x01), 1, 300, 300]),
-    frame('identify', 1, 1, null, ['tok', 2, 1, 1, 0]),
+    // Bot v2: the instance offers wire version 6 alone (the only wire), the client identifies with it,
+    // and ready echoes it (web3.8 S1 fix round 1 ruling).
+    frame('hello', 0, 0, null, [[6], [1], [1], 30000, 131584, new Uint8Array(16).fill(0x01), 1, 300, 300]),
+    frame('identify', 1, 1, null, ['tok', 6, 1, 1, 0]),
     frame('resume', 2, 2, null, ['tok', TOKEN, 1, 41]),
-    frame('ready', 3, 1, null, [DEVICE, USER, 1, TOKEN, 2, 1, 1, 32, [[GROUP, 6, 4127, 0]]]),
+    frame('ready', 3, 1, null, [DEVICE, USER, 1, TOKEN, 6, 1, 1, 32, [[GROUP, 6, 4127, 0]], new Uint8Array(16).fill(0x0c)]),
     // `resumed` carries the ROTATED resume token as element 2: the instance discards the token the
     // client just spent, so without it on the wire a client could resume exactly once per identify.
     frame('resumed', 4, 2, null, [42, 47, TOKEN]),
@@ -82,12 +84,49 @@ export function frameVectors() {
     // the member became away in the community; 0 says the member is no longer away.
     frame('afk_away', 55, 0, null, [COMMUNITY, USER, 1758659040]),
     frame('afk_away cleared', 55, 0, null, [COMMUNITY, USER, 0]),
+    // op 59 request (C->S, Bot v2): [id, method, route, body, idem | null]. n = 0: neither request
+    // nor response is replayable; an unanswered request is re-sent after a reconnect with its idem.
+    frame('request', 59, 0, null, [7, 'POST', '/v1/communities', new Uint8Array([0x80]), IDEM]),
+    frame('request without idem', 59, 0, null, [8, 'GET', '/v1/communities?limit=50', new Uint8Array(0), null]),
+    // op 60 response (S->C, Bot v2): [id, status, body], in any order.
+    frame('response', 60, 0, null, [7, 201, new Uint8Array([0x80])]),
+    // op 61 bot_catalog (S->C, Bot v2): [community_id, revision, filtered_catalog, publication | null].
+    // The catalog is the commands this one member may use, each [name, description, operation,
+    // args_shape, permission_bit, needs_bot_channel(uint 0|1), handler_kind]; args_shape is
+    // [[name, type_code 0..5, required(uint 0|1)]...]. The publication is the Bot's command-key
+    // publication, null before the Bot publishes one. n = 0: a member who missed it compares
+    // revisions at connect sync.
+    frame('bot_catalog', 61, 0, null, [COMMUNITY, 3, [['remind', 'Set a reminder', 20, [['when', 4, 1], ['text', 0, 1]], 0, 0, 0]], null]),
+    // op 62 bot_reply (S->C, Bot v2): [request_id, seq, sealed, final(uint 0|1)], to the one device
+    // that sent the command. The ephemeral range's one replayable frame: n != 0, held two minutes for
+    // a suspended connection; a reply over the connection's reply ring budget is sent unringed with
+    // n = 0, so a decoder accepts both for op 62.
+    frame('bot_reply', 62, 5, null, [REQUEST, 1, new Uint8Array([0x83, 0x01, 0x41, 0x00, 0x41, 0x00]), 1]),
+    // op 63 bot_state_changed (S->C, Bot v2): [scope_kind(0 user, 1 channel, 2 call), scope_id,
+    // revision]. Content-free, n = 0: a client that missed it compares revisions at connect sync.
+    frame('bot_state_changed', 63, 0, null, [1, CHANNEL, 4]),
+    // op 64 bot_command (S->C, Bot runtime connection only, wire 6): [request_id, community_id,
+    // user_id, device_id, sealed]. The identity is the sending connection's session. n != 0: since
+    // Bot v2 task 12 it is sequenced in the Bot connection's ring, so a resume replays it.
+    frame('bot_command', 64, 7, null, [REQUEST, COMMUNITY, USER, DEVICE, new Uint8Array([0x85, 0x01])]),
+    // op 65 bot_event (S->C, Bot runtime connection only, wire 6, Bot v2 task 12): [kind, payload].
+    // Kind 2 member is [community_id, user_id, joined(uint 0|1), role_ids]. A live event is ringed
+    // (n != 0); a cold-start snapshot's body frames are sent with n = 0.
+    frame('bot_event', 65, 8, null, [2, [COMMUNITY, USER, 1, [GROUP]]]),
+    // op 66 bot_webhook (S->C, Bot runtime connection only, wire 6, Bot v2 task 13): [delivery_id,
+    // webhook_id, community_id, channel_id, display_name, avatar_id(bstr 32) | null, text,
+    // allow_everyone(uint 0|1)]. avatar_id names the avatar the instance fetched and re-encoded, never the
+    // sender's URL. Never ringed (n = 0): sent only to a live Bot connection.
+    frame('bot_webhook', 66, 0, null, [REQUEST, IDEM, COMMUNITY, CHANNEL, 'Terraria', TAG, 'The boss was defeated', 0]),
+    // op 67 bot_webhook_ack (C->S, the Bot runtime connection's answer to one op 66): [delivery_id,
+    // status], status 0 posted. n = 0.
+    frame('bot_webhook_ack', 67, 0, null, [REQUEST, 0]),
   ];
 
   const rejects = [
     { name: 'three elements', frame: hex(encode([10, 1, null])), code: 'E_FRAME_SHAPE' },
     { name: 'five elements', frame: hex(encode([10, 1, null, [[GROUP]], 0])), code: 'E_FRAME_SHAPE' },
-    { name: 'unknown opcode', frame: hex(encode([63, 1, null, []])), code: 'E_FRAME_TYPE' },
+    { name: 'unknown opcode', frame: hex(encode([100, 1, null, []])), code: 'E_FRAME_TYPE' },
     { name: 'server opcode from a client', frame: hex(encode([3, 1, null, []])), code: 'E_FRAME_TYPE' },
     { name: 'payload is not an array', frame: hex(encode([10, 1, null, 'x'])), code: 'E_FRAME_SHAPE' },
     { name: 'subscribe with the wrong element count', frame: hex(encode([10, 1, null, [[GROUP], 1]])), code: 'E_FRAME_SHAPE' },
@@ -124,6 +163,11 @@ export function frameVectors() {
     // op 55 is server-to-client as op 54 is: the instance's code is E_FRAME_TYPE, and a client
     // decoder refuses four elements, not three, as E_FRAME_SHAPE.
     { name: 'afk_away with 4 elements', frame: hex(encode([55, 0, null, [COMMUNITY, USER, 1758659040, 1]])), code: 'E_FRAME_TYPE' },
+    // op 59's body is a bstr: a text body is refused before the request is dispatched.
+    { name: 'request with a text body', frame: hex(encode([59, 0, null, [7, 'POST', '/v1/communities', 'body', null]])), code: 'E_FRAME_SHAPE' },
+    // op 60 is server-to-client: the instance's code is E_FRAME_TYPE, and a client decoder refuses
+    // a status outside 100..599 as E_FRAME_SHAPE.
+    { name: 'response with status 600', frame: hex(encode([60, 0, null, [7, 600, new Uint8Array(0)]])), code: 'E_FRAME_TYPE' },
   ];
 
   return {

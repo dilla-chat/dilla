@@ -105,7 +105,7 @@ func (c *Client) DiscoverObserved(ctx context.Context) (Discovery, ResponseObser
 	if !equalID(d.InstanceID, c.instance) {
 		return Discovery{}, observation, ErrInstanceChanged
 	}
-	if !slices.Contains(d.WireVersions, uint64(3)) || !slices.Contains(d.E2EEVersions, uint64(1)) || !slices.Contains(d.MediaVersions, uint64(1)) {
+	if !slices.Contains(d.WireVersions, uint64(WireVersion)) || !slices.Contains(d.E2EEVersions, uint64(1)) || !slices.Contains(d.MediaVersions, uint64(1)) {
 		return Discovery{}, observation, ErrProtocol
 	}
 	c.discovered.Store(true)
@@ -490,7 +490,7 @@ func (s *Session) Negotiate(ctx context.Context, wire, e2ee, media []uint64) (Ne
 		return out, unknown()
 	}
 	var ok bool
-	if out.Wire, ok = asUint(a[0]); !ok || out.Wire != 3 {
+	if out.Wire, ok = asUint(a[0]); !ok || out.Wire != WireVersion {
 		return Negotiated{}, unknown()
 	}
 	if out.E2EE, ok = asUint(a[1]); !ok || out.E2EE != 1 {
@@ -651,9 +651,29 @@ func (s *Session) OwnDeviceList(ctx context.Context, user id.ID) ([]byte, error)
 	if e != nil {
 		return nil, e
 	}
-	a, decodeErr := decode(raw, 4)
+	a, decodeErr := decode(raw, -1)
 	if decodeErr != nil {
 		return nil, decodeErr
+	}
+	// Wire 6 (as every wire since 4): the head carries the instance-signed account-kind attestation
+	// as a fifth element; a tombstoned account's head has none. Wire 6 (Bot v2 task 20b) adds the
+	// account's umk_pub, ssk_pub and sig_umk_ssk after it. The Bot's callers compare and parse the
+	// four signed elements, so the rest is checked for shape and then dropped.
+	switch len(a) {
+	case 4:
+	case 5, 8:
+		if attestation, ok := asBytes(a[4], -1); !ok || len(attestation) == 0 {
+			return nil, ErrProtocol
+		}
+		if len(a) == 8 {
+			for i, n := range []int{32, 32, 64} {
+				if _, ok := asBytes(a[5+i], n); !ok {
+					return nil, ErrProtocol
+				}
+			}
+		}
+	default:
+		return nil, ErrProtocol
 	}
 	if _, ok := asUint(a[0]); !ok {
 		return nil, ErrProtocol
@@ -667,7 +687,10 @@ func (s *Session) OwnDeviceList(ctx context.Context, user id.ID) ([]byte, error)
 	if _, ok := asBytes(a[3], 32); !ok {
 		return nil, ErrProtocol
 	}
-	return raw, nil
+	if len(a) == 4 {
+		return raw, nil
+	}
+	return encode(a[:4])
 }
 
 func (s *Session) DeviceListHistory(ctx context.Context, user id.ID, after uint64) ([][]any, error) {
@@ -827,14 +850,6 @@ func (s *Session) AcknowledgeWelcome(ctx context.Context, welcome uint64) error 
 
 func (s *Session) GroupInfo(ctx context.Context, group id.ID) (GroupInfo, error) {
 	return s.groupInfoAt(ctx, "groups/", group)
-}
-
-func (s *Session) BotInteractionGroupInfo(ctx context.Context, installation, group id.ID) (GroupInfo, error) {
-	inst, err := pathID(installation)
-	if err != nil {
-		return GroupInfo{}, err
-	}
-	return s.groupInfoAt(ctx, "bot-runtime/installations/"+inst+"/interaction-groups/", group)
 }
 
 func (s *Session) groupInfoAt(ctx context.Context, base string, group id.ID) (GroupInfo, error) {
@@ -1069,14 +1084,6 @@ func (s *Session) GroupPage(ctx context.Context, group id.ID, kind string, from,
 	return s.groupPageAt(ctx, "groups/", group, kind, from, limit)
 }
 
-func (s *Session) BotInteractionGroupPage(ctx context.Context, installation, group id.ID, kind string, from, limit uint64) (Page, error) {
-	inst, err := pathID(installation)
-	if err != nil {
-		return Page{}, err
-	}
-	return s.groupPageAt(ctx, "bot-runtime/installations/"+inst+"/interaction-groups/", group, kind, from, limit)
-}
-
 func (s *Session) groupPageAt(ctx context.Context, base string, group id.ID, kind string, from, limit uint64) (Page, error) {
 	var out Page
 	if kind != "messages" && kind != "handshakes" {
@@ -1267,51 +1274,6 @@ func (s *Session) healStatusAt(ctx context.Context, path string) (HealStatus, er
 	return out, nil
 }
 
-// BotInteractionHealStatus reports whether a restored private interaction group
-// needs a member-authenticated MLS heal. The scoped route returns the ordinary
-// heal cursor plus an explicit epoch-unknown flag.
-func (s *Session) BotInteractionHealStatus(ctx context.Context, installation, group id.ID) (InteractionHealStatus, error) {
-	path, err := botInteractionHealPath(installation, group)
-	if err != nil {
-		return InteractionHealStatus{}, err
-	}
-	raw, _, err := s.do(ctx, http.MethodGet, path, nil, nil, MaxSmallBody, false)
-	if err != nil {
-		return InteractionHealStatus{}, err
-	}
-	a, err := decode(raw, 5)
-	if err != nil {
-		return InteractionHealStatus{}, err
-	}
-	var out InteractionHealStatus
-	values := []*uint64{&out.Epoch, &out.NextSequence, &out.Generation, &out.NeedFromSequence}
-	for i, value := range values {
-		n, ok := asUint(a[i])
-		if !ok {
-			return InteractionHealStatus{}, ErrProtocol
-		}
-		*value = n
-	}
-	needsHeal, ok := asUint(a[4])
-	if !ok || needsHeal > 1 {
-		return InteractionHealStatus{}, ErrProtocol
-	}
-	out.NeedsHeal = needsHeal == 1
-	return out, nil
-}
-
-func botInteractionHealPath(installation, group id.ID) (string, error) {
-	inst, err := pathID(installation)
-	if err != nil {
-		return "", err
-	}
-	g, err := pathID(group)
-	if err != nil {
-		return "", err
-	}
-	return "bot-runtime/installations/" + inst + "/interaction-groups/" + g + "/heal", nil
-}
-
 // Heal uploads a client-authenticated snapshot and its bounded handshake tail after a restore.
 // Each tail row is [sequence, epoch, kind, sender-or-null, blob].
 func (s *Session) Heal(ctx context.Context, group id.ID, groupInfo []byte, tail [][]any, ratchetTree []byte) (HealResult, error) {
@@ -1320,14 +1282,6 @@ func (s *Session) Heal(ctx context.Context, group id.ID, groupInfo []byte, tail 
 		return HealResult{}, err
 	}
 	return s.healAt(ctx, "groups/"+g+"/heal", groupInfo, tail, ratchetTree)
-}
-
-func (s *Session) BotInteractionHeal(ctx context.Context, installation, group id.ID, groupInfo []byte, tail [][]any, ratchetTree []byte) (HealResult, error) {
-	path, err := botInteractionHealPath(installation, group)
-	if err != nil {
-		return HealResult{}, err
-	}
-	return s.healAt(ctx, path, groupInfo, tail, ratchetTree)
 }
 
 func (s *Session) healAt(ctx context.Context, path string, groupInfo []byte, tail [][]any, ratchetTree []byte) (HealResult, error) {
@@ -1533,14 +1487,6 @@ func (s *Session) AdvanceCursor(ctx context.Context, group id.ID, sequence, epoc
 	return s.advanceCursorAt(ctx, "groups/", group, sequence, epoch)
 }
 
-func (s *Session) AdvanceBotInteractionGroupCursor(ctx context.Context, installation, group id.ID, sequence, epoch uint64) error {
-	inst, e := pathID(installation)
-	if e != nil {
-		return e
-	}
-	return s.advanceCursorAt(ctx, "bot-runtime/installations/"+inst+"/interaction-groups/", group, sequence, epoch)
-}
-
 func (s *Session) advanceCursorAt(ctx context.Context, base string, group id.ID, sequence, epoch uint64) error {
 	g, e := pathID(group)
 	if e != nil {
@@ -1557,43 +1503,6 @@ func (s *Session) advanceCursorAt(ctx context.Context, base string, group id.ID,
 	return e
 }
 
-func (s *Session) Communities(ctx context.Context) ([]Community, error) {
-	raw, _, e := s.do(ctx, http.MethodGet, "communities", nil, nil, MaxBody, false)
-	if e != nil {
-		return nil, e
-	}
-	a, e := decode(raw, -1)
-	if e != nil {
-		return nil, e
-	}
-	out := make([]Community, len(a))
-	seen := map[id.ID]bool{}
-	for i, row := range a {
-		v, ok := row.([]any)
-		if !ok || len(v) != 4 {
-			return nil, ErrProtocol
-		}
-		cid, ok := asID(v[0])
-		if !ok || seen[cid] {
-			return nil, ErrProtocol
-		}
-		name, ok := v[1].(string)
-		if !ok || name == "" {
-			return nil, ErrProtocol
-		}
-		owner, ok := asID(v[2])
-		if !ok {
-			return nil, ErrProtocol
-		}
-		policy, ok := asUint(v[3])
-		if !ok {
-			return nil, ErrProtocol
-		}
-		seen[cid] = true
-		out[i] = Community{ID: cid, Name: name, OwnerID: owner, PolicyVersion: policy}
-	}
-	return out, nil
-}
 func (s *Session) Channels(ctx context.Context, community id.ID) ([]Channel, error) {
 	c, e := pathID(community)
 	if e != nil {

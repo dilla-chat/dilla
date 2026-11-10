@@ -69,6 +69,11 @@ type planTwo struct {
 	keys     api.FrankingKeys
 	calls    api.CallsConfig
 	diagnose func(context.Context) ops.Report
+	// botEvents hears Bot-channel unmarks a channel update or delete, or a community delete, makes
+	// (Bot v2 Task 9): the Bot's event feed.
+	botEvents api.BotChannelEvents
+	// botFeed hears every community change the notifier announces (Bot v2 Task 12).
+	botFeed api.BotFeedHooks
 }
 
 // mountPlanTwo mounts every handler group Plan 2 built in internal/api (protocol/09 § Communities
@@ -115,7 +120,7 @@ func mountPlanTwo(mux *server.Mux, p planTwo) (*api.Calls, *api.Roles) {
 	// grant or overwrite change tell every member's live connections (op 54 community_changed), so
 	// an open tab re-reads its lists; a delete tells the members it had, and a leave, kick or ban
 	// tells the user it removed once.
-	notify := api.NewStructureNotifier(p.gw, repo, log)
+	notify := api.NewStructureNotifier(p.gw, repo, log).WithBotFeed(p.botFeed)
 	calls.WithAFKNotify(notify)
 	// AW2: the away roster's changes go out as op 55 to the AFK channel's audience, and a mark needs
 	// the user to hold a gateway connection (Q2). The calls left live in AFK channels end in
@@ -129,9 +134,9 @@ func mountPlanTwo(mux *server.Mux, p planTwo) (*api.Calls, *api.Roles) {
 		log.ErrorContext(p.ctx, "afk backfill", "err", err)
 	}
 	api.NewCommunities(repo, p.delivery, clk, log).
-		WithInviteMeter(p.limiter, cfg.Server.TrustedProxyCIDRs).WithCalls(calls).WithNotifier(notify).Register(m)
+		WithInviteMeter(p.limiter, cfg.Server.TrustedProxyCIDRs).WithCalls(calls).WithNotifier(notify).WithBotChannelEvents(p.botEvents).Register(m)
 	roles := api.NewRoles(repo, clk, cfg.Auth.WebAuthn.RPID, log).WithDS(p.delivery).WithCalls(tokens, calls).WithNotifier(notify)
-	channels := api.NewChannels(repo, p.delivery, clk, maxGroupDM, log).WithCalls(calls).WithNotifier(notify).WithRoles(roles)
+	channels := api.NewChannels(repo, p.delivery, clk, maxGroupDM, log).WithCalls(calls).WithNotifier(notify).WithRoles(roles).WithBotChannelEvents(p.botEvents)
 	channels.Register(m)
 	channels.RegisterMembers(m)
 	roles.Register(m)

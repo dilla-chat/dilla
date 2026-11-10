@@ -52,37 +52,6 @@ func TestCompiledHelperNativeGroupsIntegration(t *testing.T) {
 	if identity.User == nil || identity.Device == nil {
 		t.Fatal("completed helper identity omitted Bot user/device")
 	}
-	badSnapshot, err := cborx.Marshal([]any{[]byte{0x01}, make([]byte, 64)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	interactionExpected := InteractionGroupExpected{
-		Instance: binding.Instance, Installation: binding.Installation, Community: binding.Community,
-		BotUser: *identity.User, BotDevice: *identity.Device,
-		ParticipantUser: integrationID(92), ParticipantDevice: integrationID(93), Group: integrationID(94),
-		MinimumEligibilityRevision: 1, ServerNow: uint64(time.Now().Unix()), PolicyVersion: 1,
-	}
-	interactionOperation := integrationID(95)
-	if _, err = c.CreateInteractionGroup(ctx, interactionOperation, interactionExpected, badSnapshot, []byte{0x01}); err == nil {
-		t.Fatal("malformed signed context was accepted by real helper")
-	}
-	if _, err = c.InspectInteractionGroup(ctx, interactionExpected, badSnapshot); err == nil {
-		t.Fatal("malformed signed context was accepted by real inspect operation")
-	}
-	wrongInstallation := interactionExpected
-	wrongInstallation.Installation = integrationID(96)
-	if _, err = c.InspectInteractionGroup(ctx, wrongInstallation, badSnapshot); err == nil {
-		t.Fatal("cross-installation context reached real helper")
-	}
-	groupsAfterRefusal, err := c.Groups(ctx)
-	if err != nil || len(groupsAfterRefusal) != 0 {
-		t.Fatalf("refused interaction left group state: %#v %v", groupsAfterRefusal, err)
-	}
-	intentAfterRefusal, err := c.GroupIntentResult(ctx, interactionOperation)
-	if err != nil || intentAfterRefusal != nil {
-		t.Fatalf("refused interaction left intent state: %#v %v", intentAfterRefusal, err)
-	}
-
 	groupID, channelID, operation := integrationID(85), integrationID(86), integrationID(87)
 	externalSender := make([]byte, 32)
 	externalSender[0] = 1

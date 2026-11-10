@@ -112,36 +112,3 @@ func TestModerationRemovalsValidatesArguments(t *testing.T) {
 		}
 	}
 }
-
-func TestAcceptModerationRemovalSubmitsOnlyBoundSignedProof(t *testing.T) {
-	group := testID(10)
-	proof := removalProofBytes(t, testID(1), group)
-	body := cbor(t, []any{proof, make([]byte, 64)})
-	requests := 0
-	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/instance" {
-			reply(w, http.StatusOK, discovery(testID(99)))
-			return
-		}
-		requests++
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/groups/"+group.String()+"/moderation/removals" {
-			t.Errorf("unexpected request %s %s", r.Method, r.URL.RequestURI())
-		}
-		reply(w, http.StatusOK, []any{testID(20), uint64(3)})
-	}, 0)
-	s, _ := c.Session("device-token")
-	receipt, err := s.AcceptModerationRemoval(context.Background(), group, body)
-	if err != nil || receipt.ActionID != testID(20) || receipt.Revision != 3 {
-		t.Fatalf("receipt = %+v, %v", receipt, err)
-	}
-	wrongBody := cbor(t, []any{removalProofBytes(t, testID(2), testID(11)), make([]byte, 64)})
-	if _, err := s.AcceptModerationRemoval(context.Background(), group, wrongBody); !errors.Is(err, ErrInvalidConfig) {
-		t.Fatalf("cross-group proof error = %v, want ErrInvalidConfig", err)
-	}
-	if _, err := s.AcceptModerationRemoval(context.Background(), group, []byte{0x80}); !errors.Is(err, ErrInvalidConfig) {
-		t.Fatalf("malformed body error = %v, want ErrInvalidConfig", err)
-	}
-	if requests != 1 {
-		t.Fatalf("sent %d requests, want only the valid proof", requests)
-	}
-}

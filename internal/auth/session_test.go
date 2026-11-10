@@ -49,28 +49,6 @@ func (r routeGroupFaultRepo) GetGroup(ctx context.Context, groupID id.ID) (store
 	return r.Repository.GetGroup(ctx, groupID)
 }
 
-func assertBotVersionError(t *testing.T, body []byte) {
-	t.Helper()
-	var fields []any
-	if err := cborx.Unmarshal(body, &fields); err != nil {
-		t.Fatal(err)
-	}
-	if len(fields) != 6 || fields[0] != "E_VERSION" || fields[2] != nil {
-		t.Fatalf("version error fields = %v, want six-field E_VERSION with null retry slot", fields)
-	}
-	got, err := cborx.Marshal(fields[3:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, err := cborx.Marshal([][]uint64{{3}, {1}, {1}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("supported versions = %x, want %x", got, want)
-	}
-}
-
 // newSessions returns a Sessions over a migrated temporary database and the
 // fake clock that drives it. The generation is 7, so a Token.Generation of 0 is
 // a failure rather than a coincidence.
@@ -335,7 +313,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		Sig: loginSig, Login: []byte("assertion")}); err == nil {
 		t.Fatal("bot account received an assertion/login session")
 	}
-	if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 3, 1, 1); err != nil {
+	if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -399,18 +377,19 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 	ownGroup := group(&community.ID)
 	foreignGroup := group(&foreignCommunity.ID)
 	dmGroup := group(nil)
-	// A bot with no selection or persisted wire 2 must first pass the route and
-	// resource checks, then receive the protocol's exact supported-version error.
+	// A bot with no selection or a persisted pre-6 wire must first pass the route and
+	// resource checks, then be told to update (Bot v2: wire 6 only).
 	for _, tc := range []struct {
 		name, token, group string
 		wantCode           string
 	}{
-		{name: "wire not negotiated", token: renewed.Token, group: ownGroup.String(), wantCode: "E_VERSION"},
-		{name: "wire two", token: tok.Token, group: ownGroup.String(), wantCode: "E_VERSION"},
+		{name: "wire not negotiated", token: renewed.Token, group: ownGroup.String(), wantCode: "E_UPGRADE_REQUIRED"},
+		{name: "wire five", token: tok.Token, group: ownGroup.String(), wantCode: "E_UPGRADE_REQUIRED"},
 		{name: "foreign resource visibility precedes wire refusal", token: renewed.Token, group: foreignGroup.String(), wantCode: "E_FORBIDDEN"},
 	} {
-		if tc.name == "wire two" {
-			if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 2, 1, 1); err != nil {
+		if tc.name == "wire five" {
+			// Negotiated before wire 6: only the store can still write such a selection.
+			if err := repo.SetSessionVersions(ctx, auth.TokenHash(tok.Token), 5, 1, 1); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -429,10 +408,9 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 			if err := cborx.Unmarshal(rec.Body.Bytes(), &fields); err != nil || len(fields) == 0 || fields[0] != tc.wantCode {
 				t.Fatalf("response=%d body=%x err=%v, want %s", rec.Code, rec.Body.Bytes(), err, tc.wantCode)
 			}
-			if tc.wantCode == "E_VERSION" {
-				assertBotVersionError(t, rec.Body.Bytes())
-				if rec.Code != http.StatusBadRequest {
-					t.Fatalf("version response status = %d, want 400", rec.Code)
+			if tc.wantCode == "E_UPGRADE_REQUIRED" {
+				if rec.Code != http.StatusUpgradeRequired || len(fields) != 3 {
+					t.Fatalf("upgrade response = %d with %d fields, want 426 with 3", rec.Code, len(fields))
 				}
 			} else if rec.Code != http.StatusForbidden {
 				t.Fatalf("resource refusal status = %d, want 403", rec.Code)
@@ -451,7 +429,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 	if !negotiationReached || negotiationRec.Code != http.StatusOK {
 		t.Fatalf("capability negotiation was refused before wire selection: reached=%v status=%d body=%x", negotiationReached, negotiationRec.Code, negotiationRec.Body.Bytes())
 	}
-	if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 3, 1, 1); err != nil {
+	if err := s.RecordCapabilities(ctx, auth.TokenHash(tok.Token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	// Resolve succeeds through this wrapper; the subsequent route-specific group
@@ -483,8 +461,6 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "joining can publish through its installation", pattern: "POST /v1/bot-runtime/installations/{installation}/keypackages", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
 		{name: "joining can read its publication receipt", pattern: "GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}", method: http.MethodGet, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
 		{name: "joining can register its first group through the scoped route", pattern: "POST /v1/bot-runtime/installations/{installation}/groups", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
-		{name: "joining can request admission only for its installation", pattern: "POST /v1/bot-runtime/installations/{installation}/interaction-admissions", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String(), wantNext: true},
-		{name: "joining cannot request admission for another installation", pattern: "POST /v1/bot-runtime/installations/{installation}/interaction-admissions", method: http.MethodPost, pathName: "installation", pathValue: id.New().String(), wantNext: false},
 		{name: "joining can probe a foreign registration path for indistinguishable 404", pattern: "GET /v1/bot-runtime/installations/{installation}/groups/{operation}", method: http.MethodGet, pathName: "installation", pathValue: id.New().String(), wantNext: true},
 		{name: "joining can list its device-scoped welcomes", pattern: "GET /v1/welcomes", method: http.MethodGet, wantNext: true},
 		{name: "joining can acknowledge its device-scoped welcome", pattern: "DELETE /v1/welcomes/{welcome_id}", method: http.MethodDelete, wantNext: true},
@@ -494,6 +470,9 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "joining cannot sync foreign group", pattern: "GET /v1/groups/{id}/info", method: http.MethodGet, pathName: "id", pathValue: foreignGroup.String(), wantNext: false},
 		{name: "joining cannot sync DM group", pattern: "GET /v1/groups/{id}/info", method: http.MethodGet, pathName: "id", pathValue: dmGroup.String(), wantNext: false},
 		{name: "joining cannot upload application message", pattern: "POST /v1/groups/{id}/message", method: http.MethodPost, pathName: "id", pathValue: ownGroup.String(), wantNext: false},
+		// Task 22 fix round 1 (H1): the welcome looks up the new member (Session.MemberProfile), under /members' gate.
+		{name: "joining can read one member of its community", pattern: "GET /v1/communities/{id}/members/{user_id}", method: http.MethodGet, pathName: "id", pathValue: community.ID.String(), wantNext: true},
+		{name: "joining cannot read a member of a foreign community", pattern: "GET /v1/communities/{id}/members/{user_id}", method: http.MethodGet, pathName: "id", pathValue: foreignCommunity.ID.String(), wantNext: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
@@ -562,15 +541,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		name, pattern, method, installation, group string
 		allow                                      bool
 	}{
-		{name: "ready bot can enter dedicated interaction info route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info", method: http.MethodGet, allow: true},
-		{name: "ready bot can enter dedicated interaction messages route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/messages", method: http.MethodGet, allow: true},
-		{name: "ready bot can enter dedicated interaction handshakes route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/handshakes", method: http.MethodGet, allow: true},
-		{name: "ready bot can enter dedicated interaction heal status route", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal", method: http.MethodGet, allow: true},
-		{name: "ready bot can enter dedicated interaction heal route", pattern: "POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/heal", method: http.MethodPost, allow: true},
-		{name: "ready bot can enter dedicated interaction cursor route", pattern: "POST /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/cursor", method: http.MethodPost, allow: true},
 		{name: "ready bot cannot enter human command status route", pattern: "GET /v1/communities/{community}/bot/command-status", method: http.MethodGet},
-		{name: "ready bot cannot use a foreign installation path", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info", method: http.MethodGet, installation: id.New().String()},
-		{name: "ready bot cannot use a foreign community group", pattern: "GET /v1/bot-runtime/installations/{installation}/interaction-groups/{group}/info", method: http.MethodGet, group: foreignGroup.String()},
 		{name: "ready bot cannot use generic group messages route", pattern: "GET /v1/groups/{id}/messages", method: http.MethodGet},
 		{name: "ready bot cannot use generic group cursor route", pattern: "POST /v1/groups/{id}/cursor", method: http.MethodPost},
 		{name: "ready bot cannot use generic group heal status route", pattern: "GET /v1/groups/{id}/heal", method: http.MethodGet},
@@ -661,9 +632,7 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		name, pattern, method, pathName, pathValue string
 	}{
 		{name: "ready bot can register a typed group binding", pattern: "POST /v1/groups", method: http.MethodPost},
-		{name: "ready bot can redeem its automatic moderation grant", pattern: "POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem", method: http.MethodPost, pathName: "installation", pathValue: installation.ID.String()},
 		{name: "ready bot can upload to own community group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: ownGroup.String()},
-		{name: "ready bot can send to its accepted interaction group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: interactionGroupRow.GroupID.String()},
 		{name: "ready bot can read own community send receipt", pattern: "GET /v1/communities/{community}/bot/receipts/{operation}", method: http.MethodGet, pathName: "community", pathValue: community.ID.String()},
 		{name: "ready bot can resolve own community send receipt", pattern: "POST /v1/communities/{community}/bot/receipts/{operation}/resolve", method: http.MethodPost, pathName: "community", pathValue: community.ID.String()},
 		{name: "ready bot can start own community channel call", pattern: "POST /v1/channels/{id}/calls", method: http.MethodPost, pathName: "id", pathValue: voiceChannel.ID.String()},
@@ -674,6 +643,11 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		{name: "ready bot can share own community call", pattern: "POST /v1/calls/{call_id}/share", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
 		{name: "ready bot can decline own community call", pattern: "POST /v1/calls/{call_id}/decline", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
 		{name: "ready bot can report its rtt in own community call", pattern: "POST /v1/calls/{call_id}/rtt", method: http.MethodPost, pathName: "call_id", pathValue: callID.String()},
+		{name: "ready bot can publish its own community catalog", pattern: "PUT /v1/bot-runtime/communities/{community}/catalog", method: http.MethodPut, pathName: "community", pathValue: community.ID.String()},
+		{name: "ready bot can publish its own community command key", pattern: "PUT /v1/bot-runtime/communities/{community}/command-key", method: http.MethodPut, pathName: "community", pathValue: community.ID.String()},
+		{name: "ready bot can reply to a relayed command", pattern: "POST /v1/bot-runtime/replies", method: http.MethodPost, pathName: "unused", pathValue: "x"},
+		{name: "ready bot can send a state hint", pattern: "POST /v1/bot-runtime/state-hints", method: http.MethodPost, pathName: "unused", pathValue: "x"},
+		{name: "ready bot can send its health probe to its own community", pattern: "POST /v1/communities/{community}/bot/commands", method: http.MethodPost, pathName: "community", pathValue: community.ID.String()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
@@ -693,11 +667,17 @@ func TestManagedBotSessionIsAtomicallyBoundAndResolved(t *testing.T) {
 		name, pattern, method, pathName, pathValue string
 	}{
 		{name: "ready bot cannot upload to foreign community group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: foreignGroup.String()},
+		// Bot v2 Task 23: kind-3 groups are gone; the Bot sends into its own community's text and call groups only.
+		{name: "ready bot cannot send to a kind-3 group, even one registered to it", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: interactionGroupRow.GroupID.String()},
 		{name: "ready bot cannot send to an unregistered interaction group", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: unregisteredInteraction.GroupID.String()},
 		{name: "ready bot cannot send to an interaction group registered to another device", pattern: "POST /v1/groups/{group}/bot/messages", method: http.MethodPost, pathName: "group", pathValue: foreignInstallInteraction.GroupID.String()},
 		{name: "ready bot cannot read foreign community send receipt", pattern: "GET /v1/communities/{community}/bot/receipts/{operation}", method: http.MethodGet, pathName: "community", pathValue: foreignCommunity.ID.String()},
 		{name: "ready bot cannot resolve foreign community send receipt", pattern: "POST /v1/communities/{community}/bot/receipts/{operation}/resolve", method: http.MethodPost, pathName: "community", pathValue: foreignCommunity.ID.String()},
 		{name: "ready bot cannot read foreign channel permissions", pattern: "GET /v1/channels/{id}/permissions", method: http.MethodGet, pathName: "id", pathValue: foreignChannel.ID.String()},
+		{name: "ready bot cannot publish a foreign community catalog", pattern: "PUT /v1/bot-runtime/communities/{community}/catalog", method: http.MethodPut, pathName: "community", pathValue: foreignCommunity.ID.String()},
+		{name: "ready bot cannot publish a foreign community command key", pattern: "PUT /v1/bot-runtime/communities/{community}/command-key", method: http.MethodPut, pathName: "community", pathValue: foreignCommunity.ID.String()},
+		{name: "ready bot cannot read a member's catalog", pattern: "GET /v1/communities/{community}/bot/catalog", method: http.MethodGet, pathName: "community", pathValue: community.ID.String()},
+		{name: "ready bot cannot send a sealed command to a foreign community", pattern: "POST /v1/communities/{community}/bot/commands", method: http.MethodPost, pathName: "community", pathValue: foreignCommunity.ID.String()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false

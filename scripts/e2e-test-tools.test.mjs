@@ -69,6 +69,19 @@ if (token) { fs.mkdirSync(require('node:path').dirname(token), { recursive: true
 require('node:http').createServer((req, res) => {
   res.end(req.url === '/v1/instance' ? Buffer.from([0x84,0xf6,0xf6,0xf6,0x50,...Array(16).fill(0)]) : 'ready');
 }).listen(Number(value('-listen').split(':').pop()), '127.0.0.1', () => console.log('DILLA_TESTKIT_INVITE=fixture-invite'));
+// The host supervises the Bot (-bot): the control listener's /debug/bot/start and /stop run the -bot-executable it was
+// given, whose output is the host's own, as dilla-testhost's supervisor does.
+let bot = null;
+const stopBot = () => { if (bot) { bot.kill(); bot = null; } };
+require('node:http').createServer((req, res) => {
+  if (req.url === '/debug/bot/start' && args.includes('-bot')) {
+    if (!bot) bot = require('node:child_process').spawn(value('-bot-executable'), [], { stdio: 'inherit' });
+    res.statusCode = 204; return res.end();
+  }
+  if (req.url === '/debug/bot/stop') { stopBot(); res.statusCode = 204; return res.end(); }
+  res.end(JSON.stringify({ running: bot !== null }));
+}).listen(Number(value('-control').split(':').pop()), '127.0.0.1');
+process.on('SIGTERM', () => { stopBot(); process.exit(0); });
 `;
   writeFileSync(join(tools.root, 'dilla-testhost'), hostProgram);
   writeFileSync(join(tools.root, 'dillabot'), `#!${process.execPath}\nconsole.log('bot service healthy'); setInterval(() => {}, 1000);\n`);
@@ -116,7 +129,7 @@ test('local Bot preparation still runs both real build commands when no bundle i
   const host = await loadHost(t, undefined, { GO: recorder, CARGO: recorder });
   await host.prepareBotRuntimeBinaries();
   assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse), [
-    ['-C', repoRoot, 'build', '-o', join(repoRoot, 'target/dillabot'), './cmd/dillabot'],
+    ['-C', repoRoot, 'build', '-tags', 'dilla_testhost', '-o', join(repoRoot, 'target/dillabot'), './cmd/dillabot'],
     ['build', '-p', 'dilla-bot-core', '--release', '--locked'],
   ]);
 });
@@ -202,7 +215,7 @@ fs.mkdirSync(path.dirname(output), { recursive: true }); fs.writeFileSync(output
   assert.deepEqual(calls, [
     ['-C', repoRoot, 'build', '-o', join(output, 'dilla-testhost'), './cmd/dilla-testhost'],
     ['build', '-p', 'dilla-testkit', '--release', '--locked'],
-    ['-C', repoRoot, 'build', '-o', join(output, 'dillabot'), './cmd/dillabot'],
+    ['-C', repoRoot, 'build', '-tags', 'dilla_testhost', '-o', join(output, 'dillabot'), './cmd/dillabot'],
     ['build', '-p', 'dilla-bot-core', '--release', '--locked'],
   ]);
   buildTestTools(output, options);

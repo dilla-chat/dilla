@@ -252,6 +252,21 @@ func TestSchedulerPutMutationReceiptSurvivesRestartAndEpochRetry(t *testing.T) {
 	}
 }
 
+// A sealed announcement save carries the sealed command's expiry, sent_at + 120 s (internal/bot/service
+// sealedCommandWindow); the v1 interaction path's 30 s bound refused every one as expired.
+func TestSchedulerAcceptsTheSealedCommandExpiry(t *testing.T) {
+	now := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
+	s, _, _, _, destination := schedulerFixture(t, &now)
+	value := dailyAnnouncement(destination, "sealed", 1)
+	outcome, err := s.PutWithReceiptAtRevision(context.Background(), 0, schedulerID(66), [32]byte{16}, uint64(now.Unix()+120), value)
+	if err != nil || outcome.Status != 0 {
+		t.Fatalf("sealed-expiry put = %+v, %v", outcome, err)
+	}
+	if _, err := s.PutWithReceiptAtRevision(context.Background(), 1, schedulerID(67), [32]byte{17}, uint64(now.Unix()+181), value); !errors.Is(err, ErrMutationExpired) {
+		t.Fatalf("an expiry past the sealed window and its clock slack = %v, want ErrMutationExpired", err)
+	}
+}
+
 func TestSchedulerPutWithReceiptChecksDocumentRevisionAndReplaysReceipt(t *testing.T) {
 	now := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
 	s, n, _, _, destination := schedulerFixture(t, &now)

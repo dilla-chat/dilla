@@ -14,7 +14,7 @@ import { DangerSection } from './DangerSection.tsx';
 import { InvitesSection } from './InvitesSection.tsx';
 import { RolesSection } from './RolesSection.tsx';
 import { OverviewSection } from './OverviewSection.tsx';
-import { BotSettingsProvider, BotPage, WelcomePage, JoinRolesPage, MusicPage, AutomoderationPage, ModerationLogPage } from './BotSettingsPages.tsx';
+import { BotSettingsProvider, BotPage, WelcomePage, JoinRolesPage, MusicPage, ModerationLogPage } from './BotSettingsPages.tsx';
 import { SelfRolesSection } from './SelfRolesSection.tsx';
 import { GifsSettings } from './GifsSettings.tsx';
 import { MembersSection } from './MembersSection.tsx';
@@ -153,7 +153,6 @@ function ServerSettingsWorkspace({ communityId, tab, onTab, onClose, announce, a
       case 'welcome': return <WelcomePage {...common} />;
       case 'joinRoles': return <JoinRolesPage {...common} />;
       case 'music': return <MusicPage {...common} />;
-      case 'automoderation': return <AutomoderationPage {...common} />;
       case 'moderationLog': return <ModerationLogPage {...common} />;
       case 'bans': return <BansSection {...common} />;
       case 'danger': return <DangerSection {...common} owner={access.owner === true} onGone={finish} />;

@@ -21,53 +21,12 @@ import (
 	"github.com/dilla-chat/dilla/internal/store"
 )
 
-// RegisterPublicInvites mounts the two unauthenticated invite routes, each on
+// RegisterPublicInvites mounts the unauthenticated invite landing, on
 // the ("invite", client address) bucket. api.Register calls it; it is exported
 // so a handler test can mount them without the session-scoped routes around
 // them, which need an auth.Sessions.
 func (d Deps) RegisterPublicInvites(m *server.Mux) {
 	m.Handle("GET /i/{code}", d.metered(classInvite, d.InviteLanding, d.landingRefusal))
-	m.Handle("POST /v1/invites/redeem", d.metered(classInvite, d.RedeemInvite, refuseCBOR))
-}
-
-// RedeemInvite is POST /v1/invites/redeem: [code] →
-// [invite_id, community_id|null, grants_admin]. It SPENDS a use, which is why
-// it is a POST and why the landing page below is not.
-func (d Deps) RedeemInvite(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		_    struct{} `cbor:",toarray"`
-		Code string
-	}
-	if err := server.DecodeBody(w, r, maxCBORBody, &req); err != nil {
-		server.WriteError(w, err)
-		return
-	}
-	candidates, err := auth.CanonicalizeInviteCode(req.Code)
-	if err != nil {
-		server.WriteError(w, server.Errorf(server.CodeInviteInvalid, "invite code: %v", err))
-		return
-	}
-	var invite store.InviteRow
-	now := d.Clock.Now().Unix()
-	err = d.Repo.Tx(r.Context(), func(tx store.Repository) error {
-		var rerr error
-		invite, rerr = redeem(r.Context(), tx, candidates, now)
-		return rerr
-	})
-	if err != nil {
-		if errors.Is(err, store.ErrExhausted) || errors.Is(err, store.ErrNotFound) {
-			server.WriteError(w, server.Errorf(server.CodeInviteInvalid,
-				"the invite is spent, expired, revoked or unknown"))
-			return
-		}
-		server.WriteError(w, d.storeError(r, err))
-		return
-	}
-	var community any
-	if invite.CommunityID != nil {
-		community = *invite.CommunityID
-	}
-	d.write(w, r, http.StatusOK, []any{invite.ID, community, uint64(invite.GrantsAdmin)})
 }
 
 // landingPage is the invite landing page. It carries no script, no external
@@ -206,8 +165,8 @@ func LandingFont(webFS fs.FS) string {
 // InviteLanding is GET /i/{code}. It NEVER mutates: a link pasted into a chat
 // is fetched by every preview bot that sees it, and a landing page that spent a
 // use would burn every invite the moment it was shared. The use is spent by
-// POST /v1/invites/redeem and by POST /v1/accounts, both of which a bot does
-// not issue.
+// POST /v1/accounts and by POST /v1/communities/{id}/join, neither of which a bot
+// issues.
 func (d Deps) InviteLanding(w http.ResponseWriter, r *http.Request) {
 	// no-store keeps the code out of shared caches; no-referrer keeps it out of
 	// the Referer header of anything this page could ever link to.
@@ -339,7 +298,7 @@ func wantsCBOR(r *http.Request) bool {
 // Invites serves the three community-scoped invite routes of interfaces.md §5.2
 // (protocol/09 § Invites): mint a community invite, list a community's invites
 // and revoke one. The two unauthenticated routes and the redemption itself are
-// Deps' (RedeemInvite, InviteLanding) and Communities.join's.
+// Deps' (InviteLanding) and Communities.join's.
 //
 // Register mounts the handlers bare, as Communities does; each handler requires
 // an enrolled session itself, so a mis-mounted route fails closed.
@@ -357,9 +316,9 @@ func NewInvites(repo store.Repository, clk clock.Clock, baseURL string, log *slo
 }
 
 func (h *Invites) Register(mux *server.Mux) {
-	mux.HandleFunc("POST /v1/communities/{id}/invites", h.create)
-	mux.HandleFunc("GET /v1/communities/{id}/invites", h.list)
-	mux.HandleFunc("DELETE /v1/invites/{id}", h.revoke)
+	mux.Socket("POST /v1/communities/{id}/invites", http.HandlerFunc(h.create))
+	mux.Socket("GET /v1/communities/{id}/invites", http.HandlerFunc(h.list))
+	mux.Socket("DELETE /v1/invites/{id}", http.HandlerFunc(h.revoke))
 }
 
 const (

@@ -1,6 +1,6 @@
 // One folded timeline item, with its controls and focus hand-off.
 import { useCallback, useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
-import { PERM, type PollSummary, type TimelineItem, type TimelineItemState } from '@dilla/client-core';
+import { decodeWebhookLabel, PERM, type PollSummary, type TimelineItem, type TimelineItemState } from '@dilla/client-core';
 import { MessageEditor, MessageRow, MessageToolbar, ReactionBar } from '@dilla/ui';
 import { reactionDisplay, reactionName } from '../../emoji.ts';
 import { formatTime, t, type StringKey } from '../../strings/index.ts';
@@ -12,6 +12,7 @@ import { PollCard, finalPollMarker } from '../commands/PollCard.tsx';
 import { utilityText } from '../commands/utility-copy.ts';
 import { localUtilityTime } from '../commands/utility-time.ts';
 import { isCommunityBot, MusicMessageCard, musicMarker, useMusicRoomName } from '../voice/music.tsx';
+import { usePinnedBotUser, useWebhookAvatar } from './webhook.ts';
 
 const STATE_LABEL: Record<TimelineItemState, StringKey | null> = {
   ok: null, pending: 'shell.message.pending', failed: 'shell.message.failed',
@@ -164,6 +165,12 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
   // Security review M1: only an unedited message from this community's managed Bot account.
   const music = bot && marker === null && !item.edited ? musicMarker(item.body) : null;
   const musicRoom = useMusicRoomName(p.communityId ?? null, music === null || p.client === undefined ? null : music.voiceChannelId);
+  // Bot v2 Task 22: a webhook post is the Bot's message ending in its label line. Only the community's pinned Bot user's
+  // posts are read for it (the Bot defangs "[dilla-" in every text it posts, a sender's included); anyone else's stays text.
+  const pinnedBot = usePinnedBotUser(p.client, p.communityId ?? null);
+  const webhook = bot && pinnedBot !== null && pinnedBot === item.senderUser && marker === null && music === null && !item.edited
+    ? decodeWebhookLabel(item.body) : null;
+  const webhookAvatar = useWebhookAvatar(p.client, p.communityId ?? null, webhook?.avatarId ?? null);
   const fallback = marker === null ? item.body : item.body.replace(/\n?\[dilla-poll:v1:[0-9a-f]{32}\]$/u, '')
     .replace(/<t:(\d+):[tTdDfFR]>/gu, (raw, seconds: string) => localUtilityTime(Number(seconds)) ?? raw);
   const verifiedPoll = bot && marker !== null && !item.edited && item.state === 'ok' && verified?.client === p.client && verified?.scope === pollScope ? verified.poll : null;
@@ -174,7 +181,7 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
     ? t('music.started', { name: authorName({ senderUser: music.requesterId, senderDevice: null }, p.book.members, p.book.self), room: musicRoom })
     : pollPending ? ''
     : verifiedPoll !== null ? utilityText('poll.asked', { name: authorName({ senderUser: verifiedPoll.creatorId, senderDevice: null }, p.book.members, p.book.self) })
-    : markdownParts(fallback, p.book, item.mention);
+    : markdownParts(webhook !== null ? webhook.text : fallback, p.book, item.mention);
   const card = music !== null && p.client !== undefined && shown
     ? <MusicMessageCard client={p.client} communityId={p.communityId ?? null} voiceChannelId={music.voiceChannelId} item={music.item} bot={author} />
     : marker !== null && p.client !== undefined ? <PollCard client={p.client} communityId={p.communityId ?? null} channelId={p.channelId} threadId={p.threadId ?? null}
@@ -196,6 +203,8 @@ export function MessageItem(p: MessageItemProps): React.JSX.Element {
     ] : undefined}
     active={p.active} flash={p.flash} mention={item.mention} editedLabel={item.edited ? t('shell.message.edited') : undefined}
     pinnedLabel={item.pinned ? t('shell.message.pinned') : undefined} seq={item.seq} msgId={item.msgId}
+    {...(webhook !== null ? { viaLabel: t('message.viaWebhook', { name: webhook.name }) } : {})}
+    {...(webhookAvatar !== undefined ? { avatarSrc: webhookAvatar } : {})}
     reply={replyProps} toolbar={toolbar} pendingAction={pendingAction}
     thread={openThread !== undefined && item.thread !== null ? { label: item.thread.count === 1 ? t('thread.summary.one') : t('thread.summary.other', { count: item.thread.count }),
       last: t('thread.summary.last', { time: formatTime(item.thread.lastTs) }), onOpen: () => openThread(item.msgId!) } : undefined}

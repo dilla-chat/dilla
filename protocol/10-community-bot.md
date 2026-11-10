@@ -2,11 +2,22 @@
 
 ## Scope
 
-Internal first-party bot contracts for wire 3. The `/v1` prefix is unchanged;
-E2EE and media remain version 1. One independently signed native bot identity per
-community, operated by a separate service. No public SDK or third-party bot
-installation interface. This contract defines formats; implementation status is
-tracked in the bot plan rather than inferred from this document.
+Bot v2, wire 6. This document defines what a community's Bot is and how it is reached: the
+command catalog, the Bot's command key, the sealed request a member's device sends, the replies,
+the state hints, Bot channels, incoming webhooks, the Bot's connection to the instance, and its
+health. The `/v1` prefix is unchanged; E2EE and media remain version 1.
+
+There is one independently signed native Bot identity per community. dillad supervises the Bot as a
+child process, under its own operating-system user; there is no public SDK and no third-party Bot
+installation. A command is a request sealed to a key only the Bot holds, so the instance relays it
+and never reads it. The members' commands travel on the gateway socket (`02` § Gateway frames),
+the Bot's side on a local Unix socket, and nothing polls.
+
+Bot v2 removed the per-member interaction groups (MLS group kind 3) and AutoModeration. Nothing in
+this document describes them except § Retired v1 surfaces, which says they are refused. The sections
+after § Health keep the operation numbers and argument shapes, the helper contract and the
+installation API that the sealed request still uses. Implementation status is tracked in the Bot
+plan, not inferred from this document.
 
 ## Encoding
 
@@ -17,15 +28,545 @@ Length limits are encoded bytes, not characters. Raw byte fields containing CBOR
 are decoded separately under the same strict rules. Error responses expose stable
 codes, never submitted messages, provider credentials or signing material.
 
-## Application requests
+## Command catalog
 
-A type-0 envelope body is `dilla.bot/1:` plus UNPADDED canonical base64url of
-strict deterministic CBOR. Total UTF-8 body <=4000 bytes. Reject whitespace,
-noncanonical encodings/pad bits, padding, bad prefix or binary. CBOR array:
-`[1, request_id, community_id, channel_id|null, operation, revision|null, expires|null, args]`.
-Request_id is also the stable mutation operation id. Context validation requires
-an expected community id from the authenticated interaction binding, never the
-payload itself. Actor comes ONLY from authenticated MLS sender; no actor field.
+Bot v2 keeps, per community, the catalog of commands the Bot offers. None of it is command content.
+
+A catalog is the CBOR array `[[name, description, operation, args_shape, permission_bit,
+needs_bot_channel, handler_kind]…]`: `name` 1–64 bytes of text and unique in the catalog,
+`description` at most 512 bytes of text, `operation` a uint, `args_shape` at most 16 arguments
+`[name(text 1–32 bytes, unique), type_code(uint), required(uint 0|1)]` with type codes 0 text, 1
+uint, 2 user, 3 channel, 4 duration (uint seconds), 5 bool (uint 0|1) — a user or channel argument
+is a 16-byte id the member picks, never one the catalog carries; anything else is refused, `permission_bit` a mask of the permission bits of `09` § Permissions (0
+means every member), `needs_bot_channel` uint 0 or 1 (the subset has no boolean), and
+`handler_kind` a uint, kept as sent: 0 is a picker command, 1 an operation an app surface sends
+(a sealed read or an app operation, § Sealed request, § Reply and § State hints; clients never
+show it in the picker), the other values are reserved for outgoing integrations. At most 256
+commands.
+
+A member is shown only the commands they may use. A command is shown when `permission_bit` is 0,
+or when the member's community-wide permissions hold every bit of it and, for a bit a channel
+overwrite can change, at least one live text or voice channel of the community still grants it
+to the member after that channel's overwrites. A Bot account is shown nothing. "Needs a Bot
+channel" is a command's `needs_bot_channel` with an empty Bot channel list, not a Bot state.
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `GET /v1/communities/{community}/bot/catalog` | E (community member), socket | — | `[revision, commands, publication\|null, status]`; `commands` filtered for the caller; `status` is `[state, since\|null]`, state 0 ready, 1 degraded, 2 offline, 3 disabled, 4 absent; 404 for a non-member |
+| `GET /v1/bot/revisions` | E, socket | — | `[[scope_kind, scope_id, revision]…]`, the elements of gateway op 63: kind 0 the caller's own user scope in each of its communities that holds one (scope_id the community), kinds 1 channel and 2 call (scope_id the voice channel) for channels the caller can view, kind 3 each of the caller's communities' catalog revision |
+| `PUT /v1/bot-runtime/communities/{community}/catalog` | B (ready, path community) | the catalog | `[revision]`; a changed catalog takes the next revision and is pushed as gateway op 61 to every connected member, filtered for that member, after the answer; an unchanged one keeps its revision |
+
+## Command key
+
+Each community's Bot holds a command key pair, and publishes the public half to the instance.
+
+The command-key publication is `dilla_core::bot::command`'s `[1, community_id, key_id,
+public_key, not_after, bot_device_id, sig]`, signed by the Bot device's DSK over `"dilla bot
+command key v1" || CBOR([1, community_id, key_id, public_key, not_after, bot_device_id])`. The
+instance stores it only when `bot_device_id` is a listed, unrevoked device of the community's
+Bot user in the newest verified device list it serves, the signature verifies under that
+device's key, `community_id` is the route's community, and `now <= not_after <= now + 691200`
+(8 days), and `bot_device_id` is the installation's own device. Clients verify it again against
+the device list before sealing to it. A publication with a new `key_id` gives the catalog the next
+revision and is pushed with it (gateway op 61 carries the publication), so a rotated key reaches
+connected clients at once and reconnecting ones through the revision sync.
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `PUT /v1/bot-runtime/communities/{community}/command-key` | B (ready, path community) | the publication | `204`; `403` when the signer is not the installation's listed, unrevoked device or the signature fails, `400` for another community or a `not_after` in the past or more than 8 days ahead; a new `key_id` bumps the catalog revision and pushes op 61 |
+
+The Bot rotates the key weekly and keeps the previous private key for 24 hours, then deletes it. A later leak of
+the current key opens no reply (reply keys are one-time) and no request older than the rotation window.
+The Bot page shows the key's fingerprint.
+
+The rotation tail: dillad keeps relaying to the previous key until the new publication lands. If the Bot rotates while
+dillad is down, dillad still relays to the retired key after it comes back until the Bot's republish arrives; the Bot
+answers such a command `UnknownKey` (nothing reaches a handler), which triggers its throttled republish, and the
+client's next send is `410 E_BOT_KEY_STALE`, so it refetches the catalog and seals to the new key. The window heals
+itself and costs at most one refused send per client.
+
+## Sealed request
+
+A member's device sends one sealed request per command. Its plaintext, before sealing, is the
+deterministic CBOR array
+
+```
+[1, request_id, community_id, channel_id|null, operation, args, sent_at, reply_key,
+ key_id, user_id, device_id, sig]
+```
+
+- `request_id` is a nonzero bstr 16, the command's stable id: a Retry reuses it.
+- `operation` is the uint of the catalog entry (§ Command catalog) and `args` at most 32 arguments, each a
+  uint, bstr, tstr or null.
+- `sent_at` is Unix seconds on the sender's clock; the Bot refuses one more than 120 seconds before or
+  after its own.
+- `reply_key` is a fresh one-time X25519 public key (32 bytes). Every answer is sealed to it (§ Reply).
+- `key_id` is the command key the request is sealed to (§ Command key); `user_id` and `device_id` are the
+  signer's own.
+- `sig` is the device identity key's Ed25519 signature (bstr 64) over the ASCII bytes
+  `dilla bot command v1` followed by the CBOR of the first eleven elements.
+
+The plaintext is sealed with HPKE (RFC 9180), base mode, DHKEM(X25519, HKDF-SHA256) (`0x0020`),
+HKDF-SHA256 (`0x0001`) and AES-128-GCM (`0x0001`), the suite `CIPHERSUITE` of `00` already names. The
+`info` is `dilla bot command v1`, the associated data is `request_id`, and the recipient is the command
+key's public key. The sealed form, at most 16384 bytes, is the array `[1, key_id, request_id, enc(bstr 32),
+ciphertext]`.
+
+The Bot opens it under `key_id` and refuses it unless all of these hold: the signed `request_id`, `key_id`
+and community equal the outer ones and the key's community; the signature verifies under the listed,
+unrevoked key of `device_id` in the signer's device list, as the Bot's feed pushed it (§ Bot connection
+and feed), never read per command; `user_id` and `device_id` are those dillad attached outside the seal;
+`sent_at` is inside the 120-second window; and the `request_id` was not already answered (answers are kept
+five minutes, and a repeat is answered from them without running the handler again). It then authorises the
+operation from the member's current permissions in the same pushed feed state.
+
+With no first answer in 5 seconds the client shows "The Bot didn't answer" and offers Retry. Retry sends the
+same `request_id`, sealed again to a fresh `reply_key`, so it is idempotent. No capability read comes before
+a command: the Bot answers `404 E_BOT_UNSUPPORTED` for an operation it does not offer.
+
+The relay. A member's device sends a sealed command (`dilla_core::bot::command`, `[1, key_id(bstr 16),
+request_id(bstr 16), enc(bstr 32), ciphertext(bstr)]`, at most 16384 bytes) over its gateway
+socket as `POST /v1/communities/{community}/bot/commands`, body `[request_id(bstr 16), sealed]`.
+The instance decodes only that outer array, strictly: deterministic CBOR, version 1, exact lengths,
+non-zero ids, and the sealed `request_id` equal to the body's (else `400`). It never opens the seal.
+It does check `key_id` against the command keys it holds: the published one, and, for
+24 hours after a new `key_id` is published, the one it replaced (the Bot's helper keeps opening that
+key for the same 24 hours). Any other `key_id`, or any at all before a key was published, is
+`410 E_BOT_KEY_STALE`, nothing is relayed or remembered, and the client reads the catalog once and
+resends the same `request_id` sealed to the published key. Such a command could not be answered
+otherwise: a seal the Bot cannot open yields no reply key.
+It pushes gateway op 64 `bot_command` `[request_id, community_id, user_id, device_id, sealed]` to
+the Bot runtime's connection, where `user_id` and `device_id` are the sending connection's
+authenticated session, never anything from the body, and answers `202 [0]`.
+
+The relay's only state is an in-memory ledger of `request_id → (device_id, community_id)`, kept
+five minutes after the latest relay of that id. Each device holds at most 256 entries (a device at
+its quota loses its own oldest entry, never another device's), and the ledger at most 65536 in all
+(the oldest is evicted first). A command whose `request_id` another device (or another community) sent within the five
+minutes is `409 E_BOT_DUPLICATE`; the same device sending it again is accepted and pushed again
+(the Bot de-duplicates). The socket's `idem` replay record (`02` § `request`) answers a retry of the
+same request frame from its record without pushing again; a re-send with a new `idem` reaches the
+handler and is pushed again. Nothing about a command is stored: no row, no log line carries the
+sealed bytes. The route is metered per device in its own `bot_command` bucket at the `read` rate
+(`limits.rate.read_per_second` / `read_burst`, 10/s and burst 60 by default): since wire 6 the app's Bot surfaces
+(poll cards, the player and its dock, the reminders inbox) read and act through it. Clients pace it in a bucket of their own at 80 % of that rate.
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `POST /v1/communities/{community}/bot/commands` | E (community member; also the ready Bot of `community`, for its health probe only), socket | `[request_id, sealed]` | `202 [0]`; `400` for a malformed body or sealed form; `404` for a non-member; `403` when the installation is disabled; `409 E_BOT_DUPLICATE`; `410 E_BOT_KEY_STALE` for a `key_id` that is neither the published key nor the replaced one inside its 24 hours; `503 E_BOT_OFFLINE` with no installation, an installation that is not ready, or no Bot runtime connection: none live, none parked in its resume window, and none dropped within the last 120 s (the resume window). A command relayed in that last window is carried to the Bot's next identify and answered `202` (`02` § Bot runtime) |
+
+### App surfaces on sealed commands
+
+The app's own Bot surfaces (the player and its dock, poll cards and the poll form, the reminders
+inbox, the music provider status, scheduled announcements and role panels) send sealed commands
+too; nothing in the app reads or writes the Bot through interaction groups any more.
+They use catalog entries of `handler_kind` 1, which the picker never shows:
+
+- the sealed reads: `91` poll get `[poll_id]`, `92` music state `[]` (channel: the voice channel),
+  `93` reminders due `[cursor|null]`. Poll get answers the poll's voters too, as a third element
+  `[previews, distinct, capped]`: per answer the first five voters (16-byte user ids), the number of distinct voters
+  (counted up to 2000), and `1` when that count stopped at the bound. A card reads its poll once per hint and never
+  its voters page by page. Reads of one poll by many members within 100 ms are served from one computation of the poll
+  and its voters; each member is still authorised from the Bot's feed state and answered with their own choices, and a
+  vote or a close ends the window for that poll;
+- app operations, numbered 100 + the v1 operation they run: music `111`–`125` (search, enqueue,
+  pause, resume, skip, stop, seek, volume, shuffle, repeat, remove, move, clear, provider status,
+  announce; all but provider status act in the request's channel, the voice channel), role panel
+  publish `131` (`manage_roles`), announcements `150`–`152` (`manage_community`), polls `170`
+  create, `172` list, `173` vote, `174` close, `175` voters, reminders `180` create, `181` list, `182`
+  cancel, `183` dismiss.
+- the admin settings pages: Welcome settings `101` read `[5]` and `102` save `[revision, 5, document]`
+  (feature Welcome, `manage_community`, which the handler checks again), and moderation evidence `161`
+  `[0, receipt_id, reason, excerpt]` (any moderation feature). Evidence is admitted, as v1 admitted it, only from a
+  member holding `view_audit_log` or `manage_messages` in the Bot's feed state (the dispatcher's check: a
+  `permission_bit` says "all of"), and its handler binds it to that member's own accepted removal or warning. The app's
+  device sends it itself when it resumes evidence after a reload, under the request id its protected outbox reserved;
+- the Bot page's status, the sealed read `94` `[]` (`manage_community`, offered whatever the features), answered by
+  the Bot from its own state: `[null, [1, needs_re_add, starts]]`, `needs_re_add` the Bot channels whose group the Bot
+  cannot join on its own and the caller can view (16-byte ids, ascending: its Welcome to that group went stale or never
+  came), `starts` the last
+  20 music starts, oldest first, as `[first_frame_ms, cold(0|1)]`.
+
+The moderation log reads its two pages as the app operations `160` (`moderation.cases`) and `164`
+(`moderation.evidence.list`), `[cursor bstr(1..256)|null]`, offered to members with `view_audit_log`.
+
+The operations on existing polls and reminders (poll get, list, vote, close and voters; reminders due, list, cancel
+and dismiss) are offered whatever the installation's features, as v1 kept them; only creating a poll or a reminder needs
+Polls or Reminders on.
+
+A v1 poll the Bot posted in a channel that is not a Bot channel stays as read-only history. The Bot authorises poll
+reads, votes and closes from its feed state, which carries the channels it was told of, the Bot channels; in any other
+channel a member holds no permission there, so `91` poll get, `173` vote, `174` close and `175` voters answer
+`E_FORBIDDEN` for such a poll. Its message stays in the channel with its question and answers; a card that reads it
+is refused, so it shows no live tally and takes no vote. New polls are created only in Bot channels.
+
+An app operation's sealed arguments are the v1 operation's arguments (ids as 16-byte byte strings),
+preceded for a mutation by the expected revision (uint); the Bot checks and normalises them with the
+v1 request decoder and runs the same handler. A poll created through `170` must name the request's
+channel, where the Bot authorised `send_messages`. The other app operations that name a channel in their arguments
+authorise it in their handler, as v1 did: `131` (the role panel's channel; the Bot also requires `view_channel` and
+`send_messages` there from its feed state, so only a Bot channel qualifies), `151` (an announcement's channel), `172`
+(the channel whose polls are listed) and `180` (a reminder's source channel, which needs `view_channel` and
+`read_message_history`). Every one of them answers `[revision uint|null,
+data bstr]` with the v1 response data, or a bare code (`E_INVALID`, `E_FORBIDDEN`, `E_BOT_STALE`,
+`E_CONFLICT`, `E_UNAVAILABLE`, `E_BUSY`, `E_NOT_FOUND`, `E_UPGRADE_REQUIRED`, `E_INTERNAL`). A
+mutation is not a read for the Bot's timeout rule: a timed-out member's vote or dismiss is refused.
+A client reconciles a mutation that went unanswered by sending the same request again: the Bot
+answers what it did, from its five-minute answer cache, and never runs it twice.
+
+## Reply
+
+The Bot answers through `POST /v1/bot-runtime/replies`, body `[device_id(bstr 16), request_id(bstr
+16), seq(uint ≤ 2^32−1), sealed(bstr 1..65536), final(uint 0|1)]` (the subset has no boolean).
+The instance delivers gateway op 62 `bot_reply` `[request_id, seq, sealed, final]` to that device
+only, and answers `204`; a `request_id` the ledger does not hold for that device in the replying
+Bot's own community is `404`. One request takes at most 16 replies and 256 KiB of sealed replies
+in all; a reply past either is `413 E_TOO_LARGE` and is not delivered. A device whose socket dropped holds the reply in its suspended
+connection's replay ring for at most two minutes (`02` § Ephemeral).
+
+A reply is sealed to the request's `reply_key`: HPKE as above with `info` `dilla bot reply v1` and
+associated data `request_id` followed by `seq` as four bytes, big-endian, so an answer cannot be moved to
+another request or position. The sealed form, at most 65536 bytes, is `[1, enc(bstr 32), ciphertext]`.
+The plaintext is `[status, body, final]`: `status` a uint up to 65535 (200 ok), `body` a bstr, `final`
+a uint 0 or 1. The client acts only on the sealed `final`; a `status` of 400 or more is a refusal whose
+`body` may be a bare error code. A command may stream several answers ("Searching…", then "Now
+playing"). The Bot's own refusals are:
+
+| status | code | when |
+|---|---|---|
+| 401 | `E_BOT_SIGNATURE` | a bad signature, the wrong device, an unlisted or revoked device, or a user whose device-list ingest failed (retry) |
+| 403 | `E_FORBIDDEN` | the member lacks the catalog entry's `permission_bit` in the command's channel, or is timed out and the command is not a sealed read |
+| 404 | `E_BOT_UNSUPPORTED` | the operation is not in the catalog |
+| 408 | `E_BOT_STALE` | `sent_at` outside the 120-second window |
+| 409 | `E_BOT_REPLAY` | the `request_id` belongs to another user or device |
+| 503 | `E_BOT_OFFLINE` | no feed bound or no snapshot applied yet (retry) |
+
+A seal that does not open has no reply key, so it gets no reply; the client times out. A device that is
+offline when a reply arrives loses it after two minutes, so a result that must outlive that (a reminder, a
+poll) lives in the Bot's state and is read from any of the user's devices. Redelivery after a Bot
+reconnect never runs a command twice.
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `POST /v1/bot-runtime/replies` | B (ready, own community) | `[device_id, request_id, seq, sealed, final]` | `204`; `404` for a request not relayed from that device into the Bot's community in the last five minutes; `413 E_TOO_LARGE` past 16 replies or 256 KiB for the request |
+
+## State hints
+
+The Bot raises a scope's revision with `POST
+/v1/bot-runtime/state-hints`, body `[scope_kind(uint 0 user, 1 channel, 2 call), scope_id(bstr
+16)]`, raises the scope's stored revision in the Bot's community and answers `200 [revision]`. The scope
+must be the Bot's own community's: a member (user), one of its Bot channels (channel: the only
+channels the Bot keeps channel state in) or a live voice channel (call; the scope id is the voice
+channel, as `GET /v1/bot/revisions` reads it); any other scope is `404` and nothing is bumped. A
+user scope's revision is that user's in this community only, so one community's Bot learns
+nothing of another's hints. Gateway op 63 `bot_state_changed` `[scope_kind, scope_id, revision]`
+goes to the user's live connections (with `scope_id` the **community**: the user is the receiving
+connection's own), to the connections subscribed to the Bot channel's text group, or to the online
+devices of the call group of the channel's live call. State hints are metered per Bot device in a `bot_runtime`
+bucket at the `read` rate (10/s, burst 60 by default). Replies have their own `bot_reply` bucket per Bot device,
+200/s with a burst of 400: every member command and every app-surface read is answered once,
+so the budget is the community's (about one answer a second for each of 200 members, and one hint's worth of reads
+from every member's surfaces at once), and it cannot outrun the members' own `bot_command` budgets, since each reply
+needs a request the relay took within five minutes. The Bot paces itself below it (180/s, burst 360), apart from its
+own reads and its hints.
+
+A client that sees a newer revision fetches once, with a sealed read (`91` poll get, `92` music state, `93`
+reminders due). It coalesces bursts, at most one fetch per scope per 250 ms, and fetches nothing for a
+scope it is not showing, except the user scope that carries reminders. A device that was offline compares
+the revisions of `GET /v1/bot/revisions` at connect and fetches once if behind.
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `POST /v1/bot-runtime/state-hints` | B (ready, own community) | `[scope_kind, scope_id]` | `200 [revision]`; `404` for a scope outside the Bot's community or a channel that is not a Bot channel; `400` for another scope kind |
+
+## Bot channels
+
+An admin marks a text channel as a Bot channel, in the channel's settings or on the Bot page. The Bot is a member of
+Bot channels and posts only there.
+
+The Bot lives only in Bot channel groups. The rule is kept in four places:
+
+- Marking a channel runs that channel's membership sync at once. It proposes the Bot's devices into the
+  channel's text group, a member of the group (the marking admin's device first) commits the Add, and the Bot
+  applies the Welcome.
+- Unmarking voids the Bot's outstanding Adds in the group and proposes out a leaf it holds there.
+- The commit-time access check refuses the community's Bot user for the text group of any channel that is not a
+  Bot channel, so a commit that carries its Add is refused.
+- The membership sync leaves the Bot out of the Adds of a channel that is not a Bot channel, and proposes out a
+  stray leaf the Bot holds there (a commit in flight across an unmark, or a stale read, can carry one in). When
+  the Bot-channel rule cannot be read, the sync fails closed for the Bot alone: it is left out of the Adds, no
+  Bot leaf is proposed out on that guess, and the Removes of members who lost access still run.
+
+On its side the Bot forgets its local MLS state of a text group it was removed from or that is not a Bot
+channel (helper op 27 `group_forget`) and refuses, without applying, a Welcome into such a group. A Bot whose
+Welcome to a Bot channel went stale says so in its status read (`94`), and the Bot page's re-add (below)
+proposes its old leaf out and then its devices in.
+
+A Bot channel is unmarked in the same transaction when its channel stops being an end-to-end text
+channel (a channel PATCH to readable), when the channel is deleted (which also deletes the webhooks
+that target it), and when the community is deleted (which also drops the community's catalog,
+command key and webhooks).
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `PUT /v1/communities/{community}/channels/{channel}/bot-channel` | E (manage_community and `view_channel` in the channel), socket | — | `204`; `400` unless the channel is a live end-to-end text channel that is not the AFK channel; `404` for a channel outside the community or one the caller cannot view |
+| `DELETE /v1/communities/{community}/channels/{channel}/bot-channel` | E (manage_community and `view_channel` in the channel), socket | — | `204`, also when the channel was not marked; `404` for a channel the caller cannot view. An unmark voids the Bot's outstanding Adds in the channel's text group and proposes out a leaf it holds there |
+| `GET /v1/communities/{community}/bot/channels` | E (any human member), socket | — | `[[channel_id, marked_at, marked_by]…]` of the Bot channels the caller can view (`view_channel`), oldest mark first; 404 for a non-member |
+| `POST /v1/communities/{community}/channels/{channel}/bot-channel/re-add` | E (manage_community and `view_channel`), socket, audited (`bot.channel_readd`) | — | `[state]`: `1` while the Bot still holds a leaf in the channel's text group (each such leaf is proposed out; ask again once that commit lands), `0` once the Bot's devices are proposed in; `409 E_NOT_BOT_CHANNEL` for a channel that is not a Bot channel, `404` with no Bot |
+
+## Webhooks
+
+An incoming webhook lets anything that can send an HTTPS POST (a game server, a weather feed,
+`curl`) post into one Bot channel through the Bot. An admin creates it on the socket and is shown its
+address once: `https://<instance.domain>/hooks/<webhook_id>/<secret>`, where `webhook_id` is 32
+lowercase hex characters and `secret` is 32 random bytes in unpadded base64url (43 characters). The
+instance stores only `SHA-256(secret)` and never the secret; no read returns either. Rotating
+replaces the hash in one statement, so the old address stops working at once.
+
+The admin routes take the authority `PUT /v1/communities/{community}/bot` takes (a human member
+holding `manage_community`), on the socket only. A webhook's channel must be a Bot channel of the
+community when it is created (else `409 E_NOT_BOT_CHANNEL`); unmarking the channel later keeps the
+webhook but makes every POST `409 E_NOT_BOT_CHANNEL` until the channel is marked again, and deleting
+the channel deletes its webhooks. A community holds at most 50. `name` is 1 to 80 characters under
+the text rule of `09` § Accounts and devices; `avatar_blob` is null or an opaque 32-byte blob id that the
+instance never dereferences; `allow_everyone` is uint 0 or 1.
+
+| Method and path | Auth | Request | Response |
+|---|---|---|---|
+| `POST /v1/communities/{community}/bot/webhooks` | E (manage_community), socket | `[channel_id, name, avatar_blob\|null, allow_everyone]` | `201 [webhook_id, url]`, the only time the URL is shown; `409 E_NOT_BOT_CHANNEL`; `409 E_INVALID_REQUEST` past 50 webhooks |
+| `GET /v1/communities/{community}/bot/webhooks` | E (manage_community), socket | — | `[[webhook_id, channel_id, name, avatar_blob\|null, allow_everyone, created_at, rotated_at\|null]…]`, oldest first; never the secret or its hash |
+| `POST /v1/communities/{community}/bot/webhooks/{webhook}/rotate` | E (manage_community), socket | — | `200 [url]` with a new secret; `404` for a webhook the community does not hold |
+| `PATCH /v1/communities/{community}/bot/webhooks/{webhook}` | E (manage_community), socket | `[name, avatar_blob\|null, allow_everyone]` | `204`; `404` |
+| `DELETE /v1/communities/{community}/bot/webhooks/{webhook}` | E (manage_community), socket | — | `204`; `404` |
+| `POST /hooks/{webhook_id}/{secret}` | none (the secret), HTTP only | JSON, below | `204` once the Bot posted it; refusals below |
+| `GET /v1/communities/{community}/bot/webhook-avatars/{avatar_id}` | E (community member), HTTP only | — | `200 image/png`, the cached avatar; `404` otherwise |
+
+**The POST.** `Content-Type: application/json`, a body of at most 8192 bytes (more is `413` before
+anything is parsed), valid UTF-8, one JSON object. The fields are Discord's: `text` (string, 1 to 4000
+bytes of UTF-8; Discord's `content` is read when `text` is absent), `username` (string, at most 80
+bytes) and `avatar_url` (string, an absolute `https://` URL with a host and no credentials, at most
+2048 bytes, port 443 only; empty or null means none). Any other field is ignored, so an integration that also sends
+`embeds` or `tts` still works; a known field of another JSON type is `400`, and so is a control
+character (Unicode Cc) in `text` other than tab, line feed and carriage return. Control characters
+(Unicode Cc), format characters (Cf: bidi overrides, zero-width joiners) and U+2028/U+2029 are
+stripped from `username` and its white space is collapsed; an empty result shows the webhook's
+`name`. The text is posted as plain text with links; the Bot labels it "via webhook <name>" and
+neutralises `@everyone` unless `allow_everyone` is 1.
+
+**Metering.** Client addresses are keyed by IPv4 address or IPv6 /64, networks by IPv4 /24 or IPv6
+/48, and `X-Forwarded-For` is read only from a trusted proxy.
+
+- Every POST spends one token of its address's `webhook_address_all` bucket (10 per second, burst 50)
+  and of its network's `webhook_prefix_all` bucket (50 per second, burst 250), before any work. They
+  bound the work any one address or network causes, valid secrets included; the network ceiling is far
+  above what valid senders on one network send, so junk must be very heavy to throttle them.
+- Every POST then reserves one token of its address's `webhook_address` failure bucket (2 per second,
+  burst 20); an address with none left is refused before any work. The token is given back once the
+  secret matched, so a valid sender spends nothing of it, and requests in flight at once (slow bodies)
+  each hold their own token, so they cannot all pass on the last one.
+- A POST that fails before or at the secret check (an unknown or malformed id, a wrong secret, a body
+  over the cap) keeps its address token and also spends one token of its network's `webhook_prefix`
+  failure bucket (20 per second, burst 100); a network whose failure bucket is empty has its failures
+  answered `429` instead of `401`. A bad id and a bad secret spend the same buckets after the same work,
+  so they still look alike.
+- A POST whose secret matched never keeps a failure token, so junk from a network cannot throttle a
+  valid sender on it. It spends one token of the webhook's own `webhook` bucket (30 a minute, burst
+  5: the sixth POST at once waits 2 s).
+
+Every refusal is `429` with `Retry-After` in whole seconds. The instance serves `/hooks/` on its
+public listener only, never on the Bot's local socket, where every peer would share one address.
+
+**Authentication.** A secret has one spelling: strict unpadded base64url (the unused low bits of the
+last character are 0), and a path that carried any percent escape is refused. A malformed id, an
+unknown id, a malformed or otherwise-spelled secret and a wrong secret are one answer: `401 {"code":"E_UNAUTHENTICATED","message":"unknown webhook or wrong secret"}`. Each does the
+same work, one store lookup, one SHA-256 of the presented secret and one constant-time compare (with
+a per-process random hash when there is no stored one), so none is told apart by timing either.
+
+**Delivery.** After the checks the instance confirms the channel is still a Bot channel and the
+community's Bot installation is ready, then sends gateway op 66 `bot_webhook` `[delivery_id,
+webhook_id, community_id, channel_id, display_name, avatar_id|null, text, allow_everyone]` to the
+Bot runtime's live connection (`02` § Bot runtime) and waits at most 2 s for its op 67
+`bot_webhook_ack`. `display_name` is the cleaned `username`, else the webhook's `name`. A Bot that is
+offline, parked, resuming or streaming its snapshot, an installation that is not ready, an ack
+timeout, an ack whose status is not 0, and a Bot device that already has 32 deliveries waiting are all
+`503 E_BOT_OFFLINE` with `Retry-After: 5`. Unlike a sealed command, a webhook delivery is never carried across
+a Bot reconnect: a Bot inside its resume window, or reconnecting after a drop, is offline for it, while a command
+relayed then is answered `202` and carried to the Bot's next connection. Delivery
+is at least once from the sender's side: a POST answered `503` after the Bot posted (its ack was lost)
+and retried by the sender posts twice; a `503` before the frame was sent posts nothing.
+
+**Avatars.** No client and no Bot ever sees or loads the sender's `avatar_url`: a viewer's address
+would reach whoever runs the webhook. The instance fetches it instead, and only for a POST that
+authenticated. The fetch is hardened against server-side request forgery:
+
+- the URL is https, port 443, with no credentials, at most 2048 bytes;
+- the instance resolves the host itself and refuses it unless every answer may be fetched, and dials
+  the vetted address directly, so a DNS rebind cannot swap it. An IPv4 address (or the IPv4 of an
+  IPv4-mapped one) must be public unicast: not loopback, private, link-local, CGNAT `100.64.0.0/10`,
+  multicast, unspecified, or a documentation, benchmarking or reserved range. An IPv6 address must be
+  global unicast `2000::/3`, outside the IETF protocol assignments `2001::/23` (which hold Teredo) and
+  the documentation ranges; everything outside `2000::/3` is refused, including `::ffff:0:0/96` and
+  the local-use NAT64 `64:ff9b:1::/48`, except 6to4 `2002::/16` and the NAT64 well-known `64:ff9b::/96`,
+  whose embedded IPv4 is vetted instead. The instance's own addresses are refused too: its interfaces,
+  `instance.public_ip`, and what `instance.domain` resolves to. The domain is resolved in the background
+  at start-up and every 10 minutes (5 s per lookup), never while fetching; until its first lookup
+  succeeds no avatar is fetched (posts go on without one), and a later failed lookup keeps the last good
+  answer. Behind a
+  reverse proxy, set `public_ip` to the proxy's public address as well, so the check holds even when the
+  domain resolves elsewhere;
+- at most 2 redirects, each checked and vetted again; no proxy; TLS verified; no cookies, credentials
+  or instance identifiers; `User-Agent: dilla-webhook-avatar`; 3 s in all;
+- at most 512 KiB of body; the type is sniffed from the bytes (PNG, JPEG or GIF; the header is
+  ignored, and WebP is refused until a decoder is vetted); at most 512×512, checked before decoding;
+  decoded and re-encoded as PNG, so the instance never serves the sender's bytes.
+
+The result is cached in memory, content-addressed by the SHA-256 of the PNG (the `avatar_id`), scoped
+to the webhook's community, for 24 h, at most 4 MiB per community, 128 MiB and 16384 images in all,
+each image charged 512 bytes on top of its PNG; the oldest go first, and expired entries are swept as
+the cache is used. A failed fetch is remembered for 10 minutes. The remembered URLs, successes and
+failures kept apart so each expires on time, are at most 16384 and 8 MiB (each URL charged its length
+plus 256 bytes), failures dropped first. Fetches are metered per webhook (one
+per 30 s after a burst of 2), per community (one per 5 s after a burst of 5) and for the instance (2 a
+second, burst 10), narrowest first: a fetch one bucket refuses spends nothing of the others. A POST waits at most 750 ms for a new fetch; past
+that it is delivered without an avatar and the fetch, which goes on, serves the webhook's next post.
+A restart forgets the cache. Members read the image with `GET
+/v1/communities/{community}/bot/webhook-avatars/{avatar_id}` (an enrolled session of a member of
+`community`; HTTP, like GIF media): `200 image/png` with `X-Content-Type-Options: nosniff`,
+`Content-Security-Policy: default-src 'none'` and `Cache-Control: private, max-age=86400, immutable`;
+`404` for a non-member, another community's avatar, or one no longer cached.
+
+**What is kept.** Nothing of the body: the text, username and avatar URL are in no row, no log line
+and no gateway ring (op 66 is never ringed). The secret is in the path, and the request log records
+the route pattern (`POST /hooks/{webhook_id}/{secret}`), never the URL. An operator's reverse proxy
+logs full URLs by default and must redact `/hooks/*` in its access log, or the secrets land there.
+
+| Status | Code | When |
+|---|---|---|
+| 204 | — | the Bot posted it |
+| 400 | `E_INVALID_REQUEST` | not `application/json`, not UTF-8, not one JSON object, a field of the wrong type, no `text`, a control character in `text`, a `username` over 80 bytes, a bad `avatar_url` |
+| 401 | `E_UNAUTHENTICATED` | an unknown or malformed webhook id, a wrong, malformed or otherwise-spelled secret, or a percent-escaped path |
+| 409 | `E_NOT_BOT_CHANNEL` | the webhook's channel is not a Bot channel now |
+| 413 | `E_TOO_LARGE` | a body over 8192 bytes, or `text` over 4000 bytes |
+| 429 | `E_RATE_LIMITED` | the address, network or webhook bucket is empty; `Retry-After` |
+| 503 | `E_BOT_OFFLINE` | the Bot did not take it; `Retry-After: 5` |
+
+### Webhook posts
+
+The Bot posts a webhook (op 66) as an ordinary plain-text message in the webhook's Bot channel, through its normal send
+path, and answers op 67 `[delivery_id, 0]` on the same connection only once the message is accepted (any other status,
+or none within 2 s, is the sender's `503`). It posts nothing, and acks nonzero, when the channel is no longer a Bot
+channel. The text is never parsed as a command. Mentions:
+
+- a user or role token (`<@` + 32 hex digits + `>`) gets a zero-width space after the `@`: a webhook pings no user and
+  no role;
+- without `allow_everyone`, every `@everyone` and `@here`, bare or as a token, in any case, gets one too;
+- with `allow_everyone`, a bare `@everyone` or `@here` at a mention boundary (the start, or after white space or one of
+  `( [ { " '`, and ending where a name cannot continue) becomes the token `<@everyone>` or `<@here>`, so an integration
+  that writes the bare form, as Discord's do, pings.
+
+A `[dilla-` in the text becomes `(dilla-`, as in every free text the Bot posts (welcome messages, announcements, role
+panels, poll questions and answers), so it cannot forge a player card, a poll or a label. The body ends in a label line
+the client draws "via webhook <name>" from:
+
+```
+<text>
+[dilla-webhook:v1:<webhook_id>:<display_name>]
+[dilla-webhook:v1:<webhook_id>:<display_name>:<avatar_id>]   (when the webhook has an avatar)
+```
+
+`webhook_id` is 32 hex digits and `avatar_id` 64 hex digits, the id of dillad's proxied avatar
+(`GET /v1/communities/{community}/bot/webhook-avatars/{avatar_id}`), never a URL. `display_name` is percent-escaped for
+`%`, `:`, `[`, `]` and control characters (`%3A` is a colon). A text too long to fit the 4000-byte body with its label is
+cut at a character boundary and ends in an ellipsis.
+
+The ack goes only on the socket the delivery arrived on. When that socket was resumed or replaced while the message was
+being posted, the Bot sends no ack: dillad has already answered the sender `503`, the sender retries with a new
+`delivery_id`, and the message is posted twice. Delivery is at least once on reconnect.
+
+Bot posts into a channel group (kind 0) are also checked by dillad: `POST /v1/groups/{group}/bot/messages` into a text
+channel that is not a Bot channel of the Bot's community is `409 E_NOT_BOT_CHANNEL`.
+
+## Bot connection and feed
+
+The Bot is a child process of dillad (`[bot]` in `dilla.toml`), started and restarted with back-off by a
+small keeper process that holds only the right to start and stop it; the serving dillad holds no such
+capability. It runs as its own user, `dillabot`, in a sandbox, with no capability of its own. dillad and the
+Bot talk over a Unix socket and nothing else, so there is no URL to set and no network path.
+
+- **The socket.** dillad listens on `<bot.socket_dir>/gateway.sock` (default `/run/dillad/bot/gateway.sock`;
+  the directory 0750 and the socket 0660). It accepts only the process its keeper started, by `SO_PEERCRED`.
+  The first `identify` of each start carries a one-time launch token dillad passed on descriptor 3. The
+  socket serves the gateway upgrade and a short list of HTTP routes (`02` § Connecting); every other call
+  the Bot makes is a request frame (`09` § Socket requests).
+- **Frames.** The Bot's connection receives op 64 `bot_command` (a member's sealed request, with the
+  authenticated `user_id` and `device_id`), op 65 `bot_event` (the feed below) and op 66 `bot_webhook`, and
+  sends op 67 `bot_webhook_ack` (`02` § Bot runtime). It answers through `POST
+  /v1/bot-runtime/replies` and raises hints through `POST /v1/bot-runtime/state-hints`.
+- **The feed.** Op 65 carries the changes the Bot needs and nothing else, all about its own community:
+  device lists (kind 1), members (2), roles (3), channel groups (4), Bot channels (5), the owner (8),
+  channel overwrites of Bot and voice channels (9) and member timeouts (10), with a bracketed snapshot
+  (kinds 6 and 7) on every identify. The Bot authorises every command from this state; it makes no request
+  per command. Kinds, payloads and the snapshot's order are in `02` § Bot runtime.
+- **Trust.** The Bot pins a user's account key the first time dillad pushes that user's device list (trust on
+  first push). A later push under another account key replaces nothing: it is held as a pending key change
+  and that user's commands are refused until it is resolved. A pushed head that does not chain from the
+  Bot's cache marks the user behind only when the user's own key signed it. Membership of Bot channels and
+  calls is checked from the same pushed lists, for the users whose list changed, never per pass or on a
+  timer.
+- **Resume.** The connection has sequence numbers and a resume window of 120 seconds: a reconnect replays what
+  the Bot has not acknowledged. A Bot restart is ready for commands within 5 seconds. A webhook delivery
+  is not carried across a reconnect (§ Webhooks).
+- **HTTP.** The Bot uses HTTP only before its connection exists (the enrollment routes of § Installation and
+  enrollment API) and for one-off actions; nothing is periodic.
+- **Enabled per instance and per community.** `[bot] enabled` in `dilla.toml` turns the Bot process on;
+  an admin turns it on for a community on the Bot page. `dillad doctor` has a Bot leg that checks the Bot's files, user and
+  state directory (`docs/deploy/README.md`); the installers check that the running Bot holds no capability.
+
+## Health
+
+The Bot reports its health every 15 s, `PUT /v1/bot-runtime/health`, socket only, from the community's ready Bot
+(metered in the `bot_runtime` bucket): `[probe_ok, probe_at, queue_depth, oldest_wait_ms, music_start_p95_ms,
+failing_since|null]`, all uints (`probe_ok` is 0 or 1; times are Unix seconds). `204`.
+
+- **The probe.** Every 60 s the Bot sends itself a sealed `OpProbe` (90) along the whole command path and counts it
+  answered only when the answer `[200, "", 1]` comes back within 5 s. Its helper seals the probe to the community's
+  current command key as the Bot's own device (helper op 25 `probe_seal [community_id, request_id, now]` →
+  `[sealed, handle]`; it never mints or rotates a key, and with none it refuses) and keeps the reply secret behind
+  `handle`. The Bot POSTs it to `POST /v1/communities/{community}/bot/commands` like a member's device (the ready
+  Bot's own community only); dillad attaches the Bot's own session and relays it back as op 64; the Bot's intake opens
+  it in the helper against the Bot's own device list as the feed pushed it, behind the feed barrier, with the Held
+  check and the readiness gate, and answers through `POST /v1/bot-runtime/replies`; dillad delivers op 62 to the
+  Bot's own connection, and the helper opens it (op 26 `probe_open [handle, seq, sealed, forget]` → `[body]`). A
+  helper that errors or hangs, a stuck feed, a wedged delivery loop, a full queue, idle workers, and a broken relay or
+  reply route each fail it. A reply that never comes is a failure. `probe_ok` and `probe_at` are the last probe's;
+  `failing_since` is when the failures began by the Bot's clock (null while the last probe passed); dillad ignores it.
+- **The load.** `queue_depth` is the commands relayed to the Bot and not yet answered (a command a worker holds, in a
+  hanging helper call or a blocked handler, still counts), `oldest_wait_ms` how long the oldest has waited,
+  `music_start_p95_ms` the 95th percentile of the first-frame time over the last 20 track starts (0 without any).
+- **dillad's judgement**, in memory and from its own clock, per community. The Bot is **degraded** (catalog status
+  state 1, `since` the time the judgement began) when the probe failed twice in a row (two reports with distinct
+  `probe_at`, both not ok), when `oldest_wait_ms` is over 10000, or when `queue_depth` rose from each report to the
+  next over the last 60 s (the reports compared start at least 60 s ago). It is **offline** (state 2, `since` the last
+  report) when no report came for 150 s; a Bot that never reported is offline 150 s after dillad started. Otherwise it
+  is ready. A new report ends degraded or offline at once.
+- **Failing since.** When its judgement first becomes degraded, dillad stamps the time with its own clock. While the
+  Bot stays degraded the catalog status's `since` is that time, and dillad keeps it in a `0600` file, `bot-health` in
+  its data directory (one `<community hex> <unix seconds>` line per degraded community), written whole on each change.
+  A restarted dillad reads it back: a Bot judged degraded again keeps its time, and only a passing probe drops it.
+- `dillad doctor` prints `commands failing since <time> (community <id>)` from that file (a warning, not a failure),
+  and `dillabot doctor` prints `commands failing since <time>` from the last report the running Bot left in its state
+  directory.
+
+## Operations
+
+The operations a Bot offers keep the numbers and argument shapes below. They no longer travel in a
+type-0 envelope body (`dilla.bot/1:` and base64url CBOR) through an interaction group: a member's device
+names the operation in a sealed request (§ Sealed request), and an app surface adds 100 to the number (§ App
+surfaces on sealed commands). The Bot normalises an opened request into the internal CBOR array `[1,
+request_id, community_id, channel_id|null, operation, revision|null, expires|null, args]` before its handler
+runs. `request_id` is also the stable mutation operation id. The expected community comes from the key the
+request was sealed to, never from the payload. The actor comes only from the signed device identity the
+Bot verified; there is no actor field.
 
 Operation, arguments, channel requirement, mutation:
 - 0 overview.get: [], no channel, read
@@ -55,10 +596,9 @@ Operation, arguments, channel requirement, mutation:
 - 52 announcements.delete: [schedule_id, expected_schedule_revision], no channel, mutation; request revision is the expected scheduler document revision and the argument's positive revision must match the stored schedule
 - 60 moderation.cases: [cursor bstr(1..256)|null], no channel, read; null requests the first page
 - 61 moderation.evidence: legacy removal `[action_request_id, reason tstr(1..1024 UTF8 bytes), excerpt tstr(0..512 UTF8 bytes)]`, or manual warning `[action_request_id, "warn", reason tstr(1..1024 UTF8 bytes), ""]`; no channel, mutation. The warning form is accepted only after authoritative lookup of the matching human warning receipt.
-- 62 automod.config.get: [], no channel, read
-- 63 automod.config.put: [grant_token tstr(1..512 UTF8 bytes), config_document bstr(1..2400)], no channel, mutation
+- 62, 63: retired (AutoModeration, § Retired v1 surfaces)
 - 64 moderation.evidence.list: [cursor bstr(1..256)|null], no channel, read; null requests the first page
-- 3 capabilities: [], no channel, read
+- 3: retired (the capabilities report, § Retired v1 surfaces)
 - 70 poll.create: [payload bstr(1..2200)], no channel, mutation with revision 0. Payload is canonical CBOR `[1, channel_id, thread_id|null, question, answers, multi, duration_seconds]`; channel_id is required bstr16, question is 1..300 Unicode scalar values, answers are 2..10 unique nonblank strings of 1..100 Unicode scalar values, multi is 0 or 1, and duration is one of 3600, 14400, 28800, 86400, 259200, 604800 seconds. The encoded payload is capped at 1800 bytes so a result fits the response cap.
 - 71 poll.get: [poll_id], no channel, read
 - 72 poll.list: [channel_id, thread_id|null, cursor bstr(1..256)|null], no channel, read
@@ -69,7 +609,7 @@ Operation, arguments, channel requirement, mutation:
 - 81 reminder.list: [cursor bstr(1..256)|null], no channel, read
 - 82 reminder.cancel: [reminder_id], no channel, mutation
 - 83 reminder.dismiss: [reminder_id], no channel, mutation
-- 84 reminder.due: [cursor bstr(1..256)|null], no channel, read
+- 84: retired as a request; the due reminders are the sealed read 93
 
 Before requesting operation 24, clients negotiate through operation 0. Its legacy
 response is `[1, actor_id, effective_permission_bits, owner, administrator]`.
@@ -177,75 +717,22 @@ recheck the current human moderator's `view_audit_log` authority through the aut
 API. MLS sender authentication and request correlation do not establish the receiving human's
 current permission.
 
-`automod.config.get` returns the encrypted-state revision and the canonical
-configuration document `[1, enabled 0|1, rate_action, duplicate_action,
-mention_action, timeout_ms, exempt_user_ids]`. Actions are `log`, `remove`,
-`warn`, or `timeout`; timeout is `1..2419200000` ms, and there are at most 256
-unique nonempty exempt user IDs of at most 128 UTF-8 bytes each. An absent row
-reads as disabled, all rules log-only, a 600000 ms timeout, and no exemptions.
-Both configuration operations bind the encrypted state to the bot installation,
-community, and instance as the existing area-8 store does.
+### Retired v1 surfaces
 
-Each read and write resolves the authenticated MLS sender's current server
-membership and permissions. The actor must currently be an owner, administrator,
-or hold `manage_community`; writing a config that names `remove` additionally
-requires current `manage_messages`, and `warn` or `timeout` additionally requires
-current `moderate_members`. Owners and administrators satisfy those action
-requirements. A denied actor or cross-community request is refused before the
-encrypted row is read or changed. This check uses the authenticated bot session's
-current actor-authority endpoint, never actor data in `args`.
+Bot v2 removed the v1 Bot machinery the sealed commands replaced. A server, a Bot
+and a client of this version neither offer nor accept any of it:
 
-`automod.config.put` compares the top-level request revision atomically with the
-encrypted-state revision. A stale or racing update returns status 4 and the
-current revision, without changing the row. Its `grant_token` is an opaque,
-one-use grant issued after the configuring human's current step-up; it carries no
-configuration plaintext. Redemption is bound to the exact authenticated actor
-and interaction context plus community, request ID, operation 63, expected
-revision, request expiry, and SHA-256 of the exact canonical configuration
-document. The bot sends only that digest to the redemption endpoint; plaintext
-configuration remains inside the MLS-decrypting bot process. It redeems before
-attempting the state transaction. The state transaction ID is the request ID, so exact retries of a
-committed write recover the original revision receipt. Grant redemption must
-return the same receipt for an exact retry, including after restart: if a grant
-was redeemed but the state transaction then conflicted or failed, the row is
-unchanged and the same request can retry with that receipt. Reusing a grant for a
-different request tuple is refused.
+- the private per-member interaction groups (MLS group kind 3), their admission, signed
+  context, synchronization, heal and registration paths; a kind-3 binding is refused and
+  stored kind-3 groups are deleted (dillad migration 00058, the client core at open, the
+  Bot helper's one-time cleanup);
+- AutoModeration (operations 62 and 63, its grant routes and its stored configuration and
+  state) and the Bot's automatic moderation action route;
+- the capabilities report (operation 3) and the v1 due-reminders request (operation 84).
 
-A successful settings write activates the evaluator, fresh action dependencies,
-revision and replay boundary before its acknowledgement. Later reconciliation
-of that revision preserves the activated evaluator and rolling observations;
-an exact successful retry also preserves them. Dependency or replay-source
-readiness failures refuse the write. Receipt timestamps have second resolution,
-so events from the activation's own receipt second remain conservatively
-replay-only; the first strictly later receipt second is eligible for live
-evaluation. Pre-activation history arriving through delayed source sync never
-becomes a new punitive action.
+The moderation log reads its pages, operations 60 and 64, as sealed app operations 160
+and 164 (§ App surfaces on sealed commands), for members with `view_audit_log`.
 
-The config service does not treat stored bot capability bits as actor authority.
-At event enforcement time, the moderation action endpoint rechecks the active
-installation's approved warning/timeout or removal capability and the actor's
-current moderation permission. If either has been revoked, the action fails
-closed and no punitive action is accepted. The human step-up grant implementation
-is required for op 63; deployments without a configured redeemer return status 5.
-
-The human arms a config write with `POST /v1/groups/{group}/automod-grants/arm`
-using `[request_id, community_id, expected_revision, request_expires,
-config_hash32, step_up_token]`; the response is `[grant_token,
-grant_expires_unix]`. This requires the current human group context, community
-membership, bot installation, and a valid session-bound step-up. Revision zero
-is valid for the first write. The server stores the digest and exact interaction
-tuple, and stores only a hash of the opaque grant token.
-
-The bot redeems through
-`POST /v1/bot-runtime/installations/{installation}/automod-grants/redeem` with
-`[grant_token, community_id, group_id, request_id, expected_revision,
-request_expires, actor_user, actor_device, config_hash32]`; success returns
-`[true, receipt_id]`. The request must come from the matching ready installation
-and current bot session. The server validates the current interaction group,
-roster, participant device, actor membership, exact config digest, and every
-stored tuple field. An exact duplicate redemption returns the original stable
-receipt; changed or expired tuples fail. Config plaintext is never sent to these
-HTTP endpoints.
 Nonempty data is strict deterministic CBOR array. Empty data allowed. status:
 0 ok,1 invalid,2 forbidden,3 expired,4 conflict,5 unavailable,6 busy,7 not_found,
 8 upgrade_required,9 internal. Validate expected community on response separately;
@@ -368,52 +855,6 @@ preimage with its device key; the server verifies it against the authenticated
 session and current authority.
 Accepted stored proofs remain evidence after expiry; decoding never applies time.
 
-## Automatic warning and timeout acceptance
-
-`POST /v1/bot-runtime/installations/{installation}/moderation/actions` accepts
-`[request_id, group_id, source_seq, action, rules, timeout_ms, expires]` and
-returns `[action_id, community_revision, expires|null]`. The request is accepted
-only for an enrolled session bound to that exact Ready installation and when
-both the current installation and session capabilities include warnings/timeouts.
-The server rechecks the active installation, source text group and recent
-undeleted message, uploader membership, current `moderate_members` permission,
-and role hierarchy in the same transaction that records the event and receipt.
-The source sequence and group determine a stable operation ID; an exact replay
-returns the original receipt, including after the request acceptance window.
-Timeouts update the member timeout row, which applies to every upload class.
-
-Both this route and `POST /v1/groups/{group}/moderation/removals` accept
-`?receipt_only=1` for reconciliation. They validate the same authenticated
-installation/device and exact operation payload (including the signed removal
-proof). An existing matching receipt returns its original result. An absent
-receipt returns `404 E_NOT_FOUND` before any new effect, regardless of whether
-the source would otherwise still be eligible. Unknown transport results remain
-retryable; a lookup is never promoted into a new acceptance request.
-
-The Bot checkpoints rolling observations, source deduplication, the processed
-frontier and any pending decision in one protected native state transaction
-before acknowledging a delivery. There are 256 fixed actor shards (each bounded
-by the native 256 KiB value limit) and 1,024 reusable pending slots per
-installation. Full or unpersistable state defers intake before acknowledgement;
-logs expose only the refusal stage and counter. Activation barriers are persisted
-before a configuration update is acknowledged and reused after restart. A legacy
-installation without a checkpoint seeds one conservative barrier. Pending
-old-policy decisions can reconcile existing receipts but cannot authorize new
-effects after disablement, policy change or source expiry. Accepted case receipts
-are saved before evidence attachment, allowing local evidence recovery after
-revocation. Protected case format v3 adds an explicit enforcement-refused flag;
-v2 records remain readable. Checkpoint-only native transactions in this new
-area-8 namespace retain their latest 64 transaction receipts; configuration and
-command receipts keep their existing retention. An older checkpoint retry is
-still guarded by CAS revisions and recovered through row/frontier reconciliation.
-Rolling/dedup snapshots omit observations outside their evaluation windows.
-None of these state formats changes MLS or wire versions.
-
-The server can verify the source message and authorization, but it cannot inspect
-the encrypted message or independently attest that a listed rule matched. Rule
-IDs and the runtime-generated action are inputs from the authenticated bot
-session. This endpoint does not claim cryptographic evaluator attestation.
-
 ## Durable structural event
 
 `[1, event_id, sequence uint>0, community_id, timestamp uint, kind uint1..8, data]`.
@@ -434,12 +875,13 @@ group+target_seq required and target_user optional; other actions require target
 group+target_seq null. Timeout requires expires>timestamp; other actions expires
 null except ban may have expires>timestamp. Identifiers and metadata only: no
 message text, reasons, excerpts, names, URLs. Max encoded event4096 bytes.
-Validate community separately against route/session binding. Stream retention30d;
-ack semantics and pagination handled by API. Event id survives retries. A human signed-device-list
-publication appends kind 8 in the same transaction as the new list, once for each of the user's
-current community memberships; the event contains only the account ID
-and accepted list version, never device keys or list contents. The Bot resolves the current member
-episode from the community before using the event to enqueue device registration.
+Validate community separately against route/session binding. Event id survives retries. Since Bot
+v2 task 12 no route serves these records to the Bot and they are no longer pruned; a signed-device-list
+publication appends none (kind 8 is retired), and the Bot learns device lists, members, roles,
+Bot channels, the Bot and voice channels' overwrites and member timeouts from the op 65 `bot_event`
+feed (`02` § Bot runtime) instead. The Bot authorises a sealed command from that state only: the
+catalog command's `permission_bit` in the command's channel (a channel it was told nothing of refuses
+any non-zero bit), and a timed-out member's commands are refused.
 
 ## Send receipt
 
@@ -464,7 +906,7 @@ IDs and all bytes. A successor may name only the immediately previous attempt
 durably closed with outcome 0. Acceptance seals the entire logical operation;
 outcome 2 suppresses automatic retry. A missing response or receipt is not proof
 of nonacceptance. This replaces the unreleased eight-field pending/accepted
-receipt without changing wire 3, E2EE or media versions.
+receipt without changing the E2EE or media versions.
 
 ## Helper transport envelope
 
@@ -610,163 +1052,11 @@ Group suboperations are: 0 list `[]`; 1 inspect `[group_id]`;
 17 pending_leaves `[]`; 18 events_read `[after_delivery_id,limit]`;
 19 events_ack `[through_delivery_id]`; 20 intent_result `[operation_id]`.
 Here argument arrays expand after the suboperation number rather than adding a
-nested array. Kind is the existing text, call or interaction group kind. Text and
-The Bot helper currently admits only text (0) and call (1) group creation,
-external join and Welcome expectations. Pairing (2) and interaction (3) are
-refused before MLS or durable-intent mutation. Text and call groups require
-this installation's community. An interaction binding, when decoded by the
-shared protocol library, preserves `01`'s null legacy community slot and carries
-the Bot account, installation community, one participant user and one
-participant device in its typed v2 extension. That shape is structural data;
-it does not authenticate the participant or authorize admission. Do not create
-an interaction group by trusting those fields from the helper request.
-
-### Kind-3 Bot admission contract proposal
-
-Kind-3 Bot admission remains unavailable until the server and native core can
-bind an authenticated admission decision to the exact MLS roster. Existing
-evidence does not supply that decision: a Bot session authenticates the acting
-installation, community, Bot account and Bot device; the current group
-registration receipt binds that session to the submitted group body and
-generation; and a signed device list authenticates a device's account
-credential. None of those proves that a selected human is currently eligible
-for this Bot interaction or binds that selection to the resulting group.
-The current registration check also authenticates only the registering Bot
-leaf. A participant tuple copied from an event, URL, helper request or MLS
-binding remains caller-declared data.
-
-The issuance-only route is
-`POST /v1/bot-runtime/installations/{installation}/interaction-admissions`,
-under the current wire-3 Bot session for that installation, in joining or ready
-state. Its request is `[request_id,group_id,participant_user,participant_device]`.
-The server requires the participant to be an active human account and current,
-non-banned member of the
-installation community and the selected device to be active in that user's
-latest valid signed device list. The proof records that eligibility decision;
-it does not currently admit the interaction group. Once admission is wired,
-the Bot dispatcher must still check each operation's permissions at use time.
-
-Issuance is fenced by the participant user row and a durable per-community,
-per-user eligibility revision. A repeated request ID with the same group and
-participant tuple returns the same 30-second proof while it remains current;
-conflicting reuse fails. Expired proofs can be refreshed for the same tuple.
-After 30 days, the request-hash tombstone may be compacted and the ID reused.
-An admission receipt is not a group-registration receipt.
-
-The response is `[payload_bstr,signature_bstr]`. The payload is strict
-deterministic CBOR `[1,admission_id,instance_id,installation_id,community_id,
-bot_user_id,bot_device_id,participant_user_id,participant_device_id,group_id,
-eligibility_revision,not_after]`. All IDs are nonzero bstr16; revision and
-`not_after` are server uint values at most signed-int64 max. The instance signs
-`ASCII("dilla bot interaction admission v1") || 0x00 || payload` with the
-Ed25519 private key corresponding to its published instance external-sender
-public key. The Go client obtains that key from authenticated `GET /v1/instance`
-discovery and passes it to native bootstrap over private helper IPC. The client
-requires HTTPS except for explicitly enabled loopback HTTP, disables redirects,
-and checks the configured instance id. The native core stores the key in its
-encrypted Bot store alongside the installation binding. An existing ready Bot
-store without a pin requires operator recovery; bootstrap never silently assigns
-it a new key. A caller-supplied key or expected tuple is never a trust anchor.
-Every later identity reconciliation checks discovery against the stored key.
-Changing the pinned key requires an explicit trusted instance-key transition,
-not an admission retry.
-
-The read-only context endpoint returns `[snapshot_payload_bstr,
-snapshot_signature_bstr]`. Its canonical CBOR payload is array v1
-`[1,request_id,admission_id,admission_payload,admission_signature,server_now,
-eligibility_revision,policy_version,e2ee_version,media_version,instance_id,
-external_sender_key_id,instance_signer_pub,expected_tuple,bot_list,
-participant_list]`. `expected_tuple` is the eight IDs in the admission tuple order.
-Each list is `[user_id,umk_pub32,ssk_pub32,sig_umk_ssk64,version,blob,
-ssk_signature64,prev_hash32,sha256_blob32]`. The instance signs
-`ASCII("dilla bot interaction context snapshot v1") || 0x00 || payload` with
-the same pinned external-sender key. The included public key must equal the
-client's stored pin. The key ID is included in the signed payload, but this client
-version does not persist a separate key-ID pin and therefore treats that ID as
-descriptive. Each list blob is at most 64 KiB and the snapshot payload is at most
-160 KiB. This snapshot proves which
-server context was read together; it is not authorization to register a group.
-The registrar still checks current state and consumes the admission receipt
-atomically with registration.
-
-For the human participant, the Bot accepts either an already verified UMK pin or
-an unchanged first-seen pin. First-seen acceptance is limited to this operation:
-the pin must exist, its UMK must equal the snapshot UMK, and it must have no
-pending changed key; the snapshot's participant list must also be byte-for-byte
-equal to the list already ingested and cached by the native core, including its
-version and UMK/SSK. The snapshot signature and the device-list signatures and
-cross-signatures are still verified. A missing pin, changed key, or any mismatch
-between the signed snapshot and cached list refuses interaction. This lets a Bot
-serve a newly joined member under the existing first-seen trust model without
-marking that member verified. The Bot's own identity always requires its own
-verified pin.
-
-The core rejects an invalid signature, any tuple mismatch, `not_after` at or before
-than authenticated server time, an admission replayed for another operation or
-group, or an `eligibility_revision` older than the latest admission known for
-that installation and participant. The server increments that revision when
-membership, ban state, account disable/deletion or the participant's active device set changes, and
-rechecks it under the same transaction fence as group registration. Registration
-and recovery receipts bind the admission id and payload hash in addition to
-the existing installation, operation, body and generation fields. This receipt
-does not replace authenticated group state or permit a stale retry to regenerate
-an MLS mutation.
-
-After verifying that result, the core must inspect the authenticated MLS
-GroupInfo and tree and require a v2 interaction binding equal to the result in
-all immutable fields. The initial authenticated roster contains exactly two
-leaves: the Bot's registered device and the selected human device. Each leaf
-credential must match its account's current signature-verified device list,
-including the complete Bot credential match required by managed Bot
-registration. Binding equality alone is insufficient. The server must
-independently enforce the same admission tuple and exact roster when it accepts
-registration, later Adds or Removes, Welcome acknowledgement or resync; a
-valid initial receipt must not authorize a changed roster. A participant device
-replacement requires a fresh admission and a committed removal of the old leaf
-before the new device becomes actionable.
-
-The core must persist the verified admission tuple and receipt atomically with
-the group state and its registration or Welcome outcome. Recovery and duplicate
-handling must compare the exact receipt and group body, and any participant
-eligibility change or removal must stop new interaction sends and invalidate
-the admission for subsequent membership changes. Event attribution must come
-from the MLS-authenticated sender and pass the same current device-list checks;
-the binding's participant fields never override the authenticated sender.
-Until all these checks and recovery rules exist end to end, kind 3 creation,
-join, Welcome admission, synchronization and event delivery stay unavailable.
-
-For the currently supported text and call paths, sender validation uses the
-existing credential/device-list chain; unvalidated pending history must never
-produce actionable bot messages.
-Revalidation limit1..256; leaf index at most uint32 max. Network pages are bounded
-by encoded size; indivisible large group objects use group_transfer below.
-Actionable decrypted messages are delivered through the durable event journal,
-retaining the core-authenticated sender and server receipt time. A user field in
-application content cannot replace attribution.
-
-For suboperation7, `expected_bindings_body` is a deterministic CBOR array of
-`[group_id,community_id,target_id,kind,policy_version]` tuples. IDs are nonzero
-bstr16, kind is0 text or1 call, and each community is the helper's installation
-community. There is exactly one expectation for each distinct group in the
-Welcome batch. Validate all expectations before applying any Welcome; reject
-duplicates, missing or unrelated expectations and unsupported kinds. Mixed text
-and call batches preserve the native per-Welcome outcome order. Both the actual
-cryptographic binding and an existing active group's binding must match the
-expectation before a Welcome can be treated as accepted or already processed.
-Interaction expectations require the later typed participant contract and remain
-unavailable until then. The existing human native Welcome API keeps its original
-four-field expected tuples and behavior.
-
-For a Bot Welcome that successfully activates a group, the helper stores one
-versioned, fixed-size receipt in encrypted `app_meta`, keyed by group id. Its
-digest covers the exact Welcome bytes, ratchet tree, group/epoch/commit/tree-hash
-labels, installation, and immutable MLS binding (instance, community, target,
-kind and protocol versions); it excludes delivery id and policy-version snapshot.
-An already-active Bot group is acknowledged as a duplicate only when its current
-validated MLS binding and the submitted content match that receipt. Missing or
-changed content is refused without mutation. Group creation, discard, and
-external-join replacement clear the receipt in the same storage transaction as
-their state change, so stale Welcome evidence cannot survive another admission.
+nested array. Kind is the existing text or call group kind. Text and
+The Bot helper admits only text (0) and call (1) group creation, external join and
+Welcome expectations. Pairing (2) and the retired interaction kind (3) are refused
+before MLS or durable-intent mutation. Text and call groups require this
+installation's community.
 
 ### Group upload intents and recovery
 
@@ -798,8 +1088,8 @@ For first registration, the Go service also obtains the current server generatio
 and durably commits `(operation_id, expected_generation)` before it asks the native
 core to create the group. A retry or restart reuses both values exactly; it never
 substitutes a newly sampled generation or host clock. The native create intent's
-pending result is the exact deterministic-CBOR kind-3 registration body
-`[group_id,binding,group_info,ratchet_tree,initial_welcome]` as bstr. The Go service sends those
+pending result is the exact deterministic-CBOR registration body
+`[group_id,binding,group_info,ratchet_tree]` as bstr. The Go service sends those
 same bytes to the scoped HTTP route and retains them until a receipt resolves the
 intent. The generation fence therefore covers the native MLS mutation that
 produced the body, even though the generation is carried outside that body.
@@ -936,77 +1226,29 @@ resulting feature-state change; network acknowledgement occurs afterwards.
 
 ## Session capability and compatibility
 
-Wire 3 adds the bot contract; wire 2 remains supported outside bot-enabled
-functionality. Human signup, E2EE envelopes and media formats are unchanged.
+Wire 6 is the only wire (`07` § Versions): people and managed Bots offer and negotiate `[6]`, and the
+instance supports nothing older. There is no compatibility gate by community or by resource any more; a session
+below 6 can do nothing but update. Human signup, E2EE envelopes and media formats are unchanged.
+
 `POST /v1/sessions/negotiate` requires an enrolled device session and accepts
-`[[wire_versions], [e2ee_versions], [media_versions]]`, each list of 1..8 unique
-positive uints. It chooses the highest common version from server support and
-persists the selection against the authenticated bearer session. Response:
-`[wire, e2ee, media]`. No common version is `400 E_VERSION`; no row changes on
-failure. An authenticated gateway identify records its accepted versions against
-the same bearer session before publishing ready. An accepted downgrade replaces
-previous capability; device identity alone cannot lend capability to another
-session. Revocation removes the binding. Resume verifies the current bearer and
-reestablishes the original connection's versions before replay.
+`[[wire_versions], [e2ee_versions], [media_versions]]`, each list of 1..8 unique positive uints. It chooses
+the highest common version the instance supports and persists the selection against the authenticated bearer
+session. Response: `[wire, e2ee, media]`. An offer whose highest wire is below 6 is `426 E_UPGRADE_REQUIRED`;
+any other missing intersection is `400 E_VERSION`; no row changes on failure. An authenticated gateway
+`identify` records its accepted versions against the same bearer session before publishing `ready`, and an
+older offer closes with 4006 and the reason `E_UPGRADE_REQUIRED`. A later downgrade replaces the earlier
+capability; device identity alone cannot lend capability to another session. Revocation removes the binding.
+Resume verifies the current bearer and reestablishes the original connection's versions before replay.
 
-All bot routes and bot-enabled community mutation/sync operations check the
-resolved session's negotiated wire >=3. Missing/older capability yields
-`400 E_VERSION` with `supported=[3]`, allowing the UI to show an upgrade action.
-A request header containing a version is not evidence of negotiation. Existing
-wire-2 sessions can continue using unaffected communities, DMs and account routes.
-The shipping human client advertises [5,4,3,2], selects the highest supported version, and
-retains an explicit bot-unavailable/upgrade state when selected wire is 2.
-Managed Bots continue to negotiate exactly wire 3. Wires 4 and 5 preserve the Bot
-operations, including music controls and announcement registration; wire 5 adds
-the human client's ephemeral transport described in `02` and `09`.
-Runtime provisioning credentials are a separate scope, never a device session or
-instance-admin bearer. Bot runtime claims and enrollment require the wire-3 body
-contract directly; enrolled bot actions require the normal negotiated session.
+Every Bot route, and every socket request, checks the session's negotiated wire and answers `426
+E_UPGRADE_REQUIRED` unless it is 6, naming the wire it needs. A request header carrying a version is not
+evidence of negotiation. The desktop app turns the refusal into "Update dilla to continue" with its update
+button; a browser tab reloads once.
 
-For this gate, a community is bot-enabled while its current installation has no
-removal timestamp and is not disabled. Pending, enrolling, joining, ready and
-error installations all count. Ordinary community, channel, member, role,
-permission, invite and ban metadata snapshots remain readable under their normal
-authorization, so an older client can discover the community and explain its
-upgrade requirement. The gate covers community structural mutations, group
-registration and synchronization, message history and readable-channel message
-operations (including reactions, pins, search and read state), channel attachment
-operations, and community call admission/control/synchronization. DM, pairing,
-account and instance operations with no community binding remain available.
-Publishing one's account KeyPackages and fetching a device's public KeyPackage
-remain unscoped directory operations: those requests carry no group binding.
-The subsequent group registration, Add or resync admission and each Welcome are
-checked against the actual group's scope. Bot interaction groups
-retain their existing null-community binding but require wire 3 for registration,
-synchronization and delivery independently, as do bot application endpoints.
-
-Resolve and authorize the actual resource before reporting an upgrade refusal.
-Unknown or hidden resources keep their existing refusal, including reader-ACL
-group access and the signed body binding on group registration. A request checks
-the current committed installation state at its authorization boundary before
-performing the protected operation; an operation already admitted may finish if
-enablement commits concurrently. This is a compatibility gate and does not
-replace the operation's current permission, membership or transaction checks.
-Store failures refuse the affected operation with an availability error, rather
-than treating the community as disabled.
-
-Gateway compatibility is per resource, not per user. A wire-2 connection may
-identify and receive unaffected groups, DMs and account traffic. Its ready digest,
-subscriptions, group notifications, channel content and community call traffic
-exclude enabled communities. Group committer eligibility applies the same gate.
-Ordinary community metadata-change notifications may still prompt a metadata
-refresh. Each scoped delivery checks committed state before entering the writer
-queue; a frame already queued before enablement may finish. Every gateway uses
-the shared authoritative state, without a stale process-local enablement cache.
-Replay entries retain internal resource scope, including all groups in a ready
-digest. If an entry to be replayed is now disallowed, resume is refused as
-nonresumable and the client identifies again for a filtered digest; entries must
-not be silently skipped within the sequence. A live connection retains its
-identify-time version until it closes; HTTP uses its bearer's latest negotiated
-selection. Resume revalidates the bearer and current resource eligibility before
-restoring the original connection versions. Managed bot connections additionally
-retain the requirement that both the bearer and original connection selected
-wire 3.
+Runtime provisioning credentials are a separate scope, never a device session or instance-admin bearer. Bot
+runtime claims and enrollment use the wire 6 body contract directly; enrolled Bot actions require the
+normal negotiated session. A managed Bot connection retains the requirement that both the bearer and the
+original connection selected wire 6.
 
 ## Installation and enrollment API
 
@@ -1016,7 +1258,7 @@ B uses the existing enrolled device-session scope (numeric 0), with additional
 installation-state and route restrictions; it is not a fourth session scope.
 The installation state enrolling is independent of that session scope. Such a
 session may negotiate capabilities while enrolling, joining or ready, before
-calling routes that require wire 3. Capability negotiation itself does not
+calling routes that require wire 6. Capability negotiation itself does not
 require a previously negotiated version and cannot relax installation limits.
 R means a hashed, operator-registered runtime credential with provisioning scope.
 All E/A changes require existing step-up when the corresponding human operation
@@ -1118,12 +1360,18 @@ restore that right. The music publisher also disables automatic subscriptions.
 | `POST /v1/bot-runtime/installations/{installation}/keypackages` | B, joining/ready | `[operation_id, expected_generation, upload_body]` | `201 [count]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages` | B, joining/ready | — | `[generation, server_time, ordinary_active_count, has_current_fallback]` |
 | `GET /v1/bot-runtime/installations/{installation}/keypackages/{operation}` | B, joining/ready | — | `[expected_generation, upload_sha256, count]` or 404 |
-| `POST /v1/bot-runtime/installations/{installation}/groups` | B, joining/ready | `[operation_id,expected_generation,registration_body]` or kind-3 `[operation_id,expected_generation,registration_body,admission_request_id]` | `201` new / `200` exact replay: registration receipt |
+| `POST /v1/bot-runtime/installations/{installation}/groups` | B, joining/ready | `[operation_id,expected_generation,registration_body]` | `201` new / `200` exact replay: registration receipt |
 | `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` | B, joining/ready | — | registration receipt or 404 |
-| `POST /v1/bot-runtime/installations/{installation}/interaction-admissions` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[payload_bstr, signature_bstr]`; issues the short-lived proof consumed by kind-3 registration |
-| `GET /v1/bot-runtime/installations/{installation}/interaction-admissions/{request}/group-absence` | B, ready, wire 3 | — | CBOR boolean; true only while the matching admission is live and its exact group ID is absent |
-| `POST /v1/bot-runtime/installations/{installation}/interaction-admissions/context` | B, joining/ready, wire 3 | `[request_id, group_id, participant_user, participant_device]` | `[snapshot_payload_bstr, snapshot_signature_bstr]`; read-only v1 snapshot signed with the instance context-snapshot domain, max 160 KiB |
-| `GET /v1/groups/{id}/interaction-admission-context` | enrolled human participant device | no body | `[current_payload_bstr, signature_bstr]`; read-only v1 current-group proof signed with the dedicated current-interaction-context domain, max 160 KiB |
+
+Transport (Bot v2): every `B` route above is socket-only, a request frame on the Bot's gateway connection,
+except `PUT …/credential`, which the Bot sends while its installation is still enrolling and the gateway admits
+only a joining or ready Bot. The `R` routes run before and outside any device session and stay on HTTP, served
+only on the Bot's Unix socket: the public listener answers 404 to them and to the credential finalize, with or
+without `[bot]`. The Bot reaches them, the credential finalize, discovery, the session ceremony and its own device
+list only over its Unix socket (`02` § The supervised Bot's socket); the public `/gateway` refuses a managed Bot
+session. The Bot polls nothing: it reads its
+installations at start, on SIGHUP from dillad's supervisor after an installation change (configure, disable,
+remove, a restart request, the music defaults), after `community_changed` and after a `bot_event`.
 
 `device` is `09`'s native registration tuple, with device tier Native and signer
 tier Native. Credential kind MUST be Bot, and all key ids, key signatures, device
@@ -1135,49 +1383,6 @@ bound to the runtime credential and installation, and repeat requests return the
 same unexpired claim. Enrollment stores its operation result transactionally;
 repeat matching requests return the same account/device, not a second identity.
 
-The human `GET /v1/groups/{id}/interaction-admission-context` is a read-only
-Welcome-processing input. The path id is only a lookup hint: the server resolves
-the immutable accepted registration receipt, imports the currently persisted MLS
-public state, and refuses unless its canonical v2 binding and exact two-leaf
-authenticated roster still agree with that receipt. The enrolled, non-Bot session
-must be the participant user and device named by that binding. At issuance the
-server also requires that participant and Bot accounts/devices remain active,
-both remain community members and are not currently banned, both devices remain
-in their users' verified signed device lists, the Bot installation remains
-joining or ready, and the current policy still matches the binding. This route
-does not mutate group, admission, receipt, or Welcome state.
-
-The payload is deterministic CBOR fixed-position array v1:
-`[version,instance_id,instance_key_id,instance_signer_pub,issued_at,not_after,
-registration,binding,current_epoch,leaf_count,tree_hash,roster,
-eligibility_revision,policy_version,e2ee_version,media_version,bot_device_list,
-participant_device_list]`. `registration` is
-`[installation_id,operation_id,bot_user_id,bot_device_id,community_id,group_id,
-body_sha256,generation,accepted_epoch,next_seq,accepted_at]`; `binding` is
-`[instance_id,installation_id,community_id,bot_user_id,participant_user_id,
-participant_device_id,policy_version,e2ee_version,media_version]`; each roster
-entry is `[leaf_index,user_id,device_id,signature_key]`. Each device-list record
-uses the existing snapshot tuple `[user_id,umk_pub,ssk_pub,ssk_binding_signature,
-version,blob,signature,prev_hash,hash]`. The response signature is Ed25519 over
-`ASCII("dilla bot current interaction context v1") || 0x00 || payload`; clients MUST treat
-the proof as a short-lived snapshot (30 seconds), verify the signature against
-the persisted instance signing-key pin, and check its current-state fields before offering
-or processing a Welcome. `issued_at` and `accepted_at` are instance-clock values while the
-client checks them against its own clock `now`. The human client allows 5 seconds before
-them: it accepts `accepted_at <= issued_at <= now + 5`. It allows nothing past `not_after`,
-which must be strictly after `now`; `issued_at < not_after` and `not_after - issued_at <= 30`
-hold exactly. The Bot side's pre-registration snapshot check differs: it allows the same 5
-seconds for its `now` ahead of the Bot's clock and also 5 seconds past its `not_after`. A
-client clock more than 5 seconds behind the instance cannot process interaction Welcomes
-until its clock is corrected.
-A human client establishes its first pin from `/v1/instance` over the
-bearer-authenticated session created by account enrollment, and stores that key atomically with
-local enrollment. Neither unauthenticated discovery nor a key included in a proof may establish a
-pin. A later discovery key mismatch fails closed; this version defines no silent key rotation or
-repair. Existing ready identities created before this pin existed have no authenticated pin to
-migrate and must refuse this proof until an explicit trusted migration is defined. An interrupted
-pending enrollment may resume its pin after it establishes a session and reads authenticated
-discovery. This is distinct from the Bot-only pre-registration context snapshot above.
 For an already committed enrollment, a live runtime credential may replay the
 same operation id and exact payload for that installation after claim expiry.
 The stored result is bound to the original runtime credential id; authorization
@@ -1244,7 +1449,7 @@ current human authorization so emergency shutdown requires no bot availability.
 
 Managed Bots publish only through the installation-scoped route above; their
 generic `POST /v1/keypackages` is refused. The existing human publication API is
-unchanged. All three routes require wire 3, a current credential-verified Bot
+unchanged. All three routes require wire 6, a current credential-verified Bot
 session bound to this exact installation/account/device, and joining or ready
 state. Runtime credentials cannot use them. `upload_body` is a bstr containing
 the existing strict deterministic `[packages,last_resort]` upload. Operation ids
@@ -1297,23 +1502,19 @@ bounded to 8192 bytes by the host. It contains no private key.
 
 Managed Bots use only `POST /v1/bot-runtime/installations/{installation}/groups`
 and `GET /v1/bot-runtime/installations/{installation}/groups/{operation}` for
-first registration. A B session must be enrolled, wire 3, in joining or ready
+first registration. A B session must be enrolled, wire 6, in joining or ready
 state, and bound to the path installation, its Bot account and device, and that
 installation's community. Generic human `POST /v1/groups` refuses B sessions
 with `403 E_FORBIDDEN`; its human authorization, four-field request and response
 remain unchanged.
 
-The POST tuple is `[operation_id,expected_generation,registration_body]` for
-existing non-kind-3 registration. Initial kind-3 interaction registration adds
-the nonzero `admission_request_id` as a fourth element.
+The POST tuple is `[operation_id,expected_generation,registration_body]`.
 `operation_id` is a nonzero bstr16, `expected_generation` is uint 0 through
-signed-int64 max (nonzero for kind-3), and `registration_body` is a bstr of at most 65,505 bytes
+signed-int64 max, and `registration_body` is a bstr of at most 65,505 bytes
 (the whole CBOR request is capped at 64 KiB) containing
 the exact canonical deterministic-CBOR four-element registration array
-`[group_id(bstr16),binding(bstr),group_info(bstr),ratchet_tree(bstr)]` for existing
-non-kind-3 groups. Kind-3 initial registration appends `initial_welcome(bstr)`
-as a fifth element. That Welcome must address exactly one KeyPackageRef
-published by the admitted participant device. The body must
+`[group_id(bstr16),binding(bstr),group_info(bstr),ratchet_tree(bstr)]`. A kind-3
+(interaction) binding is refused (§ Retired v1 surfaces). The body must
 decode strictly, have no trailing bytes and be byte-for-byte canonical; malformed
 or noncanonical input is `400 E_INVALID_REQUEST`, a wrong media type is `415`,
 and an oversized request is `413 E_TOO_LARGE`. The handler hashes the supplied
@@ -1325,8 +1526,8 @@ The first acceptance compares `expected_generation` with the instance generation
 under the same transaction/serialization fence as group creation. A stale value
 is `409 E_INVALID_REQUEST` and writes nothing. A fresh acceptance applies the
 current registration ACL and every existing DS group validation, then commits
-the group row, serialized public MLS state, initial member rows, the kind-3
-participant Welcome outbox row and immutable receipt in one transaction. The exact receipt tuple is
+the group row, serialized public MLS state, initial member rows and immutable
+receipt in one transaction. The exact receipt tuple is
 `[operation_id,group_id,registration_sha256,accepted_generation,initial_epoch,
 next_seq]`; new acceptance returns `201`, with `next_seq = 1`, the exact value
 from the original registration response. No gateway, state-cache or hook failure
@@ -1346,22 +1547,6 @@ A different operation colliding with an existing group is `409 E_GROUP_EXISTS`
 without group metadata. Uniqueness races roll back before the winner is read in a
 new transaction; identical requests return the winner's receipt, conflicts reveal
 no group metadata.
-
-For a kind-3 request, the server first imports GroupInfo and the ratchet tree
-through OpenMLS, then reads the canonical v2 binding from the authenticated
-GroupContext. Its participant IDs are routing hints for loading the matching
-admission preflight. Fresh acceptance requires that trusted preflight and
-repeats installation, account, device-list, membership, ban, eligibility,
-policy, generation and receipt checks in the final transaction that stores the
-group, its two initial members and the consumed admission. A kind-3 group is
-already populated by those two leaves, so the channel `AfterRegister` hook does
-not run.
-
-Before loading fresh context, a kind-3 retry checks the session-fenced durable
-operation and consumed-admission receipts. An exact operation, admission,
-generation and body retry returns the original receipt even after the admission
-proof expires or its signed payload is compacted. Reusing either the operation
-or admission request with changed data is `409 E_INVALID_REQUEST`.
 
 The GET requires the same current installation-bound B authority. It returns the
 exact six-field receipt or `404 E_NOT_FOUND`; an installation cannot distinguish
@@ -1397,20 +1582,14 @@ remain one exclusive server operation.
 
 | Method and path | Auth | Request | Response |
 | --- | --- | --- | --- |
-| `GET /v1/communities/{community}/bot/events?after=N&limit=L` | B | — | `[events, next_seq, high_water, floor]` |
-| `PUT /v1/communities/{community}/bot/events/ack` | B | `[through]` | 204 |
 | `GET /v1/communities/{community}/bot/receipts/{operation}?attempt=ID` | B | — | send receipt or 404 |
 | `POST /v1/communities/{community}/bot/receipts/{operation}/resolve` | B | `[attempt_id,predecessor_attempt_id\|null,group_id,expected_generation,epoch,class,ciphertext_sha256]` | send receipt |
 | `POST /v1/groups/{group}/bot/messages` | B | `[operation_id,attempt_id,predecessor_attempt_id\|null,expected_generation,epoch,private_message,class]` | send receipt |
 
-L defaults to 100 and is at most 250; each page also stays below 1 MiB. Sequence
-values admitted to SQL are at most signed-int64 max; overflow refuses, never wraps.
-Events and their community sequence increments commit with the structural change.
-Gateway opcode54 remains a wakeup; recovery always polls this stream. `after` is
-exclusive. A cursor below the retained floor returns `410 E_PRUNED` with the floor
-and high-water. Reconcile current membership/configuration, report the gap and
-avoid inventing historical welcomes. Ack is monotone and cannot exceed the
-published high-water; consumer commits progress locally before acknowledging.
+The structural-event stream's read and acknowledgement routes are gone (Bot v2 task 12): the Bot
+learns its community's device lists, members, roles, channel groups and Bot channels from the
+gateway's op 65 `bot_event` feed on its own connection (`02` § Bot runtime), which resumes from the
+Bot's last acknowledged `n` and starts with a snapshot on every identify.
 
 ### Send attempts and resolution
 
@@ -1492,14 +1671,12 @@ meanings. Owners and administrators are exempt from automatic moderation.
 | `DELETE /v1/communities/{community}/bot/role-panels/{panel}` | E, manage_roles | `[request_id, expected_revision]` | 204 |
 | `PUT /v1/communities/{community}/bot/role-panels/{panel}/selection` | E, own member | `[request_id, expected_revision, selected_roles]` | `[revision, own_roles]` |
 | `POST /v1/communities/{community}/bot/role-grants` | B | `[operation_id, member_id, source_kind, source_id, role_id, selected]` | 204 |
-| `PUT /v1/communities/{community}/members/{member}/timeout` | E or capability-approved B | `[request_id, expires]` | `[request_id, expires]` |
+| `PUT /v1/communities/{community}/members/{member}/timeout` | E | `[request_id, expires]` | `[request_id, expires]` |
 | `DELETE /v1/communities/{community}/members/{member}/timeout` | E, moderate_members | `[request_id]` | 204 |
 | `GET /v1/communities/{community}/members/{member}/timeout` | E, own member or moderate_members | — | `[expires|null]` |
 | `POST /v1/communities/{community}/members/{member}/warning` | E, moderate_members and actor outranks target | `[request_id]` | `[request_id, action_id, community_revision, accepted_at]` |
-| `POST /v1/communities/{community}/moderation/actions` | E or capability-approved B | `[request_id, action, target_user|null, expires|null]` | `[action_id]` |
-| `POST /v1/groups/{group}/moderation/removals` | E or capability-approved B | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |
+| `POST /v1/groups/{group}/moderation/removals` | E (a Bot session is refused 403) | `[proof_bstr, signature64]` | `[action_id, removal_revision]` |
 | `GET /v1/bot-runtime/installations/{installation}/moderation/removals/{request}` | B, ready installation with removal capability | — | `[action_id,community_id,group_id,actor_user_id,actor_device_id,target_seq,removal_revision,accepted_at]`; authoritative accepted-action lookup for encrypted case attachment |
-| `GET /v1/communities/{community}/moderation/actions?after=N&limit=L` | E, view_audit_log or B | — | `[structural_actions, next_seq]` |
 | `GET /v1/groups/{group}/moderation/removals?after=N&limit=L` | E or B, group access | — | `[removal_rows, next_revision]` |
 
 Removal request IDs are idempotency keys. An exact accepted proof/signature replay
@@ -1551,24 +1728,19 @@ markers before publishing recovered timelines and exclude removed content from
 late originals/edits, search, pins, replies and attachment previews. Expiry gates
 new acceptance only, not interpretation of already accepted proofs.
 
-## Vectors
-
-`vectors/bot.json` is generated by `packages/protocol-vectors` and consumed by
-Go `internal/bot/protocol`, Rust `dilla_core::bot`, and TypeScript client-core bot
-codecs. Cases roundtrip canonical bytes; rejection cases include malformed types,
-wrong context, expired mutations and noncanonical encodings. Pure validation is
-not runtime authorization: enrollment, current permissions, account binding,
-provider authentication and store atomicity have independent integration tests.
-
 ## Native helper call-join operations
 
-The local encrypted helper request envelope accepts operation codes 1 through 20.
-Codes 19 and 20 are private IPC operations, not Bot interaction operation codes:
+The local encrypted helper request envelope accepts operation codes 1 through 27.
+Codes 19, 20 and 27 are private IPC operations, not Bot request operation codes:
 
 - 19 `call_join_check`: payload `[call_channel_id]`; checks a staged external call-group
   join against the native media-key and trust gate before the commit is posted.
 - 20 `call_group_forget`: payload `[call_channel_id]`; forgets a gone local call group
   so the same channel can be joined in a later call.
+- 27 `group_forget` (Bot v2): payload `[group_id]`; forgets the local MLS state of
+  a text group of this installation's community the Bot was removed from or that is not a
+  Bot channel, so a later mark rejoins it afresh. An unknown group is no error; a call group
+  or another community's group is refused.
 
 Installation reconciliation may retain local groups from calls that have ended.
 A call-source `403 E_FORBIDDEN` or member-only `404 E_NOT_FOUND` leaves that
@@ -1612,3 +1784,12 @@ limit contain the largest queue prefix that fits, plus an optional slot 12 with
 the total number of upcoming tracks. The stored queue is unchanged. Clients
 expose that total and identify a partial queue listing; within one installation,
 late snapshots cannot replace a newer authenticated revision.
+
+## Vectors
+
+`vectors/bot.json` is generated by `packages/protocol-vectors` and consumed by
+Go `internal/bot/protocol`, Rust `dilla_core::bot`, and TypeScript client-core bot
+codecs. Cases roundtrip canonical bytes; rejection cases include malformed types,
+wrong context, expired mutations and noncanonical encodings. Pure validation is
+not runtime authorization: enrollment, current permissions, account binding,
+provider authentication and store atomicity have independent integration tests.

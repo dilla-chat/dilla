@@ -71,70 +71,9 @@ type Repository interface {
 	BotGroupRegistrationReceipts
 	BotSendOperations
 	BotStructuralEvents
-	BotInteractionEligibility
-	BotInteractionAdmissionReceipts
-	BotGroupRegistrationAdmissionReceipts
-	BotAutoModerationGrants
 	ModerationRemovals
-}
-
-// BotAutoModerationGrantRow stores only a digest of the opaque bearer grant and a
-// digest of the encrypted op63 document. Plaintext moderation config never enters storage.
-type BotAutoModerationGrantRow struct {
-	TokenHash, RequestHash, ConfigHash                    []byte
-	CommunityID, InstallationID, GroupID, RequestID       id.ID
-	ActorUser, ActorDevice                                id.ID
-	ExpectedRevision, RequestExpires, Expires, ConsumedAt int64
-	Receipt                                               []byte
-}
-
-type BotAutoModerationGrants interface {
-	CreateBotAutoModerationGrant(context.Context, BotAutoModerationGrantRow) error
-	GetBotAutoModerationGrant(context.Context, []byte) (BotAutoModerationGrantRow, error)
-	// Accept is atomic: one grant accepts one exact installation/request/ciphertext tuple.
-	// Exact retries return the original receipt; any changed tuple conflicts.
-	AcceptBotAutoModerationGrant(context.Context, BotAutoModerationGrantRow) (BotAutoModerationGrantRow, bool, error)
-}
-
-// BotInteractionEligibility exposes the monotonic eligibility fence for one
-// user in one community. Reads happen in a transaction and lock the row on
-// PostgreSQL so admission issuance and group registration can share a fence.
-// Database triggers advance it whenever membership, bans, or device state
-// changes. This primitive does not itself authorize interaction admission.
-type BotInteractionEligibility interface {
-	GetBotInteractionEligibilityRevision(context.Context, id.ID, id.ID) (uint64, error)
-}
-
-type BotInteractionAdmissionReceipt struct {
-	InstallationID id.ID
-	RequestID      id.ID
-	RequestHash    []byte
-	Payload        []byte
-	Signature      []byte
-	NotAfter       int64
-}
-
-type BotInteractionAdmissionReceipts interface {
-	GetBotInteractionAdmissionReceipt(context.Context, id.ID, id.ID) (BotInteractionAdmissionReceipt, error)
-	CreateBotInteractionAdmissionReceipt(context.Context, BotInteractionAdmissionReceipt) error
-	UpdateBotInteractionAdmissionReceipt(context.Context, BotInteractionAdmissionReceipt) error
-	// Compaction removes expired payloads immediately and forgets request hashes after
-	// 30 days past expiry. IDs are immutable during that window; after it, reuse is allowed.
-	// One call forgets at most BotInteractionAdmissionTombstoneBatch hashes, oldest first, so a
-	// backlog (after an upgrade or a long Bot outage) drains over later admissions instead of
-	// holding the single writer; a hash may therefore outlive its 30 days, never fall short of them.
-	CompactExpiredBotInteractionAdmissionReceipts(context.Context, id.ID, int64) error
-}
-
-// BotInteractionAdmissionTombstoneBatch bounds the tombstones one compaction deletes.
-const BotInteractionAdmissionTombstoneBatch = 512
-
-// BotGroupRegistrationAdmissionReceipts atomically records the accepted
-// registration consumed by one kind-3 admission request. The bool is true for
-// an exact retry; reusing a request ID for different registration data conflicts.
-type BotGroupRegistrationAdmissionReceipts interface {
-	AcceptBotGroupRegistrationAdmission(context.Context, id.ID, BotGroupRegistrationReceipt) (BotGroupRegistrationReceipt, bool, error)
-	GetBotGroupRegistrationAdmission(context.Context, id.ID, id.ID) (BotGroupRegistrationReceipt, error)
+	// Bot v2 Task 9 — 00057_bot_v2.sql
+	BotV2
 }
 
 // BotJoinRolePolicy stores the single human-approved role a ready bot may
@@ -274,10 +213,6 @@ type BotKeyPackagePublications interface {
 // atomically with the group and initial MLS state.
 type BotGroupRegistrationReceipts interface {
 	GetBotGroupRegistrationReceipt(context.Context, id.ID, id.ID) (BotGroupRegistrationReceipt, error)
-	// GetBotGroupRegistrationReceiptByGroup resolves the immutable accepted registration for a
-	// globally unique MLS group ID. It is a read-only lookup for authorization against an existing
-	// group; callers must still validate the live group state and installation authority.
-	GetBotGroupRegistrationReceiptByGroup(context.Context, id.ID) (BotGroupRegistrationReceipt, error)
 	CreateBotGroupRegistrationReceipt(context.Context, BotGroupRegistrationReceipt) error
 	DeleteBotGroupRegistrationReceiptsByInstallation(context.Context, id.ID) error
 }
@@ -818,6 +753,9 @@ type Communities interface {
 	// list each member's roles and the permission resolver needs the set a user
 	// holds, which deriving from ListRoles would make a full scan per member.
 	ListMemberRoles(ctx context.Context, communityID, userID id.ID) ([]id.ID, error)
+	// ListCommunityMemberRoles is every member's roles in one read, user -> role ids in id order (Bot v2
+	// task 12: the Bot feed's member diff). A member who holds no role is absent.
+	ListCommunityMemberRoles(ctx context.Context, communityID id.ID) (map[id.ID][]id.ID, error)
 }
 
 // RoleGrantSource identifies an independent reason a member holds a role.

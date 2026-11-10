@@ -11,8 +11,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -46,6 +48,10 @@ type Config struct {
 	WriteTimeout        time.Duration
 	HeartbeatAckTimeout time.Duration
 	QueueSize           int
+	// Launch is the supervised Bot's launch token (Bot v2 task 11): the first identify over the Bot's Unix socket
+	// carries it, and once a connection reached ready no identify does. Nil for a Bot that reaches dillad over the
+	// network.
+	Launch *LaunchToken
 }
 
 type Client struct {
@@ -63,6 +69,14 @@ type Client struct {
 	running                        bool
 	streamID                       uint64
 	ackAvailable                   map[uint64][32]byte
+	// Bot v2 request frames: connChanged is closed and replaced whenever current changes, room on every answer.
+	connChanged chan struct{}
+	room        chan struct{}
+	slots       chan struct{}
+	nextRequest atomic.Uint64
+	// incarnation of the dillad process the newest ready came from (see connection.incarnation); guarded by mu.
+	incarnation string
+	launch      *LaunchToken
 }
 
 // Delivery is one validated frame handed to the durable consumer. Ack is bound
@@ -73,6 +87,8 @@ type Delivery struct {
 	client *Client
 	stream uint64
 	ackN   uint64
+	// conn is the socket the frame arrived on: an op 66's ack goes on it or not at all (WebhookAck).
+	conn *connection
 }
 
 func (d Delivery) Ack() error {
@@ -90,6 +106,7 @@ type outbound struct {
 	op      Opcode
 	group   *id.ID
 	payload []any
+	raw     []byte // an already encoded frame (a request frame, which may exceed the event frame bound)
 	done    chan error
 }
 type connection struct {
@@ -100,6 +117,22 @@ type connection struct {
 	maxFrame    uint64
 	heartbeat   time.Duration
 	ackDeadline time.Duration
+	pendingMu   sync.Mutex
+	pending     map[uint64]chan ResponseFrame
+	// incarnation names the dillad process this connection reached: hello instance id and generation, and the ready's
+	// boot id. A resumed connection is the same process, so it carries the previous one's.
+	incarnation string
+}
+
+// deliver hands an answer to the request waiting on this connection; an answer nobody waits for is dropped.
+func (conn *connection) deliver(r ResponseFrame) {
+	conn.pendingMu.Lock()
+	ch, ok := conn.pending[r.ID]
+	delete(conn.pending, r.ID)
+	conn.pendingMu.Unlock()
+	if ok {
+		ch <- r
+	}
 }
 
 // New pins the gateway to the same already-validated HTTP client origin. Callers
@@ -157,7 +190,9 @@ func New(cfg Config) (*Client, error) {
 	}
 	return &Client{log: cfg.Logger, origin: u, http: &hcopy, instance: cfg.Client.InstanceID(), device: cfg.ExpectedDeviceID, user: cfg.ExpectedUserID,
 		handshakeTimeout: cfg.HandshakeTimeout, writeTimeout: cfg.WriteTimeout, heartbeatAckTimeout: cfg.HeartbeatAckTimeout,
-		events: make(chan Delivery, cfg.QueueSize), ackAvailable: make(map[uint64][32]byte)}, nil
+		events: make(chan Delivery, cfg.QueueSize), ackAvailable: make(map[uint64][32]byte),
+		connChanged: make(chan struct{}), room: make(chan struct{}), slots: make(chan struct{}, MaxRequestsInFlight),
+		launch: cfg.Launch}, nil
 }
 
 // Events returns the bounded stream of validated server deliveries. For every
@@ -201,7 +236,7 @@ func (c *Client) Run(ctx context.Context, credential CredentialFunc) error {
 		c.mu.Lock()
 		c.closed = true
 		current := c.current
-		c.current = nil
+		c.setCurrentLocked(nil)
 		c.mu.Unlock()
 		if current != nil {
 			current.cancel()
@@ -334,7 +369,7 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 	if subtle.ConstantTimeCompare(h.InstanceID[:], c.instance[:]) != 1 {
 		return false, 0, ErrIdentity
 	}
-	if !hasVersion(h.WireVersions, 3) || !hasVersion(h.E2EEVersions, 1) || !hasVersion(h.MediaVersions, 1) {
+	if !hasVersion(h.WireVersions, client.WireVersion) || !hasVersion(h.E2EEVersions, 1) || !hasVersion(h.MediaVersions, 1) {
 		return false, 0, ErrVersion
 	}
 	ws.SetReadLimit(maxFrameReadLimit(h.MaxFrameBytes))
@@ -349,12 +384,23 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 	}
 	var op Opcode
 	var payload []any
+	// settleLaunch reports how an identify that may have carried the launch token went; it is idempotent, and the
+	// deferred call covers every path that ends the handshake without ready.
+	presentedLaunch := false
+	settleLaunch := func(bool) {}
+	defer func() { settleLaunch(false) }()
 	if resume {
 		op = OpResume
 		payload = []any{"", rs.token, rs.generation, rs.ack}
 	} else {
 		op = OpIdentify
-		payload = []any{"", uint64(3), uint64(1), uint64(1), uint64(0)}
+		launch, settle, err := c.launch.acquire(ctx)
+		if err != nil {
+			return fresh, 0, errTransport
+		}
+		settleLaunch = settle
+		presentedLaunch = launch != ""
+		payload = []any{launch, uint64(client.WireVersion), uint64(1), uint64(1), uint64(0)}
 	}
 	frame, err := encodeFrame(op, 0, nil, payload)
 	if err != nil {
@@ -386,6 +432,12 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 	}
 	firstRaw = append(firstRaw[:0], raw...)
 	if first.Op == OpError {
+		if presentedLaunch && first.ErrorCode == "E_UNAUTHENTICATED" {
+			// The token may have been spent on an identify whose ready never arrived: try once without it, on the
+			// ordinary reconnect backoff (Bot v2 task 14 fix round 1, I-4).
+			c.launch.refusedWithToken()
+			return fresh, 0, errLaunchRefused
+		}
 		return fresh, 0, classifyServerError(first.ErrorCode, true)
 	}
 	if first.Op == OpInvalidSession {
@@ -406,6 +458,7 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 		if err = c.acceptReady(first, h); err != nil {
 			return false, 0, err
 		}
+		settleLaunch(true)
 		fresh = false
 	} else if first.Op == OpReconnect {
 		if first.ReconnectAfterMS != nil {
@@ -419,10 +472,15 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 		return fresh, 0, ErrProtocol
 	}
 	cx, cancel := context.WithCancel(parent)
-	conn := &connection{ws: ws, ctx: cx, cancel: cancel, writes: make(chan outbound, 32), maxFrame: h.MaxFrameBytes, heartbeat: boundedMilliseconds(h.HeartbeatMS)}
+	conn := &connection{ws: ws, ctx: cx, cancel: cancel, writes: make(chan outbound, 32), maxFrame: h.MaxFrameBytes, heartbeat: boundedMilliseconds(h.HeartbeatMS),
+		pending: make(map[uint64]chan ResponseFrame)}
 	conn.ackDeadline = c.heartbeatAckTimeout
+	// Bot v2: an answer to a request frame may be as large as the route's response; DecodeServerFrame still holds every
+	// other frame to the hello's bound.
+	ws.SetReadLimit(MaxResponseFrameBytes)
 	c.mu.Lock()
-	c.current = conn
+	conn.incarnation = c.incarnation
+	c.setCurrentLocked(conn)
 	c.mu.Unlock()
 	rawFrames := make(chan []byte, 32)
 	readerDone := make(chan error, 1)
@@ -447,7 +505,7 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 		}
 		c.mu.Lock()
 		if c.current == conn {
-			c.current = nil
+			c.setCurrentLocked(nil)
 		}
 		c.mu.Unlock()
 	}()
@@ -489,7 +547,14 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 			writerDone <- err
 			return fresh, 0, errTransport
 		case raw := <-rawFrames:
-			f, e := DecodeServerFrame(raw, conn.maxFrame)
+			// An op 65 may carry a 1 MiB device-list push (Bot v2 task 14); every other frame keeps the hello's bound.
+			limit := serverFrameLimit(raw, conn.maxFrame)
+			if uint64(len(raw)) > limit {
+				// Before the read limit was raised for answers, the reader itself refused such a frame and the
+				// connection was retried; keep that outcome.
+				return fresh, 0, errTransport
+			}
+			f, e := DecodeServerFrame(raw, limit)
 			if e != nil {
 				if dropMalformedEphemeral(raw) {
 					continue
@@ -579,7 +644,7 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 // frame contents through the transport error surface.
 func classifyServerError(code string, handshake bool) error {
 	switch code {
-	case "E_VERSION":
+	case "E_VERSION", "E_UPGRADE_REQUIRED":
 		return ErrVersion
 	case "E_UNAUTHENTICATED":
 		return ErrTerminal
@@ -600,7 +665,7 @@ func (c *Client) acceptReady(f Frame, h *Hello) error {
 	if r == nil || r.DeviceID != c.device || r.UserID != c.user || r.Generation != h.Generation {
 		return ErrIdentity
 	}
-	if r.WireVersion != 3 || r.E2EEVersion != 1 || r.MediaVersion != 1 {
+	if r.WireVersion != client.WireVersion || r.E2EEVersion != 1 || r.MediaVersion != 1 {
 		return ErrVersion
 	}
 	c.mu.Lock()
@@ -610,6 +675,7 @@ func (c *Client) acceptReady(f Frame, h *Hello) error {
 		c.streamID++
 	}
 	c.ackAvailable = make(map[uint64][32]byte)
+	c.incarnation = h.InstanceID.String() + ":" + strconv.FormatUint(r.Generation, 10) + ":" + r.BootID.String()
 	c.mu.Unlock()
 	if f.N != 1 {
 		return ErrProtocol
@@ -645,8 +711,9 @@ func (c *Client) enqueueEvent(f Frame, raw []byte) (bool, error) {
 		}
 		c.ackAvailable[f.N] = hash
 	}
+	conn := c.current
 	c.mu.Unlock()
-	d := Delivery{Frame: f, client: c, stream: stream, ackN: f.N}
+	d := Delivery{Frame: f, client: c, stream: stream, ackN: f.N, conn: conn}
 	select {
 	case c.events <- d:
 		return true, nil
@@ -687,13 +754,27 @@ func (c *Client) readPump(conn *connection, out chan<- []byte, done chan<- error
 			done <- ErrProtocol
 			return
 		}
+		// Bot v2: an answer goes straight to the request waiting for it, never through the bounded event buffer, so
+		// large answers are not held there and a slow consumer cannot stall them.
+		if isResponseFrame(b) {
+			answer, err := DecodeResponseFrame(b)
+			if err != nil {
+				done <- ErrProtocol
+				return
+			}
+			conn.deliver(answer)
+			c.signalRoom()
+			continue
+		}
+		// The hand-off to runConnection's decode loop waits for room. That loop never blocks on the consumer
+		// (enqueueEvent reports a full delivery queue as ErrBackpressure, the one consumer-backpressure signal), so
+		// the wait is only for the decoder to be scheduled. Failing it instead turned a burst read faster than it
+		// was decoded, such as a cold snapshot on a host with few CPUs, into a fresh identify that replayed the
+		// same burst and failed again.
 		select {
 		case out <- b:
 		case <-conn.ctx.Done():
 			done <- conn.ctx.Err()
-			return
-		default:
-			done <- ErrBackpressure
 			return
 		}
 	}
@@ -706,7 +787,10 @@ func (c *Client) writePump(conn *connection, done chan<- error) {
 			return
 		case w := <-conn.writes:
 			ctx, cancel := context.WithTimeout(conn.ctx, c.writeTimeout)
-			b, err := encodeFrame(w.op, 0, w.group, w.payload)
+			b, err := w.raw, error(nil)
+			if b == nil {
+				b, err = encodeFrame(w.op, 0, w.group, w.payload)
+			}
 			if err == nil {
 				err = conn.ws.Write(ctx, websocket.MessageBinary, b)
 			}
@@ -753,6 +837,21 @@ func (c *Client) sendFrame(ctx context.Context, op Opcode, group *id.ID, payload
 	if conn == nil {
 		return ErrProtocol
 	}
+	return c.sendFrameVia(ctx, conn, op, group, payload)
+}
+
+// sendFrameOn sends on want only while it is still the open connection; another (or none) is ErrStaleDelivery.
+func (c *Client) sendFrameOn(ctx context.Context, want *connection, op Opcode, group *id.ID, payload []any) error {
+	c.mu.Lock()
+	conn := c.current
+	c.mu.Unlock()
+	if want == nil || conn != want {
+		return ErrStaleDelivery
+	}
+	return c.sendFrameVia(ctx, conn, op, group, payload)
+}
+
+func (c *Client) sendFrameVia(ctx context.Context, conn *connection, op Opcode, group *id.ID, payload []any) error {
 	done := make(chan error, 1)
 	select {
 	case conn.writes <- outbound{op: op, group: group, payload: payload, done: done}:

@@ -439,6 +439,10 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 			d.opts.Gateway.SetGroupLeaves(groupID, members.leaves)
 		}
 		d.fanOutCommit(ctx, groupID, result, processed, c, handshakeKind, welcomeTree, welcomeTreeHash)
+		if d.opts.OnEpoch != nil {
+			d.opts.OnEpoch(EpochChange{GroupID: groupID, Kind: row.Kind, CommunityID: row.CommunityID, TargetID: row.TargetID,
+				Epoch: result.Epoch, Devices: append([]id.ID(nil), members.devices...)})
+		}
 		return nil
 	})
 	if d.takeStaleAfterFailedMerge(groupID) {

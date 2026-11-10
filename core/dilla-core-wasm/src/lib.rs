@@ -497,9 +497,9 @@ mod tests {
     }
 
     /// Deviation A2-14. `open_encrypted`'s pragma batch is
-    /// `PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:<64-hex device KEK>';`, and rusqlite 0.40.2's
+    /// `PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:<64-hex device KEK>';`, and rusqlite 0.41.1's
     /// `Error::SqlInputError` Displays as `"{msg} in {sql} at offset {offset}"` — the whole
-    /// statement text (`rusqlite-0.40.2/src/error.rs:346-351`). Formatting that error into the
+    /// statement text (`rusqlite-0.41.1/src/error.rs:341-346`). Formatting that error into the
     /// message `store_open` hands JavaScript would put the raw device KEK into a JS `Error` the
     /// worker logs, which is exactly what A2-14 exists to prevent. `store.rs` compiles only on
     /// `wasm32-unknown-unknown` and `store_open` needs a dedicated worker in a secure context

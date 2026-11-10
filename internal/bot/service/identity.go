@@ -99,6 +99,10 @@ type LifecycleOptions struct {
 	Now             func() time.Time
 	DesiredPackages uint64
 	RenewMargin     time.Duration
+	// OnSession runs once the device session is joining or ready (its credential finalized), before the KeyPackage
+	// reconciliation: the session's later calls are socket routes (Bot v2 task 14), so the caller starts the
+	// gateway connection that carries them here. An error fails the pass. Nil does nothing.
+	OnSession func(user, device id.ID, session *client.Session) error
 }
 
 // LifecycleResult contains no private key or persisted bearer. Session is
@@ -127,6 +131,7 @@ type Lifecycle struct {
 	now         func() time.Time
 	desired     uint64
 	renewMargin time.Duration
+	onSession   func(user, device id.ID, session *client.Session) error
 }
 
 // NewIdentityLifecycle binds the real reviewed native, runtime and HTTP
@@ -153,7 +158,7 @@ func NewIdentityLifecycle(instance, community, installation id.ID, n *native.Cli
 }
 
 func newIdentityLifecycle(instance, community, installation id.ID, n lifecycleNative, runtime lifecycleRuntime, httpClient lifecycleHTTP, options LifecycleOptions) *Lifecycle {
-	return &Lifecycle{instance: instance, community: community, install: installation, native: n, runtime: runtime, http: httpClient, now: options.Now, desired: options.DesiredPackages, renewMargin: options.RenewMargin}
+	return &Lifecycle{instance: instance, community: community, install: installation, native: n, runtime: runtime, http: httpClient, now: options.Now, desired: options.DesiredPackages, renewMargin: options.RenewMargin, onSession: options.OnSession}
 }
 
 func discoveryExternalSenderKey(discovery client.Discovery) ([32]byte, error) {
@@ -383,7 +388,7 @@ func (l *Lifecycle) Ensure(ctx context.Context) (LifecycleResult, error) {
 	if err != nil {
 		return out, err
 	}
-	negotiated, err := session.Negotiate(ctx, []uint64{3}, []uint64{1}, []uint64{1})
+	negotiated, err := session.Negotiate(ctx, []uint64{client.WireVersion}, []uint64{1}, []uint64{1})
 	if err != nil {
 		var apiErr *client.APIError
 		if errors.As(err, &apiErr) && (apiErr.Status == 401 || apiErr.Status == 403) {
@@ -394,14 +399,14 @@ func (l *Lifecycle) Ensure(ctx context.Context) (LifecycleResult, error) {
 			_ = l.native.ClearSession(ctx)
 			session, err = l.establishSession(ctx, state.BotUser, state.BotDevice, discovery, true)
 			if err == nil {
-				negotiated, err = session.Negotiate(ctx, []uint64{3}, []uint64{1}, []uint64{1})
+				negotiated, err = session.Negotiate(ctx, []uint64{client.WireVersion}, []uint64{1}, []uint64{1})
 			}
 		}
 		if err != nil {
 			return out, err
 		}
 	}
-	if negotiated != (client.Negotiated{Wire: 3, E2EE: 1, Media: 1}) {
+	if negotiated != (client.Negotiated{Wire: client.WireVersion, E2EE: 1, Media: 1}) {
 		return out, client.ErrProtocol
 	}
 	inst, err = l.findInstallation(ctx)
@@ -445,6 +450,13 @@ func (l *Lifecycle) Ensure(ctx context.Context) (LifecycleResult, error) {
 		return out, ErrRecovery
 	}
 	inst = current
+	if l.onSession != nil {
+		if concrete, ok := session.(*client.Session); ok {
+			if err := l.onSession(state.BotUser, state.BotDevice, concrete); err != nil {
+				return out, err
+			}
+		}
+	}
 	if err = l.reconcileDeviceList(ctx, session, state.BotUser, completed.DeviceListBody, deviceList, &identity, &state, &revision); err != nil {
 		return out, err
 	}

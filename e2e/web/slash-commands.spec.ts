@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { openInviteInClient } from './support/invite';
 import { expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import type { Locator } from '@playwright/test';
@@ -12,6 +13,7 @@ import { connected, dock, joinVoice, voiceRow } from '../voice/support/voice';
 import { leaveIfInCall } from '../voice/support/peer-browser';
 import { FIREFOX_MEDIA_PREFS } from '../media/support/fixtures';
 import { e2ePort } from './support/ports';
+import { markBotChannel, watchBearer } from './support/bot-channel';
 
 const PORT = Number(process.env.DILLA_E2E_SLASH_PORT ?? e2ePort(8581));
 const HOST: HostConfig = { port: PORT, control: PORT + 1, webRoot: 'packages/web/dist', botRuntime: true, advanceClockWithWall: true };
@@ -85,6 +87,24 @@ async function enableBot(page: Page, password: string, capabilities: string[] = 
     .toHaveText(copy('admin.bot.status.ready'), { timeout: 90_000 });
   await settings.getByRole('button', { name: copy('settings.close'), exact: true }).click();
   await expect(settings).toBeHidden();
+  await expectPickerReady(page);
+}
+
+/**
+ * The settings page's "ready" is the installation's; the picker's is this device's catalog status. Wait for that one too:
+ * `/remind` (Reminders is on after every enable) offered and not greyed in #general's picker, then leave the picker.
+ */
+async function expectPickerReady(page: Page): Promise<void> {
+  const box = composerBox(page, GENERAL);
+  if (!(await box.isVisible())) return;
+  await box.fill('/');
+  const region = page.getByRole('region', { name: 'Command composer', exact: true });
+  const remind = region.getByRole('option', { name: /^\/remind,/ });
+  await expect(remind).toBeVisible({ timeout: WAIT });
+  await expect(remind).not.toHaveAttribute('aria-disabled', 'true', { timeout: BOT_WAIT });
+  await page.keyboard.press('Escape');
+  await expect(region).toBeHidden({ timeout: WAIT });
+  await box.fill('');
 }
 
 async function disableBot(page: Page): Promise<void> {
@@ -118,6 +138,21 @@ async function invoke(box: ReturnType<typeof composerBox>, page: Page, command: 
 /** The last private command result in the feed. */
 function commandResult(page: Page): Locator {
   return page.locator('.d-bot-result .d-message-row__body').last();
+}
+
+/** The first command after a Bot start must be answered (final review I2); when it is not, the Bot's refusal classes
+ *  (feed_behind, held, not_ready, …) go to the log so the failure names its gate. */
+async function expectFirstAnswer(page: Page, host: StartedHost, expected: RegExp): Promise<void> {
+  try {
+    await expect(commandResult(page)).toContainText(expected, { timeout: BOT_WAIT });
+  } catch (e) {
+    console.log(`Bot intake refusals so far:\n${host.botRefusals().join('\n') || '(none)'}`);
+    // No refusal and no result row: the command may never have left this device (a greyed picker row says why).
+    const composer = await page.getByRole('region', { name: 'Command composer', exact: true }).innerText({ timeout: 1_000 })
+      .catch(() => '(no command composer open)');
+    console.log(`result rows: ${String(await page.locator('.d-bot-result').count())}; command composer: ${composer}`);
+    throw e;
+  }
 }
 
 async function chooseCommand(box: ReturnType<typeof composerBox>, page: Page, command: string): Promise<Locator> {
@@ -212,7 +247,8 @@ async function moderationFailureEvidence(page: Page, member: Page): Promise<unkn
 }
 
 async function pollFailureEvidence(page: Page, question: string): Promise<unknown> {
-  return page.evaluate(text => {
+  const answers = await portSlice<{ requestId: string; status: number; final: boolean }[]>(page, 'botAnswers').catch(() => undefined);
+  return page.evaluate(({ text, answers: held }) => {
     const root = window as unknown as {
       __slashWorkerTrace?: { calls: unknown[]; returns: unknown[] };
       __slashPollObserver?: { targets: Element[]; transitions: { target: Element; intersecting: boolean }[] };
@@ -221,37 +257,13 @@ async function pollFailureEvidence(page: Page, question: string): Promise<unknow
     const calls = (trace?.calls ?? []).map(value => value as {
       t?: string; id?: number; command?: { m?: string; operation?: number; requestId?: string; communityId?: string; channelId?: string; [key: string]: unknown };
     });
-    const relevantCalls = calls.filter(call => {
-      const name = call.command?.m ?? '';
-      const operation = call.command?.operation;
-      return operation === 70 || operation === 71
-        || operation !== undefined && operation >= 72 && operation <= 75
-        || /capabilit|channel|community|interaction/i.test(name);
-    }).map(call => ({ id: call.id, name: call.command?.m, operation: call.command?.operation,
-      requestId: call.command?.requestId, communityId: call.command?.communityId, channelId: call.command?.channelId,
-      command: call.command }));
-    const trackedRequestIds = new Set(calls.filter(call => call.command?.m === 'humanInteractionRequest'
-      && (call.command.operation === 3 || call.command.operation !== undefined && call.command.operation >= 70 && call.command.operation <= 75))
-      .map(call => call.command?.requestId).filter((id): id is string => typeof id === 'string'));
-    const pollReadCalls = calls.filter(call => call.command?.m === 'readBotInteractionResponses'
-      && Array.isArray(call.command.requestIds) && call.command.requestIds.some(id => trackedRequestIds.has(String(id)))).slice(-300);
-    const readIds = new Set(pollReadCalls.map(call => call.id));
-    const workerReturns = (trace?.returns ?? []).map(value => value as {
-      t?: string; id?: number; ok?: boolean; value?: { upload?: string; responses?: { requestId?: string; operation?: number; status?: number; data?: Uint8Array; revision?: string }[]; through?: string; blocked?: boolean };
-      error?: unknown;
-    });
-    const interactionReturns = workerReturns.filter(value => value.id !== undefined
-      && calls.some(call => call.id === value.id && call.command?.m === 'humanInteractionRequest'
-        && (call.command.operation === 3 || call.command.operation !== undefined && call.command.operation >= 70 && call.command.operation <= 75)));
-    const pollReadReturns = workerReturns.filter(value => value.id !== undefined && readIds.has(value.id)).map(value => ({
-      id: value.id, ok: value.ok, error: value.error, through: value.value?.through, blocked: value.value?.blocked,
-      responses: value.value?.responses?.filter(row => trackedRequestIds.has(row.requestId ?? '')).map(row => ({
-        requestId: row.requestId, operation: row.operation, status: row.status, revision: row.revision,
-        data: row.data instanceof Uint8Array ? Array.from(row.data) : null,
-      })) ?? [],
-    }));
+    // Bot v2 Task 21b: the card reads (91) and the form, votes, voters and close (170-175) are sealed commands.
+    const pollCalls = calls.filter(call => call.command?.m === 'sendBotCommand' && call.command.operation !== undefined
+      && (call.command.operation === 91 || call.command.operation >= 170 && call.command.operation <= 175));
+    const ids = new Set(pollCalls.map(call => call.command?.requestId));
+    const returns = (trace?.returns ?? []).map(value => value as { t?: string; id?: number; ok?: boolean; error?: unknown })
+      .filter(value => pollCalls.some(call => call.id === value.id));
     const statusCalls = calls.filter(call => call.command?.m === 'getBotCommandStatus').slice(-100);
-    const statusReturns = workerReturns.filter(value => value.id !== undefined && statusCalls.some(call => call.id === value.id));
     const textMessages = [...document.querySelectorAll('[data-message-id], article')]
       .filter(element => element.textContent?.includes(text)).slice(-10).map(element => (element as HTMLElement).outerHTML.slice(0, 16_000));
     const observed = root.__slashPollObserver;
@@ -260,11 +272,13 @@ async function pollFailureEvidence(page: Page, question: string): Promise<unknow
       matchingQuestionMessages: textMessages,
       observerTargets: observed?.targets.map(target => ({ html: (target as HTMLElement).outerHTML, containsQuestion: target.textContent?.includes(text) })) ?? [],
       observerTransitions: observed?.transitions.map(entry => ({ containsQuestion: entry.target.textContent?.includes(text), intersecting: entry.intersecting })) ?? [],
-      interactionCalls: relevantCalls.filter(call => call.operation === 3 || call.operation === 71), interactionReturns, statusReturns,
-      pollReadCalls: pollReadCalls.map(call => ({ id: call.id, command: call.command })), pollReadReturns,
-      accountChannelAndCapabilityCalls: relevantCalls.filter(call => call.operation !== 71),
+      pollCalls: pollCalls.map(call => ({ id: call.id, operation: call.command?.operation, requestId: call.command?.requestId, channelId: call.command?.channelId,
+        at: ((trace as unknown as { events?: { direction: string; at: number; message: { id?: number } }[] }).events ?? [])
+          .filter(event => event.message?.id === call.id).map(event => `${event.direction}@${String(event.at)}`) })),
+      pollCallReturns: returns, statusCalls: statusCalls.length,
+      pollAnswers: (held ?? []).filter(answer => ids.has(answer.requestId)),
     };
-  }, question);
+  }, { text: question, answers });
 }
 
 async function currentBotIdentity(page: Page, communityId: string): Promise<{ installationId: string; botUserId: string }> {
@@ -276,57 +290,30 @@ async function currentBotIdentity(page: Page, communityId: string): Promise<{ in
   return { installationId: status.installationId, botUserId: status.botUserId };
 }
 
+/** The request id of the newest `/remind` the page sent (Bot v2: a sealed command, operation 80). */
 async function lastReminderRequestId(page: Page): Promise<string | null> {
   return page.evaluate(() => {
     const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[] } }).__slashWorkerTrace;
     const request = trace?.calls.map(value => value as { t?: string; command?: { m?: string; operation?: number; requestId?: string } }).reverse()
-      .find(value => value.t === 'call' && value.command?.m === 'humanInteractionRequest' && value.command.operation === 80);
+      .find(value => value.t === 'call' && value.command?.m === 'sendBotCommand' && value.command.operation === 80);
     return request?.command?.requestId ?? null;
   });
 }
 
-async function reminderReceipt(page: Page, requestId: string): Promise<{ communityId: string; status: number; data: number[] } | null> {
-  return page.evaluate(id => {
-    const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[]; returns: unknown[] } }).__slashWorkerTrace;
-    const calls = trace?.calls.map(value => value as { t?: string; id?: number; command?: {
-      m?: string; operation?: number; requestId?: string; requestIds?: string[]; through?: string; communityId?: string;
-    } }) ?? [];
-    const request = calls.find(value => value.t === 'call' && value.command?.m === 'humanInteractionRequest'
-      && value.command.operation === 80 && value.command.requestId === id);
-    if (request?.id === undefined) throw new Error(`worker trace has no reminder request ${id}`);
-    const requestReturn = trace?.returns.map(value => value as { t?: string; id?: number; ok?: boolean; value?: { requestId?: string; upload?: string } })
-      .find(value => value.t === 'ret' && value.id === request.id);
-    // Still in flight: null keeps expect.poll polling. A throw would end the poll at once, which is how a slow Firefox
-    // runner failed this test 16 s after the Bot was ready (PR #123 CI); only an answered upload that was not
-    // accepted is an error.
-    if (requestReturn === undefined) return null;
-    if (requestReturn.ok !== true || requestReturn.value?.requestId !== id || requestReturn.value.upload !== 'accepted') {
-      throw new Error(`worker did not confirm reminder upload ${id}`);
-    }
-    const reads = calls.filter(value => value.t === 'call' && value.command?.m === 'readBotInteractionResponses'
-      && (value.command.requestIds as string[] | undefined)?.includes(id));
-    const returns = trace?.returns.map(value => value as { t?: string; id?: number; ok?: boolean; value?: {
-      responses?: { requestId?: string; operation?: number; status?: number; data?: Uint8Array }[]; through?: string | null;
-    } }) ?? [];
-    let receipt: { status: number; data: Uint8Array; through: string } | null = null;
-    for (const read of reads.slice().reverse()) {
-      const returned = returns.find(value => value.t === 'ret' && value.id === read.id);
-      const row = returned?.value?.responses?.find(value => value.requestId === id && value.operation === 80);
-      const through = returned?.value?.through;
-      if (returned?.ok !== true || row?.status !== 0 || !(row.data instanceof Uint8Array) || through == null) continue;
-      const ack = calls.find(value => value.t === 'call' && value.command?.m === 'ackBotInteractionResponses'
-        && value.command.through === through);
-      const acked = trace?.returns.map(value => value as { t?: string; id?: number; ok?: boolean })
-        .some(value => value.t === 'ret' && value.id === ack?.id && value.ok === true) ?? false;
-      if (acked) { receipt = { status: row.status, data: row.data, through }; break; }
-    }
-    // The worker's first read can be empty while the daemon is still producing the response.
-    // Returning null lets expect.poll observe the later successful read/ACK pair.
-    if (receipt === null) return null;
-    const communityId = request.command?.communityId;
-    if (communityId === undefined) throw new Error(`worker trace has no community for reminder request ${id}`);
-    return { communityId, status: receipt.status, data: Array.from(receipt.data) };
-  }, requestId);
+/** The Bot's final sealed answer to a request, as the worker opened it (the `botAnswers` slice); null until it arrives. */
+async function sealedAnswer(page: Page, requestId: string): Promise<{ status: number; body: string } | null> {
+  const answers = await portSlice<{ requestId: string; status: number; body: string; final: boolean }[]>(page, 'botAnswers');
+  const answer = answers?.find(value => value.requestId === requestId && value.final);
+  return answer === undefined ? null : { status: answer.status, body: answer.body };
+}
+
+/** How many `/remind` commands this page load sent. */
+function remindSends(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[] } }).__slashWorkerTrace;
+    return trace?.calls.map(value => value as { command?: { m?: string; operation?: number } })
+      .filter(value => value.command?.m === 'sendBotCommand' && value.command.operation === 80).length ?? 0;
+  });
 }
 
 async function runKickFromPicker(page: Page, box: ReturnType<typeof composerBox>, member: Page, targetName: string): Promise<Locator> {
@@ -472,8 +459,8 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
   let host: StartedHost | null = null;
   let secondContext: BrowserContext | null = null;
   try {
-    // Production uses 30 seconds: command delivery must wake independently of reconciliation.
-    host = await startTestHost({ ...HOST, botReconcileInterval: '30s' });
+    // The Bot polls nothing (Bot v2 task 14): command delivery wakes on its own, never on a reconcile pass.
+    host = await startTestHost(HOST);
     await installWorkerPort(page.context());
     await traceCoreWorker(page);
     await page.addInitScript(() => {
@@ -493,35 +480,39 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
         },
       }) as typeof IntersectionObserver;
     });
+    const bearerOf = watchBearer(page);
     const owner = await signUp(page, host.invite.split(',')[0] ?? '', instanceName, 'Ada', host.control);
     await createCommunity(page);
     await enableBot(page, owner.password, ['roles']);
+    // Bot v2 Task 17: polls post only into Bot channels.
+    await markBotChannel(page, host.url, bearerOf, GENERAL);
     // Two sequential round trips in less than one full interval cannot both be
     // served by periodic reconciliation, regardless of where its next tick lands.
     const communities = await portSlice<{ id: string; name: string }[]>(page, 'communities');
     const probeCommunity = communities?.find(row => row.name === COMMUNITY)?.id;
     expect(probeCommunity).toMatch(/^[0-9a-f]{32}$/u);
+    // Bot v2 Task 21b: the app's Bot requests are sealed commands. Two sequential sealed reads (reminders due, 93) are each
+    // answered as pushed frames well inside an interval, once the first has waited for the catalog and the Bot to be ready.
     let probeDeadline = 0;
     for (let index = 0; index < 3; index++) {
-      // Prime group registration before timing two fresh requests, including uploads.
       if (index === 1) probeDeadline = Date.now() + 25_000;
       const probeRequest = crypto.randomUUID().replaceAll('-', '');
-      const upload = await portCall(page, { m: 'humanInteractionRequest', communityId: probeCommunity,
-        channelId: null, requestId: probeRequest, operation: 3, args: [], revision: null });
-      expect(upload).toMatchObject({ ok: true, value: { upload: 'accepted' } });
       await expect.poll(async () => {
-        const read = await portCall(page, { m: 'readBotInteractionResponses', communityId: probeCommunity,
-          operations: [3], requestIds: [probeRequest] });
-        if (!read.ok) return false;
-        const value = read.value as { responses: { requestId: string; status: number }[] };
-        return value.responses.some(response => response.requestId === probeRequest && response.status === 0);
-      }, { timeout: index === 0 ? BOT_WAIT : Math.max(1, probeDeadline - Date.now()), message: 'gateway intake serves sequential private requests before the next full interval' }).toBe(true);
+        if (await sealedAnswer(page, probeRequest) === null) {
+          const sent = await portCall(page, { m: 'sendBotCommand', communityId: probeCommunity, channelId: null, operation: 93, args: [null],
+            requestId: probeRequest });
+          if (!sent.ok) return false;
+          for (let wait = 0; wait < 20 && await sealedAnswer(page, probeRequest) === null; wait++) await page.waitForTimeout(250);
+        }
+        return (await sealedAnswer(page, probeRequest))?.status === 200;
+      }, { timeout: index === 0 ? BOT_WAIT : Math.max(1, probeDeadline - Date.now()), message: 'the Bot answers sequential sealed reads before the next full interval' }).toBe(true);
     }
     expect(Date.now()).toBeLessThan(probeDeadline);
     const invite = await makeInviteLink(page, COMMUNITY);
     const joined = await secondPersona(browser, browserName, secondBrowser, guard, host.url);
     secondContext = joined.context;
     const member = joined.page;
+    await installWorkerPort(joined.context);
     await traceCoreWorker(member);
     const bea = await joinAs(member, host, invite, instanceName, 'Bea');
     expect(bea.username).not.toBe(owner.username);
@@ -583,7 +574,16 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
         .some(entry => entry.target === reattachedTarget && entry.intersecting);
     }), { timeout: WAIT, message: 'the browser IntersectionObserver must reactivate the card on return' }).toBe(true);
     await (await pollOption(memberCard, 'Soup')).click();
-    const soupResults = await pollOption(memberCard, 'Soup');
+    let soupResults: Locator;
+    try { soupResults = await pollOption(memberCard, 'Soup'); }
+    catch (error) {
+      const evidence = { cards: await logRegion(member, GENERAL).locator('.dw-poll-card').evaluateAll(cards => cards.map(card => (card as HTMLElement).outerHTML)),
+        worker: await pollFailureEvidence(member, question) };
+      const evidencePath = testInfo.outputPath('slash-poll-vote.json');
+      writeFileSync(evidencePath, JSON.stringify(evidence, null, 2));
+      await testInfo.attach('slash-poll-vote.json', { path: evidencePath, contentType: 'application/json' });
+      throw error;
+    }
     await expect(soupResults).toBeVisible({ timeout: BOT_WAIT });
     await expect(soupResults).toHaveAttribute('aria-pressed', 'true', { timeout: BOT_WAIT });
     try { await expect(memberCard.getByRole('img', { name: 'Bea' })).toBeVisible({ timeout: BOT_WAIT }); }
@@ -609,19 +609,26 @@ test('polls publish in channels and threads, accept real votes, reject forged ma
     const threadQuestion = `Thread poll ${Date.now()}?`;
     await openPollDialog(page, thread.getByRole('textbox', { name: copy('thread.composer'), exact: true }), threadQuestion);
     const threadCard = thread.locator('.dw-poll-card').filter({ hasText: threadQuestion });
-    await expect(threadCard).toBeVisible({ timeout: BOT_WAIT });
+    try { await expect(threadCard).toBeVisible({ timeout: BOT_WAIT }); }
+    catch (error) {
+      const evidencePath = testInfo.outputPath('slash-poll-thread.json');
+      writeFileSync(evidencePath, JSON.stringify(await pollFailureEvidence(page, threadQuestion), null, 2));
+      await testInfo.attach('slash-poll-thread.json', { path: evidencePath, contentType: 'application/json' });
+      throw error;
+    }
     await expect(logRegion(page, GENERAL).locator('.dw-poll-card').filter({ hasText: threadQuestion })).toHaveCount(0);
 
     await thread.getByRole('button', { name: copy('thread.close'), exact: true }).click();
     await card.getByRole('button', { name: 'Close poll', exact: true }).click();
     await expect(card).toContainText('CLOSED', { timeout: BOT_WAIT });
+    // The poll form's create is the sealed app operation 170, sent in the poll's community.
     const communityId = await page.evaluate(() => {
       const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[] } }).__slashWorkerTrace;
       const request = trace?.calls.map(value => value as { command?: { m?: string; operation?: number; communityId?: string } })
-        .find(value => value.command?.m === 'humanInteractionRequest' && value.command.operation === 70);
+        .find(value => value.command?.m === 'sendBotCommand' && value.command.operation === 170);
       return request?.command?.communityId;
     });
-    expect(communityId).toMatch(/^[0-9a-f]{32}$/u);
+    expect(communityId).toBe(probeCommunity);
     const beforeDisable = await currentBotIdentity(page, communityId!);
     await disableBot(page);
     await expect(card).toHaveCount(0, { timeout: WAIT });
@@ -686,8 +693,10 @@ musicTest('music snapshot and clear report privately or explain unavailable encr
         const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[] } }).__slashWorkerTrace;
         return trace?.calls.filter(value => {
           const call = value as { command?: { m?: string; operation?: number } };
-          return call.command?.m === 'callJoin' || call.command?.m === 'humanInteractionRequest'
-            && call.command.operation !== undefined && call.command.operation >= 10 && call.command.operation <= 23;
+          // Bot v2: music commands and the player are sealed commands (picker 10-23, the read 92, app operations 110-125).
+          const op = call.command?.operation;
+          return call.command?.m === 'callJoin' || call.command?.m === 'sendBotCommand' && op !== undefined
+            && (op >= 10 && op <= 23 || op === 92 || op >= 110 && op <= 125);
         }) ?? [];
       })).toEqual([]);
       return;
@@ -720,6 +729,13 @@ musicTest('music snapshot and clear report privately or explain unavailable encr
       realName = bot?.display || bot?.username || '';
       return realName;
     }, { timeout: BOT_WAIT }).not.toBe('');
+    // Task 23 fix round 1: the worker's error codes (never content) at this point, so a picker tag stuck on the fallback
+    // name shows why the Bot user was not pinned.
+    const diagnostics = await portSlice<{ errors: { code: string }[] }>(page, 'diagnostics');
+    const codes = (diagnostics?.errors ?? []).map(error => error.code);
+    const catalog = await portSlice<{ botUserId: string | null; status: { state: string } }>(page, `botCatalog:${communityId}`);
+    console.log(`slash-music diagnostics codes: ${JSON.stringify(codes)} catalog bot ${catalog?.botUserId ?? 'none'} (${catalog?.status.state ?? 'no catalog'}), installation bot ${identity.botUserId}`);
+    await testInfo.attach('slash-music-diagnostics-codes.json', { body: Buffer.from(JSON.stringify(codes)), contentType: 'application/json' });
     await expect(source).toHaveText(realName, { timeout: BOT_WAIT });
     const botName = await source.innerText();
     await commands.getByRole('textbox', { name: 'Command', exact: true }).fill('/queue');
@@ -834,15 +850,13 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     await enableBot(page, owner.password);
     const reminderText = `cross-device reminder ${Date.now()}`;
     await invoke(composerBox(page, GENERAL), page, `/remind when:1m text:"${reminderText}"`);
-    await expect(commandResult(page)).toContainText(new RegExp(`^Saved\\. I’ll remind you .+: ${reminderText}$`, 'u'), { timeout: BOT_WAIT });
+    await expectFirstAnswer(page, host, new RegExp(`^Saved\\. I’ll remind you .+: ${reminderText}$`, 'u'));
+    // Bot v2 Task 21b: `/remind` is one sealed command (operation 80), and its receipt is the Bot's sealed final answer that
+    // this device opened, not an interaction response read back from an archive.
     await expect.poll(() => lastReminderRequestId(page), { timeout: BOT_WAIT }).toMatch(/^[0-9a-f]{32}$/u);
-    const reminderId = await lastReminderRequestId(page);
-    expect(reminderId).toMatch(/^[0-9a-f]{32}$/u);
-    const requestId = reminderId!;
-    await expect.poll(() => reminderReceipt(page, requestId), { timeout: BOT_WAIT, intervals: [250, 500, 1_000] })
-      .toMatchObject({ status: 0 });
-    const originalReceipt = await reminderReceipt(page, requestId);
-    if (originalReceipt === null) throw new Error(`acknowledged reminder response ${requestId} disappeared from the worker trace`);
+    const requestId = (await lastReminderRequestId(page))!;
+    await expect.poll(() => sealedAnswer(page, requestId), { timeout: BOT_WAIT, intervals: [250, 500, 1_000] }).toMatchObject({ status: 200 });
+    expect(await remindSends(page)).toBe(1);
 
     const signedIn = await secondPersona(browser, browserName, secondBrowser, guard, host.url);
     secondContext = signedIn.context;
@@ -878,31 +892,14 @@ test('reminders sync across devices and remain due after Bot restart and reload'
     await currentInbox.getByRole('button', { name: 'Dismiss', exact: true }).click();
     await expect(firstInbox).not.toContainText(reminderText, { timeout: BOT_WAIT });
 
-    // The shared adapter has already acknowledged this op80 response. Stop the managed Bot,
-    // reload this same device, then ask its real worker for that exact request's archived receipt.
+    // Stop the managed Bot and reload this device. A sealed command is never replayed by the app and its answer is not kept:
+    // the reloaded worker holds no answer for it and sends no `/remind` again; the reminder lives on in the Bot alone.
     await host.stopBotRuntime();
     await page.reload();
     await expect(page.getByRole('navigation', { name: copy('shell.rail.label'), exact: true })
       .getByRole('button', { name: COMMUNITY, exact: true })).toBeVisible({ timeout: WAIT });
-    expect(await page.evaluate(() => {
-      const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[] } }).__slashWorkerTrace;
-      return trace?.calls.map(value => value as { command?: { m?: string; operation?: number } })
-        .filter(value => value.command?.m === 'humanInteractionRequest' && value.command.operation === 80).length ?? 0;
-    })).toBe(0);
-    const archived = await portCall(page, { m: 'readBotInteractionResponses', communityId: originalReceipt.communityId,
-      operations: [80], requestIds: [requestId] });
-    expect(archived.ok).toBe(true);
-    const recoveredPage = archived.value as { responses?: { requestId?: string; operation?: number; status?: number; data?: Uint8Array }[] };
-    expect(recoveredPage.responses).toHaveLength(1);
-    const recovered = recoveredPage.responses?.[0];
-    expect(recovered?.operation).toBe(80);
-    expect({ requestId: recovered?.requestId, status: recovered?.status, data: Array.from(recovered?.data ?? []) })
-      .toEqual({ requestId, status: originalReceipt.status, data: originalReceipt.data });
-    expect(await page.evaluate(() => {
-      const trace = (window as unknown as { __slashWorkerTrace?: { calls: unknown[] } }).__slashWorkerTrace;
-      return trace?.calls.map(value => value as { command?: { m?: string; operation?: number } })
-        .filter(value => value.command?.m === 'humanInteractionRequest' && value.command.operation === 80).length ?? 0;
-    })).toBe(0);
+    expect(await remindSends(page)).toBe(0);
+    expect(await sealedAnswer(page, requestId)).toBeNull();
   } finally {
     try { await secondContext?.close(); }
     finally { await stopAppBeforeHost(page, host); }
@@ -929,7 +926,7 @@ test('a reminder set from the picker chips appears under Upcoming', async ({ pag
     const text = region.getByRole('textbox', { name: 'text', exact: true });
     await text.fill(reminderText);
     await text.press('Enter');
-    await expect(commandResult(page)).toContainText(new RegExp(`^Saved\\. I’ll remind you .+: ${reminderText}$`, 'u'), { timeout: BOT_WAIT });
+    await expectFirstAnswer(page, host, new RegExp(`^Saved\\. I’ll remind you .+: ${reminderText}$`, 'u'));
     await expect(region).toHaveCount(0);
     const list = await chooseCommand(composerBox(page, GENERAL), page, 'reminders list');
     await list.getByRole('textbox', { name: 'press ↵ to run', exact: true }).press('Enter');

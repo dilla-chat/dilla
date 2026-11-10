@@ -66,6 +66,9 @@ type Metrics struct {
 	TURNCapacityRefusals prometheus.Counter
 	TURNPeerDrops        prometheus.Counter
 	TURNCutOverflows     prometheus.Counter
+	// BotFeedSkipped counts the device-list pushes the Bot's event feed left out, by reason (Bot v2 task 12):
+	// a push over the 1 MiB frame cap, a history over 1024 rows, or a user with no usable account keys.
+	BotFeedSkipped *prometheus.CounterVec
 	// turnMu guards the relay state the diagnostics' turn leg reads back.
 	turnMu      sync.Mutex
 	turnLive    int
@@ -164,8 +167,17 @@ func NewMetrics(r prometheus.Registerer, g prometheus.Gatherer) *Metrics {
 		Help: "Datagrams a relay socket dropped because the peer was not the SFU's media port (another port, another relay allocation)."})
 	m.TURNCutOverflows = prometheus.NewCounter(prometheus.CounterOpts{Name: "dilla_turn_cut_overflows_total",
 		Help: "Relay cuts that found the cut map full and refused every device's earlier credentials instead (fail closed)."})
+	m.BotFeedSkipped = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dilla_bot_feed_skipped_total",
+		Help: "Device-list pushes the Bot's event feed left out, by reason."}, []string{"reason"})
 	r.MustRegister(m.collectors()...)
 	return m
+}
+
+// BotFeedSkip records one device-list push the Bot's event feed left out (api.BotFeed).
+func (m *Metrics) BotFeedSkip(reason string) {
+	if m != nil {
+		m.BotFeedSkipped.WithLabelValues(reason).Inc()
+	}
 }
 
 // CapacityRefused records one 486 at the instance-wide relay cap (server.TURNMetrics).
@@ -202,6 +214,7 @@ func (m *Metrics) collectors() []prometheus.Collector {
 		m.CallStatsReports, m.CallRelayReports, m.CallDecryptFailures, m.CallRTT,
 		m.TURNAllocations, m.TURNQuotaRefusals, m.TURNRelayBytes,
 		m.TURNCapacityRefusals, m.TURNPeerDrops, m.TURNCutOverflows,
+		m.BotFeedSkipped,
 	}
 }
 

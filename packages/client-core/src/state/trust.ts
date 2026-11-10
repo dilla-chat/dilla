@@ -2,6 +2,7 @@ import { arr, bin, decode, encode, str, u53, u64, type CborValue } from '../cbor
 import { decodeBoundedArray } from './bounded';
 import { CoreError, trustBlock, type Id, type PendingLeaf, type TrustRecord } from '../core-port';
 import type { Routes } from '../http/routes';
+import { encodeDeviceListPush } from '../bot/protocol';
 
 type ReaderRoutes = Pick<Routes, 'getDeviceList' | 'getDeviceListHistory'>;
 const MAX_VERSIONS = 1024;
@@ -39,10 +40,11 @@ export function decodeTrustState(bytes: Uint8Array): TrustRecord[] {
   } catch (error) { return malformed(error); }
 }
 
-/** The candidate head row: [version, list, ssk_signature, prev_hash], plus on wire 4 the account-kind attestation. */
+/** The candidate head row: [version, list, ssk_signature, prev_hash], plus on wire 4 the account-kind attestation, plus on
+ *  wire 6 (Bot v2 task 20b) the account's [umk_pub, ssk_pub, sig_umk_ssk] after it. */
 function headRow(head: Uint8Array): CborValue[] {
   const row = arr(decode(head));
-  if (row.length !== 4 && row.length !== 5) throw new RangeError('E_CBOR_SHAPE: device-list head');
+  if (row.length !== 4 && row.length !== 5 && row.length !== 8) throw new RangeError('E_CBOR_SHAPE: device-list head');
   return row;
 }
 
@@ -61,15 +63,27 @@ export function signedHeadList(head: Uint8Array): Uint8Array {
  * fifth element, the account-kind attestation, is no part of it; any other head is returned as served.
  */
 export function chainRow(head: Uint8Array): Uint8Array {
-  // Only a five-element head is rewritten; anything else is passed as served and the core's decoder judges it.
+  // Only a five- or eight-element head is rewritten; anything else is passed as served and the core's decoder judges it.
   let row: CborValue[];
   try { row = arr(decode(head)); } catch { return head; }
-  return row.length === 5 ? encode(row.slice(0, 4)) : head;
+  return row.length === 5 || row.length === 8 ? encode(row.slice(0, 4)) : head;
 }
 
 /** Task S1 part 2: the instance-signed account-kind attestation a wire-4 head carries as its fifth element, else null. */
 export function headAttestation(head: Uint8Array): Uint8Array | null {
-  try { const row = headRow(head); return row.length === 5 ? bin(row[4]) : null; } catch { return stale(); }
+  try { const row = headRow(head); return row.length >= 5 ? bin(row[4]) : null; } catch { return stale(); }
+}
+
+/** The account's keys a wire-6 head carries after the attestation (Bot v2 task 20b), as the server holds them: untrusted
+ *  until the core checks the SSK under the UMK and every list under the SSK. */
+export interface HeadIdentity { umk: Uint8Array; ssk: Uint8Array; sigUmkSsk: Uint8Array }
+
+/** The identity keys of an eight-element head, or null for a head without them (an older wire, a tombstoned account). */
+export function headIdentity(head: Uint8Array): HeadIdentity | null {
+  try {
+    const row = headRow(head);
+    return row.length === 8 ? { umk: bin(row[5], 32), ssk: bin(row[6], 32), sigUmkSsk: bin(row[7], 64) } : null;
+  } catch { return stale(); }
 }
 
 /**
@@ -106,6 +120,25 @@ export function historyFrom(history: Uint8Array, version: bigint): Uint8Array | 
     const rows = decodeBoundedArray(history, MAX_VERSIONS).filter((row) => u64(arr(row, 4)[0]) >= version);
     return rows.length === 0 ? null : encode(rows);
   } catch { return null; }
+}
+
+/**
+ * Bot v2 task 20b (Jonas, 2026-11-07): the device_list_push of a user, built by this device from the unpaged head's identity
+ * keys and the signed history from version 1, read by readDeviceListHistory (its 1024-version and 4 MiB bounds, the head read
+ * again after paging). The core checks all of it in botDeviceListPin; `head` is returned for its account-kind attestation,
+ * which the core must hold before the pin. E_DEVICE_LIST_STALE when the head has no keys or anything is out of bounds.
+ */
+export async function readBotDeviceListPush(routes: ReaderRoutes, userId: Id): Promise<{ head: Uint8Array; push: Uint8Array }> {
+  const { head, history } = await readDeviceListHistory(routes, userId, 0n);
+  try {
+    const identity = headIdentity(head);
+    if (identity === null) return stale();
+    const rows = decodeBoundedArray(history, MAX_VERSIONS).map((value) => {
+      const row = arr(value, 4);
+      return { version: u64(row[0]), blob: bin(row[1]), sskSignature: bin(row[2], 64), prevHash: bin(row[3], 32) };
+    });
+    return { head, push: encodeDeviceListPush({ umk: identity.umk, ssk: identity.ssk, sigUmkSsk: identity.sigUmkSsk, history: rows }) };
+  } catch { return stale(); }
 }
 
 /** The server supplies bytes; the Rust core authenticates all signatures and leaf evidence. */

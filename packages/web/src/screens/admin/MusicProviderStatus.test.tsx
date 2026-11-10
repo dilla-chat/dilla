@@ -1,66 +1,50 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { encode, encodeMusicProviderStatus, fromHex } from '@dilla/client-core';
+import { encodeBotStatus, encodeMusicProviderStatus, fromHex } from '@dilla/client-core';
+import { en, t } from '../../strings/index.ts';
 import { CoreProvider } from '../../core/context.tsx';
-import { FakeClient } from '../../test/fake-client.ts';
+import { FakeClient, refusal } from '../../test/fake-client.ts';
 import { account, ME } from '../../test/fixtures.ts';
+import { installSealedBot, type SealedReply } from '../../test/sealed-bot.ts';
 import { MusicProviderStatus } from './MusicProviderStatus.tsx';
 
 const cid = '11'.repeat(16); const installationId = '22'.repeat(16);
-/** When each operation's answer becomes readable, in ms after that operation was sent; null never answers. */
-type AnswerTiming = { 0?: number | null; 24?: number | null };
-function setup(status = 0, wrongInstallation = false, age = 0, empty = false, legacy = false, capabilityData?: Uint8Array, pending?: 'send' | 'read', timing: AnswerTiming = {}) {
-  const sentAt: Record<number, number> = {};
-  const unanswered = (op: number) => {
-    const delay = timing[op as 0 | 24];
-    return delay === null || (delay !== undefined && Date.now() < (sentAt[op] ?? 0) + delay);
-  };
+const ALL = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25];
+
+/** Bot v2 Task 21b: the status is the sealed app operation 124; `reply` answers it (null leaves it unanswered). */
+function setup(options: { status?: number; wrongInstallation?: boolean; age?: number; offered?: number[]; reply?: () => SealedReply; offline?: boolean } = {}) {
   const fake = new FakeClient();
   fake.set('account', account());
   fake.set('communities', [{ id: cid, name: 'Music test', owner: ME.id }]);
   fake.set(`permissions:${cid}`, { loaded: true, manageCommunity: true, top: 0, owner: false, manageRoles: false, manageChannels: false, createInvite: false, banMembers: false, kickMembers: false, everyoneId: '', overwritesLoaded: true });
-  let requestId = '';
-  let operation = 0;
-  fake.handler = command => Promise.resolve((() => {
-    if (pending === 'send' && command.m === 'humanInteractionRequest' || pending === 'read' && command.m === 'readBotInteractionResponses') return new Promise<never>(() => {});
-    if (command.m === 'getBotCommandStatus') return { installationId, botUserId: null, state: 3, revision: '1' };
-    if (command.m === 'humanInteractionRequest') { requestId = command.requestId; operation = command.operation; sentAt[operation] = Date.now(); return { requestId, upload: 'accepted' }; }
-    if (command.m === 'readBotInteractionResponses') return { responses: empty || unanswered(operation) ? [] : [{ requestId, communityId: cid, operation, status: operation === 0 ? 0 : status, deliveryId: operation === 0 ? '8' : '9', channelId: null, revision: null,
-      data: operation === 0 ? capabilityData ?? encode(legacy ? [1, fromHex('44'.repeat(16)), 0, 1, 0] : [2, fromHex('44'.repeat(16)), 0, 1, 0, [24]])
-        : encodeMusicProviderStatus({ version: 1, installationId: fromHex(wrongInstallation ? '33'.repeat(16) : installationId), observedAt: BigInt(Math.floor(Date.now() / 1000) - age),
-        youtubePlayback: 'configured', youtubePlaybackReason: 'none' }) }], through: 'ee'.repeat(16), blocked: false };
-    if (command.m === 'ackBotInteractionResponses') return null;
-    return null;
-  })());
+  fake.handler = command => command.m === 'sendBotCommand' && options.offline === true
+    ? Promise.reject(refusal({ code: 'E_BOT_OFFLINE', status: 503 })) : Promise.resolve(null);
+  const bot = installSealedBot(fake, cid, () => options.reply !== undefined ? options.reply() : { status: options.status ?? 0, revision: null,
+    data: encodeMusicProviderStatus({ version: 1, installationId: fromHex(options.wrongInstallation ? '33'.repeat(16) : installationId),
+      observedAt: BigInt(Math.floor(Date.now() / 1000) - (options.age ?? 0)), youtubePlayback: 'configured', youtubePlaybackReason: 'none' }) },
+  { offered: options.offered ?? ALL });
+  if (options.offline === true) {
+    const sealed = fake.handler;
+    fake.handler = command => command.m === 'sendBotCommand' ? Promise.reject(refusal({ code: 'E_BOT_OFFLINE', status: 503 })) : sealed(command);
+  }
   const view = render(<CoreProvider client={fake}><MusicProviderStatus communityId={cid} installationId={installationId} /></CoreProvider>);
-  return { fake, view };
+  return { fake, bot, view };
 }
 afterEach(() => vi.useRealTimers());
 describe('music provider status', () => {
-  it('uses runtime evidence and acknowledges the exact leased capability and status responses', async () => {
-    const { fake } = setup();
+  it('reads the runtime evidence through one sealed command', async () => {
+    const { bot } = setup();
     expect(await screen.findByText('ready')).toBeVisible();
-    expect(fake.callsOf('readBotInteractionResponses').map(call => [call.operations, call.requestIds])).toEqual([
-      [[0], [fake.callsOf('humanInteractionRequest')[0].requestId]], [[24], [fake.callsOf('humanInteractionRequest')[1].requestId]],
-    ]);
-    expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(2);
-    expect(fake.callsOf('humanInteractionRequest').map(call => call.operation)).toEqual([0, 24]);
-    expect(fake.callsOf('humanInteractionRequest')[1]).toMatchObject({ operation: 24, args: [], revision: null, channelId: null });
+    expect(bot.calls.map(call => [call.sealed, call.operation, call.channelId, call.args, call.revision])).toEqual([[124, 24, null, [], null]]);
   });
-  it('does not send an unknown operation to an older runtime without a capability advertisement', async () => {
-    const { fake } = setup(0, false, 0, false, true);
+  it('does not send to a Bot whose catalog does not offer provider status', async () => {
+    const { bot } = setup({ offered: [10] });
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('unavailable'));
-    expect(fake.callsOf('humanInteractionRequest').map(call => call.operation)).toEqual([0]);
-    expect(fake.callsOf('ackBotInteractionResponses')).toHaveLength(1);
+    expect(bot.calls).toEqual([]);
     expect(screen.queryByText('ready')).not.toBeInTheDocument();
   });
-  it('rejects malformed capability evidence before requesting provider status', async () => {
-    const { fake } = setup(0, false, 0, false, false, encode([2, fromHex('44'.repeat(16)), 0, 1, 0, '24']));
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('unavailable'));
-    expect(fake.callsOf('humanInteractionRequest').map(call => call.operation)).toEqual([0]);
-  });
-  it('does not equate unsupported responses or wrong installation snapshots with configured playback', async () => {
-    setup(0, true);
+  it('does not equate a wrong installation snapshot with configured playback', async () => {
+    setup({ wrongInstallation: true });
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('unavailable'));
     expect(screen.queryByText('ready')).not.toBeInTheDocument();
   });
@@ -70,63 +54,35 @@ describe('music provider status', () => {
     expect(screen.queryByText('ready')).not.toBeInTheDocument();
   });
   it('shows older observations as stale', async () => {
-    setup(0, false, 70);
+    setup({ age: 70 });
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('out of date'));
     expect(screen.queryByText('ready')).not.toBeInTheDocument();
   });
-  it('shows unsupported runtime responses as unavailable', async () => {
-    setup(1);
+  it('shows a refused status as unavailable', async () => {
+    setup({ status: 2 });
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('unavailable'));
     expect(screen.queryByText('ready')).not.toBeInTheDocument();
   });
-  it('bounds pending reads to thirty seconds and allows retry', async () => {
-    vi.useFakeTimers();
-    const { fake } = setup(0, false, 0, true);
-    await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
-    expect(screen.getByRole('status')).toHaveTextContent('unavailable');
+  it('shows a Bot the instance cannot reach as unavailable and allows Check again', async () => {
+    const { fake } = setup({ offline: true });
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('unavailable'));
     expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled();
-    const reads = fake.callsOf('readBotInteractionResponses').length;
-    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
-    expect(fake.callsOf('readBotInteractionResponses')).toHaveLength(reads);
+    const sends = fake.callsOf('sendBotCommand').length;
+    act(() => screen.getByRole('button', { name: 'Check again' }).click());
+    await waitFor(() => expect(fake.callsOf('sendBotCommand')).toHaveLength(sends + 1));
   });
-  it.each(['send', 'read'] as const)('expires even when the worker %s call never settles', async pending => {
+  it('says the Bot has not reported yet when the status goes unanswered, offers Check again and does not poll', async () => {
     vi.useFakeTimers();
-    setup(0, false, 0, false, false, undefined, pending);
-    await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
-    expect(screen.getByRole('status')).toHaveTextContent('unavailable');
-    expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled();
-  });
-  // CT 144, 2026-10-30: operation 0 was answered after 25 s and operation 24 had 5 s left of a
-  // shared deadline. Each answer has its own thirty seconds, measured from its own send.
-  it('gives operation 24 its own thirty seconds after a slow operation 0', async () => {
-    vi.useFakeTimers();
-    const { fake } = setup(0, false, 0, false, false, undefined, undefined, { 0: 25_000, 24: 20_000 });
-    await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
-    expect(fake.callsOf('humanInteractionRequest').map(call => call.operation)).toEqual([0, 24]);
-    expect(screen.getByRole('status')).not.toHaveTextContent('unavailable');
-    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
-    expect(screen.getByText('ready')).toBeVisible();
-  });
-  it('shows that the bot answered and offers Check again when operation 24 is not answered', async () => {
-    vi.useFakeTimers();
-    const { fake } = setup(0, false, 0, false, false, undefined, undefined, { 24: null });
-    await act(async () => { await vi.advanceTimersByTimeAsync(29_000); });
+    const { bot } = setup({ reply: () => null });
+    // The send and its one automatic resend each wait 5 s for an answer.
+    await act(async () => { await vi.advanceTimersByTimeAsync(9_000); });
     expect(screen.getByRole('status')).toHaveTextContent('Checking provider status…');
-    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
     expect(screen.getByRole('status')).toHaveTextContent('The bot answered, but has not reported provider status yet. Check again.');
-    expect(screen.getByRole('status')).not.toHaveTextContent('unavailable');
     expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled();
     expect(screen.queryByText('ready')).not.toBeInTheDocument();
-    const reads = fake.callsOf('readBotInteractionResponses').length;
-    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
-    expect(fake.callsOf('readBotInteractionResponses')).toHaveLength(reads);
-  });
-  it('still reports unavailable when operation 0 is not answered within its own thirty seconds', async () => {
-    vi.useFakeTimers();
-    const { fake } = setup(0, false, 0, false, false, undefined, undefined, { 0: null });
-    await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
-    expect(screen.getByRole('status')).toHaveTextContent('unavailable');
-    expect(fake.callsOf('humanInteractionRequest').map(call => call.operation)).toEqual([0]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(bot.calls).toHaveLength(2);
   });
   it('keeps a completed observation until its freshness window expires', async () => {
     vi.useFakeTimers();
@@ -137,5 +93,36 @@ describe('music provider status', () => {
     expect(screen.getByRole('status')).toHaveTextContent('out of date');
     expect(screen.queryByText('ready')).not.toBeInTheDocument();
   });
+});
 
+// Bot v2 Task 22: the Bot page's status read (94) carries the last 20 music starts; the music page lists them.
+describe('music start timings (Task 22)', () => {
+  it('music timings list the last 20 starts', async () => {
+    const fake = new FakeClient();
+    fake.set('account', account());
+    fake.set(`permissions:${cid}`, { loaded: true, manageCommunity: true, top: 0, owner: false, manageRoles: false, manageChannels: false, createInvite: false, banMembers: false, kickMembers: false, everyoneId: '', overwritesLoaded: true });
+    const starts = Array.from({ length: 20 }, (_, i) => ({ firstFrameMs: 100 + i, cold: i === 0 }));
+    const bot = installSealedBot(fake, cid, call => call.sealed === 94
+      ? { status: 0, revision: null, data: encodeBotStatus({ needsReAdd: [], musicStarts: starts }) }
+      : { status: 0, revision: null, data: encodeMusicProviderStatus({ version: 1, installationId: fromHex(installationId),
+        observedAt: BigInt(Math.floor(Date.now() / 1000)), youtubePlayback: 'configured', youtubePlaybackReason: 'none' }) },
+    { offered: [24, 94] });
+    render(<CoreProvider client={fake}><MusicProviderStatus communityId={cid} installationId={installationId} /></CoreProvider>);
+    const row = await screen.findByRole('group', { name: en['bot.music.timings'] });
+    const items = await within(row).findAllByRole('listitem');
+    expect(items).toHaveLength(20);
+    expect(items[0]).toHaveTextContent(t('bot.music.startCold', { ms: 100 }));
+    expect(items[19]).toHaveTextContent(t('bot.music.start', { ms: 119 }));
+    expect(bot.calls.map(c => c.sealed).sort()).toEqual([124, 94].sort());
+  });
+
+  it('says so when no music has started', async () => {
+    const fake = new FakeClient();
+    fake.set('account', account());
+    fake.set(`permissions:${cid}`, { loaded: true, manageCommunity: true, top: 0, owner: false, manageRoles: false, manageChannels: false, createInvite: false, banMembers: false, kickMembers: false, everyoneId: '', overwritesLoaded: true });
+    installSealedBot(fake, cid, call => call.sealed === 94 ? { status: 0, revision: null, data: encodeBotStatus({ needsReAdd: [], musicStarts: [] }) } : null,
+      { offered: [94] });
+    render(<CoreProvider client={fake}><MusicProviderStatus communityId={cid} installationId={installationId} /></CoreProvider>);
+    expect(await screen.findByText(en['bot.music.noStarts'])).toBeVisible();
+  });
 });

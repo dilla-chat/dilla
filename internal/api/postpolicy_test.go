@@ -428,6 +428,13 @@ func TestManagedBotJoinAndSendGatesUseLiveInstallation(t *testing.T) {
 				t.Fatalf("CreateBotInstallation: %v", err)
 			}
 			acl := api.ResolverACL{Repo: repo}
+			// The Bot is a member of Bot channels' text groups only (Task 23, R1 b).
+			if ok, err := acl.Eligible(ctx, f.group.GroupID, botID); err != nil || ok {
+				t.Fatalf("joining bot ACL outside a Bot channel = %v, %v; want denied", ok, err)
+			}
+			if _, err := repo.MarkBotChannel(ctx, store.BotChannelRow{ChannelID: f.channel.ID, CommunityID: f.cid, MarkedAt: policyT0, MarkedBy: f.user}); err != nil {
+				t.Fatalf("MarkBotChannel: %v", err)
+			}
 			if ok, err := acl.Eligible(ctx, f.group.GroupID, botID); err != nil || !ok {
 				t.Fatalf("joining bot own-community ACL = %v, %v; want eligible", ok, err)
 			}
@@ -445,11 +452,14 @@ func TestManagedBotJoinAndSendGatesUseLiveInstallation(t *testing.T) {
 				for _, b := range []ds.Binding{
 					binding(&foreignCommunity.ID, f.channel.ID, api.GroupText),
 					binding(nil, f.channel.ID, api.GroupText),
-					binding(nil, id.New(), 3),
 				} {
 					if err := registration.MayRegister(ctx, botID, b); !errors.Is(err, ds.ErrNotEligible) {
-						t.Errorf("%s foreign/DM/interaction registration = %v, want ds.ErrNotEligible", phase, err)
+						t.Errorf("%s foreign/DM registration = %v, want ds.ErrNotEligible", phase, err)
 					}
+				}
+				// Bot v2 Task 23 fix round 1: kind 3 is retired, refused for everyone as a binding error.
+				if err := registration.MayRegister(ctx, botID, binding(nil, id.New(), 3)); !errors.Is(err, ds.ErrBindingTarget) {
+					t.Errorf("%s interaction registration = %v, want ds.ErrBindingTarget", phase, err)
 				}
 			}
 			checkRegistration("joining")

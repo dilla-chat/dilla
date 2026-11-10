@@ -28,6 +28,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	_ "modernc.org/sqlite"
 
+	"github.com/dilla-chat/dilla/internal/api/sockettest"
 	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/clock"
@@ -187,6 +188,12 @@ func newInstanceWith(t *testing.T, tune func(*config.Config)) (*dillad.Server, h
 	return srv, h, code
 }
 
+// socketHandler is srv's HTTP handler with the routes that moved to the gateway socket sent as request frames
+// (sockettest.Bridge), for a test that drives the composed instance in process.
+func socketHandler(srv *dillad.Server) http.Handler {
+	return sockettest.NewBridge(srv.Handler(), srv.Mux(), srv.SocketDispatcher(), srv.Repo(), srv.Now)
+}
+
 // newInstanceTuned is newInstanceWith plus the config the instance was built
 // from, which is what the instance document and the limits array are asserted
 // against: every one of their elements is either a config value or a constant
@@ -204,7 +211,8 @@ func newInstanceTuned(t *testing.T, tune func(*config.Config)) (*dillad.Server, 
 	if err != nil {
 		t.Fatalf("dillad.New: %v", err)
 	}
-	return srv, srv.Handler(), code, cfg
+	// The routes that moved to the gateway socket are sent as request frames (sockettest.Bridge).
+	return srv, socketHandler(srv), code, cfg
 }
 
 // uints reads a decoded CBOR array of unsigned integers. cborx decodes a
@@ -343,8 +351,8 @@ func TestRegisterEstablishAndReadTheInstanceDocument(t *testing.T) {
 	}
 	// Every element, in the ORDER protocol/09-http-api.md § Instance fixes: a
 	// transposed pair or an inverted enum passes a length check. wire_versions is the hello's
-	// [4,3,2] since wire 4 (Task S1 part 2: the account-kind attestation).
-	for i, want := range [][]uint64{{5, 4, 3, 2}, {1}, {1}} {
+	// [6] since Bot v2 (no older client is served).
+	for i, want := range [][]uint64{{6}, {1}, {1}} {
 		names := []string{"wire_versions", "e2ee_versions", "media_versions"}
 		if got := uints(t, doc[i], names[i]); !slices.Equal(got, want) {
 			t.Fatalf("%s = %v, want %v", names[i], got, want)
@@ -684,9 +692,10 @@ func TestTheReleaseBinaryDoesNotLinkTheTestHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("go list: %v", err)
 	}
-	// Two seeding helpers exist, and neither may ship: dilladtest seeds a whole instance, and
+	// Three test helpers exist, and none may ship: internal/api/sockettest serves socket-only routes over HTTP from a bearer
+	// header; dilladtest seeds a whole instance, and
 	// internal/ds/dstest writes a group past every check of the registration route (hardening G).
-	for _, helper := range []string{"dilladtest", "internal/ds/dstest"} {
+	for _, helper := range []string{"dilladtest", "internal/ds/dstest", "internal/api/sockettest"} {
 		if strings.Contains(string(out), helper) {
 			t.Fatalf("cmd/dillad depends on %s; the seeding helpers must never ship", helper)
 		}
@@ -824,7 +833,7 @@ func TestTheEmbeddedWebClientIsServedAtTheRoot(t *testing.T) {
 func TestTheAPIAnswersAsBeforeBesideTheWebClient(t *testing.T) {
 	srv, h, _ := newInstance(t)
 	defer srv.Shutdown(context.Background())
-	message := "/v1/groups/" + id.New().String() + "/message"
+	message := "/v1/gateway/ticket"
 	for _, c := range []struct {
 		method, path string
 		status       int

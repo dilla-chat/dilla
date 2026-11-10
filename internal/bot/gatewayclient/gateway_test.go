@@ -11,7 +11,7 @@ func TestDecodeServerFrameValidatesOpcodeShapeAndScope(t *testing.T) {
 	instance := make([]byte, 16)
 	instance[0] = 1
 	validHello, err := cborx.Marshal([]any{uint64(OpHello), uint64(0), nil, []any{
-		[]any{uint64(3)}, []any{uint64(1)}, []any{uint64(1)}, uint64(30000), uint64(131584), instance, uint64(1), uint64(300), uint64(300),
+		[]any{uint64(6)}, []any{uint64(1)}, []any{uint64(1)}, uint64(30000), uint64(131584), instance, uint64(1), uint64(300), uint64(300),
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -26,7 +26,7 @@ func TestDecodeServerFrameValidatesOpcodeShapeAndScope(t *testing.T) {
 		{"unknown opcode", []any{uint64(13), uint64(0), nil, []any{}}},
 		{"wrong arity", []any{uint64(OpHeartbeatAck), uint64(0), nil, []any{uint64(1), uint64(2)}}},
 		{"wrong scope", []any{uint64(OpHeartbeatAck), uint64(0), make([]byte, 16), []any{uint64(1)}}},
-		{"server rejects client opcode", []any{uint64(OpIdentify), uint64(0), nil, []any{"", uint64(3), uint64(1), uint64(1), uint64(0)}}},
+		{"server rejects client opcode", []any{uint64(OpIdentify), uint64(0), nil, []any{"", uint64(6), uint64(1), uint64(1), uint64(0)}}},
 		{"heartbeat ack requires uint", []any{uint64(OpHeartbeatAck), uint64(0), nil, []any{"1"}}},
 	}
 	for _, tc := range tests {
@@ -138,6 +138,96 @@ func TestServerErrorCodesAreClassifiedWithoutFatalHintsBeingQueued(t *testing.T)
 		t.Run(tc.code+map[bool]string{true: "/handshake", false: "/live"}[tc.handshake], func(t *testing.T) {
 			if got := classifyServerError(tc.code, tc.handshake); !errors.Is(got, tc.want) {
 				t.Fatalf("classifyServerError(%q, %t)=%v, want %v", tc.code, tc.handshake, got, tc.want)
+			}
+		})
+	}
+}
+
+// The instance pushes app_build (op 56) to every wire 5+ connection, the Bot's included. The Bot drops it; reading it as a
+// protocol error ended the socket in a reconnect loop and the Bot never reached ready (Bot v2 task 5, found by the Bot e2e).
+func TestTheAppBuildNoticeIsDroppedNotAProtocolError(t *testing.T) {
+	raw, err := cborx.Marshal([]any{uint64(56), uint64(0), nil, []any{"/assets/index-abc.js"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeServerFrame(raw, MaxGatewayFrameBytes); err == nil {
+		t.Fatal("the decoder reads app_build as a frame; the test would not pin the drop")
+	}
+	if !dropMalformedEphemeral(raw) {
+		t.Fatal("app_build is not dropped; the read loop ends the socket with a protocol error")
+	}
+}
+
+// Bot v2 Task 17 fix round 2: op 62 bot_reply reaches the Bot (its health probe's answer). Before this it ended the
+// Bot's socket as a protocol error. It is ringed, or unringed when the server's ring had no room for it.
+func TestBotReplyFrameDecodes(t *testing.T) {
+	request := make([]byte, 16)
+	request[15] = 7
+	for _, tc := range []struct {
+		name    string
+		n       uint64
+		payload []any
+		ok      bool
+	}{
+		{"ringed", 3, []any{request, uint64(0), []byte{0x83}, uint64(1)}, true},
+		{"over the ring budget", 0, []any{request, uint64(2), []byte{0x83}, uint64(0)}, true},
+		{"zero request id", 3, []any{make([]byte, 16), uint64(0), []byte{0x83}, uint64(1)}, false},
+		{"seq over 32 bits", 3, []any{request, uint64(1 << 32), []byte{0x83}, uint64(1)}, false},
+		{"empty sealed", 3, []any{request, uint64(0), []byte{}, uint64(1)}, false},
+		{"final 2", 3, []any{request, uint64(0), []byte{0x83}, uint64(2)}, false},
+		{"three elements", 3, []any{request, uint64(0), []byte{0x83}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := cborx.Marshal([]any{uint64(OpBotReply), tc.n, nil, tc.payload})
+			if err != nil {
+				t.Fatal(err)
+			}
+			f, err := DecodeServerFrame(raw, 197120)
+			if (err == nil) != tc.ok {
+				t.Fatalf("decode err %v, want ok %v", err, tc.ok)
+			}
+			if tc.ok && (f.BotReply == nil || f.BotReply.RequestID[15] != 7 || f.BotReply.Seq != uint32(tc.payload[1].(uint64)) ||
+				f.BotReply.Final != (tc.payload[3] == uint64(1)) || len(f.BotReply.Sealed) != 1) {
+				t.Fatalf("decoded %+v", f.BotReply)
+			}
+		})
+	}
+}
+
+// Bot v2 Task 12: op 64 bot_command and op 65 bot_event reach the Bot runtime's connection. Op 64 is
+// ringed (n != 0); op 65 is ringed live and unringed (n = 0) inside a cold-start snapshot. The client
+// decodes both and hands them to its consumer, which acknowledges the ringed ones in order (the op 65
+// consumer itself is Task 14's). Before this, either opcode ended the socket as a protocol error.
+func TestBotCommandAndBotEventFramesDecode(t *testing.T) {
+	id16 := make([]byte, 16)
+	for _, tc := range []struct {
+		name    string
+		op      Opcode
+		n       uint64
+		payload []any
+		ok      bool
+	}{
+		{"ringed bot_command", OpBotCommand, 3, []any{id16, id16, id16, id16, []byte{0x85}}, true},
+		{"unringed bot_command", OpBotCommand, 0, []any{id16, id16, id16, id16, []byte{0x85}}, false},
+		{"ringed bot_event", OpBotEvent, 4, []any{uint64(2), []any{id16, id16, uint64(1), []any{}}}, true},
+		{"snapshot bot_event", OpBotEvent, 0, []any{uint64(6), []any{id16}}, true},
+		{"bot_event of three elements", OpBotEvent, 4, []any{uint64(2), []any{}, uint64(0)}, false},
+		// Bot v2 task 13: op 66 is never ringed; the Bot decodes and drops it until its consumer lands (task 14+).
+		{"bot_webhook", OpBotWebhook, 0, []any{id16, id16, id16, id16, "Terraria", nil, "boss down", uint64(0)}, true},
+		{"ringed bot_webhook", OpBotWebhook, 5, []any{id16, id16, id16, id16, "Terraria", nil, "boss down", uint64(0)}, false},
+		{"bot_webhook of seven elements", OpBotWebhook, 0, []any{id16, id16, id16, id16, "Terraria", nil, "x"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := cborx.Marshal([]any{uint64(tc.op), tc.n, nil, tc.payload})
+			if err != nil {
+				t.Fatal(err)
+			}
+			f, err := DecodeServerFrame(raw, 197120)
+			if (err == nil) != tc.ok {
+				t.Fatalf("decode err %v, want ok %v", err, tc.ok)
+			}
+			if tc.ok && (f.Op != tc.op || f.N != tc.n || len(f.BotPayload) != len(tc.payload)) {
+				t.Fatalf("decoded %+v", f)
 			}
 		})
 	}

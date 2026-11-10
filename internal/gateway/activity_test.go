@@ -25,7 +25,7 @@ func (a *activityAuth) ResolveHash(context.Context, []byte) (auth.Session, error
 
 func TestPresenceActivityUsesRealInputAndSharedBudget(t *testing.T) {
 	h := newHarness(t)
-	h.gw.opts.WireVersions = []uint64{5}
+	h.gw.opts.WireVersions = []uint64{6}
 	a := &activityAuth{capabilityRecordingAuth: &capabilityRecordingAuth{Authenticator: h}}
 	h.gw.opts.Auth = a
 	c := h.connect(t, id.New())
@@ -69,7 +69,7 @@ func TestPresenceActivityRejectsIneligibleSessions(t *testing.T) {
 	for _, kind := range []string{"legacy", "bot", "owed", "pending", "revoked", "malformed", "disconnected"} {
 		t.Run(kind, func(t *testing.T) {
 			h := newHarness(t)
-			h.gw.opts.WireVersions = []uint64{5}
+			h.gw.opts.WireVersions = []uint64{6}
 			a := &activityAuth{capabilityRecordingAuth: &capabilityRecordingAuth{Authenticator: h}}
 			h.gw.opts.Auth = a
 			c := h.connect(t, id.New())
@@ -78,7 +78,7 @@ func TestPresenceActivityRejectsIneligibleSessions(t *testing.T) {
 			in := Inbound{Op: OpPresenceActivity}
 			switch kind {
 			case "legacy":
-				c.wire = 4
+				c.wire = 5
 			case "bot":
 				c.isBot = true
 			case "owed":
@@ -102,7 +102,7 @@ func TestPresenceActivityRejectsIneligibleSessions(t *testing.T) {
 
 func TestPresenceActivityDiscardedWhenDisconnectsDuringAuthorityRead(t *testing.T) {
 	h := newHarness(t)
-	h.gw.opts.WireVersions = []uint64{5}
+	h.gw.opts.WireVersions = []uint64{6}
 	a := &activityAuth{capabilityRecordingAuth: &capabilityRecordingAuth{Authenticator: h}}
 	h.gw.opts.Auth = a
 	c := h.connect(t, id.New())

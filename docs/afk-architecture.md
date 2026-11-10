@@ -119,5 +119,5 @@ than its last migration. The down step drops the table. See
 
 ## Retired routes
 
-The routes `POST` and `DELETE /v1/communities/{id}/afk` of web-3.8 (move and leave by hand) answer
-`404` with the detail `retired in web3.9`; a web-3.8 tab gets a refusal it can map.
+The routes `POST` and `DELETE /v1/communities/{id}/afk` of web-3.8 (move and leave by hand) are not
+registered any more (Bot v2 keeps no compatibility with old clients); a request for one is a plain `404`.

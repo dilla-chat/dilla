@@ -23,15 +23,30 @@ export type Command =
   | { m: 'getBotInstallation'; communityId: string }
   | { m: 'getBotCommandStatus'; communityId: string }
   | { m: 'patchBotProfile'; communityId: string; display: string }
-  // Typed future request contract only. The worker refuses it until human kind-3 interaction groups are authenticated.
-  | { m: 'listModerationCases'; communityId: string; requestId: string; offset: 0 }
-  | { m: 'listManualModerationEvidence'; communityId: string; requestId: string; cursor: string | null }
-  | { m: 'humanInteractionRequest'; communityId: string; channelId: string | null; requestId: string; operation: number;
-      args: readonly (string | number | Uint8Array | null)[]; revision: string | null; stepUp?: string }
-  | { m: 'readBotInteractionResponses'; communityId: string; operations: readonly number[]; requestIds?: readonly string[] }
-  | { m: 'ackBotInteractionResponses'; communityId: string; through: string }
-  | { m: 'readHumanInteractionResponses'; communityId: string; requestIds?: readonly string[] }
-  | { m: 'ackHumanInteractionResponses'; communityId: string; through: string }
+  // Bot v2 (task 20): seal one command to the community's verified command key and send it over the socket; → null once the
+  // instance accepted it (202). Its answers arrive in the botAnswers slice. A retry passes the same requestId.
+  | { m: 'sendBotCommand'; communityId: string; channelId: string | null; requestId: string; operation: number;
+      args: readonly (string | number | boolean | Uint8Array | null)[] }
+  // Bot v2: read the community's catalog and Bot channels now (a stale command key); → null.
+  | { m: 'syncBotCatalog'; communityId: string }
+  // Bot v2 (task 20 fix round 1): the page closed this run; the worker forgets its reply secret now. → null.
+  | { m: 'forgetBotCommand'; requestId: string }
+  // Bot v2 Task 22: mark (on) or unmark a Bot channel; → null. The worker reads the catalog and Bot channels again after it.
+  | { m: 'markBotChannel'; communityId: string; channelId: string; on: boolean }
+  // Bot v2 Task 22: add the Bot to a Bot channel's group again (its Welcome went stale); → 'added' once it is proposed in,
+  // 'pending' while its old leaf is still being proposed out.
+  | { m: 'reAddBot'; communityId: string; channelId: string }
+  // Bot v2 Task 22: the Bot page's webhooks. The address is answered once, by create and rotate, and never kept.
+  | { m: 'listBotWebhooks'; communityId: string }
+  | { m: 'createBotWebhook'; communityId: string; channelId: string; name: string; allowEveryone: boolean }
+  | { m: 'rotateBotWebhook'; communityId: string; webhookId: string }
+  | { m: 'updateBotWebhook'; communityId: string; webhookId: string; name: string; allowEveryone: boolean }
+  | { m: 'deleteBotWebhook'; communityId: string; webhookId: string }
+  // Bot v2 Task 22: a webhook post's avatar, only from the instance's member route; → PNG bytes, or null (404).
+  | { m: 'getWebhookAvatar'; communityId: string; avatarId: string }
+  // Bot v2 (task 21): a surface shows (on) or stops showing a channel (kind 1) or call (kind 2, its voice channel) scope, so
+  // that op 63 hints for it are fetched; the user scope needs no watch. Counted per scope. → null.
+  | { m: 'watchBotScope'; kind: 1 | 2; channelId: string; on: boolean }
   | { m: 'getBotJoinRole'; communityId: string }
   | { m: 'configureBotJoinRole'; communityId: string; requestId: string; roleId: string; installationId: string }
   | { m: 'restartBot'; communityId: string; installationId: string }

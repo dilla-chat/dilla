@@ -105,7 +105,7 @@ func TestSandboxSetupFailureIsUnavailable(t *testing.T) {
 			if len(output) != 0 || !errors.Is(err, ErrSandboxUnavailable) || errors.Is(err, ErrExtractFailed) || errors.Is(err, ErrMetadataInvalid) || FailureClass(err) != "sandbox_unavailable" {
 				t.Fatalf("setup output=%q error=%v class=%s", output, err, FailureClass(err))
 			}
-			_, err = launchNetworkWorker(t.Context(), shim, python, nil, []string{"pcm"}, time.Second, time.Minute)
+			_, err = launchNetworkWorker(t.Context(), shim, python, nil, []string{"exec", "1", "true"}, time.Second, time.Minute)
 			if !errors.Is(err, ErrSandboxUnavailable) || (&music.StartError{Stage: "provider_pcm", Cause: err}).ProviderFailure() {
 				t.Fatalf("sandbox setup failure would skip track: %v", err)
 			}

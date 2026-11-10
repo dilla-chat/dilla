@@ -489,18 +489,12 @@ func (h *Calls) WithAFKNotify(notify *StructureNotifier) *Calls {
 }
 
 func (h *Calls) registerAFK(mux *server.Mux) {
-	mux.HandleFunc("GET /v1/communities/{id}/afk", h.afkSnapshot)
-	mux.HandleFunc("POST /v1/communities/{id}/afk/activity", h.afkActivity)
+	mux.Socket("GET /v1/communities/{id}/afk", http.HandlerFunc(h.afkSnapshot))
+	mux.Socket("POST /v1/communities/{id}/afk/activity", http.HandlerFunc(h.afkActivity))
 	// AW2 (R-AW3): choosing AFK. There is no DELETE: only the server clears away (Q3).
-	mux.HandleFunc("PUT /v1/communities/{id}/afk/away", h.afkAway)
-	// R41: the web3.8 manual move and leave stay registered so a web3.8 tab gets a mapped refusal
-	// instead of the mux's 405.
-	mux.HandleFunc("POST /v1/communities/{id}/afk", afkRetired)
-	mux.HandleFunc("DELETE /v1/communities/{id}/afk", afkRetired)
-}
-
-func afkRetired(w http.ResponseWriter, _ *http.Request) {
-	server.WriteError(w, server.Errorf(server.CodeNotFound, "retired in web3.9"))
+	mux.Socket("PUT /v1/communities/{id}/afk/away", http.HandlerFunc(h.afkAway))
+	// The web3.8 manual move and leave (POST and DELETE /afk) were retired in web3.9 and answered a mapped
+	// refusal to a web3.8 tab (R41). Bot v2 keeps no compatibility with old clients, so they are not registered.
 }
 
 func (h *Calls) afkMember(r *http.Request) (id.ID, id.ID, id.ID, error) {

@@ -90,7 +90,8 @@ describe('GET …/gifs/search', () => {
     expect(page).toEqual({ items: [{ id: 'abc123', title: 'cat typing', width: 200, height: 113 },
       { id: 'def456', title: '', width: 200, height: 200 }], next: 48 });
     expect(t.seen[0].url).toBe(`https://dilla.test/v1/communities/${CID}/gifs/search?q=cat%20typing%20%26%20more&offset=24`);
-    expect(t.seen[0].headers.get('authorization')).toBe('Bearer tok-1');
+    expect(t.seen[0].socket).toBe(true); // a socket request carries no headers: the connection is the session
+    expect(t.seen[0].headers.get('authorization')).toBeNull();
     expect(http.requests[0].bucket).toBe('read');
   });
 

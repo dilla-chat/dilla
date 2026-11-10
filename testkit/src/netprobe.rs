@@ -336,47 +336,25 @@ pub(crate) fn arm_action(
     }
 }
 
-/// A side's own session: the gateway client and the bearer token for the routes `HttpDs` lacks.
+/// A side's own session; every route it calls is a socket request on `ds`'s gateway socket.
 struct Session {
-    base: String,
-    token: String,
     ds: HttpDs,
 }
 
 impl Session {
     fn open(base: &str, client: &TestClient) -> Result<Self, TestkitError> {
         let est = HttpDs::establish_scoped(base, &client.device(), &client.credential_blob())?;
-        let token = est.token.clone();
         let mut ds = HttpDs::with_session(base, client.device_id(), est.token)?;
         ds.set_session_expires(est.expires);
-        Ok(Self {
-            base: base.to_owned(),
-            token,
-            ds,
-        })
-    }
-
-    fn agent() -> ureq::Agent {
-        ureq::Agent::new_with_config(
-            ureq::Agent::config_builder()
-                .http_status_as_error(false)
-                .timeout_global(Some(std::time::Duration::from_secs(60)))
-                .build(),
-        )
+        Ok(Self { ds })
     }
 
     /// `DELETE /v1/calls/{call_id}` → `204`: ends the call for everyone and closes its group, as a
-    /// current leaf may. Written here, not in `ds/remote.rs` (lane A's).
-    fn end_call(&self, call: &[u8; 16]) -> Result<(), TestkitError> {
-        let url = format!("{}/v1/calls/{}", self.base, hex::encode(call));
-        let mut resp = Self::agent()
-            .delete(&url)
-            .header("Authorization", &format!("Bearer {}", self.token))
-            .call()
-            .map_err(|e| scenario(format!("DELETE {url}: {e}")))?;
-        let status = resp.status().as_u16();
+    /// current leaf may. A socket request (Bot v2): the route has no HTTP form.
+    fn end_call(&mut self, call: &[u8; 16]) -> Result<(), TestkitError> {
+        let route = format!("/v1/calls/{}", hex::encode(call));
+        let (status, body) = self.ds.socket_call("DELETE", &route, &[])?;
         if status != 204 {
-            let body = resp.body_mut().read_to_vec().unwrap_or_default();
             return Err(scenario(format!(
                 "DELETE /v1/calls/{{id}} answered {status}: {}",
                 String::from_utf8_lossy(&body)
@@ -386,9 +364,9 @@ impl Session {
     }
 
     /// `POST /v1/groups [group_id, binding, group_info, ratchet_tree]` → `[group_id, next_seq]`
-    /// (invariant 1: the group id is the creator's choice). Answers the registered id.
+    /// (invariant 1: the group id is the creator's choice), a socket request. Answers the registered id.
     fn register_group(
-        &self,
+        &mut self,
         id: &[u8; 16],
         binding: &[u8],
         group_info: &[u8],
@@ -401,18 +379,7 @@ impl Session {
             .bytes(group_info)
             .bytes(ratchet_tree);
         let body = e.into_vec();
-        let url = format!("{}/v1/groups", self.base);
-        let mut resp = Self::agent()
-            .post(&url)
-            .header("Authorization", &format!("Bearer {}", self.token))
-            .header("Content-Type", "application/cbor")
-            .send(&body[..])
-            .map_err(|e| scenario(format!("POST {url}: {e}")))?;
-        let status = resp.status().as_u16();
-        let out = resp
-            .body_mut()
-            .read_to_vec()
-            .map_err(|e| scenario(format!("POST {url}: {e}")))?;
+        let (status, out) = self.ds.socket_call("POST", "/v1/groups", &body)?;
         if status != 201 && status != 200 {
             return Err(scenario(format!(
                 "POST /v1/groups answered {status}: {}",
@@ -428,20 +395,10 @@ impl Session {
         .map_err(|e| scenario(format!("POST /v1/groups: {e:?}")))
     }
 
-    /// `GET /v1/channels/{dm}/call` (L-HTTP-100). Written here, not in `ds/remote.rs` (lane A's).
-    fn channel_call(&self, dm: &[u8; 16]) -> Result<ChannelCall, TestkitError> {
-        let url = format!("{}/v1/channels/{}/call", self.base, hex::encode(dm));
-        let mut resp = Self::agent()
-            .get(&url)
-            .header("Authorization", &format!("Bearer {}", self.token))
-            .header("Accept", "application/cbor")
-            .call()
-            .map_err(|e| scenario(format!("GET {url}: {e}")))?;
-        let status = resp.status().as_u16();
-        let body = resp
-            .body_mut()
-            .read_to_vec()
-            .map_err(|e| scenario(format!("GET {url}: {e}")))?;
+    /// `GET /v1/channels/{dm}/call` (L-HTTP-100), a socket request.
+    fn channel_call(&mut self, dm: &[u8; 16]) -> Result<ChannelCall, TestkitError> {
+        let route = format!("/v1/channels/{}/call", hex::encode(dm));
+        let (status, body) = self.ds.socket_call("GET", &route, &[])?;
         if status != 200 {
             return Err(scenario(format!(
                 "GET /v1/channels/{{dm}}/call answered {status}: does this instance run the web-3 \
@@ -484,7 +441,7 @@ fn call_binding(
 /// Answers the group id and its epoch (0).
 fn register_call_group(
     client: &TestClient,
-    session: &Session,
+    session: &mut Session,
     binding: DillaBinding,
     senders: openmls::extensions::ExternalSendersExtension,
 ) -> Result<(Vec<u8>, u64), TestkitError> {
@@ -568,7 +525,7 @@ pub fn end(instance: &str, dir: &Path) -> Result<Option<String>, TestkitError> {
     let state = SideState::read(dir)?;
     let client = client_of(&state)?;
     let dm = hex16(&state.dm, "side.json dm")?;
-    let session = Session::open(base, &client)?;
+    let mut session = Session::open(base, &client)?;
     match session.channel_call(&dm)?.call_id {
         None => Ok(None),
         Some(call) => {
@@ -615,7 +572,7 @@ pub fn arm(instance: &str, dir: &Path) -> Result<Armed, TestkitError> {
         }
         ArmAction::Register => {
             let (binding, senders) = call_binding(base, dm)?;
-            register_call_group(&client, &session, binding, senders)?
+            register_call_group(&client, &mut session, binding, senders)?
         }
         ArmAction::Join(open) => {
             let (binding, _) = call_binding(base, dm)?;

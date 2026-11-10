@@ -49,7 +49,7 @@ func TestProductionGatewayHandlerInteroperates(t *testing.T) {
 	instance, device, user := testID(81), testID(82), testID(83)
 	session := auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, TokenHash: bytes32(84)}
 	gw := gateway.New(gateway.Options{
-		InstanceID: instance, Generation: 19, WireVersions: []uint64{3}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1},
+		InstanceID: instance, Generation: 19, WireVersions: []uint64{6}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1},
 		Store: productionGatewayStore{}, Auth: productionGatewayAuth{session}, TrustedOrigins: []string{"*"},
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), HeartbeatMS: 200,
 	})
@@ -104,7 +104,7 @@ func TestProductionGatewayUnauthenticatedRefusalIsTypedTerminal(t *testing.T) {
 	instance, device, user := testID(85), testID(86), testID(87)
 	session := auth.Session{UserID: user, DeviceID: device, Scope: auth.ScopeEnrolled, TokenHash: bytes32(88)}
 	gw := gateway.New(gateway.Options{
-		InstanceID: instance, Generation: 20, WireVersions: []uint64{3}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1},
+		InstanceID: instance, Generation: 20, WireVersions: []uint64{6}, E2EEVersions: []uint64{1}, MediaVersions: []uint64{1},
 		Store: productionGatewayStore{}, Auth: productionGatewayAuth{session}, TrustedOrigins: []string{"*"},
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})

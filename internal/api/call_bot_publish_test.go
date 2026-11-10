@@ -33,7 +33,7 @@ func readyCallBot(t *testing.T, e *env, ch, group id.ID, ownerToken string) (id.
 	}
 	user, dev := *installation.UserID, *installation.DeviceID
 	token := "publish-only-bot"
-	e.sess[token] = dillaauth.Session{UserID: user, DeviceID: dev, Scope: dillaauth.ScopeEnrolled, WireVersion: 3, E2EEVersion: 1, MediaVersion: 1, Bot: &dillaauth.BotSessionBinding{InstallationID: installation.ID, CommunityID: cid, State: store.BotInstallationReady}}
+	e.sess[token] = dillaauth.Session{UserID: user, DeviceID: dev, Scope: dillaauth.ScopeEnrolled, WireVersion: 6, E2EEVersion: 1, MediaVersion: 1, Bot: &dillaauth.BotSessionBinding{InstallationID: installation.ID, CommunityID: cid, State: store.BotInstallationReady}}
 	seedLeaf(t, e, group, dev, 3, nil)
 	if err := e.Repo.PutOverwrite(t.Context(), store.OverwriteRow{ChannelID: ch, TargetKind: 1, TargetID: user, Allow: uint64(api.PermViewChannel | api.PermConnect | api.PermSpeak | api.PermVideo | api.PermScreenShare)}); err != nil {
 		t.Fatal(err)

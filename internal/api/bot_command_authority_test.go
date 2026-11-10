@@ -64,7 +64,7 @@ func TestBotActorChannelAuthorityReturnsHumanBitsAndAppliesFreshChannelPolicy(t 
 	if err := deps.Repo.CreateBotSessionBinding(ctx, store.BotSessionBindingRow{TokenHash: auth.TokenHash(token), InstallationID: installation, UserID: bot, DeviceID: device, Created: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 3, 1, 1); err != nil {
+	if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(token), 6, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	path := "/v1/communities/" + cid.String() + "/bot/actors/" + actor.String() + "/channels/" + channel.String() + "/authority"
@@ -73,8 +73,8 @@ func TestBotActorChannelAuthorityReturnsHumanBitsAndAppliesFreshChannelPolicy(t 
 	}
 	response := getAuth(h, path, token)
 	var got []any
-	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || cborx.Unmarshal(response.Body.Bytes(), &got) != nil || len(got) != 4 {
-		t.Fatalf("channel authority = %d cache=%q tuple=%#v body=%x", response.Code, response.Header().Get("Cache-Control"), got, response.Body.Bytes())
+	if response.Code != http.StatusOK || cborx.Unmarshal(response.Body.Bytes(), &got) != nil || len(got) != 4 {
+		t.Fatalf("channel authority = %d tuple=%#v body=%x", response.Code, got, response.Body.Bytes())
 	}
 	communityBytes, communityOK := got[0].([]byte)
 	actorBytes, actorOK := got[1].([]byte)

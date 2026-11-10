@@ -77,7 +77,7 @@ export function buildTestTools(root, options) {
   directory(root);
   const names = toolNames(c.platform);
   const run = (command, args) => execFileSync(command, args, { cwd: c.repoRoot, env: c.env, stdio: 'inherit' });
-  const goBuild = (role, pkg) => run(c.env.GO ?? 'go', ['-C', c.repoRoot, 'build', '-o', join(root, names[role]), pkg]);
+  const goBuild = (role, pkg, tags = []) => run(c.env.GO ?? 'go', ['-C', c.repoRoot, 'build', ...tags, '-o', join(root, names[role]), pkg]);
   const cargoBuild = (role, pkg) => {
     run(c.env.CARGO ?? 'cargo', ['build', '-p', pkg, '--release', '--locked']);
     copyFileSync(join(resolve(c.repoRoot, c.env.CARGO_TARGET_DIR ?? 'target'), 'release', names[role]), join(root, names[role]));
@@ -85,7 +85,7 @@ export function buildTestTools(root, options) {
   goBuild('testhost', './cmd/dilla-testhost');
   cargoBuild('testkit', 'dilla-testkit');
   if (c.platform === 'linux') {
-    goBuild('bot', './cmd/dillabot');
+    goBuild('bot', './cmd/dillabot', ['-tags', 'dilla_testhost']);
     // Keep separate invocations: testkit's dilla-core feature set must not leak into the production Bot helper.
     cargoBuild('botHelper', 'dilla-bot-core');
   }

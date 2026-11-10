@@ -2,6 +2,8 @@
 // generations and re-authentication. Only *.test.ts files import this module.
 import { encode, type CborInput } from '../cbor';
 import { HttpClient, type HttpDeps, type HttpRequest, type HttpResponse } from './client';
+import { DillaHttpError } from './errors';
+import type { SocketTransport } from '../gateway/requests';
 
 export const BASE_URL = 'https://dilla.test';
 export const GENERATION = '7';
@@ -12,6 +14,10 @@ export interface SeenRequest {
   headers: Headers;
   body: Uint8Array | null;
   init: RequestInit;
+  /** True for a request that went over the gateway socket (a route in SOCKET_ROUTES): it carries no headers, so
+   *  `headers` is empty, and its idempotency key is `idem`. */
+  socket?: true;
+  idem?: Uint8Array;
 }
 
 export type Reply = Response | Error | (() => Response | Error);
@@ -49,9 +55,28 @@ export function fakeTransport(opts: FakeOptions = {}): FakeTransport {
     if (reply instanceof Error) return Promise.reject(reply);
     return Promise.resolve(reply);
   };
+  // A route in SOCKET_ROUTES goes over the gateway socket (Bot v2), never through fetch. The fake socket answers it from
+  // the same scripted replies, and records it in `seen` with no headers, as a request frame has none; a socket answer
+  // carries no X-Dilla-Generation or Retry-After either.
+  const socket: SocketTransport = {
+    up: true,
+    request: async (r: HttpRequest): Promise<HttpResponse> => {
+      const url = BASE_URL + r.path;
+      seen.push({ url, method: r.method, headers: new Headers(), body: r.body === undefined ? null : new Uint8Array(r.body),
+        init: {}, socket: true, ...(r.idem === undefined ? {} : { idem: r.idem }) });
+      const next = replies.shift();
+      const reply = typeof next === 'function' ? next() : next;
+      if (reply === undefined) throw new Error(`unscripted request ${url}`);
+      if (reply instanceof Error) {
+        throw new DillaHttpError({ status: 0, code: 'E_NETWORK', detail: reply.message, retryAfterMs: null, extra: [] });
+      }
+      return { status: reply.status, body: new Uint8Array(await reply.arrayBuffer()) };
+    },
+  };
   const deps: HttpDeps = {
     baseUrl: BASE_URL,
     fetch: fetchFn,
+    socket: () => socket,
     now: () => state.now,
     sleep: (ms, signal) => {
       sleeps.push(ms);

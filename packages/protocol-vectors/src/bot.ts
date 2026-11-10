@@ -3,6 +3,7 @@ import { hex } from './bytes.ts';
 import { createHash } from 'node:crypto';
 import { keyFromSeed, sign } from './ed25519.ts';
 import { concat } from './bytes.ts';
+import { deriveKeyPair, sealBase } from './hpke.ts';
 
 const id = (n: number) => new Uint8Array(16).fill(n);
 const comm = id(0x22), group = id(0x33), now = '100';
@@ -20,14 +21,13 @@ export async function botVectors() {
  const feffQuestionPoll=encode([1n,id(0x44),null,'\uFEFF',['One','Two'],0n,3600n]);
  const feffAnswerPoll=encode([1n,id(0x44),null,'Question?',['\uFEFF','Two'],0n,3600n]);
  const inputs: Array<[number,unknown[],boolean,boolean,string]> = [
-  [3,[],false,false,'capabilities'],
   [70,[feffQuestionPoll],false,true,'poll question accepts FEFF, not Unicode White_Space'],
   [70,[feffAnswerPoll],false,true,'poll answer accepts FEFF, not Unicode White_Space'],
   [70,[pollPayload],false,true,'poll.create'],[71,[id(0x91)],false,false,'poll.get'],
   [72,[id(0x44),null,null],false,false,'poll.list'],[73,[id(0x91),encode([0n,1n])],false,true,'poll.vote'],
   [74,[id(0x91)],false,true,'poll.close'],[75,[id(0x91),1n,null],false,false,'poll.voters'],
   [80,[reminderPayload],false,true,'reminder.create'],[81,[null],false,false,'reminder.list'],
-  [82,[id(0x92)],false,true,'reminder.cancel'],[83,[id(0x92)],false,true,'reminder.dismiss'],[84,[null],false,false,'reminder.due'],
+  [82,[id(0x92)],false,true,'reminder.cancel'],[83,[id(0x92)],false,true,'reminder.dismiss'],
   [0,[],false,false,'overview.get'],[1,[2n],false,false,'settings.get'],[2,[2n,encode([1n,'x'])],false,true,'settings.put'],
   [10,[],true,false,'music.state'],[11,['search'],true,false,'music.search'],[12,['enqueue'],true,true,'music.enqueue'],
   [13,[],true,true,'music.pause'],[14,[],true,true,'music.resume'],[15,[],true,true,'music.skip'],[16,[],true,true,'music.stop'],
@@ -36,7 +36,6 @@ export async function botVectors() {
   [30,['hello'],false,false,'welcome.preview'],[31,[id(0x44),encode([['👍',id(0x55),'Readers']])],false,true,'roles.panel.publish'],[40,[0n],false,false,'roles.list'],[50,[0n],false,false,'announcements.list'],
   [51,[null,encode([1n])],false,true,'announcements.put'],[52,[id(0x66),1n],false,true,'announcements.delete'],
   [60,[null],false,false,'moderation.cases'],[64,[null],false,false,'moderation.evidence.list'],[61,[id(0x77),'reason','excerpt'],false,true,'moderation.evidence'],
-  [62,[],false,false,'automod.config.get'],[63,['grant-token',encode([1n,0n,'log','log','log',600000n,[]])],false,true,'automod.config.put'],
  ];
  const cases:any[]=inputs.map(([op,a,ch,mu,n])=>app(op,a,ch,mu,n));
  const response=[1n,id(2),comm,0n,null,new Uint8Array()];
@@ -61,15 +60,34 @@ export async function botVectors() {
   ['send receipt accepted zero receive time and opaque zero tag',receipt(id(9),id(13),null,1n,new Uint8Array(32),0n,1n,1n,sendResponse(1n,new Uint8Array(32),0n))],
  ];
  for(const [name,value] of receipts)cases.push({name,kind:'receipt',hex:cbor(value),context:receiptContext});
+ const pushKey=(b:number)=>new Uint8Array(32).fill(b);
+ const pushRow=(v:bigint):unknown[]=>[v,encode([1n,id(0x60),v,new Uint8Array(32),[],new Uint8Array(64)]),new Uint8Array(64).fill(0x44),new Uint8Array(32).fill(Number(v))];
+ const devicePush=(rows:unknown[]):unknown[]=>[pushKey(0x11),pushKey(0x22),new Uint8Array(64).fill(0x33),rows];
  for(const [kind,name,v] of [
   ['helper_request','helper request',[1n,id(10),1n,encode([])]],['helper_request','helper group_transfer operation 16',[1n,id(10),16n,encode([])]],
   ['helper_request','helper ingest removals operation 17',[1n,id(15),17n,encode([])]],['helper_request','helper removal actor refresh operation 18',[1n,id(16),18n,encode([])]],
   ['helper_request','call join check helper operation',[1n,id(11),19n,encode([id(12)])]],['helper_request','call group forget helper operation',[1n,id(13),20n,encode([id(14)])]],
+  ['helper_request','command key helper operation 21',[1n,id(17),21n,encode([id(18),1n])]],['helper_request','command open helper operation 22',[1n,id(19),22n,encode([new Uint8Array([0x80]),id(20),id(21),1n])]],
+  ['helper_request','reply seal helper operation 23',[1n,id(22),23n,encode([new Uint8Array(32),id(23),0n,new Uint8Array([1])])]],['helper_request','device list ingest helper operation 24',[1n,id(24),24n,encode([id(25),encode(devicePush([pushRow(1n)])),1n])]],
+  // Bot v2 task 17 fix round 2: the health probe's seal and the opening of its answer.
+  ['helper_request','probe seal helper operation 25',[1n,id(26),25n,encode([id(27),id(28),1n])]],['helper_request','probe open helper operation 26',[1n,id(29),26n,encode([1n,0n,new Uint8Array([0x83]),1n])]],
+  // Bot v2 task 23 (R1 d): the Bot forgets a text group whose channel is not a Bot channel, or that it was removed from.
+  ['helper_request','group forget helper operation 27',[1n,id(30),27n,encode([id(31)])]],
   ['helper_response','helper response',[1n,id(10),0n,encode([])]],
  ] as const)cases.push({name,kind,hex:cbor(v)});
  cases.push({name:'generic helper op5 payload remains opaque',kind:'helper_request',hex:cbor([1n,id(0x95),5n,encode([32n,1n])])});
+ // The device-list push (helper op 24 body): shape only; the trust rules are the core's.
+ cases.push({name:'device list push first sight from version 1',kind:'device_list_push',hex:cbor(devicePush([pushRow(1n)]))});
+ cases.push({name:'device list push contiguous history',kind:'device_list_push',hex:cbor(devicePush([pushRow(2n),pushRow(3n),pushRow(4n)]))});
  const rejects:any[]=[];
  const rej=(name:string,kind:string,v:unknown,extra:any={})=>rejects.push({name,kind,hex:cbor(v),...extra});
+ rej('device list push without history','device_list_push',devicePush([]));
+ rej('device list push zero umk','device_list_push',[new Uint8Array(32),pushKey(0x22),new Uint8Array(64).fill(0x33),[pushRow(1n)]]);
+ rej('device list push short ssk','device_list_push',[pushKey(0x11),new Uint8Array(31).fill(0x22),new Uint8Array(64).fill(0x33),[pushRow(1n)]]);
+ rej('device list push version zero','device_list_push',devicePush([pushRow(0n)]));
+ rej('device list push empty blob','device_list_push',devicePush([[1n,new Uint8Array(),new Uint8Array(64).fill(0x44),new Uint8Array(32)]]));
+ rej('device list push short row signature','device_list_push',devicePush([[1n,encode([1n]),new Uint8Array(63).fill(0x44),new Uint8Array(32)]]));
+ rej('device list push extra field','device_list_push',[...devicePush([pushRow(1n)]),null]);
  const base=[1n,id(1),comm,null,0n,null,null,[]];
  rej('application wrong version','request',[2n,...base.slice(1)]);
  rej('application wrong shape','request',[1n,id(1)]);
@@ -81,7 +99,11 @@ export async function botVectors() {
  rej('missing required channel','request',[1n,id(1),comm,null,10n,null,null,[]]);
  rej('wrong argument type','request',[1n,id(1),comm,null,1n,null,null,['bad']]);
  rej('wrong argument count','request',[1n,id(1),comm,null,0n,null,null,[1n]]);
- rej('automod config get has arguments','request',[1n,id(1),comm,null,62n,null,null,[0n]]);
+ // Bot v2 Task 23: the v1-only operations are gone (capabilities 3, AutoModeration 62 and 63, due reminders 84).
+ rej('retired capabilities operation 3','request',[1n,id(1),comm,null,3n,null,null,[]]);
+ rej('retired AutoModeration get operation 62','request',[1n,id(1),comm,null,62n,null,null,[]]);
+ rej('retired AutoModeration put operation 63','request',[1n,id(64),comm,null,63n,1n,120n,['grant-token',encode([1n,0n,'log','log','log',600000n,[]])]]);
+ rej('retired due reminders operation 84','request',[1n,id(1),comm,null,84n,null,null,[null]]);
  const badPoll=encode([1n,id(0x91),null,'Question?',['Same','Same'],0n,86400n]);
  rej('poll duplicate answers','request',[1n,id(70),comm,null,70n,0n,120n,[badPoll]]);
  const nelQuestionPoll=encode([1n,id(0x44),null,'\u0085',['One','Two'],0n,3600n]);
@@ -101,10 +123,6 @@ export async function botVectors() {
  rej('reminder thread without source channel','request',[1n,id(80),comm,null,80n,0n,120n,[threadOnly]]);
  const badWhen=encode([1n,1n,253402300800n,'Take a break','UTC',null,null]);
  rej('reminder timestamp outside numeric range','request',[1n,id(80),comm,null,80n,0n,120n,[badWhen]]);
- const automodDoc=encode([1n,0n,'log','log','log',600000n,[]]);
- rej('automod config put empty grant','request',[1n,id(64),comm,null,63n,1n,120n,['',automodDoc]]);
- rej('automod config put oversized grant','request',[1n,id(64),comm,null,63n,1n,120n,['g'.repeat(513),automodDoc]]);
- rej('automod config put oversized document','request',[1n,id(64),comm,null,63n,1n,120n,['grant-token',encode([new Uint8Array(2400)])]]);
  rej('query over UTF8 byte limit','request',[1n,id(1),comm,id(0x44),11n,null,null,['é'.repeat(101)]]);
  rej('cross community context','request',base,{body:bodyOf(base),context:{community:hex(id(0x23)),now}});
  const mut=[1n,id(1),comm,null,2n,100n,131n,[0n,encode([1n])]];
@@ -161,7 +179,7 @@ export async function botVectors() {
  rej('send receipt cross community context','receipt',receiptBase,{context:{...receiptContext,community:hex(id(0x23))}});
  rej('send receipt cross group context','receipt',receiptBase,{context:{...receiptContext,group:hex(id(0x34))}});
  rej('response unsupported status','response',[1n,id(1),comm,10n,null,new Uint8Array()]);
- rej('helper operation 21 is unknown','helper_request',[1n,id(1),21n,encode([])]);
+ rej('helper operation 28 is unknown','helper_request',[1n,id(1),28n,encode([])]);
  const oversizedPayload=encode([new Uint8Array(1_048_475)]);
  if(oversizedPayload.length!==1_048_481)throw new Error('helper payload fixture must exceed the payload bound by one byte');
  rejects.push({name:'helper payload one byte over bound',kind:'helper_request',hex:cbor([1n,id(1),1n,oversizedPayload])});
@@ -228,90 +246,79 @@ export async function botVectors() {
  const malformedOuter=[['nonminimal CBOR array head','9800'],['trailing CBOR item','8000'],['CBOR map root','a0'],['indefinite CBOR array','9fff']] as const;
  for(const kind of ['keypackage_publication','keypackage_publication_receipt','keypackage_intent','keypackage_intent_result','keypackage_resolution'])
   for(const [name,hexValue] of malformedOuter)rejects.push({name:`${kind}: ${name}`,kind,hex:hexValue});
- // Cross-language server-signed interaction admission proof. All IDs are fixed
- // repeated-byte values and the seed is public test material, so Go and Rust
- // can independently reproduce the exact canonical payload and signature.
- const admissionSeed = new Uint8Array(32).fill(0x41);
- const admissionKey = await keyFromSeed(admissionSeed);
- const admissionPayload = encode([
-  1n, id(1), id(2), id(3), id(4), id(5), id(6), id(7), id(8), id(9), 11n, 130n,
- ]);
- const admissionSignature = await sign(admissionKey.privateKey,
-  concat(new TextEncoder().encode('dilla bot interaction admission v1\0'), admissionPayload));
- const admissionProof = encode([admissionPayload, admissionSignature]);
- const snapshotSeed=new Uint8Array(32);snapshotSeed[0]=0x41;
- const snapshotKey=await keyFromSeed(snapshotSeed);
- const snapshotAdmissionPayload=encode([
-  1n,id(1),id(2),id(3),id(4),id(5),id(6),id(7),id(8),id(9),7n,130n,
- ]);
- const snapshotAdmissionSignature=await sign(snapshotKey.privateKey,
-  concat(new TextEncoder().encode('dilla bot interaction admission v1\0'),snapshotAdmissionPayload));
- const list = (user:number, umk:number, ssk:number, bindingSig:number, blobValue:number,
-  listSig:number, prevHash:number) => {
-  const blob=new Uint8Array([0x82,blobValue,0x01]);
-  const digest=createHash('sha256').update(blob).digest();
-  return [id(user),new Uint8Array(32).fill(umk),new Uint8Array(32).fill(ssk),
-   new Uint8Array(64).fill(bindingSig),3n,blob,new Uint8Array(64).fill(listSig),
-   new Uint8Array(32).fill(prevHash),new Uint8Array(digest)];
- };
- const snapshotPayload=encode([1n,id(10),id(1),snapshotAdmissionPayload,snapshotAdmissionSignature,
-  100n,7n,9n,1n,0n,id(2),id(11),snapshotKey.publicKey,
-  [id(2),id(3),id(4),id(5),id(6),id(7),id(8),id(9)],
-  list(5,0x10,0x11,0x12,0x10,0x13,0x14),
-  list(7,0x20,0x21,0x22,0x20,0x23,0x24)]);
- const snapshotSignature=await sign(snapshotKey.privateKey,
-  concat(new TextEncoder().encode('dilla bot interaction context snapshot v1\0'),snapshotPayload));
- // Human current-group context proof: this matches currentInteractionContextWire and its
- // nested Go `,toarray` structs exactly. The embedded device lists are real signed lists so
- // the Rust verifier can validate the complete proof rather than only its outer signature.
- const currentSeed=new Uint8Array(32).fill(0x61);
- const currentKey=await keyFromSeed(currentSeed);
- const signedDeviceList=async (user:number,device:number,base:number) => {
-  const umk=await keyFromSeed(new Uint8Array(32).fill(base));
-  const ssk=await keyFromSeed(new Uint8Array(32).fill(base+1));
-  const dsk=await keyFromSeed(new Uint8Array(32).fill(base+2));
-  const userId=id(user),deviceId=id(device),zero32=new Uint8Array(32);
-  const bindingSignature=await sign(umk.privateKey,
-   concat(new TextEncoder().encode('dilla ssk v1'),ssk.publicKey));
-  const unsigned=encode([1n,userId,1n,zero32,[[deviceId,dsk.publicKey,0n,1n,null]]]);
-  const listSignature=await sign(ssk.privateKey,
-   concat(new TextEncoder().encode('dilla devices v1'),unsigned));
-  const blob=encode([1n,userId,1n,zero32,[[deviceId,dsk.publicKey,0n,1n,null]],listSignature]);
-  return {tuple:[userId,umk.publicKey,ssk.publicKey,bindingSignature,1n,blob,listSignature,zero32,
-   createHash('sha256').update(Buffer.from(blob)).digest()] as const,dskPub:dsk.publicKey};
- };
- const currentBotList=await signedDeviceList(5,6,0x71);
- const currentParticipantList=await signedDeviceList(7,8,0x74);
- const currentRegistration=[id(3),id(10),id(5),id(6),id(4),id(9),
-  new Uint8Array(32).fill(0x81),2n,4n,1n,90n];
- const currentBinding=[id(2),id(3),id(4),id(5),id(7),id(8),9n,1n,0n];
- const currentPayload=encode([1n,id(2),id(11),currentKey.publicKey,100n,130n,
-  currentRegistration,currentBinding,7n,2n,new Uint8Array(32).fill(0x82),
-  [[0n,id(5),id(6),currentBotList.dskPub],[1n,id(7),id(8),currentParticipantList.dskPub]],
-  12n,9n,1n,0n,currentBotList.tuple,currentParticipantList.tuple]);
- const currentSignature=await sign(currentKey.privateKey,
-  concat(new TextEncoder().encode('dilla bot current interaction context v1\0'),currentPayload));
- const currentWire=encode([currentPayload,currentSignature]);
- const invalidSignature=currentSignature.slice();invalidSignature[0]^=1;
- const invalidSignatureWire=encode([currentPayload,invalidSignature]);
- const malformedPayload=new Uint8Array([...currentPayload,0x00]);
- const malformedSignature=await sign(currentKey.privateKey,
-  concat(new TextEncoder().encode('dilla bot current interaction context v1\0'),malformedPayload));
- const malformedWire=encode([malformedPayload,malformedSignature]);
- return {version:1,cases,rejects,admission_proof:{
-  seed:hex(admissionSeed),public_key:hex(admissionKey.publicKey),
-  payload_hex:hex(admissionPayload),proof_hex:hex(admissionProof),
-  server_now:100,minimum_eligibility_revision:11,not_after:130,
-  ids:{admission:hex(id(1)),instance:hex(id(2)),installation:hex(id(3)),community:hex(id(4)),
-   bot_user:hex(id(5)),bot_device:hex(id(6)),participant_user:hex(id(7)),
-   participant_device:hex(id(8)),group:hex(id(9))},
- },interaction_context_snapshot:{seed:hex(snapshotSeed),public_key:hex(snapshotKey.publicKey),
-  payload_hex:hex(snapshotPayload),signature_hex:hex(snapshotSignature)},
- current_human_interaction_context:{seed:hex(currentSeed),public_key:hex(currentKey.publicKey),
-  payload_hex:hex(currentPayload),signature_hex:hex(currentSignature),wire_hex:hex(currentWire),
-  expected:{instance:hex(id(2)),group:hex(id(9)),participant_user:hex(id(7)),
-   participant_device:hex(id(8)),now:100},
-  rejects:[{name:'current interaction context signature bit flipped',wire_hex:hex(invalidSignatureWire),error:'E_BOT_CONTEXT'},
-   {name:'current interaction context signed payload has trailing CBOR',wire_hex:hex(malformedWire),error:'E_BOT_FORMAT'}]}};
+ const sealed_command=await sealedCommandVectors();
+ // The helper's command-key timing, which dillad checks too (internal/api TestCommandKeyTimingMatchesTheVector).
+ return {version:1,command_key_timing:{max_lifetime_secs:691200,publication_slack_secs:600},cases,rejects,sealed_command};
 }
 function bodyOf(v:unknown):string {const raw=encode(v as never);let s='';for(const b of raw)s+=String.fromCharCode(b);return 'dilla.bot/1:'+btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/u,'');}
+
+// Sealed Bot commands (Bot v2 task 7). Every key comes from a fixed seed or ikm, so Rust reproduces each byte:
+// the DSK signatures are deterministic Ed25519, and the HPKE ephemeral and reply keys are DeriveKeyPair(ikm).
+async function sealedCommandVectors() {
+ const te=(s:string)=>new TextEncoder().encode(s);
+ const now=1790000000n;
+ const signedList=async (user:Uint8Array,device:Uint8Array,dskSeed:Uint8Array,sskSeed:Uint8Array) => {
+  const dsk=await keyFromSeed(dskSeed),ssk=await keyFromSeed(sskSeed);
+  const entries=[[device,dsk.publicKey,0n,100n,null]];
+  const unsigned=encode([1n,user,1n,new Uint8Array(32),entries]);
+  const sig=await sign(ssk.privateKey,concat(te('dilla devices v1'),unsigned));
+  return {dsk,sskPub:ssk.publicKey,blob:encode([1n,user,1n,new Uint8Array(32),entries,sig])};
+ };
+ const botUser=id(0xb0),botDevice=id(0xb1),botDskSeed=new Uint8Array(32).fill(0xb2),botSskSeed=new Uint8Array(32).fill(0xb3);
+ const user=id(0x10),device=id(0x11),userDskSeed=new Uint8Array(32).fill(0x12),userSskSeed=new Uint8Array(32).fill(0x13);
+ const bot=await signedList(botUser,botDevice,botDskSeed,botSskSeed);
+ const usr=await signedList(user,device,userDskSeed,userSskSeed);
+ const community=id(0x22),keyId=id(0x33),notAfter=now+604800n;
+ const commandIkm=new Uint8Array(32).fill(0x42);
+ const commandKey=await deriveKeyPair(commandIkm);
+ const pubFields=[1n,community,keyId,commandKey.pk,notAfter,botDevice];
+ const pubSig=await sign(bot.dsk.privateKey,concat(te('dilla bot command key v1'),encode(pubFields)));
+ const publication=encode([...pubFields,pubSig]);
+ const requestId=id(0x44),channel=id(0x55);
+ const args=['never gonna give you up',3n,new Uint8Array([1,2,3]),null];
+ const replyIkm=new Uint8Array(32).fill(0x02),ephemeralIkm=new Uint8Array(32).fill(0x01);
+ const replyKey=await deriveKeyPair(replyIkm);
+ // The signed form names the command key (key_id) it is sealed to, between reply_key and user_id.
+ const unsignedCmd=[1n,requestId,community,channel,11n,args,now,replyKey.pk,keyId,user,device];
+ const cmdSig=await sign(usr.dsk.privateKey,concat(te('dilla bot command v1'),encode(unsignedCmd as never)));
+ const signedCmd=encode([...unsignedCmd,cmdSig] as never);
+ const sealedInner=await sealBase(commandKey.pk,te('dilla bot command v1'),requestId,signedCmd,ephemeralIkm);
+ const sealed=encode([1n,keyId,requestId,sealedInner.enc,sealedInner.ct]);
+ const replies=[];
+ for(const [seq,body,fill] of [[0,'Searching…',0x03],[1,'Now playing: never gonna give you up',0x04]] as const){
+  const ikm=new Uint8Array(32).fill(fill);
+  const aad=concat(requestId,new Uint8Array([seq>>>24,(seq>>>16)&0xff,(seq>>>8)&0xff,seq&0xff]));
+  const r=await sealBase(replyKey.pk,te('dilla bot reply v1'),aad,te(body),ikm);
+  replies.push({seq,body_hex:hex(te(body)),ephemeral_ikm:hex(ikm),sealed_hex:hex(encode([1n,r.enc,r.ct]))});
+ }
+ // [0x85, 0x01, 0x50, key_id(16), 0x50, request_id(16), ...]: byte 20 is the first byte of the outer request id.
+ // A modified client's commands: signed for another community than the key's, or for another key_id than the outer.
+ const sealRaw=async (fields:unknown[],outerKeyId:Uint8Array,ikm:number) => {
+  const sig=await sign(usr.dsk.privateKey,concat(te('dilla bot command v1'),encode(fields as never)));
+  const inner=await sealBase(commandKey.pk,te('dilla bot command v1'),requestId,encode([...fields,sig] as never),new Uint8Array(32).fill(ikm));
+  return encode([1n,outerKeyId,requestId,inner.enc,inner.ct]);
+ };
+ const otherCommunity=await sealRaw([1n,requestId,id(0x23),channel,11n,args,now,replyKey.pk,keyId,user,device],keyId,0x06);
+ const otherKeyId=await sealRaw([1n,requestId,community,channel,11n,args,now,replyKey.pk,id(0x34),user,device],keyId,0x07);
+ const tampered=sealed.slice();tampered[tampered.length-1]!^=1;
+ const movedId=sealed.slice();movedId[20]!^=1;
+ return {
+  now:Number(now),
+  bot:{user:hex(botUser),device:hex(botDevice),dsk_seed:hex(botDskSeed),ssk_pub:hex(bot.sskPub),list_hex:hex(bot.blob)},
+  user:{user:hex(user),device:hex(device),dsk_seed:hex(userDskSeed),ssk_pub:hex(usr.sskPub),list_hex:hex(usr.blob)},
+  command_key:{ikm:hex(commandIkm),sk:hex(commandKey.sk),pk:hex(commandKey.pk)},
+  publication_hex:hex(publication),
+  request:{request_id:hex(requestId),community_id:hex(community),channel_id:hex(channel),operation:11,
+   args:[{text:args[0]},{uint:3},{bytes:'010203'},{null:true}],sent_at:Number(now)},
+  ephemeral_ikm:hex(ephemeralIkm),reply_ikm:hex(replyIkm),reply_key:hex(replyKey.pk),
+  signed_hex:hex(signedCmd),sealed_hex:hex(sealed),replies,
+  rejects:[
+   {name:'attached to another device',sealed_hex:hex(sealed),attached_device:hex(id(0x14)),now:Number(now),refusal:'WrongDevice'},
+   {name:'sent_at 121 s in the past',sealed_hex:hex(sealed),attached_device:hex(device),now:Number(now+121n),refusal:'Stale'},
+   {name:'ciphertext bit flipped',sealed_hex:hex(tampered),attached_device:hex(device),now:Number(now),refusal:'Malformed'},
+   {name:'outer request id changed',sealed_hex:hex(movedId),attached_device:hex(device),now:Number(now),refusal:'Malformed'},
+   {name:'signed for another community than the key',sealed_hex:hex(otherCommunity),attached_device:hex(device),now:Number(now),refusal:'Malformed'},
+   {name:'signed for another key_id than the outer',sealed_hex:hex(otherKeyId),attached_device:hex(device),now:Number(now),refusal:'Malformed'},
+  ],
+ };
+}

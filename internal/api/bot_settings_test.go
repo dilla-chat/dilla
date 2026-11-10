@@ -39,7 +39,7 @@ func newBotSettingsFixture(t *testing.T, repo store.Repository) botSettingsFixtu
 	member, _, memberToken := seedAPISession(t, deps)
 	mod, _, modToken := seedAPISession(t, deps)
 	for _, tok := range []string{ownerToken, memberToken, modToken} {
-		if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(tok), 3, 1, 1); err != nil {
+		if err := deps.Sessions.RecordCapabilities(ctx, auth.TokenHash(tok), 6, 1, 1); err != nil {
 			t.Fatal(err)
 		}
 	}

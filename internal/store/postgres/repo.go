@@ -2677,24 +2677,6 @@ func (r *Repo) DeleteMember(ctx context.Context, communityID, userID id.ID) erro
 	return nil
 }
 
-// GetBotInteractionEligibilityRevision returns and row-locks the durable
-// revision so a later registration check in the same transaction is fenced
-// against concurrent membership, ban, and device-state changes.
-func (r *Repo) GetBotInteractionEligibilityRevision(ctx context.Context, communityID, userID id.ID) (uint64, error) {
-	if !r.inTx {
-		return 0, errors.New("store: GetBotInteractionEligibilityRevision outside a transaction")
-	}
-	var revision int64
-	err := r.tx.QueryRowContext(ctx, `SELECT revision FROM bot_interaction_eligibility_revisions WHERE community_id=$1 AND user_id=$2 FOR UPDATE`, communityID, userID).Scan(&revision)
-	if err != nil {
-		return 0, wrap(err)
-	}
-	if revision < 0 {
-		return 0, errors.New("store: negative bot interaction eligibility revision")
-	}
-	return uint64(revision), nil
-}
-
 func (r *Repo) ListMembersOfCommunity(ctx context.Context, communityID, after id.ID, limit int32) ([]store.MemberOfCommunityRow, error) {
 	rows, err := r.r.ListMembersOfCommunity(ctx, pgdb.ListMembersOfCommunityParams{
 		CommunityID: communityID, UserID: after, MaxRows: int64(limit),
@@ -2852,6 +2834,19 @@ func (r *Repo) ListMemberRoles(ctx context.Context, communityID, userID id.ID) (
 		return nil, wrap(err)
 	}
 	return rows, nil
+}
+
+// ListCommunityMemberRoles is store.Structure's one-read member-roles map.
+func (r *Repo) ListCommunityMemberRoles(ctx context.Context, communityID id.ID) (map[id.ID][]id.ID, error) {
+	rows, err := r.r.ListCommunityMemberRoles(ctx, pgdb.ListCommunityMemberRolesParams{CommunityID: communityID})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make(map[id.ID][]id.ID)
+	for _, row := range rows {
+		out[row.UserID] = append(out[row.UserID], row.RoleID)
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------- Channels

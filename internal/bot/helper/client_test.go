@@ -3,6 +3,7 @@
 package helper
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -87,16 +88,176 @@ func TestCleanupAfterChildAlreadyExitedUsesTrackedProcessHandle(t *testing.T) {
 
 func TestCallRejectsOperationOutsideFrozenRange(t *testing.T) {
 	c := startFixture(t, "")
-	for _, operation := range []protocol.HelperOperation{protocol.HelperShutdown, protocol.HelperGroupTransfer, 21} {
+	for _, operation := range []protocol.HelperOperation{protocol.HelperShutdown, protocol.HelperGroupTransfer, 28} {
 		if _, err := c.Call(context.Background(), operation, []any{}); !errors.Is(err, ErrInvalidOperation) {
 			t.Fatalf("operation %d error = %v, want ErrInvalidOperation", operation, err)
 		}
 	}
 }
 
+// fixtureCommandAnswer answers ops 21-24 in "command" mode. Op 22's `now` picks the answer:
+// 1 a replay refusal, 2 an undefined refusal code, 3 an accepted request with trailing bytes,
+// anything else the accepted request.
+func fixtureCommandAnswer(request protocol.HelperRequest) ([]any, bool) {
+	switch request.Operation {
+	case protocol.HelperCommandKey:
+		return []any{[]byte{0x87, 0x01}}, true
+	case protocol.HelperCommandOpen:
+		now, _ := request.Payload[3].(uint64)
+		switch now {
+		case 1:
+			return []any{uint64(8)}, true
+		case 2:
+			return []any{uint64(9)}, true
+		}
+		replyKey := make([]byte, 32)
+		replyKey[0] = 0xaa
+		// Task 15: a refusal decided after the seal opened carries the reply key ([code, key]).
+		switch now {
+		case 4: // a verified replay: its reply key and its own request id (fix round 1 M-1)
+			return []any{uint64(8), replyKey, idBytes(fixtureID(41))}, true
+		case 8: // undefined: a replay without its request id
+			return []any{uint64(8), replyKey}, true
+		case 5:
+			return []any{uint64(3), replyKey}, true
+		case 6: // undefined: the seal of an unknown key never opened
+			return []any{uint64(2), replyKey}, true
+		case 7: // undefined: a short key
+			return []any{uint64(8), replyKey[:31]}, true
+		}
+		body, _ := cborx.Marshal([]any{idBytes(fixtureID(40)), idBytes(fixtureID(2)), nil, uint64(7), []any{"hello", uint64(3), []byte{1}, nil}, uint64(1_800_000_000), replyKey})
+		if now == 3 {
+			body = append(body, 0)
+		}
+		return []any{uint64(0), body}, true
+	case protocol.HelperReplySeal:
+		return []any{[]byte{0x83, 0x01}}, true
+	case protocol.HelperDeviceListIngest:
+		// The body's first byte picks the state: 0x84 current, 1 held, 2 behind, 3 undefined.
+		body, _ := request.Payload[1].([]byte)
+		if now, ok := request.Payload[2].(uint64); !ok || now == 0 || len(body) == 0 {
+			return nil, false
+		}
+		switch body[0] {
+		case 1:
+			return []any{uint64(1), uint64(7), uint64(1)}, true
+		case 2:
+			return []any{uint64(0), uint64(7), uint64(2)}, true
+		case 3:
+			return []any{uint64(0), uint64(7), uint64(3)}, true
+		}
+		return []any{uint64(1), uint64(7), uint64(0)}, true
+	case protocol.HelperProbeSeal:
+		// [community, request, now]: now 1 answers a zero handle (undefined).
+		if now, _ := request.Payload[2].(uint64); now == 1 {
+			return []any{[]byte{0x85}, uint64(0)}, true
+		}
+		return []any{[]byte{0x85, 0x01}, uint64(3)}, true
+	case protocol.HelperProbeOpen:
+		// [handle, seq, sealed, forget]: the plaintext is the sealed bytes after their first.
+		sealed, _ := request.Payload[2].([]byte)
+		if forget, _ := request.Payload[3].(uint64); forget > 1 || len(sealed) < 2 {
+			return nil, false
+		}
+		return []any{sealed[1:]}, true
+	}
+	return nil, false
+}
+
+// Task 17 fix round 2: ops 25 and 26, the health probe's seal and the opening of its answer.
+func TestProbeWrappersDecodeHelperAnswers(t *testing.T) {
+	c := startFixture(t, "command")
+	ctx := context.Background()
+	sealed, handle, err := c.SealProbe(ctx, fixtureID(2), fixtureID(40), time.Unix(1_800_000_000, 0))
+	if err != nil || handle != 3 || len(sealed) != 2 {
+		t.Fatalf("SealProbe = %x %d %v", sealed, handle, err)
+	}
+	if _, _, err := c.SealProbe(ctx, fixtureID(2), fixtureID(40), time.Unix(1, 0)); !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("a zero handle = %v, want an outcome-unknown error", err)
+	}
+	if _, _, err := c.SealProbe(ctx, fixtureID(2), id.ID{}, time.Unix(1_800_000_000, 0)); err == nil {
+		t.Fatal("SealProbe accepted a zero request id")
+	}
+	body, err := c.OpenProbeReply(ctx, handle, 0, []byte{0x83, 0x18, 0xc8}, true)
+	if err != nil || !bytes.Equal(body, []byte{0x18, 0xc8}) {
+		t.Fatalf("OpenProbeReply = %x %v", body, err)
+	}
+	if _, err := c.OpenProbeReply(ctx, 0, 0, []byte{1, 2}, true); err == nil {
+		t.Fatal("OpenProbeReply accepted handle 0")
+	}
+}
+
+func TestCommandWrappersDecodeHelperAnswers(t *testing.T) {
+	c := startFixture(t, "command")
+	ctx := context.Background()
+	if publication, err := c.CommandKey(ctx, fixtureID(2), time.Unix(1_800_000_000, 0)); err != nil || len(publication) != 2 {
+		t.Fatalf("CommandKey = %x, %v", publication, err)
+	}
+	if _, err := c.CommandKey(ctx, id.ID{}, time.Unix(1_800_000_000, 0)); err == nil {
+		t.Fatal("CommandKey accepted a zero community")
+	}
+	opened, err := c.OpenCommand(ctx, []byte{0x85}, fixtureID(5), fixtureID(6), time.Unix(1_800_000_000, 0))
+	if err != nil || opened.Refusal != RefusalNone {
+		t.Fatalf("OpenCommand = %#v, %v", opened, err)
+	}
+	r := opened.Request
+	if r.RequestID != fixtureID(40) || r.CommunityID != fixtureID(2) || r.ChannelID != (id.ID{}) || r.Operation != 7 ||
+		r.SentAt != 1_800_000_000 || r.ReplyKey[0] != 0xaa || r.UserID != fixtureID(5) || r.DeviceID != fixtureID(6) {
+		t.Fatalf("opened request = %#v", r)
+	}
+	if len(r.Args) != 4 || r.Args[0] != "hello" || r.Args[1] != uint64(3) || string(r.Args[2].([]byte)) != "\x01" || r.Args[3] != nil {
+		t.Fatalf("opened args = %#v", r.Args)
+	}
+	replay, err := c.OpenCommand(ctx, []byte{0x85}, fixtureID(5), fixtureID(6), time.Unix(1, 0))
+	if err != nil || replay.Refusal != RefusalReplay || replay.ReplyKey != ([32]byte{}) {
+		t.Fatalf("replay = %#v, %v", replay, err)
+	}
+	keyed, err := c.OpenCommand(ctx, []byte{0x85}, fixtureID(5), fixtureID(6), time.Unix(4, 0))
+	if err != nil || keyed.Refusal != RefusalReplay || keyed.ReplyKey[0] != 0xaa || keyed.ReplayRequestID != fixtureID(41) || keyed.Request.RequestID != (id.ID{}) {
+		t.Fatalf("replay with its reply key = %#v, %v", keyed, err)
+	}
+	signature, err := c.OpenCommand(ctx, []byte{0x85}, fixtureID(5), fixtureID(6), time.Unix(5, 0))
+	if err != nil || signature.Refusal != RefusalBadSignature || signature.ReplyKey[0] != 0xaa {
+		t.Fatalf("bad signature with its reply key = %#v, %v", signature, err)
+	}
+	if sealed, err := c.SealReply(ctx, [32]byte{1}, fixtureID(40), 2, []byte("ok")); err != nil || len(sealed) != 2 {
+		t.Fatalf("SealReply = %x, %v", sealed, err)
+	}
+	if changed, version, err := c.IngestDeviceList(ctx, fixtureID(5), []byte{0x84}); err != nil || !changed || version != 7 {
+		t.Fatalf("IngestDeviceList = %v %d %v", changed, version, err)
+	}
+	if changed, version, err := c.IngestDeviceList(ctx, fixtureID(5), []byte{1}); !errors.Is(err, ErrDeviceListHeld) || !changed || version != 7 {
+		t.Fatalf("held IngestDeviceList = %v %d %v", changed, version, err)
+	}
+	if changed, version, err := c.IngestDeviceList(ctx, fixtureID(5), []byte{2}); !errors.Is(err, ErrDeviceListBehind) || changed || version != 7 {
+		t.Fatalf("behind IngestDeviceList = %v %d %v", changed, version, err)
+	}
+	if _, _, err := c.IngestDeviceList(ctx, fixtureID(5), []byte{3}); !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("undefined ingest state = %v", err)
+	}
+}
+
+func TestOpenCommandRefusesUndefinedAnswers(t *testing.T) {
+	for _, now := range []int64{2, 3, 6, 7, 8} {
+		c := startFixture(t, "command")
+		if _, err := c.OpenCommand(context.Background(), []byte{0x85}, fixtureID(5), fixtureID(6), time.Unix(now, 0)); err == nil {
+			t.Fatalf("answer %d accepted", now)
+		}
+	}
+}
+
+func TestCommandRefusalNumbersAreFixed(t *testing.T) {
+	got := []CommandRefusal{RefusalNone, RefusalMalformed, RefusalUnknownKey, RefusalBadSignature, RefusalWrongDevice, RefusalDeviceUnlisted, RefusalDeviceRevoked, RefusalStale, RefusalReplay}
+	for want, refusal := range got {
+		if int(refusal) != want {
+			t.Fatalf("refusal %d has number %d", want, refusal)
+		}
+	}
+}
+
 func TestCallAcceptsCallGroupJoinOperations(t *testing.T) {
 	c := startFixture(t, "")
-	for _, operation := range []protocol.HelperOperation{protocol.HelperCallJoinCheck, protocol.HelperCallGroupForget} {
+	for _, operation := range []protocol.HelperOperation{protocol.HelperCallJoinCheck, protocol.HelperCallGroupForget, protocol.HelperGroupForget} {
 		if _, err := c.Call(context.Background(), operation, []any{fixtureID(9)}); err != nil {
 			t.Fatalf("helper operation %d: %v", operation, err)
 		}
@@ -360,6 +521,12 @@ func serveFixtureChild(mode string) {
 			_, _ = conn.Write([]byte{0, 0, 0, 20, 0x84, 0x01})
 			return
 		}
+		if mode == "command" {
+			if payload, ok := fixtureCommandAnswer(request); ok {
+				writeFixtureResponse(conn, request.RequestID, 0, payload)
+				continue
+			}
+		}
 		status := uint64(0)
 		if mode == "status" {
 			status = 5
@@ -424,3 +591,5 @@ func writeFixtureRaw(conn net.Conn, body []byte) {
 	copy(frame[4:], body)
 	_, _ = conn.Write(frame)
 }
+
+func idBytes(v id.ID) []byte { return v[:] }

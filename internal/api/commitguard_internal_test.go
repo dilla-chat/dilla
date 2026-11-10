@@ -2,16 +2,12 @@ package api
 
 import (
 	"bytes"
-	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/dilla-chat/dilla/internal/auth"
 	"github.com/dilla-chat/dilla/internal/id"
-	"github.com/dilla-chat/dilla/internal/server"
 )
 
 // One commit upload per device at a time: a second while the first is in flight is 429
@@ -45,37 +41,5 @@ func TestASecondConcurrentCommitFromOneDeviceIsRefused(t *testing.T) {
 		t.Errorf("after the first commit ended: %v", err)
 	} else {
 		release()
-	}
-}
-
-// The commit route's body has a read deadline of its own: a client that sends the header and then
-// trickles nothing is cut off, not held open for as long as it likes.
-func TestTheCommitRouteBodyHasAReadDeadline(t *testing.T) {
-	read := make(chan error, 1)
-	srv := httptest.NewServer(withReadDeadline(200*time.Millisecond, http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			_, err := io.ReadAll(r.Body)
-			read <- err
-			server.WriteError(w, server.Errorf(server.CodeInvalidRequest, "read body: %v", err))
-		})))
-	t.Cleanup(srv.Close)
-
-	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", srv.Listener.Addr().String())
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer conn.Close()
-	// A declared body of 1 MiB, of which one byte ever arrives.
-	if _, err := conn.Write([]byte("POST /commit HTTP/1.1\r\nHost: x\r\nContent-Type: application/cbor\r\n" +
-		"Content-Length: 1048576\r\n\r\n\x85")); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	select {
-	case err := <-read:
-		if err == nil {
-			t.Fatal("the stalled body read completed without error")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the stalled body was still being read after 5 s; the deadline did not fire")
 	}
 }

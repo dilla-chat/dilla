@@ -839,6 +839,44 @@ func (d *DS) VoidIneligibleAdds(ctx context.Context, groupID id.ID) error {
 	return err
 }
 
+// VoidAddsOf voids the group's outstanding instance Adds of devices, and answers how many it voided. Bot v2 Task 22: a
+// Bot channel unmarked while the Bot's Add is outstanding; the Bot is a member of Bot channels' groups only
+// (protocol/10). It also takes the devices out of the group's pending_joins queue (Task 23, R1 a): a queued device
+// would otherwise be proposed by a later drain.
+func (d *DS) VoidAddsOf(ctx context.Context, groupID id.ID, devices []id.ID) (int, error) {
+	unlock := d.lock(groupID)
+	defer unlock()
+	if len(devices) > 0 {
+		if err := d.opts.Store.DeletePendingJoins(ctx, groupID, devices); err != nil {
+			return 0, err
+		}
+	}
+	row, err := d.opts.Store.GetGroup(ctx, groupID)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, errNotFound("group")
+	}
+	if err != nil {
+		return 0, err
+	}
+	rows, err := d.opts.Store.ListProposals(ctx, groupID, row.Epoch, false)
+	if err != nil {
+		return 0, err
+	}
+	voided := 0
+	for _, r := range rows {
+		if r.Origin != 0 || r.VoidAt != nil || mlswasi.ProposalKind(r.Kind) != mlswasi.ProposalAdd || r.TargetDevice == nil ||
+			!slices.Contains(devices, *r.TargetDevice) {
+			continue
+		}
+		if err := d.opts.Store.VoidProposal(ctx, groupID, r.Ref, d.now()); err != nil {
+			return voided, err
+		}
+		d.gaugeDec(r.Kind)
+		voided++
+	}
+	return voided, nil
+}
+
 // voidIneligibleAddsLocked is VoidIneligibleAdds with the group lock already held. It answers how
 // many Adds it voided. An eligibility question it cannot answer stops it with the error: an Add is
 // voided only on a definite "no".

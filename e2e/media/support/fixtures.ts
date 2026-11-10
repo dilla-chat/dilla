@@ -2,6 +2,7 @@
 // --use-file-for-fake-video-capture / --use-file-for-fake-audio-capture (media_switches.cc at
 // 153.0.8010.12); Firefox has its own fake devices (640x480@30 and a 1 kHz tone) and takes prefs,
 // never `permissions` ("Unknown permission: camera").
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, posix } from 'node:path';
@@ -73,3 +74,25 @@ export const FIREFOX_MEDIA_PREFS: Record<string, boolean | number> = {
   'media.autoplay.default': 0,
   'media.autoplay.block-webaudio': false,
 };
+
+/**
+ * Music fixtures for the Bot (Bot v2 task 18): a 30 s and a 5 s Ogg Opus file. Build the Bot with `-tags dilla_testhost`
+ * and start it with DILLA_BOT_MUSIC_FIXTURES=<dir>; `/play fixture-30s` (or `.../watch?v=fixture-30s`) then plays the file
+ * through the same single ffmpeg as a real track. The names are 11 characters, a valid video id, so a queue accepts them.
+ */
+export const MUSIC_FIXTURES = { long: 'fixture-30s', short: 'fixture-05s' } as const;
+
+export function writeMusicFixtures(dir: string): { dir: string; long: string; short: string } {
+  mkdirSync(dir, { recursive: true });
+  const render = (stem: string, seconds: number, hz: number): string => {
+    const path = join(dir, `${stem}.opus`);
+    if (!existsSync(path) || statSync(path).size === 0) {
+      // Opus at 48 kHz stereo, 20 ms frames: the format the Bot forwards.
+      execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
+        '-f', 'lavfi', '-i', `sine=frequency=${String(hz)}:sample_rate=48000:duration=${String(seconds)}`,
+        '-ac', '2', '-c:a', 'libopus', '-b:a', '96k', '-frame_duration', '20', '-f', 'ogg', path], { stdio: 'ignore' });
+    }
+    return path;
+  };
+  return { dir, long: render(MUSIC_FIXTURES.long, 30, 440), short: render(MUSIC_FIXTURES.short, 5, 660) };
+}

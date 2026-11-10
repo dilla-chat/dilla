@@ -1,7 +1,10 @@
 // The state slices the worker publishes and the page renders (L-TS-08). Every id is 32 lower-case hex
 // characters; every slice value is immutable and replaced whole.
 import type { TrustBlock } from '../core-port';
+import type { BotCatalogView } from '../bot/catalog';
+import type { BotAnswerView } from '../bot/commands';
 export type { TrustBlock };
+export type { BotCatalogView, BotAnswerView };
 export type BootPhase = 'loading' | 'unsupported' | 'other-tab' | 'paused-error' | 'store-lost' | 'needs-signup' | 'signup-keys' | 'registering' | 'ready' | 'revoked' | 'error'
   | 'signin-login' | 'signin-totp' | 'signin-key' | 'enrolling' | 'cleared'
   // web3.6: a login owing a passkey (needs 2); an account that owes a second factor before the shell.
@@ -53,7 +56,10 @@ export interface ConnectionState { status: 'offline' | 'connecting' | 'online'; 
   wireVersion?: number;
   /** Verified entry hint from a wire-5 socket; the page still verifies the manifest. */
   appBuild?: string;
-  reason?: 'version'; }                        // only while idle because the server refused this client's version (gateway close 4006)
+  /** Only while idle because the server refused this client's version (gateway close 4006); 'upgrade' when it said the
+   *  client is too old (Bot v2: E_UPGRADE_REQUIRED), so the app asks its user to update; 'instance' when the instance is
+   *  older than this client (final review M5), so the instance is the side to update. */
+  reason?: 'version' | 'upgrade' | 'instance'; }
 /** owner: the 32-hex user id of the server's owner (GET /v1/communities element 2). The owner holds every permission; the
  *  instance serves no role bits, so it is the one permission fact a page has (v0.1.0-web3.1: who may add a channel). */
 export interface CommunitySummary { id: string; name: string; owner: string; }
@@ -146,7 +152,10 @@ export interface DiagnosticsState { connection: 'online' | 'offline' | 'connecti
   devices: number; errors: { code: string; at: number }[];
   /** This device's KeyPackage directory as the worker last saw it: the ordinary count (null until known), when a publish
    *  was last tried (ms) and the stable code of the last failure (null once a publish lands). */
-  keyPackages: { count: number | null; lastAttempt: number | null; lastError: string | null } }
+  keyPackages: { count: number | null; lastAttempt: number | null; lastError: string | null };
+  /** Bot v2: the five socket routes with the highest p95 round trip (ms) this worker has seen, slowest first; absent from
+   *  a worker before the socket transport. */
+  slowRoutes?: { pattern: string; p50: number; p95: number; count: number }[] }
 export interface TypingState { userId: string; name: string; expiresAt: number }
 export interface BadgeState { unread: number; mentions: number; }
 // threadRoot (FX-core): the 32-hex msg id of the thread root the message shows under (a reply whose root is held), else null.
@@ -247,8 +256,16 @@ export type SliceName = 'account' | 'connection' | 'communities' | `channels:${s
   | 'dms' | 'devices' | 'badges' | 'notices' | 'settings' | 'trust' | 'sendBlocks' | 'search' | 'diagnostics'
   | `typing:${string}` | `pins:${string}` | `tray:${string}` | 'pendingAttachments' | 'call' | 'voice' | 'rings'
   | `permissions:${string}` | `roles:${string}` | `overwrites:${string}` | `bans:${string}` | `invites:${string}` | 'removals' | 'factors'
-  | `slow:${string}` | `thread:${string}` | `threads:${string}`;
+  | `slow:${string}` | `thread:${string}` | `threads:${string}`
+  | `botCatalog:${string}` | 'botAnswers' | 'botHints';
 export interface SliceTypes { account: AccountState; connection: ConnectionState; communities: CommunitySummary[];
+  /** Bot v2: the community Bot's command catalog held on this device (bot/catalog.ts); null while none was read. */
+  [k: `botCatalog:${string}`]: BotCatalogView | null;
+  /** Bot v2: the last opened Bot answers to this device's sealed commands (bot/commands.ts), oldest first. */
+  botAnswers: BotAnswerView[];
+  /** Bot v2: per hint scope (`<kind>:<id>`), how many times the worker asked the page to fetch it (bot/hints.ts). A rise is
+   *  the page's cue to read that scope once; there is no timer behind it. */
+  botHints: Record<string, number>;
   [k: `communityChanges:${string}`]: number;
   [k: `channels:${string}`]: ChannelSummary[]; [k: `members:${string}`]: MemberSummary[]; [k: `presence:${string}`]: PresenceState; [k: `timeline:${string}`]: TimelineState;
   [k: `afk:${string}`]: AFKState | null;

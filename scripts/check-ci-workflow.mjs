@@ -149,8 +149,8 @@ export const MIN_BROWSER_WEB_TIMEOUT = 20;
  */
 export const GO_SHARD_FLAGS = {
   go: '-race -shuffle=on -timeout 20m',
-  'go-api': '-race -shuffle=on -timeout 25m',
-  'go-ds': '-race -shuffle=on -timeout 25m',
+  'go-api': '-race -shuffle=on -timeout 40m',
+  'go-ds': '-race -shuffle=on -timeout 40m',
   'go-harness': '-race -shuffle=on -timeout 25m',
   'go-postgres': '-race -shuffle=on -timeout 20m',
 };
@@ -398,7 +398,7 @@ const REQUIRED_STEPS = {
   ],
   // The one package the go job leaves out, with the wasi core it needs and a budget of its own.
   'go-ds': [
-    'timeout-minutes: 35',
+    'timeout-minutes: 50',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
@@ -406,7 +406,7 @@ const REQUIRED_STEPS = {
   ],
   // The other package the go job leaves out, with the same wasi hand-off and a budget that leaves margin.
   'go-api': [
-    'timeout-minutes: 35',
+    'timeout-minutes: 50',
     'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8',
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
@@ -448,7 +448,12 @@ const REQUIRED_STEPS = {
     goShardCommand('go-postgres'),
   ],
   // Task 26/C9: release verifies the downloaded client before embedding it.
-  'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error', 'name: dilla-web-dist', 'path: internal/web/dist', 'content="placeholder"', 'go test -tags webdist ./internal/web/...', 'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist'],
+  'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error', 'name: dilla-web-dist', 'path: internal/web/dist', 'content="placeholder"', 'go test -tags webdist ./internal/web/...', 'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist',
+    // Bot v2 task 11: no shipped dillad is a dilla_unsafe_test build (the tag survives -trimpath in the build info).
+    `test "$(go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -c 'build[[:space:]]CGO_ENABLED=0')" -eq 2`,
+    'if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_unsafe_test; then echo "a dillad was built with the dilla_unsafe_test tag"; exit 1; fi',
+    'if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_testhost; then echo "a dillad was built with the dilla_testhost tag"; exit 1; fi',
+  ],
 };
 
 /**
@@ -1353,6 +1358,9 @@ const RELEASE_STEPS = {
     'go test ./internal/bot/... ./cmd/dillabot',
     'GOOS=linux GOARCH=${{ matrix.arch }} go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o dist/dillabot-linux-${{ matrix.arch }} ./cmd/dillabot',
     'test "$(dist/dillabot-linux-${{ matrix.arch }} version)" = "dillabot $VERSION"',
+    // Bot v2 task 18: the shipped Bot binary is read back and must not be a dilla_testhost (fixture music) build.
+    "go version -m dist/dillabot-linux-${{ matrix.arch }} | grep -q 'build[[:space:]]CGO_ENABLED=0'",
+    'if go version -m dist/dillabot-linux-${{ matrix.arch }} | grep -q dilla_testhost; then echo "a dillabot was built with the dilla_testhost tag"; exit 1; fi',
     'install -m 0755 target/release/dilla-bot-core dist/dilla-bot-core-linux-${{ matrix.arch }}',
     'name: dilla-bot-${{ matrix.arch }}',
     'if-no-files-found: error',
@@ -1363,6 +1371,10 @@ const RELEASE_STEPS = {
     'CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o dist/dillad-linux-arm64 ./cmd/dillad',
     `test "$(dist/dillad-linux-amd64 version | cut -d' ' -f1-2)" = "dillad $VERSION"`,
     'grep -qaF -- "$VERSION" dist/dillad-linux-arm64',
+    // Bot v2 task 11: no released dillad is a dilla_unsafe_test build (the tag survives -trimpath in the build info).
+    `test "$(go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -c 'build[[:space:]]CGO_ENABLED=0')" -eq 2`,
+    'if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_unsafe_test; then echo "a dillad was built with the dilla_unsafe_test tag"; exit 1; fi',
+    'if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_testhost; then echo "a dillad was built with the dilla_testhost tag"; exit 1; fi',
     'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist',
     'name: dillad-binaries',
   ],

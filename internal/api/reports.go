@@ -100,9 +100,9 @@ func NewReports(repo store.Repository, keys FrankingKeys, clk clock.Clock, log *
 }
 
 func (h *Reports) Register(mux *server.Mux) {
-	mux.HandleFunc("POST /v1/reports", h.create)
-	mux.HandleFunc("GET /v1/reports", h.list)
-	mux.HandleFunc("PATCH /v1/reports/{id}", h.patch)
+	mux.Socket("POST /v1/reports", http.HandlerFunc(h.create))
+	mux.Socket("GET /v1/reports", http.HandlerFunc(h.list))
+	mux.Socket("PATCH /v1/reports/{id}", http.HandlerFunc(h.patch))
 }
 
 // frankedTuple is protocol/04's stored tuple, read from whichever table holds

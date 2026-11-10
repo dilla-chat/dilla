@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dilla-chat/dilla/internal/bot/catalog"
 	"github.com/dilla-chat/dilla/internal/bot/client"
-	"github.com/dilla-chat/dilla/internal/bot/service"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
@@ -136,8 +136,8 @@ func TestUtilityCreationGateReadsTheRightBits(t *testing.T) {
 		}
 	}
 	check(false, false)
-	caps = service.CommandCapPolls
+	caps = uint16(catalog.FeaturePolls)
 	check(true, false)
-	caps = service.CommandCapReminders | 0xff
+	caps = uint16(catalog.FeatureReminders) | 0xff
 	check(false, true)
 }

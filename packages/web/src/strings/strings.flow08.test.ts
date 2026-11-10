@@ -19,7 +19,9 @@ describe('flow 08 (v0.1.0-web3.4, server admin and moderation)', () => {
     const listed = new Set(pairs.map(([key]) => key));
     const added = Object.keys(en).filter(k => /^(admin|members|mod|removed)\./.test(k));
     expect(added.filter(k => !listed.has(k))).toEqual([]);
-    expect(pairs.length).toBe(390); // Provider removal retires 20 setup and callback copy entries.
+    // Provider removal retired 20 setup and callback copy entries; Bot v2 Task 23 retired the 32 AutoModeration
+    // entries and the moderation log's two journal states (waiting, blocked).
+    expect(pairs.length).toBe(356);
   });
   it('sections: States, Keyboard map, Focus rules and Announcements have content, and States has 13 or more rows', () => {
     const body = (title: string) => {

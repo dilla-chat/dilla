@@ -84,7 +84,7 @@ func toUints(t *testing.T, v any) []uint64 {
 
 // S1 fix round 1 (m1): HostOptions.WireVersions reaches dillad.Options, so the hello and GET
 // /v1/instance both say the list it names (dilla-testhost's -wire). The control is a host without
-// it, which negotiates the current and legacy versions [3, 2].
+// it, which offers the one current version [6] (Bot v2).
 func TestTheHostsWireVersionsReachTheHelloAndTheInstanceDocument(t *testing.T) {
 	core := corePath(t)
 	h, err := NewHost(context.Background(), HostOptions{DataDir: t.TempDir(), CorePath: core, WireVersions: []uint64{3}})
@@ -102,7 +102,7 @@ func TestTheHostsWireVersionsReachTheHelloAndTheInstanceDocument(t *testing.T) {
 		t.Fatalf("NewHost: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Close(context.Background()) })
-	if hello, instance := wireLists(t, d); !slices.Equal(hello, []uint64{5, 4, 3, 2}) || !slices.Equal(instance, []uint64{5, 4, 3, 2}) {
-		t.Fatalf("the default host: hello %v, instance %v; want [4 3 2] and [4 3 2]", hello, instance)
+	if hello, instance := wireLists(t, d); !slices.Equal(hello, []uint64{6}) || !slices.Equal(instance, []uint64{6}) {
+		t.Fatalf("the default host: hello %v, instance %v; want [6] and [6]", hello, instance)
 	}
 }

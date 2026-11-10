@@ -18,6 +18,7 @@ use super::error::{
     E_DEVICE_REVOKED, E_DEVICE_UNLISTED, E_TIER_MISMATCH, E_UMK_CHANGED,
 };
 use super::{ClientCore, ClientError, schema, wire};
+use crate::bot::device_list_push::DeviceListPush;
 use crate::cbor::{Decoder, Encoder};
 use crate::identity::{CredentialIdentity, DISPLAY_GROUP, DeviceList, group_digits, safety_number};
 use crate::mls::{DillaGroup, StorageError};
@@ -112,6 +113,51 @@ fn head_below_cached(cached_version: i64, head: &DeviceList) -> bool {
     head.unsigned.version < cached_version as u64
 }
 
+/// Served rows `(version, blob, ssk_signature, prev_hash)` as bounded signed lists, each row's
+/// version, signature and `prev_hash` equal to its blob's own (a served history and a pushed one
+/// alike).
+fn lists_from_rows<'a>(
+    rows: impl IntoIterator<Item = (u64, &'a [u8], &'a [u8; 64], &'a [u8; 32])>,
+) -> Result<Vec<DeviceList>, ClientError> {
+    let mut lists = Vec::new();
+    for (version, blob, ssk_signature, prev_hash) in rows {
+        let list = bounded_list(blob)?;
+        if list.unsigned.version != version
+            || &list.sig_ssk != ssk_signature
+            || &list.unsigned.prev_hash != prev_hash
+        {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
+        lists.push(list);
+    }
+    Ok(lists)
+}
+
+/// The chain check: each list names `requested_user`, is exactly the next version after the one
+/// before it (the first after `anchor`, or version 1 with no anchor), links to it by `prev_hash`
+/// and is signed by `ssk_pub` (`DeviceList::accept`). Returns the newest list, `anchor` when
+/// `lists` is empty. Both the leaf-anchored history ingest and the Bot's pushed-list ingest use it.
+fn check_chain<'a>(
+    requested_user: &[u8; 16],
+    ssk_pub: &[u8; 32],
+    lists: impl IntoIterator<Item = &'a DeviceList>,
+    anchor: Option<&'a DeviceList>,
+) -> Result<Option<&'a DeviceList>, ClientError> {
+    let mut previous = anchor;
+    for list in lists {
+        if list.unsigned.user_id.as_bytes() != requested_user {
+            return Err(failure(E_CREDENTIAL));
+        }
+        let expected = previous.map_or(1, |p| p.unsigned.version + 1);
+        if list.unsigned.version != expected {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
+        list.accept(previous, ssk_pub).map_err(ClientError::from)?;
+        previous = Some(list);
+    }
+    Ok(previous)
+}
+
 /// Verify every signed link against the authenticated leaf and the exact candidate head.
 #[allow(dead_code)] // L-CORE-44 direct-verifier test seam.
 pub(crate) fn validate_history(
@@ -144,20 +190,13 @@ fn validate_history_from(
     {
         return Err(failure(E_CORE_LIMIT));
     }
-    let mut previous = cached_anchor;
-    for list in history.iter().skip(usize::from(cached_anchor.is_some())) {
-        if list.unsigned.user_id.as_bytes() != requested_user {
-            return Err(failure(E_CREDENTIAL));
-        }
-        let expected = previous.map_or(1, |p| p.unsigned.version + 1);
-        if list.unsigned.version != expected {
-            return Err(failure(E_DEVICE_LIST_STALE));
-        }
-        list.accept(previous, &cred.ssk_pub)
-            .map_err(ClientError::from)?;
-        previous = Some(list);
-    }
-    let current = previous.expect("history is nonempty");
+    let current = check_chain(
+        requested_user,
+        &cred.ssk_pub,
+        history.iter().skip(usize::from(cached_anchor.is_some())),
+        cached_anchor,
+    )?
+    .expect("history is nonempty");
     if current.encode() != head.encode() || current.hash() != head.hash() {
         return Err(failure(E_DEVICE_LIST_STALE));
     }
@@ -217,6 +256,52 @@ fn read_pin(c: &rusqlite::Connection, user: &[u8; 16]) -> Result<Option<Pin>, St
     )
     .optional()
     .map_err(Into::into)
+}
+
+/// A user's cached signed device list, but only while it vouches for the user: the pin exists,
+/// no key change is pending, the list is signed under the pinned key's cached SSK and names this
+/// user. Otherwise the refusal code (`E_DEVICE_LIST_STALE` when nothing is cached or pinned,
+/// `E_UMK_CHANGED` while a change is pending, `E_CREDENTIAL` for a list that does not verify).
+/// Sealed Bot commands use it to check the Bot's command-key publication.
+pub(super) fn trusted_list(
+    c: &rusqlite::Connection,
+    user: &[u8; 16],
+) -> Result<Result<DeviceList, &'static str>, StorageError> {
+    Ok(trusted_anchor(c, user)?.map(|(list, _)| list))
+}
+
+/// `trusted_list` with the cached SSK the list verifies under: the anchor a pushed list must
+/// chain from (`ingest_device_list`).
+fn trusted_anchor(
+    c: &rusqlite::Connection,
+    user: &[u8; 16],
+) -> Result<Result<(DeviceList, [u8; 32]), &'static str>, StorageError> {
+    let cached: Option<(Vec<u8>, [u8; 32], [u8; 32])> = c
+        .query_row(
+            "SELECT list,umk_pub,ssk_pub FROM app_device_lists WHERE user_id=?1",
+            [user.as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((bytes, umk, ssk)) = cached else {
+        return Ok(Err(E_DEVICE_LIST_STALE));
+    };
+    let Some(pin) = read_pin(c, user)? else {
+        return Ok(Err(E_DEVICE_LIST_STALE));
+    };
+    if pin.changed.is_some() {
+        return Ok(Err(E_UMK_CHANGED));
+    }
+    if pin.umk != umk {
+        return Ok(Err(E_CREDENTIAL));
+    }
+    let Ok(list) = DeviceList::decode(&bytes) else {
+        return Ok(Err(E_CREDENTIAL));
+    };
+    if list.unsigned.user_id.as_bytes() != user || list.verify(&ssk).is_err() {
+        return Ok(Err(E_CREDENTIAL));
+    }
+    Ok(Ok((list, ssk)))
 }
 
 /// The only writer of `app_trust_pins`.
@@ -314,6 +399,38 @@ fn pin_after_list(
         return None;
     }
     Some(next_pin(prior, key, now))
+}
+
+/// Writes `next` when it differs from `prior`, and raises the trust generation when an existing
+/// pin changes (first sight changes nothing displayed), as `ingest_leaf` does.
+fn repin(
+    c: &rusqlite::Connection,
+    user: &[u8; 16],
+    prior: Option<Pin>,
+    next: Option<Pin>,
+) -> Result<(), StorageError> {
+    if let Some(pin) = next.filter(|p| prior != Some(*p)) {
+        write_pin(c, user, &pin)?;
+        if prior.is_some() {
+            bump_generation(c)?;
+        }
+    }
+    Ok(())
+}
+
+/// What a device-list push did (`ClientCore::ingest_device_list`). `version` is the cached
+/// list's version afterwards (0 when none is cached).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PushedList {
+    /// The cache vouches for the user. `changed` when this push wrote the list or the pin.
+    Current { changed: bool, version: u64 },
+    /// The user's pin has a key change pending (or the pushed key is not the pinned one): the
+    /// change is recorded, and the user's commands are refused until it is verified.
+    Held { changed: bool, version: u64 },
+    /// A row signed by the user's cached SSK shows `head`, newer than the cache, but the push
+    /// does not chain to it. Nothing was written; the user is
+    /// behind until a history reaching `head` is ingested. Unsigned claims never yield this.
+    Behind { version: u64, head: u64 },
 }
 
 /// The pin after a validated signed list under `key`. First sight pins it unverified; the pinned
@@ -418,7 +535,6 @@ fn retract_matching(
         for (seq, own_id, reply_to) in rows {
             c.execute("UPDATE app_messages SET status=1,reason=?3,body='',envelope=NULL,edit_body=NULL,mention=0 WHERE group_id=?1 AND seq=?2", params![group_id.as_slice(),seq,code])?;
             super::bot_events::suppress_source(c, group_id, seq)?;
-            super::human_interaction_events::suppress_source(c, group_id, seq)?;
             c.execute(
                 "DELETE FROM app_search_rows WHERE group_id=?1 AND seq=?2",
                 params![group_id.as_slice(), seq],
@@ -522,7 +638,11 @@ fn apply_verdict(
     device: &[u8; 16],
     (leaf_index, signature_key): (u32, &[u8]),
     verdict: Result<(), &str>,
+    credential: Option<&CredentialIdentity>,
 ) -> Result<bool, StorageError> {
+    if verdict != Err(E_DEVICE_LIST_STALE) {
+        mark_checked(c, group_id, user, leaf_index, signature_key, credential)?;
+    }
     let code = match verdict {
         Ok(()) => {
             let cleared = c.execute(
@@ -573,6 +693,120 @@ fn apply_verdict(
         )?;
     }
     Ok(recorded || retracted > 0 || relabelled > 0)
+}
+
+/// Bot v2 Task 16: the list version and pinned key each current leaf was last judged under
+/// (`apply_verdict`, a decided verdict only). `pending_leaves` omits a Bot's leaf whose row still
+/// matches its user's cached list and pin, so a pushed list costs that user's leaves only. A row
+/// for a leaf index that another leaf took (another signature key), or whose credential changed
+/// under the same key (fix round 1, M-4: `credential_hash`), matches nothing.
+const LEAF_CHECKED_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS app_leaf_checked (
+  group_id BLOB NOT NULL CHECK(length(group_id)=16),
+  leaf_index INTEGER NOT NULL,
+  signature_key BLOB NOT NULL,
+  user_id BLOB NOT NULL CHECK(length(user_id)=16),
+  umk_pub BLOB NOT NULL CHECK(length(umk_pub)=32),
+  version INTEGER NOT NULL,
+  credential_hash BLOB NOT NULL CHECK(length(credential_hash)=32),
+  PRIMARY KEY(group_id,leaf_index)
+) WITHOUT ROWID;
+";
+
+/// Creates `app_leaf_checked`, replacing a table of the first Task 16 shape (no
+/// `credential_hash`): its rows are only a cache of judgements, so a dropped row makes its leaf
+/// pending again, which is the safe direction.
+pub(super) fn ensure_leaf_checked(c: &rusqlite::Connection) -> Result<(), StorageError> {
+    let exists: bool = c
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_leaf_checked'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if exists {
+        let has_hash: bool = c
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('app_leaf_checked') WHERE name='credential_hash'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !has_hash {
+            c.execute_batch("DROP TABLE app_leaf_checked;")?;
+        }
+    }
+    c.execute_batch(LEAF_CHECKED_SCHEMA)?;
+    Ok(())
+}
+
+/// The hash of a leaf's credential that `app_leaf_checked` binds its judgement to.
+fn credential_hash(credential: &CredentialIdentity) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"dilla leaf checked credential v1");
+    hash.update(credential.encode());
+    hash.finalize().into()
+}
+
+/// Records that the leaf was judged under its user's current cached list and pinned key. With no
+/// cached list, or a key change pending, nothing is recorded: the leaf stays pending.
+fn mark_checked(
+    c: &rusqlite::Connection,
+    group_id: &[u8; 16],
+    user: &[u8; 16],
+    leaf_index: u32,
+    signature_key: &[u8],
+    credential: Option<&CredentialIdentity>,
+) -> Result<(), StorageError> {
+    c.execute(
+        "DELETE FROM app_leaf_checked WHERE group_id=?1 AND leaf_index=?2",
+        params![group_id.as_slice(), i64::from(leaf_index)],
+    )?;
+    // A leaf whose credential does not decode has no judgement to bind: it stays pending.
+    let Some(credential) = credential else {
+        return Ok(());
+    };
+    c.execute(
+        "INSERT INTO app_leaf_checked(group_id,leaf_index,signature_key,user_id,umk_pub,version,credential_hash) \
+         SELECT ?1,?2,?3,?4,p.umk_pub,l.version,?5 FROM app_device_lists l \
+         JOIN app_trust_pins p ON p.user_id=l.user_id \
+         WHERE l.user_id=?4 AND p.changed_umk IS NULL AND p.umk_pub=l.umk_pub",
+        params![
+            group_id.as_slice(),
+            i64::from(leaf_index),
+            signature_key,
+            user.as_slice(),
+            credential_hash(credential).as_slice()
+        ],
+    )?;
+    Ok(())
+}
+
+/// Whether the leaf was judged under its user's current cached list and pinned key.
+fn leaf_checked_current(
+    c: &rusqlite::Connection,
+    leaf: &LeafEvidence,
+) -> Result<bool, StorageError> {
+    let user = leaf.credential.user_id.as_bytes();
+    Ok(c.query_row(
+        "SELECT 1 FROM app_leaf_checked k \
+         JOIN app_device_lists l ON l.user_id=k.user_id AND l.version=k.version \
+         JOIN app_trust_pins p ON p.user_id=k.user_id AND p.umk_pub=k.umk_pub AND p.changed_umk IS NULL \
+         WHERE k.group_id=?1 AND k.leaf_index=?2 AND k.signature_key=?3 AND k.user_id=?4 \
+         AND k.credential_hash=?5",
+        params![
+            leaf.group_id.as_slice(),
+            i64::from(leaf.leaf_index),
+            leaf.dsk_pub.as_slice(),
+            user.as_slice(),
+            credential_hash(&leaf.credential).as_slice()
+        ],
+        |_| Ok(()),
+    )
+    .optional()?
+    .is_some())
 }
 
 pub(super) fn bump_generation(c: &rusqlite::Connection) -> Result<(), StorageError> {
@@ -861,39 +1095,6 @@ fn validate_cached_leaf(c: &rusqlite::Connection, leaf: &LeafEvidence) -> Result
         .map_err(failure)
 }
 
-/// Bind a server-signed current-context list to the MLS leaf's complete identity chain and this
-/// device's existing pin/cache. The proof's signature cannot establish a user's UMK or SSK pin.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Each argument is part of the authenticated MLS leaf context."
-)]
-pub(super) fn validate_interaction_leaf(
-    c: &rusqlite::Connection,
-    group_id: &[u8; 16],
-    epoch: u64,
-    tree_hash: [u8; 32],
-    leaf_index: u32,
-    credential: &CredentialIdentity,
-    dsk_pub: [u8; 32],
-    snapshot: &crate::bot::interaction_snapshot::SnapshotList,
-) -> Result<Result<(), &'static str>, StorageError> {
-    if snapshot.user.as_bytes() != credential.user_id.as_bytes()
-        || snapshot.umk != credential.umk_pub
-        || snapshot.ssk != credential.ssk_pub
-    {
-        return Ok(Err(E_CREDENTIAL));
-    }
-    let leaf = LeafEvidence {
-        group_id: *group_id,
-        epoch,
-        tree_hash,
-        leaf_index,
-        credential: credential.clone(),
-        dsk_pub,
-    };
-    leaf_verdict(c, &leaf)
-}
-
 /// The one judgement of an authenticated leaf against its user's pin and cached signed list.
 /// The outer error is storage; the inner one the verdict code. Rule 2 (the pinned UMK) is
 /// decided before rule 3 (the newest signed list), as `protocol/03-identity.md` orders them:
@@ -1032,7 +1233,7 @@ fn audit_member(
     previous: Option<&[LeafFingerprint]>,
 ) -> Result<(), StorageError> {
     let fingerprint = (member.index.u32(), member.signature_key.as_slice().to_vec());
-    let (user, device, code) = match extract_leaf(group_id, group, [0; 32], member) {
+    let (user, device, code, credential) = match extract_leaf(group_id, group, [0; 32], member) {
         Ok(leaf) => {
             let user = *leaf.credential.user_id.as_bytes();
             let device = *leaf.credential.device_id.as_bytes();
@@ -1051,12 +1252,13 @@ fn audit_member(
                         &device,
                         (fingerprint.0, &fingerprint.1),
                         Ok(()),
+                        Some(&leaf.credential),
                     )? {
                         bump_generation(c)?;
                     }
                     return Ok(());
                 }
-                Err(code) => (user, device, code),
+                Err(code) => (user, device, code, Some(leaf.credential)),
             }
         }
         Err(_) => {
@@ -1072,7 +1274,7 @@ fn audit_member(
             let digest = hash.finalize();
             let mut opaque_device = [0u8; 16];
             opaque_device.copy_from_slice(&digest[..16]);
-            ([0; 16], opaque_device, E_CREDENTIAL)
+            ([0; 16], opaque_device, E_CREDENTIAL, None)
         }
     };
     if code == E_DEVICE_LIST_STALE {
@@ -1085,6 +1287,7 @@ fn audit_member(
         &device,
         (fingerprint.0, &fingerprint.1),
         Err(code),
+        credential.as_ref(),
     )? {
         bump_generation(c)?;
     }
@@ -1440,6 +1643,43 @@ impl ClientCore {
         extract_leaf(group_id, group, tree_hash, member)
     }
 
+    /// Bot v2 Task 16: a Bot judges one current leaf again against its user's cached list and pin
+    /// (the transition audit's verdict, `audit_sender`), recording what it was judged under. A
+    /// pushed list (`ingest_device_list`) leaves the judging of already-judged leaves to the
+    /// caller; `revalidate_pending` calls this first, so a revoked device's leaf is quarantined
+    /// and a newly listed one released before its held rows are released. A person's core
+    /// re-judges every leaf of the user in its leaf ingest instead, and calls nothing here.
+    pub(super) fn rejudge_pushed_leaf(
+        &mut self,
+        group_id: &[u8; 16],
+        leaf_index: u32,
+    ) -> Result<(), ClientError> {
+        let own = self.own()?;
+        if own.kind != crate::identity::Kind::Bot.as_u8() {
+            return Ok(());
+        }
+        self.retry_reload(group_id, |this| {
+            let group = this
+                .take_group(group_id)?
+                .ok_or_else(|| failure(E_CORE_NOT_FOUND))?;
+            let result = this.write(|_, u| {
+                u.with_conn(|c| {
+                    audit_sender(
+                        c,
+                        &group,
+                        group_id,
+                        &own.user_id,
+                        &own.device_id,
+                        leaf_index,
+                    )
+                })
+                .map_err(ClientError::from)
+            });
+            this.keep_group(*group_id, group);
+            result
+        })
+    }
+
     pub(super) fn current_leaf_pair(
         &self,
         group_id: &[u8; 16],
@@ -1453,7 +1693,20 @@ impl ClientCore {
     }
 
     /// Current tree leaves that need a signed-list refresh, without exporting credentials or keys.
+    ///
+    /// Reasons: `unknown` (the user has no cached list), `changed` (a key change is pending, or,
+    /// for a Bot, the user's list or pinned key changed since the leaf was last judged) and, for a
+    /// person only, `ready-refresh` (a current leaf). A person's cache changes only when it reads
+    /// a list, so it re-reads current leaves on ready. A Bot's cache changes only by a pushed list
+    /// (op 24, Bot v2 Task 16): a leaf judged under the user's current list and pin
+    /// (`app_leaf_checked`, written by `apply_verdict`) needs nothing and is omitted, and the
+    /// Bot's own leaf is never listed. So the Bot's work per push is that user's leaves only.
     pub fn pending_leaves(&self) -> Result<Vec<u8>, ClientError> {
+        let own = self.own().ok();
+        let pushed = own
+            .as_ref()
+            .is_some_and(|o| o.kind == crate::identity::Kind::Bot.as_u8());
+        let own_leaf = own.map(|o| (o.user_id, o.device_id, o.dsk_pub));
         let mut rows = Vec::new();
         self.each_active_group_or(
             &mut |id, group| {
@@ -1469,8 +1722,11 @@ impl ClientCore {
                     let Ok(leaf) = extract_leaf(&id, group, tree_hash, member) else {
                         continue;
                     };
+                    if pushed && is_own(&own_leaf, &leaf) {
+                        continue;
+                    }
                     let user: [u8; 16] = *leaf.credential.user_id.as_bytes();
-                    let (cached, changed): (u64, bool) = self.read(|c| {
+                    let (cached, changed, current): (u64, bool, bool) = self.read(|c| {
                         let version: Option<i64> = c
                             .query_row(
                                 "SELECT version FROM app_device_lists WHERE user_id=?1",
@@ -1479,21 +1735,21 @@ impl ClientCore {
                             )
                             .optional()?;
                         let changed = read_pin(c, &user)?.is_some_and(|pin| pin.changed.is_some());
-                        Ok((version.unwrap_or(0).max(0) as u64, changed))
+                        let current = pushed && !changed && leaf_checked_current(c, &leaf)?;
+                        Ok((version.unwrap_or(0).max(0) as u64, changed, current))
                     })?;
-                    rows.push((
-                        id,
-                        leaf.leaf_index,
-                        user,
-                        cached,
-                        if changed {
-                            "changed"
-                        } else if cached == 0 {
-                            "unknown"
-                        } else {
-                            "ready-refresh"
-                        },
-                    ));
+                    let reason = if changed {
+                        "changed"
+                    } else if cached == 0 {
+                        "unknown"
+                    } else if current {
+                        continue;
+                    } else if pushed {
+                        "changed"
+                    } else {
+                        "ready-refresh"
+                    };
+                    rows.push((id, leaf.leaf_index, user, cached, reason));
                 }
                 Ok(())
             },
@@ -1526,6 +1782,220 @@ impl ClientCore {
         // An unknown group is refused before parsing the untrusted history.
         let first = self.current_leaf(group_id, leaf_index)?;
         self.ingest_leaf(first, requested_user, history_body, head_list, now, true)
+    }
+
+    /// Bot v2 (task 8): ingests a device-list push (`bot::device_list_push::DeviceListPush`) for
+    /// `user` at `now`. The push carries the user's UMK, the UMK's certificate over the SSK and
+    /// a contiguous history; every list is checked under that SSK by `check_chain`, and the pin
+    /// is written by the same `pin_after_list`/`write_pin` the leaf path uses, in the one shared
+    /// pin table.
+    ///
+    /// - **Extend.** The cached list is under the pushed UMK: the SSK must be the cached one, and
+    ///   the rows newer than the cache must chain from it. Rows at or below the cached version
+    ///   are skipped, and a push whose head is not newer changes nothing. A newer head that does
+    ///   not chain from the cache (a gap, or a broken link) leaves the cache as it was and is
+    ///   `Behind`: the caller must refuse the user until a history reaching `head` arrives.
+    /// - **First push.** No cached list under this UMK: the history must chain from version 1.
+    ///   With no pin, or under the pinned UMK, the UMK is pinned (trust on first use, unverified,
+    ///   as the app pins on first sight) and the list is cached.
+    /// - **Another key.** The history chains from version 1 under a UMK other than the pinned
+    ///   one: it becomes the pin's pending change (`changed_umk`), the cached list stays, and the
+    ///   user is `Held` until the change is verified.
+    ///
+    /// The own account's key never changes by a push (`E_UMK_CHANGED`). Leaves already judged
+    /// under the previous list are re-judged by the caller.
+    pub fn ingest_device_list(
+        &mut self,
+        user: &[u8; 16],
+        body: &[u8],
+        now: u64,
+    ) -> Result<PushedList, ClientError> {
+        if user == &[0; 16] {
+            return Err(failure(super::error::E_CORE_INPUT));
+        }
+        let now = i64::try_from(now).map_err(|_| failure(super::error::E_CORE_INPUT))?;
+        let push = DeviceListPush::decode(body).map_err(|e| match e {
+            crate::bot::CodecError::Limit => failure(E_CORE_LIMIT),
+            _ => failure(E_DEVICE_LIST_STALE),
+        })?;
+        let (umk, ssk) = (push.umk_pub, push.ssk_pub);
+        CredentialIdentity::verify_ssk_cert(&umk, &ssk, &push.sig_umk_ssk)
+            .map_err(|_| failure(E_CREDENTIAL))?;
+        let lists = lists_from_rows(
+            push.history
+                .iter()
+                .map(|r| (r.version, r.blob.as_slice(), &r.ssk_signature, &r.prev_hash)),
+        )?;
+        // Rows must be in strictly increasing version order; anything else is not a history.
+        if lists
+            .windows(2)
+            .any(|w| w[0].unsigned.version >= w[1].unsigned.version)
+        {
+            return Err(failure(E_DEVICE_LIST_STALE));
+        }
+        let head_version = lists.last().expect("a push has rows").unsigned.version;
+        if self
+            .read(own_user_key)?
+            .is_some_and(|(own, own_umk)| own == *user && own_umk != umk)
+        {
+            return Err(failure(E_UMK_CHANGED));
+        }
+        let (prior, cached): (Option<Pin>, Option<CachedList>) = self.read(|c| {
+            let cached = c
+                .query_row(
+                    "SELECT version,list,umk_pub,ssk_pub FROM app_device_lists WHERE user_id=?1",
+                    [user.as_slice()],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()?;
+            Ok((read_pin(c, user)?, cached))
+        })?;
+        let cached_version = cached
+            .as_ref()
+            .map_or(0, |(v, ..)| u64::try_from(*v).unwrap_or(0));
+        // The pin vouches for the pushed key only when it is that key with no change pending.
+        let outcome = |pin: Option<Pin>, changed: bool, version: u64| {
+            if pin.is_some_and(|p| p.umk == umk && p.changed.is_none()) {
+                PushedList::Current { changed, version }
+            } else {
+                PushedList::Held { changed, version }
+            }
+        };
+
+        if let Some((version, blob, _, cached_ssk)) = cached.as_ref().filter(|row| row.2 == umk) {
+            if *cached_ssk != ssk {
+                return Err(failure(E_CREDENTIAL));
+            }
+            let anchor = DeviceList::decode(blob)
+                .ok()
+                .filter(|l| {
+                    !cached_version_invalid(*version)
+                        && !anchor_version_differs(*version, l)
+                        && l.unsigned.user_id.as_bytes() == user
+                        && l.verify(&ssk).is_ok()
+                })
+                .ok_or_else(|| failure(E_CREDENTIAL))?;
+            if head_version <= cached_version {
+                return Ok(outcome(prior, false, cached_version));
+            }
+            // Only a row the user's cached SSK signed and naming the user may mark the user
+            // behind. A forged or unsigned claim of a newer list is ignored and changes nothing,
+            // so it cannot set a mark that no real history could ever reach. A signed head is
+            // real however far ahead it sits: the mark holds (fail closed) until consecutive
+            // pushes of history reach it.
+            let signed_head = lists
+                .iter()
+                .filter(|l| {
+                    l.unsigned.version > cached_version
+                        && l.unsigned.user_id.as_bytes() == user
+                        && l.verify(&ssk).is_ok()
+                })
+                .map(|l| l.unsigned.version)
+                .max();
+            let behind = match signed_head {
+                Some(head) => PushedList::Behind {
+                    version: cached_version,
+                    head,
+                },
+                None => outcome(prior, false, cached_version),
+            };
+            let newer: Vec<&DeviceList> = lists
+                .iter()
+                .filter(|l| l.unsigned.version > cached_version)
+                .collect();
+            if newer.first().map(|l| l.unsigned.version) != Some(cached_version + 1) {
+                return Ok(behind);
+            }
+            let Ok(Some(head)) = check_chain(user, &ssk, newer, Some(&anchor)) else {
+                return Ok(behind);
+            };
+            let next = pin_after_list(prior, &umk, now, true);
+            let (version, list, anchor_blob) = (head.unsigned.version, head.encode(), blob);
+            let written = self.write(|_, u| {
+                u.with_conn(|c| {
+                    // Compare-and-set on the anchor that was checked.
+                    let n = c.execute(
+                        "UPDATE app_device_lists SET version=?1,list=?2 \
+                         WHERE user_id=?3 AND version=?4 AND list=?5 AND umk_pub=?6 AND ssk_pub=?7",
+                        params![
+                            i64::try_from(version).unwrap_or(i64::MAX),
+                            list,
+                            user.as_slice(),
+                            i64::try_from(cached_version).unwrap_or(i64::MAX),
+                            anchor_blob,
+                            umk.as_slice(),
+                            ssk.as_slice()
+                        ],
+                    )?;
+                    if n == 1 {
+                        repin(c, user, prior, next)?;
+                        super::bot_command::clear_reached_behind(c, user)?;
+                    }
+                    Ok(n == 1)
+                })
+                .map_err(ClientError::from)
+            })?;
+            if !written {
+                return Err(failure(E_DEVICE_LIST_STALE));
+            }
+            return Ok(outcome(next.or(prior), true, version));
+        }
+
+        // First push, a list re-established under the pinned key, or another key: the whole
+        // history from version 1.
+        let head = check_chain(user, &ssk, lists.iter(), None)?.expect("a push has rows");
+        let newer = cached.is_none() || head.unsigned.version > cached_version;
+        let Some(next) = pin_after_list(prior, &umk, now, newer) else {
+            return Ok(outcome(prior, false, cached_version));
+        };
+        // Only the pinned key's own list is cached; another key is a pending change only.
+        let cache = next.umk == umk && newer;
+        let (version, list) = (head.unsigned.version, head.encode());
+        self.write(|_, u| {
+            u.with_conn(|c| {
+                let current: Option<i64> = c
+                    .query_row(
+                        "SELECT version FROM app_device_lists WHERE user_id=?1",
+                        [user.as_slice()],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if current.map_or(0, |v| u64::try_from(v).unwrap_or(0)) != cached_version {
+                    return Err(StorageError::Codec("device list changed during ingest".into()));
+                }
+                repin(c, user, prior, Some(next))?;
+                if cache {
+                    c.execute(
+                        "INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub,credential) \
+                         VALUES(?1,?2,?3,?4,?5,NULL) ON CONFLICT(user_id) DO UPDATE SET \
+                         version=excluded.version,list=excluded.list,umk_pub=excluded.umk_pub,\
+                         ssk_pub=excluded.ssk_pub,credential=excluded.credential",
+                        params![
+                            user.as_slice(),
+                            i64::try_from(version).unwrap_or(i64::MAX),
+                            list,
+                            umk.as_slice(),
+                            ssk.as_slice()
+                        ],
+                    )?;
+                    super::bot_command::clear_reached_behind(c, user)?;
+                }
+                Ok(())
+            })
+            .map_err(ClientError::from)
+        })?;
+        let changed = cache || prior != Some(next);
+        Ok(outcome(
+            Some(next),
+            changed,
+            if cache { version } else { cached_version },
+        ))
+    }
+
+    /// The cached signed device list of `user` while it vouches for the user (`trusted_list`),
+    /// else `None`. Local only: Bot command verification never fetches a list.
+    pub fn trusted_device_list(&self, user: &[u8; 16]) -> Result<Option<DeviceList>, ClientError> {
+        Ok(self.read(|c| trusted_list(c, user))?.ok())
     }
 
     /// Return the trusted version from which a caller may fetch actor history. This is only a
@@ -1686,17 +2156,11 @@ impl ClientCore {
         if served.is_empty() {
             return Err(failure(E_DEVICE_LIST_STALE));
         }
-        let mut history = Vec::new();
-        for row in served {
-            let list = bounded_list(&row.blob)?;
-            if list.unsigned.version != row.version
-                || list.sig_ssk != row.ssk_signature
-                || list.unsigned.prev_hash != row.prev_hash
-            {
-                return Err(failure(E_DEVICE_LIST_STALE));
-            }
-            history.push(list);
-        }
+        let history = lists_from_rows(
+            served
+                .iter()
+                .map(|r| (r.version, r.blob.as_slice(), &r.ssk_signature, &r.prev_hash)),
+        )?;
         let head = bounded_list(head_list)?;
         let cached: Option<CachedList> = self.read(|c| {
             c.query_row(
@@ -1794,13 +2258,15 @@ impl ClientCore {
                 };
                 write_pin(c, requested_user, &pin)?;
                 c.execute("INSERT INTO app_device_lists(user_id,version,list,umk_pub,ssk_pub,credential) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id) DO UPDATE SET version=excluded.version,list=excluded.list,umk_pub=excluded.umk_pub,ssk_pub=excluded.ssk_pub,credential=excluded.credential",params![validated.user_id.as_slice(),validated.version as i64,head_list,validated.umk_pub.as_slice(),validated.ssk_pub.as_slice(),validated.credential])?;
+                // Re-review M-A (task 20b): a leaf ingest that reaches a Bot's marked head clears the mark.
+                super::bot_command::clear_reached_behind(c, requested_user)?;
                 // First sight pins without changing anything displayed; a key change or its end does.
                 let mut touched = prior.is_some() && prior != Some(pin);
                 let mut quarantined = 0u64;
                 for leaf in user_leaves.iter().filter(|leaf| !is_own(&own, leaf)) {
                     let verdict = leaf_verdict(c, leaf)?;
                     let device = leaf.credential.device_id.as_bytes();
-                    touched |= apply_verdict(c, &leaf.group_id, requested_user, device, (leaf.leaf_index, &leaf.dsk_pub), verdict)?;
+                    touched |= apply_verdict(c, &leaf.group_id, requested_user, device, (leaf.leaf_index, &leaf.dsk_pub), verdict, Some(&leaf.credential))?;
                     quarantined += u64::from(verdict.is_err_and(|code| code != E_DEVICE_LIST_STALE));
                 }
                 // Only a list under the pinned key is the user's own word on its devices; a list
@@ -1957,7 +2423,7 @@ impl ClientCore {
                 for leaf in leaves.iter().filter(|leaf| !is_own(&own, leaf)) {
                     let verdict = leaf_verdict(c, leaf)?;
                     let device = leaf.credential.device_id.as_bytes();
-                    apply_verdict(c, &leaf.group_id, user_id, device, (leaf.leaf_index, &leaf.dsk_pub), verdict)?;
+                    apply_verdict(c, &leaf.group_id, user_id, device, (leaf.leaf_index, &leaf.dsk_pub), verdict, Some(&leaf.credential))?;
                 }
                 bump_generation(c)
             })
@@ -2038,26 +2504,7 @@ mod tests {
     };
     use crate::ids::{DeviceId, UserId};
 
-    fn interaction_snapshot(
-        leaf: &LeafEvidence,
-        list: &DeviceList,
-    ) -> crate::bot::interaction_snapshot::SnapshotList {
-        use crate::ids::MsgId;
-        let blob = list.encode();
-        crate::bot::interaction_snapshot::SnapshotList {
-            user: MsgId::from_bytes(*leaf.credential.user_id.as_bytes()),
-            umk: leaf.credential.umk_pub,
-            ssk: leaf.credential.ssk_pub,
-            binding_signature: leaf.credential.sig_umk_ssk,
-            version: list.unsigned.version,
-            signature: list.sig_ssk,
-            prev_hash: list.unsigned.prev_hash,
-            hash: crate::identity::sha256(&blob),
-            blob,
-        }
-    }
-
-    fn interaction_trust_db(
+    fn pinned_trust_db(
         leaf: &LeafEvidence,
         list: &DeviceList,
         with_pin: bool,
@@ -2180,67 +2627,6 @@ mod tests {
             dsk_pub,
         };
         (leaf, list)
-    }
-
-    #[test]
-    fn interaction_welcome_rejects_self_consistent_substituted_identity_keys() {
-        let (trusted_leaf, list) = fixture();
-        let trusted_snapshot = interaction_snapshot(&trusted_leaf, &list);
-        let db = interaction_trust_db(&trusted_leaf, &list, true);
-        let mut substituted = trusted_leaf.clone();
-        let substituted_list = substitute_leaf_keys(&mut substituted, 0x90);
-        assert_ne!(substituted.credential.umk_pub, trusted_snapshot.umk);
-        assert_ne!(substituted.credential.ssk_pub, trusted_snapshot.ssk);
-        substituted
-            .credential
-            .verify_signatures(&substituted.dsk_pub)
-            .expect("the substituted key chain is internally valid");
-
-        let mismatched_snapshot = validate_interaction_leaf(
-            &db,
-            &substituted.group_id,
-            substituted.epoch,
-            substituted.tree_hash,
-            substituted.leaf_index,
-            &substituted.credential,
-            substituted.dsk_pub,
-            &trusted_snapshot,
-        )
-        .expect("signed-list key comparison");
-        assert_eq!(mismatched_snapshot, Err(E_CREDENTIAL));
-
-        let self_consistent_snapshot = interaction_snapshot(&substituted, &substituted_list);
-        let unpinned_key = validate_interaction_leaf(
-            &db,
-            &substituted.group_id,
-            substituted.epoch,
-            substituted.tree_hash,
-            substituted.leaf_index,
-            &substituted.credential,
-            substituted.dsk_pub,
-            &self_consistent_snapshot,
-        )
-        .expect("local pin lookup");
-        assert_eq!(unpinned_key, Err(E_CREDENTIAL));
-    }
-
-    #[test]
-    fn interaction_welcome_requires_an_existing_user_pin() {
-        let (leaf, list) = fixture();
-        let snapshot = interaction_snapshot(&leaf, &list);
-        let db = interaction_trust_db(&leaf, &list, false);
-        let result = validate_interaction_leaf(
-            &db,
-            &leaf.group_id,
-            leaf.epoch,
-            leaf.tree_hash,
-            leaf.leaf_index,
-            &leaf.credential,
-            leaf.dsk_pub,
-            &snapshot,
-        )
-        .expect("trust lookup");
-        assert_eq!(result, Err(E_DEVICE_LIST_STALE));
     }
 
     #[test]
@@ -2776,6 +3162,7 @@ mod tests {
             provider,
             signer: None,
             groups: Default::default(),
+            interaction_groups_removed: 0,
         };
         core.trust_verify(
             owner.credential.user_id.as_bytes().try_into().unwrap(),
@@ -3205,21 +3592,21 @@ mod tests {
     #[test]
     fn account_kind_absent_and_never_seen_keeps_the_earlier_rule() {
         let (leaf, list) = fixture();
-        let db = interaction_trust_db(&leaf, &list, true);
+        let db = pinned_trust_db(&leaf, &list, true);
         assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
     }
 
     #[test]
     fn a_valid_attestation_of_the_credentials_kind_passes() {
         let (leaf, list) = fixture();
-        let db = interaction_trust_db(&leaf, &list, true);
+        let db = pinned_trust_db(&leaf, &list, true);
         let user = *leaf.credential.user_id.as_bytes();
         attest(&db, &user, 0, (&INSTANCE, &user, 0), &instance_key());
         assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
         // An existing Bot account keeps working: a Bot-kind leaf attested as a Bot passes.
         let (mut bot, bot_list) = fixture();
         bot_leaf(&mut bot);
-        let db = interaction_trust_db(&bot, &bot_list, true);
+        let db = pinned_trust_db(&bot, &bot_list, true);
         attest(&db, &user, 1, (&INSTANCE, &user, 1), &instance_key());
         assert_eq!(leaf_verdict(&db, &bot).expect("verdict"), Ok(()));
     }
@@ -3228,7 +3615,7 @@ mod tests {
     fn a_human_whose_credential_claims_bot_kind_is_refused() {
         let (mut leaf, list) = fixture();
         bot_leaf(&mut leaf);
-        let db = interaction_trust_db(&leaf, &list, true);
+        let db = pinned_trust_db(&leaf, &list, true);
         let user = *leaf.credential.user_id.as_bytes();
         attest(&db, &user, 0, (&INSTANCE, &user, 0), &instance_key());
         assert_eq!(
@@ -3258,7 +3645,7 @@ mod tests {
             ),
         ];
         for (name, signed, key) in cases {
-            let db = interaction_trust_db(&leaf, &list, true);
+            let db = pinned_trust_db(&leaf, &list, true);
             attest(&db, &user, 0, (&signed.0, &signed.1, signed.2), key);
             assert_eq!(
                 leaf_verdict(&db, &leaf).expect("verdict"),
@@ -3273,7 +3660,7 @@ mod tests {
     #[test]
     fn once_an_attestation_was_seen_a_missing_one_is_refused_even_under_a_verified_key() {
         let (leaf, list) = fixture();
-        let db = interaction_trust_db(&leaf, &list, true); // the fixture's pin is person-verified
+        let db = pinned_trust_db(&leaf, &list, true); // the fixture's pin is person-verified
         schema::meta_put(&db, super::super::account_kind::ACCOUNT_KIND_SEEN, &[1]).expect("seen");
         assert_eq!(
             leaf_verdict(&db, &leaf).expect("verdict"),
@@ -3288,7 +3675,7 @@ mod tests {
         let (mut leaf, _) = fixture();
         let user = *leaf.credential.user_id.as_bytes();
         let list = substitute_leaf_keys(&mut leaf, 0x91);
-        let db = interaction_trust_db(&leaf, &list, true);
+        let db = pinned_trust_db(&leaf, &list, true);
         attest(&db, &user, 0, (&INSTANCE, &user, 0), &instance_key());
         assert_eq!(leaf_verdict(&db, &leaf).expect("verdict"), Ok(()));
         leaf.credential.kind = Kind::Bot;

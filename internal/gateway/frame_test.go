@@ -239,7 +239,7 @@ func TestAnUnknownOpcodeIsAHardError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("payload: %v", err)
 	}
-	frame, err := Encode(Frame{Op: Op(63), Payload: payload}, 1)
+	frame, err := Encode(Frame{Op: Op(100), Payload: payload}, 1)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestAnUnknownOpcodeIsAHardError(t *testing.T) {
 }
 
 // An opcode is a uint8 on this side. 256+6 must not wrap to 6 and be served as a heartbeat: it is
-// an unknown opcode, exactly like 63.
+// an unknown opcode, exactly like 100.
 func TestAnOpcodeThatOverflowsAByteIsAnUnknownOpcode(t *testing.T) {
 	payload, err := cborx.Marshal([]any{uint64(1), uint64(2)})
 	if err != nil {

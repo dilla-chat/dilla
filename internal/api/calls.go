@@ -401,12 +401,12 @@ func (h *Calls) WithCounters(c CallCounters) *Calls {
 
 func (h *Calls) Register(mux *server.Mux) {
 	h.registerAFK(mux)
-	mux.HandleFunc("POST /v1/channels/{id}/calls", h.start)
-	mux.HandleFunc("DELETE /v1/calls/{call_id}", h.end)
-	mux.HandleFunc("POST /v1/calls/{call_id}/share", h.share)
-	mux.HandleFunc("DELETE /v1/calls/{call_id}/share", h.unshare)
-	mux.HandleFunc("POST /v1/calls/{call_id}/rtt", h.rtt)
-	mux.HandleFunc("POST /v1/calls/{call_id}/decline", h.decline)
+	mux.Socket("POST /v1/channels/{id}/calls", http.HandlerFunc(h.start))
+	mux.Socket("DELETE /v1/calls/{call_id}", http.HandlerFunc(h.end))
+	mux.Socket("POST /v1/calls/{call_id}/share", http.HandlerFunc(h.share))
+	mux.Socket("DELETE /v1/calls/{call_id}/share", http.HandlerFunc(h.unshare))
+	mux.Socket("POST /v1/calls/{call_id}/rtt", http.HandlerFunc(h.rtt))
+	mux.Socket("POST /v1/calls/{call_id}/decline", http.HandlerFunc(h.decline))
 	h.registerReads(mux)
 }
 
