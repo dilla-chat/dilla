@@ -251,9 +251,13 @@ export class BotCatalogStore {
       this.notify(communityId);
       return;
     }
+    // Once the first pin is written, the entry held then is checked, whichever it is: a catalog read that landed during the
+    // lookup (served before the Bot published, it keeps this push's key) was checked with no pin to check against and
+    // waits for nothing else, so skipping it left the commands greyed `unverified` for the whole connection.
     void this.resolveBot(communityId).then(() => {
-      if (this.entries.get(communityId) !== entry) return;
-      this.verifyEntry(communityId, entry);
+      const held = this.entries.get(communityId);
+      if (held === undefined || held.verified !== null) return;
+      this.verifyEntry(communityId, held);
       this.notify(communityId);
     });
   }

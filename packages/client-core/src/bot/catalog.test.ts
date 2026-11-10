@@ -339,6 +339,30 @@ describe('fix round 1', () => {
     expect(store.get(COMMUNITY)?.commands.map(c => c.name)).toEqual(['poll create']);
   });
 
+  // The CI shape of a Bot that just came up: a read served before the Bot published (no key, ready) answers after the push
+  // that carries the key, while the push's first Bot-user lookup is still in flight. The read keeps the newer push's
+  // catalog and key, checked before any pin existed; the lookup's pin then checks the entry that is held, not only the
+  // push's own, so the commands do not stay greyed "can't check the Bot yet" for the whole connection.
+  it('a read that lands during a push\'s first Bot-user lookup is checked once the pin is written', async () => {
+    let release!: (body: Uint8Array) => void;
+    let found!: (user: Uint8Array) => void;
+    const f = fakeDeps({
+      fetchCatalog: () => new Promise(resolve => { release = resolve; }),
+      botUserId: () => new Promise(resolve => { found = resolve; }),
+    });
+    const store = new BotCatalogStore(f.deps);
+    const reading = store.refresh(COMMUNITY);
+    await Promise.resolve();
+    store.apply({ communityId: fid(0x0e), revision: 4n, commands: [cv(remind)], publication: PUBLICATION });
+    release(catalogBody(3, [remind], null, [0, null]));
+    await reading;
+    expect(store.get(COMMUNITY)?.status.state).toBe('unverified'); // no pin yet: nothing to check the key against
+    found(BOT_USER);
+    await vi.waitFor(() => { expect(store.get(COMMUNITY)?.status.state).toBe('ready'); });
+    expect(store.get(COMMUNITY)).toMatchObject({ revision: 4n, keyId: KEY, botUserId: toHex(BOT_USER) });
+    expect(store.publication(COMMUNITY)).toEqual(PUBLICATION);
+  });
+
   it('pins the Bot user on first sight; another one later is greyed, never switched to (A, M8)', async () => {
     let bot: Uint8Array | null | 'ambiguous' = BOT_USER;
     const f = fakeDeps({ botUserId: () => Promise.resolve(bot) });
