@@ -30,10 +30,7 @@ inherits = "release"
 opt-level = "z"
 strip = true
 
-# opfs-report: sqlite-wasm-vfs 0.2.0 with one patched answer, so the journal of an interrupted write
-# is played back on the next open. Remove when the browser store moves to sqlite-wasm-vfs >= 0.3.0.
 [patch.crates-io]
-sqlite-wasm-vfs = { path = "core/vendor/sqlite-wasm-vfs" }
 # RUSTSEC-2026-0459 (SQLite < 3.54, crafted -wal file): libsqlite3-sys 0.39.1 with only its
 # sqlcipher-src pin moved from =419.0.6 (SQLite 3.53.4) to =420.0.0 (SQLite 3.54.1), so the native
 # SQLCipher store is built on a fixed SQLite (core/vendor/README.md). Remove once

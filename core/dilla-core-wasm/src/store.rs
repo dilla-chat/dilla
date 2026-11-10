@@ -30,7 +30,7 @@ use zeroize::Zeroizing;
 const POOL_VFS: &str = "opfs-sahpool";
 const ENCRYPTED_VFS: &str = "multipleciphers-opfs-sahpool";
 /// Slots include journals; 12 leaves room for one database plus its `-journal` and `-wal`.
-const INITIAL_CAPACITY: u32 = 12;
+const INITIAL_CAPACITY: usize = 12;
 /// Deviation A2-14: the message for a failure of the keyed-pragma batch. Fixed, because the only
 /// detail rusqlite could add is built from the statement text, and that statement contains the KEK.
 const E_STORE_CIPHER: &str = "E_STORE_CIPHER: setting the cipher or key failed";
@@ -79,17 +79,28 @@ impl StoreOpenConfig {
     }
 }
 
-/// NV-7: the variant carrying the `createSyncAccessHandle` DOMException on 0.2.0.
+/// NV-7: the `createSyncAccessHandle` DOMException crosses unchanged, so [`is_sah_contention`] can
+/// read its `name`. On sqlite-wasm-vfs 0.3 it is `OpfsSAHError::Opfs` with the operation
+/// [`SAH_ACQUIRE`] (the pool's `.lock` lease and every slot are acquired that way); every other
+/// failure keeps the 0.2.0 mapping to a fixed-prefix `E_STORE_INSTALL` error.
 fn error_value(e: &OpfsSAHError) -> JsValue {
     match e {
-        OpfsSAHError::CreateSyncAccessHandle(v) => v.clone(),
+        OpfsSAHError::Opfs {
+            operation: SAH_ACQUIRE,
+            value,
+            ..
+        } => value.clone(),
         other => JsValue::from(js_sys::Error::new(&format!("E_STORE_INSTALL: {other}"))),
     }
 }
 
+/// sqlite-wasm-vfs 0.3.0 `SyncAccessFile::acquire` (src/sahpool.rs): the `operation` it reports
+/// when `createSyncAccessHandle()` rejects.
+const SAH_ACQUIRE: &str = "acquire sync access handle";
+
 /// True when the error is OPFS sync-access-handle contention. This is SQLite upstream's own
 /// predicate, including the documented Chromium `name` inconsistency (gap-14 §4). Never match on
-/// the Display string: 0.2.0's omits the DOMException name entirely.
+/// the Display string: it is the pool's wording, not the browser's.
 #[wasm_bindgen]
 pub fn is_sah_contention(err: &JsValue) -> bool {
     let prop = |k: &str| {
@@ -112,8 +123,8 @@ pub struct StoreHandle {
     conn: RefCell<Option<ConnHandle>>,
     db_name: String,
     /// Deviation A2-14. The raw 256-bit device KEK, kept only because `resume()` has to replay
-    /// `PRAGMA key` after `unpause_vfs()`. `Zeroizing` wipes it when the handle drops; without it the
-    /// key would sit in freed wasm linear memory for the life of the page.
+    /// `PRAGMA key` after the pool's own `resume()`. `Zeroizing` wipes it when the handle drops;
+    /// without it the key would sit in freed wasm linear memory for the life of the page.
     kek_hex: Zeroizing<String>,
 }
 
@@ -158,7 +169,7 @@ pub async fn store_open(cfg: StoreOpenConfig) -> Result<StoreHandle, JsValue> {
         .initial_capacity(INITIAL_CAPACITY)
         .build();
     // default_vfs = false: making the pool the default would displace the sqlite3mc-wrapped default
-    // and PRAGMA key would fail (gap-13 §3). The bound on 0.2.0 is `C: OsCallback` alone.
+    // and PRAGMA key would fail (gap-13 §3). The bound on 0.3.0 is `C: OsCallback + Default`.
     let util = install::<WasmOsCallback>(&pool_cfg, false)
         .await
         .map_err(|e| error_value(&e))?;
@@ -291,12 +302,14 @@ impl StoreHandle {
         self.with_conn(|c| c.query_row(sql, [], |r| r.get::<_, i64>(0)))
     }
 
-    /// `get_capacity` — the 0.2.0 spelling (gap-11 §0), not `capacity()`.
+    /// sqlite-wasm-vfs 0.3 `capacity()` (0.2.0 spelled it `get_capacity`). The JS surface stays
+    /// `capacity(): number`; a pool never holds anywhere near `u32::MAX` slots.
     pub fn capacity(&self) -> u32 {
-        self.util.get_capacity()
+        u32::try_from(self.util.capacity()).unwrap_or(u32::MAX)
     }
 
-    /// `reserve_minimum_capacity` — the 0.2.0 spelling, not `ensure_capacity`.
+    /// sqlite-wasm-vfs 0.3 `ensure_capacity` (0.2.0 spelled it `reserve_minimum_capacity`): at
+    /// least `n` slots, never shrinking.
     ///
     /// NV-13: `&self` on an exported `async fn` is what step 1 item 5 confirms. wasm-bindgen
     /// 0.2.128 accepts a borrowed receiver on an exported `async fn` — its codegen selects
@@ -305,7 +318,7 @@ impl StoreHandle {
     /// exercised by the week-1 spike, which only ever pauses on the resign path.
     pub async fn reserve_capacity(&self, n: u32) -> Result<(), JsError> {
         self.util
-            .reserve_minimum_capacity(n)
+            .ensure_capacity(n as usize)
             .await
             .map_err(|e| JsError::new(&format!("E_STORE_CAPACITY: {e}")))
     }
@@ -324,14 +337,14 @@ impl StoreHandle {
         drop(slot.take());
         drop(slot);
         self.util
-            .pause_vfs()
+            .pause()
             .map_err(|e| JsError::new(&format!("E_STORE_PAUSE: {e}")))
     }
 
     /// Deviation A2-4: reacquires the slots, then reopens the connection and replays the pragmas.
     pub async fn resume(&self) -> Result<(), JsError> {
         self.util
-            .unpause_vfs()
+            .resume()
             .await
             .map_err(|e| JsError::new(&format!("E_STORE_RESUME: {e}")))?;
         // `open_encrypted` already redacts the one arm whose statement carries the KEK (A2-14).

@@ -25,6 +25,13 @@ confidence-threshold = 0.9
 crate = "sqlcipher-src"
 allow = ["blessing", "WTFPL"]
 
+# sqlite3mc-src carries the SQLite3 Multiple Ciphers amalgamation the browser store is built from
+# (build-dependency of sqlite-wasm-rs 0.6): SQLite's public-domain dedication as CC0-1.0, and the
+# Unlicense / CC0-1.0 parts of the bundled cipher sources. Scoped to that one crate.
+[[licenses.exceptions]]
+crate = "sqlite3mc-src"
+allow = ["CC0-1.0", "Unlicense"]
+
 [licenses.private]
 ignore = true                      # every dilla crate is publish = false
 
@@ -48,36 +55,11 @@ reason = "testkit uses 0.3 for deterministic fixtures; upstream OpenMLS and rand
 crate = "getrandom"
 reason = "getrandom 0.2 serves testkit's rand_core 0.6 fixtures, while 0.4 serves rand_core 0.10. Collapses with the fixture RNG migration."
 
-# The remaining duplicates are confined to fixture RNGs, the SQLite WASM backend,
-# and proc macros. Keep these exceptions narrow so crypto duplicates fail the check.
-
-[[bans.skip]]
-crate = "hashbrown"
-reason = "rusqlite 0.41.1 pulls 0.17.1 through hashlink 0.12.2, and 0.16.1 through rsqlite-vfs 0.1.1 (the sqlite-wasm-rs path). Collapses when rsqlite-vfs bumps hashbrown."
+# The remaining duplicates are confined to fixture RNGs and proc macros. Keep these exceptions narrow so crypto duplicates fail the check.
 
 [[bans.skip]]
 crate = "syn"
 reason = "2.0.119 is what nearly every proc macro still uses; wasm-bindgen-test-macro 0.3.78 has moved to 3.0.6. Build-time only; collapses as the ecosystem finishes the syn 3 migration."
-
-[[bans.skip]]
-crate = "macroific"
-reason = "indexed_db_futures 0.6.4 pulls macroific 2.0.0 (via indexed_db_futures_macros_internal) and 3.1.0 (via fancy_constructor). Build-time only; collapses when indexed_db_futures unifies its macro stack."
-
-[[bans.skip]]
-crate = "macroific_macro"
-reason = "follows macroific's two majors. Collapses with the macroific entry."
-
-[[bans.skip]]
-crate = "macroific_core"
-reason = "follows macroific's two majors. Collapses with the macroific entry."
-
-[[bans.skip]]
-crate = "macroific_attr_parse"
-reason = "follows macroific's two majors. Collapses with the macroific entry."
-
-[[bans.skip]]
-crate = "sealed"
-reason = "0.6.0 under macroific_core 2.0.0 and 0.7.0 under macroific_core 3.1.0. Collapses with the macroific entry."
 
 [sources]
 unknown-registry = "deny"

@@ -52,10 +52,11 @@ rusqlite = { version = "0.41.1", features = ["bundled-sqlcipher-vendored-openssl
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 # rusqlite's default features include `ffi-sqlite-wasm-rs`; dropping them breaks the wasm FFI
 # backend entirely (gap-12 T1). Keep defaults, and add `sqlite3mc` on sqlite-wasm-rs so feature
-# unification compiles the encrypting amalgamation into rusqlite's single copy.
+# unification compiles the encrypting amalgamation into rusqlite's single copy. 0.6.3 is the first
+# release on SQLite >= 3.54 (RUSTSEC-2026-0459); `wasm-bindgen` provides `WasmOsCallback`.
 rusqlite        = { version = "0.41.1" }
-sqlite-wasm-rs  = { version = "0.5.5", default-features = false, features = ["sqlite3mc"] }
-sqlite-wasm-vfs = "0.2.0"       # NO [features] table on 0.2.0 - do not write features = [...]
+sqlite-wasm-rs  = { version = "0.6.3", default-features = false, features = ["sqlite3mc", "wasm-bindgen"] }
+sqlite-wasm-vfs = { version = "0.3.0", features = ["sahpool"] }
 getrandom_02    = { package = "getrandom", version = "0.2.17", features = ["js"] }
 getrandom_04    = { package = "getrandom", version = "0.4.3",  features = ["wasm_js"] }
 openmls         = { version = "=0.9.0", default-features = false, features = ["js"] }

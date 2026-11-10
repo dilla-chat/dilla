@@ -35,7 +35,7 @@ export const DOC_RULES = [
   { areas: ['web'], patterns: ['docs/design/flows/**'] },
   // internal/dillad/factor_owed_test.go parses the route tables of 02 and 09; check:docs (the docs job) reads the rest.
   { areas: ['go'], patterns: ['protocol/*.md'] },
-  // core/vendor/sqlite-wasm-vfs/src/lib.rs: #![doc = include_str!("../README.md")].
+  // core/**: a crate there may compile any file beside it (include_str!/include_bytes!, `#![doc = include_str!(...)]`).
   { areas: ['core'], patterns: ['core/**'] },
 ];
 export const PATH_RULES = [
