@@ -5,6 +5,7 @@ package botsupervisor
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -744,7 +745,7 @@ var (
 // capabilities, so a keeper started in one cannot narrow its own; such a host cannot run the keeper's tests.
 func userNSCapabilities() string {
 	userNSProbe.Do(func() {
-		cmd := exec.Command("grep", "^CapEff:", "/proc/self/status")
+		cmd := exec.CommandContext(context.Background(), "grep", "^CapEff:", "/proc/self/status")
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Cloneflags:  syscall.CLONE_NEWUSER,
 			UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
