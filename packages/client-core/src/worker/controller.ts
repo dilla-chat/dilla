@@ -1017,6 +1017,8 @@ export class Controller {
   private gateway: Gateway | null = null;
   private sync: SyncEngine | null = null;
   private wasDown = false;
+  /** Start-up's list read waits through the gateway's first connection attempt only: called when it fails (waiting). */
+  private onGatewayDown: (() => void) | null = null;
   private lastPresenceActivityAt = -Infinity;
   private selected: string | null = null;
   /** The pending debounced list read per community (op 54 and the unexpected-Welcome belt), by community hex. */
@@ -2197,7 +2199,7 @@ export class Controller {
       gateway.start();
     }
     // (h) every community's channels and members, then the DMs, so join-all expects every visible group.
-    try { await this.refreshCommunities(); }
+    try { await this.startupCommunities(); }
     catch (e) {
       // Bot v2: the list is a socket read. A gateway the instance refused (its version: reason version, upgrade or
       // instance) carries nothing until a reload, so the account still reaches ready and the shell says why (its version
@@ -2246,6 +2248,26 @@ export class Controller {
     this.calls.startSweep();
     void this.barrier.track(this.resumeManualRemovalEvidence()).catch(() => undefined);
     void this.barrier.track(this.resumeManualWarningEvidence()).catch(() => undefined);
+  }
+
+  /** Start-up's community list (a socket read). It waits for the gateway's first connection attempt, not past it: when
+   *  the gateway is down (an attempt failed and it waits to retry), start-up goes on with the list it has (empty on a
+   *  boot), the shell shows the offline state, and the gateway's ready reads the list and loads every community
+   *  (refreshAfterReady). The abandoned read stays queued and is applied if it lands (listSeq orders it). A refusal or a
+   *  served failure rejects as before. */
+  private async startupCommunities(): Promise<void> {
+    const read = this.refreshCommunities();
+    const down = this.wasDown ? Promise.resolve('down' as const)
+      : new Promise<'down'>((resolve) => { this.onGatewayDown = () => { resolve('down'); }; });
+    try {
+      const first = await Promise.race([read.then(() => 'read' as const), down]);
+      if (first === 'down') {
+        read.catch(() => undefined);
+        if (this.slices.get('communities') === undefined) this.slices.set('communities', []);
+      }
+    } finally {
+      this.onGatewayDown = null;
+    }
   }
 
   /** The engine with the controller's report handlers; enterReady and resume() build it (requirement 23). */
@@ -2338,7 +2360,7 @@ export class Controller {
           // run this ready, this starts nothing (startSweep is memoised per ready).
           if (this.phase === 'ready') this.safely(() => { this.calls.startSweep(); });
           break;
-        case 'waiting': this.wasDown = true; status = 'offline'; break;
+        case 'waiting': this.wasDown = true; status = 'offline'; this.onGatewayDown?.(); break;
         case 'connecting': status = this.wasDown ? 'offline' : 'connecting'; break;
         case 'idle': status = 'offline'; break;
       }

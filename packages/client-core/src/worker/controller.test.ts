@@ -3056,6 +3056,45 @@ describe('Controller in the ready phase', () => {
     expect(w.connection()).toMatchObject({ status: 'offline', reason: 'version' });
   });
 
+  // Bot v2: a gateway that never connects (network down, a proxy dropping the upgrade) left start-up on the splash for
+  // good, because the list read waits for a socket. Its first failed attempt (status waiting) lets start-up reach ready
+  // offline with an empty list; the gateway's ready then reads the list and loads every community (join-all expects it).
+  it('a gateway that never connects at start-up still reaches ready, offline, with an empty list', async () => {
+    const w = world();
+    w.routes.listCommunities.mockImplementationOnce(() => {
+      setTimeout(() => { w.gateway.emit({ type: 'status', status: 'waiting', closeCode: null }); }, 0);
+      return new Promise<never>(() => {});
+    });
+    await toReady(w);
+    expect(w.last<CommunitySummary[]>('communities')).toEqual([]);
+    expect(w.connection()).toMatchObject({ status: 'offline' });
+    expect(w.connection()?.reason).toBeUndefined();
+  });
+
+  it('a gateway that connects after a start-up without it loads the list and every community', async () => {
+    const w = world();
+    w.routes.listCommunities.mockImplementationOnce(() => {
+      setTimeout(() => { w.gateway.emit({ type: 'status', status: 'waiting', closeCode: null }); }, 0);
+      return new Promise<never>(() => {});
+    });
+    await toReady(w);
+    expect(w.routes.listChannels).not.toHaveBeenCalled();
+    w.gateway.emit({ type: 'status', status: 'ready', closeCode: null });
+    w.gateway.emit({ type: 'ready', info: READY_INFO });
+    await vi.waitFor(() => expect(w.last<CommunitySummary[]>('communities')?.map((c) => c.id)).toEqual([toHex(COMMUNITY)]));
+    await vi.waitFor(() => expect(w.routes.listChannels).toHaveBeenCalledWith(COMMUNITY));
+    await vi.waitFor(() => expect(w.sync.setExpected).toHaveBeenLastCalledWith(
+      expect.arrayContaining([expect.objectContaining({ channelId: CHANNEL })])));
+    expect(w.connection()).toMatchObject({ status: 'online' });
+  });
+
+  it('a served community list failure while the gateway is up is still the start-up error', async () => {
+    const w = world();
+    w.routes.listCommunities.mockImplementationOnce(() => Promise.reject(refusal(500, 'E_INTERNAL')));
+    w.call(1, { m: 'start' });
+    await vi.waitFor(() => expect(w.account()).toMatchObject({ phase: 'error', error: { code: 'E_INTERNAL' } }));
+  });
+
   it('a community list failure with no version refusal is still the start-up error', async () => {
     const w = world();
     w.routes.listCommunities.mockImplementationOnce(() => Promise.reject(refusal(0, 'E_NETWORK')));
