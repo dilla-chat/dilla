@@ -731,12 +731,15 @@ func (d *webDriver) waitFor(body string) map[string]any {
 	}
 }
 
-// relabelProxy relays every request to the instance unchanged, except that once armed it sends
-// the next POST /v1/groups/{id}/message with another device's bearer. httputil.ReverseProxy also
-// relays the gateway's WebSocket upgrade, so a driver can live entirely behind it.
+// relabelProxy relays every HTTP request to the instance unchanged and relays the gateway's
+// WebSocket frame by frame. Messaging is socket-only (wire 6), so an upload's uploader of record
+// is the session its socket identified with. Once armed, the proxy drops every socket it relays
+// and the next identify through it carries another device's session token instead: the driver
+// re-sends its lost request on a fresh socket, and that upload arrives under the other session.
 type relabelProxy struct {
 	mu    sync.Mutex
 	token string
+	live  map[*websocket.Conn]struct{}
 	srv   *httptest.Server
 }
 
@@ -747,31 +750,112 @@ func newRelabelProxy(t *testing.T, target string) *relabelProxy {
 		t.Fatal(err)
 	}
 	relay := httputil.NewSingleHostReverseProxy(u)
-	p := &relabelProxy{}
+	upstream := "ws://" + u.Host + "/gateway"
+	p := &relabelProxy{live: map[*websocket.Conn]struct{}{}}
 	p.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/groups/") &&
-			strings.HasSuffix(r.URL.Path, "/message") {
-			p.mu.Lock()
-			token := p.token
-			p.token = ""
-			p.mu.Unlock()
-			if token != "" {
-				r.Header.Set("Authorization", "Bearer "+token)
-			}
+		if r.URL.Path == "/gateway" && strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			p.relaySocket(w, r, upstream)
+			return
 		}
 		relay.ServeHTTP(w, r)
 	}))
 	t.Cleanup(func() {
+		p.dropSockets()
 		p.srv.CloseClientConnections()
 		p.srv.Close()
 	})
 	return p
 }
 
+// relaySocket pairs the driver's socket with one to the instance, carrying the driver's own
+// Authorization header, and copies frames both ways until either side ends.
+func (p *relabelProxy) relaySocket(w http.ResponseWriter, r *http.Request, upstream string) {
+	ctx := r.Context()
+	down, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"dilla.v1"}})
+	if err != nil {
+		return
+	}
+	defer func() { _ = down.CloseNow() }()
+	up, _, err := websocket.Dial(ctx, upstream, &websocket.DialOptions{ //nolint:bodyclose // websocket.Dial documents that the handshake response body never needs closing
+		HTTPHeader:   http.Header{"Authorization": r.Header.Values("Authorization")},
+		Subprotocols: []string{"dilla.v1"},
+	})
+	if err != nil {
+		return
+	}
+	defer func() { _ = up.CloseNow() }()
+	down.SetReadLimit(8 << 20)
+	up.SetReadLimit(8 << 20)
+	p.mu.Lock()
+	p.live[down] = struct{}{}
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		delete(p.live, down)
+		p.mu.Unlock()
+	}()
+	done := make(chan struct{}, 2)
+	copyFrames := func(dst, src *websocket.Conn, rewrite func([]byte) []byte) {
+		defer func() { done <- struct{}{} }()
+		for {
+			typ, b, err := src.Read(ctx)
+			if err != nil {
+				return
+			}
+			if err := dst.Write(ctx, typ, rewrite(b)); err != nil {
+				return
+			}
+		}
+	}
+	go copyFrames(down, up, func(b []byte) []byte { return b })
+	go copyFrames(up, down, p.relabel)
+	<-done
+}
+
+// relabel swaps the session token of an identify (op 1) while the proxy is armed, and disarms it.
+func (p *relabelProxy) relabel(b []byte) []byte {
+	var frame []any
+	if err := cborx.Unmarshal(b, &frame); err != nil || len(frame) != 4 {
+		return b
+	}
+	payload, _ := frame[3].([]any)
+	if op, _ := frame[0].(uint64); op != 1 || len(payload) == 0 {
+		return b
+	}
+	p.mu.Lock()
+	token := p.token
+	p.token = ""
+	p.mu.Unlock()
+	if token == "" {
+		return b
+	}
+	payload[0] = token
+	out, err := cborx.Marshal(frame)
+	if err != nil {
+		return b
+	}
+	return out
+}
+
+func (p *relabelProxy) dropSockets() {
+	p.mu.Lock()
+	live := make([]*websocket.Conn, 0, len(p.live))
+	for c := range p.live {
+		live = append(live, c)
+	}
+	p.mu.Unlock()
+	for _, c := range live {
+		_ = c.CloseNow()
+	}
+}
+
+// arm makes the next identify through the proxy carry token, and drops the sockets already
+// identified so the driver's next request opens a fresh one.
 func (p *relabelProxy) arm(token string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.token = token
+	p.mu.Unlock()
+	p.dropSockets()
 }
 
 func (p *relabelProxy) armed() bool {
@@ -899,7 +983,7 @@ func TestTheWebDriverPeersExchangeMessagesUnderTheProductionACL(t *testing.T) {
 	proxy.arm(token.Token)
 	relabelled := alice.ok("send", map[string]any{"body": "relabelled in flight"})
 	if proxy.armed() {
-		t.Fatal("the proxy never saw alice's upload, so nothing was relabelled")
+		t.Fatal("the proxy never saw alice's identify, so nothing was relabelled")
 	}
 	want := fmt.Sprintf("the MLS sender %s is not the uploader %s", aliceDev, bobDev)
 	deadline = time.Now().Add(driverWait)
