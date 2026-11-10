@@ -252,6 +252,14 @@ func judgeTwoProbes(t *testing.T, e *sealedEntry) (state, since uint64, elapsed 
 		return nil
 	}), clk)
 	monitor.SetLoad(func() health.Load {
+		// The probe's own command can still be queued for a moment after its answer arrives. With only two reports
+		// one growth window apart, that 0 -> 1 would read as a growing queue, so let it drain (bounded: a fault that
+		// leaves commands queued still reports them).
+		for settle := time.Now().Add(time.Second); time.Now().Before(settle); time.Sleep(5 * time.Millisecond) {
+			if depth, _ := e.load.snapshot(time.Now()); depth == 0 {
+				break
+			}
+		}
 		depth, oldest := e.load.snapshot(time.Now())
 		return health.Load{QueueDepth: depth, OldestWait: oldest}
 	})
