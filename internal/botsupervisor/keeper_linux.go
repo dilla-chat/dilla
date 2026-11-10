@@ -568,6 +568,11 @@ func ServeKeeper(cfg KeeperConfig, ctl *os.File, log *slog.Logger) error {
 		_ = ctl.Close()
 		return fmt.Errorf("keeper: %w", err)
 	}
+	// A unit without CAP_KILL (a binary upgraded without the release's dilla.service) still starts the Bot; only its
+	// signals fail. Said once, here, so the stop that then hangs has a reason in the log.
+	if err := keeperKillCheck(cfg.SameUser); err != nil {
+		log.Warn("bot keeper: signals to the Bot will fail", "err", err)
+	}
 	conn, err := net.FileConn(ctl)
 	_ = ctl.Close()
 	if err != nil {

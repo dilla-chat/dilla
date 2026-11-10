@@ -141,10 +141,10 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	// The Bot's keeper starts first, while this process still holds CAP_SETUID and CAP_SETGID (dilla.service's
-	// ambient set), and those leave this process right after, from every set of every thread, before anything below
-	// opens a listener (Bot v2 task 11). From here on only the keeper can start a process as another user, and only
-	// the configured Bot as the configured user.
+	// The Bot's keeper starts first, while this process still holds CAP_SETUID, CAP_SETGID and CAP_KILL
+	// (dilla.service's ambient set), and those leave this process right after, from every set of every thread, before
+	// anything below opens a listener (Bot v2 task 11). From here on only the keeper can start a process as another
+	// user, and only the configured Bot as the configured user; and only the keeper can signal it.
 	keeper, err := startBotKeeper(cfg, *cfgPath)
 	if err != nil {
 		return err
@@ -153,7 +153,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		defer keeper.close()
 	}
 	if err := botsupervisor.DropServingCapabilities(slog.Default(), cfg.Bot.Enabled && cfg.Bot.DevSameUser); err != nil {
-		return fmt.Errorf("serve: drop CAP_SETUID and CAP_SETGID: %w: %w", err, exit.Software)
+		return fmt.Errorf("serve: drop the keeper's capabilities: %w: %w", err, exit.Software)
 	}
 
 	// The data-directory lock (Plan 2 task 13): dilla.serve.lock exclusively,

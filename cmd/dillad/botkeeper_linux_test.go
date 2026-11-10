@@ -21,6 +21,7 @@ import (
 )
 
 const (
+	capKill    = 5
 	capSetgid  = 6
 	capSetuid  = 7
 	capSetpcap = 8
@@ -78,8 +79,8 @@ func capSets(t *testing.T, path string) map[string]uint64 {
 }
 
 // The serving process is started in a user namespace as its root, so it begins with every capability the way dillad
-// begins with the unit's ambient set. Once it serves, no thread of it holds CAP_SETUID, CAP_SETGID or CAP_SETPCAP in
-// any set, while its keeper child still holds CAP_SETUID and CAP_SETGID.
+// begins with the unit's ambient set. Once it serves, no thread of it holds CAP_SETUID, CAP_SETGID, CAP_SETPCAP or
+// CAP_KILL in any set, while its keeper child still holds all four (CAP_KILL to signal a Bot of another user).
 func TestServingDilladHoldsNoSetuidCapability(t *testing.T) {
 	bin := buildStaticDillad(t)
 	cfgPath := bootstrapServeConfig(t)
@@ -172,7 +173,7 @@ func TestServingDilladHoldsNoSetuidCapability(t *testing.T) {
 	for _, task := range tasks {
 		sets := capSets(t, fmt.Sprintf("/proc/%d/task/%s/status", pid, task.Name()))
 		for _, set := range []string{"CapEff", "CapPrm", "CapAmb", "CapBnd", "CapInh"} {
-			for _, bit := range []int{capSetuid, capSetgid, capSetpcap} {
+			for _, bit := range []int{capSetuid, capSetgid, capSetpcap, capKill} {
 				if sets[set]&(1<<bit) != 0 {
 					t.Errorf("thread %s holds capability %d in %s (%016x)", task.Name(), bit, set, sets[set])
 				}
@@ -204,10 +205,10 @@ func TestServingDilladHoldsNoSetuidCapability(t *testing.T) {
 	if keeper == 0 {
 		t.Fatalf("serve started no bot-keeper (children %q)", children)
 	}
-	// The keeper holds exactly CAP_SETUID, CAP_SETGID and CAP_SETPCAP, bounding set included. Root in a namespace
+	// The keeper holds exactly CAP_SETUID, CAP_SETGID, CAP_SETPCAP and CAP_KILL, bounding set included. Root in a namespace
 	// starts with empty ambient and inheritable sets (dilla.service's ambient set is where production's come from),
 	// so those two only must not hold anything else.
-	const keeperMask = 1<<capSetuid | 1<<capSetgid | 1<<capSetpcap
+	const keeperMask = 1<<capSetuid | 1<<capSetgid | 1<<capSetpcap | 1<<capKill
 	sets := capSets(t, fmt.Sprintf("/proc/%d/status", keeper))
 	for _, set := range []string{"CapEff", "CapPrm", "CapBnd"} {
 		if sets[set] != keeperMask {
