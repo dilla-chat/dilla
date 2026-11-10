@@ -1,8 +1,17 @@
 import { defineConfig } from '@playwright/test';
 import voice from './playwright.voice.config.ts';
-import { relative, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join, relative, resolve } from 'node:path';
+import { writeMusicFixtures } from './media/support/fixtures.ts';
 
 process.env.DILLA_ELECTRON_E2E = '1';
+// Bot v2 Task 19: the Bot's fixture stream (a 30 s and a 5 s Ogg Opus file, rendered by ffmpeg) for
+// voice/bot-music.spec.ts, which starts a wall-clock host of its own with the supervised Bot (botRuntime: true) and
+// copies these into the Bot's state directory. The supervised Bot is Linux only, so only Linux renders them (and only
+// the Linux desktop-voice job installs ffmpeg).
+if (process.platform === 'linux') {
+  process.env.DILLA_BOT_MUSIC_FIXTURES = writeMusicFixtures(join(tmpdir(), 'dilla-bot-music-fixtures')).dir;
+}
 export default defineConfig({
  ...voice,
  metadata: { ...voice.metadata, dillaHost: { ...voice.metadata!.dillaHost,
