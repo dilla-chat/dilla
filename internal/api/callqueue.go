@@ -400,9 +400,9 @@ func (h *Calls) endLocked(ctx context.Context, row store.VoiceSessionRow, reason
 }
 
 // teardown is what follows a call's end in the record: its room's slots, repairs and penalties go
-// under the call's lock (a busy lock leaves them to the retry pass, which drops an ended call's), its
-// room is closed, its call group closed (through the delivery service, after the lock), and every
-// device the call events saw in it is announced out. It touches only row's room, so a call reopened
+// under the call's lock (a busy lock leaves them to the retry pass, which drops an ended call's),
+// every device the call events saw in it is announced out, then its room is closed and its call
+// group closed (through the delivery service, after the lock). It touches only row's room, so a call reopened
 // since under the same call id keeps its own state.
 func (h *Calls) teardown(ctx context.Context, row store.VoiceSessionRow, reason string) {
 	h.forgetMembers(row.CallID, row.LivekitRoom)
@@ -412,12 +412,14 @@ func (h *Calls) teardown(ctx context.Context, row store.VoiceSessionRow, reason 
 			unlock()
 		}
 	}
+	// Announced before the room closes (see endCall): the room_finished the close makes forgets
+	// the room's state.
+	if h.events != nil {
+		h.events.ended(ctx, row)
+	}
 	h.closeRoom(ctx, row.LivekitRoom)
 	if row.GroupID != nil {
 		h.closeCallGroup(ctx, *row.GroupID)
-	}
-	if h.events != nil {
-		h.events.ended(ctx, row)
 	}
 	h.log.InfoContext(ctx, "an ended call's room and group are closed", "call_id", row.CallID.String(), "reason", reason)
 }

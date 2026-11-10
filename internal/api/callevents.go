@@ -797,8 +797,10 @@ func (c *CallEvents) Evict(ctx context.Context, groupID id.ID, removed []id.ID) 
 	}
 }
 
-// ended is endCall's last step: every device seen in the room is announced out and the room's
-// state dropped.
+// ended is a call end's announcement (endCall's and a teardown's): every device seen in the room is
+// announced out and the room's state dropped. It runs before the room is closed, as the room_finished
+// the close makes forgets the room's state; it marks the room ended, so a join or track event read
+// live before the end puts nobody back.
 func (c *CallEvents) ended(ctx context.Context, row store.VoiceSessionRow) {
 	c.mu.Lock()
 	c.markEndedLocked(row.LivekitRoom)

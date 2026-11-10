@@ -849,9 +849,10 @@ func (h *Calls) closeRoom(ctx context.Context, room string) {
 // closes the call group — so the next call registers a fresh group and no device of this one stays a
 // leaf of it, instead of a Remove for every leaf that no member could commit (OpenMLS refuses a
 // commit removing its own committer) — then ends the voice session if it is still this call (endRow),
-// drops every sharing slot, repair and F11 penalty of the room under the call's lock, deletes the
-// room (disconnecting everyone still in it) and announces voice_state 0 for every device the call
-// events saw in the room. The group is closed FIRST (CALLS-2): a start that read it open and writes
+// drops every sharing slot, repair and F11 penalty of the room under the call's lock, announces
+// voice_state 0 for every device the call events saw in the room, and deletes the room
+// (disconnecting everyone still in it) — in that order, as the room's close makes the room_finished
+// that forgets the room's state. The group is closed FIRST (CALLS-2): a start that read it open and writes
 // the row after this end reopens it on a group that is closed by then, which the start's own
 // re-read finds and ends; and both gates hold no leaf in a closed group. It is closed before the
 // call's lock is taken: nothing under a call's lock calls the delivery service. An end that finds
@@ -877,10 +878,13 @@ func (h *Calls) endCall(ctx context.Context, callID id.ID, room string, reason s
 	}
 	h.ringer.End(callID)
 	h.dropRoom(ctx, row)
-	h.closeRoom(ctx, room)
+	// Announced before the room closes: the close makes LiveKit send room_finished at once, and its
+	// handling (not live: the record ended the call) forgets the room's state — after which nobody
+	// seen in it would be announced out.
 	if h.events != nil {
 		h.events.ended(ctx, row)
 	}
+	h.closeRoom(ctx, room)
 	h.log.InfoContext(ctx, "call ended", "call_id", callID.String(), "reason", reason)
 	return nil
 }
