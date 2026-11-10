@@ -429,6 +429,9 @@ type stubSFU struct {
 	roomsFail error
 	// sids is the LiveKit room sid of each room the stub holds, set by setSID (none: "").
 	sids map[string]string
+	// onDelete runs after every DeleteRoom is recorded, outside the lock: a test delivers the
+	// room_finished LiveKit sends for a room it closes from there.
+	onDelete func(room string)
 }
 
 // RoomSID is sfu.Server's: the sid of the room the stub holds under that name now.
@@ -506,13 +509,17 @@ func (s *stubSFU) Token(room, identity string, perm *livekit.ParticipantPermissi
 
 func (s *stubSFU) DeleteRoom(_ context.Context, room string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.deleted = append(s.deleted, room)
 	if s.deleteFail == nil {
 		delete(s.rooms, room)
 		delete(s.present, room)
 	}
-	return s.deleteFail
+	err, onDelete := s.deleteFail, s.onDelete
+	s.mu.Unlock()
+	if onDelete != nil {
+		onDelete(room)
+	}
+	return err
 }
 
 func (s *stubSFU) CreateRoom(_ context.Context, room string) error {
