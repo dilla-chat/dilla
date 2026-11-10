@@ -37,6 +37,9 @@ const WIRE_VERSION: u64 = 6;
 const PUMP_WAIT: Duration = Duration::from_millis(50);
 /// How long the upgrade, `hello`, `identify` and `ready` may take together.
 const HANDSHAKE_WAIT: Duration = Duration::from_secs(10);
+/// How long a socket request may wait for its answer: the HTTP agent's global timeout, since the
+/// routes that moved to the socket (a 1,000-join commit among them) kept their HTTP-era cost.
+const REQUEST_WAIT: Duration = Duration::from_secs(60);
 /// Row 4's and row 12's page sizes, the handlers' own defaults.
 const HANDSHAKE_PAGE: usize = 256;
 const MESSAGE_PAGE: usize = 128;
@@ -2521,7 +2524,7 @@ impl HttpDs {
             }
             Err(e) => return Err(transport(e)),
         }
-        let deadline = Instant::now() + HANDSHAKE_WAIT;
+        let deadline = Instant::now() + REQUEST_WAIT;
         loop {
             let Some(ws) = self.ws.as_mut() else {
                 return Ok(Err(
