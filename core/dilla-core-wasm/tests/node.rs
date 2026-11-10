@@ -245,10 +245,10 @@ fn errors_cross_the_boundary_as_values_not_panics() {
 /// only renderer either probe may use: it keeps SQLite's own primary message — the string the spike
 /// asserts on — and withholds every other variant's `Display`, several of which embed text the
 /// caller handed to SQLite. `Error::SqlInputError` is the worst of them (it renders as
-/// `"{msg} in {sql} at offset {offset}"`, i.e. the whole statement — rusqlite-0.40.2/src/error.rs
-/// lines 346-351, produced by `error_with_offset` at lines 502-509); this build cannot construct it,
-/// because `modern_sqlite` is off under the `ffi-sqlite-wasm-rs` backend and the variant is
-/// `#[cfg(feature = "modern_sqlite")]`, so `InvalidParameterName` stands in for the whole class.
+/// `"{msg} in {sql} at offset {offset}"`, i.e. the whole statement — rusqlite-0.41.1/src/error.rs
+/// lines 341-346, produced by `error_with_offset` at lines 493-500). rusqlite 0.41 no longer gates
+/// that variant on `modern_sqlite`, so this build can construct it and the test asserts on it
+/// directly, next to `InvalidParameterName`.
 #[wasm_bindgen_test]
 fn a_redacted_probe_message_never_carries_the_statement() {
     const KEK: &str = "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b";
@@ -266,7 +266,7 @@ fn a_redacted_probe_message_never_carries_the_statement() {
     );
 
     // Any variant whose Display embeds text handed to SQLite is withheld whole.
-    let leaky = rusqlite::Error::InvalidParameterName(statement);
+    let leaky = rusqlite::Error::InvalidParameterName(statement.clone());
     assert!(
         leaky.to_string().contains(KEK),
         "premise of this test: this variant's Display does carry the statement"
@@ -279,6 +279,23 @@ fn a_redacted_probe_message_never_carries_the_statement() {
     assert!(
         !rendered.contains("PRAGMA"),
         "the redacted message leaked the statement: {rendered}"
+    );
+
+    // The variant `execute_batch` really produces for a prepare-time failure with an offset.
+    let input = rusqlite::Error::SqlInputError {
+        error: rusqlite::ffi::Error::new(1),
+        msg: "near \"raw\": syntax error".to_owned(),
+        sql: statement,
+        offset: 40,
+    };
+    assert!(
+        input.to_string().contains(KEK),
+        "premise of this test: SqlInputError's Display does carry the statement"
+    );
+    let rendered = redacted_sqlite_message(&input);
+    assert!(
+        !rendered.contains(KEK) && !rendered.contains("PRAGMA"),
+        "the redacted SqlInputError leaked the statement: {rendered}"
     );
 }
 

@@ -375,10 +375,9 @@ const E_STORE_PROBE_REDACTED: &str =
 /// `"{msg} in {sql} at offset {offset}"` — the whole statement — and `execute_batch` produces it
 /// for a prepare-time failure whose result code maps to `ErrorCode::Unknown` (which is what
 /// SQLITE_ERROR, the code sqlite3mc raises here, does) whenever `sqlite3_error_offset` is
-/// non-negative (rusqlite-0.40.2/src/error.rs:346-351 and :502-509). That variant is
-/// `#[cfg(feature = "modern_sqlite")]` and this crate's feature set leaves it off, so today the
-/// leak is not reachable — exactly as it was not reachable for `E_STORE_CIPHER`. The guard does not
-/// depend on that staying true.
+/// non-negative (rusqlite-0.41.1/src/error.rs:341-346 and :493-500). rusqlite 0.41 dropped the
+/// `modern_sqlite` gate on that variant, so under the `ffi-sqlite-wasm-rs` backend the leak is now
+/// reachable; this guard is what withholds it (tests/node.rs asserts it on a real `SqlInputError`).
 pub fn redacted_sqlite_message(e: &rusqlite::Error) -> String {
     match e {
         rusqlite::Error::SqliteFailure(_, Some(msg)) => msg.clone(),

@@ -45,7 +45,7 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 # this dependency and encryption silently disappears (gap-11 §9 item 2). sqlite-wasm-vfs 0.2.0 has
 # NO [features] table — never write features = ["sahpool"].
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
-rusqlite        = { version = "0.40.2" }
+rusqlite        = { version = "0.41.1" }
 sqlite-wasm-rs  = { version = "0.5.5", default-features = false, features = ["sqlite3mc"] }
 sqlite-wasm-vfs = "0.2.0"
 # Task 3's MLS probe and task 7's facade use the versions dilla-core already resolves.

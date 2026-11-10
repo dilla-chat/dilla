@@ -18,6 +18,13 @@ allow = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "Unicode-3.0",
          "Zlib", "MPL-2.0"]
 confidence-threshold = 0.9
 
+# sqlcipher-src carries the SQLCipher amalgamation the native store is built from (build-dependency
+# of the patched libsqlite3-sys, core/vendor/README.md): SQLite's public-domain blessing and
+# libtomcrypt's WTFPL-style licence. Scoped to that one crate so nothing else may use either.
+[[licenses.exceptions]]
+crate = "sqlcipher-src"
+allow = ["blessing", "WTFPL"]
+
 [licenses.private]
 ignore = true                      # every dilla crate is publish = false
 
@@ -46,7 +53,7 @@ reason = "getrandom 0.2 serves testkit's rand_core 0.6 fixtures, while 0.4 serve
 
 [[bans.skip]]
 crate = "hashbrown"
-reason = "rusqlite 0.40.2 pulls 0.17.1 through hashlink 0.12.2, and 0.16.1 through rsqlite-vfs 0.1.1 (the sqlite-wasm-rs path). Collapses when rsqlite-vfs bumps hashbrown."
+reason = "rusqlite 0.41.1 pulls 0.17.1 through hashlink 0.12.2, and 0.16.1 through rsqlite-vfs 0.1.1 (the sqlite-wasm-rs path). Collapses when rsqlite-vfs bumps hashbrown."
 
 [[bans.skip]]
 crate = "syn"

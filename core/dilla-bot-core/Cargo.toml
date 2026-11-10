@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 dilla-core = { path = "../dilla-core" }
 libc = "0.2"
-rusqlite = { version = "=0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
+rusqlite = { version = "=0.41.1", features = ["bundled-sqlcipher-vendored-openssl"] }
 sha2 = "0.11"
 thiserror = "2.0"
 zeroize = "1"

@@ -47,13 +47,13 @@ thiserror  = "2.0"
 zeroize    = { version = "1", features = ["zeroize_derive"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
+rusqlite = { version = "0.41.1", features = ["bundled-sqlcipher-vendored-openssl"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 # rusqlite's default features include `ffi-sqlite-wasm-rs`; dropping them breaks the wasm FFI
 # backend entirely (gap-12 T1). Keep defaults, and add `sqlite3mc` on sqlite-wasm-rs so feature
 # unification compiles the encrypting amalgamation into rusqlite's single copy.
-rusqlite        = { version = "0.40.2" }
+rusqlite        = { version = "0.41.1" }
 sqlite-wasm-rs  = { version = "0.5.5", default-features = false, features = ["sqlite3mc"] }
 sqlite-wasm-vfs = "0.2.0"       # NO [features] table on 0.2.0 - do not write features = [...]
 getrandom_02    = { package = "getrandom", version = "0.2.17", features = ["js"] }
