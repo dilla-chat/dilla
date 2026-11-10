@@ -156,6 +156,10 @@ func TestSupervisorRestartsWithBackoff(t *testing.T) {
 	}
 	clk.Advance(250 * time.Millisecond)
 	pid = keeper.waitStart(t)
+	// The keeper answers Start before the supervisor records the running child, so wait for the status to catch up.
+	for deadline := time.Now().Add(5 * time.Second); s.Status().PID != pid && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if st := s.Status(); !st.Running || st.PID != pid || !st.Since.Equal(clk.Now()) {
 		t.Fatalf("status of a running child = %+v, want running pid %d since %s", st, pid, clk.Now())
 	}
