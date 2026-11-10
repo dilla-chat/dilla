@@ -2144,6 +2144,18 @@ impl HttpDs {
         loop {
             match Self::read_one(&mut socket)? {
                 (_, Inbound::Ready) => break,
+                // A session the instance no longer holds is refused here, as an HTTP request
+                // with its token met a 401: the scenario sees the same E_UNAUTHENTICATED.
+                (_, Inbound::Frame(Frame::GatewayError { code, detail, .. }))
+                    if code == "E_UNAUTHENTICATED" =>
+                {
+                    return Err(DsError::from_code(
+                        401,
+                        &code,
+                        &detail,
+                        ErrorExtras::default(),
+                    ));
+                }
                 (_, Inbound::Frame(Frame::GatewayError { code, detail, .. })) => {
                     return Err(DsError::Protocol(format!(
                         "identify refused: {code}: {detail}"
@@ -2435,6 +2447,12 @@ impl HttpDs {
     /// Sends one request frame (op 59) on the gateway socket and reads until its response frame
     /// (op 60), keeping every frame that arrives meanwhile as `barrier` does. The routes that moved
     /// to the socket have no HTTP form. The socket is opened when it is not.
+    ///
+    /// A connection the gateway ended before answering (a 4009 after an `advance_clock` outlived
+    /// the heartbeat grace, a 4004 after the device's own list revoked it) is reopened and the
+    /// request sent once more with the same id and idem, as protocol/02 asks of every client: the
+    /// dispatcher's replay record answers a mutation that already ran. A reopen whose identify is
+    /// refused is that refusal (`E_UNAUTHENTICATED`), the answer the request met over HTTP.
     pub(crate) fn socket_call(
         &mut self,
         method: &str,
@@ -2445,7 +2463,7 @@ impl HttpDs {
             self.open_socket()?;
         }
         let id = SOCKET_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // The idem of a mutation: unique per call; a failed call is not retried here.
+        // The idem of a mutation: unique per call, and the same on the one re-send below.
         let mut idem = [0u8; 16];
         idem[..8].copy_from_slice(&id.to_be_bytes());
         let nanos = std::time::SystemTime::now()
@@ -2461,14 +2479,52 @@ impl HttpDs {
                 e.bytes(&idem);
             }
         });
+        match self.socket_attempt(id, &frame, method, route)? {
+            Ok(answer) => Ok(answer),
+            Err(why) => {
+                self.socket_lost(why);
+                self.open_socket()?;
+                self.socket_attempt(id, &frame, method, route)?
+                    .map_err(|why| {
+                        self.socket_lost(why.clone());
+                        DsError::Transport(format!(
+                            "the gateway closed the connection twice before answering \
+                             {method} {route}: {why}"
+                        ))
+                    })
+            }
+        }
+    }
+
+    /// One send of a request frame and the read of its answer. `Ok(Err(why))` is a connection the
+    /// gateway ended before answering; `socket_call` reopens it and sends again.
+    fn socket_attempt(
+        &mut self,
+        id: u64,
+        frame: &[u8],
+        method: &str,
+        route: &str,
+    ) -> Result<Result<(u16, Vec<u8>), String>, DsError> {
         let Some(ws) = self.ws.as_mut() else {
             return Err(DsError::Transport("no gateway connection".into()));
         };
-        ws.send(Message::Binary(frame.into())).map_err(transport)?;
+        match ws.send(Message::Binary(frame.to_vec().into())) {
+            Ok(()) => {}
+            Err(
+                e @ (tungstenite::Error::ConnectionClosed
+                | tungstenite::Error::AlreadyClosed
+                | tungstenite::Error::Protocol(_)
+                | tungstenite::Error::Io(_)),
+            ) => {
+                self.ws = None;
+                return Ok(Err(format!("send error: {e}")));
+            }
+            Err(e) => return Err(transport(e)),
+        }
         let deadline = Instant::now() + HANDSHAKE_WAIT;
         loop {
             let Some(ws) = self.ws.as_mut() else {
-                return Err(DsError::Transport(
+                return Ok(Err(
                     "the gateway closed the connection before answering a request".into(),
                 ));
             };
@@ -2476,7 +2532,7 @@ impl HttpDs {
                 Ok(Message::Binary(bytes)) => {
                     if let Some((answer, status, out)) = decode_response(&bytes) {
                         if answer == id {
-                            return Ok((status, out));
+                            return Ok(Ok((status, out)));
                         }
                         continue;
                     }
@@ -2489,7 +2545,7 @@ impl HttpDs {
                         Inbound::Ring(ring) => self.keep_ring(ring),
                         Inbound::Closing(reason) => {
                             self.ws = None;
-                            return Err(DsError::Transport(reason));
+                            return Ok(Err(format!("closing: {reason}")));
                         }
                         Inbound::Hello { .. }
                         | Inbound::Ready
@@ -2497,11 +2553,9 @@ impl HttpDs {
                         | Inbound::Signal { .. } => {}
                     }
                 }
-                Ok(Message::Close(_)) => {
+                Ok(Message::Close(frame)) => {
                     self.ws = None;
-                    return Err(DsError::Transport(
-                        "the gateway closed the connection".into(),
-                    ));
+                    return Ok(Err(format!("close frame: {frame:?}")));
                 }
                 Ok(_) => {}
                 Err(e) if is_timeout(&e) => {
@@ -2510,6 +2564,15 @@ impl HttpDs {
                             "no response to {method} {route}"
                         )));
                     }
+                }
+                Err(
+                    e @ (tungstenite::Error::ConnectionClosed
+                    | tungstenite::Error::AlreadyClosed
+                    | tungstenite::Error::Protocol(_)
+                    | tungstenite::Error::Io(_)),
+                ) => {
+                    self.ws = None;
+                    return Ok(Err(format!("read error: {e}")));
                 }
                 Err(e) => return Err(transport(e)),
             }
