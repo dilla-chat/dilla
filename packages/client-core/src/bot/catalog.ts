@@ -185,7 +185,8 @@ export class BotCatalogStore {
    *  first, so an older status (offline, read before the Bot came up) never overwrites a newer one. */
   private readSeq = 0;
   private readonly landedSeq = new Map<string, number>();
-  /** The last number handed out before clear(): a read started before it lands nowhere (another account's catalog). */
+  /** The last number handed out before clear(): a read or Bot-user lookup started before it lands nowhere (another
+   *  account's catalog and pin). */
   private clearedAt = 0;
   /** community → the Bot user this device pinned on first sight (hex): a copy of the core store's pin (task 20b), which
    *  survives a reload and is never replaced. */
@@ -358,6 +359,7 @@ export class BotCatalogStore {
     this.landedSeq.clear();
     this.inFlight.clear();
     this.queued.clear();
+    this.resolving.clear();
     for (const id of held) this.notify(id);
   }
 
@@ -366,9 +368,14 @@ export class BotCatalogStore {
   private resolveBot(communityId: string): Promise<void> {
     const running = this.resolving.get(communityId);
     if (running !== undefined) return running;
+    // Numbered like a catalog read: a lookup that started before clear() (sign-out) writes nothing after an await, not the
+    // pin (this copy or the core store's), not an attestation, not a problem or a refusal: they were the account before's.
+    const seq = ++this.readSeq;
+    const cleared = (): boolean => seq <= this.clearedAt;
     const task = (async () => {
       let candidate: BotUserCandidate;
       try { candidate = await this.deps.botUserId(communityId); } catch { return; }
+      if (cleared()) return;
       if (candidate === 'ambiguous') { this.botProblem.set(communityId, 'ambiguous'); return; }
       if (candidate === null) return;
       // The pin is the core store's (task 20b): a first sight is written there, so a reload never re-pins. It is written only
@@ -385,15 +392,20 @@ export class BotCatalogStore {
       let readFailed = false;
       const ingest = async (): Promise<void> => {
         try { await this.deps.ingestBotAttestation(candidate); readFailed = false; }
-        catch (e) { readFailed = true; this.deps.onError?.(codeOf(e)); }
+        catch (e) { readFailed = true; if (!cleared()) this.deps.onError?.(codeOf(e)); }
       };
       let ingested = false;
       if (this.pinOf(communityId) === undefined) { await ingest(); ingested = true; }
+      if (cleared()) return;
       let answer: { state: 0 | 1 | 2; pinned: Uint8Array } | null = null;
       for (;;) {
         try { answer = this.deps.pinBotUser(communityId, candidate); break; }
         catch (e) {
-          if (!ingested && codeOf(e) === 'E_DEVICE_LIST_STALE') { await ingest(); ingested = true; continue; }
+          if (!ingested && codeOf(e) === 'E_DEVICE_LIST_STALE') {
+            await ingest(); ingested = true;
+            if (cleared()) return;
+            continue;
+          }
           if (!readFailed) this.refuse(communityId);
           this.deps.onError?.(codeOf(e));
           return;
@@ -404,7 +416,7 @@ export class BotCatalogStore {
       if (answer.state === 1) { if (this.botProblem.get(communityId) === 'ambiguous') this.botProblem.delete(communityId); return; }
       this.botProblem.set(communityId, 'changed');
       this.deps.onError?.('E_BOT_USER_CHANGED');
-    })().finally(() => { this.resolving.delete(communityId); });
+    })().finally(() => { if (this.resolving.get(communityId) === task) this.resolving.delete(communityId); });
     this.resolving.set(communityId, task);
     return task;
   }

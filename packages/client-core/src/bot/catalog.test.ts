@@ -293,6 +293,37 @@ describe('fix round 1', () => {
     expect(store.get(COMMUNITY)).toBeNull();
   });
 
+  // The same numbering covers the Bot-user lookup a read starts: one still in flight at clear() (sign-out) pins nothing,
+  // neither in this store's copy nor in the core store, so the next account's first sight of its Bot is its own.
+  it('a Bot-user lookup in flight at clear() does not pin its answer', async () => {
+    const before = corePins();
+    const after = corePins();
+    let core = before;
+    const lookups: ((user: Uint8Array) => void)[] = [];
+    let answer: Uint8Array | null = null;
+    const f = fakeDeps({
+      botUserId: () => answer === null ? new Promise<Uint8Array>(resolve => { lookups.push(resolve); }) : Promise.resolve(answer),
+      pinBotUser: (communityId, user) => core.pinBotUser(communityId, user),
+      pinnedBotUser: (communityId) => core.pinnedBotUser(communityId),
+    });
+    const store = new BotCatalogStore(f.deps);
+    const stale = store.refresh(COMMUNITY);
+    await vi.waitFor(() => { expect(lookups).toHaveLength(1); });
+    store.clear();
+    core = after; // the next account's core store
+    lookups[0]?.(BOT_USER);
+    await stale;
+    expect(before.pinBotUser).not.toHaveBeenCalled();
+    expect(after.pinBotUser).not.toHaveBeenCalled();
+    expect(f.deps.ingestBotAttestation).not.toHaveBeenCalled();
+    // The next account's community has another Bot: it is pinned on first sight, not greyed as a changed Bot.
+    const other = fid(0x0c);
+    answer = other;
+    await store.refresh(COMMUNITY);
+    expect(after.pins.get(COMMUNITY)).toEqual(other);
+    expect(store.get(COMMUNITY)).toMatchObject({ botUserId: toHex(other), status: { state: 'ready' } });
+  });
+
   it('a push that lands during a catalog read wins over the older read (M7)', async () => {
     let release!: (body: Uint8Array) => void;
     const f = fakeDeps();
