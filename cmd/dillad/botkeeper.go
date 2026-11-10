@@ -8,6 +8,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"syscall"
 
 	"github.com/dilla-chat/dilla/internal/botsupervisor"
 	"github.com/dilla-chat/dilla/internal/config"
@@ -57,6 +58,31 @@ var errRootServe = errors.New("bot: dillad runs as root, which can read the Bot'
 // geteuid is os.Geteuid; a variable so a test can be root.
 var geteuid = os.Geteuid
 
+// dataDirOwner is the uid that owns dillad's data directory; a variable so a test can choose it.
+var dataDirOwner = func(dir string) (int, bool) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return 0, false
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return int(st.Uid), true
+}
+
+// serviceRunsAsRoot is doctor's judgement of the serving process, not of the operator's shell. An operator runs
+// doctor as root routinely, while the service runs as its own user (deploy/dilla.service), and that user owns the
+// data directory. So root's doctor is red only when the data directory is root's as well, or unreadable to judge;
+// a doctor that is not root cannot be the root serve it is checking for.
+func serviceRunsAsRoot(dataDir string) bool {
+	if geteuid() != 0 {
+		return false
+	}
+	uid, ok := dataDirOwner(dataDir)
+	return !ok || uid == 0
+}
+
 // refuseRootKeeper is that refusal, unless dev_same_user or a binary linked for the root-in-a-namespace test
 // (botsupervisor.UnsafeTestBuild, the dilla_unsafe_test build tag).
 func refuseRootKeeper(b config.Bot) error {
@@ -92,7 +118,7 @@ func doctorBotLeg(cfg *config.Config) ops.Leg {
 		return ops.Leg{Name: name, Status: ops.Green, Detail: "disabled ([bot] enabled = false)"}
 	}
 	var problems []string
-	if !b.DevSameUser && geteuid() == 0 {
+	if !b.DevSameUser && serviceRunsAsRoot(cfg.Instance.DataDir) {
 		problems = append(problems, errRootServe.Error())
 	}
 	if !b.DevSameUser {

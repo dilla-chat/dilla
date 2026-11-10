@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
@@ -60,6 +61,13 @@ func (r *botGatewayRuntime) maintainOne(ctx context.Context, installation id.ID,
 	}
 	done[installation] = true
 	if err := runBackgroundMaintenance(ctx, task.run); err != nil {
+		if errors.Is(err, helper.ErrClosed) {
+			// The native helper is gone (it exited, or was stopped after a call whose outcome is unknown). Bot v2 has
+			// no reconcile interval, so without this nothing would ever start another: v0.1.0-bot2 on an upgraded
+			// instance logged "helper client is closed" every 10 s for good. The pass replaces the unusable client
+			// (retainedNativeClient) with a new helper.
+			r.requestPass(installation)
+		}
 		return &installationMaintenanceError{installation: installation, cause: err}
 	}
 	return nil

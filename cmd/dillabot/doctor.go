@@ -129,7 +129,11 @@ func runDoctorCommand(args []string, stdout, stderr io.Writer) int {
 func doctorConfigFailure(path string, err error) string {
 	switch {
 	case errors.Is(err, errConfigMissing):
-		return "FAIL config: no such file at " + path + " (pass --config=PATH; the installer writes " + defaultConfigPath + ")"
+		if path == defaultConfigPath {
+			// Bot v2: dillad supervises the Bot from [bot] in dilla.toml, and install-bot.sh removes this file.
+			return "FAIL config: no such file at " + path + " (a Bot that dillad supervises has no config of its own: run dillad doctor, and read the Bot's lines in journalctl -u dilla)"
+		}
+		return "FAIL config: no such file at " + path + " (pass --config=PATH)"
 	case errors.Is(err, errConfigUnreadable):
 		return "FAIL config: cannot read " + path + " (check its owner and mode)"
 	case errors.Is(err, errCredentialBad):

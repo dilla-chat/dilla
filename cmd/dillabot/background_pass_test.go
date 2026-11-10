@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
 )
@@ -213,5 +215,28 @@ func TestRemovedInstallationDoesNotRunMaintenance(t *testing.T) {
 	}
 	if _, exists := r.maintenance[installation]; exists {
 		t.Fatal("removed installation retained maintenance")
+	}
+}
+
+// A helper that died after a good pass must be replaced: maintenance meeting a closed helper asks for a pass of that
+// installation, and only that one (v0.1.0-bot2 on CT 144 logged "helper client is closed" every 10 s forever).
+func TestMaintenanceMeetingAClosedHelperAsksForAPassOfThatInstallation(t *testing.T) {
+	r := newBotGatewayRuntime(context.Background(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	dead, healthy := id.New(), id.New()
+	r.SetMaintenance(dead, backgroundMaintenance{run: func(context.Context) error {
+		return fmt.Errorf("reminder tick: %w", helper.ErrClosed)
+	}})
+	r.SetMaintenance(healthy, backgroundMaintenance{run: func(context.Context) error { return errors.New("transient") }})
+	if err := r.maintain(context.Background(), map[id.ID]bool{}); !errors.Is(err, helper.ErrClosed) {
+		t.Fatalf("maintain = %v, want the closed helper reported", err)
+	}
+	select {
+	case <-r.Pass():
+	default:
+		t.Fatal("no pass was requested for the installation whose helper is closed")
+	}
+	targets, _ := r.takePassTargets()
+	if !targets[dead] || targets[healthy] || len(targets) != 1 {
+		t.Fatalf("pass targets = %v, want only the dead helper's installation", targets)
 	}
 }

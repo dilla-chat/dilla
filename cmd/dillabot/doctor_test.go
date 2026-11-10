@@ -462,6 +462,11 @@ func TestDillabotDoctorDistinguishesMissingInvalidAndCredentialFailures(t *testi
 	if !strings.Contains(out, "FAIL config: no such file at "+missing) || strings.Contains(out, "credential") {
 		t.Fatalf("missing config message wrong:\n%s", out)
 	}
+	// Bot v2: install-bot.sh removes the default file, so the default's message must send the operator to dillad,
+	// not back to a file that no longer exists.
+	if got := doctorConfigFailure(defaultConfigPath, errConfigMissing); !strings.Contains(got, "dillad doctor") || strings.Contains(got, "installer writes") {
+		t.Fatalf("default missing config message: %s", got)
+	}
 
 	invalid := filepath.Join(dir, "invalid.toml")
 	if err := os.WriteFile(invalid, []byte("not = [valid"), 0o600); err != nil {

@@ -232,6 +232,26 @@ func (t *linuxExchange) request(ctx context.Context, requestID id.ID, operation 
 	return response, nil
 }
 
+// exit is how the helper process ended, as os/exec words it ("exit status 101", "signal: killed"), or "running".
+// It names no path, argument or helper output, so it is safe to log.
+func (t *linuxExchange) exit() string {
+	select {
+	case <-t.done:
+	default:
+		return "running"
+	}
+	t.waitMu.Lock()
+	defer t.waitMu.Unlock()
+	if t.wait == nil {
+		return "exit status 0"
+	}
+	var exitErr *exec.ExitError
+	if errors.As(t.wait, &exitErr) {
+		return exitErr.String()
+	}
+	return "unknown"
+}
+
 func (t *linuxExchange) stop(timeout time.Duration) error {
 	var result error
 	t.once.Do(func() {

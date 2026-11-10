@@ -539,11 +539,11 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 				logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "state_key")
 				continue
 			}
-			nativeClient, err = native.Start(ctx, helper.Options{Executable: cfg.HelperExecutable, StateDir: filepath.Join(cfg.StateDir, installation.ID.String())}, native.Binding{Instance: cfg.InstanceID, Community: installation.CommunityID, Installation: installation.ID}, key)
+			nativeClient, err = native.Start(ctx, helper.Options{Executable: cfg.HelperExecutable, StateDir: filepath.Join(cfg.StateDir, installation.ID.String()), Logger: logger.With("installation_id", installation.ID.String())}, native.Binding{Instance: cfg.InstanceID, Community: installation.CommunityID, Installation: installation.ID}, key)
 			clear(key)
 			if err != nil {
 				_ = musicRegistry.Disable(installation.ID)
-				logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "helper_start")
+				logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "helper_start", "error_class", helper.Class(err))
 				continue
 			}
 		}
