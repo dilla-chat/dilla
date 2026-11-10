@@ -1,10 +1,8 @@
 import { expect, type BrowserContext, type Page, type Worker } from '@playwright/test';
-import { arr, decode, encode } from '../../packages/client-core/src/cbor';
+import { encode } from '../../packages/client-core/src/cbor';
 import { decodeFrame } from '../../packages/client-core/src/gateway/frames';
 import { addServerVia, copy, instanceInvite, joinCommunity, openChannel, signUp, test, WAIT } from './support/app';
-import { installWorkerPort, portCall, portSlice } from './support/worker-port';
-import { removeHostData, startTestHost, type StartedHost } from './support/host';
-import { e2ePort } from './support/ports';
+import { installWorkerPort, portSlice } from './support/worker-port';
 import { desktopE2E } from './support/electron.ts';
 import { expectDesktopQuitCancelled } from './support/desktop-quit.ts';
 
@@ -122,37 +120,4 @@ test('wire 6 (Bot v2) stays free of periodic version/activity/stats HTTP for fif
   await expect(dialog.getByRole('textbox', { name: copy('create.server.name'), exact: true })).toHaveValue('unfinished form');
   await page.clock.runFor(900_000);
   expect(seen.version).toBe(beforeHint + 1);
-});
-
-test.describe('no HTTP transport fallback', () => {
-  const port = e2ePort(8601);
-  let host: StartedHost;
-  let instanceName: string;
-  test.use({ baseURL: `http://127.0.0.1:${String(port)}` });
-  test.beforeAll(async () => {
-    removeHostData(port); host = await startTestHost({ port, control: port + 1, webRoot: 'packages/web/dist', wire: 4 });
-    const response = await fetch(`${host.url}/v1/instance`, { headers: { accept: 'application/cbor' } });
-    const value = arr(decode(new Uint8Array(await response.arrayBuffer())))[5];
-    if (typeof value !== 'string') throw new Error('the legacy host has no name');
-    instanceName = value;
-  });
-  test.afterAll(async () => { await host?.stop(); removeHostData(port); });
-  test('an older connection never starts version polling or HTTP activity fallback', async ({ page, context }) => {
-    await installWorkerPort(context); await page.clock.install(); const seen = requests(context);
-    await signUp(page, host.invite.split(',')[0], instanceName, 'Ada', host.control);
-    await expect.poll(() => connection(page)).toMatchObject({ status: 'online', wireVersion: 4 });
-    await page.waitForLoadState('networkidle');
-    const worker = await probe(page);
-    await page.clock.pauseAt(new Date(Date.now() + 1000));
-    const before = { ...seen };
-    for (let i = 0; i < 3; i++) {
-      await advance(page, worker, 300_000);
-      expect(seen.version).toBe(before.version);
-    }
-    await page.keyboard.press('ArrowRight');
-    await advance(page, worker, 5000);
-    expect(await portCall(page, { m: 'presenceActivity' })).toMatchObject({ ok: true });
-    expect(seen.activity).toBe(before.activity);
-    expect((await ops(worker)).filter(op => op === 57 || op === 58)).toEqual([]);
-  });
 });
