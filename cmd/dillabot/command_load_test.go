@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -350,19 +351,28 @@ func TestCommandCostIsFlatAt200Members600Devices(t *testing.T) {
 	if allocLarge > 1.1*allocSmall {
 		t.Fatalf("allocations per command: %.0f at 200 members, %.0f at 20 (ratio %.2f > 1.1)", allocLarge, allocSmall, allocLarge/allocSmall)
 	}
-	cpuOf := func(members int) time.Duration {
-		best := time.Duration(1<<63 - 1)
-		for range 3 {
-			lw := newLoadWorld(t, members, true)
-			start := cpuTime()
-			for range loadCommands {
-				lw.handleNext(ctx)
-			}
-			best = min(best, cpuTime()-start)
+	// CPU is process-wide (rusage), so it also charges the collector for whatever heap is live. Each round builds both
+	// worlds before measuring either, so both runs share one heap, collects before each run, and alternates which goes
+	// first; the best of five rounds per size discards a noisy neighbour on a shared runner.
+	run := func(lw *loadWorld) time.Duration {
+		runtime.GC()
+		start := cpuTime()
+		for range loadCommands {
+			lw.handleNext(ctx)
 		}
-		return best
+		return cpuTime() - start
 	}
-	cpuSmall, cpuLarge := cpuOf(20), cpuOf(200)
+	cpuSmall, cpuLarge := time.Duration(1<<63-1), time.Duration(1<<63-1)
+	for round := range 5 {
+		s, l := newLoadWorld(t, 20, true), newLoadWorld(t, 200, true)
+		if round%2 == 0 {
+			cpuSmall = min(cpuSmall, run(s))
+			cpuLarge = min(cpuLarge, run(l))
+		} else {
+			cpuLarge = min(cpuLarge, run(l))
+			cpuSmall = min(cpuSmall, run(s))
+		}
+	}
 	if float64(cpuLarge) > 1.2*float64(cpuSmall) {
 		t.Fatalf("CPU per 200 commands: %v at 200 members, %v at 20 (ratio %.2f > 1.2)", cpuLarge, cpuSmall, float64(cpuLarge)/float64(cpuSmall))
 	}
