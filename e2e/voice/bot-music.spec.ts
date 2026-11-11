@@ -428,12 +428,20 @@ test('a new device uses /play within its first session', async ({ peerBrowser })
   test.setTimeout(600_000);
   const seats = await seatBoth(peerBrowser, ROOMS.device);
   const listener = seats.ada.person.page;
+  const firstDevice = seats.bea.person;
   await quiet(listener);
   // A fresh device of Bea, enrolled here: it signs in, joins the room and plays, with no registration step between.
   if (bea === undefined) throw new Error('no Bea');
   const device = await peerBrowser.open('bea-new-device');
   await signIn(device.page, bea, instance);
+  // Voice takeover (v0.1.0-bot2.2, internal/api/voicetakeover.go): the new device's join removes Bea's first device from
+  // the room. LiveKit may log its data channels' abort there (SFU_CUT_LINE); that context alone may.
+  peerBrowser.guard.expectRemoval(firstDevice.context);
   await seatInVoice(device.page, ROOMS.device);
+  // The first device leaves the call and says why, calmly (pending reason 3).
+  await expect(firstDevice.page.locator('.dw-voice-dock, .d-call-bar')).toHaveCount(0, { timeout: WAIT });
+  await expect(firstDevice.page.getByText(copy('afk.takenOver')).first()).toBeVisible({ timeout: WAIT });
+  await expect(firstDevice.page.getByText(copy('voice.removed'))).toHaveCount(0);
   const elapsed = await timedPlay(device.page, listener, MUSIC_FIXTURES.long);
   console.info(`G3 new-device first /play: ${String(elapsed)} ms`);
   expect(elapsed, 'a new device is heard within the cold budget').toBeLessThanOrEqual(2000);

@@ -15,7 +15,7 @@ import { writeFixtures } from '../../media/support/fixtures.ts';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { markSignalLifecycle } from './signal-lifecycle.ts';
-import { signalCloseGuard } from './signal-close-guard.ts';
+import { SFU_CUT_LINE, signalCloseGuard } from './signal-close-guard.ts';
 
 /** One wait for one state (Global Constraints: at least 30 s locally, 90 s in CI). voice.ts re-exports it. */
 export const WAIT = process.env.CI === 'true' ? 90_000 : 30_000;
@@ -55,6 +55,10 @@ export interface Guard {
   /** Only for an intentional security-triggered leave: the callback performs the trigger and asserts blocked state,
    *  absent media/dock and removal from the MLS group and room. A new connection revokes the expectation. */
   expectSecurityLeave(context: BrowserContext, assertLeave: () => Promise<void>): Promise<void>;
+  /** Only for a device the instance is expected to remove (RemoveParticipants, e.g. a voice takeover by a newer device of
+   *  the same user): from now on LiveKit's data-channel abort lines (SFU_CUT_LINE) are let through for this context, and
+   *  nothing else. */
+  expectRemoval(context: BrowserContext): void;
 }
 
 /** The page-side recorders (one function, serialised into an init script: it may close over nothing). */
@@ -291,6 +295,7 @@ function newGuard(projectName: string): Guard & { attach(context: BrowserContext
   const pageErrors: string[] = [];
   const workers: Worker[] = [];
   const signalGuards = new WeakMap<BrowserContext, ReturnType<typeof signalCloseGuard>>();
+  const removals = new WeakSet<BrowserContext>();
   // A worker's own securitypolicyviolation listener is installed by an evaluate that runs after the worker has started
   // (Playwright has no init script for workers), so a violation in its first tick (wasm instantiation, an early fetch)
   // can be missed by it (task-10 review M8). The worker's console is watched from the moment Playwright reports the
@@ -320,6 +325,7 @@ function newGuard(projectName: string): Guard & { attach(context: BrowserContext
       if (!signal) throw new Error('Cannot leave an unguarded voice context');
       signal.beginLeave();
     },
+    expectRemoval(context) { removals.add(context); },
     async expectSecurityLeave(context, assertLeave) {
       const signal = signalGuards.get(context);
       if (!signal) throw new Error('Cannot expect a security leave in an unguarded voice context');
@@ -340,9 +346,10 @@ function newGuard(projectName: string): Guard & { attach(context: BrowserContext
       });
       context.on('console', (m) => {
         const expectedSignalClose = signal.observe(m.text());
+        const expectedCut = removals.has(context) && SFU_CUT_LINE.test(m.text());
         const resourceLine = projectName === 'chromium-voice' && BY_DESIGN_RESOURCE_LINE.test(m.text());
         const firefoxFavicon = projectName.startsWith('firefox') && FIREFOX_FAVICON_LINE.test(m.text());
-        if (m.type() === 'error' && !expectedSignalClose && !resourceLine && !firefoxFavicon && !firefoxUnloadLine(projectName, m.text(), m.location().url)) consoleErrors.push(m.text());
+        if (m.type() === 'error' && !expectedSignalClose && !expectedCut && !resourceLine && !firefoxFavicon && !firefoxUnloadLine(projectName, m.text(), m.location().url)) consoleErrors.push(m.text());
       });
       context.on('weberror', (e) => { pageErrors.push(String(e.error())); });
       context.on('page', watchPage);

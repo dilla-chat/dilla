@@ -37,3 +37,8 @@ export function observeSignalConsole(
     if (message.type() === 'error' && !expected) unexpectedError(message.text());
   });
 }
+
+/** What LiveKit's client logs when the SFU removes this participant while its data channels are open
+ *  (RemoveParticipants: an AFK move's cut, a voice takeover): it lands so, at random, when the SCTP abort beats the
+ *  signal Leave. The library's, not the app's; let through only where a removal is expected. */
+export const SFU_CUT_LINE = /^(DataChannel error on (lossy|reliable): User-Initiated Abort, reason= (\{|JSHandle@object)|publisher data channel '(LOSSY|RELIABLE|DATA_TRACK_LOSSY)' closed unexpectedly (\{|JSHandle@object))/;

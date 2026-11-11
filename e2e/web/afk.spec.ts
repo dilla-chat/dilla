@@ -43,7 +43,7 @@ import { desktopApplication, desktopE2E, launchDesktopContext, suspendDesktopCon
 import { FIREFOX_MEDIA_PREFS, chromiumMediaArgs, writeFixtures } from '../media/support/fixtures';
 import { closeSettings, connected, dock, micLive, noiseOff, openVoiceSettings, phaseOf, sendsAudio, stage, voiceRow, watchAudio } from '../voice/support/voice';
 import { markSignalLifecycle, signalLifecycleDiagnostics } from '../voice/support/signal-lifecycle.ts';
-import { observeSignalConsole, signalCloseGuard } from '../voice/support/signal-close-guard.ts';
+import { observeSignalConsole, signalCloseGuard, SFU_CUT_LINE as CUT_LINE } from '../voice/support/signal-close-guard.ts';
 import { arr, decode, encode, type CborInput, type CborValue } from '../../packages/client-core/src/cbor/index';
 import { socketRequestOnce, watchSocketRequests, type SocketRequestSeen } from './support/socket-requests';
 import { e2ePort } from './support/ports';
@@ -83,9 +83,6 @@ test.describe.configure({ mode: 'serial', timeout: TEST_TIMEOUT });
 test.use({ baseURL: ORIGIN });
 
 const fixtures = writeFixtures(join(tmpdir(), 'dilla-media-fixtures'));
-/** What LiveKit's client logs when the SFU removes this participant while its data channels are open: the move's cut (R4,
- *  RemoveParticipants) lands so, at random, a few times in three runs. The library's, not the app's; nothing else is let through. */
-const CUT_LINE = /^(DataChannel error on (lossy|reliable): User-Initiated Abort, reason= (\{|JSHandle@object)|publisher data channel '(LOSSY|RELIABLE|DATA_TRACK_LOSSY)' closed unexpectedly (\{|JSHandle@object))/;
 const RESTART_LINE = /ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_EMPTY_RESPONSE|WebSocket connection to .* failed|NetworkError|Firefox can.t establish a connection/;
 
 function started(): StartedHost {
@@ -661,6 +658,7 @@ test('5. Björn goes back to general with his own mute state and leaves the rost
   for (const p of [a, b]) await expect(awayPeople(p.page, RENAMED)).toHaveCount(0, { timeout: WAIT });
 });
 
+// NOTE: since bot2.2 the phone's join below is a voice takeover that cuts the desktop; no CI lane runs this (browser web config) and desktop skips it, so do not revive it without expecting that.
 test('6. a phone in general is never cut, its desktop twin cut beside it is not listed away, and the phone going AFK cuts the twin calmly', async ({ playwright, browserName, headless, channel }, testInfo) => {
   test.skip(desktopE2E(), 'Mobile UI is outside the desktop release; AFK exemption and another active device remain covered by internal/api/afk_pending_test.go and internal/api/afk_away_test.go.');
   const a = person(ada, OWNER);
