@@ -337,6 +337,9 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
 	var opValue music.Operation
+	// replayed is an enqueue whose request already committed its items (found before the resolve): it has no
+	// tracks of its own to append.
+	replayed := false
 	if op == protocol.OpMusicEnqueue {
 		reason = "invalid_args"
 		if len(req.Args) != 1 {
@@ -354,14 +357,19 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		}
 		reason = "already_enqueued"
 		if answer, applied := enqueuedEarlier(snapshot, musicItemID(itemKey, 0), play); applied {
-			// Answered before the resolve and the room warm: a replay adds nothing and starts nothing.
 			itemID = musicItemID(itemKey, 0)
-			return answer, nil
+			if !replayNeedsStart(snapshot.State, play) {
+				// Answered before the resolve and the room warm: a replay adds nothing and starts nothing.
+				return answer, nil
+			}
+			// A replayed /play whose player is paused completes the original /play's post-enqueue step (the
+			// resume below) without resolving or appending again.
+			replayed = true
 		}
 		var tracks []music.Track
 		var resolveErr error
 		reason = "provider_unavailable"
-		if h.Resolver == nil {
+		if h.Resolver == nil && !replayed {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
 		if play && h.OnPlayOpened != nil {
@@ -375,25 +383,27 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 				}()
 			}
 		}
-		tracks, resolveErr = h.Resolver.Resolve(ctx, input)
-		reason, diagnostic = "resolve_failed", resolveErr
-		if resolveErr != nil || len(tracks) == 0 || len(tracks) > youtube.MaxPlaylistItems {
-			return InteractionResult{Status: interactionStatusUnavailable}, nil
-		}
-		reason = "provider_mismatch"
-		for i := range tracks {
-			if tracks[i].Provider != music.ProviderYouTube {
+		if !replayed {
+			tracks, resolveErr = h.Resolver.Resolve(ctx, input)
+			reason, diagnostic = "resolve_failed", resolveErr
+			if resolveErr != nil || len(tracks) == 0 || len(tracks) > youtube.MaxPlaylistItems {
 				return InteractionResult{Status: interactionStatusUnavailable}, nil
 			}
-			tracks[i].ID = musicItemID(itemKey, i)
-			tracks[i].RequesterID = actor.User.String()
+			reason = "provider_mismatch"
+			for i := range tracks {
+				if tracks[i].Provider != music.ProviderYouTube {
+					return InteractionResult{Status: interactionStatusUnavailable}, nil
+				}
+				tracks[i].ID = musicItemID(itemKey, i)
+				tracks[i].RequesterID = actor.User.String()
+			}
+			enqueued, itemID = tracks, tracks[0].ID
+			kind := music.OpEnqueue
+			if len(tracks) > 1 {
+				kind = music.OpImportPlaylist
+			}
+			opValue = music.Operation{Kind: kind, Tracks: tracks}
 		}
-		enqueued, itemID = tracks, tracks[0].ID
-		kind := music.OpEnqueue
-		if len(tracks) > 1 {
-			kind = music.OpImportPlaylist
-		}
-		opValue = music.Operation{Kind: kind, Tracks: tracks}
 	} else {
 		var ok bool
 		reason = "invalid_operation"
@@ -412,6 +422,9 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	// Enqueue resolves once, then rebases each bounded CAS attempt onto current state.
 	// Other mutations retain their single revision-checked attempt.
 	for attempt := 0; ; attempt++ {
+		// alreadyApplied is a replayed /play whose items are committed and whose player is paused: this attempt
+		// appends nothing and only runs the /play's resume.
+		alreadyApplied := false
 		if op == protocol.OpMusicEnqueue {
 			reason = "state_read"
 			snapshot, err = h.Store.Load(ctx, channel)
@@ -431,10 +444,18 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 			// A concurrent run of this same request (a replay) may have committed since the last read; the re-apply
 			// keeps the derived ids, so it is seen here rather than queued a second time.
 			reason = "already_enqueued"
-			if answer, applied := enqueuedEarlier(snapshot, musicItemID(itemKey, 0), play); applied {
+			answer, applied := enqueuedEarlier(snapshot, musicItemID(itemKey, 0), play)
+			if applied && !replayNeedsStart(snapshot.State, play) {
 				playStarted = answer.Note != ""
 				return answer, nil
 			}
+			if !applied && replayed {
+				// The item this replay found has left the queue since (played, removed or cleared): it has no tracks to
+				// append, so it ends as a conflict rather than guessing.
+				reason = "replayed_item_gone"
+				return InteractionResult{Status: interactionStatusConflict}, nil
+			}
+			alreadyApplied = applied
 		}
 		opValue.NowMS = h.clock().UnixMilli()
 		base := snapshot.State
@@ -453,7 +474,16 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 			staleSkip = currentID != *opValue.ExpectedCurrentItemID
 		}
 		var next music.State
-		if !directImmediate && !staleSkip {
+		if alreadyApplied {
+			// The enqueue's revision step without its append: the resume below commits as revision+1, as it does after
+			// a fresh append.
+			if snapshot.Revision == math.MaxUint64 {
+				reason = "apply_failed"
+				return InteractionResult{Status: interactionStatusUnavailable}, nil
+			}
+			next = base
+			next.Revision = snapshot.Revision + 1
+		} else if !directImmediate && !staleSkip {
 			reason = "apply_failed"
 			next, err = music.Apply(base, snapshot.Revision, opValue)
 			diagnostic = err
@@ -645,6 +675,12 @@ func enqueuedEarlier(snapshot persistence.Snapshot, first string, play bool) (In
 		}
 	}
 	return InteractionResult{}, false
+}
+
+// replayNeedsStart reports a replayed /play that must still run the original /play's post-enqueue step: the player
+// is paused (the start was lost, or the user paused since), and a fresh /play resumes it after its append.
+func replayNeedsStart(state music.State, play bool) bool {
+	return play && state.Paused
 }
 
 // trackRemovedResult answers a start whose track failed and was removed from the queue and from persistence
