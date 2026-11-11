@@ -65,6 +65,7 @@ export const serverSettings = {
   'serverSettings.bot.restartPending': '{bot} has not picked up the restart yet. It restarts when it next checks in.',
   'serverSettings.bot.enable': 'Enable',
   'serverSettings.bot.menu': '{bot}',
+  'serverSettings.bot.moreActions': 'More actions for {bot}',
   'serverSettings.bot.menu.rename': 'Rename',
   'serverSettings.bot.menu.refresh': 'Refresh status',
   'serverSettings.bot.menu.disable': 'Disable {bot}',

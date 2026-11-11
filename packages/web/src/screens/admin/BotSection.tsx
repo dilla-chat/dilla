@@ -456,7 +456,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
     return () => window.clearInterval(timer);
   }, [restartWanted, restartHandled, client, communityId, setInstallation, announce, botName]);
 
-  // Glenn's row menu (Ruling X): rename, refresh status and disable, which the prototype's card draws no button for.
+  // Glenn's row menu: rename, refresh status and disable. It opens from the row's context menu (Ruling X) and, an approved beta.5 deviation, from a ⋯ button beside Restart.
   const [renaming, setRenaming] = useState(false);
   const glennMenuItems = [
     ...(bot !== undefined && manager ? [{ id: 'rename', label: t('serverSettings.bot.menu.rename') }] : []),
@@ -511,7 +511,7 @@ export function BotSection({ communityId, announce, page = 'bot' }: SectionProps
       {page !== 'bot' && page !== 'moderationLog' && current && currentInstallation?.state !== 3 ? <Button onClick={() => void navigate({ name: 'serverSettings', communityId, section: 'bot', from: null }, true)}>{t('workspace.botSetup')}</Button> : null}
       {page === 'bot' && current ? <>
         <SettingsRow id={`${base}-glenn`} icon="bot" label={botName} tag={t('serverSettings.bot.tag')} hint={cardHint}
-          {...(glennMenuItems.length > 0 ? { menu: { label: t('serverSettings.bot.menu', { bot: botName }), items: glennMenuItems,
+          {...(glennMenuItems.length > 0 ? { menu: { label: t('serverSettings.bot.menu', { bot: botName }), items: glennMenuItems, buttonLabel: t('serverSettings.bot.moreActions', { bot: botName }),
             onSelect: (item: string) => { if (item === 'rename') setRenaming(true); else if (item === 'refresh') refreshStatus(); else if (item === 'disable') disable(); } } } : {})}>
           {enabled ? <Button size="sm" aria-disabled={restarting || !manager || undefined} onClick={restart}>
             {restarting ? t('serverSettings.bot.restarting') : t('serverSettings.bot.restart')}

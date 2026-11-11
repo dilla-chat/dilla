@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { userEvent, within } from 'storybook/test';
 import { useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import { SettingsFrame } from './SettingsFrame.tsx';
 import { SettingsNav } from '../SettingsNav/SettingsNav.tsx';
@@ -224,7 +225,7 @@ function Bot() {
       <p>{t('serverSettings.bot.body', { bot: GLENN, server: SERVER })}</p>
       <SettingsRow id="bot-glenn" icon="bot" label={GLENN} tag={t('serverSettings.bot.tag')}
         hint={t('serverSettings.bot.cardVersion', { presence: t('serverSettings.bot.online'), version: '0.4.2' })}
-        menu={{ label: t('serverSettings.bot.menu', { bot: GLENN }), onSelect: noop, items: [{ id: 'rename', label: t('serverSettings.bot.menu.rename') },
+        menu={{ label: t('serverSettings.bot.menu', { bot: GLENN }), buttonLabel: t('serverSettings.bot.moreActions', { bot: GLENN }), onSelect: noop, items: [{ id: 'rename', label: t('serverSettings.bot.menu.rename') },
           { id: 'refresh', label: t('serverSettings.bot.menu.refresh') }, { id: 'disable', label: t('serverSettings.bot.menu.disable', { bot: GLENN }), danger: true, sep: true }] }}>
         <Button size="sm" onClick={noop}>{t('serverSettings.bot.restart')}</Button>
       </SettingsRow>
@@ -267,6 +268,11 @@ function Music() {
 export const RolesDesktop: Story = { render: () => <Workspace active="server:roles"><Roles /></Workspace> };
 export const InvitesDesktop: Story = { render: () => <Workspace active="server:invites"><Invites /></Workspace> };
 export const BotDesktop: Story = { play: rowsTouch, render: () => <Workspace active="server:bot"><Bot /></Workspace> };
+// Desktop beta.5: the card's ⋯ button beside Restart with its menu open (an approved deviation from the prototype's card).
+export const BotMoreMenuOpen: Story = {
+  play: async ({ canvasElement }) => { await userEvent.click(await within(canvasElement).findByRole('button', { name: t('serverSettings.bot.moreActions', { bot: GLENN }) })); },
+  render: () => <Workspace active="server:bot"><Bot /></Workspace>,
+};
 export const MusicDesktop: Story = { play: rowsTouch, render: () => <Workspace active="server:music"><Music /></Workspace> };
 export const RolesPhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="server:roles"><Roles /></Workspace> };
 export const InvitesPhone: Story = { parameters: { phoneViewport: true }, render: () => <Workspace active="server:invites"><Invites /></Workspace> };

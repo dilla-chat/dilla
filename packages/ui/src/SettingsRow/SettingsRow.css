@@ -34,3 +34,6 @@
    track into the row's padding instead of growing the row or narrowing the text. */
 .d-settings-row__control .d-toggle__switch { margin: -2px -4px; }
 [data-layout="phone"] .d-settings-row__control .d-toggle__switch, [data-phone] .d-settings-row__control .d-toggle__switch { margin-block: -12px; }
+/* Desktop beta.5: the ⋯ button beside Restart is a small button's twin: 32px high, the same edge, radius and 11.5px type. */
+.d-settings-row__control .d-settings-row__more { box-sizing: border-box; min-width: 2rem; min-height: 2rem; padding: 0.25rem 12px; font-size: var(--text-btn); font-weight: var(--weight-btn); color: var(--fg); border-color: var(--control-edge); border-radius: var(--r-md); }
+.d-settings-row__control .d-settings-row__more:hover, .d-settings-row__control .d-settings-row__more[aria-expanded="true"] { background: var(--hover); }

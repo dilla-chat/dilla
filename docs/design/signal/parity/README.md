@@ -249,6 +249,7 @@ Each element gets a presence Noul and a Box on both images, plus optional `state
 ### Desktop beta.5 accepted deviations (Jonas, 2026-11-11)
 
 - **Always show the dock:** the voice dock (call card and compact Now playing) stays visible while the voice channel's own stage is on screen, instead of the prototype's showDock hiding it (§5.6). The connected phase also draws no animated signal bars (§5.4). Parity shots of the voice stage with the dock (standing-voice-*) differ from the prototype by design; the images are not re-shot yet.
+- **Bot card ⋯ button:** a ⋯ button beside Restart on the Bot card (Settings → Bot) opens Rename, Refresh status and Disable, which the prototype's card draws no button for; the row's context menu still opens the same menu (Ruling X). Story `BotMoreMenuOpen`.
 
 ### Task 6 accepted deviations (Jonas, 2026-10-30)
 

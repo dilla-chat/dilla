@@ -1,5 +1,6 @@
 import { render, screen, within } from '@testing-library/react';
-import { beforeAll, describe, it, expect } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { beforeAll, describe, it, expect, vi } from 'vitest';
 import { SettingsRow } from './SettingsRow.tsx';
 import { Segmented } from '../Segmented/Segmented.tsx';
 import { expectNoAxeViolations } from '../test/setup.ts';
@@ -100,5 +101,21 @@ describe('SettingsRow grammar (R17)', () => {
     expect(phone).toMatch(/grid-template-columns: minmax\(0, 1fr\);/);
     expect(base).toMatch(/\[data-phone\] \.d-settings-row/);
     expect(base).not.toContain('@container d-settings');
+  });
+});
+
+describe('SettingsRow menu button', () => {
+  const items = [{ id: 'rename', label: 'Rename' }, { id: 'refresh', label: 'Refresh status' }];
+  it('draws a button after the control only when the menu names one and has items', async () => {
+    const onSelect = vi.fn();
+    const { rerender } = render(<SettingsRow id="a" label="Glenn" menu={{ label: 'Glenn', items, onSelect }}><button type="button">Restart</button></SettingsRow>);
+    expect(screen.queryByRole('button', { name: 'More actions for Glenn' })).toBeNull();
+    rerender(<SettingsRow id="a" label="Glenn" menu={{ label: 'Glenn', items: [], onSelect, buttonLabel: 'More actions for Glenn' }}><button type="button">Restart</button></SettingsRow>);
+    expect(screen.queryByRole('button', { name: 'More actions for Glenn' })).toBeNull();
+    rerender(<SettingsRow id="a" label="Glenn" menu={{ label: 'Glenn', items, onSelect, buttonLabel: 'More actions for Glenn' }}><button type="button">Restart</button></SettingsRow>);
+    const more = screen.getByRole('button', { name: 'More actions for Glenn' });
+    await userEvent.setup().click(more);
+    await userEvent.setup().click(await screen.findByRole('menuitem', { name: 'Refresh status' }));
+    expect(onSelect).toHaveBeenCalledWith('refresh');
   });
 });

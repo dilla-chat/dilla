@@ -699,3 +699,61 @@ describe('the server bot settings', () => {
     });
   });
 });
+
+// Desktop beta.5 Task 3: a ⋯ button beside Restart opens the same menu as the row's context menu (an approved deviation from Ruling X).
+describe('the Bot card ⋯ button', () => {
+  const BOT_ID = 'c3'.repeat(16);
+  const MORE = en['serverSettings.bot.moreActions'].replace('{bot}', en['serverSettings.bot.fallbackName']);
+  /** The installed Bot's member row, which Rename needs (a manager can rename only a Bot whose profile is loaded). */
+  const withMember = (fake: FakeClient) => act(() => fake.publish(`members:${SERVER}`, [{ userId: BOT_ID, username: 'dillabot', display: en['serverSettings.bot.fallbackName'], kind: 1, roleIds: [] }]));
+
+  it('opens Rename, Refresh status and Disable for a manager, anchored to the button and beside Restart', async () => {
+    const { fake, user } = setup({ ...ROW, state: 3, userId: BOT_ID });
+    withMember(fake);
+    const more = await screen.findByRole('button', { name: MORE });
+    expect(more.parentElement?.parentElement).toBe(screen.getByRole('button', { name: en['serverSettings.bot.restart'] }).parentElement);
+    await user.click(more);
+    const menu = await screen.findByRole('menu');
+    expect(more).toHaveAttribute('aria-expanded', 'true');
+    expect(more.parentElement).toContainElement(menu);
+    expect(within(menu).getAllByRole('menuitem').map(item => item.textContent)).toEqual([
+      en['serverSettings.bot.menu.rename'], en['serverSettings.bot.menu.refresh'],
+      en['serverSettings.bot.menu.disable'].replace('{bot}', en['serverSettings.bot.fallbackName'])]);
+  });
+
+  it('offers only Refresh status to a person who cannot manage the community', async () => {
+    const { fake, user } = setup({ ...ROW, state: 3 });
+    act(() => fake.set(`permissions:${SERVER}`, { ...ACCESS, owner: false, manageCommunity: false }));
+    const more = await screen.findByRole('button', { name: MORE });
+    await user.click(more);
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getAllByRole('menuitem').map(item => item.textContent)).toEqual([en['serverSettings.bot.menu.refresh']]);
+  });
+
+  it('is absent when there is nothing to offer', async () => {
+    setup(null);
+    await screen.findByRole('button', { name: en['serverSettings.bot.enable'] });
+    expect(screen.queryByRole('button', { name: MORE })).toBeNull();
+  });
+
+  it('closes on Escape and returns focus to the button', async () => {
+    const { user } = setup({ ...ROW, state: 3 });
+    const more = await screen.findByRole('button', { name: MORE });
+    await user.click(more);
+    await screen.findByRole('menu');
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(more).toHaveFocus();
+  });
+
+  it('runs the chosen item, and the row context menu still works', async () => {
+    const { fake, user } = setup({ ...ROW, state: 3, userId: BOT_ID });
+    withMember(fake);
+    await user.click(await screen.findByRole('button', { name: MORE }));
+    const before = fake.callsOf('getBotInstallation').length;
+    await user.click(await screen.findByRole('menuitem', { name: en['serverSettings.bot.menu.refresh'] }));
+    await waitFor(() => expect(fake.callsOf('getBotInstallation').length).toBeGreaterThan(before));
+    await glennMenu(user, en['serverSettings.bot.menu.rename']);
+    expect(await screen.findByRole('textbox', { name: 'Bot display name' })).toBeInTheDocument();
+  });
+});
