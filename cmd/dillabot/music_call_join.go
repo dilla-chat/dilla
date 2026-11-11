@@ -194,6 +194,9 @@ func (*errMusicCallJoinHeld) Error() string {
 }
 func (*errMusicCallJoinHeld) Retryable() bool { return true }
 
+// Is makes a held join an admission refusal (music.ErrNotAdmitted): the track stays queued, paused.
+func (*errMusicCallJoinHeld) Is(target error) bool { return target == music.ErrNotAdmitted }
+
 // errMusicCallJoinUnjudged refuses a join whose staged group still has a leaf the trust cache could not judge.
 var errMusicCallJoinUnjudged = errors.New("music call-group trust: a leaf is still unjudged")
 
@@ -543,7 +546,7 @@ func decodeMusicExternalJoinResult(body []byte) (native.GroupExternalJoinResult,
 // call), never O(the community), and no device-list read.
 func verifyMusicCallJoinLeaves(ctx context.Context, core musicCallJoinCore, trust musicJoinTrust, group id.ID, participants []client.CallParticipant) error {
 	if trust == nil {
-		return errors.New("music call-group trust unavailable")
+		return errMusicTrustUnavailable
 	}
 	if len(participants) > maxMusicCallJoinLeaves {
 		return errors.New("music call-group trust refresh exceeds limit")

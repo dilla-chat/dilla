@@ -11,6 +11,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/intake"
+	"github.com/dilla-chat/dilla/internal/bot/music"
 	"github.com/dilla-chat/dilla/internal/bot/music/livekit"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/bot/service"
@@ -25,10 +26,18 @@ import (
 const musicBotConnectSpeak = 1<<7 | 1<<8
 
 var (
-	errMusicCatchUpIncomplete    = errors.New("music call group: still behind after the catch-up budget")
-	errMusicInstallationNotReady = errors.New("music: the installation is not ready with music")
-	errMusicBotCannotSpeak       = errors.New("music: the Bot may not connect and speak in the voice channel")
+	errMusicCatchUpIncomplete          = errors.New("music call group: still behind after the catch-up budget")
+	errMusicInstallationNotReady error = &musicNotAdmittedError{"music: the installation is not ready with music"}
+	errMusicBotCannotSpeak       error = &musicNotAdmittedError{"music: the Bot may not connect and speak in the voice channel"}
+	errMusicTrustUnavailable     error = &musicNotAdmittedError{"music call-group trust unavailable"}
 )
+
+// musicNotAdmittedError is an admission refusal: the Bot may not publish in the call right now, which says nothing
+// about the track (v0.1.0-bot2.2 final review I2). It matches music.ErrNotAdmitted, so the track stays queued, paused.
+type musicNotAdmittedError struct{ msg string }
+
+func (e *musicNotAdmittedError) Error() string      { return e.msg }
+func (*musicNotAdmittedError) Is(target error) bool { return target == music.ErrNotAdmitted }
 
 // musicCallSyncer is service.SourceSync as the catch-up uses it.
 type musicCallSyncer interface {
@@ -152,7 +161,7 @@ func (a musicAdmission) admit(ctx context.Context, epoch native.CallMediaEpoch) 
 		return errMusicBotCannotSpeak
 	}
 	if a.trust == nil {
-		return errors.New("music call-group trust unavailable")
+		return errMusicTrustUnavailable
 	}
 	for _, member := range epoch.Roster {
 		if !member.UserID.IsZero() && member.UserID != a.botUser && a.trust.Held(member.UserID) {

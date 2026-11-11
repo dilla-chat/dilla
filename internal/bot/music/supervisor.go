@@ -73,6 +73,10 @@ type Supervisor struct {
 	// most QueueLimit), and the item of the playback now published.
 	restored    map[string]bool
 	playingItem string
+	// onRemoveFailed is told when a failed item's removal could not be saved (final review I1): the queue is stored on
+	// the helper, so a helper that died under the track cannot save its removal, and the owner removes it on the
+	// replacement (RemoveFailedItem).
+	onRemoveFailed func(ctx context.Context, item string, err error)
 }
 
 // TrackRemovedError is an explicit start whose track failed and was removed from the queue and from persistence
@@ -96,8 +100,24 @@ func (e *TrackRemovedError) Unwrap() error { return e.Cause }
 // paused, when there is nobody to play to (ErrNeedsExplicitPlay), when the provider as a whole is unavailable
 // (ErrPlayerUnavailable) or when the connection merely ended or expired (ErrConnectionEnded: a server-ended call,
 // an idle leave, a transport death, the room's lifetime). A user's pause or stop never reaches this check.
+//
+// Final review I2: it is also kept when the Bot was not admitted to publish (ErrNotAdmitted: the installation not
+// ready, a Bot permission change, a held user, trust not available yet) and when a dillad request failed for a
+// passing reason: a retry-safe refusal or cooperative stop (client.IsDeferred), or a 5xx, 409 or 429 answer.
 func trackFailed(err error) bool {
-	return err != nil && !errors.Is(err, ErrNeedsExplicitPlay) && !errors.Is(err, ErrPlayerUnavailable) && !errors.Is(err, ErrConnectionEnded)
+	if err == nil || errors.Is(err, ErrNeedsExplicitPlay) || errors.Is(err, ErrPlayerUnavailable) || errors.Is(err, ErrConnectionEnded) {
+		return false
+	}
+	return !errors.Is(err, ErrNotAdmitted) && !client.IsDeferred(err) && !transientServerError(err)
+}
+
+// transientServerError is a dillad answer that says nothing about the track: a server error, a conflict, a rate limit.
+func transientServerError(err error) bool {
+	var api *client.APIError
+	if !errors.As(err, &api) {
+		return false
+	}
+	return api.Status >= 500 || api.Status == 409 || api.Status == 429
 }
 
 // startFailed reports a start that failed at one of its stages for the track's own reason.
@@ -119,10 +139,42 @@ func (s *Supervisor) removeCurrentLocked(ctx context.Context) error {
 	next.Repeat = originalRepeat
 	revision, err := s.store.Save(ctx, s.channel, s.revision, next)
 	if err != nil {
+		if s.onRemoveFailed != nil && s.state.Current != nil {
+			s.onRemoveFailed(ctx, s.state.Current.ID, err)
+		}
 		return err
 	}
 	s.state, s.revision = next, revision
 	return nil
+}
+
+// WithRemoveFailed reports a failed item whose removal could not be saved (final review I1). report runs with the
+// supervisor's lock held: it must not call back into the supervisor or take a lock held while calling it.
+func WithRemoveFailed(report func(ctx context.Context, item string, err error)) SupervisorOption {
+	return func(s *Supervisor) { s.onRemoveFailed = report }
+}
+
+// RemoveFailedItem removes item, a track that failed under a helper that could not save its removal, when it is still
+// the current track and nothing plays or starts (final review I1). It is removed as a failed start removes it: repeat
+// never queues it again, and the next item becomes current, paused when the queue is paused. removed is false when item
+// is no longer current (nothing is changed then).
+func (s *Supervisor) RemoveFailedItem(ctx context.Context, item string) (removed bool, err error) {
+	if ctx == nil || item == "" {
+		return false, errors.New("invalid failed item removal")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false, ErrSupervisorClosed
+	}
+	if s.state.Current == nil || s.state.Current.ID != item || s.playback != nil || s.starting != nil {
+		return false, nil
+	}
+	if err := s.removeCurrentLocked(ctx); err != nil {
+		return false, err
+	}
+	s.signalLocked()
+	return true, nil
 }
 
 // withoutItem takes item's skip out of skips (its command answers for it).

@@ -103,6 +103,9 @@ type QueueStarter struct {
 	OnStartFailed func(error)
 	// Abandon is a /play that ended without starting: a call its warm prepared is dropped and the idle room left (M3).
 	Abandon func()
+	// OnRemoveFailed is told when a failed track's removal could not be saved (v0.1.0-bot2.2 final review I1); the
+	// music registry removes it again on the replacement helper. It runs under the supervisor's lock. Nil does nothing.
+	OnRemoveFailed func(ctx context.Context, item string, err error)
 }
 
 // AbandonWarm implements music.CallWarmer's abandon.

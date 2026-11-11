@@ -135,6 +135,12 @@ var ErrPlayerUnavailable = errors.New("music: the Bot's player is unavailable")
 // livekit errors match it (livekit imports music, so music cannot name them).
 var ErrConnectionEnded = errors.New("music: the voice connection ended")
 
+// ErrNotAdmitted is a track the Bot was not allowed to publish at that moment, not a track that broke: the installation
+// is not ready with music (including a slow dillad read at admission), the Bot may not connect and speak in the
+// channel, a user in the call is held by membership trust, or that trust is not available yet. The track stays in the
+// queue, paused. The Bot's admission errors match it (cmd/dillabot; music cannot name them).
+var ErrNotAdmitted = errors.New("music: the Bot was not admitted to publish in the call")
+
 // FailureClass returns bounded classes only, never provider messages or URLs.
 func FailureClass(err error) string {
 	if err == nil {

@@ -355,6 +355,16 @@ func TestRemovalRuleOnStartAndEnd(t *testing.T) {
 		{"room lifetime expired", fmt.Errorf("%w: %w", livekit.ErrRoomLifetime, context.DeadlineExceeded), false},
 		{"sandbox unavailable", youtube.ErrSandboxUnavailable, false},
 		{"provider-wide refusal", fmt.Errorf("http_429: %w", music.ErrPlayerUnavailable), false},
+		// Final review I2: admission refusals and transient dillad errors are not the track's failure.
+		{"admission refusal at the start (slow dillad read)", fmt.Errorf("admit: %w", fmt.Errorf("not ready: %w", music.ErrNotAdmitted)), false},
+		{"admission refusal at the end", fmt.Errorf("%w: %w", livekit.ErrCallBehind, music.ErrNotAdmitted), false},
+		{"dillad 500 during call prep", fmt.Errorf("call_token: %w", &client.APIError{Status: 500}), false},
+		{"dillad 503 during call prep", fmt.Errorf("call_group_join: %w", &client.APIError{Status: 503}), false},
+		{"dillad 409 during call prep", fmt.Errorf("call_token: %w", &client.APIError{Status: 409}), false},
+		{"dillad 429 during call prep", fmt.Errorf("call_token: %w", &client.APIError{Status: 429}), false},
+		{"deferred dillad request", fmt.Errorf("call_token: %w", client.ErrNoGateway), false},
+		// P7-3: a catch-up that ran out of time is the track's own failure.
+		{"catch-up deadline", fmt.Errorf("%w: %w", livekit.ErrCallBehind, context.DeadlineExceeded), true},
 	}
 	for _, tc := range cases {
 		t.Run("start/"+tc.name, func(t *testing.T) {

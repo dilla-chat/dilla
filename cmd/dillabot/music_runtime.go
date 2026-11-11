@@ -720,7 +720,7 @@ func newMusicSupervisor(ctx context.Context, channel id.ID, store *persistence.S
 	if ctx == nil || store == nil || starter.OptionsFor == nil {
 		return nil, errors.New("music runtime dependencies unavailable")
 	}
-	options := []music.SupervisorOption{music.WithSkippedTrack(starter.OnSkipped), music.WithPlaybackLog(starter.Logger), music.WithAutomaticPlaybackFailure(func(ctx context.Context, err error) {
+	options := []music.SupervisorOption{music.WithSkippedTrack(starter.OnSkipped), music.WithPlaybackLog(starter.Logger), music.WithRemoveFailed(starter.OnRemoveFailed), music.WithAutomaticPlaybackFailure(func(ctx context.Context, err error) {
 		slog.WarnContext(ctx, "bot automatic music playback failed", "channel_id", channel.String(), "class", music.FailureClass(err), "stderr", youtube.FailureStderr(err))
 	})}
 	if starter.IdleLeaveAfter != nil {
@@ -824,6 +824,11 @@ type musicQueueRegistry struct {
 	defaults   map[id.ID]musicDefaults
 	noticesMu  sync.Mutex
 	notices    map[id.ID]*service.MusicSkipNotices
+	// failedItems is each installation's failed track per channel whose removal could not be saved because the helper
+	// that stores the queue failed (final review I1). It survives the helper's retirement; the next reconcile removes
+	// the track on the replacement. failedMu is a leaf lock (supervisors report under their own lock).
+	failedMu    sync.Mutex
+	failedItems map[id.ID]map[id.ID]string
 }
 
 // musicDefaults is one installation's default volume and idle-leave time, already checked.
@@ -989,6 +994,91 @@ func (r *musicQueueRegistry) KeepAfterPassError(installation id.ID, gone bool, p
 // left to Usable(), which sees a self-aborted helper at once.
 func helperFailed(err error) bool {
 	return errors.Is(err, helper.ErrOutcomeUnknown) || errors.Is(err, helper.ErrClosed) || errors.Is(err, helper.ErrLaunch)
+}
+
+// failedItemRecorder is a supervisor's OnRemoveFailed for installation's channel, whose queue is stored on n: a failed
+// item whose removal could not be saved because the helper failed (helperFailed) or is no longer usable is kept, so the
+// replacement removes it (final review I1). Any other save failure is left to the supervisor, which pauses.
+func (r *musicQueueRegistry) failedItemRecorder(installation, channel id.ID, n musicRuntimeNative) func(context.Context, string, error) {
+	return func(_ context.Context, item string, err error) {
+		if helperFailed(err) || !nativeUsable(n) {
+			r.recordFailedItem(installation, channel, item)
+		}
+	}
+}
+
+// reportingRemoveFailed makes every supervisor starterFor builds for installation report a failed removal it could not
+// save on n (failedItemRecorder).
+func (r *musicQueueRegistry) reportingRemoveFailed(installation id.ID, n musicRuntimeNative, starterFor musicStarterFactory) musicStarterFactory {
+	return func(channel id.ID) (session.QueueStarter, error) {
+		starter, err := starterFor(channel)
+		if err == nil {
+			starter.OnRemoveFailed = r.failedItemRecorder(installation, channel, n)
+		}
+		return starter, err
+	}
+}
+
+// recordFailedItem keeps item as channel's failed track. failedMu is a leaf lock: the supervisor reports under its own.
+func (r *musicQueueRegistry) recordFailedItem(installation, channel id.ID, item string) {
+	r.failedMu.Lock()
+	defer r.failedMu.Unlock()
+	if r.failedItems == nil {
+		r.failedItems = map[id.ID]map[id.ID]string{}
+	}
+	if r.failedItems[installation] == nil {
+		r.failedItems[installation] = map[id.ID]string{}
+	}
+	r.failedItems[installation][channel] = item
+}
+
+// clearFailedItem forgets channel's failed track when it is still item.
+func (r *musicQueueRegistry) clearFailedItem(installation, channel id.ID, item string) {
+	r.failedMu.Lock()
+	defer r.failedMu.Unlock()
+	if r.failedItems[installation][channel] != item {
+		return
+	}
+	delete(r.failedItems[installation], channel)
+	if len(r.failedItems[installation]) == 0 {
+		delete(r.failedItems, installation)
+	}
+}
+
+func (r *musicQueueRegistry) hasFailedItems(installation id.ID) bool {
+	r.failedMu.Lock()
+	defer r.failedMu.Unlock()
+	return len(r.failedItems[installation]) > 0
+}
+
+// removeFailedItems removes each of installation's failed tracks that is still its channel's current track, before
+// anything starts on queues (final review I1): the replacement restored it, paused, and a /play would append after it
+// and resume it. An entry whose track is no longer current is forgotten; one whose removal fails again is kept.
+func (r *musicQueueRegistry) removeFailedItems(ctx context.Context, installation id.ID, queues *musicQueueRuntime) {
+	r.failedMu.Lock()
+	pending := make(map[id.ID]string, len(r.failedItems[installation]))
+	for channel, item := range r.failedItems[installation] {
+		pending[channel] = item
+	}
+	r.failedMu.Unlock()
+	for channel, item := range pending {
+		queues.mu.Lock()
+		supervisor := queues.supervisors[channel]
+		queues.mu.Unlock()
+		if supervisor == nil {
+			r.clearFailedItem(installation, channel, item)
+			continue
+		}
+		removed, err := supervisor.RemoveFailedItem(ctx, item)
+		if err != nil {
+			slog.WarnContext(ctx, "bot music failed track not removed after helper restart", "item_id", item, "error_class", helper.Class(err))
+			continue
+		}
+		r.clearFailedItem(installation, channel, item)
+		if removed {
+			slog.InfoContext(ctx, "bot music failed track removed after helper restart", "item_id", item)
+		}
+	}
 }
 
 func (r *musicQueueRegistry) DisableMusic(installation id.ID) error {
@@ -1238,23 +1328,28 @@ func (r *musicQueueRegistry) ReconcileWithStarterFactory(ctx context.Context, in
 		_ = r.disable(installation, helper.ReasonLifecycleBind)
 		existing = nil
 	}
-	if existing != nil && existing.queues != nil {
-		if err := syncMusicSupervisorsWithStarterFactory(ctx, existing.queues, channels, starterFor); err != nil {
-			_ = r.pauseMusic(installation)
-			return false, err
-		}
-		return false, nil
-	}
 	// Existing interactions own the retained helper; a newly supplied caller-owned
 	// helper must never become the store behind that helper's supervisors.
 	queueNative := nativeClient
 	if existing != nil {
 		queueNative = existing.native
 	}
+	starterFor = r.reportingRemoveFailed(installation, queueNative, starterFor)
+	if existing != nil && existing.queues != nil {
+		if err := syncMusicSupervisorsWithStarterFactory(ctx, existing.queues, channels, starterFor); err != nil {
+			_ = r.pauseMusic(installation)
+			return false, err
+		}
+		r.removeFailedItems(ctx, installation, existing.queues)
+		return false, nil
+	}
 	queues, err := restoreMusicQueuesIfEnabledWithStarterFactory(ctx, community, capabilities, func(context.Context, id.ID) ([]client.Channel, error) { return channels, nil }, queueNative, starterFor)
 	if err != nil || queues == nil {
 		return false, err
 	}
+	// Final review I1: a track that failed under the previous helper, whose removal that helper could not save, is
+	// removed on this one before the queues are registered, so no /play can resume it.
+	r.removeFailedItems(ctx, installation, queues)
 	// The restore can be slow; a helper that died meanwhile is not registered behind the new queues.
 	if !nativeUsable(queueNative) {
 		_ = queues.Close()
@@ -1482,6 +1577,14 @@ func (r *musicQueueRegistry) RetainOnly(installations []id.ID) error {
 		}
 	}
 	r.mu.Unlock()
+	// A removed installation's failed tracks are not removed later: its queues are gone with it.
+	r.failedMu.Lock()
+	for installation := range r.failedItems {
+		if _, ok := active[installation]; !ok {
+			delete(r.failedItems, installation)
+		}
+	}
+	r.failedMu.Unlock()
 	var errs []error
 	for _, installation := range removed {
 		if err := r.Disable(installation, reason); err != nil {

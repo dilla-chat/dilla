@@ -794,7 +794,16 @@ a whole is unavailable (sandbox unavailable, HTTP 429, bot check, provider
 network, and soft refusals such as "This content isn't available, try again
 later"), or when the connection merely ended or expired (server-ended call, idle
 leave, transport death or a room that could not connect, connection lifetime
-expiry). A user's pause or stop never removes a track. A /play whose own track
+expiry). A track is also kept, paused, when the Bot was not admitted to publish
+at that moment (the installation not ready with music, including a slow
+installation read; the Bot without connect and speak in the channel; a user in
+the call held by membership trust, or that trust not available yet) and when a
+dillad request failed for a passing reason (a retry-safe deferral, or a 5xx, 409
+or 429 answer). When the removal cannot be saved because the native helper that
+stores the queue failed, the Bot keeps the failed item in memory and removes it
+on the replacement helper before any queue of that installation can start; an
+item that is no longer current then is forgotten without change. A user's pause
+or stop never removes a track. A /play whose own track
 was removed answers that it could not be played and was removed, instead of a
 notice.
 A start run tries each item at most once and is bounded by skip count, elapsed

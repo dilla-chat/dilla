@@ -67,6 +67,10 @@ type sealedIntakeConfig struct {
 	// uses on every call instead of helper (v0.1.0-bot2.2, F4: after a close the intake kept the pass's stale client,
 	// and every command ended in seal_error until the next pass). Nil uses helper.
 	resolve func() sealedHelper
+	// kick asks for a pass that replaces the installation's dead helper (v0.1.0-bot2.2 final review I3): the runtime's
+	// requestPassAfterHelperGone, on its respawn backoff. A parked command calls it once, on its first miss, so the
+	// replacement can arrive inside the park instead of after the next due tick. Nil asks nothing.
+	kick    func()
 	session sealedSession
 	// handlers is the pass's feature handler map (the same one the interaction dispatcher serves).
 	handlers map[protocol.Operation]service.InteractionHandlerSpec
@@ -152,6 +156,15 @@ func (e *sealedEntry) helperNow() sealedHelper {
 	return h
 }
 
+// registeredGone reports that cfg's installation has no registered helper, or one that is no longer usable.
+func (e *sealedEntry) registeredGone(cfg sealedIntakeConfig) bool {
+	h := cfg.helper
+	if cfg.resolve != nil {
+		h = cfg.resolve()
+	}
+	return h == nil || !helperUsable(h)
+}
+
 // awaitHelper waits, up to helperParkLimit, for a usable helper other than failed (a pass replacing the dead one).
 func (e *sealedEntry) awaitHelper(ctx context.Context, failed sealedHelper, message string, attrs ...any) sealedHelper {
 	if h := e.helperNow(); h != nil && h != failed {
@@ -160,6 +173,11 @@ func (e *sealedEntry) awaitHelper(ctx context.Context, failed sealedHelper, mess
 	cfg, _ := e.current()
 	if cfg.log != nil {
 		cfg.log.InfoContext(ctx, message, attrs...)
+	}
+	// The first miss asks for the replacement at once (final review I3), when the registered helper is gone or no longer
+	// usable. The ask goes through the runtime's respawn backoff, so parked commands never storm it.
+	if cfg.kick != nil && e.registeredGone(cfg) {
+		cfg.kick()
 	}
 	// One budget per command, from when its worker took it: the open's park and the seal's park share it.
 	deadline := commandStartOf(ctx).Add(helperParkLimit)
@@ -626,7 +644,7 @@ func newSealedIntakeConfig(r *botGatewayRuntime, installation, community, botUse
 	handlers map[protocol.Operation]service.InteractionHandlerSpec, utilities *utilityRuntime) sealedIntakeConfig {
 	cfg := sealedIntakeConfig{installation: installation, community: community, botUser: botUser, capabilities: capabilities,
 		helper: h, session: session, handlers: assembleUtilityInteractionHandlers(handlers, utilities),
-		held: installationHeld{r, installation}}
+		held: installationHeld{r, installation}, kick: func() { r.requestPassAfterHelperGone(installation) }}
 	if utilities != nil {
 		reminders := utilities.reminders
 		cfg.reminders = &reminders

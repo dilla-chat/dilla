@@ -121,6 +121,33 @@ func TestSuccessorStopsWhenTheBotLosesSpeak(t *testing.T) {
 	}
 }
 
+// v0.1.0-bot2.2 final review I2: every admission refusal is music.ErrNotAdmitted, so the supervisor keeps the track
+// paused instead of removing it (a Bot permission change, a slow dillad read or a held user is not the track's failure).
+func TestAdmissionRefusalsAreNotAdmitted(t *testing.T) {
+	community, channel, bot, member := id.New(), id.New(), id.New(), id.New()
+	epoch := native.CallMediaEpoch{Roster: []native.CallMediaMember{{Leaf: 1, UserID: bot}, {Leaf: 2, UserID: member}}}
+	allowed := &fakeMusicAuthz{ready: true, allowed: map[id.ID]uint64{bot: musicBotConnectSpeak}}
+	ready := func(context.Context) bool { return true }
+	cases := map[string]musicAdmission{
+		"no readiness":           {community: community, channel: channel, botUser: bot, authz: allowed, trust: &joinTrustFake{held: map[id.ID]bool{}}},
+		"installation not ready": {community: community, channel: channel, botUser: bot, authz: allowed, trust: &joinTrustFake{held: map[id.ID]bool{}}, ready: func(context.Context) bool { return false }},
+		"cannot speak":           {community: community, channel: channel, botUser: bot, authz: &fakeMusicAuthz{ready: true, allowed: map[id.ID]uint64{}}, trust: &joinTrustFake{held: map[id.ID]bool{}}, ready: ready},
+		"trust unavailable":      {community: community, channel: channel, botUser: bot, authz: allowed, ready: ready},
+		"held user":              {community: community, channel: channel, botUser: bot, authz: allowed, trust: &joinTrustFake{held: map[id.ID]bool{member: true}}, ready: ready},
+	}
+	for name, a := range cases {
+		if err := a.admit(t.Context(), epoch); err == nil || !errors.Is(err, music.ErrNotAdmitted) {
+			t.Errorf("%s: admit = %v, want music.ErrNotAdmitted", name, err)
+		}
+	}
+	if err := verifyMusicCallJoinLeaves(t.Context(), nil, nil, id.New(), nil); !errors.Is(err, music.ErrNotAdmitted) {
+		t.Errorf("join without trust = %v, want music.ErrNotAdmitted", err)
+	}
+	if !errors.Is(&errMusicCallJoinHeld{}, music.ErrNotAdmitted) {
+		t.Error("a held join is not music.ErrNotAdmitted")
+	}
+}
+
 func TestRefusedPlayLeavesTheWarmedCall(t *testing.T) {
 	r := newPrepRig()
 	r.prep.warm(t.Context())

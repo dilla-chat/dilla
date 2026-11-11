@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -1110,5 +1111,120 @@ func TestSelfClosingHelperOnPendingWelcome(t *testing.T) {
 	}
 	if c := logs.count("bot command answer not sealed"); c != 0 {
 		t.Fatalf("a command ended in seal_error:\n%s", logs)
+	}
+}
+
+// kickCounter is a sealed intake's kick: it counts the asks and, like the pass it asks for, registers start() as the
+// replacement helper after delay (a fake helper start).
+type kickCounter struct {
+	n     atomic.Int32
+	delay time.Duration
+	start func()
+}
+
+func (k *kickCounter) kick() {
+	if k.n.Add(1) == 1 && k.start != nil {
+		time.AfterFunc(k.delay, k.start)
+	}
+}
+
+func setKick(w *loadWorld, k *kickCounter) {
+	w.entry.mu.Lock()
+	w.entry.cfg.kick = k.kick
+	w.entry.mu.Unlock()
+}
+
+// v0.1.0-bot2.2 final review I3: a parked command asks for the replacement helper at once (the runtime's respawn, on its
+// backoff), instead of waiting for the next due tick (up to 10 s) to find the dead one. It asks once per park, and a
+// replacement that is ready inside the park budget answers the command.
+func TestParkedCommandKicksRespawnOnce(t *testing.T) {
+	t.Run("open_parked_on_a_closed_helper", func(t *testing.T) {
+		shortHelperPark(t, 2*time.Second)
+		w := newLoadWorld(t, 3, true)
+		reg := &registeredHelper{}
+		a, b := w.helper, &loadHelper{requests: w.helper.requests}
+		a.close()
+		reg.set(a)
+		followRegistry(w, reg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		k := &kickCounter{delay: 50 * time.Millisecond, start: func() { reg.set(b) }}
+		setKick(w, k)
+		w.handleNext(t.Context())
+		answer, n := w.lastAnswer()
+		if n != 1 || !answer.Final || answer.Status >= 400 {
+			t.Fatalf("answers %d, last %+v; want the command run on the replacement", n, answer)
+		}
+		if got := k.n.Load(); got != 1 {
+			t.Fatalf("kicks = %d, want 1", got)
+		}
+	})
+	t.Run("answer_parked_after_a_self_close", func(t *testing.T) {
+		shortHelperPark(t, 2*time.Second)
+		w := newLoadWorld(t, 3, true)
+		reg := &registeredHelper{}
+		a, b := w.helper, &loadHelper{requests: w.helper.requests}
+		reg.set(a)
+		followRegistry(w, reg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		a.onOpen = a.close
+		k := &kickCounter{delay: 50 * time.Millisecond, start: func() { reg.set(b) }}
+		setKick(w, k)
+		w.handleNext(t.Context())
+		answer, n := w.lastAnswer()
+		if n != 1 || answer.Status != intake.StatusOffline || string(answer.Body) != intake.CodeOffline || b.sealCount() != 1 {
+			t.Fatalf("answers %d, last %+v, replacement seals %d; want one 503 E_BOT_OFFLINE sealed on the replacement", n, answer, b.sealCount())
+		}
+		if got := k.n.Load(); got != 1 {
+			t.Fatalf("kicks = %d, want 1", got)
+		}
+	})
+	t.Run("no_registered_helper", func(t *testing.T) {
+		shortHelperPark(t, 30*time.Millisecond)
+		w := newLoadWorld(t, 3, true)
+		followRegistry(w, &registeredHelper{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		k := &kickCounter{}
+		setKick(w, k)
+		w.handleNext(t.Context())
+		if got := k.n.Load(); got != 1 {
+			t.Fatalf("kicks = %d, want 1 for the whole park", got)
+		}
+	})
+	t.Run("usable_helper_never_kicks", func(t *testing.T) {
+		w := newLoadWorld(t, 3, true)
+		reg := &registeredHelper{}
+		reg.set(w.helper)
+		followRegistry(w, reg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		k := &kickCounter{}
+		setKick(w, k)
+		w.handleNext(t.Context())
+		if answer, n := w.lastAnswer(); n != 1 || answer.Status >= 400 || k.n.Load() != 0 {
+			t.Fatalf("answers %d, last %+v, kicks %d", n, answer, k.n.Load())
+		}
+	})
+}
+
+// The pass's kick is the runtime's respawn ask, on its backoff: the first park asks at once, the parks after it within
+// the backoff schedule one ask between them, never a storm.
+func TestSealedIntakeKickIsTheRespawnBackoff(t *testing.T) {
+	delays, fire := captureRespawns(t)
+	r := newBotGatewayRuntime(t.Context(), nil, true, quietLogger())
+	defer r.Close()
+	installation := id.New()
+	cfg := newSealedIntakeConfig(r, installation, id.New(), id.New(), 0, &loadHelper{}, nil, nil, nil)
+	if cfg.kick == nil {
+		t.Fatal("no kick wired")
+	}
+	asked := func() bool { targets, _ := r.takePassTargets(); return targets[installation] }
+	cfg.kick()
+	if !asked() || len(delays()) != 0 {
+		t.Fatalf("first kick: want a pass at once, delays %v", delays())
+	}
+	for range 5 {
+		cfg.kick()
+	}
+	if asked() || !slices.Equal(delays(), []time.Duration{helperRespawnBase}) {
+		t.Fatalf("kicks during the backoff: delays %v, want one ask after %v", delays(), helperRespawnBase)
+	}
+	fire()
+	if !asked() {
+		t.Fatal("the scheduled ask asked for no pass")
 	}
 }
