@@ -457,8 +457,10 @@ const eventsFailuresToDegrade = 3
 
 // eventsDegradedState is an installation's degraded mark for repeated events-stage failures.
 type eventsDegradedState struct {
-	since   time.Time
-	counted bool // the failed command that tells dillad has been counted
+	since time.Time
+	// lastCounted is when the failed command that keeps dillad's latch on was last counted; zero until it has been.
+	// While events keep failing one more is counted per health report period, never one per wake.
+	lastCounted time.Time
 }
 
 // noteEventsStage counts one poll's outcome for the installation's health. Three consecutive events-stage failures
@@ -511,9 +513,10 @@ func (r *botGatewayRuntime) noteEventsStage(installation id.ID, err error) {
 	}
 	// Still degraded: apply what the entry could not take earlier (it, or its monitor, may appear after the mark).
 	r.mu.Lock()
-	needCount := !state.counted && entry != nil
+	now := r.nowTime()
+	needCount := entry != nil && (state.lastCounted.IsZero() || (eventsFailed && now.Sub(state.lastCounted) >= health.ReportEvery))
 	if needCount {
-		state.counted = true
+		state.lastCounted = now
 	}
 	since := state.since
 	r.mu.Unlock()

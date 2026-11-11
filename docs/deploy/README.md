@@ -902,8 +902,8 @@ again** on **Server settings → Bot**, and **Add the Bot again** fixes it.
   The Bot decides this itself and never logs the duration.
 - `bot installation poll degraded` is logged once when three polls in a row fail at `stage=events`. The Bot then
   counts one failed command, so dillad marks that Bot degraded (the catalog status and `dillad doctor`'s
-  `commands failing since <time>`), the same way as any failed command. A poll that fails at another stage, or the
-  next clean poll, ends the run. `bot installation poll recovered` is logged once, on the next clean poll; dillad clears
+  `commands failing since <time>`), the same way as any failed command. While the polls keep failing it counts one more per report period, so the mark holds. A poll that fails at another
+  stage, or the next clean poll, ends the run. `bot installation poll recovered` is logged once, on the next clean poll; dillad clears
   the degraded mark on the Bot's next report that has no failed commands and a newer passing probe, up to a minute later.
 - Diagnostics rule: the journal carries verdicts and opaque ids, never a track's title, link, video id, query or
   duration. Those come from end-to-end encrypted command arguments. Music lines name a queue item by a random `item_id`
