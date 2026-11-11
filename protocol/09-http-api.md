@@ -1311,7 +1311,9 @@ caller who may not view the channel gets `404 E_NOT_FOUND`, as for an unknown on
   connected, not only admitted by the `/rtc` gate), the instance removes every other device of the
   same user that any call room lists (a community's call or a DM's, in any community), with its
   `#` shadows, and revokes its relay. Each device it cuts gets pending `3` before its removal, so its
-  first read already says why and its recovery does not rejoin. The device admitted last keeps voice,
+  first read already says why and its recovery does not rejoin; so does every other device of the
+  user that no room lists and that was not admitted after the device that keeps voice (a device
+  recovering from a lost connection, or an idle one), unless it already holds a pending reason. The device admitted last keeps voice,
   compared by the order of each device's latest fresh admission at the `/rtc` gate (a signal resume
   is no newer join): a join reported late for a device admitted before another of the user's devices
   that is already connected cuts that late device itself and nothing else, and a device admitted but

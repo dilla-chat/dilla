@@ -2,9 +2,12 @@ package api
 
 import (
 	"context"
+	"errors"
+	"strings"
 
 	botaccess "github.com/dilla-chat/dilla/internal/bot/access"
 	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/store"
 )
 
 // Voice takeover (bot2.2 task 8, Jonas 2026-11-11: "the last joined client should take over voice -
@@ -81,6 +84,7 @@ func (h *Calls) takeOverVoice(ctx context.Context, user, joined id.ID, room stri
 	}
 	var present []takeoverCut
 	seen := map[takeoverCut]bool{}
+	listed := map[id.ID]bool{}
 	if err := h.eachUserParticipant(ctx, others, func(r, d string) bool {
 		dev, err := id.Parse(d)
 		if err != nil {
@@ -89,14 +93,12 @@ func (h *Calls) takeOverVoice(ctx context.Context, user, joined id.ID, room stri
 		if c := (takeoverCut{dev: dev, room: r}); !seen[c] {
 			seen[c] = true
 			present = append(present, c)
+			listed[dev] = true
 		}
 		return true
 	}); err != nil {
 		h.log.WarnContext(ctx, "listing the SFU rooms for voice takeover failed; only the devices it listed are compared",
 			"user", user, "device", joined, "err", err)
-	}
-	if len(present) == 0 {
-		return
 	}
 	h.afkMu.Lock()
 	fresh := h.voiceFresh[user]
@@ -122,6 +124,19 @@ func (h *Calls) takeOverVoice(ctx context.Context, user, joined id.ID, room stri
 	}
 	for _, c := range cuts {
 		h.setAFKPendingLocked(c.dev, afkPendingTakenOver)
+	}
+	// Fix round 1 (I1), as cutUserEverywhere does for a recovering call: every other device of the
+	// user that no room lists and that was not admitted after the winner (a device the SFU dropped,
+	// whose lost-connection recovery is still running, or an idle one; sequence 0 and forgotten
+	// admissions included) gets pending 3 too, so a recovery reads it and does not rejoin and take
+	// voice back. A device already pending keeps its reason; its next admission clears either.
+	for _, d := range devices {
+		if d.ID == joined || d.ID == winner || listed[d.ID] || fresh[d.ID].seq >= best {
+			continue
+		}
+		if p, pending := h.afkPending[d.ID]; !pending || h.clk.Since(p.at) >= afkPendingTTL {
+			h.setAFKPendingLocked(d.ID, afkPendingTakenOver)
+		}
 	}
 	h.afkMu.Unlock()
 	for _, c := range cuts {
@@ -169,9 +184,30 @@ func (h *Calls) takeoverRemove(ctx context.Context, c takeoverCut) (bool, error)
 	return true, nil
 }
 
+// liveCallRoom reports whether room is the live room of a call that has not ended.
+func (h *Calls) liveCallRoom(ctx context.Context, room string) (bool, error) {
+	callHex, _, ok := strings.Cut(room, "-")
+	if !ok {
+		return false, nil
+	}
+	callID, err := id.Parse(callHex)
+	if err != nil {
+		return false, nil //nolint:nilerr // a room that is no call's is not live, not a failure
+	}
+	row, err := h.repo.GetVoiceSession(ctx, callID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return row.Ended == nil && row.LivekitRoom == room, nil
+}
+
 // retryTakeovers is AFKMaintenance's retry of the takeover cuts the SFU refused: a device still
 // pending 3 is removed again; one admitted since (its pending cleared, or the retry dropped by its
-// fresh admission) is left alone. A cut is given up after afkCutRetryMax failed passes.
+// fresh admission) is left alone, and so is a room that is no longer a live call's. A cut is given
+// up after afkCutRetryMax failed passes.
 func (h *Calls) retryTakeovers(ctx context.Context) {
 	h.afkMu.Lock()
 	due := make(map[takeoverCut]int, len(h.takeoverRetries))
@@ -183,7 +219,13 @@ func (h *Calls) retryTakeovers(ctx context.Context) {
 		if ctx.Err() != nil || h.draining() {
 			return
 		}
-		done, err := h.takeoverRemove(ctx, c)
+		done, err := false, error(nil)
+		// Fix round 1 (m5): a room that is no longer a live call's holds nobody to cut: dropped. A store
+		// failure retries as before.
+		live, lerr := h.liveCallRoom(ctx, c.room)
+		if live || lerr != nil {
+			done, err = h.takeoverRemove(ctx, c)
+		}
 		h.afkMu.Lock()
 		cur, queued := h.takeoverRetries[c]
 		switch {

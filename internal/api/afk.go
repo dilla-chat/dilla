@@ -63,8 +63,9 @@ type afkTracked struct {
 	lastActive               time.Time
 }
 
-// afkPendingEntry is a cut of one device (R33, R-AW6): the sweep's move (afkPendingSwept) or a
-// chosen AFK (afkPendingChose). It is device-scoped: every community's snapshot reports it to that
+// afkPendingEntry is a cut of one device (R33, R-AW6): the sweep's move (afkPendingSwept), a
+// chosen AFK (afkPendingChose) or a voice takeover by another device of the user
+// (afkPendingTakenOver). It is device-scoped: every community's snapshot reports it to that
 // device, whose client only tells the user why it left, and never joins anything on it.
 type afkPendingEntry struct {
 	reason uint64

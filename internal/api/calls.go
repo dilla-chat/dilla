@@ -249,7 +249,8 @@ type Calls struct {
 	endHook   func(stage string)
 
 	// AFK state is per device: activity in another tab or device cannot reset its voice timer.
-	// afkPending is the moves the sweep made, which only the sweep writes (R33); afkExempt is the
+	// afkPending is each device's pending cut and its reason: the sweep's move (R33), a chosen AFK's
+	// cut (PUT …/afk/away) or a voice takeover (voicetakeover.go); afkExempt is the
 	// room each device that reported itself exempt (a phone, R5) is never moved out of.
 	afkMu      sync.Mutex
 	afkTracked map[id.ID]afkTracked
