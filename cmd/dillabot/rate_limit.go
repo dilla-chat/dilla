@@ -27,10 +27,11 @@ func installationGone(installation client.Installation) bool { return installati
 
 // cleanupUnreadyInstallation answers a pass that did not reach readiness. A non-deferred error there (a dillad 409 or
 // 5xx, a Welcome the membership reconcile could not apply) is not about the helper: a usable retained helper stays,
-// with its music paused. Only an unusable helper or a gone installation's is closed (KeepAfterPassError).
+// with its music paused. Only an unusable helper, one the error names as failed, or a gone installation's is closed
+// (KeepAfterPassError).
 func cleanupUnreadyInstallation(installation id.ID, ready, gone bool, passErr error, registry *musicQueueRegistry) {
 	if !ready && !client.IsDeferred(passErr) {
-		_ = registry.KeepAfterPassError(installation, gone)
+		_ = registry.KeepAfterPassError(installation, gone, passErr)
 	}
 }
 
@@ -41,6 +42,6 @@ func cleanupFailedMusicRestore(logger *slog.Logger, installation id.ID, gone boo
 	if client.IsDeferred(err) {
 		return err
 	}
-	_ = registry.KeepAfterPassError(installation, gone)
+	_ = registry.KeepAfterPassError(installation, gone, err)
 	return nil
 }

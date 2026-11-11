@@ -5,8 +5,11 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -202,6 +205,48 @@ func TestPassErrorClosesUnusableHelper(t *testing.T) {
 				t.Fatal("next pass's helper not retained")
 			}
 		})
+	}
+	// Fix round 1: a pass error that is itself a helper failure closes the helper even while Usable() still says
+	// true (native.Client learns of some aborts only on its next call), and the same pass cannot retain it again.
+	helperFailures := map[string]error{
+		"outcome_unknown": fmt.Errorf("membership: %w", helper.ErrOutcomeUnknown),
+		"closed":          fmt.Errorf("membership: %w", helper.ErrClosed),
+		"helper_exited":   fmt.Errorf("membership: %w", io.ErrUnexpectedEOF),
+		"timeout":         fmt.Errorf("membership: %w", os.ErrDeadlineExceeded),
+		"launch":          fmt.Errorf("membership: %w", helper.ErrLaunch),
+	}
+	for class, failure := range helperFailures {
+		for name, cleanup := range map[string]func(id.ID, *musicQueueRegistry){
+			"unready": func(installation id.ID, registry *musicQueueRegistry) {
+				cleanupUnreadyInstallation(installation, false, false, failure, registry)
+			},
+			"music_restore": func(installation id.ID, registry *musicQueueRegistry) {
+				_ = cleanupFailedMusicRestore(discard, installation, false, failure, registry)
+			},
+		} {
+			t.Run(name+"_"+class+"_while_usable", func(t *testing.T) {
+				if got := helper.Class(failure); got != class {
+					t.Fatalf("test premise: class %q, want %q", got, class)
+				}
+				installation, community := id.New(), id.New()
+				registry := newMusicQueueRegistry()
+				t.Cleanup(func() { _ = registry.Close() })
+				n := newUsableTestNative(installation, community)
+				if err := registry.RetainInteractions(installation, community, n); err != nil {
+					t.Fatal(err)
+				}
+				cleanup(installation, registry)
+				if registry.Native(installation, community) != nil {
+					t.Fatal("a helper that failed the pass stayed registered")
+				}
+				if len(n.reasons) != 1 || n.reasons[0] != helper.ReasonRetainedUnusable {
+					t.Fatalf("close reasons = %v, want [retained_unusable]", n.reasons)
+				}
+				if err := registry.RetainInteractions(installation, community, n); !errors.Is(err, errHelperUnusable) {
+					t.Fatalf("same pass re-retained the closed helper: %v", err)
+				}
+			})
+		}
 	}
 }
 

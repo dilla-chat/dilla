@@ -955,8 +955,12 @@ func nativeUsable(n musicRuntimeNative) bool {
 
 // KeepAfterPassError answers a pass error that is not about the helper (a dillad 409 or 5xx, a failed music restore):
 // a usable retained helper stays registered with its music paused, so the consumers wired to it keep working. Only
-// the helper of a gone or disabled installation (installation_gone) or an unusable one (retained_unusable) is closed.
-func (r *musicQueueRegistry) KeepAfterPassError(installation id.ID, gone bool) error {
+// the helper of a gone or disabled installation (installation_gone), an unusable one, or one the pass error itself
+// names as failed (helperFailed) is closed (retained_unusable).
+//
+// An entry without interactions (music only) is kept too, on purpose: a pass error is not a capability change.
+// DisableMusic follows the opposite rule, because there the music capability itself is gone.
+func (r *musicQueueRegistry) KeepAfterPassError(installation id.ID, gone bool, passErr error) error {
 	if r == nil {
 		return nil
 	}
@@ -972,10 +976,26 @@ func (r *musicQueueRegistry) KeepAfterPassError(installation id.ID, gone bool) e
 		// Nothing retained: the pass closes its own unretained helper (pass_unretained).
 		return nil
 	}
-	if !nativeUsable(current.native) {
+	if helperFailed(passErr) || !nativeUsable(current.native) {
 		return r.disable(installation, helper.ReasonRetainedUnusable)
 	}
 	return r.pauseMusic(installation)
+}
+
+// helperFailed reports a pass error that is itself a helper failure. native.Client's Usable can lag behind a helper
+// that died mid-call, so the error decides too.
+func helperFailed(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, helper.ErrOutcomeUnknown) || errors.Is(err, helper.ErrClosed) {
+		return true
+	}
+	switch helper.Class(err) {
+	case "helper_exited", "timeout", "closed", "outcome_unknown", "launch":
+		return true
+	}
+	return false
 }
 
 func (r *musicQueueRegistry) DisableMusic(installation id.ID) error {

@@ -57,6 +57,8 @@ func Class(err error) string {
 // Close reasons: the one fixed vocabulary of why a Bot's native helper was closed. Each close logs exactly one
 // "bot native helper closed" line carrying one of these, so an operator never meets a closed helper without a cause.
 const (
+	// ReasonPassUnready and ReasonMusicRestoreFailed are reserved in the fixed vocabulary and not currently emitted:
+	// since v0.1.0-bot2.2 a pass error closes only an unusable helper (retained_unusable) or a gone one.
 	ReasonPassUnready        = "pass_unready"
 	ReasonMusicRestoreFailed = "music_restore_failed"
 	ReasonRetainedUnusable   = "retained_unusable"

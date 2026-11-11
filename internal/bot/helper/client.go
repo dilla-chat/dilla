@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -80,6 +81,20 @@ type Client struct {
 	stopTime  time.Duration
 	closed    bool
 	opened    bool
+	// down mirrors closed for Closed(), which must not wait on mu: a call holds mu for its whole length.
+	down atomic.Bool
+}
+
+// Closed reports, without waiting for an in-flight call, whether this client is closed: closed by its owner, or
+// aborted by itself on a call whose outcome is unknown or a transfer that broke its rules.
+func (c *Client) Closed() bool {
+	return c == nil || c.down.Load()
+}
+
+// markClosed is the one way closed becomes true. The caller holds mu, or owns the client exclusively.
+func (c *Client) markClosed() {
+	c.closed = true
+	c.down.Store(true)
 }
 
 // Start launches one native helper process for one community identity. The
@@ -816,7 +831,7 @@ func (c *Client) closeWith(reason string, operation *protocol.HelperOperation, k
 			shutdownErr = validateStatus(response.Status)
 		}
 	}
-	c.closed = true
+	c.markClosed()
 	stopErr := c.transport.stop(c.stopTime)
 	attrs := kindAttr(kind)
 	if shutdownErr != nil {
@@ -833,13 +848,13 @@ func (c *Client) abort() {
 	c.gate.Close()
 	_ = c.transport.stop(0)
 	c.mu.Lock()
-	c.closed = true
+	c.markClosed()
 	c.mu.Unlock()
 }
 
 func (c *Client) abortCurrent() {
 	c.gate.Close()
-	c.closed = true
+	c.markClosed()
 	_ = c.transport.stop(c.stopTime)
 }
 
