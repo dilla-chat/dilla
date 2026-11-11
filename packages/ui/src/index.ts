@@ -197,3 +197,4 @@ export { PollCard, type PollCardProps, type PollCardOption } from './PollCard/Po
 export { PollDialog, type PollDialogProps, type PollDialogLabels, type PollDraft } from './PollDialog/PollDialog.tsx';
 
 export { ReactionTooltip, type ReactionTooltipProps } from './ReactionTooltip/ReactionTooltip.tsx';
+export { ScreenSourcePicker, type ScreenSourcePickerProps, type ScreenSourceTile } from './ScreenSourcePicker/ScreenSourcePicker.tsx';

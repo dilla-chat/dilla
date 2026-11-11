@@ -29,6 +29,11 @@ await build({ entryPoints: [resolve(root, 'src/preload.ts')], outfile: resolve(r
 await build({ entryPoints: [resolve(root, 'src/screen-capture-preload.ts')], outfile: resolve(root, 'dist/screen-capture-preload.cjs'), bundle: true, platform: 'node', target: 'es2022', format: 'cjs', external: ['electron'] });
 await build({ entryPoints: [resolve(root, 'src/screen-capture-broker.ts')], outfile: resolve(root, 'dist/screen-capture-broker.js'), bundle: true, platform: 'browser', target: 'es2022', format: 'iife' });
 await cp(resolve(root, 'src/screen-capture.html'), resolve(root, 'dist/screen-capture.html'));
+// The screen-share picker window (screen-capture.ts serves dist/screen-picker/ under dilla-internal://picker/ on its own session).
+await build({ entryPoints: [resolve(root, 'src/screen-picker-preload.ts')], outfile: resolve(root, 'dist/screen-picker-preload.cjs'), bundle: true, platform: 'node', target: 'es2022', format: 'cjs', external: ['electron'] });
+await build({ entryPoints: { 'screen-picker': resolve(root, 'src/screen-picker-page.tsx') }, outdir: resolve(root, 'dist/screen-picker'), bundle: true, platform: 'browser', target: 'es2022', format: 'iife',
+  jsx: 'automatic', minify: true, define: { 'process.env.NODE_ENV': '"production"' }, loader: { '.woff2': 'file', '.woff': 'file', '.svg': 'file' }, assetNames: '[name]-[hash]' });
+await cp(resolve(root, 'src/screen-picker.html'), resolve(root, 'dist/screen-picker/screen-picker.html'));
 await cp(resolve(root, 'src/manager.html'), resolve(root, 'dist/manager.html'));
 await build({ entryPoints: [resolve(root, 'src/manager.ts')], outfile: resolve(root, 'dist/manager.js'), bundle: true, platform: 'browser', target: 'es2022' });
 await cp(resolve(root, 'src/manager.css'), resolve(root, 'dist/manager.css'));

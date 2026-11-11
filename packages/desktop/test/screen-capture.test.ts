@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
@@ -10,7 +10,7 @@ import vm from 'node:vm';
 import { build } from 'esbuild';
 
 // Exercise the controller, substituting only native Electron objects unavailable in node.
-async function fixture(response = 1, directory = '/immutable/dist', autoStarted = true) {
+async function fixture(response = 1, directory = '/immutable/dist', autoStarted = true, portal = true) {
   let clock = 0, nextTimer = 1;
   const timers = new Map<number, { at: number; interval: number; fn: () => void }>();
   const later = (fn: () => void, ms: number, interval = 0) => { const id = nextTimer++; timers.set(id, { at: clock + ms, interval, fn }); return id; };
@@ -35,6 +35,11 @@ async function fixture(response = 1, directory = '/immutable/dist', autoStarted 
   let holdDialog = false, failNextStart = false, holdSources = false;
   let sourcesResolve: ((value: { id: string; name: string }[]) => void) | undefined;
   const nativeSources = [{ id: 'screen:123:0', name: 'Actual screen' }, { id: 'window:456:0', name: 'Selected window' }];
+  const image = (bytes: number[]) => ({ isEmpty: () => bytes.length === 0, toDataURL: () => `data:image/png;base64,${Buffer.from(bytes).toString('base64')}` });
+  let pickerSources: any[] = [
+    { id: 'screen:1:0', name: 'Built-in', display_id: '1', thumbnail: image([1, 2]), appIcon: null },
+    { id: 'window:77:0', name: 'Studio notes', display_id: '', thumbnail: image([3]), appIcon: image([4]) },
+  ];
   class Contents extends EventEmitter {
     mainFrame = { url: 'https://chat.test/' };
     destroyed = false;
@@ -62,6 +67,8 @@ async function fixture(response = 1, directory = '/immutable/dist', autoStarted 
       this.webContents.emit('did-start-navigation', {}, this.webContents.mainFrame.url, false, true);
     }
     destroy() { this.destroyed = true; this.webContents.destroyed = true; this.emit('closed'); }
+    shown = false;
+    show() { this.shown = true; }
   }
   class Port { closed = false; close() { this.closed = true; } }
   const electron = {
@@ -69,6 +76,10 @@ async function fixture(response = 1, directory = '/immutable/dist', autoStarted 
     MessageChannelMain: class { port1 = new Port(); port2 = new Port(); },
     desktopCapturer: { getSources: async (options: any) => {
       sourcesCalls++;
+      if (!portal) {
+        assert.deepEqual(JSON.parse(JSON.stringify(options)), { types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 }, fetchWindowIcons: true });
+        return pickerSources;
+      }
       assert.deepEqual(JSON.parse(JSON.stringify(options)), { types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 }, fetchWindowIcons: false });
       return holdSources ? new Promise<{ id: string; name: string }[]>(resolve => { sourcesResolve = resolve; }) : nativeSources;
     } },
@@ -98,14 +109,15 @@ async function fixture(response = 1, directory = '/immutable/dist', autoStarted 
     require: (name: string) => name === 'electron' ? electron : require(name),
     setTimeout: (fn: () => void, ms: number) => later(fn, ms), clearTimeout: (id: number) => timers.delete(id),
     setInterval: (fn: () => void, ms: number) => later(fn, ms, ms), clearInterval: (id: number) => timers.delete(id),
-    AbortController, URL, Response, Date: Clock, console });
+    AbortController, URL, Response, Date: Clock, console, Buffer, Uint8Array });
   const ended: { instance: string; id: string }[] = [];
-  const controller = new module.exports.ScreenCaptureBroker({ directory, onEnded: (instance: string, id: string) => ended.push({ instance, id }) });
+  const controller = new module.exports.ScreenCaptureBroker({ directory, portal, onEnded: (instance: string, id: string) => ended.push({ instance, id }) });
   const owner = new Window();
   return { controller, owner, windows, sessions, ended, ipc, advance, get sourcesCalls() { return sourcesCalls; },
     get dialogOptions() { return dialogOptions; }, hold: () => { holdDialog = true; },
     choose: (response: number) => dialogResolve?.({ response }), failStart: () => { failNextStart = true; },
-    holdSources: () => { holdSources = true; }, sourcesReady: () => sourcesResolve?.(nativeSources), newOwner: () => new Window() };
+    holdSources: () => { holdSources = true; }, sourcesReady: () => sourcesResolve?.(nativeSources), newOwner: () => new Window(),
+    setSources: (list: any[]) => { pickerSources = list; }, timers: () => timers.size };
 }
 const options = { width: 1920, height: 1080, frameRate: 30 };
 
@@ -394,3 +406,218 @@ test('owner navigation and crash release both capture windows during handover', 
     } finally { f.controller.stopAll(); }
   }
 });
+
+// Task 5: the thumbnail picker (macOS, Windows, Linux X11) runs in a main-owned sandboxed window. Thumbnails and titles go
+// only there; main takes the choice from that window alone and maps its opaque tile id back to the native source.
+const settle = async () => { for (let i = 0; i < 4; i++) await new Promise(resolve => setImmediate(resolve)); };
+async function opened(f: Awaited<ReturnType<typeof fixture>>) {
+  await settle();
+  const win = f.windows[1];
+  const sends = () => win.webContents.sends.filter((args: any[]) => args[0] === 'dilla:screen-picker-sources').map((args: any[]) => args[1]);
+  const choose = (id: unknown, sender: any = win.webContents, frame: any = sender.mainFrame) =>
+    f.ipc.emit('dilla:screen-picker-choice', { sender, senderFrame: frame }, { id });
+  return { win, sends, choose, last: () => sends().at(-1) };
+}
+const noSourceData = (owner: any) => {
+  assert.deepEqual(owner.webContents.sends, [], 'the account renderer is sent nothing while picking');
+  assert.equal(owner.webContents.posts.length, 0);
+};
+
+test('the picker is a sandboxed modal child window on its own session, and only it receives tiles', async () => {
+  const f = await fixture(1, '/immutable/dist', true, false);
+  try {
+    const request = f.controller.request('a', f.owner, options);
+    const p = await opened(f);
+    assert.equal(f.dialogOptions, undefined);
+    const prefs = p.win.options.webPreferences;
+    assert.equal(p.win.options.parent, f.owner);
+    assert.equal(p.win.options.modal, true);
+    assert.equal(prefs.sandbox, true);
+    assert.equal(prefs.contextIsolation, true);
+    assert.equal(prefs.nodeIntegration, false);
+    assert.equal(prefs.devTools, false);
+    assert.match(prefs.preload, /screen-picker-preload\.cjs$/);
+    assert.equal(prefs.session, f.sessions[0]);
+    assert.equal(p.win.webContents.getURL(), 'dilla-internal://picker/');
+    assert.equal(p.win.shown, true);
+    const shown = p.last();
+    assert.deepEqual([...shown].map((s: any) => Object.keys(s).sort().join(',')), ['icon,id,kind,name,thumbnail', 'icon,id,kind,name,thumbnail']);
+    assert.deepEqual([...shown].map((s: any) => [s.kind, s.name]), [['screen', 'Built-in'], ['window', 'Studio notes']]);
+    assert.ok([...shown].every((s: any) => /^[0-9a-f-]{36}$/.test(s.id)), 'a native source id never leaves main');
+    assert.equal(shown[0].thumbnail, 'data:image/png;base64,AQI=');
+    assert.equal(shown[0].icon, null);
+    assert.equal(shown[1].icon, 'data:image/png;base64,BA==');
+    noSourceData(f.owner);
+    p.choose(shown[1].id);
+    const source = await request;
+    assert.equal(source.displaySurface, 'window');
+    assert.equal(p.win.destroyed, true);
+    assert.equal(f.windows[2].webContents.posts[0].data.sourceId, 'window:77:0');
+    assert.equal(f.ipc.listenerCount('dilla:screen-picker-choice'), 0);
+  } finally { f.controller.stopAll(); }
+});
+
+test('the picker page is served from the internal scheme with a strict CSP and nothing else loads', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dilla-picker-protocol-'));
+  const f = await fixture(1, directory, true, false);
+  try {
+    await mkdir(join(directory, 'screen-picker'));
+    await writeFile(join(directory, 'screen-picker', 'screen-picker.html'), '<!doctype html><title>picker</title>');
+    await writeFile(join(directory, 'screen-picker', 'screen-picker.js'), 'picker script');
+    await writeFile(join(directory, 'other.js'), 'must not load');
+    const request = f.controller.request('a', f.owner, options);
+    const p = await opened(f);
+    const serve = f.sessions[0].handler;
+    const html = await serve({ method: 'GET', url: 'dilla-internal://picker/' });
+    assert.equal(html.status, 200);
+    const csp = html.headers.get('Content-Security-Policy');
+    for (const rule of ["default-src 'none'", "script-src 'self'", "connect-src 'none'", "img-src 'self' data:", "frame-ancestors 'none'"]) assert.ok(csp.includes(rule), rule);
+    assert.equal(await (await serve({ method: 'GET', url: 'dilla-internal://picker/screen-picker.js' })).text(), 'picker script');
+    for (const url of ['dilla-internal://picker/../other.js', 'dilla-internal://picker/%2e%2e/other.js', 'dilla-internal://capture/', 'dilla-internal://picker/x.exe',
+      'dilla-internal://picker/?x=1', 'https://picker/', 'file:///etc/passwd']) assert.equal((await serve({ method: 'GET', url })).status, 404, url);
+    assert.equal((await serve({ method: 'POST', url: 'dilla-internal://picker/' })).status, 404);
+    let cancel: any;
+    f.sessions[0].network({ url: 'https://evil.test/' }, (value: any) => { cancel = value.cancel; });
+    assert.equal(cancel, true);
+    let granted: any;
+    f.sessions[0].permission(p.win.webContents, 'display-capture', (value: boolean) => { granted = value; }, {});
+    assert.equal(granted, false);
+    p.choose(null);
+    assert.equal(await request, null);
+    assert.equal((await serve({ method: 'GET', url: 'dilla-internal://picker/' })).status, 404);
+  } finally { f.controller.stopAll(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('a choice from any webContents other than the picker window is refused', async () => {
+  const f = await fixture(1, '/immutable/dist', true, false);
+  const request = f.controller.request('a', f.owner, options);
+  const p = await opened(f);
+  const tile = p.last()[0].id;
+  p.choose(tile, f.owner.webContents);
+  p.choose(tile, f.newOwner().webContents);
+  p.choose(tile, p.win.webContents, { url: 'dilla-internal://picker/' });
+  p.choose(null, f.owner.webContents);
+  await settle();
+  assert.equal(p.win.destroyed, false, 'the picker stays open');
+  assert.equal(f.windows.filter(w => w.options?.webPreferences?.preload?.endsWith('screen-capture-preload.cjs')).length, 0);
+  assert.equal(f.sessions.length, 1);
+  p.choose(null);
+  assert.equal(await request, null);
+});
+
+test('an unknown or stale source id is refused and grants nothing', async () => {
+  const f = await fixture(1, '/immutable/dist', true, false);
+  const request = f.controller.request('a', f.owner, options);
+  const p = await opened(f);
+  const first = p.last();
+  for (const bad of ['screen:1:0', 'nope', crypto.randomUUID(), 7, undefined, 'x'.repeat(300)]) p.choose(bad);
+  f.ipc.emit('dilla:screen-picker-choice', { sender: p.win.webContents, senderFrame: p.win.webContents.mainFrame }, { id: first[0].id, extra: 1 });
+  // A refresh drops the window; its tile id is stale from then on, while the screen keeps its id.
+  f.setSources([{ id: 'screen:1:0', name: 'Built-in', thumbnail: { isEmpty: () => false, toDataURL: () => 'data:image/png;base64,CQ==' }, appIcon: null }]);
+  f.advance(2000);
+  await settle();
+  assert.equal(p.last().length, 1);
+  assert.equal(p.last()[0].id, first[0].id);
+  p.choose(first[1].id);
+  await settle();
+  assert.equal(p.win.destroyed, false);
+  assert.equal(f.sessions.length, 1, 'no capture session was created');
+  p.choose(null);
+  assert.equal(await request, null);
+  // A later request never accepts tile ids handed to an earlier one.
+  const next = f.controller.request('a', f.owner, options);
+  await settle();
+  const q = { win: f.windows.at(-1)! };
+  f.ipc.emit('dilla:screen-picker-choice', { sender: q.win.webContents, senderFrame: q.win.webContents.mainFrame }, { id: first[0].id });
+  await settle();
+  assert.equal(q.win.destroyed, false);
+  f.ipc.emit('dilla:screen-picker-choice', { sender: q.win.webContents, senderFrame: q.win.webContents.mainFrame }, { id: null });
+  assert.equal(await next, null);
+  noSourceData(f.owner);
+});
+
+test('cancelling the picker grants nothing and closes it', async () => {
+  const f = await fixture(1, '/immutable/dist', true, false);
+  const request = f.controller.request('a', f.owner, options);
+  const p = await opened(f);
+  p.choose(null);
+  assert.equal(await request, null);
+  assert.equal(p.win.destroyed, true);
+  assert.equal(f.windows.length, 2);
+  assert.equal(f.sessions.length, 1);
+  assert.equal(f.sessions[0].cleared, true);
+  noSourceData(f.owner);
+});
+
+test('closing the picker window cancels', async () => {
+  const f = await fixture(1, '/immutable/dist', true, false);
+  const request = f.controller.request('a', f.owner, options);
+  const p = await opened(f);
+  p.win.destroy();
+  assert.equal(await request, null);
+  assert.equal(f.windows.length, 2);
+  assert.equal(f.ipc.listenerCount('dilla:screen-picker-choice'), 0);
+});
+
+test('the picker deadline cancels after two minutes', async () => {
+  const f = await fixture(1, '/immutable/dist', true, false);
+  const request = f.controller.request('a', f.owner, options);
+  const p = await opened(f);
+  f.advance(119_000);
+  await settle();
+  assert.equal(p.win.destroyed, false);
+  f.advance(1000);
+  assert.equal(await request, null);
+  assert.equal(p.win.destroyed, true);
+  assert.equal(f.windows.length, 2);
+  const calls = f.sourcesCalls;
+  f.advance(10_000); await settle();
+  assert.equal(f.sourcesCalls, calls);
+});
+
+test('one picker per owner: a second request while it is open is refused', async () => {
+  const f = await fixture(1, '/immutable/dist', true, false);
+  const request = f.controller.request('a', f.owner, options);
+  const p = await opened(f);
+  await assert.rejects(f.controller.request('a', f.owner, options), /already open/);
+  assert.equal(f.windows.length, 2);
+  p.choose(null);
+  assert.equal(await request, null);
+});
+
+test('the refresh timer stops when the picker closes, by cancel, choice, window close, owner navigation or stop', async () => {
+  for (const close of ['cancel', 'choose', 'close', 'navigate', 'stop'] as const) {
+    const f = await fixture(1, '/immutable/dist', true, false);
+    try {
+      const request = f.controller.request('a', f.owner, options);
+      const p = await opened(f);
+      f.advance(2000); await settle();
+      f.advance(2000); await settle();
+      assert.equal(f.sourcesCalls, 3, 'it refreshes every two seconds while open');
+      assert.equal(p.sends().length, 3);
+      if (close === 'cancel') p.choose(null);
+      else if (close === 'choose') p.choose(p.last()[0].id);
+      else if (close === 'close') p.win.destroy();
+      else if (close === 'navigate') f.owner.webContents.emit('did-start-navigation', {}, 'https://other.test/', false, true);
+      else f.controller.stop('a');
+      await request;
+      assert.equal(p.win.destroyed, true, close);
+      const calls = f.sourcesCalls;
+      f.advance(10_000); await settle();
+      f.advance(200_000); await settle();
+      assert.equal(f.sourcesCalls, calls, `${close}: no refresh after the picker closed`);
+      assert.equal(f.ipc.listenerCount('dilla:screen-picker-choice'), 0);
+    } finally { f.controller.stopAll(); }
+  }
+});
+
+test('Wayland keeps the system portal: zero-size enumeration and no picker window', async () => {
+  const f = await fixture(2);
+  try {
+    const source = await f.controller.request('a', f.owner, options);
+    assert.equal(source.displaySurface, 'window');
+    assert.equal(f.dialogOptions.title, 'Share your screen');
+    assert.ok(f.windows.every(w => !String(w.options?.webPreferences?.preload ?? '').includes('screen-picker')));
+  } finally { f.controller.stopAll(); }
+});
+
