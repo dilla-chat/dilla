@@ -4,9 +4,7 @@ import { Button, SettingsRow } from '@dilla/ui';
 import { useCore } from '../../core/context.tsx';
 import { useSlice } from '../../core/use-slice.ts';
 import { devicesChunk } from '../shell-model.ts';
-import { t } from '../../strings/index.ts';
-
-const clock = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+import { formatClock, t } from '../../strings/index.ts';
 
 /**
  * Device-local diagnostics: stable codes only (L-TS-43); Copy writes those codes, one per line, and nothing else. The
@@ -34,7 +32,7 @@ export function Diagnostics({ data, instanceName, writeText }: {
   // The count, then when a publish was last tried and the code it failed with; nothing is shown for what is not known.
   const keyPackages = <span data-fact="keyPackages">
     {[kp.count === null ? '–' : String(kp.count),
-      kp.lastAttempt === null ? null : <time key="at" dateTime={iso(kp.lastAttempt)}>{clock.format(new Date(kp.lastAttempt))}</time>,
+      kp.lastAttempt === null ? null : <time key="at" dateTime={iso(kp.lastAttempt)}>{formatClock(kp.lastAttempt)}</time>,
       kp.lastError === null ? null : <code key="code">{kp.lastError}</code>]
       .filter((part) => part !== null)
       .flatMap((part, index) => (index === 0 ? [part] : [' · ', part]))}</span>;
@@ -60,7 +58,7 @@ export function Diagnostics({ data, instanceName, writeText }: {
       : null}
     {errors.length > 0
       ? <ul className="dw-diagnostics-errors">{errors.map((error, index) => <li data-error-code={error.code} key={`${error.at}-${index}`}>
-        <code>{error.code}</code><time dateTime={iso(error.at)}>{clock.format(new Date(error.at))}</time></li>)}</ul>
+        <code>{error.code}</code><time dateTime={iso(error.at)}>{formatClock(error.at)}</time></li>)}</ul>
       : <p>{t('diagnostics.empty')}</p>}
     <SettingsRow id="diag-copy" label={t('diagnostics.copy')}>
       <Button onClick={() => { writeText(errors.map(error => error.code).join('\n')).catch(() => undefined); }}>{t('diagnostics.copy')}</Button>

@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { Button } from '@dilla/ui';
 import { MODERATION_CASES, MODERATION_EVIDENCE, readModerationPage, type ModerationCase } from '@dilla/client-core';
 import { useCore } from '../../core/context.tsx';
-import { t } from '../../strings/index.ts';
+import { formatStamp, t } from '../../strings/index.ts';
 
 type Phase = 'idle' | 'sending' | 'ready' | 'denied' | 'unavailable' | 'error';
 type Source = 'automatic' | 'manual';
@@ -66,8 +66,7 @@ export function ModerationLog({ communityId, showHeading = true }: { communityId
       return t('admin.bot.moderationLog.unknownDate');
     }
     try {
-      return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
-        .format(new Date(timestamp * 1000));
+      return formatStamp(timestamp);
     } catch {
       return t('admin.bot.moderationLog.unknownDate');
     }

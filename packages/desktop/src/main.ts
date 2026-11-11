@@ -106,8 +106,8 @@ const updater = createUpdater(state => {
 });
 
 // Electron's Intl follows the UI language, not the OS region or its 24-hour setting: the renderer gets the region from here.
-const systemLocale = () => app.getPreferredSystemLanguages()[0] ?? app.getSystemLocale();
-const webPreferences = () => ({ preload: join(__dirname, 'preload.cjs'), additionalArguments: [`--dilla-locale=${systemLocale()}`], sandbox: true, contextIsolation: true, nodeIntegration: false,
+const systemLocale = (): string | undefined => app.getPreferredSystemLanguages?.()[0] ?? app.getSystemLocale?.();
+const webPreferences = () => ({ preload: join(__dirname, 'preload.cjs'), additionalArguments: [`--dilla-locale=${systemLocale() ?? ''}`], sandbox: true, contextIsolation: true, nodeIntegration: false,
   nodeIntegrationInWorker: false, nodeIntegrationInSubFrames: false, webviewTag: false, webSecurity: true,
   allowRunningInsecureContent: false, backgroundThrottling: false, navigateOnDragDrop: false, devTools: !app.isPackaged });
 

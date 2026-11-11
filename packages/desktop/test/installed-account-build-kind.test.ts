@@ -120,7 +120,7 @@ for (const platform of ['linux', 'win32', 'darwin']) test('compiled installed ac
   async loadURL() { await requestHandler!(new Request(instance + 'v1/instance')); this.webContents.emit('did-finish-load'); }
  }
  class Tray extends EventEmitter { setToolTip() {} setContextMenu() {} }
- const app = Object.assign(new EventEmitter(), { isPackaged: true, getVersion: () => '1.0.0', getName: () => 'DillaAccountFixture', getPath: () => join(root, 'profile'), setPath() {},
+ const app = Object.assign(new EventEmitter(), { isPackaged: true, getVersion: () => '1.0.0', getName: () => 'DillaAccountFixture', getPreferredSystemLanguages: () => ['en-US'], getSystemLocale: () => 'en-US', getPath: () => join(root, 'profile'), setPath() {},
   setName() {}, setDesktopName() {}, setAppUserModelId() {}, enableSandbox() {}, setBadgeCount() {}, setAsDefaultProtocolClient() {},
   commandLine: { appendSwitch() {} }, requestSingleInstanceLock: () => true, whenReady: async () => {}, dock: { setIcon() {} },
   quit() { quit = true; }, exit() { quit = true; },

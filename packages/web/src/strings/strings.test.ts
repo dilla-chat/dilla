@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 // @ts-expect-error the copy lint is a plain .mjs script without types
 import { FORBIDDEN } from '../../../../scripts/check-ui-copy.mjs';
 import { en } from './en.ts';
-import { t, formatTime, formatDay, dateLocale } from './index.ts';
+import { t, formatTime, formatDay, formatDayTime, formatClock, formatStamp, dateLocale } from './index.ts';
 
 describe('t', () => {
   it('fills placeholders and ignores extra variables', () => {
@@ -218,6 +218,19 @@ describe('dates', () => {
     expect(formatTime(at(20, 27))).toBe('20:27');
     expect(formatTime(at(8, 5))).toBe('08:05');
     expect(formatTime(at(0, 9))).toBe('00:09');
+  });
+
+  it.each(['en-US', 'sv-SE', 'en-GB'])('shows 20:27 in the day-time, clock and moderation stamps under %s', language => {
+    region(language);
+    expect(formatDayTime(at(20, 27))).toMatch(/\b20:27$/);
+    expect(formatClock(at(20, 27) * 1000 + 5000)).toBe('20:27:05');
+    expect(formatStamp(at(20, 27))).toMatch(/\b20:27$/);
+  });
+
+  it('falls back to the page language when the shell hands over a malformed locale', () => {
+    region('en-US');
+    (globalThis as { dillaDesktop?: unknown }).dillaDesktop = { locale: 'not a locale!' };
+    try { expect(dateLocale()).toBe('en-US'); } finally { delete (globalThis as { dillaDesktop?: unknown }).dillaDesktop; }
   });
 
   it('writes a day in the system region, and the region comes from the desktop shell when it names one', () => {
