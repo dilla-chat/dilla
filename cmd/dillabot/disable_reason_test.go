@@ -15,7 +15,7 @@ type reasonNative struct {
 
 func (n *reasonNative) CloseWithReason(reason string) error {
 	n.reasons = append(n.reasons, reason)
-	return n.blockingRegistryNative.Close()
+	return n.Close()
 }
 
 func TestDisablePassesReason(t *testing.T) {

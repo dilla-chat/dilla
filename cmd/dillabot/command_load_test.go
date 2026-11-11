@@ -100,12 +100,16 @@ type loadHelper struct {
 	replays  map[string][32]byte // a Retry's seal: answered Replay with this reply key
 	ops      int
 	ingests  int
+	closed   bool // a closed helper refuses every op, as helper.Client does
 }
 
 func (h *loadHelper) OpenCommand(_ context.Context, sealed []byte, user, device id.ID, _ time.Time) (helper.OpenedCommand, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.ops++
+	if h.closed {
+		return helper.OpenedCommand{}, helper.ErrClosed
+	}
 	if strings.HasPrefix(string(sealed), "unknown-key") {
 		return helper.OpenedCommand{Refusal: helper.RefusalUnknownKey}, nil
 	}
@@ -127,6 +131,9 @@ func (h *loadHelper) SealReply(_ context.Context, _ [32]byte, _ id.ID, _ uint32,
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.ops++
+	if h.closed {
+		return nil, helper.ErrClosed
+	}
 	return append([]byte{0xa0}, body...), nil
 }
 

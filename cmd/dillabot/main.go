@@ -710,8 +710,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									runtimeOwnedNative, channelsErr = musicRegistry.ReconcileWithStarterFactory(ctx, installation.ID, installation.CommunityID, result.Installation.Capabilities, channels, nativeClient, starterFor)
 								}
 								if channelsErr != nil {
-									musicDeferred = cleanupFailedMusicRestore(installation.ID, channelsErr, musicRegistry)
-									logger.Error("bot music queue restore paused", "installation_id", installation.ID.String(), "error", channelsErr.Error())
+									musicDeferred = cleanupFailedMusicRestore(logger, installation.ID, installationGone(result.Installation), channelsErr, musicRegistry)
 									ensureErr = errors.Join(ensureErr, channelsErr) //nolint:nilnesserr // false positive: channelsErr is non-nil here (the != nil guard above), the analyzer loses it across the reassigning if block
 								} else {
 									var musicErr error
@@ -871,7 +870,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			}
 		}
 		ensureErr = withGatewayStartup(ensureErr, gatewayErr)
-		cleanupUnreadyInstallation(installation.ID, membershipReady, ensureErr, musicRegistry)
+		cleanupUnreadyInstallation(installation.ID, membershipReady, installationGone(result.Installation), ensureErr, musicRegistry)
 		var closeErr error
 		if !retainedNative && !runtimeOwnedNative {
 			closeErr = nativeClient.CloseWithReason(helper.ReasonPassUnretained)

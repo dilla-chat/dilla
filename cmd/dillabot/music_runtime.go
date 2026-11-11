@@ -902,6 +902,9 @@ func (r *musicQueueRegistry) Native(installation, community id.ID) musicRuntimeN
 	return retained.native
 }
 
+// errHelperUnusable refuses to register a helper client that is closed or whose helper died.
+var errHelperUnusable = errors.New("native helper client is not usable")
+
 // RetainInteractions keeps the helper alive for gateway-driven private command intake,
 // including installations without the music capability.
 func (r *musicQueueRegistry) RetainInteractions(installation, community id.ID, source musicRuntimeNative) error {
@@ -914,12 +917,25 @@ func (r *musicQueueRegistry) RetainInteractions(installation, community id.ID, s
 	}
 	unlock := r.lifecycle.lock(installation)
 	defer unlock()
+	// Usable is read outside the registry mutex: the client takes its own lock.
+	usable := nativeUsable(source)
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.closed {
+		r.mu.Unlock()
 		return errors.New("music registry is closed")
 	}
-	if current := r.runtimes[installation]; current != nil {
+	current := r.runtimes[installation]
+	if !usable {
+		// v0.1.0-bot2.1: a pass that closed the helper re-registered the closed client here, and the due tick met it
+		// every 10 s. A closed client is never registered; a retained one that died is retired.
+		r.mu.Unlock()
+		if current != nil && current.native == source {
+			_ = r.disable(installation, helper.ReasonRetainedUnusable)
+		}
+		return errHelperUnusable
+	}
+	defer r.mu.Unlock()
+	if current != nil {
 		if current.community != community || current.native != source {
 			return errors.New("interaction runtime differs from retained helper")
 		}
@@ -928,6 +944,38 @@ func (r *musicQueueRegistry) RetainInteractions(installation, community id.ID, s
 		r.runtimes[installation] = &retainedMusicRuntime{community: community, native: source, interactions: true}
 	}
 	return nil
+}
+
+// nativeUsable is native.Client's Usable: false once the client is closed or its helper died. A client that cannot
+// tell is taken as usable.
+func nativeUsable(n musicRuntimeNative) bool {
+	u, ok := n.(interface{ Usable() bool })
+	return !ok || u.Usable()
+}
+
+// KeepAfterPassError answers a pass error that is not about the helper (a dillad 409 or 5xx, a failed music restore):
+// a usable retained helper stays registered with its music paused, so the consumers wired to it keep working. Only
+// the helper of a gone or disabled installation (installation_gone) or an unusable one (retained_unusable) is closed.
+func (r *musicQueueRegistry) KeepAfterPassError(installation id.ID, gone bool) error {
+	if r == nil {
+		return nil
+	}
+	unlock := r.lifecycle.lock(installation)
+	defer unlock()
+	if gone {
+		return r.disable(installation, helper.ReasonInstallationGone)
+	}
+	r.mu.Lock()
+	current := r.runtimes[installation]
+	r.mu.Unlock()
+	if current == nil {
+		// Nothing retained: the pass closes its own unretained helper (pass_unretained).
+		return nil
+	}
+	if !nativeUsable(current.native) {
+		return r.disable(installation, helper.ReasonRetainedUnusable)
+	}
+	return r.pauseMusic(installation)
 }
 
 func (r *musicQueueRegistry) DisableMusic(installation id.ID) error {
@@ -1155,6 +1203,11 @@ func (r *musicQueueRegistry) ReconcileWithStarterFactory(ctx context.Context, in
 	if closed {
 		return false, errors.New("music registry is closed")
 	}
+	// A retained helper that died is retired before anything keeps it, and a closed client is never registered.
+	if existing != nil && !nativeUsable(existing.native) {
+		_ = r.disable(installation, helper.ReasonRetainedUnusable)
+		existing = nil
+	}
 	if capabilities&botMusicCapability == 0 {
 		if existing != nil && existing.interactions {
 			return false, r.pauseMusic(installation)
@@ -1164,6 +1217,9 @@ func (r *musicQueueRegistry) ReconcileWithStarterFactory(ctx context.Context, in
 	if binding := nativeClient.Binding(); binding.Installation != installation || binding.Community != community {
 		_ = r.disable(installation, helper.ReasonLifecycleBind)
 		return false, errors.New("music native binding does not match installation")
+	}
+	if !nativeUsable(nativeClient) {
+		return false, errHelperUnusable
 	}
 	if existing != nil && existing.community != community {
 		_ = r.disable(installation, helper.ReasonLifecycleBind)
@@ -1185,6 +1241,14 @@ func (r *musicQueueRegistry) ReconcileWithStarterFactory(ctx context.Context, in
 	queues, err := restoreMusicQueuesIfEnabledWithStarterFactory(ctx, community, capabilities, func(context.Context, id.ID) ([]client.Channel, error) { return channels, nil }, queueNative, starterFor)
 	if err != nil || queues == nil {
 		return false, err
+	}
+	// The restore can be slow; a helper that died meanwhile is not registered behind the new queues.
+	if !nativeUsable(queueNative) {
+		_ = queues.Close()
+		if existing != nil {
+			_ = r.disable(installation, helper.ReasonRetainedUnusable)
+		}
+		return false, errHelperUnusable
 	}
 	r.mu.Lock()
 	if r.closed {
