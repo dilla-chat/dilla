@@ -821,6 +821,41 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool, budget *sta
 	return skips, nil
 }
 
+// endTolerance is how close to the known duration an unclassified stream end still counts as the track's own end.
+const endTolerance = 3 * time.Second
+
+// endDetail is the fixed verdict logged on a playback end: eof, cancelled, connection, helper or invalid.
+func endDetail(err error) string {
+	switch {
+	case err == nil:
+		return "eof"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case errors.Is(err, ErrConnectionEnded), errors.Is(err, ErrNotAdmitted), errors.Is(err, ErrPlayerUnavailable), errors.Is(err, ErrNeedsExplicitPlay):
+		return "connection"
+	case errors.Is(err, helper.ErrClosed), errors.Is(err, helper.ErrOutcomeUnknown), errors.Is(err, helper.ErrLaunch):
+		return "helper"
+	}
+	return "invalid"
+}
+
+// endedAtDurationLocked reports whether the playing track ran to within endTolerance of its known duration.
+func (s *Supervisor) endedAtDurationLocked(p Playback) bool {
+	c := s.state.Current
+	if c == nil || c.ID != s.playingItem || c.DurationMS <= 0 {
+		return false
+	}
+	var elapsed int64
+	if source, ok := p.(Pausable); ok {
+		elapsed = source.PositionMS()
+	} else if s.state.PositionAtMS > 0 {
+		elapsed = s.state.PositionMS + time.Now().UnixMilli() - s.state.PositionAtMS
+	} else {
+		return false
+	}
+	return elapsed >= c.DurationMS-endTolerance.Milliseconds()
+}
+
 func (s *Supervisor) monitor(p Playback, budget *startBudget) {
 	<-p.Done()
 	err := p.Wait()
@@ -845,10 +880,16 @@ func (s *Supervisor) monitor(p Playback, budget *startBudget) {
 		logger = slog.Default()
 	}
 	logger = logger.With("item_id", s.playingItem, "restored", s.restored[s.playingItem])
-	if err != nil {
-		logger.WarnContext(s.ctx, "bot music playback ended", "class", FailureClass(err), "error_class", helper.Class(err))
+	detail := endDetail(err)
+	if err != nil && detail == "invalid" && s.endedAtDurationLocked(p) {
+		// The stream stopped without its closing page at the track's own end: a normal end, not a failure.
+		// The Bot decides this from the known duration and logs only the verdict, never the duration.
+		logger.InfoContext(s.ctx, "bot music playback ended", "class", "eof", "detail", "eof", "error_class", helper.Class(err))
+		err = nil
+	} else if err != nil {
+		logger.WarnContext(s.ctx, "bot music playback ended", "class", FailureClass(err), "detail", detail, "error_class", helper.Class(err))
 	} else {
-		logger.InfoContext(s.ctx, "bot music playback ended", "class", "eof")
+		logger.InfoContext(s.ctx, "bot music playback ended", "class", "eof", "detail", detail)
 	}
 	defer s.idleCheckLocked()
 	if err != nil {

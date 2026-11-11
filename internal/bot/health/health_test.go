@@ -156,3 +156,31 @@ func TestReportCarriesTheLoad(t *testing.T) {
 		t.Fatalf("report %+v", got)
 	}
 }
+
+// v0.1.0-bot2.4: a degraded mark from the event poll reaches failing_since beside the probe's, and clears alone.
+func TestDegradedMarkReachesFailingSince(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_800_000_000, 0))
+	rec := &recorder{}
+	m := New(ProberFunc(func(context.Context) error { return nil }), rec, clk)
+	m.Tick(context.Background())
+	if got := rec.last(t); got.FailingSince != nil {
+		t.Fatalf("report %+v before the mark", got)
+	}
+	since := clk.Now()
+	m.SetDegraded(since)
+	m.SetDegraded(since.Add(time.Hour)) // a second mark keeps the first time
+	clk.Advance(ReportEvery)
+	m.Tick(context.Background())
+	if got := rec.last(t); !got.ProbeOK || got.FailingSince == nil || !got.FailingSince.Equal(since) {
+		t.Fatalf("report %+v, want probe_ok and failing_since at the mark", got)
+	}
+	if got, ok := m.FailingSince(); !ok || !got.Equal(since) {
+		t.Fatalf("FailingSince = %v %v", got, ok)
+	}
+	m.ClearDegraded()
+	clk.Advance(ReportEvery)
+	m.Tick(context.Background())
+	if got := rec.last(t); got.FailingSince != nil {
+		t.Fatalf("report %+v after the clear", got)
+	}
+}

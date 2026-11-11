@@ -1254,3 +1254,21 @@ hardware and commit that document names; nothing here is an estimate.
 
 The founder-LXC measurement is pending (NV-7): no LAN figure is published yet. Loopback numbers from a
 development machine are not capacity figures and are not quoted here.
+
+#### Reading the Bot's journal
+
+- `bot channel group needs the Bot re-added: no Welcome to join it from` means the Bot found no Welcome for that channel
+  on one pass. It can precede a successful `bot joined Bot channel group` by a couple of seconds. A channel that keeps
+  logging it and never logs `bot joined Bot channel group` needs **Add the Bot again**.
+- The first music item in a call room the Bot is already connected to logs 9 start stages, not 11: `call_token` and
+  `call_fields` are skipped.
+- `bot music playback ended` carries a fixed `detail`: `eof` (the track played to its end), `invalid`, `cancelled`,
+  `connection` or `helper`. A stream that stops within 3 seconds of the track's known duration counts as `eof`.
+  The Bot decides this itself and never logs the duration.
+- `bot installation poll degraded` is logged once when three polls in a row fail at `stage=events`. The installation then
+  shows `commands failing since <time>` in `dillad doctor`. `bot installation poll recovered` is logged once, when the
+  next poll succeeds.
+- Diagnostics rule: the journal carries verdicts and opaque ids, never a track's title, link, video id, query or
+  duration. Those come from end-to-end encrypted command arguments. Music lines name a queue item by a random `item_id`
+  and say `restored=true|false`. When debugging music, read the `detail` and `item_id`, and do not ask for the track.
+

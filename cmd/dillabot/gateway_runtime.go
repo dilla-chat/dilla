@@ -11,6 +11,7 @@ import (
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/gatewayclient"
+	"github.com/dilla-chat/dilla/internal/bot/health"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -58,10 +59,14 @@ type botGatewayRuntime struct {
 	// starts runs the native helper starts off the loop (fix round, I-2; helper_start.go).
 	starts helperStarts
 	// feeds is each installation's feed handler, which outlives a pass and a gateway connection (guarded by mu).
-	feeds       map[id.ID]*installationFeed
-	pollers     map[id.ID]func(context.Context) error
-	maintenance map[id.ID]backgroundMaintenance
-	startedAt   uint64
+	feeds   map[id.ID]*installationFeed
+	pollers map[id.ID]func(context.Context) error
+	// eventFailures is each installation's run of consecutive events-stage poll failures, and eventsDegraded the
+	// installations marked degraded for it (guarded by mu; v0.1.0-bot2.4).
+	eventFailures  map[id.ID]int
+	eventsDegraded map[id.ID]bool
+	maintenance    map[id.ID]backgroundMaintenance
+	startedAt      uint64
 
 	// sealed is each installation's sealed command intake (Bot v2 Task 15, command_worker.go).
 	sealed sealedRegistry
@@ -446,6 +451,66 @@ func (r *botGatewayRuntime) TextPoller(installation id.ID) func(context.Context)
 	defer r.mu.Unlock()
 	return r.pollers[installation]
 }
+
+// eventsFailuresToDegrade is how many consecutive events-stage poll failures mark an installation degraded.
+const eventsFailuresToDegrade = 3
+
+// noteEventsStage counts one poll's outcome for the installation's health: three consecutive events-stage failures
+// mark it degraded (failing_since in its health report), the next clean poll clears the mark. Each transition logs
+// once. A poll that failed before the events stage, was rate limited or only waited for the gateway says nothing
+// about the event journal and leaves the run as it was.
+func (r *botGatewayRuntime) noteEventsStage(installation id.ID, err error) {
+	failed := false
+	if err != nil {
+		if textPollStage(err) != textPollEvents || client.RateLimitError(err) != nil || client.IsDeferred(err) {
+			return
+		}
+		failed = true
+	}
+	r.mu.Lock()
+	if r.eventFailures == nil {
+		r.eventFailures, r.eventsDegraded = map[id.ID]int{}, map[id.ID]bool{}
+	}
+	transition := ""
+	if failed {
+		r.eventFailures[installation]++
+		if r.eventFailures[installation] >= eventsFailuresToDegrade && !r.eventsDegraded[installation] {
+			r.eventsDegraded[installation], transition = true, "degraded"
+		}
+	} else {
+		delete(r.eventFailures, installation)
+		if r.eventsDegraded[installation] {
+			delete(r.eventsDegraded, installation)
+			transition = "recovered"
+		}
+	}
+	r.mu.Unlock()
+	if transition == "" {
+		return
+	}
+	var monitor *health.Monitor
+	if entry := r.sealed.lookup(installation); entry != nil {
+		entry.mu.Lock()
+		monitor = entry.monitor
+		entry.mu.Unlock()
+	}
+	now := time.Now
+	if r.now != nil {
+		now = r.now
+	}
+	if transition == "degraded" {
+		if monitor != nil {
+			monitor.SetDegraded(now())
+		}
+		r.log.Warn("bot installation poll degraded", "installation_id", installation.String(), "stage", textPollEvents, "failures", eventsFailuresToDegrade)
+		return
+	}
+	if monitor != nil {
+		monitor.ClearDegraded()
+	}
+	r.log.Info("bot installation poll recovered", "installation_id", installation.String(), "stage", textPollEvents)
+}
+
 func (r *botGatewayRuntime) PollText(ctx context.Context) {
 	ctx = client.WithBackground(ctx)
 	r.mu.Lock()
@@ -455,7 +520,11 @@ func (r *botGatewayRuntime) PollText(ctx context.Context) {
 	}
 	r.mu.Unlock()
 	for installation, poll := range pollers {
-		if err := poll(ctx); err != nil && ctx.Err() == nil {
+		err := poll(ctx)
+		if ctx.Err() == nil {
+			r.noteEventsStage(installation, err)
+		}
+		if err != nil && ctx.Err() == nil {
 			if refusal := client.RateLimitError(err); refusal != nil {
 				logBotRateLimit(r.log, installation, refusal)
 			} else {
