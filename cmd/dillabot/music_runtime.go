@@ -982,20 +982,11 @@ func (r *musicQueueRegistry) KeepAfterPassError(installation id.ID, gone bool, p
 	return r.pauseMusic(installation)
 }
 
-// helperFailed reports a pass error that is itself a helper failure. native.Client's Usable can lag behind a helper
-// that died mid-call, so the error decides too.
+// helperFailed reports a pass error that is itself a helper failure: only the sentinels the helper alone produces.
+// A timeout or a cut-off body (helper.Class "timeout" / "helper_exited") may come from a dillad request, so it is
+// left to Usable(), which sees a self-aborted helper at once.
 func helperFailed(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, helper.ErrOutcomeUnknown) || errors.Is(err, helper.ErrClosed) {
-		return true
-	}
-	switch helper.Class(err) {
-	case "helper_exited", "timeout", "closed", "outcome_unknown", "launch":
-		return true
-	}
-	return false
+	return errors.Is(err, helper.ErrOutcomeUnknown) || errors.Is(err, helper.ErrClosed) || errors.Is(err, helper.ErrLaunch)
 }
 
 func (r *musicQueueRegistry) DisableMusic(installation id.ID) error {

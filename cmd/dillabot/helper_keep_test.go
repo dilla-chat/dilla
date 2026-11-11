@@ -4,12 +4,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -208,11 +208,10 @@ func TestPassErrorClosesUnusableHelper(t *testing.T) {
 	}
 	// Fix round 1: a pass error that is itself a helper failure closes the helper even while Usable() still says
 	// true (native.Client learns of some aborts only on its next call), and the same pass cannot retain it again.
+	// Fix round 2: only the helper's own sentinels count; a timeout or a cut-off body may come from dillad.
 	helperFailures := map[string]error{
 		"outcome_unknown": fmt.Errorf("membership: %w", helper.ErrOutcomeUnknown),
 		"closed":          fmt.Errorf("membership: %w", helper.ErrClosed),
-		"helper_exited":   fmt.Errorf("membership: %w", io.ErrUnexpectedEOF),
-		"timeout":         fmt.Errorf("membership: %w", os.ErrDeadlineExceeded),
 		"launch":          fmt.Errorf("membership: %w", helper.ErrLaunch),
 	}
 	for class, failure := range helperFailures {
@@ -244,6 +243,39 @@ func TestPassErrorClosesUnusableHelper(t *testing.T) {
 				}
 				if err := registry.RetainInteractions(installation, community, n); !errors.Is(err, errHelperUnusable) {
 					t.Fatalf("same pass re-retained the closed helper: %v", err)
+				}
+			})
+		}
+	}
+	// Fix round 2: a dillad request that timed out or whose response body was cut off is not a helper failure; a
+	// usable helper is kept.
+	dilladFailures := map[string]error{
+		"dillad_deadline": errors.Join(conflict, fmt.Errorf("members read: %w", context.DeadlineExceeded)),
+		"dillad_eof":      fmt.Errorf("channels read: %w", io.EOF),
+	}
+	for kind, failure := range dilladFailures {
+		for name, cleanup := range map[string]func(id.ID, *musicQueueRegistry){
+			"unready": func(installation id.ID, registry *musicQueueRegistry) {
+				cleanupUnreadyInstallation(installation, false, false, failure, registry)
+			},
+			"music_restore": func(installation id.ID, registry *musicQueueRegistry) {
+				_ = cleanupFailedMusicRestore(discard, installation, false, failure, registry)
+			},
+		} {
+			t.Run(name+"_"+kind+"_keeps_usable", func(t *testing.T) {
+				if client.IsDeferred(failure) {
+					t.Fatal("test premise: the error is not deferred")
+				}
+				installation, community := id.New(), id.New()
+				registry := newMusicQueueRegistry()
+				t.Cleanup(func() { _ = registry.Close() })
+				n := newUsableTestNative(installation, community)
+				if err := registry.RetainInteractions(installation, community, n); err != nil {
+					t.Fatal(err)
+				}
+				cleanup(installation, registry)
+				if registry.Native(installation, community) != n || !n.Usable() || len(n.reasons) != 0 {
+					t.Fatalf("a dillad failure closed a usable helper (reasons %v)", n.reasons)
 				}
 			})
 		}
