@@ -307,6 +307,27 @@ func TestReadGroupEventsIsNotAMutation(t *testing.T) {
 	}
 }
 
+// A detail token can only ever print as one of the fixed words: a value outside the constants falls back to
+// events.page_invalid, and an error without a detail has none.
+func TestDetailTokenIsAlwaysAFixedWord(t *testing.T) {
+	if EventsCursorAboveHighWater.String() != "events.cursor_above_high_water" || EventsPageInvalid.String() != "events.page_invalid" {
+		t.Fatalf("tokens = %q %q", EventsCursorAboveHighWater, EventsPageInvalid)
+	}
+	cause := errors.New("cause")
+	if got := DecodeDetail(NewDetailError(DetailToken(200), cause)); got != EventsPageInvalid {
+		t.Fatalf("unknown token decoded as %q", got)
+	}
+	if got := DecodeDetail(fmt.Errorf("wrapped: %w", NewDetailError(EventsCursorAboveHighWater, cause))); got != EventsCursorAboveHighWater {
+		t.Fatalf("wrapped token = %q", got)
+	}
+	if got := DecodeDetail(cause); got != 0 || got.String() != "" {
+		t.Fatalf("plain error detail = %q", got)
+	}
+	if err := NewDetailError(EventsPageInvalid, cause); !errors.Is(err, cause) {
+		t.Fatalf("detail error lost its cause: %v", err)
+	}
+}
+
 // A group mutation whose result does not decode still closes the helper, and the one close line names the group
 // sub-op: every group sub-op travels as HelperGroupApply, so "operation=group_apply" alone cannot tell them apart.
 func TestGroupMutationDecodeCloseNamesTheSubOp(t *testing.T) {

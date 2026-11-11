@@ -1091,7 +1091,7 @@ func (c *Client) ReadGroupEvents(ctx context.Context, after, limit uint64) (Grou
 			if errors.Is(e, errEventCursorAboveHighWater) {
 				detail = EventsCursorAboveHighWater
 			}
-			return nil, &DetailError{Detail: detail, Err: e}
+			return nil, NewDetailError(detail, e)
 		}
 		return v, nil
 	})

@@ -460,10 +460,18 @@ func (r *botGatewayRuntime) PollText(ctx context.Context) {
 				logBotRateLimit(r.log, installation, refusal)
 			} else {
 				attrs := []any{"installation_id", installation.String(), "error_class", helper.Class(err)}
-				if detail := native.DecodeDetail(err); detail != "" {
-					attrs = append(attrs, "detail", detail) // a fixed token, never the page bytes or the error text
+				if stage := textPollStage(err); stage != "" {
+					attrs = append(attrs, "stage", stage)
 				}
-				r.log.Warn("bot text command intake deferred", attrs...)
+				if detail := native.DecodeDetail(err); detail != 0 {
+					attrs = append(attrs, "detail", detail.String()) // a fixed token, never the page bytes or the error text
+				}
+				if client.IsDeferred(err) {
+					// Waiting is the expected outcome (e.g. no gateway while it reconnects): the next wake retries.
+					r.log.Info("bot text command intake deferred", append(attrs, "deferred", true)...)
+				} else {
+					r.log.Warn("bot text command intake deferred", attrs...)
+				}
 			}
 		}
 	}

@@ -295,6 +295,14 @@ impl ClientCore {
             let rows = fetch_rows(c, after_delivery_id.max(ack as u64), limit)?;
             Ok((ack, high, rows))
         })?;
+        // A cursor above the (clamped) high water would page with next > high_water, which Go refuses as "event
+        // cursors": refuse the read instead, so the core never emits that page.
+        if after_delivery_id > high_water as u64 {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "event cursor is above the journal's high water",
+            ));
+        }
         let mut encoded_events = Vec::new();
         let mut next = after_delivery_id.max(ack as u64);
         for row in rows {

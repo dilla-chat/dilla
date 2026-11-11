@@ -950,6 +950,27 @@ fn journal_marker(connection: &ConnHandle, delivery_id: i64) {
         .expect("journal marker");
 }
 
+/// A journal marker inserted as the core journals an event: without a delivery id, so SQLite AUTOINCREMENT picks
+/// it. Returns that id.
+fn journal_marker_auto(connection: &ConnHandle, source_seq: i64) -> i64 {
+    let db = connection.lock().expect("lock");
+    db.execute(
+        "INSERT INTO app_bot_events(group_id,source_seq,community_id,channel_id,epoch,recv_ts,sender_user,sender_device,sender_kind,sender_tier,sender_leaf,sender_credential,sender_sig_key,message_id,envelope_type,original_body,disposition) \
+         VALUES(?1,?2,?3,?4,0,0,?5,?6,0,0,0,x'01',zeroblob(32),?7,0,NULL,1)",
+        rusqlite::params![
+            GROUP.as_slice(),
+            source_seq,
+            COMMUNITY.as_slice(),
+            CHANNEL.as_slice(),
+            PEER_USER.as_slice(),
+            PEER_DEVICE.as_slice(),
+            [source_seq as u8; 16].as_slice(),
+        ],
+    )
+    .expect("auto journal marker");
+    db.last_insert_rowid()
+}
+
 fn helper_event_page_vector(group: &str, name: &str) -> Vec<u8> {
     let corpus: serde_json::Value =
         serde_json::from_str(include_str!("../../../protocol/vectors/bot.json"))
@@ -992,6 +1013,20 @@ fn events_page_after_newest_rows_deleted() {
         .expect("acknowledging next is accepted");
     assert_eq!(bot.bot_events_ack(6).unwrap_err().code, "E_CORE_INPUT");
     assert_eq!(bot.bot_events_ack(4).unwrap_err().code, "E_CORE_INPUT");
+
+    // AUTOINCREMENT never reuses a deleted id: the next journaled row lands above the ack (the self-heal).
+    let healed = journal_marker_auto(&connection, 50);
+    assert!(healed > 5, "new delivery id {healed} is not above the ack");
+    assert_eq!(
+        bot.bot_events_read(0, 100)
+            .expect("read the healed journal"),
+        [0x83, 0x80, healed as u8, healed as u8]
+    );
+    connection
+        .lock()
+        .expect("lock")
+        .execute("DELETE FROM app_bot_events WHERE delivery_id=?1", [healed])
+        .expect("drop the healing row again");
 
     // Every row gone (the journal held only interaction-group events): the ack is still the high water.
     connection
@@ -1112,4 +1147,33 @@ fn events_page_skips_a_row_whose_group_is_gone() {
         .expect("redacted row");
     assert_eq!((body, disposition), (None, 1));
     bot.bot_events_ack(1).expect("ack past the gone group");
+}
+
+/// A read cursor above the clamped high water is refused, so the core never emits a page whose next exceeds its
+/// high water (the page Go refuses as "event cursors").
+#[test]
+fn events_read_after_above_high_water_is_refused() {
+    let (mut bot, connection) = ready_bot();
+    assert_eq!(bot.bot_events_read(1, 10).unwrap_err().code, "E_CORE_INPUT");
+    for delivery in 1..=5 {
+        journal_marker(&connection, delivery);
+    }
+    assert_eq!(
+        bot.bot_events_read(5, 10)
+            .expect("cursor at the high water"),
+        [0x83, 0x80, 0x05, 0x05]
+    );
+    assert_eq!(bot.bot_events_read(6, 10).unwrap_err().code, "E_CORE_INPUT");
+    bot.bot_events_ack(5).expect("ack the journal");
+    connection
+        .lock()
+        .expect("lock")
+        .execute("DELETE FROM app_bot_events", [])
+        .expect("delete every journal row");
+    assert_eq!(
+        bot.bot_events_read(5, 10)
+            .expect("cursor at the clamped high water"),
+        [0x83, 0x80, 0x05, 0x05]
+    );
+    assert_eq!(bot.bot_events_read(6, 10).unwrap_err().code, "E_CORE_INPUT");
 }

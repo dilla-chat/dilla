@@ -223,30 +223,54 @@ func (c *Client) invalidateLocked(op protocol.HelperOperation, payload []any) {
 	_ = c.t.Close()
 }
 
-// Fixed detail tokens of a result that did not decode. They are constant words, never result bytes or error text.
+// DetailToken names why a result did not decode. It prints only as one of the fixed words below, never result bytes
+// or error text: a value outside the constants cannot carry a word of its own.
+type DetailToken uint8
+
 const (
 	// EventsCursorAboveHighWater: a Bot event page whose next cursor is above its high water.
-	EventsCursorAboveHighWater = "events.cursor_above_high_water"
+	EventsCursorAboveHighWater DetailToken = iota + 1
 	// EventsPageInvalid: a Bot event page that is malformed in any other way.
-	EventsPageInvalid = "events.page_invalid"
+	EventsPageInvalid
 )
 
-// DetailError is a result decode failure that carries a fixed detail token (one of the constants above) for logs.
-type DetailError struct {
-	Detail string
-	Err    error
+// String is the token's fixed log word; the zero token (no detail) is "".
+func (t DetailToken) String() string {
+	switch t {
+	case 0:
+		return ""
+	case EventsCursorAboveHighWater:
+		return "events.cursor_above_high_water"
+	default:
+		return "events.page_invalid"
+	}
 }
 
-func (e *DetailError) Error() string { return e.Detail + ": " + e.Err.Error() }
-func (e *DetailError) Unwrap() error { return e.Err }
+// DetailError is a result decode failure that carries a fixed detail token for logs. Its fields are unexported:
+// NewDetailError is the only way to build one.
+type DetailError struct {
+	detail DetailToken
+	err    error
+}
 
-// DecodeDetail returns the fixed detail token of a result decode failure, or "" when err carries none.
-func DecodeDetail(err error) string {
+// NewDetailError wraps a decode failure with its token. A token outside the constants becomes EventsPageInvalid.
+func NewDetailError(token DetailToken, err error) error {
+	if token != EventsCursorAboveHighWater {
+		token = EventsPageInvalid
+	}
+	return &DetailError{detail: token, err: err}
+}
+
+func (e *DetailError) Error() string { return e.detail.String() + ": " + e.err.Error() }
+func (e *DetailError) Unwrap() error { return e.err }
+
+// DecodeDetail returns the fixed detail token of a result decode failure, or the zero token when err carries none.
+func DecodeDetail(err error) DetailToken {
 	var detailed *DetailError
 	if errors.As(err, &detailed) {
-		return detailed.Detail
+		return detailed.detail
 	}
-	return ""
+	return 0
 }
 
 func resultAs[T any](value any) (T, error) {
