@@ -10,7 +10,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { en } from '../../../packages/web/src/strings/en.ts';
 import { desktopNetwork } from './desktop-network.ts';
-import { RESULTS_DIR } from './host.ts';
+// The same directory as host.ts's RESULTS_DIR, computed here: importing host.ts pulls driver.ts, whose TypeScript
+// parameter properties Node's strip-only loader rejects in the e2e unit tests that import this module.
+const RESULTS_DIR = process.env.DILLA_E2E_OUTPUT_DIR ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test-results');
 import { focusNativePage } from './native-focus.ts';
 import { electronChildEnvironment } from './mac-notification-diagnostics.ts';
 
