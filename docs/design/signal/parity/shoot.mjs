@@ -85,6 +85,7 @@ export function validateSpec(spec) {
       const a = pair.app;
       if (!isObject(a) || !APP_WHO.includes(a.who)) throw new Error(`${at} (${pair.name}): app.who must be one of ${APP_WHO.join(', ')}`);
       if (a.holdUploads !== undefined && typeof a.holdUploads !== 'boolean') throw new Error(`${at} (${pair.name}): app.holdUploads must be a boolean`);
+      if (a.locale !== undefined && !(typeof a.locale === 'string' && /^[A-Za-z]{2,3}(-[A-Za-z0-9]+)*$/.test(a.locale))) throw new Error(`${at} (${pair.name}): app.locale must be a BCP 47 tag such as en-US`);
       for (const k of ['path', 'clip', 'reset']) if (a[k] !== undefined && typeof a[k] !== 'string') throw new Error(`${at} (${pair.name}): app.${k} must be a string`);
     }
     // Task 8b: a story may take the same steps (a press that shows a toast), run after it settles. An app side takes them too.
@@ -380,7 +381,7 @@ async function openAppPage(browser, state, pair) {
   const mobile = who === 'phone' || who === 'freshPhone';
   if (who === 'fresh' || who === 'freshPhone') {
     const context = await browser.newContext({
-      viewport: pair.viewport, reducedMotion: 'reduce', deviceScaleFactor: SCALE, colorScheme: 'dark', locale: 'en-GB', timezoneId: 'Europe/Stockholm',
+      viewport: pair.viewport, reducedMotion: 'reduce', deviceScaleFactor: SCALE, colorScheme: 'dark', locale: pair.app.locale ?? 'en-GB', timezoneId: 'Europe/Stockholm',
       ...(mobile ? { isMobile: true, hasTouch: true } : {}),
     });
     const page = await context.newPage();
@@ -401,8 +402,10 @@ async function openAppPage(browser, state, pair) {
     await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
     cdp = await ctx.newCDPSession(page);
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: pair.viewport.width, height: pair.viewport.height, deviceScaleFactor: SCALE, mobile });
+    // `app.locale` shoots the world's browser under another system language (en-US put "08:27 PM" in the gutter once).
+    if (pair.app.locale !== undefined) await cdp.send('Emulation.setLocaleOverride', { locale: pair.app.locale });
   } catch (e) { await remote.close().catch(() => {}); throw e; }
-  const restore = async () => { await cdp.send('Emulation.clearDeviceMetricsOverride').catch(() => {}); if (orig) await page.setViewportSize(orig).catch(() => {}); };
+  const restore = async () => { await cdp.send('Emulation.clearDeviceMetricsOverride').catch(() => {}); await cdp.send('Emulation.setLocaleOverride', {}).catch(() => {}); if (orig) await page.setViewportSize(orig).catch(() => {}); };
   return { page, mobile, cdp, restore, done: async () => { await restore(); await remote.close().catch(() => {}); } };
 }
 

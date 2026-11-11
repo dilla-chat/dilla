@@ -39,6 +39,8 @@ export interface AudioSource { id: string; label: string }
 export interface DesktopBridge {
   /** process.platform of the shell ('darwin', 'win32', 'linux'), set by the preload. Display only, not a trust signal. */
   readonly platform?: string;
+  /** The system region (BCP 47, e.g. 'sv-SE') read once by the main process, so dates follow the OS region rather than the UI language. */
+  readonly locale?: string;
   info(): Promise<DesktopInfo>;
   send(command: DesktopCommand): Promise<void>;
   onEvent(listener: (event: DesktopEvent) => void): () => void;

@@ -312,10 +312,15 @@ describe('MessageRow mention colour dot', () => {
       expect(container.querySelector('.d-message-row__avatar .d-avatar')).toBeNull();
       expect(container.querySelector('article')).toHaveAttribute('data-grouped', 'true');
     });
-    it('shows the full 12-hour time in the gutter, and the same text for the screen reader', () => {
-      const { container } = render(<MessageRow author="ada" time="10:06 PM" body={BODY} state="ok" grouped />);
-      expect(container.querySelector('.d-message-row__gutter')).toHaveTextContent('10:06 PM');
-      expect(container.querySelector('.d-message-row__head .d-message-row__time')).toHaveTextContent('10:06 PM');
+    it('shows the time in the gutter, and the same text for the screen reader, with no long-time font path', () => {
+      const { container } = render(<MessageRow author="ada" time="22:06" body={BODY} state="ok" grouped />);
+      const gutter = container.querySelector('.d-message-row__gutter') as HTMLElement;
+      expect(gutter).toHaveTextContent('22:06');
+      expect(gutter).not.toHaveAttribute('data-long');
+      expect(container.querySelector('.d-message-row__head .d-message-row__time')).toHaveTextContent('22:06');
+      const long = render(<MessageRow author="ada" time="10:06:00 PM" body={BODY} state="ok" grouped />).container;
+      expect(long.querySelector('.d-message-row__gutter')).not.toHaveAttribute('data-long');
+      expect(readFileSync('src/MessageRow/MessageRow.css', 'utf8')).not.toContain('data-long');
     });
     it('shows gutterTime in the gutter and the full time as its title, while the head keeps the full time', () => {
       const { container } = render(<MessageRow author="ada" time="Oct 21, 2026, 3:49 PM" gutterTime="3:49 PM" body={BODY} state="ok" grouped />);

@@ -1,6 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { DesktopBridge, DesktopCommand, DesktopEvent } from './contract.ts';
 
+// The main process puts the system region on the command line (`additionalArguments`), so the page reads it with no IPC round trip.
+function systemLocale(): string | undefined {
+  const raw = process.argv.find(arg => arg.startsWith('--dilla-locale='))?.slice('--dilla-locale='.length);
+  if (raw === undefined || raw === '') return undefined;
+  try { return Intl.getCanonicalLocales(raw)[0]; } catch { return undefined; }
+}
+
 if (process.isMainFrame) {
   if (location.protocol === 'dilla-internal:') {
     contextBridge.exposeInMainWorld('dillaManager', Object.freeze({
@@ -27,6 +34,7 @@ if (process.isMainFrame) {
       // The OS this shell runs on, fixed here: the page reads it to label its own device "Desktop · macOS". A display hint
       // only, never a trust signal (the device's custody tier, 1 for this app, is in its signed credential).
       platform: process.platform,
+      locale: systemLocale(),
       info: () => ipcRenderer.invoke('dilla:info'),
       send: (command: DesktopCommand) => ipcRenderer.invoke('dilla:command', command),
       browserAuth: request => ipcRenderer.invoke('dilla:browser-auth', request),

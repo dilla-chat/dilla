@@ -73,6 +73,7 @@ A pair has `prototype` plus **either** `story` **or** `app`; one spec may mix bo
   "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Reminders\"s]" }], "clip": "...", "reset": "..." } }
 ```
 
+- `locale` (optional): shoots the app under that language (a fresh context's locale, or a CDP locale override on the world's browser). Message times must read `20:27` under en-US too, so `examples/message-gutter.json` shoots the gutter under en-GB and en-US.
 - `who`: `ada`, `bjorn`, `mira`, `phone` are the world's browsers, attached over CDP (their window is emulated at the
   pair's viewport and scale 2 and restored afterwards); `fresh` and `freshPhone` are new signed-out contexts at
   `state.publicUrl` (1280x800 and 390x844 touch), with the same supported virtual platform authenticator as the passkey e2e tests. Fresh contexts use `state.authUrl` (`localhost`) with a matching WebAuthn relying party, while connected world profiles retain numeric `state.publicUrl` for RTC/CSP compatibility. The browser’s conditional passkey request remains real.

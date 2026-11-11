@@ -1,11 +1,11 @@
 // @vitest-environment node
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 // @ts-expect-error the copy lint is a plain .mjs script without types
 import { FORBIDDEN } from '../../../../scripts/check-ui-copy.mjs';
 import { en } from './en.ts';
-import { t, formatTime, formatDay } from './index.ts';
+import { t, formatTime, formatDay, dateLocale } from './index.ts';
 
 describe('t', () => {
   it('fills placeholders and ignores extra variables', () => {
@@ -200,11 +200,33 @@ describe('flow 08 (v0.1.0-web3.4, server admin and moderation)', () => {
 });
 
 describe('dates', () => {
+  const at = (h: number, m: number) => new Date(2026, 10, 3, h, m).getTime() / 1000;
+  afterEach(() => { vi.unstubAllGlobals(); });
+  const region = (language: string) => vi.stubGlobal('navigator', { language });
+
   it('formats unix seconds, not milliseconds', () => {
-    const time = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
-    const day = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    region('en-GB');
+    const time = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+    const day = new Intl.DateTimeFormat('en-GB', { year: 'numeric', month: 'short', day: 'numeric' });
     expect(formatTime(18_420)).toBe(time.format(new Date(18_420_000)));
     expect(formatTime(18_420)).not.toBe(time.format(new Date(18_420)));
     expect(formatDay(1_790_000_000)).toBe(day.format(new Date(1_790_000_000_000)));
+  });
+
+  it.each(['en-US', 'sv-SE', 'en-GB'])('shows a message time as 24-hour HH:MM under %s', language => {
+    region(language);
+    expect(formatTime(at(20, 27))).toBe('20:27');
+    expect(formatTime(at(8, 5))).toBe('08:05');
+    expect(formatTime(at(0, 9))).toBe('00:09');
+  });
+
+  it('writes a day in the system region, and the region comes from the desktop shell when it names one', () => {
+    region('sv-SE');
+    expect(formatDay(at(12, 0))).toMatch(/nov/);
+    region('en-US');
+    expect(formatDay(at(12, 0))).toBe('Nov 3, 2026');
+    (globalThis as { dillaDesktop?: unknown }).dillaDesktop = { locale: 'sv-SE' };
+    try { expect(dateLocale()).toBe('sv-SE'); expect(formatDay(at(12, 0))).toMatch(/nov/); }
+    finally { delete (globalThis as { dillaDesktop?: unknown }).dillaDesktop; }
   });
 });

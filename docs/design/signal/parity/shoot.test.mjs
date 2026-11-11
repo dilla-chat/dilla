@@ -689,3 +689,12 @@ test('phone reply-jump preparation waits for posting permission and scrolls nati
   assert.ok(steps.slice(0, tap).some(step => step.waitFor === 'main textarea.d-composer__input:enabled:not([readonly])'));
   assert.ok(steps.slice(0, tap).some(step => step.wheel?.[0] === '[role="log"]' && step.wheel[2] < 0));
 });
+
+test('app.locale is a BCP 47 tag, and the message-gutter example shoots en-US as well as en-GB', async () => {
+  const pair = { name: 'b', viewport: { width: 1280, height: 800 }, prototype: {}, app: { who: 'ada', locale: 'en-US' } };
+  assert.equal(validateSpec([pair]).length, 1);
+  assert.throws(() => validateSpec([{ ...pair, app: { who: 'ada', locale: 'English' } }]), /app\.locale/);
+  const { readFileSync } = await import('node:fs');
+  const spec = validateSpec(JSON.parse(readFileSync(new URL('./examples/message-gutter.json', import.meta.url), 'utf8')));
+  assert.deepEqual(spec.map(p => p.app.locale), ['en-GB', 'en-US']);
+});
