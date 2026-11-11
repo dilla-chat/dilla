@@ -256,7 +256,7 @@ describe('AW5: the sweep’s cut says afk.moved and starts nothing (R-AW6)', () 
   });
 
   /** As the instance answers a fresh read after a cut: this device's pending reason, in every community (device-scoped). */
-  const reasonOnRead = (h: ReturnType<typeof harness>, reason: 1 | 2, delayMs = 0) => {
+  const reasonOnRead = (h: ReturnType<typeof harness>, reason: 1 | 2 | 3, delayMs = 0) => {
     const base = h.client.handler;
     let reads = 0;
     h.client.handler = (c) => {
@@ -288,6 +288,40 @@ describe('AW5: the sweep’s cut says afk.moved and starts nothing (R-AW6)', () 
     expect(h.said).not.toContain(t('voice.removed'));
     expect(h.started).toHaveLength(1);
     expect(h.v.recoveryChannelId).toBeNull();
+  });
+
+  it('task 6: another device took voice over (reason 3); this one says afk.takenOver calmly, with no recovery or rejoin', async () => {
+    const h = harness();
+    await h.joined(GENV);
+    reasonOnRead(h, 3, 100);
+    h.cut();
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: GENV, key: 'afk.takenOver' }));
+    expect(t('afk.takenOver')).toBe('Voice moved to your other device.');
+    expect(h.v.lasting).toBe(t('afk.takenOver'));
+    await wait(REMOVED_HOLD_MS + 300);
+    expect(h.said).not.toContain(t('voice.removed'));
+    expect(h.started).toHaveLength(1);
+    expect(h.v.recoveryChannelId).toBeNull();
+  });
+
+  it('task 6: a lost connection while another device took over ends recovery with the takenOver notice', async () => {
+    const h = harness();
+    act(() => { h.client.set('dms', [{ id: DM_ID, kind: 3, members: [ME.id], name: 'bob', group: 'active' }]); });
+    await h.joined(DM_ID);
+    reasonOnRead(h, 3);
+    act(() => h.sessions[0].update({ phase: 'ended', error: 'E_DISCONNECTED' }));
+    await waitFor(() => expect(h.v.recoveryChannelId).toBeNull(), { timeout: 3_000 });
+    expect(h.v.notice).toEqual({ channelId: DM_ID, key: 'afk.takenOver' });
+    expect(h.started).toHaveLength(1);
+  });
+
+  it('task 6: a DM call with no community snapshot to read says the generic removal, not takenOver', async () => {
+    const h = harness();
+    act(() => { h.client.set('dms', [{ id: DM_ID, kind: 3, members: [ME.id], name: 'bob', group: 'active' }]); h.client.set('communities', []); });
+    await h.joined(DM_ID);
+    act(() => h.sessions[0].update({ phase: 'ended', error: 'E_REMOVED' }));
+    await waitFor(() => expect(h.v.notice).toEqual({ channelId: DM_ID, key: 'voice.removed' }), HELD);
+    expect(h.started).toHaveLength(1);
   });
 
   it('round 3 (B2-M3): a cut in community Y after AFK was chosen in X says afk.elsewhere, with no recovery', async () => {

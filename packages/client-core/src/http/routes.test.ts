@@ -176,6 +176,20 @@ const CASES: Case[] = [
     expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true, reason: 1, away: [] },
   },
   {
+    // Task 6: 3 is a newer device of this user taking voice over; it is its own value, not folded into 2.
+    name: 'AFK snapshot reads pending reason 3 (voice taken over by another device)', call: r => r.getAFK(COMMUNITY),
+    method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [CHANNEL, 300, [], 3, []]),
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true, reason: 3, away: [] },
+  },
+  {
+    // An unknown reason (4 or more) stays calm: it reads as 2, never an error, never a rejoin.
+    name: 'AFK snapshot reads an unknown pending reason as 2', call: r => r.getAFK(COMMUNITY),
+    method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
+    reply: () => cborReply(200, [CHANNEL, 300, [], 4, []]),
+    expected: { channelId: CHANNEL, timeoutSeconds: 300, pending: true, reason: 2, away: [] },
+  },
+  {
     // AW5 fix round 3: pending is a reason code; 2 is a cut because this user chose AFK on another device or tab.
     name: 'AFK snapshot reads pending reason 2 (AFK chosen elsewhere)', call: r => r.getAFK(COMMUNITY),
     method: 'GET', path: `/v1/communities/${hex(COMMUNITY)}/afk`, bucket: 'read', idempotent: true, auth: true, sent: null,
@@ -1936,9 +1950,9 @@ describe('the built-in AFK channel routes (web3.9)', () => {
     t.replies.push(cborReply(200, [CHANNEL, 300]));
     await expect(routes.getAFK(COMMUNITY)).rejects.toMatchObject({ code: 'E_CBOR_SHAPE' });
   });
-  // AW5 fix round 3b (protocol/07): any non-zero pending is pending; an unknown reason (3 or more) reads as 2, the calm one.
-  it('an unknown pending reason of 3 or more is pending and reads as reason 2, never an error', async () => {
-    for (const n of [3, 7, 255]) {
+  // AW5 fix round 3b (protocol/07): any non-zero pending is pending; an unknown reason (4 or more) reads as 2, the calm one.
+  it('an unknown pending reason of 4 or more is pending and reads as reason 2, never an error', async () => {
+    for (const n of [4, 7, 255]) {
       const one = setup();
       one.t.replies.push(cborReply(200, [CHANNEL, 300, [], n]));
       await expect(one.routes.getAFK(COMMUNITY)).resolves.toMatchObject({ pending: true, reason: 2 });

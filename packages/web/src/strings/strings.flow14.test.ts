@@ -12,7 +12,7 @@ describe('flow 14 (v0.1.0-web3.9, layout grammar, Discord layout and the built-i
   const pairs = [...copy.matchAll(/`([a-zA-Z][\w.]*)='([^`]*)'`/g)].map(m => [m[1], m[2]] as const);
   it('strings: every flow-14 copy key equals en.ts byte for byte, and every new key is in the flow', () => {
     const table = en as Readonly<Record<string, string>>;
-    expect(pairs.length).toBe(59);
+    expect(pairs.length).toBe(60);
     // M2 (Jonas): a call cut because AFK was chosen on another device says so, calmly.
     expect(table['afk.elsewhere']).toBe('You went AFK on another device.');
     // AW5/AW6 fix round 1: the AFK page's button, its away line, its empty roster, and a refused away mark.

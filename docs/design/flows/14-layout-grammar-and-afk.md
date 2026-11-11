@@ -12,6 +12,7 @@
 | the AFK page while away | the title `afk.title.you` and the `afk.comeBack` button, which leaves the AFK channel for a text channel the person can send in (the last opened, else the first), and stays when there is none (Jonas, Q3) |
 | going AFK failed | the line `afk.failed`; the call left stays left |
 | AFK chosen on another device | the call here is cut and its stage (or the region that outlives the dock) says `afk.elsewhere`, a calm notice, never a removal |
+| Another device of this user took voice over (pending reason 3) | the call here is cut and its stage (or the region that outlives the dock) says `afk.takenOver`, a calm notice, never a removal; nothing rejoins |
 | a phone in voice | never cut for inactivity |
 | coming back from away | joining any voice channel, sending a message or typing in that community, or having no connection for 30 seconds (a reload or a short network drop keeps away); there is no leave-AFK action |
 | server settings → overview | one `afk.timeout.label` row with the five `afk.timeout.*` options and `afk.timeout.hint`, inside the overview's one save footer |
@@ -76,6 +77,7 @@
 `afk.explain.off='Computers idle in voice are not moved here. Phones are never moved.'`
 `afk.failed='Could not go AFK. Try again.'`
 `afk.elsewhere='You went AFK on another device.'`
+`afk.takenOver='Voice moved to your other device.'`
 `layout.dock.where='{channel} · {server}'`
 `layout.members.online='online'`
 `layout.members.offline='offline'`
