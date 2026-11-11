@@ -163,3 +163,61 @@
 - [ ] **Step 1:** Apply the pin change only if the ledger records the A/B result as "old 403, new plays". Otherwise leave the pin and say in the notes that YouTube's 403 is outside the Bot.
 - [ ] **Step 2:** Write the release notes.
 - [ ] **Step 3: Commit** `docs(release): v0.1.0-bot2.2 notes`
+
+### Task 8: Voice takeover — the device that joins last keeps voice (server)
+
+Jonas, 2026-11-11: "the last joined client should take over voice - just like discord". He chose: server in bot2.2, client notice in the next desktop batch; cut A only once B is connected; A shows a calm notice (desktop batch).
+
+**Files:**
+- Modify: `internal/api/calls.go` (`Calls.Admitted` ~1350), `internal/api/afkaway.go` (`cutUserEverywhere` ~879 as the template, retry queue ~816-865, `latestAdmitSeqLocked` ~395), `internal/api/afk.go` (pending reasons ~48-49)
+- Modify: `protocol/02-delivery-service.md` (AFK snapshot pending reason values), `protocol/09-*.md` (the wire 6 change log: a new value of an existing field, no bump), `protocol/07-versioning.md` entry
+- Test: `internal/api/afkaway_test.go` / `calls_test.go`
+
+**Interfaces:**
+- Produces: AFK pending reason `afkPendingTakenOver = 3` (beside 1 swept, 2 chose), served in the same snapshot field. Old clients see an unknown reason and fall back to the generic "removed from voice", which is acceptable until the desktop batch.
+- Produces: `func (h *Calls) takeOverVoiceLocked(user, newDev id.ID)` (or the existing lock discipline's equivalent). Called from `Admitted` for the admitted device. For every OTHER device of the same user that is a participant in ANY room, it sets pending reason 3, `RemoveParticipants`, `revokeRelay`, and reuses the cut retry queue. It never touches the admitting device or another user.
+- Tiebreak: two of a user's devices admitted close together must not cut each other. Only the device with the latest admission sequence (`latestAdmitSeqLocked`) performs the cut. A cut queued for a device that is itself admitted later is dropped.
+- Bots and shadow identities (`id#...`) are excluded.
+- The removed device's MLS leave goes through the normal participant_left → proposeLeave path, with no new MLS code.
+
+- [ ] **Step 1: Write failing tests**
+  - `TestAdmitTakesOverOtherDevice`: user U in room R1 on device A; B admitted in R2 → A removed from R1 via the SFU fake, A's pending reason == 3, B untouched.
+  - `TestAdmitSameRoomTakesOver`: A and B in the same room → A removed.
+  - `TestTakeoverTiebreak`: A admitted, B admitted, then a late Admitted webhook for A → B is NOT cut (A's admission seq is older), and A is cut exactly once.
+  - `TestTakeoverOtherUsersUntouched` and `TestTakeoverSkipsShadowIdentity`.
+  - `TestTakeoverRetriesFailedRemove`: the SFU RemoveParticipants fails once → retried through the queue.
+  - `TestTakeoverReasonClearedOnReadmit`: A rejoins → its pending reason cleared (existing behaviour, asserted for reason 3).
+- [ ] **Step 2: Run them and confirm they fail.**
+- [ ] **Step 3: Implement, and update the protocol docs.**
+- [ ] **Step 4: Run `go test ./internal/api/ -count=1` and confirm it passes.**
+- [ ] **Step 5: Commit** `feat(voice): joining voice on another device moves you there (server)`
+
+Release notes (Task 6) gain a line: "Joining voice on a second device now moves you there; the first device leaves voice. Until the next desktop app, that device says you were removed from voice."
+
+### Task 7: Music — failed tracks leave the queue, starts survive a fresh Remove, every line names its queue item
+
+Evidence: `docs/superpowers/plans/2026-11-11-bot2-2-music-diagnosis.md`. Jonas, 2026-11-11: a new /play always goes last in the queue (unchanged). "Failed track is removed": a track that fails to start, or stops on an error, is dropped and the Bot says so. A track the user paused stays and resumes as today.
+
+**Files:**
+- Modify: `internal/bot/service/music_interactions.go` (~411 item ids, ~519-563 failure → answer), `internal/bot/music/supervisor.go` (~369, ~692-714 end handling), `internal/bot/music/queue.go` (~141-148, ~248), `internal/bot/music/persistence/store.go` (~137), `internal/bot/music/start_stage.go`, `internal/bot/music/session/session.go` (~149-182), `internal/bot/music/livekit/pool.go` (~37, 276-283, 750-805), `cmd/dillabot/music_call_guards.go` (~52), `cmd/dillabot/music_runtime.go` (~491)
+- Test: the matching `_test.go` files in those packages
+
+**Interfaces / behaviour:**
+- Logging (F1): every `bot music playback start*`, `bot music playback ended` and `bot music operation refused` line carries `item_id` (the queue item's existing random `id.New()`, never derived from content) and `restored=true|false` (whether the item was loaded from storage). Read these from the context, because session.go replaces the context logger. Each failed catch-up check logs `bot music call group check failed` with `attempt`, `error_class` and `stage`. A `media_epoch` failure adds `epoch_reason` from a fixed set (`leaf_missing`, `epoch_stale`, `group_unknown`). The URL, video id, title and query are never logged.
+- Failed track removed (F2): when a start fails, or playback ends with any class other than `eof` or a user stop or pause, the current item is removed from the queue and from persistence. The answer, or a channel notice if no command is waiting, says the track could not be played and was removed. If more items are queued, the next one starts. A user-paused item is untouched. A new /play still appends last.
+- Start retry (F3): on a `media_epoch` binding error (the Bot's leaf is missing from the roster), the start rejoins the call group once (a forced rejoin and catch-up) and retries the handoff once. If it fails again, F2 applies.
+- Catch-up on the current helper (F4): the pooled monitor resolves the installation's current native client and session on each check, the same way as Task 3. A closed or unusable helper ends the track at once with `error_class=closed`, instead of after three checks.
+
+- [ ] **Step 1: Write failing tests**
+  - `TestPlaybackLinesCarryItemID`: start, ended and refused lines carry `item_id` (equal to the queue item's id) and `restored`. No line contains the track URL or title (assert on a fixture URL and title).
+  - `TestFailedStartRemovesItem`: the provider returns http_403 → the item is gone from the queue and from persistence, the answer says it was removed, and the next queued item starts.
+  - `TestErrorEndRemovesItemButUserPauseKeeps`: ended with ctx_canceled or catch-up failure → removed. User /pause → kept and resumable.
+  - `TestPlayAfterFailureStartsNewTrack`: /play A fails; /play B → B plays (not A), and the queue does not contain A.
+  - `TestPlayAppendsLastWhenPausedQueue`: paused current X and queued Y; /play Z → order X(paused), Y, Z. This pins Jonas's rule.
+  - `TestMediaEpochRetriesAfterRejoin`: the first handoff fails leaf_missing → one rejoin, retry succeeds. Both failing → removed once, no third try.
+  - `TestCatchUpClosedHelperEndsAtOnce`: the current helper is closed → the track ends at the first check with error_class=closed.
+  - `TestCatchUpCheckFailureLogged`: each failed check logs attempt, error_class and stage.
+- [ ] **Step 2: Run them and confirm they fail.**
+- [ ] **Step 3: Implement.** User-facing strings must never say "encrypted".
+- [ ] **Step 4: Run `go test ./internal/bot/... ./cmd/dillabot/ -count=1` and confirm it passes.**
+- [ ] **Step 5: Commit** `fix(bot): failed tracks leave the queue, music starts survive a fresh Remove, and music logs name the queue item`
