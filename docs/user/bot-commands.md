@@ -18,6 +18,9 @@ messages never run commands.
 Results are private to you unless a command explicitly publishes something. A
 private card shows **Working**, **Done** or **Failed**. Bot results use the bot’s
 name (Glenn by default) and BOT tag; built-in results use **dilla** and the D tile.
+A private reply, the ones marked "Only you can see this", goes away by itself a minute after it
+finishes. A reply that is still **Working**, or that offers **Retry**, stays. Pointing at a reply, or moving focus onto
+it, pauses the countdown, and it carries on when you leave. **Dismiss** removes a reply at once.
 An uncertain result uses **Failed** with text explaining what may have happened. An
 upload receipt alone does not mean the requested action completed. Commands run
 through the built-in or managed bot and obey current community, channel, and role
@@ -116,7 +119,8 @@ The same page shows the bot's card ("Managed bot · online · v0.4.2"; the versi
 shows once the bot reports it). **Restart** asks the bot to restart; it does so the
 next time it checks in with the server, and the page says "Restarting…" until it
 has. Pending results recover on their own. The card's menu (right-click, a long
-press or Shift+F10) has **Rename**, **Refresh status** and **Disable**.
+press or Shift+F10) has **Rename**, **Refresh status** and **Disable**. The **⋯** button at the end of the card opens
+the same menu, so it is reachable without a right-click. Someone who may not manage the Bot sees only **Refresh status**.
 
 ## Webhooks
 
@@ -176,6 +180,9 @@ code points. The counter matches the server: 🔥 counts as one code point, whil
 emoji can contain several. Open **/poll create**, type the question and answers, then press **Post poll**.
 Use **Add answer** to add answers and the remove control beside an answer to
 remove it.
+
+The form stays open when the Bot's command list refreshes in the background. If the Bot really stops offering polls
+while the form is open, the form closes and a private reply says "The Bot stopped offering polls. Try again."
 
 ![Create a poll](screenshots/signal-poll-dialog.png)
 
