@@ -67,7 +67,7 @@
   - `TestDistinctRequestsStillQueueTwice`: two different request ids for the same query give two entries. That is two user actions.
 - [ ] **Step 2: Run them and confirm they fail.**
 - [ ] **Step 3: Implement.**
-  - Item id = the first 16 bytes of SHA-256("dilla/music-item/v1" ‖ request id ‖ index).
+  - Item id = the first 16 bytes of SHA-256("dilla/music-item/v1" ‖ sender user id ‖ sender device id ‖ request id ‖ index as uint32 big-endian), all ids as fixed 16-byte binary.
   - An enqueue whose first derived id is already in the queue, or current, is treated as already applied: answer with the existing position, don't add again.
   - The id is still random to any observer, because the request id is random. Never derive it from the URL or title.
 - [ ] **Step 4: Run** `go test ./internal/bot/... ./cmd/dillabot/`.

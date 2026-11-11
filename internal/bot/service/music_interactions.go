@@ -158,12 +158,14 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	reason := "dependency_or_context"
 	var diagnostic error
 	var group id.ID
-	// itemID is the queue item the operation acted on (v0.1.0-bot2.2): its opaque queue id (since v0.1.0-bot2.3 derived
-	// from the random request id, see musicItemID), never anything derived from the track. queuedEarlier reports an item this command did not enqueue (it was already in the queue). It is
-	// logged as queued_earlier, not restored: on the supervisor's start and ended lines restored means "loaded from
-	// storage when the supervisor was made", which the handler cannot see.
+	// itemID is the queue item the operation acted on (v0.1.0-bot2.2): its opaque queue id (since v0.1.0-bot2.3
+	// derived from the sender and the random request id, see musicItemID), never anything derived from the track.
+	// queuedEarlier reports an item this command did not enqueue (it was already in the queue). It is logged as
+	// queued_earlier, not restored: on the supervisor's start and ended lines restored means "loaded from storage when
+	// the supervisor was made", which the handler cannot see.
 	var itemID string
-	var itemKey id.ID // the enqueue's item-id key: the request id
+	var itemKey musicItemKey         // the enqueue's item-id key
+	var ourItems map[string]struct{} // every id the enqueue could have committed
 	var enqueued []music.Track
 	queuedEarlier := func() bool {
 		if itemID == "" {
@@ -349,15 +351,17 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		if !ok {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
-		// The command's items take ids derived from its request id (v0.1.0-bot2.3), so a replay of the same request
-		// finds what it already enqueued. A request without an id (none reaches here from the wire) keeps random ids.
-		itemKey = req.RequestID
-		if itemKey.IsZero() {
-			itemKey = id.New()
+		// The command's items take ids derived from its sender and request id (v0.1.0-bot2.3), so a replay of the same
+		// request finds what it already enqueued. A request without an id (none reaches here from the wire) keeps
+		// random ids.
+		itemKey = musicItemKey{user: actor.User, device: actor.Device, request: req.RequestID}
+		if itemKey.request.IsZero() {
+			itemKey.request = id.New()
 		}
+		ourItems = musicItemIDs(itemKey)
 		reason = "already_enqueued"
-		if answer, applied := enqueuedEarlier(snapshot, musicItemID(itemKey, 0), play); applied {
-			itemID = musicItemID(itemKey, 0)
+		if answer, matched, applied := enqueuedEarlier(snapshot, ourItems, play); applied {
+			itemID = matched
 			if !replayNeedsStart(snapshot.State, play) {
 				// Answered before the resolve and the room warm: a replay adds nothing and starts nothing.
 				return answer, nil
@@ -444,9 +448,10 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 			// A concurrent run of this same request (a replay) may have committed since the last read; the re-apply
 			// keeps the derived ids, so it is seen here rather than queued a second time.
 			reason = "already_enqueued"
-			answer, applied := enqueuedEarlier(snapshot, musicItemID(itemKey, 0), play)
+			answer, matched, applied := enqueuedEarlier(snapshot, ourItems, play)
 			if applied && !replayNeedsStart(snapshot.State, play) {
-				playStarted = answer.Note != ""
+				// The warm stays when the room plays, whichever track it plays.
+				itemID, playStarted = matched, roomPlaying(snapshot.State)
 				return answer, nil
 			}
 			if !applied && replayed {
@@ -641,14 +646,20 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 // musicItemDomain separates the enqueue's item ids from every other hash of a request id.
 const musicItemDomain = "dilla/music-item/v1"
 
+// musicItemKey is what an enqueue's item ids derive from: the sealed command's sender and its request id.
+type musicItemKey struct{ user, device, request id.ID }
+
 // musicItemID is the queue id of the index-th track a command enqueues (v0.1.0-bot2.3): the first 16 bytes of
-// SHA-256(musicItemDomain ‖ request id ‖ index as 4-byte big-endian), as 32 lowercase hex characters. The request id
-// is random, so the id stays opaque to any observer; it never takes the URL, video id, title or query. The same
-// request always derives the same ids, which makes a replayed enqueue findable in the queue.
-func musicItemID(request id.ID, index int) string {
+// SHA-256(musicItemDomain ‖ sender user id ‖ sender device id ‖ request id ‖ index as 4-byte big-endian), as 32
+// lowercase hex characters. The ids are fixed-length binary, so the concatenation is unambiguous. The request id is
+// random, so the id stays opaque to any observer; it never takes the URL, video id, title or query. The same request
+// from the same sender always derives the same ids, which makes a replayed enqueue findable in the queue.
+func musicItemID(key musicItemKey, index int) string {
 	sum := sha256.New()
 	sum.Write([]byte(musicItemDomain))
-	sum.Write(request[:])
+	sum.Write(key.user[:])
+	sum.Write(key.device[:])
+	sum.Write(key.request[:])
 	var be [4]byte
 	binary.BigEndian.PutUint32(be[:], uint32(index)) //nolint:gosec // index < youtube.MaxPlaylistItems
 	sum.Write(be[:])
@@ -657,24 +668,41 @@ func musicItemID(request id.ID, index int) string {
 	return item.String()
 }
 
-// enqueuedEarlier reports an enqueue already applied: its first item is the current track or queued. The answer adds
-// nothing. It carries the current revision, and the now-playing note when a /play finds its track playing.
-func enqueuedEarlier(snapshot persistence.Snapshot, first string, play bool) (InteractionResult, bool) {
+// musicItemIDs is every id the key's command could have enqueued: one per playlist index.
+func musicItemIDs(key musicItemKey) map[string]struct{} {
+	ids := make(map[string]struct{}, youtube.MaxPlaylistItems)
+	for i := 0; i < youtube.MaxPlaylistItems; i++ {
+		ids[musicItemID(key, i)] = struct{}{}
+	}
+	return ids
+}
+
+// enqueuedEarlier reports an enqueue already applied: any of its items is the current track or queued (item 0 of a
+// playlist may have played out). The answer adds nothing. It carries the current revision, and the now-playing note
+// when a /play finds one of its tracks playing. item is the matched queue id, for the log line.
+func enqueuedEarlier(snapshot persistence.Snapshot, ours map[string]struct{}, play bool) (answer InteractionResult, item string, applied bool) {
 	state := snapshot.State
 	revision := snapshot.Revision
-	if state.Current != nil && state.Current.ID == first {
-		answer := InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}}
-		if play && !state.Paused {
-			answer.Note = nowPlayingText(state)
+	answer = InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}}
+	if state.Current != nil {
+		if _, found := ours[state.Current.ID]; found {
+			if play && !state.Paused {
+				answer.Note = nowPlayingText(state)
+			}
+			return answer, state.Current.ID, true
 		}
-		return answer, true
 	}
 	for _, track := range state.Queue {
-		if track.ID == first {
-			return InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}}, true
+		if _, found := ours[track.ID]; found {
+			return answer, track.ID, true
 		}
 	}
-	return InteractionResult{}, false
+	return InteractionResult{}, "", false
+}
+
+// roomPlaying reports a state whose current track plays: a /play that ends there leaves the room warm.
+func roomPlaying(state music.State) bool {
+	return !state.Paused && state.Current != nil
 }
 
 // replayNeedsStart reports a replayed /play that must still run the original /play's post-enqueue step: the player

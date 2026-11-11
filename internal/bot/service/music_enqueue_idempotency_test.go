@@ -16,10 +16,13 @@ import (
 )
 
 // musicItemIDFor is the v0.1.0-bot2.3 derivation, written out independently of the handler: the first 16 bytes of
-// SHA-256("dilla/music-item/v1" ‖ request id ‖ index as 4-byte big-endian), as 32 lowercase hex characters.
-func musicItemIDFor(request id.ID, index uint32) string {
+// SHA-256("dilla/music-item/v1" ‖ sender user id ‖ sender device id ‖ request id ‖ index as 4-byte big-endian), as 32
+// lowercase hex characters.
+func musicItemIDFor(sender InteractionActor, request id.ID, index uint32) string {
 	sum := sha256.New()
 	sum.Write([]byte("dilla/music-item/v1"))
+	sum.Write(sender.User[:])
+	sum.Write(sender.Device[:])
 	sum.Write(request[:])
 	var be [4]byte
 	binary.BigEndian.PutUint32(be[:], index)
@@ -66,7 +69,7 @@ func TestPlayEnqueueIdempotentPerRequest(t *testing.T) {
 		t.Fatalf("replayed /play result=%+v err=%v, want success (playing)", result, err)
 	}
 	entries := musicQueueEntries(store.snapshot.State)
-	if len(entries) != 1 || entries[0] != musicItemIDFor(requestID, 0) {
+	if len(entries) != 1 || entries[0] != musicItemIDFor(actor, requestID, 0) {
 		t.Fatalf("after the replay the queue holds %q, want only the request's derived item", entries)
 	}
 	if store.saves != savesBefore || plays != 1 || len(resolver.inputs) != resolvesBefore {
@@ -97,7 +100,7 @@ func TestPlayReplayStartsUnstartedItem(t *testing.T) {
 	if _, err := dying.handle(withSealedPlay(context.Background()), actor, request, protocol.OpMusicEnqueue); err != nil {
 		t.Fatal(err)
 	}
-	derived := musicItemIDFor(requestID, 0)
+	derived := musicItemIDFor(actor, requestID, 0)
 	if entries := musicQueueEntries(inner.snapshot.State); len(entries) != 1 || entries[0] != derived {
 		t.Fatalf("after the first /play the queue holds %q, want the derived item", entries)
 	}
@@ -132,8 +135,9 @@ func TestPlayReplayStartsUnstartedItem(t *testing.T) {
 // without appending.
 func TestPlayReplayUnderUserPauseMatchesFreshPlay(t *testing.T) {
 	channel, community, requestID := interactionID(171), interactionID(172), interactionID(173)
+	actor := InteractionActor{User: interactionID(174), Device: interactionID(176)}
 	playing := music.Track{ID: "playing-item", Provider: music.ProviderYouTube, CanonicalID: "zyxwvutsrqp", Title: "Playing", RequesterID: "member"}
-	ours := music.Track{ID: musicItemIDFor(requestID, 0), Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "One", RequesterID: "member"}
+	ours := music.Track{ID: musicItemIDFor(actor, requestID, 0), Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "One", RequesterID: "member"}
 	state := music.InitialState()
 	state.Current, state.Queue, state.Paused, state.Revision = &playing, []music.Track{ours}, true, 4
 	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
@@ -146,7 +150,7 @@ func TestPlayReplayUnderUserPauseMatchesFreshPlay(t *testing.T) {
 				started = append(started, s)
 				return revision, nil
 			}}
-		result, err := h.handle(withSealedPlay(context.Background()), InteractionActor{User: interactionID(174)}, request, protocol.OpMusicEnqueue)
+		result, err := h.handle(withSealedPlay(context.Background()), actor, request, protocol.OpMusicEnqueue)
 		if err != nil || result.Status != 0 {
 			t.Fatalf("/play result=%+v err=%v, want success", result, err)
 		}
@@ -187,6 +191,7 @@ func (s *musicConflictOnceStore) Save(ctx context.Context, channel id.ID, expect
 // commit of this same request is seen as already applied.
 func TestPlayConflictRetryKeepsDerivedIDs(t *testing.T) {
 	channel, community, requestID := interactionID(141), interactionID(142), interactionID(143)
+	actor := InteractionActor{User: interactionID(144), Device: interactionID(146)}
 	tracks := []music.Track{
 		{ID: "yt:abcdefghijk", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "One"},
 		{ID: "yt:12345678901", Provider: music.ProviderYouTube, CanonicalID: "12345678901", Title: "Two"},
@@ -201,7 +206,7 @@ func TestPlayConflictRetryKeepsDerivedIDs(t *testing.T) {
 					return state
 				}
 				for i, track := range tracks {
-					track.ID, track.RequesterID = musicItemIDFor(requestID, uint32(i)), "member"
+					track.ID, track.RequesterID = musicItemIDFor(actor, requestID, uint32(i)), "member"
 					state.Queue = append(state.Queue, track)
 				}
 				return state
@@ -209,11 +214,11 @@ func TestPlayConflictRetryKeepsDerivedIDs(t *testing.T) {
 			authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
 			h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, Resolver: &musicInteractionResolverFake{tracks: tracks}}
 			request := protocol.Request{RequestID: requestID, CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{"a playlist"}}
-			result, err := h.handle(context.Background(), InteractionActor{User: interactionID(144)}, request, protocol.OpMusicEnqueue)
+			result, err := h.handle(context.Background(), actor, request, protocol.OpMusicEnqueue)
 			if err != nil || result.Status != 0 || !store.conflicted {
 				t.Fatalf("enqueue after a conflict result=%+v err=%v conflicted=%v, want success after the re-apply", result, err, store.conflicted)
 			}
-			want := []string{musicItemIDFor(requestID, 0), musicItemIDFor(requestID, 1)}
+			want := []string{musicItemIDFor(actor, requestID, 0), musicItemIDFor(actor, requestID, 1)}
 			if concurrent == "other_request" {
 				want = append([]string{other.ID}, want...)
 			}
@@ -239,8 +244,100 @@ func TestDistinctRequestsStillQueueTwice(t *testing.T) {
 			t.Fatalf("enqueue result=%+v err=%v, want success", result, err)
 		}
 	}
-	want := []string{musicItemIDFor(first, 0), musicItemIDFor(second, 0)}
+	want := []string{musicItemIDFor(actor, first, 0), musicItemIDFor(actor, second, 0)}
 	if got := musicQueueEntries(store.snapshot.State); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("queue=%q, want two entries %q", got, want)
+	}
+}
+
+// TestMusicItemIDIsSenderScoped (fix round 2): the same request id and index from two senders derive two item ids,
+// so one sender's request id can never collide with another's queue item.
+func TestMusicItemIDIsSenderScoped(t *testing.T) {
+	channel, community, requestID := interactionID(181), interactionID(182), interactionID(183)
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	resolver := &musicInteractionResolverFake{tracks: []music.Track{{ID: "yt:abcdefghijk", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "One"}}}
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, Resolver: resolver}
+	senders := []InteractionActor{{User: interactionID(184), Device: interactionID(185)}, {User: interactionID(184), Device: interactionID(186)}, {User: interactionID(187), Device: interactionID(185)}}
+	var want []string
+	for _, sender := range senders {
+		request := protocol.Request{RequestID: requestID, CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{"one song"}}
+		if result, err := h.handle(context.Background(), sender, request, protocol.OpMusicEnqueue); err != nil || result.Status != 0 {
+			t.Fatalf("enqueue result=%+v err=%v, want success", result, err)
+		}
+		want = append(want, musicItemIDFor(sender, requestID, 0))
+	}
+	if want[0] == want[1] || want[0] == want[2] || want[1] == want[2] {
+		t.Fatalf("derived ids %q, want one per sender", want)
+	}
+	if got := musicQueueEntries(store.snapshot.State); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("queue=%q, want one entry per sender %q", got, want)
+	}
+}
+
+// TestPlaylistReplayAfterFirstItemPlayedOut (fix round 2): item 0 of a playlist /play has played out, items 1..n-1
+// are current or queued. The replay is already applied: no resolve, no append, no unavailable answer.
+func TestPlaylistReplayAfterFirstItemPlayedOut(t *testing.T) {
+	channel, community, requestID := interactionID(191), interactionID(192), interactionID(193)
+	actor := InteractionActor{User: interactionID(194), Device: interactionID(195)}
+	track := func(i uint32, canonical string) music.Track {
+		return music.Track{ID: musicItemIDFor(actor, requestID, i), Provider: music.ProviderYouTube, CanonicalID: canonical, Title: "T", RequesterID: actor.User.String()}
+	}
+	one, two := track(1, "12345678901"), track(2, "abcdefghijk")
+	state := music.InitialState()
+	state.Current, state.Queue, state.Paused, state.Revision = &one, []music.Track{two}, false, 7
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: state, Revision: state.Revision}}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	resolver := &musicInteractionResolverFake{tracks: []music.Track{
+		{ID: "yt:zyxwvutsrqp", Provider: music.ProviderYouTube, CanonicalID: "zyxwvutsrqp", Title: "Zero"},
+		{ID: "yt:12345678901", Provider: music.ProviderYouTube, CanonicalID: "12345678901", Title: "One"},
+		{ID: "yt:abcdefghijk", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Two"},
+	}}
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, Resolver: resolver}
+	request := protocol.Request{RequestID: requestID, CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{"a playlist"}}
+	result, err := h.handle(withSealedPlay(context.Background()), actor, request, protocol.OpMusicEnqueue)
+	if err != nil || result.Status != 0 {
+		t.Fatalf("playlist replay result=%+v err=%v, want already applied", result, err)
+	}
+	if len(resolver.inputs) != 0 || store.saves != 0 {
+		t.Fatalf("playlist replay resolves=%d saves=%d, want none", len(resolver.inputs), store.saves)
+	}
+	if got := musicQueueEntries(store.snapshot.State); strings.Join(got, ",") != one.ID+","+two.ID {
+		t.Fatalf("queue=%q, want items 1 and 2 only", got)
+	}
+}
+
+// TestPlayReplayRecheckKeepsPlayingRoom (fix round 2): a concurrent run of this /play commits its item behind a
+// playing track while this run resolves. The per-attempt recheck finds it applied; the room is playing, so the warm is
+// not abandoned (the abandon signal follows the state, not the answer's note).
+func TestPlayReplayRecheckKeepsPlayingRoom(t *testing.T) {
+	channel, community, requestID := interactionID(201), interactionID(202), interactionID(203)
+	actor := InteractionActor{User: interactionID(204), Device: interactionID(205)}
+	playing := music.Track{ID: "playing-item", Provider: music.ProviderYouTube, CanonicalID: "zyxwvutsrqp", Title: "Playing", RequesterID: "member"}
+	store := &musicConflictOnceStore{musicInteractionStoreFake: &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState(), Revision: 0}}}
+	store.concurrent = func(state music.State) music.State {
+		ours := music.Track{ID: musicItemIDFor(actor, requestID, 0), Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "One", RequesterID: "member"}
+		state.Current, state.Queue, state.Paused = &playing, []music.Track{ours}, false
+		return state
+	}
+	authority := &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: id.New(), ChannelID: channel, Active: true}, user: true, dj: true}
+	resolver := &musicInteractionResolverFake{tracks: []music.Track{{ID: "yt:abcdefghijk", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "One"}}}
+	abandoned := 0
+	h := MusicInteractions{Store: store, Authority: authority, CommunityID: community, Resolver: resolver,
+		OnPlayOpened:    func(context.Context, id.ID, id.ID, id.ID) {},
+		OnPlayAbandoned: func(context.Context, id.ID, id.ID, id.ID) { abandoned++ },
+		OnPlay: func(_ context.Context, _, _, _ id.ID, _ music.State, revision uint64) (uint64, error) {
+			return revision, nil
+		}}
+	request := protocol.Request{RequestID: requestID, CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{"one song"}}
+	result, err := h.handle(withSealedPlay(context.Background()), actor, request, protocol.OpMusicEnqueue)
+	if err != nil || result.Status != 0 || !store.conflicted {
+		t.Fatalf("result=%+v err=%v conflicted=%v, want already applied after the conflict", result, err, store.conflicted)
+	}
+	if abandoned != 0 {
+		t.Fatalf("abandoned=%d, want the playing room kept", abandoned)
+	}
+	if got := musicQueueEntries(store.snapshot.State); len(got) != 2 {
+		t.Fatalf("queue=%q, want the playing track and the request's item only", got)
 	}
 }
