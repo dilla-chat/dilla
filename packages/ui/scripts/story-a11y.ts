@@ -230,7 +230,7 @@ const SIGNAL_GEOMETRY: Record<string, Want[]> = {
   ],
   'shell-userpanel--signal': [{ sel: '.d-user-panel', h: 64 }, { sel: '.d-user-panel .d-icon-button', w: 30, h: 30 }, { sel: '.d-user-panel__who .d-avatar', w: 30, h: 30 }],
   'shell-userpanel--signal-muted-and-deafened': [{ sel: '.d-user-panel .d-icon-button[aria-pressed="true"]', w: 30, color: 'rgb(255, 110, 110)', background: 'rgba(255, 110, 110, 0.1)' }],
-  'voice-voicedock--signal': [{ sel: '.d-voice-dock', radius: 8, background: 'rgba(124, 255, 142, 0.04)' }, { sel: '.d-voice-dock__leave', w: 28, h: 28, color: 'rgb(255, 110, 110)' }, { sel: '.d-voice-dock__bars', h: 12 }, { sel: '.d-voice-dock__bars > span', w: 2 }],
+  'voice-voicedock--signal': [{ sel: '.d-voice-dock', radius: 8, background: 'rgba(124, 255, 142, 0.04)' }, { sel: '.d-voice-dock__leave', w: 28, h: 28, color: 'rgb(255, 110, 110)' }],
   'shell-channelheader--signal-members-open': [{ sel: '.d-channel-header', h: 44 }, { sel: '.d-channel-header__actions [aria-pressed="true"]', h: 28, color: 'rgb(90, 168, 230)', background: 'rgba(90, 168, 230, 0.12)' }],
   'shell-tabbar--signal': [{ sel: '.d-tab-bar__link', h: 56 }, { sel: '.d-tab-bar__link[aria-current="page"]', color: 'rgb(228, 232, 238)' }],
   // Jonas 2026-10-27: the prototype's phone sizes (supersedes Ruling N): Threads/Members 28 high, search 36 x 28, no "⋯".

@@ -246,6 +246,10 @@ Each element gets a presence Noul and a Box on both images, plus optional `state
   judged pairs costs about $0.0045, and every app pair in the specs would be about $0.02-0.03.
 - Tests: `node --test docs/design/signal/parity/judge.test.mjs` (pure; no network).
 
+### Desktop beta.5 accepted deviations (Jonas, 2026-11-11)
+
+- **Always show the dock:** the voice dock (call card and compact Now playing) stays visible while the voice channel's own stage is on screen, instead of the prototype's showDock hiding it (§5.6). The connected phase also draws no animated signal bars (§5.4). Parity shots of the voice stage with the dock (standing-voice-*) differ from the prototype by design; the images are not re-shot yet.
+
 ### Task 6 accepted deviations (Jonas, 2026-10-30)
 
 | Pairs | Accepted difference from the raw prototype | Decision |

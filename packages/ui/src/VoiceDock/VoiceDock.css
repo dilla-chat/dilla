@@ -1,13 +1,8 @@
 /* The voice dock (Signal, README §5.4; the prototype's dock): a card in the --live tints, margin 0 8px 8px, padding 10px,
-   radius 8px, rising in with d-up over 340ms. One row, gap 8px: the bars, the name over the stats, the controls. */
+   radius 8px, rising in with d-up over 340ms. One row, gap 8px: the phase marker (none when connected), the name over the stats, the controls. */
 .d-voice-dock { display: grid; gap: 8px; margin: 0 8px 8px; padding: 10px; min-width: 0; background: var(--ok-soft); border: 1px solid var(--ok-soft-border); border-radius: var(--r-lg); animation: d-up var(--duration-dock) var(--ease-out) both; }
 .d-voice-dock__row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .d-voice-dock__glyph { display: inline-flex; flex: none; }
-/* Three 2 x 12px --live bars, 2px apart, bouncing from the bottom (d-bar 600ms, 200ms apart). */
-.d-voice-dock__bars { display: flex; align-items: flex-end; gap: 2px; height: 12px; }
-.d-voice-dock__bars > span { width: 2px; height: 12px; background: var(--ok); transform-origin: bottom; animation: d-bar var(--duration-bar) infinite; }
-.d-voice-dock__bars > span:nth-child(2) { animation-delay: calc(var(--duration-bar) / 3); }
-.d-voice-dock__bars > span:nth-child(3) { animation-delay: calc(var(--duration-bar) * 2 / 3); }
 .d-voice-dock__status { display: grid; flex: 1; min-width: 0; line-height: 1.3; }
 /* The name: 12px/600 --ok-text. */
 .d-voice-dock__line1 { display: flex; align-items: center; min-width: 0; margin: 0; padding: 0; font: inherit; font-size: var(--text-ui); font-weight: var(--weight-label); line-height: 1.3; color: var(--ok-text); text-align: left; background: transparent; border: 0; border-radius: 0; }

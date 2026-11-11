@@ -7,7 +7,7 @@ import { UserPanel } from '../UserPanel/UserPanel.tsx';
 import { nextFrame } from '../CallControls/CallControls.stories.tsx';
 
 /**
- * Signal §5.4: the dock is a card in the --live tints (radius 8px, padding 10px, margin 0 8px 8px), with the three bars
+ * Signal §5.4: the dock is a card in the --live tints (radius 8px, padding 10px, margin 0 8px 8px), with no phase marker
  * while connected and no level meter, the name over the stats, then camera, share and leave as 28px icon buttons in one row.
  */
 function expectDock(root: HTMLElement, story: string): void {
