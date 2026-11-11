@@ -183,6 +183,9 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
   }, [binding, handlers, gifsEnabled, bot.definitions]);
   /** The last run of this conversation's draft that the Bot never answered: the picker offers Retry with the same request id. */
   const [noAnswer, setNoAnswer] = useState<{ key: string; message: string } | null>(null);
+  // The row of an uncertain attempt is held (it never auto-dismisses) while the composer offers a way on; any new run, a late answer or a cancel lets it go.
+  const heldRow = useRef<string | null>(null);
+  const releaseHeld = useCallback(() => { const id = heldRow.current; heldRow.current = null; if (id !== null) resultStore.update(id, { hold: false }); }, [resultStore]);
   const members = useSlice(`members:${props.communityId ?? ''}`);
   const botName = installationBotName(members, bot.botUserId);
   const channels = useSlice(`channels:${props.communityId ?? ''}`);
@@ -198,7 +201,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     onDraft('');
   }, [memory, key, onDraft, onModeChange]);
   const execution = useCallback((invocation: CommandInvocation): Promise<CommandResult> => {
-    setNoAnswer(null);
+    setNoAnswer(null); releaseHeld();
     const definition = definitions.find(command => command.id === invocation.commandId);
     let resultId: string | undefined;
     let startedRun: BotCommandRun | undefined;
@@ -211,7 +214,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
         progress: (_context, text) => { if (resultId !== undefined) resultStore.update(resultId, { text }); },
         // M4: an answer that came after the 5 s timeout is shown in its row, and the Retry offer goes (it is answered).
         late: (_context, result) => {
-          if (resultId !== undefined) resultStore.update(resultId, { status: result.status === 'success' ? 'success' : 'failed',
+          if (resultId !== undefined) resultStore.update(resultId, { status: result.status === 'success' ? 'success' : 'failed', hold: false,
             text: result.message ?? commandPickerCopy.completedPrivately });
           setNoAnswer(current => (current?.key === key ? null : current));
         },
@@ -299,6 +302,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
       if (response.status === 'uncertain') {
         // Keep the original invocation and request id when an uncertain attempt is retried.
         remember(memory, key, { text: commandText, requestId: attempt, invocationKey, mode: 'active' });
+        heldRow.current = pendingResult(); resultStore.update(heldRow.current, { hold: true });
         if (isCurrent()) {
           setCommandText(commandText); setActive(true); activeRef.current = true; onModeChange(true);
           // Bot v2: no answer in 5 s: the reopened draft offers Retry, which sends the same request id again.
@@ -317,7 +321,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
       resultStore.update(pendingResult(), { status: 'failed', text });
       return { status: 'failure', private: true, message: text };
     });
-  }, [handlers, definitions, contextKey, key, memory, binding, commandText, client, runtime, items, selfId, encodeMessage, openGif, resultStore, leaveAfterRun, onModeChange]);
+  }, [handlers, definitions, contextKey, key, memory, binding, commandText, client, runtime, items, selfId, encodeMessage, openGif, resultStore, releaseHeld, leaveAfterRun, onModeChange]);
   const suggest = useCallback(async (commandId: string, option: CommandOption, query: string, values?: Readonly<Record<string, string>>): Promise<CommandSuggestionList> => {
     const supplied = await suggestionProvider?.(commandId, option, query, binding, values);
     if (supplied !== undefined) return supplied;
@@ -367,7 +371,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     return [];
   }, [suggestionProvider, binding, items, selfId, client]);
   const cancel = (text: string) => {
-    setNoAnswer(null);
+    setNoAnswer(null); releaseHeld();
     const saved = memory.get(key);
     remember(memory, key, { text, requestId: saved?.requestId ?? requestId(), invocationKey: saved?.invocationKey ?? text, mode: 'canceled' });
     generation.current++;

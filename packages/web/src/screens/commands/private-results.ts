@@ -1,5 +1,16 @@
 import type { BotStatus } from '@dilla/ui';
-export interface PrivateResult { id: string; at: number; status: BotStatus; text: string; provider: 'builtin' | 'bot' }
+/** A finished private reply (done, failed, not confirmed) goes away this long after it finished. */
+export const PRIVATE_RESULT_TTL_MS = 60_000;
+/** `hold`: the row still offers a way on (a Retry), so it stays until it settles or the user acts. `settledAt`: set by the store while the row is finished and not held. */
+export interface PrivateResult { id: string; at: number; status: BotStatus; text: string; provider: 'builtin' | 'bot'; hold?: boolean; settledAt?: number }
+/** When the visible row should dismiss itself, or undefined while it must stay. */
+export const autoDismissAt = (row: PrivateResult): number | undefined => row.settledAt === undefined ? undefined : row.settledAt + PRIVATE_RESULT_TTL_MS;
+const stamp = (next: PrivateResult, prev?: PrivateResult): PrivateResult => {
+  const { settledAt: _drop, ...rest } = next; void _drop;
+  if (next.status === 'pending' || next.hold === true) return rest;
+  const keep = prev !== undefined && prev.status === next.status && prev.hold !== true ? prev.settledAt : undefined;
+  return { ...rest, settledAt: keep ?? Date.now() };
+};
 interface Store {
   rows: () => readonly PrivateResult[];
   add: (row: Omit<PrivateResult, 'id'>) => string;
@@ -29,8 +40,8 @@ export function privateResults(client: object, account: string, conversation: st
     const publish = (next: readonly PrivateResult[]) => { rows = next; for (const listener of listeners) listener(); };
     entry = { viewed: () => listeners.size > 0, store: {
       rows: () => rows,
-      add: row => { const id = crypto.randomUUID(); publish([...rows, { ...row, id }].sort((a, b) => a.at - b.at)); return id; },
-      update: (id, patch) => { publish(rows.map(row => row.id === id ? { ...row, ...patch, id } : row).sort((a, b) => a.at - b.at)); },
+      add: row => { const id = crypto.randomUUID(); publish([...rows, stamp({ ...row, id })].sort((a, b) => a.at - b.at)); return id; },
+      update: (id, patch) => { publish(rows.map(row => row.id === id ? stamp({ ...row, ...patch, id }, row) : row).sort((a, b) => a.at - b.at)); },
       dismiss: id => { publish(rows.filter(row => row.id !== id)); },
       subscribe: listener => { listeners.add(listener); return () => { listeners.delete(listener); trim(); }; },
     } };
