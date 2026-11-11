@@ -48,7 +48,21 @@ test('only well-formed tiles reach the page, and the listener can unsubscribe', 
   assert.equal(seen.length, 1);
   assert.equal(seen[0][0].name, 'Built-in');
   off();
-  assert.equal(f.listening(), false);
+  f.emit([tile]);
+  assert.equal(seen.length, 1, 'an unsubscribed listener gets nothing more');
+});
+
+test('tiles sent before the page subscribes are delivered once on subscribe', async () => {
+  const f = await fixture();
+  assert.equal(f.listening(), true, 'the preload listens from load, before the page subscribes');
+  f.emit([{ ...tile, name: 'Older' }]);
+  f.emit([tile]);
+  const seen: any[] = [];
+  f.exposed.get('dillaPicker').onSources((tiles: any) => seen.push(tiles));
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0][0].name, 'Built-in', 'only the latest tiles are replayed');
+  f.emit([{ ...tile, name: 'Refreshed' }]);
+  assert.deepEqual(seen.map(tiles => tiles[0].name), ['Built-in', 'Refreshed']);
 });
 
 test('choose sends one tile id; cancel sends null; nothing else crosses', async () => {

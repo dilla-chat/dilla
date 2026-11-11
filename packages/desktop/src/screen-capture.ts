@@ -10,6 +10,7 @@ const SCRIPT_URL = `${CAPTURE_URL}screen-capture-broker.js`;
 // The thumbnail picker (macOS, Windows, Linux X11): a main-owned, sandboxed modal window on its own empty session. Thumbnails
 // and window titles go only to it, never to the account renderer, and main takes the choice from that window alone.
 const PICKER_URL = 'dilla-internal://picker/';
+const PICKER_PARTITION = 'dilla-picker';
 const PICKER_FILE = /^[A-Za-z0-9_-]+(?:[.-][A-Za-z0-9_]+)*\.(html|js|css|woff2|woff|svg)$/;
 const PICKER_TYPES: Record<string, string> = { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', woff2: 'font/woff2', woff: 'font/woff', svg: 'image/svg+xml' };
 const PICKER_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; media-src 'none'; worker-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
@@ -22,7 +23,6 @@ interface Picker {
   /** Tile id → native source id, exactly the sources of the LAST enumeration. A choice is checked against this only. */
   current: Map<string, string>;
   window: BrowserWindow | null;
-  session: Session | null;
   refresh: ReturnType<typeof setInterval> | null;
   deadline: ReturnType<typeof setTimeout> | null;
   enumerating: boolean;
@@ -62,6 +62,8 @@ export class ScreenCaptureBroker {
   private onEnded: (instance: string, id: string) => void;
   /** Linux Wayland: the system portal chooses the source. Elsewhere the page draws the thumbnail picker. */
   private portal: boolean;
+  private pickerSession: Session | null = null;
+  private livePickers = new Set<Picker>();
   constructor(options: { directory: string; portal?: boolean; onEnded: (instance: string, id: string) => void }) {
     this.directory = options.directory;
     this.portal = options.portal ?? screenPortal(process.platform, process.env);
@@ -162,7 +164,7 @@ export class ScreenCaptureBroker {
     if (!first.length) throw new Error('No screen capture sources');
     let resolve!: (sourceId: string | null) => void;
     const result = new Promise<string | null>(done => { resolve = done; });
-    const picker: Picker = { tiles: new Map(), current: new Map(), window: null, session: null, refresh: null, deadline: null, enumerating: false, dispose: [], done: () => {} };
+    const picker: Picker = { tiles: new Map(), current: new Map(), window: null, refresh: null, deadline: null, enumerating: false, dispose: [], done: () => {} };
     picker.done = sourceId => {
       if (capture.picker !== picker) return;
       capture.picker = null;
@@ -175,18 +177,14 @@ export class ScreenCaptureBroker {
       const win = picker.window;
       picker.window = null;
       if (win && !win.isDestroyed()) win.destroy();
-      const isolated = picker.session;
-      picker.session = null;
-      if (isolated) {
-        isolated.setPermissionCheckHandler(() => false);
-        isolated.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-        isolated.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (_details, callback) => callback({ cancel: true }));
-        isolated.protocol.unhandle('dilla-internal');
-        void Promise.allSettled([isolated.closeAllConnections(), isolated.clearStorageData(), isolated.clearCache()]);
-      }
+      this.livePickers.delete(picker);
+      // With no picker open the shared session serves and loads nothing (its handlers are gated on a live picker); empty it.
+      const isolated = this.pickerSession;
+      if (isolated && this.livePickers.size === 0) void Promise.allSettled([isolated.closeAllConnections(), isolated.clearStorageData(), isolated.clearCache()]);
       resolve(sourceId);
     };
     capture.picker = picker;
+    this.livePickers.add(picker);
     picker.deadline = setTimeout(() => picker.done(null), PICKER_DEADLINE_MS);
     try { await this.openPicker(capture, picker); }
     catch { picker.done(null); }
@@ -206,32 +204,39 @@ export class ScreenCaptureBroker {
     }
     return result;
   }
-  /** The picker window: a modal child of the owner on a fresh nonpersistent session that serves only the fixed picker files. */
-  private async openPicker(capture: Capture, picker: Picker): Promise<void> {
-    const isolated = session.fromPartition(`dilla-picker-${capture.id}`, { cache: false });
-    picker.session = isolated;
-    const live = () => capture.picker === picker;
+  /**
+   * The one picker session: a fixed nonpersistent partition (no account data), set up once. It serves only the fixed picker
+   * files and loads nothing else, and only while a picker is open; it grants no permission, capture or download, ever.
+   */
+  private picker(): Session {
+    if (this.pickerSession) return this.pickerSession;
+    const isolated = session.fromPartition(PICKER_PARTITION, { cache: false });
+    this.pickerSession = isolated;
     const root = join(this.directory, 'screen-picker');
+    const open = () => this.livePickers.size > 0;
     isolated.protocol.handle('dilla-internal', async request => {
       const name = request.url === PICKER_URL ? 'screen-picker.html' : request.url.startsWith(PICKER_URL) ? request.url.slice(PICKER_URL.length) : '';
       const type = PICKER_FILE.exec(name)?.[1];
-      if (!live() || !type || request.method !== 'GET') return new Response(null, { status: 404 });
+      if (!open() || !type || request.method !== 'GET') return new Response(null, { status: 404 });
       try {
         return new Response(await readFile(join(root, name)), { headers: {
           'Content-Type': PICKER_TYPES[type], 'Content-Security-Policy': PICKER_CSP, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store',
         } });
       } catch { return new Response(null, { status: 404 }); }
     });
-    // The picker needs no permission, network, download or capture of any kind.
     isolated.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     isolated.setPermissionCheckHandler(() => false);
     isolated.setDisplayMediaRequestHandler((_request, callback) => callback(null));
     isolated.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, callback) => {
-      callback({ cancel: !live() || !details.url.startsWith(PICKER_URL) });
+      callback({ cancel: !open() || !details.url.startsWith(PICKER_URL) });
     });
-    const download = (event: Electron.Event) => event.preventDefault();
-    isolated.on('will-download', download);
-    picker.dispose.push(() => isolated.removeListener('will-download', download));
+    isolated.on('will-download', event => event.preventDefault());
+    return isolated;
+  }
+  /** The picker window: a modal child of the owner on the picker session. */
+  private async openPicker(capture: Capture, picker: Picker): Promise<void> {
+    const isolated = this.picker();
+    const live = () => capture.picker === picker;
     const win = new BrowserWindow({ parent: capture.owner, modal: true, show: false, width: 720, height: 560, resizable: false,
       minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true, frame: false, title: 'Share your screen', backgroundColor: '#08090B',
       webPreferences: { session: isolated, preload: join(this.directory, 'screen-picker-preload.cjs'), sandbox: true,
@@ -276,7 +281,8 @@ export class ScreenCaptureBroker {
       let tile = picker.tiles.get(source.id);
       if (tile === undefined) { tile = randomUUID(); picker.tiles.set(source.id, tile); }
       picker.current.set(tile, source.id);
-      const thumbnail = source.thumbnail && !source.thumbnail.isEmpty() ? source.thumbnail.toDataURL() : null;
+      // JPEG keeps a refresh of 20 windows small; the app icons stay PNG for their transparency.
+      const thumbnail = source.thumbnail && !source.thumbnail.isEmpty() ? `data:image/jpeg;base64,${source.thumbnail.toJPEG(70).toString('base64')}` : null;
       const icon = source.appIcon && !source.appIcon.isEmpty() ? source.appIcon.toDataURL() : null;
       tiles.push({ id: tile, name: String(source.name ?? '').slice(0, 256), kind: source.id.startsWith('window:') ? 'window' : 'screen', thumbnail, icon });
     }
