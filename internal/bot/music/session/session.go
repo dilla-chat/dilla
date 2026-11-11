@@ -146,6 +146,17 @@ func (s QueueStarter) StartExplicit(ctx context.Context, track music.Track) (mus
 	}
 	ctx = context.WithValue(client.WithInteractive(ctx), explicitStartKey{}, true)
 	playback, err := s.Start(ctx, track)
+	if errors.Is(err, livekit.ErrLeafMissing) && ctx.Err() == nil && !music.ForcedRejoin(ctx) {
+		// v0.1.0-bot2.2 (F3): the Bot's own leaf left the call group (a Remove committed after its last track). The
+		// failed start already forgot the prepared call; rejoin the call group once (a forced join that does not trust
+		// the helper's membership, then a catch-up) and retry the start once. A second failure is the track's.
+		if s.ResetConnection != nil {
+			if resetErr := s.ResetConnection(); resetErr != nil {
+				return nil, resetErr
+			}
+		}
+		return s.Start(music.WithForcedRejoin(ctx), track)
+	}
 	if !errors.Is(err, livekit.ErrBinding) || ctx.Err() != nil || s.ResetConnection == nil {
 		return playback, err
 	}

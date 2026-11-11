@@ -11,6 +11,10 @@ import (
 
 const maxCallEpochRoster = 4096
 
+// ErrCallEpochOwnLeafMissing is a call epoch whose roster lacks the Bot's own leaf: its leaf was removed from the call
+// group (v0.1.0-bot2.2: a music start then rejoins once).
+var ErrCallEpochOwnLeafMissing = errors.New("call epoch own leaf missing")
+
 // CallMediaEpoch fetches the active call's current media epoch from the native helper.
 func (c *Client) CallMediaEpoch(ctx context.Context, call id.ID) (CallMediaEpoch, error) {
 	if call.IsZero() {
@@ -71,7 +75,7 @@ func decodeCallMediaEpoch(body []byte) (any, error) {
 		result.Roster = append(result.Roster, CallMediaMember{Leaf: leaf, DeviceID: device, UserID: user})
 	}
 	if !seenOwn {
-		return nil, errors.New("call epoch own leaf missing")
+		return nil, ErrCallEpochOwnLeafMissing
 	}
 	return result, nil
 }

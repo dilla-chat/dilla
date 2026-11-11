@@ -1139,11 +1139,14 @@ func TestMusicResumeSkipsBrokenProviderHead(t *testing.T) {
 			}
 			runtime := &musicQueueRuntime{store: store, supervisors: map[id.ID]*music.Supervisor{channel: supervisor}}
 			revision, err := runtime.ApplyPersistedSnapshot(context.Background(), channel, saved.State, saved.Revision, true)
-			if err != nil {
-				t.Fatal(err)
+			// v0.1.0-bot2.2: the explicit start's command answers that its track was removed (and names the one now
+			// playing), so no channel notice is sent for it.
+			var removed *music.TrackRemovedError
+			if !errors.As(err, &removed) || removed.ItemID != "broken" || removed.Playing == nil || removed.Playing.ID != "working" {
+				t.Fatalf("err = %v, want the broken head removed with the working track playing", err)
 			}
 			got := supervisor.State()
-			if got.Current == nil || got.Current.ID != "working" || got.Paused || len(got.Queue) != 0 || joins != 1 || calls.starts != 1 || lines != 1 || revision != saved.Revision+1 {
+			if got.Current == nil || got.Current.ID != "working" || got.Paused || len(got.Queue) != 0 || joins != 1 || calls.starts != 1 || lines != 0 || revision != saved.Revision+1 {
 				t.Fatalf("state=%+v joins=%d calls=%d lines=%d revision=%d", got, joins, calls.starts, lines, revision)
 			}
 			durable, err := store.Load(context.Background(), channel)

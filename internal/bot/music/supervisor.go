@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
@@ -68,6 +69,68 @@ type Supervisor struct {
 	timings       []StartTiming
 	prefetch      *prefetchPlan
 	prefetchAfter func(time.Duration, func()) Timer
+	// v0.1.0-bot2.2: the queue items loaded from storage when the supervisor was made (restored=true in the logs; at
+	// most QueueLimit), and the item of the playback now published.
+	restored    map[string]bool
+	playingItem string
+}
+
+// TrackRemovedError is an explicit start whose track failed and was removed from the queue and from persistence
+// (v0.1.0-bot2.2): the waiting command answers that it was removed, so no channel notice is sent for it. Playing is
+// the queued track that started in its place, or nil.
+type TrackRemovedError struct {
+	ItemID  string
+	Playing *Track
+	Cause   error
+}
+
+func (e *TrackRemovedError) Error() string {
+	return "music: the track failed to start and was removed from the queue"
+}
+func (e *TrackRemovedError) Unwrap() error { return e.Cause }
+
+// trackFailed reports an error that is the track's own failure, so its item leaves the queue (v0.1.0-bot2.2, owner
+// rule "failed track is removed"). A start that waits for a member's play, a helper closed under the track and a
+// player that cannot run at all are the Bot's failures, not the track's: the item stays, paused, as a user-paused one
+// does.
+func trackFailed(err error) bool {
+	return err != nil && !errors.Is(err, ErrNeedsExplicitPlay) && !errors.Is(err, helper.ErrClosed) && !errors.Is(err, ErrPlayerUnavailable)
+}
+
+// startFailed reports a start that failed at one of its stages for the track's own reason.
+func startFailed(err error) bool {
+	var stage *StartError
+	return errors.As(err, &stage) && trackFailed(err)
+}
+
+// removeCurrentLocked durably drops the current item after its failure. Repeat never queues it again; the next item
+// becomes current (paused only when the queue was paused).
+func (s *Supervisor) removeCurrentLocked(ctx context.Context) error {
+	originalRepeat := s.state.Repeat
+	base := cloneState(s.state)
+	base.Repeat = RepeatOff
+	next, err := Apply(base, s.state.Revision, Operation{Kind: OpSkip, NowMS: time.Now().UnixMilli()})
+	if err != nil {
+		return err
+	}
+	next.Repeat = originalRepeat
+	revision, err := s.store.Save(ctx, s.channel, s.revision, next)
+	if err != nil {
+		return err
+	}
+	s.state, s.revision = next, revision
+	return nil
+}
+
+// withoutItem takes item's skip out of skips (its command answers for it).
+func withoutItem(skips []SkippedTrack, item string) ([]SkippedTrack, *SkippedTrack) {
+	for i := range skips {
+		if skips[i].Track.ID == item {
+			removed := skips[i]
+			return append(skips[:i:i], skips[i+1:]...), &removed
+		}
+	}
+	return skips, nil
 }
 
 // IdleLeaver is a TrackStarter that can leave its retained voice room while nothing plays.
@@ -199,6 +262,13 @@ func NewSupervisor(ctx context.Context, channel id.ID, store QueueStore, starter
 		return nil, err
 	}
 	s := &Supervisor{ctx: ctx, channel: channel, store: store, starter: starter, state: state, revision: revision, changed: make(chan struct{}), grace: 5 * time.Minute, afterFunc: func(d time.Duration, fn func()) Timer { return time.AfterFunc(d, fn) }}
+	s.restored = make(map[string]bool, len(state.Queue)+1)
+	if state.Current != nil {
+		s.restored[state.Current.ID] = true
+	}
+	for _, track := range state.Queue {
+		s.restored[track.ID] = true
+	}
 	for _, option := range options {
 		if option != nil {
 			option(s)
@@ -365,14 +435,31 @@ func (s *Supervisor) ApplyPersistedSnapshot(ctx context.Context, committed State
 		s.startRequest++
 	}
 	if startPlayback && !state.Paused && state.Current != nil && s.playback == nil {
+		requested := state.Current.ID
 		var startErr error
 		skipped, startErr = s.startLocked(s.ctx, true, nil)
+		// The requested track failed and left the queue: its command answers for it, not a channel notice.
+		var removed *SkippedTrack
+		skipped, removed = withoutItem(skipped, requested)
 		if err := startErr; err != nil {
 			pauseCtx, cancel := context.WithTimeout(context.WithoutCancel(s.ctx), 5*time.Second)
 			_ = s.pauseLocked(pauseCtx)
 			cancel()
 			s.signalLocked()
+			if removed != nil {
+				return s.revision, &TrackRemovedError{ItemID: requested, Cause: removed.Failure}
+			}
 			return s.revision, err
+		}
+		if removed != nil {
+			var playing *Track
+			if s.playback != nil && s.state.Current != nil {
+				current := *s.state.Current
+				playing = &current
+			}
+			s.idleCheckLocked()
+			s.signalLocked()
+			return s.revision, &TrackRemovedError{ItemID: requested, Playing: playing, Cause: removed.Failure}
 		}
 	}
 	s.idleCheckLocked()
@@ -585,7 +672,7 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool, budget *sta
 			continue
 		}
 		track := *s.state.Current
-		startCtx, startTimer := withStartTimer(WithStartAtMS(runCtx, s.state.PositionMS))
+		startCtx, startTimer := withStartTimer(WithPlaybackItem(WithStartAtMS(runCtx, s.state.PositionMS), track.ID, s.restored[track.ID]))
 		startBegan := time.Now()
 		s.mu.Unlock()
 		var p Playback
@@ -621,23 +708,14 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool, budget *sta
 			if run.request != s.startRequest {
 				return skips, nil
 			}
-			var permanent interface{ ProviderFailure() bool }
-			if !errors.As(err, &permanent) || !permanent.ProviderFailure() {
+			// v0.1.0-bot2.2: a track that failed to start leaves the queue and persistence (not only a permanent
+			// provider failure), so a later /play never resumes it; the next queued track starts.
+			if !startFailed(err) {
 				return skips, err
 			}
-			originalRepeat := s.state.Repeat
-			nextBase := cloneState(s.state)
-			nextBase.Repeat = RepeatOff
-			next, applyErr := Apply(nextBase, s.state.Revision, Operation{Kind: OpSkip, NowMS: time.Now().UnixMilli()})
-			if applyErr != nil {
-				return skips, applyErr
+			if removeErr := s.removeCurrentLocked(runCtx); removeErr != nil {
+				return skips, removeErr
 			}
-			next.Repeat = originalRepeat
-			revision, saveErr := s.store.Save(runCtx, s.channel, s.revision, next)
-			if saveErr != nil {
-				return skips, saveErr
-			}
-			s.state, s.revision = next, revision
 			skips = append(skips, SkippedTrack{Track: track, Failure: err})
 			budget.skipped++
 			budget.consecutive++
@@ -658,6 +736,7 @@ func (s *Supervisor) startLocked(ctx context.Context, explicit bool, budget *sta
 		timeout.Stop()
 		go func() { <-p.Done(); cancel() }()
 		s.playback = p
+		s.playingItem = track.ID
 		s.state.PositionAtMS = time.Now().UnixMilli()
 		go s.monitor(p, budget)
 		return skips, nil
@@ -688,8 +767,9 @@ func (s *Supervisor) monitor(p Playback, budget *startBudget) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	logger = logger.With("item_id", s.playingItem, "restored", s.restored[s.playingItem])
 	if err != nil {
-		logger.WarnContext(s.ctx, "bot music playback ended", "class", FailureClass(err))
+		logger.WarnContext(s.ctx, "bot music playback ended", "class", FailureClass(err), "error_class", helper.Class(err))
 	} else {
 		logger.InfoContext(s.ctx, "bot music playback ended", "class", "eof")
 	}
@@ -705,6 +785,28 @@ func (s *Supervisor) monitor(p Playback, budget *startBudget) {
 					_ = s.pauseLocked(s.ctx)
 					if s.onAutomaticPlaybackFailure != nil {
 						s.onAutomaticPlaybackFailure(s.ctx, startErr)
+					}
+				}
+				s.signalLocked()
+				return
+			}
+		}
+		// v0.1.0-bot2.2: a track that ended on an error leaves the queue (a channel notice says so; no command waits)
+		// and the next queued one starts. A user's pause or stop never reaches here.
+		if trackFailed(err) && s.state.Current != nil && s.state.Current.ID == s.playingItem {
+			track := *s.state.Current
+			if removeErr := s.removeCurrentLocked(s.ctx); removeErr == nil {
+				skipped = append(skipped, SkippedTrack{Track: track, Failure: err})
+				if !s.state.Paused && s.state.Current != nil {
+					var skips []SkippedTrack
+					var startErr error
+					skips, startErr = s.startLocked(s.ctx, false, budget)
+					skipped = append(skipped, skips...)
+					if startErr != nil {
+						if s.onAutomaticPlaybackFailure != nil {
+							s.onAutomaticPlaybackFailure(s.ctx, startErr)
+						}
+						_ = s.pauseLocked(s.ctx)
 					}
 				}
 				s.signalLocked()

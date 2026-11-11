@@ -664,7 +664,12 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									musicPolicy := &musicPolicyCache{installation: installation.ID}
 									starterFor := func(channel id.ID) (session.QueueStarter, error) {
 										catchUp := musicCallCatchUp{sync: musicSourceSync, session: result.Session, community: installation.CommunityID, channel: channel,
-											local: nativeClient.InspectGroup, remote: result.Session.GroupInfo}
+											local: nativeClient.InspectGroup, remote: result.Session.GroupInfo,
+											// v0.1.0-bot2.2 (F4): each check resolves the installation's current helper; a closed,
+											// unusable or replaced one stops the track at once (error_class=closed).
+											helperNow: func() error {
+												return musicHelperNow(musicRegistry, installation.ID, installation.CommunityID, nativeClient)
+											}}
 										joinCallGroup := func(joinCtx context.Context) error {
 											// Bot v2 Task 19: the policy version is read once per op 54, not per join (fix round 1, M2); an
 											// already-member join catches the call group up first (C1).

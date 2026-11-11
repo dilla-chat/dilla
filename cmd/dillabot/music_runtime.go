@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os/exec"
@@ -244,7 +245,8 @@ const musicCallPrepTimeout = 30 * time.Second
 
 // errMusicNeedsPlay pauses an automatic start (the next queued track, a source restart) that has no room to play in:
 // only a member's play joins a call (Bot v2 Task 19 fix round 1, I2).
-var errMusicNeedsPlay = errors.New("music: the room was left; a member's play joins again")
+// It matches music.ErrNeedsExplicitPlay, so the track it waits on stays in the queue (v0.1.0-bot2.2).
+var errMusicNeedsPlay = fmt.Errorf("music: the room was left; a member's play joins again: %w", music.ErrNeedsExplicitPlay)
 
 // musicCallPrep runs one voice room's call preparation (call-group join, call token, and through Warm also the room
 // connection) at most once at a time (Bot v2 Task 19). An opened /play warms it while its track resolves; the start

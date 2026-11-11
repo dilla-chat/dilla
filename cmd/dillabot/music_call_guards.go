@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/intake"
 	"github.com/dilla-chat/dilla/internal/bot/music/livekit"
 	"github.com/dilla-chat/dilla/internal/bot/native"
@@ -45,11 +46,40 @@ type musicCallCatchUp struct {
 	// helper is current with costs that one read, and the paging (with its cursor write) runs only when behind.
 	local  func(context.Context, id.ID) (native.GroupInfo, error)
 	remote func(context.Context, id.ID) (client.GroupInfo, error)
+	// helperNow resolves the installation's current helper on every check (v0.1.0-bot2.2 F4, as the commands do since
+	// Task 3): helper.ErrClosed once the helper this catch-up uses is closed, unusable or no longer the registered one.
+	// Nil checks nothing.
+	helperNow func() error
 }
 
 const musicCatchUpPasses = 16
 
+// musicHelperNow is a catch-up's helperNow: nil while own is still the installation's registered helper and usable;
+// otherwise helper.ErrClosed.
+func musicHelperNow(registry *musicQueueRegistry, installation, community id.ID, own musicRuntimeNative) error {
+	current := registry.Native(installation, community)
+	if current == nil || current != own || !nativeUsable(current) {
+		return helper.ErrClosed
+	}
+	return nil
+}
+
+// run catches group up. A closed or unusable helper is terminal at once (the track stops at its first failed check
+// with error_class=closed, instead of after maxCatchUpFailures checks).
 func (c musicCallCatchUp) run(ctx context.Context, group id.ID) error {
+	if c.helperNow != nil {
+		if err := c.helperNow(); err != nil {
+			return fmt.Errorf("%w: %w", livekit.ErrCallCatchUpTerminal, err)
+		}
+	}
+	err := c.catchUp(ctx, group)
+	if err != nil && !errors.Is(err, livekit.ErrCallCatchUpTerminal) && errors.Is(err, helper.ErrClosed) {
+		return fmt.Errorf("%w: %w", livekit.ErrCallCatchUpTerminal, err)
+	}
+	return err
+}
+
+func (c musicCallCatchUp) catchUp(ctx context.Context, group id.ID) error {
 	if c.sync == nil || c.session == nil {
 		return errors.New("music call group catch-up unavailable")
 	}
