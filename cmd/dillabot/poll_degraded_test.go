@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/health"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -43,6 +44,11 @@ func TestEventsStageFailuresDegradeHealth(t *testing.T) {
 	}
 	for range 4 {
 		r.PollText(context.Background())
+	}
+	// dillad ignores the Bot's failing_since; the degraded transition reaches it as one failed command, once.
+	entry := r.sealed.lookup(installation)
+	if got := entry.healthLoad(time.Now(), nil).FailedCommands; got != 1 {
+		t.Fatalf("failed commands in the health load = %d, want 1", got)
 	}
 	if n := count("bot installation poll degraded"); n != 1 {
 		t.Fatalf("degraded line %d times:\n%s", n, out.String())

@@ -64,7 +64,7 @@ type botGatewayRuntime struct {
 	// eventFailures is each installation's run of consecutive events-stage poll failures, and eventsDegraded the
 	// installations marked degraded for it (guarded by mu; v0.1.0-bot2.4).
 	eventFailures  map[id.ID]int
-	eventsDegraded map[id.ID]bool
+	eventsDegraded map[id.ID]*eventsDegradedState
 	maintenance    map[id.ID]backgroundMaintenance
 	startedAt      uint64
 
@@ -455,60 +455,84 @@ func (r *botGatewayRuntime) TextPoller(installation id.ID) func(context.Context)
 // eventsFailuresToDegrade is how many consecutive events-stage poll failures mark an installation degraded.
 const eventsFailuresToDegrade = 3
 
-// noteEventsStage counts one poll's outcome for the installation's health: three consecutive events-stage failures
-// mark it degraded (failing_since in its health report), the next clean poll clears the mark. Each transition logs
-// once. A poll that failed before the events stage, was rate limited or only waited for the gateway says nothing
-// about the event journal and leaves the run as it was.
+// eventsDegradedState is an installation's degraded mark for repeated events-stage failures.
+type eventsDegradedState struct {
+	since   time.Time
+	counted bool // the failed command that tells dillad has been counted
+}
+
+// noteEventsStage counts one poll's outcome for the installation's health. Three consecutive events-stage failures
+// mark it degraded: the Bot counts one failed command, which dillad's failed_commands latch turns into "commands
+// failing" (dillad ignores the Bot's own failing_since), and the monitor's failing_since is set for the Bot's own
+// doctor. The next clean poll clears the mark; dillad's latch then clears on its next report with no failures and a
+// newer passing probe. Each transition logs once. A poll that was rate limited or only waited for the gateway says
+// nothing about the event journal and leaves the run as it was; a failure at an earlier stage breaks the run.
 func (r *botGatewayRuntime) noteEventsStage(installation id.ID, err error) {
-	failed := false
-	if err != nil {
-		if textPollStage(err) != textPollEvents || client.RateLimitError(err) != nil || client.IsDeferred(err) {
-			return
-		}
-		failed = true
+	if err != nil && (client.RateLimitError(err) != nil || client.IsDeferred(err)) {
+		return
 	}
+	eventsFailed := err != nil && textPollStage(err) == textPollEvents
 	r.mu.Lock()
 	if r.eventFailures == nil {
-		r.eventFailures, r.eventsDegraded = map[id.ID]int{}, map[id.ID]bool{}
+		r.eventFailures, r.eventsDegraded = map[id.ID]int{}, map[id.ID]*eventsDegradedState{}
 	}
 	transition := ""
-	if failed {
+	if eventsFailed {
 		r.eventFailures[installation]++
-		if r.eventFailures[installation] >= eventsFailuresToDegrade && !r.eventsDegraded[installation] {
-			r.eventsDegraded[installation], transition = true, "degraded"
+		if r.eventFailures[installation] >= eventsFailuresToDegrade && r.eventsDegraded[installation] == nil {
+			r.eventsDegraded[installation], transition = &eventsDegradedState{since: r.nowTime()}, "degraded"
 		}
 	} else {
 		delete(r.eventFailures, installation)
-		if r.eventsDegraded[installation] {
+		if err == nil && r.eventsDegraded[installation] != nil {
 			delete(r.eventsDegraded, installation)
 			transition = "recovered"
 		}
 	}
+	state := r.eventsDegraded[installation]
 	r.mu.Unlock()
-	if transition == "" {
-		return
-	}
+
+	var entry *sealedEntry
 	var monitor *health.Monitor
-	if entry := r.sealed.lookup(installation); entry != nil {
+	if entry = r.sealed.lookup(installation); entry != nil {
 		entry.mu.Lock()
 		monitor = entry.monitor
 		entry.mu.Unlock()
 	}
-	now := time.Now
-	if r.now != nil {
-		now = r.now
-	}
-	if transition == "degraded" {
+	switch {
+	case transition == "recovered":
 		if monitor != nil {
-			monitor.SetDegraded(now())
+			monitor.ClearDegraded()
 		}
-		r.log.Warn("bot installation poll degraded", "installation_id", installation.String(), "stage", textPollEvents, "failures", eventsFailuresToDegrade)
+		r.log.Info("bot installation poll recovered", "installation_id", installation.String(), "stage", textPollEvents)
+		return
+	case state == nil:
 		return
 	}
-	if monitor != nil {
-		monitor.ClearDegraded()
+	// Still degraded: apply what the entry could not take earlier (it, or its monitor, may appear after the mark).
+	r.mu.Lock()
+	needCount := !state.counted && entry != nil
+	if needCount {
+		state.counted = true
 	}
-	r.log.Info("bot installation poll recovered", "installation_id", installation.String(), "stage", textPollEvents)
+	since := state.since
+	r.mu.Unlock()
+	if needCount {
+		entry.load.addFailed(1)
+	}
+	if monitor != nil {
+		monitor.SetDegraded(since) // keeps the first time, so repeating it is harmless
+	}
+	if transition == "degraded" {
+		r.log.Warn("bot installation poll degraded", "installation_id", installation.String(), "stage", textPollEvents, "failures", eventsFailuresToDegrade)
+	}
+}
+
+func (r *botGatewayRuntime) nowTime() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
 }
 
 func (r *botGatewayRuntime) PollText(ctx context.Context) {

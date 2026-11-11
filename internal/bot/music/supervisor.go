@@ -10,6 +10,7 @@ import (
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
+	"github.com/dilla-chat/dilla/internal/bot/music/encode"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
@@ -881,10 +882,10 @@ func (s *Supervisor) monitor(p Playback, budget *startBudget) {
 	}
 	logger = logger.With("item_id", s.playingItem, "restored", s.restored[s.playingItem])
 	detail := endDetail(err)
-	if err != nil && detail == "invalid" && s.endedAtDurationLocked(p) {
-		// The stream stopped without its closing page at the track's own end: a normal end, not a failure.
+	if errors.Is(err, encode.ErrInvalidOpus) && detail == "invalid" && s.endedAtDurationLocked(p) {
+		// The Ogg stream stopped without its closing page at the track's own end: a normal end, not a failure.
 		// The Bot decides this from the known duration and logs only the verdict, never the duration.
-		logger.InfoContext(s.ctx, "bot music playback ended", "class", "eof", "detail", "eof", "error_class", helper.Class(err))
+		logger.InfoContext(s.ctx, "bot music playback ended", "class", "eof", "detail", "eof")
 		err = nil
 	} else if err != nil {
 		logger.WarnContext(s.ctx, "bot music playback ended", "class", FailureClass(err), "detail", detail, "error_class", helper.Class(err))

@@ -3,12 +3,14 @@ package music_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	music "github.com/dilla-chat/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music/encode"
 )
 
 // v0.1.0-bot2.4: the playback-ended line carries a fixed verdict decided inside the Bot, never the duration.
@@ -46,9 +48,11 @@ func TestPlaybackEndVerdicts(t *testing.T) {
 		detail   string
 		advances bool
 	}{
-		{"a stream cut at the duration minus 1 s is the end", duration - 1000, errors.New("encoder stopped"), "eof", true},
+		{"a stream cut at the duration minus 1 s is the end", duration - 1000, fmt.Errorf("%w: Ogg packet", encode.ErrInvalidOpus), "eof", true},
+		{"a deadline near the end stays invalid", duration - 1000, context.DeadlineExceeded, "invalid", false},
+		{"an unclassified error near the end stays invalid", duration - 1000, errors.New("encoder stopped"), "invalid", false},
 		{"a clean end is eof", duration - 1000, nil, "eof", true},
-		{"an early error is invalid", duration / 2, errors.New("encoder stopped"), "invalid", false},
+		{"an early error is invalid", duration / 2, fmt.Errorf("%w: Ogg packet", encode.ErrInvalidOpus), "invalid", false},
 		{"a cancelled end", duration / 2, context.Canceled, "cancelled", false},
 		{"a connection end", duration / 2, music.ErrConnectionEnded, "connection", false},
 		{"a helper end", duration / 2, helper.ErrClosed, "helper", false},
@@ -85,6 +89,9 @@ func TestPlaybackEndVerdicts(t *testing.T) {
 				t.Fatalf("detail = %v, want %s (%v)", row["detail"], c.detail, row)
 			}
 			if c.advances {
+				if _, has := row["error_class"]; has && c.err != nil {
+					t.Fatalf("a normal end carries error_class: %v", row)
+				}
 				waitFor(t, "the successor", func() bool { s := sup.State(); return s.Current != nil && s.Current.ID == "second" })
 				if skipped := r.skippedItems(); len(skipped) != 0 {
 					t.Fatalf("a normal end removed %v as failed", skipped)
