@@ -40,6 +40,11 @@ describe('TopBar', () => {
     await userEvent.click(chip);
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
+  it('the voice chip has no animated signal bars, only its text', () => {
+    const { container } = render(<TopBar {...base({ voice: { room: 'harbour', pingMs: 24, onOpen: vi.fn() } })} />);
+    expect(container.querySelector('.d-topbar__bars')).toBeNull();
+    expect(container.querySelector('.d-topbar__voice')?.childElementCount).toBe(0);
+  });
   it('the voice chip leaves the ping out until there is a reading', () => {
     render(<TopBar {...base({ voice: { room: 'harbour', pingMs: null, onOpen: vi.fn() } })} />);
     expect(screen.getByRole('button', { name: 'harbour' })).toBeInTheDocument();

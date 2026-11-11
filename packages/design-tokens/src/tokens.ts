@@ -224,7 +224,7 @@ export const structural = {
    * the Windows forced-colors indicator survives.
    */
   focusRing: '2px solid var(--accent)',
-  motion: { toggle: '240ms', track: '200ms', press: '120ms', fast: '150ms', normal: '220ms', slow: '300ms', enter: '380ms', badge: '450ms', pop: '400ms', turn: '200ms', aside: '280ms', bar: '600ms', easeOut: 'cubic-bezier(0.16, 1, 0.3, 1)', toast: '220ms', pulse: '2s', caret: '1s', flash: '1.4s', meter: '120ms', hover: '140ms', tab: '160ms', spin: '180ms', dock: '340ms', railBadge: '500ms', popover: '200ms',
+  motion: { toggle: '240ms', track: '200ms', press: '120ms', fast: '150ms', normal: '220ms', slow: '300ms', enter: '380ms', badge: '450ms', pop: '400ms', turn: '200ms', aside: '280ms', easeOut: 'cubic-bezier(0.16, 1, 0.3, 1)', toast: '220ms', pulse: '2s', caret: '1s', flash: '1.4s', meter: '120ms', hover: '140ms', tab: '160ms', spin: '180ms', dock: '340ms', railBadge: '500ms', popover: '200ms',
     /** Task 7 (the prototype's conversation): the feed's channel-switch fade, the composer's focus ring, the toolbar's rise and the 40ms entrance stagger. */
     switch: '140ms', switchRise: '240ms', focus: '160ms', rise: '180ms', stagger: '40ms',
     /** Task 8 (the prototype's voice stage): a tile's width and a speaker's scale, the focused tile's rise, and a caption's live meter beat. */

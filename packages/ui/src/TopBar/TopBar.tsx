@@ -56,7 +56,6 @@ export function TopBar({ searchLabel, searchShortcut, onSearch, voice, reminders
         {voice === undefined ? null : (
           <>
             <button type="button" className="d-topbar__voice" aria-describedby={voiceDesc} onClick={voice.onOpen}>
-              <span className="d-topbar__bars" aria-hidden="true"><i /><i /><i /></span>
               {voice.pingMs === null ? voice.room : `${voice.room} · ${String(voice.pingMs)} ms`}
             </button>
             <span id={voiceDesc} hidden>{labels.voice}</span>
