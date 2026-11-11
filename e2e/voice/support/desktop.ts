@@ -111,11 +111,30 @@ export async function observeDesktopScreen(ownerContext: BrowserContext, sourceC
    if (dialog.showMessageBox === choose) dialog.showMessageBox = original;
   } };
  }, { title, cancel });
+ // macOS, Windows and Linux X11 open the main-owned thumbnail picker window instead of the native list dialog
+ // (Wayland keeps the portal and the dialog above). Answer it the same way: the real named source, or Cancel.
+ const pickerSelections: NativeScreenSelection[] = [];
+ const onPicker = (picker: import('@playwright/test').Page) => {
+  void (async () => {
+   await picker.waitForLoadState('domcontentloaded');
+   if (!picker.url().startsWith('dilla-internal://picker/')) return;
+   if (cancel) {
+    await picker.getByRole('button', { name: 'Cancel', exact: true }).click();
+   } else {
+    await picker.getByRole('tab', { name: 'Windows' }).click();
+    await picker.getByRole('option', { name: title, exact: true }).click();
+    await picker.getByRole('button', { name: 'Share', exact: true }).click();
+   }
+   pickerSelections.push({ source: title, cancelled: cancel });
+  })().catch(error => { pickerSelections.push({ source: `error: ${String(error)}`, cancelled: cancel }); });
+ };
+ application.on('window', onPicker);
  return {
   requests: () => application.evaluate(() => (globalThis as any).__voiceNativeScreen.requests),
-  selections: () => application.evaluate(() => (globalThis as any).__voiceNativeScreen.selections),
+  selections: async () => [...await application.evaluate(() => (globalThis as any).__voiceNativeScreen.selections as NativeScreenSelection[]), ...pickerSelections],
   brokers: () => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(window => window.webContents.getURL() === 'dilla-internal://capture/').length),
   dispose: async () => {
+   application.off('window', onPicker);
    try { await application.evaluate(() => { (globalThis as any).__voiceNativeScreen.dispose(); delete (globalThis as any).__voiceNativeScreen; }); }
    finally {
     const source = await sourceApplication.browserWindow(sourceContext.pages()[0]);
