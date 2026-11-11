@@ -810,19 +810,26 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 													sealedConfig.musicStarts = func() []music.StartTiming {
 														return musicRegistry.StartTimings(installation.ID, installation.CommunityID)
 													}
+													// v0.1.0-bot2.2 (F4): every intake call uses the helper registered now, not this pass's.
+													sealedConfig.resolve = func() sealedHelper {
+														current, _ := musicRegistry.Native(installation.ID, installation.CommunityID).(sealedHelper)
+														return current
+													}
 													gateways.SetSealedIntake(sealedConfig)
 													// Bot v2 Task 17: incoming webhooks are posted through this installation's send path.
 													gateways.SetWebhookPoster(installation.ID, newWebhookPoster(installation.CommunityID,
 														service.WelcomeDestinationResolver{Session: result.Session, Native: nativeClient, Feature: "webhooks"},
 														coordinatorWebhookSend{coordinator: coordinator, session: result.Session, authority: api}, time.Now,
 														logger.With("installation_id", installation.ID.String())))
-													gateways.SetTextPoller(installation.ID, newTextPoller(membership, result.Session,
-														func(pollCtx context.Context) error {
-															return gateways.SubscribeNativeGroups(pollCtx, installation.ID, nativeClient)
-														}, eventPoller))
+													gateways.SetTextPoller(installation.ID, helperBoundPoller(musicRegistry, installation.ID, installation.CommunityID, nativeClient,
+														newTextPoller(membership, result.Session,
+															func(pollCtx context.Context) error {
+																return gateways.SubscribeNativeGroups(pollCtx, installation.ID, nativeClient)
+															}, eventPoller)))
 													gateways.SetMaintenance(installation.ID, backgroundMaintenance{
-														current: func() bool { return musicRegistry.Native(installation.ID, installation.CommunityID) == nativeClient },
+														current: boundHelperCurrent(musicRegistry, installation.ID, installation.CommunityID, nativeClient),
 														usable:  nativeClient.Usable,
+														client:  nativeClient,
 														run: func(maintenanceCtx context.Context) error {
 															var utilityTask func(context.Context) error
 															if utilities != nil {

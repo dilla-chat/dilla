@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -62,7 +63,11 @@ type sealedIntakeConfig struct {
 	installation, community, botUser id.ID
 	capabilities                     uint64
 	helper                           sealedHelper
-	session                          sealedSession
+	// resolve, when set, is the installation's registered helper now (musicQueueRegistry.Native), which the intake
+	// uses on every call instead of helper (v0.1.0-bot2.2, F4: after a close the intake kept the pass's stale client,
+	// and every command ended in seal_error until the next pass). Nil uses helper.
+	resolve func() sealedHelper
+	session sealedSession
 	// handlers is the pass's feature handler map (the same one the interaction dispatcher serves).
 	handlers map[protocol.Operation]service.InteractionHandlerSpec
 	// reminders, when set, is served from the feed: membership from Authz, no capability read per create
@@ -114,28 +119,108 @@ func (e *sealedEntry) current() (sealedIntakeConfig, *service.SealedDispatcher) 
 
 var errSealedNotConfigured = errors.New("bot sealed intake: no pass has configured the installation")
 
-func (e *sealedEntry) OpenCommand(ctx context.Context, sealed []byte, user, device id.ID, now time.Time) (helper.OpenedCommand, error) {
-	cfg, _ := e.current()
-	if cfg.helper == nil {
-		return helper.OpenedCommand{}, errSealedNotConfigured
-	}
-	return cfg.helper.OpenCommand(ctx, sealed, user, device, now)
+// errHelperOffline is errSealedNotConfigured for an installation whose helper is closed or gone: the intake answers
+// its commands retryable (503 E_BOT_OFFLINE) until a pass registers a replacement. Its class is "closed".
+var errHelperOffline = fmt.Errorf("%w: no usable native helper (%w)", errSealedNotConfigured, helper.ErrClosed)
+
+// helperParkLimit bounds how long a command's open, or an answer whose seal met a dead helper, waits for the
+// replacement helper (one due tick finds the dead one and asks for a pass at once); helperParkStep is how often it looks.
+// Variables for tests.
+var (
+	helperParkLimit = dueInterval
+	helperParkStep  = 100 * time.Millisecond
+)
+
+// helperUsable is native.Client's Usable; a helper that cannot tell is taken as usable.
+func helperUsable(h sealedHelper) bool {
+	u, ok := h.(interface{ Usable() bool })
+	return !ok || u.Usable()
 }
 
-func (e *sealedEntry) SealReply(ctx context.Context, key [32]byte, request id.ID, seq uint32, body []byte) ([]byte, error) {
+// helperNow is the installation's helper as it is now: the registered one (cfg.resolve), or the pass's; nil when there
+// is none or it can no longer serve calls. A closed client is never called.
+func (e *sealedEntry) helperNow() sealedHelper {
 	cfg, _ := e.current()
-	if cfg.helper == nil {
-		return nil, errSealedNotConfigured
+	h := cfg.helper
+	if cfg.resolve != nil {
+		h = cfg.resolve()
 	}
-	return cfg.helper.SealReply(ctx, key, request, seq, body)
+	if h == nil || !helperUsable(h) {
+		return nil
+	}
+	return h
+}
+
+// awaitHelper waits, up to helperParkLimit, for a usable helper other than failed (a pass replacing the dead one).
+func (e *sealedEntry) awaitHelper(ctx context.Context, failed sealedHelper, message string, attrs ...any) sealedHelper {
+	if h := e.helperNow(); h != nil && h != failed {
+		return h
+	}
+	cfg, _ := e.current()
+	if cfg.log != nil {
+		cfg.log.InfoContext(ctx, message, attrs...)
+	}
+	deadline := time.Now().Add(helperParkLimit)
+	for {
+		wait := min(helperParkStep, time.Until(deadline))
+		if wait <= 0 || !sleepFor(ctx, wait) {
+			return nil
+		}
+		if h := e.helperNow(); h != nil && h != failed {
+			return h
+		}
+	}
+}
+
+// sleepFor waits d, or until ctx ends (false).
+func sleepFor(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// OpenCommand opens a command on the installation's current helper. With none usable it waits for the replacement: the
+// command's reply key is inside the seal, so nothing can answer it until a helper opens it.
+func (e *sealedEntry) OpenCommand(ctx context.Context, sealed []byte, user, device id.ID, now time.Time) (helper.OpenedCommand, error) {
+	h := e.helperNow()
+	if h == nil {
+		if h = e.awaitHelper(ctx, nil, "bot command waiting for a replacement helper"); h == nil {
+			return helper.OpenedCommand{}, errHelperOffline
+		}
+	}
+	return h.OpenCommand(ctx, sealed, user, device, now)
+}
+
+// SealReply seals an answer on the installation's current helper. Op 23 holds no helper state (the reply key is the
+// intake's), so an answer whose seal met a dead helper is parked and sealed once more on the replacement; with none in
+// time the error stands, and the intake logs it and keeps the answer for the member's Retry.
+func (e *sealedEntry) SealReply(ctx context.Context, key [32]byte, request id.ID, seq uint32, body []byte) ([]byte, error) {
+	h := e.helperNow()
+	err := errHelperOffline
+	if h != nil {
+		var sealed []byte
+		if sealed, err = h.SealReply(ctx, key, request, seq, body); err == nil || !helperFailed(err) {
+			return sealed, err
+		}
+	}
+	next := e.awaitHelper(ctx, h, "bot command answer waiting for a replacement helper", "seq", seq, "error_class", helper.Class(err))
+	if next == nil {
+		return nil, err
+	}
+	return next.SealReply(ctx, key, request, seq, body)
 }
 
 func (e *sealedEntry) CommandKey(ctx context.Context, community id.ID, now time.Time) ([]byte, error) {
-	cfg, _ := e.current()
-	if cfg.helper == nil {
-		return nil, errSealedNotConfigured
+	h := e.helperNow()
+	if h == nil {
+		return nil, errHelperOffline
 	}
-	return cfg.helper.CommandKey(ctx, community, now)
+	return h.CommandKey(ctx, community, now)
 }
 
 func (e *sealedEntry) Reply(ctx context.Context, device, request id.ID, seq uint32, sealed []byte, final bool) error {
@@ -380,9 +465,10 @@ func (r *botGatewayRuntime) SetSealedIntake(cfg sealedIntakeConfig) {
 		// 2, N-3).
 		e.in.SetKeyStale(e.publisher.Stale)
 		// Fail closed until the installation's feed exists (Held is false for an installation with no feed) and has
-		// applied a snapshot (the Authz's own readiness): 503 E_BOT_OFFLINE, retryable.
+		// applied a snapshot (the Authz's own readiness): 503 E_BOT_OFFLINE, retryable. A command opened on a helper that
+		// has died since is refused the same way (v0.1.0-bot2.2, F4), and that answer waits for the replacement to seal it.
 		installation := cfg.installation
-		e.in.SetReady(func() bool { return r.feedHandler(installation) != nil })
+		e.in.SetReady(func() bool { return r.feedHandler(installation) != nil && e.helperNow() != nil })
 		ctx, cancel := context.WithCancel(r.ctx)
 		e.cancel = cancel
 		for range sealedWorkers {

@@ -93,7 +93,8 @@ func (r *botGatewayRuntime) probeReply(installation id.ID, reply *gatewayclient.
 // Probe sends one OpProbe along the command path and returns nil when it was answered 200 within probeAnswerLimit.
 func (e *sealedEntry) Probe(ctx context.Context) error {
 	cfg, _ := e.current()
-	h, okHelper := cfg.helper.(probeHelper)
+	// The installation's current helper (v0.1.0-bot2.2, F4); a closed one is not called.
+	h, okHelper := e.helperNow().(probeHelper)
 	sender, okSender := cfg.session.(probeSender)
 	if !okHelper || !okSender || cfg.botUser.IsZero() {
 		return errSealedNotConfigured

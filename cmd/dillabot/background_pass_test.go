@@ -320,7 +320,12 @@ func TestHelperRespawnBackoffDoublesAndResetsWhenAReplacementServes(t *testing.T
 	if !slices.Equal(delays, want) {
 		t.Fatalf("respawn delays %v, want %v", delays, want)
 	}
+	// v0.1.0-bot2.2: a replacement resets the backoff only once it has stayed usable for helperServedFor.
+	now := time.Now()
+	r.now = func() time.Time { return now }
 	r.SetMaintenance(installation, backgroundMaintenance{run: func(context.Context) error { return nil }})
+	_ = r.maintainDue(t.Context())
+	now = now.Add(helperServedFor)
 	_ = r.maintainDue(t.Context())
 	r.SetMaintenance(installation, gone)
 	delays = nil
@@ -384,4 +389,151 @@ func TestAHelperThatDiesAfterEveryRespawnIsNotRespawnedFasterThanTheBackoff(t *t
 			t.Fatal("fake time did not advance")
 		}
 	})
+}
+
+// captureRespawns records the respawn backoff's scheduled asks instead of running them on a timer.
+func captureRespawns(t *testing.T) (delays func() []time.Duration, fire func()) {
+	t.Helper()
+	var d []time.Duration
+	var f []func()
+	old := helperRespawnAfter
+	helperRespawnAfter = func(delay time.Duration, ask func()) { d, f = append(d, delay), append(f, ask) }
+	t.Cleanup(func() { helperRespawnAfter = old })
+	return func() []time.Duration { return slices.Clone(d) }, func() { f[len(f)-1]() }
+}
+
+// F4: the text poller bound to a helper that closed is not run against it, and says nothing per tick; the pass that
+// replaces the helper binds a new poller.
+func TestTextPollerSkipsClosedHelper(t *testing.T) {
+	installation, community := id.New(), id.New()
+	registry := newMusicQueueRegistry()
+	t.Cleanup(func() { _ = registry.Close() })
+	n := newUsableTestNative(installation, community)
+	if err := registry.RetainInteractions(installation, community, n); err != nil {
+		t.Fatal(err)
+	}
+	logs := &lockedLog{}
+	r := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(logs, nil)))
+	defer r.Close()
+	polls := 0
+	r.SetTextPoller(installation, helperBoundPoller(registry, installation, community, n, func(context.Context) error {
+		polls++
+		if !n.Usable() {
+			return helper.ErrClosed
+		}
+		return nil
+	}))
+	r.PollText(t.Context())
+	if polls != 1 {
+		t.Fatalf("the poller on a usable helper ran %d times, want 1", polls)
+	}
+	n.dead.Store(true)
+	for range 3 {
+		r.PollText(t.Context())
+	}
+	if polls != 1 || logs.String() != "" {
+		t.Fatalf("the poller ran %d times on a closed helper; logs:\n%s", polls, logs)
+	}
+}
+
+// F8: the due tick met the same closed client every 10 s and logged an invented "helper client is closed" each time.
+// Now it calls nothing on it, logs "bot native helper gone" once per client and one line per respawn ask, which follow
+// the backoff.
+func TestDueTickLogsGoneOncePerClient(t *testing.T) {
+	delays, fire := captureRespawns(t)
+	logs := &lockedLog{}
+	r := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(logs, nil)))
+	defer r.Close()
+	installation := id.New()
+	runs := 0
+	dead := func(client *int) backgroundMaintenance {
+		return backgroundMaintenance{client: client, usable: func() bool { return false }, run: func(context.Context) error { runs++; return nil }}
+	}
+	first := new(int)
+	r.SetMaintenance(installation, dead(first))
+	asked := func() bool { targets, _ := r.takePassTargets(); return targets[installation] }
+	for tick := range 3 {
+		if err := r.maintainDue(t.Context()); err != nil {
+			t.Fatalf("tick %d = %v, want no invented error", tick, err)
+		}
+		if got := asked(); got != (tick == 0) {
+			t.Fatalf("tick %d asked=%v", tick, got)
+		}
+	}
+	fire()
+	if !asked() {
+		t.Fatal("the scheduled ask asked for no pass")
+	}
+	_ = r.maintainDue(t.Context())
+	if !slices.Equal(delays(), []time.Duration{10 * time.Second, 20 * time.Second}) {
+		t.Fatalf("respawn delays %v, want [10s 20s]", delays())
+	}
+	if runs != 0 {
+		t.Fatalf("maintenance ran %d times on a closed client", runs)
+	}
+	if c := logs.count("bot native helper gone"); c != 1 || logs.count("installation_id="+installation.String()) < 1 {
+		t.Fatalf("%d gone lines, want 1:\n%s", c, logs)
+	}
+	if c := logs.count("bot native helper respawn requested"); c != 2 {
+		t.Fatalf("%d respawn lines, want one per ask (2):\n%s", c, logs)
+	}
+	if strings.Contains(logs.String(), "helper client is closed") {
+		t.Fatalf("an invented close error was logged:\n%s", logs)
+	}
+	// Another client that is gone is logged once too.
+	r.SetMaintenance(installation, dead(new(int)))
+	_ = r.maintainDue(t.Context())
+	_ = r.maintainDue(t.Context())
+	if c := logs.count("bot native helper gone"); c != 2 {
+		t.Fatalf("%d gone lines after a second dead client, want 2:\n%s", c, logs)
+	}
+}
+
+// CT 144 (bot2.1) respawned 10/10 s, 20/10 s, 40/30 s apart: a replacement that served one due tick reset the backoff,
+// so a helper dying on the same work after every respawn was replaced at once each time. Only a client that stayed
+// usable for helperServedFor resets it.
+func TestBackoffNotResetByShortLivedReplacement(t *testing.T) {
+	delays, fire := captureRespawns(t)
+	r := newBotGatewayRuntime(t.Context(), nil, true, quietLogger())
+	defer r.Close()
+	now := time.Now()
+	r.now = func() time.Time { return now }
+	installation := id.New()
+	asked := func() bool { targets, _ := r.takePassTargets(); return targets[installation] }
+	tick := func() { now = now.Add(dueInterval); _ = r.maintainDue(t.Context()) }
+	use := func() func() {
+		usable := true
+		client := new(int)
+		r.SetMaintenance(installation, backgroundMaintenance{client: client, usable: func() bool { return usable }, run: func(context.Context) error { return nil }})
+		return func() { usable = false }
+	}
+	die := use()
+	die()
+	tick() // at once
+	tick() // scheduled after 10 s
+	fire()
+	if !asked() || !slices.Equal(delays(), []time.Duration{10 * time.Second}) {
+		t.Fatalf("delays %v", delays())
+	}
+	die = use()
+	tick() // the replacement serves one tick
+	die()
+	tick()
+	if asked() {
+		t.Fatal("a replacement that served one tick reset the backoff: asked at once")
+	}
+	if !slices.Equal(delays(), []time.Duration{10 * time.Second, 20 * time.Second}) {
+		t.Fatalf("delays %v, want the next ask after 20 s", delays())
+	}
+	fire()
+	_ = asked()
+	die = use()
+	for range int(helperServedFor/dueInterval) + 1 {
+		tick()
+	}
+	die()
+	tick()
+	if !asked() || len(delays()) != 2 {
+		t.Fatalf("a replacement usable for %v did not reset the backoff (delays %v)", helperServedFor, delays())
+	}
 }
