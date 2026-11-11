@@ -319,9 +319,11 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
     stopCheck = recheck(() => { if (!isScopeCurrent()) cancel(); }, 100);
     if (communityId !== null) {
       const catalogKey = `botCatalog:${communityId}` as const;
-      const openedWith = client.get(catalogKey)?.botUserId ?? null;
+      let openedWith = client.get(catalogKey)?.botUserId ?? null;
       stopCatalog = client.subscribe(catalogKey, () => {
         const held = client.get(catalogKey);
+        // A pin unknown at open is adopted when it first resolves; only a change from a known id closes the form.
+        if (openedWith === null && held?.botUserId) openedWith = held.botUserId;
         if (held !== null && held !== undefined && catalogOffers(client, communityId, 70) && (held.botUserId ?? null) === openedWith) return;
         stoppedOffering.current = true;
         cancel();

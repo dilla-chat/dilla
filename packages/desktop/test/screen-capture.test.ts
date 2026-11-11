@@ -32,7 +32,7 @@ async function fixture(response = 1, directory = '/immutable/dist', autoStarted 
   let sourcesCalls = 0;
   let dialogOptions: any;
   let dialogResolve: ((value: { response: number }) => void) | undefined;
-  let holdDialog = false, failNextStart = false, holdSources = false;
+  let holdDialog = false, failNextStart = false, holdSources = false, failPickerLoad = false;
   let sourcesResolve: ((value: { id: string; name: string }[]) => void) | undefined;
   const nativeSources = [{ id: 'screen:123:0', name: 'Actual screen' }, { id: 'window:456:0', name: 'Selected window' }];
   const jpegQualities: number[] = [];
@@ -65,6 +65,7 @@ async function fixture(response = 1, directory = '/immutable/dist', autoStarted 
     constructor(options?: any) { super(); this.options = options; windows.push(this); }
     isDestroyed() { return this.destroyed; }
     async loadURL(url: string) {
+      if (failPickerLoad && url.startsWith('dilla-internal://picker')) throw new Error('ERR_FAILED');
       this.webContents.mainFrame.url = url;
       this.webContents.emit('did-start-navigation', {}, this.webContents.mainFrame.url, false, true);
     }
@@ -117,7 +118,7 @@ async function fixture(response = 1, directory = '/immutable/dist', autoStarted 
   const owner = new Window();
   return { controller, owner, windows, sessions, ended, ipc, advance, get sourcesCalls() { return sourcesCalls; },
     get dialogOptions() { return dialogOptions; }, hold: () => { holdDialog = true; },
-    choose: (response: number) => dialogResolve?.({ response }), failStart: () => { failNextStart = true; },
+    choose: (response: number) => dialogResolve?.({ response }), failStart: () => { failNextStart = true; }, failPickerLoad: () => { failPickerLoad = true; },
     holdSources: () => { holdSources = true; }, sourcesReady: () => sourcesResolve?.(nativeSources), newOwner: () => new Window(),
     setSources: (list: any[]) => { pickerSources = list; }, timers: () => timers.size, jpegQualities };
 }
@@ -550,6 +551,13 @@ test('cancelling the picker grants nothing and closes it', async () => {
   assert.equal(f.sessions.length, 1);
   assert.equal(f.sessions[0].cleared, true);
   noSourceData(f.owner);
+});
+
+test('a picker bundle that fails to load fails the capture instead of reading as a cancel', async () => {
+  const f = await fixture(1, '/immutable/dist', true, false);
+  f.failPickerLoad();
+  await assert.rejects(f.controller.request('a', f.owner, options), /Screen capture failed/);
+  assert.equal(f.ipc.listenerCount('dilla:screen-picker-choice'), 0);
 });
 
 test('closing the picker window cancels', async () => {

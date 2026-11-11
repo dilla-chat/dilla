@@ -187,7 +187,8 @@ export class ScreenCaptureBroker {
     this.livePickers.add(picker);
     picker.deadline = setTimeout(() => picker.done(null), PICKER_DEADLINE_MS);
     try { await this.openPicker(capture, picker); }
-    catch { picker.done(null); }
+    // A picker bundle that fails to load is a failure the user must see, not a cancel: release it, then let select() fail.
+    catch (error) { picker.done(null); throw error; }
     if (capture.picker === picker) {
       if (!this.offer(picker, first)) picker.done(null);
       else {

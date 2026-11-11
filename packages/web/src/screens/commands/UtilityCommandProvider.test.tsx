@@ -257,6 +257,21 @@ describe('utility command provider', () => {
       await waitFor(() => expect(screen.queryByRole('heading', { name: 'New poll in #lobby' })).not.toBeInTheDocument());
       expect(await run()).toMatchObject({ status: 'failure', message: 'The Bot stopped offering polls. Try again.' }); mounted.unmount();
     });
+    it('stays open when the Bot pin was unknown at open and then resolves', async () => {
+      const f = utilityFixture();
+      const mounted = mount(f.client); await waitFor(() => expect(mounted.captured.value).toBeDefined());
+      f.client.set(`botCatalog:${COMMUNITY}`, { ...catalog(f), botUserId: null });
+      let result!: Promise<{ status: string; message?: string }>;
+      act(() => { result = mounted.captured.value!.handlers['poll create']!({ commandId: 'poll create', args: { question: 'Q?', answers: 'A, B' } }, commandContext(f.client, 'c1'.repeat(16))); });
+      await screen.findByRole('heading', { name: 'New poll in #lobby' });
+      const run = () => result;
+      act(() => { f.client.set(`botCatalog:${COMMUNITY}`, { ...catalog(f), botUserId: BOT }); });
+      await new Promise(resolve => setTimeout(resolve, 250));
+      expect(screen.getByRole('heading', { name: 'New poll in #lobby' })).toBeInTheDocument();
+      act(() => { f.client.set(`botCatalog:${COMMUNITY}`, { ...catalog(f), botUserId: 'ee'.repeat(16) }); });
+      await waitFor(() => expect(screen.queryByRole('heading', { name: 'New poll in #lobby' })).not.toBeInTheDocument());
+      expect(await run()).toMatchObject({ status: 'failure' }); mounted.unmount();
+    });
     it('closes silently, as before, when the user cancels', async () => {
       const f = utilityFixture(); const { mounted, run } = await open(f);
       await userEvent.setup().click(screen.getByRole('button', { name: 'Cancel' }));
