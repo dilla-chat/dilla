@@ -49,7 +49,7 @@ async function focusOwner(): Promise<void> {
  } finally { await window.dispose(); }
 }
 async function brokers(): Promise<number[]> {
- return app().evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(win => win.webContents.getURL() === 'dilla-internal://capture/').map(win => win.id));
+ return app().evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(win => !win.isDestroyed() && win.webContents?.getURL() === 'dilla-internal://capture/').map(win => win.id));
 }
 
 test.beforeEach(async ({ twoInstances }, info) => {

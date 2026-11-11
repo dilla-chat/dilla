@@ -132,7 +132,7 @@ export async function observeDesktopScreen(ownerContext: BrowserContext, sourceC
  return {
   requests: () => application.evaluate(() => (globalThis as any).__voiceNativeScreen.requests),
   selections: async () => [...await application.evaluate(() => (globalThis as any).__voiceNativeScreen.selections as NativeScreenSelection[]), ...pickerSelections],
-  brokers: () => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(window => window.webContents.getURL() === 'dilla-internal://capture/').length),
+  brokers: () => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(window => !window.isDestroyed() && window.webContents?.getURL() === 'dilla-internal://capture/').length),
   dispose: async () => {
    application.off('window', onPicker);
    try { await application.evaluate(() => { (globalThis as any).__voiceNativeScreen.dispose(); delete (globalThis as any).__voiceNativeScreen; }); }

@@ -346,7 +346,7 @@ test('cancelling the typed native screen picker returns null without creating a 
   // The picker window path: cancelled there, no native dialog, and the picker window is gone.
   expect(cancelled).toEqual(['dilla-internal://picker/']);
   expect(shown).toEqual([]);
-  await expect.poll(() => application().evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(win => win.webContents.getURL().startsWith('dilla-internal://picker/')).length)).toBe(0);
+  await expect.poll(() => application().evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(win => !win.isDestroyed() && win.webContents?.getURL().startsWith('dilla-internal://picker/')).length)).toBe(0);
  } else {
   // The Wayland portal path keeps the native dialog.
   expect(shown).toHaveLength(1);
@@ -354,7 +354,7 @@ test('cancelling the typed native screen picker returns null without creating a 
   expect(shown[0].buttons[0]).toBe('Cancel');
   expect(shown[0].buttons.length).toBeGreaterThan(1);
  }
- expect(await application().evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(win => win.webContents.getURL() === 'dilla-internal://capture/').length)).toBe(0);
+ expect(await application().evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(win => !win.isDestroyed() && win.webContents?.getURL() === 'dilla-internal://capture/').length)).toBe(0);
  await assertNoMediaSurface(page);
 });
 
