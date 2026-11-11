@@ -73,9 +73,13 @@ type fakeSender struct {
 	mu      sync.Mutex
 	replies []sentReply
 	at      []time.Time
+	err     error
 }
 
 func (s *fakeSender) Reply(_ context.Context, device, request id.ID, seq uint32, sealed []byte, final bool) error {
+	if s.err != nil {
+		return s.err
+	}
 	var outer []any
 	if err := cborx.Unmarshal(sealed, &outer); err != nil || len(outer) != 3 {
 		return errors.New("not a fake seal")

@@ -796,8 +796,9 @@ func (c *Client) closeWith(reason string, operation *protocol.HelperOperation, k
 	select {
 	case <-c.gate.Close():
 	case <-ctx.Done():
-		c.abort()
+		// Logged before the abort: the abort wakes the in-flight call, which would otherwise log outcome_unknown first.
 		c.logClosed(ReasonShutdownTimeout, operation, nil, append(kindAttr(kind), "requested", reason)...)
+		c.abort()
 		return nil
 	}
 	c.mu.Lock()
@@ -807,11 +808,21 @@ func (c *Client) closeWith(reason string, operation *protocol.HelperOperation, k
 	}
 	var shutdownErr error
 	if c.opened {
-		_, shutdownErr = c.request(ctx, protocol.HelperShutdown, []any{})
+		// Sent below requestWithin: a shutdown that fails must not log outcome_unknown and use up the one close line;
+		// the caller's reason always wins, and the failure rides along as shutdown_error_class.
+		var response protocol.HelperResponse
+		response, shutdownErr = c.transport.request(ctx, id.New(), protocol.HelperShutdown, []any{}, c.callTime)
+		if shutdownErr == nil {
+			shutdownErr = validateStatus(response.Status)
+		}
 	}
 	c.closed = true
 	stopErr := c.transport.stop(c.stopTime)
-	c.logClosed(reason, operation, nil, kindAttr(kind)...)
+	attrs := kindAttr(kind)
+	if shutdownErr != nil {
+		attrs = append(attrs, "shutdown_error_class", Class(shutdownErr))
+	}
+	c.logClosed(reason, operation, nil, attrs...)
 	if shutdownErr != nil {
 		return nil // shutdown failure is handled by kill-and-reap fallback.
 	}

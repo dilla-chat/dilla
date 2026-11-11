@@ -650,7 +650,7 @@ func (i *Intake) seal(ctx context.Context, device, request id.ID, key [32]byte, 
 		return
 	}
 	if err := i.send.Reply(ctx, device, request, seq, sealed, a.Final); err != nil {
-		log.WarnContext(ctx, "bot command answer not delivered", "class", "reply_error", "error", err.Error())
+		log.WarnContext(ctx, "bot command answer not delivered", "error_class", helper.Class(err))
 	}
 }
 
