@@ -252,6 +252,10 @@ Each element gets a presence Noul and a Box on both images, plus optional `state
 - **Always show the dock:** the voice dock (call card and compact Now playing) stays visible while the voice channel's own stage is on screen, instead of the prototype's showDock hiding it (§5.6). The connected phase also draws no animated signal bars (§5.4), and neither does the top bar's voice chip, which keeps only its text (the `d-bar` keyframes stay for the CallTile and Now playing meters; the unused `--duration-bar` token is gone). Parity shots of the voice stage with the dock (standing-voice-*) differ from the prototype by design; the images are not re-shot yet.
 - **Bot card ⋯ button:** a ⋯ button beside Restart on the Bot card (Settings → Bot) opens Rename, Refresh status and Disable, which the prototype's card draws no button for; the row's context menu still opens the same menu (Ruling X). Story `BotMoreMenuOpen`.
 
+- **Thumbnail screen picker (approved addition):** the desktop app's screen share opens a picker with live thumbnails on macOS, Windows and Linux X11 (Wayland keeps the system picker). The prototype draws no picker, so there is no pair to match.
+- **Private Bot replies auto-dismiss after 60 s:** a finished private reply goes away a minute after it finishes; a reply still working or offering Retry stays, and pointing at it or focusing it pauses the countdown. The prototype keeps them until dismissed.
+- **Calm "Voice moved to your other device." notice:** when another of the user's devices takes over voice, the device that lost it shows this line and does not rejoin. The prototype has no such state.
+
 ### Task 6 accepted deviations (Jonas, 2026-10-30)
 
 | Pairs | Accepted difference from the raw prototype | Decision |
