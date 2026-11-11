@@ -85,6 +85,10 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     ...(props.threadId === undefined ? {} : { threadId: props.threadId }), ...(props.bits === undefined ? {} : { bits: props.bits }) }),
   [props.communityId, props.channelId, props.threadId, props.bits]);
   const latestBinding = useRef(binding); latestBinding.current = binding;
+  // The row of an uncertain attempt is held (it never auto-dismisses) while the composer offers a way on; any new run, a late answer or a cancel lets it go.
+  // It remembers its own store, so a conversation change or unmount releases the row in the conversation it was held in.
+  const heldRow = useRef<{ store: ReturnType<typeof privateResults>; id: string } | null>(null);
+  const releaseHeld = useCallback(() => { const held = heldRow.current; heldRow.current = null; if (held !== null) held.store.update(held.id, { hold: false }); }, []);
   const key = `${binding.communityId ?? 'dm'}/${binding.channelId}/${binding.threadId ?? ''}`;
   const [active, setActive] = useState(() => memory.get(key)?.mode === 'active');
   const [commandText, setCommandText] = useState(() => memory.get(key)?.text ?? '');
@@ -118,6 +122,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
   }, [key, memory, onDraft, onModeChange]);
   useLayoutEffect(() => {
     if (previousLayoutKey.current !== key) {
+      releaseHeld();
       generation.current++;
       cancelBotRuns();
       confirmationResolve.current?.('abandon'); confirmationResolve.current = null; setConfirmation(null);
@@ -132,16 +137,17 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
     activeRef.current = shouldActivate;
     setCommandText(saved?.text ?? '');
     onModeChange?.(shouldActivate);
-  }, [key, memory, onModeChange, cancelBotRuns]);
+  }, [key, memory, onModeChange, cancelBotRuns, releaseHeld]);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      releaseHeld();
       cancelBotRuns();
       confirmationResolve.current?.('abandon'); confirmationResolve.current = null;
       inviteResolve.current?.(false); inviteResolve.current = null;
     };
-  }, [cancelBotRuns]);
+  }, [cancelBotRuns, releaseHeld]);
   useLayoutEffect(() => {
     generation.current++;
     confirmationResolve.current?.('abandon'); confirmationResolve.current = null; setConfirmation(null);
@@ -183,9 +189,6 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
   }, [binding, handlers, gifsEnabled, bot.definitions]);
   /** The last run of this conversation's draft that the Bot never answered: the picker offers Retry with the same request id. */
   const [noAnswer, setNoAnswer] = useState<{ key: string; message: string } | null>(null);
-  // The row of an uncertain attempt is held (it never auto-dismisses) while the composer offers a way on; any new run, a late answer or a cancel lets it go.
-  const heldRow = useRef<string | null>(null);
-  const releaseHeld = useCallback(() => { const id = heldRow.current; heldRow.current = null; if (id !== null) resultStore.update(id, { hold: false }); }, [resultStore]);
   const members = useSlice(`members:${props.communityId ?? ''}`);
   const botName = installationBotName(members, bot.botUserId);
   const channels = useSlice(`channels:${props.communityId ?? ''}`);
@@ -302,11 +305,13 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
       if (response.status === 'uncertain') {
         // Keep the original invocation and request id when an uncertain attempt is retried.
         remember(memory, key, { text: commandText, requestId: attempt, invocationKey, mode: 'active' });
-        heldRow.current = pendingResult(); resultStore.update(heldRow.current, { hold: true });
         if (isCurrent()) {
           setCommandText(commandText); setActive(true); activeRef.current = true; onModeChange(true);
           // Bot v2: no answer in 5 s: the reopened draft offers Retry, which sends the same request id again.
-          if (response.retry === true) setNoAnswer({ key, message: response.message ?? resultCopy.failed() });
+          if (response.retry === true) {
+            setNoAnswer({ key, message: response.message ?? resultCopy.failed() });
+            const id = pendingResult(); heldRow.current = { store: resultStore, id }; resultStore.update(id, { hold: true });
+          }
         }
       }
       return response;
@@ -385,7 +390,7 @@ export function CommandHost(props: CommandHostProps): React.JSX.Element | null {
   const sendLiteral = (text: string) => {
     const saved = memory.get(key);
     remember(memory, key, { text: '', requestId: saved?.requestId ?? requestId(), invocationKey: '', mode: 'consumed' });
-    generation.current++;
+    generation.current++; setNoAnswer(null); releaseHeld();
     confirmationResolve.current?.('abandon'); confirmationResolve.current = null; setConfirmation(null);
     inviteResolve.current?.(false); inviteResolve.current = null;
     setCommandText(''); setActive(false); onModeChange?.(false); activeRef.current = false;

@@ -29,10 +29,10 @@ export function BotResult({ author, time, status, body, onDismiss, autoDismissAt
   const dismissRef = useRef(dismiss);
   dismissRef.current = dismiss;
   const pause = useRef({ hover: false, focus: false });
-  const timer = useRef<{ id: ReturnType<typeof setTimeout> | undefined; left: number; since: number }>({ id: undefined, left: 0, since: 0 });
+  const timer = useRef<{ id: ReturnType<typeof setTimeout> | undefined; left: number; since: number; live: boolean }>({ id: undefined, left: 0, since: 0, live: false });
   const arm = () => {
     const t = timer.current;
-    if (t.id !== undefined || pause.current.hover || pause.current.focus) return;
+    if (!t.live || t.id !== undefined || pause.current.hover || pause.current.focus) return;
     t.since = Date.now();
     t.id = setTimeout(() => {
       t.id = undefined;
@@ -48,7 +48,8 @@ export function BotResult({ author, time, status, body, onDismiss, autoDismissAt
   useEffect(() => {
     const t = timer.current;
     hold();
-    if (autoDismissAt === undefined) return;
+    t.live = autoDismissAt !== undefined;
+    if (autoDismissAt === undefined) { t.left = 0; return; }
     t.left = Math.max(0, autoDismissAt - Date.now());
     arm();
     return hold;

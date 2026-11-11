@@ -48,4 +48,25 @@ describe('BotResult auto-dismiss', () => {
       vi.advanceTimersByTime(600_000); expect(stay).not.toHaveBeenCalled();
     } finally { vi.useRealTimers(); }
   });
+  it('a row with no deadline stays after hover and leave, and after focus and blur', () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    try {
+      const dismiss = vi.fn(); mount(dismiss);
+      fireEvent.pointerEnter(article()); fireEvent.pointerLeave(article()); vi.advanceTimersByTime(1);
+      screen.getByRole('button', { name: 'Dismiss: Result' }).focus(); screen.getByRole('textbox', { name: 'Message' }).focus(); vi.advanceTimersByTime(600_000);
+      expect(dismiss).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+  it('a row that goes from settled to held stays after hover and leave', () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    try {
+      const dismiss = vi.fn();
+      const view = (at?: number) => <div><BotResult author={author} time="10:24" status="failed" body="Result" onDismiss={dismiss} {...(at !== undefined ? { autoDismissAt: at } : {})} labels={labels} /></div>;
+      const { rerender } = render(view(60_000));
+      vi.advanceTimersByTime(10_000); fireEvent.pointerEnter(article());
+      rerender(view(undefined));
+      fireEvent.pointerLeave(article()); vi.advanceTimersByTime(600_000);
+      expect(dismiss).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
 });
