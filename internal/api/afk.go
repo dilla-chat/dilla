@@ -47,6 +47,8 @@ const afkPendingTTL = 24 * time.Hour
 const (
 	afkPendingSwept = 1 // the sweep moved the device (idle past the timeout)
 	afkPendingChose = 2 // the user chose AFK: PUT …/afk/away cut the device
+	// afkPendingTakenOver: another device of the user joined voice and took it over (voicetakeover.go).
+	afkPendingTakenOver = 3
 )
 
 // afkDefaultTimeout is the timeout a community starts with, in seconds (5 minutes).

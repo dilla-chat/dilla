@@ -456,6 +456,8 @@ func (c *CallEvents) joined(ctx context.Context, row store.VoiceSessionRow, iden
 	c.mu.Unlock()
 	// A device of a rung user is in the room: that user's ring stops on every device (L-GW-33).
 	c.calls.ringer.Answered(row.CallID, d.UserID)
+	// The device is connected: it takes voice over from the user's other devices (bot2.2 task 8).
+	c.calls.takeOverVoice(ctx, d.UserID, dev, row.LivekitRoom)
 }
 
 // joinedAt is the time LiveKit reports p joined at, or zero.

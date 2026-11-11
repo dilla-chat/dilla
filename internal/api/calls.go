@@ -265,6 +265,12 @@ type Calls struct {
 	// wins (R-AW7) and a device still joining keeps its user busy (R-AW2).
 	afkAdmitSeq uint64
 	afkAdmits   map[id.ID]map[id.ID]afkAdmit
+	// voiceFresh is each device's latest fresh admission (no signal resume) per user, numbered from
+	// afkAdmitSeq: the voice takeover keeps voice on the one admitted last (voicetakeover.go).
+	// takeoverRetries is each device whose takeover removal the SFU refused, retried by
+	// AFKMaintenance. Both under afkMu.
+	voiceFresh      map[id.ID]map[id.ID]afkAdmit
+	takeoverRetries map[takeoverCut]int
 
 	// awayMu serialises every write of the stored away roster (afkaway.go). It is taken before
 	// afkMu, awayIdxMu and awayQMu, never inside them, and nothing waits on a send or an audience
@@ -1368,6 +1374,9 @@ func (h *Calls) Admitted(ctx context.Context, room string, device id.ID, resume 
 	delete(h.afkPending, device)
 	if devErr == nil {
 		h.noteAFKAdmissionLocked(dv.UserID, device)
+		if !resume {
+			h.noteVoiceFreshLocked(dv.UserID, device)
+		}
 	}
 	h.afkMu.Unlock()
 	h.trackAFKAdmission(ctx, row, device, resume)

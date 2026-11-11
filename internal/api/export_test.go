@@ -41,6 +41,11 @@ func (c *CallEvents) DeferredLeavesForTest() int {
 	return len(c.deferred)
 }
 
+// TakeOverVoiceForTest runs the voice takeover for dev of user, reported joined to room.
+func (h *Calls) TakeOverVoiceForTest(ctx context.Context, user, dev id.ID, room string) {
+	h.takeOverVoice(ctx, user, dev, room)
+}
+
 // ProcessQueueForTest runs one pass of the retry loop's work queue on the caller's goroutine.
 func (h *Calls) ProcessQueueForTest(ctx context.Context) { h.processQueue(ctx) }
 
