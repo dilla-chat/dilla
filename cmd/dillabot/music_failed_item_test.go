@@ -174,6 +174,32 @@ func TestFailedTrackRemovedAfterHelperRestart(t *testing.T) {
 	}
 }
 
+// Residual round, item 3: a failed item that is current but playing or starting (a member resumed it) is neither
+// removed nor forgotten; a later reconcile looks again.
+func TestFailedItemKeptWhileItsTrackPlays(t *testing.T) {
+	r := newFailedItemRig(t)
+	store := r.helper(t)
+	playing := music.Track{ID: "playing-item", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Playing", RequesterID: "member"}
+	if err := r.play(t, store, playing); err != nil {
+		t.Fatal(err)
+	}
+	r.registry.recordFailedItem(r.installation, r.channel, playing.ID)
+	r.registry.mu.Lock()
+	queues := r.registry.runtimes[r.installation].queues
+	r.registry.mu.Unlock()
+	r.registry.removeFailedItems(t.Context(), r.installation, queues)
+	if !r.registry.hasFailedItems(r.installation) {
+		t.Fatal("the entry of a playing track was cleared")
+	}
+	supervisor, err := r.registry.supervisor(r.installation, r.community, r.channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state := supervisor.State(); state.Current == nil || state.Current.ID != playing.ID || !supervisor.Playing() {
+		t.Fatalf("state %+v, want the track still playing", state)
+	}
+}
+
 // A failed item whose track is no longer current (a member skipped it, or the save went through after all) is
 // forgotten without removing anything.
 func TestStaleFailedItemIsClearedWithoutRemoval(t *testing.T) {

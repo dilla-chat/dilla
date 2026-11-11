@@ -365,6 +365,15 @@ func TestRemovalRuleOnStartAndEnd(t *testing.T) {
 		{"deferred dillad request", fmt.Errorf("call_token: %w", client.ErrNoGateway), false},
 		// P7-3: a catch-up that ran out of time is the track's own failure.
 		{"catch-up deadline", fmt.Errorf("%w: %w", livekit.ErrCallBehind, context.DeadlineExceeded), true},
+		// Residual round, item 1: a helper failure wins over every keep reason.
+		{"dillad 503 joined with a closed helper", errors.Join(&client.APIError{Status: 503}, helper.ErrClosed), true},
+		{"admission refusal joined with a closed helper", errors.Join(fmt.Errorf("not ready: %w", music.ErrNotAdmitted), helper.ErrClosed), true},
+		{"server-ended call joined with an unknown helper outcome", errors.Join(livekit.ErrPoolCallEnded, helper.ErrOutcomeUnknown), true},
+		// Residual round, item 2 (ruling R7d): a catch-up failure during playback is kept only when the Bot was not
+		// admitted; a transient dillad error under it still removes the track.
+		{"catch-up on dillad 503", fmt.Errorf("%w: %w", livekit.ErrCallBehind, &client.APIError{Status: 503}), true},
+		{"catch-up on a deferred request", fmt.Errorf("%w: %w", livekit.ErrCallBehind, errors.Join(client.ErrNoGateway, context.Canceled)), true},
+		{"terminal catch-up on dillad 429", fmt.Errorf("%w: %w", livekit.ErrCallCatchUpTerminal, &client.APIError{Status: 429}), true},
 	}
 	for _, tc := range cases {
 		t.Run("start/"+tc.name, func(t *testing.T) {

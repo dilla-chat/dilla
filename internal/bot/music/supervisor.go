@@ -104,11 +104,26 @@ func (e *TrackRemovedError) Unwrap() error { return e.Cause }
 // Final review I2: it is also kept when the Bot was not admitted to publish (ErrNotAdmitted: the installation not
 // ready, a Bot permission change, a held user, trust not available yet) and when a dillad request failed for a
 // passing reason: a retry-safe refusal or cooperative stop (client.IsDeferred), or a 5xx, 409 or 429 answer.
+//
+// Residual round: a helper failure (helper.ErrClosed, helper.ErrOutcomeUnknown) anywhere in the error wins over every
+// keep reason, so a dead helper joined with a dillad 503 or an admission refusal still removes the track. A failed
+// call-group check during playback (ErrCallCheckFailed) is kept only when the Bot was not admitted (ruling R7d): the
+// dillad keep reasons apply to start stages only, and keeping a track whose checks fail would bring back the loop
+// where it stops, stays paused and the next /play resumes it.
 func trackFailed(err error) bool {
-	if err == nil || errors.Is(err, ErrNeedsExplicitPlay) || errors.Is(err, ErrPlayerUnavailable) || errors.Is(err, ErrConnectionEnded) {
+	if err == nil {
 		return false
 	}
-	return !errors.Is(err, ErrNotAdmitted) && !client.IsDeferred(err) && !transientServerError(err)
+	if errors.Is(err, helper.ErrClosed) || errors.Is(err, helper.ErrOutcomeUnknown) {
+		return true
+	}
+	if errors.Is(err, ErrNeedsExplicitPlay) || errors.Is(err, ErrPlayerUnavailable) || errors.Is(err, ErrConnectionEnded) || errors.Is(err, ErrNotAdmitted) {
+		return false
+	}
+	if errors.Is(err, ErrCallCheckFailed) {
+		return true
+	}
+	return !client.IsDeferred(err) && !transientServerError(err)
 }
 
 // transientServerError is a dillad answer that says nothing about the track: a server error, a conflict, a rate limit.
@@ -154,10 +169,14 @@ func WithRemoveFailed(report func(ctx context.Context, item string, err error)) 
 	return func(s *Supervisor) { s.onRemoveFailed = report }
 }
 
+// ErrFailedItemBusy is RemoveFailedItem on an item that is current but playing or starting (residual round, item 3).
+var ErrFailedItemBusy = errors.New("music: the failed item is playing or starting")
+
 // RemoveFailedItem removes item, a track that failed under a helper that could not save its removal, when it is still
 // the current track and nothing plays or starts (final review I1). It is removed as a failed start removes it: repeat
 // never queues it again, and the next item becomes current, paused when the queue is paused. removed is false when item
-// is no longer current (nothing is changed then).
+// is no longer current (nothing is changed then). While item is current but playing or starting, nothing is changed
+// and the error is ErrFailedItemBusy: the caller keeps it and looks again later.
 func (s *Supervisor) RemoveFailedItem(ctx context.Context, item string) (removed bool, err error) {
 	if ctx == nil || item == "" {
 		return false, errors.New("invalid failed item removal")
@@ -167,8 +186,11 @@ func (s *Supervisor) RemoveFailedItem(ctx context.Context, item string) (removed
 	if s.closed {
 		return false, ErrSupervisorClosed
 	}
-	if s.state.Current == nil || s.state.Current.ID != item || s.playback != nil || s.starting != nil {
+	if s.state.Current == nil || s.state.Current.ID != item {
 		return false, nil
+	}
+	if s.playback != nil || s.starting != nil {
+		return false, ErrFailedItemBusy
 	}
 	if err := s.removeCurrentLocked(ctx); err != nil {
 		return false, err

@@ -1070,6 +1070,10 @@ func (r *musicQueueRegistry) removeFailedItems(ctx context.Context, installation
 			continue
 		}
 		removed, err := supervisor.RemoveFailedItem(ctx, item)
+		if errors.Is(err, music.ErrFailedItemBusy) {
+			// A member resumed it: kept, and the next reconcile looks again (it is cleared once it is no longer current).
+			continue
+		}
 		if err != nil {
 			slog.WarnContext(ctx, "bot music failed track not removed after helper restart", "item_id", item, "error_class", helper.Class(err))
 			continue

@@ -197,8 +197,9 @@ func (*errMusicCallJoinHeld) Retryable() bool { return true }
 // Is makes a held join an admission refusal (music.ErrNotAdmitted): the track stays queued, paused.
 func (*errMusicCallJoinHeld) Is(target error) bool { return target == music.ErrNotAdmitted }
 
-// errMusicCallJoinUnjudged refuses a join whose staged group still has a leaf the trust cache could not judge.
-var errMusicCallJoinUnjudged = errors.New("music call-group trust: a leaf is still unjudged")
+// errMusicCallJoinUnjudged refuses a join whose staged group still has a leaf the trust cache could not judge. Like a
+// held join, it is an admission refusal (music.ErrNotAdmitted): the track stays queued, paused.
+var errMusicCallJoinUnjudged error = &musicNotAdmittedError{"music call-group trust: a leaf is still unjudged"}
 
 func waitMusicCallJoin(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)

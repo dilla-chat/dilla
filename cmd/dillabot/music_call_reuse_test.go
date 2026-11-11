@@ -146,6 +146,9 @@ func TestAdmissionRefusalsAreNotAdmitted(t *testing.T) {
 	if !errors.Is(&errMusicCallJoinHeld{}, music.ErrNotAdmitted) {
 		t.Error("a held join is not music.ErrNotAdmitted")
 	}
+	if !errors.Is(errMusicCallJoinUnjudged, music.ErrNotAdmitted) {
+		t.Error("a join with an unjudged leaf is not music.ErrNotAdmitted")
+	}
 }
 
 func TestRefusedPlayLeavesTheWarmedCall(t *testing.T) {

@@ -31,11 +31,18 @@ var (
 	ErrPoolBusy            = errors.New("music livekit: publisher track is already active")
 	// ErrCallCatchUpTerminal marks a catch-up failure no retry can mend (the group is gone or needs a resync): the
 	// track stops at once.
-	ErrCallCatchUpTerminal = errors.New("music livekit: the call group cannot be caught up")
+	ErrCallCatchUpTerminal error = &callCheckFailed{text: "music livekit: the call group cannot be caught up"}
 	// ErrCallBehind stops a track whose call group could not be caught up: its media might not be under the call's
 	// current epoch (fail closed).
-	ErrCallBehind = errors.New("music livekit: the call group is behind its current epoch")
+	ErrCallBehind error = &callCheckFailed{text: "music livekit: the call group is behind its current epoch"}
 )
+
+// callCheckFailed is a failed call-group check under a playing track (music.ErrCallCheckFailed): the track is removed
+// unless the Bot was not admitted, whatever transient dillad error caused it (ruling R7d).
+type callCheckFailed struct{ text string }
+
+func (e *callCheckFailed) Error() string        { return e.text }
+func (e *callCheckFailed) Is(target error) bool { return target == music.ErrCallCheckFailed }
 
 // ErrRoomLifetime ends a track whose room reached its absolute connection lifetime (protocol/10: a transient
 // "connection lifetime expiry"). The track's error also keeps context.DeadlineExceeded.

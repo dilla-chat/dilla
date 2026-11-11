@@ -141,6 +141,12 @@ var ErrConnectionEnded = errors.New("music: the voice connection ended")
 // queue, paused. The Bot's admission errors match it (cmd/dillabot; music cannot name them).
 var ErrNotAdmitted = errors.New("music: the Bot was not admitted to publish in the call")
 
+// ErrCallCheckFailed is a playing track whose call group could not be followed (failed catch-up checks): its media might
+// not be under the call's current epoch, so it stopped. That is the track's own failure, whatever dillad error lies
+// under it (controller ruling R7d), unless the Bot was not admitted (ErrNotAdmitted). The livekit catch-up errors match
+// it (livekit imports music, so music cannot name them).
+var ErrCallCheckFailed = errors.New("music: the call group could not be followed")
+
 // FailureClass returns bounded classes only, never provider messages or URLs.
 func FailureClass(err error) string {
 	if err == nil {

@@ -798,8 +798,12 @@ expiry). A track is also kept, paused, when the Bot was not admitted to publish
 at that moment (the installation not ready with music, including a slow
 installation read; the Bot without connect and speak in the channel; a user in
 the call held by membership trust, or that trust not available yet) and when a
-dillad request failed for a passing reason (a retry-safe deferral, or a 5xx, 409
-or 429 answer). When the removal cannot be saved because the native helper that
+dillad request failed for a passing reason at a start stage (a retry-safe
+deferral, or a 5xx, 409 or 429 answer). A failed call-group check during
+playback is kept only when the Bot was not admitted; any other cause under it,
+including a deferred or 5xx, 409 or 429 dillad answer, removes the track. A
+native helper failure (the helper closed, or an op whose outcome is unknown)
+anywhere in the error wins over every keep reason: the track is removed. When the removal cannot be saved because the native helper that
 stores the queue failed, the Bot keeps the failed item in memory and removes it
 on the replacement helper before any queue of that installation can start; an
 item that is no longer current then is forgotten without change. A user's pause
