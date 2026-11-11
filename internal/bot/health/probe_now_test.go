@@ -32,6 +32,49 @@ func TestProbeNowProbesAtOnce(t *testing.T) {
 	}
 }
 
+// A flapping helper cannot make the Bot probe in a storm: ProbeNow waits for MinProbeGap since the last probe.
+func TestProbeNowKeepsAMinimumGap(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_800_000_000, 0))
+	probes := 0
+	m := New(ProberFunc(func(context.Context) error { probes++; return nil }), &recorder{}, clk)
+	m.Tick(context.Background()) // probe 1 at t=0
+	clk.Advance(time.Second)
+	m.ProbeNow()
+	m.Tick(context.Background()) // 1 s after the last probe: too soon
+	if probes != 1 {
+		t.Fatalf("%d probes 1 s after the last, want 1", probes)
+	}
+	clk.Advance(MinProbeGap)
+	m.Tick(context.Background()) // the asked-for probe runs once the gap has passed
+	if probes != 2 {
+		t.Fatalf("%d probes after the gap, want 2", probes)
+	}
+}
+
+// A report that could not be sent gives its failed commands back, so the next one carries them.
+func TestUnsentReportReturnsItsFailedCommands(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_800_000_000, 0))
+	fail := true
+	var got []uint32
+	m := New(ProberFunc(func(context.Context) error { return nil }), ReporterFunc(func(_ context.Context, r Report) error {
+		if fail {
+			fail = false
+			return context.DeadlineExceeded
+		}
+		got = append(got, r.FailedCommands)
+		return nil
+	}), clk)
+	pending := uint32(2)
+	m.SetLoad(func() Load { l := Load{FailedCommands: pending}; pending = 0; return l })
+	m.SetUnsent(func(n uint32) { pending += n })
+	m.Tick(context.Background()) // the send fails
+	clk.Advance(ReportEvery)
+	m.Tick(context.Background())
+	if len(got) != 1 || got[0] != 2 {
+		t.Fatalf("reports delivered %v, want one carrying the 2 failures", got)
+	}
+}
+
 func TestProbeNowWakesARunningMonitor(t *testing.T) {
 	clk := &countingClock{Fake: clock.NewFake(time.Unix(1_800_000_000, 0))}
 	probed := make(chan struct{}, 4)

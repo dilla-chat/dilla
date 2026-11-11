@@ -4,13 +4,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/health"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/intake"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/clock"
@@ -22,8 +26,9 @@ func failedNow(e *sealedEntry) uint32 {
 	return e.healthLoad(time.Now(), nil).FailedCommands
 }
 
-// v0.1.0-bot2.2 (F7): a command whose answer could not be sealed was counted as answered; it is a failed command, and
-// the next report carries it once.
+// v0.1.0-bot2.2 (F7): a command whose 200 answer could not be sealed was counted as answered; it is a failed command,
+// and the next report carries it once. The answer is the command's own (not a refusal, which is counted on its own): the
+// helper's seal fails with a closed helper and no replacement arrives within the park.
 func TestSealFailureCountsAsFailed(t *testing.T) {
 	shortHelperPark(t, 20*time.Millisecond)
 	w := newLoadWorld(t, 3, true)
@@ -32,10 +37,10 @@ func TestSealFailureCountsAsFailed(t *testing.T) {
 	a := w.helper
 	reg.set(a)
 	followRegistry(w, reg, slog.New(slog.NewTextHandler(logs, nil)))
-	a.onOpen = a.close // the helper dies after the open; no replacement comes in time
+	a.sealErr = helper.ErrClosed // dies at the seal of the handler's answer
 	w.entry.in.Handle(t.Context(), w.commands[0])
-	if logs.count("bot command answer not sealed") != 1 {
-		t.Fatalf("the seal failure is not logged:\n%s", logs)
+	if logs.count("bot command answer not sealed") != 1 || logs.count("bot command refused") != 0 {
+		t.Fatalf("want the command's own answer unsealed, not a refusal:\n%s", logs)
 	}
 	if got := failedNow(w.entry); got != 1 {
 		t.Fatalf("failed commands = %d, want 1", got)
@@ -60,8 +65,8 @@ func TestOpenFailureCountsAsFailed(t *testing.T) {
 	}
 }
 
-// The retryable offline refusal is a failure for the member even though its answer is sealed on the replacement; and a
-// command that fails twice (its answer, then its Retry) counts once.
+// The retryable refusal of a missing helper (helper_gone) is a failure for the member even though its answer is sealed
+// on the replacement; it counts once.
 func TestOfflineRefusalCountsOnce(t *testing.T) {
 	shortHelperPark(t, 5*time.Second)
 	w := newLoadWorld(t, 3, true)
@@ -85,6 +90,23 @@ func TestOfflineRefusalCountsOnce(t *testing.T) {
 	}
 }
 
+// A start-up refusal (the feed is not ready yet, with a usable helper) is not a failed command.
+func TestStartupRefusalIsNotAFailedCommand(t *testing.T) {
+	w := newLoadWorld(t, 3, true)
+	logs := &lockedLog{}
+	w.entry.in.SetLogger(slog.New(slog.NewTextHandler(logs, nil)))
+	w.entry.in.SetReady(func() bool { return false })
+	w.entry.in.SetParkWindow(0)
+	w.entry.in.Handle(t.Context(), w.commands[0])
+	answer, _ := w.lastAnswer()
+	if answer.Status != intake.StatusOffline || logs.count("class=not_ready") != 1 {
+		t.Fatalf("answer %+v; logs:\n%s; want the not_ready refusal", answer, logs)
+	}
+	if got := failedNow(w.entry); got != 0 {
+		t.Fatalf("failed commands = %d for a start-up refusal, want 0", got)
+	}
+}
+
 // A command that is answered does not count.
 func TestAnsweredCommandIsNotFailed(t *testing.T) {
 	w := newLoadWorld(t, 3, true)
@@ -97,17 +119,94 @@ func TestAnsweredCommandIsNotFailed(t *testing.T) {
 	}
 }
 
-// A failure is counted once per command however many answers fail, and cleared when the command's handling ends.
+// A failure is counted once per queued command however many answers fail, and the bookkeeping ends with the command:
+// a failure after (or without) its handling leaves nothing behind.
 func TestFailureCountsOncePerCommand(t *testing.T) {
 	var l commandLoad
 	request := id.New()
+	l.enqueue(request, time.Now())
 	l.fail(request)
 	l.fail(request)
 	l.answered(request)
-	l.fail(request) // a Retry after the handling ended is a new failure
+	l.fail(request) // after the handling ended: counted, and leaves no entry
 	l.failOpen()
 	if got := l.takeFailed(); got != 3 {
 		t.Fatalf("failures = %d, want 3", got)
+	}
+	if len(l.failedBy) != 0 {
+		t.Fatalf("%d entries left behind", len(l.failedBy))
+	}
+}
+
+// The Bot's own probe has its own signal (probe_ok): its failure is not a failed command.
+func TestProbeIsNotAFailedCommand(t *testing.T) {
+	w := newLoadWorld(t, 3, true)
+	request := id.New()
+	_, forget := w.entry.probes.begin(request)
+	defer forget()
+	w.entry.failCommand(request)
+	if got := failedNow(w.entry); got != 0 {
+		t.Fatalf("failed commands = %d for a probe, want 0", got)
+	}
+	w.entry.failCommand(id.New())
+	if got := failedNow(w.entry); got != 1 {
+		t.Fatalf("failed commands = %d for a command, want 1", got)
+	}
+}
+
+// A report that could not be sent gives its failures back: the next successful one carries them.
+type flakySession struct {
+	sealedSession
+	mu    sync.Mutex
+	fails int
+	last  uint32
+}
+
+func (f *flakySession) ReportHealth(_ context.Context, r client.HealthReport) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fails > 0 {
+		f.fails--
+		return errors.New("dillad unreachable")
+	}
+	f.last = r.FailedCommands
+	return nil
+}
+
+func TestFailedReportKeepsItsCount(t *testing.T) {
+	w := newLoadWorld(t, 3, true)
+	session := &flakySession{sealedSession: w.session, fails: 1}
+	w.entry.mu.Lock()
+	w.entry.cfg.session = session
+	w.entry.mu.Unlock()
+	clk := clock.NewFake(time.Unix(1_800_000_000, 0))
+	monitor := w.entry.newHealthMonitor(nil, clk)
+	w.entry.load.failOpen()
+	w.entry.load.failOpen()
+	monitor.Tick(t.Context()) // the send fails
+	clk.Advance(health.ReportEvery)
+	monitor.Tick(t.Context())
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.last != 2 {
+		t.Fatalf("the next report carried %d failures, want the 2 the failed one held", session.last)
+	}
+}
+
+// Both parks share one budget measured from when the command was taken: a command that already waited does not wait the
+// whole limit again.
+func TestParkBudgetIsPerCommand(t *testing.T) {
+	shortHelperPark(t, 300*time.Millisecond)
+	w := newLoadWorld(t, 3, true)
+	reg := &registeredHelper{}
+	followRegistry(w, reg, slog.New(slog.NewTextHandler(&lockedLog{}, nil)))
+	ctx := withCommandStart(t.Context(), time.Now().Add(-280*time.Millisecond))
+	start := time.Now()
+	if h := w.entry.awaitHelper(ctx, nil, "bot command waiting for a replacement helper"); h != nil {
+		t.Fatal("a helper appeared from nowhere")
+	}
+	if waited := time.Since(start); waited > 150*time.Millisecond {
+		t.Fatalf("waited %v with 20 ms of the budget left, want the rest of it only", waited)
 	}
 }
 

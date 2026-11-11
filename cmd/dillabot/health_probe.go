@@ -49,6 +49,14 @@ type probeTable struct {
 	pending map[id.ID]chan gatewayclient.BotReply
 }
 
+// has reports whether request is a probe still waiting for its answer.
+func (p *probeTable) has(request id.ID) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, ok := p.pending[request]
+	return ok
+}
+
 func (p *probeTable) begin(request id.ID) (<-chan gatewayclient.BotReply, func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -199,11 +207,21 @@ func (l *commandLoad) fail(request id.ID) {
 	if _, counted := l.failedBy[request]; counted {
 		return
 	}
+	l.failed++
+	if _, queued := l.queued[request]; !queued {
+		return // its handling has ended: nothing will clear an entry, so none is made
+	}
 	if l.failedBy == nil {
 		l.failedBy = map[id.ID]struct{}{}
 	}
 	l.failedBy[request] = struct{}{}
-	l.failed++
+}
+
+// addFailed gives back failures a report took and could not deliver.
+func (l *commandLoad) addFailed(n uint32) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.failed += n
 }
 
 // failOpen counts a command whose open failed. The open does not know the request (its id is inside the seal), and a
@@ -243,6 +261,15 @@ type healthReporter interface {
 // startHealth (called with e.mu held) starts the installation's health monitor, once: it probes the command path every
 // 60 s and reports every 15 s until ctx ends. musicP95 reads the installation's music start timings (zero without any).
 func (e *sealedEntry) startHealth(ctx context.Context, musicP95 func() time.Duration, clk clock.Clock) {
+	monitor := e.newHealthMonitor(musicP95, clk)
+	// The caller (SetSealedIntake) holds e.mu.
+	e.monitor = monitor
+	go monitor.Run(ctx)
+}
+
+// newHealthMonitor builds the installation's health monitor. A report that could not be sent (or had nowhere to go)
+// gives its failed commands back to the load, so the next report carries them.
+func (e *sealedEntry) newHealthMonitor(musicP95 func() time.Duration, clk clock.Clock) *health.Monitor {
 	reporter := health.ReporterFunc(func(reportCtx context.Context, r health.Report) error {
 		cfg, _ := e.current()
 		if cfg.healthDir != "" {
@@ -254,16 +281,15 @@ func (e *sealedEntry) startHealth(ctx context.Context, musicP95 func() time.Dura
 		}
 		session, ok := cfg.session.(healthReporter)
 		if !ok {
-			return nil
+			return errSealedNotConfigured
 		}
 		report := client.HealthReport{ProbeOK: r.ProbeOK, ProbeAt: r.ProbeAt, QueueDepth: r.QueueDepth, OldestWaitMS: r.OldestWaitMS, MusicStartP95: r.MusicStartP95, FailingSince: r.FailingSince, FailedCommands: r.FailedCommands}
 		return session.ReportHealth(reportCtx, report)
 	})
 	monitor := health.New(health.ProberFunc(e.Probe), reporter, clk)
 	monitor.SetLoad(func() health.Load { return e.healthLoad(clk.Now(), musicP95) })
-	// The caller (SetSealedIntake) holds e.mu.
-	e.monitor = monitor
-	go monitor.Run(ctx)
+	monitor.SetUnsent(e.load.addFailed)
+	return monitor
 }
 
 // healthLoad is the installation's load for one report: its backlog, its music start timings, and the commands that

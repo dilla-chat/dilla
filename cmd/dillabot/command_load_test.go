@@ -101,8 +101,9 @@ type loadHelper struct {
 	replays  map[string][32]byte // a Retry's seal: answered Replay with this reply key
 	ops      int
 	ingests  int
-	seals    int  // op 23 calls that sealed
-	closed   bool // a closed helper refuses every op, as helper.Client does
+	seals    int   // op 23 calls that sealed
+	closed   bool  // a closed helper refuses every op, as helper.Client does
+	sealErr  error // when set, SealReply fails with it while the helper is still usable
 	// onOpen, when set, runs after each successful open, off the helper's lock: a helper that closes itself, or is
 	// replaced in the registry, between a command's open and its answer.
 	onOpen func()
@@ -168,6 +169,9 @@ func (h *loadHelper) SealReply(_ context.Context, _ [32]byte, _ id.ID, _ uint32,
 	h.ops++
 	if h.closed {
 		return nil, helper.ErrClosed
+	}
+	if h.sealErr != nil {
+		return nil, h.sealErr
 	}
 	h.seals++
 	return append([]byte{0xa0}, body...), nil
@@ -980,7 +984,7 @@ func TestSealedIntakeOfflineWhenHelperClosed(t *testing.T) {
 		if n != 1 || answer.Status != intake.StatusOffline || string(answer.Body) != intake.CodeOffline || !answer.Final {
 			t.Fatalf("answers %d, last %+v; want one 503 E_BOT_OFFLINE", n, answer)
 		}
-		if b.sealCount() != 1 || logs.count("class=not_ready") != 1 {
+		if b.sealCount() != 1 || logs.count("class=helper_gone") != 1 {
 			t.Fatalf("replacement seals %d; logs:\n%s", b.sealCount(), logs)
 		}
 		if c := logs.count("bot command answer not sealed"); c != 0 {

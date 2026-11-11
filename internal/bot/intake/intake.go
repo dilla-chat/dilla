@@ -247,6 +247,8 @@ type Intake struct {
 	log        *slog.Logger
 	keyStale   func()
 	ready      func() bool
+	helperGone func() bool
+	onGone     func(request id.ID)
 	// The start-up park (final review I2): for park after started, a command that meets a start-up gate (the feed
 	// barrier not settled, the Authz without its first snapshot, the feed handler not bound) waits for it to open off
 	// the worker, checked every parkStep, before it is refused. At most parkCap commands are parked at once, and at
@@ -352,6 +354,16 @@ func (i *Intake) SetKeyStale(f func()) { i.mu.Lock(); i.keyStale = f; i.mu.Unloc
 // installation has a feed handler bound". While either is false every command is answered 503
 // E_BOT_OFFLINE (retryable), so a Held query that cannot know yet never lets a command through.
 func (i *Intake) SetReady(f func() bool) { i.mu.Lock(); i.ready = f; i.mu.Unlock() }
+
+// SetHelperGone tells the intake how to tell a missing helper from a start-up gate: while the readiness gate is shut and
+// gone reports true, the retryable refusal is class helper_gone (the same 503 E_BOT_OFFLINE on the wire, as not_ready) and
+// refused is called with the request, so the runtime can count it as a failed command. A start-up refusal (feed_behind,
+// not_ready) is not one.
+func (i *Intake) SetHelperGone(gone func() bool, refused func(request id.ID)) {
+	i.mu.Lock()
+	i.helperGone, i.onGone = gone, refused
+	i.mu.Unlock()
+}
 
 func (i *Intake) isReady() bool {
 	i.mu.Lock()
@@ -501,6 +513,16 @@ func (i *Intake) run(ctx context.Context, log *slog.Logger, rec *record, req pro
 		retryable("held", StatusSignature, CodeSignature)
 		return
 	case !i.isReady():
+		i.mu.Lock()
+		gone, onGone := i.helperGone, i.onGone
+		i.mu.Unlock()
+		if gone != nil && gone() {
+			if onGone != nil {
+				onGone(req.RequestID)
+			}
+			retryable("helper_gone", StatusOffline, CodeOffline)
+			return
+		}
 		retryable("not_ready", StatusOffline, CodeOffline)
 		return
 	}

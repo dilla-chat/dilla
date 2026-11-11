@@ -21,6 +21,9 @@ const (
 	// ReportEvery is how often the Bot reports to dillad. It is far below the 150 s dillad waits before it marks the
 	// Bot offline and gives its 60 s queue-growth rule several reports to compare.
 	ReportEvery = 15 * time.Second
+	// MinProbeGap is the least time between two probes, however often ProbeNow is asked: a flapping helper must not
+	// make the Bot probe in a storm. A probe asked for sooner waits for the gap.
+	MinProbeGap = 5 * time.Second
 )
 
 // Prober asks the Bot's command path to answer one probe: a sealed OpProbe to the Bot's own command key as its own
@@ -81,6 +84,7 @@ type Monitor struct {
 
 	mu        sync.Mutex
 	load      func() Load
+	unsent    func(uint32)
 	probed    bool
 	lastProbe time.Time
 	probeOK   bool
@@ -102,6 +106,14 @@ func (m *Monitor) SetLoad(load func() Load) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.load = load
+}
+
+// SetUnsent sets where the failed commands of a report that could not be sent go back to, so the next report carries
+// them. Without one they are lost with the report.
+func (m *Monitor) SetUnsent(f func(uint32)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.unsent = f
 }
 
 // FailingSince is when commands began failing, as the last probe saw it. ok is false while they work (or before the
@@ -145,8 +157,10 @@ func (m *Monitor) Run(ctx context.Context) {
 func (m *Monitor) Tick(ctx context.Context) {
 	now := m.clk.Now()
 	m.mu.Lock()
-	due := !m.probed || m.probeNow || now.Sub(m.lastProbe) >= ProbePeriod
-	m.probeNow = false
+	due := !m.probed || now.Sub(m.lastProbe) >= ProbePeriod || (m.probeNow && now.Sub(m.lastProbe) >= MinProbeGap)
+	if due {
+		m.probeNow = false // an ask made inside the gap stays pending until the gap has passed
+	}
 	m.mu.Unlock()
 	if due {
 		ok := m.runProbe(ctx)
@@ -189,7 +203,7 @@ func (m *Monitor) send(ctx context.Context, now time.Time) {
 		failing := m.failing
 		r.FailingSince = &failing
 	}
-	load := m.load
+	load, unsent := m.load, m.unsent
 	m.mu.Unlock()
 	if load != nil {
 		l := load()
@@ -197,7 +211,9 @@ func (m *Monitor) send(ctx context.Context, now time.Time) {
 	}
 	// A report that fails is not retried: the next one is ReportEvery away, and dillad marks the Bot offline when none
 	// arrives for 150 s.
-	_ = m.report.Report(ctx, r)
+	if err := m.report.Report(ctx, r); err != nil && r.FailedCommands > 0 && unsent != nil {
+		unsent(r.FailedCommands)
+	}
 }
 
 // millis is d in whole milliseconds, never negative.

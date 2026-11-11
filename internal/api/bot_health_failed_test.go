@@ -62,6 +62,29 @@ func TestOneFailedReportIsDegraded(t *testing.T) {
 	}
 }
 
+// A clean report whose passing probe predates the failures does not clear them: only a probe newer than the one the
+// failing report carried does.
+func TestStaleProbeDoesNotClearFailedCommands(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_800_000_000, 0))
+	tracker := api.NewBotHealth(clk)
+	community := id.New()
+	probeT := clk.Now()
+	clk.Advance(health.ReportEvery)
+	failed := healthReportAt(true, probeT, 0, 0)
+	failed.FailedCommands = 1
+	tracker.Record(community, failed)
+	clk.Advance(health.ReportEvery)
+	tracker.Record(community, healthReportAt(true, probeT, 0, 0)) // the same old probe
+	if state, _ := tracker.Status(community); state != healthDegraded {
+		t.Fatalf("state %d after a clean report carrying the old probe, want degraded", state)
+	}
+	clk.Advance(health.ReportEvery)
+	tracker.Record(community, healthReportAt(true, clk.Now(), 0, 0)) // a newer, passing probe
+	if state, _ := tracker.Status(community); state != healthReady {
+		t.Fatalf("state %d after a clean report with a newer passing probe, want ready", state)
+	}
+}
+
 // A line without a count (an older dillad's) reads as zero.
 func TestBotHealthFileCountIsAdditive(t *testing.T) {
 	path := filepath.Join(t.TempDir(), api.BotHealthFile)

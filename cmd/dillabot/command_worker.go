@@ -161,7 +161,8 @@ func (e *sealedEntry) awaitHelper(ctx context.Context, failed sealedHelper, mess
 	if cfg.log != nil {
 		cfg.log.InfoContext(ctx, message, attrs...)
 	}
-	deadline := time.Now().Add(helperParkLimit)
+	// One budget per command, from when its worker took it: the open's park and the seal's park share it.
+	deadline := commandStartOf(ctx).Add(helperParkLimit)
 	for {
 		wait := min(helperParkStep, time.Until(deadline))
 		if wait <= 0 || !sleepFor(ctx, wait) {
@@ -171,6 +172,21 @@ func (e *sealedEntry) awaitHelper(ctx context.Context, failed sealedHelper, mess
 			return h
 		}
 	}
+}
+
+type commandStartKey struct{}
+
+// withCommandStart marks ctx with when its command was taken from the queue.
+func withCommandStart(ctx context.Context, at time.Time) context.Context {
+	return context.WithValue(ctx, commandStartKey{}, at)
+}
+
+// commandStartOf is when ctx's command was taken, or now for a context that carries none.
+func commandStartOf(ctx context.Context) time.Time {
+	if at, ok := ctx.Value(commandStartKey{}).(time.Time); ok {
+		return at
+	}
+	return time.Now()
 }
 
 // sleepFor waits d, or until ctx ends (false).
@@ -209,16 +225,18 @@ func (e *sealedEntry) OpenCommand(ctx context.Context, sealed []byte, user, devi
 // A reply that cannot be sealed, and a retryable offline refusal (even sealed on the replacement), are failed commands.
 func (e *sealedEntry) SealReply(ctx context.Context, key [32]byte, request id.ID, seq uint32, body []byte) ([]byte, error) {
 	sealed, err := e.sealReply(ctx, key, request, seq, body)
-	if err != nil || isOfflineAnswer(body) {
-		e.load.fail(request)
+	if err != nil {
+		e.failCommand(request)
 	}
 	return sealed, err
 }
 
-// isOfflineAnswer is whether an answer plaintext is the retryable refusal 503 E_BOT_OFFLINE.
-func isOfflineAnswer(body []byte) bool {
-	answer, err := intake.DecodeAnswer(body)
-	return err == nil && answer.Status == intake.StatusOffline && string(answer.Body) == intake.CodeOffline
+// failCommand counts request as a failed command, unless it is the Bot's own probe (which has its own probe_ok signal).
+func (e *sealedEntry) failCommand(request id.ID) {
+	if e.probes.has(request) {
+		return
+	}
+	e.load.fail(request)
 }
 
 func (e *sealedEntry) sealReply(ctx context.Context, key [32]byte, request id.ID, seq uint32, body []byte) ([]byte, error) {
@@ -252,7 +270,7 @@ func (e *sealedEntry) Reply(ctx context.Context, device, request id.ID, seq uint
 	}
 	err := cfg.session.Reply(ctx, device, request, seq, sealed, final)
 	if err != nil {
-		e.load.fail(request)
+		e.failCommand(request)
 	}
 	return err
 }
@@ -495,6 +513,8 @@ func (r *botGatewayRuntime) SetSealedIntake(cfg sealedIntakeConfig) {
 		// has died since is refused the same way (v0.1.0-bot2.2, F4), and that answer waits for the replacement to seal it.
 		installation := cfg.installation
 		e.in.SetReady(func() bool { return r.feedHandler(installation) != nil && e.helperNow() != nil })
+		// A refusal because the helper is gone is a failed command; a start-up one is not.
+		e.in.SetHelperGone(func() bool { return e.helperNow() == nil }, e.failCommand)
 		ctx, cancel := context.WithCancel(r.ctx)
 		e.cancel = cancel
 		for range sealedWorkers {
@@ -529,7 +549,7 @@ func (e *sealedEntry) work(ctx context.Context) {
 			e.mu.Lock()
 			in := e.in
 			e.mu.Unlock()
-			in.Handle(ctx, cmd)
+			in.Handle(withCommandStart(ctx, time.Now()), cmd)
 			// Fix round 2, M3: counted until its handling ends, so a command stuck in a worker (a hanging helper call,
 			// a blocked handler) shows as waiting even while other workers are free.
 			e.load.answered(cmd.RequestID)

@@ -80,9 +80,12 @@ type botHealthState struct {
 	probeFails int
 	// failedLatched is set by a report with failed commands and cleared by one with none and a passing probe.
 	failedLatched bool
-	samples       []depthSample
-	degraded      bool
-	since         time.Time // when the current ready or degraded judgement began
+	// latchedProbeAt is the probe_at the failing report carried: only a passing probe newer than it clears the latch (a
+	// passing probe that predates the failures says nothing about them).
+	latchedProbeAt uint64
+	samples        []depthSample
+	degraded       bool
+	since          time.Time // when the current ready or degraded judgement began
 	// offlineTold is set when Watch told the hook this Bot went offline by silence; the next report clears it.
 	offlineTold bool
 }
@@ -280,8 +283,9 @@ func (h *BotHealth) Record(community id.ID, r BotHealthReport) {
 		// Commands failed since the last report: degraded at once, whatever the probe says, until a report with none and
 		// a passing probe.
 		st.failedLatched = true
+		st.latchedProbeAt = max(st.latchedProbeAt, r.ProbeAt)
 		h.failedCount[community] += r.FailedCommands
-	} else if r.ProbeOK {
+	} else if r.ProbeOK && r.ProbeAt > st.latchedProbeAt {
 		st.failedLatched = false
 	}
 	st.samples = append(st.samples, depthSample{at: now, depth: r.QueueDepth})
@@ -461,7 +465,7 @@ func (d Deps) PutBotRuntimeHealth(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
-	invalid := server.Errorf(server.CodeInvalidRequest, "a health report is [probe_ok(0|1), probe_at, queue_depth, oldest_wait_ms, music_start_p95_ms, failing_since|null]")
+	invalid := server.Errorf(server.CodeInvalidRequest, "a health report is 6 or 7 elements: [probe_ok(0|1), probe_at, queue_depth, oldest_wait_ms, music_start_p95_ms, failing_since|null], then optionally failed_commands")
 	// Six elements, or seven when the Bot (v0.1.0-bot2.2) has commands that failed to report: failed_commands.
 	elems, ok := rawArrayOf(body, 6)
 	if !ok {
