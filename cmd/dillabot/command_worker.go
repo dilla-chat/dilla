@@ -125,9 +125,10 @@ var errHelperOffline = fmt.Errorf("%w: no usable native helper (%w)", errSealedN
 
 // helperParkLimit bounds how long a command's open, or an answer whose seal met a dead helper, waits for the
 // replacement helper (one due tick finds the dead one and asks for a pass at once); helperParkStep is how often it looks.
-// Variables for tests.
+// The limit is under the client's 5 s first-answer window (BOT_FIRST_ANSWER_MS): a command still parked then gives its
+// 503 E_BOT_OFFLINE in time for the client's automatic resend, before it shows "The Bot didn't answer". Variables for tests.
 var (
-	helperParkLimit = dueInterval
+	helperParkLimit = 4 * time.Second
 	helperParkStep  = 100 * time.Millisecond
 )
 
@@ -190,16 +191,37 @@ func (e *sealedEntry) OpenCommand(ctx context.Context, sealed []byte, user, devi
 	h := e.helperNow()
 	if h == nil {
 		if h = e.awaitHelper(ctx, nil, "bot command waiting for a replacement helper"); h == nil {
+			e.load.failOpen()
 			return helper.OpenedCommand{}, errHelperOffline
 		}
 	}
-	return h.OpenCommand(ctx, sealed, user, device, now)
+	opened, err := h.OpenCommand(ctx, sealed, user, device, now)
+	if err != nil {
+		e.load.failOpen()
+	}
+	return opened, err
 }
 
 // SealReply seals an answer on the installation's current helper. Op 23 holds no helper state (the reply key is the
 // intake's), so an answer whose seal met a dead helper is parked and sealed once more on the replacement; with none in
 // time the error stands, and the intake logs it and keeps the answer for the member's Retry.
+//
+// A reply that cannot be sealed, and a retryable offline refusal (even sealed on the replacement), are failed commands.
 func (e *sealedEntry) SealReply(ctx context.Context, key [32]byte, request id.ID, seq uint32, body []byte) ([]byte, error) {
+	sealed, err := e.sealReply(ctx, key, request, seq, body)
+	if err != nil || isOfflineAnswer(body) {
+		e.load.fail(request)
+	}
+	return sealed, err
+}
+
+// isOfflineAnswer is whether an answer plaintext is the retryable refusal 503 E_BOT_OFFLINE.
+func isOfflineAnswer(body []byte) bool {
+	answer, err := intake.DecodeAnswer(body)
+	return err == nil && answer.Status == intake.StatusOffline && string(answer.Body) == intake.CodeOffline
+}
+
+func (e *sealedEntry) sealReply(ctx context.Context, key [32]byte, request id.ID, seq uint32, body []byte) ([]byte, error) {
 	h := e.helperNow()
 	err := errHelperOffline
 	if h != nil {
@@ -228,7 +250,11 @@ func (e *sealedEntry) Reply(ctx context.Context, device, request id.ID, seq uint
 	if cfg.session == nil {
 		return errSealedNotConfigured
 	}
-	return cfg.session.Reply(ctx, device, request, seq, sealed, final)
+	err := cfg.session.Reply(ctx, device, request, seq, sealed, final)
+	if err != nil {
+		e.load.fail(request)
+	}
+	return err
 }
 
 func (e *sealedEntry) PublishCatalog(ctx context.Context, community id.ID, commands []byte) (uint64, error) {

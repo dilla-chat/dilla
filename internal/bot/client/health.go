@@ -17,14 +17,14 @@ type HealthReport struct {
 	OldestWaitMS  uint64
 	MusicStartP95 uint64
 	FailingSince  *time.Time
+	// FailedCommands is the commands that failed since the previous report. It is sent as a seventh element only when it
+	// is not zero, so a healthy Bot's report is the six elements every dillad reads.
+	FailedCommands uint32
 }
 
-// ReportHealth sends one health report. dillad judges it (degraded after two failed probes, a command waiting over
-// 10 s or a queue growing for 60 s; offline when the reports stop for 150 s).
-func (s *Session) ReportHealth(ctx context.Context, r HealthReport) error {
-	if s == nil || s.c == nil || s.token == "" {
-		return ErrInvalidConfig
-	}
+// healthBody encodes the report: [probe_ok, probe_at, queue_depth, oldest_wait_ms, music_start_p95_ms, failing_since|null]
+// and, when commands failed, failed_commands.
+func healthBody(r HealthReport) ([]byte, error) {
 	var ok, probeAt uint64
 	if r.ProbeOK {
 		ok = 1
@@ -36,7 +36,20 @@ func (s *Session) ReportHealth(ctx context.Context, r HealthReport) error {
 	if r.FailingSince != nil && r.FailingSince.Unix() > 0 {
 		failing = uint64(r.FailingSince.Unix()) //nolint:gosec // checked positive
 	}
-	body, err := cborx.Marshal([]any{ok, probeAt, r.QueueDepth, r.OldestWaitMS, r.MusicStartP95, failing})
+	fields := []any{ok, probeAt, r.QueueDepth, r.OldestWaitMS, r.MusicStartP95, failing}
+	if r.FailedCommands > 0 {
+		fields = append(fields, uint64(r.FailedCommands))
+	}
+	return cborx.Marshal(fields)
+}
+
+// ReportHealth sends one health report. dillad judges it (degraded after two failed probes, a command waiting over
+// 10 s or a queue growing for 60 s; offline when the reports stop for 150 s).
+func (s *Session) ReportHealth(ctx context.Context, r HealthReport) error {
+	if s == nil || s.c == nil || s.token == "" {
+		return ErrInvalidConfig
+	}
+	body, err := healthBody(r)
 	if err != nil {
 		return err
 	}

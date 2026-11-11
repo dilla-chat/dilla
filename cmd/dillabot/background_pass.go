@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/helper"
+	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
@@ -37,9 +38,9 @@ type backgroundMaintenance struct {
 	run     func(context.Context) error
 	// usable reports whether the task's helper can still serve calls (native.Client.Usable); nil: always.
 	usable func() bool
-	// client is the helper the task runs on (a comparable pointer, *native.Client in production): the due tick logs a
-	// helper gone once per client, and the respawn backoff ends only once one client stayed usable for helperServedFor.
-	client any
+	// client is the helper the task runs on: the due tick logs a helper gone once per client, and the respawn backoff
+	// ends only once one client stayed usable for helperServedFor. A typed pointer, so comparing two can never panic.
+	client *native.Client
 }
 
 // installationMaintenanceError keeps the installation visible in both logs
@@ -231,40 +232,59 @@ const helperServedFor = 60 * time.Second
 
 // helperServing is since when an installation's helper client has served its maintenance (guarded by mu).
 type helperServing struct {
-	client any
+	client *native.Client
 	since  time.Time
 }
 
 // helperServed records that installation's helper client served a maintenance run; once the same client has served
 // for helperServedFor, the installation's respawn backoff ends.
-func (r *botGatewayRuntime) helperServed(installation id.ID, client any) {
+func (r *botGatewayRuntime) helperServed(installation id.ID, client *native.Client) {
 	now := r.clockNow()
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	_, wasGone := r.helperGoneLogged[installation]
 	delete(r.helperGoneLogged, installation)
 	if r.helperServing == nil {
 		r.helperServing = map[id.ID]helperServing{}
 	}
 	serving, ok := r.helperServing[installation]
-	if !ok || serving.client != client {
+	replaced := wasGone || (ok && serving.client != client)
+	switch {
+	case !ok || serving.client != client:
 		r.helperServing[installation] = helperServing{client: client, since: now}
+	case now.Sub(serving.since) >= helperServedFor:
+		delete(r.helperRespawns, installation)
+	}
+	r.mu.Unlock()
+	if replaced {
+		// A replacement helper registered: probe it at once instead of up to 60 s later, so dillad sees the Bot recover.
+		r.probeNow(installation)
+	}
+}
+
+// probeNow asks the installation's health monitor to probe at once (a helper was replaced or went away).
+func (r *botGatewayRuntime) probeNow(installation id.ID) {
+	e := r.sealed.lookup(installation)
+	if e == nil {
 		return
 	}
-	if now.Sub(serving.since) >= helperServedFor {
-		delete(r.helperRespawns, installation)
+	e.mu.Lock()
+	monitor := e.monitor
+	e.mu.Unlock()
+	if monitor != nil {
+		monitor.ProbeNow()
 	}
 }
 
 // helperGoneSeen notes that installation's helper client can no longer serve: its serving time ends, and the first time
 // for this client it logs "bot native helper gone" (with the class of the call that failed, when one did).
-func (r *botGatewayRuntime) helperGoneSeen(installation id.ID, client any, err error) {
+func (r *botGatewayRuntime) helperGoneSeen(installation id.ID, client *native.Client, err error) {
 	r.mu.Lock()
 	delete(r.helperServing, installation)
 	logged, seen := r.helperGoneLogged[installation]
 	first := !seen || logged != client
 	if first {
 		if r.helperGoneLogged == nil {
-			r.helperGoneLogged = map[id.ID]any{}
+			r.helperGoneLogged = map[id.ID]*native.Client{}
 		}
 		r.helperGoneLogged[installation] = client
 	}
@@ -272,6 +292,8 @@ func (r *botGatewayRuntime) helperGoneSeen(installation id.ID, client any, err e
 	if !first {
 		return
 	}
+	// The helper just went away: probe now, so dillad sees the failing command path in one report and not a minute on.
+	r.probeNow(installation)
 	attrs := []any{"installation_id", installation.String()}
 	if err != nil {
 		attrs = append(attrs, "error_class", helper.Class(err))

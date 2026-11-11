@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -167,6 +168,12 @@ func (r *MembershipReconciler) UseBotChannels(channels BotChannels, log *slog.Lo
 
 // botChannelSet is the reconciler's Bot channels now. linked is false only with no feed link (v1 membership); with
 // one, known is false until the feed has applied a snapshot.
+// logJoinFailed logs a Bot channel join that failed in phase: where it stopped and the class of the error, never the
+// error's text.
+func logJoinFailed(log *slog.Logger, channel id.ID, phase MembershipPhase, err error) {
+	log.Warn("bot Bot channel join failed", "channel_id", channel.String(), "phase", phase.String(), "error_class", helper.Class(err))
+}
+
 func (r *MembershipReconciler) botChannelSet() (marked map[id.ID]bool, linked, known bool, log *slog.Logger) {
 	r.mu.Lock()
 	channels, log := r.botChannels, r.log
@@ -379,6 +386,11 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		}
 		outcomes, applyErr := r.native.ApplyWelcomes(ctx, apply, expected)
 		if applyErr != nil {
+			for group, channel := range channelByGroup {
+				if kindByGroup[group] == 0 {
+					logJoinFailed(log, channel, MembershipPhaseWelcomeApply, applyErr)
+				}
+			}
 			return out, membershipPhaseError(MembershipPhaseWelcomeApply, applyErr)
 		}
 		if len(outcomes) != len(welcomes) {
@@ -388,15 +400,26 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 			if o.ID != welcomes[i].ID || o.Group != welcomes[i].GroupID || (o.Outcome != 0 && o.Outcome != 1) {
 				return out, fmt.Errorf("native welcome %d was not durably applied: outcome %d", o.ID, o.Outcome)
 			}
+			text := kindByGroup[o.Group] == 0
 			if err = r.revalidateChannelAccess(ctx, session, o.Group, channelByGroup[o.Group], kindByGroup[o.Group]); err != nil {
+				if text {
+					logJoinFailed(log, channelByGroup[o.Group], MembershipPhaseWelcomeRevalidation, err)
+				}
 				return out, membershipPhaseError(MembershipPhaseWelcomeRevalidation, err)
 			}
 			if err = session.AcknowledgeWelcome(ctx, o.ID); err != nil {
+				if text {
+					logJoinFailed(log, channelByGroup[o.Group], MembershipPhaseWelcomeAcknowledge, err)
+				}
 				return out, membershipPhaseError(MembershipPhaseWelcomeAcknowledge, err)
 			}
 			out.Applied++
 			out.Acknowledged++
 			applied[o.Group] = true
+			if text {
+				// The join is done by this Welcome: applied, revalidated and acknowledged.
+				log.Info("bot joined Bot channel group", "channel_id", channelByGroup[o.Group].String())
+			}
 		}
 	}
 	for _, w := range refused {

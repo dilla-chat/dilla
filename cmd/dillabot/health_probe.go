@@ -166,6 +166,10 @@ func (e *sealedEntry) probeClock() clock.Clock {
 type commandLoad struct {
 	mu     sync.Mutex
 	queued map[id.ID]time.Time
+	// failed is the commands that failed since the last report, and failedBy the requests already counted: a command
+	// is counted once, however many of its steps fail, until its handling ends (answered).
+	failed   uint32
+	failedBy map[id.ID]struct{}
 }
 
 func (l *commandLoad) enqueue(request id.ID, at time.Time) {
@@ -184,6 +188,39 @@ func (l *commandLoad) answered(request id.ID) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.queued, request)
+	delete(l.failedBy, request)
+}
+
+// fail counts request as a failed command, once: its answer could not be sealed or delivered, or was the retryable
+// offline refusal.
+func (l *commandLoad) fail(request id.ID) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, counted := l.failedBy[request]; counted {
+		return
+	}
+	if l.failedBy == nil {
+		l.failedBy = map[id.ID]struct{}{}
+	}
+	l.failedBy[request] = struct{}{}
+	l.failed++
+}
+
+// failOpen counts a command whose open failed. The open does not know the request (its id is inside the seal), and a
+// command is opened once.
+func (l *commandLoad) failOpen() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.failed++
+}
+
+// takeFailed is the failed commands since the last call, and starts the count again.
+func (l *commandLoad) takeFailed() uint32 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := l.failed
+	l.failed = 0
+	return n
 }
 
 // snapshot is the commands not yet answered and how long the oldest has waited.
@@ -219,21 +256,25 @@ func (e *sealedEntry) startHealth(ctx context.Context, musicP95 func() time.Dura
 		if !ok {
 			return nil
 		}
-		report := client.HealthReport{ProbeOK: r.ProbeOK, ProbeAt: r.ProbeAt, QueueDepth: r.QueueDepth, OldestWaitMS: r.OldestWaitMS, MusicStartP95: r.MusicStartP95, FailingSince: r.FailingSince}
+		report := client.HealthReport{ProbeOK: r.ProbeOK, ProbeAt: r.ProbeAt, QueueDepth: r.QueueDepth, OldestWaitMS: r.OldestWaitMS, MusicStartP95: r.MusicStartP95, FailingSince: r.FailingSince, FailedCommands: r.FailedCommands}
 		return session.ReportHealth(reportCtx, report)
 	})
 	monitor := health.New(health.ProberFunc(e.Probe), reporter, clk)
-	monitor.SetLoad(func() health.Load {
-		depth, oldest := e.load.snapshot(clk.Now())
-		var p95 time.Duration
-		if musicP95 != nil {
-			p95 = musicP95()
-		}
-		return health.Load{QueueDepth: depth, OldestWait: oldest, MusicStartP95: p95}
-	})
+	monitor.SetLoad(func() health.Load { return e.healthLoad(clk.Now(), musicP95) })
 	// The caller (SetSealedIntake) holds e.mu.
 	e.monitor = monitor
 	go monitor.Run(ctx)
+}
+
+// healthLoad is the installation's load for one report: its backlog, its music start timings, and the commands that
+// failed since the last report (which this read resets).
+func (e *sealedEntry) healthLoad(now time.Time, musicP95 func() time.Duration) health.Load {
+	depth, oldest := e.load.snapshot(now)
+	var p95 time.Duration
+	if musicP95 != nil {
+		p95 = musicP95()
+	}
+	return health.Load{QueueDepth: depth, OldestWait: oldest, MusicStartP95: p95, FailedCommands: e.load.takeFailed()}
 }
 
 // FailingSince is when the installation's commands began failing, as its last probe saw it (doctor).

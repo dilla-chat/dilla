@@ -213,7 +213,7 @@ func doctorBotHealthLeg(cfg *config.Config) ops.Leg {
 	if !cfg.Bot.Enabled {
 		return ops.Leg{Name: name, Status: ops.Green, Detail: "disabled ([bot] enabled = false)"}
 	}
-	failing, err := api.ReadBotHealthFile(filepath.Join(cfg.Instance.DataDir, api.BotHealthFile))
+	failing, err := api.ReadBotHealthStates(filepath.Join(cfg.Instance.DataDir, api.BotHealthFile))
 	if err != nil {
 		return ops.Leg{Name: name, Status: ops.Yellow, Detail: err.Error(), Fix: "dillad rewrites the file on its next judgement"}
 	}
@@ -227,7 +227,11 @@ func doctorBotHealthLeg(cfg *config.Config) ops.Leg {
 	slices.SortFunc(communities, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
 	lines := make([]string, 0, len(communities))
 	for _, community := range communities {
-		lines = append(lines, fmt.Sprintf("commands failing since %s (community %s)", failing[community].UTC().Format(time.RFC3339), community.String()))
+		line := fmt.Sprintf("commands failing since %s (community %s)", failing[community].Since.UTC().Format(time.RFC3339), community.String())
+		if n := failing[community].FailedCommands; n > 0 {
+			line += fmt.Sprintf(": %d failed commands", n)
+		}
+		lines = append(lines, line)
 	}
 	return ops.Leg{Name: name, Status: ops.Yellow, Detail: strings.Join(lines, "; "),
 		Fix: "read the Bot's lines in the service journal (journalctl -u dilla); stage and error_class name the failing step"}

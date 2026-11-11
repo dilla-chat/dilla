@@ -54,7 +54,7 @@ type botGatewayRuntime struct {
 	// helperServing is since when each installation's helper client has served its maintenance, and helperGoneLogged
 	// the client last logged gone (guarded by mu; v0.1.0-bot2.2, F8).
 	helperServing    map[id.ID]helperServing
-	helperGoneLogged map[id.ID]any
+	helperGoneLogged map[id.ID]*native.Client
 	// starts runs the native helper starts off the loop (fix round, I-2; helper_start.go).
 	starts helperStarts
 	// feeds is each installation's feed handler, which outlives a pass and a gateway connection (guarded by mu).

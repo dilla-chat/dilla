@@ -27,6 +27,8 @@ import (
 //
 //   - degraded when the probe failed twice in a row (two reports carrying distinct probe_at, both not ok), or the
 //     oldest waiting command has waited over 10 s, or queue_depth rose across every report of the last 60 s;
+//   - degraded at once by a report whose optional seventh element, failed_commands (v0.1.0-bot2.2), is above zero, and
+//     until a report with none and a passing probe (a report with six elements has none);
 //   - offline when no report came for 150 s (counted from dillad's start for a Bot that never reported);
 //   - ready otherwise.
 //
@@ -63,6 +65,8 @@ type BotHealthReport struct {
 	OldestWaitMS    uint64
 	MusicStartP95MS uint64
 	FailingSince    *uint64
+	// FailedCommands is the commands that failed since the previous report (v0.1.0-bot2.2; absent from older Bots' reports: 0).
+	FailedCommands uint64
 }
 
 type depthSample struct {
@@ -74,9 +78,11 @@ type botHealthState struct {
 	lastReport time.Time
 	lastProbe  uint64
 	probeFails int
-	samples    []depthSample
-	degraded   bool
-	since      time.Time // when the current ready or degraded judgement began
+	// failedLatched is set by a report with failed commands and cleared by one with none and a passing probe.
+	failedLatched bool
+	samples       []depthSample
+	degraded      bool
+	since         time.Time // when the current ready or degraded judgement began
 	// offlineTold is set when Watch told the hook this Bot went offline by silence; the next report clears it.
 	offlineTold bool
 }
@@ -89,8 +95,10 @@ type BotHealth struct {
 	state map[id.ID]*botHealthState
 	// failing is when each degraded community's judgement first became degraded, by dillad's clock; file keeps it.
 	failing map[id.ID]time.Time
-	file    string
-	log     *slog.Logger
+	// failedCount is the failed commands counted while each community's Bot was degraded; the file keeps it for doctor.
+	failedCount map[id.ID]uint64
+	file        string
+	log         *slog.Logger
 	// onChange hears a report that changed the judged state: dillad sends op 54, so members re-read the catalog's
 	// status instead of keeping the one they read before (the picker would show the Bot offline until a reload).
 	onChange func(community id.ID)
@@ -109,29 +117,50 @@ func NewBotHealth(clk clock.Clock) *BotHealth {
 	if clk == nil {
 		clk = clock.System()
 	}
-	return &BotHealth{clk: clk, start: clk.Now(), state: map[id.ID]*botHealthState{}, failing: map[id.ID]time.Time{}, wake: make(chan struct{}, 1)}
+	return &BotHealth{clk: clk, start: clk.Now(), state: map[id.ID]*botHealthState{}, failing: map[id.ID]time.Time{}, failedCount: map[id.ID]uint64{}, wake: make(chan struct{}, 1)}
 }
 
 // Persist keeps the failing-since times in path (0600, written whole on every change) and reads back what a previous
 // run left there: a community whose Bot is judged degraded again keeps its time; one judged ready drops it. A missing
 // file is an empty one; an unreadable one is logged and replaced on the next change.
 func (h *BotHealth) Persist(path string, log *slog.Logger) {
-	failing, err := ReadBotHealthFile(path)
+	failing, err := ReadBotHealthStates(path)
 	if err != nil && log != nil {
 		log.Warn("bot health: the failing-since file is unreadable; it is rewritten on the next change", "error", err.Error())
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.file, h.log = path, log
-	for community, since := range failing {
-		h.failing[community] = since
+	for community, state := range failing {
+		h.failing[community] = state.Since
+		if state.FailedCommands > 0 {
+			h.failedCount[community] = state.FailedCommands
+		}
 	}
 }
 
-// ReadBotHealthFile reads a failing-since file: one "<community hex> <unix seconds>" line per community whose Bot was
-// degraded when dillad last judged it. A missing file is empty.
+// BotHealthFailing is one degraded community in the failing-since file.
+type BotHealthFailing struct {
+	// Since is when dillad first judged the Bot degraded.
+	Since time.Time
+	// FailedCommands is the commands the Bot reported failed since then; 0 when it was degraded for another reason.
+	FailedCommands uint64
+}
+
+// ReadBotHealthFile reads a failing-since file: one "<community hex> <unix seconds>[ <failed commands>]" line per
+// community whose Bot was degraded when dillad last judged it. A missing file is empty.
 func ReadBotHealthFile(path string) (map[id.ID]time.Time, error) {
-	out := map[id.ID]time.Time{}
+	states, err := ReadBotHealthStates(path)
+	out := make(map[id.ID]time.Time, len(states))
+	for community, state := range states {
+		out[community] = state.Since
+	}
+	return out, err
+}
+
+// ReadBotHealthStates is ReadBotHealthFile with each community's failed-command count (0 on a line without one).
+func ReadBotHealthStates(path string) (map[id.ID]BotHealthFailing, error) {
+	out := map[id.ID]BotHealthFailing{}
 	raw, err := os.ReadFile(path) //nolint:gosec // G304: dillad's own data directory joined with a constant name
 	if errors.Is(err, fs.ErrNotExist) {
 		return out, nil
@@ -141,19 +170,25 @@ func ReadBotHealthFile(path string) (map[id.ID]time.Time, error) {
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
 	for scanner.Scan() {
-		community, at, ok := strings.Cut(strings.TrimSpace(scanner.Text()), " ")
-		if !ok {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 2 || len(fields) > 3 {
 			return out, fmt.Errorf("%s: malformed line", path)
 		}
-		cid, err := id.Parse(community)
+		cid, err := id.Parse(fields[0])
 		if err != nil || cid.IsZero() {
 			return out, fmt.Errorf("%s: malformed community id", path)
 		}
-		seconds, err := strconv.ParseInt(at, 10, 64)
+		seconds, err := strconv.ParseInt(fields[1], 10, 64)
 		if err != nil || seconds <= 0 {
 			return out, fmt.Errorf("%s: malformed time", path)
 		}
-		out[cid] = time.Unix(seconds, 0).UTC()
+		state := BotHealthFailing{Since: time.Unix(seconds, 0).UTC()}
+		if len(fields) == 3 {
+			if state.FailedCommands, err = strconv.ParseUint(fields[2], 10, 64); err != nil {
+				return out, fmt.Errorf("%s: malformed count", path)
+			}
+		}
+		out[cid] = state
 	}
 	return out, scanner.Err()
 }
@@ -171,7 +206,11 @@ func (h *BotHealth) writeLocked() {
 	slices.SortFunc(ids, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
 	var b strings.Builder
 	for _, community := range ids {
-		fmt.Fprintf(&b, "%s %d\n", community.String(), h.failing[community].Unix())
+		fmt.Fprintf(&b, "%s %d", community.String(), h.failing[community].Unix())
+		if n := h.failedCount[community]; n > 0 {
+			fmt.Fprintf(&b, " %d", n)
+		}
+		b.WriteByte('\n')
 	}
 	if err := writeFileAtomic(h.file, []byte(b.String())); err != nil && h.log != nil {
 		h.log.Warn("bot health: the failing-since file was not written", "error", err.Error())
@@ -237,6 +276,14 @@ func (h *BotHealth) Record(community id.ID, r BotHealthReport) {
 			st.probeFails++
 		}
 	}
+	if r.FailedCommands > 0 {
+		// Commands failed since the last report: degraded at once, whatever the probe says, until a report with none and
+		// a passing probe.
+		st.failedLatched = true
+		h.failedCount[community] += r.FailedCommands
+	} else if r.ProbeOK {
+		st.failedLatched = false
+	}
 	st.samples = append(st.samples, depthSample{at: now, depth: r.QueueDepth})
 	cutoff := now.Add(-botHealthKeep)
 	keep := 0
@@ -247,7 +294,7 @@ func (h *BotHealth) Record(community id.ID, r BotHealthReport) {
 	if len(st.samples) > maxBotHealthSamples {
 		st.samples = st.samples[len(st.samples)-maxBotHealthSamples:]
 	}
-	degraded := st.probeFails >= BotHealthFailedProbes || r.OldestWaitMS > BotHealthOldestWaitMS || queueGrowing(st.samples, now)
+	degraded := st.probeFails >= BotHealthFailedProbes || r.OldestWaitMS > BotHealthOldestWaitMS || queueGrowing(st.samples, now) || st.failedLatched
 	if degraded != st.degraded {
 		st.degraded, st.since = degraded, now
 	}
@@ -260,10 +307,14 @@ func (h *BotHealth) Record(community id.ID, r BotHealthReport) {
 		h.writeLocked()
 	case degraded:
 		st.since = at
+		if r.FailedCommands > 0 {
+			h.writeLocked() // the count moved
+		}
 	case kept && r.ProbeOK:
 		// Only a passing probe ends it: right after a restart one failed probe is not yet "degraded", but nor is it
 		// a recovery.
 		delete(h.failing, community)
+		delete(h.failedCount, community)
 		h.writeLocked()
 	}
 }
@@ -411,7 +462,11 @@ func (d Deps) PutBotRuntimeHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	invalid := server.Errorf(server.CodeInvalidRequest, "a health report is [probe_ok(0|1), probe_at, queue_depth, oldest_wait_ms, music_start_p95_ms, failing_since|null]")
+	// Six elements, or seven when the Bot (v0.1.0-bot2.2) has commands that failed to report: failed_commands.
 	elems, ok := rawArrayOf(body, 6)
+	if !ok {
+		elems, ok = rawArrayOf(body, 7)
+	}
 	if !ok {
 		server.WriteError(w, invalid)
 		return
@@ -435,6 +490,12 @@ func (d Deps) PutBotRuntimeHealth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		report.FailingSince = &since
+	}
+	if len(elems) == 7 {
+		if report.FailedCommands, ok = rawUintOf(elems[6]); !ok {
+			server.WriteError(w, invalid)
+			return
+		}
 	}
 	d.BotHealth.Record(installation.CommunityID, report)
 	w.WriteHeader(http.StatusNoContent)

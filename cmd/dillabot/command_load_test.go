@@ -1053,7 +1053,7 @@ func TestSelfClosingHelperOnPendingWelcome(t *testing.T) {
 			log.Warn("bot native helper closed", "installation_id", installation.String(), "reason", helper.ReasonInvalidatedDecode)
 		}
 		reg.set(h)
-		loop.SetMaintenance(installation, backgroundMaintenance{client: h, usable: h.Usable, run: func(context.Context) error { return nil }})
+		loop.SetMaintenance(installation, backgroundMaintenance{client: new(native.Client), usable: h.Usable, run: func(context.Context) error { return nil }})
 		return h
 	}
 	tick := func() {

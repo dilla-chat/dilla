@@ -45,6 +45,8 @@ type Report struct {
 	MusicStartP95 uint64
 	FailingSince  *time.Time
 	ReportedAt    time.Time
+	// FailedCommands is the commands that failed since the previous report (v0.1.0-bot2.2).
+	FailedCommands uint32
 }
 
 // Reporter sends one report to dillad.
@@ -66,6 +68,9 @@ type Load struct {
 	OldestWait time.Duration
 	// MusicStartP95 is the 95th percentile of the first-frame time of the last 20 track starts, zero without data.
 	MusicStartP95 time.Duration
+	// FailedCommands is the commands that failed since the last read: the function that returns it resets it, so a
+	// failure is reported once.
+	FailedCommands uint32
 }
 
 // Monitor probes and reports.
@@ -80,6 +85,8 @@ type Monitor struct {
 	lastProbe time.Time
 	probeOK   bool
 	failing   time.Time // when commands began failing, zero while the last probe succeeded
+	probeNow  bool      // ProbeNow was called: the next tick probes whatever the period
+	wake      chan struct{}
 }
 
 // New builds a monitor. It does nothing until Run (or Tick) is called.
@@ -87,7 +94,7 @@ func New(probe Prober, report Reporter, clk clock.Clock) *Monitor {
 	if clk == nil {
 		clk = clock.System()
 	}
-	return &Monitor{probe: probe, report: report, clk: clk}
+	return &Monitor{probe: probe, report: report, clk: clk, wake: make(chan struct{}, 1)}
 }
 
 // SetLoad sets where the report's load comes from. Without one the load is zero.
@@ -105,6 +112,18 @@ func (m *Monitor) FailingSince() (since time.Time, ok bool) {
 	return m.failing, !m.failing.IsZero()
 }
 
+// ProbeNow asks for a probe at once instead of at the next period: the installation's helper was replaced or is gone
+// (v0.1.0-bot2.2). A running monitor ticks immediately; one driven by Tick probes on its next tick.
+func (m *Monitor) ProbeNow() {
+	m.mu.Lock()
+	m.probeNow = true
+	m.mu.Unlock()
+	select {
+	case m.wake <- struct{}{}:
+	default:
+	}
+}
+
 // Run ticks every ReportEvery until ctx ends, the first after one period: a Bot that has only just started is not yet
 // ready for commands, and reporting that as a failed probe would be a startup artefact, not a fault.
 func (m *Monitor) Run(ctx context.Context) {
@@ -115,6 +134,8 @@ func (m *Monitor) Run(ctx context.Context) {
 			timer.Stop()
 			return
 		case <-timer.C():
+		case <-m.wake:
+			timer.Stop()
 		}
 		m.Tick(ctx)
 	}
@@ -124,7 +145,8 @@ func (m *Monitor) Run(ctx context.Context) {
 func (m *Monitor) Tick(ctx context.Context) {
 	now := m.clk.Now()
 	m.mu.Lock()
-	due := !m.probed || now.Sub(m.lastProbe) >= ProbePeriod
+	due := !m.probed || m.probeNow || now.Sub(m.lastProbe) >= ProbePeriod
+	m.probeNow = false
 	m.mu.Unlock()
 	if due {
 		ok := m.runProbe(ctx)
@@ -171,7 +193,7 @@ func (m *Monitor) send(ctx context.Context, now time.Time) {
 	m.mu.Unlock()
 	if load != nil {
 		l := load()
-		r.QueueDepth, r.OldestWaitMS, r.MusicStartP95 = l.QueueDepth, millis(l.OldestWait), millis(l.MusicStartP95)
+		r.QueueDepth, r.OldestWaitMS, r.MusicStartP95, r.FailedCommands = l.QueueDepth, millis(l.OldestWait), millis(l.MusicStartP95), l.FailedCommands
 	}
 	// A report that fails is not retried: the next one is ReportEvery away, and dillad marks the Bot offline when none
 	// arrives for 150 s.

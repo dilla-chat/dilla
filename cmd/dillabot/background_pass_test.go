@@ -19,6 +19,7 @@ import (
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
+	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/clock"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -446,10 +447,10 @@ func TestDueTickLogsGoneOncePerClient(t *testing.T) {
 	defer r.Close()
 	installation := id.New()
 	runs := 0
-	dead := func(client *int) backgroundMaintenance {
+	dead := func(client *native.Client) backgroundMaintenance {
 		return backgroundMaintenance{client: client, usable: func() bool { return false }, run: func(context.Context) error { runs++; return nil }}
 	}
-	first := new(int)
+	first := new(native.Client)
 	r.SetMaintenance(installation, dead(first))
 	asked := func() bool { targets, _ := r.takePassTargets(); return targets[installation] }
 	for tick := range 3 {
@@ -481,7 +482,7 @@ func TestDueTickLogsGoneOncePerClient(t *testing.T) {
 		t.Fatalf("an invented close error was logged:\n%s", logs)
 	}
 	// Another client that is gone is logged once too.
-	r.SetMaintenance(installation, dead(new(int)))
+	r.SetMaintenance(installation, dead(new(native.Client)))
 	_ = r.maintainDue(t.Context())
 	_ = r.maintainDue(t.Context())
 	if c := logs.count("bot native helper gone"); c != 2 {
@@ -503,7 +504,7 @@ func TestBackoffNotResetByShortLivedReplacement(t *testing.T) {
 	tick := func() { now = now.Add(dueInterval); _ = r.maintainDue(t.Context()) }
 	use := func() func() {
 		usable := true
-		client := new(int)
+		client := new(native.Client)
 		r.SetMaintenance(installation, backgroundMaintenance{client: client, usable: func() bool { return usable }, run: func(context.Context) error { return nil }})
 		return func() { usable = false }
 	}
