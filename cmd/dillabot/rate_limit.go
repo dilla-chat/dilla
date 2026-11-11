@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
@@ -22,7 +23,7 @@ func reconciliationRateLimit(err error) *client.APIError { return client.RateLim
 
 func cleanupUnreadyInstallation(installation id.ID, ready bool, passErr error, registry *musicQueueRegistry) {
 	if !ready && !client.IsDeferred(passErr) {
-		_ = registry.Disable(installation)
+		_ = registry.Disable(installation, helper.ReasonPassUnready)
 	}
 }
 
@@ -31,6 +32,6 @@ func cleanupFailedMusicRestore(installation id.ID, err error, registry *musicQue
 	if client.IsDeferred(err) {
 		return err
 	}
-	_ = registry.Disable(installation)
+	_ = registry.Disable(installation, helper.ReasonMusicRestoreFailed)
 	return nil
 }

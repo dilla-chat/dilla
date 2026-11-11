@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/music"
 	"github.com/dilla-chat/dilla/internal/bot/music/livekit"
 	"github.com/dilla-chat/dilla/internal/bot/music/persistence"
@@ -1280,7 +1281,7 @@ func TestMusicNoticeHolderIsSharedAcrossDisableAndReenable(t *testing.T) {
 	registry := newMusicQueueRegistry()
 	installation := id.New()
 	first := registry.SkipNotices(installation)
-	if err := registry.Disable(installation); err != nil {
+	if err := registry.Disable(installation, helper.ReasonShutdown); err != nil {
 		t.Fatal(err)
 	}
 	second := registry.SkipNotices(installation)

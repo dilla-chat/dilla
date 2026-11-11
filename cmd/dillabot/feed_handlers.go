@@ -462,7 +462,7 @@ func (b feedBotChannels) Membership(left, needsReAdd map[id.ID]bool) {
 // nativeRegistry is where a pass finds an installation's retained helper (musicQueueRegistry).
 type nativeRegistry interface {
 	Native(installation, community id.ID) musicRuntimeNative
-	Disable(installation id.ID) error
+	Disable(installation id.ID, reason string) error
 }
 
 // retainedNativeClient is installation's retained helper while it can still serve calls. A retained helper that
@@ -471,7 +471,7 @@ type nativeRegistry interface {
 func retainedNativeClient(reg nativeRegistry, installation, community id.ID) (*native.Client, bool) {
 	n := reg.Native(installation, community)
 	if u, ok := n.(interface{ Usable() bool }); ok && !u.Usable() {
-		_ = reg.Disable(installation)
+		_ = reg.Disable(installation, helper.ReasonRetainedUnusable)
 		return nil, false
 	}
 	c, ok := n.(*native.Client)

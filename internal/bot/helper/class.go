@@ -53,3 +53,21 @@ func Class(err error) string {
 		return "other"
 	}
 }
+
+// Close reasons: the one fixed vocabulary of why a Bot's native helper was closed. Each close logs exactly one
+// "bot native helper closed" line carrying one of these, so an operator never meets a closed helper without a cause.
+const (
+	ReasonPassUnready        = "pass_unready"
+	ReasonMusicRestoreFailed = "music_restore_failed"
+	ReasonRetainedUnusable   = "retained_unusable"
+	ReasonPassUnretained     = "pass_unretained"
+	ReasonLifecycleBind      = "lifecycle_bind"
+	ReasonStartDropped       = "start_dropped"
+	ReasonManagerRestart     = "manager_restart"
+	ReasonInvalidatedDecode  = "invalidated_decode"
+	ReasonTransferInvalid    = "transfer_invalid"
+	ReasonOutcomeUnknown     = "outcome_unknown"
+	ReasonShutdownTimeout    = "shutdown_timeout"
+	ReasonShutdown           = "shutdown"
+	ReasonInstallationGone   = "installation_gone"
+)

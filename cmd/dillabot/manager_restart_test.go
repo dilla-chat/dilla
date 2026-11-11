@@ -211,7 +211,7 @@ func TestManagerRestartWaitsForAlreadyRetiredNative(t *testing.T) {
 		t.Fatal("failed to borrow helper")
 	}
 	defer release()
-	if err := registry.Disable(installation); err != nil {
+	if err := registry.Disable(installation, helper.ReasonShutdown); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -256,7 +256,7 @@ func TestManagerRestartWaitCoversEveryRetiredGeneration(t *testing.T) {
 		}
 		releases = append(releases, release)
 		defer release()
-		if err := registry.Disable(installation); err != nil {
+		if err := registry.Disable(installation, helper.ReasonShutdown); err != nil {
 			t.Fatal(err)
 		}
 	}

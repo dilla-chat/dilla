@@ -32,7 +32,7 @@ func TestAStoppedHelperLogsTheOperationClassAndExitOnce(t *testing.T) {
 		t.Fatal("a dead helper answered")
 	}
 	line := out.String()
-	for _, want := range []string{"bot native helper stopped", "operation=11", "error_class=helper_exited", `exit="exit status 101"`} {
+	for _, want := range []string{"bot native helper closed", "reason=outcome_unknown", "operation=11", "error_class=helper_exited", `exit="exit status 101"`} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("log line %q lacks %q", line, want)
 		}

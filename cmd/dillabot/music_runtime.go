@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/music"
 	"github.com/dilla-chat/dilla/internal/bot/music/encode"
 	"github.com/dilla-chat/dilla/internal/bot/music/livekit"
@@ -802,7 +803,8 @@ type retainedMusicRuntime struct {
 	retired      bool
 	closeDone    chan struct{} // initialized under the registry mutex before retirement
 	closeOnce    sync.Once
-	closeErr     error // published by closing closeDone
+	closeErr     error  // published by closing closeDone
+	closeReason  string // why the helper is closed; set by retire, logged once by the helper client
 }
 
 // musicQueueRegistry keeps queue supervisors attached to the native helper
@@ -941,7 +943,7 @@ func (r *musicQueueRegistry) DisableMusic(installation id.ID) error {
 	if keepNative {
 		return r.pauseMusic(installation)
 	}
-	return r.disable(installation)
+	return r.disable(installation, helper.ReasonInstallationGone)
 }
 
 // AcquireNative pins the exact native generation used by a callback. Retirement
@@ -1157,14 +1159,14 @@ func (r *musicQueueRegistry) ReconcileWithStarterFactory(ctx context.Context, in
 		if existing != nil && existing.interactions {
 			return false, r.pauseMusic(installation)
 		}
-		return false, r.disable(installation)
+		return false, r.disable(installation, helper.ReasonInstallationGone)
 	}
 	if binding := nativeClient.Binding(); binding.Installation != installation || binding.Community != community {
-		_ = r.disable(installation)
+		_ = r.disable(installation, helper.ReasonLifecycleBind)
 		return false, errors.New("music native binding does not match installation")
 	}
 	if existing != nil && existing.community != community {
-		_ = r.disable(installation)
+		_ = r.disable(installation, helper.ReasonLifecycleBind)
 		existing = nil
 	}
 	if existing != nil && existing.queues != nil {
@@ -1268,18 +1270,20 @@ func syncMusicSupervisorsWithStarterFactory(ctx context.Context, runtime *musicQ
 	return nil
 }
 
-func (r *musicQueueRegistry) Disable(installation id.ID) error {
+// Disable retires the installation's helper and queues. reason is one of the helper.Reason constants and is logged
+// once, when the helper closes.
+func (r *musicQueueRegistry) Disable(installation id.ID, reason string) error {
 	if r == nil {
 		return nil
 	}
 	unlock := r.lifecycle.lock(installation)
 	defer unlock()
-	return r.disable(installation)
+	return r.disable(installation, reason)
 }
 
 // disable and pauseMusic require the installation lifecycle lock, never mu.
-func (r *musicQueueRegistry) disable(installation id.ID) error {
-	retained, closeNative := r.retire(installation)
+func (r *musicQueueRegistry) disable(installation id.ID, reason string) error {
+	retained, closeNative := r.retire(installation, reason)
 	if closeNative {
 		return r.finishNativeClose(installation, retained)
 	}
@@ -1289,13 +1293,16 @@ func (r *musicQueueRegistry) disable(installation id.ID) error {
 // retire detaches a generation and stops its queues before allowing the last
 // borrower to close its native helper. The caller holds the installation
 // lifecycle lock; no native Close runs while holding the registry mutex.
-func (r *musicQueueRegistry) retire(installation id.ID) (*retainedMusicRuntime, bool) {
+func (r *musicQueueRegistry) retire(installation id.ID, reason string) (*retainedMusicRuntime, bool) {
 	r.mu.Lock()
 	retained := r.runtimes[installation]
 	delete(r.runtimes, installation)
 	var queues *musicQueueRuntime
 	if retained != nil {
 		queues, retained.queues = retained.queues, nil
+		if retained.closeReason == "" {
+			retained.closeReason = reason
+		}
 		if retained.closeDone == nil {
 			retained.closeDone = make(chan struct{})
 		}
@@ -1327,7 +1334,11 @@ func (r *musicQueueRegistry) retire(installation id.ID) (*retainedMusicRuntime, 
 // both the helper exit (releasing state.lock) and removal from pending closes.
 func (r *musicQueueRegistry) finishNativeClose(installation id.ID, retained *retainedMusicRuntime) error {
 	retained.closeOnce.Do(func() {
-		retained.closeErr = retained.native.Close()
+		if rc, ok := retained.native.(interface{ CloseWithReason(string) error }); ok {
+			retained.closeErr = rc.CloseWithReason(retained.closeReason)
+		} else {
+			retained.closeErr = retained.native.Close()
+		}
 		r.mu.Lock()
 		pending := r.retiring[installation]
 		for n, current := range pending {
@@ -1383,6 +1394,10 @@ func (r *musicQueueRegistry) RetainOnly(installations []id.ID) error {
 		active[installation] = struct{}{}
 	}
 	r.mu.Lock()
+	reason := helper.ReasonInstallationGone
+	if r.closed {
+		reason = helper.ReasonShutdown
+	}
 	var removed []id.ID
 	for installation := range r.runtimes {
 		if _, ok := active[installation]; !ok {
@@ -1392,7 +1407,7 @@ func (r *musicQueueRegistry) RetainOnly(installations []id.ID) error {
 	r.mu.Unlock()
 	var errs []error
 	for _, installation := range removed {
-		if err := r.Disable(installation); err != nil {
+		if err := r.Disable(installation, reason); err != nil {
 			errs = append(errs, err)
 		}
 	}

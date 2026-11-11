@@ -386,7 +386,7 @@ func (i *Intake) Handle(ctx context.Context, cmd RelayedCommand) {
 	opened, err := i.helper.OpenCommand(ctx, cmd.Sealed, cmd.UserID, cmd.DeviceID, now)
 	if err != nil {
 		// Outcome unknown: the helper may have recorded the id. The client times out and retries.
-		log.WarnContext(ctx, "bot command open failed", "class", "helper_error")
+		log.WarnContext(ctx, "bot command open failed", "error_class", helper.Class(err))
 		return
 	}
 	switch opened.Refusal {
@@ -646,7 +646,7 @@ func (i *Intake) seal(ctx context.Context, device, request id.ID, key [32]byte, 
 	_, _, _, log, _ := i.config()
 	sealed, err := i.helper.SealReply(ctx, key, request, seq, EncodeAnswer(a))
 	if err != nil {
-		log.WarnContext(ctx, "bot command answer not sealed", "class", "seal_error")
+		log.WarnContext(ctx, "bot command answer not sealed", "error_class", helper.Class(err), "op", uint64(protocol.HelperReplySeal), "seq", seq)
 		return
 	}
 	if err := i.send.Reply(ctx, device, request, seq, sealed, a.Final); err != nil {

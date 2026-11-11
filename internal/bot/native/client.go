@@ -34,6 +34,13 @@ type transport interface {
 	Close() error
 }
 
+// reasonCloser is the transport that can log why it closed (the helper client): the native layer passes the reason
+// down so one close writes one line, in the helper layer.
+type reasonCloser interface {
+	CloseWithReason(reason string) error
+	CloseDetailed(reason string, operation protocol.HelperOperation, kind string) error
+}
+
 type Client struct {
 	mu      sync.Mutex
 	gate    *prioritygate.Gate
@@ -173,7 +180,7 @@ func (c *Client) call(ctx context.Context, op protocol.HelperOperation, payload 
 	value, err := decode(result)
 	if err != nil {
 		if mutation {
-			c.invalidateLocked()
+			c.invalidateLocked(op)
 		}
 		return nil, fmt.Errorf("native helper returned an invalid result: %w", outcomeOrValidation(err, mutation))
 	}
@@ -186,12 +193,17 @@ func outcomeOrValidation(err error, mutation bool) error {
 	}
 	return err
 }
-func (c *Client) invalidateLocked() {
+func (c *Client) invalidateLocked(op protocol.HelperOperation) {
 	c.gate.Close()
 	c.mu.Lock()
 	c.usable = false
 	c.closed = true
 	c.mu.Unlock()
+	if rc, ok := c.t.(reasonCloser); ok {
+		// "result_decode" is the fixed kind: the decode error's own text never reaches the log.
+		_ = rc.CloseDetailed(helper.ReasonInvalidatedDecode, op, "result_decode")
+		return
+	}
 	_ = c.t.Close()
 }
 
@@ -431,7 +443,10 @@ func (c *Client) StateTransaction(ctx context.Context, transactionID id.ID, chan
 	return resultAs[[]uint64](v)
 }
 
-func (c *Client) Close() error {
+func (c *Client) Close() error { return c.CloseWithReason(helper.ReasonShutdown) }
+
+// CloseWithReason closes the helper and records why, once (helper.Client logs "bot native helper closed").
+func (c *Client) CloseWithReason(reason string) error {
 	<-c.gate.Close()
 	c.mu.Lock()
 	if c.closed {
@@ -441,6 +456,9 @@ func (c *Client) Close() error {
 	c.closed = true
 	c.usable = false
 	c.mu.Unlock()
+	if rc, ok := c.t.(reasonCloser); ok {
+		return rc.CloseWithReason(reason)
+	}
 	return c.t.Close()
 }
 

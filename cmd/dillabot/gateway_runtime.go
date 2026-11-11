@@ -11,6 +11,7 @@ import (
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/gatewayclient"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/id"
 )
@@ -421,7 +422,7 @@ func (r *botGatewayRuntime) PollText(ctx context.Context) {
 			if refusal := client.RateLimitError(err); refusal != nil {
 				logBotRateLimit(r.log, installation, refusal)
 			} else {
-				r.log.Warn("bot text command intake deferred", "installation_id", installation.String())
+				r.log.Warn("bot text command intake deferred", "installation_id", installation.String(), "error_class", helper.Class(err))
 			}
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/id"
 )
@@ -54,7 +55,7 @@ func TestMusicRegistryBorrowDefersRetiredNativeClose(t *testing.T) {
 	if !ok {
 		t.Fatal("failed to borrow current native")
 	}
-	if err := registry.Disable(installation); err != nil {
+	if err := registry.Disable(installation, helper.ReasonShutdown); err != nil {
 		t.Fatal(err)
 	}
 	if n.closes.Load() != 0 || registry.Native(installation, community) != nil {
@@ -133,7 +134,7 @@ func TestMusicRegistryNativeCloseDoesNotBlockOtherInstallation(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- registry.Disable(installation) }()
+	go func() { done <- registry.Disable(installation, helper.ReasonShutdown) }()
 	<-entered
 	lookupDone := make(chan struct{})
 	go func() {

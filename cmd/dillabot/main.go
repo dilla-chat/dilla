@@ -499,7 +499,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			continue
 		}
 		if installation.State >= 4 {
-			_ = musicRegistry.Disable(installation.ID)
+			_ = musicRegistry.Disable(installation.ID, helper.ReasonInstallationGone)
 			continue
 		}
 		eligible++
@@ -539,14 +539,14 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			var pending bool
 			nativeClient, pending, err = passHelper(&gateways.starts, installation.ID)
 			if err != nil {
-				_ = musicRegistry.Disable(installation.ID)
+				_ = musicRegistry.Disable(installation.ID, helper.ReasonStartDropped)
 				logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "helper_start", "error_class", helper.Class(err))
 				continue
 			}
 			if nativeClient == nil && !pending {
 				key, _, keyErr := loadDatabaseKey(cfg.StateDir, installation.ID.String())
 				if keyErr != nil {
-					_ = musicRegistry.Disable(installation.ID)
+					_ = musicRegistry.Disable(installation.ID, helper.ReasonStartDropped)
 					logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "state_key")
 					continue
 				}
@@ -578,9 +578,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			if retainedNative {
 				gateways.Drop(installation.ID)
 			} else {
-				_ = nativeClient.Close()
+				_ = nativeClient.CloseWithReason(helper.ReasonLifecycleBind)
 			}
-			_ = musicRegistry.Disable(installation.ID)
+			_ = musicRegistry.Disable(installation.ID, helper.ReasonLifecycleBind)
 			logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "lifecycle_bind")
 			continue
 		}
@@ -874,7 +874,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 		cleanupUnreadyInstallation(installation.ID, membershipReady, ensureErr, musicRegistry)
 		var closeErr error
 		if !retainedNative && !runtimeOwnedNative {
-			closeErr = nativeClient.Close()
+			closeErr = nativeClient.CloseWithReason(helper.ReasonPassUnretained)
 		}
 		if client.IsDeferred(ensureErr) && closeErr == nil {
 			if gateways.TextPoller(installation.ID) == nil {
@@ -894,6 +894,11 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			if errors.As(ensureErr, &membershipErr) {
 				attrs = append(attrs, "membership_phase", membershipErr.Phase.String())
 				attrs = append(attrs, safeMembershipErrorAttrs(membershipErr)...)
+			}
+			if ensureErr != nil {
+				attrs = append(attrs, "error_class", helper.Class(ensureErr))
+			} else {
+				attrs = append(attrs, "error_class", helper.Class(closeErr))
 			}
 			logger.Error("bot installation reconciliation failed", attrs...)
 			continue

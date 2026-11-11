@@ -76,6 +76,7 @@ type Client struct {
 	callTime  time.Duration
 	openTime  time.Duration
 	log       *slog.Logger
+	closeLog  sync.Once
 	stopTime  time.Duration
 	closed    bool
 	opened    bool
@@ -445,17 +446,45 @@ func (c *Client) serial(ctx context.Context, fn func() ([]any, error)) ([]any, e
 	return fn()
 }
 
-// logStopped records, once per helper, why the client stopped it: the operation, the error class and how the process
-// ended. Without it a helper that died left only "helper client is closed" on every later call (v0.1.0-bot2).
-func (c *Client) logStopped(operation protocol.HelperOperation, err error) {
-	if c.log == nil {
-		return
+// logClosed records, once per helper, why the client was closed: the reason, the operation that triggered it (when a
+// call did), the error class (when an error did) and how the process ended. Without it a helper that died left only
+// "helper client is closed" on every later call (v0.1.0-bot2), and one closed by the Bot's own runtime left nothing.
+// The first reason wins; later closes of the same client are silent.
+func (c *Client) logClosed(reason string, operation *protocol.HelperOperation, err error, extra ...any) {
+	c.closeLog.Do(func() {
+		if c.log == nil {
+			return
+		}
+		exit := "unknown"
+		if e, ok := c.transport.(interface{ exit() string }); ok {
+			exit = e.exit()
+		}
+		attrs := []any{"reason", reason}
+		if operation != nil {
+			attrs = append(attrs, "operation", operationLabel(*operation))
+		}
+		if err != nil {
+			attrs = append(attrs, "error_class", Class(err))
+		}
+		attrs = append(attrs, "exit", exit)
+		attrs = append(attrs, extra...)
+		c.log.Error("bot native helper closed", attrs...)
+	})
+}
+
+// operationLabel names the staged group apply by word and leaves every other operation as its number.
+func operationLabel(op protocol.HelperOperation) any {
+	if op == protocol.HelperGroupApply {
+		return "group_apply"
 	}
-	exit := "unknown"
-	if e, ok := c.transport.(interface{ exit() string }); ok {
-		exit = e.exit()
-	}
-	c.log.Error("bot native helper stopped", "operation", uint64(operation), "error_class", Class(err), "exit", exit)
+	return uint64(op)
+}
+
+// abortTransfer closes the helper after a staged group-apply transfer broke its own rules, and says so.
+func (c *Client) abortTransfer(kind string, err error) {
+	c.abortCurrent()
+	op := protocol.HelperGroupApply
+	c.logClosed(ReasonTransferInvalid, &op, unknown(err), "kind", kind)
 }
 
 func (c *Client) request(ctx context.Context, operation protocol.HelperOperation, payload []any) ([]any, error) {
@@ -474,7 +503,7 @@ func (c *Client) requestWithin(ctx context.Context, operation protocol.HelperOpe
 	if err != nil {
 		if errors.Is(err, ErrOutcomeUnknown) {
 			c.abortCurrent()
-			c.logStopped(operation, err)
+			c.logClosed(ReasonOutcomeUnknown, &operation, err)
 		}
 		return nil, err
 	}
@@ -501,13 +530,15 @@ func (c *Client) groupApply(ctx context.Context, payload []any) ([]any, error) {
 		return nil, err
 	}
 	if len(begin) != 1 {
-		c.abortCurrent()
-		return nil, unknown(errors.New("invalid transfer begin response"))
+		e := errors.New("invalid transfer begin response")
+		c.abortTransfer("begin_response", e)
+		return nil, unknown(e)
 	}
 	transferID, ok := begin[0].([]byte)
 	if !ok || len(transferID) != 16 || allZero(transferID) {
-		c.abortCurrent()
-		return nil, unknown(errors.New("invalid transfer id"))
+		e := errors.New("invalid transfer id")
+		c.abortTransfer("transfer_id", e)
+		return nil, unknown(e)
 	}
 	transferID = append([]byte(nil), transferID...)
 	defer clear(transferID)
@@ -526,8 +557,9 @@ func (c *Client) groupApply(ctx context.Context, payload []any) ([]any, error) {
 			return nil, err
 		}
 		if len(ack) != 1 || ack[0] != uint64(end) {
-			c.abortCurrent()
-			return nil, unknown(errors.New("invalid transfer offset acknowledgement"))
+			e := errors.New("invalid transfer offset acknowledgement")
+			c.abortTransfer("offset_ack", e)
+			return nil, unknown(e)
 		}
 		offset = end
 	}
@@ -540,15 +572,17 @@ func (c *Client) groupApply(ctx context.Context, payload []any) ([]any, error) {
 		return nil, err
 	}
 	if len(descriptor) != 3 {
-		c.abortCurrent()
-		return nil, unknown(errors.New("invalid transfer result descriptor"))
+		e := errors.New("invalid transfer result descriptor")
+		c.abortTransfer("descriptor_shape", e)
+		return nil, unknown(e)
 	}
 	status, okStatus := descriptor[0].(uint64)
 	length, okLength := descriptor[1].(uint64)
 	resultDigest, okDigest := descriptor[2].([]byte)
 	if !okStatus || !okLength || !okDigest || len(resultDigest) != sha256.Size || status > 9 || length == 0 || length > maxLogicalTransfer {
-		c.abortCurrent()
-		return nil, unknown(errors.New("invalid transfer result descriptor"))
+		e := errors.New("invalid transfer result descriptor")
+		c.abortTransfer("descriptor_value", e)
+		return nil, unknown(e)
 	}
 	if status != 0 {
 		return nil, &StatusError{Status: status}
@@ -565,13 +599,15 @@ func (c *Client) groupApply(ctx context.Context, payload []any) ([]any, error) {
 			return nil, unknown(err)
 		}
 		if len(part) != 1 {
-			c.abortCurrent()
-			return nil, unknown(errors.New("invalid transfer chunk response"))
+			e := errors.New("invalid transfer chunk response")
+			c.abortTransfer("chunk_response", e)
+			return nil, unknown(e)
 		}
 		chunk, ok := part[0].([]byte)
 		if !ok || len(chunk) != n {
-			c.abortCurrent()
-			return nil, unknown(errors.New("invalid transfer chunk length"))
+			e := errors.New("invalid transfer chunk length")
+			c.abortTransfer("chunk_length", e)
+			return nil, unknown(e)
 		}
 		copy(result[offset:offset+n], chunk)
 		clear(chunk)
@@ -579,13 +615,15 @@ func (c *Client) groupApply(ctx context.Context, payload []any) ([]any, error) {
 	}
 	gotDigest := sha256.Sum256(result)
 	if !equalDigest(gotDigest[:], resultDigest) {
-		c.abortCurrent()
-		return nil, unknown(errors.New("transfer result digest mismatch"))
+		e := errors.New("transfer result digest mismatch")
+		c.abortTransfer("digest_mismatch", e)
+		return nil, unknown(e)
 	}
 	var values []any
 	if err := cborx.Unmarshal(result, &values); err != nil {
-		c.abortCurrent()
-		return nil, unknown(errors.New("invalid transfer result payload"))
+		e := errors.New("invalid transfer result payload")
+		c.abortTransfer("payload_decode", e)
+		return nil, unknown(e)
 	}
 	return values, nil
 }
@@ -742,13 +780,24 @@ func boundedContext(ctx context.Context, timeout time.Duration) (context.Context
 
 // Close asks the helper to shut down, then always closes the inherited socket
 // and reaps the child. If the bounded shutdown exchange fails, stop kills it.
-func (c *Client) Close() error {
+func (c *Client) Close() error { return c.closeWith(ReasonShutdown, nil, "") }
+
+// CloseWithReason is Close that records why: the reason is logged once, as the client's single close line.
+func (c *Client) CloseWithReason(reason string) error { return c.closeWith(reason, nil, "") }
+
+// CloseDetailed is CloseWithReason for a close a call caused: it also logs the operation and a short fixed kind token.
+func (c *Client) CloseDetailed(reason string, operation protocol.HelperOperation, kind string) error {
+	return c.closeWith(reason, &operation, kind)
+}
+
+func (c *Client) closeWith(reason string, operation *protocol.HelperOperation, kind string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.stopTime)
 	defer cancel()
 	select {
 	case <-c.gate.Close():
 	case <-ctx.Done():
 		c.abort()
+		c.logClosed(ReasonShutdownTimeout, operation, nil, append(kindAttr(kind), "requested", reason)...)
 		return nil
 	}
 	c.mu.Lock()
@@ -762,6 +811,7 @@ func (c *Client) Close() error {
 	}
 	c.closed = true
 	stopErr := c.transport.stop(c.stopTime)
+	c.logClosed(reason, operation, nil, kindAttr(kind)...)
 	if shutdownErr != nil {
 		return nil // shutdown failure is handled by kill-and-reap fallback.
 	}
@@ -794,4 +844,11 @@ func validateStatus(status uint64) error {
 		return fmt.Errorf("invalid helper status")
 	}
 	return statusError(status)
+}
+
+func kindAttr(kind string) []any {
+	if kind == "" {
+		return nil
+	}
+	return []any{"kind", kind}
 }
