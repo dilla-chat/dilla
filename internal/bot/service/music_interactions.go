@@ -12,6 +12,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/bot/music/persistence"
 	"github.com/dilla-chat/dilla/internal/bot/music/youtube"
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
+	botstrings "github.com/dilla-chat/dilla/internal/bot/strings"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
 )
@@ -155,6 +156,23 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	reason := "dependency_or_context"
 	var diagnostic error
 	var group id.ID
+	// itemID is the queue item the operation acted on (v0.1.0-bot2.2): its random queue id, never anything derived from
+	// the track. queuedEarlier reports an item this command did not enqueue (it was already in the queue). It is
+	// logged as queued_earlier, not restored: on the supervisor's start and ended lines restored means "loaded from
+	// storage when the supervisor was made", which the handler cannot see.
+	var itemID string
+	var enqueued []music.Track
+	queuedEarlier := func() bool {
+		if itemID == "" {
+			return false
+		}
+		for _, track := range enqueued {
+			if track.ID == itemID {
+				return false
+			}
+		}
+		return true
+	}
 	defer func() {
 		if result.Status == 0 && failure == nil {
 			if op != protocol.OpMusicState && op != protocol.OpMusicSearch && req.ChannelID != nil {
@@ -183,7 +201,7 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 				detail = music.FailureClass(diagnostic)
 			}
 		}
-		logger.WarnContext(ctx, "bot music operation refused", "installation_id", h.InstallationID.String(), "device_id", h.DeviceID.String(), "group_id", group.String(), "op", op, "status", status, "reason", reason, "error", detail, "stderr", youtube.FailureStderr(diagnostic))
+		logger.WarnContext(ctx, "bot music operation refused", "installation_id", h.InstallationID.String(), "device_id", h.DeviceID.String(), "group_id", group.String(), "op", op, "item_id", itemID, "queued_earlier", queuedEarlier(), "status", status, "reason", reason, "error", detail, "stderr", youtube.FailureStderr(diagnostic))
 	}()
 	if h.Store == nil || h.Authority == nil || h.CommunityID.IsZero() || req.CommunityID != h.CommunityID || req.ChannelID == nil || req.ChannelID.IsZero() {
 		return InteractionResult{}, errors.New("missing music interaction dependency or context")
@@ -355,6 +373,7 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 			tracks[i].ID = id.New().String()
 			tracks[i].RequesterID = actor.User.String()
 		}
+		enqueued, itemID = tracks, tracks[0].ID
 		kind := music.OpEnqueue
 		if len(tracks) > 1 {
 			kind = music.OpImportPlaylist
@@ -370,6 +389,9 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	}
 	if op == protocol.OpMusicShuffle {
 		opValue.Enabled = !snapshot.State.Shuffle
+	}
+	if op != protocol.OpMusicEnqueue && snapshot.State.Current != nil {
+		itemID = snapshot.State.Current.ID
 	}
 
 	// Enqueue resolves once, then rebases each bounded CAS attempt onto current state.
@@ -518,10 +540,18 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 			return InteractionResult{}, err
 		}
 		appliedRevision := saved.Revision
+		if startsPlay && saved.State.Current != nil {
+			itemID = saved.State.Current.ID
+		}
 		if startsPlay && h.OnPlay != nil {
 			var handoffErr error
 			appliedRevision, handoffErr = h.OnPlay(ctx, h.InstallationID, h.CommunityID, channel, saved.State, saved.Revision)
 			reason, diagnostic = "snapshot_handoff", handoffErr
+			if answer, removed := trackRemovedResult(handoffErr, appliedRevision, saved.Revision); removed {
+				// The track failed and left the queue (v0.1.0-bot2.2): the answer says so, and nothing is paused back.
+				playStarted = answer.Status == 0
+				return answer, nil
+			}
 			if handoffErr != nil {
 				appliedRevision = h.pauseUnstartedPlayback(ctx, channel, saved.Revision, appliedRevision)
 				if appliedRevision == 0 {
@@ -538,6 +568,9 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 			var handoffErr error
 			appliedRevision, handoffErr = h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, saved.State, saved.Revision, startPlayback)
 			reason, diagnostic = "snapshot_handoff", handoffErr
+			if answer, removed := trackRemovedResult(handoffErr, appliedRevision, saved.Revision); removed {
+				return answer, nil
+			}
 			if handoffErr != nil {
 				if startPlayback {
 					appliedRevision = h.pauseUnstartedPlayback(ctx, channel, saved.Revision, appliedRevision)
@@ -551,6 +584,25 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		revision := appliedRevision
 		return InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}}, nil
 	}
+}
+
+// trackRemovedResult answers a start whose track failed and was removed from the queue and from persistence
+// (music.TrackRemovedError): unavailable with the removed note, or, when the next queued track started in its place,
+// success naming it. removed is false for any other result.
+func trackRemovedResult(err error, applied, committed uint64) (result InteractionResult, removed bool) {
+	var trackRemoved *music.TrackRemovedError
+	if !errors.As(err, &trackRemoved) {
+		return InteractionResult{}, false
+	}
+	revision := applied
+	if revision == 0 {
+		revision = committed
+	}
+	note := botstrings.MusicTrackRemoved()
+	if trackRemoved.Playing != nil {
+		return InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}, Note: note + " " + nowPlayingText(music.State{Current: trackRemoved.Playing})}, true
+	}
+	return InteractionResult{Status: interactionStatusUnavailable, Revision: &revision, Note: note}, true
 }
 
 func (h MusicInteractions) clock() time.Time {

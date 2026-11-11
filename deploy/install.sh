@@ -904,7 +904,8 @@ RestartPreventExitStatus=78
 # NOTIFY_SOCKET, so a watchdog would have systemd abort a healthy service after
 # the first interval.
 # ACME issuance plus goose migrations plus the pre-migration VACUUM INTO can
-# exceed the 90 s default on a large SQLite file.
+# exceed the 90 s default on a large SQLite file. The one-time compaction of a database that predates
+# auto_vacuum=INCREMENTAL (VACUUM, then a WAL checkpoint) runs inside this budget, before the service is ready.
 TimeoutStartSec=300s
 TimeoutStopSec=45s
 # KillMode=mixed: a stop sends SIGTERM to serve alone, which stops the Bot it supervises through the bot-keeper

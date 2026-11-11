@@ -247,6 +247,8 @@ type Intake struct {
 	log        *slog.Logger
 	keyStale   func()
 	ready      func() bool
+	helperGone func() bool
+	onGone     func(request id.ID)
 	// The start-up park (final review I2): for park after started, a command that meets a start-up gate (the feed
 	// barrier not settled, the Authz without its first snapshot, the feed handler not bound) waits for it to open off
 	// the worker, checked every parkStep, before it is refused. At most parkCap commands are parked at once, and at
@@ -353,6 +355,16 @@ func (i *Intake) SetKeyStale(f func()) { i.mu.Lock(); i.keyStale = f; i.mu.Unloc
 // E_BOT_OFFLINE (retryable), so a Held query that cannot know yet never lets a command through.
 func (i *Intake) SetReady(f func() bool) { i.mu.Lock(); i.ready = f; i.mu.Unlock() }
 
+// SetHelperGone tells the intake how to tell a missing helper from a start-up gate: while the readiness gate is shut and
+// gone reports true, the retryable refusal is class helper_gone (the same 503 E_BOT_OFFLINE on the wire, as not_ready) and
+// refused is called with the request, so the runtime can count it as a failed command. A start-up refusal (feed_behind,
+// not_ready) is not one.
+func (i *Intake) SetHelperGone(gone func() bool, refused func(request id.ID)) {
+	i.mu.Lock()
+	i.helperGone, i.onGone = gone, refused
+	i.mu.Unlock()
+}
+
 func (i *Intake) isReady() bool {
 	i.mu.Lock()
 	ready := i.ready
@@ -386,7 +398,7 @@ func (i *Intake) Handle(ctx context.Context, cmd RelayedCommand) {
 	opened, err := i.helper.OpenCommand(ctx, cmd.Sealed, cmd.UserID, cmd.DeviceID, now)
 	if err != nil {
 		// Outcome unknown: the helper may have recorded the id. The client times out and retries.
-		log.WarnContext(ctx, "bot command open failed", "class", "helper_error")
+		log.WarnContext(ctx, "bot command open failed", "error_class", helper.Class(err))
 		return
 	}
 	switch opened.Refusal {
@@ -501,6 +513,16 @@ func (i *Intake) run(ctx context.Context, log *slog.Logger, rec *record, req pro
 		retryable("held", StatusSignature, CodeSignature)
 		return
 	case !i.isReady():
+		i.mu.Lock()
+		gone, onGone := i.helperGone, i.onGone
+		i.mu.Unlock()
+		if gone != nil && gone() {
+			if onGone != nil {
+				onGone(req.RequestID)
+			}
+			retryable("helper_gone", StatusOffline, CodeOffline)
+			return
+		}
 		retryable("not_ready", StatusOffline, CodeOffline)
 		return
 	}
@@ -646,11 +668,11 @@ func (i *Intake) seal(ctx context.Context, device, request id.ID, key [32]byte, 
 	_, _, _, log, _ := i.config()
 	sealed, err := i.helper.SealReply(ctx, key, request, seq, EncodeAnswer(a))
 	if err != nil {
-		log.WarnContext(ctx, "bot command answer not sealed", "class", "seal_error")
+		log.WarnContext(ctx, "bot command answer not sealed", "error_class", helper.Class(err), "op", uint64(protocol.HelperReplySeal), "seq", seq)
 		return
 	}
 	if err := i.send.Reply(ctx, device, request, seq, sealed, a.Final); err != nil {
-		log.WarnContext(ctx, "bot command answer not delivered", "class", "reply_error", "error", err.Error())
+		log.WarnContext(ctx, "bot command answer not delivered", "error_class", helper.Class(err))
 	}
 }
 

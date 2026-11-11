@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
@@ -19,7 +20,7 @@ func (r *musicQueueRegistry) DisableAndWait(ctx context.Context, installation id
 		return nil
 	}
 	unlock := r.lifecycle.lock(installation)
-	retained, closeNative := r.retire(installation)
+	retained, closeNative := r.retire(installation, helper.ReasonManagerRestart)
 	r.mu.Lock()
 	pending := slices.Clone(r.retiring[installation])
 	// The last borrower may have completed and removed this generation after

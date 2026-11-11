@@ -47,6 +47,8 @@ const afkPendingTTL = 24 * time.Hour
 const (
 	afkPendingSwept = 1 // the sweep moved the device (idle past the timeout)
 	afkPendingChose = 2 // the user chose AFK: PUT …/afk/away cut the device
+	// afkPendingTakenOver: another device of the user joined voice and took it over (voicetakeover.go).
+	afkPendingTakenOver = 3
 )
 
 // afkDefaultTimeout is the timeout a community starts with, in seconds (5 minutes).
@@ -61,8 +63,9 @@ type afkTracked struct {
 	lastActive               time.Time
 }
 
-// afkPendingEntry is a cut of one device (R33, R-AW6): the sweep's move (afkPendingSwept) or a
-// chosen AFK (afkPendingChose). It is device-scoped: every community's snapshot reports it to that
+// afkPendingEntry is a cut of one device (R33, R-AW6): the sweep's move (afkPendingSwept), a
+// chosen AFK (afkPendingChose) or a voice takeover by another device of the user
+// (afkPendingTakenOver). It is device-scoped: every community's snapshot reports it to that
 // device, whose client only tells the user why it left, and never joins anything on it.
 type afkPendingEntry struct {
 	reason uint64

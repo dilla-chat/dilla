@@ -666,7 +666,7 @@ func TestMetricsIsNotOpenWhenNoScrapeTokenWasSupplied(t *testing.T) {
 //
 // build.Default.GOROOT is $GOROOT when it is set and otherwise the GOROOT of
 // the toolchain that built this test binary — the one whose `go list` already
-// agrees with go.mod's `go 1.27.3`, so it is preferred over PATH, which may
+// agrees with go.mod's `go 1.27.4`, so it is preferred over PATH, which may
 // hold an older go that would try to download a toolchain instead.
 func goToolPath(t *testing.T) string {
 	t.Helper()

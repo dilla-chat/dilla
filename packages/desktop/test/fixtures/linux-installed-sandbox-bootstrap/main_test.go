@@ -45,7 +45,7 @@ func inputFixture(t *testing.T) ([]byte, []byte) {
 	helper, manager := testELF(0xc3), testELF(0xf4)
 	sha := sha256.Sum256(helper)
 	now := time.Now().UTC()
-	config := publicConfig{GoVersion: "go1.27.3", Generation: 1, PublishedAt: now.Add(-time.Hour).Format(time.RFC3339), ExpiresAt: now.Add(time.Hour).Format(time.RFC3339), PublicKeys: []string{base64.StdEncoding.EncodeToString(pub)}}
+	config := publicConfig{GoVersion: "go1.27.4", Generation: 1, PublishedAt: now.Add(-time.Hour).Format(time.RFC3339), ExpiresAt: now.Add(time.Hour).Format(time.RFC3339), PublicKeys: []string{base64.StdEncoding.EncodeToString(pub)}}
 	config.Helper.Size = int64(len(helper))
 	config.Helper.SHA512 = hash(helper)
 	config.Helper.SHA256 = hex.EncodeToString(sha[:])

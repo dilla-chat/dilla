@@ -19,11 +19,12 @@ import (
 // fakeHelper opens a sealed command by looking it up: the test decides each answer. A sealed reply
 // is "key[0] seq body" so a test can read back which key, seq and answer it was sealed with.
 type fakeHelper struct {
-	mu     sync.Mutex
-	opens  map[string]helper.OpenedCommand
-	err    error
-	ops    int
-	sealed int
+	mu      sync.Mutex
+	opens   map[string]helper.OpenedCommand
+	err     error
+	sealErr error
+	ops     int
+	sealed  int
 }
 
 func (h *fakeHelper) OpenCommand(_ context.Context, sealed []byte, user, device id.ID, _ time.Time) (helper.OpenedCommand, error) {
@@ -47,6 +48,9 @@ func (h *fakeHelper) SealReply(_ context.Context, key [32]byte, _ id.ID, seq uin
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.ops++
+	if h.sealErr != nil {
+		return nil, h.sealErr
+	}
 	h.sealed++
 	return cborx.Marshal([]any{uint64(key[0]), uint64(seq), body})
 }
@@ -69,9 +73,13 @@ type fakeSender struct {
 	mu      sync.Mutex
 	replies []sentReply
 	at      []time.Time
+	err     error
 }
 
 func (s *fakeSender) Reply(_ context.Context, device, request id.ID, seq uint32, sealed []byte, final bool) error {
+	if s.err != nil {
+		return s.err
+	}
 	var outer []any
 	if err := cborx.Unmarshal(sealed, &outer); err != nil || len(outer) != 3 {
 		return errors.New("not a fake seal")

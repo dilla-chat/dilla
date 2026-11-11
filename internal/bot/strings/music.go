@@ -16,3 +16,9 @@ func MusicSkippedBatch(count int, reason string) string {
 	}
 	return fmt.Sprintf("Couldn't play %d tracks. Skipping.", count)
 }
+
+// MusicTrackRemoved answers a /play whose track could not be played: it was removed from the queue (v0.1.0-bot2.2).
+// Like the skip notice, it names no title, requester, URL or provider detail.
+func MusicTrackRemoved() string {
+	return "Couldn't play that track, so it was removed from the queue."
+}

@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -100,12 +102,51 @@ type loadHelper struct {
 	replays  map[string][32]byte // a Retry's seal: answered Replay with this reply key
 	ops      int
 	ingests  int
+	seals    int   // op 23 calls that sealed
+	closed   bool  // a closed helper refuses every op, as helper.Client does
+	sealErr  error // when set, SealReply fails with it while the helper is still usable
+	// onOpen, when set, runs after each successful open, off the helper's lock: a helper that closes itself, or is
+	// replaced in the registry, between a command's open and its answer.
+	onOpen func()
 }
 
-func (h *loadHelper) OpenCommand(_ context.Context, sealed []byte, user, device id.ID, _ time.Time) (helper.OpenedCommand, error) {
+// Usable is native.Client's: false once closed.
+func (h *loadHelper) Usable() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return !h.closed
+}
+
+func (h *loadHelper) close() {
+	h.mu.Lock()
+	h.closed = true
+	h.mu.Unlock()
+}
+
+func (h *loadHelper) sealCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.seals
+}
+
+func (h *loadHelper) OpenCommand(ctx context.Context, sealed []byte, user, device id.ID, now time.Time) (helper.OpenedCommand, error) {
+	opened, err := h.open(ctx, sealed, user, device, now)
+	h.mu.Lock()
+	hook := h.onOpen
+	h.mu.Unlock()
+	if err == nil && hook != nil {
+		hook()
+	}
+	return opened, err
+}
+
+func (h *loadHelper) open(_ context.Context, sealed []byte, user, device id.ID, _ time.Time) (helper.OpenedCommand, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.ops++
+	if h.closed {
+		return helper.OpenedCommand{}, helper.ErrClosed
+	}
 	if strings.HasPrefix(string(sealed), "unknown-key") {
 		return helper.OpenedCommand{Refusal: helper.RefusalUnknownKey}, nil
 	}
@@ -127,6 +168,13 @@ func (h *loadHelper) SealReply(_ context.Context, _ [32]byte, _ id.ID, _ uint32,
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.ops++
+	if h.closed {
+		return nil, helper.ErrClosed
+	}
+	if h.sealErr != nil {
+		return nil, h.sealErr
+	}
+	h.seals++
 	return append([]byte{0xa0}, body...), nil
 }
 
@@ -824,5 +872,359 @@ func TestACommandBeforeTheFirstPassWaitsForTheSealedIntake(t *testing.T) {
 	}
 	if r.sealed.entry(installation, community) != e {
 		t.Fatal("the pass does not find the entry the early command waits in")
+	}
+}
+
+// lockedLog is a log sink the intake's workers and the test read at once.
+type lockedLog struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (l *lockedLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *lockedLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
+func (l *lockedLog) count(s string) int { return strings.Count(l.String(), s) }
+
+// registeredHelper is the installation's registered helper as the sealed intake resolves it (musicQueueRegistry.Native
+// in production): a pass replaces it, and a helper that closed itself stays registered until the pass retires it.
+type registeredHelper struct {
+	mu sync.Mutex
+	h  *loadHelper
+}
+
+func (r *registeredHelper) set(h *loadHelper) { r.mu.Lock(); r.h = h; r.mu.Unlock() }
+
+func (r *registeredHelper) resolve() sealedHelper {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.h == nil {
+		return nil
+	}
+	return r.h
+}
+
+// followRegistry makes w's sealed intake resolve its helper from reg on every call, and log to log.
+func followRegistry(w *loadWorld, reg *registeredHelper, log *slog.Logger) {
+	w.entry.mu.Lock()
+	w.entry.cfg.resolve = reg.resolve
+	w.entry.cfg.log = log
+	w.entry.mu.Unlock()
+	w.entry.in.SetLogger(log)
+	w.entry.in.SetParkWindow(0) // long past the start-up window, as on CT 144
+}
+
+func (w *loadWorld) lastAnswer() (intake.Answer, int) {
+	w.transport.mu.Lock()
+	defer w.transport.mu.Unlock()
+	if len(w.transport.answers) == 0 {
+		return intake.Answer{}, 0
+	}
+	return w.transport.answers[len(w.transport.answers)-1], len(w.transport.answers)
+}
+
+func shortHelperPark(t *testing.T, limit time.Duration) {
+	t.Helper()
+	oldLimit, oldStep := helperParkLimit, helperParkStep
+	helperParkLimit, helperParkStep = limit, time.Millisecond
+	t.Cleanup(func() { helperParkLimit, helperParkStep = oldLimit, oldStep })
+}
+
+// v0.1.0-bot2.2 (F4): the intake held the pass's helper, so after a close every command went to the stale client
+// (seal_error). It now resolves the registered helper on every call: a replacement between a command's open and its
+// answer seals the answer.
+func TestSealedIntakeFollowsReplacement(t *testing.T) {
+	w := newLoadWorld(t, 3, true)
+	logs := &lockedLog{}
+	reg := &registeredHelper{}
+	a, b := w.helper, &loadHelper{requests: w.helper.requests}
+	reg.set(a)
+	followRegistry(w, reg, slog.New(slog.NewTextHandler(logs, nil)))
+	a.onOpen = func() { reg.set(b); a.close() }
+	w.handleNext(t.Context())
+	answer, n := w.lastAnswer()
+	if n == 0 || !answer.Final || answer.Status >= 400 {
+		t.Fatalf("answer %+v (%d answers), want the command's final answer", answer, n)
+	}
+	if a.sealCount() != 0 || b.sealCount() != 1 {
+		t.Fatalf("seals: closed helper %d, replacement %d; want 0 and 1", a.sealCount(), b.sealCount())
+	}
+	if c := logs.count("bot command answer not sealed"); c != 0 {
+		t.Fatalf("seal_error logged %d times:\n%s", c, logs)
+	}
+}
+
+// F4: a helper that dies after a command's open leaves the command unanswerable on it. The command is refused
+// retryable (503 E_BOT_OFFLINE) and that answer waits for the replacement helper to seal it, never silence. With no
+// replacement in time the failure is logged with its class, and the member's Retry runs the command on the next helper.
+func TestSealedIntakeOfflineWhenHelperClosed(t *testing.T) {
+	t.Run("sealed_on_the_replacement", func(t *testing.T) {
+		shortHelperPark(t, 5*time.Second)
+		w := newLoadWorld(t, 3, true)
+		logs := &lockedLog{}
+		reg := &registeredHelper{}
+		a, b := w.helper, &loadHelper{requests: w.helper.requests}
+		reg.set(a)
+		followRegistry(w, reg, slog.New(slog.NewTextHandler(logs, nil)))
+		a.onOpen = a.close
+		done := make(chan struct{})
+		go func() { w.handleNext(t.Context()); close(done) }()
+		waitUntil(t, func() bool { return logs.count("bot command answer waiting for a replacement helper") == 1 })
+		reg.set(b)
+		<-done
+		answer, n := w.lastAnswer()
+		if n != 1 || answer.Status != intake.StatusOffline || string(answer.Body) != intake.CodeOffline || !answer.Final {
+			t.Fatalf("answers %d, last %+v; want one 503 E_BOT_OFFLINE", n, answer)
+		}
+		if b.sealCount() != 1 || logs.count("class=helper_gone") != 1 {
+			t.Fatalf("replacement seals %d; logs:\n%s", b.sealCount(), logs)
+		}
+		if c := logs.count("bot command answer not sealed"); c != 0 {
+			t.Fatalf("seal_error logged %d times:\n%s", c, logs)
+		}
+	})
+	t.Run("no_replacement_in_time", func(t *testing.T) {
+		shortHelperPark(t, 20*time.Millisecond)
+		w := newLoadWorld(t, 3, true)
+		logs := &lockedLog{}
+		reg := &registeredHelper{}
+		a, b := w.helper, &loadHelper{requests: w.helper.requests, replays: map[string][32]byte{}}
+		reg.set(a)
+		followRegistry(w, reg, slog.New(slog.NewTextHandler(logs, nil)))
+		a.onOpen = a.close
+		cmd := w.commands[0]
+		w.entry.in.Handle(t.Context(), cmd)
+		if _, n := w.lastAnswer(); n != 0 {
+			t.Fatalf("%d answers sealed with no helper", n)
+		}
+		if logs.count("bot command answer not sealed") != 1 || logs.count("error_class=closed op=23") != 1 {
+			t.Fatalf("the unsealed answer is not logged with its class:\n%s", logs)
+		}
+		// The member's Retry: a new seal of the same request, which the replacement opens as a Replay with a new key.
+		reg.set(b)
+		retry := cmd
+		retry.Sealed = append(append([]byte(nil), cmd.Sealed...), 'r')
+		var key [32]byte
+		key[0] = 2
+		b.replays[string(retry.Sealed)] = key
+		w.entry.in.Handle(t.Context(), retry)
+		answer, n := w.lastAnswer()
+		if n != 1 || !answer.Final || answer.Status >= 400 {
+			t.Fatalf("Retry on the replacement: %d answers, last %+v; want the command run", n, answer)
+		}
+	})
+}
+
+// A helper that closes itself (invalidated_decode) applying the same pending Welcome after every respawn: each close is
+// logged with its reason, the due tick logs each dead helper once, the respawns back off (a replacement that served one
+// tick does not reset the backoff), and every sealed command in between is answered 503 E_BOT_OFFLINE on the next
+// helper, never silence.
+func TestSelfClosingHelperOnPendingWelcome(t *testing.T) {
+	shortHelperPark(t, 5*time.Second)
+	var delays []time.Duration
+	var scheduled []func()
+	var schedMu sync.Mutex
+	defer func(f func(time.Duration, func())) { helperRespawnAfter = f }(helperRespawnAfter)
+	helperRespawnAfter = func(d time.Duration, f func()) {
+		schedMu.Lock()
+		delays, scheduled = append(delays, d), append(scheduled, f)
+		schedMu.Unlock()
+	}
+	w := newLoadWorld(t, 3, true)
+	logs := &lockedLog{}
+	log := slog.New(slog.NewTextHandler(logs, nil))
+	reg := &registeredHelper{}
+	followRegistry(w, reg, log)
+	installation := w.entry.installation
+	loop := newBotGatewayRuntime(t.Context(), nil, true, log)
+	defer loop.Close()
+	now := time.Now()
+	loop.now = func() time.Time { return now }
+	// The pass: a new helper, registered, with the installation's maintenance on it. Applying the pending Welcome
+	// makes it invalidate itself (native.Client logs that close once, with its reason).
+	respawn := func() *loadHelper {
+		h := &loadHelper{requests: w.helper.requests}
+		h.onOpen = func() {
+			h.close()
+			log.Warn("bot native helper closed", "installation_id", installation.String(), "reason", helper.ReasonInvalidatedDecode)
+		}
+		reg.set(h)
+		loop.SetMaintenance(installation, backgroundMaintenance{client: new(native.Client), usable: h.Usable, run: func(context.Context) error { return nil }})
+		return h
+	}
+	tick := func() {
+		now = now.Add(dueInterval)
+		if err := loop.maintainDue(t.Context()); err != nil {
+			t.Fatalf("due tick = %v, want no invented error", err)
+		}
+	}
+	asked := func() bool { targets, _ := loop.takePassTargets(); return targets[installation] }
+	respawn()
+	for cycle := range 3 {
+		tick() // the helper serves one tick
+		done := make(chan struct{})
+		go func() { w.handleNext(t.Context()); close(done) }()
+		waitUntil(t, func() bool { return logs.count("bot command answer waiting for a replacement helper") == cycle+1 })
+		tick() // the dead helper
+		if cycle > 0 {
+			if asked() {
+				t.Fatalf("cycle %d: asked for a pass at once, the short-lived replacement reset the backoff", cycle)
+			}
+			schedMu.Lock()
+			last := scheduled[len(scheduled)-1]
+			schedMu.Unlock()
+			last()
+		}
+		if !asked() {
+			t.Fatalf("cycle %d: no respawn asked", cycle)
+		}
+		next := respawn()
+		<-done
+		answer, n := w.lastAnswer()
+		if n != cycle+1 || answer.Status != intake.StatusOffline || string(answer.Body) != intake.CodeOffline {
+			t.Fatalf("cycle %d: %d answers, last %+v; want 503 E_BOT_OFFLINE", cycle, n, answer)
+		}
+		if next.sealCount() != 1 {
+			t.Fatalf("cycle %d: the replacement sealed %d answers, want 1", cycle, next.sealCount())
+		}
+	}
+	if !slices.Equal(delays, []time.Duration{10 * time.Second, 20 * time.Second}) {
+		t.Fatalf("respawn delays %v, want [10s 20s]", delays)
+	}
+	if c := logs.count("reason=invalidated_decode"); c != 3 {
+		t.Fatalf("%d close lines with the reason, want 3:\n%s", c, logs)
+	}
+	if c := logs.count("bot native helper gone"); c != 3 {
+		t.Fatalf("%d gone lines, want one per dead helper (3):\n%s", c, logs)
+	}
+	if c := logs.count("bot native helper respawn requested"); c != 3 {
+		t.Fatalf("%d respawn lines, want 3:\n%s", c, logs)
+	}
+	if c := logs.count("bot command answer not sealed"); c != 0 {
+		t.Fatalf("a command ended in seal_error:\n%s", logs)
+	}
+}
+
+// kickCounter is a sealed intake's kick: it counts the asks and, like the pass it asks for, registers start() as the
+// replacement helper after delay (a fake helper start).
+type kickCounter struct {
+	n     atomic.Int32
+	delay time.Duration
+	start func()
+}
+
+func (k *kickCounter) kick() {
+	if k.n.Add(1) == 1 && k.start != nil {
+		time.AfterFunc(k.delay, k.start)
+	}
+}
+
+func setKick(w *loadWorld, k *kickCounter) {
+	w.entry.mu.Lock()
+	w.entry.cfg.kick = k.kick
+	w.entry.mu.Unlock()
+}
+
+// v0.1.0-bot2.2 final review I3: a parked command asks for the replacement helper at once (the runtime's respawn, on its
+// backoff), instead of waiting for the next due tick (up to 10 s) to find the dead one. It asks once per park, and a
+// replacement that is ready inside the park budget answers the command.
+func TestParkedCommandKicksRespawnOnce(t *testing.T) {
+	t.Run("open_parked_on_a_closed_helper", func(t *testing.T) {
+		shortHelperPark(t, 2*time.Second)
+		w := newLoadWorld(t, 3, true)
+		reg := &registeredHelper{}
+		a, b := w.helper, &loadHelper{requests: w.helper.requests}
+		a.close()
+		reg.set(a)
+		followRegistry(w, reg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		k := &kickCounter{delay: 50 * time.Millisecond, start: func() { reg.set(b) }}
+		setKick(w, k)
+		w.handleNext(t.Context())
+		answer, n := w.lastAnswer()
+		if n != 1 || !answer.Final || answer.Status >= 400 {
+			t.Fatalf("answers %d, last %+v; want the command run on the replacement", n, answer)
+		}
+		if got := k.n.Load(); got != 1 {
+			t.Fatalf("kicks = %d, want 1", got)
+		}
+	})
+	t.Run("answer_parked_after_a_self_close", func(t *testing.T) {
+		shortHelperPark(t, 2*time.Second)
+		w := newLoadWorld(t, 3, true)
+		reg := &registeredHelper{}
+		a, b := w.helper, &loadHelper{requests: w.helper.requests}
+		reg.set(a)
+		followRegistry(w, reg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		a.onOpen = a.close
+		k := &kickCounter{delay: 50 * time.Millisecond, start: func() { reg.set(b) }}
+		setKick(w, k)
+		w.handleNext(t.Context())
+		answer, n := w.lastAnswer()
+		if n != 1 || answer.Status != intake.StatusOffline || string(answer.Body) != intake.CodeOffline || b.sealCount() != 1 {
+			t.Fatalf("answers %d, last %+v, replacement seals %d; want one 503 E_BOT_OFFLINE sealed on the replacement", n, answer, b.sealCount())
+		}
+		if got := k.n.Load(); got != 1 {
+			t.Fatalf("kicks = %d, want 1", got)
+		}
+	})
+	t.Run("no_registered_helper", func(t *testing.T) {
+		shortHelperPark(t, 30*time.Millisecond)
+		w := newLoadWorld(t, 3, true)
+		followRegistry(w, &registeredHelper{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		k := &kickCounter{}
+		setKick(w, k)
+		w.handleNext(t.Context())
+		if got := k.n.Load(); got != 1 {
+			t.Fatalf("kicks = %d, want 1 for the whole park", got)
+		}
+	})
+	t.Run("usable_helper_never_kicks", func(t *testing.T) {
+		w := newLoadWorld(t, 3, true)
+		reg := &registeredHelper{}
+		reg.set(w.helper)
+		followRegistry(w, reg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		k := &kickCounter{}
+		setKick(w, k)
+		w.handleNext(t.Context())
+		if answer, n := w.lastAnswer(); n != 1 || answer.Status >= 400 || k.n.Load() != 0 {
+			t.Fatalf("answers %d, last %+v, kicks %d", n, answer, k.n.Load())
+		}
+	})
+}
+
+// The pass's kick is the runtime's respawn ask, on its backoff: the first park asks at once, the parks after it within
+// the backoff schedule one ask between them, never a storm.
+func TestSealedIntakeKickIsTheRespawnBackoff(t *testing.T) {
+	delays, fire := captureRespawns(t)
+	r := newBotGatewayRuntime(t.Context(), nil, true, quietLogger())
+	defer r.Close()
+	installation := id.New()
+	cfg := newSealedIntakeConfig(r, installation, id.New(), id.New(), 0, &loadHelper{}, nil, nil, nil)
+	if cfg.kick == nil {
+		t.Fatal("no kick wired")
+	}
+	asked := func() bool { targets, _ := r.takePassTargets(); return targets[installation] }
+	cfg.kick()
+	if !asked() || len(delays()) != 0 {
+		t.Fatalf("first kick: want a pass at once, delays %v", delays())
+	}
+	for range 5 {
+		cfg.kick()
+	}
+	if asked() || !slices.Equal(delays(), []time.Duration{helperRespawnBase}) {
+		t.Fatalf("kicks during the backoff: delays %v, want one ask after %v", delays(), helperRespawnBase)
+	}
+	fire()
+	if !asked() {
+		t.Fatal("the scheduled ask asked for no pass")
 	}
 }

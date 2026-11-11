@@ -128,7 +128,7 @@ anything else.
 
 - bash, git, curl, tar, coreutils (`sha256sum`), jq, util-linux (`prlimit`; `taskset` for `--stress`)
 - Node.js of `.nvmrc` (24) with npm
-- Go of `go.mod`'s `go` line (1.27.3)
+- Go of `go.mod`'s `go` line (1.27.4)
 - rustup; `rust-toolchain.toml` pins the toolchain, with clippy, rustfmt and the wasm32 targets
 - clang and llvm-ar from the LLVM 23.1 line (`/usr/bin/clang-23`, or a `clang`/`llvm-ar` on PATH that reports 23.1)
 - the system libraries Playwright's Chromium needs (`npx playwright install-deps chromium` on Debian/Ubuntu, or your

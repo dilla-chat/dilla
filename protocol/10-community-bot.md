@@ -782,10 +782,34 @@ registration does not block Resume or change an existing destination. Active
 playback retains the normal requester, announcement-window and rate checks;
 registration changes only after an accepted announcement send.
 
-Classified track-specific start failures remove an item durably and try the
-next item, ignoring repeat for failed items. Provider-wide, deployment, network, call, room, cancellation and
-deadline failures pause without removing the item. YouTube soft refusals such as
-"This content isn't available, try again later" pause.
+A track whose own playback broke is removed from the queue durably, at start or
+while it plays, and the next item is tried, ignoring repeat for failed items. Its
+own playback broke when: the provider refuses that item (HTTP 403 and the
+item-specific video classes); the Bot's native helper closes under it; its media
+epoch still lacks the Bot's own leaf after the one rejoin-and-retry; its call
+group cannot be followed (failed catch-up checks); or its encoder or publication
+fails. A track is kept, paused, without removal when there is nobody to play to
+(the room was left and only a member's play joins it again), when the provider as
+a whole is unavailable (sandbox unavailable, HTTP 429, bot check, provider
+network, and soft refusals such as "This content isn't available, try again
+later"), or when the connection merely ended or expired (server-ended call, idle
+leave, transport death or a room that could not connect, connection lifetime
+expiry). A track is also kept, paused, when the Bot was not admitted to publish
+at that moment (the installation not ready with music, including a slow
+installation read; the Bot without connect and speak in the channel; a user in
+the call held by membership trust, or that trust not available yet) and when a
+dillad request failed for a passing reason at a start stage (a retry-safe
+deferral, or a 5xx, 409 or 429 answer). A failed call-group check during
+playback is kept only when the Bot was not admitted; any other cause under it,
+including a deferred or 5xx, 409 or 429 dillad answer, removes the track. A
+native helper failure (the helper closed, or an op whose outcome is unknown)
+anywhere in the error wins over every keep reason: the track is removed. When the removal cannot be saved because the native helper that
+stores the queue failed, the Bot keeps the failed item in memory and removes it
+on the replacement helper before any queue of that installation can start; an
+item that is no longer current then is forgotten without change. A user's pause
+or stop never removes a track. A /play whose own track
+was removed answers that it could not be played and was removed, instead of a
+notice.
 A start run tries each item at most once and is bounded by skip count, elapsed
 time and a consecutive-provider-failure circuit breaker; an exhausted queue is
 empty and paused. Stop and shutdown can interrupt a run between attempts.

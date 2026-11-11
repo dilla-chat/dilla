@@ -12,6 +12,8 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
+	"github.com/dilla-chat/dilla/internal/bot/music"
 	"github.com/dilla-chat/dilla/internal/bot/music/counter"
 	"github.com/dilla-chat/dilla/internal/bot/music/runtime"
 	"github.com/dilla-chat/dilla/internal/bot/native"
@@ -21,17 +23,36 @@ import (
 )
 
 var (
-	ErrPoolCallEnded = errors.New("music livekit: server call ended")
-	ErrPoolClosed    = errors.New("music livekit: publisher pool is closed")
-	ErrPoolDead      = errors.New("music livekit: publisher room ended; explicit reset required")
-	ErrPoolBusy      = errors.New("music livekit: publisher track is already active")
+	// ErrPoolCallEnded, ErrPoolDead, ErrPoolIdle and ErrRoomLifetime are the connection ending under a track, not the
+	// track failing: they match music.ErrConnectionEnded, so the track stays in the queue, paused (v0.1.0-bot2.2).
+	ErrPoolCallEnded error = &connectionEnded{text: "music livekit: server call ended"}
+	ErrPoolClosed          = errors.New("music livekit: publisher pool is closed")
+	ErrPoolDead      error = &connectionEnded{text: "music livekit: publisher room ended; explicit reset required"}
+	ErrPoolBusy            = errors.New("music livekit: publisher track is already active")
 	// ErrCallCatchUpTerminal marks a catch-up failure no retry can mend (the group is gone or needs a resync): the
 	// track stops at once.
-	ErrCallCatchUpTerminal = errors.New("music livekit: the call group cannot be caught up")
+	ErrCallCatchUpTerminal error = &callCheckFailed{text: "music livekit: the call group cannot be caught up"}
 	// ErrCallBehind stops a track whose call group could not be caught up: its media might not be under the call's
 	// current epoch (fail closed).
-	ErrCallBehind = errors.New("music livekit: the call group is behind its current epoch")
+	ErrCallBehind error = &callCheckFailed{text: "music livekit: the call group is behind its current epoch"}
 )
+
+// callCheckFailed is a failed call-group check under a playing track (music.ErrCallCheckFailed): the track is removed
+// unless the Bot was not admitted, whatever transient dillad error caused it (ruling R7d).
+type callCheckFailed struct{ text string }
+
+func (e *callCheckFailed) Error() string        { return e.text }
+func (e *callCheckFailed) Is(target error) bool { return target == music.ErrCallCheckFailed }
+
+// ErrRoomLifetime ends a track whose room reached its absolute connection lifetime (protocol/10: a transient
+// "connection lifetime expiry"). The track's error also keeps context.DeadlineExceeded.
+var ErrRoomLifetime error = &connectionEnded{text: "music livekit: room connection lifetime expired"}
+
+// connectionEnded is a connection end that is not the track's failure (music.ErrConnectionEnded).
+type connectionEnded struct{ text string }
+
+func (e *connectionEnded) Error() string        { return e.text }
+func (e *connectionEnded) Is(target error) bool { return target == music.ErrConnectionEnded }
 
 // maxCatchUpFailures is how many monitor ticks in a row may fail to catch the call group up before the track stops.
 const maxCatchUpFailures = 3
@@ -266,7 +287,9 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 		return nil, ErrBinding
 	}
 	guards := p.guards()
-	if guards.CatchUp != nil && (guards.FreshJoin == nil || !guards.FreshJoin(boundGroup)) {
+	// A retry after the Bot's own leaf was missing (music.ForcedRejoin) catches up although its join was just made: a
+	// group whose own leaf was missing is never taken as fresh (v0.1.0-bot2.2).
+	if guards.CatchUp != nil && (guards.FreshJoin == nil || music.ForcedRejoin(ctx) || !guards.FreshJoin(boundGroup)) {
 		// The helper's epoch must be the call's current one before any key is derived (C1).
 		if err := startStage(ctx, "call_catch_up", guards.CatchUp(ctx, boundGroup)); err != nil {
 			_ = source.Close()
@@ -274,8 +297,10 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 		}
 	}
 	initial, err := epochs.CallMediaEpoch(ctx, boundGroup)
-	if err == nil {
-		err = validateSenderEpoch(initial)
+	if err != nil {
+		err = epochFailureOf(err, true)
+	} else if err = validateSenderEpoch(initial); err != nil {
+		err = epochFailureOf(err, false)
 	}
 	if err == nil && guards.Admit != nil {
 		err = guards.Admit(ctx, initial)
@@ -308,6 +333,10 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 	}
 
 	trackCtx, trackCancel := context.WithCancel(roomCtx)
+	if item, restored, ok := music.PlaybackItem(ctx); ok {
+		// The track's checks name its queue item; the room outlives it, so only the track's context carries it.
+		trackCtx = music.WithPlaybackItem(trackCtx, item, restored)
+	}
 	stopParent := context.AfterFunc(ctx, trackCancel)
 	p.mu.Lock()
 	if p.closed || p.dead || p.generation != generation || p.connection != conn {
@@ -617,7 +646,7 @@ func (p *Pool) lifecycleError(fallback error) error {
 }
 
 // ErrPoolIdle is the reason a room was left because nothing played for the idle-leave time.
-var ErrPoolIdle = errors.New("music room left after idle timeout")
+var ErrPoolIdle error = &connectionEnded{text: "music room left after idle timeout"}
 
 // LeaveIdle disconnects a retained room that has no active or starting track (Task 10c: the
 // Music page's "Leave voice when idle"). The next explicit Start connects a fresh room; automatic
@@ -764,7 +793,12 @@ func (s *Session) monitorPooled(ctx context.Context, groupID id.ID, epochs Epoch
 	for {
 		select {
 		case <-ctx.Done():
-			s.finish(s.pool.deadCause(s.generation, ctx.Err()))
+			cause := s.pool.deadCause(s.generation, ctx.Err())
+			if errors.Is(cause, context.DeadlineExceeded) {
+				// The track's context has no deadline of its own: only the room's absolute lifetime ends it this way.
+				cause = fmt.Errorf("%w: %w", ErrRoomLifetime, cause)
+			}
+			s.finish(cause)
 			return
 		case <-sourceDone:
 			if sourceIsPaused(s.source) {
@@ -794,13 +828,21 @@ func (s *Session) monitorPooled(ctx context.Context, groupID id.ID, epochs Epoch
 // fresh durable counter range, in place: the next frame is under the new epoch's key, and a member removed by the
 // commit cannot decrypt it. An epoch the Bot's own leaf left, a refused admission, a failed reservation or a call
 // group that stays behind stop the track (fail closed); the room is left, and only a member's play joins again.
+//
+// Every failed check is logged once (v0.1.0-bot2.2) with its attempt (the catch-up's consecutive failures; 1 for a
+// check that stops the track at once), its error_class and stage, and for a media_epoch failure its epoch_reason.
 func (s *Session) followEpoch(ctx context.Context, guards CallGuards, group id.ID, epochs EpochSource, active native.CallMediaEpoch, failures *int) (native.CallMediaEpoch, error) {
+	failed := func(stage string, err error) (native.CallMediaEpoch, error) {
+		logCallGroupCheckFailed(ctx, 1, stage, err)
+		return active, err
+	}
 	if guards.CatchUp != nil {
 		catchCtx, cancel := context.WithTimeout(ctx, catchUpDeadline)
 		err := guards.CatchUp(catchCtx, group)
 		cancel()
 		if err != nil {
 			*failures++
+			logCallGroupCheckFailed(ctx, *failures, "catch_up", err)
 			if errors.Is(err, ErrCallCatchUpTerminal) || *failures >= maxCatchUpFailures {
 				return active, fmt.Errorf("%w: %w", ErrCallBehind, err)
 			}
@@ -810,43 +852,56 @@ func (s *Session) followEpoch(ctx context.Context, guards CallGuards, group id.I
 	}
 	current, err := epochs.CallMediaEpoch(ctx, group)
 	if err != nil {
-		return active, fmt.Errorf("music livekit: call media key lookup failed: %w", err)
+		return failed("media_epoch", epochFailureOf(fmt.Errorf("music livekit: call media key lookup failed: %w", err), true))
 	}
 	if err := epochStillBound(current, active); err == nil {
 		// The epoch is unchanged, but the Bot's rights, the installation and the roster's holds may have moved: each
 		// tick admits it again, in memory (fix round 2, N3).
 		if guards.Admit != nil {
 			if err := guards.Admit(ctx, current); err != nil {
-				return active, err
+				return failed("admit", err)
 			}
 		}
 		return active, nil
 	} else if !errors.Is(err, ErrEpochChanged) {
-		return active, err
+		return failed("media_epoch", epochFailureOf(err, false))
 	}
 	if current.Epoch < active.Epoch || current.OwnLeaf != active.OwnLeaf {
-		return active, ErrEpochChanged
+		return failed("media_epoch", epochFailureOf(ErrEpochChanged, false))
 	}
 	if err := validateSenderEpoch(current); err != nil {
-		return active, err
+		return failed("media_epoch", epochFailureOf(err, false))
 	}
 	if guards.Admit != nil {
 		if err := guards.Admit(ctx, current); err != nil {
-			return active, err
+			return failed("admit", err)
 		}
 	}
 	state, ok := epochs.(counter.State)
 	if !ok || s.sender == nil {
-		return active, ErrBinding
+		return failed("counter_reserve", ErrBinding)
 	}
 	reserved, err := counter.Reserve(ctx, state, group, current.Epoch, uint16(current.OwnLeaf)) //nolint:gosec // G115: validateSenderEpoch bounds OwnLeaf to uint16
 	if err != nil {
-		return active, fmt.Errorf("music livekit: sender counter reservation failed: %w", err)
+		return failed("counter_reserve", fmt.Errorf("music livekit: sender counter reservation failed: %w", err))
 	}
 	if err := s.sender.RekeyRange(current.BaseKey, uint16(current.OwnLeaf), current.Epoch, reserved.Start, reserved.End); err != nil { //nolint:gosec // G115: as above
-		return active, err
+		return failed("rekey", err)
 	}
 	return current, nil
+}
+
+// logCallGroupCheckFailed logs one failed check of a playing track's call group: never error text, only the attempt,
+// the helper error class, the stage and (media_epoch) the epoch reason, with the track's queue item.
+func logCallGroupCheckFailed(ctx context.Context, attempt int, stage string, err error) {
+	logger := music.PlaybackLogger(ctx)
+	if attrs := music.PlaybackItemAttrs(ctx); attrs != nil {
+		logger = logger.With(attrs...)
+	}
+	if reason := music.EpochReason(err); reason != "" {
+		logger = logger.With("epoch_reason", reason)
+	}
+	logger.WarnContext(ctx, "bot music call group check failed", "group_id", music.PlaybackGroup(ctx).String(), "attempt", attempt, "error_class", helper.Class(err), "stage", stage)
 }
 
 func (p *Pool) deadCause(generation uint64, fallback error) error {

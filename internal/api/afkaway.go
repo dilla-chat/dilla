@@ -412,6 +412,16 @@ func (h *Calls) pruneAFKAdmitsLocked() {
 			delete(h.afkAdmits, u)
 		}
 	}
+	for u, devs := range h.voiceFresh {
+		for d, a := range devs {
+			if h.clk.Since(a.at) >= afkAdmitMemory {
+				delete(devs, d)
+			}
+		}
+		if len(devs) == 0 {
+			delete(h.voiceFresh, u)
+		}
+	}
 }
 
 // afkDecision is the admission number a mark is decided at: an admission after it wins.
@@ -1165,6 +1175,7 @@ func (h *Calls) AFKMaintenance(ctx context.Context) {
 		return
 	}
 	h.retryAFKCuts(ctx)
+	h.retryTakeovers(ctx)
 	if ctx.Err() != nil || h.draining() {
 		return
 	}

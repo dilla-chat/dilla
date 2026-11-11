@@ -12,6 +12,7 @@ import (
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/music/counter"
 	"github.com/dilla-chat/dilla/internal/bot/music/runtime"
 	"github.com/dilla-chat/dilla/internal/bot/native"
@@ -21,10 +22,45 @@ import (
 )
 
 var (
-	ErrBinding        = errors.New("music livekit: call media binding rejected")
-	ErrEpochChanged   = errors.New("music livekit: call media epoch changed")
-	ErrRoomConnection = errors.New("music livekit: room connection failed")
+	ErrBinding      = errors.New("music livekit: call media binding rejected")
+	ErrEpochChanged = errors.New("music livekit: call media epoch changed")
+	// ErrRoomConnection is a room that could not connect: a transport failure, not the track's (it matches
+	// music.ErrConnectionEnded, so the track stays, paused).
+	ErrRoomConnection error = &connectionEnded{text: "music livekit: room connection failed"}
+	// ErrLeafMissing is an epoch whose roster does not hold the Bot's own leaf exactly once: its leaf was removed from
+	// the call group. It matches ErrBinding.
+	ErrLeafMissing = fmt.Errorf("music livekit: the Bot's own leaf is not in the call's roster: %w", ErrBinding)
 )
+
+// epochFailure names why a call's media epoch could not be used (music.EpochReason) and keeps its cause.
+type epochFailure struct {
+	error
+	reason string
+}
+
+func (e *epochFailure) Unwrap() error       { return e.error }
+func (e *epochFailure) EpochReason() string { return e.reason }
+func (e *epochFailure) Is(target error) bool {
+	return target == ErrLeafMissing && e.reason == "leaf_missing"
+}
+
+// epochFailureOf gives an epoch failure its reason: leaf_missing (the Bot's leaf left the roster), epoch_stale (the
+// epoch went back or changed under the Bot) or, for a lookup the helper refused with a status, group_unknown. Any
+// other error is returned as it is.
+func epochFailureOf(err error, lookup bool) error {
+	var status *helper.StatusError
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrLeafMissing), errors.Is(err, native.ErrCallEpochOwnLeafMissing):
+		return &epochFailure{error: err, reason: "leaf_missing"}
+	case errors.Is(err, ErrEpochChanged):
+		return &epochFailure{error: err, reason: "epoch_stale"}
+	case lookup && errors.As(err, &status):
+		return &epochFailure{error: err, reason: "group_unknown"}
+	}
+	return err
+}
 
 const epochPollInterval = 2 * time.Second
 const maxPublisherLifetime = 30 * time.Minute
@@ -165,13 +201,13 @@ func validateSenderEpoch(epoch native.CallMediaEpoch) error {
 	for _, member := range epoch.Roster {
 		if member.Leaf == epoch.OwnLeaf {
 			if found {
-				return ErrBinding
+				return ErrLeafMissing
 			}
 			found = true
 		}
 	}
 	if !found {
-		return ErrBinding
+		return ErrLeafMissing
 	}
 	return nil
 }

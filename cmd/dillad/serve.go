@@ -248,6 +248,14 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 			log.Warn("could not prune old pre-migration copies", "err", err)
 		}
 	}
+	// A SQLite file made before auto_vacuum=INCREMENTAL keeps every page it ever grew to. Convert it once here,
+	// before anything is served: the VACUUM that applies the mode holds the database for as long as it runs. A
+	// failure (a full disk) is logged and start goes on with the file as it was; the next start tries again.
+	if cfg.DB.Driver == "sqlite" {
+		if err := sqlite.EnsureIncrementalVacuum(ctx, db, log); err != nil {
+			log.Error("could not compact the database; serving it as it is and trying again at the next start", "err", err)
+		}
+	}
 	metrics := newMetrics()
 	health := obs.NewHealth(clock.System())
 
@@ -459,6 +467,21 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	defer func() {
 		stopSweep()
 		<-sweepDone
+	}()
+
+	// Free pages go back to the filesystem in the background (SQLite only; Postgres has its own autovacuum). The
+	// goroutine ends with this run, and runServe waits for it before repo.Close.
+	vacuumCtx, stopVacuum := context.WithCancel(runCtx)
+	vacuumDone := make(chan struct{})
+	go func() {
+		defer close(vacuumDone)
+		if cfg.DB.Driver == "sqlite" {
+			runIncrementalVacuum(vacuumCtx, db, time.Hour, log)
+		}
+	}()
+	defer func() {
+		stopVacuum()
+		<-vacuumDone
 	}()
 
 	// dilla_clock_skew_seconds, refreshed hourly from the same peers `dillad

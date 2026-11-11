@@ -45,8 +45,12 @@ var _ = [1]struct{}{}[1-sqlite3.SQLITE_ENABLE_FTS5]
 // doctor` and `dillad restore` open exactly those. The writer still sets WAL,
 // which is where the setting belongs, and the pool that reads it back is the
 // write pool (WantPragmas); the read pool checks WantReadPragmas.
+//
+// auto_vacuum(INCREMENTAL) comes first: it takes effect only on a file that has no tables yet, so it
+// must precede journal_mode(WAL), which writes the file's first page. On an existing file it is a no-op;
+// EnsureIncrementalVacuum converts those once, at dillad's start.
 const (
-	writeDSNSuffix = "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)&_txlock=immediate"
+	writeDSNSuffix = "?_pragma=auto_vacuum(INCREMENTAL)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)&_txlock=immediate"
 	readDSNSuffix  = "?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)"
 )
 

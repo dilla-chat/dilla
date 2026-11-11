@@ -7,7 +7,7 @@ const digest = b => createHash('sha512').update(b).digest('base64');
 const helper = Buffer.from('fixture helper');
 const maintainer = Buffer.from('fixture maintainer');
 const key = Buffer.alloc(32, 4).toString('base64');
-const config = { goVersion: 'go1.27.3', generation: 1, publishedAt: '2026-11-02T00:00:00Z', expiresAt: '2027-01-02T00:00:00Z', publicKeys: [key], helper: { version: 'fixture', size: helper.length, sha512: digest(helper), sha256: createHash('sha256').update(helper).digest('hex') } };
+const config = { goVersion: 'go1.27.4', generation: 1, publishedAt: '2026-11-02T00:00:00Z', expiresAt: '2027-01-02T00:00:00Z', publicKeys: [key], helper: { version: 'fixture', size: helper.length, sha512: digest(helper), sha256: createHash('sha256').update(helper).digest('hex') } };
 
 test('capsule binds exact final component bytes and an empty initial signature', () => {
   const { manifest, capsule, constants } = buildCapsule(config, maintainer, helper);

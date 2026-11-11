@@ -11,6 +11,7 @@ import (
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/gatewayclient"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/id"
 )
@@ -50,6 +51,10 @@ type botGatewayRuntime struct {
 	// helperRespawns is each installation's backoff for replacing a helper the due tick found gone, reset when a
 	// replacement serves a maintenance run (guarded by mu; fix round, I-1).
 	helperRespawns map[id.ID]*helperRespawn
+	// helperServing is since when each installation's helper client has served its maintenance, and helperGoneLogged
+	// the client last logged gone (guarded by mu; v0.1.0-bot2.2, F8).
+	helperServing    map[id.ID]helperServing
+	helperGoneLogged map[id.ID]*native.Client
 	// starts runs the native helper starts off the loop (fix round, I-2; helper_start.go).
 	starts helperStarts
 	// feeds is each installation's feed handler, which outlives a pass and a gateway connection (guarded by mu).
@@ -332,6 +337,16 @@ func (r *botGatewayRuntime) RetainOnly(active []id.ID) {
 			delete(r.helperRespawns, installation)
 		}
 	}
+	for installation := range r.helperServing {
+		if !keep[installation] {
+			delete(r.helperServing, installation)
+		}
+	}
+	for installation := range r.helperGoneLogged {
+		if !keep[installation] {
+			delete(r.helperGoneLogged, installation)
+		}
+	}
 	for installation, f := range r.feeds {
 		if !keep[installation] {
 			f.close() // its trust retries stop (Bot v2 Task 16, fix round 1 M-3)
@@ -394,6 +409,29 @@ func (r *botGatewayRuntime) SubscribeNativeGroups(ctx context.Context, installat
 	return nil
 }
 
+// registeredNative is where a consumer finds the installation's registered helper now (musicQueueRegistry).
+type registeredNative interface {
+	Native(installation, community id.ID) musicRuntimeNative
+}
+
+// boundHelperCurrent reports whether bound is still installation's registered helper.
+func boundHelperCurrent(reg registeredNative, installation, community id.ID, bound musicRuntimeNative) func() bool {
+	return func() bool { return reg.Native(installation, community) == bound }
+}
+
+// helperBoundPoller is a pass's text poller, which runs on the helper the pass bound: it runs only while that helper
+// is still the installation's registered one and usable, and otherwise does nothing and says nothing (v0.1.0-bot2.2,
+// F4: the poller kept calling the closed client). The pass that replaces the helper binds a new poller.
+func helperBoundPoller(reg registeredNative, installation, community id.ID, bound musicRuntimeNative, poll func(context.Context) error) func(context.Context) error {
+	current := boundHelperCurrent(reg, installation, community, bound)
+	return func(ctx context.Context) error {
+		if !current() || !nativeUsable(bound) {
+			return nil
+		}
+		return poll(ctx)
+	}
+}
+
 func (r *botGatewayRuntime) SetTextPoller(installation id.ID, poll func(context.Context) error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -421,7 +459,7 @@ func (r *botGatewayRuntime) PollText(ctx context.Context) {
 			if refusal := client.RateLimitError(err); refusal != nil {
 				logBotRateLimit(r.log, installation, refusal)
 			} else {
-				r.log.Warn("bot text command intake deferred", "installation_id", installation.String())
+				r.log.Warn("bot text command intake deferred", "installation_id", installation.String(), "error_class", helper.Class(err))
 			}
 		}
 	}

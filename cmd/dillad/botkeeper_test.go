@@ -226,3 +226,22 @@ func TestDoctorBotHealthLegPrintsCommandsFailingSince(t *testing.T) {
 		t.Fatalf("leg = %+v, want WARN %q", leg, want)
 	}
 }
+
+// v0.1.0-bot2.2 (F7): a report with failed commands is a WARN at once, naming the count and the journal.
+func TestDoctorWarnsOnFailedCommands(t *testing.T) {
+	c := config.Default()
+	c.Bot.Enabled = true
+	c.Instance.DataDir = t.TempDir()
+	clk := clock.NewFake(time.Date(2026, 11, 8, 9, 30, 0, 0, time.UTC))
+	tracker := api.NewBotHealth(clk)
+	tracker.Persist(filepath.Join(c.Instance.DataDir, api.BotHealthFile), nil)
+	community := id.New()
+	tracker.Record(community, api.BotHealthReport{ProbeOK: true, ProbeAt: uint64(clk.Now().Unix()), FailedCommands: 3})
+	leg := doctorBotHealthLeg(c)
+	if leg.Status != ops.Yellow || !strings.Contains(leg.Detail, "3 failed commands") || !strings.Contains(leg.Fix, "journalctl -u dilla") {
+		t.Fatalf("leg = %+v, want WARN naming 3 failed commands and journalctl -u dilla", leg)
+	}
+	if strings.Contains(strings.ToLower(leg.Detail+leg.Fix), "encrypted") {
+		t.Fatalf("leg says encrypted: %+v", leg)
+	}
+}

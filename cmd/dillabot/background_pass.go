@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/helper"
+	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/id"
 )
 
@@ -37,6 +38,9 @@ type backgroundMaintenance struct {
 	run     func(context.Context) error
 	// usable reports whether the task's helper can still serve calls (native.Client.Usable); nil: always.
 	usable func() bool
+	// client is the helper the task runs on: the due tick logs a helper gone once per client, and the respawn backoff
+	// ends only once one client stayed usable for helperServedFor. A typed pointer, so comparing two can never panic.
+	client *native.Client
 }
 
 // installationMaintenanceError keeps the installation visible in both logs
@@ -92,22 +96,28 @@ func (r *botGatewayRuntime) maintainAs(ctx context.Context, installation id.ID, 
 		return nil
 	}
 	done[installation] = true
-	err := runBackgroundMaintenance(ctx, task.run)
-	if ctx.Err() != nil {
-		// A cancelled run says nothing about the helper.
-		if err != nil {
-			return &installationMaintenanceError{installation: installation, cause: err}
+	// v0.1.0-bot2.2 (F8): a helper already known to be unusable is not called; before, every due tick ran the
+	// maintenance against the closed client.
+	var err error
+	if task.usable == nil || task.usable() {
+		err = runBackgroundMaintenance(ctx, task.run)
+		if ctx.Err() != nil {
+			// A cancelled run says nothing about the helper.
+			if err != nil {
+				return &installationMaintenanceError{installation: installation, cause: err}
+			}
+			return nil
 		}
-		return nil
 	}
 	if !helperGone(task, err) {
-		// The helper served this run: a replacement that got this far ends the installation's respawn backoff.
-		r.helperServed(installation)
+		// The helper served this run: one that keeps serving for helperServedFor ends the installation's respawn backoff.
+		r.helperServed(installation, task.client)
 		if err != nil {
 			return &installationMaintenanceError{installation: installation, cause: err}
 		}
 		return nil
 	}
+	r.helperGoneSeen(installation, task.client, err)
 	switch caller {
 	case maintenancePassStart:
 		// The pass replaces the helper (retainedNativeClient) when it covers the installation, and the replacement's own
@@ -120,6 +130,12 @@ func (r *botGatewayRuntime) maintainAs(ctx context.Context, installation id.ID, 
 		// reconcile interval, so without this nothing would ever start another: v0.1.0-bot2 on an upgraded instance
 		// logged "helper client is closed" every 10 s for good. The pass replaces the unusable client with a new helper.
 		r.requestPassAfterHelperGone(installation)
+		// v0.1.0-bot2.2 (F8): only a call that failed is an error of the tick. A helper found unusable without a call
+		// is the "bot native helper gone" line, once per client, not an invented "helper client is closed" every 10 s.
+		if err == nil {
+			return nil
+		}
+		return &installationMaintenanceError{installation: installation, cause: err}
 	case maintenanceInPass:
 	}
 	if err == nil {
@@ -181,7 +197,7 @@ func (r *botGatewayRuntime) requestPassAfterHelperGone(installation id.ID) {
 	if state == nil {
 		r.helperRespawns[installation] = &helperRespawn{delay: helperRespawnBase}
 		r.mu.Unlock()
-		r.requestPass(installation)
+		r.askRespawn(installation, 0)
 		return
 	}
 	if state.waiting {
@@ -198,16 +214,106 @@ func (r *botGatewayRuntime) requestPassAfterHelperGone(installation id.ID) {
 		current := r.helperRespawns[installation] == state
 		r.mu.Unlock()
 		if current {
-			r.requestPass(installation)
+			r.askRespawn(installation, delay)
 		}
 	})
 }
 
-// helperServed ends installation's respawn backoff: its helper served a maintenance run.
-func (r *botGatewayRuntime) helperServed(installation id.ID) {
+// askRespawn asks for the pass that replaces installation's gone helper, and logs the ask (after: the backoff waited).
+func (r *botGatewayRuntime) askRespawn(installation id.ID, after time.Duration) {
+	r.logger().Info("bot native helper respawn requested", "installation_id", installation.String(), "after", after)
+	r.requestPass(installation)
+}
+
+// helperServedFor is how long one helper client must stay usable before its installation's respawn backoff ends. CT 144
+// (bot2.1) showed why one served tick is not enough: a helper that dies on the same work after every respawn served a
+// tick each time, which reset the backoff, and was replaced every 10-30 s.
+const helperServedFor = 60 * time.Second
+
+// helperServing is since when an installation's helper client has served its maintenance (guarded by mu).
+type helperServing struct {
+	client *native.Client
+	since  time.Time
+}
+
+// helperServed records that installation's helper client served a maintenance run; once the same client has served
+// for helperServedFor, the installation's respawn backoff ends.
+func (r *botGatewayRuntime) helperServed(installation id.ID, client *native.Client) {
+	now := r.clockNow()
 	r.mu.Lock()
-	delete(r.helperRespawns, installation)
+	_, wasGone := r.helperGoneLogged[installation]
+	delete(r.helperGoneLogged, installation)
+	if r.helperServing == nil {
+		r.helperServing = map[id.ID]helperServing{}
+	}
+	serving, ok := r.helperServing[installation]
+	replaced := wasGone || (ok && serving.client != client)
+	switch {
+	case !ok || serving.client != client:
+		r.helperServing[installation] = helperServing{client: client, since: now}
+	case now.Sub(serving.since) >= helperServedFor:
+		delete(r.helperRespawns, installation)
+	}
 	r.mu.Unlock()
+	if replaced {
+		// A replacement helper registered: probe it at once instead of up to 60 s later, so dillad sees the Bot recover.
+		r.probeNow(installation)
+	}
+}
+
+// probeNow asks the installation's health monitor to probe at once (a helper was replaced or went away).
+func (r *botGatewayRuntime) probeNow(installation id.ID) {
+	e := r.sealed.lookup(installation)
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	monitor := e.monitor
+	e.mu.Unlock()
+	if monitor != nil {
+		monitor.ProbeNow()
+	}
+}
+
+// helperGoneSeen notes that installation's helper client can no longer serve: its serving time ends, and the first time
+// for this client it logs "bot native helper gone" (with the class of the call that failed, when one did).
+func (r *botGatewayRuntime) helperGoneSeen(installation id.ID, client *native.Client, err error) {
+	r.mu.Lock()
+	delete(r.helperServing, installation)
+	logged, seen := r.helperGoneLogged[installation]
+	first := !seen || logged != client
+	if first {
+		if r.helperGoneLogged == nil {
+			r.helperGoneLogged = map[id.ID]*native.Client{}
+		}
+		r.helperGoneLogged[installation] = client
+	}
+	r.mu.Unlock()
+	if !first {
+		return
+	}
+	// The helper just went away: probe now, so dillad sees the failing command path in one report and not a minute on.
+	r.probeNow(installation)
+	attrs := []any{"installation_id", installation.String()}
+	if err != nil {
+		attrs = append(attrs, "error_class", helper.Class(err))
+	}
+	r.logger().Warn("bot native helper gone", attrs...)
+}
+
+func (r *botGatewayRuntime) clockNow() time.Time {
+	if r.now == nil {
+		return time.Now()
+	}
+	return r.now()
+}
+
+// logger is the runtime's logger; a runtime built without one logs nothing.
+func (r *botGatewayRuntime) logger() *slog.Logger {
+	if r.log == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return r.log
 }
 
 // SetMaintenance publishes immutable task closures without retaining a request context.

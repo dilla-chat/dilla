@@ -194,8 +194,12 @@ func (*errMusicCallJoinHeld) Error() string {
 }
 func (*errMusicCallJoinHeld) Retryable() bool { return true }
 
-// errMusicCallJoinUnjudged refuses a join whose staged group still has a leaf the trust cache could not judge.
-var errMusicCallJoinUnjudged = errors.New("music call-group trust: a leaf is still unjudged")
+// Is makes a held join an admission refusal (music.ErrNotAdmitted): the track stays queued, paused.
+func (*errMusicCallJoinHeld) Is(target error) bool { return target == music.ErrNotAdmitted }
+
+// errMusicCallJoinUnjudged refuses a join whose staged group still has a leaf the trust cache could not judge. Like a
+// held join, it is an admission refusal (music.ErrNotAdmitted): the track stays queued, paused.
+var errMusicCallJoinUnjudged error = &musicNotAdmittedError{"music call-group trust: a leaf is still unjudged"}
 
 func waitMusicCallJoin(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)
@@ -296,7 +300,16 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 					}
 				}
 				_, err = timedMusicJoinCall(timing, "CallMediaEpoch", func() (native.CallMediaEpoch, error) { return core.CallMediaEpoch(ctx, group) })
-				return musicCallJoinStageError("active_media_gate", err)
+				if !music.ForcedRejoin(ctx) || !errors.Is(err, native.ErrCallEpochOwnLeafMissing) {
+					return musicCallJoinStageError("active_media_gate", err)
+				}
+				// v0.1.0-bot2.2 (F3): a start's retry after the Bot's own leaf was removed. The helper still holds the
+				// group but its epoch has no leaf of the Bot's: forget the stale state and join again.
+				branch = "forgot_stale_leaf"
+				if err = timing.run("CallGroupForget", func() error { return core.CallGroupForget(ctx, group) }); err != nil {
+					return musicCallJoinStageError("forget_gone_group", err)
+				}
+				break
 			}
 			branch = "forgot_stale_leaf"
 			break
@@ -534,7 +547,7 @@ func decodeMusicExternalJoinResult(body []byte) (native.GroupExternalJoinResult,
 // call), never O(the community), and no device-list read.
 func verifyMusicCallJoinLeaves(ctx context.Context, core musicCallJoinCore, trust musicJoinTrust, group id.ID, participants []client.CallParticipant) error {
 	if trust == nil {
-		return errors.New("music call-group trust unavailable")
+		return errMusicTrustUnavailable
 	}
 	if len(participants) > maxMusicCallJoinLeaves {
 		return errors.New("music call-group trust refresh exceeds limit")

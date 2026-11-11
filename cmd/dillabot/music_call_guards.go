@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/intake"
+	"github.com/dilla-chat/dilla/internal/bot/music"
 	"github.com/dilla-chat/dilla/internal/bot/music/livekit"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/bot/service"
@@ -24,10 +26,18 @@ import (
 const musicBotConnectSpeak = 1<<7 | 1<<8
 
 var (
-	errMusicCatchUpIncomplete    = errors.New("music call group: still behind after the catch-up budget")
-	errMusicInstallationNotReady = errors.New("music: the installation is not ready with music")
-	errMusicBotCannotSpeak       = errors.New("music: the Bot may not connect and speak in the voice channel")
+	errMusicCatchUpIncomplete          = errors.New("music call group: still behind after the catch-up budget")
+	errMusicInstallationNotReady error = &musicNotAdmittedError{"music: the installation is not ready with music"}
+	errMusicBotCannotSpeak       error = &musicNotAdmittedError{"music: the Bot may not connect and speak in the voice channel"}
+	errMusicTrustUnavailable     error = &musicNotAdmittedError{"music call-group trust unavailable"}
 )
+
+// musicNotAdmittedError is an admission refusal: the Bot may not publish in the call right now, which says nothing
+// about the track (v0.1.0-bot2.2 final review I2). It matches music.ErrNotAdmitted, so the track stays queued, paused.
+type musicNotAdmittedError struct{ msg string }
+
+func (e *musicNotAdmittedError) Error() string      { return e.msg }
+func (*musicNotAdmittedError) Is(target error) bool { return target == music.ErrNotAdmitted }
 
 // musicCallSyncer is service.SourceSync as the catch-up uses it.
 type musicCallSyncer interface {
@@ -45,11 +55,42 @@ type musicCallCatchUp struct {
 	// helper is current with costs that one read, and the paging (with its cursor write) runs only when behind.
 	local  func(context.Context, id.ID) (native.GroupInfo, error)
 	remote func(context.Context, id.ID) (client.GroupInfo, error)
+	// helperNow resolves the installation's current helper on every check (v0.1.0-bot2.2 F4, as the commands do since
+	// Task 3): helper.ErrClosed once the helper this catch-up uses is closed, unusable or no longer the registered one.
+	// Nil checks nothing.
+	helperNow func() error
 }
 
 const musicCatchUpPasses = 16
 
+// musicHelperNow is a catch-up's helperNow: nil while own is still the installation's registered helper and usable;
+// otherwise helper.ErrClosed. The identity check current != own holds because the registry and the pass hold the same
+// *native.Client: a pass reuses the retained client (retainedNativeClient) and registers exactly that one, so the
+// two differ only once the registered helper was retired or replaced, and then own is closed.
+func musicHelperNow(registry *musicQueueRegistry, installation, community id.ID, own musicRuntimeNative) error {
+	current := registry.Native(installation, community)
+	if current == nil || current != own || !nativeUsable(current) {
+		return helper.ErrClosed
+	}
+	return nil
+}
+
+// run catches group up. A closed or unusable helper is terminal at once (the track stops at its first failed check
+// with error_class=closed, instead of after maxCatchUpFailures checks).
 func (c musicCallCatchUp) run(ctx context.Context, group id.ID) error {
+	if c.helperNow != nil {
+		if err := c.helperNow(); err != nil {
+			return fmt.Errorf("%w: %w", livekit.ErrCallCatchUpTerminal, err)
+		}
+	}
+	err := c.catchUp(ctx, group)
+	if err != nil && !errors.Is(err, livekit.ErrCallCatchUpTerminal) && errors.Is(err, helper.ErrClosed) {
+		return fmt.Errorf("%w: %w", livekit.ErrCallCatchUpTerminal, err)
+	}
+	return err
+}
+
+func (c musicCallCatchUp) catchUp(ctx context.Context, group id.ID) error {
 	if c.sync == nil || c.session == nil {
 		return errors.New("music call group catch-up unavailable")
 	}
@@ -120,7 +161,7 @@ func (a musicAdmission) admit(ctx context.Context, epoch native.CallMediaEpoch) 
 		return errMusicBotCannotSpeak
 	}
 	if a.trust == nil {
-		return errors.New("music call-group trust unavailable")
+		return errMusicTrustUnavailable
 	}
 	for _, member := range epoch.Roster {
 		if !member.UserID.IsZero() && member.UserID != a.botUser && a.trust.Held(member.UserID) {

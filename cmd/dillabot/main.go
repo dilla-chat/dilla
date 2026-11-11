@@ -499,7 +499,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			continue
 		}
 		if installation.State >= 4 {
-			_ = musicRegistry.Disable(installation.ID)
+			_ = musicRegistry.Disable(installation.ID, helper.ReasonInstallationGone)
 			continue
 		}
 		eligible++
@@ -539,14 +539,14 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			var pending bool
 			nativeClient, pending, err = passHelper(&gateways.starts, installation.ID)
 			if err != nil {
-				_ = musicRegistry.Disable(installation.ID)
+				_ = musicRegistry.Disable(installation.ID, helper.ReasonStartDropped)
 				logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "helper_start", "error_class", helper.Class(err))
 				continue
 			}
 			if nativeClient == nil && !pending {
 				key, _, keyErr := loadDatabaseKey(cfg.StateDir, installation.ID.String())
 				if keyErr != nil {
-					_ = musicRegistry.Disable(installation.ID)
+					_ = musicRegistry.Disable(installation.ID, helper.ReasonStartDropped)
 					logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "state_key")
 					continue
 				}
@@ -578,9 +578,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			if retainedNative {
 				gateways.Drop(installation.ID)
 			} else {
-				_ = nativeClient.Close()
+				_ = nativeClient.CloseWithReason(helper.ReasonLifecycleBind)
 			}
-			_ = musicRegistry.Disable(installation.ID)
+			_ = musicRegistry.Disable(installation.ID, helper.ReasonLifecycleBind)
 			logger.Error("bot installation unavailable", "installation_id", installation.ID.String(), "stage", "lifecycle_bind")
 			continue
 		}
@@ -664,7 +664,12 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									musicPolicy := &musicPolicyCache{installation: installation.ID}
 									starterFor := func(channel id.ID) (session.QueueStarter, error) {
 										catchUp := musicCallCatchUp{sync: musicSourceSync, session: result.Session, community: installation.CommunityID, channel: channel,
-											local: nativeClient.InspectGroup, remote: result.Session.GroupInfo}
+											local: nativeClient.InspectGroup, remote: result.Session.GroupInfo,
+											// v0.1.0-bot2.2 (F4): each check resolves the installation's current helper; a closed,
+											// unusable or replaced one stops the track at once (error_class=closed).
+											helperNow: func() error {
+												return musicHelperNow(musicRegistry, installation.ID, installation.CommunityID, nativeClient)
+											}}
 										joinCallGroup := func(joinCtx context.Context) error {
 											// Bot v2 Task 19: the policy version is read once per op 54, not per join (fix round 1, M2); an
 											// already-member join catches the call group up first (C1).
@@ -710,8 +715,7 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 									runtimeOwnedNative, channelsErr = musicRegistry.ReconcileWithStarterFactory(ctx, installation.ID, installation.CommunityID, result.Installation.Capabilities, channels, nativeClient, starterFor)
 								}
 								if channelsErr != nil {
-									musicDeferred = cleanupFailedMusicRestore(installation.ID, channelsErr, musicRegistry)
-									logger.Error("bot music queue restore paused", "installation_id", installation.ID.String(), "error", channelsErr.Error())
+									musicDeferred = cleanupFailedMusicRestore(logger, installation.ID, installationGone(result.Installation), channelsErr, musicRegistry)
 									ensureErr = errors.Join(ensureErr, channelsErr) //nolint:nilnesserr // false positive: channelsErr is non-nil here (the != nil guard above), the analyzer loses it across the reassigning if block
 								} else {
 									var musicErr error
@@ -811,19 +815,26 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 													sealedConfig.musicStarts = func() []music.StartTiming {
 														return musicRegistry.StartTimings(installation.ID, installation.CommunityID)
 													}
+													// v0.1.0-bot2.2 (F4): every intake call uses the helper registered now, not this pass's.
+													sealedConfig.resolve = func() sealedHelper {
+														current, _ := musicRegistry.Native(installation.ID, installation.CommunityID).(sealedHelper)
+														return current
+													}
 													gateways.SetSealedIntake(sealedConfig)
 													// Bot v2 Task 17: incoming webhooks are posted through this installation's send path.
 													gateways.SetWebhookPoster(installation.ID, newWebhookPoster(installation.CommunityID,
 														service.WelcomeDestinationResolver{Session: result.Session, Native: nativeClient, Feature: "webhooks"},
 														coordinatorWebhookSend{coordinator: coordinator, session: result.Session, authority: api}, time.Now,
 														logger.With("installation_id", installation.ID.String())))
-													gateways.SetTextPoller(installation.ID, newTextPoller(membership, result.Session,
-														func(pollCtx context.Context) error {
-															return gateways.SubscribeNativeGroups(pollCtx, installation.ID, nativeClient)
-														}, eventPoller))
+													gateways.SetTextPoller(installation.ID, helperBoundPoller(musicRegistry, installation.ID, installation.CommunityID, nativeClient,
+														newTextPoller(membership, result.Session,
+															func(pollCtx context.Context) error {
+																return gateways.SubscribeNativeGroups(pollCtx, installation.ID, nativeClient)
+															}, eventPoller)))
 													gateways.SetMaintenance(installation.ID, backgroundMaintenance{
-														current: func() bool { return musicRegistry.Native(installation.ID, installation.CommunityID) == nativeClient },
+														current: boundHelperCurrent(musicRegistry, installation.ID, installation.CommunityID, nativeClient),
 														usable:  nativeClient.Usable,
+														client:  nativeClient,
 														run: func(maintenanceCtx context.Context) error {
 															var utilityTask func(context.Context) error
 															if utilities != nil {
@@ -871,10 +882,10 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			}
 		}
 		ensureErr = withGatewayStartup(ensureErr, gatewayErr)
-		cleanupUnreadyInstallation(installation.ID, membershipReady, ensureErr, musicRegistry)
+		cleanupUnreadyInstallation(installation.ID, membershipReady, installationGone(result.Installation), ensureErr, musicRegistry)
 		var closeErr error
 		if !retainedNative && !runtimeOwnedNative {
-			closeErr = nativeClient.Close()
+			closeErr = nativeClient.CloseWithReason(helper.ReasonPassUnretained)
 		}
 		if client.IsDeferred(ensureErr) && closeErr == nil {
 			if gateways.TextPoller(installation.ID) == nil {
@@ -894,6 +905,11 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 			if errors.As(ensureErr, &membershipErr) {
 				attrs = append(attrs, "membership_phase", membershipErr.Phase.String())
 				attrs = append(attrs, safeMembershipErrorAttrs(membershipErr)...)
+			}
+			if ensureErr != nil {
+				attrs = append(attrs, "error_class", helper.Class(ensureErr))
+			} else {
+				attrs = append(attrs, "error_class", helper.Class(closeErr))
 			}
 			logger.Error("bot installation reconciliation failed", attrs...)
 			continue

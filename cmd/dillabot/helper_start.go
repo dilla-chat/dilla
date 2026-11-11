@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/id"
 )
@@ -113,7 +114,7 @@ func (s *helperStarts) begin(installation id.ID, start func(context.Context) (*n
 		closed := s.closed
 		s.mu.Unlock()
 		if dropped && client != nil {
-			_ = client.Close()
+			_ = client.CloseWithReason(helper.ReasonStartDropped)
 		}
 		if !closed && s.finished != nil {
 			s.finished(installation)
@@ -143,7 +144,7 @@ func (s *helperStarts) retain(keep map[id.ID]bool) {
 	}
 	s.mu.Unlock()
 	for _, c := range closing {
-		_ = c.Close()
+		_ = c.CloseWithReason(helper.ReasonStartDropped)
 	}
 }
 

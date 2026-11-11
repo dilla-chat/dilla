@@ -103,6 +103,9 @@ type QueueStarter struct {
 	OnStartFailed func(error)
 	// Abandon is a /play that ended without starting: a call its warm prepared is dropped and the idle room left (M3).
 	Abandon func()
+	// OnRemoveFailed is told when a failed track's removal could not be saved (v0.1.0-bot2.2 final review I1); the
+	// music registry removes it again on the replacement helper. It runs under the supervisor's lock. Nil does nothing.
+	OnRemoveFailed func(ctx context.Context, item string, err error)
 }
 
 // AbandonWarm implements music.CallWarmer's abandon.
@@ -146,6 +149,17 @@ func (s QueueStarter) StartExplicit(ctx context.Context, track music.Track) (mus
 	}
 	ctx = context.WithValue(client.WithInteractive(ctx), explicitStartKey{}, true)
 	playback, err := s.Start(ctx, track)
+	if errors.Is(err, livekit.ErrLeafMissing) && ctx.Err() == nil && !music.ForcedRejoin(ctx) {
+		// v0.1.0-bot2.2 (F3): the Bot's own leaf left the call group (a Remove committed after its last track). The
+		// failed start already forgot the prepared call; rejoin the call group once (a forced join that does not trust
+		// the helper's membership, then a catch-up) and retry the start once. A second failure is the track's.
+		if s.ResetConnection != nil {
+			if resetErr := s.ResetConnection(); resetErr != nil {
+				return nil, resetErr
+			}
+		}
+		return s.Start(music.WithForcedRejoin(ctx), track)
+	}
 	if !errors.Is(err, livekit.ErrBinding) || ctx.Err() != nil || s.ResetConnection == nil {
 		return playback, err
 	}

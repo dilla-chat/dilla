@@ -123,7 +123,7 @@ type fakeNativeRegistry struct {
 }
 
 func (r *fakeNativeRegistry) Native(id.ID, id.ID) musicRuntimeNative { return r.native }
-func (r *fakeNativeRegistry) Disable(installation id.ID) error {
+func (r *fakeNativeRegistry) Disable(installation id.ID, _ string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.disabled = append(r.disabled, installation)
