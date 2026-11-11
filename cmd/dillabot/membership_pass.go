@@ -43,20 +43,49 @@ type ignoredGroupEvents struct{}
 
 func (ignoredGroupEvents) HandleGroupEvent(context.Context, native.GroupEvent) error { return nil }
 
+// The text poller's stages, as fixed log words: which step of the pass failed.
+const (
+	textPollMembership = "membership"
+	textPollSubscribe  = "subscribe"
+	textPollEvents     = "events"
+)
+
+// textPollError tags a text-poller failure with the stage that failed; it unwraps to the failure itself, so
+// helper.Class, client.IsDeferred and client.RateLimitError still see the cause.
+type textPollError struct {
+	stage string
+	err   error
+}
+
+func (e *textPollError) Error() string { return e.stage + ": " + e.err.Error() }
+func (e *textPollError) Unwrap() error { return e.err }
+
+// textPollStage returns the fixed stage word of a text-poller failure, or "" when err carries none.
+func textPollStage(err error) string {
+	var tagged *textPollError
+	if errors.As(err, &tagged) {
+		return tagged.stage
+	}
+	return ""
+}
+
 // newTextPoller is an installation's hint-driven pass: membership (Welcomes, Bot channel groups), the gateway's group
-// subscriptions, and one page of the event journal drained.
+// subscriptions, and one page of the event journal drained. Each failure names its stage.
 func newTextPoller(membership installationMembership, session *client.Session, subscribe func(context.Context) error, events groupEventPoller) func(context.Context) error {
 	return func(ctx context.Context) error {
 		if _, err := membership.ReconcileOnce(ctx, session); err != nil {
-			return err
+			return &textPollError{stage: textPollMembership, err: err}
 		}
 		if err := subscribe(ctx); err != nil {
-			return err
+			return &textPollError{stage: textPollSubscribe, err: err}
 		}
 		result, err := events.PollOnce(ctx, ignoredGroupEvents{})
 		if err == nil && result.RateLimited != nil {
 			return result.RateLimited
 		}
-		return err
+		if err != nil {
+			return &textPollError{stage: textPollEvents, err: err}
+		}
+		return nil
 	}
 }

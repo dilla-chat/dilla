@@ -254,6 +254,19 @@ fn encode_event(row: &EventRow) -> Vec<u8> {
     e.into_vec()
 }
 
+/// The journal's high water: its newest delivery id, never below the durable acknowledgement. Bot v2 deletes a
+/// v1 installation's interaction-group rows (`remove_interaction_groups`), which held the newest, acknowledged
+/// delivery ids; without the floor a page's `next` (clamped to the ack) would exceed its high water, and the ack
+/// of that `next` would be refused. A healthy journal (ack <= its newest row) reports exactly what it always did.
+fn event_high_water(c: &rusqlite::Connection, ack: i64) -> rusqlite::Result<i64> {
+    let newest: i64 = c.query_row(
+        "SELECT COALESCE(MAX(delivery_id),0) FROM app_bot_events",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(newest.max(ack))
+}
+
 impl ClientCore {
     /// Read a deterministic page of durable authenticated events. The exclusive cursor is clamped
     /// to the installation's durable acknowledgement; each live row is rechecked against source,
@@ -278,14 +291,18 @@ impl ClientCore {
                 [],
                 |r| r.get(0),
             )?;
-            let high: i64 = c.query_row(
-                "SELECT COALESCE(MAX(delivery_id),0) FROM app_bot_events",
-                [],
-                |r| r.get(0),
-            )?;
+            let high = event_high_water(c, ack)?;
             let rows = fetch_rows(c, after_delivery_id.max(ack as u64), limit)?;
             Ok((ack, high, rows))
         })?;
+        // A cursor above the (clamped) high water would page with next > high_water, which Go refuses as "event
+        // cursors": refuse the read instead, so the core never emits that page.
+        if after_delivery_id > high_water as u64 {
+            return Err(ClientError::new(
+                E_CORE_INPUT,
+                "event cursor is above the journal's high water",
+            ));
+        }
         let mut encoded_events = Vec::new();
         let mut next = after_delivery_id.max(ack as u64);
         for row in rows {
@@ -391,11 +408,7 @@ impl ClientCore {
                 [],
                 |r| r.get(0),
             )?;
-            let high: i64 = c.query_row(
-                "SELECT COALESCE(MAX(delivery_id),0) FROM app_bot_events",
-                [],
-                |r| r.get(0),
-            )?;
+            let high = event_high_water(c, ack)?;
             Ok((ack, high))
         })?;
         if (through_delivery_id as i64) < current_ack || (through_delivery_id as i64) > high_water {
@@ -407,7 +420,7 @@ impl ClientCore {
         self.write(|_, u| {
             Ok(u.with_conn(|c| {
                 let ack: i64 = c.query_row("SELECT ack_delivery_id FROM app_bot_event_state WHERE singleton=1", [], |r| r.get(0))?;
-                let high: i64 = c.query_row("SELECT COALESCE(MAX(delivery_id),0) FROM app_bot_events", [], |r| r.get(0))?;
+                let high = event_high_water(c, ack)?;
                 let through = through_delivery_id as i64;
                 if through < ack || through > high {
                     return Err(StorageError::Sqlite("acknowledgement changed concurrently".into()));

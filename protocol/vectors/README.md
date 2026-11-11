@@ -12,7 +12,7 @@ committed files differ from the generator output.
 | `identity.json` | `03-identity.md` | `safety_number.digits`, `sas.digits`, `recovery_key.base32`, `k_header`, `k_backup`, `credential_identity.cbor`, and both Ed25519 signatures |
 | `frames.json` | `02-delivery-service.md` | `frame` per case from `[op, n, group_id, payload]`, and refusal of every entry of `rejects` with the named `E_FRAME_*` code |
 | `permissions.json` | `09-http-api.md` | `community` and `channel` per case: the resolved community-wide and channel bits of `user` (§ Permissions) |
-| `bot.json` | `2026-10-21-dilla-bot.md` | strict structural encoding, body, removal preimage, context validation, and refusal of every bot protocol case |
+| `bot.json` | `2026-10-21-dilla-bot.md` | strict structural encoding, body, removal preimage, context validation, and refusal of every bot protocol case; `helper_event_pages`: the native helper's Bot event page (group sub-op 18), each `accepts` entry produced by dilla-core (`tests/client_bot_events.rs`) and decoded by Go (`internal/bot/native`) to its `next` and `high_water`, each `rejects` entry refused with `error` |
 
 `permissions.json` is not generated: it is frozen from the Go resolver (`internal/api/perm.go`), which is the reference, and is checked by `internal/api/perm_vectors_test.go` and `packages/client-core/src/admin/perm.test.ts`.
 

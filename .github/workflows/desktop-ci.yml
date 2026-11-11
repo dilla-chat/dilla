@@ -81,7 +81,8 @@ jobs:
       - run: npm run test:wasm-size-check
       - run: npm run test:manifest-writer
       - if: needs.changes.outputs.web != 'false'
-        run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+        # bsdtar may already be on the runner image; otherwise install it, retrying only on Ubuntu mirror/DNS outages.
+        run: command -v bsdtar >/dev/null || node scripts/retry-on.mjs --attempts 6 --wait 60 --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch' -- bash scripts/ci-apt-install.sh libarchive-tools
       # The Unicode inputs are cached under a key of the generator file, which holds their pinned checksums: they are
       # downloaded once per pin change. npm test's profile-tables check reads the same directory (DILLA_UCD_DIR), so
       # neither it nor the tables step below reaches unicode.org on a cache hit (PR #149: its 522s failed npm test).

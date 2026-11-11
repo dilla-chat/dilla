@@ -230,7 +230,8 @@ jobs:
         with:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
-      - run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+      # bsdtar may already be on the runner image; otherwise install it, retrying only on Ubuntu mirror/DNS outages.
+      - run: command -v bsdtar >/dev/null || node scripts/retry-on.mjs --attempts 6 --wait 60 --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch' -- bash scripts/ci-apt-install.sh libarchive-tools
       # Attach to installed Electron via CDP; no downloaded test browser or
       # Electron/npm native build is used by this acceptance consumer.
       - run: npm ci --ignore-scripts

@@ -84,10 +84,11 @@ type playbackItem struct {
 	restored bool
 }
 
-// WithPlaybackItem tags ctx with the queue item a start or a playback belongs to: its random queue id (id.New at
-// enqueue, never derived from the URL, video id, title or query) and whether it was loaded from storage when the
-// supervisor was made (logged as restored). The handler's refused line logs queued_earlier instead: it cannot see
-// what was loaded from storage, only whether the command itself enqueued the item.
+// WithPlaybackItem tags ctx with the queue item a start or a playback belongs to: its opaque queue id (derived at
+// enqueue from the sender, the random request id and the item index, never from the URL, video id, title or query)
+// and whether it was loaded from storage when the supervisor was made (logged as restored). The handler's refused
+// line logs queued_earlier instead: it cannot see what was loaded from storage, only whether the command itself
+// enqueued the item.
 func WithPlaybackItem(ctx context.Context, itemID string, restored bool) context.Context {
 	return context.WithValue(ctx, playbackItemKey{}, playbackItem{id: itemID, restored: restored})
 }

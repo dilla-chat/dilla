@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"log/slog"
 	"math"
@@ -156,11 +158,14 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	reason := "dependency_or_context"
 	var diagnostic error
 	var group id.ID
-	// itemID is the queue item the operation acted on (v0.1.0-bot2.2): its random queue id, never anything derived from
-	// the track. queuedEarlier reports an item this command did not enqueue (it was already in the queue). It is
-	// logged as queued_earlier, not restored: on the supervisor's start and ended lines restored means "loaded from
-	// storage when the supervisor was made", which the handler cannot see.
+	// itemID is the queue item the operation acted on (v0.1.0-bot2.2): its opaque queue id (since v0.1.0-bot2.3
+	// derived from the sender and the random request id, see musicItemID), never anything derived from the track.
+	// queuedEarlier reports an item this command did not enqueue (it was already in the queue). It is logged as
+	// queued_earlier, not restored: on the supervisor's start and ended lines restored means "loaded from storage when
+	// the supervisor was made", which the handler cannot see.
 	var itemID string
+	var itemKey musicItemKey         // the enqueue's item-id key
+	var ourItems map[string]struct{} // every id the enqueue could have committed
 	var enqueued []music.Track
 	queuedEarlier := func() bool {
 		if itemID == "" {
@@ -334,6 +339,9 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		return InteractionResult{Status: interactionStatusForbidden}, nil
 	}
 	var opValue music.Operation
+	// replayed is an enqueue whose request already committed its items (found before the resolve): it has no
+	// tracks of its own to append.
+	replayed := false
 	if op == protocol.OpMusicEnqueue {
 		reason = "invalid_args"
 		if len(req.Args) != 1 {
@@ -343,10 +351,29 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		if !ok {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
+		// The command's items take ids derived from its sender and request id (v0.1.0-bot2.3), so a replay of the same
+		// request finds what it already enqueued. A request without an id (none reaches here from the wire) keeps
+		// random ids.
+		itemKey = musicItemKey{user: actor.User, device: actor.Device, request: req.RequestID}
+		if itemKey.request.IsZero() {
+			itemKey.request = id.New()
+		}
+		ourItems = musicItemIDs(itemKey)
+		reason = "already_enqueued"
+		if answer, matched, applied := enqueuedEarlier(snapshot, ourItems, play); applied {
+			itemID = matched
+			if !replayNeedsStart(snapshot.State, play) {
+				// Answered before the resolve and the room warm: a replay adds nothing and starts nothing.
+				return answer, nil
+			}
+			// A replayed /play whose player is paused completes the original /play's post-enqueue step (the
+			// resume below) without resolving or appending again.
+			replayed = true
+		}
 		var tracks []music.Track
 		var resolveErr error
 		reason = "provider_unavailable"
-		if h.Resolver == nil {
+		if h.Resolver == nil && !replayed {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
 		if play && h.OnPlayOpened != nil {
@@ -360,25 +387,27 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 				}()
 			}
 		}
-		tracks, resolveErr = h.Resolver.Resolve(ctx, input)
-		reason, diagnostic = "resolve_failed", resolveErr
-		if resolveErr != nil || len(tracks) == 0 || len(tracks) > youtube.MaxPlaylistItems {
-			return InteractionResult{Status: interactionStatusUnavailable}, nil
-		}
-		reason = "provider_mismatch"
-		for i := range tracks {
-			if tracks[i].Provider != music.ProviderYouTube {
+		if !replayed {
+			tracks, resolveErr = h.Resolver.Resolve(ctx, input)
+			reason, diagnostic = "resolve_failed", resolveErr
+			if resolveErr != nil || len(tracks) == 0 || len(tracks) > youtube.MaxPlaylistItems {
 				return InteractionResult{Status: interactionStatusUnavailable}, nil
 			}
-			tracks[i].ID = id.New().String()
-			tracks[i].RequesterID = actor.User.String()
+			reason = "provider_mismatch"
+			for i := range tracks {
+				if tracks[i].Provider != music.ProviderYouTube {
+					return InteractionResult{Status: interactionStatusUnavailable}, nil
+				}
+				tracks[i].ID = musicItemID(itemKey, i)
+				tracks[i].RequesterID = actor.User.String()
+			}
+			enqueued, itemID = tracks, tracks[0].ID
+			kind := music.OpEnqueue
+			if len(tracks) > 1 {
+				kind = music.OpImportPlaylist
+			}
+			opValue = music.Operation{Kind: kind, Tracks: tracks}
 		}
-		enqueued, itemID = tracks, tracks[0].ID
-		kind := music.OpEnqueue
-		if len(tracks) > 1 {
-			kind = music.OpImportPlaylist
-		}
-		opValue = music.Operation{Kind: kind, Tracks: tracks}
 	} else {
 		var ok bool
 		reason = "invalid_operation"
@@ -397,6 +426,9 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	// Enqueue resolves once, then rebases each bounded CAS attempt onto current state.
 	// Other mutations retain their single revision-checked attempt.
 	for attempt := 0; ; attempt++ {
+		// alreadyApplied is a replayed /play whose items are committed and whose player is paused: this attempt
+		// appends nothing and only runs the /play's resume.
+		alreadyApplied := false
 		if op == protocol.OpMusicEnqueue {
 			reason = "state_read"
 			snapshot, err = h.Store.Load(ctx, channel)
@@ -413,6 +445,22 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 					snapshot.State = state
 				}
 			}
+			// A concurrent run of this same request (a replay) may have committed since the last read; the re-apply
+			// keeps the derived ids, so it is seen here rather than queued a second time.
+			reason = "already_enqueued"
+			answer, matched, applied := enqueuedEarlier(snapshot, ourItems, play)
+			if applied && !replayNeedsStart(snapshot.State, play) {
+				// The warm stays when the room plays, whichever track it plays.
+				itemID, playStarted = matched, roomPlaying(snapshot.State)
+				return answer, nil
+			}
+			if !applied && replayed {
+				// The item this replay found has left the queue since (played, removed or cleared): it has no tracks to
+				// append, so it ends as a conflict rather than guessing.
+				reason = "replayed_item_gone"
+				return InteractionResult{Status: interactionStatusConflict}, nil
+			}
+			alreadyApplied = applied
 		}
 		opValue.NowMS = h.clock().UnixMilli()
 		base := snapshot.State
@@ -431,7 +479,16 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 			staleSkip = currentID != *opValue.ExpectedCurrentItemID
 		}
 		var next music.State
-		if !directImmediate && !staleSkip {
+		if alreadyApplied {
+			// The enqueue's revision step without its append: the resume below commits as revision+1, as it does after
+			// a fresh append.
+			if snapshot.Revision == math.MaxUint64 {
+				reason = "apply_failed"
+				return InteractionResult{Status: interactionStatusUnavailable}, nil
+			}
+			next = base
+			next.Revision = snapshot.Revision + 1
+		} else if !directImmediate && !staleSkip {
 			reason = "apply_failed"
 			next, err = music.Apply(base, snapshot.Revision, opValue)
 			diagnostic = err
@@ -584,6 +641,74 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		revision := appliedRevision
 		return InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}}, nil
 	}
+}
+
+// musicItemDomain separates the enqueue's item ids from every other hash of a request id.
+const musicItemDomain = "dilla/music-item/v1"
+
+// musicItemKey is what an enqueue's item ids derive from: the sealed command's sender and its request id.
+type musicItemKey struct{ user, device, request id.ID }
+
+// musicItemID is the queue id of the index-th track a command enqueues (v0.1.0-bot2.3): the first 16 bytes of
+// SHA-256(musicItemDomain ‖ sender user id ‖ sender device id ‖ request id ‖ index as 4-byte big-endian), as 32
+// lowercase hex characters. The ids are fixed-length binary, so the concatenation is unambiguous. The request id is
+// random, so the id stays opaque to any observer; it never takes the URL, video id, title or query. The same request
+// from the same sender always derives the same ids, which makes a replayed enqueue findable in the queue.
+func musicItemID(key musicItemKey, index int) string {
+	sum := sha256.New()
+	sum.Write([]byte(musicItemDomain))
+	sum.Write(key.user[:])
+	sum.Write(key.device[:])
+	sum.Write(key.request[:])
+	var be [4]byte
+	binary.BigEndian.PutUint32(be[:], uint32(index)) //nolint:gosec // index < youtube.MaxPlaylistItems
+	sum.Write(be[:])
+	var item id.ID
+	copy(item[:], sum.Sum(nil))
+	return item.String()
+}
+
+// musicItemIDs is every id the key's command could have enqueued: one per playlist index.
+func musicItemIDs(key musicItemKey) map[string]struct{} {
+	ids := make(map[string]struct{}, youtube.MaxPlaylistItems)
+	for i := 0; i < youtube.MaxPlaylistItems; i++ {
+		ids[musicItemID(key, i)] = struct{}{}
+	}
+	return ids
+}
+
+// enqueuedEarlier reports an enqueue already applied: any of its items is the current track or queued (item 0 of a
+// playlist may have played out). The answer adds nothing. It carries the current revision, and the now-playing note
+// when a /play finds one of its tracks playing. item is the matched queue id, for the log line.
+func enqueuedEarlier(snapshot persistence.Snapshot, ours map[string]struct{}, play bool) (answer InteractionResult, item string, applied bool) {
+	state := snapshot.State
+	revision := snapshot.Revision
+	answer = InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}}
+	if state.Current != nil {
+		if _, found := ours[state.Current.ID]; found {
+			if play && !state.Paused {
+				answer.Note = nowPlayingText(state)
+			}
+			return answer, state.Current.ID, true
+		}
+	}
+	for _, track := range state.Queue {
+		if _, found := ours[track.ID]; found {
+			return answer, track.ID, true
+		}
+	}
+	return InteractionResult{}, "", false
+}
+
+// roomPlaying reports a state whose current track plays: a /play that ends there leaves the room warm.
+func roomPlaying(state music.State) bool {
+	return !state.Paused && state.Current != nil
+}
+
+// replayNeedsStart reports a replayed /play that must still run the original /play's post-enqueue step: the player
+// is paused (the start was lost, or the user paused since), and a fresh /play resumes it after its append.
+func replayNeedsStart(state music.State, play bool) bool {
+	return play && state.Paused
 }
 
 // trackRemovedResult answers a start whose track failed and was removed from the queue and from persistence

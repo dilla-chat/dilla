@@ -800,19 +800,20 @@ func (c *Client) Close() error { return c.closeWith(ReasonShutdown, nil, "") }
 // CloseWithReason is Close that records why: the reason is logged once, as the client's single close line.
 func (c *Client) CloseWithReason(reason string) error { return c.closeWith(reason, nil, "") }
 
-// CloseDetailed is CloseWithReason for a close a call caused: it also logs the operation and a short fixed kind token.
-func (c *Client) CloseDetailed(reason string, operation protocol.HelperOperation, kind string) error {
-	return c.closeWith(reason, &operation, kind)
+// CloseDetailed is CloseWithReason for a close a call caused: it also logs the operation and a short fixed kind token,
+// and extra key/value attrs that are fixed, non-secret values (the group sub-op number, never a payload or error text).
+func (c *Client) CloseDetailed(reason string, operation protocol.HelperOperation, kind string, extra ...any) error {
+	return c.closeWith(reason, &operation, kind, extra...)
 }
 
-func (c *Client) closeWith(reason string, operation *protocol.HelperOperation, kind string) error {
+func (c *Client) closeWith(reason string, operation *protocol.HelperOperation, kind string, extra ...any) error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.stopTime)
 	defer cancel()
 	select {
 	case <-c.gate.Close():
 	case <-ctx.Done():
 		// Logged before the abort: the abort wakes the in-flight call, which would otherwise log outcome_unknown first.
-		c.logClosed(ReasonShutdownTimeout, operation, nil, append(kindAttr(kind), "requested", reason)...)
+		c.logClosed(ReasonShutdownTimeout, operation, nil, append(append(kindAttr(kind), extra...), "requested", reason)...)
 		c.abort()
 		return nil
 	}
@@ -833,7 +834,7 @@ func (c *Client) closeWith(reason string, operation *protocol.HelperOperation, k
 	}
 	c.markClosed()
 	stopErr := c.transport.stop(c.stopTime)
-	attrs := kindAttr(kind)
+	attrs := append(kindAttr(kind), extra...)
 	if shutdownErr != nil {
 		attrs = append(attrs, "shutdown_error_class", Class(shutdownErr))
 	}
