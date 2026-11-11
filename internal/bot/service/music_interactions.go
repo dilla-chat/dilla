@@ -157,10 +157,12 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	var diagnostic error
 	var group id.ID
 	// itemID is the queue item the operation acted on (v0.1.0-bot2.2): its random queue id, never anything derived from
-	// the track. restored reports an item this command did not enqueue (it came from the stored queue).
+	// the track. queuedEarlier reports an item this command did not enqueue (it was already in the queue). It is
+	// logged as queued_earlier, not restored: on the supervisor's start and ended lines restored means "loaded from
+	// storage when the supervisor was made", which the handler cannot see.
 	var itemID string
 	var enqueued []music.Track
-	restored := func() bool {
+	queuedEarlier := func() bool {
 		if itemID == "" {
 			return false
 		}
@@ -199,7 +201,7 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 				detail = music.FailureClass(diagnostic)
 			}
 		}
-		logger.WarnContext(ctx, "bot music operation refused", "installation_id", h.InstallationID.String(), "device_id", h.DeviceID.String(), "group_id", group.String(), "op", op, "item_id", itemID, "restored", restored(), "status", status, "reason", reason, "error", detail, "stderr", youtube.FailureStderr(diagnostic))
+		logger.WarnContext(ctx, "bot music operation refused", "installation_id", h.InstallationID.String(), "device_id", h.DeviceID.String(), "group_id", group.String(), "op", op, "item_id", itemID, "queued_earlier", queuedEarlier(), "status", status, "reason", reason, "error", detail, "stderr", youtube.FailureStderr(diagnostic))
 	}()
 	if h.Store == nil || h.Authority == nil || h.CommunityID.IsZero() || req.CommunityID != h.CommunityID || req.ChannelID == nil || req.ChannelID.IsZero() {
 		return InteractionResult{}, errors.New("missing music interaction dependency or context")

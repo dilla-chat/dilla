@@ -23,10 +23,12 @@ import (
 )
 
 var (
-	ErrPoolCallEnded = errors.New("music livekit: server call ended")
-	ErrPoolClosed    = errors.New("music livekit: publisher pool is closed")
-	ErrPoolDead      = errors.New("music livekit: publisher room ended; explicit reset required")
-	ErrPoolBusy      = errors.New("music livekit: publisher track is already active")
+	// ErrPoolCallEnded, ErrPoolDead, ErrPoolIdle and ErrRoomLifetime are the connection ending under a track, not the
+	// track failing: they match music.ErrConnectionEnded, so the track stays in the queue, paused (v0.1.0-bot2.2).
+	ErrPoolCallEnded error = &connectionEnded{text: "music livekit: server call ended"}
+	ErrPoolClosed          = errors.New("music livekit: publisher pool is closed")
+	ErrPoolDead      error = &connectionEnded{text: "music livekit: publisher room ended; explicit reset required"}
+	ErrPoolBusy            = errors.New("music livekit: publisher track is already active")
 	// ErrCallCatchUpTerminal marks a catch-up failure no retry can mend (the group is gone or needs a resync): the
 	// track stops at once.
 	ErrCallCatchUpTerminal = errors.New("music livekit: the call group cannot be caught up")
@@ -34,6 +36,16 @@ var (
 	// current epoch (fail closed).
 	ErrCallBehind = errors.New("music livekit: the call group is behind its current epoch")
 )
+
+// ErrRoomLifetime ends a track whose room reached its absolute connection lifetime (protocol/10: a transient
+// "connection lifetime expiry"). The track's error also keeps context.DeadlineExceeded.
+var ErrRoomLifetime error = &connectionEnded{text: "music livekit: room connection lifetime expired"}
+
+// connectionEnded is a connection end that is not the track's failure (music.ErrConnectionEnded).
+type connectionEnded struct{ text string }
+
+func (e *connectionEnded) Error() string        { return e.text }
+func (e *connectionEnded) Is(target error) bool { return target == music.ErrConnectionEnded }
 
 // maxCatchUpFailures is how many monitor ticks in a row may fail to catch the call group up before the track stops.
 const maxCatchUpFailures = 3
@@ -627,7 +639,7 @@ func (p *Pool) lifecycleError(fallback error) error {
 }
 
 // ErrPoolIdle is the reason a room was left because nothing played for the idle-leave time.
-var ErrPoolIdle = errors.New("music room left after idle timeout")
+var ErrPoolIdle error = &connectionEnded{text: "music room left after idle timeout"}
 
 // LeaveIdle disconnects a retained room that has no active or starting track (Task 10c: the
 // Music page's "Leave voice when idle"). The next explicit Start connects a fresh room; automatic
@@ -774,7 +786,12 @@ func (s *Session) monitorPooled(ctx context.Context, groupID id.ID, epochs Epoch
 	for {
 		select {
 		case <-ctx.Done():
-			s.finish(s.pool.deadCause(s.generation, ctx.Err()))
+			cause := s.pool.deadCause(s.generation, ctx.Err())
+			if errors.Is(cause, context.DeadlineExceeded) {
+				// The track's context has no deadline of its own: only the room's absolute lifetime ends it this way.
+				cause = fmt.Errorf("%w: %w", ErrRoomLifetime, cause)
+			}
+			s.finish(cause)
 			return
 		case <-sourceDone:
 			if sourceIsPaused(s.source) {

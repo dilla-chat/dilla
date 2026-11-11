@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -212,6 +213,33 @@ func TestMediaEpochRetriesAfterRejoin(t *testing.T) {
 			t.Fatalf("current=%q queue=%v, want the track removed once", current, queue)
 		}
 	})
+}
+
+// closedHelperPublisher fails its first publication because the helper closed under the start.
+type closedHelperPublisher struct{ attempts atomic.Int32 }
+
+func (p *closedHelperPublisher) Start(context.Context, client.Call, id.ID, livekit.EpochSource, session.Encoder) (session.Publisher, error) {
+	if p.attempts.Add(1) == 1 {
+		return nil, &music.StartError{Stage: "media_epoch", Cause: fmt.Errorf("call media key lookup failed: %w", helper.ErrClosed)}
+	}
+	return &liveRuntimePublisher{done: make(chan struct{})}, nil
+}
+
+// Fix round 1: the production wrong-track case. A /play whose start meets a closed helper removes its track, and the
+// next /play plays the new track, not the old one resumed.
+func TestHelperClosedStartRemovesItemAndNextPlayPlaysNew(t *testing.T) {
+	r := newFailedTrackRig(t,
+		failedTrackResolver{tracks: map[string][]music.Track{"a": {ytTrack("aaaaaaaaaaa", "A")}, "b": {ytTrack("bbbbbbbbbbb", "B")}}},
+		failedTrackPCM{}, &closedHelperPublisher{})
+	if answer := r.play(t, "a"); answer != botstrings.MusicTrackRemoved() {
+		t.Fatalf("/play A = %q, want the removed answer", answer)
+	}
+	if current, queue := r.titles(t); current != "" || len(queue) != 0 {
+		t.Fatalf("after A failed: current=%q queue=%v, want A gone", current, queue)
+	}
+	if answer := r.play(t, "b"); answer != "Now playing: B — Band." {
+		t.Fatalf("/play B = %q, want B playing", answer)
+	}
 }
 
 // countingSync counts source syncs and answers err.

@@ -85,7 +85,9 @@ type playbackItem struct {
 }
 
 // WithPlaybackItem tags ctx with the queue item a start or a playback belongs to: its random queue id (id.New at
-// enqueue, never derived from the URL, video id, title or query) and whether it was loaded from storage.
+// enqueue, never derived from the URL, video id, title or query) and whether it was loaded from storage when the
+// supervisor was made (logged as restored). The handler's refused line logs queued_earlier instead: it cannot see
+// what was loaded from storage, only whether the command itself enqueued the item.
 func WithPlaybackItem(ctx context.Context, itemID string, restored bool) context.Context {
 	return context.WithValue(ctx, playbackItemKey{}, playbackItem{id: itemID, restored: restored})
 }
@@ -124,9 +126,14 @@ func ForcedRejoin(ctx context.Context) bool {
 // fail, so it stays in the queue.
 var ErrNeedsExplicitPlay = errors.New("music: only a member's play joins the call")
 
-// ErrPlayerUnavailable is the Bot's own player failing (its provider sandbox cannot run), not the track: the track
-// stays in the queue, paused.
+// ErrPlayerUnavailable is the Bot's own player failing (its provider sandbox cannot run) or the provider refusing
+// every track for a while (rate limits, bot checks, its network), not the track: the track stays in the queue, paused.
 var ErrPlayerUnavailable = errors.New("music: the Bot's player is unavailable")
+
+// ErrConnectionEnded is a voice connection that ended under a track without the track failing: the server ended the
+// call, the room was left idle, its transport died or its connection lifetime expired. The track stays, paused. The
+// livekit errors match it (livekit imports music, so music cannot name them).
+var ErrConnectionEnded = errors.New("music: the voice connection ended")
 
 // FailureClass returns bounded classes only, never provider messages or URLs.
 func FailureClass(err error) string {

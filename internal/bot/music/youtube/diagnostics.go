@@ -12,6 +12,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/dilla-chat/dilla/internal/bot/music"
 )
 
 // ProcessError retains bounded subprocess diagnostics without putting command
@@ -25,6 +27,21 @@ type ProcessError struct {
 
 func (e *ProcessError) Error() string { return e.Cause.Error() }
 func (e *ProcessError) Unwrap() error { return e.Cause }
+
+// Is makes a provider-wide refusal (rate limit, bot check, the provider's network, a soft "try again later") match
+// music.ErrPlayerUnavailable: every track would fail the same way, so the track stays paused (v0.1.0-bot2.2). A
+// refusal of the one video (http_403 and the video_* classes) is the track's own failure and removes it.
+func (e *ProcessError) Is(target error) bool {
+	if target != music.ErrPlayerUnavailable {
+		return false
+	}
+	switch e.class {
+	case "http_429", "bot_check", "network", "rate_limited":
+		return true
+	}
+	return false
+}
+
 func (e *ProcessError) PermanentPlaybackFailure() bool {
 	if errors.Is(e.Cause, context.Canceled) || errors.Is(e.Cause, context.DeadlineExceeded) {
 		return false

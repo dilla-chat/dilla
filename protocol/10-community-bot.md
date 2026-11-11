@@ -782,10 +782,21 @@ registration does not block Resume or change an existing destination. Active
 playback retains the normal requester, announcement-window and rate checks;
 registration changes only after an accepted announcement send.
 
-Classified track-specific start failures remove an item durably and try the
-next item, ignoring repeat for failed items. Provider-wide, deployment, network, call, room, cancellation and
-deadline failures pause without removing the item. YouTube soft refusals such as
-"This content isn't available, try again later" pause.
+A track whose own playback broke is removed from the queue durably, at start or
+while it plays, and the next item is tried, ignoring repeat for failed items. Its
+own playback broke when: the provider refuses that item (HTTP 403 and the
+item-specific video classes); the Bot's native helper closes under it; its media
+epoch still lacks the Bot's own leaf after the one rejoin-and-retry; its call
+group cannot be followed (failed catch-up checks); or its encoder or publication
+fails. A track is kept, paused, without removal when there is nobody to play to
+(the room was left and only a member's play joins it again), when the provider as
+a whole is unavailable (sandbox unavailable, HTTP 429, bot check, provider
+network, and soft refusals such as "This content isn't available, try again
+later"), or when the connection merely ended or expired (server-ended call, idle
+leave, transport death or a room that could not connect, connection lifetime
+expiry). A user's pause or stop never removes a track. A /play whose own track
+was removed answers that it could not be played and was removed, instead of a
+notice.
 A start run tries each item at most once and is bounded by skip count, elapsed
 time and a consecutive-provider-failure circuit breaker; an exhausted queue is
 empty and paused. Stop and shutdown can interrupt a run between attempts.

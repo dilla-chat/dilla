@@ -55,7 +55,9 @@ type musicCallCatchUp struct {
 const musicCatchUpPasses = 16
 
 // musicHelperNow is a catch-up's helperNow: nil while own is still the installation's registered helper and usable;
-// otherwise helper.ErrClosed.
+// otherwise helper.ErrClosed. The identity check current != own holds because the registry and the pass hold the same
+// *native.Client: a pass reuses the retained client (retainedNativeClient) and registers exactly that one, so the
+// two differ only once the registered helper was retired or replaced, and then own is closed.
 func musicHelperNow(registry *musicQueueRegistry, installation, community id.ID, own musicRuntimeNative) error {
 	current := registry.Native(installation, community)
 	if current == nil || current != own || !nativeUsable(current) {

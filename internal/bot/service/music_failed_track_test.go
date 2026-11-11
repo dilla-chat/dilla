@@ -63,8 +63,10 @@ func TestPlaybackLinesCarryItemID(t *testing.T) {
 	if err := json.Unmarshal(logs.Bytes(), &row); err != nil {
 		t.Fatal(err)
 	}
-	if row["msg"] != "bot music operation refused" || row["item_id"] != current.ID || row["restored"] != false {
-		t.Fatalf("refused line = %v, want item_id %s and restored=false", row, current.ID)
+	// The handler cannot see what the supervisor loaded from storage, so the refused line says queued_earlier (not
+	// enqueued by this command), never "restored", whose meaning on the playback lines is "loaded from storage".
+	if _, ambiguous := row["restored"]; row["msg"] != "bot music operation refused" || row["item_id"] != current.ID || row["queued_earlier"] != false || ambiguous {
+		t.Fatalf("refused line = %v, want item_id %s and queued_earlier=false", row, current.ID)
 	}
 	for _, secret := range []string{fixtureURL, fixtureVideo, fixtureTitle} {
 		if strings.Contains(logs.String(), secret) {

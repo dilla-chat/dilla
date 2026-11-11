@@ -22,9 +22,11 @@ import (
 )
 
 var (
-	ErrBinding        = errors.New("music livekit: call media binding rejected")
-	ErrEpochChanged   = errors.New("music livekit: call media epoch changed")
-	ErrRoomConnection = errors.New("music livekit: room connection failed")
+	ErrBinding      = errors.New("music livekit: call media binding rejected")
+	ErrEpochChanged = errors.New("music livekit: call media epoch changed")
+	// ErrRoomConnection is a room that could not connect: a transport failure, not the track's (it matches
+	// music.ErrConnectionEnded, so the track stays, paused).
+	ErrRoomConnection error = &connectionEnded{text: "music livekit: room connection failed"}
 	// ErrLeafMissing is an epoch whose roster does not hold the Bot's own leaf exactly once: its leaf was removed from
 	// the call group. It matches ErrBinding.
 	ErrLeafMissing = fmt.Errorf("music livekit: the Bot's own leaf is not in the call's roster: %w", ErrBinding)

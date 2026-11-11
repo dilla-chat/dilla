@@ -90,11 +90,14 @@ func (e *TrackRemovedError) Error() string {
 func (e *TrackRemovedError) Unwrap() error { return e.Cause }
 
 // trackFailed reports an error that is the track's own failure, so its item leaves the queue (v0.1.0-bot2.2, owner
-// rule "failed track is removed"). A start that waits for a member's play, a helper closed under the track and a
-// player that cannot run at all are the Bot's failures, not the track's: the item stays, paused, as a user-paused one
-// does.
+// rule "failed track is removed"; controller ruling, fix round 1). A track is removed when its own playback broke:
+// an item-specific provider refusal, a helper closed under it (the production wrong-track case), a media epoch still
+// without the Bot's leaf after the one rejoin, failed call-group checks, an encoder or publish failure. It is kept,
+// paused, when there is nobody to play to (ErrNeedsExplicitPlay), when the provider as a whole is unavailable
+// (ErrPlayerUnavailable) or when the connection merely ended or expired (ErrConnectionEnded: a server-ended call,
+// an idle leave, a transport death, the room's lifetime). A user's pause or stop never reaches this check.
 func trackFailed(err error) bool {
-	return err != nil && !errors.Is(err, ErrNeedsExplicitPlay) && !errors.Is(err, helper.ErrClosed) && !errors.Is(err, ErrPlayerUnavailable)
+	return err != nil && !errors.Is(err, ErrNeedsExplicitPlay) && !errors.Is(err, ErrPlayerUnavailable) && !errors.Is(err, ErrConnectionEnded)
 }
 
 // startFailed reports a start that failed at one of its stages for the track's own reason.
