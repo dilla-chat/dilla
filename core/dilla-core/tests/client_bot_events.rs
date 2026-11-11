@@ -927,3 +927,189 @@ fn signed_device_revocation_suppresses_a_queued_event_before_drain() {
     ).expect("retracted journal metadata");
     assert_eq!((body, disposition), (None, 1));
 }
+
+/// One journal marker with no body (already redacted), so a read pages past it without an MLS recheck.
+fn journal_marker(connection: &ConnHandle, delivery_id: i64) {
+    let marker = [delivery_id as u8; 16];
+    connection
+        .lock()
+        .expect("lock")
+        .execute(
+            "INSERT INTO app_bot_events(delivery_id,group_id,source_seq,community_id,channel_id,epoch,recv_ts,sender_user,sender_device,sender_kind,sender_tier,sender_leaf,sender_credential,sender_sig_key,message_id,envelope_type,original_body,disposition) \
+             VALUES(?1,?2,?1,?3,?4,0,0,?5,?6,0,0,0,x'01',zeroblob(32),?7,0,NULL,1)",
+            rusqlite::params![
+                delivery_id,
+                GROUP.as_slice(),
+                COMMUNITY.as_slice(),
+                CHANNEL.as_slice(),
+                PEER_USER.as_slice(),
+                PEER_DEVICE.as_slice(),
+                marker.as_slice(),
+            ],
+        )
+        .expect("journal marker");
+}
+
+fn helper_event_page_vector(group: &str, name: &str) -> Vec<u8> {
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../../../protocol/vectors/bot.json"))
+            .expect("bot vectors");
+    let case = corpus["helper_event_pages"][group]
+        .as_array()
+        .expect("helper event page vectors")
+        .iter()
+        .find(|case| case["name"] == name)
+        .expect("named helper event page vector");
+    hex::decode(case["hex"].as_str().expect("hex")).expect("vector hex")
+}
+
+/// A Bot v1 installation journaled interaction-group events with the newest delivery ids and acked through them;
+/// Bot v2's remove_interaction_groups deletes those rows and keeps the ack. The page still keeps next <= high water
+/// (the shared vector Go decodes), and acknowledging that next is the idempotent re-ack, not a refusal.
+#[test]
+fn events_page_after_newest_rows_deleted() {
+    let (mut bot, connection) = ready_bot();
+    for delivery in 1..=5 {
+        journal_marker(&connection, delivery);
+    }
+    bot.bot_events_ack(5).expect("ack the whole journal");
+    connection
+        .lock()
+        .expect("lock")
+        .execute("DELETE FROM app_bot_events WHERE delivery_id>=3", [])
+        .expect("delete the newest journal rows");
+
+    let page = bot.bot_events_read(0, 100).expect("read after deletion");
+    assert_eq!(
+        page,
+        helper_event_page_vector(
+            "accepts",
+            "acked journal whose newest rows were deleted reports the ack as high water"
+        )
+    );
+    assert_eq!(page, [0x83, 0x80, 0x05, 0x05]);
+    bot.bot_events_ack(5)
+        .expect("acknowledging next is accepted");
+    assert_eq!(bot.bot_events_ack(6).unwrap_err().code, "E_CORE_INPUT");
+    assert_eq!(bot.bot_events_ack(4).unwrap_err().code, "E_CORE_INPUT");
+
+    // Every row gone (the journal held only interaction-group events): the ack is still the high water.
+    connection
+        .lock()
+        .expect("lock")
+        .execute("DELETE FROM app_bot_events", [])
+        .expect("delete every journal row");
+    assert_eq!(
+        bot.bot_events_read(0, 100)
+            .expect("read an emptied journal"),
+        [0x83, 0x80, 0x05, 0x05]
+    );
+    bot.bot_events_ack(5).expect("re-ack an emptied journal");
+
+    // A newly journaled event takes a delivery id above the ack and pages normally.
+    journal_marker(&connection, 6);
+    assert_eq!(
+        bot.bot_events_read(0, 100).expect("read the new marker"),
+        [0x83, 0x80, 0x06, 0x06]
+    );
+    bot.bot_events_ack(6).expect("ack the new marker");
+}
+
+/// A healthy journal (ack <= MAX(delivery_id)): the page bytes are the ones the core always produced.
+#[test]
+fn events_page_unchanged_when_healthy() {
+    let (mut bot, connection) = ready_bot();
+    assert_eq!(
+        bot.bot_events_read(0, 100).expect("empty journal"),
+        helper_event_page_vector("accepts", "empty journal")
+    );
+    for delivery in 1..=5 {
+        journal_marker(&connection, delivery);
+    }
+    bot.bot_events_ack(3).expect("ack part of the journal");
+    // The cursor is clamped to the ack and no live row follows it: the page runs to the high water.
+    assert_eq!(
+        bot.bot_events_read(0, 100)
+            .expect("read the healthy journal"),
+        [0x83, 0x80, 0x05, 0x05]
+    );
+    // One row per page: next is the row after the ack, the high water the newest row.
+    assert_eq!(
+        bot.bot_events_read(0, 1).expect("read one row"),
+        [0x83, 0x80, 0x04, 0x05]
+    );
+    bot.bot_events_ack(5).expect("ack the rest");
+    assert_eq!(bot.bot_events_ack(6).unwrap_err().code, "E_CORE_INPUT");
+}
+
+/// The production shape after the v1 upgrade on an installation that holds no Bot channel group: no journal row
+/// at all (MAX(delivery_id) is NULL) under a durable ack of 5. The page is empty with next and high water at the
+/// ack, and acknowledging that value is accepted.
+#[test]
+fn events_page_with_no_rows_under_a_durable_ack() {
+    let (mut bot, connection) = ready_bot();
+    connection
+        .lock()
+        .expect("lock")
+        .execute(
+            "UPDATE app_bot_event_state SET ack_delivery_id=5 WHERE singleton=1",
+            [],
+        )
+        .expect("ack left by the deleted v1 interaction rows");
+    let page = bot.bot_events_read(0, 100).expect("read a rowless journal");
+    assert_eq!(
+        page,
+        helper_event_page_vector(
+            "accepts",
+            "journal with no rows left under ack 5 reports the ack as next and high water"
+        )
+    );
+    assert_eq!(page, [0x83, 0x80, 0x05, 0x05]);
+    bot.bot_events_ack(5)
+        .expect("acknowledging the ack is accepted");
+    assert_eq!(bot.bot_events_ack(6).unwrap_err().code, "E_CORE_INPUT");
+    assert_eq!(bot.bot_events_ack(4).unwrap_err().code, "E_CORE_INPUT");
+    assert_eq!(
+        bot.bot_events_read(0, 100).expect("read again"),
+        [0x83, 0x80, 0x05, 0x05]
+    );
+}
+
+/// A live journal row whose group the Bot no longer holds (removed or never rejoined) is redacted on read and
+/// paged past: the page is well formed and empty, not an error that fails every later poll.
+#[test]
+fn events_page_skips_a_row_whose_group_is_gone() {
+    let (mut bot, connection) = ready_bot();
+    connection
+        .lock()
+        .expect("lock")
+        .execute(
+            "INSERT INTO app_bot_events(delivery_id,group_id,source_seq,community_id,channel_id,epoch,recv_ts,sender_user,sender_device,sender_kind,sender_tier,sender_leaf,sender_credential,sender_sig_key,message_id,envelope_type,original_body,disposition) \
+             VALUES(1,?1,1,?2,?3,0,0,?4,?5,0,0,0,x'01',zeroblob(32),?6,0,'gone group text',0)",
+            rusqlite::params![
+                GROUP.as_slice(),
+                COMMUNITY.as_slice(),
+                CHANNEL.as_slice(),
+                PEER_USER.as_slice(),
+                PEER_DEVICE.as_slice(),
+                [0x01u8; 16].as_slice(),
+            ],
+        )
+        .expect("live row of a group the Bot does not hold");
+    assert_eq!(
+        bot.bot_events_read(0, 100)
+            .expect("read past the gone group"),
+        [0x83, 0x80, 0x01, 0x01]
+    );
+    let (body, disposition): (Option<String>, i64) = connection
+        .lock()
+        .expect("lock")
+        .query_row(
+            "SELECT original_body,disposition FROM app_bot_events WHERE delivery_id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("redacted row");
+    assert_eq!((body, disposition), (None, 1));
+    bot.bot_events_ack(1).expect("ack past the gone group");
+}

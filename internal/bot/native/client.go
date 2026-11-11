@@ -38,7 +38,7 @@ type transport interface {
 // down so one close writes one line, in the helper layer.
 type reasonCloser interface {
 	CloseWithReason(reason string) error
-	CloseDetailed(reason string, operation protocol.HelperOperation, kind string) error
+	CloseDetailed(reason string, operation protocol.HelperOperation, kind string, extra ...any) error
 }
 
 type Client struct {
@@ -189,7 +189,7 @@ func (c *Client) call(ctx context.Context, op protocol.HelperOperation, payload 
 	value, err := decode(result)
 	if err != nil {
 		if mutation {
-			c.invalidateLocked(op)
+			c.invalidateLocked(op, payload)
 		}
 		return nil, fmt.Errorf("native helper returned an invalid result: %w", outcomeOrValidation(err, mutation))
 	}
@@ -202,18 +202,51 @@ func outcomeOrValidation(err error, mutation bool) error {
 	}
 	return err
 }
-func (c *Client) invalidateLocked(op protocol.HelperOperation) {
+func (c *Client) invalidateLocked(op protocol.HelperOperation, payload []any) {
 	c.gate.Close()
 	c.mu.Lock()
 	c.usable = false
 	c.closed = true
 	c.mu.Unlock()
 	if rc, ok := c.t.(reasonCloser); ok {
-		// "result_decode" is the fixed kind: the decode error's own text never reaches the log.
-		_ = rc.CloseDetailed(helper.ReasonInvalidatedDecode, op, "result_decode")
+		// "result_decode" is the fixed kind: the decode error's own text never reaches the log. Every group sub-op
+		// travels as HelperGroupApply, so the close also names the sub-op (the payload's first uint, a fixed number).
+		var extra []any
+		if op == protocol.HelperGroupApply && len(payload) > 0 {
+			if subOp, ok := payload[0].(uint64); ok {
+				extra = []any{"sub_op", subOp}
+			}
+		}
+		_ = rc.CloseDetailed(helper.ReasonInvalidatedDecode, op, "result_decode", extra...)
 		return
 	}
 	_ = c.t.Close()
+}
+
+// Fixed detail tokens of a result that did not decode. They are constant words, never result bytes or error text.
+const (
+	// EventsCursorAboveHighWater: a Bot event page whose next cursor is above its high water.
+	EventsCursorAboveHighWater = "events.cursor_above_high_water"
+	// EventsPageInvalid: a Bot event page that is malformed in any other way.
+	EventsPageInvalid = "events.page_invalid"
+)
+
+// DetailError is a result decode failure that carries a fixed detail token (one of the constants above) for logs.
+type DetailError struct {
+	Detail string
+	Err    error
+}
+
+func (e *DetailError) Error() string { return e.Detail + ": " + e.Err.Error() }
+func (e *DetailError) Unwrap() error { return e.Err }
+
+// DecodeDetail returns the fixed detail token of a result decode failure, or "" when err carries none.
+func DecodeDetail(err error) string {
+	var detailed *DetailError
+	if errors.As(err, &detailed) {
+		return detailed.Detail
+	}
+	return ""
 }
 
 func resultAs[T any](value any) (T, error) {

@@ -16,14 +16,16 @@ type reasonTransport struct {
 	reasons []string
 	ops     []protocol.HelperOperation
 	kinds   []string
+	extras  [][]any
 }
 
 func (r *reasonTransport) CloseWithReason(reason string) error {
 	r.reasons = append(r.reasons, reason)
 	return nil
 }
-func (r *reasonTransport) CloseDetailed(reason string, op protocol.HelperOperation, kind string) error {
+func (r *reasonTransport) CloseDetailed(reason string, op protocol.HelperOperation, kind string, extra ...any) error {
 	r.reasons = append(r.reasons, reason)
+	r.extras = append(r.extras, extra)
 	r.ops = append(r.ops, op)
 	r.kinds = append(r.kinds, kind)
 	return nil

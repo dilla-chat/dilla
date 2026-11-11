@@ -1518,5 +1518,34 @@
         "refusal": "Malformed"
       }
     ]
+  },
+  "helper_event_pages": {
+    "accepts": [
+      {
+        "name": "acked journal whose newest rows were deleted reports the ack as high water",
+        "hex": "83800505",
+        "next": 5,
+        "high_water": 5
+      },
+      {
+        "name": "journal with no rows left under ack 5 reports the ack as next and high water",
+        "hex": "83800505",
+        "next": 5,
+        "high_water": 5
+      },
+      {
+        "name": "empty journal",
+        "hex": "83800000",
+        "next": 0,
+        "high_water": 0
+      }
+    ],
+    "rejects": [
+      {
+        "name": "next above high water",
+        "hex": "83800503",
+        "error": "event cursors"
+      }
+    ]
   }
 }

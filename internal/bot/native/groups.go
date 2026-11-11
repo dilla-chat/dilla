@@ -1060,19 +1060,41 @@ func decodeGroupEvents(b []byte, binding Binding, after uint64) (any, error) {
 	if out.Next, e = groupUint(a[1]); e != nil {
 		return nil, e
 	}
-	if out.HighWater, e = groupUint(a[2]); e != nil || out.Next < after || out.Next > out.HighWater {
+	if out.HighWater, e = groupUint(a[2]); e != nil || out.Next < after {
 		return nil, errors.New("event cursors")
+	}
+	// The core reports a high water never below its durable ack (dilla-core bot_events.rs event_high_water), so
+	// next <= high_water is an invariant here, and the cross-language vectors in protocol/vectors/bot.json pin it.
+	if out.Next > out.HighWater {
+		return nil, errEventCursorAboveHighWater
 	}
 	if len(out.Events) > 0 && out.Next < last {
 		return nil, errors.New("event cursor behind page")
 	}
 	return out, nil
 }
+
+var errEventCursorAboveHighWater = errors.New("event cursors: next above high water")
+
+// ReadGroupEvents is not a mutation: the core read's only write is the idempotent redaction of rows that fail their
+// rechecks, so a page Go refuses leaves no unknown outcome. That poll fails with a fixed detail token
+// (DecodeDetail) and the helper stays up; before v0.1.0-bot2.3 every refused page closed it.
 func (c *Client) ReadGroupEvents(ctx context.Context, after, limit uint64) (GroupEventPage, error) {
 	if after > math.MaxInt64 || limit < 1 || limit > 100 {
 		return GroupEventPage{}, errors.New("invalid event page request")
 	}
-	v, e := c.groupCall(ctx, []any{uint64(18), after, limit}, true, groupWrapped(func(b []byte) (any, error) { return decodeGroupEvents(b, c.binding, after) }))
+	decode := groupWrapped(func(b []byte) (any, error) { return decodeGroupEvents(b, c.binding, after) })
+	v, e := c.groupCall(ctx, []any{uint64(18), after, limit}, false, func(a []any) (any, error) {
+		v, e := decode(a)
+		if e != nil {
+			detail := EventsPageInvalid
+			if errors.Is(e, errEventCursorAboveHighWater) {
+				detail = EventsCursorAboveHighWater
+			}
+			return nil, &DetailError{Detail: detail, Err: e}
+		}
+		return v, nil
+	})
 	if e != nil {
 		return GroupEventPage{}, e
 	}

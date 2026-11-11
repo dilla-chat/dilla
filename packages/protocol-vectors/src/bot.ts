@@ -247,8 +247,21 @@ export async function botVectors() {
  for(const kind of ['keypackage_publication','keypackage_publication_receipt','keypackage_intent','keypackage_intent_result','keypackage_resolution'])
   for(const [name,hexValue] of malformedOuter)rejects.push({name:`${kind}: ${name}`,kind,hex:hexValue});
  const sealed_command=await sealedCommandVectors();
+ // The native helper's Bot event page (group sub-op 18), body [events, next, high_water]. The core reports a high
+ // water never below its durable ack, so a journal whose newest rows were deleted (the v1 upgrade) still pages; Go keeps
+ // next <= high_water as an invariant (dilla-core tests/client_bot_events.rs, internal/bot/native groups_test.go).
+ const helper_event_pages={
+  accepts:[
+   {name:'acked journal whose newest rows were deleted reports the ack as high water',hex:cbor([[],5n,5n]),next:5,high_water:5},
+   {name:'journal with no rows left under ack 5 reports the ack as next and high water',hex:cbor([[],5n,5n]),next:5,high_water:5},
+   {name:'empty journal',hex:cbor([[],0n,0n]),next:0,high_water:0},
+  ],
+  rejects:[
+   {name:'next above high water',hex:cbor([[],5n,3n]),error:'event cursors'},
+  ],
+ };
  // The helper's command-key timing, which dillad checks too (internal/api TestCommandKeyTimingMatchesTheVector).
- return {version:1,command_key_timing:{max_lifetime_secs:691200,publication_slack_secs:600},cases,rejects,sealed_command};
+ return {version:1,command_key_timing:{max_lifetime_secs:691200,publication_slack_secs:600},cases,rejects,sealed_command,helper_event_pages};
 }
 function bodyOf(v:unknown):string {const raw=encode(v as never);let s='';for(const b of raw)s+=String.fromCharCode(b);return 'dilla.bot/1:'+btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/u,'');}
 

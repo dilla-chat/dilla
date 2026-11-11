@@ -459,7 +459,11 @@ func (r *botGatewayRuntime) PollText(ctx context.Context) {
 			if refusal := client.RateLimitError(err); refusal != nil {
 				logBotRateLimit(r.log, installation, refusal)
 			} else {
-				r.log.Warn("bot text command intake deferred", "installation_id", installation.String(), "error_class", helper.Class(err))
+				attrs := []any{"installation_id", installation.String(), "error_class", helper.Class(err)}
+				if detail := native.DecodeDetail(err); detail != "" {
+					attrs = append(attrs, "detail", detail) // a fixed token, never the page bytes or the error text
+				}
+				r.log.Warn("bot text command intake deferred", attrs...)
 			}
 		}
 	}

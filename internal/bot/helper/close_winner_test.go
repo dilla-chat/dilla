@@ -59,6 +59,22 @@ func TestCloseDetailedInvalidatedDecodeSurvivesFailedShutdown(t *testing.T) {
 	}
 }
 
+// A close a group sub-op caused names that sub-op on the one close line, beside operation=group_apply.
+func TestCloseDetailedCarriesTheGroupSubOp(t *testing.T) {
+	var out bytes.Buffer
+	c := newLoggedClient(&out, &okExchange{handler: shutdownFails}, time.Second)
+	_ = c.CloseDetailed(ReasonInvalidatedDecode, protocol.HelperGroupApply, "result_decode", "sub_op", uint64(18))
+	line := out.String()
+	for _, want := range []string{"reason=invalidated_decode", "operation=group_apply", "kind=result_decode", "sub_op=18"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("log %q lacks %q", line, want)
+		}
+	}
+	if strings.Count(line, "\n") != 1 {
+		t.Fatalf("want one line, got %q", line)
+	}
+}
+
 // wakeExchange blocks a call until the helper is stopped, then fails it as a dead helper would.
 type wakeExchange struct {
 	once sync.Once

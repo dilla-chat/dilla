@@ -2,8 +2,12 @@ package native
 
 import (
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -221,8 +225,104 @@ func TestNativeGroupEventPageValidatesAndRedactsBodies(t *testing.T) {
 	bad, _ := cborx.Marshal([]any{[]any{badRow}, uint64(2), uint64(3)})
 	f = &fakeTransport{responses: [][]any{{bad}}}
 	c = newFakeClient(t, f)
-	if _, e = c.ReadGroupEvents(context.Background(), 1, 10); e == nil || !errors.Is(e, ErrOutcomeUnknown) || f.closed != 1 {
-		t.Fatalf("event read did not quarantine stale-suppression mutation: %v closes=%d", e, f.closed)
+	// The read's only core write is the idempotent redaction of rows that fail rechecks, so a page Go refuses leaves
+	// no unknown outcome: the poll fails with a fixed detail token and the helper stays up.
+	if _, e = c.ReadGroupEvents(context.Background(), 1, 10); e == nil || errors.Is(e, ErrOutcomeUnknown) || f.closed != 0 || !c.Usable() || DecodeDetail(e) != EventsPageInvalid {
+		t.Fatalf("refused event page: %v detail=%q closes=%d usable=%v", e, DecodeDetail(e), f.closed, c.Usable())
+	}
+}
+
+// The helper event page vectors of protocol/vectors/bot.json are the pages dilla-core produces (its
+// tests/client_bot_events.rs reads the same file); Go decodes each accept and refuses each reject.
+func TestHelperEventPageVectors(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "protocol", "vectors", "bot.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type pageCase struct {
+		Name      string  `json:"name"`
+		Hex       string  `json:"hex"`
+		Next      *uint64 `json:"next"`
+		HighWater *uint64 `json:"high_water"`
+		Error     string  `json:"error"`
+	}
+	var doc struct {
+		Pages *struct {
+			Accepts []pageCase `json:"accepts"`
+			Rejects []pageCase `json:"rejects"`
+		} `json:"helper_event_pages"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Pages == nil || len(doc.Pages.Accepts) == 0 || len(doc.Pages.Rejects) == 0 {
+		t.Fatal("bot.json carries no helper_event_pages")
+	}
+	for _, tc := range doc.Pages.Accepts {
+		body, err := hex.DecodeString(tc.Hex)
+		if err != nil || tc.Next == nil || tc.HighWater == nil {
+			t.Fatalf("%s: malformed vector", tc.Name)
+		}
+		v, err := decodeGroupEvents(body, testBinding(), 0)
+		if err != nil {
+			t.Fatalf("%s: refused: %v", tc.Name, err)
+		}
+		page := v.(GroupEventPage)
+		if len(page.Events) != 0 || page.Next != *tc.Next || page.HighWater != *tc.HighWater {
+			t.Fatalf("%s: decoded %#v", tc.Name, page)
+		}
+	}
+	for _, tc := range doc.Pages.Rejects {
+		body, err := hex.DecodeString(tc.Hex)
+		if err != nil || tc.Error == "" {
+			t.Fatalf("%s: malformed vector", tc.Name)
+		}
+		if _, err := decodeGroupEvents(body, testBinding(), 0); err == nil || !strings.Contains(err.Error(), tc.Error) {
+			t.Fatalf("%s: err = %v, want %q", tc.Name, err, tc.Error)
+		}
+	}
+}
+
+// A page whose next is above its high water (what dilla-core produced after Bot v2 deleted a v1 journal's newest
+// rows) fails the read alone: no outcome is unknown, the helper is not closed, and the detail is a fixed token.
+func TestReadGroupEventsIsNotAMutation(t *testing.T) {
+	page, err := hex.DecodeString("83800503")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := &reasonTransport{fakeTransport: fakeTransport{responses: [][]any{{page}}}}
+	c, err := newClient(rt, testBinding())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.ReadGroupEvents(context.Background(), 0, 100)
+	if err == nil || errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("malformed page: %v", err)
+	}
+	if got := DecodeDetail(err); got != EventsCursorAboveHighWater {
+		t.Fatalf("detail = %q", got)
+	}
+	if !c.Usable() || len(rt.reasons) != 0 || rt.closed != 0 {
+		t.Fatalf("read closed the helper: usable=%v reasons=%v closes=%d", c.Usable(), rt.reasons, rt.closed)
+	}
+}
+
+// A group mutation whose result does not decode still closes the helper, and the one close line names the group
+// sub-op: every group sub-op travels as HelperGroupApply, so "operation=group_apply" alone cannot tell them apart.
+func TestGroupMutationDecodeCloseNamesTheSubOp(t *testing.T) {
+	rt := &reasonTransport{fakeTransport: fakeTransport{responses: [][]any{{[]byte{0x80}}}}}
+	c, err := newClient(rt, testBinding())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AcknowledgeGroupEvents(context.Background(), 5); !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("malformed ack result: %v", err)
+	}
+	if len(rt.reasons) != 1 || rt.reasons[0] != helper.ReasonInvalidatedDecode || rt.ops[0] != protocol.HelperGroupApply || rt.kinds[0] != "result_decode" {
+		t.Fatalf("close carried reasons=%v ops=%v kinds=%v", rt.reasons, rt.ops, rt.kinds)
+	}
+	if !reflect.DeepEqual(rt.extras[0], []any{"sub_op", uint64(19)}) {
+		t.Fatalf("close extras = %v", rt.extras[0])
 	}
 }
 
