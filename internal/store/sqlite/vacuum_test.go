@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -140,6 +141,97 @@ func TestVacuumIntoKeepsIncremental(t *testing.T) {
 	t.Cleanup(func() { _ = cp.Close() })
 	if got := pragmaInt(t, cp, "auto_vacuum"); got != 2 {
 		t.Errorf("copy auto_vacuum = %d, want 2", got)
+	}
+}
+
+// The VACUUM of a WAL database lands in the -wal file; without a checkpoint the main file keeps its old size.
+func TestEnsureIncrementalVacuumShrinksFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "big.db")
+	raw, err := sql.Open("sqlite", "file:"+path+"?_pragma=auto_vacuum(0)&_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`CREATE TABLE t (id INTEGER PRIMARY KEY, body BLOB)`,
+		`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 2000) INSERT INTO t(id, body) SELECT i, zeroblob(4000) FROM n`,
+		`DELETE FROM t WHERE id > 10`,
+		`PRAGMA wal_checkpoint(TRUNCATE)`,
+	} {
+		if _, err := raw.ExecContext(context.Background(), q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := OpenWrite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	read, err := OpenRead(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = read.Close() })
+	if _, err := read.ExecContext(context.Background(), `SELECT count(*) FROM t`); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(path); err != nil || st.Size() < 6_000_000 {
+		t.Fatalf("setup: file is %v, err %v", st, err)
+	}
+	var buf bytes.Buffer
+	if err := EnsureIncrementalVacuum(context.Background(), db, slog.New(slog.NewTextHandler(&buf, nil))); err != nil {
+		t.Fatal(err)
+	}
+	pages := pragmaInt(t, db, "page_count")
+	size := int64(pragmaInt(t, db, "page_size"))
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Size() > int64(pages)*size+4096 {
+		t.Errorf("file is %d bytes, want <= %d (page_count %d)", st.Size(), int64(pages)*size+4096, pages)
+	}
+	if w, err := os.Stat(path + "-wal"); err == nil && w.Size() != 0 {
+		t.Errorf("-wal is %d bytes, want 0", w.Size())
+	}
+	if !strings.Contains(buf.String(), "file_bytes_before") || !strings.Contains(buf.String(), "file_bytes_after") {
+		t.Errorf("log lacks file_bytes:\n%s", buf.String())
+	}
+}
+
+// IncrementalVacuum's freed pages are in the WAL until a checkpoint; the pass checkpoints so the file shrinks.
+func TestIncrementalVacuumShrinksFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inc.db")
+	db, err := OpenWrite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	for _, q := range []string{
+		`CREATE TABLE t (id INTEGER PRIMARY KEY, body BLOB)`,
+		`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 500) INSERT INTO t(id, body) SELECT i, zeroblob(4000) FROM n`,
+		`PRAGMA wal_checkpoint(TRUNCATE)`,
+		`DELETE FROM t WHERE id > 10`,
+	} {
+		if _, err := db.ExecContext(context.Background(), q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := IncrementalVacuum(context.Background(), db, 1000); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() >= before.Size() {
+		t.Errorf("file did not shrink: %d -> %d", before.Size(), after.Size())
 	}
 }
 

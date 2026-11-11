@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 )
 
@@ -20,6 +21,33 @@ func pageCounts(ctx context.Context, conn *sql.Conn) (pages, free int64, err err
 		return 0, 0, fmt.Errorf("sqlite: read freelist_count: %w", err)
 	}
 	return pages, free, nil
+}
+
+// checkpoint runs PRAGMA wal_checkpoint(mode) on conn. The pragma reports a busy checkpoint as a row, not an
+// error, so busy is turned into one here.
+func checkpoint(ctx context.Context, conn *sql.Conn, mode string) error {
+	var busy, logFrames, done int
+	if err := conn.QueryRowContext(ctx, "PRAGMA wal_checkpoint("+mode+")").Scan(&busy, &logFrames, &done); err != nil {
+		return fmt.Errorf("sqlite: wal_checkpoint(%s): %w", mode, err)
+	}
+	if busy != 0 {
+		return fmt.Errorf("sqlite: wal_checkpoint(%s) was blocked by a reader", mode)
+	}
+	return nil
+}
+
+// fileBytes is the main database file's size, or -1 when it cannot be read (an in-memory database, say).
+func fileBytes(ctx context.Context, conn *sql.Conn) int64 {
+	var seq int
+	var name, file string
+	if err := conn.QueryRowContext(ctx, "PRAGMA database_list").Scan(&seq, &name, &file); err != nil || file == "" {
+		return -1
+	}
+	st, err := os.Stat(file)
+	if err != nil {
+		return -1
+	}
+	return st.Size()
 }
 
 // EnsureIncrementalVacuum switches a database that still has auto_vacuum=0 to INCREMENTAL. The mode is a property
@@ -49,8 +77,10 @@ func EnsureIncrementalVacuum(ctx context.Context, db *sql.DB, log *slog.Logger) 
 	if err != nil {
 		return err
 	}
+	bytesBefore := fileBytes(ctx, conn)
 	log.Info("compacting the database",
-		"page_count_before", pagesBefore, "freelist_count_before", freeBefore, "auto_vacuum_before", mode)
+		"page_count_before", pagesBefore, "freelist_count_before", freeBefore, "file_bytes_before", bytesBefore,
+		"auto_vacuum_before", mode)
 	started := time.Now()
 	if _, err := conn.ExecContext(ctx, "PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
 		return fmt.Errorf("sqlite: set auto_vacuum: %w", err)
@@ -58,13 +88,19 @@ func EnsureIncrementalVacuum(ctx context.Context, db *sql.DB, log *slog.Logger) 
 	if _, err := conn.ExecContext(ctx, "VACUUM"); err != nil {
 		return fmt.Errorf("sqlite: compact: %w", err)
 	}
+	// In WAL mode the VACUUM's rewritten pages sit in the -wal file and the main file keeps its old size until a
+	// checkpoint copies them back and truncates. Do it here so the space is returned now. The conversion is
+	// already done, so a failed or busy checkpoint (a reader holding the WAL) is only a warning.
+	if err := checkpoint(ctx, conn, "TRUNCATE"); err != nil {
+		log.Warn("could not checkpoint the database after compacting; the file shrinks at the next checkpoint", "err", err)
+	}
 	pagesAfter, freeAfter, err := pageCounts(ctx, conn)
 	if err != nil {
 		return err
 	}
 	log.Info("database compacted",
-		"page_count_before", pagesBefore, "freelist_count_before", freeBefore,
-		"page_count_after", pagesAfter, "freelist_count_after", freeAfter,
+		"page_count_before", pagesBefore, "freelist_count_before", freeBefore, "file_bytes_before", bytesBefore,
+		"page_count_after", pagesAfter, "freelist_count_after", freeAfter, "file_bytes_after", fileBytes(ctx, conn),
 		"duration", time.Since(started).Round(time.Millisecond))
 	return nil
 }
@@ -99,5 +135,8 @@ func IncrementalVacuum(ctx context.Context, db *sql.DB, pages int) (freed int, e
 	if err := conn.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&after); err != nil {
 		return 0, fmt.Errorf("sqlite: read freelist_count: %w", err)
 	}
+	// The freed pages are in the WAL until a checkpoint copies them back. PASSIVE never waits for readers or
+	// writers; what it cannot copy now it copies at a later pass. Its failure does not undo the freeing.
+	_ = checkpoint(ctx, conn, "PASSIVE")
 	return before - after, nil
 }
