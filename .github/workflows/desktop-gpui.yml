@@ -44,7 +44,7 @@ jobs:
   gpui:
     name: gpui-${{ matrix.platform }}-${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120  # Windows rebuilds every dependency with the static CRT (libwebrtc)
     strategy:
       # Each OS's leg runs to the end: the three toolchains fail for different reasons, and one red leg
       # cancelling the others hides the macOS/Windows problems until the next run.
@@ -104,7 +104,8 @@ jobs:
           mesa-vulkan-drivers libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxext-dev libxdamage-dev
           libxfixes-dev libxcomposite-dev libxrandr-dev
       - run: rustup show active-toolchain
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -144,3 +145,13 @@ jobs:
           cargo test -p dilla-client --test gateway --locked -- --ignored
           cargo test -p dilla-client --test sync --locked -- --ignored
           cargo test -p dilla-client --test http_sign_in --locked -- --ignored
+      # Saved even when a leg fails or is cancelled (actions/cache only saves on success): a cold Windows build
+      # with the static CRT takes most of an hour, so the next run must start warm.
+      - if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
