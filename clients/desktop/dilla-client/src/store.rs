@@ -1,5 +1,6 @@
 //! One instance's encrypted local database: a SQLCipher file keyed with 32 random bytes that live only
-//! in the OS keychain (service [`crate::keychain::SERVICE`], account `instance-<n>`).
+//! in the OS keychain (service [`crate::keychain::SERVICE`], account `<install-id>/instance-<n>`, the
+//! install id being the root's, from `instances.json`; see [`crate::instances`]).
 //!
 //! # Open, and recovery from a first open cut short
 //!
@@ -17,8 +18,13 @@
 //! | none     | present    | the key is lost: [`StoreError::KeyMissing`], the file is left alone  |
 //!
 //! A leftover staging file (`store.db.init` and its journal) is the unfinished half of a first open
-//! and is deleted before anything else. Opens of the same instance are serialised by a lock file
-//! beside the data dir (`instances/<n>.lock`), so two processes cannot both mint a key.
+//! and is deleted before anything else. Opens and removals of the same instance are serialised by an
+//! exclusive lock on a file beside the data dir (`instances/<n>.lock`), so two processes cannot both
+//! mint a key. That file is created on first use and never deleted, not even by
+//! [`crate::instances::Instances::remove`]: unlinking it while someone holds it would let the next two
+//! opens lock different files. Under the lock an open re-reads `instances.json` and refuses an instance
+//! that is no longer listed, so it never recreates a data dir a removal has just deleted. The install
+//! id is only ever read here, never minted, so a missing or damaged list is an error, not a new key.
 
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -29,7 +35,7 @@ use dilla_core::mls::ConnHandle;
 use rusqlite::{Connection, OpenFlags};
 use zeroize::Zeroizing;
 
-use crate::instances::MAX_INSTANCES;
+use crate::instances::{MAX_INSTANCES, install_id_for};
 use crate::seams::{InstanceConfig, InstanceId, Keychain};
 
 /// The encrypted database's file name inside an instance's data dir.
@@ -45,10 +51,10 @@ pub enum StoreError {
     /// The keychain could not be read or written. There is no fallback.
     #[error("the platform keychain is unavailable")]
     KeychainUnavailable,
-    /// The keychain holds a key, but it does not open this instance's database (SQLCipher reports
-    /// `SQLITE_NOTADB`, or the stored value is not a 32-byte key). Busy, I/O and other failures are
+    /// The database cannot be decrypted with the stored key: a wrong key or a damaged page 1, which
+    /// SQLCipher both report as `SQLITE_NOTADB`; or the stored value is not a 32-byte key. Busy, I/O and other failures are
     /// [`StoreError::Database`], never this: a UI may offer a reset on `Locked`.
-    #[error("the database cannot be opened with the stored key")]
+    #[error("the database cannot be decrypted (wrong key or damaged page 1)")]
     Locked,
     /// The database exists but the keychain holds no key for it; its contents are unrecoverable.
     #[error("the database key is missing from the keychain")]
@@ -71,9 +77,10 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
 }
 
-/// The keychain account that holds instance `id`'s database key.
-pub fn keychain_account(id: InstanceId) -> String {
-    format!("instance-{}", id.0)
+/// The keychain account that holds instance `id`'s database key, scoped to its root's install id
+/// ([`crate::instances::Instances::install_id`]).
+pub fn keychain_account(install_id: &str, id: InstanceId) -> String {
+    format!("{install_id}/instance-{}", id.0)
 }
 
 /// Opens (creating on first use) the instance's encrypted store and the client core on it.
@@ -87,14 +94,20 @@ pub fn open_connection(cfg: &InstanceConfig, kc: &dyn Keychain) -> Result<ConnHa
     if usize::from(cfg.id.0) >= MAX_INSTANCES {
         return Err(StoreError::InvalidInstance);
     }
-    let account = keychain_account(cfg.id);
+    // Read-only: a root without a valid list (and so without its install id) is an error.
+    let install_id = install_id_for(&cfg.data_dir, cfg.id)?;
+    let account = keychain_account(&install_id, cfg.id);
     // Ask the keychain before touching the disk: without it nothing is written.
     drop(read_key(kc, &account)?);
 
-    create_private_dir_all(&cfg.data_dir)?;
     let _lock = lock_instance(&cfg.data_dir)?;
+    // Under the lock: the instance may have been removed, or the list replaced, meanwhile.
+    if install_id_for(&cfg.data_dir, cfg.id)? != install_id {
+        return Err(StoreError::CorruptInstanceList);
+    }
     // Read again under the lock: another process may have finished a first open meanwhile.
     let stored = read_key(kc, &account)?;
+    create_private_dir_all(&cfg.data_dir)?;
     remove_stage(&cfg.data_dir)?;
 
     let db = cfg.data_dir.join(DB_FILE);
@@ -226,13 +239,18 @@ fn remove_stage(dir: &Path) -> Result<(), StoreError> {
 }
 
 /// `instances/<n>.lock` for data dir `instances/<n>`: outside the data dir, so it holds only the store.
-pub(crate) fn lock_path(data_dir: &Path) -> PathBuf {
+fn lock_path(data_dir: &Path) -> PathBuf {
     let mut name = data_dir.file_name().unwrap_or_default().to_os_string();
     name.push(".lock");
     data_dir.with_file_name(name)
 }
 
-fn lock_instance(data_dir: &Path) -> Result<File, StoreError> {
+/// Takes the instance's exclusive open lock, blocking until it is free. The lock file is never
+/// deleted; see the module doc.
+pub(crate) fn lock_instance(data_dir: &Path) -> Result<File, StoreError> {
+    if let Some(parent) = data_dir.parent() {
+        create_private_dir_all(parent)?;
+    }
     let file = private_file_options()
         .create(true)
         .truncate(false)
