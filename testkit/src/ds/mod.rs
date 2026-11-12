@@ -356,22 +356,41 @@ mod tests {
         }
     }
 
-    /// No WebSocket TLS stack may enter the workspace: those crates pull licences the allow-list
-    /// rejects, and the harness only ever speaks to loopback.
+    /// No WebSocket TLS stack may enter the testkit's own dependency tree: those crates pull licences
+    /// the allow-list rejects, and the harness only ever speaks to loopback. The tree is asked of
+    /// `cargo tree -p dilla-testkit`, which resolves features for the testkit alone: Cargo.lock is
+    /// shared with the GPUI desktop client (clients/desktop), which legitimately carries rustls and
+    /// so puts it in the lock's union of every member's features.
     ///
-    /// `openssl-sys` is deliberately NOT on this list. It is already in the committed Cargo.lock
-    /// (:1847), pulled by testkit's own
-    /// `rusqlite = { features = ["bundled-sqlcipher-vendored-openssl"] }` — it is SQLCipher's, not
+    /// `openssl-sys` is deliberately NOT on this list. It is in the testkit's tree through
+    /// `rusqlite = { features = ["bundled-sqlcipher-vendored-openssl"] }` - it is SQLCipher's, not
     /// a WebSocket TLS stack, and forbidding it would make this test fail on its first run and
-    /// never pass. The four that remain are genuinely absent today
-    /// (`grep -c 'name = "ring"' Cargo.lock` is 0), which is what makes the assertion meaningful.
+    /// never pass. The four that remain are genuinely absent from that tree today.
     #[test]
     fn no_websocket_tls_stack_is_in_the_lock_file() {
-        const LOCK: &str = include_str!("../../../Cargo.lock");
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+        let out = std::process::Command::new(cargo)
+            .args(["tree", "-p", "dilla-testkit", "-e", "normal,build,dev"])
+            .args(["--prefix", "none", "--locked", "--offline"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .expect("cargo tree runs");
+        assert!(
+            out.status.success(),
+            "cargo tree failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let tree = String::from_utf8(out.stdout).expect("cargo tree prints UTF-8");
+        let packages: Vec<&str> = tree.lines().filter_map(|l| l.split(' ').next()).collect();
+        assert!(
+            packages.contains(&"rusqlite"),
+            "the tree is the testkit's own ({} lines)",
+            packages.len()
+        );
         for forbidden in ["rustls", "native-tls", "webpki", "ring"] {
             assert!(
-                !LOCK.contains(&format!("name = \"{forbidden}\"")),
-                "{forbidden} entered the lock file: a TLS feature was enabled on ureq or tungstenite"
+                !packages.contains(&forbidden),
+                "{forbidden} entered the testkit's dependency tree: a TLS feature was enabled on ureq or tungstenite"
             );
         }
     }
