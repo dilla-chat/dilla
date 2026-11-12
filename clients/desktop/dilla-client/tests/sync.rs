@@ -520,6 +520,23 @@ async fn expired_session_reauthenticates() {
     .await;
 }
 
+/// Fix round 2 (N1): a start that fails, called straight from an async task, answers its error instead of panicking
+/// (the runtime it built is shut down in the background, never dropped there). The store is signed up and its session
+/// cleared, so the start reaches the network: the server it names does not answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (no Go toolchain in the desktop-gpui CI job)"]
+async fn start_offline_from_an_async_task_is_an_error() {
+    let (_host, pa, _pb, _c) = two_people("offline").await;
+    let mut cfg = pa.cfg.clone();
+    cfg.server = url::Url::parse("http://127.0.0.1:9").unwrap();
+    let started = Client::start(cfg, pa.kc.clone());
+    assert!(
+        matches!(started, Err(dilla_client::ClientError::Network(_))),
+        "{:?}",
+        started.err()
+    );
+}
+
 /// Fix round 1: the instance's session sweep closes a live connection 4004 (not resumable) whose session no longer
 /// resolves: deleted, pruned or past its hard expiry (protocol/02 § Device sessions item 6, internal/gateway/heartbeat.go
 /// `sweepSessions`). As controller.ts `onRevokedSocket` does, the client establishes a new session from the device key
@@ -544,6 +561,7 @@ async fn live_expiry_sweep_reauthenticates() {
         a.state().borrow().connection.status,
         ConnectionStatus::Online
     );
+    let readies = a.state().borrow().connection.readies;
     // Every session of a's device goes (the sign-up session's token still authorises the delete).
     let base = url::Url::parse(&host.public).unwrap();
     ReqwestHttp::new(base, AuthToken::new(pa.token.as_str()))
@@ -564,16 +582,17 @@ async fn live_expiry_sweep_reauthenticates() {
         "clock: {}",
         advanced.status()
     );
-    wait_for(
+    // The sweep cuts a's socket and a comes back on a renewed session: a new ready (the renewal can be quicker than
+    // the published "connecting" in between, so the count is the proof, not that transient state).
+    let s = wait_for(
         &a,
         Duration::from_secs(40),
-        "a's connection cut by the sweep",
-        |s| s.connection.status != ConnectionStatus::Online,
+        "a's ready on a renewed session",
+        |s| {
+            (s.connection.readies > readies && s.connection.status == ConnectionStatus::Online)
+                || s.account.phase != AccountPhase::Ready
+        },
     )
-    .await;
-    let s = wait_for(&a, Duration::from_secs(40), "a online again", |s| {
-        s.connection.status == ConnectionStatus::Online || s.account.phase != AccountPhase::Ready
-    })
     .await;
     assert_eq!(s.account.phase, AccountPhase::Ready, "a is not signed out");
     wait_for(&b, Duration::from_secs(40), "b online again", |s| {

@@ -85,6 +85,8 @@ pub struct ConnectionState {
     pub generation: Option<u64>,
     /// The wire version the ready connection selected.
     pub wire_version: Option<u64>,
+    /// How many readies this client has had (each reconnect, each renewed session adds one).
+    pub readies: u64,
 }
 
 /// `AccountState.phase`, narrowed to what a running client reaches (sign-up and sign-in are the UI's flows).

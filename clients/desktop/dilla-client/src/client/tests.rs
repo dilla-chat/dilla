@@ -7,6 +7,59 @@ use std::time::Duration;
 use super::*;
 use crate::sync::api::ApiError;
 
+#[test]
+fn a_disconnect_during_a_renewal_keeps_the_connection_down() {
+    // A refusal starts the one renewal; the app takes the connection down before it ends: the renewed session is kept
+    // for the app's own reconnect, and no gateway is started against the disconnect.
+    let mut gate = RenewGate::default();
+    assert_eq!(gate.refused(), OnRefused::Renew);
+    assert_eq!(gate.done(Renewal::Renewed, true), AfterRenewal::Stay);
+}
+
+#[test]
+fn a_reconnect_overtaking_a_renewal_waits_for_its_verdict() {
+    // disconnect + reconnect while the renewal is out: the new gateway, on the old token, is refused too. That refusal
+    // waits (no "sign in again"); the renewal then restarts the gateway on the new session, and its ready re-arms.
+    let mut gate = RenewGate::default();
+    assert_eq!(gate.refused(), OnRefused::Renew);
+    assert_eq!(gate.refused(), OnRefused::Wait);
+    assert_eq!(gate.done(Renewal::Renewed, false), AfterRenewal::Restart);
+    gate.ready();
+    assert_eq!(gate.refused(), OnRefused::Renew, "one renewal per ready");
+}
+
+#[test]
+fn a_second_refusal_before_the_next_ready_signs_out() {
+    let mut gate = RenewGate::default();
+    assert_eq!(gate.refused(), OnRefused::Renew);
+    assert_eq!(gate.done(Renewal::Renewed, false), AfterRenewal::Restart);
+    assert_eq!(gate.refused(), OnRefused::SignOut);
+    let mut gate = RenewGate::default();
+    gate.refused();
+    assert_eq!(gate.done(Renewal::SignedOut, false), AfterRenewal::SignOut);
+}
+
+#[test]
+fn a_ready_never_undoes_a_verdict() {
+    assert_eq!(phase_on_ready(AccountPhase::Revoked), AccountPhase::Revoked);
+    assert_eq!(phase_on_ready(AccountPhase::Failed), AccountPhase::Failed);
+    assert_eq!(
+        phase_on_ready(AccountPhase::FactorSetup),
+        AccountPhase::FactorSetup
+    );
+    assert_eq!(phase_on_ready(AccountPhase::Loading), AccountPhase::Ready);
+}
+
+#[tokio::test]
+async fn an_action_that_unwinds_answers_stopped() {
+    let answer: Result<(), ClientError> = guarded(async { panic!("E_CORE_POISONED") }).await;
+    assert!(matches!(answer, Err(ClientError::Stopped)), "{answer:?}");
+    assert!(matches!(
+        guarded(async { Ok::<_, ClientError>(7) }).await,
+        Ok(7)
+    ));
+}
+
 fn quick(_: u32) -> Duration {
     Duration::from_millis(5)
 }

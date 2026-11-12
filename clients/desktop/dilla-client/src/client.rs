@@ -9,6 +9,7 @@
 //! changes; a refusal moves the account to its revoked, factor-setup or version-refused phase.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -90,8 +91,8 @@ enum Update {
     Membership([u8; 16], Membership),
     Connection(ConnectionEvent),
     FactorRequired,
-    /// A refused session could not be established again: the device is revoked.
-    SignedOut,
+    /// A re-establishment of a refused session ended.
+    Renewed(Renewal),
     Structure,
     Loaded(Box<Loaded>),
     Focus(Option<ChannelId>),
@@ -134,6 +135,8 @@ struct Link {
     options: GatewayOptions,
     gateway: Mutex<Option<Arc<WsGateway>>>,
     updates: mpsc::UnboundedSender<Update>,
+    /// The app took the connection down (`Client::disconnect`) and has not asked for it again.
+    app_offline: AtomicBool,
 }
 
 struct Inner {
@@ -142,6 +145,27 @@ struct Inner {
     api: Arc<Api>,
     updates: mpsc::UnboundedSender<Update>,
     state: watch::Receiver<Arc<AppState>>,
+}
+
+/// A runtime that, unless handed on, is shut down in the background when dropped: safe on any thread, an async task's
+/// included (a plain drop there panics).
+struct RuntimeGuard(Option<tokio::runtime::Runtime>);
+
+impl std::ops::Deref for RuntimeGuard {
+    type Target = tokio::runtime::Runtime;
+    fn deref(&self) -> &Self::Target {
+        self.0
+            .as_ref()
+            .expect("the runtime is held until it is handed on")
+    }
+}
+
+impl Drop for RuntimeGuard {
+    fn drop(&mut self) {
+        if let Some(rt) = self.0.take() {
+            rt.shutdown_background();
+        }
+    }
 }
 
 /// One instance's running client. Dropping it stops the engine, closes the gateway and shuts its runtime down.
@@ -158,7 +182,8 @@ impl Client {
     /// thread or `spawn_blocking`, not from an async task where it would stall a worker. It never panics on a caller
     /// inside a tokio runtime: the wait runs on a thread of its own, outside any runtime context (tokio refuses a
     /// `block_on` inside one; `Handle::try_current` cannot tell that case from a legitimate `spawn_blocking` caller).
-    /// A failure of that thread is [`ClientError::Runtime`].
+    /// A failure of that thread is [`ClientError::Runtime`]. A start that fails (offline, revoked, no identity, a store
+    /// error) shuts the runtime it built down in the background, so failing does not panic there either.
     pub fn start(cfg: InstanceConfig, kc: Arc<dyn Keychain>) -> Result<Client, ClientError> {
         Self::start_with(cfg, kc, GatewayOptions::default())
     }
@@ -169,12 +194,6 @@ impl Client {
         kc: Arc<dyn Keychain>,
         options: GatewayOptions,
     ) -> Result<Client, ClientError> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .thread_name(format!("dilla-client-{}", cfg.id.0))
-            .build()
-            .map_err(|e| ClientError::Runtime(e.to_string()))?;
         let core: CoreHandle = Arc::new(Mutex::new(open_store(&cfg, kc.as_ref())?));
         let identity = {
             let guard = core
@@ -192,6 +211,16 @@ impl Client {
         let auth = AuthToken::anonymous();
         let http = ReqwestHttp::new(cfg.server.clone(), auth.clone())
             .map_err(|e| ClientError::Network(e.to_string()))?;
+        // Built only now, and held by a guard until the client owns it: a runtime dropped on a caller's async task
+        // panics (tokio refuses a blocking shutdown there), so every early return below shuts it down in the background.
+        let mut runtime = RuntimeGuard(Some(
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .thread_name(format!("dilla-client-{}", cfg.id.0))
+                .build()
+                .map_err(|e| ClientError::Runtime(e.to_string()))?,
+        ));
         let socket = SocketRequests::new();
         let (updates, updates_rx) = mpsc::unbounded_channel();
         let refusals = updates.clone();
@@ -247,6 +276,7 @@ impl Client {
             server: cfg.server.clone(),
             options,
             gateway: Mutex::new(None),
+            app_offline: AtomicBool::new(false),
             updates: updates.clone(),
         });
         let inner = Arc::new(Inner {
@@ -269,7 +299,7 @@ impl Client {
             focus: None,
             not_member: HashSet::new(),
             resyncing: HashSet::new(),
-            reauthenticated: false,
+            renew: RenewGate::default(),
         };
         runtime.spawn(watch_poison(
             publisher.core.clone(),
@@ -281,7 +311,7 @@ impl Client {
             link.connect();
         }
         Ok(Client {
-            runtime: Some(runtime),
+            runtime: runtime.0.take(),
             inner,
         })
     }
@@ -299,7 +329,7 @@ impl Client {
         match &self.runtime {
             Some(rt) => {
                 rt.spawn(async move {
-                    let _ = tx.send(f.await);
+                    let _ = tx.send(guarded(f).await);
                 });
             }
             None => {
@@ -360,6 +390,7 @@ impl Client {
     /// Drops the gateway connection and keeps it down (a laptop asleep, a lost network): requests wait, the timeline
     /// stays as it is.
     pub fn disconnect(&self) {
+        self.inner.link.app_offline.store(true, Ordering::Release);
         self.inner.link.disconnect();
     }
 
@@ -367,6 +398,7 @@ impl Client {
     pub fn reconnect(&self) {
         if let Some(rt) = &self.runtime {
             let _enter = rt.enter();
+            self.inner.link.app_offline.store(false, Ordering::Release);
             self.inner.link.connect();
         }
     }
@@ -433,8 +465,12 @@ impl Link {
         }
     }
 
-    /// A gateway that stopped for good is replaced by a new one (after a re-authentication).
+    /// A gateway that stopped for good is replaced by a new one (after a re-authentication), unless the app took the
+    /// connection down meanwhile ([`Client::disconnect`]): its own reconnect then uses the renewed session.
     fn restart(&self) {
+        if self.app_offline.load(Ordering::Acquire) {
+            return;
+        }
         self.disconnect();
         self.connect();
     }
@@ -496,6 +532,83 @@ async fn load_structure(api: &Api) -> Result<Loaded, ClientError> {
     })
 }
 
+/// An action's answer, also when it unwinds (a core call on a poisoned core ends its caller): then
+/// [`ClientError::Stopped`], never a dropped oneshot.
+async fn guarded<T>(
+    f: impl std::future::Future<Output = Result<T, ClientError>>,
+) -> Result<T, ClientError> {
+    use futures_util::FutureExt;
+    std::panic::AssertUnwindSafe(f)
+        .catch_unwind()
+        .await
+        .unwrap_or(Err(ClientError::Stopped))
+}
+
+/// What a refused session (gateway 4004, 4003, upgrade 401) leads to.
+#[derive(Debug, PartialEq, Eq)]
+enum OnRefused {
+    /// Start a renewal.
+    Renew,
+    /// A renewal is already out: its verdict decides (a gateway the app reconnected on the old token was refused).
+    Wait,
+    /// This ready's one renewal was spent and the new session was refused too.
+    SignOut,
+}
+
+/// What a finished renewal leads to.
+#[derive(Debug, PartialEq, Eq)]
+enum AfterRenewal {
+    /// Start a gateway on the new session.
+    Restart,
+    /// The app took the connection down meanwhile: its own reconnect uses the new session.
+    Stay,
+    SignOut,
+}
+
+/// The renewals of refused sessions: one per ready, one at a time.
+#[derive(Debug, Default)]
+struct RenewGate {
+    in_flight: bool,
+    /// A renewal ran since the last ready.
+    spent: bool,
+}
+
+impl RenewGate {
+    fn refused(&mut self) -> OnRefused {
+        if self.in_flight {
+            OnRefused::Wait
+        } else if self.spent {
+            OnRefused::SignOut
+        } else {
+            self.in_flight = true;
+            self.spent = true;
+            OnRefused::Renew
+        }
+    }
+
+    fn done(&mut self, outcome: Renewal, app_offline: bool) -> AfterRenewal {
+        self.in_flight = false;
+        match outcome {
+            Renewal::SignedOut => AfterRenewal::SignOut,
+            Renewal::Renewed if app_offline => AfterRenewal::Stay,
+            Renewal::Renewed => AfterRenewal::Restart,
+        }
+    }
+
+    fn ready(&mut self) {
+        self.spent = false;
+    }
+}
+
+/// The account phase once a gateway is ready: a ready never undoes a final verdict (revoked, a failed core) nor the
+/// factor the account owes.
+fn phase_on_ready(current: AccountPhase) -> AccountPhase {
+    match current {
+        AccountPhase::Revoked | AccountPhase::Failed | AccountPhase::FactorSetup => current,
+        _ => AccountPhase::Ready,
+    }
+}
+
 /// How a re-establishment of a refused session ended.
 #[derive(Debug, PartialEq, Eq)]
 enum Renewal {
@@ -545,8 +658,8 @@ struct Publisher {
     focus: Option<ChannelId>,
     not_member: HashSet<GroupId>,
     resyncing: HashSet<GroupId>,
-    /// A session was re-established since the last ready (one try per ready).
-    reauthenticated: bool,
+    /// The renewals of refused sessions (one per ready, one at a time).
+    renew: RenewGate,
 }
 
 impl Publisher {
@@ -582,9 +695,13 @@ impl Publisher {
                     Update::FactorRequired => {
                         self.state.account.phase = AccountPhase::FactorSetup;
                     }
-                    Update::SignedOut => {
-                        self.state.connection.status = ConnectionStatus::Offline;
-                        self.state.account.phase = AccountPhase::Revoked;
+                    Update::Renewed(outcome) => {
+                        let offline = self.link.app_offline.load(Ordering::Acquire);
+                        match self.renew.done(outcome, offline) {
+                            AfterRenewal::Restart => self.link.restart(),
+                            AfterRenewal::Stay => {}
+                            AfterRenewal::SignOut => self.sign_out(),
+                        }
                     }
                     Update::Structure => structure = true,
                     Update::Loaded(loaded) => self.on_loaded(*loaded).await,
@@ -604,6 +721,14 @@ impl Publisher {
             if self.core.is_poisoned() {
                 self.fail();
                 self.publish();
+                // Every action still queued answers Stopped (none is dropped unanswered); later ones find the channel
+                // closed and answer Stopped themselves.
+                rx.close();
+                while let Ok(update) = rx.try_recv() {
+                    if let Update::MarkRead(_, done) = update {
+                        let _ = done.send(Err(ClientError::Stopped));
+                    }
+                }
                 return;
             }
             if structure {
@@ -620,17 +745,23 @@ impl Publisher {
         self.tx.send_replace(Arc::new(self.state.clone()));
     }
 
+    /// The device is revoked: final for this client (a later ready never says otherwise, see [`phase_on_ready`]).
+    fn sign_out(&mut self) {
+        self.link.disconnect();
+        self.state.connection.status = ConnectionStatus::Offline;
+        self.state.account.phase = AccountPhase::Revoked;
+    }
+
     /// Answers whether the structure is to be read again.
     fn on_connection(&mut self, event: ConnectionEvent) -> bool {
         match event {
             ConnectionEvent::Ready(info) => {
-                self.reauthenticated = false;
+                self.renew.ready();
                 self.state.connection.status = ConnectionStatus::Online;
                 self.state.connection.generation = Some(info.generation);
                 self.state.connection.wire_version = Some(info.wire);
-                if self.state.account.phase != AccountPhase::FactorSetup {
-                    self.state.account.phase = AccountPhase::Ready;
-                }
+                self.state.connection.readies += 1;
+                self.state.account.phase = phase_on_ready(self.state.account.phase);
                 let engine = self.engine.clone();
                 tokio::spawn(async move { engine.reset_trust_memory().await });
                 true
@@ -644,20 +775,23 @@ impl Publisher {
             // session past its expiry; 4003; an upgrade 401) is established again from the device key, and the gateway
             // started on the new session. Only an establishment the instance refuses (the device's challenge is not
             // answered, or the scope is wrong) signs out; a network failure or a 5xx is tried again after a backoff,
-            // connecting meanwhile. One renewal per ready: a second refusal before the next ready signs out.
-            ConnectionEvent::Refused(Refusal::Revoked, _) if !self.reauthenticated => {
-                self.reauthenticated = true;
-                self.state.connection.status = ConnectionStatus::Connecting;
-                let (api, link, updates) =
-                    (self.api.clone(), self.link.clone(), self.updates.clone());
-                tokio::spawn(async move {
-                    match renew(|| api.establish(), renewal_backoff).await {
-                        Renewal::Renewed => link.restart(),
-                        Renewal::SignedOut => {
-                            let _ = updates.send(Update::SignedOut);
-                        }
+            // connecting meanwhile. One renewal per ready: a second refusal before the next ready signs out. While a
+            // renewal is out, a refusal (a gateway the app reconnected on the old token) waits for its verdict.
+            ConnectionEvent::Refused(Refusal::Revoked, _) => {
+                match self.renew.refused() {
+                    OnRefused::Renew => {
+                        self.state.connection.status = ConnectionStatus::Connecting;
+                        let (api, updates) = (self.api.clone(), self.updates.clone());
+                        tokio::spawn(async move {
+                            let outcome = renew(|| api.establish(), renewal_backoff).await;
+                            let _ = updates.send(Update::Renewed(outcome));
+                        });
                     }
-                });
+                    OnRefused::Wait => {
+                        self.state.connection.status = ConnectionStatus::Connecting;
+                    }
+                    OnRefused::SignOut => self.sign_out(),
+                }
                 false
             }
             ConnectionEvent::Refused(refusal, _) => {
