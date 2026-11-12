@@ -12,8 +12,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString,
+    AnyElement, App, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Window, div, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -95,7 +95,8 @@ pub fn height(cells: usize, search: bool) -> f32 {
     let grid = if rows == 0 {
         2.0 * GRID_PAD
     } else {
-        (2.0 * GRID_PAD + rows as f32 * CELL_HEIGHT + (rows - 1) as f32 * CELL_GAP).min(GRID_MAX_HEIGHT)
+        (2.0 * GRID_PAD + rows as f32 * CELL_HEIGHT + (rows - 1) as f32 * CELL_GAP)
+            .min(GRID_MAX_HEIGHT)
     };
     let head = if search {
         2.0 * HEAD_PAD + SEARCH_HEIGHT + 1.0
@@ -146,11 +147,7 @@ impl Focusable for EmojiGrid {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         match &self.search {
             Some(s) => s.input.read(cx).focus_handle(cx),
-            None => self
-                .handles
-                .first()
-                .unwrap_or(&self.fallback)
-                .clone(),
+            None => self.handles.first().unwrap_or(&self.fallback).clone(),
         }
     }
 }
@@ -247,16 +244,11 @@ impl EmojiGrid {
         }
     }
 
-    fn cell(
-        &self,
-        pos: usize,
-        index: usize,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn cell(&self, pos: usize, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let item = self.items[index].clone();
         let decorate = self.decorate.clone();
         let emoji = item.emoji.clone();
-        let handle = self.handles[pos].clone();
+        let handle = self.handles[pos].clone().tab_stop(pos == self.focus);
         let view = cx.entity();
         let hover_view = view.clone();
         let cell = div()
@@ -281,12 +273,7 @@ impl EmojiGrid {
                     });
                 }
             })
-            .child(line(
-                item.emoji.clone(),
-                px(CELL_FONT),
-                line_height(px(CELL_FONT), 1.0),
-                color::FG,
-            ))
+            .child(super::emoji_text(item.emoji.clone(), px(CELL_FONT)))
             .on_click(move |_, _window, cx| {
                 let emoji = emoji.clone();
                 view.update(cx, |_, cx| cx.emit(GridEvent::Pick(emoji)));
@@ -304,11 +291,12 @@ impl Render for EmojiGrid {
         let query = self.query(cx);
         let shown_cells = filter(&self.items, &query);
         // The cell the focus is in follows the handles: moving focus by Tab or a click sets the roving stop.
-        if let Some(pos) = self.handles.iter().position(|h| h.is_focused(window)) {
-            if pos < shown_cells.len() && pos != self.focus {
-                self.focus = pos;
-                self.shown = shown_cells.get(pos).copied();
-            }
+        if let Some(pos) = self.handles.iter().position(|h| h.is_focused(window))
+            && pos < shown_cells.len()
+            && pos != self.focus
+        {
+            self.focus = pos;
+            self.shown = shown_cells.get(pos).copied();
         }
         let view = cx.entity();
         let outside = view.clone();
@@ -389,14 +377,15 @@ impl Render for EmojiGrid {
                 .items_center()
                 .w_full()
                 .h(px(SEARCH_HEIGHT))
-                .px(px(10.0))
                 .bg(color::BG_2)
                 .border_1()
-                .border_color(if search.input.focus_handle(cx).contains_focused(window, cx) {
-                    color::ACCENT
-                } else {
-                    color::HAIRLINE_2
-                })
+                .border_color(
+                    if search.input.focus_handle(cx).contains_focused(window, cx) {
+                        color::ACCENT
+                    } else {
+                        color::HAIRLINE_2
+                    },
+                )
                 .rounded(radius::MD)
                 .text_size(text::INPUT)
                 .font_family(font::MONO)
@@ -429,20 +418,13 @@ impl Render for EmojiGrid {
         }
         root = root.child(grid);
         if self.search.is_some() {
-            let named: Option<AnyElement> = self
-                .shown
-                .and_then(|i| self.items.get(i))
-                .map(|item| {
+            let named: Option<AnyElement> =
+                self.shown.and_then(|i| self.items.get(i)).map(|item| {
                     div()
                         .flex()
                         .items_center()
                         .gap(px(8.0))
-                        .child(line(
-                            item.emoji.clone(),
-                            px(15.0),
-                            line_height(px(15.0), 1.0),
-                            color::FG,
-                        ))
+                        .child(super::emoji_text(item.emoji.clone(), px(15.0)))
                         .child(line(
                             footer_name(&item.name),
                             text::XS,

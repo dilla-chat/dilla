@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use dilla_client::instances::Instances;
 use dilla_client::keychain::MemoryKeychain;
 use dilla_client::seams::InstanceConfig;
 use dilla_client::signin::{Owed, SignIn};
@@ -45,7 +46,9 @@ async fn general(client: &Client, community: [u8; 16]) -> ChannelId {
         s.channel_named(CommunityId(community), "general").is_some()
     })
     .await;
-    s.channel_named(CommunityId(community), "general").unwrap().id
+    s.channel_named(CommunityId(community), "general")
+        .unwrap()
+        .id
 }
 
 /// What the timeline shows under the message with `body`: `(emoji, count, mine)` per chip, in the order shown.
@@ -78,12 +81,9 @@ async fn chips_are(client: &Client, channel: ChannelId, body: &str, want: Vec<(&
         .map(|(e, n, m)| (e.to_owned(), n, m))
         .collect();
     let (b, w) = (body.to_owned(), want.clone());
-    wait_for(
-        client,
-        WAIT,
-        &format!("the chips {want:?}"),
-        move |s| chips(s, channel, &b) == w,
-    )
+    wait_for(client, WAIT, &format!("the chips {want:?}"), move |s| {
+        chips(s, channel, &b) == w
+    })
     .await;
 }
 
@@ -125,7 +125,10 @@ async fn react_and_unreact_between_two_devices() {
 
     // The core refuses what is not an emoji of 1..=32 bytes, and nothing is queued.
     for bad in ["", "x".repeat(33).as_str()] {
-        let refused = alice.reactions().react(channel, alices_msg, bad, true).await;
+        let refused = alice
+            .reactions()
+            .react(channel, alices_msg, bad, true)
+            .await;
         assert!(
             matches!(refused, Ok(Err(ClientError::Sync(ref code))) if code == "E_BAD_INPUT"),
             "{bad:?}: {refused:?}"
@@ -193,11 +196,10 @@ async fn second_device(host: &Host, person: &mut Person, tag: &str) -> Client {
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&root);
-    let cfg = InstanceConfig {
-        id: person.cfg.id,
-        server: person.cfg.server.clone(),
-        data_dir: root,
-    };
+    let cfg: InstanceConfig = Instances::load(&root)
+        .expect("an instance list")
+        .add(person.cfg.server.clone())
+        .expect("an instance");
     let kc = Arc::new(MemoryKeychain::new());
     let mut sign_in = SignIn::new(cfg.clone(), kc.clone()).expect("a sign-in");
     let owed = sign_in
@@ -238,11 +240,17 @@ async fn own_second_device_sees_reaction() {
 
     // A message after the second device joined: both of alice's devices can read it.
     let body = "first words";
-    alice
-        .send_text(channel, body.into())
-        .await
-        .unwrap()
-        .expect("queued");
+    // The first device learns of the second one's entry on the account's device list from the instance: until it has, the
+    // core refuses its sends as from an unlisted device.
+    for attempt in 0..30 {
+        match alice.send_text(channel, body.into()).await.unwrap() {
+            Ok(_) => break,
+            Err(ClientError::Sync(code)) if code == "E_DEVICE_UNLISTED" && attempt < 29 => {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Err(e) => panic!("queued: {e:?}"),
+        }
+    }
     let (b, ch) = (body.to_owned(), channel);
     for client in [&alice, &alice2, &bob] {
         let b = b.clone();

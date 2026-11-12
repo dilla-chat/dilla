@@ -104,4 +104,36 @@ pub(super) async fn seed(
             }
         }
     }
+    // The viewer's own client holds every count before the browser is asked to show them.
+    let want: Vec<(String, String, usize)> = f
+        .world
+        .messages
+        .iter()
+        .flat_map(|m| {
+            m.reactions
+                .iter()
+                .map(|r| (m.body.clone(), r.emoji.clone(), r.by.len()))
+        })
+        .collect();
+    let viewer = &clients[0].1;
+    world::wait_for(
+        viewer,
+        Duration::from_secs(60),
+        "every reaction",
+        move |s| {
+            let items = s.timelines.values().flat_map(|t| t.items.iter());
+            let items: Vec<_> = items.collect();
+            want.iter().all(|(body, emoji, n)| {
+                items.iter().any(|i| {
+                    &i.body == body
+                        && i.reactions
+                            .iter()
+                            .any(|x| &x.emoji == emoji && x.count as usize == *n)
+                })
+            })
+        },
+    )
+    .await;
+    // And a moment for the browser, which hears the same folds over its own gateway.
+    tokio::time::sleep(Duration::from_secs(3)).await;
 }

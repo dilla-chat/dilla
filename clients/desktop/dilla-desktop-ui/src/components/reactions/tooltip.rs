@@ -53,7 +53,12 @@ impl ReactionTooltip {
 /// no room), each overlapping the next by 4px.
 fn face(name: &str) -> impl IntoElement + use<> {
     let (h, s, l) = colour_of(name);
-    let disc = hsla(f32::from(h) / 360.0, f32::from(s) / 100.0, f32::from(l) / 100.0, 1.0);
+    let disc = hsla(
+        f32::from(h) / 360.0,
+        f32::from(s) / 100.0,
+        f32::from(l) / 100.0,
+        1.0,
+    );
     div()
         .flex()
         .flex_none()
@@ -120,12 +125,7 @@ impl Render for ReactionTooltip {
             .child(
                 div()
                     .flex_none()
-                    .child(line(
-                        self.emoji.clone(),
-                        px(22.0),
-                        line_height(px(22.0), 1.0),
-                        color::FG,
-                    )),
+                    .child(super::emoji_text(self.emoji.clone(), px(22.0))),
             )
             .child(body)
     }

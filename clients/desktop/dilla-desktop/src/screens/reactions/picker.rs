@@ -118,12 +118,10 @@ pub fn open(
             Part::Search => {
                 crate::tracked_focus("emoji-grid-search", handle, element).into_any_element()
             }
-            Part::Cell(i) => crate::tracked_focus(
-                super::leak_id(format!("emoji-cell-{i}")),
-                handle,
-                element,
-            )
-            .into_any_element(),
+            Part::Cell(i) => {
+                crate::tracked_focus(super::leak_id(format!("emoji-cell-{i}")), handle, element)
+                    .into_any_element()
+            }
         }));
     });
     if composer {
@@ -158,10 +156,8 @@ pub fn close(window: &mut Window, cx: &mut App, restore: bool) {
     let Some(open) = picker(cx).open.take() else {
         return;
     };
-    if restore {
-        if let Some(back) = open.back {
-            back.focus(window, cx);
-        }
+    if restore && let Some(back) = open.back {
+        back.focus(window, cx);
     }
     cx.refresh_windows();
 }
@@ -177,7 +173,9 @@ fn picked(target: &Target, ctx: &SlotCx, emoji: &str, window: &mut Window, cx: &
             toggle(ctx, key, emoji);
         }
         Target::Composer => {
-            let into = open.as_ref().and_then(|o| o.insert.clone().or_else(|| o.back.clone()));
+            let into = open
+                .as_ref()
+                .and_then(|o| o.insert.clone().or_else(|| o.back.clone()));
             if let Some(handle) = into {
                 handle.focus(window, cx);
             }

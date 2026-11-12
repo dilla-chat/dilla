@@ -24,7 +24,8 @@ use std::sync::Mutex;
 use dilla_client::Area;
 use dilla_client::state::{AppState, CommunityId, Member, TimelineItem, TimelineItemState, UserId};
 use dilla_desktop_ui::components::reactions::{
-    Chip, ReactionBar, Slot, bar_height, chip_width, tooltip::tooltip as reaction_tooltip, wrap_lines,
+    Chip, ReactionBar, Slot, bar_height, chip_width, tooltip::tooltip as reaction_tooltip,
+    wrap_lines,
 };
 use dilla_desktop_ui::components::tooltip::SHOW_DELAY;
 use dilla_desktop_ui::tokens::{color, font, layout, radius, text};
@@ -45,6 +46,8 @@ use crate::{tracked_box, tracked_focus};
 const CONTENT_X: f32 = 44.0 + 10.0 + 30.0 + 10.0;
 const ROW_RIGHT: f32 = 16.0;
 const MAIN_GAP: f32 = 1.0;
+/// The empty attachments slot's 4px margin (`.d-message-row__attachments`).
+const ATTACHMENTS_MARGIN: f32 = 4.0;
 /// Composer.css `.d-composer__tool`: 26 x 24 with a 14px glyph (`Icon size={14}`).
 const TOOL_WIDTH: f32 = 26.0;
 const TOOL_HEIGHT: f32 = 24.0;
@@ -72,6 +75,11 @@ pub(super) fn leak_id(id: String) -> &'static str {
 /// The width of `display` at the chip's emoji size, as the text system shapes it (the emoji comes from the system's
 /// fallback face, so no table of widths can hold it).
 fn emoji_width(window: &Window, display: &str) -> f32 {
+    if let Some(advance) =
+        dilla_desktop_ui::components::reactions::emoji_advance(display, text::BTN)
+    {
+        return advance;
+    }
     let run = TextRun {
         len: display.len(),
         font: gpui::font(font::MONO),
@@ -105,7 +113,7 @@ fn display_name(members: &[Member], user: UserId) -> Option<&str> {
     })
 }
 
-fn members_of<'a>(state: &'a AppState, community: Option<CommunityId>) -> &'a [Member] {
+fn members_of(state: &AppState, community: Option<CommunityId>) -> &[Member] {
     community
         .and_then(|c| state.members.get(&c))
         .map_or(&[], Vec::as_slice)
@@ -135,7 +143,12 @@ pub fn reaction_bar(
     window: &mut Window,
     cx: &mut App,
 ) -> Option<Extra> {
-    let grid = picker::grid_for(&Target::Message { key: item.key.clone() }, cx);
+    let grid = picker::grid_for(
+        &Target::Message {
+            key: item.key.clone(),
+        },
+        cx,
+    );
     if item.reactions.is_empty() && grid.is_none() {
         return None;
     }
@@ -175,12 +188,21 @@ pub fn reaction_bar(
     };
 
     let key = item.key.clone();
-    let mut column = div().relative().w(px(width.max(0.0)));
+    // The row keeps an empty attachments slot (1px gap, 4px margin) between its body and what follows unless it is the
+    // log's last row, and the timeline adds that slot below the extras: the chips sit under it.
+    let last = ctx
+        .channel
+        .and_then(|c| ctx.state.timelines.get(&c))
+        .and_then(|t| t.items.last())
+        .is_some_and(|i| i.key == item.key);
+    let slot = if last {
+        0.0
+    } else {
+        MAIN_GAP + ATTACHMENTS_MARGIN
+    };
+    let mut column = div().relative().w(px(width.max(0.0))).pt(px(slot));
     if !chips.is_empty() {
-        let tooltips: Vec<_> = chips
-            .iter()
-            .map(|c| chip_tooltip(item, c, ctx))
-            .collect();
+        let tooltips: Vec<_> = chips.iter().map(|c| chip_tooltip(item, c, ctx)).collect();
         let tooltips = Rc::new(std::cell::RefCell::new(
             tooltips.into_iter().map(Some).collect::<Vec<_>>(),
         ));
@@ -228,7 +250,9 @@ pub fn reaction_bar(
         column = column.child(div().pt(px(MAIN_GAP)).child(bar));
     }
     if let Some(grid) = grid {
-        column = column.child(deferred(div().absolute().top_0().left_0().child(grid)).with_priority(GRID_PRIORITY));
+        column = column.child(
+            deferred(div().absolute().top_0().left_0().child(grid)).with_priority(GRID_PRIORITY),
+        );
     }
     Some(Extra {
         element: column.into_any_element(),
@@ -249,7 +273,14 @@ pub fn message_actions(item: &TimelineItem) -> Vec<MessageAction> {
         area: Area::Reactions,
         run: Rc::new(move |ctx, window, cx| {
             let back = window.focused(cx);
-            picker::open(Target::Message { key: key.clone() }, ctx, back, None, window, cx);
+            picker::open(
+                Target::Message { key: key.clone() },
+                ctx,
+                back,
+                None,
+                window,
+                cx,
+            );
         }),
     }]
 }
@@ -323,6 +354,7 @@ pub fn emoji_popup(_ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<
     let grid = picker::grid_for(&Target::Composer, cx)?;
     Some(
         div()
+            .flex()
             .ml(px(POP_LEFT))
             .mb(px(POP_BOTTOM))
             .child(tracked_box("emoji-grid", grid))

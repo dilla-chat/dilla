@@ -10,8 +10,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use crate::icon::Icon;
@@ -192,12 +192,7 @@ fn chip_view(
         .rounded(radius::ROW)
         .cursor_pointer()
         .focus_visible(|s| s.shadow(focus_ring()))
-        .child(line(
-            chip.display.clone(),
-            text::BTN,
-            line_height(text::BTN, 1.0),
-            color::FG,
-        ))
+        .child(super::emoji_text(chip.display.clone(), text::BTN))
         .child(
             line(
                 chip.count.to_string(),
@@ -221,13 +216,17 @@ impl RenderOnce for ReactionBar {
         // The one tab stop follows focus (`stop` in ReactionBar.tsx).
         let memory = window.use_keyed_state((self.id.clone(), "stop"), cx, |_, _| 0usize);
         let focused = handles.iter().position(|h| h.is_focused(window));
-        if let Some(i) = focused {
-            if *memory.read(cx) != i {
-                memory.update(cx, |m, _| *m = i);
-            }
+        if let Some(i) = focused
+            && *memory.read(cx) != i
+        {
+            memory.update(cx, |m, _| *m = i);
         }
         let stop = Roving::stop(focused, Some(*memory.read(cx)), n + 1);
         let tab = |i: usize| self.tabbable && i == stop;
+        // The handle's own flag is what the tab order reads.
+        for (i, h) in handles.iter().enumerate() {
+            let _ = h.clone().tab_stop(tab(i));
+        }
         let group: SharedString = format!("{:?}-bar", self.id).into();
 
         let mut row = div()
@@ -274,7 +273,11 @@ impl RenderOnce for ReactionBar {
             .focus_visible(|s| s.shadow(focus_ring()))
             .tooltip(super::super::tooltip::tooltip(self.add_label.clone(), &[]))
             .tooltip_show_delay(super::super::tooltip::SHOW_DELAY)
-            .child(Icon::new(IconName::SmilePlus).size(px(12.0)).color(color::FG_3))
+            .child(
+                Icon::new(IconName::SmilePlus)
+                    .size(px(12.0))
+                    .color(color::FG_3),
+            )
             .on_click(move |_, window, cx| {
                 if let Some(f) = &on_add {
                     f(window, cx);

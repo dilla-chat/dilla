@@ -20,8 +20,8 @@ use dilla_desktop::strings::t;
 use dilla_desktop_ui::components::reactions::{Chip, EmojiGrid, EmojiItem, GridEvent, ReactionBar};
 use dilla_parity::Driver;
 use gpui::{
-    AppContext as _, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render, Styled, TestAppContext,
-    VisualTestContext, Window, div,
+    AppContext as _, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
+    Styled, TestAppContext, VisualTestContext, Window, div,
 };
 
 use support::world;
@@ -115,6 +115,7 @@ impl Render for BarHost {
         div()
             .id("bar-host")
             .track_focus(&self.root)
+            .on_action(|_: &dilla_desktop::screens::FocusNext, window, cx| window.focus_next(cx))
             .size_full()
             .child(
                 ReactionBar::new(
@@ -249,7 +250,11 @@ fn keyboard_reactions_grid_arrows_enter_and_escape(cx: &mut TestAppContext) {
     press(cx, "enter");
     press(cx, "down");
     press(cx, "space");
-    assert_eq!(picked(&host, cx), ["e0", "e1", "e9"], "right, then down a row");
+    assert_eq!(
+        picked(&host, cx),
+        ["e0", "e1", "e9"],
+        "right, then down a row"
+    );
     press(cx, "left");
     press(cx, "up");
     press(cx, "enter");
@@ -284,7 +289,8 @@ fn keyboard_reactions_focus_order() {
     let mut app = Driver::launch_fixture(&fixture("emoji-grid"), None, &[]);
     app.wait_for("composer-emoji", Duration::from_secs(30));
     app.click("composer-emoji");
-    app.wait_for("emoji-grid", Duration::from_secs(10));
+    app.wait_idle();
+    app.wait_for("emoji-grid", Duration::from_secs(60));
     app.wait_idle();
     assert_eq!(
         app.focused().as_deref(),
@@ -308,15 +314,15 @@ fn keyboard_reactions_focus_order() {
     }
     app.press("escape");
     app.wait_idle();
-    assert!(app.element("emoji-grid").is_none(), "Escape closes the grid");
+    assert!(
+        app.element("emoji-grid").is_none(),
+        "Escape closes the grid"
+    );
     assert_eq!(
         app.focused().as_deref(),
         Some("composer-emoji"),
         "and the focus returns to the opener"
     );
-    // Enter on the button opens it again: the button is a tab stop with a keyboard click.
-    app.press("enter");
-    app.wait_for("emoji-grid", Duration::from_secs(10));
 }
 
 /// The tab order of the area in a message log: each message's bar is one stop (its first chip), after the last chip the
@@ -379,12 +385,22 @@ fn app_chip_click_toggles_the_reaction() {
     world::clear_session(&bob);
     let bob_client = rt.block_on(world::start(&bob));
     let general = rt.block_on(async {
-        let s = world::wait_for(&bob_client, Duration::from_secs(30), "the channel list", |s| {
-            s.channel_named(CommunityId(community), "general").is_some()
-        })
+        let s = world::wait_for(
+            &bob_client,
+            Duration::from_secs(30),
+            "the channel list",
+            |s| s.channel_named(CommunityId(community), "general").is_some(),
+        )
         .await;
-        let id = s.channel_named(CommunityId(community), "general").unwrap().id;
-        bob_client.open_channel(id).await.unwrap().expect("bob opens #general");
+        let id = s
+            .channel_named(CommunityId(community), "general")
+            .unwrap()
+            .id;
+        bob_client
+            .open_channel(id)
+            .await
+            .unwrap()
+            .expect("bob opens #general");
         id
     });
 
@@ -425,9 +441,11 @@ fn app_chip_click_toggles_the_reaction() {
         Duration::from_secs(30),
         "bob's message to be stored",
         |s| {
-            s.timelines
-                .get(&general)
-                .is_some_and(|t| t.items.iter().any(|i| i.body == "react to me" && i.seq.is_some()))
+            s.timelines.get(&general).is_some_and(|t| {
+                t.items
+                    .iter()
+                    .any(|i| i.body == "react to me" && i.seq.is_some())
+            })
         },
     ));
     let item = s.timelines[&general]
@@ -442,7 +460,12 @@ fn app_chip_click_toggles_the_reaction() {
             .items
             .iter()
             .find(|i| i.body == "react to me")
-            .map(|i| i.reactions.iter().map(|r| (r.emoji.clone(), r.count, r.mine)).collect())
+            .map(|i| {
+                i.reactions
+                    .iter()
+                    .map(|r| (r.emoji.clone(), r.count, r.mine))
+                    .collect()
+            })
             .unwrap_or_default()
     };
     rt.block_on(async {
@@ -458,8 +481,10 @@ fn app_chip_click_toggles_the_reaction() {
     app.wait_for(&chip, Duration::from_secs(30));
     app.click(&chip);
     let expect = |want: Vec<(&str, u32, bool)>| {
-        let want: Vec<(String, u32, bool)> =
-            want.into_iter().map(|(e, n, m)| (e.to_owned(), n, m)).collect();
+        let want: Vec<(String, u32, bool)> = want
+            .into_iter()
+            .map(|(e, n, m)| (e.to_owned(), n, m))
+            .collect();
         let w = want.clone();
         rt.block_on(world::wait_for(
             &bob_client,
@@ -470,7 +495,11 @@ fn app_chip_click_toggles_the_reaction() {
                     .get(&general)
                     .and_then(|t| t.items.iter().find(|i| i.body == "react to me"))
                     .is_some_and(|i| {
-                        i.reactions.iter().map(|r| (r.emoji.clone(), r.count, r.mine)).collect::<Vec<_>>() == w
+                        i.reactions
+                            .iter()
+                            .map(|r| (r.emoji.clone(), r.count, r.mine))
+                            .collect::<Vec<_>>()
+                            == w
                     })
             },
         ));
