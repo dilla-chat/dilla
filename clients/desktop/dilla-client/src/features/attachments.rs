@@ -527,6 +527,15 @@ impl Tray {
     /// cap stays as a failed card and is never read; the rest are read, sealed, previewed and uploaded one by one.
     /// Answers the new entries' ids once the batch is processed.
     pub async fn add(&self, files: Vec<NewFile>) -> Result<Vec<String>, AttachmentError> {
+        let ids = self.push(files)?;
+        self.process_all(&ids).await;
+        Ok(ids)
+    }
+
+    /// The first half of [`Self::add`], at once: the count check and the new entries (in their first phase, an
+    /// oversize one failed), published; a view keys its previews by the answered ids. [`Self::process_all`] does the
+    /// rest.
+    pub fn push(&self, files: Vec<NewFile>) -> Result<Vec<String>, AttachmentError> {
         let ids = {
             let mut list = lock(&self.shared.list);
             if list.entries.len() + files.len() > MAX_ATTACHMENTS {
@@ -570,11 +579,15 @@ impl Tray {
             ids
         };
         self.changed();
+        Ok(ids)
+    }
+
+    /// The second half of [`Self::add`]: reads, seals, previews and uploads the entries `ids`, after any batch before.
+    pub async fn process_all(&self, ids: &[String]) {
         let _turn = self.shared.chain.lock().await;
-        for id in &ids {
+        for id in ids {
             self.process(id).await;
         }
-        Ok(ids)
     }
 
     /// Runs `f` on the entry `id` unless it was removed; `None` when it is gone or removed.
@@ -823,6 +836,27 @@ impl Attachments {
         })
     }
 
+    /// The worker's `attachFiles`, from the UI thread: the entries are added at once (their ids answered, or the count
+    /// refused) and processed on the client's runtime.
+    pub fn attach(&self, tray: &Tray, files: Vec<NewFile>) -> Result<Vec<String>, AttachmentError> {
+        let ids = tray.push(files)?;
+        let (tray, run) = (tray.clone(), ids.clone());
+        drop(self.inner.spawn(async move {
+            tray.process_all(&run).await;
+            Ok(())
+        }));
+        Ok(ids)
+    }
+
+    /// The worker's `discardAttachment`, from the UI thread.
+    pub fn discard(&self, tray: &Tray, id: String) {
+        let tray = tray.clone();
+        drop(self.inner.spawn(async move {
+            tray.discard(&id).await;
+            Ok(())
+        }));
+    }
+
     /// The worker's `openAttachment`: the descriptor of attachment `index` of the stored message `seq`, then its
     /// thumbnail, or the stored object fetched and opened ([`open_stored`]).
     pub fn open(
@@ -922,6 +956,21 @@ impl Attachments {
             Ok(MessageId(msg))
         })
     }
+}
+
+/// A parity fixture's picture: a PNG of `w` x `h` whose pixels follow from its name only, so the seeded file (the web
+/// reference draws its thumbnail) and the GPUI side's are the same bytes on every run.
+#[cfg(feature = "testing")]
+pub fn fixture_picture(name: &str, w: u32, h: u32) -> Vec<u8> {
+    let seed = dilla_core::identity::sha256(name.as_bytes());
+    let img = image::RgbImage::from_fn(w.max(1), h.max(1), |x, y| {
+        let band = ((x / 16 + y / 16) % 4) as usize;
+        image::Rgb([seed[band] / 2 + 64, seed[band + 4] / 2 + 64, seed[band + 8] / 2 + 64])
+    });
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png)
+        .expect("a PNG encodes into memory");
+    out.into_inner()
 }
 
 /// The logic tests of attachments/{name,thumb,download,tray}.test.ts, same inputs and same outputs.

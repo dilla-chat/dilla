@@ -39,6 +39,8 @@ serde_json = { version = "1.0.151", optional = true }
 sys-locale = "0.3.2"
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "flac", "mp3", "mp4", "vorbis", "wav"] }
 symphonia = { version = "0.5.5", default-features = false, features = ["aac", "flac", "isomp4", "mkv", "mp3", "ogg", "pcm", "vorbis", "wav"] }
+# - Task 12's Opus: a pure-Rust decoder (MIT or Apache-2.0, no FFI), so no second libopus beside libwebrtc's.
+opus-decoder = "0.1.1"
 
 # On Linux the platform's windowing and its text system come with its display backends: without them `current_platform`
 # has no text system (the headless frame draws no glyphs, Task 3's finding) and no window opens. X11 pulls
