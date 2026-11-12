@@ -1733,13 +1733,26 @@ impl Engine {
     /// send.ts `sendMessage`: queues a text post (type 0) in the group's outbox and asks for a drain. The core's refusal
     /// is answered at once and nothing else runs.
     pub async fn send_text(self: &Arc<Self>, g: Gid, text: String) -> Result<Gid, SyncError> {
+        self.send_request(g, 0, None, text).await
+    }
+
+    /// send.ts `sendRequest` (Task 9: edits, deletes and pins go through it too): queues an envelope of `kind` (0 post,
+    /// 1 edit, 2 delete, 3 and 4 reaction, 5 pin, 6 unpin) aimed at `target` (a fold's message) in the group's outbox
+    /// and asks for a drain. The core's refusal is answered at once and nothing else runs.
+    pub async fn send_request(
+        self: &Arc<Self>,
+        g: Gid,
+        kind: u8,
+        target: Option<Gid>,
+        body: String,
+    ) -> Result<Gid, SyncError> {
         if self.stopped() {
             return Err(SyncError::Stopped);
         }
         let request = Value::Array(vec![
-            Value::Uint(0),
-            Value::Null,
-            Value::Text(text),
+            Value::Uint(u64::from(kind)),
+            target.map_or(Value::Null, |t| Value::Bytes(t.to_vec())),
+            Value::Text(body),
             Value::Array(Vec::new()),
             Value::Null,
         ])
@@ -1752,6 +1765,16 @@ impl Engine {
         self.hooks.group_changed(g);
         self.request_drain(g);
         Ok(msg)
+    }
+
+    /// Sends a frame on the current gateway (typing, Task 9). `false`: no connection is ready, nothing was sent.
+    pub fn send_gateway_frame(&self, frame: Vec<u8>) -> bool {
+        let gateway = self
+            .gateway
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        gateway.is_some_and(|g| g.send_now(frame).is_ok())
     }
 
     /// send.ts `afterLostResponse`.

@@ -1,21 +1,34 @@
-//! Area **messages** (Task 9): edit, delete, pin and unpin, typing (sent and received), slow mode and the announcement read-only rule, per-channel drafts' sends.
+//! Area **messages** (Task 9): edit, delete, pin and unpin, typing (sent and received) and the pins list.
 //!
-//! Ports: packages/web/src/screens/conversation/{slow,manual-removal,webhook}.ts, packages/client-core/src/worker/controller.ts (typing).
+//! Ports: packages/client-core/src/worker/controller.ts (`fold`, `editMessage`, `deleteMessage`, `pin`, `typing`,
+//! `incomingTypingFrame`, `loadPins`, `publishPins`), gateway.ts `sendTyping`.
+//!
+//! An edit, a delete and a pin are queued as their fold type aimed at the message (requirement 10): the timeline changes
+//! only when the core folds them. Slow mode needs nothing here: the engine already holds a post back while the channel's
+//! wait runs ([`crate::sync::Engine::send_request`]); the composer derives the countdown from the timeline.
 //!
 //! Receives op 49 `typing` from the gateway (`crate::sync::route`), through [`AreaFrames`].
-//!
-//! Stub from Task 1 (area scaffold): Task 9 fills it, keeping the names below (clients/desktop/OWNERSHIP.md).
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use crate::client::{Client, Inner};
-use crate::gateway::frames::Frame;
+use tokio::sync::oneshot;
+
+use crate::client::{Client, ClientError, Inner};
+use crate::gateway::frames::{Frame, Op, Value};
+use crate::state::messages::{Typer, decode_pins};
+use crate::state::{ChannelId, ConnectionStatus, MessageId, UserId};
+use crate::sync::api::try_core;
 use crate::sync::route::AreaFrames;
+
+/// The relay window of a typing signal (controller.ts: the instance's now + 10 s).
+const TYPING_WINDOW_MS: u64 = 10_000;
+/// gateway.ts `sendTyping`: an "on" within this of the last one is not sent again.
+const TYPING_THROTTLE_MS: u64 = 3_000;
 
 /// The messages area's handle for messages: cheap to clone, no I/O on construction.
 #[derive(Clone)]
 pub struct Messages {
-    #[expect(dead_code, reason = "Task 9 fills the area")]
     inner: Arc<Inner>,
 }
 
@@ -28,6 +41,224 @@ impl Client {
     }
 }
 
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// The fold types of envelope.rs.
+const EDIT: u8 = 1;
+const DELETE: u8 = 2;
+const PIN: u8 = 5;
+const UNPIN: u8 = 6;
+
+impl Messages {
+    /// The channel's text group, opened (a no-op when it is).
+    async fn group_of(inner: &Arc<Inner>, channel: ChannelId) -> Result<[u8; 16], ClientError> {
+        let known = inner
+            .snapshot()
+            .channel(channel)
+            .cloned()
+            .ok_or(ClientError::UnknownChannel)?;
+        if !known.is_text() {
+            return Err(ClientError::UnknownChannel);
+        }
+        Ok(inner
+            .engine()
+            .open_channel(
+                Some(known.community_id.0),
+                channel.0,
+                known.text_group_id.map(|g| g.0),
+            )
+            .await?)
+    }
+
+    fn fold(
+        &self,
+        channel: ChannelId,
+        msg: MessageId,
+        kind: u8,
+        body: String,
+    ) -> oneshot::Receiver<Result<(), ClientError>> {
+        let inner = self.inner.clone();
+        self.inner.spawn(async move {
+            let g = Self::group_of(&inner, channel).await?;
+            inner
+                .engine()
+                .send_request(g, kind, Some(msg.0), body)
+                .await?;
+            Ok(())
+        })
+    }
+
+    /// Replaces the text of the own message `msg`. A blank text is refused (controller.ts `editMessage`).
+    pub fn edit(
+        &self,
+        channel: ChannelId,
+        msg: MessageId,
+        text: String,
+    ) -> oneshot::Receiver<Result<(), ClientError>> {
+        if text.trim().is_empty() {
+            let (tx, rx) = oneshot::channel();
+            let _ = tx.send(Err(ClientError::Sync("E_BAD_INPUT".into())));
+            return rx;
+        }
+        self.fold(channel, msg, EDIT, text)
+    }
+
+    /// Deletes the own message `msg` (a type-2 fold).
+    pub fn delete(
+        &self,
+        channel: ChannelId,
+        msg: MessageId,
+    ) -> oneshot::Receiver<Result<(), ClientError>> {
+        self.fold(channel, msg, DELETE, String::new())
+    }
+
+    /// Pins (`on`) or unpins `msg`.
+    pub fn pin(
+        &self,
+        channel: ChannelId,
+        msg: MessageId,
+        on: bool,
+    ) -> oneshot::Receiver<Result<(), ClientError>> {
+        self.fold(channel, msg, if on { PIN } else { UNPIN }, String::new())
+    }
+
+    /// Reads the channel's pins into [`crate::state::messages::MessagesState::pins`] (the pins dialog opening, or a pin
+    /// folding while it is open).
+    pub fn load_pins(&self, channel: ChannelId) -> oneshot::Receiver<Result<(), ClientError>> {
+        let inner = self.inner.clone();
+        self.inner.spawn(async move {
+            let g = Self::group_of(&inner, channel).await?;
+            let raw = try_core(inner.engine().core(), move |c| c.pins(&g))
+                .await
+                .map_err(|e| ClientError::Runtime(e.to_string()))?
+                .map_err(|e| ClientError::Sync(e.code.to_owned()))?;
+            let items = decode_pins(&raw).map_err(|e| ClientError::Sync(e.to_string()))?;
+            inner.publish(move |s| {
+                s.messages.pins.insert(channel, items);
+            });
+            Ok(())
+        })
+    }
+
+    /// Tells the channel the person starts (`on`) or stops typing (`gateway.sendTyping`, controller.ts `typing`): an
+    /// "on" is sent at most every 3 s, an "off" only after an "on"; nothing is sent while offline.
+    pub fn typing(&self, channel: ChannelId, on: bool) {
+        let snapshot = self.inner.snapshot();
+        let sent = snapshot.messages.typing_sent.get(&channel).copied();
+        if !on && sent.is_none() {
+            return;
+        }
+        if snapshot.connection.status != ConnectionStatus::Online {
+            return;
+        }
+        let now = now_ms();
+        if on && sent.is_some_and(|t| now.saturating_sub(t) < TYPING_THROTTLE_MS) {
+            return;
+        }
+        let frame = Frame {
+            op: Op::TYPING_SET,
+            n: 0,
+            group_id: None,
+            payload: vec![Value::Bytes(channel.0.to_vec()), Value::Uint(u64::from(on))],
+        };
+        let Ok(bytes) = crate::gateway::frames::encode(&frame) else {
+            return;
+        };
+        if !self.inner.engine().send_gateway_frame(bytes) {
+            return;
+        }
+        self.inner.publish(move |s| {
+            if on {
+                s.messages.typing_sent.insert(channel, now);
+            } else {
+                s.messages.typing_sent.remove(&channel);
+            }
+        });
+    }
+}
+
+/// The name a typing row shows: the member's display name, else the username (controller.ts `nameOf`).
+fn name_of(state: &crate::state::AppState, channel: ChannelId, user: UserId) -> String {
+    state
+        .channel(channel)
+        .and_then(|c| state.members.get(&c.community_id))
+        .and_then(|m| m.iter().find(|m| m.user_id == user))
+        .map_or_else(String::new, |m| {
+            if m.display.is_empty() {
+                m.username.clone()
+            } else {
+                m.display.clone()
+            }
+        })
+}
+
 impl AreaFrames for Messages {
-    fn on_frame(_inner: &Arc<Inner>, _f: &Frame) {}
+    /// controller.ts `incomingTypingFrame`: `[channel, user, device, on, expires]`. The row lives on this machine's clock
+    /// for the relay window, whatever the frame's own expiry says (this client keeps no estimate of the instance's
+    /// clock), and a sweep removes it when it lapses.
+    fn on_frame(inner: &Arc<Inner>, f: &Frame) {
+        if f.op != Op::TYPING {
+            return;
+        }
+        let (Some(channel), Some(user), Some(on)) = (
+            f.payload.first().and_then(Value::as_bytes),
+            f.payload.get(1).and_then(Value::as_bytes),
+            f.payload.get(3).and_then(Value::as_uint),
+        ) else {
+            return;
+        };
+        let (Ok(channel), Ok(user)) = (<[u8; 16]>::try_from(channel), <[u8; 16]>::try_from(user))
+        else {
+            return;
+        };
+        let (channel, user) = (ChannelId(channel), UserId(user));
+        let snap = inner.snapshot();
+        // Never one's own signal; only a channel this device holds, and only while the link is up.
+        if snap.account.user_id == Some(user)
+            || !snap.timelines.contains_key(&channel)
+            || snap.connection.status != ConnectionStatus::Online
+        {
+            return;
+        }
+        let expires = now_ms() + TYPING_WINDOW_MS;
+        let name = name_of(&snap, channel, user);
+        inner.publish(move |s| {
+            let rows = s.messages.typing.entry(channel).or_default();
+            rows.retain(|r| r.user != user && r.expires_at_ms > now_ms());
+            if on == 1 {
+                rows.push(Typer {
+                    user,
+                    name,
+                    expires_at_ms: expires,
+                });
+            }
+        });
+        if on == 1 {
+            // The sweep: the row is dropped when it lapses unless a later frame renewed it.
+            let swept = inner.clone();
+            drop(inner.spawn(async move {
+                tokio::time::sleep(Duration::from_millis(TYPING_WINDOW_MS + 50)).await;
+                swept.publish(move |s| {
+                    if let Some(rows) = s.messages.typing.get_mut(&channel) {
+                        rows.retain(|r| r.expires_at_ms > now_ms());
+                    }
+                });
+                Ok::<(), ClientError>(())
+            }));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_fold_type_is_the_envelope_s() {
+        assert_eq!([EDIT, DELETE, PIN, UNPIN], [1, 2, 5, 6]);
+    }
 }

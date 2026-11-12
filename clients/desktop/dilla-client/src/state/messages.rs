@@ -3,7 +3,7 @@
 //! per outbox post the store does not hold yet; an own stored row whose message id is known keeps its outbox key
 //! (`o<msg id>`), so a sent message is never shown twice and does not change key when it is confirmed.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::gateway::frames::Value;
 use crate::sync::value::{DecodeError, Rows, arr, bin16, opt, text, u53, uint};
@@ -427,7 +427,97 @@ mod tests {
     }
 }
 
-/// Task 9's slice of [`super::AppState`]: typing (sent and received), pins, slow mode and the announcement rule. Stub from Task 1: Task 9 adds the fields; [`Default`] is the
-/// empty slice.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct MessagesState {}
+/// Someone else typing in a channel (`TypingState`): the row lives until `expires_at_ms` (unix ms, this machine's clock).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Typer {
+    pub user: UserId,
+    pub name: String,
+    pub expires_at_ms: u64,
+}
+
+/// A pinned message (`PinnedItem`): what the pins dialog lists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinnedItem {
+    pub msg_id: MessageId,
+    pub seq: u64,
+    pub sender_user: Option<UserId>,
+    pub excerpt: String,
+    pub pinned_by: UserId,
+    pub pinned_seq: u64,
+    pub ts: u64,
+    pub thread_root: Option<MessageId>,
+}
+
+/// Task 9's slice of [`super::AppState`]: typing (received and sent) and the pins lists. [`Default`] is the empty slice.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MessagesState {
+    /// `typing:<channel>`: the others typing there now, oldest first.
+    pub typing: HashMap<ChannelId, Vec<Typer>>,
+    /// `pins:<channel>`: the pinned messages of a channel whose pins were loaded; it keeps its last value when closed.
+    pub pins: HashMap<ChannelId, Vec<PinnedItem>>,
+    /// The channels this device has signalled typing in, with the time of the last signal (unix ms): the 3 s throttle of
+    /// gateway.ts `sendTyping`.
+    pub typing_sent: HashMap<ChannelId, u64>,
+}
+
+/// `pins` rows: `[target_seq, msg_id, pinned_seq, by_user, author|null, excerpt, target_ts, thread_root?]`.
+pub(crate) fn decode_pins(raw: &[u8]) -> Result<Vec<PinnedItem>, DecodeError> {
+    Rows::of(raw)?
+        .iter()
+        .map(|row| {
+            let a = row.as_array().ok_or(DecodeError("pin row"))?;
+            if a.len() != 7 && a.len() != 8 {
+                return Err(DecodeError("a pin row has 7 or 8 elements"));
+            }
+            Ok(PinnedItem {
+                seq: uint(&a[0])?,
+                msg_id: MessageId(bin16(&a[1])?),
+                pinned_seq: uint(&a[2])?,
+                pinned_by: UserId(bin16(&a[3])?),
+                sender_user: opt(&a[4], bin16)?.map(UserId),
+                excerpt: text(&a[5])?,
+                ts: uint(&a[6])?,
+                thread_root: match a.get(7) {
+                    Some(v) => opt(v, bin16)?.map(MessageId),
+                    None => None,
+                },
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    fn row(len: usize) -> Value {
+        let mut a = vec![
+            Value::Uint(9),
+            Value::Bytes(vec![1; 16]),
+            Value::Uint(12),
+            Value::Bytes(vec![2; 16]),
+            Value::Null,
+            Value::Text("the plan".into()),
+            Value::Uint(1_700_000_000),
+        ];
+        if len == 8 {
+            a.push(Value::Bytes(vec![3; 16]));
+        }
+        Value::Array(a)
+    }
+
+    #[test]
+    fn a_pin_row_has_seven_elements_or_eight_with_a_thread_root() {
+        let seven = decode_pins(&Value::Array(vec![row(7)]).encode()).expect("seven");
+        assert_eq!(seven[0].seq, 9);
+        assert_eq!(seven[0].excerpt, "the plan");
+        assert_eq!(seven[0].sender_user, None);
+        assert_eq!(seven[0].thread_root, None);
+        let eight = decode_pins(&Value::Array(vec![row(8)]).encode()).expect("eight");
+        assert_eq!(eight[0].thread_root, Some(MessageId([3; 16])));
+        assert_eq!(eight[0].pinned_by, UserId([2; 16]));
+        assert!(
+            decode_pins(&Value::Array(vec![Value::Array(vec![Value::Uint(1)])]).encode()).is_err()
+        );
+    }
+}

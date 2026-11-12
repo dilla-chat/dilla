@@ -29,6 +29,7 @@ use crate::router::Route;
 mod attachments;
 mod calls;
 mod dms;
+mod messages;
 mod polls;
 mod reactions;
 mod roles;
@@ -264,6 +265,7 @@ pub fn build_state(
     dms::apply(world, viewer, &mut state);
     polls::apply(world, viewer, &mut state);
     reactions::apply(world, viewer, &mut state);
+    messages::apply(world, viewer, &mut state);
     roles::apply(world, viewer, &mut state);
     threads::apply(world, viewer, &mut state);
     state
