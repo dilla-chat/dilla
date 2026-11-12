@@ -2,4 +2,7 @@
 //! is a trait in [`seams`].
 #![forbid(unsafe_code)]
 
+pub mod instances;
+pub mod keychain;
 pub mod seams;
+pub mod store;

@@ -24,3 +24,8 @@ keyring = "4.2.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 dirs = "6"
+# Task 6: the store keys its own SQLCipher connection (the same build dilla-core links), draws the key
+# from the OS CSPRNG and keeps the instance list as JSON. All three were already in Cargo.lock.
+rusqlite = { version = "=0.41.1", features = ["bundled-sqlcipher-vendored-openssl"] }
+getrandom = "0.3"
+serde_json = "1"
