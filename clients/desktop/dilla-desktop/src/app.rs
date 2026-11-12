@@ -78,6 +78,7 @@ impl Launch {
 }
 
 enum Screen {
+    ServerSettings(Entity<crate::screens::server_settings::ServerSettingsView>),
     Starting,
     SignIn(Entity<SignInView>),
     Shell(Entity<ShellView>),
@@ -120,6 +121,24 @@ impl AppView {
                     this.screen = Screen::Shell(shell);
                 }
                 crate::fixture::FixtureScreen::SignIn => this.show_sign_in(None, window, cx),
+                crate::fixture::FixtureScreen::ServerSettings { community, section } => {
+                    let clock = Clock::Fixed {
+                        now: fixture.now,
+                        utc: true,
+                    };
+                    let view = cx.new(|cx| {
+                        crate::screens::server_settings::ServerSettingsView::new(
+                            community,
+                            Arc::new(fixture.state),
+                            None,
+                            clock,
+                            section,
+                            window,
+                            cx,
+                        )
+                    });
+                    this.screen = Screen::ServerSettings(view);
+                }
             }
             return this;
         }
@@ -217,6 +236,7 @@ impl Render for AppView {
                 .into_any_element(),
             Screen::SignIn(view) => view.clone().into_any_element(),
             Screen::Shell(view) => view.clone().into_any_element(),
+            Screen::ServerSettings(view) => view.clone().into_any_element(),
         };
         tracked("root", div().size_full().bg(color::BG).child(body))
     }
