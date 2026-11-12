@@ -56,6 +56,8 @@ fn main() {
         "src/apm.rs",
         "src/audio_mixer.rs",
         "src/packet_trailer.rs",
+        // DILLA PATCH: the dilla-sframe/1 encoded-frame hook (core/vendor/README.md).
+        "src/dilla_transform.rs",
     ];
 
     if is_desktop {
@@ -99,6 +101,8 @@ fn main() {
         "src/av1_bitstream.cpp",
         "src/packet_trailer.cpp",
         "src/packet_trailer_av1.cpp",
+        // DILLA PATCH: the dilla-sframe/1 encoded-frame hook (core/vendor/README.md).
+        "src/dilla_transform.cpp",
     ]);
 
     if is_desktop {

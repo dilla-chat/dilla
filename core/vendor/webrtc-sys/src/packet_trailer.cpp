@@ -15,6 +15,8 @@
  */
 
 #include "livekit/packet_trailer.h"
+// DILLA PATCH: the dilla-sframe/1 encoded-frame hook.
+#include "livekit/dilla_transform.h"
 
 #include <chrono>
 #include <cstring>
@@ -621,7 +623,10 @@ PacketTrailerHandler::PacketTrailerHandler(
     : rtc_runtime_(rtc_runtime), sender_(sender) {
   transformer_ = webrtc::make_ref_counted<PacketTrailerTransformer>(
       PacketTrailerTransformer::Direction::kSend);
-  sender->SetEncoderToPacketizerFrameTransformer(transformer_);
+  // DILLA PATCH: never replaces the DillaFrameTransformer (protocol/05 refuses packetTrailer).
+  if (!dilla_owns_transforms()) {
+    sender->SetEncoderToPacketizerFrameTransformer(transformer_);
+  }
 }
 
 PacketTrailerHandler::PacketTrailerHandler(
@@ -630,7 +635,10 @@ PacketTrailerHandler::PacketTrailerHandler(
     : rtc_runtime_(rtc_runtime), receiver_(receiver) {
   transformer_ = webrtc::make_ref_counted<PacketTrailerTransformer>(
       PacketTrailerTransformer::Direction::kReceive);
-  receiver->SetDepacketizerToDecoderFrameTransformer(transformer_);
+  // DILLA PATCH: as above, for receivers.
+  if (!dilla_owns_transforms()) {
+    receiver->SetDepacketizerToDecoderFrameTransformer(transformer_);
+  }
 }
 
 void PacketTrailerHandler::set_enabled(bool enabled) const {

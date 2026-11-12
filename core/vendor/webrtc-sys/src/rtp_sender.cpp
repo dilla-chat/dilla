@@ -15,6 +15,8 @@
  */
 
 #include "livekit/rtp_sender.h"
+// DILLA PATCH: the dilla-sframe/1 encoded-frame hook.
+#include "livekit/dilla_transform.h"
 #include "livekit/jsep.h"
 
 #include <memory>
@@ -149,7 +151,10 @@ RtpSender::RtpSender(
       peer_connection_(std::move(peer_connection)) {}
 
 bool RtpSender::set_track(std::shared_ptr<MediaStreamTrack> track) const {
-  return sender_->SetTrack(track->rtc_track().get());
+  // DILLA PATCH: a new track gets a new transform bound to its id; the sender never runs without one.
+  bool ok = sender_->SetTrack(track->rtc_track().get());
+  dilla_attach_sender(sender_);
+  return ok;
 }
 
 std::shared_ptr<MediaStreamTrack> RtpSender::track() const {

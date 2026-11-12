@@ -24,6 +24,8 @@
 #include "api/scoped_refptr.h"
 #include "livekit/candidate.h"
 #include "livekit/data_channel.h"
+// DILLA PATCH: the dilla-sframe/1 encoded-frame hook.
+#include "livekit/dilla_transform.h"
 #include "livekit/jsep.h"
 #include "livekit/media_stream.h"
 #include "livekit/rtc_error.h"
@@ -215,6 +217,8 @@ std::shared_ptr<RtpSender> PeerConnection::add_track(
   if (!result.ok()) {
     throw std::runtime_error(serialize_error(to_error(result.error())));
   }
+  // DILLA PATCH: the sender gets its transform now, before the negotiation that starts its RTP.
+  dilla_attach_sender(result.value());
 
   return std::make_shared<RtpSender>(rtc_runtime_, result.value(),
                                      peer_connection_);
@@ -241,6 +245,8 @@ std::shared_ptr<RtpTransceiver> PeerConnection::add_transceiver(
       track->rtc_track(), to_native_rtp_transceiver_init(init));
   if (!result.ok())
     throw std::runtime_error(serialize_error(to_error(result.error())));
+  // DILLA PATCH: the sender gets its transform now, before the negotiation that starts its RTP.
+  dilla_attach_sender(result.value()->sender());
 
   return std::make_shared<RtpTransceiver>(rtc_runtime_, result.value(),
                                           peer_connection_);
@@ -478,6 +484,9 @@ void PeerConnection::OnAddTrack(
 
 void PeerConnection::OnTrack(
     webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver) {
+  // DILLA PATCH: the receiver gets its transform synchronously in the track event, before Rust (or
+  // anything else) learns of the track.
+  dilla_attach_receiver(transceiver->receiver());
   observer_->on_track(std::make_unique<RtpTransceiver>(
       rtc_runtime_, transceiver, peer_connection_));
 }

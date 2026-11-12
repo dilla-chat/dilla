@@ -15,6 +15,8 @@
  */
 
 #include "livekit/frame_cryptor.h"
+// DILLA PATCH: the dilla-sframe/1 encoded-frame hook.
+#include "livekit/dilla_transform.h"
 
 #include <memory>
 
@@ -139,7 +141,11 @@ FrameCryptor::FrameCryptor(
       new webrtc::FrameCryptorTransformer(rtc_runtime->signaling_thread(),
                                           participant_id, mediaType, algorithm,
                                           key_provider_));
-  sender->SetEncoderToPacketizerFrameTransformer(e2ee_transformer_);
+  // DILLA PATCH: with the dilla hook installed LiveKit's AES-GCM transformer is never attached; the
+  // sender keeps the DillaFrameTransformer it got when it was created.
+  if (!dilla_owns_transforms()) {
+    sender->SetEncoderToPacketizerFrameTransformer(e2ee_transformer_);
+  }
   e2ee_transformer_->SetEnabled(false);
 }
 
@@ -161,7 +167,10 @@ FrameCryptor::FrameCryptor(
       new webrtc::FrameCryptorTransformer(rtc_runtime->signaling_thread(),
                                           participant_id, mediaType, algorithm,
                                           key_provider_));
-  receiver->SetDepacketizerToDecoderFrameTransformer(e2ee_transformer_);
+  // DILLA PATCH: as above, for the receiver's DillaFrameTransformer from OnTrack.
+  if (!dilla_owns_transforms()) {
+    receiver->SetDepacketizerToDecoderFrameTransformer(e2ee_transformer_);
+  }
   e2ee_transformer_->SetEnabled(false);
 }
 
@@ -187,7 +196,9 @@ void FrameCryptor::unregister_observer() const {
 
 void FrameCryptor::set_packet_trailer_handler(
     std::shared_ptr<PacketTrailerHandler> handler) const {
-  if (!handler) {
+  // DILLA PATCH: no packet trailers under the dilla hook (protocol/05 refuses packetTrailer), and no
+  // chained transformer may replace the DillaFrameTransformer.
+  if (!handler || dilla_owns_transforms()) {
     return;
   }
 
