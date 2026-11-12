@@ -1,0 +1,49 @@
+[package]
+name = "gpui-voice-proof"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+publish = false
+description = "Proof: LiveKit Rust SDK voice and video with dilla-sframe/1 frames (Task 2, REPORT.md)"
+
+# A standalone workspace (the root Cargo.toml excludes experiments/gpui-*), with its own Cargo.lock.
+[workspace]
+
+[features]
+# The GPUI window of Step 4b (video-window binary). Off by default so the interop proof builds
+# without GPUI.
+window = ["dep:gpui", "dep:gpui-platform", "dep:cpu-time", "dep:image"]
+
+[dependencies]
+# dilla_core::sframe is compiled from its own source files (src/lib.rs, `#[path]`), not through the
+# dilla-core crate: dilla-core always links SQLCipher on vendored OpenSSL, whose libcrypto symbols
+# collide with the BoringSSL inside LiveKit's prebuilt libwebrtc (REPORT.md, "Link conflict").
+# These are dilla-core's own requirements for the crates the sframe module uses.
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes", "alloc", "zeroize"] }
+hkdf = "0.13"
+hmac = "0.13"
+sha2 = "0.11"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+thiserror = "2.0"
+livekit = "=0.10.1"
+# Direct dependency for the dilla_transform hook only; the [patch] below makes livekit use the same
+# vendored copy.
+webrtc-sys = "=0.3.53"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "io-std", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = "0.3"
+log = "0.4"
+gpui = { package = "gpui-pre", version = "=0.3.12", optional = true }
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.12", optional = true }
+cpu-time = { version = "1", optional = true }
+image = { version = "0.25", optional = true, default-features = false }
+
+[[bin]]
+name = "video-window"
+required-features = ["window"]
+
+[patch.crates-io]
+# The dilla-sframe/1 encoded-frame hook (core/vendor/README.md, "webrtc-sys").
+webrtc-sys = { path = "../../core/vendor/webrtc-sys" }

@@ -38,6 +38,51 @@ sqlite-wasm-rs 0.6.3 builds SQLite3MC 2.6.1 on SQLite 3.54.0 (`sqlite3mc-src =20
 Remove this copy and the patch entry once upstream ships sqlcipher-src >= 420 (a libsqlite3-sys
 release whose `sqlcipher-src` requirement is 420.0.0 or later).
 
+## webrtc-sys 0.3.53
+
+Upstream: <https://github.com/livekit/rust-sdks> (`webrtc-sys/`; `.cargo_vcs_info.json` has the
+commit). Apache-2.0. The published copy is the first commit that adds it (`vendor: webrtc-sys 0.3.53
+as published`), so `git diff` of that commit's successor shows the whole patch.
+
+Used today only by `experiments/gpui-voice-proof`, through that standalone workspace's own
+`[patch.crates-io]`; the root workspace does not patch it yet. `experiments/gpui-voice-proof/REPORT.md`
+is the evidence.
+
+What it adds: a process-wide encoded-frame hook for dilla-sframe/1 (protocol/05), on LiveKit's
+prebuilt libwebrtc as it is downloaded (libwebrtc itself is not rebuilt). LiveKit's Rust SDK exposes
+no transformer of its own (its `FrameCryptor` writes LiveKit's AES-GCM frame format, and its packet
+trailer transformer only adds metadata), so the hook is glue implementing libwebrtc's
+`FrameTransformerInterface`:
+
+- New files, wholly dilla's: `include/livekit/dilla_transform.h`, `src/dilla_transform.cpp`,
+  `src/dilla_transform.rs` (the cxx bridge and the Rust API: `dilla_transform::install(Box<dyn
+  FrameTransform>)`, `FrameTransform::transform(&FrameInfo, &[u8], &mut Vec<u8>) -> Verdict`, with
+  `Verdict::{Drop, Replace, Hold, PassUnchanged}`).
+- `build.rs`, `src/lib.rs`: build and export the new bridge.
+- `src/peer_connection_factory.cpp`: the hook is mandatory. `create_peer_connection` throws
+  `E_DILLA_NO_FRAME_HOOK` when no hook is installed, so a missing or late `install` can never fall
+  back to LiveKit's own FrameCryptor or to no transform
+  (`experiments/gpui-voice-proof/tests/mandatory_hook.rs`).
+- `src/peer_connection.cpp`: `add_track`, `add_transceiver` and `add_transceiver_for_media`
+  attach a `DillaFrameTransformer` to the new sender before the negotiation that starts its RTP (a
+  sender without a track gets one bound to no track, which drops every frame), so no sender exists
+  without one; `OnTrack` attaches one to the receiver synchronously, before Rust learns of the
+  track.
+- `src/rtp_sender.cpp`: `set_track` attaches a fresh one bound to the incoming track's id *before*
+  `SetTrack`, so no frame of the new track meets the old binding or no transformer (a null track
+  binds to no track; upstream dereferenced a null track here).
+- `src/frame_cryptor.cpp`, `src/packet_trailer.cpp`: while a hook is installed, LiveKit's
+  `FrameCryptorTransformer`, its chained packet-trailer transformer and the packet-trailer handlers
+  are never set on a sender or receiver, so nothing replaces the hook (protocol/05 refuses packet
+  trailers anyway).
+
+The transformer has no pass-through of its own: every frame goes to Rust, and only a frame Rust
+answers `Replace` (sealed or authenticated bytes) or `PassUnchanged` (a zero-byte audio frame) goes
+on. `Hold` keeps the frame in a strict per-track FIFO bounded by protocol/05's 2 000 ms, 256 frames
+and 8 MiB, retried on every later frame; past a bound the oldest is dropped and reported.
+
+Remove this copy when upstream exposes an equivalent custom frame transformer.
+
 ## Retired: sqlite-wasm-vfs 0.2.0
 
 Vendored from 2026-10-08 until the RUSTSEC-2026-0459 fix moved the browser core to sqlite-wasm-rs
