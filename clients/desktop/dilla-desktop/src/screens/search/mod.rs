@@ -5,9 +5,9 @@
 
 pub mod keys;
 
-use gpui::{AnyElement, App};
+use gpui::{AnyElement, App, Window};
 
 /// The search palette (`slots::overlays`): `None` while it is closed.
-pub fn palette(_cx: &mut App) -> Option<AnyElement> {
+pub fn palette(_window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
     None
 }

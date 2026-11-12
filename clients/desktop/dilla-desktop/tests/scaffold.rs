@@ -41,17 +41,20 @@ fn stubs_change_nothing(cx: &mut TestAppContext) {
     };
     let ctx = SlotCx::default();
     assert!(slots::message_actions(&item()).is_empty());
-    cx.update(|cx| {
-        assert!(slots::composer_popup(&ctx, cx).is_none());
-        assert!(slots::aside(&route, cx).is_none());
-        assert!(slots::dock(cx).is_none());
-        assert!(slots::overlays(cx).is_empty());
-        assert!(slots::banners(&ctx, cx).is_empty());
-        // The element slots always answer an element; empty, it is a bare flex container (see slots.rs).
-        let _ = slots::message_extras(&item(), &ctx, cx);
-        let _ = slots::composer_leading(&ctx, cx);
-        let _ = slots::composer_buttons(&ctx, cx);
-        let _ = slots::channel_row_extras(&voice_channel(), cx);
+    let window = cx.add_empty_window();
+    window.update(|window, cx| {
+        assert!(slots::composer_popup(&ctx, window, cx).is_none());
+        assert!(slots::aside(&route, window, cx).is_none());
+        assert!(slots::dock(window, cx).is_none());
+        assert!(slots::overlays(window, cx).is_empty());
+        assert!(slots::banners(&ctx, window, cx).is_empty());
+        // Stubbed extras take no height, so the timeline's rows keep theirs.
+        let (_, height) = slots::message_extras(&item(), &ctx, window, cx);
+        assert_eq!(height, 0.0);
+        // The other element slots always answer an element; empty, it is a bare flex container (see slots.rs).
+        let _ = slots::composer_leading(&ctx, window, cx);
+        let _ = slots::composer_buttons(&ctx, window, cx);
+        let _ = slots::channel_row_extras(&voice_channel(), window, cx);
     });
 }
 

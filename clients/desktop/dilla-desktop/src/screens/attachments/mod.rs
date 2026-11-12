@@ -5,22 +5,27 @@
 
 pub mod keys;
 
-use crate::slots::SlotCx;
+use crate::slots::{Extra, SlotCx};
 use dilla_client::state::TimelineItem;
 use gpui::{AnyElement, App, Window};
 
 /// A message's attachment cards and image grid (`slots::message_extras`, after the reply chip).
-pub fn attachment_cards(_item: &TimelineItem, _ctx: &SlotCx, _cx: &mut App) -> Option<AnyElement> {
+pub fn attachment_cards(
+    _item: &TimelineItem,
+    _ctx: &SlotCx,
+    _window: &mut Window,
+    _cx: &mut App,
+) -> Option<Extra> {
     None
 }
 
 /// The attachment tray over the composer (`slots::composer_leading`, after the reply bar).
-pub fn tray(_ctx: &SlotCx, _cx: &mut App) -> Option<AnyElement> {
+pub fn tray(_ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
     None
 }
 
 /// The composer's attach and GIF buttons (`slots::composer_buttons`, first).
-pub fn composer_buttons(_ctx: &SlotCx, _cx: &mut App) -> Option<AnyElement> {
+pub fn composer_buttons(_ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
     None
 }
 

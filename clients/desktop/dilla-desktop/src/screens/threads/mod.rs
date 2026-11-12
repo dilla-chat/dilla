@@ -6,17 +6,27 @@
 pub mod keys;
 
 use crate::router::Route;
-use crate::slots::{MessageAction, SlotCx};
+use crate::slots::{Extra, MessageAction, SlotCx};
 use dilla_client::state::TimelineItem;
-use gpui::{AnyElement, App};
+use gpui::{AnyElement, App, Window};
 
 /// The reply chip above a reply's body (`slots::message_extras`, first).
-pub fn reply_chip(_item: &TimelineItem, _ctx: &SlotCx, _cx: &mut App) -> Option<AnyElement> {
+pub fn reply_chip(
+    _item: &TimelineItem,
+    _ctx: &SlotCx,
+    _window: &mut Window,
+    _cx: &mut App,
+) -> Option<Extra> {
     None
 }
 
 /// A thread's reply count under its first message (`slots::message_extras`, after the reactions).
-pub fn thread_count(_item: &TimelineItem, _ctx: &SlotCx, _cx: &mut App) -> Option<AnyElement> {
+pub fn thread_count(
+    _item: &TimelineItem,
+    _ctx: &SlotCx,
+    _window: &mut Window,
+    _cx: &mut App,
+) -> Option<Extra> {
     None
 }
 
@@ -26,12 +36,12 @@ pub fn message_actions(_item: &TimelineItem) -> Vec<MessageAction> {
 }
 
 /// The "replying to" bar over the composer (`slots::composer_leading`, first).
-pub fn reply_bar(_ctx: &SlotCx, _cx: &mut App) -> Option<AnyElement> {
+pub fn reply_bar(_ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
     None
 }
 
 /// This area's aside (`slots::aside`): `None` while it is closed.
-pub fn pane(_route: &Route, _cx: &mut App) -> Option<AnyElement> {
+pub fn pane(_route: &Route, _window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
     None
 }
 

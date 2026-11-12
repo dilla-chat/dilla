@@ -6,14 +6,18 @@
 pub mod keys;
 
 use dilla_client::state::Channel;
-use gpui::{AnyElement, App};
+use gpui::{AnyElement, App, Window};
 
 /// The people in a voice channel, nested under its row (`slots::channel_row_extras`).
-pub fn channel_people(_channel: &Channel, _cx: &mut App) -> Option<AnyElement> {
+pub fn channel_people(
+    _channel: &Channel,
+    _window: &mut Window,
+    _cx: &mut App,
+) -> Option<AnyElement> {
     None
 }
 
 /// The voice dock over the user panel (`slots::dock`, first).
-pub fn dock(_cx: &mut App) -> Option<AnyElement> {
+pub fn dock(_window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
     None
 }

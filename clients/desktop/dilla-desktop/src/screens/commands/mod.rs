@@ -5,16 +5,21 @@
 
 pub mod keys;
 
-use crate::slots::SlotCx;
+use crate::slots::{Extra, SlotCx};
 use dilla_client::state::TimelineItem;
-use gpui::{AnyElement, App};
+use gpui::{AnyElement, App, Window};
 
 /// A poll's card under its message (`slots::message_extras`, after the attachments).
-pub fn poll_card(_item: &TimelineItem, _ctx: &SlotCx, _cx: &mut App) -> Option<AnyElement> {
+pub fn poll_card(
+    _item: &TimelineItem,
+    _ctx: &SlotCx,
+    _window: &mut Window,
+    _cx: &mut App,
+) -> Option<Extra> {
     None
 }
 
 /// The command picker over the composer (`slots::composer_popup`).
-pub fn picker(_ctx: &SlotCx, _cx: &mut App) -> Option<AnyElement> {
+pub fn picker(_ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
     None
 }

@@ -121,13 +121,13 @@ fn tool(icon: IconName) -> impl IntoElement {
 }
 
 impl Render for Composer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let value = self.input.read(cx).value();
         let empty = value.is_empty();
         let ctx = self.slots.clone();
-        let leading = slots::composer_leading(&ctx, cx);
-        let buttons = slots::composer_buttons(&ctx, cx);
-        let popup = slots::composer_popup(&ctx, cx);
+        let leading = slots::composer_leading(&ctx, window, cx);
+        let buttons = slots::composer_buttons(&ctx, window, cx);
+        let popup = slots::composer_popup(&ctx, window, cx);
         // The field is as high as the draft's lines (20px each), up to the cap; soft-wrapped lines are not counted.
         let rows = value.split('\n').count().clamp(1, max_rows());
         let placeholder = format!("Message {}", self.target);

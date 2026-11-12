@@ -631,9 +631,10 @@ impl Render for ShellView {
                 }),
             },
             on_select,
+            window,
             cx,
         );
-        let dock = slots::dock(cx);
+        let dock = slots::dock(window, cx);
         let sidebar = div()
             .flex_none()
             .w(layout::SIDEBAR)
@@ -675,15 +676,16 @@ impl Render for ShellView {
                     self.pinned,
                     on_wheel,
                     &ctx,
+                    window,
                     cx,
                 )
                 .into_any_element()
             }
             None => div().size_full().bg(color::BG).into_any_element(),
         };
-        let banners = slots::banners(&ctx, cx);
-        let aside = slots::aside(&self.route(), cx);
-        let overlays = slots::overlays(cx);
+        let banners = slots::banners(&ctx, window, cx);
+        let aside = slots::aside(&self.route(), window, cx);
+        let overlays = slots::overlays(window, cx);
         let main = div()
             .flex_1()
             .min_w_0()

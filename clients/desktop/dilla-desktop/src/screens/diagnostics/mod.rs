@@ -9,7 +9,7 @@ use crate::slots::{SectionId, SlotCx};
 use gpui::{AnyElement, App, Empty, IntoElement, Window};
 
 /// The banners over the main column (`slots::banners`): the offline link and the version refusal.
-pub fn banners(_ctx: &SlotCx, _cx: &mut App) -> Vec<AnyElement> {
+pub fn banners(_ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> Vec<AnyElement> {
     Vec::new()
 }
 

@@ -9,7 +9,7 @@ use crate::slots::{SectionId, SlotCx};
 use gpui::{AnyElement, App, Empty, IntoElement, Window};
 
 /// The now-playing card in the dock (`slots::dock`, after the voice dock).
-pub fn now_playing(_cx: &mut App) -> Option<AnyElement> {
+pub fn now_playing(_window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
     None
 }
 

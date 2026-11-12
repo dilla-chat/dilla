@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use dilla_client::state::{AppState, Channel, ChannelId, CommunityId, TimelineItem};
 use dilla_client::{Area, Client};
-use gpui::{AnyElement, App, IntoElement, ParentElement, SharedString, Styled, Window, div};
+use gpui::{AnyElement, App, IntoElement, ParentElement, SharedString, Styled, Window, div, px};
 
 use dilla_desktop_ui::IconName;
 
@@ -88,16 +88,44 @@ fn column(parts: impl IntoIterator<Item = Option<AnyElement>>) -> AnyElement {
         .into_any_element()
 }
 
+/// One guest's part under a message's body, with the height it takes there (logical px). The timeline lays its rows
+/// out from heights, so a guest says its own: computed from its content and the tokens, never measured from a
+/// reference (R21). The element is drawn in a box of exactly that height.
+pub struct Extra {
+    pub element: AnyElement,
+    pub height: f32,
+}
+
 /// Under a message's body: the reply chip (11), the attachments (12), the poll card (20), the reactions (10), the thread
-/// count (11), in this order.
-pub fn message_extras(item: &TimelineItem, ctx: &SlotCx, cx: &mut App) -> AnyElement {
-    column([
-        threads::reply_chip(item, ctx, cx),
-        attachments::attachment_cards(item, ctx, cx),
-        commands::poll_card(item, ctx, cx),
-        reactions::reaction_bar(item, ctx, cx),
-        threads::thread_count(item, ctx, cx),
-    ])
+/// count (11), in this order, stacked without gaps. Answers the stack and its height (the sum of the parts'; 0 when
+/// every guest has nothing), which the timeline adds to the row's height.
+pub fn message_extras(
+    item: &TimelineItem,
+    ctx: &SlotCx,
+    window: &mut Window,
+    cx: &mut App,
+) -> (AnyElement, f32) {
+    let parts = [
+        threads::reply_chip(item, ctx, window, cx),
+        attachments::attachment_cards(item, ctx, window, cx),
+        commands::poll_card(item, ctx, window, cx),
+        reactions::reaction_bar(item, ctx, window, cx),
+        threads::thread_count(item, ctx, window, cx),
+    ];
+    stack(parts.into_iter().flatten())
+}
+
+/// [`Extra`]s stacked in order, each in a box of its height, and the total height.
+pub fn stack(parts: impl IntoIterator<Item = Extra>) -> (AnyElement, f32) {
+    let mut height = 0.0;
+    let column = div()
+        .flex()
+        .flex_col()
+        .children(parts.into_iter().map(|part| {
+            height += part.height;
+            div().flex_none().h(px(part.height)).child(part.element)
+        }));
+    (column.into_any_element(), height)
 }
 
 /// The message toolbar's and context menu's entries: the message's own (9), then reply and thread (11), then react
@@ -109,20 +137,24 @@ pub fn message_actions(item: &TimelineItem) -> Vec<MessageAction> {
     out
 }
 
-/// Over the composer's field: the reply bar (11), then the attachment tray (12).
-pub fn composer_leading(ctx: &SlotCx, cx: &mut App) -> AnyElement {
-    column([threads::reply_bar(ctx, cx), attachments::tray(ctx, cx)])
+/// Over the composer's field: the reply bar (11), then the attachment tray (12). The composer places it in normal flow,
+/// so a non-empty guest makes the composer taller and the log above it shorter.
+pub fn composer_leading(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
+    column([
+        threads::reply_bar(ctx, window, cx),
+        attachments::tray(ctx, window, cx),
+    ])
 }
 
 /// The composer's tool buttons: attach and GIF (12), then emoji (10).
-pub fn composer_buttons(ctx: &SlotCx, cx: &mut App) -> AnyElement {
+pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
     div()
         .flex()
         .items_center()
         .children(
             [
-                attachments::composer_buttons(ctx, cx),
-                reactions::emoji_button(ctx, cx),
+                attachments::composer_buttons(ctx, window, cx),
+                reactions::emoji_button(ctx, window, cx),
             ]
             .into_iter()
             .flatten(),
@@ -131,23 +163,23 @@ pub fn composer_buttons(ctx: &SlotCx, cx: &mut App) -> AnyElement {
 }
 
 /// The popup over the composer: the command picker (20). The mention popup stays the composer's own (9).
-pub fn composer_popup(ctx: &SlotCx, cx: &mut App) -> Option<AnyElement> {
-    commands::picker(ctx, cx)
+pub fn composer_popup(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    commands::picker(ctx, window, cx)
 }
 
 /// Under a channel's row in the list: a voice channel's people (17).
-pub fn channel_row_extras(ch: &Channel, cx: &mut App) -> AnyElement {
-    column([voice::channel_people(ch, cx)])
+pub fn channel_row_extras(ch: &Channel, window: &mut Window, cx: &mut App) -> AnyElement {
+    column([voice::channel_people(ch, window, cx)])
 }
 
 /// The aside right of the main column: the thread pane (11), else the members pane (14).
-pub fn aside(route: &Route, cx: &mut App) -> Option<AnyElement> {
-    threads::pane(route, cx).or_else(|| members::pane(route, cx))
+pub fn aside(route: &Route, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    threads::pane(route, window, cx).or_else(|| members::pane(route, window, cx))
 }
 
 /// Over the user panel: the voice dock (17), then now playing (21).
-pub fn dock(cx: &mut App) -> Option<AnyElement> {
-    match (voice::dock(cx), bot_admin::now_playing(cx)) {
+pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    match (voice::dock(window, cx), bot_admin::now_playing(window, cx)) {
         (None, None) => None,
         (voice, music) => Some(column([voice, music])),
     }
@@ -155,16 +187,16 @@ pub fn dock(cx: &mut App) -> Option<AnyElement> {
 
 /// Over everything, in paint order: the search palette (23), then the ring banner (18). Toasts (Task 6) and dialogs
 /// join at merge.
-pub fn overlays(cx: &mut App) -> Vec<AnyElement> {
-    [search::palette(cx), ring::ring_banner(cx)]
+pub fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
+    [search::palette(window, cx), ring::ring_banner(window, cx)]
         .into_iter()
         .flatten()
         .collect()
 }
 
 /// Over the main column: the offline link banner and the version refusal (24).
-pub fn banners(ctx: &SlotCx, cx: &mut App) -> Vec<AnyElement> {
-    diagnostics::banners(ctx, cx)
+pub fn banners(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
+    diagnostics::banners(ctx, window, cx)
 }
 
 /// The user and server settings registries, in settings/registry.ts's order; each entry points into its area's module.

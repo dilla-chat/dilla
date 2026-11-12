@@ -10,7 +10,7 @@ use crate::slots::{SectionId, SlotCx};
 use gpui::{AnyElement, App, Empty, IntoElement, Window};
 
 /// This area's aside (`slots::aside`): `None` while it is closed.
-pub fn pane(_route: &Route, _cx: &mut App) -> Option<AnyElement> {
+pub fn pane(_route: &Route, _window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
     None
 }
 

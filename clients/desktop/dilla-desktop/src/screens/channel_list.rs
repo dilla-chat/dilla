@@ -99,6 +99,7 @@ fn row(
     active: bool,
     unread: u32,
     on_select: OnSelect,
+    window: &mut Window,
     cx: &mut App,
 ) -> gpui::AnyElement {
     let id = c.id;
@@ -111,7 +112,7 @@ fn row(
         .relative()
         .mt(layout::LIST_GAP)
         .child(row)
-        .child(crate::slots::channel_row_extras(c, cx));
+        .child(crate::slots::channel_row_extras(c, window, cx));
     #[cfg(feature = "automation")]
     let item = item.child(crate::automation::bounds_probe(row_probe(&c.name)));
     // A voice channel's item is 30px: its 28px button 1px in (VoiceChannelRow.css).
@@ -156,6 +157,7 @@ fn category(c: &Channel) -> gpui::AnyElement {
 pub fn render(
     model: &ListModel<'_>,
     on_select: OnSelect,
+    window: &mut Window,
     cx: &mut App,
 ) -> impl IntoElement + use<> {
     let state = model.state;
@@ -221,6 +223,7 @@ pub fn render(
                         model.selected == Some(ch.id),
                         state.unread_of(ch.id),
                         on_select.clone(),
+                        window,
                         cx,
                     )
                 }

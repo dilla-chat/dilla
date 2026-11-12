@@ -5,12 +5,17 @@
 
 pub mod keys;
 
-use crate::slots::{MessageAction, SlotCx};
+use crate::slots::{Extra, MessageAction, SlotCx};
 use dilla_client::state::TimelineItem;
-use gpui::{AnyElement, App};
+use gpui::{AnyElement, App, Window};
 
 /// The reaction bar under a message (`slots::message_extras`, last).
-pub fn reaction_bar(_item: &TimelineItem, _ctx: &SlotCx, _cx: &mut App) -> Option<AnyElement> {
+pub fn reaction_bar(
+    _item: &TimelineItem,
+    _ctx: &SlotCx,
+    _window: &mut Window,
+    _cx: &mut App,
+) -> Option<Extra> {
     None
 }
 
@@ -20,6 +25,6 @@ pub fn message_actions(_item: &TimelineItem) -> Vec<MessageAction> {
 }
 
 /// The composer's emoji button (`slots::composer_buttons`, after the attachment buttons).
-pub fn emoji_button(_ctx: &SlotCx, _cx: &mut App) -> Option<AnyElement> {
+pub fn emoji_button(_ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
     None
 }

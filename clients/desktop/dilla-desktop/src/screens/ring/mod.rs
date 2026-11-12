@@ -5,9 +5,9 @@
 
 pub mod keys;
 
-use gpui::{AnyElement, App};
+use gpui::{AnyElement, App, Window};
 
 /// The ring banner (`slots::overlays`).
-pub fn ring_banner(_cx: &mut App) -> Option<AnyElement> {
+pub fn ring_banner(_window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
     None
 }

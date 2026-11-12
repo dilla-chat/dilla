@@ -101,19 +101,27 @@ implements only its own hook. Every hook below exists as a stub with a fixed sig
 
 | Slot (host) | Guests in order (task: hook) |
 |---|---|
-| `message_extras(item, ctx, cx) -> AnyElement` (timeline, 9) | 11 `threads::reply_chip`, 12 `attachments::attachment_cards`, 20 `commands::poll_card`, 10 `reactions::reaction_bar`, 11 `threads::thread_count` |
+| `message_extras(item, ctx, window, cx) -> (AnyElement, f32)` (timeline, 9) | 11 `threads::reply_chip`, 12 `attachments::attachment_cards`, 20 `commands::poll_card`, 10 `reactions::reaction_bar`, 11 `threads::thread_count` |
 | `message_actions(item) -> Vec<MessageAction>` (toolbar and context menu, 9) | 9 `messages::message_actions`, 11 `threads::message_actions`, 10 `reactions::message_actions` |
-| `composer_leading(ctx, cx) -> AnyElement` (composer, 9) | 11 `threads::reply_bar`, 12 `attachments::tray` |
-| `composer_buttons(ctx, cx) -> AnyElement` (composer, 9) | 12 `attachments::composer_buttons`, 10 `reactions::emoji_button` |
-| `composer_popup(ctx, cx) -> Option<AnyElement>` (composer, 9) | 20 `commands::picker` (the mention popup stays Task 9's own) |
-| `channel_row_extras(ch, cx) -> AnyElement` (channel list, 8) | 17 `voice::channel_people` |
-| `aside(route, cx) -> Option<AnyElement>` (shell, 8) | 11 `threads::pane`, else 14 `members::pane` |
-| `dock(cx) -> Option<AnyElement>` (shell, 8) | 17 `voice::dock`, 21 `bot_admin::now_playing` |
-| `overlays(cx) -> Vec<AnyElement>` (shell, 8) | 23 `search::palette`, 18 `ring::ring_banner`; Task 6's toasts and dialogs join at merge |
-| `banners(ctx, cx) -> Vec<AnyElement>` (shell, 8) | 24 `diagnostics::banners` |
+| `composer_leading(ctx, window, cx) -> AnyElement` (composer, 9) | 11 `threads::reply_bar`, 12 `attachments::tray` |
+| `composer_buttons(ctx, window, cx) -> AnyElement` (composer, 9) | 12 `attachments::composer_buttons`, 10 `reactions::emoji_button` |
+| `composer_popup(ctx, window, cx) -> Option<AnyElement>` (composer, 9) | 20 `commands::picker` (the mention popup stays Task 9's own) |
+| `channel_row_extras(ch, window, cx) -> AnyElement` (channel list, 8) | 17 `voice::channel_people` |
+| `aside(route, window, cx) -> Option<AnyElement>` (shell, 8) | 11 `threads::pane`, else 14 `members::pane` |
+| `dock(window, cx) -> Option<AnyElement>` (shell, 8) | 17 `voice::dock`, 21 `bot_admin::now_playing` |
+| `overlays(window, cx) -> Vec<AnyElement>` (shell, 8) | 23 `search::palette`, 18 `ring::ring_banner`; Task 6's toasts and dialogs join at merge |
+| `banners(ctx, window, cx) -> Vec<AnyElement>` (shell, 8) | 24 `diagnostics::banners` |
 | `settings_sections() -> Vec<SettingsSection>` (settings frame, 6 and 8) | user: Profile, Devices, Appearance, Keyboard (16 `user_settings`), Sign-in (26 `factor`), Notifications (22 `notify`), Voice (19 `voice_settings`), Privacy (13 `dms`), Diagnostics (24 `diagnostics`); server: Overview, Channels, GIFs, Invites, Welcome, Join roles, Danger (15 `server_settings`), Members, Roles, Self roles, Moderation log, Bans (14 `members`), Bot, Music (21 `bot_admin`). Each points at the area's `settings_section` |
 
-Hooks are under `D/screens/<area>/mod.rs`, so `threads::pane` means `D/screens/threads/mod.rs`.
+Hooks are under `D/screens/<area>/mod.rs`, so `threads::pane` means `D/screens/threads/mod.rs`. Every render hook
+gets `&mut Window` and `&mut App`, so a guest can add hover, tooltips and focus itself.
+
+- **Message extras:** each `message_extras` guest returns `Option<slots::Extra>`, which is its element and its height in
+  logical px, computed from its content and the tokens (R21). The timeline adds the sum to the row's height, so the rows
+  below and the scroll range follow.
+- **`composer_leading`:** it is in normal flow inside the composer's box. A non-empty reply bar or tray makes the
+  composer taller, and the log, the main column's `flex_1`, gets shorter. Tasks 8 and 9 keep it that way: no absolute
+  placement and no fixed composer height.
 
 Calls from one area into another, declared as stubs and implemented by the callee:
 
@@ -141,6 +149,15 @@ The sync engine consumes ops 16 to 21 and 54. Every other op the TS client dispa
 | 53 `call_ring`, 55 `afk_away` | ring (18): `features::ring::Ring` |
 | 56 `app_build` | diagnostics (24): `features::diagnostics::Diagnostics` |
 | 61 `bot_catalog`, 62 `bot_reply`, 63 `bot_state_changed` | bot (20): `features::bot::Bot` |
+
+The call-related ops are split this way, so neither task needs the other's `on_frame`:
+
+- **Op 50 `voice_state`** belongs to Task 17. It covers the voice roster of every channel, DM calls included, and this
+  device's own state. Task 17 publishes it in `AppState::voice`.
+- **Op 53 `call_ring` and op 55 `afk_away`** belong to Task 18: rings in and out, busy, decline, timeout and the AFK
+  move. Task 18 publishes them in `AppState::ring`.
+- **What each task reads from the other:** Task 18 reads `AppState::voice` and calls `Client::voice()` to join or leave
+  a DM call. Task 17 reads `AppState::ring`. Neither handles the other's ops.
 
 ## Preferences (`C/prefs.rs`)
 

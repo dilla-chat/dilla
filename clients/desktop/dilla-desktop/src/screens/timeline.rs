@@ -12,7 +12,7 @@ use chrono::Datelike;
 use dilla_client::state::{AppState, Channel, Member, TimelineItem, TimelineItemState, UserId};
 use gpui::{
     AnyElement, App, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
-    StatefulInteractiveElement, Styled, div, px,
+    StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use dilla_desktop_ui::components::{Avatar, AvatarSize};
@@ -78,6 +78,47 @@ struct Shown<'a> {
     last: bool,
     /// The body's lines, wrapped to the content width.
     lines: Vec<Line>,
+    /// What other areas draw under the body ([`slots::message_extras`]), and its height.
+    extras: Option<AnyElement>,
+    extras_height: f32,
+}
+
+impl Shown<'_> {
+    fn shape(&self) -> RowShape {
+        RowShape {
+            grouped: self.grouped,
+            last: self.last,
+            lines: self.lines.len(),
+            extras: self.extras_height,
+            divider: self.divider.is_some(),
+        }
+    }
+}
+
+/// What a row's height depends on.
+#[derive(Clone, Copy, Debug)]
+struct RowShape {
+    grouped: bool,
+    last: bool,
+    lines: usize,
+    /// The height of the row's extras under its body (0 when no area draws any).
+    extras: f32,
+    /// A day divider above the row.
+    divider: bool,
+}
+
+/// Each row's top, from `start`, and the end of the last row: a divider, then the row, one after another.
+fn row_tops(start: f32, rows: &[RowShape]) -> (Vec<f32>, f32) {
+    let mut y = start;
+    let mut tops = Vec::with_capacity(rows.len());
+    for r in rows {
+        if r.divider {
+            y += divider_height();
+        }
+        tops.push(y);
+        y += row_height(r.grouped, r.last, r.lines, r.extras);
+    }
+    (tops, y)
 }
 
 fn readable(i: &TimelineItem) -> bool {
@@ -142,14 +183,14 @@ fn body_offset(grouped: bool) -> f32 {
     }
 }
 
-/// The height Chromium gives a row with `lines` body lines.
-fn row_height(grouped: bool, last: bool, lines: usize) -> f32 {
+/// The height Chromium gives a row with `lines` body lines and `extras` px of other areas' parts under the body.
+fn row_height(grouped: bool, last: bool, lines: usize, extras: f32) -> f32 {
     let slot = if last {
         0.0
     } else {
         MAIN_GAP + ATTACHMENTS_MARGIN
     };
-    let body = lines as f32 * body_line();
+    let body = lines as f32 * body_line() + extras;
     if grouped {
         FOLLOW_PAD + body + slot + FOLLOW_PAD
     } else {
@@ -316,6 +357,7 @@ pub fn render(
     pinned: bool,
     on_wheel: OnWheel,
     ctx: &SlotCx,
+    window: &mut Window,
     cx: &mut App,
 ) -> impl IntoElement + use<> {
     let members: &[Member] = state
@@ -338,6 +380,7 @@ pub fn render(
             TimelineItemState::Failed => color::DANGER,
             _ => color::FG_3,
         };
+        let (extras, extras_height) = slots::message_extras(item, ctx, window, cx);
         shown.push(Shown {
             item,
             grouped: grouped_with_above(prev, item, clock),
@@ -350,18 +393,14 @@ pub fn render(
                 body_color,
                 body_width,
             ),
+            extras: Some(extras),
+            extras_height,
         });
     }
     let (title, body) = welcome_lines(&channel.name, width);
-    let mut content = LOG_TOP + welcome_height(title.len(), body.len()) + LOG_BOTTOM;
-    for s in &shown {
-        content += row_height(s.grouped, s.last, s.lines.len())
-            + if s.divider.is_some() {
-                divider_height()
-            } else {
-                0.0
-            };
-    }
+    let shapes: Vec<RowShape> = shown.iter().map(Shown::shape).collect();
+    let (_, rows_end) = row_tops(0.0, &shapes);
+    let content = LOG_TOP + welcome_height(title.len(), body.len()) + LOG_BOTTOM + rows_end;
     // Chromium's scroll range is whole pixels: the content's height rounds, and at the end that rounding sits below the
     // last row. A log shorter than its viewport keeps to the viewport's bottom (`margin-top: auto`).
     let viewport = f32::from(scroll.bounds().size.height);
@@ -375,17 +414,16 @@ pub fn render(
     let mut placer = Placer { out: Vec::new() };
     let mut y = lift + LOG_TOP;
     y += placer.welcome(y, title, body);
-    for s in shown {
+    let (tops, _) = row_tops(y, &shapes);
+    for (mut s, top) in shown.into_iter().zip(tops) {
         if let Some(label) = s.divider.clone() {
-            placer.divider(y, width, label);
-            y += divider_height();
+            placer.divider(top - divider_height(), width, label);
         }
-        let h = row_height(s.grouped, s.last, s.lines.len());
-        let extras = slots::message_extras(s.item, ctx, cx);
-        let body_end = y + body_offset(s.grouped) + s.lines.len() as f32 * body_line();
-        placer.row(y, s, members, clock);
-        placer.block(CONTENT_X, body_end, extras);
-        y += h;
+        let body_end = top + body_offset(s.grouped) + s.lines.len() as f32 * body_line();
+        if let Some(extras) = s.extras.take() {
+            placer.block(CONTENT_X, body_end, extras);
+        }
+        placer.row(top, s, members, clock);
     }
     div()
         .id("message-log")
@@ -451,9 +489,9 @@ mod tests {
     #[test]
     fn heights_come_from_the_css() {
         // The reference's DOM: 54.89 for a row, 49.89 for the log's last row, 75.03 for two lines; 131 for the welcome.
-        assert!((row_height(false, false, 1) - 54.890_625).abs() < 1e-4);
-        assert!((row_height(false, true, 1) - 49.890_625).abs() < 1e-4);
-        assert!((row_height(false, false, 2) - 75.031_25).abs() < 1e-4);
+        assert!((row_height(false, false, 1, 0.0) - 54.890_625).abs() < 1e-4);
+        assert!((row_height(false, true, 1, 0.0) - 49.890_625).abs() < 1e-4);
+        assert!((row_height(false, false, 2, 0.0) - 75.031_25).abs() < 1e-4);
         assert_eq!(welcome_height(1, 1), 131.0);
         assert_eq!(divider_height(), 23.0);
     }
@@ -464,5 +502,34 @@ mod tests {
         let clock = Clock::Fixed { now, utc: true };
         assert_eq!(day_label(now - 60, clock), "today");
         assert_eq!(day_label(now - 86_400, clock), "yesterday");
+    }
+
+    /// Another area's part under a message (reactions, cards, a poll, a reply chip) moves every row below it down by
+    /// exactly its height, and the log's content grows by it.
+    #[test]
+    fn extras_height_moves_the_next_row_down() {
+        let row = |extras: f32, last: bool| RowShape {
+            grouped: false,
+            last,
+            lines: 1,
+            extras,
+            divider: false,
+        };
+        let follow = RowShape {
+            grouped: true,
+            last: true,
+            lines: 2,
+            extras: 0.0,
+            divider: true,
+        };
+        let (plain, plain_end) = row_tops(12.0, &[row(0.0, false), row(0.0, false), follow]);
+        let (with, with_end) = row_tops(12.0, &[row(0.0, false), row(26.5, false), follow]);
+        assert_eq!(with[0], plain[0]);
+        assert_eq!(with[1], plain[1], "the row with extras starts where it did");
+        assert!(
+            (with[2] - plain[2] - 26.5).abs() < 1e-4,
+            "the next row moves down by the extras' height"
+        );
+        assert!((with_end - plain_end - 26.5).abs() < 1e-4);
     }
 }
