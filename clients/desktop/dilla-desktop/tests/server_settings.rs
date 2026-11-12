@@ -107,3 +107,34 @@ fn keyboard_server_settings_escape_and_lost_section() {
         Some(ServerSection::Members)
     );
 }
+
+/// Tab walks the Overview in its visual order and reaches the Leave button (`server-settings-leave`, registered by this
+/// area on its own focus handle); Shift+Tab walks back out of it. The nav and the fields are the shared components'.
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "the headless renderer is Linux only here"
+)]
+fn keyboard_server_settings_tab_reaches_leave_and_shift_tab_leaves_it() {
+    let mut driver = dilla_parity::Driver::launch_fixture(&fixture("overview"), None, &[]);
+    driver.wait_idle();
+    let mut forward = Vec::new();
+    for _ in 0..40 {
+        driver.press("tab");
+        driver.wait_idle();
+        if let Some(id) = driver.focused() {
+            forward.push(id.clone());
+            if id == "server-settings-leave" {
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        forward.last().map(String::as_str),
+        Some("server-settings-leave"),
+        "tabbing reaches the Leave button: {forward:?}"
+    );
+    driver.press("shift-tab");
+    driver.wait_idle();
+    assert_ne!(driver.focused().as_deref(), Some("server-settings-leave"));
+}

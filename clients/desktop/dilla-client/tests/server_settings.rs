@@ -168,7 +168,7 @@ async fn server_rename_channel_edit_leave_hand_over_delete() {
     .await;
     admin.leave(c).wait().await.expect("alice leaves");
     wait_for(&a, Duration::from_secs(10), "the server gone", |s| {
-        s.communities.iter().all(|x| x.id != c) && s.server_admin.access.get(&c).is_none()
+        s.communities.iter().all(|x| x.id != c) && !s.server_admin.access.contains_key(&c)
     })
     .await;
 
@@ -377,15 +377,12 @@ async fn member_makes_invite_link_under_invites() {
     let b = start(&pb).await;
     channel_named(&b, c, "general").await;
     let admin = b.server_admin();
-    let created = admin.create_invite(c, 10, 604_800).wait().await;
-    // A plain member may not invite unless a role grants it; the owner's own link is what the e2e spec then lists.
-    let created = match created {
-        Ok(created) => created,
-        Err(e) => {
-            assert!(e.forbidden(), "{e}");
-            return;
-        }
-    };
+    // Every member holds create-invite by default (the instance's @everyone base), so the plain member makes the link.
+    let created = admin
+        .create_invite(c, 10, 604_800)
+        .wait()
+        .await
+        .expect("a plain member makes an invite link");
     assert!(created.url.contains(&format!("/i/{}", created.code)));
     let _ = &host;
     admin

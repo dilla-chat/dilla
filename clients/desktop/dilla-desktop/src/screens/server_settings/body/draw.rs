@@ -5,7 +5,7 @@ use dilla_client::state::Channel;
 use dilla_client::state::server_admin::GifRating;
 use gpui::{
     AnyElement, App, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window,
-    div, px,
+    div, prelude::FluentBuilder as _,
 };
 
 use dilla_desktop_ui::IconName;
@@ -45,6 +45,34 @@ fn track_id(id: String) -> &'static str {
         ids.insert(id, leaked);
         leaked
     })
+}
+
+/// `section_header` with a sub-line that wraps at 60 columns (`max-width: 60ch`), as a longer sub-line does on the web.
+fn header_wrapped(title: &str, sub: &str) -> AnyElement {
+    let width = 60.0 * f32::from(text::UI) * dilla_desktop_ui::text::MONO_ADVANCE;
+    div()
+        .flex()
+        .flex_col()
+        .pb(layout::HEADING_TOP)
+        .child(
+            line(
+                title.to_owned(),
+                text::HEADING,
+                line_height(text::HEADING, 1.5),
+                color::FG,
+            )
+            .weight(font::WEIGHT_DISPLAY),
+        )
+        .child(div().pt(layout::HEAD_GAP).flex().flex_col().children(
+            dilla_desktop_ui::text::paragraph(
+                sub,
+                text::UI,
+                line_height(text::UI, 1.5),
+                color::FG_2,
+                width,
+            ),
+        ))
+        .into_any_element()
 }
 
 /// A handler of the settings' own entity, for the components that take a plain closure.
@@ -149,11 +177,20 @@ impl Body {
         if access.loaded && access.manage_community {
             let mut field = TextField::new("server-name", t("admin.overview.name"), &self.name)
                 .disabled(draft.busy);
-            if !draft.afk_failure
-                && let Some(e) = &draft.error
-            {
+            let refused = !draft.afk_failure && draft.error.is_some();
+            if refused && let Some(e) = &draft.error {
                 field = field.error(e.clone());
             }
+            // The label is the accessible name only (`.dw-overview-field`): out of sight, unless a refusal needs room.
+            let framed = if refused {
+                div().w(layout::text_input_width()).child(field)
+            } else {
+                div()
+                    .w(layout::text_input_width())
+                    .h(layout::FIELD_H)
+                    .overflow_hidden()
+                    .child(div().mt(layout::hidden_label_offset()).child(field))
+            };
             rows = rows.child(
                 SettingsRow::new("server-name-row", t("admin.overview.name"))
                     .icon(IconName::Server)
@@ -163,7 +200,7 @@ impl Body {
                     } else {
                         GroupPosition::Only
                     })
-                    .child(field),
+                    .child(framed),
             );
         }
         let options: Vec<(String, &'static str)> = AFK_TIMEOUTS
@@ -219,8 +256,11 @@ impl Body {
             .position(GroupPosition::Last)
             .icon(IconName::LogOut)
             .hint(t("admin.overview.leaveHint"))
-            .child(
+            .child(crate::tracked_focus(
+                "server-settings-leave",
+                &self.leave_focus,
                 Button::new("leave-server", t("admin.leave.confirm"))
+                    .focus_handle(&self.leave_focus)
                     .variant(ButtonVariant::Danger)
                     .on_click(act_click(cx, |this, _, cx| {
                         if this.access().owner {
@@ -231,7 +271,7 @@ impl Body {
                         }
                         cx.notify();
                     })),
-            );
+            ));
         if self.owner_note {
             leave = leave.child(dim(tf("admin.leave.owner", &[("server", &name)])));
         }
@@ -284,7 +324,8 @@ impl Body {
             vec![section_header(t("admin.channels.title"), None).into_any_element()];
         out.push(
             div()
-                .pb(layout::SECTION_GAP)
+                .flex()
+                .pb(layout::GROUP_GAP)
                 .child(
                     Button::new("new-category", t("admin.channels.newCategory")).on_click(
                         act_click(cx, |this, _, cx| {
@@ -310,7 +351,7 @@ impl Body {
                 .items_center()
                 .gap(layout::ROW_GAP)
                 .h(layout::HEAD_H)
-                .px(layout::ROW_PAD_X)
+                .mb(layout::HEAD_GAP)
                 .child(
                     div().flex_1().min_w_0().child(
                         line(head_name, text::SM, line_height(text::SM, 1.5), color::FG)
@@ -324,6 +365,14 @@ impl Body {
             }
             block = block.child(head);
             let n = group.channels.len();
+            // The list is one bordered card; its rows are divided by hairlines.
+            let mut card = div()
+                .flex()
+                .flex_col()
+                .border_1()
+                .border_color(color::HAIRLINE)
+                .rounded(radius::XL)
+                .overflow_hidden();
             for (i, c) in group.channels.iter().enumerate() {
                 let (up, down) = model::move_slots(group, afk, c);
                 let fixed = model::fixed(c, afk);
@@ -335,15 +384,14 @@ impl Body {
                             .get(&self.community)
                             .is_some_and(|rows| is_private(rows, c.id, e))
                     });
-                let position = GroupPosition::of(i, n);
                 let mut row = div()
                     .flex()
                     .items_center()
                     .gap(layout::ROW_GAP)
-                    .h(layout::list_row_height(position.min_height()))
-                    .px(layout::ROW_PAD_X)
+                    .h(layout::LIST_ROW_H)
+                    .px(layout::LIST_PAD_X)
                     .border_color(color::HAIRLINE)
-                    .border_t_1()
+                    .when(i > 0, |r| r.border_t_1())
                     .child(
                         div().flex_1().min_w_0().child(
                             line(
@@ -355,14 +403,14 @@ impl Body {
                             .ellipsis(),
                         ),
                     );
-                if i + 1 == n {
-                    row = row.border_b_1();
-                }
                 if private {
                     row = row.child(tag(t("chperm.privateTag")));
                 }
                 row = row.child(self.row_controls(c, up, down, fixed, cx));
-                block = block.child(row);
+                card = card.child(row);
+            }
+            if n > 0 {
+                block = block.child(card);
             }
             out.push(block.into_any_element());
         }
@@ -446,6 +494,7 @@ impl Body {
         div()
             .flex()
             .flex_none()
+            .gap(layout::TRAIL_GAP)
             .items_center()
             .child(slot("up", up_slot.map(IntoElement::into_any_element)))
             .child(slot("down", down_slot.map(IntoElement::into_any_element)))
@@ -805,7 +854,7 @@ impl Body {
         let gifs = self.state.server_admin.gifs.get(&self.community).copied();
         let mut out: Vec<AnyElement> =
             vec![section_header(t("workspace.gifs"), None).into_any_element()];
-        let mut inner = div().flex().flex_col().gap(layout::FIELD_GAP);
+        let mut inner = div().flex().flex_col().gap(layout::GIFS_GAP);
         inner = inner.child(line(
             t("gif.settings.getKey"),
             text::SM,
@@ -823,7 +872,12 @@ impl Body {
                             .flex()
                             .items_center()
                             .gap(layout::FIELD_GAP)
-                            .child(dim(t("gif.settings.maskedLabel")))
+                            .child(div().mr(layout::ROW_GAP).child(line(
+                                t("gif.settings.maskedLabel"),
+                                text::UI,
+                                line_height(text::UI, 1.5),
+                                color::FG,
+                            )))
                             .child(
                                 Button::new("gif-replace", t("gif.settings.replace")).on_click(
                                     act_click(cx, |this, _, cx| {
@@ -899,7 +953,6 @@ impl Body {
         out.push(
             SettingsRow::new("gif-row", t("gif.settings.title"))
                 .hint(t("gif.settings.hint"))
-                .layout(Layout::Stacked)
                 .child(inner)
                 .into_any_element(),
         );
@@ -955,34 +1008,54 @@ impl Body {
             .iter()
             .map(|(v, l)| (v.as_str(), l.as_str()))
             .collect();
-        let mut panel =
+        let choice = |label: &str, control: AnyElement| {
             div()
                 .flex()
                 .flex_col()
-                .gap(layout::SECTION_GAP)
-                .child(
-                    SettingsRow::new("invite-expiry", t("serverSettings.invites.expires")).child(
-                        Segmented::new("invite-ttl", &ttl_pairs, ttl.to_string()).on_change(
-                            act_value(cx, |this, value, _w, cx| {
+                .gap(layout::ROW_GAP)
+                .child(line(
+                    label.to_owned(),
+                    text::SM,
+                    line_height(text::SM, 1.5),
+                    color::FG_2,
+                ))
+                .child(control)
+        };
+        let mut panel = div()
+            .flex()
+            .flex_col()
+            .gap(layout::SECTION_GAP)
+            .p(layout::INVITE_PAD_X)
+            .border_1()
+            .border_color(color::HAIRLINE)
+            .rounded(dilla_desktop_ui::tokens::radius::MD)
+            .child(
+                div()
+                    .flex()
+                    .gap(layout::HEADING_TOP)
+                    .child(choice(
+                        t("serverSettings.invites.expires"),
+                        Segmented::new("invite-ttl", &ttl_pairs, ttl.to_string())
+                            .on_change(act_value(cx, |this, value, _w, cx| {
                                 if let Ok(v) = value.parse() {
                                     this.ttl = v;
                                 }
                                 cx.notify();
-                            }),
-                        ),
-                    ),
-                )
-                .child(
-                    SettingsRow::new("invite-uses", t("serverSettings.invites.uses")).child(
+                            }))
+                            .into_any_element(),
+                    ))
+                    .child(choice(
+                        t("serverSettings.invites.uses"),
                         Segmented::new("invite-uses-choice", &uses_pairs, uses.to_string())
                             .on_change(act_value(cx, |this, value, _w, cx| {
                                 if let Ok(v) = value.parse() {
                                     this.uses = v;
                                 }
                                 cx.notify();
-                            })),
-                    ),
-                );
+                            }))
+                            .into_any_element(),
+                    )),
+            );
         if !manager {
             panel = panel.child(dim(t("serverSettings.invites.managersOnly")));
         }
@@ -997,6 +1070,7 @@ impl Body {
                             t("serverSettings.invites.make")
                         },
                     )
+                    .icon(IconName::Plus)
                     .variant(ButtonVariant::Accent)
                     .disabled(self.making)
                     .on_click(act_click(cx, |this, window, cx| {
@@ -1079,7 +1153,12 @@ impl Body {
         };
         let n = shown.len();
         for (i, invite) in shown.into_iter().enumerate() {
-            let texts = model::invite_texts(&invite, &self.host, now);
+            let host = if self.state.server_admin.host.is_empty() {
+                self.host.clone()
+            } else {
+                self.state.server_admin.host.clone()
+            };
+            let texts = model::invite_texts(&invite, &host, now);
             let maker = match invite.created_by {
                 None => t("admin.bans.unknownUser").to_owned(),
                 Some(u) => members
@@ -1153,9 +1232,21 @@ impl Body {
         } else {
             t("admin.bot.joinRole.title")
         };
-        let mut out: Vec<AnyElement> = vec![section_header(title, None).into_any_element()];
+        // The Welcome panel carries its own heading; Join roles has the section's.
+        let mut out: Vec<AnyElement> = vec![
+            section_header(
+                if section == ServerSection::Welcome {
+                    t("workspace.welcome")
+                } else {
+                    title
+                },
+                None,
+            )
+            .into_any_element(),
+        ];
         out.push(
             div()
+                .flex()
                 .pb(layout::SECTION_GAP)
                 .child(
                     Button::new("bot-setup", t("workspace.botSetup")).on_click(act_click(
@@ -1168,11 +1259,44 @@ impl Body {
                 )
                 .into_any_element(),
         );
-        out.push(if section == ServerSection::Welcome {
-            dim(t("admin.bot.welcomeSettings.requiresCapability"))
+        if section == ServerSection::Welcome {
+            // The panel until the bot installation (Task 21) fills it: its heading and help, why it cannot be used, and
+            // its disabled load button.
+            let para = |key: &str| {
+                line(
+                    t(key),
+                    text::BASE,
+                    line_height(text::BASE, 1.5),
+                    color::FG_2,
+                )
+            };
+            out.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        line(
+                            title,
+                            text::PREVIEW,
+                            line_height(text::PREVIEW, 1.5),
+                            color::FG,
+                        )
+                        .weight(font::WEIGHT_DISPLAY),
+                    )
+                    .child(para("admin.bot.welcomeSettings.help"))
+                    .child(para("admin.bot.welcomeSettings.requiresCapability"))
+                    .child(para("admin.bot.welcomeSettings.noChannels"))
+                    .child(
+                        div().flex().child(
+                            Button::new("welcome-load", t("admin.bot.welcomeSettings.load"))
+                                .disabled(true),
+                        ),
+                    )
+                    .into_any_element(),
+            );
         } else {
-            dim(t("admin.bot.joinRole.requiresBot"))
-        });
+            out.push(dim(t("admin.bot.joinRole.requiresBot")));
+        }
         out
     }
 
@@ -1199,26 +1323,25 @@ impl Body {
             })
             .unwrap_or_default();
         let members_known = self.state.members.contains_key(&self.community);
-        let mut out: Vec<AnyElement> = vec![
-            section_header(
-                t(if owner {
-                    "admin.nav.delete"
-                } else {
-                    "admin.nav.leave"
-                }),
-                None,
-            )
-            .into_any_element(),
-        ];
-        let mut rows = div().flex().flex_col().gap(layout::SECTION_GAP);
+        let title = t(if owner {
+            "admin.nav.delete"
+        } else {
+            "admin.nav.leave"
+        });
+        let mut out: Vec<AnyElement> = vec![if owner {
+            header_wrapped(title, &tf("admin.leave.owner", &[("server", &name)]))
+        } else {
+            section_header(title, None).into_any_element()
+        }];
+        let mut rows = div().flex().flex_col();
         if owner {
-            rows = rows.child(dim(tf("admin.leave.owner", &[("server", &name)])));
             if members_known && others.is_empty() {
                 rows = rows.child(dim(t("admin.transfer.none")));
             }
             if !others.is_empty() {
                 rows = rows.child(
                     SettingsRow::new("transfer-row", t("admin.nav.transfer"))
+                        .position(GroupPosition::First)
                         .icon(IconName::Crown)
                         .child(
                             Button::new("transfer-open", t("admin.nav.transfer")).on_click(
@@ -1231,6 +1354,11 @@ impl Body {
             }
             rows = rows.child(
                 SettingsRow::new("delete-row", t("admin.nav.delete"))
+                    .position(if others.is_empty() {
+                        GroupPosition::Only
+                    } else {
+                        GroupPosition::Last
+                    })
                     .icon(IconName::Trash2)
                     .child(
                         Button::new("delete-open", t("admin.nav.delete"))

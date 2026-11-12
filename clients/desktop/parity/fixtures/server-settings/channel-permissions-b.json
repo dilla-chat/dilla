@@ -111,8 +111,8 @@
   "steps": [
     {
       "do": "click",
-      "web": "css=[aria-label=\"edit Daily standup\"]",
-      "gpui": "edit-Daily standup"
+      "web": "css=[aria-label=\"edit Lounge\"]",
+      "gpui": "edit-Lounge"
     },
     {
       "do": "settle"

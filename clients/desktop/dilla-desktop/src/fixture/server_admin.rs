@@ -6,7 +6,7 @@
 
 use dilla_client::features::server_admin::{AFK_BUILTIN_POSITION, AFK_DEFAULT_TIMEOUT, access_of};
 use dilla_client::state::AppState;
-use dilla_client::state::server_admin::{AfkSettings, GifRating, GifSettings};
+use dilla_client::state::server_admin::AfkSettings;
 use dilla_client::testing::spec::WorldSpec;
 
 /// Maps the facet into `state`.
@@ -23,14 +23,6 @@ pub(super) fn apply(_world: &WorldSpec, _viewer: &str, state: &mut AppState) {
             .iter()
             .find(|c| c.community_id == community.id && c.position == AFK_BUILTIN_POSITION)
             .map(|c| c.id);
-        // A server with no key and the instance's default rating (the GIF settings' "ready" state).
-        state.server_admin.gifs.insert(
-            community.id,
-            GifSettings {
-                on: false,
-                rating: GifRating::Pg13,
-            },
-        );
         state.server_admin.afk.insert(
             community.id,
             AfkSettings {

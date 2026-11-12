@@ -144,6 +144,8 @@ pub struct Body {
     gif_key: Entity<InputState>,
     gif_editing: bool,
     gif_busy: bool,
+    /// The Overview's Leave button's focus (the automation id `server-settings-leave`).
+    leave_focus: gpui::FocusHandle,
     gif_error: Option<SharedString>,
     // Invites.
     ttl: u64,
@@ -227,7 +229,7 @@ impl Body {
                 },
             ));
         }
-        let host = "dilla.example".to_owned();
+        let host = String::new();
         let mut this = Self {
             community,
             state,
@@ -252,6 +254,7 @@ impl Body {
             gif_key,
             gif_editing: false,
             gif_busy: false,
+            leave_focus: cx.focus_handle().tab_stop(true),
             gif_error: None,
             ttl: model::DEFAULT_TTL_S,
             uses: model::DEFAULT_USES,
@@ -264,6 +267,9 @@ impl Body {
             requested: Vec::new(),
             _subscriptions: subscriptions,
         };
+        // What the state already holds (a fixture's, or a running client's last snapshot) is the draft's baseline.
+        let (state, client) = (this.state.clone(), this.client.clone());
+        this.sync(state, client, cx);
         this.load_access(cx);
         this
     }

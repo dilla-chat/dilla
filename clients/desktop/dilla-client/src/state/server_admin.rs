@@ -150,4 +150,6 @@ pub struct ServerAdminState {
     pub gifs: HashMap<CommunityId, GifSettings>,
     pub overwrites: HashMap<CommunityId, Vec<Overwrite>>,
     pub welcome: HashMap<CommunityId, Option<WelcomeSettings>>,
+    /// The instance's host as invite links show it (`host:port`), once known: from a link made, or the fixture.
+    pub host: String,
 }
