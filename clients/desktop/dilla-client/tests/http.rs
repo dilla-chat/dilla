@@ -1,29 +1,20 @@
 //! The HTTP client against the TypeScript client's route table, a mock server, and a real dillad.
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::path::Path;
+use std::process::Command;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use dilla_client::http::routes::{
-    self, Answer, BodyEncoding, ChallengeAnswer, GetAccountMe, GetBackup, GetDeviceList,
-    GetInstance, ListCommunities, NegotiateSession, NegotiatedAnswer, NoBody, PasswordLogin,
-    PasswordLoginAnswer, PostChallenge, PostSession, Raw, Reply, SessionAnswer, TotpVerify,
-    TotpVerifyAnswer, Transport,
+    self, Answer, BodyEncoding, GetAccountMe, GetBackup, ListCommunities, NegotiateSession,
+    NegotiatedAnswer, NoBody, PasswordLogin, PasswordLoginAnswer, Reply, Transport,
 };
 use dilla_client::http::{AuthToken, ReqwestHttp, fill_path};
-use dilla_client::seams::{Http, HttpError};
+use dilla_client::seams::{Http, HttpError, Route};
 use url::Url;
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .canonicalize()
-        .expect("repo root")
-}
 
 // ---- route_table_matches_ts ----
 
@@ -46,12 +37,13 @@ fn answer_name(a: Answer) -> &'static str {
 /// `name | request | answer | auth | ok | transport`: everything the TypeScript source says of a route.
 fn describe_rust(e: &routes::Entry) -> String {
     format!(
-        "{} | {} | {} | auth={} | ok={:?} | {}",
+        "{} | {} | {} | auth={} | ok={:?} | max={:?} | {}",
         e.name,
         request_name(e.request),
         answer_name(e.answer),
         e.auth,
         e.ok,
+        e.max_body,
         if e.transport == Transport::Socket {
             "socket"
         } else {
@@ -68,12 +60,13 @@ fn describe_ts(v: &serde_json::Value) -> String {
         .map(|n| n.as_u64().expect("status"))
         .collect();
     format!(
-        "{} | {} | {} | auth={} | ok={:?} | {}",
+        "{} | {} | {} | auth={} | ok={:?} | max={:?} | {}",
         v["name"].as_str().expect("name"),
         v["request"].as_str().expect("request"),
         v["response"].as_str().expect("response"),
         v["auth"].as_bool().expect("auth"),
         ok,
+        v["maxBody"].as_u64(),
         v["transport"].as_str().expect("transport")
     )
 }
@@ -291,12 +284,14 @@ async fn the_request_is_what_the_typescript_client_sends() {
     let (url, served) =
         mock(b"HTTP/1.1 200 OK\r\ncontent-length: 1\r\nconnection: close\r\n\r\n\x80");
     http_at(&url, "secret-token")
-        .call::<routes::GetDeviceListHistory>(&["c0ffee", "ab"], NoBody)
+        .call::<routes::GetDeviceListHistory>(&["0123456789abcdef0123456789abcdef", "ab"], NoBody)
         .await
         .expect("answered");
     let request = served.join().expect("mock");
     assert!(
-        request.starts_with("GET /v1/users/c0ffee/device-list?after=ab HTTP/1.1"),
+        request.starts_with(
+            "GET /v1/users/0123456789abcdef0123456789abcdef/device-list?after=ab HTTP/1.1"
+        ),
         "{request}"
     );
     assert!(
@@ -308,14 +303,14 @@ async fn the_request_is_what_the_typescript_client_sends() {
     let (url, served) =
         mock(b"HTTP/1.1 200 OK\r\ncontent-length: 1\r\nconnection: close\r\n\r\n\x80");
     http_at(&url, "t")
-        .call::<routes::GetDeviceListHistory>(&["c0ffee"], NoBody)
+        .call::<routes::GetDeviceListHistory>(&["0123456789abcdef0123456789abcdef"], NoBody)
         .await
         .expect("answered");
     assert!(
         served
             .join()
             .expect("mock")
-            .starts_with("GET /v1/users/c0ffee/device-list HTTP/1.1")
+            .starts_with("GET /v1/users/0123456789abcdef0123456789abcdef/device-list HTTP/1.1")
     );
 }
 
@@ -379,25 +374,106 @@ async fn a_redirect_is_not_followed() {
 #[test]
 fn path_arguments_fill_the_template() {
     assert_eq!(
-        fill_path("/v1/devices/{device_id}/sessions", &["ab12"]).unwrap(),
-        "/v1/devices/ab12/sessions"
+        fill_path(
+            "/v1/devices/{device_id}/sessions",
+            &["0123456789abcdef0123456789abcdef"]
+        )
+        .unwrap(),
+        "/v1/devices/0123456789abcdef0123456789abcdef/sessions"
     );
     assert_eq!(fill_path("/i/{code}", &["a b/c"]).unwrap(), "/i/a%20b%2Fc");
     assert_eq!(
         fill_path(
             "/v1/groups/{group_id}/messages?from={from}&limit={limit}",
-            &["aa", "0", "50"]
+            &["0123456789abcdef0123456789abcdef", "0", "50"]
         )
         .unwrap(),
-        "/v1/groups/aa/messages?from=0&limit=50"
+        "/v1/groups/0123456789abcdef0123456789abcdef/messages?from=0&limit=50"
     );
     assert_eq!(
-        fill_path("/v1/communities/{c}/members?after={after}", &["aa"]).unwrap(),
-        "/v1/communities/aa/members"
+        fill_path(
+            "/v1/communities/{community_id}/members?after={after}",
+            &["0123456789abcdef0123456789abcdef"]
+        )
+        .unwrap(),
+        "/v1/communities/0123456789abcdef0123456789abcdef/members"
     );
     assert!(fill_path("/v1/devices/{device_id}", &[]).is_err());
     assert!(fill_path("/v1/devices/{device_id}", &["a", "b"]).is_err());
     assert!(fill_path("/v1/communities", &["a"]).is_err());
+}
+
+#[test]
+fn a_path_argument_cannot_leave_its_segment() {
+    // Empty, `.` and `..` are dot segments to the url crate (`%2e` too): they would address another route.
+    for bad in ["", ".", ".."] {
+        for template in [
+            "/v1/devices/{device_id}/sessions",
+            "/i/{code}",
+            "/v1/welcomes/{welcome_id}",
+        ] {
+            assert!(
+                fill_path(template, &[bad]).is_err(),
+                "{template} accepted {bad:?}"
+            );
+        }
+    }
+    let channel = "0123456789abcdef0123456789abcdef";
+    assert!(
+        fill_path(
+            "/v1/channels/{channel_id}/blobs/{blob_id}",
+            &[channel, ".."]
+        )
+        .is_err()
+    );
+    // An id is 16 bytes of lowercase hex, a digest 32, a count digits, a kind 0 or 1.
+    assert!(fill_path("/v1/channels/{channel_id}", &["abc"]).is_err());
+    assert!(
+        fill_path(
+            "/v1/channels/{channel_id}",
+            &["0123456789ABCDEF0123456789ABCDEF"]
+        )
+        .is_err()
+    );
+    assert!(
+        fill_path(
+            "/v1/channels/{channel_id}",
+            &["../0123456789abcdef0123456789abc"]
+        )
+        .is_err()
+    );
+    assert!(
+        fill_path(
+            "/v1/channels/{channel_id}/blobs/{blob_id}",
+            &[channel, channel]
+        )
+        .is_err()
+    );
+    assert!(
+        fill_path(
+            "/v1/channels/{channel_id}/blobs/{blob_id}",
+            &[channel, &"ab".repeat(32)]
+        )
+        .is_ok()
+    );
+    assert!(fill_path("/v1/welcomes/{welcome_id}", &["12x"]).is_err());
+    assert!(fill_path("/v1/backups/{kind}/0", &["2"]).is_err());
+    assert!(
+        fill_path(
+            "/v1/communities/{community_id}/gifs/media/{gif_id}?r={variant}",
+            &[channel, "a/b", "x"]
+        )
+        .is_err()
+    );
+    // A query value is data, not a segment: encoded, and `..` in it is harmless.
+    assert_eq!(
+        fill_path(
+            "/v1/communities/{community_id}/members?after={after}",
+            &[channel, ".."]
+        )
+        .unwrap(),
+        format!("/v1/communities/{channel}/members?after=..")
+    );
 }
 
 #[test]
@@ -419,7 +495,7 @@ fn typed_answers_decode_strictly() {
     assert_eq!(
         a,
         PasswordLoginAnswer {
-            assertion: "assertion".into(),
+            assertion: zeroize::Zeroizing::new("assertion".into()),
             needs: 1,
             passkey: true
         }
@@ -432,6 +508,8 @@ fn typed_answers_decode_strictly() {
             .is_err(),
         "needs 3 is out of range"
     );
+    // The assertion is a credential: it is not printed.
+    assert!(!format!("{a:?}").contains("assertion\""), "{a:?}");
     // The negotiate answer is exactly what was offered.
     let ok = routes::negotiate_body();
     assert!(!ok.0.is_empty());
@@ -451,342 +529,134 @@ fn typed_answers_decode_strictly() {
     );
 }
 
-// ---- sign_in_round_trip: a real dillad ----
-
-/// A started dilla-testhost: its public and control origins and its bootstrap invite. It is stopped and its data removed
-/// on drop.
-struct TestHost {
-    child: Child,
-    base: String,
-    control: String,
-    invite: String,
-    data_dir: PathBuf,
+#[tokio::test]
+async fn a_token_that_is_not_a_header_value_is_an_error_not_an_anonymous_request() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let url = Url::parse(&format!("http://{}", listener.local_addr().expect("addr"))).expect("url");
+    let err = http_at(&url, "bad\ntoken")
+        .call::<GetAccountMe>(&[], NoBody)
+        .await
+        .expect_err("an invalid token");
+    assert!(
+        matches!(err, HttpError::Transport(ref m) if m.contains("token")),
+        "{err:?}"
+    );
+    assert!(listener.accept().is_err(), "nothing was sent");
 }
 
-impl Drop for TestHost {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.data_dir);
-    }
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("bind")
-        .local_addr()
-        .expect("addr")
-        .port()
-}
-
-/// The dilla-testhost binary: `DILLA_TESTHOST` when set (CI's prebuilt tools), else built from `cmd/dilla-testhost`.
-fn testhost_binary(root: &Path) -> PathBuf {
-    if let Some(path) = std::env::var_os("DILLA_TESTHOST") {
-        return PathBuf::from(path);
-    }
-    let out = root.join("target/dilla-testhost");
-    let status = Command::new("go")
-        .args(["build", "-o"])
-        .arg(&out)
-        .arg("./cmd/dilla-testhost")
-        .current_dir(root)
-        .status()
-        .expect("go builds the test host");
-    assert!(status.success(), "go build ./cmd/dilla-testhost failed");
-    out
-}
-
-/// The WASI core the host loads: `DILLA_WASI_CORE` when set, else the repo's `dilla_core_wasi.wasm`, built the way the
-/// e2e host builds it when it is missing.
-fn wasi_core(root: &Path) -> PathBuf {
-    if let Some(path) = std::env::var_os("DILLA_WASI_CORE") {
-        return PathBuf::from(path);
-    }
-    let wasm = root.join("internal/mlswasi/testdata/dilla_core_wasi.wasm");
-    if !wasm.exists() {
-        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        let status = Command::new(cargo)
-            .args([
-                "build",
-                "-p",
-                "dilla-core-wasi",
-                "--target",
-                "wasm32-wasip1",
-                "--release",
-                "--locked",
-            ])
-            .current_dir(root)
-            .status()
-            .expect("cargo builds the WASI core");
-        assert!(status.success(), "building dilla-core-wasi failed");
-        let target =
-            std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from);
-        std::fs::copy(
-            target.join("wasm32-wasip1/release/dilla_core_wasi.wasm"),
-            &wasm,
-        )
-        .expect("copy the WASI core");
-    }
-    wasm
-}
-
-impl TestHost {
-    fn start() -> Self {
-        let root = repo_root();
-        let binary = testhost_binary(&root);
-        let core = wasi_core(&root);
-        let (port, control_port) = (free_port(), free_port());
-        let data_dir =
-            std::env::temp_dir().join(format!("dilla-client-http-{}-{port}", std::process::id()));
-        let mut child = Command::new(binary)
-            .args([
-                "-listen",
-                &format!("127.0.0.1:{port}"),
-                "-control",
-                &format!("127.0.0.1:{control_port}"),
-            ])
-            .arg("-core")
-            .arg(core)
-            .args(["-log-level", "warn", "-production-acl", "-data-dir"])
-            .arg(&data_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("start dilla-testhost");
-        let stdout = child.stdout.take().expect("stdout");
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if let Some(code) = line.split("DILLA_TESTKIT_INVITE=").nth(1) {
-                    // A comma-separated list of codes (the e2e `instanceInvite` takes the first).
-                    let _ = tx.send(
-                        code.split_whitespace()
-                            .next()
-                            .unwrap_or_default()
-                            .split(',')
-                            .next()
-                            .unwrap_or_default()
-                            .to_owned(),
-                    );
-                }
+/// Serves one 200 answer that declares `declared` bytes and sends `sent` of them, then holds the connection open.
+fn mock_big(declared: usize, sent: usize) -> (Url, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let url = Url::parse(&format!("http://{}", listener.local_addr().expect("addr"))).expect("url");
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        read_request(&mut stream);
+        let head =
+            format!("HTTP/1.1 200 OK\r\ncontent-length: {declared}\r\nconnection: close\r\n\r\n");
+        let _ = stream.write_all(head.as_bytes());
+        let chunk = vec![0x80u8; 64 * 1024];
+        let mut left = sent;
+        while left > 0 {
+            let n = left.min(chunk.len());
+            if stream.write_all(&chunk[..n]).is_err() {
+                return; // the client stopped reading
             }
-        });
-        let mut host = Self {
-            child,
-            base: format!("http://127.0.0.1:{port}"),
-            control: format!("http://127.0.0.1:{control_port}"),
-            invite: String::new(),
-            data_dir,
-        };
-        let invite: String = rx
-            .recv_timeout(Duration::from_secs(90))
-            .expect("dilla-testhost printed its invite");
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(Instant::now() < deadline, "dilla-testhost does not answer");
-            std::thread::sleep(Duration::from_millis(100));
+            left -= n;
         }
-        host.invite = invite;
-        host
-    }
-}
-
-/// RFC 6238 (HMAC-SHA1, 6 digits) for a base32 secret.
-fn totp_code(secret_b32: &str, counter: u64) -> String {
-    use hmac::{Hmac, KeyInit, Mac};
-    let mut bits = 0u32;
-    let mut n = 0;
-    let mut key = Vec::new();
-    for c in secret_b32.bytes().filter(|c| *c != b'=') {
-        let v = match c.to_ascii_uppercase() {
-            c @ b'A'..=b'Z' => c - b'A',
-            c @ b'2'..=b'7' => c - b'2' + 26,
-            other => panic!("not base32: {other}"),
-        };
-        bits = (bits << 5) | u32::from(v);
-        n += 5;
-        if n >= 8 {
-            n -= 8;
-            key.push(u8::try_from((bits >> n) & 0xff).expect("byte"));
-        }
-    }
-    let mut mac = Hmac::<sha1::Sha1>::new_from_slice(&key).expect("key");
-    mac.update(&counter.to_be_bytes());
-    let d = mac.finalize().into_bytes();
-    let o = usize::from(d[d.len() - 1] & 0x0f);
-    let word = u32::from_be_bytes([d[o] & 0x7f, d[o + 1], d[o + 2], d[o + 3]]);
-    format!("{:06}", word % 1_000_000)
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-#[test]
-fn sign_in_round_trip() {
-    use dilla_core::cbor::{Encoder, decode_strict};
-    use dilla_core::identity::{Kind, Tier};
-    use dilla_core::ids::UserId;
-    use dilla_testkit::{HttpDs, TestClient};
-
-    let host = TestHost::start();
-    // The testkit reads the host's fake clock from here when it enrols the authenticator app.
-    // SAFETY: nothing else in this test process reads or writes the environment while this runs.
-    #[allow(unsafe_code)]
-    unsafe {
-        std::env::set_var("DILLA_TESTKIT_CONTROL", &host.control);
-    }
-
-    // An account, enrolled the way every native peer is: the bootstrap invite, an authenticator app, a password.
-    let seed = 0x51_61_6e;
-    let first = TestClient::new(
-        "alice",
-        UserId::from_bytes([0; 16]),
-        Tier::Native,
-        Kind::User,
-        seed,
-    )
-    .expect("client");
-    let enrolled = HttpDs::redeem_invite(
-        &host.base,
-        &host.invite,
-        first.new_account("alice", "Alice"),
-    )
-    .expect("invite redeems");
-    let alice = TestClient::new(
-        "alice",
-        UserId::from_bytes(enrolled.user_id),
-        Tier::Native,
-        Kind::User,
-        seed,
-    )
-    .expect("client");
-    let totp = HttpDs::enrol_second_factor(&host.base, &enrolled.token, false)
-        .expect("enrols")
-        .expect("a factor is owed");
-    let mut ds = HttpDs::with_session(&host.base, alice.device_id(), enrolled.token.clone())
-        .expect("session");
-    ds.set_totp(Some(totp.clone()));
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_secs();
-    ds.put_device_list(&enrolled.user_id, &alice.signed_device_list(now))
-        .expect("device list");
-    ds.set_password("correct horse battery staple")
-        .expect("password");
-
-    // A second device signs in with the dilla-client transport: password, TOTP, challenge, session.
-    let second = alice
-        .second_device("alice-2", seed + 1)
-        .expect("second device");
-    let registration = second.registration();
-    let device_hex = hex(registration.device_id.as_bytes());
-    let url = Url::parse(&host.base).expect("url");
-    let rt = tokio::runtime::Runtime::new().expect("runtime");
-    rt.block_on(async {
-        let http = ReqwestHttp::new(url.clone(), AuthToken::anonymous()).expect("client");
-
-        // A wrong password is refused with a status.
-        let err = http
-            .call::<PasswordLogin>(
-                &[],
-                routes::password_login_body("alice", "not the password"),
-            )
-            .await
-            .expect_err("a wrong password");
-        assert!(
-            matches!(err, HttpError::Status(s) if (400..500).contains(&s)),
-            "{err:?}"
-        );
-
-        let login = http
-            .call::<PasswordLogin>(
-                &[],
-                routes::password_login_body("alice", "correct horse battery staple"),
-            )
-            .await
-            .expect("password login");
-        assert_eq!(
-            login.needs, 1,
-            "an account with an authenticator app owes its code"
-        );
-
-        // The instance refuses a counter at or below the last it took: the next one is inside its window.
-        let code = totp_code(&totp.secret, totp.last_counter + 1);
-        let verified = http
-            .call::<TotpVerify>(&[], routes::totp_verify_body(&login.assertion, &code))
-            .await
-            .expect("totp verify");
-        let TotpVerifyAnswer { assertion } = verified;
-
-        let challenge: ChallengeAnswer = http
-            .call::<PostChallenge>(&[&device_hex], Raw::empty_list())
-            .await
-            .expect("challenge");
-        let Raw(instance) = http
-            .call::<GetInstance>(&[], NoBody)
-            .await
-            .expect("instance");
-        let instance_id = decode_strict(&instance, |d| {
-            let len = d.array_len()?;
-            for _ in 0..3 {
-                d.skip()?;
-            }
-            let id = d.bytes_exact::<16>()?;
-            for _ in 4..len {
-                d.skip()?;
-            }
-            Ok(id)
-        })
-        .expect("the instance document");
-
-        // "dilla session v1" || instance_id || device_id || nonce || purpose 0 (protocol/09)
-        let mut preimage = b"dilla session v1".to_vec();
-        preimage.extend_from_slice(&instance_id);
-        preimage.extend_from_slice(registration.device_id.as_bytes());
-        preimage.extend_from_slice(&challenge.nonce);
-        preimage.push(0);
-        let signature = second.device().sign(&preimage);
-        let mut e = Encoder::new();
-        e.array(5).bytes(&challenge.nonce).uint(0).bytes(&signature);
-        e.array(5)
-            .bytes(registration.device_id.as_bytes())
-            .bytes(&registration.dsk_pub)
-            .uint(u64::from(registration.tier))
-            .uint(u64::from(registration.signer_tier))
-            .bytes(&registration.credential);
-        e.bytes(assertion.as_bytes());
-
-        let session: SessionAnswer = http
-            .call::<PostSession>(&[&device_hex], Raw(e.into_vec()))
-            .await
-            .expect("session");
-        assert!(!session.token.is_empty());
-        assert_eq!(
-            session.user_id, enrolled.user_id,
-            "the session is the account's"
-        );
-        assert_eq!(&session.device_id, registration.device_id.as_bytes());
-        assert_eq!(
-            session.scope, 1,
-            "a sign-in that owes the account's setup reaches the enrolment routes"
-        );
-
-        // The session's token authenticates the next call: a pending session reads its own user's device list.
-        let user_hex = hex(&session.user_id);
-        let authed =
-            ReqwestHttp::new(url.clone(), AuthToken::new(session.token.clone())).expect("client");
-        let list = authed
-            .call::<GetDeviceList>(&[&user_hex], NoBody)
-            .await
-            .expect("device list with the new session");
-        assert_eq!(list.status, 200);
-        assert!(!list.body.is_empty());
-        let anonymous = http
-            .call::<GetDeviceList>(&[&user_hex], NoBody)
-            .await
-            .expect_err("no bearer, no device list");
-        assert!(matches!(anonymous, HttpError::Status(401)), "{anonymous:?}");
+        // Hold the connection until the client hangs up or gives up.
+        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        let _ = stream.read(&mut [0u8; 1]);
     });
+    (url, handle)
+}
+
+#[tokio::test]
+async fn a_body_over_the_route_cap_is_refused_without_reading_it() {
+    // GetLimits-style cap: maxBodyBytes 65536 for list_bot_webhooks is not an HTTP route;
+    let entry =
+        routes::lookup(&http::Method::GET, <routes::GetDeviceList as Route>::PATH).expect("route");
+    assert_eq!(entry.max_body, Some(1_048_576));
+    let channel = "0123456789abcdef0123456789abcdef";
+
+    // A declared length over the cap is refused before a byte is read: the server sends no body at all.
+    let (url, served) = mock_big(1_048_577, 0);
+    let err = http_at(&url, "t")
+        .call::<routes::GetDeviceList>(&[channel], NoBody)
+        .await
+        .expect_err("over the cap");
+    assert!(
+        matches!(err, HttpError::Decode(ref m) if m.contains("larger than")),
+        "{err:?}"
+    );
+    served.join().expect("mock");
+
+    // A body at the cap is read.
+    let (url, served) = mock_big(1_048_576, 1_048_576);
+    let Reply { body, .. } = http_at(&url, "t")
+        .call::<routes::GetDeviceList>(&[channel], NoBody)
+        .await
+        .expect("at the cap");
+    assert_eq!(body.len(), 1_048_576);
+    served.join().expect("mock");
+}
+
+#[tokio::test]
+async fn a_body_that_outgrows_the_cap_while_streaming_stops_being_read() {
+    // The server promises 1 MiB (within the cap) via chunked encoding it never ends: it streams 3 MiB, the cap is 1 MiB.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let url = Url::parse(&format!("http://{}", listener.local_addr().expect("addr"))).expect("url");
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        read_request(&mut stream);
+        let _ = stream.write_all(
+            b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
+        );
+        let chunk = vec![0x80u8; 64 * 1024];
+        let mut sent = 0usize;
+        for _ in 0..32 {
+            let head = format!("{:x}\r\n", chunk.len());
+            if stream.write_all(head.as_bytes()).is_err()
+                || stream.write_all(&chunk).is_err()
+                || stream.write_all(b"\r\n").is_err()
+            {
+                break;
+            }
+            sent += chunk.len();
+        }
+        // Never ends the body: a client that reads to the end waits here.
+        std::thread::sleep(Duration::from_secs(4));
+        sent
+    });
+    let started = std::time::Instant::now();
+    let channel = "0123456789abcdef0123456789abcdef";
+    let err = http_at(&url, "t")
+        .call::<routes::GetDeviceList>(&[channel], NoBody)
+        .await
+        .expect_err("over the cap");
+    assert!(
+        matches!(err, HttpError::Decode(ref m) if m.contains("larger than")),
+        "{err:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the client waited for the end of the body"
+    );
+    handle.join().expect("mock");
+}
+
+#[tokio::test]
+async fn a_route_with_no_cap_still_has_the_transport_ceiling() {
+    let channel = "0123456789abcdef0123456789abcdef";
+    let blob = "ab".repeat(32);
+    let (url, served) = mock_big(33 * 1024 * 1024, 0);
+    let err = http_at(&url, "t")
+        .call::<routes::GetBlob>(&[channel, &blob], NoBody)
+        .await
+        .expect_err("over the ceiling");
+    assert!(
+        matches!(err, HttpError::Decode(ref m) if m.contains("larger than")),
+        "{err:?}"
+    );
+    served.join().expect("mock");
 }

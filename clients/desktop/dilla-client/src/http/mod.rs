@@ -22,6 +22,9 @@ use routes::{Answer, BodyEncoding, Entry, Transport};
 
 /// WB I1: one attempt that has not answered in this long is a transport failure.
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
+/// The bound on a success body for a route client.ts gives no `maxBodyBytes` (a blob or a GIF, at most 25 MiB, or a
+/// caller-chosen bound): the TypeScript client reads those unbounded, this one never reads more than this.
+const BODY_CEILING: u64 = 32 * 1024 * 1024;
 /// A backup is capped but sits on the sign-up, sign-in and revoke paths: a longer bound than the default.
 const BACKUP_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -60,16 +63,25 @@ impl AuthToken {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
-    fn header(&self) -> Option<reqwest::header::HeaderValue> {
+    /// The `Authorization` header, `None` when there is no session. A token that cannot be a header value is an error,
+    /// never a request sent without its bearer.
+    fn header(&self) -> Result<Option<reqwest::header::HeaderValue>, HttpError> {
         let guard = self
             .0
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let token = guard.as_ref()?;
-        let mut value =
-            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token.as_str())).ok()?;
+        let Some(token) = guard.as_ref() else {
+            return Ok(None);
+        };
+        // The header value is the one copy reqwest owns; the staging buffer is zeroized and the value marked sensitive.
+        let mut bytes = Zeroizing::new(Vec::with_capacity(7 + token.len()));
+        bytes.extend_from_slice(b"Bearer ");
+        bytes.extend_from_slice(token.as_bytes());
+        let mut value = reqwest::header::HeaderValue::from_bytes(&bytes).map_err(|_| {
+            HttpError::Transport("the session token is not a valid header value".into())
+        })?;
         value.set_sensitive(true);
-        Some(value)
+        Ok(Some(value))
     }
 }
 
@@ -108,8 +120,65 @@ impl ReqwestHttp {
     }
 }
 
+/// What a path slot holds, by its name in the route table (the checks `routes.ts` makes before it builds a path).
+enum Slot {
+    /// An id (`id()` in routes.ts): 16 bytes, 32 lowercase hex digits.
+    Id,
+    /// A blob digest or a webhook avatar id: 32 bytes, 64 lowercase hex digits.
+    Digest,
+    /// A count (`count()`): decimal digits.
+    Count,
+    /// `kindOf()`: 0 or 1.
+    Kind,
+    /// A GIF id: 1 to 64 letters and digits.
+    Gif,
+    /// Anything else (an invite code): one non-empty segment.
+    Free,
+}
+
+fn slot_of(name: &str) -> Slot {
+    match name {
+        "blob_id" | "avatar_id" => Slot::Digest,
+        "seq" | "message_seq" | "welcome_id" => Slot::Count,
+        "kind" => Slot::Kind,
+        "gif_id" => Slot::Gif,
+        "code" => Slot::Free,
+        n if n.ends_with("_id") => Slot::Id,
+        _ => Slot::Free,
+    }
+}
+
+fn is_lower_hex(s: &str, len: usize) -> bool {
+    s.len() == len && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// A path-segment argument the server could read as another route, or that routes.ts would have refused.
+fn check_segment(name: &str, arg: &str) -> Result<(), HttpError> {
+    // The url crate (WHATWG) removes dot segments, `%2e` included, so these can never be sent as data.
+    let ok = !matches!(arg, "" | "." | "..")
+        && match slot_of(name) {
+            Slot::Id => is_lower_hex(arg, 32),
+            Slot::Digest => is_lower_hex(arg, 64),
+            Slot::Count => (1..=20).contains(&arg.len()) && arg.bytes().all(|b| b.is_ascii_digit()),
+            Slot::Kind => matches!(arg, "0" | "1"),
+            Slot::Gif => {
+                (1..=64).contains(&arg.len()) && arg.bytes().all(|b| b.is_ascii_alphanumeric())
+            }
+            Slot::Free => true,
+        };
+    if ok {
+        Ok(())
+    } else {
+        Err(HttpError::Transport(format!(
+            "invalid path argument for {name}"
+        )))
+    }
+}
+
 /// `template` with each `{name}` replaced by the next of `args`, percent-encoded as one path segment or query value. A
-/// trailing `?k={v}` group whose arguments were not given is left out; any other missing or surplus argument is an error.
+/// path-segment argument (before any `?`) must be what its slot holds (an id is 32 lowercase hex digits, ...) and is
+/// never empty, `.` or `..`. A trailing `?k={v}` group whose arguments were not given is left out; any other missing or
+/// surplus argument is an error.
 pub fn fill_path(template: &str, args: &[&str]) -> Result<String, HttpError> {
     let mut out = String::with_capacity(template.len() + 32);
     let mut args = args.iter();
@@ -125,7 +194,12 @@ pub fn fill_path(template: &str, args: &[&str]) -> Result<String, HttpError> {
         }
         out.push_str(literal);
         match args.next() {
-            Some(arg) => encode_into(&mut out, arg),
+            Some(arg) => {
+                if query_from.is_none() {
+                    check_segment(&tail[1..close], arg)?;
+                }
+                encode_into(&mut out, arg);
+            }
             None => {
                 return match query_from {
                     Some(at) => {
@@ -157,6 +231,23 @@ fn encode_into(out: &mut String, arg: &str) {
             out.push_str(&format!("%{b:02X}"));
         }
     }
+}
+
+/// The success body of `response`, at most `cap` bytes (`maxBodyBytes` in client.ts): a longer `Content-Length` is refused
+/// before a byte is read, and a body that outgrows the cap while streaming stops being read.
+async fn read_capped(mut response: reqwest::Response, cap: u64) -> Result<Vec<u8>, HttpError> {
+    let too_large = || HttpError::Decode(format!("the response body is larger than {cap} bytes"));
+    if response.content_length().is_some_and(|n| n > cap) {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(transport)? {
+        if (body.len() as u64).saturating_add(chunk.len() as u64) > cap {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// The body a request serializes to: `None` for [`routes::NoBody`], the bytes of a [`routes::Raw`].
@@ -198,7 +289,7 @@ impl Http for ReqwestHttp {
 
         let mut request = self.client.request(entry.method.clone(), url);
         if entry.auth
-            && let Some(bearer) = self.auth.header()
+            && let Some(bearer) = self.auth.header()?
         {
             request = request.header(reqwest::header::AUTHORIZATION, bearer);
         }
@@ -227,9 +318,10 @@ impl Http for ReqwestHttp {
         let response = request.send().await.map_err(transport)?;
         let status = response.status().as_u16();
         if !entry.accepts(status) {
+            // The refusal's body is never read: the status is the whole error.
             return Err(HttpError::Status(status));
         }
-        let body = response.bytes().await.map_err(transport)?.to_vec();
+        let body = read_capped(response, entry.max_body.unwrap_or(BODY_CEILING)).await?;
         let value = match entry.answer {
             Answer::None => Value::Null,
             Answer::Body => Value::Bytes(body),

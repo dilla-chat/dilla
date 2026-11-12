@@ -1,11 +1,12 @@
 // Dumps every HTTP route of packages/client-core (http/routes.ts and negotiate-session.ts) as JSON, read from the
 // TypeScript source with the compiler's parser (nothing is executed):
-//   [{ name, method, path, request, response, auth, ok, transport }]
+//   [{ name, method, path, request, response, auth, ok, maxBody, transport }]
 //   name      the Routes method, snake_case
 //   path      the template: each caller-supplied piece is `{name}`, in call order; a trailing `?k={v}` group is optional
 //   request   'none' (no body) | 'cbor' (application/cbor) | 'octet' (application/octet-stream)
 //   response  'none' (the answer is not read) | 'body' (the body is read) | 'status' (the status is read too)
 //   auth      false when the route is sent without the bearer
+//   maxBody   the `maxBodyBytes` bound on a success answer when it is a literal (or a product of literals), else null
 //   ok        the statuses the route lists in its `ok` option, sorted; [] when it uses the default 200/201/204
 //   transport 'socket' when socket-routes.ts sends the route as a gateway request frame (the instance does not serve it
 //             over HTTP), else 'http'
@@ -92,7 +93,19 @@ function responseOf(call, fn) {
   return 'body';
 }
 
+function numberOf(node) {
+  if (!node) return null;
+  if (ts.isNumericLiteral(node)) return Number(node.text);
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.AsteriskToken) {
+    const a = numberOf(node.left);
+    const b = numberOf(node.right);
+    return a === null || b === null ? null : a * b;
+  }
+  return null;
+}
+
 function options(obj) {
+  const maxBody = numberOf(valueOf(prop(obj, 'maxBodyBytes')));
   const body = prop(obj, 'body');
   const ct = valueOf(prop(obj, 'contentType'));
   const auth = valueOf(prop(obj, 'auth'));
@@ -100,6 +113,7 @@ function options(obj) {
   return {
     request: body === undefined ? 'none' : ct && ct.text === 'application/octet-stream' ? 'octet' : 'cbor',
     auth: !(auth && auth.kind === ts.SyntaxKind.FalseKeyword),
+    maxBody,
     ok: ok && ts.isArrayLiteralExpression(ok) ? ok.elements.map((e) => Number(e.text)).sort((a, b) => a - b) : [],
   };
 }
