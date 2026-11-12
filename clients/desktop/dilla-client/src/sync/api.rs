@@ -122,9 +122,12 @@ impl ApiError {
 
     fn of_http(e: &HttpError) -> Self {
         match e {
-            HttpError::Status(s) => Self::local(*s, "E_HTTP", ""),
+            HttpError::Status { status, code } => {
+                Self::local(*status, code.as_deref().unwrap_or("E_HTTP"), "")
+            }
             HttpError::Transport(d) => Self::local(0, "E_NETWORK", d),
             HttpError::Decode(d) => Self::local(0, "E_DECODE", d),
+            HttpError::Unanswered { code, detail } => Self::local(0, code, detail),
         }
     }
 
@@ -201,12 +204,6 @@ fn hex(b: &[u8]) -> String {
     crate::state::hex(b)
 }
 
-fn random_idem() -> Vec<u8> {
-    let mut b = vec![0u8; 16];
-    let _ = getrandom::fill(&mut b);
-    b
-}
-
 /// routes.ts `messageIdem`: SHA-256("dilla/message-idem/v1\0" || msg_id || body)[..16], so a send written again after a
 /// lost socket or a restart is answered from the instance's replay record.
 pub fn message_idem(msg_id: &[u8; 16], body: &[u8]) -> Vec<u8> {
@@ -263,7 +260,16 @@ impl Api {
         let idem = if method == "GET" {
             None
         } else {
-            Some(idem.unwrap_or_else(random_idem))
+            match idem.or_else(super::requests::random_idem) {
+                Some(idem) => Some(idem),
+                None => {
+                    return Err(ApiError::local(
+                        0,
+                        "E_RANDOM",
+                        "no OS randomness for an idempotency key",
+                    ));
+                }
+            }
         };
         let body = body.unwrap_or_default();
         for attempt in 1..=RETRY_MAX_ATTEMPTS {
@@ -413,7 +419,7 @@ impl Api {
             .await
         {
             Ok(answer) => Ok(Some(answer)),
-            Err(HttpError::Status(401)) => Ok(None),
+            Err(HttpError::Status { status: 401, .. }) => Ok(None),
             Err(e) => Err(SessionError::Api(ApiError::of_http(&e))),
         }
     }

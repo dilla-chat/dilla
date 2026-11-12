@@ -24,7 +24,7 @@ func clientInfo() *livekit.ClientInfo {
 
 // Branch review SFU-1: LiveKit labels its session histograms with the protocol number the client
 // sent, and its pub/sub histogram with the v1 client_info.sdk enum, so the gate admits only the
-// protocol dilla's clients speak and a known SDK. Every other value — missing, older, newer, not a
+// protocols dilla's clients speak (17, and the desktop's 18) and a known SDK. Every other value — missing, older, newer, not a
 // number, out of int32 — is refused 400 E_INVALID_REQUEST before the request reaches LiveKit, on the
 // v0 query and inside a v1 join_request alike; 40 distinct values reach LiveKit zero times.
 func TestTheRTCGateRefusesAClientProtocolNoDillaClientSends(t *testing.T) {
@@ -54,7 +54,7 @@ func TestTheRTCGateRefusesAClientProtocolNoDillaClientSends(t *testing.T) {
 		{"no protocol", "/rtc", tok},
 		{"protocol 0", "/rtc", tok + "&protocol=0"},
 		{"an older protocol", "/rtc", tok + "&protocol=16"},
-		{"a newer protocol", "/rtc", tok + "&protocol=18"},
+		{"a newer protocol", "/rtc", tok + "&protocol=19"},
 		{"the int32 maximum", "/rtc", tok + "&protocol=2147483647"},
 		{"a negative protocol", "/rtc", tok + "&protocol=-17"},
 		{"not a number", "/rtc", tok + "&protocol=seventeen"},
@@ -85,13 +85,16 @@ func TestTheRTCGateRefusesAClientProtocolNoDillaClientSends(t *testing.T) {
 		tok + "&protocol=0" + strconv.Itoa(sfu.ClientProtocol),
 		v1(clientInfo()),
 		v1(&livekit.ClientInfo{Sdk: livekit.ClientInfo_GO, Protocol: sfu.ClientProtocol}),
+		// The GPUI desktop's livekit 0.10.1 Rust SDK: protocol 18, on the v0 query and in a v1 client info.
+		tok + "&sdk=rust&protocol=" + strconv.Itoa(sfu.RustClientProtocol),
+		v1(&livekit.ClientInfo{Sdk: livekit.ClientInfo_RUST, Protocol: sfu.RustClientProtocol}),
 	} {
 		if rec := get("/rtc", q); rec.Code != http.StatusTeapot {
 			t.Errorf("%s: %d %s, want the SFU's answer", q, rec.Code, rtcErrorCode(rec))
 		}
 	}
-	if hits != 5 {
-		t.Fatalf("LiveKit saw %d requests, want the 5 admitted", hits)
+	if hits != 7 {
+		t.Fatalf("LiveKit saw %d requests, want the 7 admitted", hits)
 	}
 	// A refused device is still refused for what it is, whatever its protocol: the protocol is read
 	// only once the gate admitted the device.

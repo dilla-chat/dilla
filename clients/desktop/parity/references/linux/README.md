@@ -35,13 +35,46 @@ Linux):
    awaits `document.fonts` and takes one viewport screenshot.
 
 Chromium runs with `--font-render-hinting=none --enable-font-subpixel-positioning` (Jonas's 2026-11-12 decision for the Linux
-reference), `deviceScaleFactor: 2`, `reducedMotion: 'reduce'`, `timezoneId: 'UTC'`, `locale: 'en-US'`. Build first:
+reference), `deviceScaleFactor: 2`, `reducedMotion: 'reduce'`, `timezoneId: 'UTC'`, `locale: 'en-US'`.
+
+## Prerequisites (once per worktree)
+
+Verified end to end on 2026-11-12 (CachyOS, clang 23.1.4, a machine shared with other builds; wall-clock times). From the
+worktree root, every step in order. `CC=clang CXX=clang++` is needed on Linux (the sqlite3mc and WASI builds want clang >= 21):
 
 ```
-npm ci && npm run build -w @dilla/web          # wasm-pack builds packages/core-wasm/pkg first
-go build -o target/dilla-testhost ./cmd/dilla-testhost
-cargo build -p dilla-core-wasi --target wasm32-wasip1 --release
+export CC=clang CXX=clang++
+npm ci                                                                  #   3 s
+wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install \
+  --out-dir ../../packages/core-wasm/pkg                                # 1 m 48 s: the web client imports @dilla/core-wasm
+npm run build -w @dilla/web                                             #  15 s (fails with "Failed to resolve entry for package
+                                                                        #  @dilla/core-wasm" if the wasm-pack step is missing)
+go build -o target/dilla-testhost ./cmd/dilla-testhost                  #   9 s
+cargo build -p dilla-core-wasi --target wasm32-wasip1 --release         # 2 m 01 s
 ```
+
+`npm run build -w @dilla/web` does NOT build `packages/core-wasm/pkg`; run `wasm-pack` yourself as above. Playwright's
+Chromium (revision 1248) must be in `~/.cache/ms-playwright` (`npx playwright install chromium` otherwise).
+
+## Shooting
+
+```
+node clients/desktop/parity/shoot.mjs clients/desktop/parity/fixtures/shell/channel-view.json --out target/shots/run1
+```
+
+The first run in a worktree also compiles `parity_world` (gpui, dilla-client, sqlite3mc): about 15 min on a shared machine;
+every later shot takes about 2 min (`shell/channel-view-b`: 1 m 59 s). With `--out <dir>` the PNG and the sidecar go to
+`<dir>/shots/<area>/<state>-2x.png` and `<state>.shot.json`, and the world's files (`state.json` with throwaway secrets,
+`world.json`, `<state>.layout.json` with every box and text run of the frame) to `<dir>`. Without `--out` the shot REPLACES the
+committed reference and its sidecar in this directory: do that only to refresh a reference on purpose, then commit the PNG and
+the sidecar together (a PNG and its sidecar are only valid as a pair: the sidecar carries the ids and clock shift the world
+handed out). To try a fresh shot against the GPUI frame without touching the committed pair, copy
+`fixtures/<area>/` and your shot (PNG and sidecar) into a scratch `parity/{fixtures,references/linux}/<area>/` tree and call
+`dilla_parity::screen::assert_screen` on the scratch fixture path (it derives the references from the fixture's location).
+
+Re-shooting the same fixture is not byte-identical to the committed shot: the clock shift differs (the message times in the
+header rows are the only pixels that change in `shell/channel-view`: 0.13 % of the pixels, all inside x 626..687, one band per
+message header) and the host hands out new ids, which reorder anything sorted by id (`shell/channel-view-b`: 1.3 % differ).
 
 `node shoot.mjs <fixture> --check` prints the fixture line (`fixture <name> <sha256> <kind:local=hex;...>`) without a
 browser; the GPUI driver's `fixture` command prints the same line (`shooters_agree_on_fixture`). The parity world seeds
