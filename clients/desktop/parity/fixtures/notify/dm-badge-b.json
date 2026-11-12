@@ -1,0 +1,112 @@
+{
+  "name": "notify/dm-badge-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "mira",
+  "route": "/c/{midgard}/{midgard/loot}",
+  "clock": 1794481800,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "lounge",
+            "kind": "voice",
+            "name": "lounge"
+          },
+          {
+            "id": "raids",
+            "kind": "category",
+            "name": "Raids"
+          },
+          {
+            "id": "loot",
+            "kind": "text",
+            "name": "loot",
+            "parent": "raids"
+          },
+          {
+            "id": "boats",
+            "kind": "category",
+            "name": "Boats"
+          },
+          {
+            "id": "harbour",
+            "kind": "voice",
+            "name": "harbour",
+            "parent": "boats"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "midgard-loot-1",
+        "channel": "midgard/loot",
+        "sender": "bjorn",
+        "ts": 1794481790,
+        "body": "sorted the loot list"
+      },
+      {
+        "key": "midgard-loot-2",
+        "channel": "midgard/loot",
+        "sender": "ada",
+        "ts": 1794481791,
+        "body": "thanks, will check"
+      },
+      {
+        "key": "midgard-general-1",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481710,
+        "body": "raid at eight, bring the map"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]",
+      "gpui": "-"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

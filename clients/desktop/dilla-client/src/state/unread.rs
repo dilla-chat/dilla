@@ -86,7 +86,25 @@ mod tests {
     }
 }
 
-/// Task 22's slice of [`super::AppState`]: mutes per channel and server and the device-wide notification default (the counts stay in `AppState::unread`). Stub from Task 1: Task 22 adds the fields; [`Default`] is the
-/// empty slice.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct NotifyState {}
+/// The OS permission to show notifications (`PermissionState`, notify-permission.ts). The native client holds the same
+/// four states the browser reports: this plan's in-app notifier is always `Granted`; the OS delivery of the next plan
+/// reports the real one (macOS asks, Linux and Windows have no gate).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Permission {
+    #[default]
+    Granted,
+    /// Not asked yet: Settings → Notifications asks from the Desktop notifications switch.
+    Default,
+    Denied,
+    Unsupported,
+}
+
+/// Task 22's slice of [`super::AppState`]: the OS permission and a revision that moves whenever a notification setting is
+/// written. The settings themselves are the instance's preferences (`notify.*`, `Client::prefs()`), which the screens
+/// read on every draw; the counts stay in `AppState::unread`. [`Default`] is the in-app notifier's state: granted.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotifyState {
+    pub permission: Permission,
+    /// Bumped by every write through [`crate::features::notify::Notify`], so a watcher of the state redraws.
+    pub revision: u64,
+}

@@ -1,0 +1,17 @@
+{
+  "digest": "35c9ed8222576cdb97f0988623de7b228e18a0c4f1d90b9f7df4e4ca6117dcaa",
+  "shift": 38055,
+  "hand_migrated": false,
+  "ids": {
+    "channel:midgard/general": "f966b57ab569d8cb27721a8918dc1652",
+    "channel:northern/design": "8b5c5f7adfd1606f8bd66315580667fc",
+    "channel:northern/general": "b481a91f4d6a050addf415fcde31431c",
+    "channel:northern/release": "6189225bbe287467feead5c3dfa11269",
+    "channel:northern/weekly": "1c0478dcfd30a332c9bf3b1bd562ff1e",
+    "person:ada": "17c6336d662042f138259d5ac35b9508",
+    "person:bjorn": "bf481d6387fa912416e1298ddec415c5",
+    "person:mira": "c188449d475da49d866bbb31f79e0483",
+    "server:midgard": "9de53bad41fd9b4bd6ea28f7b1fd183a",
+    "server:northern": "4dfaa0f1ed5c2e9de1bb243005035dcd"
+  }
+}

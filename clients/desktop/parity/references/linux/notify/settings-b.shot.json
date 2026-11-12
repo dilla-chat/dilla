@@ -1,0 +1,12 @@
+{
+  "digest": "b604400314385dac43421d2ded51102e46b6bc29d59c7ab4ca610a7a67513abd",
+  "shift": 37867,
+  "hand_migrated": false,
+  "ids": {
+    "channel:northern/general": "2780172076b30ba5d648238110e19bb2",
+    "person:ada": "23de6b59538d68d38ff2004a509367b4",
+    "person:mira": "37cdabb3ce0b0a83591aecdc0d20be3f",
+    "person:sven": "c004b34402d77ab440fc8a4d45870613",
+    "server:northern": "a30ef323c853a16b329421d6e1a48a33"
+  }
+}

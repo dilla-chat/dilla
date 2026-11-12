@@ -1,0 +1,61 @@
+{
+  "name": "notify/settings",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "mira",
+  "route": "/settings/notifications",
+  "clock": 1794481800,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "midgard-general-1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481740,
+        "body": "morning"
+      },
+      {
+        "key": "midgard-general-2",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481741,
+        "body": "morning"
+      }
+    ]
+  }
+}
