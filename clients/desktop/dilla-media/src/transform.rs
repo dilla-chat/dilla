@@ -97,6 +97,8 @@ pub struct Stats {
     pub hold_answers: u64,
     /// Key-frame requests sent.
     pub key_frame_requests: u64,
+    /// The length of the room's server-injected-frame trailer (0 before LiveKit announced one).
+    pub sif_trailer_len: usize,
 }
 
 impl Stats {
@@ -254,7 +256,9 @@ impl CallMedia {
     /// The room's server-injected-frame trailer; replaces any earlier one (protocol/05).
     pub fn set_sif_trailer(&self, trailer: &[u8]) {
         if !trailer.is_empty() {
-            self.lock().sif = trailer.to_vec();
+            let mut s = self.lock();
+            s.sif = trailer.to_vec();
+            s.stats.sif_trailer_len = trailer.len();
         }
     }
 

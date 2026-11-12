@@ -2009,6 +2009,7 @@ dependencies = [
  "openmls_traits",
  "rusqlite",
  "serde",
+ "serde_json",
  "thiserror 2.0.20",
  "tls_codec",
  "tokio",

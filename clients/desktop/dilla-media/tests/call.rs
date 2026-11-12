@@ -7,7 +7,8 @@
 //!   code `dilla-core-wasm`'s `MediaSender` and `MediaReceiver` wrap.
 //! - `noise_modes_available`: off, standard and enhanced each process a noise fixture; enhanced
 //!   (DeepFilterNet3) lowers it by at least 10 dB within the web client's per-frame budget.
-//! - `desktop_and_web_in_one_call`: the live call (see its comment).
+//! - `desktop_and_web_in_one_call`: the desktop and the web client in one live call (see its
+//!   comment; tests/live.rs runs two desktops through the SFU).
 
 #[allow(dead_code, unused_imports, clippy::all)]
 #[path = "../../../../core/dilla-core/tests/client_support/mod.rs"]
@@ -16,7 +17,7 @@ mod client_support;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
 
-use client_support::{CALL, Core, MediaEpochOut, RawPeer, Relay, call_raw_bob, decode_media_epoch};
+use client_support::{CALL, Core, MediaEpochOut, RawPeer, call_raw_bob, decode_media_epoch};
 use dilla_core::sframe::{Codec, KeyRing, NK, SframeSender, Slot};
 use dilla_media::ffi::testing;
 use dilla_media::noise::{ENHANCED_P99_BUDGET_MS, FRAME_SAMPLES, NoiseMode, NoiseProcessor, RATE};
@@ -356,5 +357,28 @@ fn noise_modes_available() {
     assert!(short.iter().all(|s| *s == 0));
 }
 
-#[allow(dead_code)]
-fn _unused(_: Relay) {}
+/// The desktop and the web client in one call: browser/desktop-web-call.spec.ts, through the e2e
+/// media suite's own host (dilla-testhost with its in-process LiveKit, the packages/media harness).
+/// A desktop `Call` (examples/call-peer.rs) and the web client's real `DillaE2EEManager`, media
+/// worker and dilla-core-wasm hear each other's tones under a real call group's keys (the desktop's
+/// from its `ClientCore`), then change epoch mid-call with no frame dropped or accepted under a
+/// wrong key. dillad's call routes are not in this path: the desktop has no signed-in sync engine
+/// yet (Task 9), so the token comes from the host's debug route; `dilla_client::calls` covers the
+/// routes. Needs Node with the repository's dependencies, the packages/media WASM build, Go and the
+/// WASI core (the media suite's prerequisites).
+#[test]
+#[ignore = "needs the e2e media suite's prerequisites (npm ci, packages/media wasm, Go, WASI core)"]
+fn desktop_and_web_in_one_call() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let status = std::process::Command::new("npx")
+        .args([
+            "playwright",
+            "test",
+            "-c",
+            "clients/desktop/dilla-media/browser/playwright.config.ts",
+        ])
+        .current_dir(root)
+        .status()
+        .expect("npx runs");
+    assert!(status.success(), "browser/desktop-web-call.spec.ts failed");
+}
