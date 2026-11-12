@@ -5,6 +5,7 @@ use gpui::{
     SharedString, Styled, Window, div, hsla, px,
 };
 
+use crate::metrics::Density;
 use crate::text::{line, line_height};
 use crate::tokens::{color, font, radius, text};
 
@@ -140,6 +141,8 @@ pub struct Avatar {
     presence: Option<Presence>,
     size: AvatarSize,
     shape: AvatarShape,
+    density: Density,
+    fill: Option<Hsla>,
 }
 
 impl Avatar {
@@ -152,6 +155,8 @@ impl Avatar {
             presence: None,
             size: AvatarSize::Md,
             shape: AvatarShape::Circle,
+            density: Density::Regular,
+            fill: None,
         }
     }
 
@@ -176,6 +181,18 @@ impl Avatar {
         self
     }
 
+    /// The `Md` avatar follows `--avatar-size`: 28, 32 or 36px with the density (the other sizes are fixed).
+    pub fn density(mut self, density: Density) -> Self {
+        self.density = density;
+        self
+    }
+
+    /// A fixed fill in place of the name's colour (a group DM's neutral `--line-strong`).
+    pub fn fill(mut self, fill: Hsla) -> Self {
+        self.fill = Some(fill);
+        self
+    }
+
     pub fn shape(mut self, shape: AvatarShape) -> Self {
         self.shape = shape;
         self
@@ -184,13 +201,17 @@ impl Avatar {
 
 impl RenderOnce for Avatar {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let (side, initials_size) = self.size.metrics();
+        let (mut side, initials_size) = self.size.metrics();
+        if self.size == AvatarSize::Md {
+            side = self.density.avatar();
+        }
         let initials = self
             .initials
             .unwrap_or_else(|| initials_of(&self.name).into());
-        let disc = match self.hue {
-            Some(h) => hsl(h, 45, 42),
-            None => {
+        let disc = match (self.fill, self.hue) {
+            (Some(fill), _) => fill,
+            (None, Some(h)) => hsl(h, 45, 42),
+            (None, None) => {
                 let (h, s, l) = colour_of(&self.name);
                 hsl(h, s, l)
             }

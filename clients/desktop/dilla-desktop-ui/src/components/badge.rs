@@ -1,8 +1,8 @@
 //! `Badge` (packages/ui/src/Pill): the unread and mention count pill.
 
 use gpui::{
-    App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    Styled, Window, div, px,
+    App, BoxShadow, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, Styled, Window, div, point, px,
 };
 
 use crate::text::line;
@@ -12,6 +12,17 @@ use crate::tokens::{color, font, radius, text};
 pub enum BadgeKind {
     Unread,
     Mention,
+}
+
+/// `box-shadow: 0 0 0 2.5px var(--bg-2)`: the mention pill's ring, which sets it off from what it sits on.
+pub fn mention_ring() -> Vec<BoxShadow> {
+    vec![BoxShadow {
+        color: color::BG_2,
+        offset: point(px(0.0), px(0.0)),
+        blur_radius: px(0.0),
+        spread_radius: px(2.5),
+        inset: false,
+    }]
 }
 
 /// A count as the pill draws it: capped at `99+`.
@@ -81,7 +92,12 @@ impl RenderOnce for Badge {
         if self.in_row {
             pill.px(px(5.0)).rounded(radius::SM)
         } else {
-            pill.min_w(px(16.0)).px(px(4.0)).rounded(radius::PILL)
+            let pill = pill.min_w(px(16.0)).px(px(4.0)).rounded(radius::PILL);
+            if self.kind == BadgeKind::Mention {
+                pill.shadow(mention_ring())
+            } else {
+                pill
+            }
         }
     }
 }
@@ -89,6 +105,13 @@ impl RenderOnce for Badge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mention_pill_has_a_2_5px_ring_in_bg_2() {
+        let ring = mention_ring();
+        assert_eq!(ring.len(), 1);
+        assert_eq!((ring[0].color, ring[0].spread_radius), (color::BG_2, px(2.5)));
+    }
 
     #[test]
     fn counts_cap_at_99() {
