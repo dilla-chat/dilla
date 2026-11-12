@@ -1,0 +1,39 @@
+{
+  "name": "bot-admin/health-channels-b",
+  "window": [1440, 900],
+  "viewer": "ada",
+  "route": "/c/{northern}/settings/bot",
+  "clock": 1794481751,
+  "world": {
+    "people": [
+      {"id": "ada", "display": "Ada"},
+      {"id": "mira", "display": "Mira"},
+      {"id": "bjorn", "display": "Björn"}
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": ["ada", "mira"],
+        "channels": [
+          {"id": "general", "kind": "text", "name": "general"},
+          {"id": "afk", "kind": "voice", "name": "AFK", "system": true, "position": 1073741824}
+        ]
+      },
+      {
+        "id": "northern",
+        "name": "Northern Lights Photography Collective",
+        "owner": "ada",
+        "members": ["ada", "mira", "bjorn"],
+        "channels": [
+          {"id": "general", "kind": "text", "name": "general"},
+          {"id": "release", "kind": "text", "name": "release-announcements-and-changelog"},
+          {"id": "afk", "kind": "voice", "name": "AFK", "system": true, "position": 1073741824}
+        ]
+      }
+    ],
+    "messages": []
+  },
+  "steps": []
+}

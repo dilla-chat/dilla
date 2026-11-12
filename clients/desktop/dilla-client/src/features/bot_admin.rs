@@ -218,7 +218,8 @@ fn app_answer(request_id: [u8; 16], answer: &SealedAnswer) -> Result<BotResult, 
     }
 }
 
-fn new_request_id() -> [u8; 16] {
+/// 16 random bytes, never all zero: a request id.
+pub fn new_request_id() -> [u8; 16] {
     let mut b = [0u8; 16];
     let _ = getrandom::fill(&mut b);
     if b == [0; 16] {

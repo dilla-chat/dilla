@@ -1,0 +1,27 @@
+{
+  "name": "bot-admin/music",
+  "window": [1280, 800],
+  "viewer": "ada",
+  "route": "/c/{midgard}/settings/music",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {"id": "ada", "display": "Ada"},
+      {"id": "mira", "display": "Mira"}
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": ["ada", "mira"],
+        "channels": [
+          {"id": "general", "kind": "text", "name": "general"},
+          {"id": "afk", "kind": "voice", "name": "AFK", "system": true, "position": 1073741824}
+        ]
+      }
+    ],
+    "messages": []
+  },
+  "steps": []
+}
