@@ -8,15 +8,22 @@ use gpui::{App, AssetSource, Result, SharedString};
 
 use crate::icon_names::IconName;
 
-/// JetBrains Mono Variable (OFL-1.1, assets/fonts/README.md).
-static JETBRAINS_MONO: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono[wght].ttf");
+/// JetBrains Mono at the three weights the design uses (400, 600, 700): static instances of the variable font's weight
+/// axis (OFL-1.1, assets/fonts/README.md). GPUI's text system does not select a weight on the variable font (every
+/// weight drew at its default, 400; Task 12), so each weight is its own face.
+static JETBRAINS_MONO_REGULAR: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
+static JETBRAINS_MONO_SEMIBOLD: &[u8] =
+    include_bytes!("../assets/fonts/JetBrainsMono-SemiBold.ttf");
+static JETBRAINS_MONO_BOLD: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf");
 /// DM Serif Display Italic (OFL-1.1, assets/fonts/README.md).
 static DM_SERIF_DISPLAY_ITALIC: &[u8] = include_bytes!("../assets/fonts/DMSerifDisplay-Italic.ttf");
 
 /// The fonts this crate embeds, as GPUI takes them.
 fn fonts() -> Vec<Cow<'static, [u8]>> {
     vec![
-        Cow::Borrowed(JETBRAINS_MONO),
+        Cow::Borrowed(JETBRAINS_MONO_REGULAR),
+        Cow::Borrowed(JETBRAINS_MONO_SEMIBOLD),
+        Cow::Borrowed(JETBRAINS_MONO_BOLD),
         Cow::Borrowed(DM_SERIF_DISPLAY_ITALIC),
     ]
 }

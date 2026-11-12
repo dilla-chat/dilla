@@ -3,7 +3,7 @@ use gpui::{TestAppContext, VisualTestContext};
 #[gpui::test]
 fn opens_and_closes(cx: &mut TestAppContext) {
     let handle = cx
-        .update(dilla_desktop::open_main_window)
+        .update(|cx| dilla_desktop::open_main_window_with(cx, dilla_desktop::Launch::empty()))
         .expect("the main window opens");
     assert_eq!(cx.windows().len(), 1);
 
