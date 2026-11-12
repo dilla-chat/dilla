@@ -302,7 +302,7 @@ impl FrameTransform for Hook {
         verdict
     }
 
-    fn hold_expired(&self, _send: bool, _track_id: &str) {
+    fn hold_expired(&self, _handle: u64, _send: bool) {
         let mut s = self.0.lock();
         ProofMedia::fail(&mut s, "holdExpired");
     }
@@ -318,7 +318,7 @@ impl FrameTransform for PassthroughControl {
         Verdict::PassUnchanged
     }
 
-    fn hold_expired(&self, _send: bool, _track_id: &str) {}
+    fn hold_expired(&self, _handle: u64, _send: bool) {}
 }
 
 /// The KID of a received frame, for statistics only (never an authentication result).
@@ -346,6 +346,7 @@ mod tests {
 
     fn info<'a>(send: bool, video: bool, track: &'a str, mime: &'a str) -> FrameInfo<'a> {
         FrameInfo {
+            handle: 0,
             send,
             video,
             track_id: track,

@@ -5,17 +5,28 @@
 
 #include "livekit/dilla_transform.h"
 
+#include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <span>
 #include <utility>
 #include <vector>
 
 #include "api/make_ref_counted.h"
 #include "api/media_stream_interface.h"
+#include "api/video/video_frame_metadata.h"
+#include "modules/rtp_rtcp/source/rtp_video_header.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/time_utils.h"
 #include "webrtc-sys/src/dilla_transform.rs.h"
 
 namespace livekit_ffi {
+
+class DillaHookHolder {
+ public:
+  explicit DillaHookHolder(rust::Box<DillaHook> hook) : hook(std::move(hook)) {}
+  rust::Box<DillaHook> hook;
+};
 
 namespace {
 
@@ -25,7 +36,6 @@ constexpr int64_t kHoldMaxMs = 2000;
 constexpr size_t kHoldMaxFrames = 256;
 constexpr size_t kHoldMaxBytes = 8 * 1024 * 1024;
 
-constexpr uint8_t kDrop = 0;
 constexpr uint8_t kReplace = 1;
 constexpr uint8_t kHold = 2;
 constexpr uint8_t kPassUnchanged = 3;
@@ -33,18 +43,65 @@ constexpr uint8_t kPassUnchanged = 3;
 webrtc::Mutex g_hook_mutex;
 std::shared_ptr<DillaHookHolder> g_hook;
 
+// Every live core by handle. Weak: a core lives exactly as long as its transformer (and any run
+// dilla_drain_all holds a strong reference for).
+webrtc::Mutex g_registry_mutex;
+std::map<uint64_t, std::weak_ptr<DillaTransformCore>> g_registry;
+std::atomic<uint64_t> g_next_handle{1};
+
 std::shared_ptr<DillaHookHolder> current_hook() {
   webrtc::MutexLock lock(&g_hook_mutex);
   return g_hook;
 }
 
-}  // namespace
+std::vector<std::shared_ptr<DillaTransformCore>> live_cores() {
+  std::vector<std::shared_ptr<DillaTransformCore>> out;
+  webrtc::MutexLock lock(&g_registry_mutex);
+  for (auto& [handle, weak] : g_registry) {
+    if (auto core = weak.lock()) {
+      out.push_back(std::move(core));
+    }
+  }
+  return out;
+}
 
-class DillaHookHolder {
- public:
-  explicit DillaHookHolder(rust::Box<DillaHook> hook) : hook(std::move(hook)) {}
-  rust::Box<DillaHook> hook;
-};
+std::shared_ptr<DillaTransformCore> core_of(uint64_t handle) {
+  webrtc::MutexLock lock(&g_registry_mutex);
+  auto it = g_registry.find(handle);
+  return it == g_registry.end() ? nullptr : it->second.lock();
+}
+
+bool is_opus(const std::string& mime) {
+  std::string lower(mime);
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return lower == "audio/opus";
+}
+
+// Creates a core, registers it, tells Rust its handle, and wraps it in a transformer.
+webrtc::scoped_refptr<DillaFrameTransformer> make_transformer(
+    std::shared_ptr<DillaHookHolder> hook,
+    bool send,
+    bool video,
+    std::string track_id,
+    webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track,
+    const void* owner,
+    webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> key_source) {
+  uint64_t handle = g_next_handle.fetch_add(1);
+  auto core = std::make_shared<DillaTransformCore>(
+      hook, handle, send, video, std::move(track_id), std::move(track), owner,
+      std::move(key_source));
+  {
+    webrtc::MutexLock lock(&g_registry_mutex);
+    g_registry[handle] = core;
+  }
+  dilla_transformer_attached(
+      *hook->hook, handle, send, video,
+      rust::Str(core->track_id.data(), core->track_id.size()));
+  return webrtc::make_ref_counted<DillaFrameTransformer>(std::move(core));
+}
+
+}  // namespace
 
 bool dilla_install_hook(rust::Box<DillaHook> hook) {
   webrtc::MutexLock lock(&g_hook_mutex);
@@ -61,25 +118,16 @@ bool dilla_owns_transforms() {
 
 void dilla_attach_sender(
     const webrtc::scoped_refptr<webrtc::RtpSenderInterface>& sender) {
-  if (!sender) {
-    return;
-  }
-  auto track = sender->track();
-  // A sender without a track gets a transformer bound to no track: Rust drops every frame of it.
-  dilla_attach_sender_for_track(sender, track ? track->id() : std::string());
-}
-
-void dilla_attach_sender_for_track(
-    const webrtc::scoped_refptr<webrtc::RtpSenderInterface>& sender,
-    const std::string& track_id) {
   auto hook = current_hook();
   if (!hook || !sender) {
     return;
   }
+  auto track = sender->track();
   bool video = sender->media_type() == webrtc::MediaType::VIDEO;
-  sender->SetEncoderToPacketizerFrameTransformer(
-      webrtc::make_ref_counted<DillaFrameTransformer>(hook, true, video,
-                                                      track_id));
+  // A sender without a track gets a transformer bound to no track: Rust drops every frame of it.
+  std::string track_id = track ? track->id() : std::string();
+  sender->SetEncoderToPacketizerFrameTransformer(make_transformer(
+      hook, true, video, std::move(track_id), track, sender.get(), nullptr));
 }
 
 void dilla_attach_receiver(
@@ -91,52 +139,142 @@ void dilla_attach_receiver(
   auto track = receiver->track();
   std::string track_id = track ? track->id() : std::string();
   bool video = receiver->media_type() == webrtc::MediaType::VIDEO;
-  receiver->SetDepacketizerToDecoderFrameTransformer(
-      webrtc::make_ref_counted<DillaFrameTransformer>(hook, false, video,
-                                                      track_id));
+  webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> key_source;
+  if (video && track && track->kind() == webrtc::MediaStreamTrackInterface::kVideoKind) {
+    key_source = static_cast<webrtc::VideoTrackInterface*>(track.get())->GetSource();
+  }
+  receiver->SetDepacketizerToDecoderFrameTransformer(make_transformer(
+      hook, false, video, std::move(track_id), track, receiver.get(),
+      std::move(key_source)));
 }
 
-DillaFrameTransformer::DillaFrameTransformer(
+bool dilla_sender_accepts_track(
+    const webrtc::scoped_refptr<webrtc::RtpSenderInterface>& sender,
+    const std::string& track_id) {
+  if (!sender) {
+    return false;
+  }
+  std::shared_ptr<DillaTransformCore> newest;
+  for (auto& core : live_cores()) {
+    if (core->send && core->owner == sender.get() &&
+        (!newest || core->handle > newest->handle)) {
+      newest = core;
+    }
+  }
+  return newest && !track_id.empty() && newest->track_id == track_id;
+}
+
+void dilla_set_sif_trailer(const std::vector<uint8_t>& trailer) {
+  auto hook = current_hook();
+  if (!hook) {
+    return;
+  }
+  dilla_sif_trailer(*hook->hook,
+                    rust::Slice<const uint8_t>(trailer.data(), trailer.size()));
+}
+
+namespace {
+uint64_t handle_for(const MediaStreamTrack& track, bool send) {
+  auto rtc = track.rtc_track();
+  if (!rtc) {
+    return 0;
+  }
+  uint64_t best = 0;
+  for (auto& core : live_cores()) {
+    if (core->send == send && core->track.get() == rtc.get()) {
+      best = std::max(best, core->handle);
+    }
+  }
+  return best;
+}
+}  // namespace
+
+uint64_t dilla_receiver_handle(const MediaStreamTrack& track) {
+  return handle_for(track, false);
+}
+
+uint64_t dilla_sender_handle(const MediaStreamTrack& track) {
+  return handle_for(track, true);
+}
+
+void dilla_drain_all() {
+  for (auto& core : live_cores()) {
+    core->Run(nullptr);
+  }
+}
+
+void dilla_request_key_frame(uint64_t handle) {
+  auto core = core_of(handle);
+  if (!core || core->send || !core->key_source) {
+    return;
+  }
+  // VideoRtpTrackSource::GenerateKeyFrame -> VideoRtpReceiver::OnGenerateKeyFrame ->
+  // RequestRecvKeyFrame(ssrc): a PLI to the publisher, through the SFU.
+  core->key_source->GenerateKeyFrame();
+}
+
+DillaTransformCore::DillaTransformCore(
     std::shared_ptr<DillaHookHolder> hook,
+    uint64_t handle,
     bool send,
     bool video,
-    std::string track_id)
-    : hook_(std::move(hook)),
-      send_(send),
-      video_(video),
-      track_id_(std::move(track_id)) {}
+    std::string track_id,
+    webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track,
+    const void* owner,
+    webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> key_source)
+    : handle(handle),
+      send(send),
+      video(video),
+      track_id(std::move(track_id)),
+      track(std::move(track)),
+      owner(owner),
+      key_source(std::move(key_source)),
+      hook_(std::move(hook)) {}
 
-DillaFrameTransformer::~DillaFrameTransformer() = default;
+DillaTransformCore::~DillaTransformCore() {
+  {
+    webrtc::MutexLock lock(&g_registry_mutex);
+    auto it = g_registry.find(handle);
+    // Only this core's own entry (the weak pointer is already expired here).
+    if (it != g_registry.end() && it->second.expired()) {
+      g_registry.erase(it);
+    }
+  }
+  dilla_transformer_detached(*hook_->hook, handle);
+}
 
-uint8_t DillaFrameTransformer::Decide(webrtc::TransformableFrameInterface& frame,
-                                      rust::Vec<uint8_t>& out) {
+uint8_t DillaTransformCore::Decide(webrtc::TransformableFrameInterface& frame,
+                                   rust::Vec<uint8_t>& out) {
   auto data = frame.GetData();
   bool key_frame = false;
   int32_t spatial_index = -1;
   // The transformer's kind is its sender's or receiver's media type, so the downcast matches the
   // frame libwebrtc hands it (TransformableVideoSenderFrame / TransformableVideoReceiverFrame).
-  if (video_) {
+  if (video) {
     auto& v = static_cast<webrtc::TransformableVideoFrameInterface&>(frame);
     key_frame = v.IsKeyFrame();
     spatial_index = v.Metadata().GetSpatialIndex();
   }
   std::string mime = frame.GetMimeType();
   return dilla_transform_frame(
-      *hook_->hook, send_, video_,
-      rust::Str(track_id_.data(), track_id_.size()),
+      *hook_->hook, handle, send, video,
+      rust::Str(track_id.data(), track_id.size()),
       rust::Str(mime.data(), mime.size()), frame.GetSsrc(), spatial_index,
       key_frame, rust::Slice<const uint8_t>(data.data(), data.size()), out);
 }
 
-void DillaFrameTransformer::Transform(
+void DillaTransformCore::Run(
     std::unique_ptr<webrtc::TransformableFrameInterface> frame) {
+  webrtc::MutexLock run(&run_mutex_);
   std::vector<std::unique_ptr<webrtc::TransformableFrameInterface>> ready;
   {
     webrtc::MutexLock lock(&queue_mutex_);
     int64_t now = webrtc::TimeMillis();
-    size_t bytes = frame->GetData().size();
-    held_.push_back(Held{std::move(frame), now, bytes});
-    held_bytes_ += bytes;
+    if (frame) {
+      size_t bytes = frame->GetData().size();
+      held_.push_back(Held{std::move(frame), now, bytes});
+      held_bytes_ += bytes;
+    }
     while (!held_.empty()) {
       Held& front = held_.front();
       rust::Vec<uint8_t> out;
@@ -148,25 +286,38 @@ void DillaFrameTransformer::Transform(
           break;
         }
         // Past a limit: dropped and counted, the oldest first; never released unauthenticated.
-        dilla_hold_expired(*hook_->hook, send_,
-                           rust::Str(track_id_.data(), track_id_.size()));
+        dilla_hold_expired(*hook_->hook, handle, send);
       } else if (verdict == kReplace) {
         front.frame->SetData(std::span<const uint8_t>(out.data(), out.size()));
         ready.push_back(std::move(front.frame));
       } else if (verdict == kPassUnchanged) {
-        ready.push_back(std::move(front.frame));
+        // Enforced here, whatever Rust answered: only a zero-byte Opus frame on an audio
+        // transformer carries no content (protocol/05 "No plaintext path"). Anything else is a drop.
+        if (!video && front.frame->GetData().empty() &&
+            is_opus(front.frame->GetMimeType())) {
+          ready.push_back(std::move(front.frame));
+        } else {
+          RTC_LOG(LS_WARNING) << "dilla: PassUnchanged refused for a non-empty or non-Opus frame";
+          dilla_pass_refused(*hook_->hook, handle, send);
+        }
       }
-      // kDrop, an expired hold and anything unknown: the frame is discarded here.
+      // kDrop, an expired hold, a refused pass and anything unknown: the frame is discarded here.
       held_bytes_ -= front.bytes;
       held_.pop_front();
     }
   }
+  // Still under run_mutex_: a concurrent run (a new frame and dilla_drain_all) cannot reorder.
   for (auto& f : ready) {
     Emit(std::move(f));
   }
 }
 
-void DillaFrameTransformer::Emit(
+size_t DillaTransformCore::HeldCount() {
+  webrtc::MutexLock lock(&queue_mutex_);
+  return held_.size();
+}
+
+void DillaTransformCore::Emit(
     std::unique_ptr<webrtc::TransformableFrameInterface> frame) {
   webrtc::scoped_refptr<webrtc::TransformedFrameCallback> cb;
   {
@@ -179,28 +330,80 @@ void DillaFrameTransformer::Emit(
   }
 }
 
-void DillaFrameTransformer::RegisterTransformedFrameCallback(
+void DillaTransformCore::SetCallback(
     webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback) {
   webrtc::MutexLock lock(&callback_mutex_);
   callback_ = callback;
 }
 
-void DillaFrameTransformer::RegisterTransformedFrameSinkCallback(
+void DillaTransformCore::SetSinkCallback(
     webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback,
     uint32_t ssrc) {
   webrtc::MutexLock lock(&callback_mutex_);
   sink_callbacks_[ssrc] = callback;
 }
 
-void DillaFrameTransformer::UnregisterTransformedFrameCallback() {
+void DillaTransformCore::ClearCallback() {
   webrtc::MutexLock lock(&callback_mutex_);
   callback_ = nullptr;
 }
 
-void DillaFrameTransformer::UnregisterTransformedFrameSinkCallback(
-    uint32_t ssrc) {
+void DillaTransformCore::ClearSinkCallback(uint32_t ssrc) {
   webrtc::MutexLock lock(&callback_mutex_);
   sink_callbacks_.erase(ssrc);
 }
 
+DillaFrameTransformer::DillaFrameTransformer(
+    std::shared_ptr<DillaTransformCore> core)
+    : core_(std::move(core)) {}
+
+DillaFrameTransformer::~DillaFrameTransformer() = default;
+
+void DillaFrameTransformer::Transform(
+    std::unique_ptr<webrtc::TransformableFrameInterface> frame) {
+  core_->Run(std::move(frame));
+}
+
+void DillaFrameTransformer::RegisterTransformedFrameCallback(
+    webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback) {
+  core_->SetCallback(std::move(callback));
+}
+
+void DillaFrameTransformer::RegisterTransformedFrameSinkCallback(
+    webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback,
+    uint32_t ssrc) {
+  core_->SetSinkCallback(std::move(callback), ssrc);
+}
+
+void DillaFrameTransformer::UnregisterTransformedFrameCallback() {
+  core_->ClearCallback();
+}
+
+void DillaFrameTransformer::UnregisterTransformedFrameSinkCallback(
+    uint32_t ssrc) {
+  core_->ClearSinkCallback(ssrc);
+}
+
 }  // namespace livekit_ffi
+
+#ifdef DILLA_TEST_FRAMES
+// The test-frames build only (webrtc-sys feature `dilla-test-frames`, src/dilla_transform_testing.cpp).
+namespace livekit_ffi {
+
+webrtc::scoped_refptr<DillaFrameTransformer> dilla_test_new_transformer(bool send,
+                                                                       bool video,
+                                                                       std::string track_id) {
+  auto hook = current_hook();
+  if (!hook) {
+    return nullptr;
+  }
+  return make_transformer(hook, send, video, std::move(track_id), nullptr, nullptr, nullptr);
+}
+
+size_t dilla_test_held_frames(uint64_t handle) {
+  auto core = core_of(handle);
+  return core ? core->HeldCount() : 0;
+}
+
+}  // namespace livekit_ffi
+#endif

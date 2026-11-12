@@ -30,6 +30,9 @@ mode = "powerset"
 
 [features]
 default = []
+# DILLA PATCH: the hook's synthetic-frame test support (src/dilla_transform_testing.*); enabled only
+# by dilla-media's dev-dependency.
+dilla-test-frames = []
 
 [lib]
 name = "webrtc_sys"
