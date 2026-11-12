@@ -116,12 +116,30 @@ jobs:
       - if: needs.changes.outputs.core != 'false'
         run: cargo fmt --all --check
       - if: needs.changes.outputs.core != 'false'
-        run: cargo clippy --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --all-targets --all-features --locked -- -D warnings
+      # dilla-client's tests start a real dilla-testhost (Go) on the WASI core, so this job builds both. dilla-parity is
+      # excluded: it renders with GPUI + wgpu and needs a Vulkan adapter (desktop-gpui.yml runs it).
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        if: needs.changes.outputs.core != 'false'
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        if: needs.changes.outputs.core != 'false'
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
+      - if: needs.changes.outputs.core != 'false'
+        run: cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked
+      - if: needs.changes.outputs.core != 'false'
+        run: go build -o target/dilla-testhost ./cmd/dilla-testhost
       # SQLCipher's enhanced memory security calls mlock for SQLite allocations.
       - if: needs.changes.outputs.core != 'false'
         run: |
           sudo prlimit --pid "$$" --memlock=268435456:268435456
-          cargo test --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --all-features --locked
+          cargo test --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --all-features --locked
+        env:
+          DILLA_TESTHOST: ${{ github.workspace }}/target/dilla-testhost
+          DILLA_CORE_WASI: ${{ github.workspace }}/target/wasm32-wasip1/release/dilla_core_wasi.wasm
+          DILLA_WASI_CORE: ${{ github.workspace }}/target/wasm32-wasip1/release/dilla_core_wasi.wasm
       - run: cargo build -p dilla-testkit --release --locked
       - run: cargo build -p dilla-bot-core --release --locked
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

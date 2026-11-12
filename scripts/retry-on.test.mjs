@@ -117,7 +117,7 @@ const SPM = shippedPatterns('xcodebuild -resolvePackageDependencies');
 const retried = async (patterns, output) => (await retryOn({ patterns, attempts: 3, waitMs: 0, run: sequence({ code: 1, output }, { code: 0, output: '' }).run, sleep: noSleep })).attempts > 1;
 
 test('the shipped pattern sets come from the workflows that run the wrapped commands', () => {
-  assert.deepEqual(GO.files, ['desktop-ci.yml', 'desktop.yml', 'mobile.yml', 'release.yml', 'server.yml']);
+  assert.deepEqual(GO.files, ['desktop-ci.yml', 'desktop-gpui.yml', 'desktop.yml', 'mobile.yml', 'release.yml', 'server.yml']);
   assert.deepEqual(STAPLE.files, ['desktop.yml']);
   assert.deepEqual(ELECTRON.files, ['desktop-ci.yml', 'desktop.yml']);
   // mobile-release.yml builds the signed APK (Gradle) and archives for TestFlight (Swift packages); the SDK install is mobile.yml's only.
