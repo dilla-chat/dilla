@@ -58,6 +58,28 @@ pub struct Layout {
 }
 
 impl Fixture {
+    /// Deliberately wrong fixtures that the tolerance must reject (see REPORT.md, "Validating the tolerance").
+    pub fn apply_variant(&mut self, variant: &str) {
+        match variant {
+            "good" => {}
+            // (a) message text drawn in fg2 instead of fgBody
+            "wrong-colour" => {
+                let v = self.tokens["fg2"].clone();
+                self.tokens.insert("fgBody".into(), v);
+            }
+            // (b) the panel border and the code-block border one px lower, text and fills where they were
+            "border-shift" => {
+                self.layout.outer_pad += 1.0;
+                self.layout.panel_pad -= 1.0;
+                self.layout.code_margin_top += 1.0;
+                self.layout.code_pad_y -= 1.0;
+            }
+            // (c) a fallback monospace family instead of JetBrains Mono
+            "fallback-font" => self.font.family = "DejaVu Sans Mono".into(),
+            other => panic!("unknown variant {other}"),
+        }
+    }
+
     pub fn load() -> Self {
         serde_json::from_str(include_str!("../fixture.json")).expect("fixture.json parses")
     }

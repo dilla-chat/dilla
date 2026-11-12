@@ -1,5 +1,6 @@
 //! gpui-pixel-proof
 //!   render <out.png> <scale 1|2>                                  render the fixture with GPUI, offscreen
+//!   check <reference.png> <rendered.png> <max_delta> <max_pct>    the tolerance gate (exit 1 on FAIL)
 //!   diff <reference.png> <rendered.png> <out_dir> <label> <os>    compare, write crops, print numbers
 mod diff;
 mod fixture;
@@ -32,7 +33,8 @@ fn main() -> Result<()> {
         Some("render") => {
             let out = PathBuf::from(args.get(1).context("out.png")?);
             let scale: f32 = args.get(2).context("scale")?.parse()?;
-            render_headless(&out, scale)
+            let variant = args.get(3).map_or("good", String::as_str);
+            render_headless(&out, scale, variant)
         }
         Some("diff") => {
             let a = image::open(args.get(1).context("reference")?)?.to_rgba8();
@@ -48,7 +50,24 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        _ => bail!("usage: render <out.png> <scale> | diff <ref> <got> <dir> <label> <os>"),
+        Some("check") => {
+            // check <reference> <rendered> <max_delta> <max_pct>: the gate. A pixel differs if its largest channel
+            // delta is > max_delta; the check fails (exit 1) if more than max_pct percent differ.
+            let a = image::open(args.get(1).context("reference")?)?.to_rgba8();
+            let b = image::open(args.get(2).context("rendered")?)?.to_rgba8();
+            let max_delta: u8 = args.get(3).context("max_delta")?.parse()?;
+            let max_pct: f64 = args.get(4).context("max_pct")?.parse()?;
+            let pct = diff::pct_over(&a, &b, max_delta)?;
+            let ok = pct <= max_pct;
+            println!(
+                "{} pct_over_{max_delta}={pct:.3} limit={max_pct}",
+                if ok { "PASS" } else { "FAIL" }
+            );
+            std::process::exit(i32::from(!ok));
+        }
+        _ => bail!(
+            "usage: render <out.png> <scale> [variant] | check <ref> <got> <max_delta> <max_pct> | diff <ref> <got> <dir> <label> <os>"
+        ),
     }
 }
 
@@ -77,8 +96,9 @@ fn headless_parts() -> (Arc<dyn PlatformTextSystem>, RendererFactory) {
 }
 
 /// Offscreen: GPUI's test platform with a headless renderer.
-fn render_headless(out: &Path, scale: f32) -> Result<()> {
-    let fx = fixture::Fixture::load();
+fn render_headless(out: &Path, scale: f32, variant: &str) -> Result<()> {
+    let mut fx = fixture::Fixture::load();
+    fx.apply_variant(variant);
     let (w, h) = (fx.width, fx.height);
     let (text_system, factory) = headless_parts();
     let mut cx = gpui::HeadlessAppContext::with_platform(text_system, Arc::new(()), factory);

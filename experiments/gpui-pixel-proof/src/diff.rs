@@ -34,6 +34,17 @@ pub fn compare(a: &RgbaImage, b: &RgbaImage) -> Result<Stats> {
     })
 }
 
+/// Percent of pixels whose largest channel delta is > `threshold`.
+pub fn pct_over(a: &RgbaImage, b: &RgbaImage, threshold: u8) -> Result<f64> {
+    ensure!(a.dimensions() == b.dimensions(), "size mismatch");
+    let n = a
+        .pixels()
+        .zip(b.pixels())
+        .filter(|(x, y)| channel_delta(x, y) > threshold)
+        .count();
+    Ok(n as f64 * 100.0 / (f64::from(a.width()) * f64::from(a.height())))
+}
+
 fn channel_delta(a: &Rgba<u8>, b: &Rgba<u8>) -> u8 {
     (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap_or(0)
 }

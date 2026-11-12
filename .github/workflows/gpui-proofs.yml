@@ -11,6 +11,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
+      # The win leg is expected red and unverified: its cfg(windows) path was never compiled and windows-latest has no GPU.
       fail-fast: false
       matrix:
         include:
@@ -50,6 +51,15 @@ jobs:
         run: npx playwright install${{ runner.os == 'Linux' && ' --with-deps' || '' }} chromium
       - name: Render, diff and print the numbers
         run: ./run-proof.sh ${{ matrix.label }} out/${{ matrix.label }}
+      # Linux: the validated pair must pass the correct render and fail the three wrong ones (exit 1 otherwise).
+      # Elsewhere: print the scan so a pair can be chosen; never fails.
+      - name: Validate the tolerance
+        run: |
+          if [ "${{ matrix.label }}" = linux ]; then
+            ./validate-tolerance.sh linux 64 0.5 | tee -a out/linux/results.txt
+          else
+            ./validate-tolerance.sh ${{ matrix.label }} 0 0 scan | tee -a out/${{ matrix.label }}/results.txt
+          fi
       - name: Summary
         run: |
           {

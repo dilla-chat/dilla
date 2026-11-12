@@ -1,7 +1,8 @@
 # GPUI pixel proof: fidelity and tolerance
 
-Question: can GPUI draw dilla's message feed within a small, stated pixel tolerance of beta.5 (Electron/Chromium, Signal design)?
-Only Linux has been run (locally). macOS and Windows are `PENDING-CI`: run `.github/workflows/gpui-proofs.yml` (workflow_dispatch) and paste
+Question: can GPUI draw dilla's message feed within a small, stated pixel tolerance of Chromium, which is what beta.5 (Electron, Signal design) draws with?
+The reference here is a **rasteriser-level floor**: a token-level HTML rendering in Chromium, not a beta.5 component reference. A comparison against
+the real components comes with the screens. Only Linux has been run (locally). macOS and Windows are `PENDING-CI`: run `.github/workflows/gpui-proofs.yml` (workflow_dispatch) and paste
 the `RESULT` lines it prints into the tables below.
 
 ## What was compared
@@ -17,7 +18,7 @@ the `RESULT` lines it prints into the tables below.
 Fixture (`fixture.json`, one source for both sides): a bordered panel with 12 messages from 3 authors, one 5-line code block and one reaction row of
 4 pills, rendered at 1280x800 at scale 1.0 and 2.0. Lines are hard-broken so wrapping cannot differ; line heights are fixed px.
 
-Deviation from the brief, on purpose: the reference is a token-level HTML rendering of the layout in real Chromium, not the `MessageRow` component
+Deviation from the brief, on purpose: the reference is a rasteriser-level floor (a token-level HTML rendering) of the layout in real Chromium, not the `MessageRow` component
 from Storybook. Building Storybook and adding a 12-message story would have touched `packages/ui`, which this task may not. What is measured is
 Chromium's rasteriser against GPUI's for identical geometry and font, which is the tolerance question. Pixel parity of the real feed is a later
 task's job and will use these numbers.
@@ -45,11 +46,15 @@ Reference "default" is Chromium as launched by Playwright (hinting on, integer g
 
 Runs are deterministic: two full runs gave identical numbers.
 
-Linux verdict: **NEEDS-JONAS** against the default reference (2.43 % > 2 % at 2.0); it would pass (1.27 %) against the unhinted reference.
+Linux verdict: **NEEDS-JONAS** against the default reference (2.43 % > 2 % at 2.0); it passes (1.27 %) against the unhinted reference.
+**Decision (Jonas, 2026-11-12): Linux follows GPUI's exact fractional glyph spacing; the Linux parity reference is the "nohint" Chromium.**
+The tolerance below is therefore derived against "nohint" only.
 
 ### Where the difference comes from
 
-1. Chromium on Linux with default hinting rounds every glyph advance to a whole device pixel, at DPR 2 too. A 13.5px JetBrains Mono glyph is
+1. The measurements are consistent with Chromium on Linux rounding every glyph advance to a whole device pixel under its default settings, at DPR 2 too.
+   (The "nohint" variant flips two flags at once, `--font-render-hinting=none` and `--enable-font-subpixel-positioning`, so the data does not say which
+   one removes the rounding.) A 13.5px JetBrains Mono glyph is
    8.1 px wide in GPUI (0.6 em, fractional positions) and 8 px in Chromium; the 12.5px code is 7.5 px in GPUI and 8 px in Chromium
    (a 48-character code line ends at x=448 in GPUI and x=472 in Chromium). Everything after the first few characters of a line is therefore
    shifted, which is most of the differing pixels and all of the worst crops (`evidence/linux/linux-2x-worst*.png`). Nothing in GPUI 0.3.12
@@ -66,21 +71,47 @@ Task 10 fixes a tolerance. On macOS Chromium does not round advances, so the "no
 | OS | status |
 |---|---|
 | macOS (macos-15, Metal headless) | PENDING-CI |
-| Windows (windows-latest) | PENDING-CI. Caveat: GPUI's headless platform on Windows has no text system or renderer, so `main.rs` uses the wgpu renderer with cosmic-text. That is not the DirectWrite path the shipping Windows client uses, so the Windows number is a lower bound on realism. A DirectWrite measurement needs a real window on a 2560x1600 display, which GitHub's Windows runners do not have. The Windows code path has not been compiled yet. |
+| Windows (windows-latest) | PENDING-CI, **expected red / unverified**: the `cfg(windows)` path has never been compiled, and `windows-latest` has no GPU for the wgpu renderer (it would have to fall back to a software adapter such as WARP). A red Windows leg is not evidence against GPUI. Caveat: GPUI's headless platform on Windows has no text system or renderer, so `main.rs` uses the wgpu renderer with cosmic-text. That is not the DirectWrite path the shipping Windows client uses, so the Windows number is a lower bound on realism. A DirectWrite measurement needs a real window on a 2560x1600 display, which GitHub's Windows runners do not have. The Windows code path has not been compiled yet. |
 
-## Proposed tolerance (read by Task 10)
+## Tolerance (read by Task 10)
 
-Derived from Linux against the default reference (the worse one): the worst of scale 1.0 and 2.0, with headroom (max delta rounded up to the next 10;
-percent differing times 1.25, rounded up to 0.1). `max_pct` means percentage of pixels with channel delta > 8.
+Semantics, as implemented by `gpui-pixel-proof check <ref> <got> <max_delta> <max_pct>` (exit 1 on FAIL): a pixel differs if its largest R/G/B channel delta
+is **greater than** `max_delta`; the check fails if more than `max_pct` percent of the pixels differ. Linux, scale 2.0, against the "nohint" reference only.
+
+The first proposal (`220 3.9`) was not a gate: no pixel exceeds 214, so `max_delta` 220 never rejects anything, and 3.9 % is twice the 2 % budget. It is withdrawn.
+
+Choosing the pair: share of pixels over each delta, for the correct render and three deliberately wrong ones (`./validate-tolerance.sh linux 0 0 scan`):
+
+| variant | over 8 | over 16 | over 32 | over 48 | over 64 | over 96 | over 128 |
+|---|---|---|---|---|---|---|---|
+| good | 1.268 | 1.049 | 0.695 | 0.459 | 0.296 | 0.125 | 0.080 |
+| (a) wrong-colour: message text in fg2 instead of fgBody | 1.836 | 1.646 | 1.381 | 1.125 | 0.870 | 0.114 | 0.053 |
+| (b) border-shift: panel and code-block borders 1px lower | 2.726 | 2.493 | 1.649 | 0.881 | 0.699 | 0.474 | 0.364 |
+| (c) fallback-font: DejaVu Sans Mono instead of JetBrains Mono | 2.062 | 1.931 | 1.714 | 1.479 | 1.283 | 0.998 | 0.782 |
+
+A single pair separates them at delta 64: the correct render is at 0.296 %, the best wrong one at 0.699 %, so a limit of 0.5 % passes the first and fails all three
+(1.7x headroom above the correct render, 1.4x below the nearest wrong one). Validation, `./validate-tolerance.sh linux 64 0.5`:
+
+| render | expected | result | % over 64 (limit 0.5) |
+|---|---|---|---|
+| good | PASS | PASS | 0.296 |
+| (a) wrong-colour | FAIL | FAIL | 0.870 |
+| (b) border-shift | FAIL | FAIL | 0.699 |
+| (c) fallback-font | FAIL | FAIL | 1.283 |
+
+The withdrawn `220 3.9` run through the same script passes all three wrong renders (`WRONG` x3).
+
+Limits of this gate: it is validated against these three faults only. Margins are 1.4x to 1.7x, not large, and it is calibrated on one fixture, one Linux GPU
+and one Chromium; a different GPU driver or Chromium may move the "good" figure. A colour error smaller than about 64 levels on text, or text in a
+fixture with little text, would be caught less reliably. The `DejaVu Sans Mono` fallback only exists on Linux. At scale 1.0 the pair is not validated.
 
 ```
-TOLERANCE linux 220 3.9
+TOLERANCE linux 64 0.5
 TOLERANCE mac PENDING-CI PENDING-CI
 TOLERANCE win PENDING-CI PENDING-CI
 ```
 
-A `max_delta` of 220/255 is honest rather than useful: single glyph edges differ that much. For regression tests `max_pct` is the meaningful bound;
-text-free regions (chrome) can be tested with a stricter, separate bound.
+(Here `max_pct` is a percentage of pixels over `max_delta`, as above.) The workflow runs the scan on every OS so mac and win can get their own validated pair.
 
 ## How to reproduce
 
