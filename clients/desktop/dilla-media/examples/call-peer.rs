@@ -193,7 +193,11 @@ async fn main() {
                 emit(json!({"event": "muted", "on": *on == "1"}));
             }
             ["mic", id] => {
-                let error = call.set_mic(id).err().map(|e| e.to_string());
+                let error = call
+                    .set_mic(Some(id), dilla_media::noise::NoiseMode::Standard)
+                    .await
+                    .err()
+                    .map(|e| e.to_string());
                 emit(json!({"event": "mic", "error": error}));
             }
             ["stats"] => {

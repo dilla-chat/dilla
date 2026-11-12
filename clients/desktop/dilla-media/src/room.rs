@@ -36,14 +36,17 @@ use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use livekit::webrtc::peer_connection_factory::IceServer;
 use livekit::webrtc::prelude::AudioFrame;
-use livekit::{PlatformAudio, RecordingDeviceId};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use zeroize::Zeroizing;
 
-use crate::noise::{FRAME_SAMPLES, NoiseMode, NoiseProcessor, RATE};
+use crate::apm::Apm;
+use crate::capture::{self, CaptureConfig};
+use crate::devices::{self, AudioHost, DeviceId};
+use crate::noise::{FRAME_SAMPLES, NoiseMode, NoiseProcessor, RATE, embedded_model};
+use crate::playout::{PlayoutSink, Speaker};
 use crate::transform::{CallMedia, Router, Stats, hex};
-use crate::{EpochKeys, MediaError, ffi};
+use crate::{EpochKeys, MediaError, MediaEvent, ffi};
 
 /// What dillad's `POST /v1/channels/{id}/calls` answers for this device (L-HTTP-102): the room's
 /// LiveKit URL, the token minted for this device's leaf, and the instance's ICE servers (empty: the
@@ -67,9 +70,10 @@ impl std::fmt::Debug for LiveKitToken {
 pub enum Mic {
     /// Nothing is published (listen only).
     None,
-    /// A platform microphone (`None`: the system default), through libwebrtc's audio device module
-    /// and its audio processing. `Off` and `Standard` only: the device path gives no samples to
-    /// process in between, so `Enhanced` is refused (use [`Mic::Pcm`] with a capture of your own).
+    /// A device microphone (`None`: the system default), captured by [`capture::Mic`]: echo
+    /// cancellation against the call's speaker, gain control and the noise mode (`Enhanced`
+    /// included; without its model the microphone runs `Standard` and a
+    /// [`MediaEvent::EnhancedUnavailable`] follows, see [`Call::events`]).
     Device {
         id: Option<String>,
         noise: NoiseMode,
@@ -84,8 +88,8 @@ pub enum Mic {
 
 pub struct CallOptions {
     pub mic: Mic,
-    /// Play the call through the platform's speakers (the audio device module). Off for a headless
-    /// participant.
+    /// Play the call through the system's speakers ([`Speaker`], which also gives the echo canceller
+    /// its reference). Off for a headless participant.
     pub playout: bool,
     /// How long the join waits for the first epoch key before it gives up (nothing published).
     pub key_timeout: Duration,
@@ -116,12 +120,15 @@ pub struct Call {
     router: Arc<Router>,
     media: Arc<CallMedia>,
     local: Option<LocalAudioTrack>,
-    platform: Option<PlatformAudio>,
+    apm: Apm,
+    host: Arc<dyn AudioHost>,
+    capture: Option<Arc<capture::Mic>>,
+    speaker: Option<Arc<Speaker>>,
+    events_tx: mpsc::UnboundedSender<MediaEvent>,
+    events: Mutex<Option<mpsc::UnboundedReceiver<MediaEvent>>>,
     levels: watch::Receiver<RemoteLevels>,
     tails: Tails,
     muted: Arc<AtomicBool>,
-    /// The published microphone is a platform device (only that one can be switched).
-    device_mic: bool,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -179,15 +186,16 @@ impl Call {
         keys: Arc<dyn EpochKeys>,
         options: CallOptions,
     ) -> Result<Call, MediaError> {
-        if let Mic::Device {
-            noise: NoiseMode::Enhanced,
-            ..
-        } = options.mic
-        {
-            return Err(MediaError::Unsupported(
-                "enhanced noise suppression needs PCM capture (Mic::Pcm)".into(),
-            ));
-        }
+        Self::join_on(token, keys, options, devices::system()).await
+    }
+
+    /// As [`join_with`](Call::join_with) on another audio host (a fake one in tests).
+    pub async fn join_on(
+        token: LiveKitToken,
+        keys: Arc<dyn EpochKeys>,
+        options: CallOptions,
+        host: Arc<dyn AudioHost>,
+    ) -> Result<Call, MediaError> {
         let router = Router::get()?;
         let media = CallMedia::new();
         router.begin(media.clone())?;
@@ -198,7 +206,7 @@ impl Call {
             media: media.clone(),
             armed: true,
         };
-        let call = Self::connect(token, keys, options, router, media).await?;
+        let call = Self::connect(token, keys, options, host, router, media).await?;
         guard.armed = false;
         Ok(call)
     }
@@ -207,6 +215,7 @@ impl Call {
         token: LiveKitToken,
         keys: Arc<dyn EpochKeys>,
         options: CallOptions,
+        host: Arc<dyn AudioHost>,
         router: Arc<Router>,
         media: Arc<CallMedia>,
     ) -> Result<Call, MediaError> {
@@ -257,8 +266,16 @@ impl Call {
         room_options.dynacast = false;
         room_options.rtc_config.ice_servers = token.ice_servers.clone();
 
-        let platform = if options.playout || matches!(options.mic, Mic::Device { .. }) {
-            Some(PlatformAudio::new().map_err(|e| MediaError::Audio(e.to_string()))?)
+        let apm = Apm::default();
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        // The speaker first: it gives the microphone's echo canceller its reference.
+        let speaker = if options.playout {
+            Some(Arc::new(Speaker::open_with(
+                host.clone(),
+                apm.clone(),
+                Some(events_tx.clone()),
+                None,
+            )?))
         } else {
             None
         };
@@ -275,6 +292,7 @@ impl Call {
             media.clone(),
             levels_tx,
             tails.clone(),
+            speaker.as_ref().map(|s| s.sink()),
         ))];
 
         let mut call = Call {
@@ -282,11 +300,15 @@ impl Call {
             router,
             media,
             local: None,
-            platform,
+            apm,
+            host,
+            capture: None,
+            speaker,
+            events_tx,
+            events: Mutex::new(Some(events_rx)),
             levels,
             tails,
             muted,
-            device_mic: false,
             tasks: Vec::new(),
         };
         match call.publish_mic(options.mic, &mut tasks).await {
@@ -307,39 +329,45 @@ impl Call {
         mic: Mic,
         tasks: &mut Vec<JoinHandle<()>>,
     ) -> Result<(), MediaError> {
-        let device = matches!(mic, Mic::Device { .. });
         let (track, feeder) = match mic {
             Mic::None => return Ok(()),
             Mic::Device { id, noise } => {
-                let platform = self
-                    .platform
-                    .as_ref()
-                    .ok_or_else(|| MediaError::Audio("no audio device module".into()))?;
-                if let Some(id) = id {
-                    platform
-                        .set_recording_device(&RecordingDeviceId::from_unchecked_guid(&id))
-                        .map_err(|e| MediaError::Audio(e.to_string()))?;
+                let mut mic = capture::Mic::open_with(
+                    CaptureConfig {
+                        host: self.host.clone(),
+                        apm: self.apm.clone(),
+                        model: Arc::new(embedded_model),
+                    },
+                    id.map(DeviceId),
+                    noise,
+                )?;
+                let frames = mic
+                    .take_frames()
+                    .ok_or_else(|| MediaError::Audio("the microphone has no frames".into()))?;
+                if let Some(mut events) = mic.take_events() {
+                    let tx = self.events_tx.clone();
+                    tasks.push(tokio::spawn(async move {
+                        while let Some(e) = events.recv().await {
+                            let _ = tx.send(e);
+                        }
+                    }));
                 }
-                platform
-                    .set_noise_suppression(noise == NoiseMode::Standard, false)
-                    .map_err(|e| MediaError::Audio(e.to_string()))?;
+                self.capture = Some(Arc::new(mic));
+                // The device chain has processed the frames (echo, gain, noise): the feeder only
+                // mutes and forwards.
+                let source = native_source();
+                let track = LocalAudioTrack::create_audio_track(
+                    "microphone",
+                    RtcAudioSource::Native(source.clone()),
+                );
                 (
-                    LocalAudioTrack::create_audio_track("microphone", platform.rtc_source()),
-                    None,
+                    track,
+                    Some((frames, NoiseProcessor::new(NoiseMode::Off)?, source)),
                 )
             }
             Mic::Pcm { frames, noise } => {
                 let processor = NoiseProcessor::new(noise)?;
-                let source = NativeAudioSource::new(
-                    AudioSourceOptions {
-                        echo_cancellation: false,
-                        noise_suppression: false,
-                        auto_gain_control: false,
-                    },
-                    RATE,
-                    1,
-                    100,
-                );
+                let source = native_source();
                 let track = LocalAudioTrack::create_audio_track(
                     "microphone",
                     RtcAudioSource::Native(source.clone()),
@@ -378,7 +406,9 @@ impl Call {
                 ));
             }
         }
-        if let Some((frames, processor, source)) = feeder {
+        if let Some((mut frames, processor, source)) = feeder {
+            // Frames captured while the join was under way are stale: the feeder starts empty.
+            while frames.try_recv().is_ok() {}
             tasks.push(tokio::spawn(feed_pcm(
                 frames,
                 processor,
@@ -387,23 +417,44 @@ impl Call {
             )));
         }
         self.local = Some(track);
-        self.device_mic = device;
         Ok(())
     }
 
-    /// Switches the platform microphone (`id` from [`crate::devices::inputs`]) under the same track
-    /// and sender, so the sender's transformer and its binding stay.
-    pub fn set_mic(&self, id: &str) -> Result<(), MediaError> {
-        let platform = self
-            .platform
-            .as_ref()
-            .filter(|_| self.local.is_some() && self.device_mic)
-            .ok_or_else(|| {
-                MediaError::Unsupported("this call does not publish a device microphone".into())
-            })?;
-        platform
-            .switch_recording_device(&RecordingDeviceId::from_unchecked_guid(id))
-            .map_err(|e| MediaError::Audio(e.to_string()))
+    /// Switches the device microphone (`id` from [`crate::devices::inputs`], `None`: the system
+    /// default) and its noise mode under the same track and sender, so the sender's transformer
+    /// and its binding stay. Every [`NoiseMode`] is accepted; the mode that runs is returned
+    /// (`Standard` when `Enhanced` could not load, with [`MediaEvent::EnhancedUnavailable`]).
+    pub async fn set_mic(
+        &self,
+        id: Option<&str>,
+        noise: NoiseMode,
+    ) -> Result<NoiseMode, MediaError> {
+        let capture = self.capture.clone().ok_or_else(|| {
+            MediaError::Unsupported("this call does not publish a device microphone".into())
+        })?;
+        let device = id.map(|i| DeviceId(i.to_owned()));
+        // The switch waits for the capture worker (which may load the enhanced model): never on
+        // an async worker thread.
+        tokio::task::spawn_blocking(move || capture.switch(device, noise))
+            .await
+            .map_err(|e| MediaError::Audio(e.to_string()))?
+    }
+
+    /// Plays on another output device (`None`: the system default).
+    pub async fn set_speaker(&self, id: Option<&str>) -> Result<(), MediaError> {
+        let speaker = self
+            .speaker
+            .clone()
+            .ok_or_else(|| MediaError::Unsupported("this call does not play audio".into()))?;
+        let device = id.map(|i| DeviceId(i.to_owned()));
+        tokio::task::spawn_blocking(move || speaker.switch(device))
+            .await
+            .map_err(|e| MediaError::Audio(e.to_string()))?
+    }
+
+    /// What the audio devices did that the user should see ([`MediaEvent`]), once.
+    pub fn events(&self) -> Option<mpsc::UnboundedReceiver<MediaEvent>> {
+        self.events.lock().unwrap_or_else(|p| p.into_inner()).take()
     }
 
     /// Mutes or unmutes the microphone: the track is disabled (libwebrtc encodes silence, still
@@ -458,7 +509,8 @@ impl Call {
             log::warn!("dilla-media: room close: {e}");
         }
         self.router.end(&self.media);
-        self.platform.take();
+        self.capture.take();
+        self.speaker.take();
     }
 }
 
@@ -511,6 +563,7 @@ async fn remote_tracks(
     media: Arc<CallMedia>,
     levels: watch::Sender<RemoteLevels>,
     tails: Tails,
+    playout: Option<PlayoutSink>,
 ) {
     let mut readers: HashMap<String, JoinHandle<()>> = HashMap::new();
     while let Some(event) = events.recv().await {
@@ -562,6 +615,7 @@ async fn remote_tracks(
                         media.clone(),
                         levels.clone(),
                         tails.clone(),
+                        playout.clone().map(|p| (p, key.clone())),
                     ));
                     if let Some(old) = readers.insert(key, reader) {
                         old.abort();
@@ -577,6 +631,9 @@ async fn remote_tracks(
                     let key = format!("{}:{}", hex(&device), publication.sid().as_str());
                     if let Some(r) = readers.remove(&key) {
                         r.abort();
+                    }
+                    if let Some(p) = &playout {
+                        p.remove(&key);
                     }
                     levels.send_modify(|l| {
                         l.remove(&hex(&device));
@@ -598,6 +655,7 @@ async fn read_audio(
     media: Arc<CallMedia>,
     levels: watch::Sender<RemoteLevels>,
     tails: Tails,
+    playout: Option<(PlayoutSink, String)>,
 ) {
     let mut stream = NativeAudioStream::new(track, RATE as i32, 1);
     let mut window: Vec<f32> = Vec::with_capacity(RATE as usize / 10);
@@ -609,6 +667,9 @@ async fn read_audio(
             while tail.len() > RATE as usize {
                 tail.pop_front();
             }
+        }
+        if let Some((sink, key)) = &playout {
+            sink.push(key, &frame.data);
         }
         window.extend(frame.data.iter().map(|s| f32::from(*s) / 32768.0));
         if window.len() >= RATE as usize / 10 {
@@ -622,4 +683,18 @@ async fn read_audio(
             }
         }
     }
+}
+
+/// The published microphone's source: the application (or the capture chain) does the processing.
+fn native_source() -> NativeAudioSource {
+    NativeAudioSource::new(
+        AudioSourceOptions {
+            echo_cancellation: false,
+            noise_suppression: false,
+            auto_gain_control: false,
+        },
+        RATE,
+        1,
+        100,
+    )
 }
