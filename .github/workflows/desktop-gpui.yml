@@ -46,7 +46,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
-      fail-fast: true
+      # Each OS's leg runs to the end: the three toolchains fail for different reasons, and one red leg
+      # cancelling the others hides the macOS/Windows problems until the next run.
+      fail-fast: false
       matrix:
         include:
           - { os: ubuntu-24.04, platform: linux, arch: x64 }
@@ -69,13 +71,24 @@ jobs:
       # GPUI's Linux build and the libwebrtc behind LiveKit need the X11, Wayland, xkbcommon, font, Vulkan and GBM
       # development packages and libclang (bindgen). mesa-vulkan-drivers is lavapipe, the software Vulkan adapter
       # dilla-parity's headless screenshot test renders on. Retried only on mirror and DNS failures.
+      # LiveKit's prebuilt libwebrtc ships a hermetic libc++ that needs clang 21+; ubuntu-24.04 has clang 18.
+      # LLVM's own apt repository, verified by its signing key.
+      - name: Add the LLVM 21 apt repository
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-21.list
+          echo "CC=clang-21" >> "$GITHUB_ENV"
+          echo "CXX=clang++-21" >> "$GITHUB_ENV"
       - name: Install the GPUI build dependencies
         if: runner.os == 'Linux'
         run: >-
           node scripts/retry-on.mjs --attempts 6 --wait 60
           --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch'
           -- bash scripts/ci-apt-install.sh
-          clang libclang-dev pkg-config libssl-dev libdbus-1-dev libasound2-dev
+          clang-21 libclang-21-dev pkg-config libssl-dev libdbus-1-dev libasound2-dev
           libfontconfig-dev libfreetype-dev libvulkan-dev libgbm-dev libdrm-dev libglib2.0-dev
           libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
           mesa-vulkan-drivers libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxext-dev libxdamage-dev
