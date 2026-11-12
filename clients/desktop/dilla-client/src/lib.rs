@@ -3,4 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod http;
+pub mod instances;
+pub mod keychain;
 pub mod seams;
+pub mod store;
