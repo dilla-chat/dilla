@@ -2,6 +2,7 @@
 //! is a trait in [`seams`].
 #![forbid(unsafe_code)]
 
+pub mod gateway;
 pub mod http;
 pub mod instances;
 pub mod keychain;
