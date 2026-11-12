@@ -97,6 +97,9 @@ mod tests {
         assert_eq!(shape_of(StateDotTone::Idle), Shape::Fill(color::WARN));
         assert_eq!(shape_of(StateDotTone::Dnd), Shape::Fill(color::DANGER));
         assert_eq!(shape_of(StateDotTone::Off), Shape::Ring { dashed: false });
-        assert_eq!(shape_of(StateDotTone::Pending), Shape::Ring { dashed: true });
+        assert_eq!(
+            shape_of(StateDotTone::Pending),
+            Shape::Ring { dashed: true }
+        );
     }
 }

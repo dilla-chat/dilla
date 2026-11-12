@@ -70,7 +70,11 @@ pub struct SettingsNav {
 }
 
 impl SettingsNav {
-    pub fn new(id: impl Into<ElementId>, items: Vec<NavItem>, active: impl Into<SharedString>) -> Self {
+    pub fn new(
+        id: impl Into<ElementId>,
+        items: Vec<NavItem>,
+        active: impl Into<SharedString>,
+    ) -> Self {
         Self {
             id: id.into(),
             items,
@@ -128,8 +132,8 @@ impl RenderOnce for SettingsNav {
             let current = item.id == self.active;
             let mut row = div()
                 .id((self.id.clone(), format!("item-{}", item.id)))
-                .track_focus(&handles[i])
-                .tab_stop(i == stop)
+                // The handle's own flag decides the tab stop of a tracked element.
+                .track_focus(&handles[i].clone().tab_stop(i == stop))
                 .relative()
                 .flex()
                 .items_center()
@@ -167,9 +171,11 @@ impl RenderOnce for SettingsNav {
                         .justify_center()
                         .size(px(15.0))
                         .children(item.icon.map(|icon| {
-                            Icon::new(icon)
-                                .size(px(15.0))
-                                .color(if current { color::FG } else { color::FG_2 })
+                            Icon::new(icon).size(px(15.0)).color(if current {
+                                color::FG
+                            } else {
+                                color::FG_2
+                            })
                         })),
                 );
             }

@@ -1,7 +1,10 @@
 //! `AudioMeter` (packages/ui/src/AudioMeter): twelve bars that rise left to right, lit in `--ok`, unlit as a 2px baseline
 //! tick in the edge colour, so the level reads by height and fill without colour too.
 
-use gpui::{App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, Styled, Window, div, px};
+use gpui::{
+    App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, Styled, Window,
+    div, px,
+};
 
 use crate::tokens::color;
 
@@ -50,7 +53,12 @@ impl RenderOnce for AudioMeter {
             .h(px(HEIGHT));
         for i in 0..BARS {
             let h = HEIGHT * bar_percent(i) as f32 / 100.0;
-            let bar = div().relative().flex_none().w(px(4.0)).h(px(h)).rounded(px(1.0));
+            let bar = div()
+                .relative()
+                .flex_none()
+                .w(px(4.0))
+                .h(px(h))
+                .rounded(px(1.0));
             meter = meter.child(if i < on {
                 bar.bg(color::OK)
             } else {

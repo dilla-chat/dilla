@@ -50,9 +50,11 @@ impl RenderOnce for SettingsFooter {
             .gap_y(px(8.0))
             .w_full()
             .child(
-                div().flex_1().min_w(px(192.0)).children(self.status.map(|status| {
-                    line(status, text::SM, line_height(text::SM, 1.5), color::FG_3)
-                })),
+                div().flex_1().min_w(px(192.0)).children(
+                    self.status.map(|status| {
+                        line(status, text::SM, line_height(text::SM, 1.5), color::FG_3)
+                    }),
+                ),
             )
             .child(
                 div()

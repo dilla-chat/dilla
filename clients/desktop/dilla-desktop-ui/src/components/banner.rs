@@ -1,8 +1,8 @@
 //! `Banner` (packages/ui/src/Banner): a one-line notice. Tone is never colour alone: a glyph carries it too.
 
 use gpui::{
-    App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, Styled, Window, div, px,
+    App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
+    Styled, Window, div, px,
 };
 
 use super::button::{Button, ClickHandler};
@@ -84,12 +84,7 @@ impl RenderOnce for Banner {
         let accent = self.tone.accent();
         let glyph = match self.tone.glyph() {
             Some(icon) => div().child(Icon::new(icon).size(px(14.0)).color(accent)),
-            None => div().child(line(
-                "›",
-                text::SM,
-                line_height(text::SM, 1.5),
-                accent,
-            )),
+            None => div().child(line("›", text::SM, line_height(text::SM, 1.5), accent)),
         };
         let id = self.id.clone();
         let mut root = div()
@@ -105,17 +100,12 @@ impl RenderOnce for Banner {
             .border_b_1()
             .border_color(color::HAIRLINE_2)
             .child(glyph.flex_none())
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(line(
-                        self.text,
-                        text::SM,
-                        line_height(text::SM, 1.5),
-                        color::FG,
-                    )),
-            );
+            .child(div().flex_1().min_w_0().child(line(
+                self.text,
+                text::SM,
+                line_height(text::SM, 1.5),
+                color::FG,
+            )));
         // The 3px left edge takes the tone while the bottom edge stays a hairline: GPUI has one border colour per box, so the
         // left edge is a bar over the padding that makes room for it.
         root = root.relative().child(
@@ -128,7 +118,11 @@ impl RenderOnce for Banner {
                 .bg(accent),
         );
         if let Some((label, handler)) = self.action {
-            root = root.child(div().flex_none().child(Button::new((id, "action"), label).on_click(handler)));
+            root = root.child(
+                div()
+                    .flex_none()
+                    .child(Button::new((id, "action"), label).on_click(handler)),
+            );
         }
         root
     }

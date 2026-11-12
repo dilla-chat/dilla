@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use gpui::{
-    AnyView, App, AppContext, Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
-    px,
+    AnyView, App, AppContext, Context, IntoElement, ParentElement, Render, SharedString, Styled,
+    Window, div, px,
 };
 
 use crate::metrics::shadow_1;

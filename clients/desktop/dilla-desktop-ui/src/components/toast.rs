@@ -102,7 +102,12 @@ impl RenderOnce for ToastHost {
                     .rounded(radius::LG)
                     .shadow(shadow_toast())
                     .child(Icon::new(IconName::Check).size(px(14.0)).color(color::OK))
-                    .child(line(message, text::UI, line_height(text::UI, 1.5), color::FG)),
+                    .child(line(
+                        message,
+                        text::UI,
+                        line_height(text::UI, 1.5),
+                        color::FG,
+                    )),
             ),
         }
     }

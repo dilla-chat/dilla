@@ -100,7 +100,11 @@ mod tests {
         assert_eq!(l.next(&k("home"), 2, 3), Some(0));
         assert_eq!(l.next(&k("end"), 0, 3), Some(2));
         assert_eq!(l.next(&k("right"), 0, 3), None);
-        assert_eq!(l.next(&k("shift-down"), 0, 3), None, "a chord is the shell's");
+        assert_eq!(
+            l.next(&k("shift-down"), 0, 3),
+            None,
+            "a chord is the shell's"
+        );
         assert_eq!(l.next(&k("alt-down"), 0, 3), None);
         assert_eq!(l.next(&k("down"), 0, 0), None);
     }

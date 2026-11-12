@@ -13,15 +13,38 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ElementId, FocusHandle, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, RenderOnce, SharedString, Styled, Window, deferred,
-    div, px,
+    AnyElement, App, ElementId, FocusHandle, Global, InteractiveElement, IntoElement, KeyBinding,
+    MouseButton, ParentElement, RenderOnce, SharedString, Styled, Window, actions, deferred, div,
+    px,
 };
 
 use super::button::{Button, ButtonSize, ButtonVariant};
 use crate::metrics::shadow_3;
 use crate::text::{line, line_height};
 use crate::tokens::{color, font, radius, text};
+
+actions!(dilla_dialog, [TrapNext, TrapPrevious]);
+
+/// The key context of an overlay panel (a dialog, the settings frame), in which Tab and Shift+Tab are [`TrapNext`] and
+/// [`TrapPrevious`] instead of the window's own focus keys. GPUI runs a key binding before any key listener, so the trap has to
+/// be an action bound in the overlay's context; a binding in a deeper context wins over the window's plain Tab.
+pub const OVERLAY_CONTEXT: &str = "Dialog";
+
+/// Binds Tab and Shift+Tab inside an overlay. Every overlay does this on its first render, once per app; calling it
+/// earlier (an app's key setup) does no harm.
+pub fn bind_keys(cx: &mut App) {
+    if cx.has_global::<KeysBound>() {
+        return;
+    }
+    cx.set_global(KeysBound);
+    cx.bind_keys([
+        KeyBinding::new("tab", TrapNext, Some(OVERLAY_CONTEXT)),
+        KeyBinding::new("shift-tab", TrapPrevious, Some(OVERLAY_CONTEXT)),
+    ]);
+}
+
+struct KeysBound;
+impl Global for KeysBound {}
 
 type CloseHandler = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 
@@ -241,10 +264,14 @@ impl Dialog {
 
 /// Moves focus one step inside `panel` and keeps it there: past either end it wraps.
 pub fn trap_tab(panel: &FocusHandle, forward: bool, window: &mut Window, cx: &mut App) {
+    // The panel is itself a tab stop (so Tab from it descends into its first control) but never a place to rest: a step that
+    // lands on it, or outside it, goes on to the first control inside.
     if forward {
         window.focus_next(cx);
         if !panel.contains_focused(window, cx) {
             panel.focus(window, cx);
+            window.focus_next(cx);
+        } else if panel.is_focused(window) {
             window.focus_next(cx);
         }
         return;
@@ -273,11 +300,13 @@ pub fn trap_tab(panel: &FocusHandle, forward: bool, window: &mut Window, cx: &mu
 
 impl RenderOnce for Dialog {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let memory = window.use_keyed_state((self.id.clone(), "dialog"), cx, |_, cx| DialogMemory {
-            panel: cx.focus_handle(),
-            close: cx.focus_handle().tab_stop(true),
-            focus: OpenFocus::default(),
-        });
+        bind_keys(cx);
+        let memory =
+            window.use_keyed_state((self.id.clone(), "dialog"), cx, |_, cx| DialogMemory {
+                panel: cx.focus_handle().tab_stop(true),
+                close: cx.focus_handle().tab_stop(true),
+                focus: OpenFocus::default(),
+            });
         let (panel, close) = memory.read_with(cx, |m, _| (m.panel.clone(), m.close.clone()));
         let close = self.close_handle.clone().unwrap_or(close);
         let target = match &self.initial_focus {
@@ -305,7 +334,10 @@ impl RenderOnce for Dialog {
         let on_backdrop = close_with(self.on_backdrop.clone().or_else(|| self.on_close.clone()));
         let confirm = self.kind == DialogKind::Confirm;
 
-        let mut head = div().flex().gap(px(if confirm { 14.0 } else { 10.0 })).items_center();
+        let mut head = div()
+            .flex()
+            .gap(px(if confirm { 14.0 } else { 10.0 }))
+            .items_center();
         head = if confirm {
             head.items_start().px(px(18.0)).pt(px(18.0)).pb(px(4.0))
         } else {
@@ -326,8 +358,13 @@ impl RenderOnce for Dialog {
                 .flex_1()
                 .min_w_0()
                 .child(
-                    line(self.title.clone(), title_size, line_height(title_size, 1.5), color::FG)
-                        .weight(font::WEIGHT_DISPLAY),
+                    line(
+                        self.title.clone(),
+                        title_size,
+                        line_height(title_size, 1.5),
+                        color::FG,
+                    )
+                    .weight(font::WEIGHT_DISPLAY),
                 )
                 .children(self.description),
         );
@@ -358,7 +395,7 @@ impl RenderOnce for Dialog {
         let mut panel_el = div()
             .id((self.id.clone(), "panel"))
             .track_focus(&panel)
-            .key_context("Dialog")
+            .key_context(OVERLAY_CONTEXT)
             .flex()
             .flex_col()
             .flex_none()
@@ -381,18 +418,10 @@ impl RenderOnce for Dialog {
             panel_el = panel_el.child(pad.child(body));
         }
         panel_el = panel_el.child(footer);
-        let trap_panel = panel.clone();
+        let (next_panel, prev_panel) = (panel.clone(), panel.clone());
         let panel_el = panel_el
-            .capture_key_down(move |event, window, cx| {
-                if event.keystroke.key == "tab" {
-                    let m = &event.keystroke.modifiers;
-                    if m.control || m.alt || m.platform {
-                        return;
-                    }
-                    cx.stop_propagation();
-                    trap_tab(&trap_panel, !m.shift, window, cx);
-                }
-            })
+            .on_action(move |_: &TrapNext, window, cx| trap_tab(&next_panel, true, window, cx))
+            .on_action(move |_: &TrapPrevious, window, cx| trap_tab(&prev_panel, false, window, cx))
             .on_key_down(move |event, window, cx| {
                 if event.keystroke.key == "escape" {
                     cx.stop_propagation();
@@ -409,7 +438,9 @@ impl RenderOnce for Dialog {
                 .pt(px(top_offset(f32::from(viewport.height))))
                 .bg(color::SCRIM)
                 .occlude()
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| on_backdrop(window, cx))
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    on_backdrop(window, cx)
+                })
                 .child(panel_el),
         )
         .with_priority(10)

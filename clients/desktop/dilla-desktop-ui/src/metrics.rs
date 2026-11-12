@@ -159,7 +159,10 @@ mod tests {
             "regular: { rowPadY: '0.375rem' /* 6px */, rowPadX: '1.125rem' /* 18px */, rowGap: '0.125rem' /* 2px */, groupGap: '0.875rem' /* 14px */, avatar: '2rem' /* 32px */, lineHeight: '1.5' }",
             "cozy: { rowPadY: '0.625rem' /* 10px */, rowPadX: '1.25rem' /* 20px */, rowGap: '0.25rem' /* 4px */, groupGap: '1.375rem' /* 22px */, avatar: '2.25rem' /* 36px */, lineHeight: '1.55' }",
         ] {
-            assert!(TOKENS_TS.contains(needle), "tokens.ts no longer has `{needle}`");
+            assert!(
+                TOKENS_TS.contains(needle),
+                "tokens.ts no longer has `{needle}`"
+            );
         }
     }
 

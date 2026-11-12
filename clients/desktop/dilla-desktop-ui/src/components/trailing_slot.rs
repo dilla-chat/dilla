@@ -2,8 +2,8 @@
 //! shrinking, its content centred; empty it still holds its width, so the right edges of a list's badges line up.
 
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    Styled, Window, div,
+    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, Styled,
+    Window, div,
 };
 
 use crate::tokens::layout;

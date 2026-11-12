@@ -225,7 +225,8 @@ impl Row {
     fn person_row(self, person: Person, unread: u32) -> gpui::Stateful<gpui::Div> {
         let bright = self.active || unread > 0 || self.mentions > 0;
         let id = self.id.clone();
-        let mut avatar = Avatar::new((id.clone(), "avatar"), self.name.clone()).size(AvatarSize::Member);
+        let mut avatar =
+            Avatar::new((id.clone(), "avatar"), self.name.clone()).size(AvatarSize::Member);
         if let Some(initials) = person.initials.clone() {
             avatar = avatar.initials(initials);
         }
@@ -245,9 +246,8 @@ impl Row {
             .ellipsis(),
         );
         if let Some(sub) = person.sub.clone().filter(|s| !s.is_empty()) {
-            who = who.child(
-                line(sub, text::META, line_height(text::META, 1.3), color::FG_3).ellipsis(),
-            );
+            who = who
+                .child(line(sub, text::META, line_height(text::META, 1.3), color::FG_3).ellipsis());
         }
         let mut row = div()
             .id(self.id)

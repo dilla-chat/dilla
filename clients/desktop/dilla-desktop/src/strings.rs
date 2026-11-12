@@ -2239,7 +2239,10 @@ mod tests {
         assert_eq!(t("activity.title"), "Activity");
         assert_eq!(tf("activity.newCount", &[("n", "3")]), "3 new");
         assert_eq!(
-            tf("activity.where", &[("server", "dilla"), ("channel", "general")]),
+            tf(
+                "activity.where",
+                &[("server", "dilla"), ("channel", "general")]
+            ),
             "dilla · #general"
         );
         assert_eq!(try_t("no.such.key"), None);

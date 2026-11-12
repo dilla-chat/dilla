@@ -55,12 +55,7 @@ impl RenderOnce for LinkBanner {
         let root = div().id(self.id.clone());
         let (tone, label, rule, fg) = match self.status {
             LinkStatus::Online => return root.size_0(),
-            LinkStatus::Offline => (
-                StateDotTone::Danger,
-                self.offline,
-                color::DANGER,
-                color::FG,
-            ),
+            LinkStatus::Offline => (StateDotTone::Danger, self.offline, color::DANGER, color::FG),
             LinkStatus::Connecting => (
                 StateDotTone::Pending,
                 self.connecting,

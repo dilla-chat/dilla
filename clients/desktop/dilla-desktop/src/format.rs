@@ -118,7 +118,11 @@ pub fn relative_in(
 }
 
 /// `Today, 14:05`, the reminders' form (`reminder.today` and `reminder.tomorrow`), for a time at or after `now`.
-pub fn reminder_in(ts: &DateTime<FixedOffset>, now: &DateTime<FixedOffset>, locale: &str) -> String {
+pub fn reminder_in(
+    ts: &DateTime<FixedOffset>,
+    now: &DateTime<FixedOffset>,
+    locale: &str,
+) -> String {
     let hhmm = time_in(ts);
     match days_between(now, ts) {
         0 => tf("reminder.today", &[("time", &hhmm)]),
@@ -226,9 +230,18 @@ mod tests {
     #[test]
     fn the_divider_names_today_and_yesterday_by_calendar_day() {
         let now = utc(2026, 11, 3, 0, 5);
-        assert_eq!(day_divider_in(&utc(2026, 11, 3, 23, 59), &now, "en-US"), "today");
-        assert_eq!(day_divider_in(&utc(2026, 11, 2, 23, 59), &now, "en-US"), "yesterday");
-        assert_eq!(day_divider_in(&utc(2026, 11, 1, 12, 0), &now, "en-US"), "Nov 1, 2026");
+        assert_eq!(
+            day_divider_in(&utc(2026, 11, 3, 23, 59), &now, "en-US"),
+            "today"
+        );
+        assert_eq!(
+            day_divider_in(&utc(2026, 11, 2, 23, 59), &now, "en-US"),
+            "yesterday"
+        );
+        assert_eq!(
+            day_divider_in(&utc(2026, 11, 1, 12, 0), &now, "en-US"),
+            "Nov 1, 2026"
+        );
     }
 
     #[test]
@@ -258,15 +271,27 @@ mod tests {
     #[test]
     fn relative_names_yesterday_and_older_days() {
         let now = utc(2026, 11, 3, 10, 0);
-        assert_eq!(relative_in(&utc(2026, 11, 2, 22, 15), &now, "en-US"), "yesterday, 22:15");
-        assert_eq!(relative_in(&utc(2026, 10, 3, 8, 0), &now, "sv-SE"), "3 okt. 2026, 08:00");
+        assert_eq!(
+            relative_in(&utc(2026, 11, 2, 22, 15), &now, "en-US"),
+            "yesterday, 22:15"
+        );
+        assert_eq!(
+            relative_in(&utc(2026, 10, 3, 8, 0), &now, "sv-SE"),
+            "3 okt. 2026, 08:00"
+        );
     }
 
     #[test]
     fn reminders_name_today_and_tomorrow() {
         let now = utc(2026, 11, 3, 10, 0);
-        assert_eq!(reminder_in(&utc(2026, 11, 3, 18, 0), &now, "en-US"), "Today, 18:00");
-        assert_eq!(reminder_in(&utc(2026, 11, 4, 9, 30), &now, "en-US"), "Tomorrow, 09:30");
+        assert_eq!(
+            reminder_in(&utc(2026, 11, 3, 18, 0), &now, "en-US"),
+            "Today, 18:00"
+        );
+        assert_eq!(
+            reminder_in(&utc(2026, 11, 4, 9, 30), &now, "en-US"),
+            "Tomorrow, 09:30"
+        );
     }
 
     #[test]

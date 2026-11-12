@@ -64,7 +64,9 @@ pub fn tab_stop(options: &[ChoiceCardOption], value: &str) -> Option<usize> {
 
 /// The option an arrow moves to from `from`: the next enabled one in `step` (1 or -1) direction, wrapping.
 pub fn arrow_target(options: &[ChoiceCardOption], from: usize, step: isize) -> Option<usize> {
-    let enabled: Vec<usize> = (0..options.len()).filter(|i| !options[*i].disabled).collect();
+    let enabled: Vec<usize> = (0..options.len())
+        .filter(|i| !options[*i].disabled)
+        .collect();
     let at = enabled.iter().position(|i| *i == from)?;
     let len = enabled.len() as isize;
     Some(enabled[(at as isize + step).rem_euclid(len) as usize])
@@ -185,17 +187,32 @@ impl RenderOnce for ChoiceCards {
                 .flex_1()
                 .min_w_0()
                 .child(
-                    line(o.title.clone(), text::SM, line_height(text::SM, 1.35), title_fg)
-                        .weight(font::WEIGHT_LABEL),
+                    line(
+                        o.title.clone(),
+                        text::SM,
+                        line_height(text::SM, 1.35),
+                        title_fg,
+                    )
+                    .weight(font::WEIGHT_LABEL),
                 )
-                .child(line(o.hint.clone(), text::XS, line_height(text::XS, 1.35), hint_fg));
+                .child(line(
+                    o.hint.clone(),
+                    text::XS,
+                    line_height(text::XS, 1.35),
+                    hint_fg,
+                ));
             if let (true, Some(reason)) = (o.disabled, &o.reason) {
-                body = body.child(line(reason.clone(), text::XS, line_height(text::XS, 1.35), color::FG));
+                body = body.child(line(
+                    reason.clone(),
+                    text::XS,
+                    line_height(text::XS, 1.35),
+                    color::FG,
+                ));
             }
             let mut card = div()
                 .id((self.id.clone(), format!("card-{}", o.id)))
-                .track_focus(&handles[i])
-                .tab_stop(stop == Some(i))
+                // The handle's own flag decides the tab stop of a tracked element.
+                .track_focus(&handles[i].clone().tab_stop(stop == Some(i)))
                 .flex()
                 .items_center()
                 .gap(px(12.0))
@@ -203,7 +220,11 @@ impl RenderOnce for ChoiceCards {
                 .min_h(px(48.0))
                 .rounded(radius::MENU)
                 .border_1()
-                .border_color(if checked { color::ACCENT } else { color::CONTROL_EDGE_FIELD })
+                .border_color(if checked {
+                    color::ACCENT
+                } else {
+                    color::CONTROL_EDGE_FIELD
+                })
                 .focus_visible(|s| s.shadow(focus_ring()));
             if checked {
                 card = card.bg(color::ACCENT_PICK);
@@ -217,7 +238,9 @@ impl RenderOnce for ChoiceCards {
             } else {
                 card.cursor_pointer()
             };
-            if !o.disabled && let Some(handler) = on_change.clone() {
+            if !o.disabled
+                && let Some(handler) = on_change.clone()
+            {
                 let id = o.id.clone();
                 let pick = {
                     let handler = handler.clone();
@@ -239,7 +262,8 @@ mod tests {
     fn options() -> Vec<ChoiceCardOption> {
         vec![
             ChoiceCardOption::new("totp", "Authenticator app", "Six digits"),
-            ChoiceCardOption::new("passkey", "Passkey", "Touch").disabled("This browser has no passkeys"),
+            ChoiceCardOption::new("passkey", "Passkey", "Touch")
+                .disabled("This browser has no passkeys"),
             ChoiceCardOption::new("key", "Security key", "Touch"),
         ]
     }
@@ -248,7 +272,11 @@ mod tests {
     fn the_tab_stop_is_the_picked_enabled_card_else_the_first_enabled() {
         let o = options();
         assert_eq!(tab_stop(&o, "key"), Some(2));
-        assert_eq!(tab_stop(&o, "passkey"), Some(0), "a disabled pick holds no stop");
+        assert_eq!(
+            tab_stop(&o, "passkey"),
+            Some(0),
+            "a disabled pick holds no stop"
+        );
         assert_eq!(tab_stop(&o, "none"), Some(0));
     }
 
@@ -258,6 +286,10 @@ mod tests {
         assert_eq!(arrow_target(&o, 0, 1), Some(2));
         assert_eq!(arrow_target(&o, 2, 1), Some(0));
         assert_eq!(arrow_target(&o, 0, -1), Some(2));
-        assert_eq!(arrow_target(&o, 1, 1), None, "focus is never on a disabled card");
+        assert_eq!(
+            arrow_target(&o, 1, 1),
+            None,
+            "focus is never on a disabled card"
+        );
     }
 }

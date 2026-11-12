@@ -65,7 +65,11 @@ impl TextField {
         Self::with_control(id, label, Control::Multi(input.clone()))
     }
 
-    fn with_control(id: impl Into<ElementId>, label: impl Into<SharedString>, control: Control) -> Self {
+    fn with_control(
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        control: Control,
+    ) -> Self {
         Self {
             id: id.into(),
             label: label.into(),
@@ -155,7 +159,12 @@ impl RenderOnce for TextField {
             ))
             .child(frame);
         for note in [self.hint, self.note].into_iter().flatten() {
-            root = root.child(line(note, text::SM, line_height(text::SM, 1.5), color::FG_3));
+            root = root.child(line(
+                note,
+                text::SM,
+                line_height(text::SM, 1.5),
+                color::FG_3,
+            ));
         }
         if let Some(error) = self.error {
             root = root.child(
@@ -164,7 +173,12 @@ impl RenderOnce for TextField {
                     .items_center()
                     .gap(px(4.0))
                     .child(Icon::new(IconName::X).size(px(12.0)).color(color::DANGER))
-                    .child(line(error, text::SM, line_height(text::SM, 1.5), color::DANGER)),
+                    .child(line(
+                        error,
+                        text::SM,
+                        line_height(text::SM, 1.5),
+                        color::DANGER,
+                    )),
             );
         }
         root

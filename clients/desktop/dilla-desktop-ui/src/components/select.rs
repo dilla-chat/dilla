@@ -56,7 +56,12 @@ impl Select {
             value: value.into(),
             options: options
                 .iter()
-                .map(|(v, l)| (SharedString::from((*v).to_owned()), SharedString::from((*l).to_owned())))
+                .map(|(v, l)| {
+                    (
+                        SharedString::from((*v).to_owned()),
+                        SharedString::from((*l).to_owned()),
+                    )
+                })
                 .collect(),
             disabled: false,
             on_change: None,
@@ -86,8 +91,9 @@ impl RenderOnce for Select {
             open: false,
             cursor: 0,
         });
-        let (field_focus, open, cursor) =
-            memory.read_with(cx, |m, _| (m.field.clone(), m.open && !self.disabled, m.cursor));
+        let (field_focus, open, cursor) = memory.read_with(cx, |m, _| {
+            (m.field.clone(), m.open && !self.disabled, m.cursor)
+        });
         let values: Vec<SharedString> = self.options.iter().map(|(v, _)| v.clone()).collect();
         let current = self
             .options
@@ -96,7 +102,10 @@ impl RenderOnce for Select {
             .or(self.options.first())
             .map(|(_, l)| l.clone())
             .unwrap_or_default();
-        let selected = selected_index(&values.iter().map(AsRef::as_ref).collect::<Vec<_>>(), &self.value);
+        let selected = selected_index(
+            &values.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+            &self.value,
+        );
 
         let set_open = {
             let memory = memory.clone();
@@ -120,7 +129,11 @@ impl RenderOnce for Select {
             }
         };
 
-        let edge = if open { color::ACCENT } else { color::CONTROL_EDGE_FIELD };
+        let edge = if open {
+            color::ACCENT
+        } else {
+            color::CONTROL_EDGE_FIELD
+        };
         let mut field = div()
             .id((self.id.clone(), "field"))
             .track_focus(&field_focus)
@@ -139,7 +152,11 @@ impl RenderOnce for Select {
             .hover(|s| s.border_color(color::FG_3))
             .focus_visible(|s| s.border_color(color::ACCENT))
             .child(line(current, text::SM, line_height(text::SM, 1.5), color::FG).ellipsis())
-            .child(Icon::new(IconName::ChevronDown).size(px(14.0)).color(color::FG_3));
+            .child(
+                Icon::new(IconName::ChevronDown)
+                    .size(px(14.0))
+                    .color(color::FG_3),
+            );
         field = if disabled {
             field.opacity(OPACITY_MUTED).cursor_not_allowed()
         } else {
@@ -211,12 +228,27 @@ impl RenderOnce for Select {
                             label.clone(),
                             text::SM,
                             line_height(text::SM, 1.5),
-                            if *value == self.value { color::ACCENT } else { color::FG },
+                            if *value == self.value {
+                                color::ACCENT
+                            } else {
+                                color::FG
+                            },
                         ))
                         .on_click(move |_, window, cx| pick(i, window, cx)),
                 );
             }
-            wrap = wrap.child(deferred(div().absolute().top_full().left_0().w_full().pt(px(2.0)).child(list)).with_priority(5));
+            wrap = wrap.child(
+                deferred(
+                    div()
+                        .absolute()
+                        .top_full()
+                        .left_0()
+                        .w_full()
+                        .pt(px(2.0))
+                        .child(list),
+                )
+                .with_priority(5),
+            );
         }
 
         let mut root = div()
@@ -225,10 +257,20 @@ impl RenderOnce for Select {
             .flex_col()
             .gap(px(6.0))
             .min_w_0()
-            .child(line(self.label, text::XS, line_height(text::XS, 1.5), color::FG_2))
+            .child(line(
+                self.label,
+                text::XS,
+                line_height(text::XS, 1.5),
+                color::FG_2,
+            ))
             .child(wrap);
         if let Some(hint) = self.hint {
-            root = root.child(line(hint, text::SM, line_height(text::SM, 1.5), color::FG_3));
+            root = root.child(line(
+                hint,
+                text::SM,
+                line_height(text::SM, 1.5),
+                color::FG_3,
+            ));
         }
         root
     }

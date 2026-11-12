@@ -17,7 +17,10 @@ use gpui::{
     RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, deferred, div, px,
 };
 
-use super::super::dialog::{HasOpenFocus, OpenFocus, sync_open_focus, trap_tab};
+use super::super::dialog::{
+    HasOpenFocus, OVERLAY_CONTEXT, OpenFocus, TrapNext, TrapPrevious, bind_keys, sync_open_focus,
+    trap_tab,
+};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING_WIDE, focus_ring};
@@ -126,8 +129,13 @@ impl ParentElement for SettingsFrame {
 /// A section's title (20/700) and its sub-line (12px `--fg-2`, 4px under the title), then the 22px the content below keeps.
 pub fn section_header(title: impl Into<SharedString>, sub: Option<&str>) -> gpui::Div {
     let mut head = div().flex().flex_col().pb(px(22.0)).child(
-        line(title, text::HEADING, line_height(text::HEADING, 1.5), color::FG)
-            .weight(font::WEIGHT_DISPLAY),
+        line(
+            title,
+            text::HEADING,
+            line_height(text::HEADING, 1.5),
+            color::FG,
+        )
+        .weight(font::WEIGHT_DISPLAY),
     );
     if let Some(sub) = sub {
         head = head.child(div().pt(px(4.0)).child(line(
@@ -156,8 +164,9 @@ pub fn group_heading(text_: impl Into<SharedString>) -> gpui::Div {
 
 impl RenderOnce for SettingsFrame {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        bind_keys(cx);
         let memory = window.use_keyed_state((self.id.clone(), "frame"), cx, |_, cx| Memory {
-            panel: cx.focus_handle(),
+            panel: cx.focus_handle().tab_stop(true),
             focus: OpenFocus::default(),
         });
         let panel = memory.read(cx).panel.clone();
@@ -265,7 +274,10 @@ impl RenderOnce for SettingsFrame {
             .hover(|s| s.text_color(color::FG))
             .focus_visible(|s| s.shadow(focus_ring()))
             .on_click(move |_, window, cx| close_click(window, cx))
-            .tooltip(super::super::tooltip::tooltip(self.close_label.clone(), &["Esc"]))
+            .tooltip(super::super::tooltip::tooltip(
+                self.close_label.clone(),
+                &["Esc"],
+            ))
             .tooltip_show_delay(super::super::tooltip::SHOW_DELAY)
             .child(
                 div()
@@ -282,7 +294,7 @@ impl RenderOnce for SettingsFrame {
                 line("ESC", text::CHIP, line_height(text::CHIP, 1.5), color::FG_2).tracking(0.1),
             );
 
-        let trap_panel = panel.clone();
+        let (next_panel, prev_panel) = (panel.clone(), panel.clone());
         let frame = root
             .absolute()
             .inset_0()
@@ -294,21 +306,17 @@ impl RenderOnce for SettingsFrame {
                 div()
                     .id((self.id.clone(), "panel"))
                     .track_focus(&panel)
-                    .key_context("SettingsFrame")
+                    .key_context(OVERLAY_CONTEXT)
                     .relative()
                     .flex()
                     .w_full()
                     .max_w(px(1280.0))
                     .h_full()
-                    .capture_key_down(move |event, window, cx| {
-                        if event.keystroke.key == "tab" {
-                            let m = &event.keystroke.modifiers;
-                            if m.control || m.alt || m.platform {
-                                return;
-                            }
-                            cx.stop_propagation();
-                            trap_tab(&trap_panel, !m.shift, window, cx);
-                        }
+                    .on_action(move |_: &TrapNext, window, cx| {
+                        trap_tab(&next_panel, true, window, cx)
+                    })
+                    .on_action(move |_: &TrapPrevious, window, cx| {
+                        trap_tab(&prev_panel, false, window, cx)
                     })
                     .on_key_down(move |event, window, cx| {
                         if event.keystroke.key == "escape" {

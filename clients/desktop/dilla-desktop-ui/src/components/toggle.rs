@@ -79,7 +79,11 @@ impl RenderOnce for Toggle {
             .h(px(TRACK_H))
             .rounded(radius::PILL)
             .border_1()
-            .border_color(if on { color::ACCENT } else { color::CONTROL_EDGE })
+            .border_color(if on {
+                color::ACCENT
+            } else {
+                color::CONTROL_EDGE
+            })
             .bg(if on { color::ACCENT } else { color::TRACK_OFF })
             .child(
                 div()
@@ -130,7 +134,12 @@ impl RenderOnce for Toggle {
         }
         root = root.child(switch);
         if let Some(hint) = self.hint {
-            root = root.child(line(hint, text::SM, line_height(text::SM, 1.5), color::FG_3));
+            root = root.child(line(
+                hint,
+                text::SM,
+                line_height(text::SM, 1.5),
+                color::FG_3,
+            ));
         }
         root
     }

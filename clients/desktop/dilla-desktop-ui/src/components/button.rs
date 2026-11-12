@@ -1,8 +1,8 @@
 //! `Button` (packages/ui/src/Button): 32px (22px small) tall, 1px control edge, radius `md`, four variants, a toggle mark.
 
 use gpui::{
-    App, ClickEvent, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    App, ClickEvent, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, ParentElement,
+    RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use crate::icon::Icon;
@@ -255,11 +255,12 @@ impl RenderOnce for Button {
                 "[ ]"
             }));
         }
-        let weight = if dialog && matches!(self.variant, ButtonVariant::Accent | ButtonVariant::Danger) {
-            font::WEIGHT_DISPLAY
-        } else {
-            font::WEIGHT_BTN
-        };
+        let weight =
+            if dialog && matches!(self.variant, ButtonVariant::Accent | ButtonVariant::Danger) {
+                font::WEIGHT_DISPLAY
+            } else {
+                font::WEIGHT_BTN
+            };
         base = base.child(line(self.label, size, line_height(size, 1.5), p.fg).weight(weight));
         if let Some(hint) = self.key_hint {
             base = base.child(

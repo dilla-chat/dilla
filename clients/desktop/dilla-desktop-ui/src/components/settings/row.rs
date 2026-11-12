@@ -185,16 +185,20 @@ impl RenderOnce for SettingsRow {
         );
         if let Some(tag) = &self.tag {
             label = label.child(
-                div().px(px(5.0)).rounded(radius::TAG).bg(color::ACCENT_TAG).child(
-                    line(
-                        tag.to_uppercase(),
-                        text::CHIP,
-                        line_height(text::CHIP, 1.4),
-                        color::ACCENT_2,
-                    )
-                    .weight(font::WEIGHT_LABEL)
-                    .tracking(0.06),
-                ),
+                div()
+                    .px(px(5.0))
+                    .rounded(radius::TAG)
+                    .bg(color::ACCENT_TAG)
+                    .child(
+                        line(
+                            tag.to_uppercase(),
+                            text::CHIP,
+                            line_height(text::CHIP, 1.4),
+                            color::ACCENT_2,
+                        )
+                        .weight(font::WEIGHT_LABEL)
+                        .tracking(0.06),
+                    ),
             );
         }
         text_col = text_col.child(label);
@@ -208,7 +212,12 @@ impl RenderOnce for SettingsRow {
             ));
         }
 
-        let mut control = div().flex().flex_wrap().items_center().gap(px(10.0)).min_w_0();
+        let mut control = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(10.0))
+            .min_w_0();
         control = if stacked {
             control.flex_col().items_start().w_full().gap(px(16.0))
         } else {
@@ -232,22 +241,30 @@ impl RenderOnce for SettingsRow {
             let on_select = menu.on_select.clone();
             let close = set.clone();
             // The context menu (right click, Shift+F10, the Menu key): no trigger, anchored under the row or at the pointer.
-            let mut context = ActionMenu::new((self.id.clone(), "context"), menu.label.clone(), menu.items.clone())
-                .no_trigger(Some(&focus))
-                .open(open)
-                .on_select({
-                    let on_select = on_select.clone();
-                    move |id, window, cx| on_select(id, window, cx)
-                })
-                .on_open_change(move |open, _, cx| close(open, None, cx));
+            let mut context = ActionMenu::new(
+                (self.id.clone(), "context"),
+                menu.label.clone(),
+                menu.items.clone(),
+            )
+            .no_trigger(Some(&focus))
+            .open(open)
+            .on_select({
+                let on_select = on_select.clone();
+                move |id, window, cx| on_select(id, window, cx)
+            })
+            .on_open_change(move |open, _, cx| close(open, None, cx));
             if let Some(at) = at {
                 context = context.at(at);
             }
             menus.push(context.into_any_element());
             if let Some(button) = &menu.button_label {
                 control = control.child(
-                    ActionMenu::new((self.id.clone(), "more"), button.clone(), menu.items.clone())
-                        .on_select(move |id, window, cx| on_select(id, window, cx)),
+                    ActionMenu::new(
+                        (self.id.clone(), "more"),
+                        button.clone(),
+                        menu.items.clone(),
+                    )
+                    .on_select(move |id, window, cx| on_select(id, window, cx)),
                 );
             }
         }

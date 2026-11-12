@@ -6,8 +6,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ElementId, FocusHandle, IntoElement, ParentElement,
-    RenderOnce, SharedString, Styled, Window, div, px,
+    AnyElement, App, ElementId, FocusHandle, IntoElement, ParentElement, RenderOnce, SharedString,
+    Styled, Window, div, px,
 };
 
 use super::avatar::{Avatar, AvatarSize};
@@ -167,7 +167,11 @@ impl RenderOnce for ConfirmDialog {
         }
 
         let (shows_busy, disabled) = confirm_state(self.busy, self.can_confirm);
-        let label = if shows_busy { self.busy_label } else { self.confirm_label };
+        let label = if shows_busy {
+            self.busy_label
+        } else {
+            self.confirm_label
+        };
         let variant = match self.tone {
             Tone::Danger => ButtonVariant::Danger,
             Tone::Accent => ButtonVariant::Accent,
@@ -206,11 +210,10 @@ impl RenderOnce for ConfirmDialog {
             dialog = dialog.on_close(move |window, cx| handler(window, cx));
         }
         if let Some(name) = self.person {
-            dialog = dialog.lead(
-                div()
-                    .flex_none()
-                    .child(Avatar::new((self.id.clone(), "person"), name).size(AvatarSize::Confirm)),
-            );
+            dialog =
+                dialog.lead(div().flex_none().child(
+                    Avatar::new((self.id.clone(), "person"), name).size(AvatarSize::Confirm),
+                ));
         }
         if self.fields.is_some() || self.error.is_some() {
             let mut body = div().flex().flex_col().gap(px(14.0));

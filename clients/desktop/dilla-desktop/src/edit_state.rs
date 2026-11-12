@@ -247,15 +247,27 @@ mod tests {
         }
     }
 
-    fn open(flags: Flags, flush: Option<bool>, save_lands: bool) -> (Workspace<&'static str>, Rc<RefCell<Log>>) {
+    fn open(
+        flags: Flags,
+        flush: Option<bool>,
+        save_lands: bool,
+    ) -> (Workspace<&'static str>, Rc<RefCell<Log>>) {
         let log = Rc::new(RefCell::new(Log::default()));
         let mut ws = Workspace::new();
-        ws.attach(Box::new(Fake { log: log.clone(), save_lands, flush }));
+        ws.attach(Box::new(Fake {
+            log: log.clone(),
+            save_lands,
+            flush,
+        }));
         ws.publish(flags);
         (ws, log)
     }
 
-    const DIRTY: Flags = Flags { dirty: true, busy: false, can_save: true };
+    const DIRTY: Flags = Flags {
+        dirty: true,
+        busy: false,
+        can_save: true,
+    };
 
     /// e2e/web/search-settings.spec.ts "a dirty Profile draft survives Keep editing and is discarded only after confirmation".
     #[test]
@@ -290,24 +302,37 @@ mod tests {
 
     #[test]
     fn a_save_in_flight_or_a_pending_operation_holds_navigation_and_says_so() {
-        let busy = Flags { dirty: false, busy: true, can_save: false };
+        let busy = Flags {
+            dirty: false,
+            busy: true,
+            can_save: false,
+        };
         let (mut ws, _) = open(busy, None, true);
         assert_eq!(ws.request("next"), Nav::Prompt);
-        assert_eq!(ws.prompt().map(|p| p.body), Some(t("settings.editing.leaveBusyBody")));
+        assert_eq!(
+            ws.prompt().map(|p| p.body),
+            Some(t("settings.editing.leaveBusyBody"))
+        );
         let footer = ws.footer().expect("busy shows the footer");
         assert!(!footer.reset_enabled && !footer.save_enabled);
 
         let (mut ws, _) = open(Flags::default(), None, true);
         ws.set_pending_operations(1);
         assert_eq!(ws.request("next"), Nav::Prompt);
-        assert_eq!(ws.prompt().map(|p| p.body), Some(t("settings.editing.leaveBusyBody")));
+        assert_eq!(
+            ws.prompt().map(|p| p.body),
+            Some(t("settings.editing.leaveBusyBody"))
+        );
         ws.keep_editing();
         ws.set_pending_operations(0);
         assert_eq!(ws.request("next"), Nav::Go("next"));
 
         let (mut ws, _) = open(DIRTY, None, true);
         ws.request("next");
-        assert_eq!(ws.prompt().map(|p| p.body), Some(t("settings.editing.leaveBody")));
+        assert_eq!(
+            ws.prompt().map(|p| p.body),
+            Some(t("settings.editing.leaveBody"))
+        );
     }
 
     #[test]
@@ -324,15 +349,34 @@ mod tests {
         let (mut ws, log) = open(DIRTY, None, false);
         ws.save();
         assert_eq!(log.borrow().saves, 1);
-        assert_eq!(ws.footer().map(|f| f.status), Some("Changes could not be saved. Try again."));
+        assert_eq!(
+            ws.footer().map(|f| f.status),
+            Some("Changes could not be saved. Try again.")
+        );
         ws.reset();
         assert_eq!(log.borrow().resets, 1);
         assert_eq!(ws.footer().map(|f| f.status), Some("Unsaved changes"));
         // A draft that cannot be saved, or a save in flight, ignores Save and Reset.
-        let (mut ws, log) = open(Flags { dirty: true, busy: false, can_save: false }, None, true);
+        let (mut ws, log) = open(
+            Flags {
+                dirty: true,
+                busy: false,
+                can_save: false,
+            },
+            None,
+            true,
+        );
         ws.save();
         assert_eq!(log.borrow().saves, 0);
-        let (mut ws, log) = open(Flags { dirty: true, busy: true, can_save: true }, None, true);
+        let (mut ws, log) = open(
+            Flags {
+                dirty: true,
+                busy: true,
+                can_save: true,
+            },
+            None,
+            true,
+        );
         ws.save();
         ws.reset();
         assert_eq!((log.borrow().saves, log.borrow().resets), (0, 0));

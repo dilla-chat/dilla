@@ -84,13 +84,8 @@ impl RenderOnce for EmptyState {
             .px(px(24.0))
             .py(px(48.0))
             .child(
-                line(
-                    self.title,
-                    text::LG,
-                    line_height(text::LG, 1.5),
-                    color::FG,
-                )
-                .weight(font::WEIGHT_DISPLAY),
+                line(self.title, text::LG, line_height(text::LG, 1.5), color::FG)
+                    .weight(font::WEIGHT_DISPLAY),
             )
             .child(
                 div()
@@ -116,7 +111,8 @@ impl RenderOnce for EmptyState {
                 );
             }
             if let Some(a) = self.secondary {
-                actions = actions.child(Button::new((id, "secondary"), a.label).on_click(a.on_click));
+                actions =
+                    actions.child(Button::new((id, "secondary"), a.label).on_click(a.on_click));
             }
             root = root.child(actions);
         }

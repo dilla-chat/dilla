@@ -5,8 +5,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, px, rgb,
+    App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, px, rgb,
 };
 
 use crate::icon::Icon;
@@ -103,7 +103,10 @@ impl CheckList {
         self
     }
 
-    pub fn on_toggle(mut self, handler: impl Fn(&str, bool, &mut Window, &mut App) + 'static) -> Self {
+    pub fn on_toggle(
+        mut self,
+        handler: impl Fn(&str, bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
         self.on_toggle = Some(Rc::new(handler));
         self
     }
@@ -111,7 +114,11 @@ impl CheckList {
 
 /// The check box: 14px (the native box inside its 24px hit area), the accent fill and the tick when checked.
 fn check_box(checked: bool, disabled: bool) -> impl IntoElement {
-    let edge = if checked { color::ACCENT } else { color::CONTROL_EDGE_KEY };
+    let edge = if checked {
+        color::ACCENT
+    } else {
+        color::CONTROL_EDGE_KEY
+    };
     let mut b = div()
         .flex()
         .flex_none()
@@ -122,9 +129,11 @@ fn check_box(checked: bool, disabled: bool) -> impl IntoElement {
         .border_1()
         .border_color(edge);
     if checked {
-        b = b
-            .bg(color::ACCENT)
-            .child(Icon::new(IconName::Check).size(px(10.0)).color(color::ACCENT_INK));
+        b = b.bg(color::ACCENT).child(
+            Icon::new(IconName::Check)
+                .size(px(10.0))
+                .color(color::ACCENT_INK),
+        );
     }
     div()
         .flex()
@@ -138,23 +147,18 @@ fn check_box(checked: bool, disabled: bool) -> impl IntoElement {
 
 impl RenderOnce for CheckList {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let mut root = div()
-            .id(self.id.clone())
-            .flex()
-            .flex_col()
-            .min_w_0()
-            .child(
-                div().pb(px(6.0)).child(
-                    line(
-                        self.label.to_uppercase(),
-                        text::MICRO,
-                        line_height(text::MICRO, 1.5),
-                        color::FG_3,
-                    )
-                    .weight(font::WEIGHT_LABEL)
-                    .tracking(LABEL_TRACKING),
-                ),
-            );
+        let mut root = div().id(self.id.clone()).flex().flex_col().min_w_0().child(
+            div().pb(px(6.0)).child(
+                line(
+                    self.label.to_uppercase(),
+                    text::MICRO,
+                    line_height(text::MICRO, 1.5),
+                    color::FG_3,
+                )
+                .weight(font::WEIGHT_LABEL)
+                .tracking(LABEL_TRACKING),
+            ),
+        );
         if self.items.is_empty() {
             return root.child(line(
                 self.empty_label,
@@ -166,7 +170,13 @@ impl RenderOnce for CheckList {
         for item in self.items {
             let busy = self.busy_id.as_deref() == Some(item.id.as_ref());
             let allowed = can_toggle(&item, self.busy_id.as_deref());
-            let mut label = div().flex().flex_1().items_center().gap(px(8.0)).min_w_0().min_h(px(24.0));
+            let mut label = div()
+                .flex()
+                .flex_1()
+                .items_center()
+                .gap(px(8.0))
+                .min_w_0()
+                .min_h(px(24.0));
             if let Some(c) = item.color.filter(|c| *c != 0) {
                 label = label.child(role_dot(c));
             }
@@ -174,7 +184,11 @@ impl RenderOnce for CheckList {
                 item.label.clone(),
                 text::BASE,
                 line_height(text::BASE, 1.5),
-                if item.disabled { color::FG_2 } else { color::FG },
+                if item.disabled {
+                    color::FG_2
+                } else {
+                    color::FG
+                },
             ));
             let mut row = div()
                 .id((self.id.clone(), format!("row-{}", item.id)))
@@ -194,16 +208,18 @@ impl RenderOnce for CheckList {
                 row = row.opacity(OPACITY_MUTED);
             }
             if let Some(detail) = item.detail {
-                row = row.child(
-                    div().w_full().pl(px(32.0)).pb(px(4.0)).child(line(
-                        detail,
-                        text::SM,
-                        line_height(text::SM, 1.5),
-                        color::FG_3,
-                    )),
-                );
+                row = row.child(div().w_full().pl(px(32.0)).pb(px(4.0)).child(line(
+                    detail,
+                    text::SM,
+                    line_height(text::SM, 1.5),
+                    color::FG_3,
+                )));
             }
-            row = if allowed { row.cursor_pointer() } else { row.cursor_not_allowed() };
+            row = if allowed {
+                row.cursor_pointer()
+            } else {
+                row.cursor_not_allowed()
+            };
             if let Some(handler) = self.on_toggle.clone() {
                 let (id, next) = (item.id.clone(), !item.checked);
                 let activate = move |window: &mut Window, cx: &mut App| {

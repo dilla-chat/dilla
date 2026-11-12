@@ -11,15 +11,15 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, ElementId, FocusHandle, InteractiveElement, IntoElement, ParentElement,
-    Pixels, Point, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
-    anchored, deferred, div, px,
+    Pixels, Point, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, anchored,
+    deferred, div, px,
 };
 
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING_WIDE, focus_ring, shadow_menu};
-pub use crate::roving::opens_context_menu;
 use crate::roving::menu_next;
+pub use crate::roving::opens_context_menu;
 use crate::text::{line, line_height};
 use crate::tokens::{color, font, radius, text};
 
@@ -126,7 +126,11 @@ pub struct ActionMenu {
 
 impl ActionMenu {
     /// `label` names the trigger (`actions for Astrid`).
-    pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>, items: Vec<MenuItem>) -> Self {
+    pub fn new(
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        items: Vec<MenuItem>,
+    ) -> Self {
         Self {
             id: id.into(),
             label: label.into(),
@@ -179,7 +183,10 @@ impl ActionMenu {
         self
     }
 
-    pub fn on_open_change(mut self, handler: impl Fn(bool, &mut Window, &mut App) + 'static) -> Self {
+    pub fn on_open_change(
+        mut self,
+        handler: impl Fn(bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
         self.on_open_change = Some(Rc::new(handler));
         self
     }
@@ -236,8 +243,17 @@ impl RenderOnce for ActionMenu {
             let (open, memory_for_keys) = (self.open, memory.clone());
             let open_with = open_with.clone();
             let glyph = match self.icon {
-                Some(icon) => div().child(Icon::new(icon).size(px(14.0)).color(if open { color::FG } else { color::FG_2 })),
-                None => div().child(line("⋯", text::BASE, line_height(text::BASE, 1.5), if open { color::FG } else { color::FG_2 })),
+                Some(icon) => div().child(Icon::new(icon).size(px(14.0)).color(if open {
+                    color::FG
+                } else {
+                    color::FG_2
+                })),
+                None => div().child(line(
+                    "⋯",
+                    text::BASE,
+                    line_height(text::BASE, 1.5),
+                    if open { color::FG } else { color::FG_2 },
+                )),
             };
             let click_open = open_with.clone();
             let label = self.label.clone();
@@ -361,8 +377,18 @@ impl RenderOnce for ActionMenu {
         }
 
         let popup: AnyElement = match self.at {
-            Some(at) if self.no_trigger => anchored().position(at).snap_to_window().child(popup).into_any_element(),
-            _ => div().absolute().top_full().right_0().pt(px(2.0)).child(popup).into_any_element(),
+            Some(at) if self.no_trigger => anchored()
+                .position(at)
+                .snap_to_window()
+                .child(popup)
+                .into_any_element(),
+            _ => div()
+                .absolute()
+                .top_full()
+                .right_0()
+                .pt(px(2.0))
+                .child(popup)
+                .into_any_element(),
         };
         root.child(deferred(popup).with_priority(5))
     }
@@ -383,7 +409,11 @@ fn menu_row(
     } else {
         color::FG
     };
-    let hover = if item.danger { color::DANGER_SOFT } else { color::SURFACE_HI };
+    let hover = if item.danger {
+        color::DANGER_SOFT
+    } else {
+        color::SURFACE_HI
+    };
     let mut row = div()
         .id(id)
         .track_focus(handle)
@@ -403,7 +433,11 @@ fn menu_row(
             div()
                 .flex_none()
                 .opacity(if item.room { 1.0 } else { 0.85 })
-                .child(Icon::new(icon).size(px(if item.room { 13.0 } else { 14.0 })).color(fg)),
+                .child(
+                    Icon::new(icon)
+                        .size(px(if item.room { 13.0 } else { 14.0 }))
+                        .color(fg),
+                ),
         );
     }
     row = row.child(
@@ -414,11 +448,12 @@ fn menu_row(
     );
     if let Some(hint) = &item.hint {
         let size = if item.room { text::META } else { text::MICRO };
-        row = row.child(
-            div()
-                .flex_none()
-                .child(line(hint.clone(), size, line_height(size, 1.5), color::FG_FAINT)),
-        );
+        row = row.child(div().flex_none().child(line(
+            hint.clone(),
+            size,
+            line_height(size, 1.5),
+            color::FG_FAINT,
+        )));
     }
     if let Some(on) = item.check {
         let mut b = div()
@@ -429,16 +464,28 @@ fn menu_row(
             .size(px(14.0))
             .rounded(radius::TAG)
             .border_1()
-            .border_color(if on { color::ACCENT } else { color::CONTROL_EDGE_KEY });
+            .border_color(if on {
+                color::ACCENT
+            } else {
+                color::CONTROL_EDGE_KEY
+            });
         if on {
-            b = b
-                .bg(color::ACCENT)
-                .child(Icon::new(IconName::Check).size(px(10.0)).color(color::ACCENT_INK));
+            b = b.bg(color::ACCENT).child(
+                Icon::new(IconName::Check)
+                    .size(px(10.0))
+                    .color(color::ACCENT_INK),
+            );
         }
         row = row.child(b);
     }
     if item.checked == Some(true) {
-        row = row.child(div().flex_none().child(Icon::new(IconName::Check).size(px(13.0)).color(color::ACCENT)));
+        row = row.child(
+            div().flex_none().child(
+                Icon::new(IconName::Check)
+                    .size(px(13.0))
+                    .color(color::ACCENT),
+            ),
+        );
     }
     let (id, keeps_open) = (item.id.clone(), item.keeps_open());
     row.on_click(move |_, window, cx| {

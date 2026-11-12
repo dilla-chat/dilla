@@ -5,8 +5,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, Styled, Window, div, px,
+    App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
+    Styled, Window, div, px,
 };
 
 use crate::metrics::{OPACITY_MUTED, focus_ring};
@@ -41,7 +41,12 @@ impl Segmented {
             id: id.into(),
             options: options
                 .iter()
-                .map(|(v, l)| (SharedString::from((*v).to_owned()), SharedString::from((*l).to_owned())))
+                .map(|(v, l)| {
+                    (
+                        SharedString::from((*v).to_owned()),
+                        SharedString::from((*l).to_owned()),
+                    )
+                })
                 .collect(),
             value: value.into(),
             disabled: false,
@@ -109,8 +114,8 @@ impl RenderOnce for Segmented {
             };
             let mut option = div()
                 .id((self.id.clone(), format!("option-{i}")))
-                .track_focus(&handles[i])
-                .tab_stop(i == stop)
+                // The handle's own flag decides the tab stop of a tracked element.
+                .track_focus(&handles[i].clone().tab_stop(i == stop))
                 .flex()
                 .items_center()
                 .min_w(px(24.0))
@@ -120,7 +125,12 @@ impl RenderOnce for Segmented {
                 .rounded(radius::SEG - px(2.0))
                 .bg(bg)
                 .focus_visible(|s| s.shadow(focus_ring()))
-                .child(line(label.clone(), text::BTN, line_height(text::BTN, 1.5), fg));
+                .child(line(
+                    label.clone(),
+                    text::BTN,
+                    line_height(text::BTN, 1.5),
+                    fg,
+                ));
             option = if disabled {
                 option.cursor_not_allowed().opacity(OPACITY_MUTED)
             } else if checked {

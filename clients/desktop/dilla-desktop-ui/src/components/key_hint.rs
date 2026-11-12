@@ -20,7 +20,10 @@ impl KeyHint {
     pub fn new(id: impl Into<ElementId>, keys: &[&str]) -> Self {
         Self {
             id: id.into(),
-            keys: keys.iter().map(|k| SharedString::from((*k).to_owned())).collect(),
+            keys: keys
+                .iter()
+                .map(|k| SharedString::from((*k).to_owned()))
+                .collect(),
             label: None,
         }
     }

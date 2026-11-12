@@ -110,7 +110,10 @@ mod tests {
     fn the_mention_pill_has_a_2_5px_ring_in_bg_2() {
         let ring = mention_ring();
         assert_eq!(ring.len(), 1);
-        assert_eq!((ring[0].color, ring[0].spread_radius), (color::BG_2, px(2.5)));
+        assert_eq!(
+            (ring[0].color, ring[0].spread_radius),
+            (color::BG_2, px(2.5))
+        );
     }
 
     #[test]
