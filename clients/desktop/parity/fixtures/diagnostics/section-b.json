@@ -1,0 +1,49 @@
+{
+  "name": "diagnostics/section-b",
+  "window": [1440, 900],
+  "viewer": "mira",
+  "route": "/settings/diagnostics",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      { "id": "ada", "display": "Ada" },
+      { "id": "mira", "display": "Mira" },
+      { "id": "bjorn", "display": "Björn" }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": ["ada", "mira", "bjorn"],
+        "channels": [{ "id": "general", "kind": "text", "name": "general" }]
+      },
+      {
+        "id": "northern",
+        "name": "Northern Lights Collective",
+        "owner": "ada",
+        "members": ["ada", "mira"],
+        "channels": [
+          { "id": "release", "kind": "text", "name": "release-planning-and-coordination" }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "morning"
+      },
+      {
+        "key": "m2",
+        "channel": "northern/release",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "the second server"
+      }
+    ]
+  },
+  "steps": []
+}

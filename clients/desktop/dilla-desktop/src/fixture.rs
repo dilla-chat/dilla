@@ -28,6 +28,7 @@ use crate::router::Route;
 
 mod attachments;
 mod calls;
+mod diagnostics;
 mod dms;
 mod polls;
 mod reactions;
@@ -261,6 +262,7 @@ pub fn build_state(
     };
     attachments::apply(world, viewer, &mut state);
     calls::apply(world, viewer, &mut state);
+    diagnostics::apply(world, viewer, &mut state);
     dms::apply(world, viewer, &mut state);
     polls::apply(world, viewer, &mut state);
     reactions::apply(world, viewer, &mut state);
