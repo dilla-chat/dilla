@@ -10,8 +10,8 @@
 //!   the app does not embed (the text system falls back) fails the whole-frame gate: a fallback face cannot pass.
 //! - `slice_sign_in_read_send`: against a real dillad, the app signs a new device in (password, authenticator code,
 //!   recovery key), opens #general, and a message typed there and sent with Enter reaches a second, headless client.
-//!   Needs `target/dilla-testhost` and the WASI core (see `tests/support/world.rs`); `#[ignore]`d for the desktop CI
-//!   job, which has no Go toolchain. Run it with `cargo test -p dilla-desktop --test slice -- --ignored`. Its screens
+//!   Needs `target/dilla-testhost` and the WASI core (see `tests/support/world.rs`); `#[ignore]`d so a plain `cargo test` needs no Go toolchain; the desktop-gpui
+//!   CI job builds the test host and runs it on Linux. Run it with `cargo test -p dilla-desktop --test slice -- --ignored`. Its screens
 //!   are saved under `<target>/slice-screens/`.
 
 mod support;
@@ -115,7 +115,7 @@ fn keep(app: &mut Driver, name: &str) {
 }
 
 #[test]
-#[ignore = "needs dillad: target/dilla-testhost and the wasi core (no Go toolchain in the desktop-gpui CI job)"]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 fn slice_sign_in_read_send() {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

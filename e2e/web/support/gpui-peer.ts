@@ -13,16 +13,16 @@ import { REPO_ROOT } from './app';
 export function gpuiPeerBinary(): string {
   const named = process.env.DILLA_GPUI_PEER;
   if (named !== undefined && named !== '') {
-    if (!existsSync(named)) throw new Error(`DILLA_GPUI_PEER=${named} does not exist: cargo build -p dilla-client --example peer`);
+    if (!existsSync(named)) throw new Error(`DILLA_GPUI_PEER=${named} does not exist: cargo build -p dilla-client --example peer --release`);
     return named;
   }
-  const bin = join(REPO_ROOT, 'target', 'debug', 'examples', process.platform === 'win32' ? 'peer.exe' : 'peer');
+  const bin = join(REPO_ROOT, 'target', 'release', 'examples', process.platform === 'win32' ? 'peer.exe' : 'peer');
   if (process.env.CI === 'true') {
-    if (!existsSync(bin)) throw new Error(`${bin} is missing: build it in the job (cargo build -p dilla-client --example peer --locked) and set DILLA_GPUI_PEER`);
+    if (!existsSync(bin)) throw new Error(`${bin} is missing: build it in the job (cargo build -p dilla-client --example peer --release --locked) and set DILLA_GPUI_PEER`);
     return bin;
   }
-  const built = spawnSync('cargo', ['build', '-p', 'dilla-client', '--example', 'peer', '--locked'], { cwd: REPO_ROOT, stdio: 'inherit' });
-  if (built.status !== 0) throw new Error('cargo build -p dilla-client --example peer failed');
+  const built = spawnSync('cargo', ['build', '-p', 'dilla-client', '--example', 'peer', '--release', '--locked'], { cwd: REPO_ROOT, stdio: 'inherit' });
+  if (built.status !== 0) throw new Error('cargo build -p dilla-client --example peer --release failed');
   return bin;
 }
 

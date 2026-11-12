@@ -758,6 +758,7 @@ jobs:
           sudo prlimit --pid "$$" --memlock=268435456:268435456
           cargo test --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --exclude dilla-client --all-features --locked
       - run: cargo build -p dilla-testkit --release --locked
+      - run: bash scripts/check-glibc-max.sh 2.39 target/release/dilla-bot-core target/release/dilla-testkit
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-testkit
@@ -3574,4 +3575,32 @@ test('the desktop-gpui workflow is reported when it is missing', () => {
   rmSync(join(root, GPUI));
   assert.deepEqual(checkDesktopGpuiWorkflow(root), ['desktop-gpui.yml: missing']);
   rmSync(root, { recursive: true, force: true });
+});
+
+test('every GPUI integration-test file with #[ignore]d tests has a --ignored run in desktop-gpui.yml', () => {
+  const root = releaseRoot();
+  const dir = join(root, 'clients/desktop/dilla-client/tests');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'newarea.rs'), '#[test]\n#[ignore = "needs dillad"]\nfn t() {}\n');
+  writeFileSync(join(dir, 'plain.rs'), '#[test]\nfn t() {}\n');
+  const problems = checkDesktopGpuiWorkflow(root);
+  assert.ok(problems.some((p) => p.includes('newarea.rs') && p.includes('--test newarea')), problems.join('\n'));
+  assert.ok(!problems.some((p) => p.includes('plain.rs')), 'a file without ignored tests needs no run');
+  const wf = join(root, GPUI);
+  const listed = 'cargo test -p dilla-client --test http_sign_in --locked -- --ignored\n';
+  writeFileSync(wf, readFileSync(wf, 'utf8').replace(listed, `${listed}          cargo test -p dilla-client --test newarea --locked -- --ignored\n`));
+  assert.ok(!checkDesktopGpuiWorkflow(root).some((p) => p.includes('newarea.rs')), 'listing the file satisfies the guard');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('check-glibc-max.sh refuses a binary that needs a newer glibc than allowed', { skip: process.platform !== 'linux' }, () => {
+  const script = join(REPO_ROOT, 'scripts', 'check-glibc-max.sh');
+  const probe = process.execPath;
+  const ok = spawnSync('bash', [script, '99.0', probe], { encoding: 'utf8' });
+  assert.equal(ok.status, 0, ok.stderr);
+  const bad = spawnSync('bash', [script, '2.0', probe], { encoding: 'utf8' });
+  if (/no GLIBC symbol versions/.test(bad.stdout)) return; // a static node: nothing to measure
+  assert.equal(bad.status, 1, 'a ceiling below every glibc version fails');
+  assert.match(bad.stderr, /newer than the allowed GLIBC_2\.0/);
+  assert.equal(spawnSync('bash', [script, '2.39', '/nonexistent/binary'], { encoding: 'utf8' }).status, 2);
 });

@@ -61,148 +61,173 @@ wildcards = "deny"
 # is `publish = false`, which is exactly the case this key exempts.
 allow-wildcard-paths = true
 
+# Every duplicate is skipped by exact version (the older ones), never by crate name, so a new duplicate of the same crate
+# still fails the check. The reasons name the crates that bring the older line in; the GPUI desktop client's UI, media and
+# transport stacks (clients/desktop) account for most of them and sit off the MLS path in dilla-core.
+
 [[bans.skip]]
-crate = "rand_chacha"
+crate = "rand_chacha@0.3.1"
 reason = "testkit uses 0.3 for deterministic fixtures; upstream OpenMLS and rand 0.10 use 0.10. Collapses when the fixtures can migrate without changing vectors."
 
-# The remaining duplicates are confined to fixture RNGs and proc macros. Keep these exceptions narrow so crypto duplicates fail the check.
+[[bans.skip]]
+crate = "rand_chacha@0.9.0"
+reason = "rand_chacha 0.9.0 comes from rand, rav1e; the rest of the graph uses 0.10.0. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "syn"
-reason = "2.0.119 is what nearly every proc macro still uses; wasm-bindgen-test-macro 0.3.78 has moved to 3.0.6. Build-time only; collapses as the ecosystem finishes the syn 3 migration."
-
-# The GPUI desktop client (clients/desktop: gpui-pre, gpui-component, livekit, reqwest, keyring) carries its own
-# older majors of these. They sit in the UI, media and transport stacks, off the MLS path in dilla-core; each
-# collapses when the upstream release that moves it ships.
-[[bans.skip]]
-crate = "bitflags"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "syn@1.0.109"
+reason = "syn 1.0.109 is what darling_core, darling_macro, from_variants_impl still use; 3.0.6 is the line the rest moved to. Build-time (proc macros) only; collapses as those upgrade."
 
 [[bans.skip]]
-crate = "convert_case"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "syn@2.0.119"
+reason = "syn 2.0.119 is what arg_enum_proc_macro, bindgen, cbindgen, curve25519-dalek-derive, derive-new and others still use; 3.0.6 is the line the rest moved to. Build-time (proc macros) only; collapses as those upgrade."
 
 [[bans.skip]]
-crate = "cpufeatures"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "bitflags@1.3.2"
+reason = "bitflags 1.3.2 comes from cocoa, cocoa-foundation, core-graphics, core-graphics-types, fluent-uri and others; the rest of the graph uses 2.13.2. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "foldhash"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "convert_case@0.10.0"
+reason = "convert_case 0.10.0 comes from derive_more-impl; the rest of the graph uses 0.11.0. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "hashbrown"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "cpufeatures@0.2.17"
+reason = "cpufeatures 0.2.17 comes from aes, sha1, sha2; the rest of the graph uses 0.3.1. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "miniz_oxide"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "foldhash@0.1.5"
+reason = "foldhash 0.1.5 comes from hashbrown; the rest of the graph uses 0.2.0. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "png"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "hashbrown@0.14.5"
+reason = "hashbrown 0.14.5 comes from ordered-multimap, zed-xim; the rest of the graph uses 0.17.1. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "pollster"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "hashbrown@0.15.5"
+reason = "hashbrown 0.15.5 comes from petgraph; the rest of the graph uses 0.17.1. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "quick-error"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "hashbrown@0.16.1"
+reason = "hashbrown 0.16.1 comes from accesskit_consumer, accesskit_macos, accesskit_windows, gpu-allocator, string-interner; the rest of the graph uses 0.17.1. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "reqwest"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "miniz_oxide@0.8.9"
+reason = "miniz_oxide 0.8.9 comes from exr, png; the rest of the graph uses 0.9.1. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "roxmltree"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "png@0.17.16"
+reason = "png 0.17.16 comes from tiny-skia; the rest of the graph uses 0.18.1. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "serde_spanned"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "pollster@0.2.5"
+reason = "pollster 0.2.5 comes from postage; the rest of the graph uses 0.4.0. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "spin"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "quick-error@1.2.3"
+reason = "quick-error 1.2.3 comes from rusty-fork; the rest of the graph uses 2.0.1. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "strsim"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "reqwest@0.12.28"
+reason = "reqwest 0.12.28 comes from livekit-net, webrtc-sys-build; the rest of the graph uses 0.13.5. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "thiserror"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "roxmltree@0.20.0"
+reason = "roxmltree 0.20.0 comes from fontconfig-parser, usvg; the rest of the graph uses 0.21.2. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "thiserror-impl"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "serde_spanned@0.6.9"
+reason = "serde_spanned 0.6.9 comes from toml, toml_edit; the rest of the graph uses 1.1.1. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "tokio-tungstenite"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "spin@0.9.9"
+reason = "spin 0.9.9 comes from flume; the rest of the graph uses 0.10.1. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "toml"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "strsim@0.10.0"
+reason = "strsim 0.10.0 comes from darling_core; the rest of the graph uses 0.11.1. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "toml_datetime"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "thiserror@1.0.69"
+reason = "thiserror 1.0.69 comes from filedescriptor, jni, livekit, ndk, postage and others; the rest of the graph uses 2.0.20. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "toml_edit"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "thiserror-impl@1.0.69"
+reason = "thiserror-impl 1.0.69 comes from thiserror; the rest of the graph uses 2.0.20. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "tungstenite"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "tokio-tungstenite@0.29.0"
+reason = "tokio-tungstenite 0.29.0 comes from livekit-net; the rest of the graph uses 0.30.0. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "winnow"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "toml@0.8.23"
+reason = "toml 0.8.23 comes from cbindgen, dilla-parity, rust-i18n-support; the rest of the graph uses 1.1.6+spec-1.1.0. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "base64"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "toml_datetime@0.6.11"
+reason = "toml_datetime 0.6.11 comes from toml, toml_edit; the rest of the graph uses 1.1.1+spec-1.1.0. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "itertools"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "toml_edit@0.22.27"
+reason = "toml_edit 0.22.27 comes from toml; the rest of the graph uses 0.25.15+spec-1.1.0. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "bit-set"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "tungstenite@0.29.0"
+reason = "tungstenite 0.29.0 comes from tokio-tungstenite; the rest of the graph uses 0.30.0. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "bit-vec"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "winnow@0.7.15"
+reason = "winnow 0.7.15 comes from toml_edit; the rest of the graph uses 1.0.4. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "font-types"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "base64@0.21.7"
+reason = "base64 0.21.7 comes from livekit-net, livekit-signaling; the rest of the graph uses 0.23.1. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "read-fonts"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "base64@0.22.1"
+reason = "base64 0.22.1 comes from gpui-pre-reqwest, pbjson, reqwest, usvg; the rest of the graph uses 0.23.1. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "rustc-hash"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "itertools@0.11.0"
+reason = "itertools 0.11.0 comes from rust-i18n-support; the rest of the graph uses 0.15.0. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "skrifa"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "itertools@0.13.0"
+reason = "itertools 0.13.0 comes from bindgen, criterion, criterion-plot, gpui-base, gpui-component; the rest of the graph uses 0.15.0. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "zbus"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "itertools@0.14.0"
+reason = "itertools 0.14.0 comes from gpui-pre, gpui-pre-macos, gpui-pre-wgpu, gpui-pre-windows, pbjson-build and others; the rest of the graph uses 0.15.0. Collapses when those upgrade."
 
 [[bans.skip]]
-crate = "zbus_macros"
-reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+crate = "bit-set@0.10.0"
+reason = "bit-set 0.10.0 comes from naga, wgpu-core, wgpu-hal; the rest of the graph uses 0.11.1. Collapses when those upgrade."
 
-# Crypto duplicates, scoped to the older version so a new duplicate of the same crate still fails the check.
+[[bans.skip]]
+crate = "bit-vec@0.9.1"
+reason = "bit-vec 0.9.1 comes from bit-set, wgpu-core; the rest of the graph uses 0.10.2. Collapses when those upgrade."
+
+[[bans.skip]]
+crate = "font-types@0.11.3"
+reason = "font-types 0.11.3 comes from read-fonts; the rest of the graph uses 0.12.7. Collapses when those upgrade."
+
+[[bans.skip]]
+crate = "read-fonts@0.37.0"
+reason = "read-fonts 0.37.0 comes from harfrust, skrifa; the rest of the graph uses 0.41.0. Collapses when those upgrade."
+
+[[bans.skip]]
+crate = "rustc-hash@1.1.0"
+reason = "rustc-hash 1.1.0 comes from naga, naga-types, wgpu-core; the rest of the graph uses 2.1.3. Collapses when those upgrade."
+
+[[bans.skip]]
+crate = "skrifa@0.40.0"
+reason = "skrifa 0.40.0 comes from cosmic-text; the rest of the graph uses 0.44.0. Collapses when those upgrade."
+
+[[bans.skip]]
+crate = "zbus@5.19.0"
+reason = "zbus 5.19.0 comes from accesskit_unix, ashpd, atspi-common, atspi-proxies, oo7 and others; the rest of the graph uses 6.2.1. Collapses when those upgrade."
+
+[[bans.skip]]
+crate = "zbus_macros@5.19.0"
+reason = "zbus_macros 5.19.0 comes from oo7, zbus; the rest of the graph uses 6.2.1. Collapses when those upgrade."
 
 [[bans.skip]]
 crate = "aes@0.8.4"
@@ -386,47 +411,47 @@ reason = "the Windows desktop build: older windows-rs lines come from gpui-base/
 crate = "windows-strings@0.3.1"
 reason = "the Windows desktop build: older windows-rs lines come from gpui-base/gpui-component (0.58), sysinfo (0.57), windows-capture and zed-scap (0.61), ring, jni and dirs-sys (windows-sys 0.45-0.59); the rest use 0.62. Collapses as those move."
 
+[[bans.skip]]
+crate = "dirs@5.0.1"
+reason = "dirs 5.0.1 comes from zed-font-kit (GPUI desktop Linux backends and the macOS/Windows deny targets); the rest use 6.0.0. Collapses as those upgrade."
+
+[[bans.skip]]
+crate = "dirs-sys@0.4.1"
+reason = "dirs-sys 0.4.1 comes from dirs (GPUI desktop Linux backends and the macOS/Windows deny targets); the rest use 0.5.0. Collapses as those upgrade."
+
+[[bans.skip]]
+crate = "downcast-rs@1.2.1"
+reason = "downcast-rs 1.2.1 comes from wayland-backend (GPUI desktop Linux backends and the macOS/Windows deny targets); the rest use 2.0.2. Collapses as those upgrade."
+
+[[bans.skip]]
+crate = "phf@0.11.3"
+reason = "phf 0.11.3 comes from markup5ever (GPUI desktop Linux backends and the macOS/Windows deny targets); the rest use 0.13.1. Collapses as those upgrade."
+
+[[bans.skip]]
+crate = "phf_generator@0.11.3"
+reason = "phf_generator 0.11.3 comes from phf_codegen, string_cache_codegen (GPUI desktop Linux backends and the macOS/Windows deny targets); the rest use 0.13.1. Collapses as those upgrade."
+
+[[bans.skip]]
+crate = "phf_shared@0.11.3"
+reason = "phf_shared 0.11.3 comes from phf, phf_codegen, phf_generator, string_cache, string_cache_codegen (GPUI desktop Linux backends and the macOS/Windows deny targets); the rest use 0.13.1. Collapses as those upgrade."
+
+[[bans.skip]]
+crate = "windows-sys@0.48.0"
+reason = "windows-sys 0.48.0 comes from dirs-sys (GPUI desktop Linux backends and the macOS/Windows deny targets); the rest use 0.61.2. Collapses as those upgrade."
+
+[[bans.skip]]
+crate = "windows-targets@0.48.5"
+reason = "windows-targets 0.48.5 comes from windows-sys (GPUI desktop Linux backends and the macOS/Windows deny targets); the rest use 0.53.5. Collapses as those upgrade."
+
+[[bans.skip]]
+crate = "windows_x86_64_gnu@0.48.5"
+reason = "windows_x86_64_gnu 0.48.5 comes from windows-targets (GPUI desktop Linux backends and the macOS/Windows deny targets); the rest use 0.53.1. Collapses as those upgrade."
+
+[[bans.skip]]
+crate = "windows_x86_64_msvc@0.48.5"
+reason = "windows_x86_64_msvc 0.48.5 comes from windows-targets (GPUI desktop Linux backends and the macOS/Windows deny targets); the rest use 0.53.1. Collapses as those upgrade."
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-git = ["https://github.com/openmls/openmls"]
-
-[[bans.skip]]
-crate = "dirs@5.0.1"
-reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
-
-[[bans.skip]]
-crate = "dirs-sys@0.4.1"
-reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
-
-[[bans.skip]]
-crate = "downcast-rs@1.2.1"
-reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
-
-[[bans.skip]]
-crate = "phf@0.11.3"
-reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
-
-[[bans.skip]]
-crate = "phf_generator@0.11.3"
-reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
-
-[[bans.skip]]
-crate = "phf_shared@0.11.3"
-reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
-
-[[bans.skip]]
-crate = "windows-sys@0.48.0"
-reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
-
-[[bans.skip]]
-crate = "windows-targets@0.48.5"
-reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
-
-[[bans.skip]]
-crate = "windows_x86_64_gnu@0.48.5"
-reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
-
-[[bans.skip]]
-crate = "windows_x86_64_msvc@0.48.5"
-reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."

@@ -259,6 +259,8 @@ const REQUIRED_STEPS = {
     'cargo clippy --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --exclude dilla-client --all-targets --all-features --locked -- -D warnings',
     'cargo test --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --exclude dilla-client --all-features --locked',
     'cargo build -p dilla-testkit --release --locked',
+    // The native release binaries must run on the consumers' ubuntu-24.04 (glibc 2.39).
+    'bash scripts/check-glibc-max.sh 2.39 target/release/dilla-bot-core target/release/dilla-testkit',
     'name: dilla-testkit',
     'if-no-files-found: error',
     // The lint and test steps need the core area; the build and upload run for any code (go-harness and the browser suites download it).
@@ -2274,6 +2276,8 @@ export function checkDesktopReleaseWorkflow(root) {
  */
 export const GPUI_PINNED_STEPS = {
   tokens: '- run: node --test scripts/gen-gpui-tokens.test.mjs',
+  // The generated strings.rs matches packages/web/src/strings/*.ts (scripts/gen-gpui-strings.test.mjs, Task 6).
+  strings: '- run: node --test scripts/gen-gpui-strings.test.mjs',
   // dilla-client's route-table test runs tests/support/dump-routes.mjs, which imports the typescript package.
   npm: ['- uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7', '  with:', '    node-version-file: .nvmrc', '    cache: npm', "# dilla-client's route-table test runs scripts that import the typescript package.", '- run: npm ci'].join('\n'),
   build: [
@@ -2298,8 +2302,39 @@ export const GPUI_PINNED_STEPS = {
     '    cargo test -p dilla-client --test gateway --locked -- --ignored',
     '    cargo test -p dilla-client --test sync --locked -- --ignored',
     '    cargo test -p dilla-client --test http_sign_in --locked -- --ignored',
+    '    cargo test -p dilla-desktop --test slice --locked -- --ignored',
+  ].join('\n'),
+  // The media tests need the e2e media suite's prerequisites, which the steps before this one build on Linux.
+  mediaWasm: [
+    '- name: Build packages/media\'s wasm core (Linux)',
+    "  if: runner.os == 'Linux'",
+    '  env:',
+    '    CC_wasm32_unknown_unknown: /usr/bin/clang-23',
+    '    AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23',
+    '  run: |',
+    '    bash scripts/install-ci-tool.sh wasm-bindgen',
+    '    bash scripts/install-ci-tool.sh wasm-pack',
+    '    bash scripts/install-ci-tool.sh binaryen',
+    '    wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',
+  ].join('\n'),
+  chromium: [
+    '- name: Playwright Chromium (Linux)',
+    "  if: runner.os == 'Linux'",
+    '  timeout-minutes: 8',
+    '  run: npx playwright install --with-deps chromium',
+  ].join('\n'),
+  media: [
+    '- name: Run the media call tests (Linux)',
+    "  if: runner.os == 'Linux' && !cancelled()",
+    '  shell: bash',
+    '  run: cargo test -p dilla-media --test live --test call --locked -- --ignored',
   ].join('\n'),
 };
+
+/** The GPUI crates' integration-test directories (relative to the repository root) and the `cargo test -p` crate each one's `--ignored` run names. */
+const GPUI_IGNORED_TEST_DIRS = [['clients/desktop/dilla-client/tests', 'dilla-client'], ['clients/desktop/dilla-desktop/tests', 'dilla-desktop'], ['clients/desktop/dilla-media/tests', 'dilla-media']];
+/** Test files whose #[ignore] needs something CI cannot give (the real OS keychain, a developer's desktop session). */
+const GPUI_IGNORED_BY_HAND = new Set(['clients/desktop/dilla-client/tests/store.rs']);
 
 export function checkDesktopGpuiWorkflow(root) {
   const file = 'desktop-gpui.yml';
@@ -2312,6 +2347,19 @@ export function checkDesktopGpuiWorkflow(root) {
     if (!body.includes(step)) problems.push(`${file}: the ${name} step must be exactly:\n${step}`);
   }
   // The Go and WASI build runs before the cargo test run that reads DILLA_TESTHOST, so the real-server tests find it.
+  // Every integration-test file with an #[ignore]d test is run by a `--test <file> ... --ignored` line, so a suite a Wave 1 task adds
+  // cannot be ignored everywhere without this check saying so. The controller appends the line as each test file merges.
+  for (const [dir, crate] of GPUI_IGNORED_TEST_DIRS) {
+    let files;
+    try { files = readdirSync(join(root, dir)).filter((f) => f.endsWith('.rs')); } catch { continue; }
+    for (const f of files) {
+      const rel = `${dir}/${f}`;
+      if (GPUI_IGNORED_BY_HAND.has(rel) || !/^\s*#\[ignore/m.test(readFileSync(join(root, rel), 'utf8'))) continue;
+      const name = f.slice(0, -3);
+      const ran = text.split('\n').some((l) => l.includes(`cargo test -p ${crate} `) && l.includes('--ignored') && new RegExp(`--test ${name}(\\s|$)`).test(l));
+      if (!ran) problems.push(`${file}: ${rel} has #[ignore]d tests but no \`cargo test -p ${crate} --test ${name} ... -- --ignored\` line runs them`);
+    }
+  }
   if (text.indexOf('Build the test host and the WASI core') > text.indexOf('cargo test $GPUI_CRATES')) problems.push(`${file}: the test host must be built before the cargo test run`);
   return problems;
 }
