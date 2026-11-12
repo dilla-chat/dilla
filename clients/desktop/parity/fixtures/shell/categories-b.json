@@ -1,0 +1,209 @@
+{
+  "name": "shell/categories-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/c/{northern}/{northern/loot}",
+  "clock": 1794481751,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      },
+      {
+        "id": "sven",
+        "display": "Sven"
+      },
+      {
+        "id": "kari",
+        "display": "Kari"
+      },
+      {
+        "id": "liv",
+        "display": "Liv"
+      },
+      {
+        "id": "glenn",
+        "display": "Glenn"
+      },
+      {
+        "id": "ines",
+        "display": "Ines"
+      },
+      {
+        "id": "ole",
+        "display": "Ole"
+      },
+      {
+        "id": "tove",
+        "display": "Tove"
+      },
+      {
+        "id": "ulf",
+        "display": "Ulf"
+      },
+      {
+        "id": "nils",
+        "display": "Nils"
+      }
+    ],
+    "servers": [
+      {
+        "id": "northern",
+        "name": "Northern Lights Collective",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn",
+          "sven",
+          "kari",
+          "liv",
+          "glenn",
+          "ines",
+          "ole",
+          "tove",
+          "ulf",
+          "nils"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general",
+            "position": 0
+          },
+          {
+            "id": "lounge",
+            "kind": "voice",
+            "name": "lounge",
+            "position": 1
+          },
+          {
+            "id": "raids",
+            "kind": "category",
+            "name": "raids",
+            "position": 2
+          },
+          {
+            "id": "loot",
+            "kind": "text",
+            "name": "loot",
+            "parent": "raids",
+            "position": 0
+          },
+          {
+            "id": "boats",
+            "kind": "category",
+            "name": "boats",
+            "position": 3
+          },
+          {
+            "id": "harbour",
+            "kind": "voice",
+            "name": "harbour",
+            "parent": "boats",
+            "position": 0
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          },
+          {
+            "id": "design",
+            "kind": "category",
+            "name": "design and research",
+            "position": 4
+          },
+          {
+            "id": "moodboards-and-references",
+            "kind": "text",
+            "name": "moodboards-and-references",
+            "parent": "design",
+            "position": 0
+          },
+          {
+            "id": "critique",
+            "kind": "voice",
+            "name": "critique",
+            "parent": "design",
+            "position": 1
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "northern-loot-1",
+        "channel": "northern/loot",
+        "sender": "ada",
+        "ts": 1794481741,
+        "body": "raid tonight at 20:00? bring the good shields"
+      },
+      {
+        "key": "northern-loot-2",
+        "channel": "northern/loot",
+        "sender": "bjorn",
+        "ts": 1794481741,
+        "body": "in. last time the bridge troll took everything we had"
+      },
+      {
+        "key": "northern-loot-3",
+        "channel": "northern/loot",
+        "sender": "mira",
+        "ts": 1794481741,
+        "body": "I'm in too. Packing list:\nrope\ntorches\nsnacks for Björn"
+      },
+      {
+        "key": "northern-loot-4",
+        "channel": "northern/loot",
+        "sender": "ada",
+        "ts": 1794481741,
+        "body": "the map from saturday is in #loot, the one with the coffee stain"
+      },
+      {
+        "key": "northern-loot-5",
+        "channel": "northern/loot",
+        "sender": "bjorn",
+        "ts": 1794481741,
+        "body": "see you at the bridge"
+      },
+      {
+        "key": "northern-moodboards-and-references-1",
+        "channel": "northern/moodboards-and-references",
+        "sender": "sven",
+        "ts": 1794481741,
+        "body": "the new palette is up"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]",
+      "gpui": "-"
+    },
+    {
+      "do": "click",
+      "web": "css=.d-channel-list__cat-head >> nth=1",
+      "gpui": "category-boats"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

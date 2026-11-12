@@ -1,35 +1,41 @@
 //! The desktop shell (packages/ui AppShell, Signal §5.1): the top bar over the server rail, the sidebar (the channel
-//! list above the user panel) and the main column (the channel header, the message log, the composer), laid out with the
-//! web CSS's sizes (AppShell.css, TopBar.css, CommunityRail.css, UserPanel.css, ChannelHeader.css) and Task 5's
-//! components.
+//! list above the user panel) and the main column (the channel header, the message log, the composer), with the aside a
+//! slot guest draws on its right. The panes' widths are the person's (a splitter each; widths and folded categories are
+//! kept in prefs, `layout.*`); the shell keeps the route history. Sizes come from the web CSS (AppShell.css, TopBar.css,
+//! CommunityRail.css, UserPanel.css, ChannelHeader.css) and Task 6's components.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use chrono::{Datelike, FixedOffset, TimeZone};
 use dilla_client::Client;
-use dilla_client::state::{AppState, Channel, ChannelId, CommunityId, ConnectionStatus};
+use dilla_client::prefs::{LayoutPrefs, Prefs};
+use dilla_client::state::{AppState, ChannelId, CommunityId, ConnectionStatus};
 use gpui::{
-    AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Window, div, px,
+    AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
+    ScrollHandle, SharedString, Styled, Subscription, Window, div,
 };
 
-use dilla_desktop_ui::components::{
-    Avatar, AvatarSize, Button, ButtonSize, ButtonVariant, Presence,
+use dilla_desktop_ui::components::action_menu::{ActionMenu, MenuItem};
+use dilla_desktop_ui::components::shell::panes::{
+    ASIDE_DEFAULT_MEMBERS, ASIDE_DEFAULT_THREAD, COLUMN_FROM, SIDEBAR_DEFAULT, range,
 };
-use dilla_desktop_ui::text::{line, line_height};
-use dilla_desktop_ui::tokens::{color, font, layout, radius, text};
-use dilla_desktop_ui::{Icon, IconName};
+use dilla_desktop_ui::components::shell::{Pane, PaneInput, Panes, Splitter, SplitterKey, clamp_panes};
+use dilla_desktop_ui::tokens::{color, font, layout};
 
 pub mod keys;
+pub mod window;
 
-use crate::router::Route;
+use crate::router::{History, Route};
 use crate::screens::composer::{Composer, Sent};
+use crate::screens::header::{self, AsideKind};
 use crate::screens::{
-    FocusNext, FocusPrevious, LABEL_TRACKING_WIDE, centred, channel_list, timeline,
+    FocusNext, FocusPrevious, channel_list, rail, timeline, titlebar, user_panel,
 };
 use crate::slots::{self, SlotCx};
+use crate::strings::{t, tf};
 
 /// The clock and zone message times are drawn in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +83,33 @@ impl Clock {
     }
 }
 
+
+/// The labels of the channel row's menu that `strings.rs` has no key for (the web client's row menu holds pins, mute and
+/// edit; the Wave 1 plan's holds mark read, mute and copy link). "copy link" is `invite.copy`'s.
+const MARK_READ: &str = "Mark as read";
+
+/// A pane drag in progress: where the pointer went down and the width the pane had then.
+#[derive(Clone, Copy, Debug)]
+struct Drag {
+    pane: Pane,
+    start_x: f32,
+    start_width: f32,
+}
+
+/// The width a drag asks for: the pointer's travel since it went down, in the pane's own direction (the aside's splitter
+/// is on its left edge, so moving left widens it).
+fn dragged_width(drag: Drag, x: f32) -> f32 {
+    let sign = if drag.pane == Pane::Sidebar { 1.0 } else { -1.0 };
+    drag.start_width + sign * (x - drag.start_x)
+}
+
+/// A row's context menu: which channel, and where it opens.
+#[derive(Clone, Copy, Debug)]
+struct ChannelMenu {
+    channel: ChannelId,
+    at: Point<Pixels>,
+}
+
 /// The shell: the signed-in client's state and what the person has selected.
 pub struct ShellView {
     state: Arc<AppState>,
@@ -89,6 +122,26 @@ pub struct ShellView {
     /// The log follows its end (new messages scroll into view) until the person scrolls up.
     pinned: bool,
     focus: FocusHandle,
+    /// The routes this window visited (router.ts's history).
+    history: History,
+    /// The instance's preferences; none while a fixture is drawn.
+    prefs: Option<Prefs>,
+    /// The pane widths the person chose (`layout.*`), shown clamped to the window.
+    widths: LayoutPrefs,
+    /// Hex ids of the folded categories and of the muted channels (`layout.*`).
+    collapsed: HashSet<String>,
+    muted: HashSet<String>,
+    drag: Option<Drag>,
+    /// The aside that is open beside the main column.
+    aside: Option<AsideKind>,
+    menu: Option<ChannelMenu>,
+    /// This device's microphone and speakers, as the panel's buttons last set them (the voice area owns the call).
+    mic_off: bool,
+    deaf: bool,
+    sidebar_splitter: FocusHandle,
+    aside_splitter: FocusHandle,
+    /// The shipping window: the title bar draws the window's own controls.
+    controls: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -111,6 +164,15 @@ impl ShellView {
         let sent = cx.subscribe(&composer, |this: &mut Self, _, Sent(text), cx| {
             this.send(text.clone(), cx);
         });
+        let prefs = client.as_ref().map(|c| c.prefs());
+        let (widths, collapsed, muted) = match &prefs {
+            Some(p) => (
+                LayoutPrefs::read(p),
+                LayoutPrefs::ids(p, LayoutPrefs::COLLAPSED).into_iter().collect(),
+                LayoutPrefs::ids(p, LayoutPrefs::MUTED).into_iter().collect(),
+            ),
+            None => Default::default(),
+        };
         let mut this = Self {
             state,
             client,
@@ -121,11 +183,46 @@ impl ShellView {
             log: ScrollHandle::new(),
             pinned: true,
             focus: cx.focus_handle(),
+            history: History::new(Route::Root),
+            prefs,
+            widths,
+            collapsed,
+            muted,
+            drag: None,
+            aside: None,
+            menu: None,
+            mic_off: false,
+            deaf: false,
+            sidebar_splitter: cx.focus_handle().tab_stop(true),
+            aside_splitter: cx.focus_handle().tab_stop(true),
+            controls: false,
             _subscriptions: vec![sent],
         };
         this.settle_selection(cx);
+        let route = this.current_route();
+        this.history = History::new(route);
         this.log.scroll_to_bottom();
         this
+    }
+
+    /// Draws the window's own controls in the title bar (the shipping window; a fixture has none).
+    pub fn with_controls(mut self, controls: bool) -> Self {
+        self.controls = controls;
+        self
+    }
+
+    /// Keeps and reads the layout (pane widths, folded categories, muted channels) in `prefs`: what a running client's own
+    /// preferences do, for a shell built without a client.
+    pub fn with_prefs(mut self, prefs: Prefs) -> Self {
+        self.widths = LayoutPrefs::read(&prefs);
+        self.collapsed = LayoutPrefs::ids(&prefs, LayoutPrefs::COLLAPSED)
+            .into_iter()
+            .collect();
+        self.muted = LayoutPrefs::ids(&prefs, LayoutPrefs::MUTED)
+            .into_iter()
+            .collect();
+        self.prefs = Some(prefs);
+        self
     }
 
     /// A new state from the client.
@@ -167,7 +264,7 @@ impl ShellView {
             });
             self.channel = None;
             if let Some(first) = first {
-                self.select(first, cx);
+                self.focus_channel(first, cx);
             }
         }
         let target: SharedString = self
@@ -193,8 +290,8 @@ impl ShellView {
         }
     }
 
-    /// The route the shell shows.
-    fn route(&self) -> Route {
+    /// The route the selection stands on.
+    fn current_route(&self) -> Route {
         match self.community {
             Some(community) => Route::Channel {
                 community,
@@ -204,8 +301,52 @@ impl ShellView {
         }
     }
 
+    /// The route the shell shows (the head of its history).
+    pub fn route(&self) -> &Route {
+        self.history.current()
+    }
+
+    /// Goes to `route`: a channel route selects its channel (and server), a direct-message route only marks the `@` tile
+    /// (the DM list and conversations are the DM area's), and every route is an entry of the history.
+    pub fn navigate(&mut self, route: Route, cx: &mut Context<Self>) {
+        self.history.push(route.clone());
+        self.apply(&route, cx);
+    }
+
+    fn apply(&mut self, route: &Route, cx: &mut Context<Self>) {
+        match route {
+            Route::Channel { community, channel } => {
+                if self.community != Some(*community) {
+                    self.community = Some(*community);
+                    self.channel = None;
+                }
+                match channel {
+                    Some(c) => self.focus_channel(*c, cx),
+                    None => self.settle_selection(cx),
+                }
+            }
+            Route::Root => self.settle_selection(cx),
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// One step back in the history (Alt+Left); the route now shown, or `None` at the first entry.
+    pub fn back(&mut self, cx: &mut Context<Self>) -> Option<Route> {
+        let route = self.history.back()?.clone();
+        self.apply(&route, cx);
+        Some(route)
+    }
+
+    /// One step forward (Alt+Right).
+    pub fn forward(&mut self, cx: &mut Context<Self>) -> Option<Route> {
+        let route = self.history.forward()?.clone();
+        self.apply(&route, cx);
+        Some(route)
+    }
+
     /// Shows `channel`: its group is opened (joined) so its timeline is kept, and it is marked read while shown.
-    pub fn select(&mut self, channel: ChannelId, cx: &mut Context<Self>) {
+    fn focus_channel(&mut self, channel: ChannelId, cx: &mut Context<Self>) {
         if self.channel == Some(channel) {
             return;
         }
@@ -225,6 +366,26 @@ impl ShellView {
         cx.notify();
     }
 
+    /// Shows `channel` as a new history entry.
+    pub fn select(&mut self, channel: ChannelId, cx: &mut Context<Self>) {
+        if self.channel == Some(channel) {
+            return;
+        }
+        let community = self
+            .state
+            .channel(channel)
+            .map(|c| c.community_id)
+            .or(self.community);
+        self.focus_channel(channel, cx);
+        if let Some(community) = community {
+            self.community = Some(community);
+            self.history.push(Route::Channel {
+                community,
+                channel: Some(channel),
+            });
+        }
+    }
+
     /// Shows server `community` on its first text channel.
     pub fn pick_community(&mut self, community: CommunityId, cx: &mut Context<Self>) {
         if self.community == Some(community) {
@@ -233,7 +394,19 @@ impl ShellView {
         self.community = Some(community);
         self.channel = None;
         self.settle_selection(cx);
+        self.history.push(self.current_route());
         cx.notify();
+    }
+
+    /// Alt+Up and Alt+Down: the previous or next listed channel.
+    pub fn step_channel(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let Some(community) = self.community else {
+            return;
+        };
+        if let Some(next) = channel_list::step_channel(&self.state, community, self.channel, delta)
+        {
+            self.select(next, cx);
+        }
     }
 
     fn send(&mut self, text: String, cx: &mut Context<Self>) {
@@ -246,6 +419,175 @@ impl ShellView {
             let _ = queued.await;
         })
         .detach();
+    }
+
+    // ---- panes ------------------------------------------------------------------------------------------------
+
+    /// The aside column's default width: the thread pane is wider than the member list.
+    fn aside_default(&self) -> f32 {
+        if self.aside == Some(AsideKind::Threads) {
+            ASIDE_DEFAULT_THREAD
+        } else {
+            ASIDE_DEFAULT_MEMBERS
+        }
+    }
+
+    /// What the panes' widths are limited by in a shell `width` wide, with a column aside or without.
+    fn pane_input(&self, width: f32, aside_column: bool) -> PaneInput {
+        PaneInput {
+            shell: width,
+            rail: f32::from(layout::RAIL),
+            sidebar: self.widths.sidebar.unwrap_or(SIDEBAR_DEFAULT),
+            aside: self.widths.aside.unwrap_or_else(|| self.aside_default()),
+            aside_column,
+        }
+    }
+
+    /// The widths shown in a window `width` wide.
+    pub fn panes(&self, width: f32, aside_column: bool) -> Panes {
+        clamp_panes(&self.pane_input(width, aside_column))
+    }
+
+    /// Sets a pane to `width` (the request is kept as asked; the shell shows it clamped), or back to its default.
+    fn set_pane(&mut self, pane: Pane, width: Option<f32>, window_width: f32, cx: &mut Context<Self>) {
+        let column = window_width >= COLUMN_FROM;
+        let input = self.pane_input(window_width, column);
+        let value = width.map(|w| {
+            let other = match pane {
+                Pane::Sidebar => self.panes(window_width, column).aside,
+                Pane::Aside => self.panes(window_width, column).sidebar,
+            };
+            let (lo, hi) = range(pane, &input, other);
+            w.clamp(lo, hi)
+        });
+        match pane {
+            Pane::Sidebar => self.widths.sidebar = value,
+            Pane::Aside => self.widths.aside = value,
+        }
+        cx.notify();
+    }
+
+    /// Keeps the widths (the drag ended, or a key moved a splitter).
+    fn commit_widths(&self) {
+        if let Some(prefs) = &self.prefs {
+            let _ = LayoutPrefs::write_sidebar(prefs, self.widths.sidebar);
+            let _ = LayoutPrefs::write_aside(prefs, self.widths.aside);
+        }
+    }
+
+    fn begin_drag(&mut self, pane: Pane, x: f32, window_width: f32) {
+        let panes = self.panes(window_width, window_width >= COLUMN_FROM);
+        self.drag = Some(Drag {
+            pane,
+            start_x: x,
+            start_width: match pane {
+                Pane::Sidebar => panes.sidebar,
+                Pane::Aside => panes.aside,
+            },
+        });
+    }
+
+    fn on_splitter_key(&mut self, pane: Pane, key: SplitterKey, window_width: f32, cx: &mut Context<Self>) {
+        match key {
+            SplitterKey::To(w) => self.set_pane(pane, Some(w), window_width, cx),
+            SplitterKey::Reset => self.set_pane(pane, None, window_width, cx),
+        }
+        self.commit_widths();
+    }
+
+    /// The header's Threads and Members buttons: open the aside, or close it when it is the one open. The areas that draw
+    /// the panes (11, 14) keep their own state and are told.
+    fn toggle_aside(&mut self, kind: AsideKind, cx: &mut Context<Self>) {
+        self.aside = if self.aside == Some(kind) { None } else { Some(kind) };
+        match kind {
+            AsideKind::Threads => crate::screens::threads::toggle_pane(cx),
+            AsideKind::Members => crate::screens::members::toggle_pane(cx),
+        }
+        cx.notify();
+    }
+
+    // ---- the channel row's menu -------------------------------------------------------------------------------
+
+    fn open_menu(&mut self, channel: ChannelId, at: Point<Pixels>, cx: &mut Context<Self>) {
+        self.menu = Some(ChannelMenu { channel, at });
+        cx.notify();
+    }
+
+    fn menu_items(&self, channel: ChannelId) -> Vec<MenuItem> {
+        let muted = self.muted.contains(&channel.hex());
+        vec![
+            MenuItem::new("read", MARK_READ),
+            MenuItem::new("mute", t("notify.mute")).check(muted),
+            MenuItem::new("link", t("invite.copy")),
+        ]
+    }
+
+    fn choose(&mut self, channel: ChannelId, item: &str, cx: &mut Context<Self>) {
+        match item {
+            "read" => {
+                if let Some(client) = &self.client {
+                    let marked = client.mark_read(channel);
+                    cx.background_spawn(async move {
+                        let _ = marked.await;
+                    })
+                    .detach();
+                }
+            }
+            "mute" => {
+                let on = !self.muted.contains(&channel.hex());
+                if on {
+                    self.muted.insert(channel.hex());
+                } else {
+                    self.muted.remove(&channel.hex());
+                }
+                if let Some(prefs) = &self.prefs {
+                    let _ = LayoutPrefs::set_id(prefs, LayoutPrefs::MUTED, &channel.hex(), on);
+                }
+            }
+            "link" => {
+                if let Some(community) = self.state.channel(channel).map(|c| c.community_id) {
+                    let route = Route::Channel {
+                        community,
+                        channel: Some(channel),
+                    };
+                    cx.write_to_clipboard(ClipboardItem::new_string(route.path()));
+                }
+            }
+            _ => {}
+        }
+        self.menu = None;
+        cx.notify();
+    }
+
+    fn toggle_category(&mut self, category: ChannelId, cx: &mut Context<Self>) {
+        let on = !self.collapsed.contains(&category.hex());
+        if on {
+            self.collapsed.insert(category.hex());
+        } else {
+            self.collapsed.remove(&category.hex());
+        }
+        if let Some(prefs) = &self.prefs {
+            let _ = LayoutPrefs::set_id(prefs, LayoutPrefs::COLLAPSED, &category.hex(), on);
+        }
+        cx.notify();
+    }
+
+    // ---- the user panel ---------------------------------------------------------------------------------------
+
+    fn set_mic(&mut self, cx: &mut Context<Self>) {
+        self.mic_off = !self.mic_off;
+        if let Some(client) = &self.client {
+            client.voice().set_muted(self.mic_off);
+        }
+        cx.notify();
+    }
+
+    fn set_deaf(&mut self, cx: &mut Context<Self>) {
+        self.deaf = !self.deaf;
+        if let Some(client) = &self.client {
+            client.voice().set_deafened(self.deaf);
+        }
+        cx.notify();
     }
 
     fn me(&self) -> (String, &'static str) {
@@ -273,325 +615,8 @@ impl ShellView {
     }
 }
 
-/// AppShell.css and CommunityRail.css: the rail's 10px top padding and its 6px item gap; the `@` tile's rule (20x1px, 2px
-/// margins); the selected tile's ring, `box-shadow: 0 0 0 2px var(--bg-2), 0 0 0 3.5px var(--accent)`.
-/// What a click on a server tile does.
-type OnPick = Rc<dyn Fn(CommunityId, &mut gpui::App)>;
-
-const RAIL_TOP: f32 = 10.0;
-const RAIL_GAP: f32 = 6.0;
-const RING_GAP: f32 = 2.0;
-const RING: f32 = 1.5;
-
-fn topbar() -> impl IntoElement {
-    let brand_name_line = line_height(text::XS, 1.5);
-    let brand = div()
-        .flex_1()
-        .min_w_0()
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .child(
-            centred(
-                px(18.),
-                line("D", text::XS, line_height(text::XS, 1.0), color::BRAND_INK)
-                    .weight(font::WEIGHT_DISPLAY),
-            )
-            .rounded(radius::SM)
-            .bg(color::BRAND),
-        )
-        .child(
-            line("DILLA", text::XS, brand_name_line, color::FG)
-                .weight(font::WEIGHT_DISPLAY)
-                .tracking(LABEL_TRACKING_WIDE),
-        )
-        .child(div().w(px(6.)).h(px(12.)).bg(color::BRAND));
-    let search = div().w(px(420.)).flex_none().flex().justify_center().child(
-        div()
-            .w(px(360.))
-            .h(px(28.))
-            .bg(color::SURFACE_2)
-            .border_1()
-            .border_color(color::HAIRLINE_2)
-            .rounded(radius::MD)
-            .flex()
-            .items_center()
-            .pl(px(10.))
-            .pr(px(8.))
-            .gap(px(8.))
-            .child(Icon::new(IconName::Search).size(px(13.)).color(color::FG_3))
-            .child(
-                div().flex_1().min_w_0().flex().child(
-                    line(
-                        "Search or jump to…",
-                        text::UI,
-                        line_height(text::UI, 1.5),
-                        color::FG_3,
-                    )
-                    .ellipsis(),
-                ),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .h(px(18.))
-                    .border_1()
-                    .border_color(color::CONTROL_EDGE)
-                    .rounded(radius::SM)
-                    .px(px(5.))
-                    .child(line(
-                        "Ctrl K",
-                        text::MICRO,
-                        line_height(text::MICRO, 1.6),
-                        color::FG_2,
-                    )),
-            ),
-    );
-    let end = div()
-        .flex_1()
-        .min_w_0()
-        .flex()
-        .justify_end()
-        .gap(px(8.))
-        .child(centred(
-            px(28.),
-            Icon::new(IconName::Bell).size(px(15.)).color(color::FG_2),
-        ))
-        .child(centred(
-            px(28.),
-            Icon::new(IconName::Settings)
-                .size(px(15.))
-                .color(color::FG_2),
-        ));
-    div()
-        .flex_none()
-        .h(layout::TOPBAR)
-        .bg(color::BG_2)
-        .border_b_1()
-        .border_color(color::HAIRLINE)
-        .flex()
-        .items_center()
-        .pl(px(14.))
-        .pr(px(12.))
-        .gap(px(12.))
-        .child(brand)
-        .child(search)
-        .child(end)
-}
-
-fn rail(state: &AppState, selected: Option<CommunityId>, on_pick: OnPick) -> impl IntoElement {
-    let tiles = state.communities.iter().map(|c| {
-        let initials = dilla_desktop_ui::components::avatar::initials_of(&c.name);
-        let picked = Some(c.id) == selected;
-        let id = c.id;
-        let on_pick = on_pick.clone();
-        let mut tile = div()
-            .id(SharedString::from(format!("server-{}", c.id.hex())))
-            .relative()
-            .flex_none()
-            .size(layout::RAIL_TILE)
-            // CommunityRail.css: a server is a round tile in `--hover`; the selected one a rounded square in the accent.
-            .rounded(if picked { radius::XL } else { radius::PILL })
-            .bg(if picked { color::ACCENT } else { color::HOVER })
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .on_click(move |_, _, cx| on_pick(id, cx))
-            .child(
-                line(
-                    initials,
-                    text::XS,
-                    line_height(text::XS, 1.0),
-                    if picked {
-                        color::ACCENT_INK
-                    } else {
-                        color::FG_2
-                    },
-                )
-                .weight(font::WEIGHT_DISPLAY),
-            );
-        if picked {
-            // The ring around the tile, outside its box (a box-shadow takes no room in the rail).
-            let out = RING_GAP + RING;
-            tile = tile.child(
-                div()
-                    .absolute()
-                    .left(px(-out))
-                    .top(px(-out))
-                    .size(layout::RAIL_TILE + px(2.0 * out))
-                    .rounded(radius::XL + px(out))
-                    .border(px(RING))
-                    .border_color(color::ACCENT),
-            );
-        }
-        tile
-    });
-    div()
-        .flex_none()
-        .w(layout::RAIL)
-        .h_full()
-        .relative()
-        .bg(color::BG_2)
-        // The rail's edge is an inset shadow on the web (no layout width): a 1px line over its last column.
-        .child(
-            div()
-                .absolute()
-                .right_0()
-                .top_0()
-                .w(px(1.))
-                .h_full()
-                .bg(color::HAIRLINE),
-        )
-        .flex()
-        .flex_col()
-        .items_center()
-        .pt(px(RAIL_TOP))
-        .gap(px(RAIL_GAP))
-        .child(
-            centred(
-                layout::RAIL_TILE,
-                Icon::new(IconName::AtSign).size(px(17.)).color(color::FG_2),
-            )
-            .rounded_full()
-            .bg(color::HOVER),
-        )
-        .child(div().my(px(2.)).w(px(20.)).h(px(1.)).bg(color::HAIRLINE_2))
-        .children(tiles)
-        .child(
-            centred(
-                layout::RAIL_TILE,
-                Icon::new(IconName::Plus).size(px(15.)).color(color::FG_2),
-            )
-            .rounded_full()
-            .border_1()
-            .border_dashed()
-            .border_color(color::CONTROL_EDGE_KEY),
-        )
-}
-
-fn user_panel(name: &str, status: &str) -> impl IntoElement {
-    let presence = if status == "online" {
-        Presence::Online
-    } else {
-        Presence::Offline
-    };
-    let who = div()
-        .flex_1()
-        .min_w_0()
-        .h(px(36.))
-        .flex()
-        .items_center()
-        .pl(px(6.))
-        .gap(px(9.))
-        .child(
-            Avatar::new("user-panel-avatar", name.to_owned())
-                .size(AvatarSize::Panel)
-                .presence(presence),
-        )
-        .child(
-            div()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .child(
-                    line(
-                        name.to_owned(),
-                        text::UI,
-                        line_height(text::UI, 1.3),
-                        color::FG,
-                    )
-                    .weight(font::WEIGHT_LABEL)
-                    .ellipsis(),
-                )
-                .child(line(
-                    status.to_owned(),
-                    text::META,
-                    line_height(text::META, 1.3),
-                    color::FG_3,
-                )),
-        );
-    div()
-        .flex_none()
-        .relative()
-        .h(layout::USER_PANEL)
-        .bg(color::BG_2)
-        .border_t_1()
-        .border_color(color::HAIRLINE)
-        .flex()
-        .items_center()
-        .px(px(8.))
-        .gap(px(4.))
-        .child(who)
-        .child(centred(
-            px(30.),
-            Icon::new(IconName::Mic).size(px(16.)).color(color::FG_2),
-        ))
-        .child(centred(
-            px(30.),
-            Icon::new(IconName::Headphones)
-                .size(px(16.))
-                .color(color::FG_2),
-        ))
-        // The sidebar's edge runs on past the list: a 1px line over the panel's last column (no layout width).
-        .child(
-            div()
-                .absolute()
-                .right_0()
-                .top_0()
-                .w(px(1.))
-                .h_full()
-                .bg(color::HAIRLINE),
-        )
-}
-
-fn header(channel: Option<&Channel>, members: usize) -> impl IntoElement {
-    let name = channel.map_or_else(String::new, |c| c.name.clone());
-    div()
-        .flex_none()
-        .h(layout::CHANNEL_HEADER_H)
-        .bg(color::BG)
-        .border_b_1()
-        .border_color(color::HAIRLINE)
-        .flex()
-        .items_center()
-        .pl(px(20.))
-        .pr(px(10.))
-        .gap(px(8.))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(Icon::new(IconName::Hash).size(px(14.)).color(color::FG_3))
-                .child(
-                    line(name, text::BASE, line_height(text::BASE, 1.5), color::FG)
-                        .weight(font::WEIGHT_DISPLAY)
-                        .ellipsis(),
-                ),
-        )
-        .child(
-            div()
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(2.))
-                .child(
-                    Button::new("header-threads", "Threads")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Bar)
-                        .icon(IconName::MessagesSquare),
-                )
-                .child(
-                    Button::new("header-members", members.to_string())
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Bar)
-                        .icon(IconName::Users),
-                ),
-        )
-}
+/// The ⌘K / Ctrl K hint of the search field.
+const SEARCH_HINT: &str = if cfg!(target_os = "macos") { "⌘ K" } else { "Ctrl K" };
 
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -604,14 +629,66 @@ impl Render for ShellView {
         let online = usize::from(state.connection.status == ConnectionStatus::Online);
         let (me, status) = self.me();
         let ctx = self.slot_cx();
-        let entity = cx.entity().downgrade();
-        let on_select: channel_list::OnSelect = Rc::new(move |id, _window, cx| {
-            let _ = entity.update(cx, |shell, cx| shell.select(id, cx));
+        let shell = cx.entity().downgrade();
+        let window_width = f32::from(window.viewport_size().width);
+        let column = window_width >= COLUMN_FROM;
+        let panes = self.panes(window_width, column);
+
+        let weak = shell.clone();
+        let on_pick = Rc::new(move |id, _: &mut Window, cx: &mut gpui::App| {
+            let _ = weak.update(cx, |shell, cx| shell.pick_community(id, cx));
         });
-        let entity = cx.entity().downgrade();
-        let on_pick: OnPick = Rc::new(move |id, cx| {
-            let _ = entity.update(cx, |shell, cx| shell.pick_community(id, cx));
+        let weak = shell.clone();
+        let on_home = Rc::new(move |_: &mut Window, cx: &mut gpui::App| {
+            let _ = weak.update(cx, |shell, cx| shell.navigate(Route::Dms, cx));
         });
+        let rail_view = rail::render(
+            &rail::RailModel {
+                state: &state,
+                selected: self.community,
+                home_selected: matches!(self.route(), Route::Dms | Route::Dm(_)),
+                muted: &self.muted,
+            },
+            &rail::RailHandlers {
+                on_pick,
+                on_home,
+                // The add-a-server dialog is the onboarding area's (Task 25); the controller wires its hook here.
+                on_add: Rc::new(|_, _| {}),
+            },
+            window,
+            cx,
+        );
+
+        let owner = self.community.is_some_and(|c| {
+            state
+                .communities
+                .iter()
+                .any(|k| k.id == c && Some(k.owner) == state.account.user_id)
+        });
+        let has_categories = self
+            .community
+            .is_some_and(|c| state.channels.iter().any(|ch| ch.community_id == c && ch.kind == 2));
+        let handlers = {
+            let (w1, w2, w4) = (shell.clone(), shell.clone(), shell.clone());
+            let community = self.community;
+            channel_list::ListHandlers {
+                on_select: Rc::new(move |id, _, cx| {
+                    let _ = w1.update(cx, |shell, cx| shell.select(id, cx));
+                }),
+                on_toggle: Rc::new(move |id, _, cx| {
+                    let _ = w2.update(cx, |shell, cx| shell.toggle_category(id, cx));
+                }),
+                on_add: Rc::new(move |_category, _, cx| {
+                    // The create-channel flow is the onboarding area's (Task 25); its hook takes the server only.
+                    if let Some(community) = community {
+                        crate::screens::create::open_create_channel(community, cx);
+                    }
+                }),
+                on_menu: Rc::new(move |id, at, _, cx| {
+                    let _ = w4.update(cx, |shell, cx| shell.open_menu(id, at, cx));
+                }),
+            }
+        };
         let list = channel_list::render(
             &channel_list::ListModel {
                 state: &state,
@@ -619,25 +696,38 @@ impl Render for ShellView {
                 selected: self.channel,
                 online,
                 in_voice: 0,
-                can_add: self.community.is_some_and(|c| {
-                    state
-                        .communities
-                        .iter()
-                        .any(|k| k.id == c && Some(k.owner) == state.account.user_id)
-                        && !state
-                            .channels
-                            .iter()
-                            .any(|ch| ch.community_id == c && ch.kind == 2)
-                }),
+                can_add: owner && !has_categories,
+                can_add_in_category: owner && has_categories,
+                collapsed: &self.collapsed,
+                muted: &self.muted,
             },
-            on_select,
+            &handlers,
             window,
             cx,
         );
+
+        let (w_mic, w_deaf) = (shell.clone(), shell.clone());
+        let panel = user_panel::render(
+            &user_panel::PanelModel {
+                name: &me,
+                status,
+                muted: self.mic_off,
+                deafened: self.deaf,
+            },
+            &user_panel::PanelHandlers {
+                on_mute: Rc::new(move |_, cx| {
+                    let _ = w_mic.update(cx, |shell, cx| shell.set_mic(cx));
+                }),
+                on_deafen: Rc::new(move |_, cx| {
+                    let _ = w_deaf.update(cx, |shell, cx| shell.set_deaf(cx));
+                }),
+            },
+        );
         let dock = slots::dock(window, cx);
         let sidebar = div()
+            .relative()
             .flex_none()
-            .w(layout::SIDEBAR)
+            .w(Pixels::from(panes.sidebar))
             .h_full()
             .flex()
             .flex_col()
@@ -652,17 +742,22 @@ impl Render for ShellView {
             )
             // The voice dock and now playing (17, 21) over the user panel.
             .children(dock)
-            .child(user_panel(&me, status));
-        // The log wraps its bodies to its own width: the window less the rail and the sidebar.
-        let log_width = f32::from(window.viewport_size().width - layout::RAIL - layout::SIDEBAR);
+            .child(panel);
+        #[cfg(feature = "automation")]
+        let sidebar = sidebar.child(crate::automation::bounds_probe("shell-sidebar"));
+
+        // The log wraps its bodies to its own width: the window less the rail, the sidebar and a column aside.
+        let aside = slots::aside(self.route(), window, cx);
+        let aside_width = if aside.is_some() && column { panes.aside } else { 0.0 };
+        let log_width = window_width - f32::from(layout::RAIL) - panes.sidebar - aside_width;
         let log = match channel {
             Some(c) => {
-                let shell = cx.entity().downgrade();
+                let weak = shell.clone();
                 let scroll = self.log.clone();
                 let on_wheel: timeline::OnWheel = Rc::new(move |up, cx| {
                     // Up leaves the end; reaching the end again follows it.
-                    let at_end = scroll.offset().y <= -scroll.max_offset().y + px(1.);
-                    let _ = shell.update(cx, |shell, cx| {
+                    let at_end = scroll.offset().y <= -scroll.max_offset().y + Pixels::from(1.0f32);
+                    let _ = weak.update(cx, |shell, cx| {
                         shell.pinned = !up && at_end;
                         cx.notify();
                     });
@@ -684,8 +779,39 @@ impl Render for ShellView {
             None => div().size_full().bg(color::BG).into_any_element(),
         };
         let banners = slots::banners(&ctx, window, cx);
-        let aside = slots::aside(&self.route(), window, cx);
-        let overlays = slots::overlays(window, cx);
+        let mut overlays = slots::overlays(window, cx);
+        if let Some(menu) = self.menu {
+            let (w_sel, w_open) = (shell.clone(), shell.clone());
+            let name = state.channel(menu.channel).map_or_else(String::new, |c| c.name.clone());
+            overlays.push(
+                ActionMenu::new(
+                    "channel-menu",
+                    tf("nav.channel.menuOf", &[("name", name.as_str())]),
+                    self.menu_items(menu.channel),
+                )
+                .open(true)
+                .at(menu.at)
+                .no_trigger(None)
+                .on_select(move |item, _, cx| {
+                    let id = menu.channel;
+                    let _ = w_sel.update(cx, |shell, cx| shell.choose(id, item, cx));
+                })
+                .on_open_change(move |open, _, cx| {
+                    if !open {
+                        let _ = w_open.update(cx, |shell, cx| {
+                            shell.menu = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .into_any_element(),
+            );
+        }
+
+        let weak = shell.clone();
+        let on_toggle: header::OnToggle = Rc::new(move |kind, _, cx| {
+            let _ = weak.update(cx, |shell, cx| shell.toggle_aside(kind, cx));
+        });
         let main = div()
             .flex_1()
             .min_w_0()
@@ -694,32 +820,310 @@ impl Render for ShellView {
             .flex_col()
             // The offline link and version banners (24).
             .children(banners)
-            .child(header(channel, members))
+            .child(header::render(
+                &header::HeaderModel {
+                    channel,
+                    members,
+                    aside: self.aside,
+                },
+                &on_toggle,
+            ))
             .child(div().flex_1().min_h_0().child(log))
             .child(div().flex_none().child(self.composer.clone()));
+        #[cfg(feature = "automation")]
+        let main = main
+            .relative()
+            .child(crate::automation::bounds_probe("shell-main"));
+
+        // The aside is a column from 64rem of window; narrower it is the slot guest's own overlay.
+        let aside_column = aside.map(|a| {
+            div()
+                .flex_none()
+                .w(Pixels::from(panes.aside))
+                .h_full()
+                .child(a)
+        });
+
+        let (w_press, w_set) = (shell.clone(), shell.clone());
+        let sidebar_input = self.pane_input(window_width, column);
+        let (lo, hi) = range(Pane::Sidebar, &sidebar_input, panes.aside);
+        let sidebar_splitter = Splitter::new("splitter-sidebar", Pane::Sidebar, &self.sidebar_splitter)
+            .at(f32::from(layout::RAIL) + panes.sidebar - dilla_desktop_ui::components::shell::splitter::HIT / 2.0)
+            .range(panes.sidebar, lo, hi)
+            .on_press(move |x, _, cx| {
+                let _ = w_press.update(cx, |shell, _| {
+                    shell.begin_drag(Pane::Sidebar, f32::from(x), window_width)
+                });
+            })
+            .on_set(move |key, _, cx| {
+                let _ = w_set.update(cx, |shell, cx| {
+                    shell.on_splitter_key(Pane::Sidebar, key, window_width, cx)
+                });
+            });
+        #[cfg(feature = "automation")]
+        let sidebar_splitter =
+            sidebar_splitter.probe(crate::automation::bounds_probe("splitter-sidebar"));
+        let aside_splitter = (aside_column.is_some() && column).then(|| {
+            let (w_press, w_set) = (shell.clone(), shell.clone());
+            let (lo, hi) = range(Pane::Aside, &sidebar_input, panes.sidebar);
+            let splitter = Splitter::new("splitter-aside", Pane::Aside, &self.aside_splitter)
+                .at(window_width - panes.aside - dilla_desktop_ui::components::shell::splitter::HIT / 2.0)
+                .range(panes.aside, lo, hi)
+                .on_press(move |x, _, cx| {
+                    let _ = w_press.update(cx, |shell, _| {
+                        shell.begin_drag(Pane::Aside, f32::from(x), window_width)
+                    });
+                })
+                .on_set(move |key, _, cx| {
+                    let _ = w_set.update(cx, |shell, cx| {
+                        shell.on_splitter_key(Pane::Aside, key, window_width, cx)
+                    });
+                });
+            #[cfg(feature = "automation")]
+            let splitter = splitter.probe(crate::automation::bounds_probe("splitter-aside"));
+            splitter
+        });
+
+        let weak = shell.clone();
+        let titlebar = titlebar::render(
+            &titlebar::TitlebarModel {
+                controls: self.controls,
+                search_hint: SEARCH_HINT,
+            },
+            &titlebar::TitlebarHandlers {
+                on_settings: Rc::new(move |_, cx| {
+                    let _ = weak.update(cx, |shell, cx| shell.navigate(Route::Settings(None), cx));
+                }),
+            },
+        );
+
         div()
             .id("shell")
+            .key_context(keys::CONTEXT)
             .track_focus(&self.focus)
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
+            .on_action(cx.listener(|this, _: &keys::PreviousChannel, _, cx| this.step_channel(-1, cx)))
+            .on_action(cx.listener(|this, _: &keys::NextChannel, _, cx| this.step_channel(1, cx)))
+            .on_action(cx.listener(|this, _: &keys::HistoryBack, _, cx| {
+                this.back(cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::HistoryForward, _, cx| {
+                this.forward(cx);
+            }))
+            .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
+                if let Some(drag) = this.drag
+                    && e.dragging()
+                {
+                    this.set_pane(drag.pane, Some(dragged_width(drag, f32::from(e.position.x))), window_width, cx);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, _| {
+                    if this.drag.take().is_some() {
+                        this.commit_widths();
+                    }
+                }),
+            )
             .size_full()
             .bg(color::BG)
             .font_family(font::MONO)
             .flex()
             .flex_col()
-            .child(topbar())
+            .child(titlebar)
             .child(
                 div()
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(rail(&state, self.community, on_pick))
+                    .child(rail_view)
                     .child(sidebar)
                     .child(main)
                     // The thread or members pane (11, 14).
-                    .children(aside),
+                    .children(aside_column)
+                    .child(sidebar_splitter)
+                    .children(aside_splitter),
             )
-            // The search palette and the ring banner (23, 18), over everything.
+            // The search palette, the ring banner (23, 18) and the channel menu, over everything.
             .children(overlays)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_drag_moves_the_sidebar_with_the_pointer_and_the_aside_against_it() {
+        let side = Drag {
+            pane: Pane::Sidebar,
+            start_x: 300.0,
+            start_width: 244.0,
+        };
+        assert_eq!(dragged_width(side, 380.0), 324.0);
+        let aside = Drag {
+            pane: Pane::Aside,
+            start_x: 900.0,
+            start_width: 232.0,
+        };
+        assert_eq!(dragged_width(aside, 860.0), 272.0, "moving left widens the aside");
+    }
+
+    use dilla_client::state::{Channel, ChannelGroupState, Community, UserId};
+
+    fn channel(n: u8, name: &str, position: u32) -> Channel {
+        Channel {
+            id: ChannelId([n; 16]),
+            community_id: CommunityId([1; 16]),
+            kind: 0,
+            mode: 0,
+            name: name.to_owned(),
+            topic: String::new(),
+            parent_id: None,
+            position,
+            slowmode: 0,
+            text_group_id: None,
+            group: ChannelGroupState::Active,
+        }
+    }
+
+    fn world() -> Arc<AppState> {
+        let mut s = AppState::default();
+        s.communities.push(Community {
+            id: CommunityId([1; 16]),
+            name: "Midgard".into(),
+            owner: UserId([9; 16]),
+            policy_version: 0,
+        });
+        s.channels = vec![channel(2, "general", 0), channel(3, "random", 1)];
+        Arc::new(s)
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("dilla-shell-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// e2e/web/panes.spec.ts `the sidebar splitter drags and takes keys, the width survives a reload`: a width the splitter
+    /// sets is kept in the instance's prefs, a new shell on them shows it again, and Enter forgets it.
+    #[gpui::test]
+    fn sidebar_splitter_drags_takes_keys_and_persists(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let dir = scratch("panes");
+        let prefs = Prefs::instance(&dir);
+        let state = world();
+        let make = |prefs: Prefs, cx: &mut gpui::TestAppContext| {
+            let state = state.clone();
+            cx.add_window_view(move |window, cx| {
+                ShellView::new(state, None, None, Clock::Fixed { now: 0, utc: true }, window, cx)
+                    .with_prefs(prefs)
+            })
+            .0
+        };
+        let shell = make(prefs.clone(), cx);
+        let vcx = &mut gpui::VisualTestContext::from_window(cx.windows()[0], cx);
+        // A drag of +80 px, as the pointer's travel gives it, lands 80 wider and is kept.
+        let drag = Drag {
+            pane: Pane::Sidebar,
+            start_x: 300.0,
+            start_width: 244.0,
+        };
+        shell.update(vcx, |s, cx| {
+            s.set_pane(Pane::Sidebar, Some(dragged_width(drag, 380.0)), 1280.0, cx);
+            s.commit_widths();
+            assert_eq!(s.panes(1280.0, true).sidebar, 324.0);
+        });
+        assert_eq!(LayoutPrefs::read(&prefs).sidebar, Some(324.0));
+        // A new shell on the same preferences (the reload) shows it.
+        let again = make(Prefs::instance(&dir), cx);
+        let vcx = &mut gpui::VisualTestContext::from_window(cx.windows()[1], cx);
+        again.update(vcx, |s, cx| {
+            assert_eq!(s.panes(1280.0, true).sidebar, 324.0);
+            // Keys: Enter resets to 244, ArrowRight twice is two rem, Home the minimum, End the maximum.
+            s.on_splitter_key(Pane::Sidebar, SplitterKey::Reset, 1280.0, cx);
+            assert_eq!(s.panes(1280.0, true).sidebar, 244.0);
+            let sidebar = |s: &ShellView| s.panes(1280.0, true).sidebar;
+            for _ in 0..2 {
+                let now = sidebar(s);
+                s.on_splitter_key(Pane::Sidebar, SplitterKey::To(now + 16.0), 1280.0, cx);
+            }
+            assert_eq!(sidebar(s), 276.0);
+            s.on_splitter_key(Pane::Sidebar, SplitterKey::To(0.0), 1280.0, cx);
+            assert_eq!(sidebar(s), 192.0, "Home: the 12rem minimum");
+            s.on_splitter_key(Pane::Sidebar, SplitterKey::To(9999.0), 1280.0, cx);
+            assert_eq!(sidebar(s), 384.0, "End: the 24rem maximum");
+            s.on_splitter_key(Pane::Sidebar, SplitterKey::Reset, 1280.0, cx);
+        });
+        assert_eq!(LayoutPrefs::read(&Prefs::instance(&dir)).sidebar, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folded category and a muted channel are kept per device, in the layout preferences.
+    #[gpui::test]
+    fn folds_and_mutes_persist(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let dir = scratch("folds");
+        let state = world();
+        let (shell, vcx) = cx.add_window_view({
+            let (state, prefs) = (state.clone(), Prefs::instance(&dir));
+            move |window, cx| {
+                ShellView::new(state, None, None, Clock::Fixed { now: 0, utc: true }, window, cx)
+                    .with_prefs(prefs)
+            }
+        });
+        shell.update(vcx, |s, cx| {
+            s.toggle_category(ChannelId([4; 16]), cx);
+            s.choose(ChannelId([3; 16]), "mute", cx);
+            assert!(s.muted.contains(&ChannelId([3; 16]).hex()));
+        });
+        let prefs = Prefs::instance(&dir);
+        assert_eq!(
+            LayoutPrefs::ids(&prefs, LayoutPrefs::COLLAPSED),
+            [ChannelId([4; 16]).hex()]
+        );
+        assert_eq!(
+            LayoutPrefs::ids(&prefs, LayoutPrefs::MUTED),
+            [ChannelId([3; 16]).hex()]
+        );
+        shell.update(vcx, |s, cx| {
+            s.choose(ChannelId([3; 16]), "mute", cx);
+            s.toggle_category(ChannelId([4; 16]), cx);
+        });
+        let prefs = Prefs::instance(&dir);
+        assert!(LayoutPrefs::ids(&prefs, LayoutPrefs::MUTED).is_empty());
+        assert!(LayoutPrefs::ids(&prefs, LayoutPrefs::COLLAPSED).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Route history: selecting a channel is an entry, back and forward step through them, Alt+Up and Alt+Down step the list.
+    #[gpui::test]
+    fn route_history_and_channel_steps(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let state = world();
+        let (shell, vcx) = cx.add_window_view(move |window, cx| {
+            ShellView::new(state, None, None, Clock::Fixed { now: 0, utc: true }, window, cx)
+        });
+        let at = |channel: u8| Route::Channel {
+            community: CommunityId([1; 16]),
+            channel: Some(ChannelId([channel; 16])),
+        };
+        shell.update(vcx, |s, cx| {
+            assert_eq!(s.route(), &at(2), "a server opens on its first channel");
+            s.step_channel(1, cx);
+            assert_eq!(s.route(), &at(3));
+            s.step_channel(1, cx);
+            assert_eq!(s.route(), &at(3), "the list ends at its last channel");
+            assert_eq!(s.back(cx), Some(at(2)));
+            assert_eq!(s.channel, Some(ChannelId([2; 16])));
+            assert_eq!(s.forward(cx), Some(at(3)));
+            assert_eq!(s.channel, Some(ChannelId([3; 16])));
+            s.navigate(Route::Settings(None), cx);
+            assert_eq!(s.route(), &Route::Settings(None));
+            assert_eq!(s.back(cx), Some(at(3)));
+        });
     }
 }

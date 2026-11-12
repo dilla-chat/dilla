@@ -39,6 +39,9 @@ mod threads;
 pub enum FixtureScreen {
     /// The shell, on this channel.
     Shell { channel: ChannelId },
+    /// The shell on a server's default channel (`/c/{server}`: the route names no channel, the shell opens the server's
+    /// first text channel, as the web client does).
+    ShellHome { community: CommunityId },
     /// The welcome and sign-in screen of a device with no account.
     SignIn,
 }
@@ -154,6 +157,15 @@ pub fn screen_of(route: &Route, phase: Phase) -> Result<FixtureScreen, String> {
             },
             Phase::Ready,
         ) => Ok(FixtureScreen::Shell { channel: *channel }),
+        (
+            Route::Channel {
+                community,
+                channel: None,
+            },
+            Phase::Ready,
+        ) => Ok(FixtureScreen::ShellHome {
+            community: *community,
+        }),
         (Route::Welcome { .. }, Phase::SignedOut) => Ok(FixtureScreen::SignIn),
         (route, phase) => Err(format!(
             "the app cannot draw route `{}` in phase {phase:?} yet",
@@ -433,11 +445,16 @@ mod tests {
     }
 
     #[test]
+    fn a_server_route_without_a_channel_draws_the_shell_on_that_server() {
+        let f = Fixture::parse(&with_route("/c/{midgard}", "ready"), None).unwrap();
+        assert!(matches!(f.screen, FixtureScreen::ShellHome { .. }));
+    }
+
+    #[test]
     fn a_route_the_app_cannot_draw_is_refused() {
         for (route, phase) in [
             ("/settings", "ready"),
             ("/activity", "ready"),
-            ("/c/{midgard}", "ready"),
             ("/welcome", "ready"),
             ("/c/{midgard}/{midgard/general}", "signed_out"),
             ("/c/{midgard}/{midgard/general}", "revoked"),

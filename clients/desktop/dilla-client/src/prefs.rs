@@ -144,6 +144,72 @@ pub fn names_a_secret(key: &str) -> bool {
         .any(|w| matches!(w.as_str(), "token" | "key" | "secret"))
 }
 
+/// The shell's own preferences, the `layout.*` keys (Task 8): the two pane widths the person dragged to (CSS px; absent =
+/// the default), the categories collapsed per server and the channels muted from their row's menu. A wrong-typed or
+/// non-positive width reads as absent, as `readPaneWidths` does on the web.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LayoutPrefs {
+    pub sidebar: Option<f32>,
+    pub aside: Option<f32>,
+}
+
+impl LayoutPrefs {
+    pub const SIDEBAR: &'static str = "layout.sidebarWidth";
+    pub const ASIDE: &'static str = "layout.asideWidth";
+    pub const COLLAPSED: &'static str = "layout.collapsedCategories";
+    pub const MUTED: &'static str = "layout.mutedChannels";
+
+    /// The widths `prefs` keeps.
+    pub fn read(prefs: &Prefs) -> Self {
+        let width = |key| {
+            prefs
+                .get::<f64>(key)
+                .filter(|w| w.is_finite() && *w > 0.0)
+                .map(|w| w as f32)
+        };
+        Self {
+            sidebar: width(Self::SIDEBAR),
+            aside: width(Self::ASIDE),
+        }
+    }
+
+    /// Keeps `width` under `key` (`None` forgets it, back to the default).
+    fn write_width(prefs: &Prefs, key: &str, width: Option<f32>) -> Result<(), PrefsError> {
+        match width {
+            Some(w) => prefs.set(key, &f64::from(w.round())),
+            None => prefs.remove(key),
+        }
+    }
+
+    pub fn write_sidebar(prefs: &Prefs, width: Option<f32>) -> Result<(), PrefsError> {
+        Self::write_width(prefs, Self::SIDEBAR, width)
+    }
+
+    pub fn write_aside(prefs: &Prefs, width: Option<f32>) -> Result<(), PrefsError> {
+        Self::write_width(prefs, Self::ASIDE, width)
+    }
+
+    /// The hex ids (of categories, of channels) kept in the list under `key`.
+    pub fn ids(prefs: &Prefs, key: &str) -> Vec<String> {
+        prefs.get::<Vec<String>>(key).unwrap_or_default()
+    }
+
+    /// Adds `id` to the list under `key`, or takes it out when it is there (`on` says which); the list stays sorted.
+    pub fn set_id(prefs: &Prefs, key: &str, id: &str, on: bool) -> Result<(), PrefsError> {
+        let mut ids = Self::ids(prefs, key);
+        ids.retain(|i| i != id);
+        if on {
+            ids.push(id.to_owned());
+        }
+        ids.sort();
+        if ids.is_empty() {
+            prefs.remove(key)
+        } else {
+            prefs.set(key, &ids)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +307,36 @@ mod tests {
         ] {
             assert!(!names_a_secret(key), "{key}");
         }
+    }
+
+    #[test]
+    fn layout_prefs_keep_widths_and_id_lists() {
+        let dir = scratch("layout");
+        let prefs = Prefs::instance(&dir);
+        assert_eq!(LayoutPrefs::read(&prefs), LayoutPrefs::default());
+        LayoutPrefs::write_sidebar(&prefs, Some(324.4)).unwrap();
+        LayoutPrefs::write_aside(&prefs, Some(300.0)).unwrap();
+        let again = Prefs::instance(&dir);
+        assert_eq!(
+            LayoutPrefs::read(&again),
+            LayoutPrefs {
+                sidebar: Some(324.0),
+                aside: Some(300.0)
+            }
+        );
+        // A reset forgets the width; a junk width reads as absent.
+        LayoutPrefs::write_sidebar(&again, None).unwrap();
+        again.set(LayoutPrefs::ASIDE, &-4.0f64).unwrap();
+        assert_eq!(LayoutPrefs::read(&again), LayoutPrefs::default());
+        // Id lists toggle and stay sorted and unique.
+        LayoutPrefs::set_id(&again, LayoutPrefs::COLLAPSED, "bb", true).unwrap();
+        LayoutPrefs::set_id(&again, LayoutPrefs::COLLAPSED, "aa", true).unwrap();
+        LayoutPrefs::set_id(&again, LayoutPrefs::COLLAPSED, "aa", true).unwrap();
+        assert_eq!(LayoutPrefs::ids(&again, LayoutPrefs::COLLAPSED), ["aa", "bb"]);
+        LayoutPrefs::set_id(&again, LayoutPrefs::COLLAPSED, "aa", false).unwrap();
+        LayoutPrefs::set_id(&again, LayoutPrefs::COLLAPSED, "bb", false).unwrap();
+        assert!(LayoutPrefs::ids(&again, LayoutPrefs::COLLAPSED).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
