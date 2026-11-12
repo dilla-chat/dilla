@@ -32,6 +32,9 @@ pub struct Launch {
     pub resume: bool,
     /// The instance this window runs (`windows::open_instance`); `None`: the first listed instance.
     pub instance: Option<InstanceId>,
+    /// The code of an invite the person pasted into the manager: the window's welcome and join flow starts from it (the
+    /// GPUI side of the shell's `/welcome?invite=<code>`). Read through [`AppView::pending_invite`].
+    pub invite: Option<String>,
     /// The window's size, logical px.
     pub window: (f32, f32),
     #[cfg(feature = "automation")]
@@ -51,6 +54,7 @@ impl Launch {
             keychain,
             resume: true,
             instance: None,
+            invite: None,
             window: (1280.0, 800.0),
             #[cfg(feature = "automation")]
             fixture: None,
@@ -64,6 +68,7 @@ impl Launch {
             keychain: Arc::new(dilla_client::keychain::MemoryKeychain::new()),
             resume: false,
             instance: None,
+            invite: None,
             window: (1280.0, 800.0),
             #[cfg(feature = "automation")]
             fixture: None,
@@ -147,6 +152,16 @@ impl AppView {
         this
     }
 
+    /// The invite code this window was opened with, until the welcome and join flow takes it.
+    pub fn pending_invite(&self) -> Option<&str> {
+        self.launch.invite.as_deref()
+    }
+
+    /// The instance this window runs, once it has one.
+    pub fn instance(&self) -> Option<InstanceId> {
+        self.instance
+    }
+
     fn show_sign_in(&mut self, error: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let (root, keychain) = (self.launch.root.clone(), self.launch.keychain.clone());
         let view = cx.new(|cx| SignInView::new(root, keychain, error, window, cx));
@@ -162,6 +177,12 @@ impl AppView {
     }
 
     fn start_client(&mut self, cfg: InstanceConfig, window: &mut Window, cx: &mut Context<Self>) {
+        // An instance window runs its own instance only: a sign-in that ended on another one (the sign-in view takes
+        // any server address) is refused here, so this window never starts, or holds, a different instance.
+        if self.launch.instance.is_some_and(|pinned| pinned != cfg.id) {
+            let wrong = crate::screens::instances::copy::ERROR_WRONG_INSTANCE;
+            return self.show_sign_in(Some(wrong.into()), window, cx);
+        }
         self.instance = Some(cfg.id);
         // A window opened again on an instance whose client kept running shows that client (windows.rs).
         if let Some(client) = crate::windows::running_client(cx, cfg.id) {
@@ -169,6 +190,29 @@ impl AppView {
         }
         self.screen = Screen::Starting;
         cx.notify();
+        // Another window's start of this instance is running: wait for it instead of starting a second client.
+        let crate::windows::Starting::Go(token) = crate::windows::mark_starting(cx, cfg.id) else {
+            let id = cfg.id;
+            cx.spawn_in(window, async move |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(100))
+                        .await;
+                    let done = this.update_in(cx, |this, window, cx| {
+                        let over = !crate::windows::is_starting(cx, id);
+                        if over {
+                            this.start_client(cfg.clone(), window, cx);
+                        }
+                        over
+                    });
+                    if done.unwrap_or(true) {
+                        break;
+                    }
+                }
+            })
+            .detach();
+            return;
+        };
         let keychain = self.launch.keychain.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         std::thread::Builder::new()
@@ -178,6 +222,8 @@ impl AppView {
             })
             .expect("a thread starts");
         cx.spawn_in(window, async move |this, cx| {
+            // Held until this start ends, or the window goes (a released instance waits on it).
+            let _token = token;
             let result = rx
                 .await
                 .unwrap_or_else(|_| Err(ClientError::Runtime("the start thread ended".into())));
@@ -196,8 +242,21 @@ impl AppView {
     ) {
         let client = match result {
             Ok(client) => client,
-            Err(ClientError::NoIdentity) => return self.show_sign_in(None, window, cx),
-            Err(e) => return self.show_sign_in(Some(e.to_string()), window, cx),
+            Err(e) => {
+                if let Some(id) = self.instance {
+                    crate::windows::finish_starting(cx, id);
+                }
+                return match e {
+                    ClientError::NoIdentity => self.show_sign_in(None, window, cx),
+                    // A key lost from the keychain (an interrupted removal, a reset keychain): say what to do.
+                    ClientError::Store(m) if m.contains("key is missing") => self.show_sign_in(
+                        Some(crate::screens::instances::copy::KEY_MISSING.into()),
+                        window,
+                        cx,
+                    ),
+                    e => self.show_sign_in(Some(e.to_string()), window, cx),
+                };
+            }
         };
         if let Some(id) = self.instance {
             crate::windows::keep_client(cx, id, client.clone());
