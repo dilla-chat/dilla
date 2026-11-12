@@ -66,6 +66,9 @@ pub struct Workspace<T> {
     pending_ops: usize,
     prompt: bool,
     save_error: bool,
+    /// Set by [`Workspace::clear`]: the open section keeps rendering its old draft until it is torn down, and what it
+    /// publishes meanwhile is not registered (the web's `clearedOwnerRef`).
+    cleared: bool,
     waiting: Vec<T>,
 }
 
@@ -77,6 +80,7 @@ impl<T> Default for Workspace<T> {
             pending_ops: 0,
             prompt: false,
             save_error: false,
+            cleared: false,
             waiting: Vec::new(),
         }
     }
@@ -93,9 +97,30 @@ impl<T> Workspace<T> {
     }
 
     pub fn publish(&mut self, flags: Flags) {
-        if self.section.is_some() {
-            self.flags = Some(flags);
+        if self.section.is_none() {
+            return;
         }
+        if self.cleared {
+            // Still the cleared section's draft or save in flight: not registered again. A clean section is a new start.
+            if flags.dirty || flags.busy {
+                return;
+            }
+            self.cleared = false;
+        }
+        self.flags = Some(flags);
+    }
+
+    /// The sign-out reset (the web's `clear()`): the open section's draft is thrown away, the footer goes, the prompt closes
+    /// and the navigations waiting on it are dropped (they resolve `false`: nobody goes anywhere).
+    pub fn clear(&mut self) {
+        if let Some(section) = self.section.as_mut() {
+            section.reset();
+        }
+        self.cleared = self.section.is_some();
+        self.flags = None;
+        self.save_error = false;
+        self.prompt = false;
+        self.waiting.clear();
     }
 
     /// The section closed: its draft, flags and save error go with it.
@@ -103,6 +128,7 @@ impl<T> Workspace<T> {
         self.section = None;
         self.flags = None;
         self.save_error = false;
+        self.cleared = false;
     }
 
     /// An accepted operation that continues whatever section is open counts as pending (the web's
@@ -380,6 +406,37 @@ mod tests {
         ws.save();
         ws.reset();
         assert_eq!((log.borrow().saves, log.borrow().resets), (0, 0));
+    }
+
+    #[test]
+    fn clear_resets_the_draft_and_closes_the_prompt() {
+        let (mut ws, log) = open(DIRTY, None, false);
+        ws.save();
+        assert_eq!(ws.request("signin"), Nav::Prompt);
+        ws.clear();
+        assert_eq!(log.borrow().resets, 1, "the section was reset");
+        assert!(
+            ws.footer().is_none() && ws.flags().is_none(),
+            "no footer, no flags"
+        );
+        assert!(!ws.prompt_open(), "the prompt closed");
+        assert!(
+            ws.discard().is_empty(),
+            "the waiting navigation was dropped, not granted"
+        );
+        // The old draft's flags, published again before the section is torn down, are not registered.
+        ws.publish(DIRTY);
+        assert!(ws.footer().is_none());
+        assert_eq!(ws.request("next"), Nav::Go("next"));
+        // A clean section registers again.
+        ws.publish(Flags::default());
+        ws.publish(DIRTY);
+        assert!(ws.footer().is_some());
+        assert_eq!(
+            ws.footer().map(|f| f.status),
+            Some("Unsaved changes"),
+            "the failed-save status is gone"
+        );
     }
 
     #[test]

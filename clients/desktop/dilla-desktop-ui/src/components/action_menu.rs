@@ -15,6 +15,7 @@ use gpui::{
     deferred, div, px,
 };
 
+use super::dialog::{MENU_CONTEXT, MenuNext, MenuPrevious};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING_WIDE, focus_ring, shadow_menu};
@@ -243,7 +244,7 @@ impl RenderOnce for ActionMenu {
             let (open, memory_for_keys) = (self.open, memory.clone());
             let open_with = open_with.clone();
             let glyph = match self.icon {
-                Some(icon) => div().child(Icon::new(icon).size(px(14.0)).color(if open {
+                Some(icon) => div().child(Icon::new(icon).size(px(22.0)).color(if open {
                     color::FG
                 } else {
                     color::FG_2
@@ -311,6 +312,7 @@ impl RenderOnce for ActionMenu {
             .border_color(color::LINE_STRONG)
             .rounded(radius::MENU)
             .shadow(shadow_menu())
+            .key_context(MENU_CONTEXT)
             .occlude();
         if let Some(width) = self.width {
             popup = popup.w(width);
@@ -328,8 +330,21 @@ impl RenderOnce for ActionMenu {
             }
         };
         let down_out = open_with.clone();
-        let tab_close = open_with.clone();
+        let (next_close, prev_close) = (open_with.clone(), open_with.clone());
+        let (next_back, prev_back) = (back.clone(), back.clone());
+        // Tab closes the menu and moves on from where it was opened (a binding runs before key listeners, so this is an
+        // action bound in the popup's context, like the dialog's trap).
         popup = popup
+            .on_action(move |_: &MenuNext, window, cx| {
+                next_back.focus(window, cx);
+                next_close(false, window, cx);
+                window.focus_next(cx);
+            })
+            .on_action(move |_: &MenuPrevious, window, cx| {
+                prev_back.focus(window, cx);
+                prev_close(false, window, cx);
+                window.focus_prev(cx);
+            })
             .on_mouse_down_out(move |_, window, cx| down_out(false, window, cx))
             .on_key_down(move |event, window, cx| {
                 let key = event.keystroke.key.as_str();
@@ -338,7 +353,6 @@ impl RenderOnce for ActionMenu {
                         cx.stop_propagation();
                         close(window, cx);
                     }
-                    "tab" => tab_close(false, window, cx),
                     _ => {
                         let from = key_handles.iter().position(|h| h.is_focused(window));
                         if let Some(next) = menu_next(key, from, key_handles.len()) {

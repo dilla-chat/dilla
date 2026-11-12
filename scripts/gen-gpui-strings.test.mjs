@@ -16,9 +16,13 @@ test('every_ts_key_present: each key written in a strings file is in the generat
   const written = new Set();
   for (const f of readdirSync(DIR)) {
     if (!f.endsWith('.ts') || f.endsWith('.test.ts') || f === 'index.ts' || f === 'en.ts') continue;
-    for (const m of readFileSync(join(DIR, f), 'utf8').matchAll(/^\s*'([^']+)':/gm)) written.add(m[1]);
+    // A key is written quoted ('a.b' or "a.b") or bare (save); a file the generator prefixes (settingsEditing.ts) is
+    // checked under its prefix.
+    const prefix = f === 'settingsEditing.ts' ? 'settings.editing.' : '';
+    for (const m of readFileSync(join(DIR, f), 'utf8').matchAll(/^\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_$][\w$]*))\s*:/gm)) written.add(prefix + (m[1] ?? m[2] ?? m[3]));
   }
   assert.ok(written.size > 1000);
+  assert.ok(written.has('settings.editing.keepEditing'), 'bare keys are read');
   const missing = [...written].filter((k) => !have.has(k));
   assert.deepEqual(missing, []);
 });

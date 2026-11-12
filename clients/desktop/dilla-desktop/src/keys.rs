@@ -8,6 +8,7 @@ use crate::screens;
 
 pub fn bind_all(cx: &mut App) {
     screens::bind_keys(cx);
+    dilla_desktop_ui::components::dialog::bind_keys(cx);
     screens::shell::keys::bind(cx);
     screens::messages::keys::bind(cx);
     screens::reactions::keys::bind(cx);

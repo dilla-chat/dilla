@@ -26,59 +26,67 @@ pub fn canonical(raw: &str) -> String {
     base.replace('_', "-")
 }
 
-fn local(ts: u64) -> DateTime<FixedOffset> {
-    at(ts, *chrono::Local::now().offset())
+/// A time zone as a function from an instant (unix seconds) to the offset in force at it: each instant gets its own offset, so
+/// a message sent in summer time and read in winter shows the time it was sent at.
+pub type Zone<'a> = &'a dyn Fn(i64) -> FixedOffset;
+
+/// The OS local zone: the offset the local rules give at that very instant.
+pub fn local_zone(secs: i64) -> FixedOffset {
+    chrono::Local
+        .timestamp_opt(secs, 0)
+        .single()
+        .map_or_else(|| FixedOffset::east_opt(0).expect("utc"), |d| *d.offset())
 }
 
-fn at(ts: u64, zone: FixedOffset) -> DateTime<FixedOffset> {
+fn at(ts: u64, zone: Zone) -> DateTime<FixedOffset> {
     let secs = i64::try_from(ts).unwrap_or(i64::MAX);
-    zone.from_utc_datetime(
-        &chrono::DateTime::from_timestamp(secs, 0)
-            .unwrap_or_default()
-            .naive_utc(),
-    )
+    let utc = chrono::DateTime::from_timestamp(secs, 0).unwrap_or_default();
+    utc.with_timezone(&zone(secs))
 }
 
 /// A message time: 24-hour `HH:MM` in the local zone.
 pub fn time(ts: u64) -> String {
-    time_in(&local(ts))
+    time_in(ts, &local_zone)
 }
 
 /// The date of `ts` in the system region (the web's `formatDay`): `Oct 3, 2026`.
 pub fn day(ts: u64) -> String {
-    day_in(&local(ts), &date_locale())
+    day_in(ts, &local_zone, &date_locale())
 }
 
 /// The date and the 24-hour time (the web's `formatDayTime`): `Oct 3, 2026, 14:05`.
 pub fn day_time(ts: u64) -> String {
-    let when = local(ts);
-    format!("{}, {}", day_in(&when, &date_locale()), time_in(&when))
+    let when = at(ts, &local_zone);
+    format!("{}, {}", fmt_day(&when, &date_locale()), fmt_time(&when))
 }
 
 /// A diagnostics clock, 24-hour `HH:MM:SS` from milliseconds (the web's `formatClock`).
 pub fn clock(ms: u64) -> String {
-    clock_in(&local(ms / 1000))
+    clock_in(ms / 1000, &local_zone)
 }
 
 /// The day divider of a message log: `today`, `yesterday`, else the date (the web's `dayLabel`). `now` is the clock the
 /// log was rendered with, in unix seconds.
 pub fn day_divider(ts: u64, now: u64) -> String {
-    let zone = *chrono::Local::now().offset();
-    day_divider_in(&at(ts, zone), &at(now, zone), &date_locale())
+    day_divider_in(ts, now, &local_zone, &date_locale())
 }
 
 /// A time relative to `now`: the time today, `yesterday, 14:05` the day before, else the date and the time. Both are unix
 /// seconds.
 pub fn relative(ts: u64, now: u64) -> String {
-    let zone = *chrono::Local::now().offset();
-    relative_in(&at(ts, zone), &at(now, zone), &date_locale())
+    relative_in(ts, now, &local_zone, &date_locale())
 }
 
-pub fn time_in(when: &DateTime<FixedOffset>) -> String {
+fn fmt_time(when: &DateTime<FixedOffset>) -> String {
     format!("{:02}:{:02}", when.hour(), when.minute())
 }
 
-pub fn clock_in(when: &DateTime<FixedOffset>) -> String {
+pub fn time_in(ts: u64, zone: Zone) -> String {
+    fmt_time(&at(ts, zone))
+}
+
+pub fn clock_in(ts: u64, zone: Zone) -> String {
+    let when = at(ts, zone);
     format!(
         "{:02}:{:02}:{:02}",
         when.hour(),
@@ -87,47 +95,39 @@ pub fn clock_in(when: &DateTime<FixedOffset>) -> String {
     )
 }
 
-/// Whole days from the day of `ts` to the day of `now`, by local calendar day (log-model.ts `dayLabel`).
+/// Whole days from the day of `ts` to the day of `now`, by calendar day, each in the offset of its own instant
+/// (log-model.ts `dayLabel`).
 fn days_between(ts: &DateTime<FixedOffset>, now: &DateTime<FixedOffset>) -> i64 {
     i64::from(now.date_naive().num_days_from_ce()) - i64::from(ts.date_naive().num_days_from_ce())
 }
 
-pub fn day_divider_in(
-    ts: &DateTime<FixedOffset>,
-    now: &DateTime<FixedOffset>,
-    locale: &str,
-) -> String {
-    match days_between(ts, now) {
+pub fn day_divider_in(ts: u64, now: u64, zone: Zone, locale: &str) -> String {
+    let (when, now) = (at(ts, zone), at(now, zone));
+    match days_between(&when, &now) {
         0 => t("layout.log.today").to_owned(),
         1 => t("layout.log.yesterday").to_owned(),
-        _ => day_in(ts, locale),
+        _ => fmt_day(&when, locale),
     }
 }
 
-pub fn relative_in(
-    ts: &DateTime<FixedOffset>,
-    now: &DateTime<FixedOffset>,
-    locale: &str,
-) -> String {
-    let hhmm = time_in(ts);
-    match days_between(ts, now) {
+pub fn relative_in(ts: u64, now: u64, zone: Zone, locale: &str) -> String {
+    let (when, now) = (at(ts, zone), at(now, zone));
+    let hhmm = fmt_time(&when);
+    match days_between(&when, &now) {
         0 => hhmm,
         1 => format!("{}, {hhmm}", t("layout.log.yesterday")),
-        _ => format!("{}, {hhmm}", day_in(ts, locale)),
+        _ => format!("{}, {hhmm}", fmt_day(&when, locale)),
     }
 }
 
 /// `Today, 14:05`, the reminders' form (`reminder.today` and `reminder.tomorrow`), for a time at or after `now`.
-pub fn reminder_in(
-    ts: &DateTime<FixedOffset>,
-    now: &DateTime<FixedOffset>,
-    locale: &str,
-) -> String {
-    let hhmm = time_in(ts);
-    match days_between(now, ts) {
+pub fn reminder_in(ts: u64, now: u64, zone: Zone, locale: &str) -> String {
+    let (when, now) = (at(ts, zone), at(now, zone));
+    let hhmm = fmt_time(&when);
+    match days_between(&now, &when) {
         0 => tf("reminder.today", &[("time", &hhmm)]),
         1 => tf("reminder.tomorrow", &[("time", &hhmm)]),
-        _ => format!("{}, {hhmm}", day_in(ts, locale)),
+        _ => format!("{}, {hhmm}", fmt_day(&when, locale)),
     }
 }
 
@@ -194,7 +194,11 @@ fn pattern(locale: &str) -> (Order, &'static [&'static str; 12]) {
     }
 }
 
-pub fn day_in(when: &DateTime<FixedOffset>, locale: &str) -> String {
+pub fn day_in(ts: u64, zone: Zone, locale: &str) -> String {
+    fmt_day(&at(ts, zone), locale)
+}
+
+fn fmt_day(when: &DateTime<FixedOffset>, locale: &str) -> String {
     let (order, months) = pattern(locale);
     let (y, m, d) = (when.year(), when.month(), when.day());
     let name = months[(m - 1) as usize];
@@ -210,11 +214,23 @@ pub fn day_in(when: &DateTime<FixedOffset>, locale: &str) -> String {
 mod tests {
     use super::*;
 
-    fn utc(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<FixedOffset> {
-        FixedOffset::east_opt(0)
-            .unwrap()
+    const UTC: &dyn Fn(i64) -> FixedOffset = &|_| FixedOffset::east_opt(0).unwrap();
+
+    /// Unix seconds of a UTC wall-clock time.
+    fn utc(y: i32, m: u32, d: u32, h: u32, min: u32) -> u64 {
+        chrono::Utc
             .with_ymd_and_hms(y, m, d, h, min, 0)
             .unwrap()
+            .timestamp() as u64
+    }
+
+    /// Europe/Stockholm 2026: CEST (+2) from the last Sunday of March 01:00 UTC to the last Sunday of October 01:00 UTC,
+    /// else CET (+1).
+    fn stockholm(secs: i64) -> FixedOffset {
+        let start = utc(2026, 3, 29, 1, 0) as i64;
+        let end = utc(2026, 10, 25, 1, 0) as i64;
+        let hours = if (start..end).contains(&secs) { 2 } else { 1 };
+        FixedOffset::east_opt(hours * 3600).unwrap()
     }
 
     /// log-model.dates.test.ts: an older day in the system region, a Swedish month under sv-SE, an English one under en-US.
@@ -222,37 +238,73 @@ mod tests {
     fn format_matches_log_model_dates() {
         let ts = utc(2026, 10, 3, 12, 0);
         let now = utc(2026, 11, 3, 12, 0);
-        assert!(day_divider_in(&ts, &now, "sv-SE").contains("okt"));
-        assert_eq!(day_divider_in(&ts, &now, "en-US"), "Oct 3, 2026");
-        assert_eq!(day_divider_in(&ts, &now, "en-GB"), "3 Oct 2026");
+        assert!(day_divider_in(ts, now, UTC, "sv-SE").contains("okt"));
+        assert_eq!(day_divider_in(ts, now, UTC, "en-US"), "Oct 3, 2026");
+        assert_eq!(day_divider_in(ts, now, UTC, "en-GB"), "3 Oct 2026");
+    }
+
+    /// A message sent at 00:30 summer time on 3 Oct, read in November: the time stays 00:30 and it stays in the 3 Oct group
+    /// (applying today's winter offset would make it 23:30 on 2 Oct).
+    #[test]
+    fn each_instant_keeps_its_own_offset_across_dst() {
+        let sent = utc(2026, 10, 2, 22, 30); // 00:30 CEST on 3 Oct
+        let now = utc(2026, 11, 3, 12, 0);
+        assert_eq!(time_in(sent, &stockholm), "00:30");
+        assert_eq!(day_in(sent, &stockholm, "en-US"), "Oct 3, 2026");
+        assert_eq!(
+            day_divider_in(sent, now, &stockholm, "en-US"),
+            "Oct 3, 2026"
+        );
+        assert_eq!(
+            relative_in(sent, now, &stockholm, "en-US"),
+            "Oct 3, 2026, 00:30"
+        );
+        // A winter message read in summer likewise.
+        let winter = utc(2026, 1, 15, 23, 30); // 00:30 CET on 16 Jan
+        assert_eq!(time_in(winter, &stockholm), "00:30");
+        assert_eq!(day_in(winter, &stockholm, "en-US"), "Jan 16, 2026");
+        // `now` is resolved in its own offset too: 23:30 UTC on 25 Oct is 00:30 CET on the 26th, "today" for a 00:10 CET message.
+        assert_eq!(
+            day_divider_in(
+                utc(2026, 10, 25, 23, 10),
+                utc(2026, 10, 25, 23, 30),
+                &stockholm,
+                "en-US"
+            ),
+            "today"
+        );
     }
 
     #[test]
     fn the_divider_names_today_and_yesterday_by_calendar_day() {
         let now = utc(2026, 11, 3, 0, 5);
         assert_eq!(
-            day_divider_in(&utc(2026, 11, 3, 23, 59), &now, "en-US"),
+            day_divider_in(utc(2026, 11, 3, 23, 59), now, UTC, "en-US"),
             "today"
         );
         assert_eq!(
-            day_divider_in(&utc(2026, 11, 2, 23, 59), &now, "en-US"),
+            day_divider_in(utc(2026, 11, 2, 23, 59), now, UTC, "en-US"),
             "yesterday"
         );
         assert_eq!(
-            day_divider_in(&utc(2026, 11, 1, 12, 0), &now, "en-US"),
+            day_divider_in(utc(2026, 11, 1, 12, 0), now, UTC, "en-US"),
             "Nov 1, 2026"
         );
     }
 
     #[test]
     fn times_are_24_hour_in_every_region() {
-        assert_eq!(time_in(&utc(2026, 10, 3, 0, 7)), "00:07");
-        assert_eq!(time_in(&utc(2026, 10, 3, 14, 5)), "14:05");
-        assert_eq!(time_in(&utc(2026, 10, 3, 23, 59)), "23:59");
-        assert_eq!(clock_in(&utc(2026, 10, 3, 9, 8)), "09:08:00");
-        // en-US dates do not make the time 12-hour: relative() takes the locale for the date only.
+        assert_eq!(time_in(utc(2026, 10, 3, 0, 7), UTC), "00:07");
+        assert_eq!(time_in(utc(2026, 10, 3, 14, 5), UTC), "14:05");
+        assert_eq!(time_in(utc(2026, 10, 3, 23, 59), UTC), "23:59");
+        assert_eq!(clock_in(utc(2026, 10, 3, 9, 8), UTC), "09:08:00");
         assert_eq!(
-            relative_in(&utc(2026, 11, 3, 15, 30), &utc(2026, 11, 3, 16, 0), "en-US"),
+            relative_in(
+                utc(2026, 11, 3, 15, 30),
+                utc(2026, 11, 3, 16, 0),
+                UTC,
+                "en-US"
+            ),
             "15:30"
         );
     }
@@ -260,23 +312,23 @@ mod tests {
     #[test]
     fn dates_follow_the_locale() {
         let when = utc(2026, 3, 9, 12, 0);
-        assert_eq!(day_in(&when, "sv-SE"), "9 mars 2026");
-        assert_eq!(day_in(&when, "de-DE"), "9. März 2026");
-        assert_eq!(day_in(&when, "fr-FR"), "9 mars 2026");
-        assert_eq!(day_in(&when, "ja-JP"), "2026年3月9日");
-        assert_eq!(day_in(&when, "xx-YY"), "9 Mar 2026");
-        assert_eq!(day_in(&when, "en"), "Mar 9, 2026");
+        assert_eq!(day_in(when, UTC, "sv-SE"), "9 mars 2026");
+        assert_eq!(day_in(when, UTC, "de-DE"), "9. März 2026");
+        assert_eq!(day_in(when, UTC, "fr-FR"), "9 mars 2026");
+        assert_eq!(day_in(when, UTC, "ja-JP"), "2026年3月9日");
+        assert_eq!(day_in(when, UTC, "xx-YY"), "9 Mar 2026");
+        assert_eq!(day_in(when, UTC, "en"), "Mar 9, 2026");
     }
 
     #[test]
     fn relative_names_yesterday_and_older_days() {
         let now = utc(2026, 11, 3, 10, 0);
         assert_eq!(
-            relative_in(&utc(2026, 11, 2, 22, 15), &now, "en-US"),
+            relative_in(utc(2026, 11, 2, 22, 15), now, UTC, "en-US"),
             "yesterday, 22:15"
         );
         assert_eq!(
-            relative_in(&utc(2026, 10, 3, 8, 0), &now, "sv-SE"),
+            relative_in(utc(2026, 10, 3, 8, 0), now, UTC, "sv-SE"),
             "3 okt. 2026, 08:00"
         );
     }
@@ -285,11 +337,11 @@ mod tests {
     fn reminders_name_today_and_tomorrow() {
         let now = utc(2026, 11, 3, 10, 0);
         assert_eq!(
-            reminder_in(&utc(2026, 11, 3, 18, 0), &now, "en-US"),
+            reminder_in(utc(2026, 11, 3, 18, 0), now, UTC, "en-US"),
             "Today, 18:00"
         );
         assert_eq!(
-            reminder_in(&utc(2026, 11, 4, 9, 30), &now, "en-US"),
+            reminder_in(utc(2026, 11, 4, 9, 30), now, UTC, "en-US"),
             "Tomorrow, 09:30"
         );
     }

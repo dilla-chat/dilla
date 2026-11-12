@@ -80,9 +80,13 @@ pub fn tf(key: &str, vars: &[(&str, &str)]) -> String {
     while let Some(open) = rest.find('{') {
         out.push_str(&rest[..open]);
         let after = &rest[open + 1..];
-        match after.find('}') {
-            Some(close) => {
-                let name = &after[..close];
+        // Only a brace pair around letters is a placeholder, as in the web's t(); any other brace is text.
+        let name = after
+            .find('}')
+            .map(|close| (close, &after[..close]))
+            .filter(|(_, name)| !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphabetic()));
+        match name {
+            Some((close, name)) => {
                 match vars.iter().find(|(n, _)| *n == name) {
                     Some((_, v)) => out.push_str(v),
                     None => {
@@ -93,8 +97,8 @@ pub fn tf(key: &str, vars: &[(&str, &str)]) -> String {
                 rest = &after[close + 1..];
             }
             None => {
-                out.push_str(&rest[open..]);
-                rest = "";
+                out.push('{');
+                rest = after;
             }
         }
     }
@@ -116,6 +120,13 @@ mod tests {
             "dilla · #general"
         );
         assert_eq!(try_t("no.such.key"), None);
+    }
+
+    #[test]
+    fn only_letter_placeholders_are_replaced() {
+        // The web's t() replaces only a brace pair around letters: a brace around anything else is text.
+        assert_eq!(tf("activity.newCount", &[("n", "3"), ("x", "y")]), "3 new");
+        assert_eq!(tf("activity.mentionOne", &[]), "1 mention");
     }
 
     #[test]

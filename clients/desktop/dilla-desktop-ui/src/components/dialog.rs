@@ -23,15 +23,20 @@ use crate::metrics::shadow_3;
 use crate::text::{line, line_height};
 use crate::tokens::{color, font, radius, text};
 
-actions!(dilla_dialog, [TrapNext, TrapPrevious]);
+actions!(
+    dilla_dialog,
+    [TrapNext, TrapPrevious, MenuNext, MenuPrevious]
+);
 
 /// The key context of an overlay panel (a dialog, the settings frame), in which Tab and Shift+Tab are [`TrapNext`] and
 /// [`TrapPrevious`] instead of the window's own focus keys. GPUI runs a key binding before any key listener, so the trap has to
 /// be an action bound in the overlay's context; a binding in a deeper context wins over the window's plain Tab.
 pub const OVERLAY_CONTEXT: &str = "Dialog";
 
-/// Binds Tab and Shift+Tab inside an overlay. Every overlay does this on its first render, once per app; calling it
-/// earlier (an app's key setup) does no harm.
+/// The key context of an open action menu's popup: Tab and Shift+Tab close it and move on ([`MenuNext`], [`MenuPrevious`]).
+pub const MENU_CONTEXT: &str = "ActionMenu";
+
+/// Binds Tab and Shift+Tab inside an overlay and an open menu. The app calls this once, from `keys::bind_all`.
 pub fn bind_keys(cx: &mut App) {
     if cx.has_global::<KeysBound>() {
         return;
@@ -40,6 +45,8 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("tab", TrapNext, Some(OVERLAY_CONTEXT)),
         KeyBinding::new("shift-tab", TrapPrevious, Some(OVERLAY_CONTEXT)),
+        KeyBinding::new("tab", MenuNext, Some(MENU_CONTEXT)),
+        KeyBinding::new("shift-tab", MenuPrevious, Some(MENU_CONTEXT)),
     ]);
 }
 
@@ -132,11 +139,12 @@ pub fn sync_open_focus<T: HasOpenFocus>(
             f.was_open = false;
             f.opener.take()
         });
-        let panel = panel.clone();
+        // Decided now, while the last frame still has the overlay in its tree: after the frame the overlay is gone and
+        // nothing can be said to be inside it.
+        let inside = window
+            .focused(cx)
+            .is_none_or(|_| panel.contains_focused(window, cx));
         window.defer(cx, move |window, cx| {
-            let inside = window
-                .focused(cx)
-                .is_none_or(|_| panel.contains_focused(window, cx));
             if inside && let Some(opener) = opener {
                 opener.focus(window, cx);
             }
@@ -169,7 +177,12 @@ pub struct Dialog {
 }
 
 impl Dialog {
-    pub fn new(id: impl Into<ElementId>, title: impl Into<SharedString>) -> Self {
+    /// `close_label` names the close button (the web's `dialog.close`); it has no default, so no English lives here.
+    pub fn new(
+        id: impl Into<ElementId>,
+        title: impl Into<SharedString>,
+        close_label: impl Into<SharedString>,
+    ) -> Self {
         Self {
             id: id.into(),
             open: true,
@@ -179,7 +192,7 @@ impl Dialog {
             description: None,
             body: None,
             footer: Vec::new(),
-            close_label: "Close".into(),
+            close_label: close_label.into(),
             show_default_close: true,
             can_close: true,
             initial_focus: InitialFocus::Dialog,
@@ -219,11 +232,6 @@ impl Dialog {
     /// Controls after the close button in the footer (the action).
     pub fn footer(mut self, footer: impl IntoElement) -> Self {
         self.footer.push(footer.into_any_element());
-        self
-    }
-
-    pub fn close_label(mut self, label: impl Into<SharedString>) -> Self {
-        self.close_label = label.into();
         self
     }
 
@@ -300,7 +308,6 @@ pub fn trap_tab(panel: &FocusHandle, forward: bool, window: &mut Window, cx: &mu
 
 impl RenderOnce for Dialog {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        bind_keys(cx);
         let memory =
             window.use_keyed_state((self.id.clone(), "dialog"), cx, |_, cx| DialogMemory {
                 panel: cx.focus_handle().tab_stop(true),

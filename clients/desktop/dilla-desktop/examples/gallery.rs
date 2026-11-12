@@ -4,6 +4,7 @@
 //! The overlays (the dialog, the confirmation, the action menu, the toast, the settings frame) open from their buttons, so
 //! their behaviour can be tried by hand; the controls keep their state, so a toggle toggles and a segmented group moves.
 
+use dilla_desktop::strings::t;
 use dilla_desktop_ui::components::action_menu::{ActionMenu, MenuItem};
 use dilla_desktop_ui::components::audio_meter::AudioMeter;
 use dilla_desktop_ui::components::banner::{Banner, BannerTone};
@@ -64,6 +65,10 @@ impl Gallery {
         self.dialog = true;
         self.confirm = true;
         self.settings = true;
+    }
+
+    pub fn settings_open(&self) -> bool {
+        self.settings
     }
 
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -605,7 +610,7 @@ impl Render for Gallery {
             .size_full()
             .child(page)
             .child(
-                Dialog::new("gallery-dialog", "Rename channel")
+                Dialog::new("gallery-dialog", "Rename channel", t("dialog.close"))
                     .open(self.dialog)
                     .body(div().child("Pick a new name."))
                     .footer(

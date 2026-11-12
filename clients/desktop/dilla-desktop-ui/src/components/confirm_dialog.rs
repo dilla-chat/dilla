@@ -194,10 +194,9 @@ impl RenderOnce for ConfirmDialog {
             measure,
         ));
 
-        let mut dialog = Dialog::new(self.id.clone(), self.title)
+        let mut dialog = Dialog::new(self.id.clone(), self.title, self.cancel_label)
             .open(self.open)
             .kind(DialogKind::Confirm)
-            .close_label(self.cancel_label)
             .close_handle(&cancel)
             .can_close(self.can_close)
             .description(description)

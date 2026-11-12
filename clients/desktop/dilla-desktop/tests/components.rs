@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use dilla_desktop::screens::{FocusNext, FocusPrevious};
+use dilla_desktop::strings::t;
 use dilla_desktop_ui::components::action_menu::{ActionMenu, MenuItem};
 use dilla_desktop_ui::components::dialog::Dialog;
 use dilla_desktop_ui::components::segmented::Segmented;
@@ -32,6 +33,8 @@ struct DialogHost {
     open: bool,
     opener: FocusHandle,
     outside: FocusHandle,
+    close: FocusHandle,
+    save: FocusHandle,
     saved: usize,
 }
 
@@ -62,11 +65,13 @@ impl Render for DialogHost {
                     .h(px(24.0)),
             )
             .child(
-                Dialog::new("dlg", "Rename")
+                Dialog::new("dlg", "Rename", t("dialog.close"))
                     .open(self.open)
+                    .close_handle(&self.close)
                     .body(div().child("body"))
                     .footer(
                         Button::new("dlg-save", "Save")
+                            .focus_handle(&self.save)
                             .variant(ButtonVariant::Accent)
                             .on_click(move |_, _, cx| save.update(cx, |t, _| t.saved += 1)),
                     )
@@ -93,9 +98,18 @@ fn dialog_traps_focus_and_escape_returns_it(cx: &mut TestAppContext) {
         open: false,
         opener: cx.focus_handle().tab_stop(true),
         outside: cx.focus_handle().tab_stop(true),
+        close: cx.focus_handle().tab_stop(true),
+        save: cx.focus_handle().tab_stop(true),
         saved: 0,
     });
-    let (opener, outside) = host.read_with(cx, |h, _| (h.opener.clone(), h.outside.clone()));
+    let (opener, outside, close, save) = host.read_with(cx, |h, _| {
+        (
+            h.opener.clone(),
+            h.outside.clone(),
+            h.close.clone(),
+            h.save.clone(),
+        )
+    });
     cx.update(|window, cx| opener.focus(window, cx));
     assert!(
         focused(cx, &opener),
@@ -107,30 +121,30 @@ fn dialog_traps_focus_and_escape_returns_it(cx: &mut TestAppContext) {
         cx.notify();
     });
     cx.run_until_parked();
+    let focus_is_some = |cx: &mut VisualTestContext| cx.update(|w, cx| w.focused(cx).is_some());
+    assert!(focus_is_some(cx), "opening puts focus somewhere");
     assert!(
         !focused(cx, &opener) && !focused(cx, &outside),
         "opening moves focus into the dialog"
     );
 
-    // Tab and Shift+Tab cycle inside the dialog: focus never reaches the controls behind it.
-    for key in [
-        "tab",
-        "tab",
-        "tab",
-        "tab",
-        "shift-tab",
-        "shift-tab",
-        "shift-tab",
-        "shift-tab",
-    ] {
+    // The real cycle (the panel itself is never a place to rest): Close, Save, Close, ... and back with Shift+Tab,
+    // wrapping to the last control (Save) from the first.
+    let step = |cx: &mut VisualTestContext, key: &'static str, want: &FocusHandle, name: &str| {
         cx.simulate_keystrokes(key);
+        assert!(focus_is_some(cx), "{key} left focus nowhere");
+        assert!(focused(cx, want), "{key} should land on {name}");
         assert!(
             !focused(cx, &opener) && !focused(cx, &outside),
-            "{key} left the dialog (opener={}, outside={})",
-            focused(cx, &opener),
-            focused(cx, &outside)
+            "{key} left the dialog"
         );
-    }
+    };
+    step(cx, "tab", &close, "Close");
+    step(cx, "tab", &save, "Save");
+    step(cx, "tab", &close, "Close (wrapped)");
+    step(cx, "shift-tab", &save, "Save (wrapped back)");
+    step(cx, "shift-tab", &close, "Close");
+    step(cx, "shift-tab", &save, "Save (wrapped back)");
 
     // Escape closes it and focus goes back to what had it.
     cx.simulate_keystrokes("escape");
@@ -149,6 +163,8 @@ fn dialog_leaves_focus_alone_when_a_flow_moved_it_elsewhere(cx: &mut TestAppCont
         open: false,
         opener: cx.focus_handle().tab_stop(true),
         outside: cx.focus_handle().tab_stop(true),
+        close: cx.focus_handle().tab_stop(true),
+        save: cx.focus_handle().tab_stop(true),
         saved: 0,
     });
     let (opener, outside) = host.read_with(cx, |h, _| (h.opener.clone(), h.outside.clone()));
@@ -247,6 +263,29 @@ fn action_menu_opens_on_shift_f10_and_menu_key(cx: &mut TestAppContext) {
         ["mute", "kick"]
     );
     assert!(!open(&host, cx), "choosing an action closes the menu");
+}
+
+#[gpui::test]
+fn tab_in_an_open_menu_closes_it_and_moves_on(cx: &mut TestAppContext) {
+    install(cx);
+    let (host, cx) = cx.add_window_view(|_, cx| MenuHost {
+        open: false,
+        chosen: Vec::new(),
+        root: cx.focus_handle(),
+    });
+    let root = host.read_with(cx, |h, _| h.root.clone());
+    cx.update(|window, cx| root.focus(window, cx));
+    cx.simulate_keystrokes("tab");
+    cx.simulate_keystrokes("down");
+    cx.run_until_parked();
+    assert!(host.read_with(cx, |h, _| h.open), "Down opens the menu");
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    assert!(!host.read_with(cx, |h, _| h.open), "Tab closed the menu");
+    assert!(
+        cx.update(|w, cx| w.focused(cx).is_some()),
+        "focus moved on, not nowhere"
+    );
 }
 
 struct ToastRoot;
@@ -372,6 +411,12 @@ fn every_component_renders_in_every_state(cx: &mut TestAppContext) {
     cx.update(|_, cx| show_toast("Link copied", cx));
     cx.run_until_parked();
     // Tab around inside the open overlays and press Escape: the settings frame (the topmost) closes first.
-    cx.simulate_keystrokes("tab tab shift-tab escape");
+    cx.simulate_keystrokes("tab tab shift-tab");
+    assert!(page.read_with(cx, |g, _| g.settings_open()));
+    cx.simulate_keystrokes("escape");
     cx.run_until_parked();
+    assert!(
+        !page.read_with(cx, |g, _| g.settings_open()),
+        "Escape closed the settings frame"
+    );
 }

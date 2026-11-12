@@ -18,8 +18,7 @@ use gpui::{
 };
 
 use super::super::dialog::{
-    HasOpenFocus, OVERLAY_CONTEXT, OpenFocus, TrapNext, TrapPrevious, bind_keys, sync_open_focus,
-    trap_tab,
+    HasOpenFocus, OVERLAY_CONTEXT, OpenFocus, TrapNext, TrapPrevious, sync_open_focus, trap_tab,
 };
 use crate::icon::Icon;
 use crate::icon_names::IconName;
@@ -164,7 +163,6 @@ pub fn group_heading(text_: impl Into<SharedString>) -> gpui::Div {
 
 impl RenderOnce for SettingsFrame {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        bind_keys(cx);
         let memory = window.use_keyed_state((self.id.clone(), "frame"), cx, |_, cx| Memory {
             panel: cx.focus_handle().tab_stop(true),
             focus: OpenFocus::default(),

@@ -141,27 +141,117 @@ mod tests {
 
     const TOKENS_TS: &str = include_str!("../../../../packages/design-tokens/src/tokens.ts");
 
+    /// The number that follows `key` in tokens.ts (`labelTracking: '0.08em'` gives 0.08).
+    fn num_after(key: &str) -> f32 {
+        let at = TOKENS_TS
+            .find(key)
+            .unwrap_or_else(|| panic!("tokens.ts has no `{key}`"))
+            + key.len();
+        let digits: String = TOKENS_TS[at..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        digits
+            .parse()
+            .unwrap_or_else(|_| panic!("no number after `{key}`"))
+    }
+
+    /// The shadow `name: '0 Ypx Bpx rgba(0,0,0,A)'` of tokens.ts as (y, blur, alpha).
+    fn shadow_of(name: &str) -> (f32, f32, f32) {
+        let key = format!("{name}: '0 ");
+        let at = TOKENS_TS
+            .find(&key)
+            .unwrap_or_else(|| panic!("no shadow {name}"))
+            + key.len();
+        let end = at + TOKENS_TS[at..].find('\'').unwrap();
+        let nums: Vec<f32> = TOKENS_TS[at..end]
+            .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .filter(|t| !t.is_empty())
+            .map(|t| t.parse().unwrap())
+            .collect();
+        // y, blur, then rgba(0,0,0,alpha): the alpha is the last number.
+        (nums[0], nums[1], *nums.last().unwrap())
+    }
+
     #[test]
     fn constants_match_tokens_ts() {
-        for needle in [
-            "labelTracking: '0.08em'",
-            "trackingSoft: '0.04em'",
-            "trackingTag: '0.06em'",
-            "labelTrackingWide: '0.12em'",
-            "opacity: { muted: '0.8' }",
-            "s1: '0 8px 20px rgba(0,0,0,0.4)'",
-            "s3: '0 30px 80px rgba(0,0,0,0.65)'",
-            "knob: '0 1px 3px rgba(0,0,0,0.4)'",
-            "menu: '0 18px 48px rgba(0,0,0,0.6)'",
-            "toast: '0 12px 30px rgba(0,0,0,0.5)'",
-            "focusRing: '2px solid var(--accent)'",
-            "compact: { rowPadY: '0.25rem' /* 4px */, rowPadX: '1rem' /* 16px */, rowGap: '0rem' /* 0px */, groupGap: '0.5rem' /* 8px */, avatar: '1.75rem' /* 28px */, lineHeight: '1.4' }",
-            "regular: { rowPadY: '0.375rem' /* 6px */, rowPadX: '1.125rem' /* 18px */, rowGap: '0.125rem' /* 2px */, groupGap: '0.875rem' /* 14px */, avatar: '2rem' /* 32px */, lineHeight: '1.5' }",
-            "cozy: { rowPadY: '0.625rem' /* 10px */, rowPadX: '1.25rem' /* 20px */, rowGap: '0.25rem' /* 4px */, groupGap: '1.375rem' /* 22px */, avatar: '2.25rem' /* 36px */, lineHeight: '1.55' }",
+        assert_eq!(LABEL_TRACKING, num_after("labelTracking: '"));
+        assert_eq!(TRACKING_SOFT, num_after("trackingSoft: '"));
+        assert_eq!(TRACKING_TAG, num_after("trackingTag: '"));
+        assert_eq!(LABEL_TRACKING_WIDE, num_after("labelTrackingWide: '"));
+        assert_eq!(OPACITY_MUTED, num_after("opacity: { muted: '"));
+        // The disabled opacity is Button.css's, not a token.
+        assert!(
+            include_str!("../../../../packages/ui/src/Button/Button.css").contains("opacity: 0.4")
+        );
+        assert_eq!(OPACITY_DISABLED, 0.4);
+        for (name, got) in [
+            ("s1", shadow_1()),
+            ("s3", shadow_3()),
+            ("menu", shadow_menu()),
+            ("toast", shadow_toast()),
+            ("knob", shadow_knob()),
         ] {
-            assert!(
-                TOKENS_TS.contains(needle),
-                "tokens.ts no longer has `{needle}`"
+            let (y, blur, alpha) = shadow_of(name);
+            let s = &got[0];
+            assert_eq!(
+                (f32::from(s.offset.y), f32::from(s.blur_radius), s.color.a),
+                (y, blur, alpha),
+                "shadow {name}"
+            );
+        }
+        assert_eq!(
+            f32::from(focus_ring()[0].spread_radius),
+            num_after("focusRing: '")
+        );
+    }
+
+    #[test]
+    fn densities_match_tokens_ts() {
+        for (name, d) in [
+            ("compact", Density::Compact),
+            ("regular", Density::Regular),
+            ("cozy", Density::Cozy),
+        ] {
+            let row = &TOKENS_TS[TOKENS_TS
+                .find(&format!("  {name}: {{ rowPadY"))
+                .expect("density row")..];
+            let row = &row[..row.find('}').unwrap()];
+            let px_of = |key: &str| {
+                let at = row.find(key).unwrap() + key.len();
+                let at = at + row[at..].find("/* ").unwrap() + 3;
+                row[at..]
+                    .split("px")
+                    .next()
+                    .unwrap()
+                    .parse::<f32>()
+                    .unwrap()
+            };
+            assert_eq!(
+                f32::from(d.row_pad_y()),
+                px_of("rowPadY:"),
+                "{name} rowPadY"
+            );
+            assert_eq!(
+                f32::from(d.row_pad_x()),
+                px_of("rowPadX:"),
+                "{name} rowPadX"
+            );
+            assert_eq!(f32::from(d.row_gap()), px_of("rowGap:"), "{name} rowGap");
+            assert_eq!(
+                f32::from(d.group_gap()),
+                px_of("groupGap:"),
+                "{name} groupGap"
+            );
+            assert_eq!(f32::from(d.avatar()), px_of("avatar:"), "{name} avatar");
+            let lh = row[row.find("lineHeight: '").unwrap() + 13..]
+                .split('\'')
+                .next()
+                .unwrap();
+            assert_eq!(
+                d.line_height(),
+                lh.parse::<f32>().unwrap(),
+                "{name} lineHeight"
             );
         }
     }
