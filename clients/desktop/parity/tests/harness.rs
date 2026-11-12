@@ -158,6 +158,10 @@ fn tolerance_file_ships_measured_linux_and_exact_placeholders() {
 }
 
 #[test]
+// GPUI's headless mode on Windows has no HeadlessRenderer ("render_to_image not available"), so the driver
+// cannot capture there; Linux (lavapipe) and macOS (Metal) run it. Windows parity is measured with a real
+// window in the screens plan's final sweep.
+#[cfg_attr(windows, ignore = "GPUI headless has no renderer on Windows")]
 fn click_and_read_element() {
     let fixture = tempfile::tempdir().unwrap();
     let mut driver = Driver::launch(fixture.path());
