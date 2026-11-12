@@ -103,6 +103,7 @@ pub fn tf(key: &str, vars: &[(&str, &str)]) -> String {
 }
 
 #[cfg(test)]
+#[rustfmt::skip]
 mod tests {
     use super::*;
 
