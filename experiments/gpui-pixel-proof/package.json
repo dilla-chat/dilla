@@ -1,0 +1,9 @@
+{
+  "name": "gpui-pixel-proof",
+  "private": true,
+  "type": "module",
+  "description": "Reference renderer for the GPUI pixel proof; the repo's playwright version (1.64.1).",
+  "dependencies": {
+    "playwright": "1.64.1"
+  }
+}
