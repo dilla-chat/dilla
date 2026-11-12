@@ -1,0 +1,31 @@
+{
+  "name": "dms/conversation",
+  "window": [1280, 800],
+  "viewer": "ada",
+  "route": "/dm/{dm/mira}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      { "id": "ada", "display": "Ada" },
+      { "id": "mira", "display": "Mira", "status": "shipping the outbox fix" }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": ["ada", "mira"],
+        "channels": [
+          { "id": "general", "kind": "text", "name": "general" },
+          { "id": "afk", "kind": "voice", "name": "AFK", "system": true, "position": 1073741824 }
+        ]
+      }
+    ],
+    "dms": [{ "id": "mira", "members": ["ada", "mira"] }],
+    "messages": [
+      { "key": "d1", "channel": "dm/mira", "sender": "mira", "ts": 1794481600, "body": "can you look at the sealed-command retry?" },
+      { "key": "d2", "channel": "dm/mira", "sender": "ada", "ts": 1794481650, "body": "on it after standup" },
+      { "key": "d3", "channel": "dm/mira", "sender": "mira", "ts": 1794481700, "body": "thanks, the outbox keeps the order now" }
+    ]
+  }
+}

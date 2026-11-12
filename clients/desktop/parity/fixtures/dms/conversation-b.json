@@ -1,0 +1,32 @@
+{
+  "name": "dms/conversation-b",
+  "window": [1440, 900],
+  "viewer": "ada",
+  "route": "/dm/{dm/crew}",
+  "clock": 1794481751,
+  "world": {
+    "people": [
+      { "id": "ada", "display": "Ada" },
+      { "id": "bjorn", "display": "Björn Ásgeirsson-Lindqvist" },
+      { "id": "sol", "display": "Sol" }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": ["ada", "bjorn", "sol"],
+        "channels": [
+          { "id": "general", "kind": "text", "name": "general" },
+          { "id": "afk", "kind": "voice", "name": "AFK", "system": true, "position": 1073741824 }
+        ]
+      }
+    ],
+    "dms": [{ "id": "crew", "members": ["ada", "bjorn", "sol"] }],
+    "messages": [
+      { "key": "d1", "channel": "dm/crew", "sender": "bjorn", "ts": 1794481600, "body": "group check-in at four" },
+      { "key": "d2", "channel": "dm/crew", "sender": "sol", "ts": 1794481620, "body": "works for me; I will bring the release checklist and the long list of open questions from the retro" },
+      { "key": "d3", "channel": "dm/crew", "sender": "ada", "ts": 1794481700, "body": "see you there" }
+    ]
+  }
+}
