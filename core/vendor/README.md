@@ -37,10 +37,19 @@ Rusqlite has no such feature, so each native crate that opens a store (`dilla-co
 `rusqlite = { features = ["bundled"] }` plus `libsqlite3-sys = { features = ["bundled-sqlite3mc"] }`,
 and feature unification hands rusqlite that one copy.
 
-Bindings: the committed `sqlite3/bindgen_bundled_version.rs` (SQLite 3.54.1 headers) is used; the
-library is 3.54.0. Patch releases add no API, so the bindings are sound; `buildtime_bindgen` is not
-supported with this feature (the amalgamation's header is `sqlite3mc_amalgamation.h`, not
-`sqlite3.h`). `DEP_SQLITE3_INCLUDE` points at the sqlite3mc directory.
+Known leftovers:
+- The committed `sqlite3/bindgen_bundled_version.rs` (SQLite **3.54.1** headers) is used against
+  the **3.54.0** library, so the compile-time `SQLITE_VERSION*` constants say 3.54.1 while
+  `sqlite3_libversion()` / `SELECT sqlite_version()` report 3.54.0. Patch releases add no API, so
+  the bindings are sound. `buildtime_bindgen` is not supported with this feature (the
+  amalgamation's header is `sqlite3mc_amalgamation.h`, not `sqlite3.h`).
+- `DEP_SQLITE3_INCLUDE` points at the sqlite3mc directory, which has no `sqlite3.h` (commented in
+  `build.rs`); nothing in the graph reads it.
+
+Legacy stores: sqlite3mc opens SQLCipher 4 files that are clean or in WAL mode (a hot WAL
+included), but not one with a hot **rollback journal** from SQLCipher, whose journal checksums
+cover ciphertext where sqlite3mc's cover plaintext; `dilla_core::native_store` refuses such a file
+untouched (`KeyError::LegacyHotJournal`).
 
 Why: dilla-core's SQLCipher linked vendored OpenSSL, and LiveKit's prebuilt libwebrtc carries
 BoringSSL with an incomplete rename list, so the desktop client could not link dilla-core and

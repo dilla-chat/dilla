@@ -16,6 +16,15 @@
 //!   it is not rekeyed, because a rekey rewrites every page of a deployed Bot's WAL-mode store in
 //!   place, and moving those files is a separate, separately tested step if it is ever wanted.
 //!
+//! Legacy support covers a SQLCipher 4 file that is clean or has a WAL (hot or not; a Bot store
+//! is in WAL mode). A **hot rollback journal** the SQLCipher build left is not supported: its
+//! records are checksummed over ciphertext and sqlite3mc's over plaintext, so sqlite3mc would stop
+//! at the first record or half-apply the rollback. [`open_keyed`] detects such a journal before
+//! any connection exists (the first one would already play it back) and returns
+//! [`KeyError::LegacyHotJournal`] with both files untouched; only the old build can recover it.
+//! The reverse holds too: rolling a store back to the old SQLCipher build is safe when it is clean
+//! or in WAL mode, not when this build left a hot rollback journal.
+//!
 //! The probing connection has checkpoint-on-close turned off until the key is proven, so a key that
 //! does not decrypt the file can never make SQLite copy a hot WAL into it (sqlite3mc's WAL read
 //! also fails on such a key; this is the second guard). Only a connection whose read succeeded gets
@@ -60,6 +69,12 @@ pub enum KeyError {
     /// Any other failure while keying or reading (busy, I/O, ...): says nothing about the key.
     #[error("the store failed while being keyed ({0:?})")]
     Database(Option<ErrorCode>),
+    /// The file has a hot rollback journal that the SQLCipher build wrote (its records are
+    /// checksummed over ciphertext; sqlite3mc checksums plaintext). sqlite3mc cannot play it back
+    /// correctly, so nothing was opened and neither file was touched. Only the pre-6b SQLCipher
+    /// build can recover it.
+    #[error("the store has an unfinished transaction from the SQLCipher build")]
+    LegacyHotJournal,
 }
 
 /// A connection whose key has been proven by a read.
@@ -83,6 +98,10 @@ pub fn open_keyed(
     if key.iter().all(|b| *b == 0) {
         return Err(KeyError::InvalidKey);
     }
+    // Before any connection: the first one plays a hot journal back (and truncates the file).
+    if sqlcipher_hot_journal(path)? {
+        return Err(KeyError::LegacyHotJournal);
+    }
     match attempt(path, flags, key, &prepare, StoreCipher::ChaCha20) {
         Err(KeyError::WrongKey) => attempt(path, flags, key, &prepare, StoreCipher::SqlCipher4),
         other => other,
@@ -105,20 +124,7 @@ fn attempt(
     conn.execute_batch("PRAGMA temp_store = MEMORY;")
         .map_err(|e| KeyError::Database(code(&e)))?;
 
-    let hex = key_hex(key);
-    let statement = Zeroizing::new(match cipher {
-        StoreCipher::ChaCha20 => {
-            format!(
-                "PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:{}';",
-                hex.as_str()
-            )
-        }
-        StoreCipher::SqlCipher4 => format!(
-            "PRAGMA cipher = 'sqlcipher'; PRAGMA legacy = 4; PRAGMA key = \"x'{}'\";",
-            hex.as_str()
-        ),
-    });
-    drop(hex);
+    let statement = key_statement(key, cipher);
     let keyed = conn.execute_batch(&statement);
     drop(statement);
     keyed.map_err(|e| classify(&e))?;
@@ -152,14 +158,88 @@ fn require_sqlite3mc(conn: &Connection) -> Result<(), KeyError> {
     Ok(())
 }
 
-fn key_hex(key: &[u8; KEY_LEN]) -> Zeroizing<String> {
+/// The keying statement for `cipher`, built in one exact-capacity buffer so the key's hex never
+/// sits in a reallocated (and so unwiped) copy.
+fn key_statement(key: &[u8; KEY_LEN], cipher: StoreCipher) -> Zeroizing<String> {
+    let (head, tail) = match cipher {
+        StoreCipher::ChaCha20 => ("PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:", "';"),
+        StoreCipher::SqlCipher4 => (
+            "PRAGMA cipher = 'sqlcipher'; PRAGMA legacy = 4; PRAGMA key = \"x'",
+            "'\";",
+        ),
+    };
+    let mut s = Zeroizing::new(String::with_capacity(head.len() + KEY_LEN * 2 + tail.len()));
+    s.push_str(head);
+    push_hex(&mut s, key);
+    s.push_str(tail);
+    s
+}
+
+fn push_hex(out: &mut String, key: &[u8; KEY_LEN]) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut hex = Zeroizing::new(String::with_capacity(KEY_LEN * 2));
     for b in key {
-        hex.push(char::from(HEX[usize::from(b >> 4)]));
-        hex.push(char::from(HEX[usize::from(b & 0x0f)]));
+        out.push(char::from(HEX[usize::from(b >> 4)]));
+        out.push(char::from(HEX[usize::from(b & 0x0f)]));
     }
-    hex
+}
+
+/// Whether `<path>-journal` is a hot rollback journal the SQLCipher build wrote.
+///
+/// Both builds write encrypted page images into the journal, and both protect each record with
+/// SQLite's journal checksum (`cksum = nonce + data[n - 200] + data[n - 400] + ...`, from
+/// `pager_cksum`). SQLCipher computes it over the **ciphertext** it writes; sqlite3mc over the
+/// plaintext page, encrypting only on the way to disk. So the first record's checksum, computed
+/// over the bytes on disk, matches only for a SQLCipher journal (for a sqlite3mc one with odds of
+/// 2^-32, and then the store fails closed). sqlite3mc cannot play a SQLCipher journal back: it
+/// stops at the first record (corrupt) or, worse, "finishes" with a transaction half rolled back.
+///
+/// A journal SQLite would not play back (absent, empty, zeroed header, no complete record) is not
+/// one; `Database` only when the journal exists but cannot be read.
+fn sqlcipher_hot_journal(path: &Path) -> Result<bool, KeyError> {
+    use std::io::Read;
+
+    const MAGIC: [u8; 8] = [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7];
+    let mut name = path.as_os_str().to_owned();
+    name.push("-journal");
+    let file = match std::fs::File::open(&name) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err(KeyError::Database(None)),
+    };
+    // At most a maximal header sector plus one maximal record.
+    let mut journal = Vec::new();
+    file.take(65536 + 4 + 65536 + 4)
+        .read_to_end(&mut journal)
+        .map_err(|_| KeyError::Database(None))?;
+    let be32 = |at: usize| -> Option<u32> {
+        journal
+            .get(at..at + 4)
+            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    if journal.get(..8) != Some(MAGIC.as_slice()) {
+        return Ok(false);
+    }
+    let (Some(n_rec), Some(nonce), Some(sector), Some(page)) =
+        (be32(8), be32(12), be32(20), be32(24))
+    else {
+        return Ok(false);
+    };
+    let pow2 = |v: u32, lo: u32| v.is_power_of_two() && (lo..=65536).contains(&v);
+    if n_rec == 0 || !pow2(sector, 32) || !pow2(page, 512) {
+        return Ok(false);
+    }
+    // The first record follows the header, which is padded to the sector size.
+    let (start, page) = (sector as usize + 4, page as usize);
+    let (Some(data), Some(stored)) = (journal.get(start..start + page), be32(start + page)) else {
+        return Ok(false);
+    };
+    let mut sum = nonce;
+    let mut i = page - 200;
+    while i > 0 {
+        sum = sum.wrapping_add(u32::from(data[i]));
+        i = i.saturating_sub(200);
+    }
+    Ok(sum == stored)
 }
 
 fn code(e: &rusqlite::Error) -> Option<ErrorCode> {
@@ -179,13 +259,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn key_hex_is_lowercase_and_complete() {
+    fn key_statements_are_exact_and_never_reallocate() {
         let mut key = [0u8; KEY_LEN];
         key[0] = 0xab;
         key[31] = 0x0f;
-        let hex = key_hex(&key);
-        assert_eq!(hex.len(), 64);
-        assert!(hex.starts_with("ab00"));
-        assert!(hex.ends_with("000f"));
+        let hex = format!("ab{}0f", "00".repeat(30));
+        let chacha = key_statement(&key, StoreCipher::ChaCha20);
+        assert_eq!(
+            chacha.as_str(),
+            format!("PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:{hex}';")
+        );
+        assert_eq!(chacha.len(), chacha.capacity());
+        let legacy = key_statement(&key, StoreCipher::SqlCipher4);
+        assert_eq!(
+            legacy.as_str(),
+            format!("PRAGMA cipher = 'sqlcipher'; PRAGMA legacy = 4; PRAGMA key = \"x'{hex}'\";")
+        );
+        assert_eq!(legacy.len(), legacy.capacity());
     }
 }

@@ -130,7 +130,11 @@ fn open_keyed(path: &Path, key: &[u8; 32]) -> Result<(Connection, i64), StoreErr
     // through the SQLCipher 4 scheme and stays in it) and proves the key with a schema read.
     match dilla_core::native_store::open_keyed(path, flags, key, |_| Ok(())) {
         Ok(keyed) => Ok((keyed.conn, keyed.tables)),
-        Err(dilla_core::native_store::KeyError::Open(_)) => Err(StoreError::Database),
+        // A hot rollback journal the SQLCipher build left: refused untouched, not a key problem.
+        Err(
+            dilla_core::native_store::KeyError::Open(_)
+            | dilla_core::native_store::KeyError::LegacyHotJournal,
+        ) => Err(StoreError::Database),
         Err(_) => Err(StoreError::Key),
     }
 }
@@ -840,6 +844,29 @@ mod tests {
             drop(s);
             let _ = fs::remove_dir_all(p);
         }
+    }
+
+    #[test]
+    fn a_sqlcipher_hot_rollback_journal_is_refused_untouched() {
+        use sha2::{Digest, Sha256};
+
+        let p = dir();
+        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../dilla-core/tests/fixtures/sqlcipher4/legacy-hot-journal.db");
+        fs::copy(&src, p.join("state.db")).unwrap();
+        fs::copy(with_suffix(&src, "-journal"), p.join("state.db-journal")).unwrap();
+        for name in ["state.db", "state.db-journal"] {
+            fs::set_permissions(p.join(name), fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let hash = |name: &str| Sha256::digest(fs::read(p.join(name)).unwrap());
+        let before = (hash("state.db"), hash("state.db-journal"));
+        let key = core::array::from_fn::<u8, 32, _>(|i| i as u8);
+        assert!(matches!(
+            Store::open(&p, [1; 16], [2; 16], [3; 16], &key),
+            Err(StoreError::Database)
+        ));
+        assert_eq!((hash("state.db"), hash("state.db-journal")), before);
+        let _ = fs::remove_dir_all(p);
     }
 
     #[test]

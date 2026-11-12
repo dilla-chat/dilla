@@ -1,5 +1,5 @@
 > **Vendored by dilla (DILLA PATCH, see `core/vendor/README.md`).** This is libsqlite3-sys 0.39.1
-> as published on crates.io, minus its `Cargo.lock`, with exactly one change: the `sqlcipher-src`
+> as published on crates.io, minus its `Cargo.lock`, with two changes. **First:** the `sqlcipher-src`
 > build-dependency requirement in `Cargo.toml` (and `Cargo.toml.orig`) moves from `=419.0.6`
 > (SQLCipher 4.19.0 on SQLite 3.53.4) to `=420.0.0` (SQLCipher 4.20.0 on SQLite 3.54.1).
 > Why: RUSTSEC-2026-0459 (CVE-2026-119375), SQLite before 3.54.0 leaks uninitialized page-cache
@@ -8,7 +8,10 @@
 > Wired by `[patch.crates-io] libsqlite3-sys` in the root `Cargo.toml`.
 > **Second change (Task 6b):** a `bundled-sqlite3mc` feature that compiles the SQLite3 Multiple
 > Ciphers amalgamation from `sqlite3mc-src =206.1.0` with its built-in crypto (no OpenSSL); the
-> native store builds with it, and nothing enables `bundled-sqlcipher` any more.
+> native store builds with it, and nothing enables `bundled-sqlcipher` any more. Known leftover:
+> that build uses the committed `sqlite3/` bindings (SQLite 3.54.1 headers) against a 3.54.0
+> library, and `DEP_SQLITE3_INCLUDE` names a directory with `sqlite3mc_amalgamation.h`, not
+> `sqlite3.h`.
 
 # Rusqlite
 

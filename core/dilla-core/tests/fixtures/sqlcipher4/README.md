@@ -25,6 +25,12 @@ only works on that commit (or any other SQLCipher build); the current build no l
 SQLCipher. Re-running it gives different bytes (random salts and nonces), so the files are kept,
 not regenerated.
 
+`legacy-hot-journal.db` + `-journal` came later (Task 6b fix round 1) from the same commit and
+build: `generate_hot_journal.rs.txt` was placed in `core/dilla-core/tests/` as a test file, run
+with `cargo test -p dilla-core --test <name> -- --ignored` while the four native manifests asked
+for `bundled-sqlcipher-vendored-openssl` again, and then removed. It also checks that the old build
+itself rolls the journal back (40 committed rows, `integrity_check` ok).
+
 ## Files
 
 All keyed with a raw key in SQLCipher's form, `PRAGMA key = "x'<64 hex>'"`, SQLCipher 4 defaults
@@ -34,6 +40,7 @@ All keyed with a raw key in SQLCipher's form, `PRAGMA key = "x'<64 hex>'"`, SQLC
 |------|-----|----------|
 | `legacy.db` | `000102…1f` (bytes 0x00..=0x1f) | rollback journal; table `legacy(id, label, payload)` with rows 1 `legacy-plaintext-marker` / `x'00010203'`, 2 `second row` / 3000 zero bytes, 3 `third row` / `x'ff'` |
 | `legacy-wal.db` + `legacy-wal.db-wal` | same | WAL mode; table `early` (`checkpointed`) is in the database file, table `legacy` (same rows) only in the WAL, copied while the writer was open: a hot WAL, as a crash leaves it |
+| `legacy-hot-journal.db` + `legacy-hot-journal.db-journal` | same | rollback journal, `synchronous=FULL`; table `legacy` with 40 rows `committed <n>` / 1500 zero bytes; then `cache_size=2; BEGIN; UPDATE` every row, so pages spilled into the file, and both files were copied with the transaction open: a hot rollback journal. sqlite3mc cannot play it back; `open_keyed` refuses it untouched (`LegacyHotJournal`) |
 | `../../../../dilla-bot-core/tests/fixtures/sqlcipher4/clean/state.db` | `41` × 32 | a store made by `Store::open(dir, [1;16], [2;16], [3;16], &[0x41;32])`, plus `bot_state` row area 1, key `fixture-key`, value `legacy-bot-value`; closed cleanly |
 | `…/sqlcipher4/hot-wal/state.db` + `state.db-wal` | `41` × 32 | the same, copied while the store was open: the row is only in the WAL |
 
@@ -45,6 +52,8 @@ SHA-256:
 52c4f73150df26c151ac9a11be32e0afc62fd5d5279e2502c58f31c17f6bc35e  legacy.db
 c38e3a0df828063c023925d9906b3a0d0c9b723bc1cdf587ddee0af468abf58e  legacy-wal.db
 fc98f515542d112e10393fbeec94379ea953351062231806d1970b872f0a3ea3  legacy-wal.db-wal
+4a883e60a2449316827e36514eafd05e817f2d6bffca6a22596c33ef4187dada  legacy-hot-journal.db
+388f8d63959c94027acf93ae4ab7581bef0ec1e32f82dd9f1c2710532e1b0c2a  legacy-hot-journal.db-journal
 6f8dd6d642e96fcce97d21c538a6a2b7aab01038334c534bd1a58b364832bb58  dilla-bot-core/…/clean/state.db
 f80324effca06748dbfbc3cf75c1ca91dcd2121d38ef5a44c7fbfee96f84b7b7  dilla-bot-core/…/hot-wal/state.db
 6b2ee086c7a37e323679141168e64f8528eb40ca4abfcb5764c11fe25cab68f6  dilla-bot-core/…/hot-wal/state.db-wal

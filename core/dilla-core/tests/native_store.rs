@@ -290,3 +290,136 @@ fn freed_sqlite_memory_is_wiped() {
     drop(keyed);
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_hot_rollback_journal_from_the_sqlcipher_build_is_refused_untouched() {
+    // A rollback-mode SQLCipher 4 store copied mid-transaction (pages already spilled into the
+    // file). sqlite3mc checksums journal records over plaintext, SQLCipher over ciphertext, so
+    // playing this back would fail or half-apply: refuse, whatever the key, and touch nothing.
+    let path = copy_fixture(&["legacy-hot-journal.db", "legacy-hot-journal.db-journal"]);
+    let journal = sidecar(&path, "-journal");
+    let (db_before, journal_before) = (bytes(&path), bytes(&journal));
+    for key in [LEGACY_KEY, [0x12; 32]] {
+        let err = open_keyed(&path, flags(), &key, no_prepare).unwrap_err();
+        assert!(matches!(err, KeyError::LegacyHotJournal), "{err:?}");
+        assert_eq!(bytes(&path), db_before, "the database changed");
+        assert_eq!(bytes(&journal), journal_before, "the journal changed");
+    }
+    let _ = fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// A ChaCha20 store in rollback mode, copied while a transaction that spilled pages into the file
+/// was open: `<dir>/store.db` + `store.db-journal`. Returns the copy's path.
+fn chacha20_store_with_hot_journal(key: &[u8; 32]) -> PathBuf {
+    let dir = temp_dir();
+    let path = new_empty_file(&dir);
+    let keyed = open_keyed(&path, flags(), key, no_prepare).unwrap();
+    keyed
+        .conn
+        .execute_batch(
+            "PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL;
+             CREATE TABLE t(id INTEGER PRIMARY KEY, label TEXT NOT NULL, payload BLOB NOT NULL);
+             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 40)
+             INSERT INTO t(label, payload) SELECT 'committed', zeroblob(1500) FROM n;",
+        )
+        .unwrap();
+    let committed = bytes(&path);
+    keyed
+        .conn
+        .execute_batch(
+            "PRAGMA cache_size = 2; BEGIN;
+             UPDATE t SET label = 'uncommitted', payload = randomblob(1500);",
+        )
+        .unwrap();
+    let copy = temp_dir();
+    fs::copy(&path, copy.join("store.db")).unwrap();
+    fs::copy(sidecar(&path, "-journal"), copy.join("store.db-journal")).unwrap();
+    keyed.conn.execute_batch("ROLLBACK").unwrap();
+    drop(keyed);
+    let _ = fs::remove_dir_all(dir);
+    let copied = copy.join("store.db");
+    assert_ne!(bytes(&copied), committed, "nothing spilled into the file");
+    // A real hot journal: SQLite's magic and a record count (it was synced before the spill).
+    let journal = bytes(&sidecar(&copied, "-journal"));
+    assert!(journal.len() > 512);
+    assert_eq!(
+        journal[..8],
+        [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7]
+    );
+    assert_ne!(journal[8..12], [0, 0, 0, 0]);
+    copied
+}
+
+#[test]
+fn a_chacha20_store_with_its_own_hot_journal_recovers() {
+    let key = [0x2b; 32];
+    let path = chacha20_store_with_hot_journal(&key);
+    let keyed = open_keyed(&path, flags(), &key, no_prepare).expect("recovering open");
+    assert_eq!(keyed.cipher, StoreCipher::ChaCha20);
+    let committed: i64 = keyed
+        .conn
+        .query_row(
+            "SELECT count(*) FROM t WHERE label = 'committed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        committed, 40,
+        "the interrupted transaction was not rolled back"
+    );
+    let ok: String = keyed
+        .conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(ok, "ok");
+    drop(keyed);
+    assert!(bytes(&sidecar(&path, "-journal")).is_empty());
+    let _ = fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn a_wrong_key_on_a_chacha20_store_with_a_hot_wal_touches_neither_file() {
+    // The SQLCipher fallback runs over a ChaCha20 WAL here: it must not checkpoint or rewrite it.
+    let key = [0x3d; 32];
+    let dir = temp_dir();
+    let path = new_empty_file(&dir);
+    let keyed = open_keyed(&path, flags(), &key, no_prepare).unwrap();
+    let copy = temp_dir().join("store.db");
+    let mode: String = keyed
+        .conn
+        .query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode, "wal");
+    keyed
+        .conn
+        .execute_batch(
+            "PRAGMA wal_autocheckpoint = 0; CREATE TABLE t(v TEXT); INSERT INTO t VALUES('in the wal');",
+        )
+        .unwrap();
+    fs::copy(&path, &copy).unwrap();
+    fs::copy(sidecar(&path, "-wal"), sidecar(&copy, "-wal")).unwrap();
+    drop(keyed);
+    let _ = fs::remove_dir_all(dir);
+    let wal = sidecar(&copy, "-wal");
+    let (db_before, wal_before) = (bytes(&copy), bytes(&wal));
+    assert!(!wal_before.is_empty());
+
+    let err = open_keyed(&copy, flags(), &[0x4e; 32], no_prepare).unwrap_err();
+    assert!(matches!(err, KeyError::WrongKey), "{err:?}");
+    assert_eq!(
+        bytes(&copy),
+        db_before,
+        "a refused open changed the database"
+    );
+    assert_eq!(bytes(&wal), wal_before, "a refused open changed the WAL");
+
+    let keyed = open_keyed(&copy, flags(), &key, no_prepare).unwrap();
+    let v: String = keyed
+        .conn
+        .query_row("SELECT v FROM t", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, "in the wal");
+    drop(keyed);
+    let _ = fs::remove_dir_all(copy.parent().unwrap());
+}

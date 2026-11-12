@@ -176,6 +176,9 @@ mod build_bundled {
                 super::copy_bindings(lib_name, "bindgen_bundled_version", out_path);
             }
         }
+        // DILLA PATCH (core/vendor/README.md): with `bundled-sqlite3mc` this (DEP_SQLITE3_INCLUDE
+        // for dependents) is the sqlite3mc-src directory, which has `sqlite3mc_amalgamation.h` and
+        // `sqlite3ext.h` but no `sqlite3.h`. Nothing in dilla's graph reads it.
         println!("cargo:include={}", include_dir.display());
         println!("cargo:rerun-if-changed={}", source.display());
         println!("cargo:rerun-if-changed=sqlite3/wasm32-wasi-vfs.c");

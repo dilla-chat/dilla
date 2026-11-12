@@ -190,9 +190,10 @@ fn open_keyed(path: &Path, key: &[u8; KEY_LEN]) -> Result<Connection, StoreError
             // NOTADB under every scheme; the error never carries key material.
             KeyError::WrongKey | KeyError::InvalidKey => StoreError::Locked,
             // Busy, I/O, a build that cannot encrypt: nothing about the key.
-            KeyError::Open(_) | KeyError::Database(_) | KeyError::NotEncrypted => {
-                StoreError::Database
-            }
+            KeyError::Open(_)
+            | KeyError::Database(_)
+            | KeyError::NotEncrypted
+            | KeyError::LegacyHotJournal => StoreError::Database,
         })?;
     // A published database always has a schema; an empty one (truncated, say) would otherwise be
     // silently re-initialised. It says nothing about the key, so it is not `Locked`.
