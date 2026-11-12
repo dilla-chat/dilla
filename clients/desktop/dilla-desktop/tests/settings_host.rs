@@ -31,11 +31,11 @@ fn host(
     let routes = Rc::new(RefCell::new(Vec::new()));
     let log = routes.clone();
     vcx.update(|_, cx| {
-        let sub = cx.subscribe(&host, move |_, e: &SettingsEvent, _| {
+        cx.subscribe(&host, move |_, e: &SettingsEvent, _| {
             let SettingsEvent::Navigate(route) = e;
             log.borrow_mut().push(route.clone());
-        });
-        std::mem::forget(sub);
+        })
+        .detach();
     });
     vcx.run_until_parked();
     (host, vcx, routes)
@@ -230,4 +230,92 @@ fn the_fixture_draws_the_host_for_a_ready_settings_route() {
         );
     }
     assert!(screen_of(&Route::Settings(None), Phase::Ready).is_err());
+}
+
+/// What a section's hook does with `SlotCx::workspace` every frame: attach (idempotent) and publish.
+fn hook(ctx: &SlotCx, resets: &Rc<RefCell<usize>>) {
+    let ws = ctx.workspace.as_ref().expect("the host fills the guard");
+    ws.borrow_mut().attach(Box::new(Draft(resets.clone())));
+    ws.borrow_mut().publish(Flags {
+        dirty: true,
+        busy: false,
+        can_save: true,
+    });
+}
+
+#[gpui::test]
+fn attaching_every_frame_keeps_the_draft(cx: &mut TestAppContext) {
+    let (host, vcx, _) = host(cx, Some(UserSection::Profile), None);
+    let (first, second) = (Rc::new(RefCell::new(0)), Rc::new(RefCell::new(0)));
+    let ws = host.read_with(vcx, |h, _| h.workspace());
+    let ctx = SlotCx {
+        workspace: Some(ws.clone()),
+        ..SlotCx::default()
+    };
+    hook(&ctx, &first);
+    hook(&ctx, &second); // the next frame's attach must not replace the first
+    ws.borrow_mut().reset();
+    assert_eq!((*first.borrow(), *second.borrow()), (1, 0));
+}
+
+#[gpui::test]
+fn two_windows_have_two_guards(cx: &mut TestAppContext) {
+    let (a, acx, _) = host(cx, Some(UserSection::Profile), None);
+    let a_ws = a.read_with(acx, |h, _| h.workspace());
+    hook(
+        &SlotCx {
+            workspace: Some(a_ws.clone()),
+            ..SlotCx::default()
+        },
+        &Rc::new(RefCell::new(0)),
+    );
+    assert!(a_ws.borrow().footer().is_some());
+    let (b, bcx, _) = host(cx, Some(UserSection::Voice), None);
+    let b_ws = b.read_with(bcx, |h, _| h.workspace());
+    assert!(!Rc::ptr_eq(&a_ws, &b_ws));
+    assert!(b_ws.borrow().footer().is_none());
+    assert!(
+        a_ws.borrow().footer().is_some(),
+        "the second host left the first's draft alone"
+    );
+}
+
+#[gpui::test]
+fn clicking_a_nav_row_selects_it(cx: &mut TestAppContext) {
+    let (host, vcx, routes) = host(cx, Some(UserSection::Profile), None);
+    // Side column: 14px in, 28px down; the group heading takes 35px, each 34px row 36px with its gap: row 3 is Devices.
+    let left = panel_left(vcx);
+    vcx.simulate_click(
+        gpui::point(left + gpui::px(114.0), gpui::px(152.0)),
+        Default::default(),
+    );
+    vcx.run_until_parked();
+    assert_eq!(section(&host, vcx), UserSection::Devices);
+    assert_eq!(
+        *routes.borrow(),
+        vec![Route::Settings(Some(UserSection::Devices))]
+    );
+}
+
+#[gpui::test]
+fn clicking_close_closes(cx: &mut TestAppContext) {
+    let (_host, vcx, routes) = host(cx, Some(UserSection::Profile), Some(Route::Activity));
+    let left = panel_left(vcx);
+    // The close button: 16px from the panel's right edge, 22px from the top, 36px wide.
+    vcx.simulate_click(
+        gpui::point(left + gpui::px(1246.0), gpui::px(40.0)),
+        Default::default(),
+    );
+    vcx.run_until_parked();
+    assert_eq!(*routes.borrow(), vec![Route::Activity]);
+}
+
+/// The frame's panel is at most 1280px wide and centred in the window.
+fn panel_left(vcx: &mut VisualTestContext) -> gpui::Pixels {
+    let width = vcx.update(|w, _| w.viewport_size().width);
+    assert!(
+        width >= gpui::px(1280.0),
+        "the test window is {width:?} wide"
+    );
+    (width - gpui::px(1280.0)) / 2.0
 }

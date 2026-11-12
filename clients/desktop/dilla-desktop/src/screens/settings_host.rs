@@ -4,7 +4,7 @@
 //! footer and the unsaved-changes prompt it drives. No section's content lives here.
 //!
 //! **Sections and the guard.** A section that has a draft registers its operations with the open [`Workspace`] (see
-//! [`workspace`]) from its hook and publishes its flags; leaving through the nav, Escape or the close button goes through
+//! `SlotCx::workspace`, one per host) from its hook and publishes its flags; leaving through the nav, Escape or the close button goes through
 //! [`Workspace::request`]. The host detaches the section when another one opens.
 //!
 //! **Routes.** The host does not own history: it emits [`SettingsEvent::Navigate`] with the route to show next (the
@@ -14,8 +14,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    AppContext as _, Context, EventEmitter, Global, InteractiveElement, IntoElement, ParentElement,
-    Render, Styled, Window, div,
+    AppContext as _, Context, EventEmitter, InteractiveElement, IntoElement, ParentElement, Render,
+    Styled, Window, div,
 };
 
 use dilla_desktop_ui::IconName;
@@ -41,14 +41,6 @@ pub enum Dest {
 
 /// The guard of the open settings host, as the sections see it.
 pub type SettingsWorkspace = Rc<RefCell<Workspace<Dest>>>;
-
-struct ActiveWorkspace(SettingsWorkspace);
-impl Global for ActiveWorkspace {}
-
-/// The open host's dirty-draft guard: a section's hook registers its operations here (`attach`, `publish`).
-pub fn workspace(cx: &gpui::App) -> Option<SettingsWorkspace> {
-    cx.try_global::<ActiveWorkspace>().map(|w| w.0.clone())
-}
 
 /// What the host asks of the app.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,10 +107,9 @@ impl UserSettingsHost {
         section: Option<UserSection>,
         from: Option<Route>,
         ctx: SlotCx,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> Self {
         let workspace: SettingsWorkspace = Rc::new(RefCell::new(Workspace::new()));
-        cx.set_global(ActiveWorkspace(workspace.clone()));
         Self {
             section: section.unwrap_or(UserSection::Profile),
             from: from.unwrap_or(Route::Root),
@@ -184,10 +175,15 @@ impl Render for UserSettingsHost {
             }
         });
 
+        // Each host hands its own guard to its sections, so several windows never share one.
+        let ctx = SlotCx {
+            workspace: Some(self.workspace.clone()),
+            ..self.ctx.clone()
+        };
         let body = slots::settings_sections()
             .into_iter()
             .find(|s| s.id == SectionId::User(section))
-            .map(|s| (s.view)(s.id, &self.ctx, window, cx));
+            .map(|s| (s.view)(s.id, &ctx, window, cx));
 
         let (footer, prompt) = {
             let ws = self.workspace.borrow();
@@ -240,9 +236,9 @@ impl Render for UserSettingsHost {
             "user-settings-leave",
             prompt.map_or(t("settings.editing.leaveTitle"), |p| p.title),
             prompt.map_or(t("settings.editing.leaveBody"), |p| p.body),
-            t("settings.editing.discard"),
-            t("settings.editing.discard"),
-            t("settings.editing.keepEditing"),
+            prompt.map_or(t("settings.editing.discard"), |p| p.confirm_label),
+            prompt.map_or(t("settings.editing.discard"), |p| p.confirm_label),
+            prompt.map_or(t("settings.editing.keepEditing"), |p| p.cancel_label),
         )
         .open(open)
         .tone(Tone::Accent)

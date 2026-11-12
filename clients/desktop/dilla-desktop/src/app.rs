@@ -18,7 +18,7 @@ use gpui::{
 use dilla_desktop_ui::tokens::{color, text};
 
 use crate::router::{Route, UserSection};
-use crate::screens::settings_host::{self, SettingsEvent, UserSettingsHost};
+use crate::screens::settings_host::{self, Dest, SettingsEvent, UserSettingsHost};
 use crate::screens::shell::{Clock, ShellView};
 use crate::screens::sign_in::{SignInView, SignedIn};
 use crate::slots::SlotCx;
@@ -85,9 +85,13 @@ enum Screen {
     SignIn(Entity<SignInView>),
     Shell(Entity<ShellView>),
     /// The user settings over the screen they were opened from, which comes back on close.
+    /// `behind` is authoritative for where Close goes: the host's own `from` is not used (it is `None`), and the
+    /// route it emits on close is only the signal to take `behind` back. The host's subscription lives here, so it
+    /// goes with the screen.
     Settings {
         host: Entity<UserSettingsHost>,
         behind: Box<Screen>,
+        _subscription: Subscription,
     },
 }
 
@@ -156,11 +160,26 @@ impl AppView {
         this
     }
 
-    /// The live route `Route::Settings(section)`: the user settings host over the current screen (Task 1b). Any other
-    /// route is the shell's (Task 8).
+    /// The live route `Route::Settings(section)`: the user settings host over the current screen, or, when settings
+    /// already shows, a switch of its section (Task 1b). Any other route is the shell's (Task 8, who owns history).
     pub fn open_route(&mut self, route: &Route, window: &mut Window, cx: &mut Context<Self>) {
-        if let Route::Settings(section) = route {
-            self.show_settings(*section, SlotCx::default(), window, cx);
+        let Route::Settings(section) = route else {
+            return;
+        };
+        if let Screen::Settings { host, .. } = &self.screen {
+            let section = section.unwrap_or(UserSection::Profile);
+            host.update(cx, |host, cx| host.request(Dest::Section(section), cx));
+            return;
+        }
+        self.show_settings(*section, SlotCx::default(), window, cx);
+    }
+
+    /// The route the app shows while settings is open (the host's section, live, so a section switch is reflected);
+    /// `None` otherwise: the shell's route is Task 8's.
+    pub fn settings_route(&self, cx: &gpui::App) -> Option<Route> {
+        match &self.screen {
+            Screen::Settings { host, .. } => Some(Route::Settings(Some(host.read(cx).section()))),
+            _ => None,
         }
     }
 
@@ -172,12 +191,13 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         let host = settings_host::open(section, None, ctx, cx);
-        // A route the host emits is a section it already shows; the route it leaves for takes the screen behind back.
-        self._subscriptions.push(cx.subscribe_in(
+        // A section switch is the host's own; any other route it emits is Close, which takes `behind` back.
+        let subscription = cx.subscribe_in(
             &host,
             window,
             |this, _, SettingsEvent::Navigate(route), _, cx| {
                 if matches!(route, Route::Settings(_)) {
+                    cx.notify();
                     return;
                 }
                 if let Screen::Settings { behind, .. } =
@@ -187,11 +207,12 @@ impl AppView {
                 }
                 cx.notify();
             },
-        ));
+        );
         let behind = std::mem::replace(&mut self.screen, Screen::Starting);
         self.screen = Screen::Settings {
             host,
             behind: Box::new(behind),
+            _subscription: subscription,
         };
         cx.notify();
     }
