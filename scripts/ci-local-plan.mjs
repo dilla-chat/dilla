@@ -111,6 +111,7 @@ export const EXTRA_JOBS = {
   'desktop-gpui': {
     weight: 3,
     script: [
+      'node --test scripts/gen-gpui-tokens.test.mjs',
       'cargo build -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop --all-targets --locked',
       'cargo clippy -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop --all-targets --locked -- -D warnings',
       'cargo test -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop --locked',
