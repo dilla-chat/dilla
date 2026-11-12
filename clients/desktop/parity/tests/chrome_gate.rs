@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use dilla_parity::{
     Os, ParityFailure, Rect, RgbaImage, TextMask, assert_parity, assert_parity_masked,
-    assert_parity_masked_with, tolerance_for,
+    assert_parity_masked_with, chrome_difference_pct, tolerance_for,
 };
 
 fn fixture(name: &str) -> PathBuf {
@@ -21,7 +21,7 @@ fn load(name: &str) -> RgbaImage {
 /// Text is the only content brighter than channel 70 (the brightest border is ~#2A303A = 58); a
 /// 3 px fringe covers glyph anti-aliasing.
 fn text_mask() -> TextMask {
-    TextMask::from_bright_pixels(&load("reference-nohint-2x.png"), 70, 3)
+    TextMask::from_bright_pixels_fixture_only(&load("reference-nohint-2x.png"), 70, 3)
 }
 
 fn run(name: &str) -> Result<(), ParityFailure> {
@@ -55,7 +55,11 @@ fn border_only_shift_fails_chrome_gate() {
 
 #[test]
 fn layout_shift_fails() {
-    assert!(run("layout-shift-2x.png").is_err());
+    // Text is displaced too, so the whole-frame gate trips first.
+    assert!(matches!(
+        run("layout-shift-2x.png"),
+        Err(ParityFailure::Pixels { .. })
+    ));
 }
 
 #[test]
@@ -110,5 +114,92 @@ fn explicit_rects_mask_pixels() {
     assert!(matches!(
         assert_parity_masked_with(&actual, &reference, tolerance, &TextMask::default()),
         Err(ParityFailure::Chrome { .. })
+    ));
+}
+
+#[test]
+fn chrome_margins_measured_in_rust() {
+    let tolerance = tolerance_for(Os::Linux).unwrap();
+    let reference = load("reference-nohint-2x.png");
+    let mask = text_mask();
+    let pct = |name: &str| {
+        chrome_difference_pct(&load(name), &reference, tolerance.chrome_max_delta, &mask).unwrap()
+    };
+    let (good, b1, b2) = (
+        pct("good-2x.png"),
+        pct("border-shift-2x.png"),
+        pct("layout-shift-2x.png"),
+    );
+    println!(
+        "CHROME good {good:.4} b1 {b1:.4} b2 {b2:.4} limit {}",
+        tolerance.chrome_max_pct
+    );
+    assert!(good < tolerance.chrome_max_pct / 2.0, "good {good}");
+    assert!(b1 > tolerance.chrome_max_pct * 4.0, "b1 {b1}");
+}
+
+/// A 1px-bordered accent box (#5AA8E6 fill, light border) whose border moves down by `border_dy`.
+fn accent_box(border_dy: u32) -> RgbaImage {
+    let edge = image::Rgba([230, 240, 250, 255]);
+    let mut img = RgbaImage::from_pixel(600, 400, image::Rgba([8, 9, 11, 255]));
+    let (x0, y0, w, h) = (100u32, 100u32, 200u32, 100u32);
+    for y in y0..y0 + h {
+        for x in x0..x0 + w {
+            img.put_pixel(x, y, image::Rgba([90, 168, 230, 255]));
+        }
+    }
+    for x in x0..x0 + w {
+        img.put_pixel(x, y0 + border_dy, edge);
+        img.put_pixel(x, y0 + h - 1 + border_dy, edge);
+    }
+    for y in y0..y0 + h {
+        img.put_pixel(x0, y + border_dy, edge);
+        img.put_pixel(x0 + w - 1, y + border_dy, edge);
+    }
+    img
+}
+
+#[test]
+fn bright_pixel_mask_hides_accent_chrome_but_rect_mask_catches_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let reference_path = dir.path().join("reference.png");
+    accent_box(0).save(&reference_path).unwrap();
+    let shifted = accent_box(1);
+    let tolerance = tolerance_for(Os::Linux).unwrap();
+
+    // The fixture-only bright mask swallows the whole box: the border shift is missed.
+    let bright = TextMask::from_bright_pixels_fixture_only(&accent_box(0), 70, 3);
+    assert_parity_masked_with(&shifted, &reference_path, tolerance, &bright).unwrap();
+
+    // A rect mask that covers only the text (here: a label elsewhere) catches it.
+    let text_only = TextMask::from_rects([Rect {
+        x: 10,
+        y: 10,
+        w: 60,
+        h: 12,
+    }]);
+    assert!(matches!(
+        assert_parity_masked_with(&shifted, &reference_path, tolerance, &text_only),
+        Err(ParityFailure::Chrome { .. })
+    ));
+}
+
+#[test]
+fn mask_covering_most_of_the_frame_is_an_error() {
+    let reference = fixture("reference-nohint-2x.png");
+    let everything = TextMask::from_rects([Rect {
+        x: 0,
+        y: 0,
+        w: 2560,
+        h: 1000,
+    }]);
+    assert!(matches!(
+        assert_parity_masked_with(
+            &load("good-2x.png"),
+            &reference,
+            tolerance_for(Os::Linux).unwrap(),
+            &everything
+        ),
+        Err(ParityFailure::Mask { .. })
     ));
 }

@@ -52,8 +52,8 @@ pub struct Rect {
 ///
 /// Where screens get it from: the automation interface reports each text element's bounds
 /// ([`crate::ElementInfo`]); a screen test converts them to device pixels (logical x scale) and
-/// calls [`TextMask::from_rects`]. Until a screen reports bounds, [`TextMask::from_bright_pixels`]
-/// derives a mask from the reference image itself.
+/// calls [`TextMask::from_rects`]. Screen tests must use `from_rects`; the bright-pixel constructor
+/// exists only for the pixel-proof fixture.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TextMask {
     rects: Vec<Rect>,
@@ -70,10 +70,18 @@ impl TextMask {
         &self.rects
     }
 
-    /// Masks everything within `grow` pixels of a `reference` pixel whose brightest channel is at
-    /// least `min_channel`. Pick `min_channel` above the brightest border or fill colour (only text
-    /// is that bright) and `grow` to the glyph anti-aliasing fringe.
-    pub fn from_bright_pixels(reference: &RgbaImage, min_channel: u8, grow: u32) -> Self {
+    /// FIXTURE ONLY. Masks everything within `grow` pixels of a `reference` pixel whose brightest
+    /// channel is at least `min_channel`. That is "text" only in a fixture whose non-text colours are
+    /// all dimmer than `min_channel` (the pixel-proof fixture: borders and fills peak at ~58).
+    /// Any bright non-text chrome (Signal accent, brand, ok/warn/danger fills, focus rings, avatar
+    /// fills, selected rows, icons) is masked too, together with its fringe, and so is NOT checked by
+    /// the chrome gate. Real screens must pass text bounds from the automation interface to
+    /// [`TextMask::from_rects`].
+    pub fn from_bright_pixels_fixture_only(
+        reference: &RgbaImage,
+        min_channel: u8,
+        grow: u32,
+    ) -> Self {
         let mut rects = Vec::new();
         let (w, h) = reference.dimensions();
         let max_gap = grow.max(1) * 2;
@@ -159,6 +167,11 @@ pub enum ParityFailure {
         max_pct: f64,
         max_delta: u8,
     },
+    /// The mask covers more than half of the frame, so the chrome gate would pass vacuously.
+    #[error(
+        "text mask covers {covered_pct:.1} % of the frame (limit 50 %): the chrome gate would be vacuous"
+    )]
+    Mask { covered_pct: f64 },
     #[error("reference image {path}: {reason}")]
     Reference { path: String, reason: String },
     #[error("tolerance file: {0}")]
@@ -293,19 +306,9 @@ fn compare(
         });
     }
     if let Some(mask) = mask {
-        let covered = mask.covered(a);
-        let (mut chrome_total, mut chrome_differing) = (0u64, 0u64);
-        for ((p, q), &is_text) in actual.pixels().zip(reference.pixels()).zip(&covered) {
-            if is_text {
-                continue;
-            }
-            chrome_total += 1;
-            if pixel_delta(p, q) > tolerance.chrome_max_delta {
-                chrome_differing += 1;
-            }
-        }
-        let chrome_pct = percent(chrome_differing, chrome_total);
-        if chrome_differing > 0 && chrome_pct > tolerance.chrome_max_pct {
+        let chrome_pct =
+            chrome_difference_pct(actual, reference, tolerance.chrome_max_delta, mask)?;
+        if chrome_pct > tolerance.chrome_max_pct {
             return Err(ParityFailure::Chrome {
                 pct: chrome_pct,
                 max_pct: tolerance.chrome_max_pct,
@@ -314,4 +317,33 @@ fn compare(
         }
     }
     Ok(())
+}
+
+/// Share (percent) of the pixels outside `mask` whose largest channel delta exceeds `max_delta`.
+/// Both images must have the same size. Fails with [`ParityFailure::Mask`] when the mask covers
+/// more than half of the frame.
+pub fn chrome_difference_pct(
+    actual: &RgbaImage,
+    reference: &RgbaImage,
+    max_delta: u8,
+    mask: &TextMask,
+) -> Result<f64, ParityFailure> {
+    let covered = mask.covered(actual.dimensions());
+    let masked = covered.iter().filter(|&&c| c).count() as u64;
+    let masked_pct = percent(masked, covered.len() as u64);
+    if masked_pct > 50.0 {
+        return Err(ParityFailure::Mask {
+            covered_pct: masked_pct,
+        });
+    }
+    let (mut total, mut differing) = (0u64, 0u64);
+    for ((p, q), &is_text) in actual.pixels().zip(reference.pixels()).zip(&covered) {
+        if !is_text {
+            total += 1;
+            if pixel_delta(p, q) > max_delta {
+                differing += 1;
+            }
+        }
+    }
+    Ok(percent(differing, total))
 }

@@ -6,7 +6,7 @@ mod driver;
 
 pub use diff::{
     Os, ParityFailure, Rect, TextMask, Tolerance, assert_parity, assert_parity_masked,
-    assert_parity_masked_with, assert_parity_with, tolerance_for,
+    assert_parity_masked_with, assert_parity_with, chrome_difference_pct, tolerance_for,
 };
 pub use driver::{Driver, ElementInfo, target_dir};
 pub use image::RgbaImage;
