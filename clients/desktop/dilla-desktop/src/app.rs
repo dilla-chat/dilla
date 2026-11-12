@@ -81,6 +81,9 @@ enum Screen {
     Starting,
     SignIn(Entity<SignInView>),
     Shell(Entity<ShellView>),
+    /// Controller hook (Task 21): a server settings section drawn from a fixture, until the settings route is wired.
+    #[cfg(feature = "automation")]
+    Settings(Entity<crate::screens::bot_admin::host::SettingsHost>),
 }
 
 /// The main window's root view.
@@ -118,6 +121,21 @@ impl AppView {
                         )
                     });
                     this.screen = Screen::Shell(shell);
+                }
+                crate::fixture::FixtureScreen::ServerSettings { community, section } => {
+                    let clock = Clock::Fixed {
+                        now: fixture.now,
+                        utc: true,
+                    };
+                    let host = cx.new(|_| {
+                        crate::screens::bot_admin::host::SettingsHost::new(
+                            Arc::new(fixture.state),
+                            community,
+                            section,
+                            clock,
+                        )
+                    });
+                    this.screen = Screen::Settings(host);
                 }
                 crate::fixture::FixtureScreen::SignIn => this.show_sign_in(None, window, cx),
             }
@@ -217,6 +235,8 @@ impl Render for AppView {
                 .into_any_element(),
             Screen::SignIn(view) => view.clone().into_any_element(),
             Screen::Shell(view) => view.clone().into_any_element(),
+            #[cfg(feature = "automation")]
+            Screen::Settings(view) => view.clone().into_any_element(),
         };
         tracked("root", div().size_full().bg(color::BG).child(body))
     }

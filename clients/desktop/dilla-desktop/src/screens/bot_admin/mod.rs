@@ -9,6 +9,7 @@
 //!   in the window under the section's id, so a section left and entered again finds them as they were.
 
 pub mod bot_page;
+pub mod host;
 pub mod keys;
 pub mod music_page;
 pub mod player;
