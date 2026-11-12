@@ -23,6 +23,7 @@
 pub mod frames;
 pub mod reconnect;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -40,25 +41,14 @@ use crate::seams::{DisconnectReason, Gateway, GatewayError, GatewayEvent};
 use frames::{FrameError, Op, Value};
 use reconnect::Backoff;
 
-/// A device session's bearer token, held zeroized and never printed.
-#[derive(Clone)]
-pub struct AuthToken(Zeroizing<String>);
+pub use crate::auth::AuthToken;
 
-impl AuthToken {
-    pub fn new(token: String) -> Self {
-        Self(Zeroizing::new(token))
-    }
-
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for AuthToken {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("AuthToken(..)")
-    }
-}
+/// The bound on the bytes `send()` may have queued for the writer and not yet written. The instance keeps at most
+/// `MaxRequestBytesInFlight` (32 MiB, internal/gateway/request.go) of request and response bodies in flight on one
+/// connection and answers E_BUSY past it, so the TS client never usefully has more than that on the wire; past this
+/// bound `send()` refuses with [`GatewayError::Full`] instead of buffering without limit behind a peer that stopped
+/// reading. One frame is always accepted on an empty queue (a request frame may be up to `MAX_RESPONSE_FRAME`).
+pub const WRITER_QUEUE_CAP: usize = 32 << 20;
 
 /// gateway.ts `WIRE_PREFERENCE`: wire 6 (Bot v2) is the only wire this client speaks.
 pub const WIRE_PREFERENCE: &[u64] = &[6];
@@ -297,10 +287,16 @@ fn older_than_all(offered: &[u64], preference: &[u64]) -> bool {
     !offered.is_empty() && offered.iter().all(|v| preference.iter().all(|own| v < own))
 }
 
+/// One write for the writer task: the message and the bytes it counts against [`WRITER_QUEUE_CAP`] (0 for the
+/// connection's own frames: heartbeats, identify, the close).
+type Queued = (Message, usize);
+
 /// The ready connection's writer, as `send` sees it.
 struct Link {
-    tx: mpsc::UnboundedSender<Message>,
+    tx: mpsc::UnboundedSender<Queued>,
     max_frame_bytes: usize,
+    /// Bytes `send()` queued that the writer has not written yet.
+    queued: Arc<AtomicUsize>,
 }
 
 #[derive(Default)]
@@ -364,20 +360,14 @@ impl WsGateway {
     pub fn refusal(&self) -> Option<Refusal> {
         *lock(&self.shared.refusal)
     }
-}
 
-impl Drop for WsGateway {
-    fn drop(&mut self) {
-        let _ = self.stop.send(true);
+    /// Whether a connection is ready now (`send` would queue a frame).
+    pub fn is_ready(&self) -> bool {
+        lock(&self.shared.link).is_some()
     }
-}
 
-#[async_trait::async_trait]
-impl Gateway for WsGateway {
-    /// Writes one encoded frame on the ready connection. `Closed` when there is none (the caller keeps it queued);
-    /// `TooLarge` when it is over the hello's `max_frame_bytes` (a request frame, op 59: over the request frame cap),
-    /// refused before it is sent, because the instance would close the socket on it.
-    async fn send(&self, frame: Vec<u8>) -> Result<(), GatewayError> {
+    /// [`Gateway::send`] without the future: the write is only queued for the connection's writer, never awaited.
+    pub fn send_now(&self, frame: Vec<u8>) -> Result<(), GatewayError> {
         let link = lock(&self.shared.link);
         let Some(link) = link.as_ref() else {
             return Err(GatewayError::Closed);
@@ -393,9 +383,38 @@ impl Gateway for WsGateway {
                 max,
             });
         }
+        let len = frame.len();
+        let before = link.queued.fetch_add(len, Ordering::AcqRel);
+        if before > 0 && before.saturating_add(len) > WRITER_QUEUE_CAP {
+            link.queued.fetch_sub(len, Ordering::AcqRel);
+            return Err(GatewayError::Full {
+                queued: before,
+                cap: WRITER_QUEUE_CAP,
+            });
+        }
         link.tx
-            .send(Message::Binary(frame.into()))
-            .map_err(|_| GatewayError::Closed)
+            .send((Message::Binary(frame.into()), len))
+            .map_err(|_| {
+                link.queued.fetch_sub(len, Ordering::AcqRel);
+                GatewayError::Closed
+            })
+    }
+}
+
+impl Drop for WsGateway {
+    fn drop(&mut self) {
+        let _ = self.stop.send(true);
+    }
+}
+
+#[async_trait::async_trait]
+impl Gateway for WsGateway {
+    /// Writes one encoded frame on the ready connection. `Closed` when there is none (the caller keeps it queued);
+    /// `TooLarge` when it is over the hello's `max_frame_bytes` (a request frame, op 59: over the request frame cap),
+    /// refused before it is sent, because the instance would close the socket on it.
+    /// `Full` when the frames queued for the writer would pass [`WRITER_QUEUE_CAP`].
+    async fn send(&self, frame: Vec<u8>) -> Result<(), GatewayError> {
+        self.send_now(frame)
     }
 
     /// The event stream. There is one: a second call answers a receiver that is already closed.
@@ -505,10 +524,19 @@ impl Driver {
             "sec-websocket-protocol",
             HeaderValue::from_static("dilla.v1"),
         );
-        let mut bearer = HeaderValue::from_str(&format!("Bearer {}", self.auth.expose()))
-            .map_err(|e| tungstenite::Error::HttpFormat(e.into()))?;
-        bearer.set_sensitive(true);
-        headers.insert("authorization", bearer);
+        // No session: no header (the instance answers the upgrade 401, a refusal).
+        let bearer = self.auth.with(|token| {
+            token
+                .map(|token| {
+                    let value = Zeroizing::new(format!("Bearer {token}"));
+                    HeaderValue::from_str(&value)
+                })
+                .transpose()
+        });
+        if let Some(mut bearer) = bearer.map_err(|e| tungstenite::Error::HttpFormat(e.into()))? {
+            bearer.set_sensitive(true);
+            headers.insert("authorization", bearer);
+        }
         Ok(req)
     }
 
@@ -574,9 +602,11 @@ impl Driver {
         };
         let (sink, stream) = ws.split();
         let (out, out_rx) = mpsc::unbounded_channel();
-        let writer = tokio::spawn(write_loop(sink, out_rx));
+        let queued = Arc::new(AtomicUsize::new(0));
+        let writer = tokio::spawn(write_loop(sink, out_rx, queued.clone()));
         let mut conn = Conn {
             out,
+            queued,
             phase: Phase::Hello,
             hello: None,
             selected: (0, 0, 0),
@@ -610,11 +640,14 @@ type WsStream =
 /// the connection's timers, its reads or `stop()`.
 async fn write_loop(
     mut sink: futures_util::stream::SplitSink<WsStream, Message>,
-    mut queue: mpsc::UnboundedReceiver<Message>,
+    mut queue: mpsc::UnboundedReceiver<Queued>,
+    queued: Arc<AtomicUsize>,
 ) {
-    while let Some(message) = queue.recv().await {
+    while let Some((message, counted)) = queue.recv().await {
         let last = matches!(message, Message::Close(_));
-        if sink.send(message).await.is_err() || last {
+        let sent = sink.send(message).await;
+        queued.fetch_sub(counted, Ordering::AcqRel);
+        if sent.is_err() || last {
             return;
         }
     }
@@ -623,7 +656,9 @@ async fn write_loop(
 /// One socket's state: gateway.ts's per-attempt fields.
 struct Conn {
     /// The writer task's queue.
-    out: mpsc::UnboundedSender<Message>,
+    out: mpsc::UnboundedSender<Queued>,
+    /// The bytes `send()` has queued on `out` (shared with the writer and the ready link).
+    queued: Arc<AtomicUsize>,
     phase: Phase,
     hello: Option<HelloInfo>,
     selected: (u64, u64, u64),
@@ -688,7 +723,7 @@ impl Conn {
 
     /// Queues a message for the writer; false when the writer is gone (its socket failed).
     fn queue(&self, message: Message) -> bool {
-        self.out.send(message).is_ok()
+        self.out.send((message, 0)).is_ok()
     }
 
     /// Queues the close frame and ends the attempt with `end`. The writer sends it after what was already queued.
@@ -954,6 +989,7 @@ impl Conn {
         *lock(&d.shared.link) = Some(Link {
             tx: self.out.clone(),
             max_frame_bytes,
+            queued: self.queued.clone(),
         });
         *lock(&d.shared.hello) = Some(hello);
         self.beat_at = Some(Instant::now() + self.beat_interval(&d.options));
@@ -997,6 +1033,7 @@ mod tests {
         let (out, _queue) = mpsc::unbounded_channel();
         let conn = Conn {
             out,
+            queued: Arc::default(),
             phase: Phase::Ready,
             hello: None,
             selected: (6, 1, 1),
@@ -1071,8 +1108,74 @@ mod tests {
     #[test]
     fn token_is_not_printed() {
         assert_eq!(
-            format!("{:?}", AuthToken::new("secret".into())),
-            "AuthToken(..)"
+            format!("{:?}", AuthToken::new("secret")),
+            "AuthToken(<redacted>)"
         );
+    }
+
+    /// A gateway whose ready link writes into `queue` and nowhere else: nothing drains it unless the test does.
+    fn gateway_with_link() -> (WsGateway, mpsc::UnboundedReceiver<Queued>, Arc<AtomicUsize>) {
+        let (tx, queue) = mpsc::unbounded_channel();
+        let queued = Arc::new(AtomicUsize::new(0));
+        let shared = Arc::new(Shared::default());
+        *lock(&shared.link) = Some(Link {
+            tx,
+            max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
+            queued: queued.clone(),
+        });
+        let (stop, _) = watch::channel(false);
+        let gw = WsGateway {
+            shared,
+            events: Mutex::new(None),
+            stop,
+        };
+        (gw, queue, queued)
+    }
+
+    fn request_frame(body: usize) -> Vec<u8> {
+        frames::encode_request(&frames::RequestFrame {
+            id: 1,
+            method: "POST".into(),
+            route: "/v1/groups/00000000000000000000000000000000/message".into(),
+            body: vec![0; body],
+            idem: Some(vec![1; 16]),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn writer_queue_is_capped() {
+        let (gw, mut queue, queued) = gateway_with_link();
+        // One frame is always taken on an empty queue, however large (a 16 MiB request frame).
+        let max = request_frame(frames::MAX_REQUEST_BODY);
+        gw.send_now(max.clone())
+            .expect("an empty queue takes one frame");
+        assert!(matches!(
+            gw.send_now(max).expect_err("two max frames pass the cap"),
+            GatewayError::Full { .. }
+        ));
+        drain(&mut queue, &queued);
+        // 10 MiB frames: three fit under 32 MiB, the fourth does not, and nothing is queued for it.
+        let ten = request_frame(10 << 20);
+        for _ in 0..3 {
+            gw.send_now(ten.clone()).expect("within the cap");
+        }
+        let full = gw.send_now(ten.clone()).expect_err("past the cap");
+        assert!(
+            matches!(full, GatewayError::Full { cap, queued: q } if cap == WRITER_QUEUE_CAP && q == 3 * ten.len()),
+            "{full:?}"
+        );
+        assert_eq!(queued.load(Ordering::Acquire), 3 * ten.len());
+        // The writer writes one: its bytes leave the count and the next frame is taken.
+        let (_, counted) = queue.try_recv().unwrap();
+        queued.fetch_sub(counted, Ordering::AcqRel);
+        gw.send_now(ten)
+            .expect("room again once the writer wrote one");
+    }
+
+    fn drain(queue: &mut mpsc::UnboundedReceiver<Queued>, queued: &AtomicUsize) {
+        while let Ok((_, counted)) = queue.try_recv() {
+            queued.fetch_sub(counted, Ordering::AcqRel);
+        }
     }
 }

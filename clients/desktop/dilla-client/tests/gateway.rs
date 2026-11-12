@@ -371,7 +371,7 @@ async fn heartbeat_timeout_reconnects() {
         ack_timeout: Duration::from_millis(300),
         ..GatewayOptions::default()
     };
-    let gw = WsGateway::connect_with(base, AuthToken::new("tok-1".into()), options);
+    let gw = WsGateway::connect_with(base, AuthToken::new("tok-1"), options);
     let mut events = gw.events();
 
     let GatewayEvent::Connected { session } = next_event(&mut events, Duration::from_secs(5)).await
@@ -452,7 +452,7 @@ async fn oversized_frame_refused() {
     };
     let (addr, mut seen) = scripted_server(script).await;
     let base = url::Url::parse(&format!("http://{addr}")).unwrap();
-    let gw = WsGateway::connect(base, AuthToken::new("tok-2".into()));
+    let gw = WsGateway::connect(base, AuthToken::new("tok-2"));
     let mut events = gw.events();
     let GatewayEvent::Connected { .. } = next_event(&mut events, Duration::from_secs(5)).await
     else {
@@ -577,7 +577,7 @@ async fn blocked_write_still_times_out() {
         ack_timeout,
         ..GatewayOptions::default()
     };
-    let gw = WsGateway::connect_with(base, AuthToken::new("tok-deaf".into()), options);
+    let gw = WsGateway::connect_with(base, AuthToken::new("tok-deaf"), options);
     let mut events = gw.events();
     let GatewayEvent::Connected { .. } = next_event(&mut events, Duration::from_secs(5)).await
     else {
@@ -632,7 +632,7 @@ async fn full_event_channel_keeps_heartbeats() {
         event_capacity: 2,
         ..GatewayOptions::default()
     };
-    let gw = WsGateway::connect_with(base, AuthToken::new("tok-slow".into()), options);
+    let gw = WsGateway::connect_with(base, AuthToken::new("tok-slow"), options);
     let mut events = gw.events();
 
     tokio::time::sleep(Duration::from_millis(700)).await;
@@ -684,7 +684,7 @@ async fn stop_is_prompt_with_a_full_event_channel() {
         event_capacity: 1,
         ..GatewayOptions::default()
     };
-    let gw = WsGateway::connect_with(base, AuthToken::new("tok-stuck".into()), options);
+    let gw = WsGateway::connect_with(base, AuthToken::new("tok-stuck"), options);
     let _events = gw.events();
     wait_seen(
         &mut seen,
@@ -749,7 +749,7 @@ async fn wss_connects_with_the_explicit_provider() {
         extra_roots: vec![ca],
         ..GatewayOptions::default()
     };
-    let gw = WsGateway::connect_with(base, AuthToken::new("tok-tls".into()), options);
+    let gw = WsGateway::connect_with(base, AuthToken::new("tok-tls"), options);
     let mut events = gw.events();
     let event = next_event(&mut events, Duration::from_secs(10)).await;
     let GatewayEvent::Connected { session } = event else {
@@ -794,7 +794,7 @@ async fn wss_refuses_an_unknown_ca() {
         }
     });
     let base = url::Url::parse(&format!("https://127.0.0.1:{}", addr.port())).unwrap();
-    let gw = WsGateway::connect(base, AuthToken::new("tok-tls".into()));
+    let gw = WsGateway::connect(base, AuthToken::new("tok-tls"));
     let mut events = gw.events();
     assert!(
         tokio::time::timeout(Duration::from_millis(1_500), events.recv())
