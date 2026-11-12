@@ -41,6 +41,8 @@ struct State {
     input: Option<InputSlot>,
     output: Option<OutputSlot>,
     next: u64,
+    in_latency: u32,
+    out_latency: u32,
 }
 
 #[derive(Clone)]
@@ -49,9 +51,19 @@ struct Fake(Arc<Mutex<State>>);
 struct Token {
     state: Arc<Mutex<State>>,
     id: u64,
+    input: bool,
 }
 
-impl Running for Token {}
+impl Running for Token {
+    fn latency_ms(&self) -> u32 {
+        let s = self.state.lock().unwrap();
+        if self.input {
+            s.in_latency
+        } else {
+            s.out_latency
+        }
+    }
+}
 
 impl Drop for Token {
     fn drop(&mut self) {
@@ -80,6 +92,8 @@ impl Fake {
             input: None,
             output: None,
             next: 1,
+            in_latency: 0,
+            out_latency: 0,
         })))
     }
 
@@ -111,6 +125,17 @@ impl Fake {
             (source.lock().unwrap())(&mut out);
         }
         out
+    }
+
+    fn set_latency(&self, input: u32, output: u32) {
+        let mut s = self.0.lock().unwrap();
+        s.in_latency = input;
+        s.out_latency = output;
+    }
+
+    /// The machine has no default microphone any more.
+    fn remove_default_input(&self) {
+        self.0.lock().unwrap().default_input = "";
     }
 
     fn capturing_from(&self) -> Option<String> {
@@ -177,6 +202,7 @@ impl AudioHost for Fake {
         Ok(Box::new(Token {
             state: self.0.clone(),
             id,
+            input: true,
         }))
     }
 
@@ -196,6 +222,7 @@ impl AudioHost for Fake {
         Ok(Box::new(Token {
             state: self.0.clone(),
             id,
+            input: false,
         }))
     }
 }
@@ -356,6 +383,233 @@ fn enhanced_lowers_noise_10db_on_device_path() {
         "noise {off_db:.1} dBFS off, {enh_db:.1} dBFS enhanced: only {:.1} dB lower",
         off_db - enh_db
     );
+}
+
+/// Pushes `input` frame by frame (faster than real time) and returns every output frame.
+fn run_frames(mode: NoiseMode, input: &[Vec<i16>]) -> Vec<Vec<i16>> {
+    let host = Fake::new();
+    let mut mic = Mic::open_with(config(&host, Apm::default(), embedded()), None, mode).unwrap();
+    let mut rx = mic.take_frames().unwrap();
+    let mut out = Vec::new();
+    for f in input {
+        host.push(f);
+        std::thread::sleep(Duration::from_millis(5));
+        while let Ok(o) = rx.try_recv() {
+            out.push(o);
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while out.len() < input.len() && Instant::now() < deadline {
+        match rx.try_recv() {
+            Ok(o) => out.push(o),
+            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    out
+}
+
+/// A voiced, speech-like frame: 150 Hz harmonics with a 4 Hz syllable envelope.
+fn speech_frame(k: usize, level: f64) -> Vec<i16> {
+    (0..FRAME_SAMPLES)
+        .map(|i| {
+            let t = (k * FRAME_SAMPLES + i) as f64 / f64::from(RATE);
+            let voiced: f64 = (1..=12)
+                .map(|h| (TAU * 150.0 * f64::from(h) * t).sin() / f64::from(h))
+                .sum();
+            let envelope = 0.6 + 0.4 * (TAU * 4.0 * t).sin();
+            (voiced * envelope * level) as i16
+        })
+        .collect()
+}
+
+#[test]
+fn enhanced_keeps_speech_while_noise_drops() {
+    // One-second segments alternate noise only / speech plus noise (noise at -30 dBFS rms, speech
+    // about -20 dBFS rms). Levels are measured inside each segment, away from its edges and from
+    // the first two segments (warm-up of the model and the gain control).
+    let mut noise = Noise(0xD1CE_5EED);
+    let input: Vec<Vec<i16>> = (0..800)
+        .map(|k| {
+            let mut f = noise.frame(1000.0);
+            if (k / 100) % 2 == 1 {
+                for (a, b) in f
+                    .iter_mut()
+                    .zip(speech_frame(k, 0.12 * f64::from(i16::MAX)))
+                {
+                    *a = a.saturating_add(b);
+                }
+            }
+            f
+        })
+        .collect();
+    let level = |out: &[Vec<i16>], parity: usize| -> f64 {
+        let samples: Vec<i16> = (200..800)
+            .filter(|k| (k / 100) % 2 == parity && (k % 100) >= 20 && (k % 100) < 80)
+            .flat_map(|k| out[k].iter().copied())
+            .collect();
+        dbfs(&samples)
+    };
+    let off = run_frames(NoiseMode::Off, &input);
+    let enhanced = run_frames(NoiseMode::Enhanced, &input);
+    assert!(off.len() == input.len() && enhanced.len() == input.len());
+    let (noise_off, noise_enh) = (level(&off, 0), level(&enhanced, 0));
+    let (speech_off, speech_enh) = (level(&off, 1), level(&enhanced, 1));
+    println!(
+        "speech+noise: noise {noise_off:.1} -> {noise_enh:.1} dBFS, speech {speech_off:.1} -> {speech_enh:.1} dBFS"
+    );
+    assert!(
+        noise_off - noise_enh >= 10.0,
+        "noise only {:.1} dB lower",
+        noise_off - noise_enh
+    );
+    // Speech keeps within SPEECH_LOSS_DB of what the chain without suppression gives.
+    // Measured 4.1 dB on the reference run (the synthetic voice loses some body to the model); 6 dB
+    // leaves margin for another CPU without letting a muted-speech regression through.
+    const SPEECH_LOSS_DB: f64 = 6.0;
+    assert!(
+        speech_off - speech_enh <= SPEECH_LOSS_DB,
+        "speech lost {:.1} dB (limit {SPEECH_LOSS_DB})",
+        speech_off - speech_enh
+    );
+}
+
+#[test]
+fn a_stalled_consumer_never_blocks_the_capture_callback() {
+    let host = Fake::new();
+    // Stall the worker: switching to Enhanced waits in the model loader.
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release_rx = Mutex::new(release_rx);
+    let loader: ModelLoader = Arc::new(move || {
+        let _ = release_rx.lock().unwrap().recv();
+        embedded_model()
+    });
+    let mut mic =
+        Mic::open_with(config(&host, Apm::default(), loader), None, NoiseMode::Off).unwrap();
+    let _frames = mic.take_frames().unwrap();
+    let mic = Arc::new(mic);
+    let switching = {
+        let mic = mic.clone();
+        std::thread::spawn(move || mic.switch(None, NoiseMode::Enhanced))
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    // Two seconds of audio into the callback while the worker is stuck.
+    let frame = Noise(5).frame(500.0);
+    let mut slowest = Duration::ZERO;
+    for _ in 0..200 {
+        let t = Instant::now();
+        host.push(&frame);
+        slowest = slowest.max(t.elapsed());
+    }
+    println!("stalled worker: slowest callback {slowest:?}");
+    assert!(
+        slowest < Duration::from_millis(5),
+        "a callback took {slowest:?} with the worker stalled"
+    );
+    release_tx.send(()).unwrap();
+    assert_eq!(switching.join().unwrap().unwrap(), NoiseMode::Enhanced);
+}
+
+#[test]
+fn the_playout_callback_never_waits_for_a_pusher() {
+    let host = Fake::new();
+    let speaker = Speaker::open_with(Arc::new(host.clone()), Apm::default(), None, None).unwrap();
+    let sink = speaker.sink();
+    let stop = Arc::new(AtomicBool::new(false));
+    // Several remote sources push as fast as they can while the callback runs.
+    let pushers: Vec<_> = (0..4)
+        .map(|n| {
+            let (sink, stop) = (sink.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let burst = vec![1000i16; 4800];
+                while !stop.load(Ordering::SeqCst) {
+                    sink.push(&format!("src{n}"), &burst);
+                }
+            })
+        })
+        .collect();
+    let mut slowest = Duration::ZERO;
+    for _ in 0..500 {
+        let t = Instant::now();
+        let out = host.pull(FRAME_SAMPLES);
+        slowest = slowest.max(t.elapsed());
+        assert_eq!(out.len(), FRAME_SAMPLES);
+    }
+    stop.store(true, Ordering::SeqCst);
+    for p in pushers {
+        p.join().unwrap();
+    }
+    println!("busy pushers: slowest playout callback {slowest:?}");
+    assert!(
+        slowest < Duration::from_millis(5),
+        "a playout callback took {slowest:?}"
+    );
+}
+
+#[test]
+fn dropping_the_watcher_ends_its_thread() {
+    let host = Fake::new();
+    let arc: Arc<dyn AudioHost> = Arc::new(host.clone());
+    let base = Arc::strong_count(&arc);
+    // The list never changes after the first message: only the stop signal can end the poller.
+    let watcher = watch_host(arc.clone(), Duration::from_secs(60));
+    assert!(watcher.recv_timeout(Duration::from_secs(2)).is_ok());
+    assert!(Arc::strong_count(&arc) > base, "the poller holds the host");
+    drop(watcher);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Arc::strong_count(&arc) > base && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        Arc::strong_count(&arc),
+        base,
+        "the poller thread is still running"
+    );
+}
+
+#[test]
+fn a_mic_with_no_default_to_fall_back_to_says_so() {
+    let host = Fake::new();
+    let mut mic = Mic::open_with(
+        config(&host, Apm::default(), embedded()),
+        Some(DeviceId("usb".into())),
+        NoiseMode::Off,
+    )
+    .unwrap();
+    let mut ev = mic.take_events().unwrap();
+    host.remove_default_input();
+    host.unplug("usb");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut seen = Vec::new();
+    while seen.is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+        seen = events(&mut ev);
+    }
+    assert_eq!(seen, vec![MediaEvent::MicLost]);
+}
+
+#[test]
+fn the_device_latencies_set_the_apm_stream_delay() {
+    let host = Fake::new();
+    host.set_latency(20, 15);
+    let apm = Apm::default();
+    let _speaker = Speaker::open_with(Arc::new(host.clone()), apm.clone(), None, None).unwrap();
+    let _mic =
+        Mic::open_with(config(&host, apm.clone(), embedded()), None, NoiseMode::Off).unwrap();
+    // The delay is applied with the first captured frame once both workers have read the latencies.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while apm.applied_delay_ms() != Some(35) && Instant::now() < deadline {
+        host.push(&vec![0i16; FRAME_SAMPLES]);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(apm.applied_delay_ms(), Some(35));
+    // A changed latency follows.
+    host.set_latency(20, 40);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while apm.applied_delay_ms() != Some(60) && Instant::now() < deadline {
+        host.push(&vec![0i16; FRAME_SAMPLES]);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(apm.applied_delay_ms(), Some(60));
 }
 
 #[test]

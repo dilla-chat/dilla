@@ -122,8 +122,8 @@ pub struct Call {
     local: Option<LocalAudioTrack>,
     apm: Apm,
     host: Arc<dyn AudioHost>,
-    capture: Option<capture::Mic>,
-    speaker: Option<Speaker>,
+    capture: Option<Arc<capture::Mic>>,
+    speaker: Option<Arc<Speaker>>,
     events_tx: mpsc::UnboundedSender<MediaEvent>,
     events: Mutex<Option<mpsc::UnboundedReceiver<MediaEvent>>>,
     levels: watch::Receiver<RemoteLevels>,
@@ -270,12 +270,12 @@ impl Call {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         // The speaker first: it gives the microphone's echo canceller its reference.
         let speaker = if options.playout {
-            Some(Speaker::open_with(
+            Some(Arc::new(Speaker::open_with(
                 host.clone(),
                 apm.clone(),
                 Some(events_tx.clone()),
                 None,
-            )?)
+            )?))
         } else {
             None
         };
@@ -292,7 +292,7 @@ impl Call {
             media.clone(),
             levels_tx,
             tails.clone(),
-            speaker.as_ref().map(Speaker::sink),
+            speaker.as_ref().map(|s| s.sink()),
         ))];
 
         let mut call = Call {
@@ -352,7 +352,7 @@ impl Call {
                         }
                     }));
                 }
-                self.capture = Some(mic);
+                self.capture = Some(Arc::new(mic));
                 // The device chain has processed the frames (echo, gain, noise): the feeder only
                 // mutes and forwards.
                 let source = native_source();
@@ -406,7 +406,9 @@ impl Call {
                 ));
             }
         }
-        if let Some((frames, processor, source)) = feeder {
+        if let Some((mut frames, processor, source)) = feeder {
+            // Frames captured while the join was under way are stale: the feeder starts empty.
+            while frames.try_recv().is_ok() {}
             tasks.push(tokio::spawn(feed_pcm(
                 frames,
                 processor,
@@ -422,19 +424,32 @@ impl Call {
     /// default) and its noise mode under the same track and sender, so the sender's transformer
     /// and its binding stay. Every [`NoiseMode`] is accepted; the mode that runs is returned
     /// (`Standard` when `Enhanced` could not load, with [`MediaEvent::EnhancedUnavailable`]).
-    pub fn set_mic(&self, id: Option<&str>, noise: NoiseMode) -> Result<NoiseMode, MediaError> {
-        let capture = self.capture.as_ref().ok_or_else(|| {
+    pub async fn set_mic(
+        &self,
+        id: Option<&str>,
+        noise: NoiseMode,
+    ) -> Result<NoiseMode, MediaError> {
+        let capture = self.capture.clone().ok_or_else(|| {
             MediaError::Unsupported("this call does not publish a device microphone".into())
         })?;
-        capture.switch(id.map(|i| DeviceId(i.to_owned())), noise)
+        let device = id.map(|i| DeviceId(i.to_owned()));
+        // The switch waits for the capture worker (which may load the enhanced model): never on
+        // an async worker thread.
+        tokio::task::spawn_blocking(move || capture.switch(device, noise))
+            .await
+            .map_err(|e| MediaError::Audio(e.to_string()))?
     }
 
     /// Plays on another output device (`None`: the system default).
-    pub fn set_speaker(&self, id: Option<&str>) -> Result<(), MediaError> {
-        self.speaker
-            .as_ref()
-            .ok_or_else(|| MediaError::Unsupported("this call does not play audio".into()))?
-            .switch(id.map(|i| DeviceId(i.to_owned())))
+    pub async fn set_speaker(&self, id: Option<&str>) -> Result<(), MediaError> {
+        let speaker = self
+            .speaker
+            .clone()
+            .ok_or_else(|| MediaError::Unsupported("this call does not play audio".into()))?;
+        let device = id.map(|i| DeviceId(i.to_owned()));
+        tokio::task::spawn_blocking(move || speaker.switch(device))
+            .await
+            .map_err(|e| MediaError::Audio(e.to_string()))?
     }
 
     /// What the audio devices did that the user should see ([`MediaEvent`]), once.

@@ -5,9 +5,10 @@
 //!
 //! One [`Apm`] is shared by a call's microphone ([`crate::capture::Mic`], the capture side) and
 //! its speaker ([`crate::playout::Speaker`], the render side: every frame that is played is handed
-//! over as the echo reference). The capture side runs on the microphone worker thread and the
-//! render side in the playout callback; the short critical sections serialise on one mutex.
+//! over as the echo reference). Both sides run on worker threads, never in a device's real-time
+//! callback; the short critical sections serialise on one mutex.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use livekit::webrtc::native::apm::AudioProcessingModule;
@@ -18,7 +19,20 @@ use crate::noise::{FRAME_SAMPLES, RATE};
 struct Inner {
     module: AudioProcessingModule,
     noise_suppression: bool,
+    /// The stream delay last handed to the module (`None`: not yet, or the module was rebuilt).
+    applied_delay_ms: Option<u32>,
 }
+
+struct Shared {
+    inner: Mutex<Inner>,
+    /// The devices' own latencies, as the host reports them (the capture stream's age of a sample,
+    /// the render stream's time to the speaker). Their sum is the stream delay AEC3 starts from.
+    capture_ms: AtomicU32,
+    render_ms: AtomicU32,
+}
+
+/// libwebrtc rejects a delay beyond this.
+const MAX_DELAY_MS: u32 = 500;
 
 fn build(noise_suppression: bool) -> AudioProcessingModule {
     // Echo cancellation, gain control and the high-pass filter always; noise suppression only for
@@ -28,7 +42,7 @@ fn build(noise_suppression: bool) -> AudioProcessingModule {
 
 #[derive(Clone)]
 pub struct Apm {
-    inner: Arc<Mutex<Inner>>,
+    shared: Arc<Shared>,
 }
 
 impl Default for Apm {
@@ -40,15 +54,20 @@ impl Default for Apm {
 impl Apm {
     pub fn new(noise_suppression: bool) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(Inner {
-                module: build(noise_suppression),
-                noise_suppression,
-            })),
+            shared: Arc::new(Shared {
+                inner: Mutex::new(Inner {
+                    module: build(noise_suppression),
+                    noise_suppression,
+                    applied_delay_ms: None,
+                }),
+                capture_ms: AtomicU32::new(0),
+                render_ms: AtomicU32::new(0),
+            }),
         }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+        self.shared.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     /// Switches the standard noise suppressor on or off. A change rebuilds the module (the echo
@@ -58,13 +77,41 @@ impl Apm {
         if inner.noise_suppression != on {
             inner.module = build(on);
             inner.noise_suppression = on;
+            inner.applied_delay_ms = None;
         }
+    }
+
+    /// The capture device's latency (the age of a sample when its callback runs).
+    pub fn set_capture_latency_ms(&self, ms: u32) {
+        self.shared.capture_ms.store(ms, Ordering::Relaxed);
+    }
+
+    /// The render device's latency (from the callback to the sound leaving the speaker).
+    pub fn set_render_latency_ms(&self, ms: u32) {
+        self.shared.render_ms.store(ms, Ordering::Relaxed);
+    }
+
+    /// The stream delay last given to the module: capture plus render latency, or `None` before
+    /// the first frame.
+    pub fn applied_delay_ms(&self) -> Option<u32> {
+        self.lock().applied_delay_ms
     }
 
     /// Processes one 10 ms microphone frame in place.
     pub fn process_capture(&self, frame: &mut [i16]) -> Result<(), MediaError> {
         check(frame)?;
-        self.lock()
+        let delay = (self.shared.capture_ms.load(Ordering::Relaxed)
+            + self.shared.render_ms.load(Ordering::Relaxed))
+        .min(MAX_DELAY_MS);
+        let mut inner = self.lock();
+        if inner.applied_delay_ms != Some(delay) {
+            inner
+                .module
+                .set_stream_delay_ms(delay as i32)
+                .map_err(|e| MediaError::Audio(e.message))?;
+            inner.applied_delay_ms = Some(delay);
+        }
+        inner
             .module
             .process_stream(frame, RATE as i32, 1)
             .map_err(|e| MediaError::Audio(e.message))

@@ -22,6 +22,7 @@ pub mod devices;
 pub mod ffi;
 pub mod noise;
 pub mod playout;
+pub mod ring;
 pub mod room;
 pub mod transform;
 
@@ -34,6 +35,12 @@ pub enum MediaEvent {
     EnhancedUnavailable,
     /// A microphone or speaker went away (or was never there) and the system default took over.
     DevicesChanged,
+    /// The microphone is gone and there is no default to take over: nothing is captured.
+    MicLost,
+    /// The speaker is gone and there is no default to take over: nothing is played.
+    SpeakerLost,
+    /// The enhanced noise processor failed on a frame: that frame was silenced.
+    EnhancedFailed,
 }
 
 /// The call group's media keys, as `ClientCore::call_media_epoch` gives them for each epoch.
