@@ -10,6 +10,8 @@ use image::Rgba;
 const EXACT: Tolerance = Tolerance {
     max_delta: 0,
     max_pct: 0.0,
+    chrome_max_delta: 0,
+    chrome_max_pct: 0.0,
 };
 
 fn workspace_root() -> PathBuf {
@@ -85,6 +87,8 @@ fn one_pixel_over_tolerance_fails() {
     let tolerance = Tolerance {
         max_delta: 2,
         max_pct: 0.0,
+        chrome_max_delta: 0,
+        chrome_max_pct: 0.0,
     };
 
     let mut within = grey(40, 30, 120);
@@ -106,6 +110,8 @@ fn one_pixel_over_tolerance_fails() {
     let lenient = Tolerance {
         max_delta: 2,
         max_pct: 0.1,
+        chrome_max_delta: 0,
+        chrome_max_pct: 0.0,
     };
     assert_parity_with(&over, &reference, lenient).unwrap();
 }
@@ -133,10 +139,19 @@ fn scale_mismatch_fails() {
 }
 
 #[test]
-fn tolerance_file_ships_exact_placeholders() {
-    for os in [Os::Linux, Os::MacOs, Os::Windows] {
+fn tolerance_file_ships_measured_linux_and_exact_placeholders() {
+    for os in [Os::MacOs, Os::Windows] {
         assert_eq!(tolerance_for(os).unwrap(), EXACT);
     }
+    assert_eq!(
+        tolerance_for(Os::Linux).unwrap(),
+        Tolerance {
+            max_delta: 64,
+            max_pct: 0.5,
+            chrome_max_delta: 16,
+            chrome_max_pct: 0.2,
+        }
+    );
     let dir = tempfile::tempdir().unwrap();
     let image = grey(8, 8, 9);
     assert_parity(&image, &reference_file(dir.path(), &image), Os::current()).unwrap();
