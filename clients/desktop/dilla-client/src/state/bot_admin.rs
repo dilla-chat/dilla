@@ -684,6 +684,10 @@ pub fn player_time(seconds: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
+/// The Go bot's caps (`internal/bot/music/queue.go`): upcoming tracks per channel, and bytes of each metadata field.
+pub const MAX_QUEUE: usize = 500;
+pub const MAX_METADATA_BYTES: usize = 512;
+
 const MUSIC_SHAPE: DecodeError = DecodeError("malformed music snapshot");
 
 /// The 16 bytes of 32 lower-case hex digits.
@@ -714,7 +718,13 @@ fn music_track(v: &Value) -> Result<Option<MusicTrack>, DecodeError> {
     if provider != "youtube" || !is_video_id(&canonical) || !lower_hex(&item, 32) {
         return Err(DecodeError("unsupported music track"));
     }
-    let album = text(&row[5])?;
+    let (title, artist, album) = (text(&row[3])?, text(&row[4])?, text(&row[5])?);
+    if [&title, &artist, &album]
+        .iter()
+        .any(|f| f.len() > MAX_METADATA_BYTES)
+    {
+        return Err(DecodeError("music metadata too long"));
+    }
     // Slot 7 is the requester the Bot recorded (a user id; other markers, such as a search placeholder, are not a person).
     let requester = row[7]
         .as_text()
@@ -723,8 +733,8 @@ fn music_track(v: &Value) -> Result<Option<MusicTrack>, DecodeError> {
         .map(UserId);
     Ok(Some(MusicTrack {
         id: item,
-        title: text(&row[3])?,
-        artist: text(&row[4])?,
+        title,
+        artist,
         album: (!album.is_empty()).then_some(album),
         duration_ms: u53(&row[6])?,
         requester,
@@ -743,9 +753,11 @@ pub fn decode_music_snapshot(data: &[u8], now_ms: u64) -> Result<MusicSnapshot, 
     }
     let revision = uint(&row[1])?;
     let track = music_track(&row[2])?;
-    let queue = row[3]
-        .as_array()
-        .ok_or(MUSIC_SHAPE)?
+    let queue_rows = row[3].as_array().ok_or(MUSIC_SHAPE)?;
+    if queue_rows.len() > MAX_QUEUE {
+        return Err(DecodeError("music queue too long"));
+    }
+    let queue = queue_rows
         .iter()
         .map(|t| music_track(t)?.ok_or(DecodeError("malformed music queue")))
         .collect::<Result<Vec<_>, _>>()?;
@@ -810,12 +822,18 @@ pub fn decode_music_search(data: &[u8]) -> Result<Vec<MusicSearchResult>, Decode
             if !text(&r[7])?.is_empty() {
                 return Err(DecodeError("malformed music search result"));
             }
-            let album = text(&r[5])?;
+            let (title, artist, album) = (text(&r[3])?, text(&r[4])?, text(&r[5])?);
+            if [&title, &artist, &album]
+                .iter()
+                .any(|f| f.len() > MAX_METADATA_BYTES)
+            {
+                return Err(DecodeError("music metadata too long"));
+            }
             Ok(MusicSearchResult {
                 track: MusicTrack {
                     id,
-                    title: text(&r[3])?,
-                    artist: text(&r[4])?,
+                    title,
+                    artist,
                     album: (!album.is_empty()).then_some(album),
                     duration_ms: u53(&r[6])?,
                     requester: None,

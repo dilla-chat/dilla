@@ -437,6 +437,66 @@ fn search_results_have_stable_ids_and_a_watch_address() {
     assert!(decode_music_search(&forged).is_err());
 }
 
+fn snapshot_with(title: &str, queue: Vec<Value>) -> Vec<u8> {
+    let track = arr_of(vec![
+        t(&hex_of(1)),
+        t("youtube"),
+        t("abcdefghijk"),
+        t(title),
+        t("A"),
+        t(""),
+        u(1),
+        u(0),
+    ]);
+    arr_of(vec![
+        u(1),
+        u(1),
+        track,
+        arr_of(queue),
+        u(0),
+        u(0),
+        u(50),
+        u(0),
+        u(0),
+        u(0),
+    ])
+    .encode()
+}
+
+#[test]
+fn metadata_and_queue_are_capped_as_the_go_bot_caps_them() {
+    // 512 bytes of metadata pass, 513 are refused (internal/bot/music/queue.go MaxMetadataBytes).
+    assert!(decode_music_snapshot(&snapshot_with(&"x".repeat(512), vec![]), 0).is_ok());
+    assert!(decode_music_snapshot(&snapshot_with(&"x".repeat(513), vec![]), 0).is_err());
+    // 500 upcoming tracks pass, 501 are refused (QueueLimit).
+    let queued = |n: usize| {
+        (0..n)
+            .map(|_| track_row(&hex_of(2), "abcdefghijk", Value::Null))
+            .collect::<Vec<_>>()
+    };
+    assert!(decode_music_snapshot(&snapshot_with("T", queued(500)), 0).is_ok());
+    assert!(decode_music_snapshot(&snapshot_with("T", queued(501)), 0).is_err());
+    // A search result obeys the same metadata cap.
+    let hit = |title: &str| {
+        arr_of(vec![
+            u(1),
+            arr_of(vec![arr_of(vec![
+                t("yt:abcdefghijk"),
+                t("youtube"),
+                t("abcdefghijk"),
+                t(title),
+                t("B"),
+                t(""),
+                u(1),
+                t(""),
+            ])]),
+        ])
+        .encode()
+    };
+    assert!(decode_music_search(&hit(&"x".repeat(512))).is_ok());
+    assert!(decode_music_search(&hit(&"x".repeat(513))).is_err());
+}
+
 #[test]
 fn the_player_time_is_m_ss() {
     assert_eq!(player_time(0.0), "0:00");

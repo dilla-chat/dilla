@@ -214,7 +214,7 @@ fn app_answer(request_id: [u8; 16], answer: &SealedAnswer) -> Result<BotResult, 
             revision: None,
             data: Vec::new(),
         }),
-        None => Err(refused(&code)),
+        None => Err(refused(&clean_code(&code))),
     }
 }
 
@@ -281,7 +281,10 @@ impl BotOperations {
         match self.transport.send(self.community, command).await {
             Ok(answer) => app_answer(request_id, &answer),
             Err(SendError::Timeout) => Err(OpError::Uncertain { request_id }),
-            Err(SendError::Refused { code, .. }) => Err(OpError::Refused { code, request_id }),
+            Err(SendError::Refused { code, .. }) => Err(OpError::Refused {
+                code: clean_code(&code),
+                request_id,
+            }),
         }
     }
 
@@ -392,11 +395,37 @@ pub struct RestartCounts {
 
 const RETRY_MAX_ATTEMPTS: u32 = 5;
 
+/// A refusal code as it may be shown: 1 to 32 of `A-Z`, `0-9` and `_`, else `E_UNKNOWN`. The Bot's answers and the
+/// instance's bodies are not trusted to carry text.
+pub fn clean_code(raw: &str) -> String {
+    let ok = (1..=32).contains(&raw.len())
+        && raw
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+    if ok {
+        raw.to_owned()
+    } else {
+        "E_UNKNOWN".to_owned()
+    }
+}
+
+/// An instance refusal as the error carries it: `CODE (status)` for an HTTP status, so a page can read both
+/// ([`split_refusal`]); the code is cleaned ([`clean_code`]).
 fn sync_err(e: ApiError) -> ClientError {
     if e.status == 0 && e.code == "E_NETWORK" {
         ClientError::Network(e.detail)
+    } else if e.status == 0 {
+        ClientError::Sync(clean_code(&e.code))
     } else {
-        ClientError::Sync(e.code)
+        ClientError::Sync(format!("{} ({})", clean_code(&e.code), e.status))
+    }
+}
+
+/// The code and the HTTP status of a [`ClientError::Sync`] text made by this module.
+pub fn split_refusal(text: &str) -> (&str, Option<u16>) {
+    match text.split_once(" (") {
+        Some((code, rest)) => (code, rest.strip_suffix(')').and_then(|n| n.parse().ok())),
+        None => (text, None),
     }
 }
 
@@ -443,7 +472,9 @@ impl BotAdmin {
     }
 
     /// [`Self::call`] with a body that is zeroized on drop (a step-up token is in it) and the idempotency key of the
-    /// request (a mutation without one gets a random key).
+    /// request (a mutation without one gets a random key). The caller's buffer is wiped when it drops; each attempt hands
+    /// the socket transport its own copy of the body (`SocketRequests::request` takes the bytes by value and queues them
+    /// in a plain `Vec` until the answer), and that copy is not wiped: it is outside this module.
     async fn call_with<R: Route>(
         inner: &Arc<Inner>,
         args: &[&str],
@@ -1101,33 +1132,41 @@ fn parse_cursor(hex_text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// The address of a create (`[webhook_id, url]`) or a rotate (`[url]`) answer. The text is moved into a zeroizing string
-/// and never named by an error.
+/// The address of a create (`[webhook_id, url]`) or a rotate (`[url]`) answer. What is wiped: the decoded text is
+/// *moved* (never copied) into the returned `Zeroizing` string, and an error never names it. What is not: the decoder
+/// reads the answer's bytes, which the caller holds in its own `Zeroizing` buffer (wiped when it drops), and the socket
+/// transport keeps the frame it received in a plain buffer until it drops it.
 fn webhook_address(
     body: &[u8],
     len: usize,
     url_at: usize,
     has_id: bool,
 ) -> Result<WebhookAddress, ClientError> {
-    let value = Value::decode(body).map_err(|_| decode_err(v::DecodeError("not CBOR")))?;
-    let f = v::arr(&value, len).map_err(decode_err)?;
+    let Value::Array(mut items) =
+        Value::decode(body).map_err(|_| decode_err(v::DecodeError("not CBOR")))?
+    else {
+        return Err(decode_err(v::DecodeError("not an array")));
+    };
+    if items.len() != len {
+        return Err(decode_err(v::DecodeError("an array of the wrong length")));
+    }
     let webhook_id = if has_id {
-        bin16(&f[0]).map_err(decode_err)?
+        bin16(&items[0]).map_err(decode_err)?
     } else {
         [0; 16]
     };
-    let url = f[url_at]
-        .as_text()
-        .ok_or_else(|| decode_err(v::DecodeError("not a text string")))?;
+    let Value::Text(url) = items.swap_remove(url_at) else {
+        return Err(decode_err(v::DecodeError("not a text string")));
+    };
     Ok(WebhookAddress {
         webhook_id,
-        url: Zeroizing::new(url.to_owned()),
+        url: Zeroizing::new(url),
     })
 }
 
 fn op_err(e: OpError) -> ClientError {
     match e {
-        OpError::Refused { code, .. } => ClientError::Sync(code),
+        OpError::Refused { code, .. } => ClientError::Sync(clean_code(&code)),
         OpError::Uncertain { .. } => ClientError::Sync("E_BOT_UNCERTAIN".to_owned()),
         OpError::Invalid => ClientError::Sync("E_ROUTE_INPUT".to_owned()),
     }
@@ -1346,6 +1385,42 @@ mod tests {
             !shown.contains("SECRET") && shown.contains("<secret>"),
             "{shown}"
         );
+    }
+
+    #[test]
+    fn a_refusal_code_is_capped_and_an_http_status_stays_in_the_error() {
+        assert_eq!(clean_code("E_FORBIDDEN"), "E_FORBIDDEN");
+        assert_eq!(clean_code(&"E".repeat(32)), "E".repeat(32));
+        for bad in ["", "e_lower", "E X", "E_\u{202e}EVIL", &"E".repeat(33)] {
+            assert_eq!(clean_code(bad), "E_UNKNOWN", "{bad:?}");
+        }
+        // A Bot answer's bare code is cleaned before it can be shown.
+        let t = fake(|_| {
+            Ok(SealedAnswer {
+                status: 500,
+                body: b"E_OK <b>hi</b>".to_vec(),
+            })
+        });
+        let ops = BotOperations::new(COMMUNITY, t);
+        let e = run(ops.request(BotRequest {
+            operation: 9,
+            ..BotRequest::default()
+        }))
+        .unwrap_err();
+        assert!(
+            matches!(e, OpError::Refused { ref code, .. } if code == "E_UNKNOWN"),
+            "{e:?}"
+        );
+        // An instance refusal keeps its status: a 403 reads as forbidden, a 409 as a conflict.
+        let forbidden = sync_err(ApiError::local(403, "E_WHATEVER", ""));
+        assert!(
+            matches!(&forbidden, ClientError::Sync(s) if split_refusal(s) == ("E_WHATEVER", Some(403)))
+        );
+        let odd = sync_err(ApiError::local(409, "not a code!", ""));
+        assert!(
+            matches!(&odd, ClientError::Sync(s) if split_refusal(s) == ("E_UNKNOWN", Some(409)))
+        );
+        assert_eq!(split_refusal("E_X"), ("E_X", None));
     }
 
     #[test]

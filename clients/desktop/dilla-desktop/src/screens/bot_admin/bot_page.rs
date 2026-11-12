@@ -3,14 +3,17 @@
 //! key, the Bot channels, and the webhooks.
 //!
 //! A webhook's address carries its secret: it is shown once, in its dialog, from a [`Zeroizing`] string that is dropped
-//! when the dialog closes; it is never kept in the slice and never logged. Enabling the Bot and saving its capabilities
+//! (and wiped) when the dialog closes; it is never kept in the slice and never logged. It is turned into text only inside
+//! the dialog's render, as an element of its own. GPUI's text system keeps a shared copy of the shown string (a plain
+//! `SharedString`, and its shaped-line cache) while the dialog is open and until the cache evicts it: that copy is not
+//! wiped, which is what the web client's show-once leaves in its DOM as well. Enabling the Bot and saving its capabilities
 //! need a fresh second factor: the step-up dialog is the factor area's (Task 26), which installs a [`StepUp`] the Save
 //! button asks; without one the page says so (`admin.bot.stepUpMissing`), as the web does when the factors are unknown.
 
 use std::rc::Rc;
 
-use dilla_client::features::bot_admin::new_request_id;
 use dilla_client::features::bot_admin::{BotAdmin, ReAdd};
+use dilla_client::features::bot_admin::{clean_code, new_request_id, split_refusal};
 use dilla_client::state::bot_admin::{BotWebhook, Installation, health_line};
 use dilla_client::state::{ChannelId, CommunityId};
 use dilla_client::{Client, ClientError};
@@ -89,17 +92,28 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// An error line: `E_FORBIDDEN` and a 403 read as the manager's refusal, a conflict as a stale page, the rest by code.
+/// The refusal code of an error, as it may be shown (`[A-Z0-9_]{1,32}`, else `E_UNKNOWN`), and its HTTP status if it has one.
+pub fn refusal_of(error: &ClientError) -> (String, Option<u16>) {
+    match error {
+        ClientError::Sync(text) => {
+            let (code, status) = split_refusal(text);
+            (clean_code(code), status)
+        }
+        ClientError::Network(_) => ("E_NETWORK".to_owned(), None),
+        _ => ("E_UNKNOWN".to_owned(), None),
+    }
+}
+
+/// An error line (BotSection.tsx `errorMessage`): `E_FORBIDDEN` or a 403 read as the manager's refusal, `E_CONFLICT` or a 409
+/// as a stale page, the rest by code.
 pub fn error_line(error: &ClientError) -> String {
-    let code = match error {
-        ClientError::Sync(code) => code.as_str(),
-        ClientError::Network(_) => "E_NETWORK",
-        _ => "E_UNKNOWN",
-    };
-    match code {
-        "E_FORBIDDEN" => t("admin.bot.error.forbidden").to_owned(),
-        "E_CONFLICT" => t("admin.bot.error.conflict").to_owned(),
-        other => tf("admin.bot.error.other", &[("code", other)]),
+    let (code, status) = refusal_of(error);
+    if code == "E_FORBIDDEN" || status == Some(403) {
+        t("admin.bot.error.forbidden").to_owned()
+    } else if code == "E_CONFLICT" || status == Some(409) {
+        t("admin.bot.error.conflict").to_owned()
+    } else {
+        tf("admin.bot.error.other", &[("code", &code)])
     }
 }
 
@@ -194,11 +208,7 @@ impl BotPage {
     }
 
     fn fail(&mut self, error: &ClientError) {
-        let code = match error {
-            ClientError::Sync(code) => code.clone(),
-            ClientError::Network(_) => "E_NETWORK".to_owned(),
-            _ => "E_UNKNOWN".to_owned(),
-        };
+        let (code, _) = refusal_of(error);
         self.error = Some(tf("bot.webhooks.error", &[("code", &code)]));
     }
 
@@ -296,10 +306,7 @@ impl BotPage {
                     None
                 }
                 Err(e) => {
-                    let code = match &e {
-                        ClientError::Sync(code) => code.clone(),
-                        _ => "E_UNKNOWN".to_owned(),
-                    };
+                    let (code, _) = refusal_of(&e);
                     Some((channel, tf("bot.channels.reAddError", &[("code", &code)])))
                 }
             };
@@ -930,9 +937,17 @@ impl BotPage {
                 .child(SharedString::from(
                     shown
                         .as_ref()
-                        .map(|(name, url)| format!("{name}: {}", url.as_str()))
+                        .map(|(name, _)| name.clone())
                         .unwrap_or_default(),
-                )),
+                ))
+                // The secret in an element of its own, built straight from the zeroizing string (one shared copy, no
+                // intermediate `String`); see the module doc for what that copy leaves behind.
+                .child(
+                    shown
+                        .as_ref()
+                        .map(|(_, url)| SharedString::from(url.as_str()))
+                        .unwrap_or_default(),
+                ),
         )
         .footer(
             Button::new(
@@ -1079,6 +1094,28 @@ mod tests {
         assert_eq!(state_key(3), "admin.bot.status.ready");
         assert_eq!(state_key(4), "admin.bot.status.disabled");
         assert_eq!(state_key(5), "admin.bot.status.failed");
+    }
+
+    #[test]
+    fn http_statuses_and_hostile_codes_read_as_botsection_reads_them() {
+        let forbidden = t("admin.bot.error.forbidden");
+        let conflict = t("admin.bot.error.conflict");
+        // BotSection.tsx errorMessage: a 403 is forbidden, a 409 a conflict, whatever the code.
+        assert_eq!(
+            error_line(&ClientError::Sync("E_WHATEVER (403)".into())),
+            forbidden
+        );
+        assert_eq!(
+            error_line(&ClientError::Sync("E_WHATEVER (409)".into())),
+            conflict
+        );
+        // A code that is not `[A-Z0-9_]{1,32}` is shown as E_UNKNOWN.
+        assert_eq!(
+            error_line(&ClientError::Sync("<script>alert(1)</script>".into())),
+            tf("admin.bot.error.other", &[("code", "E_UNKNOWN")])
+        );
+        let long = "E".repeat(33);
+        assert_eq!(refusal_of(&ClientError::Sync(long)).0, "E_UNKNOWN");
     }
 
     #[test]

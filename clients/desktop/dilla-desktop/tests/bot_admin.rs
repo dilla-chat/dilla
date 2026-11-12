@@ -3,10 +3,15 @@
 //! the Bot and Music pages' own tests (the one-time webhook address, the capability mask) are in
 //! `src/screens/bot_admin/*.rs`.
 //!
-//! Not here, with the reason (the report lists each):
-//! - the parity tests `parity_bot_admin_*` and `parity_music_*`: the fixture schema (`dilla-client/src/testing/spec.rs`,
-//!   Task 5's) has no Bot installation, webhook or player, the shooter cannot seed them, and the app refuses the settings
-//!   routes (`fixture::screen_of`) until the settings frame is wired;
+//! Parity (S4): `parity_bot_admin_{health_channels,music}[_b]` draw the Bot and Music pages with the Bot NOT installed (the
+//! fixture schema, `dilla-client/src/testing/spec.rs`, cannot seed an installation) against references shot from the web
+//! client. They are `#[ignore]`d until the shared components (section-header sub-line wrap, toggle offset, row hint wrap)
+//! and the real settings host land; the last run was 2.85 %, 2.85 %, 1.01 % and 1.31 % against 0.5 %.
+//!
+//! Not here (Task 28 adds a `-bot` capability to the test host and the fixture schema for them):
+//! - the installed-Bot fixtures: `bot-admin/health-channels` with an installation, Bot channels and webhooks;
+//!   `bot-admin/channel-toggle` (the Bot channel switch in the channel dialog); `bot-admin/webhook-post` (a post "via webhook");
+//!   `music/now-playing` (the dock player);
 //! - the behaviour tests that run the Bot (`bot_enabled_reaches_ready`, `webhook_post_appears`, `welcome_channel_greets_new_member`,
 //!   `music_text_never_executes`, `moderation_log_across_bot_restart`, `join_role_applied_on_join_and_rejoin`,
 //!   `self_role_panel_reaction_grant`, `warning_retrievable_from_bot_settings` and the six `bot-music` ones): they need the
@@ -222,25 +227,25 @@ fn parity(name: &str) {
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[ignore = "shared component parity (T6c) + server settings host"]
 fn parity_bot_admin_health_channels() {
     parity("bot-admin/health-channels.json");
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[ignore = "shared component parity (T6c) + server settings host"]
 fn parity_bot_admin_health_channels_b() {
     parity("bot-admin/health-channels-b.json");
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[ignore = "shared component parity (T6c) + server settings host"]
 fn parity_bot_admin_music() {
     parity("bot-admin/music.json");
 }
 
 #[test]
-#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+#[ignore = "shared component parity (T6c) + server settings host"]
 fn parity_bot_admin_music_b() {
     parity("bot-admin/music-b.json");
 }
