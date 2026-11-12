@@ -28,10 +28,9 @@ async fn factor_setup_clears_after_factor_completed() {
     let alice = sign_up_with(&host, &invite, "alice", "factor", true).await;
     clear_session(&alice);
     let (target, _) = key_package_limits(&host).await;
-    let a = start(&alice).await;
     // Every snapshot from the start on: the owed account starts in FactorSetup with no gateway (no ready, never
     // online), and a completion without a factor (the instance still finds one owed) leaves it there.
-    let mut snapshots = a.snapshots();
+    let (a, mut snapshots) = start_observed(&alice).await;
     let first = snapshots.recv().await.unwrap();
     assert_eq!(first.account.phase, AccountPhase::FactorSetup);
     a.factor_completed();

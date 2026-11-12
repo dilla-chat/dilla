@@ -393,6 +393,16 @@ pub async fn start(p: &Person) -> Client {
         .unwrap()
 }
 
+/// [`start`], with every snapshot the client ever publishes, its first included (`Client::start_observed`).
+pub async fn start_observed(
+    p: &Person,
+) -> (Client, tokio::sync::mpsc::UnboundedReceiver<Arc<AppState>>) {
+    let (cfg, kc) = (p.cfg.clone(), p.kc.clone());
+    tokio::task::spawn_blocking(move || Client::start_observed(cfg, kc).expect("client starts"))
+        .await
+        .unwrap()
+}
+
 /// Stops a client off the test's runtime (its drop shuts its own runtime down) and waits a moment for its socket to go.
 pub async fn stop(client: Client) {
     tokio::task::spawn_blocking(move || client.stop())

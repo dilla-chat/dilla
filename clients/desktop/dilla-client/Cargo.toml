@@ -50,6 +50,11 @@ open = "5.4.5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 [dev-dependencies]
+# Every test target builds with the `testing` feature (Client::snapshots, the feed fault hooks), so a plain
+# `cargo test -p dilla-client` and `clippy --all-targets` compile the tests gated on it instead of skipping them.
+dilla-client = { path = ".", features = ["testing"] }
+# A paused clock for the removal gate's retry test (tokio is already a dependency; only the feature is new).
+tokio = { version = "1", features = ["test-util"] }
 # The real-dillad tests enrol an account the way every native peer does.
 dilla-testkit = { path = "../../../testkit" }
 # RFC 6238 for the sign-in tests; both are already in the lock (the testkit's second factor uses them).

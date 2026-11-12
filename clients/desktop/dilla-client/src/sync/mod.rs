@@ -1168,9 +1168,9 @@ impl Engine {
 
     /// Reads every active community group's removal feed, each on its own lane, and answers once all of them have run:
     /// a recovery that ingested anything reports its group changed. A failure is left for the next apply, ready or open.
-    pub async fn recover_removals_all(self: &Arc<Self>) -> HashSet<Gid> {
+    pub async fn recover_removals_all(self: &Arc<Self>) -> HashMap<Gid, removals::FeedFailure> {
         if self.stopped() {
-            return HashSet::new();
+            return HashMap::new();
         }
         let groups = self
             .groups()
@@ -1182,39 +1182,23 @@ impl Engine {
         self.recover_removals_of(groups).await
     }
 
-    /// Reads the removal feed of each of `groups` on its own lane; answers those whose feed is still unread: a read
-    /// that failed, or a group that could not be read now (a commit of its own pending, a resync due). A group that is
-    /// gone or no community group needs no read. Each group read is reported changed.
-    pub async fn recover_removals_of(self: &Arc<Self>, groups: Vec<Gid>) -> HashSet<Gid> {
+    /// Reads the removal feed of each of `groups` on its own lane; answers those whose feed is still unread, with why
+    /// ([`removals::FeedFailure`]). A group that is not active (registering, joining, waiting for a resync) is not read
+    /// and not held back: its channel shows that state, as in TS. A group with a commit of its own pending is a transient
+    /// failure (the core ingests only a settled group). A lost leaf (404 on an active group) is resynced and its feed
+    /// read once more (engine.ts `openChannel`). Each group read is reported changed.
+    pub async fn recover_removals_of(
+        self: &Arc<Self>,
+        groups: Vec<Gid>,
+    ) -> HashMap<Gid, removals::FeedFailure> {
         let jobs: Vec<_> = groups
             .into_iter()
             .map(|g| {
                 let this = Arc::clone(self);
                 async move {
                     let lane = Arc::clone(&this.lanes);
-                    let read = lane
-                        .run(&key(&g), async {
-                            if this.stopped() {
-                                return false;
-                            }
-                            let Some(row) = this.row(g).await else {
-                                return true;
-                            };
-                            if row.kind != 0 || row.community_id.is_none() || row.state == 4 {
-                                return true;
-                            }
-                            if !this.is_community_group(g).await {
-                                return false;
-                            }
-                            // Reported whatever was ingested: a trust refresh on the way may have released held rows.
-                            let ok = this.recover_removals(g).await.is_ok();
-                            if ok {
-                                this.hooks.group_changed(g);
-                            }
-                            ok
-                        })
-                        .await;
-                    (!read).then_some(g)
+                    let read = lane.run(&key(&g), this.clone().feed_read(g)).await;
+                    read.err().map(|why| (g, why))
                 }
             })
             .collect();
@@ -1225,6 +1209,43 @@ impl Engine {
             .into_iter()
             .flatten()
             .collect()
+    }
+
+    /// One group's read for [`Engine::recover_removals_of`], on its lane.
+    async fn feed_read(self: Arc<Self>, g: Gid) -> Result<(), removals::FeedFailure> {
+        use removals::FeedFailure;
+        if self.stopped() {
+            return Err(FeedFailure::Transient("E_SYNC_STOPPED".into()));
+        }
+        let Some(row) = self.row(g).await else {
+            return Ok(());
+        };
+        if row.kind != 0 || row.community_id.is_none() || row.state != 2 {
+            return Ok(());
+        }
+        if row.pending_commit {
+            return Err(FeedFailure::Transient("E_COMMIT_PENDING".into()));
+        }
+        let read = match self.recover_removals(g).await {
+            Err(e) if self.membership_lost(g, &e).await => {
+                // engine.ts openChannel: a device that rejoined before its catch-up noticed its Remove is refused the
+                // member-only feed with the 404 of a lost leaf; one resync, then the feed is read again.
+                if !self.clone().resync_group(g, true).await {
+                    return Err(removals::classify(&e));
+                }
+                self.st().heal_blocked.remove(&g);
+                self.recover_removals(g).await
+            }
+            other => other,
+        };
+        match read {
+            Ok(_) => {
+                // Reported whatever was ingested: a trust refresh on the way may have released held rows.
+                self.hooks.group_changed(g);
+                Ok(())
+            }
+            Err(e) => Err(removals::classify(&e)),
+        }
     }
 
     pub fn request_catch_up(self: &Arc<Self>, g: Gid) {

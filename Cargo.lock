@@ -2061,6 +2061,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "ciborium",
+ "dilla-client",
  "dilla-core",
  "dilla-testkit",
  "dirs 6.0.0",

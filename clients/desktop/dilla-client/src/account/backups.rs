@@ -81,6 +81,9 @@ pub struct OwnList {
 #[async_trait::async_trait]
 pub trait ReadyPort: BackupPort {
     async fn refresh_own_list(&self) -> Result<OwnList, BackupError>;
+    /// controller.ts `core.identity().phase === 2`: the store holds a finished sign-up or sign-in. Only then is a
+    /// revoking answer a revocation (an enrolment in progress answers the same codes for its own reasons).
+    async fn identity_ready(&self) -> bool;
 }
 
 /// How a ready's backup pass ended.
@@ -109,8 +112,12 @@ pub async fn after_ready(port: &dyn ReadyPort, confirmed: &Mutex<Option<Vec<u8>>
         let own = match port.refresh_own_list().await {
             Ok(own) => own,
             // controller.ts enterReady (requirement 12): a pending scope or an unlisted answer for a device the own list
-            // names is a revocation, not a failure to retry.
-            Err(e) if revokes(&e) => return Ok(AfterReady::Unlisted),
+            // names is a revocation, not a failure to retry. The steps around the refresh (ensure, repair) never reach
+            // that catch in TS: their wrappers swallow every error (controller.ts `ensureBackups`,
+            // `repairBackupState`), and so do these (the pass records them).
+            Err(e) if revokes(&e) && port.identity_ready().await => {
+                return Ok(AfterReady::Unlisted);
+            }
             Err(e) => return Err(e),
         };
         if !own.listed {
@@ -331,6 +338,14 @@ impl BackupPort for Live<'_> {
 
 #[async_trait::async_trait]
 impl ReadyPort for Live<'_> {
+    async fn identity_ready(&self) -> bool {
+        core_call(self.core, |c| c.identity())
+            .await
+            .ok()
+            .and_then(|raw| crate::sync::api::Identity::decode(&raw))
+            .is_some_and(|i| i.phase == 2)
+    }
+
     /// enrol.ts `refreshOwnDeviceList` (signup.ts `adoptServedList`): the served head; when it is newer than the list
     /// this device holds, the signed history after it, page by page, each adopted by the core (which checks every
     /// signature against the account's SSK).
@@ -467,6 +482,8 @@ mod tests {
         own: Mutex<Result<OwnList, u16>>,
         /// When set, the refresh fails with this.
         failure: Mutex<Option<BackupError>>,
+        /// The store's identity is in phase 2.
+        phase_ready: Mutex<bool>,
     }
 
     #[async_trait::async_trait]
@@ -493,6 +510,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ReadyPort for Ready {
+        async fn identity_ready(&self) -> bool {
+            *lock(&self.phase_ready)
+        }
         async fn refresh_own_list(&self) -> Result<OwnList, BackupError> {
             lock(&self.backups.log).push("GET /v1/users/me/device-list".into());
             if let Some(e) = lock(&self.failure).clone() {
@@ -515,6 +535,7 @@ mod tests {
             backups,
             own: Mutex::new(own),
             failure: Mutex::new(None),
+            phase_ready: Mutex::new(true),
         }
     }
 
@@ -593,6 +614,19 @@ mod tests {
                 "{paths:?}"
             );
         }
+        // Without a finished identity (phase 2) the same answer is no revocation: the refresh's failure is kept.
+        let r = ready(Ok(OwnList {
+            version: 1,
+            listed: true,
+        }));
+        *lock(&r.failure) = Some(BackupError::Core("E_DEVICE_UNLISTED".into()));
+        *lock(&r.phase_ready) = false;
+        let pass = after_ready(&r, &confirmed()).await;
+        assert!(
+            matches!(pass.outcome, Err(BackupError::Core(_))),
+            "{:?}",
+            pass.outcome
+        );
         // Any other refusal is a failure to retry, not a revocation.
         assert!(!revokes(&BackupError::Api(ApiError::local(
             403,

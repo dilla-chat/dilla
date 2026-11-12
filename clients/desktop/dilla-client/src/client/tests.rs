@@ -399,31 +399,103 @@ async fn a_poisoned_core_stops_the_engine_and_is_never_used_again() {
     );
 }
 
+fn transient(groups: &[[u8; 16]]) -> HashMap<[u8; 16], FeedFailure> {
+    groups
+        .iter()
+        .map(|g| (*g, FeedFailure::Transient("E_NETWORK".into())))
+        .collect()
+}
+
+fn refused(g: [u8; 16]) -> HashMap<[u8; 16], FeedFailure> {
+    HashMap::from([(
+        g,
+        FeedFailure::Terminal(TimelineUnavailable::FeedRefused {
+            status: 403,
+            code: "E_FORBIDDEN".into(),
+        }),
+    )])
+}
+
 /// Review fix (round 1): a ready's removal read carries its generation, so an older ready's answer cannot clear a newer
 /// one's gate; groups whose read failed stay unreadable and are retried with the key-package backoff until cleared.
 #[test]
 fn removal_gate_tokens_and_unread_groups() {
     let (g1, g2) = ([1u8; 16], [2u8; 16]);
     let mut gate = RemovalGate::default();
-    let one = gate.start();
-    let two = gate.start();
-    assert!(!gate.read(one, HashSet::new()), "an older ready's answer");
+    let (one, at_one) = gate.start();
+    let (two, at_two) = gate.start();
+    assert!(
+        !gate.read(one, (at_one, HashMap::new())),
+        "an older ready's answer"
+    );
     assert!(!gate.readable(&g1), "the newer ready's read is still out");
-    assert!(gate.read(two, HashSet::from([g2])));
+    assert!(gate.read(two, (at_two, transient(&[g2]))));
     assert!(gate.readable(&g1));
     assert!(!gate.readable(&g2), "its read failed");
-    let (wait, groups) = gate.next_retry().unwrap();
-    assert_eq!((wait, groups), (Duration::from_secs(5), vec![g2]));
+    let (wait, at, groups) = gate.next_retry().unwrap();
+    assert_eq!((wait, groups.clone()), (Duration::from_secs(5), vec![g2]));
     assert!(gate.next_retry().is_none(), "one retry at a time");
-    gate.retried(HashSet::from([g2]));
-    assert_eq!(gate.next_retry().unwrap().0, Duration::from_secs(10));
-    gate.retried(HashSet::new());
-    assert!(
-        !gate.readable(&g2),
-        "only a read that succeeded clears a group"
-    );
-    gate.cleared(&g2);
+    gate.retried(&groups, (at, transient(&[g2])));
+    let (wait, at, groups) = gate.next_retry().unwrap();
+    assert_eq!(wait, Duration::from_secs(10));
+    // A retry that read the group takes it off.
+    gate.retried(&groups, (at, HashMap::new()));
     assert!(gate.readable(&g2));
     assert!(gate.next_retry().is_none());
     assert_eq!(gate.delay_ms, 0, "the backoff starts again");
+}
+
+/// Review fix (round 2): a terminal failure (a permanent 403) is the channel's state and is not retried; a transient one
+/// still is. With tokio's clock paused and advanced past every backoff step, no retry is ever due for the refused group.
+#[tokio::test(start_paused = true)]
+async fn a_refused_feed_is_terminal_and_never_retried() {
+    let (g1, g2) = ([1u8; 16], [2u8; 16]);
+    let mut gate = RemovalGate::default();
+    let (generation, at) = gate.start();
+    let mut answers = refused(g1);
+    answers.extend(transient(&[g2]));
+    assert!(gate.read(generation, (at, answers)));
+    assert!(!gate.readable(&g1) && !gate.readable(&g2));
+    assert!(matches!(
+        gate.failed.get(&g1),
+        Some(TimelineUnavailable::FeedRefused { status: 403, .. })
+    ));
+    // Only the transient group is retried, however long the clock runs.
+    for _ in 0..12 {
+        let Some((wait, at, groups)) = gate.next_retry() else {
+            break;
+        };
+        assert_eq!(groups, vec![g2], "the refused group is never retried");
+        tokio::time::advance(wait).await;
+        gate.retried(&groups, (at, transient(&[g2])));
+    }
+    assert!(gate.failed.contains_key(&g1));
+    // A transient answer for g2 now refused for good stops its retries too.
+    gate.retried(&[], (gate.clock, refused(g2)));
+    assert!(gate.unread.is_empty());
+    assert!(gate.next_retry().is_none(), "nothing is retried any more");
+    // A later successful read (an apply, an open, the next ready) clears either.
+    gate.cleared(&g1);
+    assert!(gate.readable(&g1));
+}
+
+/// Review fix (round 2): an apply's own read can clear a group before the ready's read (which started earlier) reports
+/// it unread; that stale answer must not gate the group again.
+#[test]
+fn a_clearing_after_a_read_started_wins_over_its_answer() {
+    let g = [3u8; 16];
+    let mut gate = RemovalGate::default();
+    let (generation, started) = gate.start();
+    gate.cleared(&g);
+    assert!(gate.read(generation, (started, refused(g))));
+    assert!(gate.readable(&g), "the stale answer is skipped");
+    // A read that starts after the clearing is not stale.
+    let (generation, started) = gate.start();
+    assert!(gate.read(generation, (started, transient(&[g]))));
+    assert!(!gate.readable(&g));
+    // The same holds for a retry's answer.
+    let (_, at, groups) = gate.next_retry().unwrap();
+    gate.cleared(&g);
+    gate.retried(&groups, (at, transient(&[g])));
+    assert!(gate.readable(&g));
 }

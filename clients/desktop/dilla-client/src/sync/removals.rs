@@ -12,7 +12,7 @@
 //! `apply_hook`, before the group is reported changed), when a community channel is opened, on each `message.deleted`
 //! frame, and after every ready for every active community group ([`recover_moderation_removals`]).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use dilla_core::bot::RemovalProof;
@@ -21,6 +21,7 @@ use dilla_core::client::RemovalFeedEntry;
 use crate::client::Inner;
 use crate::http::routes as r;
 use crate::state::hex;
+use crate::state::messages::TimelineUnavailable;
 
 use super::SyncError;
 use super::api::{Api, ApiError, CoreHandle, with_core};
@@ -37,6 +38,48 @@ pub const PAGE_BUDGET: u32 = 8;
 pub struct RemovalPage {
     pub rows: Vec<RemovalFeedEntry>,
     pub next_revision: u64,
+}
+
+/// Why a feed read failed, sorted for the retry: a transient failure (the network, a 5xx, a 429, an unknown outcome, a
+/// history read racing a list change) is retried with the backoff; a terminal one (any other refusal, a feed that does
+/// not hold together, a removal the core will not verify) stops the retries and is shown as the channel's state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FeedFailure {
+    Transient(String),
+    Terminal(TimelineUnavailable),
+}
+
+/// Sorts a feed read's error ([`FeedFailure`]).
+pub fn classify(e: &SyncError) -> FeedFailure {
+    const TRANSIENT_LOCAL: &[&str] = &[
+        "E_NETWORK",
+        "E_OUTCOME_UNKNOWN",
+        "E_DEVICE_LIST_STALE",
+        "E_REMOVAL_SYNC_LIMIT",
+        "E_SYNC_STOPPED",
+    ];
+    match e {
+        SyncError::Stopped => FeedFailure::Transient("E_SYNC_STOPPED".into()),
+        SyncError::Api(a) if a.status == 0 && TRANSIENT_LOCAL.contains(&a.code.as_str()) => {
+            FeedFailure::Transient(a.code.clone())
+        }
+        SyncError::Api(a) if a.status >= 500 || a.status == 429 => {
+            FeedFailure::Transient(a.code.clone())
+        }
+        SyncError::Api(a) if a.status == 0 => {
+            FeedFailure::Terminal(TimelineUnavailable::FeedInvalid {
+                code: a.code.clone(),
+            })
+        }
+        SyncError::Api(a) => FeedFailure::Terminal(TimelineUnavailable::FeedRefused {
+            status: a.status,
+            code: a.code.clone(),
+        }),
+        SyncError::Core(c) => FeedFailure::Terminal(TimelineUnavailable::RemovalUnverified {
+            code: c.code.to_owned(),
+        }),
+        other => FeedFailure::Terminal(TimelineUnavailable::FeedInvalid { code: other.code() }),
+    }
 }
 
 fn feed_error(detail: &str) -> SyncError {
@@ -132,10 +175,10 @@ fn actors_of(
 
 async fn read_page(api: &Api, group: &[u8; 16], after: u64) -> Result<RemovalPage, SyncError> {
     #[cfg(feature = "testing")]
-    if faults::take(group) {
+    if let Some((status, code)) = faults::take(group) {
         return Err(SyncError::Api(ApiError::local(
-            0,
-            "E_NETWORK",
+            status,
+            code,
             "injected feed failure",
         )));
     }
@@ -224,17 +267,18 @@ async fn ingest_account_kind(core: &CoreHandle, user: [u8; 16], head: &[u8]) {
 /// shows the tombstones. The client runs it after every ready (a removal made while this device was away arrives with no
 /// `message.deleted` frame) and reads the timelines only after it, so a removed message's plaintext is never published.
 ///
-/// Answers the groups whose feed is still unread (a failed read, or a group that cannot be read now): the client keeps
-/// their timelines unpublished and retries them ([`retry_moderation_removals`]).
-pub(crate) async fn recover_moderation_removals(inner: &Inner) -> HashSet<[u8; 16]> {
+/// Answers the groups whose feed is still unread, with why ([`FeedFailure`]): the client keeps their timelines
+/// unpublished, retries the transient ones ([`retry_moderation_removals`]) and shows the terminal ones as the channel's
+/// state.
+pub(crate) async fn recover_moderation_removals(inner: &Inner) -> HashMap<[u8; 16], FeedFailure> {
     Arc::clone(inner.engine()).recover_removals_all().await
 }
 
-/// The retry of [`recover_moderation_removals`]' unread groups: answers those still unread.
+/// The retry of [`recover_moderation_removals`]' transient groups: answers those still unread.
 pub(crate) async fn retry_moderation_removals(
     inner: &Inner,
     groups: Vec<[u8; 16]>,
-) -> HashSet<[u8; 16]> {
+) -> HashMap<[u8; 16], FeedFailure> {
     Arc::clone(inner.engine()).recover_removals_of(groups).await
 }
 
@@ -245,26 +289,44 @@ pub mod faults {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    static FAIL: Mutex<Option<HashMap<[u8; 16], u32>>> = Mutex::new(None);
+    /// Per group: how many reads still fail, with what status and code, and how many were failed so far.
+    type Faults = HashMap<[u8; 16], (u32, u16, &'static str, u32)>;
+    static FAIL: Mutex<Option<Faults>> = Mutex::new(None);
 
-    /// The next `n` reads of `group`'s removal feed fail.
-    pub fn fail_next_feed_reads(group: [u8; 16], n: u32) {
+    fn faults() -> std::sync::MutexGuard<'static, Option<Faults>> {
         FAIL.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_or_insert_with(HashMap::new)
-            .insert(group, n);
     }
 
-    pub(super) fn take(group: &[u8; 16]) -> bool {
-        let mut fail = FAIL
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    /// The next `n` reads of `group`'s removal feed fail as an unreachable instance would (`E_NETWORK`).
+    pub fn fail_next_feed_reads(group: [u8; 16], n: u32) {
+        fail_next_feed_reads_with(group, n, 0, "E_NETWORK");
+    }
+
+    /// The next `n` reads of `group`'s removal feed are refused with `status` and `code` (0 for a local failure).
+    pub fn fail_next_feed_reads_with(group: [u8; 16], n: u32, status: u16, code: &'static str) {
+        faults()
+            .get_or_insert_with(HashMap::new)
+            .insert(group, (n, status, code, 0));
+    }
+
+    /// How many reads of `group`'s feed were failed so far.
+    pub fn failed_reads(group: [u8; 16]) -> u32 {
+        faults()
+            .as_ref()
+            .and_then(|m| m.get(&group))
+            .map_or(0, |f| f.3)
+    }
+
+    pub(super) fn take(group: &[u8; 16]) -> Option<(u16, &'static str)> {
+        let mut fail = faults();
         match fail.as_mut().and_then(|m| m.get_mut(group)) {
-            Some(n) if *n > 0 => {
+            Some((n, status, code, done)) if *n > 0 => {
                 *n -= 1;
-                true
+                *done += 1;
+                Some((*status, *code))
             }
-            _ => false,
+            _ => None,
         }
     }
 }
@@ -304,6 +366,54 @@ mod tests {
         assert!(decode_page(&page(&[(4, vec![1])], 6), 3, 250).is_err());
         assert!(decode_page(&page(&[], 4), 3, 250).is_err());
         assert!(decode_page(&page(&[(1, vec![1]), (2, vec![1])], 2), 0, 1).is_err());
+    }
+
+    /// Review fix (round 2): transient feed failures keep the retry; every other one is terminal and becomes the
+    /// channel's state.
+    #[test]
+    fn feed_failures_are_sorted_for_the_retry() {
+        let api = |status, code: &str| SyncError::Api(ApiError::local(status, code, ""));
+        for transient in [
+            api(0, "E_NETWORK"),
+            api(0, "E_OUTCOME_UNKNOWN"),
+            api(0, "E_DEVICE_LIST_STALE"),
+            api(503, "E_UNAVAILABLE"),
+            api(500, "E_INTERNAL"),
+            api(429, "E_RATE_LIMITED"),
+            SyncError::Stopped,
+        ] {
+            assert!(
+                matches!(classify(&transient), FeedFailure::Transient(_)),
+                "{transient:?}"
+            );
+        }
+        assert_eq!(
+            classify(&api(403, "E_FORBIDDEN")),
+            FeedFailure::Terminal(TimelineUnavailable::FeedRefused {
+                status: 403,
+                code: "E_FORBIDDEN".into()
+            })
+        );
+        assert!(matches!(
+            classify(&api(404, "E_NOT_FOUND")),
+            FeedFailure::Terminal(TimelineUnavailable::FeedRefused { status: 404, .. })
+        ));
+        assert_eq!(
+            classify(&feed_error("revision gap")),
+            FeedFailure::Terminal(TimelineUnavailable::FeedInvalid {
+                code: "E_REMOVAL_FEED".into()
+            })
+        );
+        let core = SyncError::Core(dilla_core::client::ClientError {
+            code: "E_CORE_INPUT",
+            detail: "moderator has no pinned user key".into(),
+        });
+        assert_eq!(
+            classify(&core),
+            FeedFailure::Terminal(TimelineUnavailable::RemovalUnverified {
+                code: "E_CORE_INPUT".into()
+            })
+        );
     }
 
     #[test]

@@ -27,6 +27,7 @@ use crate::state::channels::{
     channel_group, channel_group_state, decode_channels, decode_communities,
 };
 use crate::state::members::decode_members;
+use crate::state::messages::TimelineUnavailable;
 use crate::state::messages::{build_timeline, decode_outbox, decode_timeline};
 use crate::state::unread::{build_badges, decode_activity};
 use crate::state::{
@@ -35,6 +36,7 @@ use crate::state::{
 };
 use crate::store::{StoreError, open_store};
 use crate::sync::api::{Api, CoreHandle, Identity, SessionError, try_core};
+use crate::sync::removals::FeedFailure;
 use crate::sync::requests::SocketRequests;
 use crate::sync::{ConnectionEvent, Engine, ExpectedGroup, GroupRow, Membership, SyncHooks};
 
@@ -109,15 +111,18 @@ enum Update {
     FactorChecked(bool),
     /// A job of the engine or an action panicked without poisoning the core: the client fails, as for a poisoned core.
     Panicked,
-    /// The removal feeds of ready `generation` were read; `unread` are the groups whose feed is still unread.
+    /// The removal feeds of ready `generation` were read; the answers are the groups whose feed is still unread.
     RemovalsRead {
         generation: u64,
-        unread: HashSet<[u8; 16]>,
+        answers: FeedAnswers,
     },
     /// A group's removal feed was read to its end ([`SyncHooks::removals_read`]).
     RemovalsCleared([u8; 16]),
-    /// A retry of the unread feeds ended; these are still unread.
-    RemovalsRetried(HashSet<[u8; 16]>),
+    /// A retry of `groups`' feeds ended; the answers are those still unread.
+    RemovalsRetried {
+        groups: Vec<[u8; 16]>,
+        answers: FeedAnswers,
+    },
     /// The refreshed own device list leaves this device out (controller.ts `refreshOwnDeviceList` `!listed`): revoked.
     Unlisted,
 }
@@ -255,6 +260,28 @@ impl Client {
         kc: Arc<dyn Keychain>,
         options: GatewayOptions,
     ) -> Result<Client, ClientError> {
+        Self::start_tapped(cfg, kc, options, Taps::default())
+    }
+
+    /// Feature `testing`: [`Client::start`], with every snapshot it ever publishes also sent to the receiver (the first
+    /// one included), so a test can show that a value appeared in no snapshot at all.
+    #[cfg(feature = "testing")]
+    pub fn start_observed(
+        cfg: InstanceConfig,
+        kc: Arc<dyn Keychain>,
+    ) -> Result<(Client, mpsc::UnboundedReceiver<Arc<AppState>>), ClientError> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let taps = Taps::new(Mutex::new(vec![tx]));
+        let client = Self::start_tapped(cfg, kc, GatewayOptions::default(), taps)?;
+        Ok((client, rx))
+    }
+
+    fn start_tapped(
+        cfg: InstanceConfig,
+        kc: Arc<dyn Keychain>,
+        options: GatewayOptions,
+        taps: Taps,
+    ) -> Result<Client, ClientError> {
         let core: CoreHandle = Arc::new(Mutex::new(open_store(&cfg, kc.as_ref())?));
         let identity = {
             let guard = core
@@ -338,7 +365,6 @@ impl Client {
             user_id,
             device_id,
         );
-        let taps = Taps::default();
         let initial = AppState {
             account: crate::state::AccountState {
                 phase: if owed {
@@ -353,6 +379,8 @@ impl Client {
             ..AppState::default()
         };
         let (state_tx, state_rx) = watch::channel(Arc::new(initial.clone()));
+        // A tap set before the start gets the initial snapshot first (before the publisher can publish any other).
+        lock_taps(&taps).retain(|t| t.send(state_rx.borrow().clone()).is_ok());
         let link = Arc::new(Link {
             engine: engine.clone(),
             socket,
@@ -911,22 +939,54 @@ struct RemovalGate {
     /// The newest ready whose feeds are being read (a token: an older ready's answer does not clear a newer one).
     generation: u64,
     pending: Option<u64>,
+    /// Groups whose read failed transiently: retried with the backoff.
     unread: HashSet<[u8; 16]>,
+    /// Groups whose read failed for good: shown as the channel's state, not retried (a later ready reads them again).
+    failed: HashMap<[u8; 16], TimelineUnavailable>,
     delay_ms: u64,
     retrying: bool,
+    /// Orders the answers: each clearing is a tick, and a read's answer for a group cleared after the read started
+    /// (by an apply's or an open's own read) is stale.
+    clock: u64,
+    cleared_at: HashMap<[u8; 16], u64>,
 }
 
+/// The answer of one read of removal feeds: when it started ([`RemovalGate::clock`]) and what is still unread.
+type FeedAnswers = (u64, HashMap<[u8; 16], FeedFailure>);
+
 impl RemovalGate {
-    /// A ready's read starts: its generation.
-    fn start(&mut self) -> u64 {
+    /// A ready's read starts: its generation and the tick it starts at.
+    fn start(&mut self) -> (u64, u64) {
         self.generation += 1;
         self.pending = Some(self.generation);
-        self.generation
+        (self.generation, self.clock)
+    }
+
+    /// Takes a read's answers, skipping a group cleared since the read started.
+    fn apply(&mut self, (started, answers): FeedAnswers) {
+        for (g, why) in answers {
+            if self.cleared_at.get(&g).is_some_and(|at| *at > started) {
+                continue;
+            }
+            match why {
+                FeedFailure::Transient(_) => {
+                    self.failed.remove(&g);
+                    self.unread.insert(g);
+                }
+                FeedFailure::Terminal(why) => {
+                    self.unread.remove(&g);
+                    self.failed.insert(g, why);
+                }
+            }
+        }
+        if self.unread.is_empty() {
+            self.delay_ms = 0;
+        }
     }
 
     /// A ready's read ended: answers whether it was the newest one.
-    fn read(&mut self, generation: u64, unread: HashSet<[u8; 16]>) -> bool {
-        self.unread.extend(unread);
+    fn read(&mut self, generation: u64, answers: FeedAnswers) -> bool {
+        self.apply(answers);
         if self.pending == Some(generation) {
             self.pending = None;
             true
@@ -936,7 +996,10 @@ impl RemovalGate {
     }
 
     fn cleared(&mut self, group: &[u8; 16]) {
+        self.clock += 1;
+        self.cleared_at.insert(*group, self.clock);
         self.unread.remove(group);
+        self.failed.remove(group);
         if self.unread.is_empty() {
             self.delay_ms = 0;
         }
@@ -944,11 +1007,12 @@ impl RemovalGate {
 
     /// Whether `group`'s timeline may be read now.
     fn readable(&self, group: &[u8; 16]) -> bool {
-        self.pending.is_none() && !self.unread.contains(group)
+        self.pending.is_none() && !self.unread.contains(group) && !self.failed.contains_key(group)
     }
 
-    /// The next retry's wait and the groups it reads, unless one is out or nothing is unread.
-    fn next_retry(&mut self) -> Option<(Duration, Vec<[u8; 16]>)> {
+    /// The next retry's wait, the tick it starts at and the groups it reads, unless one is out or nothing transient
+    /// is unread.
+    fn next_retry(&mut self) -> Option<(Duration, u64, Vec<[u8; 16]>)> {
         if self.retrying || self.unread.is_empty() {
             return None;
         }
@@ -956,16 +1020,20 @@ impl RemovalGate {
         self.delay_ms = crate::account::keypackages::next_delay_ms(self.delay_ms);
         Some((
             Duration::from_millis(self.delay_ms),
+            self.clock,
             self.unread.iter().copied().collect(),
         ))
     }
 
-    fn retried(&mut self, still: HashSet<[u8; 16]>) {
+    /// A retry ended. Its groups are taken off first (a group that read is not in the answers), then its answers.
+    fn retried(&mut self, groups: &[[u8; 16]], answers: FeedAnswers) {
         self.retrying = false;
-        self.unread.extend(still);
-        if self.unread.is_empty() {
-            self.delay_ms = 0;
+        for g in groups {
+            if !answers.1.contains_key(g) {
+                self.unread.remove(g);
+            }
         }
+        self.apply(answers);
     }
 }
 
@@ -979,6 +1047,7 @@ impl Publisher {
             let mut groups: HashSet<[u8; 16]> = HashSet::new();
             let mut structure = false;
             let mut panicked = false;
+            let mut reread_all = false;
             for update in batch {
                 match update {
                     Update::Group(g) => {
@@ -1028,18 +1097,25 @@ impl Publisher {
                     Update::FactorChecked(owed) => self.factor_completed(owed),
                     Update::Panicked => panicked = true,
                     Update::Unlisted => self.sign_out(),
-                    Update::RemovalsRead { generation, unread } => {
-                        if self.removals.read(generation, unread) {
-                            groups.insert([0; 16]);
-                        }
+                    Update::RemovalsRead {
+                        generation,
+                        answers,
+                    } => {
+                        // The newest ready's read: every channel the gate held back is read now (its structure
+                        // load may have failed, and nothing else would read them).
+                        reread_all |= self.removals.read(generation, answers);
                         self.retry_removals();
                     }
                     Update::RemovalsCleared(g) => {
                         self.removals.cleared(&g);
                         groups.insert(g);
                     }
-                    Update::RemovalsRetried(still) => {
-                        self.removals.retried(still);
+                    Update::RemovalsRetried {
+                        groups: tried,
+                        answers,
+                    } => {
+                        self.removals.retried(&tried, answers);
+                        groups.extend(tried);
                         self.retry_removals();
                     }
                 }
@@ -1059,6 +1135,16 @@ impl Publisher {
             }
             if structure {
                 self.load_structure();
+            }
+            if reread_all {
+                let all: HashSet<[u8; 16]> = self
+                    .engine
+                    .groups()
+                    .await
+                    .iter()
+                    .map(|r| r.group_id)
+                    .collect();
+                groups.extend(all);
             }
             if !groups.is_empty() {
                 self.refresh_groups(&groups).await;
@@ -1245,10 +1331,13 @@ impl Publisher {
         // group changed first): the store may still hold a message removed while this device was away.
         let generation = removals.as_ref().map(|_| self.removals.start());
         tokio::spawn(async move {
-            if let (Some(inner), Some(generation)) = (removals, generation) {
+            if let (Some(inner), Some((generation, started))) = (removals, generation) {
                 let unread = crate::sync::removals::recover_moderation_removals(&inner).await;
                 drop(inner);
-                let _ = updates.send(Update::RemovalsRead { generation, unread });
+                let _ = updates.send(Update::RemovalsRead {
+                    generation,
+                    answers: (started, unread),
+                });
             }
             if let Ok(loaded) = load_structure(&api).await {
                 let _ = updates.send(Update::Loaded(Box::new(loaded)));
@@ -1259,7 +1348,7 @@ impl Publisher {
     /// Retries the unread removal feeds after the backoff (5 s doubling to 5 min, as a key-package publish); a feed
     /// read on the way (an apply, an open) clears its group without waiting.
     fn retry_removals(&mut self) {
-        let Some((wait, groups)) = self.removals.next_retry() else {
+        let Some((wait, started, groups)) = self.removals.next_retry() else {
             return;
         };
         let inner = self.inner.get().cloned();
@@ -1268,11 +1357,17 @@ impl Publisher {
             tokio::time::sleep(wait).await;
             let still = match inner.and_then(|w| w.upgrade()) {
                 Some(inner) => {
-                    crate::sync::removals::retry_moderation_removals(&inner, groups).await
+                    crate::sync::removals::retry_moderation_removals(&inner, groups.clone()).await
                 }
-                None => groups.into_iter().collect(),
+                None => groups
+                    .iter()
+                    .map(|g| (*g, FeedFailure::Transient("E_SYNC_STOPPED".into())))
+                    .collect(),
             };
-            let _ = updates.send(Update::RemovalsRetried(still));
+            let _ = updates.send(Update::RemovalsRetried {
+                groups,
+                answers: (started, still),
+            });
         });
     }
 
@@ -1332,13 +1427,23 @@ impl Publisher {
                 continue;
             };
             // A removal feed not read yet: the store may hold a message removed meanwhile. The timeline is shown as
-            // loading (no timeline), never with what the store holds.
+            // loading (no timeline), never with what the store holds; a feed that cannot be read is the channel's
+            // state (`messages.unavailable`), with why.
             if !self.removals.readable(&group.group_id) {
                 if self.removals.pending.is_none() {
                     self.state.timelines.remove(&id);
                 }
+                match self.removals.failed.get(&group.group_id) {
+                    Some(why) => {
+                        self.state.messages.unavailable.insert(id, why.clone());
+                    }
+                    None => {
+                        self.state.messages.unavailable.remove(&id);
+                    }
+                }
                 continue;
             }
+            self.state.messages.unavailable.remove(&id);
             let timeline = self.read_timeline(id, group_state, &group).await;
             if let Some(t) = timeline {
                 self.state.timelines.insert(id, t);
