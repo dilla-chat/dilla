@@ -200,7 +200,16 @@ pub fn attachment_cards(
                     _ => None,
                 };
                 let moving = ready(full, cx);
-                let shown = moving.clone().or_else(|| ready(thumb_key, cx));
+                let fixture = (!live)
+                    .then(|| {
+                        ctx.state
+                            .attachments
+                            .fixture_thumbs
+                            .get(&(a.name.clone(), a.size))
+                    })
+                    .flatten()
+                    .and_then(|b| ui::picture(b));
+                let shown = moving.clone().or_else(|| ready(thumb_key, cx)).or(fixture);
                 let badge = (gif && moving.is_none())
                     .then(|| SharedString::from(t("shell.attachment.gif")));
                 let w = if gif { GIF_W } else { IMAGE_W };

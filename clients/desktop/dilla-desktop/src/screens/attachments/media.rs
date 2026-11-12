@@ -64,7 +64,7 @@ impl AsRef<[u8]> for Bytes {
 enum Codec {
     Symphonia(Box<dyn Decoder>),
     Opus {
-        dec: opus_pure::OpusDecoder,
+        dec: Box<opus_pure::OpusDecoder>,
         channels: usize,
         /// The OpusHead pre-skip still to drop (in samples per channel at 48 kHz).
         skip: usize,
@@ -160,6 +160,7 @@ fn open_audio_inner(
             MediaError::Unsupported("an Opus track without its header".to_owned())
         })?;
         let dec = opus_pure::OpusDecoder::new(48_000, channels)
+            .map(Box::new)
             .map_err(|e| MediaError::Unsupported(e.to_string()))?;
         (
             Codec::Opus {
@@ -436,9 +437,12 @@ pub fn wipe_open_dir(instance_dir: &Path) {
     let _ = std::fs::remove_dir_all(open_dir(instance_dir));
 }
 
+/// A container's file extension and its signature check.
+type Container = (&'static str, fn(&[u8]) -> bool);
+
 /// The video containers handed to the system player, by exact MIME type: the web client's playable videos
 /// (derive.ts `PLAYABLE_VIDEO`) and the two phone formats a person most often sends. Anything else is refused.
-fn video_container(mime: &str) -> Option<(&'static str, fn(&[u8]) -> bool)> {
+fn video_container(mime: &str) -> Option<Container> {
     fn iso_bmff(b: &[u8]) -> bool {
         b.len() >= 12 && &b[4..8] == b"ftyp"
     }

@@ -165,7 +165,7 @@ pub fn image_format(b: &[u8]) -> Option<ImageFormat> {
 
 /// A picture GPUI may decode: one of the four inline types whose headers say all its frames fit `DECODE_BUDGET` (a
 /// decompression bomb is never handed over; the card keeps its still or its neutral box).
-fn picture(bytes: &[u8]) -> Option<Arc<Image>> {
+pub(crate) fn picture(bytes: &[u8]) -> Option<Arc<Image>> {
     if !dilla_client::features::attachments::fits_decode_budget(bytes) {
         return None;
     }
@@ -290,7 +290,7 @@ pub fn pick_files(cx: &mut App) {
             return;
         };
         let picked: Vec<_> = paths.iter().filter_map(|p| file_from_path(p)).collect();
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             let (files, previews) = picked.into_iter().unzip();
             attach(files, previews, cx);
         });
@@ -343,7 +343,7 @@ pub fn ensure_image(key: ImageKey, cx: &mut App) {
             Ok(Ok(opened)) => picture(&opened.bytes).map_or(Slot::Failed, Slot::Ready),
             _ => Slot::Failed,
         };
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             ui(cx).images.insert(key, slot);
             cx.refresh_windows();
         });
@@ -367,7 +367,7 @@ pub fn save(key: CardKey, cx: &mut App) {
         let opened = match rx.await {
             Ok(Ok(o)) => o,
             Ok(Err(e)) => {
-                let _ = cx.update(|cx| {
+                cx.update(|cx| {
                     ui(cx).cards.insert(key, CardStatus::Failed(e.to_string()));
                     cx.refresh_windows();
                 });
@@ -385,7 +385,7 @@ pub fn save(key: CardKey, cx: &mut App) {
             _ => Ok(()),
         };
         drop(opened);
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             match result {
                 Ok(()) => ui(cx).cards.remove(&key),
                 Err(code) => ui(cx).cards.insert(key, CardStatus::Failed(code)),
@@ -420,14 +420,14 @@ pub fn play(key: CardKey, video: bool, mime: String, cx: &mut App) {
         let opened = match rx.await {
             Ok(Ok(o)) => o,
             _ => {
-                let _ = cx.update(|cx| {
+                cx.update(|cx| {
                     ui(cx).players.insert(key, Player::Error);
                     cx.refresh_windows();
                 });
                 return;
             }
         };
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             let state = if video {
                 let dir = ui(cx).instance_dir.clone();
                 match dir.map(|d| media::write_for_system_player(&d, &mime, &opened.bytes)) {
@@ -539,7 +539,7 @@ pub fn gif_on(community: CommunityId, cx: &mut App) -> bool {
     let rx = client.gifs().status(community);
     cx.spawn(async move |cx| {
         let on = matches!(rx.await, Ok(Ok(s)) if s.on);
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             ui(cx).gif_on.insert(community, Some(on));
             cx.refresh_windows();
         });
@@ -606,7 +606,7 @@ pub fn search_gifs(query: String, more: bool, cx: &mut App) {
                 .gifs()
                 .media(community, id.clone(), GifVariant::Preview);
             if let Ok(Ok(bytes)) = rx.await {
-                let _ = cx.update(|cx| {
+                cx.update(|cx| {
                     if let (Some(g), Some(p)) = (ui(cx).gif.as_mut(), picture(&bytes)) {
                         g.previews.insert(id, p);
                         cx.refresh_windows();
@@ -638,7 +638,7 @@ pub fn pick_gif(index: usize, cx: &mut App) {
         .media(community, item.id.clone(), GifVariant::Full);
     cx.spawn(async move |cx| {
         let got = rx.await;
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             match got {
                 Ok(Ok(bytes)) => {
                     let title = if item.title.is_empty() {
