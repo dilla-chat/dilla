@@ -78,10 +78,16 @@ fn automation_binary() -> &'static Path {
 impl Driver {
     /// Starts the automation build against the instance fixture directory and waits until it is ready.
     pub fn launch(instance_fixture: &Path) -> Self {
+        Self::launch_with_env(instance_fixture, &[])
+    }
+
+    /// [`Driver::launch`] with extra environment variables for the app (test controls such as the fallback font).
+    pub fn launch_with_env(instance_fixture: &Path, env: &[(&str, &str)]) -> Self {
         let mut child = Command::new(automation_binary())
             .arg("--automation")
             .arg("--instance")
             .arg(instance_fixture)
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -137,6 +143,11 @@ impl Driver {
         self.expect_ok(&format!("click {id}"));
     }
 
+    /// Types `text` into whatever element holds the focus (no click: after [`Driver::press`] of `tab`, say).
+    pub fn type_focused(&mut self, text: &str) {
+        self.type_text("-", text);
+    }
+
     /// Clicks the element to focus it, then types `text`.
     pub fn type_text(&mut self, id: &str, text: &str) {
         let hex: String = text.bytes().map(|b| format!("{b:02x}")).collect();
@@ -165,6 +176,52 @@ impl Driver {
             width,
             height,
         })
+    }
+
+    /// Sends one keystroke to the focused element (`enter`, `shift-enter`, `tab`, ...).
+    pub fn press(&mut self, key: &str) {
+        self.expect_ok(&format!("key {key}"));
+    }
+
+    /// The line boxes of every text line on screen, in logical pixels: the input of the chrome gate's text mask
+    /// ([`crate::TextMask::from_rects`] after scaling to device pixels).
+    pub fn text_bounds(&mut self) -> Vec<ElementInfo> {
+        let reply = self.request("text-bounds");
+        let rest = reply
+            .strip_prefix("ok")
+            .unwrap_or_else(|| panic!("`text-bounds` failed: {reply}"))
+            .trim();
+        rest.split(';')
+            .filter(|r| !r.is_empty())
+            .map(|r| {
+                let n: Vec<f32> = r.split(' ').map(|n| n.parse().expect("a number")).collect();
+                let [x, y, width, height] = n[..] else {
+                    panic!("bad text-bounds reply: {reply}");
+                };
+                ElementInfo {
+                    id: String::from("text"),
+                    x,
+                    y,
+                    width,
+                    height,
+                }
+            })
+            .collect()
+    }
+
+    /// Waits until the element `id` is on screen (the app keeps working between requests), at most `timeout`.
+    pub fn wait_for(&mut self, id: &str, timeout: Duration) -> ElementInfo {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Some(found) = self.element(id) {
+                return found;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "`{id}` did not appear within {timeout:?}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     /// The rendered window as device pixels (the headless platform renders at scale 2.0).

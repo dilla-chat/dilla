@@ -13,3 +13,5 @@ workspace = true
 [dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.12" }
 gpui-component = "=0.9.1"
+# Which characters the embedded mono face covers (its advance is then the web's width; text.rs). Already in the lock.
+ttf-parser = { version = "0.25", default-features = false, features = ["std", "opentype-layout"] }

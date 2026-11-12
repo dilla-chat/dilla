@@ -35,7 +35,8 @@ crate = "notify"
 allow = ["CC0-1.0"]
 
 # tiny-keccak is CC0-1.0: a build-time dependency (const-random-macro, through rust-ini's ordered
-# map) of deep-filter-rt, the desktop's enhanced noise suppression (Task 11). Scoped to that crate.
+# map) of deep-filter-rt, the desktop's enhanced noise suppression (Task 11), and of GPUI's X11 backend (zed-xim -> ahash ->
+# const-random, Task 12, ruling R20). Scoped to that crate.
 [[licenses.exceptions]]
 crate = "tiny-keccak"
 allow = ["CC0-1.0"]

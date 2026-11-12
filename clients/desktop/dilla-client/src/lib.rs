@@ -10,6 +10,7 @@ pub mod http;
 pub mod instances;
 pub mod keychain;
 pub mod seams;
+pub mod signin;
 pub mod state;
 pub mod store;
 pub mod sync;

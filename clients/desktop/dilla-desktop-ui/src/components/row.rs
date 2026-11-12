@@ -9,6 +9,7 @@ use super::badge::{Badge, BadgeKind, capped};
 use super::button::ClickHandler;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
+use crate::text::{line, line_height};
 use crate::tokens::{color, font, layout, radius, text};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,12 +126,9 @@ impl RenderOnce for Row {
             .h(layout::ROW)
             .px(px(8.0))
             .rounded(radius::ROW)
-            .font_family(font::MONO)
-            .text_size(text::INPUT)
-            .text_color(if bright { color::FG } else { color::FG_2 })
             .when_active(self.active)
             .cursor_pointer()
-            .hover(|s| s.bg(color::HOVER).text_color(color::FG))
+            .hover(|s| s.bg(color::HOVER))
             .child(
                 div()
                     .flex()
@@ -141,14 +139,18 @@ impl RenderOnce for Row {
                     .child(glyph),
             )
             .child(
-                div()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_color(name_colour)
-                    .when_bold(bright)
-                    .child(self.name),
+                line(
+                    self.name,
+                    text::INPUT,
+                    line_height(text::INPUT, 1.5),
+                    name_colour,
+                )
+                .weight(if bright {
+                    font::WEIGHT_LABEL
+                } else {
+                    font::WEIGHT_BODY
+                })
+                .ellipsis(),
             );
         if self.active {
             // The 2px accent bar at the left edge, 6px in from the top and bottom.
@@ -193,15 +195,6 @@ trait RowStyle: Styled + Sized {
     fn when_active(self, active: bool) -> Self {
         if active {
             self.bg(color::SURFACE_HI)
-        } else {
-            self
-        }
-    }
-
-    /// The 600 name of an active or unread row.
-    fn when_bold(self, bold: bool) -> Self {
-        if bold {
-            self.font_weight(font::WEIGHT_LABEL)
         } else {
             self
         }

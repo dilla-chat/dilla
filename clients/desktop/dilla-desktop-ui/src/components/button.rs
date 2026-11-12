@@ -5,6 +5,9 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use crate::icon::Icon;
+use crate::icon_names::IconName;
+use crate::text::{line, line_height};
 use crate::tokens::{color, font, radius, text};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -21,6 +24,9 @@ pub enum ButtonSize {
     Sm,
     #[default]
     Md,
+    /// In a bar (ChannelHeader.css `.d-channel-header__actions .d-btn`): 28px, 8px across, a 6px gap, `--text-xs`, no
+    /// border.
+    Bar,
 }
 
 /// The colours of one state, resolved from the variant.
@@ -92,6 +98,7 @@ pub(crate) type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 
 pub struct Button {
     id: ElementId,
     label: SharedString,
+    icon: Option<IconName>,
     variant: ButtonVariant,
     size: ButtonSize,
     key_hint: Option<SharedString>,
@@ -105,6 +112,7 @@ impl Button {
         Self {
             id: id.into(),
             label: label.into(),
+            icon: None,
             variant: ButtonVariant::Default,
             size: ButtonSize::Md,
             key_hint: None,
@@ -116,6 +124,12 @@ impl Button {
 
     pub fn variant(mut self, variant: ButtonVariant) -> Self {
         self.variant = variant;
+        self
+    }
+
+    /// An icon before the label (14px in a bar, as the header's buttons draw theirs).
+    pub fn icon(mut self, icon: IconName) -> Self {
+        self.icon = Some(icon);
         self
     }
 
@@ -153,23 +167,31 @@ impl Button {
 impl RenderOnce for Button {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let p = palette(self.variant, self.pressed == Some(true), self.disabled);
-        let small = self.size == ButtonSize::Sm;
+        let (height, pad, gap, size) = match self.size {
+            ButtonSize::Sm => (22.0, 7.0, 8.0, text::XS),
+            ButtonSize::Md => (32.0, 12.0, 8.0, text::BTN),
+            ButtonSize::Bar => (28.0, 8.0, 6.0, text::XS),
+        };
         let mut base = div()
             .id(self.id)
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(8.0))
-            .h(px(if small { 22.0 } else { 32.0 }))
-            .px(px(if small { 7.0 } else { 12.0 }))
+            .gap(px(gap))
+            .h(px(height))
+            .px(px(pad))
             .font_family(font::MONO)
-            .text_size(if small { text::XS } else { text::BTN })
+            .text_size(size)
             .font_weight(font::WEIGHT_BTN)
             .text_color(p.fg)
             .bg(p.bg)
-            .border_1()
-            .border_color(p.border)
             .rounded(radius::MD);
+        if self.size != ButtonSize::Bar {
+            base = base.border_1().border_color(p.border);
+        }
+        if let Some(icon) = self.icon {
+            base = base.child(Icon::new(icon).size(px(14.0)).color(p.fg));
+        }
         if self.pressed.is_some() {
             base = base.child(div().child(if self.pressed == Some(true) {
                 "[x]"
@@ -177,7 +199,8 @@ impl RenderOnce for Button {
                 "[ ]"
             }));
         }
-        base = base.child(div().child(self.label));
+        base = base
+            .child(line(self.label, size, line_height(size, 1.5), p.fg).weight(font::WEIGHT_BTN));
         if let Some(hint) = self.key_hint {
             base = base.child(
                 div()
