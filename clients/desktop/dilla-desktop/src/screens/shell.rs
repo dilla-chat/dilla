@@ -26,6 +26,7 @@ pub mod keys;
 
 use crate::router::Route;
 use crate::screens::composer::{Composer, Sent};
+use crate::screens::search::{self, Navigate, SearchEnv};
 use crate::screens::{
     FocusNext, FocusPrevious, LABEL_TRACKING_WIDE, centred, channel_list, timeline,
 };
@@ -225,6 +226,34 @@ impl ShellView {
         cx.notify();
     }
 
+    /// Opens what a search result names. `false` when it is gone, or is a screen the shell does not draw yet (the settings,
+    /// the direct messages and the voice mute arrive with their areas, which add their arms here).
+    fn open_search_result(&mut self, target: Navigate, cx: &mut Context<Self>) -> bool {
+        let open = |this: &mut Self,
+                    community: CommunityId,
+                    channel: ChannelId,
+                    cx: &mut Context<Self>| {
+            if this
+                .state
+                .channel(channel)
+                .is_none_or(|c| c.community_id != community)
+            {
+                return false;
+            }
+            this.pick_community(community, cx);
+            this.select(channel, cx);
+            true
+        };
+        match target {
+            Navigate::Channel { community, channel } => open(self, community, channel, cx),
+            Navigate::Message(hit) => match hit.community {
+                Some(community) => open(self, community, hit.channel, cx),
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
     /// Shows server `community` on its first text channel.
     pub fn pick_community(&mut self, community: CommunityId, cx: &mut Context<Self>) {
         if self.community == Some(community) {
@@ -308,6 +337,9 @@ fn topbar() -> impl IntoElement {
         .child(div().w(px(6.)).h(px(12.)).bg(color::BRAND));
     let search = div().w(px(420.)).flex_none().flex().justify_center().child(
         div()
+            .id("topbar-search")
+            .cursor_pointer()
+            .on_click(|_, _, cx| search::request_open(cx))
             .w(px(360.))
             .h(px(28.))
             .bg(color::SURFACE_2)
@@ -685,6 +717,18 @@ impl Render for ShellView {
         };
         let banners = slots::banners(&ctx, window, cx);
         let aside = slots::aside(&self.route(), window, cx);
+        // What the search palette (23) draws with, and how it opens a result.
+        let host = cx.entity().downgrade();
+        search::provide(
+            SearchEnv {
+                ctx: ctx.clone(),
+                navigate: Rc::new(move |target, _, cx| {
+                    host.update(cx, |shell, cx| shell.open_search_result(target, cx))
+                        .unwrap_or(false)
+                }),
+            },
+            cx,
+        );
         let overlays = slots::overlays(window, cx);
         let main = div()
             .flex_1()
