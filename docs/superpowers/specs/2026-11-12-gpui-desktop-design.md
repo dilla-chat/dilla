@@ -233,6 +233,20 @@ Crate names and directory layout, async runtime choice inside
 interface's wire format, the token codegen tool, how fixtures are seeded for
 parity shots, task split inside each phase.
 
+## 11a. Decisions from Jonas during the foundations build (2026-11-12)
+
+- **Linux text spacing follows GPUI's exact (fractional) glyph advances.** Linux
+  parity references are shot with Chromium's hinting off
+  (`--font-render-hinting=none`); no GPUI patch. Measured: 1.3% differing at 2× vs
+  2.4% against hinted Chromium.
+- **The native store leaves SQLCipher + OpenSSL for SQLite3 Multiple Ciphers with
+  built-in crypto** (the browser already uses it, `chacha20`). Reason: the voice
+  proof passed through the LiveKit Rust SDK, but dilla-core's vendored OpenSSL and
+  LiveKit's prebuilt libwebrtc (BoringSSL) cannot link into one binary (208
+  duplicate symbols). The desktop app stays one process. Existing Bot stores
+  (SQLCipher 4) must keep opening (sqlite3mc's SQLCipher-compatible scheme) or get
+  a tested migration in the Bot release that ships the change.
+
 ## 12. Decisions from Jonas after the builder check
 
 - **The switch makes a new device.** **(Jonas)** No key or history export
