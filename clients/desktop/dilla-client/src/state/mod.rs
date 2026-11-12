@@ -98,11 +98,14 @@ pub enum AccountPhase {
     /// The account owes a second factor (gateway close 4003 "second factor required", or a refusal
     /// E_FACTOR_REQUIRED): the session stands, the UI asks for the factor, then the client starts again.
     FactorSetup,
-    /// The session was revoked or refused (close 4004, 4003, an upgrade 401, a challenge the instance no longer
-    /// answers): sign in again.
+    /// The device was revoked: a refused session (close 4004 or 4003, an upgrade 401) could not be established again
+    /// from the device key (the instance no longer answers its challenge). Sign in again.
     Revoked,
     /// The instance refused this client's version (close 4006): `upgrade` when this client must update.
     VersionRefused { upgrade: bool },
+    /// The local store's core panicked mid-call (its lock is poisoned): it may be inconsistent, so the client stopped
+    /// syncing. Restart the client (the store reopens from disk).
+    Failed,
 }
 
 /// `AccountState`, the part a running client knows.

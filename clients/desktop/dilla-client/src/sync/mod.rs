@@ -335,8 +335,9 @@ impl Engine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Stopped by [`Engine::stop`], or for good because the core's lock is poisoned (a core call panicked).
     pub fn stopped(&self) -> bool {
-        self.stopped.load(Ordering::Acquire)
+        self.stopped.load(Ordering::Acquire) || self.core.is_poisoned()
     }
 
     /// engine.ts `stop`: every timer is cancelled and nothing new starts; jobs already running see `stopped()`.
@@ -401,10 +402,12 @@ impl Engine {
 
     // ---- reads of the core ----
 
+    /// Read by the publisher too: a poisoned core answers nothing here instead of unwinding its caller.
     pub async fn groups(&self) -> Vec<GroupRow> {
-        with_core(&self.core, |c| c.groups())
+        api::try_core(&self.core, |c| c.groups())
             .await
             .ok()
+            .and_then(Result::ok)
             .and_then(|raw| GroupRow::decode_all(&raw).ok())
             .unwrap_or_default()
     }

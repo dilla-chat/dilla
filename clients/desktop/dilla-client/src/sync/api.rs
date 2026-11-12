@@ -30,20 +30,37 @@ use super::value::{self, DecodeError, Page, arr, at_least, bin16, bin32, page, t
 /// The store's client core, shared by the engine's lanes; every call runs on the blocking pool.
 pub type CoreHandle = Arc<Mutex<ClientCore>>;
 
-/// Runs `f` on the core off the async workers (MLS and SQLCipher work can take a while).
+/// The core's lock is poisoned: a call panicked while it held the core, which may be left inconsistent. Nothing uses
+/// it again; the client stops ([`crate::state::AccountPhase::Failed`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("E_CORE_POISONED: the local store's core panicked and is no longer used")]
+pub struct CorePoisoned;
+
+/// Runs `f` on the core off the async workers (MLS and SQLCipher work can take a while). A poisoned core is never
+/// used: `f` is not run and the answer is [`CorePoisoned`], also when `f` itself panics (which poisons it).
+pub async fn try_core<T: Send + 'static>(
+    core: &CoreHandle,
+    f: impl FnOnce(&mut ClientCore) -> T + Send + 'static,
+) -> Result<T, CorePoisoned> {
+    let core = core.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut guard = core.lock().map_err(|_| CorePoisoned)?;
+        Ok(f(&mut guard))
+    })
+    .await
+    .unwrap_or(Err(CorePoisoned))
+}
+
+/// [`try_core`] for the engine's jobs: a poisoned core ends the calling job (it unwinds; the engine reports itself
+/// stopped from then on, see `Engine::stopped`) instead of running on a core a panic may have left inconsistent.
 pub async fn with_core<T: Send + 'static>(
     core: &CoreHandle,
     f: impl FnOnce(&mut ClientCore) -> T + Send + 'static,
 ) -> T {
-    let core = core.clone();
-    tokio::task::spawn_blocking(move || {
-        let mut guard = core
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        f(&mut guard)
-    })
-    .await
-    .expect("a core call panicked")
+    match try_core(core, f).await {
+        Ok(v) => v,
+        Err(e) => panic!("{e}"),
+    }
 }
 
 /// http/errors.ts `DillaHttpError`: status 0 is a failure before any answer (E_NETWORK, E_OUTCOME_UNKNOWN).

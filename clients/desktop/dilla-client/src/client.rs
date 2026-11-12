@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -28,7 +29,7 @@ use crate::state::{
     MessageId, TIMELINE_PAGE, UserId,
 };
 use crate::store::{StoreError, open_store};
-use crate::sync::api::{Api, CoreHandle, Identity, SessionError, with_core};
+use crate::sync::api::{Api, CoreHandle, Identity, SessionError, try_core};
 use crate::sync::requests::SocketRequests;
 use crate::sync::{ConnectionEvent, Engine, ExpectedGroup, GroupRow, Membership, SyncHooks};
 
@@ -89,6 +90,8 @@ enum Update {
     Membership([u8; 16], Membership),
     Connection(ConnectionEvent),
     FactorRequired,
+    /// A refused session could not be established again: the device is revoked.
+    SignedOut,
     Structure,
     Loaded(Box<Loaded>),
     Focus(Option<ChannelId>),
@@ -150,6 +153,12 @@ pub struct Client {
 impl Client {
     /// Opens the instance's store, establishes the device session (from the device key; a stored session is used
     /// while it is not within an hour of expiring), connects the gateway and starts syncing, on a runtime of its own.
+    ///
+    /// It blocks the calling thread until the session is established (a few round trips), so call it from the UI's
+    /// thread or `spawn_blocking`, not from an async task where it would stall a worker. It never panics on a caller
+    /// inside a tokio runtime: the wait runs on a thread of its own, outside any runtime context (tokio refuses a
+    /// `block_on` inside one; `Handle::try_current` cannot tell that case from a legitimate `spawn_blocking` caller).
+    /// A failure of that thread is [`ClientError::Runtime`].
     pub fn start(cfg: InstanceConfig, kc: Arc<dyn Keychain>) -> Result<Client, ClientError> {
         Self::start_with(cfg, kc, GatewayOptions::default())
     }
@@ -197,18 +206,25 @@ impl Client {
                 }
             }),
         ));
-        let instance = runtime.block_on(async {
-            api.ensure_session(now_s()).await.map_err(|e| match e {
-                SessionError::NoIdentity => ClientError::NoIdentity,
-                SessionError::Revoked | SessionError::Scope => ClientError::Revoked,
-                SessionError::Api(a) if a.status == 0 => ClientError::Network(a.detail),
-                SessionError::Api(a) => ClientError::Sync(a.code),
-                SessionError::Core(c) => ClientError::Sync(c),
-            })?;
-            api.get_instance()
-                .await
-                .map_err(|e| ClientError::Network(e.to_string()))
-        })?;
+        // On a thread of its own, outside any runtime context the caller may be in (see `start`).
+        let instance = std::thread::scope(|s| {
+            s.spawn(|| {
+                runtime.block_on(async {
+                    api.ensure_session(now_s()).await.map_err(|e| match e {
+                        SessionError::NoIdentity => ClientError::NoIdentity,
+                        SessionError::Revoked | SessionError::Scope => ClientError::Revoked,
+                        SessionError::Api(a) if a.status == 0 => ClientError::Network(a.detail),
+                        SessionError::Api(a) => ClientError::Sync(a.code),
+                        SessionError::Core(c) => ClientError::Sync(c),
+                    })?;
+                    api.get_instance()
+                        .await
+                        .map_err(|e| ClientError::Network(e.to_string()))
+                })
+            })
+            .join()
+        })
+        .map_err(|_| ClientError::Runtime("the start thread panicked".into()))??;
 
         let hooks = Arc::new(Hooks {
             tx: updates.clone(),
@@ -255,6 +271,10 @@ impl Client {
             resyncing: HashSet::new(),
             reauthenticated: false,
         };
+        runtime.spawn(watch_poison(
+            publisher.core.clone(),
+            publisher.updates.clone(),
+        ));
         runtime.spawn(publisher.run(updates_rx));
         {
             let _enter = runtime.enter();
@@ -476,6 +496,41 @@ async fn load_structure(api: &Api) -> Result<Loaded, ClientError> {
     })
 }
 
+/// How a re-establishment of a refused session ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Renewal {
+    Renewed,
+    SignedOut,
+}
+
+/// The wait before the `n`th retry of a re-establishment that did not reach a verdict: 1 s doubling to 30 s.
+fn renewal_backoff(n: u32) -> Duration {
+    Duration::from_secs((1u64 << n.saturating_sub(1).min(5)).min(30))
+}
+
+/// Establishes a session until the instance gives a verdict: success renews, a refusal of the device (revoked, wrong
+/// scope, no identity) signs out, and anything else (the instance unreachable, a 5xx, a store hiccup) is retried after
+/// `backoff(n)`.
+async fn renew<F, Fut>(mut establish: F, backoff: impl Fn(u32) -> Duration) -> Renewal
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), SessionError>>,
+{
+    let mut retries = 0u32;
+    loop {
+        match establish().await {
+            Ok(()) => return Renewal::Renewed,
+            Err(SessionError::Revoked | SessionError::Scope | SessionError::NoIdentity) => {
+                return Renewal::SignedOut;
+            }
+            Err(SessionError::Api(_) | SessionError::Core(_)) => {
+                retries += 1;
+                tokio::time::sleep(backoff(retries)).await;
+            }
+        }
+    }
+}
+
 /// Owns the [`AppState`] and publishes every change.
 struct Publisher {
     state: AppState,
@@ -527,6 +582,10 @@ impl Publisher {
                     Update::FactorRequired => {
                         self.state.account.phase = AccountPhase::FactorSetup;
                     }
+                    Update::SignedOut => {
+                        self.state.connection.status = ConnectionStatus::Offline;
+                        self.state.account.phase = AccountPhase::Revoked;
+                    }
                     Update::Structure => structure = true,
                     Update::Loaded(loaded) => self.on_loaded(*loaded).await,
                     Update::Focus(channel) => {
@@ -541,6 +600,11 @@ impl Publisher {
                         groups.insert([0; 16]);
                     }
                 }
+            }
+            if self.core.is_poisoned() {
+                self.fail();
+                self.publish();
+                return;
             }
             if structure {
                 self.load_structure();
@@ -576,24 +640,21 @@ impl Publisher {
                 self.state.connection.wire_version = None;
                 false
             }
-            // A session the instance no longer takes at the upgrade (401) or at identify (4003) may only have expired:
-            // as client.ts re-authenticates on a 401, a new session is established from the device key once, and the
-            // gateway started again on it. A revocation (4004), or a second refusal before the next ready, signs out.
-            ConnectionEvent::Refused(Refusal::Revoked, code)
-                if code != 4004 && !self.reauthenticated =>
-            {
+            // controller.ts `onRevokedSocket`: every refused session (4004 from the session sweep, which also closes a
+            // session past its expiry; 4003; an upgrade 401) is established again from the device key, and the gateway
+            // started on the new session. Only an establishment the instance refuses (the device's challenge is not
+            // answered, or the scope is wrong) signs out; a network failure or a 5xx is tried again after a backoff,
+            // connecting meanwhile. One renewal per ready: a second refusal before the next ready signs out.
+            ConnectionEvent::Refused(Refusal::Revoked, _) if !self.reauthenticated => {
                 self.reauthenticated = true;
                 self.state.connection.status = ConnectionStatus::Connecting;
                 let (api, link, updates) =
                     (self.api.clone(), self.link.clone(), self.updates.clone());
                 tokio::spawn(async move {
-                    match api.establish().await {
-                        Ok(()) => link.restart(),
-                        Err(_) => {
-                            let _ = updates.send(Update::Connection(ConnectionEvent::Refused(
-                                Refusal::Revoked,
-                                4004,
-                            )));
+                    match renew(|| api.establish(), renewal_backoff).await {
+                        Renewal::Renewed => link.restart(),
+                        Renewal::SignedOut => {
+                            let _ = updates.send(Update::SignedOut);
                         }
                     }
                 });
@@ -690,7 +751,7 @@ impl Publisher {
             .filter(|r| r.kind == 0)
             .map(|r| (GroupId(r.group_id), ChannelId(r.target_id)))
             .collect();
-        if let Ok(Ok(activity)) = with_core(&self.core, |c| {
+        if let Ok(Ok(Ok(activity))) = try_core(&self.core, |c| {
             c.activity().map(|raw| decode_activity(&raw))
         })
         .await
@@ -706,10 +767,11 @@ impl Publisher {
         group: &GroupRow,
     ) -> Option<crate::state::Timeline> {
         let g = group.group_id;
-        let (rows, outbox) = with_core(&self.core, move |c| {
+        let (rows, outbox) = try_core(&self.core, move |c| {
             (c.timeline(&g, 0, TIMELINE_PAGE), c.outbox(&g))
         })
-        .await;
+        .await
+        .ok()?;
         let rows = decode_timeline(&rows.ok()?).ok()?;
         let outbox = outbox
             .ok()
@@ -737,9 +799,10 @@ impl Publisher {
             return Ok(());
         };
         let g = group.group_id;
-        let newest = with_core(&self.core, move |c| c.timeline(&g, 0, 1))
+        let newest = try_core(&self.core, move |c| c.timeline(&g, 0, 1))
             .await
             .ok()
+            .and_then(Result::ok)
             .and_then(|raw| decode_timeline(&raw).ok())
             .and_then(|rows| rows.iter().map(|r| r.seq).max());
         let Some(newest) = newest else {
@@ -747,8 +810,33 @@ impl Publisher {
         };
         let head = group.next_seq.saturating_sub(1).max(newest);
         let now = now_s();
-        with_core(&self.core, move |c| c.mark_read(&g, head, now))
+        try_core(&self.core, move |c| c.mark_read(&g, head, now))
             .await
+            .map_err(|e| ClientError::Sync(e.to_string()))?
             .map_err(|e| ClientError::Sync(e.code.to_owned()))
     }
+
+    /// The core is poisoned: stop syncing for good (no job uses it again), drop the gateway, and say so.
+    fn fail(&mut self) {
+        self.engine.stop();
+        self.link.disconnect();
+        self.link.socket.close();
+        self.state.connection.status = ConnectionStatus::Offline;
+        self.state.account.phase = AccountPhase::Failed;
+    }
 }
+
+/// Wakes the publisher once a second while the core's lock is not poisoned; a panicked core call ends no update of its
+/// own, so this is what turns it into [`AccountPhase::Failed`].
+async fn watch_poison(core: CoreHandle, updates: mpsc::UnboundedSender<Update>) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if core.is_poisoned() {
+            let _ = updates.send(Update::Structure);
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
