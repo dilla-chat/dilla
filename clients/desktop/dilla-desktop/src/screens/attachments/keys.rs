@@ -26,9 +26,24 @@ pub enum Key {
 }
 
 /// The keystroke's meaning while the lightbox or the GIF picker is open (or neither).
-pub fn classify(key: &str, ctrl: bool, platform: bool, alt: bool, shift: bool, lightbox: bool, gifs: bool) -> Key {
+pub fn classify(
+    key: &str,
+    ctrl: bool,
+    platform: bool,
+    alt: bool,
+    shift: bool,
+    lightbox: bool,
+    gifs: bool,
+) -> Key {
     let modified = ctrl || platform || alt || shift;
-    let paste = key == "v" && !alt && !shift && (if cfg!(target_os = "macos") { platform } else { ctrl });
+    let paste = key == "v"
+        && !alt
+        && !shift
+        && (if cfg!(target_os = "macos") {
+            platform
+        } else {
+            ctrl
+        });
     if lightbox {
         return match (key, modified) {
             ("escape", false) => Key::LightboxClose,
@@ -58,7 +73,9 @@ fn intercept(e: &KeystrokeEvent, _window: &mut Window, cx: &mut App) {
         (u.lightbox.is_some(), u.gif.is_some())
     };
     let m = &k.modifiers;
-    match classify(&k.key, m.control, m.platform, m.alt, m.shift, lightbox, gifs) {
+    match classify(
+        &k.key, m.control, m.platform, m.alt, m.shift, lightbox, gifs,
+    ) {
         Key::None => {}
         Key::LightboxClose => {
             ui::close_lightbox(cx);
@@ -94,7 +111,9 @@ fn intercept(e: &KeystrokeEvent, _window: &mut Window, cx: &mut App) {
             if ui::ui(cx).channel.is_none() {
                 return;
             }
-            let Some(item) = cx.read_from_clipboard() else { return };
+            let Some(item) = cx.read_from_clipboard() else {
+                return;
+            };
             let images: Vec<gpui::Image> = item
                 .entries()
                 .iter()
@@ -122,25 +141,64 @@ mod tests {
 
     #[test]
     fn the_lightbox_takes_bare_arrows_and_escape_only() {
-        assert_eq!(classify("left", false, false, false, false, true, false), Key::LightboxMove(-1));
-        assert_eq!(classify("right", false, false, false, false, true, false), Key::LightboxMove(1));
-        assert_eq!(classify("escape", false, false, false, false, true, false), Key::LightboxClose);
-        assert_eq!(classify("left", false, false, true, false, true, false), Key::None, "a modified arrow is left alone");
+        assert_eq!(
+            classify("left", false, false, false, false, true, false),
+            Key::LightboxMove(-1)
+        );
+        assert_eq!(
+            classify("right", false, false, false, false, true, false),
+            Key::LightboxMove(1)
+        );
+        assert_eq!(
+            classify("escape", false, false, false, false, true, false),
+            Key::LightboxClose
+        );
+        assert_eq!(
+            classify("left", false, false, true, false, true, false),
+            Key::None,
+            "a modified arrow is left alone"
+        );
     }
 
     #[test]
     fn the_gif_picker_moves_by_cells_and_rows_and_picks_on_enter() {
-        assert_eq!(classify("down", false, false, false, false, false, true), Key::GifMove(3));
-        assert_eq!(classify("up", false, false, false, false, false, true), Key::GifMove(-3));
-        assert_eq!(classify("enter", false, false, false, false, false, true), Key::GifPick);
-        assert_eq!(classify("escape", false, false, false, false, false, true), Key::GifClose);
+        assert_eq!(
+            classify("down", false, false, false, false, false, true),
+            Key::GifMove(3)
+        );
+        assert_eq!(
+            classify("up", false, false, false, false, false, true),
+            Key::GifMove(-3)
+        );
+        assert_eq!(
+            classify("enter", false, false, false, false, false, true),
+            Key::GifPick
+        );
+        assert_eq!(
+            classify("escape", false, false, false, false, false, true),
+            Key::GifClose
+        );
     }
 
     #[test]
     fn paste_is_the_platform_paste_chord() {
-        let (ctrl, cmd) = if cfg!(target_os = "macos") { (false, true) } else { (true, false) };
-        assert_eq!(classify("v", ctrl, cmd, false, false, false, false), Key::Paste);
-        assert_eq!(classify("v", false, false, false, false, false, false), Key::None);
-        assert_eq!(classify("v", ctrl, cmd, false, true, false, false), Key::None, "shift+paste is not ours");
+        let (ctrl, cmd) = if cfg!(target_os = "macos") {
+            (false, true)
+        } else {
+            (true, false)
+        };
+        assert_eq!(
+            classify("v", ctrl, cmd, false, false, false, false),
+            Key::Paste
+        );
+        assert_eq!(
+            classify("v", false, false, false, false, false, false),
+            Key::None
+        );
+        assert_eq!(
+            classify("v", ctrl, cmd, false, true, false, false),
+            Key::None,
+            "shift+paste is not ours"
+        );
     }
 }

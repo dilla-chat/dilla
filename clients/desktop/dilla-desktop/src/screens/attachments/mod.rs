@@ -11,7 +11,9 @@ pub mod ui;
 
 use std::rc::Rc;
 
-use dilla_client::features::attachments::{ATTACHMENT_CAP, AttachmentKind, GIF_AUTOPLAY_MAX, attachment_kind, safe_name};
+use dilla_client::features::attachments::{
+    ATTACHMENT_CAP, AttachmentKind, GIF_AUTOPLAY_MAX, attachment_kind, safe_name,
+};
 use dilla_client::state::{TimelineItem, attachments::TrayPhase};
 use dilla_desktop_ui::components::attachments::card::{
     self, FILE_W, GIF_W, IMAGE_W, STATE_GAP, file_card, file_card_height, image_tile, state_line,
@@ -19,13 +21,15 @@ use dilla_desktop_ui::components::attachments::card::{
 };
 use dilla_desktop_ui::components::attachments::player::{MediaCardProps, PlayerState, media_card};
 use dilla_desktop_ui::components::attachments::tray::{Preview, Step, TrayEntry};
-use dilla_desktop_ui::components::attachments::{OnClick, ROW_GAP, drop_overlay, gif_picker, lightbox, tray as tray_view};
+use dilla_desktop_ui::components::attachments::{
+    OnClick, ROW_GAP, drop_overlay, gif_picker, lightbox, tray as tray_view,
+};
 use dilla_desktop_ui::tokens::{color, layout, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
 use gpui::{
-    Focusable,
-    AnyElement, App, AppContext, ExternalPaths, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Window, anchored, deferred, div, point, px,
+    AnyElement, App, AppContext, ExternalPaths, Focusable, InteractiveElement, IntoElement,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, anchored, deferred,
+    div, point, px,
 };
 
 use crate::slots::{Extra, SlotCx};
@@ -59,7 +63,9 @@ fn wrap(cards: Vec<Card>, width: f32) -> (AnyElement, f32) {
     let mut lines: Vec<Vec<Card>> = Vec::new();
     let mut used = 0.0;
     for c in cards {
-        let fits = lines.last().is_some_and(|l| !l.is_empty() && used + ROW_GAP + c.width <= width);
+        let fits = lines
+            .last()
+            .is_some_and(|l| !l.is_empty() && used + ROW_GAP + c.width <= width);
         if fits {
             used += ROW_GAP + c.width;
             lines.last_mut().expect("a line").push(c);
@@ -112,7 +118,12 @@ fn with_state(element: AnyElement, width: f32, height: f32, state: Option<(Strin
 }
 
 /// A message's attachment cards and image grid (`slots::message_extras`, after the reply chip).
-pub fn attachment_cards(item: &TimelineItem, ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<Extra> {
+pub fn attachment_cards(
+    item: &TimelineItem,
+    ctx: &SlotCx,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Extra> {
     if item.attachments.is_empty() {
         return None;
     }
@@ -123,7 +134,13 @@ pub fn attachment_cards(item: &TimelineItem, ctx: &SlotCx, window: &mut Window, 
         .attachments
         .iter()
         .filter(|a| attachment_kind(&a.mime) == AttachmentKind::Image && a.size <= ATTACHMENT_CAP)
-        .map(|a| (a.index, safe_name(&a.name, t("shell.attachment.unnamed")), a.size))
+        .map(|a| {
+            (
+                a.index,
+                safe_name(&a.name, t("shell.attachment.unnamed")),
+                a.size,
+            )
+        })
         .collect();
     let mut cards = Vec::new();
     for a in &item.attachments {
@@ -131,12 +148,20 @@ pub fn attachment_cards(item: &TimelineItem, ctx: &SlotCx, window: &mut Window, 
         let size = ui::format_size(a.size);
         let too_large = a.size > ATTACHMENT_CAP;
         let kind = attachment_kind(&a.mime);
-        let key = seq.map(|seq| CardKey { channel, seq, index: a.index });
+        let key = seq.map(|seq| CardKey {
+            channel,
+            seq,
+            index: a.index,
+        });
         let status = key.and_then(|k| ui::ui(cx).cards.get(&k).cloned());
         let state_text = match (&status, too_large) {
             (_, true) => Some((t("shell.attachment.tooLarge").to_owned(), false)),
-            (Some(CardStatus::Loading), _) => Some((t("shell.attachment.opening").to_owned(), false)),
-            (Some(CardStatus::Failed(code)), _) => Some((tf("shell.attachment.failed", &[("code", code)]), true)),
+            (Some(CardStatus::Loading), _) => {
+                Some((t("shell.attachment.opening").to_owned(), false))
+            }
+            (Some(CardStatus::Failed(code)), _) => {
+                Some((tf("shell.attachment.failed", &[("code", code)]), true))
+            }
             (None, false) => None,
         };
         let id = format!("attachment-{}-{}", item.key, a.index);
@@ -148,30 +173,42 @@ pub fn attachment_cards(item: &TimelineItem, ctx: &SlotCx, window: &mut Window, 
             AttachmentKind::Image => {
                 let gif = a.mime == "image/gif";
                 // A GIF plays in its card up to 8 MB (the whole file, GPUI animates it); else and until then, the still.
-                let full = key.filter(|_| gif && a.size <= GIF_AUTOPLAY_MAX && live).map(|k| ImageKey {
+                let full = key
+                    .filter(|_| gif && a.size <= GIF_AUTOPLAY_MAX && live)
+                    .map(|k| ImageKey {
+                        channel,
+                        seq: k.seq,
+                        index: k.index,
+                        thumb: false,
+                    });
+                let thumb_key = key.map(|k| ImageKey {
                     channel,
                     seq: k.seq,
                     index: k.index,
-                    thumb: false,
+                    thumb: true,
                 });
-                let thumb_key = key.map(|k| ImageKey { channel, seq: k.seq, index: k.index, thumb: true });
                 if let Some(k) = thumb_key {
                     ui::ensure_image(k, cx);
                 }
                 if let Some(k) = full {
                     ui::ensure_image(k, cx);
                 }
-                let ready = |k: Option<ImageKey>, cx: &mut App| match k.and_then(|k| ui::ui(cx).images.get(&k).cloned()) {
+                let ready = |k: Option<ImageKey>, cx: &mut App| match k
+                    .and_then(|k| ui::ui(cx).images.get(&k).cloned())
+                {
                     Some(Slot::Ready(i)) => Some(i),
                     _ => None,
                 };
                 let moving = ready(full, cx);
                 let shown = moving.clone().or_else(|| ready(thumb_key, cx));
-                let badge = (gif && moving.is_none()).then(|| SharedString::from(t("shell.attachment.gif")));
+                let badge = (gif && moving.is_none())
+                    .then(|| SharedString::from(t("shell.attachment.gif")));
                 let w = if gif { GIF_W } else { IMAGE_W };
                 let open = key.map(|k| {
                     let images = images.clone();
-                    click(move |w, cx| ui::open_lightbox(k.channel, k.seq, images.clone(), k.index, w, cx))
+                    click(move |w, cx| {
+                        ui::open_lightbox(k.channel, k.seq, images.clone(), k.index, w, cx)
+                    })
                 });
                 let el = image_tile(id, w, shown, badge, open);
                 cards.push(with_state(el, w, tile_height(w), state_text));
@@ -189,7 +226,7 @@ pub fn attachment_cards(item: &TimelineItem, ctx: &SlotCx, window: &mut Window, 
                         duration: p.duration(),
                     },
                 };
-                let (mime, play_name) = (a.mime.clone(), name.clone());
+                let mime = a.mime.clone();
                 let (el, h) = media_card(MediaCardProps {
                     id: id.into(),
                     video,
@@ -200,7 +237,7 @@ pub fn attachment_cards(item: &TimelineItem, ctx: &SlotCx, window: &mut Window, 
                     loading_label: t("media.loading").into(),
                     error_label: t("media.error").into(),
                     save_text: t("media.save").into(),
-                    on_play: click(move |_, cx| ui::play(k, video, play_name.clone(), mime.clone(), cx)),
+                    on_play: click(move |_, cx| ui::play(k, video, mime.clone(), cx)),
                     on_toggle: click(move |_, cx| ui::toggle(k, cx)),
                     on_save: Some(click(move |_, cx| ui::save(k, cx))),
                 });
@@ -212,10 +249,15 @@ pub fn attachment_cards(item: &TimelineItem, ctx: &SlotCx, window: &mut Window, 
             }
             _ => {
                 let meta = card::file_meta(&name, &size);
-                let save = key.filter(|_| !too_large).map(|k| click(move |_, cx| ui::save(k, cx)));
+                let save = key
+                    .filter(|_| !too_large)
+                    .map(|k| click(move |_, cx| ui::save(k, cx)));
                 let state = state_text.clone();
                 let element: Box<dyn FnOnce(f32) -> AnyElement> = Box::new(move |line_h| {
-                    let own = line_h - state.as_ref().map_or(0.0, |_| STATE_GAP + state_line_height());
+                    let own = line_h
+                        - state
+                            .as_ref()
+                            .map_or(0.0, |_| STATE_GAP + state_line_height());
                     let el = file_card(id, name, meta, save, own.max(file_card_height()));
                     match state {
                         None => el,
@@ -228,8 +270,13 @@ pub fn attachment_cards(item: &TimelineItem, ctx: &SlotCx, window: &mut Window, 
                             .into_any_element(),
                     }
                 });
-                let height = state_text.map(|_| file_card_height() + STATE_GAP + state_line_height());
-                cards.push(Card { element, width: FILE_W, height });
+                let height =
+                    state_text.map(|_| file_card_height() + STATE_GAP + state_line_height());
+                cards.push(Card {
+                    element,
+                    width: FILE_W,
+                    height,
+                });
             }
         }
     }
@@ -252,7 +299,9 @@ pub fn tray(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyEleme
                 TrayPhase::Failed => Step::Failed,
             };
             let phase = match item.phase {
-                TrayPhase::Failed if item.reason == "E_ATTACHMENT_TOO_LARGE" => t("shell.tray.overLimit").to_owned(),
+                TrayPhase::Failed if item.reason == "E_ATTACHMENT_TOO_LARGE" => {
+                    t("shell.tray.overLimit").to_owned()
+                }
                 TrayPhase::Failed => tf("shell.tray.failed", &[("code", &item.reason)]),
                 p => t(&format!("shell.tray.{}", p.as_str())).to_owned(),
             };
@@ -291,7 +340,10 @@ fn tool(id: &'static str, label: &'static str, f: OnClick) -> gpui::Stateful<gpu
         .text_color(color::FG_3)
         .cursor_pointer()
         .hover(|s| s.bg(color::SURFACE_HI).text_color(color::FG))
-        .tooltip(dilla_desktop_ui::components::tooltip::tooltip(t(label), &[]))
+        .tooltip(dilla_desktop_ui::components::tooltip::tooltip(
+            t(label),
+            &[],
+        ))
         .on_click(move |e, w, cx| f(e, w, cx))
 }
 
@@ -299,21 +351,39 @@ fn tool(id: &'static str, label: &'static str, f: OnClick) -> gpui::Stateful<gpu
 pub fn composer_buttons(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     ui::track(ctx.client.clone(), ctx.channel, cx);
     let mut row = div().flex().items_center().gap(px(2.0)).child(
-        tool("composer-attach", "shell.composer.attach", click(|_, cx| ui::pick_files(cx)))
-            .child(Icon::new(IconName::Paperclip).size(px(14.0)).color(color::FG_3)),
+        tool(
+            "composer-attach",
+            "shell.composer.attach",
+            click(|_, cx| ui::pick_files(cx)),
+        )
+        .child(
+            Icon::new(IconName::Paperclip)
+                .size(px(14.0))
+                .color(color::FG_3),
+        ),
     );
-    if let (Some(community), Some(channel), true) = (ctx.community, ctx.channel, ctx.client.is_some())
+    if let (Some(community), Some(channel), true) =
+        (ctx.community, ctx.channel, ctx.client.is_some())
         && ui::gif_on(community, cx)
     {
         let open = ui::ui(cx).gif.is_some();
         row = row.child(
-            tool("composer-gif", "gif.button", click(move |_, cx| ui::toggle_gifs(channel, community, cx)))
-                .px(px(6.0))
-                .when_open(open)
-                .child(
-                    dilla_desktop_ui::text::line("GIF", text::BTN, 18.0, if open { color::ACCENT } else { color::FG_3 })
-                        .weight(dilla_desktop_ui::tokens::font::WEIGHT_LABEL),
-                ),
+            tool(
+                "composer-gif",
+                "gif.button",
+                click(move |_, cx| ui::toggle_gifs(channel, community, cx)),
+            )
+            .px(px(6.0))
+            .when_open(open)
+            .child(
+                dilla_desktop_ui::text::line(
+                    "GIF",
+                    text::BTN,
+                    18.0,
+                    if open { color::ACCENT } else { color::FG_3 },
+                )
+                .weight(dilla_desktop_ui::tokens::font::WEIGHT_LABEL),
+            ),
         );
     }
     for overlay in overlays(window, cx) {
@@ -328,7 +398,11 @@ trait OpenTool {
 
 impl OpenTool for gpui::Stateful<gpui::Div> {
     fn when_open(self, open: bool) -> Self {
-        if open { self.bg(color::ACCENT_SOFT) } else { self }
+        if open {
+            self.bg(color::ACCENT_SOFT)
+        } else {
+            self
+        }
     }
 }
 
@@ -346,19 +420,46 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
             .w(viewport.width - left)
             .h(viewport.height - top)
             .on_drop(|paths: &ExternalPaths, _, cx| {
-                let picked: Vec<_> = paths.paths().iter().filter_map(|p| ui::file_from_path(p)).collect();
+                let picked: Vec<_> = paths
+                    .paths()
+                    .iter()
+                    .filter_map(|p| ui::file_from_path(p))
+                    .collect();
                 let (files, previews) = picked.into_iter().unzip();
                 ui::attach(files, previews, cx);
             })
-            .child(drop_overlay::drop_overlay(t("shell.drop.title"), t("shell.drop.body")));
-        out.push(deferred(anchored().position(point(left, top)).child(pane)).with_priority(1).into_any_element());
+            .child(drop_overlay::drop_overlay(
+                t("shell.drop.title"),
+                t("shell.drop.body"),
+            ));
+        out.push(
+            deferred(anchored().position(point(left, top)).child(pane))
+                .with_priority(1)
+                .into_any_element(),
+        );
     }
     if let Some(element) = lightbox_overlay(cx) {
-        let full = div().w(viewport.width).h(viewport.height).relative().child(element);
-        out.push(deferred(anchored().position(point(px(0.0), px(0.0))).child(full)).with_priority(3).into_any_element());
+        let full = div()
+            .w(viewport.width)
+            .h(viewport.height)
+            .relative()
+            .child(element);
+        out.push(
+            deferred(anchored().position(point(px(0.0), px(0.0))).child(full))
+                .with_priority(3)
+                .into_any_element(),
+        );
     }
     if let Some(picker) = gif_overlay(window, cx) {
-        out.push(deferred(anchored().snap_to_window().child(div().mb(px(8.0)).child(picker))).with_priority(2).into_any_element());
+        out.push(
+            deferred(
+                anchored()
+                    .snap_to_window()
+                    .child(div().mb(px(8.0)).child(picker)),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        );
     }
     out
 }
@@ -368,23 +469,46 @@ fn lightbox_overlay(cx: &mut App) -> Option<AnyElement> {
     let (channel, seq, at, count) = (l.channel, l.seq, l.at, l.images.len());
     let (index, name, size) = l.images.get(at)?.clone();
     let focus = l.close_focus.clone();
-    let key = ImageKey { channel, seq, index, thumb: false };
+    let key = ImageKey {
+        channel,
+        seq,
+        index,
+        thumb: false,
+    };
     ui::ensure_image(key, cx);
     let image = match ui::ui(cx).images.get(&key) {
         Some(Slot::Ready(i)) => Some(i.clone()),
         _ => None,
     };
-    let card = CardKey { channel, seq, index };
+    let card = CardKey {
+        channel,
+        seq,
+        index,
+    };
     Some(lightbox::lightbox(lightbox::LightboxProps {
-        label: tf("shell.lightbox.label", &[("name", &name), ("size", &ui::format_size(size))]).into(),
+        label: tf(
+            "shell.lightbox.label",
+            &[("name", &name), ("size", &ui::format_size(size))],
+        )
+        .into(),
         image,
         save_label: t("shell.lightbox.save").into(),
         on_save: click(move |_, cx| ui::save(card, cx)),
         close_label: t("shell.lightbox.close").into(),
         on_close: click(|_, cx| ui::close_lightbox(cx)),
         close_focus: focus,
-        previous: (at > 0).then(|| (t("shell.lightbox.previous").into(), click(|_, cx| ui::step_lightbox(-1, cx)))),
-        next: (at + 1 < count).then(|| (t("shell.lightbox.next").into(), click(|_, cx| ui::step_lightbox(1, cx)))),
+        previous: (at > 0).then(|| {
+            (
+                t("shell.lightbox.previous").into(),
+                click(|_, cx| ui::step_lightbox(-1, cx)),
+            )
+        }),
+        next: (at + 1 < count).then(|| {
+            (
+                t("shell.lightbox.next").into(),
+                click(|_, cx| ui::step_lightbox(1, cx)),
+            )
+        }),
     }))
 }
 
@@ -392,7 +516,8 @@ fn gif_overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     ui::ui(cx).gif.as_ref()?;
     if ui::ui(cx).gif.as_ref().is_some_and(|g| g.search.is_none()) {
         let input = cx.new(|cx| {
-            gpui_component::input::InputState::new(window, cx).placeholder(t("gif.search.placeholder"))
+            gpui_component::input::InputState::new(window, cx)
+                .placeholder(t("gif.search.placeholder"))
         });
         let focus = input.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
@@ -402,7 +527,10 @@ fn gif_overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     }
     let input = ui::ui(cx).gif.as_ref()?.search.clone()?;
     let typed = input.read(cx).value().to_string();
-    let (query, loading) = ui::ui(cx).gif.as_ref().map(|g| (g.query.clone(), g.loading))?;
+    let (query, loading) = ui::ui(cx)
+        .gif
+        .as_ref()
+        .map(|g| (g.query.clone(), g.loading))?;
     if typed != query && !loading {
         ui::search_gifs(typed, false, cx);
     }
@@ -432,7 +560,11 @@ fn gif_overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         (
             SharedString::from(t("gif.more")),
             click(|_, cx| {
-                let q = ui::ui(cx).gif.as_ref().map(|g| g.query.clone()).unwrap_or_default();
+                let q = ui::ui(cx)
+                    .gif
+                    .as_ref()
+                    .map(|g| g.query.clone())
+                    .unwrap_or_default();
                 ui::search_gifs(q, true, cx);
             }),
         )
@@ -466,17 +598,27 @@ pub fn dm_gif_privacy(ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> Opti
     let on = client.gifs().dm_consent();
     let toggle_client = client.clone();
     Some(
-        dilla_desktop_ui::components::settings::row::SettingsRow::new("privacy-dm-gifs", t("gif.dm.title"))
-            .icon(IconName::Image)
-            .hint(t("gif.dm.hint"))
+        dilla_desktop_ui::components::settings::row::SettingsRow::new(
+            "privacy-dm-gifs",
+            t("gif.dm.title"),
+        )
+        .icon(IconName::Image)
+        .hint(t("gif.dm.hint"))
         .child(
-            dilla_desktop_ui::components::toggle::Toggle::new("privacy-dm-gifs-toggle", t("gif.dm.title"), on)
-                .on_change(move |v, _, cx| {
-                    if toggle_client.gifs().set_dm_consent(v).is_err() {
-                        dilla_desktop_ui::components::toast::show_toast(t("workspace.preference.error"), cx);
-                    }
-                    cx.refresh_windows();
-                }),
+            dilla_desktop_ui::components::toggle::Toggle::new(
+                "privacy-dm-gifs-toggle",
+                t("gif.dm.title"),
+                on,
+            )
+            .on_change(move |v, _, cx| {
+                if toggle_client.gifs().set_dm_consent(v).is_err() {
+                    dilla_desktop_ui::components::toast::show_toast(
+                        t("workspace.preference.error"),
+                        cx,
+                    );
+                }
+                cx.refresh_windows();
+            }),
         )
         .into_any_element(),
     )
@@ -484,8 +626,13 @@ pub fn dm_gif_privacy(ctx: &SlotCx, _window: &mut Window, _cx: &mut App) -> Opti
 
 /// Whether a tray file is still working (the composer's send waits: `shell.tray.notReady`).
 pub fn tray_busy(ctx: &SlotCx) -> bool {
-    ctx.channel
-        .is_some_and(|c| ctx.state.attachments.tray(c).iter().any(|e| e.phase != TrayPhase::Ready))
+    ctx.channel.is_some_and(|c| {
+        ctx.state
+            .attachments
+            .tray(c)
+            .iter()
+            .any(|e| e.phase != TrayPhase::Ready)
+    })
 }
 
 #[cfg(test)]

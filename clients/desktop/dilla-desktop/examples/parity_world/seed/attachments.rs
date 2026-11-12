@@ -4,7 +4,10 @@
 //! loop in `parity_world/main.rs` (not Task 12's file) has to call [`send`] instead of `send_text` for a message with
 //! attachments. Until the controller wires that one line (Task 12's report), the facet stays refused.
 
-#![allow(dead_code, reason = "send is called once main.rs's posting loop is wired (Task 12's report)")]
+#![allow(
+    dead_code,
+    reason = "send is called once main.rs's posting loop is wired (Task 12's report)"
+)]
 
 use std::time::Duration;
 
@@ -34,7 +37,9 @@ pub(super) fn bytes_of(a: &AttachmentSpec) -> Vec<u8> {
         ("image/png" | "image/jpeg" | "image/webp" | "image/gif", Some(w), Some(h)) => {
             dilla_client::features::attachments::fixture_picture(&a.name, w, h)
         }
-        _ => (0..a.size).map(|i| (i.wrapping_mul(31) % 251) as u8).collect(),
+        _ => (0..a.size)
+            .map(|i| (i.wrapping_mul(31) % 251) as u8)
+            .collect(),
     }
 }
 
@@ -46,10 +51,15 @@ pub(super) async fn send(client: &Client, channel: ChannelId, m: &MessageSpec) {
         .iter()
         .map(|a| NewFile::from_bytes(&a.name, &a.mime, bytes_of(a)))
         .collect();
-    tray.add(files).await.expect("the tray takes the fixture's files");
+    tray.add(files)
+        .await
+        .expect("the tray takes the fixture's files");
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while !tray.entries().iter().all(|e| e.phase == TrayPhase::Ready) {
-        assert!(std::time::Instant::now() < deadline, "the fixture's files did not upload");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the fixture's files did not upload"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let descriptors = tray.take_all().expect("every file is ready");

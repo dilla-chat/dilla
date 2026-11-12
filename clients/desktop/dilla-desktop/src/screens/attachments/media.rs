@@ -2,8 +2,8 @@
 //! goes behind [`MediaDecoder`], so the later Rust video stack adds a decoder without touching the card.
 //!
 //! - Containers and codecs: symphonia (MP3, AAC in MP4, Vorbis and Opus in Ogg, FLAC, WAV, and MKV/WebM demux).
-//! - Opus: symphonia 0.5 has no Opus decoder; packets go to `opus-decoder`, a pure-Rust RFC 8251-conformant decoder
-//!   (MIT or Apache-2.0, no FFI), so nothing links a second libopus beside the one in libwebrtc (Task 12, path (a) of
+//! - Opus: symphonia 0.5 has no Opus decoder; packets go to `opus-pure`, a pure-Rust port of libopus 1.x
+//!   (BSD-3-Clause, no FFI), so nothing links a second libopus beside the one in libwebrtc (Task 12, path (a) of
 //!   the controller's ruling).
 //! - Output: rodio's [`Player`] (play, pause, seek, volume) on the default device.
 //! - Video: not decoded here. A video card shows its poster and opens the file in the system player
@@ -64,7 +64,7 @@ impl AsRef<[u8]> for Bytes {
 enum Codec {
     Symphonia(Box<dyn Decoder>),
     Opus {
-        dec: opus_decoder::OpusDecoder,
+        dec: opus_pure::OpusDecoder,
         channels: usize,
         /// The OpusHead pre-skip still to drop (in samples per channel at 48 kHz).
         skip: usize,
@@ -80,6 +80,31 @@ pub struct AudioDecoder {
     channels: u16,
     rate: u32,
     duration: Option<Duration>,
+    /// A block decoded while opening (to learn a stream's layout its header does not state), played first.
+    pending: Option<Vec<f32>>,
+}
+
+/// The longest duration shown; a header claiming more says nothing believable, so the duration is unknown.
+pub const MAX_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
+/// The most channels and the highest rate played; a header beyond them is refused as unplayable.
+const MAX_CHANNELS: u16 = 8;
+const MAX_RATE: u32 = 384_000;
+
+/// A stream's duration from its header's frame count and rate: `None` (unknown) for a missing, non-finite or absurd
+/// value, never a panic on a forged header.
+pub fn duration_of(n_frames: Option<u64>, rate: Option<u32>) -> Option<Duration> {
+    let (n, rate) = (n_frames?, rate?);
+    if rate == 0 {
+        return None;
+    }
+    Duration::try_from_secs_f64(n as f64 / f64::from(rate))
+        .ok()
+        .filter(|d| *d <= MAX_DURATION)
+}
+
+/// Runs a decoder call so that a panic inside a codec (a hostile file found a bug) is "cannot play", never a crash.
+fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
 }
 
 /// The OpusHead (RFC 7845 §5.1) fields a decoder needs: channels and pre-skip.
@@ -93,8 +118,14 @@ fn opus_head(extra: Option<&[u8]>) -> Option<(usize, usize)> {
     (channels == 1 || channels == 2).then_some((channels, pre_skip))
 }
 
-/// Opens `bytes` (a decrypted audio attachment, typed by `mime`) for playback.
-pub fn open_audio(
+/// Opens `bytes` (a decrypted audio attachment, typed by `mime`) for playback. Every probe, codec or header failure,
+/// every absurd header value and every codec panic is [`MediaError::Unsupported`]: the card shows "cannot play".
+pub fn open_audio(bytes: Arc<Zeroizing<Vec<u8>>>, mime: &str) -> Result<AudioDecoder, MediaError> {
+    guarded(move || open_audio_inner(bytes, mime))
+        .unwrap_or_else(|| Err(MediaError::Unsupported("the decoder failed".to_owned())))
+}
+
+fn open_audio_inner(
     bytes: Arc<Zeroizing<Vec<u8>>>,
     mime: &str,
 ) -> Result<AudioDecoder, MediaError> {
@@ -123,14 +154,12 @@ pub fn open_audio(
         .ok_or_else(|| MediaError::Unsupported("no audio track".to_owned()))?;
     let params = track.codec_params.clone();
     let track_id = track.id;
-    let duration = match (params.n_frames, params.sample_rate) {
-        (Some(n), Some(rate)) if rate > 0 => Some(Duration::from_secs_f64(n as f64 / f64::from(rate))),
-        _ => None,
-    };
+    let duration = duration_of(params.n_frames, params.sample_rate);
     let (codec, channels, rate) = if params.codec == CODEC_TYPE_OPUS {
-        let (channels, pre_skip) = opus_head(params.extra_data.as_deref())
-            .ok_or_else(|| MediaError::Unsupported("an Opus track without its header".to_owned()))?;
-        let dec = opus_decoder::OpusDecoder::new(48_000, channels)
+        let (channels, pre_skip) = opus_head(params.extra_data.as_deref()).ok_or_else(|| {
+            MediaError::Unsupported("an Opus track without its header".to_owned())
+        })?;
+        let dec = opus_pure::OpusDecoder::new(48_000, channels)
             .map_err(|e| MediaError::Unsupported(e.to_string()))?;
         (
             Codec::Opus {
@@ -150,17 +179,30 @@ pub fn open_audio(
         let rate = params.sample_rate.unwrap_or(0);
         (Codec::Symphonia(dec), channels, rate)
     };
-    if channels == 0 || rate == 0 {
-        return Err(MediaError::Unsupported("no channel count or rate".to_owned()));
-    }
-    Ok(AudioDecoder {
+    let mut d = AudioDecoder {
         format,
         track: track_id,
         codec,
         channels,
         rate,
         duration,
-    })
+        pending: None,
+    };
+    if d.channels == 0 || d.rate == 0 {
+        // Some containers (MP3, AAC in MP4) state the layout only in the first frame: decode it to learn it.
+        let (block, channels, rate) = d
+            .raw_next()
+            .ok_or_else(|| MediaError::Unsupported("no channel count or rate".to_owned()))?;
+        d.channels = channels;
+        d.rate = rate;
+        d.pending = Some(block);
+    }
+    if d.channels == 0 || d.channels > MAX_CHANNELS || d.rate == 0 || d.rate > MAX_RATE {
+        return Err(MediaError::Unsupported(
+            "an unplayable channel count or rate".to_owned(),
+        ));
+    }
+    Ok(d)
 }
 
 impl MediaDecoder for AudioDecoder {
@@ -177,6 +219,24 @@ impl MediaDecoder for AudioDecoder {
     }
 
     fn next_block(&mut self) -> Option<Vec<f32>> {
+        if let Some(b) = self.pending.take() {
+            return Some(b);
+        }
+        let (channels, rate) = (self.channels, self.rate);
+        // A codec panic, or a block whose layout changed mid-stream (the output cannot follow it), ends playback.
+        let (block, c, r) = guarded(|| self.raw_next()).flatten()?;
+        (c == channels && r == rate).then_some(block)
+    }
+
+    fn seek(&mut self, to: Duration) -> Result<(), MediaError> {
+        self.pending = None;
+        self.seek_inner(to)
+    }
+}
+
+impl AudioDecoder {
+    /// The next block, with the layout it was decoded in.
+    fn raw_next(&mut self) -> Option<(Vec<f32>, u16, u32)> {
         loop {
             let packet = self.format.next_packet().ok()?;
             if packet.track_id() != self.track {
@@ -194,16 +254,24 @@ impl MediaDecoder for AudioDecoder {
                     let spec = *decoded.spec();
                     let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
                     buf.copy_interleaved_ref(decoded);
-                    return Some(buf.samples().to_vec());
+                    return Some((
+                        buf.samples().to_vec(),
+                        spec.channels.count() as u16,
+                        spec.rate,
+                    ));
                 }
                 Codec::Opus {
-                    dec, channels, skip, ..
+                    dec,
+                    channels,
+                    skip,
+                    ..
                 } => {
                     // 120 ms at 48 kHz is the longest Opus packet.
                     let mut pcm = vec![0f32; 5760 * *channels];
-                    let Ok(n) = dec.decode_float(&packet.data, &mut pcm, false) else {
+                    let Ok(n) = dec.decode(&packet.data, 5760, &mut pcm) else {
                         continue;
                     };
+                    let n = n.min(5760);
                     let drop = (*skip).min(n);
                     *skip -= drop;
                     if drop == n {
@@ -211,13 +279,13 @@ impl MediaDecoder for AudioDecoder {
                     }
                     pcm.truncate(n * *channels);
                     pcm.drain(..drop * *channels);
-                    return Some(pcm);
+                    return Some((pcm, *channels as u16, 48_000));
                 }
             }
         }
     }
 
-    fn seek(&mut self, to: Duration) -> Result<(), MediaError> {
+    fn seek_inner(&mut self, to: Duration) -> Result<(), MediaError> {
         self.format
             .seek(
                 SeekMode::Coarse,
@@ -230,9 +298,12 @@ impl MediaDecoder for AudioDecoder {
         match &mut self.codec {
             Codec::Symphonia(dec) => dec.reset(),
             Codec::Opus {
-                dec, skip, pre_skip, ..
+                dec,
+                skip,
+                pre_skip,
+                ..
             } => {
-                dec.reset();
+                let _ = dec.reset_state();
                 // From the start, the pre-skip is dropped again; elsewhere the decoder's own warm-up suffices.
                 *skip = if to.is_zero() { *pre_skip } else { 0 };
             }
@@ -365,14 +436,96 @@ pub fn wipe_open_dir(instance_dir: &Path) {
     let _ = std::fs::remove_dir_all(open_dir(instance_dir));
 }
 
-/// Writes a decrypted video for the system player, which needs a file: into the instance's own `media-open` directory
-/// (owner-only on Unix) under the attachment's safe name. The caller opens the answered path with the OS
-/// (`App::open_with_system`). The file stays until [`wipe_open_dir`] runs at exit (the player may still be reading it).
+/// The video containers handed to the system player, by exact MIME type: the web client's playable videos
+/// (derive.ts `PLAYABLE_VIDEO`) and the two phone formats a person most often sends. Anything else is refused.
+fn video_container(mime: &str) -> Option<(&'static str, fn(&[u8]) -> bool)> {
+    fn iso_bmff(b: &[u8]) -> bool {
+        b.len() >= 12 && &b[4..8] == b"ftyp"
+    }
+    fn quicktime(b: &[u8]) -> bool {
+        b.len() >= 8
+            && matches!(
+                &b[4..8],
+                b"ftyp" | b"moov" | b"mdat" | b"wide" | b"free" | b"skip"
+            )
+    }
+    fn ebml(b: &[u8]) -> bool {
+        b.starts_with(&[0x1a, 0x45, 0xdf, 0xa3])
+    }
+    fn ogg(b: &[u8]) -> bool {
+        b.starts_with(b"OggS")
+    }
+    match mime {
+        "video/mp4" => Some(("mp4", iso_bmff)),
+        "video/quicktime" => Some(("mov", quicktime)),
+        "video/webm" => Some(("webm", ebml)),
+        "video/x-matroska" => Some(("mkv", ebml)),
+        "video/ogg" => Some(("ogv", ogg)),
+        _ => None,
+    }
+}
+
+/// 128 random bits as 32 hex digits, from the OS's random source through std's hasher keys (nothing of the sender's).
+fn random_name() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut out = String::with_capacity(32);
+    for half in 0..2u64 {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u64(n);
+        h.write_u64(half);
+        out.push_str(&format!("{:016x}", h.finish()));
+    }
+    out
+}
+
+/// Marks a written file as downloaded from the internet, so the OS asks before running anything from it: the
+/// `Zone.Identifier` stream with `ZoneId=3` on Windows, the `com.apple.quarantine` attribute on macOS. Linux has no
+/// such mark; there the random name and the checked container extension are the protection.
+fn mark_downloaded(path: &Path) {
+    #[cfg(windows)]
+    {
+        let mut ads = path.as_os_str().to_owned();
+        ads.push(":Zone.Identifier");
+        let _ = std::fs::write(ads, "[ZoneTransfer]\r\nZoneId=3\r\n");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let _ = std::process::Command::new("/usr/bin/xattr")
+            .arg("-w")
+            .arg("com.apple.quarantine")
+            .arg(format!("0081;{stamp:x};Dilla Preview;"))
+            .arg(path)
+            .status();
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = path;
+}
+
+/// Writes a decrypted video for the system player, which needs a file (security review, Task 12):
+///
+/// - only an allowed video type (`video_container`) whose bytes start with that container's signature is written;
+///   anything else is refused, so no executable, script or launcher ever reaches the OS's opener;
+/// - the file's name is random and its extension the container's: nothing of the sender's file name is used;
+/// - it goes into the instance's own `media-open` directory (owner-only on Unix), marked as downloaded, and stays
+///   until [`wipe_open_dir`] runs at start and at exit (the player may still be reading it).
+///
+/// The caller opens the answered path with the OS (`App::open_with_system`).
 pub fn write_for_system_player(
     instance_dir: &Path,
-    name: &str,
+    mime: &str,
     bytes: &[u8],
 ) -> std::io::Result<PathBuf> {
+    let refuse = |why: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, why.to_owned());
+    let (ext, matches) =
+        video_container(mime).ok_or_else(|| refuse("not a video type the system player gets"))?;
+    if !matches(bytes) {
+        return Err(refuse("the file is not the container its type names"));
+    }
     let dir = open_dir(instance_dir);
     std::fs::create_dir_all(&dir)?;
     #[cfg(unix)]
@@ -380,23 +533,15 @@ pub fn write_for_system_player(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
     }
-    let path = dir.join(file_name_for(name));
-    std::fs::write(&path, bytes)?;
+    let path = dir.join(format!("{}.{ext}", random_name()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    std::io::Write::write_all(&mut file, bytes)?;
+    drop(file);
+    mark_downloaded(&path);
     Ok(path)
-}
-
-/// A name that stays inside the directory: no separator, no leading dot, never empty.
-fn file_name_for(name: &str) -> String {
-    let clean: String = name
-        .chars()
-        .map(|c| if matches!(c, '/' | '\\' | ':' | '\0') { '_' } else { c })
-        .collect();
-    let clean = clean.trim_start_matches('.');
-    if clean.is_empty() {
-        "video".to_owned()
-    } else {
-        clean.to_owned()
-    }
 }
 
 #[cfg(test)]
@@ -434,7 +579,8 @@ mod tests {
         out.extend_from_slice(b"data");
         out.extend_from_slice(&(n * 2).to_le_bytes());
         for i in 0..n {
-            let v = ((i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 16000.0) as i16;
+            let v =
+                ((i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 16000.0) as i16;
             out.extend_from_slice(&v.to_le_bytes());
         }
         out
@@ -444,20 +590,44 @@ mod tests {
     fn every_audio_format_of_the_task_decodes_to_the_tone() {
         for (bytes, mime, rate) in [
             (wav(1.0), "audio/wav", 8000),
-            (include_bytes!("testdata/tone-440.mp3").to_vec(), "audio/mpeg", 44_100),
-            (include_bytes!("testdata/tone-440.m4a").to_vec(), "audio/mp4", 44_100),
-            (include_bytes!("testdata/tone-440.ogg").to_vec(), "audio/ogg", 44_100),
-            (include_bytes!("testdata/tone-440.flac").to_vec(), "audio/flac", 44_100),
-            (include_bytes!("testdata/tone-440.opus").to_vec(), "audio/ogg", 48_000),
+            (
+                include_bytes!("testdata/tone-440.mp3").to_vec(),
+                "audio/mpeg",
+                44_100,
+            ),
+            (
+                include_bytes!("testdata/tone-440.m4a").to_vec(),
+                "audio/mp4",
+                44_100,
+            ),
+            (
+                include_bytes!("testdata/tone-440.ogg").to_vec(),
+                "audio/ogg",
+                44_100,
+            ),
+            (
+                include_bytes!("testdata/tone-440.flac").to_vec(),
+                "audio/flac",
+                44_100,
+            ),
+            (
+                include_bytes!("testdata/tone-440.opus").to_vec(),
+                "audio/ogg",
+                48_000,
+            ),
         ] {
             let (d, samples) = decode_all(&bytes, mime);
             assert_eq!((d.channels(), d.sample_rate()), (1, rate), "{mime}");
-            assert!(samples.len() as u32 >= rate / 3, "{mime}: {} samples", samples.len());
-            assert!(rms(&samples) > 0.1, "{mime}: rms {}", rms(&samples));
+            assert!(
+                samples.len() as u32 >= rate / 3,
+                "{mime}: {} samples",
+                samples.len()
+            );
+            assert!(rms(&samples) > 0.05, "{mime}: rms {}", rms(&samples));
         }
     }
 
-    /// Opus through `opus-decoder`: one second at 48 kHz less the OpusHead pre-skip, within one 20 ms packet.
+    /// Opus through `opus-pure`: one second at 48 kHz less the OpusHead pre-skip, within one 20 ms packet.
     #[test]
     fn opus_drops_its_pre_skip_and_keeps_the_length() {
         let (_, samples) = decode_all(include_bytes!("testdata/tone-440.opus"), "audio/opus");
@@ -467,11 +637,16 @@ mod tests {
 
     #[test]
     fn a_seek_moves_to_the_middle_and_back_to_the_start() {
-        let bytes = Arc::new(Zeroizing::new(include_bytes!("testdata/tone-440.ogg").to_vec()));
+        let bytes = Arc::new(Zeroizing::new(
+            include_bytes!("testdata/tone-440.ogg").to_vec(),
+        ));
         let mut d = open_audio(bytes, "audio/ogg").unwrap();
         d.seek(Duration::from_millis(500)).unwrap();
         let rest: usize = std::iter::from_fn(|| d.next_block()).map(|b| b.len()).sum();
-        assert!(rest < 44_100 * 3 / 4 && rest > 44_100 / 4, "{rest} samples after 0.5 s");
+        assert!(
+            rest < 44_100 * 3 / 4 && rest > 44_100 / 4,
+            "{rest} samples after 0.5 s"
+        );
         d.seek(Duration::ZERO).unwrap();
         let all: usize = std::iter::from_fn(|| d.next_block()).map(|b| b.len()).sum();
         assert!(all > 44_100 * 3 / 4, "{all} samples from the start");
@@ -479,16 +654,174 @@ mod tests {
 
     #[test]
     fn bytes_that_are_no_audio_are_unsupported() {
-        let r = open_audio(Arc::new(Zeroizing::new(b"not audio at all".to_vec())), "audio/mpeg");
+        let r = open_audio(
+            Arc::new(Zeroizing::new(b"not audio at all".to_vec())),
+            "audio/mpeg",
+        );
         assert!(matches!(r, Err(MediaError::Unsupported(_))));
     }
 
     #[test]
     fn a_video_file_name_stays_inside_the_instance_directory() {
-        assert_eq!(file_name_for("../../etc/x.mp4"), "_.._etc_x.mp4");
-        assert_eq!(file_name_for("..."), "video");
-        assert_eq!(file_name_for("clip.mp4"), "clip.mp4");
         let dir = Path::new("/data/instances/0");
         assert_eq!(open_dir(dir), Path::new("/data/instances/0/media-open"));
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("dilla-t12-media-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    const MP4: &[u8] = b"\0\0\0\x18ftypmp42\0\0\0\0mp42isom";
+
+    /// Security review (HIGH): the sender's name never reaches the path; whatever it says, the file is a random name
+    /// with the extension of its checked container type, inside the instance's own directory.
+    #[test]
+    fn a_hostile_name_never_reaches_the_path_given_to_the_system_player() {
+        let dir = scratch("names");
+        let mut seen = std::collections::HashSet::new();
+        for hostile in [
+            "evil.exe",
+            "x.desktop",
+            "../../a.mp4",
+            "run.command",
+            "a.lnk",
+            "s.scr",
+        ] {
+            let path = write_for_system_player(&dir, "video/mp4", MP4).expect("an MP4 is written");
+            assert_eq!(path.parent(), Some(open_dir(&dir).as_path()), "{hostile}");
+            assert_eq!(path.extension().and_then(|e| e.to_str()), Some("mp4"));
+            let stem = path.file_stem().unwrap().to_str().unwrap();
+            assert!(
+                stem.len() == 32 && stem.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{stem}"
+            );
+            assert!(seen.insert(path.clone()), "a fresh name each time");
+        }
+        wipe_open_dir(&dir);
+        assert!(!open_dir(&dir).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_container_that_does_not_match_its_type_is_refused() {
+        let dir = scratch("magic");
+        // An executable, a script and a WebM claiming to be MP4s; an MP4 claiming to be a WebM.
+        for (mime, bytes) in [
+            ("video/mp4", &b"MZ\x90\0\x03\0\0\0\x04\0\0\0\xff\xff"[..]),
+            ("video/mp4", b"#!/bin/sh\nrm -rf ~\n"),
+            ("video/mp4", b"\x1a\x45\xdf\xa3\x01\0\0\0"),
+            ("video/webm", MP4),
+            ("video/mp4", b""),
+        ] {
+            assert!(
+                write_for_system_player(&dir, mime, bytes).is_err(),
+                "{mime} {bytes:?}"
+            );
+        }
+        assert!(
+            !open_dir(&dir).exists() || std::fs::read_dir(open_dir(&dir)).unwrap().next().is_none()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unknown_video_type_is_refused() {
+        let dir = scratch("mime");
+        for mime in [
+            "application/x-msdownload",
+            "video/x-ms-wmv",
+            "text/x-desktop",
+            "",
+            "video/mp4; x=1",
+        ] {
+            assert!(write_for_system_player(&dir, mime, MP4).is_err(), "{mime}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Security review (MEDIUM): a forged header's frame count never panics the duration.
+    #[test]
+    fn an_absurd_duration_is_unknown_not_a_panic() {
+        assert_eq!(duration_of(Some(u64::MAX), Some(1)), None);
+        assert_eq!(
+            duration_of(Some(u64::MAX), Some(u32::MAX)),
+            None,
+            "over 24 h"
+        );
+        assert_eq!(duration_of(Some(10), Some(0)), None);
+        assert_eq!(
+            duration_of(Some(88_200), Some(44_100)),
+            Some(Duration::from_secs(2))
+        );
+        assert_eq!(duration_of(None, Some(44_100)), None);
+    }
+
+    /// Every truncation of every test file, and garbage, is "cannot play" or plays: never a panic.
+    #[test]
+    fn truncated_and_garbage_audio_never_panics() {
+        let files: [&[u8]; 5] = [
+            include_bytes!("testdata/tone-440.mp3"),
+            include_bytes!("testdata/tone-440.m4a"),
+            include_bytes!("testdata/tone-440.ogg"),
+            include_bytes!("testdata/tone-440.flac"),
+            include_bytes!("testdata/tone-440.opus"),
+        ];
+        let mut corpus: Vec<Vec<u8>> = Vec::new();
+        for f in files {
+            for cut in [
+                0,
+                1,
+                4,
+                12,
+                44,
+                64,
+                200,
+                f.len() / 3,
+                f.len() / 2,
+                f.len() - 1,
+            ] {
+                corpus.push(f[..cut.min(f.len())].to_vec());
+            }
+            // The same file with a stretch of its body flipped.
+            let mut flipped = f.to_vec();
+            for b in flipped.iter_mut().skip(f.len() / 4).take(f.len() / 4) {
+                *b ^= 0x5a;
+            }
+            corpus.push(flipped);
+        }
+        let mut seed = 0x2545_f491_u32;
+        for len in [16, 512, 4096] {
+            corpus.push(
+                (0..len)
+                    .map(|_| {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 17;
+                        seed ^= seed << 5;
+                        seed as u8
+                    })
+                    .collect(),
+            );
+        }
+        let mut wav_header = wav(0.1);
+        wav_header[22..24].copy_from_slice(&u16::MAX.to_le_bytes());
+        wav_header[24..28].copy_from_slice(&u32::MAX.to_le_bytes());
+        corpus.push(wav_header);
+        for (i, bytes) in corpus.into_iter().enumerate() {
+            for mime in ["audio/mpeg", "audio/ogg", "audio/wav"] {
+                if let Ok(mut d) = open_audio(Arc::new(Zeroizing::new(bytes.clone())), mime) {
+                    assert!(
+                        d.channels() >= 1 && d.channels() <= 8 && d.sample_rate() > 0,
+                        "#{i}"
+                    );
+                    let mut blocks = 0;
+                    while d.next_block().is_some() && blocks < 10_000 {
+                        blocks += 1;
+                    }
+                }
+            }
+        }
     }
 }

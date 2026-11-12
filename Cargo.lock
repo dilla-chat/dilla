@@ -2170,7 +2170,7 @@ dependencies = [
  "gpui-pre-platform",
  "hmac 0.13.0",
  "image",
- "opus-decoder",
+ "opus-pure",
  "reqwest 0.13.5",
  "rodio",
  "serde",
@@ -6758,13 +6758,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
-name = "opus-decoder"
-version = "0.1.1"
+name = "opus-pure"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15ae32c275dabb0cd2c863460bf349e9abc3568ba2abf0f9eb7b7d2edeeed07e"
-dependencies = [
- "thiserror 2.0.20",
-]
+checksum = "5afacd236411dddcc284983066ef66b27e306e53ce4de85cd745b3da9be8a0be"
 
 [[package]]
 name = "ordered-float"

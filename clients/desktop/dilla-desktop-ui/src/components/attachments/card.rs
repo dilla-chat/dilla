@@ -64,7 +64,11 @@ pub fn image_tile(
             .object_fit(ObjectFit::Cover)
             .rounded(radius::LG)
             .into_any_element(),
-        None => div().size_full().rounded(radius::LG).bg(color::SURFACE_2).into_any_element(),
+        None => div()
+            .size_full()
+            .rounded(radius::LG)
+            .bg(color::SURFACE_2)
+            .into_any_element(),
     };
     let mut tile = div()
         .id(gpui::ElementId::Name(id.into()))
@@ -141,7 +145,11 @@ pub fn file_card(
                 .justify_center()
                 .rounded(radius::SEG)
                 .bg(color::HOVER)
-                .child(Icon::new(IconName::File).size(px(15.0)).color(color::ACCENT_2)),
+                .child(
+                    Icon::new(IconName::File)
+                        .size(px(15.0))
+                        .color(color::ACCENT_2),
+                ),
         )
         .child(
             div()
@@ -149,7 +157,15 @@ pub fn file_card(
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .child(line(name, text::SM, line_height(text::SM, FILE_LEADING), color::FG).ellipsis())
+                .child(
+                    line(
+                        name,
+                        text::SM,
+                        line_height(text::SM, FILE_LEADING),
+                        color::FG,
+                    )
+                    .ellipsis(),
+                )
                 .child(line(
                     meta,
                     text::META,
@@ -172,14 +188,21 @@ pub fn file_card(
                 .hover(|s| s.bg(color::SURFACE_HI))
                 .focus_visible(|s| s.shadow(focus_ring()))
                 .on_click(move |e, w, cx| on_save(e, w, cx))
-                .child(Icon::new(IconName::Download).size(px(14.0)).color(color::FG_STRONG)),
+                .child(
+                    Icon::new(IconName::Download)
+                        .size(px(14.0))
+                        .color(color::FG_STRONG),
+                ),
         );
     }
     card.into_any_element()
 }
 
 /// The frame of an image too large to open here: the neutral box, then the name and the size (no button).
-pub fn too_large_image(name: impl Into<SharedString>, size: impl Into<SharedString>) -> (AnyElement, f32) {
+pub fn too_large_image(
+    name: impl Into<SharedString>,
+    size: impl Into<SharedString>,
+) -> (AnyElement, f32) {
     let h = tile_height(IMAGE_W);
     let meta_h = line_height(text::SM, LEADING);
     let el = div()
@@ -218,7 +241,11 @@ pub fn state_line(text_: impl Into<SharedString>, failed: bool) -> AnyElement {
     let tone = if failed { color::DANGER } else { color::FG_3 };
     let mut row = div().flex().items_center().gap(px(3.0)).h(px(h));
     if failed {
-        row = row.child(Icon::new(IconName::X).size(px(f32::from(text::XS) * 0.875)).color(tone));
+        row = row.child(
+            Icon::new(IconName::X)
+                .size(px(f32::from(text::XS) * 0.875))
+                .color(tone),
+        );
     }
     row.child(line(text_, text::XS, h, tone)).into_any_element()
 }

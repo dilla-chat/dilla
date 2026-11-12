@@ -104,9 +104,14 @@ fn card(e: TrayEntry) -> AnyElement {
             .bg(color::HOVER)
             .child(
                 div().px(px(6.0)).max_w_full().child(
-                    line(e.name.to_uppercase(), text::BADGE, line_height(text::BADGE, 1.5), color::FG_CHIP)
-                        .tracking(TRACKING_TAG)
-                        .ellipsis(),
+                    line(
+                        e.name.to_uppercase(),
+                        text::BADGE,
+                        line_height(text::BADGE, 1.5),
+                        color::FG_CHIP,
+                    )
+                    .tracking(TRACKING_TAG)
+                    .ellipsis(),
                 ),
             )
             .child(
@@ -121,7 +126,11 @@ fn card(e: TrayEntry) -> AnyElement {
             )
             .into_any_element(),
         Preview::None => {
-            let meta = if e.step == Step::Ready { e.size.clone() } else { e.phase.clone() };
+            let meta = if e.step == Step::Ready {
+                e.size.clone()
+            } else {
+                e.phase.clone()
+            };
             div()
                 .flex_1()
                 .min_h_0()
@@ -139,14 +148,26 @@ fn card(e: TrayEntry) -> AnyElement {
                         .justify_center()
                         .rounded(radius::MD)
                         .bg(color::HOVER)
-                        .child(Icon::new(IconName::File).size(px(14.0)).color(color::ACCENT_2)),
+                        .child(
+                            Icon::new(IconName::File)
+                                .size(px(14.0))
+                                .color(color::ACCENT_2),
+                        ),
                 )
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .min_w_0()
-                        .child(line(e.name.clone(), text::BTN, line_height(text::BTN, 1.3), color::FG).ellipsis())
+                        .child(
+                            line(
+                                e.name.clone(),
+                                text::BTN,
+                                line_height(text::BTN, 1.3),
+                                color::FG,
+                            )
+                            .ellipsis(),
+                        )
                         .child(
                             line(
                                 meta,
@@ -177,7 +198,11 @@ fn card(e: TrayEntry) -> AnyElement {
         .h(px(ITEM_H + 2.0))
         .bg(color::BG_3)
         .border_1()
-        .border_color(if failed { color::DANGER_LINE } else { color::HAIRLINE_2 })
+        .border_color(if failed {
+            color::DANGER_LINE
+        } else {
+            color::HAIRLINE_2
+        })
         .rounded(radius::LG)
         .child(body)
         .child(
@@ -189,7 +214,9 @@ fn card(e: TrayEntry) -> AnyElement {
         )
         .child(
             div()
-                .id(gpui::ElementId::Name(format!("tray-remove-{}", e.id).into()))
+                .id(gpui::ElementId::Name(
+                    format!("tray-remove-{}", e.id).into(),
+                ))
                 .absolute()
                 .top(px(4.0))
                 .right(px(4.0))
@@ -231,10 +258,16 @@ mod tests {
 
     #[test]
     fn the_progress_line_fills_in_steps() {
-        let fills: Vec<f32> = [Step::Reading, Step::Preparing, Step::Uploading, Step::Ready, Step::Failed]
-            .iter()
-            .map(|s| s.fill())
-            .collect();
+        let fills: Vec<f32> = [
+            Step::Reading,
+            Step::Preparing,
+            Step::Uploading,
+            Step::Ready,
+            Step::Failed,
+        ]
+        .iter()
+        .map(|s| s.fill())
+        .collect();
         assert_eq!(fills, [0.25, 0.5, 0.75, 1.0, 1.0]);
         assert_eq!(height(), 94.0);
     }

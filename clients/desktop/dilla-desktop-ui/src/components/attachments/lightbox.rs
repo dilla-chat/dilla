@@ -35,7 +35,9 @@ pub struct LightboxProps {
 }
 
 fn button(id: &'static str, label: SharedString, variant: ButtonVariant, f: OnClick) -> Button {
-    Button::new(id, label).variant(variant).on_click(move |e, w, cx| f(e, w, cx))
+    Button::new(id, label)
+        .variant(variant)
+        .on_click(move |e, w, cx| f(e, w, cx))
 }
 
 /// The lightbox, filling its (window-sized) parent.
@@ -97,7 +99,13 @@ pub fn lightbox(p: LightboxProps) -> AnyElement {
                 .border_color(color::HAIRLINE)
                 .child(
                     div().flex_1().min_w_0().child(
-                        line(p.label, text::UI, line_height(text::UI, LEADING), color::FG_2).ellipsis(),
+                        line(
+                            p.label,
+                            text::UI,
+                            line_height(text::UI, LEADING),
+                            color::FG_2,
+                        )
+                        .ellipsis(),
                     ),
                 )
                 .child(nav)
@@ -105,7 +113,12 @@ pub fn lightbox(p: LightboxProps) -> AnyElement {
                     div()
                         .flex()
                         .gap(px(8.0))
-                        .child(button("lightbox-save", p.save_label, ButtonVariant::Default, p.on_save))
+                        .child(button(
+                            "lightbox-save",
+                            p.save_label,
+                            ButtonVariant::Default,
+                            p.on_save,
+                        ))
                         .child(
                             Button::new("lightbox-close", p.close_label)
                                 .variant(ButtonVariant::Ghost)

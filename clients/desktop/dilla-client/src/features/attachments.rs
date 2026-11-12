@@ -199,6 +199,127 @@ pub struct Thumbnail {
     pub h: u32,
 }
 
+/// The most a picture may take decoded (width x height x 4 bytes x frames) before it is drawn whole, made into a
+/// preview or played as a GIF (security review, Task 12): a larger one stays a still or a neutral box.
+pub const DECODE_BUDGET: u64 = 256 * 1024 * 1024;
+
+/// A GIF's frames and the largest area any of them (or its screen) declares, read from its blocks without decoding.
+fn gif_frames(b: &[u8]) -> Option<(u64, u64)> {
+    let area = |at: usize| -> Option<u64> {
+        let w = u16::from_le_bytes([*b.get(at)?, *b.get(at + 1)?]);
+        let h = u16::from_le_bytes([*b.get(at + 2)?, *b.get(at + 3)?]);
+        Some(u64::from(w) * u64::from(h))
+    };
+    let mut max = area(6)?;
+    let packed = *b.get(10)?;
+    let mut at = 13
+        + if packed & 0x80 != 0 {
+            3 << ((packed & 7) + 1)
+        } else {
+            0
+        };
+    let skip_blocks = |mut at: usize| -> Option<usize> {
+        loop {
+            let len = usize::from(*b.get(at)?);
+            at += 1 + len;
+            if len == 0 {
+                return Some(at);
+            }
+        }
+    };
+    let mut frames = 0u64;
+    while let Some(&tag) = b.get(at) {
+        match tag {
+            0x2c => {
+                max = max.max(area(at + 5)?);
+                frames += 1;
+                let packed = *b.get(at + 9)?;
+                at += 10
+                    + if packed & 0x80 != 0 {
+                        3 << ((packed & 7) + 1)
+                    } else {
+                        0
+                    };
+                // The LZW minimum code size, then the data's sub-blocks.
+                at = skip_blocks(at + 1)?;
+            }
+            0x21 => at = skip_blocks(at + 2)?,
+            _ => break,
+        }
+    }
+    Some((frames.max(1), max))
+}
+
+/// An animated PNG's frame count (`acTL`), 1 for a still.
+fn png_frames(b: &[u8]) -> u64 {
+    let mut at = 8;
+    while at + 12 <= b.len() {
+        let len = u32::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]) as usize;
+        let kind = &b[at + 4..at + 8];
+        if kind == b"acTL" && at + 12 <= b.len() {
+            return u64::from(u32::from_be_bytes([
+                b[at + 8],
+                b[at + 9],
+                b[at + 10],
+                b[at + 11],
+            ]))
+            .max(1);
+        }
+        if kind == b"IDAT" {
+            break;
+        }
+        at = at.saturating_add(12).saturating_add(len);
+    }
+    1
+}
+
+/// An animated WebP's frame count (`ANMF` chunks), 1 for a still.
+fn webp_frames(b: &[u8]) -> u64 {
+    let mut at = 12;
+    let mut n = 0u64;
+    while at + 8 <= b.len() {
+        let len = u32::from_le_bytes([b[at + 4], b[at + 5], b[at + 6], b[at + 7]]) as usize;
+        if &b[at..at + 4] == b"ANMF" {
+            n += 1;
+        }
+        at = at.saturating_add(8).saturating_add(len + (len & 1));
+    }
+    n.max(1)
+}
+
+/// What a picture takes decoded, all frames (width x height x 4 x frames), from its headers only; `None` when the
+/// headers do not say (not a picture, or cut short).
+pub fn decoded_size(bytes: &[u8]) -> Option<u64> {
+    if bytes.starts_with(b"GIF8") {
+        let (frames, area) = gif_frames(bytes)?;
+        return Some(area.saturating_mul(4).saturating_mul(frames));
+    }
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let format = reader.format()?;
+    let (w, h) = reader.into_dimensions().ok()?;
+    let frames = match format {
+        image::ImageFormat::Png => png_frames(bytes),
+        image::ImageFormat::WebP => webp_frames(bytes),
+        _ => 1,
+    };
+    Some(
+        u64::from(w)
+            .saturating_mul(u64::from(h))
+            .saturating_mul(4)
+            .saturating_mul(frames),
+    )
+}
+
+/// Whether a picture may be decoded whole: its headers say it fits [`DECODE_BUDGET`].
+pub fn fits_decode_budget(bytes: &[u8]) -> bool {
+    decoded_size(bytes).is_some_and(|n| n <= DECODE_BUDGET)
+}
+
+/// The largest side a preview is made from.
+const THUMB_MAX_SIDE: u32 = 16_384;
+
 /// The decode bound of an image whose preview is made: a picture over it gets no preview (never an allocation the size
 /// a hostile header names).
 const THUMB_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
@@ -208,10 +329,28 @@ const THUMB_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
 /// encoder has none; this one takes the JPEG path (the `image` crate's WebP encoder is lossless only), which every
 /// client opens (thumb.ts `isThumbnailBytes`). `None` for bytes that do not decode as an image.
 pub fn make_thumbnail(bytes: &[u8]) -> Option<Thumbnail> {
+    // Only the first frame is decoded; its own size (any frame's, for a GIF) must fit the budget and the side cap.
+    let one_frame = if bytes.starts_with(b"GIF8") {
+        gif_frames(bytes).map(|(_, area)| area.saturating_mul(4))
+    } else {
+        decoded_size(bytes).map(|n| {
+            let frames = match image::guess_format(bytes) {
+                Ok(image::ImageFormat::Png) => png_frames(bytes),
+                Ok(image::ImageFormat::WebP) => webp_frames(bytes),
+                _ => 1,
+            };
+            n / frames.max(1)
+        })
+    };
+    if one_frame.is_none_or(|n| n > DECODE_BUDGET) {
+        return None;
+    }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
     let mut limits = image::Limits::default();
+    limits.max_image_width = Some(THUMB_MAX_SIDE);
+    limits.max_image_height = Some(THUMB_MAX_SIDE);
     limits.max_alloc = Some(THUMB_DECODE_ALLOC);
     reader.limits(limits);
     let img = reader.decode().ok()?;
@@ -965,7 +1104,11 @@ pub fn fixture_picture(name: &str, w: u32, h: u32) -> Vec<u8> {
     let seed = dilla_core::identity::sha256(name.as_bytes());
     let img = image::RgbImage::from_fn(w.max(1), h.max(1), |x, y| {
         let band = ((x / 16 + y / 16) % 4) as usize;
-        image::Rgb([seed[band] / 2 + 64, seed[band + 4] / 2 + 64, seed[band + 8] / 2 + 64])
+        image::Rgb([
+            seed[band] / 2 + 64,
+            seed[band + 4] / 2 + 64,
+            seed[band + 8] / 2 + 64,
+        ])
     });
     let mut out = std::io::Cursor::new(Vec::new());
     img.write_to(&mut out, image::ImageFormat::Png)
@@ -1059,6 +1202,62 @@ mod tests {
         let t = make_thumbnail(&png(300, 900)).unwrap();
         let small = image::load_from_memory(&t.bytes.unwrap()).unwrap();
         assert!(small.height() <= 320 && small.width() <= 107);
+    }
+
+    /// A GIF of a few dozen bytes that declares a 65535 x 65535 screen and frame.
+    fn gif_bomb(frames: usize) -> Vec<u8> {
+        let mut g = b"GIF89a".to_vec();
+        g.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00]);
+        for _ in 0..frames {
+            g.push(0x2c);
+            g.extend_from_slice(&[0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0x00]);
+            g.extend_from_slice(&[0x02, 0x02, 0x4c, 0x01, 0x00]);
+        }
+        g.push(0x3b);
+        g
+    }
+
+    fn png_header(w: u32, h: u32) -> Vec<u8> {
+        let mut p = b"\x89PNG\r\n\x1a\n".to_vec();
+        p.extend_from_slice(&13u32.to_be_bytes());
+        p.extend_from_slice(b"IHDR");
+        p.extend_from_slice(&w.to_be_bytes());
+        p.extend_from_slice(&h.to_be_bytes());
+        p.extend_from_slice(&[8, 2, 0, 0, 0, 0, 0, 0, 0]);
+        p
+    }
+
+    /// Security review (MEDIUM): a picture whose decoded frames would pass 256 MB is never decoded whole.
+    #[test]
+    fn a_decompression_bomb_is_over_the_decode_budget() {
+        let bomb = gif_bomb(1);
+        assert!(bomb.len() < 64, "a tiny file");
+        assert!(decoded_size(&bomb).is_some_and(|n| n > DECODE_BUDGET));
+        assert!(!fits_decode_budget(&bomb));
+        assert!(!fits_decode_budget(&png_header(65_535, 65_535)));
+        // Many small frames add up: 1000 frames of 200 x 200 x 4 is 160 MB, 2000 frames pass the budget.
+        let small = |n: usize| {
+            let mut g = b"GIF89a\xc8\x00\xc8\x00\x00\x00\x00".to_vec();
+            for _ in 0..n {
+                g.extend_from_slice(&[
+                    0x2c, 0, 0, 0, 0, 0xc8, 0, 0xc8, 0, 0, 0x02, 0x02, 0x4c, 0x01, 0x00,
+                ]);
+            }
+            g.push(0x3b);
+            g
+        };
+        assert!(fits_decode_budget(&small(1000)));
+        assert!(!fits_decode_budget(&small(2000)));
+        assert!(fits_decode_budget(&png(320, 240)));
+        assert!(
+            !fits_decode_budget(b"GIF89a"),
+            "a header without a size is refused"
+        );
+        assert!(!fits_decode_budget(b"not a picture"));
+        // No preview is made from a bomb, and making none is quick.
+        let t = std::time::Instant::now();
+        assert_eq!(make_thumbnail(&bomb), None);
+        assert!(t.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[test]

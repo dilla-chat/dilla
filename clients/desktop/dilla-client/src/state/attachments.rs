@@ -50,6 +50,9 @@ pub struct TrayItem {
 pub struct AttachmentState {
     /// `tray:<channel>`: absent while a channel's tray is empty.
     pub trays: HashMap<ChannelId, Vec<TrayItem>>,
+    /// The thumbnails a drawn fixture's cards show, by attachment name and size: set only by the automation build's
+    /// fixture (`dilla-desktop/src/fixture/attachments.rs`), where there is no client to open them. Empty otherwise.
+    pub fixture_thumbs: HashMap<(String, u64), Vec<u8>>,
 }
 
 impl AttachmentState {

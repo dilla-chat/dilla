@@ -137,7 +137,14 @@ pub fn format_size(bytes: u64) -> String {
     } else {
         format!("{}", (value + 0.5).floor())
     };
-    tf(if mb { "shell.attachment.mb" } else { "shell.attachment.kb" }, &[("n", &n)])
+    tf(
+        if mb {
+            "shell.attachment.mb"
+        } else {
+            "shell.attachment.kb"
+        },
+        &[("n", &n)],
+    )
 }
 
 /// The format GPUI decodes a picture as, by its signature; `None` for anything that is not one of the four image
@@ -156,7 +163,12 @@ pub fn image_format(b: &[u8]) -> Option<ImageFormat> {
     }
 }
 
+/// A picture GPUI may decode: one of the four inline types whose headers say all its frames fit `DECODE_BUDGET` (a
+/// decompression bomb is never handed over; the card keeps its still or its neutral box).
 fn picture(bytes: &[u8]) -> Option<Arc<Image>> {
+    if !dilla_client::features::attachments::fits_decode_budget(bytes) {
+        return None;
+    }
     image_format(bytes).map(|f| Arc::new(Image::from_bytes(f, bytes.to_vec())))
 }
 
@@ -226,11 +238,13 @@ pub fn file_from_path(path: &std::path::Path) -> Option<(NewFile, Option<TrayPre
     let mime = dilla_client::features::attachments::mime_of(&file.name);
     let preview = match mime {
         "image/gif" => Some(TrayPreview::Gif),
-        m if attachment_kind(m) == AttachmentKind::Image && file.size <= ATTACHMENT_CAP => std::fs::read(path)
-            .ok()
-            .map(Zeroizing::new)
-            .and_then(|b| picture(&b))
-            .map(TrayPreview::Image),
+        m if attachment_kind(m) == AttachmentKind::Image && file.size <= ATTACHMENT_CAP => {
+            std::fs::read(path)
+                .ok()
+                .map(Zeroizing::new)
+                .and_then(|b| picture(&b))
+                .map(TrayPreview::Image)
+        }
         _ => None,
     };
     Some((file, preview))
@@ -248,12 +262,16 @@ pub fn attach_images(images: Vec<Image>, cx: &mut App) {
             ImageFormat::Gif => ("gif", "image/gif"),
             _ => continue,
         };
-        let name = if i == 0 { format!("image.{ext}") } else { format!("image-{}.{ext}", i + 1) };
-        previews.push(Some(if mime == "image/gif" {
-            TrayPreview::Gif
+        let name = if i == 0 {
+            format!("image.{ext}")
         } else {
-            TrayPreview::Image(Arc::new(Image::from_bytes(image.format, image.bytes.clone())))
-        }));
+            format!("image-{}.{ext}", i + 1)
+        };
+        previews.push(if mime == "image/gif" {
+            Some(TrayPreview::Gif)
+        } else {
+            picture(&image.bytes).map(TrayPreview::Image)
+        });
         files.push(NewFile::from_bytes(&name, mime, image.bytes));
     }
     attach(files, previews, cx);
@@ -268,7 +286,9 @@ pub fn pick_files(cx: &mut App) {
         prompt: None,
     });
     cx.spawn(async move |cx| {
-        let Ok(Ok(Some(paths))) = rx.await else { return };
+        let Ok(Ok(Some(paths))) = rx.await else {
+            return;
+        };
         let picked: Vec<_> = paths.iter().filter_map(|p| file_from_path(p)).collect();
         let _ = cx.update(|cx| {
             let (files, previews) = picked.into_iter().unzip();
@@ -280,7 +300,9 @@ pub fn pick_files(cx: &mut App) {
 
 /// Removes a tray entry (and its preview).
 pub fn discard(channel: ChannelId, id: String, cx: &mut App) {
-    let Some(client) = ui(cx).client.clone() else { return };
+    let Some(client) = ui(cx).client.clone() else {
+        return;
+    };
     let tray = tray_of(&client, channel, cx);
     ui(cx).tray_previews.remove(&(channel, id.clone()));
     client.attachments().discard(&tray, id);
@@ -306,12 +328,16 @@ pub fn take_for_send(
 
 /// Opens a thumbnail or a whole picture once; the card or the lightbox draws it when it is ready.
 pub fn ensure_image(key: ImageKey, cx: &mut App) {
-    let Some(client) = ui(cx).client.clone() else { return };
+    let Some(client) = ui(cx).client.clone() else {
+        return;
+    };
     if ui(cx).images.contains_key(&key) {
         return;
     }
     ui(cx).images.insert(key, Slot::Loading);
-    let rx = client.attachments().open(key.channel, key.seq, key.index, key.thumb);
+    let rx = client
+        .attachments()
+        .open(key.channel, key.seq, key.index, key.thumb);
     cx.spawn(async move |cx| {
         let slot = match rx.await {
             Ok(Ok(opened)) => picture(&opened.bytes).map_or(Slot::Failed, Slot::Ready),
@@ -328,10 +354,14 @@ pub fn ensure_image(key: ImageKey, cx: &mut App) {
 /// Saves an attachment where the person chooses (only after their action): it is opened, the save dialog asks for a
 /// path, and the plaintext is written there.
 pub fn save(key: CardKey, cx: &mut App) {
-    let Some(client) = ui(cx).client.clone() else { return };
+    let Some(client) = ui(cx).client.clone() else {
+        return;
+    };
     ui(cx).cards.insert(key, CardStatus::Loading);
     cx.refresh_windows();
-    let rx = client.attachments().open(key.channel, key.seq, key.index, false);
+    let rx = client
+        .attachments()
+        .open(key.channel, key.seq, key.index, false);
     let home = dirs_home();
     cx.spawn(async move |cx| {
         let opened = match rx.await {
@@ -348,8 +378,10 @@ pub fn save(key: CardKey, cx: &mut App) {
         let shown = safe_name(&opened.name, t("shell.attachment.unnamed"));
         let path_rx = cx.update(|cx| cx.prompt_for_new_path(&home, Some(&shown)));
         let result = match path_rx.await {
-            Ok(Ok(Some(path))) => dilla_client::features::attachments::Attachments::save(&path, &opened.bytes)
-                .map_err(|_| "E_SAVE".to_owned()),
+            Ok(Ok(Some(path))) => {
+                dilla_client::features::attachments::Attachments::save(&path, &opened.bytes)
+                    .map_err(|_| "E_SAVE".to_owned())
+            }
             _ => Ok(()),
         };
         drop(opened);
@@ -372,14 +404,18 @@ fn dirs_home() -> PathBuf {
 
 /// The media card's play: an audio file is opened and played inline (symphonia, rodio); a video is written to the
 /// instance's directory and opened in the system player.
-pub fn play(key: CardKey, video: bool, name: String, mime: String, cx: &mut App) {
-    let Some(client) = ui(cx).client.clone() else { return };
+pub fn play(key: CardKey, video: bool, mime: String, cx: &mut App) {
+    let Some(client) = ui(cx).client.clone() else {
+        return;
+    };
     if matches!(ui(cx).players.get(&key), Some(Player::Loading)) {
         return;
     }
     ui(cx).players.insert(key, Player::Loading);
     cx.refresh_windows();
-    let rx = client.attachments().open(key.channel, key.seq, key.index, false);
+    let rx = client
+        .attachments()
+        .open(key.channel, key.seq, key.index, false);
     cx.spawn(async move |cx| {
         let opened = match rx.await {
             Ok(Ok(o)) => o,
@@ -394,7 +430,7 @@ pub fn play(key: CardKey, video: bool, name: String, mime: String, cx: &mut App)
         let _ = cx.update(|cx| {
             let state = if video {
                 let dir = ui(cx).instance_dir.clone();
-                match dir.map(|d| media::write_for_system_player(&d, &name, &opened.bytes)) {
+                match dir.map(|d| media::write_for_system_player(&d, &mime, &opened.bytes)) {
                     Some(Ok(path)) => {
                         cx.open_with_system(&path);
                         None
@@ -496,7 +532,9 @@ pub fn gif_on(community: CommunityId, cx: &mut App) -> bool {
     if let Some(known) = ui(cx).gif_on.get(&community) {
         return known.unwrap_or(false);
     }
-    let Some(client) = ui(cx).client.clone() else { return false };
+    let Some(client) = ui(cx).client.clone() else {
+        return false;
+    };
     ui(cx).gif_on.insert(community, None);
     let rx = client.gifs().status(community);
     cx.spawn(async move |cx| {
@@ -526,7 +564,9 @@ pub fn toggle_gifs(channel: ChannelId, community: CommunityId, cx: &mut App) {
 
 /// Searches (or, with `more`, reads the next page of) the picker's query.
 pub fn search_gifs(query: String, more: bool, cx: &mut App) {
-    let Some(client) = ui(cx).client.clone() else { return };
+    let Some(client) = ui(cx).client.clone() else {
+        return;
+    };
     let Some(g) = ui(cx).gif.as_mut() else { return };
     let Some(community) = g.community else { return };
     let offset = if more { g.next.unwrap_or(0) } else { 0 };
@@ -543,27 +583,28 @@ pub fn search_gifs(query: String, more: bool, cx: &mut App) {
     let rx = client.gifs().search(community, query, offset);
     cx.spawn(async move |cx| {
         let page = rx.await;
-        let ids = cx
-            .update(|cx| {
-                let g = ui(cx).gif.as_mut().filter(|g| g.turn == turn)?;
-                g.loading = false;
-                match page {
-                    Ok(Ok(p)) => {
-                        let ids: Vec<String> = p.items.iter().map(|i| i.id.clone()).collect();
-                        g.items.extend(p.items);
-                        g.next = p.next;
-                        cx.refresh_windows();
-                        Some(ids)
-                    }
-                    _ => {
-                        g.error = true;
-                        cx.refresh_windows();
-                        None
-                    }
+        let ids = cx.update(|cx| {
+            let g = ui(cx).gif.as_mut().filter(|g| g.turn == turn)?;
+            g.loading = false;
+            match page {
+                Ok(Ok(p)) => {
+                    let ids: Vec<String> = p.items.iter().map(|i| i.id.clone()).collect();
+                    g.items.extend(p.items);
+                    g.next = p.next;
+                    cx.refresh_windows();
+                    Some(ids)
                 }
-            });
+                _ => {
+                    g.error = true;
+                    cx.refresh_windows();
+                    None
+                }
+            }
+        });
         for id in ids.unwrap_or_default() {
-            let rx = client.gifs().media(community, id.clone(), GifVariant::Preview);
+            let rx = client
+                .gifs()
+                .media(community, id.clone(), GifVariant::Preview);
             if let Ok(Ok(bytes)) = rx.await {
                 let _ = cx.update(|cx| {
                     if let (Some(g), Some(p)) = (ui(cx).gif.as_mut(), picture(&bytes)) {
@@ -580,7 +621,9 @@ pub fn search_gifs(query: String, more: bool, cx: &mut App) {
 /// Picks a GIF: its full file is fetched through the instance and attached as an ordinary attachment (the worker's
 /// note: "a GIF crosses back as a Blob and the page sends it with attachFiles").
 pub fn pick_gif(index: usize, cx: &mut App) {
-    let Some(client) = ui(cx).client.clone() else { return };
+    let Some(client) = ui(cx).client.clone() else {
+        return;
+    };
     let Some(g) = ui(cx).gif.as_mut() else { return };
     if g.picking.is_some() {
         return;
@@ -590,16 +633,26 @@ pub fn pick_gif(index: usize, cx: &mut App) {
     };
     g.picking = Some(item.id.clone());
     cx.refresh_windows();
-    let rx = client.gifs().media(community, item.id.clone(), GifVariant::Full);
+    let rx = client
+        .gifs()
+        .media(community, item.id.clone(), GifVariant::Full);
     cx.spawn(async move |cx| {
         let got = rx.await;
         let _ = cx.update(|cx| {
             match got {
                 Ok(Ok(bytes)) => {
-                    let title = if item.title.is_empty() { t("gif.untitled").to_owned() } else { item.title.clone() };
+                    let title = if item.title.is_empty() {
+                        t("gif.untitled").to_owned()
+                    } else {
+                        item.title.clone()
+                    };
                     let name = format!("{}.gif", safe_name(&title, "gif"));
                     ui(cx).gif = None;
-                    attach(vec![NewFile::from_bytes(&name, "image/gif", bytes)], vec![Some(TrayPreview::Gif)], cx);
+                    attach(
+                        vec![NewFile::from_bytes(&name, "image/gif", bytes)],
+                        vec![Some(TrayPreview::Gif)],
+                        cx,
+                    );
                 }
                 _ => {
                     if let Some(g) = ui(cx).gif.as_mut() {
@@ -629,10 +682,33 @@ mod tests {
     }
 
     #[test]
+    fn a_decompression_bomb_is_never_handed_to_gpui() {
+        let mut bomb = b"GIF89a\xff\xff\xff\xff\x00\x00\x00".to_vec();
+        bomb.extend_from_slice(&[
+            0x2c, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0x02, 0x02, 0x4c, 0x01, 0x00, 0x3b,
+        ]);
+        assert!(
+            picture(&bomb).is_none(),
+            "the card keeps its still or its neutral box"
+        );
+        let ok = b"GIF89a\x01\x00\x01\x00\x00\x00\x00\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x4c\x01\x00\x3b";
+        assert!(picture(ok).is_some());
+    }
+
+    #[test]
     fn only_the_four_inline_types_are_pictures() {
-        assert_eq!(image_format(b"\x89PNG\r\n\x1a\n...."), Some(ImageFormat::Png));
-        assert_eq!(image_format(&[0xff, 0xd8, 0xff, 0xe0]), Some(ImageFormat::Jpeg));
-        assert_eq!(image_format(b"RIFF\0\0\0\0WEBPVP8 "), Some(ImageFormat::Webp));
+        assert_eq!(
+            image_format(b"\x89PNG\r\n\x1a\n...."),
+            Some(ImageFormat::Png)
+        );
+        assert_eq!(
+            image_format(&[0xff, 0xd8, 0xff, 0xe0]),
+            Some(ImageFormat::Jpeg)
+        );
+        assert_eq!(
+            image_format(b"RIFF\0\0\0\0WEBPVP8 "),
+            Some(ImageFormat::Webp)
+        );
         assert_eq!(image_format(b"GIF89a"), Some(ImageFormat::Gif));
         assert_eq!(image_format(b"<svg xmlns="), None);
     }

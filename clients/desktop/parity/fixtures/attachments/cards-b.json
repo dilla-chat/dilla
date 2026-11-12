@@ -1,0 +1,161 @@
+{
+  "name": "attachments/cards-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "mira",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "the map from saturday is in #loot"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "see you at the bridge"
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "nine pictures from the walk",
+        "attachments": [
+          {
+            "name": "walk-00-a-rather-long-picture-name.png",
+            "mime": "image/png",
+            "size": 48000,
+            "width": 320,
+            "height": 240
+          },
+          {
+            "name": "walk-01-a-rather-long-picture-name.png",
+            "mime": "image/png",
+            "size": 48000,
+            "width": 328,
+            "height": 240
+          },
+          {
+            "name": "walk-02-a-rather-long-picture-name.png",
+            "mime": "image/png",
+            "size": 48000,
+            "width": 336,
+            "height": 240
+          },
+          {
+            "name": "walk-03-a-rather-long-picture-name.png",
+            "mime": "image/png",
+            "size": 48000,
+            "width": 344,
+            "height": 240
+          },
+          {
+            "name": "walk-04-a-rather-long-picture-name.png",
+            "mime": "image/png",
+            "size": 48000,
+            "width": 352,
+            "height": 240
+          },
+          {
+            "name": "walk-05-a-rather-long-picture-name.png",
+            "mime": "image/png",
+            "size": 48000,
+            "width": 360,
+            "height": 240
+          },
+          {
+            "name": "walk-06-a-rather-long-picture-name.png",
+            "mime": "image/png",
+            "size": 48000,
+            "width": 368,
+            "height": 240
+          },
+          {
+            "name": "walk-07-a-rather-long-picture-name.png",
+            "mime": "image/png",
+            "size": 48000,
+            "width": 376,
+            "height": 240
+          },
+          {
+            "name": "walk-08-a-rather-long-picture-name.png",
+            "mime": "image/png",
+            "size": 48000,
+            "width": 384,
+            "height": 240
+          }
+        ]
+      },
+      {
+        "key": "m4",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "and the list",
+        "attachments": [
+          {
+            "name": "the-whole-packing-list-for-the-long-walk-to-the-northern-bridge-final-v2.txt",
+            "mime": "text/plain",
+            "size": 12345
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]",
+      "gpui": "-"
+    }
+  ]
+}

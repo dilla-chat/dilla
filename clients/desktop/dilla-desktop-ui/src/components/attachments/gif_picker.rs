@@ -36,7 +36,11 @@ pub struct GifTile {
 
 /// GifPicker.tsx `tileSpan` without the 1px grid: a tile's height in a column `column` wide (1:1 when unknown).
 pub fn tile_height(width: u32, height: u32, column: f32) -> f32 {
-    let ratio = if width > 0 && height > 0 { height as f32 / width as f32 } else { 1.0 };
+    let ratio = if width > 0 && height > 0 {
+        height as f32 / width as f32
+    } else {
+        1.0
+    };
     column * ratio
 }
 
@@ -51,7 +55,10 @@ pub fn place(tiles: &[(u32, u32)], column: f32) -> Vec<(usize, f32)> {
                 .iter()
                 .copied()
                 .enumerate()
-                .fold((0, f32::MAX), |best, (i, t)| if t < best.1 { (i, t) } else { best });
+                .fold(
+                    (0, f32::MAX),
+                    |best, (i, t)| if t < best.1 { (i, t) } else { best },
+                );
             tops[c] = top + tile_height(w, h, column) + TILE_GAP;
             (c, top)
         })
@@ -89,7 +96,10 @@ pub fn gif_picker(p: GifPickerProps) -> AnyElement {
         let active = p.active == Some(i);
         let pick = tile.on_pick.clone();
         let body: AnyElement = match tile.image {
-            Some(image) => img(image).size_full().object_fit(ObjectFit::Contain).into_any_element(),
+            Some(image) => img(image)
+                .size_full()
+                .object_fit(ObjectFit::Contain)
+                .into_any_element(),
             None => div().size_full().bg(color::SURFACE_HI).into_any_element(),
         };
         let mut cell = div()
@@ -130,12 +140,23 @@ pub fn gif_picker(p: GifPickerProps) -> AnyElement {
                 .cursor_pointer()
                 .hover(|s| s.bg(color::SURFACE_HI))
                 .on_click(move |e, w, cx| f(e, w, cx))
-                .child(line(label, text::UI, line_height(text::UI, LEADING), color::FG)),
+                .child(line(
+                    label,
+                    text::UI,
+                    line_height(text::UI, LEADING),
+                    color::FG,
+                )),
         );
     }
     let status_h = line_height(text::SM, LEADING).max(20.0);
     let status = div().min_h(px(20.0)).child(match p.status {
-        Some((s, error)) => line(s, text::SM, status_h, if error { color::DANGER } else { color::FG_2 }).into_any_element(),
+        Some((s, error)) => line(
+            s,
+            text::SM,
+            status_h,
+            if error { color::DANGER } else { color::FG_2 },
+        )
+        .into_any_element(),
         None => div().into_any_element(),
     });
     div()
@@ -161,11 +182,23 @@ pub fn gif_picker(p: GifPickerProps) -> AnyElement {
                 .border_color(color::HAIRLINE)
                 .child(div().flex_1().min_w_0().child(p.search))
                 .child(
-                    line(p.powered, text::CHIP, line_height(text::CHIP, LEADING), color::FG_3)
-                        .tracking(LABEL_TRACKING),
+                    line(
+                        p.powered,
+                        text::CHIP,
+                        line_height(text::CHIP, LEADING),
+                        color::FG_3,
+                    )
+                    .tracking(LABEL_TRACKING),
                 ),
         )
-        .child(div().id("gif-scroll").flex_1().min_h_0().overflow_y_scroll().child(grid))
+        .child(
+            div()
+                .id("gif-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(grid),
+        )
         .child(status)
         .child(foot)
         .into_any_element()
@@ -182,6 +215,10 @@ mod tests {
         assert_eq!(placed[1], (1, 0.0));
         assert_eq!(placed[2], (2, 0.0));
         assert_eq!(placed[3], (1, 54.0), "under the short tile");
-        assert_eq!(tile_height(0, 0, 120.0), 120.0, "unknown dimensions are square");
+        assert_eq!(
+            tile_height(0, 0, 120.0),
+            120.0,
+            "unknown dimensions are square"
+        );
     }
 }

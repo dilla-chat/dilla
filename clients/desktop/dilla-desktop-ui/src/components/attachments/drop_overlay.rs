@@ -48,7 +48,12 @@ pub fn drop_overlay(title: impl Into<SharedString>, body: impl Into<SharedString
                     line(title, text::MD, line_height(text::MD, LEADING), color::FG)
                         .weight(font::WEIGHT_DISPLAY),
                 )
-                .child(line(body, text::SM, line_height(text::SM, LEADING), color::FG_2)),
+                .child(line(
+                    body,
+                    text::SM,
+                    line_height(text::SM, LEADING),
+                    color::FG_2,
+                )),
         )
         .into_any_element()
 }
