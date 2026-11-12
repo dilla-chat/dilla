@@ -10,14 +10,17 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::auth::AuthToken;
+use crate::features::Area;
+use crate::gateway::frames::Frame;
 use crate::gateway::{GatewayOptions, Refusal, WsGateway};
 use crate::http::ReqwestHttp;
+use crate::prefs::Prefs;
 use crate::seams::{Gateway, InstanceConfig, Keychain};
 use crate::state::channels::{
     channel_group, channel_group_state, decode_channels, decode_communities,
@@ -97,6 +100,8 @@ enum Update {
     Loaded(Box<Loaded>),
     Focus(Option<ChannelId>),
     MarkRead(ChannelId, oneshot::Sender<Result<(), ClientError>>),
+    /// An area's change to its own slice ([`Inner::publish`]).
+    Apply(Box<dyn FnOnce(&mut AppState) + Send>),
 }
 
 struct Loaded {
@@ -105,9 +110,11 @@ struct Loaded {
     members: HashMap<CommunityId, Vec<crate::state::Member>>,
 }
 
-/// The engine's hooks: each only queues an update for the publisher.
+/// The engine's hooks: each only queues an update for the publisher, or hands an area its frame.
 struct Hooks {
     tx: mpsc::UnboundedSender<Update>,
+    /// The client, set once it is built (the engine, and so these hooks, come first). Weak: the client owns the engine.
+    inner: Arc<OnceLock<Weak<Inner>>>,
 }
 
 impl SyncHooks for Hooks {
@@ -124,6 +131,11 @@ impl SyncHooks for Hooks {
     fn community_changed(&self, _community: [u8; 16]) {
         let _ = self.tx.send(Update::Structure);
     }
+    fn area_frame(&self, area: Area, frame: Frame) {
+        if let Some(inner) = self.inner.get().and_then(Weak::upgrade) {
+            crate::sync::route::dispatch(area, &inner, &frame);
+        }
+    }
 }
 
 /// The gateway connection's owner: the one place a gateway is started, replaced or stopped.
@@ -139,12 +151,16 @@ struct Link {
     app_offline: AtomicBool,
 }
 
-struct Inner {
+/// What every handle of the client shares: the area features (`crate::features`) hold it and reach the engine, the API,
+/// the socket requests, the runtime and the publisher through it.
+pub(crate) struct Inner {
     link: Arc<Link>,
     engine: Arc<Engine>,
     api: Arc<Api>,
     updates: mpsc::UnboundedSender<Update>,
     state: watch::Receiver<Arc<AppState>>,
+    runtime: tokio::runtime::Handle,
+    prefs: Prefs,
 }
 
 /// A runtime that, unless handed on, is shut down in the background when dropped: safe on any thread, an async task's
@@ -255,8 +271,10 @@ impl Client {
         })
         .map_err(|_| ClientError::Runtime("the start thread panicked".into()))??;
 
+        let area_inner = Arc::new(OnceLock::new());
         let hooks = Arc::new(Hooks {
             tx: updates.clone(),
+            inner: area_inner.clone(),
         });
         let engine = Engine::new(core.clone(), api.clone(), hooks, instance);
         let initial = AppState {
@@ -285,7 +303,10 @@ impl Client {
             api: api.clone(),
             updates: updates.clone(),
             state: state_rx,
+            runtime: runtime.handle().clone(),
+            prefs: Prefs::instance(&cfg.data_dir),
         });
+        let _ = area_inner.set(Arc::downgrade(&inner));
         let publisher = Publisher {
             state: initial,
             tx: state_tx,
@@ -319,6 +340,16 @@ impl Client {
     /// The observable state: a new snapshot is published on every change.
     pub fn state(&self) -> watch::Receiver<Arc<AppState>> {
         self.inner.state.clone()
+    }
+
+    /// This instance's non-secret preferences (`<data_dir>/prefs.json`).
+    pub fn prefs(&self) -> Prefs {
+        self.inner.prefs.clone()
+    }
+
+    /// What the area handles (`crate::features`) are built from.
+    pub(crate) fn inner(&self) -> &Arc<Inner> {
+        &self.inner
     }
 
     fn spawn<T: Send + 'static>(
@@ -476,7 +507,53 @@ impl Link {
     }
 }
 
+// The area features' access to the client (Task 1's scaffold): what a Wave 1 task needs without editing this file.
+#[allow(
+    dead_code,
+    reason = "the Wave 1 areas (crate::features) are the callers"
+)]
 impl Inner {
+    /// Applies `f` to the published [`AppState`] on the publisher's loop, then publishes the new snapshot. An area
+    /// changes only its own slice.
+    pub(crate) fn publish(&self, f: impl FnOnce(&mut AppState) + Send + 'static) {
+        let _ = self.updates.send(Update::Apply(Box::new(f)));
+    }
+
+    /// The gateway's request transport (op 59/60) for areas that request over the socket.
+    pub(crate) fn socket_requests(&self) -> Arc<SocketRequests> {
+        self.link.socket.clone()
+    }
+
+    /// The latest published snapshot.
+    pub(crate) fn snapshot(&self) -> Arc<AppState> {
+        self.state.borrow().clone()
+    }
+
+    pub(crate) fn api(&self) -> &Arc<Api> {
+        &self.api
+    }
+
+    pub(crate) fn engine(&self) -> &Arc<Engine> {
+        &self.engine
+    }
+
+    pub(crate) fn prefs(&self) -> &Prefs {
+        &self.prefs
+    }
+
+    /// Runs `f` on the client's runtime; its answer comes on the oneshot ([`ClientError::Stopped`] if it unwinds, a
+    /// closed oneshot once the client stopped).
+    pub(crate) fn spawn<T: Send + 'static>(
+        &self,
+        f: impl std::future::Future<Output = Result<T, ClientError>> + Send + 'static,
+    ) -> oneshot::Receiver<Result<T, ClientError>> {
+        let (tx, rx) = oneshot::channel();
+        self.runtime.spawn(async move {
+            let _ = tx.send(guarded(f).await);
+        });
+        rx
+    }
+
     /// The channel's text group, opened.
     async fn open(&self, channel: ChannelId) -> Result<[u8; 16], ClientError> {
         let known = self.state.borrow().channel(channel).cloned();
@@ -716,6 +793,7 @@ impl Publisher {
                         let _ = done.send(self.mark_read(channel).await);
                         groups.insert([0; 16]);
                     }
+                    Update::Apply(f) => f(&mut self.state),
                 }
             }
             if self.core.is_poisoned() {

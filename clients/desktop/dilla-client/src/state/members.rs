@@ -56,3 +56,8 @@ pub(crate) fn decode_members(raw: &[u8]) -> Result<Vec<Member>, DecodeError> {
         })
         .collect()
 }
+
+/// Task 14's slice of [`super::AppState`]: presence, away and the profile card (the member lists stay in `AppState::members`). Stub from Task 1: Task 14 adds the fields; [`Default`] is the
+/// empty slice.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PeopleState {}

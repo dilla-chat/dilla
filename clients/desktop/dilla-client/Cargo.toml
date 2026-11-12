@@ -10,6 +10,10 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Task 5: the sign-up, server and world helpers tests share (src/testing.rs). Never in a shipping build.
+testing = []
+
 # Every dependency the later desktop tasks need is declared here so Cargo.lock is settled once.
 [dependencies]
 dilla-core = { path = "../../../core/dilla-core" }
@@ -39,6 +43,11 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 # the platform's roots. Both already in the lock through tokio-tungstenite and reqwest.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 rustls-native-certs = "0.8"
+# Wave 1 (plan R1), declared by Task 1 so Cargo.lock is settled once:
+# - Task 26's system-browser ceremony opens the browser with `open`;
+# - Task 12's attachment thumbnails decode and scale images the way attachments/thumb.ts does.
+open = "5.4.5"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 [dev-dependencies]
 # The real-dillad tests enrol an account the way every native peer does.

@@ -85,3 +85,8 @@ mod tests {
         assert!(build_badges(&[row(1, 0, 0)], &map).is_empty());
     }
 }
+
+/// Task 22's slice of [`super::AppState`]: mutes per channel and server and the device-wide notification default (the counts stay in `AppState::unread`). Stub from Task 1: Task 22 adds the fields; [`Default`] is the
+/// empty slice.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NotifyState {}

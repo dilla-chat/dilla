@@ -11,7 +11,7 @@
 use chrono::Datelike;
 use dilla_client::state::{AppState, Channel, Member, TimelineItem, TimelineItemState, UserId};
 use gpui::{
-    AnyElement, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
+    AnyElement, App, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
     StatefulInteractiveElement, Styled, div, px,
 };
 
@@ -22,6 +22,7 @@ use dilla_desktop_ui::{Icon, IconName};
 
 use crate::screens::LABEL_TRACKING_WIDE;
 use crate::screens::shell::Clock;
+use crate::slots::{self, SlotCx};
 
 /// log-model.ts `GROUP_SECONDS`.
 pub const GROUP_SECONDS: u64 = 7 * 60;
@@ -129,6 +130,15 @@ fn body_text(item: &TimelineItem) -> String {
         TimelineItemState::CannotRead => "This message cannot be read on this device.".to_owned(),
         TimelineItemState::Deleted => "This message was deleted.".to_owned(),
         _ => item.body.clone(),
+    }
+}
+
+/// Where a row's body starts, below the row's top.
+fn body_offset(grouped: bool) -> f32 {
+    if grouped {
+        FOLLOW_PAD
+    } else {
+        ROW_TOP + head_line() + MAIN_GAP
     }
 }
 
@@ -294,7 +304,9 @@ impl Placer {
     }
 }
 
-/// The log of `channel`, `width` wide, kept at its end through `scroll` while `pinned`.
+/// The log of `channel`, `width` wide, kept at its end through `scroll` while `pinned`. Each row's
+/// [`slots::message_extras`] sits under its body.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     state: &AppState,
     channel: &Channel,
@@ -303,6 +315,8 @@ pub fn render(
     scroll: &ScrollHandle,
     pinned: bool,
     on_wheel: OnWheel,
+    ctx: &SlotCx,
+    cx: &mut App,
 ) -> impl IntoElement + use<> {
     let members: &[Member] = state
         .members
@@ -367,7 +381,10 @@ pub fn render(
             y += divider_height();
         }
         let h = row_height(s.grouped, s.last, s.lines.len());
+        let extras = slots::message_extras(s.item, ctx, cx);
+        let body_end = y + body_offset(s.grouped) + s.lines.len() as f32 * body_line();
         placer.row(y, s, members, clock);
+        placer.block(CONTENT_X, body_end, extras);
         y += h;
     }
     div()

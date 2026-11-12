@@ -26,6 +26,9 @@ zeroize = "1"
 # crate: the weights are licensed like the code since upstream 7b14b89), on tract, pure Rust.
 deep-filter-rt = "=0.2.0"
 ndarray = "0.17"
+# Task 4 (plan R1, declared by Task 1 so Cargo.lock is settled once): device capture and playout. The cpal rodio uses
+# (dilla-desktop), so the lock holds one.
+cpal = "0.18.2"
 
 [dev-dependencies]
 # The hook's synthetic-frame test support (webrtc_sys::dilla_transform_testing): tests only, never in

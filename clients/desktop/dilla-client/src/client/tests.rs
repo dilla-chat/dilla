@@ -174,7 +174,15 @@ async fn a_poisoned_core_stops_the_engine_and_is_never_used_again() {
         policy_version: 1,
         external_sender_pub: [0; 32],
     };
-    let engine = Engine::new(core, api, Arc::new(Hooks { tx }), instance);
+    let engine = Engine::new(
+        core,
+        api,
+        Arc::new(Hooks {
+            tx,
+            inner: Arc::default(),
+        }),
+        instance,
+    );
     assert!(
         engine.stopped(),
         "the engine treats a poisoned core as stopped"

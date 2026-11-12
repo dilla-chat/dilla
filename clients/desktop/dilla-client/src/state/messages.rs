@@ -426,3 +426,8 @@ mod tests {
         assert_eq!(both.items[0].key, "s1");
     }
 }
+
+/// Task 9's slice of [`super::AppState`]: typing (sent and received), pins, slow mode and the announcement rule. Stub from Task 1: Task 9 adds the fields; [`Default`] is the
+/// empty slice.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MessagesState {}

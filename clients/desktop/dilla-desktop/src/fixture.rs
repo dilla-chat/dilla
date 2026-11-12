@@ -205,6 +205,7 @@ impl Fixture {
             )]),
             members,
             unread: HashMap::new(),
+            ..AppState::default()
         };
         Ok(Self {
             state,

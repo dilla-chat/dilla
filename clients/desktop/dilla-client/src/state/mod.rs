@@ -7,10 +7,27 @@
 use std::collections::HashMap;
 use std::fmt;
 
+pub mod attachments;
+pub mod bot;
+pub mod bot_admin;
 pub mod channels;
+pub mod diagnostics;
+pub mod dms;
+pub mod factors;
 pub mod members;
 pub mod messages;
+pub mod onboarding;
+pub mod profile;
+pub mod reactions;
+pub mod ring;
+pub mod roles;
+pub mod search;
+pub mod server_admin;
+pub mod threads;
+pub mod trust;
 pub mod unread;
+pub mod voice;
+pub mod voice_prefs;
 
 pub use channels::{Channel, ChannelGroupState, Community};
 pub use members::Member;
@@ -133,6 +150,49 @@ pub struct AppState {
     pub members: HashMap<CommunityId, Vec<Member>>,
     /// `badges`: unread and mention counts per channel; a channel without unread rows is absent.
     pub unread: HashMap<ChannelId, BadgeState>,
+
+    // The Wave 1 areas' slices (Task 1's scaffold, clients/desktop/OWNERSHIP.md): each is one task's type in that task's
+    // file, published through the client's publisher; each task adds fields to its own type, never a field here.
+    /// Task 9: typing, pins, slow mode.
+    pub messages: messages::MessagesState,
+    /// Task 10.
+    pub reactions: reactions::ReactionState,
+    /// Task 11.
+    pub threads: threads::ThreadState,
+    /// Task 12 (attachments and GIFs).
+    pub attachments: attachments::AttachmentState,
+    /// Task 13.
+    pub dms: dms::DmState,
+    /// Task 13.
+    pub trust: trust::TrustState,
+    /// Task 14: presence and the members area's extras (the member lists stay in `members`).
+    pub people: members::PeopleState,
+    /// Task 14.
+    pub roles: roles::RoleState,
+    /// Task 15.
+    pub server_admin: server_admin::ServerAdminState,
+    /// Task 16 (profile and devices).
+    pub profile: profile::ProfileState,
+    /// Task 17.
+    pub voice: voice::VoiceState,
+    /// Task 18 (rings, blocked calls, AFK).
+    pub ring: ring::RingState,
+    /// Task 19.
+    pub voice_prefs: voice_prefs::VoicePrefsState,
+    /// Task 20 (commands, private results, polls, reminders).
+    pub bot: bot::BotState,
+    /// Task 21 (Bot admin and music).
+    pub bot_admin: bot_admin::BotAdminState,
+    /// Task 22: mutes and notification defaults (the counts stay in `unread`).
+    pub notify: unread::NotifyState,
+    /// Task 23.
+    pub search: search::SearchState,
+    /// Task 24.
+    pub diagnostics: diagnostics::DiagnosticsState,
+    /// Task 25.
+    pub onboarding: onboarding::OnboardingState,
+    /// Task 26.
+    pub factors: factors::FactorState,
 }
 
 impl AppState {

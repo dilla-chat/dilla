@@ -4,12 +4,19 @@
 pub mod app;
 #[cfg(feature = "automation")]
 pub mod automation;
+pub mod edit_state;
 #[cfg(feature = "automation")]
 pub mod fixture;
+pub mod format;
+pub mod keys;
+pub mod router;
 pub mod screens;
+pub mod slots;
+pub mod strings;
+pub mod windows;
 
 use gpui::{
-    App, Bounds, Global, IntoElement, Result, TitlebarOptions, WindowBounds, WindowHandle,
+    App, Bounds, Global, IntoElement, Pixels, Result, TitlebarOptions, WindowBounds, WindowHandle,
     WindowOptions, div, prelude::*, px, size,
 };
 
@@ -49,7 +56,7 @@ pub fn install(cx: &mut App) {
     cx.set_global(Installed);
     dilla_desktop_ui::theme::install(cx);
     gpui_component::init(cx);
-    screens::bind_keys(cx);
+    keys::bind_all(cx);
 }
 
 /// Opens the main window on the OS data dir and keychain: 1280x800, titled [`PRODUCT_NAME`].
@@ -62,19 +69,22 @@ pub fn open_main_window_with(cx: &mut App, launch: Launch) -> Result<WindowHandl
     install(cx);
     let (width, height) = launch.window;
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
-    cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
-                title: Some(PRODUCT_NAME.into()),
-                ..Default::default()
-            }),
-            app_id: Some(APP_ID.to_owned()),
+    cx.open_window(main_window_options(bounds), |window, cx| {
+        window.set_window_title(PRODUCT_NAME);
+        cx.new(|cx| AppView::new(launch, window, cx))
+    })
+}
+
+/// The main window's options at `bounds`. They carry no title: the window sets it once, through `set_window_title`, as
+/// it is built.
+pub fn main_window_options(bounds: Bounds<Pixels>) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar: Some(TitlebarOptions {
+            title: None,
             ..Default::default()
-        },
-        |window, cx| {
-            window.set_window_title(PRODUCT_NAME);
-            cx.new(|cx| AppView::new(launch, window, cx))
-        },
-    )
+        }),
+        app_id: Some(APP_ID.to_owned()),
+        ..Default::default()
+    }
 }

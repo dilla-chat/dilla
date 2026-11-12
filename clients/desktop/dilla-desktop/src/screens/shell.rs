@@ -22,10 +22,14 @@ use dilla_desktop_ui::text::{line, line_height};
 use dilla_desktop_ui::tokens::{color, font, layout, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
 
+pub mod keys;
+
+use crate::router::Route;
 use crate::screens::composer::{Composer, Sent};
 use crate::screens::{
     FocusNext, FocusPrevious, LABEL_TRACKING_WIDE, centred, channel_list, timeline,
 };
+use crate::slots::{self, SlotCx};
 
 /// The clock and zone message times are drawn in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,8 +175,33 @@ impl ShellView {
             .and_then(|c| self.state.channel(c))
             .map_or_else(String::new, |c| format!("#{}", c.name))
             .into();
-        self.composer
-            .update(cx, |composer, cx| composer.set_target(target, cx));
+        let slots = self.slot_cx();
+        self.composer.update(cx, |composer, cx| {
+            composer.set_slots(slots);
+            composer.set_target(target, cx);
+        });
+    }
+
+    /// What the slots this shell hosts draw with.
+    fn slot_cx(&self) -> SlotCx {
+        SlotCx {
+            state: self.state.clone(),
+            client: self.client.clone(),
+            community: self.community,
+            channel: self.channel,
+            clock: self.clock,
+        }
+    }
+
+    /// The route the shell shows.
+    fn route(&self) -> Route {
+        match self.community {
+            Some(community) => Route::Channel {
+                community,
+                channel: self.channel,
+            },
+            None => Route::Root,
+        }
     }
 
     /// Shows `channel`: its group is opened (joined) so its timeline is kept, and it is marked read while shown.
@@ -182,6 +211,9 @@ impl ShellView {
         }
         self.channel = Some(channel);
         self.pinned = true;
+        let slots = self.slot_cx();
+        self.composer
+            .update(cx, |composer, _| composer.set_slots(slots));
         if let Some(client) = &self.client {
             client.focus(Some(channel));
             let opened = client.open_channel(channel);
@@ -571,6 +603,7 @@ impl Render for ShellView {
             .map_or(0, Vec::len);
         let online = usize::from(state.connection.status == ConnectionStatus::Online);
         let (me, status) = self.me();
+        let ctx = self.slot_cx();
         let entity = cx.entity().downgrade();
         let on_select: channel_list::OnSelect = Rc::new(move |id, _window, cx| {
             let _ = entity.update(cx, |shell, cx| shell.select(id, cx));
@@ -598,7 +631,9 @@ impl Render for ShellView {
                 }),
             },
             on_select,
+            cx,
         );
+        let dock = slots::dock(cx);
         let sidebar = div()
             .flex_none()
             .w(layout::SIDEBAR)
@@ -614,6 +649,8 @@ impl Render for ShellView {
                     .border_color(color::HAIRLINE)
                     .child(list),
             )
+            // The voice dock and now playing (17, 21) over the user panel.
+            .children(dock)
             .child(user_panel(&me, status));
         // The log wraps its bodies to its own width: the window less the rail and the sidebar.
         let log_width = f32::from(window.viewport_size().width - layout::RAIL - layout::SIDEBAR);
@@ -637,17 +674,24 @@ impl Render for ShellView {
                     &self.log,
                     self.pinned,
                     on_wheel,
+                    &ctx,
+                    cx,
                 )
                 .into_any_element()
             }
             None => div().size_full().bg(color::BG).into_any_element(),
         };
+        let banners = slots::banners(&ctx, cx);
+        let aside = slots::aside(&self.route(), cx);
+        let overlays = slots::overlays(cx);
         let main = div()
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
             .flex_col()
+            // The offline link and version banners (24).
+            .children(banners)
             .child(header(channel, members))
             .child(div().flex_1().min_h_0().child(log))
             .child(div().flex_none().child(self.composer.clone()));
@@ -669,7 +713,11 @@ impl Render for ShellView {
                     .flex()
                     .child(rail(&state, self.community, on_pick))
                     .child(sidebar)
-                    .child(main),
+                    .child(main)
+                    // The thread or members pane (11, 14).
+                    .children(aside),
             )
+            // The search palette and the ring banner (23, 18), over everything.
+            .children(overlays)
     }
 }

@@ -1,10 +1,43 @@
-//! The slice's screens and the pieces they share.
+//! The screens and the pieces they share. One module (a file or a directory) per area of the ownership map
+//! (clients/desktop/OWNERSHIP.md); the list is Task 1's, and no Wave 1 task adds a line here.
 
+// Task 8 (shell).
 pub mod channel_list;
-pub mod composer;
+pub mod header;
+pub mod rail;
 pub mod shell;
-pub mod sign_in;
+pub mod titlebar;
+pub mod user_panel;
+// Task 9 (messages).
+pub mod composer;
+pub mod messages;
 pub mod timeline;
+// Tasks 10-23.
+pub mod attachments;
+pub mod bot_admin;
+pub mod commands;
+pub mod dms;
+pub mod members;
+pub mod notify;
+pub mod reactions;
+pub mod ring;
+pub mod search;
+pub mod server_settings;
+pub mod threads;
+pub mod user_settings;
+pub mod voice;
+pub mod voice_settings;
+// Task 24 (diagnostics).
+pub mod boot;
+pub mod diagnostics;
+// Task 25 (onboarding).
+pub mod create;
+pub mod onboarding;
+// Task 26 (factors).
+pub mod factor;
+pub mod sign_in;
+// Task 27 (instances).
+pub mod instances;
 
 use gpui::{App, IntoElement, KeyBinding, ParentElement, Pixels, Styled, actions, div};
 

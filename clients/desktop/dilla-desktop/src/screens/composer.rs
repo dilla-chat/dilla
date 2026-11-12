@@ -19,6 +19,7 @@ use dilla_desktop_ui::text::{line, line_height};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
 
+use crate::slots::{self, SlotCx};
 use crate::tracked_box;
 
 /// Composer.css `.d-composer__input`: 20px lines, 5px above and below, at most 13.75rem (220px) high.
@@ -38,6 +39,8 @@ pub struct Composer {
     pub input: Entity<TextareaState>,
     /// `#general`: the placeholder names the channel.
     target: SharedString,
+    /// What the composer's slots (`slots::composer_*`) are drawn with.
+    slots: SlotCx,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -56,8 +59,14 @@ impl Composer {
         Self {
             input,
             target: SharedString::default(),
+            slots: SlotCx::default(),
             _subscriptions: vec![sub],
         }
+    }
+
+    /// The view the composer's slots draw for (the shell's state and selection).
+    pub fn set_slots(&mut self, slots: SlotCx) {
+        self.slots = slots;
     }
 
     /// The channel the draft goes to (`#general`).
@@ -115,6 +124,10 @@ impl Render for Composer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let value = self.input.read(cx).value();
         let empty = value.is_empty();
+        let ctx = self.slots.clone();
+        let leading = slots::composer_leading(&ctx, cx);
+        let buttons = slots::composer_buttons(&ctx, cx);
+        let popup = slots::composer_popup(&ctx, cx);
         // The field is as high as the draft's lines (20px each), up to the cap; soft-wrapped lines are not counted.
         let rows = value.split('\n').count().clamp(1, max_rows());
         let placeholder = format!("Message {}", self.target);
@@ -186,6 +199,8 @@ impl Render for Composer {
             .child(tool(IconName::Paperclip))
             .child(tool(IconName::Smile))
             .child(tool(IconName::CodeXml))
+            // The other areas' buttons (12, 10). Before the flexible spacer, which absorbs the gap an empty slot adds.
+            .child(buttons)
             .child(div().flex_1())
             .child(div().ml(px(10.)).child(line(
                 "⇧↵ new line",
@@ -197,6 +212,7 @@ impl Render for Composer {
             // The textarea propagates a plain Enter so its owner can send; swallowing it here stops GPUI from then also
             // typing the key's "\n" into the draft.
             .on_action(cx.listener(|_, _: &Enter, _, _| {}))
+            .relative()
             .w_full()
             .bg(color::BG)
             .px(px(16.))
@@ -211,8 +227,19 @@ impl Render for Composer {
                     .flex()
                     .flex_col()
                     .child(div().h(px(2.)))
+                    // The reply bar and the attachment tray (11, 12): no gap, so an empty slot takes no height.
+                    .child(leading)
                     .child(row)
                     .child(foot),
             )
+            // The command picker (20) opens over the composer.
+            .children(popup.map(|popup| {
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_full()
+                    .child(popup)
+            }))
     }
 }

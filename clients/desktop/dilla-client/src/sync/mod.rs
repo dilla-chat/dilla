@@ -25,7 +25,9 @@
 
 pub mod api;
 pub mod lanes;
+pub mod removals;
 pub mod requests;
+pub mod route;
 pub mod timeline;
 pub mod trust;
 pub mod value;
@@ -232,6 +234,9 @@ pub trait SyncHooks: Send + Sync {
     fn connection(&self, event: ConnectionEvent);
     /// `community.changed` (op 54): the community's structure changed; the model reads it again.
     fn community_changed(&self, community: Gid);
+    /// A frame the engine does not consume, for the area [`route::route`] names (presence, typing, voice state, rings,
+    /// AFK, the app build, the Bot's frames). The client hands it to that area's feature.
+    fn area_frame(&self, _area: crate::features::Area, _frame: Frame) {}
 }
 
 /// The gateway's lifecycle as the model sees it.
@@ -579,6 +584,13 @@ impl Engine {
 
     fn on_frame(self: &Arc<Self>, gateway: &Arc<WsGateway>, f: Frame) {
         if self.stopped() {
+            return;
+        }
+        // What the engine does not consume goes to its area (route.rs), or nowhere.
+        if !route::SYNC_CONSUMED.contains(&f.op) {
+            if let Some(area) = route::route(f.op) {
+                self.hooks.area_frame(area, f);
+            }
             return;
         }
         if f.op == Op::COMMUNITY_CHANGED {

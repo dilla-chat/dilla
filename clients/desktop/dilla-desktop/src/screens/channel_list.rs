@@ -94,13 +94,24 @@ fn row_probe(name: &str) -> &'static str {
         .or_insert_with(|| Box::leak(format!("channel-{name}").into_boxed_str()))
 }
 
-fn row(c: &Channel, active: bool, unread: u32, on_select: OnSelect) -> gpui::AnyElement {
+fn row(
+    c: &Channel,
+    active: bool,
+    unread: u32,
+    on_select: OnSelect,
+    cx: &mut App,
+) -> gpui::AnyElement {
     let id = c.id;
     let row = Row::new(row_id(&c.name), c.name.clone(), kind_of(c))
         .active(active)
         .unread(unread)
         .on_click(move |_: &ClickEvent, window, cx| on_select(id, window, cx));
-    let item = div().relative().mt(layout::LIST_GAP).child(row);
+    // The item is a block: the row, then what other areas draw under it (an empty slot takes no height).
+    let item = div()
+        .relative()
+        .mt(layout::LIST_GAP)
+        .child(row)
+        .child(crate::slots::channel_row_extras(c, cx));
     #[cfg(feature = "automation")]
     let item = item.child(crate::automation::bounds_probe(row_probe(&c.name)));
     // A voice channel's item is 30px: its 28px button 1px in (VoiceChannelRow.css).
@@ -142,7 +153,11 @@ fn category(c: &Channel) -> gpui::AnyElement {
 }
 
 /// The sidebar above the user panel.
-pub fn render(model: &ListModel<'_>, on_select: OnSelect) -> impl IntoElement + use<> {
+pub fn render(
+    model: &ListModel<'_>,
+    on_select: OnSelect,
+    cx: &mut App,
+) -> impl IntoElement + use<> {
     let state = model.state;
     let community = model
         .community
@@ -206,6 +221,7 @@ pub fn render(model: &ListModel<'_>, on_select: OnSelect) -> impl IntoElement + 
                         model.selected == Some(ch.id),
                         state.unread_of(ch.id),
                         on_select.clone(),
+                        cx,
                     )
                 }
             })
