@@ -131,7 +131,7 @@ jobs:
       - run: cargo clippy $GPUI_CRATES --all-targets --locked -- -D warnings
         shell: bash
       # The window test runs on GPUI's test platform, so it needs no display.
-      - run: cargo test $GPUI_CRATES --locked
+      - run: cargo test $GPUI_CRATES --locked --no-fail-fast  # every OS reports all its failing test binaries in one run
         shell: bash
       # dilla-parity's only GPU test is #[ignore]d (release build has no automation, ~4 min), so the plain run above
       # needs no adapter on any OS: macOS would use Metal and Windows has none, and neither runs the ignored test.
