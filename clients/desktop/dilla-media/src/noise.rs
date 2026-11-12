@@ -45,6 +45,17 @@ impl NoiseMode {
     }
 }
 
+/// Loads the enhanced model. The shipping loader is [`embedded_model`]; a test (or a build without
+/// the weights) gives one that fails, and the microphone falls back to `Standard` visibly
+/// ([`crate::MediaEvent::EnhancedUnavailable`]).
+pub type ModelLoader = std::sync::Arc<dyn Fn() -> Result<DfTract, MediaError> + Send + Sync>;
+
+/// DeepFilterNet3 with the weights embedded in `deep-filter-rt`.
+pub fn embedded_model() -> Result<DfTract, MediaError> {
+    std::panic::catch_unwind(DfTract::default)
+        .map_err(|_| MediaError::Audio("the DeepFilterNet3 model did not load".into()))
+}
+
 enum Engine {
     Off,
     Standard(AudioProcessingModule),
@@ -69,22 +80,28 @@ impl NoiseProcessor {
             NoiseMode::Standard => {
                 Engine::Standard(AudioProcessingModule::new(false, false, false, true))
             }
-            NoiseMode::Enhanced => {
-                let df = DfTract::default();
-                if df.sr != RATE as usize || df.hop_size != FRAME_SAMPLES || df.ch != 1 {
-                    return Err(MediaError::Audio(format!(
-                        "DeepFilterNet3 runs at {} Hz, {} samples, {} channels",
-                        df.sr, df.hop_size, df.ch
-                    )));
-                }
-                Engine::Enhanced {
-                    input: Array2::zeros((1, FRAME_SAMPLES)),
-                    output: Array2::zeros((1, FRAME_SAMPLES)),
-                    df: Box::new(df),
-                }
-            }
+            NoiseMode::Enhanced => return Self::enhanced_from(embedded_model()?),
         };
         Ok(Self { mode, engine })
+    }
+
+    /// The enhanced processor around an already loaded model (the capture chain loads it through
+    /// its [`ModelLoader`], so a missing model is a visible fallback, not a failure).
+    pub fn enhanced_from(df: DfTract) -> Result<Self, MediaError> {
+        if df.sr != RATE as usize || df.hop_size != FRAME_SAMPLES || df.ch != 1 {
+            return Err(MediaError::Audio(format!(
+                "DeepFilterNet3 runs at {} Hz, {} samples, {} channels",
+                df.sr, df.hop_size, df.ch
+            )));
+        }
+        Ok(Self {
+            mode: NoiseMode::Enhanced,
+            engine: Engine::Enhanced {
+                input: Array2::zeros((1, FRAME_SAMPLES)),
+                output: Array2::zeros((1, FRAME_SAMPLES)),
+                df: Box::new(df),
+            },
+        })
     }
 
     pub fn mode(&self) -> NoiseMode {
