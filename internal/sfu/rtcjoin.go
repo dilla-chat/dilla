@@ -45,8 +45,8 @@ const RustClientProtocol = 18
 // ClientProtocols is every signalling protocol the /rtc gate admits: the short, closed list of what
 // dilla's clients send, so LiveKit's protocol-labelled session histograms keep a bounded label set
 // (branch review SFU-1). A client upgrade that raises its protocol is refused at /rtc until this
-// list follows.
-var ClientProtocols = [...]int32{ClientProtocol, RustClientProtocol}
+// list follows. It returns an array, a copy: nothing can change the list at run time.
+func ClientProtocols() [2]int32 { return [2]int32{ClientProtocol, RustClientProtocol} }
 
 // Join is what the /rtc gate reads from a signalling request's query before it reaches LiveKit.
 type Join struct {
@@ -124,8 +124,9 @@ func JoinIsResume(q url.Values) (bool, error) {
 // LiveKit's own enum names (the desktop's RUST among them). Every value LiveKit then labels a metric
 // with is from a closed set.
 func (j Join) CheckClient() error {
-	if !slices.Contains(ClientProtocols[:], j.Protocol) {
-		return fmt.Errorf("%w: protocol must be one of %v", ErrClientProtocol, ClientProtocols)
+	admitted := ClientProtocols()
+	if !slices.Contains(admitted[:], j.Protocol) {
+		return fmt.Errorf("%w: protocol must be one of %v", ErrClientProtocol, admitted)
 	}
 	if _, ok := livekit.ClientInfo_SDK_name[int32(j.SDK)]; !ok {
 		return fmt.Errorf("%w: unknown sdk %d", ErrClientProtocol, int32(j.SDK))

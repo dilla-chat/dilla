@@ -2,6 +2,9 @@
 //! leave, the hourly rotation, and declining a ring (ring.ts).
 
 use std::sync::Mutex;
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use super::wire::decode_media_epoch;
 use super::{CallCore, CallRoutes, CoreRefusal, MediaEpoch, RouteError, lock};
@@ -65,31 +68,86 @@ pub enum RotateError {
     Route(#[from] RouteError),
 }
 
+/// How many times one rotation commit is written in all: the first write and its re-writes after
+/// lost answers.
+pub const ROTATE_WRITES: u32 = 3;
+/// The bound on reconciling a rotation whose answer was lost, from the first loss: past it the
+/// pending commit is aborted. Well inside the instance's 5-minute replay record.
+pub const ROTATE_RECONCILE: Duration = Duration::from_secs(60);
+/// The first wait before a re-write; it doubles.
+const ROTATE_BACKOFF: Duration = Duration::from_secs(1);
+
+fn is_outcome_unknown(e: &RouteError) -> bool {
+    e.code.as_deref() == Some("E_OUTCOME_UNKNOWN")
+}
+
 /// The hourly rotation (controller.ts `rotate`): an empty commit with a fresh leaf secret. A
 /// refused post aborts the pending commit; an accepted one is confirmed, and the caller then reads
 /// the new epoch's keys ([`media_epoch`]). Must not run once a leave has started.
+///
+/// A write whose answer was lost (`E_OUTCOME_UNKNOWN`: the instance may or may not have applied
+/// it) is reconciled, never left pending (a pending commit blocks every later one of the group): the
+/// same commit is written again with the same idempotency key, so the instance's replay record
+/// answers with the first write's outcome (applied: its seq) or applies it now; either way it is
+/// confirmed. At most [`ROTATE_WRITES`] writes, backed off, within [`ROTATE_RECONCILE`] of the first
+/// loss; past that, or on any refusal, the pending commit is aborted. controller.ts aborts at once
+/// on any failure.
 pub async fn rotate_call<C: CallCore, R: CallRoutes + ?Sized>(
     core: &Mutex<C>,
     routes: &R,
     group: &[u8; 16],
 ) -> Result<u64, RotateError> {
-    let body = lock(core)?.call_rotate(group)?;
-    match routes.post_commit(group, body).await {
-        Ok(seq) => {
-            // The instance accepted it: the pending commit is kept even if the confirm fails (the
-            // engine adopts it when it arrives), so only the confirm's result is reported.
-            lock(core)?.commit_confirm(group)?;
-            Ok(seq)
+    let mut idem = [0u8; 16];
+    if getrandom::fill(&mut idem).is_err() {
+        return Err(RouteError {
+            status: None,
+            code: Some("E_RANDOM".into()),
+            detail: "no OS randomness for an idempotency key".into(),
         }
-        // The answer was lost after the commit was written: the instance may have applied it, so the pending
-        // commit is kept (the engine adopts it as this device's own when it arrives; aborting would make it a
-        // stranger's and lose the call group). controller.ts aborts on any failure; this keeps the safe side.
-        Err(e) if e.code.as_deref() == Some("E_OUTCOME_UNKNOWN") => Err(e.into()),
-        Err(e) => {
-            let _ = lock(core).map(|mut c| c.commit_abort(group));
-            Err(e.into())
+        .into());
+    }
+    let body = lock(core)?.call_rotate(group)?;
+    let abort = |e: RouteError| {
+        let _ = lock(core).map(|mut c| c.commit_abort(group));
+        Err(e.into())
+    };
+    let mut lost_at: Option<Instant> = None;
+    let mut backoff = ROTATE_BACKOFF;
+    for write in 1..=ROTATE_WRITES {
+        let posted = match lost_at {
+            None => routes.post_commit(group, body.clone(), idem).await,
+            Some(at) => {
+                let left = ROTATE_RECONCILE.saturating_sub(at.elapsed());
+                tokio::time::timeout(left, routes.post_commit(group, body.clone(), idem))
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(RouteError {
+                            status: None,
+                            code: Some("E_OUTCOME_UNKNOWN".into()),
+                            detail: "the rotation was not reconciled in time".into(),
+                        })
+                    })
+            }
+        };
+        match posted {
+            Ok(seq) => {
+                // The instance accepted it: the pending commit is kept even if the confirm fails
+                // (the engine adopts it when it arrives), so only the confirm's result is reported.
+                lock(core)?.commit_confirm(group)?;
+                return Ok(seq);
+            }
+            Err(e) if is_outcome_unknown(&e) && write < ROTATE_WRITES => {
+                let at = *lost_at.get_or_insert_with(Instant::now);
+                if at.elapsed() + backoff >= ROTATE_RECONCILE {
+                    return abort(e);
+                }
+                tokio::time::sleep(backoff).await;
+                backoff *= 2;
+            }
+            Err(e) => return abort(e),
         }
     }
+    unreachable!("the last write returns")
 }
 
 /// Declines a ring (ring.ts): the body echoes the ring's `expires_ts`, so a late decline never stops

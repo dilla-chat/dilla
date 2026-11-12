@@ -237,6 +237,8 @@ struct FakeRoutes {
     /// Once `resync` is spent: every later resync is this refusal (none: accepted).
     resync_always: Mutex<Option<RouteError>>,
     proposal: Mutex<VecDeque<Result<u64, RouteError>>>,
+    /// The idempotency key of every commit written.
+    idems: Mutex<Vec<[u8; 16]>>,
     /// Set while the start is in flight: a leave that lands during it.
     cancel_on_start: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     alone: bool,
@@ -305,8 +307,14 @@ impl CallRoutes for FakeRoutes {
                 .map_or(Ok(9), Err)
         })
     }
-    async fn post_commit(&self, _g: &[u8; 16], _b: Vec<u8>) -> Result<u64, RouteError> {
+    async fn post_commit(
+        &self,
+        _g: &[u8; 16],
+        _b: Vec<u8>,
+        idem: [u8; 16],
+    ) -> Result<u64, RouteError> {
         self.log("post_commit".into());
+        self.idems.lock().unwrap().push(idem);
         self.commit.lock().unwrap().pop_front().unwrap_or(Ok(10))
     }
     async fn post_proposal(&self, _g: &[u8; 16], b: Vec<u8>) -> Result<u64, RouteError> {
@@ -564,11 +572,11 @@ fn outcome_unknown() -> RouteError {
     }
 }
 
-/// A commit or proposal whose answer was lost after it was written (E_OUTCOME_UNKNOWN) may have been applied: the
-/// rotation keeps its pending commit (the engine adopts it when it arrives) instead of aborting it, and the leave
-/// forgets the group as always, aborting nothing.
-#[tokio::test]
-async fn an_outcome_unknown_never_aborts_a_pending_commit() {
+/// A rotation whose answer was lost (E_OUTCOME_UNKNOWN) is reconciled, never left pending: the same commit is written
+/// again with the same idempotency key (the instance's replay record answers the first write's outcome, or applies it
+/// now) and confirmed; the next rotation writes under a new key. A proposal whose answer was lost aborts nothing.
+#[tokio::test(start_paused = true)]
+async fn a_lost_rotation_answer_is_rewritten_with_its_key_and_confirmed() {
     let core = Mutex::new(FakeCore::default());
     let routes = FakeRoutes::default();
     routes
@@ -576,9 +584,23 @@ async fn an_outcome_unknown_never_aborts_a_pending_commit() {
         .lock()
         .unwrap()
         .push_back(Err(outcome_unknown()));
-    let e = rotate_call(&core, &routes, &GROUP).await.unwrap_err();
-    assert!(e.to_string().contains("E_OUTCOME_UNKNOWN"), "{e}");
-    assert_eq!(core.lock().unwrap().log, ["rotate 44"]);
+    assert_eq!(rotate_call(&core, &routes, &GROUP).await.unwrap(), 10);
+    let idems = routes.idems.lock().unwrap().clone();
+    assert_eq!(idems.len(), 2);
+    assert_eq!(
+        idems[0], idems[1],
+        "the re-write carries the first write's key"
+    );
+    assert_eq!(core.lock().unwrap().log, ["rotate 44", "confirm 44"]);
+
+    // The next rotation succeeds, under a key of its own.
+    assert_eq!(rotate_call(&core, &routes, &GROUP).await.unwrap(), 10);
+    let idems = routes.idems.lock().unwrap().clone();
+    assert_ne!(idems[2], idems[0]);
+    assert_eq!(
+        core.lock().unwrap().log,
+        ["rotate 44", "confirm 44", "rotate 44", "confirm 44"]
+    );
 
     routes
         .proposal
@@ -588,9 +610,42 @@ async fn an_outcome_unknown_never_aborts_a_pending_commit() {
     let left = leave_call(&core, &routes, &GROUP, &CHANNEL, false).await;
     assert!(!left.proposed && !left.ended);
     assert_eq!(
-        core.lock().unwrap().log,
-        ["rotate 44", "leave_proposal 44", "forget 44"]
+        core.lock().unwrap().log[4..],
+        ["leave_proposal 44", "forget 44"]
     );
+}
+
+/// Bounded: a rotation whose every write loses its answer is aborted after ROTATE_WRITES writes, within
+/// ROTATE_RECONCILE, and the group takes its next rotation; a refusal of a re-write aborts at once.
+#[tokio::test(start_paused = true)]
+async fn an_unreconciled_rotation_is_aborted_within_the_bound() {
+    use dilla_client::calls::controller::{ROTATE_RECONCILE, ROTATE_WRITES};
+    let core = Mutex::new(FakeCore::default());
+    let routes = FakeRoutes::default();
+    routes
+        .commit
+        .lock()
+        .unwrap()
+        .extend((0..ROTATE_WRITES).map(|_| Err(outcome_unknown())));
+    let began = tokio::time::Instant::now();
+    let e = rotate_call(&core, &routes, &GROUP).await.unwrap_err();
+    assert!(e.to_string().contains("E_OUTCOME_UNKNOWN"), "{e}");
+    assert!(began.elapsed() < ROTATE_RECONCILE, "{:?}", began.elapsed());
+    assert_eq!(routes.idems.lock().unwrap().len(), ROTATE_WRITES as usize);
+    assert_eq!(core.lock().unwrap().log, ["rotate 44", "abort 44"]);
+
+    // A re-write refused (the commit lost its epoch's race) aborts at once.
+    routes
+        .commit
+        .lock()
+        .unwrap()
+        .extend([Err(outcome_unknown()), Err(err(409, "E_COMMIT_CONFLICT"))]);
+    assert!(rotate_call(&core, &routes, &GROUP).await.is_err());
+    assert_eq!(core.lock().unwrap().log[2..], ["rotate 44", "abort 44"]);
+
+    // The next rotation succeeds.
+    assert_eq!(rotate_call(&core, &routes, &GROUP).await.unwrap(), 10);
+    assert_eq!(core.lock().unwrap().log[4..], ["rotate 44", "confirm 44"]);
 }
 
 #[test]

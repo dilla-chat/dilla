@@ -19,8 +19,8 @@ use tokio::sync::{oneshot, watch};
 
 use super::controller::{Left, RotateError, decline_ring};
 use super::{
-    CallPhase, CoreRefusal, HttpRoutes, JoinHooks, JoinRefused, JoinTarget, Joined, MediaEpoch,
-    RouteError, join_call, leave_call, media_epoch, rotate_call,
+    CallCore, CallPhase, CallRoutes, CoreRefusal, HttpRoutes, JoinHooks, JoinRefused, JoinTarget,
+    Joined, MediaEpoch, RouteError, join_call, leave_call, media_epoch, rotate_call,
 };
 use crate::client::{Client, ClientError, Inner};
 use crate::seams::{Http, HttpError, Route};
@@ -102,11 +102,15 @@ pub struct CallJoin {
     phase: watch::Receiver<CallPhase>,
     cancel: Arc<AtomicBool>,
     outcome: Option<oneshot::Receiver<Result<Result<Joined, JoinRefused>, ClientError>>>,
+    /// The outcome was received: the join is over, and dropping this cancels nothing.
+    settled: bool,
 }
 
 impl Drop for CallJoin {
+    /// Dropped before its outcome arrived (the handle, or the `outcome()` future while it waits): the join is
+    /// cancelled, and a call it starts anyway is left at once.
     fn drop(&mut self) {
-        if self.outcome.is_some() {
+        if !self.settled {
             self.cancel.store(true, Ordering::Release);
         }
     }
@@ -125,11 +129,15 @@ impl CallJoin {
     }
 
     /// The join's outcome. A client that stopped meanwhile is the outer error.
+    /// The join's outcome. A client that stopped meanwhile is the outer error. `self` is held across the wait, so
+    /// dropping this future before the outcome arrives cancels the join.
     pub async fn outcome(mut self) -> Result<Result<Joined, JoinRefused>, ClientError> {
-        let Some(outcome) = self.outcome.take() else {
+        let Some(outcome) = self.outcome.as_mut() else {
             return Err(ClientError::Stopped);
         };
-        outcome.await.unwrap_or(Err(ClientError::Stopped))
+        let answer = outcome.await.unwrap_or(Err(ClientError::Stopped));
+        self.settled = true;
+        answer
     }
 }
 
@@ -158,6 +166,42 @@ impl JoinHooks for Hooks {
 
     fn phase(&self, phase: CallPhase) {
         self.phase.send_replace(phase);
+    }
+}
+
+/// A join that was cancelled (a leave, or its [`CallJoin`] dropped) by the time it ended: nobody takes its outcome, so
+/// whatever it holds is left here. A call it joined after its last check (the window between that check and this) is
+/// left (its self-Remove, the call ended when alone, the forget) and the outcome is the cancellation; a refusal that
+/// names a group gets that group's self-Remove and forget. A join not cancelled is answered as it is.
+pub(crate) async fn leave_if_cancelled<C: CallCore, R: CallRoutes + ?Sized>(
+    core: &std::sync::Mutex<C>,
+    routes: &R,
+    joined: Result<Joined, JoinRefused>,
+    cancelled: bool,
+) -> Result<Joined, JoinRefused> {
+    if !cancelled {
+        return joined;
+    }
+    match joined {
+        Ok(j) => {
+            let alone = j.started.created
+                || (j.media.roster.len() == 1 && j.media.roster[0].0 == j.media.own_leaf);
+            let (group, call) = (j.group_id, j.started.call_id);
+            drop(j);
+            leave_call(core, routes, &group, &call, alone).await;
+            Err(JoinRefused {
+                code: "E_NO_CALL".into(),
+                phase: super::join::Phase::Failed,
+                leave: None,
+                alone: false,
+            })
+        }
+        Err(r) => {
+            if let Some(group) = r.leave {
+                leave_call(core, routes, &group, &[0; 16], false).await;
+            }
+            Err(r)
+        }
     }
 }
 
@@ -190,20 +234,14 @@ impl<H: Http + 'static> Calls<H> {
         let outcome = self.inner.spawn(async move {
             let core = engine.core().clone();
             let joined = join_call(&*core, &*routes, &hooks, &target).await;
-            // A cancelled join (a leave, or the CallJoin dropped) that already holds a leaf of a group: nobody will
-            // take this refusal and leave it, so its self-Remove and the forget happen here.
-            if let Err(r) = &joined
-                && let Some(group) = r.leave
-                && hooks.cancel.load(Ordering::Acquire)
-            {
-                leave_call(&*core, &*routes, &group, &[0; 16], false).await;
-            }
-            Ok(joined)
+            let cancelled = hooks.cancel.load(Ordering::Acquire);
+            Ok(leave_if_cancelled(&*core, &*routes, joined, cancelled).await)
         });
         CallJoin {
             phase,
             cancel,
             outcome: Some(outcome),
+            settled: false,
         }
     }
 
@@ -263,6 +301,7 @@ mod tests {
                 phase,
                 cancel: cancel.clone(),
                 outcome: Some(rx),
+                settled: false,
             },
             cancel,
             tx,
@@ -282,5 +321,18 @@ mod tests {
         let _ = tx.send(Err(ClientError::Stopped));
         assert!(j.outcome().await.is_err());
         assert!(!cancel.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn dropping_the_outcome_future_while_it_waits_cancels_the_join() {
+        let (j, cancel, _tx) = join();
+        let waiting = j.outcome();
+        // Polled once (it waits), then dropped.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), waiting)
+                .await
+                .is_err()
+        );
+        assert!(cancel.load(Ordering::Acquire));
     }
 }

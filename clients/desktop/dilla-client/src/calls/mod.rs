@@ -18,10 +18,14 @@ pub mod join;
 pub mod session;
 pub mod wire;
 
+#[cfg(test)]
+mod tests;
+
 use dilla_core::client::{ClientCore, ClientError};
 use zeroize::Zeroizing;
 
 use crate::seams::{Http, HttpError};
+use crate::sync::requests::SocketHttp;
 
 pub use controller::{Left, RotateError, decline_ring, leave_call, media_epoch, rotate_call};
 pub use join::{JoinHooks, JoinRefused, JoinTarget, Joined, REJOIN_STEP, REJOIN_WAIT, join_call};
@@ -262,8 +266,15 @@ pub trait CallRoutes: Send + Sync {
     async fn get_group_tree(&self, group: &[u8; 16]) -> Result<Vec<u8>, RouteError>;
     /// `POST /v1/groups/{id}/resync`: the commit's `seq`.
     async fn post_resync(&self, group: &[u8; 16], body: Vec<u8>) -> Result<u64, RouteError>;
-    /// `POST /v1/groups/{id}/commit`: the commit's `seq`.
-    async fn post_commit(&self, group: &[u8; 16], body: Vec<u8>) -> Result<u64, RouteError>;
+    /// `POST /v1/groups/{id}/commit`: the commit's `seq`. `idem` is the write's idempotency key: the
+    /// same commit written again after a lost answer carries the same key, so the instance's replay
+    /// record answers with the first write's outcome.
+    async fn post_commit(
+        &self,
+        group: &[u8; 16],
+        body: Vec<u8>,
+        idem: [u8; 16],
+    ) -> Result<u64, RouteError>;
     /// `POST /v1/groups/{id}/proposal`: the proposal's `seq`.
     async fn post_proposal(&self, group: &[u8; 16], body: Vec<u8>) -> Result<u64, RouteError>;
     /// L-HTTP-102 `POST /v1/channels/{id}/calls`.
@@ -274,7 +285,8 @@ pub trait CallRoutes: Send + Sync {
     async fn decline_call(&self, call: &[u8; 16], ring_ts: u64) -> Result<(), RouteError>;
 }
 
-/// [`CallRoutes`] over the client's [`Http`] seam and its typed route table.
+/// [`CallRoutes`] over the client's gateway socket ([`SocketHttp`]: every call route is a socket
+/// route) and its typed route table.
 pub struct HttpRoutes<H>(pub H);
 
 fn hex(b: &[u8]) -> String {
@@ -282,7 +294,7 @@ fn hex(b: &[u8]) -> String {
 }
 
 #[async_trait::async_trait]
-impl<H: Http> CallRoutes for HttpRoutes<H> {
+impl<H: Http> CallRoutes for HttpRoutes<SocketHttp<H>> {
     async fn get_channel_call(&self, channel: &[u8; 16]) -> Result<ChannelCall, RouteError> {
         use crate::http::routes::{GetChannelCall, NoBody};
         let raw = self
@@ -309,9 +321,17 @@ impl<H: Http> CallRoutes for HttpRoutes<H> {
         let raw = self.0.call::<PostResync>(&[&hex(group)], Raw(body)).await?;
         wire::decode_seq(&raw.0, 0)
     }
-    async fn post_commit(&self, group: &[u8; 16], body: Vec<u8>) -> Result<u64, RouteError> {
+    async fn post_commit(
+        &self,
+        group: &[u8; 16],
+        body: Vec<u8>,
+        idem: [u8; 16],
+    ) -> Result<u64, RouteError> {
         use crate::http::routes::{PostCommit, Raw};
-        let raw = self.0.call::<PostCommit>(&[&hex(group)], Raw(body)).await?;
+        let raw = self
+            .0
+            .call_with_idem::<PostCommit>(&[&hex(group)], Raw(body), Some(idem))
+            .await?;
         wire::decode_seq(&raw.0, 0)
     }
     async fn post_proposal(&self, group: &[u8; 16], body: Vec<u8>) -> Result<u64, RouteError> {

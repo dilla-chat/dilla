@@ -148,7 +148,7 @@ impl SocketRequests {
     }
 
     /// [`SocketRequests::attach`] for any [`RequestSink`] (a test's scripted socket).
-    pub fn attach_sink(&self, sink: Option<Arc<dyn RequestSink>>) {
+    pub(crate) fn attach_sink(&self, sink: Option<Arc<dyn RequestSink>>) {
         let mut inner = lock(&self.inner);
         inner.gateway = sink;
         inner.up = false;
@@ -577,6 +577,8 @@ fn method_name(m: &http::Method) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+pub(crate) mod script;
+#[cfg(test)]
 mod tests;
 
 /// `Api::socket_call`'s attempts and its longest 429 wait (client.ts `RETRY`).
@@ -598,6 +600,20 @@ impl<H: Http> Http for SocketHttp<H> {
         path_args: &[&str],
         req: R::Request,
     ) -> Result<R::Response, HttpError> {
+        self.call_with_idem::<R>(path_args, req, None).await
+    }
+}
+
+impl<H: Http> SocketHttp<H> {
+    /// [`Http::call`] with the caller's idempotency key for a socket mutation (`None`: a fresh random one). A caller
+    /// that writes the same request again after a lost answer (`E_OUTCOME_UNKNOWN`) passes the same key, so the
+    /// instance's replay record answers with the first write's outcome instead of applying it twice.
+    pub async fn call_with_idem<R: Route>(
+        &self,
+        path_args: &[&str],
+        req: R::Request,
+        idem: Option<[u8; 16]>,
+    ) -> Result<R::Response, HttpError> {
         let entry = routes::lookup(&R::METHOD, R::PATH).ok_or_else(|| {
             HttpError::Transport(format!(
                 "{} {} is not in the route table",
@@ -618,8 +634,13 @@ impl<H: Http> Http for SocketHttp<H> {
         // One key for every attempt of this request, so a retry is answered from the instance's replay record.
         let idem = if method == "GET" {
             None
+        } else if let Some(idem) = idem {
+            Some(idem.to_vec())
         } else {
-            Some(random_idem().ok_or_else(|| HttpError::Transport("E_RANDOM".into()))?)
+            Some(random_idem().ok_or_else(|| HttpError::Unanswered {
+                code: "E_RANDOM".into(),
+                detail: "no OS randomness for an idempotency key".into(),
+            })?)
         };
         for attempt in 1..=SOCKET_HTTP_ATTEMPTS {
             let answer = self

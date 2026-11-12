@@ -301,7 +301,7 @@ func mountRTC(mux *server.Mux, s SFU, gate RTCGate, trusted []netip.Prefix, limi
 // here, 400 E_INVALID_REQUEST, before it reaches the SFU. Every other check — the token's signature,
 // its device, the gate, every non-source right — applies to a resume as to a fresh join.
 //
-// Last, an admitted join whose signalling protocol is not one of sfu.ClientProtocols (the v0 `protocol`
+// Last, an admitted join whose signalling protocol is not one of sfu.ClientProtocols() (the v0 `protocol`
 // parameter, or client_info.protocol in a v1 join_request), or whose v1 client_info.sdk is not a
 // value of LiveKit's enum, is 400 E_INVALID_REQUEST: LiveKit labels metric series with both as the
 // client wrote them.
