@@ -2297,6 +2297,7 @@ export const GPUI_PINNED_STEPS = {
     '    cargo test -p dilla-parity --locked -- --ignored',
     '    cargo test -p dilla-client --test gateway --locked -- --ignored',
     '    cargo test -p dilla-client --test sync --locked -- --ignored',
+    '    cargo test -p dilla-client --test http_sign_in --locked -- --ignored',
   ].join('\n'),
 };
 

@@ -214,6 +214,13 @@ mod build_bundled {
                 .flag("-DSQLITE3MC_SECURE_MEMORY=1")
                 .flag("-DSQLITE_TEMP_STORE=2")
                 .flag("-DHAVE_STDINT_H=1");
+            // DILLA PATCH: pin the C dialect to C17 (non-MSVC). A C23-default compiler makes sqlite3mc's
+            // secure wipe call memset_explicit, which with _FORTIFY_SOURCE binds __memset_explicit_chk
+            // (GLIBC_2.43): binaries built on a new distro then refuse to start on older ones (CI's
+            // ubuntu-24.04 runners, deployed servers). Under C17 it uses explicit_bzero (glibc >= 2.25).
+            if !cfg!(target_env = "msvc") && env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+                cfg.flag_if_supported("-std=gnu17");
+            }
         }
 
         if cfg!(feature = "bundled-sqlcipher") {

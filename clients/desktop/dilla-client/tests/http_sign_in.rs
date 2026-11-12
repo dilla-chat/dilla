@@ -196,6 +196,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[test]
+#[ignore = "needs dillad: the Go test host (run with --ignored; desktop-gpui runs it on Linux)"]
 fn sign_in_round_trip() {
     use dilla_core::cbor::{Encoder, decode_strict};
     use dilla_core::identity::{Kind, Tier};
