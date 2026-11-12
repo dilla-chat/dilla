@@ -7,7 +7,12 @@ all-features = true
 [advisories]
 yanked = "deny"
 unmaintained = "workspace"
-ignore = []
+ignore = [
+  # ttf-parser 0.25 is unmaintained, but GPUI's own text stack requires it (fontdb, rustybuzz,
+  # wayland-backend), so dropping our direct use would not remove it. Follow-up: move
+  # dilla-desktop-ui's glyph-coverage check to skrifa; lift this when GPUI moves off ttf-parser.
+  { id = "RUSTSEC-2026-0192", reason = "transitively required by GPUI's text stack (fontdb, rustybuzz)" },
+]
 
 [licenses]
 # Every entry here must be a licence the resolved graph actually carries: cargo-deny reports an
@@ -385,3 +390,43 @@ reason = "the Windows desktop build: older windows-rs lines come from gpui-base/
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-git = ["https://github.com/openmls/openmls"]
+
+[[bans.skip]]
+crate = "dirs@5.0.1"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "dirs-sys@0.4.1"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "downcast-rs@1.2.1"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "phf@0.11.3"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "phf_generator@0.11.3"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "phf_shared@0.11.3"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "windows-sys@0.48.0"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "windows-targets@0.48.5"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "windows_x86_64_gnu@0.48.5"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "windows_x86_64_msvc@0.48.5"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
