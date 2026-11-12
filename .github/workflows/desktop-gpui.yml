@@ -74,6 +74,13 @@ jobs:
       # GPUI's Linux build and the libwebrtc behind LiveKit need the X11, Wayland, xkbcommon, font, Vulkan and GBM
       # development packages and libclang (bindgen). mesa-vulkan-drivers is lavapipe, the software Vulkan adapter
       # dilla-parity's headless screenshot test renders on. Retried only on mirror and DNS failures.
+      # LiveKit's prebuilt libwebrtc on Windows links the static MSVC runtime (/MT); a dynamic-CRT Rust build gets
+      # LNK2005/LNK1169 duplicate std symbols. .cargo/config.toml may not carry rustflags (workspace_policy), so the
+      # Windows leg sets it here; local Windows builds need the same (documented in clients/desktop/README).
+      - name: Static MSVC runtime for libwebrtc (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
       # LiveKit's prebuilt libwebrtc ships a hermetic libc++ that needs clang 21+; ubuntu-24.04 has clang 18.
       # LLVM's own apt repository, verified by its signing key.
       - name: Add the LLVM 21 apt repository
