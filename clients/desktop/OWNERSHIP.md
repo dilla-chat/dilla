@@ -92,6 +92,7 @@ change.
 | `D/slots.rs`, `D/keys.rs` | A task fills its own hooks in `D/screens/<area>/` and its own `keys.rs`. The order of the guests in a slot is the controller's. |
 | Workflows, `scripts/ci-local*.mjs`, `deny.toml` | Task 7 only. Other tasks write what they need into their report. |
 | `D/app.rs`, `D/lib.rs` window functions, `D/main.rs` | Task 8 (Task 27 the `--instance` flag in `main.rs`). The boot splash (24), the sign-in and factor flow (26) and the instance windows (27) need hooks there: each of those tasks reports the exact change, and the controller applies it at merge. |
+| Parity fixture extension points (ruling R11): `D/fixture/<facet>.rs` (`apply`) and `dilla-desktop/examples/parity_world/seed/<facet>.rs` (`unseedable`, `seed`) | One module per facet, owned by its area: `messages` 9, `reactions` 10, `threads` 11, `attachments` 12, `dms` 13, `members` and `roles` 14, `calls` 17, `polls` 20. A task whose fixtures need a facet without a module creates `<facet>.rs` in both places and adds one line, in sorted position, to `D/fixture.rs` and `seed/mod.rs`; the controller resolves those list lines at merge. Nobody else edits `D/fixture.rs`, `seed/mod.rs` or `parity_world/main.rs`. |
 | `D/screens/composer.rs` | Task 9's. Its static paperclip and smile tools are placeholders until Tasks 12 and 10 fill `composer_buttons`; the controller removes each one when it merges the task that replaces it. |
 
 ## Slots and cross-area calls
