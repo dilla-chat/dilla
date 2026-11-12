@@ -1,0 +1,69 @@
+name: desktop-gpui
+# The native GPUI desktop client (clients/desktop). Separate from desktop.yml / desktop-ci.yml, which are the
+# Electron client's; this one builds, lints and tests only the four GPUI crates.
+on:
+  pull_request:
+    paths:
+      - 'clients/desktop/**'
+      - 'core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'deny.toml'
+      - '.github/workflows/desktop-gpui.yml'
+permissions:
+  contents: read
+concurrency:
+  group: desktop-gpui-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  GPUI_CRATES: -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop
+jobs:
+  gpui:
+    name: gpui-${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: ubuntu-24.04, platform: linux, arch: x64 }
+          - { os: windows-latest, platform: win, arch: x64 }
+          - { os: macos-15, platform: mac, arch: arm64 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      # GPUI's Linux build and the libwebrtc behind LiveKit need the X11, Wayland, xkbcommon, font, Vulkan and GBM
+      # development packages and libclang (bindgen). Retried only on mirror and DNS failures.
+      - name: Install the GPUI build dependencies
+        if: runner.os == 'Linux'
+        run: >-
+          node scripts/retry-on.mjs --attempts 6 --wait 60
+          --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch'
+          -- bash scripts/ci-apt-install.sh
+          clang libclang-dev pkg-config libssl-dev libdbus-1-dev libasound2-dev
+          libfontconfig-dev libfreetype-dev libvulkan-dev libgbm-dev libdrm-dev libglib2.0-dev
+          libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
+          libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxext-dev libxdamage-dev
+          libxfixes-dev libxcomposite-dev libxrandr-dev
+      - run: rustup show active-toolchain
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+      - run: cargo build $GPUI_CRATES --all-targets --locked
+        shell: bash
+      - run: cargo clippy $GPUI_CRATES --all-targets --locked -- -D warnings
+        shell: bash
+      # The window test runs on GPUI's test platform, so it needs no display.
+      - run: cargo test $GPUI_CRATES --locked
+        shell: bash

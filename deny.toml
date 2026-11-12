@@ -11,11 +11,11 @@ ignore = []
 [licenses]
 # Every entry here must be a licence the resolved graph actually carries: cargo-deny reports an
 # unused allowance as `license-not-encountered`, and a run that prints warnings is a run whose
-# warnings stop being read. `ISC` was dropped for exactly that reason (nothing in the graph over
-# the four targets in [graph] carries it); `BlueOak-1.0.0` went the same way with minicbor
+# warnings stop being read. `ISC` was dropped for exactly that reason once and is back with the GPUI desktop
+# client (ring, rustls-webpki, libloading, inotify; `0BSD` is enum-iterator, a gpui-component dependency); `BlueOak-1.0.0` went the same way with minicbor
 # (deviation A1-3). Add one back when the dependency that needs it arrives, not before.
 allow = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "Unicode-3.0",
-         "Zlib", "MPL-2.0"]
+         "Zlib", "MPL-2.0", "ISC", "0BSD"]
 confidence-threshold = 0.9
 
 # sqlcipher-src carries the SQLCipher amalgamation the native store is built from (build-dependency
@@ -31,6 +31,16 @@ allow = ["blessing", "WTFPL"]
 [[licenses.exceptions]]
 crate = "sqlite3mc-src"
 allow = ["CC0-1.0", "Unlicense"]
+
+# notify (a gpui-component dependency, file watching) is CC0-1.0; webpki-root-certs (reqwest's rustls platform
+# verifier) is CDLA-Permissive-2.0, a data licence for the Mozilla root list. Scoped to those crates.
+[[licenses.exceptions]]
+crate = "notify"
+allow = ["CC0-1.0"]
+
+[[licenses.exceptions]]
+crate = "webpki-root-certs"
+allow = ["CDLA-Permissive-2.0"]
 
 [licenses.private]
 ignore = true                      # every dilla crate is publish = false
@@ -60,6 +70,188 @@ reason = "getrandom 0.2 serves testkit's rand_core 0.6 fixtures, while 0.4 serve
 [[bans.skip]]
 crate = "syn"
 reason = "2.0.119 is what nearly every proc macro still uses; wasm-bindgen-test-macro 0.3.78 has moved to 3.0.6. Build-time only; collapses as the ecosystem finishes the syn 3 migration."
+
+# The GPUI desktop client (clients/desktop: gpui-pre, gpui-component, livekit, reqwest, keyring) carries its own
+# older majors of these. They sit in the UI, media and transport stacks, off the MLS path in dilla-core; each
+# collapses when the upstream release that moves it ships.
+[[bans.skip]]
+crate = "bitflags"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "block-buffer"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "convert_case"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "cpufeatures"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "crypto-common"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "digest"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "foldhash"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "hashbrown"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "miniz_oxide"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "png"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "pollster"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "quick-error"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "reqwest"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "roxmltree"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "serde_spanned"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "sha1"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "spin"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "strsim"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "thiserror"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "thiserror-impl"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "tokio-tungstenite"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "toml"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "toml_datetime"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "toml_edit"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "tungstenite"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "winnow"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "base64"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "itertools"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "rand"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+[[bans.skip]]
+crate = "aes"
+reason = "the older RustCrypto line (0.8-0.12 era) comes only from oo7 0.6 in gpui-pre-linux (GPUI's own Secret Service / portal access); dilla-core's MLS crypto uses the current line. Collapses when oo7 moves to it."
+
+[[bans.skip]]
+crate = "block-padding"
+reason = "the older RustCrypto line (0.8-0.12 era) comes only from oo7 0.6 in gpui-pre-linux (GPUI's own Secret Service / portal access); dilla-core's MLS crypto uses the current line. Collapses when oo7 moves to it."
+
+[[bans.skip]]
+crate = "cbc"
+reason = "the older RustCrypto line (0.8-0.12 era) comes only from oo7 0.6 in gpui-pre-linux (GPUI's own Secret Service / portal access); dilla-core's MLS crypto uses the current line. Collapses when oo7 moves to it."
+
+[[bans.skip]]
+crate = "cipher"
+reason = "the older RustCrypto line (0.8-0.12 era) comes only from oo7 0.6 in gpui-pre-linux (GPUI's own Secret Service / portal access); dilla-core's MLS crypto uses the current line. Collapses when oo7 moves to it."
+
+[[bans.skip]]
+crate = "hkdf"
+reason = "the older RustCrypto line (0.8-0.12 era) comes only from oo7 0.6 in gpui-pre-linux (GPUI's own Secret Service / portal access); dilla-core's MLS crypto uses the current line. Collapses when oo7 moves to it."
+
+[[bans.skip]]
+crate = "hmac"
+reason = "the older RustCrypto line (0.8-0.12 era) comes only from oo7 0.6 in gpui-pre-linux (GPUI's own Secret Service / portal access); dilla-core's MLS crypto uses the current line. Collapses when oo7 moves to it."
+
+[[bans.skip]]
+crate = "inout"
+reason = "the older RustCrypto line (0.8-0.12 era) comes only from oo7 0.6 in gpui-pre-linux (GPUI's own Secret Service / portal access); dilla-core's MLS crypto uses the current line. Collapses when oo7 moves to it."
+
+[[bans.skip]]
+crate = "sha2"
+reason = "the older RustCrypto line (0.8-0.12 era) comes only from oo7 0.6 in gpui-pre-linux (GPUI's own Secret Service / portal access); dilla-core's MLS crypto uses the current line. Collapses when oo7 moves to it."
+
+[[bans.skip]]
+crate = "bit-set"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "bit-vec"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "font-types"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "read-fonts"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "rustc-hash"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "skrifa"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "zbus"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "zbus_macros"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
 
 [sources]
 unknown-registry = "deny"

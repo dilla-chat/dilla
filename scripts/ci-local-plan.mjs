@@ -107,6 +107,15 @@ export const EXTRA_JOBS = {
     languages: ['actions', 'go', 'javascript-typescript', 'rust'],
     install: 'CodeQL CLI not installed: download codeql-bundle-linux64.tar.gz from https://github.com/github/codeql-action/releases, unpack it and put its codeql directory on PATH (or `gh extension install github/gh-codeql && gh codeql set-version latest`).',
   },
+  // The GPUI desktop crates: .github/workflows/desktop-gpui.yml runs the same three commands on three OSes, locally Linux only.
+  'desktop-gpui': {
+    weight: 3,
+    script: [
+      'cargo build -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop --all-targets --locked',
+      'cargo clippy -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop --all-targets --locked -- -D warnings',
+      'cargo test -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop --locked',
+    ],
+  },
 };
 
 /** What each `uses:` action becomes locally. */

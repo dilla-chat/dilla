@@ -6,11 +6,16 @@ members = [
     "core/dilla-core-wasm",
     "core/dilla-core-wasi",
     "testkit",
+    "clients/desktop/dilla-client",
+    "clients/desktop/dilla-media",
+    "clients/desktop/dilla-desktop-ui",
+    "clients/desktop/dilla-desktop",
 ]
 default-members = ["core/dilla-core", "testkit"]
 # Third-party source carried with a patch (core/vendor/README.md): never a member, so fmt, clippy and
 # the workspace lints leave the upstream code as it was published.
-exclude = ["core/vendor"]
+# experiments/gpui-*: the GPUI proofs are standalone workspaces of their own.
+exclude = ["core/vendor", "experiments/gpui-*"]
 
 [workspace.package]
 edition = "2024"

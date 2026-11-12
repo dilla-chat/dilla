@@ -1,0 +1,26 @@
+[package]
+name = "dilla-desktop"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+# Screenshot automation (a later task); the image crate is only built with it.
+automation = ["dep:image"]
+
+[dependencies]
+dilla-client = { path = "../dilla-client" }
+dilla-media = { path = "../dilla-media" }
+dilla-desktop-ui = { path = "../dilla-desktop-ui" }
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.12" }
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+
+[dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
