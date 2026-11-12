@@ -499,3 +499,22 @@ fn a_clearing_after_a_read_started_wins_over_its_answer() {
     gate.retried(&groups, (at, transient(&[g])));
     assert!(gate.readable(&g));
 }
+
+/// Review fix (round 3): a group that is not active (state 0, 1, 3) is a transient failure, so it stays gated through
+/// every retry and is released only by a feed read that succeeded.
+#[test]
+fn a_non_active_group_stays_gated_until_a_read() {
+    let g = [4u8; 16];
+    let not_active = HashMap::from([(g, FeedFailure::Transient("E_GROUP_NOT_ACTIVE".into()))]);
+    let mut gate = RemovalGate::default();
+    let (generation, started) = gate.start();
+    assert!(gate.read(generation, (started, not_active.clone())));
+    assert!(!gate.readable(&g));
+    for _ in 0..3 {
+        let (_, at, groups) = gate.next_retry().unwrap();
+        gate.retried(&groups, (at, not_active.clone()));
+        assert!(!gate.readable(&g), "a retry that could not read keeps it");
+    }
+    gate.cleared(&g);
+    assert!(gate.readable(&g));
+}

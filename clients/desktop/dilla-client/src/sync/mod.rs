@@ -1184,13 +1184,14 @@ impl Engine {
 
     /// Reads the removal feed of each of `groups` on its own lane; answers those whose feed is still unread, with why
     /// ([`removals::FeedFailure`]). A group that is not active (registering, joining, waiting for a resync) is not read
-    /// and not held back: its channel shows that state, as in TS. A group with a commit of its own pending is a transient
+    /// now and stays held back (a transient failure, retried); its channel shows that state. A group with a commit of its own pending is a transient
     /// failure (the core ingests only a settled group). A lost leaf (404 on an active group) is resynced and its feed
     /// read once more (engine.ts `openChannel`). Each group read is reported changed.
     pub async fn recover_removals_of(
         self: &Arc<Self>,
         groups: Vec<Gid>,
     ) -> HashMap<Gid, removals::FeedFailure> {
+        let asked = groups.clone();
         let jobs: Vec<_> = groups
             .into_iter()
             .map(|g| {
@@ -1202,13 +1203,17 @@ impl Engine {
                 }
             })
             .collect();
-        let watched = self.watched_value(futures_util::future::join_all(jobs));
-        watched
+        // A read that panicked answers every group unread (never released without a read).
+        match self
+            .watched_value(futures_util::future::join_all(jobs))
             .await
-            .unwrap_or_default()
-            .into_iter()
-            .flatten()
-            .collect()
+        {
+            Some(answers) => answers.into_iter().flatten().collect(),
+            None => asked
+                .into_iter()
+                .map(|g| (g, removals::FeedFailure::Transient("E_PANICKED".into())))
+                .collect(),
+        }
     }
 
     /// One group's read for [`Engine::recover_removals_of`], on its lane.
@@ -1220,8 +1225,14 @@ impl Engine {
         let Some(row) = self.row(g).await else {
             return Ok(());
         };
-        if row.kind != 0 || row.community_id.is_none() || row.state != 2 {
+        if row.kind != 0 || row.community_id.is_none() || row.state == 4 {
             return Ok(());
+        }
+        // Jonas (2026-11-13), stricter than the web: a community group that is registering, joining or waiting for a
+        // resync keeps its history hidden until its feed is read. Nothing is requested now (the core cannot ingest
+        // into it); the retry reads it once the group is active again. Its channel shows the group's state meanwhile.
+        if row.state != 2 {
+            return Err(FeedFailure::Transient("E_GROUP_NOT_ACTIVE".into()));
         }
         if row.pending_commit {
             return Err(FeedFailure::Transient("E_COMMIT_PENDING".into()));

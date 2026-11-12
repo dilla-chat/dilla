@@ -325,3 +325,46 @@ async fn a_lost_leaf_is_resynced_and_the_feed_read_again() {
     assert!(!s.messages.unavailable.contains_key(&channel));
     drop(_b);
 }
+
+/// Review fix (round 3, Jonas 2026-11-13: history stays hidden until the removals are read, stricter than the web): Bob's
+/// group is waiting for a resync (state 3) when he comes back, and its store still holds the message removed while he
+/// was away. No snapshot shows a timeline for the channel (nor the plaintext) until the group is active again and its
+/// feed is read; then the first timeline shows the tombstone. Meanwhile the channel shows the group's own state.
+#[cfg(feature = "testing")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn a_resyncing_group_stays_hidden_until_its_feed_is_read() {
+    let (_host, bob, channel, seq) = removed_while_bob_is_away("rm-resync").await;
+    let group = bob_group(&bob, channel);
+    {
+        // The group as a lost leaf leaves it: waiting for a resync.
+        let conn = dilla_client::store::open_connection(&bob.cfg, bob.kc.as_ref()).unwrap();
+        let conn = conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "UPDATE app_groups SET state=3 WHERE group_id=?1",
+                [group.as_slice()],
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+    let (_b, mut snapshots) = start_observed(&bob).await;
+    let mut seen = 0;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+    loop {
+        let s = tokio::time::timeout_at(deadline, snapshots.recv())
+            .await
+            .unwrap_or_else(|_| panic!("no tombstone after {seen} snapshots"))
+            .unwrap();
+        seen += 1;
+        body_nowhere(&s);
+        if let Some(t) = s.timelines.get(&channel) {
+            assert!(
+                tombstoned(&s, channel, seq),
+                "the first timeline shown is after the feed read: {t:#?}"
+            );
+            break;
+        }
+    }
+    assert!(seen >= 2, "{seen} snapshots");
+}

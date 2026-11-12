@@ -49,15 +49,43 @@ pub enum FeedFailure {
     Terminal(TimelineUnavailable),
 }
 
+/// The status-0 (local, no answer from the instance) codes a feed read can fail with, sorted. Every code the client
+/// raises with status 0 is listed in one of the two (`local_codes_are_all_sorted` holds the source to this), so a new
+/// transport code cannot default to terminal unnoticed:
+/// - transient: the transport (`E_NETWORK`, `E_OUTCOME_UNKNOWN`), a device-list read racing a list change
+///   (`E_DEVICE_LIST_STALE`), a feed still ahead after the page budget (`E_REMOVAL_SYNC_LIMIT`), the engine stopping, a
+///   group that cannot be read yet (`E_GROUP_NOT_ACTIVE`, `E_COMMIT_PENDING`), a read that panicked (`E_PANICKED`);
+/// - terminal: an answer that does not decode or is too large (`E_DECODE`, `E_BODY_TOO_LARGE`), a feed that does not
+///   hold together (`E_REMOVAL_FEED`), a request the client cannot write (`E_ROUTE`, `E_IDEMPOTENCY_REQUIRED`,
+///   `E_FRAME_LIMIT`), a resync the instance refused (`E_NOT_MEMBER`), and the other status-0 codes of the client
+///   (none of them can reach a feed read today).
+pub const TRANSIENT_LOCAL: &[&str] = &[
+    "E_NETWORK",
+    "E_OUTCOME_UNKNOWN",
+    "E_DEVICE_LIST_STALE",
+    "E_REMOVAL_SYNC_LIMIT",
+    "E_SYNC_STOPPED",
+    "E_GROUP_NOT_ACTIVE",
+    "E_COMMIT_PENDING",
+    "E_PANICKED",
+];
+/// The terminal status-0 codes ([`TRANSIENT_LOCAL`]).
+pub const TERMINAL_LOCAL: &[&str] = &[
+    "E_DECODE",
+    "E_BODY_TOO_LARGE",
+    "E_REMOVAL_FEED",
+    "E_ROUTE",
+    "E_IDEMPOTENCY_REQUIRED",
+    "E_FRAME_LIMIT",
+    "E_RANDOM",
+    "E_CORE_POISONED",
+    "E_SYNC_HEAL_MISMATCH",
+    "E_SYNC_HEAL_GENERATION",
+    "E_NOT_MEMBER",
+];
+
 /// Sorts a feed read's error ([`FeedFailure`]).
 pub fn classify(e: &SyncError) -> FeedFailure {
-    const TRANSIENT_LOCAL: &[&str] = &[
-        "E_NETWORK",
-        "E_OUTCOME_UNKNOWN",
-        "E_DEVICE_LIST_STALE",
-        "E_REMOVAL_SYNC_LIMIT",
-        "E_SYNC_STOPPED",
-    ];
     match e {
         SyncError::Stopped => FeedFailure::Transient("E_SYNC_STOPPED".into()),
         SyncError::Api(a) if a.status == 0 && TRANSIENT_LOCAL.contains(&a.code.as_str()) => {
@@ -414,6 +442,60 @@ mod tests {
                 code: "E_CORE_INPUT".into()
             })
         );
+    }
+
+    /// Review fix (round 3): every status-0 code the client raises (`ApiError::local(0, ...)` anywhere in `src/`) is
+    /// sorted, so a new transport code cannot fall to terminal by default; each sorted code classifies as listed.
+    #[test]
+    fn local_codes_are_all_sorted() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        let mut found = std::collections::BTreeSet::new();
+        for f in files {
+            let text = std::fs::read_to_string(&f).unwrap();
+            for (i, _) in text.match_indices("ApiError::local(") {
+                let rest = text[i + "ApiError::local(".len()..].trim_start();
+                let Some(rest) = rest.strip_prefix('0') else {
+                    continue;
+                };
+                let rest = rest.trim_start().trim_start_matches(',').trim_start();
+                if let Some(code) = rest.strip_prefix('"').and_then(|r| r.split('"').next()) {
+                    found.insert(code.to_owned());
+                }
+            }
+        }
+        assert!(found.contains("E_NETWORK"), "the scan found {found:?}");
+        let unsorted: Vec<_> = found
+            .iter()
+            .filter(|c| {
+                !TRANSIENT_LOCAL.contains(&c.as_str()) && !TERMINAL_LOCAL.contains(&c.as_str())
+            })
+            .collect();
+        assert!(
+            unsorted.is_empty(),
+            "sort these status-0 codes in classify: {unsorted:?}"
+        );
+        for code in TRANSIENT_LOCAL {
+            let e = SyncError::Api(ApiError::local(0, code, ""));
+            assert!(matches!(classify(&e), FeedFailure::Transient(_)), "{code}");
+        }
+        for code in TERMINAL_LOCAL {
+            let e = SyncError::Api(ApiError::local(0, code, ""));
+            assert!(matches!(classify(&e), FeedFailure::Terminal(_)), "{code}");
+        }
     }
 
     #[test]
