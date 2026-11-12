@@ -76,6 +76,7 @@ fn http_error(e: &HttpError) -> SignInError {
         HttpError::Status { status: s, .. } => SignInError::Other(format!("HTTP {s}")),
         HttpError::Transport(t) => SignInError::Network(t.clone()),
         HttpError::Decode(d) => SignInError::Other(format!("decode: {d}")),
+        HttpError::Unanswered { code, detail } => SignInError::Network(format!("{code}: {detail}")),
     }
 }
 

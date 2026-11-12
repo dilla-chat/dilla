@@ -234,6 +234,11 @@ struct FakeRoutes {
     commit: Mutex<VecDeque<Result<u64, RouteError>>>,
     /// GroupInfo answers in order; then `info`.
     infos: Mutex<VecDeque<Vec<u8>>>,
+    /// Once `resync` is spent: every later resync is this refusal (none: accepted).
+    resync_always: Mutex<Option<RouteError>>,
+    proposal: Mutex<VecDeque<Result<u64, RouteError>>>,
+    /// Set while the start is in flight: a leave that lands during it.
+    cancel_on_start: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     alone: bool,
 }
 
@@ -291,7 +296,14 @@ impl CallRoutes for FakeRoutes {
     }
     async fn post_resync(&self, _g: &[u8; 16], _b: Vec<u8>) -> Result<u64, RouteError> {
         self.log("post_resync".into());
-        self.resync.lock().unwrap().pop_front().unwrap_or(Ok(9))
+        let queued = self.resync.lock().unwrap().pop_front();
+        queued.unwrap_or_else(|| {
+            self.resync_always
+                .lock()
+                .unwrap()
+                .clone()
+                .map_or(Ok(9), Err)
+        })
     }
     async fn post_commit(&self, _g: &[u8; 16], _b: Vec<u8>) -> Result<u64, RouteError> {
         self.log("post_commit".into());
@@ -299,10 +311,13 @@ impl CallRoutes for FakeRoutes {
     }
     async fn post_proposal(&self, _g: &[u8; 16], b: Vec<u8>) -> Result<u64, RouteError> {
         self.log(format!("post_proposal {}", String::from_utf8_lossy(&b)));
-        Ok(11)
+        self.proposal.lock().unwrap().pop_front().unwrap_or(Ok(11))
     }
     async fn start_call(&self, _c: &[u8; 16], _v: &str) -> Result<CallStarted, RouteError> {
         self.log("start".into());
+        if let Some(c) = &self.cancel_on_start {
+            c.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         self.start
             .lock()
             .unwrap()
@@ -322,7 +337,7 @@ impl CallRoutes for FakeRoutes {
 struct Hooks {
     refreshed: Mutex<u32>,
     phases: Mutex<Vec<CallPhase>>,
-    cancel: std::sync::atomic::AtomicBool,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[async_trait::async_trait]
@@ -345,7 +360,7 @@ fn hooks() -> Hooks {
     Hooks {
         refreshed: Mutex::new(0),
         phases: Mutex::new(Vec::new()),
-        cancel: std::sync::atomic::AtomicBool::new(false),
+        cancel: std::sync::Arc::default(),
     }
 }
 
@@ -541,6 +556,43 @@ async fn a_rotation_is_confirmed_when_posted_and_aborted_when_refused() {
     );
 }
 
+fn outcome_unknown() -> RouteError {
+    RouteError {
+        status: None,
+        code: Some("E_OUTCOME_UNKNOWN".into()),
+        detail: "the request was written and its answer was lost".into(),
+    }
+}
+
+/// A commit or proposal whose answer was lost after it was written (E_OUTCOME_UNKNOWN) may have been applied: the
+/// rotation keeps its pending commit (the engine adopts it when it arrives) instead of aborting it, and the leave
+/// forgets the group as always, aborting nothing.
+#[tokio::test]
+async fn an_outcome_unknown_never_aborts_a_pending_commit() {
+    let core = Mutex::new(FakeCore::default());
+    let routes = FakeRoutes::default();
+    routes
+        .commit
+        .lock()
+        .unwrap()
+        .push_back(Err(outcome_unknown()));
+    let e = rotate_call(&core, &routes, &GROUP).await.unwrap_err();
+    assert!(e.to_string().contains("E_OUTCOME_UNKNOWN"), "{e}");
+    assert_eq!(core.lock().unwrap().log, ["rotate 44"]);
+
+    routes
+        .proposal
+        .lock()
+        .unwrap()
+        .push_back(Err(outcome_unknown()));
+    let left = leave_call(&core, &routes, &GROUP, &CHANNEL, false).await;
+    assert!(!left.proposed && !left.ended);
+    assert_eq!(
+        core.lock().unwrap().log,
+        ["rotate 44", "leave_proposal 44", "forget 44"]
+    );
+}
+
 #[test]
 fn the_media_epoch_decodes_into_a_zeroizing_key_and_refuses_trailing_bytes() {
     let core = Mutex::new(FakeCore::default());
@@ -612,7 +664,86 @@ fn the_rejoin_wait_is_bounded_as_join_ts_bounds_it() {
     assert_eq!(REJOIN_WAIT, std::time::Duration::from_millis(30_000));
 }
 
-#[tokio::test]
+/// The wait is bounded: a Remove nobody ever commits (every resync refused, the GroupInfo never moving) fails the join
+/// with that refusal REJOIN_WAIT after the first one, within one step of it.
+#[tokio::test(start_paused = true)]
+async fn a_rejoin_whose_remove_is_never_committed_gives_up_after_rejoin_wait() {
+    let core = Mutex::new(gated(vec![], vec![]));
+    let routes = FakeRoutes::default();
+    *routes.resync_always.lock().unwrap() = Some(err(409, "E_REMOVE_PENDING"));
+    let h = hooks();
+    let began = tokio::time::Instant::now();
+    // On the paused clock a wait with no bound would spin forever: two bounds' worth is a failure.
+    let refused = tokio::time::timeout(2 * REJOIN_WAIT, join_call(&core, &routes, &h, &target()))
+        .await
+        .expect("the wait ends REJOIN_WAIT after the first refusal")
+        .unwrap_err();
+    let waited = began.elapsed();
+    assert_eq!(refused.code, "E_REMOVE_PENDING");
+    assert_eq!(refused.leave, None);
+    assert!(
+        waited >= REJOIN_WAIT && waited < REJOIN_WAIT + REJOIN_STEP,
+        "{waited:?}"
+    );
+    assert_eq!(
+        *h.phases.lock().unwrap(),
+        [
+            CallPhase::Joining,
+            CallPhase::WaitingForRemove,
+            CallPhase::Idle
+        ]
+    );
+    assert!(!routes.posted().contains(&"start".to_owned()));
+}
+
+/// The bound runs from the first refusal: a GroupInfo that moves (a commit, not the Remove) and a resync refused
+/// again do not restart it.
+#[tokio::test(start_paused = true)]
+async fn the_rejoin_wait_ends_rejoin_wait_after_the_first_refusal_even_when_the_group_moves() {
+    let core = Mutex::new(gated(vec![], vec![]));
+    let routes = FakeRoutes::default();
+    *routes.resync_always.lock().unwrap() = Some(err(409, "E_REMOVE_PENDING"));
+    // The join reads "info"; step 1 sees it unchanged, step 2 sees it moved; the second join reads "moved" and is
+    // refused again; from then on it never moves.
+    routes
+        .infos
+        .lock()
+        .unwrap()
+        .extend([b"info".to_vec(), b"info".to_vec(), b"moved".to_vec()]);
+    let h = hooks();
+    let began = tokio::time::Instant::now();
+    // On the paused clock a wait with no bound would spin forever: two bounds' worth is a failure.
+    let refused = tokio::time::timeout(2 * REJOIN_WAIT, join_call(&core, &routes, &h, &target()))
+        .await
+        .expect("the wait ends REJOIN_WAIT after the first refusal")
+        .unwrap_err();
+    let waited = began.elapsed();
+    assert_eq!(refused.code, "E_REMOVE_PENDING");
+    assert!(
+        waited >= REJOIN_WAIT && waited < REJOIN_WAIT + REJOIN_STEP,
+        "{waited:?}"
+    );
+    assert_eq!(
+        routes
+            .posted()
+            .iter()
+            .filter(|p| *p == "post_resync")
+            .count(),
+        2,
+        "the moved group was tried once more: {:?}",
+        routes.posted()
+    );
+    assert_eq!(
+        *h.phases.lock().unwrap(),
+        [
+            CallPhase::Joining,
+            CallPhase::WaitingForRemove,
+            CallPhase::Idle
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_rejoin_refused_while_its_remove_stands_waits_then_joins_the_same_group_once_it_moves() {
     let core = Mutex::new(gated(vec![], vec![]));
     let routes = FakeRoutes::default();
@@ -630,7 +761,7 @@ async fn a_rejoin_refused_while_its_remove_stands_waits_then_joins_the_same_grou
         b"moved".to_vec(),
     ]);
     let h = hooks();
-    let began = std::time::Instant::now();
+    let began = tokio::time::Instant::now();
     let joined = join_call(&core, &routes, &h, &target()).await.unwrap();
     assert_eq!(joined.group_id, GROUP, "the same call group");
     assert!(began.elapsed() >= 2 * REJOIN_STEP, "{:?}", began.elapsed());
@@ -671,7 +802,7 @@ async fn a_rejoin_refused_while_its_remove_stands_waits_then_joins_the_same_grou
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_rejoin_whose_call_closed_while_it_waited_registers_a_fresh_group() {
     let core = Mutex::new(gated(vec![], vec![]));
     let routes = FakeRoutes::default();
@@ -709,7 +840,7 @@ async fn a_rejoin_whose_call_closed_while_it_waited_registers_a_fresh_group() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn only_409_e_remove_pending_waits_every_other_refusal_fails_at_once() {
     for (status, code) in [
         (403, "E_REMOVE_PENDING"),
@@ -725,7 +856,7 @@ async fn only_409_e_remove_pending_waits_every_other_refusal_fails_at_once() {
             .unwrap()
             .push_back(Err(err(status, code)));
         let h = hooks();
-        let began = std::time::Instant::now();
+        let began = tokio::time::Instant::now();
         let refused = join_call(&core, &routes, &h, &target()).await.unwrap_err();
         assert_eq!(refused.code, code);
         assert!(began.elapsed() < REJOIN_STEP, "{status} {code} waited");
@@ -738,7 +869,7 @@ async fn only_409_e_remove_pending_waits_every_other_refusal_fails_at_once() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_leave_during_the_rejoin_wait_ends_it_with_the_refusal_and_posts_nothing_more() {
     let core = Mutex::new(gated(vec![], vec![]));
     let routes = std::sync::Arc::new(FakeRoutes::default());
@@ -972,7 +1103,7 @@ async fn rejoin_waits_for_pending_remove() {
         .expect("alice joins");
     assert_eq!(hex(&joined.group_id), group_hex);
     let mut media = MediaPeer::start(
-        &host.media_url(&joined.started.livekit_url),
+        &host.rtc_url(&joined.started.livekit_url),
         &joined.started.token,
         440,
     );
@@ -1029,7 +1160,7 @@ async fn rejoin_waits_for_pending_remove() {
     let rejoin = calls.join(target.clone());
     let mut phase = rejoin.phase();
     tokio::time::timeout(
-        Duration::from_secs(20),
+        Duration::from_secs(5),
         phase.wait_for(|p| *p == CallPhase::WaitingForRemove),
     )
     .await
@@ -1089,4 +1220,43 @@ async fn rejoin_waits_for_pending_remove() {
     assert_eq!(members["devices"], json!(expected));
     drop(client);
     drop(host);
+}
+
+/// A leave that lands while the call's start is in flight: the start succeeded, so the device is admitted; the join
+/// leaves at once (its self-Remove and the forget) and ends cancelled, never handing out the call.
+#[tokio::test]
+async fn a_leave_during_the_start_leaves_the_started_call_and_ends_cancelled() {
+    let core = Mutex::new(gated(vec![], vec![]));
+    let h = hooks();
+    let routes = FakeRoutes {
+        cancel_on_start: Some(h.cancel.clone()),
+        ..FakeRoutes::default()
+    };
+    let refused = join_call(&core, &routes, &h, &target()).await.unwrap_err();
+    assert_eq!(refused.code, "E_NO_CALL");
+    assert_eq!(refused.leave, None, "already left");
+    assert_eq!(
+        routes.posted(),
+        [
+            "get_call",
+            "get_info",
+            "get_tree",
+            "post_resync",
+            "start",
+            "post_proposal remove"
+        ]
+    );
+    assert_eq!(
+        core.lock().unwrap().inner.log,
+        [
+            "join_external 44 info",
+            "joined 44 9",
+            "leave_proposal 44",
+            "forget 44"
+        ]
+    );
+    assert_eq!(
+        *h.phases.lock().unwrap(),
+        [CallPhase::Joining, CallPhase::Idle]
+    );
 }

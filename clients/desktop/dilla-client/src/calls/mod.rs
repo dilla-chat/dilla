@@ -116,6 +116,11 @@ impl From<HttpError> for RouteError {
                 code: Some("E_CBOR_SHAPE".into()),
                 detail: d,
             },
+            HttpError::Unanswered { code, detail } => Self {
+                status: None,
+                code: Some(code),
+                detail,
+            },
         }
     }
 }

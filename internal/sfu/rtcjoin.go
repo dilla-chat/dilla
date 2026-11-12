@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 
 	"github.com/livekit/livekit-server/pkg/service"
@@ -24,15 +25,28 @@ var ErrBadJoinRequest = errors.New("sfu: malformed join_request")
 // (branch review SFU-1).
 var ErrClientProtocol = errors.New("sfu: client protocol not supported")
 
-// ClientProtocol is the one LiveKit signalling protocol dilla's clients speak: livekit-client 2.22.3
-// sends protocolVersion = 17 (src/version.ts:4, as `protocol` on the v0 query, SignalClient.ts:1375,
-// and as client_info.protocol in the v1 join_request, room/utils.ts:483), and server-sdk-go
-// v2.18.2-0.20260922130803-2088dabd3442 sends PROTOCOL = 17 (protocolversion.go:17, signalling.go:58
-// and signallingjoinrequest.go:63). It equals livekit-server v1.13.7's types.CurrentProtocol. A
-// client upgrade that raises it is refused at /rtc until this constant follows;
-// TestTheGoSDKSpeaksTheAdmittedProtocol fails first for the Go SDK, and
+// ClientProtocol is the LiveKit signalling protocol the web client and the Go SDK speak:
+// livekit-client 2.22.3 (pinned in packages/media/package.json) sends protocolVersion = 17
+// (src/version.ts:4, as `protocol` on the v0 query, SignalClient.ts:1375, and as
+// client_info.protocol in the v1 join_request, room/utils.ts:483), and server-sdk-go
+// v2.18.2-0.20260922130803-2088dabd3442 (go.mod) sends PROTOCOL = 17 (protocolversion.go:17,
+// signalling.go:58 and signallingjoinrequest.go:63). It equals livekit-server v1.13.7's
+// types.CurrentProtocol. TestTheGoSDKSpeaksTheAdmittedProtocol fails first for the Go SDK, and
 // packages/media/test/protocol-version.test.ts for livekit-client: move them together.
 const ClientProtocol = 17
+
+// RustClientProtocol is the signalling protocol the GPUI desktop speaks: its `livekit =0.10.1` crate
+// (pinned in clients/desktop/dilla-media/Cargo.toml) connects through livekit-signaling 0.1.9, whose
+// PROTOCOL_VERSION = 18 (src/lib.rs:63) is sent as `protocol` on the v0 query and as
+// client_info.protocol; Room::connect does not let the caller lower it. dilla-media's
+// tests/protocol.rs fails if that constant moves: move it, this constant and the test together.
+const RustClientProtocol = 18
+
+// ClientProtocols is every signalling protocol the /rtc gate admits: the short, closed list of what
+// dilla's clients send, so LiveKit's protocol-labelled session histograms keep a bounded label set
+// (branch review SFU-1). A client upgrade that raises its protocol is refused at /rtc until this
+// list follows.
+var ClientProtocols = [...]int32{ClientProtocol, RustClientProtocol}
 
 // Join is what the /rtc gate reads from a signalling request's query before it reaches LiveKit.
 type Join struct {
@@ -106,11 +120,12 @@ func JoinIsResume(q url.Values) (bool, error) {
 	return j.Resume, err
 }
 
-// CheckClient refuses a join whose protocol is not ClientProtocol, or whose v1 SDK is not one
-// LiveKit's own enum names. Every value LiveKit then labels a metric with is from a closed set.
+// CheckClient refuses a join whose protocol is not one of ClientProtocols, or whose v1 SDK is not one
+// LiveKit's own enum names (the desktop's RUST among them). Every value LiveKit then labels a metric
+// with is from a closed set.
 func (j Join) CheckClient() error {
-	if j.Protocol != ClientProtocol {
-		return fmt.Errorf("%w: protocol must be %d", ErrClientProtocol, ClientProtocol)
+	if !slices.Contains(ClientProtocols[:], j.Protocol) {
+		return fmt.Errorf("%w: protocol must be one of %v", ErrClientProtocol, ClientProtocols)
 	}
 	if _, ok := livekit.ClientInfo_SDK_name[int32(j.SDK)]; !ok {
 		return fmt.Errorf("%w: unknown sdk %d", ErrClientProtocol, int32(j.SDK))

@@ -23,7 +23,7 @@ use routes::{Answer, BodyEncoding, Entry, Transport};
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The bound on a success body for a route client.ts gives no `maxBodyBytes` (a blob or a GIF, at most 25 MiB, or a
 /// caller-chosen bound): the TypeScript client reads those unbounded, this one never reads more than this.
-const BODY_CEILING: u64 = 32 * 1024 * 1024;
+pub(crate) const BODY_CEILING: u64 = 32 * 1024 * 1024;
 /// A backup is capped but sits on the sign-up, sign-in and revoke paths: a longer bound than the default.
 const BACKUP_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -318,21 +318,9 @@ pub const ERROR_BODY_CAP: u64 = 64 * 1024;
 /// `[code, detail, delay|null, ...extra]` with `code` matching `^E_[A-Z0-9_]{1,64}$`, `detail` a text and `delay` an
 /// integer or null. Any other body (not CBOR, not such an array, an empty one) has no code (`E_HTTP` in errors.ts).
 pub fn error_code(body: &[u8]) -> Option<String> {
-    use crate::gateway::frames::Value as V;
-    let Ok(V::Array(a)) = V::decode(body) else {
-        return None;
-    };
-    if a.len() < 3 || a[1].as_text().is_none() || !matches!(a[2], V::Uint(_) | V::Null) {
-        return None;
-    }
-    let code = a[0].as_text()?;
-    let ok = code.len() > 2
-        && code.len() <= 66
-        && code.starts_with("E_")
-        && code[2..]
-            .bytes()
-            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
-    ok.then(|| code.to_owned())
+    // One decoder: the socket transport's (`ApiError::from_body`), whose fallback code is E_HTTP.
+    let e = crate::sync::api::ApiError::from_body(0, body);
+    (e.code != "E_HTTP").then_some(e.code)
 }
 
 /// `R`'s answer from an accepted `status` and its `body`, read as the route's table row says.

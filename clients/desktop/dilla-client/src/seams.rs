@@ -40,6 +40,11 @@ pub enum HttpError {
     Transport(String),
     #[error("undecodable response: {0}")]
     Decode(String),
+    /// No answer, with the client's own `E_*` code for why (client.ts's status-0 errors): `E_NETWORK` (the request
+    /// never reached the instance) or `E_OUTCOME_UNKNOWN` (a written mutation whose answer was lost: it may have
+    /// been applied, so a caller must not undo what it staged for it).
+    #[error("no answer ({code}): {detail}")]
+    Unanswered { code: String, detail: String },
 }
 
 impl HttpError {

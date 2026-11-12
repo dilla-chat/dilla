@@ -96,11 +96,20 @@ pub struct CallTarget {
     pub vdec: String,
 }
 
-/// A join in progress: its phase as it moves ([`CallPhase`]), a cancel, and its outcome.
+/// A join in progress: its phase as it moves ([`CallPhase`]), a cancel, and its outcome. Dropping it before
+/// [`CallJoin::outcome`] cancels the join: nobody is left to take the call it would start.
 pub struct CallJoin {
     phase: watch::Receiver<CallPhase>,
     cancel: Arc<AtomicBool>,
-    outcome: oneshot::Receiver<Result<Result<Joined, JoinRefused>, ClientError>>,
+    outcome: Option<oneshot::Receiver<Result<Result<Joined, JoinRefused>, ClientError>>>,
+}
+
+impl Drop for CallJoin {
+    fn drop(&mut self) {
+        if self.outcome.is_some() {
+            self.cancel.store(true, Ordering::Release);
+        }
+    }
 }
 
 impl CallJoin {
@@ -116,8 +125,11 @@ impl CallJoin {
     }
 
     /// The join's outcome. A client that stopped meanwhile is the outer error.
-    pub async fn outcome(self) -> Result<Result<Joined, JoinRefused>, ClientError> {
-        self.outcome.await.unwrap_or(Err(ClientError::Stopped))
+    pub async fn outcome(mut self) -> Result<Result<Joined, JoinRefused>, ClientError> {
+        let Some(outcome) = self.outcome.take() else {
+            return Err(ClientError::Stopped);
+        };
+        outcome.await.unwrap_or(Err(ClientError::Stopped))
     }
 }
 
@@ -177,12 +189,21 @@ impl<H: Http + 'static> Calls<H> {
         let routes = self.routes.clone();
         let outcome = self.inner.spawn(async move {
             let core = engine.core().clone();
-            Ok(join_call(&*core, &*routes, &hooks, &target).await)
+            let joined = join_call(&*core, &*routes, &hooks, &target).await;
+            // A cancelled join (a leave, or the CallJoin dropped) that already holds a leaf of a group: nobody will
+            // take this refusal and leave it, so its self-Remove and the forget happen here.
+            if let Err(r) = &joined
+                && let Some(group) = r.leave
+                && hooks.cancel.load(Ordering::Acquire)
+            {
+                leave_call(&*core, &*routes, &group, &[0; 16], false).await;
+            }
+            Ok(joined)
         });
         CallJoin {
             phase,
             cancel,
-            outcome,
+            outcome: Some(outcome),
         }
     }
 
@@ -224,5 +245,42 @@ impl<H: Http + 'static> Calls<H> {
         let routes = self.routes.clone();
         self.inner
             .spawn(async move { Ok(decline_ring(&*routes, &call, ring_ts).await) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Outcome = oneshot::Sender<Result<Result<Joined, JoinRefused>, ClientError>>;
+
+    fn join() -> (CallJoin, Arc<AtomicBool>, Outcome) {
+        let (_phase_tx, phase) = watch::channel(CallPhase::Joining);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = oneshot::channel();
+        (
+            CallJoin {
+                phase,
+                cancel: cancel.clone(),
+                outcome: Some(rx),
+            },
+            cancel,
+            tx,
+        )
+    }
+
+    #[test]
+    fn dropping_a_join_cancels_it() {
+        let (j, cancel, _tx) = join();
+        drop(j);
+        assert!(cancel.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn a_join_whose_outcome_was_taken_is_not_cancelled_by_its_drop() {
+        let (j, cancel, tx) = join();
+        let _ = tx.send(Err(ClientError::Stopped));
+        assert!(j.outcome().await.is_err());
+        assert!(!cancel.load(Ordering::Acquire));
     }
 }

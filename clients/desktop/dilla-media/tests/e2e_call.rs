@@ -72,7 +72,7 @@ async fn desktop_call_through_dillad() {
     assert_eq!(*a_phase.borrow(), CallPhase::In);
     assert!(a_in.started.created);
     let group = a_in.group_id;
-    let a_url = host.media_url(&a_in.started.livekit_url);
+    let a_url = host.rtc_url(&a_in.started.livekit_url);
     let a_token = a_in.started.token.to_string();
     let a_first = a_in.media;
     let mut a_media = tokio::task::spawn_blocking(move || {
@@ -106,7 +106,7 @@ async fn desktop_call_through_dillad() {
     assert_eq!(*a_now.base_key, *b_in.media.base_key, "one epoch, one key");
     assert_eq!(a_now.code, b_in.media.code, "one safety code");
 
-    let b_url = host.media_url(&b_in.started.livekit_url);
+    let b_url = host.rtc_url(&b_in.started.livekit_url);
     let b_token = b_in.started.token.to_string();
     let b_first = b_in.media;
     let (a_media, b_media) = tokio::task::spawn_blocking(move || {

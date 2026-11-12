@@ -219,8 +219,7 @@ impl Call {
                 let Some(media) = media.upgrade() else {
                     return false;
                 };
-                let base_key = Zeroizing::new(base_key);
-                match media.install_epoch(epoch, &base_key, &roster, own_leaf) {
+                match media.install_epoch(epoch, base_key, &roster, own_leaf) {
                     Ok(()) => {
                         let _ = epoch_tx.send(Some(epoch));
                         true

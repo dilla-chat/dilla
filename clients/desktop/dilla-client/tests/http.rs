@@ -358,8 +358,31 @@ async fn http_error_carries_e_code() {
     );
     served.join().expect("mock");
 
-    // A refusal body over client.ts's ERROR_BODY_CAP is not read for a code.
+    // A refusal body over client.ts's ERROR_BODY_CAP is not read for a code; one of exactly the cap is.
     assert_eq!(dilla_client::http::ERROR_BODY_CAP, 64 * 1024);
+    for (total, expect) in [(64 * 1024 + 1, None), (64 * 1024, Some("E_PERM"))] {
+        // [code, detail, null]: 1 + 7 + (3 + len) + 1 bytes.
+        let body = cbor_error("E_PERM", &"x".repeat(total - 12), None);
+        assert_eq!(body.len(), total);
+        let mut response = format!(
+            "HTTP/1.1 403 Forbidden\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(&body);
+        let (url, served) = mock(Box::leak(response.into_boxed_slice()));
+        let err = http_at(&url, "tok")
+            .call::<GetAccountMe>(&[], NoBody)
+            .await
+            .expect_err("403");
+        match err {
+            HttpError::Status { status: 403, code } => {
+                assert_eq!(code.as_deref(), expect, "a {total}-byte refusal");
+            }
+            other => panic!("{other:?}"),
+        }
+        let _ = served.join();
+    }
 }
 
 /// http/errors.test.ts `decodeErrorBody`, for the code the client keeps.

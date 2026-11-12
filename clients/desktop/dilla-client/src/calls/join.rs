@@ -261,6 +261,18 @@ async fn join_loop<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
             return Err(stopped(Some(group)));
         }
         match routes.start_call(&target.channel, &target.vdec).await {
+            // A leave (or a dropped join) that arrived while the start was in flight: the call has
+            // started with this device admitted, so it leaves at once (its self-Remove, ending the
+            // call when alone, and the forget) and the join ends as cancelled. join.ts returns the
+            // join here and leaves it to the controller's later leave; this never hands out a call
+            // nobody wants.
+            Ok(started) if hooks.cancelled() => {
+                let alone =
+                    created || (media.roster.len() == 1 && media.roster[0].0 == media.own_leaf);
+                drop(media);
+                super::leave_call(core, routes, &group, &started.call_id, alone).await;
+                return Err(stopped(None));
+            }
             Ok(started) => {
                 return Ok(Joined {
                     group_id: group,

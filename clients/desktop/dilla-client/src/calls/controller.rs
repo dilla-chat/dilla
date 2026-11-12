@@ -81,6 +81,10 @@ pub async fn rotate_call<C: CallCore, R: CallRoutes + ?Sized>(
             lock(core)?.commit_confirm(group)?;
             Ok(seq)
         }
+        // The answer was lost after the commit was written: the instance may have applied it, so the pending
+        // commit is kept (the engine adopts it as this device's own when it arrives; aborting would make it a
+        // stranger's and lose the call group). controller.ts aborts on any failure; this keeps the safe side.
+        Err(e) if e.code.as_deref() == Some("E_OUTCOME_UNKNOWN") => Err(e.into()),
         Err(e) => {
             let _ = lock(core).map(|mut c| c.commit_abort(group));
             Err(e.into())

@@ -162,7 +162,8 @@ pub fn start_host(tag: &str) -> Host {
 }
 
 impl Host {
-    /// The LiveKit URL a call start answered, reached on loopback: dillad hands the instance domain's `wss://` URL,
+    /// The LiveKit URL a call start answered, reached on loopback through dillad's own `/rtc` gate (its protocol,
+    /// token, leaf and grant checks): dillad hands the instance domain's `wss://` URL,
     /// whose `/rtc` gate this host serves on its own listener, and that name resolves to nothing here. dilla-testhost
     /// itself hands a browser `ws://<listen>` for the same reason (its `LiveKitURL` with a web root); the path is kept.
     pub fn rtc_url(&self, answered: &str) -> String {
@@ -174,31 +175,6 @@ impl Host {
             .map_or(self.public.as_str(), |(_, r)| r)
             .trim_end_matches('/');
         format!("ws://{authority}{path}")
-    }
-
-    /// Where the desktop's media connects with the token dillad minted at the call's start.
-    ///
-    /// Not dillad's `/rtc` gate ([`Host::rtc_url`]): the gate admits only LiveKit signalling protocol 17
-    /// (internal/sfu/rtcjoin.go `ClientProtocol`, what livekit-client 2.22.3 and the Go SDK send), and the pinned
-    /// `livekit =0.10.1` crate sends 18 (livekit-signaling 0.1.9 `PROTOCOL_VERSION`; `Room::connect` does not expose
-    /// `SignalOptions::protocol_version`), so the gate refuses it with 400 E_INVALID_REQUEST. Until that is decided
-    /// (screens wave 1 Task 3 report), the media goes to this host's SFU directly (`GET /debug/sfu`), as
-    /// dilla-media's tests/live.rs does; the token, its room and its identity are still dillad's.
-    pub fn media_url(&self, _answered: &str) -> String {
-        let addr = self.control.trim_start_matches("http://");
-        let mut s = TcpStream::connect(addr).unwrap();
-        write!(
-            s,
-            "GET /debug/sfu HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
-        )
-        .unwrap();
-        let mut answer = String::new();
-        s.read_to_string(&mut answer).unwrap();
-        let (head, body) = answer.split_once("\r\n\r\n").expect("an HTTP answer");
-        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
-        let (start, end) = (body.find('{').unwrap(), body.rfind('}').unwrap());
-        let v: Value = serde_json::from_str(&body[start..=end]).unwrap();
-        v["url"].as_str().expect("the SFU's url").to_owned()
     }
 }
 

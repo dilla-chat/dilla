@@ -18,7 +18,7 @@ use tokio::time::Instant;
 use crate::gateway::WsGateway;
 use crate::gateway::frames::{self, MAX_REQUEST_BODY, RequestFrame};
 use crate::http::routes::{self, Transport};
-use crate::http::{answer_of, body_of, error_code, fill_path};
+use crate::http::{BODY_CEILING, answer_of, body_of, error_code, fill_path};
 use crate::seams::{GatewayError, Http, HttpError, Route};
 
 use super::api::ApiError;
@@ -88,7 +88,7 @@ impl Pending {
 
 #[derive(Default)]
 struct Inner {
-    gateway: Option<Arc<WsGateway>>,
+    gateway: Option<Arc<dyn RequestSink>>,
     up: bool,
     queue: Vec<Pending>,
     in_flight: HashMap<u64, Pending>,
@@ -101,6 +101,18 @@ struct Inner {
     incarnation: Option<String>,
     stopped_with: Option<ApiError>,
     closed: bool,
+}
+
+/// Where request frames are written: the gateway's socket ([`WsGateway::send_now`]), or a test's script.
+pub trait RequestSink: Send + Sync {
+    /// Queues one frame for the socket now, or says why not (as `WsGateway::send_now` does).
+    fn send_now(&self, frame: Vec<u8>) -> Result<(), GatewayError>;
+}
+
+impl RequestSink for WsGateway {
+    fn send_now(&self, frame: Vec<u8>) -> Result<(), GatewayError> {
+        WsGateway::send_now(self, frame)
+    }
 }
 
 /// The socket request transport of one client. The gateway it writes to is swapped by the sync engine
@@ -132,8 +144,13 @@ impl SocketRequests {
 
     /// The gateway requests are written to from now on (`None` while there is none).
     pub fn attach(&self, gateway: Option<Arc<WsGateway>>) {
+        self.attach_sink(gateway.map(|g| g as Arc<dyn RequestSink>));
+    }
+
+    /// [`SocketRequests::attach`] for any [`RequestSink`] (a test's scripted socket).
+    pub fn attach_sink(&self, sink: Option<Arc<dyn RequestSink>>) {
         let mut inner = lock(&self.inner);
-        inner.gateway = gateway;
+        inner.gateway = sink;
         inner.up = false;
     }
 
@@ -559,14 +576,19 @@ fn method_name(m: &http::Method) -> Option<&'static str> {
     })
 }
 
+#[cfg(test)]
+mod tests;
+
 /// `Api::socket_call`'s attempts and its longest 429 wait (client.ts `RETRY`).
 const SOCKET_HTTP_ATTEMPTS: u32 = 5;
 const SOCKET_HTTP_MAX_WAIT_MS: u64 = 60_000;
 
-fn random_idem() -> Vec<u8> {
+/// A fresh idempotency key (16 bytes from the OS CSPRNG), or `None` when the OS gives no randomness: a key is never
+/// a predictable one (all zeros would make the instance's replay record answer another request's write).
+pub(crate) fn random_idem() -> Option<Vec<u8>> {
     let mut b = vec![0u8; 16];
-    let _ = getrandom::fill(&mut b);
-    b
+    getrandom::fill(&mut b).ok()?;
+    Some(b)
 }
 
 #[async_trait::async_trait]
@@ -594,15 +616,22 @@ impl<H: Http> Http for SocketHttp<H> {
             HttpError::Transport(format!("{} is not a socket method", entry.method))
         })?;
         // One key for every attempt of this request, so a retry is answered from the instance's replay record.
-        let idem = (method != "GET").then(random_idem);
+        let idem = if method == "GET" {
+            None
+        } else {
+            Some(random_idem().ok_or_else(|| HttpError::Transport("E_RANDOM".into()))?)
+        };
         for attempt in 1..=SOCKET_HTTP_ATTEMPTS {
             let answer = self
                 .socket
                 .request(method, route.clone(), body.to_vec(), idem.clone())
                 .await
-                .map_err(|e| HttpError::Transport(format!("{}: {}", e.code, e.detail)))?;
+                .map_err(|e| HttpError::Unanswered {
+                    code: e.code,
+                    detail: e.detail,
+                })?;
             if entry.accepts(answer.status) {
-                let cap = entry.max_body.unwrap_or(u64::MAX);
+                let cap = entry.max_body.unwrap_or(BODY_CEILING);
                 if answer.body.len() as u64 > cap {
                     return Err(HttpError::Decode(format!(
                         "the response body is larger than {cap} bytes"
