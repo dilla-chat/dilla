@@ -29,13 +29,37 @@ pub trait Keychain: Send + Sync {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum HttpError {
-    #[error("the server answered with status {0}")]
-    Status(u16),
+    /// A status the route does not accept. `code` is the instance's `E_*` code from the refusal's body
+    /// (`[code, detail, delay|null, ...extra]`, internal/server/errors.go, read as http/errors.ts `decodeErrorBody`
+    /// reads it); `None` when the body is not a dilla error (errors.ts names that `E_HTTP`).
+    #[error("the server answered with status {status} ({})", code.as_deref().unwrap_or("E_HTTP"))]
+    Status { status: u16, code: Option<String> },
     #[error("transport failure: {0}")]
     Transport(String),
     #[error("undecodable response: {0}")]
     Decode(String),
+    /// No answer, with the client's own `E_*` code for why (client.ts's status-0 errors): `E_NETWORK` (the request
+    /// never reached the instance) or `E_OUTCOME_UNKNOWN` (a written mutation whose answer was lost: it may have
+    /// been applied, so a caller must not undo what it staged for it).
+    #[error("no answer ({code}): {detail}")]
+    Unanswered { code: String, detail: String },
+}
+
+impl HttpError {
+    /// `Status { status, code }`: the instance refused with `status` and the `E_*` code `code`.
+    pub fn is(&self, status: u16, code: &str) -> bool {
+        matches!(self, HttpError::Status { status: s, code: Some(c) } if *s == status && c == code)
+    }
+
+    /// The refusal's status, if this is one.
+    pub fn status(&self) -> Option<u16> {
+        match self {
+            HttpError::Status { status, .. } => Some(*status),
+            _ => None,
+        }
+    }
 }
 
 pub trait Route {

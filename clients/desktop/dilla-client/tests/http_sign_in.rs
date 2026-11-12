@@ -276,7 +276,7 @@ fn sign_in_round_trip() {
             .await
             .expect_err("a wrong password");
         assert!(
-            matches!(err, HttpError::Status(s) if (400..500).contains(&s)),
+            matches!(err, HttpError::Status { status: s, .. } if (400..500).contains(&s)),
             "{err:?}"
         );
 
@@ -367,6 +367,9 @@ fn sign_in_round_trip() {
             .call::<GetDeviceList>(&[&user_hex], NoBody)
             .await
             .expect_err("no bearer, no device list");
-        assert!(matches!(anonymous, HttpError::Status(401)), "{anonymous:?}");
+        assert!(
+            matches!(anonymous, HttpError::Status { status: 401, .. }),
+            "{anonymous:?}"
+        );
     });
 }

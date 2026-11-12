@@ -45,11 +45,11 @@ pub enum MediaEvent {
 
 /// The call group's media keys, as `ClientCore::call_media_epoch` gives them for each epoch.
 pub trait EpochKeys: Send + Sync {
-    /// Registers `f`, called with `(epoch, base_key, roster as (leaf, device_id), own_leaf)` for
+    /// Registers `f`, called with `(epoch, &base_key, roster as (leaf, device_id), own_leaf)` for
     /// the current epoch at once (when one is known) and then for every later one. The call stops
     /// publishing until the first call.
     #[allow(clippy::type_complexity)]
-    fn on_epoch(&self, f: Box<dyn Fn(u64, [u8; 16], Vec<(u16, [u8; 16])>, u16) + Send + Sync>);
+    fn on_epoch(&self, f: Box<dyn Fn(u64, &[u8; 16], Vec<(u16, [u8; 16])>, u16) + Send + Sync>);
 
     /// As [`on_epoch`](EpochKeys::on_epoch), for a registration that ends: `f` answers false once
     /// its call has ended, and an implementation that can drops it then ([`EpochFeed`] does). The
@@ -57,7 +57,7 @@ pub trait EpochKeys: Send + Sync {
     #[allow(clippy::type_complexity)]
     fn on_epoch_while(
         &self,
-        f: Box<dyn Fn(u64, [u8; 16], Vec<(u16, [u8; 16])>, u16) -> bool + Send + Sync>,
+        f: Box<dyn Fn(u64, &[u8; 16], Vec<(u16, [u8; 16])>, u16) -> bool + Send + Sync>,
     ) {
         self.on_epoch(Box::new(move |e, k, r, l| {
             f(e, k, r, l);
@@ -65,8 +65,8 @@ pub trait EpochKeys: Send + Sync {
     }
 }
 
-type EpochCallback = Box<dyn Fn(u64, [u8; 16], Vec<(u16, [u8; 16])>, u16) + Send + Sync>;
-type WhileCallback = Box<dyn Fn(u64, [u8; 16], Vec<(u16, [u8; 16])>, u16) -> bool + Send + Sync>;
+type EpochCallback = Box<dyn Fn(u64, &[u8; 16], Vec<(u16, [u8; 16])>, u16) + Send + Sync>;
+type WhileCallback = Box<dyn Fn(u64, &[u8; 16], Vec<(u16, [u8; 16])>, u16) -> bool + Send + Sync>;
 
 /// One epoch's media keys: `ClientCore::call_media_epoch` decoded (dilla-client's `calls`).
 #[derive(Clone)]
@@ -100,7 +100,7 @@ impl EpochFeed {
         callbacks.retain(|f| {
             f(
                 epoch.epoch,
-                *epoch.base_key,
+                &epoch.base_key,
                 epoch.roster.clone(),
                 epoch.own_leaf,
             )
@@ -135,7 +135,7 @@ impl EpochKeys for EpochFeed {
     fn on_epoch_while(&self, f: WhileCallback) {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(e) = &inner.0
-            && !f(e.epoch, *e.base_key, e.roster.clone(), e.own_leaf)
+            && !f(e.epoch, &e.base_key, e.roster.clone(), e.own_leaf)
         {
             return;
         }
