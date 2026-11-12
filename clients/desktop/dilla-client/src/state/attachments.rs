@@ -1,7 +1,60 @@
-//! `attachments`: Task 12's slice of [`super::AppState`]: uploads and downloads in flight, the GIF search and DM GIF consent.
+//! `attachments`: Task 12's slice of [`super::AppState`]: the files waiting to be sent per channel (the worker's
+//! `tray:<channel>` slices).
 //!
-//! Stub from Task 1: Task 12 adds the fields; [`Default`] is the empty slice. Nothing here holds key material.
+//! Nothing here holds key material: a tray entry names its file and its phase only (the worker's `publishTray`), never
+//! its descriptor. GIF search results and opened files are not published: the view that asked holds them.
 
-/// The empty slice until its area fills it.
+use std::collections::HashMap;
+
+use super::ChannelId;
+
+/// tray.ts `TrayPhase`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrayPhase {
+    Reading,
+    Preparing,
+    Uploading,
+    Ready,
+    Failed,
+}
+
+impl TrayPhase {
+    /// The phase's name (`data-phase`, the `shell.tray.<phase>` string key).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reading => "reading",
+            Self::Preparing => "preparing",
+            Self::Uploading => "uploading",
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// core-port.ts `TrayItem`: one file waiting to be sent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrayItem {
+    pub id: String,
+    pub name: String,
+    pub size: u64,
+    pub mime: String,
+    /// A renderable image within the cap: it gets a preview card.
+    pub image: bool,
+    pub phase: TrayPhase,
+    /// The failure's code (`E_ATTACHMENT_TOO_LARGE`, a route's code), else empty.
+    pub reason: String,
+}
+
+/// Task 12's slice.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct AttachmentState {}
+pub struct AttachmentState {
+    /// `tray:<channel>`: absent while a channel's tray is empty.
+    pub trays: HashMap<ChannelId, Vec<TrayItem>>,
+}
+
+impl AttachmentState {
+    /// The tray of `channel`, empty when it has none.
+    pub fn tray(&self, channel: ChannelId) -> &[TrayItem] {
+        self.trays.get(&channel).map_or(&[], Vec::as_slice)
+    }
+}

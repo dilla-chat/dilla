@@ -341,6 +341,31 @@ impl Api {
         unreachable!("the loop returns on its last attempt")
     }
 
+    // ---- the Wave 1 areas' routes (Task 12: blobs and GIFs) ----
+
+    /// One HTTP row of the route table for an area feature, with [`Self::http_call`]'s retries and re-authentication.
+    pub(crate) async fn http_route<R: Route>(
+        &self,
+        args: &[&str],
+        req: R::Request,
+        idempotent: bool,
+    ) -> Result<R::Response, ApiError>
+    where
+        R::Request: Clone,
+    {
+        self.http_call::<R>(args, req, idempotent).await
+    }
+
+    /// One gateway row of the route table for an area feature: the accepted answer's status and body.
+    pub(crate) async fn socket_route<R: Route>(
+        &self,
+        args: &[&str],
+        body: Option<Vec<u8>>,
+    ) -> Result<(u16, Vec<u8>), ApiError> {
+        let answer = self.socket_call::<R>(args, body, None, true).await?;
+        Ok((answer.status, answer.body))
+    }
+
     // ---- the device session (session.ts) ----
 
     /// session.ts `ensure`: a stored session that is not within an hour of either expiry is used as it is; otherwise a
