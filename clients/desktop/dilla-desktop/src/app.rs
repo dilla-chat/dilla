@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use dilla_client::instances::{Instances, default_root};
 use dilla_client::keychain::OsKeychain;
-use dilla_client::seams::{InstanceConfig, Keychain};
+use dilla_client::seams::{InstanceConfig, InstanceId, Keychain};
 use dilla_client::{Client, ClientError};
 use gpui::{
     AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription, Window,
@@ -30,6 +30,8 @@ pub struct Launch {
     pub keychain: Arc<dyn Keychain>,
     /// Start the first listed instance's client at launch (a device already signed in).
     pub resume: bool,
+    /// The instance this window runs (`windows::open_instance`); `None`: the first listed instance.
+    pub instance: Option<InstanceId>,
     /// The window's size, logical px.
     pub window: (f32, f32),
     #[cfg(feature = "automation")]
@@ -48,6 +50,7 @@ impl Launch {
             root,
             keychain,
             resume: true,
+            instance: None,
             window: (1280.0, 800.0),
             #[cfg(feature = "automation")]
             fixture: None,
@@ -60,6 +63,7 @@ impl Launch {
             root: None,
             keychain: Arc::new(dilla_client::keychain::MemoryKeychain::new()),
             resume: false,
+            instance: None,
             window: (1280.0, 800.0),
             #[cfg(feature = "automation")]
             fixture: None,
@@ -87,6 +91,8 @@ enum Screen {
 pub struct AppView {
     launch: Launch,
     screen: Screen,
+    /// The instance whose client this window shows (set when it starts).
+    instance: Option<InstanceId>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -95,6 +101,7 @@ impl AppView {
         let mut this = Self {
             launch,
             screen: Screen::Starting,
+            instance: None,
             _subscriptions: Vec::new(),
         };
         #[cfg(feature = "automation")]
@@ -129,7 +136,10 @@ impl AppView {
             .as_deref()
             .filter(|_| this.launch.resume)
             .and_then(|root| Instances::load(root).ok())
-            .and_then(|list| list.list().first().cloned());
+            .and_then(|list| match this.launch.instance {
+                Some(id) => list.get(id).cloned(),
+                None => list.list().first().cloned(),
+            });
         match existing {
             Some(cfg) => this.start_client(cfg, window, cx),
             None => this.show_sign_in(None, window, cx),
@@ -152,6 +162,11 @@ impl AppView {
     }
 
     fn start_client(&mut self, cfg: InstanceConfig, window: &mut Window, cx: &mut Context<Self>) {
+        self.instance = Some(cfg.id);
+        // A window opened again on an instance whose client kept running shows that client (windows.rs).
+        if let Some(client) = crate::windows::running_client(cx, cfg.id) {
+            return self.started(Ok(client), window, cx);
+        }
         self.screen = Screen::Starting;
         cx.notify();
         let keychain = self.launch.keychain.clone();
@@ -166,22 +181,27 @@ impl AppView {
             let result = rx
                 .await
                 .unwrap_or_else(|_| Err(ClientError::Runtime("the start thread ended".into())));
-            let _ = this.update_in(cx, |this, window, cx| this.started(result, window, cx));
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.started(result.map(Rc::new), window, cx)
+            });
         })
         .detach();
     }
 
     fn started(
         &mut self,
-        result: Result<Client, ClientError>,
+        result: Result<Rc<Client>, ClientError>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let client = match result {
-            Ok(client) => Rc::new(client),
+            Ok(client) => client,
             Err(ClientError::NoIdentity) => return self.show_sign_in(None, window, cx),
             Err(e) => return self.show_sign_in(Some(e.to_string()), window, cx),
         };
+        if let Some(id) = self.instance {
+            crate::windows::keep_client(cx, id, client.clone());
+        }
         let mut states = client.state();
         let first = states.borrow_and_update().clone();
         let shell = cx
