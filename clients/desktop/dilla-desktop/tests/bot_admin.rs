@@ -206,3 +206,41 @@ fn the_queue_toggle_opens_the_queue(cx: &mut TestAppContext) {
     assert!(!host.read_with(cx, |p, _| p.queue_open), "and closes again");
     assert_eq!(log(&host, cx), ["queue-open", "queue-close"]);
 }
+
+// ---- S4: parity (Bot not installed: the fixture schema cannot seed an installation, Task 28) ----
+
+fn parity(name: &str) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures")
+        .join(name);
+    let report = dilla_parity::screen::assert_screen(&path)
+        .unwrap_or_else(|e| panic!("{name} differs from its web reference: {e}"));
+    println!(
+        "SCREEN {name}: {} text lines, chrome {:.4} %",
+        report.text_lines, report.chrome_pct
+    );
+}
+
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+fn parity_bot_admin_health_channels() {
+    parity("bot-admin/health-channels.json");
+}
+
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+fn parity_bot_admin_health_channels_b() {
+    parity("bot-admin/health-channels-b.json");
+}
+
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+fn parity_bot_admin_music() {
+    parity("bot-admin/music.json");
+}
+
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+fn parity_bot_admin_music_b() {
+    parity("bot-admin/music-b.json");
+}

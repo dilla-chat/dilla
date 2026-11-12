@@ -507,7 +507,6 @@ impl Render for BotPage {
                     let this2 = this.clone();
                     row = row.child(
                         Button::new("bot-enable", t("serverSettings.bot.enable"))
-                            .size(ButtonSize::Sm)
                             .variant(ButtonVariant::Accent)
                             .disabled(busy || !manager)
                             .on_click(move |_: &ClickEvent, window, cx| {
@@ -577,11 +576,19 @@ impl Render for BotPage {
                 row.into_any_element()
             }));
         }
-        let n = rows.len();
-        let group: Vec<AnyElement> = rows
+        // The managed Bot's card is a group of its own; the switches, the voice row and the health line are the next.
+        let mut rows = rows.into_iter();
+        let card = rows.next().map(|build| build(GroupPosition::Only));
+        let rest: Vec<_> = rows.collect();
+        let n = rest.len();
+        let group: Vec<AnyElement> = card
             .into_iter()
-            .enumerate()
-            .map(|(i, build)| build(GroupPosition::of(i, n)))
+            .chain(std::iter::once(div().mt_3p5().into_any_element()))
+            .chain(
+                rest.into_iter()
+                    .enumerate()
+                    .map(|(i, build)| build(GroupPosition::of(i, n))),
+            )
             .collect();
 
         let mut page = div()

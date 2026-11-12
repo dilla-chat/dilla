@@ -34,7 +34,11 @@ pub fn provider_hint(
 ) -> &'static str {
     let stale =
         matches!(state, ProviderStatusState::Known(s) if provider_is_stale(s.observed_at, now_s));
-    let busy = authorised && matches!(state, ProviderStatusState::Loading) && installation;
+    // No installation to ask (or no manager to ask for): the page never sends the read, so it stands "unavailable".
+    if !authorised || !installation {
+        return "workspace.providers.unavailable";
+    }
+    let busy = matches!(state, ProviderStatusState::Loading);
     if busy {
         return "workspace.providers.loading";
     }
@@ -342,6 +346,7 @@ impl Render for MusicPage {
         if installation.as_ref().is_none_or(|i| i.state != 3) {
             page = page.child(
                 div()
+                    .flex()
                     .pb_3()
                     .child(Button::new("music-open-bot", t("workspace.botSetup"))),
             );

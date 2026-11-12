@@ -53,7 +53,13 @@ fn server_icon(s: ServerSection) -> IconName {
 
 /// Sections the content pane draws at 1024px (`wide` in the registry).
 fn wide(s: ServerSection) -> bool {
-    matches!(s, ServerSection::Channels | ServerSection::Members | ServerSection::ModerationLog | ServerSection::Bans)
+    matches!(
+        s,
+        ServerSection::Channels
+            | ServerSection::Members
+            | ServerSection::ModerationLog
+            | ServerSection::Bans
+    )
 }
 
 pub struct SettingsHost {
@@ -64,8 +70,18 @@ pub struct SettingsHost {
 }
 
 impl SettingsHost {
-    pub fn new(state: Arc<AppState>, community: CommunityId, section: ServerSection, clock: Clock) -> Self {
-        Self { state, community, section, clock }
+    pub fn new(
+        state: Arc<AppState>,
+        community: CommunityId,
+        section: ServerSection,
+        clock: Clock,
+    ) -> Self {
+        Self {
+            state,
+            community,
+            section,
+            clock,
+        }
     }
 }
 
@@ -78,18 +94,48 @@ impl Render for SettingsHost {
             .find(|c| c.id == self.community)
             .map(|c| c.name.clone())
             .unwrap_or_default();
-        let mut items: Vec<NavItem> = UserSection::ALL
-            .iter()
-            .map(|&s| {
+        // Prototype navItems order first, then the live sections it does not draw (SettingsNavigation.tsx).
+        let first_user = [
+            UserSection::Profile,
+            UserSection::Signin,
+            UserSection::Devices,
+            UserSection::Notifications,
+            UserSection::Voice,
+            UserSection::Keyboard,
+        ];
+        let first_server = [
+            ServerSection::Overview,
+            ServerSection::Roles,
+            ServerSection::Invites,
+            ServerSection::Bot,
+            ServerSection::Music,
+        ];
+        let users = first_user.iter().copied().chain(
+            UserSection::ALL
+                .iter()
+                .copied()
+                .filter(|s| !first_user.contains(s)),
+        );
+        let servers = first_server.iter().copied().chain(
+            ServerSection::ALL
+                .iter()
+                .copied()
+                .filter(|s| !first_server.contains(s)),
+        );
+        let mut items: Vec<NavItem> = users
+            .map(|s| {
                 NavItem::new(s.id(), t(&format!("workspace.{}", s.id())))
                     .icon(user_icon(s))
                     .group(t("workspace.group.you"))
             })
             .collect();
-        items.extend(ServerSection::ALL.iter().map(|&s| {
-            NavItem::new(format!("server:{}", s.id()), t(&format!("workspace.{}", s.id())))
-                .icon(server_icon(s))
-                .group(server.clone())
+        items.extend(servers.map(|s| {
+            NavItem::new(
+                format!("server:{}", s.id()),
+                t(&format!("workspace.{}", s.id())),
+            )
+            .icon(server_icon(s))
+            .group(server.clone())
         }));
         let ctx = SlotCx {
             state: self.state.clone(),
@@ -106,7 +152,11 @@ impl Render for SettingsHost {
             .unwrap_or_else(|| gpui::Empty.into_any_element());
         SettingsFrame::new("settings-host", t("settings.close"))
             .wide(wide(self.section))
-            .nav(SettingsNav::new("settings-nav", items, format!("server:{}", self.section.id())))
+            .nav(SettingsNav::new(
+                "settings-nav",
+                items,
+                format!("server:{}", self.section.id()),
+            ))
             .child(body)
     }
 }
