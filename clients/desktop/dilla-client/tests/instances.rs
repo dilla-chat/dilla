@@ -271,7 +271,7 @@ fn an_open_window_holds_its_instance() {
     let other = Instances::load(&root).unwrap();
     assert!(matches!(other.hold(cfg.id), Err(InstanceError::InUse)));
     assert!(matches!(
-        instances.remove_erasing(cfg.id, &kc),
+        instances.remove_erasing(cfg.id, &cfg.server, &kc),
         Err(InstanceError::InUse)
     ));
     assert_eq!(kc.accounts().len(), 1, "a refused removal keeps the key");
@@ -281,7 +281,12 @@ fn an_open_window_holds_its_instance() {
     drop(open_store(&cfg, &kc).unwrap());
 
     drop(guard);
-    assert!(instances.remove_erasing(cfg.id, &kc).unwrap().is_some());
+    assert!(
+        instances
+            .remove_erasing(cfg.id, &cfg.server, &kc)
+            .unwrap()
+            .is_some()
+    );
 }
 
 /// Removing an instance deletes its key from the keychain and its data dir: a crypto-erase.
@@ -296,7 +301,10 @@ fn removing_an_instance_deletes_its_key() {
     drop(open_store(&b, &kc).unwrap());
     assert_eq!(kc.accounts().len(), 2);
 
-    let removed = instances.remove_erasing(a.id, &kc).unwrap().unwrap();
+    let removed = instances
+        .remove_erasing(a.id, &a.server, &kc)
+        .unwrap()
+        .unwrap();
     assert_eq!(removed.id, a.id);
     assert_eq!(
         kc.accounts(),
@@ -306,7 +314,12 @@ fn removing_an_instance_deletes_its_key() {
     assert!(b.data_dir.exists());
     assert_eq!(instances.list().len(), 1);
     // Removing it again changes nothing.
-    assert!(instances.remove_erasing(a.id, &kc).unwrap().is_none());
+    assert!(
+        instances
+            .remove_erasing(a.id, &a.server, &kc)
+            .unwrap()
+            .is_none()
+    );
 }
 
 /// The key deletion on its own (the one function the controller rewires to Task 2's account at merge).
@@ -348,9 +361,49 @@ fn a_keychain_that_cannot_delete_refuses_the_removal() {
     let kc = Stuck(MemoryKeychain::new());
     drop(open_store(&cfg, &kc).unwrap());
     assert!(matches!(
-        instances.remove_erasing(cfg.id, &kc),
+        instances.remove_erasing(cfg.id, &cfg.server, &kc),
         Err(InstanceError::Keychain)
     ));
     assert!(cfg.data_dir.exists());
     assert_eq!(instances.list().len(), 1);
+}
+
+/// An id removed elsewhere and reused for another server is never erased by a removal meant for the old one: the
+/// removal carries the server the person saw, and refuses when the listed server differs. Neither the key nor the data
+/// of the new instance is touched.
+#[test]
+fn a_reused_id_is_never_erased_by_a_stale_removal() {
+    let root = root();
+    let mut mine = Instances::load(&root).unwrap();
+    let old = mine.add(url("https://old.example/")).unwrap();
+    let kc = MemoryKeychain::new();
+    // Another window removes the old instance and adds a new one, which takes the freed id.
+    let mut other = Instances::load(&root).unwrap();
+    other.remove(old.id).unwrap();
+    let new = other.add(url("https://new.example/")).unwrap();
+    assert_eq!(new.id, old.id);
+    drop(open_store(&new, &kc).unwrap());
+    assert_eq!(kc.accounts().len(), 1);
+
+    assert!(matches!(
+        mine.remove_erasing(old.id, &old.server, &kc),
+        Err(InstanceError::Changed)
+    ));
+    assert!(matches!(
+        mine.erase_key(old.id, &old.server, &kc, true),
+        Err(InstanceError::Changed)
+    ));
+    assert!(matches!(
+        mine.remove_verified(old.id, &old.server, true),
+        Err(InstanceError::Changed)
+    ));
+    assert_eq!(kc.accounts().len(), 1, "the new instance's key stays");
+    assert!(new.data_dir.exists());
+    assert_eq!(Instances::load(&root).unwrap().list().len(), 1);
+    // The removal meant for the new one works.
+    assert!(
+        mine.remove_erasing(new.id, &new.server, &kc)
+            .unwrap()
+            .is_some()
+    );
 }

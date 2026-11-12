@@ -7,8 +7,9 @@
 //! (`packages/desktop/test/electron/shell.spec.ts`, "closing a window keeps the client alive"). Opening the instance
 //! again shows a new window on the running client.
 
+use std::any::Any;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use dilla_client::Client;
 use dilla_client::instances::{InstanceError, InstanceGuard, Instances};
@@ -51,9 +52,20 @@ impl std::error::Error for OpenError {}
 
 struct Live {
     /// The instance's hold, kept while its window or its client exists.
-    _guard: InstanceGuard,
+    guard: InstanceGuard,
     window: Option<WindowHandle<AppView>>,
     client: Option<Rc<Client>>,
+    /// Set while a window's `Client::start` runs; a window opened meanwhile waits for it instead of starting a second
+    /// client. The token is dropped when that start ends or is abandoned.
+    starting: Option<Rc<()>>,
+}
+
+/// A released instance whose client has not stopped yet: its hold stays until `alive` is gone, so a removal or another
+/// window never meets the old client's open store.
+struct Retired {
+    id: InstanceId,
+    _guard: InstanceGuard,
+    alive: Weak<dyn Any>,
 }
 
 /// The windows and clients of this process.
@@ -61,6 +73,7 @@ struct Live {
 pub struct Registry {
     manager: Option<WindowHandle<ManagerView>>,
     live: HashMap<u8, Live>,
+    retired: Vec<Retired>,
     closing_hook: bool,
 }
 
@@ -123,12 +136,67 @@ pub fn running_client(cx: &App, id: InstanceId) -> Option<Rc<Client>> {
 pub fn keep_client(cx: &mut App, id: InstanceId, client: Rc<Client>) {
     if let Some(live) = Registry::of(cx).live.get_mut(&id.0) {
         live.client = Some(client);
+        live.starting = None;
     }
 }
 
-/// How many windows of the app are open.
-pub fn window_count(cx: &App) -> usize {
-    cx.windows().len()
+/// What [`mark_starting`] found.
+pub enum Starting {
+    /// This window may start the client. The token (when the instance is registered) is kept alive until the start ends.
+    Go(Option<Rc<()>>),
+    /// Another window's start of the instance is running.
+    Busy,
+}
+
+/// Marks a `Client::start` for `id` as running.
+pub fn mark_starting(cx: &mut App, id: InstanceId) -> Starting {
+    let Some(live) = Registry::of(cx).live.get_mut(&id.0) else {
+        return Starting::Go(None);
+    };
+    if live.starting.is_some() {
+        return Starting::Busy;
+    }
+    let token = Rc::new(());
+    live.starting = Some(token.clone());
+    Starting::Go(Some(token))
+}
+
+/// Whether a window's `Client::start` for `id` is running.
+pub fn is_starting(cx: &App, id: InstanceId) -> bool {
+    cx.try_global::<Registry>()
+        .and_then(|r| r.live.get(&id.0))
+        .is_some_and(|l| l.starting.is_some())
+}
+
+/// Ends a failed start for `id`.
+pub fn finish_starting(cx: &mut App, id: InstanceId) {
+    if let Some(live) = Registry::of(cx).live.get_mut(&id.0) {
+        live.starting = None;
+    }
+}
+
+/// Whether this process holds instance `id` (a window or client of it exists, or its client is still stopping).
+pub fn held_here(cx: &App, id: InstanceId) -> bool {
+    cx.try_global::<Registry>()
+        .is_some_and(|r| r.live.contains_key(&id.0) || r.retired.iter().any(|t| t.id == id))
+}
+
+/// Whether instance `id` has let go of everything: no window or client, and a released client has really stopped.
+/// The hold of a released instance is dropped here, once its client is gone.
+pub fn stopped(cx: &mut App, id: InstanceId) -> bool {
+    let registry = Registry::of(cx);
+    registry.retired.retain(|t| t.alive.upgrade().is_some());
+    !registry.live.contains_key(&id.0) && !registry.retired.iter().any(|t| t.id == id)
+}
+
+/// Keeps `guard` (the hold of `id`) until `alive` is dropped: [`release_instance`] hands over the client it stops, and
+/// tests hand over a stand-in.
+pub fn retire_hold(cx: &mut App, id: InstanceId, guard: InstanceGuard, alive: Weak<dyn Any>) {
+    Registry::of(cx).retired.push(Retired {
+        id,
+        _guard: guard,
+        alive,
+    });
 }
 
 /// Called when a window has closed and none is left: opens the manager when a client still runs (so the app does not
@@ -143,7 +211,7 @@ pub fn after_window_closed(cx: &mut App, launch: &Launch, allow_loopback: bool) 
     }
 }
 
-/// Records which window closed. `true` when it was an instance's window whose client keeps running.
+/// Records which window closed and says what it was.
 fn note_closed(cx: &mut App, id: WindowId) -> Closed {
     Registry::of(cx).closed(id)
 }
@@ -174,9 +242,12 @@ pub fn open_manager(
     let handle = cx
         .open_window(manager_options(bounds), move |window, cx| {
             window.set_window_title(copy::WINDOW_TITLE);
-            let release: crate::screens::instances::view::Release =
-                Rc::new(|id, cx| release_instance(cx, id));
-            let view = cx.new(|cx| ManagerView::new(model, release, window, cx));
+            let host = crate::screens::instances::view::Host {
+                release: Rc::new(|id, cx| release_instance(cx, id)),
+                held_here: Rc::new(|id, cx| held_here(cx, id)),
+                stopped: Rc::new(|id, cx| stopped(cx, id)),
+            };
+            let view = cx.new(|cx| ManagerView::new(model, host, window, cx));
             let weak = view.downgrade();
             cx.subscribe(&view, move |_, event: &ManagerEvent, cx| {
                 let ManagerEvent::Open { instance, invite } = event;
@@ -227,7 +298,7 @@ pub fn open_instance(
     cx: &mut App,
     launch: &Launch,
     cfg: InstanceConfig,
-    _invite: Option<String>,
+    invite: Option<String>,
     allow_loopback: bool,
 ) -> Result<(), OpenError> {
     install_close_hook(cx, launch.clone(), allow_loopback);
@@ -253,15 +324,17 @@ pub fn open_instance(
         Registry::of(cx).live.insert(
             cfg.id.0,
             Live {
-                _guard: guard,
+                guard,
                 window: None,
                 client: None,
+                starting: None,
             },
         );
     }
     let mut for_instance = launch.clone();
     for_instance.instance = Some(cfg.id);
     for_instance.resume = true;
+    for_instance.invite = invite;
     match crate::open_main_window_with(cx, for_instance) {
         Ok(window) => {
             if let Some(live) = Registry::of(cx).live.get_mut(&cfg.id.0) {
@@ -284,18 +357,38 @@ pub fn open_instance(
     }
 }
 
-/// Closes instance `id`'s window, stops its client and lets go of its hold: what removing it needs first.
+/// Closes instance `id`'s window and drops its client. Its hold stays (retired) until the client has really stopped:
+/// [`stopped`] says when. What removing an instance needs first.
 pub fn release_instance(cx: &mut App, id: InstanceId) {
     let Some(live) = Registry::of(cx).live.remove(&id.0) else {
         return;
     };
-    if let Some(window) = live.window {
+    let Live {
+        guard,
+        window,
+        client,
+        starting,
+    } = live;
+    let alive: Weak<dyn Any> = match (&client, &starting) {
+        (Some(c), _) => {
+            let any: Rc<dyn Any> = c.clone();
+            Rc::downgrade(&any)
+        }
+        (None, Some(token)) => {
+            let any: Rc<dyn Any> = token.clone();
+            Rc::downgrade(&any)
+        }
+        (None, None) => Weak::<()>::new(),
+    };
+    retire_hold(cx, id, guard, alive);
+    if let Some(window) = window {
         window
             .update(cx, |_, window, _| window.remove_window())
             .ok();
     }
-    // The client stops when the last reference goes: the registry's here, the shell view's with its window.
-    drop(live.client);
+    // The client stops when the last reference goes: the registry's (here), then the shell view's with its window.
+    drop(client);
+    drop(starting);
 }
 
 /// Forgets every window and client, for a clean quit.

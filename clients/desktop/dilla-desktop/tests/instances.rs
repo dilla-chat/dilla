@@ -6,7 +6,7 @@
 
 mod support;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -17,6 +17,7 @@ use dilla_client::keychain::MemoryKeychain;
 use dilla_client::seams::{InstanceConfig, InstanceId, Keychain};
 use dilla_client::store::{keychain_account, open_store};
 use dilla_desktop::screens::instances::model::label_of;
+use dilla_desktop::screens::instances::view::Host;
 use dilla_desktop::screens::instances::{ManagerEvent, ManagerView, copy, model::Manager};
 use gpui::{TestAppContext, VisualTestContext, WindowHandle};
 
@@ -39,6 +40,10 @@ struct Fixture {
     window: WindowHandle<ManagerView>,
     opened: Opened,
     released: Released,
+    /// How many times the removal asked whether the released instance had stopped.
+    polls: Rc<Cell<u32>>,
+    /// The instance reports "stopped" after this many questions (`u32::MAX`: never).
+    stop_after: Rc<Cell<u32>>,
     root: PathBuf,
 }
 
@@ -46,13 +51,21 @@ fn open_manager(cx: &mut TestAppContext, root: &Path, kc: Arc<MemoryKeychain>) -
     cx.update(dilla_desktop::install);
     let opened: Opened = Rc::default();
     let released: Released = Rc::default();
+    let polls = Rc::new(Cell::new(0u32));
+    let stop_after = Rc::new(Cell::new(0u32));
     let (r, k, rel) = (root.to_path_buf(), kc.clone(), released.clone());
+    let (p, sa) = (polls.clone(), stop_after.clone());
     let window = cx.add_window(move |window, cx| {
         let model = Manager::load(&r, k, false);
-        let release: dilla_desktop::screens::instances::view::Release = Rc::new(move |id, _| {
-            rel.borrow_mut().push(id);
-        });
-        ManagerView::new(model, release, window, cx)
+        let host = Host {
+            release: Rc::new(move |id, _| rel.borrow_mut().push(id)),
+            held_here: Rc::new(|_, _| false),
+            stopped: Rc::new(move |_, _| {
+                p.set(p.get() + 1);
+                p.get() > sa.get()
+            }),
+        };
+        ManagerView::new(model, host, window, cx)
     });
     let view = window.root(cx).expect("the view");
     let sink = opened.clone();
@@ -67,6 +80,8 @@ fn open_manager(cx: &mut TestAppContext, root: &Path, kc: Arc<MemoryKeychain>) -
         window,
         opened,
         released,
+        polls,
+        stop_after,
         root: root.to_path_buf(),
     }
 }
@@ -322,11 +337,6 @@ fn removed_instance_not_resurrected(cx: &mut TestAppContext) {
     let on_disk = Instances::load(&root).unwrap();
     let servers: Vec<_> = on_disk.list().iter().map(|c| label_of(&c.server)).collect();
     assert_eq!(servers, ["three.example", "two.example"]);
-    // ... and opening the instance the first window removed opens nothing stale.
-    second
-        .window
-        .update(cx, |view, window, cx| view.open_at(5, window, cx))
-        .unwrap();
 }
 
 /// Delete asks first; Cancel keeps everything, and a refusal of the keychain keeps the instance and says so.
@@ -540,5 +550,239 @@ fn closing_a_window_keeps_client_alive(cx: &mut TestAppContext) {
     let third = cx.update(|cx| windows::running_client(cx, id)).unwrap();
     assert!(Rc::ptr_eq(&client, &third), "no second client was started");
     drop((client, again, third));
+    cx.update(windows::release_all);
+}
+
+/// A window that still shows an instance whose id was removed and reused for another server opens nothing, and a
+/// removal confirmed on it erases nothing: both carry the server the row showed, not just the id.
+#[gpui::test]
+fn a_stale_row_neither_opens_nor_erases_a_reused_id(cx: &mut TestAppContext) {
+    let root = root();
+    let kc = Arc::new(MemoryKeychain::new());
+    let stale = open_manager(cx, &root, kc.clone());
+    stale.type_address(cx, "https://old.example");
+    stale.connect(cx);
+    let old = stale.opened.borrow()[0].0.clone();
+    assert_eq!(stale.entries(cx), ["old.example"]);
+
+    // Another window removes it and a new server takes the freed id.
+    let mut other = Instances::load(&root).unwrap();
+    other.remove(old.id).unwrap();
+    let new = other
+        .add(url::Url::parse("https://new.example/").unwrap())
+        .unwrap();
+    assert_eq!(new.id, old.id);
+    drop(open_store(&new, kc.as_ref()).unwrap());
+
+    // Opening the stale row opens nothing and says the list changed.
+    let before = stale.opened.borrow().len();
+    stale
+        .window
+        .update(cx, |view, window, cx| view.open_at(0, window, cx))
+        .unwrap();
+    assert_eq!(stale.opened.borrow().len(), before, "nothing was opened");
+    assert_eq!(stale.error(cx).as_deref(), Some(copy::ERROR_CHANGED));
+    // The window now shows the list as it is.
+    assert_eq!(stale.entries(cx), ["new.example"]);
+
+    // A removal asked on a row that went stale is refused too, with the key and data of the new instance untouched.
+    let stale2 = open_manager(cx, &root, kc.clone());
+    other.remove(new.id).unwrap();
+    let newer = other
+        .add(url::Url::parse("https://newer.example/").unwrap())
+        .unwrap();
+    drop(open_store(&newer, kc.as_ref()).unwrap());
+    stale2
+        .window
+        .update(cx, |view, _, cx| view.ask_remove(0, cx))
+        .unwrap();
+    // (the row of stale2 is the one it loaded, before the swap above: newer.example took the id after it loaded)
+    let _ = &stale2;
+    let keys = kc.accounts().len();
+    stale2
+        .window
+        .update(cx, |view, window, cx| view.confirm(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(stale2.error(cx).as_deref(), Some(copy::ERROR_CHANGED));
+    assert!(stale2.released.borrow().is_empty(), "no window was closed");
+    assert_eq!(kc.accounts().len(), keys, "no key was deleted");
+    assert!(newer.data_dir.exists());
+}
+
+/// The removal waits for the released client to stop before it deletes anything, and gives up (keeping the data)
+/// if the client never does.
+#[gpui::test]
+fn removal_waits_for_the_client_to_stop(cx: &mut TestAppContext) {
+    let root = root();
+    let kc = Arc::new(MemoryKeychain::new());
+    let app = open_manager(cx, &root, kc);
+    app.type_address(cx, "https://one.example");
+    app.connect(cx);
+    let cfg = app.opened.borrow()[0].0.clone();
+    std::fs::create_dir_all(&cfg.data_dir).unwrap();
+    app.stop_after.set(3);
+    app.window
+        .update(cx, |view, _, cx| view.ask_remove(0, cx))
+        .unwrap();
+    app.window
+        .update(cx, |view, window, cx| view.confirm(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        app.polls.get() >= 4,
+        "it asked again until the client had stopped"
+    );
+    assert!(app.entries(cx).is_empty());
+    assert!(!cfg.data_dir.exists());
+
+    // A client that never stops: the data stays and the window says the instance is in use.
+    app.type_address(cx, "https://two.example");
+    app.connect(cx);
+    let two = app.opened.borrow()[1].0.clone();
+    std::fs::create_dir_all(&two.data_dir).unwrap();
+    app.stop_after.set(u32::MAX);
+    app.window
+        .update(cx, |view, _, cx| view.ask_remove(0, cx))
+        .unwrap();
+    app.window
+        .update(cx, |view, window, cx| view.confirm(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(app.error(cx).as_deref(), Some(copy::ERROR_IN_USE));
+    assert_eq!(app.entries(cx), ["two.example"]);
+    assert!(two.data_dir.exists());
+}
+
+/// A keychain that refuses to delete refuses the removal before any window is closed.
+#[gpui::test]
+fn a_refusing_keychain_closes_no_window(cx: &mut TestAppContext) {
+    struct Stuck(MemoryKeychain);
+    impl Keychain for Stuck {
+        fn get(
+            &self,
+            a: &str,
+        ) -> Result<Option<zeroize::Zeroizing<Vec<u8>>>, dilla_client::seams::KeychainError>
+        {
+            self.0.get(a)
+        }
+        fn set(&self, a: &str, s: &[u8]) -> Result<(), dilla_client::seams::KeychainError> {
+            self.0.set(a, s)
+        }
+        fn delete(&self, _: &str) -> Result<(), dilla_client::seams::KeychainError> {
+            Err(dilla_client::seams::KeychainError::Unavailable)
+        }
+    }
+    let root = root();
+    cx.update(dilla_desktop::install);
+    let released: Released = Rc::default();
+    let (r, rel) = (root.clone(), released.clone());
+    let window = cx.add_window(move |window, cx| {
+        let model = Manager::load(&r, Arc::new(Stuck(MemoryKeychain::new())), false);
+        let host = Host {
+            release: Rc::new(move |id, _| rel.borrow_mut().push(id)),
+            held_here: Rc::new(|_, _| true),
+            stopped: Rc::new(|_, _| true),
+        };
+        ManagerView::new(model, host, window, cx)
+    });
+    window
+        .update(cx, |view, window, cx| {
+            view.set_address("https://one.example", window, cx);
+            view.connect_url(window, cx);
+            view.ask_remove(0, cx);
+            view.confirm(window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let (error, entries) = window
+        .read_with(cx, |v, _| (v.error().map(str::to_owned), v.entries().len()))
+        .unwrap();
+    assert_eq!(error.as_deref(), Some(copy::ERROR_KEYCHAIN));
+    assert_eq!(entries, 1);
+    assert!(released.borrow().is_empty(), "the window was left open");
+}
+
+/// Keyboard: Delete asks, and the confirmation removes the focused instance.
+#[gpui::test]
+fn keyboard_delete_then_confirm_removes(cx: &mut TestAppContext) {
+    let root = root();
+    let app = open_manager(cx, &root, Arc::new(MemoryKeychain::new()));
+    for server in ["https://a.example", "https://b.example"] {
+        app.type_address(cx, server);
+        app.connect(cx);
+    }
+    let mut vcx = VisualTestContext::from_window(app.window.into(), cx);
+    for _ in 0..4 {
+        vcx.simulate_keystrokes("tab");
+    }
+    vcx.simulate_keystrokes("down delete");
+    assert!(app.confirming(&mut vcx));
+    app.window
+        .update(&mut vcx, |view, window, cx| view.confirm(window, cx))
+        .unwrap();
+    vcx.run_until_parked();
+    assert_eq!(app.entries(&mut vcx), ["a.example"]);
+    assert_eq!(app.released.borrow().len(), 1);
+}
+
+/// The hold of a released instance stays until its client has stopped, and is then free again.
+#[gpui::test]
+fn a_released_hold_lasts_until_the_client_stopped(cx: &mut TestAppContext) {
+    let root = root();
+    let mut instances = Instances::load(&root).unwrap();
+    let cfg = instances
+        .add(url::Url::parse("https://one.example/").unwrap())
+        .unwrap();
+    let guard = instances.hold(cfg.id).unwrap();
+    let client: Rc<dyn std::any::Any> = Rc::new(());
+    cx.update(|cx| {
+        dilla_desktop::windows::retire_hold(cx, cfg.id, guard, Rc::downgrade(&client));
+        assert!(dilla_desktop::windows::held_here(cx, cfg.id));
+        assert!(!dilla_desktop::windows::stopped(cx, cfg.id));
+    });
+    assert!(
+        matches!(
+            instances.hold(cfg.id),
+            Err(dilla_client::instances::InstanceError::InUse)
+        ),
+        "the old client is still running"
+    );
+    drop(client);
+    assert!(cx.update(|cx| dilla_desktop::windows::stopped(cx, cfg.id)));
+    instances.hold(cfg.id).expect("free once it stopped");
+}
+
+/// The invite code of a pasted invite reaches the instance's window, and a second start of the same instance waits
+/// for the first.
+#[gpui::test]
+fn the_window_receives_the_invite_and_one_start_runs(cx: &mut TestAppContext) {
+    use dilla_desktop::{AppView, Launch, windows};
+    let root = root();
+    let mut instances = Instances::load(&root).unwrap();
+    let cfg = instances
+        .add(url::Url::parse("https://one.example/").unwrap())
+        .unwrap();
+    let launch = Launch::live(Some(root.clone()), Arc::new(MemoryKeychain::new()));
+    cx.update(dilla_desktop::install);
+    cx.update(|cx| windows::open_instance(cx, &launch, cfg.clone(), Some("CODE-9".into()), false))
+        .expect("the window opens");
+    let window = cx.windows()[0]
+        .downcast::<AppView>()
+        .expect("an app window");
+    let invite = window
+        .read_with(cx, |view, _| view.pending_invite().map(str::to_owned))
+        .unwrap();
+    assert_eq!(invite.as_deref(), Some("CODE-9"));
+    assert_eq!(
+        window.read_with(cx, |view, _| view.instance()).unwrap(),
+        Some(cfg.id)
+    );
+    // Its client is starting: a second window's start must wait instead of starting another.
+    assert!(cx.update(|cx| windows::is_starting(cx, cfg.id)));
+    assert!(matches!(
+        cx.update(|cx| windows::mark_starting(cx, cfg.id)),
+        windows::Starting::Busy
+    ));
     cx.update(windows::release_all);
 }

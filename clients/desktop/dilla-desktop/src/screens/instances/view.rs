@@ -7,6 +7,7 @@
 
 use std::rc::Rc;
 
+use dilla_client::instances::{InstanceError, Instances};
 use dilla_client::seams::{InstanceConfig, InstanceId};
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -39,16 +40,29 @@ pub enum ManagerEvent {
     },
 }
 
-/// Runs before an instance is removed, so the host can close its window and stop its client (and so release its hold).
-pub type Release = Rc<dyn Fn(InstanceId, &mut App)>;
+type OnInstance = Rc<dyn Fn(InstanceId, &mut App)>;
+type InstanceHeld = Rc<dyn Fn(InstanceId, &App) -> bool>;
+type InstanceStopped = Rc<dyn Fn(InstanceId, &mut App) -> bool>;
+
+/// What the manager asks of the window host (`crate::windows`), kept as closures so the view runs without one.
+#[derive(Clone)]
+pub struct Host {
+    /// Closes the instance's window and drops its client; its hold stays until the client has stopped.
+    pub release: OnInstance,
+    /// Whether this process holds the instance (a window or client of it exists, or one is still stopping).
+    pub held_here: InstanceHeld,
+    /// Whether a released instance has really stopped, so its data can go.
+    pub stopped: InstanceStopped,
+}
+
+/// How many times a removal looks again for a released client to stop, before it gives up with "in use".
+const STOP_ATTEMPTS: u32 = 200;
 
 enum Confirm {
-    Remove(InstanceId),
+    /// The instance and the server the person saw in the list: an id reused for another server is not removed.
+    Remove(InstanceId, url::Url),
     /// A pasted invite naming an instance not listed yet: ask before adding it.
-    NewInstance {
-        input: String,
-        host: String,
-    },
+    NewInstance { input: String, host: String },
 }
 
 pub struct ManagerView {
@@ -61,7 +75,9 @@ pub struct ManagerView {
     stop: usize,
     /// One focus handle per listed instance, grown as the list does (made while drawing).
     row_focus: Vec<FocusHandle>,
-    release: Release,
+    host: Host,
+    /// A removal is running (its keychain and disk work is off the UI thread).
+    busy: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -70,7 +86,7 @@ impl EventEmitter<ManagerEvent> for ManagerView {}
 impl ManagerView {
     pub fn new(
         model: Result<Manager, dilla_client::store::StoreError>,
-        release: Release,
+        host: Host,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -108,7 +124,8 @@ impl ManagerView {
             confirm: None,
             stop: 0,
             row_focus: Vec::new(),
-            release,
+            host,
+            busy: false,
             _subscriptions: subscriptions,
         }
     }
@@ -211,65 +228,156 @@ impl ManagerView {
         }
     }
 
-    /// Opens the instance at `index` of the list.
+    /// Opens the instance at `index` of the list. The row is taken before the list is re-read, and opened only if the
+    /// same instance (id and server) is still listed after it: an id removed and reused for another server meanwhile
+    /// opens nothing.
     pub fn open_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Ok(model) = self.model.as_mut() else {
             return;
         };
-        // The list other windows left: an instance removed meanwhile is gone, not reopened.
+        let Some(seen) = model.entries().get(index).cloned() else {
+            return;
+        };
         if let Err(e) = model.refresh() {
             return self.fail(&Refusal::Store(e), cx);
         }
-        let Some(entry) = model.entries().get(index).cloned() else {
-            return;
-        };
-        let Some(cfg) = model.instances().get(entry.id).cloned() else {
-            return;
-        };
-        self.opened(
-            Connect {
-                instance: cfg,
-                invite: None,
-                added: false,
-            },
-            window,
-            cx,
-        );
+        match model.instances().get(seen.id).cloned() {
+            Some(cfg) if cfg.server == seen.server => {
+                self.opened(
+                    Connect {
+                        instance: cfg,
+                        invite: None,
+                    },
+                    window,
+                    cx,
+                );
+            }
+            _ => self.fail(&Refusal::Changed, cx),
+        }
     }
 
     /// Asks to remove the instance at `index`.
     pub fn ask_remove(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
         if let Some(entry) = self.entries().get(index) {
             self.error = None;
-            self.confirm = Some(Confirm::Remove(entry.id));
+            self.confirm = Some(Confirm::Remove(entry.id, entry.server.clone()));
             cx.notify();
         }
     }
 
     pub fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.confirm.take() {
-            Some(Confirm::Remove(id)) => {
-                // Close the instance's window and stop its client first: a held instance is not removed. The window
-                // and the client are released once this update's effects have run, so the removal waits for them.
-                (self.release)(id, cx);
-                let this = cx.entity().downgrade();
-                window.defer(cx, move |window, cx| {
-                    this.update(cx, |this, cx| this.remove_now(id, window, cx))
-                        .ok();
-                });
-            }
+            Some(Confirm::Remove(id, server)) => self.start_removal(id, server, window, cx),
             Some(Confirm::NewInstance { input, .. }) => self.finish_invite(&input, window, cx),
             None => {}
         }
         cx.notify();
     }
 
-    /// The removal itself: the key is deleted from the keychain, then the data dir and the entry.
-    fn remove_now(&mut self, id: InstanceId, window: &mut Window, cx: &mut Context<Self>) {
+    /// Removal, in steps, so a refusal changes nothing and nothing waits on the UI thread:
+    /// 1. off the UI thread, the key is deleted from the keychain, but only if `id` is still listed for `server`;
+    /// 2. only then the instance's window and client are released (a refused keychain closes nothing);
+    /// 3. once the client has really stopped, off the UI thread again, the data dir and the entry go.
+    fn start_removal(
+        &mut self,
+        id: InstanceId,
+        server: url::Url,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok(model) = self.model.as_ref() else {
+            return;
+        };
+        let (root, kc) = (model.root().to_path_buf(), model.keychain().clone());
+        let hold = !(self.host.held_here)(id, cx);
+        self.busy = true;
+        self.error = None;
+        let expected = server.clone();
+        let task = cx.background_spawn(async move {
+            Instances::load(&root)
+                .map_err(InstanceError::from)
+                .and_then(|mut list| list.erase_key(id, &expected, kc.as_ref(), hold))
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| {
+                this.erased(id, server, result, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn erased(
+        &mut self,
+        id: InstanceId,
+        server: url::Url,
+        result: Result<Option<dilla_client::seams::InstanceConfig>, InstanceError>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(Some(_)) => {
+                (self.host.release)(id, cx);
+                self.await_stop(id, server, 0, window, cx);
+            }
+            // Gone already: nothing to erase.
+            Ok(None) => self.removed(Ok(()), window, cx),
+            Err(e) => self.removed(Err(Refusal::from(e)), window, cx),
+        }
+    }
+
+    /// Waits (a few turns of the event loop) until the released client has stopped, then deletes the data.
+    fn await_stop(
+        &mut self,
+        id: InstanceId,
+        server: url::Url,
+        attempt: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if (self.host.stopped)(id, cx) {
+            let Ok(model) = self.model.as_ref() else {
+                return;
+            };
+            let root = model.root().to_path_buf();
+            let task = cx.background_spawn(async move {
+                Instances::load(&root)
+                    .map_err(InstanceError::from)
+                    .and_then(|mut list| list.remove_verified(id, &server, true))
+            });
+            cx.spawn_in(window, async move |this, cx| {
+                let result = task.await.map(|_| ()).map_err(Refusal::from);
+                this.update_in(cx, |this, window, cx| this.removed(result, window, cx))
+                    .ok();
+            })
+            .detach();
+        } else if attempt < STOP_ATTEMPTS {
+            let this = cx.entity().downgrade();
+            window.defer(cx, move |window, cx| {
+                this.update(cx, |this, cx| {
+                    this.await_stop(id, server, attempt + 1, window, cx);
+                })
+                .ok();
+            });
+        } else {
+            self.removed(Err(Refusal::InUse), window, cx);
+        }
+    }
+
+    fn removed(
+        &mut self,
+        result: Result<(), Refusal>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.busy = false;
+        self.error = result.err().map(|e| e.message().into());
         if let Ok(model) = self.model.as_mut() {
-            let removed = model.remove(id);
             let _ = model.refresh();
-            self.error = removed.err().map(|e| e.message().into());
         }
         let len = self.entries().len();
         self.stop = self.stop.min(len.saturating_sub(1));
@@ -284,7 +392,7 @@ impl ManagerView {
     }
 
     pub fn cancel_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let was_remove = matches!(self.confirm, Some(Confirm::Remove(_)));
+        let was_remove = matches!(self.confirm, Some(Confirm::Remove(..)));
         self.confirm = None;
         if was_remove {
             self.focus_row(self.stop, window, cx);
@@ -349,17 +457,27 @@ impl Render for ManagerView {
             "instances-url",
             TextField::new("instances-url-field", copy::ADDRESS_LABEL, &self.url),
         ));
-        let connect = Button::new("instances-connect", copy::CONNECT)
-            .variant(ButtonVariant::Accent)
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.connect_url(window, cx)));
+        let connect = Button::new(
+            "instances-connect",
+            if self.busy {
+                copy::CONNECT_BUSY
+            } else {
+                copy::CONNECT
+            },
+        )
+        .disabled(self.busy)
+        .variant(ButtonVariant::Accent)
+        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.connect_url(window, cx)));
         let invite_field = div().flex_1().min_w_0().child(tracked_box(
             "instances-invite",
             TextField::new("instances-invite-field", copy::INVITE_LABEL, &self.invite)
                 .hint(copy::INVITE_HINT),
         ));
-        let join = Button::new("instances-join", copy::INVITE_CONNECT).on_click(
-            cx.listener(|this, _: &ClickEvent, window, cx| this.connect_invite(window, cx)),
-        );
+        let join = Button::new("instances-join", copy::INVITE_CONNECT)
+            .disabled(self.busy)
+            .on_click(
+                cx.listener(|this, _: &ClickEvent, window, cx| this.connect_invite(window, cx)),
+            );
 
         let rows = entries.iter().enumerate().map(|(index, entry)| {
             let handle: FocusHandle = handles[index].clone().tab_stop(index == stop);
@@ -544,30 +662,20 @@ impl Render for ManagerView {
 
         let dialog = self.confirm.as_ref().map(|confirm| {
             let weak = cx.entity().downgrade();
-            let (title, body, confirm_label, tone, entry_host) = match confirm {
-                Confirm::Remove(id) => {
-                    let host = entries
-                        .iter()
-                        .find(|e| e.id == *id)
-                        .map(|e| e.label.clone())
-                        .unwrap_or_default();
-                    (
-                        copy::REMOVE_TITLE,
-                        copy::REMOVE_BODY.replace("{host}", &host),
-                        copy::REMOVE_CONFIRM,
-                        Tone::Danger,
-                        host,
-                    )
-                }
+            let (title, body, confirm_label, tone) = match confirm {
+                Confirm::Remove(_, server) => (
+                    copy::REMOVE_TITLE,
+                    copy::REMOVE_BODY.replace("{host}", &label_of(server)),
+                    copy::REMOVE_CONFIRM,
+                    Tone::Danger,
+                ),
                 Confirm::NewInstance { host, .. } => (
                     copy::NEW_TITLE,
                     copy::NEW_BODY.replace("{host}", host),
                     copy::CONNECT,
                     Tone::Accent,
-                    host.clone(),
                 ),
             };
-            let _ = entry_host;
             let on_close = weak.clone();
             ConfirmDialog::new(
                 "instances-confirm",

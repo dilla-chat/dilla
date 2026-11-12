@@ -14,6 +14,7 @@ pub const LEAD: &str = "Connect to the Dilla address your community uses. Your a
 pub const ADDRESS_LABEL: &str = "Instance address";
 pub const ADDRESS_PLACEHOLDER: &str = "https://chat.example.com";
 pub const CONNECT: &str = "Connect";
+pub const CONNECT_BUSY: &str = "Connecting\u{2026}";
 pub const INVITE_LABEL: &str = "Invite link";
 pub const INVITE_PLACEHOLDER: &str = "dilla://invite/chat.example.com/code";
 pub const INVITE_HINT: &str = "Paste an invite link to join its community.";
@@ -38,3 +39,8 @@ pub const ERROR_IN_USE: &str = "This instance is open in a window. Close it firs
 pub const ERROR_KEYCHAIN: &str =
     "The system keychain would not delete this instance's key, so nothing was removed. Try again.";
 pub const ERROR_STORE: &str = "Could not read your instances. Restart Dilla to try again.";
+pub const ERROR_CHANGED: &str =
+    "Your instances changed in another window. Check the list and try again.";
+pub const ERROR_WRONG_INSTANCE: &str =
+    "This window belongs to another instance. Sign in to its own address.";
+pub const KEY_MISSING: &str = "This instance's key is gone from the system keychain, so its data on this device cannot be read. Remove it in \"Your instances\" and connect again.";

@@ -169,22 +169,64 @@ impl Instances {
         self.remove_listed(id)
     }
 
-    /// [`Instances::remove`] for the manager: refuses an instance whose window is open (here or in another process),
-    /// deletes the instance's database key from the keychain first (crypto-erase, [`delete_instance_key`]) and only
-    /// then the data dir and the list entry. A keychain that cannot delete refuses the whole removal: the data is
-    /// never left behind a key that is still stored.
+    /// [`Instances::remove`] for the manager, in one call: [`Instances::erase_key`] then [`Instances::remove_verified`],
+    /// the instance held throughout. `expected` is the server the person saw in the list: an id that was removed and
+    /// reused for another server meanwhile is [`InstanceError::Changed`], never erased.
     pub fn remove_erasing(
         &mut self,
         id: InstanceId,
+        expected: &url::Url,
         kc: &dyn Keychain,
     ) -> Result<Option<InstanceConfig>, InstanceError> {
+        let _open = self.hold(id)?;
+        if self.erase_key(id, expected, kc, false)?.is_none() {
+            return Ok(None);
+        }
+        self.remove_verified(id, expected, false)
+    }
+
+    /// The first half of a removal: checks that `id` is still listed for `expected`, then deletes its database key from
+    /// the keychain (a crypto-erase, [`delete_instance_key`]). Nothing else is touched, so a keychain that refuses
+    /// leaves the instance whole. The list lock is not held while the keychain answers. With `hold` the instance is
+    /// held meanwhile (refused with [`InstanceError::InUse`] when a window has it); pass `false` when the caller
+    /// already holds it. `Ok(None)`: it is no longer listed.
+    pub fn erase_key(
+        &mut self,
+        id: InstanceId,
+        expected: &url::Url,
+        kc: &dyn Keychain,
+        hold: bool,
+    ) -> Result<Option<InstanceConfig>, InstanceError> {
+        let _open = if hold { Some(self.hold(id)?) } else { None };
+        let cfg = {
+            let _list_lock = lock_list(&self.root)?;
+            self.reload()?;
+            match self.get(id) {
+                None => return Ok(None),
+                Some(c) if &c.server != expected => return Err(InstanceError::Changed),
+                Some(c) => c.clone(),
+            }
+        };
+        delete_instance_key(kc, &cfg)?;
+        Ok(Some(cfg))
+    }
+
+    /// The second half of a removal: deletes the data dir and the list entry of `id` if it is still listed for
+    /// `expected` ([`InstanceError::Changed`] otherwise). With `hold`, the instance is held meanwhile.
+    pub fn remove_verified(
+        &mut self,
+        id: InstanceId,
+        expected: &url::Url,
+        hold: bool,
+    ) -> Result<Option<InstanceConfig>, InstanceError> {
+        let _open = if hold { Some(self.hold(id)?) } else { None };
         let _list_lock = lock_list(&self.root)?;
         self.reload()?;
-        let Some(cfg) = self.get(id).cloned() else {
-            return Ok(None);
-        };
-        let _open = self.hold(id)?;
-        delete_instance_key(kc, &cfg)?;
+        match self.get(id) {
+            None => return Ok(None),
+            Some(c) if &c.server != expected => return Err(InstanceError::Changed),
+            Some(_) => {}
+        }
         Ok(self.remove_listed(id)?)
     }
 
@@ -302,6 +344,9 @@ pub enum InstanceError {
     /// The OS keychain could not delete the instance's database key.
     #[error("the platform keychain could not delete the instance's key")]
     Keychain,
+    /// The id is listed for another server than the one the caller meant (it was removed and reused).
+    #[error("the instance list changed")]
+    Changed,
     #[error(transparent)]
     Store(#[from] StoreError),
 }

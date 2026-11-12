@@ -26,8 +26,6 @@ pub struct Entry {
 pub struct Connect {
     pub instance: InstanceConfig,
     pub invite: Option<String>,
-    /// The instance was added by this connect (it was not listed before).
-    pub added: bool,
 }
 
 /// Why a connect, an invite or a removal did not happen. [`Refusal::message`] is what the window shows.
@@ -40,6 +38,8 @@ pub enum Refusal {
     /// The keychain would not delete the instance's key, so nothing was erased.
     Keychain,
     Store(StoreError),
+    /// The list changed under the window (an instance removed and its id reused): nothing was done.
+    Changed,
 }
 
 impl Refusal {
@@ -50,6 +50,7 @@ impl Refusal {
             Self::InUse => copy::ERROR_IN_USE.into(),
             Self::Keychain => copy::ERROR_KEYCHAIN.into(),
             Self::Store(_) => copy::ERROR_STORE.into(),
+            Self::Changed => copy::ERROR_CHANGED.into(),
         }
     }
 }
@@ -59,6 +60,7 @@ impl From<InstanceError> for Refusal {
         match e {
             InstanceError::InUse => Self::InUse,
             InstanceError::Keychain => Self::Keychain,
+            InstanceError::Changed => Self::Changed,
             InstanceError::Store(e) => e.into(),
         }
     }
@@ -114,10 +116,6 @@ impl Manager {
         &self.instances
     }
 
-    pub fn is_full(&self) -> bool {
-        self.instances.list().len() >= MAX_INSTANCES
-    }
-
     /// Every instance in id order.
     pub fn entries(&self) -> Vec<Entry> {
         self.instances
@@ -155,24 +153,14 @@ impl Manager {
     fn connect(&mut self, parsed: address::Input) -> Result<Connect, Refusal> {
         // The list as other windows left it: a stale list must neither hide an instance nor hold a removed one.
         self.instances.refresh()?;
-        let (instance, added) = match self.instances.find(&parsed.instance) {
-            Some(cfg) => (cfg.clone(), false),
-            None => (self.instances.add(parsed.instance)?, true),
+        let instance = match self.instances.find(&parsed.instance) {
+            Some(cfg) => cfg.clone(),
+            None => self.instances.add(parsed.instance)?,
         };
         Ok(Connect {
             instance,
             invite: parsed.invite,
-            added,
         })
-    }
-
-    /// Removes an instance: its key is deleted from the keychain first (crypto-erase), then its data dir and its entry.
-    /// A removal of an instance another window already removed is not an error.
-    pub fn remove(&mut self, id: InstanceId) -> Result<(), Refusal> {
-        self.instances
-            .remove_erasing(id, self.keychain.as_ref())
-            .map(|_| ())
-            .map_err(Refusal::from)
     }
 }
 
