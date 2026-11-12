@@ -126,6 +126,12 @@ function parseArgs(argv) {
   return args;
 }
 
+/** Where the PNG and its sidecar go: the committed references, or `<out>/shots/<area>` when `--out` is given (so a trial run never overwrites them). */
+export function shotDir(parity, os, name, out) {
+  const area = name.split('/').slice(0, -1);
+  return out ? join(out, 'shots', ...area) : join(parity, 'references', os, ...area);
+}
+
 function osDir() {
   return { linux: 'linux', darwin: 'macos', win32: 'windows' }[process.platform] ?? process.platform;
 }
@@ -205,7 +211,7 @@ async function shoot(args, fixture, text) {
   const OS = osDir();
   const parity = resolve(args.fixture, '../../..');
   const out = args.out ?? join(REPO, 'target', `parity-world-${fixture.name.replace('/', '-')}-${process.pid}`);
-  const dest = join(parity, 'references', OS, ...fixture.name.split('/').slice(0, -1));
+  const dest = shotDir(parity, OS, fixture.name, args.out);
   const leaf = fixture.name.split('/').at(-1);
   const world = startWorld(args.fixture, out);
   let browser = null;
