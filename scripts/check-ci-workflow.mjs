@@ -259,6 +259,8 @@ const REQUIRED_STEPS = {
     'cargo clippy --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --exclude dilla-client --all-targets --all-features --locked -- -D warnings',
     'cargo test --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --exclude dilla-client --all-features --locked',
     'cargo build -p dilla-testkit --release --locked',
+    // The native release binaries must run on the consumers' ubuntu-24.04 (glibc 2.39).
+    'bash scripts/check-glibc-max.sh 2.39 target/release/dilla-bot-core target/release/dilla-testkit',
     'name: dilla-testkit',
     'if-no-files-found: error',
     // The lint and test steps need the core area; the build and upload run for any code (go-harness and the browser suites download it).
@@ -2274,6 +2276,8 @@ export function checkDesktopReleaseWorkflow(root) {
  */
 export const GPUI_PINNED_STEPS = {
   tokens: '- run: node --test scripts/gen-gpui-tokens.test.mjs',
+  // The generated strings.rs matches packages/web/src/strings/*.ts (scripts/gen-gpui-strings.test.mjs, Task 6).
+  strings: '- run: node --test scripts/gen-gpui-strings.test.mjs',
   // dilla-client's route-table test runs tests/support/dump-routes.mjs, which imports the typescript package.
   npm: ['- uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7', '  with:', '    node-version-file: .nvmrc', '    cache: npm', "# dilla-client's route-table test runs scripts that import the typescript package.", '- run: npm ci'].join('\n'),
   build: [
@@ -2291,15 +2295,61 @@ export const GPUI_PINNED_STEPS = {
   ].join('\n'),
   ignored: [
     '- name: Run the ignored tests (Linux)',
-    "  if: runner.os == 'Linux'",
+    "  if: runner.os == 'Linux' && !cancelled()",
     '  shell: bash',
     '  run: |',
     '    cargo test -p dilla-parity --locked -- --ignored',
     '    cargo test -p dilla-client --test gateway --locked -- --ignored',
     '    cargo test -p dilla-client --test sync --locked -- --ignored',
     '    cargo test -p dilla-client --test http_sign_in --locked -- --ignored',
+    '    cargo test -p dilla-desktop --test slice --locked -- --ignored',
+  ].join('\n'),
+  // The media tests need the e2e media suite's prerequisites, which the steps before this one build on Linux.
+  mediaWasm: [
+    '- name: Build packages/media\'s wasm core (Linux)',
+    "  if: runner.os == 'Linux' && !cancelled()",
+    '  env:',
+    '    CC_wasm32_unknown_unknown: /usr/bin/clang-23',
+    '    AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23',
+    '  run: |',
+    '    bash scripts/install-ci-tool.sh wasm-bindgen',
+    '    bash scripts/install-ci-tool.sh wasm-pack',
+    '    bash scripts/install-ci-tool.sh binaryen',
+    '    wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm',
+  ].join('\n'),
+  chromium: [
+    '- name: Playwright Chromium (Linux)',
+    "  if: runner.os == 'Linux' && !cancelled()",
+    '  timeout-minutes: 8',
+    '  run: npx playwright install --with-deps chromium',
+  ].join('\n'),
+  media: [
+    '- name: Run the media call tests (Linux)',
+    "  if: runner.os == 'Linux' && !cancelled()",
+    '  shell: bash',
+    '  run: cargo test -p dilla-media --test live --test call --locked -- --ignored',
   ].join('\n'),
 };
+
+/** The GPUI crates' integration-test directories (relative to the repository root) and the `cargo test -p` crate each one's `--ignored` run names. */
+const GPUI_IGNORED_TEST_DIRS = [['clients/desktop/dilla-client/tests', 'dilla-client'], ['clients/desktop/dilla-desktop/tests', 'dilla-desktop'], ['clients/desktop/dilla-media/tests', 'dilla-media'], ['clients/desktop/dilla-desktop-ui/tests', 'dilla-desktop-ui'], ['clients/desktop/parity/tests', 'dilla-parity']];
+/** Test files whose #[ignore] needs something CI cannot give (the real OS keychain, a developer's desktop session). */
+const GPUI_IGNORED_BY_HAND = new Set(['clients/desktop/dilla-client/tests/store.rs']);
+
+/** The `cargo test ... --ignored` command lines of the gpui job's Linux steps (run blocks, comment lines dropped, wrapped lines joined). */
+function gpuiIgnoredRunLines(text) {
+  let doc;
+  try { doc = yaml.load(text); } catch { return []; }
+  const steps = Array.isArray(doc?.jobs?.gpui?.steps) ? doc.jobs.gpui.steps : [];
+  const lines = [];
+  for (const step of steps) {
+    const guard = String(step?.if ?? '');
+    if (typeof step?.run !== 'string' || !guard.includes("runner.os == 'Linux'") || /\bfalse\b/.test(guard)) continue;
+    const body = step.run.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n').replace(/\\\n/g, ' ');
+    for (const l of body.split('\n')) if (l.includes('cargo test') && l.includes('--ignored')) lines.push(l);
+  }
+  return lines;
+}
 
 export function checkDesktopGpuiWorkflow(root) {
   const file = 'desktop-gpui.yml';
@@ -2310,6 +2360,28 @@ export function checkDesktopGpuiWorkflow(root) {
   const body = text.split('\n').map((l) => l.replace(/^ {6}/, '')).join('\n');
   for (const [name, step] of Object.entries(GPUI_PINNED_STEPS)) {
     if (!body.includes(step)) problems.push(`${file}: the ${name} step must be exactly:\n${step}`);
+  }
+  // Every integration-test file with an ignored test is run by a `cargo test -p <crate> [--test <file>] ... --ignored` line in the Linux
+  // ignored or media step's run block (comments stripped, so a commented-out line or a disabled step does not count), so a suite a
+  // Wave 1 task adds cannot be ignored everywhere without this check saying so. The controller appends the line as each test file merges.
+  const runLines = gpuiIgnoredRunLines(text);
+  for (const [dir, crate] of GPUI_IGNORED_TEST_DIRS) {
+    const entries = [];
+    try {
+      for (const e of readdirSync(join(root, dir), { withFileTypes: true })) {
+        if (e.isFile() && e.name.endsWith('.rs')) entries.push([e.name.slice(0, -3), `${dir}/${e.name}`]);
+        else if (e.isDirectory()) entries.push([e.name, `${dir}/${e.name}/main.rs`]); // tests/<name>/main.rs is the test target <name>
+      }
+    } catch { continue; }
+    for (const [name, rel] of entries) {
+      let source;
+      try { source = readFileSync(join(root, rel), 'utf8'); } catch { continue; }
+      if (GPUI_IGNORED_BY_HAND.has(rel) || !/#\[\s*(?:ignore\b|cfg_attr\([^\]]*\bignore\b)/.test(source)) continue;
+      const forCrate = runLines.filter((l) => l.includes(`cargo test -p ${crate} `));
+      // A run with no --test filter runs every ignored test of the crate.
+      const ran = forCrate.some((l) => !/--test\s/.test(l)) || forCrate.some((l) => new RegExp(`--test ${name}(\\s|$)`).test(l));
+      if (!ran) problems.push(`${file}: ${rel} has ignored tests but no \`cargo test -p ${crate} --test ${name} ... -- --ignored\` line in a Linux ignored step runs them`);
+    }
   }
   // The Go and WASI build runs before the cargo test run that reads DILLA_TESTHOST, so the real-server tests find it.
   if (text.indexOf('Build the test host and the WASI core') > text.indexOf('cargo test $GPUI_CRATES')) problems.push(`${file}: the test host must be built before the cargo test run`);

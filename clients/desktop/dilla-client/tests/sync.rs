@@ -3,8 +3,8 @@
 //!
 //! Needs `target/dilla-testhost` (`go build -o target/dilla-testhost ./cmd/dilla-testhost`, or `DILLA_TESTHOST`) and
 //! the WASI core (`DILLA_CORE_WASI`, else `target/wasm32-wasip1/release/dilla_core_wasi.wasm`); the tests are
-//! `#[ignore]`d so a plain `cargo test` needs no Go toolchain; the desktop-gpui CI job runs them on Linux with
-//! `cargo test -p dilla-client --test sync -- --ignored`.
+//! `#[ignore]`d so a plain `cargo test` needs no Go toolchain (the desktop-gpui CI job has one and runs them on Linux with
+//! `cargo test -p dilla-client --test sync -- --ignored`).
 //!
 //! Every account is made the way the app makes one: a sign-up from the client core's own identity (the instance's
 //! bootstrap invite), its device list published, an authenticator app enrolled over the real `/v1/auth/totp/*` routes
