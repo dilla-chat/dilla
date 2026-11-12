@@ -98,8 +98,8 @@ impl Instances {
 
     /// Removes an instance and deletes its data dir. The data dir goes first, so a crash between the
     /// two leaves a listed instance with an empty store, never stale data under a reused id. The
-    /// keychain entry is the caller's to delete (`Keychain::delete(&keychain_account(id))`); a key
-    /// left behind protects nothing and is reused by the id's next first open.
+    /// keychain entry may be deleted by the caller (`Keychain::delete(&keychain_account(id))`); a key
+    /// left behind protects nothing, and the id's next first open replaces it with a fresh one.
     pub fn remove(&mut self, id: InstanceId) -> Result<Option<InstanceConfig>, StoreError> {
         let Some(pos) = self.entries.iter().position(|c| c.id == id) else {
             return Ok(None);

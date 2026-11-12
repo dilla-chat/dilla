@@ -195,10 +195,15 @@ fn thirty_third_instance_refused() {
     drop(core);
     assert!(instances.remove(InstanceId(7)).unwrap().is_some());
     assert!(!seven.data_dir.exists());
+    let old_key = kc.get("instance-7").unwrap().unwrap();
     let again = instances.add(server()).unwrap();
     assert_eq!(again.id, InstanceId(7));
     let core = open_store(&again, &kc).unwrap();
     assert!(!settings_contain(&core, "from the removed instance"));
+    // The removed instance's key was replaced: removal is a crypto-erase.
+    let new_key = kc.get("instance-7").unwrap().unwrap();
+    assert_eq!(new_key.len(), 32);
+    assert_ne!(*new_key, *old_key);
 }
 
 #[test]
@@ -231,8 +236,9 @@ fn wrong_key_does_not_open() {
 }
 
 #[test]
-fn key_stored_but_database_never_created_reopens_with_that_key() {
-    // A crash after the key reached the keychain and before the database was published.
+fn key_stored_but_database_never_created_gets_a_fresh_key() {
+    // A crash after the key reached the keychain and before the database was published: the old key
+    // protects nothing, so a fresh one replaces it and the store opens.
     let root = root();
     let mut instances = Instances::load(&root).unwrap();
     let cfg = instances.add(server()).unwrap();
@@ -247,9 +253,50 @@ fn key_stored_but_database_never_created_reopens_with_that_key() {
     let mut core = open_store(&cfg, &kc).unwrap();
     core.setting_put("k", "v1").unwrap();
     drop(core);
-    assert_eq!(kc.get("instance-0").unwrap().unwrap().as_slice(), &key);
+    let fresh = kc.get("instance-0").unwrap().unwrap();
+    assert_eq!(fresh.len(), 32);
+    assert_ne!(fresh.as_slice(), &key);
+    assert_eq!(kc.accounts(), vec!["instance-0".to_string()]);
     assert_eq!(files_in(&cfg.data_dir), vec![DB_FILE.to_string()]);
+    // The fresh key is the one that keeps opening it.
     assert!(settings_contain(&open_store(&cfg, &kc).unwrap(), "v1"));
+}
+
+#[test]
+fn busy_database_is_not_reported_as_locked() {
+    // Another connection holds an exclusive lock: the key is fine, so this must not be `Locked`
+    // (a UI may offer to reset a `Locked` store).
+    let root = root();
+    let mut instances = Instances::load(&root).unwrap();
+    let cfg = instances.add(server()).unwrap();
+    let kc = MemoryKeychain::new();
+    drop(open_store(&cfg, &kc).unwrap());
+    let key = kc.get("instance-0").unwrap().unwrap();
+    let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+    let holder = rusqlite::Connection::open(cfg.data_dir.join(DB_FILE)).unwrap();
+    holder
+        .execute_batch(&format!("PRAGMA key = \"x'{hex}'\"; BEGIN EXCLUSIVE;"))
+        .unwrap();
+
+    assert!(matches!(open_store(&cfg, &kc), Err(StoreError::Database)));
+
+    holder.execute_batch("COMMIT").unwrap();
+    drop(holder);
+    assert!(open_store(&cfg, &kc).is_ok());
+}
+
+#[test]
+fn empty_database_file_is_not_reported_as_locked() {
+    // A truncated store.db says nothing about the key: `Database`, and it is not re-initialised.
+    let root = root();
+    let mut instances = Instances::load(&root).unwrap();
+    let cfg = instances.add(server()).unwrap();
+    let kc = MemoryKeychain::new();
+    drop(open_store(&cfg, &kc).unwrap());
+    std::fs::write(cfg.data_dir.join(DB_FILE), b"").unwrap();
+
+    assert!(matches!(open_store(&cfg, &kc), Err(StoreError::Database)));
+    assert_eq!(std::fs::read(cfg.data_dir.join(DB_FILE)).unwrap(), b"");
 }
 
 #[test]

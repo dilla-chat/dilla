@@ -4,13 +4,15 @@
 //! # Open, and recovery from a first open cut short
 //!
 //! The key is always stored (and read back) before the database is created, and a database is only
-//! ever made under a staging name and renamed into place once its schema is complete. So the states a
-//! crash can leave, and what the next open does with them, are:
+//! ever made under a staging name and renamed into place once its schema is complete. Whenever there is
+//! no `store.db`, a fresh key is minted and stored over whatever the keychain held, so a key never
+//! outlives its database: deleting the data dir is a crypto-erase. The states a crash can leave, and
+//! what the next open does with them, are:
 //!
 //! | keychain | `store.db` | next open                                                            |
 //! |----------|------------|----------------------------------------------------------------------|
 //! | none     | absent     | first open: a fresh key, then a fresh database                       |
-//! | key      | absent     | the key protects nothing yet: reuse it, build the database           |
+//! | key      | absent     | the key protects nothing: replace it with a fresh one, build the database |
 //! | key      | present    | open it; a key that does not decrypt it is [`StoreError::Locked`]    |
 //! | none     | present    | the key is lost: [`StoreError::KeyMissing`], the file is left alone  |
 //!
@@ -35,13 +37,17 @@ pub const DB_FILE: &str = "store.db";
 /// A database under construction; never opened as the instance's store.
 const STAGE_FILE: &str = "store.db.init";
 const KEY_LEN: usize = 32;
+/// How long an open waits for another connection's lock before failing with `Database`.
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     /// The keychain could not be read or written. There is no fallback.
     #[error("the platform keychain is unavailable")]
     KeychainUnavailable,
-    /// The keychain holds a key, but it does not open this instance's database.
+    /// The keychain holds a key, but it does not open this instance's database (SQLCipher reports
+    /// `SQLITE_NOTADB`, or the stored value is not a 32-byte key). Busy, I/O and other failures are
+    /// [`StoreError::Database`], never this: a UI may offer a reset on `Locked`.
     #[error("the database cannot be opened with the stored key")]
     Locked,
     /// The database exists but the keychain holds no key for it; its contents are unrecoverable.
@@ -103,21 +109,16 @@ pub fn open_connection(cfg: &InstanceConfig, kc: &dyn Keychain) -> Result<ConnHa
         return Ok(Arc::new(Mutex::new(open_keyed(&db, &key)?)));
     }
 
-    // No database: whatever the keychain holds protects nothing yet. Reuse a well-formed key (the
-    // first open stored it and stopped), otherwise mint one, store it and check it reads back.
-    let key = match stored.as_deref().and_then(|bytes| as_key(bytes)) {
-        Some(key) => key,
-        None => {
-            let key = new_key()?;
-            kc.set(&account, key.as_slice())
-                .map_err(|_| StoreError::KeychainUnavailable)?;
-            let back = read_key(kc, &account)?.ok_or(StoreError::KeychainUnavailable)?;
-            if back.as_slice() != key.as_slice() {
-                return Err(StoreError::KeychainUnavailable);
-            }
-            key
-        }
-    };
+    // No database: whatever the keychain holds (a first open cut short, or a removed instance on
+    // this id) protects nothing. Mint a fresh key, store it over the old one and check it reads back.
+    drop(stored);
+    let key = new_key()?;
+    kc.set(&account, key.as_slice())
+        .map_err(|_| StoreError::KeychainUnavailable)?;
+    let back = read_key(kc, &account)?.ok_or(StoreError::KeychainUnavailable)?;
+    if back.as_slice() != key.as_slice() {
+        return Err(StoreError::KeychainUnavailable);
+    }
     create_database(&cfg.data_dir, &db, &key)?;
     Ok(Arc::new(Mutex::new(open_keyed(&db, &key)?)))
 }
@@ -155,27 +156,30 @@ fn create_database(dir: &Path, db: &Path, key: &[u8; KEY_LEN]) -> Result<(), Sto
         .map_err(StoreError::Core)?;
     // Dropping the core drops the only handle and closes the connection.
     drop(core);
-    File::open(&stage)?.sync_all()?;
+    // A writable handle: Windows' FlushFileBuffers refuses a read-only one.
+    private_file_options().open(&stage)?.sync_all()?;
     fs::rename(&stage, db)?;
     sync_dir(dir)
 }
 
 /// Opens an existing file with the raw key, exactly as `dilla-bot-core` does, and proves the key by
-/// reading the schema. A key that does not decrypt the file is [`StoreError::Locked`].
+/// reading the schema. Only `SQLITE_NOTADB` (the key does not decrypt the file) is
+/// [`StoreError::Locked`]; every other failure is [`StoreError::Database`].
 fn open_keyed(path: &Path, key: &[u8; KEY_LEN]) -> Result<Connection, StoreError> {
     // No SQLITE_OPEN_CREATE: the file must exist already.
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_NOFOLLOW
         | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
     let conn = Connection::open_with_flags(path, flags).map_err(|_| StoreError::Database)?;
+    conn.busy_timeout(BUSY_TIMEOUT)
+        .map_err(|_| StoreError::Database)?;
     let mut key_hex = Zeroizing::new(String::with_capacity(KEY_LEN * 2));
     for b in key {
         use std::fmt::Write;
         let _ = write!(key_hex, "{b:02x}");
     }
     let key_pragma = Zeroizing::new(format!("PRAGMA key = \"x'{}'\"", key_hex.as_str()));
-    conn.execute_batch(&key_pragma)
-        .map_err(|_| StoreError::Locked)?;
+    conn.execute_batch(&key_pragma).map_err(classify)?;
     drop(key_pragma);
     drop(key_hex);
     // Connection-only settings, active before SQLCipher decrypts the first page.
@@ -190,12 +194,24 @@ fn open_keyed(path: &Path, key: &[u8; KEY_LEN]) -> Result<Connection, StoreError
     }
     let tables: i64 = conn
         .query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))
-        .map_err(|_| StoreError::Locked)?;
-    // A published database always has a schema; an empty one would be silently re-initialised.
+        .map_err(classify)?;
+    // A published database always has a schema; an empty one (truncated, say) would otherwise be
+    // silently re-initialised. It says nothing about the key, so it is not `Locked`.
     if tables == 0 && path.file_name().is_some_and(|n| n == DB_FILE) {
-        return Err(StoreError::Locked);
+        return Err(StoreError::Database);
     }
     Ok(conn)
+}
+
+/// `SQLITE_NOTADB` is what SQLCipher reports for a key that does not decrypt page 1; nothing else is
+/// evidence of a wrong key. The error itself is dropped: it never carries key material, but neither
+/// does it need to be shown.
+fn classify(e: rusqlite::Error) -> StoreError {
+    if e.sqlite_error_code() == Some(rusqlite::ErrorCode::NotADatabase) {
+        StoreError::Locked
+    } else {
+        StoreError::Database
+    }
 }
 
 fn remove_stage(dir: &Path) -> Result<(), StoreError> {
