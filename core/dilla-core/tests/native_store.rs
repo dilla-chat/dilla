@@ -423,3 +423,84 @@ fn a_wrong_key_on_a_chacha20_store_with_a_hot_wal_touches_neither_file() {
     drop(keyed);
     let _ = fs::remove_dir_all(copy.parent().unwrap());
 }
+
+/// Rewrites the first journal record's stored checksum to the sum over its bytes on disk, the
+/// value a SQLCipher journal carries: what a ChaCha20 journal looks like when its plaintext and
+/// ciphertext sums happen to agree (about 1 in 1200).
+fn force_ciphertext_checksum(journal: &Path) {
+    let mut j = fs::read(journal).unwrap();
+    let be32 = |j: &[u8], at: usize| u32::from_be_bytes(j[at..at + 4].try_into().unwrap());
+    let (nonce, sector, page) = (be32(&j, 12), be32(&j, 20) as usize, be32(&j, 24) as usize);
+    let data = sector + 4;
+    let mut sum = nonce;
+    let mut i = page - 200;
+    while i > 0 {
+        sum = sum.wrapping_add(u32::from(j[data + i]));
+        i = i.saturating_sub(200);
+    }
+    j[data + page..data + page + 4].copy_from_slice(&sum.to_be_bytes());
+    fs::write(journal, j).unwrap();
+}
+
+#[test]
+fn a_chacha20_hot_journal_whose_checksum_collides_is_not_refused() {
+    let key = [0x5c; 32];
+    let path = chacha20_store_with_hot_journal(&key);
+    force_ciphertext_checksum(&sidecar(&path, "-journal"));
+    let opened = open_keyed(&path, flags(), &key, no_prepare);
+    assert!(
+        !matches!(opened, Err(KeyError::LegacyHotJournal)),
+        "a ChaCha20 store's own journal was refused as SQLCipher's"
+    );
+    let keyed = opened.expect("the store opens");
+    assert_eq!(keyed.cipher, StoreCipher::ChaCha20);
+    drop(keyed);
+    let _ = fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn a_legacy_and_a_new_store_both_switch_to_wal_and_keep_their_cipher() {
+    use dilla_core::native_store::use_wal;
+
+    let legacy = copy_fixture(&["legacy.db"]);
+    let keyed = open_keyed(&legacy, flags(), &LEGACY_KEY, no_prepare).unwrap();
+    use_wal(&keyed.conn).unwrap();
+    keyed
+        .conn
+        .execute(
+            "INSERT INTO legacy(label, payload) VALUES('in wal mode', x'02')",
+            [],
+        )
+        .unwrap();
+    drop(keyed);
+    let again = open_keyed(&legacy, flags(), &LEGACY_KEY, no_prepare).unwrap();
+    assert_eq!(again.cipher, StoreCipher::SqlCipher4);
+    let mode: String = again
+        .conn
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode, "wal");
+    let n: i64 = again
+        .conn
+        .query_row("SELECT count(*) FROM legacy", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 4);
+    drop(again);
+    let _ = fs::remove_dir_all(legacy.parent().unwrap());
+
+    let dir = temp_dir();
+    let path = new_empty_file(&dir);
+    let keyed = open_keyed(&path, flags(), &[0x6d; 32], no_prepare).unwrap();
+    use_wal(&keyed.conn).unwrap();
+    keyed.conn.execute_batch("CREATE TABLE t(v);").unwrap();
+    drop(keyed);
+    let again = open_keyed(&path, flags(), &[0x6d; 32], no_prepare).unwrap();
+    assert_eq!(again.cipher, StoreCipher::ChaCha20);
+    let mode: String = again
+        .conn
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode, "wal");
+    drop(again);
+    let _ = fs::remove_dir_all(dir);
+}

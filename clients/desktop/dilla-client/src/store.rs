@@ -197,8 +197,15 @@ fn open_keyed(path: &Path, key: &[u8; KEY_LEN]) -> Result<Connection, StoreError
         })?;
     // A published database always has a schema; an empty one (truncated, say) would otherwise be
     // silently re-initialised. It says nothing about the key, so it is not `Locked`.
-    if keyed.tables == 0 && path.file_name().is_some_and(|n| n == DB_FILE) {
+    let published = path.file_name().is_some_and(|n| n == DB_FILE);
+    if keyed.tables == 0 && published {
         return Err(StoreError::Database);
+    }
+    // The published store runs in WAL mode: a crash leaves a WAL, which replays correctly, never a
+    // hot rollback journal (see `dilla_core::native_store`). The staging file stays in rollback
+    // mode, so it is one self-contained file when it is renamed into place.
+    if published {
+        native_store::use_wal(&keyed.conn).map_err(|_| StoreError::Database)?;
     }
     Ok(keyed.conn)
 }

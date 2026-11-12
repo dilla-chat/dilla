@@ -282,9 +282,12 @@ fn busy_database_is_not_reported_as_locked() {
     let key = kc.get(&acct(&instances, 0)).unwrap().unwrap();
     let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
     let holder = rusqlite::Connection::open(cfg.data_dir.join(DB_FILE)).unwrap();
+    // The store is in WAL mode (Task 6b), where an exclusive transaction still lets readers in;
+    // exclusive locking mode is what shuts every other connection out.
     holder
         .execute_batch(&format!(
-            "PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:{hex}'; BEGIN EXCLUSIVE;"
+            "PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:{hex}'; \
+             PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE;"
         ))
         .unwrap();
 
@@ -546,4 +549,22 @@ fn remove_waits_for_the_open_lock_and_keeps_the_lock_file() {
         Err(StoreError::InvalidInstance)
     ));
     assert!(!cfg.data_dir.exists());
+}
+
+#[test]
+fn the_published_store_runs_in_wal_mode() {
+    // Task 6b: a crash leaves a WAL, never a hot rollback journal.
+    let root = root();
+    let mut instances = Instances::load(&root).unwrap();
+    let cfg = instances.add(server()).unwrap();
+    let kc = MemoryKeychain::new();
+    let conn = dilla_client::store::open_connection(&cfg, &kc).unwrap();
+    let mode: String = conn
+        .lock()
+        .unwrap()
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode, "wal");
+    drop(conn);
+    assert_eq!(files_in(&cfg.data_dir), vec![DB_FILE.to_string()]);
 }

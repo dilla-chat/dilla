@@ -20,10 +20,18 @@
 //! is in WAL mode). A **hot rollback journal** the SQLCipher build left is not supported: its
 //! records are checksummed over ciphertext and sqlite3mc's over plaintext, so sqlite3mc would stop
 //! at the first record or half-apply the rollback. [`open_keyed`] detects such a journal before
-//! any connection exists (the first one would already play it back) and returns
+//! any writable connection exists (the first one would already play it back) and returns
 //! [`KeyError::LegacyHotJournal`] with both files untouched; only the old build can recover it.
+//! The detection is the first record's checksum (SQLCipher's matches over the bytes on disk),
+//! counted only when page 1 does not decrypt as ChaCha20 under the key, read through an immutable
+//! read-only connection; so this build's own hot journals always play back with the right key.
 //! The reverse holds too: rolling a store back to the old SQLCipher build is safe when it is clean
 //! or in WAL mode, not when this build left a hot rollback journal.
+//!
+//! Hence every store's callers put it in WAL mode once it is validated ([`use_wal`]): the Bot's
+//! canonical store (always was), the desktop client's store; a staged Bot store stays in rollback
+//! mode until it is published. A store still in rollback mode with a hot journal of this build
+//! reports a wrong key as `Database`, not `WrongKey` (playback fails before the key is proven).
 //!
 //! The probing connection has checkpoint-on-close turned off until the key is proven, so a key that
 //! does not decrypt the file can never make SQLite copy a hot WAL into it (sqlite3mc's WAL read
@@ -70,9 +78,10 @@ pub enum KeyError {
     #[error("the store failed while being keyed ({0:?})")]
     Database(Option<ErrorCode>),
     /// The file has a hot rollback journal that the SQLCipher build wrote (its records are
-    /// checksummed over ciphertext; sqlite3mc checksums plaintext). sqlite3mc cannot play it back
-    /// correctly, so nothing was opened and neither file was touched. Only the pre-6b SQLCipher
-    /// build can recover it.
+    /// checksummed over ciphertext; sqlite3mc checksums plaintext), and page 1 is not ChaCha20
+    /// under this key. sqlite3mc cannot play it back correctly, so nothing was opened and neither
+    /// file was touched. Only the pre-6b SQLCipher build can recover it. (With a wrong key, a
+    /// ChaCha20 store's own hot journal can also land here, about 1 time in 1200.)
     #[error("the store has an unfinished transaction from the SQLCipher build")]
     LegacyHotJournal,
 }
@@ -98,8 +107,10 @@ pub fn open_keyed(
     if key.iter().all(|b| *b == 0) {
         return Err(KeyError::InvalidKey);
     }
-    // Before any connection: the first one plays a hot journal back (and truncates the file).
-    if sqlcipher_hot_journal(path)? {
+    // Before any writable connection: the first one plays a hot journal back (and truncates the
+    // file). The checksum test alone also fires on about 1 in 1200 of this build's own hot
+    // journals, so it counts only when page 1 is not ChaCha20 under this key.
+    if journal_checksums_ciphertext(path)? && !page_one_is_chacha20(path, key)? {
         return Err(KeyError::LegacyHotJournal);
     }
     match attempt(path, flags, key, &prepare, StoreCipher::ChaCha20) {
@@ -139,6 +150,21 @@ fn attempt(
         cipher,
         tables,
     })
+}
+
+/// Puts a keyed store in WAL mode (and checks that it took). WAL frames are checksummed over the
+/// bytes on disk in both builds, so unlike a rollback journal a hot WAL replays correctly in
+/// either direction, and a SQLCipher 4 file switched to WAL here still opens in the old build.
+/// Callers run this once the store is validated: switching rewrites the file header.
+pub fn use_wal(conn: &Connection) -> Result<(), KeyError> {
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))
+        .map_err(|e| KeyError::Database(code(&e)))?;
+    if mode.eq_ignore_ascii_case("wal") {
+        Ok(())
+    } else {
+        Err(KeyError::Database(None))
+    }
 }
 
 /// Refuses any SQLite that is not sqlite3mc with secure memory: there `PRAGMA cipher` and
@@ -183,19 +209,69 @@ fn push_hex(out: &mut String, key: &[u8; KEY_LEN]) {
     }
 }
 
-/// Whether `<path>-journal` is a hot rollback journal the SQLCipher build wrote.
+/// Whether page 1 of `path` decrypts as ChaCha20 under `key`, read without playing anything back.
+///
+/// A read-only connection on `file:<path>?immutable=1`: SQLite then takes no locks and ignores
+/// any journal or WAL, so nothing is written, and only the header of page 1 is read
+/// (`PRAGMA schema_version`). `SQLITE_NOTADB` means not ChaCha20 under this key (a SQLCipher file,
+/// a wrong key, or a torn page 1); any other failure is returned, so the caller fails closed.
+fn page_one_is_chacha20(path: &Path, key: &[u8; KEY_LEN]) -> Result<bool, KeyError> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+        | OpenFlags::SQLITE_OPEN_URI
+        | OpenFlags::SQLITE_OPEN_NOFOLLOW
+        | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
+    let conn = Connection::open_with_flags(immutable_uri(path)?, flags)
+        .map_err(|e| KeyError::Open(code(&e)))?;
+    require_sqlite3mc(&conn)?;
+    let statement = key_statement(key, StoreCipher::ChaCha20);
+    let keyed = conn.execute_batch(&statement);
+    drop(statement);
+    keyed.map_err(|e| KeyError::Database(code(&e)))?;
+    match conn.query_row("PRAGMA schema_version", [], |r| r.get::<_, i64>(0)) {
+        Ok(_) => Ok(true),
+        Err(e) if code(&e) == Some(ErrorCode::NotADatabase) => Ok(false),
+        Err(e) => Err(KeyError::Database(code(&e))),
+    }
+}
+
+/// `file:///<absolute path>?immutable=1`, the path percent-encoded (`/` separators; on Windows
+/// `file:///C:/...`, the form SQLite documents).
+fn immutable_uri(path: &Path) -> Result<String, KeyError> {
+    let absolute = std::path::absolute(path).map_err(|_| KeyError::Open(None))?;
+    let text = absolute.to_str().ok_or(KeyError::Open(None))?;
+    let mut slashed = text.replace('\\', "/");
+    if !slashed.starts_with('/') {
+        slashed.insert(0, '/');
+    }
+    let mut uri = String::from("file://");
+    for b in slashed.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/:".contains(&b) {
+            uri.push(char::from(b));
+        } else {
+            uri.push_str(&format!("%{b:02X}"));
+        }
+    }
+    uri.push_str("?immutable=1");
+    Ok(uri)
+}
+
+/// Whether `<path>-journal` is a hot rollback journal whose first record is checksummed over the
+/// bytes on disk, as the SQLCipher build writes it.
 ///
 /// Both builds write encrypted page images into the journal, and both protect each record with
 /// SQLite's journal checksum (`cksum = nonce + data[n - 200] + data[n - 400] + ...`, from
 /// `pager_cksum`). SQLCipher computes it over the **ciphertext** it writes; sqlite3mc over the
-/// plaintext page, encrypting only on the way to disk. So the first record's checksum, computed
-/// over the bytes on disk, matches only for a SQLCipher journal (for a sqlite3mc one with odds of
-/// 2^-32, and then the store fails closed). sqlite3mc cannot play a SQLCipher journal back: it
-/// stops at the first record (corrupt) or, worse, "finishes" with a transaction half rolled back.
+/// plaintext page, encrypting only on the way to disk. sqlite3mc cannot play a SQLCipher journal
+/// back: it stops at the first record (corrupt) or, worse, "finishes" with a transaction half
+/// rolled back.
+///
+/// Not deterministic on its own: the checksum adds up only about 20 bytes, so a sqlite3mc journal
+/// whose plaintext and ciphertext sums happen to agree also matches, about 1 time in 1200. That is
+/// why [`open_keyed`] asks [`page_one_is_chacha20`] too.
 ///
 /// A journal SQLite would not play back (absent, empty, zeroed header, no complete record) is not
 /// one; `Database` only when the journal exists but cannot be read.
-fn sqlcipher_hot_journal(path: &Path) -> Result<bool, KeyError> {
+fn journal_checksums_ciphertext(path: &Path) -> Result<bool, KeyError> {
     use std::io::Read;
 
     const MAGIC: [u8; 8] = [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7];
