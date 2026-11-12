@@ -118,9 +118,13 @@ trailer transformer only adds metadata), so the hook is glue implementing libweb
   `src/dilla_transform.rs` (the cxx bridge and the Rust API: `dilla_transform::install(Box<dyn
   FrameTransform>)`, `FrameTransform::{attached, detached, transform, hold_expired, pass_refused,
   sif_trailer, key_frame_requests}`, `Verdict::{Drop, Replace, Hold, PassUnchanged}`, `drain`,
-  `request_key_frame`, `receiver_handle` / `sender_handle`, and `testing`: a transformer fed
+  `request_key_frame`, `receiver_handle` / `sender_handle`).
+- Test support, only with the crate feature `dilla-test-frames` (which only dilla-media's
+  dev-dependency enables, so no shipping binary contains it): `include/livekit/dilla_transform_testing.h`,
+  `src/dilla_transform_testing.{cpp,rs}` (`webrtc_sys::dilla_transform_testing`: a transformer fed
   synthetic frames without a PeerConnection, through libwebrtc's own test-mock frame class names,
-  which the prebuilt library does not define).
+  which the prebuilt library does not define); `build.rs` compiles them and defines
+  `DILLA_TEST_FRAMES` only then.
 - `build.rs`, `src/lib.rs`: build and export the new bridge.
 - `src/peer_connection_factory.cpp`: the hook is mandatory. `create_peer_connection` throws
   `E_DILLA_NO_FRAME_HOOK` when no hook is installed, so a missing or late `install` can never fall

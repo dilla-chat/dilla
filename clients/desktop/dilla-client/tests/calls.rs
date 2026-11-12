@@ -45,6 +45,7 @@ struct FakeCore {
     log: Vec<String>,
     join_external: VecDeque<Result<Vec<u8>, CoreRefusal>>,
     groups: Vec<GroupSummary>,
+    joined_fails: bool,
 }
 
 impl CallCore for FakeCore {
@@ -80,8 +81,8 @@ impl CallCore for FakeCore {
     fn call_join_check(&self, _id: &[u8; 16]) -> Result<(), CoreRefusal> {
         Ok(())
     }
-    fn call_media_epoch(&self, _id: &[u8; 16]) -> Result<Vec<u8>, CoreRefusal> {
-        Ok(epoch_body(3, &[(0, ME), (1, PEER)]))
+    fn call_media_epoch(&self, _id: &[u8; 16]) -> Result<Zeroizing<Vec<u8>>, CoreRefusal> {
+        Ok(Zeroizing::new(epoch_body(3, &[(0, ME), (1, PEER)])))
     }
     fn call_leave_proposal(&mut self, id: &[u8; 16]) -> Result<Vec<u8>, CoreRefusal> {
         self.log.push(format!("leave_proposal {:02x}", id[0]));
@@ -102,6 +103,9 @@ impl CallCore for FakeCore {
     }
     fn group_joined(&mut self, id: &[u8; 16], seq: u64) -> Result<(), CoreRefusal> {
         self.log.push(format!("joined {:02x} {seq}", id[0]));
+        if self.joined_fails {
+            return Err(refusal("E_CORE_STATE"));
+        }
         Ok(())
     }
     fn group_discard(&mut self, id: &[u8; 16]) -> Result<(), CoreRefusal> {
@@ -153,11 +157,12 @@ impl CallCore for GatedCore {
     fn call_join_check(&self, _id: &[u8; 16]) -> Result<(), CoreRefusal> {
         self.check.lock().unwrap().pop_front().unwrap_or(Ok(()))
     }
-    fn call_media_epoch(&self, id: &[u8; 16]) -> Result<Vec<u8>, CoreRefusal> {
+    fn call_media_epoch(&self, id: &[u8; 16]) -> Result<Zeroizing<Vec<u8>>, CoreRefusal> {
         self.media
             .lock()
             .unwrap()
             .pop_front()
+            .map(|r| r.map(Zeroizing::new))
             .unwrap_or_else(|| self.inner.call_media_epoch(id))
     }
     fn call_leave_proposal(&mut self, id: &[u8; 16]) -> Result<Vec<u8>, CoreRefusal> {
@@ -557,4 +562,18 @@ fn the_call_answers_decode_as_routes_ts_decodes_them() {
     assert_eq!(s.livekit_url, "wss://sfu.example");
     assert_eq!(s.token.as_str(), "jwt");
     assert_eq!(s.ice_servers[0].0, ["turn:relay.example:3478"]);
+}
+
+#[tokio::test]
+async fn a_failure_after_the_instance_accepted_the_join_commit_names_the_group_to_leave() {
+    let core = Mutex::new(gated(vec![], vec![]));
+    core.lock().unwrap().inner.joined_fails = true;
+    let routes = FakeRoutes::default();
+    let refused = join_call(&core, &routes, &hooks(), &target())
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, "E_CORE_STATE");
+    // RED (review M4): leave was None, so the posted external commit's leaf was never removed.
+    assert_eq!(refused.leave, Some(GROUP));
+    assert!(routes.posted().contains(&"post_resync".to_owned()));
 }

@@ -1,6 +1,7 @@
 //! The one door to the dilla-sframe/1 hook in the vendored webrtc-sys (`core/vendor/webrtc-sys`,
-//! `dilla_transform`): installing it, the transformer handles of a track, draining the holds and the
-//! synthetic-frame test support. Everything below is safe Rust over webrtc-sys's cxx bridge; this
+//! `dilla_transform`): installing it, the transformer handles of a track and draining the holds.
+//! (The synthetic-frame test support is webrtc-sys's `dilla_transform_testing`, behind its
+//! `dilla-test-frames` feature, which only this crate's dev-dependency enables.) Everything below is safe Rust over webrtc-sys's cxx bridge; this
 //! module is where any `unsafe` of this crate would have to live, and today there is none.
 
 use std::sync::OnceLock;
@@ -42,10 +43,4 @@ pub(crate) fn receiver_handle_video(track: &RtcVideoTrack) -> Option<u64> {
 /// The sender transformer attached for exactly this local audio track object.
 pub(crate) fn sender_handle_audio(track: &RtcAudioTrack) -> Option<u64> {
     webrtc_sys::dilla_transform::sender_handle(&track.sys_handle())
-}
-
-/// Synthetic frames through a real `DillaFrameTransformer` (tests only).
-#[doc(hidden)]
-pub mod testing {
-    pub use webrtc_sys::dilla_transform::testing::*;
 }

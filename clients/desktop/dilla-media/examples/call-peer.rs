@@ -10,6 +10,7 @@
 //! stdin, one command per line:
 //!   epoch <epoch> <base key hex> <own leaf> <leaf>:<device hex>,...   the call group's keys
 //!   mute 0|1
+//!   mic <device id>                           switch the device microphone (prints {"event":"mic"})
 //!   stats                                     prints {"event":"stats",...}
 //!   quit
 //! stdout: one JSON object per line ({"event": ...}).
@@ -190,6 +191,10 @@ async fn main() {
             ["mute", on] => {
                 call.set_muted(*on == "1");
                 emit(json!({"event": "muted", "on": *on == "1"}));
+            }
+            ["mic", id] => {
+                let error = call.set_mic(id).err().map(|e| e.to_string());
+                emit(json!({"event": "mic", "error": error}));
             }
             ["stats"] => {
                 let stats = call.stats();

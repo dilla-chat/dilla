@@ -264,9 +264,11 @@ async fn join_existing<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Size
         }
         match routes.post_resync(group, body.to_vec()).await {
             Ok(seq) => {
-                lock(core)?
-                    .group_joined(group, seq)
-                    .map_err(|e| refused(&e.code, None))?;
+                // The instance accepted the commit: this device is a member now, so a failure
+                // from here on names the group to leave (its self-Remove and a forget).
+                lock(core)
+                    .and_then(|mut c| c.group_joined(group, seq))
+                    .map_err(|e| refused(&e.code, Some(*group)))?;
                 return Ok(());
             }
             Err(e) => {

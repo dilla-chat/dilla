@@ -7,15 +7,79 @@
 //!   (an expired hold is dropped without a later frame), never released unauthenticated;
 //! - a frame ending in the room's server-injected-frame trailer is dropped before any parse;
 //! - a dropped video frame asks for a key frame, at most every 500 ms, until a decrypted key frame;
-//! - a sender's transformer is never replaced: `set_track` to another track is refused.
+//! - a sender's transformer is never replaced: `set_track` to another track is refused;
+//! - a cancelled join ends its media and frees the router; its key registration goes.
+
+#[test]
+fn a_join_dropped_while_it_waits_for_its_key_ends_its_media_and_frees_the_router() {
+    use dilla_media::{Call, CallOptions, EpochFeed, EpochKeys, LiveKitToken, MediaEpoch, Mic};
+
+    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let token = || LiveKitToken {
+        url: "ws://127.0.0.1:9".into(),
+        token: zeroize::Zeroizing::new("unused".into()),
+        ice_servers: Vec::new(),
+    };
+    let options = |secs| CallOptions {
+        mic: Mic::None,
+        playout: false,
+        key_timeout: Duration::from_secs(secs),
+    };
+    let feed = EpochFeed::new();
+    rt.block_on(async {
+        // The join waits for its first key; the caller gives up and drops the future.
+        let join = Call::join_with(token(), feed.clone() as Arc<dyn EpochKeys>, options(30));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), join)
+                .await
+                .is_err(),
+            "still waiting for the key"
+        );
+    });
+    // RED (review I1): the router stayed busy with the dropped join's media for the process life.
+    let media = CallMedia::new();
+    let router = Router::get().unwrap();
+    router
+        .begin(media.clone())
+        .expect("the dropped join's call has ended");
+    router.end(&media);
+    // The dropped call's registration goes at the next epoch: its keys are never installed.
+    assert_eq!(feed.registrations(), 1);
+    feed.publish(MediaEpoch {
+        epoch: 1,
+        base_key: zeroize::Zeroizing::new([7; 16]),
+        roster: ROSTER.to_vec(),
+        own_leaf: 0,
+    });
+    assert_eq!(
+        feed.registrations(),
+        0,
+        "an ended call's registration is dropped"
+    );
+    // A later join is not refused as busy (it fails on its own key timeout instead).
+    let again = rt.block_on(Call::join_with(
+        token(),
+        EpochFeed::new() as Arc<dyn EpochKeys>,
+        options(0),
+    ));
+    assert!(
+        matches!(again, Err(MediaError::NoEpoch)),
+        "{:?}",
+        again.err().map(|e| e.to_string())
+    );
+}
 
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use dilla_core::sframe::{Codec, KeyRing, NK, SframeSender, Slot};
 use dilla_media::MediaError;
-use dilla_media::ffi::testing;
 use dilla_media::transform::{CallMedia, Router};
+use webrtc_sys::dilla_transform_testing as testing;
 
 const EPOCH: u64 = 4;
 const BASE: [u8; NK] = [7; NK];

@@ -28,6 +28,9 @@ deep-filter-rt = "=0.2.0"
 ndarray = "0.17"
 
 [dev-dependencies]
+# The hook's synthetic-frame test support (webrtc_sys::dilla_transform_testing): tests only, never in
+# a shipping binary.
+webrtc-sys = { version = "=0.3.53", features = ["dilla-test-frames"] }
 # tests/link.rs (Task 6b): open flags for the keyed store; the same rusqlite dilla-core links.
 rusqlite = "=0.41.1"
 # tests/call.rs: real call-group keys from a `ClientCore` and a `DillaGroup` member, through

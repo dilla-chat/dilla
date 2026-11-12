@@ -28,9 +28,23 @@ pub trait EpochKeys: Send + Sync {
     /// publishing until the first call.
     #[allow(clippy::type_complexity)]
     fn on_epoch(&self, f: Box<dyn Fn(u64, [u8; 16], Vec<(u16, [u8; 16])>, u16) + Send + Sync>);
+
+    /// As [`on_epoch`](EpochKeys::on_epoch), for a registration that ends: `f` answers false once
+    /// its call has ended, and an implementation that can drops it then ([`EpochFeed`] does). The
+    /// default keeps it registered and ignores the answer.
+    #[allow(clippy::type_complexity)]
+    fn on_epoch_while(
+        &self,
+        f: Box<dyn Fn(u64, [u8; 16], Vec<(u16, [u8; 16])>, u16) -> bool + Send + Sync>,
+    ) {
+        self.on_epoch(Box::new(move |e, k, r, l| {
+            f(e, k, r, l);
+        }));
+    }
 }
 
 type EpochCallback = Box<dyn Fn(u64, [u8; 16], Vec<(u16, [u8; 16])>, u16) + Send + Sync>;
+type WhileCallback = Box<dyn Fn(u64, [u8; 16], Vec<(u16, [u8; 16])>, u16) -> bool + Send + Sync>;
 
 /// One epoch's media keys: `ClientCore::call_media_epoch` decoded (dilla-client's `calls`).
 #[derive(Clone)]
@@ -46,7 +60,7 @@ pub struct MediaEpoch {
 /// registers late gets the newest epoch at once. Epochs only move forward: an older one is ignored.
 #[derive(Default)]
 pub struct EpochFeed {
-    inner: std::sync::Mutex<(Option<MediaEpoch>, Vec<EpochCallback>)>,
+    inner: std::sync::Mutex<(Option<MediaEpoch>, Vec<WhileCallback>)>,
 }
 
 impl EpochFeed {
@@ -59,15 +73,22 @@ impl EpochFeed {
         if inner.0.as_ref().is_some_and(|e| e.epoch >= epoch.epoch) {
             return;
         }
-        for f in &inner.1 {
+        // A registration whose call has ended answers false and is dropped.
+        let (_, callbacks) = &mut *inner;
+        callbacks.retain(|f| {
             f(
                 epoch.epoch,
                 *epoch.base_key,
                 epoch.roster.clone(),
                 epoch.own_leaf,
-            );
-        }
+            )
+        });
         inner.0 = Some(epoch);
+    }
+
+    /// How many registrations are live.
+    pub fn registrations(&self) -> usize {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).1.len()
     }
 
     /// The newest epoch published.
@@ -83,9 +104,18 @@ impl EpochFeed {
 
 impl EpochKeys for EpochFeed {
     fn on_epoch(&self, f: EpochCallback) {
+        self.on_epoch_while(Box::new(move |e, k, r, l| {
+            f(e, k, r, l);
+            true
+        }));
+    }
+
+    fn on_epoch_while(&self, f: WhileCallback) {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(e) = &inner.0 {
-            f(e.epoch, *e.base_key, e.roster.clone(), e.own_leaf);
+        if let Some(e) = &inner.0
+            && !f(e.epoch, *e.base_key, e.roster.clone(), e.own_leaf)
+        {
+            return;
         }
         inner.1.push(f);
     }

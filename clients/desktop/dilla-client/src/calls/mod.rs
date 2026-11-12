@@ -142,7 +142,8 @@ pub trait CallCore {
         tree: &[u8],
     ) -> Result<Vec<u8>, CoreRefusal>;
     fn call_join_check(&self, id: &[u8; 16]) -> Result<(), CoreRefusal>;
-    fn call_media_epoch(&self, id: &[u8; 16]) -> Result<Vec<u8>, CoreRefusal>;
+    /// The answer holds the epoch's base key: it is zeroized when dropped.
+    fn call_media_epoch(&self, id: &[u8; 16]) -> Result<Zeroizing<Vec<u8>>, CoreRefusal>;
     fn call_leave_proposal(&mut self, id: &[u8; 16]) -> Result<Vec<u8>, CoreRefusal>;
     fn call_rotate(&mut self, id: &[u8; 16]) -> Result<Vec<u8>, CoreRefusal>;
     fn call_group_forget(&mut self, id: &[u8; 16]) -> Result<(), CoreRefusal>;
@@ -189,8 +190,9 @@ impl CallCore for ClientCore {
     fn call_join_check(&self, id: &[u8; 16]) -> Result<(), CoreRefusal> {
         Ok(ClientCore::call_join_check(self, id)?)
     }
-    fn call_media_epoch(&self, id: &[u8; 16]) -> Result<Vec<u8>, CoreRefusal> {
-        Ok(ClientCore::call_media_epoch(self, id)?)
+    fn call_media_epoch(&self, id: &[u8; 16]) -> Result<Zeroizing<Vec<u8>>, CoreRefusal> {
+        // Moved, not copied: the core sizes the buffer up front, so this is its only copy.
+        Ok(Zeroizing::new(ClientCore::call_media_epoch(self, id)?))
     }
     fn call_leave_proposal(&mut self, id: &[u8; 16]) -> Result<Vec<u8>, CoreRefusal> {
         Ok(ClientCore::call_leave_proposal(self, id)?)

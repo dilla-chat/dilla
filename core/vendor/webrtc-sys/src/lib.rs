@@ -25,6 +25,9 @@ pub mod data_channel;
 pub mod desktop_capturer;
 // DILLA PATCH: the dilla-sframe/1 encoded-frame hook (core/vendor/README.md).
 pub mod dilla_transform;
+// DILLA PATCH: the hook's synthetic-frame test support, only with the `dilla-test-frames` feature.
+#[cfg(feature = "dilla-test-frames")]
+pub mod dilla_transform_testing;
 pub mod frame_cryptor;
 pub mod helper;
 pub mod jsep;

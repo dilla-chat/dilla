@@ -134,43 +134,6 @@ pub fn sender_handle(track: &SharedPtr<MediaStreamTrack>) -> Option<u64> {
     Some(ffi::dilla_sender_handle(track)).filter(|h| *h != 0)
 }
 
-/// Synthetic frames through a real `DillaFrameTransformer` with no PeerConnection (tests only).
-#[doc(hidden)]
-pub mod testing {
-    use super::ffi;
-
-    /// A transformer like one a sender or receiver would get; 0 without an installed hook.
-    pub fn attach(send: bool, video: bool, track_id: &str) -> u64 {
-        ffi::dilla_test_attach(send, video, track_id)
-    }
-
-    pub fn frame(handle: u64, mime: &str, data: &[u8], key_frame: bool) {
-        ffi::dilla_test_frame(handle, mime, data, key_frame);
-    }
-
-    /// The frames the transformer passed on since the last call, in order.
-    pub fn take_emitted(handle: u64) -> Vec<Vec<u8>> {
-        let flat = ffi::dilla_test_take_emitted(handle);
-        let mut out = Vec::new();
-        let mut rest = flat.as_slice();
-        while rest.len() >= 4 {
-            let n = u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
-            out.push(rest[4..4 + n].to_vec());
-            rest = &rest[4 + n..];
-        }
-        out
-    }
-
-    pub fn held(handle: u64) -> usize {
-        ffi::dilla_test_held(handle)
-    }
-
-    /// Drops the transformer (the hook hears `detached`).
-    pub fn release(handle: u64) {
-        ffi::dilla_test_release(handle);
-    }
-}
-
 fn dilla_transformer_attached(hook: &DillaHook, handle: u64, send: bool, video: bool, track_id: &str) {
     let _ = catch_unwind(AssertUnwindSafe(|| hook.0.attached(handle, send, video, track_id)));
 }
@@ -272,11 +235,5 @@ pub mod ffi {
         fn dilla_drain_all();
         fn dilla_request_key_frame(handle: u64);
 
-        fn dilla_test_attach(send: bool, video: bool, track_id: &str) -> u64;
-        fn dilla_test_frame(handle: u64, mime: &str, data: &[u8], key_frame: bool);
-        fn dilla_test_take_emitted(handle: u64) -> Vec<u8>;
-        fn dilla_test_emitted_count(handle: u64) -> usize;
-        fn dilla_test_held(handle: u64) -> usize;
-        fn dilla_test_release(handle: u64);
     }
 }

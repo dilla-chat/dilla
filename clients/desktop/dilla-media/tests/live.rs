@@ -347,6 +347,16 @@ fn desktop_to_desktop_through_the_sfu_with_client_core_keys_and_an_epoch_change(
         b_dev
     );
 
+    // A PCM microphone cannot be switched like a device one (review M3).
+    a.send("mic default");
+    let switched = a.next("mic", Duration::from_secs(5));
+    assert!(
+        switched["error"]
+            .as_str()
+            .is_some_and(|e| e.starts_with("E_UNSUPPORTED")),
+        "{switched}"
+    );
+
     // Each hears the other's tone, from the other's verified device.
     hears(&mut a, &b_dev, 1000.0, Duration::from_secs(20));
     hears(&mut b, &a_dev, 440.0, Duration::from_secs(20));

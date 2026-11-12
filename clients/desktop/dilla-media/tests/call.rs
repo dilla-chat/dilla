@@ -19,10 +19,10 @@ use std::time::Instant;
 
 use client_support::{CALL, Core, MediaEpochOut, RawPeer, call_raw_bob, decode_media_epoch};
 use dilla_core::sframe::{Codec, KeyRing, NK, SframeSender, Slot};
-use dilla_media::ffi::testing;
 use dilla_media::noise::{ENHANCED_P99_BUDGET_MS, FRAME_SAMPLES, NoiseMode, NoiseProcessor, RATE};
 use dilla_media::transform::{CallMedia, Router, kid_hex};
 use dilla_media::{EpochFeed, EpochKeys, MediaEpoch};
+use webrtc_sys::dilla_transform_testing as testing;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 

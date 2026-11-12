@@ -94,16 +94,6 @@ void dilla_drain_all();
 /// the SFU). Blocks on libwebrtc's worker thread: never call it from inside a transform.
 void dilla_request_key_frame(uint64_t handle);
 
-// Test support (webrtc_sys::dilla_transform::testing): a transformer with no PeerConnection, fed
-// synthetic frames, whose output is recorded. Never used by a call.
-uint64_t dilla_test_attach(bool send, bool video, rust::Str track_id);
-void dilla_test_frame(uint64_t handle, rust::Str mime, rust::Slice<const uint8_t> data,
-                      bool key_frame);
-rust::Vec<uint8_t> dilla_test_take_emitted(uint64_t handle);
-size_t dilla_test_emitted_count(uint64_t handle);
-size_t dilla_test_held(uint64_t handle);
-void dilla_test_release(uint64_t handle);
-
 /// Everything one transformer owns: its handle, its FIFO, its callbacks. Shared so that
 /// dilla_drain_all can run it without touching a transformer libwebrtc is destroying.
 class DillaTransformCore {

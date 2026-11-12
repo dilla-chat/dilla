@@ -120,7 +120,24 @@ pub struct Call {
     levels: watch::Receiver<RemoteLevels>,
     tails: Tails,
     muted: Arc<AtomicBool>,
+    /// The published microphone is a platform device (only that one can be switched).
+    device_mic: bool,
     tasks: Vec<JoinHandle<()>>,
+}
+
+/// Ends a call's media when dropped while armed (a failed or cancelled join).
+struct EndOnDrop {
+    router: Arc<Router>,
+    media: Arc<CallMedia>,
+    armed: bool,
+}
+
+impl Drop for EndOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.router.end(&self.media);
+        }
+    }
 }
 
 /// A participant identity as protocol/05 reads it: exactly 32 lowercase hex digits.
@@ -174,13 +191,16 @@ impl Call {
         let router = Router::get()?;
         let media = CallMedia::new();
         router.begin(media.clone())?;
-        match Self::connect(token, keys, options, router.clone(), media.clone()).await {
-            Ok(call) => Ok(call),
-            Err(e) => {
-                router.end(&media);
-                Err(e)
-            }
-        }
+        // Ends the call's media on every way out but success, a dropped (cancelled) join future
+        // included: the router is free again and the keys are dropped.
+        let mut guard = EndOnDrop {
+            router: router.clone(),
+            media: media.clone(),
+            armed: true,
+        };
+        let call = Self::connect(token, keys, options, router, media).await?;
+        guard.armed = false;
+        Ok(call)
     }
 
     async fn connect(
@@ -192,14 +212,24 @@ impl Call {
     ) -> Result<Call, MediaError> {
         let (epoch_tx, mut epoch_rx) = watch::channel::<Option<u64>>(None);
         {
-            let media = media.clone();
-            keys.on_epoch(Box::new(move |epoch, base_key, roster, own_leaf| {
+            // Weak: the registration never keeps an ended call's keys alive, and it is dropped
+            // (answers false) once the call has ended.
+            let media = Arc::downgrade(&media);
+            keys.on_epoch_while(Box::new(move |epoch, base_key, roster, own_leaf| {
+                let Some(media) = media.upgrade() else {
+                    return false;
+                };
                 let base_key = Zeroizing::new(base_key);
                 match media.install_epoch(epoch, &base_key, &roster, own_leaf) {
                     Ok(()) => {
                         let _ = epoch_tx.send(Some(epoch));
+                        true
                     }
-                    Err(e) => log::warn!("dilla-media: epoch {epoch} not installed: {e}"),
+                    Err(MediaError::Closed) => false,
+                    Err(e) => {
+                        log::warn!("dilla-media: epoch {epoch} not installed: {e}");
+                        true
+                    }
                 }
             }));
         }
@@ -256,6 +286,7 @@ impl Call {
             levels,
             tails,
             muted,
+            device_mic: false,
             tasks: Vec::new(),
         };
         match call.publish_mic(options.mic, &mut tasks).await {
@@ -276,6 +307,7 @@ impl Call {
         mic: Mic,
         tasks: &mut Vec<JoinHandle<()>>,
     ) -> Result<(), MediaError> {
+        let device = matches!(mic, Mic::Device { .. });
         let (track, feeder) = match mic {
             Mic::None => return Ok(()),
             Mic::Device { id, noise } => {
@@ -355,6 +387,7 @@ impl Call {
             )));
         }
         self.local = Some(track);
+        self.device_mic = device;
         Ok(())
     }
 
@@ -364,7 +397,7 @@ impl Call {
         let platform = self
             .platform
             .as_ref()
-            .filter(|_| self.local.is_some())
+            .filter(|_| self.local.is_some() && self.device_mic)
             .ok_or_else(|| {
                 MediaError::Unsupported("this call does not publish a device microphone".into())
             })?;
