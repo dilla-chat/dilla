@@ -4,7 +4,7 @@
 //! Device-local and code-only (L-TS-43): what is drawn and what Copy writes come from [`dilla_client::state::diagnostics`]
 //! and the connection slice, nothing else.
 
-use dilla_client::features::diagnostics::copy_text;
+use dilla_client::features::diagnostics::{copy_text, stable_code};
 use dilla_client::state::diagnostics::{ErrorEntry, RouteTiming};
 use dilla_client::state::{AppState, ConnectionStatus};
 use gpui::{AnyElement, App, ClipboardItem, IntoElement, ParentElement, Styled, Window, div, px};
@@ -24,6 +24,9 @@ use crate::{format, tracked_box};
 const SHOWN_ERRORS: usize = 20;
 /// The routes shown: at most five (Diagnostics.tsx `slice(0, 5)`).
 const SHOWN_ROUTES: usize = 5;
+
+/// The table cells' horizontal padding in px (`.dw-diagnostics-routes__table` `padding: 10px 16px`, the `px_4` of a cell).
+const CELL_PAD_X: f32 = 16.0;
 
 /// One fact row: its automation id, the `strings.rs` key of its label and its value.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,13 +94,14 @@ pub fn key_packages_value(state: &AppState) -> String {
     let mut parts = vec![
         status
             .count
-            .map_or_else(|| "–".to_owned(), |n| n.to_string()),
+            .map_or_else(|| t("shell.status.unknown").to_owned(), |n| n.to_string()),
     ];
     if let Some(at) = status.last_attempt_ms {
         parts.push(format::clock(at));
     }
     if let Some(code) = &status.last_error {
-        parts.push(code.clone());
+        // Whatever the slice holds, only a stable code is drawn.
+        parts.push(stable_code(code).to_owned());
     }
     parts.join(" · ")
 }
@@ -145,7 +149,7 @@ fn routes_table(routes: &[RouteTiming]) -> AnyElement {
             .iter()
             .map(|r| r[i + 1].chars().count() as f32 * f32::from(size) * MONO_ADVANCE)
             .fold(0.0, f32::max);
-        *width = head.max(cells) + 32.0;
+        *width = head.max(cells) + 2.0 * CELL_PAD_X;
     }
     let cell = |text_: String, width: Option<f32>, head: bool| {
         let (size, ratio, colour) = if head {
@@ -343,6 +347,19 @@ mod tests {
         assert!(v.ends_with(" · E_NETWORK"), "{v}");
         s.diagnostics.key_packages.last_error = None;
         assert_eq!(key_packages_value(&s).matches(" · ").count(), 1);
+    }
+
+    #[test]
+    fn a_hostile_last_error_shows_as_unknown() {
+        let mut s = AppState::default();
+        s.diagnostics.key_packages = KeyPackageStatus {
+            count: Some(3),
+            last_attempt_ms: None,
+            last_error: Some("token=abc123 recovery key".into()),
+        };
+        let v = key_packages_value(&s);
+        assert_eq!(v, "3 · E_UNKNOWN");
+        assert!(!v.contains("abc123"));
     }
 
     #[test]

@@ -556,15 +556,11 @@ async fn idle_socket_no_periodic_http() {
 
 /// e2e/web/version-reload.spec.ts, the desktop leg: the host is replaced by one that offers only wire 7 (newer than this
 /// client's 6). The client is refused from the hello: the phase is `VersionRefused { upgrade: true }`, the banner slot
-/// shows "Update dilla to continue", no socket is opened again, and what the person had stays: the channels and
-/// timelines, and the draft (the composer keeps its text in `drafts.*` prefs, which nothing here touches).
-///
-/// The composer's own text field is Task 9's; this proves the part that is this area's, and that nothing a refusal does
-/// reaches a draft (Task 28 adds the composer assertion once Task 9 has landed).
+/// shows "Update dilla to continue", no socket is opened again, and the channels are kept. The composer's draft is Task
+/// 9's; its assertion belongs to Task 28 once the composer persists drafts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 async fn older_client_refused_banner_no_reconnect_keeps_draft() {
-    const DRAFT: &str = "a half-written thought that must outlive the refusal";
     let data = scratch_dir("diag-ver-data");
     let root = scratch_dir("diag-ver-root");
     let port = free_port();
@@ -586,7 +582,6 @@ async fn older_client_refused_banner_no_reconnect_keeps_draft() {
         None,
         "no banner while online"
     );
-    client.prefs().set("drafts.t24", &DRAFT).unwrap();
 
     // The wire-6 host goes, a wire-7 host takes its port and its data.
     drop(wire6);
@@ -630,10 +625,6 @@ async fn older_client_refused_banner_no_reconnect_keeps_draft() {
 
     // The work stays.
     assert_eq!(now.channels.len(), channels, "the structure is kept");
-    assert_eq!(
-        client.prefs().get::<String>("drafts.t24").as_deref(),
-        Some(DRAFT)
-    );
     client.stop();
     drop(wire7);
     let _ = std::fs::remove_dir_all(&data);

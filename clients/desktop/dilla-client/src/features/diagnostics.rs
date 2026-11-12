@@ -1,5 +1,5 @@
 //! Area **diagnostics** (Task 24): the stable error codes, the slowest socket routes, the connection and wire facts, the
-//! app build the instance announces and the text Copy and Export write.
+//! app build the instance announces and the text Copy writes.
 //!
 //! Ports: packages/web/src/screens/settings/Diagnostics.tsx, packages/client-core/src/http/route-rtt.ts, the diagnostics
 //! slice of packages/client-core/src/worker/controller.ts, packages/web/src/{update-view,update-checkpoint}.ts.
@@ -8,7 +8,7 @@
 //!
 //! Nothing a person could be hurt by leaving the device goes through here (L-TS-43): a code is stable (`E_...`), a route is
 //! a pattern without ids, a count is a count. A recorded "code" that is not that shape is replaced by `E_UNKNOWN`, so a
-//! detail text, a key or a token handed in by mistake never reaches the screen, Copy or Export.
+//! detail text, a key or a token handed in by mistake never reaches the screen or Copy.
 //!
 //! Who calls what: the engine and the other areas call [`Diagnostics::record_error`] where the web controller calls
 //! `recordError`; `sync/requests.rs` (Task 3) calls [`Diagnostics::record_route`] when a socket response settles; Task 2's
@@ -20,7 +20,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::client::{Client, Inner};
 use crate::gateway::frames::{Frame, Value, valid_app_entry};
-use crate::state::AppState;
 use crate::state::diagnostics::{
     DiagnosticsState, ERROR_LIMIT, ErrorEntry, KeyPackageStatus, SLOW_ROUTE_LIMIT,
 };
@@ -60,13 +59,41 @@ pub fn stable_code(code: &str) -> &str {
     if shaped { code } else { UNKNOWN_CODE }
 }
 
-/// A route pattern as the socket route table writes it (`GET /v1/channels/{id}`): printable ASCII without a query, a
-/// space-separated method and path. Anything else is not recorded, so a path with real ids never lands on the screen.
+/// One literal segment of a route pattern: a lower-case word (`[a-z][a-z0-9_-]*`, at most 24 characters) that is not made
+/// only of hex digits and has digits only as a version (`v1`): anything else is what an id or a token looks like.
+fn is_literal(seg: &str) -> bool {
+    let mut bytes = seg.bytes();
+    seg.len() <= 24
+        && bytes.next().is_some_and(|b| b.is_ascii_lowercase())
+        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+        && !seg.bytes().all(|b| b.is_ascii_hexdigit())
+        // A digit belongs only to a version segment (`v1`): a word with digits in it is an opaque token.
+        && (!seg.bytes().any(|b| b.is_ascii_digit())
+            || seg.strip_prefix('v').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
+}
+
+/// A route pattern as the socket route table writes it (`GET /v1/channels/{id}`): a method, a space and a path of
+/// segments that are each a literal ([`is_literal`]) or a placeholder `{name}` (`name` in `[a-z_]+`). A path with a real
+/// id or token in it (a hex id, a digit string, an invite code) is not a pattern and is never recorded, so it cannot land
+/// on the screen. The method is upper-case letters.
 fn is_pattern(pattern: &str) -> bool {
+    let Some((method, path)) = pattern.split_once(' ') else {
+        return false;
+    };
+    let placeholder = |seg: &str| {
+        seg.strip_prefix('{')
+            .and_then(|r| r.strip_suffix('}'))
+            .is_some_and(|name| {
+                !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+            })
+    };
     pattern.len() <= 200
-        && pattern.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
-        && !pattern.contains('?')
-        && pattern.split(' ').count() == 2
+        && !method.is_empty()
+        && method.bytes().all(|b| b.is_ascii_uppercase())
+        && path.strip_prefix('/').is_some_and(|rest| {
+            rest.split('/')
+                .all(|seg| is_literal(seg) || placeholder(seg))
+        })
 }
 
 impl Diagnostics {
@@ -106,7 +133,11 @@ impl Diagnostics {
     }
 
     /// The key package status, as the maintenance last knew it (Task 2).
-    pub fn set_key_packages(&self, status: KeyPackageStatus) {
+    ///
+    /// `last_error` goes through [`stable_code`] before it is stored. `stable_code` assumes callers pass real codes: it
+    /// checks the shape, not the meaning, so a secret formatted like a code would pass; call sites pass `E_*` strings only.
+    pub fn set_key_packages(&self, mut status: KeyPackageStatus) {
+        status.last_error = status.last_error.map(|c| stable_code(&c).to_owned());
         self.inner
             .publish(move |s| s.diagnostics.key_packages = status);
     }
@@ -156,67 +187,11 @@ pub fn copy_text(state: &DiagnosticsState) -> String {
         .join("\n")
 }
 
-/// What Export writes: the facts the screen shows, as `key=value` lines, then the slowest routes and the codes. It reads
-/// only [`AppState::connection`], [`AppState::diagnostics`] and the account's phase: no key, token, recovery key, message
-/// or member name can be in it by construction (the test `export_has_no_secrets` pins that with canaries).
-pub fn export_text(state: &AppState) -> String {
-    use std::fmt::Write;
-    let d = &state.diagnostics;
-    let mut out = String::from("dilla diagnostics v1\n");
-    let _ = writeln!(out, "connection={:?}", state.connection.status);
-    let _ = writeln!(
-        out,
-        "generation={}",
-        state
-            .connection
-            .generation
-            .map_or_else(|| "-".to_owned(), |g| g.to_string())
-    );
-    let _ = writeln!(
-        out,
-        "wire={}",
-        state
-            .connection
-            .wire_version
-            .map_or_else(|| "-".to_owned(), |w| w.to_string())
-    );
-    let _ = writeln!(out, "readies={}", state.connection.readies);
-    let _ = writeln!(out, "account={:?}", state.account.phase);
-    let _ = writeln!(
-        out,
-        "devices={}",
-        d.devices.map_or("-".into(), |n| n.to_string())
-    );
-    let _ = writeln!(
-        out,
-        "keyPackages={} lastAttemptMs={} lastError={}",
-        d.key_packages.count.map_or("-".into(), |n| n.to_string()),
-        d.key_packages
-            .last_attempt_ms
-            .map_or("-".into(), |n| n.to_string()),
-        d.key_packages
-            .last_error
-            .as_deref()
-            .map_or("-", stable_code),
-    );
-    for r in &d.slow_routes {
-        let _ = writeln!(
-            out,
-            "route {} p50={} p95={} count={}",
-            r.pattern, r.p50, r.p95, r.count
-        );
-    }
-    for e in d.errors.iter().rev().take(ERROR_LIMIT).rev() {
-        let _ = writeln!(out, "error {} atMs={}", e.code, e.at_ms);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::AccountState;
     use crate::state::diagnostics::RouteTiming;
+    use crate::state::{AccountState, AppState};
 
     #[test]
     fn a_stable_code_passes_and_anything_else_is_unknown() {
@@ -241,6 +216,17 @@ mod tests {
         assert!(!is_pattern("GET /v1/channels/{id}?x=1"));
         assert!(!is_pattern("/v1/channels"));
         assert!(!is_pattern("GET /v1/a b"));
+        // A real id or token in the path is not a pattern.
+        assert!(!is_pattern("GET /v1/invites/Zk3x9QmT2vPLw8"));
+        assert!(!is_pattern("GET /v1/invites/zk3x9qmt2vplw8"));
+        assert!(!is_pattern(
+            "GET /v1/users/0123456789abcdef0123456789abcdef"
+        ));
+        assert!(!is_pattern("GET /v1/users/deadbeef"));
+        assert!(!is_pattern("GET /v1/channels/12345"));
+        assert!(is_pattern("GET /v1/users/{user_id}/device-list"));
+        assert!(!is_pattern("GET /v1/users/{UserId}"));
+        assert!(!is_pattern(&format!("GET /v1/{}", "a".repeat(25))));
     }
 
     fn state() -> AppState {
@@ -302,28 +288,5 @@ mod tests {
     fn copy_writes_the_codes_one_per_line_and_nothing_else() {
         assert_eq!(copy_text(&state().diagnostics), "E_A\nE_B");
         assert_eq!(copy_text(&DiagnosticsState::default()), "");
-    }
-
-    #[test]
-    fn export_has_no_secrets() {
-        let mut s = state();
-        // A recorded value is only ever a stable code, a pattern, a count: even a hostile one cannot carry text out.
-        s.diagnostics.errors.push(ErrorEntry {
-            code: stable_code("recovery key: aaaa bbbb").to_owned(),
-            at_ms: 3,
-        });
-        s.diagnostics.key_packages.last_error = Some("token=secret-token".into());
-        let out = export_text(&s);
-        for canary in [
-            "canary-username",
-            "secret-token",
-            "recovery",
-            "aaaa",
-            "token",
-        ] {
-            assert!(!out.contains(canary), "{canary} in {out}");
-        }
-        assert!(out.contains("error E_UNKNOWN atMs=3"));
-        assert!(out.contains("route GET /v1/x/{id} p50=3 p95=9 count=4"));
     }
 }

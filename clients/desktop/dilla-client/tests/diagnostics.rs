@@ -1,13 +1,13 @@
 //! Task 24's client tests for the diagnostics area (standard procedure S2), against a real dillad.
 //!
 //! Needs `target/dilla-testhost` and the WASI core (see `tests/sync.rs`); `#[ignore]`d so a plain `cargo test` needs no Go
-//! toolchain. The pure parts (the route round trips, the stable code shape, Copy and Export, the app build hint) are unit
+//! toolchain. The pure parts (the route round trips, the stable code shape, Copy, the app build hint) are unit
 //! tests in `src/state/diagnostics.rs` and `src/features/diagnostics.rs`; the three behaviour tests of the web e2e suite
 //! this area replaces are in `dilla-desktop/tests/diagnostics.rs` (they count HTTP requests, which needs the proxy).
 
 use std::time::Duration;
 
-use dilla_client::features::diagnostics::{copy_text, export_text};
+use dilla_client::features::diagnostics::copy_text;
 use dilla_client::state::ConnectionStatus;
 use dilla_client::state::diagnostics::{ERROR_LIMIT, SLOW_ROUTE_LIMIT};
 use dilla_client::testing::host::{clear_session, community, sign_up, start, start_host, wait_for};
@@ -57,14 +57,16 @@ async fn a_running_client_records_codes_routes_and_facts() {
 
     // Routes: only the slowest five are published, slowest first, by pattern.
     for i in 0..SLOW_ROUTE_LIMIT + 3 {
+        let name = char::from(b'a' + u8::try_from(i).unwrap());
         diag.record_route(
-            &format!("GET /v1/route/{i}/{{id}}"),
+            &format!("GET /v1/route-{name}/{{id}}"),
             10.0 * (i as f64 + 1.0),
         );
     }
     diag.record_route("GET /v1/with/a/real/id?x=1", 5000.0);
     let s = wait_for(&client, Duration::from_secs(5), "the routes", |s| {
         s.diagnostics.slow_routes.len() == SLOW_ROUTE_LIMIT
+            && s.diagnostics.slow_routes[0].pattern == "GET /v1/route-h/{id}"
     })
     .await;
     let patterns: Vec<_> = s
@@ -74,17 +76,10 @@ async fn a_running_client_records_codes_routes_and_facts() {
         .map(|r| r.pattern.as_str())
         .collect();
     assert_eq!(
-        patterns[0], "GET /v1/route/7/{id}",
+        patterns[0], "GET /v1/route-h/{id}",
         "slowest first, a path with a query is not recorded"
     );
 
-    // Nothing secret can be in what Export writes.
-    let out = export_text(&s);
-    assert!(out.starts_with("dilla diagnostics v1\n"));
-    assert!(out.contains("connection=Online") && out.contains("wire=6"));
-    for secret in ["abc123", "alice", "token="] {
-        assert!(!out.contains(secret), "{secret} in {out}");
-    }
     client.stop();
     drop(host);
 }

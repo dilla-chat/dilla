@@ -30,7 +30,14 @@ use crate::tracked;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Boot {
     Loading,
-    Fatal { code: String },
+    Fatal {
+        code: String,
+    },
+    /// The store was written by a newer dilla (`E_STORE_NEWER`): explained, never offered a reset.
+    StoreNewer {
+        found: u32,
+        supported: u32,
+    },
 }
 
 impl Boot {
@@ -39,6 +46,7 @@ impl Boot {
         match self {
             Self::Loading => "boot.loading.status",
             Self::Fatal { .. } => "boot.error.status",
+            Self::StoreNewer { .. } => "boot.storeNewer.status",
         }
     }
 
@@ -47,6 +55,13 @@ impl Boot {
         match self {
             Self::Loading => None,
             Self::Fatal { code } => Some(tf("boot.error.detail", &[("code", code)])),
+            Self::StoreNewer { found, supported } => Some(tf(
+                "boot.storeNewer.detail",
+                &[
+                    ("found", &found.to_string()),
+                    ("supported", &supported.to_string()),
+                ],
+            )),
         }
     }
 
@@ -55,7 +70,58 @@ impl Boot {
         match self {
             Self::Loading => None,
             Self::Fatal { .. } => Some("boot.error.action"),
+            Self::StoreNewer { .. } => Some("boot.storeNewer.action"),
         }
+    }
+
+    /// The quieter second action's label: back to the instance picker and sign-in, as the mobile splash's
+    /// `secondary` (`MobileBootError`). Only the failure splash has one.
+    pub fn secondary_key(&self) -> Option<&'static str> {
+        match self {
+            Self::Fatal { .. } => Some("mobile.switchInstance"),
+            _ => None,
+        }
+    }
+}
+
+/// What a failed `Client::start` leads to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StartFailure {
+    /// This device is gone (revoked, unlisted, session scope, a factor owed): the sign-in screen answers it, as the web's
+    /// `enterRevoked` does for `E_SESSION_SCOPE` and `E_DEVICE_UNLISTED`.
+    SignIn,
+    /// The store is newer than this build.
+    StoreNewer,
+    /// Anything else: the fatal splash with its stable code.
+    Fatal,
+}
+
+/// Sorts a failed start. `E_STORE_NEWER` arrives as a `Sync` code until the store reports its schema versions.
+pub fn classify(error: &ClientError) -> StartFailure {
+    match error {
+        ClientError::Revoked | ClientError::FactorRequired | ClientError::NoIdentity => {
+            StartFailure::SignIn
+        }
+        ClientError::Sync(code) => match code.as_str() {
+            "E_SESSION_SCOPE" | "E_DEVICE_UNLISTED" | "E_DEVICE_REVOKED" => StartFailure::SignIn,
+            "E_STORE_NEWER" => StartFailure::StoreNewer,
+            _ => StartFailure::Fatal,
+        },
+        _ => StartFailure::Fatal,
+    }
+}
+
+/// The splash a failed start shows. The versions are not reported by the client yet, so they read 0 as the web's
+/// `?? 0` does.
+pub fn failure_boot(error: &ClientError) -> Boot {
+    match classify(error) {
+        StartFailure::StoreNewer => Boot::StoreNewer {
+            found: 0,
+            supported: 0,
+        },
+        _ => Boot::Fatal {
+            code: fatal_code(error),
+        },
     }
 }
 
@@ -75,10 +141,13 @@ pub fn fatal_code(error: &ClientError) -> String {
     stable_code(code).to_owned()
 }
 
+/// The detail's `max-width` in characters (Splash.css `46ch`).
+const DETAIL_COLUMNS: f32 = 46.0;
+
 type Press = Rc<dyn Fn(&mut Window, &mut App)>;
 
 /// The splash: the brand, the status and detail, and the action when there is one. It fills its parent.
-pub fn splash(boot: &Boot, on_action: Option<Press>) -> AnyElement {
+pub fn splash(boot: &Boot, on_action: Option<Press>, on_secondary: Option<Press>) -> AnyElement {
     let status = div()
         .flex()
         .flex_col()
@@ -102,7 +171,7 @@ pub fn splash(boot: &Boot, on_action: Option<Press>) -> AnyElement {
         )
         .children(boot.detail().map(|detail| {
             // `max-width: 46ch` at the detail's size, centred.
-            let width = 46.0 * f32::from(text::SM) * MONO_ADVANCE;
+            let width = DETAIL_COLUMNS * f32::from(text::SM) * MONO_ADVANCE;
             div().flex().flex_col().items_center().children(
                 paragraph(
                     &detail,
@@ -120,6 +189,11 @@ pub fn splash(boot: &Boot, on_action: Option<Press>) -> AnyElement {
             .variant(ButtonVariant::Accent)
             .on_click(move |_, window, cx| on_action(window, cx))
     });
+    let secondary = boot.secondary_key().zip(on_secondary).map(|(key, press)| {
+        Button::new(ElementId::from("boot-secondary"), t(key))
+            .variant(ButtonVariant::Ghost)
+            .on_click(move |_, window, cx| press(window, cx))
+    });
     tracked(
         "boot-splash",
         div()
@@ -133,26 +207,27 @@ pub fn splash(boot: &Boot, on_action: Option<Press>) -> AnyElement {
             .p_6()
             .child(brand())
             .child(status)
-            .children(action),
+            .children(action)
+            .children(secondary),
     )
     .into_any_element()
 }
 
 /// "Starting dilla".
 pub fn loading() -> AnyElement {
-    splash(&Boot::Loading, None)
+    splash(&Boot::Loading, None, None)
 }
 
 /// "dilla could not start", with `on_retry` behind its action.
 pub fn fatal(
     error: &ClientError,
     on_retry: impl Fn(&mut Window, &mut App) + 'static,
+    on_sign_in: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
     splash(
-        &Boot::Fatal {
-            code: fatal_code(error),
-        },
+        &failure_boot(error),
         Some(Rc::new(on_retry)),
+        Some(Rc::new(on_sign_in)),
     )
 }
 
@@ -206,6 +281,43 @@ mod tests {
             fatal_code(&ClientError::Sync("some detail text".into())),
             "E_UNKNOWN"
         );
+    }
+
+    #[test]
+    fn failed_starts_are_sorted_like_the_webs_boot() {
+        use StartFailure::*;
+        let sync = |c: &str| ClientError::Sync(c.into());
+        assert_eq!(classify(&ClientError::Revoked), SignIn);
+        assert_eq!(classify(&ClientError::FactorRequired), SignIn);
+        assert_eq!(classify(&ClientError::NoIdentity), SignIn);
+        assert_eq!(classify(&sync("E_SESSION_SCOPE")), SignIn);
+        assert_eq!(classify(&sync("E_DEVICE_UNLISTED")), SignIn);
+        assert_eq!(classify(&sync("E_STORE_NEWER")), StoreNewer);
+        assert_eq!(classify(&sync("E_COMMIT_REQUIRED")), Fatal);
+        assert_eq!(classify(&ClientError::Network("x".into())), Fatal);
+        assert!(matches!(
+            failure_boot(&sync("E_STORE_NEWER")),
+            Boot::StoreNewer { .. }
+        ));
+    }
+
+    #[test]
+    fn the_failure_splashes_have_their_words_and_a_way_out() {
+        let fatal = Boot::Fatal { code: "E_X".into() };
+        assert_eq!(fatal.secondary_key(), Some("mobile.switchInstance"));
+        let newer = Boot::StoreNewer {
+            found: 9,
+            supported: 7,
+        };
+        assert!(newer.detail().unwrap().contains("data version 9"));
+        assert_eq!(newer.secondary_key(), None);
+        for key in [
+            newer.status_key(),
+            newer.action_key().unwrap(),
+            "mobile.switchInstance",
+        ] {
+            assert!(crate::strings::try_t(key).is_some(), "{key}");
+        }
     }
 
     #[test]
