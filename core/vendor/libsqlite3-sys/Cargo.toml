@@ -52,6 +52,11 @@ bundled-sqlcipher-vendored-openssl = [
     "bundled-sqlcipher",
     "openssl-sys/vendored",
 ]
+# DILLA PATCH (core/vendor/README.md): SQLite3 Multiple Ciphers with its built-in crypto, no OpenSSL.
+bundled-sqlite3mc = [
+    "bundled",
+    "dep:sqlite3mc-src",
+]
 bundled-windows = [
     "cc",
     "bundled_bindings",
@@ -114,6 +119,12 @@ default-features = false
 # DILLA PATCH (core/vendor/README.md): 0.39.1 pins =419.0.6 (SQLite 3.53.4); 420.0.0 bundles
 # SQLite 3.54.1, which fixes RUSTSEC-2026-0459.
 version = "=420.0.0"
+optional = true
+
+[build-dependencies.sqlite3mc-src]
+# DILLA PATCH (core/vendor/README.md): the same SQLite3MC 2.6.1 (SQLite 3.54.0) the browser core
+# compiles through sqlite-wasm-rs, for the `bundled-sqlite3mc` feature.
+version = "=206.1.0"
 optional = true
 
 [build-dependencies.syn]

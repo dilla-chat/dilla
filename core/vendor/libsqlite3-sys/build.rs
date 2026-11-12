@@ -28,6 +28,13 @@ macro_rules! cfg_select {
     }}
 }
 
+// DILLA PATCH (core/vendor/README.md): one SQLite copy per binary, so the two encrypting builds
+// cannot both be on.
+#[cfg(all(feature = "bundled-sqlcipher", feature = "bundled-sqlite3mc"))]
+compile_error!(
+    "feature \"bundled-sqlcipher\" and feature \"bundled-sqlite3mc\" cannot be enabled at the same time"
+);
+
 #[cfg(all(feature = "loadable_extension", feature = "preupdate_hook"))]
 compile_error!(
     "feature \"loadable_extension\" and feature \"preupdate_hook\" cannot be enabled at the same time"
@@ -142,6 +149,13 @@ mod build_bundled {
                 let dir = sqlcipher_src::source_dir();
                 (dir.to_owned(), dir.join(sqlcipher_src::SOURCE_FILE))
             }
+            // DILLA PATCH (core/vendor/README.md): the SQLite3 Multiple Ciphers amalgamation. Its
+            // directory holds `sqlite3mc_amalgamation.h`, not `sqlite3.h`, so the committed
+            // `sqlite3/` bindings are what this feature uses (not with `buildtime_bindgen`).
+            feature = "bundled-sqlite3mc" => {
+                let dir = sqlite3mc_src::source_dir();
+                (dir.to_owned(), dir.join(sqlite3mc_src::SOURCE_FILE))
+            }
             _ => {
                 let dir = format!("{}/{lib_name}", env!("CARGO_MANIFEST_DIR"));
                 let source = format!("{lib_name}/sqlite3.c");
@@ -186,6 +200,18 @@ mod build_bundled {
             .flag("-DHAVE_ISNAN")
             .flag("-D_POSIX_THREAD_SAFE_FUNCTIONS") // cross compile with MinGW
             .warnings(false);
+
+        // DILLA PATCH (core/vendor/README.md): SQLite3 Multiple Ciphers with its own crypto (no
+        // OpenSSL, no system library). ChaCha20-Poly1305 is the default cipher; the SQLCipher
+        // scheme stays compiled in so stores the SQLCipher build wrote keep opening.
+        // SQLITE3MC_SECURE_MEMORY makes `PRAGMA memory_security = fill` available (freed SQLite
+        // allocations are wiped); sqlite3mc has no mlock. Temporary data stays in memory.
+        if cfg!(feature = "bundled-sqlite3mc") {
+            cfg.flag("-DCODEC_TYPE=CODEC_TYPE_CHACHA20")
+                .flag("-DSQLITE3MC_SECURE_MEMORY=1")
+                .flag("-DSQLITE_TEMP_STORE=2")
+                .flag("-DHAVE_STDINT_H=1");
+        }
 
         if cfg!(feature = "bundled-sqlcipher") {
             cfg.flag("-DSQLITE_HAS_CODEC")

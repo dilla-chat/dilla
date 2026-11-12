@@ -6,7 +6,9 @@
 > memory through a crafted `-wal` file; the native SQLCipher
 > store must be built on a fixed SQLite, not only have a clean Cargo.lock.
 > Wired by `[patch.crates-io] libsqlite3-sys` in the root `Cargo.toml`.
-> **Remove once upstream ships sqlcipher-src >= 420.**
+> **Second change (Task 6b):** a `bundled-sqlite3mc` feature that compiles the SQLite3 Multiple
+> Ciphers amalgamation from `sqlite3mc-src =206.1.0` with its built-in crypto (no OpenSSL); the
+> native store builds with it, and nothing enables `bundled-sqlcipher` any more.
 
 # Rusqlite
 

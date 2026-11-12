@@ -11,6 +11,55 @@ clippy` and the workspace lints do not touch it.
 Upstream: <https://github.com/rusqlite/rusqlite> (`libsqlite3-sys/`; `.cargo_vcs_info.json` has the
 commit). MIT.
 
+Two changes. The second is what the native store builds with today.
+
+### 2. `bundled-sqlite3mc`: SQLite3 Multiple Ciphers, no OpenSSL (Task 6b, 2026-11-12)
+
+A new feature, `bundled-sqlite3mc = ["bundled", "dep:sqlite3mc-src"]`, with the build-dependency
+`sqlite3mc-src = "=206.1.0"` (SQLite3MC 2.6.1 on SQLite 3.54.0; MIT, with the CC0-1.0 / Unlicense
+parts `deny.toml` already allows for that crate). It is the same release, from the same crate,
+that the browser core compiles through sqlite-wasm-rs 0.6.3, so the native and browser stores are
+one cipher implementation. Edits, all marked `DILLA PATCH`:
+
+- `Cargo.toml` and `Cargo.toml.orig`: the feature and the optional build-dependency.
+- `build.rs`:
+  - a `compile_error!` when `bundled-sqlcipher` and `bundled-sqlite3mc` are both on (one SQLite
+    per binary);
+  - `build_bundled` compiles `sqlite3mc_src::source_dir()/sqlite3mc_amalgamation.c` instead of
+    `sqlite3/sqlite3.c`, with the usual bundled flags plus `-DCODEC_TYPE=CODEC_TYPE_CHACHA20` (the
+    default cipher), `-DSQLITE3MC_SECURE_MEMORY=1` (makes `PRAGMA memory_security = fill`
+    available: freed SQLite memory is wiped; sqlite3mc has no mlock), `-DSQLITE_TEMP_STORE=2` and
+    `-DHAVE_STDINT_H=1`. The crypto is sqlite3mc's own C code; nothing links OpenSSL or a system
+    crypto library (`cargo tree -i openssl-sys` is empty).
+
+Rusqlite has no such feature, so each native crate that opens a store (`dilla-core`,
+`dilla-bot-core`, `clients/desktop/dilla-client`, `testkit`) asks for
+`rusqlite = { features = ["bundled"] }` plus `libsqlite3-sys = { features = ["bundled-sqlite3mc"] }`,
+and feature unification hands rusqlite that one copy.
+
+Bindings: the committed `sqlite3/bindgen_bundled_version.rs` (SQLite 3.54.1 headers) is used; the
+library is 3.54.0. Patch releases add no API, so the bindings are sound; `buildtime_bindgen` is not
+supported with this feature (the amalgamation's header is `sqlite3mc_amalgamation.h`, not
+`sqlite3.h`). `DEP_SQLITE3_INCLUDE` points at the sqlite3mc directory.
+
+Why: dilla-core's SQLCipher linked vendored OpenSSL, and LiveKit's prebuilt libwebrtc carries
+BoringSSL with an incomplete rename list, so the desktop client could not link dilla-core and
+LiveKit into one binary (208 duplicate symbols; Jonas's ruling R14). Regression tests:
+`core/dilla-core/tests/sqlite3mc_build.rs` (sqlite3mc linked, SQLite >= 3.54.0, no
+openssl-sys / sqlcipher-src in Cargo.lock), `core/dilla-core/tests/native_store.rs` (ChaCha20
+stores, and SQLCipher 4 files from the old build still open) and
+`clients/desktop/dilla-media/tests/link.rs` (one binary uses both).
+
+RUSTSEC-2026-0459 is fixed in SQLite 3.54.0, which sqlite3mc-src 206.1.0 bundles.
+
+Keep this patch until upstream libsqlite3-sys can build SQLite3 Multiple Ciphers itself.
+
+### 1. `sqlcipher-src` 420 (RUSTSEC-2026-0459; no longer built)
+
+No crate enables `bundled-sqlcipher` since Task 6b, so this pin is dormant (sqlcipher-src and
+openssl-sys left Cargo.lock); it stays so the feature still builds a fixed SQLite if anyone turns
+it on, and is dropped with the copy.
+
 One change, in `Cargo.toml` (and the same line in `Cargo.toml.orig`): the `sqlcipher-src`
 build-dependency requirement moves from `=419.0.6` to `=420.0.0`. Nothing else is edited; `build.rs`
 uses the same `sqlcipher_src::source_dir()` / `SOURCE_FILE` API, which 420.0.0 keeps unchanged
@@ -22,8 +71,8 @@ size). The advisory itself notes that `bundled-sqlcipher` in libsqlite3-sys 0.39
 which bundles SQLCipher 4.19.0 on SQLite 3.53.4, so the native store dilla-core, dilla-bot-core and
 the testkit build with `bundled-sqlcipher-vendored-openssl` stayed vulnerable even with the
 advisory resolved in Cargo.lock. `sqlcipher-src 420.0.0` bundles SQLCipher 4.20.0 on SQLite 3.54.1.
-Regression test: `core/dilla-core/tests/sqlcipher_build.rs` (`sqlite_version()` >= 3.54.1 with
-`PRAGMA cipher_version` non-empty on a keyed connection); it fails with this patch removed.
+Its regression test, `core/dilla-core/tests/sqlcipher_build.rs`, became `sqlite3mc_build.rs` in
+Task 6b.
 
 Known leftover: the pre-generated `sqlcipher/bindgen_bundled_version.rs` still comes from the
 3.53.4 headers, so the compile-time `SQLITE_VERSION*` constants in the bindings say 3.53.4. The
@@ -35,8 +84,8 @@ from sqlite-wasm-rs, which carries its own SQLite. That side is fixed without a 
 sqlite-wasm-rs 0.6.3 builds SQLite3MC 2.6.1 on SQLite 3.54.0 (`sqlite3mc-src =206.1.0`), see
 "Retired" below.
 
-Remove this copy and the patch entry once upstream ships sqlcipher-src >= 420 (a libsqlite3-sys
-release whose `sqlcipher-src` requirement is 420.0.0 or later).
+Since Task 6b the native store builds its own SQLite3MC too (change 2), from the same
+`sqlite3mc-src` release.
 
 ## Retired: sqlite-wasm-vfs 0.2.0
 
