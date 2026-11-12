@@ -1,0 +1,118 @@
+diff --git a/core/dilla-bot-core/src/store.rs b/core/dilla-bot-core/src/store.rs
+index 8e55064ef..7cf566222 100644
+--- a/core/dilla-bot-core/src/store.rs
++++ b/core/dilla-bot-core/src/store.rs
+@@ -773,4 +773,113 @@ mod tests {
+             StoreError::Binding,
+         );
+     }
++
++    // TEMPORARY fixture generator (Task 6b): runs only against the pre-change SQLCipher build.
++    #[test]
++    #[ignore = "fixture generator"]
++    fn generate_sqlcipher4_fixtures() {
++        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
++        let core = root.join("core/dilla-core/tests/fixtures/sqlcipher4");
++        let bot = root.join("core/dilla-bot-core/tests/fixtures/sqlcipher4");
++        fs::create_dir_all(&core).unwrap();
++        fs::create_dir_all(&bot).unwrap();
++        // dilla-core: SQLCipher 4 raw-key files, the keying every native store used before 6b.
++        let core_key = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
++        let fill = |c: &Connection| {
++            c.execute_batch(&format!(
++                "PRAGMA key = \"x'{core_key}'\"; PRAGMA cipher_memory_security=ON; PRAGMA temp_store=MEMORY;"
++            ))
++            .unwrap();
++            let v: String = c.query_row("PRAGMA cipher_version", [], |r| r.get(0)).unwrap();
++            assert!(v.starts_with("4."), "{v}");
++        };
++        let write_rows = |c: &Connection| {
++            c.execute_batch(
++                "CREATE TABLE legacy(id INTEGER PRIMARY KEY, label TEXT NOT NULL, payload BLOB NOT NULL); \
++                 INSERT INTO legacy(label,payload) VALUES('legacy-plaintext-marker', x'00010203'), \
++                 ('second row', zeroblob(3000)), ('third row', x'ff');",
++            )
++            .unwrap();
++        };
++        let db = core.join("legacy.db");
++        let _ = fs::remove_file(&db);
++        {
++            let c = Connection::open(&db).unwrap();
++            fill(&c);
++            c.execute_batch("PRAGMA journal_mode=DELETE;").unwrap();
++            write_rows(&c);
++        }
++        // A hot WAL: the -wal file is copied while the writer still holds it, as after a crash.
++        let tmp = dir();
++        let live = tmp.join("legacy-wal.db");
++        {
++            let c = Connection::open(&live).unwrap();
++            fill(&c);
++            let mode: String = c.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0)).unwrap();
++            assert_eq!(mode, "wal");
++            c.execute_batch("PRAGMA wal_autocheckpoint=0; CREATE TABLE early(v TEXT); INSERT INTO early VALUES('checkpointed');").unwrap();
++            c.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())).unwrap();
++            write_rows(&c);
++            for name in ["legacy-wal.db", "legacy-wal.db-wal"] {
++                fs::copy(tmp.join(name), core.join(name)).unwrap();
++            }
++        }
++        assert!(fs::metadata(core.join("legacy-wal.db-wal")).unwrap().len() > 0);
++        // dilla-bot-core: a store made by Store::open itself (binding 1/2/3, key 0x41 * 32).
++        let make_bot = |hot_wal: bool| -> PathBuf {
++            let p = dir();
++            let s = open(&p).unwrap();
++            s.conn
++                .lock()
++                .unwrap()
++                .execute(
++                    "INSERT INTO bot_state(area,key,revision,value) VALUES(1,?1,1,?2)",
++                    params![b"fixture-key".as_slice(), b"legacy-bot-value".as_slice()],
++                )
++                .unwrap();
++            if hot_wal {
++                let out = bot.join("hot-wal");
++                fs::create_dir_all(&out).unwrap();
++                for name in ["state.db", "state.db-wal"] {
++                    fs::copy(p.join(name), out.join(name)).unwrap();
++                }
++            }
++            drop(s);
++            p
++        };
++        let clean = make_bot(false);
++        assert!(!clean.join("state.db-wal").exists() || fs::metadata(clean.join("state.db-wal")).unwrap().len() == 0);
++        let out = bot.join("clean");
++        fs::create_dir_all(&out).unwrap();
++        fs::copy(clean.join("state.db"), out.join("state.db")).unwrap();
++        make_bot(true);
++        assert!(fs::metadata(bot.join("hot-wal/state.db-wal")).unwrap().len() > 0);
++    }
++
++    #[test]
++    #[ignore = "fixture check"]
++    fn check_sqlcipher4_fixtures_on_old_build() {
++        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
++        let core = root.join("core/dilla-core/tests/fixtures/sqlcipher4");
++        for (name, wal) in [("legacy.db", false), ("legacy-wal.db", true)] {
++            let t = dir();
++            fs::copy(core.join(name), t.join(name)).unwrap();
++            if wal { fs::copy(core.join(format!("{name}-wal")), t.join(format!("{name}-wal"))).unwrap(); }
++            let c = Connection::open(t.join(name)).unwrap();
++            c.execute_batch("PRAGMA key = \"x'000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'\";").unwrap();
++            let n: i64 = c.query_row("SELECT count(*) FROM legacy", [], |r| r.get(0)).unwrap();
++            let l: String = c.query_row("SELECT label FROM legacy WHERE id=1", [], |r| r.get(0)).unwrap();
++            println!("{name}: {n} rows, {l}");
++        }
++        for sub in ["clean", "hot-wal"] {
++            let t = dir();
++            for f in ["state.db", "state.db-wal"] {
++                let src = root.join("core/dilla-bot-core/tests/fixtures/sqlcipher4").join(sub).join(f);
++                if src.exists() { fs::copy(&src, t.join(f)).unwrap(); fs::set_permissions(t.join(f), fs::Permissions::from_mode(0o600)).unwrap(); }
++            }
++            let s = open(&t).unwrap();
++            let v: Vec<u8> = s.conn.lock().unwrap().query_row("SELECT value FROM bot_state WHERE key=?1", [b"fixture-key".as_slice()], |r| r.get(0)).unwrap();
++            println!("{sub}: {}", String::from_utf8(v).unwrap());
++        }
++    }
+ }

@@ -22,7 +22,7 @@ fn main() {
 
 fn suppress_database_diagnostics() -> Result<(), ()> {
     type SqliteLog = unsafe extern "C" fn(*mut libc::c_void, libc::c_int, *const libc::c_char);
-    // A null SQLite log callback suppresses SQLCipher's default stderr diagnostics.
+    // A null SQLite log callback suppresses SQLite's default stderr diagnostics.
     let rc = unsafe {
         rusqlite::ffi::sqlite3_config(
             rusqlite::ffi::SQLITE_CONFIG_LOG,

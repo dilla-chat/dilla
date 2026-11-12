@@ -18,16 +18,11 @@ allow = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "Unicode-3.0",
          "Zlib", "MPL-2.0", "ISC", "0BSD"]
 confidence-threshold = 0.9
 
-# sqlcipher-src carries the SQLCipher amalgamation the native store is built from (build-dependency
-# of the patched libsqlite3-sys, core/vendor/README.md): SQLite's public-domain blessing and
-# libtomcrypt's WTFPL-style licence. Scoped to that one crate so nothing else may use either.
-[[licenses.exceptions]]
-crate = "sqlcipher-src"
-allow = ["blessing", "WTFPL"]
-
-# sqlite3mc-src carries the SQLite3 Multiple Ciphers amalgamation the browser store is built from
-# (build-dependency of sqlite-wasm-rs 0.6): SQLite's public-domain dedication as CC0-1.0, and the
-# Unlicense / CC0-1.0 parts of the bundled cipher sources. Scoped to that one crate.
+# sqlite3mc-src carries the SQLite3 Multiple Ciphers amalgamation both stores are built from: the
+# browser's (build-dependency of sqlite-wasm-rs 0.6) and, since Task 6b, the native one (of the
+# patched libsqlite3-sys, core/vendor/README.md). SQLite's public-domain dedication as CC0-1.0, and
+# the Unlicense / CC0-1.0 parts of the bundled cipher sources. Scoped to that one crate.
+# (sqlcipher-src, with its blessing / WTFPL exception, left the graph with SQLCipher in Task 6b.)
 [[licenses.exceptions]]
 crate = "sqlite3mc-src"
 allow = ["CC0-1.0", "Unlicense"]

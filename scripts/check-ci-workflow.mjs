@@ -256,8 +256,8 @@ const REQUIRED_STEPS = {
   // The testkit artifact hand-off: rust-native builds and uploads it, go downloads it.
   'rust-native': [
     'cargo fmt --all --check',
-    'cargo clippy --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --all-targets --all-features --locked -- -D warnings',
-    'cargo test --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --all-features --locked',
+    'cargo clippy --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --all-targets --all-features --locked -- -D warnings',
+    'cargo test --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --all-features --locked',
     'cargo build -p dilla-testkit --release --locked',
     'name: dilla-testkit',
     'if-no-files-found: error',

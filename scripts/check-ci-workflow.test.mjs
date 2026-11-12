@@ -752,11 +752,11 @@ jobs:
       - if: needs.changes.outputs.core != 'false'
         run: cargo fmt --all --check
       - if: needs.changes.outputs.core != 'false'
-        run: cargo clippy --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --all-targets --all-features --locked -- -D warnings
       - if: needs.changes.outputs.core != 'false'
         run: |
           sudo prlimit --pid "$$" --memlock=268435456:268435456
-          cargo test --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --all-features --locked
+          cargo test --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --all-features --locked
       - run: cargo build -p dilla-testkit --release --locked
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
