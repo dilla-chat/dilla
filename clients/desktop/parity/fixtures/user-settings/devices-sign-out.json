@@ -1,0 +1,55 @@
+{
+  "name": "user-settings/devices-sign-out",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "ada",
+  "route": "/settings/devices",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "role=button[name=\"Sign out\"]",
+      "gpui": "device-0-action"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

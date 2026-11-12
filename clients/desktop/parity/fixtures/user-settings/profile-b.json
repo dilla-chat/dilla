@@ -1,0 +1,63 @@
+{
+  "name": "user-settings/profile-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/settings/profile",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada Lindqvist-Bergström of the Northern Release Train",
+        "status": "Heads down until the 14th, ping me for anything that blocks the release train",
+        "bio": "Maintainer of the release train.\nOn call every other week, so expect slow replies on those. Ask me about voice, the build pipeline and why the staging box is called Bifrost."
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          }
+        ]
+      },
+      {
+        "id": "asgard",
+        "name": "Asgard Platform Engineering Working Group",
+        "owner": "mira",
+        "members": [
+          "ada",
+          "mira"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          }
+        ]
+      }
+    ]
+  }
+}
