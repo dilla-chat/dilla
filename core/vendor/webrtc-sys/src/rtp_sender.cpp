@@ -151,13 +151,19 @@ RtpSender::RtpSender(
       peer_connection_(std::move(peer_connection)) {}
 
 bool RtpSender::set_track(std::shared_ptr<MediaStreamTrack> track) const {
-  // DILLA PATCH: the transform for the incoming track is attached before the swap, so no frame of the
-  // new track meets a sender without it or the old track's binding. A null track binds to no track.
+  // DILLA PATCH: a sender's transformer is never replaced (libwebrtc's ChannelSend takes one
+  // transformer delegate per stream; a second is an RTC_DCHECK). Under the dilla hook a sender takes
+  // only the track its transformer was attached for (back after a null swap); any other track is
+  // refused, so no frame of it can meet another track's binding. A null track sends nothing.
   webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> rtc_track;
   if (track) {
     rtc_track = track->rtc_track();
   }
-  dilla_attach_sender_for_track(sender_, rtc_track ? rtc_track->id() : std::string());
+  if (dilla_owns_transforms() && rtc_track &&
+      !dilla_sender_accepts_track(sender_, rtc_track->id())) {
+    RTC_LOG(LS_WARNING) << "dilla: set_track refused: the sender's transformer is bound to another track";
+    return false;
+  }
   return sender_->SetTrack(rtc_track.get());
 }
 

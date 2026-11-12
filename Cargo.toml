@@ -50,3 +50,10 @@ openmls_memory_storage = { git = "https://github.com/openmls/openmls", rev = "e0
 openmls_serialization_helpers = { git = "https://github.com/openmls/openmls", rev = "e0b21a70a55a9014b8de2772b36bf3d638adad51" }
 openmls_rust_crypto = { git = "https://github.com/openmls/openmls", rev = "e0b21a70a55a9014b8de2772b36bf3d638adad51" }
 openmls_basic_credential = { git = "https://github.com/openmls/openmls", rev = "e0b21a70a55a9014b8de2772b36bf3d638adad51" }
+# LiveKit's webrtc-sys 0.3.53 with the dilla-sframe/1 encoded-frame hook (Tasks 2 and 11): every
+# RtpSender and RtpReceiver gets dilla's transformer, and no PeerConnection is created without one
+# installed. core/vendor/README.md, "webrtc-sys 0.3.53".
+webrtc-sys = { path = "core/vendor/webrtc-sys" }
+# LiveKit's libwebrtc 0.4.0 with a track's C++ handle public (Task 11), so a receiver is bound by
+# its own track object, never by a track id the SFU chose. core/vendor/README.md, "libwebrtc 0.4.0".
+libwebrtc = { path = "core/vendor/libwebrtc" }

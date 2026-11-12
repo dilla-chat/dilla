@@ -47,6 +47,8 @@ fn dilla_core_store_and_livekit_webrtc_link_into_one_binary() {
     let secret = dilla_core::sframe::sframe_secret(&[7; dilla_core::sframe::NK]);
     assert_ne!(secret, [0; 32]);
 
+    // Task 11: no PeerConnection exists without the dilla-sframe/1 hook (E_DILLA_NO_FRAME_HOOK).
+    dilla_media::transform::Router::get().expect("the dilla hook installs");
     let factory = PeerConnectionFactory::default();
     let pc = factory
         .create_peer_connection(RtcConfiguration::default())

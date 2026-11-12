@@ -14,7 +14,26 @@ workspace = true
 dilla-core = { path = "../../../core/dilla-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 livekit = "=0.10.1"
+# The dilla-sframe/1 hook (core/vendor/webrtc-sys, patched in the root Cargo.toml): the same crate
+# livekit links, used directly for `dilla_transform`.
+webrtc-sys = "=0.3.53"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+zeroize = "1"
+# The enhanced noise mode: DeepFilterNet3 (MIT OR Apache-2.0, model embedded; NOTICE.md of the
+# crate: the weights are licensed like the code since upstream 7b14b89), on tract, pure Rust.
+deep-filter-rt = "=0.2.0"
+ndarray = "0.17"
 
 [dev-dependencies]
 # tests/link.rs (Task 6b): open flags for the keyed store; the same rusqlite dilla-core links.
 rusqlite = "=0.41.1"
+# tests/call.rs: real call-group keys from a `ClientCore` and a `DillaGroup` member, through
+# dilla-core's own test fixtures (tests/client_support), which need these (already in the lock).
+openmls = { version = "=0.9.0", default-features = false }
+openmls_rust_crypto = "=0.6.0"
+openmls_traits = "=0.6.0"
+openmls_basic_credential = "=0.6.0"
+tls_codec = { version = "=0.5.0", features = ["derive", "serde", "mls"] }

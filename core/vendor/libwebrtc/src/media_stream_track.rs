@@ -30,7 +30,9 @@ pub enum MediaStreamTrack {
 impl MediaStreamTrack {
     enum_dispatch!(
         [Video, Audio];
-        pub(crate) fn sys_handle(self: &Self) -> cxx::SharedPtr<webrtc_sys::media_stream::ffi::MediaStreamTrack>;
+        // DILLA PATCH (core/vendor/README.md): public, so dilla-media can find the transformer
+        // attached for this exact track object (webrtc_sys::dilla_transform::receiver_handle).
+        pub fn sys_handle(self: &Self) -> cxx::SharedPtr<webrtc_sys::media_stream::ffi::MediaStreamTrack>;
     );
 }
 
@@ -62,8 +64,10 @@ macro_rules! media_stream_track {
             self.handle.state().into()
         }
 
+        // DILLA PATCH (core/vendor/README.md): public, so dilla-media can find the transformer
+        // attached for this exact track object (webrtc_sys::dilla_transform::receiver_handle).
         #[cfg(not(target_arch = "wasm32"))]
-        pub(crate) fn sys_handle(
+        pub fn sys_handle(
             &self,
         ) -> cxx::SharedPtr<webrtc_sys::media_stream::ffi::MediaStreamTrack> {
             self.handle.sys_handle()

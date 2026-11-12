@@ -102,9 +102,11 @@ Upstream: <https://github.com/livekit/rust-sdks> (`webrtc-sys/`; `.cargo_vcs_inf
 commit). Apache-2.0. The published copy is the first commit that adds it (`vendor: webrtc-sys 0.3.53
 as published`), so `git diff` of that commit's successor shows the whole patch.
 
-Used today only by `experiments/gpui-voice-proof`, through that standalone workspace's own
-`[patch.crates-io]`; the root workspace does not patch it yet. `experiments/gpui-voice-proof/REPORT.md`
-is the evidence.
+Patched into the root workspace (`[patch.crates-io]` in `Cargo.toml`, Task 11) for `dilla-media`,
+which installs its hook (`dilla_media::transform::Router`) before the process's first
+PeerConnection. `experiments/gpui-voice-proof` (its own workspace and `[patch.crates-io]`) holds the
+original evidence, `experiments/gpui-voice-proof/REPORT.md`; `clients/desktop/dilla-media/tests/`
+(`glue.rs`, `hook_enforced.rs`, `call.rs`) covers the current glue.
 
 What it adds: a process-wide encoded-frame hook for dilla-sframe/1 (protocol/05), on LiveKit's
 prebuilt libwebrtc as it is downloaded (libwebrtc itself is not rebuilt). LiveKit's Rust SDK exposes
@@ -114,32 +116,68 @@ trailer transformer only adds metadata), so the hook is glue implementing libweb
 
 - New files, wholly dilla's: `include/livekit/dilla_transform.h`, `src/dilla_transform.cpp`,
   `src/dilla_transform.rs` (the cxx bridge and the Rust API: `dilla_transform::install(Box<dyn
-  FrameTransform>)`, `FrameTransform::transform(&FrameInfo, &[u8], &mut Vec<u8>) -> Verdict`, with
-  `Verdict::{Drop, Replace, Hold, PassUnchanged}`).
+  FrameTransform>)`, `FrameTransform::{attached, detached, transform, hold_expired, pass_refused,
+  sif_trailer, key_frame_requests}`, `Verdict::{Drop, Replace, Hold, PassUnchanged}`, `drain`,
+  `request_key_frame`, `receiver_handle` / `sender_handle`, and `testing`: a transformer fed
+  synthetic frames without a PeerConnection, through libwebrtc's own test-mock frame class names,
+  which the prebuilt library does not define).
 - `build.rs`, `src/lib.rs`: build and export the new bridge.
 - `src/peer_connection_factory.cpp`: the hook is mandatory. `create_peer_connection` throws
   `E_DILLA_NO_FRAME_HOOK` when no hook is installed, so a missing or late `install` can never fall
   back to LiveKit's own FrameCryptor or to no transform
-  (`experiments/gpui-voice-proof/tests/mandatory_hook.rs`).
+  (`clients/desktop/dilla-media/tests/hook_enforced.rs`).
 - `src/peer_connection.cpp`: `add_track`, `add_transceiver` and `add_transceiver_for_media`
   attach a `DillaFrameTransformer` to the new sender before the negotiation that starts its RTP (a
   sender without a track gets one bound to no track, which drops every frame), so no sender exists
   without one; `OnTrack` attaches one to the receiver synchronously, before Rust learns of the
   track.
-- `src/rtp_sender.cpp`: `set_track` attaches a fresh one bound to the incoming track's id *before*
-  `SetTrack`, so no frame of the new track meets the old binding or no transformer (a null track
-  binds to no track; upstream dereferenced a null track here).
+- `src/rtp_sender.cpp`: `set_track` never replaces a sender's transformer. libwebrtc's ChannelSend
+  takes one transformer delegate per stream (a second is an `RTC_DCHECK`), so under the hook a
+  sender takes back only the track its transformer was attached for (after a null swap); any other
+  track is refused (`set_track` answers false). dilla-media never needs one: it switches the
+  microphone device under the same track. (Task 2's glue attached a fresh transformer here; upstream
+  dereferenced a null track here.)
+- `include/livekit/frame_cryptor.h`: LiveKit's `KeyProvider::set_sif_trailer` (the room's
+  server-injected-frame trailer from the join response) is also handed to the hook, which drops a
+  frame ending in it before any SFrame header is parsed.
 - `src/frame_cryptor.cpp`, `src/packet_trailer.cpp`: while a hook is installed, LiveKit's
   `FrameCryptorTransformer`, its chained packet-trailer transformer and the packet-trailer handlers
   are never set on a sender or receiver, so nothing replaces the hook (protocol/05 refuses packet
   trailers anyway).
 
+Every transformer has an opaque handle, process-unique and never reused, which Rust learns when the
+transformer is attached (`attached`) and which names it in every later call. A receiver is bound by
+that handle, found from the subscribed track's own C++ object (`receiver_handle`, compared by
+identity; see libwebrtc 0.4.0 below), never by a track id string the SFU chose; dilla-media refuses a
+second bind of a handle.
+
 The transformer has no pass-through of its own: every frame goes to Rust, and only a frame Rust
-answers `Replace` (sealed or authenticated bytes) or `PassUnchanged` (a zero-byte audio frame) goes
-on. `Hold` keeps the frame in a strict per-track FIFO bounded by protocol/05's 2 000 ms, 256 frames
-and 8 MiB, retried on every later frame; past a bound the oldest is dropped and reported.
+answers `Replace` (sealed or authenticated bytes) or `PassUnchanged` goes on. `PassUnchanged` is
+enforced in C++: it forwards only a zero-byte Opus frame on an audio transformer and drops (and
+reports, `pass_refused`) anything else so answered. `Hold` keeps the frame in a strict
+per-transformer FIFO bounded by protocol/05's 2 000 ms, 256 frames and 8 MiB; the FIFO is retried on
+every later frame, on every `drain` (dilla-media calls it after each key install and each binding)
+and every 20 ms on the hook's own timer thread, so a held frame of a silent track still expires.
+Past a bound the oldest is dropped and reported, never released unauthenticated. The same timer
+sends the key-frame requests the hook asks for (`key_frame_requests`) through
+`VideoTrackSourceInterface::GenerateKeyFrame` on the receiving track's source, which libwebrtc turns
+into an RTCP PLI to the publisher.
 
 Remove this copy when upstream exposes an equivalent custom frame transformer.
+
+## libwebrtc 0.4.0
+
+Upstream: <https://github.com/livekit/rust-sdks> (`libwebrtc/`; `.cargo_vcs_info.json` has the
+commit). Apache-2.0. The published copy is the first commit that adds it (`vendor: libwebrtc 0.4.0 as
+published`), so the diff of that commit's successor shows the whole patch. Patched into the root
+workspace (`[patch.crates-io]`, Task 11).
+
+The one change (`src/media_stream_track.rs`, `DILLA PATCH`): `sys_handle()` of `RtcAudioTrack`,
+`RtcVideoTrack` and `MediaStreamTrack` is public instead of `pub(crate)`, so dilla-media can hand a
+subscribed track's own C++ object to `webrtc_sys::dilla_transform::receiver_handle` and bind the
+receiver's transformer by identity rather than by a track id the SFU chose.
+
+Remove this copy when upstream makes the handle public or the webrtc-sys hook is upstreamed.
 
 ## Retired: sqlite-wasm-vfs 0.2.0
 

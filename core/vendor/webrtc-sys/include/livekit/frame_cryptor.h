@@ -25,6 +25,8 @@
 #include "api/crypto/frame_crypto_transformer.h"
 #include "api/scoped_refptr.h"
 #include "livekit/peer_connection.h"
+// DILLA PATCH: the dilla-sframe/1 encoded-frame hook (SIF trailer forward).
+#include "livekit/dilla_transform.h"
 #include "livekit/peer_connection_factory.h"
 #include "livekit/rtp_receiver.h"
 #include "livekit/rtp_sender.h"
@@ -116,6 +118,9 @@ class KeyProvider {
     std::vector<uint8_t> trailer_vec;
     std::copy(trailer.begin(), trailer.end(), std::back_inserter(trailer_vec));
     impl_->SetSifTrailer(trailer_vec);
+    // DILLA PATCH: the room's server-injected-frame trailer also goes to the dilla hook, which drops
+    // a frame ending in it before any SFrame header is parsed (protocol/05 "Authenticity").
+    dilla_set_sif_trailer(trailer_vec);
   }
 
   webrtc::scoped_refptr<webrtc::KeyProvider> rtc_key_provider() { return impl_; }
