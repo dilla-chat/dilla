@@ -11,8 +11,12 @@ publish = false
 workspace = true
 
 [features]
-# Task 5: the sign-up, server and world helpers tests share (src/testing.rs). Never in a shipping build.
-testing = []
+# Task 5: what tests and the parity harness share (src/testing.rs). Never in a shipping build.
+# `testing`: the screen fixture schema (testing/spec.rs), pure data: the automation build of dilla-desktop reads it.
+testing = ["dep:sha2"]
+# `testing-host`: a real dillad and accounts made the way the app makes them (testing/host.rs). It links the testkit
+# (AGPL-3.0-or-later), so only tests, examples and the parity world enable it, through the dev-dependency below.
+testing-host = ["testing", "dep:dilla-testkit", "dep:hmac", "dep:sha1"]
 
 # Every dependency the later desktop tasks need is declared here so Cargo.lock is settled once.
 [dependencies]
@@ -49,7 +53,15 @@ rustls-native-certs = "0.8"
 open = "5.4.5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
+# Task 5: the testing helpers' own dependencies, behind the features above.
+sha2 = { version = "0.11", optional = true }
+dilla-testkit = { path = "../../../testkit", optional = true }
+hmac = { version = "0.13", optional = true }
+sha1 = { version = "0.11", optional = true }
+
 [dev-dependencies]
+# Tests and examples get the real-dillad helpers (src/testing/host.rs) without a feature flag.
+dilla-client = { path = ".", features = ["testing-host"] }
 # The real-dillad tests enrol an account the way every native peer does.
 dilla-testkit = { path = "../../../testkit" }
 # RFC 6238 for the sign-in tests; both are already in the lock (the testkit's second factor uses them).

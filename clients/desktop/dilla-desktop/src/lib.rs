@@ -45,6 +45,23 @@ pub fn tracked_box(id: &'static str, child: impl IntoElement) -> impl IntoElemen
     wrapper
 }
 
+/// [`tracked_box`] for an element that owns the focus handle `handle`: the automation interface's `focused` command
+/// answers `id` while `handle` holds the focus. Without the `automation` feature the handle is not used.
+pub fn tracked_focus<C: IntoElement>(
+    id: &'static str,
+    handle: &gpui::FocusHandle,
+    child: C,
+) -> impl IntoElement + use<C> {
+    let wrapper = div().id(id).relative().flex_none().child(child);
+    #[cfg(feature = "automation")]
+    let wrapper = wrapper
+        .child(automation::bounds_probe(id))
+        .child(automation::focus_probe(id, handle));
+    #[cfg(not(feature = "automation"))]
+    let _ = handle;
+    wrapper
+}
+
 struct Installed;
 impl Global for Installed {}
 

@@ -21,11 +21,15 @@ for v in good wrong-colour border-shift layout-shift fallback-font; do
     echo "$line"
     continue
   fi
+  # The checker answers PASS or FAIL (exit status 1 on FAIL). Anything else is a crash, not a verdict: it must never
+  # pass for the expected FAIL of a wrong render.
   res=$("$bin" check "$ref" "$out/$os-neg-$v-2x.png" "$max_delta" "$max_pct" || true)
   want=FAIL; [ "$v" = good ] && want=PASS
   got=${res%% *}
   verdict=ok
-  if [ "$v" = border-shift ]; then
+  if [ "$got" != PASS ] && [ "$got" != FAIL ]; then
+    verdict="CRASH: the checker answered \`$res\`"; status=1
+  elif [ "$v" = border-shift ]; then
     # Known gap, recorded in REPORT.md: a pure 1px border shift is below this gate's resolution (it passes).
     verdict="KNOWN-GAP: should FAIL, passes"; [ "$got" = PASS ] || verdict=ok
   elif [ "$got" != "$want" ]; then

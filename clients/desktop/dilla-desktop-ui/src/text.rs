@@ -67,11 +67,13 @@ impl Face {
 }
 
 /// What a test build hooks into every line: an overlay that reports the line's box (the automation interface's
-/// `text-bounds`), and a family that replaces every face (the parity test's fallback-font control).
+/// `text-bounds`), a family that replaces every face (the parity test's fallback-font control) and `hidden`, which paints
+/// every glyph transparent so a frame shows exactly the pixels the glyphs would cover (the text mask's control).
 #[derive(Clone, Copy, Default)]
 pub struct Hooks {
     pub probe: Option<fn() -> AnyElement>,
     pub family: Option<&'static str>,
+    pub hidden: bool,
 }
 
 static HOOKS: OnceLock<Hooks> = OnceLock::new();
@@ -182,7 +184,11 @@ impl Line {
         TextRun {
             len,
             font,
-            color: self.color,
+            color: if hooks().is_some_and(|h| h.hidden) {
+                transparent_black()
+            } else {
+                self.color
+            },
             background_color: None,
             underline: None,
             strikethrough: None,
