@@ -5,7 +5,7 @@
 import { expect } from '@playwright/test';
 import { GpuiPeer } from './support/gpui-peer';
 import {
-  CONTROL_URL, HEX32, PUBLIC_URL, TEST_TIMEOUT, WAIT, addServerVia, copy, expectComposerReady, instanceInvite,
+  CONTROL_URL, HEX32, PUBLIC_URL, TEST_TIMEOUT, WAIT, addServerVia, copy, ensureMembersOpen, expectComposerReady, instanceInvite,
   makeInviteLink, messageRow, railItem, sendText, signUp, tag, test,
 } from './support/app';
 
@@ -37,12 +37,29 @@ test('native client and web client exchange messages', async ({ page, instanceNa
     const channel = await peer.channel(community, 'general');
     expect(channel).toMatch(HEX32);
 
+    // The web user owns the server it made: its id is what the native client must show as the author.
+    const webUser = await peer.owner(community);
+    expect(webUser).toMatch(HEX32);
+    expect(webUser).not.toBe(me.user);
+
+    // The web side applies the native client's join before anyone sends (a message posted at an epoch the joiner is not in
+    // cannot be read): the new member shows in the member pane, then web posts settle probes until the native client
+    // reads one, which is only possible once the web is on the epoch that includes it.
+    const members = page.getByRole('complementary', { name: copy('members.region', { server }), exact: true });
+    await ensureMembersOpen(page, members);
+    await expect(members.getByRole('listitem').filter({ hasText: username })).toBeVisible({ timeout: WAIT });
+    await expect(async () => {
+      const probe = `settle ${tag()}`;
+      await sendText(page, 'general', probe);
+      await peer.wait(channel, probe, 2_000);
+    }).toPass({ timeout: WAIT, intervals: [500] });
+
     // Web to native: the native client shows the web user's message, authored by someone other than itself.
     const fromWeb = `hello from web ${tag()}`;
     await sendText(page, 'general', fromWeb);
     const author = await peer.wait(channel, fromWeb, EXCHANGE_MS);
     expect(author).toMatch(HEX32);
-    expect(author).not.toBe(me.user);
+    expect(author).toBe(webUser);
 
     // Native to web: the page shows it, confirmed, under the native user's name.
     const fromNative = `hello from gpui ${tag()}`;

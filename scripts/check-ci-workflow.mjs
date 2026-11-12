@@ -1861,10 +1861,7 @@ run: node packages/desktop/scripts/check-mac-dmg.mjs packages/desktop/out` ? ind
     if (!consumer.includes("go test ./internal/ops -run 'Lock|BackupAndServe|ServeAdmits'")) {
       problems.push(`${file}: ${job} must retain native test-host directory locks coverage`);
     }
-    // The one build a consumer may do itself is the native interop peer (e2e/web/native-interop.spec.ts): it is a test
-    // fixture of the shared client suite, not part of the verified tooling artifact.
-    const withoutPeer = consumer.replace(/^\s+run: cargo build -p dilla-client --example peer --locked$/m, '');
-    if (/cargo build|^\s+(?:run-id|repository|github-token):/m.test(withoutPeer)) {
+    if (/cargo build|^\s+(?:run-id|repository|github-token):/m.test(consumer)) {
       problems.push(`${file}: ${job} tooling must reuse the verified artifact from this run without rebuilding`);
     }
     const steps = jobSteps(consumer);

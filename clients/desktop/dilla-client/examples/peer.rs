@@ -5,6 +5,7 @@
 //! start <instance-dir> <server-url> <control-url> <instance-invite> <community-hex> <community-invite> <username>
 //!     -> ok user=<hex> device=<hex>
 //! channel <community-hex> <name>        -> ok <channel-hex>            (waits for the channel list)
+//! owner <community-hex>                 -> ok <user-hex>               (who owns the community, per this client's state)
 //! send <channel-hex> <text...>          -> ok                          (once the instance stored the post)
 //! wait <channel-hex> <text...> <ms>     -> ok author=<hex>             (a confirmed message from someone else)
 //! quit                                  -> ok                          (then exits)
@@ -304,6 +305,16 @@ fn channel(peer: &Peer, args: &[&str]) -> Res<String> {
     Ok(hex(&id.0))
 }
 
+fn owner(peer: &Peer, rest: &str) -> Res<String> {
+    let community = CommunityId(unhex16(rest.trim())?);
+    peer.until(Duration::from_secs(30), "the community", |s| {
+        s.communities
+            .iter()
+            .find(|c| c.id == community)
+            .map(|c| hex(&c.owner.0))
+    })
+}
+
 fn send(peer: &Peer, rest: &str) -> Res<()> {
     let (ch, text) = rest
         .split_once(' ')
@@ -368,6 +379,7 @@ fn main() {
             ("start", Some(_)) => Err("already started".into()),
             (_, None) => Err("not started".into()),
             ("channel", Some(p)) => channel(p, &rest.split(' ').collect::<Vec<_>>()),
+            ("owner", Some(p)) => owner(p, rest),
             ("send", Some(p)) => send(p, rest).map(|()| String::new()),
             ("wait", Some(p)) => wait(p, rest).map(|author| format!("author={author}")),
             (other, _) => Err(format!("unknown command {other}")),

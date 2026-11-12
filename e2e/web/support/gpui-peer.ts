@@ -69,6 +69,8 @@ export class GpuiPeer {
   }
 
   channel(community: string, name: string): Promise<string> { return this.command(`channel ${community} ${name}`, 60_000); }
+  /** The community owner (a user id), as the native client's own state has it. */
+  owner(community: string): Promise<string> { return this.command(`owner ${community}`, 30_000); }
   send(channel: string, text: string): Promise<string> { return this.command(`send ${channel} ${text}`, 15_000); }
   /** Waits for a confirmed message of someone else; answers its author's user id. */
   async wait(channel: string, text: string, timeoutMs: number): Promise<string> {
