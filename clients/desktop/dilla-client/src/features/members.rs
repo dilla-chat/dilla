@@ -37,6 +37,17 @@ impl Client {
 }
 
 impl Members {
+    /// Runs `job` (built from this handle) on the client's runtime; see [`crate::features::moderation::Moderation::run`].
+    pub fn run<T: Send + 'static, F, J: FnOnce(Members) -> F>(
+        &self,
+        job: J,
+    ) -> impl std::future::Future<Output = Result<T, ApiError>> + use<T, F, J>
+    where
+        F: std::future::Future<Output = Result<T, ApiError>> + Send + 'static,
+    {
+        crate::features::roles::on_runtime(&self.inner, job(self.clone()))
+    }
+
     /// Reads the presence snapshot of `community` (the pane says loading until it lands).
     pub async fn load_presence(&self, community: CommunityId) -> Result<(), ApiError> {
         load_presence(&self.inner, community).await

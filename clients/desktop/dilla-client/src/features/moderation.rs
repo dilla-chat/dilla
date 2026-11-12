@@ -207,6 +207,18 @@ impl Client {
 }
 
 impl Moderation {
+    /// Runs `job` (built from this handle) on the client's runtime and answers its result, so a view on another executor
+    /// can await it: `client.moderation().run(|m| async move { m.kick(c, u).await })`.
+    pub fn run<T: Send + 'static, F, J: FnOnce(Moderation) -> F>(
+        &self,
+        job: J,
+    ) -> impl std::future::Future<Output = Result<T, ApiError>> + use<T, F, J>
+    where
+        F: std::future::Future<Output = Result<T, ApiError>> + Send + 'static,
+    {
+        crate::features::roles::on_runtime(&self.inner, job(self.clone()))
+    }
+
     fn listed(&self, community: CommunityId) -> Result<(), ApiError> {
         if self
             .inner

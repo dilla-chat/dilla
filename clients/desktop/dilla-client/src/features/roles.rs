@@ -689,6 +689,24 @@ pub fn move_plan(
 
 // ---- the wire ----
 
+/// Runs `job` on the client's own runtime (the members commands need its tokio reactor), so a view can await the answer
+/// on any executor. A client that stopped meanwhile answers E_STOPPED.
+pub(crate) fn on_runtime<T: Send + 'static, J>(
+    inner: &Inner,
+    job: J,
+) -> impl std::future::Future<Output = Result<T, ApiError>> + use<T, J>
+where
+    J: std::future::Future<Output = Result<T, ApiError>> + Send + 'static,
+{
+    let rx = inner.spawn(async move { Ok(job.await) });
+    async move {
+        match rx.await {
+            Ok(Ok(answer)) => answer,
+            _ => Err(refusal("E_STOPPED", "the client stopped")),
+        }
+    }
+}
+
 /// A local refusal (the worker's own `Refusal`): reaches the view as its code, like a server's.
 pub(crate) fn refusal(code: &str, detail: &str) -> ApiError {
     ApiError::local(0, code, detail)
@@ -884,6 +902,17 @@ impl Client {
 }
 
 impl Roles {
+    /// Runs `job` (built from this handle) on the client's runtime; see [`Moderation::run`](super::moderation::Moderation::run).
+    pub fn run<T: Send + 'static, F, J: FnOnce(Roles) -> F>(
+        &self,
+        job: J,
+    ) -> impl std::future::Future<Output = Result<T, ApiError>> + use<T, F, J>
+    where
+        F: std::future::Future<Output = Result<T, ApiError>> + Send + 'static,
+    {
+        on_runtime(&self.inner, job(self.clone()))
+    }
+
     fn listed(&self, community: CommunityId) -> Result<(), ApiError> {
         if self
             .inner
