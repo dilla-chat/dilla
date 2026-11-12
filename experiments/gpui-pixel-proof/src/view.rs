@@ -53,17 +53,22 @@ impl Render for Proof {
                 );
             }
             if !msg.code.is_empty() {
+                let dy = fx.border_dy;
                 let mut code = div()
+                    .relative()
                     .mt(p(l.code_margin_top))
                     .w(p(l.code_w))
                     .px(p(l.code_pad_x))
                     .py(p(l.code_pad_y))
                     .bg(rgb(fx.rgb("bg")))
                     .border(px(m))
-                    .border_color(rgb(fx.rgb("hairline2")))
+                    .border_color(rgb(fx.rgb(if dy == 0.0 { "hairline2" } else { "bg" })))
                     .rounded(p(fx.radius))
                     .flex()
                     .flex_col();
+                if dy != 0.0 {
+                    code = code.child(border_overlay(m, dy, fx.radius, fx.rgb("hairline2")));
+                }
                 for line in &msg.code {
                     code = code.child(
                         div()
@@ -123,21 +128,37 @@ impl Render for Proof {
             );
         }
 
+        let dy = fx.border_dy;
+        let mut panel = div()
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .bg(rgb(fx.rgb("surface")))
+            .border(px(m))
+            .border_color(rgb(fx.rgb(if dy == 0.0 { "hairline2" } else { "surface" })))
+            .rounded(p(fx.radius))
+            .p(p(l.panel_pad));
+        if dy != 0.0 {
+            panel = panel.child(border_overlay(m, dy, fx.radius, fx.rgb("hairline2")));
+        }
         div()
             .size_full()
             .bg(rgb(fx.rgb("bg")))
             .p(p(l.outer_pad))
             .font_family(family)
-            .child(
-                div()
-                    .size_full()
-                    .overflow_hidden()
-                    .bg(rgb(fx.rgb("surface")))
-                    .border(px(m))
-                    .border_color(rgb(fx.rgb("hairline2")))
-                    .rounded(p(fx.radius))
-                    .p(p(l.panel_pad))
-                    .child(feed),
-            )
+            .child(panel.child(feed))
     }
+}
+
+/// Negative fixture: an 1px border line drawn `dy` fixture px lower than its box, on top of a box whose own border is
+/// painted in the fill colour, so sizes and positions of everything else stay put.
+fn border_overlay(m: f32, dy: f32, radius: f32, color: u32) -> gpui::Div {
+    div()
+        .absolute()
+        .top(px(dy * m - m))
+        .left(px(-m))
+        .size_full()
+        .border(px(m))
+        .border_color(rgb(color))
+        .rounded(px(radius * m))
 }

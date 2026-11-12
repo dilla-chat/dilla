@@ -80,28 +80,36 @@ is **greater than** `max_delta`; the check fails if more than `max_pct` percent 
 
 The first proposal (`220 3.9`) was not a gate: no pixel exceeds 214, so `max_delta` 220 never rejects anything, and 3.9 % is twice the 2 % budget. It is withdrawn.
 
-Choosing the pair: share of pixels over each delta, for the correct render and three deliberately wrong ones (`./validate-tolerance.sh linux 0 0 scan`):
+Choosing the pair: share of pixels over each delta, for the correct render and four deliberately wrong ones (`./validate-tolerance.sh linux 0 0 scan`):
 
 | variant | over 8 | over 16 | over 32 | over 48 | over 64 | over 96 | over 128 |
 |---|---|---|---|---|---|---|---|
 | good | 1.268 | 1.049 | 0.695 | 0.459 | 0.296 | 0.125 | 0.080 |
-| (a) wrong-colour: message text in fg2 instead of fgBody | 1.836 | 1.646 | 1.381 | 1.125 | 0.870 | 0.114 | 0.053 |
-| (b) border-shift: panel and code-block borders 1px lower | 2.726 | 2.493 | 1.649 | 0.881 | 0.699 | 0.474 | 0.364 |
+| (a) wrong-colour: message and code-block text in fg2 instead of fgBody | 1.836 | 1.646 | 1.381 | 1.125 | 0.870 | 0.114 | 0.053 |
+| (b1) border-shift: only the panel and code-block border lines drawn 1px lower, all sizes and positions unchanged | 2.224 | 2.003 | 0.941 | 0.459 | 0.296 | 0.125 | 0.080 |
+| (b2) layout-shift: panel and code block moved or resized by 1px (text and pills displaced too) | 2.726 | 2.493 | 1.649 | 0.881 | 0.699 | 0.474 | 0.364 |
 | (c) fallback-font: DejaVu Sans Mono instead of JetBrains Mono | 2.062 | 1.931 | 1.714 | 1.479 | 1.283 | 0.998 | 0.782 |
 
-A single pair separates them at delta 64: the correct render is at 0.296 %, the best wrong one at 0.699 %, so a limit of 0.5 % passes the first and fails all three
-(1.7x headroom above the correct render, 1.4x below the nearest wrong one). Validation, `./validate-tolerance.sh linux 64 0.5`:
+Validation, `./validate-tolerance.sh linux 64 0.5` (delta 64, limit 0.5 %):
 
 | render | expected | result | % over 64 (limit 0.5) |
 |---|---|---|---|
 | good | PASS | PASS | 0.296 |
 | (a) wrong-colour | FAIL | FAIL | 0.870 |
-| (b) border-shift | FAIL | FAIL | 0.699 |
+| (b1) border-shift (border lines only) | FAIL | **PASS, known gap** | 0.296 |
+| (b2) layout-shift | FAIL | FAIL | 0.699 |
 | (c) fallback-font | FAIL | FAIL | 1.283 |
 
-The withdrawn `220 3.9` run through the same script passes all three wrong renders (`WRONG` x3).
+**A pure 1px border shift is below this gate's resolution; it needs a region-aware gate.** The border colours (hairline2 on bg, delta about 40) never exceed 64, so
+at delta 64 the border-only fixture scores exactly the same as the correct render. It is visible at lower deltas (2.2 % over 8 against 1.3 %), but no
+global (delta, percent) pair separates it from the correct render without also failing the correct one's own text anti-aliasing noise, and the pair
+was deliberately not retuned to force it. An earlier version of this table called the layout shift a "border shift": it moved text and pills as well, which is what
+made it fail; it is now (b2). `validate-tolerance.sh` reports (b1) as `KNOWN-GAP` without failing the Linux workflow step.
 
-Limits of this gate: it is validated against these three faults only. Margins are 1.4x to 1.7x, not large, and it is calibrated on one fixture, one Linux GPU
+Earlier choice of pair: delta 64 separates the correct render (0.296 %) from (a), (b2) and (c) (best wrong one 0.699 %), so a limit of 0.5 % passes the first and fails those three
+(1.7x headroom above the correct render, 1.4x below the nearest wrong one). The withdrawn `220 3.9` passes all of them.
+
+Limits of this gate: it is validated against faults (a), (b2) and (c) only; (b1) is a known miss. Margins are 1.4x to 1.7x, not large, and it is calibrated on one fixture, one Linux GPU
 and one Chromium; a different GPU driver or Chromium may move the "good" figure. A colour error smaller than about 64 levels on text, or text in a
 fixture with little text, would be caught less reliably. The `DejaVu Sans Mono` fallback only exists on Linux. At scale 1.0 the pair is not validated.
 

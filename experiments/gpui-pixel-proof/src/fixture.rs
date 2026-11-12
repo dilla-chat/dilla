@@ -12,6 +12,9 @@ pub struct Fixture {
     pub authors: Vec<Author>,
     pub messages: Vec<Message>,
     pub layout: Layout,
+    /// Negative fixtures only: draw the box borders this many fixture px lower (0 in the real fixture).
+    #[serde(skip)]
+    pub border_dy: f32,
 }
 #[derive(Deserialize)]
 pub struct Font {
@@ -62,13 +65,15 @@ impl Fixture {
     pub fn apply_variant(&mut self, variant: &str) {
         match variant {
             "good" => {}
-            // (a) message text drawn in fg2 instead of fgBody
+            // (a) message and code-block text drawn in fg2 instead of fgBody
             "wrong-colour" => {
                 let v = self.tokens["fg2"].clone();
                 self.tokens.insert("fgBody".into(), v);
             }
-            // (b) the panel border and the code-block border one px lower, text and fills where they were
-            "border-shift" => {
+            // (b1) only the panel and code-block border lines one px lower; every size and position stays
+            "border-shift" => self.border_dy = 1.0,
+            // (b2) the panel and code block moved or resized by 1px (a layout shift, text and pills included)
+            "layout-shift" => {
                 self.layout.outer_pad += 1.0;
                 self.layout.panel_pad -= 1.0;
                 self.layout.code_margin_top += 1.0;
