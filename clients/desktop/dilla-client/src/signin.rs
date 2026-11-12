@@ -72,8 +72,8 @@ impl From<StoreError> for SignInError {
 
 fn http_error(e: &HttpError) -> SignInError {
     match e {
-        HttpError::Status(429) => SignInError::TooMany,
-        HttpError::Status(s) => SignInError::Other(format!("HTTP {s}")),
+        HttpError::Status { status: 429, .. } => SignInError::TooMany,
+        HttpError::Status { status: s, .. } => SignInError::Other(format!("HTTP {s}")),
         HttpError::Transport(t) => SignInError::Network(t.clone()),
         HttpError::Decode(d) => SignInError::Other(format!("decode: {d}")),
     }
@@ -210,7 +210,7 @@ impl SignIn {
             .await
         {
             Ok(a) => a,
-            Err(HttpError::Status(s)) if (400..500).contains(&s) && s != 429 => {
+            Err(HttpError::Status { status: s, .. }) if (400..500).contains(&s) && s != 429 => {
                 return Err(SignInError::LoginFailed);
             }
             Err(e) => return Err(http_error(&e)),
@@ -243,7 +243,7 @@ impl SignIn {
             .await
         {
             Ok(a) => a,
-            Err(HttpError::Status(s)) if (400..500).contains(&s) && s != 429 => {
+            Err(HttpError::Status { status: s, .. }) if (400..500).contains(&s) && s != 429 => {
                 return Err(SignInError::CodeFailed);
             }
             Err(e) => return Err(http_error(&e)),
@@ -318,7 +318,7 @@ impl SignIn {
             .await
         {
             Ok(s) => s,
-            Err(HttpError::Status(s)) if s == 401 || s == 403 => {
+            Err(HttpError::Status { status: s, .. }) if s == 401 || s == 403 => {
                 return Err(SignInError::LoginFailed);
             }
             Err(e) => return Err(http_error(&e)),
@@ -410,8 +410,8 @@ impl SignIn {
                 .call::<r::PutDeviceList>(&[&user_hex], Raw(body))
                 .await
             {
-                Ok(()) | Err(HttpError::Status(409)) => {}
-                Err(HttpError::Status(401)) => return Err(SignInError::Evicted),
+                Ok(()) | Err(HttpError::Status { status: 409, .. }) => {}
+                Err(HttpError::Status { status: 401, .. }) => return Err(SignInError::Evicted),
                 Err(_) => return Err(SignInError::ListRace),
             }
         }
@@ -422,8 +422,8 @@ impl SignIn {
             .await
         {
             Ok(()) => {}
-            Err(HttpError::Status(409)) => return Err(SignInError::ListRace),
-            Err(HttpError::Status(401)) => return Err(SignInError::Evicted),
+            Err(HttpError::Status { status: 409, .. }) => return Err(SignInError::ListRace),
+            Err(HttpError::Status { status: 401, .. }) => return Err(SignInError::Evicted),
             Err(e) => return Err(http_error(&e)),
         }
         self.with_core(|c| c.device_list_published())?;
@@ -460,7 +460,7 @@ impl SignIn {
             .await
         {
             Ok(s) => s,
-            Err(HttpError::Status(401)) => return Err(SignInError::Evicted),
+            Err(HttpError::Status { status: 401, .. }) => return Err(SignInError::Evicted),
             Err(e) => return Err(http_error(&e)),
         };
         if session.scope != 0 {

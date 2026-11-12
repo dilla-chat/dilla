@@ -136,6 +136,74 @@ fn route_table_matches_ts() {
         "routes that differ:\n{}",
         different.join("\n")
     );
+
+    // Every path slot gets at least the check routes.ts makes: the same validator where routes.ts has one (a bare
+    // toHex() of an id is an id), any segment where routes.ts encodes free text, and where routes.ts interpolates a value
+    // its method checks itself, the matching Rust check (a GIF id, an avatar digest, a message seq) or a free segment.
+    let mut weaker = Vec::new();
+    for v in &ts {
+        for s in v["slots"].as_array().expect("slots") {
+            let (name, check) = (
+                s["name"].as_str().expect("slot name"),
+                s["check"].as_str().expect("slot check"),
+            );
+            let allowed: &[&str] = match check {
+                "id" | "hex" => &["id"],
+                "digest" => &["digest"],
+                "count" => &["count"],
+                "kind" => &["kind"],
+                "uri" => &["free"],
+                "raw" => &["gif", "digest", "count", "free"],
+                other => panic!("the dump names an unknown check {other}"),
+            };
+            let rust = dilla_client::http::slot_check(name);
+            if !allowed.contains(&rust) {
+                weaker.push(format!(
+                    "{} {} {{{name}}}: ts {check}, rust {rust}",
+                    v["method"], v["path"]
+                ));
+            }
+        }
+    }
+    assert!(weaker.is_empty(), "slot checks that differ: {weaker:#?}");
+
+    // Two Routes methods that send one method and path are one row, named by the first; the Rust row has that name.
+    let collapsed: Vec<String> = ts
+        .iter()
+        .filter(|v| v["names"].as_array().expect("names").len() > 1)
+        .map(|v| {
+            let names: Vec<&str> = v["names"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n.as_str().expect("a name"))
+                .collect();
+            assert_eq!(v["name"].as_str(), Some(names[0]), "{v}");
+            format!(
+                "{} {} {}",
+                v["method"].as_str().unwrap(),
+                v["path"].as_str().unwrap(),
+                names.join(",")
+            )
+        })
+        .collect();
+    assert_eq!(
+        collapsed,
+        ["POST /v1/communities/{community_id}/channels create_channel,create_category"],
+        "the routes two TypeScript methods share changed: check the collapsed rows"
+    );
+
+    // The dump's own collapse rule and slot validators.
+    let out = Command::new("node")
+        .arg(&script)
+        .arg("--self-test")
+        .output()
+        .expect("node runs the self-test");
+    assert!(
+        out.status.success() && out.stdout == b"ok\n",
+        "the dump's self-test failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 // ---- a mock server ----
@@ -197,14 +265,17 @@ fn http_at(url: &Url, token: &str) -> ReqwestHttp {
 
 #[tokio::test]
 async fn error_status_maps() {
-    // A 403 is HttpError::Status(403).
+    // A 403 is HttpError::Status { status: 403, .. }.
     let (url, served) =
         mock(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
     let err = http_at(&url, "tok")
         .call::<GetAccountMe>(&[], NoBody)
         .await
         .expect_err("403 is an error");
-    assert!(matches!(err, HttpError::Status(403)), "{err:?}");
+    assert!(
+        matches!(err, HttpError::Status { status: 403, .. }),
+        "{err:?}"
+    );
     served.join().expect("mock");
 
     // A dropped connection is HttpError::Transport.
@@ -228,6 +299,164 @@ async fn error_status_maps() {
         .await
         .expect_err("refused");
     assert!(matches!(err, HttpError::Transport(_)), "{err:?}");
+}
+
+fn cbor_error(code: &str, detail: &str, delay: Option<u64>) -> Vec<u8> {
+    let mut e = dilla_core::cbor::Encoder::new();
+    e.array(3).text(code).text(detail);
+    match delay {
+        Some(d) => e.uint(d),
+        None => e.null(),
+    };
+    e.into_vec()
+}
+
+#[tokio::test]
+async fn http_error_carries_e_code() {
+    // A refused route answers its E_ code: Status { 403, Some("E_PERM") }.
+    let body = cbor_error("E_PERM", "not allowed", None);
+    let mut response = format!(
+        "HTTP/1.1 403 Forbidden\r\ncontent-type: application/cbor\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(&body);
+    let (url, served) = mock(Box::leak(response.into_boxed_slice()));
+    let err = http_at(&url, "tok")
+        .call::<GetAccountMe>(&[], NoBody)
+        .await
+        .expect_err("403 is an error");
+    match &err {
+        HttpError::Status { status, code } => {
+            assert_eq!((*status, code.as_deref()), (403, Some("E_PERM")));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(err.is(403, "E_PERM"));
+    assert!(!err.is(409, "E_PERM"));
+    assert_eq!(err.status(), Some(403));
+    assert!(err.to_string().contains("E_PERM"), "{err}");
+    served.join().expect("mock");
+
+    // A body that is not a dilla error has no code (errors.ts: E_HTTP).
+    let (url, served) = mock(
+        b"HTTP/1.1 404 Not Found\r\ncontent-length: 19\r\nconnection: close\r\n\r\n404 page not found\n",
+    );
+    let err = http_at(&url, "tok")
+        .call::<GetAccountMe>(&[], NoBody)
+        .await
+        .expect_err("404");
+    assert!(
+        matches!(
+            err,
+            HttpError::Status {
+                status: 404,
+                code: None
+            }
+        ),
+        "{err:?}"
+    );
+    served.join().expect("mock");
+
+    // A refusal body over client.ts's ERROR_BODY_CAP is not read for a code.
+    assert_eq!(dilla_client::http::ERROR_BODY_CAP, 64 * 1024);
+}
+
+/// http/errors.test.ts `decodeErrorBody`, for the code the client keeps.
+#[test]
+fn error_bodies_decode_as_errors_ts() {
+    use dilla_client::http::error_code;
+    let mut e = dilla_core::cbor::Encoder::new();
+    e.array(4)
+        .text("E_COMMIT_REQUIRED")
+        .text("outstanding proposals must be committed first")
+        .uint(1500)
+        .array(1)
+        .bytes(&[0x11; 32]);
+    assert_eq!(
+        error_code(&e.into_vec()).as_deref(),
+        Some("E_COMMIT_REQUIRED")
+    );
+    // Several extras, a null delay.
+    let mut e = dilla_core::cbor::Encoder::new();
+    e.array(5)
+        .text("E_COMMIT_CONFLICT")
+        .text("another commit won this epoch")
+        .null()
+        .bytes(&[0x12; 48])
+        .array(1)
+        .bytes(&[0x11; 32]);
+    assert_eq!(
+        error_code(&e.into_vec()).as_deref(),
+        Some("E_COMMIT_CONFLICT")
+    );
+    assert_eq!(
+        error_code(&cbor_error("E_RATE_LIMITED", "rate limited", Some(1200))).as_deref(),
+        Some("E_RATE_LIMITED")
+    );
+    // A delay beyond the safe integer range is still a delay.
+    assert_eq!(
+        error_code(&cbor_error("E_UNAVAILABLE", "", Some(1 << 63))).as_deref(),
+        Some("E_UNAVAILABLE")
+    );
+    // Any body that is not a dilla error array is E_HTTP (no code).
+    let enc = |f: &dyn Fn(&mut dilla_core::cbor::Encoder)| {
+        let mut e = dilla_core::cbor::Encoder::new();
+        f(&mut e);
+        e.into_vec()
+    };
+    let not_arrays: Vec<Vec<u8>> = vec![
+        b"404 page not found\n".to_vec(),
+        Vec::new(),
+        enc(&|e| {
+            e.array(3).uint(1).uint(2).uint(3);
+        }),
+        enc(&|e| {
+            e.array(2).text("E_SHORT").text("two only");
+        }),
+        enc(&|e| {
+            e.array(3).text("not a code").text("").null();
+        }),
+        enc(&|e| {
+            e.array(3).text("E_BAD_RETRY").text("detail").text("soon");
+        }),
+        enc(&|e| {
+            e.array(3).text("E_BAD_DETAIL").uint(7).null();
+        }),
+        vec![0xa0],
+        // `^E_[A-Z0-9_]{1,64}$`: nothing after E_, lowercase, and 65 characters are not codes.
+        cbor_error("E_", "", None),
+        cbor_error("E_lower", "", None),
+        cbor_error(&format!("E_{}", "A".repeat(65)), "", None),
+    ];
+    for (i, raw) in not_arrays.iter().enumerate() {
+        assert_eq!(error_code(raw), None, "case {i}");
+    }
+    assert_eq!(
+        error_code(&cbor_error(&format!("E_{}", "A".repeat(64)), "", None)).map(|c| c.len()),
+        Some(66)
+    );
+}
+
+#[test]
+fn credential_bodies_are_zeroizing_and_never_printed() {
+    let body = routes::password_login_body("alice", "correct horse");
+    // The body is [username, password] in one buffer of its final size.
+    let mut e = dilla_core::cbor::Encoder::new();
+    e.array(2).text("alice").text("correct horse");
+    assert_eq!(&body.0[..], &e.into_vec()[..]);
+    let shown = format!("{body:?}");
+    assert!(!shown.contains("horse"), "{shown}");
+    let _: &zeroize::Zeroizing<Vec<u8>> = &body.0;
+    let code = routes::totp_verify_body("assertion", "123456");
+    assert!(!format!("{code:?}").contains("assertion"));
+    // Every route that carries a password or an assertion takes a Secret.
+    fn takes_secret<R: Route<Request = routes::Secret>>() {}
+    takes_secret::<PasswordLogin>();
+    takes_secret::<routes::TotpVerify>();
+    takes_secret::<routes::RecoveryVerify>();
+    takes_secret::<routes::PasskeyLoginFinish>();
+    takes_secret::<routes::ChangePassword>();
 }
 
 #[tokio::test]
@@ -254,7 +483,10 @@ async fn a_status_the_route_does_not_accept_is_an_error_even_when_another_route_
         .call::<GetAccountMe>(&[], NoBody)
         .await
         .expect_err("404");
-    assert!(matches!(err, HttpError::Status(404)), "{err:?}");
+    assert!(
+        matches!(err, HttpError::Status { status: 404, .. }),
+        "{err:?}"
+    );
     served.join().expect("mock");
 }
 
@@ -367,7 +599,10 @@ async fn a_redirect_is_not_followed() {
         .call::<GetAccountMe>(&[], NoBody)
         .await
         .expect_err("redirect");
-    assert!(matches!(err, HttpError::Status(302)), "{err:?}");
+    assert!(
+        matches!(err, HttpError::Status { status: 302, .. }),
+        "{err:?}"
+    );
     served.join().expect("mock");
 }
 
@@ -457,6 +692,18 @@ fn a_path_argument_cannot_leave_its_segment() {
         .is_ok()
     );
     assert!(fill_path("/v1/welcomes/{welcome_id}", &["12x"]).is_err());
+    // A count is positive, in its one spelling: no 0 and no leading zero.
+    assert!(fill_path("/v1/welcomes/{welcome_id}", &["0"]).is_err());
+    assert!(fill_path("/v1/welcomes/{welcome_id}", &["007"]).is_err());
+    assert!(fill_path("/v1/welcomes/{welcome_id}", &["7"]).is_ok());
+    assert!(fill_path("/v1/groups/{group_id}/messages/{seq}", &[channel, "0"]).is_err());
+    assert!(
+        fill_path(
+            "/v1/groups/{group_id}/messages/{seq}",
+            &[channel, "18446744073709551615"]
+        )
+        .is_ok()
+    );
     assert!(fill_path("/v1/backups/{kind}/0", &["2"]).is_err());
     assert!(
         fill_path(

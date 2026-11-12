@@ -122,7 +122,9 @@ impl ApiError {
 
     fn of_http(e: &HttpError) -> Self {
         match e {
-            HttpError::Status(s) => Self::local(*s, "E_HTTP", ""),
+            HttpError::Status { status, code } => {
+                Self::local(*status, code.as_deref().unwrap_or("E_HTTP"), "")
+            }
             HttpError::Transport(d) => Self::local(0, "E_NETWORK", d),
             HttpError::Decode(d) => Self::local(0, "E_DECODE", d),
         }
@@ -413,7 +415,7 @@ impl Api {
             .await
         {
             Ok(answer) => Ok(Some(answer)),
-            Err(HttpError::Status(401)) => Ok(None),
+            Err(HttpError::Status { status: 401, .. }) => Ok(None),
             Err(e) => Err(SessionError::Api(ApiError::of_http(&e))),
         }
     }

@@ -1,14 +1,25 @@
 //! Task 11: the call signalling (`dilla_client::calls`) over a scripted core and instance, in the
 //! order join.ts and controller.ts take, and the wire decoders against bodies built as dillad and
 //! dilla-core build them.
+//!
+//! Screens wave 1, Task 3: the rejoin's wait for this device's own Remove (scripted, and against a
+//! real dillad), and a running `Client`'s call signalling over its gateway socket. The real-dillad
+//! tests are `#[ignore]`d (they need `target/dilla-testhost`, the WASI core, and they build the
+//! testkit's peer and dilla-media's `call-peer`): `cargo test -p dilla-client --test calls --
+//! --ignored`.
+
+#[path = "support/call_world.rs"]
+mod world;
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use dilla_client::calls::wire::{decode_call_started, decode_channel_call, decode_media_epoch};
 use dilla_client::calls::{
-    CallCore, CallRoutes, CallStarted, ChannelCall, CoreRefusal, GroupSummary, JoinHooks,
-    JoinTarget, RouteError, join_call, leave_call, media_epoch, rotate_call,
+    CallCore, CallPhase, CallRoutes, CallStarted, ChannelCall, CoreRefusal, GroupSummary,
+    JoinHooks, JoinTarget, REJOIN_STEP, REJOIN_WAIT, RouteError, join_call, leave_call,
+    media_epoch, rotate_call,
 };
 use dilla_core::cbor::Encoder;
 use zeroize::Zeroizing;
@@ -221,6 +232,8 @@ struct FakeRoutes {
     resync: Mutex<VecDeque<Result<u64, RouteError>>>,
     start: Mutex<VecDeque<Result<(), RouteError>>>,
     commit: Mutex<VecDeque<Result<u64, RouteError>>>,
+    /// GroupInfo answers in order; then `info`.
+    infos: Mutex<VecDeque<Vec<u8>>>,
     alone: bool,
 }
 
@@ -265,7 +278,12 @@ impl CallRoutes for FakeRoutes {
     }
     async fn get_group_info(&self, _g: &[u8; 16]) -> Result<Vec<u8>, RouteError> {
         self.log("get_info".into());
-        Ok(b"info".to_vec())
+        Ok(self
+            .infos
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| b"info".to_vec()))
     }
     async fn get_group_tree(&self, _g: &[u8; 16]) -> Result<Vec<u8>, RouteError> {
         self.log("get_tree".into());
@@ -303,6 +321,8 @@ impl CallRoutes for FakeRoutes {
 
 struct Hooks {
     refreshed: Mutex<u32>,
+    phases: Mutex<Vec<CallPhase>>,
+    cancel: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait::async_trait]
@@ -314,13 +334,18 @@ impl JoinHooks for Hooks {
         *self.refreshed.lock().unwrap() += 1;
     }
     fn cancelled(&self) -> bool {
-        false
+        self.cancel.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    fn phase(&self, phase: CallPhase) {
+        self.phases.lock().unwrap().push(phase);
     }
 }
 
 fn hooks() -> Hooks {
     Hooks {
         refreshed: Mutex::new(0),
+        phases: Mutex::new(Vec::new()),
+        cancel: std::sync::atomic::AtomicBool::new(false),
     }
 }
 
@@ -576,4 +601,492 @@ async fn a_failure_after_the_instance_accepted_the_join_commit_names_the_group_t
     // RED (review M4): leave was None, so the posted external commit's leaf was never removed.
     assert_eq!(refused.leave, Some(GROUP));
     assert!(routes.posted().contains(&"post_resync".to_owned()));
+}
+
+// ---- the rejoin's wait for this device's own Remove (join.ts waitForRemove; controller.test.ts "a rejoin refused
+// because its own Remove stands (409 E_REMOVE_PENDING) waits, says so, and joins once the Remove is committed") ----
+
+#[test]
+fn the_rejoin_wait_is_bounded_as_join_ts_bounds_it() {
+    assert_eq!(REJOIN_STEP, std::time::Duration::from_millis(2_000));
+    assert_eq!(REJOIN_WAIT, std::time::Duration::from_millis(30_000));
+}
+
+#[tokio::test]
+async fn a_rejoin_refused_while_its_remove_stands_waits_then_joins_the_same_group_once_it_moves() {
+    let core = Mutex::new(gated(vec![], vec![]));
+    let routes = FakeRoutes::default();
+    routes
+        .resync
+        .lock()
+        .unwrap()
+        .push_back(Err(err(409, "E_REMOVE_PENDING")));
+    // The join reads "info"; the first step reads it unchanged (nobody committed yet), the second the group moved on
+    // (the Remove committed), and the rejoin reads that.
+    routes.infos.lock().unwrap().extend([
+        b"info".to_vec(),
+        b"info".to_vec(),
+        b"moved".to_vec(),
+        b"moved".to_vec(),
+    ]);
+    let h = hooks();
+    let began = std::time::Instant::now();
+    let joined = join_call(&core, &routes, &h, &target()).await.unwrap();
+    assert_eq!(joined.group_id, GROUP, "the same call group");
+    assert!(began.elapsed() >= 2 * REJOIN_STEP, "{:?}", began.elapsed());
+    assert_eq!(
+        routes.posted(),
+        [
+            "get_call",
+            "get_info",
+            "get_tree",
+            "post_resync",
+            // step 1: the call still names the group, its GroupInfo is unchanged
+            "get_call",
+            "get_info",
+            // step 2: the GroupInfo moved
+            "get_call",
+            "get_info",
+            // the rejoin, built on the moved group
+            "get_info",
+            "get_tree",
+            "post_resync",
+            "start",
+        ]
+    );
+    assert_eq!(
+        *h.phases.lock().unwrap(),
+        [
+            CallPhase::Joining,
+            CallPhase::WaitingForRemove,
+            CallPhase::In
+        ]
+    );
+    // The refused commit's staged state was discarded; the second one joined.
+    let log = core.lock().unwrap().inner.log.clone();
+    assert_eq!(
+        log.iter().filter(|l| l.starts_with("joined")).count(),
+        1,
+        "{log:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_rejoin_whose_call_closed_while_it_waited_registers_a_fresh_group() {
+    let core = Mutex::new(gated(vec![], vec![]));
+    let routes = FakeRoutes::default();
+    routes
+        .resync
+        .lock()
+        .unwrap()
+        .push_back(Err(err(409, "E_REMOVE_PENDING")));
+    routes.calls.lock().unwrap().extend([
+        ChannelCall {
+            group_id: Some(GROUP),
+            call_id: Some(CHANNEL),
+            participants: vec![],
+        },
+        ChannelCall {
+            group_id: None,
+            call_id: None,
+            participants: vec![],
+        },
+    ]);
+    let h = hooks();
+    let joined = join_call(&core, &routes, &h, &target()).await.unwrap();
+    assert_eq!(joined.group_id, FRESH);
+    assert_eq!(
+        routes.posted(),
+        [
+            "get_call",
+            "get_info",
+            "get_tree",
+            "post_resync",
+            "get_call",
+            "post_group",
+            "start"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn only_409_e_remove_pending_waits_every_other_refusal_fails_at_once() {
+    for (status, code) in [
+        (403, "E_REMOVE_PENDING"),
+        (409, "E_GROUP_EXISTS"),
+        (403, "E_FORBIDDEN"),
+        (409, "E_COMMIT_CONFLICT"),
+    ] {
+        let core = Mutex::new(gated(vec![], vec![]));
+        let routes = FakeRoutes::default();
+        routes
+            .resync
+            .lock()
+            .unwrap()
+            .push_back(Err(err(status, code)));
+        let h = hooks();
+        let began = std::time::Instant::now();
+        let refused = join_call(&core, &routes, &h, &target()).await.unwrap_err();
+        assert_eq!(refused.code, code);
+        assert!(began.elapsed() < REJOIN_STEP, "{status} {code} waited");
+        assert_eq!(
+            *h.phases.lock().unwrap(),
+            [CallPhase::Joining, CallPhase::Idle],
+            "{status} {code}"
+        );
+        assert!(!routes.posted().contains(&"start".to_owned()));
+    }
+}
+
+#[tokio::test]
+async fn a_leave_during_the_rejoin_wait_ends_it_with_the_refusal_and_posts_nothing_more() {
+    let core = Mutex::new(gated(vec![], vec![]));
+    let routes = std::sync::Arc::new(FakeRoutes::default());
+    routes
+        .resync
+        .lock()
+        .unwrap()
+        .push_back(Err(err(409, "E_REMOVE_PENDING")));
+    let h = std::sync::Arc::new(hooks());
+    let cancel = {
+        let h = h.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            h.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+    };
+    let refused = join_call(&core, &*routes, &*h, &target())
+        .await
+        .unwrap_err();
+    cancel.await.unwrap();
+    assert_eq!(refused.code, "E_REMOVE_PENDING");
+    assert_eq!(refused.leave, None);
+    // Nothing after the refused resync: the step woke cancelled and read nothing.
+    assert_eq!(
+        routes.posted(),
+        ["get_call", "get_info", "get_tree", "post_resync"]
+    );
+    assert_eq!(
+        *h.phases.lock().unwrap(),
+        [
+            CallPhase::Joining,
+            CallPhase::WaitingForRemove,
+            CallPhase::Idle
+        ]
+    );
+}
+
+// ---- against a real dillad ----
+
+/// An HTTP transport that records every route it is handed and refuses it: the call stack's HTTP side.
+#[derive(Clone, Default)]
+struct CountingHttp(std::sync::Arc<Mutex<Vec<String>>>);
+
+#[async_trait::async_trait]
+impl dilla_client::seams::Http for CountingHttp {
+    async fn call<R: dilla_client::seams::Route>(
+        &self,
+        _path_args: &[&str],
+        _req: R::Request,
+    ) -> Result<R::Response, dilla_client::seams::HttpError> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("{} {}", R::METHOD, R::PATH));
+        Err(dilla_client::seams::HttpError::Transport(
+            "counted, not sent".into(),
+        ))
+    }
+}
+
+/// e2e/web/socket-only.spec.ts "joining and leaving voice goes over the socket": a person makes a server, joins its
+/// voice channel and leaves; the call's every route goes over the gateway socket (the HTTP side sees none of them,
+/// and the instance serves none of them over HTTP).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn call_signalling_uses_socket_when_up() {
+    use dilla_client::calls::CallTarget;
+    let host = tokio::task::spawn_blocking(|| world::start_host("socket"))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let ada = world::sign_up(&host, &invite, "ada", "socket").await;
+    let (host, ada, community, voice) = tokio::task::spawn_blocking(move || {
+        let (c, v) = world::voice_community(&host, &ada, &[]);
+        world::clear_session(&ada);
+        (host, ada, c, v)
+    })
+    .await
+    .unwrap();
+    let client = world::start(&ada).await;
+    world::connected(&client).await;
+
+    let http = CountingHttp::default();
+    let calls = client.calls_with(http.clone());
+    let join = calls.join(CallTarget {
+        channel: voice,
+        community: Some(community),
+        vdec: String::new(),
+    });
+    let phase = join.phase();
+    let joined = join.outcome().await.expect("client").expect("joined");
+    assert_eq!(*phase.borrow(), CallPhase::In);
+    // Alone: it registered the call group and started the call (201), with its own leaf in the join epoch.
+    assert!(joined.started.created);
+    assert_eq!(joined.started.group_id, joined.group_id);
+    assert_eq!(joined.media.roster.len(), 1);
+    assert_eq!(joined.media.roster[0].1, ada.device_id);
+    assert!(!joined.started.token.is_empty());
+
+    // The hourly rotation: an empty commit over the socket, and the next epoch's keys.
+    let seq = calls
+        .rotate(joined.group_id)
+        .await
+        .unwrap()
+        .expect("client")
+        .expect("rotated");
+    assert!(seq > 0);
+    let next = calls
+        .media_epoch(&joined.group_id)
+        .expect("the gate passes");
+    assert_eq!(next.epoch, joined.media.epoch + 1);
+
+    // A decline of a ring that never rang is the instance's no-op, answered over the socket.
+    let declined = calls
+        .decline(joined.started.call_id, 0)
+        .await
+        .unwrap()
+        .expect("client");
+    assert!(
+        declined.as_ref().is_ok_or_status(),
+        "the decline went over the socket: {declined:?}"
+    );
+
+    // The leave: alone, so the call is ended conditionally (DELETE ?if_alone=1), then the group is forgotten.
+    let left = calls
+        .leave(joined.group_id, joined.started.call_id, true)
+        .await
+        .unwrap()
+        .expect("client");
+    assert!(left.ended, "{left:?}");
+    let after = calls
+        .routes()
+        .get_channel_call(&voice)
+        .await
+        .expect("the call read");
+    assert_eq!(after.call_id, None, "the call ended");
+
+    let seen = http.0.lock().unwrap().clone();
+    assert!(
+        seen.is_empty(),
+        "call routes handed to HTTP while the socket was up: {seen:?}"
+    );
+    drop(client);
+    drop(host);
+}
+
+trait OkOrStatus {
+    fn is_ok_or_status(&self) -> bool;
+}
+
+impl OkOrStatus for Result<&(), &RouteError> {
+    /// Answered by the instance: a success or a refusal with its status (never a transport failure).
+    fn is_ok_or_status(&self) -> bool {
+        match self {
+            Ok(()) => true,
+            Err(e) => e.status.is_some() && e.code.is_some(),
+        }
+    }
+}
+
+/// e2e/voice/leave-reload.spec.ts "a rejoin whose Remove nobody has committed yet waits, says so, and joins the same
+/// call once it is committed" (the task-10 fix round's wait itself): alice drops out of the call (her media leaves the
+/// room, so the instance proposes the Remove of her leaf), her client forgets the group as a reloaded page's sweep
+/// does, and she rejoins at once. The member that would commit the Remove is the testkit's native peer, which holds a
+/// leaf of the call group, never enters the room and commits only when told. Her join waits
+/// (`CallPhase::WaitingForRemove`), lands in the same call group once the peer commits the Remove, and the roster holds
+/// exactly one leaf of her device.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn rejoin_waits_for_pending_remove() {
+    use dilla_client::calls::CallTarget;
+    use serde_json::json;
+    use world::{Driver, MediaPeer, hex};
+
+    let host = tokio::task::spawn_blocking(|| world::start_host("rejoin"))
+        .await
+        .unwrap();
+    let (host, mut peer, setup) = tokio::task::spawn_blocking(move || {
+        let mut peer = Driver::start(&host);
+        let setup = peer.request(
+            "setup",
+            json!({"community": "c", "channel": "general", "voice": true}),
+        );
+        (host, peer, setup)
+    })
+    .await
+    .unwrap();
+    let community = world::unhex16(setup["community_id"].as_str().unwrap());
+    let voice_hex = setup["voice_channel_id"].as_str().unwrap().to_owned();
+    let voice = world::unhex16(&voice_hex);
+    let peer_device = setup["device_id"].as_str().unwrap().to_owned();
+    let code = setup["invite_code"].as_str().unwrap().to_owned();
+
+    let invite = host.invites.last().unwrap().clone();
+    let alice = world::sign_up(&host, &invite, "alice", "rejoin").await;
+    let (host, alice) = tokio::task::spawn_blocking(move || {
+        world::ds_of(&host, &alice)
+            .join_community(&community, &code)
+            .unwrap();
+        world::clear_session(&alice);
+        (host, alice)
+    })
+    .await
+    .unwrap();
+    let a_dev = hex(&alice.device_id);
+    let client = world::start(&alice).await;
+    world::connected(&client).await;
+    let calls = client.calls();
+    let target = CallTarget {
+        channel: voice,
+        community: Some(community),
+        vdec: String::new(),
+    };
+
+    // The peer registers the call group; alice joins it and enters the room.
+    let (mut peer, joined_peer) = tokio::task::spawn_blocking({
+        let voice_hex = voice_hex.clone();
+        move || {
+            let j = peer.request("call_join", json!({"actor": "peer", "channel": voice_hex}));
+            (peer, j)
+        }
+    })
+    .await
+    .unwrap();
+    let group_hex = joined_peer["group"].as_str().unwrap().to_owned();
+    let joined = calls
+        .join(target.clone())
+        .outcome()
+        .await
+        .unwrap()
+        .expect("alice joins");
+    assert_eq!(hex(&joined.group_id), group_hex);
+    let mut media = MediaPeer::start(
+        &host.media_url(&joined.started.livekit_url),
+        &joined.started.token,
+        440,
+    );
+    media.epoch(&joined.media);
+    media.next("connected", Duration::from_secs(30));
+    let read_channel = voice_hex.clone();
+    let read = move |peer: &mut Driver| {
+        peer.request(
+            "call_read",
+            json!({"actor": "peer", "channel": read_channel}),
+        )
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut peer = tokio::task::spawn_blocking(move || {
+        loop {
+            let r = read(&mut peer);
+            if r["participants"]
+                .as_array()
+                .is_some_and(|p| p.iter().any(|p| p["device"] == a_dev.as_str()))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "alice never reached the room: {r}"
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        // Alice drops out: her media leaves the room (the reloaded page's pagehide leave), so the instance proposes
+        // the Remove of her leaf. The peer has not synced since, so nobody commits it.
+        media.quit();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let r = read(&mut peer);
+            if r["participants"].as_array().is_some_and(Vec::is_empty) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "alice never left the room: {r}");
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        peer
+    })
+    .await
+    .unwrap();
+    // The reloaded page's sweep: her own Remove (refused while the instance's stands) and the group forgotten.
+    let left = calls
+        .leave(joined.group_id, joined.started.call_id, false)
+        .await
+        .unwrap()
+        .expect("client");
+    assert!(!left.ended);
+
+    // She rejoins at once: the instance refuses her resync (409 E_REMOVE_PENDING) and the join waits.
+    let rejoin = calls.join(target.clone());
+    let mut phase = rejoin.phase();
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        phase.wait_for(|p| *p == CallPhase::WaitingForRemove),
+    )
+    .await
+    .expect("the rejoin waits for the Remove")
+    .unwrap();
+    // It stays waiting while nobody commits.
+    tokio::time::sleep(REJOIN_STEP * 2).await;
+    assert_eq!(*phase.borrow(), CallPhase::WaitingForRemove);
+
+    // The peer syncs and commits the Remove: the wait sees the group move on, and the join lands in it.
+    let voice_for_peer = voice_hex.clone();
+    let (mut peer, members) = tokio::task::spawn_blocking(move || {
+        let m = peer.request(
+            "call_members",
+            json!({"actor": "peer", "channel": voice_for_peer}),
+        );
+        (peer, m)
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        members["devices"],
+        json!([peer_device.clone()]),
+        "the peer committed alice's Remove: {members}"
+    );
+    let rejoined = tokio::time::timeout(Duration::from_secs(30), rejoin.outcome())
+        .await
+        .expect("the rejoin ends")
+        .unwrap()
+        .expect("alice is in once the peer committed her Remove");
+    assert_eq!(*phase.borrow(), CallPhase::In);
+    assert_eq!(hex(&rejoined.group_id), group_hex, "the same call group");
+    let own: Vec<_> = rejoined
+        .media
+        .roster
+        .iter()
+        .filter(|(_, d, _)| *d == alice.device_id)
+        .collect();
+    assert_eq!(own.len(), 1, "exactly one leaf of alice's device");
+    assert_eq!(rejoined.media.roster.len(), 2);
+    assert!(rejoined.media.epoch > joined.media.epoch + 1);
+
+    // The peer's roster agrees: one leaf of each device.
+    let voice_for_peer = voice_hex.clone();
+    let members = tokio::task::spawn_blocking(move || {
+        let m = peer.request(
+            "call_members",
+            json!({"actor": "peer", "channel": voice_for_peer}),
+        );
+        drop(peer);
+        m
+    })
+    .await
+    .unwrap();
+    let mut expected = vec![hex(&alice.device_id), peer_device];
+    expected.sort();
+    assert_eq!(members["devices"], json!(expected));
+    drop(client);
+    drop(host);
 }

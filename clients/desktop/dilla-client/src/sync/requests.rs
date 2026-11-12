@@ -17,7 +17,9 @@ use tokio::time::Instant;
 
 use crate::gateway::WsGateway;
 use crate::gateway::frames::{self, MAX_REQUEST_BODY, RequestFrame};
-use crate::seams::GatewayError;
+use crate::http::routes::{self, Transport};
+use crate::http::{answer_of, body_of, error_code, fill_path};
+use crate::seams::{GatewayError, Http, HttpError, Route};
 
 use super::api::ApiError;
 
@@ -517,5 +519,111 @@ fn fail_all(inner: &mut Inner, error: Option<&ApiError>) {
             Some(e) => e.clone(),
         };
         p.settle(Err(e));
+    }
+}
+
+/// The [`Http`] seam over this gateway socket for the routes the instance serves only there (the route table's
+/// `Socket` rows, every call route among them), and over `H` for the rest: socket-routes.ts's split, exactly. A socket
+/// route never falls back to HTTP (the instance has no REST form of it): while the socket is down it waits in
+/// [`SocketRequests`]'s queue and is written once the gateway is ready again.
+///
+/// A socket route's answer is read as [`crate::http::ReqwestHttp`] reads an HTTP one (the row's accepted statuses, its
+/// body bound and its answer shape), and a refusal is [`HttpError::Status`] with the instance's `E_*` code. A route
+/// meter's 429 is waited out as `Api`'s socket routes wait it out (the body's delay, else 1 s; at most five attempts).
+/// A request the socket lost is [`HttpError::Transport`] naming `E_NETWORK` or, for a written mutation whose answer
+/// was lost, `E_OUTCOME_UNKNOWN`.
+pub struct SocketHttp<H> {
+    socket: Arc<SocketRequests>,
+    http: H,
+}
+
+impl<H> SocketHttp<H> {
+    pub fn new(socket: Arc<SocketRequests>, http: H) -> Self {
+        Self { socket, http }
+    }
+
+    /// The HTTP transport the non-socket routes take.
+    pub fn http(&self) -> &H {
+        &self.http
+    }
+}
+
+fn method_name(m: &http::Method) -> Option<&'static str> {
+    Some(match *m {
+        http::Method::GET => "GET",
+        http::Method::POST => "POST",
+        http::Method::PUT => "PUT",
+        http::Method::PATCH => "PATCH",
+        http::Method::DELETE => "DELETE",
+        _ => return None,
+    })
+}
+
+/// `Api::socket_call`'s attempts and its longest 429 wait (client.ts `RETRY`).
+const SOCKET_HTTP_ATTEMPTS: u32 = 5;
+const SOCKET_HTTP_MAX_WAIT_MS: u64 = 60_000;
+
+fn random_idem() -> Vec<u8> {
+    let mut b = vec![0u8; 16];
+    let _ = getrandom::fill(&mut b);
+    b
+}
+
+#[async_trait::async_trait]
+impl<H: Http> Http for SocketHttp<H> {
+    async fn call<R: Route>(
+        &self,
+        path_args: &[&str],
+        req: R::Request,
+    ) -> Result<R::Response, HttpError> {
+        let entry = routes::lookup(&R::METHOD, R::PATH).ok_or_else(|| {
+            HttpError::Transport(format!(
+                "{} {} is not in the route table",
+                R::METHOD,
+                R::PATH
+            ))
+        })?;
+        if entry.transport == Transport::Http {
+            return self.http.call::<R>(path_args, req).await;
+        }
+        let route = fill_path(entry.path, path_args)?;
+        // Zeroized here; the copy each attempt hands the queue (and its frame) is the transport's, as over HTTP.
+        let body = zeroize::Zeroizing::new(body_of::<R>(&req, entry)?.unwrap_or_default());
+        drop(req);
+        let method = method_name(&entry.method).ok_or_else(|| {
+            HttpError::Transport(format!("{} is not a socket method", entry.method))
+        })?;
+        // One key for every attempt of this request, so a retry is answered from the instance's replay record.
+        let idem = (method != "GET").then(random_idem);
+        for attempt in 1..=SOCKET_HTTP_ATTEMPTS {
+            let answer = self
+                .socket
+                .request(method, route.clone(), body.to_vec(), idem.clone())
+                .await
+                .map_err(|e| HttpError::Transport(format!("{}: {}", e.code, e.detail)))?;
+            if entry.accepts(answer.status) {
+                let cap = entry.max_body.unwrap_or(u64::MAX);
+                if answer.body.len() as u64 > cap {
+                    return Err(HttpError::Decode(format!(
+                        "the response body is larger than {cap} bytes"
+                    )));
+                }
+                return answer_of::<R>(entry, answer.status, answer.body);
+            }
+            if answer.status == 429 && attempt < SOCKET_HTTP_ATTEMPTS {
+                let wait = ApiError::from_body(answer.status, &answer.body)
+                    .retry_after_ms
+                    .unwrap_or(1000);
+                if wait <= SOCKET_HTTP_MAX_WAIT_MS {
+                    tokio::time::sleep(Duration::from_millis(wait)).await;
+                    continue;
+                }
+            }
+            return Err(HttpError::Status {
+                status: answer.status,
+                code: error_code(&answer.body),
+            });
+        }
+        unreachable!("the loop returns on its last attempt")
     }
 }

@@ -15,6 +15,7 @@
 
 pub mod controller;
 pub mod join;
+pub mod session;
 pub mod wire;
 
 use dilla_core::client::{ClientCore, ClientError};
@@ -22,9 +23,27 @@ use zeroize::Zeroizing;
 
 use crate::seams::{Http, HttpError};
 
-pub use controller::{leave_call, media_epoch, rotate_call};
-pub use join::{JoinHooks, JoinRefused, JoinTarget, Joined, join_call};
+pub use controller::{Left, RotateError, decline_ring, leave_call, media_epoch, rotate_call};
+pub use join::{JoinHooks, JoinRefused, JoinTarget, Joined, REJOIN_STEP, REJOIN_WAIT, join_call};
+pub use session::{CallJoin, CallTarget, Calls, NoHttp, SocketCallRoutes};
 pub use wire::{CallParticipant, CallStarted, ChannelCall, GroupSummary};
+
+/// Where a call of this device stands, as the join reports it ([`JoinHooks::phase`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CallPhase {
+    /// No call, or a join that ended without one.
+    #[default]
+    Idle,
+    /// The join is reading the call, registering or joining its group, or starting the call.
+    Joining,
+    /// A rejoin the instance refused with 409 `E_REMOVE_PENDING`: this device's earlier leaf is
+    /// still being removed, and the join waits (at most [`join::REJOIN_WAIT`]) until another member
+    /// commits that Remove or the call ends, then joins (join.ts `rejoining`).
+    WaitingForRemove,
+    /// Joined: the call group's member, with the join epoch's keys and the LiveKit token.
+    In,
+}
 
 /// The core, locked for one call. A poisoned lock (a panic inside the core) is a refusal: the core's
 /// state may be half-written, so nothing more is derived from it or posted for it.
@@ -82,10 +101,10 @@ impl RouteError {
 impl From<HttpError> for RouteError {
     fn from(e: HttpError) -> Self {
         match e {
-            HttpError::Status(s) => Self {
-                status: Some(s),
-                code: None,
-                detail: format!("status {s}"),
+            HttpError::Status { status, code } => Self {
+                status: Some(status),
+                detail: format!("status {status}"),
+                code,
             },
             HttpError::Transport(t) => Self {
                 status: None,
@@ -310,8 +329,8 @@ impl<H: Http> CallRoutes for HttpRoutes<H> {
         use crate::http::routes::{EndCallIfAlone, NoBody};
         match self.0.call::<EndCallIfAlone>(&[&hex(call)], NoBody).await {
             Ok(()) => Ok(true),
-            // 409 E_CALL_NOT_ALONE is the only 409 of this route.
-            Err(HttpError::Status(409)) => Ok(false),
+            // routes.ts `endCallIfAlone`: others are in the call.
+            Err(e) if e.is(409, "E_CALL_NOT_ALONE") => Ok(false),
             Err(e) => Err(e.into()),
         }
     }

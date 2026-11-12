@@ -105,6 +105,20 @@ fn slot_of(name: &str) -> Slot {
     }
 }
 
+/// The check a path slot gets, by the slot's name: `id`, `digest`, `count`, `kind`, `gif` or `free` (the names
+/// `tests/support/dump-routes.mjs` gives the routes.ts validators: `id()`, `digest()`, `count()`, `kindOf()`, the GIF
+/// id's own check, and a free segment). `route_table_matches_ts` holds this to the TypeScript source.
+pub fn slot_check(name: &str) -> &'static str {
+    match slot_of(name) {
+        Slot::Id => "id",
+        Slot::Digest => "digest",
+        Slot::Count => "count",
+        Slot::Kind => "kind",
+        Slot::Gif => "gif",
+        Slot::Free => "free",
+    }
+}
+
 fn is_lower_hex(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
@@ -116,7 +130,13 @@ fn check_segment(name: &str, arg: &str) -> Result<(), HttpError> {
         && match slot_of(name) {
             Slot::Id => is_lower_hex(arg, 32),
             Slot::Digest => is_lower_hex(arg, 64),
-            Slot::Count => (1..=20).contains(&arg.len()) && arg.bytes().all(|b| b.is_ascii_digit()),
+            // A positive count in its one decimal spelling: no `0` (no seq, message seq or welcome id is 0) and no
+            // leading zero.
+            Slot::Count => {
+                (1..=20).contains(&arg.len())
+                    && !arg.starts_with('0')
+                    && arg.bytes().all(|b| b.is_ascii_digit())
+            }
             Slot::Kind => matches!(arg, "0" | "1"),
             Slot::Gif => {
                 (1..=64).contains(&arg.len()) && arg.bytes().all(|b| b.is_ascii_alphanumeric())
@@ -207,8 +227,12 @@ async fn read_capped(mut response: reqwest::Response, cap: u64) -> Result<Vec<u8
     Ok(body)
 }
 
-/// The body a request serializes to: `None` for [`routes::NoBody`], the bytes of a [`routes::Raw`].
-fn body_of<R: Route>(req: &R::Request, entry: &Entry) -> Result<Option<Vec<u8>>, HttpError> {
+/// The body a request serializes to: `None` for [`routes::NoBody`], the bytes of a [`routes::Raw`] or a
+/// [`routes::Secret`] (whose copy here is the one the transport takes over; see [`routes::Secret`]).
+pub(crate) fn body_of<R: Route>(
+    req: &R::Request,
+    entry: &Entry,
+) -> Result<Option<Vec<u8>>, HttpError> {
     let value = Value::serialized(req).map_err(|e| HttpError::Decode(format!("request: {e}")))?;
     match (value, entry.request) {
         (Value::Null, BodyEncoding::None) => Ok(None),
@@ -275,17 +299,54 @@ impl Http for ReqwestHttp {
         let response = request.send().await.map_err(transport)?;
         let status = response.status().as_u16();
         if !entry.accepts(status) {
-            // The refusal's body is never read: the status is the whole error.
-            return Err(HttpError::Status(status));
+            // client.ts reads a refusal's body up to ERROR_BODY_CAP for its code; a body it cannot read is E_HTTP.
+            let body = read_capped(response, ERROR_BODY_CAP).await.ok();
+            return Err(HttpError::Status {
+                status,
+                code: body.as_deref().and_then(error_code),
+            });
         }
         let body = read_capped(response, entry.max_body.unwrap_or(BODY_CEILING)).await?;
-        let value = match entry.answer {
-            Answer::None => Value::Null,
-            Answer::Body => Value::Bytes(body),
-            Answer::Status => Value::Array(vec![Value::Integer(status.into()), Value::Bytes(body)]),
-        };
-        value
-            .deserialized()
-            .map_err(|e| HttpError::Decode(e.to_string()))
+        answer_of::<R>(entry, status, body)
     }
+}
+
+/// client.ts `ERROR_BODY_CAP`: the most of a refusal's body that is read for its code.
+pub const ERROR_BODY_CAP: u64 = 64 * 1024;
+
+/// The instance's `E_*` code in a refusal's body, as http/errors.ts `decodeErrorBody` reads it: the body is
+/// `[code, detail, delay|null, ...extra]` with `code` matching `^E_[A-Z0-9_]{1,64}$`, `detail` a text and `delay` an
+/// integer or null. Any other body (not CBOR, not such an array, an empty one) has no code (`E_HTTP` in errors.ts).
+pub fn error_code(body: &[u8]) -> Option<String> {
+    use crate::gateway::frames::Value as V;
+    let Ok(V::Array(a)) = V::decode(body) else {
+        return None;
+    };
+    if a.len() < 3 || a[1].as_text().is_none() || !matches!(a[2], V::Uint(_) | V::Null) {
+        return None;
+    }
+    let code = a[0].as_text()?;
+    let ok = code.len() > 2
+        && code.len() <= 66
+        && code.starts_with("E_")
+        && code[2..]
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+    ok.then(|| code.to_owned())
+}
+
+/// `R`'s answer from an accepted `status` and its `body`, read as the route's table row says.
+pub(crate) fn answer_of<R: Route>(
+    entry: &Entry,
+    status: u16,
+    body: Vec<u8>,
+) -> Result<R::Response, HttpError> {
+    let value = match entry.answer {
+        Answer::None => Value::Null,
+        Answer::Body => Value::Bytes(body),
+        Answer::Status => Value::Array(vec![Value::Integer(status.into()), Value::Bytes(body)]),
+    };
+    value
+        .deserialized()
+        .map_err(|e| HttpError::Decode(e.to_string()))
 }
