@@ -2295,7 +2295,7 @@ export const GPUI_PINNED_STEPS = {
   ].join('\n'),
   ignored: [
     '- name: Run the ignored tests (Linux)',
-    "  if: runner.os == 'Linux'",
+    "  if: runner.os == 'Linux' && !cancelled()",
     '  shell: bash',
     '  run: |',
     '    cargo test -p dilla-parity --locked -- --ignored',
@@ -2307,7 +2307,7 @@ export const GPUI_PINNED_STEPS = {
   // The media tests need the e2e media suite's prerequisites, which the steps before this one build on Linux.
   mediaWasm: [
     '- name: Build packages/media\'s wasm core (Linux)',
-    "  if: runner.os == 'Linux'",
+    "  if: runner.os == 'Linux' && !cancelled()",
     '  env:',
     '    CC_wasm32_unknown_unknown: /usr/bin/clang-23',
     '    AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23',
@@ -2319,7 +2319,7 @@ export const GPUI_PINNED_STEPS = {
   ].join('\n'),
   chromium: [
     '- name: Playwright Chromium (Linux)',
-    "  if: runner.os == 'Linux'",
+    "  if: runner.os == 'Linux' && !cancelled()",
     '  timeout-minutes: 8',
     '  run: npx playwright install --with-deps chromium',
   ].join('\n'),
@@ -2332,9 +2332,24 @@ export const GPUI_PINNED_STEPS = {
 };
 
 /** The GPUI crates' integration-test directories (relative to the repository root) and the `cargo test -p` crate each one's `--ignored` run names. */
-const GPUI_IGNORED_TEST_DIRS = [['clients/desktop/dilla-client/tests', 'dilla-client'], ['clients/desktop/dilla-desktop/tests', 'dilla-desktop'], ['clients/desktop/dilla-media/tests', 'dilla-media']];
+const GPUI_IGNORED_TEST_DIRS = [['clients/desktop/dilla-client/tests', 'dilla-client'], ['clients/desktop/dilla-desktop/tests', 'dilla-desktop'], ['clients/desktop/dilla-media/tests', 'dilla-media'], ['clients/desktop/dilla-desktop-ui/tests', 'dilla-desktop-ui'], ['clients/desktop/parity/tests', 'dilla-parity']];
 /** Test files whose #[ignore] needs something CI cannot give (the real OS keychain, a developer's desktop session). */
 const GPUI_IGNORED_BY_HAND = new Set(['clients/desktop/dilla-client/tests/store.rs']);
+
+/** The `cargo test ... --ignored` command lines of the gpui job's Linux steps (run blocks, comment lines dropped, wrapped lines joined). */
+function gpuiIgnoredRunLines(text) {
+  let doc;
+  try { doc = yaml.load(text); } catch { return []; }
+  const steps = Array.isArray(doc?.jobs?.gpui?.steps) ? doc.jobs.gpui.steps : [];
+  const lines = [];
+  for (const step of steps) {
+    const guard = String(step?.if ?? '');
+    if (typeof step?.run !== 'string' || !guard.includes("runner.os == 'Linux'") || /\bfalse\b/.test(guard)) continue;
+    const body = step.run.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n').replace(/\\\n/g, ' ');
+    for (const l of body.split('\n')) if (l.includes('cargo test') && l.includes('--ignored')) lines.push(l);
+  }
+  return lines;
+}
 
 export function checkDesktopGpuiWorkflow(root) {
   const file = 'desktop-gpui.yml';
@@ -2346,20 +2361,29 @@ export function checkDesktopGpuiWorkflow(root) {
   for (const [name, step] of Object.entries(GPUI_PINNED_STEPS)) {
     if (!body.includes(step)) problems.push(`${file}: the ${name} step must be exactly:\n${step}`);
   }
-  // The Go and WASI build runs before the cargo test run that reads DILLA_TESTHOST, so the real-server tests find it.
-  // Every integration-test file with an #[ignore]d test is run by a `--test <file> ... --ignored` line, so a suite a Wave 1 task adds
-  // cannot be ignored everywhere without this check saying so. The controller appends the line as each test file merges.
+  // Every integration-test file with an ignored test is run by a `cargo test -p <crate> [--test <file>] ... --ignored` line in the Linux
+  // ignored or media step's run block (comments stripped, so a commented-out line or a disabled step does not count), so a suite a
+  // Wave 1 task adds cannot be ignored everywhere without this check saying so. The controller appends the line as each test file merges.
+  const runLines = gpuiIgnoredRunLines(text);
   for (const [dir, crate] of GPUI_IGNORED_TEST_DIRS) {
-    let files;
-    try { files = readdirSync(join(root, dir)).filter((f) => f.endsWith('.rs')); } catch { continue; }
-    for (const f of files) {
-      const rel = `${dir}/${f}`;
-      if (GPUI_IGNORED_BY_HAND.has(rel) || !/^\s*#\[ignore/m.test(readFileSync(join(root, rel), 'utf8'))) continue;
-      const name = f.slice(0, -3);
-      const ran = text.split('\n').some((l) => l.includes(`cargo test -p ${crate} `) && l.includes('--ignored') && new RegExp(`--test ${name}(\\s|$)`).test(l));
-      if (!ran) problems.push(`${file}: ${rel} has #[ignore]d tests but no \`cargo test -p ${crate} --test ${name} ... -- --ignored\` line runs them`);
+    const entries = [];
+    try {
+      for (const e of readdirSync(join(root, dir), { withFileTypes: true })) {
+        if (e.isFile() && e.name.endsWith('.rs')) entries.push([e.name.slice(0, -3), `${dir}/${e.name}`]);
+        else if (e.isDirectory()) entries.push([e.name, `${dir}/${e.name}/main.rs`]); // tests/<name>/main.rs is the test target <name>
+      }
+    } catch { continue; }
+    for (const [name, rel] of entries) {
+      let source;
+      try { source = readFileSync(join(root, rel), 'utf8'); } catch { continue; }
+      if (GPUI_IGNORED_BY_HAND.has(rel) || !/#\[\s*(?:ignore\b|cfg_attr\([^\]]*\bignore\b)/.test(source)) continue;
+      const forCrate = runLines.filter((l) => l.includes(`cargo test -p ${crate} `));
+      // A run with no --test filter runs every ignored test of the crate.
+      const ran = forCrate.some((l) => !/--test\s/.test(l)) || forCrate.some((l) => new RegExp(`--test ${name}(\\s|$)`).test(l));
+      if (!ran) problems.push(`${file}: ${rel} has ignored tests but no \`cargo test -p ${crate} --test ${name} ... -- --ignored\` line in a Linux ignored step runs them`);
     }
   }
+  // The Go and WASI build runs before the cargo test run that reads DILLA_TESTHOST, so the real-server tests find it.
   if (text.indexOf('Build the test host and the WASI core') > text.indexOf('cargo test $GPUI_CRATES')) problems.push(`${file}: the test host must be built before the cargo test run`);
   return problems;
 }

@@ -149,7 +149,7 @@ jobs:
       # WASI core built above, packages/media's wasm and Playwright's Chromium (the e2e media suite's prerequisites).
       # The wasm C build (sqlite-wasm-rs) uses clang 23, as the browser jobs of desktop-ci.yml do.
       - id: clang23-cache
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !cancelled()
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/llvm-23-debs
@@ -157,15 +157,15 @@ jobs:
           restore-keys: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-
       - id: clang23
         name: clang 23 for the wasm C build (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !cancelled()
         run: bash scripts/ci-llvm.sh install
-      - if: runner.os == 'Linux' && steps.clang23.outputs.changed == 'true'
+      - if: runner.os == 'Linux' && !cancelled() && steps.clang23.outputs.changed == 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/llvm-23-debs
           key: llvm-23-debs-${{ runner.arch }}-ubuntu-24.04-${{ steps.clang23.outputs.build }}
       - name: Build packages/media's wasm core (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !cancelled()
         env:
           CC_wasm32_unknown_unknown: /usr/bin/clang-23
           AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
@@ -176,7 +176,7 @@ jobs:
           wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/media/wasm
       # Chromium for the media tests and for dilla-parity's web shooter (parity/shoot.mjs).
       - name: Playwright Chromium (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !cancelled()
         timeout-minutes: 8
         run: npx playwright install --with-deps chromium
       # dilla-parity's only GPU test is #[ignore]d (release build has no automation, ~4 min), so the plain run above
@@ -184,7 +184,7 @@ jobs:
       # Linux renders on lavapipe (mesa-vulkan-drivers, installed above) and runs it, plus dilla-client's real-dillad
       # hello (it starts the dilla-testhost built above).
       - name: Run the ignored tests (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !cancelled()
         shell: bash
         run: |
           cargo test -p dilla-parity --locked -- --ignored

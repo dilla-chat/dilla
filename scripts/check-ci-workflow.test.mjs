@@ -3587,20 +3587,68 @@ test('every GPUI integration-test file with #[ignore]d tests has a --ignored run
   assert.ok(problems.some((p) => p.includes('newarea.rs') && p.includes('--test newarea')), problems.join('\n'));
   assert.ok(!problems.some((p) => p.includes('plain.rs')), 'a file without ignored tests needs no run');
   const wf = join(root, GPUI);
-  const listed = 'cargo test -p dilla-client --test http_sign_in --locked -- --ignored\n';
+  const listed = 'cargo test -p dilla-desktop --test slice --locked -- --ignored\n';
   writeFileSync(wf, readFileSync(wf, 'utf8').replace(listed, `${listed}          cargo test -p dilla-client --test newarea --locked -- --ignored\n`));
   assert.ok(!checkDesktopGpuiWorkflow(root).some((p) => p.includes('newarea.rs')), 'listing the file satisfies the guard');
   rmSync(root, { recursive: true, force: true });
 });
 
+// A directory holding a fake `objdump` that prints `output` and exits with `code`; `null` for no objdump at all.
+function glibcToolDir(output, code) {
+  const dir = mkdtempSync(join(tmpdir(), 'dilla-glibc-tool-'));
+  if (output !== null) writeFileSync(join(dir, 'objdump'), `#!/bin/sh\nprintf '%s' '${output}'\nexit ${code}\n`, { mode: 0o755 });
+  return dir;
+}
+const glibcScript = join(REPO_ROOT, 'scripts', 'check-glibc-max.sh');
+const runGlibc = (args, dir) => spawnSync('/bin/bash', [glibcScript, ...args], { encoding: 'utf8', env: { ...process.env, PATH: dir === undefined ? process.env.PATH : `${dir}:${process.env.PATH}` } });
+
 test('check-glibc-max.sh refuses a binary that needs a newer glibc than allowed', { skip: process.platform !== 'linux' }, () => {
-  const script = join(REPO_ROOT, 'scripts', 'check-glibc-max.sh');
-  const probe = process.execPath;
-  const ok = spawnSync('bash', [script, '99.0', probe], { encoding: 'utf8' });
+  const dir = glibcToolDir('0000 g DF .text 0 GLIBC_2.39 memcpy\n0000 g DF .text 0 GLIBC_2.17 free\n', 0);
+  const ok = runGlibc(['2.39', process.execPath], dir);
   assert.equal(ok.status, 0, ok.stderr);
-  const bad = spawnSync('bash', [script, '2.0', probe], { encoding: 'utf8' });
-  if (/no GLIBC symbol versions/.test(bad.stdout)) return; // a static node: nothing to measure
-  assert.equal(bad.status, 1, 'a ceiling below every glibc version fails');
-  assert.match(bad.stderr, /newer than the allowed GLIBC_2\.0/);
-  assert.equal(spawnSync('bash', [script, '2.39', '/nonexistent/binary'], { encoding: 'utf8' }).status, 2);
+  assert.match(ok.stdout, /needs GLIBC_2\.39/);
+  const bad = runGlibc(['2.38', process.execPath], dir);
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /needs GLIBC_2\.39, newer than the allowed GLIBC_2\.38/);
+  assert.equal(runGlibc(['2.39', '/nonexistent/binary'], dir).status, 2);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('check-glibc-max.sh cannot pass without measuring: no objdump, a failing objdump or no GLIBC versions all fail', { skip: process.platform !== 'linux' }, () => {
+  const none = glibcToolDir(null, 0);
+  // PATH holds only the empty directory: no objdump, no other tool.
+  const missing = spawnSync('/bin/bash', [glibcScript, '2.39', process.execPath], { encoding: 'utf8', env: { PATH: none } });
+  assert.equal(missing.status, 2, 'a missing objdump is a tooling error, not a pass');
+  assert.match(missing.stderr, /objdump is not installed/);
+  const failing = glibcToolDir('', 1);
+  assert.equal(runGlibc(['2.39', process.execPath], failing).status, 2, 'an objdump failure is not swallowed');
+  const static_ = glibcToolDir('0000 g DF .text 0 Base memcpy\n', 0);
+  const noVersions = runGlibc(['2.39', process.execPath], static_);
+  assert.equal(noVersions.status, 1, 'a binary with no GLIBC versions (static, musl) fails');
+  assert.match(noVersions.stderr, /nothing was measured/);
+  for (const d of [none, failing, static_]) rmSync(d, { recursive: true, force: true });
+});
+
+test('the GPUI ignored-coverage guard counts only live Linux run lines and sees every ignore spelling', () => {
+  const root = releaseRoot();
+  const tests = (dir, file, source) => { mkdirSync(join(root, 'clients/desktop', dir, 'tests', ...file.split('/').slice(0, -1)), { recursive: true }); writeFileSync(join(root, 'clients/desktop', dir, 'tests', file), source); };
+  tests('dilla-client', 'cfg.rs', '#[test]\n#[cfg_attr(not(windows), ignore = "needs dillad")]\nfn t() {}\n');
+  tests('dilla-client', 'inline.rs', '#[test] #[ignore = "x"] fn t() {}\n');
+  tests('dilla-desktop', 'dirsuite/main.rs', '#[test]\n#[ignore]\nfn t() {}\n');
+  tests('dilla-desktop-ui', 'ui.rs', '#[test]\n#[ignore]\nfn t() {}\n');
+  const wf = join(root, GPUI);
+  const original = readFileSync(wf, 'utf8');
+  const missing = checkDesktopGpuiWorkflow(root).join('\n');
+  for (const name of ['cfg.rs', 'inline.rs', 'dirsuite/main.rs', 'ui.rs']) assert.ok(missing.includes(name), `${name}: ${missing}`);
+  const listed = 'cargo test -p dilla-desktop --test slice --locked -- --ignored\n';
+  // A YAML comment line naming the suite does not count.
+  writeFileSync(wf, original.replace(listed, `${listed}          # cargo test -p dilla-client --test cfg --locked -- --ignored\n`));
+  assert.ok(checkDesktopGpuiWorkflow(root).some((p) => p.includes('cfg.rs')), 'a commented-out line must not count');
+  // A live line does, and so does a run with no --test filter.
+  writeFileSync(wf, original.replace(listed, `${listed}          cargo test -p dilla-client --test cfg --test inline --locked -- --ignored\n          cargo test -p dilla-desktop --test dirsuite --locked -- --ignored\n          cargo test -p dilla-desktop-ui --locked -- --ignored\n`));
+  assert.deepEqual(checkDesktopGpuiWorkflow(root), []);
+  // A disabled step does not count.
+  writeFileSync(wf, readFileSync(wf, 'utf8').replace("name: Run the ignored tests (Linux)\n        if: runner.os == 'Linux' && !cancelled()", "name: Run the ignored tests (Linux)\n        if: runner.os == 'Linux' && false"));
+  assert.ok(checkDesktopGpuiWorkflow(root).length > 0, 'a step guarded by false must not count');
+  rmSync(root, { recursive: true, force: true });
 });
