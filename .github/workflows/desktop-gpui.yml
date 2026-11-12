@@ -1,6 +1,6 @@
 name: desktop-gpui
 # The native GPUI desktop client (clients/desktop). Separate from desktop.yml / desktop-ci.yml, which are the
-# Electron client's; this one builds, lints and tests only the four GPUI crates.
+# Electron client's; this one builds, lints and tests only the GPUI crates and the parity harness.
 on:
   pull_request:
     paths:
@@ -17,7 +17,7 @@ concurrency:
   group: desktop-gpui-${{ github.ref }}
   cancel-in-progress: true
 env:
-  GPUI_CRATES: -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop
+  GPUI_CRATES: -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity
 jobs:
   gpui:
     name: gpui-${{ matrix.platform }}-${{ matrix.arch }}
@@ -37,8 +37,16 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+      # dilla-client's real-server tests start dilla-testhost (Go) on the WASI core, so every OS builds both below.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       # GPUI's Linux build and the libwebrtc behind LiveKit need the X11, Wayland, xkbcommon, font, Vulkan and GBM
-      # development packages and libclang (bindgen). Retried only on mirror and DNS failures.
+      # development packages and libclang (bindgen). mesa-vulkan-drivers is lavapipe, the software Vulkan adapter
+      # dilla-parity's headless screenshot test renders on. Retried only on mirror and DNS failures.
       - name: Install the GPUI build dependencies
         if: runner.os == 'Linux'
         run: >-
@@ -48,7 +56,7 @@ jobs:
           clang libclang-dev pkg-config libssl-dev libdbus-1-dev libasound2-dev
           libfontconfig-dev libfreetype-dev libvulkan-dev libgbm-dev libdrm-dev libglib2.0-dev
           libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
-          libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxext-dev libxdamage-dev
+          mesa-vulkan-drivers libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxext-dev libxdamage-dev
           libxfixes-dev libxcomposite-dev libxrandr-dev
       - run: rustup show active-toolchain
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -60,6 +68,22 @@ jobs:
           key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
             desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+      # Token freshness: the generated Rust tokens match the design tokens they come from.
+      - run: node --test scripts/gen-gpui-tokens.test.mjs
+      # The test host and the WASI core dilla-client's tests/http_sign_in.rs and tests/gateway.rs start. Both test
+      # binaries read the WASI core from a differently named variable, so both are exported.
+      - name: Build the test host and the WASI core
+        shell: bash
+        run: |
+          exe=""
+          if [ "$RUNNER_OS" = "Windows" ]; then exe=".exe"; fi
+          cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked
+          go build -o "target/dilla-testhost$exe" ./cmd/dilla-testhost
+          {
+            echo "DILLA_TESTHOST=$GITHUB_WORKSPACE/target/dilla-testhost$exe"
+            echo "DILLA_CORE_WASI=$GITHUB_WORKSPACE/target/wasm32-wasip1/release/dilla_core_wasi.wasm"
+            echo "DILLA_WASI_CORE=$GITHUB_WORKSPACE/target/wasm32-wasip1/release/dilla_core_wasi.wasm"
+          } >> "$GITHUB_ENV"
       - run: cargo build $GPUI_CRATES --all-targets --locked
         shell: bash
       - run: cargo clippy $GPUI_CRATES --all-targets --locked -- -D warnings
@@ -67,3 +91,13 @@ jobs:
       # The window test runs on GPUI's test platform, so it needs no display.
       - run: cargo test $GPUI_CRATES --locked
         shell: bash
+      # dilla-parity's only GPU test is #[ignore]d (release build has no automation, ~4 min), so the plain run above
+      # needs no adapter on any OS: macOS would use Metal and Windows has none, and neither runs the ignored test.
+      # Linux renders on lavapipe (mesa-vulkan-drivers, installed above) and runs it, plus dilla-client's real-dillad
+      # hello (it starts the dilla-testhost built above).
+      - name: Run the ignored tests (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cargo test -p dilla-parity --locked -- --ignored
+          cargo test -p dilla-client --test gateway --locked -- --ignored
