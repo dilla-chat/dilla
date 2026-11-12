@@ -244,10 +244,12 @@ mod tests {
     }
 
     fn state() -> AppState {
-        let mut s = AppState::default();
-        s.account = AccountState {
-            username: "canary-username".into(),
-            ..AccountState::default()
+        let mut s = AppState {
+            account: AccountState {
+                username: "canary-username".into(),
+                ..AccountState::default()
+            },
+            ..AppState::default()
         };
         s.diagnostics.errors = vec![
             ErrorEntry {
