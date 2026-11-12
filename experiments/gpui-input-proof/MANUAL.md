@@ -1,9 +1,15 @@
 # Composer IME checklist (about 10 minutes)
 
 The automated tests cannot drive a real OS input method. Run this once per
-platform on the proof app (a window with `Composer`; `cargo run` once an
-`examples/` window is wired, or the Task 5 shell). Mark each line PASS or FAIL
-and note the platform and IME version.
+platform on the proof app. Step 1 on every platform:
+
+    cd experiments/gpui-input-proof && cargo run --example composer
+
+It opens a window with the composer focused, prints each sent message to the
+terminal as `SENT: "..."`, and shows the mention popup state under the
+composer. On Linux, run it once under Wayland and once with
+`WAYLAND_DISPLAY= cargo run --example composer` for X11. Mark each line PASS or
+FAIL and note the platform and IME version.
 
 Common to every platform: the preedit (underlined) text must appear inline at
 the caret, the candidate window must sit next to the caret (not at the window
