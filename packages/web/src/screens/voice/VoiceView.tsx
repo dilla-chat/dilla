@@ -812,9 +812,8 @@ export function Dock({ v, where, server, stageShown }: {
   const phase = callPhase(v);
   const link = call.state?.link;
   return (
-    // Signal §5.6 (the prototype's showDock): while this channel's own stage is on screen, its call bar says where and how
-    // the call is, so the dock draws nothing; its status region stays (the one polite region of the call). A DM keeps it.
-    <div className="dw-voice-dock" data-doc-state="voice-dock" data-on-stage={stageShown && server !== null ? 'true' : undefined}>
+    // Beta.5 (Jonas, "Always show the dock"; deviates from Signal §5.6's showDock): the dock stays while this channel's own stage is on screen.
+    <div className="dw-voice-dock" data-doc-state="voice-dock">
       {banner !== null ? (
         <div ref={bannerRef} className="dw-voice-dock__paused" role="status">
           <p id="dw-voice-dock-paused">{banner.text}</p>
@@ -836,7 +835,7 @@ export function Dock({ v, where, server, stageShown }: {
         canShare={!paused && canCapture()} busy={call.session === null} paused={paused}
         {...(link === undefined ? {} : { stats: { rttMs: link.rttMs, upKbps: link.upKbps, downKbps: link.downKbps, quality: linkQuality(link.rttMs, link.lossPct) } })}
         announcement={call.announcement}
-        {...(server !== null && !stageShown && v.music != null && v.music.track !== undefined ? { music: <MusicPlayer view={v.music} variant="compact" /> } : {})}
+        {...(server !== null && v.music != null && v.music.track !== undefined ? { music: <MusicPlayer view={v.music} variant="compact" /> } : {})}
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'),
           ping: en['voice.dock.ping'], pingSub: en['voice.dock.pingSub'], pingNone: en['voice.dock.pingNone'], rate: en['voice.dock.rate'], stats: en['voice.dock.stats'],
           quality: { good: en['voice.dock.quality.good'], poor: en['voice.dock.quality.poor'], bad: en['voice.dock.quality.bad'] },

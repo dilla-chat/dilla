@@ -12,6 +12,7 @@ import { Button } from '../Button/Button.tsx';
 import { IconButton } from '../IconButton/IconButton.tsx';
 import { TopBar } from '../TopBar/TopBar.tsx';
 import { VoiceDock } from '../VoiceDock/VoiceDock.tsx';
+import { harbourCompact } from '../NowPlaying/np.fixture.tsx';
 import { CallStage, type CallStageNotice } from '../CallStage/CallStage.tsx';
 import { CallControls } from '../CallControls/CallControls.tsx';
 import type { CallTileProps, VoiceParticipantView } from '../CallTile/CallTile.tsx';
@@ -60,10 +61,10 @@ function controls(p: { paused?: boolean; busy?: boolean; dm?: boolean } = {}) {
   );
 }
 
-function dock(phase: 'connected' | 'paused' | 'reconnecting' | 'connecting', announcement = '') {
+function dock(phase: 'connected' | 'paused' | 'reconnecting' | 'connecting', announcement = '', music?: ReactNode) {
   return (
     <div className="dw-voice-dock" data-doc-state="voice-dock">
-      <VoiceDock phase={phase} where="harbour" muted={false} deafened={false} announcement={announcement}
+      <VoiceDock phase={phase} where="harbour" muted={false} deafened={false} announcement={announcement} {...(music === undefined ? {} : { music })}
         labels={{ region: t('voice.dock.region'), connecting: t('voice.dock.connecting'),
           ping: en['voice.dock.ping'], pingSub: en['voice.dock.pingSub'], pingNone: en['voice.dock.pingNone'], rate: en['voice.dock.rate'], stats: en['voice.dock.stats'],
           quality: { good: en['voice.dock.quality.good'], poor: en['voice.dock.quality.poor'], bad: en['voice.dock.quality.bad'] },
@@ -132,6 +133,8 @@ const stage = (p: { notice?: CallStageNotice | null; code?: string | null; outgo
 );
 
 export const Connected: Story = { render: () => <Screen joined main={stage({ code: CODE })} /> };
+/** Beta.5 (Jonas, "Always show the dock"): on the channel's own stage the dock stays, call card and compact Now playing both. */
+export const ConnectedDockOnStage: Story = { render: () => <Screen joined dock={dock('connected', '', harbourCompact)} main={stage({ code: CODE })} /> };
 export const Ringing: Story = { render: () => <Screen joined ring={ring(true)} main={stage({ code: CODE })} /> };
 export const Paused: Story = {
   render: () => <Screen joined paused main={stage({ paused: true, notice: { kind: 'paused', text: t('voice.paused', { name: 'bo' }), focusOnce: false,

@@ -183,6 +183,20 @@ describe('BotCatalogStore', () => {
     }
   });
 
+  it('a read that finds nothing changed does not notify; a changed one notifies once', async () => {
+    const f = fakeDeps();
+    const store = new BotCatalogStore(f.deps);
+    await store.syncOnConnect(COMMUNITY);
+    const seen = vi.fn();
+    store.subscribe(COMMUNITY, seen);
+    await store.refresh(COMMUNITY);
+    await store.refresh(COMMUNITY);
+    expect(seen).not.toHaveBeenCalled();
+    f.set(catalogBody(4, [remind]));
+    await store.refresh(COMMUNITY);
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(store.get(COMMUNITY)?.commands.map(c => c.name)).toEqual(['remind']);
+  });
   it('a failed fetch keeps the last good catalog', async () => {
     const f = fakeDeps();
     const store = new BotCatalogStore(f.deps);

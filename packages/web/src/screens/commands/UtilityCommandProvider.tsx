@@ -1,7 +1,7 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Button, PollDialog, RemindersPopover, showToast, type PollDraft, type ReminderItem } from '@dilla/ui';
 import { BotUtilitiesError, BotUtilitiesProviderUnavailableError, BotUtilitiesStatusError, BotUtilitiesUncertainMutationError,
-  createBotUtilities, encode, fromHex, parseReminderTime, resolveReminderTimeCandidate,
+  catalogOffers, createBotUtilities, encode, fromHex, parseReminderTime, resolveReminderTimeCandidate,
   type BotUtilities, type CoreClient, type ReminderSummary, type ReminderTimeResult } from '@dilla/client-core';
 import { channelBitsOf, PERM, watchBotHint, type CommandContext as Binding, type CommandInvocation, type CommandResult } from '@dilla/client-core';
 import { BOT_ACCOUNT_KIND } from '../bot-member.ts';
@@ -182,6 +182,8 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
   const [dialogScope, setDialogScope] = useState<{ client: CoreClient; owner: string; communityId: string | null } | null>(null);
   const resolveDialog = useRef<((value: unknown) => void) | null>(null);
   const cancelDialog = useRef<(() => void) | null>(null);
+  /** The open poll form was closed because the Bot stopped offering polls, not by the user. */
+  const stoppedOffering = useRef(false);
   const [inboxOpen, setInboxOpen] = useState(false);
   // null: the tab follows the list (Due while anything is due, else Upcoming), also while it is still loading; a pick holds.
   const [inboxTab, setInboxTab] = useState<'due' | 'upcoming' | null>(null);
@@ -292,6 +294,7 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
   const openDialog = useCallback((state: UtilityDialogInput, context: CommandExecutionContext) => new Promise<unknown>(resolve => {
     if (liveScope.current.client !== client || liveScope.current.ownerKey === '' || !context.isCurrent()) { resolve(null); return; }
     cancelDialog.current?.();
+    stoppedOffering.current = false;
     const scope = { client, owner: liveScope.current.ownerKey, communityId };
     setDialogScope(scope);
     resolveDialog.current = resolve;
@@ -310,10 +313,22 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
     };
     const cancel = () => finish(null);
     cancelDialog.current = cancel;
-    // Local guard only: it reads the page's own state. What the Bot offers comes from the pushed catalog, so a change of this
-    // community's catalog closes the dialog instead of a periodic capability request.
+    // The 100 ms check guards the form's own scope (the channel or thread, the send permission, the live account), which only
+    // the page knows. What the Bot offers comes from the pushed catalog: the form closes when the catalog stops listing the
+    // poll operation or names another Bot user, never on a republish that changed neither.
     stopCheck = recheck(() => { if (!isScopeCurrent()) cancel(); }, 100);
-    if (communityId !== null) stopCatalog = client.subscribe(`botCatalog:${communityId}`, cancel);
+    if (communityId !== null) {
+      const catalogKey = `botCatalog:${communityId}` as const;
+      let openedWith = client.get(catalogKey)?.botUserId ?? null;
+      stopCatalog = client.subscribe(catalogKey, () => {
+        const held = client.get(catalogKey);
+        // A pin unknown at open is adopted when it first resolves; only a change from a known id closes the form.
+        if (openedWith === null && held?.botUserId) openedWith = held.botUserId;
+        if (held !== null && held !== undefined && catalogOffers(client, communityId, 70) && (held.botUserId ?? null) === openedWith) return;
+        stoppedOffering.current = true;
+        cancel();
+      });
+    }
     const submit = (value: unknown) => { if (!isScopeCurrent()) { cancel(); return; } finish(value); };
     setDialog({ ...state, isCurrent: isScopeCurrent, onCancel: cancel, onSubmit: submit });
   }), [client, communityId]);
@@ -362,7 +377,12 @@ export function useUtilityCommandProvider(client: CoreClient, communityId: strin
       // A retained mutation is immutable. Reopening its fields would imply that edits are
       // part of the retry even though the original request ID is body-bound.
       const raw = saved ?? await open({ kind: 'poll', question: invocation.args.question ?? '', answers: answers.replace(/\s*,\s*/gu, '\n'), multi: invocation.args.multiple === 'on', duration: invocation.args.duration ?? '24h', channelId: context.binding.channelId, threadId: thread(context.binding) }, context) as { question: string; answers: string[]; multi: boolean; duration: number } | null;
-      if (raw === null) return prior ? uncertain(copy('poll.createdUncertain')) : failure('Poll creation cancelled.');
+      if (raw === null) {
+        if (prior) return uncertain(copy('poll.createdUncertain'));
+        // The Bot's catalog closed the form: the user is told, where their own Cancel stays silent.
+        if (stoppedOffering.current) { stoppedOffering.current = false; return failure('The Bot stopped offering polls. Try again.'); }
+        return failure('Poll creation cancelled.');
+      }
       context.startResult?.();
       const submitted = saved ?? raw;
       const attempt = prior ?? { kind: 'poll' as const, scope, installationId: caps.installationId, value: { ...raw, answers: [...raw.answers] } };

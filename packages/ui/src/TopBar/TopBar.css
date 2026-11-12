@@ -29,11 +29,6 @@
   font-size: var(--text-btn); color: var(--ok-text); white-space: nowrap; background: var(--ok-tint); border: 1px solid var(--ok-border); border-radius: var(--r-md);
   cursor: pointer; animation: d-up var(--duration-slow) var(--ease-out) both;
 }
-.d-topbar__bars { display: flex; align-items: flex-end; gap: 2px; height: 0.75rem /* 12px */; }
-/* sBar 600ms, each bar a third of it later (200ms, 400ms). */
-.d-topbar__bars i { display: block; width: 2px; height: 0.75rem; background: var(--ok); transform-origin: bottom; animation: d-bar var(--duration-bar) infinite; }
-.d-topbar__bars i:nth-child(2) { animation-delay: calc(var(--duration-bar) / 3); }
-.d-topbar__bars i:nth-child(3) { animation-delay: calc(var(--duration-bar) * 2 / 3); }
 
 /* The bell's due count: 14px, --mention fill (the prototype's #FFD16A) with --mention-ink, pops in. */
 .d-topbar__bell { position: relative; display: inline-flex; flex: none; }

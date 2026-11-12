@@ -20,7 +20,9 @@ export interface SettingsRowProps {
    * The row's context menu (Ruling X, as DeviceRow's): a right-click, a long press, Shift+F10 or the ContextMenu key on the
    * row opens it. Task 10c puts Glenn's Rename, Refresh status and Disable here, beside the prototype's one Restart button.
    */
-  menu?: { label: string; items: readonly ActionMenuItem[]; onSelect(itemId: string): void };
+  menu?: { label: string; items: readonly ActionMenuItem[]; onSelect(itemId: string): void;
+    /** Desktop beta.5: with a name, the same menu also opens from a ⋯ button after the row's control (beside Restart), named by this. */
+    buttonLabel?: string };
   /** A settings-search anchor (`data-setting`) on the row itself, so a row can be found without a wrapper. */
   anchor?: string;
   children: ReactNode;
@@ -34,6 +36,7 @@ export interface SettingsRowProps {
 export function SettingsRow({ id, label, hint, icon, tag, headingLevel, layout = 'inline', menu, anchor, children }: SettingsRowProps) {
   const Label = headingLevel === undefined ? 'span' : (`h${headingLevel}` as const);
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const [buttonOpen, setButtonOpen] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
   const trigger = useContextMenuTrigger<HTMLDivElement>(menu === undefined ? undefined : (_el, point) => setAt(point));
   // A press on the row's own controls is theirs: it never opens the row's menu.
@@ -49,7 +52,13 @@ export function SettingsRow({ id, label, hint, icon, tag, headingLevel, layout =
         <Label id={`${id}-label`} className="d-settings-row__label">{label}{tag ? <span className="d-settings-row__tag">{tag}</span> : null}</Label>
         {hint ? <p id={`${id}-hint`} className="d-settings-row__hint">{hint}</p> : null}
       </div>
-      <div className="d-settings-row__control">{children}</div>
+      <div className="d-settings-row__control">
+        {children}
+        {menu?.buttonLabel !== undefined && menu.items.length > 0 ? (
+          <ActionMenu label={menu.buttonLabel} items={menu.items} open={buttonOpen} onOpenChange={setButtonOpen} triggerClassName="d-settings-row__more"
+            onSelect={item => menu.onSelect(item)} />
+        ) : null}
+      </div>
       {menu !== undefined && at !== null ? (
         <ActionMenu label={menu.label} items={menu.items} open trigger="none" at={at} returnFocus={() => rowRef.current}
           onOpenChange={open => { if (!open) setAt(null); }} onSelect={item => menu.onSelect(item)} />

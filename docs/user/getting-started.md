@@ -1183,6 +1183,12 @@ the same for a whole server ([Notifications for a server](#notifications-for-a-s
 A message can be edited, deleted, answered, reacted to and pinned, it can mention people, and it can carry images
 and files. This works the same in channels and in direct messages.
 
+### Times and dates
+
+The time beside a message is always 24-hour, such as 20:27, whatever your computer's region says. Date dividers, and
+other dates and times in the app such as a ban's or the Bot's status times, follow your system's region and language,
+and those times are 24-hour too. The desktop app reads the system region from the operating system.
+
 ### The message toolbar
 
 ![Mira's view of #general: Björn's reply to Ada with its reply line and its toolbar react, reply and pin,

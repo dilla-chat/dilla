@@ -323,16 +323,38 @@ test('cancelling the typed native screen picker returns null without creating a 
    }, error => { (globalThis as any).__typedScreenError = String(error); });
   }; document.body.append(button);
  });
- await page.getByRole('button', { name: 'Choose desktop screen for acceptance', exact: true }).click();
- await page.waitForFunction(() => (globalThis as any).__typedScreenResult !== undefined || (globalThis as any).__typedScreenError !== undefined);
+ // macOS, Windows and Linux X11 open the main-owned thumbnail picker window (Wayland keeps the portal and the
+ // native dialog). Cancel the picker window when it appears; the dialog path is answered by the stub above.
+ const cancelled: string[] = [];
+ const onWindow = (picker: Page) => {
+  void (async () => {
+   await picker.waitForLoadState('domcontentloaded');
+   if (!picker.url().startsWith('dilla-internal://picker/')) return;
+   await picker.getByRole('button', { name: 'Cancel', exact: true }).click();
+   cancelled.push(picker.url());
+  })().catch(error => { cancelled.push(`error: ${String(error)}`); });
+ };
+ application().on('window', onWindow);
+ try {
+  await page.getByRole('button', { name: 'Choose desktop screen for acceptance', exact: true }).click();
+  await page.waitForFunction(() => (globalThis as any).__typedScreenResult !== undefined || (globalThis as any).__typedScreenError !== undefined);
+ } finally { application().off('window', onWindow); }
  expect(await page.evaluate(() => (globalThis as any).__typedScreenError)).toBeUndefined();
  expect(await page.evaluate(() => (globalThis as any).__typedScreenResult)).toEqual({ source: null, trusted: true });
  const shown = await prompts();
- expect(shown).toHaveLength(1);
- expect(shown[0]).toMatchObject({ title: 'Share your screen', defaultId: 0, cancelId: 0 });
- expect(shown[0].buttons[0]).toBe('Cancel');
- expect(shown[0].buttons.length).toBeGreaterThan(1);
- expect(await application().evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(win => win.webContents.getURL() === 'dilla-internal://capture/').length)).toBe(0);
+ if (cancelled.length > 0) {
+  // The picker window path: cancelled there, no native dialog, and the picker window is gone.
+  expect(cancelled).toEqual(['dilla-internal://picker/']);
+  expect(shown).toEqual([]);
+  await expect.poll(() => application().evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(win => !win.isDestroyed() && win.webContents?.getURL().startsWith('dilla-internal://picker/')).length)).toBe(0);
+ } else {
+  // The Wayland portal path keeps the native dialog.
+  expect(shown).toHaveLength(1);
+  expect(shown[0]).toMatchObject({ title: 'Share your screen', defaultId: 0, cancelId: 0 });
+  expect(shown[0].buttons[0]).toBe('Cancel');
+  expect(shown[0].buttons.length).toBeGreaterThan(1);
+ }
+ expect(await application().evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(win => !win.isDestroyed() && win.webContents?.getURL() === 'dilla-internal://capture/').length)).toBe(0);
  await assertNoMediaSurface(page);
 });
 

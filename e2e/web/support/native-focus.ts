@@ -51,6 +51,9 @@ async function requestNativeFocus(application: ElectronApplication, page: Page, 
   } finally { await win.dispose(); }
 }
 
+/** How long the renderer may take to report focus after the native request before the proof fails. */
+export const FOCUS_WAIT_MS = 30_000;
+
 /** Complete one native request before requiring the renderer's proof. Detached repeat RPCs can finish after
  * that proof and steal focus from the next peer. A failed proof retains bounded evidence and its original error. */
 export async function focusNativePage(application: ElectronApplication, page: Page,
@@ -59,7 +62,10 @@ export async function focusNativePage(application: ElectronApplication, page: Pa
 ): Promise<void> {
   const steal = options.steal ?? process.platform === 'win32';
   await requestNativeFocus(application, page, steal);
-  try { await page.waitForFunction(() => document.hasFocus()); }
+  // Bounded: an unbounded wait hung a whole test (and its 300 s budget) on a mac runner that never gave the window
+  // focus. Fail with the focus diagnostic instead of waiting forever. No second native request: a hung request must
+  // not hold the original failed proof.
+  try { await page.waitForFunction(() => document.hasFocus(), undefined, { timeout: FOCUS_WAIT_MS }); }
   catch (error) {
     try { report(await focusFacts(application, page)); } catch { /* Evidence must not replace the original focus failure. */ }
     throw error;

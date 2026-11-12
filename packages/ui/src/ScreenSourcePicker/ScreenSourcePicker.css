@@ -1,0 +1,21 @@
+/* Task 5 (an approved addition; the prototype has no picker): the desktop screen-share picker in the Signal dialog. A wider
+   dialog for three 16:9 tiles a row; underline tabs under the head; each tile is the thumbnail in a --hairline-2 edge
+   with the name (and a window's app icon) under it; the selected tile takes the --accent ring. */
+.d-dialog:has(.d-screen-picker) { width: min(680px, calc(100vw - 24px)); }
+.d-screen-picker { display: grid; gap: 12px; }
+.d-screen-picker__tabs { display: flex; gap: 16px; border-bottom: 1px solid var(--hairline); }
+.d-screen-picker__tab { margin-bottom: -1px; padding: 0 0 8px; font: inherit; font-size: var(--text-ui); color: var(--fg-3); background: transparent; border: 0; border-bottom: 2px solid transparent; cursor: pointer; }
+.d-screen-picker__tab:hover { color: var(--fg-2); }
+.d-screen-picker__tab[aria-selected="true"] { color: var(--fg); font-weight: var(--weight-display); border-bottom-color: var(--accent); }
+.d-screen-picker__panel { max-height: min(52vh, 420px); overflow-y: auto; padding: 2px; }
+.d-screen-picker__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.d-screen-picker__tile { display: grid; gap: 6px; min-width: 0; padding: 6px; border: 1px solid transparent; border-radius: var(--r-xl); cursor: pointer; }
+.d-screen-picker__tile:hover { background: var(--hover); }
+.d-screen-picker__tile[aria-selected="true"] { background: var(--surface-2); border-color: var(--accent); }
+.d-screen-picker__thumb { display: grid; place-items: center; aspect-ratio: 16 / 9; overflow: hidden; color: var(--fg-3); background: var(--bg-2); border: 1px solid var(--hairline-2); border-radius: var(--r-md); }
+.d-screen-picker__thumb img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.d-screen-picker__name { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: var(--text-sm); color: var(--fg-2); }
+.d-screen-picker__tile[aria-selected="true"] .d-screen-picker__name { color: var(--fg); }
+.d-screen-picker__icon { flex: none; width: 16px; height: 16px; }
+.d-screen-picker__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.d-screen-picker__empty { margin: 24px 0; text-align: center; color: var(--fg-3); }

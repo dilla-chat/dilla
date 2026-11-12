@@ -73,6 +73,7 @@ A pair has `prototype` plus **either** `story` **or** `app`; one spec may mix bo
   "app": { "who": "ada", "path": "{server}", "steps": [{ "click": "role=button[name=\"Reminders\"s]" }], "clip": "...", "reset": "..." } }
 ```
 
+- `locale` (optional): shoots the app under that language (a fresh context's locale, or a CDP locale override on the world's browser). Message times must read `20:27` under en-US too, so `examples/message-gutter.json` shoots the gutter under en-GB and en-US.
 - `who`: `ada`, `bjorn`, `mira`, `phone` are the world's browsers, attached over CDP (their window is emulated at the
   pair's viewport and scale 2 and restored afterwards); `fresh` and `freshPhone` are new signed-out contexts at
   `state.publicUrl` (1280x800 and 390x844 touch), with the same supported virtual platform authenticator as the passkey e2e tests. Fresh contexts use `state.authUrl` (`localhost`) with a matching WebAuthn relying party, while connected world profiles retain numeric `state.publicUrl` for RTC/CSP compatibility. The browser’s conditional passkey request remains real.
@@ -245,6 +246,15 @@ Each element gets a presence Noul and a Box on both images, plus optional `state
   about 3,200, a close-up crop about 1,100. **A pair costs about $0.0003-0.0005** (7,000-12,000 tokens); a run over the 12
   judged pairs costs about $0.0045, and every app pair in the specs would be about $0.02-0.03.
 - Tests: `node --test docs/design/signal/parity/judge.test.mjs` (pure; no network).
+
+### Desktop beta.5 accepted deviations (Jonas, 2026-11-11)
+
+- **Always show the dock:** the voice dock (call card and compact Now playing) stays visible while the voice channel's own stage is on screen, instead of the prototype's showDock hiding it (§5.6). The connected phase also draws no animated signal bars (§5.4), and neither does the top bar's voice chip, which keeps only its text (the `d-bar` keyframes stay for the CallTile and Now playing meters; the unused `--duration-bar` token is gone). Parity shots of the voice stage with the dock (standing-voice-*) differ from the prototype by design; the images are not re-shot yet.
+- **Bot card ⋯ button:** a ⋯ button beside Restart on the Bot card (Settings → Bot) opens Rename, Refresh status and Disable, which the prototype's card draws no button for; the row's context menu still opens the same menu (Ruling X). Story `BotMoreMenuOpen`.
+
+- **Thumbnail screen picker (approved addition):** the desktop app's screen share opens a picker with live thumbnails on macOS, Windows and Linux X11 (Wayland keeps the system picker). The prototype draws no picker, so there is no pair to match.
+- **Private Bot replies auto-dismiss after 60 s:** a finished private reply goes away a minute after it finishes; a reply still working or offering Retry stays, and pointing at it or focusing it pauses the countdown. The prototype keeps them until dismissed.
+- **Calm "Voice moved to your other device." notice:** when another of the user's devices takes over voice, the device that lost it shows this line and does not rejoin. The prototype has no such state.
 
 ### Task 6 accepted deviations (Jonas, 2026-10-30)
 

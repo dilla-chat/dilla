@@ -14,6 +14,20 @@ let otherInstance: Page | undefined;
 const test = base.extend<{ twoInstances: boolean }>({ twoInstances: [false, { option: true }] });
 let page: Page, directory: string, profile: string, title: string;
 let stopTrace: (() => Promise<void>) | undefined;
+let pickerSelections: Record<string, unknown>[] = [];
+async function answerPicker(picker: Page): Promise<void> {
+ await picker.waitForLoadState('domcontentloaded');
+ if (!picker.url().startsWith('dilla-internal://picker/')) return;
+ // The account page never holds a picker API; the tiles live only in this window.
+ expect(await page.evaluate(() => Object.keys((window as any).dillaDesktop ?? {}).filter(key => /picker|source/i.test(key)))).toEqual([]);
+ await picker.getByRole('tab', { name: 'Windows' }).click();
+ const tile = picker.getByRole('option', { name: title, exact: true });
+ await expect(tile).toHaveCount(1);
+ await expect(tile.locator('.d-screen-picker__thumb img')).toHaveAttribute('src', /^data:image\/(png|jpeg);base64,/);
+ await tile.click();
+ await picker.getByRole('button', { name: 'Share', exact: true }).click();
+ pickerSelections.push({ title });
+}
 let stun: Awaited<ReturnType<typeof startLoopbackStun>> | undefined;
 type ValidationWindow = Window & { validation: { capture(): Promise<MediaStream>; screen(options?: { source?: string; receiver?: boolean; ms?: number; iceServers?: RTCIceServer[] }): Promise<ScreenResult> } };
 type ScreenResult = FailClosedResult & { audioTracks: number };
@@ -35,7 +49,7 @@ async function focusOwner(): Promise<void> {
  } finally { await window.dispose(); }
 }
 async function brokers(): Promise<number[]> {
- return app().evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(win => win.webContents.getURL() === 'dilla-internal://capture/').map(win => win.id));
+ return app().evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(win => !win.isDestroyed() && win.webContents?.getURL() === 'dilla-internal://capture/').map(win => win.id));
 }
 
 test.beforeEach(async ({ twoInstances }, info) => {
@@ -93,6 +107,10 @@ test.beforeEach(async ({ twoInstances }, info) => {
    return { response: matches[0], checkboxChecked: false };
   }) as typeof dialog.showMessageBox;
  }, title);
+ // macOS, Windows and Linux X11 open the main-owned picker window (Wayland keeps the portal and the dialog above). Answer it as a
+ // person would: the Windows tab, the actor's tile (offered exactly once, with a thumbnail), then Share.
+ pickerSelections = [];
+ desktop.on('window', picker => { void answerPicker(picker).catch(error => { pickerSelections.push({ error: String(error) }); }); });
  await focusOwner();
 });
 test.afterEach(async () => {
@@ -204,7 +222,8 @@ test('a selected native application window stays video-only and encrypted throug
  assertPattern(result.nativeVideo!.input); assertPattern(result.nativeVideo!.receiver);
  expect(result.nativeVideo!.observationMs).toBeGreaterThanOrEqual(5000);
  await expect.poll(brokers).toHaveLength(0);
- expect(await app().evaluate(() => (globalThis as any).__screenSelections)).toEqual([{ title, cancelFirst: true }]);
+ const portal = await app().evaluate(() => (globalThis as any).__screenSelections);
+ expect([...portal, ...pickerSelections]).toEqual(portal.length ? [{ title, cancelFirst: true }] : [{ title }]);
  await assertDirectCaptureDenied();
 });
 

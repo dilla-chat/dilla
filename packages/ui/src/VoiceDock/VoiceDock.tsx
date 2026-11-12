@@ -76,17 +76,15 @@ export interface VoiceDockProps {
   onLeave(): void;
 }
 
-/** Connected: the three --live bars (README §5.4, `d-bar` 600ms, staggered 200ms); still under reduced motion. */
-const BARS = <span className="d-voice-dock__bars"><span /><span /><span /></span>;
+/** Connected draws no marker (beta.5, Jonas: the animated signal bars are gone). */
 const PHASE_GLYPH = {
-  connecting: <StateDot tone="pending" />, connected: BARS,
+  connecting: <StateDot tone="pending" />, connected: null,
   reconnecting: <StateDot tone="pending" />, paused: <Icon name="pause" size={14} />,
 } as const;
 
 /**
  * The voice dock above the user panel while this device is in voice (Signal, README §5.4): a card in the --live tints
- * (margin 0 8px 8px, padding 10px, radius 8px) holding one row: the three --live bars while connected (the phase marker
- * otherwise), the room name (12px/600 --ok-text; a button with `onStatus` that opens Diagnostics, the server is its tooltip
+ * (margin 0 8px 8px, padding 10px, radius 8px) holding one row: the phase marker while not connected (none when connected), the room name (12px/600 --ok-text; a button with `onStatus` that opens Diagnostics, the server is its tooltip
  * and accessible name) over the link stats ("24 ms · ↑ 38 ↓ 71 kb/s", 10.5px tabular --fg-2; the phase words while not
  * connected), then camera and share (when given) and leave as 28px icon buttons in one roving Tab stop
  * (`role="toolbar"`). Leave is the --danger glyph and fills --danger on hover. Mute and deafen live in the user panel.
@@ -125,7 +123,7 @@ export function VoiceDock({
   return (
     <div className="d-voice-dock" data-phase={phase}>
       <div className="d-voice-dock__row">
-      <span className="d-voice-dock__glyph" aria-hidden="true">{PHASE_GLYPH[phase]}</span>
+      {PHASE_GLYPH[phase] === null ? null : <span className="d-voice-dock__glyph" aria-hidden="true">{PHASE_GLYPH[phase]}</span>}
       <div className="d-voice-dock__status">
         {onStatus !== undefined
           ? <button type="button" className="d-voice-dock__line1" title={full} onClick={onStatus}>{line1}</button>

@@ -1,0 +1,14 @@
+[
+  {
+    "name": "message-gutter-en-gb",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" } },
+    "app": { "who": "ada", "path": "{server}", "clip": ".d-message-row", "locale": "en-GB" }
+  },
+  {
+    "name": "message-gutter-en-us",
+    "viewport": { "width": 1280, "height": 800 },
+    "prototype": { "props": { "startAt": "app" } },
+    "app": { "who": "ada", "path": "{server}", "clip": ".d-message-row", "locale": "en-US" }
+  }
+]

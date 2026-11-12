@@ -4,7 +4,7 @@ import { phoneNow, usePhoneLayout } from '../../layout.ts';
 import { Fragment, useEffect, useLayoutEffect, useReducer, useRef, useState, useSyncExternalStore, type KeyboardEvent, type PointerEvent } from 'react';
 import { encodeMentions, PERM, type MentionMember, type RoleSummary, type TimelineItem, type TimelineState } from '@dilla/client-core';
 import { BotResult, Banner, Button, DateDivider, Dialog, DropOverlay, EmojiGrid, MessageLog, type IconName } from '@dilla/ui';
-import { privateResults } from '../commands/private-results.ts';
+import { autoDismissAt, privateResults } from '../commands/private-results.ts';
 import { privateResultCopy } from '../commands/copy.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { useCore } from '../../core/context.tsx';
@@ -419,7 +419,7 @@ export function Conversation(props: ConversationProps): React.JSX.Element {
         {...(p.onOpenProfile !== undefined ? { onOpenProfile: p.onOpenProfile } : {})} />
       </Fragment>)}
       {privateRows.map(row => <BotResult key={row.id} author={{ name: (row.provider === 'bot' ? botName : privateResultCopy.author.builtin), avatarName: (row.provider === 'bot' ? botName : privateResultCopy.author.builtin), shape: row.provider === 'bot' ? 'bot' : 'circle' }}
-        time={formatTime(row.at / 1000)} status={row.status} body={row.text} labels={{ ...privateResultCopy.labels, dismissName: privateResultCopy.dismissName(row.text) }} onDismiss={() => privateStore.dismiss(row.id)} />)}
+        time={formatTime(row.at / 1000)} status={row.status} body={row.text} labels={{ ...privateResultCopy.labels, dismissName: privateResultCopy.dismissName(row.text) }} autoDismissAt={autoDismissAt(row)} onDismiss={() => privateStore.dismiss(row.id)} />)}
     </MessageLog>
     <div className="dw-overlay">{emojiFor !== null && gridPos !== null ? <div ref={gridRef} style={gridPos}
       onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) closeEmoji(false); }}>

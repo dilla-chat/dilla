@@ -61,6 +61,10 @@ tile (under the name on a phone), never over the face. Your own tile has no volu
 
 ### The call panel
 
+The call panel, and the compact Now playing card when music plays, stay visible while you are on the voice channel's own
+page, not only in other channels; the stage keeps its own Now playing too. Neither the panel nor the top bar's voice chip
+shows animated signal bars: the ping and rates are the only signal.
+
 At the bottom left, above your user panel, the call panel shows the channel name (hover it for the server) over your ping and data rates, like "24 ms · ↑48 ↓96 kb/s" (or "connecting", "reconnecting" or "paused
 in {where}" in place of the rates when that is so; before the first reading it says "— ms"). The figures change colour with the connection: the normal text colour under 150 ms, amber from 150 to 300 ms, and red above 300 ms or with more than 5 % of packets lost. The colour is never the only signal: a screen reader can read the quality ("good", "poor" or "bad") along with the ping and rates, and the numbers are not announced as they change. ↑ is what this device sends (voice, and camera or screen when they are on) and ↓ is what it receives, in kb/s, read every two seconds on your own device and never sent to the server. On the right of the panel is one icon button, **leave**. Camera and share screen are on the stage's toolbar. Press the channel name to open Settings → Diagnostics, which shows the connection. The
 panel has no microphone meter: the level of your microphone is in Settings → Voice. It has no mute or deafen either:
@@ -229,6 +233,10 @@ opens the share picker above it:
   stopping ("Stream set to 1080p · 30 fps"); a new source or sound choice asks the browser again, and if you cancel the
   browser's picker the running share goes on unchanged.
 
+In the desktop app on macOS, Windows and Linux with X11, **Go live** opens a picker of your own: thumbnails of your
+screens and windows, one tile each, under **Screens** and **Windows** tabs. Choose a tile with the pointer or the arrow keys, then press
+Enter or **Share**. Escape or **Cancel** closes it without starting a share. On Linux with Wayland the desktop app keeps the system's own picker.
+
 In a DM call, **share screen** starts at once with your last choices. Pressed again it ends the share. A share is its own tile, "{name}’s screen",
 beside the person's own tile, so with the camera and a share both on, a person has two tiles
 ([The stage](#the-stage)). A share carries sound from:
@@ -325,6 +333,9 @@ camera and no media server, and nobody hears anything. The channel instead lists
   the timeout (1, 5, 15, 30 minutes or 1 hour) in server settings → overview
   ([Run your server](getting-started.md#run-your-server)).
 - **A phone is never disconnected** for being idle.
+- **Another device takes over voice.** If you join voice on a second device while this one is in a call, the one that
+  lost the call says "Voice moved to your other device." It stays calm and does not rejoin by itself; **join voice**
+  takes the call back. In a direct message with no server context, you see the general "You were removed from voice."
 - **On another device.** If you choose AFK on one device, your other devices leave their calls and say "You went AFK
   on another device."
 - **Away longer than the timeout.** If your computer loses its connection during a call (the lid closed, the Wi-Fi
@@ -407,6 +418,7 @@ checks every device again.
 | "You are in a call in the other tab. Using this tab ends that call." | You pressed **Use this tab** while the other tab is in voice: **Keep the call**, or **Leave the call and use this tab** |
 | "This voice is full." | The call has as many people as the instance allows |
 | "Could not join voice. Try again." | Press **join voice** again |
+| "Voice moved to your other device." | You joined voice on another of your devices, and this one gave it up. It does not rejoin; press **join voice** to take it back |
 | "You were removed from voice." | Your device was taken out of the call; join again if you can still open the channel |
 | "You were removed from this server, so you left its voice." | The server's owner removed you while you were in its voice; there is nothing to join there any more |
 | "The connection to voice was lost. Join again to continue." | The connection dropped and did not come back; press **join voice** again |

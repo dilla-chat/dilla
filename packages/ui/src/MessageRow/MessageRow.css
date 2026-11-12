@@ -20,8 +20,6 @@
 .d-message-row:not([data-grouped="true"]) .d-message-row__gutter,
 .d-message-row:hover .d-message-row__gutter, .d-message-row[data-hover="true"] .d-message-row__gutter,
 .d-message-row:focus-within .d-message-row__gutter, .d-message-row[data-revealed="true"] .d-message-row__gutter { color: var(--fg-quiet); }
-/* A 12-hour time ("10:06 PM", 8 characters) is wider than the prototype's 44px column at 10.5px: it steps down to 9px, which fits. */
-.d-message-row__gutter[data-long="true"] { font-size: var(--text-badge); }
 .d-message-row[data-grouped="true"] .d-message-row__gutter { padding-top: 0.0625rem /* 1px */; }
 .d-message-row[data-reply="true"] .d-message-row__gutter { padding-top: 2.375rem /* 38px */; }
 .d-message-row__avatar { display: block; width: 1.875rem; height: 1.875rem; }

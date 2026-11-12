@@ -181,6 +181,8 @@ type ListRead = { state: 'reading'; backoff: number } | { state: 'settled' }
 export class BotCatalogStore {
   private readonly entries = new Map<string, Entry>();
   private readonly listeners = new Map<string, Set<() => void>>();
+  /** community → the fingerprint of the catalog listeners were last notified of. */
+  private readonly told = new Map<string, string | null>();
   private revisions: Promise<BotRevision[] | null> | null = null;
   private readonly inFlight = new Map<string, Promise<void>>();
   /** A read asked for while one is in flight: it runs once that read ends (every ask meanwhile shares it). */
@@ -457,8 +459,17 @@ export class BotCatalogStore {
     const base = keep ? current : { revision: decoded.revision, commands: decoded.commands, publication: decoded.publication, verified: null };
     const entry: Entry = { ...base, serverStatus: decoded.status, botChannels: channels ?? current?.botChannels ?? null };
     if (!keep || entry.verified === null) this.verifyEntry(communityId, entry);
+    // A read that found nothing new stays silent: what a listener sees (commands, Bot user, revision, key, status, channels)
+    // is compared by value, so a poll form open on this catalog is not cancelled by a refresh that changed nothing.
+    // It is compared with what listeners were last told, so a Bot-user problem found during this read still reaches them.
     this.entries.set(communityId, entry);
-    this.notify(communityId);
+    if (this.fingerprint(communityId) !== this.told.get(communityId)) this.notify(communityId);
+  }
+
+  /** What a catalog listener can see of a community, as one comparable string; null with no entry. */
+  private fingerprint(communityId: string): string | null {
+    const view = this.view(communityId);
+    return view === null ? null : JSON.stringify(view);
   }
 
   private now(): number { return this.deps.now?.() ?? Date.now(); }
@@ -604,6 +615,7 @@ export class BotCatalogStore {
   }
 
   private notify(communityId: string): void {
+    this.told.set(communityId, this.fingerprint(communityId));
     for (const fn of [...(this.listeners.get(communityId) ?? [])]) {
       try { fn(); } catch { /* a listener's failure is its own */ }
     }

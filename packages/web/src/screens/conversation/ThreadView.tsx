@@ -10,7 +10,7 @@ import { useChannelBits } from '../../core/use-channel-bits.ts';
 import { useSlice } from '../../core/use-slice.ts';
 import { REACTION_EMOJI } from '../../emoji.ts';
 import { useRoute } from '../../router.ts';
-import { privateResults } from '../commands/private-results.ts';
+import { autoDismissAt, privateResults } from '../commands/private-results.ts';
 import { privateResultCopy } from '../commands/copy.ts';
 import { t, formatTime } from '../../strings/index.ts';
 import { editableText, editRoles, excerpt, mentionCandidates, mentionMembers, mentionRoles, nameBook, plainBody, withSenders } from '../shell-model.ts';
@@ -241,7 +241,7 @@ export function ThreadView(p: {
         <MessageLog label={t('thread.title')} emptyLabel={current === null ? '' : t('thread.noReplies')} busy={current === null}>
           {items.map(item => row(item, item.key, item.key === active))}
           {privateRows.map(row => <BotResult key={row.id} author={{ name: (row.provider === 'bot' ? botName : privateResultCopy.author.builtin), avatarName: (row.provider === 'bot' ? botName : privateResultCopy.author.builtin), shape: row.provider === 'bot' ? 'bot' : 'circle' }}
-            time={formatTime(row.at / 1000)} status={row.status} body={row.text} labels={{ ...privateResultCopy.labels, dismissName: privateResultCopy.dismissName(row.text) }} onDismiss={() => privateStore.dismiss(row.id)} />)}
+            time={formatTime(row.at / 1000)} status={row.status} body={row.text} labels={{ ...privateResultCopy.labels, dismissName: privateResultCopy.dismissName(row.text) }} autoDismissAt={autoDismissAt(row)} onDismiss={() => privateStore.dismiss(row.id)} />)}
         </MessageLog>
       </ThreadPane>
       <Dialog open={emojiFor !== null} title={t('shell.emoji.label')} closeLabel={t('dialog.close')} onClose={() => setEmojiFor(null)}>

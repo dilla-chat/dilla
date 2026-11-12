@@ -89,6 +89,7 @@ type Monitor struct {
 	lastProbe time.Time
 	probeOK   bool
 	failing   time.Time // when commands began failing, zero while the last probe succeeded
+	degraded  time.Time // when the event poll began failing repeatedly (v0.1.0-bot2.4), zero while it works
 	probeNow  bool      // ProbeNow was called: the next tick probes whatever the period
 	wake      chan struct{}
 }
@@ -116,12 +117,40 @@ func (m *Monitor) SetUnsent(f func(uint32)) {
 	m.unsent = f
 }
 
-// FailingSince is when commands began failing, as the last probe saw it. ok is false while they work (or before the
-// first probe).
+// SetDegraded marks the installation degraded since the given time: its event poll failed repeatedly. The report's
+// failing_since carries it beside the probe's. A second mark keeps the first time.
+func (m *Monitor) SetDegraded(since time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.degraded.IsZero() {
+		m.degraded = since
+	}
+}
+
+// ClearDegraded ends the mark SetDegraded made.
+func (m *Monitor) ClearDegraded() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.degraded = time.Time{}
+}
+
+// FailingSince is when commands began failing, as the last probe saw it, or when the event poll began failing
+// repeatedly, whichever came first. ok is false while both work (or before the first probe).
 func (m *Monitor) FailingSince() (since time.Time, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.failing, !m.failing.IsZero()
+	since = m.failingSinceLocked()
+	return since, !since.IsZero()
+}
+
+func (m *Monitor) failingSinceLocked() time.Time {
+	switch {
+	case m.failing.IsZero():
+		return m.degraded
+	case m.degraded.IsZero() || m.failing.Before(m.degraded):
+		return m.failing
+	}
+	return m.degraded
 }
 
 // ProbeNow asks for a probe at once instead of at the next period: the installation's helper was replaced or is gone
@@ -199,8 +228,7 @@ func (m *Monitor) runProbe(ctx context.Context) bool {
 func (m *Monitor) send(ctx context.Context, now time.Time) {
 	m.mu.Lock()
 	r := Report{ProbeOK: m.probeOK, ProbeAt: m.lastProbe, ReportedAt: now}
-	if !m.failing.IsZero() {
-		failing := m.failing
+	if failing := m.failingSinceLocked(); !failing.IsZero() {
 		r.FailingSince = &failing
 	}
 	load, unsent := m.load, m.unsent

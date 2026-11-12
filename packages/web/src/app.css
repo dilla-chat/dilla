@@ -174,9 +174,6 @@ html, body { margin: 0; height: 100%; background: var(--bg); }
 /* Fix round 1: the call code dialog (from the voice row's menu): the digits large and tabular, the help under them. */
 .dw-call-code__digits { margin: 0; font-size: var(--text-md); letter-spacing: var(--label-tracking); font-variant-numeric: tabular-nums; color: var(--fg); }
 .dw-call-code__help { margin: 0.5rem 0 0; font-size: var(--text-xs); color: var(--fg-2); }
-/* Signal §5.6: on its own joined channel stage the dock draws nothing (the call bar is there); its status region stays. */
-.dw-voice-dock[data-on-stage] .d-voice-dock { margin: 0; padding: 0; border: 0; background: none; animation: none; }
-.dw-voice-dock[data-on-stage] :is(.d-voice-dock__row, .d-np--compact) { display: none; }
 html[data-reduce-motion="on"] *, html[data-reduce-motion="on"] *::before, html[data-reduce-motion="on"] *::after {
   animation-duration: 0.01ms !important; transition-duration: 0.01ms !important;
 }

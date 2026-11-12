@@ -21,4 +21,5 @@ export const afk = {
   'afk.explain.off': 'Computers idle in voice are not moved here. Phones are never moved.',
   'afk.failed': 'Could not go AFK. Try again.',
   'afk.elsewhere': 'You went AFK on another device.',
+  'afk.takenOver': 'Voice moved to your other device.',
 };

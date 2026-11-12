@@ -241,7 +241,7 @@ export function MessageRow({
       data-grouped={flag(grouped)} data-revealed={phone ? flag(revealed) : undefined} data-mention={flag(mention)} data-flash={flag(flash)}
       data-reply={flag(reply !== undefined)} data-replying={flag(replying)} data-hover={flag(forceHover)}>
       {/* The time gutter (README §5.5): always on a group's first row, on hover or focus for a follow-up. The head says it for a screen reader. */}
-      <span className="d-message-row__gutter" aria-hidden="true" title={gutterTime === undefined ? undefined : time} data-long={gutter.length > 5 ? 'true' : undefined}>{gutter}</span>
+      <span className="d-message-row__gutter" aria-hidden="true" title={gutterTime === undefined ? undefined : time}>{gutter}</span>
       {grouped === true
         ? <span className="d-message-row__avatar" aria-hidden="true" />
         : <span className="d-message-row__avatar" aria-hidden="true" data-profile={opens ? 'true' : undefined}

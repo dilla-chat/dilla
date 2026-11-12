@@ -186,7 +186,6 @@
   --duration-pop: 400ms;
   --duration-turn: 200ms;
   --duration-aside: 280ms;
-  --duration-bar: 600ms;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --duration-toast: 220ms;
   --duration-pulse: 2s;
@@ -372,7 +371,6 @@
     --duration-pop: 0ms;
     --duration-turn: 0ms;
     --duration-aside: 0ms;
-    --duration-bar: 0ms;
     --duration-toast: 0ms;
     --duration-pulse: 0ms;
     --duration-caret: 0ms;
@@ -418,7 +416,6 @@
     --duration-pop: 0ms;
     --duration-turn: 0ms;
     --duration-aside: 0ms;
-    --duration-bar: 0ms;
     --duration-toast: 0ms;
     --duration-pulse: 0ms;
     --duration-caret: 0ms;

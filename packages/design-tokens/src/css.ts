@@ -33,7 +33,7 @@ function structuralDecls(): string {
 }
 
 /** Durations zeroed under reduced motion; `meter` is a live level readout, never zeroed. One list for the media query and `data-motion`. */
-const REDUCED = ['toggle', 'track', 'press', 'fast', 'normal', 'slow', 'enter', 'badge', 'pop', 'turn', 'aside', 'bar', 'toast', 'pulse', 'caret', 'flash', 'hover', 'tab', 'spin', 'dock', 'rail-badge', 'popover', 'switch', 'switch-rise', 'focus', 'rise', 'stagger', 'stage', 'focus-in', 'beat', 'player', 'player-row', 'player-bar', 'queue', 'progress', 'scrim', 'dialog', 'profile', 'modal', 'card', 'step', 'cmd-row'];
+const REDUCED = ['toggle', 'track', 'press', 'fast', 'normal', 'slow', 'enter', 'badge', 'pop', 'turn', 'aside', 'toast', 'pulse', 'caret', 'flash', 'hover', 'tab', 'spin', 'dock', 'rail-badge', 'popover', 'switch', 'switch-rise', 'focus', 'rise', 'stagger', 'stage', 'focus-in', 'beat', 'player', 'player-row', 'player-bar', 'queue', 'progress', 'scrim', 'dialog', 'profile', 'modal', 'card', 'step', 'cmd-row'];
 
 export function renderCss(): string {
   const reduced = REDUCED.map(k => `    --duration-${k}: 0ms;`).join('\n');

@@ -1,6 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { captureOptions, captureId, frameBytes, FrameWindow, videoOnlyPermission } from '../src/screen-capture-contract.ts';
+import { captureOptions, captureId, frameBytes, FrameWindow, screenPortal, videoOnlyPermission } from '../src/screen-capture-contract.ts';
+
+test('only a Linux Wayland session keeps the system portal; X11, macOS and Windows get the thumbnail picker', () => {
+  assert.equal(screenPortal('linux', { XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: 'wayland-0' }), true);
+  assert.equal(screenPortal('linux', { WAYLAND_DISPLAY: 'wayland-0' }), true);
+  assert.equal(screenPortal('linux', { XDG_SESSION_TYPE: 'x11', DISPLAY: ':0' }), false);
+  assert.equal(screenPortal('linux', {}), false);
+  assert.equal(screenPortal('darwin', { XDG_SESSION_TYPE: 'wayland' }), false);
+  assert.equal(screenPortal('win32', { WAYLAND_DISPLAY: 'wayland-0' }), false);
+});
 
 test('capture options accept bounded integers and reject additional capture authority', () => {
   assert.deepEqual(captureOptions({ width: 3840, height: 2160, frameRate: 60 }), { width: 3840, height: 2160, frameRate: 60 });

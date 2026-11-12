@@ -193,10 +193,16 @@ describe('VoiceDock (MP5)', () => {
   });
 
   it.each([['connecting', 'span.d-state-dot[data-tone="pending"]'], ['reconnecting', 'span.d-state-dot[data-tone="pending"]'],
-    ['connected', 'span.d-voice-dock__bars'], ['paused', 'svg[data-icon="pause"]']] as const)('the %s phase marker is drawn, not a font glyph', (phase, sel) => {
+    ['paused', 'svg[data-icon="pause"]']] as const)('the %s phase marker is drawn, not a font glyph', (phase, sel) => {
     const { container } = render(<VoiceDock {...dock} phase={phase} />);
     expect(container.querySelector(`.d-voice-dock__glyph ${sel}`)).not.toBeNull();
     expect(container.querySelector('.d-voice-dock__glyph')?.textContent).toBe('');
+  });
+
+  it('the connected phase draws no marker and no animated signal bars', () => {
+    const { container } = render(<VoiceDock {...dock} phase="connected" />);
+    expect(container.querySelector('.d-voice-dock__bars')).toBeNull();
+    expect(container.querySelector('.d-voice-dock__glyph')).toBeNull();
   });
 
   it('with controls={false} there is no toolbar, but the status, where and the status region stay', () => {

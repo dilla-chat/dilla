@@ -47,9 +47,9 @@ export interface CommunityRow { id: Uint8Array; name: string; owner: Uint8Array;
 /** web3.9: the built-in AFK channel. `pending` is true when the server's sweep moved this device and it has not joined yet.
  *  AW4: `away` is the community's away roster, each member and the unix second it became away; empty from a web3.9 host. */
 /** `pending`: this device has a pending cut. AW5 fix round 3: `reason` says why (device-scoped, any community's read):
- *  1 the idle sweep moved it, 2 this user chose AFK on another device or tab; 0 none. A fixture may leave `reason` out
+ *  1 the idle sweep moved it, 2 this user chose AFK on another device or tab, 3 a newer device of this user took voice over; 0 none. A fixture may leave `reason` out
  *  (then 1 when pending). */
-export interface AFKSnapshot { channelId: Uint8Array | null; timeoutSeconds: number; pending: boolean; reason?: 0 | 1 | 2; away: AFKAwayRow[] }
+export interface AFKSnapshot { channelId: Uint8Array | null; timeoutSeconds: number; pending: boolean; reason?: 0 | 1 | 2 | 3; away: AFKAwayRow[] }
 export interface AFKAwayRow { userId: Uint8Array; since: number }
 /** 09 § GET /v1/communities/{id}/afk: the away roster holds at most 1024 entries. */
 const AFK_AWAY_MAX = 1024;
@@ -308,12 +308,12 @@ function checkedText(field: string, v: string, maxBytes: number): string {
   for (const ch of v) if (ch !== '\n' && ch !== '\t' && CONTROL.test(ch)) throw new RangeError(`E_ROUTE_INPUT: ${field} contains a control character`);
   return v;
 }
-/** AW5 fix round 3: GET …/afk's pending reason (protocol/07): 0 none, 1 the idle sweep, 2 AFK chosen elsewhere. Round 3b:
- *  any non-zero value is pending, and one this client does not know (3 or more) reads as 2, the calm reason; never an
- *  error. */
-function pendingReason(v: CborValue): 0 | 1 | 2 {
+/** AW5 fix round 3: GET …/afk's pending reason (protocol/07): 0 none, 1 the idle sweep, 2 AFK chosen elsewhere, 3 a newer
+ *  device took voice over. Round 3b: any non-zero value is pending, and one this client does not know (4 or more) reads
+ *  as 2, the calm reason that never rejoins; never an error. */
+function pendingReason(v: CborValue): 0 | 1 | 2 | 3 {
   const n = u53(v);
-  return n === 0 ? 0 : n === 1 ? 1 : 2;
+  return n === 0 ? 0 : n === 1 ? 1 : n === 3 ? 3 : 2;
 }
 function flag(v: CborValue): boolean {
   const n = u53(v);

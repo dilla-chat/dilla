@@ -2,7 +2,7 @@ import { useNativeViewport } from '../../../packages/desktop/test/support/viewpo
 import { nativeTrace } from '../../../packages/desktop/test/support/trace.ts';
 import { canonicalInstance } from '../../../packages/desktop/src/policy.ts';
 import { _electron, test as playwrightTest, type BrowserContext, type BrowserContextOptions, type LaunchOptions, type Page, type ElectronApplication, type TestInfo } from '@playwright/test';
-import { mkdtemp, mkdir, rm, access, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, access, writeFile, readdir, readFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -10,8 +10,23 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { en } from '../../../packages/web/src/strings/en.ts';
 import { desktopNetwork } from './desktop-network.ts';
+// The same directory as host.ts's RESULTS_DIR, computed here: importing host.ts pulls driver.ts, whose TypeScript
+// parameter properties Node's strip-only loader rejects in the e2e unit tests that import this module.
+const RESULTS_DIR = process.env.DILLA_E2E_OUTPUT_DIR ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test-results');
 import { focusNativePage } from './native-focus.ts';
 import { electronChildEnvironment } from './mac-notification-diagnostics.ts';
+
+/** A failed desktop test carries the tail of the test host's log, where dillad and the supervised dillabot write. The core worker
+ *  runs inside the renderer, so its trace is the Electron renderer trace attached on close. */
+async function attachServerLogs(info: TestInfo | undefined): Promise<void> {
+ if (!info || info.status === undefined || info.status === info.expectedStatus || info.status === 'skipped') return;
+ try {
+  for (const name of (await readdir(RESULTS_DIR)).filter(entry => /^testhost-\d+\.log$/u.test(entry))) {
+   const body = await readFile(join(RESULTS_DIR, name), 'utf8');
+   await info.attach(name, { body: body.slice(-65_536), contentType: 'text/plain' });
+  }
+ } catch { /* diagnostics only */ }
+}
 
 export const desktopE2E = () => process.env.DILLA_ELECTRON_E2E === '1';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -128,6 +143,7 @@ export async function launchDesktopContext(profile: string | null, options: Brow
   if (closed) return; closed = true;
   try { await stopTrace(); }
   catch (error) { await info?.attach('Electron tracing error', { body: String(error), contentType: 'text/plain' }); }
+  await attachServerLogs(info);
   const process = app.process();
   if (process.exitCode === null && process.signalCode === null) {
    const fallback = setTimeout(() => terminate(), 10000);

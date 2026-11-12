@@ -4,6 +4,8 @@ import { desktopApplication, launchDesktopContext } from '../../web/support/elec
 import { prepareMacNotificationDiagnostic } from '../../web/support/mac-notification-diagnostics.ts';
 
 export const liveDesktopVoiceContexts = new Set<BrowserContext>();
+/** Applications whose screen picker observeDesktopScreen answers itself; the default picker answer stays out. */
+const observedApplications = new Set<unknown>();
 let diagnosticNumber = 0;
 
 export async function desktopVoiceContext(options: { baseURL?: string; permissions?: string[]; launchOptions: LaunchOptions; viewport?: { width: number; height: number } | null }): Promise<BrowserContext> {
@@ -55,6 +57,17 @@ export async function desktopVoiceContext(options: { baseURL?: string; permissio
    const permission = await context.pages()[0].evaluate(() => Notification.requestPermission());
    if (permission !== 'granted') throw new Error('The native notification permission boundary denied acceptance consent');
   }
+  // macOS, Windows and Linux X11 open the main-owned thumbnail picker window instead of the native list dialog.
+  // Like the dialog stub above, share the first screen, unless observeDesktopScreen is answering this application.
+  application.on('window', picker => {
+   void (async () => {
+    await picker.waitForLoadState('domcontentloaded');
+    if (!picker.url().startsWith('dilla-internal://picker/') || observedApplications.has(application)) return;
+    await picker.getByRole('tab', { name: 'Screens' }).click();
+    await picker.getByRole('option').first().click();
+    await picker.getByRole('button', { name: 'Share', exact: true }).click();
+   })().catch(() => { /* A picker the test closes or answers itself is not a failure of this default. */ });
+  });
   liveDesktopVoiceContexts.add(context);
   const close = context.close.bind(context);
   const ownedContext = context;
@@ -111,11 +124,32 @@ export async function observeDesktopScreen(ownerContext: BrowserContext, sourceC
    if (dialog.showMessageBox === choose) dialog.showMessageBox = original;
   } };
  }, { title, cancel });
+ // macOS, Windows and Linux X11 open the main-owned thumbnail picker window instead of the native list dialog
+ // (Wayland keeps the portal and the dialog above). Answer it the same way: the real named source, or Cancel.
+ const pickerSelections: NativeScreenSelection[] = [];
+ const onPicker = (picker: import('@playwright/test').Page) => {
+  void (async () => {
+   await picker.waitForLoadState('domcontentloaded');
+   if (!picker.url().startsWith('dilla-internal://picker/')) return;
+   if (cancel) {
+    await picker.getByRole('button', { name: 'Cancel', exact: true }).click();
+   } else {
+    await picker.getByRole('tab', { name: 'Windows' }).click();
+    await picker.getByRole('option', { name: title, exact: true }).click();
+    await picker.getByRole('button', { name: 'Share', exact: true }).click();
+   }
+   pickerSelections.push({ source: title, cancelled: cancel });
+  })().catch(error => { pickerSelections.push({ source: `error: ${String(error)}`, cancelled: cancel }); });
+ };
+ observedApplications.add(application);
+ application.on('window', onPicker);
  return {
   requests: () => application.evaluate(() => (globalThis as any).__voiceNativeScreen.requests),
-  selections: () => application.evaluate(() => (globalThis as any).__voiceNativeScreen.selections),
-  brokers: () => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(window => window.webContents.getURL() === 'dilla-internal://capture/').length),
+  selections: async () => [...await application.evaluate(() => (globalThis as any).__voiceNativeScreen.selections as NativeScreenSelection[]), ...pickerSelections],
+  brokers: () => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter(window => !window.isDestroyed() && window.webContents?.getURL() === 'dilla-internal://capture/').length),
   dispose: async () => {
+   application.off('window', onPicker);
+   observedApplications.delete(application);
    try { await application.evaluate(() => { (globalThis as any).__voiceNativeScreen.dispose(); delete (globalThis as any).__voiceNativeScreen; }); }
    finally {
     const source = await sourceApplication.browserWindow(sourceContext.pages()[0]);

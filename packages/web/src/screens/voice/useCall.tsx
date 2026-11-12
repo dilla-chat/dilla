@@ -419,10 +419,10 @@ export function useCall(o: UseCallOptions): CallView {
   /**
    * AW5 fix round 3 (B2-I1, B2-M2, B2-M3, B2-n1): why the call `id` was cut, from the instance's pending reason for this
    * device (R-AW6): 1 the idle sweep moved it ('Moved to AFK'), 2 this user chose AFK on another device or tab ('You went
-   * AFK on another device.'); null for none. A read the call started under is stale (the instance cleared it at this
+   * AFK on another device.'), 3 a newer device took voice over ('Voice moved to your other device.'); null for none. A read the call started under is stale (the instance cleared it at this
    * admission). Nothing is inferred from away rows.
    */
-  const cutReason = useCallback((id: string): { reason: 1 | 2; cid: string } | null => {
+  const cutReason = useCallback((id: string): { reason: 1 | 2 | 3; cid: string } | null => {
     const cid = reasonCommunity(id);
     if (cid === null) return null;
     const afk = client.get(`afk:${cid}`);
@@ -457,6 +457,10 @@ export function useCall(o: UseCallOptions): CallView {
         const text = t('afk.moved', { channel: afkNameFor(id) });
         setNotice({ channelId: id, key: 'afk.moved', text });
         if (!live.current.stageShown(id)) setLasting(text);
+      } else if (cut.reason === 3) {
+        // Task 6: a newer device of this user took voice over: said calmly, never as a removal; nothing rejoins.
+        setNotice({ channelId: id, key: 'afk.takenOver' });
+        if (!live.current.stageShown(id)) setLasting(t('afk.takenOver'));
       } else {
         // M2: AFK chosen on another device or tab cut this call: said calmly, never as a removal.
         setNotice({ channelId: id, key: 'afk.elsewhere' });
@@ -856,7 +860,7 @@ export function useCall(o: UseCallOptions): CallView {
    * channel lists and the DMs, then reads the call's own community (a DM call: any listed one, the reason being
    * device-scoped; with none, nothing can have cut it for AFK):
    * - 'clear' joins; 'unknown' (the wait ran out, the read failed) skips this attempt (B-I1);
-   * - 'afk' (the AFK channel), 'moved' and 'elsewhere' (the pending reason, 1 and 2), and 'away' (an away row since the
+   * - 'afk' (the AFK channel), 'moved' and 'elsewhere' (the pending reason, 1, 2 and 3 'takenOver'), and 'away' (an away row since the
    *   call in its own community) join nothing;
    * - 'gone' (B2-M1): no loaded list or DM holds `id`, or its community is no longer listed: the recovery is over;
    * - 'leftAway' (late rejoin, Jonas 2026-10-21): a recovery after a lost connection (`goneFrom`) of a community call whose
@@ -865,7 +869,7 @@ export function useCall(o: UseCallOptions): CallView {
    *   DM call, the recovery goes on as before.
    */
   const afkFresh = useCallback(async (id: string, mark: { since: number | null } | null, goneFrom: Stamp | null = null)
-    : Promise<'clear' | 'afk' | 'moved' | 'elsewhere' | 'away' | 'leftAway' | 'gone' | 'unknown'> => {
+    : Promise<'clear' | 'afk' | 'moved' | 'elsewhere' | 'takenOver' | 'away' | 'leftAway' | 'gone' | 'unknown'> => {
     const deadline = Date.now() + AFK_READ_WAIT_MS;
     const isDm = (): boolean => (client.get('dms') ?? []).some((d) => d.id === id);
     const listsLoaded = (): boolean => {
@@ -886,7 +890,7 @@ export function useCall(o: UseCallOptions): CallView {
     if (read === 'failed') return 'unknown';
     if (own !== null && isAfk(id)) return 'afk';
     const cut = cutReason(id);
-    if (cut !== null) return cut.reason === 1 ? 'moved' : 'elsewhere';
+    if (cut !== null) return cut.reason === 1 ? 'moved' : cut.reason === 3 ? 'takenOver' : 'elsewhere';
     if (own !== null && goneFrom !== null) {
       const afk = client.get(`afk:${own}`);
       const timeout = afk != null && afk.channelId !== null && afk.timeoutSeconds > 0 ? afk.timeoutSeconds * 1_000 : null;
@@ -898,7 +902,7 @@ export function useCall(o: UseCallOptions): CallView {
    *  the pending reason's line ('Moved to AFK', or the calm 'You went AFK on another device.'), else the lost call; the
    *  AFK channel itself says nothing. A device gone longer than the AFK timeout says 'You left the call while away.'; the
    *  stage's join button joins again as any join. */
-  const endRecovery = useCallback((id: string, verdict: 'afk' | 'moved' | 'elsewhere' | 'away' | 'leftAway' | 'gone') => {
+  const endRecovery = useCallback((id: string, verdict: 'afk' | 'moved' | 'elsewhere' | 'takenOver' | 'away' | 'leftAway' | 'gone') => {
     recoveryRef.current = null;
     recoveryUntil.current = null;
     recoveryGoneFrom.current = null;
@@ -910,6 +914,11 @@ export function useCall(o: UseCallOptions): CallView {
     if (verdict === 'elsewhere') {
       setNotice({ channelId: id, key: 'afk.elsewhere' });
       if (!live.current.stageShown(id)) setLasting(t('afk.elsewhere'));
+      return;
+    }
+    if (verdict === 'takenOver') {
+      setNotice({ channelId: id, key: 'afk.takenOver' });
+      if (!live.current.stageShown(id)) setLasting(t('afk.takenOver'));
       return;
     }
     if (verdict === 'leftAway') {
