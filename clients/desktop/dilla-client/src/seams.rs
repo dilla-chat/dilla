@@ -58,6 +58,10 @@ pub trait Http: Send + Sync {
 pub enum GatewayError {
     #[error("the gateway connection is closed")]
     Closed,
+    /// Task 8: the frame is over the connection's bound (the hello's `max_frame_bytes`; a request frame's own cap), so
+    /// it was refused before it was sent. The instance would close the socket on it (E_FRAME_LIMIT).
+    #[error("the frame is {len} bytes, over the gateway's bound of {max}")]
+    TooLarge { len: usize, max: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
