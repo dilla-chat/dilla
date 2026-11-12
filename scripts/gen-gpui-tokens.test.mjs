@@ -9,7 +9,8 @@ test('the committed tokens.rs, icon_names.rs and icon SVGs are what the generato
 test('the generator emits 100 icons and tokens.rs', async () => {
   const files = [...(await generate()).keys()];
   assert.equal(files.filter((p) => p.endsWith('.svg')).length, 100);
-  assert.ok(files.some((p) => p.endsWith('src/tokens.rs')));
+  // Windows paths use '\'; compare separator-agnostically.
+  assert.ok(files.some((p) => p.replaceAll('\\', '/').endsWith('src/tokens.rs')));
 });
 
 test('colour parsing and the HSL conversion', () => {
