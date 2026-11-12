@@ -32,6 +32,7 @@ mod dms;
 mod polls;
 mod reactions;
 mod roles;
+mod server_admin;
 mod threads;
 
 /// What a fixture's route and phase draw.
@@ -41,6 +42,11 @@ pub enum FixtureScreen {
     Shell { channel: ChannelId },
     /// The welcome and sign-in screen of a device with no account.
     SignIn,
+    /// A server's settings (Task 15): `section` is the route's, `None` its first.
+    ServerSettings {
+        community: CommunityId,
+        section: Option<crate::router::ServerSection>,
+    },
 }
 
 /// A loaded fixture: the state to draw, the route it opens and the clock it is drawn at.
@@ -155,6 +161,12 @@ pub fn screen_of(route: &Route, phase: Phase) -> Result<FixtureScreen, String> {
             Phase::Ready,
         ) => Ok(FixtureScreen::Shell { channel: *channel }),
         (Route::Welcome { .. }, Phase::SignedOut) => Ok(FixtureScreen::SignIn),
+        (Route::ServerSettings { community, section }, Phase::Ready) => {
+            Ok(FixtureScreen::ServerSettings {
+                community: *community,
+                section: *section,
+            })
+        }
         (route, phase) => Err(format!(
             "the app cannot draw route `{}` in phase {phase:?} yet",
             route.path()
@@ -265,6 +277,7 @@ pub fn build_state(
     polls::apply(world, viewer, &mut state);
     reactions::apply(world, viewer, &mut state);
     roles::apply(world, viewer, &mut state);
+    server_admin::apply(world, viewer, &mut state);
     threads::apply(world, viewer, &mut state);
     state
 }

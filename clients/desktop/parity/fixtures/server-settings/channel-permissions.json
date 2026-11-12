@@ -1,0 +1,101 @@
+{
+  "name": "server-settings/channel-permissions",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/settings/channels",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "ship-talk",
+            "kind": "text",
+            "name": "ship-talk"
+          },
+          {
+            "id": "text",
+            "kind": "category",
+            "name": "Text",
+            "position": 1
+          },
+          {
+            "id": "dev",
+            "kind": "text",
+            "name": "dev",
+            "parent": "text",
+            "position": 2
+          },
+          {
+            "id": "design",
+            "kind": "text",
+            "name": "design",
+            "parent": "text",
+            "position": 3
+          },
+          {
+            "id": "voice",
+            "kind": "category",
+            "name": "Voice",
+            "position": 4
+          },
+          {
+            "id": "lounge",
+            "kind": "voice",
+            "name": "Lounge",
+            "parent": "voice",
+            "position": 5
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": []
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "css=[aria-label=\"edit dev\"]",
+      "gpui": "edit-dev"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}
