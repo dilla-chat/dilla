@@ -63,6 +63,10 @@ pub enum GatewayError {
     /// it was refused before it was sent. The instance would close the socket on it (E_FRAME_LIMIT).
     #[error("the frame is {len} bytes, over the gateway's bound of {max}")]
     TooLarge { len: usize, max: usize },
+    /// Task 9: the writer queue already holds `queued` bytes and this frame would pass its bound
+    /// (`gateway::WRITER_QUEUE_CAP`); nothing was queued. The caller keeps the frame and sends it later.
+    #[error("the gateway's writer queue is full ({queued} of {cap} bytes queued)")]
+    Full { queued: usize, cap: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -7,7 +7,6 @@
 //! network failure), its one re-authentication on a 401, and its `X-Dilla-Generation` hook. The caller that owns the
 //! session adds them; a refusal here is the status of the first answer.
 
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use ciborium::value::Value;
@@ -28,49 +27,13 @@ const BODY_CEILING: u64 = 32 * 1024 * 1024;
 /// A backup is capped but sits on the sign-up, sign-in and revoke paths: a longer bound than the default.
 const BACKUP_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// The session's bearer token, shared by every clone so a renewed session reaches the transport that holds it. It is
-/// zeroized when the last clone drops and never printed.
-#[derive(Clone, Default)]
-pub struct AuthToken(Arc<RwLock<Option<Zeroizing<String>>>>);
+pub use crate::auth::AuthToken;
 
-impl AuthToken {
-    /// A token as the instance issued it.
-    pub fn new(token: impl Into<String>) -> Self {
-        let this = Self::default();
-        this.set(token);
-        this
-    }
-
-    /// No session yet: only the routes that take no bearer are answered.
-    pub fn anonymous() -> Self {
-        Self::default()
-    }
-
-    /// Replaces the token (a new session).
-    pub fn set(&self, token: impl Into<String>) {
-        *self
-            .0
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(Zeroizing::new(token.into()));
-    }
-
-    /// Forgets the token (sign-out).
-    pub fn clear(&self) {
-        *self
-            .0
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-    }
-
-    /// The `Authorization` header, `None` when there is no session. A token that cannot be a header value is an error,
-    /// never a request sent without its bearer.
-    fn header(&self) -> Result<Option<reqwest::header::HeaderValue>, HttpError> {
-        let guard = self
-            .0
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(token) = guard.as_ref() else {
+/// The `Authorization` header for `auth`, `None` when there is no session. A token that cannot be a header value is an
+/// error, never a request sent without its bearer.
+fn bearer_header(auth: &AuthToken) -> Result<Option<reqwest::header::HeaderValue>, HttpError> {
+    auth.with(|token| {
+        let Some(token) = token else {
             return Ok(None);
         };
         // The header value is the one copy reqwest owns; the staging buffer is zeroized and the value marked sensitive.
@@ -82,13 +45,7 @@ impl AuthToken {
         })?;
         value.set_sensitive(true);
         Ok(Some(value))
-    }
-}
-
-impl std::fmt::Debug for AuthToken {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("AuthToken(<redacted>)")
-    }
+    })
 }
 
 /// [`Http`] over reqwest, for one instance.
@@ -289,7 +246,7 @@ impl Http for ReqwestHttp {
 
         let mut request = self.client.request(entry.method.clone(), url);
         if entry.auth
-            && let Some(bearer) = self.auth.header()?
+            && let Some(bearer) = bearer_header(&self.auth)?
         {
             request = request.header(reqwest::header::AUTHORIZATION, bearer);
         }

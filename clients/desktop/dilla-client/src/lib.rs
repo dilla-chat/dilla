@@ -2,9 +2,15 @@
 //! is a trait in [`seams`].
 #![forbid(unsafe_code)]
 
+pub mod auth;
+pub mod client;
 pub mod gateway;
 pub mod http;
 pub mod instances;
 pub mod keychain;
 pub mod seams;
+pub mod state;
 pub mod store;
+pub mod sync;
+
+pub use client::{Client, ClientError};
