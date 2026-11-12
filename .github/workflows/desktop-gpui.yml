@@ -61,6 +61,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+          cache: npm
+      # dilla-client's route-table test runs scripts that import the typescript package.
+      - run: npm ci
       # dilla-client's real-server tests start dilla-testhost (Go) on the WASI core, so every OS builds both below.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:

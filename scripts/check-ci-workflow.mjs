@@ -256,8 +256,8 @@ const REQUIRED_STEPS = {
   // The testkit artifact hand-off: rust-native builds and uploads it, go downloads it.
   'rust-native': [
     'cargo fmt --all --check',
-    'cargo clippy --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --all-targets --all-features --locked -- -D warnings',
-    'cargo test --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --all-features --locked',
+    'cargo clippy --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --exclude dilla-client --all-targets --all-features --locked -- -D warnings',
+    'cargo test --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --exclude dilla-client --all-features --locked',
     'cargo build -p dilla-testkit --release --locked',
     'name: dilla-testkit',
     'if-no-files-found: error',
@@ -2274,6 +2274,8 @@ export function checkDesktopReleaseWorkflow(root) {
  */
 export const GPUI_PINNED_STEPS = {
   tokens: '- run: node --test scripts/gen-gpui-tokens.test.mjs',
+  // dilla-client's route-table test runs tests/support/dump-routes.mjs, which imports the typescript package.
+  npm: ['- uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7', '  with:', '    node-version-file: .nvmrc', '    cache: npm', "# dilla-client's route-table test runs scripts that import the typescript package.", '- run: npm ci'].join('\n'),
   build: [
     '- name: Build the test host and the WASI core',
     '  shell: bash',
