@@ -70,8 +70,7 @@ jobs:
             desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
       # Token freshness: the generated Rust tokens match the design tokens they come from.
       - run: node --test scripts/gen-gpui-tokens.test.mjs
-      # The test host and the WASI core dilla-client's tests/http_sign_in.rs and tests/gateway.rs start. Both test
-      # binaries read the WASI core from a differently named variable, so both are exported.
+      # The test host and the WASI core dilla-client's real-server tests start (all read DILLA_CORE_WASI).
       - name: Build the test host and the WASI core
         shell: bash
         run: |
@@ -82,7 +81,6 @@ jobs:
           {
             echo "DILLA_TESTHOST=$GITHUB_WORKSPACE/target/dilla-testhost$exe"
             echo "DILLA_CORE_WASI=$GITHUB_WORKSPACE/target/wasm32-wasip1/release/dilla_core_wasi.wasm"
-            echo "DILLA_WASI_CORE=$GITHUB_WORKSPACE/target/wasm32-wasip1/release/dilla_core_wasi.wasm"
           } >> "$GITHUB_ENV"
       - run: cargo build $GPUI_CRATES --all-targets --locked
         shell: bash
@@ -101,3 +99,4 @@ jobs:
         run: |
           cargo test -p dilla-parity --locked -- --ignored
           cargo test -p dilla-client --test gateway --locked -- --ignored
+          cargo test -p dilla-client --test sync --locked -- --ignored
