@@ -2,7 +2,8 @@
 //! file maps it.
 //!
 //! The parity world stops every headless client before the browser shoots, so only the viewer is connected: the viewer
-//! is online and everyone else offline, as the instance's presence snapshot says then.
+//! is idle (connected, with no input: internal/gateway counts only real input on the current wire) and everyone else
+//! offline, as the instance's presence snapshot says then (the web reference shows "idle" under the viewer).
 
 use std::collections::HashMap;
 
@@ -21,7 +22,7 @@ pub(super) fn apply(_world: &WorldSpec, _viewer: &str, state: &mut AppState) {
             .iter()
             .map(|m| {
                 let p = if Some(m.user_id) == me {
-                    Presence::Online
+                    Presence::Idle
                 } else {
                     Presence::Offline
                 };

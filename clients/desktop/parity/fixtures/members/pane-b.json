@@ -307,11 +307,6 @@
   "clock": 1794481738,
   "steps": [
     {
-      "do": "click",
-      "web": "css=[data-members-toggle]",
-      "gpui": "header-members"
-    },
-    {
       "do": "settle"
     }
   ]

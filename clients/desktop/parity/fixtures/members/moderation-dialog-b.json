@@ -308,11 +308,6 @@
   "steps": [
     {
       "do": "click",
-      "web": "css=[data-members-toggle]",
-      "gpui": "header-members"
-    },
-    {
-      "do": "click",
       "web": "css=.d-member-list__open:has-text(\"Gunnar\")",
       "gpui": "member-Gunnar"
     },

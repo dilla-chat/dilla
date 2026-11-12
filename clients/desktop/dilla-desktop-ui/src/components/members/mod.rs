@@ -5,15 +5,17 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, BoxShadow, ClickEvent, ElementId, Hsla, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, RenderOnce, Rgba, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, point, px, rgb,
+    AnyElement, App, BoxShadow, ClickEvent, ElementId, FocusHandle, Hsla, InteractiveElement,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Pixels, Point,
+    RenderOnce, Rgba, SharedString, StatefulInteractiveElement, Styled, Window, div, point, px,
+    rgb,
 };
 
-use crate::components::avatar::{Avatar, AvatarShape, AvatarSize, Presence};
+use crate::components::avatar::{Avatar, AvatarShape, AvatarSize, Presence, colour_of};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING, LABEL_TRACKING_WIDE, OPACITY_MUTED};
+use crate::roving::{Roving, opens_context_menu};
 use crate::text::{line, line_height};
 use crate::tokens::{color, font, layout, radius, text};
 
@@ -85,6 +87,19 @@ pub fn role_tint(colour: Option<u32>, opacity: f32) -> Option<Hsla> {
         contrast(painted, bg)
     };
     (over(color::SURFACE) >= 4.5 && over(color::SURFACE_2) >= 4.5).then(|| c.into())
+}
+
+/// MemberList.css `.d-member-list__group[data-kind="offline"] .d-member-list__avatar { filter: grayscale(0.7) }`.
+pub const OFFLINE_GRAYSCALE: f32 = 0.7;
+
+/// CSS `grayscale(amount)` (Filter Effects: the luminance matrix) applied to `c`.
+pub fn grayscale(c: Hsla, amount: f32) -> Hsla {
+    let c = Rgba::from(c);
+    let s = 1. - amount.clamp(0., 1.);
+    let r = (0.2126 + 0.7874 * s) * c.r + (0.7152 - 0.7152 * s) * c.g + (0.0722 - 0.0722 * s) * c.b;
+    let g = (0.2126 - 0.2126 * s) * c.r + (0.7152 + 0.2848 * s) * c.g + (0.0722 - 0.0722 * s) * c.b;
+    let b = (0.2126 - 0.2126 * s) * c.r + (0.7152 - 0.7152 * s) * c.g + (0.0722 + 0.9278 * s) * c.b;
+    Rgba { r, g, b, a: c.a }.into()
 }
 
 type OnId = Rc<dyn Fn(&str, &mut Window, &mut App)>;
@@ -193,11 +208,11 @@ impl MemberList {
 fn row(
     m: &ListMember,
     kind: GroupKind,
-    open: bool,
     bot_label: &SharedString,
     on_open: Option<OnId>,
     on_menu: Option<OnMenu>,
     probe: Option<&Probe>,
+    focus: RowFocus,
 ) -> AnyElement {
     let dim = kind == GroupKind::Offline;
     let tint = role_tint(m.color, if dim { OPACITY_MUTED } else { 1.0 });
@@ -248,7 +263,8 @@ fn row(
         );
     }
     let id: SharedString = format!("member-{}", m.name).into();
-    let (open_id, menu_id) = (m.id.clone(), m.id.clone());
+    let (open_id, menu_id, key_id) = (m.id.clone(), m.id.clone(), m.id.clone());
+    let on_open_key = on_open.clone();
     div()
         .id(id.clone())
         .h(layout::ROW_H_2)
@@ -257,19 +273,34 @@ fn row(
         .items_center()
         .gap(px(10.))
         .rounded(radius::MD)
-        .when_open(open)
+        .when_open(focus.open)
         .hover(|s| s.bg(color::HOVER))
         .cursor_pointer()
-        .child(
-            Avatar::new(SharedString::from(format!("{id}-avatar")), m.name.clone())
+        .child({
+            let avatar = Avatar::new(SharedString::from(format!("{id}-avatar")), m.name.clone())
                 .size(AvatarSize::Member)
                 .shape(if m.is_bot {
                     AvatarShape::Bot
                 } else {
                     AvatarShape::Circle
                 })
-                .presence(m.presence),
-        )
+                .presence(m.presence);
+            // MemberList.css: an offline row's avatar is desaturated, `filter: grayscale(0.7)`.
+            if dim && !m.is_bot {
+                let (h, s, l) = colour_of(&m.name);
+                avatar.fill(grayscale(
+                    gpui::hsla(
+                        f32::from(h) / 360.,
+                        f32::from(s) / 100.,
+                        f32::from(l) / 100.,
+                        1.,
+                    ),
+                    OFFLINE_GRAYSCALE,
+                ))
+            } else {
+                avatar
+            }
+        })
         .child(words)
         .relative()
         .children(probe.map(|p| p(&id)))
@@ -278,12 +309,48 @@ fn row(
                 f(&open_id, window, cx);
             }
         })
-        .on_mouse_down(MouseButton::Right, move |e: &MouseDownEvent, window, cx| {
-            if let Some(f) = &on_menu {
-                f(&menu_id, e.position, window, cx);
+        .on_mouse_down(MouseButton::Right, {
+            let on_menu = on_menu.clone();
+            let menu_id = menu_id.clone();
+            move |e: &MouseDownEvent, window, cx| {
+                if let Some(f) = &on_menu {
+                    f(&menu_id, e.position, window, cx);
+                }
+            }
+        })
+        // The list is one tab stop (useRovingFocus): Up and Down step, Home and End jump; Enter opens the card and
+        // Shift+F10 or the Menu key the person menu, at the pointer (the row has no other anchor here).
+        .track_focus(&focus.handles[focus.index].clone().tab_stop(focus.stop))
+        .focus_visible(|s| s.shadow(crate::metrics::focus_ring()))
+        .on_key_down(move |e: &KeyDownEvent, window, cx| {
+            let key = &e.keystroke;
+            if let Some(next) = Roving::List.next(key, focus.index, focus.handles.len()) {
+                window.focus(&focus.handles[next], cx);
+                cx.stop_propagation();
+            } else if opens_context_menu(key) {
+                if let Some(f) = &on_menu {
+                    f(&menu_id, window.mouse_position(), window, cx);
+                }
+                cx.stop_propagation();
+            } else if key.key == "enter" && !key.modifiers.modified() {
+                if let Some(f) = &on_open_key {
+                    f(&key_id, window, cx);
+                }
+                cx.stop_propagation();
             }
         })
         .into_any_element()
+}
+
+/// One row's place in the list's single tab stop.
+#[derive(Clone)]
+struct RowFocus {
+    handles: Rc<Vec<FocusHandle>>,
+    index: usize,
+    /// This row is the list's tab stop.
+    stop: bool,
+    /// Its member's card is open: the row keeps the hover fill.
+    open: bool,
 }
 
 trait OpenFill {
@@ -297,7 +364,27 @@ impl OpenFill for gpui::Stateful<gpui::Div> {
 }
 
 impl RenderOnce for MemberList {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // Every row of every group, in order: one handle each, and one tab stop (the focused row, else the open one,
+        // else the first).
+        let order: Vec<SharedString> = self
+            .groups
+            .iter()
+            .flat_map(|g| g.members.iter().map(|m| m.id.clone()))
+            .collect();
+        let handles = Rc::new(crate::roving::focus_handles(
+            (self.id.clone(), "rows"),
+            order.len(),
+            window,
+            cx,
+        ));
+        let focused = handles.iter().position(|h| h.is_focused(window));
+        let open = self
+            .open_id
+            .as_ref()
+            .and_then(|id| order.iter().position(|o| o == id));
+        let stop = Roving::stop(focused, open, order.len());
+        let mut next_row = 0usize;
         let mut root = div().id(self.id).flex().flex_col().min_w_0();
         if let Some(label) = self.label {
             let mut bar = div()
@@ -382,17 +469,25 @@ impl RenderOnce for MemberList {
                     .weight(font::WEIGHT_LABEL)
                     .tracking(LABEL_TRACKING_WIDE),
                 );
-                let rows = g.members.iter().map(|m| {
-                    row(
+                let mut rows = Vec::with_capacity(g.members.len());
+                for m in &g.members {
+                    let index = next_row;
+                    next_row += 1;
+                    rows.push(row(
                         m,
                         g.kind,
-                        self.open_id.as_ref() == Some(&m.id),
                         &self.bot_label,
                         self.on_open.clone(),
                         self.on_menu.clone(),
                         self.probe.as_ref(),
-                    )
-                });
+                        RowFocus {
+                            handles: handles.clone(),
+                            index,
+                            stop: index == stop,
+                            open: self.open_id.as_ref() == Some(&m.id),
+                        },
+                    ));
+                }
                 body = body.child(
                     div()
                         .id(SharedString::from(format!("members-group-{}", g.id)))
@@ -466,6 +561,7 @@ pub struct ProfileCard {
     bio: SharedString,
     is_owner: bool,
     is_bot: bool,
+    client: Option<SharedString>,
     hue: u16,
     roles: Vec<(SharedString, u32)>,
     message: Option<SharedString>,
@@ -488,6 +584,7 @@ impl ProfileCard {
             bio: SharedString::default(),
             is_owner: false,
             is_bot: false,
+            client: None,
             hue,
             roles: Vec::new(),
             message: None,
@@ -503,6 +600,12 @@ impl ProfileCard {
 
     pub fn owner(mut self, owner: bool) -> Self {
         self.is_owner = owner;
+        self
+    }
+
+    /// The client tag after the name (`WEB`, ProfileCard.css `.d-profile-card__client`); a Bot has none.
+    pub fn client(mut self, label: impl Into<SharedString>) -> Self {
+        self.client = Some(label.into());
         self
     }
 
@@ -561,6 +664,17 @@ impl RenderOnce for ProfileCard {
         if self.is_owner {
             title = title.child(Icon::new(IconName::Crown).size(px(13.)).color(color::WARN));
         }
+        if let Some(client) = self.client.clone() {
+            title = title.child(
+                div()
+                    .flex_none()
+                    .px(px(4.))
+                    .border_1()
+                    .border_color(color::CONTROL_EDGE_KEY)
+                    .rounded(radius::TAG)
+                    .child(line(client, text::BADGE, 14.0, color::FG_2).tracking(LABEL_TRACKING)),
+            );
+        }
         let mut body = div()
             .mt(px(-28.))
             .px(px(16.))
@@ -571,8 +685,14 @@ impl RenderOnce for ProfileCard {
                 div().flex().child(
                     div()
                         .rounded(radius::PILL)
-                        .border_4()
-                        .border_color(color::SURFACE_2)
+                        // ProfileCard.css: `box-shadow: 0 0 0 4px var(--surface-2)`, a ring that takes no layout.
+                        .shadow(vec![BoxShadow {
+                            color: color::SURFACE_2,
+                            offset: point(px(0.), px(0.)),
+                            blur_radius: px(0.),
+                            spread_radius: px(4.),
+                            inset: false,
+                        }])
                         .child(
                             Avatar::new("profile-avatar", self.name.clone())
                                 .size(AvatarSize::Card)
@@ -728,4 +848,7 @@ pub mod space {
     pub const CARD_MAX_H: Pixels = px(360.);
     /// The card's distance from the window's edges and from the aside (`calc(100vw - 16px)`).
     pub const CARD_EDGE: Pixels = px(8.);
+    /// ProfileCard.tsx: the card sits 14px beside the pointer and 24px above it.
+    pub const POINTER_GAP: Pixels = px(14.);
+    pub const POINTER_RISE: Pixels = px(24.);
 }

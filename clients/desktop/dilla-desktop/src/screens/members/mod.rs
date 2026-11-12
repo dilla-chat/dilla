@@ -102,7 +102,11 @@ impl Global for MembersUi {}
 
 fn ui(cx: &mut App) -> &mut MembersUi {
     if !cx.has_global::<MembersUi>() {
-        cx.set_global(MembersUi::default());
+        // Shell.tsx: the pane starts open in the wide column (min-width 64rem, every desktop workspace window).
+        cx.set_global(MembersUi {
+            open: true,
+            ..MembersUi::default()
+        });
     }
     cx.global_mut::<MembersUi>()
 }
@@ -114,7 +118,7 @@ pub fn sync(ctx: &SlotCx, cx: &mut App) {
 
 /// Whether the aside is open.
 pub fn is_open(cx: &App) -> bool {
-    cx.try_global::<MembersUi>().is_some_and(|u| u.open)
+    cx.try_global::<MembersUi>().is_none_or(|u| u.open)
 }
 
 fn presence_of(p: Wire) -> Presence {
@@ -250,6 +254,21 @@ fn groups(state: &AppState, community: CommunityId) -> Option<Vec<ListGroup>> {
     )
 }
 
+/// The automation registry keys on `&'static str`: each row id is leaked once and lives as long as the process (as
+/// `channel_list::row_probe` does).
+#[cfg(feature = "automation")]
+fn probe_id(id: &str) -> &'static str {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static IDS: Mutex<Option<HashMap<String, &'static str>>> = Mutex::new(None);
+    let mut ids = IDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ids.get_or_insert_with(HashMap::new)
+        .entry(id.to_owned())
+        .or_insert_with(|| Box::leak(id.to_owned().into_boxed_str()))
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -302,6 +321,12 @@ fn list_with_overlays(
             u.menu = Some((user, at));
             cx.refresh_windows();
         });
+    #[cfg(feature = "automation")]
+    {
+        list = list.probe(Rc::new(|id: &str| {
+            crate::automation::bounds_probe(probe_id(id)).into_any_element()
+        }));
+    }
     if head {
         list = list
             .head(t("members.toggle"), Some(t("members.close").into()))
@@ -323,15 +348,25 @@ fn list_with_overlays(
     root.into_any_element()
 }
 
-fn action_icon(a: MenuAction) -> (IconName, bool) {
+/// MemberCardHost.tsx `CARD`: the card's own buttons are message, compare and edit roles; moderation lives only in the
+/// person menu (`MOD`), where every item is danger and a rule comes before the first.
+fn card_icon(a: MenuAction) -> Option<IconName> {
     match a {
-        MenuAction::Message => (IconName::MessageSquare, false),
-        MenuAction::Compare => (IconName::Shield, false),
-        MenuAction::Roles => (IconName::Users, false),
-        MenuAction::Warn => (IconName::Shield, false),
-        MenuAction::Timeout => (IconName::AlarmClock, false),
-        MenuAction::Kick => (IconName::UserX, true),
-        MenuAction::Ban => (IconName::Ban, true),
+        MenuAction::Message => Some(IconName::MessageSquare),
+        MenuAction::Compare => Some(IconName::Shield),
+        MenuAction::Roles => Some(IconName::SquarePen),
+        _ => None,
+    }
+}
+
+/// MemberCardHost.tsx `MOD`.
+fn moderation_icon(a: MenuAction) -> Option<IconName> {
+    match a {
+        MenuAction::Warn => Some(IconName::TriangleAlert),
+        MenuAction::Timeout => Some(IconName::AlarmClock),
+        MenuAction::Kick => Some(IconName::LogOut),
+        MenuAction::Ban => Some(IconName::Lock),
+        _ => None,
     }
 }
 
@@ -351,7 +386,7 @@ fn action_label(a: MenuAction, name: &str) -> String {
     match a {
         MenuAction::Message => t("members.menu.message").to_owned(),
         MenuAction::Compare => t("members.menu.compare").to_owned(),
-        MenuAction::Roles => t("members.menu.roles").to_owned(),
+        MenuAction::Roles => t("layout.profile.manageRoles").to_owned(),
         MenuAction::Warn => t("mod.warn.menu").to_owned(),
         MenuAction::Timeout => t("mod.timeout.menu").to_owned(),
         MenuAction::Kick => tf("members.menu.kickName", &[("name", name)]),
@@ -431,14 +466,13 @@ fn card_overlay(
         .actions
         .iter()
         .filter(|a| **a != MenuAction::Message)
-        .map(|a| {
-            let (icon, danger) = action_icon(*a);
-            CardAction {
+        .filter_map(|a| {
+            Some(CardAction {
                 id: action_id(*a).into(),
                 label: action_label(*a, &card.name).into(),
-                icon,
-                danger,
-            }
+                icon: card_icon(*a)?,
+                danger: false,
+            })
         })
         .collect();
     let mut view = ProfileCard::new(
@@ -458,16 +492,23 @@ fn card_overlay(
     )
     .actions(actions)
     .on_action(move |id, _w, cx| choose(community, user, id, cx));
+    if !card.is_bot {
+        view = view.client(t("layout.profile.web"));
+    }
     if card.actions.contains(&MenuAction::Message) {
         view = view.message(t("members.menu.message"));
     }
-    // Beside the row, left of the aside, inside the window.
+    // ProfileCard.tsx (the prototype's rule): right of the pointer by 14px, else left of it; 24px above it; 8px from the
+    // window's edges.
     let viewport = window.viewport_size();
-    let x =
-        (viewport.width - layout::MEMBERS - space::CARD_W - space::CARD_EDGE).max(space::CARD_EDGE);
-    let y =
-        at.y.min(viewport.height - space::CARD_MAX_H)
-            .max(space::CARD_EDGE);
+    let mut x = at.x + space::POINTER_GAP;
+    if x + space::CARD_W > viewport.width - space::CARD_EDGE {
+        x = at.x - space::CARD_W - space::POINTER_GAP;
+    }
+    let x = x.max(space::CARD_EDGE);
+    let y = (at.y - space::POINTER_RISE)
+        .min(viewport.height - space::CARD_MAX_H - space::CARD_EDGE)
+        .max(space::CARD_EDGE);
     Some(
         deferred(anchored().position(point(x, y)).child(view))
             .with_priority(1)
@@ -487,15 +528,36 @@ fn menu_overlay(ctx: &SlotCx, community: CommunityId, cx: &mut App) -> Option<An
     let owner = state.communities.iter().find(|c| c.id == community)?.owner;
     let access = state.roles.access.get(&community);
     let card = member_card(member, access, me, owner, state.roles.roles_of(community));
-    let mut items = vec![MenuItem::new("profile", t("members.menu.profile"))];
-    for a in &card.actions {
-        let (icon, danger) = action_icon(*a);
-        let mut item = MenuItem::new(action_id(*a), action_label(*a, &card.name)).icon(icon);
-        if danger {
-            item = item.danger();
+    // MemberCardHost.tsx: Profile, Message, Mention (where a composer is open), Copy username, Edit roles, then the
+    // moderation the viewer may use, after a rule.
+    let mut items = vec![MenuItem::new("profile", t("members.menu.profile")).icon(IconName::User)];
+    if card.actions.contains(&MenuAction::Message) {
+        items.push(
+            MenuItem::new("message", t("members.menu.message")).icon(IconName::MessageSquare),
+        );
+    }
+    if ctx.channel.is_some() && !card.is_you {
+        items.push(MenuItem::new("mention", t("members.menu.mention")).icon(IconName::AtSign));
+    }
+    items.push(MenuItem::new("copy", t("members.menu.copy")).icon(IconName::Copy));
+    if card.actions.contains(&MenuAction::Roles) {
+        items.push(MenuItem::new("roles", t("members.menu.roles")).icon(IconName::Shield));
+    }
+    for (i, a) in card
+        .actions
+        .iter()
+        .filter(|a| moderation_icon(**a).is_some())
+        .enumerate()
+    {
+        let mut item = MenuItem::new(action_id(*a), action_label(*a, &card.name))
+            .icon(moderation_icon(*a).unwrap_or(IconName::Shield))
+            .danger();
+        if i == 0 {
+            item = item.sep();
         }
         items.push(item);
     }
+    let username = card.username.clone();
     let head = div()
         .flex()
         .items_center()
@@ -541,6 +603,10 @@ fn menu_overlay(ctx: &SlotCx, community: CommunityId, cx: &mut App) -> Option<An
                 u.menu = None;
                 u.card = Some((user, at));
                 cx.refresh_windows();
+            } else if id == "copy" {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(format!("@{username}")));
+                ui(cx).menu = None;
+                show_toast(tf("members.menu.copied", &[("name", &username)]), cx);
             } else {
                 choose(community, user, id, cx);
             }
