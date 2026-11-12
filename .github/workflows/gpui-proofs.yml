@@ -1,0 +1,76 @@
+name: gpui-proofs
+# Manual runs of the GPUI proofs under experiments/gpui-*. Not part of CI. Each job prints the RESULT lines and uploads
+# every image (beta.5 reference, GPUI render, diff, worst-region crops) as an artifact named after the OS.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pixel-proof:
+    name: pixel-proof-${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      # The win leg is expected red and unverified: its cfg(windows) path was never compiled and windows-latest has no GPU.
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, label: linux }
+          - { os: windows-latest, label: win }
+          - { os: macos-15, label: mac }
+    defaults:
+      run:
+        shell: bash
+        working-directory: experiments/gpui-pixel-proof
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      # GPUI's Linux build needs the X11/Wayland/font development packages; the headless wgpu renderer needs a
+      # Vulkan driver, and a GPU-less runner gets Mesa's software one (lavapipe).
+      - name: Install the GPUI build dependencies
+        if: runner.os == 'Linux'
+        working-directory: .
+        run: >-
+          node scripts/retry-on.mjs --attempts 6 --wait 60
+          --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch'
+          -- bash scripts/ci-apt-install.sh
+          clang libclang-dev pkg-config libssl-dev libdbus-1-dev libasound2-dev
+          libfontconfig-dev libfreetype-dev libvulkan-dev libgbm-dev libdrm-dev libglib2.0-dev
+          libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
+          libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxext-dev libxdamage-dev
+          libxfixes-dev libxcomposite-dev libxrandr-dev
+          mesa-vulkan-drivers vulkan-tools
+      - run: rustup show active-toolchain
+      - run: cargo build --release --locked
+      - run: npm install --no-audit --no-fund
+      - name: Install Chromium for Playwright
+        run: npx playwright install${{ runner.os == 'Linux' && ' --with-deps' || '' }} chromium
+      - name: Render, diff and print the numbers
+        run: ./run-proof.sh ${{ matrix.label }} out/${{ matrix.label }}
+      # Linux: the validated pair must pass the correct render and fail the three wrong ones (exit 1 otherwise).
+      # Elsewhere: print the scan so a pair can be chosen; never fails.
+      - name: Validate the tolerance
+        run: |
+          if [ "${{ matrix.label }}" = linux ]; then
+            ./validate-tolerance.sh linux 64 0.5 | tee -a out/linux/results.txt
+          else
+            ./validate-tolerance.sh ${{ matrix.label }} 0 0 scan | tee -a out/${{ matrix.label }}/results.txt
+          fi
+      - name: Summary
+        run: |
+          {
+            echo '### pixel proof, ${{ matrix.label }}'
+            echo '```'
+            cat out/${{ matrix.label }}/results.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: pixel-proof-${{ matrix.label }}
+          path: experiments/gpui-pixel-proof/out/${{ matrix.label }}
+          if-no-files-found: error

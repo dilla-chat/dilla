@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dilla-ci-run-'));
 process.on('exit', () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 import { gateExpression, JOB_GATES, WORKFLOWS } from './ci-areas.mjs';
-import { checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkElectronInstalls, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, DESKTOP_RELEASE_ACTIONS, REQUIRED_JOBS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
+import { checkDesktopGpuiWorkflow, GPUI_PINNED_STEPS, checkRerunStarvedWorkflow, assertGoShards,checkGoModuleDownloads, checkElectronInstalls, BROWSER_WEB_JOBS, browserSuiteCommand, checkDesktopCiWorkflow, checkMobileCiWorkflow, checkDesktopReleaseWorkflow, checkDesktopWorkflow, checkReleaseWorkflow, checkMobileReleaseWorkflow, checkServerWorkflow, DESKTOP_RELEASE_ACTIONS, REQUIRED_JOBS, DESKTOP_RELEASE_SECRETS, goShardCommand, goShardMatrix, jobSteps, NIGHTLY_CRON, MIN_BROWSER_WEB_TIMEOUT, NON_RACE_STEP, raceGatedTests, RELEASE_ASSETS, WASM_CLANG_BLOCK, WASM_CLANG_ENV_BLOCK, WASM_CLANG_STEPS, WASM_LLVM_KEY_FPR, WASM_LLVM_VERSION, WEB_SHARDS } from './check-ci-workflow.mjs';
 import { POSTGRES_API_RUN, SETS as GO_SHARD_SETS } from './go-shard.mjs';
 
 const NPM_TEST = "      - if: needs.changes.outputs.web != 'false'\n        run: npm test\n";
@@ -752,11 +752,11 @@ jobs:
       - if: needs.changes.outputs.core != 'false'
         run: cargo fmt --all --check
       - if: needs.changes.outputs.core != 'false'
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --exclude dilla-client --all-targets --all-features --locked -- -D warnings
       - if: needs.changes.outputs.core != 'false'
         run: |
           sudo prlimit --pid "$$" --memlock=268435456:268435456
-          cargo test --workspace --all-features --locked
+          cargo test --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --exclude dilla-client --all-features --locked
       - run: cargo build -p dilla-testkit --release --locked
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -1181,7 +1181,7 @@ function fixture(body, gated = GATED) {
   writeFileSync(join(dir, '.github', 'workflows', 'desktop.yml'), REAL_DESKTOP);
   // ... and the desktop release trampoline with the key scripts it pins.
   releaseRoots.push(dir);
-  for (const file of RELEASE_FILES.filter(path => !path.startsWith('.github/') || /desktop-release(-request)?\.yml$|ci-rerun-starved\.yml$/.test(path))) {
+  for (const file of RELEASE_FILES.filter(path => !path.startsWith('.github/') || /desktop-release(-request)?\.yml$|ci-rerun-starved\.yml$|desktop-gpui\.yml$/.test(path))) {
     mkdirSync(dirname(join(dir, file)), { recursive: true });
     writeFileSync(join(dir, file), readFileSync(join(REPO_ROOT, file), 'utf8'));
   }
@@ -3541,4 +3541,37 @@ test('mobile.yml builds the wasm core alone, uploads the emulator evidence from 
   // The slim job is still a wasm job: the pinned clang 23 block applies to it.
   const clang = checkMobile(mobileEdit('        run: bash scripts/ci-llvm.sh install\n', '        run: echo no clang\n'));
   assert.ok(clang.some((p) => p.includes('job "mobile-core-wasm" builds for wasm32-unknown-unknown')), clang.join('\n'));
+});
+
+const GPUI = '.github/workflows/desktop-gpui.yml';
+const gpuiProblems = (change) => {
+  const root = releaseRoot({ [GPUI]: change });
+  const problems = checkDesktopGpuiWorkflow(root);
+  rmSync(root, { recursive: true, force: true });
+  return problems;
+};
+const indent = (block) => block.split('\n').map((l) => `      ${l}`).join('\n');
+
+test('the desktop-gpui workflow as committed has no problems', () => {
+  assert.deepEqual(checkDesktopGpuiWorkflow(REPO_ROOT), []);
+  const cli = spawnSync(process.execPath, [SCRIPT_PATH, releaseRoot({ [GPUI]: (text) => text.replace('go build -o "target/dilla-testhost$exe"', 'true') })], { encoding: 'utf8' });
+  assert.notEqual(cli.status, 0, 'wired into the CLI');
+  assert.match(cli.stderr, /desktop-gpui\.yml/);
+});
+
+test('the desktop-gpui token test, test-host build and --ignored runs are each pinned', () => {
+  for (const [name, step] of Object.entries(GPUI_PINNED_STEPS)) {
+    const problems = gpuiProblems((text) => { assert.ok(text.includes(indent(step)), name); return text.replace(indent(step), ''); });
+    assert.ok(problems.some((p) => p.includes(`the ${name} step`)), `${name}: ${problems.join('|')}`);
+  }
+  for (const dropped of ['cargo test -p dilla-client --test sync --locked -- --ignored', 'cargo test -p dilla-client --test gateway --locked -- --ignored']) {
+    assert.ok(gpuiProblems((text) => text.replace(`          ${dropped}\n`, '')).some((p) => p.includes('the ignored step')), dropped);
+  }
+});
+
+test('the desktop-gpui workflow is reported when it is missing', () => {
+  const root = releaseRoot();
+  rmSync(join(root, GPUI));
+  assert.deepEqual(checkDesktopGpuiWorkflow(root), ['desktop-gpui.yml: missing']);
+  rmSync(root, { recursive: true, force: true });
 });

@@ -11,6 +11,64 @@ clippy` and the workspace lints do not touch it.
 Upstream: <https://github.com/rusqlite/rusqlite> (`libsqlite3-sys/`; `.cargo_vcs_info.json` has the
 commit). MIT.
 
+Two changes. The second is what the native store builds with today.
+
+### 2. `bundled-sqlite3mc`: SQLite3 Multiple Ciphers, no OpenSSL (Task 6b, 2026-11-12)
+
+A new feature, `bundled-sqlite3mc = ["bundled", "dep:sqlite3mc-src"]`, with the build-dependency
+`sqlite3mc-src = "=206.1.0"` (SQLite3MC 2.6.1 on SQLite 3.54.0; MIT, with the CC0-1.0 / Unlicense
+parts `deny.toml` already allows for that crate). It is the same release, from the same crate,
+that the browser core compiles through sqlite-wasm-rs 0.6.3, so the native and browser stores are
+one cipher implementation. Edits, all marked `DILLA PATCH`:
+
+- `Cargo.toml` and `Cargo.toml.orig`: the feature and the optional build-dependency.
+- `build.rs`:
+  - a `compile_error!` when `bundled-sqlcipher` and `bundled-sqlite3mc` are both on (one SQLite
+    per binary);
+  - `build_bundled` compiles `sqlite3mc_src::source_dir()/sqlite3mc_amalgamation.c` instead of
+    `sqlite3/sqlite3.c`, with the usual bundled flags plus `-DCODEC_TYPE=CODEC_TYPE_CHACHA20` (the
+    default cipher), `-DSQLITE3MC_SECURE_MEMORY=1` (makes `PRAGMA memory_security = fill`
+    available: freed SQLite memory is wiped; sqlite3mc has no mlock), `-DSQLITE_TEMP_STORE=2` and
+    `-DHAVE_STDINT_H=1`. The crypto is sqlite3mc's own C code; nothing links OpenSSL or a system
+    crypto library (`cargo tree -i openssl-sys` is empty).
+
+Rusqlite has no such feature, so each native crate that opens a store (`dilla-core`,
+`dilla-bot-core`, `clients/desktop/dilla-client`, `testkit`) asks for
+`rusqlite = { features = ["bundled"] }` plus `libsqlite3-sys = { features = ["bundled-sqlite3mc"] }`,
+and feature unification hands rusqlite that one copy.
+
+Known leftovers:
+- The committed `sqlite3/bindgen_bundled_version.rs` (SQLite **3.54.1** headers) is used against
+  the **3.54.0** library, so the compile-time `SQLITE_VERSION*` constants say 3.54.1 while
+  `sqlite3_libversion()` / `SELECT sqlite_version()` report 3.54.0. Patch releases add no API, so
+  the bindings are sound. `buildtime_bindgen` is not supported with this feature (the
+  amalgamation's header is `sqlite3mc_amalgamation.h`, not `sqlite3.h`).
+- `DEP_SQLITE3_INCLUDE` points at the sqlite3mc directory, which has no `sqlite3.h` (commented in
+  `build.rs`); nothing in the graph reads it.
+
+Legacy stores: sqlite3mc opens SQLCipher 4 files that are clean or in WAL mode (a hot WAL
+included), but not one with a hot **rollback journal** from SQLCipher, whose journal checksums
+cover ciphertext where sqlite3mc's cover plaintext; `dilla_core::native_store` refuses such a file
+untouched (`KeyError::LegacyHotJournal`).
+
+Why: dilla-core's SQLCipher linked vendored OpenSSL, and LiveKit's prebuilt libwebrtc carries
+BoringSSL with an incomplete rename list, so the desktop client could not link dilla-core and
+LiveKit into one binary (208 duplicate symbols; Jonas's ruling R14). Regression tests:
+`core/dilla-core/tests/sqlite3mc_build.rs` (sqlite3mc linked, SQLite >= 3.54.0, no
+openssl-sys / sqlcipher-src in Cargo.lock), `core/dilla-core/tests/native_store.rs` (ChaCha20
+stores, and SQLCipher 4 files from the old build still open) and
+`clients/desktop/dilla-media/tests/link.rs` (one binary uses both).
+
+RUSTSEC-2026-0459 is fixed in SQLite 3.54.0, which sqlite3mc-src 206.1.0 bundles.
+
+Keep this patch until upstream libsqlite3-sys can build SQLite3 Multiple Ciphers itself.
+
+### 1. `sqlcipher-src` 420 (RUSTSEC-2026-0459; no longer built)
+
+No crate enables `bundled-sqlcipher` since Task 6b, so this pin is dormant (sqlcipher-src and
+openssl-sys left Cargo.lock); it stays so the feature still builds a fixed SQLite if anyone turns
+it on, and is dropped with the copy.
+
 One change, in `Cargo.toml` (and the same line in `Cargo.toml.orig`): the `sqlcipher-src`
 build-dependency requirement moves from `=419.0.6` to `=420.0.0`. Nothing else is edited; `build.rs`
 uses the same `sqlcipher_src::source_dir()` / `SOURCE_FILE` API, which 420.0.0 keeps unchanged
@@ -22,8 +80,8 @@ size). The advisory itself notes that `bundled-sqlcipher` in libsqlite3-sys 0.39
 which bundles SQLCipher 4.19.0 on SQLite 3.53.4, so the native store dilla-core, dilla-bot-core and
 the testkit build with `bundled-sqlcipher-vendored-openssl` stayed vulnerable even with the
 advisory resolved in Cargo.lock. `sqlcipher-src 420.0.0` bundles SQLCipher 4.20.0 on SQLite 3.54.1.
-Regression test: `core/dilla-core/tests/sqlcipher_build.rs` (`sqlite_version()` >= 3.54.1 with
-`PRAGMA cipher_version` non-empty on a keyed connection); it fails with this patch removed.
+Its regression test, `core/dilla-core/tests/sqlcipher_build.rs`, became `sqlite3mc_build.rs` in
+Task 6b.
 
 Known leftover: the pre-generated `sqlcipher/bindgen_bundled_version.rs` still comes from the
 3.53.4 headers, so the compile-time `SQLITE_VERSION*` constants in the bindings say 3.53.4. The
@@ -35,8 +93,95 @@ from sqlite-wasm-rs, which carries its own SQLite. That side is fixed without a 
 sqlite-wasm-rs 0.6.3 builds SQLite3MC 2.6.1 on SQLite 3.54.0 (`sqlite3mc-src =206.1.0`), see
 "Retired" below.
 
-Remove this copy and the patch entry once upstream ships sqlcipher-src >= 420 (a libsqlite3-sys
-release whose `sqlcipher-src` requirement is 420.0.0 or later).
+Since Task 6b the native store builds its own SQLite3MC too (change 2), from the same
+`sqlite3mc-src` release.
+
+## webrtc-sys 0.3.53
+
+Upstream: <https://github.com/livekit/rust-sdks> (`webrtc-sys/`; `.cargo_vcs_info.json` has the
+commit). Apache-2.0. The published copy is the first commit that adds it (`vendor: webrtc-sys 0.3.53
+as published`), so `git diff` of that commit's successor shows the whole patch.
+
+Patched into the root workspace (`[patch.crates-io]` in `Cargo.toml`, Task 11) for `dilla-media`,
+which installs its hook (`dilla_media::transform::Router`) before the process's first
+PeerConnection. `experiments/gpui-voice-proof` (its own workspace and `[patch.crates-io]`) holds the
+original evidence, `experiments/gpui-voice-proof/REPORT.md`; `clients/desktop/dilla-media/tests/`
+(`glue.rs`, `hook_enforced.rs`, `call.rs`) covers the current glue.
+
+What it adds: a process-wide encoded-frame hook for dilla-sframe/1 (protocol/05), on LiveKit's
+prebuilt libwebrtc as it is downloaded (libwebrtc itself is not rebuilt). LiveKit's Rust SDK exposes
+no transformer of its own (its `FrameCryptor` writes LiveKit's AES-GCM frame format, and its packet
+trailer transformer only adds metadata), so the hook is glue implementing libwebrtc's
+`FrameTransformerInterface`:
+
+- New files, wholly dilla's: `include/livekit/dilla_transform.h`, `src/dilla_transform.cpp`,
+  `src/dilla_transform.rs` (the cxx bridge and the Rust API: `dilla_transform::install(Box<dyn
+  FrameTransform>)`, `FrameTransform::{attached, detached, transform, hold_expired, pass_refused,
+  sif_trailer, key_frame_requests}`, `Verdict::{Drop, Replace, Hold, PassUnchanged}`, `drain`,
+  `request_key_frame`, `receiver_handle` / `sender_handle`).
+- Test support, only with the crate feature `dilla-test-frames` (which only dilla-media's
+  dev-dependency enables, so no shipping binary contains it): `include/livekit/dilla_transform_testing.h`,
+  `src/dilla_transform_testing.{cpp,rs}` (`webrtc_sys::dilla_transform_testing`: a transformer fed
+  synthetic frames without a PeerConnection, through libwebrtc's own test-mock frame class names,
+  which the prebuilt library does not define); `build.rs` compiles them and defines
+  `DILLA_TEST_FRAMES` only then.
+- `build.rs`, `src/lib.rs`: build and export the new bridge.
+- `src/peer_connection_factory.cpp`: the hook is mandatory. `create_peer_connection` throws
+  `E_DILLA_NO_FRAME_HOOK` when no hook is installed, so a missing or late `install` can never fall
+  back to LiveKit's own FrameCryptor or to no transform
+  (`clients/desktop/dilla-media/tests/hook_enforced.rs`).
+- `src/peer_connection.cpp`: `add_track`, `add_transceiver` and `add_transceiver_for_media`
+  attach a `DillaFrameTransformer` to the new sender before the negotiation that starts its RTP (a
+  sender without a track gets one bound to no track, which drops every frame), so no sender exists
+  without one; `OnTrack` attaches one to the receiver synchronously, before Rust learns of the
+  track.
+- `src/rtp_sender.cpp`: `set_track` never replaces a sender's transformer. libwebrtc's ChannelSend
+  takes one transformer delegate per stream (a second is an `RTC_DCHECK`), so under the hook a
+  sender takes back only the track its transformer was attached for (after a null swap); any other
+  track is refused (`set_track` answers false). dilla-media never needs one: it switches the
+  microphone device under the same track. (Task 2's glue attached a fresh transformer here; upstream
+  dereferenced a null track here.)
+- `include/livekit/frame_cryptor.h`: LiveKit's `KeyProvider::set_sif_trailer` (the room's
+  server-injected-frame trailer from the join response) is also handed to the hook, which drops a
+  frame ending in it before any SFrame header is parsed.
+- `src/frame_cryptor.cpp`, `src/packet_trailer.cpp`: while a hook is installed, LiveKit's
+  `FrameCryptorTransformer`, its chained packet-trailer transformer and the packet-trailer handlers
+  are never set on a sender or receiver, so nothing replaces the hook (protocol/05 refuses packet
+  trailers anyway).
+
+Every transformer has an opaque handle, process-unique and never reused, which Rust learns when the
+transformer is attached (`attached`) and which names it in every later call. A receiver is bound by
+that handle, found from the subscribed track's own C++ object (`receiver_handle`, compared by
+identity; see libwebrtc 0.4.0 below), never by a track id string the SFU chose; dilla-media refuses a
+second bind of a handle.
+
+The transformer has no pass-through of its own: every frame goes to Rust, and only a frame Rust
+answers `Replace` (sealed or authenticated bytes) or `PassUnchanged` goes on. `PassUnchanged` is
+enforced in C++: it forwards only a zero-byte Opus frame on an audio transformer and drops (and
+reports, `pass_refused`) anything else so answered. `Hold` keeps the frame in a strict
+per-transformer FIFO bounded by protocol/05's 2 000 ms, 256 frames and 8 MiB; the FIFO is retried on
+every later frame, on every `drain` (dilla-media calls it after each key install and each binding)
+and every 20 ms on the hook's own timer thread, so a held frame of a silent track still expires.
+Past a bound the oldest is dropped and reported, never released unauthenticated. The same timer
+sends the key-frame requests the hook asks for (`key_frame_requests`) through
+`VideoTrackSourceInterface::GenerateKeyFrame` on the receiving track's source, which libwebrtc turns
+into an RTCP PLI to the publisher.
+
+Remove this copy when upstream exposes an equivalent custom frame transformer.
+
+## libwebrtc 0.4.0
+
+Upstream: <https://github.com/livekit/rust-sdks> (`libwebrtc/`; `.cargo_vcs_info.json` has the
+commit). Apache-2.0. The published copy is the first commit that adds it (`vendor: libwebrtc 0.4.0 as
+published`), so the diff of that commit's successor shows the whole patch. Patched into the root
+workspace (`[patch.crates-io]`, Task 11).
+
+The one change (`src/media_stream_track.rs`, `DILLA PATCH`): `sys_handle()` of `RtcAudioTrack`,
+`RtcVideoTrack` and `MediaStreamTrack` is public instead of `pub(crate)`, so dilla-media can hand a
+subscribed track's own C++ object to `webrtc_sys::dilla_transform::receiver_handle` and bind the
+receiver's transformer by identity rather than by a track id the SFU chose.
+
+Remove this copy when upstream makes the handle public or the webrtc-sys hook is upstreamed.
 
 ## Retired: sqlite-wasm-vfs 0.2.0
 

@@ -1,36 +1,54 @@
 [graph]
 targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
-           "wasm32-unknown-unknown", "wasm32-wasip1"]
+           "wasm32-unknown-unknown", "wasm32-wasip1",
+           "x86_64-pc-windows-msvc", "aarch64-apple-darwin"]
 all-features = true
 
 [advisories]
 yanked = "deny"
 unmaintained = "workspace"
-ignore = []
+ignore = [
+  # ttf-parser 0.25 is unmaintained, but GPUI's own text stack requires it (fontdb, rustybuzz,
+  # wayland-backend), so dropping our direct use would not remove it. Follow-up: move
+  # dilla-desktop-ui's glyph-coverage check to skrifa; lift this when GPUI moves off ttf-parser.
+  { id = "RUSTSEC-2026-0192", reason = "transitively required by GPUI's text stack (fontdb, rustybuzz)" },
+]
 
 [licenses]
 # Every entry here must be a licence the resolved graph actually carries: cargo-deny reports an
 # unused allowance as `license-not-encountered`, and a run that prints warnings is a run whose
-# warnings stop being read. `ISC` was dropped for exactly that reason (nothing in the graph over
-# the four targets in [graph] carries it); `BlueOak-1.0.0` went the same way with minicbor
+# warnings stop being read. `ISC` was dropped for exactly that reason once and is back with the GPUI desktop
+# client (ring, rustls-webpki, libloading, inotify; `0BSD` is enum-iterator, a gpui-component dependency); `BlueOak-1.0.0` went the same way with minicbor
 # (deviation A1-3). Add one back when the dependency that needs it arrives, not before.
 allow = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "Unicode-3.0",
-         "Zlib", "MPL-2.0"]
+         "Zlib", "MPL-2.0", "ISC", "0BSD"]
 confidence-threshold = 0.9
 
-# sqlcipher-src carries the SQLCipher amalgamation the native store is built from (build-dependency
-# of the patched libsqlite3-sys, core/vendor/README.md): SQLite's public-domain blessing and
-# libtomcrypt's WTFPL-style licence. Scoped to that one crate so nothing else may use either.
-[[licenses.exceptions]]
-crate = "sqlcipher-src"
-allow = ["blessing", "WTFPL"]
-
-# sqlite3mc-src carries the SQLite3 Multiple Ciphers amalgamation the browser store is built from
-# (build-dependency of sqlite-wasm-rs 0.6): SQLite's public-domain dedication as CC0-1.0, and the
-# Unlicense / CC0-1.0 parts of the bundled cipher sources. Scoped to that one crate.
+# sqlite3mc-src carries the SQLite3 Multiple Ciphers amalgamation both stores are built from: the
+# browser's (build-dependency of sqlite-wasm-rs 0.6) and, since Task 6b, the native one (of the
+# patched libsqlite3-sys, core/vendor/README.md). SQLite's public-domain dedication as CC0-1.0, and
+# the Unlicense / CC0-1.0 parts of the bundled cipher sources. Scoped to that one crate.
+# (sqlcipher-src, with its blessing / WTFPL exception, left the graph with SQLCipher in Task 6b.)
 [[licenses.exceptions]]
 crate = "sqlite3mc-src"
 allow = ["CC0-1.0", "Unlicense"]
+
+# notify (a gpui-component dependency, file watching) is CC0-1.0; webpki-root-certs (reqwest's rustls platform
+# verifier) is CDLA-Permissive-2.0, a data licence for the Mozilla root list. Scoped to those crates.
+[[licenses.exceptions]]
+crate = "notify"
+allow = ["CC0-1.0"]
+
+# tiny-keccak is CC0-1.0: a build-time dependency (const-random-macro, through rust-ini's ordered
+# map) of deep-filter-rt, the desktop's enhanced noise suppression (Task 11), and of GPUI's X11 backend (zed-xim -> ahash ->
+# const-random, Task 12, ruling R20). Scoped to that crate.
+[[licenses.exceptions]]
+crate = "tiny-keccak"
+allow = ["CC0-1.0"]
+
+[[licenses.exceptions]]
+crate = "webpki-root-certs"
+allow = ["CDLA-Permissive-2.0"]
 
 [licenses.private]
 ignore = true                      # every dilla crate is publish = false
@@ -44,16 +62,8 @@ wildcards = "deny"
 allow-wildcard-paths = true
 
 [[bans.skip]]
-crate = "rand_core"
-reason = "rand_chacha 0.3 (deterministic testkit fixtures) needs 0.6, while the upstream OpenMLS crypto provider and rand 0.10 use 0.10."
-
-[[bans.skip]]
 crate = "rand_chacha"
 reason = "testkit uses 0.3 for deterministic fixtures; upstream OpenMLS and rand 0.10 use 0.10. Collapses when the fixtures can migrate without changing vectors."
-
-[[bans.skip]]
-crate = "getrandom"
-reason = "getrandom 0.2 serves testkit's rand_core 0.6 fixtures, while 0.4 serves rand_core 0.10. Collapses with the fixture RNG migration."
 
 # The remaining duplicates are confined to fixture RNGs and proc macros. Keep these exceptions narrow so crypto duplicates fail the check.
 
@@ -61,7 +71,362 @@ reason = "getrandom 0.2 serves testkit's rand_core 0.6 fixtures, while 0.4 serve
 crate = "syn"
 reason = "2.0.119 is what nearly every proc macro still uses; wasm-bindgen-test-macro 0.3.78 has moved to 3.0.6. Build-time only; collapses as the ecosystem finishes the syn 3 migration."
 
+# The GPUI desktop client (clients/desktop: gpui-pre, gpui-component, livekit, reqwest, keyring) carries its own
+# older majors of these. They sit in the UI, media and transport stacks, off the MLS path in dilla-core; each
+# collapses when the upstream release that moves it ships.
+[[bans.skip]]
+crate = "bitflags"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "convert_case"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "cpufeatures"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "foldhash"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "hashbrown"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "miniz_oxide"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "png"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "pollster"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "quick-error"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "reqwest"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "roxmltree"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "serde_spanned"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "spin"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "strsim"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "thiserror"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "thiserror-impl"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "tokio-tungstenite"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "toml"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "toml_datetime"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "toml_edit"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "tungstenite"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "winnow"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "base64"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "itertools"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "bit-set"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "bit-vec"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "font-types"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "read-fonts"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "rustc-hash"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "skrifa"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "zbus"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+[[bans.skip]]
+crate = "zbus_macros"
+reason = "GPUI desktop client dependency tree (gpui-pre, gpui-component, livekit, reqwest 0.13, tokio-tungstenite): a second major beside the one dilla-core uses."
+
+# Crypto duplicates, scoped to the older version so a new duplicate of the same crate still fails the check.
+
+[[bans.skip]]
+crate = "aes@0.8.4"
+reason = "the older RustCrypto line comes only from oo7 0.6 (gpui-pre-linux's Secret Service / portal access, the Linux desktop build); dilla-core's MLS crypto uses the current line. Collapses when oo7 moves to it."
+
+[[bans.skip]]
+crate = "cbc@0.1.2"
+reason = "the older RustCrypto line comes only from oo7 0.6 (gpui-pre-linux's Secret Service / portal access, the Linux desktop build); dilla-core's MLS crypto uses the current line. Collapses when oo7 moves to it."
+
+[[bans.skip]]
+crate = "cipher@0.4.4"
+reason = "the older RustCrypto line comes only from oo7 0.6 (gpui-pre-linux's Secret Service / portal access, the Linux desktop build); dilla-core's MLS crypto uses the current line. Collapses when oo7 moves to it. (also aes 0.8, cbc 0.1)"
+
+[[bans.skip]]
+crate = "hkdf@0.12.4"
+reason = "the older RustCrypto line comes only from oo7 0.6 (gpui-pre-linux's Secret Service / portal access, the Linux desktop build); dilla-core's MLS crypto uses the current line. Collapses when oo7 moves to it."
+
+[[bans.skip]]
+crate = "hmac@0.12.1"
+reason = "hkdf 0.12 and pbkdf2 0.12 of oo7 0.6 (Linux desktop Secret Service access); the MLS crypto uses hmac 0.13. Collapses with oo7."
+
+[[bans.skip]]
+crate = "sha2@0.10.9"
+reason = "the older RustCrypto line comes only from oo7 0.6 (gpui-pre-linux's Secret Service / portal access, the Linux desktop build); dilla-core's MLS crypto uses the current line. Collapses when oo7 moves to it."
+
+[[bans.skip]]
+crate = "sha1@0.10.7"
+reason = "sha1 0.10 is pulled only by tungstenite 0.29 (livekit's websocket stack, the desktop's voice transport); testkit and dilla-core's own tungstenite use sha1 0.11. Collapses when livekit moves to tungstenite 0.30."
+
+[[bans.skip]]
+crate = "digest@0.10.7"
+reason = "hmac 0.12, md-5, pbkdf2, sha1 0.10 and sha2 0.10 of oo7 0.6 and tungstenite 0.29 (desktop Secret Service and voice transport); the MLS crypto uses digest 0.11. Collapses with those."
+
+[[bans.skip]]
+crate = "block-buffer@0.10.4"
+reason = "digest 0.10 (oo7 0.6 and tungstenite 0.29 in the desktop build); the MLS crypto uses block-buffer 0.12. Collapses with digest."
+
+[[bans.skip]]
+crate = "crypto-common@0.1.7"
+reason = "cipher 0.4 and digest 0.10 (oo7 0.6 and tungstenite 0.29 in the desktop build); the MLS crypto uses crypto-common 0.2. Collapses with those."
+
+[[bans.skip]]
+crate = "inout@0.1.4"
+reason = "cipher 0.4 (oo7 0.6 in the Linux desktop build); the MLS crypto uses inout 0.2. Collapses with oo7."
+
+[[bans.skip]]
+crate = "block-padding@0.3.3"
+reason = "inout 0.1 (cipher 0.4, oo7 0.6 in the Linux desktop build); the MLS crypto uses block-padding 0.4. Collapses with oo7."
+
+[[bans.skip]]
+crate = "rand@0.8.8"
+reason = "phf_generator 0.11 and zed-scap (desktop screen capture); the MLS crypto and dilla-core use rand 0.10. Collapses when those move."
+
+[[bans.skip]]
+crate = "rand@0.9.5"
+reason = "gpui-pre, livekit-datatrack, rav1e, num-bigint-dig and tungstenite 0.29 (desktop UI and media stacks); the MLS crypto uses rand 0.10. Collapses when those move."
+
+[[bans.skip]]
+crate = "rand_core@0.6.4"
+reason = "rand 0.8 and testkit's rand_chacha 0.3 (deterministic fixtures); the OpenMLS provider uses rand_core 0.10. Collapses with the fixture RNG migration."
+
+[[bans.skip]]
+crate = "rand_core@0.9.5"
+reason = "rand 0.9 and rand_chacha 0.9 of the desktop UI and media stacks; the OpenMLS provider uses rand_core 0.10. Collapses with rand 0.9."
+
+[[bans.skip]]
+crate = "getrandom@0.2.17"
+reason = "testkit's rand_core 0.6 fixtures, dilla-core's wasm entropy hook, ring 0.17, const-random-macro and redox_users; rand_core 0.10 uses getrandom 0.4. Collapses with the fixture RNG migration."
+
+[[bans.skip]]
+crate = "getrandom@0.3.4"
+reason = "gpui-pre, dilla-client and rand_core 0.9 (desktop stacks); rand_core 0.10 uses getrandom 0.4. Collapses with rand 0.9."
+
+# Duplicates the Windows and macOS targets add to the graph (cargo-deny now checks those targets too), scoped to the older version.
+
+[[bans.skip]]
+crate = "core-foundation@0.9.4"
+reason = "cocoa 0.25, core-graphics 0.23 and system-configuration (macOS desktop stack); 0.10 is used by the rest."
+
+[[bans.skip]]
+crate = "gif@0.13.3"
+reason = "gpui-component 0.9.1 still uses resvg 0.45 and its SVG stack; gpui-pre uses 0.46. Collapses when gpui-component moves."
+
+[[bans.skip]]
+crate = "imagesize@0.13.0"
+reason = "gpui-component 0.9.1 still uses resvg 0.45 and its SVG stack; gpui-pre uses 0.46. Collapses when gpui-component moves."
+
+[[bans.skip]]
+crate = "kurbo@0.11.3"
+reason = "gpui-component 0.9.1 still uses resvg 0.45 and its SVG stack; gpui-pre uses 0.46. Collapses when gpui-component moves."
+
+[[bans.skip]]
+crate = "resvg@0.45.1"
+reason = "gpui-component 0.9.1 still uses resvg 0.45 and its SVG stack; gpui-pre uses 0.46. Collapses when gpui-component moves."
+
+[[bans.skip]]
+crate = "svgtypes@0.15.3"
+reason = "gpui-component 0.9.1 still uses resvg 0.45 and its SVG stack; gpui-pre uses 0.46. Collapses when gpui-component moves."
+
+[[bans.skip]]
+crate = "usvg@0.45.1"
+reason = "gpui-component 0.9.1 still uses resvg 0.45 and its SVG stack; gpui-pre uses 0.46. Collapses when gpui-component moves."
+
+[[bans.skip]]
+crate = "zune-core@0.4.12"
+reason = "gpui-component 0.9.1 still uses resvg 0.45 and its SVG stack; gpui-pre uses 0.46. Collapses when gpui-component moves."
+
+[[bans.skip]]
+crate = "zune-jpeg@0.4.21"
+reason = "gpui-component 0.9.1 still uses resvg 0.45 and its SVG stack; gpui-pre uses 0.46. Collapses when gpui-component moves."
+
+[[bans.skip]]
+crate = "heck@0.4.1"
+reason = "cbindgen 0.28 (build-time header generation in the desktop media stack); the rest use heck 0.5."
+
+[[bans.skip]]
+crate = "objc2@0.5.3"
+reason = "accesskit_macos 0.26 and the objc2 0.2 framework crates (macOS desktop UI); the rest use objc2 0.6. Collapses when accesskit_macos moves."
+
+[[bans.skip]]
+crate = "objc2-app-kit@0.2.2"
+reason = "accesskit_macos 0.26 (macOS desktop UI); the rest use 0.3. Collapses when accesskit_macos moves."
+
+[[bans.skip]]
+crate = "objc2-foundation@0.2.2"
+reason = "accesskit_macos 0.26 and objc2 0.2 framework crates (macOS desktop UI); the rest use 0.3. Collapses when accesskit_macos moves."
+
+[[bans.skip]]
+crate = "windows@0.58.0"
+reason = "the Windows desktop build: older windows-rs lines come from gpui-base/gpui-component (0.58), sysinfo (0.57), windows-capture and zed-scap (0.61), ring, jni and dirs-sys (windows-sys 0.45-0.59); the rest use 0.62. Collapses as those move."
+
+[[bans.skip]]
+crate = "windows-core@0.58.0"
+reason = "the Windows desktop build: older windows-rs lines come from gpui-base/gpui-component (0.58), sysinfo (0.57), windows-capture and zed-scap (0.61), ring, jni and dirs-sys (windows-sys 0.45-0.59); the rest use 0.62. Collapses as those move."
+
+[[bans.skip]]
+crate = "windows-implement@0.58.0"
+reason = "the Windows desktop build: older windows-rs lines come from gpui-base/gpui-component (0.58), sysinfo (0.57), windows-capture and zed-scap (0.61), ring, jni and dirs-sys (windows-sys 0.45-0.59); the rest use 0.62. Collapses as those move."
+
+[[bans.skip]]
+crate = "windows-interface@0.58.0"
+reason = "the Windows desktop build: older windows-rs lines come from gpui-base/gpui-component (0.58), sysinfo (0.57), windows-capture and zed-scap (0.61), ring, jni and dirs-sys (windows-sys 0.45-0.59); the rest use 0.62. Collapses as those move."
+
+[[bans.skip]]
+crate = "windows-link@0.1.3"
+reason = "the Windows desktop build: older windows-rs lines come from gpui-base/gpui-component (0.58), sysinfo (0.57), windows-capture and zed-scap (0.61), ring, jni and dirs-sys (windows-sys 0.45-0.59); the rest use 0.62. Collapses as those move."
+
+[[bans.skip]]
+crate = "windows-registry@0.4.0"
+reason = "the Windows desktop build: older windows-rs lines come from gpui-base/gpui-component (0.58), sysinfo (0.57), windows-capture and zed-scap (0.61), ring, jni and dirs-sys (windows-sys 0.45-0.59); the rest use 0.62. Collapses as those move."
+
+[[bans.skip]]
+crate = "windows-sys@0.59.0"
+reason = "the Windows desktop build: older windows-rs lines come from gpui-base/gpui-component (0.58), sysinfo (0.57), windows-capture and zed-scap (0.61), ring, jni and dirs-sys (windows-sys 0.45-0.59); the rest use 0.62. Collapses as those move."
+
+[[bans.skip]]
+crate = "windows-targets@0.52.6"
+reason = "the Windows desktop build: older windows-rs lines come from gpui-base/gpui-component (0.58), sysinfo (0.57), windows-capture and zed-scap (0.61), ring, jni and dirs-sys (windows-sys 0.45-0.59); the rest use 0.62. Collapses as those move."
+
+[[bans.skip]]
+crate = "windows_x86_64_gnu@0.52.6"
+reason = "the Windows desktop build: older windows-rs lines come from gpui-base/gpui-component (0.58), sysinfo (0.57), windows-capture and zed-scap (0.61), ring, jni and dirs-sys (windows-sys 0.45-0.59); the rest use 0.62. Collapses as those move."
+
+[[bans.skip]]
+crate = "windows_x86_64_msvc@0.52.6"
+reason = "the Windows desktop build: older windows-rs lines come from gpui-base/gpui-component (0.58), sysinfo (0.57), windows-capture and zed-scap (0.61), ring, jni and dirs-sys (windows-sys 0.45-0.59); the rest use 0.62. Collapses as those move."
+
+[[bans.skip]]
+crate = "windows-result@0.2.0"
+reason = "the Windows desktop build: older windows-rs lines come from gpui-base/gpui-component (0.58), sysinfo (0.57), windows-capture and zed-scap (0.61), ring, jni and dirs-sys (windows-sys 0.45-0.59); the rest use 0.62. Collapses as those move."
+
+[[bans.skip]]
+crate = "windows-result@0.3.4"
+reason = "the Windows desktop build: older windows-rs lines come from gpui-base/gpui-component (0.58), sysinfo (0.57), windows-capture and zed-scap (0.61), ring, jni and dirs-sys (windows-sys 0.45-0.59); the rest use 0.62. Collapses as those move."
+
+[[bans.skip]]
+crate = "windows-strings@0.1.0"
+reason = "the Windows desktop build: older windows-rs lines come from gpui-base/gpui-component (0.58), sysinfo (0.57), windows-capture and zed-scap (0.61), ring, jni and dirs-sys (windows-sys 0.45-0.59); the rest use 0.62. Collapses as those move."
+
+[[bans.skip]]
+crate = "windows-strings@0.3.1"
+reason = "the Windows desktop build: older windows-rs lines come from gpui-base/gpui-component (0.58), sysinfo (0.57), windows-capture and zed-scap (0.61), ring, jni and dirs-sys (windows-sys 0.45-0.59); the rest use 0.62. Collapses as those move."
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-git = ["https://github.com/openmls/openmls"]
+
+[[bans.skip]]
+crate = "dirs@5.0.1"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "dirs-sys@0.4.1"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "downcast-rs@1.2.1"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "phf@0.11.3"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "phf_generator@0.11.3"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "phf_shared@0.11.3"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "windows-sys@0.48.0"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "windows-targets@0.48.5"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "windows_x86_64_gnu@0.48.5"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."
+
+[[bans.skip]]
+crate = "windows_x86_64_msvc@0.48.5"
+reason = "GPUI desktop Linux backends (x11/wayland, Task 12) and the macOS/Windows deny targets bring this older line beside the one the rest of the graph uses. Collapses as those upstreams move."

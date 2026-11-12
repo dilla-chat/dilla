@@ -256,8 +256,8 @@ const REQUIRED_STEPS = {
   // The testkit artifact hand-off: rust-native builds and uploads it, go downloads it.
   'rust-native': [
     'cargo fmt --all --check',
-    'cargo clippy --workspace --all-targets --all-features --locked -- -D warnings',
-    'cargo test --workspace --all-features --locked',
+    'cargo clippy --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --exclude dilla-client --all-targets --all-features --locked -- -D warnings',
+    'cargo test --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --exclude dilla-client --all-features --locked',
     'cargo build -p dilla-testkit --release --locked',
     'name: dilla-testkit',
     'if-no-files-found: error',
@@ -2267,6 +2267,56 @@ export function checkDesktopReleaseWorkflow(root) {
 }
 
 /**
+ * desktop-gpui.yml (the GPUI desktop client, on three OSes) is pinned where a silent edit would hide a gap: the token
+ * freshness test, the step that builds the Go test host and the WASI core and exports them to every later step, and the
+ * `--ignored` runs on Linux (the parity render and dilla-client's real-dillad tests, which a plain `cargo test` skips).
+ * Without them the real-server tests would be ignored everywhere and nothing would say so.
+ */
+export const GPUI_PINNED_STEPS = {
+  tokens: '- run: node --test scripts/gen-gpui-tokens.test.mjs',
+  // dilla-client's route-table test runs tests/support/dump-routes.mjs, which imports the typescript package.
+  npm: ['- uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7', '  with:', '    node-version-file: .nvmrc', '    cache: npm', "# dilla-client's route-table test runs scripts that import the typescript package.", '- run: npm ci'].join('\n'),
+  build: [
+    '- name: Build the test host and the WASI core',
+    '  shell: bash',
+    '  run: |',
+    '    exe=""',
+    '    if [ "$RUNNER_OS" = "Windows" ]; then exe=".exe"; fi',
+    '    cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked',
+    '    go build -o "target/dilla-testhost$exe" ./cmd/dilla-testhost',
+    '    {',
+    '      echo "DILLA_TESTHOST=$GITHUB_WORKSPACE/target/dilla-testhost$exe"',
+    '      echo "DILLA_CORE_WASI=$GITHUB_WORKSPACE/target/wasm32-wasip1/release/dilla_core_wasi.wasm"',
+    '    } >> "$GITHUB_ENV"',
+  ].join('\n'),
+  ignored: [
+    '- name: Run the ignored tests (Linux)',
+    "  if: runner.os == 'Linux'",
+    '  shell: bash',
+    '  run: |',
+    '    cargo test -p dilla-parity --locked -- --ignored',
+    '    cargo test -p dilla-client --test gateway --locked -- --ignored',
+    '    cargo test -p dilla-client --test sync --locked -- --ignored',
+    '    cargo test -p dilla-client --test http_sign_in --locked -- --ignored',
+  ].join('\n'),
+};
+
+export function checkDesktopGpuiWorkflow(root) {
+  const file = 'desktop-gpui.yml';
+  let text;
+  try { text = readFileSync(join(root, '.github', 'workflows', file), 'utf8'); } catch { return [`${file}: missing`]; }
+  const problems = [];
+  // Compare each pinned step with the steps of the file, indentation removed.
+  const body = text.split('\n').map((l) => l.replace(/^ {6}/, '')).join('\n');
+  for (const [name, step] of Object.entries(GPUI_PINNED_STEPS)) {
+    if (!body.includes(step)) problems.push(`${file}: the ${name} step must be exactly:\n${step}`);
+  }
+  // The Go and WASI build runs before the cargo test run that reads DILLA_TESTHOST, so the real-server tests find it.
+  if (text.indexOf('Build the test host and the WASI core') > text.indexOf('cargo test $GPUI_CRATES')) problems.push(`${file}: the test host must be built before the cargo test run`);
+  return problems;
+}
+
+/**
  * ci-rerun-starved.yml holds `actions: write` on a workflow_run event, so it is pinned as a privileged workflow:
  * it fires only on a completed server or desktop run, its sole permission is actions: write (contents: read at most), it
  * re-runs attempt 1 only, checks out the default branch and never the triggering run's code, and takes the
@@ -2325,7 +2375,7 @@ export function checkLocalMirror(root) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = process.argv[2] ?? process.cwd();
-  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkMobileReleaseWorkflow(root), ...checkDesktopWorkflow(root), ...checkDesktopReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkLocalMirror(root)];
+  const problems = [...checkServerWorkflow(root), ...checkDesktopCiWorkflow(root), ...checkMobileCiWorkflow(root), ...checkReleaseWorkflow(root), ...checkMobileReleaseWorkflow(root), ...checkDesktopWorkflow(root), ...checkDesktopReleaseWorkflow(root), ...checkRerunStarvedWorkflow(root), ...checkDesktopGpuiWorkflow(root), ...checkLocalMirror(root)];
   for (const p of problems) console.error(p);
   process.exit(problems.length === 0 ? 0 : 1);
 }

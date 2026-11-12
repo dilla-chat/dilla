@@ -150,9 +150,9 @@ fn test_cipher_conn(path: &Path, key: &[u8; 32]) -> rusqlite::Connection {
     let conn = rusqlite::Connection::open(path).expect("open encrypted helper DB");
     let key_hex = key.iter().map(|b| format!("{b:02x}")).collect::<String>();
     conn.execute_batch(&format!(
-        "PRAGMA key = \"x'{key_hex}'\"; PRAGMA cipher_memory_security=ON; PRAGMA temp_store=MEMORY;"
+        "PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:{key_hex}'; PRAGMA temp_store=MEMORY;"
     ))
-    .expect("set SQLCipher key");
+    .expect("set the store key");
     conn
 }
 

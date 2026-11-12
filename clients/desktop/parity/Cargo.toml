@@ -1,0 +1,20 @@
+[package]
+name = "dilla-parity"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# Test tooling for the native desktop client: drives the automation build of dilla-desktop and compares
+# its screenshots with the beta.5 reference shots in docs/user/screenshots.
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "2"
+tempfile = "3"

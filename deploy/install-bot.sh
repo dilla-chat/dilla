@@ -226,9 +226,9 @@ RuntimeDirectory=dillad
 # would otherwise leave that directory read-only to the Bot. The "-" keeps an instance without the Bot
 # (no such directory) starting: systemd otherwise refuses to set up the namespace.
 ReadWritePaths=-/var/lib/dillabot
-# SQLCipher's enhanced memory security in the Bot locks its SQLite allocations in memory, as the
-# dillabot unit allowed (LimitMEMLOCK=256M there). The limit is inherited by the Bot from this unit.
-LimitMEMLOCK=256M
+# MemorySwapMax=0: the Bot's store (SQLite3 Multiple Ciphers) cannot lock its pages in memory, so the unit
+# forbids swap instead (cgroup v2): the store key and decrypted pages are never written to swap.
+MemorySwapMax=0
 
 # CAP_NET_BIND_SERVICE: how a non-root process binds 443/tcp.
 # CAP_SETUID CAP_SETGID: only for the bot-keeper child, which dillad starts before it opens any listener and

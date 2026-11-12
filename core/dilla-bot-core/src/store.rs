@@ -8,7 +8,6 @@ use std::{
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
 };
-use zeroize::{Zeroize, Zeroizing};
 
 const STORE_VERSION: i64 = 1;
 const INIT_MAGIC: &[u8] = b"DILLA-BOT-INIT-v1\0";
@@ -127,32 +126,17 @@ fn open_keyed(path: &Path, key: &[u8; 32]) -> Result<(Connection, i64), StoreErr
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_NOFOLLOW
         | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
-    let conn = Connection::open_with_flags(path, flags).map_err(|_| StoreError::Database)?;
-    let mut key_hex = Zeroizing::new(String::with_capacity(64));
-    for b in key {
-        use std::fmt::Write;
-        let _ = write!(key_hex, "{b:02x}");
+    // dilla-core keys the file (ChaCha20; a store the SQLCipher build wrote before Task 6b opens
+    // through the SQLCipher 4 scheme and stays in it) and proves the key with a schema read.
+    match dilla_core::native_store::open_keyed(path, flags, key, |_| Ok(())) {
+        Ok(keyed) => Ok((keyed.conn, keyed.tables)),
+        // A hot rollback journal the SQLCipher build left: refused untouched, not a key problem.
+        Err(
+            dilla_core::native_store::KeyError::Open(_)
+            | dilla_core::native_store::KeyError::LegacyHotJournal,
+        ) => Err(StoreError::Database),
+        Err(_) => Err(StoreError::Key),
     }
-    let mut key_pragma = Zeroizing::new(format!("PRAGMA key = \"x'{}'\"", *key_hex));
-    let key_result = conn.execute_batch(&key_pragma).map_err(|_| StoreError::Key);
-    key_pragma.zeroize();
-    key_result?;
-    key_hex.zeroize();
-
-    // These are connection-only settings and must be active before SQLCipher
-    // decrypts even the first page. The schema query below remains the key check.
-    conn.execute_batch("PRAGMA cipher_memory_security=ON; PRAGMA temp_store=MEMORY;")
-        .map_err(|_| StoreError::Key)?;
-    let cipher: String = conn
-        .query_row("PRAGMA cipher_version", [], |r| r.get(0))
-        .map_err(|_| StoreError::Key)?;
-    if cipher.is_empty() {
-        return Err(StoreError::Key);
-    }
-    let schema_count: i64 = conn
-        .query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))
-        .map_err(|_| StoreError::Key)?;
-    Ok((conn, schema_count))
 }
 
 fn validate_binding(
@@ -683,12 +667,12 @@ mod tests {
         let p = dir();
         let db = p.join("state.db");
         let c = Connection::open(&db).unwrap();
-        c.execute_batch("PRAGMA key = \"x'4141414141414141414141414141414141414141414141414141414141414141'\"; CREATE TABLE foreign_state(value BLOB);").unwrap();
+        c.execute_batch("PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:4141414141414141414141414141414141414141414141414141414141414141'; CREATE TABLE foreign_state(value BLOB);").unwrap();
         drop(c);
         fs::set_permissions(&db, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(matches!(open(&p), Err(StoreError::Binding)));
         let verify = Connection::open(&db).unwrap();
-        verify.execute_batch("PRAGMA key = \"x'4141414141414141414141414141414141414141414141414141414141414141'\"").unwrap();
+        verify.execute_batch("PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:4141414141414141414141414141414141414141414141414141414141414141'").unwrap();
         assert_eq!(
             verify
                 .query_row(
@@ -745,7 +729,7 @@ mod tests {
             let db = p.join("state.db");
             {
                 let c = Connection::open(&db).unwrap();
-                c.execute_batch("PRAGMA key = \"x'4141414141414141414141414141414141414141414141414141414141414141'\"; PRAGMA journal_mode=DELETE;")
+                c.execute_batch("PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:4141414141414141414141414141414141414141414141414141414141414141'; PRAGMA journal_mode=DELETE;")
                     .unwrap();
                 c.execute_batch(change).unwrap();
             }
@@ -755,7 +739,7 @@ mod tests {
             );
             assert_eq!(hash(&db), before);
             let verify = Connection::open(&db).unwrap();
-            verify.execute_batch("PRAGMA key = \"x'4141414141414141414141414141414141414141414141414141414141414141'\"").unwrap();
+            verify.execute_batch("PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:4141414141414141414141414141414141414141414141414141414141414141'").unwrap();
             let mode: String = verify
                 .query_row("PRAGMA journal_mode", [], |r| r.get(0))
                 .unwrap();
@@ -772,5 +756,127 @@ mod tests {
             "UPDATE bot_helper_meta SET v=zeroblob(16) WHERE k='community'",
             StoreError::Binding,
         );
+    }
+
+    /// A state directory holding a store the SQLCipher 4 build wrote (binding 1/2/3, key
+    /// 0x41 * 32; `tests/fixtures/sqlcipher4/README.md`), copied with the modes a Bot leaves.
+    fn legacy_state(variant: &str) -> PathBuf {
+        let p = dir();
+        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/sqlcipher4")
+            .join(variant);
+        for name in ["state.db", "state.db-wal"] {
+            if src.join(name).exists() {
+                fs::copy(src.join(name), p.join(name)).unwrap();
+                fs::set_permissions(p.join(name), fs::Permissions::from_mode(0o600)).unwrap();
+            }
+        }
+        p
+    }
+
+    fn fixture_value(s: &Store) -> Vec<u8> {
+        s.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM bot_state WHERE area=1 AND key=?1",
+                [b"fixture-key".as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn cipher_on_disk(p: &Path) -> dilla_core::native_store::StoreCipher {
+        dilla_core::native_store::open_keyed(
+            &p.join("state.db"),
+            OpenFlags::SQLITE_OPEN_READ_WRITE,
+            &[0x41; 32],
+            |_| Ok(()),
+        )
+        .unwrap()
+        .cipher
+    }
+
+    #[test]
+    fn a_store_the_sqlcipher_build_wrote_opens_and_stays_sqlcipher() {
+        use dilla_core::native_store::StoreCipher;
+        use sha2::{Digest, Sha256};
+
+        for variant in ["clean", "hot-wal"] {
+            let p = legacy_state(variant);
+            let hash = |name: &str| Sha256::digest(fs::read(p.join(name)).unwrap_or_default());
+            let before = (hash("state.db"), hash("state.db-wal"));
+            assert!(
+                matches!(
+                    Store::open(&p, [1; 16], [2; 16], [3; 16], &[0x24; 32]),
+                    Err(StoreError::Key)
+                ),
+                "{variant}: a wrong key opened the legacy store"
+            );
+            assert_eq!(
+                (hash("state.db"), hash("state.db-wal")),
+                before,
+                "{variant}: a refused open changed the files"
+            );
+            assert!(matches!(
+                Store::open(&p, [1; 16], [9; 16], [3; 16], &[0x41; 32]),
+                Err(StoreError::Binding)
+            ));
+
+            let s = open(&p).unwrap_or_else(|e| panic!("{variant}: {e:?}"));
+            assert_eq!(s.bind(), ([1; 16], [2; 16], [3; 16]));
+            assert_eq!(fixture_value(&s), b"legacy-bot-value", "{variant}");
+            s.conn
+                .lock()
+                .unwrap()
+                .execute(
+                    "INSERT INTO bot_state(area,key,revision,value) VALUES(1,?1,1,?2)",
+                    params![b"after-6b".as_slice(), b"new".as_slice()],
+                )
+                .unwrap();
+            let _core = dilla_core::client::ClientCore::open(s.conn.clone()).unwrap();
+            drop(_core);
+            drop(s);
+
+            assert_eq!(cipher_on_disk(&p), StoreCipher::SqlCipher4, "{variant}");
+            let s = open(&p).unwrap();
+            assert_eq!(fixture_value(&s), b"legacy-bot-value");
+            drop(s);
+            let _ = fs::remove_dir_all(p);
+        }
+    }
+
+    #[test]
+    fn a_sqlcipher_hot_rollback_journal_is_refused_untouched() {
+        use sha2::{Digest, Sha256};
+
+        let p = dir();
+        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../dilla-core/tests/fixtures/sqlcipher4/legacy-hot-journal.db");
+        fs::copy(&src, p.join("state.db")).unwrap();
+        fs::copy(with_suffix(&src, "-journal"), p.join("state.db-journal")).unwrap();
+        for name in ["state.db", "state.db-journal"] {
+            fs::set_permissions(p.join(name), fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let hash = |name: &str| Sha256::digest(fs::read(p.join(name)).unwrap());
+        let before = (hash("state.db"), hash("state.db-journal"));
+        let key = core::array::from_fn::<u8, 32, _>(|i| i as u8);
+        assert!(matches!(
+            Store::open(&p, [1; 16], [2; 16], [3; 16], &key),
+            Err(StoreError::Database)
+        ));
+        assert_eq!((hash("state.db"), hash("state.db-journal")), before);
+        let _ = fs::remove_dir_all(p);
+    }
+
+    #[test]
+    fn a_new_store_is_chacha20() {
+        let p = dir();
+        drop(open(&p).unwrap());
+        assert_eq!(
+            cipher_on_disk(&p),
+            dilla_core::native_store::StoreCipher::ChaCha20
+        );
+        let _ = fs::remove_dir_all(p);
     }
 }

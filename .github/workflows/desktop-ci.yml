@@ -245,7 +245,7 @@ jobs:
   rust-native:
     needs: [changes]
     if: needs.changes.outputs.code != 'false'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # same image as the consumers: newer ubuntu-latest builds need GLIBC_2.43
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: rustup show active-toolchain
@@ -261,12 +261,14 @@ jobs:
       - if: needs.changes.outputs.core != 'false'
         run: cargo fmt --all --check
       - if: needs.changes.outputs.core != 'false'
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      # SQLCipher's enhanced memory security calls mlock for SQLite allocations.
+        run: cargo clippy --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --exclude dilla-client --all-targets --all-features --locked -- -D warnings
+      # dilla-client and dilla-parity are excluded: dilla-client's tests need the Go test host, the WASI core and npm's
+      # typescript, and dilla-parity renders with GPUI + wgpu on a Vulkan adapter; desktop-gpui.yml runs both.
+      # Kept as harmless headroom: the Bot store (SQLite3 Multiple Ciphers) no longer locks memory.
       - if: needs.changes.outputs.core != 'false'
         run: |
           sudo prlimit --pid "$$" --memlock=268435456:268435456
-          cargo test --workspace --all-features --locked
+          cargo test --workspace --exclude dilla-desktop --exclude dilla-media --exclude dilla-desktop-ui --exclude dilla-parity --exclude dilla-client --all-features --locked
       - run: cargo build -p dilla-testkit --release --locked
       - run: cargo build -p dilla-bot-core --release --locked
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

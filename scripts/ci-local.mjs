@@ -414,7 +414,7 @@ class Runner {
     const write = (s) => writeSync(fd, `${s}\n`);
     const cleanups = [];
     try {
-      if (id in EXTRA_JOBS) return await this.runCodeql(id, write, fd);
+      if (id in EXTRA_JOBS) return EXTRA_JOBS[id].script ? await this.runExtraScript(id, write, fd) : await this.runCodeql(id, write, fd);
       const job = this.jobs.get(id);
       const info = this.info(id);
       write(`ci-local: job ${id} (${job.workflows.join(' and ')} job "${job.name}") in ${ROOT}`);
@@ -747,6 +747,19 @@ class Runner {
     this.log(`stress: Go and browser jobs pinned to CPUs ${this.stressCpus} of ${n}, beside ${k} busy-loop processes on the same CPUs`);
   }
 
+  // -------------------------------------------------------------- extra jobs
+
+  /** An extra job that is a plain list of commands (the GPUI desktop crates' build, clippy and test), run on Linux only. */
+  async runExtraScript(id, write, fd) {
+    if (process.platform !== 'linux') return { status: 'skipped', reason: `${id} runs on Linux locally; desktop-gpui.yml runs it on every OS` };
+    const script = EXTRA_JOBS[id].script.join('\n');
+    write(`\n==> ${id}\n${script.split('\n').map((l) => `    $ ${l}`).join('\n')}`);
+    const file = join(OUT, `${id}.sh`);
+    writeFileSync(file, `${script}\n`);
+    const r = await this.spawnLogged('bash', ['-eo', 'pipefail', file], { ...process.env }, fd, 60 * 60_000);
+    return r.ok ? { status: 'pass', reason: '' } : { status: 'fail', reason: `${id}: ${r.why}` };
+  }
+
   // -------------------------------------------------------------- codeql
 
   async runCodeql(id, write, fd) {
@@ -923,7 +936,8 @@ async function main() {
   if (args.dryRun) {
     for (const id of selection) {
       if (id in EXTRA_JOBS) {
-        console.log(`\n${id} (ci-local extra: ${EXTRA_JOBS[id].languages.join(', ')})${has('codeql') ? '' : ' -> SKIPPED: codeql not installed'}`);
+        if (EXTRA_JOBS[id].script) console.log(`\n${id} (ci-local extra: ${EXTRA_JOBS[id].script.join('; ')})`);
+        else console.log(`\n${id} (ci-local extra: ${EXTRA_JOBS[id].languages.join(', ')})${has('codeql') ? '' : ' -> SKIPPED: codeql not installed'}`);
         continue;
       }
       const job = byId.get(id);

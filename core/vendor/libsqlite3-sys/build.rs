@@ -28,6 +28,13 @@ macro_rules! cfg_select {
     }}
 }
 
+// DILLA PATCH (core/vendor/README.md): one SQLite copy per binary, so the two encrypting builds
+// cannot both be on.
+#[cfg(all(feature = "bundled-sqlcipher", feature = "bundled-sqlite3mc"))]
+compile_error!(
+    "feature \"bundled-sqlcipher\" and feature \"bundled-sqlite3mc\" cannot be enabled at the same time"
+);
+
 #[cfg(all(feature = "loadable_extension", feature = "preupdate_hook"))]
 compile_error!(
     "feature \"loadable_extension\" and feature \"preupdate_hook\" cannot be enabled at the same time"
@@ -142,6 +149,13 @@ mod build_bundled {
                 let dir = sqlcipher_src::source_dir();
                 (dir.to_owned(), dir.join(sqlcipher_src::SOURCE_FILE))
             }
+            // DILLA PATCH (core/vendor/README.md): the SQLite3 Multiple Ciphers amalgamation. Its
+            // directory holds `sqlite3mc_amalgamation.h`, not `sqlite3.h`, so the committed
+            // `sqlite3/` bindings are what this feature uses (not with `buildtime_bindgen`).
+            feature = "bundled-sqlite3mc" => {
+                let dir = sqlite3mc_src::source_dir();
+                (dir.to_owned(), dir.join(sqlite3mc_src::SOURCE_FILE))
+            }
             _ => {
                 let dir = format!("{}/{lib_name}", env!("CARGO_MANIFEST_DIR"));
                 let source = format!("{lib_name}/sqlite3.c");
@@ -162,6 +176,9 @@ mod build_bundled {
                 super::copy_bindings(lib_name, "bindgen_bundled_version", out_path);
             }
         }
+        // DILLA PATCH (core/vendor/README.md): with `bundled-sqlite3mc` this (DEP_SQLITE3_INCLUDE
+        // for dependents) is the sqlite3mc-src directory, which has `sqlite3mc_amalgamation.h` and
+        // `sqlite3ext.h` but no `sqlite3.h`. Nothing in dilla's graph reads it.
         println!("cargo:include={}", include_dir.display());
         println!("cargo:rerun-if-changed={}", source.display());
         println!("cargo:rerun-if-changed=sqlite3/wasm32-wasi-vfs.c");
@@ -186,6 +203,25 @@ mod build_bundled {
             .flag("-DHAVE_ISNAN")
             .flag("-D_POSIX_THREAD_SAFE_FUNCTIONS") // cross compile with MinGW
             .warnings(false);
+
+        // DILLA PATCH (core/vendor/README.md): SQLite3 Multiple Ciphers with its own crypto (no
+        // OpenSSL, no system library). ChaCha20-Poly1305 is the default cipher; the SQLCipher
+        // scheme stays compiled in so stores the SQLCipher build wrote keep opening.
+        // SQLITE3MC_SECURE_MEMORY makes `PRAGMA memory_security = fill` available (freed SQLite
+        // allocations are wiped); sqlite3mc has no mlock. Temporary data stays in memory.
+        if cfg!(feature = "bundled-sqlite3mc") {
+            cfg.flag("-DCODEC_TYPE=CODEC_TYPE_CHACHA20")
+                .flag("-DSQLITE3MC_SECURE_MEMORY=1")
+                .flag("-DSQLITE_TEMP_STORE=2")
+                .flag("-DHAVE_STDINT_H=1");
+            // DILLA PATCH: pin the C dialect to C17 (non-MSVC). A C23-default compiler makes sqlite3mc's
+            // secure wipe call memset_explicit, which with _FORTIFY_SOURCE binds __memset_explicit_chk
+            // (GLIBC_2.43): binaries built on a new distro then refuse to start on older ones (CI's
+            // ubuntu-24.04 runners, deployed servers). Under C17 it uses explicit_bzero (glibc >= 2.25).
+            if !cfg!(target_env = "msvc") && env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+                cfg.flag_if_supported("-std=gnu17");
+            }
+        }
 
         if cfg!(feature = "bundled-sqlcipher") {
             cfg.flag("-DSQLITE_HAS_CODEC")

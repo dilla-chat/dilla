@@ -15,6 +15,9 @@ pub mod error;
 pub mod identity;
 pub mod ids;
 pub mod mls;
+// Native only: keying a store file on SQLite3 Multiple Ciphers (the browser keys OPFS in dilla-core-wasm).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod native_store;
 pub mod public_group;
 pub mod sframe;
 #[cfg(feature = "vectors")]

@@ -107,6 +107,24 @@ export const EXTRA_JOBS = {
     languages: ['actions', 'go', 'javascript-typescript', 'rust'],
     install: 'CodeQL CLI not installed: download codeql-bundle-linux64.tar.gz from https://github.com/github/codeql-action/releases, unpack it and put its codeql directory on PATH (or `gh extension install github/gh-codeql && gh codeql set-version latest`).',
   },
+  // The GPUI desktop crates: .github/workflows/desktop-gpui.yml runs the same commands on three OSes, locally Linux only.
+  'desktop-gpui': {
+    weight: 3,
+    script: [
+      'node --test scripts/gen-gpui-tokens.test.mjs',
+      // The test host and WASI core dilla-client's real-server tests start (desktop-gpui.yml's "Build the test host" step).
+      'cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked',
+      'go build -o target/dilla-testhost ./cmd/dilla-testhost',
+      'export DILLA_TESTHOST="$PWD/target/dilla-testhost" DILLA_CORE_WASI="$PWD/target/wasm32-wasip1/release/dilla_core_wasi.wasm"',
+      'cargo build -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity --all-targets --locked',
+      'cargo clippy -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity --all-targets --locked -- -D warnings',
+      'cargo test -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity --locked',
+      'cargo test -p dilla-parity --locked -- --ignored',
+      'cargo test -p dilla-client --test gateway --locked -- --ignored',
+      'cargo test -p dilla-client --test sync --locked -- --ignored',
+      'cargo test -p dilla-client --test http_sign_in --locked -- --ignored',
+    ],
+  },
 };
 
 /** What each `uses:` action becomes locally. */

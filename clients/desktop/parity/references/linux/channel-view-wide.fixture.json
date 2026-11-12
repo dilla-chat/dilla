@@ -1,0 +1,47 @@
+{
+  "now": 1794481751,
+  "window": [1440, 900],
+  "user": {"id": "1036c376f8400ff4e0a28085ecb88986", "username": "ada", "display": "Ada"},
+  "communities": [
+    {"id": "1fdf9a4ec425fda2215f25a860986914", "name": "Midgard Crew", "owner": "1036c376f8400ff4e0a28085ecb88986"},
+    {"id": "616600e042bd49ddd30285edd5b05f30", "name": "Northern Lights Collective", "owner": "1036c376f8400ff4e0a28085ecb88986"}
+  ],
+  "channels": [
+    {"id": "c10d43c23b9533fb836720daf0a13d7e", "community": "1fdf9a4ec425fda2215f25a860986914", "kind": 0, "mode": 0, "name": "general", "topic": "", "parent": null, "position": 0},
+    {"id": "f8d3911d934e6c0497962d83b2d28bd9", "community": "1fdf9a4ec425fda2215f25a860986914", "kind": 1, "mode": 0, "name": "AFK", "topic": "", "parent": null, "position": 1073741824},
+    {"id": "524f75f7476e22ed89936e620dd66bd9", "community": "616600e042bd49ddd30285edd5b05f30", "kind": 0, "mode": 0, "name": "desktop", "topic": "", "parent": "85ba83d935b97961003ddaa54c1cb63e", "position": 0},
+    {"id": "619910021284b814911551322e507cf1", "community": "616600e042bd49ddd30285edd5b05f30", "kind": 1, "mode": 0, "name": "standup", "topic": "", "parent": "85ba83d935b97961003ddaa54c1cb63e", "position": 0},
+    {"id": "7be121ac8e51cf7b8bf45c7fb3898a86", "community": "616600e042bd49ddd30285edd5b05f30", "kind": 0, "mode": 0, "name": "release-coordination-and-long-running-discussions", "topic": "", "parent": null, "position": 0},
+    {"id": "85ba83d935b97961003ddaa54c1cb63e", "community": "616600e042bd49ddd30285edd5b05f30", "kind": 2, "mode": 0, "name": "projects", "topic": "", "parent": null, "position": 0},
+    {"id": "892cf4982f68d554d156187483002013", "community": "616600e042bd49ddd30285edd5b05f30", "kind": 0, "mode": 0, "name": "general", "topic": "", "parent": null, "position": 0},
+    {"id": "5494b1b81cd21f39884f74060f80fd4b", "community": "616600e042bd49ddd30285edd5b05f30", "kind": 1, "mode": 0, "name": "AFK", "topic": "", "parent": null, "position": 1073741824}
+  ],
+  "members": {
+    "1fdf9a4ec425fda2215f25a860986914": [
+      {"id": "1036c376f8400ff4e0a28085ecb88986", "username": "ada", "display": "Ada", "kind": 0},
+      {"id": "20d0ed6103d561f688320d0734a3f071", "username": "mira", "display": "Mira", "kind": 0},
+      {"id": "e80dba194314d7af0c75b31517b49207", "username": "bjorn", "display": "Björn", "kind": 0}
+    ],
+    "616600e042bd49ddd30285edd5b05f30": [
+      {"id": "1036c376f8400ff4e0a28085ecb88986", "username": "ada", "display": "Ada", "kind": 0},
+      {"id": "20d0ed6103d561f688320d0734a3f071", "username": "mira", "display": "Mira", "kind": 0},
+      {"id": "31eb10b5cfda06e1bcf455b490a5e738", "username": "sven", "display": "Sven", "kind": 0},
+      {"id": "82d8a25b75134540b67d291441f21b94", "username": "kari", "display": "Kari", "kind": 0},
+      {"id": "a8ea21c4e5b0b2fe45e6ac5e7fd47d53", "username": "liv", "display": "Liv", "kind": 0},
+      {"id": "afded77bd40513dde4cc352a208783e0", "username": "glenn", "display": "Glenn", "kind": 0},
+      {"id": "b1c2745e9143d68c9624b9c99f72acb6", "username": "ines", "display": "Ines", "kind": 0},
+      {"id": "dd86a71d7c0538017d4ca5b096c43c2a", "username": "ole", "display": "Ole", "kind": 0},
+      {"id": "e5f4553f8ca85083f10d5056e859cc36", "username": "tove", "display": "Tove", "kind": 0},
+      {"id": "e80dba194314d7af0c75b31517b49207", "username": "bjorn", "display": "Björn", "kind": 0},
+      {"id": "f6e24808e54e83d37c3d6fcc9e44b7fa", "username": "ulf", "display": "Ulf", "kind": 0}
+    ]
+  },
+  "open": "7be121ac8e51cf7b8bf45c7fb3898a86",
+  "messages": [
+    {"key": "s5", "sender": "e80dba194314d7af0c75b31517b49207", "ts": 1794481741, "own": false, "body": "morning! the desktop preview builds again"},
+    {"key": "s6", "sender": "20d0ed6103d561f688320d0734a3f071", "ts": 1794481741, "own": false, "body": "I went through the whole release checklist for the preview this morning and everything that touches the timeline, the composer and the sign-in flow behaves the way the web client does, including the wrapping of long lines like this one, which keeps going well past the width of the message column so that it has to break onto a second and a third line before it ends"},
+    {"key": "s7", "sender": "20d0ed6103d561f688320d0734a3f071", "ts": 1794481741, "own": false, "body": "the only thing left is the member count in the header"},
+    {"key": "o557ce7472fea3459f30f58ed64ed4e44", "sender": "1036c376f8400ff4e0a28085ecb88986", "ts": 1794481741, "own": true, "body": "great, then the two-digit count is the last check"},
+    {"key": "s9", "sender": "a8ea21c4e5b0b2fe45e6ac5e7fd47d53", "ts": 1794481741, "own": false, "body": "eleven of us now, so it is two digits"}
+  ]
+}

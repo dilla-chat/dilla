@@ -1,0 +1,37 @@
+{
+  "width": 1280,
+  "height": 800,
+  "tokens": {
+    "bg": "#08090B", "surface": "#0D1014", "surface2": "#0F1216", "surfaceHi": "#171B22",
+    "hairline2": "#232831", "controlEdge": "#2A303A",
+    "fg": "#E4E8EE", "fgBody": "#D5DAE1", "fg2": "#8C939E", "fg4": "#5C636E"
+  },
+  "font": { "family": "JetBrains Mono", "base": 13.5, "small": 10.5, "code": 12.5, "pill": 11 },
+  "radius": 8,
+  "authors": [
+    { "name": "ada", "initials": "AD" },
+    { "name": "bo", "initials": "BO" },
+    { "name": "cy", "initials": "CY" }
+  ],
+  "messages": [
+    { "author": 0, "time": "09:12", "lines": ["morning, the release branch is green again"] },
+    { "author": 1, "time": "09:13", "lines": ["nice. did the voice e2e pass on all three platforms?"] },
+    { "author": 0, "time": "09:13", "lines": ["linux and windows yes, macos is still running"] },
+    { "author": 2, "time": "09:15", "lines": ["I pushed the fix for the sealed-command retry", "it needs a second pair of eyes before merge"] },
+    { "author": 1, "time": "09:16", "lines": ["on it, give me ten minutes"] },
+    { "author": 2, "time": "09:17", "lines": ["the core of the change is this:"],
+      "code": ["fn retry(&mut self, cmd: Sealed) -> Result<()> {", "    let id = self.next_id();", "    self.outbox.insert(id, cmd);", "    self.flush().map_err(Error::Gateway)", "}"] },
+    { "author": 0, "time": "09:21", "lines": ["reads fine to me, the outbox keeps the order"],
+      "reactions": [["+1", "3"], ["ok", "2"], ["<3", "1"], ["rev", "1"]] },
+    { "author": 1, "time": "09:24", "lines": ["approved, merging after ci"] },
+    { "author": 2, "time": "09:25", "lines": ["thanks both"] },
+    { "author": 0, "time": "09:31", "lines": ["ci is green, the tag goes out this afternoon"] },
+    { "author": 1, "time": "09:32", "lines": ["I will tell the homelab session to upgrade CT 144"] },
+    { "author": 2, "time": "09:33", "lines": ["perfect, nothing else from me"] }
+  ],
+  "layout": {
+    "outerPad": 18, "panelPad": 14, "rowPadY": 4, "avatar": 32, "rowGap": 12, "lineH": 20,
+    "headGap": 8, "codeMarginTop": 6, "codeLineH": 18, "codePadY": 10, "codePadX": 12, "codeW": 560,
+    "reactMarginTop": 6, "reactGap": 6, "pillH": 22, "pillPadX": 8
+  }
+}

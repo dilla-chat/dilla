@@ -1,0 +1,157 @@
+name: desktop-gpui
+# The native GPUI desktop client (clients/desktop). Separate from desktop.yml / desktop-ci.yml, which are the
+# Electron client's; this one builds, lints and tests only the GPUI crates and the parity harness.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'clients/desktop/**'
+      - 'core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'deny.toml'
+      - 'packages/design-tokens/src/tokens.ts'
+      - 'packages/ui/src/Icon/icons.ts'
+      - 'cmd/dilla-testhost/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/desktop-gpui.yml'
+  pull_request:
+    paths:
+      - 'clients/desktop/**'
+      - 'core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'deny.toml'
+      - 'packages/design-tokens/src/tokens.ts'
+      - 'packages/ui/src/Icon/icons.ts'
+      - 'cmd/dilla-testhost/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/desktop-gpui.yml'
+permissions:
+  contents: read
+concurrency:
+  group: desktop-gpui-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  GPUI_CRATES: -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity
+jobs:
+  gpui:
+    name: gpui-${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120  # Windows rebuilds every dependency with the static CRT (libwebrtc)
+    strategy:
+      # Each OS's leg runs to the end: the three toolchains fail for different reasons, and one red leg
+      # cancelling the others hides the macOS/Windows problems until the next run.
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, platform: linux, arch: x64 }
+          - { os: windows-latest, platform: win, arch: x64 }
+          - { os: macos-15, platform: mac, arch: arm64 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      # dilla-client's route-table test runs scripts that import the typescript package.
+      - run: npm ci
+      # dilla-client's real-server tests start dilla-testhost (Go) on the WASI core, so every OS builds both below.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Download Go modules (retried only on known network errors)
+        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
+      # GPUI's Linux build and the libwebrtc behind LiveKit need the X11, Wayland, xkbcommon, font, Vulkan and GBM
+      # development packages and libclang (bindgen). mesa-vulkan-drivers is lavapipe, the software Vulkan adapter
+      # dilla-parity's headless screenshot test renders on. Retried only on mirror and DNS failures.
+      # LiveKit's prebuilt libwebrtc on Windows links the static MSVC runtime (/MT); a dynamic-CRT Rust build gets
+      # LNK2005/LNK1169 duplicate std symbols. .cargo/config.toml may not carry rustflags (workspace_policy), so the
+      # Windows leg sets it here; local Windows builds need the same (documented in clients/desktop/README).
+      - name: Static MSVC runtime for libwebrtc (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+      # LiveKit's prebuilt libwebrtc ships a hermetic libc++ that needs clang 21+; ubuntu-24.04 has clang 18.
+      # LLVM's own apt repository, verified by its signing key.
+      - name: Add the LLVM 21 apt repository
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-21.list
+          echo "CC=clang-21" >> "$GITHUB_ENV"
+          echo "CXX=clang++-21" >> "$GITHUB_ENV"
+      - name: Install the GPUI build dependencies
+        if: runner.os == 'Linux'
+        run: >-
+          node scripts/retry-on.mjs --attempts 6 --wait 60
+          --pattern 'Temporary failure resolving|Could not resolve|Failed to fetch|Unable to fetch'
+          -- bash scripts/ci-apt-install.sh
+          clang-21 libclang-21-dev pkg-config libssl-dev libdbus-1-dev libasound2-dev
+          libfontconfig-dev libfreetype-dev libvulkan-dev libgbm-dev libdrm-dev libglib2.0-dev
+          libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
+          mesa-vulkan-drivers libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libxext-dev libxdamage-dev
+          libxfixes-dev libxcomposite-dev libxrandr-dev
+      - run: rustup show active-toolchain
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      # Token freshness: the generated Rust tokens match the design tokens they come from.
+      - run: node --test scripts/gen-gpui-tokens.test.mjs
+      # The test host and the WASI core dilla-client's real-server tests start (all read DILLA_CORE_WASI).
+      - name: Build the test host and the WASI core
+        shell: bash
+        run: |
+          exe=""
+          if [ "$RUNNER_OS" = "Windows" ]; then exe=".exe"; fi
+          cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked
+          go build -o "target/dilla-testhost$exe" ./cmd/dilla-testhost
+          {
+            echo "DILLA_TESTHOST=$GITHUB_WORKSPACE/target/dilla-testhost$exe"
+            echo "DILLA_CORE_WASI=$GITHUB_WORKSPACE/target/wasm32-wasip1/release/dilla_core_wasi.wasm"
+          } >> "$GITHUB_ENV"
+      - run: cargo build $GPUI_CRATES --all-targets --locked
+        shell: bash
+      - run: cargo clippy $GPUI_CRATES --all-targets --locked -- -D warnings
+        shell: bash
+      # The window test runs on GPUI's test platform, so it needs no display.
+      - run: cargo test $GPUI_CRATES --locked --no-fail-fast  # every OS reports all its failing test binaries in one run
+        shell: bash
+      # dilla-parity's only GPU test is #[ignore]d (release build has no automation, ~4 min), so the plain run above
+      # needs no adapter on any OS: macOS would use Metal and Windows has none, and neither runs the ignored test.
+      # Linux renders on lavapipe (mesa-vulkan-drivers, installed above) and runs it, plus dilla-client's real-dillad
+      # hello (it starts the dilla-testhost built above).
+      - name: Run the ignored tests (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cargo test -p dilla-parity --locked -- --ignored
+          cargo test -p dilla-client --test gateway --locked -- --ignored
+          cargo test -p dilla-client --test sync --locked -- --ignored
+          cargo test -p dilla-client --test http_sign_in --locked -- --ignored
+      # Saved even when a leg fails or is cancelled (actions/cache only saves on success): a cold Windows build
+      # with the static CRT takes most of an hour, so the next run must start warm.
+      - if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}

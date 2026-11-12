@@ -1,0 +1,17 @@
+[package]
+name = "dilla-desktop-ui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+gpui-component = "=0.9.1"
+# Which characters the embedded mono face covers (its advance is then the web's width; text.rs). Already in the lock.
+ttf-parser = { version = "0.25", default-features = false, features = ["std", "opentype-layout"] }

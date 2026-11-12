@@ -1,0 +1,24 @@
+# Per-OS pixel tolerances for assert_parity / assert_parity_masked.
+#   max_delta / max_pct:               whole-frame gate. A pixel differs if its largest R/G/B channel delta exceeds
+#                                      max_delta (0..=255); fails if more than max_pct percent of all pixels differ.
+#   chrome_max_delta / chrome_max_pct: chrome gate, only pixels outside the text mask (assert_parity_masked);
+#                                      the percent is of the unmasked pixels.
+# Linux numbers are measured (experiments/gpui-pixel-proof, Task 3; see TOLERANCES.md).
+# macOS and Windows stay exact placeholders until CI measures them (PENDING-CI).
+[linux]
+max_delta = 64
+max_pct = 0.5
+chrome_max_delta = 16
+chrome_max_pct = 0.2
+
+[macos]
+max_delta = 0
+max_pct = 0.0
+chrome_max_delta = 0
+chrome_max_pct = 0.0
+
+[windows]
+max_delta = 0
+max_pct = 0.0
+chrome_max_delta = 0
+chrome_max_pct = 0.0

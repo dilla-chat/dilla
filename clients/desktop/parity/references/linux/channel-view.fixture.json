@@ -1,0 +1,34 @@
+{
+  "now": 1794481738,
+  "window": [1280, 800],
+  "user": {"id": "28f3beb80f991d4f681a5cd57c261912", "username": "ada", "display": "Ada"},
+  "communities": [
+    {"id": "7e00ea64157812ed16e84f7b83649e51", "name": "Midgard Crew", "owner": "28f3beb80f991d4f681a5cd57c261912"}
+  ],
+  "channels": [
+    {"id": "120cd34ad3a8a64eadacc17b72c64be5", "community": "7e00ea64157812ed16e84f7b83649e51", "kind": 0, "mode": 0, "name": "general", "topic": "", "parent": null, "position": 0},
+    {"id": "0448f7367c41ed8d93c7f9ebe12b0c30", "community": "7e00ea64157812ed16e84f7b83649e51", "kind": 1, "mode": 0, "name": "AFK", "topic": "", "parent": null, "position": 1073741824}
+  ],
+  "members": {
+    "7e00ea64157812ed16e84f7b83649e51": [
+      {"id": "28f3beb80f991d4f681a5cd57c261912", "username": "ada", "display": "Ada", "kind": 0},
+      {"id": "34164013431568efc7b40edc1c36cd8a", "username": "mira", "display": "Mira", "kind": 0},
+      {"id": "cf82dc1297f53d03cdf254a01537cd95", "username": "bjorn", "display": "Björn", "kind": 0}
+    ]
+  },
+  "open": "120cd34ad3a8a64eadacc17b72c64be5",
+  "messages": [
+    {"key": "o19163ad6c97ccc3e50404876ff1cdd7a", "sender": "28f3beb80f991d4f681a5cd57c261912", "ts": 1794481730, "own": true, "body": "morning, the release branch is green again"},
+    {"key": "s5", "sender": "cf82dc1297f53d03cdf254a01537cd95", "ts": 1794481730, "own": false, "body": "nice. did the voice e2e pass on all three platforms?"},
+    {"key": "o5ea901beb27c86132dc01f70875fd168", "sender": "28f3beb80f991d4f681a5cd57c261912", "ts": 1794481730, "own": true, "body": "linux and windows yes, macos is still running"},
+    {"key": "s7", "sender": "34164013431568efc7b40edc1c36cd8a", "ts": 1794481730, "own": false, "body": "I pushed the fix for the sealed-command retry\nit needs a second pair of eyes before merge"},
+    {"key": "s8", "sender": "cf82dc1297f53d03cdf254a01537cd95", "ts": 1794481730, "own": false, "body": "on it, give me ten minutes"},
+    {"key": "s9", "sender": "34164013431568efc7b40edc1c36cd8a", "ts": 1794481730, "own": false, "body": "the core of the change is the outbox"},
+    {"key": "o79eae4c52bbd082ecb5d2ad523af1a6d", "sender": "28f3beb80f991d4f681a5cd57c261912", "ts": 1794481730, "own": true, "body": "reads fine to me, the outbox keeps the order"},
+    {"key": "s11", "sender": "cf82dc1297f53d03cdf254a01537cd95", "ts": 1794481730, "own": false, "body": "approved, merging after ci"},
+    {"key": "s12", "sender": "34164013431568efc7b40edc1c36cd8a", "ts": 1794481730, "own": false, "body": "thanks both"},
+    {"key": "oc760f6ffa4c7dd5e4c22c2efb912801a", "sender": "28f3beb80f991d4f681a5cd57c261912", "ts": 1794481730, "own": true, "body": "ci is green, the tag goes out this afternoon"},
+    {"key": "s14", "sender": "cf82dc1297f53d03cdf254a01537cd95", "ts": 1794481730, "own": false, "body": "I will tell the homelab session to upgrade CT 144"},
+    {"key": "s15", "sender": "34164013431568efc7b40edc1c36cd8a", "ts": 1794481730, "own": false, "body": "perfect, nothing else from me"}
+  ]
+}
