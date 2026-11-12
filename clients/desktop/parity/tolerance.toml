@@ -1,0 +1,15 @@
+# Per-OS pixel tolerances for assert_parity.
+#   max_delta: the largest per-channel difference (0..=255) a pixel may have and still count as equal.
+#   max_pct:   the share of pixels (in percent, 0..=100) allowed to exceed max_delta.
+# The numbers are exact placeholders until the pixel proof (Task 3) reports its TOLERANCE lines.
+[linux]
+max_delta = 0
+max_pct = 0.0
+
+[macos]
+max_delta = 0
+max_pct = 0.0
+
+[windows]
+max_delta = 0
+max_pct = 0.0

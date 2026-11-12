@@ -1,4 +1,9 @@
 fn main() {
+    #[cfg(feature = "automation")]
+    if std::env::args().any(|arg| arg == "--automation") {
+        dilla_desktop::automation::run(std::env::args().collect());
+        return;
+    }
     gpui_platform::application().run(|cx| {
         // The app lives exactly as long as its window.
         cx.on_window_closed(|cx, _| {

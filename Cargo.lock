@@ -1934,6 +1934,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dilla-parity"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.20",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "dilla-testkit"
 version = "0.1.0"
 dependencies = [
@@ -3259,6 +3270,7 @@ dependencies = [
  "gpui-pre-linux",
  "gpui-pre-macos",
  "gpui-pre-web",
+ "gpui-pre-wgpu",
  "gpui-pre-windows",
 ]
 
@@ -3415,6 +3427,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-collections",
  "gpui-pre-util",
+ "image",
  "itertools 0.14.0",
  "log",
  "parking_lot",
