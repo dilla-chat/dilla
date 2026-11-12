@@ -14,8 +14,7 @@
 //!   the next plan.
 //!
 //! Attacker statement (the web's lesson e): the notifier refuses nothing. What it shows is the body of a message the core
-//! already decrypted and the timeline renders, on this device only. The device-local `notify.previews` setting turns the
-//! body (and a DM's sender name) off: nothing of the message text then reaches the OS notification centre.
+//! already decrypted and the timeline renders, on this device only.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -33,9 +32,6 @@ use crate::state::{AppState, ChannelId, CommunityId, TimelineItemState, UserId, 
 pub const KEY_DEFAULT: &str = "notify.default";
 /// `SETTINGS.notifyDesktop` (`on` | `off`): notifications on this device. Absent is on.
 pub const KEY_DESKTOP: &str = "notify.desktop";
-/// Message previews in a notification (`on` | `off`). The web client shows the body always (its notifier is the page's),
-/// so absent is on; `off` keeps message text out of the OS notification centre.
-pub const KEY_PREVIEWS: &str = "notify.previews";
 /// The join, leave and ring sounds (`on` | `off`), which Task 19's `sounds` read through [`Settings::sounds_on`].
 pub const KEY_SOUNDS: &str = "notify.sounds";
 
@@ -193,11 +189,6 @@ impl Settings<'_> {
     /// `notify.desktop` is not `off`.
     pub fn desktop_on(&self) -> bool {
         self.0.get(KEY_DESKTOP).as_deref() != Some("off")
-    }
-
-    /// `notify.previews` is not `off`.
-    pub fn previews_on(&self) -> bool {
-        self.0.get(KEY_PREVIEWS).as_deref() != Some("off")
     }
 
     /// `notify.sounds` is not `off` (the web keeps two keys, `sound.voice` and `sound.ring`, and the Notifications row
@@ -533,6 +524,18 @@ pub fn plain_body(
     community: Option<CommunityId>,
     text: &Text,
 ) -> String {
+    plain_body_with(body, state, community, text, &|_| None)
+}
+
+/// [`plain_body`] with the names of the roles `role_name` knows (hex id to name, from Task 14's role slice): a known
+/// role reads as `mention.role`, as the web shows it.
+pub fn plain_body_with(
+    body: &str,
+    state: &AppState,
+    community: Option<CommunityId>,
+    text: &Text,
+    role_name: &dyn Fn(&str) -> Option<String>,
+) -> String {
     let known = |id: &str| {
         let members: Vec<&crate::state::Member> = match community {
             Some(c) => state.members.get(&c).into_iter().flatten().collect(),
@@ -551,6 +554,9 @@ pub fn plain_body(
         }
         if state.account.user_id.is_some_and(|u| u.hex() == id) {
             return format!("@{}", state.account.username);
+        }
+        if let Some(name) = role_name(id) {
+            return text("mention.role", &[("name", &name)]);
         }
         let is_role = members
             .iter()
@@ -587,8 +593,7 @@ pub fn plain_body(
     out
 }
 
-/// The notification a notice raises, or `None` when [`should_notify`] says no. With previews off the body is the
-/// generic `activity.newCount` ("1 new") and a DM's title is `activity.dm`: no message text, no sender name.
+/// The notification a notice raises, or `None` when [`should_notify`] says no.
 #[allow(
     clippy::too_many_arguments,
     reason = "the decision's inputs, as the web's"
@@ -609,17 +614,8 @@ pub fn notification_for(
         .community
         .and_then(|id| state.communities.iter().find(|c| c.id == id))
         .map(|c| c.name.as_str());
-    let previews = Settings(src).previews_on();
-    let title = if !previews && notice.community.is_none() {
-        text("activity.dm", &[])
-    } else {
-        notice_title(notice, channel_name, server_name, text)
-    };
-    let body = if previews {
-        plain_body(&notice.body, state, notice.community, text)
-    } else {
-        text("activity.newCount", &[("n", "1")])
-    };
+    let title = notice_title(notice, channel_name, server_name, text);
+    let body = plain_body(&notice.body, state, notice.community, text);
     Some(Notification {
         kind: if notice.community.is_none() {
             NotificationKind::Dm
@@ -683,19 +679,22 @@ pub fn ring_notification(
 // ---- the notices a state change raises ------------------------------------------------------------------------------
 
 /// The worker's `reportActivity`: remembers the newest stored message of each channel it has seen and answers the notices
-/// of the messages that are newer, from another user, readable, received at or after the floor (what the person held
-/// before this client started is never replayed).
+/// of the messages that are newer, from another user, readable, beyond the high-water mark of their channel. A channel's mark is seeded
+/// from everything its timeline holds the first time it appears, so history is never replayed, however late it loads.
 #[derive(Clone, Debug)]
 pub struct NoticeTracker {
-    floor: u64,
     marks: HashMap<ChannelId, u64>,
 }
 
+impl Default for NoticeTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NoticeTracker {
-    /// `floor`: unix seconds; a message received before it raises no notice.
-    pub fn new(floor: u64) -> Self {
+    pub fn new() -> Self {
         Self {
-            floor,
             marks: HashMap::new(),
         }
     }
@@ -705,18 +704,20 @@ impl NoticeTracker {
         let own = state.account.user_id;
         let mut out = Vec::new();
         for (channel, timeline) in &state.timelines {
+            let seeded = self.marks.contains_key(channel);
             let mark = self.marks.get(channel).copied().unwrap_or(0);
             let community = state.channel(*channel).map(|c| c.community_id);
             let mut newest = mark;
             for item in &timeline.items {
                 let Some(seq) = item.seq else { continue };
                 newest = newest.max(seq);
-                if seq <= mark
+                // The first time a channel appears, everything it holds is history.
+                if !seeded
+                    || seq <= mark
                     || item.state != TimelineItemState::Ok
                     || item.own
                     || item.sender_user.is_none()
                     || item.sender_user == own
-                    || item.ts < self.floor
                 {
                     continue;
                 }
@@ -790,14 +791,9 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(
-        floor: u64,
-        notifier: Arc<dyn Notifier>,
-        env: Arc<dyn NotifyEnv>,
-        text: Text,
-    ) -> Self {
+    pub fn new(notifier: Arc<dyn Notifier>, env: Arc<dyn NotifyEnv>, text: Text) -> Self {
         Self {
-            tracker: NoticeTracker::new(floor),
+            tracker: NoticeTracker::new(),
             notifier,
             env,
             text,
@@ -851,17 +847,6 @@ impl Drop for NotifyTask {
     fn drop(&mut self) {
         self.stop();
     }
-}
-
-/// The instance's clock stamps a stored message, and it need not agree with this device's: a message received up to this
-/// many seconds before the notifier started still counts. What the timelines held at the start is never replayed anyway
-/// (the first snapshot only sets the marks), so the allowance only reaches a channel whose history loads after the start.
-const CLOCK_SKEW_S: u64 = 120;
-
-fn now_s() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 // ---- the handle -----------------------------------------------------------------------------------------------------
@@ -964,11 +949,6 @@ impl Notify {
         Ok(())
     }
 
-    /// Message previews in notifications.
-    pub fn set_previews(&self, on: bool) -> Result<(), PrefsError> {
-        self.write(KEY_PREVIEWS, (!on).then_some("off"))
-    }
-
     /// The join, leave and ring sounds.
     pub fn set_sounds(&self, on: bool) -> Result<(), PrefsError> {
         self.write(KEY_SOUNDS, (!on).then_some("off"))
@@ -996,7 +976,7 @@ impl Notify {
         let (stop, mut stopped) = watch::channel(false);
         let mut state = client.state();
         let prefs = self.inner.prefs().clone();
-        let mut engine = Engine::new(now_s().saturating_sub(CLOCK_SKEW_S), notifier, env, text);
+        let mut engine = Engine::new(notifier, env, text);
         // The first value only sets the marks.
         let first = state.borrow_and_update().clone();
         engine.tracker.observe(&first);
@@ -1045,6 +1025,7 @@ mod tests {
                 "activity.dm" => "Direct message",
                 "activity.newCount" => "{n} new",
                 "shell.message.mentionRole" => "@role",
+                "mention.role" => "@{name}",
                 "shell.message.mentionUnknown" => "@{id}",
                 other => panic!("no string {other}"),
             };
@@ -1492,11 +1473,23 @@ mod tests {
     }
 
     #[test]
-    fn previews_off_keeps_the_message_text_out_of_the_notification() {
+    fn a_known_role_reads_as_mention_role() {
+        let state = world();
+        let t = text();
+        let body = format!("<@{}>", hex(&ROLE));
+        let names = |id: &str| (id == hex(&ROLE)).then(|| "mods".to_owned());
+        assert_eq!(
+            plain_body_with(&body, &state, Some(COMMUNITY), &t, &names),
+            "@mods"
+        );
+    }
+
+    #[test]
+    fn the_notification_carries_the_title_and_the_plain_body_as_the_web_shows_them() {
         let state = world();
         let t = text();
         let n = Notice {
-            body: "the secret plan".into(),
+            body: format!("<@{}> look", ME.hex()),
             ..notice(DM, NoticeKind::Dm)
         };
         let c = NotifyContext {
@@ -1506,25 +1499,10 @@ mod tests {
         let shown = notification_for(&n, 3, &c, &settings(&[]), &state, &t).unwrap();
         assert_eq!(
             (shown.title.as_str(), shown.body.as_str()),
-            ("bob", "the secret plan")
+            ("bob", "@Ada L look")
         );
-        let off = settings(&[(KEY_PREVIEWS, "off")]);
-        let hidden = notification_for(&n, 3, &c, &off, &state, &t).unwrap();
-        assert_eq!(
-            (hidden.title.as_str(), hidden.body.as_str()),
-            ("Direct message", "1 new")
-        );
-        assert!(!format!("{hidden:?}").contains("secret"));
-        assert!(!format!("{hidden:?}").contains("bob"));
-        let mention = Notice {
-            body: "secret <@everyone>".into(),
-            ..notice(RANDOM, NoticeKind::Mention)
-        };
-        let hidden = notification_for(&mention, 0, &c, &off, &state, &t).unwrap();
-        assert_eq!(
-            (hidden.title.as_str(), hidden.body.as_str()),
-            ("#random · Midgard", "1 new")
-        );
+        assert_eq!(shown.tag, format!("dilla:{}", DM.hex()));
+        assert_eq!(shown.channel, Some(DM));
     }
 
     fn ring() -> RingInput {
@@ -1651,9 +1629,12 @@ mod tests {
 
     #[test]
     fn the_tracker_never_replays_history_and_raises_each_new_message_once() {
-        let mut tracker = NoticeTracker::new(1_000);
+        let mut tracker = NoticeTracker::new();
         let base = with_items(&world(), RANDOM, vec![item(1, BOB, 500, "old", true)]);
-        assert!(tracker.observe(&base).is_empty(), "before the floor");
+        assert!(
+            tracker.observe(&base).is_empty(),
+            "the first sight is history"
+        );
         let next = with_items(
             &base,
             RANDOM,
@@ -1675,25 +1656,50 @@ mod tests {
         );
         assert_eq!(notices[0].sender_name, "bob");
         assert!(tracker.observe(&next).is_empty(), "each only once");
-        // a DM that appears live (a timeline the state did not hold) notifies
-        let dm = with_items(&next, DM, vec![item(1, BOB, 1_010, "dm from peer", false)]);
-        let notices = tracker.observe(&dm);
-        assert_eq!(notices.len(), 1);
-        assert_eq!(
-            (notices[0].kind, notices[0].community),
-            (NoticeKind::Dm, None)
-        );
         // a message that is not readable, a pending one and an own one raise nothing
         let mut unreadable = item(5, BOB, 1_020, "", false);
         unreadable.state = TimelineItemState::CannotRead;
         let mut pending = item(0, BOB, 1_021, "x", false);
         pending.seq = None;
         let quiet = with_items(
-            &dm,
+            &next,
             RANDOM,
             vec![unreadable, pending, item(6, ME, 1_022, "me", false)],
         );
         assert!(tracker.observe(&quiet).is_empty());
+    }
+
+    #[test]
+    fn history_that_loads_after_the_start_raises_no_notice_and_a_live_message_after_it_does() {
+        let mut tracker = NoticeTracker::new();
+        assert!(tracker.observe(&world()).is_empty());
+        // a channel whose timeline first appears late, holding old messages
+        let loaded = with_items(
+            &world(),
+            RANDOM,
+            vec![
+                item(1, BOB, 10, "old one", true),
+                item(2, BOB, 11, "old two", true),
+            ],
+        );
+        assert!(
+            tracker.observe(&loaded).is_empty(),
+            "loaded history is not news"
+        );
+        let live = with_items(
+            &loaded,
+            RANDOM,
+            vec![
+                item(1, BOB, 10, "old one", true),
+                item(2, BOB, 11, "old two", true),
+                item(3, BOB, 12, "live", true),
+            ],
+        );
+        let notices = tracker.observe(&live);
+        assert_eq!(
+            notices.iter().map(|n| n.body.as_str()).collect::<Vec<_>>(),
+            ["live"]
+        );
     }
 
     struct Env {
@@ -1722,9 +1728,11 @@ mod tests {
             visible: true,
             on_screen: Some(GENERAL),
         };
-        let mut engine = Engine::new(1_000, Arc::new(recorder.clone()), Arc::new(env), text());
+        let mut engine = Engine::new(Arc::new(recorder.clone()), Arc::new(env), text());
         let mut state = with_items(&world(), GENERAL, vec![item(1, BOB, 500, "hello", false)]);
         state = with_items(&state, RANDOM, vec![]);
+        // a DM is opened (its timeline held, empty) before anything arrives in it
+        state = with_items(&state, DM, vec![]);
         let mut src = settings(&[]);
         assert!(engine.on_state(&state, &src).is_empty());
         let mention = format!("<@{}> look", ME.hex());
