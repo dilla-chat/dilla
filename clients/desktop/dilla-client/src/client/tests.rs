@@ -52,12 +52,217 @@ fn a_ready_never_undoes_a_verdict() {
 
 #[tokio::test]
 async fn an_action_that_unwinds_answers_stopped() {
-    let answer: Result<(), ClientError> = guarded(async { panic!("E_CORE_POISONED") }).await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let answer: Result<(), ClientError> = guarded(async { panic!("E_CORE_POISONED") }, &tx).await;
     assert!(matches!(answer, Err(ClientError::Stopped)), "{answer:?}");
+    assert!(matches!(rx.try_recv(), Ok(Update::Panicked)));
     assert!(matches!(
-        guarded(async { Ok::<_, ClientError>(7) }).await,
+        guarded(async { Ok::<_, ClientError>(7) }, &tx).await,
         Ok(7)
     ));
+    assert!(rx.try_recv().is_err(), "an answer is not a failure");
+}
+
+/// An in-memory core, an API on an address nothing answers, and an engine whose hooks send to `tx`.
+fn offline_parts(tx: mpsc::UnboundedSender<Update>) -> (CoreHandle, Arc<Api>, Arc<Engine>) {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    let core: CoreHandle = Arc::new(Mutex::new(
+        dilla_core::client::ClientCore::open(Arc::new(Mutex::new(conn))).unwrap(),
+    ));
+    let auth = AuthToken::new("token");
+    let http =
+        ReqwestHttp::new(url::Url::parse("http://127.0.0.1:9").unwrap(), auth.clone()).unwrap();
+    let api = Arc::new(Api::new(
+        http,
+        SocketRequests::new(),
+        auth,
+        core.clone(),
+        Arc::new(|_: &str| {}),
+    ));
+    let instance = crate::sync::api::InstanceInfo {
+        instance_id: [1; 16],
+        policy_version: 1,
+        external_sender_pub: [0; 32],
+    };
+    let engine = Engine::new(
+        core.clone(),
+        api.clone(),
+        Arc::new(Hooks {
+            tx,
+            inner: Arc::default(),
+        }),
+        instance,
+    );
+    (core, api, engine)
+}
+
+fn offline_link(engine: Arc<Engine>, updates: mpsc::UnboundedSender<Update>) -> Arc<Link> {
+    Arc::new(Link {
+        engine,
+        socket: SocketRequests::new(),
+        auth: AuthToken::new("token"),
+        server: url::Url::parse("http://127.0.0.1:9").unwrap(),
+        options: GatewayOptions::default(),
+        gateway: Mutex::new(None),
+        updates,
+        app_offline: AtomicBool::new(false),
+    })
+}
+
+fn has_gateway(link: &Link) -> bool {
+    link.gateway.lock().unwrap().is_some()
+}
+
+/// The Link TOCTOU (screens plan Task 2): a renewal's restart checked `app_offline` before the app's disconnect landed;
+/// its connect then runs after the disconnect. The app's choice wins: the connect reads `app_offline` under the
+/// gateway's lock and connects nothing.
+#[tokio::test]
+async fn disconnect_during_connect_stays_offline() {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let (_core, _api, engine) = offline_parts(tx.clone());
+    let link = offline_link(engine, tx);
+    link.connect();
+    assert!(has_gateway(&link));
+    // The restart's `disconnect` ran (its check of app_offline passed a moment before); then the app's disconnect
+    // (`Client::disconnect`: the flag first, then the gateway); then the restart's `connect`.
+    link.disconnect();
+    link.app_offline.store(true, Ordering::Release);
+    link.disconnect();
+    link.connect();
+    assert!(!has_gateway(&link), "the app took the connection down");
+    link.restart();
+    assert!(!has_gateway(&link));
+    // The app's own reconnect connects.
+    link.app_offline.store(false, Ordering::Release);
+    link.connect();
+    assert!(has_gateway(&link));
+    link.disconnect();
+}
+
+/// A refusal starts a renewal; before it ends, a gateway reaches ready (the app reconnected on a session the HTTP
+/// layer had already renewed). The renewal's verdict must not tear that working gateway down and connect again.
+#[test]
+fn renewed_token_after_ready_does_not_restart() {
+    let mut gate = RenewGate::default();
+    assert_eq!(gate.refused(), OnRefused::Renew);
+    gate.ready();
+    assert_eq!(gate.done(Renewal::Renewed, false), AfterRenewal::Stay);
+    // The next refusal is a new one: this ready re-armed the renewal, and it restarts as usual.
+    assert_eq!(gate.refused(), OnRefused::Renew);
+    assert_eq!(gate.done(Renewal::Renewed, false), AfterRenewal::Restart);
+    // A ready before a renewal starts is no reason to skip its restart.
+    let mut gate = RenewGate::default();
+    gate.ready();
+    assert_eq!(gate.refused(), OnRefused::Renew);
+    assert_eq!(gate.done(Renewal::Renewed, false), AfterRenewal::Restart);
+    // A device the instance refused is signed out whatever came meanwhile.
+    let mut gate = RenewGate::default();
+    gate.refused();
+    gate.ready();
+    assert_eq!(gate.done(Renewal::SignedOut, false), AfterRenewal::SignOut);
+}
+
+/// A publisher of a `Ready` account on the offline parts, its update queue and its published state.
+#[allow(clippy::type_complexity)]
+fn offline_publisher() -> (
+    Publisher,
+    mpsc::UnboundedReceiver<Update>,
+    watch::Receiver<Arc<AppState>>,
+    CoreHandle,
+    Arc<Engine>,
+) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let (core, api, engine) = offline_parts(tx.clone());
+    let link = offline_link(engine.clone(), tx.clone());
+    let (state_tx, state_rx) = watch::channel(Arc::new(AppState::default()));
+    let initial = AppState {
+        account: crate::state::AccountState {
+            phase: AccountPhase::Ready,
+            ..Default::default()
+        },
+        ..AppState::default()
+    };
+    let upkeep = Upkeep::new(
+        core.clone(),
+        api.clone(),
+        tokio::runtime::Handle::current(),
+        [1; 16],
+        [2; 16],
+    );
+    let publisher = Publisher {
+        state: initial,
+        tx: state_tx,
+        core: core.clone(),
+        engine: engine.clone(),
+        api,
+        link,
+        updates: tx,
+        own_user: [1; 16],
+        own_device: [2; 16],
+        focus: None,
+        not_member: HashSet::new(),
+        resyncing: HashSet::new(),
+        renew: RenewGate::default(),
+        upkeep,
+        inner: Arc::default(),
+        removals_due: false,
+        removals_pending: false,
+    };
+    (publisher, rx, state_rx, core, engine)
+}
+
+/// The security fix of the ready's backup pass: a refreshed own device list that leaves this device out signs it out
+/// (controller.ts `if (!own.listed) return this.enterRevoked()`), and the connection goes down.
+#[tokio::test]
+async fn an_unlisted_device_is_signed_out() {
+    let (publisher, rx, mut state_rx, _core, _engine) = offline_publisher();
+    let updates = publisher.updates.clone();
+    let link = publisher.link.clone();
+    link.connect();
+    tokio::spawn(publisher.run(rx));
+    updates.send(Update::Unlisted).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if state_rx.borrow_and_update().account.phase == AccountPhase::Revoked {
+                return;
+            }
+            state_rx.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the account is reported Revoked");
+    assert!(!has_gateway(&link), "the gateway is down");
+}
+
+/// A panic in an engine job that does not poison the core (a bug in the engine, not the store): the engine stops and
+/// the client reports `Failed`, as for a poisoned core, instead of answering `Stopped` with the account still `Ready`.
+#[tokio::test]
+async fn engine_panic_reports_failed_not_stopped() {
+    let (publisher, rx, mut state_rx, core, engine) = offline_publisher();
+    let running = tokio::spawn(publisher.run(rx));
+    // A job on a lane, the way every frame, catch-up and commit runs.
+    let job = engine.watched(async {
+        let rows: Vec<u8> = Vec::new();
+        let _ = rows[3];
+    });
+    tokio::spawn(job).await.unwrap();
+    assert!(!core.is_poisoned(), "the panic did not hold the core");
+    assert!(engine.stopped(), "nothing more runs on the engine");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if state_rx.borrow_and_update().account.phase == AccountPhase::Failed {
+                return;
+            }
+            state_rx.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the account is reported Failed");
+    // The publisher ends, as for a poisoned core.
+    tokio::time::timeout(Duration::from_secs(5), running)
+        .await
+        .expect("the publisher stopped")
+        .unwrap();
 }
 
 fn quick(_: u32) -> Duration {
