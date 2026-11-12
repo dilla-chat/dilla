@@ -154,6 +154,7 @@ impl AppView {
                             cx,
                         )
                     });
+                    this.focus_shell(&shell, window, cx);
                     this.screen = Screen::Shell(shell);
                 }
                 crate::fixture::FixtureScreen::ShellHome { community } => {
@@ -169,6 +170,7 @@ impl AppView {
                     let shell = cx.new(|cx| {
                         ShellView::new(Arc::new(fixture.state), None, channel, clock, window, cx)
                     });
+                    this.focus_shell(&shell, window, cx);
                     this.screen = Screen::Shell(shell);
                 }
                 crate::fixture::FixtureScreen::SignIn => this.show_sign_in(None, window, cx),
@@ -280,9 +282,16 @@ impl AppView {
             }
         })
         .detach();
+        self.focus_shell(&shell, window, cx);
         self.screen = Screen::Shell(shell);
         self.fit_window(window, cx);
         cx.notify();
+    }
+
+    /// The keyboard works from the first frame: the shell's root holds the focus, so Tab and the shell's keys reach it.
+    fn focus_shell(&self, shell: &Entity<ShellView>, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = gpui::Focusable::focus_handle(shell.read(cx), cx);
+        window.focus(&handle, cx);
     }
 
     /// Gives a compact screen its window shape (the start and authentication windows resize in place).

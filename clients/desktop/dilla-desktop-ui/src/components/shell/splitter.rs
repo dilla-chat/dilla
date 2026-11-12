@@ -126,7 +126,7 @@ impl RenderOnce for Splitter {
         // The line is 1px; focused it is the accent, as the web's `:focus-visible` ring on the separator.
         let line = div()
             .absolute()
-            .left(Pixels::from(HIT / 2.0 - 0.5))
+            .left(Pixels::from(HIT / 2.0 - 1.0))
             .top_0()
             .h_full()
             .w(Pixels::from(1.0f32))

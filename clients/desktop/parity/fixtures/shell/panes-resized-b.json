@@ -81,40 +81,34 @@
           {
             "id": "general",
             "kind": "text",
-            "name": "general",
-            "position": 0
+            "name": "general"
           },
           {
             "id": "lounge",
             "kind": "voice",
-            "name": "lounge",
-            "position": 1
+            "name": "lounge"
           },
           {
             "id": "raids",
             "kind": "category",
-            "name": "raids",
-            "position": 2
+            "name": "raids"
           },
           {
             "id": "loot",
             "kind": "text",
             "name": "loot",
-            "parent": "raids",
-            "position": 0
+            "parent": "raids"
           },
           {
             "id": "boats",
             "kind": "category",
-            "name": "boats",
-            "position": 3
+            "name": "boats"
           },
           {
             "id": "harbour",
             "kind": "voice",
             "name": "harbour",
-            "parent": "boats",
-            "position": 0
+            "parent": "boats"
           },
           {
             "id": "afk",
@@ -126,22 +120,19 @@
           {
             "id": "design",
             "kind": "category",
-            "name": "design and research",
-            "position": 4
+            "name": "design and research"
           },
           {
             "id": "moodboards-and-references",
             "kind": "text",
             "name": "moodboards-and-references",
-            "parent": "design",
-            "position": 0
+            "parent": "design"
           },
           {
             "id": "critique",
             "kind": "voice",
             "name": "critique",
-            "parent": "design",
-            "position": 1
+            "parent": "design"
           }
         ]
       }

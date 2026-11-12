@@ -129,7 +129,9 @@ pub fn restore_bounds(
     screens: &[Screen],
 ) -> (f32, f32, Option<(f32, f32)>) {
     let Some(b) = saved.filter(|b| {
-        [b.x, b.y, b.width, b.height].iter().all(|v| v.is_finite()) && b.width > 0.0 && b.height > 0.0
+        [b.x, b.y, b.width, b.height].iter().all(|v| v.is_finite())
+            && b.width > 0.0
+            && b.height > 0.0
     }) else {
         return (shape.width, shape.height, None);
     };
@@ -141,7 +143,9 @@ pub fn restore_bounds(
         }
     });
     let width = b.width.clamp(shape.min_width, shape.min_width.max(max_w));
-    let height = b.height.clamp(shape.min_height, shape.min_height.max(max_h));
+    let height = b
+        .height
+        .clamp(shape.min_height, shape.min_height.max(max_h));
     // A grabbable strip of the title bar (the top-left 100x32 corner) must lie on a display.
     let visible = screens.iter().any(|s| {
         b.x + 100.0 <= s.x + s.width
@@ -163,13 +167,19 @@ mod tests {
         assert_eq!(at(800.0).height, 720.0);
         assert_eq!(at(600.0).height, 600.0, "never under 600");
         let s = at(1080.0);
-        assert_eq!((s.min_width, s.min_height, s.resizable), (900.0, 600.0, true));
+        assert_eq!(
+            (s.min_width, s.min_height, s.resizable),
+            (900.0, 600.0, true)
+        );
     }
 
     #[test]
     fn the_compact_windows_are_400_wide_and_fixed() {
         let start = window_shape(WindowMode::Starting, Some(900.0), 1080.0);
-        assert_eq!((start.width, start.height, start.resizable), (400.0, 280.0, false));
+        assert_eq!(
+            (start.width, start.height, start.resizable),
+            (400.0, 280.0, false)
+        );
         let auth = window_shape(WindowMode::Authentication, None, 1080.0);
         assert_eq!(auth.height, 620.0);
         let tall = window_shape(WindowMode::Authentication, Some(2000.0), 1080.0);
@@ -198,10 +208,18 @@ mod tests {
             (1500.0, 700.0, Some((100.0, 60.0)))
         );
         // Too small: the minimum holds. Too big: the display's size.
-        let small = SavedBounds { width: 300.0, height: 200.0, ..saved };
+        let small = SavedBounds {
+            width: 300.0,
+            height: 200.0,
+            ..saved
+        };
         assert_eq!(restore_bounds(Some(small), shape, &screens).0, 900.0);
         assert_eq!(restore_bounds(Some(small), shape, &screens).1, 600.0);
-        let huge = SavedBounds { width: 9000.0, height: 9000.0, ..saved };
+        let huge = SavedBounds {
+            width: 9000.0,
+            height: 9000.0,
+            ..saved
+        };
         assert_eq!(restore_bounds(Some(huge), shape, &screens).0, 1920.0);
         // A display that is gone: the size is kept, the origin is the platform's.
         let away = SavedBounds { x: 5000.0, ..saved };

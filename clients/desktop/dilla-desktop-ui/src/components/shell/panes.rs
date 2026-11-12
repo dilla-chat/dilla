@@ -98,22 +98,37 @@ mod tests {
 
     #[test]
     fn the_sidebar_stays_in_its_rem_range() {
-        assert_eq!(clamp_panes(&input(1280.0, 10.0, 232.0, true)).sidebar, 192.0);
-        assert_eq!(clamp_panes(&input(1600.0, 900.0, 232.0, true)).sidebar, 384.0);
+        assert_eq!(
+            clamp_panes(&input(1280.0, 10.0, 232.0, true)).sidebar,
+            192.0
+        );
+        assert_eq!(
+            clamp_panes(&input(1600.0, 900.0, 232.0, true)).sidebar,
+            384.0
+        );
     }
 
     #[test]
     fn main_keeps_24rem_and_the_minimums_win_over_it() {
         // 800 wide, no column aside: the widest sidebar leaves main at 24rem (384): 800 - 56 - 384 = 360 for the sidebar.
-        assert_eq!(clamp_panes(&input(800.0, 900.0, 232.0, false)).sidebar, 360.0);
+        assert_eq!(
+            clamp_panes(&input(800.0, 900.0, 232.0, false)).sidebar,
+            360.0
+        );
         // 600 wide: the room is under the minimum, so the minimum (12rem) holds.
-        assert_eq!(clamp_panes(&input(600.0, 300.0, 232.0, false)).sidebar, 192.0);
+        assert_eq!(
+            clamp_panes(&input(600.0, 300.0, 232.0, false)).sidebar,
+            192.0
+        );
     }
 
     #[test]
     fn a_column_aside_takes_room_from_the_sidebar() {
         let p = clamp_panes(&input(1100.0, 384.0, 340.0, true));
-        assert!(p.sidebar + p.aside + 56.0 + 384.0 <= 1100.0 + 0.001, "{p:?}");
+        assert!(
+            p.sidebar + p.aside + 56.0 + 384.0 <= 1100.0 + 0.001,
+            "{p:?}"
+        );
     }
 
     #[test]

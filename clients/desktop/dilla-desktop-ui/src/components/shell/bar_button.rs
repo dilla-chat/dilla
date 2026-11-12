@@ -4,8 +4,8 @@
 //! accent fill for a pressed toggle, so the header has its own.
 
 use gpui::{
-    App, ClickEvent, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels,
-    RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    App, ClickEvent, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
+    SharedString, StatefulInteractiveElement, Styled, Window, div,
 };
 
 use crate::components::button::ClickHandler;
@@ -66,7 +66,11 @@ pub fn colours(pressed: bool) -> (gpui::Hsla, gpui::Hsla) {
 impl RenderOnce for BarButton {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let (fg, bg) = colours(self.pressed);
-        let hover_fg = if self.pressed { color::ACCENT } else { color::FG };
+        let hover_fg = if self.pressed {
+            color::ACCENT
+        } else {
+            color::FG
+        };
         let base = div()
             .id(self.id)
             .flex()
@@ -85,8 +89,7 @@ impl RenderOnce for BarButton {
             .focus_visible(|s| s.shadow(focus_ring()))
             .child(Icon::new(self.icon).size(Pixels::from(GLYPH)).color(fg))
             .child(
-                line(self.label, text::XS, line_height(text::XS, 1.5), fg)
-                    .weight(font::WEIGHT_BTN),
+                line(self.label, text::XS, line_height(text::XS, 1.5), fg).weight(font::WEIGHT_BTN),
             );
         match self.on_click {
             Some(handler) => base.on_click(handler),

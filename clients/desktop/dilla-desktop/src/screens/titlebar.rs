@@ -3,8 +3,6 @@
 //! buttons. The bar is also the window's drag region (a press moves the window, a double click maximises it). A fixture
 //! draws the bar without the window controls, as the web client does in a browser.
 
-use std::rc::Rc;
-
 use gpui::{
     App, ClickEvent, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
     Pixels, StatefulInteractiveElement, Styled, Window, div,
@@ -60,7 +58,7 @@ pub struct TitlebarModel {
 #[derive(Clone)]
 pub struct TitlebarHandlers {
     /// The settings button was pressed.
-    pub on_settings: Rc<dyn Fn(&mut Window, &mut App)>,
+    pub on_settings: super::shell::Action,
 }
 
 fn window_button(
@@ -239,11 +237,13 @@ pub fn render(model: &TitlebarModel, handlers: &TitlebarHandlers) -> impl IntoEl
         .border_color(color::HAIRLINE)
         .flex()
         .items_center()
-        .pl(Pixels::from(if cfg!(target_os = "macos") && model.controls {
-            css::TRAFFIC_LIGHTS
-        } else {
-            css::LEFT
-        }))
+        .pl(Pixels::from(
+            if cfg!(target_os = "macos") && model.controls {
+                css::TRAFFIC_LIGHTS
+            } else {
+                css::LEFT
+            },
+        ))
         .pr(Pixels::from(css::RIGHT))
         .gap(Pixels::from(css::GAP))
         .child(brand)

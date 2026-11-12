@@ -36,14 +36,12 @@
           {
             "id": "general",
             "kind": "text",
-            "name": "general",
-            "position": 0
+            "name": "general"
           },
           {
             "id": "random",
             "kind": "text",
-            "name": "random",
-            "position": 1
+            "name": "random"
           },
           {
             "id": "afk",

@@ -53,24 +53,24 @@ pub struct RailModel<'a> {
 
 #[derive(Clone)]
 pub struct RailHandlers {
-    pub on_pick: Rc<dyn Fn(CommunityId, &mut Window, &mut App)>,
-    pub on_home: Rc<dyn Fn(&mut Window, &mut App)>,
-    pub on_add: Rc<dyn Fn(&mut Window, &mut App)>,
+    pub on_pick: super::shell::PickServer,
+    pub on_home: super::shell::Action,
+    pub on_add: super::shell::Action,
 }
 
 /// Mentions (and unread) summed over a server's channels (`sumBadges`; a muted channel hides its unread).
-pub fn counts(
-    state: &AppState,
-    community: CommunityId,
-    muted: &HashSet<String>,
-) -> (u32, u32) {
+pub fn counts(state: &AppState, community: CommunityId, muted: &HashSet<String>) -> (u32, u32) {
     state
         .channels
         .iter()
         .filter(|c| c.community_id == community)
         .fold((0, 0), |(unread, mentions), c| {
             let b = state.unread.get(&c.id).copied().unwrap_or_default();
-            let unread_here = if muted.contains(&c.id.hex()) { 0 } else { b.unread };
+            let unread_here = if muted.contains(&c.id.hex()) {
+                0
+            } else {
+                b.unread
+            };
             (unread + unread_here, mentions + b.mentions)
         })
 }
@@ -100,7 +100,7 @@ struct Stops {
 fn key_handler(
     stops: Rc<Stops>,
     index: usize,
-    press: Rc<dyn Fn(&mut Window, &mut App)>,
+    press: super::shell::Action,
 ) -> impl Fn(&gpui::KeyDownEvent, &mut Window, &mut App) + 'static {
     move |event, window, cx| {
         let key = &event.keystroke;
@@ -185,8 +185,7 @@ pub fn render(
         let initials = dilla_desktop_ui::components::avatar::initials_of(&c.name);
         let picked = Some(c.id) == model.selected;
         let (id, on_pick, on_key) = (c.id, handlers.on_pick.clone(), handlers.on_pick.clone());
-        let press: Rc<dyn Fn(&mut Window, &mut App)> =
-            Rc::new(move |window, cx| on_key(id, window, cx));
+        let press: super::shell::Action = Rc::new(move |window, cx| on_key(id, window, cx));
         let (unread, mentions) = counts(state, c.id, model.muted);
         let mut tile = div()
             .id(SharedString::from(format!("server-{}", c.id.hex())))
@@ -286,7 +285,10 @@ pub fn render(
                 .border_color(color::CONTROL_EDGE_KEY),
             );
         #[cfg(feature = "automation")]
-        let add = add.child(crate::automation::focus_probe("rail-add", &tab_stop(count - 1)));
+        let add = add.child(crate::automation::focus_probe(
+            "rail-add",
+            &tab_stop(count - 1),
+        ));
         add
     };
 

@@ -332,7 +332,10 @@ mod tests {
         LayoutPrefs::set_id(&again, LayoutPrefs::COLLAPSED, "bb", true).unwrap();
         LayoutPrefs::set_id(&again, LayoutPrefs::COLLAPSED, "aa", true).unwrap();
         LayoutPrefs::set_id(&again, LayoutPrefs::COLLAPSED, "aa", true).unwrap();
-        assert_eq!(LayoutPrefs::ids(&again, LayoutPrefs::COLLAPSED), ["aa", "bb"]);
+        assert_eq!(
+            LayoutPrefs::ids(&again, LayoutPrefs::COLLAPSED),
+            ["aa", "bb"]
+        );
         LayoutPrefs::set_id(&again, LayoutPrefs::COLLAPSED, "aa", false).unwrap();
         LayoutPrefs::set_id(&again, LayoutPrefs::COLLAPSED, "bb", false).unwrap();
         assert!(LayoutPrefs::ids(&again, LayoutPrefs::COLLAPSED).is_empty());

@@ -4,7 +4,7 @@
     1440,
     900
   ],
-  "viewer": "bjorn",
+  "viewer": "ada",
   "route": "/c/{harbour}/{harbour/night-shift-handover-notes}",
   "clock": 1794481751,
   "world": {
@@ -68,8 +68,7 @@
           {
             "id": "general",
             "kind": "text",
-            "name": "general",
-            "position": 0
+            "name": "general"
           },
           {
             "id": "afk",
@@ -83,7 +82,7 @@
       {
         "id": "harbour",
         "name": "Harbour Watch and Long Nights Society",
-        "owner": "sven",
+        "owner": "ada",
         "members": [
           "bjorn",
           "ada",
@@ -101,14 +100,12 @@
           {
             "id": "general",
             "kind": "text",
-            "name": "general",
-            "position": 0
+            "name": "general"
           },
           {
             "id": "night-shift-handover-notes",
             "kind": "text",
-            "name": "night-shift-handover-notes",
-            "position": 1
+            "name": "night-shift-handover-notes"
           },
           {
             "id": "afk",
@@ -148,13 +145,6 @@
         "sender": "liv",
         "ts": 1794481741,
         "body": "four is fine"
-      },
-      {
-        "key": "midgard-general-1",
-        "channel": "midgard/general",
-        "sender": "ada",
-        "ts": 1794481741,
-        "body": "hello"
       }
     ]
   },

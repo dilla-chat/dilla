@@ -253,6 +253,8 @@ pub fn build_state(
             );
         }
     }
+    // The servers come in the order the web client lists them: by id.
+    communities.sort_by_key(|c| c.id);
     let mut state = AppState {
         account: AccountState {
             phase: AccountPhase::Ready,

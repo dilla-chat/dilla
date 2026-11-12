@@ -174,14 +174,14 @@ pub fn items<'a>(
         if c.kind == 2 {
             folded = collapsed.contains(&c.id.hex());
             parent = Some(c.id);
-            out.push(Item::Category {
-                channel: c,
-                folded,
-            });
+            out.push(Item::Category { channel: c, folded });
             continue;
         }
         let in_folded = folded && c.parent_id == parent && !is_afk(c);
-        let busy = state.unread.get(&c.id).is_some_and(|b| b.unread + b.mentions > 0);
+        let busy = state
+            .unread
+            .get(&c.id)
+            .is_some_and(|b| b.unread + b.mentions > 0);
         if in_folded && selected != Some(c.id) && !busy {
             continue;
         }
@@ -312,7 +312,9 @@ fn row(
         .child(wrapper)
         .child(crate::slots::channel_row_extras(c, window, cx));
     #[cfg(feature = "automation")]
-    let item = item.child(crate::automation::bounds_probe(probe_id("channel", &c.name)));
+    let item = item.child(crate::automation::bounds_probe(probe_id(
+        "channel", &c.name,
+    )));
     if c.kind == 1 {
         item.py(Pixels::from(css::VOICE_PAD)).into_any_element()
     } else {
@@ -387,7 +389,9 @@ fn category(
                 .min_w(Pixels::from(css::CAT_RULE_MIN))
                 .h(Pixels::from(css::HAIRLINE_W))
                 .bg(color::HAIRLINE),
-        );
+        )
+        // With a "+" to show, the head keeps its trailing slot (`<TrailingSlot />`, --slot-w) so the rule stops short of it.
+        .children(can_add.then(|| div().flex_none().w(layout::SLOT)));
     #[cfg(feature = "automation")]
     let head = head.child(crate::automation::focus_probe(
         probe_id("focus-category", &c.name),
@@ -431,7 +435,9 @@ fn category(
         );
     }
     #[cfg(feature = "automation")]
-    let cell = cell.child(crate::automation::bounds_probe(probe_id("category", &c.name)));
+    let cell = cell.child(crate::automation::bounds_probe(probe_id(
+        "category", &c.name,
+    )));
     cell.into_any_element()
 }
 
@@ -470,7 +476,10 @@ pub fn render(
                 .id("channel-list-add")
                 .cursor_pointer()
                 .tooltip(dilla_desktop_ui::components::tooltip::tooltip(
-                    tf("create.channel.title", &[("server", title_for_tip.as_str())]),
+                    tf(
+                        "create.channel.title",
+                        &[("server", title_for_tip.as_str())],
+                    ),
                     &[],
                 ))
                 .on_click(move |_: &ClickEvent, window, cx| on_add(None, window, cx))
@@ -620,7 +629,9 @@ mod tests {
         items
             .iter()
             .map(|i| match i {
-                Item::Category { channel, folded } => format!("[{}{}]", channel.name, if *folded { "-" } else { "" }),
+                Item::Category { channel, folded } => {
+                    format!("[{}{}]", channel.name, if *folded { "-" } else { "" })
+                }
                 Item::Channel(c) => c.name.clone(),
             })
             .collect()
@@ -630,7 +641,10 @@ mod tests {
     fn afk_is_listed_last_whatever_its_position() {
         let s = world();
         let list = items(&s, CommunityId([1; 16]), None, &HashSet::new());
-        assert_eq!(names(&list), ["general", "[raids]", "loot", "harbour", "AFK"]);
+        assert_eq!(
+            names(&list),
+            ["general", "[raids]", "loot", "harbour", "AFK"]
+        );
     }
 
     #[test]

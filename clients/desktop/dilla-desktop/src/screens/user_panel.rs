@@ -2,11 +2,9 @@
 //! name over the status line, and the mute and deafen buttons (30px, a 16px glyph; on, the danger glyph on the danger tint).
 //! The buttons call the voice area's handle (`Client::voice().set_muted`, `set_deafened`: Task 17 implements them).
 
-use std::rc::Rc;
-
 use gpui::{
-    App, ClickEvent, InteractiveElement, IntoElement, ParentElement, Pixels, SharedString,
-    StatefulInteractiveElement, Styled, Window, div,
+    ClickEvent, InteractiveElement, IntoElement, ParentElement, Pixels, SharedString,
+    StatefulInteractiveElement, Styled, div,
 };
 
 use dilla_desktop_ui::components::tooltip::tooltip;
@@ -43,14 +41,18 @@ pub struct PanelModel<'a> {
 
 #[derive(Clone)]
 pub struct PanelHandlers {
-    pub on_mute: Rc<dyn Fn(&mut Window, &mut App)>,
-    pub on_deafen: Rc<dyn Fn(&mut Window, &mut App)>,
+    pub on_mute: super::shell::Action,
+    pub on_deafen: super::shell::Action,
 }
 
 /// The tooltip chord of a shortcut: Ctrl+Shift+M on Windows and Linux, the Command key on macOS.
 fn chord(letter: &'static str) -> [&'static str; 3] {
     [
-        if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" },
+        if cfg!(target_os = "macos") {
+            "⌘"
+        } else {
+            "Ctrl"
+        },
         "Shift",
         letter,
     ]
@@ -63,7 +65,7 @@ fn toggle(
     label: &'static str,
     letter: &'static str,
     pressed: bool,
-    handler: Rc<dyn Fn(&mut Window, &mut App)>,
+    handler: super::shell::Action,
 ) -> impl IntoElement {
     let (fg, bg) = if pressed {
         (color::DANGER, color::DANGER_SOFT)

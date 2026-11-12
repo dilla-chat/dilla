@@ -22,11 +22,18 @@ use dilla_desktop_ui::components::action_menu::{ActionMenu, MenuItem};
 use dilla_desktop_ui::components::shell::panes::{
     ASIDE_DEFAULT_MEMBERS, ASIDE_DEFAULT_THREAD, COLUMN_FROM, SIDEBAR_DEFAULT, range,
 };
-use dilla_desktop_ui::components::shell::{Pane, PaneInput, Panes, Splitter, SplitterKey, clamp_panes};
+use dilla_desktop_ui::components::shell::{
+    Pane, PaneInput, Panes, Splitter, SplitterKey, clamp_panes,
+};
 use dilla_desktop_ui::tokens::{color, font, layout};
 
 pub mod keys;
 pub mod window;
+
+/// A button's handler: it gets the window and the app.
+pub type Action = Rc<dyn Fn(&mut Window, &mut gpui::App)>;
+/// A server tile's handler.
+pub type PickServer = Rc<dyn Fn(CommunityId, &mut Window, &mut gpui::App)>;
 
 use crate::router::{History, Route};
 use crate::screens::composer::{Composer, Sent};
@@ -83,7 +90,6 @@ impl Clock {
     }
 }
 
-
 /// The labels of the channel row's menu that `strings.rs` has no key for (the web client's row menu holds pins, mute and
 /// edit; the Wave 1 plan's holds mark read, mute and copy link). "copy link" is `invite.copy`'s.
 const MARK_READ: &str = "Mark as read";
@@ -99,7 +105,11 @@ struct Drag {
 /// The width a drag asks for: the pointer's travel since it went down, in the pane's own direction (the aside's splitter
 /// is on its left edge, so moving left widens it).
 fn dragged_width(drag: Drag, x: f32) -> f32 {
-    let sign = if drag.pane == Pane::Sidebar { 1.0 } else { -1.0 };
+    let sign = if drag.pane == Pane::Sidebar {
+        1.0
+    } else {
+        -1.0
+    };
     drag.start_width + sign * (x - drag.start_x)
 }
 
@@ -168,8 +178,12 @@ impl ShellView {
         let (widths, collapsed, muted) = match &prefs {
             Some(p) => (
                 LayoutPrefs::read(p),
-                LayoutPrefs::ids(p, LayoutPrefs::COLLAPSED).into_iter().collect(),
-                LayoutPrefs::ids(p, LayoutPrefs::MUTED).into_iter().collect(),
+                LayoutPrefs::ids(p, LayoutPrefs::COLLAPSED)
+                    .into_iter()
+                    .collect(),
+                LayoutPrefs::ids(p, LayoutPrefs::MUTED)
+                    .into_iter()
+                    .collect(),
             ),
             None => Default::default(),
         };
@@ -449,7 +463,13 @@ impl ShellView {
     }
 
     /// Sets a pane to `width` (the request is kept as asked; the shell shows it clamped), or back to its default.
-    fn set_pane(&mut self, pane: Pane, width: Option<f32>, window_width: f32, cx: &mut Context<Self>) {
+    fn set_pane(
+        &mut self,
+        pane: Pane,
+        width: Option<f32>,
+        window_width: f32,
+        cx: &mut Context<Self>,
+    ) {
         let column = window_width >= COLUMN_FROM;
         let input = self.pane_input(window_width, column);
         let value = width.map(|w| {
@@ -487,7 +507,13 @@ impl ShellView {
         });
     }
 
-    fn on_splitter_key(&mut self, pane: Pane, key: SplitterKey, window_width: f32, cx: &mut Context<Self>) {
+    fn on_splitter_key(
+        &mut self,
+        pane: Pane,
+        key: SplitterKey,
+        window_width: f32,
+        cx: &mut Context<Self>,
+    ) {
         match key {
             SplitterKey::To(w) => self.set_pane(pane, Some(w), window_width, cx),
             SplitterKey::Reset => self.set_pane(pane, None, window_width, cx),
@@ -498,7 +524,11 @@ impl ShellView {
     /// The header's Threads and Members buttons: open the aside, or close it when it is the one open. The areas that draw
     /// the panes (11, 14) keep their own state and are told.
     fn toggle_aside(&mut self, kind: AsideKind, cx: &mut Context<Self>) {
-        self.aside = if self.aside == Some(kind) { None } else { Some(kind) };
+        self.aside = if self.aside == Some(kind) {
+            None
+        } else {
+            Some(kind)
+        };
         match kind {
             AsideKind::Threads => crate::screens::threads::toggle_pane(cx),
             AsideKind::Members => crate::screens::members::toggle_pane(cx),
@@ -616,7 +646,11 @@ impl ShellView {
 }
 
 /// The ⌘K / Ctrl K hint of the search field.
-const SEARCH_HINT: &str = if cfg!(target_os = "macos") { "⌘ K" } else { "Ctrl K" };
+const SEARCH_HINT: &str = if cfg!(target_os = "macos") {
+    "⌘ K"
+} else {
+    "Ctrl K"
+};
 
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -665,9 +699,12 @@ impl Render for ShellView {
                 .iter()
                 .any(|k| k.id == c && Some(k.owner) == state.account.user_id)
         });
-        let has_categories = self
-            .community
-            .is_some_and(|c| state.channels.iter().any(|ch| ch.community_id == c && ch.kind == 2));
+        let has_categories = self.community.is_some_and(|c| {
+            state
+                .channels
+                .iter()
+                .any(|ch| ch.community_id == c && ch.kind == 2)
+        });
         let handlers = {
             let (w1, w2, w4) = (shell.clone(), shell.clone(), shell.clone());
             let community = self.community;
@@ -748,7 +785,11 @@ impl Render for ShellView {
 
         // The log wraps its bodies to its own width: the window less the rail, the sidebar and a column aside.
         let aside = slots::aside(self.route(), window, cx);
-        let aside_width = if aside.is_some() && column { panes.aside } else { 0.0 };
+        let aside_width = if aside.is_some() && column {
+            panes.aside
+        } else {
+            0.0
+        };
         let log_width = window_width - f32::from(layout::RAIL) - panes.sidebar - aside_width;
         let log = match channel {
             Some(c) => {
@@ -782,7 +823,9 @@ impl Render for ShellView {
         let mut overlays = slots::overlays(window, cx);
         if let Some(menu) = self.menu {
             let (w_sel, w_open) = (shell.clone(), shell.clone());
-            let name = state.channel(menu.channel).map_or_else(String::new, |c| c.name.clone());
+            let name = state
+                .channel(menu.channel)
+                .map_or_else(String::new, |c| c.name.clone());
             overlays.push(
                 ActionMenu::new(
                     "channel-menu",
@@ -818,8 +861,6 @@ impl Render for ShellView {
             .h_full()
             .flex()
             .flex_col()
-            // The offline link and version banners (24).
-            .children(banners)
             .child(header::render(
                 &header::HeaderModel {
                     channel,
@@ -847,27 +888,39 @@ impl Render for ShellView {
         let (w_press, w_set) = (shell.clone(), shell.clone());
         let sidebar_input = self.pane_input(window_width, column);
         let (lo, hi) = range(Pane::Sidebar, &sidebar_input, panes.aside);
-        let sidebar_splitter = Splitter::new("splitter-sidebar", Pane::Sidebar, &self.sidebar_splitter)
-            .at(f32::from(layout::RAIL) + panes.sidebar - dilla_desktop_ui::components::shell::splitter::HIT / 2.0)
-            .range(panes.sidebar, lo, hi)
-            .on_press(move |x, _, cx| {
-                let _ = w_press.update(cx, |shell, _| {
-                    shell.begin_drag(Pane::Sidebar, f32::from(x), window_width)
-                });
-            })
-            .on_set(move |key, _, cx| {
-                let _ = w_set.update(cx, |shell, cx| {
-                    shell.on_splitter_key(Pane::Sidebar, key, window_width, cx)
-                });
-            });
-        #[cfg(feature = "automation")]
         let sidebar_splitter =
-            sidebar_splitter.probe(crate::automation::bounds_probe("splitter-sidebar"));
+            Splitter::new("splitter-sidebar", Pane::Sidebar, &self.sidebar_splitter)
+                .at(f32::from(layout::RAIL) + panes.sidebar
+                    - dilla_desktop_ui::components::shell::splitter::HIT / 2.0)
+                .range(panes.sidebar, lo, hi)
+                .on_press(move |x, _, cx| {
+                    let _ = w_press.update(cx, |shell, _| {
+                        shell.begin_drag(Pane::Sidebar, f32::from(x), window_width)
+                    });
+                })
+                .on_set(move |key, _, cx| {
+                    let _ = w_set.update(cx, |shell, cx| {
+                        shell.on_splitter_key(Pane::Sidebar, key, window_width, cx)
+                    });
+                });
+        #[cfg(feature = "automation")]
+        let sidebar_splitter = sidebar_splitter.probe(
+            div()
+                .absolute()
+                .size_full()
+                .child(crate::automation::bounds_probe("splitter-sidebar"))
+                .child(crate::automation::focus_probe(
+                    "splitter-sidebar",
+                    &self.sidebar_splitter,
+                )),
+        );
         let aside_splitter = (aside_column.is_some() && column).then(|| {
             let (w_press, w_set) = (shell.clone(), shell.clone());
             let (lo, hi) = range(Pane::Aside, &sidebar_input, panes.sidebar);
             let splitter = Splitter::new("splitter-aside", Pane::Aside, &self.aside_splitter)
-                .at(window_width - panes.aside - dilla_desktop_ui::components::shell::splitter::HIT / 2.0)
+                .at(window_width
+                    - panes.aside
+                    - dilla_desktop_ui::components::shell::splitter::HIT / 2.0)
                 .range(panes.aside, lo, hi)
                 .on_press(move |x, _, cx| {
                     let _ = w_press.update(cx, |shell, _| {
@@ -880,7 +933,16 @@ impl Render for ShellView {
                     });
                 });
             #[cfg(feature = "automation")]
-            let splitter = splitter.probe(crate::automation::bounds_probe("splitter-aside"));
+            let splitter = splitter.probe(
+                div()
+                    .absolute()
+                    .size_full()
+                    .child(crate::automation::bounds_probe("splitter-aside"))
+                    .child(crate::automation::focus_probe(
+                        "splitter-aside",
+                        &self.aside_splitter,
+                    )),
+            );
             splitter
         });
 
@@ -903,7 +965,9 @@ impl Render for ShellView {
             .track_focus(&self.focus)
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
-            .on_action(cx.listener(|this, _: &keys::PreviousChannel, _, cx| this.step_channel(-1, cx)))
+            .on_action(
+                cx.listener(|this, _: &keys::PreviousChannel, _, cx| this.step_channel(-1, cx)),
+            )
             .on_action(cx.listener(|this, _: &keys::NextChannel, _, cx| this.step_channel(1, cx)))
             .on_action(cx.listener(|this, _: &keys::HistoryBack, _, cx| {
                 this.back(cx);
@@ -915,7 +979,12 @@ impl Render for ShellView {
                 if let Some(drag) = this.drag
                     && e.dragging()
                 {
-                    this.set_pane(drag.pane, Some(dragged_width(drag, f32::from(e.position.x))), window_width, cx);
+                    this.set_pane(
+                        drag.pane,
+                        Some(dragged_width(drag, f32::from(e.position.x))),
+                        window_width,
+                        cx,
+                    );
                 }
             }))
             .on_mouse_up(
@@ -932,6 +1001,8 @@ impl Render for ShellView {
             .flex()
             .flex_col()
             .child(titlebar)
+            // The offline link and version banners (24): across the whole window, under the top bar.
+            .children(banners)
             .child(
                 div()
                     .relative()
@@ -968,7 +1039,11 @@ mod tests {
             start_x: 900.0,
             start_width: 232.0,
         };
-        assert_eq!(dragged_width(aside, 860.0), 272.0, "moving left widens the aside");
+        assert_eq!(
+            dragged_width(aside, 860.0),
+            272.0,
+            "moving left widens the aside"
+        );
     }
 
     use dilla_client::state::{Channel, ChannelGroupState, Community, UserId};
@@ -1019,8 +1094,15 @@ mod tests {
         let make = |prefs: Prefs, cx: &mut gpui::TestAppContext| {
             let state = state.clone();
             cx.add_window_view(move |window, cx| {
-                ShellView::new(state, None, None, Clock::Fixed { now: 0, utc: true }, window, cx)
-                    .with_prefs(prefs)
+                ShellView::new(
+                    state,
+                    None,
+                    None,
+                    Clock::Fixed { now: 0, utc: true },
+                    window,
+                    cx,
+                )
+                .with_prefs(prefs)
             })
             .0
         };
@@ -1071,8 +1153,15 @@ mod tests {
         let (shell, vcx) = cx.add_window_view({
             let (state, prefs) = (state.clone(), Prefs::instance(&dir));
             move |window, cx| {
-                ShellView::new(state, None, None, Clock::Fixed { now: 0, utc: true }, window, cx)
-                    .with_prefs(prefs)
+                ShellView::new(
+                    state,
+                    None,
+                    None,
+                    Clock::Fixed { now: 0, utc: true },
+                    window,
+                    cx,
+                )
+                .with_prefs(prefs)
             }
         });
         shell.update(vcx, |s, cx| {
@@ -1105,7 +1194,14 @@ mod tests {
         cx.update(crate::install);
         let state = world();
         let (shell, vcx) = cx.add_window_view(move |window, cx| {
-            ShellView::new(state, None, None, Clock::Fixed { now: 0, utc: true }, window, cx)
+            ShellView::new(
+                state,
+                None,
+                None,
+                Clock::Fixed { now: 0, utc: true },
+                window,
+                cx,
+            )
         });
         let at = |channel: u8| Route::Channel {
             community: CommunityId([1; 16]),
