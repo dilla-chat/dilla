@@ -4,6 +4,9 @@
 //! renewed_token_after_ready_does_not_restart, engine_panic_reports_failed_not_stopped}` and
 //! `gateway::tests::server_timings_are_clamped`.
 
+// Its test needs `Client::snapshots`: run it with `--features testing`.
+#![cfg(feature = "testing")]
+
 #[path = "support/world.rs"]
 mod world;
 
@@ -26,17 +29,29 @@ async fn factor_setup_clears_after_factor_completed() {
     clear_session(&alice);
     let (target, _) = key_package_limits(&host).await;
     let a = start(&alice).await;
-    wait_for(&a, Duration::from_secs(20), "factor setup", |s| {
-        s.account.phase == AccountPhase::FactorSetup
-    })
-    .await;
-    // Without a factor, completing changes nothing for good: the instance refuses again.
+    // Every snapshot from the start on: the owed account starts in FactorSetup with no gateway (no ready, never
+    // online), and a completion without a factor (the instance still finds one owed) leaves it there.
+    let mut snapshots = a.snapshots();
+    let first = snapshots.recv().await.unwrap();
+    assert_eq!(first.account.phase, AccountPhase::FactorSetup);
     a.factor_completed();
-    wait_for(&a, Duration::from_secs(20), "factor setup again", |s| {
-        s.account.phase == AccountPhase::FactorSetup
-            && s.connection.status == ConnectionStatus::Offline
-    })
-    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let mut seen = 1;
+    while let Ok(s) = snapshots.try_recv() {
+        seen += 1;
+        assert_eq!(
+            s.account.phase,
+            AccountPhase::FactorSetup,
+            "snapshot {seen}"
+        );
+        assert_ne!(
+            s.connection.status,
+            ConnectionStatus::Online,
+            "snapshot {seen}"
+        );
+        assert_eq!(s.connection.readies, 0, "snapshot {seen}");
+    }
+    assert_eq!(a.state().borrow().connection.readies, 0);
     // The factor screens add an authenticator app; then the same client goes on.
     enrol_totp(&host, &alice).await;
     a.factor_completed();

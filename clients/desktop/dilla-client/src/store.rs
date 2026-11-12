@@ -30,12 +30,14 @@
 //! keychain accounts: the copy's next first open would mint a key over the one the original's
 //! database needs. Each instance therefore keeps a generation record beside its lock file
 //! (`instances/<n>.generation`: a generation id and the data dir it belongs to). The generation is
-//! bound into the keychain account (`<install-id>/instance-<n>/<generation>`; the first generation of
-//! a data dir is the plain `<install-id>/instance-<n>`). An open that finds the record naming another
-//! data dir is in a copy: it takes a generation of its own, so the two roots never share a keychain
-//! entry again (an existing database's key is copied to the new entry; a missing one gets a fresh key
-//! under the new entry). Within one data dir the generation is kept, so re-creating a removed
-//! instance still replaces its old key (a crypto-erase).
+//! bound into the keychain account (`<install-id>/instance-<n>/<generation>`). A store is created
+//! under a random generation unless its data dir's own record names one; only a database that
+//! exists without a record (made before records existed) keeps the plain `<install-id>/instance-<n>`.
+//! An open that finds the record naming another data dir is in a copy: it takes a generation of its
+//! own, so the two roots never share a keychain entry again (an existing database's key is copied to
+//! the new entry; a missing one gets a fresh key under the new entry). A root copied before its first
+//! open has no record and so creates its store under a random generation too. Within one data dir the
+//! generation is kept, so re-creating a removed instance still replaces its old key (a crypto-erase).
 //!
 //! # WAL, durability and file systems
 //!
@@ -106,9 +108,9 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
 }
 
-/// The keychain account that holds instance `id`'s database key in its data dir's first generation, scoped to its
-/// root's install id ([`crate::instances::Instances::install_id`]). A data dir in a copied root uses a later
-/// generation ([`store_keychain_account`]).
+/// The plain keychain account of instance `id`, scoped to its root's install id
+/// ([`crate::instances::Instances::install_id`]): the account of a database made before generation records existed. A
+/// store created since takes a random generation ([`store_keychain_account`]).
 pub fn keychain_account(install_id: &str, id: InstanceId) -> String {
     format!("{install_id}/instance-{}", id.0)
 }
@@ -225,6 +227,7 @@ pub fn open_connection(cfg: &InstanceConfig, kc: &dyn Keychain) -> Result<ConnHa
     remove_stage(&cfg.data_dir)?;
     let here = canonical_dir(&cfg.data_dir)?;
     let record = read_generation(&cfg.data_dir)?;
+    let recorded = record.is_some();
     // A record naming another data dir: this root is a copy (or a move) of that one.
     let copied = record.as_ref().is_some_and(|r| r.dir != here);
     let generation = record.and_then(|r| r.generation);
@@ -260,11 +263,13 @@ pub fn open_connection(cfg: &InstanceConfig, kc: &dyn Keychain) -> Result<ConnHa
 
     // No database: a WAL, shared-memory index or journal left beside it belongs to a database that is gone.
     remove_stale_sidecars(&cfg.data_dir)?;
-    // Whatever this data dir's generation holds in the keychain (a first open cut short, or a removed instance on this
-    // id) protects nothing: a fresh key goes over it. In a copied root the original may still need that key, so the
-    // copy takes a generation of its own first.
+    // Whatever this data dir's recorded generation holds in the keychain (a first open cut short, or a removed instance
+    // on this id) protects nothing: a fresh key goes over it. Without a record, or in a copied root, the plain account
+    // or the recorded one may be another root's (a root copied before its first open shares the install id and has no
+    // record yet), so this store takes a generation of its own. Only a database that exists without a record keeps the
+    // plain account: it was made before records existed.
     drop(stored);
-    let (account, generation) = if copied {
+    let (account, generation) = if copied || !recorded {
         let fresh = Some(new_generation()?);
         (
             generation_account(&install_id, cfg.id, fresh.as_deref()),
@@ -614,24 +619,70 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// A root copied before either copy opened its store: no record yet, so neither takes the plain account, and the
+    /// copy that opens first cannot have its key overwritten by the other's first open.
     #[test]
-    fn store_sets_synchronous_full() {
+    fn a_copy_that_opens_first_keeps_its_key() {
+        let kc = MemoryKeychain::new();
+        let root_a = root();
+        let mut a = Instances::load(&root_a).unwrap();
+        let cfg_a = a.add(server()).unwrap();
+        let root_b = root();
+        copy_dir(&root_a, &root_b);
+        let b = Instances::load(&root_b).unwrap();
+        let cfg_b = b.get(cfg_a.id).unwrap().clone();
+        // The copy opens first.
+        let mut core = open_store(&cfg_b, &kc).unwrap();
+        core.setting_put("k", "the copy's").unwrap();
+        drop(core);
+        let acct_b = store_keychain_account(&cfg_b).unwrap();
+        assert_ne!(acct_b, keychain_account(b.install_id(), cfg_b.id));
+        let key_b = kc.get(&acct_b).unwrap().unwrap();
+        // Then the original.
+        let mut core = open_store(&cfg_a, &kc).unwrap();
+        core.setting_put("k", "the original's").unwrap();
+        drop(core);
+        let acct_a = store_keychain_account(&cfg_a).unwrap();
+        assert_ne!(acct_a, acct_b);
+        assert_eq!(
+            *kc.get(&acct_b).unwrap().unwrap(),
+            *key_b,
+            "the copy's key is untouched"
+        );
+        let core = open_store(&cfg_b, &kc).unwrap();
+        assert!(holds(&core, "the copy's") && !holds(&core, "the original's"));
+        drop(core);
+        assert!(holds(&open_store(&cfg_a, &kc).unwrap(), "the original's"));
+        let _ = a.remove(cfg_a.id);
+        let _ = fs::remove_dir_all(&root_a);
+        let _ = fs::remove_dir_all(&root_b);
+    }
+
+    /// A database made before generation records existed (no record) keeps the plain account, and is claimed.
+    #[test]
+    fn a_store_without_a_record_keeps_the_plain_account() {
+        let kc = MemoryKeychain::new();
         let root = root();
         let cfg = Instances::load(&root).unwrap().add(server()).unwrap();
-        let kc = MemoryKeychain::new();
-        // The first open (which builds the database) and a later one.
-        for _ in 0..2 {
-            let conn = open_connection(&cfg, &kc).unwrap();
-            let conn = conn.lock().unwrap();
-            let sync: i64 = conn
-                .query_row("PRAGMA synchronous", [], |r| r.get(0))
-                .unwrap();
-            assert_eq!(sync, 2, "synchronous=FULL");
-            let mode: String = conn
-                .query_row("PRAGMA journal_mode", [], |r| r.get(0))
-                .unwrap();
-            assert_eq!(mode, "wal");
-        }
+        let mut core = open_store(&cfg, &kc).unwrap();
+        core.setting_put("k", "old store").unwrap();
+        drop(core);
+        // Rewrite it as an old build left it: the key under the plain account, no record.
+        let install = install_id_for(&cfg.data_dir, cfg.id).unwrap();
+        let plain = keychain_account(&install, cfg.id);
+        let key = kc
+            .get(&store_keychain_account(&cfg).unwrap())
+            .unwrap()
+            .unwrap();
+        kc.set(&plain, &key).unwrap();
+        fs::remove_file(generation_path(&cfg.data_dir)).unwrap();
+        assert_eq!(store_keychain_account(&cfg).unwrap(), plain);
+        assert!(holds(&open_store(&cfg, &kc).unwrap(), "old store"));
+        assert_eq!(
+            store_keychain_account(&cfg).unwrap(),
+            plain,
+            "claimed under the plain account"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -689,7 +740,11 @@ mod tests {
             store_keychain_account(&cfg_b).unwrap(),
         );
         assert_ne!(acct_a, acct_b, "the copy holds its key under its own entry");
-        assert_eq!(acct_a, keychain_account(a.install_id(), cfg_a.id));
+        assert_ne!(
+            acct_a,
+            keychain_account(a.install_id(), cfg_a.id),
+            "a new store takes a random generation, never the plain account"
+        );
 
         // The original removes and re-adds its instance: its fresh key replaces its own entry only (a crypto-erase).
         let old_a = kc.get(&acct_a).unwrap().unwrap();

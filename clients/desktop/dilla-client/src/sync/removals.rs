@@ -12,7 +12,7 @@
 //! `apply_hook`, before the group is reported changed), when a community channel is opened, on each `message.deleted`
 //! frame, and after every ready for every active community group ([`recover_moderation_removals`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dilla_core::bot::RemovalProof;
@@ -131,6 +131,14 @@ fn actors_of(
 }
 
 async fn read_page(api: &Api, group: &[u8; 16], after: u64) -> Result<RemovalPage, SyncError> {
+    #[cfg(feature = "testing")]
+    if faults::take(group) {
+        return Err(SyncError::Api(ApiError::local(
+            0,
+            "E_NETWORK",
+            "injected feed failure",
+        )));
+    }
     let answer = api
         .socket_call::<r::GetModerationRemovals>(
             &[&hex(group), &after.to_string(), &PAGE_LIMIT.to_string()],
@@ -215,8 +223,50 @@ async fn ingest_account_kind(core: &CoreHandle, user: [u8; 16], head: &[u8]) {
 /// answers once all of them have run; a group whose recovery ingested anything is reported changed, so its timeline
 /// shows the tombstones. The client runs it after every ready (a removal made while this device was away arrives with no
 /// `message.deleted` frame) and reads the timelines only after it, so a removed message's plaintext is never published.
-pub(crate) async fn recover_moderation_removals(inner: &Inner) {
-    Arc::clone(inner.engine()).recover_removals_all().await;
+///
+/// Answers the groups whose feed is still unread (a failed read, or a group that cannot be read now): the client keeps
+/// their timelines unpublished and retries them ([`retry_moderation_removals`]).
+pub(crate) async fn recover_moderation_removals(inner: &Inner) -> HashSet<[u8; 16]> {
+    Arc::clone(inner.engine()).recover_removals_all().await
+}
+
+/// The retry of [`recover_moderation_removals`]' unread groups: answers those still unread.
+pub(crate) async fn retry_moderation_removals(
+    inner: &Inner,
+    groups: Vec<[u8; 16]>,
+) -> HashSet<[u8; 16]> {
+    Arc::clone(inner.engine()).recover_removals_of(groups).await
+}
+
+/// Test-only fault injection (feature `testing`): the next `n` feed reads of a group fail as an unreachable instance
+/// would (`E_NETWORK`), before any request is written.
+#[cfg(feature = "testing")]
+pub mod faults {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    static FAIL: Mutex<Option<HashMap<[u8; 16], u32>>> = Mutex::new(None);
+
+    /// The next `n` reads of `group`'s removal feed fail.
+    pub fn fail_next_feed_reads(group: [u8; 16], n: u32) {
+        FAIL.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(HashMap::new)
+            .insert(group, n);
+    }
+
+    pub(super) fn take(group: &[u8; 16]) -> bool {
+        let mut fail = FAIL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match fail.as_mut().and_then(|m| m.get_mut(group)) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]

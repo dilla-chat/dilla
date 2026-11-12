@@ -206,7 +206,8 @@ fn offline_publisher() -> (
         upkeep,
         inner: Arc::default(),
         removals_due: false,
-        removals_pending: false,
+        removals: RemovalGate::default(),
+        taps: Taps::default(),
     };
     (publisher, rx, state_rx, core, engine)
 }
@@ -396,4 +397,33 @@ async fn a_poisoned_core_stops_the_engine_and_is_never_used_again() {
         engine.groups().await.is_empty(),
         "the publisher's read answers nothing, it does not unwind"
     );
+}
+
+/// Review fix (round 1): a ready's removal read carries its generation, so an older ready's answer cannot clear a newer
+/// one's gate; groups whose read failed stay unreadable and are retried with the key-package backoff until cleared.
+#[test]
+fn removal_gate_tokens_and_unread_groups() {
+    let (g1, g2) = ([1u8; 16], [2u8; 16]);
+    let mut gate = RemovalGate::default();
+    let one = gate.start();
+    let two = gate.start();
+    assert!(!gate.read(one, HashSet::new()), "an older ready's answer");
+    assert!(!gate.readable(&g1), "the newer ready's read is still out");
+    assert!(gate.read(two, HashSet::from([g2])));
+    assert!(gate.readable(&g1));
+    assert!(!gate.readable(&g2), "its read failed");
+    let (wait, groups) = gate.next_retry().unwrap();
+    assert_eq!((wait, groups), (Duration::from_secs(5), vec![g2]));
+    assert!(gate.next_retry().is_none(), "one retry at a time");
+    gate.retried(HashSet::from([g2]));
+    assert_eq!(gate.next_retry().unwrap().0, Duration::from_secs(10));
+    gate.retried(HashSet::new());
+    assert!(
+        !gate.readable(&g2),
+        "only a read that succeeded clears a group"
+    );
+    gate.cleared(&g2);
+    assert!(gate.readable(&g2));
+    assert!(gate.next_retry().is_none());
+    assert_eq!(gate.delay_ms, 0, "the backoff starts again");
 }

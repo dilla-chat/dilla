@@ -686,10 +686,11 @@ async fn until(at: Option<Instant>) {
     }
 }
 
-/// The shortest heartbeat interval the client accepts. gateway.ts has no explicit floor (a JS timer is clamped to a few
-/// milliseconds by the runtime); this is the same guard made explicit, so a server-sent `heartbeat_ms` of 0 or 1 cannot
-/// make the client send heartbeats in a tight loop.
-const MIN_BEAT_INTERVAL: Duration = Duration::from_millis(10);
+/// The shortest heartbeat interval the client accepts: the Bot's gateway client bound
+/// (internal/bot/gatewayclient: `maxDuration(heartbeat/2, 250ms)`). gateway.ts has no explicit floor (a JS timer is only
+/// clamped to a few milliseconds by the runtime), so a server-sent `heartbeat_ms` of 0 or 1 cannot make the client send
+/// heartbeats in a tight loop.
+const MIN_BEAT_INTERVAL: Duration = Duration::from_millis(250);
 
 /// The longest wait a server-sent timing can impose (a `reconnect` frame's `after_ms`, the hello's commit backoff):
 /// the Bot's gateway client bound (internal/bot/gatewayclient `boundedMilliseconds`). gateway.ts takes `after_ms` as
@@ -1089,10 +1090,12 @@ mod tests {
             Duration::from_millis(15_000)
         );
         assert_eq!(beat_interval_for(100_000, max), max);
-        assert_eq!(beat_interval_for(100, max), Duration::from_millis(50));
+        assert_eq!(beat_interval_for(600, max), Duration::from_millis(300));
+        assert_eq!(beat_interval_for(500, max), MIN_BEAT_INTERVAL);
+        assert_eq!(beat_interval_for(100, max), MIN_BEAT_INTERVAL);
         assert_eq!(beat_interval_for(0, max), MIN_BEAT_INTERVAL);
         assert_eq!(beat_interval_for(1, max), MIN_BEAT_INTERVAL);
-        assert_eq!(beat_interval_for(15, max), MIN_BEAT_INTERVAL);
+        assert_eq!(MIN_BEAT_INTERVAL, Duration::from_millis(250));
     }
 
     #[test]

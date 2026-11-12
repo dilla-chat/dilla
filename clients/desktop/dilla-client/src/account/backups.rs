@@ -106,7 +106,13 @@ pub struct ReadyPass {
 pub async fn after_ready(port: &dyn ReadyPort, confirmed: &Mutex<Option<Vec<u8>>>) -> ReadyPass {
     let ensured = ensure_backups(port, confirmed).await;
     let outcome = async {
-        let own = port.refresh_own_list().await?;
+        let own = match port.refresh_own_list().await {
+            Ok(own) => own,
+            // controller.ts enterReady (requirement 12): a pending scope or an unlisted answer for a device the own list
+            // names is a revocation, not a failure to retry.
+            Err(e) if revokes(&e) => return Ok(AfterReady::Unlisted),
+            Err(e) => return Err(e),
+        };
         if !own.listed {
             return Ok(AfterReady::Unlisted);
         }
@@ -115,6 +121,20 @@ pub async fn after_ready(port: &dyn ReadyPort, confirmed: &Mutex<Option<Vec<u8>>
     }
     .await;
     ReadyPass { ensured, outcome }
+}
+
+/// controller.ts' `isCode(e, 'E_SESSION_SCOPE') || isCode(e, 'E_DEVICE_UNLISTED')`: the own-list refresh's answers
+/// that revoke this device. Both are client-side codes in TS (a session answer of the wrong scope, a list that leaves
+/// the device out); here the core's `E_DEVICE_UNLISTED` and either code on an instance answer.
+// E_ code: until Task 3's `HttpError::Status` carries the instance's body, an HTTP refusal reaches here as `E_HTTP`
+// with its status only, so neither code can come from the instance yet; the core's code does.
+pub fn revokes(e: &BackupError) -> bool {
+    const REVOKING: [&str; 2] = ["E_SESSION_SCOPE", "E_DEVICE_UNLISTED"];
+    match e {
+        BackupError::Api(a) => REVOKING.contains(&a.code.as_str()),
+        BackupError::Core(code) => REVOKING.iter().any(|c| code.starts_with(c)),
+        BackupError::RootMismatch => false,
+    }
 }
 
 /// enrol.ts `ensureBackups`. `confirmed` is the root this device already compared with the instance's (enrol.ts
@@ -445,6 +465,8 @@ mod tests {
     struct Ready {
         backups: Fake,
         own: Mutex<Result<OwnList, u16>>,
+        /// When set, the refresh fails with this.
+        failure: Mutex<Option<BackupError>>,
     }
 
     #[async_trait::async_trait]
@@ -473,6 +495,9 @@ mod tests {
     impl ReadyPort for Ready {
         async fn refresh_own_list(&self) -> Result<OwnList, BackupError> {
             lock(&self.backups.log).push("GET /v1/users/me/device-list".into());
+            if let Some(e) = lock(&self.failure).clone() {
+                return Err(e);
+            }
             match *lock(&self.own) {
                 Ok(own) => Ok(own),
                 Err(status) => Err(BackupError::Api(ApiError::local(status, "E_INTERNAL", ""))),
@@ -489,6 +514,7 @@ mod tests {
         Ready {
             backups,
             own: Mutex::new(own),
+            failure: Mutex::new(None),
         }
     }
 
@@ -545,6 +571,35 @@ mod tests {
             "{paths:?}"
         );
         assert_eq!(r.backups.get(STATE).await.unwrap().unwrap(), JUNK);
+    }
+
+    #[tokio::test]
+    async fn a_refresh_answering_session_scope_or_device_unlisted_revokes() {
+        for e in [
+            BackupError::Api(ApiError::local(403, "E_SESSION_SCOPE", "")),
+            BackupError::Api(ApiError::local(403, "E_DEVICE_UNLISTED", "")),
+            BackupError::Core("E_DEVICE_UNLISTED".into()),
+        ] {
+            let r = ready(Ok(OwnList {
+                version: 1,
+                listed: true,
+            }));
+            *lock(&r.failure) = Some(e.clone());
+            let pass = after_ready(&r, &confirmed()).await;
+            assert_eq!(pass.outcome.unwrap(), AfterReady::Unlisted, "{e:?}");
+            let paths = r.backups.paths();
+            assert!(
+                !paths.iter().any(|p| p.contains("/v1/backups/1/0")),
+                "{paths:?}"
+            );
+        }
+        // Any other refusal is a failure to retry, not a revocation.
+        assert!(!revokes(&BackupError::Api(ApiError::local(
+            403,
+            "E_FORBIDDEN",
+            ""
+        ))));
+        assert!(!revokes(&BackupError::RootMismatch));
     }
 
     #[test]

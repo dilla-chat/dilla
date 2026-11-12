@@ -109,8 +109,15 @@ enum Update {
     FactorChecked(bool),
     /// A job of the engine or an action panicked without poisoning the core: the client fails, as for a poisoned core.
     Panicked,
-    /// A ready's removal feeds were read (successfully or not): timelines may be read again.
-    RemovalsRead,
+    /// The removal feeds of ready `generation` were read; `unread` are the groups whose feed is still unread.
+    RemovalsRead {
+        generation: u64,
+        unread: HashSet<[u8; 16]>,
+    },
+    /// A group's removal feed was read to its end ([`SyncHooks::removals_read`]).
+    RemovalsCleared([u8; 16]),
+    /// A retry of the unread feeds ended; these are still unread.
+    RemovalsRetried(HashSet<[u8; 16]>),
     /// The refreshed own device list leaves this device out (controller.ts `refreshOwnDeviceList` `!listed`): revoked.
     Unlisted,
 }
@@ -150,6 +157,9 @@ impl SyncHooks for Hooks {
     fn failed(&self) {
         let _ = self.tx.send(Update::Panicked);
     }
+    fn removals_read(&self, group: [u8; 16]) {
+        let _ = self.tx.send(Update::RemovalsCleared(group));
+    }
 }
 
 /// The gateway connection's owner: the one place a gateway is started, replaced or stopped.
@@ -176,7 +186,19 @@ pub(crate) struct Inner {
     runtime: tokio::runtime::Handle,
     prefs: Prefs,
     upkeep: Arc<Upkeep>,
+    #[cfg_attr(
+        not(feature = "testing"),
+        allow(
+            dead_code,
+            reason = "Client::snapshots (feature testing) is its reader"
+        )
+    )]
+    taps: Taps,
 }
+
+/// Every published snapshot, for the subscribers of `Client::snapshots` (feature `testing`): the watch channel keeps
+/// only the newest, and a test that must see that a value never appeared needs them all.
+type Taps = Arc<Mutex<Vec<mpsc::UnboundedSender<Arc<AppState>>>>>;
 
 /// A runtime that, unless handed on, is shut down in the background when dropped: safe on any thread, an async task's
 /// included (a plain drop there panics).
@@ -316,6 +338,7 @@ impl Client {
             user_id,
             device_id,
         );
+        let taps = Taps::default();
         let initial = AppState {
             account: crate::state::AccountState {
                 phase: if owed {
@@ -349,6 +372,7 @@ impl Client {
             runtime: runtime.handle().clone(),
             prefs: Prefs::instance(&cfg.data_dir),
             upkeep: upkeep.clone(),
+            taps: taps.clone(),
         });
         let _ = area_inner.set(Arc::downgrade(&inner));
         let publisher = Publisher {
@@ -368,7 +392,8 @@ impl Client {
             upkeep,
             inner: area_inner,
             removals_due: false,
-            removals_pending: false,
+            removals: RemovalGate::default(),
+            taps,
         };
         runtime.spawn(watch_poison(
             publisher.core.clone(),
@@ -388,6 +413,17 @@ impl Client {
     /// The observable state: a new snapshot is published on every change.
     pub fn state(&self) -> watch::Receiver<Arc<AppState>> {
         self.inner.state.clone()
+    }
+
+    /// Feature `testing`: every snapshot published from now on, in order (the current one first). [`Client::state`]
+    /// coalesces; this is for a test that must show a value never appeared in any snapshot.
+    #[cfg(feature = "testing")]
+    pub fn snapshots(&self) -> mpsc::UnboundedReceiver<Arc<AppState>> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut taps = lock_taps(&self.inner.taps);
+        let _ = tx.send(self.inner.state.borrow().clone());
+        taps.push(tx);
+        rx
     }
 
     /// This instance's non-secret preferences (`<data_dir>/prefs.json`).
@@ -858,8 +894,79 @@ struct Publisher {
     inner: Arc<OnceLock<Weak<Inner>>>,
     /// A ready came since the last structure load: the next one reads the removal feeds first.
     removals_due: bool,
-    /// The removal feeds of a ready are being read: no timeline is read until they are ([`Update::RemovalsRead`]).
-    removals_pending: bool,
+    /// Which timelines may not be read yet because a removal feed is unread.
+    removals: RemovalGate,
+    taps: Taps,
+}
+
+fn lock_taps(taps: &Taps) -> std::sync::MutexGuard<'_, Vec<mpsc::UnboundedSender<Arc<AppState>>>> {
+    taps.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// What keeps a timeline unread until its removal feed is: a ready's read in flight (every timeline), and each group
+/// whose read failed or could not run (its timeline), retried with the key-package backoff.
+#[derive(Debug, Default)]
+struct RemovalGate {
+    /// The newest ready whose feeds are being read (a token: an older ready's answer does not clear a newer one).
+    generation: u64,
+    pending: Option<u64>,
+    unread: HashSet<[u8; 16]>,
+    delay_ms: u64,
+    retrying: bool,
+}
+
+impl RemovalGate {
+    /// A ready's read starts: its generation.
+    fn start(&mut self) -> u64 {
+        self.generation += 1;
+        self.pending = Some(self.generation);
+        self.generation
+    }
+
+    /// A ready's read ended: answers whether it was the newest one.
+    fn read(&mut self, generation: u64, unread: HashSet<[u8; 16]>) -> bool {
+        self.unread.extend(unread);
+        if self.pending == Some(generation) {
+            self.pending = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn cleared(&mut self, group: &[u8; 16]) {
+        self.unread.remove(group);
+        if self.unread.is_empty() {
+            self.delay_ms = 0;
+        }
+    }
+
+    /// Whether `group`'s timeline may be read now.
+    fn readable(&self, group: &[u8; 16]) -> bool {
+        self.pending.is_none() && !self.unread.contains(group)
+    }
+
+    /// The next retry's wait and the groups it reads, unless one is out or nothing is unread.
+    fn next_retry(&mut self) -> Option<(Duration, Vec<[u8; 16]>)> {
+        if self.retrying || self.unread.is_empty() {
+            return None;
+        }
+        self.retrying = true;
+        self.delay_ms = crate::account::keypackages::next_delay_ms(self.delay_ms);
+        Some((
+            Duration::from_millis(self.delay_ms),
+            self.unread.iter().copied().collect(),
+        ))
+    }
+
+    fn retried(&mut self, still: HashSet<[u8; 16]>) {
+        self.retrying = false;
+        self.unread.extend(still);
+        if self.unread.is_empty() {
+            self.delay_ms = 0;
+        }
+    }
 }
 
 impl Publisher {
@@ -921,7 +1028,20 @@ impl Publisher {
                     Update::FactorChecked(owed) => self.factor_completed(owed),
                     Update::Panicked => panicked = true,
                     Update::Unlisted => self.sign_out(),
-                    Update::RemovalsRead => self.removals_pending = false,
+                    Update::RemovalsRead { generation, unread } => {
+                        if self.removals.read(generation, unread) {
+                            groups.insert([0; 16]);
+                        }
+                        self.retry_removals();
+                    }
+                    Update::RemovalsCleared(g) => {
+                        self.removals.cleared(&g);
+                        groups.insert(g);
+                    }
+                    Update::RemovalsRetried(still) => {
+                        self.removals.retried(still);
+                        self.retry_removals();
+                    }
                 }
             }
             if self.core.is_poisoned() || panicked {
@@ -948,7 +1068,11 @@ impl Publisher {
     }
 
     fn publish(&self) {
-        self.tx.send_replace(Arc::new(self.state.clone()));
+        let snapshot = Arc::new(self.state.clone());
+        // Under the taps' lock, so a subscriber added meanwhile sees either this snapshot as its first or receives it.
+        let mut taps = lock_taps(&self.taps);
+        taps.retain(|t| t.send(snapshot.clone()).is_ok());
+        self.tx.send_replace(snapshot);
     }
 
     /// The device is revoked: final for this client (a later ready never says otherwise, see [`phase_on_ready`]).
@@ -1119,16 +1243,36 @@ impl Publisher {
             .flatten();
         // Until the feeds are read, no timeline is read (a trust refresh or a catch-up of this ready may report a
         // group changed first): the store may still hold a message removed while this device was away.
-        self.removals_pending |= removals.is_some();
+        let generation = removals.as_ref().map(|_| self.removals.start());
         tokio::spawn(async move {
-            if let Some(inner) = removals {
-                crate::sync::removals::recover_moderation_removals(&inner).await;
+            if let (Some(inner), Some(generation)) = (removals, generation) {
+                let unread = crate::sync::removals::recover_moderation_removals(&inner).await;
                 drop(inner);
-                let _ = updates.send(Update::RemovalsRead);
+                let _ = updates.send(Update::RemovalsRead { generation, unread });
             }
             if let Ok(loaded) = load_structure(&api).await {
                 let _ = updates.send(Update::Loaded(Box::new(loaded)));
             }
+        });
+    }
+
+    /// Retries the unread removal feeds after the backoff (5 s doubling to 5 min, as a key-package publish); a feed
+    /// read on the way (an apply, an open) clears its group without waiting.
+    fn retry_removals(&mut self) {
+        let Some((wait, groups)) = self.removals.next_retry() else {
+            return;
+        };
+        let inner = self.inner.get().cloned();
+        let updates = self.updates.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(wait).await;
+            let still = match inner.and_then(|w| w.upgrade()) {
+                Some(inner) => {
+                    crate::sync::removals::retry_moderation_removals(&inner, groups).await
+                }
+                None => groups.into_iter().collect(),
+            };
+            let _ = updates.send(Update::RemovalsRetried(still));
         });
     }
 
@@ -1181,12 +1325,20 @@ impl Publisher {
                 resyncing.contains(g)
             });
         }
-        for channel in channels.iter().filter(|_| !self.removals_pending) {
+        for channel in channels {
             let id = ChannelId(*channel);
             let group_state = self.state.channel(id).map(|c| c.group).unwrap_or_default();
             let Some(group) = channel_group(id, &rows).filter(|g| g.state != 4).cloned() else {
                 continue;
             };
+            // A removal feed not read yet: the store may hold a message removed meanwhile. The timeline is shown as
+            // loading (no timeline), never with what the store holds.
+            if !self.removals.readable(&group.group_id) {
+                if self.removals.pending.is_none() {
+                    self.state.timelines.remove(&id);
+                }
+                continue;
+            }
             let timeline = self.read_timeline(id, group_state, &group).await;
             if let Some(t) = timeline {
                 self.state.timelines.insert(id, t);

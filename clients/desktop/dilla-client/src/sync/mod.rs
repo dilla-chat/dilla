@@ -244,6 +244,9 @@ pub trait SyncHooks: Send + Sync {
     /// A job of the engine panicked without poisoning the core (a bug in the engine, not the store): the engine has
     /// stopped, and the client is to report itself failed rather than carry on with a lane that silently lost a job.
     fn failed(&self) {}
+    /// A community group's removal feed was read to its end (the core holds every tombstone the instance has): its
+    /// timeline may be published again ([`Engine::recover_removals_all`] lists those whose read failed).
+    fn removals_read(&self, _group: Gid) {}
 }
 
 /// The gateway's lifecycle as the model sees it.
@@ -279,6 +282,9 @@ struct St {
     count425: HashMap<Gid, u32>,
     reframed_once: HashSet<(Gid, Gid)>,
     trust_retried: HashMap<(Gid, Gid), bool>,
+    /// Groups whose removal recovery already reset the trust memory for a moderator this ready (once per group per
+    /// ready, as `trust_retried` bounds a send's trust retry).
+    removal_trust_tried: HashSet<Gid>,
     resync_tried: HashSet<Gid>,
     recovery_generation: HashMap<Gid, u64>,
     quiet: HashSet<Gid>,
@@ -408,6 +414,18 @@ impl Engine {
                 .is_err()
             {
                 this.panicked();
+            }
+        }
+    }
+
+    /// [`Engine::watched`] for a job with an answer: `None` when it panicked.
+    async fn watched_value<T>(self: &Arc<Self>, job: impl Future<Output = T>) -> Option<T> {
+        use futures_util::FutureExt;
+        match std::panic::AssertUnwindSafe(job).catch_unwind().await {
+            Ok(v) => Some(v),
+            Err(_) => {
+                self.panicked();
+                None
             }
         }
     }
@@ -713,6 +731,7 @@ impl Engine {
             st.quiet.clear();
             st.resync_tried.clear();
             st.heal_blocked.clear();
+            st.removal_trust_tried.clear();
         }
         let this = Arc::clone(self);
         self.lane_spawn("w", async move {
@@ -1116,9 +1135,15 @@ impl Engine {
     /// read once (the leaf refresh controller.ts runs on every ready) and the feed is read again. That refresh reports
     /// no group changed: a group whose feed has not been read yet must not have its timeline published by it (the
     /// caller reports `g` once its feed is in).
+    ///
+    /// The trust memory is reset at most once per group per ready. A success is reported ([`SyncHooks::removals_read`]).
     async fn recover_removals(&self, g: Gid) -> Result<u64, SyncError> {
-        match removals::recover_group(&self.core, &self.api, g).await {
-            Err(SyncError::Core(e)) if e.code == "E_CORE_INPUT" && !self.stopped() => {
+        let read = match removals::recover_group(&self.core, &self.api, g).await {
+            Err(SyncError::Core(e))
+                if e.code == "E_CORE_INPUT"
+                    && !self.stopped()
+                    && self.st().removal_trust_tried.insert(g) =>
+            {
                 *self.trust.lock().await = trust::TrustMemory::default();
                 if trust::refresh_once(&self.api, &self.core, &self.trust, now_s()).await {
                     self.hooks.trust_changed();
@@ -1126,7 +1151,11 @@ impl Engine {
                 removals::recover_group(&self.core, &self.api, g).await
             }
             other => other,
+        };
+        if read.is_ok() {
+            self.hooks.removals_read(g);
         }
+        read
     }
 
     /// An active, settled group bound to a community (kind 0 with a community id, no commit of its own pending): the
@@ -1139,33 +1168,63 @@ impl Engine {
 
     /// Reads every active community group's removal feed, each on its own lane, and answers once all of them have run:
     /// a recovery that ingested anything reports its group changed. A failure is left for the next apply, ready or open.
-    pub async fn recover_removals_all(self: &Arc<Self>) {
+    pub async fn recover_removals_all(self: &Arc<Self>) -> HashSet<Gid> {
         if self.stopped() {
-            return;
+            return HashSet::new();
         }
-        let jobs: Vec<_> = self
+        let groups = self
             .groups()
             .await
             .into_iter()
-            .filter(|r| r.kind == 0 && r.state == 2 && r.community_id.is_some())
-            .map(|r| {
-                let (this, g) = (Arc::clone(self), r.group_id);
-                self.watched(async move {
+            .filter(|r| r.kind == 0 && r.community_id.is_some() && r.state != 4)
+            .map(|r| r.group_id)
+            .collect();
+        self.recover_removals_of(groups).await
+    }
+
+    /// Reads the removal feed of each of `groups` on its own lane; answers those whose feed is still unread: a read
+    /// that failed, or a group that could not be read now (a commit of its own pending, a resync due). A group that is
+    /// gone or no community group needs no read. Each group read is reported changed.
+    pub async fn recover_removals_of(self: &Arc<Self>, groups: Vec<Gid>) -> HashSet<Gid> {
+        let jobs: Vec<_> = groups
+            .into_iter()
+            .map(|g| {
+                let this = Arc::clone(self);
+                async move {
                     let lane = Arc::clone(&this.lanes);
-                    lane.run(&key(&g), async move {
-                        if this.stopped() || !this.is_community_group(g).await {
-                            return;
-                        }
-                        // Reported whatever was ingested: a trust refresh on the way may have released held rows.
-                        if this.recover_removals(g).await.is_ok() {
-                            this.hooks.group_changed(g);
-                        }
-                    })
-                    .await;
-                })
+                    let read = lane
+                        .run(&key(&g), async {
+                            if this.stopped() {
+                                return false;
+                            }
+                            let Some(row) = this.row(g).await else {
+                                return true;
+                            };
+                            if row.kind != 0 || row.community_id.is_none() || row.state == 4 {
+                                return true;
+                            }
+                            if !this.is_community_group(g).await {
+                                return false;
+                            }
+                            // Reported whatever was ingested: a trust refresh on the way may have released held rows.
+                            let ok = this.recover_removals(g).await.is_ok();
+                            if ok {
+                                this.hooks.group_changed(g);
+                            }
+                            ok
+                        })
+                        .await;
+                    (!read).then_some(g)
+                }
             })
             .collect();
-        futures_util::future::join_all(jobs).await;
+        let watched = self.watched_value(futures_util::future::join_all(jobs));
+        watched
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     pub fn request_catch_up(self: &Arc<Self>, g: Gid) {

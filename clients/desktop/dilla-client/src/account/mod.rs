@@ -72,6 +72,8 @@ pub(crate) struct Upkeep {
     backups_status: Mutex<BackupStatus>,
     user: [u8; 16],
     device: [u8; 16],
+    #[cfg(test)]
+    panic_next: AtomicBool,
     /// A ready was seen: a later one is a reconnect, whose key-package count is read from the server (controller.ts
     /// `keyPackagesRecheck`).
     seen_ready: AtomicBool,
@@ -108,6 +110,8 @@ impl Upkeep {
             confirmed_root: Mutex::default(),
             root_mismatch: AtomicBool::new(false),
             seen_ready: AtomicBool::new(false),
+            #[cfg(test)]
+            panic_next: AtomicBool::new(false),
         })
     }
 
@@ -177,7 +181,13 @@ impl Upkeep {
             kp.busy = true;
         }
         self.runtime.spawn(async move {
-            let outcome = me.refill_once(remaining, recheck).await;
+            use futures_util::FutureExt;
+            // A panic in the attempt is a failed attempt (recorded, retried with the backoff), never a `busy` left set
+            // that would stop every later publish.
+            let outcome = std::panic::AssertUnwindSafe(me.refill_once(remaining, recheck))
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|_| Err("E_PANICKED".to_owned()));
             let mut kp = lock(&me.kp);
             kp.busy = false;
             match outcome {
@@ -214,6 +224,10 @@ impl Upkeep {
     }
 
     async fn refill_once(&self, remaining: u32, recheck: bool) -> Result<(u32, u32), String> {
+        #[cfg(test)]
+        if self.panic_next.swap(false, Ordering::AcqRel) {
+            panic!("an injected panic in the refill");
+        }
         let cached = lock(&self.kp).limits;
         let limits = match cached {
             Some(l) => l,
@@ -258,4 +272,56 @@ pub(crate) fn refill_key_packages(inner: &Inner, remaining: u32) {
 /// the error, and nothing was repaired.
 pub(crate) async fn backups_after_ready(inner: &Inner) -> Result<AfterReady, BackupError> {
     inner.upkeep().ready_pass().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A panic inside a refill attempt resets `busy` (and is recorded and retried), so later publishes still run.
+    #[tokio::test]
+    async fn a_panicking_refill_resets_busy() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let core: CoreHandle = Arc::new(Mutex::new(
+            dilla_core::client::ClientCore::open(Arc::new(Mutex::new(conn))).unwrap(),
+        ));
+        let auth = crate::auth::AuthToken::new("token");
+        let http = crate::http::ReqwestHttp::new(
+            url::Url::parse("http://127.0.0.1:9").unwrap(),
+            auth.clone(),
+        )
+        .unwrap();
+        let api = Arc::new(Api::new(
+            http,
+            crate::sync::requests::SocketRequests::new(),
+            auth,
+            core.clone(),
+            Arc::new(|_: &str| {}),
+        ));
+        let upkeep = Upkeep::new(
+            core,
+            api,
+            tokio::runtime::Handle::current(),
+            [1; 16],
+            [2; 16],
+        );
+        upkeep.panic_next.store(true, Ordering::Release);
+        upkeep.refill(0, false);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if !lock(&upkeep.kp).busy && upkeep.key_package_status().last_error.is_some() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the attempt ended");
+        let kp = lock(&upkeep.kp);
+        assert!(!kp.busy, "busy is reset");
+        assert_eq!(kp.status.last_error.as_deref(), Some("E_PANICKED"));
+        assert!(kp.retry.is_some(), "a retry is armed");
+        drop(kp);
+        upkeep.stop();
+    }
 }
