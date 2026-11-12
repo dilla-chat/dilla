@@ -362,10 +362,9 @@ mod tests {
     /// shared with the GPUI desktop client (clients/desktop), which legitimately carries rustls and
     /// so puts it in the lock's union of every member's features.
     ///
-    /// `openssl-sys` is deliberately NOT on this list. It is in the testkit's tree through
-    /// `rusqlite = { features = ["bundled-sqlcipher-vendored-openssl"] }` - it is SQLCipher's, not
-    /// a WebSocket TLS stack, and forbidding it would make this test fail on its first run and
-    /// never pass. The four that remain are genuinely absent from that tree today.
+    /// `openssl-sys` is on the list too since Task 6b: the store is SQLite3 Multiple Ciphers with
+    /// its own crypto, so nothing in the testkit's tree links OpenSSL any more (before, SQLCipher's
+    /// `bundled-sqlcipher-vendored-openssl` put it there).
     #[test]
     fn no_websocket_tls_stack_is_in_the_lock_file() {
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
@@ -387,7 +386,7 @@ mod tests {
             "the tree is the testkit's own ({} lines)",
             packages.len()
         );
-        for forbidden in ["rustls", "native-tls", "webpki", "ring"] {
+        for forbidden in ["rustls", "native-tls", "webpki", "ring", "openssl-sys"] {
             assert!(
                 !packages.contains(&forbidden),
                 "{forbidden} entered the testkit's dependency tree: a TLS feature was enabled on ureq or tungstenite"

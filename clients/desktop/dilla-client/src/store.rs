@@ -1,4 +1,5 @@
-//! One instance's encrypted local database: a SQLCipher file keyed with 32 random bytes that live only
+//! One instance's encrypted local database: a SQLite3 Multiple Ciphers (ChaCha20-Poly1305) file keyed
+//! by `dilla_core::native_store` with 32 random bytes that live only
 //! in the OS keychain (service [`crate::keychain::SERVICE`], account `<install-id>/instance-<n>`, the
 //! install id being the root's, from `instances.json`; see [`crate::instances`]).
 //!
@@ -32,6 +33,7 @@ use std::sync::{Arc, Mutex};
 
 use dilla_core::client::{ClientCore, ClientError};
 use dilla_core::mls::ConnHandle;
+use dilla_core::native_store::{self, KeyError};
 use rusqlite::{Connection, OpenFlags};
 use zeroize::Zeroizing;
 
@@ -52,7 +54,7 @@ pub enum StoreError {
     #[error("the platform keychain is unavailable")]
     KeychainUnavailable,
     /// The database cannot be decrypted with the stored key: a wrong key or a damaged page 1, which
-    /// SQLCipher both report as `SQLITE_NOTADB`; or the stored value is not a 32-byte key. Busy, I/O and other failures are
+    /// SQLite3 Multiple Ciphers both report as `SQLITE_NOTADB`; or the stored value is not a 32-byte key. Busy, I/O and other failures are
     /// [`StoreError::Database`], never this: a UI may offer a reset on `Locked`.
     #[error("the database cannot be decrypted (wrong key or damaged page 1)")]
     Locked,
@@ -89,7 +91,7 @@ pub fn open_store(cfg: &InstanceConfig, kc: &dyn Keychain) -> Result<ClientCore,
     ClientCore::open(conn).map_err(StoreError::Core)
 }
 
-/// The keyed, verified SQLCipher connection under [`open_store`].
+/// The keyed, verified connection under [`open_store`].
 pub fn open_connection(cfg: &InstanceConfig, kc: &dyn Keychain) -> Result<ConnHandle, StoreError> {
     if usize::from(cfg.id.0) >= MAX_INSTANCES {
         return Err(StoreError::InvalidInstance);
@@ -175,56 +177,29 @@ fn create_database(dir: &Path, db: &Path, key: &[u8; KEY_LEN]) -> Result<(), Sto
     sync_dir(dir)
 }
 
-/// Opens an existing file with the raw key, exactly as `dilla-bot-core` does, and proves the key by
-/// reading the schema. Only `SQLITE_NOTADB` (the key does not decrypt the file) is
-/// [`StoreError::Locked`]; every other failure is [`StoreError::Database`].
+/// Opens an existing file with the raw key through `dilla_core::native_store`, as `dilla-bot-core`
+/// does (cipher, then key, then a schema read that proves it). Only `SQLITE_NOTADB` (the key does not
+/// decrypt the file) is [`StoreError::Locked`]; every other failure is [`StoreError::Database`].
 fn open_keyed(path: &Path, key: &[u8; KEY_LEN]) -> Result<Connection, StoreError> {
     // No SQLITE_OPEN_CREATE: the file must exist already.
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_NOFOLLOW
         | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
-    let conn = Connection::open_with_flags(path, flags).map_err(|_| StoreError::Database)?;
-    conn.busy_timeout(BUSY_TIMEOUT)
-        .map_err(|_| StoreError::Database)?;
-    let mut key_hex = Zeroizing::new(String::with_capacity(KEY_LEN * 2));
-    for b in key {
-        use std::fmt::Write;
-        let _ = write!(key_hex, "{b:02x}");
-    }
-    let key_pragma = Zeroizing::new(format!("PRAGMA key = \"x'{}'\"", key_hex.as_str()));
-    conn.execute_batch(&key_pragma).map_err(classify)?;
-    drop(key_pragma);
-    drop(key_hex);
-    // Connection-only settings, active before SQLCipher decrypts the first page.
-    conn.execute_batch("PRAGMA cipher_memory_security=ON; PRAGMA temp_store=MEMORY;")
-        .map_err(|_| StoreError::Database)?;
-    let cipher: String = conn
-        .query_row("PRAGMA cipher_version", [], |r| r.get(0))
-        .map_err(|_| StoreError::Database)?;
-    if cipher.is_empty() {
-        // Not a SQLCipher build: never write a plaintext database.
-        return Err(StoreError::Database);
-    }
-    let tables: i64 = conn
-        .query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))
-        .map_err(classify)?;
+    let keyed = native_store::open_keyed(path, flags, key, |conn| conn.busy_timeout(BUSY_TIMEOUT))
+        .map_err(|e| match e {
+            // NOTADB under every scheme; the error never carries key material.
+            KeyError::WrongKey | KeyError::InvalidKey => StoreError::Locked,
+            // Busy, I/O, a build that cannot encrypt: nothing about the key.
+            KeyError::Open(_) | KeyError::Database(_) | KeyError::NotEncrypted => {
+                StoreError::Database
+            }
+        })?;
     // A published database always has a schema; an empty one (truncated, say) would otherwise be
     // silently re-initialised. It says nothing about the key, so it is not `Locked`.
-    if tables == 0 && path.file_name().is_some_and(|n| n == DB_FILE) {
+    if keyed.tables == 0 && path.file_name().is_some_and(|n| n == DB_FILE) {
         return Err(StoreError::Database);
     }
-    Ok(conn)
-}
-
-/// `SQLITE_NOTADB` is what SQLCipher reports for a key that does not decrypt page 1; nothing else is
-/// evidence of a wrong key. The error itself is dropped: it never carries key material, but neither
-/// does it need to be shown.
-fn classify(e: rusqlite::Error) -> StoreError {
-    if e.sqlite_error_code() == Some(rusqlite::ErrorCode::NotADatabase) {
-        StoreError::Locked
-    } else {
-        StoreError::Database
-    }
+    Ok(keyed.conn)
 }
 
 fn remove_stage(dir: &Path) -> Result<(), StoreError> {

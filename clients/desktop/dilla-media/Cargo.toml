@@ -14,3 +14,7 @@ workspace = true
 dilla-core = { path = "../../../core/dilla-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 livekit = "=0.10.1"
+
+[dev-dependencies]
+# tests/link.rs (Task 6b): open flags for the keyed store; the same rusqlite dilla-core links.
+rusqlite = "=0.41.1"

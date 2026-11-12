@@ -1,4 +1,4 @@
-//! Task 6: instances, the SQLCipher store and the keychain that holds its key.
+//! Task 6: instances, the encrypted store and the keychain that holds its key.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -97,7 +97,7 @@ fn first_open_creates_key_and_reopens() {
     assert_eq!(kc.accounts(), vec![acct(&instances, 0)]);
     assert_eq!(kc.get(&acct(&instances, 0)).unwrap().unwrap().len(), 32);
 
-    // The database on disk is SQLCipher, not a plaintext SQLite file.
+    // The database on disk is encrypted (ChaCha20), not a plaintext SQLite file.
     let bytes = std::fs::read(cfg.data_dir.join(DB_FILE)).unwrap();
     assert!(!bytes.starts_with(b"SQLite format 3\0"));
     assert!(
@@ -283,7 +283,9 @@ fn busy_database_is_not_reported_as_locked() {
     let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
     let holder = rusqlite::Connection::open(cfg.data_dir.join(DB_FILE)).unwrap();
     holder
-        .execute_batch(&format!("PRAGMA key = \"x'{hex}'\"; BEGIN EXCLUSIVE;"))
+        .execute_batch(&format!(
+            "PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:{hex}'; BEGIN EXCLUSIVE;"
+        ))
         .unwrap();
 
     assert!(matches!(open_store(&cfg, &kc), Err(StoreError::Database)));

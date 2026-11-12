@@ -47,7 +47,12 @@ thiserror  = "2.0"
 zeroize    = { version = "1", features = ["zeroize_derive"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rusqlite = { version = "0.41.1", features = ["bundled-sqlcipher-vendored-openssl"] }
+# The native store: SQLite3 Multiple Ciphers with its built-in crypto (no OpenSSL), compiled by the
+# vendored libsqlite3-sys's `bundled-sqlite3mc` feature (core/vendor/README.md). rusqlite has no
+# such feature, so the -sys crate is named here to turn it on; feature unification gives rusqlite
+# that one copy. Every native crate that opens a store names the same pair.
+rusqlite       = { version = "0.41.1", features = ["bundled"] }
+libsqlite3-sys = { version = "0.39.1", features = ["bundled-sqlite3mc"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 # rusqlite's default features include `ffi-sqlite-wasm-rs`; dropping them breaks the wasm FFI
