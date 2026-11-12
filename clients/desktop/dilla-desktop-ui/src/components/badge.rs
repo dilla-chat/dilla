@@ -5,6 +5,7 @@ use gpui::{
     Styled, Window, div, px,
 };
 
+use crate::text::line;
 use crate::tokens::{color, font, radius, text};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,18 +73,15 @@ impl RenderOnce for Badge {
             .items_center()
             .justify_center()
             .h(px(16.0))
-            .bg(bg)
-            .text_color(fg)
-            .font_family(font::MONO)
-            .font_weight(font::WEIGHT_DISPLAY)
-            .child(label);
+            .bg(bg);
+        let size = if self.in_row { text::MICRO } else { text::CHIP };
+        let pill = pill.child(
+            line(label, size, crate::text::line_height(size, 1.5), fg).weight(font::WEIGHT_DISPLAY),
+        );
         if self.in_row {
-            pill.px(px(5.0)).text_size(text::MICRO).rounded(radius::SM)
+            pill.px(px(5.0)).rounded(radius::SM)
         } else {
-            pill.min_w(px(16.0))
-                .px(px(4.0))
-                .text_size(text::CHIP)
-                .rounded(radius::PILL)
+            pill.min_w(px(16.0)).px(px(4.0)).rounded(radius::PILL)
         }
     }
 }

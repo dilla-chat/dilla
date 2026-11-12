@@ -1,8 +1,11 @@
 //! The vertical slice (Task 12), driven through the automation build.
 //!
-//! - `slice_parity_channel_view`: the channel view drawn from the parity fixture matches the web client's reference
-//!   (`clients/desktop/parity/references/linux`, shot from the current web client at scale 2 with Chromium's hinting
-//!   off) under both gates: the whole frame, and the chrome outside the text lines the app reports (`text-bounds`).
+//! - `slice_parity_channel_view` and `slice_parity_channel_view_wide`: the channel view drawn from each parity fixture
+//!   matches the web client's reference of the same data (`clients/desktop/parity/references/linux`, shot from the
+//!   current web client at scale 2 with Chromium's hinting off) under both gates, with the same tolerance and no
+//!   per-fixture calibration: the whole frame, and the chrome outside the text lines the app reports (`text-bounds`).
+//!   `basic` is 1280x800 with one server; `wide` is 1440x900 with a second server selected, a category, a long channel
+//!   name, eleven members and a message that wraps.
 //! - `slice_parity_fails_with_a_fallback_font`: the negative control. The same frame with every line asking for a font
 //!   the app does not embed (the text system falls back) fails the whole-frame gate: a fallback face cannot pass.
 //! - `slice_sign_in_read_send`: against a real dillad, the app signs a new device in (password, authenticator code,
@@ -40,14 +43,19 @@ fn device_rect(e: &ElementInfo, grow: f32) -> Rect {
     }
 }
 
-/// The channel view of the parity fixture, its text mask, compared with the reference.
-fn channel_view(env: &[(&str, &str)], save_as: &str) -> Result<(), ParityFailure> {
-    let fixture = references().join("channel-view.fixture.json");
-    let reference = references().join("channel-view-2x.png");
+/// The channel view of the parity fixture `name`, its text mask, compared with the reference.
+fn channel_view(name: &str, env: &[(&str, &str)], save_as: &str) -> Result<(), ParityFailure> {
+    let fixture = references().join(format!("{name}.fixture.json"));
+    let reference = references().join(format!("{name}-2x.png"));
     let mut driver = Driver::launch_with_env(&fixture, env);
     driver.wait_for("composer", Duration::from_secs(30));
     let shot: RgbaImage = driver.screenshot();
     let text = driver.text_bounds();
+    if std::env::var_os("DILLA_SLICE_DUMP").is_some() {
+        for e in &text {
+            println!("TEXT {} {} {} {}", e.x, e.y, e.width, e.height);
+        }
+    }
     assert!(
         text.len() >= 30,
         "the app reports its text lines ({} found)",
@@ -66,8 +74,18 @@ fn channel_view(env: &[(&str, &str)], save_as: &str) -> Result<(), ParityFailure
     ignore = "the channel-view reference is shot on Linux only (macOS and Windows tolerances are PENDING-CI)"
 )]
 fn slice_parity_channel_view() {
-    channel_view(&[], "channel-view-gpui-2x.png")
+    channel_view("channel-view", &[], "channel-view-gpui-2x.png")
         .unwrap_or_else(|e| panic!("the channel view differs from the web reference: {e:?}"));
+}
+
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "the channel-view reference is shot on Linux only (macOS and Windows tolerances are PENDING-CI)"
+)]
+fn slice_parity_channel_view_wide() {
+    channel_view("channel-view-wide", &[], "channel-view-wide-gpui-2x.png")
+        .unwrap_or_else(|e| panic!("the wide channel view differs from the web reference: {e:?}"));
 }
 
 #[test]
@@ -77,6 +95,7 @@ fn slice_parity_channel_view() {
 )]
 fn slice_parity_fails_with_a_fallback_font() {
     let result = channel_view(
+        "channel-view",
         &[("DILLA_AUTOMATION_FALLBACK_FONT", "1")],
         "channel-view-fallback-font-2x.png",
     );

@@ -5,6 +5,7 @@ pub mod components;
 pub mod icon;
 #[rustfmt::skip]
 pub mod icon_names;
+pub mod text;
 pub mod theme;
 #[rustfmt::skip]
 pub mod tokens;

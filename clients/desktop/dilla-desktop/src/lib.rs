@@ -7,7 +7,6 @@ pub mod automation;
 #[cfg(feature = "automation")]
 pub mod fixture;
 pub mod screens;
-pub mod text;
 
 use gpui::{
     App, Bounds, Global, IntoElement, Result, TitlebarOptions, WindowBounds, WindowHandle,
@@ -61,7 +60,8 @@ pub fn open_main_window(cx: &mut App) -> Result<WindowHandle<AppView>> {
 /// Opens the main window for `launch`.
 pub fn open_main_window_with(cx: &mut App, launch: Launch) -> Result<WindowHandle<AppView>> {
     install(cx);
-    let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
+    let (width, height) = launch.window;
+    let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),

@@ -5,6 +5,7 @@ use gpui::{
     SharedString, Styled, Window, div, hsla, px,
 };
 
+use crate::text::{line, line_height};
 use crate::tokens::{color, font, radius, text};
 
 /// The Signal prototype's avatar colours (`AVATAR_PALETTE` in Avatar.tsx): hue in degrees, saturation and lightness in percent.
@@ -208,11 +209,15 @@ impl RenderOnce for Avatar {
             .size(side)
             .rounded(corner)
             .bg(bg)
-            .font_family(font::MONO)
-            .font_weight(font::WEIGHT_DISPLAY)
-            .text_size(initials_size)
-            .text_color(gpui::white())
-            .child(initials);
+            .child(
+                line(
+                    initials,
+                    initials_size,
+                    line_height(initials_size, 1.5),
+                    color::BRAND_INK,
+                )
+                .weight(font::WEIGHT_DISPLAY),
+            );
         if let Some(presence) = self.presence {
             // The 9px dot sits 1px outside the corner inside a 2px ring in --bg-2.
             root = root.child(

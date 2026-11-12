@@ -23,8 +23,8 @@ use dilla_desktop_ui::tokens::{color, font, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
 
 use crate::screens::{FocusNext, FocusPrevious};
-use crate::text::line;
 use crate::tracked_box;
+use dilla_desktop_ui::text::line;
 
 /// The device is signed in: the instance to start the client for.
 pub struct SignedIn(pub InstanceConfig);
@@ -432,7 +432,7 @@ impl Render for SignInView {
                             15.0,
                             color::FG_3,
                         )
-                        .spacing(0.8),
+                        .tracking(0.08),
                     )
                     .child(div().flex().gap(px(4.)).children(progress)),
             )
@@ -495,7 +495,7 @@ impl Render for SignInView {
                     .child(
                         line("DILLA", text::XS, 16.5, color::FG)
                             .weight(font::WEIGHT_DISPLAY)
-                            .spacing(1.32),
+                            .tracking(crate::screens::LABEL_TRACKING_WIDE),
                     ),
             )
             .child(card)

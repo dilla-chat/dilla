@@ -4,7 +4,8 @@
 //
 // Usage (from the repository root, after `npm run build -w @dilla/web`, `go build -o target/dilla-testhost
 // ./cmd/dilla-testhost` and the WASI core build, see README.md):
-//   node clients/desktop/parity/references/shoot-channel-view.mjs [outDir]
+//   node clients/desktop/parity/references/shoot-channel-view.mjs <basic|wide> [outDir]
+// `basic` writes linux/channel-view-2x.png and linux/channel-view.fixture.json; `wide` the channel-view-wide pair.
 //
 // It runs `cargo run -p dilla-desktop --example parity_world` (a real dillad with the fixture in it), signs Ada in on a
 // fresh Chromium the way a new browser signs in (password, authenticator code, recovery key), opens #general and takes
@@ -20,9 +21,11 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '../../../..');
-const OUT = resolve(process.argv[2] ?? join(REPO, 'target', `parity-world-${process.pid}`));
+const SCENARIO = process.argv[2];
+if (SCENARIO !== 'basic' && SCENARIO !== 'wide') throw new Error('usage: shoot-channel-view.mjs <basic|wide> [outDir]');
+const NAME = SCENARIO === 'basic' ? 'channel-view' : 'channel-view-wide';
+const OUT = resolve(process.argv[3] ?? join(REPO, 'target', `parity-world-${SCENARIO}-${process.pid}`));
 const DEST = join(HERE, 'linux');
-const VIEWPORT = { width: 1280, height: 800 };
 const WAIT = 60_000;
 
 function base32(secret) {
@@ -58,7 +61,7 @@ async function nextCode(state) {
 }
 
 function startWorld() {
-  const child = spawn('cargo', ['run', '-q', '-p', 'dilla-desktop', '--example', 'parity_world', '--', OUT], {
+  const child = spawn('cargo', ['run', '-q', '-p', 'dilla-desktop', '--example', 'parity_world', '--', SCENARIO, OUT], {
     cwd: REPO, stdio: ['pipe', 'pipe', 'inherit'],
   });
   const waiters = {};
@@ -79,6 +82,7 @@ const world = startWorld();
 try {
   await world.signin;
   const state = JSON.parse(readFileSync(join(OUT, 'state.json'), 'utf8'));
+  const VIEWPORT = { width: state.window[0], height: state.window[1] };
   const browser = await chromium.launch({ args: ['--font-render-hinting=none', '--enable-font-subpixel-positioning'] });
   const context = await browser.newContext({
     viewport: VIEWPORT, deviceScaleFactor: 2, reducedMotion: 'reduce', timezoneId: 'UTC', locale: 'en-US',
@@ -96,13 +100,16 @@ try {
   await page.getByLabel('Recovery key', { exact: true }).fill(state.recoveryKey);
   await page.getByRole('button', { name: 'Add browser', exact: true }).click();
   await page.getByRole('button', { name: 'Open dilla', exact: true }).click();
-  // The shell, on #general (the browser joins its group here), then the history, posted by the world's clients.
-  await page.locator('.d-channel-header').filter({ hasText: 'general' }).waitFor();
-  await page.getByPlaceholder('Message #general').waitFor();
+  // The shell; then the scenario's server and channel (the browser joins its group as it opens it), then the history,
+  // posted by the world's clients.
+  await page.locator('.d-channel-header').waitFor();
+  await page.locator('.d-community-rail__item').filter({ hasText: state.server }).click();
+  await page.locator('.d-chrow').filter({ hasText: state.channel }).first().click();
+  await page.getByPlaceholder(`Message #${state.channel}`).waitFor();
   await page.waitForTimeout(3000);
   world.child.stdin.write('post\n');
   await world.ready;
-  await page.getByText('perfect, nothing else from me', { exact: true }).waitFor();
+  await page.getByText(state.lastMessage, { exact: true }).waitFor();
   // The member pane stays closed: the slice has no presence, so the view is compared without it.
   const members = page.locator('.d-channel-header [data-members-toggle]');
   if ((await members.getAttribute('aria-pressed')) === 'true' || (await members.getAttribute('aria-expanded')) === 'true') {
@@ -113,7 +120,7 @@ try {
   await page.evaluate(() => document.fonts.ready);
   await page.waitForTimeout(1000);
   mkdirSync(DEST, { recursive: true });
-  const file = join(DEST, 'channel-view-2x.png');
+  const file = join(DEST, `${NAME}-2x.png`);
   await page.screenshot({ path: file });
   // The geometry behind the frame, for porting: every visible box and text run with its computed type and colour
   // (written beside the world's state, never into the repository).
@@ -136,8 +143,8 @@ try {
     }
     return out;
   });
-  writeFileSync(join(OUT, 'channel-view.layout.json'), JSON.stringify(layout, null, 1));
-  copyFileSync(join(OUT, 'fixture.json'), join(DEST, 'channel-view.fixture.json'));
+  writeFileSync(join(OUT, `${NAME}.layout.json`), JSON.stringify(layout, null, 1));
+  copyFileSync(join(OUT, 'fixture.json'), join(DEST, `${NAME}.fixture.json`));
   console.log('wrote', file);
   await browser.close();
 } finally {

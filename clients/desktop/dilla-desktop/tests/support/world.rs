@@ -405,6 +405,20 @@ pub fn clear_session(p: &Person) {
 /// A community named `name` with one text channel, #general, owned by `owner`; every one of `members` joins it.
 /// Answers the community id.
 pub fn community(host: &Host, owner: &Person, name: &str, members: &[&Person]) -> [u8; 16] {
+    community_with(host, owner, name, members, &[])
+}
+
+/// A channel to make: its kind (0 text, 1 voice, 2 category), its name and the name of the category it sits in.
+pub type ChannelSpec<'a> = (u64, &'a str, Option<&'a str>);
+
+/// [`community`] with more channels after #general, made in order (a category before the channels in it).
+pub fn community_with(
+    host: &Host,
+    owner: &Person,
+    name: &str,
+    members: &[&Person],
+    channels: &[ChannelSpec<'_>],
+) -> [u8; 16] {
     use dilla_core::ids::DeviceId;
     use dilla_testkit::HttpDs;
     let mut ds = HttpDs::with_session(
@@ -415,7 +429,22 @@ pub fn community(host: &Host, owner: &Person, name: &str, members: &[&Person]) -
     .unwrap();
     let c = ds.create_community(name).unwrap();
     ds.create_text_channel(&c, "general").unwrap();
-    let code = ds.create_invite(&c, 10, 3600).unwrap();
+    let mut made: Vec<(&str, [u8; 16])> = Vec::new();
+    for (kind, channel, parent) in channels {
+        let (id, _, _) = match parent {
+            Some(parent) => {
+                let parent = made
+                    .iter()
+                    .find(|(n, _)| n == parent)
+                    .expect("the category is made first")
+                    .1;
+                ds.create_channel_in(&c, *kind, channel, &parent).unwrap()
+            }
+            None => ds.create_channel(&c, *kind, channel).unwrap(),
+        };
+        made.push((channel, id));
+    }
+    let code = ds.create_invite(&c, 64, 3600).unwrap();
     drop(ds);
     for m in members {
         let mut ds = HttpDs::with_session(

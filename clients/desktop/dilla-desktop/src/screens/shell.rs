@@ -1,6 +1,7 @@
 //! The desktop shell (packages/ui AppShell, Signal §5.1): the top bar over the server rail, the sidebar (the channel
-//! list above the user panel) and the main column (the channel header, the message log, the composer). Geometry is the
-//! web client's at 1280x800, measured from the beta.5 reference (`clients/desktop/parity/references/linux`).
+//! list above the user panel) and the main column (the channel header, the message log, the composer), laid out with the
+//! web CSS's sizes (AppShell.css, TopBar.css, CommunityRail.css, UserPanel.css, ChannelHeader.css) and Task 5's
+//! components.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -10,15 +11,21 @@ use dilla_client::Client;
 use dilla_client::state::{AppState, Channel, ChannelId, CommunityId, ConnectionStatus};
 use gpui::{
     AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    ParentElement, Render, ScrollHandle, SharedString, Styled, Subscription, Window, div, px,
+    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, Window, div, px,
 };
 
+use dilla_desktop_ui::components::{
+    Avatar, AvatarSize, Button, ButtonSize, ButtonVariant, Presence,
+};
+use dilla_desktop_ui::text::{line, line_height};
 use dilla_desktop_ui::tokens::{color, font, layout, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
 
 use crate::screens::composer::{Composer, Sent};
-use crate::screens::{FocusNext, FocusPrevious, avatar, centred, channel_list, timeline};
-use crate::text::{Edge, line};
+use crate::screens::{
+    FocusNext, FocusPrevious, LABEL_TRACKING_WIDE, centred, channel_list, timeline,
+};
 
 /// The clock and zone message times are drawn in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,6 +193,17 @@ impl ShellView {
         cx.notify();
     }
 
+    /// Shows server `community` on its first text channel.
+    pub fn pick_community(&mut self, community: CommunityId, cx: &mut Context<Self>) {
+        if self.community == Some(community) {
+            return;
+        }
+        self.community = Some(community);
+        self.channel = None;
+        self.settle_selection(cx);
+        cx.notify();
+    }
+
     fn send(&mut self, text: String, cx: &mut Context<Self>) {
         let (Some(client), Some(channel)) = (&self.client, self.channel) else {
             return;
@@ -223,7 +241,18 @@ impl ShellView {
     }
 }
 
+/// AppShell.css and CommunityRail.css: the rail's 10px top padding and its 6px item gap; the `@` tile's rule (20x1px, 2px
+/// margins); the selected tile's ring, `box-shadow: 0 0 0 2px var(--bg-2), 0 0 0 3.5px var(--accent)`.
+/// What a click on a server tile does.
+type OnPick = Rc<dyn Fn(CommunityId, &mut gpui::App)>;
+
+const RAIL_TOP: f32 = 10.0;
+const RAIL_GAP: f32 = 6.0;
+const RING_GAP: f32 = 2.0;
+const RING: f32 = 1.5;
+
 fn topbar() -> impl IntoElement {
+    let brand_name_line = line_height(text::XS, 1.5);
     let brand = div()
         .flex_1()
         .min_w_0()
@@ -231,32 +260,23 @@ fn topbar() -> impl IntoElement {
         .items_center()
         .gap(px(8.))
         .child(
-            div()
-                .size(px(18.))
-                .rounded(radius::SM)
-                .bg(color::BRAND)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    line("D", text::XS, 11.0, color::BRAND_INK)
-                        .weight(font::WEIGHT_DISPLAY)
-                        .at(Edge::Start(19.7), Edge::Start(16.0)),
-                ),
+            centred(
+                px(18.),
+                line("D", text::XS, line_height(text::XS, 1.0), color::BRAND_INK)
+                    .weight(font::WEIGHT_DISPLAY),
+            )
+            .rounded(radius::SM)
+            .bg(color::BRAND),
         )
         .child(
-            line("DILLA", text::XS, 16.5, color::FG)
+            line("DILLA", text::XS, brand_name_line, color::FG)
                 .weight(font::WEIGHT_DISPLAY)
-                .spacing(1.32)
-                .at(Edge::Start(40.0), Edge::Start(13.25)),
+                .tracking(LABEL_TRACKING_WIDE),
         )
         .child(div().w(px(6.)).h(px(12.)).bg(color::BRAND));
     let search = div().w(px(420.)).flex_none().flex().justify_center().child(
         div()
             .w(px(360.))
-            // The web box sits 8px down the 43px bar (its pixels, not the 7.5 its layout reports).
-            .relative()
-            .top(px(0.5))
             .h(px(28.))
             .bg(color::SURFACE_2)
             .border_1()
@@ -269,23 +289,30 @@ fn topbar() -> impl IntoElement {
             .gap(px(8.))
             .child(Icon::new(IconName::Search).size(px(13.)).color(color::FG_3))
             .child(
-                div().flex_1().child(
-                    line("Search or jump to…", text::UI, 18.0, color::FG_3)
-                        .at(Edge::Mid(-147.0), Edge::Start(13.0)),
+                div().flex_1().min_w_0().flex().child(
+                    line(
+                        "Search or jump to…",
+                        text::UI,
+                        line_height(text::UI, 1.5),
+                        color::FG_3,
+                    )
+                    .ellipsis(),
                 ),
             )
             .child(
                 div()
-                    .w(px(48.))
+                    .flex_none()
                     .h(px(18.))
                     .border_1()
                     .border_color(color::CONTROL_EDGE)
                     .rounded(radius::SM)
-                    .pl(px(5.))
-                    .child(
-                        line("Ctrl K", text::MICRO, 16.0, color::FG_2)
-                            .at(Edge::Mid(130.0), Edge::Start(14.0)),
-                    ),
+                    .px(px(5.))
+                    .child(line(
+                        "Ctrl K",
+                        text::MICRO,
+                        line_height(text::MICRO, 1.6),
+                        color::FG_2,
+                    )),
             ),
     );
     let end = div()
@@ -320,49 +347,53 @@ fn topbar() -> impl IntoElement {
         .child(end)
 }
 
-fn rail(state: &AppState, selected: Option<CommunityId>) -> impl IntoElement {
-    let tiles = state.communities.iter().enumerate().map(|(index, c)| {
+fn rail(state: &AppState, selected: Option<CommunityId>, on_pick: OnPick) -> impl IntoElement {
+    let tiles = state.communities.iter().map(|c| {
         let initials = dilla_desktop_ui::components::avatar::initials_of(&c.name);
-        let tile = div()
+        let picked = Some(c.id) == selected;
+        let id = c.id;
+        let on_pick = on_pick.clone();
+        let mut tile = div()
+            .id(SharedString::from(format!("server-{}", c.id.hex())))
+            .relative()
+            .flex_none()
             .size(layout::RAIL_TILE)
-            .rounded(radius::XL)
+            // CommunityRail.css: a server is a round tile in `--hover`; the selected one a rounded square in the accent.
+            .rounded(if picked { radius::XL } else { radius::PILL })
+            .bg(if picked { color::ACCENT } else { color::HOVER })
             .flex()
             .items_center()
-            .justify_center();
-        if Some(c.id) == selected {
-            // The selected tile's ring: 2px of the rail, then 1.5px of the accent (box-shadow 0 0 0 2px, 0 0 0 3.5px).
-            div()
-                .size(px(45.))
-                .flex_none()
-                .rounded(px(13.5))
-                .bg(color::ACCENT)
-                .p(px(1.5))
-                .child(
-                    div()
-                        .size(px(42.))
-                        .rounded(px(12.))
-                        .bg(color::BG_2)
-                        .p(px(2.))
-                        .child(
-                            tile.bg(color::ACCENT).child(
-                                line(initials, text::XS, 11.0, color::ACCENT_INK)
-                                    .weight(font::WEIGHT_DISPLAY)
-                                    .at(
-                                        Edge::Start(21.4),
-                                        Edge::Start(122.5 + 45.0 * index as f32),
-                                    ),
-                            ),
-                        ),
+            .justify_center()
+            .cursor_pointer()
+            .on_click(move |_, _, cx| on_pick(id, cx))
+            .child(
+                line(
+                    initials,
+                    text::XS,
+                    line_height(text::XS, 1.0),
+                    if picked {
+                        color::ACCENT_INK
+                    } else {
+                        color::FG_2
+                    },
                 )
-                .into_any_element()
-        } else {
-            div()
-                .p(px(3.5))
-                .child(tile.bg(color::SURFACE_HI).child(
-                    line(initials, text::XS, 11.0, color::FG_2).weight(font::WEIGHT_DISPLAY),
-                ))
-                .into_any_element()
+                .weight(font::WEIGHT_DISPLAY),
+            );
+        if picked {
+            // The ring around the tile, outside its box (a box-shadow takes no room in the rail).
+            let out = RING_GAP + RING;
+            tile = tile.child(
+                div()
+                    .absolute()
+                    .left(px(-out))
+                    .top(px(-out))
+                    .size(layout::RAIL_TILE + px(2.0 * out))
+                    .rounded(radius::XL + px(out))
+                    .border(px(RING))
+                    .border_color(color::ACCENT),
+            );
         }
+        tile
     });
     div()
         .flex_none()
@@ -383,50 +414,36 @@ fn rail(state: &AppState, selected: Option<CommunityId>) -> impl IntoElement {
         .flex()
         .flex_col()
         .items_center()
-        .pt(px(10.))
+        .pt(px(RAIL_TOP))
+        .gap(px(RAIL_GAP))
         .child(
-            div()
-                .size(layout::RAIL_TILE)
-                .rounded_full()
-                .bg(color::HOVER)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(Icon::new(IconName::AtSign).size(px(17.)).color(color::FG_2)),
+            centred(
+                layout::RAIL_TILE,
+                Icon::new(IconName::AtSign).size(px(17.)).color(color::FG_2),
+            )
+            .rounded_full()
+            .bg(color::HOVER),
         )
+        .child(div().my(px(2.)).w(px(20.)).h(px(1.)).bg(color::HAIRLINE_2))
+        .children(tiles)
         .child(
-            div()
-                .mt(px(8.))
-                .mb(px(8.))
-                .w(px(20.))
-                .h(px(1.))
-                .bg(color::HAIRLINE_2),
-        )
-        // The ring overhangs the 38px tile by 3.5px each side; the column keeps the tile's 6px gaps.
-        .child(
-            div()
-                .mt(px(-3.5))
-                .mb(px(-3.5))
-                .flex()
-                .flex_col()
-                .children(tiles),
-        )
-        .child(
-            div()
-                .mt(px(6.))
-                .size(layout::RAIL_TILE)
-                .rounded_full()
-                .border_1()
-                .border_dashed()
-                .border_color(color::CONTROL_EDGE_KEY)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(Icon::new(IconName::Plus).size(px(15.)).color(color::FG_2)),
+            centred(
+                layout::RAIL_TILE,
+                Icon::new(IconName::Plus).size(px(15.)).color(color::FG_2),
+            )
+            .rounded_full()
+            .border_1()
+            .border_dashed()
+            .border_color(color::CONTROL_EDGE_KEY),
         )
 }
 
 fn user_panel(name: &str, status: &str) -> impl IntoElement {
+    let presence = if status == "online" {
+        Presence::Online
+    } else {
+        Presence::Offline
+    };
     let who = div()
         .flex_1()
         .min_w_0()
@@ -436,43 +453,35 @@ fn user_panel(name: &str, status: &str) -> impl IntoElement {
         .pl(px(6.))
         .gap(px(9.))
         .child(
-            div()
-                .relative()
-                .child(avatar(name, px(30.), text::MICRO, 13.0))
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(20.))
-                        .top(px(20.))
-                        .size(px(13.))
-                        .rounded_full()
-                        .bg(color::BG_2)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(div().size(px(9.)).rounded_full().bg(if status == "online" {
-                            color::OK
-                        } else {
-                            color::FG_3
-                        })),
-                ),
+            Avatar::new("user-panel-avatar", name.to_owned())
+                .size(AvatarSize::Panel)
+                .presence(presence),
         )
         .child(
             div()
+                .min_w_0()
                 .flex()
                 .flex_col()
                 .child(
-                    line(name.to_owned(), text::UI, 15.6, color::FG)
-                        .weight(font::WEIGHT_LABEL)
-                        .at(Edge::Start(109.0), Edge::End(46.115)),
+                    line(
+                        name.to_owned(),
+                        text::UI,
+                        line_height(text::UI, 1.3),
+                        color::FG,
+                    )
+                    .weight(font::WEIGHT_LABEL)
+                    .ellipsis(),
                 )
-                .child(
-                    line(status.to_owned(), text::META, 13.65, color::FG_3)
-                        .at(Edge::Start(109.0), Edge::End(30.53)),
-                ),
+                .child(line(
+                    status.to_owned(),
+                    text::META,
+                    line_height(text::META, 1.3),
+                    color::FG_3,
+                )),
         );
     div()
         .flex_none()
+        .relative()
         .h(layout::USER_PANEL)
         .bg(color::BG_2)
         .border_t_1()
@@ -492,24 +501,20 @@ fn user_panel(name: &str, status: &str) -> impl IntoElement {
                 .size(px(16.))
                 .color(color::FG_2),
         ))
+        // The sidebar's edge runs on past the list: a 1px line over the panel's last column (no layout width).
+        .child(
+            div()
+                .absolute()
+                .right_0()
+                .top_0()
+                .w(px(1.))
+                .h_full()
+                .bg(color::HAIRLINE),
+        )
 }
 
 fn header(channel: Option<&Channel>, members: usize) -> impl IntoElement {
     let name = channel.map_or_else(String::new, |c| c.name.clone());
-    let button = |icon: IconName, label: String, from_right: f32| {
-        div()
-            .h(px(28.))
-            .px(px(8.))
-            .rounded(radius::MD)
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .child(Icon::new(icon).size(px(14.)).color(color::FG_2))
-            .child(
-                line(label, text::XS, 16.5, color::FG_2)
-                    .at(Edge::End(from_right), Edge::Start(57.25)),
-            )
-    };
     div()
         .flex_none()
         .h(layout::CHANNEL_HEADER_H)
@@ -520,6 +525,7 @@ fn header(channel: Option<&Channel>, members: usize) -> impl IntoElement {
         .items_center()
         .pl(px(20.))
         .pr(px(10.))
+        .gap(px(8.))
         .child(
             div()
                 .flex_1()
@@ -529,23 +535,34 @@ fn header(channel: Option<&Channel>, members: usize) -> impl IntoElement {
                 .gap(px(6.))
                 .child(Icon::new(IconName::Hash).size(px(14.)).color(color::FG_3))
                 .child(
-                    line(name, text::BASE, 20.25, color::FG)
+                    line(name, text::BASE, line_height(text::BASE, 1.5), color::FG)
                         .weight(font::WEIGHT_DISPLAY)
-                        .at(Edge::Start(340.0), Edge::Start(55.375)),
+                        .ellipsis(),
                 ),
         )
         .child(
             div()
+                .flex_none()
                 .flex()
                 .items_center()
                 .gap(px(2.))
-                .child(button(IconName::MessagesSquare, "Threads".into(), 108.81))
-                .child(button(IconName::Users, members.to_string(), 24.61)),
+                .child(
+                    Button::new("header-threads", "Threads")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Bar)
+                        .icon(IconName::MessagesSquare),
+                )
+                .child(
+                    Button::new("header-members", members.to_string())
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Bar)
+                        .icon(IconName::Users),
+                ),
         )
 }
 
 impl Render for ShellView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.clone();
         let channel = self.channel.and_then(|c| state.channel(c));
         let members = self
@@ -558,12 +575,27 @@ impl Render for ShellView {
         let on_select: channel_list::OnSelect = Rc::new(move |id, _window, cx| {
             let _ = entity.update(cx, |shell, cx| shell.select(id, cx));
         });
+        let entity = cx.entity().downgrade();
+        let on_pick: OnPick = Rc::new(move |id, cx| {
+            let _ = entity.update(cx, |shell, cx| shell.pick_community(id, cx));
+        });
         let list = channel_list::render(
             &channel_list::ListModel {
                 state: &state,
                 community: self.community,
                 selected: self.channel,
                 online,
+                in_voice: 0,
+                can_add: self.community.is_some_and(|c| {
+                    state
+                        .communities
+                        .iter()
+                        .any(|k| k.id == c && Some(k.owner) == state.account.user_id)
+                        && !state
+                            .channels
+                            .iter()
+                            .any(|ch| ch.community_id == c && ch.kind == 2)
+                }),
             },
             on_select,
         );
@@ -583,6 +615,8 @@ impl Render for ShellView {
                     .child(list),
             )
             .child(user_panel(&me, status));
+        // The log wraps its bodies to its own width: the window less the rail and the sidebar.
+        let log_width = f32::from(window.viewport_size().width - layout::RAIL - layout::SIDEBAR);
         let log = match channel {
             Some(c) => {
                 let shell = cx.entity().downgrade();
@@ -595,8 +629,16 @@ impl Render for ShellView {
                         cx.notify();
                     });
                 });
-                timeline::render(&state, c, self.clock, &self.log, self.pinned, on_wheel)
-                    .into_any_element()
+                timeline::render(
+                    &state,
+                    c,
+                    self.clock,
+                    log_width,
+                    &self.log,
+                    self.pinned,
+                    on_wheel,
+                )
+                .into_any_element()
             }
             None => div().size_full().bg(color::BG).into_any_element(),
         };
@@ -608,7 +650,7 @@ impl Render for ShellView {
             .flex_col()
             .child(header(channel, members))
             .child(div().flex_1().min_h_0().child(log))
-            .child(div().flex_none().h(px(88.)).child(self.composer.clone()));
+            .child(div().flex_none().child(self.composer.clone()));
         div()
             .id("shell")
             .track_focus(&self.focus)
@@ -625,7 +667,7 @@ impl Render for ShellView {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(rail(&state, self.community))
+                    .child(rail(&state, self.community, on_pick))
                     .child(sidebar)
                     .child(main),
             )

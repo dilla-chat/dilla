@@ -19,8 +19,8 @@ use dilla_desktop_ui::tokens::{color, text};
 
 use crate::screens::shell::{Clock, ShellView};
 use crate::screens::sign_in::{SignInView, SignedIn};
-use crate::text::line;
 use crate::tracked;
+use dilla_desktop_ui::text::line;
 
 /// Where the app keeps its instances and their keys, or the fixture it draws instead.
 #[derive(Clone)]
@@ -30,6 +30,8 @@ pub struct Launch {
     pub keychain: Arc<dyn Keychain>,
     /// Start the first listed instance's client at launch (a device already signed in).
     pub resume: bool,
+    /// The window's size, logical px.
+    pub window: (f32, f32),
     #[cfg(feature = "automation")]
     pub fixture: Option<crate::fixture::Fixture>,
 }
@@ -46,6 +48,7 @@ impl Launch {
             root,
             keychain,
             resume: true,
+            window: (1280.0, 800.0),
             #[cfg(feature = "automation")]
             fixture: None,
         }
@@ -57,6 +60,7 @@ impl Launch {
             root: None,
             keychain: Arc::new(dilla_client::keychain::MemoryKeychain::new()),
             resume: false,
+            window: (1280.0, 800.0),
             #[cfg(feature = "automation")]
             fixture: None,
         }
@@ -66,6 +70,7 @@ impl Launch {
     #[cfg(feature = "automation")]
     pub fn fixture(fixture: crate::fixture::Fixture) -> Self {
         Self {
+            window: fixture.window,
             fixture: Some(fixture),
             ..Self::empty()
         }

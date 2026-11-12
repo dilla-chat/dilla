@@ -33,6 +33,9 @@ use gpui::{
     MouseDownEvent, MouseUpEvent, Pixels, PlatformInput, Point, Window, canvas, point, px,
 };
 
+/// Set, every line of text asks for a family no embedded font answers to (the parity test's fallback-font control).
+pub const FALLBACK_FONT_VAR: &str = "DILLA_AUTOMATION_FALLBACK_FONT";
+
 /// Marks a binary as an automation build. The release-build test greps for it.
 pub const AUTOMATION_MARKER: &str = "dilla-automation-interface/1";
 
@@ -306,6 +309,11 @@ pub fn run(args: Vec<String>) {
         ),
         None => crate::app::Launch::empty(),
     };
+    // Every line of text reports its box; the parity test's negative control asks every line for a missing family.
+    dilla_desktop_ui::text::set_hooks(dilla_desktop_ui::text::Hooks {
+        probe: Some(|| gpui::IntoElement::into_any_element(text_probe())),
+        family: std::env::var_os(FALLBACK_FONT_VAR).map(|_| "Dilla Parity Missing Font"),
+    });
     let mut session = Session::open(launch);
     let mut out = std::io::stdout().lock();
     writeln!(out, "ready {AUTOMATION_MARKER}")

@@ -1,6 +1,5 @@
-//! The sidebar's channel list (packages/ui ChannelList and ChannelRow, Signal §5.3): the server's name in the serif
-//! italic, the online and voice counts, then the channels in position order. Geometry is the web client's at 1280x800
-//! (`clients/desktop/parity/references/linux`).
+//! The sidebar's channel list (packages/ui ChannelList, Signal §5.3): the server's name in the serif italic, the online and
+//! voice counts, then the channels in position order, a category's channels under its head. The rows are Task 5's `Row`.
 
 use dilla_client::state::{AppState, Channel, ChannelId, CommunityId};
 use gpui::{
@@ -8,11 +7,12 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 
-use dilla_desktop_ui::tokens::{color, font, layout, radius, text};
+use dilla_desktop_ui::components::{Row, RowKind};
+use dilla_desktop_ui::text::{Face, line, line_height};
+use dilla_desktop_ui::tokens::{color, font, layout, text};
 use dilla_desktop_ui::{Icon, IconName};
 
-use crate::screens::centred;
-use crate::text::{Edge, Face, line};
+use crate::screens::{LABEL_TRACKING_WIDE, centred};
 
 /// What the sidebar shows.
 pub struct ListModel<'a> {
@@ -21,102 +21,65 @@ pub struct ListModel<'a> {
     pub selected: Option<ChannelId>,
     /// People online (the slice has no presence: this device's own account while connected).
     pub online: usize,
+    /// People in the server's voice channels (the slice's state carries no voice occupancy: 0).
+    pub in_voice: usize,
+    /// The head's "+" (a new channel): for someone who can manage channels, in a server without categories (Shell.tsx;
+    /// the slice knows no roles: the owner).
+    pub can_add: bool,
 }
 
 /// What a click on a channel row does.
 pub type OnSelect = std::rc::Rc<dyn Fn(ChannelId, &mut Window, &mut App)>;
 
-/// The channels of `community` in the web's order: by position, categories' children under them.
+/// Whether `c` is the server's AFK channel (the built-in voice channel; the slice's state does not mark it).
+pub fn is_afk(c: &Channel) -> bool {
+    c.kind == 1 && c.name == "AFK"
+}
+
+/// The channels of `community` in the web's order (shell-model.ts `orderChannels`): the rows outside categories by
+/// position (then id), then each category (by position) with its rows, the AFK channel last.
 pub fn ordered(state: &AppState, community: CommunityId) -> Vec<&Channel> {
-    let mut top: Vec<&Channel> = state
+    let by_position = |a: &&Channel, b: &&Channel| (a.position, a.id).cmp(&(b.position, b.id));
+    let in_server: Vec<&Channel> = state
         .channels
         .iter()
-        .filter(|c| c.community_id == community && c.parent_id.is_none())
+        .filter(|c| c.community_id == community)
         .collect();
-    top.sort_by_key(|c| (c.position, c.id));
-    let mut out = Vec::new();
-    for c in top {
-        out.push(c);
-        if c.kind == 2 {
-            let mut kids: Vec<&Channel> = state
-                .channels
-                .iter()
-                .filter(|k| k.parent_id == Some(c.id))
-                .collect();
-            kids.sort_by_key(|k| (k.position, k.id));
-            out.extend(kids);
-        }
+    let mut cats: Vec<&Channel> = in_server.iter().copied().filter(|c| c.kind == 2).collect();
+    cats.sort_by(by_position);
+    let is_cat = |id: Option<ChannelId>| id.is_some_and(|id| cats.iter().any(|c| c.id == id));
+    let mut top: Vec<&Channel> = in_server
+        .iter()
+        .copied()
+        .filter(|c| c.kind != 2 && !is_cat(c.parent_id))
+        .collect();
+    top.sort_by(by_position);
+    let mut out: Vec<&Channel> = top.iter().copied().filter(|c| !is_afk(c)).collect();
+    for cat in &cats {
+        out.push(cat);
+        let mut kids: Vec<&Channel> = in_server
+            .iter()
+            .copied()
+            .filter(|c| c.kind != 2 && c.parent_id == Some(cat.id))
+            .collect();
+        kids.sort_by(by_position);
+        out.extend(kids.into_iter().filter(|c| !is_afk(c)));
     }
+    out.extend(in_server.iter().copied().filter(|c| is_afk(c)));
     out
 }
 
-fn glyph(c: &Channel) -> IconName {
+fn kind_of(c: &Channel) -> RowKind {
     match c.kind {
-        1 if c.name == "AFK" => IconName::Moon,
-        1 => IconName::Volume2,
-        _ => IconName::Hash,
+        1 if c.name == "AFK" => RowKind::Afk,
+        1 => RowKind::Voice,
+        _ => RowKind::Text,
     }
 }
 
 /// The element id of a channel's row: `channel-<name>`.
 pub fn row_id(name: &str) -> SharedString {
     format!("channel-{name}").into()
-}
-
-/// `name_top`: the web line box top of the row's name in the window.
-fn row(
-    c: &Channel,
-    active: bool,
-    unread: u32,
-    name_top: f32,
-    on_select: OnSelect,
-) -> impl IntoElement {
-    let id = c.id;
-    let (name_color, glyph_color, weight) = if active {
-        (color::FG, color::ACCENT, font::WEIGHT_LABEL)
-    } else if unread > 0 {
-        (color::FG, color::FG_2, font::WEIGHT_LABEL)
-    } else {
-        (color::FG_2, color::FG_4, font::WEIGHT_BODY)
-    };
-    let mut button = div()
-        .id(row_id(&c.name))
-        .relative()
-        .w_full()
-        .h(layout::ROW)
-        .rounded(radius::ROW)
-        .flex()
-        .items_center()
-        .pl(px(8.))
-        .gap(px(8.))
-        .cursor_pointer()
-        .on_click(move |_: &ClickEvent, window, cx| on_select(id, window, cx))
-        .child(Icon::new(glyph(c)).size(px(14.)).color(glyph_color))
-        .child(
-            line(c.name.clone(), text::INPUT, 19.5, name_color)
-                .weight(weight)
-                .at(Edge::Start(94.0), Edge::Start(name_top)),
-        );
-    if active {
-        button = button.bg(color::SURFACE_HI).child(
-            div()
-                .absolute()
-                .left_0()
-                .top(px(6.))
-                .w(px(2.))
-                .h(px(16.))
-                .rounded(px(2.))
-                .bg(color::ACCENT),
-        );
-    }
-    #[cfg(feature = "automation")]
-    let button = button.child(crate::automation::bounds_probe(row_probe(&c.name)));
-    // A voice row sits in a 30px item (1px above and below its 28px button).
-    if c.kind == 1 {
-        div().py(px(1.)).child(button).into_any_element()
-    } else {
-        button.into_any_element()
-    }
 }
 
 /// The probe ids of rows live as long as the process (the automation registry keys on `&'static str`).
@@ -131,10 +94,52 @@ fn row_probe(name: &str) -> &'static str {
         .or_insert_with(|| Box::leak(format!("channel-{name}").into_boxed_str()))
 }
 
-/// The web positions in the window of the stats line and of the channel list's top rule (under the 44px top bar, the
-/// 50.5px head and the 25.75px stats).
-const STATS_TOP: f32 = 94.5;
-const LIST_TOP: f32 = 120.25;
+fn row(c: &Channel, active: bool, unread: u32, on_select: OnSelect) -> gpui::AnyElement {
+    let id = c.id;
+    let row = Row::new(row_id(&c.name), c.name.clone(), kind_of(c))
+        .active(active)
+        .unread(unread)
+        .on_click(move |_: &ClickEvent, window, cx| on_select(id, window, cx));
+    let item = div().relative().mt(layout::LIST_GAP).child(row);
+    #[cfg(feature = "automation")]
+    let item = item.child(crate::automation::bounds_probe(row_probe(&c.name)));
+    // A voice channel's item is 30px: its 28px button 1px in (VoiceChannelRow.css).
+    if c.kind == 1 {
+        item.py(px(1.)).into_any_element()
+    } else {
+        item.into_any_element()
+    }
+}
+
+/// A category's head (ChannelList.css `.d-channel-list__cat-head`): the chevron, the name in tracked capitals, a rule.
+fn category(c: &Channel) -> gpui::AnyElement {
+    div()
+        .id(SharedString::from(format!("category-{}", c.name)))
+        .mt(px(10.))
+        .h(layout::ROW_H_SUB)
+        .px(px(8.))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .child(
+            Icon::new(IconName::ChevronDown)
+                .size(px(11.))
+                .color(color::FG_3),
+        )
+        .child(
+            line(
+                c.name.to_uppercase(),
+                text::MICRO,
+                line_height(text::MICRO, 1.5),
+                color::FG_3,
+            )
+            .weight(font::WEIGHT_LABEL)
+            .tracking(LABEL_TRACKING_WIDE)
+            .ellipsis(),
+        )
+        .child(div().flex_1().min_w(px(8.)).h(px(1.)).bg(color::HAIRLINE))
+        .into_any_element()
+}
 
 /// The sidebar above the user panel.
 pub fn render(model: &ListModel<'_>, on_select: OnSelect) -> impl IntoElement + use<> {
@@ -153,25 +158,25 @@ pub fn render(model: &ListModel<'_>, on_select: OnSelect) -> impl IntoElement + 
         .pr(px(12.))
         .gap(px(8.))
         .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .child(line(title, text::TITLE, 28.5, color::FG).face(Face::SerifItalic)),
+            div().flex_1().min_w_0().flex().child(
+                line(title, text::TITLE, line_height(text::TITLE, 1.5), color::FG)
+                    .face(Face::SerifItalic)
+                    .clip(),
+            ),
         )
-        .child(centred(
-            px(28.),
-            Icon::new(IconName::Plus).size(px(15.)).color(color::FG_2),
-        ))
+        .children(model.can_add.then(|| {
+            centred(
+                px(28.),
+                Icon::new(IconName::Plus).size(px(15.)).color(color::FG_2),
+            )
+        }))
         .child(centred(
             px(26.),
             Icon::new(IconName::ChevronDown)
                 .size(px(15.))
                 .color(color::FG_2),
         ));
-    let online = format!("{} online", model.online);
-    let dot_x = 81.0 + online.chars().count() as f32 * 6.3 + 10.0;
-    let voice_x = dot_x + 6.3 + 10.0;
+    let meta = |s: String| line(s, text::META, line_height(text::META, 1.5), color::FG_3);
     let stats = div()
         .flex_none()
         .flex()
@@ -185,42 +190,24 @@ pub fn render(model: &ListModel<'_>, on_select: OnSelect) -> impl IntoElement + 
                 .items_center()
                 .gap(px(5.))
                 .child(div().size(px(6.)).rounded_full().bg(color::OK))
-                .child(
-                    line(online, text::META, 15.75, color::FG_3)
-                        .at(Edge::Start(81.0), Edge::Start(STATS_TOP)),
-                ),
+                .child(meta(format!("{} online", model.online))),
         )
-        .child(
-            line("·", text::META, 15.75, color::FG_3)
-                .at(Edge::Start(dot_x), Edge::Start(STATS_TOP)),
-        )
-        .child(
-            line("0 in voice", text::META, 15.75, color::FG_3)
-                .at(Edge::Start(voice_x), Edge::Start(STATS_TOP)),
-        );
-    // The rows' web positions: the list's first row 6px below its top rule; a text row 28px, a voice item 30px (its
-    // button 1px in), 1px apart; the name 4.25px into its button.
-    let mut top = LIST_TOP + 6.0;
-    let rows = community.map_or_else(Vec::new, |c| {
+        .child(meta("·".to_owned()))
+        .child(meta(format!("{} in voice", model.in_voice)));
+    let items = community.map_or_else(Vec::new, |c| {
         ordered(state, c.id)
             .into_iter()
-            .filter(|ch| ch.kind != 2)
             .map(|ch| {
-                let (inset, height) = if ch.kind == 1 {
-                    (1.0, 30.0)
+                if ch.kind == 2 {
+                    category(ch)
                 } else {
-                    (0.0, 28.0)
-                };
-                let name_top = top + inset + 4.25;
-                top += height + 1.0;
-                row(
-                    ch,
-                    model.selected == Some(ch.id),
-                    state.unread_of(ch.id),
-                    name_top,
-                    on_select.clone(),
-                )
-                .into_any_element()
+                    row(
+                        ch,
+                        model.selected == Some(ch.id),
+                        state.unread_of(ch.id),
+                        on_select.clone(),
+                    )
+                }
             })
             .collect()
     });
@@ -232,15 +219,16 @@ pub fn render(model: &ListModel<'_>, on_select: OnSelect) -> impl IntoElement + 
         .child(stats)
         .child(
             div()
+                .id("channel-list")
                 .flex_1()
                 .min_h_0()
+                .overflow_y_scroll()
                 .border_t_1()
                 .border_color(color::HAIRLINE)
-                .pt(px(5.))
+                .pt(px(4.))
                 .px(px(8.))
                 .flex()
                 .flex_col()
-                .gap(layout::LIST_GAP)
-                .children(rows),
+                .children(items),
         )
 }

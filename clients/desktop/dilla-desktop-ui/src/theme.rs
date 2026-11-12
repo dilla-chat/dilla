@@ -11,7 +11,8 @@ use crate::icon_names::IconName;
 /// JetBrains Mono at the three weights the design uses (400, 600, 700): static instances of the variable font's weight
 /// axis (OFL-1.1, assets/fonts/README.md). GPUI's text system does not select a weight on the variable font (every
 /// weight drew at its default, 400; Task 12), so each weight is its own face.
-static JETBRAINS_MONO_REGULAR: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
+pub(crate) static JETBRAINS_MONO_REGULAR: &[u8] =
+    include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
 static JETBRAINS_MONO_SEMIBOLD: &[u8] =
     include_bytes!("../assets/fonts/JetBrainsMono-SemiBold.ttf");
 static JETBRAINS_MONO_BOLD: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf");

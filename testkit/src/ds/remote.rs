@@ -2035,6 +2035,35 @@ impl HttpDs {
         )
     }
 
+    /// POST /v1/communities/{id}/channels [kind, 0, 0, parent, name, "", 0, 0]: a channel under category `parent`.
+    pub fn create_channel_in(
+        &mut self,
+        community: &[u8; 16],
+        kind: u64,
+        name: &str,
+        parent: &[u8; 16],
+    ) -> Result<([u8; 16], u64, u64), DsError> {
+        let path = format!("/v1/communities/{}/channels", hex::encode(community));
+        self.socket_post_decoded(
+            &path,
+            &encode(|e| {
+                e.array(8)
+                    .uint(kind)
+                    .uint(0)
+                    .uint(0)
+                    .bytes(parent)
+                    .text(name)
+                    .text("")
+                    .uint(0)
+                    .uint(0);
+            }),
+            |d| {
+                d.array(3)?;
+                Ok((d.bytes_exact::<16>()?, d.uint()?, d.uint()?))
+            },
+        )
+    }
+
     /// POST /v1/communities/{id}/invites [max_uses, ttl_seconds, 0].
     pub fn create_invite(
         &mut self,

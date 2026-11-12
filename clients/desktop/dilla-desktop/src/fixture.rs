@@ -16,10 +16,14 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 struct Raw {
     now: u64,
+    /// The window, logical px (the reference's viewport); 1280x800 when absent.
+    #[serde(default)]
+    window: Option<(f32, f32)>,
     user: RawUser,
     communities: Vec<RawCommunity>,
     channels: Vec<RawChannel>,
-    members: Vec<RawMember>,
+    /// Per community (hex id).
+    members: HashMap<String, Vec<RawMember>>,
     open: String,
     messages: Vec<RawMessage>,
 }
@@ -31,6 +35,7 @@ struct RawUser {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct RawCommunity {
     id: String,
     name: String,
@@ -40,6 +45,7 @@ struct RawCommunity {
 #[derive(Deserialize)]
 struct RawChannel {
     id: String,
+    community: String,
     kind: u8,
     mode: u8,
     name: String,
@@ -71,6 +77,8 @@ pub struct Fixture {
     pub state: AppState,
     pub open: ChannelId,
     pub now: u64,
+    /// The window, logical px.
+    pub window: (f32, f32),
 }
 
 fn id16(hex: &str) -> Result<[u8; 16], String> {
@@ -93,8 +101,6 @@ impl Fixture {
 
     pub fn parse(text: &str) -> Result<Self, String> {
         let raw: Raw = serde_json::from_str(text).map_err(|e| e.to_string())?;
-        let community = raw.communities.first().ok_or("no community")?;
-        let community_id = CommunityId(id16(&community.id)?);
         let open = ChannelId(id16(&raw.open)?);
         let user = UserId(id16(&raw.user.id)?);
         let channels = raw
@@ -103,7 +109,7 @@ impl Fixture {
             .map(|c| {
                 Ok(Channel {
                     id: ChannelId(id16(&c.id)?),
-                    community_id,
+                    community_id: CommunityId(id16(&c.community)?),
                     kind: c.kind,
                     mode: c.mode,
                     name: c.name.clone(),
@@ -120,18 +126,33 @@ impl Fixture {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        let members = raw
-            .members
+        let mut members = HashMap::new();
+        for (community, rows) in &raw.members {
+            let rows = rows
+                .iter()
+                .map(|m| {
+                    Ok(Member {
+                        user_id: UserId(id16(&m.id)?),
+                        username: m.username.clone(),
+                        display: m.display.clone(),
+                        kind: m.kind,
+                        role_ids: Vec::new(),
+                        status_msg: String::new(),
+                        bio: String::new(),
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            members.insert(CommunityId(id16(community)?), rows);
+        }
+        let communities = raw
+            .communities
             .iter()
-            .map(|m| {
-                Ok(Member {
-                    user_id: UserId(id16(&m.id)?),
-                    username: m.username.clone(),
-                    display: m.display.clone(),
-                    kind: m.kind,
-                    role_ids: Vec::new(),
-                    status_msg: String::new(),
-                    bio: String::new(),
+            .map(|c| {
+                Ok(Community {
+                    id: CommunityId(id16(&c.id)?),
+                    name: c.name.clone(),
+                    owner: UserId(id16(&c.owner)?),
+                    policy_version: 0,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -171,12 +192,7 @@ impl Fixture {
                 status: ConnectionStatus::Online,
                 ..ConnectionState::default()
             },
-            communities: vec![Community {
-                id: community_id,
-                name: community.name.clone(),
-                owner: UserId(id16(&community.owner)?),
-                policy_version: 0,
-            }],
+            communities,
             channels,
             timelines: HashMap::from([(
                 open,
@@ -187,13 +203,14 @@ impl Fixture {
                     has_earlier: false,
                 },
             )]),
-            members: HashMap::from([(community_id, members)]),
+            members,
             unread: HashMap::new(),
         };
         Ok(Self {
             state,
             open,
             now: raw.now,
+            window: raw.window.unwrap_or((1280.0, 800.0)),
         })
     }
 }
@@ -208,6 +225,7 @@ mod tests {
             .join("../parity/references/linux/channel-view.fixture.json");
         let f = Fixture::load(&path).unwrap();
         assert_eq!(f.state.communities[0].name, "Midgard Crew");
+        assert_eq!(f.window, (1280.0, 800.0));
         assert_eq!(f.state.timelines[&f.open].items.len(), 12);
         assert!(f.state.channel(f.open).is_some_and(|c| c.name == "general"));
     }
