@@ -63,6 +63,11 @@ fn main() {
     if is_desktop {
         rust_files.push("src/desktop_capturer.rs");
     }
+    // DILLA PATCH: the hook's synthetic-frame test support, only with the `dilla-test-frames` feature.
+    let dilla_test_frames = env::var("CARGO_FEATURE_DILLA_TEST_FRAMES").is_ok();
+    if dilla_test_frames {
+        rust_files.push("src/dilla_transform_testing.rs");
+    }
 
     let mut builder = cxx_build::bridges(rust_files);
 
@@ -107,6 +112,10 @@ fn main() {
 
     if is_desktop {
         builder.file("src/desktop_capturer.cpp");
+    }
+    if dilla_test_frames {
+        builder.file("src/dilla_transform_testing.cpp");
+        builder.define("DILLA_TEST_FRAMES", None);
     }
 
     let webrtc_dir = webrtc_sys_build::webrtc_dir();

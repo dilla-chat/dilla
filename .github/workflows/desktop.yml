@@ -653,6 +653,8 @@ jobs:
         if: runner.os == 'Linux'
         env:
           CHROME_DEVEL_SANDBOX: ${{ github.workspace }}/node_modules/electron/dist/chrome-sandbox
+          # e2e/web/native-interop.spec.ts drives the native client's peer, built once by test-tools into the verified artifact.
+          DILLA_GPUI_PEER: ${{ github.workspace }}/artifacts/e2e-test-tools/dilla-gpui-peer
         run: xvfb-run -a bash e2e/web/support/installed-keyring.sh bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/6
       - name: Desktop-specific client coverage in Electron
         if: runner.os != 'Linux'
