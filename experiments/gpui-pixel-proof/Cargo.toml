@@ -1,0 +1,21 @@
+# Standalone workspace (the root workspace excludes experiments/gpui-*).
+[workspace]
+
+[package]
+name = "gpui-pixel-proof"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["test-support", "wayland", "x11"] }
+anyhow = "1"
+image = { version = "0.25.1", default-features = false, features = ["png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+gpui-wgpu = { package = "gpui-pre-wgpu", version = "=0.3.12", features = ["test-support"] }

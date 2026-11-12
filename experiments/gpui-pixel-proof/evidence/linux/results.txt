@@ -1,0 +1,4 @@
+RESULT linux linux-1x max_delta=214 pct_gt0=3.675 pct_gt8=3.117 pct_gt32=2.409
+RESULT linux linux-nohint-1x max_delta=136 pct_gt0=2.931 pct_gt8=2.119 pct_gt32=0.956
+RESULT linux linux-2x max_delta=214 pct_gt0=2.740 pct_gt8=2.428 pct_gt32=2.063
+RESULT linux linux-nohint-2x max_delta=214 pct_gt0=1.674 pct_gt8=1.268 pct_gt32=0.695
