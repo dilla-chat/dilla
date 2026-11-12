@@ -31,6 +31,7 @@ impl Access {
     /// The viewer's access in `community`. A member sees the sections every member sees; the owner has every right. The
     /// roles area (Task 14) refines this for the other members when its slice lands: until then they are listed only the
     /// sections the registry shows every member.
+    // T14: replace the owner stand-in with the real permission bits once the roles area (Task 14) publishes them.
     pub fn of(state: &AppState, community: CommunityId) -> Self {
         let Some(c) = state.communities.iter().find(|c| c.id == community) else {
             return Self::default();

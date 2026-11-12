@@ -168,18 +168,18 @@ impl Search {
         });
         let inner = self.inner.clone();
         self.inner.spawn(async move {
-            let hits = if searchable(&query) {
-                find(&inner, &query).await?
+            let found = if searchable(&query) {
+                find(&inner, &query).await
             } else {
-                Vec::new()
+                Ok(Vec::new())
             };
-            inner.publish(move |s| {
-                if s.search.request == request {
-                    s.search.hits = hits;
-                    s.search.loading = false;
-                }
-            });
-            Ok(())
+            // A failed search still ends "searching": the palette shows nothing found, and the caller gets the error.
+            let (hits, error) = match found {
+                Ok(hits) => (hits, None),
+                Err(e) => (Vec::new(), Some(e)),
+            };
+            inner.publish(move |s| settle(&mut s.search, request, hits));
+            error.map_or(Ok(()), Err)
         })
     }
 
@@ -193,6 +193,15 @@ impl Search {
                 ..SearchState::default()
             };
         });
+    }
+}
+
+/// Publishes the answer of request `request` into `search`: only the newest request's answer lands (the web's
+/// `searchGate`), and whatever the answer was, that request is no longer loading.
+fn settle(search: &mut SearchState, request: u64, hits: Vec<SearchHit>) {
+    if search.request == request {
+        search.hits = hits;
+        search.loading = false;
     }
 }
 
@@ -420,6 +429,50 @@ mod tests {
         assert!(searchable("  boat "));
         assert!(searchable(&"å".repeat(64)));
         assert!(!searchable(&"å".repeat(65)));
+    }
+
+    fn running(request: u64, query: &str) -> SearchState {
+        SearchState {
+            request,
+            query: query.into(),
+            hits: Vec::new(),
+            loading: true,
+        }
+    }
+
+    fn hit(snippet: &str) -> SearchHit {
+        SearchHit {
+            channel: ChannelId([1; 16]),
+            community: None,
+            seq: 1,
+            snippet: snippet.into(),
+            author: None,
+            ts: None,
+            thread_root: None,
+        }
+    }
+
+    /// A search the core refuses or fails ends as nothing found, never as "searching" for ever.
+    #[test]
+    fn a_failed_search_stops_loading() {
+        let mut s = running(5, "boat");
+        settle(&mut s, 5, Vec::new());
+        assert!(!s.loading && s.hits.is_empty());
+    }
+
+    /// The older query is issued first and answered last: its answer never publishes over the newer one's.
+    #[test]
+    fn a_stale_answer_never_publishes() {
+        let mut s = running(2, "oars"); // the newer request replaced the older one's slice
+        settle(&mut s, 2, vec![hit("two oars")]);
+        settle(&mut s, 1, vec![hit("one boat")]); // the older answer arrives last
+        assert_eq!(s.query, "oars");
+        assert_eq!(s.hits, vec![hit("two oars")]);
+        assert!(!s.loading);
+        // And a stale failure leaves the newer search loading, not cleared.
+        let mut s = running(4, "x");
+        settle(&mut s, 3, Vec::new());
+        assert!(s.loading);
     }
 
     #[test]

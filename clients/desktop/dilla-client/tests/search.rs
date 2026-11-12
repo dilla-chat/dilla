@@ -54,13 +54,14 @@ fn found(s: &AppState, snippet: &str) -> bool {
 /// the part this task owns: a message the other device sent is found by a prefix of a word without its accent, the hit
 /// names its channel, author and time, and a query for something absent finds nothing.
 ///
-/// The edit and the delete themselves (the spec's `peer.edit` and `peer.deleteMessage`) need the messages area's edit and
+/// What this test covers: the search half (prefix, no accent, newest first, hit fields). The full edit and delete test is
+/// `edit_found_by_prefix_deleted_text_gone` below, compiled out until Task 9's commands exist. The edit and delete themselves (the spec's `peer.edit` and `peer.deleteMessage`) need the messages area's edit and
 /// delete commands (Task 9), which this branch does not have: the end-to-end half of the test, "the old text is gone from
 /// the results after a delete", is on Task 28's list. The core's search (`core search.rs`) already drops a deleted row's
 /// text from its index; this test checks the index follows a row's text.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
-async fn edit_found_by_prefix_deleted_text_gone() {
+async fn prefix_search_finds_accentless_and_orders_newest_first() {
     let (_host, pa, pb, c) = two_people("search").await;
     let alice = start(&pa).await;
     let bob = start(&pb).await;
@@ -152,11 +153,11 @@ async fn edit_found_by_prefix_deleted_text_gone() {
     bob.stop();
 }
 
-/// A request that a newer one overtook never publishes (the web's `searchGate`): two queries in a row leave the second's
-/// hits, whichever the core answers first.
+/// Two queries in a row leave the second's hits. The deterministic proof that an older answer arriving last never publishes
+/// is the unit test `a_stale_answer_never_publishes` (`features/search.rs`), which orders the answers by hand.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
-async fn a_newer_query_wins_over_an_older_answer() {
+async fn two_queries_in_a_row_leave_the_newer_ones_hits() {
     let (_host, pa, pb, c) = two_people("search-gate").await;
     let alice = start(&pa).await;
     let bob = start(&pb).await;
@@ -196,4 +197,67 @@ async fn a_newer_query_wins_over_an_older_answer() {
     );
     alice.stop();
     bob.stop();
+}
+
+/// e2e/web/search-settings.spec.ts `native edit is searched by prefix and deleted text disappears after a positive result`,
+/// in full: bob edits "old lantern" to "café lamp", alice finds it by "cafe", bob deletes it, and "lamp" no longer finds it.
+///
+/// Written now, compiled out (`cfg(any())`) because `Messages::edit` and `Messages::delete` (Task 9) are not on this branch;
+/// at integration (Task 28) remove the `cfg` and the `ignore`, and adjust the two call names to Task 9's.
+#[cfg(any())]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Task 9 edit/delete; Task 28"]
+async fn edit_found_by_prefix_deleted_text_gone() {
+    let (_host, pa, pb, c) = two_people("search-edit").await;
+    let alice = start(&pa).await;
+    let bob = start(&pb).await;
+    let channel = general(&alice, c).await;
+    general(&bob, c).await;
+    alice.open_channel(channel).await.unwrap().unwrap();
+    bob.open_channel(channel).await.unwrap().unwrap();
+    let first = bob
+        .send_text(channel, "old lantern".into())
+        .await
+        .unwrap()
+        .unwrap();
+    bob.messages()
+        .edit(channel, first, "café lamp".into())
+        .await
+        .unwrap()
+        .unwrap();
+    wait_for(&alice, Duration::from_secs(20), "the edit", |s| {
+        s.timelines
+            .get(&channel)
+            .is_some_and(|t| t.items.iter().any(|i| i.body == "café lamp"))
+    })
+    .await;
+    alice.search().query("cafe").await.unwrap().unwrap();
+    wait_for(&alice, Duration::from_secs(10), "the edited hit", |s| {
+        s.search.query == "cafe" && found(s, "café lamp")
+    })
+    .await;
+    bob.messages()
+        .delete(channel, first)
+        .await
+        .unwrap()
+        .unwrap();
+    bob.send_text(channel, "lamp after delete".into())
+        .await
+        .unwrap()
+        .unwrap();
+    wait_for(&alice, Duration::from_secs(20), "the later message", |s| {
+        s.timelines
+            .get(&channel)
+            .is_some_and(|t| t.items.iter().any(|i| i.body == "lamp after delete"))
+    })
+    .await;
+    alice.search().query("lamp").await.unwrap().unwrap();
+    let s = wait_for(&alice, Duration::from_secs(10), "the later hit", |s| {
+        s.search.query == "lamp" && found(s, "lamp after delete")
+    })
+    .await;
+    assert!(
+        !found(&s, "café lamp"),
+        "the deleted text is gone from the results"
+    );
 }
