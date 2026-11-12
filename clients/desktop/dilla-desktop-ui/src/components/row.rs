@@ -5,6 +5,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use super::avatar::{Avatar, AvatarSize, Presence};
 use super::badge::{Badge, BadgeKind, capped};
 use super::button::ClickHandler;
 use crate::icon::Icon;
@@ -21,6 +22,26 @@ pub enum RowKind {
     Dm,
 }
 
+/// A DM drawn as a person (`ChannelRow` with `person`, Jonas Q2, the prototype's DM row): 42px, the 28px avatar with its
+/// online dot, the name over its sub-line, and a 7px accent dot for unread in place of the "n new" tag.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Person {
+    /// Their status, or a group's members.
+    pub sub: Option<SharedString>,
+    pub presence: Option<Presence>,
+    /// A group DM: the avatar is the neutral `--line-strong`, with no presence dot.
+    pub group: bool,
+    pub initials: Option<SharedString>,
+}
+
+/// The person row's height: 42px (`2.625rem`).
+pub const PERSON_HEIGHT: f32 = 42.0;
+
+/// The name's weight in a person row: 500, and 700 while unread (or active and unread).
+pub fn person_name_weight(unread: u32) -> f32 {
+    if unread > 0 { 700.0 } else { 500.0 }
+}
+
 #[derive(IntoElement)]
 pub struct Row {
     id: ElementId,
@@ -31,6 +52,7 @@ pub struct Row {
     mentions: u32,
     muted: bool,
     private: bool,
+    person: Option<Person>,
     on_click: Option<ClickHandler>,
 }
 
@@ -45,8 +67,15 @@ impl Row {
             mentions: 0,
             muted: false,
             private: false,
+            person: None,
             on_click: None,
         }
+    }
+
+    /// Draws the row as a person (a DM).
+    pub fn person(mut self, person: Person) -> Self {
+        self.person = Some(person);
+        self
     }
 
     pub fn active(mut self, active: bool) -> Self {
@@ -98,6 +127,9 @@ impl RenderOnce for Row {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         // A muted channel hides its unread count; its mention count still shows.
         let unread = if self.muted { 0 } else { self.unread };
+        if let Some(person) = self.person.clone() {
+            return self.person_row(person, unread).into_any_element();
+        }
         let bright = self.active || unread > 0 || self.mentions > 0;
         let name_colour = if self.muted && !self.active {
             color::FG_3
@@ -183,6 +215,84 @@ impl RenderOnce for Row {
             row = row.child(Badge::new((id, "badge"), BadgeKind::Unread, unread).in_row());
         }
         match self.on_click {
+            Some(handler) => row.on_click(handler).into_any_element(),
+            None => row.into_any_element(),
+        }
+    }
+}
+
+impl Row {
+    fn person_row(self, person: Person, unread: u32) -> gpui::Stateful<gpui::Div> {
+        let bright = self.active || unread > 0 || self.mentions > 0;
+        let id = self.id.clone();
+        let mut avatar =
+            Avatar::new((id.clone(), "avatar"), self.name.clone()).size(AvatarSize::Member);
+        if let Some(initials) = person.initials.clone() {
+            avatar = avatar.initials(initials);
+        }
+        if person.group {
+            avatar = avatar.fill(color::LINE_STRONG);
+        } else if person.presence == Some(Presence::Online) {
+            avatar = avatar.presence(Presence::Online);
+        }
+        let mut who = div().flex().flex_col().flex_1().min_w_0().child(
+            line(
+                self.name.clone(),
+                text::SM,
+                line_height(text::SM, 1.3),
+                if bright { color::FG } else { color::FG_2 },
+            )
+            .weight(gpui::FontWeight(person_name_weight(unread)))
+            .ellipsis(),
+        );
+        if let Some(sub) = person.sub.clone().filter(|s| !s.is_empty()) {
+            who = who
+                .child(line(sub, text::META, line_height(text::META, 1.3), color::FG_3).ellipsis());
+        }
+        let mut row = div()
+            .id(self.id)
+            .relative()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .w_full()
+            .h(px(PERSON_HEIGHT))
+            .px(px(8.0))
+            .my(px(1.0))
+            .rounded(px(6.0))
+            .when_active(self.active)
+            .cursor_pointer()
+            .hover(|s| s.bg(color::HOVER))
+            .child(div().flex_none().child(avatar))
+            .child(who);
+        if self.active {
+            row = row.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(8.0))
+                    .bottom(px(8.0))
+                    .w(px(2.0))
+                    .rounded(px(2.0))
+                    .bg(color::ACCENT),
+            );
+        }
+        if self.mentions > 0 {
+            row = row.child(
+                Badge::new((id, "badge"), BadgeKind::Mention, self.mentions)
+                    .text(format!("@{}", capped(self.mentions)))
+                    .in_row(),
+            );
+        } else if unread > 0 {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .size(px(7.0))
+                    .rounded(radius::PILL)
+                    .bg(color::ACCENT),
+            );
+        }
+        match self.on_click {
             Some(handler) => row.on_click(handler),
             None => row,
         }
@@ -205,6 +315,13 @@ impl<T: Styled + Sized> RowStyle for T {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_person_row_is_42px_and_bolds_the_name_when_unread() {
+        assert_eq!(PERSON_HEIGHT, 42.0);
+        assert_eq!(person_name_weight(0), 500.0);
+        assert_eq!(person_name_weight(3), 700.0);
+    }
 
     #[test]
     fn glyphs_match_channel_row() {
