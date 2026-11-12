@@ -17,8 +17,11 @@ use gpui::{
 
 use dilla_desktop_ui::tokens::{color, text};
 
+use crate::router::{Route, UserSection};
+use crate::screens::settings_host::{self, SettingsEvent, UserSettingsHost};
 use crate::screens::shell::{Clock, ShellView};
 use crate::screens::sign_in::{SignInView, SignedIn};
+use crate::slots::SlotCx;
 use crate::tracked;
 use dilla_desktop_ui::text::line;
 
@@ -81,6 +84,11 @@ enum Screen {
     Starting,
     SignIn(Entity<SignInView>),
     Shell(Entity<ShellView>),
+    /// The user settings over the screen they were opened from, which comes back on close.
+    Settings {
+        host: Entity<UserSettingsHost>,
+        behind: Box<Screen>,
+    },
 }
 
 /// The main window's root view.
@@ -120,6 +128,17 @@ impl AppView {
                     this.screen = Screen::Shell(shell);
                 }
                 crate::fixture::FixtureScreen::SignIn => this.show_sign_in(None, window, cx),
+                crate::fixture::FixtureScreen::Settings { section } => {
+                    let ctx = SlotCx {
+                        state: Arc::new(fixture.state),
+                        clock: Clock::Fixed {
+                            now: fixture.now,
+                            utc: true,
+                        },
+                        ..SlotCx::default()
+                    };
+                    this.show_settings(Some(section), ctx, window, cx);
+                }
             }
             return this;
         }
@@ -135,6 +154,46 @@ impl AppView {
             None => this.show_sign_in(None, window, cx),
         }
         this
+    }
+
+    /// The live route `Route::Settings(section)`: the user settings host over the current screen (Task 1b). Any other
+    /// route is the shell's (Task 8).
+    pub fn open_route(&mut self, route: &Route, window: &mut Window, cx: &mut Context<Self>) {
+        if let Route::Settings(section) = route {
+            self.show_settings(*section, SlotCx::default(), window, cx);
+        }
+    }
+
+    fn show_settings(
+        &mut self,
+        section: Option<UserSection>,
+        ctx: SlotCx,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let host = settings_host::open(section, None, ctx, cx);
+        // A route the host emits is a section it already shows; the route it leaves for takes the screen behind back.
+        self._subscriptions.push(cx.subscribe_in(
+            &host,
+            window,
+            |this, _, SettingsEvent::Navigate(route), _, cx| {
+                if matches!(route, Route::Settings(_)) {
+                    return;
+                }
+                if let Screen::Settings { behind, .. } =
+                    std::mem::replace(&mut this.screen, Screen::Starting)
+                {
+                    this.screen = *behind;
+                }
+                cx.notify();
+            },
+        ));
+        let behind = std::mem::replace(&mut self.screen, Screen::Starting);
+        self.screen = Screen::Settings {
+            host,
+            behind: Box::new(behind),
+        };
+        cx.notify();
     }
 
     fn show_sign_in(&mut self, error: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
@@ -217,6 +276,7 @@ impl Render for AppView {
                 .into_any_element(),
             Screen::SignIn(view) => view.clone().into_any_element(),
             Screen::Shell(view) => view.clone().into_any_element(),
+            Screen::Settings { host, .. } => host.clone().into_any_element(),
         };
         tracked("root", div().size_full().bg(color::BG).child(body))
     }
