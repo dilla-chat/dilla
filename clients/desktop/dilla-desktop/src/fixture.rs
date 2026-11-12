@@ -24,7 +24,7 @@ use dilla_client::state::{
 };
 use dilla_client::testing::spec::{self, ChannelKind, Phase, ScreenFixture, Shot, WorldSpec};
 
-use crate::router::Route;
+use crate::router::{Route, ServerSection};
 
 mod attachments;
 mod calls;
@@ -39,6 +39,11 @@ mod threads;
 pub enum FixtureScreen {
     /// The shell, on this channel.
     Shell { channel: ChannelId },
+    /// A server settings section (Task 21's Bot and Music: controller hook, `AppView`'s `Screen::Settings`).
+    ServerSettings {
+        community: CommunityId,
+        section: crate::router::ServerSection,
+    },
     /// The welcome and sign-in screen of a device with no account.
     SignIn,
 }
@@ -154,6 +159,16 @@ pub fn screen_of(route: &Route, phase: Phase) -> Result<FixtureScreen, String> {
             },
             Phase::Ready,
         ) => Ok(FixtureScreen::Shell { channel: *channel }),
+        (
+            Route::ServerSettings {
+                community,
+                section: Some(section @ (ServerSection::Bot | ServerSection::Music)),
+            },
+            Phase::Ready,
+        ) => Ok(FixtureScreen::ServerSettings {
+            community: *community,
+            section: *section,
+        }),
         (Route::Welcome { .. }, Phase::SignedOut) => Ok(FixtureScreen::SignIn),
         (route, phase) => Err(format!(
             "the app cannot draw route `{}` in phase {phase:?} yet",
