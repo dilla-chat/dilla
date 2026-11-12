@@ -1032,7 +1032,10 @@ mod tests {
     #[test]
     fn beat_interval_is_clamped() {
         let max = Duration::from_millis(15_000);
-        assert_eq!(beat_interval_for(30_000, max), Duration::from_millis(15_000));
+        assert_eq!(
+            beat_interval_for(30_000, max),
+            Duration::from_millis(15_000)
+        );
         assert_eq!(beat_interval_for(100_000, max), max);
         assert_eq!(beat_interval_for(100, max), Duration::from_millis(50));
         assert_eq!(beat_interval_for(0, max), MIN_BEAT_INTERVAL);
