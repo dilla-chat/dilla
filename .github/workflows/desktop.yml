@@ -649,10 +649,27 @@ jobs:
         run: |
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      # e2e/web/native-interop.spec.ts drives the native GPUI client library (dilla-client's `peer` example) against the
+      # same dillad as the shared client; the binary is built here, once per shard, and the spec reads DILLA_GPUI_PEER.
+      - name: Rust toolchain for the native interop peer
+        if: runner.os == 'Linux'
+        run: rustup show active-toolchain
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: runner.os == 'Linux'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - name: Build the native interop peer
+        if: runner.os == 'Linux'
+        run: cargo build -p dilla-client --example peer --locked
       - name: Shared client end-to-end coverage in Electron
         if: runner.os == 'Linux'
         env:
           CHROME_DEVEL_SANDBOX: ${{ github.workspace }}/node_modules/electron/dist/chrome-sandbox
+          DILLA_GPUI_PEER: ${{ github.workspace }}/target/debug/examples/peer
         run: xvfb-run -a bash e2e/web/support/installed-keyring.sh bash packages/desktop/scripts/with-window-manager.sh npm exec -w @dilla/e2e -- playwright test --config playwright.desktop.config.ts --project=electron-client --shard=${{ matrix.shard }}/6
       - name: Desktop-specific client coverage in Electron
         if: runner.os != 'Linux'

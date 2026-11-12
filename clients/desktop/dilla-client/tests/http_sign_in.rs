@@ -69,10 +69,12 @@ fn testhost_binary(root: &Path) -> PathBuf {
     out
 }
 
-/// The WASI core the host loads: `DILLA_WASI_CORE` when set, else the repo's `dilla_core_wasi.wasm`, built the way the
+/// The WASI core the host loads: `DILLA_CORE_WASI` (the old name `DILLA_WASI_CORE` still works for one release) when set, else the repo's `dilla_core_wasi.wasm`, built the way the
 /// e2e host builds it when it is missing.
 fn wasi_core(root: &Path) -> PathBuf {
-    if let Some(path) = std::env::var_os("DILLA_WASI_CORE") {
+    if let Some(path) =
+        std::env::var_os("DILLA_CORE_WASI").or_else(|| std::env::var_os("DILLA_WASI_CORE"))
+    {
         return PathBuf::from(path);
     }
     let wasm = root.join("internal/mlswasi/testdata/dilla_core_wasi.wasm");
