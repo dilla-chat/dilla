@@ -36,6 +36,8 @@
 #include "api/audio/audio_device.h"
 #include "api/audio_options.h"
 #include "livekit/adm_proxy.h"
+// DILLA PATCH: the dilla-sframe/1 encoded-frame hook.
+#include "livekit/dilla_transform.h"
 #include "livekit/audio_track.h"
 #include "livekit/peer_connection.h"
 #include "livekit/rtc_error.h"
@@ -218,6 +220,13 @@ PeerConnectionFactory::~PeerConnectionFactory() {
 std::shared_ptr<PeerConnection> PeerConnectionFactory::create_peer_connection(
     RtcConfiguration config,
     rust::Box<PeerConnectionObserverWrapper> observer) const {
+  // DILLA PATCH: the hook is mandatory. Without it every attach would be a no-op and LiveKit's own
+  // FrameCryptor, or no transform at all, would carry the media.
+  if (!dilla_owns_transforms()) {
+    throw std::runtime_error(serialize_error(to_error(webrtc::RTCError(
+        webrtc::RTCErrorType::INVALID_STATE,
+        "E_DILLA_NO_FRAME_HOOK: install webrtc_sys::dilla_transform before any PeerConnection"))));
+  }
   std::shared_ptr<PeerConnection> pc = std::make_shared<PeerConnection>(
       rtc_runtime_, peer_factory_, std::move(observer));
 

@@ -43,13 +43,27 @@ epoch 2 has base key `[9u8; 16]`. The page runs the real `DillaE2EEManager` and 
 | `epoch_change_mid_stream` | after 2 s both directions moved to epoch 2 (the Rust ring installs, then the page installs and its sender switches, then the Rust sender rekeys); page authenticated `{1: 119, 2: 216}`, Rust opened `{101: 114, 102: 216}`; **0** dropped frames on each side (limit 10); peak 439.45 Hz on the page and 1000 Hz in Rust after the switch; **0** frames accepted under a wrong key (no `aeadFail` / `E_SFRAME_AUTH`, and the only authenticated KIDs are each sender's own epoch-1 and epoch-2 KIDs; the unit test `an_epoch_change_holds_until_installed_and_never_accepts_a_wrong_key` installs epoch 2 under `[8u8; 16]` and opens none of its frames) |
 | `video_vp8_rust_to_browser` | 640×360 VP8 test pattern: the page decoded **50** frames (1 key frame, 0 PLI) at 640×360, all 50 authenticated under KID `1`, 0 drops |
 
-RED evidence: with the hook not installed (`VOICE_PROOF_NO_HOOK=1`: the same participant on stock
-LiveKit E2EE) `rust_to_browser_audio` and `browser_to_rust_audio` both fail, 0 frames authenticated
-in 30 s in either direction. The transform's unit tests went RED first against a transform that
-answered `Drop` to everything (9 of the 10 failed; the tenth asserts drops), then GREEN.
+**Negative control, `control_passthrough_is_refused`** (runs by default, 3.5 s): the same Rust
+participant with a hook that answers `PassUnchanged` to every frame (`voice-proof --control
+passthrough`: plaintext Opus on an encrypted-flagged publication). The page refused all of it:
+`dropped: {parse: 134, every other reason 0}`, `decrypted: {}`, `verified: {}`. So the page counts
+and refuses frames that are not dilla-sframe/1; the passing interop tests are not an artefact of a
+receiver that lets anything through.
 
-Unit tests: `cargo test --lib` 83 passed: the 12 proof tests plus dilla-core's own 71 sframe tests,
-including the `protocol/vectors/sframe.json` runner, compiled from the same source files.
+The earlier RED run with no hook at all (stock LiveKit E2EE, the old `VOICE_PROOF_NO_HOOK=1`) showed
+**no traffic, not a refusal**: in 30 s the page counted `decrypted: {}` and every drop reason 0, so
+nothing reached its transform. That run is no longer possible: the hook is now mandatory (below)
+and the switch is gone.
+
+**Mandatory hook, `tests/mandatory_hook.rs`**: `PeerConnectionFactory::create_peer_connection`
+without an installed hook fails with `E_DILLA_NO_FRAME_HOOK`; after `install` the same factory
+creates one. RED with the check disabled ("a PeerConnection must not be created without the dilla
+hook"), GREEN with it.
+
+The transform's unit tests went RED first against a transform that answered `Drop` to everything
+(9 of the 10 failed; the tenth asserts drops), then GREEN. `cargo test`: 83 lib tests passed (the
+12 proof tests plus dilla-core's own 71 sframe tests, including the `protocol/vectors/sframe.json`
+runner, compiled from the same source files) and 1 integration test passed.
 
 ## Step 4b: 1920×1080 at 30 fps in a GPUI window
 
@@ -87,14 +101,17 @@ whether that is needed.
 2. **Glue in a vendored `webrtc-sys` on the prebuilt libwebrtc: works.** The prebuilt package ships
    `api/frame_transformer_interface.h` (with `GetMimeType`, `GetDirection`, the video frame's
    `IsKeyFrame` and `Metadata().GetSpatialIndex()`), which is everything the transform needs; the
-   glue compiled and linked against it unchanged. The patch adds 45 lines and removes 6 in six upstream
-   files plus three new files, documented in `core/vendor/README.md` ("webrtc-sys 0.3.53").
+   glue compiled and linked against it unchanged. The patch touches seven upstream files (about 60
+   lines) and adds three new files, documented in `core/vendor/README.md` ("webrtc-sys 0.3.53").
    libwebrtc is not rebuilt.
 3. Not reached.
 
-How the glue stays fail-closed: a sender gets its transformer inside `add_track` /
-`add_transceiver`, before negotiation starts its RTP (and again on `set_track`); a receiver inside
-`OnTrack`, before Rust hears of it; while a hook is installed, LiveKit's `FrameCryptor` and
+How the glue stays fail-closed: no PeerConnection is created without an installed hook
+(`E_DILLA_NO_FRAME_HOOK`), so there is no stock-LiveKit fallback; a sender gets its transformer
+inside `add_track` / `add_transceiver` / `add_transceiver_for_media` (one without a track drops
+every frame), before negotiation starts its RTP, and `set_track` attaches a fresh one for the
+incoming track *before* swapping the track; a receiver gets one inside `OnTrack`, before Rust hears
+of it; while a hook is installed, LiveKit's `FrameCryptor` and
 packet-trailer code never set a transformer, so nothing can replace it. The transformer has no
 pass-through: a frame goes on only when Rust answers `Replace` (sealed or authenticated) or
 `PassUnchanged` (only a zero-byte Opus frame, protocol/05 DTX). A sender track not bound to a slot,
@@ -122,8 +139,10 @@ in. Any task that gives `dilla-media` real LiveKit code will hit this. Forcing t
 This proof therefore compiles `dilla_core::sframe` from dilla-core's own source files
 (`#[path = "../../../core/dilla-core/src/sframe/mod.rs"]`, plus the two `identity` helpers it calls,
 written as dilla-core writes them) instead of linking the crate; dilla-core's own sframe tests and
-the vector runner pass in this crate, and the page side is the real `dilla-core-wasm`. Ways out,
-for Jonas to decide (none is done here):
+the vector runner pass in this crate, and the page side is the real `dilla-core-wasm`.
+
+**Decided (Jonas, after this proof):** the native store moves to sqlite3mc, which another task
+does; that removes OpenSSL from dilla-core. The options this proof listed, for the record:
 
 - a `store` feature (or a split crate) in dilla-core, so media code can use `sframe` without
   SQLCipher; the media code then still cannot share a binary with the store;
@@ -146,9 +165,11 @@ for Jonas to decide (none is done here):
   first-seen per `(KID, slot)`) and is unit-tested, not tested live.
 - Screen-share slots, H.264 and VP9 were not run live (the codec paths are dilla-core's, and its
   vectors pass).
-- The hook must be installed before the first PeerConnection exists; `install` refuses a second
-  hook but not a late first one.
-- Upstream `RtpSender::set_track` dereferences a null track; unchanged here.
+- Receivers are bound by the SFU-chosen track id rather than per transformer instance, and there
+  is no receive window before `OnTrack`; both go to Task 11's `dilla-media` design.
+- The `set_track` ordering and the `add_transceiver_for_media` transformer are reviewed code, not
+  covered by a live test (it would need a two-PeerConnection loopback); the LiveKit publish path
+  through them is exercised by every interop test.
 - Sender uniqueness (N1–N3) across process lives is the caller's: the proof creates one
   `SframeSender` per process, with `min_epoch` its first epoch.
 
@@ -160,7 +181,7 @@ From the repository root (Linux; the e2e media suite's prerequisites):
 cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked
 cp target/wasm32-wasip1/release/dilla_core_wasi.wasm internal/mlswasi/testdata/
 npm ci && npm run build:wasm -w packages/media
-(cd experiments/gpui-voice-proof && cargo test --locked --lib)
+(cd experiments/gpui-voice-proof && cargo test --locked)
 npx playwright test -c experiments/gpui-voice-proof/browser/playwright.config.ts
 # Step 4b, with a display (not a locked session):
 (cd experiments/gpui-voice-proof && cargo build --locked --release --bin voice-proof \
@@ -214,7 +235,7 @@ The global setup is the media suite's own (`e2e/media/support/testhost.ts`: dill
           cp target/wasm32-wasip1/release/dilla_core_wasi.wasm internal/mlswasi/testdata/
       - working-directory: experiments/gpui-voice-proof
         run: |
-          cargo test --locked --lib
+          cargo test --locked
           cargo build --locked --release --bin voice-proof
           cargo build --locked --release --features window --bin video-window
       - name: Interop and the 60 s GPUI window measurement

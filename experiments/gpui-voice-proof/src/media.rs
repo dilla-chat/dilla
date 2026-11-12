@@ -308,6 +308,19 @@ impl FrameTransform for Hook {
     }
 }
 
+/// Negative control only (`voice-proof --control passthrough`): a hook that passes every frame
+/// unchanged, i.e. what a missing or broken transform would put on the wire. A dilla receiver must
+/// refuse all of it.
+pub struct PassthroughControl;
+
+impl FrameTransform for PassthroughControl {
+    fn transform(&self, _info: &FrameInfo<'_>, _data: &[u8], _out: &mut Vec<u8>) -> Verdict {
+        Verdict::PassUnchanged
+    }
+
+    fn hold_expired(&self, _send: bool, _track_id: &str) {}
+}
+
 /// The KID of a received frame, for statistics only (never an authentication result).
 pub fn peek_kid(codec: Codec, frame: &[u8]) -> Option<u64> {
     let (unescaped, prefix) = unescape_protected(codec, frame).ok()?;

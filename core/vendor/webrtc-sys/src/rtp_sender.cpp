@@ -151,10 +151,14 @@ RtpSender::RtpSender(
       peer_connection_(std::move(peer_connection)) {}
 
 bool RtpSender::set_track(std::shared_ptr<MediaStreamTrack> track) const {
-  // DILLA PATCH: a new track gets a new transform bound to its id; the sender never runs without one.
-  bool ok = sender_->SetTrack(track->rtc_track().get());
-  dilla_attach_sender(sender_);
-  return ok;
+  // DILLA PATCH: the transform for the incoming track is attached before the swap, so no frame of the
+  // new track meets a sender without it or the old track's binding. A null track binds to no track.
+  webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> rtc_track;
+  if (track) {
+    rtc_track = track->rtc_track();
+  }
+  dilla_attach_sender_for_track(sender_, rtc_track ? rtc_track->id() : std::string());
+  return sender_->SetTrack(rtc_track.get());
 }
 
 std::shared_ptr<MediaStreamTrack> RtpSender::track() const {

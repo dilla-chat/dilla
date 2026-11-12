@@ -57,12 +57,20 @@ trailer transformer only adds metadata), so the hook is glue implementing libweb
 - New files, wholly dilla's: `include/livekit/dilla_transform.h`, `src/dilla_transform.cpp`,
   `src/dilla_transform.rs` (the cxx bridge and the Rust API: `dilla_transform::install(Box<dyn
   FrameTransform>)`, `FrameTransform::transform(&FrameInfo, &[u8], &mut Vec<u8>) -> Verdict`, with
-  `Verdict::{Drop, Replace, Hold, PassUnchanged}`). Without an installed hook nothing changes.
+  `Verdict::{Drop, Replace, Hold, PassUnchanged}`).
 - `build.rs`, `src/lib.rs`: build and export the new bridge.
-- `src/peer_connection.cpp`: `add_track` and `add_transceiver` attach a `DillaFrameTransformer` to
-  the new sender before the negotiation that starts its RTP; `OnTrack` attaches one to the receiver
-  synchronously, before Rust learns of the track.
-- `src/rtp_sender.cpp`: `set_track` attaches a fresh one bound to the new track's id.
+- `src/peer_connection_factory.cpp`: the hook is mandatory. `create_peer_connection` throws
+  `E_DILLA_NO_FRAME_HOOK` when no hook is installed, so a missing or late `install` can never fall
+  back to LiveKit's own FrameCryptor or to no transform
+  (`experiments/gpui-voice-proof/tests/mandatory_hook.rs`).
+- `src/peer_connection.cpp`: `add_track`, `add_transceiver` and `add_transceiver_for_media`
+  attach a `DillaFrameTransformer` to the new sender before the negotiation that starts its RTP (a
+  sender without a track gets one bound to no track, which drops every frame), so no sender exists
+  without one; `OnTrack` attaches one to the receiver synchronously, before Rust learns of the
+  track.
+- `src/rtp_sender.cpp`: `set_track` attaches a fresh one bound to the incoming track's id *before*
+  `SetTrack`, so no frame of the new track meets the old binding or no transformer (a null track
+  binds to no track; upstream dereferenced a null track here).
 - `src/frame_cryptor.cpp`, `src/packet_trailer.cpp`: while a hook is installed, LiveKit's
   `FrameCryptorTransformer`, its chained packet-trailer transformer and the packet-trailer handlers
   are never set on a sender or receiver, so nothing replaces the hook (protocol/05 refuses packet

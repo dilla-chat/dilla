@@ -154,7 +154,12 @@ test('rust_to_browser_audio', async ({ page }) => {
   const t0 = Date.now();
   const agent = await Agent.start('rust_to_browser_audio', r, ['--publish', 'audio', '--tone', '440', '--epoch', '1', '--base-key', KEY1, '--roster', ROSTER_ARG]);
   try {
-    await expect.poll(async () => (await pageStats(page)).decrypted[RUST_KID(1)] ?? 0, POLL).toBeGreaterThan(100);
+    await expect.poll(async () => (await pageStats(page)).decrypted[RUST_KID(1)] ?? 0, POLL).toBeGreaterThan(100)
+      .catch(async (err) => {
+        const s = await pageStats(page);
+        record('rust_to_browser_audio.failed', { decrypted: s.decrypted, dropped: s.dropped, rust: (await agent.stats()).media });
+        throw err;
+      });
     const firstAudioMs = Date.now() - t0;
     const peak = await pagePeak(page, RUST_DEV, 1500);
     const s = await pageStats(page);
@@ -167,6 +172,24 @@ test('rust_to_browser_audio', async ({ page }) => {
     expect(sum(s.dropped as unknown as Record<string, number>)).toBe(0);
     expect(rust.media.failed).toEqual({});
     expect(rust.media.encrypted[RUST_KID(1)] ?? 0).toBeGreaterThan(100);
+  } finally {
+    await agent.close();
+  }
+});
+
+// Negative control: the same participant with a hook that passes every frame unchanged (plaintext Opus on an
+// encrypted-flagged publication). The page must refuse it: drops counted, nothing authenticated, nothing played.
+test('control_passthrough_is_refused', async ({ page }) => {
+  const r = room('control');
+  await joinPage(page, r);
+  const agent = await Agent.start('control_passthrough_is_refused', r, ['--publish', 'audio', '--tone', '440', '--control', 'passthrough']);
+  try {
+    const dropped = async () => sum((await pageStats(page)).dropped as unknown as Record<string, number>);
+    await expect.poll(dropped, POLL).toBeGreaterThan(100);
+    const s = await pageStats(page);
+    record('control_passthrough_is_refused', { decrypted: s.decrypted, verified: s.verified, dropped: s.dropped, emptyFrames: s.emptyFrames });
+    expect(s.decrypted).toEqual({});
+    expect(s.verified).toEqual({});
   } finally {
     await agent.close();
   }

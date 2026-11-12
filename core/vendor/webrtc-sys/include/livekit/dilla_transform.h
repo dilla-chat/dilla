@@ -4,9 +4,12 @@
  * A process-wide encoded-frame hook for dilla-sframe/1 (protocol/05-media-frames.md). Once a hook is
  * installed (dilla_install_hook, from Rust, before any PeerConnection exists):
  *
- *  - every RtpSender created through PeerConnection::add_track / add_transceiver with a track gets a
- *    DillaFrameTransformer synchronously, before the negotiation that starts its RTP, and again on
- *    every RtpSender::set_track;
+ *  - every RtpSender (PeerConnection::add_track, add_transceiver, add_transceiver_for_media) gets a
+ *    DillaFrameTransformer synchronously, before the negotiation that starts its RTP; one without a
+ *    track drops every frame. RtpSender::set_track attaches a fresh one for the incoming track
+ *    before the swap;
+ *  - PeerConnectionFactory::create_peer_connection refuses to create a PeerConnection without a
+ *    hook (E_DILLA_NO_FRAME_HOOK), so there is no stock-LiveKit fallback;
  *  - every RtpReceiver gets one synchronously in PeerConnection::OnTrack, before Rust learns of the
  *    track;
  *  - no other transformer may be set: FrameCryptor and PacketTrailerHandler skip their
@@ -47,9 +50,15 @@ bool dilla_install_hook(rust::Box<DillaHook> hook);
 /// True once a hook is installed: dilla then owns every encoded-frame transform.
 bool dilla_owns_transforms();
 
-/// Attach a fresh DillaFrameTransformer to `sender` / `receiver`; a no-op without a hook.
+/// Attach a fresh DillaFrameTransformer to `sender` / `receiver`; a no-op without a hook (which
+/// cannot happen once a PeerConnection exists: create_peer_connection refuses to run without one).
+/// The sender form binds to the sender's current track id ("" without a track).
 void dilla_attach_sender(
     const webrtc::scoped_refptr<webrtc::RtpSenderInterface>& sender);
+/// The sender form for a track that is about to be set (RtpSender::set_track): binds to `track_id`.
+void dilla_attach_sender_for_track(
+    const webrtc::scoped_refptr<webrtc::RtpSenderInterface>& sender,
+    const std::string& track_id);
 void dilla_attach_receiver(
     const webrtc::scoped_refptr<webrtc::RtpReceiverInterface>& receiver);
 

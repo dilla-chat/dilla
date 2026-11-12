@@ -61,13 +61,21 @@ bool dilla_owns_transforms() {
 
 void dilla_attach_sender(
     const webrtc::scoped_refptr<webrtc::RtpSenderInterface>& sender) {
-  auto hook = current_hook();
-  if (!hook || !sender) {
+  if (!sender) {
     return;
   }
   auto track = sender->track();
   // A sender without a track gets a transformer bound to no track: Rust drops every frame of it.
-  std::string track_id = track ? track->id() : std::string();
+  dilla_attach_sender_for_track(sender, track ? track->id() : std::string());
+}
+
+void dilla_attach_sender_for_track(
+    const webrtc::scoped_refptr<webrtc::RtpSenderInterface>& sender,
+    const std::string& track_id) {
+  auto hook = current_hook();
+  if (!hook || !sender) {
+    return;
+  }
   bool video = sender->media_type() == webrtc::MediaType::VIDEO;
   sender->SetEncoderToPacketizerFrameTransformer(
       webrtc::make_ref_counted<DillaFrameTransformer>(hook, true, video,

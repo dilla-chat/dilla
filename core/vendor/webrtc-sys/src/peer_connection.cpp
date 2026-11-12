@@ -261,6 +261,9 @@ std::shared_ptr<RtpTransceiver> PeerConnection::add_transceiver_for_media(
 
   if (!result.ok())
     throw std::runtime_error(serialize_error(to_error(result.error())));
+  // DILLA PATCH: a sender without a track still gets a transformer (bound to no track, so every
+  // frame is dropped) and is rebound by set_track: no sender ever exists without one.
+  dilla_attach_sender(result.value()->sender());
 
   return std::make_shared<RtpTransceiver>(rtc_runtime_, result.value(),
                                           peer_connection_);

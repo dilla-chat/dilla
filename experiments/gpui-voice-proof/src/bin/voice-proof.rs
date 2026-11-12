@@ -4,7 +4,7 @@
 //! ```text
 //! voice-proof --url WS --token JWT --leaf N [--publish audio|video] [--tone HZ]
 //!             [--width W --height H --fps F]
-//!             [--epoch E --base-key HEX --roster LEAF:DEVICE,...]
+//!             [--epoch E --base-key HEX --roster LEAF:DEVICE,...] [--control passthrough]
 //! ```
 //!
 //! `--epoch` installs that epoch on both sides before the room is joined, as the first
@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use gpui_voice_proof::media::{Hook, ProofMedia};
+use gpui_voice_proof::media::{Hook, PassthroughControl, ProofMedia};
 use gpui_voice_proof::sframe::{NK, Slot};
 use gpui_voice_proof::signal::{self, Tone};
 use livekit::e2ee::key_provider::{KeyProvider, KeyProviderOptions};
@@ -52,6 +52,7 @@ struct Args {
     height: u32,
     fps: u32,
     epoch: Option<(u64, String, String)>,
+    control: Option<String>,
 }
 
 fn parse_roster(s: &str) -> Vec<(u16, [u8; 16])> {
@@ -74,6 +75,7 @@ fn args() -> Args {
         height: 360,
         fps: 30,
         epoch: None,
+        control: None,
     };
     let (mut epoch, mut key, mut roster) = (None, None, None);
     let mut it = std::env::args().skip(1);
@@ -91,6 +93,7 @@ fn args() -> Args {
             "--epoch" => epoch = Some(v.parse().expect("--epoch")),
             "--base-key" => key = Some(v),
             "--roster" => roster = Some(v),
+            "--control" => a.control = Some(v),
             _ => panic!("unknown argument {k}"),
         }
     }
@@ -156,14 +159,17 @@ async fn main() {
             .send_epoch(*epoch, &unhex::<NK>(key))
             .expect("send epoch");
     }
-    // Negative control only (REPORT.md, RED evidence): VOICE_PROOF_NO_HOOK=1 runs the same
-    // participant on stock LiveKit E2EE, whose frames a dilla receiver must refuse.
-    if std::env::var_os("VOICE_PROOF_NO_HOOK").is_none() {
-        assert!(
-            webrtc_sys::dilla_transform::install(Box::new(Hook(media.clone()))),
-            "the dilla hook must be the first and only one"
-        );
-    }
+    // `--control passthrough` is the negative control only (REPORT.md): a hook that passes every
+    // frame unchanged, whose plaintext a dilla receiver must refuse.
+    let hook: Box<dyn webrtc_sys::dilla_transform::FrameTransform> = match a.control.as_deref() {
+        None => Box::new(Hook(media.clone())),
+        Some("passthrough") => Box::new(PassthroughControl),
+        Some(other) => panic!("--control {other}: only passthrough"),
+    };
+    assert!(
+        webrtc_sys::dilla_transform::install(hook),
+        "the dilla hook must be the first and only one"
+    );
 
     let mut options = RoomOptions::default();
     // The publication's encryption flag must say encrypted (a browser drops a NONE-flagged one
