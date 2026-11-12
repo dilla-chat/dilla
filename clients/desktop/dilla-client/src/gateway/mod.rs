@@ -686,6 +686,18 @@ async fn until(at: Option<Instant>) {
     }
 }
 
+/// The shortest heartbeat interval the client accepts. gateway.ts has no explicit floor (a JS timer is clamped to a few
+/// milliseconds by the runtime); this is the same guard made explicit, so a server-sent `heartbeat_ms` of 0 or 1 cannot
+/// make the client send heartbeats in a tight loop.
+const MIN_BEAT_INTERVAL: Duration = Duration::from_millis(10);
+
+/// `min(heartbeat_ms / 2, heartbeat_max)`, never below [`MIN_BEAT_INTERVAL`].
+fn beat_interval_for(heartbeat_ms: u64, heartbeat_max: Duration) -> Duration {
+    Duration::from_millis(heartbeat_ms / 2)
+        .min(heartbeat_max)
+        .max(MIN_BEAT_INTERVAL)
+}
+
 impl Conn {
     async fn run(
         &mut self,
@@ -765,9 +777,8 @@ impl Conn {
     }
 
     fn beat_interval(&self, options: &GatewayOptions) -> Duration {
-        let half = Duration::from_millis(self.hello.as_ref().map_or(0, |h| h.heartbeat_ms / 2));
-        half.min(options.heartbeat_max)
-            .max(Duration::from_millis(1))
+        let heartbeat_ms = self.hello.as_ref().map_or(0, |h| h.heartbeat_ms);
+        beat_interval_for(heartbeat_ms, options.heartbeat_max)
     }
 
     /// Hands one event to the consumer. While the channel is full the heartbeats go on and `stop()` still wins; a
@@ -1017,6 +1028,20 @@ impl Conn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn beat_interval_is_clamped() {
+        let max = Duration::from_millis(15_000);
+        assert_eq!(
+            beat_interval_for(30_000, max),
+            Duration::from_millis(15_000)
+        );
+        assert_eq!(beat_interval_for(100_000, max), max);
+        assert_eq!(beat_interval_for(100, max), Duration::from_millis(50));
+        assert_eq!(beat_interval_for(0, max), MIN_BEAT_INTERVAL);
+        assert_eq!(beat_interval_for(1, max), MIN_BEAT_INTERVAL);
+        assert_eq!(beat_interval_for(15, max), MIN_BEAT_INTERVAL);
+    }
 
     #[test]
     fn negotiation_mirrors_gateway_ts() {

@@ -2,8 +2,8 @@
 //!
 //! The real-dillad test needs `target/dilla-testhost` (`go build -o target/dilla-testhost ./cmd/dilla-testhost`) and
 //! `target/wasm32-wasip1/release/dilla_core_wasi.wasm` (`cargo build -p dilla-core-wasi --target wasm32-wasip1
-//! --release`), or `DILLA_TESTHOST` and `DILLA_CORE_WASI` naming them. CI's desktop-gpui job has no Go toolchain, so it
-//! is `#[ignore]`d there; run it with `cargo test -p dilla-client --test gateway -- --ignored`.
+//! --release`), or `DILLA_TESTHOST` and `DILLA_CORE_WASI` naming them. CI's desktop-gpui job builds both and runs it on Linux with
+//! `--ignored`; run it locally with `cargo test -p dilla-client --test gateway -- --ignored`.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -1006,7 +1006,7 @@ async fn enrolled_session(host: &Host) -> String {
 }
 
 #[tokio::test]
-#[ignore = "needs dillad: target/dilla-testhost and the wasi core (no Go toolchain in the desktop-gpui CI job)"]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 async fn hello_negotiates_same_versions_as_ts() {
     let host = tokio::task::spawn_blocking(start_host).await.unwrap();
     let token = enrolled_session(&host).await;

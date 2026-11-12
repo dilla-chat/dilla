@@ -152,7 +152,7 @@ func launch(options Options) (exchange, error) {
 	// Pdeathsig: the helper must not outlive the Bot. It is in its own process group, so a Bot that is killed or
 	// restarted never signals it, and it notices the closed socket only between requests: a helper in a long Open
 	// (the one-off v1 cleanup) kept state.lock after a restart, and the next Bot's Open was refused as busy
-	// (v0.1.0-bot2 on an upgraded instance). SQLCipher's writes are transactional, so a kill mid-write is safe.
+	// (v0.1.0-bot2 on an upgraded instance). The store's writes are transactional, so a kill mid-write is safe.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	if options.launcher != nil {
 		err = options.launcher(cmd)

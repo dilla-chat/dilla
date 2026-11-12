@@ -113,9 +113,10 @@ to `dilla-client` only through its state model and commands, never to
 ### Keys at rest
 
 Today keys live in the page's IndexedDB/OPFS (sqlite3mc), with no OS keychain.
-The native app stores its SQLCipher key-encryption key in the OS keychain
-(Keychain, Credential Manager, Secret Service), with the same password/MFA
-unlock flow as today. That is at least as strong as today, never weaker.
+The native app stores a random 32-byte sqlite3mc store key in the OS keychain
+(Keychain, Credential Manager, Secret Service) under the account
+`<install-id>/instance-<n>` (§11a, R10), with the same password/MFA unlock flow
+as today. That is at least as strong as today, never weaker.
 
 ## 6. Hard risks, proven first
 

@@ -167,7 +167,7 @@ jobs:
       - run: rustup show active-toolchain
       - run: cargo fmt --all -- --check
       - run: |
-          # Match the Bot service's memory-lock allowance for SQLCipher tests.
+          # Kept as harmless headroom: the Bot store no longer locks memory.
           sudo prlimit --pid "$$" --memlock=268435456:268435456
           cargo test -p dilla-bot-core --locked
       - run: cargo build -p dilla-bot-core --release --locked

@@ -2,6 +2,22 @@ name: desktop-gpui
 # The native GPUI desktop client (clients/desktop). Separate from desktop.yml / desktop-ci.yml, which are the
 # Electron client's; this one builds, lints and tests only the GPUI crates and the parity harness.
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'clients/desktop/**'
+      - 'core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'deny.toml'
+      - 'packages/design-tokens/src/tokens.ts'
+      - 'packages/ui/src/Icon/icons.ts'
+      - 'cmd/dilla-testhost/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/desktop-gpui.yml'
   pull_request:
     paths:
       - 'clients/desktop/**'
@@ -10,6 +26,12 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'deny.toml'
+      - 'packages/design-tokens/src/tokens.ts'
+      - 'packages/ui/src/Icon/icons.ts'
+      - 'cmd/dilla-testhost/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/desktop-gpui.yml'
 permissions:
   contents: read
@@ -65,9 +87,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
-          restore-keys: |
-            desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
       # Token freshness: the generated Rust tokens match the design tokens they come from.
       - run: node --test scripts/gen-gpui-tokens.test.mjs
       # The test host and the WASI core dilla-client's real-server tests start (all read DILLA_CORE_WASI).
