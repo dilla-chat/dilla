@@ -11,8 +11,9 @@ publish = false
 workspace = true
 
 [features]
-# Screenshot automation (a later task); the image crate is only built with it.
-automation = ["dep:image"]
+# Test-only automation interface (src/automation.rs): a headless window driven over stdin/stdout, with
+# screenshots. It needs GPUI's test-support renderer, so release builds never enable it.
+automation = ["dep:image", "gpui/test-support", "gpui-platform/test-support"]
 
 [dependencies]
 dilla-client = { path = "../dilla-client" }

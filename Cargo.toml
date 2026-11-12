@@ -10,6 +10,7 @@ members = [
     "clients/desktop/dilla-media",
     "clients/desktop/dilla-desktop-ui",
     "clients/desktop/dilla-desktop",
+    "clients/desktop/parity",
 ]
 default-members = ["core/dilla-core", "testkit"]
 # Third-party source carried with a patch (core/vendor/README.md): never a member, so fmt, clippy and
