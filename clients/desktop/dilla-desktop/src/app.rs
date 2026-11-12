@@ -107,7 +107,7 @@ impl AppView {
                 ShellView::new(
                     Arc::new(fixture.state),
                     None,
-                    Some(fixture.open),
+                    fixture.open,
                     clock,
                     window,
                     cx,

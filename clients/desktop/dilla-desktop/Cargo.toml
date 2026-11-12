@@ -13,7 +13,7 @@ workspace = true
 [features]
 # Test-only automation interface (src/automation.rs): a headless window driven over stdin/stdout, with
 # screenshots. It needs GPUI's test-support renderer, so release builds never enable it.
-automation = ["dep:image", "dep:serde", "dep:serde_json", "gpui/test-support", "gpui-platform/test-support"]
+automation = ["dep:image", "dep:serde", "dep:serde_json", "dilla-client/testing", "gpui/test-support", "gpui-platform/test-support"]
 
 [dependencies]
 dilla-client = { path = "../dilla-client" }
@@ -53,6 +53,8 @@ gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] 
 dilla-core = { path = "../../../core/dilla-core" }
 dilla-testkit = { path = "../../../testkit" }
 dilla-parity = { path = "../parity" }
+# The shared real-dillad helpers (dilla-client src/testing/host.rs): tests/support/world.rs and the parity world.
+dilla-client = { path = "../dilla-client", features = ["testing-host"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 serde_json = "1.0.151"

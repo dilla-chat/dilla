@@ -1,25 +1,25 @@
-//! A real dillad (dilla-testhost) with accounts made the way the app makes them, for the slice test and the parity
-//! world (`examples/parity_world.rs`). The same recipe as `dilla-client/tests/sync.rs`: a sign-up from the client core's
-//! own identity (the bootstrap invite), the device list published, an authenticator app enrolled over the real
-//! `/v1/auth/totp/*` routes. Each person also keeps the recovery key their sign-up showed, so a new device can sign in.
+//! A real dillad (dilla-testhost) with accounts made the way the app makes them (feature `testing-host`). The sign-up
+//! recipe is signup.ts `submit` from the client core's own identity (the bootstrap invite), the device list published, an
+//! authenticator app enrolled over the real `/v1/auth/totp/*` routes and the sealed backups uploaded. Each person also
+//! keeps the recovery key their sign-up showed, so a new device can sign in. Taken out of `tests/sync.rs`,
+//! `examples/peer.rs` and the desktop's `tests/support/world.rs`, which now all use this one.
 //!
 //! Needs `target/dilla-testhost` (`go build -o target/dilla-testhost ./cmd/dilla-testhost`, or `DILLA_TESTHOST`) and the
 //! WASI core (`DILLA_CORE_WASI`, else `target/wasm32-wasip1/release/dilla_core_wasi.wasm`).
-#![allow(dead_code)]
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dilla_client::Client;
-use dilla_client::http::routes::{self as r, NoBody, Raw};
-use dilla_client::http::{AuthToken, ReqwestHttp};
-use dilla_client::instances::Instances;
-use dilla_client::keychain::MemoryKeychain;
-use dilla_client::seams::{Http, InstanceConfig};
-use dilla_client::state::AppState;
-use dilla_client::store::open_store;
+use crate::Client;
+use crate::http::routes::{self as r, NoBody, Raw};
+use crate::http::{AuthToken, ReqwestHttp};
+use crate::instances::Instances;
+use crate::keychain::MemoryKeychain;
+use crate::seams::{Http, InstanceConfig};
+use crate::state::AppState;
+use crate::store::open_store;
 use dilla_core::cbor::{Encoder, decode_strict};
 
 pub const PASSWORD: &str = "correct horse battery staple";
@@ -214,12 +214,15 @@ pub struct Person {
     pub totp_secret: String,
     /// The last TOTP counter the instance accepted from this account.
     pub totp_last: u64,
-    root: PathBuf,
+    /// The data root to delete with the person; `None` when the caller owns it ([`sign_up_at`]).
+    cleanup: Option<PathBuf>,
 }
 
 impl Drop for Person {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        if let Some(root) = &self.cleanup {
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 }
 
@@ -244,7 +247,7 @@ fn cbor(f: impl FnOnce(&mut Encoder)) -> Vec<u8> {
     e.into_vec()
 }
 
-/// signup.ts `submit` from a fresh client core, then the device list and an authenticator app.
+/// [`sign_up_at`] on a data root of its own under `target/`, deleted with the person.
 pub async fn sign_up(
     host: &Host,
     invite: &str,
@@ -253,12 +256,36 @@ pub async fn sign_up(
     tag: &str,
 ) -> Person {
     let root = repo_root().join(format!(
-        "target/slice-test-client-{tag}-{username}-{}",
+        "target/testing-client-{tag}-{username}-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&root);
-    let mut instances = Instances::load(&root).unwrap();
-    let base = url::Url::parse(&host.public).unwrap();
+    let mut person = sign_up_at(
+        &host.public,
+        &host.control,
+        &root,
+        invite,
+        username,
+        display,
+    )
+    .await;
+    person.cleanup = Some(root);
+    person
+}
+
+/// signup.ts `submit` from a fresh client core, then the device list, an authenticator app and the sealed backups.
+/// `root` is the instance data root (the caller's to delete); `public` and `control` are the host's listeners. A
+/// failing step panics with its name: this is test tooling.
+pub async fn sign_up_at(
+    public: &str,
+    control: &str,
+    root: &Path,
+    invite: &str,
+    username: &str,
+    display: &str,
+) -> Person {
+    let mut instances = Instances::load(root).unwrap();
+    let base = url::Url::parse(public).unwrap();
     let cfg = instances.add(base.clone()).unwrap();
     let kc = Arc::new(MemoryKeychain::new());
     let mut core = open_store(&cfg, kc.as_ref()).expect("store");
@@ -337,7 +364,7 @@ pub async fn sign_up(
         Ok(s)
     })
     .unwrap();
-    let control = host.control.clone();
+    let control = control.to_owned();
     let clock = tokio::task::spawn_blocking(move || {
         let body = reqwest::blocking_get(&format!("{control}/debug/clock"));
         serde_json::from_slice::<serde_json::Value>(&body).unwrap()["now"]
@@ -392,7 +419,7 @@ pub async fn sign_up(
         recovery_key,
         totp_secret: secret,
         totp_last: counter,
-        root,
+        cleanup: None,
     }
 }
 

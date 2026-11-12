@@ -2061,6 +2061,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "ciborium",
+ "dilla-client",
  "dilla-core",
  "dilla-testkit",
  "dirs 6.0.0",
@@ -2079,6 +2080,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1 0.11.0",
+ "sha2 0.11.0",
  "thiserror 2.0.20",
  "tokio",
  "tokio-rustls",
@@ -2219,8 +2221,10 @@ dependencies = [
 name = "dilla-parity"
 version = "0.1.0"
 dependencies = [
+ "dilla-client",
  "image",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "toml 0.8.23",

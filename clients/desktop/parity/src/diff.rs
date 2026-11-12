@@ -36,6 +36,19 @@ pub struct Tolerance {
     pub chrome_max_delta: u8,
     /// Share of non-text (unmasked) pixels, in percent, allowed to differ by more than `chrome_max_delta`.
     pub chrome_max_pct: f64,
+    /// Colour gate, applied only to pixels outside the text mask: a pixel counts as right when its colour is within
+    /// `colour_max_delta` (per channel) of some reference pixel within `colour_radius` device pixels of it. It tolerates
+    /// a line or an edge a pixel out of place (the chrome gate sees those) but not a wrong colour: a fill or a border
+    /// one design-token step off is further than any neighbour's colour. Far tighter than `chrome_max_delta`, which
+    /// must be wide for glyph fringes and edge anti-aliasing.
+    #[serde(default)]
+    pub colour_max_delta: u8,
+    /// How far, in device pixels, the colour gate looks for the pixel's colour in the reference.
+    #[serde(default)]
+    pub colour_radius: u32,
+    /// Share of non-text (unmasked) pixels, in percent, allowed to have no such neighbour.
+    #[serde(default)]
+    pub colour_max_pct: f64,
 }
 
 /// A rectangle in pixel coordinates of the reference (images are never rescaled, so also of the capture).
@@ -166,6 +179,16 @@ pub enum ParityFailure {
         pct: f64,
         max_pct: f64,
         max_delta: u8,
+    },
+    /// Non-text pixels whose colour no reference pixel nearby has: a fill or border of the wrong colour.
+    #[error(
+        "colour (non-text) pixels: {pct:.4} % have no reference pixel within {radius} px and delta {max_delta}; allowed {max_pct} %"
+    )]
+    Colour {
+        pct: f64,
+        max_pct: f64,
+        max_delta: u8,
+        radius: u32,
     },
     /// The mask covers more than half of the frame, so the chrome gate would pass vacuously.
     #[error(
@@ -315,8 +338,77 @@ fn compare(
                 max_delta: tolerance.chrome_max_delta,
             });
         }
+        let colour_pct = colour_difference_pct(
+            actual,
+            reference,
+            tolerance.colour_max_delta,
+            tolerance.colour_radius,
+            mask,
+        )?;
+        if colour_pct > tolerance.colour_max_pct {
+            return Err(ParityFailure::Colour {
+                pct: colour_pct,
+                max_pct: tolerance.colour_max_pct,
+                max_delta: tolerance.colour_max_delta,
+                radius: tolerance.colour_radius,
+            });
+        }
     }
     Ok(())
+}
+
+/// Share (percent) of the pixels outside `mask` whose colour is within `max_delta` of no reference pixel in the
+/// `(2 * radius + 1)` square around them. Both images must have the same size. Fails with [`ParityFailure::Mask`] when
+/// the mask covers more than half of the frame.
+pub fn colour_difference_pct(
+    actual: &RgbaImage,
+    reference: &RgbaImage,
+    max_delta: u8,
+    radius: u32,
+    mask: &TextMask,
+) -> Result<f64, ParityFailure> {
+    let (w, h) = actual.dimensions();
+    let covered = mask.covered((w, h));
+    let masked = covered.iter().filter(|&&c| c).count() as u64;
+    let masked_pct = percent(masked, covered.len() as u64);
+    if masked_pct > 50.0 {
+        return Err(ParityFailure::Mask {
+            covered_pct: masked_pct,
+        });
+    }
+    let r = i64::from(radius);
+    let (w, h) = (i64::from(w), i64::from(h));
+    let (mut total, mut missing) = (0u64, 0u64);
+    for y in 0..h {
+        for x in 0..w {
+            if covered[(y * w + x) as usize] {
+                continue;
+            }
+            total += 1;
+            let p = actual.get_pixel(x as u32, y as u32);
+            // The pixel's own place first: nearly every pixel matches there.
+            let mut found = pixel_delta(p, reference.get_pixel(x as u32, y as u32)) <= max_delta;
+            'search: for dy in -r..=r {
+                if found {
+                    break;
+                }
+                for dx in -r..=r {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < 0 || ny < 0 || nx >= w || ny >= h {
+                        continue;
+                    }
+                    if pixel_delta(p, reference.get_pixel(nx as u32, ny as u32)) <= max_delta {
+                        found = true;
+                        break 'search;
+                    }
+                }
+            }
+            if !found {
+                missing += 1;
+            }
+        }
+    }
+    Ok(percent(missing, total))
 }
 
 /// Share (percent) of the pixels outside `mask` whose largest channel delta exceeds `max_delta`.

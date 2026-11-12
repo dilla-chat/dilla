@@ -1,223 +1,126 @@
-//! The parity world: a real dillad with a channel-view scenario in it, for shooting the web client's reference
-//! (`clients/desktop/parity/references/shoot-channel-view.mjs` runs this; see the README there).
+//! The parity world: a real dillad with a screen fixture's world in it, for shooting the web client's reference
+//! (`clients/desktop/parity/shoot.mjs` runs this; see `parity/references/linux/README.md`).
 //!
-//! `cargo run -p dilla-desktop --example parity_world -- <scenario> <out-dir>` starts dilla-testhost serving
-//! `packages/web/dist`, signs the scenario's people up, makes its servers and channels, writes `<out-dir>/state.json`
-//! (the instance and Ada's throwaway secrets, the server and channel to open, the window) and prints
-//! `SIGNIN <out-dir>`. The browser signs Ada in on a new device and opens the channel meanwhile, then sends `post` on
-//! stdin: a device added later cannot read what was sent before it joined. The world posts the history, writes what
-//! Ada's own headless client holds as `<out-dir>/fixture.json` (the GPUI side's input; no secrets), stops every client
-//! (so only the browser is online), prints `READY <out-dir>` and keeps the host running until its stdin closes.
+//! `cargo run -p dilla-desktop --example parity_world -- <fixture.json> <out-dir>` reads a screen fixture
+//! (`dilla_client::testing::spec`), starts dilla-testhost serving `packages/web/dist`, signs the world's people up,
+//! makes its servers and channels and writes `<out-dir>/state.json` (the viewer's throwaway secrets, the channels the
+//! browser visits so it can read their history, the window, the host's clock and every local id's real id) before it
+//! prints `SIGNIN <out-dir>`. The browser signs the viewer in on a new device and visits those channels meanwhile, then
+//! sends `post` on stdin: a device added later cannot read what was sent before it joined. The world posts the history
+//! in time order, writes `<out-dir>/world.json` (the reference's sidecar: the fixture's digest, the clock shift and the
+//! real ids), stops every client (so only the browser is online), prints `READY <out-dir>` and keeps the host running
+//! until its stdin closes. Every line it logs for the shooters begins `FIXTURE`: the same line the GPUI driver's
+//! `fixture` command answers (`shoot.mjs --check` prints it too).
 //!
-//! Scenarios:
-//! - `basic`: 1280x800; "Midgard Crew" (Ada, Björn, Mira), #general with twelve short messages (the text of the Task 3
-//!   fixture without its code block and reactions).
-//! - `wide`: 1440x900; "Midgard Crew" and, selected, "Northern Lights Collective" with eleven members (a two-digit count),
-//!   a category with a text and a voice channel, and a long-named channel holding a message that wraps and a follow-up.
-
-#[path = "../tests/support/world.rs"]
-mod world;
+//! Time: the host's clock is frozen and only moves forward from the moment the host starts, so a fixture's absolute
+//! times are not reachable. The world lifts the whole fixture by `shift` seconds (every message's `ts` and the clock)
+//! and records it in the sidecar; the GPUI side lifts its frame by the same amount.
+//!
+//! Scope: plain text messages in text channels. A fixture that asks for more (reactions, replies, threads,
+//! attachments, polls, edits, pins, DMs, calls, roles, bots, statuses) is refused by name until the area that owns the
+//! facet adds its seeding to `seed_facets` (each area task fills its own function there).
 
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::time::Duration;
 
-use dilla_client::state::{AppState, ChannelId, CommunityId, TimelineItemState};
+use dilla_client::state::{ChannelId, CommunityId, TimelineItemState};
+use dilla_client::testing::host as world;
+use dilla_client::testing::spec::{self, ChannelKind, ScreenFixture, ServerSpec};
 
-struct Scenario {
-    window: (u32, u32),
-    /// Usernames and display names; the first is the viewer (Ada), whose browser shoots.
-    people: &'static [(&'static str, &'static str)],
-    /// How many of `people` post (each runs a headless client).
-    posters: usize,
-    /// Servers: name, members (indices into `people`, the owner first), extra channels.
-    servers: Vec<(&'static str, Vec<usize>, Vec<world::ChannelSpec<'static>>)>,
-    /// The server (index) and channel the view shows.
-    open: (usize, &'static str),
-    /// The history: (author index, body), oldest first, posted in `open`.
-    messages: &'static [(usize, &'static str)],
-}
-
-const LONG_CHANNEL: &str = "release-coordination-and-long-running-discussions";
-
-fn scenario(name: &str) -> Scenario {
-    match name {
-        "basic" => Scenario {
-            window: (1280, 800),
-            people: &[("ada", "Ada"), ("bjorn", "Björn"), ("mira", "Mira")],
-            posters: 3,
-            servers: vec![("Midgard Crew", vec![0, 1, 2], Vec::new())],
-            open: (0, "general"),
-            messages: &[
-                (0, "morning, the release branch is green again"),
-                (1, "nice. did the voice e2e pass on all three platforms?"),
-                (0, "linux and windows yes, macos is still running"),
-                (
-                    2,
-                    "I pushed the fix for the sealed-command retry\nit needs a second pair of eyes before merge",
-                ),
-                (1, "on it, give me ten minutes"),
-                (2, "the core of the change is the outbox"),
-                (0, "reads fine to me, the outbox keeps the order"),
-                (1, "approved, merging after ci"),
-                (2, "thanks both"),
-                (0, "ci is green, the tag goes out this afternoon"),
-                (1, "I will tell the homelab session to upgrade CT 144"),
-                (2, "perfect, nothing else from me"),
-            ],
-        },
-        "wide" => Scenario {
-            window: (1440, 900),
-            people: &[
-                ("ada", "Ada"),
-                ("bjorn", "Björn"),
-                ("mira", "Mira"),
-                ("liv", "Liv"),
-                ("sven", "Sven"),
-                ("kari", "Kari"),
-                ("ole", "Ole"),
-                ("glenn", "Glenn"),
-                ("ines", "Ines"),
-                ("tove", "Tove"),
-                ("ulf", "Ulf"),
-            ],
-            posters: 4,
-            servers: vec![
-                ("Midgard Crew", vec![0, 1, 2], Vec::new()),
-                (
-                    "Northern Lights Collective",
-                    (0..11).collect(),
-                    vec![
-                        (0, LONG_CHANNEL, None),
-                        (2, "projects", None),
-                        (0, "desktop", Some("projects")),
-                        (1, "standup", Some("projects")),
-                    ],
-                ),
-            ],
-            open: (1, LONG_CHANNEL),
-            messages: &[
-                (1, "morning! the desktop preview builds again"),
-                (
-                    2,
-                    "I went through the whole release checklist for the preview this morning and everything that \
-                     touches the timeline, the composer and the sign-in flow behaves the way the web client does, \
-                     including the wrapping of long lines like this one, which keeps going well past the width of the \
-                     message column so that it has to break onto a second and a third line before it ends",
-                ),
-                (2, "the only thing left is the member count in the header"),
-                (0, "great, then the two-digit count is the last check"),
-                (3, "eleven of us now, so it is two digits"),
-            ],
-        },
-        other => panic!("unknown scenario {other}: basic or wide"),
-    }
-}
-
-fn json_string(s: &str) -> String {
-    serde_json::to_string(s).unwrap()
-}
-
-fn fixture_json(
-    state: &AppState,
-    open: ChannelId,
-    communities: &[CommunityId],
-    window: (u32, u32),
-    now: u64,
-) -> String {
-    let user = state.account.user_id.expect("signed in");
-    let open_community = state.channel(open).unwrap().community_id;
-    let me = state.members[&open_community]
-        .iter()
-        .find(|m| m.user_id == user)
-        .expect("own row");
-    let mut out = String::from("{\n");
-    out += &format!("  \"now\": {now},\n");
-    out += &format!("  \"window\": [{}, {}],\n", window.0, window.1);
-    out += &format!(
-        "  \"user\": {{\"id\": \"{}\", \"username\": {}, \"display\": {}}},\n",
-        user.hex(),
-        json_string(&me.username),
-        json_string(&me.display)
+/// What this world cannot seed yet, by facet; empty when it can seed the fixture.
+fn unseedable(f: &ScreenFixture) -> Vec<String> {
+    let w = &f.world;
+    let mut out = Vec::new();
+    let mut note = |what: &str, found: bool| {
+        if found {
+            out.push(what.to_owned());
+        }
+    };
+    note(
+        "reactions",
+        w.messages.iter().any(|m| !m.reactions.is_empty()),
     );
-    let rows: Vec<String> = communities
-        .iter()
-        .map(|id| {
-            let c = state.communities.iter().find(|c| c.id == *id).unwrap();
-            format!(
-                "    {{\"id\": \"{}\", \"name\": {}, \"owner\": \"{}\"}}",
-                c.id.hex(),
-                json_string(&c.name),
-                c.owner.hex()
-            )
-        })
-        .collect();
-    out += &format!("  \"communities\": [\n{}\n  ],\n", rows.join(",\n"));
-    let channels: Vec<String> = state
-        .channels
-        .iter()
-        .filter(|ch| communities.contains(&ch.community_id))
-        .map(|ch| {
-            format!(
-                "    {{\"id\": \"{}\", \"community\": \"{}\", \"kind\": {}, \"mode\": {}, \"name\": {}, \"topic\": {}, \"parent\": {}, \"position\": {}}}",
-                ch.id.hex(),
-                ch.community_id.hex(),
-                ch.kind,
-                ch.mode,
-                json_string(&ch.name),
-                json_string(&ch.topic),
-                ch.parent_id.map_or("null".to_owned(), |p| format!("\"{}\"", p.hex())),
-                ch.position
-            )
-        })
-        .collect();
-    out += &format!("  \"channels\": [\n{}\n  ],\n", channels.join(",\n"));
-    let mut members = BTreeMap::new();
-    for id in communities {
-        let rows: Vec<String> = state.members[id]
+    note("replies", w.messages.iter().any(|m| m.reply_to.is_some()));
+    note("threads", w.messages.iter().any(|m| m.thread_of.is_some()));
+    note(
+        "attachments",
+        w.messages.iter().any(|m| !m.attachments.is_empty()),
+    );
+    note("polls", w.messages.iter().any(|m| m.poll.is_some()));
+    note("edits", w.messages.iter().any(|m| m.edited));
+    note("pins", w.messages.iter().any(|m| m.pinned));
+    note("dms", !w.dms.is_empty());
+    note("calls", !w.calls.is_empty());
+    note("roles", w.servers.iter().any(|s| !s.roles.is_empty()));
+    note("bots", w.people.iter().any(|p| p.bot));
+    note(
+        "statuses and bios",
+        w.people
             .iter()
-            .map(|m| {
-                format!(
-                    "      {{\"id\": \"{}\", \"username\": {}, \"display\": {}, \"kind\": {}}}",
-                    m.user_id.hex(),
-                    json_string(&m.username),
-                    json_string(&m.display),
-                    m.kind
-                )
-            })
-            .collect();
-        members.insert(id.hex(), rows.join(",\n"));
-    }
-    let members: Vec<String> = members
-        .into_iter()
-        .map(|(id, rows)| format!("    \"{id}\": [\n{rows}\n    ]"))
-        .collect();
-    out += &format!("  \"members\": {{\n{}\n  }},\n", members.join(",\n"));
-    out += &format!("  \"open\": \"{}\",\n", open.hex());
-    let items: Vec<String> = state.timelines[&open]
-        .items
-        .iter()
-        .map(|i| {
-            format!(
-                "    {{\"key\": {}, \"sender\": \"{}\", \"ts\": {}, \"own\": {}, \"body\": {}}}",
-                json_string(&i.key),
-                i.sender_user.map(|u| u.hex()).unwrap_or_default(),
-                i.ts,
-                i.own,
-                json_string(&i.body)
-            )
-        })
-        .collect();
-    out += &format!("  \"messages\": [\n{}\n  ]\n}}\n", items.join(",\n"));
+            .any(|p| !p.status.is_empty() || !p.bio.is_empty()),
+    );
     out
+}
+
+/// The facets' seeding, one function per Wave 1 area: called once the history is posted, with the live clients. Each
+/// is empty until its area gives `unseedable` the matching facet.
+#[allow(clippy::unused_async)]
+async fn seed_facets(_f: &ScreenFixture, _people: &[(String, world::Person)]) {
+    // Task 9 edits, 10 reactions, 11 threads, 12 attachments, 13 DMs, 14 roles and moderation, 17/18 calls,
+    // 20 polls and Bot accounts, 14 statuses: each adds its facet here and drops it from `unseedable`.
+}
+
+/// The server's channels the world makes: every non-system one but the first `general`, which the world makes itself.
+fn extra_channels(server: &ServerSpec) -> Vec<world::ChannelSpec<'_>> {
+    let made: Vec<_> = server.channels.iter().filter(|c| !c.system).collect();
+    assert!(
+        made.first()
+            .is_some_and(|c| c.kind == ChannelKind::Text && c.name == "general"),
+        "server {}: the world makes #general first, so the first non-system channel must be the text channel `general`",
+        server.id
+    );
+    made[1..]
+        .iter()
+        .map(|c| {
+            let parent = c.parent.as_deref().map(|p| {
+                server
+                    .channels
+                    .iter()
+                    .find(|x| x.id == p)
+                    .expect("validated parent")
+                    .name
+                    .as_str()
+            });
+            (u64::from(c.kind.wire()), c.name.as_str(), parent)
+        })
+        .collect()
+}
+
+/// The host's clock, unix seconds (a blocking call on a thread of its own).
+fn read_clock(host: &world::Host) -> u64 {
+    tokio::task::block_in_place(|| world::clock_now(host))
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
     let mut args = std::env::args().skip(1);
-    let usage = "usage: parity_world <basic|wide> <out-dir>";
-    let sc = scenario(&args.next().expect(usage));
+    let usage = "usage: parity_world <fixture.json> <out-dir>";
+    let fixture_path = args.next().expect(usage);
     let out = std::path::PathBuf::from(args.next().expect(usage));
+    let text = std::fs::read_to_string(&fixture_path).expect("the fixture file reads");
+    let f = ScreenFixture::parse(&text).unwrap_or_else(|e| panic!("{fixture_path}: {e}"));
+    let digest = spec::digest(text.as_bytes());
+    println!(
+        "{}",
+        f.fixture_line(&digest).replacen("fixture ", "FIXTURE ", 1)
+    );
+    let missing = unseedable(&f);
+    assert!(
+        missing.is_empty(),
+        "the parity world cannot seed {} yet (see `unseedable` in this example)",
+        missing.join(", ")
+    );
     std::fs::create_dir_all(&out).unwrap();
     let web = world::repo_root().join("packages/web/dist");
     assert!(
@@ -229,49 +132,114 @@ async fn main() {
             .await
             .unwrap();
     let invite = host.invites.last().unwrap().clone();
-    let mut people = Vec::new();
-    for (username, display) in sc.people {
-        people.push(world::sign_up(&host, &invite, username, display, "parity").await);
+    let mut people: Vec<(String, world::Person)> = Vec::new();
+    for p in &f.world.people {
+        let person = world::sign_up(&host, &invite, p.username(), &p.display, "parity").await;
+        people.push((p.id.clone(), person));
     }
-    let servers = sc.servers.clone();
-    let (host, people, communities) = tokio::task::spawn_blocking(move || {
-        let mut ids = Vec::new();
-        for (name, members, channels) in &servers {
-            let owner = &people[members[0]];
-            let others: Vec<&world::Person> = members[1..].iter().map(|m| &people[*m]).collect();
-            ids.push(CommunityId(world::community_with(
-                &host, owner, name, &others, channels,
-            )));
+    let person_of = |id: &str| &people.iter().find(|(p, _)| p == id).expect("validated").1;
+    let communities: Vec<(String, CommunityId)> = {
+        let mut made = Vec::new();
+        for server in &f.world.servers {
+            let owner = person_of(&server.owner);
+            let others: Vec<&world::Person> = server
+                .members
+                .iter()
+                .filter(|m| **m != server.owner)
+                .map(|m| person_of(m))
+                .collect();
+            let channels = extra_channels(server);
+            let id = tokio::task::block_in_place(|| {
+                world::community_with(&host, owner, &server.name, &others, &channels)
+            });
+            made.push((server.id.clone(), CommunityId(id)));
         }
-        for p in &people {
+        for (_, p) in &people {
             world::clear_session(p);
         }
-        (host, people, ids)
-    })
-    .await
-    .unwrap();
-    let open_community = communities[sc.open.0];
+        made
+    };
+    // A headless client for everyone who posts, and for the viewer (who must hold every group the browser reads).
+    let mut senders: Vec<&str> = f.world.messages.iter().map(|m| m.sender.as_str()).collect();
+    senders.sort_unstable();
+    senders.dedup();
     let mut clients = Vec::new();
-    for p in &people[..sc.posters] {
-        clients.push(world::start(p).await);
+    for id in &senders {
+        clients.push((*id, world::start(person_of(id)).await));
     }
-    let mut open = None;
-    for client in &clients {
-        let s = world::wait_for(client, Duration::from_secs(30), "the channel list", |s| {
-            s.channel_named(open_community, sc.open.1).is_some()
-        })
-        .await;
-        open = s.channel_named(open_community, sc.open.1).map(|c| c.id);
+    // The real ids of every server and channel: by name within the server.
+    let mut ids: BTreeMap<String, String> = BTreeMap::new();
+    for (id, p) in &people {
+        ids.insert(format!("person:{id}"), world::hex(&p.user_id));
     }
-    let open = open.unwrap();
-    for client in &clients {
-        client
-            .open_channel(open)
-            .await
-            .unwrap()
-            .expect("opens the channel");
+    let Some((_, first)) = clients.first() else {
+        panic!(
+            "a fixture with no messages has nothing to read: it needs no history, shoot it by hand"
+        );
+    };
+    for (server, community) in &communities {
+        ids.insert(format!("server:{server}"), community.hex());
+        let spec_server = f.world.servers.iter().find(|s| s.id == *server).unwrap();
+        for c in &spec_server.channels {
+            let community = *community;
+            let name = c.name.clone();
+            let state = world::wait_for(
+                first,
+                Duration::from_secs(30),
+                "the channel list",
+                move |s| s.channel_named(community, &name).is_some(),
+            )
+            .await;
+            let real = state.channel_named(community, &c.name).unwrap().id;
+            ids.insert(format!("channel:{server}/{}", c.id), real.hex());
+        }
     }
-    let viewer = &people[0];
+    let channel_real = |path: &str| -> ChannelId {
+        ChannelId(spec::unhex16(&ids[&format!("channel:{path}")]).expect("hex"))
+    };
+    // Every channel that holds history: each sender opens it (joins its group).
+    let mut with_history: Vec<&str> = f
+        .world
+        .messages
+        .iter()
+        .map(|m| m.channel.as_str())
+        .collect();
+    with_history.sort_unstable();
+    with_history.dedup();
+    for path in &with_history {
+        for (_, client) in &clients {
+            client
+                .open_channel(channel_real(path))
+                .await
+                .unwrap()
+                .expect("opens the channel");
+        }
+    }
+    // The browser visits the history channels, the route's own last.
+    let target = with_history
+        .iter()
+        .find(|p| f.route.contains(&format!("{{{p}}}")))
+        .copied();
+    let mut visit: Vec<serde_json::Value> = Vec::new();
+    for path in with_history
+        .iter()
+        .filter(|p| Some(**p) != target)
+        .chain(target.iter())
+    {
+        let (server, channel) = f.world.channel(path).expect("validated");
+        visit.push(serde_json::json!({"server": server.name, "channel": channel.name}));
+    }
+    let first_ts = f
+        .world
+        .messages
+        .iter()
+        .map(|m| m.ts)
+        .min()
+        .unwrap_or(f.clock);
+    let host_now = read_clock(&host);
+    // The host's clock only moves forward: lift the fixture past it, with a minute to spare for what is still to be set up.
+    let shift = (host_now + 60).saturating_sub(first_ts);
+    let viewer = person_of(&f.viewer);
     let secrets = serde_json::json!({
         "publicUrl": host.public,
         "control": host.control,
@@ -280,55 +248,76 @@ async fn main() {
         "totpSecret": viewer.totp_secret,
         "totpLast": viewer.totp_last,
         "recoveryKey": viewer.recovery_key,
-        "server": sc.servers[sc.open.0].0,
-        "channel": sc.open.1,
-        "window": [sc.window.0, sc.window.1],
-        "lastMessage": sc.messages.last().unwrap().1,
+        "visit": visit,
+        "window": [f.window.0, f.window.1],
+        "now": f.clock + shift,
+        "shift": shift,
+        "ids": ids,
+        "lastMessage": f.world.messages.iter().max_by_key(|m| m.ts).map(|m| m.body.clone()),
     });
     std::fs::write(out.join("state.json"), secrets.to_string()).unwrap();
     println!("SIGNIN {}", out.display());
     let mut line = String::new();
     std::io::stdin().read_line(&mut line).unwrap();
     assert_eq!(line.trim(), "post", "expected `post` on stdin");
-    for (n, (author, body)) in sc.messages.iter().enumerate() {
-        clients[*author]
-            .send_text(open, (*body).to_owned())
+    // History in time order (the file's order within a tie).
+    let mut order: Vec<&spec::MessageSpec> = f.world.messages.iter().collect();
+    order.sort_by_key(|m| m.ts);
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for m in order {
+        let at = m.ts + shift;
+        let now = read_clock(&host);
+        assert!(
+            at >= now,
+            "message {} is {} s before the host's clock",
+            m.key,
+            now - at
+        );
+        if at > now {
+            tokio::task::block_in_place(|| world::advance_clock(&host, at - now));
+        }
+        let channel = channel_real(&m.channel);
+        let client = &clients.iter().find(|(id, _)| *id == m.sender).unwrap().1;
+        client
+            .send_text(channel, m.body.clone())
             .await
             .unwrap()
             .expect("queued");
-        // Every client holds the message before the next one goes out, so the order is the scenario's.
-        for client in &clients {
-            world::wait_for(client, Duration::from_secs(20), "the message", |s| {
-                s.timelines.get(&open).is_some_and(|t| {
+        let n = counts.entry(&m.channel).or_default();
+        *n += 1;
+        let want = *n;
+        // Every client holds the message before the next one goes out, so the order is the fixture's.
+        for (_, c) in &clients {
+            world::wait_for(c, Duration::from_secs(20), "the message", |s| {
+                s.timelines.get(&channel).is_some_and(|t| {
                     t.items
                         .iter()
                         .filter(|i| i.state == TimelineItemState::Ok && i.seq.is_some())
                         .count()
-                        > n
+                        >= want
                 })
             })
             .await;
         }
     }
-    let members = sc.servers[sc.open.0].1.len();
-    let state = world::wait_for(&clients[0], Duration::from_secs(20), "the members", |s| {
-        communities.iter().enumerate().all(|(i, c)| {
-            s.members
-                .get(c)
-                .is_some_and(|m| m.len() == sc.servers[i].1.len())
-        }) && s.members[&open_community].len() == members
-    })
-    .await;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    seed_facets(&f, &people).await;
+    // The clock at the frame: the fixture's, lifted.
+    let target = f.clock + shift;
+    let now = read_clock(&host);
+    if target > now {
+        tokio::task::block_in_place(|| world::advance_clock(&host, target - now));
+    }
+    let sidecar = spec::Shot {
+        digest,
+        shift,
+        ids: ids.clone(),
+    };
     std::fs::write(
-        out.join("fixture.json"),
-        fixture_json(&state, open, &communities, sc.window, now),
+        out.join("world.json"),
+        serde_json::to_string_pretty(&sidecar).unwrap(),
     )
     .unwrap();
-    for client in clients {
+    for (_, client) in clients {
         client.stop();
     }
     println!("READY {}", out.display());

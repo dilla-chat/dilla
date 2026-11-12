@@ -18,18 +18,11 @@
 
 use std::io::{BufRead, Write};
 use std::path::Path;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dilla_client::Client;
-use dilla_client::http::routes::{self as r, NoBody, Raw};
-use dilla_client::http::{AuthToken, ReqwestHttp};
-use dilla_client::instances::Instances;
-use dilla_client::keychain::MemoryKeychain;
-use dilla_client::seams::{Http, InstanceConfig};
 use dilla_client::state::{AppState, ChannelId, CommunityId, TimelineItemState};
-use dilla_client::store::open_store;
-use dilla_core::cbor::{Encoder, decode_strict};
+use dilla_client::testing::host::{Person, clear_session, sign_up_at};
 
 type Res<T> = Result<T, String>;
 
@@ -48,174 +41,39 @@ fn unhex16(s: &str) -> Res<[u8; 16]> {
     Ok(out)
 }
 
-fn totp_code(secret_b32: &str, counter: u64) -> Res<String> {
-    use hmac::{Hmac, KeyInit, Mac};
-    let mut key = Vec::new();
-    let (mut buf, mut bits) = (0u32, 0u32);
-    for c in secret_b32.trim_end_matches('=').chars() {
-        let v = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
-            .find(c.to_ascii_uppercase())
-            .ok_or("base32 secret")? as u32;
-        buf = (buf << 5) | v;
-        bits += 5;
-        if bits >= 8 {
-            bits -= 8;
-            key.push((buf >> bits) as u8);
-        }
-    }
-    let mut mac = Hmac::<sha1::Sha1>::new_from_slice(&key).map_err(|e| e.to_string())?;
-    mac.update(&counter.to_be_bytes());
-    let d = mac.finalize().into_bytes();
-    let o = usize::from(d[d.len() - 1] & 0x0f);
-    let word = u32::from_be_bytes([d[o] & 0x7f, d[o + 1], d[o + 2], d[o + 3]]);
-    Ok(format!("{:06}", word % 1_000_000))
-}
-
-fn cbor(f: impl FnOnce(&mut Encoder)) -> Vec<u8> {
-    let mut e = Encoder::new();
-    f(&mut e);
-    e.into_vec()
-}
-
-struct Person {
-    cfg: InstanceConfig,
-    kc: Arc<MemoryKeychain>,
-    user_id: [u8; 16],
-    device_id: [u8; 16],
-    token: String,
-}
-
-/// signup.ts `submit` from a fresh client core, then the device list and an authenticator app.
-async fn sign_up(
+/// Signs up through the shared recipe (`dilla_client::testing::host`). A failing step panics there, on a task of its
+/// own, so the panic comes back as this command's `err <reason>`.
+async fn sign_up_checked(
     root: &Path,
     server: &str,
     control: &str,
     invite: &str,
     username: &str,
 ) -> Res<Person> {
-    let e = |what: &str, err: &dyn std::fmt::Debug| format!("{what}: {err:?}");
-    let mut instances = Instances::load(root).map_err(|x| e("instances", &x))?;
-    let base = url::Url::parse(server).map_err(|x| e("server url", &x))?;
-    let cfg = instances.add(base.clone()).map_err(|x| e("add", &x))?;
-    let kc = Arc::new(MemoryKeychain::new());
-    let mut core = open_store(&cfg, kc.as_ref()).map_err(|x| e("store", &x))?;
-
-    let anon = ReqwestHttp::new(base.clone(), AuthToken::anonymous()).map_err(|x| e("http", &x))?;
-    let Raw(doc) = anon
-        .call::<r::GetInstance>(&[], NoBody)
-        .await
-        .map_err(|x| e("instance", &x))?;
-    let (instance_id, signer) = decode_strict(&doc, |d| {
-        let len = d.array_len()?;
-        for _ in 0..3 {
-            d.skip()?;
-        }
-        let id = d.bytes_exact::<16>()?;
-        for _ in 4..10 {
-            d.skip()?;
-        }
-        let signer = d.bytes_exact::<32>()?;
-        for _ in 11..len {
-            d.skip()?;
-        }
-        Ok((id, signer))
-    })
-    .map_err(|x| e("instance document", &x))?;
-    core.signup_begin(&instance_id)
-        .map_err(|x| e("signup begin", &x))?;
-    let body = core
-        .signup_request(
-            invite,
-            username,
-            username,
-            Some("correct horse battery staple"),
-        )
-        .map_err(|x| e("signup request", &x))?;
-    let Raw(created) = anon
-        .call::<r::PostAccount>(&[], Raw(body))
-        .await
-        .map_err(|x| e("account", &x))?;
-    let (user_id, device_id, token, expires) = decode_strict(&created, |d| {
-        let len = d.array_len()?;
-        let u = d.bytes_exact::<16>()?;
-        let dev = d.bytes_exact::<16>()?;
-        let t = d.text()?.to_owned();
-        let x = d.uint()?;
-        for _ in 4..len {
-            d.skip()?;
-        }
-        Ok((u, dev, t, x))
-    })
-    .map_err(|x| e("account answer", &x))?;
-    core.session_store(&token, expires, expires)
-        .map_err(|x| e("session", &x))?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|x| e("clock", &x))?
-        .as_secs();
-    core.signup_complete(&user_id, username, now, &signer)
-        .map_err(|x| e("signup complete", &x))?;
-
-    let authed =
-        ReqwestHttp::new(base, AuthToken::new(token.as_str())).map_err(|x| e("http", &x))?;
-    authed
-        .call::<r::PutDeviceList>(
-            &[&hex(&user_id)],
-            Raw(core.device_list_body().map_err(|x| e("device list", &x))?),
-        )
-        .await
-        .map_err(|x| e("device list put", &x))?;
-    core.device_list_published()
-        .map_err(|x| e("device list published", &x))?;
-
-    // An authenticator app, confirmed with the host's clock.
-    let Raw(enrol) = authed
-        .call::<r::TotpEnroll>(
-            &[],
-            Raw(cbor(|en| {
-                en.array(1).null();
-            })),
-        )
-        .await
-        .map_err(|x| e("totp enroll", &x))?;
-    let secret = decode_strict(&enrol, |d| {
-        let len = d.array_len()?;
-        let s = d.text()?.to_owned();
-        for _ in 1..len {
-            d.skip()?;
-        }
-        Ok(s)
-    })
-    .map_err(|x| e("totp secret", &x))?;
-    let clock: serde_json::Value = serde_json::from_slice(
-        &reqwest::get(format!("{control}/debug/clock"))
-            .await
-            .map_err(|x| e("clock get", &x))?
-            .bytes()
-            .await
-            .map_err(|x| e("clock body", &x))?,
-    )
-    .map_err(|x| e("clock json", &x))?;
-    let now = clock["now"].as_u64().ok_or("clock.now")?;
-    let code = totp_code(&secret, now / 30)?;
-    authed
-        .call::<r::TotpConfirm>(
-            &[],
-            Raw(cbor(|en| {
-                en.array(1).text(&code);
-            })),
-        )
-        .await
-        .map_err(|x| e("totp confirm", &x))?;
-    // Forget the sign-up session: the client establishes its own from the device key.
-    core.session_clear().map_err(|x| e("session clear", &x))?;
-    drop(core);
-    Ok(Person {
-        cfg,
-        kc,
-        user_id,
-        device_id,
-        token,
+    let (root, server, control, invite, username) = (
+        root.to_owned(),
+        server.to_owned(),
+        control.to_owned(),
+        invite.to_owned(),
+        username.to_owned(),
+    );
+    let task = tokio::spawn(async move {
+        let person = sign_up_at(&server, &control, &root, &invite, &username, &username).await;
+        // The client establishes its own session from the device key.
+        clear_session(&person);
+        person
+    });
+    task.await.map_err(|e| {
+        let why = e.try_into_panic().map_or_else(
+            |e| e.to_string(),
+            |p| {
+                p.downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                    .unwrap_or_else(|| "panicked".to_owned())
+            },
+        );
+        format!("sign-up: {why}")
     })
 }
 
@@ -276,7 +134,7 @@ fn start(args: &[&str]) -> Res<(Peer, String)> {
         .map_err(|e| e.to_string())?;
     let root = Path::new(dir);
     std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
-    let person = rt.block_on(sign_up(root, server, control, invite, username))?;
+    let person = rt.block_on(sign_up_checked(root, server, control, invite, username))?;
     join(server, &person, community, code)?;
     // `Client::start` blocks on a runtime of its own: it is called outside this one.
     let client = Client::start(person.cfg.clone(), person.kc.clone())
