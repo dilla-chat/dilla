@@ -5,5 +5,5 @@ mod diff;
 mod driver;
 
 pub use diff::{Os, ParityFailure, Tolerance, assert_parity, assert_parity_with, tolerance_for};
-pub use driver::{Driver, ElementInfo};
+pub use driver::{Driver, ElementInfo, target_dir};
 pub use image::RgbaImage;

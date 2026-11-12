@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use dilla_parity::{
-    Driver, Os, ParityFailure, RgbaImage, Tolerance, assert_parity, assert_parity_with,
+    Driver, Os, ParityFailure, RgbaImage, Tolerance, assert_parity, assert_parity_with, target_dir,
     tolerance_for,
 };
 use image::Rgba;
@@ -17,11 +17,6 @@ fn workspace_root() -> PathBuf {
         .join("../../..")
         .canonicalize()
         .unwrap()
-}
-
-fn target_dir() -> PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR")
-        .map_or_else(|| workspace_root().join("target"), PathBuf::from)
 }
 
 fn grey(width: u32, height: u32, value: u8) -> RgbaImage {
@@ -39,6 +34,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 #[test]
+#[ignore = "slow: run explicitly in CI (cargo test -p dilla-parity -- --ignored)"]
 fn release_build_has_no_automation() {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     // Positive control: the needles below really are in an automation build, so their absence means something.

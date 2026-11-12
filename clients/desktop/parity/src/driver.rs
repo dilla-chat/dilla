@@ -1,7 +1,9 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::OnceLock;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::time::Duration;
 
 use image::RgbaImage;
 
@@ -19,7 +21,7 @@ pub struct ElementInfo {
 pub struct Driver {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    lines: Receiver<String>,
     shots: tempfile::TempDir,
     counter: u32,
 }
@@ -31,9 +33,24 @@ fn workspace_root() -> PathBuf {
         .expect("workspace root")
 }
 
-fn target_dir() -> PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR")
-        .map_or_else(|| workspace_root().join("target"), PathBuf::from)
+/// How long the app may take to answer one request (GPU start-up included) before the driver gives up.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The cargo target directory of this workspace, as `cargo metadata` reports it (honours
+/// `CARGO_TARGET_DIR` and `build.target-dir`).
+pub fn target_dir() -> PathBuf {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(cargo)
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(workspace_root())
+        .output()
+        .expect("cargo metadata runs");
+    assert!(output.status.success(), "cargo metadata failed");
+    let text = String::from_utf8(output.stdout).expect("utf-8 metadata");
+    let key = "\"target_directory\":\"";
+    let start = text.find(key).expect("target_directory in metadata") + key.len();
+    let end = start + text[start..].find('"').expect("end of target_directory");
+    PathBuf::from(text[start..end].replace("\\\\", "\\"))
 }
 
 /// Builds (once per process) and returns the automation binary. `DILLA_AUTOMATION_BIN` overrides it.
@@ -72,10 +89,18 @@ impl Driver {
             .expect("the automation binary starts");
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
+        let (sender, lines) = channel();
+        std::thread::spawn(move || {
+            for line in stdout.lines().map_while(Result::ok) {
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
         let mut driver = Self {
             child,
             stdin,
-            stdout,
+            lines,
             shots: tempfile::tempdir().expect("temp dir"),
             counter: 0,
         };
@@ -85,10 +110,14 @@ impl Driver {
     }
 
     fn read_line(&mut self) -> String {
-        let mut line = String::new();
-        let n = self.stdout.read_line(&mut line).expect("read from the app");
-        assert!(n > 0, "the automation app exited");
-        line.trim_end().to_owned()
+        match self.lines.recv_timeout(REPLY_TIMEOUT) {
+            Ok(line) => line.trim_end().to_owned(),
+            Err(RecvTimeoutError::Timeout) => {
+                let _ = self.child.kill();
+                panic!("the automation app did not answer within {REPLY_TIMEOUT:?}; killed it");
+            }
+            Err(RecvTimeoutError::Disconnected) => panic!("the automation app exited"),
+        }
     }
 
     fn request(&mut self, command: &str) -> String {
