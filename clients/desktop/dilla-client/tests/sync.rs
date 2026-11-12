@@ -3,7 +3,7 @@
 //!
 //! Needs `target/dilla-testhost` (`go build -o target/dilla-testhost ./cmd/dilla-testhost`, or `DILLA_TESTHOST`) and
 //! the WASI core (`DILLA_CORE_WASI`, else `target/wasm32-wasip1/release/dilla_core_wasi.wasm`); the tests are
-//! `#[ignore]`d for the desktop CI job, which has no Go toolchain. Run them with
+//! `#[ignore]`d so a plain `cargo test` needs no Go toolchain; the desktop-gpui CI job runs them on Linux with
 //! `cargo test -p dilla-client --test sync -- --ignored`.
 //!
 //! Every account is made the way the app makes one: a sign-up from the client core's own identity (the instance's
@@ -414,7 +414,7 @@ fn bodies_from(s: &AppState, channel: ChannelId, author: [u8; 16]) -> Vec<String
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "needs dillad: target/dilla-testhost and the wasi core (no Go toolchain in the desktop-gpui CI job)"]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 async fn two_devices_exchange_text() {
     let (_host, pa, pb, c) = two_people("exchange").await;
     let a = start(&pa).await;
@@ -479,7 +479,7 @@ async fn two_devices_exchange_text() {
 /// Controller ruling: a session the instance stops taking (here: expired on its clock) is re-established from the
 /// device key and the gateway started again on it; the account is not signed out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "needs dillad: target/dilla-testhost and the wasi core (no Go toolchain in the desktop-gpui CI job)"]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 async fn expired_session_reauthenticates() {
     use dilla_client::state::{AccountPhase, ConnectionStatus};
     let (host, pa, pb, c) = two_people("reauth").await;
@@ -524,7 +524,7 @@ async fn expired_session_reauthenticates() {
 /// (the runtime it built is shut down in the background, never dropped there). The store is signed up and its session
 /// cleared, so the start reaches the network: the server it names does not answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "needs dillad: target/dilla-testhost and the wasi core (no Go toolchain in the desktop-gpui CI job)"]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 async fn start_offline_from_an_async_task_is_an_error() {
     let (_host, pa, _pb, _c) = two_people("offline").await;
     let mut cfg = pa.cfg.clone();
@@ -546,7 +546,7 @@ async fn start_offline_from_an_async_task_is_an_error() {
 /// connection is up: a clock jump past the expiry itself trips the heartbeat deadline first, and the reconnect then
 /// meets 4003 at identify (`expired_session_reauthenticates` covers that path).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "needs dillad: target/dilla-testhost and the wasi core (no Go toolchain in the desktop-gpui CI job)"]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 async fn live_expiry_sweep_reauthenticates() {
     use dilla_client::state::{AccountPhase, ConnectionStatus};
     let (host, pa, pb, c) = two_people("sweep").await;
@@ -610,7 +610,7 @@ async fn live_expiry_sweep_reauthenticates() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "needs dillad: target/dilla-testhost and the wasi core (no Go toolchain in the desktop-gpui CI job)"]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 async fn resume_after_sleep_no_gap_no_dup() {
     let (host, pa, pb, c) = two_people("resume").await;
     let a = start(&pa).await;
@@ -688,7 +688,7 @@ async fn resume_after_sleep_no_gap_no_dup() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "needs dillad: target/dilla-testhost and the wasi core (no Go toolchain in the desktop-gpui CI job)"]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 async fn unread_counts() {
     let (_host, pa, pb, c) = two_people("unread").await;
     let a = start(&pa).await;

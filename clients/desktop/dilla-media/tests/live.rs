@@ -7,7 +7,7 @@
 //! change mid-call.
 //!
 //! Needs Go (to build `cmd/dilla-testhost`, or `DILLA_TESTHOST`) and the WASI core
-//! (`internal/mlswasi/testdata/dilla_core_wasi.wasm`, or `DILLA_WASI_CORE`):
+//! (`internal/mlswasi/testdata/dilla_core_wasi.wasm`, or `DILLA_CORE_WASI`):
 //! `cargo test -p dilla-media --test live -- --ignored`.
 
 #[allow(dead_code, unused_imports, clippy::all)]
@@ -56,7 +56,7 @@ fn testhost_binary(root: &Path) -> PathBuf {
 }
 
 fn wasi_core(root: &Path) -> PathBuf {
-    std::env::var_os("DILLA_WASI_CORE")
+    std::env::var_os("DILLA_CORE_WASI")
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("internal/mlswasi/testdata/dilla_core_wasi.wasm"))
 }

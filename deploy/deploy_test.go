@@ -120,7 +120,7 @@ func TestDillaServiceAllowsBubblewrapAndKeeper(t *testing.T) {
 		"AmbientCapabilities":   "CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL",
 		"CapabilityBoundingSet": "CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL",
 		"DevicePolicy":          "closed",
-		"LimitMEMLOCK":          "256M",
+		"MemorySwapMax":         "0",
 		"NoNewPrivileges":       "yes",
 		"ProtectSystem":         "strict",
 		"ProtectHome":           "yes",
@@ -137,13 +137,13 @@ func TestDillaServiceAllowsBubblewrapAndKeeper(t *testing.T) {
 			t.Errorf("%s=%q (set: %v), want %q", key, got, ok, want)
 		}
 	}
-	for _, gone := range []string{"PrivateDevices", "RestrictSUIDSGID"} {
+	for _, gone := range []string{"PrivateDevices", "RestrictSUIDSGID", "LimitMEMLOCK"} {
 		if v, ok := directives[gone]; ok {
 			t.Errorf("%s=%s is set; bubblewrap's nested mounts need it gone (see the unit comment)", gone, v)
 		}
 	}
 	// Each change says why, next to it.
-	for _, reason := range []string{"bot-keeper", "bubblewrap", "SQLCipher", "/run/dillad/bot", "dillabot", "KillMode=mixed: a stop sends SIGTERM to serve alone"} {
+	for _, reason := range []string{"bot-keeper", "bubblewrap", "cannot lock its pages in memory", "/run/dillad/bot", "dillabot", "KillMode=mixed: a stop sends SIGTERM to serve alone"} {
 		if !strings.Contains(unit, reason) {
 			t.Errorf("the unit's comments never mention %q", reason)
 		}

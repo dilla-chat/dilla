@@ -17,7 +17,7 @@
 - No server, protocol or wire change. Every frame and route matches what `packages/client-core` sends today; the negotiated versions are exactly those in `packages/client-core/src/gateway/gateway.ts`.
 - Voice frames are `dilla-sframe/1` (`protocol/05-media-frames.md`), built only from `dilla_core::sframe`. If any task finds this needs our own libwebrtc build: stop and report; Jonas decides.
 - Receivers never fetch link previews (`protocol/04`).
-- Keys at rest: the SQLCipher key is held only in the OS keychain (service `dev.dilla.desktop.preview`, account `instance-<n>`), in `Zeroizing` buffers; no plaintext fallback, ever.
+- Keys at rest: the SQLCipher key is held only in the OS keychain (service `dev.dilla.desktop.preview`, account `instance-<n>` (superseded by R10: `<install-id>/instance-<n>`)), in `Zeroizing` buffers; no plaintext fallback, ever.
 - Preview identity: app id `dev.dilla.desktop.preview`, product name `Dilla Preview`, data dir `<OS data dir>/Dilla Preview/instances/<n>`; never touch the Electron app's `dev.dilla.desktop` data.
 - At most 32 instances; instance ids are `0..=31`.
 - Pinned exactly: `gpui-pre =0.3.12`, `gpui-component =0.9.1`, `livekit =0.10.1`. A bump is its own PR.
