@@ -1,0 +1,258 @@
+{
+  "name": "reactions/bar-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      },
+      {
+        "id": "kari",
+        "display": "Kari"
+      },
+      {
+        "id": "liv",
+        "display": "Liv"
+      },
+      {
+        "id": "sven",
+        "display": "Sven"
+      },
+      {
+        "id": "glenn",
+        "display": "Glenn"
+      },
+      {
+        "id": "ines",
+        "display": "Ines"
+      },
+      {
+        "id": "ole",
+        "display": "Ole"
+      },
+      {
+        "id": "tove",
+        "display": "Tove"
+      },
+      {
+        "id": "ulf",
+        "display": "Ulf"
+      },
+      {
+        "id": "saga",
+        "display": "Saga"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn",
+          "kari",
+          "liv",
+          "sven",
+          "glenn",
+          "ines",
+          "ole",
+          "tove",
+          "ulf",
+          "saga"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "release day: the tag goes out this afternoon, thank you all"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "the core of the change is the outbox, which keeps the order of every send across a reconnect and a restart, so a message typed while offline is sent once, in place, when the gateway is back",
+        "reactions": [
+          {
+            "emoji": "🎉",
+            "by": [
+              "mira",
+              "bjorn",
+              "kari",
+              "liv",
+              "sven",
+              "glenn",
+              "ines",
+              "ole",
+              "tove",
+              "ulf",
+              "saga"
+            ]
+          },
+          {
+            "emoji": "👍",
+            "by": [
+              "mira",
+              "bjorn",
+              "kari",
+              "liv",
+              "sven",
+              "glenn",
+              "ines",
+              "ole",
+              "tove",
+              "ulf"
+            ]
+          },
+          {
+            "emoji": "🔥",
+            "by": [
+              "mira",
+              "bjorn",
+              "kari"
+            ]
+          },
+          {
+            "emoji": "🦀",
+            "by": [
+              "kari"
+            ]
+          }
+        ]
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "reads fine to me",
+        "reactions": [
+          {
+            "emoji": "✅",
+            "by": [
+              "mira",
+              "kari"
+            ]
+          }
+        ]
+      },
+      {
+        "key": "m4",
+        "channel": "midgard/general",
+        "sender": "kari",
+        "ts": 1794481730,
+        "body": "approved, merging after ci"
+      },
+      {
+        "key": "m5",
+        "channel": "midgard/general",
+        "sender": "liv",
+        "ts": 1794481730,
+        "body": "thanks both"
+      },
+      {
+        "key": "m6",
+        "channel": "midgard/general",
+        "sender": "sven",
+        "ts": 1794481730,
+        "body": "perfect"
+      },
+      {
+        "key": "m7",
+        "channel": "midgard/general",
+        "sender": "glenn",
+        "ts": 1794481730,
+        "body": "nothing else from me"
+      },
+      {
+        "key": "m8",
+        "channel": "midgard/general",
+        "sender": "ines",
+        "ts": 1794481730,
+        "body": "ci is green"
+      },
+      {
+        "key": "m9",
+        "channel": "midgard/general",
+        "sender": "ole",
+        "ts": 1794481730,
+        "body": "tag it"
+      },
+      {
+        "key": "m10",
+        "channel": "midgard/general",
+        "sender": "tove",
+        "ts": 1794481730,
+        "body": "I will tell the homelab session to upgrade CT 144"
+      },
+      {
+        "key": "m11",
+        "channel": "midgard/general",
+        "sender": "ulf",
+        "ts": 1794481730,
+        "body": "on it"
+      },
+      {
+        "key": "m12",
+        "channel": "midgard/general",
+        "sender": "saga",
+        "ts": 1794481730,
+        "body": "done",
+        "reactions": [
+          {
+            "emoji": "🙏",
+            "by": [
+              "glenn",
+              "ines",
+              "ole",
+              "tove",
+              "ulf"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]",
+      "gpui": "-"
+    }
+  ]
+}

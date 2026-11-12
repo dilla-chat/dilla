@@ -1,6 +1,7 @@
 //! What the parity world can seed beyond plain text history, one file per Wave 1 area (ruling R11): this file only lists
 //! them, one per line in sorted order, and each area edits its own file.
 
+use dilla_client::Client;
 use dilla_client::testing::host::Person;
 use dilla_client::testing::spec::ScreenFixture;
 
@@ -30,14 +31,14 @@ pub fn unseedable(f: &ScreenFixture) -> Vec<String> {
 }
 
 /// Seeds every facet once the history is posted.
-pub async fn seed(f: &ScreenFixture, people: &[(String, Person)]) {
+pub async fn seed(f: &ScreenFixture, people: &[(String, Person)], clients: &[(&str, Client)]) {
     attachments::seed(f, people).await;
     calls::seed(f, people).await;
     dms::seed(f, people).await;
     members::seed(f, people).await;
     messages::seed(f, people).await;
     polls::seed(f, people).await;
-    reactions::seed(f, people).await;
+    reactions::seed(f, people, clients).await;
     roles::seed(f, people).await;
     threads::seed(f, people).await;
 }

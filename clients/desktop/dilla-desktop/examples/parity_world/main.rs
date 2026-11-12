@@ -241,7 +241,7 @@ async fn main() {
             .await;
         }
     }
-    seed::seed(&f, &people).await;
+    seed::seed(&f, &people, &clients).await;
     // The clock at the frame: the fixture's, lifted.
     let target = f.clock + shift;
     let now = read_clock(&host);
