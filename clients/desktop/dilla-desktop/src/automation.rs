@@ -11,9 +11,14 @@
 //! type <id> <hex>         -> ok | err <why>                     (click to focus, then the UTF-8 text typed; id `-`: no click)
 //! key <chord>             -> ok | err <why>                     (one keystroke to the focused element: enter, tab, shift-tab,
 //!                                                                escape, up, ctrl-k, ctrl-shift-m, ... see `spec::validate_chord`)
-//! focused                 -> ok <id> | none                     (the id of the focused element: see `focus_probe`)
+//! focused                 -> ok <id> | ok - | none              (the id of the focused element: see `focus_probe`; `-`: an
+//!                                                                unregistered element holds the focus)
+//! rest                    -> ok                                 (pointer to the window's corner, focus cleared: the web shooter's
+//!                                                                last move before its frame)
+//! pointer                 -> ok <x> <y>                         (the pointer's position, logical px)
 //! scroll <id> <dy>        -> ok | err <why>                     (a wheel step of `dy` logical px over the element's centre)
-//! wait-idle               -> ok <frames>                        (frames drawn until nothing on screen changed twice running)
+//! wait-idle               -> ok <frames> | err not idle         (frames drawn until nothing on screen changed twice running;
+//!                                                                60 frames without that is an error)
 //! text-bounds             -> ok [<x> <y> <w> <h>[;<x> <y> <w> <h>]...]   (every painted text line, logical pixels)
 //! fixture                 -> ok <fixture line> | none           (what the screen was drawn from: `ScreenFixture::fixture_line`)
 //! log                     -> ok [<entry>[;<entry>]...]          (the harness view's received events; see `--harness`)
@@ -57,6 +62,10 @@ use dilla_desktop_ui::tokens::color;
 
 /// Set, every line of text asks for a family no embedded font answers to (the parity test's fallback-font control).
 pub const FALLBACK_FONT_VAR: &str = "DILLA_AUTOMATION_FALLBACK_FONT";
+
+/// Set, every line of text is painted transparent: the frame shows exactly the pixels the glyphs cover when it is
+/// compared with the normal one (the text mask's control).
+pub const HIDE_TEXT_VAR: &str = "DILLA_AUTOMATION_HIDE_TEXT";
 
 /// Marks a binary as an automation build. The release-build test greps for it.
 pub const AUTOMATION_MARKER: &str = "dilla-automation-interface/1";
@@ -328,7 +337,7 @@ impl Session {
     }
 
     /// Draws until two frames in a row describe the same screen (bounds and text lines), at most 60 frames.
-    fn wait_idle(&mut self) -> usize {
+    fn wait_idle(&mut self) -> Option<usize> {
         let snapshot = || {
             let mut bounds: Vec<(String, [f32; 4])> = with_bounds(|m| {
                 m.iter()
@@ -359,12 +368,12 @@ impl Session {
             self.frame();
             let now = snapshot();
             if previous.as_ref() == Some(&now) {
-                return frames;
+                return Some(frames);
             }
             previous = Some(now);
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
-        60
+        None
     }
 
     fn element(&mut self, id: &str) -> Option<Bounds<Pixels>> {
@@ -469,21 +478,51 @@ impl Session {
         Ok(())
     }
 
-    /// The id of the element whose registered focus handle holds the focus.
+    /// The id of the element whose registered focus handle holds the focus; `-` when something unregistered holds it;
+    /// `None` when nothing does.
     fn focused(&mut self) -> Option<&'static str> {
         self.frame();
         let window = self.window;
         self.cx
-            .update_window(window, |_, window, _cx| {
-                FOCUS.with(|f| {
-                    f.borrow()
-                        .iter()
-                        .find(|(_, handle)| handle.is_focused(window))
-                        .map(|(id, _)| *id)
-                })
+            .update_window(window, |_, window, cx| {
+                FOCUS
+                    .with(|f| {
+                        f.borrow()
+                            .iter()
+                            .find(|(_, handle)| handle.is_focused(window))
+                            .map(|(id, _)| *id)
+                    })
+                    .or_else(|| window.focused(cx).map(|_| "-"))
             })
             .ok()
             .flatten()
+    }
+
+    /// What a person's hands off the screen look like, and what the web shooter does before its frame: the pointer
+    /// goes to the window's corner (2 px in, off any content) and the focus is cleared.
+    fn rest(&mut self) {
+        let window = self.window;
+        let size = self
+            .cx
+            .update_window(window, |_, window, _| window.viewport_size())
+            .expect("the window exists");
+        let corner = point(size.width - px(2.), size.height - px(2.));
+        self.event(PlatformInput::MouseMove(MouseMoveEvent {
+            position: corner,
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        }));
+        let _ = self
+            .cx
+            .update_window(window, |_, window, cx| window.blur(cx));
+        self.frame();
+    }
+
+    fn pointer(&mut self) -> Point<Pixels> {
+        let window = self.window;
+        self.cx
+            .update_window(window, |_, window, _| window.mouse_position())
+            .expect("the window exists")
     }
 
     fn text_bounds(&mut self) -> Vec<Bounds<Pixels>> {
@@ -614,7 +653,18 @@ fn handle(session: &mut Session, line: &str) -> Option<String> {
             Some(id) => format!("ok {id}"),
             None => "none".to_owned(),
         },
-        (Some("wait-idle"), None, None) => format!("ok {}", session.wait_idle()),
+        (Some("wait-idle"), None, None) => match session.wait_idle() {
+            Some(frames) => format!("ok {frames}"),
+            None => "err not idle".to_owned(),
+        },
+        (Some("rest"), None, None) => {
+            session.rest();
+            "ok".to_owned()
+        }
+        (Some("pointer"), None, None) => {
+            let p = session.pointer();
+            format!("ok {} {}", f32::from(p.x), f32::from(p.y))
+        }
         (Some("text-bounds"), None, None) => {
             let rects: Vec<String> = session.text_bounds().iter().map(rect).collect();
             format!("ok {}", rects.join(";")).trim_end().to_owned()
@@ -655,10 +705,15 @@ pub fn run(args: Vec<String>) {
     } else {
         let launch = match value("--instance") {
             Some(path) if path.extension().is_some_and(|e| e == "json") => {
-                let fixture = crate::fixture::Fixture::load(&path, value("--shot").as_deref())
-                    .unwrap_or_else(|e| {
-                        panic!("the fixture {} does not load: {e}", path.display())
-                    });
+                let fixture = match crate::fixture::Fixture::load(&path, value("--shot").as_deref())
+                {
+                    Ok(fixture) => fixture,
+                    // The launch fails, loudly and before `ready`: the driver reports this line.
+                    Err(e) => {
+                        println!("error the fixture {} does not load: {e}", path.display());
+                        std::process::exit(2);
+                    }
+                };
                 crate::app::Launch::fixture(fixture)
             }
             Some(root) => crate::app::Launch::live(
@@ -673,6 +728,7 @@ pub fn run(args: Vec<String>) {
     dilla_desktop_ui::text::set_hooks(dilla_desktop_ui::text::Hooks {
         probe: Some(|| gpui::IntoElement::into_any_element(text_probe())),
         family: std::env::var_os(FALLBACK_FONT_VAR).map(|_| "Dilla Parity Missing Font"),
+        hidden: std::env::var_os(HIDE_TEXT_VAR).is_some(),
     });
     let mut session = Session::open(mode);
     let mut out = std::io::stdout().lock();

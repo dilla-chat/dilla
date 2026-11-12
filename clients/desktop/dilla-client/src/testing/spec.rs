@@ -40,9 +40,26 @@ pub struct ScreenFixture {
     pub route: String,
     /// The frozen "now", unix seconds.
     pub clock: u64,
+    /// Where the viewer's account stands: `ready` draws the app's own screens, any other phase draws what a device in
+    /// that phase sees (`/welcome` is the sign-in screen of a device with no account).
+    #[serde(default)]
+    pub phase: Phase,
     /// The same actions on both sides, in order.
     #[serde(default)]
     pub steps: Vec<Step>,
+}
+
+/// The account phase of the viewer's device (`AccountPhase`, narrowed to what a fixture draws).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    /// No account on this device yet: the welcome and sign-in screens.
+    SignedOut,
+    #[default]
+    Ready,
+    FactorSetup,
+    Revoked,
+    VersionRefused,
 }
 
 /// One action of a fixture, replayed on both sides.
@@ -172,7 +189,8 @@ pub struct ChannelSpec {
     /// The id of the category this channel sits in.
     #[serde(default)]
     pub parent: Option<String>,
-    /// The channel's sort position; its index among the server's non-system channels when absent.
+    /// The channel's sort position, 0 when absent: what a channel made without a position has (the web client then
+    /// sorts equal positions by id, which is why a shot records the real ids).
     #[serde(default)]
     pub position: Option<u32>,
     /// Made by the server itself (the AFK channel), so a seeded world does not make it.
@@ -276,6 +294,15 @@ pub struct ParticipantSpec {
     pub sharing: bool,
 }
 
+/// What seeding a fixture's world needs (`ScreenFixture::seed_plan`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeedPlan {
+    /// People who run a headless client, the viewer first.
+    pub clients: Vec<String>,
+    /// `<server>/<channel>` paths the browser opens, the route's own last.
+    pub visit: Vec<String>,
+}
+
 /// What the web shooter resolved when it shot a reference, next to the PNG: `<state>[-b].shot.json`.
 ///
 /// A real dillad stamps messages with its own clock, which only moves forward from the moment it starts. The shooter
@@ -289,7 +316,12 @@ pub struct Shot {
     /// Seconds added to every `ts` and to `clock`.
     #[serde(default)]
     pub shift: u64,
-    /// The ids the real dillad gave each local id (`kind:name`), for the people debugging a shot.
+    /// Written by hand from the data of an earlier shot, not by the shooter: true until `shoot.mjs` writes the pair.
+    #[serde(default)]
+    pub hand_migrated: bool,
+    /// The ids the real dillad gave each local id (`kind:name`, 32 lower-case hex digits). They replace the derived ids on
+    /// the GPUI side and in the fixture line, because the web client sorts equal positions by id. A key that is not in the
+    /// fixture's world, or a value that is not an id, is refused ([`ScreenFixture::effective_ids`]).
     #[serde(default)]
     pub ids: BTreeMap<String, String>,
 }
@@ -417,12 +449,33 @@ impl ScreenFixture {
     /// The line both shooters log for a fixture: `fixture <name> <digest of the file> <kind:local=hex;...>`. The web
     /// shooter's `--check` and the GPUI driver's `fixture` command print the same line for the same file.
     pub fn fixture_line(&self, file_digest: &str) -> String {
-        format!(
-            "fixture {} {} {}",
-            self.name,
-            file_digest,
-            ids_line(&self.ids())
-        )
+        self.fixture_line_with(file_digest, &self.ids())
+    }
+
+    /// [`Self::fixture_line`] with the ids both sides use (see [`Self::effective_ids`]).
+    pub fn fixture_line_with(&self, file_digest: &str, ids: &BTreeMap<String, [u8; 16]>) -> String {
+        format!("fixture {} {} {}", self.name, file_digest, ids_line(ids))
+    }
+
+    /// The derived ids, replaced by the ones a shot recorded. Refuses an id that is not 32 lower-case hex digits and a key
+    /// that names nothing in the world.
+    pub fn effective_ids(
+        &self,
+        shot: Option<&Shot>,
+    ) -> Result<BTreeMap<String, [u8; 16]>, SpecError> {
+        let mut ids = self.ids();
+        for (key, value) in shot.map(|s| &s.ids).into_iter().flatten() {
+            let Some(slot) = ids.get_mut(key) else {
+                return invalid(format!("sidecar id `{key}` is not in the fixture's world"));
+            };
+            let Some(id) = unhex16(value) else {
+                return invalid(format!(
+                    "sidecar id `{key}`: `{value}` is not 32 lower-case hex digits"
+                ));
+            };
+            *slot = id;
+        }
+        Ok(ids)
     }
 
     /// The route with its `{...}` placeholders replaced by hex ids.
@@ -462,6 +515,47 @@ impl ScreenFixture {
         }
         out.push_str(rest);
         Ok(out)
+    }
+
+    /// Who runs a headless client while the world is seeded, and which channels the browser opens before the history is
+    /// posted (a device added later cannot read what was sent before it joined).
+    pub fn seed_plan(&self) -> SeedPlan {
+        // The viewer first (its client reads the channel list), then everyone who posts, in order of first message.
+        let mut clients = vec![self.viewer.clone()];
+        let mut history: Vec<String> = Vec::new();
+        for m in &self.world.messages {
+            if !clients.contains(&m.sender) {
+                clients.push(m.sender.clone());
+            }
+            if !m.channel.starts_with("dm/") && !history.contains(&m.channel) {
+                history.push(m.channel.clone());
+            }
+        }
+        // The route's own text channels come last, with or without history: an empty channel is still opened.
+        let mut route_channels = Vec::new();
+        let mut rest = self.route.as_str();
+        while let Some(open) = rest.find('{') {
+            let Some(close) = rest[open..].find('}') else {
+                break;
+            };
+            let name = &rest[open + 1..open + close];
+            if name.contains('/')
+                && !name.starts_with("dm/")
+                && self
+                    .world
+                    .channel(name)
+                    .is_some_and(|(_, c)| c.kind == ChannelKind::Text)
+            {
+                route_channels.push(name.to_owned());
+            }
+            rest = &rest[open + close + 1..];
+        }
+        let mut visit: Vec<String> = history
+            .into_iter()
+            .filter(|c| !route_channels.contains(c))
+            .collect();
+        visit.extend(route_channels);
+        SeedPlan { clients, visit }
     }
 
     /// Checks every reference and rule of the file.
@@ -870,6 +964,55 @@ mod tests {
         ] {
             assert!(validate_chord(bad).is_err(), "{bad} should be refused");
         }
+    }
+
+    #[test]
+    fn a_shot_replaces_derived_ids_and_is_checked() {
+        let f = fixture();
+        let real = "00112233445566778899aabbccddeeff";
+        let shot = |key: &str, value: &str| Shot {
+            digest: String::new(),
+            shift: 0,
+            hand_migrated: false,
+            ids: [(key.to_owned(), value.to_owned())].into(),
+        };
+        let ids = f.effective_ids(Some(&shot("person:ada", real))).unwrap();
+        assert_eq!(hex(&ids["person:ada"]), real);
+        assert_eq!(ids["person:mira"], derive_id("person", "mira"));
+        for bad in [
+            shot("person:ada", "+0112233445566778899aabbccddeef"),
+            shot("person:ada", "xyz"),
+            shot("person:ada", &real.to_uppercase()),
+            shot("person:zed", real),
+        ] {
+            assert!(f.effective_ids(Some(&bad)).is_err(), "{bad:?}");
+        }
+        assert!(f.fixture_line_with("d", &ids).contains(real));
+    }
+
+    #[test]
+    fn an_empty_world_still_has_a_viewer_client_and_opens_the_routes_channel() {
+        let empty = MINIMAL.replace(
+            r#""messages": [{"key": "m1", "channel": "midgard/general", "sender": "mira", "ts": 990, "body": "hi"}]"#,
+            r#""messages": []"#,
+        );
+        let plan = ScreenFixture::parse(&empty).unwrap().seed_plan();
+        assert_eq!(plan.clients, ["ada"]);
+        assert_eq!(plan.visit, ["midgard/general"]);
+        // With history: posters join the viewer, and the route's channel is visited last.
+        let plan = fixture().seed_plan();
+        assert_eq!(plan.clients, ["ada", "mira"]);
+        assert_eq!(plan.visit, ["midgard/general"]);
+    }
+
+    #[test]
+    fn phase_defaults_to_ready() {
+        assert_eq!(fixture().phase, Phase::Ready);
+        let out = MINIMAL.replace(
+            "\"clock\": 1000,",
+            "\"clock\": 1000, \"phase\": \"signed_out\",",
+        );
+        assert_eq!(ScreenFixture::parse(&out).unwrap().phase, Phase::SignedOut);
     }
 
     #[test]

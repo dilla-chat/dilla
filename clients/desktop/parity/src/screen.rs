@@ -15,8 +15,10 @@ use crate::{
     chrome_difference_pct, tolerance_for,
 };
 
-/// The glow of anti-aliasing around a glyph, in device pixels: the grow every screen mask uses. It is the one number of
-/// the mask, kept here so that no screen test picks its own.
+/// Device pixels the mask grows every reported line box by. Measured (`text_fringe_is_the_measured_reach_of_glyphs`):
+/// GPUI's own glyph pixels reach 0 px beyond the boxes the app reports, over both shell fixtures. The 2 px is the margin
+/// for the other renderer: Chromium's anti-aliasing of the reference glyphs, which the chrome gate must not read as
+/// chrome. The test fails if GPUI's glyphs ever reach past it. The one number of the mask, so no screen picks its own.
 pub const TEXT_FRINGE_PX: f32 = 2.0;
 
 /// The headless platform renders at scale 2.0 (`dilla-desktop/src/automation.rs`).
@@ -94,9 +96,14 @@ pub fn assert_screen_with(
 ) -> Result<ScreenReport, ParityFailure> {
     let os = Os::current();
     let loaded = fixture::load(fixture, os).map_err(|e| fixture_failure(e.to_string(), fixture))?;
-    if let Some(shot) = &loaded.shot
-        && shot.digest != loaded.digest
-    {
+    // The sidecar is what ties a reference to the fixture it was shot from; a reference without one is unchecked.
+    let Some(shot) = &loaded.shot else {
+        return Err(fixture_failure(
+            "no sidecar (<state>.shot.json) beside the reference: shoot it with parity/shoot.mjs",
+            fixture,
+        ));
+    };
+    if shot.digest != loaded.digest {
         return Err(fixture_failure(
             format!(
                 "the reference was shot from another version of this fixture (shot {}, fixture {}): shoot it again with parity/shoot.mjs",
@@ -130,6 +137,18 @@ pub fn assert_screen_with(
     })
 }
 
+/// What the web shooter does before its frame: with no hover step the pointer goes off the content and the focus is
+/// cleared; with one the pointer stays where the step put it.
+pub fn rest_before_frame(driver: &mut Driver, fixture: &fixture::ScreenFixture) {
+    if !fixture
+        .steps
+        .iter()
+        .any(|s| matches!(s, Step::Hover { .. }))
+    {
+        driver.rest();
+    }
+}
+
 /// Settles the screen, replays the steps, and takes the frame with its R13 mask.
 fn capture(driver: &mut Driver, loaded: &LoadedFixture) -> (RgbaImage, TextMask, usize, String) {
     let line = driver
@@ -139,6 +158,9 @@ fn capture(driver: &mut Driver, loaded: &LoadedFixture) -> (RgbaImage, TextMask,
     for step in &loaded.fixture.steps {
         replay(driver, step);
     }
+    // As the web shooter does before its frame: with no hover step the pointer goes off the content and the focus is
+    // cleared; with one the pointer stays where the step put it.
+    rest_before_frame(driver, &loaded.fixture);
     driver.wait_idle();
     let shot = driver.screenshot();
     let lines = driver.text_bounds().len();

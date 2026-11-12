@@ -101,12 +101,22 @@ impl Driver {
     /// Starts the automation build on a screen fixture (`fixtures/<area>/<state>.json`); `shot` is the reference's
     /// sidecar (`<state>.shot.json`), whose ids and time shift the web shooter recorded.
     pub fn launch_fixture(fixture: &Path, shot: Option<&Path>, env: &[(&str, &str)]) -> Self {
+        Self::try_launch_fixture(fixture, shot, env).unwrap_or_else(|why| panic!("{why}"))
+    }
+
+    /// [`Driver::launch_fixture`] that answers why the app refused the fixture (a route it cannot draw, a bad sidecar)
+    /// instead of panicking.
+    pub fn try_launch_fixture(
+        fixture: &Path,
+        shot: Option<&Path>,
+        env: &[(&str, &str)],
+    ) -> Result<Self, String> {
         let mut args: Vec<&std::ffi::OsStr> = vec!["--instance".as_ref(), fixture.as_os_str()];
         if let Some(shot) = shot {
             args.push("--shot".as_ref());
             args.push(shot.as_os_str());
         }
-        Self::spawn(&args, env)
+        Self::try_spawn(&args, env)
     }
 
     /// Starts the automation build's own harness view (two focusable fields, a hover box and a scroll box), which
@@ -116,6 +126,10 @@ impl Driver {
     }
 
     fn spawn(args: &[&std::ffi::OsStr], env: &[(&str, &str)]) -> Self {
+        Self::try_spawn(args, env).unwrap_or_else(|why| panic!("{why}"))
+    }
+
+    fn try_spawn(args: &[&std::ffi::OsStr], env: &[(&str, &str)]) -> Result<Self, String> {
         let mut child = Command::new(automation_binary())
             .arg("--automation")
             .args(args)
@@ -144,8 +158,11 @@ impl Driver {
             timeout: REPLY_TIMEOUT,
         };
         let hello = driver.read_line();
-        assert!(hello.starts_with("ready "), "unexpected greeting: {hello}");
-        driver
+        match hello.strip_prefix("error ") {
+            Some(why) => Err(why.to_owned()),
+            None if hello.starts_with("ready ") => Ok(driver),
+            None => Err(format!("unexpected greeting: {hello}")),
+        }
     }
 
     /// How long one request may take before the driver gives up and kills the app (60 s by default).
@@ -213,8 +230,8 @@ impl Driver {
         self.expect_ok(&format!("hover {id}"));
     }
 
-    /// The id of the focused element (see `automation::focus_probe`), or `None` when none of the registered elements
-    /// holds the focus.
+    /// The id of the focused element (see `automation::focus_probe`; `-` when an unregistered element holds the focus), or
+    /// `None` when nothing holds the focus.
     pub fn focused(&mut self) -> Option<String> {
         let reply = self.request("focused");
         if reply == "none" {
@@ -233,7 +250,26 @@ impl Driver {
         self.expect_ok(&format!("scroll {id} {dy}"));
     }
 
-    /// Waits until nothing on screen changes (two identical frames in a row); answers how many frames it drew.
+    /// What the web shooter does before its frame: the pointer to the window's corner, off any content, and the focus
+    /// cleared.
+    pub fn rest(&mut self) {
+        self.expect_ok("rest");
+    }
+
+    /// The pointer's position, logical px.
+    pub fn pointer(&mut self) -> (f32, f32) {
+        let reply = self.request("pointer");
+        let n: Vec<f32> = reply
+            .strip_prefix("ok ")
+            .unwrap_or_else(|| panic!("`pointer` failed: {reply}"))
+            .split(' ')
+            .map(|n| n.parse().expect("a number"))
+            .collect();
+        (n[0], n[1])
+    }
+
+    /// Waits until nothing on screen changes (two identical frames in a row); answers how many frames it drew. Panics
+    /// when the screen never settles (the app answers `err not idle` after 60 frames).
     pub fn wait_idle(&mut self) -> usize {
         let reply = self.request("wait-idle");
         reply

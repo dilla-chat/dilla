@@ -21,7 +21,7 @@
 // `fixture` command; the parity world prints it as `FIXTURE ...` and this script refuses to shoot if they differ.
 import { createHash, createHmac } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -52,9 +52,20 @@ export function worldIds(fixture) {
   return [...ids.entries()].sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
 }
 
-export function fixtureLine(fixture, text) {
+/** The ids both sides use: derived, replaced by the ones a sidecar recorded (strict hex, keys that are in the world). */
+export function effectiveIds(fixture, shotIds = {}) {
+  const ids = new Map(worldIds(fixture));
+  for (const [key, value] of Object.entries(shotIds)) {
+    if (!ids.has(key)) throw new Error(`sidecar id \`${key}\` is not in the fixture's world`);
+    if (!/^[0-9a-f]{32}$/.test(value)) throw new Error(`sidecar id \`${key}\`: \`${value}\` is not 32 lower-case hex digits`);
+    ids.set(key, value);
+  }
+  return [...ids.entries()].sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+}
+
+export function fixtureLine(fixture, text, shotIds = {}) {
   const digest = createHash('sha256').update(text).digest('hex');
-  const ids = worldIds(fixture).map(([k, v]) => `${k}=${v}`).join(';');
+  const ids = effectiveIds(fixture, shotIds).map(([k, v]) => `${k}=${v}`).join(';');
   return `fixture ${fixture.name} ${digest} ${ids}`;
 }
 
@@ -116,8 +127,7 @@ function parseArgs(argv) {
 }
 
 function osDir() {
-  if (process.platform === 'linux') return 'linux';
-  throw new Error(`references are shot on Linux only for now (${process.platform}): macOS and Windows tolerances are PENDING-CI`);
+  return { linux: 'linux', darwin: 'macos', win32: 'windows' }[process.platform] ?? process.platform;
 }
 
 // ---- The run ------------------------------------------------------------------------------------------------------
@@ -127,11 +137,12 @@ function startWorld(fixturePath, out) {
     cwd: REPO, stdio: ['pipe', 'pipe', 'inherit'],
   });
   const waiters = {};
-  const fixtureLine = new Promise((resolveLine) => { waiters.FIXTURE = resolveLine; });
+  // Every phase, the fixture line included, fails when the world exits before it prints.
   const phase = (name) => new Promise((resolvePhase, reject) => {
     waiters[name] = resolvePhase;
-    child.on('exit', (code) => reject(new Error(`parity_world exited (${code})`)));
+    child.on('exit', (code) => reject(new Error(`parity_world exited (${code}) before ${name}`)));
   });
+  const fixtureLine = phase('FIXTURE');
   const signin = phase('SIGNIN');
   const ready = phase('READY');
   createInterface({ input: child.stdout }).on('line', (line) => {
@@ -173,7 +184,8 @@ async function replayStep(page, step) {
     case 'key': {
       // `ctrl-shift-m` -> Playwright's `Control+Shift+M`; `secondary` is Control off macOS.
       const names = { ctrl: 'Control', alt: 'Alt', shift: 'Shift', fn: 'Fn', secondary: 'Control', enter: 'Enter', tab: 'Tab', escape: 'Escape', backspace: 'Backspace', delete: 'Delete', space: 'Space', up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', home: 'Home', end: 'End', pageup: 'PageUp', pagedown: 'PageDown', minus: 'Minus', comma: 'Comma', period: 'Period', slash: 'Slash', semicolon: 'Semicolon', quote: 'Quote', backslash: 'Backslash', equals: 'Equal', backtick: 'Backquote', insert: 'Insert' };
-      const parts = step.chord.split('-').map((p) => names[p] ?? (p.length === 1 ? p.toUpperCase() : p.toUpperCase()));
+      // A bare letter or digit stays as written (lower case: `shift` is its own modifier).
+      const parts = step.chord.split('-').map((p) => names[p] ?? p);
       await page.keyboard.press(parts.join('+'));
       return;
     }
@@ -187,12 +199,16 @@ async function replayStep(page, step) {
 }
 
 async function shoot(args, fixture, text) {
+  if (process.platform !== 'linux') {
+    throw new Error(`references are shot on Linux only for now (${process.platform}): macOS and Windows tolerances are PENDING-CI`);
+  }
   const OS = osDir();
   const parity = resolve(args.fixture, '../../..');
   const out = args.out ?? join(REPO, 'target', `parity-world-${fixture.name.replace('/', '-')}-${process.pid}`);
   const dest = join(parity, 'references', OS, ...fixture.name.split('/').slice(0, -1));
   const leaf = fixture.name.split('/').at(-1);
   const world = startWorld(args.fixture, out);
+  let browser = null;
   try {
     const worldLine = await world.fixtureLine;
     const mine = fixtureLine(fixture, text);
@@ -204,7 +220,7 @@ async function shoot(args, fixture, text) {
     const viewport = { width: state.window[0], height: state.window[1] };
     const { chromium } = await import('playwright');
     const args2 = process.platform === 'linux' ? ['--font-render-hinting=none', '--enable-font-subpixel-positioning'] : [];
-    const browser = await chromium.launch({ args: args2 });
+    browser = await chromium.launch({ args: args2 });
     const context = await browser.newContext({ viewport, deviceScaleFactor: 2, reducedMotion: 'reduce', timezoneId: 'UTC', locale: 'en-US' });
     const page = await context.newPage();
     page.setDefaultTimeout(WAIT);
@@ -268,8 +284,8 @@ async function shoot(args, fixture, text) {
     writeFileSync(join(out, `${leaf}.layout.json`), JSON.stringify(layout, null, 1));
     copyFileSync(join(out, 'world.json'), join(dest, `${leaf}.shot.json`));
     console.log('wrote', file);
-    await browser.close();
   } finally {
+    await browser?.close();
     world.child.stdin.end();
   }
 }
@@ -279,6 +295,9 @@ if (isMain) {
   const args = parseArgs(process.argv.slice(2));
   const text = readFileSync(args.fixture);
   const fixture = JSON.parse(text.toString('utf8'));
-  console.log(fixtureLine(fixture, text));
+  // The sidecar beside the reference, when there is one, gives the ids both sides log.
+  const sidecar = join(resolve(args.fixture, '../../..'), 'references', osDir(), `${fixture.name}.shot.json`);
+  const shotIds = existsSync(sidecar) ? JSON.parse(readFileSync(sidecar, 'utf8')).ids ?? {} : {};
+  console.log(fixtureLine(fixture, text, shotIds));
   if (!args.check) await shoot(args, fixture, text);
 }

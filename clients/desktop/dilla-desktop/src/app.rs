@@ -99,21 +99,28 @@ impl AppView {
         };
         #[cfg(feature = "automation")]
         if let Some(fixture) = this.launch.fixture.clone() {
-            let clock = Clock::Fixed {
-                now: fixture.now,
-                utc: true,
-            };
-            let shell = cx.new(|cx| {
-                ShellView::new(
-                    Arc::new(fixture.state),
-                    None,
-                    fixture.open,
-                    clock,
-                    window,
-                    cx,
-                )
-            });
-            this.screen = Screen::Shell(shell);
+            // The route decides the screen (`fixture::screen_of`): the fixture loader already refused any route the app
+            // cannot draw, so this match is exhaustive over what it can.
+            match fixture.screen {
+                crate::fixture::FixtureScreen::Shell { channel } => {
+                    let clock = Clock::Fixed {
+                        now: fixture.now,
+                        utc: true,
+                    };
+                    let shell = cx.new(|cx| {
+                        ShellView::new(
+                            Arc::new(fixture.state),
+                            None,
+                            Some(channel),
+                            clock,
+                            window,
+                            cx,
+                        )
+                    });
+                    this.screen = Screen::Shell(shell);
+                }
+                crate::fixture::FixtureScreen::SignIn => this.show_sign_in(None, window, cx),
+            }
             return this;
         }
         let existing = this

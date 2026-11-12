@@ -84,7 +84,10 @@ fn symbol_needles_positive_control() {
     // The release test greps for these needles; this proves each one can be found in an automation build at all (a
     // needle that never matches would make that test pass for nothing).
     let _ = Driver::launch_harness();
-    let automation = std::fs::read(target_dir().join("debug/dilla-desktop")).unwrap();
+    // The binary the driver ran: `DILLA_AUTOMATION_BIN` when it overrides the build.
+    let binary = std::env::var_os("DILLA_AUTOMATION_BIN")
+        .map_or_else(|| target_dir().join("debug/dilla-desktop"), PathBuf::from);
+    let automation = std::fs::read(binary).unwrap();
     for needle in AUTOMATION_NEEDLES {
         assert!(
             contains(&automation, needle.as_bytes()),

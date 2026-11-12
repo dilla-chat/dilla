@@ -5,11 +5,14 @@
 //! Nothing here is a screen's business: UI code never carries fixture content. A screen reads [`dilla_client::state`]
 //! like it does live.
 //!
-//! The world is built in one place. The per-area functions at the end are where each Wave 1 area maps its own facet of
-//! the spec into its own state slice; each is an empty stub until its area's slice exists, and each task edits only its
-//! own function (the controller resolves the trivial merge).
+//! The world is built in one place. Each Wave 1 area maps its own facet of the spec into its own state slice in its own
+//! file, `fixture/<area>.rs` (`pub(super) fn apply`, an empty stub until the area's slice exists). This file only lists
+//! the modules and calls them, one per line in sorted order, so no area edits it (ruling R11).
+//!
+//! The route decides what is drawn ([`Fixture::screen`]): a route or phase the app cannot draw yet is an error, never the
+//! shell standing in for it.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use dilla_client::state::MessageId;
@@ -19,9 +22,26 @@ use dilla_client::state::{
     TimelineItemState, UserId,
     messages::{Attachment, Reaction, ReplyRef},
 };
-use dilla_client::testing::spec::{self, ChannelKind, ScreenFixture, Shot, WorldSpec};
+use dilla_client::testing::spec::{self, ChannelKind, Phase, ScreenFixture, Shot, WorldSpec};
 
 use crate::router::Route;
+
+mod attachments;
+mod calls;
+mod dms;
+mod polls;
+mod reactions;
+mod roles;
+mod threads;
+
+/// What a fixture's route and phase draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FixtureScreen {
+    /// The shell, on this channel.
+    Shell { channel: ChannelId },
+    /// The welcome and sign-in screen of a device with no account.
+    SignIn,
+}
 
 /// A loaded fixture: the state to draw, the route it opens and the clock it is drawn at.
 #[derive(Clone, Debug)]
@@ -29,8 +49,10 @@ pub struct Fixture {
     pub state: AppState,
     /// The route the fixture opens (`router.ts` path, resolved).
     pub route: Route,
-    /// The text channel the route shows, when it shows one.
-    pub open: Option<ChannelId>,
+    /// What the route draws.
+    pub screen: FixtureScreen,
+    /// The ids the world uses (derived, or the sidecar's), for the fixture line.
+    ids: BTreeMap<String, [u8; 16]>,
     /// The frozen "now" (the fixture's clock, plus the shot's shift).
     pub now: u64,
     /// The window, logical px.
@@ -43,18 +65,17 @@ pub struct Fixture {
 
 /// The ids of the world: derived from the local names, or, for a world a real dillad made, the ids the shooter recorded
 /// in the reference's sidecar (the web client sorts equal positions by id, so a screen only matches when it holds them).
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct Ids<'a> {
-    shot: Option<&'a Shot>,
+    map: &'a BTreeMap<String, [u8; 16]>,
 }
 
 impl Ids<'_> {
     fn of(&self, kind: &str, local: &str) -> [u8; 16] {
-        let recorded = self
-            .shot
-            .and_then(|s| s.ids.get(&format!("{kind}:{local}")))
-            .and_then(|hex| spec::unhex16(hex));
-        recorded.unwrap_or_else(|| spec::derive_id(kind, local))
+        *self
+            .map
+            .get(&format!("{kind}:{local}"))
+            .unwrap_or_else(|| panic!("`{kind}:{local}` is not in the validated world"))
     }
 
     fn user(&self, id: &str) -> UserId {
@@ -95,39 +116,64 @@ impl Fixture {
     pub fn parse(text: &str, shot: Option<&Shot>) -> Result<Self, String> {
         let fixture = ScreenFixture::parse(text).map_err(|e| e.to_string())?;
         let shift = shot.map_or(0, |s| s.shift);
-        let ids = Ids { shot };
+        let map = fixture.effective_ids(shot).map_err(|e| e.to_string())?;
+        let ids = Ids { map: &map };
         let route = Route::parse(
             &fixture
                 .resolved_route_with(|kind, local| ids.of(kind, local))
                 .map_err(|e| e.to_string())?,
         );
-        let state = build_state(&fixture.world, &fixture.viewer, shift, ids);
-        let open = match &route {
-            Route::Channel {
-                channel: Some(channel),
-                ..
-            } => Some(*channel),
-            _ => None,
-        };
+        let screen = screen_of(&route, fixture.phase)?;
+        let state = build_state(&fixture, shift, ids, screen);
         Ok(Self {
             state,
             route,
-            open,
+            screen,
             now: fixture.clock + shift,
             window: (fixture.window.0 as f32, fixture.window.1 as f32),
             digest: spec::digest(text.as_bytes()),
+            ids: map,
             spec: fixture,
         })
     }
 
     /// The line the driver's `fixture` command answers and the web shooter's `--check` prints.
     pub fn line(&self) -> String {
-        self.spec.fixture_line(&self.digest)
+        self.spec.fixture_line_with(&self.digest, &self.ids)
     }
 }
 
-/// The state one device of `viewer` holds in `world`, every time lifted by `shift` seconds.
-pub fn build_state(world: &WorldSpec, viewer: &str, shift: u64, ids: Ids<'_>) -> AppState {
+/// What `route` draws for a device in `phase`, or why the app cannot draw it yet (every other route is a screen of a
+/// Wave 1 area that has not landed: the shell is never drawn in its place).
+pub fn screen_of(route: &Route, phase: Phase) -> Result<FixtureScreen, String> {
+    match (route, phase) {
+        (
+            Route::Channel {
+                channel: Some(channel),
+                ..
+            },
+            Phase::Ready,
+        ) => Ok(FixtureScreen::Shell { channel: *channel }),
+        (Route::Welcome { .. }, Phase::SignedOut) => Ok(FixtureScreen::SignIn),
+        (route, phase) => Err(format!(
+            "the app cannot draw route `{}` in phase {phase:?} yet",
+            route.path()
+        )),
+    }
+}
+
+/// The state one device of the fixture's viewer holds in its world, every time lifted by `shift` seconds. A device with
+/// no account holds none: the default state, its phase `Loading`.
+pub fn build_state(
+    fixture: &ScreenFixture,
+    shift: u64,
+    ids: Ids<'_>,
+    screen: FixtureScreen,
+) -> AppState {
+    if screen == FixtureScreen::SignIn {
+        return AppState::default();
+    }
+    let (world, viewer) = (&fixture.world, fixture.viewer.as_str());
     let username = world
         .people
         .iter()
@@ -172,11 +218,11 @@ pub fn build_state(world: &WorldSpec, viewer: &str, shift: u64, ids: Ids<'_>) ->
                 })
                 .collect(),
         );
-        for (index, c) in server.channels.iter().filter(|c| !c.system).enumerate() {
-            channels.push(channel_of(server, c, index as u32, id, ids));
+        for c in server.channels.iter().filter(|c| !c.system) {
+            channels.push(channel_of(server, c, id, ids));
         }
         for c in server.channels.iter().filter(|c| c.system) {
-            channels.push(channel_of(server, c, 0, id, ids));
+            channels.push(channel_of(server, c, id, ids));
         }
         for c in server
             .channels
@@ -213,20 +259,19 @@ pub fn build_state(world: &WorldSpec, viewer: &str, shift: u64, ids: Ids<'_>) ->
         unread: HashMap::new(),
         ..AppState::default()
     };
-    apply_reactions(world, viewer, &mut state);
-    apply_threads(world, viewer, &mut state);
-    apply_attachments(world, viewer, &mut state);
-    apply_dms(world, viewer, &mut state);
-    apply_roles(world, viewer, &mut state);
-    apply_calls(world, viewer, &mut state);
-    apply_polls(world, viewer, &mut state);
+    attachments::apply(world, viewer, &mut state);
+    calls::apply(world, viewer, &mut state);
+    dms::apply(world, viewer, &mut state);
+    polls::apply(world, viewer, &mut state);
+    reactions::apply(world, viewer, &mut state);
+    roles::apply(world, viewer, &mut state);
+    threads::apply(world, viewer, &mut state);
     state
 }
 
 fn channel_of(
     server: &spec::ServerSpec,
     c: &spec::ChannelSpec,
-    _index: u32,
     community: CommunityId,
     ids: Ids<'_>,
 ) -> Channel {
@@ -320,31 +365,6 @@ fn items_of(
         .collect()
 }
 
-// ---- Per-area facets -------------------------------------------------------------------------------------------
-// One function per Wave 1 area, called by `build_state`. Each stays empty until its area's state slice has fields for
-// the facet; its task fills only its own function.
-
-/// Task 10: `AppState::reactions` (who reacted, picker state). The counts on timeline items are already set.
-fn apply_reactions(_world: &WorldSpec, _viewer: &str, _state: &mut AppState) {}
-
-/// Task 11: `AppState::threads`, from `MessageSpec::thread_of`.
-fn apply_threads(_world: &WorldSpec, _viewer: &str, _state: &mut AppState) {}
-
-/// Task 12: `AppState::attachments` (downloads, thumbnails). The items' attachment rows are already set.
-fn apply_attachments(_world: &WorldSpec, _viewer: &str, _state: &mut AppState) {}
-
-/// Task 13: `AppState::dms` and `AppState::trust`, from `WorldSpec::dms` and the messages in `dm/<id>`.
-fn apply_dms(_world: &WorldSpec, _viewer: &str, _state: &mut AppState) {}
-
-/// Task 14: `AppState::roles`, from `ServerSpec::roles`.
-fn apply_roles(_world: &WorldSpec, _viewer: &str, _state: &mut AppState) {}
-
-/// Tasks 17 and 18: `AppState::voice` and `AppState::ring`, from `WorldSpec::calls`.
-fn apply_calls(_world: &WorldSpec, _viewer: &str, _state: &mut AppState) {}
-
-/// Task 20: `AppState::bot` (polls), from `MessageSpec::poll`.
-fn apply_polls(_world: &WorldSpec, _viewer: &str, _state: &mut AppState) {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,7 +381,9 @@ mod tests {
         let f = committed("shell/channel-view.json");
         assert_eq!(f.state.communities[0].name, "Midgard Crew");
         assert_eq!(f.window, (1280.0, 800.0));
-        let open = f.open.expect("the route opens a channel");
+        let FixtureScreen::Shell { channel: open } = f.screen else {
+            panic!("the route draws the shell");
+        };
         assert_eq!(f.state.timelines[&open].items.len(), 12);
         assert!(f.state.channel(open).is_some_and(|c| c.name == "general"));
         assert!(f.line().starts_with("fixture shell/channel-view "));
@@ -376,14 +398,52 @@ mod tests {
         let shot = Shot {
             digest: plain.digest.clone(),
             shift: 86_400,
+            hand_migrated: false,
             ids: Default::default(),
         };
         let lifted = Fixture::parse(&text, Some(&shot)).unwrap();
         assert_eq!(lifted.now, plain.now + 86_400);
-        let open = plain.open.unwrap();
+        let FixtureScreen::Shell { channel: open } = plain.screen else {
+            panic!("shell");
+        };
         assert_eq!(
             lifted.state.timelines[&open].items[0].ts,
             plain.state.timelines[&open].items[0].ts + 86_400
         );
+    }
+
+    fn with_route(route: &str, phase: &str) -> String {
+        let text = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../parity/fixtures/shell/channel-view.json"),
+        )
+        .unwrap();
+        text.replace(
+            "\"route\": \"/c/{midgard}/{midgard/general}\"",
+            &format!("\"route\": \"{route}\", \"phase\": \"{phase}\""),
+        )
+    }
+
+    #[test]
+    fn the_welcome_route_draws_the_sign_in_screen_with_no_account() {
+        let f = Fixture::parse(&with_route("/welcome", "signed_out"), None).unwrap();
+        assert_eq!(f.screen, FixtureScreen::SignIn);
+        assert!(f.state.communities.is_empty());
+        assert_ne!(f.state.account.phase, AccountPhase::Ready);
+    }
+
+    #[test]
+    fn a_route_the_app_cannot_draw_is_refused() {
+        for (route, phase) in [
+            ("/settings", "ready"),
+            ("/activity", "ready"),
+            ("/c/{midgard}", "ready"),
+            ("/welcome", "ready"),
+            ("/c/{midgard}/{midgard/general}", "signed_out"),
+            ("/c/{midgard}/{midgard/general}", "revoked"),
+        ] {
+            let err = Fixture::parse(&with_route(route, phase), None).unwrap_err();
+            assert!(err.contains("cannot draw"), "{route} {phase}: {err}");
+        }
     }
 }

@@ -18,7 +18,7 @@
 //!
 //! Scope: plain text messages in text channels. A fixture that asks for more (reactions, replies, threads,
 //! attachments, polls, edits, pins, DMs, calls, roles, bots, statuses) is refused by name until the area that owns the
-//! facet adds its seeding to `seed_facets` (each area task fills its own function there).
+//! facet adds its seeding in its own file under `seed/` (one file per area; `seed/mod.rs` only lists them).
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -28,48 +28,7 @@ use dilla_client::state::{ChannelId, CommunityId, TimelineItemState};
 use dilla_client::testing::host as world;
 use dilla_client::testing::spec::{self, ChannelKind, ScreenFixture, ServerSpec};
 
-/// What this world cannot seed yet, by facet; empty when it can seed the fixture.
-fn unseedable(f: &ScreenFixture) -> Vec<String> {
-    let w = &f.world;
-    let mut out = Vec::new();
-    let mut note = |what: &str, found: bool| {
-        if found {
-            out.push(what.to_owned());
-        }
-    };
-    note(
-        "reactions",
-        w.messages.iter().any(|m| !m.reactions.is_empty()),
-    );
-    note("replies", w.messages.iter().any(|m| m.reply_to.is_some()));
-    note("threads", w.messages.iter().any(|m| m.thread_of.is_some()));
-    note(
-        "attachments",
-        w.messages.iter().any(|m| !m.attachments.is_empty()),
-    );
-    note("polls", w.messages.iter().any(|m| m.poll.is_some()));
-    note("edits", w.messages.iter().any(|m| m.edited));
-    note("pins", w.messages.iter().any(|m| m.pinned));
-    note("dms", !w.dms.is_empty());
-    note("calls", !w.calls.is_empty());
-    note("roles", w.servers.iter().any(|s| !s.roles.is_empty()));
-    note("bots", w.people.iter().any(|p| p.bot));
-    note(
-        "statuses and bios",
-        w.people
-            .iter()
-            .any(|p| !p.status.is_empty() || !p.bio.is_empty()),
-    );
-    out
-}
-
-/// The facets' seeding, one function per Wave 1 area: called once the history is posted, with the live clients. Each
-/// is empty until its area gives `unseedable` the matching facet.
-#[allow(clippy::unused_async)]
-async fn seed_facets(_f: &ScreenFixture, _people: &[(String, world::Person)]) {
-    // Task 9 edits, 10 reactions, 11 threads, 12 attachments, 13 DMs, 14 roles and moderation, 17/18 calls,
-    // 20 polls and Bot accounts, 14 statuses: each adds its facet here and drops it from `unseedable`.
-}
+mod seed;
 
 /// The server's channels the world makes: every non-system one but the first `general`, which the world makes itself.
 fn extra_channels(server: &ServerSpec) -> Vec<world::ChannelSpec<'_>> {
@@ -115,10 +74,10 @@ async fn main() {
         "{}",
         f.fixture_line(&digest).replacen("fixture ", "FIXTURE ", 1)
     );
-    let missing = unseedable(&f);
+    let missing = seed::unseedable(&f);
     assert!(
         missing.is_empty(),
-        "the parity world cannot seed {} yet (see `unseedable` in this example)",
+        "the parity world cannot seed {} yet (see `seed/` in this example)",
         missing.join(", ")
     );
     std::fs::create_dir_all(&out).unwrap();
@@ -159,24 +118,19 @@ async fn main() {
         }
         made
     };
-    // A headless client for everyone who posts, and for the viewer (who must hold every group the browser reads).
-    let mut senders: Vec<&str> = f.world.messages.iter().map(|m| m.sender.as_str()).collect();
-    senders.sort_unstable();
-    senders.dedup();
+    // A headless client for the viewer (who must hold every group the browser reads, and reads the channel list) and for
+    // everyone who posts: an empty world has only the viewer's.
+    let plan = f.seed_plan();
     let mut clients = Vec::new();
-    for id in &senders {
-        clients.push((*id, world::start(person_of(id)).await));
+    for id in &plan.clients {
+        clients.push((id.as_str(), world::start(person_of(id)).await));
     }
     // The real ids of every server and channel: by name within the server.
     let mut ids: BTreeMap<String, String> = BTreeMap::new();
     for (id, p) in &people {
         ids.insert(format!("person:{id}"), world::hex(&p.user_id));
     }
-    let Some((_, first)) = clients.first() else {
-        panic!(
-            "a fixture with no messages has nothing to read: it needs no history, shoot it by hand"
-        );
-    };
+    let first = &clients[0].1;
     for (server, community) in &communities {
         ids.insert(format!("server:{server}"), community.hex());
         let spec_server = f.world.servers.iter().find(|s| s.id == *server).unwrap();
@@ -197,16 +151,9 @@ async fn main() {
     let channel_real = |path: &str| -> ChannelId {
         ChannelId(spec::unhex16(&ids[&format!("channel:{path}")]).expect("hex"))
     };
-    // Every channel that holds history: each sender opens it (joins its group).
-    let mut with_history: Vec<&str> = f
-        .world
-        .messages
-        .iter()
-        .map(|m| m.channel.as_str())
-        .collect();
-    with_history.sort_unstable();
-    with_history.dedup();
-    for path in &with_history {
+    // Every channel the browser visits (the history's, and the route's own even when it is empty): each client opens it
+    // (joins its group).
+    for path in &plan.visit {
         for (_, client) in &clients {
             client
                 .open_channel(channel_real(path))
@@ -215,20 +162,14 @@ async fn main() {
                 .expect("opens the channel");
         }
     }
-    // The browser visits the history channels, the route's own last.
-    let target = with_history
+    let visit: Vec<serde_json::Value> = plan
+        .visit
         .iter()
-        .find(|p| f.route.contains(&format!("{{{p}}}")))
-        .copied();
-    let mut visit: Vec<serde_json::Value> = Vec::new();
-    for path in with_history
-        .iter()
-        .filter(|p| Some(**p) != target)
-        .chain(target.iter())
-    {
-        let (server, channel) = f.world.channel(path).expect("validated");
-        visit.push(serde_json::json!({"server": server.name, "channel": channel.name}));
-    }
+        .map(|path| {
+            let (server, channel) = f.world.channel(path).expect("validated");
+            serde_json::json!({"server": server.name, "channel": channel.name})
+        })
+        .collect();
     let first_ts = f
         .world
         .messages
@@ -300,7 +241,7 @@ async fn main() {
             .await;
         }
     }
-    seed_facets(&f, &people).await;
+    seed::seed(&f, &people).await;
     // The clock at the frame: the fixture's, lifted.
     let target = f.clock + shift;
     let now = read_clock(&host);
@@ -310,6 +251,7 @@ async fn main() {
     let sidecar = spec::Shot {
         digest,
         shift,
+        hand_migrated: false,
         ids: ids.clone(),
     };
     std::fs::write(

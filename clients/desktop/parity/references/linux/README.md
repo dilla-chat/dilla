@@ -12,7 +12,7 @@ side draws the same ids). A reference without a sidecar is drawn with the fixtur
 | `shell/channel-view-b` | 1440x900, a second server selected, a category with a text and a voice channel, a long channel name (cut in the list, whole in the header), eleven members, a message that wraps over three lines |
 
 Both are compared by `parity/tests/screen.rs` (`channel_view_two_fixtures`) under `../../tolerance.toml`, with no
-per-fixture setting. The two shell sidecars were written from the data of the shots of 2026-11-12 (Playwright 1.64.1
+per-fixture setting. The two shell sidecars carry `"hand_migrated": true`: they were written by hand from the data of the shots of 2026-11-12 (Playwright 1.64.1
 Chromium 156.0.8078.4, the web client of `feat/gpui-desktop` with Tasks 9b and 11 merged), which predate the screen
 fixtures; shoot them again with `shoot.mjs` to make them pairs of the shooter.
 

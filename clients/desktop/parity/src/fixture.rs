@@ -96,3 +96,16 @@ pub fn load(path: &Path, os: Os) -> Result<LoadedFixture, FixtureError> {
         shot,
     })
 }
+
+/// Reads and validates a fixture wherever it is (a test's variant in a temp directory): no reference, no sidecar.
+pub fn load_unchecked(path: &Path) -> Result<ScreenFixture, FixtureError> {
+    let shown = path.display().to_string();
+    let text = std::fs::read_to_string(path).map_err(|e| FixtureError::Io {
+        path: shown.clone(),
+        reason: e.to_string(),
+    })?;
+    ScreenFixture::parse(&text).map_err(|source| FixtureError::Spec {
+        path: shown,
+        source,
+    })
+}

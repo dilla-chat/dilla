@@ -27,11 +27,16 @@ fn reference(name: &str) -> PathBuf {
 
 /// The GPUI frame of a committed fixture and its R13 mask.
 fn shoot(name: &str, env: &[(&str, &str)]) -> (RgbaImage, TextMask) {
+    shoot_with(name, env, TEXT_FRINGE_PX)
+}
+
+/// [`shoot`] with the mask grown by `grow` device pixels.
+fn shoot_with(name: &str, env: &[(&str, &str)], grow: f32) -> (RgbaImage, TextMask) {
     let loaded = fixture::load(&fixture_path(name), Os::Linux).unwrap();
     let mut driver = Driver::launch_fixture(&fixture_path(name), loaded.shot_path.as_deref(), env);
     driver.wait_idle();
     let shot = driver.screenshot();
-    let mask = text_mask(&mut driver, TEXT_FRINGE_PX);
+    let mask = text_mask(&mut driver, grow);
     (shot, mask)
 }
 
@@ -53,41 +58,61 @@ fn text_mask_matches_painted_lines() {
             "{r:?} is outside {width}x{height}"
         );
     }
-    // The mask covers every glyph pixel. The same screen with every line in a face the app does not embed draws other
-    // glyphs: whatever differs between the two frames is glyph pixels of one or the other, so it must all lie in the
-    // union of the two frames' masks, and no pixel outside them may differ.
-    let (fallback, mask_fallback) = shoot(
-        "shell/channel-view",
-        &[("DILLA_AUTOMATION_FALLBACK_FONT", "1")],
-    );
-    let inside = |x: u32, y: u32| {
-        mask_normal
-            .rects()
-            .iter()
-            .chain(mask_fallback.rects())
-            .any(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
-    };
+    // The mask covers every glyph pixel. The same screen with every line painted transparent (`DILLA_AUTOMATION_HIDE_TEXT`)
+    // has the same geometry and none of the glyphs: whatever differs between the two frames is exactly the pixels the
+    // glyphs cover, and every one of them must lie in the mask. No exclusions: a glyph the lines do not report fails.
+    let (hidden, _) = shoot("shell/channel-view", &[("DILLA_AUTOMATION_HIDE_TEXT", "1")]);
     let (mut glyph_pixels, mut outside) = (0u64, 0u64);
     for (x, y, p) in normal.enumerate_pixels() {
-        if p != fallback.get_pixel(x, y) {
+        if p != hidden.get_pixel(x, y) {
             glyph_pixels += 1;
-            if !inside(x, y) {
-                outside += 1;
-            }
+            let covered = mask_normal
+                .rects()
+                .iter()
+                .any(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+            outside += u64::from(!covered);
         }
     }
     assert!(
         glyph_pixels > 10_000,
-        "the two faces differ ({glyph_pixels} pixels)"
+        "the text is drawn ({glyph_pixels} glyph pixels)"
     );
-    // Measured on the committed fixture: 475 of 106774 (0.44 %) differ outside the masks. They are not glyphs the lines
-    // report: avatar initials and the accent `#` glyph (drawn without a text probe: Task 6's avatar and icon components
-    // should report them), and the timeline scrollbar, which the fallback face's different text height moves. A mask
-    // that missed whole lines would miss far more than 1 %.
-    println!("MASK {outside} of {glyph_pixels} differing pixels are outside the text masks");
+    assert_eq!(
+        outside, 0,
+        "{outside} of {glyph_pixels} glyph pixels are outside the text mask"
+    );
+}
+
+/// `TEXT_FRINGE_PX` is the measured reach of glyph pixels beyond the line boxes the app reports: the largest distance
+/// (Chebyshev, device px) from a glyph pixel to the nearest ungrown line box, over both shell fixtures, must be within it.
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+fn text_fringe_is_the_measured_reach_of_glyphs() {
+    let mut reach = 0u32;
+    for name in ["shell/channel-view", "shell/channel-view-b"] {
+        let (normal, boxes) = shoot_with(name, &[], 0.0);
+        let (hidden, _) = shoot_with(name, &[("DILLA_AUTOMATION_HIDE_TEXT", "1")], 0.0);
+        for (x, y, p) in normal.enumerate_pixels() {
+            if p == hidden.get_pixel(x, y) {
+                continue;
+            }
+            let nearest = boxes
+                .rects()
+                .iter()
+                .map(|r| {
+                    let dx = r.x.saturating_sub(x).max(x.saturating_sub(r.x + r.w - 1));
+                    let dy = r.y.saturating_sub(y).max(y.saturating_sub(r.y + r.h - 1));
+                    dx.max(dy)
+                })
+                .min()
+                .expect("line boxes");
+            reach = reach.max(nearest);
+        }
+    }
+    println!("FRINGE glyph pixels reach {reach} device px beyond their line boxes");
     assert!(
-        outside * 100 <= glyph_pixels,
-        "{outside} of {glyph_pixels} differing pixels are outside the text masks"
+        reach as f32 <= TEXT_FRINGE_PX,
+        "glyphs reach {reach} px beyond the line boxes: raise TEXT_FRINGE_PX (and document why)"
     );
 }
 
@@ -143,6 +168,112 @@ fn a_reference_shot_from_another_fixture_is_refused() {
         }
         other => panic!("expected a stale reference, got {other:?}"),
     }
+}
+
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
+fn a_missing_sidecar_is_a_reference_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let copy = dir.path().join("parity");
+    for rel in ["fixtures/shell", "references/linux/shell"] {
+        std::fs::create_dir_all(copy.join(rel)).unwrap();
+    }
+    std::fs::copy(
+        fixture_path("shell/channel-view"),
+        copy.join("fixtures/shell/channel-view.json"),
+    )
+    .unwrap();
+    std::fs::copy(
+        reference("shell/channel-view"),
+        copy.join("references/linux/shell/channel-view-2x.png"),
+    )
+    .unwrap();
+    match assert_screen(&copy.join("fixtures/shell/channel-view.json")) {
+        Err(ParityFailure::Reference { reason, .. }) => {
+            assert!(reason.contains("no sidecar"), "{reason}");
+        }
+        other => panic!("a reference with no sidecar must be refused, got {other:?}"),
+    }
+}
+
+/// A copy of the channel-view fixture with `edit` applied to its JSON, written to a temp file.
+fn variant(edit: impl FnOnce(&mut serde_json::Value)) -> (tempfile::TempDir, PathBuf) {
+    let mut json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture_path("shell/channel-view")).unwrap())
+            .unwrap();
+    edit(&mut json);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("variant.json");
+    std::fs::write(&path, json.to_string()).unwrap();
+    (dir, path)
+}
+
+#[test]
+fn the_welcome_route_draws_the_sign_in_screen() {
+    let (_dir, path) = variant(|j| {
+        j["route"] = "/welcome".into();
+        j["phase"] = "signed_out".into();
+    });
+    let mut app = Driver::try_launch_fixture(&path, None, &[]).expect("the app draws /welcome");
+    app.wait_for("signin-server", Duration::from_secs(30));
+    assert!(app.element("composer").is_none(), "the shell is not drawn");
+}
+
+#[test]
+fn a_route_the_app_cannot_draw_fails_the_launch() {
+    for (route, phase) in [
+        ("/settings", "ready"),
+        ("/welcome", "ready"),
+        ("/activity", "ready"),
+    ] {
+        let (_dir, path) = variant(|j| {
+            j["route"] = route.into();
+            j["phase"] = phase.into();
+        });
+        match Driver::try_launch_fixture(&path, None, &[]) {
+            Err(why) => assert!(why.contains("cannot draw"), "{route}: {why}"),
+            Ok(_) => panic!("{route} in phase {phase} must not draw anything"),
+        }
+    }
+}
+
+#[test]
+fn capture_leaves_no_hover_and_no_focus() {
+    // A Click step focuses the composer; the web shooter then moves the pointer to the corner and blurs the focus, and
+    // the GPUI side does the same before its frame.
+    let (_dir, path) = variant(|j| {
+        j["steps"] =
+            serde_json::json!([{"do": "click", "web": "css=textarea", "gpui": "composer"}]);
+    });
+    let fixture = fixture::load_unchecked(&path).unwrap();
+    let mut app = Driver::launch_fixture(&path, None, &[]);
+    app.wait_idle();
+    for step in &fixture.steps {
+        dilla_parity::screen::replay(&mut app, step);
+    }
+    assert!(app.focused().is_some(), "the click focused the composer");
+    assert_ne!(app.pointer(), (1278.0, 798.0));
+    dilla_parity::screen::rest_before_frame(&mut app, &fixture);
+    assert_eq!(app.focused(), None, "no focus");
+    assert_eq!(
+        app.pointer(),
+        (1278.0, 798.0),
+        "the pointer is off the content"
+    );
+    // With a hover step the pointer stays where the step put it.
+    let (_dir, path) = variant(|j| {
+        j["steps"] =
+            serde_json::json!([{"do": "hover", "web": "css=textarea", "gpui": "composer"}]);
+    });
+    let fixture = fixture::load_unchecked(&path).unwrap();
+    let mut app = Driver::launch_fixture(&path, None, &[]);
+    app.wait_idle();
+    for step in &fixture.steps {
+        dilla_parity::screen::replay(&mut app, step);
+    }
+    let before = app.pointer();
+    dilla_parity::screen::rest_before_frame(&mut app, &fixture);
+    assert_eq!(app.pointer(), before, "a hover step keeps the pointer");
 }
 
 /// The colour of a design token as 8-bit sRGB (`tokens.rs`, hsl converted): `BG_2`, `BG_3` and the two hairlines.
@@ -403,6 +534,12 @@ fn no_window_coordinates_in_screens() {
                 (file.to_owned(), n.parse().expect("a count"))
             })
             .collect();
+    // The baseline's total is pinned here: raising it takes a reviewed edit of this test, not of the data file.
+    let total: usize = baseline.values().sum();
+    assert!(
+        total <= BASELINE_TOTAL_MAX,
+        "screens-px-baseline.txt holds {total} literals: more than the {BASELINE_TOTAL_MAX} it may"
+    );
     let mut files = Vec::new();
     rust_files(&screens, &mut files);
     let mut offenders = Vec::new();
@@ -414,11 +551,19 @@ fn no_window_coordinates_in_screens() {
             .to_string_lossy()
             .replace('\\', "/");
         let found = literal_offsets(&std::fs::read_to_string(&file).unwrap());
-        let allowed = baseline.get(&rel).copied().unwrap_or(0);
-        if found > allowed {
-            offenders.push(format!(
+        match baseline.get(&rel).copied() {
+            None if found > 0 => offenders.push(format!(
+                "{rel}: {found} literal px(..)/point(..); a file with no baseline line holds none"
+            )),
+            Some(allowed) if found > allowed => offenders.push(format!(
                 "{rel}: {found} literal px(..)/point(..), allowed {allowed}"
-            ));
+            )),
+            // The ratchet: a count that fell must be written down, so it can never rise back.
+            Some(allowed) if found < allowed => offenders.push(format!(
+                "{rel}: only {found} literals left: lower its line in screens-px-baseline.txt from {allowed} to {found}{}",
+                if found == 0 { " (delete the line)" } else { "" }
+            )),
+            _ => {}
         }
         seen.insert(rel);
     }
@@ -434,6 +579,9 @@ fn no_window_coordinates_in_screens() {
         offenders.join("\n")
     );
 }
+
+/// The most literals the baseline may hold in total (what the Task 12 slice had when Task 5 landed).
+const BASELINE_TOTAL_MAX: usize = 114;
 
 // ---- Step 6: both shooters read the same fixture ----------------------------------------------------------------
 
@@ -453,12 +601,18 @@ fn shooters_agree_on_fixture() {
             String::from_utf8_lossy(&web.stderr)
         );
         let web = String::from_utf8(web.stdout).unwrap().trim().to_owned();
-        let mut app = Driver::launch_fixture(&path, None, &[]);
+        let loaded = fixture::load(&path, Os::Linux).unwrap();
+        let mut app = Driver::launch_fixture(&path, loaded.shot_path.as_deref(), &[]);
         let gpui = app.fixture_line().expect("a fixture launch answers");
         assert_eq!(web, gpui, "{name}: the shooters log different fixtures");
-        // The line carries the file's digest and every world id.
-        let loaded = fixture::load(&path, Os::Linux).unwrap();
-        assert_eq!(gpui, loaded.fixture.fixture_line(&loaded.digest));
+        // The line carries the file's digest and every world id, the sidecar's where it has them.
+        let ids = loaded.fixture.effective_ids(loaded.shot.as_ref()).unwrap();
+        assert_eq!(gpui, loaded.fixture.fixture_line_with(&loaded.digest, &ids));
+        let real = loaded.shot.as_ref().unwrap().ids["person:ada"].clone();
+        assert!(
+            gpui.contains(&format!("person:ada={real}")),
+            "the sidecar's ids are the logged ones"
+        );
         assert!(gpui.contains(&format!(" {} ", loaded.digest)));
         assert!(gpui.contains("person:ada="));
     }
