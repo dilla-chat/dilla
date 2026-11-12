@@ -4,23 +4,36 @@
 //! Nothing is posted for a tree the gate refuses, and the join commit is posted only after
 //! `call_join_check` passes.
 //!
-//! Not ported from join.ts: the rejoin's wait for this device's own earlier Remove (409
-//! `E_REMOVE_PENDING`). The [`crate::seams::Http`] seam carries a status without the instance's
-//! `E_*` code, so it cannot tell that refusal from a lost commit race; such a join fails closed
-//! (a [`JoinRefused`]) and the caller may try again.
+//! A rejoin while this device's own earlier Remove is still outstanding (join.ts, web-3 task 10,
+//! concern 2): the instance refuses the resync of a Remove's target with 409 `E_REMOVE_PENDING`
+//! (and only that refusal waits; every other one, a 403 included, fails at once). The join reports
+//! [`CallPhase::WaitingForRemove`] and waits until another member has committed the Remove (the
+//! device then joins afresh, in the same group) or the call has ended and its group closed (the
+//! device registers a fresh one). Each step, [`REJOIN_STEP`] apart, reads the call and the group's
+//! GroupInfo and tries the join again only when either has changed; the wait ends [`REJOIN_WAIT`]
+//! after the first refusal, failing closed with that refusal.
 
 use std::sync::Mutex;
+use std::time::Duration;
 
+use tokio::time::Instant;
 use zeroize::Zeroizing;
 
 use super::controller::media_epoch;
 use super::{
-    CallCore, CallRoutes, CallStarted, ChannelCall, CoreRefusal, MediaEpoch, RouteError, lock,
+    CallCore, CallPhase, CallRoutes, CallStarted, ChannelCall, CoreRefusal, MediaEpoch, RouteError,
+    lock,
 };
 
 /// join.ts `JOIN_READS_MAX`: the most GroupInfo/tree read pairs one external join makes when the
 /// pair disagrees (a commit landed between the reads).
 pub const JOIN_READS_MAX: usize = 3;
+/// join.ts `REJOIN_STEP_MS`: how far apart the rejoin's wait reads the call and its GroupInfo (two
+/// requests: at most one a second).
+pub const REJOIN_STEP: Duration = Duration::from_millis(2_000);
+/// join.ts `REJOIN_WAIT_MS`: how long after the first `E_REMOVE_PENDING` the rejoin waits. It
+/// outlasts the room's departure timeout (20 s) and its webhook.
+pub const REJOIN_WAIT: Duration = Duration::from_millis(30_000);
 
 /// The call to join.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,8 +63,14 @@ pub trait JoinHooks: Send + Sync {
     fn random_id(&self) -> [u8; 16];
     /// The worker's bounded trust refresh of the group's leaves (device lists); never fails.
     async fn refresh_leaves(&self, group: &[u8; 16]);
-    /// True once the join was cancelled (a leave, sign-out or revocation): nothing more is posted.
+    /// True once the join was cancelled (a leave, sign-out or revocation): nothing more is posted,
+    /// and a rejoin's wait stops there.
     fn cancelled(&self) -> bool;
+    /// The join's phase moved: [`CallPhase::Joining`] as it starts,
+    /// [`CallPhase::WaitingForRemove`] once it waits for this device's earlier Remove (join.ts
+    /// `rejoining`: the page says so in its status region), [`CallPhase::In`] when it has joined
+    /// and [`CallPhase::Idle`] when it ended without a call.
+    fn phase(&self, _phase: CallPhase) {}
 }
 
 /// A join that ended without a call. `leave` names an active call group this device must leave
@@ -116,10 +135,56 @@ fn stopped(leave: Option<[u8; 16]>) -> JoinRefused {
     refused("E_NO_CALL", leave)
 }
 
+/// A refusal of the external join, and whether its cause was the instance's 409
+/// `E_REMOVE_PENDING` (join.ts `isHttp(e.cause, 409, 'E_REMOVE_PENDING')`).
+struct ExistingRefused {
+    refused: JoinRefused,
+    remove_pending: bool,
+}
+
+impl From<JoinRefused> for ExistingRefused {
+    fn from(refused: JoinRefused) -> Self {
+        Self {
+            refused,
+            remove_pending: false,
+        }
+    }
+}
+
+impl From<CoreRefusal> for ExistingRefused {
+    fn from(e: CoreRefusal) -> Self {
+        JoinRefused::from(e).into()
+    }
+}
+
+/// A refused route of the external join.
+fn route_refused(e: &RouteError) -> ExistingRefused {
+    ExistingRefused {
+        refused: refused(&route_code(e), None),
+        remove_pending: e.is(409, "E_REMOVE_PENDING"),
+    }
+}
+
 /// Joins the channel's call. On success the caller connects `dilla_media::Call` with
 /// `started.livekit_url` / `started.token` and publishes `media` (and every later epoch's keys,
-/// [`super::media_epoch`]) to it.
+/// [`super::media_epoch`]) to it. The phases go to [`JoinHooks::phase`].
 pub async fn join_call<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
+    core: &Mutex<C>,
+    routes: &R,
+    hooks: &H,
+    target: &JoinTarget,
+) -> Result<Joined, JoinRefused> {
+    hooks.phase(CallPhase::Joining);
+    let joined = join_loop(core, routes, hooks, target).await;
+    hooks.phase(if joined.is_ok() {
+        CallPhase::In
+    } else {
+        CallPhase::Idle
+    });
+    joined
+}
+
+async fn join_loop<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
     core: &Mutex<C>,
     routes: &R,
     hooks: &H,
@@ -127,6 +192,7 @@ pub async fn join_call<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Size
 ) -> Result<Joined, JoinRefused> {
     let mut reread_exists = true;
     let mut reread_closed = true;
+    let mut wait_since: Option<Instant> = None;
     let mut read = routes
         .get_channel_call(&target.channel)
         .await
@@ -173,7 +239,21 @@ pub async fn join_call<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Size
             }
             Some(existing) => {
                 group = existing;
-                join_existing(core, routes, hooks, target, &group).await?;
+                let mut tried: Option<Vec<u8>> = None;
+                if let Err(e) = join_existing(core, routes, hooks, target, &group, &mut tried).await
+                {
+                    let Some(info) = tried.filter(|_| e.remove_pending && !hooks.cancelled())
+                    else {
+                        return Err(e.refused);
+                    };
+                    let since = *wait_since.get_or_insert_with(|| {
+                        hooks.phase(CallPhase::WaitingForRemove);
+                        Instant::now()
+                    });
+                    read = wait_for_remove(routes, hooks, target, e.refused, since, &group, &info)
+                        .await?;
+                    continue;
+                }
             }
         }
         let media = join_epoch(core, hooks, &group).await?;
@@ -181,6 +261,18 @@ pub async fn join_call<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Size
             return Err(stopped(Some(group)));
         }
         match routes.start_call(&target.channel, &target.vdec).await {
+            // A leave (or a dropped join) that arrived while the start was in flight: the call has
+            // started with this device admitted, so it leaves at once (its self-Remove, ending the
+            // call when alone, and the forget) and the join ends as cancelled. join.ts returns the
+            // join here and leaves it to the controller's later leave; this never hands out a call
+            // nobody wants.
+            Ok(started) if hooks.cancelled() => {
+                let alone =
+                    created || (media.roster.len() == 1 && media.roster[0].0 == media.own_leaf);
+                drop(media);
+                super::leave_call(core, routes, &group, &started.call_id, alone).await;
+                return Err(stopped(None));
+            }
             Ok(started) => {
                 return Ok(Joined {
                     group_id: group,
@@ -209,6 +301,49 @@ pub async fn join_call<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Size
     }
 }
 
+/// The rejoin's wait ([`REJOIN_WAIT`] from `since`; join.ts `waitForRemove`): each step reads the
+/// call, and while it still names the refused group, its GroupInfo; it answers the call read once
+/// either has changed (the call ended or moved on, or a commit landed: perhaps the Remove), and
+/// fails with `refusal` once the bound has passed or the join is cancelled.
+async fn wait_for_remove<R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
+    routes: &R,
+    hooks: &H,
+    target: &JoinTarget,
+    refusal: JoinRefused,
+    since: Instant,
+    group: &[u8; 16],
+    info: &[u8],
+) -> Result<ChannelCall, JoinRefused> {
+    loop {
+        let left = (since + REJOIN_WAIT).saturating_duration_since(Instant::now());
+        if left.is_zero() || hooks.cancelled() {
+            return Err(refusal);
+        }
+        tokio::time::sleep(left.min(REJOIN_STEP)).await;
+        if hooks.cancelled() {
+            return Err(refusal);
+        }
+        let read = reread(routes, target).await?;
+        // A leave during a read stops the wait there; the join goes no further.
+        if hooks.cancelled() {
+            return Err(refusal);
+        }
+        if read.group_id.as_ref() != Some(group) {
+            return Ok(read);
+        }
+        let now = routes
+            .get_group_info(group)
+            .await
+            .map_err(|e| refused(&route_code(&e), None))?;
+        if hooks.cancelled() {
+            return Err(refusal);
+        }
+        if now != info {
+            return Ok(read);
+        }
+    }
+}
+
 async fn reread<R: CallRoutes + ?Sized>(
     routes: &R,
     target: &JoinTarget,
@@ -229,17 +364,20 @@ async fn join_existing<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Size
     hooks: &H,
     target: &JoinTarget,
     group: &[u8; 16],
-) -> Result<(), JoinRefused> {
+    tried: &mut Option<Vec<u8>>,
+) -> Result<(), ExistingRefused> {
     for reads in 1..=JOIN_READS_MAX {
         let again = reads < JOIN_READS_MAX && !hooks.cancelled();
         let info = routes
             .get_group_info(group)
             .await
-            .map_err(|e| refused(&route_code(&e), None))?;
+            .map_err(|e| route_refused(&e))?;
+        // The GroupInfo the commit is built on: the rejoin's wait compares it.
+        *tried = Some(info.clone());
         let tree = routes
             .get_group_tree(group)
             .await
-            .map_err(|e| refused(&route_code(&e), None))?;
+            .map_err(|e| route_refused(&e))?;
         let joined = lock(core)?.call_group_join_external(
             group,
             target.community.as_ref(),
@@ -251,16 +389,16 @@ async fn join_existing<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Size
         let body = match joined {
             Ok(body) => Zeroizing::new(body),
             Err(e) if e.code == "E_CORE_INPUT" && again => continue,
-            Err(e) => return Err(refused(&e.code, None)),
+            Err(e) => return Err(refused(&e.code, None).into()),
         };
         let checked = check(core, hooks, group).await;
         if let Err(e) = checked {
             discard(core, group);
-            return Err(refused(&e.code, None));
+            return Err(refused(&e.code, None).into());
         }
         if hooks.cancelled() {
             discard(core, group);
-            return Err(stopped(None));
+            return Err(stopped(None).into());
         }
         match routes.post_resync(group, body.to_vec()).await {
             Ok(seq) => {
@@ -268,7 +406,7 @@ async fn join_existing<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Size
                 // from here on names the group to leave (its self-Remove and a forget).
                 lock(core)
                     .and_then(|mut c| c.group_joined(group, seq))
-                    .map_err(|e| refused(&e.code, Some(*group)))?;
+                    .map_err(|e| ExistingRefused::from(refused(&e.code, Some(*group))))?;
                 return Ok(());
             }
             Err(e) => {
@@ -277,11 +415,11 @@ async fn join_existing<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Size
                 if again && stale && moved_since(routes, group, &info).await {
                     continue;
                 }
-                return Err(refused(&route_code(&e), None));
+                return Err(route_refused(&e));
             }
         }
     }
-    Err(refused("E_CORE_INPUT", None))
+    Err(refused("E_CORE_INPUT", None).into())
 }
 
 async fn check<C: CallCore, H: JoinHooks + ?Sized>(
