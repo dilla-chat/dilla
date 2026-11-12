@@ -529,13 +529,13 @@ pub fn text_mask(driver: &mut Driver, grow_px: f32) -> TextMask;            // f
   - cards and image grid;
   - lightbox;
   - GIF picker;
-  - `MediaPlayer` card. Audio/video playback goes behind a `MediaDecoder` trait; the implementation waits for Jonas (see Questions). Images and animated GIFs work fully.
+  - `MediaPlayer` card. Playback goes behind a `MediaDecoder` trait. **Jonas (2026-11-12): audio first, then a Rust video stack; no FFmpeg.** This task ships inline AUDIO with `symphonia` (AAC, MP3, Vorbis, FLAC, WAV; MP4/MKV/OGG demux) + `symphonia-adapter-libopus` for Opus + `rodio` (play, pause, seek, volume). VIDEO in this task: poster frame plus "open in system player". Inline video is a later task: `openh264` loading Cisco's prebuilt binary at runtime, `dav1d` (AV1), `vpx-rs` (VP8/VP9), Apple's decoder for HEVC on macOS, frames rendered the way Zed renders call video. Research: session scratchpad `rust-media-playback.md`. Images and animated GIFs work fully.
 - **Parity:** `attachments/{cards,lightbox,media-player,gif-picker,drop-overlay,oversized-toast}` plus `-b` fixtures (9 images, long file names, 1440×900). Sources: `docs/user/screenshots/conversation-{attachments,lightbox}.png` and `media-player-desktop.png`.
 - **Behaviour:** `e2e/web/conversation.spec.ts`:
   - "images and files go both ways" → `images_and_files_both_ways`;
   - "a 25 MB file … one byte more" → `file_cap_exact_passes_one_more_refused`;
   - DM GIF consent (`DmGifPrivacy.test.tsx`) → `dm_gif_needs_consent`;
-  - `e2e/voice/media-attachments.spec.ts` → `audio_attachment_plays`. This one is `#[ignore]` until the `MediaDecoder` decision.
+  - `e2e/voice/media-attachments.spec.ts` → `audio_attachment_plays`. Runs against the symphonia + rodio audio path.
 - **Keyboard:** Ctrl+V pastes an image; in the lightbox, arrows move and Escape closes; the GIF picker takes arrows and Enter.
 
 ### Task 13: DMs and trust
@@ -906,11 +906,8 @@ pub fn text_mask(driver: &mut Driver, grow_px: f32) -> TextMask;            // f
 8. **After the switch:** screen readers (AccessKit), OS-wide push-to-talk, and removing `packages/desktop` and its Linux sandbox.
 9. **Separate track (not desktop):** the Bot release with `MemorySwapMax=0` and the sqlite3mc comments (R15).
 
-## Questions for Jonas
+## Decisions from Jonas (2026-11-12)
 
-1. **Audio/video attachment playback** (Task 12). Every decoder option needs his call:
-   - FFmpeg (LGPL, dynamic) or GStreamer would each need a licence exception;
-   - the platform frameworks (AVFoundation, Media Foundation, GStreamer on Linux) mean more code per OS;
-   - "open in the system player" for now would be a visible deviation.
-2. **macOS/Windows parity:** gate every screen on Linux only in this plan, and measure the macOS and Windows tolerances once in Task 28? Or block each screen task on all three OSes, which is slower?
-3. **Concurrency cap:** how many Wave 1 agents may run at once? The plan allows all 20.
+1. **Attachment playback:** audio inline first (symphonia + libopus adapter + rodio), video as poster + system player; then a Rust video stack (openh264 runtime Cisco binary, dav1d, vpx-rs, Apple decoder for HEVC on macOS). No FFmpeg. See Task 12.
+2. **Parity OS gating:** each screen gates on Linux only; macOS and Windows tolerances are measured once in Task 28.
+3. **Concurrency:** all 20 Wave 1 agents may run at once.
