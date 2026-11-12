@@ -1,0 +1,56 @@
+// TEMPORARY (Task 6b fix round 1): run only against the pre-change SQLCipher build.
+// Writes tests/fixtures/sqlcipher4/legacy-hot-journal.db + -journal: a rollback-mode
+// SQLCipher 4 store copied while a transaction that spilled pages to the file was open.
+use std::fs;
+use std::path::Path;
+
+const KEY: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
+#[test]
+#[ignore = "fixture generator"]
+fn generate_legacy_hot_journal() {
+    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sqlcipher4");
+    let tmp = std::env::temp_dir().join(format!("t6b-hotj-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).unwrap();
+    let db = tmp.join("legacy-hot-journal.db");
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(&format!("PRAGMA key = \"x'{KEY}'\"; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;")).unwrap();
+    let v: String = c.query_row("PRAGMA cipher_version", [], |r| r.get(0)).unwrap();
+    assert!(v.starts_with("4."), "{v}");
+    c.execute_batch(
+        "CREATE TABLE legacy(id INTEGER PRIMARY KEY, label TEXT NOT NULL, payload BLOB NOT NULL);
+         WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 40)
+         INSERT INTO legacy(label, payload) SELECT 'committed ' || i, zeroblob(1500) FROM n;",
+    )
+    .unwrap();
+    let committed = fs::read(&db).unwrap();
+    // A tiny cache makes the transaction spill dirty pages into the database file, which
+    // syncs the journal (with its record count) first: a real hot journal.
+    c.execute_batch("PRAGMA cache_size=2; BEGIN; UPDATE legacy SET label = 'uncommitted', payload = randomblob(1500);")
+        .unwrap();
+    for name in ["legacy-hot-journal.db", "legacy-hot-journal.db-journal"] {
+        fs::copy(tmp.join(name), out.join(name)).unwrap();
+    }
+    c.execute_batch("ROLLBACK").unwrap();
+    drop(c);
+    let copied = fs::read(out.join("legacy-hot-journal.db")).unwrap();
+    assert_ne!(copied, committed, "nothing spilled into the database file");
+    assert!(fs::metadata(out.join("legacy-hot-journal.db-journal")).unwrap().len() > 512);
+
+    // The old build itself rolls the hot journal back.
+    let check = tmp.join("check");
+    fs::create_dir_all(&check).unwrap();
+    for name in ["legacy-hot-journal.db", "legacy-hot-journal.db-journal"] {
+        fs::copy(out.join(name), check.join(name)).unwrap();
+    }
+    let c = rusqlite::Connection::open(check.join("legacy-hot-journal.db")).unwrap();
+    c.execute_batch(&format!("PRAGMA key = \"x'{KEY}'\";")).unwrap();
+    let n: i64 = c
+        .query_row("SELECT count(*) FROM legacy WHERE label LIKE 'committed %'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 40);
+    let ok: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+    assert_eq!(ok, "ok");
+    println!("hot journal fixture written and rolled back by the old build: {n} rows");
+}

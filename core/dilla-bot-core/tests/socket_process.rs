@@ -28,9 +28,9 @@ fn test_cipher_conn(path: &Path, key: &[u8; 32]) -> rusqlite::Connection {
     let conn = rusqlite::Connection::open(path).expect("open encrypted database");
     let key_hex = key.iter().map(|b| format!("{b:02x}")).collect::<String>();
     conn.execute_batch(&format!(
-        "PRAGMA key = \"x'{key_hex}'\"; PRAGMA cipher_memory_security=ON; PRAGMA temp_store=MEMORY;"
+        "PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:{key_hex}'; PRAGMA temp_store=MEMORY;"
     ))
-    .expect("set SQLCipher key");
+    .expect("set the store key");
     conn
 }
 
@@ -192,7 +192,7 @@ fn spawn(path: &PathBuf, stream: &UnixStream) -> std::process::Child {
             .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            // Nobody reads child.stderr in this fixture. SQLCipher diagnostics
+            // Nobody reads child.stderr in this fixture. SQLite diagnostics
             // under a small memlock budget can fill that pipe and deadlock the
             // helper while the parent waits for its protocol response.
             .stderr(Stdio::inherit());
@@ -256,9 +256,9 @@ fn staging_fixture(
         let c = rusqlite::Connection::open(&stage).unwrap();
         let key_hex = key.iter().map(|b| format!("{b:02x}")).collect::<String>();
         c.execute_batch(&format!(
-            "PRAGMA key = \"x'{key_hex}'\"; PRAGMA cipher_memory_security=ON; PRAGMA temp_store=MEMORY;"
+            "PRAGMA cipher = 'chacha20'; PRAGMA key = 'raw:{key_hex}'; PRAGMA temp_store=MEMORY;"
         ))
-            .unwrap();
+        .unwrap();
         if committed {
             c.execute_batch("CREATE TABLE bot_helper_meta (k TEXT PRIMARY KEY, v BLOB NOT NULL); CREATE TABLE bot_state (area INTEGER NOT NULL, key BLOB NOT NULL, revision INTEGER NOT NULL, value BLOB, PRIMARY KEY(area,key)); CREATE TABLE bot_state_receipts (id BLOB PRIMARY KEY, digest BLOB NOT NULL, result BLOB NOT NULL);")
                 .unwrap();

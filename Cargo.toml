@@ -37,10 +37,10 @@ opt-level = "z"
 strip = true
 
 [patch.crates-io]
-# RUSTSEC-2026-0459 (SQLite < 3.54, crafted -wal file): libsqlite3-sys 0.39.1 with only its
-# sqlcipher-src pin moved from =419.0.6 (SQLite 3.53.4) to =420.0.0 (SQLite 3.54.1), so the native
-# SQLCipher store is built on a fixed SQLite (core/vendor/README.md). Remove once
-# upstream libsqlite3-sys ships with sqlcipher-src >= 420.
+# libsqlite3-sys 0.39.1 with a `bundled-sqlite3mc` feature: the native store is SQLite3 Multiple
+# Ciphers 2.6.1 on SQLite 3.54.0 (RUSTSEC-2026-0459 fixed) with its built-in crypto, so no OpenSSL
+# clashes with the BoringSSL in LiveKit's libwebrtc (Task 6b). Also carries the dormant
+# sqlcipher-src =420.0.0 pin. core/vendor/README.md.
 libsqlite3-sys = { path = "core/vendor/libsqlite3-sys" }
 # OpenMLS 0.9.0's published RustCrypto crates still pull crypto-bigint 0.5.5
 # (RUSTSEC-2026-0387). Pin the upstream crypto migration until it is released.

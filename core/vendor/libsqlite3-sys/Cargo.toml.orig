@@ -24,6 +24,8 @@ bundled-sqlcipher-vendored-openssl = [
     "bundled-sqlcipher",
     "openssl-sys/vendored",
 ]
+# DILLA PATCH (core/vendor/README.md): bundled SQLite3 Multiple Ciphers, built-in crypto, no OpenSSL.
+bundled-sqlite3mc = ["bundled", "dep:sqlite3mc-src"]
 buildtime_bindgen = ["bindgen", "pkg-config", "vcpkg"]
 # Use SQLCipher instead of SQLite
 sqlcipher = []
@@ -57,6 +59,8 @@ pkg-config = { version = "0.3.19", optional = true }
 cc = { version = "1.2.27", optional = true }
 # DILLA PATCH (core/vendor/README.md): was =419.0.6 (SQLite 3.53.4); 420.0.0 bundles SQLite 3.54.1.
 sqlcipher-src = { version = "=420.0.0", optional = true }
+# DILLA PATCH (core/vendor/README.md): SQLite3MC 2.6.1 on SQLite 3.54.0, as sqlite-wasm-rs 0.6.3 uses.
+sqlite3mc-src = { version = "=206.1.0", optional = true }
 vcpkg = { version = "0.2.15", optional = true }
 # for loadable_extension:
 prettyplease = { version = "0.3.0", optional = true }
