@@ -103,7 +103,7 @@ impl Desktop {
         let feed = EpochFeed::new();
         let m = media.clone();
         feed.on_epoch(Box::new(move |epoch, key, roster, own| {
-            m.install_epoch(epoch, &key, &roster, own).expect("install");
+            m.install_epoch(epoch, key, &roster, own).expect("install");
         }));
         feed.publish(alice_epoch(alice));
         Desktop {

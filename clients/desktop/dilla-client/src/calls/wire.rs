@@ -178,12 +178,22 @@ pub fn decode_call_started(status: u16, body: &[u8]) -> Result<CallStarted, Rout
 }
 
 /// `ClientCore::call_media_epoch`: `[epoch, base_key(16), own_leaf, [[leaf, device_id, user_id]],
-/// code]`, decoded strictly; the key goes straight into a zeroizing buffer.
+/// code]`, decoded strictly. The key is copied once, from the (caller's zeroizing) body straight
+/// into the zeroizing buffer the answer holds: no temporary array of it is left on the stack, and a
+/// refused body drops that buffer zeroized.
 pub fn decode_media_epoch(body: &[u8]) -> Result<MediaEpoch, String> {
-    decode_strict(body, |d| {
+    let mut base_key = Zeroizing::new([0u8; 16]);
+    let (epoch, own_leaf, roster, code) = decode_strict(body, |d| {
         d.array(5)?;
         let epoch = d.uint()?;
-        let base_key = Zeroizing::new(d.bytes_exact::<16>()?);
+        let key = d.bytes()?;
+        if key.len() != 16 {
+            return Err(dilla_core::cbor::CborError::WrongByteLen {
+                expected: 16,
+                actual: key.len(),
+            });
+        }
+        base_key.copy_from_slice(key);
         let own_leaf = d.uint()?;
         let n = d.array_len()?;
         let mut roster = Vec::with_capacity(n.min(CALL_PARTICIPANTS_MAX));
@@ -193,21 +203,19 @@ pub fn decode_media_epoch(body: &[u8]) -> Result<MediaEpoch, String> {
             roster.push((leaf, d.bytes_exact::<16>()?, d.bytes_exact::<16>()?));
         }
         let code = d.text()?.to_owned();
-        Ok((epoch, base_key, own_leaf, roster, code))
+        Ok((epoch, own_leaf, roster, code))
     })
-    .map_err(|e| format!("E_CBOR_SHAPE: {e:?}"))
-    .and_then(|(epoch, base_key, own_leaf, roster, code)| {
-        let leaf = |l: u64| u16::try_from(l).map_err(|_| "E_CBOR_RANGE: leaf".to_owned());
-        Ok(MediaEpoch {
-            epoch,
-            base_key,
-            own_leaf: leaf(own_leaf)?,
-            roster: roster
-                .into_iter()
-                .map(|(l, d, u)| Ok((leaf(l)?, d, u)))
-                .collect::<Result<_, String>>()?,
-            code,
-        })
+    .map_err(|e| format!("E_CBOR_SHAPE: {e:?}"))?;
+    let leaf = |l: u64| u16::try_from(l).map_err(|_| "E_CBOR_RANGE: leaf".to_owned());
+    Ok(MediaEpoch {
+        epoch,
+        base_key,
+        own_leaf: leaf(own_leaf)?,
+        roster: roster
+            .into_iter()
+            .map(|(l, d, u)| Ok((leaf(l)?, d, u)))
+            .collect::<Result<_, String>>()?,
+        code,
     })
 }
 
