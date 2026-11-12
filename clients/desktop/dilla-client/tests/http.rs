@@ -609,6 +609,9 @@ async fn a_body_that_outgrows_the_cap_while_streaming_stops_being_read() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept");
         read_request(&mut stream);
+        // Once the client stops reading, a write blocks as soon as the socket buffers fill. Linux's buffers hold
+        // the whole stream; Windows's don't, and an unbounded write would hang this thread (and the join) forever.
+        stream.set_write_timeout(Some(Duration::from_secs(2))).expect("write timeout");
         let _ = stream.write_all(
             b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
         );
