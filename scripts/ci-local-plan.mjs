@@ -115,12 +115,13 @@ export const EXTRA_JOBS = {
       // The test host and WASI core dilla-client's real-server tests start (desktop-gpui.yml's "Build the test host" step).
       'cargo build -p dilla-core-wasi --target wasm32-wasip1 --release --locked',
       'go build -o target/dilla-testhost ./cmd/dilla-testhost',
-      'export DILLA_TESTHOST="$PWD/target/dilla-testhost" DILLA_CORE_WASI="$PWD/target/wasm32-wasip1/release/dilla_core_wasi.wasm" DILLA_WASI_CORE="$PWD/target/wasm32-wasip1/release/dilla_core_wasi.wasm"',
+      'export DILLA_TESTHOST="$PWD/target/dilla-testhost" DILLA_CORE_WASI="$PWD/target/wasm32-wasip1/release/dilla_core_wasi.wasm"',
       'cargo build -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity --all-targets --locked',
       'cargo clippy -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity --all-targets --locked -- -D warnings',
       'cargo test -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity --locked',
       'cargo test -p dilla-parity --locked -- --ignored',
       'cargo test -p dilla-client --test gateway --locked -- --ignored',
+      'cargo test -p dilla-client --test sync --locked -- --ignored',
     ],
   },
 };
