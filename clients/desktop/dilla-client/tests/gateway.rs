@@ -7,6 +7,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dilla_client::gateway::frames::{self, Frame, FrameError, Op, Value};
@@ -182,6 +183,22 @@ struct Script {
     max_frame_bytes: u64,
     /// Answer heartbeats on the first connection.
     ack_first: bool,
+    /// After `ready`, push this many presence frames (op 48).
+    push: usize,
+    /// After `ready` (and the push), stop reading the first connection altogether: a peer whose receive window fills.
+    deaf_first: bool,
+}
+
+impl Default for Script {
+    fn default() -> Self {
+        Self {
+            heartbeat_ms: 30_000,
+            max_frame_bytes: 131_584,
+            ack_first: true,
+            push: 0,
+            deaf_first: false,
+        }
+    }
 }
 
 /// What the scripted server saw: one entry per accepted connection, then every frame read on it.
@@ -192,6 +209,8 @@ enum Seen {
         authorization: Option<String>,
     },
     Frame(Vec<u8>),
+    /// The server stopped reading.
+    Deaf,
     Closed,
 }
 
@@ -236,72 +255,94 @@ fn ready_frame(n: u64) -> Vec<u8> {
     .unwrap()
 }
 
+fn presence_frame() -> Vec<u8> {
+    frames::encode(&Frame {
+        op: Op::PRESENCE,
+        n: 0,
+        group_id: None,
+        payload: vec![
+            Value::Bytes(vec![9; 16]),
+            Value::Bytes(vec![8; 16]),
+            Value::Uint(1),
+            Value::Uint(2),
+        ],
+    })
+    .unwrap()
+}
+
 // The upgrade callback's error type is tungstenite's (an HTTP response), not ours.
 #[allow(clippy::result_large_err)]
+async fn serve_ws<S>(stream: S, script: Script, first: bool, tx: mpsc::UnboundedSender<Seen>)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let ack = !first || script.ack_first;
+    let up = tx.clone();
+    let ws =
+        tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, mut resp: Response| {
+            let header = |name: &str| {
+                req.headers()
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned)
+            };
+            let _ = up.send(Seen::Upgrade {
+                protocol: header("sec-websocket-protocol"),
+                authorization: header("authorization"),
+            });
+            resp.headers_mut().insert(
+                "sec-websocket-protocol",
+                HeaderValue::from_static("dilla.v1"),
+            );
+            Ok(resp)
+        })
+        .await;
+    let Ok(mut ws) = ws else { return };
+    ws.send(Message::Binary(hello_frame(script).into()))
+        .await
+        .unwrap();
+    while let Some(Ok(msg)) = ws.next().await {
+        let Message::Binary(bytes) = msg else {
+            continue;
+        };
+        let _ = tx.send(Seen::Frame(bytes.to_vec()));
+        let Ok(f) = frames::decode(&bytes) else {
+            continue;
+        };
+        if f.op == Op::IDENTIFY {
+            let _ = ws.send(Message::Binary(ready_frame(1).into())).await;
+            for _ in 0..script.push {
+                let _ = ws.send(Message::Binary(presence_frame().into())).await;
+            }
+            if first && script.deaf_first {
+                // Never read again: the client's writes fill the receive window and block.
+                let _ = tx.send(Seen::Deaf);
+                std::future::pending::<()>().await;
+            }
+        } else if f.op == Op::HEARTBEAT && ack {
+            let ack = frames::encode(&Frame {
+                op: Op::HEARTBEAT_ACK,
+                n: 0,
+                group_id: None,
+                payload: vec![Value::Uint(1)],
+            })
+            .unwrap();
+            let _ = ws.send(Message::Binary(ack.into())).await;
+        }
+        // Without `ack`, every heartbeat is read and dropped: a server that stops answering.
+    }
+    let _ = tx.send(Seen::Closed);
+}
+
 async fn scripted_server(script: Script) -> (SocketAddr, mpsc::UnboundedReceiver<Seen>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
-        let mut conn = 0u32;
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                return;
-            };
-            conn += 1;
-            let tx = tx.clone();
-            let ack = conn > 1 || script.ack_first;
-            tokio::spawn(async move {
-                let up = tx.clone();
-                let ws = tokio_tungstenite::accept_hdr_async(
-                    stream,
-                    move |req: &Request, mut resp: Response| {
-                        let header = |name: &str| {
-                            req.headers()
-                                .get(name)
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_owned)
-                        };
-                        let _ = up.send(Seen::Upgrade {
-                            protocol: header("sec-websocket-protocol"),
-                            authorization: header("authorization"),
-                        });
-                        resp.headers_mut().insert(
-                            "sec-websocket-protocol",
-                            HeaderValue::from_static("dilla.v1"),
-                        );
-                        Ok(resp)
-                    },
-                )
-                .await;
-                let Ok(mut ws) = ws else { return };
-                ws.send(Message::Binary(hello_frame(script).into()))
-                    .await
-                    .unwrap();
-                while let Some(Ok(msg)) = ws.next().await {
-                    let Message::Binary(bytes) = msg else {
-                        continue;
-                    };
-                    let _ = tx.send(Seen::Frame(bytes.to_vec()));
-                    let Ok(f) = frames::decode(&bytes) else {
-                        continue;
-                    };
-                    if f.op == Op::IDENTIFY {
-                        let _ = ws.send(Message::Binary(ready_frame(1).into())).await;
-                    } else if f.op == Op::HEARTBEAT && ack {
-                        let ack = frames::encode(&Frame {
-                            op: Op::HEARTBEAT_ACK,
-                            n: 0,
-                            group_id: None,
-                            payload: vec![Value::Uint(1)],
-                        })
-                        .unwrap();
-                        let _ = ws.send(Message::Binary(ack.into())).await;
-                    }
-                    // A server that stops answering: it reads and drops every heartbeat after the first ack-less one.
-                }
-                let _ = tx.send(Seen::Closed);
-            });
+        let mut first = true;
+        while let Ok((stream, _)) = listener.accept().await {
+            tokio::spawn(serve_ws(stream, script, first, tx.clone()));
+            first = false;
         }
     });
     (addr, rx)
@@ -320,6 +361,7 @@ async fn heartbeat_timeout_reconnects() {
         heartbeat_ms: 200,
         max_frame_bytes: 131_584,
         ack_first: false,
+        ..Script::default()
     };
     let (addr, mut seen) = scripted_server(script).await;
     let base = url::Url::parse(&format!("http://{addr}")).unwrap();
@@ -406,6 +448,7 @@ async fn oversized_frame_refused() {
         heartbeat_ms: 30_000,
         max_frame_bytes: 128,
         ack_first: true,
+        ..Script::default()
     };
     let (addr, mut seen) = scripted_server(script).await;
     let base = url::Url::parse(&format!("http://{addr}")).unwrap();
@@ -484,6 +527,286 @@ async fn oversized_frame_refused() {
         gw.send(vec![0x84]).await,
         Err(GatewayError::Closed)
     ));
+}
+
+/// Waits for the first `Seen` the predicate accepts.
+async fn wait_seen(
+    seen: &mut mpsc::UnboundedReceiver<Seen>,
+    within: Duration,
+    want: impl Fn(&Seen) -> bool,
+) {
+    tokio::time::timeout(within, async {
+        while let Some(s) = seen.recv().await {
+            if want(&s) {
+                return;
+            }
+        }
+        panic!("the scripted server ended");
+    })
+    .await
+    .expect("the scripted server saw it in time");
+}
+
+fn heartbeats_seen(seen: &mut mpsc::UnboundedReceiver<Seen>) -> usize {
+    let mut beats = 0;
+    while let Ok(s) = seen.try_recv() {
+        if let Seen::Frame(b) = s
+            && b.get(1) == Some(&Op::HEARTBEAT)
+        {
+            beats += 1;
+        }
+    }
+    beats
+}
+
+/// A peer that stops reading while a large write is in flight: the write blocks, the heartbeat behind it is never
+/// answered, and the ack timeout still fires, because no write is awaited on the connection's own loop.
+#[tokio::test]
+async fn blocked_write_still_times_out() {
+    let script = Script {
+        heartbeat_ms: 200,
+        max_frame_bytes: 4 << 20,
+        ack_first: false,
+        deaf_first: true,
+        ..Script::default()
+    };
+    let (addr, mut seen) = scripted_server(script).await;
+    let base = url::Url::parse(&format!("http://{addr}")).unwrap();
+    let ack_timeout = Duration::from_millis(500);
+    let options = GatewayOptions {
+        ack_timeout,
+        ..GatewayOptions::default()
+    };
+    let gw = WsGateway::connect_with(base, AuthToken::new("tok-deaf".into()), options);
+    let mut events = gw.events();
+    let GatewayEvent::Connected { .. } = next_event(&mut events, Duration::from_secs(5)).await
+    else {
+        panic!("expected Connected");
+    };
+    wait_seen(&mut seen, Duration::from_secs(5), |s| {
+        matches!(s, Seen::Deaf)
+    })
+    .await;
+
+    // 32 MiB of frames, far past the socket buffers of a peer that does not read.
+    let big = frames::encode(&Frame {
+        op: 99,
+        n: 0,
+        group_id: None,
+        payload: vec![Value::Bytes(vec![0; (4 << 20) - 16])],
+    })
+    .unwrap();
+    let t0 = Instant::now();
+    for _ in 0..8 {
+        let sent = tokio::time::timeout(Duration::from_secs(1), gw.send(big.clone())).await;
+        assert!(sent.is_ok(), "send() must not wait on the socket");
+    }
+    let GatewayEvent::Disconnected { reason } =
+        next_event(&mut events, Duration::from_secs(5)).await
+    else {
+        panic!("expected Disconnected");
+    };
+    assert_eq!(reason, DisconnectReason::Network);
+    // One heartbeat interval (100 ms) plus the ack timeout, plus margin.
+    let took = t0.elapsed();
+    assert!(
+        took < ack_timeout + Duration::from_millis(1_500),
+        "noticed after {took:?}"
+    );
+    gw.stop();
+}
+
+/// A consumer that does not drain a full event channel: heartbeats go on while the gateway waits, and a consumer more
+/// than the ack timeout behind gets the documented teardown (`Disconnected { Network }`, then a reconnect).
+#[tokio::test]
+async fn full_event_channel_keeps_heartbeats() {
+    let script = Script {
+        heartbeat_ms: 100,
+        push: 50,
+        ..Script::default()
+    };
+    let (addr, mut seen) = scripted_server(script).await;
+    let base = url::Url::parse(&format!("http://{addr}")).unwrap();
+    let options = GatewayOptions {
+        ack_timeout: Duration::from_millis(1_000),
+        event_capacity: 2,
+        ..GatewayOptions::default()
+    };
+    let gw = WsGateway::connect_with(base, AuthToken::new("tok-slow".into()), options);
+    let mut events = gw.events();
+
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    // A beat every 50 ms (heartbeat_ms / 2) while the channel is full.
+    let beats = heartbeats_seen(&mut seen);
+    assert!(
+        beats >= 5,
+        "only {beats} heartbeats while the event channel was full"
+    );
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let mut log = Vec::new();
+    let found = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(e) = events.recv().await {
+            let done = matches!(
+                e,
+                GatewayEvent::Disconnected {
+                    reason: DisconnectReason::Network
+                }
+            );
+            log.push(e);
+            if done {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(
+        found.is_ok(),
+        "no Disconnected{{Network}} after the stall: {log:?}"
+    );
+    assert!(
+        matches!(log.first(), Some(GatewayEvent::Connected { .. })),
+        "{log:?}"
+    );
+    gw.stop();
+}
+
+/// `stop()` is honoured while the gateway waits on a consumer that never drains its events.
+#[tokio::test]
+async fn stop_is_prompt_with_a_full_event_channel() {
+    let script = Script {
+        push: 20,
+        ..Script::default()
+    };
+    let (addr, mut seen) = scripted_server(script).await;
+    let base = url::Url::parse(&format!("http://{addr}")).unwrap();
+    let options = GatewayOptions {
+        event_capacity: 1,
+        ..GatewayOptions::default()
+    };
+    let gw = WsGateway::connect_with(base, AuthToken::new("tok-stuck".into()), options);
+    let _events = gw.events();
+    wait_seen(
+        &mut seen,
+        Duration::from_secs(5),
+        |s| matches!(s, Seen::Frame(b) if b.get(1) == Some(&Op::IDENTIFY)),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    gw.stop();
+    wait_seen(&mut seen, Duration::from_secs(2), |s| {
+        matches!(s, Seen::Closed)
+    })
+    .await;
+    let t0 = Instant::now();
+    while !matches!(gw.send(vec![0x84]).await, Err(GatewayError::Closed)) {
+        assert!(
+            t0.elapsed() < Duration::from_secs(1),
+            "the driver did not end"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// wss end to end against a local TLS server, through the gateway's own rustls configuration (its explicit aws-lc-rs
+/// provider, never the process default). `tests/fixtures/tls/` holds a throwaway test CA (`ca.der`, its key discarded)
+/// and a leaf for IP 127.0.0.1 and `localhost` (`server.der`, PKCS#8 `server.key.der`), valid for 100 years, made with
+/// `openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256` and `openssl x509 -req`.
+#[tokio::test]
+async fn wss_connects_with_the_explicit_provider() {
+    use tokio_rustls::rustls;
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls");
+    let read = |name: &str| std::fs::read(fixtures.join(name)).unwrap();
+    let ca = rustls::pki_types::CertificateDer::from(read("ca.der"));
+    let leaf = rustls::pki_types::CertificateDer::from(read("server.der"));
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(read("server.key.der").into());
+    let server = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(vec![leaf], key)
+    .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, mut seen) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            let (acceptor, tx) = (acceptor.clone(), tx.clone());
+            tokio::spawn(async move {
+                if let Ok(tls) = acceptor.accept(tcp).await {
+                    serve_ws(tls, Script::default(), true, tx).await;
+                }
+            });
+        }
+    });
+
+    let base = url::Url::parse(&format!("https://127.0.0.1:{}", addr.port())).unwrap();
+    let options = GatewayOptions {
+        extra_roots: vec![ca],
+        ..GatewayOptions::default()
+    };
+    let gw = WsGateway::connect_with(base, AuthToken::new("tok-tls".into()), options);
+    let mut events = gw.events();
+    let event = next_event(&mut events, Duration::from_secs(10)).await;
+    let GatewayEvent::Connected { session } = event else {
+        panic!("expected Connected over wss, got {event:?}");
+    };
+    assert_eq!(ReadyInfo::from_frame(&session).unwrap().wire, 6);
+    let Some(Seen::Upgrade { authorization, .. }) = seen.recv().await else {
+        panic!("upgrade")
+    };
+    assert_eq!(authorization.as_deref(), Some("Bearer tok-tls"));
+    gw.stop();
+}
+
+/// The same server without the test CA among the roots: the handshake fails and the gateway never connects.
+#[tokio::test]
+async fn wss_refuses_an_unknown_ca() {
+    use tokio_rustls::rustls;
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls");
+    let read = |name: &str| std::fs::read(fixtures.join(name)).unwrap();
+    let leaf = rustls::pki_types::CertificateDer::from(read("server.der"));
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(read("server.key.der").into());
+    let server = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(vec![leaf], key)
+    .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, mut seen) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            let (acceptor, tx) = (acceptor.clone(), tx.clone());
+            tokio::spawn(async move {
+                if let Ok(tls) = acceptor.accept(tcp).await {
+                    serve_ws(tls, Script::default(), true, tx).await;
+                }
+            });
+        }
+    });
+    let base = url::Url::parse(&format!("https://127.0.0.1:{}", addr.port())).unwrap();
+    let gw = WsGateway::connect(base, AuthToken::new("tok-tls".into()));
+    let mut events = gw.events();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1_500), events.recv())
+            .await
+            .is_err(),
+        "no event without trust"
+    );
+    assert!(
+        seen.try_recv().is_err(),
+        "the upgrade never reached the server"
+    );
+    gw.stop();
 }
 
 // ---------------------------------------------------------------------------------------------------------------

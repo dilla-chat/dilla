@@ -55,6 +55,7 @@ pub trait Http: Send + Sync {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum GatewayError {
     #[error("the gateway connection is closed")]
     Closed,

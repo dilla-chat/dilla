@@ -14,8 +14,11 @@
 //!   the voice, ring, structure, away and app-build notices, the Bot frames 61-63) and the socket responses (op 60).
 //! - `Disconnected { reason }`: a ready connection ended (`Network` when this client tore it down or the transport
 //!   failed, `Server(code)` when the instance closed it with a code), or a refusal that stops the gateway for good
-//!   (`Server(4004)` revoked, `Server(4003)` unauthenticated, `Server(4006)` versions, `Server(401)` at the upgrade:
-//!   see [`WsGateway::refusal`]), or `Shutdown` after [`WsGateway::stop`].
+//!   (`Server(4004)` revoked, `Server(4003)` unauthenticated or second factor owed, `Server(4006)` versions,
+//!   `Server(401)` at the upgrade: see [`WsGateway::refusal`]), or `Shutdown` after [`WsGateway::stop`] (best effort).
+//!
+//! Every write goes through a per-connection writer task, so a peer that stops reading never holds the heartbeat and
+//! ack timers, the reads or `stop()`. wss uses rustls with an explicit aws-lc-rs provider and the platform's roots.
 
 pub mod frames;
 pub mod reconnect;
@@ -66,6 +69,9 @@ pub const MEDIA_PREFERENCE: &[u64] = &[1];
 /// gateway.ts `DEFAULT_MAX_FRAME_BYTES`: the bound on frames read before a hello names its own.
 pub const DEFAULT_MAX_FRAME_BYTES: usize = 131_584;
 const UPGRADE_REQUIRED: &str = "E_UPGRADE_REQUIRED";
+/// The reason of the instance's 4003 close for a session whose account owes a second factor
+/// (internal/gateway/heartbeat.go).
+const SECOND_FACTOR_REQUIRED: &str = "second factor required";
 
 /// gateway.ts `CLIENT_CLOSE`: the codes this client closes a socket with (4100-4199 are the client's own).
 pub struct ClientClose;
@@ -92,8 +98,11 @@ pub struct GatewayOptions {
     pub ack_timeout: Duration,
     /// Each handshake step (upgrade, hello, ready) must finish within this (4100).
     pub hello_timeout: Duration,
-    /// The events channel's capacity. A consumer that stops draining it stalls the socket.
+    /// The events channel's capacity. While it is full the connection keeps its heartbeats and `stop()`, but a
+    /// consumer that leaves an event untaken for `ack_timeout` gets a reconnect (`Disconnected { Network }`).
     pub event_capacity: usize,
+    /// Roots trusted for wss beside the platform's own (a self-hosted instance's private CA; tests).
+    pub extra_roots: Vec<rustls::pki_types::CertificateDer<'static>>,
 }
 
 impl Default for GatewayOptions {
@@ -103,6 +112,7 @@ impl Default for GatewayOptions {
             ack_timeout: Duration::from_millis(10_000),
             hello_timeout: Duration::from_millis(15_000),
             event_capacity: 1024,
+            extra_roots: Vec::new(),
         }
     }
 }
@@ -110,8 +120,11 @@ impl Default for GatewayOptions {
 /// Why a gateway stopped for good. The app acts on it: sign in again, or ask its user (or the operator) to update.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// The session was revoked (close 4004), is not accepted (close 4003), or the upgrade answered 401.
+    /// The session was revoked (close 4004), is not accepted (close 4003), or the upgrade answered 401: sign in again.
     Revoked,
+    /// The account owes a second factor (close 4003, "second factor required"): the session stands, the app asks for
+    /// the factor (protocol/09 § Second factors), then connects again.
+    SecondFactorRequired,
     /// The instance speaks only wires newer than this client's (or named E_UPGRADE_REQUIRED): this client must update.
     UpgradeRequired,
     /// The instance offers only wires older than this client's: the instance must update.
@@ -286,7 +299,7 @@ fn older_than_all(offered: &[u64], preference: &[u64]) -> bool {
 
 /// The ready connection's writer, as `send` sees it.
 struct Link {
-    tx: mpsc::UnboundedSender<Vec<u8>>,
+    tx: mpsc::UnboundedSender<Message>,
     max_frame_bytes: usize,
 }
 
@@ -327,6 +340,7 @@ impl WsGateway {
             shared: shared.clone(),
             events: events_tx,
             stop: stop_rx,
+            tls: None,
         };
         tokio::spawn(driver.run());
         WsGateway {
@@ -379,7 +393,9 @@ impl Gateway for WsGateway {
                 max,
             });
         }
-        link.tx.send(frame).map_err(|_| GatewayError::Closed)
+        link.tx
+            .send(Message::Binary(frame.into()))
+            .map_err(|_| GatewayError::Closed)
     }
 
     /// The event stream. There is one: a second call answers a receiver that is already closed.
@@ -428,6 +444,8 @@ struct Driver {
     shared: Arc<Shared>,
     events: mpsc::Sender<GatewayEvent>,
     stop: watch::Receiver<bool>,
+    /// The wss client configuration, built once on the first wss attempt.
+    tls: Option<Arc<rustls::ClientConfig>>,
 }
 
 impl Driver {
@@ -437,41 +455,47 @@ impl Driver {
             let mut was_ready = false;
             let end = self.attempt(&mut backoff, &mut was_ready).await;
             *lock(&self.shared.link) = None;
+            let mut stop = self.stop.clone();
             match end {
                 End::Stop => {
+                    // Best effort: a consumer that does not drain its events must not keep a stopped driver alive.
                     if was_ready {
-                        self.emit(GatewayEvent::Disconnected {
+                        let _ = self.events.try_send(GatewayEvent::Disconnected {
                             reason: DisconnectReason::Shutdown,
-                        })
-                        .await;
+                        });
                     }
                     return;
                 }
                 End::Refused { refusal, code } => {
                     *lock(&self.shared.refusal) = Some(refusal);
-                    self.emit(GatewayEvent::Disconnected {
+                    let event = GatewayEvent::Disconnected {
                         reason: DisconnectReason::Server(code),
-                    })
-                    .await;
+                    };
+                    tokio::select! {
+                        biased;
+                        () = stopped(&mut stop) => {}
+                        _ = self.events.send(event) => {}
+                    }
                     return;
                 }
                 End::Retry(reason) => {
+                    let wake = Instant::now() + backoff.next_delay(reconnect::jitter());
                     if was_ready {
-                        self.emit(GatewayEvent::Disconnected { reason }).await;
+                        // No socket is open while this waits on the consumer; only stop() has to win over it.
+                        tokio::select! {
+                            biased;
+                            () = stopped(&mut stop) => return,
+                            _ = self.events.send(GatewayEvent::Disconnected { reason }) => {}
+                        }
                     }
-                    let delay = backoff.next_delay(reconnect::jitter());
                     tokio::select! {
-                        () = tokio::time::sleep(delay) => {}
-                        () = stopped(&mut self.stop) => return,
+                        biased;
+                        () = stopped(&mut stop) => return,
+                        () = tokio::time::sleep_until(wake) => {}
                     }
                 }
             }
         }
-    }
-
-    async fn emit(&self, event: GatewayEvent) {
-        // A dropped receiver only means nobody listens; the connection's lifecycle goes on regardless.
-        let _ = self.events.send(event).await;
     }
 
     fn request(&self) -> Result<tungstenite::handshake::client::Request, tungstenite::Error> {
@@ -488,6 +512,29 @@ impl Driver {
         Ok(req)
     }
 
+    /// The wss configuration with an explicit aws-lc-rs provider, never the process default: a binary that also
+    /// links ring (LiveKit) has no single default, and `ClientConfig::builder()` would panic on the first wss connect.
+    fn tls(&mut self) -> Result<Arc<rustls::ClientConfig>, rustls::Error> {
+        if let Some(config) = &self.tls {
+            return Ok(config.clone());
+        }
+        let mut roots = rustls::RootCertStore::empty();
+        // A certificate the platform store holds but rustls cannot parse is skipped, as browsers skip it.
+        let (_added, _skipped) =
+            roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+        for cert in &self.options.extra_roots {
+            roots.add(cert.clone())?;
+        }
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let config = Arc::new(config);
+        self.tls = Some(config.clone());
+        Ok(config)
+    }
+
     async fn attempt(&mut self, backoff: &mut Backoff, was_ready: &mut bool) -> End {
         if *self.stop.borrow() {
             return End::Stop;
@@ -495,15 +542,28 @@ impl Driver {
         let Ok(request) = self.request() else {
             return End::Retry(DisconnectReason::Network);
         };
+        let connector = if self.url.scheme() == "wss" {
+            match self.tls() {
+                Ok(config) => Some(tokio_tungstenite::Connector::Rustls(config)),
+                Err(_) => return End::Retry(DisconnectReason::Network),
+            }
+        } else {
+            None
+        };
         // The socket reads every frame up to the request frame cap; the hello's own bound is applied per frame below,
         // so an oversized frame is a 4109 close, as in gateway.ts, not a library error.
         let config = WebSocketConfig::default()
             .max_message_size(Some(frames::MAX_RESPONSE_FRAME + 1))
             .max_frame_size(Some(frames::MAX_RESPONSE_FRAME + 1));
-        let connecting =
-            tokio_tungstenite::connect_async_tls_with_config(request, Some(config), true, None);
+        let connecting = tokio_tungstenite::connect_async_tls_with_config(
+            request,
+            Some(config),
+            true,
+            connector,
+        );
+        let mut stop = self.stop.clone();
         let ws = tokio::select! {
-            () = stopped(&mut self.stop) => return End::Stop,
+            () = stopped(&mut stop) => return End::Stop,
             r = tokio::time::timeout(self.options.hello_timeout, connecting) => match r {
                 Ok(Ok((ws, _))) => ws,
                 Ok(Err(tungstenite::Error::Http(resp))) if resp.status() == 401 => {
@@ -513,9 +573,10 @@ impl Driver {
             },
         };
         let (sink, stream) = ws.split();
-        let (out_tx, out_rx) = mpsc::unbounded_channel();
+        let (out, out_rx) = mpsc::unbounded_channel();
+        let writer = tokio::spawn(write_loop(sink, out_rx));
         let mut conn = Conn {
-            sink,
+            out,
             phase: Phase::Hello,
             hello: None,
             selected: (0, 0, 0),
@@ -524,18 +585,45 @@ impl Driver {
             handshake_by: Instant::now() + self.options.hello_timeout,
             beat_at: None,
             ack_by: None,
-            out_tx,
         };
-        conn.run(self, stream, out_rx, backoff, was_ready).await
+        let end = conn.run(self, stream, stop, backoff, was_ready).await;
+        // The writer ends once it has written what was queued, the close last. A peer that no longer reads must not
+        // keep the socket: after a second the writer is aborted, which drops the socket.
+        drop(conn);
+        tokio::spawn(async move {
+            let abort = writer.abort_handle();
+            if tokio::time::timeout(Duration::from_secs(1), writer)
+                .await
+                .is_err()
+            {
+                abort.abort();
+            }
+        });
+        end
     }
 }
 
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// Every write of a connection, in order, on its own task: a write blocked on a peer that stops reading never holds
+/// the connection's timers, its reads or `stop()`.
+async fn write_loop(
+    mut sink: futures_util::stream::SplitSink<WsStream, Message>,
+    mut queue: mpsc::UnboundedReceiver<Message>,
+) {
+    while let Some(message) = queue.recv().await {
+        let last = matches!(message, Message::Close(_));
+        if sink.send(message).await.is_err() || last {
+            return;
+        }
+    }
+}
+
 /// One socket's state: gateway.ts's per-attempt fields.
 struct Conn {
-    sink: futures_util::stream::SplitSink<WsStream, Message>,
+    /// The writer task's queue.
+    out: mpsc::UnboundedSender<Message>,
     phase: Phase,
     hello: Option<HelloInfo>,
     selected: (u64, u64, u64),
@@ -544,7 +632,6 @@ struct Conn {
     handshake_by: Instant,
     beat_at: Option<Instant>,
     ack_by: Option<Instant>,
-    out_tx: mpsc::UnboundedSender<Vec<u8>>,
 }
 
 enum Flow {
@@ -569,33 +656,29 @@ impl Conn {
         &mut self,
         d: &Driver,
         mut stream: futures_util::stream::SplitStream<WsStream>,
-        mut out_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+        mut stop: watch::Receiver<bool>,
         backoff: &mut Backoff,
         was_ready: &mut bool,
     ) -> End {
-        let mut stop = d.stop.clone();
         loop {
             let handshake = (self.phase != Phase::Ready).then_some(self.handshake_by);
             let flow = tokio::select! {
                 biased;
-                () = stopped(&mut stop) => {
-                    self.close(ClientClose::NORMAL, "").await;
-                    Flow::End(End::Stop)
-                }
-                () = until(handshake) => self.teardown(ClientClose::HELLO_TIMEOUT).await,
-                () = until(self.ack_by) => self.teardown(ClientClose::HEARTBEAT_TIMEOUT).await,
-                () = until(self.beat_at) => self.beat(&d.options).await,
-                Some(bytes) = out_rx.recv() => match self.sink.send(Message::Binary(bytes.into())).await {
-                    Ok(()) => Flow::Continue,
-                    Err(_) => Flow::End(End::Retry(DisconnectReason::Network)),
-                },
+                () = stopped(&mut stop) => self.close_with(ClientClose::NORMAL, End::Stop),
+                () = until(self.beat_at) => self.beat(&d.options),
+                // Inbound before the deadlines: an ack (or a ready) already on the socket wins over a deadline that
+                // expired while it waited, so a stall elsewhere never turns into a spurious 4101 or 4100.
                 msg = stream.next() => match msg {
                     None | Some(Err(_)) => Flow::End(End::Retry(DisconnectReason::Network)),
                     Some(Ok(Message::Close(frame))) => Flow::End(self.on_close(frame)),
-                    Some(Ok(Message::Binary(bytes))) => self.on_binary(d, &bytes, backoff, was_ready).await,
-                    Some(Ok(Message::Text(_))) => self.teardown(ClientClose::UNDECODABLE).await,
+                    Some(Ok(Message::Binary(bytes))) => {
+                        self.on_binary(d, &mut stop, &bytes, backoff, was_ready).await
+                    }
+                    Some(Ok(Message::Text(_))) => self.teardown(ClientClose::UNDECODABLE),
                     Some(Ok(_)) => Flow::Continue,
                 },
+                () = until(handshake) => self.teardown(ClientClose::HELLO_TIMEOUT),
+                () = until(self.ack_by) => self.teardown(ClientClose::HEARTBEAT_TIMEOUT),
             };
             if let Flow::End(end) = flow {
                 return end;
@@ -603,42 +686,39 @@ impl Conn {
         }
     }
 
-    /// Sends a close frame, bounded: a peer that no longer reads must not hold the reconnect.
-    async fn close(&mut self, code: u16, reason: &str) {
+    /// Queues a message for the writer; false when the writer is gone (its socket failed).
+    fn queue(&self, message: Message) -> bool {
+        self.out.send(message).is_ok()
+    }
+
+    /// Queues the close frame and ends the attempt with `end`. The writer sends it after what was already queued.
+    fn close_with(&mut self, code: u16, end: End) -> Flow {
         let frame = CloseFrame {
             code: CloseCode::from(code),
-            reason: reason.to_owned().into(),
+            reason: "".into(),
         };
-        let _ = tokio::time::timeout(
-            Duration::from_secs(1),
-            self.sink.send(Message::Close(Some(frame))),
-        )
-        .await;
+        let _ = self.queue(Message::Close(Some(frame)));
+        Flow::End(end)
     }
 
     /// gateway.ts `teardown(code, true)`: close with the client's code, then reconnect after the backoff.
-    async fn teardown(&mut self, code: u16) -> Flow {
-        self.close(code, "").await;
-        Flow::End(End::Retry(DisconnectReason::Network))
+    fn teardown(&mut self, code: u16) -> Flow {
+        self.close_with(code, End::Retry(DisconnectReason::Network))
     }
 
-    async fn write(&mut self, frame: &frames::Frame) -> Result<(), ()> {
-        let bytes = frames::encode(frame).map_err(|_| ())?;
-        self.sink
-            .send(Message::Binary(bytes.into()))
-            .await
-            .map_err(|_| ())
+    fn write(&self, frame: &frames::Frame) -> bool {
+        frames::encode(frame).is_ok_and(|bytes| self.queue(Message::Binary(bytes.into())))
     }
 
     /// gateway.ts `scheduleBeat`: `[last_n, 0]`, n = 0; the first beat without an ack arms the ack timeout.
-    async fn beat(&mut self, options: &GatewayOptions) -> Flow {
+    fn beat(&mut self, options: &GatewayOptions) -> Flow {
         let beat = frames::Frame {
             op: Op::HEARTBEAT,
             n: 0,
             group_id: None,
             payload: vec![Value::Uint(self.last_n), Value::Uint(0)],
         };
-        if self.write(&beat).await.is_err() {
+        if !self.write(&beat) {
             return Flow::End(End::Retry(DisconnectReason::Network));
         }
         let now = Instant::now();
@@ -655,15 +735,50 @@ impl Conn {
             .max(Duration::from_millis(1))
     }
 
-    /// gateway.ts `onClose`: 4004 is a revocation and 4006 a version refusal, both final; 4003 is final too, since
-    /// this client's credential is the session itself (gateway.ts would re-mint a ticket, get 401 and stop the same
-    /// way). Any other close reconnects.
+    /// Hands one event to the consumer. While the channel is full the heartbeats go on and `stop()` still wins; a
+    /// consumer that has not taken the event within the ack timeout gets a teardown (close 1000, `Disconnected
+    /// { Network }`, reconnect) instead of a socket the instance would time out anyway.
+    async fn deliver(
+        &mut self,
+        d: &Driver,
+        stop: &mut watch::Receiver<bool>,
+        event: GatewayEvent,
+    ) -> Flow {
+        let stall = Instant::now() + d.options.ack_timeout;
+        let send = d.events.send(event);
+        tokio::pin!(send);
+        loop {
+            tokio::select! {
+                biased;
+                () = stopped(stop) => return self.close_with(ClientClose::NORMAL, End::Stop),
+                // A dropped receiver only means nobody listens; the lifecycle goes on regardless.
+                _ = &mut send => return Flow::Continue,
+                () = until(self.beat_at) => {
+                    if let Flow::End(end) = self.beat(&d.options) {
+                        return Flow::End(end);
+                    }
+                }
+                () = tokio::time::sleep_until(stall) => return self.teardown(ClientClose::NORMAL),
+            }
+        }
+    }
+
+    /// gateway.ts `onClose`: 4004 is a revocation and 4006 a version refusal, both final. 4003 is final too, since this
+    /// client's credential is the session itself (gateway.ts would re-mint a ticket, get 401 and stop the same way);
+    /// with the reason "second factor required" (the instance's liveness sweep, internal/gateway/heartbeat.go) it means
+    /// the account owes a second factor, not a new sign-in. Any other close reconnects.
     fn on_close(&self, frame: Option<CloseFrame>) -> End {
         let Some(frame) = frame else {
             return End::Retry(DisconnectReason::Network);
         };
         let code = u16::from(frame.code);
         match code {
+            CLOSE_UNAUTHENTICATED if frame.reason.as_str() == SECOND_FACTOR_REQUIRED => {
+                End::Refused {
+                    refusal: Refusal::SecondFactorRequired,
+                    code,
+                }
+            }
             CLOSE_REVOKED | CLOSE_UNAUTHENTICATED => End::Refused {
                 refusal: Refusal::Revoked,
                 code,
@@ -685,6 +800,7 @@ impl Conn {
     async fn on_binary(
         &mut self,
         d: &Driver,
+        stop: &mut watch::Receiver<bool>,
         bytes: &[u8],
         backoff: &mut Backoff,
         was_ready: &mut bool,
@@ -699,14 +815,15 @@ impl Conn {
             })
         };
         if bytes.len() > bound {
-            return self.teardown(ClientClose::TOO_LARGE).await;
+            return self.teardown(ClientClose::TOO_LARGE);
         }
         if response {
             if frames::decode_response(bytes).is_err() {
-                return self.teardown(ClientClose::UNDECODABLE).await;
+                return self.teardown(ClientClose::UNDECODABLE);
             }
-            d.emit(GatewayEvent::Frame(bytes.to_vec())).await;
-            return Flow::Continue;
+            return self
+                .deliver(d, stop, GatewayEvent::Frame(bytes.to_vec()))
+                .await;
         }
         let frame = match frames::decode(bytes) {
             Ok(f) => f,
@@ -719,14 +836,17 @@ impl Conn {
             {
                 return Flow::Continue;
             }
-            Err(_) => return self.teardown(ClientClose::UNDECODABLE).await,
+            Err(_) => return self.teardown(ClientClose::UNDECODABLE),
         };
         self.last_n = self.last_n.max(frame.n);
         match self.phase {
-            Phase::Hello => self.on_hello(d, &frame).await,
+            Phase::Hello => self.on_hello(d, &frame),
             Phase::ReadyWait => match frame.op {
-                Op::READY => self.on_ready(d, bytes, &frame, backoff, was_ready).await,
-                Op::INVALID_SESSION | Op::RECONNECT => self.reconnect_frame(&frame, backoff).await,
+                Op::READY => {
+                    self.on_ready(d, stop, bytes, &frame, backoff, was_ready)
+                        .await
+                }
+                Op::INVALID_SESSION | Op::RECONNECT => self.reconnect_frame(&frame, backoff),
                 Op::ERROR => {
                     if frame.payload.get(1).and_then(Value::as_text) == Some(UPGRADE_REQUIRED) {
                         self.refused_upgrade = true;
@@ -750,31 +870,30 @@ impl Conn {
                 | Op::BOT_CATALOG
                 | Op::BOT_REPLY
                 | Op::BOT_STATE_CHANGED => {
-                    d.emit(GatewayEvent::Frame(bytes.to_vec())).await;
-                    Flow::Continue
+                    self.deliver(d, stop, GatewayEvent::Frame(bytes.to_vec()))
+                        .await
                 }
                 Op::APP_BUILD if self.selected.0 >= 5 => {
-                    d.emit(GatewayEvent::Frame(bytes.to_vec())).await;
-                    Flow::Continue
+                    self.deliver(d, stop, GatewayEvent::Frame(bytes.to_vec()))
+                        .await
                 }
-                Op::INVALID_SESSION | Op::RECONNECT => self.reconnect_frame(&frame, backoff).await,
+                Op::INVALID_SESSION | Op::RECONNECT => self.reconnect_frame(&frame, backoff),
                 _ => Flow::Continue,
             },
         }
     }
 
-    async fn on_hello(&mut self, d: &Driver, frame: &frames::Frame) -> Flow {
+    fn on_hello(&mut self, d: &Driver, frame: &frames::Frame) -> Flow {
         if frame.op != Op::HELLO {
-            return self.teardown(ClientClose::UNDECODABLE).await;
+            return self.teardown(ClientClose::UNDECODABLE);
         }
         let Ok(hello) = HelloInfo::from_payload(&frame.payload) else {
-            return self.teardown(ClientClose::UNDECODABLE).await;
+            return self.teardown(ClientClose::UNDECODABLE);
         };
         let wire = highest_common(&hello.wire_versions, WIRE_PREFERENCE);
         let e2ee = highest_common(&hello.e2ee_versions, E2EE_PREFERENCE);
         let media = highest_common(&hello.media_versions, MEDIA_PREFERENCE);
         let (Some(wire), Some(e2ee), Some(media)) = (wire, e2ee, media) else {
-            self.close(ClientClose::VERSION, "").await;
             let refusal = if wire.is_none() && newer_than_all(&hello.wire_versions, WIRE_PREFERENCE)
             {
                 Refusal::UpgradeRequired
@@ -783,10 +902,13 @@ impl Conn {
             } else {
                 Refusal::VersionUnsupported
             };
-            return Flow::End(End::Refused {
-                refusal,
-                code: ClientClose::VERSION,
-            });
+            return self.close_with(
+                ClientClose::VERSION,
+                End::Refused {
+                    refusal,
+                    code: ClientClose::VERSION,
+                },
+            );
         };
         self.selected = (wire, e2ee, media);
         self.hello = Some(hello);
@@ -802,7 +924,7 @@ impl Conn {
                 Value::Uint(0),
             ],
         };
-        if self.write(&identify).await.is_err() {
+        if !self.write(&identify) {
             return Flow::End(End::Retry(DisconnectReason::Network));
         }
         self.phase = Phase::ReadyWait;
@@ -813,6 +935,7 @@ impl Conn {
     async fn on_ready(
         &mut self,
         d: &Driver,
+        stop: &mut watch::Receiver<bool>,
         bytes: &[u8],
         frame: &frames::Frame,
         backoff: &mut Backoff,
@@ -822,33 +945,36 @@ impl Conn {
         let echoes = ReadyInfo::from_payload(frame.n, &frame.payload)
             .is_ok_and(|info| (info.wire, info.e2ee, info.media) == self.selected);
         let (true, Some(hello)) = (echoes, self.hello.clone()) else {
-            return self.teardown(ClientClose::UNDECODABLE).await;
+            return self.teardown(ClientClose::UNDECODABLE);
         };
         backoff.ready();
         self.phase = Phase::Ready;
         *was_ready = true;
         let max_frame_bytes = usize::try_from(hello.max_frame_bytes).unwrap_or(usize::MAX);
         *lock(&d.shared.link) = Some(Link {
-            tx: self.out_tx.clone(),
+            tx: self.out.clone(),
             max_frame_bytes,
         });
         *lock(&d.shared.hello) = Some(hello);
-        d.emit(GatewayEvent::Connected {
-            session: bytes.to_vec(),
-        })
-        .await;
         self.beat_at = Some(Instant::now() + self.beat_interval(&d.options));
-        Flow::Continue
+        self.deliver(
+            d,
+            stop,
+            GatewayEvent::Connected {
+                session: bytes.to_vec(),
+            },
+        )
+        .await
     }
 
     /// gateway.ts `reconnectFrame`: `reconnect` names its own wait, `invalid_session` none; close normally, reconnect.
-    async fn reconnect_frame(&mut self, frame: &frames::Frame, backoff: &mut Backoff) -> Flow {
+    fn reconnect_frame(&mut self, frame: &frames::Frame, backoff: &mut Backoff) -> Flow {
         let after = match frame.op {
             Op::RECONNECT => frame.payload.get(1).and_then(|v| u53(v).ok()).unwrap_or(0),
             _ => 0,
         };
         backoff.set_after(after);
-        self.teardown(ClientClose::NORMAL).await
+        self.teardown(ClientClose::NORMAL)
     }
 }
 
@@ -864,6 +990,72 @@ mod tests {
         assert!(!newer_than_all(&[], WIRE_PREFERENCE));
         assert!(older_than_all(&[4, 5], WIRE_PREFERENCE));
         assert!(!older_than_all(&[5, 7], WIRE_PREFERENCE));
+    }
+
+    #[test]
+    fn closes_map_to_refusals() {
+        let (out, _queue) = mpsc::unbounded_channel();
+        let conn = Conn {
+            out,
+            phase: Phase::Ready,
+            hello: None,
+            selected: (6, 1, 1),
+            last_n: 0,
+            refused_upgrade: false,
+            handshake_by: Instant::now(),
+            beat_at: None,
+            ack_by: None,
+        };
+        let close = |code: u16, reason: &str| {
+            conn.on_close(Some(CloseFrame {
+                code: CloseCode::from(code),
+                reason: reason.to_owned().into(),
+            }))
+        };
+        // internal/gateway/heartbeat.go: the liveness sweep's close for an account that owes a second factor.
+        assert!(matches!(
+            close(4003, "second factor required"),
+            End::Refused {
+                refusal: Refusal::SecondFactorRequired,
+                code: 4003
+            }
+        ));
+        assert!(matches!(
+            close(4003, ""),
+            End::Refused {
+                refusal: Refusal::Revoked,
+                code: 4003
+            }
+        ));
+        assert!(matches!(
+            close(4004, "revoked"),
+            End::Refused {
+                refusal: Refusal::Revoked,
+                code: 4004
+            }
+        ));
+        assert!(matches!(
+            close(4006, "E_UPGRADE_REQUIRED"),
+            End::Refused {
+                refusal: Refusal::UpgradeRequired,
+                code: 4006
+            }
+        ));
+        assert!(matches!(
+            close(4006, "E_VERSION"),
+            End::Refused {
+                refusal: Refusal::VersionUnsupported,
+                ..
+            }
+        ));
+        assert!(matches!(
+            close(4010, "going away"),
+            End::Retry(DisconnectReason::Server(4010))
+        ));
+        assert!(matches!(
+            conn.on_close(None),
+            End::Retry(DisconnectReason::Network)
+        ));
     }
 
     #[test]

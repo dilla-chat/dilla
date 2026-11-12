@@ -270,6 +270,7 @@ pub fn encode(frame: &Frame) -> Result<Vec<u8>, FrameError> {
 /// frames.ts `decodeFrame`: the envelope, the arity and grouping of every known op, and the per-op checks of the ops
 /// this client acts on. An unknown op is accepted with any payload.
 pub fn decode(bytes: &[u8]) -> Result<Frame, FrameError> {
+    arity_precheck(bytes)?;
     let Value::Array(mut parts) = Value::decode(bytes)? else {
         return Err(FrameError::Shape);
     };
@@ -429,12 +430,37 @@ pub fn is_request_frame_head(bytes: &[u8]) -> bool {
 
 /// The op of a frame whose envelope is a four-element array with an op of at most 255; nothing else is read.
 pub fn frame_op(bytes: &[u8]) -> Option<u8> {
-    match Value::decode(bytes).ok()? {
-        Value::Array(parts) if parts.len() == 4 => {
-            parts[0].as_uint().and_then(|op| u8::try_from(op).ok())
-        }
-        _ => None,
+    let mut d = Decoder::new(bytes);
+    if d.array_len().ok()? != 4 {
+        return None;
     }
+    u8::try_from(d.uint().ok()?).ok()
+}
+
+/// Reads the envelope's heads and the payload's element count without building anything, and refuses a known op whose
+/// payload count is not its own before a single item is materialised: a 16 MiB frame of one-byte items would
+/// otherwise cost about 32 times its size in `Value`s before `check` refused its arity. Anything this cannot read from
+/// the heads is left to the full decode, which names the exact error.
+fn arity_precheck(bytes: &[u8]) -> Result<(), FrameError> {
+    let mut d = Decoder::new(bytes);
+    let head = (|| {
+        if d.array_len().ok()? != 4 {
+            return None;
+        }
+        let op = u8::try_from(d.uint().ok()?).ok()?;
+        d.uint().ok()?;
+        d.skip().ok()?;
+        Some((op, d.array_len().ok()?))
+    })();
+    let Some((op, len)) = head else {
+        return Ok(());
+    };
+    let fits = match (op, spec(op)) {
+        (Op::MESSAGE_CT, _) => len == 6 || len == 7,
+        (_, Some(elements)) => len == elements,
+        (_, None) => true,
+    };
+    if fits { Ok(()) } else { Err(FrameError::Shape) }
 }
 
 /// The ops whose malformed frame a ready gateway drops without closing the socket (frames.ts `DROPPABLE_OPS`).
@@ -495,20 +521,36 @@ pub fn encode_request(r: &RequestFrame) -> Result<Vec<u8>, FrameError> {
 
 /// op 60 `[id, status, body]`, checked as `decode` checks it; any other frame, or an id past the safe integers, is
 /// `E_FRAME_SHAPE`.
+///
+/// Read straight off the heads, never through `Value`: the frame may be 16 MiB, and the body is copied once.
 pub fn decode_response(bytes: &[u8]) -> Result<ResponseFrame, FrameError> {
-    let f = decode(bytes)?;
-    match (f.op, f.group_id, f.payload.as_slice()) {
-        (Op::RESPONSE, None, [Value::Uint(id), Value::Uint(status), Value::Bytes(body)])
-            if *id <= MAX_SAFE_INTEGER && (100..=599).contains(status) =>
-        {
-            Ok(ResponseFrame {
-                id: *id,
-                status: *status as u16,
-                body: body.clone(),
-            })
-        }
-        _ => Err(FrameError::Shape),
+    // A wrong type or count is the frame's shape; anything else is the CBOR's own error.
+    let shape = |e: CborError| match e {
+        CborError::TypeMismatch { .. }
+        | CborError::WrongArrayLen { .. }
+        | CborError::WrongByteLen { .. } => FrameError::Shape,
+        e => FrameError::Cbor(e),
+    };
+    let mut d = Decoder::new(bytes);
+    d.array(4).map_err(shape)?;
+    // frames.ts decodeFrame: op 60 is never replayed (n = 0) and carries no group.
+    if d.uint().map_err(shape)? != u64::from(Op::RESPONSE) || d.uint().map_err(shape)? != 0 {
+        return Err(FrameError::Shape);
     }
+    d.null().map_err(shape)?;
+    d.array(3).map_err(shape)?;
+    let id = d.uint().map_err(shape)?;
+    let status = d.uint().map_err(shape)?;
+    let body = d.bytes().map_err(shape)?.to_vec();
+    d.finish()?;
+    if id > MAX_SAFE_INTEGER || !(100..=599).contains(&status) {
+        return Err(FrameError::Shape);
+    }
+    Ok(ResponseFrame {
+        id,
+        status: status as u16,
+        body,
+    })
 }
 
 fn id16(v: &Value) -> Option<[u8; 16]> {
@@ -684,6 +726,78 @@ mod tests {
             Value::Array(payload),
         ])
         .encode()
+    }
+
+    /// A maximum-size frame (16 MiB) of one-byte items is refused from its heads, before any item is built.
+    #[test]
+    fn many_tiny_items_refused_by_arity() {
+        let items = MAX_RESPONSE_FRAME - 16;
+        for op in [Op::RESPONSE, Op::MESSAGE_CT, Op::PRESENCE] {
+            let mut bytes = Encoder::new();
+            bytes
+                .array(4)
+                .uint(u64::from(op))
+                .uint(0)
+                .null()
+                .array(items);
+            let mut bytes = bytes.into_vec();
+            bytes.resize(bytes.len() + items, 0);
+            assert!(bytes.len() <= MAX_RESPONSE_FRAME);
+            assert_eq!(arity_precheck(&bytes), Err(FrameError::Shape), "op {op}");
+            assert_eq!(decode(&bytes), Err(FrameError::Shape), "op {op}");
+        }
+        let mut bytes = Encoder::new();
+        bytes
+            .array(4)
+            .uint(u64::from(Op::RESPONSE))
+            .uint(0)
+            .null()
+            .array(items);
+        let mut bytes = bytes.into_vec();
+        bytes.resize(bytes.len() + items, 0);
+        assert_eq!(decode_response(&bytes), Err(FrameError::Shape));
+        assert_eq!(frame_op(&bytes), Some(Op::RESPONSE));
+    }
+
+    #[test]
+    fn response_errors_match_decode() {
+        let ok = frame(
+            Op::RESPONSE,
+            0,
+            None,
+            vec![Value::Uint(7), Value::Uint(200), Value::Bytes(vec![])],
+        );
+        assert!(decode_response(&ok).is_ok());
+        let replayed = frame(
+            Op::RESPONSE,
+            3,
+            None,
+            vec![Value::Uint(7), Value::Uint(200), Value::Bytes(vec![])],
+        );
+        assert_eq!(decode_response(&replayed), Err(FrameError::Shape));
+        assert_eq!(decode(&replayed), Err(FrameError::Shape));
+        let grouped = frame(
+            Op::RESPONSE,
+            0,
+            Some([1; 16]),
+            vec![Value::Uint(7), Value::Uint(200), Value::Bytes(vec![])],
+        );
+        assert_eq!(decode_response(&grouped), Err(FrameError::Shape));
+        let text_body = frame(
+            Op::RESPONSE,
+            0,
+            None,
+            vec![Value::Uint(7), Value::Uint(200), Value::Text("x".into())],
+        );
+        assert_eq!(decode_response(&text_body), Err(FrameError::Shape));
+        let mut trailing = ok.clone();
+        trailing.push(0);
+        assert_eq!(
+            decode_response(&trailing).unwrap_err().code(),
+            "E_CBOR_TRAILING"
+        );
+        let other = frame(Op::PRESENCE, 0, None, vec![]);
+        assert_eq!(decode_response(&other), Err(FrameError::Shape));
     }
 
     #[test]

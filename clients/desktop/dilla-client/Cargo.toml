@@ -26,6 +26,10 @@ tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"]
 dirs = "6"
 # The gateway's socket loop (Task 8): StreamExt/SinkExt over tokio-tungstenite's stream. Already in the lock.
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# The gateway's wss: an explicit aws-lc-rs provider (never the process default, which a ring-linking binary lacks) and
+# the platform's roots. Both already in the lock through tokio-tungstenite and reqwest.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
+rustls-native-certs = "0.8"
 
 [dev-dependencies]
 # The gateway tests read protocol/vectors/frames.json and the test host's JSON control answers, and compute the
@@ -33,3 +37,5 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 serde_json = "1.0.151"
 hmac = "0.13"
 sha1 = "0.11"
+# The wss smoke test's local TLS server (already in the lock through tokio-tungstenite).
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }
