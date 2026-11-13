@@ -1056,3 +1056,76 @@ fn control_shift_m_and_d_show_muted_and_deafened_to_the_peer(cx: &mut TestAppCon
         "bob sees alice undeafened",
     );
 }
+
+/// The toast a join that answers `answer` leaves in its window, after the handover.
+fn toast_after_join(
+    cx: &mut TestAppContext,
+    answer: Result<(), dilla_client::ClientError>,
+) -> Option<String> {
+    let (_w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    cx.update(|cx| voice::handover(id, Vec::new(), start, undo, cx));
+    cx.run_until_parked();
+    join_tx.send(answer).unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    toast_in(cx, id)
+}
+
+fn sync_err(code: &str) -> Result<(), dilla_client::ClientError> {
+    Err(dilla_client::ClientError::Sync(code.into()))
+}
+
+/// Review L I1 (shell-model.ts `joinFailureKey`): a join the person cancelled (a leave, or another join, while joining)
+/// says nothing.
+#[gpui::test]
+fn a_cancelled_join_says_nothing(cx: &mut TestAppContext) {
+    assert_eq!(toast_after_join(cx, sync_err("E_CANCELLED")), None);
+}
+
+/// Review L I1: a trust refusal says nothing in a toast; the stage's blocked notice says why.
+#[gpui::test]
+fn a_trust_refused_join_says_nothing(cx: &mut TestAppContext) {
+    assert_eq!(toast_after_join(cx, sync_err("E_UMK_CHANGED")), None);
+}
+
+/// Review L I1: a full call says so.
+#[gpui::test]
+fn a_full_call_says_it_is_full(cx: &mut TestAppContext) {
+    assert_eq!(
+        toast_after_join(cx, sync_err("E_CALL_FULL")).as_deref(),
+        Some(dilla_desktop::strings::t("voice.full"))
+    );
+}
+
+/// Review L I1: `joinFailureKey`, code by code (shell-model.test.ts).
+#[test]
+fn a_join_failure_maps_as_the_web_s() {
+    use dilla_client::ClientError;
+    let key = |e: ClientError| voice::join_failure_key(&e);
+    let sync = |c: &str| ClientError::Sync(c.into());
+    assert_eq!(key(sync("E_CALL_FULL")), Some("voice.full"));
+    assert_eq!(key(sync("E_CALL_SHARERS_FULL")), Some("voice.sharersFull"));
+    assert_eq!(key(sync("E_CALL_IN_OTHER_TAB")), Some("voice.otherTab"));
+    for quiet in [
+        "E_CANCELLED",
+        "E_ABORTED",
+        "E_UMK_CHANGED",
+        "E_CREDENTIAL",
+        "E_DEVICE_UNLISTED",
+        "E_DEVICE_REVOKED",
+        "E_TIER_MISMATCH",
+        "E_BINDING",
+    ] {
+        assert_eq!(key(sync(quiet)), None, "{quiet}");
+    }
+    assert_eq!(key(sync("E_NETWORK")), Some("voice.failed"));
+    assert_eq!(
+        key(ClientError::Network("down".into())),
+        Some("voice.failed")
+    );
+    assert_eq!(key(ClientError::UnknownChannel), Some("voice.failed"));
+}
