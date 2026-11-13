@@ -31,7 +31,22 @@ pub struct Toggle {
     hint: Option<SharedString>,
     disabled: bool,
     show_label: bool,
+    fit: Fit,
     on_change: Option<ChangeHandler>,
+}
+
+/// How the switch's 44 x 24 target sits in its host.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Fit {
+    /// The target as drawn: at least 44 x 24, 4px each side of the track.
+    #[default]
+    Target,
+    /// In a settings row (`.d-settings-row__control .d-toggle__switch { margin: -2px -4px }`): the target reaches into
+    /// the row's padding, so the row lays out the 36 x 20 track.
+    Row,
+    /// In a Voice switch row (`.d-voice-settings__switch-row .d-toggle__switch`): no side padding and no minimum width,
+    /// 24px high, so the track is 36 wide.
+    Tight,
 }
 
 impl Toggle {
@@ -43,6 +58,7 @@ impl Toggle {
             hint: None,
             disabled: false,
             show_label: false,
+            fit: Fit::Target,
             on_change: None,
         }
     }
@@ -60,6 +76,12 @@ impl Toggle {
     /// Shows the label before the knob (named by that visible text).
     pub fn show_label(mut self, show: bool) -> Self {
         self.show_label = show;
+        self
+    }
+
+    /// How the switch sits in its host ([`Fit`]).
+    pub fn fit(mut self, fit: Fit) -> Self {
+        self.fit = fit;
         self
     }
 
@@ -88,8 +110,9 @@ impl RenderOnce for Toggle {
             .child(
                 div()
                     .absolute()
-                    .top(px(0.0))
-                    .left(px(knob_left(on) - 1.0))
+                    // `top: 1px; left: 1px` in the track's padding box (inside its 1px edge), then 1rem across when on.
+                    .top(px(1.0))
+                    .left(px(knob_left(on)))
                     .size(px(KNOB))
                     .rounded(radius::PILL)
                     .bg(color::KNOB)
@@ -102,13 +125,16 @@ impl RenderOnce for Toggle {
             .flex()
             .items_center()
             .justify_center()
-            .min_w(px(44.0))
             .min_h(px(24.0))
-            .px(px(4.0))
             .rounded(radius::MD)
             .tab_index(0)
             .focus_visible(|s| s.shadow(focus_ring()))
             .child(track);
+        switch = match self.fit {
+            Fit::Target => switch.min_w(px(44.0)).px(px(4.0)),
+            Fit::Row => switch.min_w(px(44.0)).px(px(4.0)).mx(px(-4.0)).my(px(-2.0)),
+            Fit::Tight => switch,
+        };
         switch = if disabled {
             switch.cursor_not_allowed().opacity(OPACITY_MUTED)
         } else {

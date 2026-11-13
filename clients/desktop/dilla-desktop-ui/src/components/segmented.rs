@@ -4,6 +4,7 @@
 
 use std::rc::Rc;
 
+use gpui::prelude::FluentBuilder;
 use gpui::{
     App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
     Styled, Window, div, px,
@@ -16,6 +17,25 @@ use crate::tokens::{color, radius, text};
 
 type PickHandler = Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>;
 
+/// The group's width as the web paints it: its options are as wide as their mono labels (fractional pixels) and the web
+/// paints the group between whole CSS pixels; with one edge on a whole pixel (left- or right-aligned) that is the natural
+/// width rounded. `None` when a label falls back to another face (then the layout's own width stands).
+pub fn painted_width(labels: &[&str], tall: bool) -> Option<f32> {
+    let pad = if tall { 12.0 } else { 10.0 };
+    let advance = f32::from(text::BTN) * crate::text::MONO_ADVANCE;
+    if !labels
+        .iter()
+        .all(|l| l.chars().all(crate::text::mono_covers))
+    {
+        return None;
+    }
+    let options: f32 = labels
+        .iter()
+        .map(|l| (2.0 * pad + l.chars().count() as f32 * advance).max(24.0))
+        .sum();
+    Some(crate::text::painted_height(options + 2.0 * (2.0 + 1.0)))
+}
+
 /// The index of the option holding the tab stop: the checked one, else the first.
 pub fn tab_stop(values: &[&str], value: &str) -> usize {
     values.iter().position(|v| *v == value).unwrap_or(0)
@@ -27,6 +47,7 @@ pub struct Segmented {
     options: Vec<(SharedString, SharedString)>,
     value: SharedString,
     disabled: bool,
+    tall: bool,
     on_change: Option<PickHandler>,
 }
 
@@ -50,6 +71,7 @@ impl Segmented {
                 .collect(),
             value: value.into(),
             disabled: false,
+            tall: false,
             on_change: None,
         }
     }
@@ -57,6 +79,12 @@ impl Segmented {
     /// Shown but not changeable.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// The Voice page's input mode (`.d-voice-settings__mode .d-segmented__option`): 28px options, 12px across.
+    pub fn tall(mut self, tall: bool) -> Self {
+        self.tall = tall;
         self
     }
 
@@ -76,16 +104,28 @@ impl RenderOnce for Segmented {
         let (disabled, on_change) = (self.disabled, self.on_change);
         let group_values: Vec<SharedString> = self.options.iter().map(|(v, _)| v.clone()).collect();
         let group_handles = handles.clone();
+        let labels: Vec<&str> = self.options.iter().map(|(_, l)| l.as_ref()).collect();
+        let painted = painted_width(&labels, self.tall);
         let mut group = div()
             .id(self.id.clone())
             .flex()
             .flex_none()
-            .flex_wrap()
+            // At its painted width the options fit on one line by construction (a width rounded down leaves them at most
+            // half a pixel over, which must not wrap); without one they wrap as the web's do.
+            .when_some(painted, |g, w| g.w(px(w)).max_w_full())
+            .when(painted.is_none(), |g| g.flex_wrap())
+            .relative()
             .p(px(2.0))
-            .bg(color::SURFACE_2)
+            // Its options are as wide as their labels (fractional pixels): the group and the chosen option are painted
+            // on the web's whole pixels (`snap::painted_box`).
             .border_1()
-            .border_color(color::CONTROL_EDGE_FIELD)
-            .rounded(radius::SEG);
+            .border_color(gpui::transparent_black())
+            .rounded(radius::SEG)
+            .child(crate::snap::painted_box(
+                radius::SEG,
+                color::SURFACE_2,
+                Some(color::CONTROL_EDGE_FIELD),
+            ));
         group = group.on_key_down(move |event, window, cx| {
             let Some(from) = group_handles.iter().position(|h| h.is_focused(window)) else {
                 return;
@@ -107,10 +147,10 @@ impl RenderOnce for Segmented {
         });
         for (i, (value, label)) in self.options.iter().enumerate() {
             let checked = *value == self.value;
-            let (fg, bg) = if checked {
-                (color::ACCENT_INK, color::ACCENT)
+            let fg = if checked {
+                color::ACCENT_INK
             } else {
-                (color::FG_STRONG, gpui::transparent_black())
+                color::FG_STRONG
             };
             let mut option = div()
                 .id((self.id.clone(), format!("option-{i}")))
@@ -119,11 +159,18 @@ impl RenderOnce for Segmented {
                 .flex()
                 .items_center()
                 .min_w(px(24.0))
-                .min_h(px(26.0))
-                .px(px(10.0))
-                .py(px(4.0))
+                .min_h(px(if self.tall { 28.0 } else { 26.0 }))
+                .px(px(if self.tall { 12.0 } else { 10.0 }))
+                .py(px(if self.tall { 0.0 } else { 4.0 }))
+                .relative()
                 .rounded(radius::SEG - px(2.0))
-                .bg(bg)
+                .when(checked, |o| {
+                    o.child(crate::snap::painted_box(
+                        radius::SEG - px(2.0),
+                        color::ACCENT,
+                        None,
+                    ))
+                })
                 .focus_visible(|s| s.shadow(focus_ring()))
                 .child(line(
                     label.clone(),
@@ -149,6 +196,19 @@ impl RenderOnce for Segmented {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_group_paints_whole_pixels() {
+        // Automatic / Lightweight / Off: 224.72px of options and frame, painted 225 wide (the web's 758..983).
+        assert_eq!(
+            painted_width(&["Automatic", "Lightweight", "Off"], false),
+            Some(225.0)
+        );
+        assert_eq!(
+            painted_width(&["Voice activity", "Push to talk"], true),
+            Some(233.0)
+        );
+    }
 
     #[test]
     fn the_checked_option_holds_the_tab_stop() {
