@@ -52,7 +52,8 @@ pub fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
                 t("shell.delete.cancel"),
             )
             .body(body)
-            .footer(button)
+            // Tracked, so a pointer can find it (the tests' and the automation build's bounds).
+            .footer(crate::tracked_box("message-delete-confirm", button))
             .on_close(move |_, cx| close.update(cx, |ui, cx| ui.cancel_delete(cx)))
             .into_any_element(),
         );

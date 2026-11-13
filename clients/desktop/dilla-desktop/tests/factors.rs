@@ -169,6 +169,96 @@ fn keyboard_factors_focus_order() {
     app.wait_for("signin-key", WAIT);
 }
 
+/// The shipping window (the automation build, `Launch::live`) end to end from an invite link: the sign-up's steps, then
+/// its factor step (an authenticator app). The code boxes hold the keyboard; six typed digits are sent with no press; a
+/// wrong code is refused and said under the boxes, which are emptied and keep the keyboard for another. (Before the
+/// fix the boxes' own reset said "changed" and the step took the refusal back at once: the field stood empty and
+/// silent, as if the digits had never arrived.)
+#[test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn signup_factor_step_takes_typed_digits_and_says_a_wrong_code() {
+    use dilla_core::ids::DeviceId;
+    use dilla_testkit::HttpDs;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("t28-ship-factor", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let ivar = rt.block_on(world::sign_up(
+        &host,
+        &invite,
+        "ivar",
+        "Ivar",
+        "t28-ship-factor",
+    ));
+    let community = world::community(&host, &ivar, "Midgard Crew", &[]);
+    let code = HttpDs::with_session(
+        &host.public,
+        DeviceId::from_bytes(ivar.device_id),
+        ivar.token.clone(),
+    )
+    .unwrap()
+    .create_invite(&community, 8, 3600)
+    .unwrap();
+    let link = format!("{}/i/{code}", host.public.trim_end_matches('/'));
+
+    let root = scratch_dir("ship-factor");
+    let mut app = Driver::launch(&root);
+    app.wait_for("onboarding-invite", WAIT);
+    app.type_text("onboarding-invite", &link);
+    app.press("enter");
+    app.wait_for("onboarding-confirm", WAIT);
+    app.press("enter");
+    app.wait_for("onboarding-username", WAIT);
+    app.type_text("onboarding-username", "newbie");
+    app.press("tab");
+    app.type_focused(world::PASSWORD);
+    app.press("enter");
+    app.wait_for("onboarding-key", WAIT);
+    app.click("onboarding-ack");
+    app.click("onboarding-next");
+    // Step 4: the choice (an authenticator app is the default), Continue, then the app step with the boxes focused.
+    app.wait_for("factor-kind", WAIT);
+    app.click("factor-submit");
+    app.wait_for("factor-totp-code", WAIT);
+    let deadline = std::time::Instant::now() + WAIT;
+    while app.focused().as_deref() != Some("factor-totp-code") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the code boxes take the keyboard once the secret is shown"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(app.element("factor-code-error").is_none());
+    // Six digits as a person types them, then Enter in the boxes (the sixth digit's own send after its 350 ms rest is
+    // `code::tests` on the test clock: the automation build's frames do not run that timer between commands). The
+    // app's secret never leaves the window, so the code is one no authenticator shows now (a one-in-a-million miss
+    // aside).
+    app.type_focused("000000");
+    app.press("enter");
+    let deadline = std::time::Instant::now() + WAIT;
+    while app.element("factor-code-error").is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the wrong code is refused and said"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // The refusal stays on show and the emptied boxes keep the keyboard for another code.
+    for _ in 0..5 {
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            app.element("factor-code-error").is_some(),
+            "the refusal stays"
+        );
+    }
+    assert_eq!(app.focused().as_deref(), Some("factor-totp-code"));
+    drop(app);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Integration 3, step 0 item 1 (ForgetBrowser after a shell existed): the shell ran with the client (the voice,
 /// attachments, threads, ring, search and the other app-wide hooks took it), then the forced factor screen's Forget
 /// this device. Every app-wide holder lets go of the client, so the store really closes and is wiped: the instance is
@@ -652,13 +742,14 @@ fn pump_until(
 /// and the only factor cannot be removed. Then new devices: a backup code with the key signs one in and leaves nine; a
 /// wrong code on another is refused at the login. (A code and the key on a second device is
 /// [`password_then_factor_then_recovery_key_backup_code_waits`]; new codes behind the step-up are the client's
-/// `step_up_backup_codes_remove_and_password`.)
+/// `step_up_backup_codes_remove_and_password`; the same step in the shipping window is
+/// [`signup_factor_step_takes_typed_digits_and_says_a_wrong_code`].)
 ///
-/// Open (Task 28 report): in this window, handed the fresh sign-up's client, the code boxes hold the focus but never
-/// receive the typed digits (the same boxes take them on a reopened forced screen, `forced_setup_then_joins_invited_server`),
-/// so the test stops at the wrong code. Not root-caused; CI skips it until it is.
+/// The digits always reached the boxes. What this test met was the boxes' reset of a refused code saying "changed",
+/// which made the step take its refusal back at once (an empty, silent field); and a handed-over client that still
+/// owed its factor drew the forced screen instead of the sign-up's step 4.
 #[gpui::test]
-#[ignore = "under investigation: typed digits never reach the sign-up factor step's code boxes here (see the Task 28 report)"]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 fn signup_factor_code_backup_code_wrong_code_settings(cx: &mut gpui::TestAppContext) {
     use dilla_client::features::factors::FactorKind;
     use dilla_client::features::signup::Signup;
@@ -743,11 +834,62 @@ fn signup_factor_code_backup_code_wrong_code_settings(cx: &mut gpui::TestAppCont
         vcx.update(|window, cx| setup.read(cx).code_focused(window, cx)),
         "the code field has the keyboard"
     );
-    // The right code adds the app; the done step shows the backup codes.
+    assert!(
+        setup.read_with(vcx, |s, cx| s.code_invalid(cx)),
+        "the refused boxes are red"
+    );
+    // Back to the choice and the app again: a new secret, and the boxes start plain, not in the old red.
+    setup.update_in(vcx, |s, window, cx| s.press_back(window, cx));
+    pump(vcx);
+    assert_eq!(setup.read_with(vcx, |s, _| s.step_name()), "Choose");
+    setup.update_in(vcx, |s, window, cx| s.press_primary(window, cx));
+    let mut again = None;
+    pump_until(vcx, "the app step's new secret", |vcx| {
+        again = setup.read_with(vcx, |s, _| s.shown_secret());
+        again.is_some()
+    });
+    assert!(
+        !setup.read_with(vcx, |s, cx| s.code_invalid(cx)),
+        "the app step again: plain boxes"
+    );
+    let secret = again.unwrap();
+    let right = world::totp_code(&secret, world::clock_now(&host) / 30);
+    // The right code adds the app; the done step (step 6) shows the backup codes: collapsed under their count until
+    // Show, then ten, and Open dilla waits for their tick.
     type_digits(vcx, &right);
     pump_until(vcx, "the done step", |vcx| {
         app.read_with(vcx, |a, _| a.screen_name() == "done")
     });
+    let done = app.read_with(vcx, |a, _| a.done()).expect("the done step");
+    assert_eq!(done.read_with(vcx, |d, _| d.code_count()), 10);
+    assert!(
+        done.read_with(vcx, |d, _| d.shown_codes()).is_none(),
+        "collapsed until Show"
+    );
+    done.update(vcx, |d, cx| d.press_show(cx));
+    let codes = done
+        .read_with(vcx, |d, _| d.shown_codes())
+        .expect("the codes on show");
+    assert_eq!(codes.len(), 10);
+    done.update(vcx, |d, cx| d.press_open(cx));
+    pump(vcx);
+    assert_eq!(
+        app.read_with(vcx, |a, _| a.screen_name()),
+        "done",
+        "Open dilla waits for the codes' tick"
+    );
+    done.update(vcx, |d, cx| {
+        d.press_saved(cx);
+        d.press_open(cx);
+    });
+    pump_until(vcx, "the shell", |vcx| {
+        app.read_with(vcx, |a, _| a.screen_name() == "shell")
+    });
+    assert_eq!(
+        done.read_with(vcx, |d, _| d.code_count()),
+        0,
+        "the codes go with the step"
+    );
     let factors = rt
         .block_on(client.factors().refresh())
         .unwrap()
@@ -770,19 +912,6 @@ fn signup_factor_code_backup_code_wrong_code_settings(cx: &mut gpui::TestAppCont
         .block_on(client.factors().remove(token, FactorKind::Totp))
         .unwrap_err();
     assert_eq!(e.status, 409, "{e:?}");
-    // The done step does not show the sign-up's backup codes yet (Task 28 report: a product gap), so the codes for the
-    // devices below are a new set, made behind a step-up as Settings → Sign-in makes them.
-    let token = rt
-        .block_on(client.factors().step_up(
-            StepUpMethod::Password,
-            Zeroizing::new(world::PASSWORD.to_owned()),
-        ))
-        .expect("the password steps up");
-    let codes = rt
-        .block_on(client.factors().regenerate_backup_codes(token))
-        .expect("new codes")
-        .0;
-    assert_eq!(codes.len(), 10);
 
     // A new device: the login, a backup code instead of the app's, then the key: nine codes left.
     let new_device = |tag: &str| {
@@ -897,8 +1026,13 @@ fn forced_setup_then_joins_invited_server(cx: &mut gpui::TestAppContext) {
     let setup = app
         .read_with(vcx, |a, cx| a.factor().map(|f| f.read(cx).setup()))
         .expect("the forced screen's set-up");
-    // The choice's Continue (an authenticator app), then the app step shows its secret.
-    setup.update_in(vcx, |s, window, cx| s.press_primary(window, cx));
+    // The choice's Continue (an authenticator app), clicked where it is drawn (the button's wiring, not only the
+    // function); then the app step shows its secret.
+    pump(vcx);
+    let next = vcx
+        .debug_bounds("factor-submit")
+        .expect("the choice's Continue is drawn");
+    vcx.simulate_click(next.center(), gpui::Modifiers::none());
     let mut secret = None;
     pump_until(vcx, "the app step's secret", |vcx| {
         secret = setup.read_with(vcx, |s, _| s.shown_secret());

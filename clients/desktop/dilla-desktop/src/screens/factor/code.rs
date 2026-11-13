@@ -63,14 +63,28 @@ impl CodeField {
         self.value.len() == CODE_LENGTH
     }
 
+    /// The boxes are drawn as refused (red).
+    pub fn is_invalid(&self) -> bool {
+        self.invalid
+    }
+
     pub fn set_invalid(&mut self, invalid: bool, cx: &mut Context<Self>) {
         self.invalid = invalid;
         cx.notify();
     }
 
-    /// Empties the field (a refused code, a step left).
+    /// Empties the field (a refused code, a step left). The host's reset, not the person's edit: it says no
+    /// [`CodeEvent::Changed`], which the hosts read as "the person typed" and answer by dropping their error, so a
+    /// refusal set together with this reset stays on show. A completion timer of the old value says nothing. The boxes
+    /// lose their refused red with their digits; a host that wants them red (a refused code) sets it after the clear.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
-        self.set(String::new(), 0, cx);
+        if !self.value.is_empty() {
+            self.edits += 1;
+        }
+        self.value = Zeroizing::new(String::new());
+        self.caret = 0;
+        self.invalid = false;
+        cx.notify();
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
@@ -226,6 +240,47 @@ mod tests {
             assert_eq!((f.value(), f.caret), ("", 0));
             f.insert("a b", cx);
             assert_eq!(f.value(), "");
+        });
+    }
+
+    /// A refused code empties the field (the host's `clear`), and that reset is not the person's change: no `Changed`,
+    /// so the host's refusal ("That code did not work") stays until the person types again. A timer of the cleared
+    /// value says nothing either.
+    #[gpui::test]
+    fn clearing_is_not_a_change_of_the_persons(cx: &mut TestAppContext) {
+        let field = cx.new(|cx| CodeField::new("code-test", cx));
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let log = seen.clone();
+        cx.update(|cx| {
+            cx.subscribe(&field, move |_, e: &CodeEvent, _| {
+                log.borrow_mut().push(e.clone())
+            })
+            .detach();
+        });
+        field.update(cx, |f, cx| f.insert("123456", cx));
+        cx.run_until_parked();
+        seen.borrow_mut().clear();
+        field.update(cx, |f, cx| f.clear(cx));
+        cx.executor().advance_clock(COMPLETE_DELAY);
+        cx.run_until_parked();
+        assert_eq!(*seen.borrow(), Vec::<CodeEvent>::new());
+        field.read_with(cx, |f, _| assert_eq!((f.value(), f.caret), ("", 0)));
+        // The person's next digit is a change again.
+        field.update(cx, |f, cx| f.insert("4", cx));
+        cx.run_until_parked();
+        assert_eq!(*seen.borrow(), vec![CodeEvent::Changed]);
+    }
+
+    /// The reset is a fresh field: a refused field's red goes with its digits (a host that wants it red again, a
+    /// refused code, sets it after the clear).
+    #[gpui::test]
+    fn clearing_drops_the_refused_red(cx: &mut TestAppContext) {
+        let field = cx.new(|cx| CodeField::new("code-test", cx));
+        field.update(cx, |f, cx| {
+            f.insert("123", cx);
+            f.set_invalid(true, cx);
+            f.clear(cx);
+            assert!(!f.is_invalid());
         });
     }
 

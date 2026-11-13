@@ -26,12 +26,15 @@ use dilla_desktop_ui::tokens::color;
 
 use crate::screens::boot;
 use crate::screens::shell::window::{SavedBounds, WindowMode, window_shape};
+use dilla_client::features::factors::BackupCodes;
 use dilla_client::features::signup::SignupResult;
 use dilla_client::state::AccountPhase;
 
 use crate::router::{Route, UserSection};
 use crate::screens::create::Navigate;
-use crate::screens::onboarding::{DoneView, OpenDilla, SignedUp, SignupView, WantsSignIn};
+use crate::screens::onboarding::{
+    DoneView, OpenDilla, SignedUp, SignupCodes, SignupView, WantsSignIn,
+};
 use crate::screens::settings_host::{self, Dest, SettingsEvent, UserSettingsHost};
 use crate::screens::shell::{Clock, OpenSettings, ShellView};
 use crate::screens::sign_in::{CreateInstead, SignInView, SignedIn};
@@ -61,6 +64,8 @@ pub struct Launch {
     /// The handed-over client is a new account's from the sign-up (Task 25): the workspace window finishes its join and
     /// shows the done step.
     pub after_signup: bool,
+    /// The sign-up's backup codes on their way to the done step, when a sign-up's window hands its client over.
+    pub signup_codes: SignupCodes,
     #[cfg(feature = "automation")]
     pub fixture: Option<crate::fixture::Fixture>,
 }
@@ -83,6 +88,7 @@ impl Launch {
             shipping: true,
             handoff: None,
             after_signup: false,
+            signup_codes: SignupCodes::default(),
             #[cfg(feature = "automation")]
             fixture: None,
         }
@@ -100,6 +106,7 @@ impl Launch {
             shipping: false,
             handoff: None,
             after_signup: false,
+            signup_codes: SignupCodes::default(),
             #[cfg(feature = "automation")]
             fixture: None,
         }
@@ -183,6 +190,8 @@ pub struct AppView {
     /// The client about to start is a new account's: once its factor is in place, the invite's server is joined and
     /// the done step shows (Task 25).
     after_signup: bool,
+    /// The backup codes the sign-up's factor step was given, held (zeroizing) until its done step shows them.
+    signup_codes: Option<BackupCodes>,
     shell: Option<Entity<ShellView>>,
     /// The shell's way to the user settings (`ShellView`'s `OpenSettings`): the host opens over it.
     shell_sub: Option<Subscription>,
@@ -207,6 +216,7 @@ impl AppView {
             bounds_task: None,
             bounds_sub: None,
             after_signup: false,
+            signup_codes: None,
             shell: None,
             shell_sub: None,
             root_focus: cx.focus_handle(),
@@ -313,9 +323,16 @@ impl AppView {
         }
         if let Some(client) = this.launch.handoff.take() {
             this.after_signup = std::mem::take(&mut this.launch.after_signup);
+            this.signup_codes = this.launch.signup_codes.take();
             // Task 26: the factor area follows the client into the workspace window.
             crate::screens::factor::register_window_client(&client, window, cx);
-            this.show_shell(client, window, cx);
+            // A client that still owes its factor shows the factor step first, as `started` does: for a new account
+            // that is the sign-up's step 4 (`after_signup` is kept for it, and the shell after it finishes the join).
+            if client.state().borrow().account.phase == AccountPhase::FactorSetup {
+                this.show_factor(client, window, cx);
+            } else {
+                this.show_shell(client, window, cx);
+            }
             return this;
         }
         let existing = this
@@ -377,8 +394,9 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         let first = client.state().borrow().clone();
+        let codes = self.signup_codes.take();
         let view = cx.new(|cx| {
-            let mut done = DoneView::new(result, window, cx);
+            let mut done = DoneView::new(result, codes, window, cx);
             done.set_state(&first, cx);
             done
         });
@@ -739,6 +757,10 @@ impl AppView {
         let mut launch = self.launch.clone();
         launch.handoff = Some(client);
         launch.after_signup = std::mem::take(&mut self.after_signup);
+        // The codes ride in the launch; this window keeps a handle on the same holder, so a window that does not open
+        // (the launch dropped with it) hands them back instead of losing them.
+        let codes = SignupCodes::new(self.signup_codes.take());
+        launch.signup_codes = codes.clone();
         match crate::open_window_in(cx, launch, WindowMode::Workspace) {
             Ok(handle) => {
                 // The instance's window is the workspace window from now on (Task 27's registry).
@@ -751,7 +773,10 @@ impl AppView {
                 window.remove_window();
             }
             // The workspace window did not open: this one stays, on the sign-in.
-            Err(e) => self.show_sign_in(Some(e.to_string()), window, cx),
+            Err(e) => {
+                self.signup_codes = codes.take();
+                self.show_sign_in(Some(e.to_string()), window, cx);
+            }
         }
     }
 
@@ -781,8 +806,12 @@ impl AppView {
         self._subscriptions = vec![cx.subscribe_in(
             &view,
             window,
-            move |this, _, e: &ForcedEvent, window, cx| match e {
+            move |this, view, e: &ForcedEvent, window, cx| match e {
                 ForcedEvent::Completed => {
+                    // The sign-up's backup codes go on to its done step (Onboarding.tsx `finishFactor`).
+                    if let Some(codes) = view.update(cx, |v, _| v.take_codes()) {
+                        this.signup_codes = Some(codes);
+                    }
                     let client = held.clone();
                     if this.launch.shipping && this.screen.mode().is_compact() {
                         this.open_workspace(client, window, cx);
@@ -1035,6 +1064,15 @@ impl AppView {
         }
     }
 
+    /// Tests: the sign-up's done step, while the window shows it.
+    #[cfg(feature = "test-hooks")]
+    pub fn done(&self) -> Option<Entity<DoneView>> {
+        match &self.screen {
+            Screen::Done(view) => Some(view.clone()),
+            _ => None,
+        }
+    }
+
     /// Automation: the open settings host, and how many settings hosts are stacked (one at most).
     #[cfg(feature = "test-hooks")]
     pub fn settings_host(&self) -> Option<(Entity<UserSettingsHost>, usize)> {
@@ -1055,6 +1093,7 @@ impl AppView {
     /// behind the forced screen), the screen, the subscriptions, the instance registry's hold (Task 27) and every
     /// app-wide holder ([`crate::release::release_client`]).
     fn release(&mut self, client: &Rc<Client>, cx: &mut Context<Self>) {
+        self.signup_codes = None;
         self.shell = None;
         self.shell_sub = None;
         self._subscriptions.clear();

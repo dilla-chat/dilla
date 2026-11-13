@@ -1293,6 +1293,58 @@ mod tests {
         });
     }
 
+    /// A code refused for its form turns the boxes red; leaving the code step (back to the login, or to a backup code)
+    /// empties them, and the next code step starts with plain boxes, not the old red.
+    #[gpui::test]
+    fn leaving_the_code_step_drops_the_refused_red(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let window = cx.add_window(|window, cx| {
+            SignInView::new(
+                None,
+                Arc::new(dilla_client::keychain::MemoryKeychain::new()),
+                None,
+                None,
+                window,
+                cx,
+            )
+        });
+        let red = |cx: &mut gpui::TestAppContext| {
+            window
+                .update(cx, |v, _, cx| v.code.read(cx).is_invalid())
+                .unwrap()
+        };
+        let refuse = |cx: &mut gpui::TestAppContext| {
+            // The digits as typed (their Changed lands first), then the send.
+            window
+                .update(cx, |v, _, cx| {
+                    v.shown = Shown::Totp;
+                    v.code.update(cx, |c, cx| c.insert("123", cx));
+                })
+                .unwrap();
+            cx.run_until_parked();
+            window
+                .update(cx, |v, window, cx| v.submit_totp(window, cx))
+                .unwrap();
+            cx.run_until_parked();
+        };
+        refuse(cx);
+        assert!(red(cx), "a short code is refused in red");
+        window
+            .update(cx, |v, window, cx| v.back_to_login(window, cx))
+            .unwrap();
+        assert!(!red(cx), "back to the login: plain boxes");
+        refuse(cx);
+        assert!(red(cx));
+        // "Use a backup code": the link's own steps.
+        window
+            .update(cx, |v, window, cx| {
+                v.code.update(cx, |c, cx| c.clear(cx));
+                v.go(Shown::Backup, window, cx);
+            })
+            .unwrap();
+        assert!(!red(cx), "to the backup code: plain boxes");
+    }
+
     /// SignIn.tsx `signInRefusal`: the step a refusal shows on and what it says, by kind only.
     #[test]
     fn refusals_follow_the_web_table() {

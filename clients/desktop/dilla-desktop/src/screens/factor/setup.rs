@@ -89,11 +89,12 @@ pub enum Lost {
 /// What the view tells its host.
 pub enum SetupEvent {
     /// The factor is in place; the host finishes (the forced and sign-in hosts read the factors and go on). `codes` are
-    /// handed over only to the sign-up origin.
+    /// handed over only to the sign-up origin, for its done step: the host takes them out of the cell (an event is
+    /// read by reference), so they are held in one place only.
     Done {
         added: Added,
         name: Option<String>,
-        codes: Option<BackupCodes>,
+        codes: std::cell::Cell<Option<BackupCodes>>,
     },
     /// Settings: the host asks for a new step-up.
     StepUpLost(Lost),
@@ -209,6 +210,16 @@ impl FactorSetupView {
     /// The code field's error, by its copy key (`factor.error.code`: the instance refused the code).
     pub fn code_problem(&self) -> Option<&'static str> {
         self.code_error
+    }
+
+    /// Whether the code boxes are drawn as refused (red).
+    pub fn code_invalid(&self, cx: &gpui::App) -> bool {
+        self.code.read(cx).is_invalid()
+    }
+
+    /// The app step's Back: the choice again.
+    pub fn press_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_choice(window, cx);
     }
 
     /// Whether the code field has the keyboard.
@@ -695,7 +706,7 @@ impl FactorSetupView {
         cx.emit(SetupEvent::Done {
             added: self.added,
             name,
-            codes,
+            codes: std::cell::Cell::new(codes),
         });
     }
 
@@ -893,14 +904,19 @@ impl FactorSetupView {
                         if matches!(self.origin, Origin::Signup { .. }) {
                             body.push(para(t("factor.totp.codeHint")));
                         }
+                        let focus = gpui::Focusable::focus_handle(self.code.read(cx), cx);
                         body.push(
-                            tracked_box("factor-totp-code", self.code.clone()).into_any_element(),
+                            crate::tracked_focus("factor-totp-code", &focus, self.code.clone())
+                                .into_any_element(),
                         );
                         if !matches!(self.origin, Origin::Signup { .. }) {
                             body.push(para(t("factor.totp.codeHint")));
                         }
                         if let Some(e) = self.code_error {
-                            body.push(error_line(t(e)));
+                            body.push(
+                                tracked_box("factor-code-error", error_line(t(e)))
+                                    .into_any_element(),
+                            );
                         }
                     }
                 }

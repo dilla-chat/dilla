@@ -361,9 +361,50 @@ fn thread_opens_from_search_hit(cx: &mut TestAppContext) {
     for _ in 0..at.unwrap() {
         vcx.simulate_keystrokes("down");
     }
+    // The row Enter chooses (the palette's active result) and the hit behind it.
+    let chosen = vcx
+        .update(|window, cx| dilla_desktop::screens::search::inspect(window, cx))
+        .and_then(|p| p.active)
+        .expect("an active result");
+    let hit = scene
+        .ada
+        .state()
+        .borrow()
+        .search
+        .hits
+        .iter()
+        .find(|h| format!("msg:{}", h.id()) == chosen)
+        .cloned()
+        .unwrap_or_else(|| panic!("the active row {chosen} is a message hit"));
     vcx.simulate_keystrokes("enter");
     assert_plan_thread_open(&scene, &app, vcx);
-    let _ = scene.reply;
+    // The hit chosen is the needle reply itself: it names the plan's thread, and the reply the opened pane holds (by
+    // its id) is the message at the hit's place (channel and seq).
+    assert_eq!(
+        hit.thread_root,
+        Some(scene.plan),
+        "the hit is a reply in the plan's thread"
+    );
+    let opened = scene
+        .ada
+        .state()
+        .borrow()
+        .threads
+        .threads
+        .get(&scene.plan)
+        .and_then(|d| {
+            d.replies
+                .iter()
+                .find(|r| r.msg_id == Some(scene.reply))
+                .cloned()
+        })
+        .expect("the pane holds the needle reply");
+    assert!(opened.body.contains(&scene.needle));
+    assert_eq!(
+        (hit.channel, Some(hit.seq)),
+        (scene.general, opened.seq),
+        "the chosen hit is that reply"
+    );
     drop(app);
     scene.bjorn.stop();
 }
@@ -563,7 +604,19 @@ fn edit_reply_react_pin_delete_one_flow(cx: &mut TestAppContext) {
         i.edited && i.body == "the peer edited"
     });
 
-    // A reply: the toolbar's Reply aims the composer at the peer's message; the answer carries its reference.
+    // A reply: the toolbar's Reply aims the composer at the peer's message; the answer carries its reference. The
+    // keyboard is first moved off the composer (to the shell's root, as a click on the toolbar leaves it), so the
+    // focus assertion below holds only if Reply itself puts the keyboard back in the composer.
+    let shell = shell_of(&app, vcx);
+    vcx.update(|window, cx| {
+        let root = gpui::Focusable::focus_handle(shell.read(cx), cx);
+        window.focus(&root, cx);
+    });
+    pump(vcx);
+    assert!(
+        !composer_focused(&app, vcx),
+        "the keyboard is off the composer before Reply"
+    );
     run_action(&app, vcx, &target, "reply");
     let replying = ada.state().borrow().threads.replying.clone();
     assert_eq!(replying.map(|r| r.msg_id), Some(theirs), "the reply bar");
@@ -670,6 +723,14 @@ fn edit_reply_react_pin_delete_one_flow(cx: &mut TestAppContext) {
         "the dialog stays open"
     );
 
+    // The pins dialog is closed (its close button's call), as a person must before reaching a message's toolbar.
+    vcx.update(|window, cx| {
+        let ui = dilla_desktop::screens::messages::ui::handle(window, cx).expect("the log drew");
+        ui.update(cx, |ui, cx| ui.close_pins(cx));
+    });
+    pump(vcx);
+    assert!(message_ui(vcx, |ui| ui.pins.is_none()), "the pins closed");
+
     // Delete for everyone, only through the dialog.
     let own = by_id(&ada, general, mine).unwrap();
     run_action(&app, vcx, &own, "delete");
@@ -681,7 +742,12 @@ fn edit_reply_react_pin_delete_one_flow(cx: &mut TestAppContext) {
         by_id(&ada, general, mine).unwrap().state,
         TimelineItemState::Ok
     );
-    vcx.update(dialogs::confirm_delete);
+    // A real click on the drawn dialog's Delete, at its painted bounds (the button's wiring, not only the function).
+    pump(vcx);
+    let delete = vcx
+        .debug_bounds("message-delete-confirm")
+        .expect("the delete dialog's Delete is drawn");
+    vcx.simulate_click(delete.center(), gpui::Modifiers::none());
     until_item(vcx, &ada, general, mine, "her message deleted", |i| {
         i.state == TimelineItemState::Deleted && !i.body.contains("edited")
     });
