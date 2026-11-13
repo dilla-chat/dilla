@@ -44,6 +44,9 @@ use crate::tracked_focus;
 
 /// Composer.css `.d-composer__input`: 20px lines, 5px above and below, at most 13.75rem (220px) high.
 const FIELD_LINE: f32 = 20.0;
+/// The face Chromium falls back to for the ⇧ and ↵ JetBrains Mono lacks (fontconfig's sans-serif on the reference
+/// machine).
+const SYMBOL_FALLBACK: &str = "DejaVu Sans";
 const FIELD_PAD: f32 = 5.0;
 const FIELD_MAX: f32 = 220.0;
 
@@ -666,8 +669,10 @@ impl Render for Composer {
             .flex()
             .items_center()
             .child(
+                // JetBrains Mono has no ↵: Chromium draws it from fontconfig's fallback face, DejaVu Sans (0.838em).
                 line("send ↵", text::BTN, line_height(text::BTN, 1.5), send_fg)
-                    .weight(font::WEIGHT_DISPLAY),
+                    .weight(font::WEIGHT_DISPLAY)
+                    .fallback(SYMBOL_FALLBACK),
             )
             .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)));
         let row = div()
@@ -716,12 +721,17 @@ impl Render for Composer {
                 .ellipsis(),
             );
         }
-        foot = foot.child(div().ml(len(10.)).child(line(
-            t("shell.composer.newLine"),
-            text::META,
-            line_height(text::META, 1.5),
-            color::FG_3,
-        )));
+        foot = foot.child(
+            div().ml(len(10.)).child(
+                line(
+                    t("shell.composer.newLine"),
+                    text::META,
+                    line_height(text::META, 1.5),
+                    color::FG_3,
+                )
+                .fallback(SYMBOL_FALLBACK),
+            ),
+        );
         // The notice above the box: the read-only line, or the wait and its queue.
         let notice: Option<String> = match (blocked, slow_wait) {
             (Some(Blocked::ReadOnly), _) => None,
