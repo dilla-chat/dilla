@@ -168,3 +168,92 @@ fn keyboard_factors_focus_order() {
     app.press("enter");
     app.wait_for("signin-key", WAIT);
 }
+
+/// Integration 3, step 0 item 1 (ForgetBrowser after a shell existed): the shell ran with the client (the voice,
+/// attachments, threads, ring, search and the other app-wide hooks took it), then the forced factor screen's Forget
+/// this device. Every app-wide holder lets go of the client, so the store really closes and is wiped: the instance is
+/// no longer listed, its data dir and its keychain entry are gone, and the app is back on the sign-in. Before the fix
+/// the wipe never ran (the client stayed shared: `E_FORGET_STORE`).
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn forget_after_the_shell_closes_and_wipes_the_store(cx: &mut gpui::TestAppContext) {
+    use std::rc::Rc;
+    cx.executor().allow_parking();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("t26-forget-shell", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let ada = rt.block_on(world::sign_up(
+        &host,
+        &invite,
+        "ada",
+        "Ada",
+        "t26-forget-shell",
+    ));
+    world::community(&host, &ada, "Forget", &[]);
+    world::clear_session(&ada);
+    let client = rt.block_on(world::start(&ada));
+    rt.block_on(world::wait_for(&client, WAIT, "ada online", |s| {
+        s.connection.status == dilla_client::state::ConnectionStatus::Online
+            && !s.channels.is_empty()
+    }));
+    let probe = client.store_probe();
+    let cfg = ada.cfg.clone();
+    // `<root>/instances/<n>`: the data root the app lists its instances in.
+    let root = cfg
+        .data_dir
+        .parent()
+        .and_then(|d| d.parent())
+        .unwrap()
+        .to_path_buf();
+    assert!(
+        dilla_client::instances::Instances::load(&root)
+            .unwrap()
+            .get(cfg.id)
+            .is_some()
+    );
+    assert!(cfg.data_dir.exists());
+    use dilla_client::seams::Keychain as _;
+    let account = dilla_client::store::store_keychain_account(&cfg).unwrap();
+    assert!(ada.kc.get(&account).unwrap().is_some());
+    let client = Rc::new(client);
+    cx.update(dilla_desktop::install);
+    cx.update(|cx| dilla_desktop::screens::factor::register_instance(&client, cfg.clone(), cx));
+    let mut launch = dilla_desktop::app::Launch::live(Some(root.clone()), ada.kc.clone());
+    launch.shipping = false;
+    launch.resume = false;
+    launch.handoff = Some(client);
+    let (app, vcx) =
+        cx.add_window_view(move |window, cx| dilla_desktop::app::AppView::new(launch, window, cx));
+    // The shell draws a few frames with the running client: every app-wide hook takes it.
+    for _ in 0..5 {
+        vcx.run_until_parked();
+        vcx.update(|window, _| window.refresh());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // The account owes a factor now: the forced screen, and its Forget this device.
+    app.update_in(vcx, |a, window, cx| a.forget_from_forced(window, cx));
+    let deadline = std::time::Instant::now() + WAIT;
+    let signed_out =
+        |vcx: &mut gpui::VisualTestContext| app.read_with(vcx, |a, _| a.shows_sign_in());
+    while !(probe.is_closed() && !cfg.data_dir.exists() && signed_out(vcx)) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the store closes and is wiped, then the sign-in (closed: {}, dir left: {}, sign-in: {})",
+            probe.is_closed(),
+            cfg.data_dir.exists(),
+            signed_out(vcx)
+        );
+        vcx.run_until_parked();
+        vcx.executor().advance_clock(Duration::from_millis(20));
+        vcx.update(|window, _| window.refresh());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    vcx.run_until_parked();
+    let listed = dilla_client::instances::Instances::load(&root).unwrap();
+    assert!(listed.get(cfg.id).is_none(), "the instance is forgotten");
+    assert!(ada.kc.get(&account).unwrap().is_none(), "its key is gone");
+}

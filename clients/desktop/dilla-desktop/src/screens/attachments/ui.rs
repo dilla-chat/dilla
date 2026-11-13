@@ -111,6 +111,8 @@ pub enum TrayPreview {
 #[derive(Default)]
 pub struct AttachmentsUi {
     pub trays: HashMap<ChannelId, Tray>,
+    /// Which client (by the address of its `Client`) made each tray: [`release`] lets go of that client's trays.
+    pub tray_owners: HashMap<ChannelId, usize>,
     pub tray_previews: HashMap<(ChannelId, String), TrayPreview>,
     pub images: HashMap<ImageKey, Slot>,
     pub cards: HashMap<CardKey, CardStatus>,
@@ -236,10 +238,48 @@ pub fn on_quit(cx: &mut App) {
     }
 }
 
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): the windows' targets, the lightbox, the
+/// GIF picker and the trays that hold it go, so its store can close.
+pub fn release(client: &Rc<Client>, cx: &mut App) {
+    if !cx.has_global::<AttachmentsUi>() {
+        return;
+    }
+    let u = ui(cx);
+    let owner = Rc::as_ptr(client) as usize;
+    u.targets
+        .retain(|_, t| !t.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)));
+    if u.lightbox
+        .as_ref()
+        .is_some_and(|l| Rc::ptr_eq(&l.client, client))
+    {
+        u.lightbox = None;
+    }
+    if u.gif
+        .as_ref()
+        .is_some_and(|g| g.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)))
+    {
+        u.gif = None;
+    }
+    let gone: Vec<ChannelId> = u
+        .tray_owners
+        .iter()
+        .filter(|(_, o)| **o == owner)
+        .map(|(c, _)| *c)
+        .collect();
+    for channel in gone {
+        u.trays.remove(&channel);
+        u.tray_owners.remove(&channel);
+        u.tray_previews.retain(|(c, _), _| *c != channel);
+    }
+}
+
 /// The tray of `channel`, made on first use.
 pub fn tray_of(client: &Client, channel: ChannelId, cx: &mut App) -> Tray {
-    ui(cx)
-        .trays
+    let u = ui(cx);
+    u.tray_owners
+        .entry(channel)
+        .or_insert(std::ptr::from_ref(client) as usize);
+    u.trays
         .entry(channel)
         .or_insert_with(|| client.attachments().tray(channel))
         .clone()

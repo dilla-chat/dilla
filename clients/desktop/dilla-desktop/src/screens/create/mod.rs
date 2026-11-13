@@ -121,6 +121,23 @@ pub fn attach(window: &Window, client: Rc<Client>, on_navigate: OnNavigate, cx: 
     }
 }
 
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): each window it was attached to drops it,
+/// with that window's flows (made again on first use).
+pub fn release(client: &Rc<Client>, cx: &mut App) {
+    let w = windows(cx);
+    let gone: Vec<WindowId> = w
+        .attached
+        .iter()
+        .filter(|(_, (c, _))| Rc::ptr_eq(c, client))
+        .map(|(id, _)| *id)
+        .collect();
+    for id in gone {
+        w.attached.remove(&id);
+        w.flows.remove(&id);
+        w.pending.remove(&id);
+    }
+}
+
 /// The window's flows entity, made on first use.
 fn flows_of(window: &mut Window, cx: &mut App) -> Entity<CreateFlows> {
     let id = window.window_handle().window_id();

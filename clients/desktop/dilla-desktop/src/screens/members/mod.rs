@@ -127,6 +127,27 @@ fn ui(cx: &mut App) -> &mut MembersUi {
     cx.global_mut::<MembersUi>()
 }
 
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): the slot context it was handed and the
+/// card, menu and dialog drawn for it go.
+pub fn release(client: &Rc<Client>, cx: &mut App) {
+    if !cx.has_global::<MembersUi>() {
+        return;
+    }
+    let u = ui(cx);
+    if u.ctx
+        .as_ref()
+        .is_some_and(|ctx| ctx.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)))
+    {
+        u.ctx = None;
+        u.card = None;
+        u.menu = None;
+        u.dialog = None;
+        u.busy = false;
+        u.assign = None;
+        u.role_delete = None;
+    }
+}
+
 /// The host hands its slot context in before it draws the aside (the aside hook takes none of its own).
 ///
 /// The web reads the access again on every community change (op 54: a role, a grant or an overwrite changed). The sync

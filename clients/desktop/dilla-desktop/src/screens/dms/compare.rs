@@ -77,6 +77,21 @@ pub fn set_heading(heading: FocusHandle, cx: &mut App) {
     model(cx).heading = Some(heading);
 }
 
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): its comparison closes.
+pub fn release(client: &Rc<Client>, cx: &mut App) {
+    if !cx.has_global::<CompareModel>() {
+        return;
+    }
+    let m = model(cx);
+    if m.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)) {
+        let heading = m.heading.take();
+        *m = CompareModel {
+            heading,
+            ..CompareModel::default()
+        };
+    }
+}
+
 /// Opens the comparison with `record` and asks the client for the number of its comparison key.
 pub fn open(record: &TrustSummary, client: Option<Rc<Client>>, cx: &mut App) {
     let key = record.comparison_key().to_owned();

@@ -571,13 +571,7 @@ impl AppView {
             // Every view that held the client goes first; then the last handle stops it and the wipe waits for the
             // store to close.
             let _ = this.update(cx, |this, cx| {
-                crate::screens::factor::forget_instance(&client, cx);
-                // An instance window's registry holds the client too (Task 27): it lets go, so the store can close.
-                if let Some(id) = this.instance {
-                    crate::windows::drop_client(cx, id);
-                }
-                this._subscriptions.clear();
-                this.screen = Screen::Starting;
+                this.release(&client, cx);
                 cx.notify();
             });
             let mut client = client;
@@ -615,6 +609,7 @@ impl AppView {
                 Err(shared) => {
                     let _ = this.update_in(cx, |this, window, cx| {
                         crate::screens::factor::register_instance(&shared, cfg, cx);
+                        crate::screens::factor::register_window_client(&shared, window, cx);
                         if let Some(id) = this.instance {
                             crate::windows::keep_client(cx, id, shared.clone());
                         }
@@ -626,6 +621,45 @@ impl AppView {
             }
         })
         .detach();
+    }
+
+    /// Automation (integration 3, step 0 item 1's test): the shell's client comes to owe a factor (the forced screen, as
+    /// `show_shell`'s state loop shows it), and the person confirms Forget this device there.
+    #[cfg(feature = "automation")]
+    pub fn forget_from_forced(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(client) = self
+            .shell
+            .as_ref()
+            .and_then(|s| s.read(cx).client().cloned())
+        else {
+            return;
+        };
+        let Some(cfg) = crate::screens::factor::instance_of(&client, cx) else {
+            return;
+        };
+        self.show_factor(client.clone(), window, cx);
+        self.forget(client, cfg, window, cx);
+    }
+
+    /// Automation: the window shows the sign-in.
+    #[cfg(feature = "automation")]
+    pub fn shows_sign_in(&self) -> bool {
+        matches!(self.screen, Screen::SignIn(_))
+    }
+
+    /// Integration 3, step 0 item 1: the window and the app let go of `client` (Forget, sign-out), so the caller's
+    /// handle is the last and its store can close: the shell this window kept (a shell shown earlier still held it
+    /// behind the forced screen), the screen, the subscriptions, the instance registry's hold (Task 27) and every
+    /// app-wide holder ([`crate::release::release_client`]).
+    fn release(&mut self, client: &Rc<Client>, cx: &mut Context<Self>) {
+        self.shell = None;
+        self._subscriptions.clear();
+        self.screen = Screen::Starting;
+        // An instance window's registry holds the client too (Task 27): it lets go, so the store can close.
+        if let Some(id) = self.instance {
+            crate::windows::drop_client(cx, id);
+        }
+        crate::release::release_client(client, cx);
     }
 
     /// A Forget that did not go through: said on the forced screen.
@@ -645,15 +679,17 @@ impl AppView {
                 .with_controls(controls)
         });
         let weak = shell.downgrade();
-        let factor_client = client.clone();
+        // Held weakly: a Forget or a sign-out releases the client while this loop waits (integration 3, step 0 item 1).
+        let factor_client = Rc::downgrade(&client);
         cx.spawn_in(window, async move |this, cx| {
             while states.changed().await.is_ok() {
                 let next = states.borrow_and_update().clone();
                 // Task 26: a renewal or a refusal found a factor owed: the forced screen.
                 if next.account.phase == dilla_client::state::AccountPhase::FactorSetup {
-                    let client = factor_client.clone();
-                    let _ =
-                        this.update_in(cx, |this, window, cx| this.show_factor(client, window, cx));
+                    if let Some(client) = factor_client.upgrade() {
+                        let _ = this
+                            .update_in(cx, |this, window, cx| this.show_factor(client, window, cx));
+                    }
                     break;
                 }
                 if weak
@@ -696,9 +732,16 @@ impl AppView {
             // again): once its factor is in place (Task 26's screens) it is ready, and if a sign-up's join is kept in the
             // store, the invite's server is joined (a refused join is the result, not a failure) and the done step shows.
             let mut ready = client.state();
-            let client = client.clone();
+            // Held weakly while it waits: a Forget or a sign-out meanwhile releases the client (step 0 item 1).
+            let held = Rc::downgrade(&client);
             cx.spawn_in(window, async move |this, cx| {
-                if !after_signup && !client.onboarding().has_pending_join().await {
+                let onboarding = match held.upgrade() {
+                    Some(client) => client.onboarding(),
+                    None => return,
+                };
+                let pending = onboarding.has_pending_join().await;
+                drop(onboarding);
+                if !after_signup && !pending {
                     return;
                 }
                 loop {
@@ -710,6 +753,9 @@ impl AppView {
                         return;
                     }
                 }
+                let Some(client) = held.upgrade() else {
+                    return;
+                };
                 let result = client.onboarding().finish_signup().await;
                 client.refresh();
                 let _ = this.update_in(cx, |this, window, cx| {

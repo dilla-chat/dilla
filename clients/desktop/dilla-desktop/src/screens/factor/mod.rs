@@ -50,6 +50,24 @@ pub fn forget_instance(client: &Rc<Client>, cx: &mut App) {
     }
 }
 
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): a step-up waiting in a window that shows
+/// it is dropped (its dialog holds the client's factors handle), and the window map forgets those windows.
+pub fn release(client: &Rc<Client>, cx: &mut App) {
+    let windows: Vec<gpui::WindowId> = cx
+        .try_global::<WindowClients>()
+        .map(|w| {
+            w.0.iter()
+                .filter(|(_, c)| c.upgrade().is_some_and(|c| Rc::ptr_eq(&c, client)))
+                .map(|(id, _)| *id)
+                .collect()
+        })
+        .unwrap_or_default();
+    for id in &windows {
+        cx.default_global::<PendingStepUps>().0.remove(id);
+        cx.default_global::<WindowClients>().0.remove(id);
+    }
+}
+
 /// The instance `client` was registered with ([`register_instance`]).
 pub fn instance_of(client: &Rc<Client>, cx: &App) -> Option<dilla_client::seams::InstanceConfig> {
     cx.try_global::<Instances>()

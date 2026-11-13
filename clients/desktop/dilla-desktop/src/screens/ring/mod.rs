@@ -55,6 +55,17 @@ pub fn provide(env: RingEnv, window: &Window, cx: &mut App) {
     }
 }
 
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): the windows whose banner read it forget
+/// their environment (the next render of a host provides a new one).
+pub fn release(client: &std::rc::Rc<dilla_client::Client>, cx: &mut App) {
+    cx.default_global::<Windows>().0.retain(|(_, env, _)| {
+        !env.ctx
+            .client
+            .as_ref()
+            .is_some_and(|c| std::rc::Rc::ptr_eq(c, client))
+    });
+}
+
 /// A ring's key: its call and the instance's expires_ts (Ring.tsx `key`).
 pub fn ring_key(r: &IncomingRing) -> SharedString {
     SharedString::from(format!("{}:{}", hex(&r.call_id), r.ring_ts))

@@ -97,6 +97,27 @@ pub fn ui(window: &mut Window, cx: &mut App) -> Entity<MessageUi> {
 struct UiHandle(Entity<MessageUi>);
 impl Global for UiHandle {}
 
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): the context the dialogs read and an open
+/// editor that holds it go.
+pub fn release(client: &Rc<Client>, cx: &mut App) {
+    let Some(handle) = cx.try_global::<UiHandle>().cloned() else {
+        return;
+    };
+    let holds = |c: &Option<Rc<Client>>| c.as_ref().is_some_and(|c| Rc::ptr_eq(c, client));
+    handle.0.update(cx, |ui, cx| {
+        if ui.ctx.as_ref().is_some_and(|ctx| holds(&ctx.client)) {
+            ui.ctx = None;
+            ui.pins = None;
+            ui.deleting = None;
+            ui.menu = None;
+        }
+        if ui.editing.as_ref().is_some_and(|e| holds(&e.client)) {
+            ui.editing = None;
+        }
+        cx.notify();
+    });
+}
+
 /// The state a closure of an action reaches (`None` before the timeline's first frame).
 pub fn handle(cx: &App) -> Option<Entity<MessageUi>> {
     cx.try_global::<UiHandle>().map(|h| h.0.clone())

@@ -62,6 +62,19 @@ fn model(cx: &mut App) -> &mut PickerModel {
     cx.global_mut::<PickerModel>()
 }
 
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): the picker closes.
+pub fn release(client: &Rc<Client>, cx: &mut App) {
+    if !cx.has_global::<PickerModel>() {
+        return;
+    }
+    let m = cx.global_mut::<PickerModel>();
+    if m.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)) {
+        m.client = None;
+        m.open = false;
+        m.busy = false;
+    }
+}
+
 /// Opens the picker over `community`'s members (`None`: every server's).
 pub fn open(community: Option<CommunityId>, client: Option<Rc<Client>>, cx: &mut App) {
     let m = model(cx);

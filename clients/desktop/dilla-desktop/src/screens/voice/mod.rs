@@ -191,6 +191,22 @@ fn tell_ring(state: &AppState, client: &Rc<Client>, cx: &mut App) {
     }
 }
 
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): its handle and its call's media session go,
+/// so the store can close.
+pub fn release(client: &Rc<Client>, cx: &mut App) {
+    if !cx.has_global::<VoiceUi>() {
+        return;
+    }
+    let ui = cx.global_mut::<VoiceUi>();
+    if ui.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)) {
+        ui.client = None;
+        ui.session = None;
+        ui.images.clear();
+        ui.told_in_call = None;
+        ui.told_roster = None;
+    }
+}
+
 fn ui(cx: &App) -> Option<&VoiceUi> {
     cx.try_global::<VoiceUi>()
 }

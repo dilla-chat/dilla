@@ -234,6 +234,11 @@ impl ShellView {
         this
     }
 
+    /// The running client this shell shows (`None` for a fixture).
+    pub fn client(&self) -> Option<&Rc<Client>> {
+        self.client.as_ref()
+    }
+
     /// Draws the window's own controls in the title bar (the shipping window; a fixture has none).
     pub fn with_controls(mut self, controls: bool) -> Self {
         self.controls = controls;

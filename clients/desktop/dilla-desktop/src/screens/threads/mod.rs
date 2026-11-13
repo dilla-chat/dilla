@@ -73,6 +73,21 @@ fn ui(cx: &mut App) -> &mut Ui {
     cx.default_global::<Ui>()
 }
 
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): the context the hooks read, the pane
+/// drawn for it and its tracked channel go.
+pub fn release(client: &std::rc::Rc<dilla_client::Client>, cx: &mut App) {
+    let u = ui(cx);
+    u.tracked.remove(&(std::rc::Rc::as_ptr(client) as usize));
+    if u.ctx.as_ref().is_some_and(|ctx| {
+        ctx.client
+            .as_ref()
+            .is_some_and(|c| std::rc::Rc::ptr_eq(c, client))
+    }) {
+        u.ctx = None;
+        u.pane = None;
+    }
+}
+
 /// Remembers `ctx` for the hooks that get none and asks the client to keep `ctx.channel`'s thread summaries.
 fn remember(ctx: &SlotCx, cx: &mut App) {
     let mut change = None;

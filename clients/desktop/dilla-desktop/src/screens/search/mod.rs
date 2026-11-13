@@ -92,6 +92,19 @@ pub struct SearchEnv {
 
 impl Global for SearchEnv {}
 
+/// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): the palette's environment goes (the next
+/// render of a host provides a new one).
+pub fn release(client: &std::rc::Rc<dilla_client::Client>, cx: &mut App) {
+    if cx.try_global::<SearchEnv>().is_some_and(|env| {
+        env.ctx
+            .client
+            .as_ref()
+            .is_some_and(|c| std::rc::Rc::ptr_eq(c, client))
+    }) {
+        cx.remove_global::<SearchEnv>();
+    }
+}
+
 /// The host's current view for the palette, set on each render of the host.
 pub fn provide(env: SearchEnv, cx: &mut App) {
     cx.set_global(env);

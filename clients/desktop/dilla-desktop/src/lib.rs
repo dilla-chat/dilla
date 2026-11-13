@@ -9,6 +9,7 @@ pub mod edit_state;
 pub mod fixture;
 pub mod format;
 pub mod keys;
+pub mod release;
 pub mod router;
 pub mod screens;
 pub mod slots;
