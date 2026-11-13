@@ -239,3 +239,118 @@ async fn a_bot_enabled_in_server_settings_reaches_ready() {
     a.stop();
     drop(host);
 }
+
+/// An invite code to `community`, made by `owner` (the invite link's code).
+fn invite_code(host: &Host, owner: &Person, community: [u8; 16]) -> String {
+    use dilla_core::ids::DeviceId;
+    let mut ds = dilla_testkit::HttpDs::with_session(
+        &host.public,
+        DeviceId::from_bytes(owner.device_id),
+        owner.token.clone(),
+    )
+    .unwrap();
+    ds.create_invite(&community, 64, 3600).unwrap()
+}
+
+/// How many members of `community` hold `role`, as the owner's Roles page counts them.
+fn holders(s: &dilla_client::state::AppState, community: CommunityId, role: [u8; 16]) -> usize {
+    s.members.get(&community).map_or(0, |m| {
+        m.iter().filter(|m| m.role_ids.contains(&role)).count()
+    })
+}
+
+/// e2e/web/bot-runtime.spec.ts "a Roles-enabled bot applies the configured join role on join and rejoin": the owner makes
+/// "Arrival Crew" (no members), enables the Bot with the Roles capability, sets it as the join role (read back the same);
+/// Bea joins and the role counts one member; she leaves (zero) and joins again, and the Bot gives it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+async fn a_roles_bot_applies_the_join_role_on_join_and_rejoin() {
+    use dilla_client::testing::host::bot::cap;
+    let (host, pa, c) = bot_owner("t28-joinrole").await;
+    let invite = host.invites.last().unwrap().clone();
+    let pb = sign_up(&host, &invite, "bea", "Bea", "t28-joinrole").await;
+    clear_session(&pb);
+    let a = start(&pa).await;
+    let community = CommunityId(c);
+    wait_for(&a, Duration::from_secs(30), "the community", |s| {
+        s.members.contains_key(&community)
+    })
+    .await;
+    let role = a
+        .roles()
+        .create_role(community, "Arrival Crew", 0, false, false, 0)
+        .await
+        .expect("the role");
+    let s = wait_for(&a, Duration::from_secs(10), "the role listed", |s| {
+        s.roles
+            .roles
+            .get(&community)
+            .is_some_and(|r| r.iter().any(|r| r.id == role))
+    })
+    .await;
+    assert_eq!(holders(&s, community, role), 0);
+    let installation = enable_bot(&a, c, cap::ROLES).await;
+    assert_eq!(
+        a.roles().bot_join_role(community).await.unwrap(),
+        Some((None, installation.id)),
+        "no join role yet"
+    );
+    let saved = a
+        .roles()
+        .configure_bot_join_role(community, Some(role), installation.id)
+        .await
+        .expect("the join role is saved");
+    assert_eq!(saved, installation.id);
+    assert_eq!(
+        a.roles().bot_join_role(community).await.unwrap(),
+        Some((Some(role), installation.id)),
+        "read back"
+    );
+
+    let code = invite_code(&host, &pa, c);
+    let b = start(&pb).await;
+    b.onboarding().join(&code).await.expect("bea joins");
+    let bea = dilla_client::state::UserId(pb.user_id);
+    wait_for(
+        &a,
+        Duration::from_secs(90),
+        "the Bot gives bea the join role",
+        |s| {
+            s.members.get(&community).is_some_and(|m| {
+                m.iter()
+                    .any(|m| m.user_id == bea && m.role_ids.contains(&role))
+            })
+        },
+    )
+    .await;
+
+    b.server_admin()
+        .leave(community)
+        .wait()
+        .await
+        .expect("bea leaves");
+    wait_for(&a, Duration::from_secs(30), "bea gone", |s| {
+        s.members
+            .get(&community)
+            .is_some_and(|m| m.iter().all(|m| m.user_id != bea))
+            && holders(s, community, role) == 0
+    })
+    .await;
+
+    b.onboarding().join(&code).await.expect("bea joins again");
+    wait_for(
+        &a,
+        Duration::from_secs(90),
+        "the join role again on rejoin",
+        |s| {
+            s.members.get(&community).is_some_and(|m| {
+                m.iter()
+                    .any(|m| m.user_id == bea && m.role_ids.contains(&role))
+            })
+        },
+    )
+    .await;
+    a.stop();
+    b.stop();
+    drop(host);
+}
