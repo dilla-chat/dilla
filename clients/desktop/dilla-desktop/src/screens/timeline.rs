@@ -369,7 +369,9 @@ fn marks_head(state: &AppState, community: CommunityId, item: &TimelineItem) -> 
 fn body_offset(grouped: bool, marks: bool) -> f32 {
     match (grouped, marks) {
         (true, false) => FOLLOW_PAD,
-        (true, true) => FOLLOW_PAD + head_line() + MAIN_GAP,
+        // The grouped head is a flex row whose only in-flow children are meta spans (the author is screen-reader only,
+        // absolutely placed): a flex container has no strut, so it is one meta line high (MessageRow.css).
+        (true, true) => FOLLOW_PAD + meta_line() + MAIN_GAP,
         (false, _) => ROW_TOP + head_line() + MAIN_GAP,
     }
 }
@@ -396,7 +398,7 @@ fn row_height(grouped: bool, marks: bool, last: bool, before: f32, body: f32, ex
     let slot = attachments_slot(last);
     let body = before + body + extras;
     if grouped && marks {
-        FOLLOW_PAD + head_line() + MAIN_GAP + body + slot + FOLLOW_PAD
+        FOLLOW_PAD + meta_line() + MAIN_GAP + body + slot + FOLLOW_PAD
     } else if grouped {
         FOLLOW_PAD + body + slot + FOLLOW_PAD
     } else {
@@ -696,9 +698,8 @@ fn draw_row(
     } else if shown.marks {
         // A follow-up that shows a mark keeps a head line of only its marks (the name and the tag are for a screen
         // reader there): a webhook's "via", edited, pinned, the send state (final review I3, MessageRow.css).
-        let head = local + FOLLOW_PAD + shift;
-        let baseline = head + chromium_baseline(Face::Mono, f32::from(text::SM), head_line());
-        let meta_top = baseline - chromium_baseline(Face::Mono, f32::from(text::META), meta_line());
+        // Only meta spans, baseline-aligned at one size: the line's top is the head's top.
+        let meta_top = local + FOLLOW_PAD + shift;
         draw_marks(
             &mut placer,
             cx_row,
@@ -1307,7 +1308,7 @@ mod tests {
                 > row_height(true, false, false, 0.0, lh, 0.0)
         );
         assert!(body_offset(true, true) > body_offset(true, false));
-        assert_eq!(body_offset(true, true), FOLLOW_PAD + head_line() + MAIN_GAP);
+        assert_eq!(body_offset(true, true), FOLLOW_PAD + meta_line() + MAIN_GAP);
     }
 
     fn item_with_body(body: &str) -> TimelineItem {
