@@ -19,9 +19,7 @@ use dilla_client::state::bot::{
     Conversation, PollView, PrivateResult, ResultProvider, ResultStatus,
 };
 use dilla_client::state::{AppState, TimelineItem};
-use gpui::{
-    AnyElement, App, ElementId, Global, IntoElement, ParentElement, Styled, Window, div, px,
-};
+use gpui::{AnyElement, App, ElementId, Global, IntoElement, ParentElement, Styled, Window, div};
 
 use dilla_desktop_ui::components::commands::bot_result::{self, Author, BotResult, Status};
 use dilla_desktop_ui::components::commands::list::{CommandList, ListItem, ListLabels};
@@ -243,8 +241,8 @@ pub fn picker(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyEle
     // CommandPicker.css: 16px in from the composer's sides, 6px above it.
     Some(
         div()
-            .px(px(16.0))
-            .pb(px(6.0))
+            .px(dilla_desktop_ui::components::commands::list::PICKER_INSET_X)
+            .pb(dilla_desktop_ui::components::commands::list::PICKER_GAP)
             .child(crate::tracked_box(
                 "command-picker",
                 div().w_full().child(list),

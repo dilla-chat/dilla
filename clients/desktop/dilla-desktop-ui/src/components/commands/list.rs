@@ -22,6 +22,10 @@ use crate::tokens::{color, font, radius, text};
 pub const LIST_MAX: f32 = 260.0;
 /// One row: `min-height: 2.5rem` and 4px above and below (content-box).
 pub const ROW_HEIGHT: f32 = 48.0;
+/// CommandPicker.css: the list sits this far in from the composer's sides.
+pub const PICKER_INSET_X: gpui::Pixels = gpui::px(16.0);
+/// CommandPicker.css: the gap between the list and the composer under it.
+pub const PICKER_GAP: gpui::Pixels = gpui::px(6.0);
 const ROW_PAD_Y: f32 = 4.0;
 const ROW_PAD_X: f32 = 10.0;
 const SCROLL_PAD: f32 = 4.0;
