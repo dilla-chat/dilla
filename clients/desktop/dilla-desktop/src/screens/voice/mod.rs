@@ -116,6 +116,8 @@ pub struct VoiceUi {
     come_back: Option<crate::screens::ring::OnComeBack>,
     /// The push-to-talk key (Task 19's `PttHold`): held, or let go less than the release delay ago.
     ptt: dilla_client::features::voice_prefs::ptt::PttHold,
+    /// Push to talk's key (as GPUI names it) and release delay, from the settings ([`set_ptt_key`]).
+    ptt_key: Option<(String, u32)>,
 }
 
 /// Every instance window's voice area, by window. A window that closes is let go at once (`windows::on_closed`: its
@@ -189,6 +191,7 @@ fn in_a_call(ui: &VoiceUi) -> bool {
 /// media link is cut, Idle published, the Remove sent), its media session is dropped with the area, and its client is
 /// no longer held.
 pub fn window_closed(window: WindowId, cx: &mut App) {
+    release_ptt(window, cx);
     let Some(ui) = cx
         .try_global::<VoiceAreas>()
         .is_some()
@@ -407,6 +410,17 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
     }
     if let Some(client) = client {
         tell_ring(window, &state, client, cx);
+        let v = dilla_client::features::voice_prefs::values::VoiceValues::read(&client.prefs());
+        let key = v
+            .ptt_chord
+            .map(|chord| (keys::ptt_key(&chord), v.ptt_release_ms));
+        set_ptt_key(window, key, cx);
+    }
+    if ui_mut(window, cx).state.voice.call.phase != CallPhase::Idle
+        && state.voice.call.phase == CallPhase::Idle
+    {
+        // The call ended: push to talk lets go (review I1).
+        release_ptt(window, cx);
     }
     let ui = ui_mut(window, cx);
     if ui.state.voice.call.phase != CallPhase::Idle && state.voice.call.phase == CallPhase::Idle {
@@ -907,8 +921,7 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
                 .min_w_0()
                 .child(status)
                 .child(controls),
-        )
-        .child(ptt_listener(w));
+        );
     Some(tracked_box("voice-dock", card).into_any_element())
 }
 
@@ -922,69 +935,92 @@ fn ptt_now_ms() -> f64 {
         * 1000.0
 }
 
-/// Push to talk while the window is focused: the person's key (`voice.pttChord`, Task 19's validated values) held opens
-/// the microphone; let go, it keeps sending for the release delay (`voice.pttRelease`, Task 19's `PttHold`); the
-/// window losing the focus closes it at once. Listened for while a call is on (the dock is drawn).
-fn ptt_listener(w: WindowId) -> impl IntoElement {
-    use dilla_client::features::voice_prefs::values::VoiceValues;
+/// Push to talk's key and its release delay for `window` (`None`: no key set). The shell's sync keeps it from Task 19's
+/// validated values (`voice.pttChord`, `voice.pttRelease`).
+pub fn set_ptt_key(window: WindowId, key: Option<(String, u32)>, cx: &mut App) {
+    ui_mut(window, cx).ptt_key = key;
+}
+
+/// Whether push to talk sends from `window` now (the key held, or let go less than the release delay ago).
+pub fn ptt_sending(window: WindowId, cx: &App) -> bool {
+    ui_of(window, cx).is_some_and(|u| {
+        let release = u.ptt_key.as_ref().map_or(0, |(_, ms)| *ms);
+        u.ptt.sending(ptt_now_ms(), release)
+    })
+}
+
+/// Lets go of push to talk in `window` at once (review I1): the screen left the shell, the window lost the focus or
+/// closed, or the call ended. The microphone closes; idempotent.
+pub fn release_ptt(window: WindowId, cx: &mut App) {
+    let Some(ui) = ui_of(window, cx) else { return };
+    let held = ui.ptt.is_down() || ptt_sending(window, cx);
+    let published = ui
+        .client
+        .as_ref()
+        .is_some_and(|c| c.state().borrow().voice.ptt_held);
+    if !held && !published {
+        return;
+    }
+    ui_mut(window, cx).ptt.release();
+    if let Some(v) = voice(window, cx) {
+        v.set_ptt_held(false);
+    }
+}
+
+/// Push to talk while the window is focused (review I1: drawn at the app's root, so it hears the key whatever screen
+/// shows): the person's key held opens the microphone; let go, it keeps sending for the release delay (Task 19's
+/// `PttHold`); the window losing the focus closes it at once. Listened for while this window's call is on.
+pub fn ptt_root(w: WindowId) -> impl IntoElement {
+    // The window losing the focus is noticed when it next draws: nothing is sent from here on.
     canvas(
         |_, _, _| {},
         move |_, _, window, cx| {
-            let values = ui_of(w, cx)
-                .and_then(|u| u.client.as_ref())
-                .map(|c| VoiceValues::read(&c.prefs()));
-            let Some(values) = values else { return };
-            // Focus left the window: nothing is sent from here on, whatever the release delay.
-            if !window.is_window_active()
-                && ui_of(w, cx).is_some_and(|u| u.ptt.sending(ptt_now_ms(), values.ptt_release_ms))
-            {
-                ui_mut(w, cx).ptt.release();
-                if let Some(v) = voice(w, cx) {
-                    v.set_ptt_held(false);
-                }
+            if !window.is_window_active() {
+                release_ptt(w, cx);
             }
-            let Some(chord) = values.ptt_chord else {
-                return;
-            };
-            let key = keys::ptt_key(&chord);
-            let down = key.clone();
-            let release_ms = values.ptt_release_ms;
-            window.on_key_event(move |e: &gpui::KeyDownEvent, phase, _, cx| {
-                if phase == gpui::DispatchPhase::Capture
-                    && !e.is_held
-                    && e.keystroke.key.eq_ignore_ascii_case(&down)
-                    && ui_of(w, cx).is_some()
-                {
-                    ui_mut(w, cx).ptt.press();
-                    if let Some(v) = voice(w, cx) {
-                        v.set_ptt_held(true);
-                    }
-                }
-            });
-            window.on_key_event(move |e: &gpui::KeyUpEvent, phase, _, cx| {
-                if phase == gpui::DispatchPhase::Capture
-                    && e.keystroke.key.eq_ignore_ascii_case(&key)
-                    && ui_of(w, cx).is_some()
-                {
-                    ui_mut(w, cx).ptt.let_go(ptt_now_ms());
-                    cx.spawn(async move |cx| {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(u64::from(release_ms)))
-                            .await;
-                        cx.update(|cx| {
-                            let sending = ui_of(w, cx)
-                                .is_some_and(|u| u.ptt.sending(ptt_now_ms(), release_ms));
-                            if !sending && let Some(v) = voice(w, cx) {
-                                v.set_ptt_held(false);
-                            }
-                        });
-                    })
-                    .detach();
-                }
-            });
         },
     )
     .size_0()
+}
+
+/// The push-to-talk key's handlers, on the window's root element (review I1): an ancestor of whatever holds the focus,
+/// so a key is heard on every screen. The key counts while this window's call is on.
+pub fn ptt_keys<E: InteractiveElement>(w: WindowId, root: E) -> E {
+    let key_of = move |cx: &App| {
+        ui_of(w, cx)
+            .filter(|u| in_a_call(u))
+            .and_then(|u| u.ptt_key.clone())
+    };
+    root.capture_key_down(move |e: &gpui::KeyDownEvent, _, cx| {
+        let Some((key, _)) = key_of(cx) else { return };
+        if !e.is_held && e.keystroke.key.eq_ignore_ascii_case(&key) {
+            ui_mut(w, cx).ptt.press();
+            if let Some(v) = voice(w, cx) {
+                v.set_ptt_held(true);
+            }
+        }
+    })
+    .capture_key_up(move |e: &gpui::KeyUpEvent, _, cx| {
+        let Some((key, release_ms)) = key_of(cx) else {
+            return;
+        };
+        if !e.keystroke.key.eq_ignore_ascii_case(&key) {
+            return;
+        }
+        ui_mut(w, cx).ptt.let_go(ptt_now_ms());
+        cx.spawn(async move |cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(u64::from(release_ms)))
+                .await;
+            cx.update(|cx| {
+                let sending = ui_of(w, cx).is_some_and(|u| u.ptt.sending(ptt_now_ms(), release_ms));
+                if !sending && let Some(v) = voice(w, cx) {
+                    v.set_ptt_held(false);
+                }
+            });
+        })
+        .detach();
+    })
 }
 
 // ---- the stage ----------------------------------------------------------------------------------------------------

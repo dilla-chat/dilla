@@ -18,8 +18,8 @@ use dilla_client::keychain::OsKeychain;
 use dilla_client::seams::{InstanceConfig, InstanceId, Keychain};
 use dilla_client::{Client, ClientError};
 use gpui::{
-    AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription, Window,
-    div,
+    AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render, Styled,
+    Subscription, Window, div,
 };
 
 use dilla_desktop_ui::tokens::color;
@@ -186,6 +186,9 @@ pub struct AppView {
     shell: Option<Entity<ShellView>>,
     /// The shell's way to the user settings (`ShellView`'s `OpenSettings`): the host opens over it.
     shell_sub: Option<Subscription>,
+    /// The window's root: it takes the focus when nothing else holds it, so every key reaches the root's handlers
+    /// (push to talk, review I1).
+    root_focus: gpui::FocusHandle,
     _subscriptions: Vec<Subscription>,
     /// Task 26: why the last Forget did not finish, for the forced screen the client comes back to.
     forget_note: Option<String>,
@@ -202,6 +205,7 @@ impl AppView {
             after_signup: false,
             shell: None,
             shell_sub: None,
+            root_focus: cx.focus_handle(),
             _subscriptions: Vec::new(),
             forget_note: None,
         };
@@ -1194,13 +1198,31 @@ impl Render for AppView {
         .then(|| {
             crate::screens::shell::resize::render(f32::from(size.width), f32::from(size.height))
         });
-        tracked(
-            "root",
+        // Push to talk is heard at the root, whatever screen shows, and lets go when the screen is not the shell
+        // (review I1: the settings replacing the shell's dock left a held key's microphone open).
+        let w = crate::screens::voice::wid(window);
+        if !matches!(self.screen, Screen::Shell(_)) {
+            crate::screens::voice::release_ptt(w, cx);
+        }
+        // The window's outermost element carries push to talk's keys: it is on every key's dispatch path (it takes the
+        // focus itself when nothing holds it).
+        if window.focused(cx).is_none() {
+            window.focus(&self.root_focus, cx);
+        }
+        crate::screens::voice::ptt_keys(
+            w,
             div()
+                .track_focus(&self.root_focus)
                 .size_full()
-                .bg(color::BG)
-                .child(body)
-                .children(strips.into_iter().flatten()),
+                .child(tracked(
+                    "root",
+                    div()
+                        .size_full()
+                        .bg(color::BG)
+                        .child(crate::screens::voice::ptt_root(w))
+                        .child(body)
+                        .children(strips.into_iter().flatten()),
+                )),
         )
     }
 }

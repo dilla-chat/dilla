@@ -84,12 +84,13 @@ struct Host;
 impl Render for Host {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ch = channel();
-        div()
+        voice::ptt_keys(voice::wid(window), div())
             .size_full()
             .flex()
             .children(voice::channel_people(&ch, window, cx))
             .children(voice::dock(window, cx))
             .children(voice::stage(&ch, window, cx))
+            .child(voice::ptt_root(voice::wid(window)))
     }
 }
 
@@ -235,6 +236,82 @@ fn another_window_s_sync_leaves_this_window_s_call_alone(cx: &mut TestAppContext
 }
 
 // ---- with a real dillad: the window's call, its close, and one call per device ---------------------------------------
+
+/// Review I1 (mic privacy): push to talk is listened for at the app's root, not in the shell's dock, and it is released
+/// whenever the screen leaves the shell. Holding the key in a call, then opening the settings and letting go: the mic is
+/// closed (it was held open while the settings replaced the dock, which alone listened).
+#[cfg(feature = "automation")]
+#[gpui::test]
+fn push_to_talk_lets_go_when_the_settings_open(cx: &mut TestAppContext) {
+    use dilla_desktop::app::{AppView, Launch};
+    use dilla_desktop::router::Route;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/shell/channel-view.json");
+    let loaded = dilla_desktop::fixture::Fixture::load(&path, None).expect("the shell fixture");
+    cx.update(dilla_desktop::install);
+    let (app, vcx) =
+        cx.add_window_view(|window, cx| AppView::new(Launch::fixture(loaded), window, cx));
+    vcx.run_until_parked();
+    let w = vcx.update(|window, _| voice::wid(window));
+    // This window's call is on, push to talk on F13.
+    vcx.update(|_, cx| {
+        voice::sync(w, state(2), None, cx);
+        voice::set_ptt_key(w, Some(("f13".into(), 200)), cx);
+    });
+    vcx.update(|window, _| window.activate_window());
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    let f13 = gpui::Keystroke::parse("f13").unwrap();
+    vcx.simulate_event(gpui::KeyDownEvent {
+        keystroke: f13.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    vcx.run_until_parked();
+    assert!(
+        vcx.update(|_, cx| voice::ptt_sending(w, cx)),
+        "held: sending"
+    );
+    // The settings open over the shell (the gear): the key is let go of there.
+    app.update_in(vcx, |a, window, cx| {
+        a.open_route(&Route::Settings(None), window, cx)
+    });
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    assert!(
+        !vcx.update(|_, cx| voice::ptt_sending(w, cx)),
+        "the screen left the shell: released"
+    );
+    vcx.simulate_event(gpui::KeyUpEvent { keystroke: f13 });
+    vcx.run_until_parked();
+    assert!(!vcx.update(|_, cx| voice::ptt_sending(w, cx)));
+}
+
+/// Review I1: the call ending releases push to talk.
+#[gpui::test]
+fn the_call_ending_releases_push_to_talk(cx: &mut TestAppContext) {
+    let vcx = host(cx, state(2));
+    let w = vcx.update(|window, _| voice::wid(window));
+    vcx.update(|_, cx| voice::set_ptt_key(w, Some(("f13".into(), 200)), cx));
+    // The stage holds the focus (a key goes down the focus path, under the window's root).
+    let focus = stage_focus(vcx);
+    vcx.update(|window, cx| focus.focus(window, cx));
+    vcx.update(|window, _| window.activate_window());
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    vcx.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("f13").unwrap(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    vcx.run_until_parked();
+    assert!(vcx.update(|_, cx| voice::ptt_sending(w, cx)));
+    vcx.update(|_, cx| voice::sync(w, Arc::new(AppState::default()), None, cx));
+    assert!(
+        !vcx.update(|_, cx| voice::ptt_sending(w, cx)),
+        "the call ended"
+    );
+}
 
 #[path = "../../dilla-client/tests/support/call_world.rs"]
 mod call_world;
