@@ -199,6 +199,11 @@ pub fn composer_popup(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option
     commands::picker(ctx, window, cx).or_else(|| reactions::emoji_popup(ctx, window, cx))
 }
 
+/// In place of the composer's field: a picked command's chips (20).
+pub fn composer_chips(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    commands::chips::view(ctx, window, cx)
+}
+
 /// Under a channel's row in the list: a voice channel's people (17).
 pub fn channel_row_extras(ch: &Channel, window: &mut Window, cx: &mut App) -> AnyElement {
     column([voice::channel_people(ch, window, cx)])

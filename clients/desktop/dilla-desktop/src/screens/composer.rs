@@ -357,7 +357,14 @@ impl Composer {
     }
 
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let raw = self.input.read(cx).value().to_string();
+        // Task 28 follow-up 14: with a command picked, the chips' typed form is what is sent.
+        let chips = crate::screens::commands::chips::draft(
+            &self.slots,
+            window.window_handle().window_id(),
+            cx,
+        );
+        let chipped = chips.is_some();
+        let raw = chips.unwrap_or_else(|| self.input.read(cx).value().to_string());
         if self.blocked().is_some() {
             return;
         }
@@ -374,7 +381,7 @@ impl Composer {
         }
         // Task 20: a draft without files is the bot area's to decide first: posted (`//x` as `/x`, a built-in's text),
         // answered privately on this device, or kept (a command still lacking its arguments).
-        let raw = if files {
+        let raw = if files && !chipped {
             raw
         } else {
             match crate::screens::commands::on_send(
@@ -632,6 +639,8 @@ impl Render for Composer {
         let leading = slots::composer_leading(&ctx, window, cx);
         let buttons = slots::composer_buttons(&ctx, window, cx);
         let popup = slots::composer_popup(&ctx, window, cx);
+        // A picked command's chips in place of the field (Task 20's hook, Task 28 follow-up 14).
+        let chips = slots::composer_chips(&ctx, window, cx);
         let now_ms = ctx.clock.now() * 1000;
         let now_ms = match ctx.clock {
             crate::screens::shell::Clock::Local => std::time::SystemTime::now()
@@ -660,7 +669,7 @@ impl Render for Composer {
         // The field is as high as the draft's lines (20px each), up to the cap; soft-wrapped lines are not counted.
         let rows = value.split('\n').count().clamp(1, max_rows());
         let placeholder = format!("Message {}", self.target);
-        let sendable = !empty && blocked.is_none();
+        let sendable = (!empty || chips.is_some()) && blocked.is_none();
         let field = div()
             .relative()
             .flex_1()
@@ -740,7 +749,17 @@ impl Render for Composer {
                 line("›", text::BASE, line_height(text::BASE, 1.5), color::ACCENT)
                     .weight(font::WEIGHT_DISPLAY),
             )
-            .child(field)
+            .child(match chips {
+                // The textarea stays in the tree, empty-sized: it keeps the focus and its Enter sends the chips.
+                Some(chips) => div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .child(chips)
+                    .child(div().w_0().h_0().overflow_hidden().child(field))
+                    .into_any_element(),
+                None => field.into_any_element(),
+            })
             .child(send);
         let code = div()
             .id("composer-code")
