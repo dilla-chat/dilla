@@ -413,9 +413,26 @@ impl Descriptor {
 
     /// `[blob_id, key, nonce, size, mime, w|null, h|null, thumb|null, name]` (core-port.ts `readDescriptor`).
     pub(crate) fn decode(raw: &[u8]) -> Result<Self, AttachmentError> {
+        let mut tree = value::decode(raw)
+            .map_err(|_| AttachmentError::Other("E_CBOR_SHAPE".to_owned()))?;
+        Self::from_tree(&mut tree)
+    }
+
+    /// [`Self::decode`] from the decoded tree, whose copy of the key is zeroed before this returns (on success or
+    /// refusal).
+    pub(crate) fn from_tree(tree: &mut Value) -> Result<Self, AttachmentError> {
+        let out = Self::read_tree(tree);
+        if let Value::Array(a) = tree
+            && let Some(Value::Bytes(key)) = a.get_mut(1)
+        {
+            zeroize::Zeroize::zeroize(&mut key[..]);
+        }
+        out
+    }
+
+    fn read_tree(v: &Value) -> Result<Self, AttachmentError> {
         let bad = || AttachmentError::Other("E_CBOR_SHAPE".to_owned());
-        let v = value::decode(raw).map_err(|_| bad())?;
-        let a = value::arr(&v, 9).map_err(|_| bad())?;
+        let a = value::arr(v, 9).map_err(|_| bad())?;
         let fixed = |v: &Value, n: usize| -> Result<Vec<u8>, AttachmentError> {
             v.as_bytes()
                 .filter(|b| b.len() == n)
@@ -429,8 +446,10 @@ impl Descriptor {
                 .transpose()
         };
         let mut key = Zeroizing::new([0u8; 32]);
-        let raw_key = Zeroizing::new(fixed(&a[1], 32)?);
-        key.copy_from_slice(&raw_key);
+        match a[1].as_bytes() {
+            Some(k) if k.len() == 32 => key.copy_from_slice(k),
+            _ => return Err(bad()),
+        }
         Ok(Self {
             blob_id: fixed(&a[0], 32)?.try_into().map_err(|_| bad())?,
             key,
@@ -449,21 +468,104 @@ impl Descriptor {
         })
     }
 
-    /// The send request's attachment element (core `send_prepare`).
-    pub(crate) fn to_value(&self) -> Value {
-        let opt_u = |n: Option<u32>| n.map_or(Value::Null, |n| Value::Uint(u64::from(n)));
-        Value::Array(vec![
-            Value::Bytes(self.blob_id.to_vec()),
-            Value::Bytes(self.key.to_vec()),
-            Value::Bytes(self.nonce.to_vec()),
-            Value::Uint(self.size),
-            Value::Text(self.mime.clone()),
-            opt_u(self.w),
-            opt_u(self.h),
-            self.thumb.clone().map_or(Value::Null, Value::Bytes),
-            Value::Text(self.name.clone()),
-        ])
+}
+
+/// A CBOR head (major type and argument), in its shortest form, as `Value::encode` writes it.
+fn cbor_head(out: &mut Vec<u8>, major: u8, n: u64) {
+    let m = major << 5;
+    match n {
+        0..=23 => out.push(m | n as u8),
+        24..=0xff => out.extend_from_slice(&[m | 24, n as u8]),
+        0x100..=0xffff => {
+            out.push(m | 25);
+            out.extend_from_slice(&(n as u16).to_be_bytes());
+        }
+        0x1_0000..=0xffff_ffff => {
+            out.push(m | 26);
+            out.extend_from_slice(&(n as u32).to_be_bytes());
+        }
+        _ => {
+            out.push(m | 27);
+            out.extend_from_slice(&n.to_be_bytes());
+        }
     }
+}
+
+fn cbor_bytes(out: &mut Vec<u8>, b: &[u8]) {
+    cbor_head(out, 2, b.len() as u64);
+    out.extend_from_slice(b);
+}
+
+fn cbor_text(out: &mut Vec<u8>, t: &str) {
+    cbor_head(out, 3, t.len() as u64);
+    out.extend_from_slice(t.as_bytes());
+}
+
+fn cbor_opt_uint(out: &mut Vec<u8>, n: Option<u32>) {
+    match n {
+        Some(n) => cbor_head(out, 0, u64::from(n)),
+        None => out.push(0xf6),
+    }
+}
+
+/// The core's send request `[0, null, body, [attachment...], null]` (`send_prepare`), encoded by hand into one
+/// zeroizing buffer sized up front, so the attachments' keys exist only there (no `Value` tree, no grown buffer
+/// leaving a copy behind). Answers the buffer and the capacity it was made with.
+fn encode_send(body: &str, attachments: &[Descriptor]) -> (Zeroizing<Vec<u8>>, usize) {
+    // A head is at most 9 bytes; an element has 10 of them plus its payloads.
+    let capacity = 64
+        + body.len()
+        + attachments
+            .iter()
+            .map(|d| 10 * 9 + 32 + 32 + 12 + d.mime.len() + d.name.len() + d.thumb.as_ref().map_or(0, Vec::len))
+            .sum::<usize>();
+    let mut out = Zeroizing::new(Vec::with_capacity(capacity));
+    cbor_head(&mut out, 4, 5);
+    cbor_head(&mut out, 0, 0);
+    out.push(0xf6);
+    cbor_text(&mut out, body);
+    cbor_head(&mut out, 4, attachments.len() as u64);
+    for d in attachments {
+        cbor_head(&mut out, 4, 9);
+        cbor_bytes(&mut out, &d.blob_id);
+        cbor_bytes(&mut out, &d.key[..]);
+        cbor_bytes(&mut out, &d.nonce);
+        cbor_head(&mut out, 0, d.size);
+        cbor_text(&mut out, &d.mime);
+        cbor_opt_uint(&mut out, d.w);
+        cbor_opt_uint(&mut out, d.h);
+        match &d.thumb {
+            Some(t) => cbor_bytes(&mut out, t),
+            None => out.push(0xf6),
+        }
+        cbor_text(&mut out, &d.name);
+    }
+    out.push(0xf6);
+    (out, capacity)
+}
+
+/// download.ts `fetchAttachment`: refused over the cap before any request; the stored object fetched with a body
+/// bound of its sealed size (`size + 16`), a longer one (`E_BODY_TOO_LARGE`) refused as E_BLOB_OPEN before the rest
+/// is read; then [`open_stored`].
+pub async fn fetch(
+    routes: &dyn BlobRoutes,
+    channel: ChannelId,
+    d: &Descriptor,
+) -> Result<Zeroizing<Vec<u8>>, AttachmentError> {
+    if d.size > ATTACHMENT_CAP {
+        return Err(AttachmentError::TooLarge);
+    }
+    let stored = routes
+        .get(channel, d.blob_id, d.size + TAG_LEN as u64)
+        .await
+        .map_err(|e| {
+            if e.code == "E_BODY_TOO_LARGE" {
+                AttachmentError::BlobOpen("the stored object is larger than its descriptor".to_owned())
+            } else {
+                AttachmentError::from(e)
+            }
+        })?;
+    open_stored(d, stored.as_deref())
 }
 
 /// download.ts after the fetch: a stored object longer than `size + 16` is refused before it is hashed or opened
@@ -506,8 +608,13 @@ pub trait BlobRoutes: Send + Sync {
         blob: [u8; 32],
         stored: Vec<u8>,
     ) -> Result<(), ApiError>;
-    /// The stored bytes; `None` on 404.
-    async fn get(&self, channel: ChannelId, blob: [u8; 32]) -> Result<Option<Vec<u8>>, ApiError>;
+    /// The stored bytes, at most `cap` of them (a longer body is `E_BODY_TOO_LARGE`, not read on); `None` on 404.
+    async fn get(
+        &self,
+        channel: ChannelId,
+        blob: [u8; 32],
+        cap: u64,
+    ) -> Result<Option<Vec<u8>>, ApiError>;
     async fn delete(&self, channel: ChannelId, blob: [u8; 32]) -> Result<(), ApiError>;
     async fn confirm(&self, channel: ChannelId, blob: [u8; 32]) -> Result<(), ApiError>;
 }
@@ -528,10 +635,15 @@ impl BlobRoutes for InstanceBlobs {
             .await
             .map(|_| ())
     }
-    async fn get(&self, channel: ChannelId, blob: [u8; 32]) -> Result<Option<Vec<u8>>, ApiError> {
+    async fn get(
+        &self,
+        channel: ChannelId,
+        blob: [u8; 32],
+        cap: u64,
+    ) -> Result<Option<Vec<u8>>, ApiError> {
         let reply = self
             .0
-            .http_route::<r::GetBlob>(&[&channel.hex(), &hex(&blob)], NoBody, true)
+            .http_route_capped::<r::GetBlob>(&[&channel.hex(), &hex(&blob)], NoBody, true, cap)
             .await?;
         Ok((reply.status == 200).then_some(reply.body))
     }
@@ -1009,27 +1121,20 @@ impl Attachments {
         let routes = self.routes();
         self.inner.spawn(async move {
             let g = Self::group_of(&inner, channel).await?;
-            let raw = with_core(inner.engine().core(), move |c| {
-                c.attachment_get(&g, seq, index)
-            })
-            .await
-            .map_err(|e| AttachmentError::Other(e.code.to_owned()))?;
+            // The core's answer holds the file's key: it is wiped when dropped.
+            let raw = Zeroizing::new(
+                with_core(inner.engine().core(), move |c| c.attachment_get(&g, seq, index))
+                    .await
+                    .map_err(|e| AttachmentError::Other(e.code.to_owned()))?,
+            );
             let d = Descriptor::decode(&raw)?;
+            drop(raw);
             let name = safe_name(&d.name, "");
             let mime = d.mime.clone();
             let bytes = if thumb {
                 open_thumbnail(&d)?
             } else {
-                if d.size > ATTACHMENT_CAP {
-                    return Err(AttachmentError::TooLarge.into());
-                }
-                let stored = routes
-                    .get(channel, d.blob_id)
-                    .await
-                    .map_err(AttachmentError::from)?;
-                tokio::task::spawn_blocking(move || open_stored(&d, stored.as_deref()))
-                    .await
-                    .map_err(|_| AttachmentError::Other("E_INTERNAL".to_owned()))??
+                fetch(&*routes, channel, &d).await?
             };
             Ok(Opened { bytes, name, mime })
         })
@@ -1068,16 +1173,8 @@ impl Attachments {
                     }
                 })?;
             }
-            let request = Zeroizing::new(
-                Value::Array(vec![
-                    Value::Uint(0),
-                    Value::Null,
-                    Value::Text(body),
-                    Value::Array(attachments.iter().map(Descriptor::to_value).collect()),
-                    Value::Null,
-                ])
-                .encode(),
-            );
+            let (request, _) = encode_send(&body, &attachments);
+            drop(attachments);
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs());
@@ -1335,16 +1432,86 @@ mod tests {
         assert_eq!(open_thumbnail(&none).err(), Some(AttachmentError::Missing));
     }
 
+    /// The core's descriptor element, as `Value` would encode it: the reference the hand encoding must equal.
+    fn element(d: &Descriptor) -> Value {
+        let opt_u = |n: Option<u32>| n.map_or(Value::Null, |n| Value::Uint(u64::from(n)));
+        Value::Array(vec![
+            Value::Bytes(d.blob_id.to_vec()),
+            Value::Bytes(d.key.to_vec()),
+            Value::Bytes(d.nonce.to_vec()),
+            Value::Uint(d.size),
+            Value::Text(d.mime.clone()),
+            opt_u(d.w),
+            opt_u(d.h),
+            d.thumb.clone().map_or(Value::Null, Value::Bytes),
+            Value::Text(d.name.clone()),
+        ])
+    }
+
     #[test]
     fn a_descriptor_round_trips_through_the_core_encoding() {
         let (d, _) = descriptor(b"abc");
-        let raw = d.to_value().encode();
+        let raw = element(&d).encode();
         let back = Descriptor::decode(&raw).unwrap();
-        assert_eq!(back.to_value().encode(), raw);
+        assert_eq!(element(&back).encode(), raw);
         assert!(
             !format!("{back:?}").contains("17"),
             "Debug never shows the key"
         );
+    }
+
+    /// Fix round 1: the key's copy in the decoded tree is wiped once the descriptor holds it.
+    #[test]
+    fn decoding_a_descriptor_wipes_the_key_in_the_decoded_tree() {
+        let (d, _) = descriptor(b"abc");
+        let mut tree = value::decode(&element(&d).encode()).unwrap();
+        let back = Descriptor::from_tree(&mut tree).unwrap();
+        assert_eq!(*back.key, [0x11; 32]);
+        let Value::Array(a) = &tree else { panic!("an array") };
+        assert_eq!(a[1].as_bytes(), Some(&[0u8; 32][..]), "the tree's key is zeroed");
+    }
+
+    /// Fix round 1: the send request is the core's encoding, built in one zeroizing buffer that never grows (a grown
+    /// buffer leaves its old copy, the key with it, in freed memory).
+    #[test]
+    fn the_send_request_is_built_by_hand_in_a_zeroizing_buffer() {
+        let (mut d, _) = descriptor(b"abc");
+        d.w = Some(320);
+        d.h = Some(70_000);
+        let (e, _) = descriptor(&vec![1u8; 300]);
+        let body = "two files ".repeat(40);
+        let want = Value::Array(vec![
+            Value::Uint(0),
+            Value::Null,
+            Value::Text(body.clone()),
+            Value::Array(vec![element(&d), element(&e)]),
+            Value::Null,
+        ])
+        .encode();
+        let (got, capacity) = encode_send(&body, &[d, e]);
+        assert_eq!(*got, want);
+        assert_eq!(got.capacity(), capacity, "sized once, never reallocated");
+    }
+
+    /// download.ts / routes.ts `getBlob(.., size + 16)`: the fetch is bounded by the sealed size, and a longer object
+    /// (E_BODY_TOO_LARGE) is E_BLOB_OPEN.
+    #[tokio::test]
+    async fn a_download_is_bounded_by_its_sealed_size() {
+        let fake = Arc::new(FakeBlobs::default());
+        let (d, stored) = descriptor(b"hello");
+        fake.stored.lock().unwrap().insert(d.blob_id, stored);
+        let routes: Arc<dyn BlobRoutes> = fake.clone();
+        assert_eq!(&**fetch(&*routes, ChannelId([7; 16]), &d).await.unwrap(), b"hello");
+        assert_eq!(*fake.caps.lock().unwrap(), [5 + 16]);
+        *fake.fail_get.lock().unwrap() = Some(ApiError::local(200, "E_BODY_TOO_LARGE", ""));
+        assert_eq!(
+            fetch(&*routes, ChannelId([7; 16]), &d).await.err().map(|e| e.code()),
+            Some("E_BLOB_OPEN".to_owned())
+        );
+        let mut big = d.clone();
+        big.size = ATTACHMENT_CAP + 1;
+        assert_eq!(fetch(&*routes, ChannelId([7; 16]), &big).await.err(), Some(AttachmentError::TooLarge));
+        assert_eq!(fake.caps.lock().unwrap().len(), 2, "no request for a file over the cap");
     }
 
     #[derive(Default)]
@@ -1352,6 +1519,8 @@ mod tests {
         stored: StdMutex<HashMap<[u8; 32], Vec<u8>>>,
         log: StdMutex<Vec<String>>,
         fail_put: StdMutex<Option<ApiError>>,
+        fail_get: StdMutex<Option<ApiError>>,
+        caps: StdMutex<Vec<u64>>,
     }
 
     #[async_trait::async_trait]
@@ -1372,7 +1541,16 @@ mod tests {
             self.stored.lock().unwrap().insert(blob, stored);
             Ok(())
         }
-        async fn get(&self, _c: ChannelId, blob: [u8; 32]) -> Result<Option<Vec<u8>>, ApiError> {
+        async fn get(
+            &self,
+            _c: ChannelId,
+            blob: [u8; 32],
+            cap: u64,
+        ) -> Result<Option<Vec<u8>>, ApiError> {
+            self.caps.lock().unwrap().push(cap);
+            if let Some(e) = self.fail_get.lock().unwrap().take() {
+                return Err(e);
+            }
             Ok(self.stored.lock().unwrap().get(&blob).cloned())
         }
         async fn delete(&self, _c: ChannelId, blob: [u8; 32]) -> Result<(), ApiError> {

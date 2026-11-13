@@ -313,10 +313,28 @@ impl Api {
     where
         R::Request: Clone,
     {
+        self.http_call_bounded::<R>(args, req, idempotent, None).await
+    }
+
+    /// [`Self::http_call`] with an optional per-call success body bound (client.ts `maxBodyBytes`).
+    async fn http_call_bounded<R: Route>(
+        &self,
+        args: &[&str],
+        req: R::Request,
+        idempotent: bool,
+        cap: Option<u64>,
+    ) -> Result<R::Response, ApiError>
+    where
+        R::Request: Clone,
+    {
         let auth = r::lookup(&R::METHOD, R::PATH).is_some_and(|e| e.auth);
         let mut reauthenticated = false;
         for attempt in 1..=RETRY_MAX_ATTEMPTS {
-            let error = match self.http.call::<R>(args, req.clone()).await {
+            let answer = match cap {
+                Some(cap) => self.http.call_capped::<R>(args, req.clone(), cap).await,
+                None => self.http.call::<R>(args, req.clone()).await,
+            };
+            let error = match answer {
                 Ok(v) => return Ok(v),
                 Err(e) => ApiError::of_http(&e),
             };
@@ -360,6 +378,21 @@ impl Api {
         R::Request: Clone,
     {
         self.http_call::<R>(args, req, idempotent).await
+    }
+
+    /// [`Self::http_route`] with a success body bound of the caller's (routes.ts `getBlob(.., size + 16)`, `gifMedia`):
+    /// a longer body is `E_BODY_TOO_LARGE`, refused before the rest is read.
+    pub(crate) async fn http_route_capped<R: Route>(
+        &self,
+        args: &[&str],
+        req: R::Request,
+        idempotent: bool,
+        cap: u64,
+    ) -> Result<R::Response, ApiError>
+    where
+        R::Request: Clone,
+    {
+        self.http_call_bounded::<R>(args, req, idempotent, Some(cap)).await
     }
 
     /// One gateway row of the route table for an area feature: the accepted answer's status and body.
