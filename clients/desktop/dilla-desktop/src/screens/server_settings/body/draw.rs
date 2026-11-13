@@ -1041,11 +1041,38 @@ impl Body {
         let gifs = self.state.server_admin.gifs.get(&self.community).copied();
         let mut out: Vec<AnyElement> =
             vec![section_header(t("workspace.gifs"), None).into_any_element()];
-        let mut inner = div().flex().flex_col().gap(layout::GIFS_GAP);
+        let (set_row, form): (Option<(&str, &[&str])>, Option<Vec<&str>>) = match gifs {
+            Some(g) if g.on && !self.gif_editing => (
+                Some((
+                    t("gif.settings.maskedLabel"),
+                    &[t("gif.settings.replace"), t("gif.settings.remove")][..],
+                )),
+                None,
+            ),
+            Some(g) => (
+                None,
+                Some(if g.on {
+                    vec![t("gif.settings.save"), t("gif.settings.cancel")]
+                } else {
+                    vec![t("gif.settings.save")]
+                }),
+            ),
+            None => (None, None),
+        };
+        let mut inner = div()
+            .flex()
+            .flex_col()
+            .gap(layout::GIFS_GAP)
+            .w(layout::gifs_column_width(
+                t("gif.settings.getKey"),
+                set_row,
+                form.as_deref(),
+            ));
+        // The link is the page's own type (`--text-base`).
         inner = inner.child(line(
             t("gif.settings.getKey"),
-            text::SM,
-            line_height(text::SM, 1.5),
+            text::BASE,
+            line_height(text::BASE, 1.5),
             color::FG_LINK,
         ));
         match gifs {
@@ -1055,14 +1082,15 @@ impl Body {
                 let showing_field = !g.on || self.gif_editing;
                 if g.on && !self.gif_editing {
                     inner = inner.child(
+                        // The column is this row's own width: it fits on one line.
                         div()
                             .flex()
                             .items_center()
-                            .gap(layout::FIELD_GAP)
+                            .gap(layout::GIFS_FORM_GAP)
                             .child(div().mr(layout::ROW_GAP).child(line(
                                 t("gif.settings.maskedLabel"),
-                                text::UI,
-                                line_height(text::UI, 1.5),
+                                text::BASE,
+                                line_height(text::BASE, 1.5),
                                 color::FG,
                             )))
                             .child(
@@ -1089,11 +1117,13 @@ impl Body {
                     if let Some(e) = &self.gif_error {
                         field = field.error(e.clone());
                     }
+                    // `.dw-gifs-settings__form`: the field's 20rem basis takes the line, Save wraps under it.
                     let mut form = div()
                         .flex()
+                        .flex_wrap()
                         .items_end()
-                        .gap(layout::FIELD_GAP)
-                        .child(field)
+                        .gap(layout::GIFS_FORM_GAP)
+                        .child(div().w_full().child(field))
                         .child(
                             Button::new("gif-save", t("gif.settings.save"))
                                 .variant(ButtonVariant::Accent)
@@ -1140,6 +1170,7 @@ impl Body {
         out.push(
             SettingsRow::new("gif-row", t("gif.settings.title"))
                 .hint(t("gif.settings.hint"))
+                .layout(Layout::Stacked)
                 .child(inner)
                 .into_any_element(),
         );

@@ -55,6 +55,8 @@ parity_tests! {
     parity_server_settings_afk_b => "afk-b",
     parity_server_settings_invites => "invites",
     parity_server_settings_invites_b => "invites-b",
+    parity_server_settings_gifs => "gifs",
+    parity_server_settings_gifs_b => "gifs-b",
 }
 
 parity_after_t6c! {
@@ -62,8 +64,6 @@ parity_after_t6c! {
     parity_server_settings_channels_b => "channels-b", "parity after T6c: whole frame 0.6982 % (the parity world makes the channels without the fixture's positions, so the reference lists them by channel id: qa, dev, design; Archive before Voice; needs the seed to set positions and a re-shoot)",
     parity_server_settings_channel_permissions => "channel-permissions", "parity after T6c: whole frame 2.2690 %",
     parity_server_settings_channel_permissions_b => "channel-permissions-b", "parity after T6c: whole frame 1.7017 %",
-    parity_server_settings_gifs => "gifs", "parity after T6c: whole frame 1.1892 %",
-    parity_server_settings_gifs_b => "gifs-b", "parity after T6c: whole frame 1.2638 %",
 }
 
 parity_tests! {

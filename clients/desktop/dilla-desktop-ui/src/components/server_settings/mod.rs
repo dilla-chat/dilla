@@ -45,6 +45,46 @@ pub mod layout {
     pub const HEAD_GAP: Pixels = px(2.0);
     /// The gap between the blocks of the GIF settings (1.5rem).
     pub const GIFS_GAP: Pixels = px(24.0);
+
+    /// The GIF settings' column (`.dw-gifs-settings` in its stacked row's content-sized track): as wide as its widest
+    /// part's max-content: the link (`--text-base`), the key's row (its label, then Replace and Remove) or the key form
+    /// (a bare input and its buttons side by side; the field's 20rem flex basis then wraps them under it).
+    pub fn gifs_column_width(
+        link: &str,
+        set_row: Option<(&str, &[&str])>,
+        form: Option<&[&str]>,
+    ) -> Pixels {
+        let base = f32::from(crate::tokens::text::BASE) * crate::text::MONO_ADVANCE;
+        let mut w = link.chars().count() as f32 * base;
+        if let Some((label, buttons)) = set_row {
+            // `.dw-gifs-settings__set`: 0.75rem apart, the label 0.5rem further.
+            let row = label.chars().count() as f32 * base
+                + 8.0
+                + buttons
+                    .iter()
+                    .map(|b| f32::from(GIFS_FORM_GAP) + button_width(b))
+                    .sum::<f32>();
+            w = w.max(row);
+        }
+        if let Some(buttons) = form {
+            let row = f32::from(text_input_width())
+                + buttons
+                    .iter()
+                    .map(|b| f32::from(GIFS_FORM_GAP) + button_width(b))
+                    .sum::<f32>();
+            w = w.max(row);
+        }
+        px(w)
+    }
+
+    /// The gap of the GIF key form (`.dw-gifs-settings__form`: 0.75rem).
+    pub const GIFS_FORM_GAP: Pixels = px(12.0);
+
+    /// A default button's width (`Button.css`: 12px across, a 1px edge, 11.5px mono).
+    pub fn button_width(label: &str) -> f32 {
+        let advance = f32::from(crate::tokens::text::BTN) * crate::text::MONO_ADVANCE;
+        2.0 * 12.0 + 2.0 + label.chars().count() as f32 * advance
+    }
     /// The gap between a row's four trailing slots.
     pub const TRAIL_GAP: Pixels = px(4.0);
 
@@ -100,6 +140,21 @@ pub mod layout {
 #[cfg(test)]
 mod tests {
     use super::layout;
+
+    #[test]
+    fn the_gif_column_is_the_form_side_by_side() {
+        // 216 + 12 + 53.6: the web's 281.6px column.
+        let w =
+            layout::gifs_column_width("get a key at developers.giphy.com", None, Some(&["save"]));
+        assert!((f32::from(w) - 281.6).abs() < 0.01);
+        // The key's row: 18 characters of 13.5px, 8px, then Replace and Remove 12px apart: 319.5.
+        let set = layout::gifs_column_width(
+            "get a key at developers.giphy.com",
+            Some(("a giphy key is set", &["replace", "remove"])),
+            None,
+        );
+        assert!((f32::from(set) - 319.5).abs() < 0.01);
+    }
 
     #[test]
     fn a_bare_input_is_chromiums_size_twenty() {
