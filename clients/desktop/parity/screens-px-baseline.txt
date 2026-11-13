@@ -1,5 +1,3 @@
 # Literal px(..)/point(..) offsets the Task 12 slice code still holds in dilla-desktop/src/screens (`<file> <count>`).
 # Only ever lower a number or delete a line (when the screen is ported to tokens::*). Never add a line or raise one.
 sign_in.rs 24
-composer.rs 17
-timeline.rs 5

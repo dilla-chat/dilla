@@ -31,6 +31,7 @@ mod calls;
 mod diagnostics;
 mod dms;
 mod members;
+mod messages;
 mod notify;
 mod polls;
 mod reactions;
@@ -281,6 +282,7 @@ pub fn build_state(
     diagnostics::apply(world, viewer, &mut state);
     dms::apply(world, viewer, &mut state);
     members::apply(world, viewer, &mut state);
+    messages::apply(world, viewer, &mut state);
     notify::apply(fixture, ids, &mut state);
     polls::apply(world, viewer, &mut state);
     reactions::apply(world, viewer, &mut state);

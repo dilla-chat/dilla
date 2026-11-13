@@ -48,22 +48,22 @@ fn enter_sends_shift_enter_newlines(cx: &mut TestAppContext) {
 fn dead_key_e_acute(cx: &mut TestAppContext) {
     let (c, cx) = setup(cx);
     let state = input(&c, cx);
-    // macOS/Wayland text-input sequence for dead acute then `e`: the dead key
-    // arrives as marked text, the follow-up replaces it with the composed char.
+    // The platform shows the dead acute as marked text (the IME's callback), then delivers the follow-up as a keystroke
+    // whose `key_char` is the composed character: that keystroke goes through the window's own key dispatch, which hands
+    // its text to the input handler, not through a direct `replace_text_in_range` call.
     cx.update(|window, app| {
         state.update(app, |s, cx| {
             s.replace_and_mark_text_in_range(None, "´", Some(1..1), window, cx);
         });
     });
     assert_eq!(text(&c, cx), "´", "dead key is shown while composing");
-    cx.update(|window, app| {
-        state.update(app, |s, cx| {
-            assert!(s.marked_text_range(window, cx).is_some());
-            s.replace_text_in_range(None, "é", window, cx);
-            assert!(s.marked_text_range(window, cx).is_none());
-        });
-    });
-    assert_eq!(text(&c, cx), "é");
+    assert!(cx.update(|window, app| state.update(app, |s, cx| s.marked_text_range(window, cx).is_some())));
+    cx.simulate_input("é");
+    assert_eq!(text(&c, cx), "é", "the composed character replaces the dead key");
+    assert!(
+        cx.update(|window, app| state.update(app, |s, cx| s.marked_text_range(window, cx).is_none())),
+        "composition ended"
+    );
     // Enter during composition must not send; after it, it does.
     assert!(c.read_with(cx, |c, _| c.sent.is_empty()));
     cx.update(|window, app| {
@@ -81,18 +81,27 @@ fn dead_key_e_acute(cx: &mut TestAppContext) {
 #[gpui::test]
 fn paste_multiline_keeps_newlines(cx: &mut TestAppContext) {
     let (c, cx) = setup(cx);
+    // The platform's paste chord is a real binding of the `Paste` action in the input's context: the chord is read back
+    // from the keymap, never assumed, and pressing it pastes (no direct action dispatch).
+    let stroke = cx.update(|window, _| {
+        window
+            .bindings_for_action(&Paste)
+            .first()
+            .and_then(|b| b.keystrokes().first().map(|k| k.inner().clone()))
+    });
+    let stroke = stroke.expect("Paste has a binding");
+    assert_eq!(stroke.key, "v");
+    let mac = cfg!(target_os = "macos");
+    assert!(
+        stroke.modifiers.platform == mac && stroke.modifiers.control == !mac,
+        "the paste chord is the platform's, got {stroke:?}"
+    );
+    let chord = if mac { "cmd-v" } else { "ctrl-v" };
     cx.write_to_clipboard(ClipboardItem::new_string(
         "line one\nline two\n\nline four".into(),
     ));
-    cx.simulate_keystrokes("ctrl-v");
-    let mut got = text(&c, cx);
-    if got.is_empty() {
-        // Platforms where ctrl-v is not bound (macOS binds cmd-v): fall back
-        // to the Paste action the binding would dispatch.
-        cx.dispatch_action(Paste);
-        got = text(&c, cx);
-    }
-    assert_eq!(got, "line one\nline two\n\nline four");
+    cx.simulate_keystrokes(chord);
+    assert_eq!(text(&c, cx), "line one\nline two\n\nline four");
     assert!(
         c.read_with(cx, |c, _| c.sent.is_empty()),
         "paste must not send"
@@ -112,12 +121,17 @@ fn emoji_insert_at_caret(cx: &mut TestAppContext) {
     // Caret sits right after the inserted emoji: typing continues there.
     cx.simulate_input("!");
     assert_eq!(text(&c, cx), "a😀👍🏽!b");
-    // One backspace removes the `!`; a second removes the whole skin-tone
-    // cluster's last scalar boundary without splitting UTF-8.
-    cx.simulate_keystrokes("backspace backspace");
-    let t = text(&c, cx);
-    assert!(t.starts_with('a') && t.ends_with('b'), "got {t:?}");
-    assert!(std::str::from_utf8(t.as_bytes()).is_ok());
+    // One backspace removes the `!`.
+    cx.simulate_keystrokes("backspace");
+    assert_eq!(text(&c, cx), "a😀👍🏽b");
+    // A second removes the skin-tone scalar only: gpui-component deletes by scalar, not by grapheme cluster, so a bare
+    // thumbs-up is left. (Chromium's textarea deletes the whole cluster; this is the measured difference the composer
+    // carries until the input crate changes, not a behaviour to rely on.)
+    cx.simulate_keystrokes("backspace");
+    assert_eq!(text(&c, cx), "a😀👍b");
+    // A third removes the thumbs-up, and the text is valid UTF-8 throughout.
+    cx.simulate_keystrokes("backspace");
+    assert_eq!(text(&c, cx), "a😀b");
 }
 
 #[gpui::test]
@@ -141,6 +155,28 @@ fn mention_trigger_opens_popup_at_at_sign(cx: &mut TestAppContext) {
     // An `@` inside a word (an e-mail address) does not trigger.
     cx.simulate_input("me@x");
     assert!(c.read_with(cx, |c, _| c.mention.is_none()));
+}
+
+/// The cursor the rules see stays inside the text: a cursor past its end, or inside a character, finds no mention instead
+/// of panicking, and every mention found starts at or before the cursor, on a character boundary, with its query exactly
+/// the text between the `@` and the cursor.
+#[test]
+fn mention_at_cursor_stays_inside_the_text() {
+    for text in ["", "@", "@ab", "é @ada", "x\n@日本語", "a @😀 b", "@a@b", "naïve @zoë"] {
+        for cursor in 0..=text.len() + 3 {
+            let found = mention_at(text, cursor);
+            if cursor > text.len() || !text.is_char_boundary(cursor) {
+                assert_eq!(found, None, "{text:?} at {cursor}");
+                continue;
+            }
+            if let Some(m) = found {
+                assert!(m.at < cursor, "{text:?} at {cursor}: the @ is before the cursor");
+                assert!(text.is_char_boundary(m.at));
+                assert_eq!(&text[m.at..m.at + 1], "@");
+                assert_eq!(&text[m.at + 1..cursor], m.query, "{text:?} at {cursor}");
+            }
+        }
+    }
 }
 
 #[test]

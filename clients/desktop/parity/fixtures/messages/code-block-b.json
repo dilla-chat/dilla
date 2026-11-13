@@ -1,0 +1,124 @@
+{
+  "name": "messages/code-block-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "raid tonight at 20:00? bring the good shields"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "in. last time the bridge troll took everything we had"
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "I'm in too. Packing list:\nrope\ntorches\nsnacks for Björn"
+      },
+      {
+        "key": "m4",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "the map from saturday is in #loot, the one with the coffee stain"
+      },
+      {
+        "key": "m5",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "see you at the bridge"
+      },
+      {
+        "key": "m6",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "ok, 20:00 works, I'll bring the shields"
+      },
+      {
+        "key": "m7",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "```json\n{\"party\": [\"Ada\", 6], \"loot\": null, \"gold\": 12.5}\n```\n```sh\nnpm test --watch $HOME # go\n```"
+      },
+      {
+        "key": "m8",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "> a quote that is long enough to wrap onto a second line of the quote block in the log, to check the rule"
+      },
+      {
+        "key": "m9",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481731,
+        "body": "plain last line"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "if:css=.d-channel-header [data-members-toggle][aria-pressed=\"true\"], .d-channel-header [data-members-toggle][aria-expanded=\"true\"]",
+      "gpui": "-"
+    }
+  ]
+}

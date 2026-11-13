@@ -1,28 +1,41 @@
 //! The message log (packages/ui MessageLog and MessageRow, web `screens/conversation`, Signal §5.5): the channel's
-//! welcome, day dividers, and one row per message: the 44px time gutter, the 30px avatar, the author and the body,
-//! wrapped like the web's `white-space: pre-wrap; overflow-wrap: anywhere`. A row continues the run above it (no gutter
-//! time, avatar or author) when the same author wrote it within seven minutes, on the same day (log-model.ts
-//! `groupedWithAbove`). The log keeps to its end until the person scrolls up, as the web log does at present.
+//! welcome, day dividers, and one row per message: the 44px time gutter, the 30px avatar, the author and the body. The
+//! body is the message's markdown laid out as the web lays it out ([`crate::screens::messages::body`]). A row continues
+//! the run above it (no gutter time, avatar or author) when the same author wrote it within seven minutes, on the same
+//! day (log-model.ts `groupedWithAbove`). The log keeps to its end until the person scrolls up, as the web log does at
+//! present; PageUp and PageDown scroll it.
 //!
 //! Every height is the web CSS's (MessageLog.css, MessageRow.css) in Chromium's layout units, so the log's content has
 //! the web's height and, at its end, the web's (whole-pixel) scroll offset. The log is not virtualised: every row of the
 //! open timeline (at most the client's 100-row page) is laid out.
+//!
+//! Each row is a box of its own at its CSS position: it takes the hover fill and bar (`--bg-3`, 2px `--accent`), the
+//! mention tint (`--warn-soft`, 2px `--mention`) and the flash of a jump, and holds the toolbar over its top edge.
 
-use chrono::Datelike;
-use dilla_client::state::{AppState, Channel, Member, TimelineItem, TimelineItemState, UserId};
+use dilla_client::state::{AppState, Channel, Member, TimelineItem, TimelineItemState};
 use gpui::{
     AnyElement, App, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use dilla_desktop_ui::components::tag::{Tag, TagKind, look};
 use dilla_desktop_ui::components::{Avatar, AvatarSize};
-use dilla_desktop_ui::text::{Line, MONO_ADVANCE, line, line_height, paragraph};
+use dilla_desktop_ui::text::{
+    Face, Line, MONO_ADVANCE, chromium_baseline, line, line_height, paragraph,
+};
 use dilla_desktop_ui::tokens::{color, font, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
 
+use crate::format;
 use crate::screens::LABEL_TRACKING_WIDE;
+use crate::screens::messages::body::{self, Laid};
+use crate::screens::messages::css::len;
+use crate::screens::messages::markdown::{self, Body, Pill};
+use crate::screens::messages::ui::{self, MessageUi};
+use crate::screens::messages::{editor, toolbar};
 use crate::screens::shell::Clock;
 use crate::slots::{self, SlotCx};
+use crate::strings::{t, tf};
 
 /// log-model.ts `GROUP_SECONDS`.
 pub const GROUP_SECONDS: u64 = 7 * 60;
@@ -42,6 +55,8 @@ const GUTTER_TOP: f32 = 18.0;
 /// The row grid's 1px gap, and the empty attachment slot's 4px margin (`0.25rem`) every row keeps but the log's last.
 const MAIN_GAP: f32 = 1.0;
 const ATTACHMENTS_MARGIN: f32 = 4.0;
+/// The head's gap between its parts (`gap: 0.5rem`).
+const HEAD_GAP: f32 = 8.0;
 /// MessageLog.css: 12px above the content, 6px below; the welcome's 16px 20px 18px padding, its 40px tile in a 1px
 /// border and the title's 10px margin; the day divider's 4px 20px padding and 10px gap.
 const LOG_TOP: f32 = 12.0;
@@ -55,7 +70,7 @@ const DIVIDER_PAD: f32 = 4.0;
 const DIVIDER_GAP: f32 = 10.0;
 
 fn body_line() -> f32 {
-    line_height(text::INPUT, 1.55)
+    body::body_line()
 }
 fn head_line() -> f32 {
     line_height(text::SM, 1.5)
@@ -76,11 +91,15 @@ struct Shown<'a> {
     grouped: bool,
     divider: Option<String>,
     last: bool,
-    /// The body's lines, wrapped to the content width.
-    lines: Vec<Line>,
+    /// The body: its height now (from the memo), its elements only when the row is drawn.
+    body: Plan,
     /// What other areas draw under the body ([`slots::message_extras`]), and its height.
     extras: Option<AnyElement>,
     extras_height: f32,
+    /// The row's hover group.
+    group: String,
+    /// The row's place in the log: its automation ids are numbered by it.
+    index: usize,
 }
 
 impl Shown<'_> {
@@ -88,9 +107,44 @@ impl Shown<'_> {
         RowShape {
             grouped: self.grouped,
             last: self.last,
-            lines: self.lines.len(),
+            body: self.body.height(),
             extras: self.extras_height,
             divider: self.divider.is_some(),
+        }
+    }
+}
+
+/// A row's body before it is drawn: the editor (always drawn), or the text and what it needs to be laid out.
+enum Plan {
+    Editor(Laid),
+    Text {
+        parts: Vec<Body>,
+        color: gpui::Hsla,
+        height: f32,
+    },
+}
+
+impl Plan {
+    fn height(&self) -> f32 {
+        match self {
+            Self::Editor(l) => l.height,
+            Self::Text { height, .. } => *height,
+        }
+    }
+
+    /// The elements, laid out in `width`.
+    fn laid(self, width: f32, y0: f32) -> Laid {
+        match self {
+            Self::Editor(l) => l,
+            Self::Text {
+                parts,
+                color,
+                height,
+            } => {
+                let mut laid = body::layout_from(&parts, width, color, y0);
+                laid.height = height;
+                laid
+            }
         }
     }
 }
@@ -100,7 +154,8 @@ impl Shown<'_> {
 struct RowShape {
     grouped: bool,
     last: bool,
-    lines: usize,
+    /// The height of the row's body (its text, code cards and quotes, or the editor).
+    body: f32,
     /// The height of the row's extras under its body (0 when no area draws any).
     extras: f32,
     /// A day divider above the row.
@@ -116,7 +171,7 @@ fn row_tops(start: f32, rows: &[RowShape]) -> (Vec<f32>, f32) {
             y += divider_height();
         }
         tops.push(y);
-        y += row_height(r.grouped, r.last, r.lines, r.extras);
+        y += row_height(r.grouped, r.last, r.body, r.extras);
     }
     (tops, y)
 }
@@ -128,6 +183,11 @@ fn readable(i: &TimelineItem) -> bool {
     )
 }
 
+/// log-model.ts `startsDay`: the item starts a local day the row above it (if any) is not in.
+pub fn starts_day(prev: Option<&TimelineItem>, item: &TimelineItem, clock: Clock) -> bool {
+    prev.is_none_or(|p| clock.day(p.ts) != clock.day(item.ts))
+}
+
 /// log-model.ts `groupedWithAbove`.
 pub fn grouped_with_above(prev: Option<&TimelineItem>, item: &TimelineItem, clock: Clock) -> bool {
     let Some(prev) = prev else { return false };
@@ -137,40 +197,104 @@ pub fn grouped_with_above(prev: Option<&TimelineItem>, item: &TimelineItem, cloc
     if !readable(prev) || !readable(item) || item.reply.is_some() {
         return false;
     }
-    if clock.day(prev.ts) != clock.day(item.ts) {
+    if starts_day(Some(prev), item, clock) {
         return false;
     }
     item.ts >= prev.ts && item.ts - prev.ts <= GROUP_SECONDS
 }
 
+/// The offset of the clock's zone at `secs`, in seconds east of UTC.
+fn zone_of(clock: Clock, secs: i64) -> chrono::FixedOffset {
+    let east = clock
+        .format(u64::try_from(secs).unwrap_or(0), |d| {
+            d.offset().local_minus_utc().to_string()
+        })
+        .parse::<i32>()
+        .unwrap_or(0);
+    chrono::FixedOffset::east_opt(east)
+        .unwrap_or_else(|| chrono::FixedOffset::east_opt(0).expect("utc"))
+}
+
 /// log-model.ts `dayLabel`: today, yesterday, else the date.
 pub fn day_label(ts: u64, clock: Clock) -> String {
-    let days = clock.day(clock.now()) - clock.day(ts);
-    match days {
-        0 => "today".to_owned(),
-        1 => "yesterday".to_owned(),
-        _ => clock.format(ts, |d| {
-            format!("{} {} {}", d.format("%A"), d.day(), d.format("%B"))
-        }),
+    let zone = |secs: i64| zone_of(clock, secs);
+    format::day_divider_in(ts, clock.now(), &zone, &format::date_locale())
+}
+
+/// webhook.ts and shell-model.ts `authorName`: the member's display name, else the username, else the viewer's own,
+/// else the first eight digits of the id.
+fn author(state: &AppState, members: &[Member], item: &TimelineItem) -> String {
+    let Some(user) = item.sender_user else {
+        let device = item.sender_device.map(|d| d.hex()).unwrap_or_default();
+        return tf(
+            "shell.message.unknownAuthor",
+            &[("id", &device[..device.len().min(8)])],
+        );
+    };
+    if let Some(m) = members.iter().find(|m| m.user_id == user) {
+        if !m.display.is_empty() {
+            return m.display.clone();
+        }
+        if !m.username.is_empty() {
+            return m.username.clone();
+        }
+    }
+    if state.account.user_id == Some(user) && !state.account.username.is_empty() {
+        return state.account.username.clone();
+    }
+    user.hex()[..8].to_owned()
+}
+
+/// shell-model.ts `mentionPill`: what a mention token shows as.
+fn mention_pill(state: &AppState, members: &[Member], target: &str, mentions_me: bool) -> Pill {
+    if target == "everyone" || target == "here" {
+        return Pill {
+            label: format!("@{target}"),
+            me: mentions_me,
+            broadcast: true,
+            user: None,
+        };
+    }
+    if let Some(m) = members.iter().find(|m| m.user_id.hex() == target) {
+        let name = if m.display.is_empty() {
+            &m.username
+        } else {
+            &m.display
+        };
+        return Pill {
+            label: format!("@{name}"),
+            me: state.account.user_id.is_some_and(|u| u.hex() == target),
+            broadcast: false,
+            user: Some(target.to_owned()),
+        };
+    }
+    if state.account.user_id.is_some_and(|u| u.hex() == target) {
+        return Pill {
+            label: format!("@{}", state.account.username),
+            me: true,
+            broadcast: false,
+            user: Some(target.to_owned()),
+        };
+    }
+    Pill {
+        label: tf(
+            "shell.message.mentionUnknown",
+            &[("id", &target[..target.len().min(8)])],
+        ),
+        me: false,
+        broadcast: false,
+        user: None,
     }
 }
 
-fn author(members: &[Member], user: Option<UserId>) -> &str {
-    user.and_then(|u| members.iter().find(|m| m.user_id == u))
-        .map_or("unknown", |m| {
-            if m.display.is_empty() {
-                m.username.as_str()
-            } else {
-                m.display.as_str()
-            }
-        })
-}
-
-fn body_text(item: &TimelineItem) -> String {
+/// The body a row shows: the message's markdown for a readable one, the state's note for the rest.
+fn body_parts(state: &AppState, members: &[Member], item: &TimelineItem) -> Vec<Body> {
     match item.state {
-        TimelineItemState::CannotRead => "This message cannot be read on this device.".to_owned(),
-        TimelineItemState::Deleted => "This message was deleted.".to_owned(),
-        _ => item.body.clone(),
+        TimelineItemState::CannotRead => vec![Body::Text(t("shell.message.cannotRead").to_owned())],
+        TimelineItemState::Deleted => vec![Body::Text(t("shell.message.deleted").to_owned())],
+        _ => markdown::parse_markdown(&item.body, &|target| {
+            mention_pill(state, members, target, item.mention)
+        }),
     }
 }
 
@@ -183,14 +307,14 @@ fn body_offset(grouped: bool) -> f32 {
     }
 }
 
-/// The height Chromium gives a row with `lines` body lines and `extras` px of other areas' parts under the body.
-fn row_height(grouped: bool, last: bool, lines: usize, extras: f32) -> f32 {
+/// The height Chromium gives a row with a body `body` px high and `extras` px of other areas' parts under the body.
+fn row_height(grouped: bool, last: bool, body: f32, extras: f32) -> f32 {
     let slot = if last {
         0.0
     } else {
         MAIN_GAP + ATTACHMENTS_MARGIN
     };
-    let body = lines as f32 * body_line() + extras;
+    let body = body + extras;
     if grouped {
         FOLLOW_PAD + body + slot + FOLLOW_PAD
     } else {
@@ -266,7 +390,11 @@ impl Placer {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(Icon::new(IconName::Hash).size(px(20.)).color(color::ACCENT)),
+                .child(
+                    Icon::new(IconName::Hash)
+                        .size(len(20.))
+                        .color(color::ACCENT),
+                ),
         );
         let height = welcome_height(title.len(), body.len());
         let mut y = top + WELCOME_TOP + WELCOME_TILE + WELCOME_TITLE_GAP;
@@ -301,48 +429,202 @@ impl Placer {
             top + divider_height() / 2.0 - 0.5,
             div()
                 .w(px((width - WELCOME_X - rule_x).max(0.0)))
-                .h(px(1.))
+                .h(len(1.))
                 .bg(color::HAIRLINE),
         );
     }
+}
 
-    /// One row at `top`.
-    fn row(&mut self, top: f32, shown: Shown<'_>, members: &[Member], clock: Clock) {
-        let item = shown.item;
-        let body_top = if shown.grouped {
-            top + FOLLOW_PAD
-        } else {
-            let head = top + ROW_TOP;
-            let name = author(members, item.sender_user);
-            let time = clock.format(item.ts, |d| d.format("%H:%M").to_string());
-            // The time is right-aligned in the gutter, by its advance.
-            let time_width = time.chars().count() as f32 * f32::from(text::META) * MONO_ADVANCE;
-            self.line(
-                line(time, text::META, meta_line(), color::FG_QUIET),
-                GUTTER - time_width,
-                head + GUTTER_TOP,
+/// The head's text after the name (meta size, `--fg-3`; `--fg-2` on a mention row's tint).
+fn head_marks(item: &TimelineItem) -> Vec<String> {
+    let mut marks = Vec::new();
+    if item.edited {
+        marks.push(t("shell.message.edited").to_owned());
+    }
+    if item.pinned {
+        marks.push(t("shell.message.pinned").to_owned());
+    }
+    match item.state {
+        TimelineItemState::Pending => marks.push(t("shell.message.pending").to_owned()),
+        TimelineItemState::Failed => marks.push(t("shell.message.failed").to_owned()),
+        _ => {}
+    }
+    marks
+}
+
+/// What a row paints, in the row's own coordinates (its box's top is 0, and sits on a whole pixel).
+struct RowCx<'a> {
+    state: &'a AppState,
+    members: &'a [Member],
+    clock: Clock,
+    width: f32,
+}
+
+/// One row's elements, in coordinates relative to the row box at `base` (whole pixel); `top` is the row's CSS top.
+#[allow(clippy::too_many_arguments)]
+fn draw_row(
+    cx_row: &RowCx<'_>,
+    shown: Shown<'_>,
+    top: f32,
+    base: f32,
+    ui: &gpui::Entity<MessageUi>,
+    ctx: &SlotCx,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let item = shown.item;
+    let local = top - base;
+    // The body's box sits on a whole pixel; its lines keep the CSS position's fraction.
+    let frac = {
+        let at = local + body_offset(shown.grouped);
+        at - at.floor()
+    };
+    let laid = shown.body.laid(cx_row.width - CONTENT_X - ROW_RIGHT, frac);
+    let height = row_height(shown.grouped, shown.last, laid.height, shown.extras_height);
+    let mut placer = Placer { out: Vec::new() };
+    let meta_color = if item.mention {
+        color::FG_2
+    } else {
+        color::FG_3
+    };
+    if !shown.grouped {
+        let head = local + ROW_TOP;
+        let name = author(cx_row.state, cx_row.members, item);
+        let zone = |secs: i64| zone_of(cx_row.clock, secs);
+        let time = format::time_in(item.ts, &zone);
+        // The time is right-aligned in the gutter, by its advance.
+        let time_width = time.chars().count() as f32 * f32::from(text::META) * MONO_ADVANCE;
+        placer.line(
+            line(time, text::META, meta_line(), color::FG_QUIET),
+            GUTTER - time_width,
+            head + GUTTER_TOP,
+        );
+        placer.block(
+            GUTTER + COLUMN_GAP,
+            head,
+            Avatar::new(
+                gpui::SharedString::from(format!("avatar-{}", item.key)),
+                name.clone(),
+            )
+            .size(AvatarSize::Msg),
+        );
+        let name_width = name.chars().count() as f32 * f32::from(text::SM) * MONO_ADVANCE;
+        let bot = item.bot
+            && cx_row
+                .members
+                .iter()
+                .any(|m| Some(m.user_id) == item.sender_user && m.kind == 1);
+        let name_color = if bot { color::ACCENT_2 } else { color::FG };
+        placer.line(
+            line(name, text::SM, head_line(), name_color).weight(font::WEIGHT_DISPLAY),
+            CONTENT_X,
+            head,
+        );
+        // The head is a baseline-aligned row of the name, the tag and the marks, 8px apart.
+        let baseline = head + chromium_baseline(Face::Mono, f32::from(text::SM), head_line());
+        let mut x = CONTENT_X + name_width + HEAD_GAP;
+        if bot {
+            let l = look(TagKind::Bot);
+            let tag_w = 8.0
+                + "BOT".chars().count() as f32
+                    * (f32::from(l.size) * MONO_ADVANCE + l.tracking * f32::from(l.size));
+            let tag_top =
+                baseline - chromium_baseline(Face::Mono, f32::from(l.size), l.line_height);
+            placer.block(
+                x,
+                tag_top,
+                Tag::new(
+                    gpui::SharedString::from(format!("tag-{}", item.key)),
+                    TagKind::Bot,
+                ),
             );
-            self.block(
-                GUTTER + COLUMN_GAP,
-                head,
-                Avatar::new(
-                    gpui::SharedString::from(format!("avatar-{}", item.key)),
-                    name.to_owned(),
-                )
-                .size(AvatarSize::Msg),
-            );
-            self.line(
-                line(name.to_owned(), text::SM, head_line(), color::FG)
-                    .weight(font::WEIGHT_DISPLAY),
-                CONTENT_X,
-                head,
-            );
-            head + head_line() + MAIN_GAP
-        };
-        for (n, l) in shown.lines.into_iter().enumerate() {
-            self.line(l, CONTENT_X, body_top + n as f32 * body_line());
+            x += tag_w + HEAD_GAP;
+        }
+        let meta_top = baseline - chromium_baseline(Face::Mono, f32::from(text::META), meta_line());
+        for mark in head_marks(item) {
+            let tone = if item.state == TimelineItemState::Failed {
+                color::DANGER
+            } else {
+                meta_color
+            };
+            let w = mark.chars().count() as f32 * f32::from(text::META) * MONO_ADVANCE;
+            placer.line(line(mark, text::META, meta_line(), tone), x, meta_top);
+            x += w + HEAD_GAP;
         }
     }
+    let body_top = local + body_offset(shown.grouped);
+    let content_w = cx_row.width - CONTENT_X - ROW_RIGHT;
+    let body_end = body_top + laid.height;
+    placer.out.push(
+        div()
+            .absolute()
+            .left(px(CONTENT_X))
+            .top(px(body_top.floor()))
+            .w(px(content_w))
+            .h(px(laid.height.ceil()))
+            .child(div().relative().size_full().children(laid.elements))
+            .into_any_element(),
+    );
+    if let Some(extras) = shown.extras {
+        placer.block(CONTENT_X, body_end, extras);
+    }
+    // The row's box: the hover fill and bar, the mention tint, the flash; the toolbar over its top edge.
+    let group = shown.group.clone();
+    let flash = ui.read(cx).flashing(&item.key);
+    let mut row = div()
+        .id(gpui::SharedString::from(format!(
+            "message-row-{}",
+            shown.index
+        )))
+        .absolute()
+        .left(len(0.))
+        .top(px(base))
+        .w(px(cx_row.width))
+        .h(px(height.ceil()))
+        .group(group.clone());
+    row = if flash {
+        row.bg(color::ACCENT_FLASH)
+    } else if item.mention {
+        row.bg(color::WARN_SOFT)
+    } else {
+        row.hover(|s| s.bg(color::BG_3))
+    };
+    let bar = if item.mention {
+        Some(color::MENTION)
+    } else {
+        None
+    };
+    row = match bar {
+        Some(c) => row.child(
+            div()
+                .absolute()
+                .left(len(0.))
+                .top(len(0.))
+                .w(len(2.))
+                .h_full()
+                .bg(c),
+        ),
+        None => row.child(
+            div()
+                .absolute()
+                .left(len(0.))
+                .top(len(0.))
+                .w(len(2.))
+                .h_full()
+                .bg(color::ACCENT)
+                .invisible()
+                .group_hover(group.clone(), |s| s.visible()),
+        ),
+    };
+    row = row
+        .child(crate::screens::messages::probe(
+            crate::screens::messages::id_of("message-row", shown.index),
+        ))
+        .children(placer.out);
+    if let Some(bar) = toolbar::toolbar(item, shown.index, &group, ctx, ui, window, cx) {
+        row = row.child(bar);
+    }
+    row.into_any_element()
 }
 
 /// The log of `channel`, `width` wide, kept at its end through `scroll` while `pinned`. Each row's
@@ -360,6 +642,8 @@ pub fn render(
     window: &mut Window,
     cx: &mut App,
 ) -> impl IntoElement + use<> {
+    let ui = ui::ui(window, cx);
+    ui.update(cx, |u, _| u.ctx = Some(ctx.clone()));
     let members: &[Member] = state
         .members
         .get(&channel.community_id)
@@ -370,10 +654,10 @@ pub fn render(
         .map(|t| t.items.iter().collect())
         .unwrap_or_default();
     let body_width = width - CONTENT_X - ROW_RIGHT;
+    let editing_key = ui.read(cx).editing.as_ref().map(|e| e.key.clone());
     let mut shown = Vec::with_capacity(items.len());
     for (n, item) in items.iter().enumerate() {
         let prev = n.checked_sub(1).map(|p| items[p]);
-        let starts_day = prev.is_none_or(|p| clock.day(p.ts) != clock.day(item.ts));
         let body_color = match item.state {
             TimelineItemState::Ok => color::FG_BODY,
             TimelineItemState::Pending => color::FG_2,
@@ -381,58 +665,133 @@ pub fn render(
             _ => color::FG_3,
         };
         let (extras, extras_height) = slots::message_extras(item, ctx, window, cx);
+        let editing = editing_key.as_deref() == Some(item.key.as_str());
+        let laid = if editing {
+            let current = ui
+                .read(cx)
+                .editing
+                .as_ref()
+                .map(|ed| (ed.input.clone(), ed.used(cx)));
+            match current {
+                Some((input, used)) => {
+                    let lines = editor::lines_of(&input.read(cx).value(), body_width);
+                    let el = editor::editor(&input, used, &ui, body_width, window, cx);
+                    Plan::Editor(Laid {
+                        height: editor::height(lines),
+                        elements: vec![el],
+                    })
+                }
+                None => Plan::Editor(Laid {
+                    height: 0.0,
+                    elements: Vec::new(),
+                }),
+            }
+        } else {
+            let parts = body_parts(state, members, item);
+            // The height comes from the memo (by the parts and the width): a body is laid out once, not on every draw.
+            let mut height = body::height_cached(&parts, body_width);
+            // An empty body still keeps its line (the web's row holds the empty text node's line box).
+            if parts.is_empty() {
+                height = body_line();
+            }
+            Plan::Text {
+                parts,
+                color: body_color,
+                height,
+            }
+        };
         shown.push(Shown {
             item,
             grouped: grouped_with_above(prev, item, clock),
-            divider: starts_day.then(|| day_label(item.ts, clock)),
+            divider: starts_day(prev, item, clock).then(|| day_label(item.ts, clock)),
             last: n + 1 == items.len(),
-            lines: paragraph(
-                &body_text(item),
-                text::INPUT,
-                body_line(),
-                body_color,
-                body_width,
-            ),
+            body: laid,
             extras: Some(extras),
             extras_height,
+            group: format!("message-row-{}", item.key),
+
+            index: n,
         });
     }
-    let (title, body) = welcome_lines(&channel.name, width);
+    let (title, body_lines) = welcome_lines(&channel.name, width);
     let shapes: Vec<RowShape> = shown.iter().map(Shown::shape).collect();
     let (_, rows_end) = row_tops(0.0, &shapes);
-    let content = LOG_TOP + welcome_height(title.len(), body.len()) + LOG_BOTTOM + rows_end;
+    let content = LOG_TOP + welcome_height(title.len(), body_lines.len()) + LOG_BOTTOM + rows_end;
     // Chromium's scroll range is whole pixels: the content's height rounds, and at the end that rounding sits below the
     // last row. A log shorter than its viewport keeps to the viewport's bottom (`margin-top: auto`).
     let viewport = f32::from(scroll.bounds().size.height);
     let height = content.round();
     let lift = (viewport - height).max(0.0).round();
-    if pinned && viewport > 0.0 {
-        scroll.set_offset(gpui::point(px(0.), px(-(height - viewport).max(0.0))));
+    let mut placer = Placer { out: Vec::new() };
+    let mut y = lift + LOG_TOP;
+    y += placer.welcome(y, title, body_lines);
+    let (tops, _) = row_tops(y, &shapes);
+    // A jump (from the pins or a reply) brings its row into view and leaves the end.
+    let jump = ui.update(cx, |u, _| u.jump.take());
+    let jumped = jump
+        .as_deref()
+        .and_then(|key| shown.iter().position(|s| s.item.key == key));
+    if let Some(at) = jumped {
+        let target = (tops[at] - 48.0).max(0.0);
+        let max = (height + lift - viewport).max(0.0);
+        scroll.set_offset(gpui::point(len(0.), px(-target.min(max))));
+        on_wheel(true, cx);
+    } else if pinned && viewport > 0.0 {
+        scroll.set_offset(gpui::point(len(0.), px(-(height - viewport).max(0.0))));
     } else if pinned {
         scroll.scroll_to_bottom();
     }
-    let mut placer = Placer { out: Vec::new() };
-    let mut y = lift + LOG_TOP;
-    y += placer.welcome(y, title, body);
-    let (tops, _) = row_tops(y, &shapes);
-    for (mut s, top) in shown.into_iter().zip(tops) {
+    let row_cx = RowCx {
+        state,
+        members,
+        clock,
+        width,
+    };
+    // Only the rows near the viewport are drawn (a screen above and below it): the rest keep their height from the memo.
+    let at = if jumped.is_some() {
+        -f32::from(scroll.offset().y)
+    } else if pinned && viewport > 0.0 {
+        (height - viewport).max(0.0)
+    } else {
+        -f32::from(scroll.offset().y)
+    };
+    let (from, to) = (at - viewport, at + 2.0 * viewport);
+    for (s, top) in shown.into_iter().zip(tops) {
         if let Some(label) = s.divider.clone() {
             placer.divider(top - divider_height(), width, label);
         }
-        let body_end = top + body_offset(s.grouped) + s.lines.len() as f32 * body_line();
-        if let Some(extras) = s.extras.take() {
-            placer.block(CONTENT_X, body_end, extras);
+        let bottom = top + row_height(s.grouped, s.last, s.body.height(), s.extras_height);
+        let editing = matches!(s.body, Plan::Editor(_));
+        if viewport > 0.0 && !editing && (bottom < from || top > to) {
+            continue;
         }
-        placer.row(top, s, members, clock);
+        let base = top.floor();
+        let el = draw_row(&row_cx, s, top, base, &ui, ctx, window, cx);
+        placer.out.push(el);
     }
+    let pager = scroll.clone();
+    let focus = ui.update(cx, |u, cx| {
+        u.log_focus.get_or_insert_with(|| cx.focus_handle()).clone()
+    });
+    let to_focus = focus.clone();
     div()
         .id("message-log")
+        .key_context("MessageLog")
+        .track_focus(&focus)
+        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+            window.focus(&to_focus, cx);
+        })
         .size_full()
         .bg(color::BG)
         .overflow_y_scroll()
         .track_scroll(scroll)
         .on_scroll(move |event, _window, cx| {
-            on_wheel(event.delta.pixel_delta(px(20.)).y > px(0.), cx);
+            on_wheel(event.delta.pixel_delta(len(20.)).y > len(0.), cx);
+        })
+        .on_action(move |_: &PageUp, _, _| page(&pager, -1.0))
+        .on_action({
+            let pager = scroll.clone();
+            move |_: &PageDown, _, _| page(&pager, 1.0)
         })
         .child(
             div()
@@ -443,10 +802,22 @@ pub fn render(
         )
 }
 
+gpui::actions!(message_log, [PageUp, PageDown]);
+
+/// PageUp and PageDown scroll the log by a viewport less a few lines.
+fn page(scroll: &ScrollHandle, direction: f32) {
+    let view = f32::from(scroll.bounds().size.height);
+    let step = (view - 3.0 * body_line()).max(view / 2.0) * direction;
+    let max = f32::from(scroll.max_offset().y);
+    let now = -f32::from(scroll.offset().y);
+    let next = (now + step).clamp(0.0, max);
+    scroll.set_offset(gpui::point(len(0.), px(-next)));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dilla_client::state::{DeviceId, TimelineItemState};
+    use dilla_client::state::{DeviceId, TimelineItemState, UserId};
 
     fn item(sender: u8, ts: u64) -> TimelineItem {
         TimelineItem {
@@ -487,11 +858,53 @@ mod tests {
     }
 
     #[test]
+    fn a_new_day_never_folds_into_the_run_above_and_starts_a_divider() {
+        let clock = Clock::Fixed {
+            now: 1_794_476_484,
+            utc: true,
+        };
+        // 2026-11-11 23:59:00 UTC and 2026-11-12 00:01:00 UTC: two minutes apart, two days.
+        let late = item(1, 1_794_441_540);
+        let early = item(1, 1_794_441_660);
+        assert!(starts_day(None, &late, clock));
+        assert!(starts_day(Some(&late), &early, clock));
+        assert!(!grouped_with_above(Some(&late), &early, clock));
+        // The same day does not start one.
+        let next = item(1, 1_794_441_600 + 3_000);
+        assert!(!starts_day(Some(&early), &next, clock));
+    }
+
+    #[test]
+    fn a_reply_and_an_unreadable_row_keep_their_own_head() {
+        let clock = Clock::Fixed {
+            now: 1_794_476_484,
+            utc: true,
+        };
+        let a = item(1, 1_794_470_000);
+        let mut reply = item(1, 1_794_470_010);
+        reply.reply = Some(dilla_client::state::messages::ReplyRef {
+            msg_id: dilla_client::state::MessageId([3; 16]),
+            state: 0,
+            sender_user: None,
+            excerpt: String::new(),
+            seq: None,
+        });
+        assert!(!grouped_with_above(Some(&a), &reply, clock));
+        let mut gone = item(1, 1_794_470_020);
+        gone.state = TimelineItemState::Deleted;
+        assert!(!grouped_with_above(Some(&a), &gone, clock));
+        let mut unknown = item(1, 1_794_470_030);
+        unknown.sender_user = None;
+        assert!(!grouped_with_above(Some(&a), &unknown, clock));
+    }
+
+    #[test]
     fn heights_come_from_the_css() {
         // The reference's DOM: 54.89 for a row, 49.89 for the log's last row, 75.03 for two lines; 131 for the welcome.
-        assert!((row_height(false, false, 1, 0.0) - 54.890_625).abs() < 1e-4);
-        assert!((row_height(false, true, 1, 0.0) - 49.890_625).abs() < 1e-4);
-        assert!((row_height(false, false, 2, 0.0) - 75.031_25).abs() < 1e-4);
+        let lh = body_line();
+        assert!((row_height(false, false, lh, 0.0) - 54.890_625).abs() < 1e-4);
+        assert!((row_height(false, true, lh, 0.0) - 49.890_625).abs() < 1e-4);
+        assert!((row_height(false, false, 2.0 * lh, 0.0) - 75.031_25).abs() < 1e-4);
         assert_eq!(welcome_height(1, 1), 131.0);
         assert_eq!(divider_height(), 23.0);
     }
@@ -502,23 +915,79 @@ mod tests {
         let clock = Clock::Fixed { now, utc: true };
         assert_eq!(day_label(now - 60, clock), "today");
         assert_eq!(day_label(now - 86_400, clock), "yesterday");
+        // An older day is the date, in the region's form.
+        let older = day_label(now - 10 * 86_400, clock);
+        assert!(older.contains("2026") && older.contains('2'), "{older}");
+    }
+
+    #[test]
+    fn authors_are_named_like_the_web() {
+        let mut s = AppState::default();
+        s.account.user_id = Some(UserId([9; 16]));
+        s.account.username = "me".into();
+        let member = Member {
+            user_id: UserId([1; 16]),
+            username: "ada".into(),
+            display: "Ada L".into(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        let members = [member];
+        assert_eq!(author(&s, &members, &item(1, 5)), "Ada L");
+        assert_eq!(author(&s, &members, &item(9, 5)), "me");
+        assert_eq!(
+            author(&s, &members, &item(7, 5)),
+            UserId([7; 16]).hex()[..8]
+        );
+        let mut anon = item(1, 5);
+        anon.sender_user = None;
+        assert_eq!(
+            author(&s, &members, &anon),
+            tf("shell.message.unknownAuthor", &[("id", "01010101")])
+        );
+    }
+
+    #[test]
+    fn mentions_are_pills_by_who_they_name() {
+        let mut s = AppState::default();
+        s.account.user_id = Some(UserId([9; 16]));
+        s.account.username = "me".into();
+        let everyone = mention_pill(&s, &[], "everyone", true);
+        assert!(everyone.broadcast && everyone.me && everyone.label == "@everyone");
+        let me = mention_pill(&s, &[], &UserId([9; 16]).hex(), false);
+        assert!(me.me && me.label == "@me");
+        let unknown = mention_pill(&s, &[], &UserId([4; 16]).hex(), true);
+        assert!(!unknown.me && unknown.user.is_none());
+    }
+
+    #[test]
+    fn the_head_marks_are_edited_pinned_and_the_send_state() {
+        let mut i = item(1, 5);
+        assert!(head_marks(&i).is_empty());
+        i.edited = true;
+        i.pinned = true;
+        i.state = TimelineItemState::Pending;
+        assert_eq!(head_marks(&i), ["edited", "pinned", "sending…"]);
     }
 
     /// Another area's part under a message (reactions, cards, a poll, a reply chip) moves every row below it down by
     /// exactly its height, and the log's content grows by it.
     #[test]
     fn extras_height_moves_the_next_row_down() {
+        let lh = body_line();
         let row = |extras: f32, last: bool| RowShape {
             grouped: false,
             last,
-            lines: 1,
+            body: lh,
             extras,
             divider: false,
         };
         let follow = RowShape {
             grouped: true,
             last: true,
-            lines: 2,
+            body: 2.0 * lh,
             extras: 0.0,
             divider: true,
         };
@@ -531,5 +1000,25 @@ mod tests {
             "the next row moves down by the extras' height"
         );
         assert!((with_end - plain_end - 26.5).abs() < 1e-4);
+    }
+
+    /// A body of code cards and quotes makes its row as tall as its blocks: the log follows the body's height.
+    #[test]
+    fn a_taller_body_moves_the_next_row_down() {
+        let lh = body_line();
+        let one = RowShape {
+            grouped: false,
+            last: false,
+            body: lh,
+            extras: 0.0,
+            divider: false,
+        };
+        let tall = RowShape {
+            body: lh + 70.0,
+            ..one
+        };
+        let (a, _) = row_tops(0.0, &[one, one]);
+        let (b, _) = row_tops(0.0, &[tall, one]);
+        assert!((b[1] - a[1] - 70.0).abs() < 1e-4);
     }
 }
