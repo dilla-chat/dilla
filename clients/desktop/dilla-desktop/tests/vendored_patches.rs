@@ -115,3 +115,93 @@ fn laid_out_size_is_the_unsnapped_box(cx: &mut TestAppContext) {
     assert_eq!(laid_out, 54.609375);
     assert_eq!(painted, 54.0);
 }
+
+/// A clickable box laid out at x 100.5, y 10.5, 54.609375 x 20 (it paints 101..155 x 11..31 at scale 2).
+struct Clickable {
+    clicks: Rc<Cell<u32>>,
+}
+
+impl Render for Clickable {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        use gpui::InteractiveElement as _;
+        let clicks = self.clicks.clone();
+        div().size_full().relative().child(
+            div()
+                .id("target")
+                .absolute()
+                .left(px(100.5))
+                .top(px(10.5))
+                .w(px(54.609375))
+                .h(px(20.0))
+                .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
+                    clicks.set(clicks.get() + 1)
+                }),
+        )
+    }
+}
+
+/// Task 28 (T6c review m5): the edge snap moves the hit box with the painted box: a pointer lands on a box exactly where
+/// the box paints (101..155, 11..31), not where it was laid out (100.5..155.11, 10.5..30.5).
+#[gpui::test]
+fn hit_bounds_are_the_painted_bounds(cx: &mut TestAppContext) {
+    let clicks = Rc::new(Cell::new(0));
+    let c = clicks.clone();
+    let (_, vcx) = cx.add_window_view(move |_, _| Clickable { clicks: c });
+    vcx.update(|window, _| {
+        assert_eq!(window.scale_factor(), 2.0, "the test platform's scale");
+        window.refresh();
+    });
+    vcx.run_until_parked();
+    let mut lands = |x: f32, y: f32| {
+        let before = clicks.get();
+        vcx.simulate_mouse_down(
+            gpui::point(px(x), px(y)),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        vcx.simulate_mouse_up(
+            gpui::point(px(x), px(y)),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        clicks.get() > before
+    };
+    // Inside the laid-out box, outside the painted one: no hit.
+    assert!(!lands(100.75, 20.0), "left of the painted edge");
+    assert!(!lands(155.05, 20.0), "right of the painted edge");
+    assert!(!lands(120.0, 10.75), "above the painted edge");
+    // Inside the painted box, at its edges: a hit.
+    assert!(lands(101.25, 20.0));
+    assert!(lands(154.75, 20.0));
+    assert!(lands(120.0, 11.25));
+    assert!(lands(120.0, 30.75));
+    assert!(!lands(120.0, 31.25), "below the painted edge");
+}
+
+/// Task 28 (T6c review m5): the dashed-border patch of the vendored wgpu shader (core/vendor/README.md, "gpui-pre-wgpu
+/// 0.3.12") is in place: a thin border (under 3 device px, the web's 1px at scale 2) dashes 3 widths on and 2 off, as
+/// Blink's StrokeData does; a thicker one keeps upstream's 2 on, 1 off. The shader runs on the GPU only (the parity
+/// screens that draw a dashed edge pin its pixels); this pins the pattern the shader computes, and mirrors it.
+#[test]
+fn the_dashed_border_follows_blink_s_pattern() {
+    let shader = include_str!("../../../../core/vendor/gpui-pre-wgpu/src/shaders.wgsl");
+    let wgsl: String = shader.split_whitespace().collect::<Vec<_>>().join(" ");
+    for line in [
+        "max(max(quad.border_widths.top, quad.border_widths.bottom), max(quad.border_widths.left, quad.border_widths.right)) < 3.0;",
+        "let dash_length_per_width = select(2.0, 3.0, thin);",
+        "let dash_gap_per_width = select(1.0, 2.0, thin);",
+        "let dash_period_per_width = dash_length_per_width + dash_gap_per_width;",
+    ] {
+        assert!(wgsl.contains(line), "the shader computes: {line}");
+    }
+    // The pattern (dash, gap) in device px for a border `w` device px wide, as the shader selects it.
+    let pattern = |w: f32| {
+        let thin = w < 3.0;
+        let (on, off) = if thin { (3.0, 2.0) } else { (2.0, 1.0) };
+        (on * w, off * w)
+    };
+    // The web's 1px dashed border at scale 2: 6 device px on, 4 off (Blink: 3 css px on, 2 off).
+    assert_eq!(pattern(2.0), (6.0, 4.0));
+    assert_eq!(pattern(1.0), (3.0, 2.0));
+    assert_eq!(pattern(4.0), (8.0, 4.0), "a thick border keeps upstream's");
+}
