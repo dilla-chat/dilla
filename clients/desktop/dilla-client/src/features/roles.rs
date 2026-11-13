@@ -423,6 +423,7 @@ pub mod rank {
         CommunityAccess {
             top,
             owner,
+            administrator: all,
             manage_community: has(perm::MANAGE_COMMUNITY),
             view_audit_log: has(perm::VIEW_AUDIT_LOG),
             manage_channels: has(perm::MANAGE_CHANNELS),

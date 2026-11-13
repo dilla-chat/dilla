@@ -30,6 +30,32 @@ pub struct Access {
     pub overwrites_loaded: bool,
 }
 
+impl From<&super::roles::CommunityAccess> for Access {
+    /// The settings' view of the one access (final review I2: one resolver, one slice).
+    fn from(a: &super::roles::CommunityAccess) -> Self {
+        Self {
+            loaded: a.loaded,
+            owner: a.owner,
+            top: u64::from(a.top),
+            manage_community: a.manage_community,
+            manage_channels: a.manage_channels,
+            manage_roles: a.manage_roles,
+            create_invite: a.create_invite,
+            ban_members: a.ban_members,
+            view_audit_log: a.view_audit_log,
+            administrator: a.administrator,
+            everyone: a.everyone_id,
+            overwrites_loaded: a.overwrites_loaded,
+        }
+    }
+}
+
+/// What this account may do in `community`, as the server settings read it: the one access slice
+/// (`state.roles.access`), not loaded until a read landed.
+pub fn access_in(state: &super::AppState, community: CommunityId) -> Access {
+    Access::from(&state.roles.access_of(community))
+}
+
 /// One role as the channel permissions list it (`RoleRow`, narrowed to what the settings read).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdminRole {
@@ -144,7 +170,6 @@ pub struct WelcomeSettings {
 /// What each read has landed for each community; a community with no entry has not been read yet.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ServerAdminState {
-    pub access: HashMap<CommunityId, Access>,
     pub roles: HashMap<CommunityId, Vec<AdminRole>>,
     pub afk: HashMap<CommunityId, AfkSettings>,
     /// The AFK read failed (the section shows its load error).

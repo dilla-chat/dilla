@@ -170,13 +170,7 @@ impl ServerSettingsView {
 
     /// The section on show, once the permissions are read.
     pub fn active(&self) -> Option<ServerSection> {
-        let access = self
-            .state
-            .server_admin
-            .access
-            .get(&self.community)
-            .copied()
-            .unwrap_or_default();
+        let access = dilla_client::state::server_admin::access_in(&self.state, self.community);
         model::active_of(self.requested, &access)
     }
 
@@ -207,13 +201,7 @@ impl ServerSettingsView {
     }
 
     fn nav(&self, active: Option<ServerSection>, cx: &mut Context<Self>) -> AnyElement {
-        let access = self
-            .state
-            .server_admin
-            .access
-            .get(&self.community)
-            .copied()
-            .unwrap_or_default();
+        let access = dilla_client::state::server_admin::access_in(&self.state, self.community);
         let server_name = self
             .state
             .communities

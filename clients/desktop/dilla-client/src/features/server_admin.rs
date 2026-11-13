@@ -99,25 +99,11 @@ pub mod perm {
 
 // ---- rules ----
 
-/// rank.ts `accessOf`: what a member may do community-wide, from the resolved bits and rank of
-/// `GET /v1/communities/{id}/permissions`. The owner and an administrator hold every permission.
+/// rank.ts `accessOf`, as the settings view it: the one resolver (`features::roles::rank::access_of`, final review I2),
+/// converted. There is no second formula here.
 pub fn access_of(bits: u64, top: u64, owner: bool) -> Access {
-    let all = owner || bits & u64::from(perm::ADMINISTRATOR) != 0;
-    let has = |bit: u32| all || bits & u64::from(bit) != 0;
-    Access {
-        loaded: true,
-        owner,
-        top,
-        manage_community: has(perm::MANAGE_COMMUNITY),
-        manage_channels: has(perm::MANAGE_CHANNELS),
-        manage_roles: has(perm::MANAGE_ROLES),
-        create_invite: has(perm::CREATE_INVITE),
-        ban_members: has(perm::BAN_MEMBERS),
-        view_audit_log: has(perm::VIEW_AUDIT_LOG),
-        administrator: all,
-        everyone: None,
-        overwrites_loaded: false,
-    }
+    let top = u32::try_from(top).unwrap_or(u32::MAX);
+    Access::from(&crate::features::roles::rank::access_of(bits, top, owner))
 }
 
 /// perm.ts `isPrivate`: a channel is private when `@everyone`'s overwrite denies viewing it.
@@ -1201,7 +1187,7 @@ impl ServerAdmin {
                 if let Some(c) = s.communities.iter_mut().find(|c| c.id == community) {
                     c.owner = user;
                 }
-                s.server_admin.access.remove(&community);
+                s.roles.access.remove(&community);
             });
             Ok(())
         })
@@ -1675,12 +1661,14 @@ async fn read_access_with(
         .iter()
         .find(|c| c.id == community)
         .is_some_and(|c| Some(c.owner) == snapshot.account.user_id);
-    let mut access = access_of(uint(&a[0])?, top, owner);
-    access.everyone = roles.iter().find(|r| r.position == 0).map(|r| r.id);
-    access.overwrites_loaded = overwrites.is_some();
+    // The one resolver (rank.ts `accessOf`) into the one slice: the members area and the Bot pages read this read too.
+    let mut one = crate::features::roles::rank::access_of(uint(&a[0])?, top as u32, owner);
+    one.everyone_id = roles.iter().find(|r| r.position == 0).map(|r| r.id);
+    one.overwrites_loaded = overwrites.is_some();
+    let access = Access::from(&one);
     let published = overwrites.clone();
     inner.publish(move |s| {
-        s.server_admin.access.insert(community, access);
+        s.roles.access.insert(community, one);
         s.server_admin.roles.insert(community, roles);
         if let Some(rows) = published {
             s.server_admin.overwrites.insert(community, rows);
@@ -1695,8 +1683,8 @@ fn forget(inner: &Inner, community: CommunityId) {
         s.communities.retain(|c| c.id != community);
         s.channels.retain(|c| c.community_id != community);
         s.members.remove(&community);
+        s.roles.access.remove(&community);
         let a = &mut s.server_admin;
-        a.access.remove(&community);
         a.roles.remove(&community);
         a.afk.remove(&community);
         a.afk_load_failed.remove(&community);

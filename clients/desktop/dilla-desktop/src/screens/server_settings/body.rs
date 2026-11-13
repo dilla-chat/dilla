@@ -299,12 +299,7 @@ impl Body {
         cx: &mut Context<Self>,
     ) {
         let new_name = community_name(&state, self.community);
-        let access = state
-            .server_admin
-            .access
-            .get(&self.community)
-            .copied()
-            .unwrap_or_default();
+        let access = dilla_client::state::server_admin::access_in(&state, self.community);
         let afk = state.server_admin.afk.get(&self.community).copied();
         self.state = state;
         if self.client.is_none() && client.is_some() {
@@ -347,12 +342,7 @@ impl Body {
     }
 
     fn access(&self) -> dilla_client::state::server_admin::Access {
-        self.state
-            .server_admin
-            .access
-            .get(&self.community)
-            .copied()
-            .unwrap_or_default()
+        dilla_client::state::server_admin::access_in(&self.state, self.community)
     }
 
     fn server_name(&self) -> String {

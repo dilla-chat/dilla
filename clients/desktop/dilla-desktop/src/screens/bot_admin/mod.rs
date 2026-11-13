@@ -22,23 +22,16 @@ use crate::slots::{SectionId, SlotCx};
 pub fn now_playing(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     player::dock(window, cx)
 }
-
-/// The Bot and Music pages' manager (BotSection.tsx `access.loaded && access.manageCommunity`): Task 14's resolver's
-/// Manage server in the page's community (the owner holds it), nobody before the access read lands. The same route's
-/// read lands in two slices (Task 14's `roles.access`, and `server_admin.access`, which the server settings host loads,
-/// both rank.ts `accessOf`): either one counts.
+/// The Bot and Music pages' manager (BotSection.tsx `access.loaded && access.manageCommunity`): Manage server in the
+/// page's community (the owner holds it), nobody before the access read lands. It reads the one access slice
+/// (`state.roles.access`, final review I2) that the host's nav and the members area read too, so a revoked grant hides
+/// management everywhere at once.
 pub fn is_manager(ctx: &SlotCx) -> bool {
     let Some(community) = ctx.community else {
         return false;
     };
-    let roles = ctx.state.roles.access_of(community);
-    let hosted = ctx
-        .state
-        .server_admin
-        .access
-        .get(&community)
-        .is_some_and(|a| a.loaded && a.manage_community);
-    (roles.loaded && roles.manage_community) || hosted
+    let access = ctx.state.roles.access_of(community);
+    access.loaded && access.manage_community
 }
 
 /// Draws one of this area's settings sections (`slots::settings_sections` points here).
@@ -116,17 +109,44 @@ mod tests {
             ..CommunityAccess::default()
         };
         assert!(!is_manager(&ctx(Some(member))), "a member without it");
-        // The server settings host reads the same route through Task 15's copy of `accessOf`: its read counts too.
-        let mut s = AppState::default();
-        s.server_admin.access.insert(
-            community,
-            dilla_client::features::server_admin::access_of(1 << 16, 1, false),
-        );
-        let hosted = SlotCx {
-            state: Arc::new(s),
-            community: Some(community),
-            ..SlotCx::default()
+    }
+
+    /// Integration 3, final review I2: one resolver and one slice. A grant read once and revoked by the next read hides
+    /// management everywhere at the same time: the Bot page, the host's nav (Bot, Music, Overview) and the members area
+    /// all read the same access.
+    #[test]
+    fn a_revoked_grant_hides_management_everywhere_at_once() {
+        use crate::screens::server_settings::model;
+        let community = CommunityId([7; 16]);
+        let with = |bits: u64| {
+            let mut s = AppState::default();
+            s.roles.access.insert(
+                community,
+                dilla_client::features::roles::rank::access_of(bits, 1, false),
+            );
+            s
         };
-        assert!(is_manager(&hosted), "Manage server, read by the host");
+        let everywhere = |s: AppState| {
+            let access = dilla_client::state::server_admin::access_in(&s, community);
+            let nav = model::nav_sections(&access);
+            let ctx = SlotCx {
+                state: Arc::new(s),
+                community: Some(community),
+                ..SlotCx::default()
+            };
+            (
+                is_manager(&ctx),
+                nav.contains(&ServerSection::Bot),
+                nav.contains(&ServerSection::Music),
+                ctx.state.roles.access_of(community).manage_community,
+            )
+        };
+        let manage = u64::from(dilla_client::features::roles::perm::MANAGE_COMMUNITY);
+        assert_eq!(
+            everywhere(with(manage)),
+            (true, true, true, true),
+            "granted"
+        );
+        assert_eq!(everywhere(with(0)), (false, false, false, false), "revoked");
     }
 }

@@ -36,12 +36,16 @@ impl RoleSummary {
 }
 
 /// types.ts `CommunityAccess`: what the caller may do community-wide, from `GET /v1/communities/{id}/permissions`
-/// (`features::roles::access_of`). The owner and an administrator hold every permission.
+/// (`features::roles::rank::access_of`, the one resolver). The owner and an administrator hold every permission. This
+/// slice ([`RoleState::access`]) is the only place the access lives (integration 3, final review I2): the members area,
+/// the server settings host (`server_admin::access_in`) and the Bot pages all read it, whichever of them read it last.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommunityAccess {
     /// The caller's rank: the highest position among the roles held, `OWNER_TOP` for the owner.
     pub top: u32,
     pub owner: bool,
+    /// Holds the administrator bit (every permission, as the owner does).
+    pub administrator: bool,
     pub manage_community: bool,
     pub view_audit_log: bool,
     pub manage_channels: bool,
