@@ -47,6 +47,10 @@ pub fn settings_section(
                 bot_page::BotPage::new(ctx.clone(), window, cx)
             });
             page.update(cx, |p, _| p.set_ctx(ctx.clone()));
+            // Release lets go of the page's client at once, not when the window next draws (final review M2).
+            if let Some(client) = &ctx.client {
+                crate::release::hold(client, &page, |p, _| p.set_ctx(SlotCx::default()), cx);
+            }
             page.into_any_element()
         }
         SectionId::Server(ServerSection::Music) => {
@@ -54,6 +58,10 @@ pub fn settings_section(
                 music_page::MusicPage::new(ctx.clone())
             });
             page.update(cx, |p, _| p.set_ctx(ctx.clone()));
+            // Release lets go of the page's client at once, not when the window next draws (final review M2).
+            if let Some(client) = &ctx.client {
+                crate::release::hold(client, &page, |p, _| p.set_ctx(SlotCx::default()), cx);
+            }
             page.into_any_element()
         }
         _ => Empty.into_any_element(),
