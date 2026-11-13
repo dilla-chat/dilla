@@ -32,23 +32,12 @@ pub fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
         (s.deleting, s.pins)
     };
     let mut out = Vec::new();
-    if let Some(d) = deleting {
+    if deleting.is_some() {
         let close = ui.clone();
-        let confirm = ui.clone();
-        let client = ctx.client.clone();
         let button = Button::new("message-delete-confirm", t("shell.delete.confirm"))
             .variant(ButtonVariant::Danger)
             .size(ButtonSize::Dialog)
-            .on_click(move |_, _, cx| {
-                if let Some(client) = &client {
-                    let done = client.messages().delete(d.channel, d.msg);
-                    cx.background_spawn(async move {
-                        let _ = done.await;
-                    })
-                    .detach();
-                }
-                confirm.update(cx, |ui, cx| ui.cancel_delete(cx));
-            });
+            .on_click(move |_, window, cx| confirm_delete(window, cx));
         let body = div().flex().flex_col().children(paragraph(
             t("shell.delete.body"),
             text::UI,
@@ -144,23 +133,10 @@ fn pins_dialog(
             480.0 - 32.0,
         );
         let unpin = {
-            let client = ctx.client.clone();
             let msg = pin.msg_id;
-            let ui = ui.clone();
             Button::new(("pins-unpin", n), t("shell.message.unpin"))
                 .variant(ButtonVariant::Ghost)
-                .on_click(move |_, _, cx| {
-                    if let Some(client) = &client {
-                        let done = client.messages().pin(channel, msg, false);
-                        let reload = client.messages().load_pins(channel);
-                        cx.background_spawn(async move {
-                            let _ = done.await;
-                            let _ = reload.await;
-                        })
-                        .detach();
-                    }
-                    ui.update(cx, |_, cx| cx.notify());
-                })
+                .on_click(move |_, window, cx| unpin_from_pins(channel, msg, window, cx))
         };
         let jump = {
             let msg = pin.msg_id;
@@ -218,6 +194,42 @@ fn pins_dialog(
     .body(list)
     .on_close(move |_, cx| close.update(cx, |ui, cx| ui.close_pins(cx)))
     .into_any_element()
+}
+
+/// The delete dialog's confirm: the message waiting for its confirmation is deleted for everyone, and the dialog closes.
+pub fn confirm_delete(window: &mut Window, cx: &mut App) {
+    let Some(ui) = handle(window, cx) else {
+        return;
+    };
+    let (deleting, client) = {
+        let s = ui.read(cx);
+        (s.deleting, s.ctx.as_ref().and_then(|c| c.client.clone()))
+    };
+    if let (Some(d), Some(client)) = (deleting, client) {
+        let done = client.messages().delete(d.channel, d.msg);
+        cx.background_spawn(async move {
+            let _ = done.await;
+        })
+        .detach();
+    }
+    ui.update(cx, |ui, cx| ui.cancel_delete(cx));
+}
+
+/// The pins dialog's Unpin on the pin of `msg` in `channel`: the pin goes and the list is read again; the dialog stays.
+pub fn unpin_from_pins(channel: ChannelId, msg: MessageId, window: &mut Window, cx: &mut App) {
+    let Some(ui) = handle(window, cx) else {
+        return;
+    };
+    if let Some(client) = ui.read(cx).ctx.as_ref().and_then(|c| c.client.clone()) {
+        let done = client.messages().pin(channel, msg, false);
+        let reload = client.messages().load_pins(channel);
+        cx.background_spawn(async move {
+            let _ = done.await;
+            let _ = reload.await;
+        })
+        .detach();
+    }
+    ui.update(cx, |_, cx| cx.notify());
 }
 
 /// The pins dialog's Jump on the pin of `msg` in `channel`: the dialog closes and the log scrolls to the message and
