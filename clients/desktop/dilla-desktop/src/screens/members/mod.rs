@@ -10,6 +10,7 @@
 //! hook (`slots::aside`) receives no state of its own, so the host hands the slot context in with [`sync`] each frame.
 
 pub mod keys;
+pub mod modlog;
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -99,8 +100,8 @@ pub struct MembersUi {
     pub role: Option<[u8; 16]>,
     /// What this view asked the client to read already (a section reads once per community).
     asked: HashSet<(&'static str, CommunityId)>,
-    /// The Moderation log's answer (its sealed Bot read is Task 20's; until then it says the Bot could not answer).
-    log_unavailable: bool,
+    /// The Moderation log's pages (sealed Bot reads through Task 21's `BotAdmin::moderation_page`).
+    log: modlog::Log,
     /// The DeleteRole confirmation: the role and its name, and the request in flight.
     role_delete: Option<(CommunityId, RoleId, String)>,
     role_delete_busy: bool,
@@ -1517,9 +1518,56 @@ fn bans_section(
     root.into_any_element()
 }
 
+/// Reads one page of the log (ModerationLog.tsx `load`): a sealed Bot read through Task 21's
+/// `BotAdmin::moderation_page`; its answer lands in [`modlog::Log`] unless a later load or another community came first.
+fn load_log(source: modlog::Source, after: Option<String>, cx: &mut App) {
+    let Some(ctx) = ui(cx).ctx.clone() else {
+        return;
+    };
+    let (Some(client), Some(community)) = (ctx.client.clone(), ctx.community) else {
+        return;
+    };
+    let log = &mut ui(cx).log;
+    log.show(community);
+    let Some((generation, after)) = log.begin(source, after) else {
+        return;
+    };
+    let rx = client
+        .bot_admin()
+        .moderation_page(community, source.operation(), after);
+    cx.refresh_windows();
+    cx.spawn(async move |cx| {
+        let answer = rx
+            .await
+            .unwrap_or_else(|_| Err(dilla_client::ClientError::Sync("E_DROPPED".into())));
+        cx.update(|cx| {
+            ui(cx).log.land(generation, answer);
+            cx.refresh_windows();
+        });
+    })
+    .detach();
+}
+
+/// ModerationLog.tsx's date: the stamp, or "Date unavailable" for one that is no unix second count.
+fn log_date(seconds: &str) -> String {
+    match seconds.parse::<u64>() {
+        Ok(ts) if ts <= 8_640_000_000 => crate::format::day_time(ts),
+        _ => t("admin.bot.moderationLog.unknownDate").to_owned(),
+    }
+}
+
 fn moderation_log_section(ctx: &SlotCx, community: CommunityId, cx: &mut App) -> AnyElement {
     let access = ctx.state.roles.access_of(community);
-    let unavailable = ui(cx).log_unavailable;
+    ui(cx).log.show(community);
+    let log = ui(cx).log.clone();
+    let sending = log.phase == modlog::Phase::Sending;
+    let label = |source: modlog::Source, idle: &'static str| {
+        if sending && log.source == source {
+            t("admin.bot.moderationLog.loading")
+        } else {
+            t(idle)
+        }
+    };
     let mut root = div()
         .id("settings-moderation-log")
         .flex()
@@ -1533,27 +1581,64 @@ fn moderation_log_section(ctx: &SlotCx, community: CommunityId, cx: &mut App) ->
                 .child(
                     Button::new(
                         "modlog-automatic",
-                        t("admin.bot.moderationLog.loadAutomatic"),
+                        label(
+                            modlog::Source::Automatic,
+                            "admin.bot.moderationLog.loadAutomatic",
+                        ),
                     )
-                    .on_click(|_, _w, cx| {
-                        ui(cx).log_unavailable = true;
-                        cx.refresh_windows();
-                    }),
+                    .disabled(sending)
+                    .on_click(|_, _w, cx| load_log(modlog::Source::Automatic, None, cx)),
                 )
                 .child(
-                    Button::new("modlog-manual", t("admin.bot.moderationLog.load")).on_click(
-                        |_, _w, cx| {
-                            ui(cx).log_unavailable = true;
-                            cx.refresh_windows();
-                        },
-                    ),
+                    Button::new(
+                        "modlog-manual",
+                        label(modlog::Source::Manual, "admin.bot.moderationLog.load"),
+                    )
+                    .disabled(sending)
+                    .on_click(|_, _w, cx| load_log(modlog::Source::Manual, None, cx)),
                 ),
         );
-    if access.loaded && !access.view_audit_log {
+    if access.loaded && !access.view_audit_log && log.phase == modlog::Phase::Idle {
         root = root.child(note(t("admin.bot.moderationLog.denied")));
-    } else if unavailable {
-        // The pages are sealed Bot reads (Bot v2 operations); this client sends them once Task 20's Bot operations land.
-        root = root.child(note(t("admin.bot.moderationLog.responseUnavailable")));
+    }
+    match log.phase {
+        modlog::Phase::Denied => root = root.child(note(t("admin.bot.moderationLog.denied"))),
+        modlog::Phase::Error => root = root.child(note(t("admin.bot.moderationLog.error"))),
+        modlog::Phase::Unavailable => {
+            root = root.child(note(t("admin.bot.moderationLog.responseUnavailable")));
+        }
+        _ => {}
+    }
+    if log.empty() {
+        root = root.child(note(t("admin.bot.moderationLog.empty")));
+    }
+    for row in &log.cases {
+        let meta = crate::strings::tf(
+            "admin.bot.moderationLog.caseMeta",
+            &[
+                ("action", row.action.as_str()),
+                ("reason", row.reason.as_str()),
+                ("date", log_date(&row.received_at).as_str()),
+            ],
+        );
+        root = root.child(
+            div()
+                .flex()
+                .flex_col()
+                .child(note(meta))
+                .child(note(row.excerpt.clone())),
+        );
+    }
+    if let Some(cursor) = log.more() {
+        let cursor = cursor.to_owned();
+        root = root.child(
+            Button::new("modlog-more", t("admin.bot.moderationLog.more")).on_click(
+                move |_, _w, cx| load_log(modlog::Source::Manual, Some(cursor.clone()), cx),
+            ),
+        );
+    }
+    if log.phase == modlog::Phase::Ready && log.automatic_more {
+        root = root.child(note(t("admin.bot.moderationLog.automaticMore")));
     }
     root.into_any_element()
 }
