@@ -569,9 +569,20 @@ pub mod address {
             return Err(InvalidAddress(INVALID));
         }
         canonical_instance(input, allow_loopback)?;
-        let code = invite_code(url.path()).ok_or(InvalidAddress(INVALID))?;
-        let instance = Url::parse(&format!("{}/", url.origin().ascii_serialization()))
-            .map_err(|_| InvalidAddress(INVALID))?;
+        // An instance served under a base path mints `<base URL>/i/<code>` (dillad invites.go `NewInvites`): the link
+        // names `<origin><base>/` when that is the instance's own canonical address (integration 3, step 0 item 4).
+        // A base `canonical_instance` refuses or rewrites (`/assets/`, an app page, another invite) is no instance's.
+        let path = url.path();
+        let at = path.rfind("/i/").ok_or(InvalidAddress(INVALID))?;
+        let (base, rest) = path.split_at(at);
+        let code = invite_code(rest).ok_or(InvalidAddress(INVALID))?;
+        let instance = canonical_instance(
+            &format!("{}{base}/", url.origin().ascii_serialization()),
+            allow_loopback,
+        )?;
+        if instance.path() != format!("{base}/") {
+            return Err(InvalidAddress(INVALID));
+        }
         Ok(Input {
             instance,
             invite: Some(code.to_owned()),

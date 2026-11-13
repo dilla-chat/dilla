@@ -1440,6 +1440,37 @@ fn decode_invite(raw: &[u8]) -> Option<MadeInvite> {
 mod tests {
     use super::*;
 
+    /// Integration 3, step 0 item 4: an instance served under a base path mints `<base URL>/i/<code>` (dillad
+    /// invites.go `NewInvites`): the link names that instance, base path included, when the base is the instance's own
+    /// canonical base path; nothing else is loosened.
+    #[test]
+    fn a_base_path_invite_names_its_instance() {
+        let ok = parse_invite_link("https://host.example/dilla/i/AB_12-x", false).unwrap();
+        assert_eq!(ok.instance.as_str(), "https://host.example/dilla/");
+        assert_eq!(ok.code, "AB_12-x");
+        let deep = parse_invite_link("https://host.example/a/b/i/AB/", false).unwrap();
+        assert_eq!(deep.instance.as_str(), "https://host.example/a/b/");
+        use InviteLinkError::*;
+        for (link, why) in [
+            // A base the instance check refuses or rewrites is no instance's own base.
+            ("https://host.example/assets/i/AB", Invalid),
+            ("https://host.example/welcome/i/AB", Invalid),
+            (
+                "https://host.example/c/0123456789abcdef0123456789abcdef/i/AB",
+                Invalid,
+            ),
+            ("https://host.example/i/AB/i/CD", Invalid),
+            ("https://host.example/dilla/i/AB?", Credentials),
+            ("https://host.example/dilla/i/AB#", Credentials),
+            ("https://host.example/dil%2fla/i/AB", Invalid),
+            ("https://host.example/dilla/i/A%2fB", Invalid),
+            ("http://host.example/dilla/i/AB", Insecure),
+            ("https://host.example/dilla/x/AB", Invalid),
+        ] {
+            assert_eq!(parse_invite_link(link, false), Err(why), "{link}");
+        }
+    }
+
     #[test]
     fn invite_links_follow_canonical_instance() {
         let ok = parse_invite_link(" https://dilla.example/i/AB_12-x ", false).unwrap();
