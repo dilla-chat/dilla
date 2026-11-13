@@ -939,7 +939,10 @@ pub fn render(
         let target = (tops[at] - 48.0).max(0.0);
         let max = (height + lift - viewport).max(0.0);
         scroll.set_offset(gpui::point(len(0.), px(-target.min(max))));
-        on_wheel(true, cx);
+        // The log leaves the end. Its host (the shell) is drawing this log right now, so it hears of it once the frame is
+        // done: an update of it from here would be a re-entrant update (a panic).
+        let leave_end = on_wheel.clone();
+        cx.defer(move |cx| leave_end(true, cx));
     } else if pinned && viewport > 0.0 {
         scroll.set_offset(gpui::point(len(0.), px(-(height - viewport).max(0.0))));
     } else if pinned {
