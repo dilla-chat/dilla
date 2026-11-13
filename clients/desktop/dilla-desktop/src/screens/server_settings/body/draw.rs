@@ -504,16 +504,20 @@ impl Body {
             1 => tf("admin.channel.titleVoice", &[("name", &c.name)]),
             _ => tf("admin.channel.titleText", &[("name", &c.name)]),
         };
+        // The fields' hints wrap at the dialog body's width, as the web's do.
+        let measure = DialogKind::Form.body_width(f32::from(window.viewport_size().width));
         let mut body = div().flex().flex_col().gap(layout::SECTION_GAP);
         body = body.child(
             TextField::new("edit-name", t("admin.channel.name"), &self.edit_name)
                 .hint(t("admin.channel.nameHint"))
+                .hint_width(measure)
                 .disabled(self.dialogue_busy),
         );
         if c.kind == 0 {
             body = body.child(
                 TextField::new("edit-topic", t("admin.channel.topic"), &self.edit_topic)
                     .hint(t("admin.channel.topicHint"))
+                    .hint_width(measure)
                     .disabled(self.dialogue_busy),
             );
         }
@@ -558,6 +562,7 @@ impl Body {
                     self.edit_slow.clone(),
                 )
                 .hint(t("slow.hint"))
+                .hint_width(measure)
                 .disabled(self.dialogue_busy)
                 .on_change(act_value(cx, |this, value, _w, cx| {
                     this.edit_slow = value.to_owned();
@@ -604,7 +609,9 @@ impl Body {
             .max_h(cap)
             .overflow_y_scroll()
             .child(body);
+        // ChannelsSection.tsx renders the editor as its section's child (`Dialog::in_settings_section`).
         Dialog::new("edit-channel", title, t("admin.cancel"))
+            .in_settings_section()
             .kind(DialogKind::Form)
             .show_default_close(false)
             .body(body)
@@ -974,6 +981,7 @@ impl Body {
             t("admin.channelDelete.busy"),
             t("admin.cancel"),
         )
+        .in_settings_section()
         .open(open)
         .busy(self.dialogue_busy)
         .error(self.dialogue_error.clone())
@@ -1006,6 +1014,7 @@ impl Body {
             t("admin.cancel"),
         )
         .open(self.dialogue == Dialogue::Category)
+        .in_settings_section()
         .kind(DialogKind::Form)
         .body(body)
         .footer(

@@ -62,8 +62,8 @@ parity_tests! {
 }
 
 parity_after_t6c! {
-    parity_server_settings_channel_permissions => "channel-permissions", "parity after T6c: whole frame 2.3386 % (no Bot channel switch in the GPUI editor: a Task 28 feature port; and the dialog: the reference's layout puts it at [380, 14, 520, 684] in the window, a Chromium probe of Dialog.css nested in the settings frame at 12vh = 96, GPUI's at 12vh in the scrolled body, 132; the CSS behind 14 is not found yet)",
-    parity_server_settings_channel_permissions_b => "channel-permissions-b", "parity after T6c: whole frame 1.6756 % (as channel-permissions)",
+    parity_server_settings_channel_permissions => "channel-permissions", "parity after T6c: whole frame 0.9420 % (no Bot channel switch in the GPUI editor, a Task 28 feature port; the dialog's place matches since T6c: it is a settings section's child, whose rhythm replaces Dialog.css's 12vh)",
+    parity_server_settings_channel_permissions_b => "channel-permissions-b", "parity after T6c: whole frame 0.9293 % (as channel-permissions)",
 }
 
 parity_tests! {

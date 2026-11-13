@@ -35,6 +35,7 @@ pub struct Select {
     id: ElementId,
     label: SharedString,
     hint: Option<SharedString>,
+    hint_width: Option<f32>,
     value: SharedString,
     options: Vec<(SharedString, SharedString)>,
     disabled: bool,
@@ -54,6 +55,7 @@ impl Select {
             id: id.into(),
             label: label.into(),
             hint: None,
+            hint_width: None,
             value: value.into(),
             options: options
                 .iter()
@@ -74,6 +76,13 @@ impl Select {
     /// `<select>` named by it), so the field's own label and its 6px gap take no room.
     pub fn bare(mut self) -> Self {
         self.show_label = false;
+        self
+    }
+
+    /// The measure the hint wraps at (the field's width, when the host knows it: a dialog's body); without one
+    /// it stays on one line.
+    pub fn hint_width(mut self, width: f32) -> Self {
+        self.hint_width = Some(width);
         self
     }
 
@@ -276,12 +285,7 @@ impl RenderOnce for Select {
         }
         root = root.child(wrap);
         if let Some(hint) = self.hint {
-            root = root.child(line(
-                hint,
-                text::SM,
-                line_height(text::SM, 1.5),
-                color::FG_3,
-            ));
+            root = root.child(super::text_field::hint_lines(hint, self.hint_width));
         }
         root
     }
