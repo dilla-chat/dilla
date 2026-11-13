@@ -168,7 +168,7 @@ async fn private_results_stay_private_and_auto_dismiss() {
     );
 }
 
-/// The sealed path against a real dillad with no Bot (the test host runs none yet; Task 28 adds one): the catalog read
+/// The sealed path against a real dillad with no Bot (this host runs none; Task 28's tests below run one): the catalog read
 /// leaves nothing to seal to, so a Bot command is refused on this device (`E_BOT_OFFLINE`) before anything is sealed or
 /// posted, and Task 21's operations over the same transport are refused the same way.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

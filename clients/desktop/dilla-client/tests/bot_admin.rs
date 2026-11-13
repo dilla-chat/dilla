@@ -5,11 +5,9 @@
 //!
 //! What needs the Bot's own process (the sealed commands: status read 94, provider status 24, the moderation pages, the
 //! music operations, a webhook post being delivered into the channel) goes through the `SealedBot` seam that Task 20's
-//! transport fills at merge; those tests live in `features::bot_admin` and `features::music` with a fake Bot, and the
-//! end-to-end ones are Task 28's list (`BEHAVIOUR-GATES.md`): `welcome_channel_greets_new_member`, `webhook_post_appears`,
-//! `bot_enabled_reaches_ready`, `music_text_never_executes`, `moderation_log_across_bot_restart`,
-//! `join_role_applied_on_join_and_rejoin`, `self_role_panel_reaction_grant`, `warning_retrievable_from_bot_settings` and the
-//! six `e2e/voice/bot-music.spec.ts` tests.
+//! transport fills at merge; those tests live in `features::bot_admin` and `features::music` with a fake Bot. The
+//! end-to-end ones run against dilla's real Bot (Task 28, `testing::host::bot`): the Bot reaching ready and the join
+//! role are below; the rest are listed in `BEHAVIOUR-GATES.md`.
 
 use std::time::Duration;
 
