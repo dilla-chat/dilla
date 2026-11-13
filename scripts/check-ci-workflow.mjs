@@ -2311,6 +2311,9 @@ export const GPUI_PINNED_STEPS = {
     '    cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test server_settings --test shell --test threads --test user_settings --test voice --test voice_settings --locked -- --ignored --skip parity_',
     '    cargo test -p dilla-client --test voice --locked -- --ignored',
     '    cargo test -p dilla-client --test ring --locked -- --ignored --skip blocked_dm',
+    '    cargo clippy -p dilla-desktop --all-targets --features automation --locked -- -D warnings',
+    '    cargo test -p dilla-desktop --features automation --locked',
+    '    cargo test -p dilla-desktop --features automation --test members --test search --test server_settings --test settings_host --test shell --test user_settings --test voice_settings --locked -- --ignored --skip parity_',
     '    cargo test -p dilla-desktop --test slice --locked -- --ignored',
   ].join('\n'),
   // The media tests need the e2e media suite's prerequisites, which the steps before this one build on Linux.
