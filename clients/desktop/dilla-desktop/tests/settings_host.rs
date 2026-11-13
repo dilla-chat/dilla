@@ -351,7 +351,6 @@ fn super_host(
 
 /// The app (integration 3, step 1): one settings host per window, whatever opens it again; Close takes back the screen
 /// it was opened over; a Settings-to-Settings route switches the section through the dirty guard.
-#[cfg(feature = "automation")]
 mod app {
     use super::*;
     use dilla_desktop::app::{AppView, Launch};

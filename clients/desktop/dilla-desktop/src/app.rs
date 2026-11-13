@@ -856,9 +856,9 @@ impl AppView {
         .detach();
     }
 
-    /// Automation (integration 3, step 0 item 1's test): the shell's client comes to owe a factor (the forced screen, as
+    /// Tests (integration 3, step 0 item 1; built without the automation feature too, as CI runs them): the shell's client comes to owe a factor (the forced screen, as
     /// `show_shell`'s state loop shows it), and the person confirms Forget this device there.
-    #[cfg(feature = "automation")]
+    #[doc(hidden)]
     pub fn forget_from_forced(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(client) = self
             .shell
@@ -875,13 +875,13 @@ impl AppView {
     }
 
     /// Automation: the window shows the sign-in.
-    #[cfg(feature = "automation")]
+    #[doc(hidden)]
     pub fn shows_sign_in(&self) -> bool {
         matches!(self.screen, Screen::SignIn(_))
     }
 
     /// Automation: what the window shows, by name (`settings` while the host is open, whatever is behind it).
-    #[cfg(feature = "automation")]
+    #[doc(hidden)]
     pub fn screen_name(&self) -> &'static str {
         match &self.screen {
             Screen::Starting => "starting",
@@ -897,7 +897,7 @@ impl AppView {
     }
 
     /// Automation: the open server settings and whether they sit over a screen that comes back on close.
-    #[cfg(feature = "automation")]
+    #[doc(hidden)]
     pub fn server_settings(
         &self,
     ) -> Option<(
@@ -911,7 +911,7 @@ impl AppView {
     }
 
     /// Automation: the open settings host, and how many settings hosts are stacked (one at most).
-    #[cfg(feature = "automation")]
+    #[doc(hidden)]
     pub fn settings_host(&self) -> Option<(Entity<UserSettingsHost>, usize)> {
         let Screen::Settings { host, behind, .. } = &self.screen else {
             return None;
