@@ -103,7 +103,18 @@ fn pins_dialog(
         .cloned()
         .unwrap_or_default();
     let now = ctx.clock.now();
+    let (can_unpin, note) = pins_gate_of(state, channel);
     let mut list = div().flex().flex_col().w_full();
+    // PinsDialog.css `__note`: the meta size in --fg-3, 12px over the list.
+    if let Some(note) = note {
+        list = list.child(div().w_full().pb(len(12.)).children(paragraph(
+            t(note),
+            text::META,
+            line_height(text::META, 1.5),
+            color::FG_3,
+            480.0 - 32.0,
+        )));
+    }
     if pins.is_empty() {
         list = list.child(
             div()
@@ -133,12 +144,13 @@ fn pins_dialog(
             color::FG_BODY,
             480.0 - 32.0,
         );
-        let unpin = {
+        // Pins.tsx: `canUnpin === false` hides the unpin buttons (the reader may not pin here).
+        let unpin = can_unpin.then(|| {
             let msg = pin.msg_id;
             Button::new(("pins-unpin", n), t("shell.message.unpin"))
                 .variant(ButtonVariant::Ghost)
                 .on_click(move |_, window, cx| unpin_from_pins(channel, msg, window, cx))
-        };
+        });
         let jump = {
             let msg = pin.msg_id;
             Button::new(("pins-jump", n), t("shell.pins.jump"))
@@ -182,7 +194,7 @@ fn pins_dialog(
                         color::FG_3,
                     )))
                     .child(jump)
-                    .child(unpin),
+                    .children(unpin),
             ),
         );
     }
@@ -221,6 +233,15 @@ pub fn unpin_from_pins(channel: ChannelId, msg: MessageId, window: &mut Window, 
     let Some(ui) = handle(window, cx) else {
         return;
     };
+    // The reader may not pin here: nothing is offered, and nothing is sent.
+    if ui
+        .read(cx)
+        .ctx
+        .as_ref()
+        .is_some_and(|c| !pins_gate_of(&c.state, channel).0)
+    {
+        return;
+    }
     if let Some(client) = ui.read(cx).ctx.as_ref().and_then(|c| c.client.clone()) {
         let done = client.messages().pin(channel, msg, false);
         let reload = client.messages().load_pins(channel);
@@ -268,6 +289,21 @@ pub fn jump_from_pins(channel: ChannelId, msg: MessageId, window: &mut Window, c
     });
 }
 
+/// The pins dialog's gate for a reader with the channel's permission `bits` (`None`: unknown, or a DM): whether Unpin is
+/// offered and the note under the title (Conversation.tsx: `canUnpin`, `note`).
+pub fn pins_gate(bits: Option<u64>) -> (bool, Option<&'static str>) {
+    let pin = u64::from(dilla_client::features::roles::perm::PIN_MESSAGES);
+    (
+        bits.is_none_or(|b| b & pin != 0),
+        bits.is_some().then_some("perm.pinsNote"),
+    )
+}
+
+/// [`pins_gate`] for the reader of `channel` (the one resolver, `roles::viewer_channel_bits`).
+fn pins_gate_of(state: &AppState, channel: ChannelId) -> (bool, Option<&'static str>) {
+    pins_gate(dilla_client::features::roles::viewer_channel_bits(state, channel))
+}
+
 /// A pin row's top rule: every row but the first has a 1px hairline above it.
 trait PinRow: Styled + Sized {
     fn when_else_border(self, n: usize) -> Self;
@@ -280,5 +316,22 @@ impl PinRow for gpui::Div {
         } else {
             self.border_t_1().border_color(color::HAIRLINE)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PIN: u64 = dilla_client::features::roles::perm::PIN_MESSAGES as u64;
+
+    /// Review L I2 (Conversation.tsx's PinsPanel props): Unpin is offered with the channel's pin_messages bit or while
+    /// the bits are unknown (`canUnpin`); the note shows once the bits are known (`perm.pinsNote`; absent in a DM).
+    #[test]
+    fn the_pins_dialog_gates_unpin_on_the_pin_messages_bit() {
+        let read = 1;
+        assert_eq!(pins_gate(Some(read)), (false, Some("perm.pinsNote")));
+        assert_eq!(pins_gate(Some(read | PIN)), (true, Some("perm.pinsNote")));
+        assert_eq!(pins_gate(None), (true, None));
     }
 }
