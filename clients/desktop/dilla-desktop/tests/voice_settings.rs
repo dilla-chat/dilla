@@ -746,19 +746,19 @@ mod parity {
     }
 
     #[test]
-    #[ignore = "parity after T6c: whole frame 2.5308 % (the web reference shows \"The microphone test could not start.\": the shooter's browser has no microphone, GPUI's test runs; needs a re-shoot with a fake capture device)"]
+    #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
     fn parity_voice_settings_mic_test_running() {
         check("mic-test-running");
     }
 
     #[test]
-    #[ignore = "parity after T6c: whole frame 2.2988 % (the web reference shows \"The microphone test could not start.\": the shooter's browser has no microphone, GPUI's test runs; needs a re-shoot with a fake capture device)"]
+    #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
     fn parity_voice_settings_mic_test_running_b() {
         check("mic-test-running-b");
     }
 
     #[test]
-    #[ignore = "parity after T6c: whole frame 2.5177 % (the web reference shows \"The microphone test could not start.\": the shooter's browser has no microphone, GPUI's test runs; needs a re-shoot with a fake capture device)"]
+    #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
     fn parity_voice_settings_enhanced_unavailable() {
         check("enhanced-unavailable");
     }
