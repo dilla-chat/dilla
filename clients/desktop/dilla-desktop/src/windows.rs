@@ -134,32 +134,39 @@ pub fn running_client(cx: &App, id: InstanceId) -> Option<Rc<Client>> {
 }
 
 /// Re-review C: the instances whose store a Sign out still has to wipe (a holder kept the old client), and how often
-/// each instance was started, so a wipe that waited never deletes a session started after it.
+/// each instance was started, so a wipe that waited never deletes a session started after it. Pending wipes are
+/// counted (final review M6): two wipes of one instance keep it pending until both ended.
 #[derive(Default)]
 struct Wipes {
-    pending: std::collections::HashSet<InstanceId>,
+    pending: HashMap<InstanceId, u32>,
     starts: HashMap<InstanceId, u64>,
 }
 
 impl Global for Wipes {}
 
-/// A Sign out's wipe of `id` waits for the old client: the sign-in for `id` is refused until [`wipe_end`]. Answers the
-/// instance's start count now, for [`wipe_may_delete`].
+/// A wipe of `id` (a Sign out's or a Forget's) waits for the old client: a start of `id` is refused until
+/// [`wipe_end`]. Answers the instance's start count now, for [`wipe_may_delete`].
 pub fn wipe_begin(cx: &mut App, id: InstanceId) -> u64 {
     let w = cx.default_global::<Wipes>();
-    w.pending.insert(id);
+    *w.pending.entry(id).or_insert(0) += 1;
     w.starts.get(&id).copied().unwrap_or(0)
 }
 
-/// The pending wipe of `id` ended (done, or skipped).
+/// One pending wipe of `id` ended (done, or skipped).
 pub fn wipe_end(cx: &mut App, id: InstanceId) {
-    cx.default_global::<Wipes>().pending.remove(&id);
+    let w = cx.default_global::<Wipes>();
+    if let Some(n) = w.pending.get_mut(&id) {
+        *n = n.saturating_sub(1);
+        if *n == 0 {
+            w.pending.remove(&id);
+        }
+    }
 }
 
-/// A Sign out's wipe of `id` is still pending: a sign-in for it waits.
+/// A wipe of `id` is still pending: a start of it waits.
 pub fn wipe_pending(cx: &App, id: InstanceId) -> bool {
     cx.try_global::<Wipes>()
-        .is_some_and(|w| w.pending.contains(&id))
+        .is_some_and(|w| w.pending.contains_key(&id))
 }
 
 /// A client of `id` is starting (any window): a wipe that began before it may no longer delete anything.
@@ -535,6 +542,22 @@ mod tests {
             );
             wipe_end(cx, id);
             assert!(!wipe_pending(cx, id));
+        });
+    }
+
+    /// Final review M6: two wipes of one instance pending at once keep it pending until both ended.
+    #[gpui::test]
+    fn two_pending_wipes_keep_the_instance_pending_until_both_end(cx: &mut gpui::TestAppContext) {
+        let id = InstanceId(4);
+        cx.update(|cx| {
+            wipe_begin(cx, id);
+            wipe_begin(cx, id);
+            wipe_end(cx, id);
+            assert!(wipe_pending(cx, id), "one wipe still waits");
+            wipe_end(cx, id);
+            assert!(!wipe_pending(cx, id));
+            wipe_end(cx, id);
+            assert!(!wipe_pending(cx, id), "an extra end never goes below none");
         });
     }
 }
