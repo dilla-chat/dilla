@@ -185,6 +185,14 @@ jobs:
       # needs no adapter on any OS: macOS would use Metal and Windows has none, and neither runs the ignored test.
       # Linux renders on lavapipe (mesa-vulkan-drivers, installed above) and runs it, plus dilla-client's real-dillad
       # hello (it starts the dilla-testhost built above).
+      # dilla's real Bot for the Bot tests (dilla-client tests/bot*, dilla-desktop tests/bot): dilla-testhost -bot supervises
+      # this dillabot (the dilla_testhost tag lets it read its music fixtures from its state directory) and its helper.
+      - name: Build the Bot for the Bot tests (Linux)
+        if: runner.os == 'Linux' && !cancelled()
+        shell: bash
+        run: |
+          go build -tags dilla_testhost -o target/dillabot ./cmd/dillabot
+          cargo build -p dilla-bot-core --release --locked
       - name: Run the ignored tests (Linux)
         if: runner.os == 'Linux' && !cancelled()
         shell: bash
@@ -196,12 +204,12 @@ jobs:
           cargo test -p dilla-client --test calls --locked -- --ignored
           cargo test -p dilla-client --test removals --test keypackages --test backups --test lifecycle --test readmit --test send_after_new_device --locked -- --ignored
           cargo test -p dilla-client --test attachments --test bot --test bot_admin --test diagnostics --test factors --test members --test messages --test onboarding --test reactions --test search --test server_settings --test threads --test user_settings --test voice_settings --locked -- --ignored
-          cargo test -p dilla-client --test notify --locked -- --ignored --skip dm_from_tab_reaches_peer_reply_badges_until_read --skip dm_opened_by_peer_appears_badges_notifies_live
+          cargo test -p dilla-client --test notify --locked -- --ignored
           cargo build -p dilla-testkit --bin dilla-testkit --locked
           cargo test -p dilla-client --test dms --locked -- --ignored
           cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test server_settings --test shell --test threads --test user_settings --test voice --test voice_settings --locked -- --ignored --skip parity_
           cargo test -p dilla-client --test voice --locked -- --ignored
-          cargo test -p dilla-client --test ring --locked -- --ignored --skip blocked_dm
+          cargo test -p dilla-client --test ring --locked -- --ignored
           cargo clippy -p dilla-desktop --all-targets --features automation --locked -- -D warnings
           cargo test -p dilla-desktop --features automation --locked
           cargo test -p dilla-desktop --features automation --test bot --test bot_admin --test members --test search --test server_settings --test settings_host --test shell --test user_settings --test voice_settings --locked -- --ignored --skip parity_

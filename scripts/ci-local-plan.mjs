@@ -121,6 +121,9 @@ export const EXTRA_JOBS = {
       'cargo build -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity --all-targets --locked',
       'cargo clippy -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity --all-targets --locked -- -D warnings',
       'cargo test -p dilla-client -p dilla-media -p dilla-desktop-ui -p dilla-desktop -p dilla-parity --locked',
+      // dilla's real Bot for the Bot tests (desktop-gpui.yml's "Build the Bot for the Bot tests" step).
+      'go build -tags dilla_testhost -o target/dillabot ./cmd/dillabot',
+      'cargo build -p dilla-bot-core --release --locked',
       'cargo test -p dilla-parity --locked -- --ignored',
       'cargo test -p dilla-client --test gateway --locked -- --ignored',
       'cargo test -p dilla-client --test sync --locked -- --ignored',
@@ -128,12 +131,12 @@ export const EXTRA_JOBS = {
       'cargo test -p dilla-client --test calls --locked -- --ignored',
       'cargo test -p dilla-client --test removals --test keypackages --test backups --test lifecycle --test readmit --test send_after_new_device --locked -- --ignored',
       'cargo test -p dilla-client --test attachments --test bot --test bot_admin --test diagnostics --test factors --test members --test messages --test onboarding --test reactions --test search --test server_settings --test threads --test user_settings --test voice_settings --locked -- --ignored',
-      'cargo test -p dilla-client --test notify --locked -- --ignored --skip dm_from_tab_reaches_peer_reply_badges_until_read --skip dm_opened_by_peer_appears_badges_notifies_live',
+      'cargo test -p dilla-client --test notify --locked -- --ignored',
       'cargo build -p dilla-testkit --bin dilla-testkit --locked',
       'cargo test -p dilla-client --test dms --locked -- --ignored',
       'cargo test -p dilla-desktop --test attachments --test diagnostics --test factors --test instances --test members --test messages --test notify --test onboarding --test reactions --test search --test server_settings --test shell --test threads --test user_settings --test voice --test voice_settings --locked -- --ignored --skip parity_',
       'cargo test -p dilla-client --test voice --locked -- --ignored',
-      'cargo test -p dilla-client --test ring --locked -- --ignored --skip blocked_dm',
+      'cargo test -p dilla-client --test ring --locked -- --ignored',
       // The automation build's window, keyboard and fixture tests (review I4: CI built no automation, so the
       // automation-gated suites never ran), and its lint.
       'cargo clippy -p dilla-desktop --all-targets --features automation --locked -- -D warnings',
