@@ -118,20 +118,20 @@ fn emoji_width(window: &Window, display: &str) -> f32 {
 
 /// The width the shell gives the message log, once the shell says so ([`set_log_width`]).
 struct LogWidth(f32);
-impl gpui::Global for LogWidth {}
 
 /// The shell tells this area how wide its message log is, so the chips wrap where the log's rows do whichever aside (the
 /// thread or members pane) is open. Until it does, the log is the window less the rail and the sidebar.
-pub fn set_log_width(cx: &mut App, width: f32) {
-    cx.set_global(LogWidth(width));
+pub fn set_log_width(window: gpui::WindowId, width: f32, cx: &mut App) {
+    crate::per_window::set(window, Some(LogWidth(width)), cx);
 }
 
 /// How wide the message column is: the log less the row's gutter columns and right padding.
 fn column_width(window: &Window, cx: &App) -> f32 {
-    let log = cx.try_global::<LogWidth>().map_or_else(
-        || f32::from(window.viewport_size().width - layout::RAIL - layout::SIDEBAR),
-        |w| w.0,
-    );
+    let log = crate::per_window::get::<LogWidth>(window.window_handle().window_id(), cx)
+        .map_or_else(
+            || f32::from(window.viewport_size().width - layout::RAIL - layout::SIDEBAR),
+            |w| w.0,
+        );
     column_of(log)
 }
 
@@ -433,7 +433,7 @@ mod tests {
         let window = cx.add_empty_window();
         window.update(|window, cx| {
             let from_window = column_width(window, cx);
-            set_log_width(cx, 500.0);
+            set_log_width(window.window_handle().window_id(), 500.0, cx);
             assert_eq!(column_width(window, cx), column_of(500.0));
             assert_ne!(from_window, column_of(500.0));
         });

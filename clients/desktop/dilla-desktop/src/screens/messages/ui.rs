@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use dilla_client::Client;
 use dilla_client::state::{ChannelId, MessageId, TimelineItem};
 use gpui::{
-    App, AppContext as _, Context, Entity, EntityInputHandler as _, Focusable as _, Global,
-    Subscription, Window,
+    App, AppContext as _, Context, Entity, EntityInputHandler as _, Focusable as _, Subscription,
+    Window,
 };
 use gpui_component::input::{InputEvent, TextareaState};
 
@@ -84,43 +84,42 @@ pub struct MessageUi {
 /// The window's message state, created on first use. Notifying it redraws the view that drew the timeline.
 pub fn ui(window: &mut Window, cx: &mut App) -> Entity<MessageUi> {
     let e = window.use_keyed_state("messages-ui", cx, |_, _| MessageUi::default());
-    if cx
-        .try_global::<UiHandle>()
-        .is_none_or(|h| h.0.entity_id() != e.entity_id())
-    {
-        cx.set_global(UiHandle(e.clone()));
+    let id = window.window_handle().window_id();
+    if crate::per_window::get::<UiHandle>(id, cx).is_none_or(|h| h.0.entity_id() != e.entity_id()) {
+        crate::per_window::set(id, Some(UiHandle(e.clone())), cx);
     }
     e
 }
 
+/// Each window's message state (final review sweep: per window; release walks them all).
 #[derive(Clone)]
 struct UiHandle(Entity<MessageUi>);
-impl Global for UiHandle {}
 
 /// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): the context the dialogs read and an open
 /// editor that holds it go.
 pub fn release(client: &Rc<Client>, cx: &mut App) {
-    let Some(handle) = cx.try_global::<UiHandle>().cloned() else {
-        return;
-    };
+    let mut handles = Vec::new();
+    crate::per_window::each_mut::<UiHandle>(cx, |_, h| handles.push(h.clone()));
     let holds = |c: &Option<Rc<Client>>| c.as_ref().is_some_and(|c| Rc::ptr_eq(c, client));
-    handle.0.update(cx, |ui, cx| {
-        if ui.ctx.as_ref().is_some_and(|ctx| holds(&ctx.client)) {
-            ui.ctx = None;
-            ui.pins = None;
-            ui.deleting = None;
-            ui.menu = None;
-        }
-        if ui.editing.as_ref().is_some_and(|e| holds(&e.client)) {
-            ui.editing = None;
-        }
-        cx.notify();
-    });
+    for handle in handles {
+        handle.0.update(cx, |ui, cx| {
+            if ui.ctx.as_ref().is_some_and(|ctx| holds(&ctx.client)) {
+                ui.ctx = None;
+                ui.pins = None;
+                ui.deleting = None;
+                ui.menu = None;
+            }
+            if ui.editing.as_ref().is_some_and(|e| holds(&e.client)) {
+                ui.editing = None;
+            }
+            cx.notify();
+        });
+    }
 }
 
-/// The state a closure of an action reaches (`None` before the timeline's first frame).
-pub fn handle(cx: &App) -> Option<Entity<MessageUi>> {
-    cx.try_global::<UiHandle>().map(|h| h.0.clone())
+/// The state of `window`'s log that a closure of an action reaches (`None` before its timeline's first frame).
+pub fn handle(window: &Window, cx: &App) -> Option<Entity<MessageUi>> {
+    crate::per_window::get::<UiHandle>(window.window_handle().window_id(), cx).map(|h| h.0.clone())
 }
 
 impl MessageUi {
@@ -287,7 +286,7 @@ impl MessageUi {
 }
 
 /// Opens the pins dialog of `channel` (the channel header's pin button calls this).
-pub fn open_pins(channel: ChannelId, client: Option<&Rc<Client>>, cx: &mut App) {
+pub fn open_pins(channel: ChannelId, client: Option<&Rc<Client>>, window: &Window, cx: &mut App) {
     if let Some(client) = client {
         let loaded = client.messages().load_pins(channel);
         cx.background_spawn(async move {
@@ -295,7 +294,7 @@ pub fn open_pins(channel: ChannelId, client: Option<&Rc<Client>>, cx: &mut App) 
         })
         .detach();
     }
-    if let Some(ui) = handle(cx) {
+    if let Some(ui) = handle(window, cx) {
         ui.update(cx, |ui, cx| ui.open_pins(channel, cx));
     }
 }

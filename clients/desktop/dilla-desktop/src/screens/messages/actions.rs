@@ -29,7 +29,7 @@ pub fn message_actions(item: &TimelineItem) -> Vec<MessageAction> {
             icon: IconName::Pencil,
             area: Area::Messages,
             run: Rc::new(move |ctx, window, cx| {
-                if let Some(h) = ui::handle(cx) {
+                if let Some(h) = ui::handle(window, cx) {
                     h.update(cx, |ui, cx| ui.begin_edit(ctx, &item, window, cx));
                 }
             }),
@@ -63,8 +63,8 @@ pub fn message_actions(item: &TimelineItem) -> Vec<MessageAction> {
             label: "shell.message.delete",
             icon: IconName::Trash2,
             area: Area::Messages,
-            run: Rc::new(move |ctx, _window, cx| {
-                if let (Some(channel), Some(h)) = (ctx.channel, ui::handle(cx)) {
+            run: Rc::new(move |ctx, window, cx| {
+                if let (Some(channel), Some(h)) = (ctx.channel, ui::handle(window, cx)) {
                     h.update(cx, |ui, cx| ui.ask_delete(channel, msg, cx));
                 }
             }),

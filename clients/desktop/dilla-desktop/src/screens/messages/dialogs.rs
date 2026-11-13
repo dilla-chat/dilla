@@ -20,7 +20,7 @@ use crate::strings::{t, tf};
 /// The dialogs the state asks for, in paint order: the delete confirmation, then the pins. They draw with what the
 /// timeline was last drawn with.
 pub fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
-    let Some(ui) = handle(cx) else {
+    let Some(ui) = handle(window, cx) else {
         return Vec::new();
     };
     let Some(ctx) = ui.read(cx).ctx.clone() else {

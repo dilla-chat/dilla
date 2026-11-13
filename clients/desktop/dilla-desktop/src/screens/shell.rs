@@ -722,9 +722,11 @@ impl ShellView {
         ]
     }
 
-    fn choose(&mut self, channel: ChannelId, item: &str, cx: &mut Context<Self>) {
+    fn choose(&mut self, channel: ChannelId, item: &str, window: &Window, cx: &mut Context<Self>) {
         match item {
-            "pins" => crate::screens::messages::open_pins(channel, self.client.as_ref(), cx),
+            "pins" => {
+                crate::screens::messages::open_pins(channel, self.client.as_ref(), window, cx)
+            }
             "read" => {
                 if let Some(client) = &self.client {
                     let marked = client.mark_read(channel);
@@ -1000,7 +1002,7 @@ impl Render for ShellView {
         // The DM area asks the shell to go somewhere through this (13).
         let nav = shell.clone();
         dms::set_navigator(
-            cx,
+            window.window_handle().window_id(),
             Rc::new(move |to, _, cx| {
                 let route = match to {
                     dms::Nav::Dm(dm) => Route::Dm(dm),
@@ -1009,6 +1011,7 @@ impl Render for ShellView {
                 };
                 let _ = nav.update(cx, |shell, cx| shell.navigate(route, cx));
             }),
+            cx,
         );
         let list = if self.dm_view {
             // Home: the DM list in place of a server's channels (13).
@@ -1093,7 +1096,7 @@ impl Render for ShellView {
         };
         let log_width = window_width - f32::from(layout::RAIL) - panes.sidebar - aside_width;
         // The reaction bars wrap to the message column (10).
-        crate::screens::reactions::set_log_width(cx, log_width);
+        crate::screens::reactions::set_log_width(window.window_handle().window_id(), log_width, cx);
         let log = match channel {
             Some(c) => {
                 let weak = shell.clone();
@@ -1155,9 +1158,9 @@ impl Render for ShellView {
                 .open(true)
                 .at(menu.at)
                 .no_trigger(None)
-                .on_select(move |item, _, cx| {
+                .on_select(move |item, window, cx| {
                     let id = menu.channel;
-                    let _ = w_sel.update(cx, |shell, cx| shell.choose(id, item, cx));
+                    let _ = w_sel.update(cx, |shell, cx| shell.choose(id, item, window, cx));
                 })
                 .on_open_change(move |open, _, cx| {
                     if !open {
@@ -1647,9 +1650,9 @@ mod tests {
                 .with_prefs(prefs)
             }
         });
-        shell.update(vcx, |s, cx| {
+        shell.update_in(vcx, |s, window, cx| {
             s.toggle_category(ChannelId([4; 16]), cx);
-            s.choose(ChannelId([3; 16]), "mute", cx);
+            s.choose(ChannelId([3; 16]), "mute", window, cx);
             assert!(s.channel_muted(ChannelId([3; 16])));
         });
         let prefs = Prefs::instance(&dir);
@@ -1660,8 +1663,8 @@ mod tests {
         // The mute is the notify area's account setting (Task 22), not a layout key.
         assert!(prefs.get::<Vec<String>>("layout.mutedChannels").is_none());
         assert!(notify::is_muted(&prefs, ChannelId([3; 16]), None));
-        shell.update(vcx, |s, cx| {
-            s.choose(ChannelId([3; 16]), "mute", cx);
+        shell.update_in(vcx, |s, window, cx| {
+            s.choose(ChannelId([3; 16]), "mute", window, cx);
             s.toggle_category(ChannelId([4; 16]), cx);
         });
         let prefs = Prefs::instance(&dir);

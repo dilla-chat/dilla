@@ -24,7 +24,7 @@ pub mod privacy;
 use std::rc::Rc;
 
 use dilla_client::state::ChannelId;
-use gpui::{AnyElement, App, Global, Window};
+use gpui::{AnyElement, App, Window};
 
 use crate::slots::{SectionId, SlotCx};
 
@@ -45,17 +45,19 @@ pub enum Nav {
 /// The shell's navigation, as the area calls it.
 pub type Navigator = Rc<dyn Fn(Nav, &mut Window, &mut App)>;
 
-struct NavigatorGlobal(Navigator);
-impl Global for NavigatorGlobal {}
+/// One window's shell navigation (final review sweep: per window, so a DM opened in one window never moves another
+/// window's shell).
+struct NavigatorOf(Navigator);
 
-/// Installs the shell's navigation (Task 8 calls this once per app).
-pub fn set_navigator(cx: &mut App, navigator: Navigator) {
-    cx.set_global(NavigatorGlobal(navigator));
+/// Installs the shell's navigation for `window` (the shell calls this as it draws).
+pub fn set_navigator(window: gpui::WindowId, navigator: Navigator, cx: &mut App) {
+    crate::per_window::set(window, Some(NavigatorOf(navigator)), cx);
 }
 
-/// Asks the shell to go to `to`.
+/// Asks this window's shell to go to `to`.
 pub fn navigate(to: Nav, window: &mut Window, cx: &mut App) {
-    if let Some(nav) = cx.try_global::<NavigatorGlobal>().map(|g| g.0.clone()) {
+    let id = window.window_handle().window_id();
+    if let Some(nav) = crate::per_window::get::<NavigatorOf>(id, cx).map(|g| g.0.clone()) {
         nav(to, window, cx);
     }
 }
@@ -68,4 +70,43 @@ pub fn settings_section(
     cx: &mut App,
 ) -> AnyElement {
     privacy::section(ctx, window, cx)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use super::*;
+
+    /// Final review sweep: each window's shell installs its own navigation: a DM opened in window A moves A's shell,
+    /// never B's (the last one drawn).
+    #[gpui::test]
+    fn each_windows_dm_navigation_moves_its_own_shell(cx: &mut gpui::TestAppContext) {
+        let went: Rc<RefCell<Vec<&'static str>>> = Rc::default();
+        let a = cx.add_empty_window();
+        let a_went = went.clone();
+        a.update(|window, cx| {
+            set_navigator(
+                window.window_handle().window_id(),
+                Rc::new(move |_, _, _| a_went.borrow_mut().push("a")),
+                cx,
+            );
+        });
+        let b = cx.add_empty_window();
+        let b_went = went.clone();
+        b.update(|window, cx| {
+            set_navigator(
+                window.window_handle().window_id(),
+                Rc::new(move |_, _, _| b_went.borrow_mut().push("b")),
+                cx,
+            );
+        });
+        let a = cx.windows()[0];
+        a.update(cx, |_, window, cx| {
+            navigate(Nav::Privacy, window, cx);
+        })
+        .unwrap();
+        assert_eq!(*went.borrow(), vec!["a"], "A's shell moved, not B's");
+    }
 }

@@ -460,7 +460,7 @@ impl Composer {
                 .channel
                 .and_then(|c| self.slots.state.timelines.get(&c))
                 .and_then(|tl| composing::edit_target(&tl.items).cloned());
-            if let (Some(item), Some(h)) = (target, ui::handle(cx)) {
+            if let (Some(item), Some(h)) = (target, ui::handle(window, cx)) {
                 let slots = self.slots.clone();
                 h.update(cx, |ui, cx| ui.begin_edit(&slots, &item, window, cx));
                 return true;
