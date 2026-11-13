@@ -1,0 +1,136 @@
+{
+  "name": "server-settings/channels-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/settings/channels",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew of the Northern Lights and the Very Long Winter Nights Society",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "announcements-and-release-notes-for-the-whole-crew-of-the-northern-lights",
+            "kind": "text",
+            "name": "announcements-and-release-notes-for-the-whole-crew-of-the-northern-lights"
+          },
+          {
+            "id": "text",
+            "kind": "category",
+            "name": "Text channels for the long winter nights",
+            "position": 1
+          },
+          {
+            "id": "dev",
+            "kind": "text",
+            "name": "dev",
+            "parent": "text",
+            "position": 2
+          },
+          {
+            "id": "design",
+            "kind": "text",
+            "name": "design",
+            "parent": "text",
+            "position": 3
+          },
+          {
+            "id": "qa",
+            "kind": "text",
+            "name": "qa",
+            "parent": "text",
+            "position": 4
+          },
+          {
+            "id": "voice",
+            "kind": "category",
+            "name": "Voice",
+            "position": 5
+          },
+          {
+            "id": "lounge",
+            "kind": "voice",
+            "name": "Lounge",
+            "parent": "voice",
+            "position": 6
+          },
+          {
+            "id": "standup",
+            "kind": "voice",
+            "name": "Daily standup",
+            "parent": "voice",
+            "position": 7
+          },
+          {
+            "id": "empty",
+            "kind": "category",
+            "name": "Archive",
+            "position": 8
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      },
+      {
+        "id": "valhalla",
+        "name": "Valhalla",
+        "owner": "mira",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": []
+  },
+  "steps": []
+}

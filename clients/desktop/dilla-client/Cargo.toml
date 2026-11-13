@@ -58,6 +58,7 @@ sha2 = { version = "0.11", optional = true }
 dilla-testkit = { path = "../../../testkit", optional = true }
 hmac = { version = "0.13", optional = true }
 sha1 = { version = "0.11", optional = true }
+unicode-normalization = "0.1"
 
 # Task 25: the recovery key file is opened with O_NOFOLLOW (already in the lock).
 [target.'cfg(unix)'.dependencies]

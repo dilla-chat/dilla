@@ -30,12 +30,15 @@ mod attachments;
 mod calls;
 mod diagnostics;
 mod dms;
+mod gifs;
+mod invites;
 mod members;
 mod messages;
 mod notify;
 mod polls;
 mod reactions;
 mod roles;
+mod server_admin;
 mod threads;
 
 /// What a fixture's route and phase draw.
@@ -50,6 +53,11 @@ pub enum FixtureScreen {
     SignIn,
     /// The user settings host, on this section (`/settings/<section>`).
     Settings { section: crate::router::UserSection },
+    /// A server's settings (Task 15): `section` is the route's, `None` its first.
+    ServerSettings {
+        community: CommunityId,
+        section: Option<crate::router::ServerSection>,
+    },
 }
 
 /// A loaded fixture: the state to draw, the route it opens and the clock it is drawn at.
@@ -176,6 +184,12 @@ pub fn screen_of(route: &Route, phase: Phase) -> Result<FixtureScreen, String> {
         (Route::Settings(Some(section)), Phase::Ready) => {
             Ok(FixtureScreen::Settings { section: *section })
         }
+        (Route::ServerSettings { community, section }, Phase::Ready) => {
+            Ok(FixtureScreen::ServerSettings {
+                community: *community,
+                section: *section,
+            })
+        }
         (route, phase) => Err(format!(
             "the app cannot draw route `{}` in phase {phase:?} yet",
             route.path()
@@ -292,6 +306,9 @@ pub fn build_state(
     polls::apply(world, viewer, &mut state);
     reactions::apply(world, viewer, &mut state);
     roles::apply(world, viewer, &mut state);
+    server_admin::apply(world, viewer, &mut state);
+    gifs::apply(&fixture.name, &mut state);
+    invites::apply(&fixture.name, fixture.clock + shift, &mut state);
     threads::apply(world, viewer, &mut state);
     state
 }

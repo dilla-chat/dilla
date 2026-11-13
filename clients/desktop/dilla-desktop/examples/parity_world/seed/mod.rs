@@ -9,6 +9,8 @@ mod attachments;
 mod calls;
 mod diagnostics;
 mod dms;
+mod gifs;
+mod invites;
 mod members;
 mod messages;
 mod polls;
@@ -25,6 +27,8 @@ pub fn unseedable(f: &ScreenFixture) -> Vec<String> {
     calls::unseedable(f, &mut out);
     diagnostics::unseedable(f, &mut out);
     dms::unseedable(f, &mut out);
+    gifs::unseedable(f, &mut out);
+    invites::unseedable(f, &mut out);
     members::unseedable(f, &mut out);
     messages::unseedable(f, &mut out);
     polls::unseedable(f, &mut out);
@@ -40,6 +44,8 @@ pub async fn seed(f: &ScreenFixture, people: &[(String, Person)], clients: &[(&s
     calls::seed(f, people).await;
     diagnostics::seed(f, people).await;
     dms::seed(f, people).await;
+    gifs::seed(f, people).await;
+    invites::seed(f, people).await;
     members::seed(f, people).await;
     messages::seed(f, people).await;
     polls::seed(f, people).await;

@@ -1,0 +1,94 @@
+{
+  "name": "server-settings/invites-b",
+  "window": [
+    1440,
+    900
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/settings/invites",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      },
+      {
+        "id": "kai",
+        "display": "Kai"
+      },
+      {
+        "id": "lena",
+        "display": "Lena"
+      },
+      {
+        "id": "oskar",
+        "display": "Oskar"
+      },
+      {
+        "id": "saga",
+        "display": "Saga"
+      },
+      {
+        "id": "tor",
+        "display": "Tor"
+      },
+      {
+        "id": "ulla",
+        "display": "Ulla"
+      },
+      {
+        "id": "vidar",
+        "display": "Vidar"
+      },
+      {
+        "id": "yrsa",
+        "display": "Yrsa"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn",
+          "kai",
+          "lena",
+          "oskar",
+          "saga",
+          "tor",
+          "ulla",
+          "vidar",
+          "yrsa"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": []
+  },
+  "steps": []
+}

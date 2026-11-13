@@ -138,6 +138,8 @@ enum Screen {
         behind: Box<Screen>,
         _subscription: Subscription,
     },
+    /// A server's settings (Task 15's `ServerSettingsView`, the server settings host).
+    ServerSettings(Entity<crate::screens::server_settings::ServerSettingsView>),
 }
 
 impl Screen {
@@ -146,7 +148,7 @@ impl Screen {
         match self {
             Screen::Starting | Screen::Fatal(..) => WindowMode::Starting,
             Screen::SignIn(_) | Screen::Signup(_) | Screen::Factor(_) => WindowMode::Authentication,
-            Screen::Shell(_) | Screen::Done(_) => WindowMode::Workspace,
+            Screen::Shell(_) | Screen::Done(_) | Screen::ServerSettings(_) => WindowMode::Workspace,
             // Settings keeps the shape of the screen it was opened over.
             Screen::Settings { behind, .. } => behind.mode(),
         }
@@ -240,6 +242,24 @@ impl AppView {
                         ..SlotCx::default()
                     };
                     this.show_settings(Some(section), ctx, window, cx);
+                }
+                crate::fixture::FixtureScreen::ServerSettings { community, section } => {
+                    let clock = Clock::Fixed {
+                        now: fixture.now,
+                        utc: true,
+                    };
+                    let view = cx.new(|cx| {
+                        crate::screens::server_settings::ServerSettingsView::new(
+                            community,
+                            Arc::new(fixture.state),
+                            None,
+                            clock,
+                            section,
+                            window,
+                            cx,
+                        )
+                    });
+                    this.screen = Screen::ServerSettings(view);
                 }
             }
             return this;
@@ -758,6 +778,7 @@ impl AppView {
             Screen::Shell(_) => "shell",
             Screen::Factor(_) => "factor",
             Screen::Settings { .. } => "settings",
+            Screen::ServerSettings(_) => "server-settings",
         }
     }
 
@@ -998,6 +1019,7 @@ impl Render for AppView {
             Screen::Shell(view) => view.clone().into_any_element(),
             Screen::Factor(view) => view.clone().into_any_element(),
             Screen::Settings { host, .. } => host.clone().into_any_element(),
+            Screen::ServerSettings(view) => view.clone().into_any_element(),
         };
         // A window that draws its own frame is resized from strips at its rim.
         let size = window.viewport_size();

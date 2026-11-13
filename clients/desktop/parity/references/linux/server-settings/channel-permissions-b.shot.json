@@ -1,0 +1,22 @@
+{
+  "digest": "800b61ee03171abd2ae4a0575cacb8da0756198f4fcf4b2fd1bfdc6fb4724def",
+  "shift": 36494,
+  "hand_migrated": false,
+  "ids": {
+    "channel:midgard/afk": "146d336eee0b0275fee330848cde4f0a",
+    "channel:midgard/announcements-and-release-notes-for-the-whole-crew-of-the-northern-lights": "acb8fbe2a467d1c27615f944d7c45574",
+    "channel:midgard/design": "c0c3ae07a8e3997dfcadf10d17caeec5",
+    "channel:midgard/dev": "c514ec795b7692633b9f785557694e37",
+    "channel:midgard/empty": "50ebde73ab1b9475e3120d3499c6c22a",
+    "channel:midgard/general": "4fbd6164c8e941b6b1dcb06107c8204d",
+    "channel:midgard/lounge": "aea2e84afde26cda96ef7d481d69177b",
+    "channel:midgard/qa": "0404375baedab77c251270a3b937c6ad",
+    "channel:midgard/standup": "84e6493fbd814f5d0d51aac634d08e5c",
+    "channel:midgard/text": "ef16fc084d41e4b26a66ecfd36b051b4",
+    "channel:midgard/voice": "fefcbc7683e437bb037f1b9561c1a9f1",
+    "person:ada": "464b92b43cd3675cf0774359cbdd646e",
+    "person:bjorn": "f6bdb68a037a251445eb1de283c0e627",
+    "person:mira": "765647de010f40d19979bf9dd6cc9cf7",
+    "server:midgard": "dc08052f60373cf468946e692c090252"
+  }
+}
