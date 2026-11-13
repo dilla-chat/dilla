@@ -396,6 +396,26 @@ fn renewal_backoff_doubles_to_thirty_seconds() {
     assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30, 30]);
 }
 
+/// Review M1: a core call the runtime's shutdown cancelled is the client stopping, not a poisoned core (Forget's close
+/// logged a false E_CORE_POISONED panic); a call that panicked still is.
+#[tokio::test]
+async fn a_cancelled_core_call_is_a_stop_not_poison() {
+    use crate::sync::api::{CoreFailure, CorePoisoned, core_outcome};
+    let cancelled = tokio::spawn(std::future::pending::<Result<(), CorePoisoned>>());
+    cancelled.abort();
+    let joined = cancelled.await;
+    assert_eq!(core_outcome(joined), Err(CoreFailure::Stopped));
+    let panicked = tokio::spawn(async { panic!("a core call fails") }).await;
+    assert_eq!(
+        core_outcome::<()>(panicked.map(|()| Ok(()))),
+        Err(CoreFailure::Poisoned)
+    );
+    assert_eq!(
+        core_outcome::<()>(Ok(Err(CorePoisoned))),
+        Err(CoreFailure::Poisoned)
+    );
+}
+
 #[tokio::test]
 async fn a_poisoned_core_stops_the_engine_and_is_never_used_again() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();

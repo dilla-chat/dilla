@@ -42,24 +42,56 @@ pub async fn try_core<T: Send + 'static>(
     core: &CoreHandle,
     f: impl FnOnce(&mut ClientCore) -> T + Send + 'static,
 ) -> Result<T, CorePoisoned> {
+    core_call(core, f).await.map_err(|_| CorePoisoned)
+}
+
+/// Why a core call did not answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CoreFailure {
+    /// The lock is poisoned, or the call itself panicked.
+    Poisoned,
+    /// The runtime is shutting down (the client stops: `Client::stop`, Forget's close): the call never ran.
+    Stopped,
+}
+
+async fn core_call<T: Send + 'static>(
+    core: &CoreHandle,
+    f: impl FnOnce(&mut ClientCore) -> T + Send + 'static,
+) -> Result<T, CoreFailure> {
     let core = core.clone();
-    tokio::task::spawn_blocking(move || {
-        let mut guard = core.lock().map_err(|_| CorePoisoned)?;
-        Ok(f(&mut guard))
-    })
-    .await
-    .unwrap_or(Err(CorePoisoned))
+    core_outcome(
+        tokio::task::spawn_blocking(move || {
+            let mut guard = core.lock().map_err(|_| CorePoisoned)?;
+            Ok(f(&mut guard))
+        })
+        .await,
+    )
+}
+
+/// A blocking core call's outcome: a call cancelled by the runtime's shutdown is the client stopping, not a poisoned core
+/// (review M1: Forget's close logged a false E_CORE_POISONED panic); a panic or a poisoned lock is.
+pub(crate) fn core_outcome<T>(
+    joined: Result<Result<T, CorePoisoned>, tokio::task::JoinError>,
+) -> Result<T, CoreFailure> {
+    match joined {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(CorePoisoned)) => Err(CoreFailure::Poisoned),
+        Err(e) if e.is_cancelled() => Err(CoreFailure::Stopped),
+        Err(_) => Err(CoreFailure::Poisoned),
+    }
 }
 
 /// [`try_core`] for the engine's jobs: a poisoned core ends the calling job (it unwinds; the engine reports itself
-/// stopped from then on, see `Engine::stopped`) instead of running on a core a panic may have left inconsistent.
+/// stopped from then on, see `Engine::stopped`) instead of running on a core a panic may have left inconsistent. A call
+/// the runtime's shutdown cancelled ends the job quietly: it waits for the runtime to drop it.
 pub async fn with_core<T: Send + 'static>(
     core: &CoreHandle,
     f: impl FnOnce(&mut ClientCore) -> T + Send + 'static,
 ) -> T {
-    match try_core(core, f).await {
+    match core_call(core, f).await {
         Ok(v) => v,
-        Err(e) => panic!("{e}"),
+        Err(CoreFailure::Stopped) => std::future::pending().await,
+        Err(CoreFailure::Poisoned) => panic!("{CorePoisoned}"),
     }
 }
 
