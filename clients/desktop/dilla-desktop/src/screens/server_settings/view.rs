@@ -75,7 +75,15 @@ pub struct ServerSettingsView {
     body: Entity<Body>,
     workspace: Workspace<Leave>,
     attached: bool,
+    /// The settings' root: it holds the focus when they open, so Tab and Escape reach them.
+    focus: gpui::FocusHandle,
     _subscriptions: Vec<Subscription>,
+}
+
+impl gpui::Focusable for ServerSettingsView {
+    fn focus_handle(&self, _cx: &App) -> gpui::FocusHandle {
+        self.focus.clone()
+    }
 }
 
 /// settings/registry.ts `SETTINGS_ICONS` for the person's own sections.
@@ -142,6 +150,7 @@ impl ServerSettingsView {
             body,
             workspace: Workspace::new(),
             attached: false,
+            focus: cx.focus_handle(),
             _subscriptions: vec![subscription],
         }
     }
@@ -391,7 +400,11 @@ impl Render for ServerSettingsView {
         }
         div()
             .id("server-settings-root")
+            .track_focus(&self.focus)
             .size_full()
+            // Tab and Shift+Tab walk the settings as they walk the shell (`crate::screens::bind_keys`).
+            .on_action(|_: &crate::screens::FocusNext, window, cx| window.focus_next(cx))
+            .on_action(|_: &crate::screens::FocusPrevious, window, cx| window.focus_prev(cx))
             .child(frame)
             .child(self.prompt(cx))
     }

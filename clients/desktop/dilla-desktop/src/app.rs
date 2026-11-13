@@ -467,12 +467,15 @@ impl AppView {
                 }
                 cx.notify();
             });
+        let focus = gpui::Focusable::focus_handle(view.read(cx), cx);
         let behind = std::mem::replace(&mut self.screen, Screen::Starting);
         self.screen = Screen::ServerSettings {
             view,
             behind: Some(Box::new(behind)),
             _subscription: Some(subscription),
         };
+        // The settings take the keyboard from their first frame (review M8).
+        window.focus(&focus, cx);
         cx.notify();
     }
 

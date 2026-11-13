@@ -197,6 +197,14 @@ fn the_server_menu_opens_the_server_settings_over_the_shell(cx: &mut gpui::TestA
     );
     let (view, over) = app.read_with(vcx, |a, _| a.server_settings()).unwrap();
     assert!(over, "over the shell, which comes back");
+    // Review M8: the settings hold the keyboard (Tab and Escape reach them).
+    let focus = view.read_with(vcx, |v, cx| gpui::Focusable::focus_handle(v, cx));
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    assert!(
+        vcx.update(|window, cx| focus.contains_focused(window, cx)),
+        "the focus is in the settings"
+    );
     view.update(vcx, |v, cx| v.request_close(cx));
     vcx.run_until_parked();
     assert_eq!(app.read_with(vcx, |a, _| a.screen_name()), "shell");
