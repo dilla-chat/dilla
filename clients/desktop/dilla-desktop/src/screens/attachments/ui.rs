@@ -454,9 +454,11 @@ pub fn play(key: CardKey, video: bool, mime: String, cx: &mut App) {
         let dir = cx.update(|cx| ui(cx).instance_dir.clone());
         let prepared = cx
             .background_executor()
-        .spawn(async move {
+            .spawn(async move {
                 if video {
-                    Err(dir.map(|d| media::write_for_system_player(&d, &mime, &opened.bytes)))
+                    Err(dir.map(|d| {
+                        media::write_for_system_player(&d, &mime, &opened.bytes)
+                    }))
                 } else {
                     Ok(media::open_audio(Arc::new(opened.bytes), &mime))
                 }
