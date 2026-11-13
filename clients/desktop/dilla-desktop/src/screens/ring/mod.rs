@@ -43,6 +43,9 @@ impl Global for Windows {}
 struct Memory {
     focus: HashMap<SharedString, RingFocus>,
     seen: HashSet<SharedString>,
+    /// Where the focus was when a ring took it (Jonas's decision for Task 18): it goes back there when the rings that
+    /// held it end or are dismissed.
+    back: Option<gpui::FocusHandle>,
 }
 
 /// The host's current view for the ring banner, set on each render of the host (the shell, Task 8).
@@ -128,15 +131,44 @@ pub fn ring_banner(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
             fresh.push((k.clone(), RingFocus::new(cx)));
         }
     }
-    let (rows_focus, arrived) = {
+    let focused = window.focused(cx);
+    // A ring that held the focus and is gone (answered, declined, ended): where the focus goes next.
+    let ring_held_focus = cx
+        .global::<Windows>()
+        .0
+        .iter()
+        .find(|(w, _, _)| *w == id)
+        .is_some_and(|(_, _, m)| {
+            m.focus
+                .iter()
+                .any(|(k, f)| !keys.contains(k) && f.row.contains_focused(window, cx))
+        });
+    let (rows_focus, arrived, back) = {
         let memory = &mut cx
             .global_mut::<Windows>()
             .0
             .iter_mut()
             .find(|(w, _, _)| *w == id)?
             .2;
+        let in_a_ring = |f: &gpui::FocusHandle| {
+            memory
+                .focus
+                .values()
+                .any(|r| r.row == *f || r.answer == *f || r.decline == *f)
+        };
+        let focus_outside_rings = focused.clone().filter(|f| !in_a_ring(f));
         memory.focus.extend(fresh);
         memory.focus.retain(|k, _| keys.contains(k));
+        // The place to go back to is taken when the first ring takes the focus.
+        if memory.back.is_none() {
+            memory.back = focus_outside_rings;
+        }
+        let back = (ring_held_focus && keys.is_empty())
+            .then(|| memory.back.take())
+            .flatten();
+        if keys.is_empty() {
+            memory.back = None;
+        }
         let arrived: Vec<SharedString> = keys
             .iter()
             .filter(|k| !memory.seen.contains(*k))
@@ -145,10 +177,18 @@ pub fn ring_banner(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         memory.seen.retain(|k| keys.contains(k));
         memory.seen.extend(arrived.iter().cloned());
         let focus: Vec<RingFocus> = keys.iter().map(|k| memory.focus[k].clone()).collect();
-        (focus, arrived)
+        (focus, arrived, back)
     };
+    // The rings that held the focus are gone: it goes back where it was when the first one took it.
+    if let Some(back) = back {
+        window.focus(&back, cx);
+    }
     if keys.is_empty() {
         return None;
+    }
+    // Another ring still rings: a gone ring's focus moves to it.
+    if ring_held_focus {
+        window.focus(&rows_focus[0].row, cx);
     }
     // A ring that arrives while the window is focused takes the focus (Enter answers, Escape declines); a ring never
     // takes it from another window.

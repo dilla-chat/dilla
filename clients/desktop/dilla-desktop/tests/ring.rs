@@ -739,3 +739,41 @@ fn the_ring_sound_follows_the_windows_that_ring(cx: &mut TestAppContext) {
         "the last ringing window went: silent"
     );
 }
+
+/// Jonas's decision for Task 18: a ring that arrives takes the keyboard focus (Enter answers, Escape declines), and the
+/// focus goes back to where it was once the ring ends or is dismissed.
+#[gpui::test]
+fn the_ring_takes_the_focus_and_gives_it_back(cx: &mut TestAppContext) {
+    let (shell, vcx) = shell_on(
+        server(),
+        dilla_desktop::router::Route::Channel {
+            community: SERVER,
+            channel: Some(GENERAL),
+        },
+        cx,
+    );
+    vcx.update(|window, _| window.activate_window());
+    // The person is somewhere in the shell: its own focus.
+    let before = shell.read_with(vcx, gpui::Focusable::focus_handle);
+    vcx.update(|window, cx| before.focus(window, cx));
+    vcx.run_until_parked();
+    let mut ringing = server();
+    ringing.ring.rings.push(ring(DM, "Bob", false));
+    shell.update(vcx, |s, cx| s.set_state(Arc::new(ringing), cx));
+    vcx.run_until_parked();
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    assert!(
+        !vcx.update(|window, _| before.is_focused(window)),
+        "the ring took the focus"
+    );
+    // The ring ends (the caller gave up): the focus is back where it was.
+    shell.update(vcx, |s, cx| s.set_state(Arc::new(server()), cx));
+    vcx.run_until_parked();
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    assert!(
+        vcx.update(|window, _| before.is_focused(window)),
+        "the focus came back"
+    );
+}
