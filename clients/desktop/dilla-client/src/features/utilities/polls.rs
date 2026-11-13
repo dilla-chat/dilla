@@ -211,6 +211,7 @@ mod tests {
         let poll = PollView {
             id: [2; 16],
             channel: ChannelId([1; 16]),
+            thread: None,
             creator: UserId([3; 16]),
             question: "Raid?".into(),
             answers: vec!["a".into(), "b".into(), "c".into()],

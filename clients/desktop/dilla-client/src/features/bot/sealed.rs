@@ -283,6 +283,11 @@ pub struct Sealed {
     store: Mutex<Store>,
     pending: Mutex<HashMap<[u8; 16], Pending>>,
     generation: std::sync::atomic::AtomicU64,
+    /// The runs of held rows (no answer yet), by row id: what their Retry sends again.
+    held: Mutex<HashMap<u64, super::run::HeldRun>>,
+    /// One catalog read at a time per community (catalog.ts `inFlight`): a later read lands after an earlier one, so an
+    /// older status never overwrites a newer one.
+    reads: Mutex<HashMap<CommunityId, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -296,6 +301,8 @@ impl Sealed {
             store: Mutex::default(),
             pending: Mutex::default(),
             generation: std::sync::atomic::AtomicU64::new(1),
+            held: Mutex::default(),
+            reads: Mutex::default(),
         })
     }
 
@@ -374,6 +381,8 @@ impl Sealed {
 
     /// Reads the catalog and the Bot channels now (a sync, a state change, a stale key). A failure keeps what is held.
     pub async fn refresh(&self, community: CommunityId) -> Result<(), Refusal> {
+        let gate = lock(&self.reads).entry(community).or_default().clone();
+        let _one_at_a_time = gate.lock().await;
         let body = self.io.fetch_catalog(community).await?;
         let decoded =
             decode_catalog_response(&body).map_err(|_| Refusal::new("E_BOT_CATALOG", 0))?;
@@ -695,14 +704,53 @@ impl Sealed {
         }
     }
 
+    /// After a timeout, the answers to `request_id` that still arrive (TS `onLate`): this device keeps the reply secret
+    /// for [`REPLY_HOLD`] after the send, and they go here from now on. `None` when it holds none.
+    pub fn late(&self, request_id: [u8; 16]) -> Option<mpsc::UnboundedReceiver<Answer>> {
+        let mut pending = lock(&self.pending);
+        let entry = pending.get_mut(&request_id)?;
+        let (tx, rx) = mpsc::unbounded_channel();
+        entry.tx = tx;
+        Some(rx)
+    }
+
     /// The run is over for its caller: its reply secret goes now.
     pub fn forget(&self, request_id: [u8; 16]) {
         lock(&self.pending).remove(&request_id);
     }
 
-    /// Sign-out, revocation: every reply secret goes.
+    /// Sign-out, revocation: every reply secret goes, and every held run with it.
     pub fn forget_all(&self) {
+        lock(&self.held).clear();
         lock(&self.pending).clear();
+    }
+
+    /// Unix seconds by the instance's clock where known (the command's `sent_at`).
+    pub fn now_s(&self) -> u64 {
+        self.io.now_s()
+    }
+
+    /// Keeps a held row's run for its Retry.
+    pub(crate) fn hold(&self, row: u64, run: super::run::HeldRun) {
+        lock(&self.held).insert(row, run);
+    }
+
+    /// Takes a held row's run (its Retry); `None` when there is none.
+    pub(crate) fn take_held(&self, row: u64) -> Option<super::run::HeldRun> {
+        lock(&self.held).remove(&row)
+    }
+
+    /// Drops a held row's run and forgets its reply secret (the row was dismissed or evicted).
+    pub(crate) fn drop_held(&self, row: u64) {
+        let run = lock(&self.held).remove(&row);
+        if let Some(run) = run {
+            self.forget(run.submit.request_id);
+        }
+    }
+
+    /// Whether row `row` holds a run.
+    pub fn holds_row(&self, row: u64) -> bool {
+        lock(&self.held).contains_key(&row)
     }
 
     /// Whether this device holds a reply secret for `request_id`.
@@ -824,4 +872,4 @@ impl SealedBot for Transport {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -7,7 +7,7 @@ use dilla_core::bot::command::seal_reply;
 
 use super::*;
 
-const COMMUNITY: CommunityId = CommunityId([7; 16]);
+pub(crate) const COMMUNITY: CommunityId = CommunityId([7; 16]);
 const BOT: [u8; 16] = [0xb0; 16];
 const OTHER_BOT: [u8; 16] = [0xb1; 16];
 
@@ -15,24 +15,26 @@ const OTHER_BOT: [u8; 16] = [0xb1; 16];
 type Verdict = Result<([u8; 16], String), Refusal>;
 
 #[derive(Default)]
-struct Fake {
-    candidate: Mutex<Option<Candidate>>,
+pub(crate) struct Fake {
+    pub(crate) candidate: Mutex<Option<Candidate>>,
     /// The core store's pin.
-    pinned: Mutex<Option<[u8; 16]>>,
+    pub(crate) pinned: Mutex<Option<[u8; 16]>>,
     /// Users the instance attested as Bots.
-    attested: Mutex<Vec<[u8; 16]>>,
+    pub(crate) attested: Mutex<Vec<[u8; 16]>>,
     /// What `verify` answers, in order (the last one repeats).
-    verify: Mutex<Vec<Verdict>>,
-    verified: Mutex<u32>,
-    device_list_state: Mutex<Option<u8>>,
-    seal_refusals: Mutex<Vec<Refusal>>,
+    pub(crate) verify: Mutex<Vec<Verdict>>,
+    pub(crate) verified: Mutex<u32>,
+    pub(crate) device_list_state: Mutex<Option<u8>>,
+    pub(crate) seal_refusals: Mutex<Vec<Refusal>>,
     /// The public half of each reply secret made, in order.
-    reply_keys: Mutex<Vec<[u8; 32]>>,
-    posted: Mutex<Vec<Vec<u8>>>,
-    post_refusal: Mutex<Option<Refusal>>,
-    catalog: Mutex<Option<Vec<u8>>>,
-    catalog_reads: Mutex<u32>,
-    published: Mutex<Vec<Option<BotCatalogView>>>,
+    pub(crate) reply_keys: Mutex<Vec<[u8; 32]>>,
+    pub(crate) posted: Mutex<Vec<Vec<u8>>>,
+    pub(crate) post_refusal: Mutex<Option<Refusal>>,
+    pub(crate) catalog: Mutex<Option<Vec<u8>>>,
+    pub(crate) catalog_reads: Mutex<u32>,
+    pub(crate) reads_at_once: Mutex<u32>,
+    pub(crate) max_reads_at_once: Mutex<u32>,
+    pub(crate) published: Mutex<Vec<Option<BotCatalogView>>>,
 }
 
 #[async_trait]
@@ -98,6 +100,16 @@ impl BotIo for Fake {
     }
     async fn fetch_catalog(&self, _: CommunityId) -> Result<Vec<u8>, Refusal> {
         *lock(&self.catalog_reads) += 1;
+        {
+            let mut now = lock(&self.reads_at_once);
+            *now += 1;
+            let mut max = lock(&self.max_reads_at_once);
+            *max = (*max).max(*now);
+        }
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        *lock(&self.reads_at_once) -= 1;
         lock(&self.catalog)
             .clone()
             .ok_or_else(|| Refusal::new("E_NOT_FOUND", 404))
@@ -116,7 +128,7 @@ impl BotIo for Fake {
     }
 }
 
-fn publication(community: [u8; 16]) -> Vec<u8> {
+pub(crate) fn publication(community: [u8; 16]) -> Vec<u8> {
     Value::Array(vec![
         Value::Uint(1),
         Value::Bytes(community.to_vec()),
@@ -125,7 +137,7 @@ fn publication(community: [u8; 16]) -> Vec<u8> {
     .encode()
 }
 
-fn frame(revision: u64, publication: Option<Vec<u8>>) -> BotCatalogFrame {
+pub(crate) fn frame(revision: u64, publication: Option<Vec<u8>>) -> BotCatalogFrame {
     let remind = Value::Array(vec![
         Value::Text("remind".into()),
         Value::Text("Set a reminder".into()),
@@ -144,7 +156,7 @@ fn frame(revision: u64, publication: Option<Vec<u8>>) -> BotCatalogFrame {
 }
 
 /// `GET /bot/catalog`: `[revision, commands, publication, [ready, null]]`.
-fn catalog_body(revision: u64) -> Vec<u8> {
+pub(crate) fn catalog_body(revision: u64) -> Vec<u8> {
     Value::Array(vec![
         Value::Uint(revision),
         Value::Array(vec![]),
@@ -155,7 +167,7 @@ fn catalog_body(revision: u64) -> Vec<u8> {
 }
 
 /// A Bot that checks out: attested, named by the server, its key verifying.
-fn ready_fake() -> Arc<Fake> {
+pub(crate) fn ready_fake() -> Arc<Fake> {
     let fake = Fake::default();
     *lock(&fake.candidate) = Some(Candidate::One(BOT));
     lock(&fake.attested).push(BOT);
@@ -163,7 +175,7 @@ fn ready_fake() -> Arc<Fake> {
     Arc::new(fake)
 }
 
-async fn ready(fake: &Arc<Fake>) -> Arc<Sealed> {
+pub(crate) async fn ready(fake: &Arc<Fake>) -> Arc<Sealed> {
     let sealed = Sealed::new(fake.clone());
     sealed
         .apply_frame(&frame(1, Some(publication(COMMUNITY.0))))
@@ -182,7 +194,7 @@ fn submit(request_id: [u8; 16]) -> Submit {
 }
 
 /// The fake Bot's answer number `seq` to `request_id`, sealed to reply key `key`, as op 62 carries it.
-fn reply(
+pub(crate) fn reply(
     key: [u8; 32],
     request_id: [u8; 16],
     seq: u32,
@@ -206,7 +218,7 @@ fn reply(
 }
 
 /// Waits (yielding) until `n` commands were posted.
-async fn posted(fake: &Fake, n: usize) {
+pub(crate) async fn posted(fake: &Fake, n: usize) {
     for _ in 0..1000 {
         if lock(&fake.posted).len() >= n {
             return;
@@ -517,4 +529,56 @@ async fn the_admin_transport_maps_answers_and_refusals() {
             status: 403
         }
     );
+}
+
+#[tokio::test]
+async fn a_umk_change_refused_by_the_core_is_changed_and_refused() {
+    let fake = ready_fake();
+    *lock(&fake.verify) = vec![Err(Refusal::new("E_UMK_CHANGED", 0))];
+    let sealed = ready(&fake).await;
+    assert_eq!(
+        sealed.view(COMMUNITY).unwrap().status.state,
+        BotStatusState::Changed
+    );
+    assert_eq!(
+        sealed.run(&submit([5; 16]), |_| {}).await,
+        RunEnd::Refused(Refusal::new("E_BOT_OFFLINE", 503))
+    );
+    assert!(lock(&fake.posted).is_empty());
+}
+
+#[tokio::test]
+async fn catalog_reads_of_one_community_run_one_at_a_time() {
+    let fake = ready_fake();
+    *lock(&fake.catalog) = Some(catalog_body(1));
+    let sealed = Sealed::new(fake.clone());
+    let reads: Vec<_> = (0..3)
+        .map(|_| {
+            let sealed = sealed.clone();
+            tokio::spawn(async move { sealed.refresh(COMMUNITY).await })
+        })
+        .collect();
+    for r in reads {
+        r.await.unwrap().unwrap();
+    }
+    assert_eq!(*lock(&fake.catalog_reads), 3);
+    assert_eq!(
+        *lock(&fake.max_reads_at_once),
+        1,
+        "never two reads of one community at once"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_late_answer_after_the_timeout_still_arrives() {
+    let fake = ready_fake();
+    let sealed = ready(&fake).await;
+    let rid = [5; 16];
+    assert_eq!(sealed.run(&submit(rid), |_| {}).await, RunEnd::Timeout);
+    let mut late = sealed.late(rid).expect("the reply secret is held");
+    let key = lock(&fake.reply_keys)[0];
+    sealed.on_reply(&reply(key, rid, 0, 200, "Reminder set.", true));
+    let a = late.recv().await.unwrap();
+    assert_eq!(a.body, b"Reminder set.");
+    assert!(!sealed.holds(rid));
 }

@@ -2,19 +2,22 @@
 //! arguments as the catalog's shapes say, its answers streamed into a private result row, an unanswered run held with a
 //! Retry that reuses the request id. The copy is the caller's ([`Texts`]); nothing here holds a string the UI shows.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use super::private::Patch;
 use super::registry::{ArgKind, Args, CommandDefinition};
-use super::sealed::{Answer, RunEnd, Submit};
-use super::{Bot, now_ms, private};
+use super::sealed::{Answer, RunEnd, Sealed, Submit};
+use super::{Bot, NEXT_RESULT, now_ms, private};
+use crate::client::Inner;
 use crate::features::bot_admin::{BotArg, new_request_id};
 use crate::features::utilities::time::{ReminderTime, ReminderZone, parse_reminder_time};
 use crate::state::bot::{
-    BotCatalogView, BotStatusState, Conversation, ResultProvider, ResultStatus,
+    BotCatalogView, BotState, BotStatusState, Conversation, PRIVATE_RESULT_TTL_MS, ResultProvider,
+    ResultStatus,
 };
-use crate::state::{AppState, ChannelId, CommunityId};
+use crate::state::{ChannelId, CommunityId};
 
 /// What a private result row says, in the caller's copy (bot-run.ts and copy.ts).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,34 +212,137 @@ pub fn answer_result(
     }
 }
 
-/// What a held (unanswered) row needs for its Retry.
-struct Held {
-    bot: Bot,
-    conversation: Conversation,
-    submit: Submit,
-    definition: CommandDefinition,
-    args: Args,
-    texts: Texts,
+/// What a held (unanswered) row keeps for its Retry, in its client's [`Sealed`]: the request id is sent again.
+pub(crate) struct HeldRun {
+    pub(crate) conversation: Conversation,
+    pub(crate) submit: Submit,
+    pub(crate) definition: CommandDefinition,
+    pub(crate) args: Args,
+    pub(crate) texts: Texts,
 }
 
-static HELD: Mutex<Option<HashMap<u64, Held>>> = Mutex::new(None);
-
-fn held() -> std::sync::MutexGuard<'static, Option<HashMap<u64, Held>>> {
-    HELD.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+/// Where a client's private rows live, and the clock they are stamped with.
+pub trait Rows: Send + Sync {
+    /// Unix milliseconds.
+    fn now_ms(&self) -> u64;
+    /// Applies `f` to the bot slice.
+    fn apply(&self, f: Box<dyn FnOnce(&mut BotState) + Send>);
+    /// The earliest moment a row dismisses itself, as the slice stands.
+    fn next_expiry(&self) -> Option<u64>;
+    /// A channel's name (a channel post's "posted in #…").
+    fn channel_name(&self, channel: ChannelId) -> Option<String>;
 }
 
-impl Bot {
-    fn patch(&self, conversation: Conversation, id: u64, patch: Patch) {
-        let now = now_ms();
-        self.inner.publish(move |s| {
-            private::update(&mut s.bot, &conversation, id, patch, now);
+/// The rows of a running client: its published state.
+pub(crate) struct InnerRows {
+    pub(crate) inner: Weak<Inner>,
+}
+
+impl Rows for InnerRows {
+    fn now_ms(&self) -> u64 {
+        now_ms()
+    }
+    fn apply(&self, f: Box<dyn FnOnce(&mut BotState) + Send>) {
+        if let Some(inner) = self.inner.upgrade() {
+            inner.publish(move |s| f(&mut s.bot));
+        }
+    }
+    fn next_expiry(&self) -> Option<u64> {
+        private::next_expiry(&self.inner.upgrade()?.snapshot().bot)
+    }
+    fn channel_name(&self, channel: ChannelId) -> Option<String> {
+        self.inner
+            .upgrade()?
+            .snapshot()
+            .channel(channel)
+            .map(|c| c.name.clone())
+    }
+}
+
+/// The private rows and the Bot runs behind them, for one client.
+#[derive(Clone)]
+pub struct Runs {
+    sealed: Arc<Sealed>,
+    rows: Arc<dyn Rows>,
+}
+
+/// Once a published sweep lands, the next is looked for at least this long later (the slice is published on the client's
+/// loop, so a sweep is seen a moment after it ran).
+const SWEEP_SETTLE: Duration = Duration::from_millis(250);
+
+impl Runs {
+    pub fn new(sealed: Arc<Sealed>, rows: Arc<dyn Rows>) -> Self {
+        Self { sealed, rows }
+    }
+
+    /// Adds a row; rows the conversation cap evicts take their held runs with them.
+    pub fn add_result(
+        &self,
+        conversation: Conversation,
+        status: ResultStatus,
+        text: String,
+        provider: ResultProvider,
+    ) -> u64 {
+        let id = NEXT_RESULT.fetch_add(1, Ordering::Relaxed);
+        let now = self.rows.now_ms();
+        let sealed = self.sealed.clone();
+        self.rows.apply(Box::new(move |b| {
+            for evicted in private::add(b, conversation, status, text, provider, id, now) {
+                sealed.drop_held(evicted);
+            }
+        }));
+        if status != ResultStatus::Pending {
+            self.schedule_sweep();
+        }
+        id
+    }
+
+    /// Changes a row; one that settles (finished and not held) goes away by itself after the TTL.
+    pub fn patch(&self, conversation: Conversation, id: u64, patch: Patch) {
+        let settles =
+            patch.status.is_some_and(|s| s != ResultStatus::Pending) && patch.hold != Some(true);
+        let now = self.rows.now_ms();
+        self.rows.apply(Box::new(move |b| {
+            private::update(b, &conversation, id, patch, now);
+        }));
+        if settles {
+            self.schedule_sweep();
+        }
+    }
+
+    /// The Dismiss button: the row goes, and its held run with it (its reply secret is forgotten, as TS `cancel()`).
+    pub fn dismiss(&self, conversation: Conversation, id: u64) {
+        self.rows.apply(Box::new(move |b| {
+            private::dismiss(b, &conversation, id);
+        }));
+        self.sealed.drop_held(id);
+    }
+
+    /// Sweeps the rows whose time is up, at the TTL and then at each next expiry, until none is left to expire.
+    fn schedule_sweep(&self) {
+        let rows = self.rows.clone();
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        rt.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(PRIVATE_RESULT_TTL_MS)).await;
+            loop {
+                let now = rows.now_ms();
+                rows.apply(Box::new(move |b| {
+                    private::sweep(b, now);
+                }));
+                tokio::time::sleep(SWEEP_SETTLE).await;
+                let Some(next) = rows.next_expiry() else {
+                    return;
+                };
+                let wait = next.saturating_sub(rows.now_ms());
+                tokio::time::sleep(Duration::from_millis(wait)).await;
+            }
         });
     }
 
-    /// Runs a picked Bot command in `conversation` (a channel of `community`): a pending private row at once, its
-    /// answers as they come, and its end. Answers the row's id. A row with no answer is held with a Retry
-    /// ([`Bot::retry`]), which sends the same request id again.
+    /// Runs a picked Bot command in `conversation` (a channel of `community`): a pending private row at once, its answers
+    /// as they come, and its end. Answers the row's id. A row with no answer is held with a Retry ([`Runs::retry`]).
     #[allow(clippy::too_many_arguments)]
     pub fn run_command(
         &self,
@@ -248,8 +354,7 @@ impl Bot {
         zone: &Zone,
         texts: Texts,
     ) -> u64 {
-        let state = self.inner.snapshot();
-        let view = state.bot.catalogs.get(&community);
+        let view = self.sealed.view(community);
         let fail = |text: Text| {
             self.add_result(
                 conversation,
@@ -258,13 +363,13 @@ impl Bot {
                 ResultProvider::Bot,
             )
         };
-        if let Some(r) = reason(view, &definition) {
+        if let Some(r) = reason(view.as_ref(), &definition) {
             return fail(r);
         }
         let Some(bot) = definition.bot.clone() else {
             return fail(Text::Failed);
         };
-        let now = i64::try_from(now_ms() / 1000).unwrap_or(i64::MAX);
+        let now = i64::try_from(self.sealed.now_s()).unwrap_or(i64::MAX);
         let sealed_args = match bot_args(&definition, &args, zone, now) {
             Ok(a) => a,
             Err(t) => return fail(t),
@@ -282,16 +387,26 @@ impl Bot {
             args: sealed_args,
             request_id: new_request_id(),
         };
-        self.drive(id, conversation, submit, definition, args, texts);
+        self.drive(
+            id,
+            HeldRun {
+                conversation,
+                submit,
+                definition,
+                args,
+                texts,
+            },
+        );
         id
     }
 
-    /// Sends a held row's command again with its request id (the Bot answers what it answered, or runs it once).
+    /// Sends a held row's command again with its request id; `false` when the row holds no run (dismissed, evicted,
+    /// signed out).
     pub fn retry(&self, row: u64) -> bool {
-        let Some(h) = held().get_or_insert_with(HashMap::new).remove(&row) else {
+        let Some(h) = self.sealed.take_held(row) else {
             return false;
         };
-        h.bot.patch(
+        self.patch(
             h.conversation,
             row,
             Patch {
@@ -300,30 +415,76 @@ impl Bot {
                 hold: Some(false),
             },
         );
-        h.bot
-            .drive(row, h.conversation, h.submit, h.definition, h.args, h.texts);
+        self.drive(row, h);
         true
     }
 
-    fn drive(
+    /// After a timeout: the answers that still arrive (until the reply secret's hold ends) update the held row, and the
+    /// final one settles it and drops its run. A stale-key answer is not shown (the Retry reads the catalog again).
+    fn listen_late(
         &self,
         row: u64,
         conversation: Conversation,
-        submit: Submit,
-        definition: CommandDefinition,
-        args: Args,
+        mut late: tokio::sync::mpsc::UnboundedReceiver<Answer>,
         texts: Texts,
+        community: CommunityId,
     ) {
-        let bot = self.clone();
-        let sealed = self.sealed();
-        drop(self.inner.spawn(async move {
-            let progress_bot = bot.clone();
-            let progress_texts = texts.clone();
-            let end = sealed
-                .run(&submit, move |a| {
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let this = self.clone();
+        rt.spawn(async move {
+            let deadline = tokio::time::Instant::now() + super::sealed::REPLY_HOLD;
+            while let Ok(Some(a)) = tokio::time::timeout_at(deadline, late.recv()).await {
+                if a.status == super::sealed::KEY_STALE_STATUS {
+                    continue;
+                }
+                if !a.final_ {
                     if let Some(t) = answer_text(&a.body) {
-                        let _ = &progress_texts;
-                        progress_bot.patch(
+                        this.patch(
+                            conversation,
+                            row,
+                            Patch {
+                                text: Some(t),
+                                ..Patch::default()
+                            },
+                        );
+                    }
+                    continue;
+                }
+                // Only while the row still holds its run: a Retry or a dismiss took it over.
+                if this.sealed.take_held(row).is_none() {
+                    return;
+                }
+                let view = this.sealed.view(community);
+                let (status, coded, plain) = answer_result(&a, view.as_ref());
+                let text = coded.map(|c| texts(&c)).or(plain).unwrap_or_default();
+                this.patch(
+                    conversation,
+                    row,
+                    Patch {
+                        status: Some(status),
+                        text: Some(text),
+                        hold: Some(false),
+                    },
+                );
+                return;
+            }
+        });
+    }
+
+    fn drive(&self, row: u64, run: HeldRun) {
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let this = self.clone();
+        rt.spawn(async move {
+            let (conversation, progress_runs) = (run.conversation, this.clone());
+            let end = this
+                .sealed
+                .run(&run.submit, move |a| {
+                    if let Some(t) = answer_text(&a.body) {
+                        progress_runs.patch(
                             conversation,
                             row,
                             Patch {
@@ -334,15 +495,15 @@ impl Bot {
                     }
                 })
                 .await;
-            let snapshot = bot.inner.snapshot();
-            let view = snapshot.bot.catalogs.get(&submit.community);
+            let view = this.sealed.view(run.submit.community);
+            let texts = run.texts.clone();
             let (status, text, hold) = match end {
                 RunEnd::Final(answer) => {
-                    let (status, coded, plain) = answer_result(&answer, view);
+                    let (status, coded, plain) = answer_result(&answer, view.as_ref());
                     let text = match (coded, plain) {
                         (Some(c), _) => texts(&c),
                         (None, Some(t)) => t,
-                        (None, None) => posted_in(&snapshot, &definition, &args)
+                        (None, None) => posted_in(&*this.rows, &run.definition, &run.args)
                             .map(|t| texts(&t))
                             .unwrap_or_default(),
                     };
@@ -351,9 +512,9 @@ impl Bot {
                 RunEnd::Timeout => (ResultStatus::Cancelled, texts(&Text::NoAnswer), true),
                 RunEnd::Refused(r) => {
                     if r.code == "E_BOT_OFFLINE" {
-                        let _ = sealed.refresh(submit.community).await;
+                        let _ = this.sealed.refresh(run.submit.community).await;
                     }
-                    let t = code_text(&r.code, view).unwrap_or(if r.status == 403 {
+                    let t = code_text(&r.code, view.as_ref()).unwrap_or(if r.status == 403 {
                         Text::Disabled
                     } else {
                         Text::Failed
@@ -362,19 +523,20 @@ impl Bot {
                 }
             };
             if hold {
-                held().get_or_insert_with(HashMap::new).insert(
-                    row,
-                    Held {
-                        bot: bot.clone(),
-                        conversation,
-                        submit,
-                        definition,
-                        args,
-                        texts,
-                    },
+                // onLate (M4): an answer that still arrives within the hold time settles the row.
+                let (request_id, community, late_texts) = (
+                    run.submit.request_id,
+                    run.submit.community,
+                    run.texts.clone(),
                 );
+                this.sealed.hold(row, run);
+                if let Some(late) = this.sealed.late(request_id) {
+                    this.listen_late(row, conversation, late, late_texts, community);
+                }
+            } else {
+                this.sealed.forget(run.submit.request_id);
             }
-            bot.patch(
+            this.patch(
                 conversation,
                 row,
                 Patch {
@@ -383,13 +545,42 @@ impl Bot {
                     hold: Some(hold),
                 },
             );
-            Ok(())
-        }));
+        });
+    }
+}
+
+impl Bot {
+    /// Runs a picked Bot command ([`Runs::run_command`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_command(
+        &self,
+        conversation: Conversation,
+        community: CommunityId,
+        channel: Option<ChannelId>,
+        definition: CommandDefinition,
+        args: Args,
+        zone: &Zone,
+        texts: Texts,
+    ) -> u64 {
+        self.runs().run_command(
+            conversation,
+            community,
+            channel,
+            definition,
+            args,
+            zone,
+            texts,
+        )
+    }
+
+    /// Sends a held row's command again ([`Runs::retry`]).
+    pub fn retry(&self, row: u64) -> bool {
+        self.runs().retry(row)
     }
 }
 
 /// A command whose result is a channel post, answered with no text, says where it went.
-fn posted_in(state: &AppState, definition: &CommandDefinition, args: &Args) -> Option<Text> {
+fn posted_in(rows: &dyn Rows, definition: &CommandDefinition, args: &Args) -> Option<Text> {
     let bot = definition.bot.as_ref()?;
     if !bot.needs_bot_channel {
         return None;
@@ -398,11 +589,10 @@ fn posted_in(state: &AppState, definition: &CommandDefinition, args: &Args) -> O
         .arg_types
         .iter()
         .position(|t| *t == crate::state::bot::ArgType::Channel)?;
-    let target = args.get(&definition.options.get(index)?.name)?;
-    let channel = state.channels.iter().find(|c| c.id.hex() == *target)?;
+    let target = unhex16(args.get(&definition.options.get(index)?.name)?)?;
     Some(Text::PostedIn {
         what: format!("/{}", definition.id),
-        channel: channel.name.clone(),
+        channel: rows.channel_name(ChannelId(target))?,
     })
 }
 
@@ -582,5 +772,253 @@ mod tests {
         assert_eq!(duration_seconds("1h30m"), Some(5400));
         assert_eq!(duration_seconds("7 days"), Some(604_800));
         assert_eq!(duration_seconds("soon"), None);
+    }
+
+    /// The private rows and their runs against the fake Bot, on a paused clock.
+    mod runs {
+        use std::sync::Mutex;
+
+        use super::*;
+        use crate::features::bot::registry::bot_command_definitions;
+        use crate::features::bot::sealed::tests::{
+            COMMUNITY, Fake, posted, ready, ready_fake, reply,
+        };
+
+        /// The rows in memory, stamped by the paused tokio clock.
+        struct MemRows {
+            state: Mutex<BotState>,
+            start: tokio::time::Instant,
+        }
+
+        impl MemRows {
+            fn new() -> Arc<Self> {
+                Arc::new(Self {
+                    state: Mutex::default(),
+                    start: tokio::time::Instant::now(),
+                })
+            }
+            fn rows(&self, c: &Conversation) -> Vec<crate::state::bot::PrivateResult> {
+                self.state.lock().unwrap().results(c).to_vec()
+            }
+        }
+
+        impl Rows for MemRows {
+            fn now_ms(&self) -> u64 {
+                1_000_000 + self.start.elapsed().as_millis() as u64
+            }
+            fn apply(&self, f: Box<dyn FnOnce(&mut BotState) + Send>) {
+                f(&mut self.state.lock().unwrap());
+            }
+            fn next_expiry(&self) -> Option<u64> {
+                private::next_expiry(&self.state.lock().unwrap())
+            }
+            fn channel_name(&self, _: ChannelId) -> Option<String> {
+                None
+            }
+        }
+
+        const HERE: Conversation = Conversation {
+            channel: ChannelId([2; 16]),
+            thread: None,
+        };
+
+        fn texts() -> Texts {
+            Arc::new(|t: &Text| format!("{t:?}"))
+        }
+
+        fn utc() -> Zone {
+            Zone {
+                name: "UTC".into(),
+                offset_at: Arc::new(|_| 0),
+            }
+        }
+
+        async fn setup() -> (Arc<Fake>, Arc<Sealed>, Arc<MemRows>, Runs) {
+            let fake = ready_fake();
+            let sealed = ready(&fake).await;
+            let rows = MemRows::new();
+            let runs = Runs::new(sealed.clone(), rows.clone());
+            (fake, sealed, rows, runs)
+        }
+
+        fn remind(sealed: &Sealed) -> CommandDefinition {
+            bot_command_definitions(&sealed.view(COMMUNITY).unwrap().commands).remove(0)
+        }
+
+        /// The request id of the `n`th post.
+        fn posted_id(fake: &Fake, n: usize) -> [u8; 16] {
+            let body = fake.posted.lock().unwrap()[n].clone();
+            let v = crate::gateway::frames::Value::decode(&body).unwrap();
+            v.as_array().unwrap()[0]
+                .as_bytes()
+                .unwrap()
+                .try_into()
+                .unwrap()
+        }
+
+        async fn settle() {
+            for _ in 0..50 {
+                tokio::task::yield_now().await;
+            }
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_bot_result_settles_and_goes_away_at_the_ttl() {
+            let (fake, sealed, rows, runs) = setup().await;
+            let row = runs.run_command(
+                HERE,
+                COMMUNITY,
+                Some(HERE.channel),
+                remind(&sealed),
+                Args::new(),
+                &utc(),
+                texts(),
+            );
+            posted(&fake, 1).await;
+            let key = fake.reply_keys.lock().unwrap()[0];
+            sealed.on_reply(&reply(
+                key,
+                posted_id(&fake, 0),
+                0,
+                200,
+                "Reminder set.",
+                true,
+            ));
+            settle().await;
+            let r = rows.rows(&HERE);
+            assert_eq!(
+                (r[0].id, r[0].status, r[0].text.as_str()),
+                (row, ResultStatus::Success, "Reminder set.")
+            );
+            assert!(r[0].settled_at.is_some());
+            tokio::time::sleep(Duration::from_millis(PRIVATE_RESULT_TTL_MS - 1000)).await;
+            settle().await;
+            assert_eq!(rows.rows(&HERE).len(), 1, "still there before the TTL");
+            tokio::time::sleep(Duration::from_millis(2000)).await;
+            settle().await;
+            assert!(rows.rows(&HERE).is_empty(), "gone at the TTL");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn an_unanswered_run_is_held_and_dismiss_forgets_it() {
+            let (fake, sealed, rows, runs) = setup().await;
+            let row = runs.run_command(
+                HERE,
+                COMMUNITY,
+                Some(HERE.channel),
+                remind(&sealed),
+                Args::new(),
+                &utc(),
+                texts(),
+            );
+            posted(&fake, 1).await;
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            settle().await;
+            let rid = posted_id(&fake, 0);
+            assert!(rows.rows(&HERE)[0].hold);
+            assert!(sealed.holds_row(row) && sealed.holds(rid));
+            runs.dismiss(HERE, row);
+            assert!(
+                !sealed.holds_row(row) && !sealed.holds(rid),
+                "dismiss drops the run and its reply secret"
+            );
+            assert!(!runs.retry(row));
+            // A held row never goes by the TTL: it stays until it settles or is dismissed.
+            assert!(rows.rows(&HERE).is_empty());
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_late_answer_settles_a_held_row() {
+            let (fake, sealed, rows, runs) = setup().await;
+            let row = runs.run_command(
+                HERE,
+                COMMUNITY,
+                Some(HERE.channel),
+                remind(&sealed),
+                Args::new(),
+                &utc(),
+                texts(),
+            );
+            posted(&fake, 1).await;
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            settle().await;
+            assert!(rows.rows(&HERE)[0].hold);
+            let key = fake.reply_keys.lock().unwrap()[0];
+            sealed.on_reply(&reply(
+                key,
+                posted_id(&fake, 0),
+                0,
+                200,
+                "Reminder set.",
+                true,
+            ));
+            settle().await;
+            let r = rows.rows(&HERE);
+            assert_eq!(
+                (r[0].status, r[0].hold, r[0].text.as_str()),
+                (ResultStatus::Success, false, "Reminder set.")
+            );
+            assert!(!sealed.holds_row(row));
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn retry_resends_the_held_request_id_until_sign_out() {
+            let (fake, sealed, _rows, runs) = setup().await;
+            let row = runs.run_command(
+                HERE,
+                COMMUNITY,
+                Some(HERE.channel),
+                remind(&sealed),
+                Args::new(),
+                &utc(),
+                texts(),
+            );
+            posted(&fake, 1).await;
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            settle().await;
+            assert!(runs.retry(row));
+            posted(&fake, 2).await;
+            assert_eq!(posted_id(&fake, 0), posted_id(&fake, 1));
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            settle().await;
+            assert!(sealed.holds_row(row));
+            sealed.forget_all();
+            assert!(!sealed.holds_row(row) && !sealed.holds(posted_id(&fake, 0)));
+            assert!(!runs.retry(row), "nothing is sent again after sign-out");
+            settle().await;
+            assert_eq!(fake.posted.lock().unwrap().len(), 2);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_held_run_evicted_by_the_conversation_cap_is_forgotten() {
+            let (fake, sealed, _rows, runs) = setup().await;
+            let row = runs.run_command(
+                HERE,
+                COMMUNITY,
+                Some(HERE.channel),
+                remind(&sealed),
+                Args::new(),
+                &utc(),
+                texts(),
+            );
+            posted(&fake, 1).await;
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            settle().await;
+            assert!(sealed.holds_row(row));
+            for n in 0..60u8 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                let c = Conversation {
+                    channel: ChannelId([100u8.wrapping_add(n); 16]),
+                    thread: None,
+                };
+                runs.add_result(
+                    c,
+                    ResultStatus::Success,
+                    "x".into(),
+                    ResultProvider::Builtin,
+                );
+            }
+            assert!(!sealed.holds_row(row) && !sealed.holds(posted_id(&fake, 0)));
+        }
     }
 }

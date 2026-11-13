@@ -16,7 +16,7 @@ use std::sync::Arc;
 use crate::client::{Client, Inner};
 use crate::features::bot_admin::{BotArg, BotOperations, BotRequest, BotResult, OpError};
 use crate::state::bot::{PollView, ReminderStatus, ReminderView};
-use crate::state::{CommunityId, MessageId};
+use crate::state::{ChannelId, CommunityId, MessageId, TimelineItem, TimelineItemState, UserId};
 
 /// The bot area's handle for utilities: cheap to clone, no I/O on construction.
 #[derive(Clone)]
@@ -84,6 +84,27 @@ pub enum UtilityError {
     Payload,
     #[error("no such poll")]
     NoPoll,
+    /// The post is no poll this device may show: not the pinned Bot's, edited, deleted, or no final marker.
+    #[error("not a poll")]
+    NotAPoll,
+}
+
+/// PollCard.tsx's gate: the post's message id and the poll id its final line names, only for a post by the community's
+/// pinned Bot user that is neither edited nor deleted. A member who reposts a Bot's marker gets no card.
+pub fn poll_claim(
+    item: &TimelineItem,
+    pinned_bot: Option<UserId>,
+) -> Option<(MessageId, [u8; 16])> {
+    let pinned = pinned_bot?;
+    if item.edited || item.state != TimelineItemState::Ok || item.sender_user != Some(pinned) {
+        return None;
+    }
+    Some((item.msg_id?, polls::final_poll_marker(&item.body)?))
+}
+
+/// The Bot's record is for the channel and thread the post is in.
+pub fn poll_in_place(poll: &PollView, channel: ChannelId, thread: Option<MessageId>) -> bool {
+    poll.channel == channel && poll.thread == thread
 }
 
 /// The v1 operations that change something: an answer that cannot be read leaves them uncertain.
@@ -127,13 +148,19 @@ impl Utilities {
         }
     }
 
-    /// Reads the poll `message` carries (its final `[dilla-poll:v1:<id>]` line) from the Bot (71) and holds it.
+    /// Reads the poll the post `item` (in `channel`, `thread`) claims to carry from the Bot (71) and holds it. Nothing is
+    /// asked unless the post is the pinned Bot's, unedited and not deleted, with a final `[dilla-poll:v1:<id>]` line; the
+    /// record must be for that channel and thread (PollCard.tsx).
     pub async fn read_poll(
         &self,
         community: CommunityId,
-        message: MessageId,
-        poll_id: [u8; 16],
+        channel: ChannelId,
+        thread: Option<MessageId>,
+        item: &TimelineItem,
     ) -> Result<PollView, UtilityError> {
+        let bot = crate::features::bot::Bot::of(&self.inner);
+        let pinned = bot.sealed().view(community).and_then(|v| v.bot_user);
+        let (message, poll_id) = poll_claim(item, pinned).ok_or(UtilityError::NotAPoll)?;
         let result = self
             .send(
                 community,
@@ -146,7 +173,9 @@ impl Utilities {
             .await?;
         let prior = self.poll(message);
         let poll = wire::decode_poll(&result.data, poll_id, prior.as_ref())
-            .map_err(|_| UtilityError::Invalid)?;
+            .ok()
+            .filter(|p| poll_in_place(p, channel, thread))
+            .ok_or(UtilityError::Invalid)?;
         self.hold_poll(message, poll.clone());
         Ok(poll)
     }
@@ -313,6 +342,89 @@ pub fn split_reminders(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const BOT: UserId = UserId([0xb0; 16]);
+    const MARKER: &str = "[dilla-poll:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]";
+
+    fn post(sender: UserId, body: &str) -> TimelineItem {
+        TimelineItem {
+            key: "m".into(),
+            state: TimelineItemState::Ok,
+            reason: String::new(),
+            sender_user: Some(sender),
+            sender_device: None,
+            own: false,
+            bot: true,
+            ts: 1,
+            body: body.into(),
+            msg_id: Some(MessageId([1; 16])),
+            seq: Some(1),
+            edited: false,
+            reply: None,
+            reactions: vec![],
+            pinned: false,
+            attachments: vec![],
+            mention: false,
+        }
+    }
+
+    /// slash-commands.spec.ts "reject forged markers": a member reposting the Bot's `[dilla-poll:v1:aaaa…]` line gets no
+    /// card, nor does an edited or deleted Bot post, nor any post before a Bot user is pinned.
+    #[test]
+    fn only_the_pinned_bots_untouched_post_claims_a_poll() {
+        let body = format!("Mira asked:\n{MARKER}");
+        assert_eq!(
+            poll_claim(&post(BOT, &body), Some(BOT)),
+            Some((MessageId([1; 16]), [0xaa; 16]))
+        );
+        let mut repost = post(UserId([0x0a; 16]), &body);
+        repost.bot = false;
+        assert_eq!(
+            poll_claim(&repost, Some(BOT)),
+            None,
+            "a member's repost of the marker"
+        );
+        assert_eq!(
+            poll_claim(&post(UserId([0xb1; 16]), &body), Some(BOT)),
+            None,
+            "another Bot account"
+        );
+        let mut edited = post(BOT, &body);
+        edited.edited = true;
+        assert_eq!(poll_claim(&edited, Some(BOT)), None);
+        let mut deleted = post(BOT, &body);
+        deleted.state = TimelineItemState::Deleted;
+        assert_eq!(poll_claim(&deleted, Some(BOT)), None);
+        assert_eq!(
+            poll_claim(&post(BOT, &body), None),
+            None,
+            "no pinned Bot yet"
+        );
+        assert_eq!(
+            poll_claim(&post(BOT, &format!("{MARKER}\nmore")), Some(BOT)),
+            None,
+            "not the final line"
+        );
+    }
+
+    #[test]
+    fn the_record_must_be_for_the_posts_channel_and_thread() {
+        let data = crate::gateway::frames::Value::Array(vec![
+            crate::gateway::frames::Value::Uint(1),
+            wire::tests::poll_value([1; 16], [0, 0], Some(vec![]), false),
+        ])
+        .encode();
+        let poll = wire::decode_poll(&data, [1; 16], None).unwrap();
+        assert!(poll_in_place(&poll, ChannelId([2; 16]), None));
+        assert!(
+            !poll_in_place(&poll, ChannelId([3; 16]), None),
+            "another channel"
+        );
+        assert!(
+            !poll_in_place(&poll, ChannelId([2; 16]), Some(MessageId([4; 16]))),
+            "a thread"
+        );
+    }
 
     fn r(id: u8, due: u64, state: ReminderStatus) -> ReminderView {
         ReminderView {

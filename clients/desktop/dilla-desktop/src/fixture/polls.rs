@@ -68,6 +68,7 @@ pub(super) fn apply(world: &WorldSpec, viewer: &str, state: &mut AppState) {
             PollView {
                 id: spec::derive_id("poll", &m.key),
                 channel,
+                thread: None,
                 creator: me,
                 question: p.question.clone(),
                 answers: p.options.clone(),

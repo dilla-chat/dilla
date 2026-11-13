@@ -31,7 +31,7 @@ fn stamp(mut next: PrivateResult, prev: Option<&PrivateResult>, now: u64) -> Pri
 /// The most conversations whose rows are kept (the web's LRU of fifty).
 pub const MAX_CONVERSATIONS: usize = 50;
 
-/// Adds a row to `conversation` at `now` (unix ms), answers its id.
+/// Adds a row to `conversation` at `now` (unix ms). Answers the ids of the rows the conversation cap evicted.
 pub fn add(
     state: &mut BotState,
     conversation: Conversation,
@@ -40,7 +40,7 @@ pub fn add(
     provider: ResultProvider,
     id: u64,
     now: u64,
-) -> u64 {
+) -> Vec<u64> {
     let row = stamp(
         PrivateResult {
             id,
@@ -67,11 +67,15 @@ pub fn add(
             .collect();
         by_age.sort();
         let excess = state.private_results.len() - MAX_CONVERSATIONS;
+        let mut evicted = Vec::new();
         for (_, c) in by_age.into_iter().take(excess) {
-            state.private_results.remove(&c);
+            if let Some(rows) = state.private_results.remove(&c) {
+                evicted.extend(rows.iter().map(|r| r.id));
+            }
         }
+        return evicted;
     }
-    id
+    Vec::new()
 }
 
 /// Applies `patch` to the row `id` of `conversation`; `false` when there is no such row.
@@ -157,7 +161,7 @@ mod tests {
     }
 
     fn row(state: &mut BotState, c: Conversation, status: ResultStatus, id: u64, now: u64) -> u64 {
-        add(
+        let _ = add(
             state,
             c,
             status,
@@ -165,7 +169,8 @@ mod tests {
             ResultProvider::Bot,
             id,
             now,
-        )
+        );
+        id
     }
 
     #[test]

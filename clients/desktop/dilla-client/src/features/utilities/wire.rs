@@ -81,7 +81,7 @@ pub fn read_poll(v: &Value, prior: Option<&PollView>) -> Result<PollView, Invali
     let t = arr(v, 13)?;
     let poll_id = id(&t[0])?;
     let channel = ChannelId(id(&t[1])?);
-    let _thread = opt_id(&t[2])?;
+    let thread = opt_id(&t[2])?.map(MessageId);
     let creator = UserId(id(&t[3])?);
     let question = text(&t[4], usize::MAX, Some(300), true)?;
     let answers = list(&t[5], 2, 10)?
@@ -126,6 +126,7 @@ pub fn read_poll(v: &Value, prior: Option<&PollView>) -> Result<PollView, Invali
     Ok(PollView {
         id: poll_id,
         channel,
+        thread,
         creator,
         question,
         answers,

@@ -463,6 +463,7 @@ mod tests {
         PollView {
             id: [1; 16],
             channel: ChannelId([2; 16]),
+            thread: None,
             creator: UserId([3; 16]),
             question: "What should we raid on Friday?".into(),
             answers: vec!["the bridge".into(), "the harbour".into()],

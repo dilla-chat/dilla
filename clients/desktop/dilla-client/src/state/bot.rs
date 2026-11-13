@@ -146,6 +146,8 @@ pub struct PollView {
     /// The poll's id (its post's final `[dilla-poll:v1:<id>]` line).
     pub id: [u8; 16],
     pub channel: ChannelId,
+    /// The thread the poll was posted in, if any.
+    pub thread: Option<MessageId>,
     pub creator: UserId,
     pub question: String,
     pub answers: Vec<String>,

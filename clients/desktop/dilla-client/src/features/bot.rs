@@ -9,7 +9,7 @@
 //!   draft, or a built-in that posts (`/me`, `/shrug`, `/code`, ...), comes back as [`RunOutcome::Post`] for the caller to
 //!   send like any message. Everything else answers with a private result.
 //! - Private results ([`private`]) live only in [`BotState::private_results`]: no store, no transport, no timeline. A
-//!   finished row goes away [`PRIVATE_RESULT_TTL_MS`] after it finished; the area sweeps itself on a timer.
+//!   finished row goes away [`crate::state::bot::PRIVATE_RESULT_TTL_MS`] after it finished; the area sweeps itself on a timer.
 
 pub mod catalog;
 mod io;
@@ -18,13 +18,12 @@ pub mod registry;
 pub mod run;
 pub mod sealed;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
 
 use crate::client::{Client, Inner};
 use crate::gateway::frames::{self, Frame, Op};
-use crate::state::bot::{Conversation, PRIVATE_RESULT_TTL_MS, ResultProvider, ResultStatus};
+use crate::state::bot::{Conversation, ResultProvider, ResultStatus};
 use crate::state::{AppState, CommunityId};
 use crate::sync::route::AreaFrames;
 
@@ -227,7 +226,17 @@ impl Bot {
         }
     }
 
-    /// Adds a private result row and schedules its dismissal once it is finished.
+    /// The private rows of this client and the runs behind them.
+    pub(crate) fn runs(&self) -> run::Runs {
+        run::Runs::new(
+            self.sealed(),
+            Arc::new(run::InnerRows {
+                inner: Arc::downgrade(&self.inner),
+            }),
+        )
+    }
+
+    /// Adds a private result row; a finished one goes away by itself after the TTL.
     pub fn add_result(
         &self,
         conversation: Conversation,
@@ -235,22 +244,12 @@ impl Bot {
         text: String,
         provider: ResultProvider,
     ) -> u64 {
-        let id = NEXT_RESULT.fetch_add(1, Ordering::Relaxed);
-        let now = now_ms();
-        self.inner.publish(move |s| {
-            private::add(&mut s.bot, conversation, status, text, provider, id, now);
-        });
-        if status != ResultStatus::Pending {
-            self.schedule_sweep();
-        }
-        id
+        self.runs().add_result(conversation, status, text, provider)
     }
 
-    /// The Dismiss button.
+    /// The Dismiss button: the row goes, and a held run behind it is forgotten (its reply secret too).
     pub fn dismiss(&self, conversation: Conversation, id: u64) {
-        self.inner.publish(move |s| {
-            private::dismiss(&mut s.bot, &conversation, id);
-        });
+        self.runs().dismiss(conversation, id);
     }
 
     /// Removes every private result whose time is up at `now_ms` (unix ms). The area calls it on its own timer.
@@ -258,17 +257,6 @@ impl Bot {
         self.inner.publish(move |s| {
             private::sweep(&mut s.bot, now_ms);
         });
-    }
-
-    fn schedule_sweep(&self) {
-        let bot = self.clone();
-        // A spawned task that outlives a stopped client only publishes into a closed channel.
-        // The answer is not awaited: the sweep publishes what it removes.
-        drop(self.inner.spawn(async move {
-            tokio::time::sleep(Duration::from_millis(PRIVATE_RESULT_TTL_MS)).await;
-            bot.sweep_at(now_ms());
-            Ok(())
-        }));
     }
 
     /// The handle of the client `inner` (the utilities reach the transport through it).
@@ -314,6 +302,42 @@ pub(crate) fn sealed_for(inner: &Arc<Inner>) -> Arc<Sealed> {
     }));
     r.push((Arc::downgrade(inner), sealed.clone()));
     sealed
+}
+
+/// The gateway's lifecycle, as controller.ts drives the Bot catalog and the relay: on every ready the device lists are
+/// read again when needed and each community's catalog is read (its Bot user looked up again, its key checked) once the
+/// structure and the members are in; a refused session (sign-out, revocation) forgets every reply secret and held run.
+pub(crate) fn on_connection(inner: &Arc<Inner>, event: &crate::sync::ConnectionEvent) {
+    use crate::sync::ConnectionEvent as E;
+    let sealed = sealed_for(inner);
+    match event {
+        E::Ready(_) => {
+            sealed.new_connection();
+            let weak = Arc::downgrade(inner);
+            drop(inner.spawn(async move {
+                // The structure is read after the ready: wait (bounded) for every community's members.
+                for _ in 0..120 {
+                    let Some(inner) = weak.upgrade() else {
+                        return Ok(());
+                    };
+                    let s = inner.snapshot();
+                    drop(inner);
+                    if !s.communities.is_empty()
+                        && s.communities.iter().all(|c| s.members.contains_key(&c.id))
+                    {
+                        for c in &s.communities {
+                            let _ = sealed.refresh(c.id).await;
+                        }
+                        return Ok(());
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                Ok(())
+            }));
+        }
+        E::Refused(..) => sealed.forget_all(),
+        E::Down => {}
+    }
 }
 
 impl AreaFrames for Bot {

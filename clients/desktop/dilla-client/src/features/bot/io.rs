@@ -80,6 +80,17 @@ fn id16(v: &Value) -> Option<[u8; 16]> {
     v.as_bytes()?.try_into().ok()
 }
 
+/// routes.ts `getBotCommandStatus`: `[1, installation_id, bot_user_id | null, state 1..=4, revision]`, its Bot user.
+fn command_status_bot_user(body: &[u8]) -> Option<[u8; 16]> {
+    let v = Value::decode(body).ok()?;
+    let a = v.as_array().filter(|a| a.len() == 5)?;
+    if a[0].as_uint() != Some(1) || id16(&a[1]).is_none() || !matches!(a[3].as_uint(), Some(1..=4))
+    {
+        return None;
+    }
+    id16(&a[2]).filter(|u| *u != [0; 16])
+}
+
 /// trust.ts `readBotDeviceListPush`: the head's identity keys and every signed row from version 1.
 fn bot_push(head: &[u8], history: &[u8]) -> Option<Vec<u8>> {
     let row = Value::decode(head).ok()?;
@@ -130,7 +141,16 @@ impl BotIo for InnerIo {
             })
             .unwrap_or_default();
         match bots.as_slice() {
-            [] => Candidate::None,
+            // controller.ts `botUserOf`: with none in the member list (not loaded yet), the command status names it.
+            [] => self
+                .get(format!(
+                    "/v1/communities/{}/bot/command-status",
+                    community.hex()
+                ))
+                .await
+                .ok()
+                .and_then(|body| command_status_bot_user(&body))
+                .map_or(Candidate::None, Candidate::One),
             [one] => Candidate::One(*one),
             _ => Candidate::Ambiguous,
         }
@@ -287,7 +307,10 @@ impl BotIo for InnerIo {
     }
 
     fn now_s(&self) -> u64 {
-        now_s()
+        // serverNowS: the instance's clock (the Bot refuses a `sent_at` more than 2 min off it), else this device's.
+        self.inner
+            .upgrade()
+            .map_or_else(now_s, |inner| inner.api().server_now_s())
     }
 
     fn random16(&self) -> [u8; 16] {
@@ -333,6 +356,30 @@ impl BotIo for InnerIo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_command_status_names_the_bot_user() {
+        let row = |user: Value, state: u64| {
+            Value::Array(vec![
+                Value::Uint(1),
+                Value::Bytes(vec![1; 16]),
+                user,
+                Value::Uint(state),
+                Value::Uint(3),
+            ])
+            .encode()
+        };
+        assert_eq!(
+            command_status_bot_user(&row(Value::Bytes(vec![0xb0; 16]), 1)),
+            Some([0xb0; 16])
+        );
+        assert_eq!(command_status_bot_user(&row(Value::Null, 1)), None);
+        assert_eq!(
+            command_status_bot_user(&row(Value::Bytes(vec![0xb0; 16]), 9)),
+            None
+        );
+        assert_eq!(command_status_bot_user(&Value::Null.encode()), None);
+    }
 
     #[test]
     fn a_push_needs_the_heads_identity_keys() {
