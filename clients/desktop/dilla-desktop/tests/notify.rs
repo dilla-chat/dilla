@@ -1,9 +1,7 @@
 //! Task 22's parity, behaviour and keyboard tests for the notify area (standard procedure S4-S6).
 //!
 //! - `parity_notify_*`: each fixture of `parity/fixtures/notify/` against its web reference (`assert_screen`, Linux only).
-//!   The two `settings` fixtures need the settings host (the frame, its nav and the route), which Task 16 and Task 8 own:
-//!   `fixture::screen_of` refuses every `/settings` route until they land, so those two tests are `#[ignore]`d with that
-//!   reason and run the moment the host does.
+//!   The two `settings` fixtures are drawn in the settings host.
 //! - `keyboard_notify_focus_order`: Tab goes through the section's controls in the web's order, and each control reports
 //!   its change.
 //! - The behaviours of `e2e/web/badges.spec.ts` that this area's client answers are in `dilla-client/tests/notify.rs`.
@@ -39,14 +37,12 @@ fn parity(name: &str) {
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "needs the settings host (Tasks 16 and 8): `fixture::screen_of` refuses /settings routes until then"]
 fn parity_notify_settings() {
     parity("settings");
 }
 
 #[test]
 #[cfg_attr(not(target_os = "linux"), ignore = "references are Linux only")]
-#[ignore = "needs the settings host (Tasks 16 and 8): `fixture::screen_of` refuses /settings routes until then"]
 fn parity_notify_settings_b() {
     parity("settings-b");
 }
