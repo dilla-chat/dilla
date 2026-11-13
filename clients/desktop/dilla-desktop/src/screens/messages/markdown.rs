@@ -1187,7 +1187,11 @@ mod tests {
     #[test]
     fn remembers_the_parse_of_a_body() {
         let body = format!("**x** https://example.com {}", ID);
-        assert!(Arc::ptr_eq(&parse_cached(&body), &parse_cached(&body)));
+        // A local memo: the global one is churned by `the_parse_memo_is_bounded` on another thread.
+        let mut memo: Lru<Parsed> = Lru::web();
+        let first = memo.memo(&body, || parse(&body));
+        assert!(Arc::ptr_eq(&first, &memo.memo(&body, || parse(&body))));
+        assert_eq!(first.tree, parse(&body).tree);
         assert_eq!(parse_cached(&body).tree, parse(&body).tree);
     }
 
