@@ -1432,7 +1432,8 @@ impl Render for ShellView {
             // Ctrl+K (23) does not open the palette over the channel menu or another overlay (the web's guard).
             .capture_action(
                 cx.listener(|this, _: &search::keys::OpenSearch, window, cx| {
-                    if palette_refused(this.overlay_open, &window.context_stack()) {
+                    let open = this.overlay_open || this.server_menu_open;
+                    if palette_refused(open, &window.context_stack()) {
                         cx.stop_propagation();
                     }
                 }),
@@ -1503,15 +1504,28 @@ impl Render for ShellView {
 /// frame (`overlay_open`: the channel menu, the palette itself, a DM dialog), or focus inside a dialog or the settings
 /// frame (`contexts`, the focused path's key contexts, carry the ui crate's overlay context).
 fn palette_refused(overlay_open: bool, contexts: &[gpui::KeyContext]) -> bool {
+    use dilla_desktop_ui::components::dialog::{MENU_CONTEXT, OVERLAY_CONTEXT};
+    // An open action menu (its items carry `MENU_CONTEXT` while focused) is an overlay too (review m2).
     overlay_open
         || contexts
             .iter()
-            .any(|c| c.contains(dilla_desktop_ui::components::dialog::OVERLAY_CONTEXT))
+            .any(|c| c.contains(OVERLAY_CONTEXT) || c.contains(MENU_CONTEXT))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review m2: focus inside an open action menu (the channel list head's ⌄, a toolbar's ⋯) refuses Ctrl+K, as the web's
+    /// guard refuses it over any open menu.
+    #[test]
+    fn the_palette_is_refused_over_an_open_menu() {
+        let menu =
+            gpui::KeyContext::parse(dilla_desktop_ui::components::dialog::MENU_CONTEXT).unwrap();
+        let plain = gpui::KeyContext::parse(keys::CONTEXT).unwrap();
+        assert!(palette_refused(false, &[plain.clone(), menu]));
+        assert!(!palette_refused(false, &[plain]));
+    }
 
     #[test]
     fn a_drag_moves_the_sidebar_with_the_pointer_and_the_aside_against_it() {
