@@ -23,14 +23,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock, PoisonError, Weak};
+use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 
 use crate::calls::wire::decode_groups;
 use crate::calls::{
-    CallJoin, CallPhase, CallRoutes, CallTarget, Calls, HttpRoutes, JoinRefused, Joined, NoHttp,
-    decline_ring,
+    CallJoin, CallPhase, CallTarget, Calls, HttpRoutes, JoinRefused, Joined, NoHttp, decline_ring,
 };
 use crate::client::{Client, ClientError, Inner};
 use crate::gateway::frames::{
@@ -265,14 +265,22 @@ pub fn outgoing_shrink(out: &mut Outgoing, in_call: &HashSet<UserId>) -> bool {
 
 // ---- the blocked call (decision 4, ruling I2) ----
 
-/// Ruling I2 and review M4: the changed contact a block names, only among this call's own participants. `changed` is
-/// every user the core's trust state holds as changed (a pending key, or a leaf blocked `E_UMK_CHANGED`); the first by
-/// user id among `candidates`, never the own user.
+/// Ruling I2 and review M4 (controller.ts `changedUser`): the changed contact a block names, only among this call's own
+/// participants. `changed` is every user the core's trust state holds as changed (a pending key, or a leaf blocked
+/// `E_UMK_CHANGED`). The leaf the core's refusal `reported` comes first while the trust state still shows it changed;
+/// else the first by user id among `candidates`; never the own user, and nobody when no candidate is known.
 pub fn changed_user(
     changed: &[UserId],
     own: Option<UserId>,
     candidates: &[UserId],
+    reported: Option<UserId>,
 ) -> Option<UserId> {
+    if let Some(r) = reported
+        && Some(r) != own
+        && changed.contains(&r)
+    {
+        return Some(r);
+    }
     let mut rows: Vec<UserId> = changed
         .iter()
         .copied()
@@ -402,16 +410,32 @@ pub fn decode_afk(raw: &[u8]) -> Result<AfkRead, DecodeError> {
 #[derive(Debug, Default)]
 pub struct AfkBook {
     reads: HashMap<CommunityId, (u64, Vec<Away>)>,
+    /// When each community's last read failed: no new read starts within [`AFK_RETRY`] of it.
+    failed: HashMap<CommunityId, Instant>,
     next_read: u64,
     landed: u64,
 }
 
+/// How long after a failed AFK read no new one starts (a view that asks on every frame reads at most this often).
+pub const AFK_RETRY: Duration = Duration::from_secs(5);
+
 impl AfkBook {
-    /// A read starts: its token, which supersedes any earlier read of the community.
-    pub fn begin(&mut self, community: CommunityId) -> u64 {
+    /// A read starts at `now`: its token, or `None` while a read of the community is in flight or within [`AFK_RETRY`]
+    /// of its last failure (a view asking on every frame causes one read, not one per frame).
+    pub fn begin(&mut self, community: CommunityId, now: Instant) -> Option<u64> {
+        if self.reads.contains_key(&community) {
+            return None;
+        }
+        if self
+            .failed
+            .get(&community)
+            .is_some_and(|at| now.saturating_duration_since(*at) < AFK_RETRY)
+        {
+            return None;
+        }
         self.next_read += 1;
         self.reads.insert(community, (self.next_read, Vec::new()));
-        self.next_read
+        Some(self.next_read)
     }
 
     /// op 55: kept for the read in flight, and the held snapshot patched in place (its seq stays, so no move is
@@ -421,11 +445,18 @@ impl AfkBook {
             user: UserId(f.user_id),
             since: f.since,
         };
-        if let Some((_, buffer)) = self.reads.get_mut(&CommunityId(f.community_id)) {
+        // Bounded as the read is (routes.ts AFK_AWAY_MAX): an instance flooding op 55 grows neither the buffer nor the
+        // roster past it.
+        if let Some((_, buffer)) = self.reads.get_mut(&CommunityId(f.community_id))
+            && buffer.len() < AFK_AWAY_MAX
+        {
             buffer.push(change.clone());
         }
         let held = held?;
         let away = away_patched(&held.away, &change)?;
+        if away.len() > AFK_AWAY_MAX {
+            return None;
+        }
         Some(AfkSnapshot {
             away,
             ..held.clone()
@@ -447,10 +478,13 @@ impl AfkBook {
         let (_, frames) = self.reads.remove(&community)?;
         let mut away = read.away;
         for change in &frames {
-            if let Some(next) = away_patched(&away, change) {
+            if let Some(next) = away_patched(&away, change)
+                && next.len() <= AFK_AWAY_MAX
+            {
                 away = next;
             }
         }
+        self.failed.remove(&community);
         self.landed += 1;
         Some(AfkSnapshot {
             channel: read.channel,
@@ -462,10 +496,12 @@ impl AfkBook {
         })
     }
 
-    /// The read `token` failed: its buffer goes (a newer read keeps its own).
-    pub fn fail(&mut self, community: CommunityId, token: u64) {
+    /// The read `token` failed at `now`: its buffer goes (a newer read keeps its own), and no new read starts for
+    /// [`AFK_RETRY`].
+    pub fn fail(&mut self, community: CommunityId, token: u64, now: Instant) {
         if self.reads.get(&community).is_some_and(|(t, _)| *t == token) {
             self.reads.remove(&community);
+            self.failed.insert(community, now);
         }
     }
 }
@@ -508,8 +544,18 @@ struct PerClient {
     outgoing: Mutex<Option<Outgoing>>,
     in_call: Mutex<Option<String>>,
     afk: Mutex<AfkBook>,
-    queue: OnceLock<mpsc::UnboundedSender<Frame>>,
+    queue: OnceLock<mpsc::Sender<Frame>>,
+    /// When the DM list was last read: at most once per [`DMS_REREAD`].
+    last_dms_read: Mutex<Option<Instant>>,
+    /// Each channel's ring timer: re-arming aborts the one before.
+    timers: Mutex<HashMap<ChannelId, tokio::task::AbortHandle>>,
 }
+
+/// The bound on the area's frame queue: frames past it are dropped (op 53 and 55 are droppable, gateway/frames.ts
+/// `DROPPABLE_OPS`).
+pub const FRAME_QUEUE: usize = 256;
+/// The least time between two reads of the DM list (a ring for an unknown DM reads it again).
+pub const DMS_REREAD: Duration = Duration::from_secs(5);
 
 fn guard<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -555,22 +601,23 @@ impl AreaFrames for Ring {
         }
         let pc = per_client(inner);
         let tx = pc.queue.get_or_init(|| {
-            let (tx, rx) = mpsc::unbounded_channel();
-            drop(inner.spawn(worker(Arc::downgrade(inner), pc.clone(), rx)));
+            let (tx, rx) = mpsc::channel(FRAME_QUEUE);
+            drop(inner.spawn(worker(Arc::downgrade(inner), Arc::downgrade(&pc), rx)));
             tx
         });
-        let _ = tx.send(f.clone());
+        // Full (an instance flooding the area): the frame is dropped, never queued without bound.
+        let _ = tx.try_send(f.clone());
     }
 }
 
-/// The client's frames of this area, in arrival order.
+/// The client's frames of this area, in arrival order. It ends once the client (or its ring state) is gone.
 async fn worker(
     inner: Weak<Inner>,
-    pc: Arc<PerClient>,
-    mut rx: mpsc::UnboundedReceiver<Frame>,
+    pc: Weak<PerClient>,
+    mut rx: mpsc::Receiver<Frame>,
 ) -> Result<(), ClientError> {
     while let Some(f) = rx.recv().await {
-        let Some(inner) = inner.upgrade() else {
+        let (Some(inner), Some(pc)) = (inner.upgrade(), pc.upgrade()) else {
             break;
         };
         if f.op == Op::CALL_RING {
@@ -698,19 +745,22 @@ impl RingDeps for NoDeps {
     }
 }
 
-/// R5: a local timer ends the ring at its deadline when no state 0 arrives.
+/// R5: a local timer ends the ring at its deadline when no state 0 arrives. One sleeper per channel: re-arming aborts
+/// the one before. Runs on the client's runtime (the area's worker calls it).
 fn arm(inner: &Arc<Inner>, pc: &Arc<PerClient>, e: Expiry) {
-    let weak = Arc::downgrade(inner);
-    let pc = pc.clone();
-    drop(inner.spawn(async move {
+    let (weak, weak_pc) = (Arc::downgrade(inner), Arc::downgrade(pc));
+    let sleeper = tokio::spawn(async move {
         tokio::time::sleep_until(e.at).await;
-        if let Some(inner) = weak.upgrade()
+        if let (Some(inner), Some(pc)) = (weak.upgrade(), weak_pc.upgrade())
             && guard(&pc.book).expire(e)
         {
             publish_rings(&inner, &pc);
         }
-        Ok(())
-    }));
+    });
+    // At most one handle per channel: a finished sleeper's handle stays until the channel rings again.
+    if let Some(previous) = guard(&pc.timers).insert(e.channel, sleeper.abort_handle()) {
+        previous.abort();
+    }
 }
 
 fn publish_rings(inner: &Arc<Inner>, pc: &Arc<PerClient>) {
@@ -788,8 +838,21 @@ fn decode_dms(raw: &[u8]) -> Result<HashMap<ChannelId, Dm>, DecodeError> {
     Ok(out)
 }
 
-/// Reads this device's DM list again (a failed read keeps the list it had).
+/// Whether a read of the DM list may start at `now` (none in the last [`DMS_REREAD`]); if so, `now` is recorded.
+pub fn dms_read_due(last: &mut Option<Instant>, now: Instant) -> bool {
+    if last.is_some_and(|at| now.saturating_duration_since(at) < DMS_REREAD) {
+        return false;
+    }
+    *last = Some(now);
+    true
+}
+
+/// Reads this device's DM list again, at most once per [`DMS_REREAD`] (a ring flood for unknown channels reads it no
+/// more often). A failed read keeps the list it had.
 async fn load_dms(inner: &Arc<Inner>, pc: &Arc<PerClient>) {
+    if !dms_read_due(&mut guard(&pc.last_dms_read), Instant::now()) {
+        return;
+    }
     if let Ok(Raw(raw)) = socket(inner).call::<ListDms>(&[], NoBody).await
         && let Ok(dms) = decode_dms(&raw)
     {
@@ -860,7 +923,6 @@ pub struct GatedJoin {
     channel: ChannelId,
     /// The DM's members; `None` for a voice channel.
     dm: Option<Vec<UserId>>,
-    routes: Arc<HttpRoutes<SocketHttp<NoHttp>>>,
 }
 
 impl GatedJoin {
@@ -880,7 +942,6 @@ impl GatedJoin {
             pc,
             channel,
             dm,
-            routes,
         } = self;
         let answer = join.outcome().await;
         // The bookkeeping runs on the client's runtime (it reads the instance), whatever executor awaits this.
@@ -889,14 +950,18 @@ impl GatedJoin {
                 created: joined.started.created,
             },
             Ok(Err(refused)) if refused.phase == crate::calls::join::Phase::Blocked => {
-                Then::Blocked(refused.code.clone())
+                Then::Blocked {
+                    code: refused.code.clone(),
+                    users: refused.users.clone(),
+                    reported: refused.reported,
+                }
             }
             _ => Then::Nothing,
         };
         let task = inner.clone();
         let done = inner.spawn(async move {
             let inner = task;
-            bookkeeping(&inner, &pc, channel, dm, &routes, then).await;
+            bookkeeping(&inner, &pc, channel, dm, then).await;
             Ok(())
         });
         let _ = done.await;
@@ -906,8 +971,14 @@ impl GatedJoin {
 
 /// What a join's outcome leaves to do.
 enum Then {
-    Joined { created: bool },
-    Blocked(String),
+    Joined {
+        created: bool,
+    },
+    Blocked {
+        code: String,
+        users: Vec<UserId>,
+        reported: Option<UserId>,
+    },
     Nothing,
 }
 
@@ -918,7 +989,6 @@ async fn bookkeeping(
     pc: &Arc<PerClient>,
     channel: ChannelId,
     dm: Option<Vec<UserId>>,
-    routes: &HttpRoutes<SocketHttp<NoHttp>>,
     then: Then,
 ) {
     {
@@ -946,31 +1016,24 @@ async fn bookkeeping(
                     }
                 });
             }
-            Then::Blocked(code) => {
-                // Ruling I2: the changed contact among this call's own participants: the DM's members, else the
-                // call's room as the instance lists it. A member of the call tree who never entered the room (the
-                // TS `JoinRefused.users`, which Task 3's refusal does not carry yet) is found among the voice
-                // channel's community members instead, so the notice can name them.
-                let candidates = match dm {
-                    Some(m) => m,
-                    None => {
-                        let mut users: Vec<UserId> = routes
-                            .get_channel_call(&channel.0)
-                            .await
-                            .map(|c| c.participants.iter().map(|p| UserId(p.user_id)).collect())
-                            .unwrap_or_default();
-                        if users.is_empty() {
-                            let state = inner.snapshot();
-                            let community = state.channel(channel).map(|c| c.community_id);
-                            users = community
-                                .and_then(|c| state.members.get(&c))
-                                .map(|m| m.iter().map(|m| m.user_id).collect())
-                                .unwrap_or_default();
-                        }
-                        users
-                    }
-                };
-                publish_block(inner, channel, code, BlockWhen::BeforeJoin, &candidates).await;
+            Then::Blocked {
+                code,
+                users,
+                reported,
+            } => {
+                // Ruling I2 and review M4 (controller.ts:325): the changed contact among this call's own
+                // participants only: the DM's members, else the room's users as the join last read them; the leaf
+                // the core's refusal named comes first. With none known, nobody is named.
+                let candidates = dm.unwrap_or(users);
+                publish_block(
+                    inner,
+                    channel,
+                    code,
+                    BlockWhen::BeforeJoin,
+                    &candidates,
+                    reported,
+                )
+                .await;
             }
             Then::Nothing => {}
         }
@@ -983,10 +1046,11 @@ async fn publish_block(
     code: String,
     when: BlockWhen,
     candidates: &[UserId],
-) {
+    reported: Option<UserId>,
+) -> CallBlock {
     let changed_user = if code == "E_UMK_CHANGED" {
         let own = inner.snapshot().account.user_id;
-        changed_user(&changed_users(inner).await, own, candidates)
+        changed_user(&changed_users(inner).await, own, candidates, reported)
     } else {
         None
     };
@@ -996,7 +1060,9 @@ async fn publish_block(
         changed_user,
         when,
     };
-    inner.publish(move |s| s.ring.blocked = Some(block));
+    let published = block.clone();
+    inner.publish(move |s| s.ring.blocked = Some(published));
+    block
 }
 
 impl Ring {
@@ -1015,8 +1081,10 @@ impl Ring {
         let calls = self.calls.clone();
         let pc = per_client(&inner);
         self.inner.spawn(async move {
-            let dm = if community.is_none() {
-                if !guard(&pc.dms).contains_key(&channel) {
+            // Review M5: a channel this device lists as a DM gets the DM gate whatever `community` says.
+            let listed_dm = guard(&pc.dms).contains_key(&channel);
+            let dm = if community.is_none() || listed_dm {
+                if !listed_dm {
                     load_dms(&inner, &pc).await;
                 }
                 let members = guard(&pc.dms).get(&channel).map(|d| d.members.clone());
@@ -1025,21 +1093,9 @@ impl Ring {
                 };
                 // Decision 4: refused while the DM's text group is send-blocked, before anything reaches the instance.
                 if let Some(code) = text_block(&inner, channel).await {
-                    publish_block(
-                        &inner,
-                        channel,
-                        code.clone(),
-                        BlockWhen::BeforeJoin,
-                        &members,
-                    )
-                    .await;
-                    let block = inner.snapshot().ring.blocked.clone();
-                    let block = block.filter(|b| b.channel == channel).unwrap_or(CallBlock {
-                        channel,
-                        code,
-                        changed_user: None,
-                        when: BlockWhen::BeforeJoin,
-                    });
+                    let block =
+                        publish_block(&inner, channel, code, BlockWhen::BeforeJoin, &members, None)
+                            .await;
                     return Ok(Err(block));
                 }
                 Some(members)
@@ -1051,14 +1107,12 @@ impl Ring {
                 community: community.map(|c| c.0),
                 vdec,
             });
-            let routes = Arc::new(HttpRoutes(socket(&inner)));
             Ok(Ok(GatedJoin {
                 join,
                 inner,
                 pc,
                 channel,
                 dm,
-                routes,
             }))
         })
     }
@@ -1133,7 +1187,7 @@ impl Ring {
     ) -> oneshot::Receiver<Result<(), ClientError>> {
         let inner = self.inner.clone();
         self.inner.spawn(async move {
-            publish_block(&inner, channel, code, when, &participants).await;
+            publish_block(&inner, channel, code, when, &participants, None).await;
             Ok(())
         })
     }
@@ -1221,7 +1275,11 @@ impl Ring {
     pub fn load_afk(&self, community: CommunityId) -> oneshot::Receiver<Result<(), ClientError>> {
         let inner = self.inner.clone();
         let pc = per_client(&inner);
-        let token = guard(&pc.afk).begin(community);
+        // Review I2: one read at a time per community, and none within AFK_RETRY of a failure: a view that asks on every
+        // frame reads once.
+        let Some(token) = guard(&pc.afk).begin(community, Instant::now()) else {
+            return self.inner.spawn(async { Ok(()) });
+        };
         self.inner.spawn(async move {
             let read = socket(&inner)
                 .call::<GetAfk>(&[&community.hex()], NoBody)
@@ -1233,7 +1291,7 @@ impl Ring {
             let read = match read {
                 Ok(r) => r,
                 Err(e) => {
-                    guard(&pc.afk).fail(community, token);
+                    guard(&pc.afk).fail(community, token, Instant::now());
                     return Err(e);
                 }
             };

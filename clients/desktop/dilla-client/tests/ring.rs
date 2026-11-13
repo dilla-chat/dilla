@@ -14,11 +14,12 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use dilla_client::features::ring::{
-    AfkBook, AfkRead, Expiry, RingBook, RingDeps, away_patched, changed_user, decode_afk,
-    decode_changed, is_builtin_afk, outgoing_declined, outgoing_shrink, outgoing_start,
+    AFK_RETRY, AfkBook, AfkRead, DMS_REREAD, Expiry, RingBook, RingDeps, away_patched,
+    changed_user, decode_afk, decode_changed, dms_read_due, is_builtin_afk, outgoing_declined,
+    outgoing_shrink, outgoing_start,
 };
 use dilla_client::gateway::frames::{AfkAwayFrame, CallRingFrame};
-use dilla_client::state::ring::{AfkSnapshot, Away, RING, RINGS_MAX};
+use dilla_client::state::ring::{AFK_AWAY_MAX, AfkSnapshot, Away, RING, RINGS_MAX};
 use dilla_client::state::{ChannelId, CommunityId, UserId};
 use dilla_core::cbor::Encoder;
 use tokio::time::Instant;
@@ -327,13 +328,44 @@ fn an_outgoing_dm_call_lists_who_is_ringing_and_appends_decliners_from_state_2()
 #[test]
 fn the_changed_contact_is_named_only_among_the_calls_own_participants() {
     let changed = [THIRD, PEER, ME];
-    assert_eq!(changed_user(&changed, Some(ME), &[ME, PEER]), Some(PEER));
-    assert_eq!(changed_user(&changed, Some(ME), &[ME]), None);
     assert_eq!(
-        changed_user(&changed, Some(ME), &[PEER, THIRD]),
+        changed_user(&changed, Some(ME), &[ME, PEER], None),
+        Some(PEER)
+    );
+    assert_eq!(changed_user(&changed, Some(ME), &[ME], None), None);
+    assert_eq!(
+        changed_user(&changed, Some(ME), &[PEER, THIRD], None),
         Some(PEER.min(THIRD))
     );
-    assert_eq!(changed_user(&[], Some(ME), &[PEER]), None);
+    assert_eq!(changed_user(&[], Some(ME), &[PEER], None), None);
+}
+
+/// Review I1 (controller.ts:325): with no candidates known (a call tree member who never entered the room, and no leaf
+/// named by the core), nobody is named: never a contact of another conversation, however many are changed.
+#[test]
+fn with_no_candidates_and_no_reported_leaf_nobody_is_named() {
+    let changed = [THIRD, PEER];
+    assert_eq!(changed_user(&changed, Some(ME), &[], None), None);
+}
+
+/// controller.ts `changedUser(.., reported)`: the leaf the core's refusal named comes first while the trust state still
+/// shows it changed; a reported leaf no longer changed, or the own user, falls back to the candidates.
+#[test]
+fn the_leaf_the_core_named_comes_first_while_it_is_still_changed() {
+    let changed = [THIRD, PEER];
+    assert_eq!(
+        changed_user(&changed, Some(ME), &[], Some(THIRD)),
+        Some(THIRD)
+    );
+    assert_eq!(
+        changed_user(&changed, Some(ME), &[PEER], Some(THIRD)),
+        Some(THIRD)
+    );
+    assert_eq!(
+        changed_user(&[PEER], Some(ME), &[PEER], Some(THIRD)),
+        Some(PEER)
+    );
+    assert_eq!(changed_user(&[ME], Some(ME), &[], Some(ME)), None);
 }
 
 #[test]
@@ -443,7 +475,7 @@ fn frames_received_while_an_afk_read_is_in_flight_are_replayed_onto_it_and_each_
 {
     let c = CommunityId([5; 16]);
     let mut book = AfkBook::default();
-    let token = book.begin(c);
+    let token = book.begin(c, Instant::now()).unwrap();
     // No snapshot held yet: the frame is kept for the read only.
     let f = AfkAwayFrame {
         community_id: c.0,
@@ -461,11 +493,10 @@ fn frames_received_while_an_afk_read_is_in_flight_are_replayed_onto_it_and_each_
     assert_eq!(s.away, vec![away(ME, 50), away(PEER, 10)]);
     assert!(s.pending);
     assert_eq!(s.seq, 1);
-    // A superseded read lands nothing.
-    let old = book.begin(c);
-    let new = book.begin(c);
-    assert_eq!(book.land(c, old, read.clone()), None);
-    assert_eq!(book.land(c, new, read).unwrap().seq, 2);
+    // The next read takes the next seq; a token that is not the read in flight lands nothing.
+    let next = book.begin(c, Instant::now()).unwrap();
+    assert_eq!(book.land(c, next + 1, read.clone()), None);
+    assert_eq!(book.land(c, next, read).unwrap().seq, 2);
     // op 55 on a held snapshot patches it in place, keeping its seq.
     let held = AfkSnapshot {
         seq: 2,
@@ -479,6 +510,95 @@ fn frames_received_while_an_afk_read_is_in_flight_are_replayed_onto_it_and_each_
     };
     let patched = book.frame(Some(&held), &clear).unwrap();
     assert_eq!((patched.seq, patched.away.len()), (2, 0));
+}
+
+#[test]
+fn ten_renders_asking_for_the_afk_snapshot_start_one_read_and_a_failure_holds_reads_for_5_s() {
+    let c = CommunityId([5; 16]);
+    let mut book = AfkBook::default();
+    let t0 = Instant::now();
+    // The AFK page asks on every frame (screens::ring::afk_page): ten frames, one read.
+    let started: Vec<u64> = (0..10).filter_map(|_| book.begin(c, t0)).collect();
+    assert_eq!(started.len(), 1, "one read for ten asks: {started:?}");
+    // Another community reads on its own.
+    assert!(book.begin(CommunityId([6; 16]), t0).is_some());
+    // The read fails: no new one for AFK_RETRY, then one.
+    book.fail(c, started[0], t0);
+    assert_eq!(
+        book.begin(c, t0 + AFK_RETRY - Duration::from_millis(1)),
+        None
+    );
+    let again = (0..10)
+        .filter_map(|_| book.begin(c, t0 + AFK_RETRY))
+        .count();
+    assert_eq!(again, 1);
+}
+
+#[test]
+fn op_55_never_grows_the_away_roster_or_the_read_buffer_past_the_reads_bound() {
+    let c = CommunityId([5; 16]);
+    let mut book = AfkBook::default();
+    let held = AfkSnapshot {
+        away: (0..AFK_AWAY_MAX as u32)
+            .map(|i| {
+                let mut u = [0u8; 16];
+                u[..4].copy_from_slice(&i.to_be_bytes());
+                away(UserId(u), 1)
+            })
+            .collect(),
+        ..AfkSnapshot::default()
+    };
+    let one_more = AfkAwayFrame {
+        community_id: c.0,
+        user_id: [0xff; 16],
+        since: 9,
+    };
+    assert_eq!(
+        book.frame(Some(&held), &one_more),
+        None,
+        "a full roster takes no one more"
+    );
+    // A refresh of someone already listed still applies.
+    let refresh = AfkAwayFrame {
+        community_id: c.0,
+        user_id: held.away[0].user.0,
+        since: 9,
+    };
+    assert!(book.frame(Some(&held), &refresh).is_some());
+    // A read in flight keeps at most AFK_AWAY_MAX frames: the flood past it is dropped, the read lands bounded.
+    let token = book.begin(c, Instant::now()).unwrap();
+    for i in 0..(AFK_AWAY_MAX as u32 + 100) {
+        let mut u = [0u8; 16];
+        u[..4].copy_from_slice(&i.to_be_bytes());
+        book.frame(
+            None,
+            &AfkAwayFrame {
+                community_id: c.0,
+                user_id: u,
+                since: 5,
+            },
+        );
+    }
+    let read = AfkRead {
+        channel: None,
+        timeout_seconds: 60,
+        reason: 0,
+        away: vec![],
+    };
+    assert_eq!(book.land(c, token, read).unwrap().away.len(), AFK_AWAY_MAX);
+}
+
+#[test]
+fn the_dm_list_is_read_again_at_most_once_per_5_s() {
+    let mut last = None;
+    let t0 = Instant::now();
+    let reads = (0..20).filter(|_| dms_read_due(&mut last, t0)).count();
+    assert_eq!(reads, 1);
+    assert!(!dms_read_due(
+        &mut last,
+        t0 + DMS_REREAD - Duration::from_millis(1)
+    ));
+    assert!(dms_read_due(&mut last, t0 + DMS_REREAD));
 }
 
 #[test]
@@ -1035,6 +1155,25 @@ async fn blocked_dm() {
         .expect_err("the DM call is refused");
     assert_eq!(block.code, "E_UMK_CHANGED");
     assert_eq!(block.changed_user, Some(p.peer_user()));
+    // Review M6: nothing of that refused call reached the instance: the peer's call group and its room never list
+    // this device.
+    let devices = p.peer.call_devices(dm).await;
+    assert!(
+        !devices.contains(&hex(&p.me.device_id)),
+        "the DM's call group never saw this device: {devices:?}"
+    );
+    let room = p
+        .peer
+        .call("call_read", json!({ "actor": "peer", "channel": dm.hex() }))
+        .await;
+    assert!(
+        !room["participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["device"] == hex(&p.me.device_id)),
+        "the DM's room never saw this device: {room}"
+    );
     recorder.abort();
 }
 
