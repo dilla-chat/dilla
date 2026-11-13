@@ -954,8 +954,8 @@ fn list_body_version(body: &[u8]) -> Option<u64> {
 
 /// signup.ts `publishDeviceList` for a store whose own list is not published yet, then session.ts `establish` for the
 /// enrolled session the list makes possible. A 409 whose served list is at least the candidate's version is adopted
-/// (verified by the core, a page at a time) and answers `E_DEVICE_UNLISTED` when it leaves this device out; an older
-/// or missing one is a list race. A 401 is a revoked row.
+/// (verified by the core, a page at a time); one that leaves this device out (`E_DEVICE_UNLISTED`) is a revocation, as
+/// at the web's ready. An older or missing one is a list race. A 401 is a revoked row.
 async fn publish_own_list(
     api: &Api,
     core: &CoreHandle,
@@ -976,8 +976,10 @@ async fn publish_own_list(
             if list_conflict(served.map(|s| s.version), candidate) == ListConflict::Race {
                 return Err(ClientError::Sync("E_LIST_RACE".into()));
             }
+            // controller.ts `enterReady`: a served list that leaves this enrolled device out (`E_DEVICE_UNLISTED` at
+            // phase 2) is a revocation, as a refused session is.
             if !crate::features::devices::adopt_served_list(api, core, user, device).await? {
-                return Err(ClientError::Sync("E_DEVICE_UNLISTED".into()));
+                return Err(ClientError::Revoked);
             }
         }
         Err(e) if e.status == 401 => return Err(ClientError::Revoked),

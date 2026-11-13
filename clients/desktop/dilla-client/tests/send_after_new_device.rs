@@ -464,3 +464,51 @@ async fn a_recovery_start_after_a_lost_list_answer_adopts_the_served_list() {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// Wave 2 H (recovery re-review): the unlisted refusal at the start, which the web treats as a revocation
+/// (controller.ts `enterReady`: `E_DEVICE_UNLISTED` at phase 2 is `enterRevoked`). Bob's new device signs in by recovery
+/// key, and its list PUT never reaches the instance. Meanwhile his first device removes a third one, publishing a list of
+/// the same version that does not name the new device. The new device's start publishes, gets 409, has the core verify
+/// and adopt the served list, and finds itself left out: the start fails as revoked, never as a passing refusal code.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn a_start_left_off_the_served_list_is_revoked() {
+    let tag = "recunlisted";
+    let (host, _pa, mut pb, _c) = two_people(tag).await;
+    let b1 = start(&pb).await;
+    let (third, _third_kc) = second_device(&host, &mut pb, tag).await;
+    let third_device = third.state().borrow().account.device_id.expect("a device");
+    tokio::task::spawn_blocking(move || third.stop())
+        .await
+        .unwrap();
+    let (cfg, kc, root) = dilla_client::testing::host::second_device_faulted(
+        &host,
+        &mut pb,
+        tag,
+        dilla_client::signin::ListPutFault::NeverSent,
+    )
+    .await;
+    b1.devices()
+        .revoke(
+            third_device,
+            Some(zeroize::Zeroizing::new(pb.recovery_key.clone())),
+        )
+        .await
+        .expect("the client answers")
+        .expect("the first device removes the third");
+    let started = tokio::task::spawn_blocking({
+        let (cfg, kc) = (cfg.clone(), kc.clone());
+        move || Client::start(cfg, kc)
+    })
+    .await
+    .unwrap();
+    match started {
+        Err(dilla_client::ClientError::Revoked) => {}
+        Err(e) => panic!("the unlisted start fails as revoked, not {e:?}"),
+        Ok(_) => panic!("a device the served list leaves out never starts"),
+    }
+    tokio::task::spawn_blocking(move || b1.stop())
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(root);
+}
