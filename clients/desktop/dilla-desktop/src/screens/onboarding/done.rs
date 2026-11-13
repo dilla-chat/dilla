@@ -472,6 +472,19 @@ mod tests {
         assert_eq!(opened.get(), 1);
     }
 
+    /// The handover's holder (`AppView::open_workspace`): a launch dropped without a window leaves the codes with the
+    /// handing window's handle; a window that opened took them, once.
+    #[test]
+    fn the_handover_keeps_or_hands_the_codes_once() {
+        let kept = SignupCodes::new(Some(ten()));
+        drop(kept.clone());
+        assert_eq!(kept.take().map(|c| c.0.len()), Some(10), "no window opened");
+        let kept = SignupCodes::new(Some(ten()));
+        let launch = kept.clone();
+        assert!(launch.take().is_some(), "the new window takes them");
+        assert!(kept.take().is_none(), "and nothing is left behind");
+    }
+
     /// The saved file: the title, the copy, then the codes one per line as Copy gives them.
     #[test]
     fn the_file_holds_the_copy_and_the_codes() {

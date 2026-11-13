@@ -754,7 +754,10 @@ impl AppView {
         let mut launch = self.launch.clone();
         launch.handoff = Some(client);
         launch.after_signup = std::mem::take(&mut self.after_signup);
-        launch.signup_codes = SignupCodes::new(self.signup_codes.take());
+        // The codes ride in the launch; this window keeps a handle on the same holder, so a window that does not open
+        // (the launch dropped with it) hands them back instead of losing them.
+        let codes = SignupCodes::new(self.signup_codes.take());
+        launch.signup_codes = codes.clone();
         match crate::open_window_in(cx, launch, WindowMode::Workspace) {
             Ok(handle) => {
                 // The instance's window is the workspace window from now on (Task 27's registry).
@@ -767,7 +770,10 @@ impl AppView {
                 window.remove_window();
             }
             // The workspace window did not open: this one stays, on the sign-in.
-            Err(e) => self.show_sign_in(Some(e.to_string()), window, cx),
+            Err(e) => {
+                self.signup_codes = codes.take();
+                self.show_sign_in(Some(e.to_string()), window, cx);
+            }
         }
     }
 
