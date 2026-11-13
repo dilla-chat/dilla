@@ -495,7 +495,13 @@ impl Body {
                 None => slot,
             }
         };
-        let edit = crate::tracked_box(track_id(format!("edit-{}", c.name)), edit);
+        // The automation drives the button by the channel's name; a shipping build keys it by the channel's id, so the
+        // interned ids are bounded by the channels and a rename never adds one (re-review minor).
+        #[cfg(feature = "automation")]
+        let edit_id = track_id(format!("edit-{}", c.name));
+        #[cfg(not(feature = "automation"))]
+        let edit_id = track_id(format!("edit-{}", c.id.hex()));
+        let edit = crate::tracked_box(edit_id, edit);
         div()
             .flex()
             .flex_none()
