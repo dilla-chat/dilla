@@ -244,7 +244,7 @@ struct CallWorld {
     rt: tokio::runtime::Runtime,
     _host: call_world::Host,
     alice: Rc<dilla_client::Client>,
-    _bob: Rc<dilla_client::Client>,
+    bob: Rc<dilla_client::Client>,
     voice: ChannelId,
 }
 
@@ -289,7 +289,7 @@ fn call_world(tag: &'static str) -> CallWorld {
         rt,
         _host: host,
         alice: Rc::new(alice),
-        _bob: Rc::new(bob),
+        bob: Rc::new(bob),
         voice,
     }
 }
@@ -325,6 +325,10 @@ async fn until_within(
         )
         .await;
     }
+}
+
+fn phase_of(client: &dilla_client::Client) -> CallPhase {
+    client.state().borrow().voice.call.phase
 }
 
 /// Opens a window whose voice area follows `client`, as its shell does.
@@ -376,4 +380,34 @@ fn closing_the_window_leaves_its_call(cx: &mut TestAppContext) {
     );
     assert!(session.upgrade().is_none(), "the media session is dropped");
     assert!(cx.update(|cx: &mut App| voice::ui_of(wa, cx).is_none()));
+}
+
+/// Review N3: one call per device. Alice's window is in the call; a join in bob's window (another instance's) leaves
+/// alice's call first, through alice's own client.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn a_join_in_another_window_leaves_this_window_s_call(cx: &mut TestAppContext) {
+    let w = call_world("t-one-call");
+    cx.update(dilla_desktop::install);
+    let a = window_for(cx, &w.alice);
+    let b = window_for(cx, &w.bob);
+    let (wa, wb) = (a.window_id(), b.window_id());
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    w.rt.block_on(until(&w.alice, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    }));
+    assert_eq!(
+        cx.update(|cx: &mut App| voice::client_of(wa, cx).map(|c| Rc::ptr_eq(&c, &w.alice))),
+        Some(true),
+        "A's area acts through A's client"
+    );
+    // B's join right away: B's window has not synced alice's new state, the client's own state says she is in.
+    cx.update(|cx| voice::join(w.voice, wb, cx));
+    w.rt.block_on(until(&w.alice, "alice's call is left", |s| {
+        s.voice.call.phase == CallPhase::Idle
+    }));
+    w.rt.block_on(until(&w.bob, "bob is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    }));
+    assert_eq!(phase_of(&w.alice), CallPhase::Idle);
 }

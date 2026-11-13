@@ -165,7 +165,7 @@ fn call_window(cx: &App) -> Option<WindowId> {
         .and_then(|a| {
             a.windows
                 .iter()
-                .find(|(_, u)| u.state.voice.call.phase != CallPhase::Idle)
+                .find(|(_, u)| in_a_call(u))
                 .map(|(w, _)| *w)
         })
         .or_else(|| cx.active_window().map(|w| w.window_id()))
@@ -473,7 +473,7 @@ pub fn other_calls(window: WindowId, cx: &App) -> Vec<Rc<Client>> {
         .map(|a| {
             a.windows
                 .iter()
-                .filter(|(w, u)| **w != window && u.state.voice.call.phase != CallPhase::Idle)
+                .filter(|(w, u)| **w != window && in_a_call(u))
                 .filter_map(|(_, u)| u.client.clone())
                 .filter(|c| own.as_ref().is_none_or(|o| !Rc::ptr_eq(o, c)))
                 .collect()
