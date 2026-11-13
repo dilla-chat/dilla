@@ -212,3 +212,18 @@ LockLevel::Reserved`), so a fresh connection reports no RESERVED lock and plays 
 Still covered by `e2e/tests/mls-store.spec.ts` ("a write interrupted by a reload rolls back on the
 next open"), and across the upgrade by `core/dilla-core-wasm/tests/sqlite_compat.rs` (a hot journal
 written by the 0.5.5 build is played back by the current one).
+
+## gpui-pre 0.3.12
+
+Upstream: <https://crates.io/crates/gpui-pre> (Zed's GPUI). Apache-2.0. The copy is the published crate minus `.cargo-ok`,
+`.cargo_vcs_info.json`, `Cargo.lock` and `examples/` (with their `[[example]]` targets dropped from `Cargo.toml`).
+
+One change (Task 6c, 2026-11-13), marked `DILLA PATCH`: in `src/taffy.rs`, `layout_bounds` snaps a box's outer edges to
+whole logical px, half up, when the scale factor is whole; upstream rounds them to device px, midpoints toward zero. The web
+client's frames (Chromium, `deviceScaleFactor: 2`) paint a box laid out at 51.5px from 52px (two device px further than
+upstream GPUI), so every centred control, avatar, tile and field with a half-px offset (the 28px header buttons in the 43px
+bar, the 30px panel avatar in the 63px panel, the 28px search field in the 44px top bar, the 17px `@` glyph in its 38px tile)
+drew one device px off, which read as anti-aliasing on their rounded edges. With the patch `shell/conversation` goes from
+0.21 % to 0.09 % chrome difference. A fractional scale keeps upstream's device-pixel snapping, so edges stay crisp there.
+
+Keep this patch while the Linux parity references are Chromium frames.
