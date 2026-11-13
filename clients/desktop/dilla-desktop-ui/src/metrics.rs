@@ -211,6 +211,30 @@ mod tests {
         assert_eq!(gpui::measured_length(6.6, 1.75), 12.0);
     }
 
+    /// Task 28 (T6c review m4): a whole length computed in f32 just off the integer (`30.0 * 2.1` is 62.999996,
+    /// `25.0 * 0.6` is 15.000001) lays out whole, as Chromium's double arithmetic gets it; and a negative length
+    /// truncates toward zero, as `LayoutUnit(float)` does, where flooring went a unit further out. The text rule
+    /// (`text::layout_unit`) agrees.
+    #[test]
+    fn layout_units_ignore_f32_noise_and_truncate_negatives() {
+        let below = std::hint::black_box(30.0_f32) * 2.1;
+        let above = std::hint::black_box(25.0_f32) * 0.6;
+        assert!(
+            below < 63.0 && above > 15.0,
+            "the f32 noise the rules must absorb"
+        );
+        assert_eq!(gpui::layout_length(below, 2.0), 126.0);
+        assert_eq!(crate::text::layout_unit(below), 63.0);
+        assert_eq!(gpui::measured_length(above, 2.0), 30.0);
+        // Negatives: toward zero (-6.6 is -6.59375, not -6.609375).
+        assert_eq!(gpui::layout_length(-6.6, 2.0), -6.59375 * 2.0);
+        assert_eq!(crate::text::layout_unit(-6.6), -6.59375);
+        assert_eq!(gpui::layout_length(-10.0, 2.0), -20.0);
+        // A real fraction is still floored onto the unit, as before.
+        assert_eq!(gpui::layout_length(6.6, 2.0), 6.59375 * 2.0);
+        assert_eq!(crate::text::layout_unit(20.15), 20.140625);
+    }
+
     const TOKENS_TS: &str = include_str!("../../../../packages/design-tokens/src/tokens.ts");
 
     /// The number that follows `key` in tokens.ts (`labelTracking: '0.08em'` gives 0.08).

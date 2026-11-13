@@ -87,9 +87,11 @@ fn hooks() -> Option<&'static Hooks> {
     HOOKS.get()
 }
 
-/// Chromium's layout unit: 1/64 px, values floored onto it.
+/// Chromium's layout unit: 1/64 px, values truncated onto it toward zero (`LayoutUnit(float)`), the vendored GPUI's
+/// `layout_length` rule: a whole unit off only by f32 noise stays whole, a negative value is not pushed a unit further out.
 pub fn layout_unit(v: f32) -> f32 {
-    (v * 64.0).floor() / 64.0
+    let units = gpui::whole_layout_units(v).unwrap_or_else(|| (f64::from(v) * 64.0).trunc());
+    (units / 64.0) as f32
 }
 
 /// A CSS `line-height` ratio at a font size, in Chromium's layout units (13px at 1.55 is 20.140625).

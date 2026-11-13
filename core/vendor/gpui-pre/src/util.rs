@@ -148,24 +148,38 @@ pub fn snap_layout_edge(device: f32, scale_factor: f32) -> f32 {
     }
 }
 
+/// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12"): `logical` px in Chromium's layout units (1/64 px), in f64,
+/// when it lies on a whole unit but for f32 noise (`30.0 * 2.1` is 62.999996 in f32; Chromium computes it in double and
+/// gets 63): that whole unit, else `None`. The tolerance is a thousandth of a unit plus a few f32 ulps of the value.
+#[inline]
+pub fn whole_layout_units(logical: f32) -> Option<f64> {
+    let units = f64::from(logical) * 64.0;
+    let near = units.round();
+    ((units - near).abs() <= 1e-3 + units.abs() * 5e-7).then_some(near)
+}
+
 /// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12"): an authored length of `logical` px, in device px. At a whole
-/// scale factor it lies on Chromium's layout unit (1/64 css px, floored as `LayoutUnit` does), so a box's edges keep
-/// the web's fractions until [`snap_layout_edge`]; at a fractional scale it is upstream's whole device px.
+/// scale factor it lies on Chromium's layout unit (1/64 css px, truncated toward zero as `LayoutUnit(float)` does, so a
+/// negative length is not pushed a unit further out; a whole unit off only by f32 noise stays whole), so a box's edges
+/// keep the web's fractions until [`snap_layout_edge`]; at a fractional scale it is upstream's whole device px.
 #[inline]
 pub fn layout_length(logical: f32, scale_factor: f32) -> f32 {
     if scale_factor.fract() == 0.0 {
-        (logical * 64.0).floor() / 64.0 * scale_factor
+        let units = whole_layout_units(logical).unwrap_or_else(|| (f64::from(logical) * 64.0).trunc());
+        (units / 64.0) as f32 * scale_factor
     } else {
         round_to_device_pixel(logical, scale_factor)
     }
 }
 
 /// DILLA PATCH: a measured size (a text's width) of `logical` px, in device px: ceiled onto Chromium's layout unit at a
-/// whole scale factor (`LayoutUnit::FromFloatCeil`), else upstream's whole device px, ceiled.
+/// whole scale factor (`LayoutUnit::FromFloatCeil`; a whole unit off only by f32 noise stays whole), else upstream's
+/// whole device px, ceiled.
 #[inline]
 pub fn measured_length(logical: f32, scale_factor: f32) -> f32 {
     if scale_factor.fract() == 0.0 {
-        (logical * 64.0).ceil() / 64.0 * scale_factor
+        let units = whole_layout_units(logical).unwrap_or_else(|| (f64::from(logical) * 64.0).ceil());
+        (units / 64.0) as f32 * scale_factor
     } else {
         ceil_to_device_pixel(logical, scale_factor)
     }

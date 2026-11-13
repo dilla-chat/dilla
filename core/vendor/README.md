@@ -231,7 +231,7 @@ bar, the 30px panel avatar in the 63px panel, the 28px search field in the 44px 
 drew one device px off, which read as anti-aliasing on their rounded edges. With the patch `shell/conversation` goes from
 0.21 % to 0.09 % chrome difference. A fractional scale keeps upstream's device-pixel snapping, so edges stay crisp there.
 
-Before that snap, at a whole scale factor, authored lengths lie on Chromium's layout unit (1/64 css px, floored:
+Before that snap, at a whole scale factor, authored lengths lie on Chromium's layout unit (1/64 css px, truncated toward zero as `LayoutUnit(float)` is, a whole unit off only by f32 noise kept whole:
 `util::layout_length`) and measured sizes (text) are ceiled onto it (`util::measured_length`), where upstream rounds
 both to whole device px: a box's fractions (a 42.609375px button whose "3" is 6.609375px) carry to the edge snap as
 in Chromium. A fractional scale keeps upstream's device-px lengths.
