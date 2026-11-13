@@ -2,6 +2,8 @@
 //! (ProfileCard) and the role chip. They draw plain data handed in by the members screen; every gate (which actions a
 //! card offers) is decided by the client's `features::members::menu_for` before it reaches here.
 
+pub mod role_editor;
+
 use std::rc::Rc;
 
 use gpui::{

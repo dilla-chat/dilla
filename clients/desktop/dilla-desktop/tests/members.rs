@@ -10,11 +10,15 @@
 
 #![cfg(feature = "automation")]
 
+mod support;
+
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use dilla_client::state::{CommunityId, UserId};
 use dilla_desktop::fixture::Fixture;
 use dilla_desktop::screens::members::may_moderate;
+use dilla_parity::Driver;
 use dilla_parity::screen::assert_screen;
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -218,6 +222,377 @@ fn every_members_fixture_parses_and_the_pane_ones_open_the_channel() {
     }
 }
 
+// ---- the Roles section (RolesSection.tsx): its view of the fixtures, and the shipping window ----
+
+fn hex(id: &[u8]) -> String {
+    id.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// RolesSection.tsx `orderRoles` and the open role: @everyone first, then the roles from the highest down; with nothing
+/// chosen the top role below @everyone opens (the web's two panes with the top role's editor open).
+#[test]
+fn the_roles_section_lists_everyone_first_and_opens_the_top_role() {
+    use dilla_desktop::screens::members::roles::RolesView;
+    let f = load("server-settings/roles-b");
+    let c = f.state.communities[0].id;
+    let view = RolesView::of(&f.state, c, None, None);
+    let names: Vec<&str> = view.ordered.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names[0], "@everyone");
+    assert_eq!(names[1], "harbour masters of the northern fleet");
+    assert_eq!(names[2], "role number 14");
+    assert_eq!(names[15], "role number 01");
+    assert_eq!(
+        view.role.as_ref().map(|r| r.name.as_str()),
+        Some("harbour masters of the northern fleet")
+    );
+    // A chosen role opens while it is listed; one that is gone falls back to the top role.
+    let low = view.ordered[15].id;
+    let chosen = RolesView::of(&f.state, c, Some(low), None);
+    assert_eq!(chosen.role.as_ref().map(|r| r.id), Some(low));
+    let gone = RolesView::of(&f.state, c, Some([0xEE; 16]), None);
+    assert_eq!(gone.role.as_ref().map(|r| r.name.as_str()), Some(names[1]));
+    let f = load("server-settings/roles");
+    let c = f.state.communities[0].id;
+    let view = RolesView::of(&f.state, c, None, None);
+    assert_eq!(view.role.as_ref().map(|r| r.name.as_str()), Some("crew"));
+}
+
+/// The rank rule (RolesSection.tsx `locked`, `editable`) and the grid by the one resolver (`mine`): ada ranks at role 14
+/// of 15 (manage roles, kick, ban, moderate) under mira, the owner. Role 15 and her own role 14 are at or above her rank:
+/// read-only, every switch locked, no menu, no name or colour change. Role 01 is below her: the bits she holds may change,
+/// the ones she lacks are locked as not held; the patches carry exactly the change.
+#[test]
+fn the_roles_section_locks_at_or_above_my_rank_and_the_bits_i_lack() {
+    use dilla_client::features::roles::PermLock;
+    use dilla_client::features::roles::perm::{self, PermKey};
+    use dilla_desktop::screens::members::roles::{NameProblem, RoleMenu, RolesView};
+    let f = load("server-settings/roles-b");
+    let c = f.state.communities[0].id;
+    let by = |name: &str| {
+        RolesView::of(&f.state, c, None, None)
+            .ordered
+            .into_iter()
+            .find(|r| r.name == name)
+            .unwrap()
+    };
+    for name in ["harbour masters of the northern fleet", "role number 14"] {
+        let view = RolesView::of(&f.state, c, Some(by(name).id), None);
+        assert!(
+            view.can_manage && !view.editable,
+            "{name} is at or above her rank"
+        );
+        let role = view.role.clone().unwrap();
+        assert!(
+            view.permission_rows(role.allow)
+                .iter()
+                .flat_map(|(_, rows)| rows)
+                .all(|(_, _, lock)| *lock == Some(PermLock::Locked))
+        );
+        assert_eq!(
+            view.permission_patch(role.allow, PermKey::View, false),
+            None
+        );
+        assert_eq!(view.name_patch("renamed"), Ok(None));
+        assert_eq!(view.color_patch(role.color, 0x5A_A8E6), None);
+        assert!(view.menu(role.id).is_empty());
+    }
+    let low = by("role number 01");
+    let view = RolesView::of(&f.state, c, Some(low.id), None);
+    assert!(view.editable);
+    let rows = view.permission_rows(low.allow);
+    let lock = |k: PermKey| {
+        rows.iter()
+            .flat_map(|(_, r)| r)
+            .find(|(key, _, _)| *key == k)
+            .unwrap()
+            .2
+    };
+    assert_eq!(lock(PermKey::Kick), None, "a bit she holds");
+    assert_eq!(lock(PermKey::ManageChannels), Some(PermLock::NotHeld));
+    assert_eq!(lock(PermKey::Admin), Some(PermLock::NotHeld));
+    let patch = view
+        .permission_patch(low.allow, PermKey::Kick, true)
+        .unwrap();
+    assert_eq!(patch.allow, Some(low.allow | perm::KICK_MEMBERS));
+    assert_eq!(
+        view.permission_patch(low.allow, PermKey::ManageChannels, true),
+        None
+    );
+    assert_eq!(
+        view.name_patch("  deck hands  ")
+            .unwrap()
+            .unwrap()
+            .name
+            .as_deref(),
+        Some("deck hands")
+    );
+    assert_eq!(view.name_patch("role number 01"), Ok(None));
+    assert_eq!(view.name_patch("   "), Err(NameProblem::Empty));
+    assert_eq!(view.name_patch(&"é".repeat(51)), Err(NameProblem::Long));
+    assert_eq!(
+        view.color_patch(low.color, 0x7C_FF8E).unwrap().color,
+        Some(0x7C_FF8E)
+    );
+    // Role 01 is the lowest she may move: up, not down.
+    assert_eq!(
+        view.menu(low.id),
+        [
+            RoleMenu::Up,
+            RoleMenu::Hoist(false),
+            RoleMenu::Mentionable(false),
+            RoleMenu::Delete
+        ]
+    );
+    // @everyone has a name and no colour of its own.
+    let everyone = view.ordered[0].clone();
+    let view = RolesView::of(&f.state, c, Some(everyone.id), None);
+    assert!(view.editable);
+    assert_eq!(view.name_patch("all"), Ok(None));
+    assert_eq!(view.color_patch(0, 0x7C_FF8E), None);
+    assert!(view.menu(everyone.id).is_empty());
+}
+
+/// RolesSection.tsx in the shipping window (the roles-b fixture): the top role opens first, every switch locked; a click
+/// on role 01 opens it, where a bit ada holds may change and one she lacks stays locked; the arrows walk the list.
+#[test]
+fn the_roles_section_selects_a_role_and_locks_by_rank_in_the_window() {
+    let f = load("server-settings/roles-b");
+    let c = f.state.communities[0].id;
+    let roles = f.state.roles.roles_of(c).to_vec();
+    let id_of = |name: &str| hex(&roles.iter().find(|r| r.name == name).unwrap().id);
+    let (top, low) = (
+        id_of("harbour masters of the northern fleet"),
+        id_of("role number 01"),
+    );
+    let mut app = Driver::launch_fixture(&fixture_path("server-settings/roles-b"), None, &[]);
+    app.wait_for(&format!("role-open-{top}"), Duration::from_secs(60));
+    app.wait_idle();
+    assert!(app.element("perm-view-locked").is_some());
+    assert!(app.element("perm-kick-locked").is_some());
+    app.click(&format!("role-{low}"));
+    app.wait_idle();
+    assert!(app.element(&format!("role-open-{low}")).is_some());
+    assert!(app.element(&format!("role-open-{top}")).is_none());
+    assert!(app.element("perm-kick-locked").is_none(), "she holds kick");
+    assert!(app.element("perm-view-on").is_some());
+    assert!(app.element("perm-manageChannels-locked").is_some());
+    // Up from role 01 reaches role 02; Down wraps past "New role" to @everyone.
+    app.press("up");
+    app.wait_idle();
+    assert_eq!(
+        app.focused().as_deref(),
+        Some(format!("role-{}", id_of("role number 02")).as_str())
+    );
+}
+
+/// e2e/web/roles.spec.ts (the role editor half), against a real dillad: a manager whose role ranks second of three. The
+/// section's view of her client opens the top role read-only and sends nothing for it; the instance refuses the same
+/// change made around the view (403), so the gate is advisory and the rank rule is the instance's. Below her rank, the
+/// view's patches (a permission she holds, a name, a colour) save through the client roles API and reach the owner; a
+/// bit she lacks is locked in the view and refused by the instance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn the_roles_section_edits_below_my_rank_and_is_refused_above_it() {
+    use dilla_client::features::roles::PermLock;
+    use dilla_client::features::roles::perm::{self, PermKey};
+    use dilla_client::state::AppState;
+    use dilla_desktop::screens::members::roles::RolesView;
+    use support::world;
+
+    let host = tokio::task::spawn_blocking(|| world::start_host("w2e-roles", "127.0.0.1:0", None))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let owner = world::sign_up(&host, &invite, "olof", "Olof", "w2e-roles").await;
+    let ada = world::sign_up(&host, &invite, "ada", "Ada", "w2e-roles").await;
+    let (host, owner, ada, c) = tokio::task::spawn_blocking(move || {
+        let c = world::community(&host, &owner, "crew", &[&ada]);
+        world::clear_session(&owner);
+        world::clear_session(&ada);
+        (host, owner, ada, CommunityId(c))
+    })
+    .await
+    .unwrap();
+    let (olof, ada_client) = (world::start(&owner).await, world::start(&ada).await);
+    let within = Duration::from_secs(30);
+    world::wait_for(&olof, within, "the member list", |s| {
+        s.members.get(&c).is_some_and(|m| m.len() == 2)
+    })
+    .await;
+    olof.roles().load_access(c).await.unwrap();
+    // The owner makes three roles (each where the client's `create_position` puts it), then reads their ranks: the lowest
+    // is "low", the middle one becomes ada's (manage roles and kick), the highest is "high".
+    // Each waits for the one before it in the owner's view: the client places a role by the roles it holds.
+    for (n, name) in ["one", "two", "three"].into_iter().enumerate() {
+        olof.roles()
+            .create_role(c, name, 0x5A_A8E6, false, false, perm::VIEW_CHANNEL)
+            .await
+            .unwrap();
+        world::wait_for(&olof, within, "the new role", |s| {
+            s.roles.roles_of(c).len() == n + 2
+        })
+        .await;
+    }
+    let ranked = world::wait_for(&olof, within, "the three roles", |s| {
+        s.roles.roles_of(c).len() == 4
+    })
+    .await;
+    let mut made: Vec<_> = ranked
+        .roles
+        .roles_of(c)
+        .iter()
+        .filter(|r| r.position > 0)
+        .map(|r| (r.position, r.id))
+        .collect();
+    made.sort();
+    let (low, mods, high) = (made[0].1, made[1].1, made[2].1);
+    olof.roles()
+        .update_role(
+            c,
+            mods,
+            dilla_client::features::roles::RolePatch {
+                allow: Some(perm::VIEW_CHANNEL | perm::MANAGE_ROLES | perm::KICK_MEMBERS),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    olof.roles()
+        .grant_role(c, UserId(ada.user_id), mods)
+        .await
+        .unwrap();
+
+    // Ada's client reads her access: rank 2, manage roles.
+    world::wait_for(&ada_client, within, "ada's member list", |s| {
+        s.members.get(&c).is_some_and(|m| m.len() == 2)
+    })
+    .await;
+    let loaded = |s: &AppState| {
+        let a = s.roles.access_of(c);
+        a.loaded
+            && a.manage_roles
+            && a.kick_members
+            && s.roles.roles_of(c).len() == 4
+            && s.members[&c]
+                .iter()
+                .any(|m| m.user_id.0 == ada.user_id && m.role_ids.contains(&mods))
+    };
+    let mut s = None;
+    for _ in 0..20 {
+        // The section's own read (`ensure_loaded`): the member list, then the access with the roles.
+        ada_client.members().open(c).await.unwrap();
+        ada_client.roles().load_access(c).await.unwrap();
+        let now = ada_client.state().borrow().clone();
+        if loaded(&now) {
+            s = Some(now);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let s = s.unwrap_or_else(|| {
+        let now = ada_client.state().borrow().clone();
+        panic!(
+            "ada's access with her role: {:?}, {} roles",
+            now.roles.access_of(c),
+            now.roles.roles_of(c).len()
+        )
+    });
+
+    // The top role opens first, read-only: the view sends nothing, and the instance refuses it anyway.
+    let view = RolesView::of(&s, c, None, None);
+    let open = view.role.clone().unwrap();
+    assert_eq!(open.id, high);
+    assert!(!view.editable);
+    assert_eq!(view.permission_patch(open.allow, PermKey::Kick, true), None);
+    let refused = ada_client
+        .roles()
+        .update_role(
+            c,
+            high,
+            dilla_client::features::roles::RolePatch {
+                allow: Some(perm::VIEW_CHANNEL | perm::KICK_MEMBERS),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.status, 403, "{refused}");
+    // Her own role is at her rank: read-only too.
+    assert!(!RolesView::of(&s, c, Some(mods), None).editable);
+
+    // Below her rank: a bit she holds saves, a bit she lacks is locked and refused.
+    let view = RolesView::of(&s, c, Some(low), None);
+    assert!(
+        view.editable,
+        "{:?} top {} roles {:?}",
+        view.role,
+        view.top,
+        s.roles.roles_of(c)
+    );
+    let role = view.role.clone().unwrap();
+    let kick = view
+        .permission_patch(role.allow, PermKey::Kick, true)
+        .expect("she holds kick");
+    ada_client.roles().update_role(c, low, kick).await.unwrap();
+    let lock = view
+        .permission_rows(role.allow)
+        .into_iter()
+        .flat_map(|(_, rows)| rows)
+        .find(|(k, _, _)| *k == PermKey::ManageChannels)
+        .unwrap()
+        .2;
+    assert_eq!(lock, Some(PermLock::NotHeld));
+    assert_eq!(
+        view.permission_patch(role.allow, PermKey::ManageChannels, true),
+        None
+    );
+    let lacked = ada_client
+        .roles()
+        .update_role(
+            c,
+            low,
+            dilla_client::features::roles::RolePatch {
+                allow: Some(role.allow | perm::MANAGE_CHANNELS),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(lacked.status, 403, "{lacked}");
+    let name = view.name_patch(" deck hands ").unwrap().unwrap();
+    ada_client.roles().update_role(c, low, name).await.unwrap();
+    let colour = view.color_patch(role.color, 0x7C_FF8E).unwrap();
+    ada_client
+        .roles()
+        .update_role(c, low, colour)
+        .await
+        .unwrap();
+
+    // The owner sees each change the section saved.
+    let mut seen = false;
+    for _ in 0..40 {
+        olof.roles().load_access(c).await.unwrap();
+        let s = olof.state().borrow().clone();
+        if s.roles.roles_of(c).iter().any(|r| {
+            r.id == low
+                && r.name == "deck hands"
+                && r.color == 0x7C_FF8E
+                && r.allow == perm::VIEW_CHANNEL | perm::KICK_MEMBERS
+        }) {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(
+        seen,
+        "the owner sees low renamed, recoloured and given kick"
+    );
+    olof.stop();
+    ada_client.stop();
+    drop(host);
+}
+
 macro_rules! parity {
     ($($test:ident => $name:literal $(, $why:literal)?;)*) => {$(
         #[test]
@@ -240,8 +615,8 @@ parity! {
     parity_members_moderation_dialog_b => "members/moderation-dialog-b";
     parity_server_settings_members => "server-settings/members";
     parity_server_settings_members_b => "server-settings/members-b";
-    parity_server_settings_roles => "server-settings/roles", "parity after T6c: whole frame 1.8776 % (the Roles section is not RolesSection.tsx's two panes: the web lists the roles at the left with the top role's editor open beside them (name, colour swatches, the permission switches), GPUI draws a list of rows)";
-    parity_server_settings_roles_b => "server-settings/roles-b", "parity after T6c: whole frame 2.4827 % (as roles)";
+    parity_server_settings_roles => "server-settings/roles", "parity after T6c: chrome 0.2172 % (lane E drew RolesSection.tsx's two panes; the residue is the permission switches: each single-line row's switch sits 1 css px lower than the web's, though it is where the CSS puts it (an isolated Chromium render of the same rule set agrees with GPUI); the two-line row matches)";
+    parity_server_settings_roles_b => "server-settings/roles-b", "parity after T6c: chrome 0.3006 % (as roles: the switches 1 css px low; the overflowing role row is drawn as the web draws it)";
     parity_server_settings_self_roles => "server-settings/self-roles", "parity after T6c: whole frame 1.1456 % (the section is not SelfRolesSection.tsx: the web draws a fieldset of role checkboxes and the Publish-a-role-panel form, GPUI a list of switches, and Loading in a fixture, which maps no self roles)";
     parity_server_settings_self_roles_b => "server-settings/self-roles-b", "parity after T6c: whole frame 1.2626 % (as self-roles)";
     parity_server_settings_bans => "server-settings/bans";
