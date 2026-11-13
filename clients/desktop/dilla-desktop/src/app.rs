@@ -213,6 +213,8 @@ impl AppView {
     }
 
     fn start_client(&mut self, cfg: InstanceConfig, window: &mut Window, cx: &mut Context<Self>) {
+        // The instance's played-video directory is wiped at open, and remembered for the wipe at quit (Task 12).
+        crate::screens::attachments::ui::instance_opened(&cfg.data_dir, cx);
         self.screen = Screen::Starting;
         self.fit_window(window, cx);
         cx.notify();

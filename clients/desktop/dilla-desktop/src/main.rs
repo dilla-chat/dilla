@@ -15,6 +15,12 @@ fn main() {
                 }
             })
             .detach();
+            // Videos handed to the system player are wiped when the app quits (Task 12).
+            cx.on_app_quit(|cx| {
+                dilla_desktop::screens::attachments::ui::on_quit(cx);
+                async {}
+            })
+            .detach();
             dilla_desktop::open_main_window(cx).expect("the main window opens");
             cx.activate(true);
         });

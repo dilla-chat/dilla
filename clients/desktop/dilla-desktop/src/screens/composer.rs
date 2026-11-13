@@ -196,7 +196,6 @@ impl Render for Composer {
             .gap(px(2.))
             .px(px(6.))
             .pb(px(6.))
-            .child(tool(IconName::Paperclip))
             // The other areas' buttons (12, 10): attach, then emoji, then the code tool (the web's order).
             .child(buttons)
             .child(tool(IconName::CodeXml))
