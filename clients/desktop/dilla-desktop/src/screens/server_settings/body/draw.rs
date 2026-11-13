@@ -342,10 +342,11 @@ impl Body {
             }
             block = block.child(head);
             let n = group.channels.len();
-            // The list is one bordered card; its rows are divided by hairlines.
+            // The list is one bordered card; its rows are divided by hairlines, 1px apart.
             let mut card = div()
                 .flex()
                 .flex_col()
+                .gap(layout::LIST_GAP)
                 .border_1()
                 .border_color(color::HAIRLINE)
                 .rounded(radius::XL)
@@ -412,8 +413,9 @@ impl Body {
         let hex = c.id.hex();
         let afk = self.afk_channel() == Some(c.id);
         let button = |key: &'static str, icon: IconName, label: String, enabled: bool| {
+            // The web's IconButton default: 32px with an 18px glyph, filling the 32px slot.
             IconButton::new(SharedString::from(format!("{key}-{hex}")), icon, label)
-                .size(IconButtonSize::S28)
+                .size(IconButtonSize::S32)
                 .disabled(!enabled)
         };
         let up_slot = (!fixed).then(|| {

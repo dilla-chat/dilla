@@ -35,6 +35,9 @@ pub mod layout {
     /// What a manage-list row takes off a settings row's group height: its own padding.
     const ROW_TRIM: f32 = 16.0;
 
+    /// The space between a channel list's rows (`.dw-admin-rows.d-manage-list { row-gap: var(--list-gap) }`, 1px): each row
+    /// keeps its 48px, the hairline over it drawn inside (an inset shadow), so the rows step 49px.
+    pub const LIST_GAP: Pixels = px(1.0);
     /// A manage-list row (`.d-manage-list__row`): 48px and 16px across, in a card of one hairline edge.
     pub const LIST_ROW_H: Pixels = px(48.0);
     pub const LIST_PAD_X: Pixels = px(16.0);
