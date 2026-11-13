@@ -37,6 +37,7 @@ fn track_id(id: String) -> &'static str {
     use std::cell::RefCell;
     use std::collections::HashMap;
     thread_local! {
+        // App-wide by design (final review sweep): interned automation ids (element names, never a client handle).
         static IDS: RefCell<HashMap<String, &'static str>> = RefCell::new(HashMap::new());
     }
     IDS.with(|ids| {

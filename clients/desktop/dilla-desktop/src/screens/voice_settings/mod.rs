@@ -51,6 +51,7 @@ pub fn settings_section(
 /// when the generator learns native-only copy (see the task report).
 pub const SPEAKER_LOST: &str = "The speaker was disconnected and no other is available. Nothing is played until one is connected.";
 
+/// App-wide by design (final review sweep): the audio host is the machine's devices, one per process; it holds no client.
 static HOST: Mutex<Option<Arc<dyn AudioHost>>> = Mutex::new(None);
 
 /// The audio host the section, the microphone test and the sounds use from now on (tests give a fake one).

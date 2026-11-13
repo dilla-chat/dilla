@@ -80,6 +80,8 @@ pub struct StepUp(pub Rc<StepUpAsk>);
 pub type StepUpAsk =
     dyn Fn(Box<dyn FnOnce(Zeroizing<String>, &mut Window, &mut App)>, &mut Window, &mut App);
 
+/// App-wide by design (final review sweep): the step-up is a function; the dialog it opens is the asking window's (`factor`'s
+/// `PendingStepUps` is per window).
 impl Global for StepUp {}
 
 /// A request id for a mutation that is retried with the same id (the server binds it to actor, payload and result).

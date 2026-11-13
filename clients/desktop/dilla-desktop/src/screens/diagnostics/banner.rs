@@ -75,6 +75,7 @@ pub fn check_for_update() -> UpdateOutcome {
 }
 
 /// The message the update banner shows now; the press changes it, as desktop.ts's `onChange` does.
+/// App-wide by design (final review sweep): an update is the app's, the same in every window and for every account.
 #[derive(Default)]
 struct UpdateSurface(UpdateMessage);
 

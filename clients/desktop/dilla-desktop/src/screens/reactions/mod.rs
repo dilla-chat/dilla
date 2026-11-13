@@ -61,6 +61,7 @@ const POP_BOTTOM: f32 = 6.0;
 pub(super) fn tag(id: String, handle: &gpui::FocusHandle, element: impl IntoElement) -> AnyElement {
     use std::collections::HashSet;
     use std::sync::Mutex;
+    // App-wide by design (final review sweep): interned automation ids (element names, never a client handle).
     static IDS: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
     let mut guard = IDS.lock().expect("id registry");
     let set = guard.get_or_insert_with(HashSet::new);

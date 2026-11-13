@@ -336,6 +336,8 @@ fn run(host: Arc<dyn AudioHost>, mut output: Option<String>, rx: std::sync::mpsc
     }
 }
 
+/// App-wide by design (final review sweep): the one output stream the app's sounds (rings, joins) play on, and the device it plays to;
+/// the ring sound is refcounted over the windows that ring (`ring::effects`). No client is held.
 static PLAYER: Mutex<Option<Player>> = Mutex::new(None);
 static OUTPUT: Mutex<Option<String>> = Mutex::new(None);
 

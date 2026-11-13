@@ -116,6 +116,8 @@ pub fn stop_ring(cx: &mut App) {
 }
 
 /// The app's notifier (Task 22's in-app [`RecordingNotifier`]: the OS delivery is the next plan's), one per app.
+/// App-wide by design (final review sweep): the OS has one notification centre per app, and a ring notification names the window it
+/// rings in, not a client handle.
 #[derive(Default)]
 pub struct RingNotifier(pub RecordingNotifier);
 

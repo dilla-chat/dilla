@@ -83,6 +83,7 @@ pub fn tracked_focus<C: IntoElement>(
     wrapper
 }
 
+/// App-wide by design (final review sweep): the theme, the components and the key bindings are installed once per app.
 struct Installed;
 impl Global for Installed {}
 

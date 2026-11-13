@@ -927,6 +927,7 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
 
 /// Milliseconds on one clock for the push-to-talk hold (its release delay is measured on it).
 fn ptt_now_ms() -> f64 {
+    // App-wide by design (final review sweep): the origin of one monotonic clock; it holds nothing else.
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     START
         .get_or_init(std::time::Instant::now)

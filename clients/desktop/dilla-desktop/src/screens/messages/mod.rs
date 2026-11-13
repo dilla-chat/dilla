@@ -68,6 +68,7 @@ pub mod css {
 pub fn id_of(prefix: &str, n: usize) -> &'static str {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
+    // App-wide by design (final review sweep): interned automation ids (element names, never a client handle).
     static IDS: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
     let key = format!("{prefix}-{n}");
     let mut ids = IDS

@@ -337,6 +337,7 @@ fn groups(state: &AppState, community: CommunityId) -> Option<Vec<ListGroup>> {
 fn probe_id(id: &str) -> &'static str {
     use std::collections::HashMap;
     use std::sync::Mutex;
+    // App-wide by design (final review sweep): interned automation ids (element names, never a client handle).
     static IDS: Mutex<Option<HashMap<String, &'static str>>> = Mutex::new(None);
     let mut ids = IDS
         .lock()

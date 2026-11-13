@@ -11,6 +11,8 @@ use gpui::{App, Global};
 use super::PickerState;
 use super::picker::{self, Effect, Key};
 
+/// App-wide by design (final review sweep): the key interceptor is installed once per app; what it acts on is the window that took the
+/// key (`PickerState` is per window).
 struct Bound;
 impl Global for Bound {}
 

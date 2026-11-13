@@ -216,6 +216,7 @@ pub fn row_id(name: &str) -> SharedString {
 pub(crate) fn probe_id(prefix: &str, name: &str) -> &'static str {
     use std::collections::HashMap;
     use std::sync::Mutex;
+    // App-wide by design (final review sweep): interned automation ids (element names, never a client handle).
     static IDS: Mutex<Option<HashMap<String, &'static str>>> = Mutex::new(None);
     let mut ids = IDS.lock().expect("row ids");
     ids.get_or_insert_with(HashMap::new)
