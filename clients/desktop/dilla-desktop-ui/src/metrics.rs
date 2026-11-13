@@ -84,11 +84,17 @@ impl Density {
     }
 }
 
+/// GPUI's `blur_radius` for a CSS shadow blur `blur`: CSS blurs with a Gaussian of standard deviation half the blur
+/// radius (CSS Backgrounds 3, `box-shadow`), and GPUI's shadow shader takes `blur_radius` as that deviation.
+pub fn css_blur(blur: f32) -> Pixels {
+    px(blur / 2.0)
+}
+
 fn shadow(color: Hsla, y: f32, blur: f32) -> Vec<BoxShadow> {
     vec![BoxShadow {
         color,
         offset: point(px(0.0), px(y)),
-        blur_radius: px(blur),
+        blur_radius: css_blur(blur),
         spread_radius: px(0.0),
         inset: false,
     }]
@@ -219,7 +225,11 @@ mod tests {
             let (y, blur, alpha) = shadow_of(name);
             let s = &got[0];
             assert_eq!(
-                (f32::from(s.offset.y), f32::from(s.blur_radius), s.color.a),
+                (
+                    f32::from(s.offset.y),
+                    2.0 * f32::from(s.blur_radius),
+                    s.color.a
+                ),
                 (y, blur, alpha),
                 "shadow {name}"
             );
