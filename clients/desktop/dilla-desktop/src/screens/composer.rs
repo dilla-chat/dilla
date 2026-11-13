@@ -55,8 +55,12 @@ fn max_rows() -> usize {
     ((FIELD_MAX - 2.0 * FIELD_PAD) / FIELD_LINE).floor() as usize
 }
 
-/// Emitted when the person sends the draft: its text, as it is posted (mentions encoded, a leading `//` folded).
-pub struct Sent(pub String);
+/// Emitted when the person sends the draft: its text, as it is posted (mentions encoded, a leading `//` folded), and the
+/// attachments taken from the channel's tray (Task 12's `take_for_send`; empty when there are none).
+pub struct Sent(
+    pub String,
+    pub Vec<dilla_client::features::attachments::Descriptor>,
+);
 
 pub struct Composer {
     pub input: Entity<TextareaState>,
@@ -330,12 +334,37 @@ impl Composer {
 
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let raw = self.input.read(cx).value().to_string();
-        if raw.trim().is_empty() || self.blocked().is_some() {
+        if self.blocked().is_some() {
+            return;
+        }
+        // ComposerArea.tsx `send`: files alone may be sent; nothing typed and no files sends nothing.
+        let channel = self.slots.channel;
+        let files = channel.is_some_and(|c| {
+            crate::screens::attachments::ui::ui(cx)
+                .trays
+                .get(&c)
+                .is_some_and(|t| !t.entries().is_empty())
+        });
+        if raw.trim().is_empty() && !files {
             return;
         }
         let posted = self.encoded(&composing::outgoing(&raw));
         // Over the budget the text stays in the field; the counter already says by how much.
         if posted.len() > MAX_LEN {
+            return;
+        }
+        // The tray's files go with the post (Task 12); while one is not ready, nothing is sent and the text stays.
+        let attachments = match channel {
+            Some(c) if files => match crate::screens::attachments::ui::take_for_send(c, cx) {
+                Ok(d) => d,
+                Err(text) => {
+                    dilla_desktop_ui::components::toast::show_toast(text, cx);
+                    return;
+                }
+            },
+            _ => Vec::new(),
+        };
+        if raw.trim().is_empty() && attachments.is_empty() {
             return;
         }
         self.input.update(cx, |s, cx| s.set_value("", window, cx));
@@ -345,7 +374,7 @@ impl Composer {
         }
         self.save = None;
         self.write_draft(cx);
-        cx.emit(Sent(posted));
+        cx.emit(Sent(posted, attachments));
         cx.notify();
     }
 

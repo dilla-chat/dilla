@@ -186,8 +186,8 @@ impl ShellView {
         cx: &mut Context<Self>,
     ) -> Self {
         let composer = cx.new(|cx| Composer::new(window, cx));
-        let sent = cx.subscribe(&composer, |this: &mut Self, _, Sent(text), cx| {
-            this.send(text.clone(), cx);
+        let sent = cx.subscribe(&composer, |this: &mut Self, _, Sent(text, files), cx| {
+            this.send(text.clone(), files.clone(), cx);
         });
         let prefs = client.as_ref().map(|c| c.prefs());
         let (widths, collapsed) = match &prefs {
@@ -502,12 +502,20 @@ impl ShellView {
         }
     }
 
-    fn send(&mut self, text: String, cx: &mut Context<Self>) {
+    fn send(
+        &mut self,
+        text: String,
+        files: Vec<dilla_client::features::attachments::Descriptor>,
+        cx: &mut Context<Self>,
+    ) {
         let (Some(client), Some(channel)) = (&self.client, self.channel) else {
             return;
         };
-        // A DM's message goes through the DM area (13), which opens the DM's group; a channel's through the client.
-        let queued = if self.dm_view {
+        // A post with files goes through the attachments area (12), which confirms each file first. Otherwise a DM's
+        // message goes through the DM area (13), which opens the DM's group; a channel's through the client.
+        let queued = if !files.is_empty() {
+            client.attachments().send(channel, text, files)
+        } else if self.dm_view {
             client.dms().send_text(channel, text)
         } else {
             client.send_text(channel, text)
@@ -646,6 +654,8 @@ impl ShellView {
     fn menu_items(&self, channel: ChannelId) -> Vec<MenuItem> {
         let muted = self.channel_muted(channel);
         vec![
+            // Ruling X: the channel row's menu holds the pins (the header has no pin button).
+            MenuItem::new("pins", t("shell.pins.open")),
             MenuItem::new("read", MARK_READ),
             MenuItem::new("mute", t("notify.mute")).check(muted),
             MenuItem::new("link", t("invite.copy")),
@@ -654,6 +664,7 @@ impl ShellView {
 
     fn choose(&mut self, channel: ChannelId, item: &str, cx: &mut Context<Self>) {
         match item {
+            "pins" => crate::screens::messages::open_pins(channel, self.client.as_ref(), cx),
             "read" => {
                 if let Some(client) = &self.client {
                     let marked = client.mark_read(channel);

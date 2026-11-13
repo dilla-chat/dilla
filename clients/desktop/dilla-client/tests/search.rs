@@ -201,12 +201,8 @@ async fn two_queries_in_a_row_leave_the_newer_ones_hits() {
 
 /// e2e/web/search-settings.spec.ts `native edit is searched by prefix and deleted text disappears after a positive result`,
 /// in full: bob edits "old lantern" to "café lamp", alice finds it by "cafe", bob deletes it, and "lamp" no longer finds it.
-///
-/// Written now, compiled out (`cfg(any())`) because `Messages::edit` and `Messages::delete` (Task 9) are not on this branch;
-/// at integration (Task 28) remove the `cfg` and the `ignore`, and adjust the two call names to Task 9's.
-#[cfg(any())]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "needs Task 9 edit/delete; Task 28"]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
 async fn edit_found_by_prefix_deleted_text_gone() {
     let (_host, pa, pb, c) = two_people("search-edit").await;
     let alice = start(&pa).await;

@@ -307,13 +307,19 @@ fn body_offset(grouped: bool) -> f32 {
     }
 }
 
-/// The height Chromium gives a row with a body `body` px high and `extras` px of other areas' parts under the body.
-fn row_height(grouped: bool, last: bool, body: f32, extras: f32) -> f32 {
-    let slot = if last {
+/// The attachments slot's height (the grid's 1px gap and its 4px margin) between the body and the other areas' parts:
+/// none in the log's last row when it is empty (MessageLog.css `:last-child .d-message-row__attachments:empty`).
+fn attachments_slot(last: bool) -> f32 {
+    if last {
         0.0
     } else {
         MAIN_GAP + ATTACHMENTS_MARGIN
-    };
+    }
+}
+
+/// The height Chromium gives a row with a body `body` px high and `extras` px of other areas' parts under the body.
+fn row_height(grouped: bool, last: bool, body: f32, extras: f32) -> f32 {
+    let slot = attachments_slot(last);
     let body = body + extras;
     if grouped {
         FOLLOW_PAD + body + slot + FOLLOW_PAD
@@ -565,8 +571,10 @@ fn draw_row(
             .child(div().relative().size_full().children(laid.elements))
             .into_any_element(),
     );
+    // The other areas' parts sit under the attachments slot (the web's grid: body, attachments, reactions, thread), so
+    // no guest needs to know whether its row is the log's last (Task 10's coupling).
     if let Some(extras) = shown.extras {
-        placer.block(CONTENT_X, body_end, extras);
+        placer.block(CONTENT_X, body_end + attachments_slot(shown.last), extras);
     }
     // The row's box: the hover fill and bar, the mention tint, the flash; the toolbar over its top edge.
     let group = shown.group.clone();
@@ -704,7 +712,8 @@ pub fn render(
             item,
             grouped: grouped_with_above(prev, item, clock),
             divider: starts_day(prev, item, clock).then(|| day_label(item.ts, clock)),
-            last: n + 1 == items.len(),
+            // Only an empty attachments slot is hidden in the last row; one with cards keeps its gap and margin.
+            last: n + 1 == items.len() && item.attachments.is_empty(),
             body: laid,
             extras: Some(extras),
             extras_height,

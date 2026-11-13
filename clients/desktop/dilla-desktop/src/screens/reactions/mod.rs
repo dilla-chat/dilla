@@ -44,8 +44,6 @@ use crate::{tracked_box, tracked_focus};
 const CONTENT_X: f32 = 44.0 + 10.0 + 30.0 + 10.0;
 const ROW_RIGHT: f32 = 16.0;
 const MAIN_GAP: f32 = 1.0;
-/// The empty attachments slot's 4px margin (`.d-message-row__attachments`).
-const ATTACHMENTS_MARGIN: f32 = 4.0;
 /// Composer.css `.d-composer__tool`: 26 x 24 with a 14px glyph (`Icon size={14}`).
 const TOOL_WIDTH: f32 = 26.0;
 const TOOL_HEIGHT: f32 = 24.0;
@@ -227,19 +225,8 @@ pub fn reaction_bar(
     };
 
     let key = item.key.clone();
-    // The row keeps an empty attachments slot (1px gap, 4px margin) between its body and what follows unless it is the
-    // log's last row, and the timeline adds that slot below the extras: the chips sit under it.
-    let last = ctx
-        .channel
-        .and_then(|c| ctx.state.timelines.get(&c))
-        .and_then(|t| t.items.last())
-        .is_some_and(|i| i.key == item.key);
-    let slot = if last {
-        0.0
-    } else {
-        MAIN_GAP + ATTACHMENTS_MARGIN
-    };
-    let mut column = div().relative().w(px(width.max(0.0))).pt(px(slot));
+    // The timeline places the extras under the row's attachments slot, so the chips start right here.
+    let mut column = div().relative().w(px(width.max(0.0)));
     if !chips.is_empty() {
         let tooltips: Vec<_> = chips.iter().map(|c| chip_tooltip(item, c, ctx)).collect();
         let tooltips = Rc::new(std::cell::RefCell::new(
