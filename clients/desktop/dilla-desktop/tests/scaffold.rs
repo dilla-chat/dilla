@@ -9,7 +9,10 @@ use dilla_client::state::{
 };
 use dilla_desktop::router::{Route, ServerSection, UserSection};
 use dilla_desktop::slots::{self, SectionId, SlotCx};
-use gpui::TestAppContext;
+use std::cell::Cell;
+use std::rc::Rc;
+
+use gpui::{Context, IntoElement, Render, TestAppContext, Window};
 
 fn item() -> TimelineItem {
     TimelineItem {
@@ -53,9 +56,32 @@ fn stubs_change_nothing(cx: &mut TestAppContext) {
         assert_eq!(height, 0.0);
         // The other element slots always answer an element; empty, it is a bare flex container (see slots.rs).
         let _ = slots::composer_leading(&ctx, window, cx);
-        let _ = slots::composer_buttons(&ctx, window, cx);
         let _ = slots::channel_row_extras(&voice_channel(), window, cx);
     });
+    // The composer's buttons are filled (Tasks 10 and 12): the emoji button keeps its focus in element state, which
+    // exists only while a view renders, so the slot is drawn by a view here.
+    let drawn = Rc::new(Cell::new(false));
+    let (_view, vcx) = cx.add_window_view({
+        let drawn = drawn.clone();
+        move |_, _| Buttons { drawn }
+    });
+    vcx.run_until_parked();
+    assert!(
+        drawn.get(),
+        "the composer's buttons slot drew inside a render"
+    );
+}
+
+/// Draws the composer's buttons slot.
+struct Buttons {
+    drawn: Rc<Cell<bool>>,
+}
+
+impl Render for Buttons {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.drawn.set(true);
+        slots::composer_buttons(&SlotCx::default(), window, cx)
+    }
 }
 
 fn voice_channel() -> Channel {

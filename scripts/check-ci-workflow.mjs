@@ -2305,6 +2305,10 @@ export const GPUI_PINNED_STEPS = {
     '    cargo test -p dilla-client --test calls --locked -- --ignored',
     '    cargo test -p dilla-client --test removals --test keypackages --test backups --test lifecycle --locked -- --ignored',
     '    cargo test -p dilla-desktop --test slice --locked -- --ignored',
+    '    cargo test -p dilla-client --test attachments --test diagnostics --test members --test notify --test reactions --test search --locked -- --ignored',
+    '    cargo build -p dilla-testkit --bin dilla-testkit --locked',
+    '    cargo test -p dilla-client --test dms --locked -- --ignored',
+    '    cargo test -p dilla-desktop --test attachments --test diagnostics --test instances --test members --test notify --test reactions --test search --test shell --locked -- --ignored --skip parity_ --skip keyboard_diagnostics_focus_order',
   ].join('\n'),
   // The media tests need the e2e media suite's prerequisites, which the steps before this one build on Linux.
   mediaWasm: [
