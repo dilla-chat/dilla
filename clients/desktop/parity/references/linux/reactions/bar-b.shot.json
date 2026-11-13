@@ -1,22 +1,22 @@
 {
   "digest": "fb3ae22b4fa3cc378bb4ce70cf4ae4238b70550d5780b18f3b710ccd0f564834",
-  "shift": 74198,
+  "shift": 79569,
   "hand_migrated": false,
   "ids": {
-    "channel:midgard/afk": "56a881b9271f6d997f7016a0154273bd",
-    "channel:midgard/general": "d1ef320e85ae2a718ca5a153637ac781",
-    "person:ada": "399cdfc83e01d4ac566c43b9ef603368",
-    "person:bjorn": "4f3026f814502ac8e3f11629262b8af2",
-    "person:glenn": "9d17c4c32cf666ecccb5ac24c44cf4af",
-    "person:ines": "3d93cde9d4c9cd7a294a1d8bd8797297",
-    "person:kari": "224a809b3a1829a95ea53fda74b2bc5d",
-    "person:liv": "94a2dc83c58f0f2203385597c5796e3d",
-    "person:mira": "e0a461942a2ecd9f966fd2b4833f4bbd",
-    "person:ole": "d930d8c7d8f5bac9b5c6568844cb9076",
-    "person:saga": "5391508ef57c5a8dc92442966d901573",
-    "person:sven": "94c38ff3155772b3742d0e31804dd0a7",
-    "person:tove": "0cb790232f52cec4d45361126bdfee4f",
-    "person:ulf": "3e648bf1cbe5703a418dcb99ff8ec64f",
-    "server:midgard": "628aa6f0c01cff26dfb06c1ccaeba6b0"
+    "channel:midgard/afk": "85a3edaf48b9963fd8cfc17f1ec3b577",
+    "channel:midgard/general": "78f3c8ac9cee884b9731ceabc1b6b6ac",
+    "person:ada": "948aa5846b41828c5cf8f8f977e9d714",
+    "person:bjorn": "55ac98b02919d3f92394b3ecfea86954",
+    "person:glenn": "e7122c60f9f424c453667272239bed55",
+    "person:ines": "59b2d0c901513b1daee1743ee4888c6b",
+    "person:kari": "96e78639b74830fd937821acd9444a76",
+    "person:liv": "3a90db8f17f2e9e1d26efdea2adb0757",
+    "person:mira": "c00bfe408806bd46eaa1cfe9ad399399",
+    "person:ole": "42e863e35f9f091c5dc5a7395303d82d",
+    "person:saga": "60534f3d5ee2559abce22d9f0ab7168b",
+    "person:sven": "93e9d820758fa32e30ebb78fde136d75",
+    "person:tove": "ba614c0ef420ea0589f52e69086d8de5",
+    "person:ulf": "a23f73f5325496f61c914ee003a160ac",
+    "server:midgard": "a561645ab92a6487e7b02dbd304a4d8f"
   }
 }
