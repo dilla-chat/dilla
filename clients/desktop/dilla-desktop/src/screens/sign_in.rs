@@ -809,8 +809,10 @@ impl SignInView {
         cx.emit(CreateInstead);
     }
 
+    /// A labelled field; a press anywhere on it (its label included) focuses its input, as a `<label for>` does.
     fn field(
         &self,
+        cx: &mut Context<Self>,
         id: &'static str,
         label: &str,
         input: &Entity<InputState>,
@@ -820,7 +822,18 @@ impl SignInView {
         if let Some(e) = self.errors.get(&field) {
             f = f.error(e.clone());
         }
-        tracked_box(id, f).into_any_element()
+        tracked_box(
+            id,
+            div()
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
+                        this.focus(field, window, cx)
+                    }),
+                )
+                .child(f),
+        )
+        .into_any_element()
     }
 
     fn nav(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -875,6 +888,7 @@ impl Render for SignInView {
                         .child(para(tf("signin.login.body", &[("instance", &instance)])));
                 if self.pin.is_none() {
                     frame = frame.child(self.field(
+                        cx,
                         "signin-server",
                         t("diagnostics.instance"),
                         &self.server,
@@ -883,12 +897,14 @@ impl Render for SignInView {
                 }
                 frame = frame
                     .child(self.field(
+                        cx,
                         "signin-username",
                         t("signin.login.username"),
                         &self.username,
                         Field::Username,
                     ))
                     .child(self.field(
+                        cx,
                         "signin-password",
                         t("signin.login.password"),
                         &self.password,
@@ -1033,6 +1049,7 @@ impl Render for SignInView {
                 frame
                     .child(para(t("factorSignin.backup.body")))
                     .child(self.field(
+                        cx,
                         "signin-backup",
                         t("factorSignin.backup.label"),
                         &self.backup,
@@ -1081,7 +1098,17 @@ impl Render for SignInView {
                     .step(step(key_step))
                     .progress(key_step, total)
                     .child(para(t("signin.key.body")))
-                    .child(tracked_box("signin-key", f));
+                    .child(tracked_box(
+                        "signin-key",
+                        div()
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, _: &gpui::MouseDownEvent, window, cx| {
+                                    this.focus(Field::Key, window, cx)
+                                }),
+                            )
+                            .child(f),
+                    ));
                 if looks && self.note_settled {
                     frame = frame.child(tracked_box(
                         "signin-key-backup",

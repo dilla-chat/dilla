@@ -195,3 +195,67 @@ impl Render for CodeField {
             )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{AppContext as _, TestAppContext};
+
+    /// CodeBoxes.test.tsx and the keyboard rule: digits land at the caret and move it on, a partial paste is inserted, a
+    /// whole code (grouped or newline-ended) replaces the field, Backspace deletes before the caret and moves back.
+    #[gpui::test]
+    fn digits_paste_and_backspace(cx: &mut TestAppContext) {
+        let field = cx.new(|cx| CodeField::new("code-test", cx));
+        field.update(cx, |f, cx| {
+            f.insert("1", cx);
+            f.insert("2", cx);
+            assert_eq!((f.value(), f.caret), ("12", 2));
+            f.backspace(cx);
+            assert_eq!((f.value(), f.caret), ("1", 1));
+            f.insert("23", cx);
+            assert_eq!((f.value(), f.caret), ("123", 3));
+            f.caret = 1;
+            f.insert("9", cx);
+            assert_eq!((f.value(), f.caret), ("1923", 2));
+            f.insert("654 321\n", cx);
+            assert_eq!((f.value(), f.caret), ("654321", 6));
+            assert!(f.is_complete());
+            f.insert("7", cx);
+            assert_eq!(f.value(), "654321", "a seventh digit is dropped");
+            f.clear(cx);
+            assert_eq!((f.value(), f.caret), ("", 0));
+            f.insert("a b", cx);
+            assert_eq!(f.value(), "");
+        });
+    }
+
+    /// The sixth digit says the code is complete once it rests (the prototype's 350 ms), and only for that value.
+    #[gpui::test]
+    fn the_sixth_digit_completes_after_the_rest(cx: &mut TestAppContext) {
+        let field = cx.new(|cx| CodeField::new("code-test", cx));
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let log = seen.clone();
+        cx.update(|cx| {
+            cx.subscribe(&field, move |_, e: &CodeEvent, _| {
+                log.borrow_mut().push(e.clone())
+            })
+            .detach();
+        });
+        field.update(cx, |f, cx| f.insert("123456", cx));
+        cx.run_until_parked();
+        assert!(!seen.borrow().contains(&CodeEvent::Complete));
+        cx.executor().advance_clock(COMPLETE_DELAY);
+        cx.run_until_parked();
+        assert!(seen.borrow().contains(&CodeEvent::Complete));
+        // A change inside the rest cancels the completion of the older value.
+        seen.borrow_mut().clear();
+        field.update(cx, |f, cx| {
+            f.clear(cx);
+            f.insert("123456", cx);
+            f.backspace(cx);
+        });
+        cx.executor().advance_clock(COMPLETE_DELAY);
+        cx.run_until_parked();
+        assert!(!seen.borrow().contains(&CodeEvent::Complete));
+    }
+}
