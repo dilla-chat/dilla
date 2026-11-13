@@ -345,6 +345,16 @@ impl Engine {
         self.stopped.load(Ordering::Acquire) || self.core.is_poisoned()
     }
 
+    /// Sends a frame on the current gateway (typing, Task 9). `false`: no connection is ready, nothing was sent.
+    pub fn send_gateway_frame(&self, frame: Vec<u8>) -> bool {
+        let gateway = self
+            .gateway
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        gateway.is_some_and(|g| g.send_now(frame).is_ok())
+    }
+
     /// engine.ts `stop`: every timer is cancelled and nothing new starts; jobs already running see `stopped()`.
     pub fn stop(&self) {
         if self.stopped.swap(true, Ordering::AcqRel) {
