@@ -317,6 +317,16 @@ impl BotIo for InnerIo {
         crate::features::bot_admin::new_request_id()
     }
 
+    fn spawn(&self, task: super::sealed::Task) {
+        // The client's runtime: the UI thread that asks has none of its own.
+        if let Some(inner) = self.inner.upgrade() {
+            drop(inner.spawn(async move {
+                task.await;
+                Ok(())
+            }));
+        }
+    }
+
     fn publish(&self, community: CommunityId, view: Option<BotCatalogView>) {
         let Some(inner) = self.inner.upgrade() else {
             return;

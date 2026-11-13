@@ -321,10 +321,7 @@ impl Runs {
     /// Sweeps the rows whose time is up, at the TTL and then at each next expiry, until none is left to expire.
     fn schedule_sweep(&self) {
         let rows = self.rows.clone();
-        let Ok(rt) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        rt.spawn(async move {
+        self.sealed.spawn(Box::pin(async move {
             tokio::time::sleep(Duration::from_millis(PRIVATE_RESULT_TTL_MS)).await;
             loop {
                 let now = rows.now_ms();
@@ -338,7 +335,7 @@ impl Runs {
                 let wait = next.saturating_sub(rows.now_ms());
                 tokio::time::sleep(Duration::from_millis(wait)).await;
             }
-        });
+        }));
     }
 
     /// Runs a picked Bot command in `conversation` (a channel of `community`): a pending private row at once, its answers
@@ -429,11 +426,8 @@ impl Runs {
         texts: Texts,
         community: CommunityId,
     ) {
-        let Ok(rt) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
         let this = self.clone();
-        rt.spawn(async move {
+        self.sealed.spawn(Box::pin(async move {
             let deadline = tokio::time::Instant::now() + super::sealed::REPLY_HOLD;
             while let Ok(Some(a)) = tokio::time::timeout_at(deadline, late.recv()).await {
                 if a.status == super::sealed::KEY_STALE_STATUS {
@@ -470,15 +464,12 @@ impl Runs {
                 );
                 return;
             }
-        });
+        }));
     }
 
     fn drive(&self, row: u64, run: HeldRun) {
-        let Ok(rt) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
         let this = self.clone();
-        rt.spawn(async move {
+        self.sealed.spawn(Box::pin(async move {
             let (conversation, progress_runs) = (run.conversation, this.clone());
             let end = this
                 .sealed
@@ -545,7 +536,7 @@ impl Runs {
                     hold: Some(hold),
                 },
             );
-        });
+        }));
     }
 }
 
@@ -784,17 +775,23 @@ mod tests {
             COMMUNITY, Fake, posted, ready, ready_fake, reply,
         };
 
-        /// The rows in memory, stamped by the paused tokio clock.
+        /// The rows in memory, stamped by the client runtime's (paused) clock.
         struct MemRows {
             state: Mutex<BotState>,
             start: tokio::time::Instant,
+            runtime: tokio::runtime::Handle,
         }
 
         impl MemRows {
             fn new() -> Arc<Self> {
+                Self::on(tokio::runtime::Handle::current())
+            }
+            fn on(runtime: tokio::runtime::Handle) -> Arc<Self> {
+                let _in = runtime.enter();
                 Arc::new(Self {
                     state: Mutex::default(),
                     start: tokio::time::Instant::now(),
+                    runtime: runtime.clone(),
                 })
             }
             fn rows(&self, c: &Conversation) -> Vec<crate::state::bot::PrivateResult> {
@@ -804,6 +801,7 @@ mod tests {
 
         impl Rows for MemRows {
             fn now_ms(&self) -> u64 {
+                let _in = self.runtime.enter();
                 1_000_000 + self.start.elapsed().as_millis() as u64
             }
             fn apply(&self, f: Box<dyn FnOnce(&mut BotState) + Send>) {
@@ -987,6 +985,127 @@ mod tests {
             assert!(!runs.retry(row), "nothing is sent again after sign-out");
             settle().await;
             assert_eq!(fake.posted.lock().unwrap().len(), 2);
+        }
+
+        /// The UI thread has no runtime: a command, its Retry and a settling row all run on the client's runtime, and the
+        /// row dismisses itself at the TTL.
+        #[test]
+        fn runs_work_from_a_thread_without_a_runtime() {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .start_paused(true)
+                .build()
+                .unwrap();
+            let fake = ready_fake();
+            *fake.runtime.lock().unwrap() = Some(rt.handle().clone());
+            let sealed = rt.block_on(ready(&fake));
+            let rows = MemRows::on(rt.handle().clone());
+            let runs = Runs::new(sealed.clone(), rows.clone());
+            assert!(
+                tokio::runtime::Handle::try_current().is_err(),
+                "this thread has no runtime"
+            );
+
+            // A command that gets no answer is held; its Retry, from this thread, sends the same request id.
+            let row = runs.run_command(
+                HERE,
+                COMMUNITY,
+                Some(HERE.channel),
+                remind(&sealed),
+                Args::new(),
+                &utc(),
+                texts(),
+            );
+            rt.block_on(async {
+                posted(&fake, 1).await;
+                tokio::time::sleep(Duration::from_secs(6)).await;
+                settle().await;
+            });
+            assert!(rows.rows(&HERE)[0].hold && sealed.holds_row(row));
+            assert!(runs.retry(row));
+            rt.block_on(async {
+                posted(&fake, 2).await;
+                let key = fake.reply_keys.lock().unwrap()[1];
+                sealed.on_reply(&reply(
+                    key,
+                    posted_id(&fake, 1),
+                    0,
+                    200,
+                    "Reminder set.",
+                    true,
+                ));
+                settle().await;
+            });
+            assert_eq!(posted_id(&fake, 0), posted_id(&fake, 1));
+            let r = rows.rows(&HERE);
+            assert_eq!(
+                (r[0].status, r[0].text.as_str()),
+                (ResultStatus::Success, "Reminder set.")
+            );
+
+            // A settling patch from this thread schedules the sweep there too.
+            let other = runs.add_result(
+                HERE,
+                ResultStatus::Pending,
+                "x".into(),
+                ResultProvider::Builtin,
+            );
+            runs.patch(
+                HERE,
+                other,
+                Patch {
+                    status: Some(ResultStatus::Failed),
+                    ..Patch::default()
+                },
+            );
+            rt.block_on(async {
+                tokio::time::sleep(Duration::from_millis(PRIVATE_RESULT_TTL_MS + 2000)).await;
+                settle().await;
+            });
+            assert!(
+                rows.rows(&HERE).is_empty(),
+                "both rows dismissed at the TTL"
+            );
+        }
+
+        /// A refused session that is renewed (4004 on expiry) keeps in-flight runs and Retry; a revocation forgets them.
+        #[tokio::test(start_paused = true)]
+        async fn a_renewed_session_keeps_held_runs_and_a_revocation_forgets_them() {
+            let (fake, sealed, _rows, runs) = setup().await;
+            let row = runs.run_command(
+                HERE,
+                COMMUNITY,
+                Some(HERE.channel),
+                remind(&sealed),
+                Args::new(),
+                &utc(),
+                texts(),
+            );
+            posted(&fake, 1).await;
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            settle().await;
+            let refused =
+                crate::sync::ConnectionEvent::Refused(crate::gateway::Refusal::Revoked, 4004);
+            crate::features::bot::on_connection_of(&sealed, Weak::new(), &refused);
+            crate::features::bot::on_connection_of(
+                &sealed,
+                Weak::new(),
+                &crate::sync::ConnectionEvent::Down,
+            );
+            assert!(
+                sealed.holds_row(row) && sealed.holds(posted_id(&fake, 0)),
+                "a renewal keeps the run"
+            );
+            assert!(runs.retry(row));
+            posted(&fake, 2).await;
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            settle().await;
+            assert!(sealed.holds_row(row));
+            sealed.forget_all();
+            assert!(
+                !sealed.holds_row(row) && !sealed.holds(posted_id(&fake, 0)),
+                "a revocation forgets it"
+            );
         }
 
         #[tokio::test(start_paused = true)]

@@ -304,40 +304,77 @@ pub(crate) fn sealed_for(inner: &Arc<Inner>) -> Arc<Sealed> {
     sealed
 }
 
-/// The gateway's lifecycle, as controller.ts drives the Bot catalog and the relay: on every ready the device lists are
-/// read again when needed and each community's catalog is read (its Bot user looked up again, its key checked) once the
-/// structure and the members are in; a refused session (sign-out, revocation) forgets every reply secret and held run.
+/// The gateway's lifecycle, as controller.ts drives the Bot catalog: on every ready the device lists are read again
+/// when needed and each community's catalog is read (its Bot user looked up again, its key checked) once the structure
+/// and the members are in. A loss or a refusal ends that wait. Nothing is forgotten here: a refused session is usually
+/// renewed (4004 on expiry), and its runs and Retries go on; only a revocation ([`revoked`]) or a stop ([`stopped`])
+/// forgets them, as TS `enterRevoked` and `forgetAccount`.
 pub(crate) fn on_connection(inner: &Arc<Inner>, event: &crate::sync::ConnectionEvent) {
-    use crate::sync::ConnectionEvent as E;
-    let sealed = sealed_for(inner);
-    match event {
-        E::Ready(_) => {
-            sealed.new_connection();
-            let weak = Arc::downgrade(inner);
-            drop(inner.spawn(async move {
-                // The structure is read after the ready: wait (bounded) for every community's members.
-                for _ in 0..120 {
-                    let Some(inner) = weak.upgrade() else {
-                        return Ok(());
-                    };
-                    let s = inner.snapshot();
-                    drop(inner);
-                    if !s.communities.is_empty()
-                        && s.communities.iter().all(|c| s.members.contains_key(&c.id))
-                    {
-                        for c in &s.communities {
-                            let _ = sealed.refresh(c.id).await;
-                        }
-                        return Ok(());
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                }
-                Ok(())
-            }));
-        }
-        E::Refused(..) => sealed.forget_all(),
-        E::Down => {}
+    on_connection_of(&sealed_for(inner), Arc::downgrade(inner), event);
+}
+
+/// [`on_connection`] for one client's sealed path.
+pub(crate) fn on_connection_of(
+    sealed: &Arc<Sealed>,
+    inner: Weak<Inner>,
+    event: &crate::sync::ConnectionEvent,
+) {
+    let generation = sealed.next_connection_generation();
+    if !matches!(event, crate::sync::ConnectionEvent::Ready(_)) {
+        return;
     }
+    sealed.new_connection();
+    let weak = inner;
+    let waiting = sealed.clone();
+    sealed.spawn(Box::pin(async move {
+        // The structure is read after the ready: wait (bounded) for every community's members, while this connection
+        // lasts.
+        for _ in 0..120 {
+            if waiting.connection_generation() != generation {
+                return;
+            }
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            let s = inner.snapshot();
+            drop(inner);
+            if !s.communities.is_empty()
+                && s.communities.iter().all(|c| s.members.contains_key(&c.id))
+            {
+                for c in &s.communities {
+                    let _ = waiting.refresh(c.id).await;
+                }
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }));
+}
+
+/// The device was revoked (the client signs out): every reply secret and held run of that client goes.
+pub(crate) fn revoked(engine: &Arc<crate::sync::Engine>) {
+    let r = REGISTRY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (w, sealed) in r.iter() {
+        if w.upgrade().is_some_and(|i| Arc::ptr_eq(i.engine(), engine)) {
+            sealed.forget_all();
+        }
+    }
+}
+
+/// The client stopped: its sealed path forgets everything and is dropped.
+pub(crate) fn stopped(inner: &Arc<Inner>) {
+    let mut r = REGISTRY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    r.retain(|(w, sealed)| {
+        let mine = std::ptr::eq(w.as_ptr(), Arc::as_ptr(inner));
+        if mine || w.strong_count() == 0 {
+            sealed.forget_all();
+        }
+        !mine && w.strong_count() > 0
+    });
 }
 
 impl AreaFrames for Bot {

@@ -35,6 +35,8 @@ pub(crate) struct Fake {
     pub(crate) reads_at_once: Mutex<u32>,
     pub(crate) max_reads_at_once: Mutex<u32>,
     pub(crate) published: Mutex<Vec<Option<BotCatalogView>>>,
+    /// The client's runtime; the test's own when none is set.
+    pub(crate) runtime: Mutex<Option<tokio::runtime::Handle>>,
 }
 
 #[async_trait]
@@ -125,6 +127,12 @@ impl BotIo for Fake {
     }
     fn publish(&self, _: CommunityId, view: Option<BotCatalogView>) {
         lock(&self.published).push(view);
+    }
+    fn spawn(&self, task: Task) {
+        let handle = lock(&self.runtime)
+            .clone()
+            .unwrap_or_else(tokio::runtime::Handle::current);
+        handle.spawn(task);
     }
 }
 

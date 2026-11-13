@@ -113,7 +113,12 @@ pub trait BotIo: Send + Sync {
     fn random16(&self) -> [u8; 16];
     /// The community's catalog view changed.
     fn publish(&self, community: CommunityId, view: Option<BotCatalogView>);
+    /// Runs `task` on the client's runtime (the UI thread has none).
+    fn spawn(&self, task: Task);
 }
+
+/// A task for the client's runtime.
+pub type Task = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
 #[derive(Clone, Debug)]
 struct Verified {
@@ -288,6 +293,7 @@ pub struct Sealed {
     /// One catalog read at a time per community (catalog.ts `inFlight`): a later read lands after an earlier one, so an
     /// older status never overwrites a newer one.
     reads: Mutex<HashMap<CommunityId, Arc<tokio::sync::Mutex<()>>>>,
+    connection: std::sync::atomic::AtomicU64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -303,6 +309,7 @@ impl Sealed {
             generation: std::sync::atomic::AtomicU64::new(1),
             held: Mutex::default(),
             reads: Mutex::default(),
+            connection: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -654,19 +661,22 @@ impl Sealed {
 
     fn arm_hold(self: &Arc<Self>, request_id: [u8; 16], generation: u64) {
         let weak: Weak<Self> = Arc::downgrade(self);
-        if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            rt.spawn(async move {
-                tokio::time::sleep(REPLY_HOLD).await;
-                if let Some(this) = weak.upgrade() {
-                    let mut p = lock(&this.pending);
-                    if p.get(&request_id)
-                        .is_some_and(|e| e.generation == generation)
-                    {
-                        p.remove(&request_id);
-                    }
+        self.io.spawn(Box::pin(async move {
+            tokio::time::sleep(REPLY_HOLD).await;
+            if let Some(this) = weak.upgrade() {
+                let mut p = lock(&this.pending);
+                if p.get(&request_id)
+                    .is_some_and(|e| e.generation == generation)
+                {
+                    p.remove(&request_id);
                 }
-            });
-        }
+            }
+        }));
+    }
+
+    /// Runs `task` on the client's runtime.
+    pub fn spawn(&self, task: Task) {
+        self.io.spawn(task);
     }
 
     /// op 62: opens the answer with the newest send's reply secret. A replayed, unknown or unopenable answer is dropped.
@@ -723,6 +733,18 @@ impl Sealed {
     pub fn forget_all(&self) {
         lock(&self.held).clear();
         lock(&self.pending).clear();
+    }
+
+    /// Every gateway ready, loss or refusal starts a new generation: a ready's wait for the structure stops when it ends.
+    pub(crate) fn next_connection_generation(&self) -> u64 {
+        self.connection
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
+    }
+
+    /// The current connection generation.
+    pub(crate) fn connection_generation(&self) -> u64 {
+        self.connection.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Unix seconds by the instance's clock where known (the command's `sent_at`).
