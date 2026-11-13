@@ -13,7 +13,7 @@ import { DillaHttpError } from '../http/errors';
 import type { AFKSnapshot, DeviceRow } from '../http/routes';
 import type { AccountState, ChannelSummary, CommunitySummary, DeviceSummary, DiagnosticsState, DmSummary, MemberSummary, PinnedItem, ThreadState, ThreadSummary, TimelineState, TrayItem, TrustSummary } from '../state/types';
 import { SyncError } from '../sync/errors';
-import { HELD_LIVE_MAX, HELD_READ_HOLD_MS } from './controller';
+import { HELD_LIVE_MAX, HELD_READ_HOLD_MS, diagnosticsFacts } from './controller';
 import { LEADER } from './leader';
 import type { FromWorker } from './protocol';
 import { INSTANCE, INSTANCE_ID, INSTANCE_HEX, LOCK, cbor, fakeFetch, stubCore, harness, opened, USER, DEVICE, COMMUNITY, CHANNEL, GROUP, STRANGER, ROLE_EVERYONE, NEW_COMMUNITY, READY_INFO, refusal, SUBMIT, textGroup, applied, strangerRow, DM_CHANNEL, DM_GROUP, OTHER_DEVICE, ORPHAN_GROUP, ORPHAN_CHANNEL, RECOVERY_KEY, PASSWORD, ROOT, STATE_OBJECT, LOCAL_STATE, LIST_RAW, FETCHED, NOW_S, world, World, toReady, type SliceMessage } from './world';
@@ -2774,6 +2774,29 @@ it('resign waits for cleanup after a refused send takes attachment references', 
   expect(w.core.pause).not.toHaveBeenCalled();
   gate.resolve();
   await vi.waitFor(() => expect(w.ret(92)).toMatchObject({ ok: true, value: { released: true } }));
+});
+
+// Task 6c (parity): under dilla-testhost's fixture marker the diagnostics carry no round trips and no key-package report,
+// so the web reference is deterministic; without it nothing changes.
+describe('diagnostics under the parity-fixture marker', () => {
+  const kp = { count: 32, lastAttempt: 1_700_000_000_000, lastError: null };
+  const routes = [{ pattern: '/v1/instance', p50: 4, p95: 9, count: 3 }];
+  it('passes the live round trips and key packages through without the marker', () => {
+    expect(diagnosticsFacts(false, kp, routes)).toEqual({ keyPackages: kp, slowRoutes: routes });
+  });
+  it('reports none of them with it', () => {
+    expect(diagnosticsFacts(true, kp, routes)).toEqual({ keyPackages: { count: null, lastAttempt: null, lastError: null }, slowRoutes: [] });
+  });
+  it('the controller reads the marker from the instance it discovered', async () => {
+    const w = world();
+    w.routes.getInstance.mockImplementation(() => Promise.resolve({ ...INSTANCE, parityFixture: true }));
+    await toReady(w);
+    w.call(95, { m: 'refreshDevices' });
+    await vi.waitFor(() => expect(w.ret(95)).toBeDefined());
+    const d = w.last<DiagnosticsState>('diagnostics');
+    expect(d?.slowRoutes).toEqual([]);
+    expect(d?.keyPackages).toEqual({ count: null, lastAttempt: null, lastError: null });
+  });
 });
 
 it('publishes only bounded diagnostics and code-only errors', async () => {
