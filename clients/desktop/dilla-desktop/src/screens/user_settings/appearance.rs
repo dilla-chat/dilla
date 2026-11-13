@@ -1,0 +1,167 @@
+//! Settings -> Appearance (packages/web/src/screens/settings/Appearance.tsx): the theme, the density and reduced motion.
+//!
+//! A choice applies at once. Density and reduced motion are kept in the store (`setSetting`, the client's
+//! `Profile::set_density` and `set_reduce_motion`); the density shown is what the section's own rows and the shared components
+//! step by ([`density_of`], `metrics::Density`). The theme has the one entry, Signal.
+//!
+//! The brief names three densities (compact, regular, cozy); the web client admits two (`isSettingValue`: `regular`, `compact`;
+//! the stylesheet's `cozy` is a Storybook step only), and parity wins, so the Segmented has the two.
+
+use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div};
+
+use dilla_client::state::profile::{DensitySetting, MotionSetting};
+use dilla_desktop_ui::components::banner::{Banner, BannerTone};
+use dilla_desktop_ui::components::segmented::Segmented;
+use dilla_desktop_ui::components::settings::frame::section_header;
+use dilla_desktop_ui::components::settings::row::SettingsRow;
+use dilla_desktop_ui::icon_names::IconName;
+use dilla_desktop_ui::metrics::Density;
+use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::tokens::{color, text};
+
+use super::section::UserSettings;
+use crate::strings::t;
+
+/// The shared components' density step for a setting.
+pub fn density_of(setting: DensitySetting) -> Density {
+    match setting {
+        DensitySetting::Compact => Density::Compact,
+        DensitySetting::Regular => Density::Regular,
+    }
+}
+
+impl UserSettings {
+    fn set_density(&mut self, value: &str, cx: &mut Context<Self>) {
+        let Some(setting) = DensitySetting::from_id(value) else {
+            return;
+        };
+        let Some(client) = self.ctx.client.clone() else {
+            return;
+        };
+        self.appearance_failed = false;
+        self.appearance_pending = true;
+        let rx = client.profile().set_density(setting);
+        self.settled(rx, cx);
+    }
+
+    fn set_motion(&mut self, value: &str, cx: &mut Context<Self>) {
+        let Some(setting) = MotionSetting::from_id(value) else {
+            return;
+        };
+        let Some(client) = self.ctx.client.clone() else {
+            return;
+        };
+        self.appearance_failed = false;
+        self.appearance_pending = true;
+        let rx = client.profile().set_reduce_motion(setting);
+        self.settled(rx, cx);
+    }
+
+    fn settled(
+        &mut self,
+        rx: tokio::sync::oneshot::Receiver<Result<(), dilla_client::ClientError>>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let r = rx.await;
+            let _ = this.update(cx, |this, cx| {
+                this.appearance_pending = false;
+                this.appearance_failed = !matches!(r, Ok(Ok(())));
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(super) fn appearance_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let density = self.density();
+        let state = &self.ctx.state.profile;
+        let this = cx.entity();
+
+        let theme = SettingsRow::new("appearance-theme-row", t("appearance.theme.label"))
+            .icon(IconName::Eye)
+            .child(Segmented::new(
+                "appearance-theme",
+                &[("signal", t("appearance.theme.signal"))],
+                "signal",
+            ));
+        let density_row = SettingsRow::new("appearance-density-row", t("workspace.density"))
+            .icon(IconName::LayoutGrid)
+            .child(
+                Segmented::new(
+                    "appearance-density",
+                    &[
+                        ("regular", t("workspace.density.regular")),
+                        ("compact", t("workspace.density.compact")),
+                    ],
+                    state.density.id(),
+                )
+                .on_change({
+                    let this = this.clone();
+                    move |v, _, cx| {
+                        let v = v.to_owned();
+                        this.update(cx, |s, cx| s.set_density(&v, cx));
+                    }
+                }),
+            );
+        let motion_row = SettingsRow::new("appearance-motion-row", t("workspace.motion"))
+            .icon(IconName::Activity)
+            .child(
+                Segmented::new(
+                    "appearance-motion",
+                    &[
+                        ("system", t("workspace.motion.system")),
+                        ("on", t("workspace.motion.on")),
+                        ("off", t("workspace.motion.off")),
+                    ],
+                    state.reduce_motion.id(),
+                )
+                .on_change({
+                    let this = this.clone();
+                    move |v, _, cx| {
+                        let v = v.to_owned();
+                        this.update(cx, |s, cx| s.set_motion(&v, cx));
+                    }
+                }),
+            );
+
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .gap(density.group_gap())
+            .w_full()
+            .child(section_header(t("appearance.title"), None))
+            .child(theme)
+            .child(density_row)
+            .child(motion_row);
+        if self.appearance_pending {
+            col = col.child(line(
+                t("workspace.preference.pending"),
+                text::UI,
+                line_height(text::UI, 1.5),
+                color::FG_2,
+            ));
+        }
+        if self.appearance_failed {
+            col = col.child(Banner::new(
+                "appearance-failed",
+                BannerTone::Danger,
+                t("workspace.preference.error"),
+            ));
+        }
+        col.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_setting_steps_the_shared_components_density() {
+        assert_eq!(density_of(DensitySetting::Compact), Density::Compact);
+        assert_eq!(density_of(DensitySetting::Regular), Density::Regular);
+        assert!(Density::Compact.group_gap() < Density::Regular.group_gap());
+    }
+}

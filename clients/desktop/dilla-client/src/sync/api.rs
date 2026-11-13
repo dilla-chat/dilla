@@ -796,6 +796,71 @@ impl Api {
             .await?;
         Ok(())
     }
+
+    // ---- account and devices (Task 16: Settings -> Profile and Devices) ----
+
+    /// routes.ts `getAccountMe`: the raw `[user_id, username, display, kind, flags, presence, status, bio]`.
+    pub async fn get_account_me(&self) -> Result<Vec<u8>, ApiError> {
+        let Raw(raw) = self.http_call::<r::GetAccountMe>(&[], NoBody, true).await?;
+        Ok(raw)
+    }
+
+    /// routes.ts `patchMe`: `[display|null, status_msg|null, bio|null]` -> 204.
+    pub async fn patch_me(&self, body: Vec<u8>) -> Result<(), ApiError> {
+        self.socket_call::<r::PatchMe>(&[], Some(body), None, true)
+            .await?;
+        Ok(())
+    }
+
+    /// routes.ts `listDevices`: the account's devices, raw.
+    pub async fn list_devices(&self) -> Result<Vec<u8>, ApiError> {
+        Ok(self
+            .socket_call::<r::ListDevices>(&[], None, None, true)
+            .await?
+            .body)
+    }
+
+    /// routes.ts `patchDevice`: `[label|null]` -> 204.
+    pub async fn patch_device(&self, device: &[u8; 16], body: Vec<u8>) -> Result<(), ApiError> {
+        self.socket_call::<r::PatchDevice>(&[&hex(device)], Some(body), None, true)
+            .await?;
+        Ok(())
+    }
+
+    /// routes.ts `deleteDevice`: removes a device no signed list names (no recovery key).
+    pub async fn delete_device(&self, device: &[u8; 16]) -> Result<(), ApiError> {
+        self.socket_call::<r::DeleteDevice>(&[&hex(device)], None, None, true)
+            .await?;
+        Ok(())
+    }
+
+    /// routes.ts `getBackup`: `[object, created]`'s object, `None` on 404.
+    pub async fn get_backup(&self, kind: u8) -> Result<Option<Vec<u8>>, ApiError> {
+        let reply = self
+            .http_call::<r::GetBackup>(&[&kind.to_string()], NoBody, true)
+            .await?;
+        if reply.status == 404 {
+            return Ok(None);
+        }
+        let v = value::decode(&reply.body).map_err(ApiError::decode)?;
+        let a = at_least(&v, 2).map_err(ApiError::decode)?;
+        Ok(Some(value::bytes(&a[0]).map_err(ApiError::decode)?))
+    }
+
+    /// routes.ts `putBackup`: `[object]`.
+    pub async fn put_backup(&self, kind: u8, object: &[u8]) -> Result<(), ApiError> {
+        let mut e = dilla_core::cbor::Encoder::new();
+        e.array(1).bytes(object);
+        self.http_call::<r::PutBackup>(&[&kind.to_string()], Raw(e.into_vec()), true)
+            .await?;
+        Ok(())
+    }
+
+    /// routes.ts `putDeviceList`: a 409 reaches the caller as [`ApiError::status`] 409 (a list race).
+    pub async fn put_device_list(&self, user: &[u8; 16], body: Vec<u8>) -> Result<(), ApiError> {
+        self.http_call::<r::PutDeviceList>(&[&hex(user)], Raw(body), false)
+            .await
+    }
 }
 
 fn seq_epoch(body: &[u8], n: usize) -> Result<(u64, u64), ApiError> {

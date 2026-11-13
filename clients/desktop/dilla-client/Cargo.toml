@@ -51,6 +51,8 @@ rustls-native-certs = "0.8"
 # - Task 26's system-browser ceremony opens the browser with `open`;
 # - Task 12's attachment thumbnails decode and scale images the way attachments/thumb.ts does.
 open = "5.4.5"
+# Task 16: profile text is NFC-normalised before it is checked and sent (already in the lock through url -> idna).
+icu_normalizer = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 # Task 5: the testing helpers' own dependencies, behind the features above.
