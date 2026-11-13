@@ -238,14 +238,14 @@ parity! {
     parity_members_context_menu_b => "members/context-menu-b";
     parity_members_moderation_dialog => "members/moderation-dialog";
     parity_members_moderation_dialog_b => "members/moderation-dialog-b";
-    parity_server_settings_members => "server-settings/members", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
-    parity_server_settings_members_b => "server-settings/members-b", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
-    parity_server_settings_roles => "server-settings/roles", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
-    parity_server_settings_roles_b => "server-settings/roles-b", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
-    parity_server_settings_self_roles => "server-settings/self-roles", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
-    parity_server_settings_self_roles_b => "server-settings/self-roles-b", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
+    parity_server_settings_members => "server-settings/members";
+    parity_server_settings_members_b => "server-settings/members-b";
+    parity_server_settings_roles => "server-settings/roles", "parity after T6c: whole frame 1.8776 % (the Roles section is not RolesSection.tsx's two panes: the web lists the roles at the left with the top role's editor open beside them (name, colour swatches, the permission switches), GPUI draws a list of rows)";
+    parity_server_settings_roles_b => "server-settings/roles-b", "parity after T6c: whole frame 2.4827 % (as roles)";
+    parity_server_settings_self_roles => "server-settings/self-roles", "parity after T6c: whole frame 1.1456 % (the section is not SelfRolesSection.tsx: the web draws a fieldset of role checkboxes and the Publish-a-role-panel form, GPUI a list of switches, and Loading in a fixture, which maps no self roles)";
+    parity_server_settings_self_roles_b => "server-settings/self-roles-b", "parity after T6c: whole frame 1.2626 % (as self-roles)";
     parity_server_settings_bans => "server-settings/bans";
     parity_server_settings_bans_b => "server-settings/bans-b";
     parity_server_settings_moderation_log => "server-settings/moderation-log";
-    parity_server_settings_moderation_log_b => "server-settings/moderation-log-b", "needs its reference (shoot.mjs) and the settings route drawn by the settings host (Tasks 1b/15)";
+    parity_server_settings_moderation_log_b => "server-settings/moderation-log-b";
 }

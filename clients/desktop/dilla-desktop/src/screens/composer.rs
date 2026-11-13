@@ -109,6 +109,64 @@ impl Focusable for Composer {
     }
 }
 
+/// Whether the viewer may mention everyone in the server (ComposerArea.tsx `broadcast`: the `mentionEveryone` bit; the
+/// owner and an administrator hold every bit), and the server's roles a mention can name (`offeredRoles` filters them).
+fn mention_rights(slots: &SlotCx) -> (bool, Vec<RoleInfo>) {
+    use dilla_client::features::roles::perm::{self, PermInput, PermRole};
+    let (Some(community), Some(me)) = (slots.community, slots.state.account.user_id) else {
+        return (false, Vec::new());
+    };
+    let state = &slots.state;
+    let access = state.roles.access_of(community);
+    let summaries = state.roles.roles_of(community);
+    let roles: Vec<RoleInfo> = summaries
+        .iter()
+        .map(|r| RoleInfo {
+            id: dilla_client::features::server_admin::hex_id(&r.id),
+            name: r.name.clone(),
+            position: r.position,
+            mentionable: r.mentionable,
+        })
+        .collect();
+    let broadcast = access.owner
+        || access.administrator
+        || access.everyone_id.is_some_and(|everyone| {
+            let owner = state
+                .communities
+                .iter()
+                .find(|c| c.id == community)
+                .map(|c| c.owner.0);
+            let held: Vec<[u8; 16]> = state
+                .members
+                .get(&community)
+                .and_then(|m| m.iter().find(|m| m.user_id == me))
+                .map(|m| m.role_ids.clone())
+                .unwrap_or_default();
+            let perm_roles: Vec<PermRole> = summaries
+                .iter()
+                .map(|r| PermRole {
+                    id: r.id,
+                    position: u64::from(r.position),
+                    allow: r.allow,
+                    deny: r.deny,
+                })
+                .collect();
+            owner.is_some_and(|owner| {
+                perm::resolve_community(
+                    &PermInput {
+                        owner,
+                        everyone_id: everyone,
+                        roles: &perm_roles,
+                        held: &held,
+                    },
+                    me.0,
+                ) & perm::MENTION_EVERYONE
+                    != 0
+            })
+        });
+    (broadcast, roles)
+}
+
 /// The members a mention can name in the open channel, without the viewer.
 fn candidates(slots: &SlotCx) -> Vec<Member> {
     let state = &slots.state;
@@ -274,12 +332,12 @@ impl Composer {
         if self.dismissed == Some(start) {
             return Vec::new();
         }
-        let roles: Vec<RoleInfo> = Vec::new();
+        let (broadcast, roles) = mention_rights(&self.slots);
         mention_options(
             &query,
             &candidates(&self.slots),
-            false,
-            &offered_roles(&roles, false),
+            broadcast,
+            &offered_roles(&roles, broadcast),
         )
     }
 

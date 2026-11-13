@@ -95,7 +95,7 @@
     {
       "do": "click",
       "web": "css=.d-attachment-card__open",
-      "gpui": "attachment-s3-0"
+      "gpui": "attachment-m3-0"
     },
     {
       "do": "settle"

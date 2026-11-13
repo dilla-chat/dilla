@@ -44,7 +44,6 @@ fn parity(name: &str) {
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2171 % (every row height matches layout.json; the bottom-anchored log ends 0.28-0.39 css px lower than the web's: re-measured at the T6c merge)"]
 fn parity_reactions_bar() {
     parity("bar");
 }
@@ -57,21 +56,21 @@ fn parity_reactions_bar_b() {
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: chrome 0.4412 % (as bar: the log end offset)"]
+#[ignore = "parity after T6c: chrome 0.2392 % (the log end now matches; the pill chips' rounded corners anti-alias differently from Skia's, and with 12 chips in a row that passes the gate)"]
 fn parity_reactions_many_wrapping() {
     parity("many-wrapping");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2545 % (as bar: the log end offset)"]
+#[ignore = "parity after T6c: chrome 0.2331 % (as many-wrapping: chip corner anti-aliasing)"]
 fn parity_reactions_many_wrapping_b() {
     parity("many-wrapping-b");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2794 % (the picker grid cells, 1 css px, over the log end offset)"]
+#[ignore = "parity after T6c: chrome 0.2812 % (the log end matches; the picker grid's emoji glyphs and cell edges, 1 css px)"]
 fn parity_reactions_emoji_grid() {
     parity("emoji-grid");
 }

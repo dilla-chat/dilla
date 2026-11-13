@@ -160,7 +160,7 @@
     {
       "do": "click",
       "web": "css=.d-attachment-card__open >> nth=4",
-      "gpui": "attachment-s3-4"
+      "gpui": "attachment-m3-4"
     },
     {
       "do": "settle"

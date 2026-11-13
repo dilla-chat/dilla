@@ -171,14 +171,12 @@ mod driven {
     }
 
     parity! {
-        parity_messages_conversation_actions => "conversation-actions",
-            ignore "parity after T6c: colour 0.3113 % (the toolbar matches; the hovered row\'s fill edge, 1px: re-measured at the T6c merge)";
+        parity_messages_conversation_actions => "conversation-actions";
         parity_messages_conversation_actions_b => "conversation-actions-b";
         parity_messages_edit => "edit";
         parity_messages_edit_b => "edit-b";
         parity_messages_mention => "mention";
-        parity_messages_mention_b => "mention-b",
-            ignore "parity after T6c: chrome 0.2596 % (the mention list over the composer, 1 css px: re-measured at the T6c merge)";
+        parity_messages_mention_b => "mention-b";
         parity_messages_code_block => "code-block";
         parity_messages_code_block_b => "code-block-b";
         parity_messages_slow_mode => "slow-mode";

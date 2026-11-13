@@ -22,7 +22,7 @@ use gpui::{
 
 use super::button::{Button, ButtonSize, ButtonVariant};
 use crate::metrics::shadow_3;
-use crate::text::{line, line_height};
+use crate::text::line_height;
 use crate::tokens::{color, font, radius, text};
 
 actions!(

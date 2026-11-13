@@ -1,10 +1,8 @@
 //! Task 12's parity, behaviour and keyboard tests for the attachments area (standard procedure S4-S6).
 //!
-//! The parity tests compare `parity/fixtures/attachments/*.json` with their references. The references are not shot
-//! yet: a message's attachments go out with its post, so `parity_world/main.rs`'s posting loop has to call
-//! `seed::attachments::send` for a message with attachments (the one-line change in Task 12's report; `main.rs` is not
-//! Task 12's file). Until the controller makes it and the references are shot, the parity tests are ignored with that
-//! reason, and the facet stays refused by `seed::attachments::unseedable`.
+//! The parity tests compare `parity/fixtures/attachments/*.json` with their references, shot with `shoot.mjs` (the
+//! parity world posts a message's files with it: `seed::post`). The ones still parked (ruling R22) carry their measured
+//! numbers and causes.
 //!
 //! The behaviour tests of `e2e/web/conversation.spec.ts` run at the client level against a real dillad
 //! (`dilla-client/tests/attachments.rs`: `images_and_files_go_both_ways`, `file_cap_exact_passes_one_more_refused`);
@@ -68,9 +66,9 @@ fn fixtures_parse_and_b_varies_a() {
 }
 
 macro_rules! parity {
-    ($($test:ident => $name:literal),* $(,)?) => {$(
+    ($($test:ident => $name:literal, $why:literal),* $(,)?) => {$(
         #[test]
-        #[ignore = "no reference yet: parity_world/main.rs must post attachments (Task 12's report), then shoot.mjs"]
+        #[ignore = $why]
         fn $test() {
             if let Err(e) = assert_screen(&fixture($name)) {
                 panic!("{e}");
@@ -80,12 +78,12 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_attachments_cards => "cards",
-    parity_attachments_cards_b => "cards-b",
-    parity_attachments_lightbox => "lightbox",
-    parity_attachments_lightbox_b => "lightbox-b",
-    parity_attachments_media_player => "media-player",
-    parity_attachments_media_player_b => "media-player-b",
+    parity_attachments_cards => "cards", "parity after T6c: chrome 0.9573 % (the fixture pictures are 1px checkerboards: GPUI's cover-crop downscale filters them otherwise than Chromium's, so every tile differs over its whole area)",
+    parity_attachments_cards_b => "cards-b", "parity after T6c: chrome 7.0269 % (as cards, over nine tiles)",
+    parity_attachments_lightbox => "lightbox", "parity after T6c: whole frame 14.1674 % (a fixture has no client to open the whole picture with, so the tile opens no lightbox: LightboxState holds the client that reads the file)",
+    parity_attachments_lightbox_b => "lightbox-b", "parity after T6c: whole frame 35.4118 % (as lightbox)",
+    parity_attachments_media_player => "media-player", "parity after T6c: chrome 0.3849 % (the audio card is wider than AttachmentCard.css's, which fits its content, and its play button's label differs)",
+    parity_attachments_media_player_b => "media-player-b", "parity after T6c: whole frame 0.6066 % (as media-player)",
 }
 
 mod behaviour {

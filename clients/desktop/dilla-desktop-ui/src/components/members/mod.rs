@@ -126,6 +126,7 @@ pub struct MemberList {
     on_menu: Option<OnMenu>,
     on_close: Option<OnClose>,
     probe: Option<Probe>,
+    in_section: bool,
 }
 
 impl MemberList {
@@ -144,7 +145,15 @@ impl MemberList {
             on_menu: None,
             on_close: None,
             probe: None,
+            in_section: false,
         }
+    }
+
+    /// The list drawn in a settings section (Server settings -> Members): `.dw-settings-section h3 { margin: 0 }` takes the
+    /// group headings' 10px/4px margins away.
+    pub fn in_settings_section(mut self) -> Self {
+        self.in_section = true;
+        self
     }
 
     /// The 44px head, with its close × when `close_label` is given.
@@ -464,8 +473,8 @@ impl RenderOnce for MemberList {
                     None
                 };
                 let mut heading = div()
-                    .mt(px(10.))
-                    .mb(px(4.))
+                    .mt(px(if self.in_section { 0. } else { 10. }))
+                    .mb(px(if self.in_section { 0. } else { 4. }))
                     .px(px(8.))
                     .flex()
                     .items_center()

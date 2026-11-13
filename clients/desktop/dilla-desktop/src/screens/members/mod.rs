@@ -413,6 +413,9 @@ fn list_with_overlays(
                 ui(w, cx).open = false;
                 cx.refresh_windows();
             });
+    } else {
+        // Without its head the list is Server settings -> Members, inside a settings section.
+        list = list.in_settings_section();
     }
     let mut root = div().flex().flex_col().size_full().child(list);
     if let Some(card) = card_overlay(ctx, community, window, cx) {
@@ -1714,7 +1717,13 @@ pub fn settings_section(
             .id("settings-members")
             .flex()
             .flex_col()
-            .child(section_head(t("members.toggle"), None))
+            // MembersSection.tsx: the section's h2 (20px at 1.5) with the 22px the frame keeps under it.
+            .child(
+                dilla_desktop_ui::components::settings::frame::section_header(
+                    t("members.toggle"),
+                    None,
+                ),
+            )
             .child(list_with_overlays(ctx, community, false, window, cx))
             .into_any_element(),
         SectionId::Server(ServerSection::Roles) => roles_section(w, ctx, community, cx),
