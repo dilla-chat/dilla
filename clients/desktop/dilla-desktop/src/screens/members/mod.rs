@@ -953,11 +953,8 @@ pub fn pane(route: &Route, window: &mut Window, cx: &mut App) -> Option<AnyEleme
     Some(
         div()
             .id("members-pane")
-            .w(layout::MEMBERS)
-            .h_full()
-            .flex_none()
-            .border_l_1()
-            .border_color(color::HAIRLINE)
+            // The shell's aside column is the pane's width and draws its border-left (`.d-app-shell__aside`).
+            .size_full()
             .bg(color::BG_2)
             .key_context("MembersPane")
             .on_action(|_: &keys::CloseCard, _w, cx| {
