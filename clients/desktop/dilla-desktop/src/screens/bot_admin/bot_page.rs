@@ -406,15 +406,7 @@ impl BotPage {
     }
 
     fn is_manager(&self) -> bool {
-        let (Some(community), Some(me)) = (self.ctx.community, self.ctx.state.account.user_id)
-        else {
-            return false;
-        };
-        self.ctx
-            .state
-            .communities
-            .iter()
-            .any(|c| c.id == community && c.owner == me)
+        super::is_manager(&self.ctx)
     }
 
     fn bot_name(&self) -> String {

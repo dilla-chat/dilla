@@ -23,6 +23,16 @@ pub fn now_playing(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     player::dock(window, cx)
 }
 
+/// The Bot and Music pages' manager (BotSection.tsx `access.loaded && access.manageCommunity`): Task 14's resolver's
+/// Manage server in the page's community (the owner holds it), nobody before the access read lands.
+pub fn is_manager(ctx: &SlotCx) -> bool {
+    let Some(community) = ctx.community else {
+        return false;
+    };
+    let access = ctx.state.roles.access_of(community);
+    access.loaded && access.manage_community
+}
+
 /// Draws one of this area's settings sections (`slots::settings_sections` points here).
 pub fn settings_section(
     section: SectionId,
@@ -46,5 +56,57 @@ pub fn settings_section(
             page.into_any_element()
         }
         _ => Empty.into_any_element(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use dilla_client::state::roles::CommunityAccess;
+    use dilla_client::state::{AppState, CommunityId, UserId};
+
+    use super::*;
+
+    /// Integration 3, step 5: the Bot and Music pages' manager is Task 14's resolver's (BotSection.tsx: `access.loaded
+    /// && access.manageCommunity`): a member whose roles grant Manage server is one, the owner is one once the access
+    /// read landed, and nobody is before it.
+    #[test]
+    fn the_manager_is_the_resolvers_manage_community() {
+        let community = CommunityId([7; 16]);
+        let ctx = |access: Option<CommunityAccess>| {
+            let mut s = AppState::default();
+            s.account.user_id = Some(UserId([1; 16]));
+            if let Some(a) = access {
+                s.roles.access.insert(community, a);
+            }
+            SlotCx {
+                state: Arc::new(s),
+                community: Some(community),
+                ..SlotCx::default()
+            }
+        };
+        let granted = CommunityAccess {
+            manage_community: true,
+            loaded: true,
+            ..CommunityAccess::default()
+        };
+        assert!(is_manager(&ctx(Some(granted.clone()))), "Manage server");
+        let owner = CommunityAccess {
+            owner: true,
+            ..granted.clone()
+        };
+        assert!(is_manager(&ctx(Some(owner))), "the owner");
+        let unloaded = CommunityAccess {
+            loaded: false,
+            ..granted
+        };
+        assert!(!is_manager(&ctx(Some(unloaded))), "before the read");
+        assert!(!is_manager(&ctx(None)), "no access read");
+        let member = CommunityAccess {
+            loaded: true,
+            ..CommunityAccess::default()
+        };
+        assert!(!is_manager(&ctx(Some(member))), "a member without it");
     }
 }
