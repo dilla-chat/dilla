@@ -218,6 +218,35 @@ fn every_members_fixture_parses_and_the_pane_ones_open_the_channel() {
     }
 }
 
+/// T28 parity review I3: every server-settings fixture's viewer is offered the route's section (registry.ts
+/// `visible`), so neither side falls back to another section (the b world of moderation-log drew Members).
+#[test]
+fn every_server_settings_fixture_reaches_its_section() {
+    use dilla_client::state::server_admin::access_in;
+    use dilla_desktop::router::Route;
+    use dilla_desktop::screens::server_settings::model::nav_sections;
+    for name in ["members", "roles", "self-roles", "bans", "moderation-log"] {
+        for b in ["", "-b"] {
+            let name = format!("server-settings/{name}{b}");
+            let f = load(&name);
+            let Route::ServerSettings {
+                community,
+                section: Some(section),
+            } = f.route
+            else {
+                panic!("{name}: not a server settings section route");
+            };
+            let offered = nav_sections(&access_in(&f.state, community));
+            assert!(
+                offered.contains(&section),
+                "{name}: the viewer is not offered {} ({:?})",
+                section.id(),
+                offered.iter().map(|s| s.id()).collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
 macro_rules! parity {
     ($($test:ident => $name:literal $(, $why:literal)?;)*) => {$(
         #[test]
