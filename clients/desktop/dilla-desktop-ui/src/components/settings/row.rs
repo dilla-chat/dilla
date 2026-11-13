@@ -221,8 +221,19 @@ impl RenderOnce for SettingsRow {
                 color::FG_2,
                 self.hint_width.unwrap_or_else(hint_width),
             );
-            text_h += lines.len() as f32 * line_height(text::XS, 1.4);
-            text_col = text_col.children(lines);
+            let lh = line_height(text::XS, 1.4);
+            text_h += lines.len() as f32 * lh;
+            // Each line at its own fractional top (15.390625 apart), as the web lays them out: GPUI's device-pixel line
+            // boxes (15.5) would put the third line a pixel low.
+            let block = lines.len() as f32 * lh;
+            text_col = text_col.child(
+                div().relative().w_full().h(px(block)).children(
+                    lines
+                        .into_iter()
+                        .enumerate()
+                        .map(|(k, l)| l.exact(0.0, k as f32 * lh)),
+                ),
+            );
         }
         // The text sizes the row: it takes the height the web paints for it, so the hairline under the row is the web's.
         text_col = text_col.h(px(painted_height(text_h)));
@@ -234,7 +245,9 @@ impl RenderOnce for SettingsRow {
             .gap(px(10.0))
             .min_w_0();
         control = if stacked {
-            control.flex_col().items_start().w_full().gap(px(16.0))
+            // `.d-settings-row--stacked .d-settings-row__control`: one grid column, `justify-content: flex-end` (the base
+            // rule's) keeps the track at its content's width on the row's right, its items at the track's start.
+            control.flex_col().items_start().self_end().gap(px(16.0))
         } else {
             control.justify_end().ml_auto()
         };
