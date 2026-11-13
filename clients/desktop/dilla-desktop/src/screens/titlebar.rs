@@ -68,6 +68,8 @@ pub struct TitlebarModel {
 pub struct TitlebarHandlers {
     /// The settings button was pressed.
     pub on_settings: super::shell::Action,
+    /// The search field was pressed: the search palette opens (Task 23).
+    pub on_search: super::shell::Action,
 }
 
 fn window_button(
@@ -138,7 +140,12 @@ pub fn render(model: &TitlebarModel, handlers: &TitlebarHandlers) -> impl IntoEl
         .flex()
         .justify_center()
         .child(
-            interactive(div())
+            interactive(div().id("topbar-search"))
+                .cursor_pointer()
+                .on_click({
+                    let on_search = handlers.on_search.clone();
+                    move |_, window, cx| on_search(window, cx)
+                })
                 .w(Pixels::from(css::SEARCH_W))
                 .h(Pixels::from(css::SEARCH_H))
                 .bg(color::SURFACE_2)

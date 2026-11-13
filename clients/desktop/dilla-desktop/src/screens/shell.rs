@@ -47,6 +47,7 @@ pub type PickServer = Rc<dyn Fn(CommunityId, &mut Window, &mut gpui::App)>;
 use crate::router::{History, Route};
 use crate::screens::composer::{Composer, Sent};
 use crate::screens::header::{self, AsideKind};
+use crate::screens::search::{self, Navigate, SearchEnv};
 use crate::screens::{
     FocusNext, FocusPrevious, channel_list, rail, timeline, titlebar, user_panel,
 };
@@ -154,6 +155,9 @@ pub struct ShellView {
     /// The aside that is open beside the main column.
     aside: Option<AsideKind>,
     menu: Option<ChannelMenu>,
+    /// Something is drawn over the shell (the channel menu, a dialog or another overlay of `slots::overlays`), as of the
+    /// last frame: Ctrl+K does not open the search palette over it (the web's guard; Task 23).
+    overlay_open: bool,
     /// This device's microphone and speakers, as the panel's buttons last set them (the voice area owns the call).
     mic_off: bool,
     deaf: bool,
@@ -210,6 +214,7 @@ impl ShellView {
             drag: None,
             aside: None,
             menu: None,
+            overlay_open: false,
             mic_off: false,
             deaf: false,
             sidebar_splitter: cx.focus_handle().tab_stop(true),
@@ -399,6 +404,34 @@ impl ShellView {
                 community,
                 channel: Some(channel),
             });
+        }
+    }
+
+    /// Opens what a search result names (Task 23). `false` when it is gone, or is a screen the shell does not draw yet
+    /// (the settings, the direct messages and the voice mute arrive with their areas, which add their arms here).
+    fn open_search_result(&mut self, target: Navigate, cx: &mut Context<Self>) -> bool {
+        let open = |this: &mut Self,
+                    community: CommunityId,
+                    channel: ChannelId,
+                    cx: &mut Context<Self>| {
+            if this
+                .state
+                .channel(channel)
+                .is_none_or(|c| c.community_id != community)
+            {
+                return false;
+            }
+            this.pick_community(community, cx);
+            this.select(channel, cx);
+            true
+        };
+        match target {
+            Navigate::Channel { community, channel } => open(self, community, channel, cx),
+            Navigate::Message(hit) => match hit.community {
+                Some(community) => open(self, community, hit.channel, cx),
+                None => false,
+            },
+            _ => false,
         }
     }
 
@@ -860,6 +893,18 @@ impl Render for ShellView {
             None => div().size_full().bg(color::BG).into_any_element(),
         };
         let banners = slots::banners(&ctx, window, cx);
+        // What the search palette (23) draws with, and how it opens a result.
+        let host = cx.entity().downgrade();
+        search::provide(
+            SearchEnv {
+                ctx: ctx.clone(),
+                navigate: Rc::new(move |target, _, cx| {
+                    host.update(cx, |shell, cx| shell.open_search_result(target, cx))
+                        .unwrap_or(false)
+                }),
+            },
+            cx,
+        );
         let mut overlays = slots::overlays(window, cx);
         if let Some(menu) = self.menu {
             let (w_sel, w_open) = (shell.clone(), shell.clone());
@@ -890,6 +935,8 @@ impl Render for ShellView {
                 .into_any_element(),
             );
         }
+        // The open palette is one of these too; a second Ctrl+K over it is ignored either way.
+        self.overlay_open = !overlays.is_empty();
 
         let weak = shell.clone();
         let on_toggle: header::OnToggle = Rc::new(move |kind, _, cx| {
@@ -996,6 +1043,8 @@ impl Render for ShellView {
                 on_settings: Rc::new(move |_, cx| {
                     let _ = weak.update(cx, |shell, cx| shell.navigate(Route::Settings(None), cx));
                 }),
+                // The search field opens the palette (23).
+                on_search: Rc::new(|_, cx| search::request_open(cx)),
             },
         );
 
@@ -1003,6 +1052,12 @@ impl Render for ShellView {
             .id("shell")
             .key_context(keys::CONTEXT)
             .track_focus(&self.focus)
+            // Ctrl+K (23) does not open the palette over the channel menu or another overlay (the web's guard).
+            .capture_action(cx.listener(|this, _: &search::keys::OpenSearch, _, cx| {
+                if this.overlay_open {
+                    cx.stop_propagation();
+                }
+            }))
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
             .on_action(
