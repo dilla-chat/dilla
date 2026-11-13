@@ -553,9 +553,16 @@ impl Render for BotPage {
                     .icon(IconName::Lock)
                     .hint(tf("serverSettings.bot.voiceHint", &[("bot", &bot_name)]))
                     .position(position)
-                    .child(Button::new(
+                    .child(crate::tracked_box(
                         "bot-voice-roles",
-                        t("serverSettings.bot.voiceRoles"),
+                        Button::new("bot-voice-roles-b", t("serverSettings.bot.voiceRoles"))
+                            .on_click(|_: &ClickEvent, window, cx| {
+                                crate::screens::server_settings::open_section(
+                                    crate::router::ServerSection::Roles,
+                                    window,
+                                    cx,
+                                );
+                            }),
                     ))
                     .into_any_element()
             }));

@@ -17,7 +17,7 @@ pub mod model;
 mod view;
 
 pub use body::{Body, BodyEvent};
-pub use view::{ServerSettingsView, SettingsEvent};
+pub use view::{ServerSettingsView, SettingsEvent, open_section};
 
 use gpui::{AnyElement, App, Empty, IntoElement, Window};
 

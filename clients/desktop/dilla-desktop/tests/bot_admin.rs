@@ -250,3 +250,44 @@ fn parity_bot_admin_music() {
 fn parity_bot_admin_music_b() {
     parity("bot-admin/music-b.json");
 }
+
+// ---- integration 3, step 5: the pages' navigation inside the server settings host ----
+
+/// The Music page's "Open Bot settings" (BotSection.tsx `workspace.botSetup`) opens the Bot section in the same server
+/// settings, and the Bot page's "Edit in Roles" (`serverSettings.bot.voiceRoles`) leads to Roles.
+#[cfg(feature = "automation")]
+#[gpui::test]
+fn the_bot_pages_lead_to_the_bot_and_roles_sections(cx: &mut TestAppContext) {
+    use dilla_desktop::app::{AppView, Launch};
+    use dilla_desktop::router::ServerSection;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/bot-admin/music.json");
+    let loaded = dilla_desktop::fixture::Fixture::load(&path, None).expect("the music fixture");
+    cx.update(dilla_desktop::install);
+    let (app, vcx) =
+        cx.add_window_view(|window, cx| AppView::new(Launch::fixture(loaded), window, cx));
+    vcx.run_until_parked();
+    let active = |vcx: &mut VisualTestContext| {
+        let (view, _) = app
+            .read_with(vcx, |a, _| a.server_settings())
+            .expect("server settings");
+        view.read_with(vcx, |v, _| v.active())
+    };
+    assert_eq!(active(vcx), Some(ServerSection::Music));
+    let open = vcx
+        .debug_bounds("music-open-bot")
+        .expect("the Music page's Open Bot settings");
+    vcx.simulate_click(open.center(), gpui::Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(active(vcx), Some(ServerSection::Bot), "the Bot section");
+    // The Bot page's "Edit in Roles" through the same hook (its row needs an installed Bot, which no fixture seeds).
+    vcx.update(|window, cx| {
+        assert!(dilla_desktop::screens::server_settings::open_section(
+            ServerSection::Roles,
+            window,
+            cx
+        ))
+    });
+    vcx.run_until_parked();
+    assert_eq!(active(vcx), Some(ServerSection::Roles), "Roles");
+}

@@ -336,12 +336,18 @@ impl Render for MusicPage {
             Some(&tf("serverSettings.music.body", &[("bot", &bot)])),
         ));
         if installation.as_ref().is_none_or(|i| i.state != 3) {
-            page = page.child(
-                div()
-                    .flex()
-                    .pb_3()
-                    .child(Button::new("music-open-bot", t("workspace.botSetup"))),
-            );
+            page = page.child(div().flex().pb_3().child(crate::tracked_box(
+                "music-open-bot",
+                Button::new("music-open-bot-b", t("workspace.botSetup")).on_click(
+                    |_: &ClickEvent, window, cx| {
+                        crate::screens::server_settings::open_section(
+                            crate::router::ServerSection::Bot,
+                            window,
+                            cx,
+                        );
+                    },
+                ),
+            )));
         }
         page = page.children(group);
         if let Some(error) = &self.error {

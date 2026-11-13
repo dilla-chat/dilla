@@ -325,8 +325,37 @@ impl ServerSettingsView {
     }
 }
 
+/// Each window's open server settings, for a section drawn through a slot (Task 21's Bot and Music pages) that leads to
+/// another section of the same settings.
+#[derive(Default)]
+struct OpenHosts(std::collections::HashMap<gpui::WindowId, gpui::WeakEntity<ServerSettingsView>>);
+
+impl gpui::Global for OpenHosts {}
+
+/// Shows `section` in this window's server settings, as the nav does (an unsaved draft asks first): the Bot page's
+/// "Edit in Roles", the Music page's "Open Bot settings" (BotSection.tsx's `navigate`). `false`: no settings are open
+/// in this window.
+pub fn open_section(section: ServerSection, window: &mut Window, cx: &mut gpui::App) -> bool {
+    let id = window.window_handle().window_id();
+    let host = cx
+        .try_global::<OpenHosts>()
+        .and_then(|h| h.0.get(&id))
+        .and_then(gpui::WeakEntity::upgrade);
+    match host {
+        Some(host) => {
+            host.update(cx, |v, cx| v.leave(Leave::Server(section), cx));
+            true
+        }
+        None => false,
+    }
+}
+
 impl Render for ServerSettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let me = cx.entity().downgrade();
+        let hosts = &mut cx.default_global::<OpenHosts>().0;
+        hosts.retain(|_, h| h.upgrade().is_some());
+        hosts.insert(window.window_handle().window_id(), me);
         // The last drawn frame keeps these settings until the window draws again: release lets go of their client at
         // once (review M5).
         if let Some(client) = self.client.clone() {
