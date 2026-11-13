@@ -170,7 +170,15 @@ async fn appearance_settings_are_kept_in_the_store() {
     ok(a.profile().set_density(DensitySetting::Compact)).await;
     ok(a.profile().set_reduce_motion(MotionSetting::On)).await;
     ok(a.profile().load_appearance()).await;
-    let s = a.state().borrow().clone();
+    // The read is published through the client's update loop (`Inner::publish` queues it): the snapshot that carries it
+    // comes a moment after the answer (integration 3: read at once, this failed 2 runs in 3).
+    let s = wait_for(
+        &a,
+        Duration::from_secs(10),
+        "the appearance read published",
+        |s| s.profile.reduce_motion == MotionSetting::On,
+    )
+    .await;
     assert_eq!(s.profile.density, DensitySetting::Compact);
     assert_eq!(s.profile.reduce_motion, MotionSetting::On);
 }

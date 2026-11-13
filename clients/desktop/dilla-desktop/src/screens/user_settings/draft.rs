@@ -258,7 +258,8 @@ impl ProfileDraft {
             self.last_written = Some(sent);
             self.sent = Some(written);
         }
-        self.done = true;
+        // "Saved" only when the fields are what was written: a newer edit waiting to be sent is not saved yet.
+        self.done = self.last_written.as_ref() == Some(&self.fields);
         self.autosaves()
     }
 
@@ -333,6 +334,27 @@ mod tests {
             status_msg: String::new(),
             bio: String::new(),
         })
+    }
+
+    /// Integration 3 (the Task 16 review minor): "Saved" shows only when the fields equal what was written; a save that
+    /// lands under a newer edit leaves the mark off until that edit lands too.
+    #[test]
+    fn saved_shows_only_when_the_fields_equal_what_was_written() {
+        let mut d = draft();
+        d.edit(Fields {
+            bio: "first".into(),
+            ..d.fields.clone()
+        });
+        let _ = d.begin_save().expect("a change");
+        d.edit(Fields {
+            bio: "first and more".into(),
+            ..d.fields.clone()
+        });
+        assert!(d.save_landed(), "the newer edit is still to send");
+        assert!(!d.done, "not saved: the fields are newer than the write");
+        let _ = d.begin_save().expect("the newer edit");
+        assert!(!d.save_landed());
+        assert!(d.done, "saved: the fields are what was written");
     }
 
     #[test]

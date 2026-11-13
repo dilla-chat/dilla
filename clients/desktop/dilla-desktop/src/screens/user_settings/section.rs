@@ -76,6 +76,9 @@ pub struct UserSettings {
     // Appearance
     pub(super) appearance_pending: bool,
     pub(super) appearance_failed: bool,
+    /// The settings host's guard asks for a save (its Save, or leaving with a change still to send): the request comes
+    /// back here, where the client is (integration 3: Profile registers with the Task 1b host's `SlotCx::workspace`).
+    save_requests: tokio::sync::mpsc::UnboundedSender<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -138,7 +141,17 @@ impl UserSettings {
                 }
             },
         ));
+        let (save_requests, mut asked) = tokio::sync::mpsc::unbounded_channel::<()>();
+        cx.spawn(async move |this, cx| {
+            while asked.recv().await.is_some() {
+                if this.update(cx, |this, cx| this.start_save(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         Self {
+            save_requests,
             which: UserSection::Profile,
             ctx: SlotCx::default(),
             requested: Vec::new(),
@@ -181,7 +194,33 @@ impl UserSettings {
         if moved {
             self.sync_inputs = true;
         }
+        self.register(which);
         self.request(which, cx);
+    }
+
+    /// Profile's draft is the open section of the settings host's guard (Task 1b's `SlotCx::workspace`): attached once
+    /// (the guard keeps the first), its flags published every draw, so the footer, the prompt and every way out follow it.
+    fn register(&self, which: UserSection) {
+        let Some(ws) = self.ctx.workspace.as_ref() else {
+            return;
+        };
+        if which != UserSection::Profile {
+            return;
+        }
+        let (draft, asked) = (self.draft.clone(), self.save_requests.clone());
+        ws.borrow_mut().attach(Box::new(super::draft::DraftSection {
+            draft: self.draft.clone(),
+            // Answers whether there was nothing left to send; else the save is asked of the view, where the client is.
+            start_save: Rc::new(move || {
+                let nothing = !draft.borrow().evaluate().dirty;
+                if !nothing {
+                    let _ = asked.send(());
+                }
+                nothing
+            }),
+        }));
+        let flags = self.draft.borrow().flags();
+        ws.borrow_mut().publish(flags);
     }
 
     /// What a section needs from the client, asked once per opening.

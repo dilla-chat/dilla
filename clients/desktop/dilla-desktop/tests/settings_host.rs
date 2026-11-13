@@ -137,7 +137,7 @@ fn a_clean_section_switches_at_once(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn a_dirty_draft_blocks_the_switch_until_discard(cx: &mut TestAppContext) {
-    let (host, vcx, routes) = host(cx, Some(UserSection::Profile), None);
+    let (host, vcx, routes) = host(cx, Some(UserSection::Keyboard), None);
     let resets = Rc::new(RefCell::new(0));
     let ws = host.read_with(vcx, |h, _| h.workspace());
     ws.borrow_mut().attach(Box::new(Draft(resets.clone())));
@@ -154,17 +154,17 @@ fn a_dirty_draft_blocks_the_switch_until_discard(cx: &mut TestAppContext) {
         h.request(Dest::Section(UserSection::Voice), cx)
     });
     vcx.run_until_parked();
-    assert_eq!(section(&host, vcx), UserSection::Profile);
+    assert_eq!(section(&host, vcx), UserSection::Keyboard);
     assert!(routes.borrow().is_empty());
     let prompt = ws.borrow().prompt().expect("the unsaved-changes prompt");
     assert_eq!(prompt.cancel_label, "Keep editing");
     assert_eq!(prompt.confirm_label, "Discard changes");
 
-    // Keep editing (Escape in the prompt): the draft stays, still Profile, and focus is back in the frame.
+    // Keep editing (Escape in the prompt): the draft stays, still Keyboard, and focus is back in the frame.
     vcx.simulate_keystrokes("escape");
     vcx.run_until_parked();
     assert!(!ws.borrow().prompt_open());
-    assert_eq!(section(&host, vcx), UserSection::Profile);
+    assert_eq!(section(&host, vcx), UserSection::Keyboard);
     assert_eq!(*resets.borrow(), 0);
 
     // Escape in the frame is guarded the same way.
@@ -245,7 +245,7 @@ fn hook(ctx: &SlotCx, resets: &Rc<RefCell<usize>>) {
 
 #[gpui::test]
 fn attaching_every_frame_keeps_the_draft(cx: &mut TestAppContext) {
-    let (host, vcx, _) = host(cx, Some(UserSection::Profile), None);
+    let (host, vcx, _) = host(cx, Some(UserSection::Keyboard), None);
     let (first, second) = (Rc::new(RefCell::new(0)), Rc::new(RefCell::new(0)));
     let ws = host.read_with(vcx, |h, _| h.workspace());
     let ctx = SlotCx {
@@ -322,6 +322,33 @@ fn render_hands_the_section_this_hosts_guard(cx: &mut TestAppContext) {
     assert!(Rc::ptr_eq(&handed, &own));
 }
 
+/// Integration 3, step 3: Task 16's Profile section draws in the host and registers its draft with the host's guard (its
+/// flags are published on the first frame); another section registers none.
+#[gpui::test]
+fn the_profile_section_registers_with_the_hosts_guard(cx: &mut TestAppContext) {
+    let (host, vcx, _) = host(cx, Some(UserSection::Profile), None);
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    let ws = host.read_with(vcx, |h, _| h.workspace());
+    assert!(ws.borrow().flags().is_some(), "Profile published its flags");
+    let (other, ovcx, _) = super_host(cx, UserSection::Keyboard);
+    ovcx.update(|window, _| window.refresh());
+    ovcx.run_until_parked();
+    let ws = other.read_with(ovcx, |h, _| h.workspace());
+    assert!(ws.borrow().flags().is_none(), "Keyboard has no draft");
+}
+
+fn super_host(
+    cx: &mut TestAppContext,
+    section: UserSection,
+) -> (
+    Entity<UserSettingsHost>,
+    &mut VisualTestContext,
+    Rc<RefCell<Vec<Route>>>,
+) {
+    host(cx, Some(section), None)
+}
+
 /// The app (integration 3, step 1): one settings host per window, whatever opens it again; Close takes back the screen
 /// it was opened over; a Settings-to-Settings route switches the section through the dirty guard.
 #[cfg(feature = "automation")]
@@ -372,7 +399,7 @@ mod app {
     #[gpui::test]
     fn a_settings_route_over_settings_goes_through_the_guard(cx: &mut TestAppContext) {
         let (app, vcx) = app(cx);
-        open(&app, vcx, Some(UserSection::Profile));
+        open(&app, vcx, Some(UserSection::Keyboard));
         let host = app.read_with(vcx, |a, _| a.settings_host()).unwrap().0;
         let ws = host.read_with(vcx, |h, _| h.workspace());
         let resets = Rc::new(RefCell::new(0));
@@ -385,11 +412,11 @@ mod app {
         );
         // A dirty draft: the route waits behind the prompt, the section stays.
         open(&app, vcx, Some(UserSection::Devices));
-        assert_eq!(section(&host, vcx), UserSection::Profile);
+        assert_eq!(section(&host, vcx), UserSection::Keyboard);
         assert!(ws.borrow().prompt().is_some(), "Keep editing / Discard");
         assert_eq!(
             app.read_with(vcx, |a, cx| a.settings_route(cx)),
-            Some(Route::Settings(Some(UserSection::Profile)))
+            Some(Route::Settings(Some(UserSection::Keyboard)))
         );
         // Discard: the waiting route goes through.
         host.update(vcx, |h, cx| h.discard(cx));

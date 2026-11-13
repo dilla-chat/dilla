@@ -3,8 +3,9 @@
 //! - **Fixtures** (`parity/fixtures/user-settings/*.json`): every one parses, is named by its file, has a `-b` pair and a
 //!   desktop window; [`parity_user_settings`] compares each with its web reference.
 //! - **Behaviour** that needs no dillad lives with the pure models (`screens/user_settings/{draft,devices,keyboard}.rs`:
-//!   `dirty_profile_draft_keep_editing_then_discard`, `keyboard_table_matches_bindings`); the two device flows
-//!   (`remove_other_device_from_devices`, `sign_out_and_remove_leaves_account_and_group`) run against a real dillad in
+//!   `dirty_profile_draft_keep_editing_then_discard`; the table against the keymap is
+//!   `keyboard_table_follows_the_registered_bindings` below); the two device flows (`remove_other_device_from_devices`,
+//!   `sign_out_and_remove_leaves_account_and_group`) run against a real dillad in
 //!   `dilla-client/tests/user_settings.rs`, where the client's calls are made (the app drives the same calls).
 //! - **Keyboard**: the Profile form's tab order and the shortcuts table.
 
@@ -156,17 +157,11 @@ fn keyboard_user_settings_every_shortcut_is_a_keystroke() {
     }
 }
 
-/// The shortcuts whose owning area has not registered its binding yet (search 23, voice 8 and 17, jump 9, DM call 13), by
-/// action. The test fails when one of them appears in the keymap or when a listed one that is not here goes missing, so the
-/// Keyboard table cannot drift from the real registrations unnoticed. Task 28 empties this list.
-const EXPECTED_MISSING: [&str; 6] = [
-    "signalSettings.keyboard.search",
-    "signalSettings.keyboard.mute",
-    "signalSettings.keyboard.deafen",
-    "signalSettings.keyboard.jump",
-    "signalSettings.keyboard.searchSlash",
-    "keyboard.dmCallAction",
-];
+/// The shortcuts whose owning area has not registered its binding yet (jump 9, DM call 13), by action. The test fails when
+/// one of them appears in the keymap or when a listed one that is not here goes missing, so the Keyboard table cannot drift
+/// from the real registrations unnoticed. Integration 3: search (23) and the voice controls (17) are registered on the
+/// integration branch. Task 28 empties this list.
+const EXPECTED_MISSING: [&str; 2] = ["signalSettings.keyboard.jump", "keyboard.dmCallAction"];
 
 #[gpui::test]
 fn keyboard_table_follows_the_registered_bindings(cx: &mut TestAppContext) {

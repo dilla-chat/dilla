@@ -116,6 +116,15 @@ impl Launch {
     }
 }
 
+/// Why a client's local data goes ([`AppView::wipe`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wipe {
+    /// Forget this device: the call left and the session signed out first.
+    Forget,
+    /// The device signed itself out and removed itself (the server half is done).
+    SignedOut,
+}
+
 /// What the window shows. // ROUTE: a screen of another area is a variant here.
 enum Screen {
     Starting,
@@ -758,14 +767,31 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.wipe(client, cfg, Wipe::Forget, window, cx);
+    }
+
+    /// The one way a client's local data goes (integration 3, step 0 item 1): Forget this device (Task 26: its call
+    /// left and its session signed out first), or a device that signed itself out and removed itself (Task 16's Devices
+    /// "Sign out", `profile.signed_out`: the server half is done). Both release the client everywhere
+    /// ([`AppView::release`]), wait for the last handle, then close the store and wipe it.
+    fn wipe(
+        &mut self,
+        client: Rc<Client>,
+        cfg: InstanceConfig,
+        how: Wipe,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (root, keychain) = (self.launch.root.clone(), self.launch.keychain.clone());
         cx.spawn_in(window, async move |this, cx| {
-            // A call this device is in is left first (Task 17): its media and its self-Remove go before the session and
-            // the store do.
-            let _ = client.voice().leave().await;
-            if let Err(message) = crate::screens::factor::sign_out(&client).await {
-                let _ = this.update(cx, |this, cx| this.forget_failed(message, cx));
-                return;
+            if how == Wipe::Forget {
+                // A call this device is in is left first (Task 17): its media and its self-Remove go before the session
+                // and the store do.
+                let _ = client.voice().leave().await;
+                if let Err(message) = crate::screens::factor::sign_out(&client).await {
+                    let _ = this.update(cx, |this, cx| this.forget_failed(message, cx));
+                    return;
+                }
             }
             // Every view that held the client goes first; then the last handle stops it and the wipe waits for the
             // store to close.
@@ -797,14 +823,22 @@ impl AppView {
                     let _ = this.update_in(cx, |this, window, cx| match result {
                         Ok(()) => this.show_sign_in(None, window, cx),
                         // Never a halted client: it starts again on the forced screen, which says why and can retry
-                        // (the sessions are gone, so the retry's sign-out is a 401, which counts as done).
+                        // (the sessions are gone, so the retry's sign-out is a 401, which counts as done). A device
+                        // that removed itself starts on the sign-in, which says the device is gone.
                         Err(message) => {
                             this.forget_note = Some(message);
                             this.start_client(cfg, window, cx);
                         }
                     });
                 }
-                // A view still holds the client: it was never stopped, nothing was wiped; back on the forced screen.
+                // A view still holds the client: it was never stopped, nothing was wiped; back on the forced screen (a
+                // device that removed itself: the sign-in, saying the store could not go).
+                Err(shared) if how == Wipe::SignedOut => {
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        shared.halt();
+                        this.show_sign_in(Some(store()), window, cx);
+                    });
+                }
                 Err(shared) => {
                     let _ = this.update_in(cx, |this, window, cx| {
                         crate::screens::factor::register_instance(&shared, cfg, cx);
@@ -907,6 +941,14 @@ impl AppView {
         crate::release::release_client(client, cx);
     }
 
+    /// Task 16's Devices "Sign out" landed (`profile.signed_out`): the store goes through the one release path.
+    fn signed_out(&mut self, client: Rc<Client>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cfg) = crate::screens::factor::instance_of(&client, cx) else {
+            return self.show_sign_in(None, window, cx);
+        };
+        self.wipe(client, cfg, Wipe::SignedOut, window, cx);
+    }
+
     /// A Forget that did not go through: said on the forced screen.
     fn forget_failed(&mut self, message: String, cx: &mut Context<Self>) {
         if let Screen::Factor(view) = &self.screen {
@@ -929,6 +971,15 @@ impl AppView {
         cx.spawn_in(window, async move |this, cx| {
             while states.changed().await.is_ok() {
                 let next = states.borrow_and_update().clone();
+                // Task 16: this device signed itself out and removed itself: its store is wiped (the one release
+                // path), then the sign-in.
+                if next.profile.signed_out {
+                    if let Some(client) = factor_client.upgrade() {
+                        let _ = this
+                            .update_in(cx, |this, window, cx| this.signed_out(client, window, cx));
+                    }
+                    break;
+                }
                 // Task 26: a renewal or a refusal found a factor owed: the forced screen.
                 if next.account.phase == dilla_client::state::AccountPhase::FactorSetup {
                     if let Some(client) = factor_client.upgrade() {

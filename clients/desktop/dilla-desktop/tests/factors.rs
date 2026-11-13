@@ -257,3 +257,82 @@ fn forget_after_the_shell_closes_and_wipes_the_store(cx: &mut gpui::TestAppConte
     assert!(listed.get(cfg.id).is_none(), "the instance is forgotten");
     assert!(ada.kc.get(&account).unwrap().is_none(), "its key is gone");
 }
+
+/// Integration 3, step 3 (Task 16's Devices "Sign out" with step 0 item 1's release path): a device that signs itself out
+/// and removes itself (`profile.signed_out`) has its store wiped through the same path as Forget, after the shell had
+/// it: the store closes, the data dir, the list entry and the key go, and the app shows the sign-in.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn signing_out_this_device_wipes_its_store_after_the_shell(cx: &mut gpui::TestAppContext) {
+    use std::rc::Rc;
+    cx.executor().allow_parking();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_host("t16-sign-out", "127.0.0.1:0", None);
+    let invite = host.invites.last().unwrap().clone();
+    let ada = rt.block_on(world::sign_up(&host, &invite, "ada", "Ada", "t16-sign-out"));
+    world::community(&host, &ada, "Sign out", &[]);
+    world::clear_session(&ada);
+    let client = rt.block_on(world::start(&ada));
+    rt.block_on(world::wait_for(&client, WAIT, "ada online", |s| {
+        s.connection.status == dilla_client::state::ConnectionStatus::Online
+            && !s.channels.is_empty()
+    }));
+    let probe = client.store_probe();
+    let cfg = ada.cfg.clone();
+    let root = cfg
+        .data_dir
+        .parent()
+        .and_then(|d| d.parent())
+        .unwrap()
+        .to_path_buf();
+    use dilla_client::seams::Keychain as _;
+    let account = dilla_client::store::store_keychain_account(&cfg).unwrap();
+    let devices = client.devices();
+    let client = Rc::new(client);
+    cx.update(dilla_desktop::install);
+    cx.update(|cx| dilla_desktop::screens::factor::register_instance(&client, cfg.clone(), cx));
+    let mut launch = dilla_desktop::app::Launch::live(Some(root.clone()), ada.kc.clone());
+    launch.shipping = false;
+    launch.resume = false;
+    launch.handoff = Some(client);
+    let (app, vcx) =
+        cx.add_window_view(move |window, cx| dilla_desktop::app::AppView::new(launch, window, cx));
+    for _ in 0..5 {
+        vcx.run_until_parked();
+        vcx.update(|window, _| window.refresh());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // The Devices section's Sign out (its key dialog's call), then nothing of the client is kept here.
+    let mut answer = devices.sign_out_and_remove(Zeroizing::new(ada.recovery_key.clone()));
+    drop(devices);
+    let deadline = std::time::Instant::now() + WAIT;
+    let on_sign_in =
+        |vcx: &mut gpui::VisualTestContext| app.read_with(vcx, |a, _| a.shows_sign_in());
+    let mut answered = None;
+    while !(probe.is_closed() && !cfg.data_dir.exists() && on_sign_in(vcx)) {
+        if answered.is_none()
+            && let Ok(r) = answer.try_recv()
+        {
+            answered = Some(r);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "signed out: the store closes and is wiped, then the sign-in (answer: {answered:?}, closed: {}, dir left: {}, \
+             sign-in: {})",
+            probe.is_closed(),
+            cfg.data_dir.exists(),
+            on_sign_in(vcx)
+        );
+        vcx.run_until_parked();
+        vcx.executor().advance_clock(Duration::from_millis(20));
+        vcx.update(|window, _| window.refresh());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let listed = dilla_client::instances::Instances::load(&root).unwrap();
+    assert!(listed.get(cfg.id).is_none(), "the instance is forgotten");
+    assert!(ada.kc.get(&account).unwrap().is_none(), "its key is gone");
+}
