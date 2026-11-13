@@ -81,6 +81,8 @@ enum Screen {
     Starting,
     SignIn(Entity<SignInView>),
     Shell(Entity<ShellView>),
+    /// Task 26: the account owes a second factor.
+    Factor(Entity<crate::screens::factor::forced::ForcedFactorView>),
 }
 
 /// The main window's root view.
@@ -139,7 +141,7 @@ impl AppView {
 
     fn show_sign_in(&mut self, error: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let (root, keychain) = (self.launch.root.clone(), self.launch.keychain.clone());
-        let view = cx.new(|cx| SignInView::new(root, keychain, error, window, cx));
+        let view = cx.new(|cx| SignInView::new(root, keychain, None, error, window, cx));
         self._subscriptions = vec![cx.subscribe_in(
             &view,
             window,
@@ -155,6 +157,7 @@ impl AppView {
         self.screen = Screen::Starting;
         cx.notify();
         let keychain = self.launch.keychain.clone();
+        let server = cfg.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         std::thread::Builder::new()
             .name("dilla-client-start".into())
@@ -166,7 +169,9 @@ impl AppView {
             let result = rx
                 .await
                 .unwrap_or_else(|_| Err(ClientError::Runtime("the start thread ended".into())));
-            let _ = this.update_in(cx, |this, window, cx| this.started(result, window, cx));
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.started(result, server, window, cx)
+            });
         })
         .detach();
     }
@@ -174,22 +179,122 @@ impl AppView {
     fn started(
         &mut self,
         result: Result<Client, ClientError>,
+        cfg: InstanceConfig,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let client = match result {
             Ok(client) => Rc::new(client),
             Err(ClientError::NoIdentity) => return self.show_sign_in(None, window, cx),
-            Err(e) => return self.show_sign_in(Some(e.to_string()), window, cx),
+            // Task 26 (Task 2's note): the start's error in the sign-in screen's words.
+            Err(e) => {
+                let copy = crate::screens::factor::start_error_copy(&e);
+                return self.show_sign_in(Some(copy), window, cx);
+            }
         };
+        // Task 26: the factor area knows this window's client and its instance (the system-browser ceremony, step-up).
+        crate::screens::factor::register_instance(&client, cfg.server.clone(), cx);
+        crate::screens::factor::register_window_client(&client, window, cx);
+        if client.state().borrow().account.phase == dilla_client::state::AccountPhase::FactorSetup {
+            return self.show_factor(client, cfg, window, cx);
+        }
+        self.show_shell(client, cfg, window, cx);
+    }
+
+    /// Task 26: the forced-factor screen; it goes on to the shell once the factor is set, or forgets the device.
+    fn show_factor(
+        &mut self,
+        client: Rc<Client>,
+        cfg: InstanceConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::screens::factor::forced::{ForcedEvent, ForcedFactorView};
+        use crate::screens::factor::setup::Origin;
+        let view = cx.new(|cx| {
+            ForcedFactorView::new(
+                client.clone(),
+                cfg.server.clone(),
+                Origin::Required,
+                window,
+                cx,
+            )
+        });
+        self._subscriptions = vec![cx.subscribe_in(
+            &view,
+            window,
+            move |this, _, e: &ForcedEvent, window, cx| match e {
+                ForcedEvent::Completed => this.show_shell(client.clone(), cfg.clone(), window, cx),
+                ForcedEvent::Forget => this.forget(client.clone(), cfg.clone(), window, cx),
+            },
+        )];
+        self.screen = Screen::Factor(view);
+        cx.notify();
+    }
+
+    /// Task 26 (ForgetBrowser): the client stops and this device forgets the instance; then the sign-in.
+    fn forget(
+        &mut self,
+        client: Rc<Client>,
+        cfg: InstanceConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::screens::factor::forget_instance(&client, cx);
+        self._subscriptions.clear();
+        self.screen = Screen::Starting;
+        let (root, keychain) = (self.launch.root.clone(), self.launch.keychain.clone());
+        client.disconnect();
+        let client = Rc::try_unwrap(client).ok();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("dilla-forget".into())
+            .spawn(move || {
+                if let Some(client) = client {
+                    client.stop();
+                }
+                let result = root.as_deref().map(|root| {
+                    dilla_client::features::factors::forget_device(root, &cfg, keychain.as_ref())
+                });
+                let _ = tx.send(matches!(result, Some(Ok(()))));
+            })
+            .expect("a thread starts");
+        cx.spawn_in(window, async move |this, cx| {
+            let forgot = rx.await.unwrap_or(false);
+            let _ = this.update_in(cx, |this, window, cx| {
+                let error = (!forgot)
+                    .then(|| crate::strings::tf("factor.error.other", &[("code", "E_FORGET")]));
+                this.show_sign_in(error, window, cx);
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn show_shell(
+        &mut self,
+        client: Rc<Client>,
+        cfg: InstanceConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mut states = client.state();
         let first = states.borrow_and_update().clone();
         let shell = cx
             .new(|cx| ShellView::new(first, Some(client.clone()), None, Clock::Local, window, cx));
         let weak = shell.downgrade();
-        cx.spawn(async move |_, cx| {
+        let factor_client = client.clone();
+        cx.spawn_in(window, async move |this, cx| {
             while states.changed().await.is_ok() {
                 let next = states.borrow_and_update().clone();
+                // Task 26: a renewal or a refusal found a factor owed: the forced screen.
+                if next.account.phase == dilla_client::state::AccountPhase::FactorSetup {
+                    let (client, cfg) = (factor_client.clone(), cfg.clone());
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.show_factor(client, cfg, window, cx)
+                    });
+                    break;
+                }
                 if weak
                     .update(cx, |shell, cx| shell.set_state(next, cx))
                     .is_err()
@@ -217,6 +322,7 @@ impl Render for AppView {
                 .into_any_element(),
             Screen::SignIn(view) => view.clone().into_any_element(),
             Screen::Shell(view) => view.clone().into_any_element(),
+            Screen::Factor(view) => view.clone().into_any_element(),
         };
         tracked("root", div().size_full().bg(color::BG).child(body))
     }
