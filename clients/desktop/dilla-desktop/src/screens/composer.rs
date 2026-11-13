@@ -549,6 +549,7 @@ fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
         }
         list = list.child(row);
     }
+    // MentionList.css: `box-shadow: var(--shadow-2)`.
     div()
         .w(len(340.))
         .overflow_hidden()
@@ -556,6 +557,7 @@ fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
         .border_1()
         .border_color(color::LINE_STRONG)
         .rounded(radius::XL)
+        .shadow(dilla_desktop_ui::metrics::shadow_2())
         .child(
             div().px(len(12.)).pt(len(8.)).pb(len(6.)).child(
                 line(

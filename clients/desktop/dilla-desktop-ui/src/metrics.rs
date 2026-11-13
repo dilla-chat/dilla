@@ -103,6 +103,11 @@ pub fn shadow_1() -> Vec<BoxShadow> {
     shadow(black(0.4), 8.0, 20.0)
 }
 
+/// `--shadow-2`: `0 20px 50px rgba(0,0,0,0.55)` (the mention list).
+pub fn shadow_2() -> Vec<BoxShadow> {
+    shadow(black(0.55), 20.0, 50.0)
+}
+
 /// `--shadow-3`: `0 30px 80px rgba(0,0,0,0.65)` (a dialog).
 pub fn shadow_3() -> Vec<BoxShadow> {
     shadow(black(0.65), 30.0, 80.0)
