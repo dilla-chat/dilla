@@ -70,9 +70,11 @@ const COMMIT_KINDS: [u64; 2] = [1, 2];
 /// order), as a rotation's reconciliation reads it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HandshakePage {
-    /// The page's first commit: its seq and blob. Read from this device's cursor while a commit of
-    /// this device is pending, it is the commit that took that epoch.
-    pub first_commit: Option<(u64, Vec<u8>)>,
+    /// The page's commits, in seq order: `(seq, epoch, blob)`, where `epoch` is the row's epoch, the
+    /// one the commit opened. The commit that took epoch `n` is the row of epoch `n + 1`; the cursor
+    /// does not move past a commit this device confirmed from its answer, so rows of epochs it
+    /// already holds can precede it.
+    pub commits: Vec<(u64, u64, Vec<u8>)>,
     pub rows: usize,
     /// The seq of the page's last row.
     pub last: Option<u64>,
@@ -91,9 +93,10 @@ pub fn decode_handshake_page(body: &[u8]) -> Result<HandshakePage, RouteError> {
         let r = at_least(row, 5, "handshake row")?;
         let seq = uint(&r[0], "handshake seq")?;
         page.last = Some(seq);
-        if page.first_commit.is_none() && COMMIT_KINDS.contains(&uint(&r[2], "handshake kind")?) {
+        if COMMIT_KINDS.contains(&uint(&r[2], "handshake kind")?) {
+            let epoch = uint(&r[1], "handshake epoch")?;
             match &r[4] {
-                Value::Bytes(b) => page.first_commit = Some((seq, b.clone())),
+                Value::Bytes(b) => page.commits.push((seq, epoch, b.clone())),
                 _ => return Err(shape("handshake blob")),
             }
         }

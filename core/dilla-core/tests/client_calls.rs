@@ -548,6 +548,34 @@ fn an_aborted_rotation_the_instance_applied_needs_a_resync() {
         "E_CORE_STATE",
         "nothing more is applied"
     );
+
+    // No wedge: the call's rejoin (the call controller's external commit; the engine never resyncs a call group)
+    // brings Alice back to an active group with Bob's key.
+    let rejoin = alice
+        .core
+        .call_group_join_external(
+            &CALL,
+            Some(&COMMUNITY),
+            &VOICE,
+            POLICY,
+            &call.info_body(),
+            &call.tree_body(),
+        )
+        .expect("the rejoin is built over the instance's tree");
+    alice
+        .core
+        .call_join_check(&CALL)
+        .expect("every leaf validates");
+    let seq = seq_of_commit_answer(&call.resync(&rejoin).expect("the DS accepts the rejoin"));
+    alice.core.group_joined(&CALL, seq).expect("group_joined");
+    bob.apply_commit(&call, seq);
+    assert_eq!(alice.group(&CALL).unwrap().state, 2);
+    let media = decode_media_epoch(&alice.core.call_media_epoch(&CALL).expect("keys"));
+    assert_eq!(
+        media.base_key,
+        base_key_of(&bob),
+        "the peer's key after the rejoin"
+    );
 }
 
 /// The reconciliation Task 3b's `rotate_call` relies on: with the pending rotation KEPT, catch-up

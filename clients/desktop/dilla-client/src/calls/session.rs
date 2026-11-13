@@ -174,8 +174,8 @@ struct EngineCatchUp(Arc<Engine>);
 
 #[async_trait::async_trait]
 impl CallCatchUp for EngineCatchUp {
-    async fn catch_up(&self, group: &[u8; 16]) -> bool {
-        self.0.clone().catch_up_now(*group, Source::CatchUp).await
+    async fn catch_up(&self, group: &[u8; 16]) {
+        self.0.clone().catch_up_now(*group, Source::CatchUp).await;
     }
 }
 

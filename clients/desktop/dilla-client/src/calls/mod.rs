@@ -301,7 +301,7 @@ pub trait CallCatchUp: Send + Sync {
     /// engine's catch-up): a pending commit of this device is adopted as its own when it arrives
     /// (confirmed), and another member's commit of that epoch clears it. True when the read reached
     /// the instance's end with the group still active.
-    async fn catch_up(&self, group: &[u8; 16]) -> bool;
+    async fn catch_up(&self, group: &[u8; 16]);
 }
 
 /// [`CallRoutes`] over the client's gateway socket ([`SocketHttp`]: every call route is a socket

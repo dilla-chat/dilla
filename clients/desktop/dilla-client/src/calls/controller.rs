@@ -86,6 +86,14 @@ fn is_outcome_unknown(e: &RouteError) -> bool {
     e.code.as_deref() == Some("E_OUTCOME_UNKNOWN")
 }
 
+/// After a lost answer, an answer to a re-write that says nothing about the first write: the
+/// instance's replay record keeps neither a 5xx nor a 429 (`socket_dispatch.go`), answers 503
+/// `E_UNAVAILABLE` while the first write still runs, and an upgraded instance can answer 401 or
+/// 426 before any handler. The re-write is written again, as after a lost answer.
+fn says_nothing(e: &RouteError) -> bool {
+    matches!(e.status, Some(s) if s >= 500 || s == 429 || s == 401 || s == 426)
+}
+
 /// The DS's one-commit-per-epoch refusal (`commitPreflight` step 2): the instance's epoch has moved
 /// past the one the commit was built for, so SOME commit took that epoch. After a lost answer that
 /// commit may be this one: the instance applied the first write, and the re-write ran the handler
@@ -117,11 +125,13 @@ fn row_of<C: CallCore>(core: &Mutex<C>, group: &[u8; 16]) -> Option<GroupSummary
 /// Aborting then would leave the instance holding a commit the core has dropped: the core cannot
 /// process its own commit when it arrives and the group needs a resync (dilla-core's
 /// `an_aborted_rotation_the_instance_applied_needs_a_resync`). So the pending commit is kept and the
-/// group is caught up from its cursor ([`CallCatchUp`]), which settles it ([`reconcile`]). Any
-/// other refusal of a re-write aborts at once, as controller.ts does on any failure: the DS's later
-/// checks run only once the epoch check passed (the instance is still at the commit's epoch, so it
-/// never applied it), and its earlier ones find the group gone or this device without a current
-/// leaf in it (nothing left to rotate).
+/// group is caught up from its cursor ([`CallCatchUp`]), which settles it ([`reconcile`]). An
+/// answer to a re-write that says nothing about the first write ([`says_nothing`]: 5xx, 429, 401,
+/// 426) is treated as a lost answer, within the same bound. Any other refusal of a re-write aborts
+/// at once, as controller.ts does on any failure: the DS's later checks run only once the epoch
+/// check passed (the instance is still at the commit's epoch, so it never applied it), and its
+/// earlier ones find the group gone or this device without a current leaf in it (nothing left to
+/// rotate).
 pub async fn rotate_call<C: CallCore, R: CallRoutes + ?Sized, S: CallCatchUp + ?Sized>(
     core: &Mutex<C>,
     routes: &R,
@@ -170,7 +180,10 @@ pub async fn rotate_call<C: CallCore, R: CallRoutes + ?Sized, S: CallCatchUp + ?
                 lock(core)?.commit_confirm(group)?;
                 return Ok(seq);
             }
-            Err(e) if is_outcome_unknown(&e) && write < ROTATE_WRITES => {
+            Err(e)
+                if (is_outcome_unknown(&e) || lost_at.is_some() && says_nothing(&e))
+                    && write < ROTATE_WRITES =>
+            {
                 let at = *lost_at.get_or_insert_with(Instant::now);
                 if at.elapsed() + backoff >= ROTATE_RECONCILE {
                     return abort(e);
@@ -187,17 +200,29 @@ pub async fn rotate_call<C: CallCore, R: CallRoutes + ?Sized, S: CallCatchUp + ?
     unreachable!("the last write returns")
 }
 
-/// The first commit the instance holds at or after `from` (its seq and blob), read page by page;
-/// `None` when it holds none.
+/// The commit that took epoch `epoch` (its seq and blob): the commit row of epoch `epoch + 1` the
+/// instance holds at or after `from`, read page by page; `None` when it holds none. Rows of earlier
+/// epochs are skipped: the cursor does not move past a commit this device confirmed from its
+/// answer, so its own earlier rotation can come first.
 async fn commit_that_took<R: CallRoutes + ?Sized>(
     routes: &R,
     group: &[u8; 16],
     mut from: u64,
+    epoch: u64,
 ) -> Result<Option<(u64, Vec<u8>)>, RouteError> {
+    let opened = epoch + 1;
     for _ in 0..RECONCILE_PAGES {
         let page = routes.get_handshakes(group, from, RECONCILE_PAGE).await?;
-        if page.first_commit.is_some() {
-            return Ok(page.first_commit);
+        if let Some((seq, row_epoch, blob)) = page.commits.into_iter().find(|c| c.1 >= opened) {
+            if row_epoch > opened {
+                // Its row is behind the cursor: not this device's to judge from here.
+                return Err(RouteError {
+                    status: None,
+                    code: Some("E_OUTCOME_UNKNOWN".into()),
+                    detail: "the commit that took the epoch is not after the cursor".into(),
+                });
+            }
+            return Ok(Some((seq, blob)));
         }
         match page.last {
             Some(last) if page.rows as u64 >= RECONCILE_PAGE => from = last + 1,
@@ -222,11 +247,13 @@ async fn commit_that_took<R: CallRoutes + ?Sized>(
 ///   is the answer;
 /// - no commit after the cursor: the instance never applied this one, and it is aborted.
 ///
-/// When that read fails, the catch-up alone settles it, and the refusal is the answer. A pending
-/// commit the catch-up left too (its read failed as well) stays pending: the refusal proved that a
-/// commit took the epoch, so the engine's next catch-up adopts or clears it; the answer is then
-/// `E_OUTCOME_UNKNOWN`. A group the catch-up left inactive (lost, or needing a resync) has nothing
-/// to rotate: a pending commit of it is aborted.
+/// A read that fails before the catch-up is tried once more after it. When both fail, whose commit
+/// took the epoch is not known and the answer is `E_OUTCOME_UNKNOWN`: a pending commit the catch-up
+/// left stays pending (the refusal proved that a commit took the epoch, so the engine's next
+/// catch-up adopts or clears it), and a group the catch-up settled is at a new epoch either way, so
+/// the caller re-reads [`media_epoch`] after any rotation outcome, as after every commit. A group
+/// the catch-up left inactive (lost, or needing a rejoin) has nothing to rotate: a pending commit of
+/// it is aborted.
 async fn reconcile<C: CallCore, R: CallRoutes + ?Sized, S: CallCatchUp + ?Sized>(
     core: &Mutex<C>,
     routes: &R,
@@ -236,18 +263,24 @@ async fn reconcile<C: CallCore, R: CallRoutes + ?Sized, S: CallCatchUp + ?Sized>
     cursor: Option<u64>,
     refused: RouteError,
 ) -> Result<u64, RotateError> {
-    let commit = decode_commit_body(body).ok().map(|(_, commit)| commit);
-    let took = match (cursor, commit) {
-        (Some(from), Some(commit)) => {
-            tokio::time::timeout(ROTATE_RECONCILE, commit_that_took(routes, group, from))
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .map(|took| took.map(|(seq, blob)| (seq, blob == commit)))
-        }
-        _ => None,
+    let read = || async {
+        let (epoch, commit) = decode_commit_body(body).ok()?;
+        let from = cursor?;
+        tokio::time::timeout(
+            ROTATE_RECONCILE,
+            commit_that_took(routes, group, from, epoch),
+        )
+        .await
+        .ok()?
+        .ok()
+        .map(|took| took.map(|(seq, blob)| (seq, blob == commit)))
     };
+    let first = read().await;
     let _ = tokio::time::timeout(ROTATE_RECONCILE, sync.catch_up(group)).await;
+    let took = match first {
+        Some(took) => Some(took),
+        None => read().await,
+    };
     let row = row_of(core, group);
     let active = row.as_ref().is_some_and(|r| r.state == 2);
     let pending = row.as_ref().is_some_and(|r| r.pending_commit);
@@ -261,10 +294,15 @@ async fn reconcile<C: CallCore, R: CallRoutes + ?Sized, S: CallCatchUp + ?Sized>
             }
             Ok(seq)
         }
-        None if pending && active => Err(RouteError {
+        None if active => Err(RouteError {
             status: None,
             code: Some("E_OUTCOME_UNKNOWN".into()),
-            detail: "the rotation's epoch was taken; the next catch-up settles it".into(),
+            detail: if pending {
+                "the rotation's epoch was taken; the next catch-up settles it".into()
+            } else {
+                "the rotation's epoch was taken and settled; whose commit took it is not known"
+                    .into()
+            },
         }
         .into()),
         _ => {

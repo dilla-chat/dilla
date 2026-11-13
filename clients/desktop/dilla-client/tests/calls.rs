@@ -230,7 +230,7 @@ struct NoCatchUp;
 
 #[async_trait::async_trait]
 impl CallCatchUp for NoCatchUp {
-    async fn catch_up(&self, _group: &[u8; 16]) -> bool {
+    async fn catch_up(&self, _group: &[u8; 16]) {
         panic!("no catch-up expected")
     }
 }

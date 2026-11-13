@@ -179,16 +179,15 @@ struct CatchUp {
 
 #[async_trait::async_trait]
 impl CallCatchUp for CatchUp {
-    async fn catch_up(&self, _group: &[u8; 16]) -> bool {
+    async fn catch_up(&self, _group: &[u8; 16]) {
         self.runs.fetch_add(1, Ordering::SeqCst);
         if !self.reachable.load(Ordering::SeqCst) {
-            return false;
+            return;
         }
         let mut core = self.core.lock().unwrap();
         for row in self.held.lock().unwrap().iter() {
             core.apply(row);
         }
-        core.state == 2
     }
 }
 
@@ -280,7 +279,9 @@ impl World {
     async fn rotates_at(&self, n: usize, seq: u64) {
         let rotation = self.spawn_rotate();
         let (id, key) = self.script.request(n).await;
-        assert_ne!(key, self.script.request(0).await.1);
+        if n > 0 {
+            assert_ne!(key, self.script.request(0).await.1);
+        }
         self.socket
             .on_response(&response(id, 200, &seq_answer(seq)));
         assert_eq!(rotation.await.unwrap().unwrap(), seq);
@@ -419,7 +420,7 @@ async fn an_applied_rotation_is_confirmed_when_the_catch_up_fails() {
     assert_eq!(w.state(), (2, false, commit.clone()));
 
     w.sync.reachable.store(true, Ordering::SeqCst);
-    assert!(w.sync.catch_up(&GROUP).await);
+    w.sync.catch_up(&GROUP).await;
     assert_eq!(w.state(), (2, false, commit), "skipped, still active");
 }
 
@@ -442,15 +443,112 @@ async fn an_unsettled_rotation_stays_pending_for_the_next_catch_up() {
     let (id3, _) = w.script.request(2).await;
     w.socket
         .on_response(&response(id3, 403, &refusal("E_FORBIDDEN", None)));
+    // The read is tried again after the catch-up, and fails again.
+    let (id4, _) = w.script.request(3).await;
+    w.socket
+        .on_response(&response(id4, 403, &refusal("E_FORBIDDEN", None)));
     let e = rotation.await.unwrap().unwrap_err();
     assert!(e.to_string().contains("E_OUTCOME_UNKNOWN"), "{e}");
     assert_eq!(w.log(), ["rotate"]);
     assert!(w.state().1, "still pending");
 
     w.sync.reachable.store(true, Ordering::SeqCst);
-    assert!(w.sync.catch_up(&GROUP).await);
+    w.sync.catch_up(&GROUP).await;
     assert_eq!(w.log(), ["rotate", "adopt"]);
     assert_eq!(w.state(), (2, false, commit));
+}
+
+/// The first read fails, the catch-up adopts the commit, and the read tried again after it names this commit as the
+/// one that took the epoch: the rotation is done at its seq.
+#[tokio::test(start_paused = true)]
+async fn a_read_that_fails_before_the_catch_up_is_tried_again_after_it() {
+    let w = world();
+    let rotation = w.spawn_rotate();
+    w.script.request(0).await;
+    let commit = w.commit_of(0);
+    w.held.lock().unwrap().push((7, 1, commit.clone()));
+    lose_the_answer(&w.socket);
+    w.socket.on_ready("restarted".into());
+    let (id2, _) = w.script.request(1).await;
+    w.socket
+        .on_response(&response(id2, 409, &refusal("E_COMMIT_CONFLICT", None)));
+    let (id3, _) = w.script.request(2).await;
+    w.socket
+        .on_response(&response(id3, 403, &refusal("E_FORBIDDEN", None)));
+    let (id4, _) = w.script.request(3).await;
+    assert!(w.script.route(3).contains("/handshakes?from=7&"));
+    w.socket.on_response(&response(
+        id4,
+        200,
+        &handshake_page(&w.held.lock().unwrap()),
+    ));
+    assert_eq!(rotation.await.unwrap().unwrap(), 7);
+    assert_eq!(w.log(), ["rotate", "adopt"]);
+    assert_eq!(w.state(), (2, false, commit));
+}
+
+/// The cursor does not move past a rotation confirmed from its answer, so the read from it serves that earlier own
+/// commit first. The commit that took THIS rotation's epoch is the row of the next epoch: here it is this rotation's,
+/// so with the catch-up unreachable it is confirmed (never misread as a peer's win and aborted).
+#[tokio::test(start_paused = true)]
+async fn an_earlier_confirmed_rotation_before_the_cursor_is_not_taken_for_the_winner() {
+    let w = world();
+    w.rotates_at(0, 7).await;
+    let first = w.commit_of(0);
+    w.held.lock().unwrap().push((7, 1, first.clone()));
+    assert_eq!(
+        w.core.lock().unwrap().next_seq,
+        7,
+        "confirm leaves the cursor"
+    );
+
+    w.sync.reachable.store(false, Ordering::SeqCst);
+    let rotation = w.spawn_rotate();
+    w.script.request(1).await;
+    let second = w.commit_of(1);
+    w.held.lock().unwrap().push((8, 2, second.clone()));
+    lose_the_answer(&w.socket);
+    w.socket.on_ready("restarted".into());
+    let (id2, _) = w.script.request(2).await;
+    w.socket
+        .on_response(&response(id2, 409, &refusal("E_COMMIT_CONFLICT", None)));
+    let (id3, _) = w.script.request(3).await;
+    assert!(w.script.route(3).contains("/handshakes?from=7&"));
+    w.socket.on_response(&response(
+        id3,
+        200,
+        &handshake_page(&w.held.lock().unwrap()),
+    ));
+    assert_eq!(rotation.await.unwrap().unwrap(), 8);
+    assert_eq!(w.log(), ["rotate", "confirm", "rotate", "confirm"]);
+    assert_eq!(w.state(), (3, false, second));
+}
+
+/// After a lost answer the re-write meets a restarting instance: 503 E_UNAVAILABLE (the replay record's answer while
+/// the first write still runs, or a store failure: neither proves anything) until the socket's own retries are spent.
+/// That is no refusal: the rotation stays in its write loop, and the third write is answered.
+#[tokio::test(start_paused = true)]
+async fn an_unavailable_rewrite_after_a_lost_answer_is_written_again() {
+    let w = world();
+    let began = tokio::time::Instant::now();
+    let rotation = w.spawn_rotate();
+    let (_, key) = w.script.request(0).await;
+    lose_the_answer(&w.socket);
+    w.socket.on_ready("restarted".into());
+    // The re-write and the socket's own retries of it: the last 503 reaches the rotation.
+    let attempts = crate::sync::requests::UNAVAILABLE_ATTEMPTS as usize;
+    for n in 1..=attempts {
+        let (id, k) = w.script.request(n).await;
+        assert_eq!(k, key);
+        w.socket
+            .on_response(&response(id, 503, &refusal("E_UNAVAILABLE", None)));
+    }
+    let (id, k) = w.script.request(attempts + 1).await;
+    assert_eq!(k, key, "the third write, under the same key");
+    w.socket.on_response(&response(id, 200, &seq_answer(7)));
+    assert_eq!(rotation.await.unwrap().unwrap(), 7);
+    assert_eq!(w.log(), ["rotate", "confirm"]);
+    assert!(began.elapsed() < controller::ROTATE_RECONCILE);
 }
 
 /// Without the reconciliation (the old rotate_call aborted on the refused re-write), the instance holds a commit the
