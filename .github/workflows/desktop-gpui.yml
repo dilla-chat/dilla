@@ -124,6 +124,8 @@ jobs:
       - run: node --test scripts/gen-gpui-tokens.test.mjs
       # Strings freshness: dilla-desktop's generated strings.rs matches packages/web/src/strings/*.ts.
       - run: node --test scripts/gen-gpui-strings.test.mjs
+      # Behaviour gates: every e2e test title has a row in clients/desktop/BEHAVIOUR-GATES.md (behaviour_gate_table_complete).
+      - run: node --test scripts/behaviour-gates.test.mjs
       # The test host and the WASI core dilla-client's real-server tests start (all read DILLA_CORE_WASI).
       # The WASI core is rebuilt here on purpose, not taken from internal/mlswasi/testdata (the committed copy the Go
       # tests embed): the client under test and the server it talks to must be the core of this very commit.
