@@ -4,8 +4,8 @@
 //! thread parts of `MessageRow`. The slots (`crate::slots`) call the hooks below; the pane itself is an entity
 //! ([`view::PaneView`]) with a composer of its own.
 //!
-//! What the hooks cannot be handed by their signatures is kept in one [`Ui`] global: the last [`SlotCx`] a hook saw (the
-//! aside's hook gets only a route), the focus handles of the thread chips (a closing pane gives focus back to its chip),
+//! What the hooks cannot be handed by their signatures is kept in one [`Ui`] global: per window, the [`SlotCx`] its shell
+//! last drew (the aside's hook gets only a route), its pane and its pending jump; the focus handles of the thread chips (a closing pane gives focus back to its chip),
 //! and, in a fixture with no client, the open thread and the reply target a running client would keep in
 //! `AppState::threads`.
 
@@ -22,7 +22,7 @@ use dilla_desktop_ui::components::threads::{
 };
 use gpui::{
     AnyElement, App, AppContext as _, Entity, FocusHandle, Global, IntoElement, ParentElement,
-    Window, div,
+    Window, WindowId, div,
 };
 
 use crate::router::Route;
@@ -48,12 +48,22 @@ pub fn excerpt(body: &str) -> String {
         .collect()
 }
 
+/// One window's part of the area: its shell's view, its thread pane and the original a reply line in it asked for.
+/// Keyed by window, so with two instances open a thread reply typed in one window is never sent through the other's
+/// client or into its thread.
+#[derive(Default)]
+struct PerWindow {
+    /// The view this window's shell last drew ([`sync`]).
+    ctx: Option<SlotCx>,
+    pane: Option<Entity<PaneView>>,
+    /// A reply line was pressed: the message to scroll to and flash. This window's log (Task 9) takes it.
+    jump: Option<MessageId>,
+}
+
 /// What the area keeps between frames.
 #[derive(Default)]
 struct Ui {
-    /// The latest view a hook was drawn for.
-    ctx: Option<SlotCx>,
-    pane: Option<Entity<PaneView>>,
+    windows: HashMap<WindowId, PerWindow>,
     /// A thread chip's focus handle, by root: Enter and Space press it, and a closing pane gives focus back to it.
     chips: HashMap<MessageId, FocusHandle>,
     /// The channel each client (by the address of its `Rc<Client>`) was asked to keep the summaries of: one per client, so
@@ -63,8 +73,6 @@ struct Ui {
     local_open: Option<OpenThread>,
     local_last: Option<OpenThread>,
     local_replying: Option<ReplyTarget>,
-    /// A reply line was pressed: the message to scroll to and flash. The log (Task 9) takes it.
-    jump: Option<MessageId>,
 }
 
 impl Global for Ui {}
@@ -73,12 +81,19 @@ fn ui(cx: &mut App) -> &mut Ui {
     cx.default_global::<Ui>()
 }
 
-/// Remembers `ctx` for the hooks that get none and asks the client to keep `ctx.channel`'s thread summaries.
+fn wid(window: &Window) -> WindowId {
+    window.window_handle().window_id()
+}
+
+fn per_window(window: WindowId, cx: &mut App) -> &mut PerWindow {
+    ui(cx).windows.entry(window).or_default()
+}
+
+/// Asks the client to keep `ctx.channel`'s thread summaries.
 fn remember(ctx: &SlotCx, cx: &mut App) {
     let mut change = None;
     {
         let u = ui(cx);
-        u.ctx = Some(ctx.clone());
         if let (Some(client), Some(channel)) = (&ctx.client, ctx.channel) {
             let key = Rc::as_ptr(client) as usize;
             let old = u.tracked.insert(key, channel);
@@ -97,10 +112,15 @@ fn remember(ctx: &SlotCx, cx: &mut App) {
     }
 }
 
-/// The shell's view, each time it draws (the shell calls it before its slots): the pane, the header's toggle and the
-/// reply keys read this one, not whichever hook drew last.
-pub fn sync(ctx: &SlotCx, cx: &mut App) {
+/// `window`'s shell view, each time it draws (the shell calls it before its slots): that window's pane reads this one,
+/// never another window's. Windows that are gone are let go (with the client their view held).
+pub fn sync(ctx: &SlotCx, window: &Window, cx: &mut App) {
     remember(ctx, cx);
+    let live: std::collections::HashSet<WindowId> =
+        cx.windows().iter().map(|w| w.window_id()).collect();
+    let here = wid(window);
+    ui(cx).windows.retain(|w, _| *w == here || live.contains(w));
+    per_window(here, cx).ctx = Some(ctx.clone());
 }
 
 /// Whether a thread is open in `ctx`'s view: the header draws its Threads button pressed.
@@ -134,9 +154,9 @@ fn original_gone(ctx: &SlotCx, target: &ReplyTarget) -> bool {
         .is_some_and(|i| !readable(i))
 }
 
-/// The last [`SlotCx`] a hook was drawn for.
-fn current(cx: &mut App) -> Option<SlotCx> {
-    ui(cx).ctx.clone()
+/// The [`SlotCx`] `window`'s shell last drew.
+fn current(window: WindowId, cx: &mut App) -> Option<SlotCx> {
+    ui(cx).windows.get(&window)?.ctx.clone()
 }
 
 /// The open thread: the client's, or a fixture's own.
@@ -173,7 +193,9 @@ pub fn open_thread(channel: ChannelId, root: MessageId, ctx: &SlotCx, cx: &mut A
 
 /// Closes the aside and gives focus back to the thread's chip, if it is on screen.
 pub fn close_thread(window: &mut Window, cx: &mut App) {
-    let Some(ctx) = current(cx) else { return };
+    let Some(ctx) = current(wid(window), cx) else {
+        return;
+    };
     let Some(open) = open_of(&ctx, cx) else {
         return;
     };
@@ -187,11 +209,10 @@ pub fn close_thread(window: &mut Window, cx: &mut App) {
     cx.refresh_windows();
 }
 
-/// Opens or closes the aside. The channel header's button (Task 8) calls it: it closes the open thread, else reopens the
-/// last one directly, with no list in between (e2e Q9).
-pub fn toggle_pane(cx: &mut App) {
-    let Some(ctx) = current(cx) else { return };
-    if open_of(&ctx, cx).is_some() {
+/// Opens or closes the aside of the shell whose view is `ctx`. The channel header's button (Task 8) calls it: it closes
+/// the open thread, else reopens the last one directly, with no list in between (e2e Q9).
+pub fn toggle_pane(ctx: &SlotCx, cx: &mut App) {
+    if open_of(ctx, cx).is_some() {
         match &ctx.client {
             Some(client) => client.threads().close(),
             None => ui(cx).local_open = None,
@@ -226,9 +247,10 @@ pub fn take_reply(ctx: &SlotCx, channel: ChannelId, cx: &mut App) -> Option<Mess
     (!original_gone(ctx, &target)).then_some(target.msg_id)
 }
 
-/// The message a pressed reply line asked to see, once. The log scrolls to it and flashes it (Task 9).
-pub fn take_jump(cx: &mut App) -> Option<MessageId> {
-    ui(cx).jump.take()
+/// The message a pressed reply line in `window` asked to see, once. That window's log scrolls to it and flashes it
+/// (Task 9).
+pub fn take_jump(window: &Window, cx: &mut App) -> Option<MessageId> {
+    ui(cx).windows.get_mut(&wid(window))?.jump.take()
 }
 
 /// The name a person goes by in `community`.
@@ -298,9 +320,9 @@ pub fn reply_chip(
     let target = reply.msg_id;
     let mut line = ReplyLine::new("reply-line", author, text, state);
     if state != ReplyState::Missing {
-        line = line.on_jump(move |_, _, cx| {
-            ui(cx).jump = Some(target);
-            cx.refresh_windows();
+        line = line.on_jump(move |_, window, cx| {
+            per_window(wid(window), cx).jump = Some(target);
+            window.refresh();
         });
     }
     Some(Extra {
@@ -430,14 +452,15 @@ pub fn reply_bar(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<Any
 
 /// The thread pane (`slots::aside`): `None` while no thread is open.
 pub fn pane(_route: &Route, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let ctx = current(cx)?;
+    let here = wid(window);
+    let ctx = current(here, cx)?;
     open_of(&ctx, cx)?;
-    let existing = ui(cx).pane.clone();
+    let existing = per_window(here, cx).pane.clone();
     let view = match existing {
         Some(view) => view,
         None => {
             let view = cx.new(|cx| PaneView::new(window, cx));
-            ui(cx).pane = Some(view.clone());
+            per_window(here, cx).pane = Some(view.clone());
             view
         }
     };
@@ -669,5 +692,80 @@ mod tests {
                 "a send is not a reply to a deleted message"
             );
         });
+    }
+
+    struct Blank;
+    impl gpui::Render for Blank {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    /// Review C2: each window's thread pane reads and sends through its own shell's view. Window A (may send) drawn
+    /// first and window B (read-only) last: Enter in A's pane still sends, under A's view; Enter in B's is refused.
+    #[gpui::test]
+    fn each_window_s_thread_pane_sends_through_its_own_view(cx: &mut TestAppContext) {
+        use dilla_client::state::threads::SEND_MESSAGES;
+        use gpui_component::input::InputEvent;
+        let (allowed, channel) = channel_ctx(Some(SEND_MESSAGES | 1));
+        let (read_only, _) = channel_ctx(Some(0));
+        let root = MessageId([7; 16]);
+        let a = cx.add_window(|_, _| Blank);
+        let b = cx.add_window(|_, _| Blank);
+        let draw = |ctx: &SlotCx, window: &mut Window, cx: &mut App| {
+            sync(ctx, window, cx);
+            pane(&Route::Root, window, cx).expect("the thread is open");
+        };
+        a.update(cx, |_, window, cx| {
+            open_thread(channel, root, &allowed, cx);
+            draw(&allowed, window, cx);
+        })
+        .unwrap();
+        b.update(cx, |_, window, cx| draw(&read_only, window, cx))
+            .unwrap();
+        let sent = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let press = |handle: gpui::WindowHandle<Blank>, cx: &mut TestAppContext| {
+            let id = handle.window_id();
+            handle
+                .update(cx, |_, window, cx| {
+                    let pane = ui(cx).windows.get(&id).unwrap().pane.clone().unwrap();
+                    let input = pane.read(cx).input();
+                    input.update(cx, |s, cx| {
+                        s.set_value("hello", window, cx);
+                        cx.emit(InputEvent::PressEnter {
+                            secondary: false,
+                            shift: false,
+                        });
+                    });
+                    pane
+                })
+                .unwrap()
+        };
+        let pane_a = press(a, cx);
+        let log = sent.clone();
+        let _keep = cx.update(|cx| {
+            cx.subscribe(&pane_a, move |_, e: &view::Sent, _| {
+                log.borrow_mut().push(e.1.clone())
+            })
+        });
+        // The subscription is made after the first press: press again, now observed.
+        press(a, cx);
+        cx.run_until_parked();
+        assert_eq!(
+            sent.borrow().as_slice(),
+            ["hello"],
+            "A's pane sends under A's view, not B's (drawn last)"
+        );
+        let pane_b = press(b, cx);
+        let log_b = Rc::new(std::cell::RefCell::new(0));
+        let count = log_b.clone();
+        let _keep_b = cx.update(|cx| {
+            cx.subscribe(&pane_b, move |_, _: &view::Sent, _| {
+                *count.borrow_mut() += 1
+            })
+        });
+        press(b, cx);
+        cx.run_until_parked();
+        assert_eq!(*log_b.borrow(), 0, "B's read-only view refuses the send");
     }
 }

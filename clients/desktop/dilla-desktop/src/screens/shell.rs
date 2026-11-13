@@ -639,7 +639,7 @@ impl ShellView {
     fn toggle_aside(&mut self, kind: AsideKind, cx: &mut Context<Self>) {
         match kind {
             // The open thread is the threads area's (11): it closes it, or reopens the last one.
-            AsideKind::Threads => crate::screens::threads::toggle_pane(cx),
+            AsideKind::Threads => crate::screens::threads::toggle_pane(&self.slot_cx(), cx),
             // The member list's open state is the members area's (Task 14: open by default, as the web's).
             AsideKind::Members => crate::screens::members::toggle_pane(cx),
         }
@@ -834,7 +834,7 @@ impl Render for ShellView {
         let ctx = self.slot_cx();
         // The threads area reads this shell's view (its pane, the header's toggle, the reply keys), and the Threads button
         // is pressed while a thread is open (11).
-        crate::screens::threads::sync(&ctx, cx);
+        crate::screens::threads::sync(&ctx, window, cx);
         self.aside = crate::screens::threads::is_open(&ctx, cx).then_some(AsideKind::Threads);
         // What the viewer may do in the open channel, from the roles slice (14), gates reply and thread (11); told only
         // when it changes, so the publish does not loop.

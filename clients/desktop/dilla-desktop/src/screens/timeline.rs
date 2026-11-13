@@ -775,7 +775,7 @@ pub fn render(
     let (tops, _) = row_tops(y, &shapes);
     // A jump (from the pins or a reply) brings its row into view and leaves the end.
     // A pressed reply line (11) asks for its original: the log scrolls to it and flashes it, as the pins' jump does.
-    if let Some(msg) = crate::screens::threads::take_jump(cx)
+    if let Some(msg) = crate::screens::threads::take_jump(window, cx)
         && let Some(found) = items.iter().find(|i| i.msg_id == Some(msg))
     {
         let key = found.key.clone();

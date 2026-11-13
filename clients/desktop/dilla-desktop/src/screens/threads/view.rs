@@ -1,5 +1,6 @@
 //! The thread pane (ThreadView.tsx, ThreadPane.css): the root, a rule with the reply count, the replies and the thread's own
-//! composer. It reads the client's `AppState::threads` through the last [`SlotCx`] a hook saw (see the module docs), and
+//! composer. It reads the client's `AppState::threads` through the [`SlotCx`] its own window's shell last drew (see the
+//! module docs), and
 //! sends through [`dilla_client::features::threads::Threads`]. Opening it leaves the composer unfocused (wave B parity round 2).
 
 use std::rc::Rc;
@@ -41,6 +42,8 @@ fn max_rows() -> usize {
 pub struct Sent(pub MessageId, pub String);
 
 pub struct PaneView {
+    /// The window this pane is drawn in: it reads and sends through that window's shell view only.
+    window: gpui::WindowId,
     input: Entity<TextareaState>,
     close_focus: FocusHandle,
     /// A send is in flight: the field is empty but the draft stays in the prefs until the send succeeds.
@@ -63,12 +66,19 @@ impl PaneView {
         let input = cx.new(|cx| TextareaState::new(window, cx).submit_on_enter(true));
         let sub = cx.subscribe_in(&input, window, Self::on_input_event);
         Self {
+            window: window.window_handle().window_id(),
             input,
             close_focus: cx.focus_handle().tab_stop(true),
             in_flight: false,
             shown: None,
             _subscriptions: vec![sub],
         }
+    }
+
+    /// The composer's field (tests drive it).
+    #[cfg(test)]
+    pub(super) fn input(&self) -> Entity<TextareaState> {
+        self.input.clone()
     }
 
     fn on_input_event(
@@ -78,7 +88,9 @@ impl PaneView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(ctx) = current(cx) else { return };
+        let Some(ctx) = current(self.window, cx) else {
+            return;
+        };
         let Some(open) = open_of(&ctx, cx) else {
             return;
         };
@@ -141,7 +153,7 @@ impl PaneView {
             return;
         }
         self.shown = Some(root);
-        let draft = current(cx)
+        let draft = current(self.window, cx)
             .and_then(|c| c.client.map(|client| client.threads().draft(root)))
             .unwrap_or_default();
         self.input
@@ -196,7 +208,7 @@ impl PaneView {
 
 impl Render for PaneView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(ctx) = current(cx) else {
+        let Some(ctx) = current(self.window, cx) else {
             return div().into_any_element();
         };
         let Some(open) = open_of(&ctx, cx) else {
