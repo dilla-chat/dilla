@@ -410,16 +410,14 @@ impl ReqwestHttp {
         if !entry.accepts(status) {
             // client.ts reads a refusal's body up to ERROR_BODY_CAP for its code; a body it cannot read is E_HTTP.
             let body = read_capped(response, ERROR_BODY_CAP).await.ok();
-            return Err(HttpError::Status {
-                status,
-                code: body.as_deref().and_then(error_code),
-            });
+            return Err(refused(status, body.as_deref()));
         }
         let body = match cap {
             Some(cap) => {
                 read_capped_or(response, cap, || HttpError::Status {
                     status,
                     code: Some("E_BODY_TOO_LARGE".to_owned()),
+                    retry_after_ms: None,
                 })
                 .await?
             }
@@ -450,6 +448,19 @@ pub fn error_code(body: &[u8]) -> Option<String> {
     // One decoder: the socket transport's (`ApiError::from_body`), whose fallback code is E_HTTP.
     let e = crate::sync::api::ApiError::from_body(0, body);
     (e.code != "E_HTTP").then_some(e.code)
+}
+
+/// A refusal with `status` and its `body` (`None`: unread): its `E_*` code and delay, as errors.ts `decodeErrorBody`.
+pub(crate) fn refused(status: u16, body: Option<&[u8]>) -> HttpError {
+    let e = body.map(|b| crate::sync::api::ApiError::from_body(0, b));
+    HttpError::Status {
+        status,
+        code: e
+            .as_ref()
+            .filter(|e| e.code != "E_HTTP")
+            .map(|e| e.code.clone()),
+        retry_after_ms: e.and_then(|e| e.retry_after_ms),
+    }
 }
 
 /// `R`'s answer from an accepted `status` and its `body`, read as the route's table row says.

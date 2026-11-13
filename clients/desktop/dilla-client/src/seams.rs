@@ -33,9 +33,14 @@ pub trait Keychain: Send + Sync {
 pub enum HttpError {
     /// A status the route does not accept. `code` is the instance's `E_*` code from the refusal's body
     /// (`[code, detail, delay|null, ...extra]`, internal/server/errors.go, read as http/errors.ts `decodeErrorBody`
-    /// reads it); `None` when the body is not a dilla error (errors.ts names that `E_HTTP`).
+    /// reads it); `None` when the body is not a dilla error (errors.ts names that `E_HTTP`). `retry_after_ms` is the
+    /// body's delay (errors.ts `retryAfterMs`), when it names one.
     #[error("the server answered with status {status} ({})", code.as_deref().unwrap_or("E_HTTP"))]
-    Status { status: u16, code: Option<String> },
+    Status {
+        status: u16,
+        code: Option<String>,
+        retry_after_ms: Option<u64>,
+    },
     #[error("transport failure: {0}")]
     Transport(String),
     #[error("undecodable response: {0}")]
@@ -50,7 +55,15 @@ pub enum HttpError {
 impl HttpError {
     /// `Status { status, code }`: the instance refused with `status` and the `E_*` code `code`.
     pub fn is(&self, status: u16, code: &str) -> bool {
-        matches!(self, HttpError::Status { status: s, code: Some(c) } if *s == status && c == code)
+        matches!(self, HttpError::Status { status: s, code: Some(c), .. } if *s == status && c == code)
+    }
+
+    /// How long the instance asked to wait before a retry (a refusal's delay), if it named one.
+    pub fn retry_after_ms(&self) -> Option<u64> {
+        match self {
+            HttpError::Status { retry_after_ms, .. } => *retry_after_ms,
+            _ => None,
+        }
     }
 
     /// The refusal's status, if this is one.

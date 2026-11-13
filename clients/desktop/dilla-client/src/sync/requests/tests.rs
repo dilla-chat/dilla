@@ -76,7 +76,9 @@ async fn refusals_and_lost_answers_keep_their_codes() {
     let (id, _) = script.request(0).await;
     socket.on_response(&response(id, 403, &refusal("E_PERM", None)));
     match call.await.unwrap() {
-        Err(HttpError::Status { status: 403, code }) => {
+        Err(HttpError::Status {
+            status: 403, code, ..
+        }) => {
             assert_eq!(code.as_deref(), Some("E_PERM"));
         }
         other => panic!("{other:?}"),

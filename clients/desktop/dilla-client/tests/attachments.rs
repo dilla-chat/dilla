@@ -187,7 +187,7 @@ async fn a_blob_one_byte_over_its_sealed_size_is_refused_without_reading_it_all(
         .await
         .expect_err("one byte over the sealed size");
     assert!(
-        matches!(err, HttpError::Status { status: 200, code: Some(ref c) } if c == "E_BODY_TOO_LARGE"),
+        matches!(err, HttpError::Status { status: 200, code: Some(ref c), .. } if c == "E_BODY_TOO_LARGE"),
         "{err:?}"
     );
     assert!(

@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 use crate::gateway::WsGateway;
 use crate::gateway::frames::{self, MAX_REQUEST_BODY, RequestFrame};
 use crate::http::routes::{self, Transport};
-use crate::http::{BODY_CEILING, answer_of, body_of, error_code, fill_path};
+use crate::http::{BODY_CEILING, answer_of, body_of, fill_path};
 use crate::seams::{GatewayError, Http, HttpError, Route};
 
 use super::api::ApiError;
@@ -716,10 +716,7 @@ impl<H: Http> SocketHttp<H> {
                     continue;
                 }
             }
-            return Err(HttpError::Status {
-                status: answer.status,
-                code: error_code(&answer.body),
-            });
+            return Err(crate::http::refused(answer.status, Some(&answer.body)));
         }
         unreachable!("the loop returns on its last attempt")
     }
