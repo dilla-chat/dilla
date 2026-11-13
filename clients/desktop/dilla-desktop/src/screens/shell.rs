@@ -687,12 +687,12 @@ impl ShellView {
 
     /// The header's Threads and Members buttons: open the aside, or close it when it is the one open. The areas that draw
     /// the panes (11, 14) keep their own state and are told.
-    fn toggle_aside(&mut self, kind: AsideKind, cx: &mut Context<Self>) {
+    fn toggle_aside(&mut self, kind: AsideKind, window: gpui::WindowId, cx: &mut Context<Self>) {
         match kind {
             // The open thread is the threads area's (11): it closes it, or reopens the last one.
             AsideKind::Threads => crate::screens::threads::toggle_pane(&self.slot_cx(), cx),
             // The member list's open state is the members area's (Task 14: open by default, as the web's).
-            AsideKind::Members => crate::screens::members::toggle_pane(cx),
+            AsideKind::Members => crate::screens::members::toggle_pane(window, cx),
         }
         cx.notify();
     }
@@ -1087,7 +1087,7 @@ impl Render for ShellView {
 
         // The log wraps its bodies to its own width: the window less the rail, the sidebar and a column aside.
         // The members aside reads the slot context the shell holds (its hook takes none of its own; Task 14).
-        crate::screens::members::sync(&ctx, cx);
+        crate::screens::members::sync(window.window_handle().window_id(), &ctx, cx);
         let aside = slots::aside(self.route(), window, cx);
         let aside_width = if aside.is_some() && column {
             panes.aside
@@ -1220,8 +1220,9 @@ impl Render for ShellView {
             .and_then(|dm| crate::screens::voice::ring_notice(&state, dm));
 
         let weak = shell.clone();
-        let on_toggle: header::OnToggle = Rc::new(move |kind, _, cx| {
-            let _ = weak.update(cx, |shell, cx| shell.toggle_aside(kind, cx));
+        let on_toggle: header::OnToggle = Rc::new(move |kind, window, cx| {
+            let wid = window.window_handle().window_id();
+            let _ = weak.update(cx, |shell, cx| shell.toggle_aside(kind, wid, cx));
         });
         let main = div()
             .flex_1()
@@ -1239,8 +1240,12 @@ impl Render for ShellView {
                         members,
                         // Members is pressed while the members area's pane is open (Task 14's `is_open`).
                         aside: self.aside.or_else(|| {
-                            (aside.is_some() && crate::screens::members::is_open(cx))
-                                .then_some(AsideKind::Members)
+                            (aside.is_some()
+                                && crate::screens::members::is_open(
+                                    window.window_handle().window_id(),
+                                    cx,
+                                ))
+                            .then_some(AsideKind::Members)
                         }),
                         call: dm_call,
                     },

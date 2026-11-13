@@ -176,12 +176,22 @@ fn deleting_a_role_goes_through_its_confirmation(cx: &mut gpui::TestAppContext) 
         cancel_role_delete, pending_role_delete, request_role_delete,
     };
     let c = CommunityId([7; 16]);
+    let w = cx
+        .add_empty_window()
+        .update(|window, _| window.window_handle().window_id());
+    let other = cx
+        .add_empty_window()
+        .update(|window, _| window.window_handle().window_id());
     cx.update(|cx| {
-        assert_eq!(pending_role_delete(cx), None);
-        request_role_delete(c, [9; 16], "crew".into(), cx);
-        assert_eq!(pending_role_delete(cx), Some((c, [9; 16])));
-        cancel_role_delete(cx);
-        assert_eq!(pending_role_delete(cx), None);
+        assert_eq!(pending_role_delete(w, cx), None);
+        request_role_delete(w, c, [9; 16], "crew".into(), cx);
+        assert_eq!(pending_role_delete(w, cx), Some((c, [9; 16])));
+        // Final review sweep: the confirmation is its window's; another window has none, and its cancel leaves it.
+        assert_eq!(pending_role_delete(other, cx), None);
+        cancel_role_delete(other, cx);
+        assert_eq!(pending_role_delete(w, cx), Some((c, [9; 16])));
+        cancel_role_delete(w, cx);
+        assert_eq!(pending_role_delete(w, cx), None);
     });
 }
 

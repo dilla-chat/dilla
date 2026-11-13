@@ -31,9 +31,9 @@ use dilla_client::state::roles::{RoleId, RoleSummary};
 use dilla_client::state::{AppState, CommunityId, UserId};
 use dilla_client::sync::api::ApiError;
 use gpui::{
-    AnyElement, App, AppContext, ClickEvent, Entity, Global, InteractiveElement, IntoElement,
+    AnyElement, App, AppContext, ClickEvent, Entity, InteractiveElement, IntoElement,
     ParentElement, Pixels, Point, SharedString, StatefulInteractiveElement, Styled, Window,
-    anchored, deferred, div, point,
+    WindowId, anchored, deferred, div, point,
 };
 use gpui_component::input::InputState;
 
@@ -113,17 +113,21 @@ pub struct MembersUi {
     access_seen: std::collections::HashMap<CommunityId, u64>,
 }
 
-impl Global for MembersUi {}
-
-fn ui(cx: &mut App) -> &mut MembersUi {
-    if !cx.has_global::<MembersUi>() {
+/// The members area's state of window `w` (final review sweep: per window, so one window's card, menu, dialogs, slot
+/// context and its client never reach another window).
+fn ui(w: WindowId, cx: &mut App) -> &mut MembersUi {
+    if crate::per_window::get::<MembersUi>(w, cx).is_none() {
         // Shell.tsx: the pane starts open in the wide column (min-width 64rem, every desktop workspace window).
-        cx.set_global(MembersUi {
-            open: true,
-            ..MembersUi::default()
-        });
+        crate::per_window::set(
+            w,
+            Some(MembersUi {
+                open: true,
+                ..MembersUi::default()
+            }),
+            cx,
+        );
     }
-    cx.global_mut::<MembersUi>()
+    crate::per_window::get_mut::<MembersUi>(w, cx)
 }
 
 /// Lets go of `client` (Forget, sign-out: `crate::release::release_client`): the slot context it was handed and the
@@ -131,22 +135,20 @@ fn ui(cx: &mut App) -> &mut MembersUi {
 pub fn release(client: &Rc<Client>, cx: &mut App) {
     // The moderation log's decrypted pages this client read go with it, in every window (final review I4).
     modlog::release_reader(Rc::as_ptr(client) as usize, cx);
-    if !cx.has_global::<MembersUi>() {
-        return;
-    }
-    let u = ui(cx);
-    if u.ctx
-        .as_ref()
-        .is_some_and(|ctx| ctx.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)))
-    {
-        u.ctx = None;
-        u.card = None;
-        u.menu = None;
-        u.dialog = None;
-        u.busy = false;
-        u.assign = None;
-        u.role_delete = None;
-    }
+    crate::per_window::each_mut::<MembersUi>(cx, |_, u| {
+        if u.ctx
+            .as_ref()
+            .is_some_and(|ctx| ctx.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)))
+        {
+            u.ctx = None;
+            u.card = None;
+            u.menu = None;
+            u.dialog = None;
+            u.busy = false;
+            u.assign = None;
+            u.role_delete = None;
+        }
+    });
 }
 
 /// The host hands its slot context in before it draws the aside (the aside hook takes none of its own).
@@ -154,14 +156,14 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
 /// The web reads the access again on every community change (op 54: a role, a grant or an overwrite changed). The sync
 /// engine consumes op 54 and reads the member list again; when a community's members, their roles or its owner change
 /// here, its access is read again too.
-pub fn sync(ctx: &SlotCx, cx: &mut App) {
+pub fn sync(w: WindowId, ctx: &SlotCx, cx: &mut App) {
     let signatures: Vec<(CommunityId, u64)> = ctx
         .state
         .communities
         .iter()
         .map(|c| (c.id, role_signature(&ctx.state, c.id)))
         .collect();
-    let u = ui(cx);
+    let u = ui(w, cx);
     u.ctx = Some(ctx.clone());
     for (community, sig) in signatures {
         let before = u.access_seen.insert(community, sig);
@@ -191,8 +193,8 @@ fn role_signature(state: &AppState, community: CommunityId) -> u64 {
 }
 
 /// Whether the aside is open.
-pub fn is_open(cx: &App) -> bool {
-    cx.try_global::<MembersUi>().is_none_or(|u| u.open)
+pub fn is_open(w: WindowId, cx: &App) -> bool {
+    crate::per_window::get::<MembersUi>(w, cx).is_none_or(|u| u.open)
 }
 
 fn presence_of(p: Wire) -> Presence {
@@ -216,13 +218,14 @@ fn presence_word(p: Wire) -> &'static str {
 /// Asks the client once per community for what the members views read: the presence, and the access with the roles
 /// and the overwrites.
 fn ensure_loaded(
+    w: WindowId,
     what: &'static str,
     community: CommunityId,
     client: Option<&Rc<Client>>,
     cx: &mut App,
 ) {
     let Some(client) = client else { return };
-    if !ui(cx).asked.insert((what, community)) {
+    if !ui(w, cx).asked.insert((what, community)) {
         return;
     }
     let job = match what {
@@ -248,7 +251,7 @@ fn ensure_loaded(
         if job.await.is_err() {
             // Read again on the next draw.
             cx.update(|cx| {
-                ui(cx).asked.remove(&(what, community));
+                ui(w, cx).asked.remove(&(what, community));
             });
         }
     })
@@ -366,20 +369,21 @@ fn list_with_overlays(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    ensure_loaded("people", community, ctx.client.as_ref(), cx);
+    let w = window.window_handle().window_id();
+    ensure_loaded(w, "people", community, ctx.client.as_ref(), cx);
     let state = ctx.state.clone();
     let groups = groups(&state, community);
     let loading = groups.is_none() || !state.people.presence.contains_key(&community);
-    let open_id = ui(cx).card.map(|(u, _)| SharedString::from(u.hex()));
+    let open_id = ui(w, cx).card.map(|(u, _)| SharedString::from(u.hex()));
     let mut list = MemberList::new("members-list", groups.unwrap_or_default())
         .loading(loading, t("members.loading"))
         .empty_label(t("members.empty"))
         .bot_label(t("layout.profile.bot"))
         .open_id(open_id)
-        .on_open(|id, window, cx| {
+        .on_open(move |id, window, cx| {
             let Some(user) = user_of(id) else { return };
             let at = window.mouse_position();
-            let u = ui(cx);
+            let u = ui(w, cx);
             u.menu = None;
             u.card = if u.card.is_some_and(|(c, _)| c == user) {
                 None
@@ -388,9 +392,9 @@ fn list_with_overlays(
             };
             cx.refresh_windows();
         })
-        .on_menu(|id, at, _window, cx| {
+        .on_menu(move |id, at, _window, cx| {
             let Some(user) = user_of(id) else { return };
-            let u = ui(cx);
+            let u = ui(w, cx);
             u.card = None;
             u.menu = Some((user, at));
             cx.refresh_windows();
@@ -404,8 +408,8 @@ fn list_with_overlays(
     if head {
         list = list
             .head(t("members.toggle"), Some(t("members.close").into()))
-            .on_close(|_, cx| {
-                ui(cx).open = false;
+            .on_close(move |_, cx| {
+                ui(w, cx).open = false;
                 cx.refresh_windows();
             });
     }
@@ -413,13 +417,13 @@ fn list_with_overlays(
     if let Some(card) = card_overlay(ctx, community, window, cx) {
         root = root.child(card);
     }
-    if let Some(menu) = menu_overlay(ctx, community, cx) {
+    if let Some(menu) = menu_overlay(w, ctx, community, cx) {
         root = root.child(menu);
     }
     if let Some(dialog) = dialog_overlay(ctx, window, cx) {
         root = root.child(dialog);
     }
-    if let Some(dialog) = assign_dialog(ctx, cx) {
+    if let Some(dialog) = assign_dialog(w, ctx, cx) {
         root = root.child(dialog);
     }
     root.into_any_element()
@@ -472,8 +476,8 @@ fn action_label(a: MenuAction, name: &str) -> String {
 }
 
 /// Runs a chosen action on `user` (the card's buttons and the person menu's items).
-fn choose(community: CommunityId, user: UserId, id: &str, cx: &mut App) {
-    let Some(ctx) = ui(cx).ctx.clone() else {
+fn choose(w: WindowId, community: CommunityId, user: UserId, id: &str, cx: &mut App) {
+    let Some(ctx) = ui(w, cx).ctx.clone() else {
         return;
     };
     let state = ctx.state.clone();
@@ -495,13 +499,13 @@ fn choose(community: CommunityId, user: UserId, id: &str, cx: &mut App) {
         "timeout" => ModKind::Timeout,
         "warn" => ModKind::Warn,
         "roles" => {
-            open_assign(community, user, member_name(member).to_owned(), cx);
+            open_assign(w, community, user, member_name(member).to_owned(), cx);
             return;
         }
         // Message and compare hand over to the DM and trust views (Tasks 13 and 28 wire them).
         _ => return,
     };
-    let u = ui(cx);
+    let u = ui(w, cx);
     u.card = None;
     u.menu = None;
     u.error = None;
@@ -526,7 +530,8 @@ fn card_overlay(
     window: &mut Window,
     cx: &mut App,
 ) -> Option<AnyElement> {
-    let (user, at) = ui(cx).card?;
+    let w = window.window_handle().window_id();
+    let (user, at) = ui(w, cx).card?;
     let state = &ctx.state;
     let member = state
         .members
@@ -572,7 +577,7 @@ fn card_overlay(
             .collect(),
     )
     .actions(actions)
-    .on_action(move |id, _w, cx| choose(community, user, id, cx));
+    .on_action(move |id, _w, cx| choose(w, community, user, id, cx));
     if !card.is_bot {
         view = view.client(t("layout.profile.web"));
     }
@@ -602,8 +607,13 @@ fn card_overlay(
     )
 }
 
-fn menu_overlay(ctx: &SlotCx, community: CommunityId, cx: &mut App) -> Option<AnyElement> {
-    let (user, at) = ui(cx).menu?;
+fn menu_overlay(
+    w: WindowId,
+    ctx: &SlotCx,
+    community: CommunityId,
+    cx: &mut App,
+) -> Option<AnyElement> {
+    let (user, at) = ui(w, cx).menu?;
     let state = &ctx.state;
     let member = state
         .members
@@ -676,25 +686,25 @@ fn menu_overlay(ctx: &SlotCx, community: CommunityId, cx: &mut App) -> Option<An
         .at(at)
         .width(space::PERSON_MENU_W)
         .head(head)
-        .on_open_change(|open, _w, cx| {
+        .on_open_change(move |open, _w, cx| {
             if !open {
-                ui(cx).menu = None;
+                ui(w, cx).menu = None;
                 cx.refresh_windows();
             }
         })
         .on_select(move |id, window, cx| {
             if id == "profile" {
                 let at = window.mouse_position();
-                let u = ui(cx);
+                let u = ui(w, cx);
                 u.menu = None;
                 u.card = Some((user, at));
                 cx.refresh_windows();
             } else if id == "copy" {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(format!("@{username}")));
-                ui(cx).menu = None;
+                ui(w, cx).menu = None;
                 show_toast(tf("members.menu.copied", &[("name", &username)]), cx);
             } else {
-                choose(community, user, id, cx);
+                choose(w, community, user, id, cx);
             }
         })
         .into_any_element(),
@@ -717,8 +727,8 @@ fn refusal_text(kind: ModKind, e: &ApiError, name: &str, server: &str) -> String
 }
 
 /// Sends the open dialog's command; the error and the end of busy land together (ConfirmDialog's contract).
-fn confirm(cx: &mut App) {
-    let u = ui(cx);
+fn confirm(w: WindowId, cx: &mut App) {
+    let u = ui(w, cx);
     let Some(d) = u.dialog.clone() else { return };
     if u.busy {
         return;
@@ -727,7 +737,7 @@ fn confirm(cx: &mut App) {
     let reason = input
         .map(|r| r.read(cx).value().to_string())
         .unwrap_or_default();
-    let u = ui(cx);
+    let u = ui(w, cx);
     let local = match d.kind {
         ModKind::Ban => reason_problem(&reason).map(|p| match p {
             ReasonProblem::Long => t("mod.ban.error.reasonLong"),
@@ -772,7 +782,7 @@ fn confirm(cx: &mut App) {
     cx.spawn(async move |cx| {
         let answer = job.await;
         cx.update(|cx| {
-            let u = ui(cx);
+            let u = ui(w, cx);
             // A dialog closed or replaced meanwhile keeps its own state.
             if u.dialog.as_ref().is_none_or(|now| now.request != d.request) {
                 return;
@@ -801,8 +811,9 @@ fn confirm(cx: &mut App) {
 }
 
 fn dialog_overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let w = window.window_handle().window_id();
     let _ = ctx;
-    let d = ui(cx).dialog.clone()?;
+    let d = ui(w, cx).dialog.clone()?;
     let vars = [("name", d.name.as_str()), ("server", d.server.as_str())];
     let (title, body, ok, busy) = match d.kind {
         ModKind::Kick => (
@@ -836,11 +847,11 @@ fn dialog_overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<Any
             "admin.bans.unbanBusy",
         ),
     };
-    if matches!(d.kind, ModKind::Ban | ModKind::Warn) && ui(cx).reason.is_none() {
+    if matches!(d.kind, ModKind::Ban | ModKind::Warn) && ui(w, cx).reason.is_none() {
         let input = cx.new(|cx| InputState::new(window, cx));
-        ui(cx).reason = Some(input);
+        ui(w, cx).reason = Some(input);
     }
-    let u = ui(cx);
+    let u = ui(w, cx);
     let (is_busy, error, reason) = (u.busy, u.error.clone(), u.reason.clone());
     let (ban, timeout) = (u.ban_length, u.timeout_length);
     let fields: Option<AnyElement> = match d.kind {
@@ -874,8 +885,9 @@ fn dialog_overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<Any
                             ban.unwrap_or(BanLength::Day).key(),
                         )
                         .disabled(is_busy)
-                        .on_change(|v, _w, cx| {
-                            ui(cx).ban_length = BanLength::ALL.into_iter().find(|l| l.key() == v);
+                        .on_change(move |v, _w, cx| {
+                            ui(w, cx).ban_length =
+                                BanLength::ALL.into_iter().find(|l| l.key() == v);
                             cx.refresh_windows();
                         }),
                     )
@@ -906,8 +918,9 @@ fn dialog_overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<Any
                     timeout.unwrap_or(TimeoutLength::TenMinutes).key(),
                 )
                 .disabled(is_busy)
-                .on_change(|v, _w, cx| {
-                    ui(cx).timeout_length = TimeoutLength::ALL.into_iter().find(|l| l.key() == v);
+                .on_change(move |v, _w, cx| {
+                    ui(w, cx).timeout_length =
+                        TimeoutLength::ALL.into_iter().find(|l| l.key() == v);
                     cx.refresh_windows();
                 })
                 .into_any_element(),
@@ -926,9 +939,9 @@ fn dialog_overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<Any
     .person(d.name.clone())
     .busy(is_busy)
     .error(error.map(SharedString::from))
-    .on_confirm(|_w, cx| confirm(cx))
-    .on_close(|_w, cx| {
-        let u = ui(cx);
+    .on_confirm(move |_w, cx| confirm(w, cx))
+    .on_close(move |_w, cx| {
+        let u = ui(w, cx);
         u.dialog = None;
         u.busy = false;
         u.error = None;
@@ -942,11 +955,12 @@ fn dialog_overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<Any
 
 /// This area's aside (`slots::aside`): `None` while it is closed.
 pub fn pane(route: &Route, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let w = window.window_handle().window_id();
     let Route::Channel { community, .. } = route else {
         return None;
     };
     let community = *community;
-    let u = ui(cx);
+    let u = ui(w, cx);
     if !u.open {
         return None;
     }
@@ -961,8 +975,8 @@ pub fn pane(route: &Route, window: &mut Window, cx: &mut App) -> Option<AnyEleme
             .border_color(color::HAIRLINE)
             .bg(color::BG_2)
             .key_context("MembersPane")
-            .on_action(|_: &keys::CloseCard, _w, cx| {
-                let u = ui(cx);
+            .on_action(move |_: &keys::CloseCard, _w, cx| {
+                let u = ui(w, cx);
                 if u.card.take().is_some() || u.menu.take().is_some() {
                     cx.refresh_windows();
                 }
@@ -973,8 +987,8 @@ pub fn pane(route: &Route, window: &mut Window, cx: &mut App) -> Option<AnyEleme
 }
 
 /// Opens or closes this area's aside. The channel header's button (Task 8) calls it. Fixed signature.
-pub fn toggle_pane(cx: &mut App) {
-    let u = ui(cx);
+pub fn toggle_pane(w: WindowId, cx: &mut App) {
+    let u = ui(w, cx);
     u.open = !u.open;
     if !u.open {
         u.card = None;
@@ -1035,15 +1049,17 @@ fn roles_job(
     .detach();
 }
 
-fn roles_section(ctx: &SlotCx, community: CommunityId, cx: &mut App) -> AnyElement {
-    ensure_loaded("people", community, ctx.client.as_ref(), cx);
+fn roles_section(w: WindowId, ctx: &SlotCx, community: CommunityId, cx: &mut App) -> AnyElement {
+    ensure_loaded(w, "people", community, ctx.client.as_ref(), cx);
     let state = ctx.state.clone();
     let access = state.roles.access_of(community);
     let roles = sorted_roles(&state, community);
     let can = access.loaded && access.manage_roles;
     // A role at or above my rank is locked (the instance refuses it): the owner ranks above every role.
     let locked = |r: &RoleSummary| !role_editable(&state, community, r);
-    let open = ui(cx).role.filter(|id| roles.iter().any(|r| r.id == *id));
+    let open = ui(w, cx)
+        .role
+        .filter(|id| roles.iter().any(|r| r.id == *id));
     let list = div()
         .flex()
         .flex_col()
@@ -1085,7 +1101,7 @@ fn roles_section(ctx: &SlotCx, community: CommunityId, cx: &mut App) -> AnyEleme
                     color::FG_3,
                 ))
                 .on_click(move |_: &ClickEvent, _w, cx| {
-                    ui(cx).role = Some(id);
+                    ui(w, cx).role = Some(id);
                     cx.refresh_windows();
                 })
         }));
@@ -1117,9 +1133,9 @@ fn roles_section(ctx: &SlotCx, community: CommunityId, cx: &mut App) -> AnyEleme
     root = root.child(list);
     if let Some(role) = open.and_then(|id| roles.iter().find(|r| r.id == id)) {
         let locks = permission_locks(&state, community, role);
-        root = root.child(role_editor(ctx, community, role, locked(role), locks));
+        root = root.child(role_editor(w, ctx, community, role, locked(role), locks));
     }
-    if let Some(dialog) = role_delete_dialog(cx) {
+    if let Some(dialog) = role_delete_dialog(w, cx) {
         root = root.child(dialog);
     }
     root.into_any_element()
@@ -1138,6 +1154,7 @@ impl OpenBg for gpui::Stateful<gpui::Div> {
 /// The role editor (RoleEditor + PermissionGrid): the six swatches, hoist and mentionable, then every permission under
 /// the prototype's four headings. A locked role (at or above my rank, or without manage_roles) is read-only.
 fn role_editor(
+    w: WindowId,
     ctx: &SlotCx,
     community: CommunityId,
     role: &RoleSummary,
@@ -1303,7 +1320,7 @@ fn role_editor(
                         .variant(ButtonVariant::Danger)
                         .icon(IconName::Trash2)
                         .on_click(move |_, _w, cx| {
-                            request_role_delete(community, id, name.clone(), cx);
+                            request_role_delete(w, community, id, name.clone(), cx);
                         }),
                 ),
         );
@@ -1325,9 +1342,14 @@ impl Chosen for gpui::Stateful<gpui::Div> {
     }
 }
 
-fn self_roles_section(ctx: &SlotCx, community: CommunityId, cx: &mut App) -> AnyElement {
-    ensure_loaded("people", community, ctx.client.as_ref(), cx);
-    ensure_loaded("self", community, ctx.client.as_ref(), cx);
+fn self_roles_section(
+    w: WindowId,
+    ctx: &SlotCx,
+    community: CommunityId,
+    cx: &mut App,
+) -> AnyElement {
+    ensure_loaded(w, "people", community, ctx.client.as_ref(), cx);
+    ensure_loaded(w, "self", community, ctx.client.as_ref(), cx);
     let state = ctx.state.clone();
     let access = state.roles.access_of(community);
     let mut root = div()
@@ -1403,8 +1425,9 @@ fn bans_section(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    ensure_loaded("people", community, ctx.client.as_ref(), cx);
-    ensure_loaded("bans", community, ctx.client.as_ref(), cx);
+    let w = window.window_handle().window_id();
+    ensure_loaded(w, "people", community, ctx.client.as_ref(), cx);
+    ensure_loaded(w, "bans", community, ctx.client.as_ref(), cx);
     let state = ctx.state.clone();
     let server = state
         .communities
@@ -1492,7 +1515,7 @@ fn bans_section(
                             t("admin.bans.unban"),
                         )
                         .on_click(move |_, _w, cx| {
-                            let u = ui(cx);
+                            let u = ui(w, cx);
                             u.error = None;
                             u.busy = false;
                             u.reason = None;
@@ -1671,10 +1694,11 @@ pub fn settings_section(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
+    let w = window.window_handle().window_id();
     let Some(community) = ctx.community else {
         return div().into_any_element();
     };
-    ui(cx).ctx = Some(ctx.clone());
+    ui(w, cx).ctx = Some(ctx.clone());
     match section {
         SectionId::Server(ServerSection::Members) => div()
             .id("settings-members")
@@ -1683,8 +1707,8 @@ pub fn settings_section(
             .child(section_head(t("members.toggle"), None))
             .child(list_with_overlays(ctx, community, false, window, cx))
             .into_any_element(),
-        SectionId::Server(ServerSection::Roles) => roles_section(ctx, community, cx),
-        SectionId::Server(ServerSection::SelfRoles) => self_roles_section(ctx, community, cx),
+        SectionId::Server(ServerSection::Roles) => roles_section(w, ctx, community, cx),
+        SectionId::Server(ServerSection::SelfRoles) => self_roles_section(w, ctx, community, cx),
         SectionId::Server(ServerSection::Bans) => bans_section(ctx, community, window, cx),
         SectionId::Server(ServerSection::ModerationLog) => {
             moderation_log_section(ctx, community, window, cx)
@@ -1797,8 +1821,14 @@ pub fn assign_items(
 }
 
 /// Opens the DeleteRole confirmation for `role` (nothing is sent until it is confirmed).
-pub fn request_role_delete(community: CommunityId, role: RoleId, name: String, cx: &mut App) {
-    let u = ui(cx);
+pub fn request_role_delete(
+    w: WindowId,
+    community: CommunityId,
+    role: RoleId,
+    name: String,
+    cx: &mut App,
+) {
+    let u = ui(w, cx);
     u.role_delete = Some((community, role, name));
     u.role_delete_busy = false;
     u.role_delete_error = None;
@@ -1806,14 +1836,14 @@ pub fn request_role_delete(community: CommunityId, role: RoleId, name: String, c
 }
 
 /// The role whose deletion awaits its confirmation.
-pub fn pending_role_delete(cx: &App) -> Option<(CommunityId, RoleId)> {
-    cx.try_global::<MembersUi>()
+pub fn pending_role_delete(w: WindowId, cx: &App) -> Option<(CommunityId, RoleId)> {
+    crate::per_window::get::<MembersUi>(w, cx)
         .and_then(|u| u.role_delete.as_ref().map(|(c, r, _)| (*c, *r)))
 }
 
 /// Closes the DeleteRole confirmation (not while its request is in flight).
-pub fn cancel_role_delete(cx: &mut App) {
-    let u = ui(cx);
+pub fn cancel_role_delete(w: WindowId, cx: &mut App) {
+    let u = ui(w, cx);
     if !u.role_delete_busy {
         u.role_delete = None;
         u.role_delete_error = None;
@@ -1822,8 +1852,8 @@ pub fn cancel_role_delete(cx: &mut App) {
 }
 
 /// Sends the confirmed deletion; the refusal and the end of busy land together.
-fn confirm_role_delete(cx: &mut App) {
-    let u = ui(cx);
+fn confirm_role_delete(w: WindowId, cx: &mut App) {
+    let u = ui(w, cx);
     let Some((community, role, name)) = u.role_delete.clone() else {
         return;
     };
@@ -1842,7 +1872,7 @@ fn confirm_role_delete(cx: &mut App) {
     cx.spawn(async move |cx| {
         let answer = job.await;
         cx.update(|cx| {
-            let u = ui(cx);
+            let u = ui(w, cx);
             if u.role_delete.as_ref().is_none_or(|(_, r, _)| *r != role) {
                 return;
             }
@@ -1869,8 +1899,8 @@ fn confirm_role_delete(cx: &mut App) {
 }
 
 /// The DeleteRole confirmation, while one is open.
-fn role_delete_dialog(cx: &mut App) -> Option<AnyElement> {
-    let u = ui(cx);
+fn role_delete_dialog(w: WindowId, cx: &mut App) -> Option<AnyElement> {
+    let u = ui(w, cx);
     let (_, _, name) = u.role_delete.clone()?;
     Some(
         ConfirmDialog::new(
@@ -1883,15 +1913,15 @@ fn role_delete_dialog(cx: &mut App) -> Option<AnyElement> {
         )
         .busy(u.role_delete_busy)
         .error(u.role_delete_error.clone().map(SharedString::from))
-        .on_confirm(|_w, cx| confirm_role_delete(cx))
-        .on_close(|_w, cx| cancel_role_delete(cx))
+        .on_confirm(move |_w, cx| confirm_role_delete(w, cx))
+        .on_close(move |_w, cx| cancel_role_delete(w, cx))
         .into_any_element(),
     )
 }
 
 /// Opens MemberRolesFlow for `user`.
-fn open_assign(community: CommunityId, user: UserId, name: String, cx: &mut App) {
-    let u = ui(cx);
+fn open_assign(w: WindowId, community: CommunityId, user: UserId, name: String, cx: &mut App) {
+    let u = ui(w, cx);
     u.card = None;
     u.menu = None;
     u.assign = Some((community, user));
@@ -1902,8 +1932,8 @@ fn open_assign(community: CommunityId, user: UserId, name: String, cx: &mut App)
 }
 
 /// One tick of the assign dialog: a grant or a revoke, one at a time, each said when it lands or is refused.
-fn assign_toggle(role: RoleId, on: bool, cx: &mut App) {
-    let u = ui(cx);
+fn assign_toggle(w: WindowId, role: RoleId, on: bool, cx: &mut App) {
+    let u = ui(w, cx);
     let Some((community, user)) = u.assign else {
         return;
     };
@@ -1921,7 +1951,7 @@ fn assign_toggle(role: RoleId, on: bool, cx: &mut App) {
     let Some((r, _, None)) = items.into_iter().find(|(r, _, _)| r.id == role) else {
         return;
     };
-    let u = ui(cx);
+    let u = ui(w, cx);
     let name = u.assign_name.clone();
     u.assign_busy = Some(role);
     u.assign_problem = None;
@@ -1936,10 +1966,10 @@ fn assign_toggle(role: RoleId, on: bool, cx: &mut App) {
     cx.spawn(async move |cx| {
         let answer = job.await;
         cx.update(|cx| {
-            if ui(cx).assign != Some((community, user)) {
+            if ui(w, cx).assign != Some((community, user)) {
                 return;
             }
-            ui(cx).assign_busy = None;
+            ui(w, cx).assign_busy = None;
             match answer {
                 Ok(()) => {
                     let key = if on {
@@ -1950,7 +1980,7 @@ fn assign_toggle(role: RoleId, on: bool, cx: &mut App) {
                     show_toast(tf(key, &[("role", &r.name), ("name", &name)]), cx);
                 }
                 Err(e) => {
-                    let listed = ui(cx).ctx.as_ref().is_some_and(|c| {
+                    let listed = ui(w, cx).ctx.as_ref().is_some_and(|c| {
                         c.state
                             .roles
                             .roles_of(community)
@@ -1972,7 +2002,7 @@ fn assign_toggle(role: RoleId, on: bool, cx: &mut App) {
                             tf("roles.assign.error.other", &[("code", &code)])
                         }
                     };
-                    ui(cx).assign_problem = Some(message);
+                    ui(w, cx).assign_problem = Some(message);
                 }
             }
             cx.refresh_windows();
@@ -1981,8 +2011,8 @@ fn assign_toggle(role: RoleId, on: bool, cx: &mut App) {
     .detach();
 }
 
-fn close_assign(cx: &mut App) {
-    let u = ui(cx);
+fn close_assign(w: WindowId, cx: &mut App) {
+    let u = ui(w, cx);
     u.assign = None;
     u.assign_busy = None;
     u.assign_problem = None;
@@ -1990,17 +2020,17 @@ fn close_assign(cx: &mut App) {
 }
 
 /// MemberRolesFlow: a dialog over a check list keyed by role id; it closes, and says so, when the member leaves.
-fn assign_dialog(ctx: &SlotCx, cx: &mut App) -> Option<AnyElement> {
-    let (community, user) = ui(cx).assign?;
-    let name = ui(cx).assign_name.clone();
+fn assign_dialog(w: WindowId, ctx: &SlotCx, cx: &mut App) -> Option<AnyElement> {
+    let (community, user) = ui(w, cx).assign?;
+    let name = ui(w, cx).assign_name.clone();
     let Some(items) = assign_items(&ctx.state, community, user) else {
         if ctx.state.members.contains_key(&community) {
-            close_assign(cx);
+            close_assign(w, cx);
             show_toast(tf("roles.assign.error.gone", &[("name", &name)]), cx);
         }
         return None;
     };
-    let u = ui(cx);
+    let u = ui(w, cx);
     let busy = u.assign_busy.map(|r| SharedString::from(hex(&r)));
     let problem = u.assign_problem.clone();
     let list = items
@@ -2032,9 +2062,9 @@ fn assign_dialog(ctx: &SlotCx, cx: &mut App) -> Option<AnyElement> {
                 t("roles.assign.none"),
             )
             .busy(busy)
-            .on_toggle(|id, on, _w, cx| {
+            .on_toggle(move |id, on, _w, cx| {
                 if let Some(role) = user_of(id) {
-                    assign_toggle(role.0, on, cx);
+                    assign_toggle(w, role.0, on, cx);
                 }
             }),
         );
@@ -2053,7 +2083,7 @@ fn assign_dialog(ctx: &SlotCx, cx: &mut App) -> Option<AnyElement> {
             t("roles.assign.close"),
         )
         .body(body)
-        .on_close(|_w, cx| close_assign(cx))
+        .on_close(move |_w, cx| close_assign(w, cx))
         .into_any_element(),
     )
 }
