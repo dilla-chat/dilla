@@ -80,6 +80,13 @@ pub fn call_options(v: VoiceValues) -> CallOptions {
 }
 
 /// The microphone is live: not muted or deafened, and in push-to-talk mode only while the key is held.
+/// What the call's microphone should be now, `(muted, deafened)`, from the settings as they are now (review I2: the mode
+/// is read on every pass, so a switch to push to talk mid-call applies at once, as session.ts `setMode` does).
+pub fn mic_want(prefs: &dilla_client::prefs::Prefs, s: &AppState) -> (bool, bool) {
+    let ptt = VoiceValues::read(prefs).mode == InputMode::Ptt;
+    (!mic_open(s, ptt), s.voice.self_deaf)
+}
+
 pub fn mic_open(s: &AppState, ptt_mode: bool) -> bool {
     !(s.voice.self_mute || s.voice.self_deaf) && (!ptt_mode || s.voice.ptt_held)
 }
@@ -330,7 +337,6 @@ async fn in_call(
     if link.epochs.borrow().is_none() {
         call.drop_keys();
     }
-    let ptt = ctx.ptt_mode();
     let mut states = ctx.states.clone();
     let mut levels = call.remote_audio_levels();
     let mut videos = call.remote_videos();
@@ -342,7 +348,8 @@ async fn in_call(
     let mut applied: Option<(bool, bool)> = None;
     loop {
         let s = states.borrow_and_update().clone();
-        let want = (!mic_open(&s, ptt), s.voice.self_deaf);
+        // The settings are read on every pass: a mode switch publishes the voice values, which wakes this loop.
+        let want = mic_want(&ctx.prefs, &s);
         if applied != Some(want) {
             call.set_muted(want.0);
             call.set_deafened(want.1);
@@ -574,6 +581,26 @@ mod tests {
                 noise: NoiseMode::Standard
             }
         ));
+    }
+
+    /// Review I2 (session.ts `setMode` applies live): what the call's mic does is read from the settings on every pass
+    /// of the loop, so switching to push to talk mid-call mutes it at once (the switch publishes the voice values,
+    /// which wakes the loop).
+    #[test]
+    fn a_mode_switch_mid_call_is_applied() {
+        let dir = std::env::temp_dir().join(format!("dilla-i2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prefs = dilla_client::prefs::Prefs::instance(&dir);
+        let s = AppState::default();
+        assert_eq!(mic_want(&prefs, &s), (false, false), "voice activity: open");
+        prefs.set("voice.mode", &"ptt").unwrap();
+        assert_eq!(
+            mic_want(&prefs, &s),
+            (true, false),
+            "push to talk, key up: muted"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
