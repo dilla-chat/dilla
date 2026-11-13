@@ -895,6 +895,42 @@ impl Factors {
     }
 }
 
+/// Why [`close_and_forget`] did not wipe.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ForgetError {
+    /// The store stayed open (a handle of the client outlived it) past the wait: nothing was wiped.
+    #[error("the store is still open")]
+    StoreOpen,
+    /// The wipe itself failed.
+    #[error("the store could not be removed: {0}")]
+    Wipe(String),
+}
+
+/// Forget this device, the local half, after [`Factors::sign_out_device`]: the client halts and stops (its runtime
+/// shuts down), then the wipe waits until the store is closed ([`crate::client::StoreProbe`]: every job and handle let go
+/// of the core and its SQLite connection), at most `wait`, and only then removes the data dir and its keychain entry.
+/// Blocking: call it off the UI thread and outside any runtime. The caller drops every other handle of the client
+/// (views, area handles) first, or the store stays open and nothing is wiped ([`ForgetError::StoreOpen`]).
+pub fn close_and_forget(
+    client: Client,
+    root: &std::path::Path,
+    cfg: &crate::seams::InstanceConfig,
+    kc: &dyn crate::seams::Keychain,
+    wait: std::time::Duration,
+) -> Result<(), ForgetError> {
+    let probe = client.store_probe();
+    client.halt();
+    client.stop();
+    let deadline = std::time::Instant::now() + wait;
+    while !probe.is_closed() {
+        if std::time::Instant::now() >= deadline {
+            return Err(ForgetError::StoreOpen);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    forget_device(root, cfg, kc).map_err(|e| ForgetError::Wipe(e.to_string()))
+}
+
 /// web ForgetBrowser: this device forgets the instance. Its data dir goes (the store and its keys), then its keychain
 /// entry; the account's device list on the instance is not touched, so the device stays listed until it is removed from
 /// another device. The caller stops the instance's client first.

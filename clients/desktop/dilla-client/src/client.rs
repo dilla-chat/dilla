@@ -578,6 +578,12 @@ impl Client {
         self.shutdown();
     }
 
+    /// Task 26 (Forget this device): a probe that says when this client's store is closed, i.e. its core and its SQLite
+    /// connection were dropped (every job, every area handle and the runtime let go of them). A wipe waits for it.
+    pub fn store_probe(&self) -> StoreProbe {
+        StoreProbe(Arc::downgrade(self.inner.engine.core()))
+    }
+
     /// Task 26 (Forget this device): stops the upkeep, the engine and the gateway now, through a shared handle (views
     /// may still hold the client). The runtime goes when the last handle drops ([`Client::stop`] or the drop).
     pub fn halt(&self) {
@@ -595,6 +601,23 @@ impl Client {
         if let Some(rt) = self.runtime.take() {
             rt.shutdown_background();
         }
+    }
+}
+
+/// [`Client::store_probe`]: holds the store only weakly.
+#[derive(Clone)]
+pub struct StoreProbe(std::sync::Weak<std::sync::Mutex<dilla_core::client::ClientCore>>);
+
+impl StoreProbe {
+    /// The core and its connection are gone: nothing can write the store any more.
+    pub fn is_closed(&self) -> bool {
+        self.0.strong_count() == 0
+    }
+}
+
+impl std::fmt::Debug for StoreProbe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "StoreProbe(closed: {})", self.is_closed())
     }
 }
 

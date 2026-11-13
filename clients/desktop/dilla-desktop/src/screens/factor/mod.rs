@@ -56,33 +56,59 @@ pub fn instance_of(client: &Rc<Client>, cx: &App) -> Option<dilla_client::seams:
         .and_then(|i| i.0.get(&key(client)).cloned())
 }
 
-/// Task 26 (ForgetBrowser), the whole of it: the gateway goes down, the device signs out on the instance
-/// ([`dilla_client::features::factors::Factors::sign_out_device`]), the client halts through the shared handle (so no
-/// view's clone can keep it running), then this device forgets the instance. Answers why it did not, never silently:
-/// a refused sign-out leaves everything in place and reconnects.
-pub async fn forget_device(
-    client: Rc<Client>,
+/// Task 26 (ForgetBrowser), the server half: the gateway goes down and the device signs out on the instance
+/// ([`dilla_client::features::factors::Factors::sign_out_device`]). A refusal reconnects and answers what to say; the
+/// local half ([`close_and_wipe`]) follows only after this succeeded.
+pub async fn sign_out(client: &Rc<Client>) -> Result<(), String> {
+    client.disconnect();
+    match client.factors().sign_out_device().await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            client.reconnect();
+            // Offline: the web's own words for a dropped connection (`factor.error.network`).
+            Err(
+                if e.status == 0 && (e.code == "E_NETWORK" || e.code == "E_UNAVAILABLE") {
+                    crate::strings::t("factor.error.network").to_owned()
+                } else {
+                    crate::strings::tf("factor.error.other", &[("code", &e.code)])
+                },
+            )
+        }
+    }
+}
+
+/// Task 26 (ForgetBrowser), the local half, with the last handle of the client (every view that held it dropped):
+/// the client stops, the wipe waits until the store is closed, then the data dir and its key go. Off the UI thread.
+/// On an error the store is left as it was and the caller starts the client again (a retry signs out again, where a
+/// 401 counts as done).
+pub async fn close_and_wipe(
+    client: Client,
     cfg: dilla_client::seams::InstanceConfig,
     root: Option<std::path::PathBuf>,
     keychain: std::sync::Arc<dyn dilla_client::seams::Keychain>,
 ) -> Result<(), String> {
-    client.disconnect();
-    if let Err(e) = client.factors().sign_out_device().await {
-        client.reconnect();
-        return Err(e.code);
-    }
-    client.halt();
-    let root = root.ok_or_else(|| "E_STORE".to_owned())?;
+    let failed = || crate::strings::tf("factor.error.other", &[("code", "E_FORGET_STORE")]);
+    let Some(root) = root else {
+        return Err(failed());
+    };
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::Builder::new()
         .name("dilla-forget".into())
         .spawn(move || {
-            let result =
-                dilla_client::features::factors::forget_device(&root, &cfg, keychain.as_ref());
-            let _ = tx.send(result.map_err(|_| "E_FORGET".to_owned()));
+            let result = dilla_client::features::factors::close_and_forget(
+                client,
+                &root,
+                &cfg,
+                keychain.as_ref(),
+                std::time::Duration::from_secs(15),
+            );
+            let _ = tx.send(result);
         })
-        .map_err(|_| "E_THREAD".to_owned())?;
-    rx.await.unwrap_or_else(|_| Err("E_FORGET".to_owned()))
+        .map_err(|_| failed())?;
+    match rx.await {
+        Ok(Ok(())) => Ok(()),
+        _ => Err(failed()),
+    }
 }
 
 fn server_of(client: &Rc<Client>, cx: &App) -> Option<url::Url> {

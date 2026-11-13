@@ -546,6 +546,7 @@ impl FactorSetupView {
                 Browser(BrowserAuthError),
             }
             let run = async {
+                let finish_guard = cancel.clone();
                 let ceremony = begin.await.map_err(Ended::Instance)?;
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let options = ceremony.options.clone();
@@ -574,6 +575,10 @@ impl FactorSetupView {
                     .ok_or(Ended::Browser(BrowserAuthError::Invalid(
                         "browser completion",
                     )))?;
+                // A reply that landed just before a cancel is not applied.
+                if finish_guard.is_cancelled() {
+                    return Err(Ended::Browser(BrowserAuthError::Cancelled));
+                }
                 factors
                     .passkey_finish(ceremony.id, response, &name)
                     .await

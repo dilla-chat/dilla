@@ -386,9 +386,102 @@ async fn forget_signs_the_device_out_on_the_instance() {
         matches!(after, HttpError::Status { status: 401, .. }),
         "{after:?}"
     );
-    client.halt();
+    // The local half: an area handle still alive keeps the store open, so nothing is wiped.
     let client = std::rc::Rc::try_unwrap(client).ok().unwrap();
-    world::stop(client).await;
+    let probe = client.store_probe();
+    let cfg = ada.cfg.clone();
+    let root = cfg
+        .data_dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let kc = ada.kc.clone();
+    let held = client.factors();
+    let (root2, cfg2, kc2) = (root.clone(), cfg.clone(), kc.clone());
+    let early = tokio::task::spawn_blocking(move || {
+        dilla_client::features::factors::close_and_forget(
+            client,
+            &root2,
+            &cfg2,
+            kc2.as_ref(),
+            Duration::from_millis(500),
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        early,
+        Err(dilla_client::features::factors::ForgetError::StoreOpen)
+    );
+    assert!(
+        cfg.data_dir.exists(),
+        "nothing wiped while the store is open"
+    );
+    // Every handle gone: the store closes, then the wipe; nothing writes it again afterwards.
+    drop(held);
+    let mut waited = 0;
+    while !probe.is_closed() && waited < 100 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        waited += 1;
+    }
+    assert!(
+        probe.is_closed(),
+        "the store closes once every handle let go"
+    );
+    dilla_client::features::factors::forget_device(&root, &cfg, kc.as_ref()).unwrap();
+    assert!(!cfg.data_dir.exists());
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !cfg.data_dir.exists(),
+        "no task wrote the store after the wipe"
+    );
+}
+
+/// The whole local half in one call, with no other handle: the store is closed before the wipe and the data dir goes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn forget_wipes_only_a_closed_store() {
+    let host = tokio::task::spawn_blocking(|| h::start_host("t26-wipe", "127.0.0.1:0", None))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let ada = h::sign_up(&host, &invite, "ada", "Ada", "t26-wipe").await;
+    let client = h::start(&ada).await;
+    h::wait_for(&client, Duration::from_secs(30), "ready and online", online).await;
+    client.disconnect();
+    client.factors().sign_out_device().await.unwrap();
+    let probe = client.store_probe();
+    let cfg = ada.cfg.clone();
+    let root = cfg
+        .data_dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let kc = ada.kc.clone();
+    let (root2, cfg2) = (root.clone(), cfg.clone());
+    tokio::task::spawn_blocking(move || {
+        dilla_client::features::factors::close_and_forget(
+            client,
+            &root2,
+            &cfg2,
+            kc.as_ref(),
+            Duration::from_secs(10),
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(probe.is_closed());
+    assert!(!cfg.data_dir.exists());
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !cfg.data_dir.exists(),
+        "no task wrote the store after the wipe"
+    );
 }
 
 /// signInBack: a wrong key keeps the registration only for the same ceremony; Back resets it, so another account's

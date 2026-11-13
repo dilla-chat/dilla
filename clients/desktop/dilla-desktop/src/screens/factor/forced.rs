@@ -73,9 +73,10 @@ impl ForcedFactorView {
 
     /// The app's Forget did not go through (the sign-out was refused, or the store could not go): said in the dialog,
     /// and the device stays as it was.
-    pub fn forget_refused(&mut self, code: &str, cx: &mut Context<Self>) {
+    pub fn forget_failed(&mut self, message: String, cx: &mut Context<Self>) {
         self.forgetting = false;
-        self.forget_error = Some(crate::strings::tf("factor.error.other", &[("code", code)]));
+        self.forget_error = Some(message);
+        self.confirm = true;
         cx.notify();
     }
 

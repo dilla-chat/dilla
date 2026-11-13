@@ -685,6 +685,10 @@ impl SignInView {
                         .ok_or(SignInError::Browser(BrowserAuthError::Invalid(
                             "browser completion",
                         )))?;
+                // A reply that landed just before a cancel is not applied.
+                if cancel.is_cancelled() {
+                    return Err(SignInError::Browser(BrowserAuthError::Cancelled));
+                }
                 rt.block_on(f.passkey_finish(ceremony.id, &response))
                     .map(|owes| (owes, doc))
             },
@@ -733,6 +737,10 @@ impl SignInView {
                         .ok_or(SignInError::Browser(BrowserAuthError::Invalid(
                             "browser completion",
                         )))?;
+                // A reply that landed just before a cancel is not applied.
+                if cancel.is_cancelled() {
+                    return Err(SignInError::Browser(BrowserAuthError::Cancelled));
+                }
                 Ok((f.oidc(assertion, result.needs), doc))
             },
             |this, result, window, cx| {

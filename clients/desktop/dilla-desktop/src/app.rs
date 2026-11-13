@@ -122,6 +122,8 @@ pub struct AppView {
     bounds_task: Option<gpui::Task<()>>,
     bounds_sub: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
+    /// Task 26: why the last Forget did not finish, for the forced screen the client comes back to.
+    forget_note: Option<String>,
 }
 
 impl AppView {
@@ -132,6 +134,7 @@ impl AppView {
             bounds_task: None,
             bounds_sub: None,
             _subscriptions: Vec::new(),
+            forget_note: None,
         };
         if this.launch.shipping {
             this.keep_bounds(window, cx);
@@ -312,6 +315,9 @@ impl AppView {
                 ForcedEvent::Forget => this.forget(held.clone(), cfg.clone(), window, cx),
             },
         )];
+        if let Some(note) = self.forget_note.take() {
+            view.update(cx, |v, cx| v.forget_failed(note, cx));
+        }
         self.screen = Screen::Factor(view);
         self.fit_window(window, cx);
         cx.notify();
@@ -329,27 +335,68 @@ impl AppView {
     ) {
         let (root, keychain) = (self.launch.root.clone(), self.launch.keychain.clone());
         cx.spawn_in(window, async move |this, cx| {
-            let result =
-                crate::screens::factor::forget_device(client.clone(), cfg, root, keychain).await;
-            let _ = this.update_in(cx, |this, window, cx| match result {
-                Ok(()) => {
-                    crate::screens::factor::forget_instance(&client, cx);
-                    this._subscriptions.clear();
-                    this.screen = Screen::Starting;
-                    // The last handles: the runtime goes with the client.
-                    if let Ok(client) = Rc::try_unwrap(client) {
-                        std::thread::spawn(move || client.stop());
-                    }
-                    this.show_sign_in(None, window, cx);
-                }
-                Err(code) => {
-                    if let Screen::Factor(view) = &this.screen {
-                        view.update(cx, |v, cx| v.forget_refused(&code, cx));
-                    }
-                }
+            if let Err(message) = crate::screens::factor::sign_out(&client).await {
+                let _ = this.update(cx, |this, cx| this.forget_failed(message, cx));
+                return;
+            }
+            // Every view that held the client goes first; then the last handle stops it and the wipe waits for the
+            // store to close.
+            let _ = this.update(cx, |this, cx| {
+                crate::screens::factor::forget_instance(&client, cx);
+                this._subscriptions.clear();
+                this.screen = Screen::Starting;
+                cx.notify();
             });
+            let mut client = client;
+            let mut frames = 0;
+            let owned = loop {
+                match Rc::try_unwrap(client) {
+                    Ok(owned) => break Ok(owned),
+                    Err(shared) if frames < 250 => {
+                        client = shared;
+                        frames += 1;
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(20))
+                            .await;
+                    }
+                    Err(shared) => break Err(shared),
+                }
+            };
+            let store = || crate::strings::tf("factor.error.other", &[("code", "E_FORGET_STORE")]);
+            match owned {
+                Ok(owned) => {
+                    let result =
+                        crate::screens::factor::close_and_wipe(owned, cfg.clone(), root, keychain)
+                            .await;
+                    let _ = this.update_in(cx, |this, window, cx| match result {
+                        Ok(()) => this.show_sign_in(None, window, cx),
+                        // Never a halted client: it starts again on the forced screen, which says why and can retry
+                        // (the sessions are gone, so the retry's sign-out is a 401, which counts as done).
+                        Err(message) => {
+                            this.forget_note = Some(message);
+                            this.start_client(cfg, window, cx);
+                        }
+                    });
+                }
+                // A view still holds the client: it was never stopped, nothing was wiped; back on the forced screen.
+                Err(shared) => {
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        crate::screens::factor::register_instance(&shared, cfg, cx);
+                        this.forget_note = Some(store());
+                        shared.reconnect();
+                        this.show_factor(shared, window, cx);
+                    });
+                }
+            }
         })
         .detach();
+    }
+
+    /// A Forget that did not go through: said on the forced screen.
+    fn forget_failed(&mut self, message: String, cx: &mut Context<Self>) {
+        if let Screen::Factor(view) = &self.screen {
+            view.update(cx, |v, cx| v.forget_failed(message, cx));
+        }
     }
 
     // ROUTE: the shell, for a running client.

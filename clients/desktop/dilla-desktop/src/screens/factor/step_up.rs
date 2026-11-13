@@ -202,6 +202,7 @@ impl StepUpDialog {
                 Browser(BrowserAuthError),
             }
             let run = async {
+                let finish_guard = cancel.clone();
                 let ceremony = factors
                     .step_up_passkey_begin()
                     .await
@@ -232,6 +233,10 @@ impl StepUpDialog {
                     .ok_or(Ended::Browser(BrowserAuthError::Invalid(
                         "browser completion",
                     )))?;
+                // A reply that landed just before a cancel is not applied.
+                if finish_guard.is_cancelled() {
+                    return Err(Ended::Browser(BrowserAuthError::Cancelled));
+                }
                 factors
                     .step_up_passkey_finish(ceremony.id, response)
                     .await
